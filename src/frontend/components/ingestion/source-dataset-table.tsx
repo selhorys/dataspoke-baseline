@@ -3,8 +3,9 @@
 /**
  * SourceDatasetTable — the source→dataset mapping table.
  *
- * Each row links to the dataset's ingestion detail page and shows its `origin`
- * (matcher / emitted / pipeline_name) and first/last seen timestamps.
+ * Each row links to the dataset's ingestion detail page and shows its `authority`
+ * (high / medium) and `derivation` (emitted / pipeline_name / matched), rendered
+ * together as e.g. `high (emitted)`, plus first/last seen timestamps.
  *
  * Spec: spec/feature/FRONTEND_INGESTION.md §Source Detail §Datasets.
  */
@@ -38,7 +39,7 @@ export function SourceDatasetTable({ rows }: SourceDatasetTableProps) {
         <TableHeader>
           <TableRow>
             <TableHead>dataset_urn</TableHead>
-            <TableHead>origin</TableHead>
+            <TableHead>authority</TableHead>
             <TableHead>first_seen_at</TableHead>
             <TableHead>last_seen_at</TableHead>
           </TableRow>
@@ -56,7 +57,7 @@ export function SourceDatasetTable({ rows }: SourceDatasetTableProps) {
               </TableCell>
               <TableCell>
                 <Badge variant="outline" className="text-xs">
-                  {row.origin}
+                  {`${row.authority} (${row.derivation})`}
                 </Badge>
               </TableCell>
               <TableCell className="text-sm text-muted-foreground">

@@ -67,14 +67,14 @@ async def measure(
     #
     # Join ingestion_source_dataset -> ingestion_source to obtain (mode, schedule_tier)
     # for each dataset URN.  When a dataset appears under multiple sources, use
-    # the highest-priority origin (emitted > pipeline_name > matcher) and then the
-    # most-recent last_seen_at to pick one source row per dataset.
-    _ORIGIN_PRIORITY = {"emitted": 0, "pipeline_name": 1, "matcher": 2}
+    # the highest-priority derivation (emitted > pipeline_name > matched) and then
+    # the most-recent last_seen_at to pick one source row per dataset.
+    _DERIVATION_PRIORITY = {"emitted": 0, "pipeline_name": 1, "matched": 2}
 
     mapping_q = (
         select(
             IngestionSourceDataset.dataset_urn,
-            IngestionSourceDataset.origin,
+            IngestionSourceDataset.derivation,
             IngestionSourceDataset.last_seen_at,
             IngestionSource.mode,
             IngestionSource.schedule_tier,
@@ -86,12 +86,12 @@ async def measure(
 
     # Group by dataset_urn and pick the best row per dataset.
     _best: dict[str, tuple[str, str | None]] = {}  # urn -> (mode, schedule_tier)
-    _best_priority: dict[str, tuple[int, float]] = {}  # urn -> (origin_prio, -ts)
+    _best_priority: dict[str, tuple[int, float]] = {}  # urn -> (derivation_prio, -ts)
 
     for row in mapping_rows:
         urn = row.dataset_urn
-        origin = getattr(row, "origin", "matcher")
-        prio = _ORIGIN_PRIORITY.get(origin, 99)
+        derivation = getattr(row, "derivation", "matched")
+        prio = _DERIVATION_PRIORITY.get(derivation, 99)
         # last_seen_at may be absent in test mocks; default to epoch so it
         # sorts last within the same priority level.
         last_seen = getattr(row, "last_seen_at", None)

@@ -40,7 +40,8 @@ Four sections, each bound to a route:
    read-only — edits are disabled with an explanatory note that DataHub is SSOT (the API returns
    `409 INGESTION_SOURCE_READONLY`).
 2. **Datasets** — the source→dataset mapping table (`GET /spoke/ingestion/sources/{id}/datasets`),
-   each row showing the dataset URN and `origin` (`matcher` / `emitted` / `pipeline_name`).
+   each row showing the dataset URN, its `authority` (`high` / `medium`) and `derivation`
+   (`emitted` / `pipeline_name` / `matched`) — rendered as e.g. `high (emitted)`.
 3. **Run** — `POST /spoke/ingestion/sources/{id}/method/run` with a `dry_run` toggle. Shown only
    for `ACTIVE_CUSTOM_MANAGED`; other modes show an explanatory disabled state (the run happens in
    DataHub or externally; the API returns `409 INGESTION_RUN_NOT_APPLICABLE`).

@@ -401,11 +401,11 @@ def test_ingestion_source_has_required_columns() -> None:
 def test_ingestion_source_dataset_has_required_columns() -> None:
     """IngestionSourceDataset has all columns per BACKEND_SCHEMA.md §ingestion_source_dataset.
 
-    spec: BACKEND_SCHEMA.md §ingestion_source_dataset — source_id, dataset_urn, origin,
+    spec: BACKEND_SCHEMA.md §ingestion_source_dataset — source_id, dataset_urn, derivation,
           first_seen_at, last_seen_at.
     """
     col_names = {col.name for col in IngestionSourceDataset.__table__.columns}
-    for expected in ("source_id", "dataset_urn", "origin", "first_seen_at", "last_seen_at"):
+    for expected in ("source_id", "dataset_urn", "derivation", "first_seen_at", "last_seen_at"):
         assert expected in col_names, (
             f"IngestionSourceDataset missing column '{expected}'. "
             "spec: BACKEND_SCHEMA.md §ingestion_source_dataset."

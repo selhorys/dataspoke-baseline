@@ -1228,7 +1228,7 @@ async def test_ingestion_freshness_active_custom_daily_window(
     """ingestion-freshness: ACTIVE_CUSTOM_MANAGED daily source → window = 172800s.
 
     Seeds an ingestion_source row with mode='ACTIVE_CUSTOM_MANAGED', schedule_tier='daily'
-    and ingestion_source_dataset rows (origin='emitted') for two datasets:
+    and ingestion_source_dataset rows (derivation='emitted') for two datasets:
       - urn_fresh: INGESTION.COMPLETE 130000s ago (< 172800s) → in-time
       - urn_stale: INGESTION.COMPLETE 200000s ago (> 172800s) → stale
 
@@ -1279,14 +1279,14 @@ async def test_ingestion_freshness_active_custom_daily_window(
             "OK",
         )
 
-        # Insert ingestion_source_dataset rows (origin='emitted') for both datasets
-        # spec: BACKEND_SCHEMA.md §ingestion_source_dataset — (source_id, dataset_urn, origin, ...)
+        # Insert ingestion_source_dataset rows (derivation='emitted') for both datasets
+        # spec: BACKEND_SCHEMA.md §ingestion_source_dataset — (source_id, dataset_urn, derivation, ...)
         for urn in (urn_fresh, urn_stale):
             await conn.execute(
                 "INSERT INTO dataspoke.ingestion_source_dataset "
-                "(source_id, dataset_urn, origin) "
+                "(source_id, dataset_urn, derivation) "
                 "VALUES ($1, $2, $3) "
-                "ON CONFLICT (source_id, dataset_urn) DO UPDATE SET origin=$3",
+                "ON CONFLICT (source_id, dataset_urn) DO UPDATE SET derivation=$3",
                 source_id, urn, "emitted",
             )
 
@@ -1418,7 +1418,7 @@ async def test_ingestion_freshness_passive_window(
     """ingestion-freshness: PASSIVE source → window = 7200s (2 × hourly sync cadence).
 
     Seeds an ingestion_source with mode='PASSIVE' and ingestion_source_dataset rows
-    (origin='matcher') for two datasets:
+    (derivation='matched') for two datasets:
       - urn_fresh: event 3600s ago (< 7200s) → in-time
       - urn_stale: event 8000s ago (> 7200s) → stale, detail.window_source='passive'
 
@@ -1463,15 +1463,15 @@ async def test_ingestion_freshness_passive_window(
             "OK",
         )
 
-        # Insert ingestion_source_dataset rows (origin='matcher') for both datasets
-        # spec: BACKEND_SCHEMA.md §ingestion_source_dataset — origin='matcher' for PASSIVE
+        # Insert ingestion_source_dataset rows (derivation='matched') for both datasets
+        # spec: BACKEND_SCHEMA.md §ingestion_source_dataset — derivation='matched' for PASSIVE
         for urn in (urn_fresh, urn_stale):
             await conn.execute(
                 "INSERT INTO dataspoke.ingestion_source_dataset "
-                "(source_id, dataset_urn, origin) "
+                "(source_id, dataset_urn, derivation) "
                 "VALUES ($1, $2, $3) "
-                "ON CONFLICT (source_id, dataset_urn) DO UPDATE SET origin=$3",
-                source_id, urn, "matcher",
+                "ON CONFLICT (source_id, dataset_urn) DO UPDATE SET derivation=$3",
+                source_id, urn, "matched",
             )
 
         # Clear any pre-existing INGESTION.COMPLETE events for these URNs

@@ -4,7 +4,7 @@ Covers:
 - DATAHUB_MANAGED create/update/delete → 409 INGESTION_SOURCE_READONLY
 - ACTIVE_CUSTOM_MANAGED run on PASSIVE source → 409 INGESTION_RUN_NOT_APPLICABLE
 - cron → tier validation: unknown cron → INVALID_PARAMETER error code
-- reverse_lookup precedence: emitted > pipeline_name > matcher
+- reverse_lookup precedence: emitted > pipeline_name > matched
 - list_active_sources_for_tier: mode + tier filter
 - list_datasets_for_source: propagates EntityNotFoundError on unknown source
 - get_source: raises EntityNotFoundError for non-existent ID
@@ -17,7 +17,7 @@ Spec: spec/USE_CASE_en.md §UC1
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -28,11 +28,8 @@ from tests.unit.backend.conftest import mock_db_refresh, mock_scalar_query
 from tests.unit.backend.ingestion.conftest import (
     _DATASET_URN,
     _RECIPE_NO_SECRET,
-    _RECIPE_POSTGRES,
-    _SOURCE_ID,
     _make_source_row,
 )
-
 
 # ── DATAHUB_MANAGED read-only guard ───────────────────────────────────────────
 
@@ -44,7 +41,9 @@ class TestDatahubManagedReadOnly:
     """
 
     @pytest.mark.asyncio
-    async def test_create_datahub_managed_raises_conflict(self, service: IngestionService, db: AsyncMock) -> None:
+    async def test_create_datahub_managed_raises_conflict(
+        self, service: IngestionService, db: AsyncMock
+    ) -> None:
         """POST with mode=DATAHUB_MANAGED raises ConflictError(INGESTION_SOURCE_READONLY).
 
         Spec: BACKEND.md §Ingestion Service §Editability.
@@ -59,7 +58,9 @@ class TestDatahubManagedReadOnly:
         assert exc_info.value.error_code == "INGESTION_SOURCE_READONLY"
 
     @pytest.mark.asyncio
-    async def test_replace_datahub_managed_raises_conflict(self, service: IngestionService, db: AsyncMock) -> None:
+    async def test_replace_datahub_managed_raises_conflict(
+        self, service: IngestionService, db: AsyncMock
+    ) -> None:
         """PUT on a DATAHUB_MANAGED source raises ConflictError(INGESTION_SOURCE_READONLY).
 
         Spec: BACKEND.md §Ingestion Service §Editability.
@@ -78,7 +79,9 @@ class TestDatahubManagedReadOnly:
         assert exc_info.value.error_code == "INGESTION_SOURCE_READONLY"
 
     @pytest.mark.asyncio
-    async def test_patch_datahub_managed_raises_conflict(self, service: IngestionService, db: AsyncMock) -> None:
+    async def test_patch_datahub_managed_raises_conflict(
+        self, service: IngestionService, db: AsyncMock
+    ) -> None:
         """PATCH on a DATAHUB_MANAGED source raises ConflictError(INGESTION_SOURCE_READONLY).
 
         Spec: BACKEND.md §Ingestion Service §Editability.
@@ -91,7 +94,9 @@ class TestDatahubManagedReadOnly:
         assert exc_info.value.error_code == "INGESTION_SOURCE_READONLY"
 
     @pytest.mark.asyncio
-    async def test_delete_datahub_managed_raises_conflict(self, service: IngestionService, db: AsyncMock) -> None:
+    async def test_delete_datahub_managed_raises_conflict(
+        self, service: IngestionService, db: AsyncMock
+    ) -> None:
         """DELETE on a DATAHUB_MANAGED source raises ConflictError(INGESTION_SOURCE_READONLY).
 
         Spec: BACKEND.md §Ingestion Service §Editability.
@@ -283,32 +288,34 @@ class TestGetSource:
 
 
 class TestReverseLookupPrecedence:
-    """Spec: BACKEND.md §Ingestion Service §reverse_lookup — 'emitted > pipeline_name > matcher'.
-
-    When multiple sources map the same dataset, the highest-priority origin wins.
+    """Spec: BACKEND_SCHEMA.md §ingestion_source_dataset — authority levels (emitted/
+    pipeline_name = high, matched = medium). When multiple sources map the same dataset,
+    the highest-authority derivation wins; the emitted > pipeline_name relative order is
+    implementation-defined (these tests assert only the spec-grounded high > medium boundary).
     Ties within the same priority are broken by most-recent last_seen_at.
     """
 
     @pytest.mark.asyncio
-    async def test_emitted_beats_matcher(
+    async def test_emitted_beats_matched(
         self, service: IngestionService, db: AsyncMock
     ) -> None:
-        """Source with origin='emitted' wins over origin='matcher'.
+        """Source with derivation='emitted' wins over derivation='matched'.
 
-        Spec: BACKEND.md §reverse_lookup — 'emitted > pipeline_name > matcher'.
+        Spec: BACKEND_SCHEMA.md §ingestion_source_dataset — emitted is authority 'high',
+        matched is authority 'medium'; the higher-authority derivation wins.
         """
         source_a_id = uuid.uuid4()
         source_b_id = uuid.uuid4()
 
         mapping_emitted = MagicMock()
-        mapping_emitted.origin = "emitted"
+        mapping_emitted.derivation = "emitted"
         mapping_emitted.last_seen_at = datetime.now(tz=UTC)
         mapping_emitted.dataset_urn = _DATASET_URN
 
-        mapping_matcher = MagicMock()
-        mapping_matcher.origin = "matcher"
-        mapping_matcher.last_seen_at = datetime.now(tz=UTC)
-        mapping_matcher.dataset_urn = _DATASET_URN
+        mapping_matched = MagicMock()
+        mapping_matched.derivation = "matched"
+        mapping_matched.last_seen_at = datetime.now(tz=UTC)
+        mapping_matched.dataset_urn = _DATASET_URN
 
         source_a = MagicMock()
         source_a.id = source_a_id
@@ -337,9 +344,9 @@ class TestReverseLookupPrecedence:
         source_b.updated_at = datetime.now(tz=UTC)
 
         result_mock = MagicMock()
-        # source_b has 'emitted', source_a has 'matcher' → source_b wins
+        # source_b has derivation='emitted', source_a has derivation='matched' → source_b wins
         result_mock.all.return_value = [
-            (mapping_matcher, source_a),
+            (mapping_matched, source_a),
             (mapping_emitted, source_b),
         ]
         db.execute = AsyncMock(return_value=result_mock)
@@ -347,25 +354,26 @@ class TestReverseLookupPrecedence:
         winner = await service.reverse_lookup(_DATASET_URN)
         assert winner is not None
         assert winner.name == "source-b", (
-            f"Expected 'source-b' (emitted origin) to win; got '{winner.name}'. "
-            "Spec: BACKEND.md §reverse_lookup — emitted > matcher."
+            f"Expected 'source-b' (emitted derivation) to win; got '{winner.name}'. "
+            "Spec: BACKEND_SCHEMA.md §ingestion_source_dataset — emitted (high) > matched (medium)."
         )
 
     @pytest.mark.asyncio
-    async def test_pipeline_name_beats_matcher(
+    async def test_pipeline_name_beats_matched(
         self, service: IngestionService, db: AsyncMock
     ) -> None:
-        """Source with origin='pipeline_name' wins over origin='matcher'.
+        """Source with derivation='pipeline_name' wins over derivation='matched'.
 
-        Spec: BACKEND.md §reverse_lookup — 'emitted > pipeline_name > matcher'.
+        Spec: BACKEND_SCHEMA.md §ingestion_source_dataset — pipeline_name is authority
+        'high', matched is authority 'medium'; the higher-authority derivation wins.
         """
         mapping_pipeline = MagicMock()
-        mapping_pipeline.origin = "pipeline_name"
+        mapping_pipeline.derivation = "pipeline_name"
         mapping_pipeline.last_seen_at = datetime.now(tz=UTC)
 
-        mapping_matcher = MagicMock()
-        mapping_matcher.origin = "matcher"
-        mapping_matcher.last_seen_at = datetime.now(tz=UTC)
+        mapping_matched = MagicMock()
+        mapping_matched.derivation = "matched"
+        mapping_matched.last_seen_at = datetime.now(tz=UTC)
 
         source_pipeline = MagicMock()
         source_pipeline.id = uuid.uuid4()
@@ -380,22 +388,22 @@ class TestReverseLookupPrecedence:
         source_pipeline.created_at = datetime.now(tz=UTC)
         source_pipeline.updated_at = datetime.now(tz=UTC)
 
-        source_matcher = MagicMock()
-        source_matcher.id = uuid.uuid4()
-        source_matcher.name = "matcher-source"
-        source_matcher.mode = "PASSIVE"
-        source_matcher.platform = "postgres"
-        source_matcher.recipe = _RECIPE_NO_SECRET
-        source_matcher.schedule = None
-        source_matcher.schedule_tier = None
-        source_matcher.datahub_source_urn = None
-        source_matcher.status = "OK"
-        source_matcher.created_at = datetime.now(tz=UTC)
-        source_matcher.updated_at = datetime.now(tz=UTC)
+        source_matched = MagicMock()
+        source_matched.id = uuid.uuid4()
+        source_matched.name = "matched-source"
+        source_matched.mode = "PASSIVE"
+        source_matched.platform = "postgres"
+        source_matched.recipe = _RECIPE_NO_SECRET
+        source_matched.schedule = None
+        source_matched.schedule_tier = None
+        source_matched.datahub_source_urn = None
+        source_matched.status = "OK"
+        source_matched.created_at = datetime.now(tz=UTC)
+        source_matched.updated_at = datetime.now(tz=UTC)
 
         result_mock = MagicMock()
         result_mock.all.return_value = [
-            (mapping_matcher, source_matcher),
+            (mapping_matched, source_matched),
             (mapping_pipeline, source_pipeline),
         ]
         db.execute = AsyncMock(return_value=result_mock)
@@ -403,8 +411,9 @@ class TestReverseLookupPrecedence:
         winner = await service.reverse_lookup(_DATASET_URN)
         assert winner is not None
         assert winner.name == "pipeline-source", (
-            f"Expected 'pipeline-source' (pipeline_name origin) to win; got '{winner.name}'. "
-            "Spec: BACKEND.md §reverse_lookup — pipeline_name > matcher."
+            f"Expected 'pipeline-source' (pipeline_name derivation) to win; "
+            f"got '{winner.name}'. "
+            "Spec: BACKEND_SCHEMA.md §ingestion_source_dataset — pipeline_name (high) > matched (medium)."
         )
 
     @pytest.mark.asyncio

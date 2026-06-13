@@ -12,10 +12,10 @@ Concerns covered (one per test):
    latest_run} — null/unmapped case.
 7. Sync-sweep matcher mapping: PASSIVE kafka source with topic_patterns.allow over imazon.*
    → POST /internal/activities/ingestion/sync → GET .../datasets returns URNs with
-   origin='matcher'. Proves the sync matcher independently of api-wired UC1 Case 3.
-8. Real run emit + origin=emitted: ACTIVE_CUSTOM_MANAGED postgres catalog source →
+   derivation='matched'. Proves the sync matcher independently of api-wired UC1 Case 3.
+8. Real run emit + derivation=emitted: ACTIVE_CUSTOM_MANAGED postgres catalog source →
    POST .../method/run (no dry_run param) → ≥2 catalog URNs in .../datasets with
-   origin='emitted'. Skipped if dummy-data-pg secret absent from cluster.
+   derivation='emitted'. Skipped if dummy-data-pg secret absent from cluster.
 9. Populated reverse-lookup: after real run in #8, GET /data/{catalog_title_urn}/attr/ingestion
    returns source_id, mode=ACTIVE_CUSTOM_MANAGED, latest_run.status=success. Complements
    test 6 (null case).
@@ -476,13 +476,13 @@ async def test_sync_sweep_passive_kafka_matcher_maps_topics(
     Independent spot-level proof of the sync matcher pipeline:
     1. Create a PASSIVE kafka source with topic_patterns.allow: ["^imazon\\..*$"]
     2. POST /internal/activities/ingestion/sync to trigger the sweep
-    3. GET /sources/{id}/datasets and assert imazon.* URNs appear with origin='matcher'
+    3. GET /sources/{id}/datasets and assert imazon.* URNs appear with derivation='matched'
 
     This test stands alone from UC1 Case 3 (api-wired): the spot set must cover this
     surface even when api-wired tests are skipped.
 
     spec: USE_CASE_en.md §UC1 Case 3 — PASSIVE source declares allow/deny scope; sync maps topics.
-    spec: feature/BACKEND.md §Ingestion Service §Sync sweep step 2 — AllowDenyPattern/origin=matcher
+    spec: feature/BACKEND.md §Ingestion Service §Sync sweep step 2 — derivation=matched.
     spec: TESTING.md §Coverage rule — spot set must catch backend regressions independently.
     """
     # Clean slate: remove any leftover ingestion_source rows.
@@ -556,14 +556,14 @@ async def test_sync_sweep_passive_kafka_matcher_maps_topics(
             "spec: USE_CASE_en.md §UC1 Case 3 — declared allow scope maps topics."
         )
 
-        # All mapped rows must have origin='matcher' (PASSIVE sync path).
-        # spec: feature/BACKEND.md §Sync sweep step 2 — PASSIVE: origin=matcher.
+        # All mapped rows must have derivation='matched' (PASSIVE sync path).
+        # spec: feature/BACKEND.md §Sync sweep step 2 — PASSIVE: derivation=matched.
         for d in datasets_body["datasets"]:
             if d["dataset_urn"] in (_KAFKA_ORDERS_URN, _KAFKA_SHIPPING_URN):
-                assert d["origin"] == "matcher", (
-                    f"PASSIVE source dataset {d['dataset_urn']!r} must have origin='matcher'; "
-                    f"got {d['origin']!r}. "
-                    "spec: feature/BACKEND.md §Sync sweep step 2 — PASSIVE uses matcher origin."
+                assert d["derivation"] == "matched", (
+                    f"PASSIVE source dataset {d['dataset_urn']!r} must have "
+                    f"derivation='matched'; got {d['derivation']!r}. "
+                    "spec: feature/BACKEND.md §Sync sweep step 2 — PASSIVE uses matched derivation."
                 )
 
     finally:
@@ -573,22 +573,23 @@ async def test_sync_sweep_passive_kafka_matcher_maps_topics(
         await dataspoke_db.reset_ingestion_sources()
 
 
-# ── Test 8: Real-run emit + origin=emitted (ACTIVE_CUSTOM_MANAGED) ───────────────
+# ── Test 8: Real-run emit + derivation=emitted (ACTIVE_CUSTOM_MANAGED) ──────────
 
 
 @pytest.mark.asyncio
-async def test_real_run_emits_catalog_datasets_with_origin_emitted(
+async def test_real_run_emits_catalog_datasets_with_derivation_emitted(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
     """ACTIVE_CUSTOM_MANAGED postgres catalog source: POST .../method/run (real run)
-    → ≥2 catalog URNs in .../datasets with origin='emitted'.
+    → ≥2 catalog URNs in .../datasets with derivation='emitted'.
 
     Skipped when the dummy-data-pg K8s Secret is not provisioned in the cluster
     (checked via GET /spoke/ingestion/secrets).
 
     spec: USE_CASE_en.md §UC1 Case 2 — real run emits dataset aspects + records emitted URNs.
-    spec: feature/BACKEND.md §Active-custom run pipeline — emitted URNs recorded with origin=emitted
+    spec: feature/BACKEND.md §Active-custom run pipeline — emitted URNs recorded with
+    derivation=emitted.
     spec: SECRET_RESOLUTION.md §Reference discovery — skip guard via list endpoint.
     spec: TESTING.md §Coverage rule — spot must prove emit surface independently.
     """
@@ -651,8 +652,8 @@ async def test_real_run_emits_catalog_datasets_with_origin_emitted(
             "spec: USE_CASE_en.md §UC1 Case 2 — catalog schema produces title_master + editions."
         )
 
-        # GET .../datasets — emitted URNs must be present with origin='emitted'.
-        # spec: feature/BACKEND.md §Active-custom run pipeline — origin=emitted (authoritative).
+        # GET .../datasets — emitted URNs must be present with derivation='emitted'.
+        # spec: feature/BACKEND.md §Active-custom run pipeline — derivation=emitted (authoritative).
         datasets_resp = await api_client.get(
             f"{_SOURCES_BASE}/{source_id}/datasets",
             headers=admin_headers,
@@ -668,12 +669,13 @@ async def test_real_run_emits_catalog_datasets_with_origin_emitted(
             f"got {len(dataset_rows)}: {[d['dataset_urn'] for d in dataset_rows]}. "
             "spec: USE_CASE_en.md §UC1 Case 2."
         )
-        # All emitted rows must carry origin='emitted'.
+        # All emitted rows must carry derivation='emitted'.
+        # spec: feature/BACKEND.md §Active-custom run pipeline — derivation=emitted for real runs.
         for row in dataset_rows:
-            assert row.get("origin") == "emitted", (
-                f"Dataset {row.get('dataset_urn')!r} must have origin='emitted' after a real run; "
-                f"got {row.get('origin')!r}. "
-                "spec: feature/BACKEND.md §Active-custom run pipeline — origin=emitted."
+            assert row.get("derivation") == "emitted", (
+                f"Dataset {row.get('dataset_urn')!r} must have derivation='emitted' after "
+                f"a real run; got {row.get('derivation')!r}. "
+                "spec: feature/BACKEND.md §Active-custom run pipeline — derivation=emitted."
             )
 
     finally:

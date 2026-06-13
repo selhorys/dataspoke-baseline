@@ -293,7 +293,7 @@ Redis SETNX (`ingestion:running:{source_id}`) → resolve `${name__key}` recipe 
 (skipped on `dry_run`) → dispatch to the extractor registered for `recipe.source.type`; emit
 dataset aspects (skipped on `dry_run`; a non-dry-run that ingests zero entities is treated as
 failure) → emit `DataProcessInstanceRunEvent(COMPLETE | FAILED)` (skipped on `dry_run`) → record
-the extractor's emitted URNs into `ingestion_source_dataset` (`origin = emitted`, authoritative)
+the extractor's emitted URNs into `ingestion_source_dataset` (`derivation = emitted`, authority `high`)
 → record `INGESTION.COMPLETE` / `INGESTION.FAIL` event (the run's `dry_run` boolean is preserved
 in the event's `detail`; see [Event Catalogue](#event-catalogue)).
 
@@ -301,20 +301,22 @@ in the event's `detail`; see [Event Catalogue](#event-catalogue)).
 DAG) reconciles all modes:
 
 1. **Source defs**: pull `DATAHUB_MANAGED` source recipes + schedules via DataHub's
-   `listIngestionSources` / `ingestionSource(urn)`; upsert read-only rows. Mask plaintext secret
-   values in the stored/displayed recipe (DataHub returns them raw); `${...}` secret references
-   are preserved as-is (not masked, not resolved).
+   `listIngestionSources` / `ingestionSource(urn)`; upsert read-only rows. The sweep mirrors only
+   non-system sources (`sourceType != SYSTEM`), matching DataHub's own Manage Data Sources view —
+   system-internal jobs such as `datahub-gc` and `datahub-documents` are excluded. Mask plaintext
+   secret values in the stored/displayed recipe (DataHub returns them raw); `${...}` secret
+   references are preserved as-is (not masked, not resolved).
 2. **Mapping**: list the DataHub dataset set once and rebuild `ingestion_source_dataset` by
    evaluating each source's **filter-matcher** — derived from the recipe's `platform`+`database`+
    `schema_pattern`/`table_pattern` for `DATAHUB_MANAGED`/`ACTIVE_CUSTOM_MANAGED`; the declared `AllowDenyPattern`
-   scope for `PASSIVE`. `origin = matcher`. Matching parses dataset URNs and applies filters the
+   scope for `PASSIVE`. `derivation = matched` (authority `medium`). Matching parses dataset URNs and applies filters the
    way the connector names them — declared/derived coverage, an explicit approximation (DataHub
    exposes no native source→dataset reverse lookup). A source with no derivable selection patterns
    (`schema_pattern`/`table_pattern`/`topic_patterns`/`dataset_pattern` all absent) maps no datasets.
 3. **Observed enrichment (optional, the two MANAGED modes)**: read `systemMetadata.pipelineName`
    per dataset to link datasets to their source authoritatively — `DATAHUB_MANAGED` (DataHub
    stamps the source URN), `ACTIVE_CUSTOM_MANAGED` (DataSpoke's extractor stamps the source id).
-   `origin = pipeline_name`. Not used for `PASSIVE`.
+   `derivation = pipeline_name` (authority `high`). Not used for `PASSIVE`.
 4. **Run events**: mirror run history into the `events` table — `listExecutionRequests` for
    `DATAHUB_MANAGED`; `Operation` / `DataProcessInstance` observation for `PASSIVE` — with
    `event_type = INGESTION.COMPLETE` / `INGESTION.FAIL`, deduplicated by

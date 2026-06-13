@@ -1,10 +1,11 @@
 /**
- * Tests for SourceDatasetTable — empty state, URN link encoding, origin badge.
+ * Tests for SourceDatasetTable — empty state, URN link encoding, authority badge.
  *
  * Spec traces:
  *   - spec/feature/FRONTEND_INGESTION.md §Source Detail §Datasets:
- *     source→dataset mapping table; each row links to /ingestion/data/[urn].
- *   - spec/API.md §Ingestion: origin enum: matcher | emitted | pipeline_name.
+ *     source→dataset mapping table; each row links to /ingestion/data/[urn] and
+ *     shows authority (high/medium) + derivation (emitted/pipeline_name/matched),
+ *     rendered together as e.g. `high (emitted)`.
  */
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
@@ -27,7 +28,8 @@ function makeRow(overrides: Partial<IngestionSourceDatasetRow> = {}): IngestionS
   return {
     dataset_urn:
       "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)",
-    origin: "matcher",
+    authority: "high",
+    derivation: "emitted",
     first_seen_at: "2024-01-01T00:00:00Z",
     last_seen_at: "2024-01-10T00:00:00Z",
     ...overrides,
@@ -60,22 +62,22 @@ describe("SourceDatasetTable — row data", () => {
     expect(screen.getByText(urn)).toBeTruthy();
   });
 
-  it("renders the origin badge for each origin type", () => {
+  it("renders the authority + derivation badge as `authority (derivation)`", () => {
     const rows: IngestionSourceDatasetRow[] = [
-      makeRow({ origin: "matcher", dataset_urn: "urn:a" }),
-      makeRow({ origin: "emitted", dataset_urn: "urn:b" }),
-      makeRow({ origin: "pipeline_name", dataset_urn: "urn:c" }),
+      makeRow({ authority: "high", derivation: "emitted", dataset_urn: "urn:a" }),
+      makeRow({ authority: "high", derivation: "pipeline_name", dataset_urn: "urn:b" }),
+      makeRow({ authority: "medium", derivation: "matched", dataset_urn: "urn:c" }),
     ];
     render(<SourceDatasetTable rows={rows} />);
-    expect(screen.getByText("matcher")).toBeTruthy();
-    expect(screen.getByText("emitted")).toBeTruthy();
-    expect(screen.getByText("pipeline_name")).toBeTruthy();
+    expect(screen.getByText("high (emitted)")).toBeTruthy();
+    expect(screen.getByText("high (pipeline_name)")).toBeTruthy();
+    expect(screen.getByText("medium (matched)")).toBeTruthy();
   });
 
   it("renders multiple rows when multiple datasets are provided", () => {
     const rows = [
-      makeRow({ dataset_urn: "urn:a", origin: "matcher" }),
-      makeRow({ dataset_urn: "urn:b", origin: "emitted" }),
+      makeRow({ dataset_urn: "urn:a", authority: "high", derivation: "matched" }),
+      makeRow({ dataset_urn: "urn:b", authority: "medium", derivation: "emitted" }),
     ];
     render(<SourceDatasetTable rows={rows} />);
     expect(screen.getByText("urn:a")).toBeTruthy();

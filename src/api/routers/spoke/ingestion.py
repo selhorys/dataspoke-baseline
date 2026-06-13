@@ -249,8 +249,9 @@ async def get_ingestion_source_datasets(
 ) -> IngestionSourceDatasetsResponse:
     """List datasets covered by this source (the current mapping).
 
-    Each row carries ``dataset_urn``, ``origin``, ``first_seen_at``, and
-    ``last_seen_at``. The mapping is rebuilt by the hourly sync DAG.
+    Each row carries ``dataset_urn``, ``authority``, ``derivation``,
+    ``first_seen_at``, and ``last_seen_at``. The mapping is rebuilt by the
+    hourly sync DAG.
 
     Returns ``404 INGESTION_SOURCE_NOT_FOUND`` when the id is absent.
     """
@@ -264,7 +265,8 @@ async def get_ingestion_source_datasets(
         datasets=[
             IngestionSourceDatasetRow(
                 dataset_urn=d.dataset_urn,
-                origin=d.origin,
+                authority=d.authority,
+                derivation=d.derivation,
                 first_seen_at=d.first_seen_at,
                 last_seen_at=d.last_seen_at,
             )

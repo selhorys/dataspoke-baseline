@@ -9,7 +9,7 @@ Steps mirror USE_CASE_en.md §UC1 Case 2:
   3. Dry-run POST /sources/{id}/method/run?dry_run=true → success, no datasets emitted
   4. Real run (no dry_run param) → success
   5. Assert catalog.* datasets present in DataHub (ES settle: up to 30s poll)
-  6. GET /sources/{id}/datasets → origin='emitted' rows for catalog datasets
+  6. GET /sources/{id}/datasets → derivation='emitted' rows for catalog datasets
   7. GET /sources/{id}/event → INGESTION.COMPLETE event
   8. GET /spoke/common/data/{catalog_urn}/attr/ingestion → reverse-lookup returns this source
   9. Cleanup: DELETE /sources/{id}
@@ -287,10 +287,10 @@ async def test_uc1_active_custom_postgres(
             "spec: USE_CASE_en.md §UC1 Case 2 — catalog schema produces multiple datasets"
         )
 
-        # ── Step 5: GET /sources/{id}/datasets → origin='emitted' rows ────────
+        # ── Step 5: GET /sources/{id}/datasets → derivation='emitted' rows ─────
         # spec: API.md §Ingestion — GET /sources/{id}/datasets returns mapping rows
         # spec: feature/BACKEND.md §Active-custom run pipeline — emitted URNs recorded
-        #       into ingestion_source_dataset with origin='emitted'
+        #       into ingestion_source_dataset with derivation='emitted'
         #
         # F1: discover_catalog_tables() asserts the dummy-postgres seed is non-empty
         # before we compute expected_urns; prevents vacuous set-equality on both sides
@@ -330,14 +330,22 @@ async def test_uc1_active_custom_postgres(
             f"expected subset: {sorted(expected_urns)}; got: {sorted(dataset_urns)}. "
             "spec: USE_CASE_en.md §UC1 Case 2 — all catalog datasets emitted by the run"
         )
-        # All emitted rows must carry origin='emitted' (authoritative mapping).
-        # spec: feature/BACKEND.md §Active-custom run pipeline — origin=emitted for real runs
-        emitted_origins = {d["origin"] for d in datasets_body["datasets"]}
-        assert "emitted" in emitted_origins, (
-            f"At least one dataset must have origin='emitted' after a real run; "
-            f"got origins={emitted_origins}. "
+        # All emitted rows must carry derivation='emitted' (authoritative mapping).
+        # spec: feature/BACKEND.md §Active-custom run pipeline — derivation=emitted for real runs.
+        # spec: BACKEND_SCHEMA.md §ingestion_source_dataset — emitted→authority=high.
+        derivations = {d["derivation"] for d in datasets_body["datasets"]}
+        assert "emitted" in derivations, (
+            f"At least one dataset must have derivation='emitted' after a real run; "
+            f"got derivations={derivations}. "
             "spec: feature/BACKEND.md §Ingestion Service §Source→dataset mapping"
         )
+        for d in datasets_body["datasets"]:
+            if d["derivation"] == "emitted":
+                assert d["authority"] == "high", (
+                    f"Dataset {d['dataset_urn']!r} has derivation='emitted' but "
+                    f"authority={d['authority']!r}; expected 'high'. "
+                    "spec: BACKEND_SCHEMA.md §ingestion_source_dataset — emitted→high."
+                )
         for d in datasets_body["datasets"]:
             assert "first_seen_at" in d
             assert "last_seen_at" in d

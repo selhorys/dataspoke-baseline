@@ -193,7 +193,7 @@ class IngestionSourceDataset(Base):
         primary_key=True,
     )
     dataset_urn: Mapped[str] = mapped_column(Text, primary_key=True)
-    origin: Mapped[str] = mapped_column(Text, nullable=False)
+    derivation: Mapped[str] = mapped_column(Text, nullable=False)
     first_seen_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
     )

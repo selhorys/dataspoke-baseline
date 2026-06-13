@@ -18,7 +18,7 @@ Steps mirror USE_CASE_en.md §UC1 Case 1:
        PUT / PATCH → 409 INGESTION_SOURCE_READONLY
        method/run → 409 INGESTION_RUN_NOT_APPLICABLE
   6. Poll GET /sources/{id}/datasets (≤180s, ES budget);
-     assert non-empty, valid origin enum, non-catalog URNs, ≥1 matcher origin.
+     assert non-empty, valid derivation enum, non-catalog URNs, ≥1 matched derivation.
   7. Assert schedule round-trips ('0 0 * * *') and schedule_tier is absent from wire.
   8. Cleanup: deleteIngestionSource, deleteSecret, re-run sync to remove mirrored rows.
 
@@ -354,7 +354,7 @@ async def test_uc1_datahub_managed_sync_and_readonly(
       - method/run → 409 INGESTION_RUN_NOT_APPLICABLE
       - schedule == '0 0 * * *'; schedule_tier NOT in API response
       - recipe source.type == 'postgres'
-      - /sources/{id}/datasets: non-empty, valid origin enum, non-catalog URNs, ≥1 matcher
+      - /sources/{id}/datasets: non-empty, valid derivation enum, non-catalog URNs, ≥1 matched
 
     spec: USE_CASE_en.md §UC1 Case 1
     spec: API.md §Ingestion — DATAHUB_MANAGED read-only: 409 INGESTION_SOURCE_READONLY
@@ -466,7 +466,7 @@ async def test_uc1_datahub_managed_sync_and_readonly(
     # 180s covers the full lag window.
     # spec: project_es_indexing_lag_after_reset_seed — ES lags ~2-3 min; budget ≥180s.
     # spec: USE_CASE_en.md §UC1 Case 1 — GET /sources/{id}/datasets lists mapped datasets.
-    # spec: BACKEND_SCHEMA.md §ingestion_source_dataset — origin: emitted | matcher | pipeline_name
+    # spec: BACKEND_SCHEMA.md §ingestion_source_dataset — derivation: emitted | pipeline_name | matched
     datasets_body: dict = {}
     mapped_datasets: list = []
     # ES-gated assertion: dataset existence search indexes lag 2-3 min after seed.
@@ -518,15 +518,35 @@ async def test_uc1_datahub_managed_sync_and_readonly(
         "spec: project_es_indexing_lag_after_reset_seed — ES lag budget is 2-3 min."
     )
 
-    # All returned URNs must carry a valid origin value.
-    # spec: BACKEND_SCHEMA.md §ingestion_source_dataset — origin: matcher | emitted | pipeline_name.
+    # All returned rows must carry both derivation and authority fields.
+    # spec: BACKEND_SCHEMA.md §ingestion_source_dataset — derivation: emitted|pipeline_name|matched.
+    # spec: API.md ~line 283 — GET /sources/{id}/datasets rows expose authority + derivation.
     for d in mapped_datasets:
         assert "dataset_urn" in d, f"Mapping row missing dataset_urn: {d}"
-        assert "origin" in d, f"Mapping row missing origin: {d}"
-        assert d["origin"] in ("emitted", "pipeline_name", "matcher"), (
-            f"origin must be one of emitted/pipeline_name/matcher; got {d['origin']!r}. "
-            "spec: BACKEND_SCHEMA.md §ingestion_source_dataset — origin enum."
+        assert "derivation" in d, f"Mapping row missing derivation: {d}"
+        assert "authority" in d, f"Mapping row missing authority: {d}"
+        assert d["derivation"] in ("emitted", "pipeline_name", "matched"), (
+            f"derivation must be one of emitted/pipeline_name/matched; got {d['derivation']!r}. "
+            "spec: BACKEND_SCHEMA.md §ingestion_source_dataset — derivation enum."
         )
+        assert d["authority"] in ("high", "medium"), (
+            f"authority must be high or medium; got {d['authority']!r}. "
+            "spec: BACKEND_SCHEMA.md §ingestion_source_dataset — authority derived from derivation."
+        )
+        # Authority/derivation pairing invariant.
+        # spec: BACKEND_SCHEMA.md §ingestion_source_dataset — emitted/pipeline_name→high, matched→medium.
+        if d["derivation"] in ("emitted", "pipeline_name"):
+            assert d["authority"] == "high", (
+                f"derivation={d['derivation']!r} must have authority='high'; "
+                f"got {d['authority']!r}. "
+                "spec: BACKEND_SCHEMA.md §ingestion_source_dataset — emitted/pipeline_name→high."
+            )
+        elif d["derivation"] == "matched":
+            assert d["authority"] == "medium", (
+                f"derivation='matched' must have authority='medium'; "
+                f"got {d['authority']!r}. "
+                "spec: BACKEND_SCHEMA.md §ingestion_source_dataset — matched→medium."
+            )
         # All URNs must be from example_db (the PG_INSTANCE)
         assert _EXPECTED_URN_INFIX in d["dataset_urn"], (
             f"Mapped URN '{d['dataset_urn']}' must contain '{_EXPECTED_URN_INFIX}'. "
@@ -540,15 +560,113 @@ async def test_uc1_datahub_managed_sync_and_readonly(
             "spec: USE_CASE_en.md §UC1 Case 1 — recipe denies catalog schema."
         )
 
-    # UC1 Case 1 maps via the sync matcher — at least one mapped row must have origin='matcher'.
-    # (pipeline_name origin is also valid if DataHub stamps systemMetadata, but matcher is the
+    # UC1 Case 1 maps via the sync matcher — at least one mapped row must have
+    # derivation='matched' (DATAHUB_MANAGED sync path).
+    # (pipeline_name is also valid if DataHub stamps systemMetadata, but matched is the
     # primary UC1-Case-1 path since DataSpoke is not the ingestor.)
     # spec: USE_CASE_en.md §UC1 Case 1 — GET /sources/{id}/datasets "lists the covered datasets"
-    # spec: feature/BACKEND.md §Sync sweep step 2 — DATAHUB_MANAGED matcher origin.
-    matcher_origins = [d for d in mapped_datasets if d.get("origin") == "matcher"]
-    assert matcher_origins, (
-        f"At least one mapped row must have origin='matcher' for a DATAHUB_MANAGED sync; "
-        f"origins seen: {[d.get('origin') for d in mapped_datasets]}. "
+    # spec: feature/BACKEND.md §Sync sweep step 2 — DATAHUB_MANAGED uses filter-matcher.
+    matched_rows = [d for d in mapped_datasets if d.get("derivation") == "matched"]
+    assert matched_rows, (
+        f"At least one mapped row must have derivation='matched' for a DATAHUB_MANAGED sync; "
+        f"derivations seen: {[d.get('derivation') for d in mapped_datasets]}. "
         "spec: feature/BACKEND.md §Sync sweep step 2 — DATAHUB_MANAGED uses filter-matcher; "
-        "origin=matcher is the primary mapping path before pipeline_name enrichment."
+        "derivation=matched is the primary mapping path before pipeline_name enrichment."
+    )
+
+    # ── Regression guard: system sources must never appear as DATAHUB_MANAGED rows ──
+    # DataHub bootstraps `datahub-gc` (optional: false) and `datahub-documents`
+    # (optional: true) as sourceType=SYSTEM ingestion sources.  The sync sweep must
+    # mirror only non-system sources (sourceType != SYSTEM).
+    #
+    # The guard is two-part:
+    #   1. Precondition check — confirm `datahub-gc` IS present in DataHub's unfiltered
+    #      listIngestionSources (no sourceType filter).  This proves the system source
+    #      exists in the dev DataHub, making the subsequent absence assertion non-vacuous:
+    #      if the sweep drops the SYSTEM filter the URN would appear in step 2.
+    #      Skip the guard entirely (rather than false-pass) if GMS cannot confirm it.
+    #   2. Absence check — assert neither `datahub-gc` nor `datahub-documents` appears in
+    #      DataSpoke's DATAHUB_MANAGED list.
+    #
+    # spec: feature/BACKEND.md §Sync sweep step 1 — "the sweep mirrors only non-system
+    #   sources (sourceType != SYSTEM) … datahub-gc and datahub-documents are excluded."
+    _SYSTEM_SOURCE_URNS = {
+        "urn:li:dataHubIngestionSource:datahub-gc",
+        "urn:li:dataHubIngestionSource:datahub-documents",
+    }
+    _GC_URN = "urn:li:dataHubIngestionSource:datahub-gc"
+
+    # Reuse the GMS-access pattern from _managed_source_setup: same env vars + gql_headers.
+    datahub_gms_url = os.environ.get("DATASPOKE_TEST_DATAHUB_GMS_URL", "")
+    datahub_token = os.environ.get("DATASPOKE_TEST_DATAHUB_TOKEN", "")
+    gql_headers_guard: dict[str, str] = {"Content-Type": "application/json"}
+    if datahub_token:
+        gql_headers_guard["Authorization"] = f"Bearer {datahub_token}"
+
+    list_sources_query = """
+    query listIngestionSources($input: ListIngestionSourcesInput!) {
+        listIngestionSources(input: $input) {
+            ingestionSources {
+                urn
+            }
+        }
+    }
+    """
+    try:
+        gms_resp = httpx.post(
+            f"{datahub_gms_url}/api/graphql",
+            headers=gql_headers_guard,
+            json={
+                "query": list_sources_query,
+                "variables": {"input": {"start": 0, "count": 100}},
+            },
+            timeout=15.0,
+        )
+        gms_resp.raise_for_status()
+        gms_data = gms_resp.json()
+    except Exception as exc:
+        pytest.skip(
+            f"Could not reach DataHub GMS to confirm datahub-gc precondition: {exc}. "
+            "Skipping system-source guard to avoid a vacuous absence assertion."
+        )
+
+    if "errors" in gms_data:
+        pytest.skip(
+            f"listIngestionSources GraphQL error: {gms_data['errors']}. "
+            "DataHub GMS may not support Managed Ingestion — "
+            "skipping system-source guard to avoid a vacuous absence assertion."
+        )
+
+    gms_urns = {
+        src["urn"]
+        for src in gms_data.get("data", {})
+        .get("listIngestionSources", {})
+        .get("ingestionSources", [])
+    }
+    if _GC_URN not in gms_urns:
+        pytest.skip(
+            f"{_GC_URN!r} not found in DataHub's unfiltered listIngestionSources "
+            f"(returned {len(gms_urns)} source(s)). "
+            "Cannot confirm the system-source precondition — "
+            "skipping guard to avoid a vacuous absence assertion."
+        )
+
+    # Precondition confirmed: datahub-gc IS in DataHub's unfiltered list.
+    # Now assert the sweep's SYSTEM filter works: neither system source must appear
+    # in DataSpoke's DATAHUB_MANAGED mirror.
+    managed_list_resp = await api_client.get(
+        "/api/v1/spoke/ingestion/sources?mode=DATAHUB_MANAGED&limit=100",
+        headers=admin_headers,
+    )
+    assert managed_list_resp.status_code == 200, managed_list_resp.text
+    all_managed_sources = managed_list_resp.json().get("sources", [])
+    all_managed_urns = {s.get("datahub_source_urn") for s in all_managed_sources}
+    system_urns_present = _SYSTEM_SOURCE_URNS & all_managed_urns
+    assert not system_urns_present, (
+        f"System-internal DataHub ingestion sources must NOT appear as DATAHUB_MANAGED rows "
+        f"in DataSpoke; found: {system_urns_present}. "
+        f"Precondition verified: {_GC_URN!r} IS present in DataHub's unfiltered source list, "
+        f"so a dropped sourceType filter would surface it here. "
+        "spec: feature/BACKEND.md §Sync sweep step 1 — 'the sweep mirrors only non-system "
+        "sources (sourceType != SYSTEM) … datahub-gc and datahub-documents are excluded'."
     )

@@ -10,8 +10,11 @@ export type IngestionMode =
   | "ACTIVE_CUSTOM_MANAGED"
   | "PASSIVE";
 
-/** Origin of a source→dataset mapping row. */
-export type IngestionDatasetOrigin = "emitted" | "pipeline_name" | "matcher";
+/** Confidence in the source→dataset link. */
+export type IngestionDatasetAuthority = "high" | "medium";
+
+/** How the source→dataset link was established. */
+export type IngestionDatasetDerivation = "emitted" | "pipeline_name" | "matched";
 
 // ── Source ──────────────────────────────────────────────────────────────────────
 
@@ -66,7 +69,8 @@ export interface IngestionRunResponse {
 
 export interface IngestionSourceDatasetRow {
   dataset_urn: string;
-  origin: IngestionDatasetOrigin;
+  authority: IngestionDatasetAuthority;
+  derivation: IngestionDatasetDerivation;
   first_seen_at: string;
   last_seen_at: string;
 }

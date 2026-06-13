@@ -105,14 +105,26 @@ class IngestionRunResult(BaseModel):
     warnings: list[str]
 
 
+_DERIVATION_TO_AUTHORITY = {"emitted": "high", "pipeline_name": "high", "matched": "medium"}
+
+
 class IngestionSourceDatasetRecord(BaseModel):
     """Value object for one ingestion_source_dataset row."""
 
     source_id: str
     dataset_urn: str
-    origin: str
+    derivation: str
     first_seen_at: datetime
     last_seen_at: datetime
+
+    @property
+    def authority(self) -> str:
+        """Confidence in the source->dataset link, derived purely from ``derivation``.
+
+        ``emitted``/``pipeline_name`` (observed) -> ``high``; ``matched`` (recipe
+        filter inference) -> ``medium``.
+        """
+        return _DERIVATION_TO_AUTHORITY.get(self.derivation, "medium")
 
 
 # ── ORM row converters ────────────────────────────────────────────────────────
@@ -138,7 +150,7 @@ def _dataset_from_row(row: IngestionSourceDataset) -> IngestionSourceDatasetReco
     return IngestionSourceDatasetRecord(
         source_id=str(row.source_id),
         dataset_urn=row.dataset_urn,
-        origin=row.origin,
+        derivation=row.derivation,
         first_seen_at=row.first_seen_at,
         last_seen_at=row.last_seen_at,
     )
@@ -609,7 +621,7 @@ class IngestionService:
         4. Emit DataProcessInstance STARTED (non-dry-run).
         5. Dispatch to extractor for recipe.source.type.
         6. Emit DataProcessInstance COMPLETE/FAILED (non-dry-run).
-        7. Upsert emitted URNs into ingestion_source_dataset (origin='emitted', non-dry-run).
+        7. Upsert emitted URNs into ingestion_source_dataset (derivation='emitted', non-dry-run).
         8. Record INGESTION.COMPLETE / INGESTION.FAIL event.
 
         Raises:
@@ -748,7 +760,7 @@ class IngestionService:
             await self._upsert_dataset_mappings(
                 source_id=source_id,
                 dataset_urns=ingestion_result.emitted_urns,
-                origin="emitted",
+                derivation="emitted",
             )
 
         event_type = INGESTION_COMPLETE if status == "success" else INGESTION_FAIL
@@ -845,7 +857,7 @@ class IngestionService:
         self,
         source_id: str,
         dataset_urns: list[str],
-        origin: str,
+        derivation: str,
     ) -> None:
         """Upsert dataset URNs into ingestion_source_dataset.
 
@@ -864,7 +876,7 @@ class IngestionService:
                 .values(
                     source_id=uid,
                     dataset_urn=dataset_urn,
-                    origin=origin,
+                    derivation=derivation,
                     first_seen_at=now,
                     last_seen_at=now,
                 )
@@ -933,7 +945,7 @@ class IngestionService:
     ) -> IngestionSourceRecord | None:
         """Return the owning source for a dataset URN.
 
-        Priority rule (per spec): ``emitted`` > ``pipeline_name`` > ``matcher``.
+        Priority rule (per spec): ``emitted`` > ``pipeline_name`` > ``matched``.
         When multiple sources map the same dataset at the same priority, returns
         the one with the most recent ``last_seen_at``.
 
@@ -948,11 +960,11 @@ class IngestionService:
         if not rows:
             return None
 
-        _ORIGIN_PRIORITY = {"emitted": 0, "pipeline_name": 1, "matcher": 2}
+        _DERIVATION_PRIORITY = {"emitted": 0, "pipeline_name": 1, "matched": 2}
 
         def _key(pair: tuple[IngestionSourceDataset, IngestionSource]) -> tuple[int, datetime]:
             mapping, _ = pair
-            priority = _ORIGIN_PRIORITY.get(mapping.origin, 99)
+            priority = _DERIVATION_PRIORITY.get(mapping.derivation, 99)
             # Negate last_seen_at so that most recent sorts first within the same priority.
             return (priority, -mapping.last_seen_at.timestamp())
 
@@ -1038,13 +1050,13 @@ class IngestionService:
         1. **Source defs**: pull DATAHUB_MANAGED source recipes + schedules via
            listIngestionSources; upsert read-only rows; remove stale rows.
         2. **Mapping + registry reconcile**: enumerate all DataHub datasets once,
-           rebuild ingestion_source_dataset rows with origin='matcher' for every
-           source. Preserve origin='emitted' rows (authoritative from active-custom
+           rebuild ingestion_source_dataset rows with derivation='matched' for every
+           source. Preserve derivation='emitted' rows (authoritative from active-custom
            runs). Reconcile dataset_registry to mirror the full DataHub URN set:
            insert new URNs as registered, soft-flag removed URNs as unregistered.
         3. **Observed enrichment**: for DATAHUB_MANAGED and ACTIVE_CUSTOM_MANAGED
            sources, read systemMetadata.pipelineName per dataset and upsert
-           origin='pipeline_name' rows where the name matches a source.
+           derivation='pipeline_name' rows where the name matches a source.
         4. **Run events**: mirror terminal execution requests for DATAHUB_MANAGED
            sources as INGESTION.COMPLETE / INGESTION.FAIL events.
            For PASSIVE sources, observe Operation timeseries on mapped datasets.
@@ -1055,8 +1067,8 @@ class IngestionService:
             Summary dict for the activity endpoint / logging:
               sources_synced    — DATAHUB_MANAGED rows upserted
               sources_removed   — DATAHUB_MANAGED rows removed (gone from DataHub)
-              datasets_mapped   — new ingestion_source_dataset matcher rows inserted
-              pipeline_links    — pipeline_name-origin rows upserted
+              datasets_mapped   — new ingestion_source_dataset matched rows inserted
+              pipeline_links    — pipeline_name-derivation rows upserted
               events_mirrored   — new INGESTION events written
               registry_inserted — new dataset_registry rows inserted (datahub_registered=True)
               registry_marked_true   — existing rows flipped from False to True
@@ -1185,11 +1197,11 @@ class IngestionService:
                 if urn_to_platform.get(urn) == expected_platform and matcher(name)
             }
 
-            # Fetch currently stored matcher-origin rows for this source.
+            # Fetch currently stored matched-derivation rows for this source.
             existing_result = await self._db.execute(
                 select(IngestionSourceDataset).where(
                     IngestionSourceDataset.source_id == source_id,
-                    IngestionSourceDataset.origin == "matcher",
+                    IngestionSourceDataset.derivation == "matched",
                 )
             )
             existing_matcher_rows: dict[str, IngestionSourceDataset] = {
@@ -1198,26 +1210,26 @@ class IngestionService:
 
             now = datetime.now(tz=UTC)
 
-            # Upsert matcher rows for currently-matched datasets.
+            # Upsert matched rows for currently-matched datasets.
             # F1+F2: use pg_insert with a WHERE guard on the conflict path so that:
             #   - A conflict against an existing emitted/pipeline_name row is a no-op
             #     (the higher-precedence row is never overwritten or demoted).
-            #   - A conflict against an existing matcher row just bumps last_seen_at.
-            #   - A genuinely new row is inserted with origin='matcher'.
+            #   - A conflict against an existing matched row just bumps last_seen_at.
+            #   - A genuinely new row is inserted with derivation='matched'.
             for urn in matched_urns:
                 stmt = (
                     pg_insert(IngestionSourceDataset)
                     .values(
                         source_id=source_id,
                         dataset_urn=urn,
-                        origin="matcher",
+                        derivation="matched",
                         first_seen_at=now,
                         last_seen_at=now,
                     )
                     .on_conflict_do_update(
                         index_elements=["source_id", "dataset_urn"],
                         set_={"last_seen_at": now},
-                        where=(IngestionSourceDataset.origin == "matcher"),
+                        where=(IngestionSourceDataset.derivation == "matched"),
                     )
                 )
                 insert_result = await self._db.execute(stmt)
@@ -1226,9 +1238,9 @@ class IngestionService:
                 if insert_result.rowcount == 1 and urn not in existing_matcher_rows:
                     summary["datasets_mapped"] += 1
 
-            # Prune stale matcher rows (origin='matcher') that no longer match.
-            # These rows were fetched with origin=='matcher' filter above, so this
-            # loop can only delete matcher-origin rows — emitted/pipeline_name rows
+            # Prune stale matched rows (derivation='matched') that no longer match.
+            # These rows were fetched with derivation=='matched' filter above, so this
+            # loop can only delete matched-derivation rows — emitted/pipeline_name rows
             # are never in existing_matcher_rows and are therefore never deleted here.
             for urn, stale_row in existing_matcher_rows.items():
                 if urn not in matched_urns:
@@ -1277,19 +1289,18 @@ class IngestionService:
                     .values(
                         source_id=source_id,
                         dataset_urn=dataset_urn,
-                        origin="pipeline_name",
+                        derivation="pipeline_name",
                         first_seen_at=now,
                         last_seen_at=now,
                     )
                     .on_conflict_do_update(
                         index_elements=["source_id", "dataset_urn"],
                         # F3: do not demote an emitted row to pipeline_name.
-                        # origin is not in set_ (so it never overwrites the existing
-                        # origin value), and the WHERE guard prevents even last_seen_at
-                        # from being bumped on emitted rows — keeping them pristine
-                        # across sweeps.
-                        set_={"origin": "pipeline_name", "last_seen_at": now},
-                        where=(IngestionSourceDataset.origin != "emitted"),
+                        # derivation is overwritten to pipeline_name only when the
+                        # WHERE guard passes; emitted rows are excluded so they stay
+                        # pristine (neither derivation nor last_seen_at bumped).
+                        set_={"derivation": "pipeline_name", "last_seen_at": now},
+                        where=(IngestionSourceDataset.derivation != "emitted"),
                     )
                 )
                 await self._db.execute(stmt)

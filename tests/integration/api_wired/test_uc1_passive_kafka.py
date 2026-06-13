@@ -12,7 +12,7 @@ Steps mirror USE_CASE_en.md §UC1 Case 3:
   2. Assert 201 + response body shape (no schedule on the wire)
   3. POST /sources/{id}/method/run → 409 INGESTION_RUN_NOT_APPLICABLE (dry and non-dry)
   4. Trigger sync (PASSIVE source now exists) → GET /sources/{id}/datasets maps
-     imazon.* topics with origin=matcher
+     imazon.* topics with derivation=matched
   5. After-sync negative check — poll GET /spoke/ingestion/unmanaged (≤120s) until
      both imazon.* topics are ABSENT (they are now mapped to the PASSIVE source)
   6. GET /sources/{id}/event → 200
@@ -257,14 +257,14 @@ async def test_uc1_passive_kafka(
         # ── Step 4: Trigger sync (PASSIVE source now exists) → topics mapped ──
         # Now that the PASSIVE source is registered, re-run the sync sweep. The
         # matcher evaluates the source's AllowDenyPattern (^imazon\..*$) against
-        # DataHub datasets and maps matching topics to this source with origin=matcher.
+        # DataHub datasets and maps matching topics to this source with derivation=matched.
         #
         # Poll: re-trigger sync each iteration so newly-ES-indexed URNs surface.
         # Budget 180s covers remaining ES lag from the seed operation.
         #
         # spec: feature/BACKEND.md §Sync sweep step 2 — "evaluate each source's
         #   filter-matcher — derived from the declared AllowDenyPattern scope for PASSIVE;
-        #   origin = matcher"
+        #   derivation = matched"
         # spec: TESTING.md §Imazon Dummy-Data Reference — both Kafka topics seeded in DataHub.
         poll_deadline_step4 = time.time() + 180.0
         datasets_body: dict = {}
@@ -311,14 +311,20 @@ async def test_uc1_passive_kafka(
             "spec: USE_CASE_en.md §UC1 Case 3"
         )
 
-        # Mapped datasets must have origin='matcher' (PASSIVE scope-based mapping).
-        # spec: feature/BACKEND.md §Sync sweep step 2 — origin=matcher for PASSIVE
+        # Mapped datasets must have derivation='matched' (PASSIVE scope-based mapping).
+        # spec: feature/BACKEND.md §Sync sweep step 2 — derivation=matched for PASSIVE.
+        # spec: BACKEND_SCHEMA.md §ingestion_source_dataset — matched→authority=medium.
         for d in datasets_body["datasets"]:
             if d["dataset_urn"] in (_ORDERS_URN, _SHIPPING_URN):
-                assert d["origin"] == "matcher", (
-                    f"PASSIVE source dataset {d['dataset_urn']!r} must have origin='matcher'; "
-                    f"got {d['origin']!r}. "
-                    "spec: feature/BACKEND.md §Sync sweep step 2 — PASSIVE uses matcher origin"
+                assert d["derivation"] == "matched", (
+                    f"PASSIVE source dataset {d['dataset_urn']!r} must have "
+                    f"derivation='matched'; got {d['derivation']!r}. "
+                    "spec: feature/BACKEND.md §Sync sweep step 2 — PASSIVE uses matched derivation"
+                )
+                assert d["authority"] == "medium", (
+                    f"PASSIVE source dataset {d['dataset_urn']!r} must have authority='medium'; "
+                    f"got {d['authority']!r}. "
+                    "spec: BACKEND_SCHEMA.md §ingestion_source_dataset — matched→medium."
                 )
 
         # ── Step 5: AFTER-SYNC — mapped URNs must be ABSENT from /unmanaged ────

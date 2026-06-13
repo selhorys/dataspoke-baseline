@@ -408,9 +408,12 @@ class DataHubClient:
         )
 
     async def list_ingestion_sources(self) -> list[dict[str, Any]]:
-        """Return all DataHub-managed ingestion sources.
+        """Return non-system (user-facing) DataHub-managed ingestion sources.
 
-        Paginates listIngestionSources until all pages are consumed.
+        Paginates listIngestionSources until all pages are consumed, passing a
+        negated ``sourceType=SYSTEM`` filter so system-internal jobs (e.g.
+        ``datahub-gc``, ``datahub-documents``) are excluded — matching the set
+        of sources shown in DataHub's Manage Data Sources view.
 
         Each returned dict contains:
           - urn (str): the dataHubIngestionSource URN
@@ -451,7 +454,20 @@ class DataHubClient:
 
         while True:
             raw = await self.execute_graphql(
-                _QUERY, variables={"input": {"start": start, "count": page_size}}
+                _QUERY,
+                variables={
+                    "input": {
+                        "start": start,
+                        "count": page_size,
+                        "filters": [
+                            {
+                                "field": "sourceType",
+                                "values": ["SYSTEM"],
+                                "negated": True,
+                            }
+                        ],
+                    }
+                },
             )
             outer = (raw or {}).get("listIngestionSources") or {}
             sources_page: list[dict] = outer.get("ingestionSources") or []

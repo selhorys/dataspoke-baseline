@@ -196,8 +196,19 @@ class IngestionSourceDatasetRow(BaseModel):
     """One row in the dataset mapping for a source."""
 
     dataset_urn: str = Field(description="DataHub URN of the mapped dataset")
-    origin: str = Field(
-        description="How the mapping was established: 'emitted' | 'pipeline_name' | 'matcher'"
+    authority: str = Field(
+        description=(
+            "Confidence in the source->dataset link: 'high' (observed — the source "
+            "produced or stamped the dataset) | 'medium' (derived — inferred from the "
+            "recipe filter)."
+        )
+    )
+    derivation: str = Field(
+        description=(
+            "How the link was established: 'emitted' (ACTIVE_CUSTOM_MANAGED run output) "
+            "| 'pipeline_name' (systemMetadata.pipelineName) | 'matched' (recipe filter "
+            "/ declared scope)."
+        )
     )
     first_seen_at: datetime = Field(description="UTC timestamp when the mapping was first recorded")
     last_seen_at: datetime = Field(description="UTC timestamp when the mapping was last confirmed")

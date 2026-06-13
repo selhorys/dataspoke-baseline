@@ -163,7 +163,7 @@ def upgrade() -> None:
             primary_key=True,
         ),
         sa.Column("dataset_urn", sa.Text(), primary_key=True),
-        sa.Column("origin", sa.Text(), nullable=False),
+        sa.Column("derivation", sa.Text(), nullable=False),
         sa.Column("first_seen_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
         sa.Column("last_seen_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
         schema=SCHEMA,

@@ -134,12 +134,12 @@ every source form the **unmanaged bucket**.
 |--------|------|-------------|
 | `source_id` | `UUID` FK → `ingestion_source(id)` ON DELETE CASCADE | Owning source |
 | `dataset_urn` | `TEXT` | A dataset the source covers |
-| `origin` | `TEXT` | How the link was derived: `matcher` (recipe filter / declared allow-deny evaluated against the dataset set), `emitted` (authoritative — `ACTIVE_CUSTOM_MANAGED` extractor's own run output), or `pipeline_name` (observed via `systemMetadata.pipelineName`, optional enrichment for the two MANAGED modes) |
+| `derivation` | `TEXT` | How the link was established: `matched` (recipe filter / declared allow-deny evaluated against the dataset set), `emitted` (`ACTIVE_CUSTOM_MANAGED` extractor's own run output), or `pipeline_name` (observed via `systemMetadata.pipelineName`, optional enrichment for the two MANAGED modes) |
 | `first_seen_at` | `TIMESTAMPTZ` | First sweep that linked this pair |
 | `last_seen_at` | `TIMESTAMPTZ` | Most recent sweep confirming the link |
 
 - **PK**: `(source_id, dataset_urn)`.
-- Mapping is **declared/derived coverage** for `matcher`-origin rows (what the recipe says it covers), an explicit approximation since DataHub exposes no native source→dataset reverse lookup. `emitted` and `pipeline_name` origins are observed and authoritative.
+- `derivation` is named to avoid collision with DataHub's dataset URN fabric (`origin`/`FabricType`, also used by `dataset_filter.origin`). The API additionally exposes a derived **`authority`** confidence level: `medium` for `matched` rows (declared/derived coverage — what the recipe says it covers, an explicit approximation since DataHub exposes no native source→dataset reverse lookup) and `high` for `emitted` / `pipeline_name` rows (observed and authoritative). `authority` is a pure function of `derivation`, so it is derived at the API layer rather than stored.
 
 #### `dataset_registry`
 
