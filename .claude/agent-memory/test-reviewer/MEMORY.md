@@ -1,2 +1,3 @@
 - [No destructive git during review](feedback_no_destructive_git_during_review.md) — never git checkout/restore/stash files under review; they're uncommitted; use cp backups
 - [Recipe mask-string divergence](project_recipe_mask_string_divergence.md) — spec says <hidden>, impl says ********; flag tests pinning either exact value
+- [E2E cross-host cookie auth](project_e2e_cross_host_cookie_auth.md) — storageState auth rests on a fragile cross-host refresh-cookie chain; require a green smoke run on a real cluster before trusting it
