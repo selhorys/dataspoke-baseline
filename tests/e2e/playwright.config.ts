@@ -49,8 +49,8 @@ export default defineConfig({
   projects: [
     {
       name: "admin",
-      // Everything except the role-specific ground specs.
-      testIgnore: ["**/*.editor.spec.ts", "**/*.reader.spec.ts"],
+      // Everything except the role-specific and public (unauthenticated) ground specs.
+      testIgnore: ["**/*.editor.spec.ts", "**/*.reader.spec.ts", "**/*.public.spec.ts"],
       use: {
         ...devices["Desktop Chrome"],
         storageState: path.join(AUTH_DIR, "admin.json"),
@@ -70,6 +70,15 @@ export default defineConfig({
       use: {
         ...devices["Desktop Chrome"],
         storageState: path.join(AUTH_DIR, "reader.json"),
+      },
+    },
+    {
+      name: "public",
+      // Unauthenticated context for public pages (login/register/password reset).
+      testMatch: ["**/*.public.spec.ts"],
+      use: {
+        ...devices["Desktop Chrome"],
+        storageState: { cookies: [], origins: [] },
       },
     },
   ],

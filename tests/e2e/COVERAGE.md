@@ -5,7 +5,10 @@ Two groups cover the full surface: **use-case** (mirrors api-wired UC tests) and
 **ground** (mirrors spot integration tests — narrow per-page flows).
 
 `spec: spec/TESTING.md §End-to-End (E2E) Testing — use-case + ground groups together
-cover every route; tracked here as the acceptance artifact for "fully covered".`
+cover every route; this map is the acceptance artifact for "fully covered".`
+
+Every route below is covered by at least one group. A `—` in a column means that
+group does not cover the route; the other column does.
 
 ---
 
@@ -13,21 +16,19 @@ cover every route; tracked here as the acceptance artifact for "fully covered".`
 
 - **UC test**: `tests/e2e/use-case/<file>.spec.ts` covering this route
 - **Ground test**: `tests/e2e/ground/<feature>/<file>.spec.ts` covering this route
-- `(partial)` — some but not all gestures/scenarios for this route are covered
-- `—` — not yet covered (deferred to ground group or future UC)
 
 ---
 
 ## Routes
 
-### Public routes (`/login`, `/register`, etc.)
+### Public routes
 
 | Route | UC test | Ground test |
 |---|---|---|
-| `/login` | `_smoke.spec.ts` (auth harness) | — |
-| `/register` | — | — |
-| `/forgot-password` | — | — |
-| `/reset-password` | — | — |
+| `/login` | `_smoke.spec.ts` (auth harness) | `ground/auth/login.public.spec.ts` (form render, bad-creds error, Register link, Forgot-password link) |
+| `/register` | — | `ground/auth/register.public.spec.ts` (form render, short-password validation, real signup → redirect) |
+| `/forgot-password` | — | `ground/auth/password-reset.public.spec.ts` (form render, submit → confirmation state) |
+| `/reset-password` | — | `ground/auth/password-reset.public.spec.ts` (no-token error state, dummy-token form render, short-password validation) |
 
 ### App routes (authenticated)
 
@@ -35,113 +36,64 @@ cover every route; tracked here as the acceptance artifact for "fully covered".`
 
 | Route | UC test | Ground test |
 |---|---|---|
-| `/ingestion` | `uc1-active-custom-postgres.spec.ts` step 7 (list after delete); `uc1-passive-kafka.spec.ts` step 6 (list after delete); `uc1-datahub-managed.spec.ts` step 3 (list view, DATAHUB_MANAGED filter) | — |
+| `/ingestion` | `uc1-active-custom-postgres.spec.ts` step 7; `uc1-passive-kafka.spec.ts` step 6; `uc1-datahub-managed.spec.ts` step 3 (list view, DATAHUB_MANAGED filter) | `ground/shell/reader-write-suppressed.reader.spec.ts` (Reader read-only: "Create source" absent) |
 | `/ingestion/sources/new` | `uc1-active-custom-postgres.spec.ts` step 1 (create ACTIVE_CUSTOM_MANAGED); `uc1-passive-kafka.spec.ts` step 1 (create PASSIVE) | — |
-| `/ingestion/sources/[id]` | `uc1-active-custom-postgres.spec.ts` steps 2–7 (detail, dry-run, real-run, datasets, events, delete); `uc1-passive-kafka.spec.ts` steps 2–3, 5–6 (detail, run panel, datasets, events); `uc1-datahub-managed.spec.ts` steps 4–5 (detail, read-only, datasets) | — |
+| `/ingestion/sources/[id]` | `uc1-active-custom-postgres.spec.ts` steps 2–7; `uc1-passive-kafka.spec.ts` steps 2–3, 5–6; `uc1-datahub-managed.spec.ts` steps 4–5 (detail, run, datasets, events, read-only, delete) | — |
 | `/ingestion/unmanaged` | `uc1-passive-kafka.spec.ts` steps 0, 4 (before/after source creation) | — |
-| `/ingestion/data/[urn]` | `uc1-active-custom-postgres.spec.ts` step 6 (reverse-lookup; source + mode + latest_run) | — |
+| `/ingestion/data/[urn]` | `uc1-active-custom-postgres.spec.ts` step 6 (reverse-lookup) | — |
 
 #### Governance (UC5)
 
 | Route | UC test | Ground test |
 |---|---|---|
-| `/governance/dashboard` | `_smoke.spec.ts` (post-login landing); `uc5-governance.spec.ts` step 3a (metric cards + trend chart after run) | — |
-| `/governance/metrics` | `uc5-governance.spec.ts` step 3b (list: all three metrics, type badges, Enabled status) | — |
-| `/governance/metrics/new` | `uc5-governance.spec.ts` step 1a (create form: metric_id, type, title, description, metrics checkboxes, schedule, is_enabled, Save → redirect) | — |
-| `/governance/metrics/[id]` | `uc5-governance.spec.ts` steps 1c (Edit → PUT → read-only), 2 (Run → ConfirmDialog), 3c (attr/conf dl, attr/result chart, event log, Edit/Run/Delete buttons), 4 (Delete → ConfirmDialog → list redirect) | — |
+| `/governance/dashboard` | `_smoke.spec.ts` (post-login landing); `uc5-governance.spec.ts` step 3a (metric cards + trend chart) | `ground/shell/root-redirect.spec.ts` (`/` redirect target) |
+| `/governance/metrics` | `uc5-governance.spec.ts` step 3b (list: metrics, type badges, Enabled) | — |
+| `/governance/metrics/new` | `uc5-governance.spec.ts` step 1a (create form → redirect) | — |
+| `/governance/metrics/[id]` | `uc5-governance.spec.ts` steps 1c, 2, 3c, 4 (Edit→PUT, Run, attr/conf+result+event, Delete) | — |
 
 #### Validation (UC2)
 
 | Route | UC test | Ground test |
 |---|---|---|
-| `/validation` | `uc2-validation.spec.ts` step 3 (cross-dataset list; both URNs, score badges) | — |
-| `/validation/data/[urn]` | `uc2-validation.spec.ts` steps 2, 4–7 (detail: conf, charts, event log, delete, create, resurrect) | — |
+| `/validation` | `uc2-validation.spec.ts` step 3 (cross-dataset list; URNs, score badges) | — |
+| `/validation/data/[urn]` | `uc2-validation.spec.ts` steps 2, 4–7 (conf, charts, event log, delete, create, resurrect) | — |
 
 #### Ontology Generation (UC3)
 
 | Route | UC test | Ground test |
 |---|---|---|
 | `/ontogen` | `uc3-ontology-generation.spec.ts` steps 3–4 (Run dialog, tabs, result panels) | — |
-| `/ontogen/conf` | `uc3-ontology-generation.spec.ts` step 1 (Edit/Save conf, is_enabled+schedule_tier) | — |
+| `/ontogen/conf` | `uc3-ontology-generation.spec.ts` step 1 (Edit/Save conf) | — |
 | `/ontogen/seed` | `uc3-ontology-generation.spec.ts` steps 2, 5 (create seed, delete via ConfirmDialog) | — |
 
 #### Metadata Generation (UC4)
 
 | Route | UC test | Ground test |
 |---|---|---|
-| `/metagen` | `uc4-metadata-generation.spec.ts` steps 1, 3, 4, 9 (conf form, Run button + RunDialog, global event panel, second run) | — |
-| `/metagen/data/[urn]` | `uc4-metadata-generation.spec.ts` steps 2, 5, 6, 8 (boundary form, item cards, candidate Approve/Reject + ConfirmDialog, per-dataset events) | — |
+| `/metagen` | `uc4-metadata-generation.spec.ts` steps 1, 3, 4, 9 (conf, Run+RunDialog, event panel, second run) | — |
+| `/metagen/data/[urn]` | `uc4-metadata-generation.spec.ts` steps 2, 5, 6, 8 (boundary, item cards, Approve/Reject, events) | — |
 
-#### Admin / Settings / Profile
+#### Admin / Account
 
 | Route | UC test | Ground test |
 |---|---|---|
-| `/admin/conf` | `_smoke.spec.ts` (adminApi probe on GET /admin/conf) | — |
-| `/admin/users` | — | — |
-| `/settings` | — | — |
-| `/profile` | — | — |
-| `/profile/tokens` | — | — |
+| `/admin/conf` | `_smoke.spec.ts` (adminApi probe) | `ground/admin/conf.spec.ts` (form renders from GET conf; edit `validation_score_n_intervals` → Save → persist → revert); `ground/shell/admin-nav-*` (link visible to Admin, absent for editor/reader) |
+| `/admin/users` | — | `ground/admin/users.spec.ts` (list; role change via Radix Select; delete via ⋯ ConfirmDialog); `ground/shell/admin-nav-hidden.reader.spec.ts` (Reader direct-nav → permission-denied) |
+| `/profile` | — | `ground/account/profile.spec.ts` (email/role locked; change name → Save → confirm via /auth/me → revert) |
+| `/profile/tokens` | — | `ground/account/tokens.spec.ts` (mint → dsk_ reveal → in list; revoke via ConfirmDialog → gone) |
+| `/settings` | — | `ground/account/settings.spec.ts` (Theme Dark → `html.dark`; locale Select → localStorage) |
+| `/` | `_smoke.spec.ts` (post-login landing) | `ground/shell/root-redirect.spec.ts` (`/` → `/governance/dashboard`) |
 
 ---
 
-## Coverage delta — UC1 addition (this session)
+## App-shell role-gating
 
-Routes newly covered by `tests/e2e/use-case/uc1-*.spec.ts`:
+Real-session role behavior (the editor/reader/admin Playwright projects use real
+provisioned sessions, not mocked `useMe`). Covered by `tests/e2e/ground/shell/`:
 
-| Route | Newly covered by |
-|---|---|
-| `/ingestion` | `uc1-active-custom-postgres.spec.ts`, `uc1-passive-kafka.spec.ts`, `uc1-datahub-managed.spec.ts` |
-| `/ingestion/sources/new` | `uc1-active-custom-postgres.spec.ts`, `uc1-passive-kafka.spec.ts` |
-| `/ingestion/sources/[id]` | all three UC1 files |
-| `/ingestion/unmanaged` | `uc1-passive-kafka.spec.ts` |
-| `/ingestion/data/[urn]` | `uc1-active-custom-postgres.spec.ts` |
-
-Routes remaining uncovered by E2E (ground group deferred):
-`/register`, `/forgot-password`, `/reset-password`, `/admin/users`, `/settings`, `/profile*`
-
----
-
-## Coverage delta — UC5 addition (this session)
-
-Routes newly covered by `tests/e2e/use-case/uc5-governance.spec.ts`:
-
-| Route | Newly covered by |
-|---|---|
-| `/governance/dashboard` | `uc5-governance.spec.ts` step 3a |
-| `/governance/metrics` | `uc5-governance.spec.ts` step 3b |
-| `/governance/metrics/new` | `uc5-governance.spec.ts` step 1a |
-| `/governance/metrics/[id]` | `uc5-governance.spec.ts` steps 1c, 2, 3c, 4 |
-
----
-
-## Coverage delta — UC2 addition (this session)
-
-Routes newly covered by `tests/e2e/use-case/uc2-validation.spec.ts`:
-
-| Route | Newly covered by |
-|---|---|
-| `/validation` | `uc2-validation.spec.ts` step 3 |
-| `/validation/data/[urn]` | `uc2-validation.spec.ts` steps 2, 4–7 |
-
----
-
-## Coverage delta — UC3 addition (this session)
-
-Routes newly covered by `tests/e2e/use-case/uc3-ontology-generation.spec.ts`:
-
-| Route | Newly covered by |
-|---|---|
-| `/ontogen` | `uc3-ontology-generation.spec.ts` steps 3–4 (Run dialog, Nodes/Edges/Triples tabs, error-free panel render) |
-| `/ontogen/conf` | `uc3-ontology-generation.spec.ts` step 1 (heading, Edit flow, is_enabled checkbox, schedule_tier Radix Select, Save configuration toast) |
-| `/ontogen/seed` | `uc3-ontology-generation.spec.ts` steps 2, 5 (+New Seed → SeedEditor → Save seed toast; seed row Delete → ConfirmDialog → Seed deleted toast) |
-
----
-
-## Coverage delta — UC4 addition (this session)
-
-Routes newly covered by `tests/e2e/use-case/uc4-metadata-generation.spec.ts`:
-
-| Route | Newly covered by |
-|---|---|
-| `/metagen` | steps 1, 3, 4, 9: conf form (is_enabled/schedule_tier/result_limit/overwrite_pending), Run button → RunDialog → run toast, global event panel (METAGEN.RUN_COMPLETE), second run |
-| `/metagen/data/[urn]` | steps 2, 5, 6, 8: boundary form (is_enabled/allowed checkboxes), item cards (dataset.description / column.description grouping), candidate Approve → ConfirmDialog → approved toast, candidate Reject → ConfirmDialog → rejected toast, per-dataset event section (CANDIDATE_APPROVE / CANDIDATE_REJECT) |
+| Concern | Test file | Project |
+|---|---|---|
+| Admin nav section (Users + Configurations) visible; Account section visible; main feature nav visible; Admin above Account in DOM | `admin-nav-visible.spec.ts` | admin |
+| Admin nav section absent; Account section visible; direct `/admin/users` nav → permission-denied | `admin-nav-hidden.reader.spec.ts` | reader |
+| Admin nav section absent; Account section visible | `admin-nav-hidden.editor.spec.ts` | editor |
+| Reader write control ("Create source") suppressed on `/ingestion`; read-only content still renders | `reader-write-suppressed.reader.spec.ts` | reader |
