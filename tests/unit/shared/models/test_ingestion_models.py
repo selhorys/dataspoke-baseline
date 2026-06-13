@@ -22,13 +22,13 @@ from src.shared.models.ingestion import (
     parse_recipe,
 )
 
-
 # ── Mode enum ─────────────────────────────────────────────────────────────────
 
 
 class TestModeEnum:
     def test_three_modes_defined(self) -> None:
-        """Spec: BACKEND.md §Ingestion Service — three modes DATAHUB_MANAGED, ACTIVE_CUSTOM_MANAGED, PASSIVE.
+        """Spec: BACKEND.md §Ingestion Service — three modes DATAHUB_MANAGED,
+        ACTIVE_CUSTOM_MANAGED, PASSIVE.
 
         Spec: spec/feature/BACKEND_SCHEMA.md §ingestion_source — mode column.
         """
@@ -459,9 +459,8 @@ class TestBuildMatcher:
         matcher = build_matcher(recipe)
         # Schema "orders" matches allow=["^orders$"] and NOT deny=["^internal$"] → True
         assert matcher("db.orders.daily_fulfillment_summary") is True
-        # Schema "orders" matches allow=["^orders$"] — the table name is irrelevant for schema_pattern
-        # Note: schema_pattern deny applies to schema segment only; "orders" != "internal"
-        assert matcher("db.orders.internal_audit") is True  # schema "orders" is allowed; deny applies to schema not table
+        # schema_pattern deny applies to schema segment only; "orders" != "internal"
+        assert matcher("db.orders.internal_audit") is True  # schema "orders" allowed
         # Schema "catalog" does not match allow=["^orders$"] → False
         assert matcher("db.catalog.title_master") is False
 
@@ -579,4 +578,260 @@ class TestBuildMatcher:
         # bare denied topic — must be excluded
         assert matcher("imazon.secret.x") is False
         # non-denied sibling under same broad allow — must be included
+        assert matcher("example_kafka.imazon.orders.events") is True
+
+
+# ── build_matcher: database scoping gate ──────────────────────────────────────
+
+
+class TestBuildMatcherDatabaseScope:
+    """Database-prefix gate added to build_matcher per spec/feature/BACKEND.md §Sync +
+    mapping sweep: the matcher is derived from the recipe's platform+database+
+    schema_pattern/table_pattern. When the recipe declares a ``database`` and the source
+    type's URN names are database-prefixed, every predicate additionally requires
+    ``name.startswith("<database>.")`` before pattern evaluation (exact, case-sensitive,
+    trailing dot = whole-segment match).
+
+    Platform scoping (caller's responsibility) is NOT tested here — see the sync-sweep
+    unit tests and test_uc1_datahub_managed.py for that layer.
+
+    Spec: spec/feature/BACKEND.md §Sync + mapping sweep
+    Spec: build_matcher docstring §Database scoping and §Caller contract
+    """
+
+    def test_uc1_shaped_recipe_rejects_kafka_name_accepts_example_db(self) -> None:
+        """UC1 production-bug regression: a postgres source (database=example_db,
+        schema_pattern deny=[^information_schema$, ^pg_.*$, ^catalog$]) must NOT match
+        the kafka name 'example_kafka.imazon.orders.events', because its first segment
+        'example_kafka' != 'example_db'.
+
+        The same matcher must accept 'example_db.imazon.orders' — a postgres name whose
+        schema segment 'imazon' passes the deny list (not information_schema, pg_*, or
+        catalog).
+
+        Spec: BACKEND.md §Sync + mapping sweep — matcher derived from
+        platform+database+schema_pattern; the database prefix gates the full predicate so
+        cross-platform names are never matched by a platform-specific source.
+        Spec: build_matcher docstring §Database scoping.
+        """
+        recipe = {
+            "source": {
+                "type": "postgres",
+                "config": {
+                    "database": "example_db",
+                    "schema_pattern": {
+                        "deny": [
+                            "^information_schema$",
+                            "^pg_.*$",
+                            "^catalog$",
+                        ],
+                    },
+                },
+            }
+        }
+        matcher = build_matcher(recipe)
+        # kafka name — first segment is example_kafka, not example_db → rejected by db gate
+        assert matcher("example_kafka.imazon.orders.events") is False
+        # postgres name — database segment matches, schema 'imazon' passes the deny list
+        assert matcher("example_db.imazon.orders") is True
+
+    def test_database_gate_rejects_other_db_accepts_declared_db(self) -> None:
+        """With database=example_db and allow-all schema_pattern, names under a different
+        database are rejected; names under example_db are accepted.
+
+        Spec: BACKEND.md §Sync + mapping sweep — database scoping is exact prefix match.
+        Spec: build_matcher docstring §Database scoping.
+        """
+        recipe = {
+            "source": {
+                "type": "postgres",
+                "config": {
+                    "database": "example_db",
+                    "schema_pattern": {"allow": [".*"]},
+                },
+            }
+        }
+        matcher = build_matcher(recipe)
+        assert matcher("other_db.public.t") is False
+        assert matcher("example_db.public.t") is True
+
+    def test_no_database_key_leaves_gate_inactive(self) -> None:
+        """When the recipe has no 'database' key, the database gate is inactive and names
+        from any database-prefix are evaluated purely by pattern.
+
+        Spec: build_matcher docstring §Database scoping — gate requires a non-empty string
+        database key to activate; absent key → unchanged behaviour.
+        """
+        recipe = {
+            "source": {
+                "type": "postgres",
+                "config": {
+                    "schema_pattern": {"allow": [".*"]},
+                },
+            }
+        }
+        matcher = build_matcher(recipe)
+        # Without the database gate, names from any prefix pass the allow-all pattern
+        assert matcher("other_db.public.t") is True
+
+    def test_empty_string_database_leaves_gate_inactive(self) -> None:
+        """database='' (empty string) does not activate the gate — empty prefix would
+        trivially match every name; the spec requires a non-empty database value.
+
+        Spec: build_matcher docstring §Database scoping — gate activates only for a
+        non-empty str database value.
+        """
+        recipe = {
+            "source": {
+                "type": "postgres",
+                "config": {
+                    "database": "",
+                    "schema_pattern": {"allow": [".*"]},
+                },
+            }
+        }
+        matcher = build_matcher(recipe)
+        # Gate is inactive — allow-all pattern matches regardless of db prefix
+        assert matcher("other_db.public.t") is True
+
+    def test_non_string_database_leaves_gate_inactive(self) -> None:
+        """database=<non-str> (e.g. a dict) does not activate the gate; the value is not
+        a string so the isinstance(db, str) guard skips it.
+
+        Spec: build_matcher docstring §Database scoping — gate requires isinstance(db, str).
+        """
+        recipe = {
+            "source": {
+                "type": "postgres",
+                "config": {
+                    "database": {"host": "pg"},  # malformed — not a string
+                    "schema_pattern": {"allow": [".*"]},
+                },
+            }
+        }
+        matcher = build_matcher(recipe)
+        # Gate is inactive — allow-all pattern matches regardless of db prefix
+        assert matcher("other_db.public.t") is True
+
+    def test_mysql_two_segment_names_gated_by_database(self) -> None:
+        """mysql URN names are database.table (two segments); the database gate applies
+        the same startswith('<database>.') prefix check, so 'shop.orders' passes when
+        database=shop and 'crm.orders' is rejected.
+
+        Spec: build_matcher docstring §Database scoping — mysql URN names are always
+        database-prefixed (database.table); a non-empty database always gates.
+        """
+        recipe = {
+            "source": {
+                "type": "mysql",
+                "config": {
+                    "database": "shop",
+                    "table_pattern": {"allow": [".*"]},
+                },
+            }
+        }
+        matcher = build_matcher(recipe)
+        assert matcher("shop.orders") is True
+        assert matcher("crm.orders") is False
+
+    def test_oracle_without_add_database_name_to_urn_gate_inactive(self) -> None:
+        """Oracle URN names default to schema.table (no database prefix), so gating on
+        database alone would reject every name. The gate must remain inactive when
+        add_database_name_to_urn is absent or falsy.
+
+        Spec: build_matcher docstring §Database scoping — for oracle the gate activates
+        ONLY when add_database_name_to_urn is truthy; absent flag → gate inactive.
+        """
+        recipe = {
+            "source": {
+                "type": "oracle",
+                "config": {
+                    "database": "orcl",
+                    "schema_pattern": {"allow": [".*"]},
+                    # add_database_name_to_urn not set → oracle names are schema.table
+                },
+            }
+        }
+        matcher = build_matcher(recipe)
+        # Gate is inactive — oracle names like hr.employees are accepted without db prefix
+        assert matcher("hr.employees") is True
+
+    def test_oracle_with_add_database_name_to_urn_gate_active(self) -> None:
+        """When oracle recipe sets add_database_name_to_urn=True, URN names gain the
+        database prefix (orcl.hr.employees). The gate then requires the name to start
+        with 'orcl.' and rejects bare schema.table names.
+
+        Spec: build_matcher docstring §Database scoping — oracle gate activates only
+        when add_database_name_to_urn is truthy, matching the connector's behaviour of
+        prepending the database segment to the URN name.
+        """
+        recipe = {
+            "source": {
+                "type": "oracle",
+                "config": {
+                    "database": "orcl",
+                    "add_database_name_to_urn": True,
+                    "schema_pattern": {"allow": [".*"]},
+                },
+            }
+        }
+        matcher = build_matcher(recipe)
+        assert matcher("orcl.hr.employees") is True
+        # Bare schema.table — missing database prefix → rejected
+        assert matcher("hr.employees") is False
+
+    def test_database_prefix_is_whole_segment_not_substring(self) -> None:
+        """The database prefix check uses '<database>.' (with trailing dot), so
+        'example_db' does NOT match names starting with 'example_db2.' — the trailing
+        dot enforces a whole-segment boundary.
+
+        Spec: build_matcher docstring §Database scoping — 'the trailing dot makes it a
+        whole-segment match, so example_db accepts example_db.public.orders but rejects
+        example_db2.public.orders'.
+        """
+        recipe = {
+            "source": {
+                "type": "postgres",
+                "config": {
+                    "database": "example_db",
+                    "schema_pattern": {"allow": [".*"]},
+                },
+            }
+        }
+        matcher = build_matcher(recipe)
+        # example_db2 shares the prefix string but is a different segment → rejected
+        assert matcher("example_db2.s.t") is False
+        # The declared database is accepted
+        assert matcher("example_db.s.t") is True
+
+    def test_kafka_with_stray_database_key_gate_never_activates(self) -> None:
+        """A kafka recipe that incidentally carries a 'database' key in config must NOT
+        activate the database scoping gate — kafka URN names are topic-based (bare or
+        instance-prefixed) and are never database-prefixed in the dataspoke URN scheme.
+
+        The guard ``source_type in _DB_PREFIXED_SOURCE_TYPES`` ensures only postgres and
+        mysql trigger the gate; bigquery, snowflake, and kafka always bypass it regardless
+        of whether a 'database' key happens to appear in the config.
+
+        Without this guard the test would fail: the gate would require the name to start
+        with 'anything.' and the Imazon kafka name 'example_kafka.imazon.orders.events'
+        would be tested against the stray prefix — producing an incorrect exclusion.
+
+        Spec: build_matcher docstring §Database scoping — 'bigquery / snowflake / kafka:
+        the gate never activates'.
+        Spec: BACKEND.md §Sync + mapping sweep.
+        """
+        recipe = {
+            "source": {
+                "type": "kafka",
+                "config": {
+                    "database": "anything",  # stray key — must not activate gate
+                    "topic_patterns": {
+                        "allow": [r"^imazon\..*$"],
+                    },
+                },
+            }
+        }
+        matcher = build_matcher(recipe)
+        # Gate must NOT activate for kafka — instance-prefixed topic passes allow pattern
         assert matcher("example_kafka.imazon.orders.events") is True

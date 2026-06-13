@@ -7,6 +7,7 @@ so neither imports from the other for ingestion primitives.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from enum import Enum
 from typing import Any
 
@@ -61,6 +62,11 @@ CRON_TO_TIER: dict[str, str] = dict(_CRON_TO_TIER)
 
 
 # ── Recipe helpers ────────────────────────────────────────────────────────────
+
+# Source types whose dataset URN names are always database-prefixed
+# (``database.schema.table`` for postgres, ``database.table`` for mysql), so the
+# recipe's ``database`` always names the first dot-separated segment.
+_DB_PREFIXED_SOURCE_TYPES = frozenset({"postgres", "mysql"})
 
 
 def parse_recipe(recipe: dict[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -149,7 +155,7 @@ def cron_to_tier(schedule: str | None) -> str | None:
     return tier
 
 
-def build_matcher(recipe: dict[str, Any]) -> "Callable[[str], bool]":  # noqa: F821
+def build_matcher(recipe: dict[str, Any]) -> Callable[[str], bool]:
     """Build a dataset-name predicate from the recipe's allow/deny patterns.
 
     Uses ``datahub.configuration.common.AllowDenyPattern`` from the acryl-datahub
@@ -177,6 +183,28 @@ def build_matcher(recipe: dict[str, Any]) -> "Callable[[str], bool]":  # noqa: F
     When both ``schema_pattern`` and ``table_pattern`` are present, a dataset
     must pass both predicates to be included.
 
+    Database scoping:
+      When the recipe declares a ``database`` and the source type's URN names are
+      database-prefixed, every returned predicate additionally requires the name to
+      begin with ``<database>.`` (the database followed by a dot) before any pattern
+      is evaluated. The prefix is exact and case-sensitive; the trailing dot makes it
+      a whole-segment match, so ``example_db`` accepts ``example_db.public.orders`` but
+      rejects ``example_db2.public.orders``. The gate activates per source type:
+        - ``postgres`` / ``mysql``: URN names are always database-prefixed
+          (``database.schema.table`` / ``database.table``), so a non-empty ``database``
+          always gates.
+        - ``oracle``: URN names default to ``schema.table`` with no database segment,
+          so the gate activates only when the recipe also sets
+          ``add_database_name_to_urn`` truthy (which prepends the database segment).
+          Gating on ``database`` alone would reject every oracle name.
+        - bigquery / snowflake / kafka: the gate never activates; their names are not
+          database-prefixed in this form.
+
+    Caller contract:
+      The matcher evaluates dataset names only — it has no view of the URN platform.
+      Platform scoping is the caller's responsibility: the sync sweep feeds the matcher
+      only names whose URN platform equals the recipe's ``source.type``.
+
     If none of the above keys are found in ``source.config``, the matcher
     returns ``False`` for every name (match-nothing). A source with no
     derivable selection patterns maps no datasets — coverage that cannot be
@@ -186,18 +214,36 @@ def build_matcher(recipe: dict[str, Any]) -> "Callable[[str], bool]":  # noqa: F
     source→dataset reverse lookup; the matcher reconstructs coverage from
     the declared filter syntax only.
     """
-    from collections.abc import Callable  # local import to avoid circular dep
-
     try:
-        _, config = parse_recipe(recipe)
+        source_type, config = parse_recipe(recipe)
     except ValueError:
         # Malformed recipe — match nothing.
         return lambda name: False
 
+    # Database scoping gate: when active, every predicate requires the name to
+    # start with ``<database>.`` before its pattern branch runs.
+    db = config.get("database")
+    st = source_type.lower()
+    db_gated = (
+        isinstance(db, str)
+        and bool(db)
+        and (
+            st in _DB_PREFIXED_SOURCE_TYPES
+            or (st == "oracle" and bool(config.get("add_database_name_to_urn")))
+        )
+    )
+    db_prefix = f"{db}." if db_gated else ""
+
+    def _gate(pred: Callable[[str], bool]) -> Callable[[str], bool]:
+        """Wrap ``pred`` with the database-prefix guard when the gate is active."""
+        if not db_gated:
+            return pred
+        return lambda name, _p=pred, _pfx=db_prefix: name.startswith(_pfx) and _p(name)
+
     try:
         from datahub.configuration.common import AllowDenyPattern
 
-        def _make_adp(allow: list[str], deny: list[str]) -> "Callable[[str], bool]":
+        def _make_adp(allow: list[str], deny: list[str]) -> Callable[[str], bool]:
             adp = AllowDenyPattern(allow=allow, deny=deny)
             return lambda name: adp.allowed(name)
 
@@ -215,20 +261,29 @@ def build_matcher(recipe: dict[str, Any]) -> "Callable[[str], bool]":  # noqa: F
         if "schema_pattern" in config:
             sp = config["schema_pattern"]
             schema_adp = _make_adp(sp.get("allow", [".*"]), sp.get("deny", []))
-            schema_pred: "Callable[[str], bool]" = (
-                lambda name, _a=schema_adp: _a(_schema_segment(name))
-            )
+
+            def schema_pred(name: str, _a: Callable[[str], bool] = schema_adp) -> bool:
+                return _a(_schema_segment(name))
+
             # table_pattern (when present) applies to the full database.schema.table string.
             if "table_pattern" in config:
                 tp = config["table_pattern"]
                 table_adp = _make_adp(tp.get("allow", [".*"]), tp.get("deny", []))
-                return lambda name, _s=schema_pred, _t=table_adp: _s(name) and _t(name)
-            return schema_pred
+
+                def schema_table_pred(
+                    name: str,
+                    _s: Callable[[str], bool] = schema_pred,
+                    _t: Callable[[str], bool] = table_adp,
+                ) -> bool:
+                    return _s(name) and _t(name)
+
+                return _gate(schema_table_pred)
+            return _gate(schema_pred)
 
         # Table-only pattern — matched against the full database.schema.table string.
         if "table_pattern" in config:
             tp = config["table_pattern"]
-            return _make_adp(tp.get("allow", [".*"]), tp.get("deny", []))
+            return _gate(_make_adp(tp.get("allow", [".*"]), tp.get("deny", [])))
 
         # Kafka topic patterns — allow and deny evaluated against the topic name.
         # A kafka dataset URN name may be bare (<topic>) or instance-prefixed
@@ -259,12 +314,12 @@ def build_matcher(recipe: dict[str, Any]) -> "Callable[[str], bool]":  # noqa: F
                     return False
                 return True
 
-            return _kafka_pred
+            return _gate(_kafka_pred)
 
         # BigQuery / Snowflake dataset pattern — matched against the full name.
         if "dataset_pattern" in config:
             dp = config["dataset_pattern"]
-            return _make_adp(dp.get("allow", [".*"]), dp.get("deny", []))
+            return _gate(_make_adp(dp.get("allow", [".*"]), dp.get("deny", [])))
 
     except ImportError:
         # acryl-datahub not available in this context — no SDK means no

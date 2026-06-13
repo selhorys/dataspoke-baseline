@@ -35,6 +35,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.backend.ingestion.extractors import run_extractor
 from src.shared.cache.client import RedisClient
 from src.shared.datahub.client import DataHubClient
+from src.shared.datahub.urn import platform_from_dataset_urn
 from src.shared.db.models import Event, IngestionSource, IngestionSourceDataset
 from src.shared.db.registry import reconcile_registry
 from src.shared.events import (
@@ -1151,13 +1152,19 @@ class IngestionService:
         # Enumerate the full dataset set once.
         all_dataset_urns = await self._datahub.enumerate_datasets()
 
-        # Build a lookup: dataset_urn -> name segment (second comma-field of the
-        # URN inner tuple: (platform, name, origin)).
+        # Build two lookups from the same single enumeration:
+        #   urn -> name segment (second comma-field of the URN inner tuple), and
+        #   urn -> platform id (first comma-field). URNs the helpers can't parse
+        #   are skipped from both maps.
         urn_to_name: dict[str, str] = {}
+        urn_to_platform: dict[str, str] = {}
         for urn in all_dataset_urns:
             name = _name_from_dataset_urn(urn)
             if name:
                 urn_to_name[urn] = name
+            platform = platform_from_dataset_urn(urn)
+            if platform:
+                urn_to_platform[urn] = platform
 
         # Load all source rows to evaluate matchers.
         result = await self._db.execute(select(IngestionSource))
@@ -1167,9 +1174,15 @@ class IngestionService:
             source_id = src_row.id
             recipe = dict(src_row.recipe) if src_row.recipe else {}
 
+            # Platform scoping is the sweep's responsibility (the matcher sees only
+            # names): require the URN platform to equal the recipe's source.type
+            # before evaluating the name matcher.
+            expected_platform = _safe_parse_recipe(recipe)[0].lower()
             matcher = build_matcher(recipe)
             matched_urns: set[str] = {
-                urn for urn, name in urn_to_name.items() if matcher(name)
+                urn
+                for urn, name in urn_to_name.items()
+                if urn_to_platform.get(urn) == expected_platform and matcher(name)
             }
 
             # Fetch currently stored matcher-origin rows for this source.

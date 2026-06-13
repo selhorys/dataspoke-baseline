@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from src.backend.dataset.service import DatasetService, _parse_platform
+from src.backend.dataset.service import DatasetService
 from src.shared.exceptions import EntityNotFoundError
 from tests.unit.backend.conftest import (
     make_datahub_ownership,
@@ -24,17 +24,6 @@ _DATASET_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,mydb.public.users,P
 @pytest.fixture
 def service(datahub, db, cache):
     return DatasetService(datahub=datahub, db=db, cache=cache)
-
-
-# ── parse_platform ────────────────────────────────────────────────────────────
-
-
-def test_parse_platform_postgres():
-    assert _parse_platform(_DATASET_URN) == "postgres"
-
-
-def test_parse_platform_unknown():
-    assert _parse_platform("urn:li:dataset:bad") == "unknown"
 
 
 # ── get_summary ───────────────────────────────────────────────────────────────
@@ -88,6 +77,29 @@ async def test_get_summary_not_found(service, datahub):
     with pytest.raises(EntityNotFoundError) as exc_info:
         await service.get_summary(_DATASET_URN)
     assert exc_info.value.error_code == "DATASET_NOT_FOUND"
+
+
+async def test_get_summary_malformed_urn_platform_fallback(service, datahub):
+    """A malformed dataset URN that does not match the expected URN format yields
+    platform == 'unknown' in the summary — the service uses
+    platform_from_dataset_urn(...) or 'unknown' as the display fallback.
+
+    Spec: src/shared/datahub/urn.py — platform_from_dataset_urn returns None when
+    the URN does not match; DatasetService.get_summary substitutes 'unknown'.
+    """
+    malformed_urn = "not-a-real-urn"
+    props = make_datahub_props()
+
+    async def fake_get_aspect(urn, cls):
+        name = cls.__name__ if hasattr(cls, "__name__") else str(cls)
+        if "Properties" in name:
+            return props
+        return None
+
+    datahub.get_aspect = AsyncMock(side_effect=fake_get_aspect)
+
+    result = await service.get_summary(malformed_urn)
+    assert result.platform == "unknown"
 
 
 # ── get_attributes ────────────────────────────────────────────────────────────

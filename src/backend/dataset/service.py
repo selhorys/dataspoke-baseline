@@ -1,7 +1,6 @@
 """Dataset service — read-through layer for dataset summary, attributes, and events."""
 
 import json
-import re
 from datetime import datetime
 from typing import Any
 
@@ -10,18 +9,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.shared.cache.client import QUALITY_CACHE_KEY, RedisClient
 from src.shared.datahub.client import DataHubClient
+from src.shared.datahub.urn import platform_from_dataset_urn
 from src.shared.db.models import Event
 from src.shared.exceptions import EntityNotFoundError
 from src.shared.models.dataset import DatasetAttributes, DatasetSummary
 from src.shared.models.events import EventRecord
 from src.shared.models.quality import QualityScore
-
-_URN_PLATFORM_RE = re.compile(r"urn:li:dataset:\(urn:li:dataPlatform:([^,]+),")
-
-
-def _parse_platform(urn: str) -> str:
-    m = _URN_PLATFORM_RE.search(urn)
-    return m.group(1) if m else "unknown"
 
 
 class DatasetService:
@@ -53,7 +46,7 @@ class DatasetService:
 
         owners = [o.owner for o in (ownership.owners if ownership else [])]
         tags = [t.tag for t in (global_tags.tags if global_tags else [])]
-        platform = _parse_platform(dataset_urn)
+        platform = platform_from_dataset_urn(dataset_urn) or "unknown"
 
         return DatasetSummary(
             urn=dataset_urn,
