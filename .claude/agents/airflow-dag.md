@@ -30,7 +30,8 @@ src/workflows/
 ├── _common.py              # Service factories (make_datahub, make_redis_client, make_llm_client, make_pgvector_manager, make_notification_service) and workflow ID helpers
 ├── airflow/                # AirflowClient REST wrapper, models, errors
 ├── dags/                   # Airflow DAG Python files (self-contained, no src/ imports)
-└── {feature}.py            # FLOW_ID constant and tier query helpers per feature
+├── registry.py             # Tier/DAG-ID tuple helpers (TIERS, *_DAG_IDS)
+└── {feature}.py            # Pydantic parameter models per feature (ingestion, metagen, ontogen, metrics)
 ```
 
 ## Airflow conventions
@@ -40,7 +41,7 @@ src/workflows/
 - **HTTP connection**: use `http_conn_id="dataspoke_api"` (pre-configured Airflow connection pointing to `http://dataspoke-api:8002`)
 - **DAG inputs**: passed via `dag_run.conf` (accessed as `{{ dag_run.conf.get('key', 'default') }}` in Jinja templates)
 - **Retry policy**: `retries=3`, `retry_delay=timedelta(seconds=10)`, configured in `default_args`
-- **Concurrency**: `max_active_runs` per DAG (1 for singletons like `ontogen`, 2 for `metagen` / `metrics`)
+- **Concurrency**: `max_active_runs` per DAG — 1 for singletons (`ontogen`, `metagen`, `datahub-sync`), 2 for `metrics`, 5 for `ingestion-active`
 - **Deduplication**: `AirflowClient.check_no_duplicate()` queries running DAG runs by `conf` values. API returns 409 Conflict if a duplicate is running
 - **Inter-task data**: use XCom. `HttpOperator` with `response_filter=lambda response: response.json()` pushes parsed JSON to XCom. Downstream tasks pull via `{{ ti.xcom_pull(task_ids="task_name") | tojson }}`
 - **Dynamic fan-out**: use `@task` decorator + `HttpOperator.partial(...).expand(data=payloads)` for dynamic task mapping (Airflow 2.3+)

@@ -37,7 +37,7 @@ spec/
 
 **Routing rules:**
 - Top-level `spec/` — project-wide documents only. Do NOT create new top-level files unless the topic affects the whole system and warrants an architectural-level document.
-- `spec/feature/` — **all baseline feature deep-dives** (Ingestion Control, Validation, Ontology Generation, Metadata Generation, Governance) plus cross-cutting infrastructure (e.g. `API.md`, `BACKEND.md`, `HELM_CHART.md`) and one FRONTEND spec per function area (`FRONTEND_BASIC.md` for shell/auth/admin, plus `FRONTEND_{GOVERNANCE,INGESTION,VALIDATION,ONTOGEN,METAGEN}.md`). Organization-specific extensions in forks add new files alongside (e.g. `feature/SEARCH.md`); no separate subdirectory is required.
+- `spec/feature/` — **all baseline feature deep-dives** (Ingestion Control, Validation, Ontology Generation, Metadata Generation, Governance) plus cross-cutting infrastructure (e.g. `BACKEND.md`, `HELM_CHART.md`) and one FRONTEND spec per function area (`FRONTEND_BASIC.md` for shell/auth/admin, plus `FRONTEND_{GOVERNANCE,INGESTION,VALIDATION,ONTOGEN,METAGEN}.md`). Organization-specific extensions in forks add new files alongside (e.g. `feature/SEARCH.md`); no separate subdirectory is required.
 
 Implementation plans and decision records are tracked via GitHub Issues and PRs, not in the spec directory.
 
@@ -62,7 +62,7 @@ If writing about a specific feature, also check for an existing `spec/feature/<F
 
 | Destination | When to use | Document type |
 |-------------|-------------|---------------|
-| `spec/feature/<FEATURE>.md` | A baseline feature (Ingestion Control, Validation, Ontology Generation, Metadata Generation, Governance), a common cross-cutting topic (API, dev environment, shared services), a per-function FRONTEND spec (`FRONTEND_{BASIC,GOVERNANCE,INGESTION,VALIDATION,ONTOGEN,METAGEN}.md`), or an organization-specific extension in a fork (e.g. `SEARCH.md`). | Feature Spec (see template A) |
+| `spec/feature/<FEATURE>.md` | A baseline feature (Ingestion Control, Validation, Ontology Generation, Metadata Generation, Governance), a common cross-cutting topic (dev environment, shared services), a per-function FRONTEND spec (`FRONTEND_{BASIC,GOVERNANCE,INGESTION,VALIDATION,ONTOGEN,METAGEN}.md`), or an organization-specific extension in a fork (e.g. `SEARCH.md`). | Feature Spec (see template A) |
 | `spec/<DOC>.md` (top-level) | Only for project-wide topics that belong alongside MANIFESTO and ARCHITECTURE | Top-level spec (use template A without feature context) |
 
 ---

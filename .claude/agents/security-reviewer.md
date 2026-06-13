@@ -28,8 +28,8 @@ The orchestrator invokes you **only when a generator's diff touches a sensitive 
 
 ### Sensitive path globs (authoritative list)
 
-- `src/api/auth/**` — JWT/auth (`dependencies.py`, `internal.py`, `jwt.py`)
-- `src/api/routers/**` — when the diff touches `Depends(get_current_user)`, `require_*`, `require_internal_token`, or other auth guards
+- `src/api/auth/**` — JWT/auth (`dependencies.py`, `internal.py`)
+- `src/api/routers/**` — when the diff touches `Depends(require_authenticated)`, other `require_*` guards, or `require_internal_token`
 - `src/shared/settings.py` — secret env vars (JWT, DataHub token, Postgres, LLM, Airflow, internal-token)
 - `src/shared/datahub/**` — DataHub client and emission (`client.py`, `consumer.py`, `events.py`)
 - `src/backend/ingestion/**`, `src/backend/metagen/**`, `src/backend/ontogen/**`, `src/api/routers/internal/activities.py` — DataHub write paths
@@ -65,7 +65,7 @@ Score each criterion as **PASS**, **FAIL**, or **PARTIAL** with a one-line justi
 
 ### 2. AuthN / AuthZ
 
-- Every non-public route has an auth dependency (`Depends(get_current_user)` or equivalent)
+- Every non-public route has an auth dependency (`Depends(require_authenticated)` or equivalent)
 - Role checks enforced at the service layer, not just the router
 - No IDOR — resource access checks ownership, not just authentication
 - Token handling: no tokens in URLs, query strings, or logs

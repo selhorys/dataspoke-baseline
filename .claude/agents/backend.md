@@ -32,9 +32,9 @@ Your job is to write production-quality Python code in `src/api/`, `src/backend/
 ```
 src/
 ├── api/                       # FastAPI routers, schemas, middleware, auth
-│   ├── routers/spoke/         # One file per resource (common/ and dg/)
+│   ├── routers/spoke/         # common/ (per-dataset cross-feature) + one file per feature (ingestion, validation, ontogen, metagen, governance)
 │   └── schemas/               # Pydantic request/response models
-├── backend/                   # One subdirectory per feature domain (8 domains)
+├── backend/                   # One subdirectory per feature domain (9 domains)
 │   └── {feature}/service.py   # Stateless service, constructor-injected deps
 └── shared/                    # Cross-cutting clients and models
     ├── datahub/, db/, vector/, llm/, cache/, notifications/
