@@ -198,7 +198,7 @@ test("UC1 Case 3 step 1 — create PASSIVE kafka source", async ({ page, adminAp
 
   // -- UI assertion: mode badge "Passive" visible --
   // spec: FRONTEND_INGESTION.md §Source Detail — mode badge in header; modeLabel(PASSIVE) = "Passive"
-  await expect(page.getByText("Passive")).toBeVisible();
+  await expect(page.getByText("Passive", { exact: true })).toBeVisible();
 
   // -- Backend probe: GET /spoke/ingestion/sources/{id} --
   // spec: USE_CASE_en.md §UC1 Case 3 step 2 — body shape: mode=PASSIVE, schedule=null,

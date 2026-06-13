@@ -171,8 +171,9 @@ test("UC1 Case 2 step 1 — create ACTIVE_CUSTOM_MANAGED postgres source", async
 
   // -- UI assertion: mode badge ACTIVE_CUSTOM_MANAGED visible --
   // spec: FRONTEND_INGESTION.md §Source Detail — mode badge rendered in header
-  // The badge text maps: ACTIVE_CUSTOM_MANAGED → "Active (custom managed)" via modeLabel()
-  await expect(page.getByText("Active (custom managed)")).toBeVisible();
+  // modeLabel("ACTIVE_CUSTOM_MANAGED") === "Active"
+  // (ingestion-mode-variant.ts modeLabel switch, line 35)
+  await expect(page.getByText("Active", { exact: true })).toBeVisible();
 
   // -- UI assertion: recipe YAML shows masked secret ref, not plaintext --
   // spec: FRONTEND_INGESTION.md §Source Detail §Recipe — secrets masked in YAML view
@@ -396,8 +397,9 @@ test("UC1 Case 2 step 6 — per-dataset reverse-lookup shows owning source", asy
   // The source name link must be visible in the Ingestion panel.
   await expect(page.getByRole("link", { name: SOURCE_NAME })).toBeVisible({ timeout: 30_000 });
 
-  // -- UI assertion: mode badge "Active (custom managed)" visible --
-  await expect(page.getByText("Active (custom managed)")).toBeVisible();
+  // -- UI assertion: mode badge "Active" visible (modeLabel("ACTIVE_CUSTOM_MANAGED") === "Active") --
+  // ingestion-mode-variant.ts modeLabel switch, line 35
+  await expect(page.getByText("Active", { exact: true })).toBeVisible();
 
   // -- Backend probe: GET /spoke/common/data/{urn}/attr/ingestion --
   // spec: USE_CASE_en.md §UC1 Case 2 step 7 — source_id matches, mode=ACTIVE_CUSTOM_MANAGED,
