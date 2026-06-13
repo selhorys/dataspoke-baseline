@@ -5,9 +5,10 @@ description: |
   step in the source test file, print the UI gesture (page + action), ask you to
   perform it and report what you observed, then independently probe the backend
   (REST read-back, DB rows, DataHub aspects, k8s secrets) to confirm the side
-  effect fired. The human-in-the-loop stand-in for the unbuilt automated E2E
-  layer. Optional argument `scope` selects the case (free-form: "UC1",
-  "UC1 Case 2", "passive kafka", filename fragment, etc.).
+  effect fired. The human-driven sibling of the automated `tests/e2e/` use-case
+  group — same scenarios, with a human at the browser. Optional argument `scope`
+  selects the case (free-form: "UC1", "UC1 Case 2", "passive kafka", filename
+  fragment, etc.).
 disable-model-invocation: true
 argument-hint: '[scope, e.g. "UC1 Case 2"]'
 allowed-tools: Bash(*), Read, Edit, Glob, Grep, AskUserQuestion, Skill(k8s-deploy)
@@ -17,10 +18,10 @@ allowed-tools: Bash(*), Read, Edit, Glob, Grep, AskUserQuestion, Skill(k8s-deplo
 
 A guided manual harness that walks one `tests/integration/api_wired/test_*.py`
 scenario through the **browser UI** instead of curl. It is the browser-facing
-sibling of `/test-manual-api-wired` and the human-in-the-loop substitute for the
-automated E2E layer that `spec/TESTING.md §End-to-End (E2E) Testing` reserves but
-the scaffold never generated (no E2E generator agent exists; `tests/e2e/` is
-empty).
+sibling of `/test-manual-api-wired` and the human-driven counterpart of the
+automated E2E use-case group (`tests/e2e/use-case/`, `spec/TESTING.md
+§End-to-End (E2E) Testing`) — same UC scenarios, run with a human at the browser
+when you want eyes on the rendered UI rather than an unattended Playwright run.
 
 Use when:
 - verifying the reference UI renders and drives each UC end-to-end

@@ -277,3 +277,14 @@ These component IDs are referenced from per-function specs.
   `dataset_urns[]`). Reused by Governance metrics, OntoGen conf, and MetaGen conf.
 - **ConfirmDialog** — destructive-action gate (revoke token, delete config).
   No API of its own.
+
+---
+
+## Testability
+
+The automated E2E layer (`tests/e2e/`, see [TESTING](../TESTING.md#end-to-end-e2e-testing))
+drives this UI with Playwright using user-facing locators (role, label, text). Components expose a
+`data-testid` only where a semantic locator is insufficient — recharts widgets, dynamic table
+rows, and status badges that carry no accessible name. Default to accessible markup (labelled
+inputs, `role`-bearing controls, button text) so most flows need no test-id at all; add test-ids
+narrowly when requested by the E2E author, not pre-emptively across the tree.

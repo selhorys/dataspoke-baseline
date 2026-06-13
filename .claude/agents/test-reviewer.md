@@ -26,6 +26,28 @@ Same skeptical-by-default stance as the code reviewer — see `.claude/agents/re
 5. You may read the implementation under test for context, but **assertion correctness is judged against the spec, not against the impl.**
 6. Verify the test agent's traceability claims by reading the cited spec lines. Do not trust the citations at face value — confirm the cited line actually specifies the asserted behavior.
 
+## Reviewing Playwright E2E tests
+
+When the reviewed tests are Playwright/TypeScript under `tests/e2e/` (use-case or ground groups,
+per `spec/TESTING.md §End-to-End (E2E) Testing`), criteria T1–T5 apply **identically** — only the
+spec anchors and a few E2E-specific failure modes differ:
+
+- **Traceability (T1)**: use-case specs trace to a `USE_CASE_en.md` story **and** the matching
+  `tests/integration/api_wired/test_uc*` step; ground specs trace to a `FRONTEND_*.md` behavior +
+  route. Confirm the dual-confirmation contract: every use-case step that mutates must assert UI
+  **and** independently probe the backend (`APIRequestContext`). A UI-only assertion that should
+  have probed the backend is a T1/T4 finding (a stale-render bug would pass).
+- **Spec-derived assertions (T2)**: flag selectors or expected text pinned to incidental DOM
+  rather than the spec'd UI contract; flag backend probes asserting impl-incidental fields.
+- **Failure-mode coverage (T3)**: error toasts, role-gated suppression (reader vs editor), empty
+  states, skip-guards (e.g. real-LLM gated on `stub_llm_client`, missing-secret skips).
+- **Coverage (advisory)**: sanity-check `tests/e2e/COVERAGE.md` — do use-case + ground actually
+  reach the routes claimed; is anything silently uncovered.
+
+You may run read-only `pnpm -C tests/e2e typecheck` (`tsc --noEmit`) and
+`pnpm -C tests/e2e exec playwright test --list` to confirm the suite compiles and enumerates; do
+not execute the browser suite.
+
 ## Evaluation criteria
 
 Score each criterion as **PASS**, **FAIL**, or **PARTIAL** with a one-line justification.

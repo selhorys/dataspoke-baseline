@@ -370,8 +370,8 @@ logic, and convenience methods. Patterns defined in
 |---------|-----------|
 | Package Manager | uv |
 | API Testing | pytest, httpx |
-| Frontend Testing | Jest, React Testing Library |
-| E2E Testing | Playwright |
+| Frontend Testing | Vitest, React Testing Library |
+| E2E Testing | Playwright (use-case + ground groups) |
 | Linting | ruff (Python), ESLint (TypeScript) |
 | Formatting | ruff format (Python), Prettier (TypeScript) |
 | Type Checking | mypy (Python), TypeScript compiler |

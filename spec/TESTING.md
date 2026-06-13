@@ -32,7 +32,7 @@
 |-------|----------|-----------|-------------|
 | Backend (API + services) | Python 3.13 | pytest + httpx | mypy, ruff |
 | Frontend | TypeScript | Vitest + React Testing Library | TypeScript compiler, ESLint |
-| E2E | TypeScript | Playwright | -- |
+| E2E | TypeScript | Playwright | TypeScript compiler |
 
 > **Do not use the `datahub` CLI** -- it requires Python <= 3.11 and is incompatible with the
 > project's Python 3.13 runtime. Use Python scripts with the `acryl-datahub` SDK instead
@@ -54,7 +54,10 @@ Tests live under `tests/` at the repo root, mirroring `src/`:
     scenarios; steps mirror the user-story narrative.
   - `util/` — dummy-data reset/ingest utilities with `fixtures/sql/` and `fixtures/kafka/`.
   - `conftest.py` — root fixtures: infra, lock, dummy-data lifecycle.
-- `tests/e2e/` — Playwright end-to-end tests
+- `tests/e2e/` — Playwright end-to-end tests (TypeScript), split into `use-case/` (one browser
+  flow per `USE_CASE_en.md` story, mirroring api-wired) and `ground/<feature>/` (narrow per-page
+  flows, mirroring spot); plus `fixtures/`, `global-setup.ts`/`global-teardown.ts`, and
+  `COVERAGE.md` (the route-coverage map). Self-contained pnpm/TypeScript project.
 
 ---
 
@@ -355,15 +358,95 @@ kubectl scale deployment/dataspoke-api --replicas=0 -n "${DATASPOKE_KUBE_DATASPO
 
 ## End-to-End (E2E) Testing
 
-E2E tests verify the full stack through a real browser (Playwright, TypeScript, `tests/e2e/`).
+E2E tests verify the full stack through a real browser: real frontend -> real API -> real
+DataHub / PostgreSQL / Kafka, nothing mocked (Playwright, TypeScript, `tests/e2e/`). They are the
+frontend counterpart of the integration layer — the **use-case group** mirrors api-wired and the
+**ground group** mirrors spot. The colocated Vitest tests (`src/frontend/`) remain the mocked
+unit/component tier; E2E never mocks the API.
 
-**Prerequisites**: All services running -- Frontend (`http://app.<INGRESS_IP>.nip.io/`), API
-(`http://api.<INGRESS_IP>.nip.io/api/v1/`), dev environment installed with nginx-ingress.
+### Prerequisites
 
-**Lock protocol**: Same seven-step workflow as integration tests (acquire lock -> reset data ->
-run -> reset -> release lock).
+All services running, including the **cluster-deployed frontend**:
+`./helm-charts/bin/install.sh --profile dev --frontend cluster` deploys the UI at
+`http://app.<INGRESS_IP>.nip.io/`; the API is at `http://api.<INGRESS_IP>.nip.io/api/v1/`. Run
+`./helm-charts/bin/health-check.sh` first. Playwright's `baseURL` resolves from
+`PLAYWRIGHT_BASE_URL`, defaulting to the cluster URL derived from `DATASPOKE_KUBE_INGRESS_DOMAIN`
+in `helm-charts/.env`.
 
-**Running** (from `tests/e2e/`): `npx playwright test` (or `--headed` for debugging).
+### Two groups
+
+E2E splits into two complementary groups, the same way integration splits into spot and api-wired.
+Each is a Playwright project group under `tests/e2e/`.
+
+#### Use-case group (`tests/e2e/use-case/`)
+
+One browser flow per `USE_CASE_en.md` user story — the executable UI form of the matching
+`tests/integration/api_wired/test_uc{1..5}_*.py` file and the `/test-manual-ui` walkthrough. Files
+mirror the api-wired split: `uc{1..5}-<slug>.spec.ts` (UC1 has three —
+`uc1-datahub-managed`, `uc1-active-custom-postgres`, `uc1-passive-kafka`).
+
+- **Mirrors the narrative**: steps follow the user-story prose and the api-wired step sequence
+  verbatim; annotate each step with the matching `USE_CASE_en.md` paragraph.
+- **Dual confirmation**: each step asserts the **UI** state (toast, row, badge, redirect) **and**
+  independently verifies the **backend** state via Playwright's `APIRequestContext` — the same
+  REST read-back the api-wired step asserts. A UI that renders stale or cached state must not pass.
+- **Gestures from FRONTEND specs**: map each REST mutation to its page + gesture per
+  `spec/feature/FRONTEND_*.md` (create form + Submit, run panel `dry_run` toggle, Approve/Reject
+  card, conf editor Save, delete behind ConfirmDialog).
+- **Readability over DRY**: inline the gesture sequence and expected values per step; do not hide
+  flows behind helpers. Shared setup (auth, env, URN constants) lives in `fixtures/`.
+- **LLM mode**: UC3/UC4 carry a stub-mode variant and a gated real-LLM variant, mirroring
+  api-wired — the real-LLM variant `test.skip`s unless `stub_llm_client` is false in `/admin/conf`.
+
+#### Ground group (`tests/e2e/ground/<feature>/`)
+
+Many narrow, single-concern UI-flow tests, each proving one page behavior against the real stack —
+the spot-tier analogue.
+
+- **One concern per test**, independent (reset fixtures handle data lifecycle), minimum setup;
+  the test reads like its concern.
+- **Coverage rule**: the use-case and ground groups **together** cover the entire frontend route
+  surface — every route under `src/frontend/app/`. Unlike backend spot, the ground group need not
+  be self-sufficient: the Vitest unit/component tests and the use-case group already cover much,
+  and ground fills only what they leave. `tests/e2e/COVERAGE.md` maps every route to its covering
+  test(s) and is the acceptance artifact for "fully covered".
+- **Boundary vs Vitest**: ground tests cover real-stack UI flows (a real role-gated nav, a form
+  submit that lands in the DB and re-renders, polling that reflects a real event). Presentational
+  and pure-logic assertions stay in the colocated Vitest tests — do not duplicate them here.
+
+### Selectors
+
+Prefer Playwright's user-facing locators (`getByRole`, `getByLabel`, `getByText`). Add a
+`data-testid` to a component only where a semantic locator is insufficient (recharts widgets,
+dynamic table rows, status badges), per `spec/feature/FRONTEND_BASIC.md §Testability`.
+
+### Authentication
+
+`global-setup` logs in once per role through the real `/login` page and persists each session as a
+Playwright `storageState` (the refresh token is an HttpOnly cookie; the app refreshes the in-memory
+access token on load). Playwright projects are keyed on role (admin / editor / reader); role-gated
+tests select the matching project. Non-admin users are provisioned via the admin API during setup.
+
+### Lock + reset
+
+Same dev-env lock and data-reset protocol as integration tests, driven from Playwright's
+`globalSetup`/`globalTeardown` by **reusing the existing Python utilities** — acquire the lock
+(`POST http://<INGRESS_IP>:9221/lock/acquire`, honouring `DATASPOKE_DEV_ENV_LOCK_PREACQUIRED`),
+`uv run python -m tests.integration.util --reset-seed`, run, reset, release. UC4 uses the same
+`--uc4-seed` / `--uc4-restore` staging as the manual skill.
+
+### Running
+
+```bash
+./helm-charts/bin/install.sh --profile dev --frontend cluster   # deploy the cluster UI
+./helm-charts/bin/health-check.sh
+set -a && source helm-charts/.env && set +a                     # export DATASPOKE_* for fixtures
+pnpm -C tests/e2e install
+pnpm -C tests/e2e test                                          # --headed / --ui to debug
+```
+
+Static gate: `pnpm -C tests/e2e typecheck` (`tsc --noEmit`). Real-LLM use-case variants run only
+after `PATCH /api/v1/admin/conf {"stub_llm_client": false}` (≤30s propagation); revert afterward.
 
 ---
 

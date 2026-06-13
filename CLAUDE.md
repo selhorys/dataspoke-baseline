@@ -25,7 +25,7 @@ Settings in `helm-charts/.env`. See `helm-charts/README.md` for access details a
 
 The API runs **in-cluster** alongside Airflow so that workflow callbacks work via cluster DNS. Developers access it via nginx-ingress (`http://api.<INGRESS_IP>.nip.io/api/v1/`). Code changes are picked up by `install.sh --profile dev --components api` (docker build + `helm upgrade` + rollout).
 
-The **frontend** (`src/frontend/`, Next.js 15 + pnpm) is a thin reference UI. A full install's `--frontend` flag (default `none` in dev, `cluster` in prod) controls it: `none` deploys nothing; `local` (dev-only) writes `src/frontend/.env.local` so host `pnpm dev` reaches the in-cluster API; `cluster` deploys the containerised UI. `--components frontend` is the standalone rebuild+redeploy iteration path. Frontend tests run via `pnpm -C src/frontend test` (Vitest), separate from the Python `pytest` groups.
+The **frontend** (`src/frontend/`, Next.js 15 + pnpm) is a thin reference UI. A full install's `--frontend` flag (default `none` in dev, `cluster` in prod) controls it: `none` deploys nothing; `local` (dev-only) writes `src/frontend/.env.local` so host `pnpm dev` reaches the in-cluster API; `cluster` deploys the containerised UI. `--components frontend` is the standalone rebuild+redeploy iteration path. Frontend tests run via `pnpm -C src/frontend test` (Vitest, mocked); full-stack browser E2E lives in `tests/e2e/` (Playwright — use-case + ground groups) and runs against the `--frontend cluster` UI via `pnpm -C tests/e2e test`, separate from the Python `pytest` groups.
 
 Prod uses the same umbrella chart with `values.yaml` plus an operator-supplied overlay: `./helm-charts/bin/install.sh --profile prod --values <overlay.yaml>`.
 
@@ -94,7 +94,7 @@ When a generator's diff touches paths listed in `.claude/agents/security-reviewe
 Delegate implementation to the appropriate generator agent rather than writing code directly in the main conversation. Each generator runs in a confined context — it sees only the approved plan, the relevant spec, and the files in its scope. The reviewer receives the plan + generator's completion report + changed files. If the reviewer's verdict is REVISE, the generator is re-invoked with the findings for a fix pass. If issues persist after one fix pass, they are escalated to the user.
 
 For spec authoring, use `/spec-write` directly.
-For testing conventions (unit/integration/api-wired integration/E2E, toolchain, dev-env lock protocol), see `spec/TESTING.md`.
+For testing conventions (unit/integration/api-wired integration/E2E, toolchain, dev-env lock protocol), see `spec/TESTING.md`. E2E (`tests/e2e/`) is Playwright with two groups — use-case (mirrors api-wired UC stories, dual UI+backend confirmation) and ground (narrow per-page flows, spot analogue); together they cover every `src/frontend/app/` route (tracked in `tests/e2e/COVERAGE.md`).
 
 ## Integration Test Protocol
 
