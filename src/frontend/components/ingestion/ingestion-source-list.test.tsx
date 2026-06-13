@@ -39,7 +39,6 @@ vi.mock("next/link", () => ({
 // statically present in the DOM and fireEvent.change works without opening
 // a portal popup.
 vi.mock("@/components/ui/select", () => {
-  const React = require("react");
   return {
     Select: ({
       value,
