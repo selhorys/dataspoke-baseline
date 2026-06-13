@@ -265,7 +265,8 @@ DataHub-recipe-standard wording only — `{mode, name, schedule, recipe:{source:
 — plus read-only management fields (`id`, `status`, `created_at`, `updated_at`, and
 `datahub_source_urn` for `DATAHUB_MANAGED`). No DataSpoke-isms on the wire: `schedule` is the
 cron string (not `schedule_cron`/`schedule_tier`), and the frontend renders/edits this JSON as
-YAML. On `GET`, `${name__key}` secret references inside `recipe` are masked.
+YAML. On `GET`, `${name__key}` references inside `recipe` are returned as-is; any plaintext
+secret value is masked.
 
 **Editability**: `DATAHUB_MANAGED` rows are read-only (DataHub is SSOT) — create/update/delete
 return `409 INGESTION_SOURCE_READONLY`; they are written only by the sync sweep. `ACTIVE_CUSTOM_MANAGED`
@@ -300,8 +301,9 @@ in the event's `detail`; see [Event Catalogue](#event-catalogue)).
 DAG) reconciles all modes:
 
 1. **Source defs**: pull `DATAHUB_MANAGED` source recipes + schedules via DataHub's
-   `listIngestionSources` / `ingestionSource(urn)`; upsert read-only rows. Mask secrets in the
-   stored/displayed recipe (DataHub returns them raw).
+   `listIngestionSources` / `ingestionSource(urn)`; upsert read-only rows. Mask plaintext secret
+   values in the stored/displayed recipe (DataHub returns them raw); `${...}` secret references
+   are preserved as-is (not masked, not resolved).
 2. **Mapping**: list the DataHub dataset set once and rebuild `ingestion_source_dataset` by
    evaluating each source's **filter-matcher** — derived from the recipe's `platform`+`database`+
    `schema_pattern`/`table_pattern` for `DATAHUB_MANAGED`/`ACTIVE_CUSTOM_MANAGED`; the declared `AllowDenyPattern`

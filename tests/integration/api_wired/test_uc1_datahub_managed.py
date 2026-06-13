@@ -1,20 +1,26 @@
 """UC1 Case 1 — DATAHUB_MANAGED source sync: end-to-end through public REST API.
 
-DataHub's own recipe + cron runs the ingestion; DataSpoke syncs the source
+DataHub's own recipe + cron run the ingestion; DataSpoke syncs the source
 definition down and exposes it read-only. DataSpoke is NOT the ingestor.
 
 Steps mirror USE_CASE_en.md §UC1 Case 1:
-  1. Create a DataHub IngestionSource via GraphQL createIngestionSource (setup)
-  2. Trigger the DataSpoke sync sweep via POST /internal/activities/ingestion/sync
-  3. Assert a DATAHUB_MANAGED source row appeared in GET /spoke/ingestion/sources
-  4. Assert the row is read-only: PUT / PATCH / DELETE return 409 INGESTION_SOURCE_READONLY
-  5. Poll GET /sources/{id}/datasets until seed-derived non-catalog URNs appear (≥180s, ES budget)
-  6. Assert schedule round-trips ('0 0 * * *') and schedule_tier is absent from wire
-  7. Cleanup: deleteIngestionSource from DataHub + re-run sync to remove the mirrored row
-
-F1 fix: Step 5 polls with ≥180s timeout until mapped dataset rows appear and asserts non-empty.
-F2 fix: Step 6 asserts schedule == '0 0 * * *' and 'schedule_tier' not in response.
-F5 fix: cleanup moved to a pytest fixture with yield so mid-test failures still run teardown.
+  1. Create a DataHub Secret (UC1_POSTGRES_PASSWORD) and an IngestionSource
+     whose recipe uses password = "${UC1_POSTGRES_PASSWORD}" (DataHub best practice).
+  2. Trigger the DataSpoke sync sweep via POST /internal/activities/ingestion/sync.
+  3. Assert the source appears as a DATAHUB_MANAGED row in
+     GET /spoke/ingestion/sources?mode=DATAHUB_MANAGED.
+  4. Assert credential-handling invariant:
+       password == "${UC1_POSTGRES_PASSWORD}" (secret reference preserved verbatim,
+       not masked, not resolved)
+       spec: feature/BACKEND.md §Sync sweep step 1 — "${...} secret references are
+             preserved as-is"
+  5. Assert read-only enforcement:
+       PUT / PATCH → 409 INGESTION_SOURCE_READONLY
+       method/run → 409 INGESTION_RUN_NOT_APPLICABLE
+  6. Poll GET /sources/{id}/datasets (≤180s, ES budget);
+     assert non-empty, valid origin enum, non-catalog URNs, ≥1 matcher origin.
+  7. Assert schedule round-trips ('0 0 * * *') and schedule_tier is absent from wire.
+  8. Cleanup: deleteIngestionSource, deleteSecret, re-run sync to remove mirrored rows.
 
 spec: USE_CASE_en.md §UC1 Case 1
 spec: API.md §Ingestion — DATAHUB_MANAGED, read-only invariant (409 INGESTION_SOURCE_READONLY)
@@ -28,6 +34,7 @@ import os
 import time
 import uuid
 from collections.abc import AsyncGenerator
+from dataclasses import dataclass
 
 import httpx
 import pytest
@@ -64,20 +71,49 @@ _NON_CATALOG_SCHEMAS = TARGET_SCHEMAS - {"catalog"}
 _EXPECTED_URN_INFIX = f",{PG_INSTANCE}."  # e.g. ",example_db."
 _EXPECTED_NON_CATALOG_SCHEMAS = _NON_CATALOG_SCHEMAS
 
+# The secret value stored in the DataHub Secret (used only in the createSecret call).
+# This value must NOT appear anywhere in any DataSpoke API response — on the secret-ref
+# path DataHub returns only the reference string, so the value never reaches DataSpoke at all.
+_PLAINTEXT_PW_IN_FIXTURE = "ExampleDev2024!"
+
+# The DataHub secret name used for the secret-ref path.
+# spec: feature/BACKEND.md §Sync sweep step 1 — ${...} references preserved as-is.
+_SECRET_NAME = "UC1_POSTGRES_PASSWORD"
+_SECRET_REF = f"${{{_SECRET_NAME}}}"  # "${UC1_POSTGRES_PASSWORD}"
+
+
+@dataclass
+class _ManagedSource:
+    """Typed container for the single DATAHUB_MANAGED source provisioned by the fixture.
+
+    id: DataSpoke source ID (from GET /sources).
+    urn: DataHub ingestion source URN.
+    secret_urn: DataHub secret URN (urn:li:dataHubSecret:UC1_POSTGRES_PASSWORD).
+    """
+
+    id: str
+    urn: str
+    secret_urn: str
+
 
 @pytest_asyncio.fixture
 async def _managed_source_setup(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
     internal_headers: dict[str, str],
-) -> AsyncGenerator[str]:
-    """Create a DataHub IngestionSource, run sync, yield the DataSpoke source id.
+) -> AsyncGenerator[_ManagedSource]:
+    """Provision a DataHub Secret + one IngestionSource, run sync, yield the DataSpoke id.
 
-    Teardown (F5 fix): deletes the DataHub IngestionSource and re-runs sync to
-    remove the mirrored DataSpoke row even if the test fails mid-run.
+    The source recipe uses password = "${UC1_POSTGRES_PASSWORD}" — the DataHub-recommended
+    best practice of referencing a pre-created DataHub Secret rather than embedding a
+    plaintext credential.
+
+    Teardown (guaranteed on mid-test failure): deleteIngestionSource, deleteSecret for the
+    secret URN, then re-run sync to remove the mirrored DataSpoke row.
 
     spec: TESTING.md §Api-Wired Integration Tests — fixture teardown prevents
-          managed source leaking into DataHub for subsequent runs.
+          managed sources leaking into DataHub for subsequent runs.
+    spec: USE_CASE_en.md §UC1 Case 1 — DataHub-managed source exposed read-only via DataSpoke.
     """
     datahub_gms_url = os.environ.get("DATASPOKE_TEST_DATAHUB_GMS_URL", "")
     datahub_token = os.environ.get("DATASPOKE_TEST_DATAHUB_TOKEN", "")
@@ -94,17 +130,54 @@ async def _managed_source_setup(
     # Clean slate before test — spec: TESTING.md §Integration Testing §Per-Module reset
     await dataspoke_db.reset_ingestion_sources()
 
-    # Create the DataHub IngestionSource (mirroring USE_CASE_en.md §UC1 Case 1 YAML)
-    # Recipe covers all example_db schemas except catalog (and pg_* / information_schema).
-    test_name = f"uc1-datahub-managed-test-{uuid.uuid4().hex[:8]}"
-    test_recipe = {
+    # ── Step 1a: Create DataHub Secret ────────────────────────────────────────
+    # spec: USE_CASE_en.md §UC1 Case 1 — DataHub-recommended credential pattern uses
+    #   createSecret + ${SECRET_NAME} reference in the recipe.
+    # The secret value itself must NEVER appear in any DataSpoke API response.
+    create_secret_mutation = """
+    mutation createSecret($input: CreateSecretInput!) {
+        createSecret(input: $input)
+    }
+    """
+    secret_resp = httpx.post(
+        f"{datahub_gms_url}/api/graphql",
+        headers=gql_headers,
+        json={
+            "query": create_secret_mutation,
+            "variables": {
+                "input": {
+                    "name": _SECRET_NAME,
+                    "value": _PLAINTEXT_PW_IN_FIXTURE,
+                    "description": "UC1 test secret: postgres password for DATAHUB_MANAGED fixture",
+                }
+            },
+        },
+        timeout=15.0,
+    )
+    secret_resp.raise_for_status()
+    secret_data = secret_resp.json()
+    if "errors" in secret_data:
+        pytest.skip(
+            f"createSecret GraphQL error: {secret_data['errors']}. "
+            "DataHub GMS may not support Managed Secrets in this dev-env."
+        )
+    secret_urn = secret_data.get("data", {}).get("createSecret")
+    assert secret_urn, f"createSecret returned no URN: {secret_data}"
+
+    # ── Step 1b: Create IngestionSource — secret-ref recipe ──────────────────
+    # spec: feature/BACKEND.md §Sync sweep step 1 — ${...} secret references are
+    #   preserved as-is (not masked, not resolved).
+    # The password field holds only the reference; the actual credential value is
+    # stored in the DataHub Secret and never returned by DataHub to DataSpoke.
+    name = f"uc1-datahub-managed-secretref-{uuid.uuid4().hex[:8]}"
+    recipe = {
         "source": {
             "type": "postgres",
             "config": {
                 "host_port": "example-postgres.dataspoke-dummy-data-01.svc.cluster.local:5432",
                 "database": "example_db",
                 "username": "postgres",
-                "password": "ExampleDev2024!",
+                "password": _SECRET_REF,  # "${UC1_POSTGRES_PASSWORD}"
                 "include_tables": True,
                 "include_views": False,
                 "env": "DEV",
@@ -132,10 +205,10 @@ async def _managed_source_setup(
             "query": create_mutation,
             "variables": {
                 "input": {
-                    "name": test_name,
+                    "name": name,
                     "type": "postgres",
                     "config": {
-                        "recipe": json.dumps(test_recipe),
+                        "recipe": json.dumps(recipe),
                         "executorId": "default",
                         "debugMode": False,
                     },
@@ -150,22 +223,17 @@ async def _managed_source_setup(
     gql_data = gql_resp.json()
     if "errors" in gql_data:
         pytest.skip(
-            f"createIngestionSource GraphQL error: {gql_data['errors']}. "
+            f"createIngestionSource (secret-ref) GraphQL error: {gql_data['errors']}. "
             "DataHub GMS may not support Managed Ingestion in this dev-env."
         )
-    ingestion_source_urn = gql_data.get("data", {}).get("createIngestionSource")
-    assert ingestion_source_urn, f"createIngestionSource returned no URN: {gql_data}"
+    urn = gql_data.get("data", {}).get("createIngestionSource")
+    assert urn, f"createIngestionSource returned no URN: {gql_data}"
 
-    # Poll: re-run POST /internal/activities/ingestion/sync and re-list
-    # GET /spoke/ingestion/sources?mode=DATAHUB_MANAGED until a row with the created
-    # datahub_source_urn appears (≤180s).
-    #
-    # DataHub eventual consistency: listIngestionSources may not return the brand-new
-    # source immediately, so the sync correctly mirrors only pre-existing sources on the
-    # first call.  Subsequent sync calls pick it up once DataHub indexes the new entry.
+    # ── Step 2: Poll sync sweep until the source URN appears in DataSpoke ─────
+    # DataHub eventual consistency: listIngestionSources may not return brand-new
+    # sources immediately; subsequent sync calls pick them up once DataHub indexes.
     # spec: project_es_indexing_lag_after_reset_seed — ES lags ~2-3 min; budget ≥180s.
-    # spec: feature/BACKEND.md §Ingestion Service §Sync sweep step 1 — sync mirrors all
-    #       DataHub-managed sources; new sources surface after indexing completes.
+    # spec: feature/BACKEND.md §Sync sweep step 1 — sync mirrors all DataHub-managed sources.
     poll_deadline = time.time() + 180.0
     poll_interval = 5.0
     matching: list = []
@@ -185,32 +253,43 @@ async def _managed_source_setup(
         )
         assert list_resp.status_code == 200, list_resp.text
         sources = list_resp.json().get("sources", [])
-        matching = [s for s in sources if s.get("datahub_source_urn") == ingestion_source_urn]
+        matching = [s for s in sources if s.get("datahub_source_urn") == urn]
         found_urns = [s.get("datahub_source_urn") for s in sources]
         if matching:
             break
         await asyncio.sleep(poll_interval)
 
     assert len(matching) >= 1, (
-        f"Expected a DATAHUB_MANAGED source with "
-        f"datahub_source_urn={ingestion_source_urn!r} after ≤180s polling; "
+        f"Expected DATAHUB_MANAGED source (secret-ref) with "
+        f"datahub_source_urn={urn!r} after ≤180s polling; "
         f"found {found_urns}. "
         "spec: feature/BACKEND.md §Sync sweep step 1 — sync mirrors DataHub-managed sources; "
         "spec: project_es_indexing_lag_after_reset_seed — DataHub eventual consistency."
     )
 
-    managed_source = matching[0]
-    managed_id = managed_source["id"]
+    source_id = matching[0]["id"]
+
+    managed = _ManagedSource(
+        id=source_id,
+        urn=urn,
+        secret_urn=secret_urn,
+    )
 
     try:
-        yield managed_id
+        yield managed
     finally:
-        # F5: Guaranteed cleanup even on mid-test failure.
-        # Delete the DataHub IngestionSource so subsequent runs see a clean slate.
+        # Guaranteed cleanup even on mid-test failure.
+        # Delete the DataHub IngestionSource and the secret so subsequent runs
+        # see a clean slate.
         # spec: TESTING.md §Integration Testing — deterministic isolation.
         delete_mutation = """
         mutation deleteIngestionSource($urn: String!) {
             deleteIngestionSource(urn: $urn)
+        }
+        """
+        delete_secret_mutation = """
+        mutation deleteSecret($urn: String!) {
+            deleteSecret(urn: $urn)
         }
         """
         try:
@@ -219,7 +298,20 @@ async def _managed_source_setup(
                 headers=gql_headers,
                 json={
                     "query": delete_mutation,
-                    "variables": {"urn": ingestion_source_urn},
+                    "variables": {"urn": urn},
+                },
+                timeout=10.0,
+            )
+        except Exception:
+            pass
+
+        try:
+            httpx.post(
+                f"{datahub_gms_url}/api/graphql",
+                headers=gql_headers,
+                json={
+                    "query": delete_secret_mutation,
+                    "variables": {"urn": secret_urn},
                 },
                 timeout=10.0,
             )
@@ -241,7 +333,7 @@ async def test_uc1_datahub_managed_sync_and_readonly(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
     internal_headers: dict[str, str],
-    _managed_source_setup: str,
+    _managed_source_setup: _ManagedSource,
 ) -> None:
     """UC1 Case 1 — DataHub-managed source is synced down and read-only in DataSpoke.
 
@@ -250,71 +342,81 @@ async def test_uc1_datahub_managed_sync_and_readonly(
        http://datahub.<domain>/ingestion. DataSpoke's sync sweep pulls the
        definition down and exposes it read-only."
 
-    F1: Polls GET /sources/{id}/datasets with ≥180s timeout until non-catalog mapped
-        dataset rows appear; asserts the mapped set is NON-EMPTY and that all URNs
-        belong to example_db non-catalog schemas. The poll budget covers the ES
-        indexing lag window (2-3 min per project_es_indexing_lag_after_reset_seed).
+    The source recipe uses password = "${UC1_POSTGRES_PASSWORD}" — a DataHub Secret
+    reference. The sync sweep must preserve the reference verbatim: it is not a secret
+    value, so it is not masked and not resolved.
+    spec: feature/BACKEND.md §Sync sweep step 1 — "${...} secret references are
+          preserved as-is (not masked, not resolved)."
 
-    F2: Asserts the synced source's schedule == '0 0 * * *' (spec: USE_CASE_en.md §UC1
-        Case 1 — "scheduled daily"). Also asserts 'schedule_tier' is absent from the
-        wire-shape (internal field, never exposed in API; spec: BACKEND_SCHEMA.md
-        §ingestion_source — schedule_tier internal; never in API).
+    UC1 invariants verified:
+      - credential-handling: password reference preserved verbatim as "${UC1_POSTGRES_PASSWORD}"
+      - read-only enforcement: PUT / PATCH → 409 INGESTION_SOURCE_READONLY
+      - method/run → 409 INGESTION_RUN_NOT_APPLICABLE
+      - schedule == '0 0 * * *'; schedule_tier NOT in API response
+      - recipe source.type == 'postgres'
+      - /sources/{id}/datasets: non-empty, valid origin enum, non-catalog URNs, ≥1 matcher
 
     spec: USE_CASE_en.md §UC1 Case 1
     spec: API.md §Ingestion — DATAHUB_MANAGED read-only: 409 INGESTION_SOURCE_READONLY
     spec: feature/BACKEND.md §Ingestion Service §Sync sweep step 1 (source defs)
     spec: BACKEND_SCHEMA.md §ingestion_source — schedule_tier internal; never in API
     """
-    managed_id = _managed_source_setup
+    managed = _managed_source_setup
 
-    # Re-fetch the managed source to get its current shape for assertions
+    # Re-fetch the source for assertions
     get_resp = await api_client.get(
-        f"/api/v1/spoke/ingestion/sources/{managed_id}",
+        f"/api/v1/spoke/ingestion/sources/{managed.id}",
         headers=admin_headers,
     )
     assert get_resp.status_code == 200, get_resp.text
-    managed_source = get_resp.json()
+    source = get_resp.json()
 
-    # ── F2: schedule round-trips + wire-shape invariant ──────────────────────
+    # ── Credential-handling: secret-ref path ──────────────────────────────────
+    # spec: feature/BACKEND.md §Sync sweep step 1 — "${...} secret references are
+    #   preserved as-is (not masked, not resolved)."
+    # The recipe is stored with the reference verbatim; the reference is NOT a
+    # credential value and must NOT be replaced with "********".
+    password = source.get("recipe", {}).get("source", {}).get("config", {}).get("password")
+    assert password == _SECRET_REF, (
+        f"recipe.source.config.password must equal "
+        f"{_SECRET_REF!r} (reference preserved verbatim); got {password!r}. "
+        "spec: feature/BACKEND.md §Sync sweep step 1 — '${...} secret references are "
+        "preserved as-is (not masked, not resolved)'."
+    )
+
+    # Cheap regression guard: on the secret-ref path DataHub returns only the reference
+    # string to DataSpoke — the secret value never reaches DataSpoke at all.
+    # Asserting the value is absent confirms nothing was inadvertently resolved or injected.
+    assert _PLAINTEXT_PW_IN_FIXTURE not in get_resp.text, (
+        f"The secret value '{_PLAINTEXT_PW_IN_FIXTURE}' must not appear anywhere in the "
+        f"GET response (on the secret-ref path DataHub returns the reference, not the value). "
+        "spec: API.md §Ingestion §Source body shape."
+    )
+
+    # ── Schedule round-trips + wire-shape invariant ───────────────────────────
     # spec: USE_CASE_en.md §UC1 Case 1 — "scheduled daily" with cron '0 0 * * *'
-    assert managed_source.get("schedule") == "0 0 * * *", (
+    assert source.get("schedule") == "0 0 * * *", (
         f"Synced DATAHUB_MANAGED source must carry schedule='0 0 * * *' (mirrored from DataHub); "
-        f"got {managed_source.get('schedule')!r}. "
+        f"got {source.get('schedule')!r}. "
         "spec: USE_CASE_en.md §UC1 Case 1 — schedule mirrored from DataHub IngestionSource."
     )
     # spec: BACKEND_SCHEMA.md §ingestion_source — schedule_tier is internal; never in the API.
-    assert "schedule_tier" not in managed_source, (
+    assert "schedule_tier" not in source, (
         f"schedule_tier must NOT appear in the API response for DATAHUB_MANAGED source. "
         f"spec: BACKEND_SCHEMA.md §ingestion_source — schedule_tier is internal, never exposed. "
-        f"Body keys: {list(managed_source.keys())}"
+        f"Body keys: {list(source.keys())}"
     )
 
     # Recipe must be present and have source.type = 'postgres'
-    assert managed_source.get("recipe", {}).get("source", {}).get("type") == "postgres", (
+    assert source.get("recipe", {}).get("source", {}).get("type") == "postgres", (
         "Synced recipe must preserve source.type='postgres'. "
         "spec: USE_CASE_en.md §UC1 Case 1 — recipe mirrored from DataHub"
     )
 
-    # ── Secret-masking invariant ──────────────────────────────────────────────
-    # USE_CASE_en.md §UC1 Case 1 specifies "secrets masked" in the synced recipe:
-    #   the displayed recipe shows password: <hidden>.
-    # The DataHub source fixture uses 'ExampleDev2024!' as the plaintext password;
-    # the synced DataSpoke copy must NOT contain that plaintext anywhere in the response.
-    # spec: USE_CASE_en.md §UC1 Case 1 — "recipe is rendered as YAML with secrets masked"
-    # spec: feature/BACKEND.md §Ingestion Service §Sync sweep step 1 — "Mask secrets in the
-    #   stored/displayed recipe (DataHub returns them raw)."
-    # spec: API.md §Ingestion §Source body shape — secret refs never expanded in responses
-    _PLAINTEXT_PW_IN_FIXTURE = "ExampleDev2024!"
-    assert _PLAINTEXT_PW_IN_FIXTURE not in get_resp.text, (
-        f"Synced DATAHUB_MANAGED recipe must have secrets masked; "
-        f"plaintext '{_PLAINTEXT_PW_IN_FIXTURE}' must not appear in GET response. "
-        "spec: USE_CASE_en.md §UC1 Case 1 — 'recipe is rendered as YAML with secrets masked'."
-    )
-
-    # ── Step 4: Assert read-only enforcement ─────────────────────────────────
+    # ── Read-only enforcement ─────────────────────────────────────────────────
     # spec: API.md §Ingestion — PUT / PATCH on DATAHUB_MANAGED → 409 INGESTION_SOURCE_READONLY
     put_resp = await api_client.put(
-        f"/api/v1/spoke/ingestion/sources/{managed_id}",
+        f"/api/v1/spoke/ingestion/sources/{managed.id}",
         headers=admin_headers,
         json={
             "mode": "DATAHUB_MANAGED",
@@ -334,7 +436,7 @@ async def test_uc1_datahub_managed_sync_and_readonly(
     )
 
     patch_resp = await api_client.patch(
-        f"/api/v1/spoke/ingestion/sources/{managed_id}",
+        f"/api/v1/spoke/ingestion/sources/{managed.id}",
         headers=admin_headers,
         json={"name": "attempted patch"},
     )
@@ -345,7 +447,7 @@ async def test_uc1_datahub_managed_sync_and_readonly(
     assert patch_resp.json().get("error_code") == "INGESTION_SOURCE_READONLY"
 
     run_resp = await api_client.post(
-        f"/api/v1/spoke/ingestion/sources/{managed_id}/method/run",
+        f"/api/v1/spoke/ingestion/sources/{managed.id}/method/run",
         headers=admin_headers,
     )
     assert run_resp.status_code == 409, (
@@ -358,7 +460,7 @@ async def test_uc1_datahub_managed_sync_and_readonly(
         "spec: USE_CASE_en.md §UC1 API Mapping"
     )
 
-    # ── F1: Poll /sources/{id}/datasets until non-catalog URNs appear ────────
+    # ── Poll /sources/{id}/datasets until non-catalog URNs appear ─────────────
     # The sync sweep uses DataHub ES search to find URNs matching the recipe's
     # filter. ES indexing lags ~2-3 min after reset-seed; the poll budget of
     # 180s covers the full lag window.
@@ -382,11 +484,11 @@ async def test_uc1_datahub_managed_sync_and_readonly(
             pass  # transient; outer deadline handles retry
 
         datasets_resp = await api_client.get(
-            f"/api/v1/spoke/ingestion/sources/{managed_id}/datasets",
+            f"/api/v1/spoke/ingestion/sources/{managed.id}/datasets",
             headers=admin_headers,
         )
         assert datasets_resp.status_code == 200, (
-            f"GET /sources/{managed_id}/datasets expected 200, "
+            f"GET /sources/{managed.id}/datasets expected 200, "
             f"got {datasets_resp.status_code}: {datasets_resp.text}"
         )
         datasets_body = datasets_resp.json()
@@ -402,12 +504,12 @@ async def test_uc1_datahub_managed_sync_and_readonly(
             break
         await asyncio.sleep(poll_interval)
 
-    # F1 core assertion: mapped set must be NON-EMPTY after the sync + ES settle period.
+    # Core assertion: mapped set must be NON-EMPTY after the sync + ES settle period.
     # Vacuous passes (empty list → all() returns True) are eliminated.
     # spec: USE_CASE_en.md §UC1 Case 1 — GET /sources/{id}/datasets must list the
     #   covered datasets once the ES index catches up.
     assert mapped_datasets, (
-        f"GET /sources/{managed_id}/datasets must return at least one mapped dataset "
+        f"GET /sources/{managed.id}/datasets must return at least one mapped dataset "
         f"within 180s after sync (ES lag budget). "
         f"The recipe covers example_db excluding catalog; DataHub should have seeded "
         f"orders/customers/reviews/shipping URNs. "

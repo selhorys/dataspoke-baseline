@@ -20,6 +20,15 @@ set +a
 
 BASE="http://api.${DATASPOKE_KUBE_INGRESS_DOMAIN}"
 
+# Ensure the bootstrap admin user exists (reset-seed wipes it) — mirrors
+# tests/integration/api_wired/conftest.py require_server. Best-effort: token
+# login below surfaces real failures.
+if [[ -n "${DATASPOKE_TEST_INTERNAL_TOKEN:-}" ]]; then
+  curl -sS -o /dev/null -X POST "${BASE}/internal/admin/bootstrap" \
+    -H "X-Internal-Token: ${DATASPOKE_TEST_INTERNAL_TOKEN}" \
+    -H "Content-Type: application/json" -d '{}' || true
+fi
+
 ADMIN_TOKEN=$(curl -sS -X POST "${BASE}/api/v1/auth/token" \
   -H "Content-Type: application/json" \
   -d '{"email":"dataspoke@dataspoke.local","password":"dataspoke"}' \

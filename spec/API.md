@@ -275,7 +275,7 @@ and [DATAHUB_INTEGRATION §Ingestion Source Sync](DATAHUB_INTEGRATION.md#ingesti
 |--------|------|---------|---------|-----|
 | `GET` | `/spoke/ingestion/sources` | List ingestion sources (paginated; filter by `mode`) | Ingestion Control | UC1 |
 | `POST` | `/spoke/ingestion/sources` | Create a source (`ACTIVE_CUSTOM_MANAGED` or `PASSIVE` only; `DATAHUB_MANAGED` is synced, not created) | Ingestion Control | UC1 |
-| `GET` | `/spoke/ingestion/sources/{id}` | Get one source as JSON (recipe `${name__key}` secrets masked) | Ingestion Control | UC1 |
+| `GET` | `/spoke/ingestion/sources/{id}` | Get one source as JSON (recipe `${name__key}` references returned as-is; any plaintext secret value masked) | Ingestion Control | UC1 |
 | `PUT` | `/spoke/ingestion/sources/{id}` | Replace a source; `409 INGESTION_SOURCE_READONLY` for `DATAHUB_MANAGED` | Ingestion Control | UC1 |
 | `PATCH` | `/spoke/ingestion/sources/{id}` | Partially update a source; `409 INGESTION_SOURCE_READONLY` for `DATAHUB_MANAGED` | Ingestion Control | UC1 |
 | `DELETE` | `/spoke/ingestion/sources/{id}` | Remove a source (+ cascade its dataset mappings); `409 INGESTION_SOURCE_READONLY` for `DATAHUB_MANAGED` | Ingestion Control | UC1 |
@@ -306,7 +306,8 @@ other. A `GET` response (and `POST`/`PUT`/`PATCH` body) carries:
 
 Responses additionally include read-only management fields outside the recipe-standard set:
 `id`, `status`, `created_at`, `updated_at`, and `datahub_source_urn` (for `DATAHUB_MANAGED`).
-On `GET`, every `${name__key}` reference inside `recipe` is **masked**. There is no
+On `GET`, `${name__key}` references inside `recipe` are returned as-is — they are pointers to
+K8s Secrets, not secret values; any plaintext secret value is **masked**. There is no
 `schedule_tier`/`schedule_cron`/`is_enabled` on the wire — the tier is derived server-side from
 `schedule`, and `schedule: null` is the manual-only ("paused") state. See
 [`USE_CASE_en.md §UC1`](USE_CASE_en.md#uc1-ingestion-control) for the YAML form of each mode.
