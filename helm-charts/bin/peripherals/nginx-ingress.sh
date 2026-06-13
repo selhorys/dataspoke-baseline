@@ -61,6 +61,18 @@ helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
   --timeout 5m
 
 # ---------------------------------------------------------------------------
+# Wait for the controller Deployment to roll out.
+#
+# On GKE Autopilot the cluster scales from 0 nodes, so the controller pod and
+# its backing node can take a few minutes to come up. Block on the rollout
+# condition (not a fixed sleep) before polling for the LoadBalancer IP, which
+# GCP only assigns once the controller has a schedulable node.
+# ---------------------------------------------------------------------------
+info "Waiting for ingress-nginx-controller rollout (up to 5m)..."
+kubectl rollout status deployment/ingress-nginx-controller \
+  -n "${NS}" --timeout=5m
+
+# ---------------------------------------------------------------------------
 # Wait for LoadBalancer external IP (poll up to 120s)
 # ---------------------------------------------------------------------------
 info "Waiting for LoadBalancer external IP (up to 120s)..."

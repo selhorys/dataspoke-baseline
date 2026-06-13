@@ -15,6 +15,12 @@ controller:
     limits:
       cpu: 500m
       memory: 256Mi
+  # GKE Autopilot scales from 0 nodes, so the admission webhook's pre-install
+  # hook Job cannot schedule before Helm's hook-wait times out. The webhook is
+  # optional Ingress validation we don't need in dev — disabling it removes the
+  # admission-create/patch hook Jobs that block install.
+  admissionWebhooks:
+    enabled: false
 
 # TCP services — maps LoadBalancer ports to in-cluster services.
 # The ingress-nginx chart creates a ConfigMap called "tcp-services" from
