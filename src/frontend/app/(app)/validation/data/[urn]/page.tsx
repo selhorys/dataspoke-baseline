@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useState } from "react";
+import { use, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
@@ -98,8 +98,11 @@ export default function ValidationDetailPage({
   const [rangeLabel, setRangeLabel] = useState<RangeLabel>("30d");
 
   const rangeDays = RANGE_OPTIONS.find((r) => r.label === rangeLabel)?.days ?? 30;
-  // from is recomputed each render; no upper bound — open-ended (backend defaults to now).
-  const from = daysAgoIso(rangeDays);
+  // from feeds the results query key; memoize on rangeDays so the key only
+  // changes when the selected range changes — not on every render. Recomputing
+  // daysAgoIso() inline would change the ISO ms each render, churning the query
+  // key and forcing an infinite refetch loop. No upper bound (backend defaults to now).
+  const from = useMemo(() => daysAgoIso(rangeDays), [rangeDays]);
 
   // ── Queries ──────────────────────────────────────────────────────────────────
   const {

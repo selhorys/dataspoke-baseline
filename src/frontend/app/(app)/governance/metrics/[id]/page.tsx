@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useState } from "react";
+import { use, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, Play, Trash2 } from "lucide-react";
@@ -72,8 +72,10 @@ export default function MetricDetailPage({
   const [rangeLabel, setRangeLabel] = useState<RangeLabel>("30d");
 
   const rangeDays = RANGE_OPTIONS.find((r) => r.label === rangeLabel)?.days ?? 30;
-  // `from` is recomputed each render; no `to` — open-ended (backend defaults to now).
-  const from = daysAgoIso(rangeDays);
+  // `from` feeds the results query key; memoize on rangeDays so the key only
+  // changes when the selected range changes — not on every render. No `to` —
+  // open-ended (backend defaults to now).
+  const from = useMemo(() => daysAgoIso(rangeDays), [rangeDays]);
 
   // ── Queries ────────────────────────────────────────────────────────────────
   const { data: conf, isLoading: confLoading, error: confError } = useMetricConf(metricId);

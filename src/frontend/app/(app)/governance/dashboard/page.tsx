@@ -1,5 +1,6 @@
 "use client";
 
+import { useMemo } from "react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ErrorState } from "@/components/ui/error-state";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -19,8 +20,11 @@ function daysAgoIso(days: number): string {
 // ── Per-metric timeseries chart (one per enabled metric) ──────────────────────
 
 function MetricChart({ metric }: { metric: MetricDefinition }) {
-  // `from` is recomputed on each render/poll tick; no `to` — open-ended (backend defaults to now).
-  const from = daysAgoIso(30);
+  // `from` feeds the results query key; memoize so the key stays stable across
+  // renders/poll ticks. Recomputing daysAgoIso(30) inline changes the ISO ms each
+  // render, churning the key and forcing an infinite refetch loop. The window is a
+  // fixed 30 d, so an empty dep list is correct. No `to` — open-ended (backend defaults to now).
+  const from = useMemo(() => daysAgoIso(30), []);
   const { data } = useMetricResults(metric.id, { from, limit: 100 });
 
   return (
