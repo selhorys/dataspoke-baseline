@@ -1,5 +1,5 @@
 ---
-name: test-api-wired-manual
+name: test-manual-api-wired
 description: |
   Walk a single api-wired UC scenario manually: read the
   source test file, print each REST request, ask for approval, fire it, print
@@ -59,7 +59,7 @@ For UC4 scenarios: after reset-seed, run `uv run python -m tests.integration.uti
 
 Bootstrap env:
 ```bash
-bash .claude/skills/test-api-wired-manual/helpers/setup_env.sh
+bash .claude/skills/test-manual-api-wired/helpers/setup_env.sh
 ```
 Writes `/tmp/_manual_test_env` with `BASE`, `ADMIN_TOKEN`, `GMS`, `GMS_TOKEN`,
 `INTERNAL_TOKEN`, `PG_HOST/PORT/DB/USER/PASSWORD`. Source via
@@ -113,7 +113,7 @@ For each extracted step:
    JSON). Never truncate. The request block from step 1 and this response block
    are the canonical artifacts the user reviews to approve the step.
 5. **401 retry**: if HTTP 401 with `error_code=UNAUTHORIZED`, run
-   `bash .claude/skills/test-api-wired-manual/helpers/refresh_token.sh`,
+   `bash .claude/skills/test-manual-api-wired/helpers/refresh_token.sh`,
    then re-fire once. If still 401, abort with diagnostics.
 6. **Side-effect probes**: invoke `helpers/probes.py` (see §Probe selection).
 7. **Result line**: ✓ pass / ✗ fail / ⚠ warn (with one-line reason).
@@ -126,34 +126,52 @@ Honor user choice if they say "skip cleanup" — leave state for inspection
 
 ### 7. Summary
 
-Concise table:
+Concise table (illustrating UC1 Case 2 — `test_uc1_active_custom_postgres.py`):
 ```
-| step | op                          | http | side-effect | result |
-|------|-----------------------------|------|-------------|--------|
-| 1    | PUT active-custom conf      | 201  | DB+secret ✓ | ✓      |
-| 2    | dry-run while disabled      | 200  | no DH write | ✓      |
-| 3    | real-run while disabled     | 409  | no events   | ✓      |
-...
+| step | op                          | http | side-effect                          | result |
+|------|-----------------------------|------|--------------------------------------|--------|
+| 1    | POST active-custom source   | 201  | ingestion_source +1; k8s secret read | ✓      |
+| 2    | dry-run                     | 200  | emitted_urns_count=0, no DH write    | ✓      |
+| 3    | real run                    | 200  | ≥2 datasetProperties emitted         | ✓      |
+| 4    | datasets mapping            | 200  | ingestion_source_dataset origin=emit | ✓      |
+| 5    | reverse-lookup              | 200  | source_id matches                    | ✓      |
+| 6    | delete source               | 204  | ingestion_source row gone            | ✓      |
 ```
 Then a one-paragraph narrative of what the run proved.
 
 ## Probe selection
 
-Pick probes based on the route + method, not from a hardcoded map:
+Pick probes based on the route + method, not from a hardcoded map. `db_row
+<table> <urn>` works only for `dataset_urn`-keyed tables (`ingestion_source_dataset`,
+`dataset_registry`, `validation_configs`, `validation_results`, `metagen_boundary`,
+`metagen_items`, `metagen_candidates`); for tables keyed by `id`/`metric_id`/singleton
+(`ingestion_source`, `metagen_config`, `metric_definitions`, `metric_results`,
+`ontogen_config`, `ontogen_seeds`, `ontogen_{nodes,edges,triples}`) use
+`db_count <table> [where_sql]`. Global event feeds (`/spoke/{ontogen,metagen}/event`)
+are not URN-keyed — confirm those via the REST `…/event` read-back, not `events_window`.
 
 | Test code pattern | Probes (via helpers/probes.py) |
 |---|---|
-| `PUT/PATCH .../attr/ingestion/conf` | `db_row ingestion_configs <urn>`, `k8s_secret <name>` if conf carries `secret_ref` |
-| `DELETE .../attr/ingestion/conf` | `db_row` (expect 0), `gms_aspect <urn> status` (expect retained), `k8s_secret` (expect retained — vault is independent) |
-| `POST .../method/ingestion/run` w/ `dry_run:true` | assert no `lastIngested` change |
-| `POST .../method/ingestion/run` w/ `dry_run:false`, expected 200 | `gms_aspect <urn> datasetProperties`, `gms_aspect <urn> schemaMetadata`, `gms_lastingested <urn>`, `gms_systemmetadata <urn> schemaMetadata` |
-| `POST .../method/ingestion/run` expected 4xx | `events_by_run_id <urn> <ts_window>` (expect empty) |
-| `POST /internal/activities/ingestion/passive-sync` | `events_passive_count <urn>` (expect growth from snapshot) |
-| `POST /internal/activities/ingestion/datahub-sync` | `db_row dataset_registry <urn>` |
-| `PUT/PATCH .../attr/validation/conf` | `db_row validation_configs <urn>`, `gms_aspect <assertion_urn> assertionInfo`, `gms_aspect <assertion_urn> status` (cleared on PUT-after-DELETE resurrect) |
-| `DELETE .../attr/validation/conf` | `db_row validation_configs <urn>` `is_removed=true`, `gms_aspect <assertion_urn> status.removed=true` |
-| `POST .../attr/validation/result` | `db_row validation_results <urn> <data_time>`, `gms_assertion_run_event <assertion_urn> timestampMillis=data_time` |
-| `PUT/PATCH .../attr/metagen/conf` | `db_row metagen_configs <urn>` |
+| `POST /spoke/ingestion/sources` (create) | `db_count ingestion_source`, `k8s_secret <name>` when the recipe carries a `${name__key}` ref |
+| `PUT/PATCH /spoke/ingestion/sources/{id}` | `db_count ingestion_source` (updated in place); on `DATAHUB_MANAGED` expect `409 INGESTION_SOURCE_READONLY` instead |
+| `DELETE /spoke/ingestion/sources/{id}` | `db_count ingestion_source` (row gone); emitted DataHub aspects retained |
+| `POST /spoke/ingestion/sources/{id}/method/run?dry_run=true` | `gms_lastingested <dataset_urn>` unchanged (no emission); `detail.emitted_urns_count == 0` |
+| `POST /spoke/ingestion/sources/{id}/method/run` (real, 200) | `gms_aspect <dataset_urn> datasetProperties`, `gms_aspect <dataset_urn> schemaMetadata`, `gms_lastingested <dataset_urn>`, `gms_systemmetadata <dataset_urn> schemaMetadata`, `db_row ingestion_source_dataset <dataset_urn>` (`origin='emitted'`) |
+| `POST /spoke/ingestion/sources/{id}/method/run` (4xx — `DATAHUB_MANAGED`/`PASSIVE`) | `events_window <dataset_urn> <since_iso> INGESTION` (expect none for this run) |
+| `POST /internal/activities/ingestion/sync` | `db_row dataset_registry <dataset_urn>`; matcher mappings via `db_row ingestion_source_dataset <dataset_urn>` (`origin='matcher'`); passive sources via `events_passive_count <dataset_urn>` |
+| `PUT/PATCH /spoke/common/data/{urn}/attr/validation/conf` | `db_row validation_configs <urn>`, `gms_aspect <assertion_urn> assertionInfo`, `gms_aspect <assertion_urn> status` (status cleared on PUT-after-DELETE resurrect) |
+| `DELETE /spoke/common/data/{urn}/attr/validation/conf` | `db_row validation_configs <urn>` `is_removed=true`, `gms_aspect <assertion_urn> status` `removed=true` |
+| `POST /spoke/common/data/{urn}/attr/validation/result` | `db_row validation_results <urn>` (latest row); the assertionRunEvent timeseries has no direct probe — confirm via the `GET .../attr/validation/result` read-back |
+| `PUT/PATCH/DELETE /spoke/metagen/attr/conf` (global singleton) | `db_count metagen_config` |
+| `PUT/PATCH/DELETE /spoke/common/data/{urn}/attr/metagen/conf` (per-dataset boundary) | `db_row metagen_boundary <urn>` |
+| `POST /spoke/metagen/method/run` | `db_row metagen_items <urn>` (candidates staged); RUN_COMPLETE via `GET /spoke/metagen/event` read-back |
+| `POST /spoke/common/data/{urn}/attr/metagen/item/{item_id}/candidate/{cid}/method/review` | `db_row metagen_candidates <urn>` (status `approved`/`rejected`); approve writes `gms_aspect <urn> editableDatasetProperties` or `editableSchemaMetadata`; `events_window <urn> <since_iso> METAGEN` (per-dataset `…/event/metagen` carries CANDIDATE_APPROVE/REJECT) |
+| `PUT/PATCH/DELETE /spoke/ontogen/attr/conf` | `db_count ontogen_config` |
+| `POST /spoke/ontogen/attr/seed` | `db_count ontogen_seeds` |
+| `POST /spoke/ontogen/method/run` | `db_count ontogen_nodes` / `ontogen_edges` / `ontogen_triples`; RUN_COMPLETE via `GET /spoke/ontogen/event` read-back |
+| `POST /spoke/ontogen/result/{node\|edge\|triple}/{id}/method/review` | `db_count` on the matching `ontogen_{nodes,edges,triples}` table for the new `status` |
+| `POST /spoke/governance/metric` (create) / `PUT .../{id}/attr/conf` | `db_count metric_definitions` |
+| `POST /spoke/governance/metric/{id}/method/run` | `db_count metric_results`; confirm via `GET .../{id}/attr/result` read-back |
 | any GraphQL mutation against `${GMS}` | parse mutation name → describe expected entity URN side-effect |
 
 If no rule matches, report "no automatic probe — verify manually" and continue.
@@ -182,7 +200,7 @@ Do NOT mask transient failures by bumping timeouts (`feedback_no_increase_timeou
 - `helpers/setup_env.sh` — bootstrap env + admin JWT into `/tmp/_manual_test_env`.
 - `helpers/refresh_token.sh` — re-issue admin JWT, replace in `/tmp/_manual_test_env`.
 - `helpers/probes.py` — DB / GMS / k8s side-effect probes. Run as
-  `python3 .claude/skills/test-api-wired-manual/helpers/probes.py <probe> <args>`.
+  `python3 .claude/skills/test-manual-api-wired/helpers/probes.py <probe> <args>`.
 
 Run `python3 helpers/probes.py --list` to see current probes.
 
@@ -193,9 +211,8 @@ Run `python3 helpers/probes.py --list` to see current probes.
   the skill changes with it.
 - **Pause before every mutation.** Default to per-call approval. Read-only
   probes don't pause.
-- **Operation-framed previews.** "PUT active-custom conf for title_master"
-  beats "PUT /spoke/common/data/.../attr/ingestion/conf" (per
-  `feedback_naming_operation_framed`).
+- **Operation-framed previews.** "create active-custom source for catalog schema"
+  beats "POST /spoke/ingestion/sources" (per `feedback_naming_operation_framed`).
 - **Use `-d @file` curl, not inline `-d '{...}'`.** Shell quoting JSON inline
   is a trap.
 - **JWT TTL is short.** Refresh proactively on 401, don't propagate the error.

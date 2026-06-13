@@ -295,7 +295,7 @@ testing and verifying features before writing automated tests.
 
 > For a guided harness that walks an existing api-wired test scenario step-by-step (extracts
 > requests from the test file, pauses for approval before each mutation, probes side effects),
-> use the `/test-api-wired-manual` skill.
+> use the `/test-manual-api-wired` skill.
 
 ### Setup
 

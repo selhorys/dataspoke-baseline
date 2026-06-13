@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Side-effect probes for test-api-wired-manual.
+"""Side-effect probes for test-manual-api-wired.
 
 Reads /tmp/_manual_test_env, runs one probe, prints findings as JSON to stdout.
 Exits non-zero only on infra failure (DB unreachable, GMS down, etc.) — never

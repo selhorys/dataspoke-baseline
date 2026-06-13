@@ -115,7 +115,7 @@ env -u CLAUDECODE bash -x .prauto/heartbeat.sh
 
 ## Claude Code Configuration
 
-**Skills**: `k8s-work`, `spec-write`, `datahub-api`, `prauto-check-status`, `prauto-run-heartbeat`, `k8s-deploy`, `ref-setup`, `spec-sync-with-impl`, `spec-harmonize`, `spec-reduce`, `spec-to-bulk-issue`, `test-api-wired-manual`
+**Skills**: `k8s-work`, `spec-write`, `datahub-api`, `prauto-check-status`, `prauto-run-heartbeat`, `k8s-deploy`, `ref-setup`, `spec-sync-with-impl`, `spec-harmonize`, `spec-reduce`, `spec-to-bulk-issue`, `test-manual-api-wired`, `test-manual-ui` (browser-driven sibling — manual UC walkthrough with UI+backend dual confirmation)
 _(Note: `datahub-api` requires `ref/github/datahub/` — run `/ref-setup` once if not present.)_
 **Subagents**: `reviewer` (evaluator, opus), `test-reviewer` (evaluator, opus), `security-reviewer` (evaluator, opus), `backend`, `airflow-dag`, `test`, `frontend`, `k8s-helm`. Evaluators keep persistent cross-session memory in `.claude/agent-memory/<name>/` (checked in).
 **Workflows**: dynamic workflow scripts written per task — agent fleets composed from the `.claude/agents/` sub-agent definitions with adversarial generator → reviewer pairing. `.claude/workflows/wf-minimal.js` is the simplest checked-in example (§Implementation Workflow steps 4–8; also runnable as `/wf-minimal`); the default driver remains direct Agent calls.
