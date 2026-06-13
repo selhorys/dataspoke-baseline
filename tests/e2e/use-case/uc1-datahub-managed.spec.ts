@@ -30,7 +30,13 @@
  */
 
 import { test, expect } from "../fixtures/index";
-import { apiBaseUrl } from "../fixtures/env";
+import { apiBaseUrl, loadDotenv } from "../fixtures/env";
+
+// Ensure helm-charts/.env is loaded before reading GMS env at module scope —
+// this module is evaluated at collection time, before the config's loadDotenv
+// is guaranteed to have run in this process. loadDotenv is idempotent and never
+// overwrites already-set vars.
+loadDotenv();
 
 // ── Constants (verbatim from api-wired test) ────────────────────────────────
 
@@ -45,15 +51,20 @@ const SCHEDULE_CRON = "0 0 * * *";
 // storageState. Do not override storageState here (a relative path would resolve
 // against the playwright cwd and break context creation).
 
-// ── Skip-guard: requires a reachable DataHub GMS ─────────────────────────
-// spec: test_uc1_datahub_managed.py fixture — skips when DATASPOKE_TEST_DATAHUB_GMS_URL absent.
-
 const GMS_URL = process.env["DATASPOKE_TEST_DATAHUB_GMS_URL"] ?? "";
 const GMS_TOKEN = process.env["DATASPOKE_TEST_DATAHUB_TOKEN"] ?? "";
 
-if (!GMS_URL) {
-  test.skip(true, "DATASPOKE_TEST_DATAHUB_GMS_URL not set; skipping DATAHUB_MANAGED UC1 E2E test.");
-}
+// Skip-guard at runtime (not module top level, where a conditional test.skip is
+// fragile): only skip when DataHub GMS is genuinely unconfigured. GMS is part of
+// the dev stack, so normally these tests run.
+// spec: test_uc1_datahub_managed.py fixture — skips when GMS URL absent.
+test.beforeEach(() => {
+  test.skip(!GMS_URL, "DATASPOKE_TEST_DATAHUB_GMS_URL not set; DATAHUB_MANAGED UC1 requires DataHub GMS.");
+});
+
+// Deterministic DataHub Secret URN (name-keyed) — used to clear leftovers so the
+// seed is idempotent across runs.
+const SECRET_DH_URN = `urn:li:dataHubSecret:${SECRET_NAME}`;
 
 // ── Per-test state ────────────────────────────────────────────────────────
 
@@ -115,6 +126,13 @@ test.afterAll(async ({ adminApi }) => {
 // spec: test_uc1_datahub_managed.py _managed_source_setup — createSecret + createIngestionSource
 // ─────────────────────────────────────────────────────────────────────────────
 test("UC1 Case 1 step 1 — seed DataHub Secret + IngestionSource", async () => {
+  // Idempotency: clear any leftover secret from a prior run (createSecret errors
+  // with "This Secret already exists!" otherwise). Ignore errors when absent.
+  await gqlMutate(
+    `mutation deleteSecret($urn: String!) { deleteSecret(urn: $urn) }`,
+    { urn: SECRET_DH_URN }
+  ).catch(() => {});
+
   // Create DataHub Secret
   const secretResult = await gqlMutate(
     `mutation createSecret($input: CreateSecretInput!) { createSecret(input: $input) }`,
@@ -260,8 +278,11 @@ test("UC1 Case 1 step 3 — /ingestion list shows DATAHUB_MANAGED row with read-
 
   // -- UI assertion: a row with mode "DataHub-managed" and "read-only" badge visible --
   // spec: FRONTEND_INGESTION.md §List View — DATAHUB_MANAGED rows: mode badge + "read-only" badge
-  await expect(page.getByText("DataHub-managed")).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByText("read-only")).toBeVisible({ timeout: 10_000 });
+  // Multiple DATAHUB_MANAGED rows may exist (pre-existing + seeded); assert at
+  // least one mode badge + read-only badge. The backend probe below verifies the
+  // specific seeded source.
+  await expect(page.getByText("DataHub-managed").first()).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("read-only").first()).toBeVisible({ timeout: 10_000 });
 
   // -- Backend probe: GET /spoke/ingestion/sources?mode=DATAHUB_MANAGED --
   // spec: USE_CASE_en.md §UC1 Case 1 — source appears as DATAHUB_MANAGED row
@@ -295,7 +316,9 @@ test("UC1 Case 1 step 4 — source detail shows secret ref preserved; is read-on
 
   // -- UI assertion: mode badge "DataHub-managed" visible in header --
   // spec: FRONTEND_INGESTION.md §Source Detail — mode badge rendered in header
-  await expect(page.getByText("DataHub-managed")).toBeVisible({ timeout: 15_000 });
+  // exact — the source name ("uc1-datahub-managed-…") and recipe <pre> also
+  // contain "datahub-managed"; only the badge text is exactly "DataHub-managed".
+  await expect(page.getByText("DataHub-managed", { exact: true })).toBeVisible({ timeout: 15_000 });
 
   // -- UI assertion: "DataHub is the source of truth" explanatory note --
   // spec: FRONTEND_INGESTION.md §Source Detail §Recipe — DATAHUB_MANAGED: read-only note
@@ -306,7 +329,8 @@ test("UC1 Case 1 step 4 — source detail shows secret ref preserved; is read-on
   // -- UI assertion: secret ref ${UC1_POSTGRES_PASSWORD} visible in recipe YAML (masked) --
   // spec: feature/BACKEND.md §Sync sweep step 1 — "${...} secret references preserved as-is"
   // The RecipeYamlEditor in read-only mode renders a <pre> with the masked ref highlighted.
-  await expect(page.getByText(SECRET_REF)).toBeVisible({ timeout: 10_000 });
+  // The ref may appear in both the recipe <pre> and a raw-JSON view; assert ≥1.
+  await expect(page.getByText(SECRET_REF).first()).toBeVisible({ timeout: 10_000 });
 
   // -- UI assertion: plaintext password NOT visible on page --
   // spec: API.md §Ingestion §Source body shape — secret refs never expanded in responses
@@ -437,6 +461,6 @@ test("UC1 Case 1 step 5 — datasets panel shows mapped non-catalog datasets", a
   // A dataset URN from the mapped set must appear in the table.
   if (mappedDatasets.length > 0) {
     const firstUrn = mappedDatasets[0]!.dataset_urn;
-    await expect(page.getByText(firstUrn, { exact: false })).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText(firstUrn, { exact: false }).first()).toBeVisible({ timeout: 30_000 });
   }
 });
