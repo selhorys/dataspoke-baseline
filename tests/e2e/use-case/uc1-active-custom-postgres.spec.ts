@@ -155,7 +155,9 @@ test("UC1 Case 2 step 1 — create ACTIVE_CUSTOM_MANAGED postgres source", async
 
   // -- UI assertion: redirect to source detail page --
   // spec: FRONTEND_INGESTION.md §Create View — on success, redirect to /ingestion/sources/[id]
-  await page.waitForURL(/\/ingestion\/sources\/[^/]+$/, { timeout: 30_000 });
+  // Exclude the create page itself (/sources/new) so a failed create (which stays
+  // on /new) is caught here instead of silently matching the loose pattern.
+  await page.waitForURL(/\/ingestion\/sources\/(?!new$)[^/]+$/, { timeout: 30_000 });
 
   // Capture the source id from the URL for subsequent steps.
   const url = page.url();
@@ -232,7 +234,7 @@ test("UC1 Case 2 step 2 — dry_run emits nothing", async ({ page, adminApi }) =
   // spec: TESTING.md §E2E — semantic-first; data-testid requested where insufficient.
   // REQUIRED data-testid: ingestion-run-panel (component: IngestionRunPanel, element: result container)
   // For now we wait for the run_id span text "run_id" to appear as a proxy for the result panel.
-  await expect(page.getByText(/run_id/)).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByText(/^run_id\s/)).toBeVisible({ timeout: 60_000 });
 
   // -- Backend probe: POST /sources/{id}/method/run?dry_run=true --
   // spec: USE_CASE_en.md §UC1 Case 2 step 3 — dry_run: emitted_urns_count == 0
@@ -275,7 +277,7 @@ test("UC1 Case 2 step 3 — real run emits ≥ 2 catalog datasets", async ({ pag
   await page.getByRole("button", { name: "Run" }).click();
 
   // -- UI assertion: run_id appears in result panel --
-  await expect(page.getByText(/run_id/)).toBeVisible({ timeout: 120_000 });
+  await expect(page.getByText(/^run_id\s/)).toBeVisible({ timeout: 120_000 });
 
   // -- Backend probe: POST /sources/{id}/method/run (no dry_run) --
   // spec: USE_CASE_en.md §UC1 Case 2 step 4 — real run: emitted_urns_count >= 2
@@ -317,7 +319,8 @@ test("UC1 Case 2 step 4 — datasets panel shows catalog rows with emitted deriv
 
   // -- UI assertion: authority badge "high (emitted)" appears at least once --
   // spec: FRONTEND_INGESTION.md §Source Detail §Datasets — authority rendered as "high (emitted)"
-  await expect(page.getByText("high (emitted)")).toBeVisible();
+  // Multiple catalog rows render this badge; assert at least one is present.
+  await expect(page.getByText("high (emitted)").first()).toBeVisible();
 
   // -- Backend probe: GET /sources/{id}/datasets --
   // spec: USE_CASE_en.md §UC1 Case 2 step 5 — dataset_urns subset includes catalog tables;

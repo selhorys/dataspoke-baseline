@@ -56,7 +56,7 @@ const RECIPE_YAML = `source:
   config:
     topic_patterns:
       allow:
-        - "^imazon\\..*$"
+        - '^imazon\\..*$'
 `;
 
 // Runs under the admin project only — enforced by the filename convention in
@@ -187,7 +187,9 @@ test("UC1 Case 3 step 1 — create PASSIVE kafka source", async ({ page, adminAp
 
   // -- UI assertion: redirect to source detail page --
   // spec: FRONTEND_INGESTION.md §Create View — on success, redirect to /ingestion/sources/[id]
-  await page.waitForURL(/\/ingestion\/sources\/[^/]+$/, { timeout: 30_000 });
+  // Exclude the create page itself (/sources/new) so a failed create (which stays
+  // on /new) is caught here instead of silently matching the loose pattern.
+  await page.waitForURL(/\/ingestion\/sources\/(?!new$)[^/]+$/, { timeout: 30_000 });
   const url = page.url();
   const idMatch = /\/ingestion\/sources\/([^/?#]+)$/.exec(url);
   expect(idMatch, "Expected source ID in URL after redirect").toBeTruthy();
@@ -332,18 +334,17 @@ test("UC1 Case 3 step 3 — datasets panel shows imazon Kafka topics with matche
   await expect(page.getByRole("heading", { name: SOURCE_NAME })).toBeVisible({ timeout: 15_000 });
   await expect(page.getByRole("heading", { name: "Datasets" })).toBeVisible();
 
-  // At least one Kafka URN must appear in the table.
+  // At least one Kafka URN must appear in the table. Use an auto-waiting
+  // assertion (not isVisible(), which is a zero-wait race against the panel's
+  // async data fetch); the backend probe above already confirmed the mapping.
   const ordersText = page.getByText(ORDERS_URN, { exact: false });
   const shippingText = page.getByText(SHIPPING_URN, { exact: false });
-  const ordersVis = await ordersText.isVisible().catch(() => false);
-  const shippingVis = await shippingText.isVisible().catch(() => false);
-  expect(ordersVis || shippingVis, "At least one Kafka URN must be visible in Datasets panel").toBe(
-    true
-  );
+  await expect(ordersText.or(shippingText).first()).toBeVisible({ timeout: 15_000 });
 
   // -- UI assertion: authority badge "medium (matched)" present --
   // spec: FRONTEND_INGESTION.md §Source Detail §Datasets — authority rendered as "medium (matched)"
-  await expect(page.getByText("medium (matched)")).toBeVisible();
+  // Both mapped Kafka topics render this badge; assert at least one is present.
+  await expect(page.getByText("medium (matched)").first()).toBeVisible();
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -57,20 +57,34 @@ async function acquireLock(): Promise<void> {
   const url = lockUrl();
   const owner = lockOwner();
   console.log(`[e2e setup] Acquiring dev-env lock at ${url} (owner: ${owner})...`);
-  const resp = await fetch(`${url}/lock/acquire`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ owner, message: "playwright e2e test suite" }),
-  });
-  if (resp.status === 409) {
+  // Retry transient connect failures (cluster blips), but never retry a 409 —
+  // that is a real "held by another tester" signal.
+  const maxAttempts = 3;
+  let resp: Response | undefined;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      resp = await fetch(`${url}/lock/acquire`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ owner, message: "playwright e2e test suite" }),
+      });
+      break;
+    } catch (err) {
+      if (attempt === maxAttempts) throw err;
+      console.warn(
+        `[e2e setup] lock acquire attempt ${attempt}/${maxAttempts} failed to connect (transient); retrying...`
+      );
+    }
+  }
+  if (resp!.status === 409) {
     throw new Error(
       `Dev-env lock is held by another process. ` +
         `Release it first: DELETE ${url}/lock\n` +
         `Or set DATASPOKE_DEV_ENV_LOCK_PREACQUIRED=1 if you hold it externally.`
     );
   }
-  if (!resp.ok) {
-    throw new Error(`Lock acquire failed: ${resp.status} ${await resp.text()}`);
+  if (!resp!.ok) {
+    throw new Error(`Lock acquire failed: ${resp!.status} ${await resp!.text()}`);
   }
   console.log("[e2e setup] Lock acquired.");
 }
@@ -80,12 +94,26 @@ function resetSeed(): void {
   // Reuses the existing Python util — no TS reimplementation of reset logic.
   // Runs from the repo root (two levels above tests/e2e/).
   const repoRoot = path.resolve(__dirname, "..", "..");
-  execSync("uv run python -m tests.integration.util --reset-seed", {
-    cwd: repoRoot,
-    stdio: "inherit",
-    timeout: 300_000, // 5 min
-  });
-  console.log("[e2e setup] Reset-seed complete.");
+  // The dev cluster (GKE Autopilot) has intermittent connectivity drops that make
+  // reset-seed fail mid-ingest (DataHub/PG timeouts). Retry a few times before
+  // giving up — this is transient-blip resilience, not a timeout bump.
+  const maxAttempts = 3;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      execSync("uv run python -m tests.integration.util --reset-seed", {
+        cwd: repoRoot,
+        stdio: "inherit",
+        timeout: 300_000, // 5 min
+      });
+      console.log("[e2e setup] Reset-seed complete.");
+      return;
+    } catch (err) {
+      if (attempt === maxAttempts) throw err;
+      console.warn(
+        `[e2e setup] reset-seed attempt ${attempt}/${maxAttempts} failed (likely a transient cluster blip); retrying...`
+      );
+    }
+  }
 }
 
 async function getAdminToken(): Promise<string> {
