@@ -45,32 +45,32 @@ cover every route; tracked here as the acceptance artifact for "fully covered".`
 
 | Route | UC test | Ground test |
 |---|---|---|
-| `/governance/dashboard` | `_smoke.spec.ts` (post-login landing) | — |
-| `/governance/metrics` | — | — |
-| `/governance/metrics/new` | — | — |
-| `/governance/metrics/[id]` | — | — |
+| `/governance/dashboard` | `_smoke.spec.ts` (post-login landing); `uc5-governance.spec.ts` step 3a (metric cards + trend chart after run) | — |
+| `/governance/metrics` | `uc5-governance.spec.ts` step 3b (list: all three metrics, type badges, Enabled status) | — |
+| `/governance/metrics/new` | `uc5-governance.spec.ts` step 1a (create form: metric_id, type, title, description, metrics checkboxes, schedule, is_enabled, Save → redirect) | — |
+| `/governance/metrics/[id]` | `uc5-governance.spec.ts` steps 1c (Edit → PUT → read-only), 2 (Run → ConfirmDialog), 3c (attr/conf dl, attr/result chart, event log, Edit/Run/Delete buttons), 4 (Delete → ConfirmDialog → list redirect) | — |
 
 #### Validation (UC2)
 
 | Route | UC test | Ground test |
 |---|---|---|
-| `/validation` | — | — |
-| `/validation/data/[urn]` | — | — |
+| `/validation` | `uc2-validation.spec.ts` step 3 (cross-dataset list; both URNs, score badges) | — |
+| `/validation/data/[urn]` | `uc2-validation.spec.ts` steps 2, 4–7 (detail: conf, charts, event log, delete, create, resurrect) | — |
 
 #### Ontology Generation (UC3)
 
 | Route | UC test | Ground test |
 |---|---|---|
-| `/ontogen` | — | — |
-| `/ontogen/conf` | — | — |
-| `/ontogen/seed` | — | — |
+| `/ontogen` | `uc3-ontology-generation.spec.ts` steps 3–4 (Run dialog, tabs, result panels) | — |
+| `/ontogen/conf` | `uc3-ontology-generation.spec.ts` step 1 (Edit/Save conf, is_enabled+schedule_tier) | — |
+| `/ontogen/seed` | `uc3-ontology-generation.spec.ts` steps 2, 5 (create seed, delete via ConfirmDialog) | — |
 
 #### Metadata Generation (UC4)
 
 | Route | UC test | Ground test |
 |---|---|---|
-| `/metagen` | — | — |
-| `/metagen/data/[urn]` | — | — |
+| `/metagen` | `uc4-metadata-generation.spec.ts` steps 1, 3, 4, 9 (conf form, Run button + RunDialog, global event panel, second run) | — |
+| `/metagen/data/[urn]` | `uc4-metadata-generation.spec.ts` steps 2, 5, 6, 8 (boundary form, item cards, candidate Approve/Reject + ConfirmDialog, per-dataset events) | — |
 
 #### Admin / Settings / Profile
 
@@ -97,6 +97,51 @@ Routes newly covered by `tests/e2e/use-case/uc1-*.spec.ts`:
 | `/ingestion/data/[urn]` | `uc1-active-custom-postgres.spec.ts` |
 
 Routes remaining uncovered by E2E (ground group deferred):
-`/register`, `/forgot-password`, `/reset-password`, `/governance/metrics*`,
-`/validation*`, `/ontogen*`, `/metagen*`, `/admin/users`, `/settings`,
-`/profile*`
+`/register`, `/forgot-password`, `/reset-password`, `/admin/users`, `/settings`, `/profile*`
+
+---
+
+## Coverage delta — UC5 addition (this session)
+
+Routes newly covered by `tests/e2e/use-case/uc5-governance.spec.ts`:
+
+| Route | Newly covered by |
+|---|---|
+| `/governance/dashboard` | `uc5-governance.spec.ts` step 3a |
+| `/governance/metrics` | `uc5-governance.spec.ts` step 3b |
+| `/governance/metrics/new` | `uc5-governance.spec.ts` step 1a |
+| `/governance/metrics/[id]` | `uc5-governance.spec.ts` steps 1c, 2, 3c, 4 |
+
+---
+
+## Coverage delta — UC2 addition (this session)
+
+Routes newly covered by `tests/e2e/use-case/uc2-validation.spec.ts`:
+
+| Route | Newly covered by |
+|---|---|
+| `/validation` | `uc2-validation.spec.ts` step 3 |
+| `/validation/data/[urn]` | `uc2-validation.spec.ts` steps 2, 4–7 |
+
+---
+
+## Coverage delta — UC3 addition (this session)
+
+Routes newly covered by `tests/e2e/use-case/uc3-ontology-generation.spec.ts`:
+
+| Route | Newly covered by |
+|---|---|
+| `/ontogen` | `uc3-ontology-generation.spec.ts` steps 3–4 (Run dialog, Nodes/Edges/Triples tabs, error-free panel render) |
+| `/ontogen/conf` | `uc3-ontology-generation.spec.ts` step 1 (heading, Edit flow, is_enabled checkbox, schedule_tier Radix Select, Save configuration toast) |
+| `/ontogen/seed` | `uc3-ontology-generation.spec.ts` steps 2, 5 (+New Seed → SeedEditor → Save seed toast; seed row Delete → ConfirmDialog → Seed deleted toast) |
+
+---
+
+## Coverage delta — UC4 addition (this session)
+
+Routes newly covered by `tests/e2e/use-case/uc4-metadata-generation.spec.ts`:
+
+| Route | Newly covered by |
+|---|---|
+| `/metagen` | steps 1, 3, 4, 9: conf form (is_enabled/schedule_tier/result_limit/overwrite_pending), Run button → RunDialog → run toast, global event panel (METAGEN.RUN_COMPLETE), second run |
+| `/metagen/data/[urn]` | steps 2, 5, 6, 8: boundary form (is_enabled/allowed checkboxes), item cards (dataset.description / column.description grouping), candidate Approve → ConfirmDialog → approved toast, candidate Reject → ConfirmDialog → rejected toast, per-dataset event section (CANDIDATE_APPROVE / CANDIDATE_REJECT) |
