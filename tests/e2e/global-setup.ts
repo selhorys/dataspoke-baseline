@@ -20,7 +20,7 @@
  * ensureFreshToken() — confirmed the app refreshes on load from the cookie.
  */
 
-import { execSync } from "child_process";
+import { execSync, execFileSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import { chromium, type FullConfig } from "@playwright/test";
@@ -31,8 +31,10 @@ const AUTH_DIR = path.join(__dirname, ".auth");
 /** E2E test users provisioned during setup. Passwords are deterministic so
  *  global-teardown/next-run can rely on them. */
 const TEST_USERS = [
-  { email: "e2e-editor@dataspoke.local", name: "E2E Editor", password: "e2e-editor-password", role: "Editor" },
-  { email: "e2e-reader@dataspoke.local", name: "E2E Reader", password: "e2e-reader-password", role: "Reader" },
+  // .local is rejected by the API's EmailStr validator (special-use domain); use the
+  // same example.com subdomain the spot auth tests register under.
+  { email: "e2e-editor@test.dataspoke.example.com", name: "E2E Editor", password: "e2e-editor-password", role: "Editor" },
+  { email: "e2e-reader@test.dataspoke.example.com", name: "E2E Reader", password: "e2e-reader-password", role: "Reader" },
 ] as const;
 
 /** storageState file per role — keyed to match playwright.config.ts projects */
@@ -130,15 +132,22 @@ function flushRateLimitKeys(): void {
   console.log("[e2e setup] Flushing slowapi rate-limit keys from Redis...");
   const repoRoot = path.resolve(__dirname, "..", "..");
   const script = [
-    "import redis as r, sys",
-    `c = r.Redis(host=${JSON.stringify(host)}, port=int(${JSON.stringify(port)}), password=${JSON.stringify(password)} or None)`,
+    "import os, redis as r",
+    "c = r.Redis(host=os.environ['E2E_REDIS_HOST'], port=int(os.environ['E2E_REDIS_PORT']), password=os.environ.get('E2E_REDIS_PASSWORD') or None)",
     "keys = list(c.scan_iter('LIMITS:LIMITER/*'))",
     "[c.delete(k) for k in keys]",
     "c.close()",
     "print(f'[e2e setup] Flushed {len(keys)} rate-limit key(s).')",
   ].join("; ");
   try {
-    execSync(`uv run python -c "${script}"`, { cwd: repoRoot, stdio: "inherit", timeout: 10_000 });
+    // execFileSync (no shell) + env-passed connection params avoids any quoting
+    // collision between the shell wrapper and the interpolated values.
+    execFileSync("uv", ["run", "python", "-c", script], {
+      cwd: repoRoot,
+      stdio: "inherit",
+      timeout: 10_000,
+      env: { ...process.env, E2E_REDIS_HOST: host, E2E_REDIS_PORT: port, E2E_REDIS_PASSWORD: password },
+    });
   } catch {
     // Non-fatal — if Redis is unreachable the limiter falls back to in-memory
     // and a 429 during provisioning will surface as a clearer error than a flush failure.
@@ -202,8 +211,11 @@ async function loginAndSaveState(
   // Navigate to the login page and complete the form.
   await page.goto("/login");
   await page.getByLabel("Email").fill(email);
-  await page.getByLabel("Password").fill(password);
-  await page.getByRole("button", { name: /sign in/i }).click();
+  // getByLabel("Password") also matches the "Show password" toggle button
+  // (substring accessible-name match); target the unique input by id instead.
+  await page.locator("input#password").fill(password);
+  // Exact match — /sign in/i also matches "Sign in with Google".
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
 
   // Wait for post-login redirect (to /governance/dashboard).
   await page.waitForURL("**/governance/dashboard", { timeout: 30_000 });
