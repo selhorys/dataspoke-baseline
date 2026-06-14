@@ -131,7 +131,9 @@ detail render a null tier as *on-demand*.
 ```
 
 The detail action bar is `[Edit] [Run] [Delete]`; disabling a metric is
-done via the `is_enabled` checkbox inside the Edit form. The detail
+done via the `is_enabled` checkbox inside the Edit form. `Run` opens a
+confirm dialog with a "Dry run" checkbox — when checked the run issues
+`?dry_run=true` (evaluate without persisting a result). The detail
 result/event panels poll on a 15s interval (paused when the tab is hidden)
 per the BASIC convention.
 

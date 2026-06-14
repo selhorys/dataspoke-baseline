@@ -14,6 +14,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { toast } from "@/components/ui/use-toast";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { MetricForm } from "@/components/governance/metric-form";
 import { MetricTimeseriesChart } from "@/components/governance/metric-timeseries-chart";
@@ -111,7 +121,10 @@ export default function MetricDetailPage({
     runMetric.mutate(
       { metricId, dry_run: dryRun },
       {
-        onSuccess: () => setShowRunDialog(false),
+        onSuccess: () => {
+          setShowRunDialog(false);
+          toast({ title: dryRun ? "Dry run complete" : "Run complete" });
+        },
       },
     );
   };
@@ -322,20 +335,43 @@ export default function MetricDetailPage({
 
       {/* Run dialog */}
       {canWrite && (
-        <>
-          <ConfirmDialog
-            open={showRunDialog}
-            onOpenChange={setShowRunDialog}
-            title="Run metric"
-            description={`Trigger a measurement run for "${conf.title}".`}
-            confirmLabel={runMetric.isPending ? "Running..." : "Run"}
-            onConfirm={handleRun}
-            loading={runMetric.isPending}
-          />
-          {runError && (
-            <p className="text-sm text-destructive">{runError}</p>
-          )}
-        </>
+        <Dialog open={showRunDialog} onOpenChange={setShowRunDialog}>
+          <DialogContent className="sm:max-w-[425px]">
+            <DialogHeader>
+              <DialogTitle>Run metric</DialogTitle>
+              <DialogDescription>
+                {`Trigger a measurement run for "${conf.title}".`}
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="flex items-center gap-2 py-2">
+              <Checkbox
+                id="run-dry-run"
+                checked={dryRun}
+                onCheckedChange={(v) => setDryRun(!!v)}
+                disabled={runMetric.isPending}
+              />
+              <label htmlFor="run-dry-run" className="cursor-pointer text-sm">
+                Dry run — evaluate without persisting a result
+              </label>
+            </div>
+
+            {runError && <p className="text-sm text-destructive">{runError}</p>}
+
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => setShowRunDialog(false)}
+                disabled={runMetric.isPending}
+              >
+                Cancel
+              </Button>
+              <Button onClick={handleRun} disabled={runMetric.isPending}>
+                {runMetric.isPending ? "Running..." : dryRun ? "Dry run" : "Run"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       )}
 
       {/* Delete confirm */}

@@ -35,9 +35,9 @@ Review proceeds **nodes → edges → triples** per
 [API §Ontology Generation](../API.md#ontology-generation-spokeontogen). When
 a triple's dependencies are not yet human-`approved` the UI disables the
 approve button with an inline hint naming the missing dependency; a
-dependency at `llm_approved` does not satisfy the gate. The confirm
-dialog states that approval flips status in DataSpoke storage only and does
-not write to DataHub.
+dependency at `llm_approved` does not satisfy the gate. Approve and reject
+are direct actions — approval flips status in DataSpoke storage only and
+does not write to DataHub.
 
 The **Navigator** tab embeds `OntologyNavigator`, overlaying all outgoing
 triples for a node (pending + approved) with inline approve/reject controls

@@ -21,6 +21,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Table,
   TableBody,
   TableCell,
@@ -37,6 +44,24 @@ const mintSchema = z.object({
 
 type MintFormValues = z.infer<typeof mintSchema>;
 
+const EXPIRY_OPTIONS = [
+  { value: "never", label: "never", days: null },
+  { value: "30d", label: "30 days", days: 30 },
+  { value: "90d", label: "90 days", days: 90 },
+  { value: "1y", label: "1 year", days: 365 },
+] as const;
+
+type ExpiryValue = (typeof EXPIRY_OPTIONS)[number]["value"];
+
+/** Compute an ISO-8601 UTC datetime `now + days`, or null for a non-expiring token. */
+function computeExpiresAt(value: ExpiryValue): string | null {
+  const days = EXPIRY_OPTIONS.find((o) => o.value === value)?.days ?? null;
+  if (days === null) return null;
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString();
+}
+
 function formatDate(iso: string | null | undefined): string {
   if (!iso) return "—";
   return new Date(iso).toLocaleDateString();
@@ -48,6 +73,7 @@ export default function ProfileTokensPage() {
   const { mutateAsync: deleteToken, isPending: deleting } = useDeleteApiToken();
 
   const [mintOpen, setMintOpen] = useState(false);
+  const [expiry, setExpiry] = useState<ExpiryValue>("never");
   const [mintedToken, setMintedToken] = useState<ApiTokenMintResponse | null>(null);
   const [copied, setCopied] = useState(false);
   const [revokeId, setRevokeId] = useState<string | null>(null);
@@ -61,10 +87,14 @@ export default function ProfileTokensPage() {
 
   async function onMint(values: MintFormValues) {
     try {
-      const result = await createToken({ name: values.name });
+      const result = await createToken({
+        name: values.name,
+        expires_at: computeExpiresAt(expiry),
+      });
       setMintedToken(result);
       setMintOpen(false);
       resetMintForm();
+      setExpiry("never");
     } catch (err) {
       if (err instanceof ApiError) {
         toast({ variant: "destructive", title: "Token creation failed", description: err.message });
@@ -162,6 +192,20 @@ export default function ProfileTokensPage() {
                 placeholder="e.g. ci-jenkins"
                 {...register("name")}
               />
+            </Field>
+            <Field label="Expiry" htmlFor="token-expiry">
+              <Select value={expiry} onValueChange={(v) => setExpiry(v as ExpiryValue)}>
+                <SelectTrigger id="token-expiry">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {EXPIRY_OPTIONS.map((o) => (
+                    <SelectItem key={o.value} value={o.value}>
+                      {o.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </Field>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setMintOpen(false)}>
