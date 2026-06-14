@@ -143,6 +143,11 @@ export function IngestionSourceList({
                     >
                       {s.name}
                     </Link>
+                    {s.datahub_source_urn && (
+                      <div className="font-mono text-xs text-muted-foreground">
+                        {s.datahub_source_urn}
+                      </div>
+                    )}
                   </TableCell>
                   <TableCell>
                     <div className="flex flex-wrap items-center gap-1.5">

@@ -239,7 +239,63 @@ describe("IngestionSourceList — mode-filter select", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 3. Empty state — sources=[] and isLoading=false
+// 3. URN subtitle — DATAHUB_MANAGED shows datahub_source_urn; others do not
+// ---------------------------------------------------------------------------
+
+describe("IngestionSourceList — URN subtitle", () => {
+  it("renders datahub_source_urn as a subtitle for a DATAHUB_MANAGED row", () => {
+    // makeSource("DATAHUB_MANAGED") sets datahub_source_urn to
+    // "urn:li:dataHubIngestionSource:x" — verify the text appears in the DOM.
+    render(
+      <IngestionSourceList
+        sources={[makeSource("DATAHUB_MANAGED")]}
+        isLoading={false}
+        modeFilter="ALL"
+        onModeFilterChange={noop}
+        page={{ ...basePage, totalCount: 1 }}
+        onPrev={noop}
+        onNext={noop}
+      />,
+    );
+    expect(screen.getByText("urn:li:dataHubIngestionSource:x")).toBeTruthy();
+  });
+
+  it("does NOT render a URN subtitle for an ACTIVE_CUSTOM_MANAGED row", () => {
+    // makeSource("ACTIVE_CUSTOM_MANAGED") sets datahub_source_urn to null —
+    // no urn:li:… text must appear in the DOM.
+    render(
+      <IngestionSourceList
+        sources={[makeSource("ACTIVE_CUSTOM_MANAGED")]}
+        isLoading={false}
+        modeFilter="ALL"
+        onModeFilterChange={noop}
+        page={{ ...basePage, totalCount: 1 }}
+        onPrev={noop}
+        onNext={noop}
+      />,
+    );
+    expect(screen.queryByText(/^urn:/)).toBeNull();
+  });
+
+  it("does NOT render a URN subtitle for a PASSIVE row", () => {
+    // makeSource("PASSIVE") sets datahub_source_urn to null.
+    render(
+      <IngestionSourceList
+        sources={[makeSource("PASSIVE")]}
+        isLoading={false}
+        modeFilter="ALL"
+        onModeFilterChange={noop}
+        page={{ ...basePage, totalCount: 1 }}
+        onPrev={noop}
+        onNext={noop}
+      />,
+    );
+    expect(screen.queryByText(/^urn:/)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 4. Empty state — sources=[] and isLoading=false
 // ---------------------------------------------------------------------------
 
 describe("IngestionSourceList — empty state", () => {

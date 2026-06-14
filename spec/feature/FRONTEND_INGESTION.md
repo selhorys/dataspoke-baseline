@@ -26,9 +26,11 @@ The per-dataset reverse-lookup page mirrors the per-dataset pages of Validation
 One row per source: `name`, `mode` badge (`DATAHUB_MANAGED` / `ACTIVE_CUSTOM_MANAGED` /
 `PASSIVE`), `platform`, schedule, enabled state, covered-dataset count, and latest run status.
 Filter by `mode`; paginate. A "Create source" button routes to `/ingestion/sources/new`.
-`DATAHUB_MANAGED` rows carry a read-only badge. (`GET /spoke/ingestion/sources`.) The covered-dataset
-count and latest run status are not fields on the list payload — each is client-derived via a
-per-source fan-out (`datasets?limit=1` and `event?limit=1`).
+`DATAHUB_MANAGED` rows carry a read-only badge. The name cell shows the source's
+`datahub_source_urn` as a gray subtitle below the name for DataHub-managed rows; rows without a URN
+(`ACTIVE_CUSTOM_MANAGED` / `PASSIVE`) show the name alone. (`GET /spoke/ingestion/sources`.) The
+covered-dataset count and latest run status are not fields on the list payload — each is
+client-derived via a per-source fan-out (`datasets?limit=1` and `event?limit=1`).
 
 ## Source Detail (`/ingestion/sources/[id]`)
 
