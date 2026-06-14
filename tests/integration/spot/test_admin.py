@@ -66,30 +66,61 @@ async def test_admin_dags_verify(
 
 
 @pytest.mark.asyncio
-async def test_admin_dags_verify_requires_admin_role(api_client: httpx.AsyncClient) -> None:
-    """POST /admin/dags/verify returns 403 when caller is not Admin role.
+async def test_admin_dags_verify_requires_admin_role(
+    api_client: httpx.AsyncClient,
+    async_session,
+) -> None:
+    """POST /admin/dags/verify returns 403 when caller has Reader role (not Admin).
+
+    Uses a REAL seeded Reader user so the 403 is genuinely from the require_admin
+    role gate, not from a missing-user branch.
 
     spec: API.md §Access Control — /admin/* requires users.role = 'Admin'.
-    spec: feature/AUTH.md §Privilege Model — Admin row in the role × method matrix.
+    spec: feature/AUTH.md §Privilege Model — Editor/Reader on /admin/* → 403 FORBIDDEN.
+    spec: feature/AUTH.md §Lifecycle §Deletion — deleted/unknown subject → 401 (not 403).
     """
     import uuid
 
+    from sqlalchemy import text
+
     from src.backend.auth.tokens import issue_access_token
 
-    # Unknown UUID → user not found in DB → 403 FORBIDDEN on /admin/* routes.
-    # Wave F will replace this with a properly seeded non-Admin user.
-    fake_id = uuid.UUID("ffffffff-0000-0000-0000-000000000010")
-    non_admin_token, _ = issue_access_token(fake_id, "non-admin@example.com")
-    non_admin_headers = {"Authorization": f"Bearer {non_admin_token}"}
+    # Seed a real Reader user directly in the DB. The user EXISTS with role=Reader,
+    # so require_admin returns 403 FORBIDDEN (not 401 — the user is authenticated).
+    reader_id = uuid.uuid4()
+    reader_email = f"reader-dags-{str(uuid.uuid4())[:8]}@test.dataspoke.example.com"
+    await async_session.execute(
+        text(
+            "INSERT INTO dataspoke.users (id, email, name, google_sub, role)"
+            " VALUES (:id, :email, :name, :google_sub, 'Reader')"
+        ),
+        {
+            "id": str(reader_id),
+            "email": reader_email,
+            "name": "Reader Test User",
+            "google_sub": f"test-sub-{uuid.uuid4()}",
+        },
+    )
+    await async_session.commit()
+    try:
+        reader_token, _ = issue_access_token(reader_id, reader_email)
+        non_admin_headers = {"Authorization": f"Bearer {reader_token}"}
 
-    resp = await api_client.post(
-        "/api/v1/admin/dags/verify",
-        headers=non_admin_headers,
-    )
-    assert resp.status_code == 403, (
-        f"Non-Admin caller must get 403 on /admin route per spec/API.md "
-        f"§Access Control, got {resp.status_code}"
-    )
+        resp = await api_client.post(
+            "/api/v1/admin/dags/verify",
+            headers=non_admin_headers,
+        )
+        assert resp.status_code == 403, (
+            f"Reader-role caller must get 403 FORBIDDEN on /admin/* route "
+            f"per spec/API.md §Access Control and spec/feature/AUTH.md §Privilege Model; "
+            f"got {resp.status_code}: {resp.text}"
+        )
+    finally:
+        await async_session.execute(
+            text("DELETE FROM dataspoke.users WHERE id = :id"),
+            {"id": str(reader_id)},
+        )
+        await async_session.commit()
 
 
 @pytest.mark.asyncio

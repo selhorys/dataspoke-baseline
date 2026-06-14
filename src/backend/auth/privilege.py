@@ -89,8 +89,8 @@ async def require_authenticated(
 
         user = await _users.get_by_id(db, user_id)
         if user is None:
-            raise ForbiddenError(
-                error_code="FORBIDDEN",
+            raise AuthenticationError(
+                error_code="UNAUTHORIZED",
                 message="User no longer exists.",
             )
         effective_role = user.role

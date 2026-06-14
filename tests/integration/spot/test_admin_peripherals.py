@@ -54,12 +54,11 @@ Spec traceability:
 
 import os
 import subprocess
+import uuid as _uuid
 from collections.abc import Iterator
 
 import httpx
 import pytest
-
-import uuid as _uuid
 
 from src.backend.auth.tokens import issue_access_token as _issue_access_token
 
@@ -91,7 +90,14 @@ def _db_delete_peripheral_rows() -> None:
     sql = "DELETE FROM dataspoke.peripheral_config WHERE name IN ('datahub', 'langfuse');"
     env = {**os.environ, "PGPASSWORD": password}
     subprocess.run(
-        ["psql", f"--host={host}", f"--port={port}", f"--username={user}", f"--dbname={db}", f"--command={sql}"],
+        [
+            "psql",
+            f"--host={host}",
+            f"--port={port}",
+            f"--username={user}",
+            f"--dbname={db}",
+            f"--command={sql}",
+        ],
         env=env,
         check=False,
         capture_output=True,
@@ -115,16 +121,84 @@ def _reset_peripheral_state() -> None:
     _k8s_delete_peripheral_secrets()
 
 
-def _non_admin_headers() -> dict[str, str]:
-    """Authorization headers for a non-existent user (unknown UUID sub).
+def _db_insert_reader_user(user_id: str, email: str, google_sub: str) -> None:
+    """Insert a Reader-role user directly into dataspoke.users via psql.
 
-    The in-cluster privilege layer cannot resolve this UUID to a DB user, so it
-    returns 403 — which is the intended outcome for non-admin 403 assertions.
-    Wave F will replace this with a properly seeded non-Admin user.
+    Mirrors _db_delete_peripheral_rows() — sync subprocess approach so callers
+    do not need an async session fixture.
     """
-    fake_id = _uuid.UUID("ffffffff-0000-0000-0000-000000000099")
-    token, _ = _issue_access_token(fake_id, "non-admin@test.example.com")
-    return {"Authorization": f"Bearer {token}"}
+    host = os.environ.get("DATASPOKE_TEST_POSTGRES_HOST", "localhost")
+    port = os.environ.get("DATASPOKE_TEST_POSTGRES_PORT", "9201")
+    user = os.environ.get("DATASPOKE_TEST_POSTGRES_USER", "dataspoke")
+    password = os.environ.get("DATASPOKE_TEST_POSTGRES_PASSWORD", "")
+    db = os.environ.get("DATASPOKE_TEST_POSTGRES_DB", "dataspoke")
+
+    sql = (
+        f"INSERT INTO dataspoke.users (id, email, name, google_sub, role) "
+        f"VALUES ('{user_id}', '{email}', 'Non-Admin Test User', "
+        f"'{google_sub}', 'Reader') ON CONFLICT DO NOTHING;"
+    )
+    env = {**os.environ, "PGPASSWORD": password}
+    subprocess.run(
+        [
+            "psql",
+            f"--host={host}",
+            f"--port={port}",
+            f"--username={user}",
+            f"--dbname={db}",
+            f"--command={sql}",
+        ],
+        env=env,
+        check=False,
+        capture_output=True,
+    )
+
+
+def _db_delete_user(user_id: str) -> None:
+    """Delete a user row from dataspoke.users by id via psql."""
+    host = os.environ.get("DATASPOKE_TEST_POSTGRES_HOST", "localhost")
+    port = os.environ.get("DATASPOKE_TEST_POSTGRES_PORT", "9201")
+    user = os.environ.get("DATASPOKE_TEST_POSTGRES_USER", "dataspoke")
+    password = os.environ.get("DATASPOKE_TEST_POSTGRES_PASSWORD", "")
+    db = os.environ.get("DATASPOKE_TEST_POSTGRES_DB", "dataspoke")
+
+    sql = f"DELETE FROM dataspoke.users WHERE id = '{user_id}';"
+    env = {**os.environ, "PGPASSWORD": password}
+    subprocess.run(
+        [
+            "psql",
+            f"--host={host}",
+            f"--port={port}",
+            f"--username={user}",
+            f"--dbname={db}",
+            f"--command={sql}",
+        ],
+        env=env,
+        check=False,
+        capture_output=True,
+    )
+
+
+def _non_admin_headers() -> tuple[dict[str, str], str]:
+    """Seed a real Reader-role user and return (auth_headers, user_id).
+
+    The user EXISTS in the DB with role=Reader, so /admin/* routes return
+    403 FORBIDDEN from the require_admin role gate (not 401 — the user is
+    authenticated). Callers must delete the user after the assertion via
+    _db_delete_user(user_id).
+
+    spec: spec/API.md §Access Control — /admin/* requires role=Admin;
+        authenticated Reader → 403 FORBIDDEN.
+    spec: spec/feature/AUTH.md §Privilege Model — /admin/* column: Reader ✗.
+    spec: spec/feature/AUTH.md §Lifecycle §Deletion — deleted/unknown → 401,
+        not 403; role gate only fires when the user EXISTS.
+    """
+    user_id = str(_uuid.uuid4())
+    email = f"reader-periph-{str(_uuid.uuid4())[:8]}@test.dataspoke.example.com"
+    google_sub = f"test-sub-{_uuid.uuid4()}"
+    _db_insert_reader_user(user_id, email, google_sub)
+    token, _ = _issue_access_token(_uuid.UUID(user_id), email)
+    return {"Authorization": f"Bearer {token}"}, user_id
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -295,7 +369,8 @@ async def test_patch_datahub_and_get_reflects_values(
             f"GET after PATCH must reflect kafka_brokers; got {get_body['kafka_brokers']!r}."
         )
         assert get_body["token"] == "********", (
-            f"GET after PATCH must return token='********' (set, masked); got {get_body['token']!r}."
+            "GET after PATCH must return token='********' (set, masked); "
+            f"got {get_body['token']!r}."
         )
         assert get_body["is_configured"] is True, (
             f"is_configured must be True after full PATCH; got {get_body['is_configured']!r}. "
@@ -329,7 +404,8 @@ async def test_patch_langfuse_and_get_reflects_values(
         )
 
         assert patch_resp.status_code == 200, (
-            f"PATCH /admin/peripherals/langfuse returned {patch_resp.status_code}: {patch_resp.text}"
+            f"PATCH /admin/peripherals/langfuse returned "
+            f"{patch_resp.status_code}: {patch_resp.text}"
         )
         patch_body = patch_resp.json()
 
@@ -451,7 +527,8 @@ async def test_patch_langfuse_clear_secret_key_makes_is_configured_false(
 
         assert get_body["secret_key"] == ""
         assert get_body["is_configured"] is False, (
-            f"is_configured must be False after secret_key cleared; got {get_body['is_configured']!r}. "
+            "is_configured must be False after secret_key cleared; "
+            f"got {get_body['is_configured']!r}. "
             "spec: plan/scalable-beaming-hamster.md §is_configured predicate."
         )
 
@@ -693,35 +770,51 @@ async def test_patch_langfuse_idempotent(
 async def test_patch_datahub_non_admin_returns_403(
     api_client: httpx.AsyncClient,
 ) -> None:
-    """PATCH /admin/peripherals/datahub by non-admin user → 403.
+    """PATCH /admin/peripherals/datahub by real Reader-role user → 403 FORBIDDEN.
+
+    The user EXISTS in the DB with role=Reader; 403 comes from the require_admin
+    role gate, not from a missing-user branch.
 
     spec: spec/API.md §Access Control — Admin role required for /admin/*.
+    spec: spec/feature/AUTH.md §Privilege Model — Reader on /admin/* → 403 FORBIDDEN.
     """
-    resp = await api_client.patch(
-        _ADMIN_PERIPHERALS_DH,
-        headers=_non_admin_headers(),
-        json={"gms_url": "http://gms:8080"},
-    )
-    assert resp.status_code == 403, (
-        f"Non-admin PATCH must return 403; got {resp.status_code}: {resp.text}. "
-        "spec: API.md §Admin routes."
-    )
+    non_admin_hdrs, user_id = _non_admin_headers()
+    try:
+        resp = await api_client.patch(
+            _ADMIN_PERIPHERALS_DH,
+            headers=non_admin_hdrs,
+            json={"gms_url": "http://gms:8080"},
+        )
+        assert resp.status_code == 403, (
+            f"Reader-role PATCH must return 403; got {resp.status_code}: {resp.text}. "
+            "spec: API.md §Access Control — require_admin role gate."
+        )
+    finally:
+        _db_delete_user(user_id)
 
 
 @pytest.mark.asyncio
 async def test_patch_langfuse_non_admin_returns_403(
     api_client: httpx.AsyncClient,
 ) -> None:
-    """PATCH /admin/peripherals/langfuse by non-admin user → 403.
+    """PATCH /admin/peripherals/langfuse by real Reader-role user → 403 FORBIDDEN.
 
     spec: spec/API.md §Access Control — Admin role required for /admin/*.
+    spec: spec/feature/AUTH.md §Privilege Model — Reader on /admin/* → 403 FORBIDDEN.
     """
-    resp = await api_client.patch(
-        _ADMIN_PERIPHERALS_LF,
-        headers=_non_admin_headers(),
-        json={"host": "http://langfuse:3000"},
-    )
-    assert resp.status_code == 403
+    non_admin_hdrs, user_id = _non_admin_headers()
+    try:
+        resp = await api_client.patch(
+            _ADMIN_PERIPHERALS_LF,
+            headers=non_admin_hdrs,
+            json={"host": "http://langfuse:3000"},
+        )
+        assert resp.status_code == 403, (
+            f"Reader-role PATCH must return 403; got {resp.status_code}: {resp.text}. "
+            "spec: API.md §Access Control — require_admin role gate."
+        )
+    finally:
+        _db_delete_user(user_id)
 
 
 # ── 9. Missing X-Internal-Token → 401 or 503 ────────────────────────────────

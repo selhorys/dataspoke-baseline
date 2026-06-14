@@ -205,11 +205,12 @@ async def post_token_refresh(
     # Revoke old token before minting new one (fail-closed).
     await _tokens.mark_refresh_revoked(redis, refresh_token_cookie)
 
-    # Fetch user to get current email.
+    # Reject refresh for a deleted user — the session is no longer valid.
     user = await users.get_by_id(db, user_id)
-    email = user.email if user is not None else sub
+    if user is None:
+        raise AuthenticationError("User no longer exists.")
 
-    access_token, expires_in = _tokens.issue_access_token(user_id, email)
+    access_token, expires_in = _tokens.issue_access_token(user_id, user.email)
     new_refresh = _tokens.issue_refresh_token(user_id)
     _set_refresh_cookie(response, new_refresh)
     return TokenResponse(access_token=access_token, expires_in=expires_in)

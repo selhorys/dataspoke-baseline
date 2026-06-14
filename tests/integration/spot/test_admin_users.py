@@ -4,7 +4,7 @@ Concerns covered:
 - GET /admin/users returns paginated list with role column
 - PATCH /admin/users/{id} updates the display name
 - PATCH /admin/users/{id}/role promotes Reader to Editor, new role reflected on next GET
-- DELETE /admin/users/{id} removes the row; subsequent GET /auth/me with their token returns 403
+- DELETE /admin/users/{id} removes the row; subsequent GET /auth/me with their token returns 401
 
 spec: spec/feature/AUTH.md §Admin Surface
 spec: spec/API.md §Admin /admin/users
@@ -62,14 +62,18 @@ async def test_list_users_returns_pagination_shape(
         "/api/v1/admin/users",
         headers=admin_headers,
     )
-    assert resp.status_code == 200, f"GET /admin/users must return 200, got {resp.status_code}: {resp.text}"
+    assert resp.status_code == 200, (
+        f"GET /admin/users must return 200, got {resp.status_code}: {resp.text}"
+    )
 
     body = resp.json()
     assert "users" in body, "Response must include 'users' list"
     assert "total" in body, "Response must include 'total' count"
 
     for user in body["users"]:
-        assert "role" in user, "Each user row must include 'role' per spec/feature/AUTH.md §Admin Surface"
+        assert "role" in user, (
+            "Each user row must include 'role' per spec/feature/AUTH.md §Admin Surface"
+        )
         assert "id" in user
         assert "email" in user
         assert "name" in user
@@ -95,7 +99,9 @@ async def test_patch_user_name(
         json={"name": "Admin Updated Name"},
         headers=admin_headers,
     )
-    assert patch_resp.status_code == 200, f"PATCH /admin/users/{user['id']} must return 200: {patch_resp.text}"
+    assert patch_resp.status_code == 200, (
+        f"PATCH /admin/users/{user['id']} must return 200: {patch_resp.text}"
+    )
 
     updated = patch_resp.json()
     assert updated["name"] == "Admin Updated Name", (
@@ -152,10 +158,10 @@ async def test_delete_user_removes_row(
     admin_headers: dict[str, str],
     async_session: AsyncSession,
 ) -> None:
-    """DELETE /admin/users/{id} removes the row; their token returns 403 on next use.
+    """DELETE /admin/users/{id} removes the row; their token returns 401 on next use.
 
-    spec: spec/feature/AUTH.md §Lifecycle §Deletion — hard delete; user immediately unable
-    to log into DataSpoke.
+    spec: spec/feature/AUTH.md §Lifecycle §Deletion — hard delete; deleted subject is an
+    authentication failure (401 UNAUTHORIZED), not an authorization failure.
     spec: spec/feature/AUTH.md §DataHub Mirror Semantics §Mirror delete sequence.
     """
     email = _unique_email("delete-user")
@@ -177,13 +183,19 @@ async def test_delete_user_removes_row(
         f"DELETE /admin/users/{user['id']} must return 204: {del_resp.text}"
     )
 
-    # User's token must now fail (user no longer exists in DB)
+    # A still-valid access token whose subject was deleted must return 401 UNAUTHORIZED.
+    # spec: spec/feature/AUTH.md §Lifecycle §Deletion — "A still-valid access token
+    # whose subject was deleted fails with 401 UNAUTHORIZED ... A deleted subject is
+    # an authentication failure — the client must re-authenticate, not an authorization
+    # failure."
     me_after = await api_client.get(
         "/api/v1/auth/me",
         headers={"Authorization": f"Bearer {user['access_token']}"},
     )
-    assert me_after.status_code in (401, 403), (
-        "Deleted user's token must return 401 or 403 per spec/feature/AUTH.md §Lifecycle §Deletion"
+    assert me_after.status_code == 401, (
+        f"Deleted user's token must return exactly 401 UNAUTHORIZED "
+        f"per spec/feature/AUTH.md §Lifecycle §Deletion (deleted subject = "
+        f"authentication failure, not authorization failure); got {me_after.status_code}"
     )
 
     # Email must be immediately reusable

@@ -199,6 +199,13 @@ ownership, role assignments). Email is immediately reusable for a fresh
 registration after deletion. Audit trails are not maintained by DataSpoke;
 organisations that need historical records take them from logs.
 
+A still-valid access token whose subject was deleted fails with
+`401 UNAUTHORIZED`, and a `/auth/token/refresh` attempt carrying the deleted
+user's refresh cookie also fails with `401 UNAUTHORIZED` (the cookie is revoked
+before the user lookup, so the failure is fail-closed). A deleted subject is an
+authentication failure — the client must re-authenticate, not an authorization
+failure — so the frontend clears the session and redirects to `/login`.
+
 ---
 
 ## DataHub Mirror Semantics

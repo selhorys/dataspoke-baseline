@@ -40,12 +40,8 @@ Spec traceability:
 - src/backend/admin/config_service.py RUNTIME_CONFIG_DEFAULTS.
 """
 
-import os
-
 import httpx
 import pytest
-
-from src.backend.admin.config_service import RUNTIME_CONFIG_DEFAULTS
 
 # Module-level constants — no DataHub/Postgres/Kafka data needed; the
 # runtime_config table is managed by alembic and always present in the
@@ -227,25 +223,56 @@ async def test_get_conf_without_auth_returns_401(
 @pytest.mark.asyncio
 async def test_get_conf_non_admin_role_returns_403(
     api_client: httpx.AsyncClient,
+    async_session,
 ) -> None:
-    """GET /admin/conf with non-Admin caller returns 403.
+    """GET /admin/conf with a real Reader-role caller returns 403 FORBIDDEN.
 
-    spec: API.md §Access Control — /admin/* requires users.role = 'Admin'.
+    Uses a REAL seeded Reader user so the 403 comes from the require_admin role
+    gate (the user IS authenticated; they simply lack Admin role).
+
+    spec: API.md §Access Control — /admin/* requires users.role = 'Admin';
+        Editor/Reader → 403 FORBIDDEN.
+    spec: feature/AUTH.md §Privilege Model — /admin/* column: Reader ✗, Editor ✗.
+    spec: feature/AUTH.md §Lifecycle §Deletion — deleted/unknown subject → 401,
+        not 403; role gate only fires when the user EXISTS.
     """
     import uuid
 
+    from sqlalchemy import text
+
     from src.backend.auth.tokens import issue_access_token
 
-    # Unknown UUID → user not found in DB → 403 FORBIDDEN
-    fake_id = uuid.UUID("ffffffff-0000-0000-0000-000000000001")
-    non_admin_token, _ = issue_access_token(fake_id, "non-admin@test.example.com")
-    resp = await api_client.get(
-        _ADMIN_CONF,
-        headers={"Authorization": f"Bearer {non_admin_token}"},
+    reader_id = uuid.uuid4()
+    reader_email = f"reader-conf-get-{str(uuid.uuid4())[:8]}@test.dataspoke.example.com"
+    await async_session.execute(
+        text(
+            "INSERT INTO dataspoke.users (id, email, name, google_sub, role)"
+            " VALUES (:id, :email, :name, :google_sub, 'Reader')"
+        ),
+        {
+            "id": str(reader_id),
+            "email": reader_email,
+            "name": "Reader Test User",
+            "google_sub": f"test-sub-{uuid.uuid4()}",
+        },
     )
-    assert resp.status_code == 403, (
-        f"Non-Admin caller must return 403 on GET /admin/conf; got {resp.status_code}"
-    )
+    await async_session.commit()
+    try:
+        non_admin_token, _ = issue_access_token(reader_id, reader_email)
+        resp = await api_client.get(
+            _ADMIN_CONF,
+            headers={"Authorization": f"Bearer {non_admin_token}"},
+        )
+        assert resp.status_code == 403, (
+            f"Reader-role caller must return 403 FORBIDDEN on GET /admin/conf "
+            f"per spec/API.md §Access Control; got {resp.status_code}: {resp.text}"
+        )
+    finally:
+        await async_session.execute(
+            text("DELETE FROM dataspoke.users WHERE id = :id"),
+            {"id": str(reader_id)},
+        )
+        await async_session.commit()
 
 
 @pytest.mark.asyncio
@@ -266,24 +293,59 @@ async def test_patch_conf_without_auth_returns_401(
 @pytest.mark.asyncio
 async def test_patch_conf_non_admin_role_returns_403(
     api_client: httpx.AsyncClient,
+    async_session,
 ) -> None:
-    """PATCH /admin/conf with non-Admin caller returns 403.
+    """PATCH /admin/conf with a real Reader-role caller returns 403 FORBIDDEN.
 
-    spec: API.md §Access Control — /admin/* requires users.role = 'Admin'.
+    Uses a REAL seeded Reader user so the 403 comes from the require_admin role
+    gate (the user IS authenticated; they simply lack Admin role).
+
+    spec: API.md §Access Control — /admin/* requires users.role = 'Admin';
+        Editor/Reader → 403 FORBIDDEN.
+    spec: feature/AUTH.md §Privilege Model — /admin/* column: Reader ✗, Editor ✗.
+    spec: feature/AUTH.md §Lifecycle §Deletion — deleted/unknown subject → 401,
+        not 403; role gate only fires when the user EXISTS.
     """
     import uuid
 
+    from sqlalchemy import text
+
     from src.backend.auth.tokens import issue_access_token
 
-    # Unknown UUID → user not found in DB → 403 FORBIDDEN
-    fake_id = uuid.UUID("ffffffff-0000-0000-0000-000000000002")
-    non_admin_token, _ = issue_access_token(fake_id, "non-admin2@test.example.com")
-    resp = await api_client.patch(
-        _ADMIN_CONF,
-        json={"llm_model": "gpt-4o-mini"},
-        headers={"Authorization": f"Bearer {non_admin_token}"},
+    reader_id = uuid.uuid4()
+    reader_email = (
+        f"reader-conf-patch-{str(uuid.uuid4())[:8]}@test.dataspoke.example.com"
     )
-    assert resp.status_code == 403
+    await async_session.execute(
+        text(
+            "INSERT INTO dataspoke.users (id, email, name, google_sub, role)"
+            " VALUES (:id, :email, :name, :google_sub, 'Reader')"
+        ),
+        {
+            "id": str(reader_id),
+            "email": reader_email,
+            "name": "Reader Test User",
+            "google_sub": f"test-sub-{uuid.uuid4()}",
+        },
+    )
+    await async_session.commit()
+    try:
+        non_admin_token, _ = issue_access_token(reader_id, reader_email)
+        resp = await api_client.patch(
+            _ADMIN_CONF,
+            json={"llm_model": "gpt-4o-mini"},
+            headers={"Authorization": f"Bearer {non_admin_token}"},
+        )
+        assert resp.status_code == 403, (
+            f"Reader-role caller must return 403 FORBIDDEN on PATCH /admin/conf "
+            f"per spec/API.md §Access Control; got {resp.status_code}: {resp.text}"
+        )
+    finally:
+        await async_session.execute(
+            text("DELETE FROM dataspoke.users WHERE id = :id"),
+            {"id": str(reader_id)},
+        )
+        await async_session.commit()
 
 
 # ── 3. PATCH /admin/conf — partial update round-trip ─────────────────────────
@@ -504,7 +566,9 @@ async def test_internal_patch_conf_valid_token_returns_200_and_get_reflects(
                 "503 response must carry INTERNAL_AUTH_NOT_CONFIGURED error_code "
                 "when DATASPOKE_TEST_INTERNAL_TOKEN is unset."
             )
-            pytest.skip("DATASPOKE_TEST_INTERNAL_TOKEN not configured in this environment — skipping")
+            pytest.skip(
+                "DATASPOKE_TEST_INTERNAL_TOKEN not configured in this environment — skipping"
+            )
 
         assert patch_resp.status_code == 200, (
             f"PATCH /internal/admin/conf returned {patch_resp.status_code}: {patch_resp.text}"
