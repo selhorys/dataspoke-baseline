@@ -286,12 +286,14 @@ test("UC2 step 3 — /validation list shows both datasets with score badges", as
   // We check a prefix of the description that is short enough to appear un-truncated.
   await expect(page.getByText("Daily order fulfillment quality", { exact: false }).first()).toBeVisible();
 
-  // -- UI assertion: at least one Quality Score badge rendered --
+  // -- UI assertion: Quality Score badge for the postgres dataset's row --
   // spec: FRONTEND_VALIDATION.md §Page contracts — Quality Score column: badge or "—"
   // The badge for score=1.0 renders scoreLabel(1.0) = "1.0000".
-  // The kafka dataset's latest score (day_1: 0.85) renders "0.8500".
-  // Locate whichever appears first. Avoid exact match to tolerate badge wrapping.
-  await expect(page.getByText("1.0000", { exact: false }).first()).toBeVisible({ timeout: 10_000 });
+  // Scoped to the PG_URN row (the validation table uses <TableRow key={v.dataset_urn}>
+  // with PG_URN as the first cell text) so stale rows with a different dataset's score
+  // cannot satisfy this assertion. The URN is unique enough to anchor the row.
+  const pgRow = page.getByRole("row").filter({ hasText: PG_URN });
+  await expect(pgRow.getByText("1.0000", { exact: false })).toBeVisible({ timeout: 10_000 });
 
   // -- Backend probe: GET /spoke/validation → BOTH URNs in validations --
   // spec: VALIDATION.md §API Surface — aggregates conf + latest result per dataset.

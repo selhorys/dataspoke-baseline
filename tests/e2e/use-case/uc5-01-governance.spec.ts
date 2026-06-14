@@ -579,23 +579,26 @@ test("UC5 step 3b — /governance/metrics list shows all three metrics with type
     ).toBeVisible({ timeout: 20_000 });
   }
 
-  // -- UI assertion: metric_type badges visible --
+  // -- UI assertion: metric_type badges visible, scoped to the registered metrics' rows --
   // spec: metrics/page.tsx — Badge variant="outline" text={m.metric_type}
-  // Three distinct type strings; each appears at least once (could be > once if filter reused).
-  await expect(
-    page.getByText("ingestion-freshness", { exact: true }).first()
-  ).toBeVisible({ timeout: 10_000 });
-  await expect(
-    page.getByText("validation-score", { exact: true }).first()
-  ).toBeVisible({ timeout: 10_000 });
-  await expect(
-    page.getByText("doc-health", { exact: true }).first()
-  ).toBeVisible({ timeout: 10_000 });
+  // Each row renders m.id as a <p> subtitle under the title link (metrics/page.tsx line ~169).
+  // Scope badge assertions to each registered metric's row via its metric_id to prevent
+  // stale/pre-existing rows with the same metric_type from satisfying the assertion.
+  const ingestionRow = page.getByRole("row").filter({ hasText: METRIC_INGESTION.metric_id });
+  await expect(ingestionRow.getByText("ingestion-freshness", { exact: true })).toBeVisible({ timeout: 10_000 });
 
-  // -- UI assertion: "Enabled" badges visible (all three were created is_enabled=true) --
+  const validationRow = page.getByRole("row").filter({ hasText: METRIC_VALIDATION.metric_id });
+  await expect(validationRow.getByText("validation-score", { exact: true })).toBeVisible({ timeout: 10_000 });
+
+  const docRow = page.getByRole("row").filter({ hasText: METRIC_DOC.metric_id });
+  await expect(docRow.getByText("doc-health", { exact: true })).toBeVisible({ timeout: 10_000 });
+
+  // -- UI assertion: "Enabled" badge in each registered metric's row --
   // spec: metrics/page.tsx — Badge variant="default" text="Enabled" when m.is_enabled
-  // Multiple rows render "Enabled"; assert ≥1 is visible.
-  await expect(page.getByText("Enabled", { exact: true }).first()).toBeVisible({ timeout: 10_000 });
+  // Scoped to each registered metric's row (by metric_id) so stale rows do not satisfy.
+  await expect(ingestionRow.getByText("Enabled", { exact: true })).toBeVisible({ timeout: 10_000 });
+  await expect(validationRow.getByText("Enabled", { exact: true })).toBeVisible({ timeout: 10_000 });
+  await expect(docRow.getByText("Enabled", { exact: true })).toBeVisible({ timeout: 10_000 });
 
   // -- Backend probe: GET /spoke/governance/metric → all 3 ids in response --
   // spec: USE_CASE_en.md §UC5 — metric catalogue persists across requests.

@@ -276,13 +276,21 @@ test("UC1 Case 1 step 3 — /ingestion list shows DATAHUB_MANAGED row with read-
   await modeFilter.click();
   await page.getByRole("option", { name: "DataHub-managed" }).click();
 
-  // -- UI assertion: a row with mode "DataHub-managed" and "read-only" badge visible --
+  // -- UI assertion: the registered source's row shows "DataHub-managed" and "read-only" badges --
   // spec: FRONTEND_INGESTION.md §List View — DATAHUB_MANAGED rows: mode badge + "read-only" badge
-  // Multiple DATAHUB_MANAGED rows may exist (pre-existing + seeded); assert at
-  // least one mode badge + read-only badge. The backend probe below verifies the
-  // specific seeded source.
-  await expect(page.getByText("DataHub-managed").first()).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByText("read-only").first()).toBeVisible({ timeout: 10_000 });
+  // Scoped to the registered source's row via its datahub_source_urn (rendered as a mono
+  // subtitle below the source name since the URN-subtitle feature was added to
+  // ingestion-source-list.tsx). This prevents stale/other DATAHUB_MANAGED rows from
+  // satisfying the assertion.
+  const sourceRow = page.getByRole("row").filter({ hasText: sourceUrn! });
+  await expect(sourceRow).toBeVisible({ timeout: 15_000 });
+  await expect(sourceRow.getByText("DataHub-managed")).toBeVisible({ timeout: 15_000 });
+  await expect(sourceRow.getByText("read-only")).toBeVisible({ timeout: 10_000 });
+  // Also confirm the registered source's name and URN subtitle appear in the same row.
+  // spec: FRONTEND_INGESTION.md §List View — datahub_source_urn rendered as mono subtitle
+  // The source name starts with "uc1-datahub-managed-" (set in step 1).
+  await expect(sourceRow.getByText(/^uc1-datahub-managed-/)).toBeVisible({ timeout: 10_000 });
+  await expect(sourceRow.getByText(sourceUrn!, { exact: true })).toBeVisible({ timeout: 10_000 });
 
   // -- Backend probe: GET /spoke/ingestion/sources?mode=DATAHUB_MANAGED --
   // spec: USE_CASE_en.md §UC1 Case 1 — source appears as DATAHUB_MANAGED row

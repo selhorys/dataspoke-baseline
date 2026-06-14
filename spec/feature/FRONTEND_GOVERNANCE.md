@@ -65,7 +65,7 @@ list, create, edit, run, disable, delete.
 
 | Page | Read | Write |
 |---|---|---|
-| `/governance/metrics` (list) | `GET /spoke/governance/metric` — rendered filter bar (`metric_type` / `mode` / status Selects, mapped to query params) plus Previous/Next pagination controls with a page count | "New metric" action → `/governance/metrics/new` |
+| `/governance/metrics` (list) | `GET /spoke/governance/metric` — rendered filter bar (`metric_type` / `mode` / status Selects, mapped to query params) plus Previous/Next pagination controls with a page count. Each row shows the `title` (link to detail) with `metric_id` as a subtitle, a `metric_type` badge, and an `Enabled`/`Disabled` status badge | "New metric" action → `/governance/metrics/new` |
 | `/governance/metrics/new` | — | `POST /spoke/governance/metric` (definition fields **plus** a client-supplied `metric_id`) |
 | `/governance/metrics/[id]` | `GET .../attr/conf`, `GET .../attr/result?from&to` (7d / 30d / 90d range selector above the chart, default 30d), `GET .../event` | `PUT/PATCH/DELETE .../attr/conf` (fields: `mode`, `is_enabled`, `metric_type`, `title`, `description`, `metrics`, `metric_conf`, `schedule_tier`, `dataset_filter`); `POST .../method/run` (`?dry_run=true`) |
 
