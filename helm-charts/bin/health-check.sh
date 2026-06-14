@@ -272,6 +272,23 @@ check_dataspoke_api() {
   fi
 }
 
+check_dataspoke_frontend() {
+  local fe_url="http://app.${DOMAIN}"
+  local label="dataspoke-frontend (${fe_url})"
+  if ! _tcp_check "${INGRESS_IP}" 80; then
+    _fail "$label — ingress port 80 not reachable"
+    ((FAILURES++)); return
+  fi
+  if $QUICK; then _pass "$label (tcp)"; return; fi
+
+  # The UI root redirects (307 → /login), so treat any HTTP response as alive.
+  if _http_alive "${fe_url}/"; then
+    _pass "$label"
+  else
+    _skip "$label — not responding (may not be deployed; run: install.sh --profile dev --components frontend)"
+  fi
+}
+
 check_dataspoke_langfuse() {
   local lf_url="http://langfuse.${DOMAIN}"
   local label="langfuse-web (${lf_url})"
@@ -425,6 +442,7 @@ check_dataspoke_postgresql
 check_dataspoke_redis
 check_dataspoke_airflow
 check_dataspoke_api
+check_dataspoke_frontend
 check_dataspoke_langfuse
 
 echo ""
