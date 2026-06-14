@@ -64,6 +64,19 @@ is synced from DataHub) plus a YAML recipe editor. `ACTIVE_CUSTOM_MANAGED` recip
 `PASSIVE` recipes carry only the declared allow/deny scope. Submits via
 `POST /spoke/ingestion/sources`.
 
+A **secret reference helper** sits beside the editor for `ACTIVE_CUSTOM_MANAGED` recipes. It
+lists the source-credential references available to recipes (`GET /spoke/ingestion/secrets` — one
+`${name__key}` per `(secret, key)` under the `dataspoke-source-cred-` prefix; values are never
+shown) so an author can pick a known reference, and a collapsible **authoring guide** explains
+how to provision a new one. DataSpoke is reference-only — there is no secret-write endpoint — so
+the guide is read-only instruction, not a form: it shows the
+`kubectl create secret generic dataspoke-source-cred-<name> --from-literal=<key>=… -n <namespace>`
+recipe (the `<namespace>` is the API pod's own namespace), states the `dataspoke-source-cred-`
+name prefix as a security boundary, and gives the `${name__key}` syntax for referencing the new
+key in the recipe. The reference list refreshes from `GET /spoke/ingestion/secrets`; the guide
+calls no write route. This is the UI rendering of
+[SECRET_RESOLUTION.md §Admin authoring guide](SECRET_RESOLUTION.md).
+
 ## Unmanaged View (`/ingestion/unmanaged`)
 
 A table of DataHub datasets covered by no source (`GET /spoke/ingestion/unmanaged`), paginated.
@@ -84,6 +97,9 @@ Below it, an events table shows per-dataset ingestion events from
 - `RecipeYamlEditor` — YAML recipe view/editor; read-only for `DATAHUB_MANAGED`, secrets masked.
 - `SourceDatasetTable` — the source→dataset mapping table.
 - `IngestionRunPanel` — dry-run / run trigger with status (`ACTIVE_CUSTOM_MANAGED` only).
+- `SecretRefHelper` — the available-references list (`GET /spoke/ingestion/secrets`) plus the
+  read-only authoring guide (kubectl recipe, namespace, `dataspoke-source-cred-` prefix,
+  `${name__key}` syntax) shown in the source editor.
 - `IngestionEventTable` — shared event table bound to `…/event`.
 - `UnmanagedDatasetTable` — the unmanaged-bucket list.
 

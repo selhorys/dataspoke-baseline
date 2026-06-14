@@ -134,9 +134,14 @@ resulting object lands in DataSpoke's namespace under the prefix. Rotation is a 
 `kubectl` update of the Secret value — the recipe is untouched, and the resolver picks up the
 new value within the cache TTL.
 
-The same guidance, rendered for end users with the in-cluster namespace and the available-
-reference list, surfaces in the UI source editor (see
-[FRONTEND_INGESTION.md](FRONTEND_INGESTION.md)).
+The same guidance surfaces to end users as the **authoring-guide panel** in the ingestion source
+editor: a read-only helper that renders this `kubectl create secret` recipe with the in-cluster
+namespace filled in, the `dataspoke-source-cred-` prefix rule, and the `${name__key}` reference
+syntax, shown next to the available-reference list (`GET /spoke/ingestion/secrets`). It is
+instruction only — the panel calls no write route, consistent with the reference-only model. See
+[FRONTEND_INGESTION.md §Create View](FRONTEND_INGESTION.md#create-view-ingestionsourcesnew). The
+`GET /spoke/ingestion/secrets` description in [API.md](../API.md) carries the same authoring
+pointer for API consumers.
 
 ### Reference discovery (list flow)
 

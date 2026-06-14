@@ -155,6 +155,12 @@ recipe:
 `GET /spoke/ingestion/sources/{id}/datasets`는 (동기화 sweep이 매핑한) 커버 데이터셋을 나열하고,
 `GET /spoke/ingestion/sources/{id}/event`는 DataHub의 실행 이력을 미러링한다.
 
+소스가 DataHub에서 실행되면 — daily 스케줄이든 `http://datahub.<domain>/ingestion`에서 수동으로
+트리거한 실행이든 — DataSpoke의 다음 동기화가 그 실행을 `…/event`에 `INGESTION.COMPLETE` 이벤트로
+미러링하고, 커버 데이터셋을 매처 매핑(`derivation = matched`, `authority = medium`)에서 실행 관찰
+(`derivation = pipeline_name`, `authority = high`)으로 승격한다. 실행이 방출하는 aspect에 DataHub가
+소스의 정체성을 새기기 때문이다.
+
 #### Case 2 — `ACTIVE_CUSTOM_MANAGED`, `example_db`의 `catalog` 스키마만
 
 DataSpoke가 `catalog` 스키마 추출을 소유한다. 팀이 API로 소스를 생성하고, Airflow tier DAG이

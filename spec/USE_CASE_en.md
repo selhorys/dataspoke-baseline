@@ -147,6 +147,12 @@ recipe:
 `GET /spoke/ingestion/sources/{id}/datasets` lists the covered datasets (mapped by the sync
 sweep), and `GET /spoke/ingestion/sources/{id}/event` mirrors DataHub's run history.
 
+When the source runs in DataHub — on its daily schedule or a run triggered manually at
+`http://datahub.<domain>/ingestion` — DataSpoke's next sync mirrors that execution into
+`…/event` as an `INGESTION.COMPLETE` event and upgrades the covered datasets from matcher-mapped
+(`derivation = matched`, `authority = medium`) to run-observed (`derivation = pipeline_name`,
+`authority = high`), because DataHub stamps the source's identity on the aspects the run emits.
+
 #### Case 2 — `ACTIVE_CUSTOM_MANAGED`, `example_db` `catalog` schema only
 
 DataSpoke owns the extraction for the `catalog` schema. The team creates the source via the API;
