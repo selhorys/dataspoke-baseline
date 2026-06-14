@@ -13,6 +13,10 @@ export const metadata: Metadata = {
   description: "DataSpoke — DataHub sidecar extension",
 };
 
+// Render the layout per request so the runtime-config env reads below resolve
+// from the live process environment instead of being frozen at build time.
+export const dynamic = "force-dynamic";
+
 /**
  * Serialise a runtime config object into a safe inline script string.
  * Escapes "<" to prevent "</script>" injection from operator-controlled values.
@@ -32,7 +36,8 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  // Read non-public env vars at request time (server-only; never inlined by Next.js).
+  // With force-dynamic the layout renders per request, so these server-only
+  // env vars are read at request time and never inlined into the client bundle.
   const apiBaseUrl = process.env.DATASPOKE_API_BASE_URL ?? "";
   const datahubUrl = process.env.DATASPOKE_DATAHUB_URL ?? "";
   const langfuseUrl = process.env.DATASPOKE_LANGFUSE_URL ?? "";

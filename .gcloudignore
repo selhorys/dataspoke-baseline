@@ -1,4 +1,10 @@
 # Cloud Build: only upload files needed for docker-images/api/Dockerfile
+# Host dev / build artifacts — must never enter the build context (would bake
+# stale NEXT_PUBLIC_* values into the frontend image).
+.env
+.env.*
+*.local
+**/.next/
 .git/
 .venv/
 ref/
