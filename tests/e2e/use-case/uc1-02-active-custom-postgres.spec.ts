@@ -22,14 +22,17 @@
  *   7. Cleanup: Delete the source via ConfirmDialog.
  *      Backend: GET /sources/{id} → 404.
  *
- * Skip-guard: mirrors api-wired — if the dummy-data-pg secret ref is absent from
- * GET /spoke/ingestion/secrets, the test skips cleanly.
+ * Secret precondition: beforeAll provisions dataspoke-source-cred-dummy-data-pg
+ * idempotently via kubectl (create --dry-run=client -o yaml | apply -f -).
+ * The test skips cleanly only if DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD is unset.
  *
  * spec: USE_CASE_en.md §UC1 Case 2
  * spec: spec/feature/FRONTEND_INGESTION.md §Create View, §Source Detail, §Per-dataset reverse-lookup
+ * spec: spec/feature/SECRET_RESOLUTION.md §Reference-only model — out-of-band authoring
  * spec: spec/TESTING.md §End-to-End (E2E) Testing — dual confirmation, selector guidance
  */
 
+import { spawnSync } from "child_process";
 import { test, expect, IMAZON_URNS } from "../fixtures/index";
 
 // ── Constants (verbatim from api-wired test) ────────────────────────────────
@@ -68,28 +71,47 @@ const RECIPE_YAML = `source:
 
 let sourceId: string | null = null;
 
-// ── Skip-guard: mirrors api-wired _dummy_pg_secret_is_provisioned ─────────
-// spec: feature/SECRET_RESOLUTION.md §Reference discovery — skip via list endpoint
+// ── Secret provisioning: create-if-absent before any test step ────────────
+// spec: feature/SECRET_RESOLUTION.md §Reference-only model — out-of-band authoring
+// spec: spec/TESTING.md §E2E — secret-mutating setup in beforeAll, not test body
 //
-// beforeAll probes the secret list; sets a module-level flag if absent.
-// beforeEach calls test.skip() with the flag so each test skips cleanly.
+// Provisions dataspoke-source-cred-dummy-data-pg idempotently via kubectl
+// (--dry-run=client -o yaml | apply -f - is idempotent on repeated runs).
+// Skips cleanly only when DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD is unset.
 
 let _skipReason: string | null = null;
 
-test.beforeAll(async ({ adminApi }) => {
-  const resp = await adminApi.get("/api/v1/spoke/ingestion/secrets");
-  if (!resp.ok()) {
+test.beforeAll(async () => {
+  const password = process.env["DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD"] ?? "";
+  if (!password) {
     _skipReason =
-      "GET /spoke/ingestion/secrets returned non-200; cannot probe secret provisioning.";
+      "DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD is not set. " +
+      "Source helm-charts/.env before running this test. " +
+      "spec: feature/SECRET_RESOLUTION.md §Admin authoring guide.";
     return;
   }
-  const body = (await resp.json()) as { secrets: Array<{ ref: string }> };
-  const provisioned = body.secrets.some((s) => s.ref === SECRET_REF_BARE);
-  if (!provisioned) {
+
+  // Resolve namespace from env (mirrors _resolve_namespace() in util/k8s.py).
+  const namespace =
+    process.env["DATASPOKE_KUBE_DATASPOKE_NAMESPACE"] ?? "dataspoke-01";
+
+  // Idempotent kubectl create: --dry-run=client -o yaml | apply -f -
+  // "apply" is idempotent; the --dry-run+pipe pattern avoids the "already exists"
+  // error path. spawnSync with ["sh", "-c", ...] avoids the boolean shell: option
+  // that causes TS overload resolution to fail with execSync.
+  // spec: spec/feature/SECRET_RESOLUTION.md §Admin authoring guide.
+  // spec: spec/TESTING.md §E2E — reuse kubectl; no TS k8s client.
+  const cmd =
+    `kubectl create secret generic dataspoke-source-cred-dummy-data-pg` +
+    ` --from-literal=password=${password}` +
+    ` -n ${namespace}` +
+    ` --dry-run=client -o yaml | kubectl apply -f -`;
+  const result = spawnSync("sh", ["-c", cmd], { encoding: "utf-8" });
+  if (result.status !== 0) {
     _skipReason =
-      `Secret ref '${SECRET_REF_BARE}' not listed by GET /spoke/ingestion/secrets. ` +
-      "Pre-create K8s Secret 'dataspoke-source-cred-dummy-data-pg' with key 'password'. " +
-      "spec: feature/SECRET_RESOLUTION.md §Admin authoring guide.";
+      `kubectl failed to provision dataspoke-source-cred-dummy-data-pg: ` +
+      `${result.stderr ?? result.error}. ` +
+      "Ensure kubectl is on PATH and the cluster is reachable.";
   }
 });
 

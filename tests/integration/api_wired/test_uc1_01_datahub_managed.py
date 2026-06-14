@@ -20,11 +20,21 @@ Steps mirror USE_CASE_en.md §UC1 Case 1:
   6. Poll GET /sources/{id}/datasets (≤180s, ES budget);
      assert non-empty, valid derivation enum, non-catalog URNs, ≥1 matched derivation.
   7. Assert schedule round-trips ('0 0 * * *') and schedule_tier is absent from wire.
-  8. Cleanup: deleteIngestionSource, deleteSecret, re-run sync to remove mirrored rows.
+  8. Execute the source in DataHub via createIngestionExecutionRequest; poll to terminal
+     SUCCESS (≤180s); re-run sync; verify DataSpoke reflects the run:
+       PRIMARY:   GET /sources/{id}/event has INGESTION.COMPLETE with
+                  detail.execution_request_urn present and detail.source='datahub_sync'.
+       SECONDARY: GET /sources/{id}/datasets has ≥1 row with derivation='pipeline_name'
+                  and authority='high'.
+     Tolerant: skip if executor unavailable or run does not reach SUCCESS in budget.
+  9. Cleanup: deleteIngestionSource, deleteSecret, re-run sync to remove mirrored rows.
 
 spec: USE_CASE_en.md §UC1 Case 1
+spec: USE_CASE_en.md §UC1 Case 1 — execution beat: sync mirrors the run as INGESTION.COMPLETE
+      and upgrades datasets from matched/medium to pipeline_name/high
 spec: API.md §Ingestion — DATAHUB_MANAGED, read-only invariant (409 INGESTION_SOURCE_READONLY)
-spec: feature/BACKEND.md §Ingestion Service §Sync sweep
+spec: feature/BACKEND.md §Ingestion Service §Sync sweep steps 3-4
+spec: BACKEND_SCHEMA.md §ingestion_source_dataset — derivation→authority pairing
 spec: TESTING.md §Api-Wired Integration Tests
 """
 
@@ -127,6 +137,21 @@ async def _managed_source_setup(
 
     # Clean slate before test — spec: TESTING.md §Integration Testing §Per-Module reset
     await dataspoke_db.reset_ingestion_sources()
+
+    # Idempotency: drop any leftover DataHub Secret from a prior interrupted run.
+    # DataHub Secrets are name-keyed (urn:li:dataHubSecret:<name>) and survive a DataSpoke
+    # reset-seed, so without this createSecret below fails with "This Secret already exists!".
+    # Best-effort — ignore errors when the secret is absent (mirrors the teardown deleteSecret
+    # and the e2e uc1-01 step-1 pre-delete).
+    httpx.post(
+        f"{datahub_gms_url}/api/graphql",
+        headers=gql_headers,
+        json={
+            "query": "mutation deleteSecret($urn: String!) { deleteSecret(urn: $urn) }",
+            "variables": {"urn": f"urn:li:dataHubSecret:{_SECRET_NAME}"},
+        },
+        timeout=10.0,
+    )
 
     # ── Step 1a: Create DataHub Secret ────────────────────────────────────────
     # spec: USE_CASE_en.md §UC1 Case 1 — DataHub-recommended credential pattern uses
@@ -715,4 +740,319 @@ async def test_uc1_datahub_managed_sync_and_readonly(
         "even though its URN has a hash suffix and would not appear in the bare-URN check. "
         "spec: feature/BACKEND.md §Sync sweep step 1 — the sweep mirrors only non-system "
         "sources; datahub-gc and datahub-documents are excluded."
+    )
+
+
+@pytest.mark.asyncio
+async def test_uc1_datahub_managed_execute_and_reflect(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    internal_headers: dict[str, str],
+    _managed_source_setup: _ManagedSource,
+) -> None:
+    """UC1 Case 1 step 8 — execute source in DataHub; DataSpoke reflects the run.
+
+    Narrative from USE_CASE_en.md §UC1 Case 1:
+      "When the source runs in DataHub — on its daily schedule or a run triggered
+       manually — DataSpoke's next sync mirrors that execution into …/event as an
+       INGESTION.COMPLETE event and upgrades the covered datasets from matcher-mapped
+       (derivation=matched, authority=medium) to run-observed (derivation=pipeline_name,
+       authority=high), because DataHub stamps the source's identity on the aspects
+       the run emits."
+
+    Mechanism (ref/github/datahub/datahub-graphql-core/src/main/resources/ingestion.graphql
+    and ref/github/datahub/smoke-test/tests/managed_ingestion/managed_ingestion_test.py):
+      - Trigger: createIngestionExecutionRequest(input: {ingestionSourceUrn}) → exec URN
+      - Poll:    ingestionSource(urn){ executions(start:0,count:5){
+                     executionRequests { urn result { status } } } }
+                 until result.status ∈ {SUCCESS, SUCCEEDED} (≤180s budget)
+      - Re-sync: POST /internal/activities/ingestion/sync
+      - PRIMARY:   GET /sources/{id}/event → INGESTION.COMPLETE with
+                   detail.execution_request_urn present and detail.source='datahub_sync'
+      - SECONDARY: GET /sources/{id}/datasets → ≥1 row with derivation='pipeline_name'
+                   and authority='high'
+
+    Tolerant: if createIngestionExecutionRequest errors (executor unavailable) or the
+    execution does not reach SUCCESS/SUCCEEDED within the budget, the test is skipped with
+    a clear message — mirroring the executor-unavailable skip-guard style used in the
+    fixture setup.
+
+    spec: USE_CASE_en.md §UC1 Case 1 — execution beat: sync mirrors the run as
+          INGESTION.COMPLETE and upgrades datasets from matched/medium to pipeline_name/high
+    spec: feature/BACKEND.md §Sync sweep step 3 — observed enrichment writes
+          derivation='pipeline_name' / authority='high' when DataHub stamps pipelineName
+    spec: feature/BACKEND.md §Sync sweep step 4 — run events: _mirror_execution_requests
+          inserts INGESTION.COMPLETE with detail.execution_request_urn + source='datahub_sync'
+    spec: BACKEND_SCHEMA.md §ingestion_source_dataset — pipeline_name→high derivation/authority
+    spec: API.md §Ingestion — GET /sources/{id}/event, GET /sources/{id}/datasets
+    """
+    managed = _managed_source_setup
+
+    datahub_gms_url = os.environ.get("DATASPOKE_TEST_DATAHUB_GMS_URL", "")
+    datahub_token = os.environ.get("DATASPOKE_TEST_DATAHUB_TOKEN", "")
+
+    if not datahub_gms_url:
+        pytest.skip("DATASPOKE_TEST_DATAHUB_GMS_URL not set; skipping execution step")
+
+    gql_headers: dict[str, str] = {"Content-Type": "application/json"}
+    if datahub_token:
+        gql_headers["Authorization"] = f"Bearer {datahub_token}"
+
+    # ── Step 8a: Trigger the execution in DataHub ─────────────────────────────
+    # spec: ref/github/datahub/datahub-graphql-core/src/main/resources/ingestion.graphql
+    #   createIngestionExecutionRequest(input: CreateIngestionExecutionRequestInput!)
+    #   input field: ingestionSourceUrn: String!
+    #   return: String (execution request URN)
+    # spec: ref/github/datahub/smoke-test/tests/managed_ingestion/managed_ingestion_test.py
+    #   test_create_list_get_ingestion_execution_request — confirmed mutation shape
+    exec_mutation = """
+    mutation createIngestionExecutionRequest($input: CreateIngestionExecutionRequestInput!) {
+        createIngestionExecutionRequest(input: $input)
+    }
+    """
+    try:
+        exec_resp = httpx.post(
+            f"{datahub_gms_url}/api/graphql",
+            headers=gql_headers,
+            json={
+                "query": exec_mutation,
+                "variables": {"input": {"ingestionSourceUrn": managed.urn}},
+            },
+            timeout=20.0,
+        )
+        exec_resp.raise_for_status()
+        exec_data = exec_resp.json()
+    except Exception as exc:
+        pytest.skip(
+            f"createIngestionExecutionRequest HTTP error: {exc}. "
+            "DataHub executor may not be available in this dev-env."
+        )
+
+    if "errors" in exec_data:
+        pytest.skip(
+            f"createIngestionExecutionRequest GraphQL error: {exec_data['errors']}. "
+            "DataHub executor may not be available or ready in this dev-env."
+        )
+    execution_request_urn: str = exec_data.get("data", {}).get(
+        "createIngestionExecutionRequest"
+    ) or ""
+    if not execution_request_urn:
+        pytest.skip(
+            f"createIngestionExecutionRequest returned no URN: {exec_data}. "
+            "Skipping execution-and-reflect step."
+        )
+
+    # ── Step 8b: Poll the execution to terminal SUCCESS/SUCCEEDED (≤180s) ─────
+    # spec: ref/github/datahub/datahub-graphql-core/src/main/resources/ingestion.graphql
+    #   ingestionSource(urn: String!) { executions(start:0, count:5) {
+    #       total executionRequests { urn result { status } } } }
+    #   result.status: String! — terminal values per service.py:
+    #     SUCCESS / SUCCEEDED → INGESTION_COMPLETE (→ test succeeds)
+    #     every other terminal value (FAILURE, CANCELLED, ABORTED, TIMEOUT, …) →
+    #       INGESTION_FAIL (executor ran but source errored → skip, not fail)
+    #     PENDING / RUNNING → in-progress → keep polling
+    #     SKIPPED / UP_FOR_RETRY → non-terminal ambiguous → keep polling
+    #     None / absent result → still running → keep polling
+    poll_query = """
+    query ingestionSource($urn: String!) {
+        ingestionSource(urn: $urn) {
+            executions(start: 0, count: 5) {
+                total
+                executionRequests {
+                    urn
+                    result {
+                        status
+                    }
+                }
+            }
+        }
+    }
+    """
+    # Terminal statuses per _DATAHUB_SUCCESS_STATUSES / _DATAHUB_SKIP_STATUSES in service.py.
+    # Anything not in skip set and not None is a terminal outcome (success or failure).
+    _SUCCESS_STATUSES = frozenset({"SUCCESS", "SUCCEEDED"})
+    # In-progress (PENDING/RUNNING) and ambiguous (SKIPPED/UP_FOR_RETRY) statuses are not
+    # terminal — keep polling. Only SUCCESS/SUCCEEDED or a hard-failure status ends the loop.
+    _NON_TERMINAL_STATUSES = frozenset({"PENDING", "RUNNING", "SKIPPED", "UP_FOR_RETRY"})
+
+    poll_deadline = time.time() + 180.0
+    poll_interval = 8.0
+    exec_status: str | None = None
+
+    while time.time() < poll_deadline:
+        try:
+            poll_resp = httpx.post(
+                f"{datahub_gms_url}/api/graphql",
+                headers=gql_headers,
+                json={"query": poll_query, "variables": {"urn": managed.urn}},
+                timeout=15.0,
+            )
+            poll_resp.raise_for_status()
+            poll_data = poll_resp.json()
+        except Exception:
+            await asyncio.sleep(poll_interval)
+            continue
+
+        exec_requests = (
+            poll_data.get("data", {})
+            .get("ingestionSource", {})
+            .get("executions", {})
+            .get("executionRequests", [])
+        )
+        # Find the execution request we triggered by URN
+        for req in exec_requests:
+            if req.get("urn") == execution_request_urn:
+                result = req.get("result") or {}
+                status = result.get("status") or None
+                if status and status not in _NON_TERMINAL_STATUSES:
+                    # Terminal: either success or failure
+                    exec_status = status
+                    break
+        if exec_status is not None:
+            break
+        await asyncio.sleep(poll_interval)
+
+    if exec_status is None:
+        pytest.skip(
+            f"Execution {execution_request_urn!r} did not reach a terminal status "
+            f"within 180s (last poll: no terminal result seen). "
+            "DataHub executor may be slow or unavailable in this dev-env. "
+            "spec: TESTING.md — tolerant skip when executor unavailable."
+        )
+
+    if exec_status not in _SUCCESS_STATUSES:
+        pytest.skip(
+            f"Execution {execution_request_urn!r} completed with non-success status "
+            f"{exec_status!r} (executor ran but source errored — likely a connectivity "
+            "issue in this dev-env, not a DataSpoke bug). "
+            "spec: TESTING.md — tolerant skip when executor completes with failure."
+        )
+
+    # ── Step 8c: Re-run DataSpoke sync to mirror the completed execution ──────
+    # spec: feature/BACKEND.md §Sync sweep step 4 — _mirror_execution_requests mirrors
+    #   terminal execution requests for DATAHUB_MANAGED sources as INGESTION.COMPLETE events.
+    sync_resp = await api_client.post(
+        "/internal/activities/ingestion/sync",
+        headers=internal_headers,
+    )
+    assert sync_resp.status_code == 200, (
+        f"POST /internal/activities/ingestion/sync after execution expected 200, "
+        f"got {sync_resp.status_code}: {sync_resp.text}"
+    )
+
+    # ── Step 8d: PRIMARY — GET /sources/{id}/event → INGESTION.COMPLETE ──────
+    # spec: USE_CASE_en.md §UC1 Case 1 — "DataSpoke's next sync mirrors that execution
+    #   into …/event as an INGESTION.COMPLETE event"
+    # spec: feature/BACKEND.md §Sync sweep step 4 — _mirror_execution_requests inserts
+    #   Event(event_type=INGESTION_COMPLETE, status='success',
+    #         detail={execution_request_urn: ..., source: 'datahub_sync'})
+    # Poll briefly to let the event row settle (sync is synchronous but DB may lag).
+    event_body: dict = {}
+    found_event: dict | None = None
+    deadline = time.time() + 30.0
+    while time.time() < deadline:
+        event_resp = await api_client.get(
+            f"/api/v1/spoke/ingestion/sources/{managed.id}/event",
+            headers=admin_headers,
+        )
+        assert event_resp.status_code == 200, (
+            f"GET /sources/{managed.id}/event expected 200, "
+            f"got {event_resp.status_code}: {event_resp.text}"
+        )
+        event_body = event_resp.json()
+        for evt in event_body.get("events", []):
+            if evt.get("event_type") == "INGESTION.COMPLETE":
+                detail = evt.get("detail") or {}
+                if detail.get("execution_request_urn") == execution_request_urn:
+                    found_event = evt
+                    break
+        if found_event is not None:
+            break
+        await asyncio.sleep(2.0)
+
+    assert found_event is not None, (
+        f"Expected an INGESTION.COMPLETE event with "
+        f"detail.execution_request_urn={execution_request_urn!r} in "
+        f"GET /sources/{managed.id}/event within 30s after sync. "
+        f"Events returned: {event_body.get('events', [])}. "
+        "spec: USE_CASE_en.md §UC1 Case 1 — sync mirrors run as INGESTION.COMPLETE event. "
+        "spec: feature/BACKEND.md §Sync sweep step 4 — _mirror_execution_requests."
+    )
+
+    # Verify the event's status and detail fields.
+    # spec: feature/BACKEND.md §Sync sweep step 4 — Event carries status='success',
+    #   detail.source='datahub_sync', detail.execution_request_urn=<urn>
+    assert found_event.get("status") == "success", (
+        f"INGESTION.COMPLETE event must carry status='success'; "
+        f"got {found_event.get('status')!r}. "
+        "spec: feature/BACKEND.md §Sync sweep step 4 — _mirror_execution_requests."
+    )
+    event_detail = found_event.get("detail") or {}
+    assert event_detail.get("source") == "datahub_sync", (
+        f"INGESTION.COMPLETE event detail.source must be 'datahub_sync'; "
+        f"got {event_detail.get('source')!r}. "
+        "spec: feature/BACKEND.md §Sync sweep step 4 — _mirror_execution_requests: "
+        "detail.source='datahub_sync' identifies the sync origin."
+    )
+    assert event_detail.get("execution_request_urn"), (
+        f"INGESTION.COMPLETE event detail.execution_request_urn must be present and non-empty; "
+        f"got {event_detail.get('execution_request_urn')!r}. "
+        "spec: feature/BACKEND.md §Sync sweep step 4 — _mirror_execution_requests: "
+        "detail carries execution_request_urn for traceability."
+    )
+
+    # ── Step 8e: SECONDARY — GET /sources/{id}/datasets → pipeline_name / high ─
+    # spec: USE_CASE_en.md §UC1 Case 1 — "upgrades the covered datasets from
+    #   matcher-mapped (derivation=matched, authority=medium) to run-observed
+    #   (derivation=pipeline_name, authority=high), because DataHub stamps the source's
+    #   identity on the aspects the run emits."
+    # spec: feature/BACKEND.md §Sync sweep step 3 — _link_pipeline_datasets upserts
+    #   derivation='pipeline_name' where systemMetadata.pipelineName == datahub_source_urn.
+    # spec: BACKEND_SCHEMA.md §ingestion_source_dataset — pipeline_name→authority='high'.
+    #
+    # NOTE: pipeline_name enrichment requires that DataHub has stamped pipelineName on
+    # the aspects emitted by the run.  In the dev-env the executor targets the
+    # example-postgres instance which is also the DataHub sink; systemMetadata.pipelineName
+    # is stamped by the DataHub ingestion framework to the source URN.  We give the ES
+    # index a brief settle window via the same sync+poll pattern.
+    datasets_body: dict = {}
+    pipeline_name_rows: list = []
+    deadline = time.time() + 60.0
+    while time.time() < deadline:
+        # Re-trigger sync so any freshly-indexed pipelineName aspects are picked up.
+        try:
+            await api_client.post(
+                "/internal/activities/ingestion/sync",
+                headers=internal_headers,
+            )
+        except Exception:
+            pass
+
+        ds_resp = await api_client.get(
+            f"/api/v1/spoke/ingestion/sources/{managed.id}/datasets",
+            headers=admin_headers,
+        )
+        assert ds_resp.status_code == 200, (
+            f"GET /sources/{managed.id}/datasets expected 200, "
+            f"got {ds_resp.status_code}: {ds_resp.text}"
+        )
+        datasets_body = ds_resp.json()
+        pipeline_name_rows = [
+            d
+            for d in datasets_body.get("datasets", [])
+            if d.get("derivation") == "pipeline_name" and d.get("authority") == "high"
+        ]
+        if pipeline_name_rows:
+            break
+        await asyncio.sleep(8.0)
+
+    assert pipeline_name_rows, (
+        f"Expected ≥1 dataset row with derivation='pipeline_name' and authority='high' "
+        f"in GET /sources/{managed.id}/datasets after a successful DataHub execution "
+        f"and re-sync (within 60s). "
+        f"Datasets returned: {datasets_body.get('datasets', [])}. "
+        "spec: USE_CASE_en.md §UC1 Case 1 — execution upgrades datasets from matched/medium "
+        "to pipeline_name/high via DataHub systemMetadata.pipelineName stamping. "
+        "spec: feature/BACKEND.md §Sync sweep step 3 — _link_pipeline_datasets upserts "
+        "pipeline_name rows where pipelineName matches datahub_source_urn."
     )

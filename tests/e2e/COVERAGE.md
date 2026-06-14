@@ -38,7 +38,7 @@ group does not cover the route; the other column does.
 |---|---|---|
 | `/ingestion` | `uc1-02-active-custom-postgres.spec.ts` step 7; `uc1-03-passive-kafka.spec.ts` step 6; `uc1-01-datahub-managed.spec.ts` step 3 (list view, DATAHUB_MANAGED filter) | `ground/shell/reader-write-suppressed.reader.spec.ts` (Reader read-only: "Create source" absent) |
 | `/ingestion/sources/new` | `uc1-02-active-custom-postgres.spec.ts` step 1 (create ACTIVE_CUSTOM_MANAGED); `uc1-03-passive-kafka.spec.ts` step 1 (create PASSIVE) | — |
-| `/ingestion/sources/[id]` | `uc1-02-active-custom-postgres.spec.ts` steps 2–7; `uc1-03-passive-kafka.spec.ts` steps 2–3, 5–6; `uc1-01-datahub-managed.spec.ts` steps 4–5 (detail, run, datasets, events, read-only, delete) | — |
+| `/ingestion/sources/[id]` | `uc1-02-active-custom-postgres.spec.ts` steps 2–7; `uc1-03-passive-kafka.spec.ts` steps 2–3, 5–6; `uc1-01-datahub-managed.spec.ts` steps 4–6 (detail, run, datasets, events, read-only, INGESTION.COMPLETE event row, pipeline_name/high authority cell after real execution) | — |
 | `/ingestion/unmanaged` | `uc1-03-passive-kafka.spec.ts` steps 0, 4 (before/after source creation) | — |
 | `/ingestion/data/[urn]` | `uc1-02-active-custom-postgres.spec.ts` step 6 (reverse-lookup) | — |
 

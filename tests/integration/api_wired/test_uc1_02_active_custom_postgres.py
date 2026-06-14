@@ -14,14 +14,15 @@ Steps mirror USE_CASE_en.md §UC1 Case 2:
   8. GET /spoke/common/data/{catalog_urn}/attr/ingestion → reverse-lookup returns this source
   9. Cleanup: DELETE /sources/{id}
 
-The test skips cleanly when the dummy-data-pg K8s Secret is not provisioned in the cluster
-(checked via GET /spoke/ingestion/secrets before the first mutation).
+The K8s Secret dataspoke-source-cred-dummy-data-pg is provisioned in the setup fixture
+(create-if-absent, idempotent) using DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD from
+helm-charts/.env. The test skips cleanly only if that env var is unset.
 
 spec: USE_CASE_en.md §UC1 Case 2
 spec: API.md §Ingestion (/spoke/ingestion/sources)
 spec: feature/BACKEND.md §Ingestion Service §Active-custom run pipeline
-spec: feature/SECRET_RESOLUTION.md §Reference discovery — skip guard
-spec: TESTING.md §Api-Wired Integration Tests
+spec: feature/SECRET_RESOLUTION.md §Reference-only model — out-of-band secret authoring
+spec: TESTING.md §Api-Wired Integration Tests — secret-mutating setup in fixtures
 """
 
 import asyncio
@@ -47,7 +48,7 @@ _PG_HOST_PORT = os.environ.get(
 
 # Secret reference: K8s Secret dataspoke-source-cred-dummy-data-pg, key 'password'.
 # The <name> segment (dummy-data-pg) must be DNS-label-safe (hyphens, no underscores).
-# The secret must be pre-created in the cluster; DataSpoke lists and resolves it at run time.
+# DataSpoke lists and resolves it at run time; the test fixture provisions it beforehand.
 # spec: USE_CASE_en.md §UC1 Case 2 — password: '${dummy-data-pg__password}'
 # spec: feature/SECRET_RESOLUTION.md §Name prefix policy — <name> DNS-label-safe
 _SECRET_REF = "${dummy-data-pg__password}"
@@ -63,6 +64,36 @@ _PG_PLAINTEXT_PASSWORD = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSW
 DUMMY_DATA_DATAHUB_SCHEMAS: frozenset[str] = frozenset(["catalog"])
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _provision_source_cred_secret() -> None:
+    """Provision dataspoke-source-cred-dummy-data-pg K8s Secret before any test in this module.
+
+    Creates the Secret idempotently (never overwrites an existing value) using
+    DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD from helm-charts/.env. This is the
+    test-setup analogue of the operator authoring step in
+    spec/feature/SECRET_RESOLUTION.md §Admin authoring guide.
+
+    Secret-mutating setup belongs in the fixture, not the REST-only test body.
+    spec: spec/TESTING.md §Api-Wired Integration Tests — REST-only test body
+    spec: spec/feature/SECRET_RESOLUTION.md §Reference-only model — out-of-band provisioning
+
+    The Secret is NOT deleted on teardown: it is operator-owned and idempotent with
+    the install.sh post-install provisioning step (install.sh:873).
+    """
+    password = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD", "")
+    if not password:
+        pytest.skip(
+            "DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD is not set. "
+            "Source helm-charts/.env before running this test. "
+            "spec: feature/SECRET_RESOLUTION.md §Admin authoring guide."
+        )
+
+    from tests.integration.util.k8s import ensure_source_cred_secret
+
+    ensure_source_cred_secret("dummy-data-pg", "password", password)
+    # No teardown — the Secret is operator-owned, idempotent on re-run.
+
+
 @pytest_asyncio.fixture(autouse=True)
 async def _clean_ingestion_sources() -> AsyncGenerator[None]:
     """Reset ingestion_source table before and after each test in this module.
@@ -76,26 +107,6 @@ async def _clean_ingestion_sources() -> AsyncGenerator[None]:
     yield
     await dataspoke_db.reset_ingestion_sources()
 
-
-async def _dummy_pg_secret_is_provisioned(
-    api_client: httpx.AsyncClient,
-    admin_headers: dict[str, str],
-) -> bool:
-    """Return True if the dummy-data-pg secret ref is listed by GET /spoke/ingestion/secrets.
-
-    The test is REST-only and cannot read k8s directly; we probe the API's own
-    secret-list endpoint as the skip guard.
-
-    spec: feature/SECRET_RESOLUTION.md §Reference discovery (list flow)
-    spec: TESTING.md §Api-Wired Integration Tests — REST-only guard
-    """
-    resp = await api_client.get("/api/v1/spoke/ingestion/secrets", headers=admin_headers)
-    if resp.status_code != 200:
-        return False
-    return any(
-        item.get("ref") == _SECRET_REF_BARE
-        for item in resp.json().get("secrets", [])
-    )
 
 # ── Catalog URNs (resolvable after DUMMY_DATA_DATAHUB_SCHEMAS seed) ───────────
 # spec: project_datahub_resolvable_urns_catalog_only — only catalog.* seeded into DataHub
@@ -120,24 +131,30 @@ async def test_uc1_active_custom_postgres(
        extractor on the schedule. The recipe is DataHub-compatible; the password
        references a k8s secret via ${name__key}."
 
-    Skips when the dataspoke-source-cred-dummy-data-pg K8s Secret is absent from the cluster
-    (probed via GET /spoke/ingestion/secrets) so the test fails cleanly rather than with a
-    confusing SECRET_REF_NOT_FOUND error.
+    The K8s Secret dataspoke-source-cred-dummy-data-pg is provisioned by
+    _provision_source_cred_secret() (module-scoped fixture) before this test runs.
+    The test then asserts that GET /spoke/ingestion/secrets lists the ref — confirming
+    the DataSpoke secret-list endpoint sees the just-provisioned Secret.
 
     spec: USE_CASE_en.md §UC1 Case 2
     spec: API.md §Ingestion — POST /spoke/ingestion/sources (ACTIVE_CUSTOM_MANAGED)
     spec: feature/BACKEND.md §Ingestion Service §Active-custom run pipeline
-    spec: feature/SECRET_RESOLUTION.md §Reference discovery — skip guard via list endpoint
+    spec: feature/SECRET_RESOLUTION.md §Reference discovery (list flow)
     """
-    # Skip-guard: probe the API's own secret-list endpoint (REST-only; cannot read k8s directly).
-    # spec: feature/SECRET_RESOLUTION.md §Reference discovery (list flow)
-    if not await _dummy_pg_secret_is_provisioned(api_client, admin_headers):
-        pytest.skip(
-            f"Secret ref '{_SECRET_REF_BARE}' not listed by GET /spoke/ingestion/secrets. "
-            "Pre-create K8s Secret 'dataspoke-source-cred-dummy-data-pg' with key 'password' "
-            "to run the real-run UC1 Case 2 test. "
-            "spec: feature/SECRET_RESOLUTION.md §Admin authoring guide."
-        )
+    # Assert the provisioned secret is now visible via GET /spoke/ingestion/secrets.
+    # This confirms the DataSpoke list endpoint reflects the out-of-band Secret creation.
+    # spec: feature/SECRET_RESOLUTION.md §Reference discovery — list flow
+    secrets_resp = await api_client.get("/api/v1/spoke/ingestion/secrets", headers=admin_headers)
+    assert secrets_resp.status_code == 200, (
+        f"GET /spoke/ingestion/secrets expected 200, got {secrets_resp.status_code}: "
+        f"{secrets_resp.text}"
+    )
+    listed_refs = [item.get("ref") for item in secrets_resp.json().get("secrets", [])]
+    assert _SECRET_REF_BARE in listed_refs, (
+        f"Secret ref '{_SECRET_REF_BARE}' not listed by GET /spoke/ingestion/secrets "
+        f"after provisioning. Listed refs: {listed_refs}. "
+        "spec: feature/SECRET_RESOLUTION.md §Reference discovery (list flow)"
+    )
 
     source_id: str | None = None
 

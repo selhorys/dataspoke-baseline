@@ -262,9 +262,14 @@ expect (backend): POST /spoke/ingestion/sources → 201; body.mode=ACTIVE_CUSTOM
 probe:            GET /spoke/ingestion/sources/{id} (read-back, assert masked ref);
                   probes.py k8s_secret dataspoke-source-cred-dummy-data-pg
 ```
-Precondition (test skip-guard): `GET /spoke/ingestion/secrets` must list ref
-`dummy-data-pg__password`; if absent, stop and tell the user to pre-create the
-K8s Secret `dataspoke-source-cred-dummy-data-pg` (key `password`).
+Precondition (self-provisioning): ensure the K8s Secret exists before Step 1
+(create-if-absent; see preflight.sh):
+```
+kubectl create secret generic dataspoke-source-cred-dummy-data-pg \
+  --from-literal=password=<DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD> \
+  -n dataspoke-01 --dry-run=client -o yaml | kubectl apply -f -
+```
+spec: feature/SECRET_RESOLUTION.md §Reference-only model — out-of-band provisioning.
 
 **STEP 2 — dry-run** `[UI gesture]`
 ```

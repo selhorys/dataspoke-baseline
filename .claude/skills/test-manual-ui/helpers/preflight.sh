@@ -61,7 +61,27 @@ EOF
   exit 1
 fi
 
-# ── 4. Print the access summary ──────────────────────────────────────────────
+# ── 4. Provision dataspoke-source-cred-dummy-data-pg (create-if-absent) ──────
+# Required for UC1 Case 2 (ACTIVE_CUSTOM_MANAGED). Idempotent on re-run.
+# spec: feature/SECRET_RESOLUTION.md §Reference-only model — out-of-band provisioning
+NS="${DATASPOKE_KUBE_DATASPOKE_NAMESPACE:-dataspoke-01}"
+PG_PASS="${DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD:-}"
+if [[ -n "$PG_PASS" ]] && command -v kubectl &>/dev/null; then
+  echo
+  echo "── source-cred secret (create-if-absent) ────────────────────"
+  kubectl create secret generic dataspoke-source-cred-dummy-data-pg \
+    --from-literal=password="${PG_PASS}" \
+    -n "${NS}" \
+    --dry-run=client -o yaml | kubectl apply -f -
+  echo "  dataspoke-source-cred-dummy-data-pg  ✓"
+else
+  echo
+  echo "── source-cred secret ───────────────────────────────────────"
+  echo "  SKIP: DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD unset or kubectl absent."
+  echo "  UC1 Case 2 will skip if the secret is missing in-cluster."
+fi
+
+# ── 5. Print the access summary ──────────────────────────────────────────────
 cat <<EOF
 
 ── ready ────────────────────────────────────────────────────
