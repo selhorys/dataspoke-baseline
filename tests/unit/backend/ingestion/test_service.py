@@ -8,6 +8,8 @@ Covers:
 - list_active_sources_for_tier: mode + tier filter
 - list_datasets_for_source: propagates EntityNotFoundError on unknown source
 - get_source: raises EntityNotFoundError for non-existent ID
+- _mirror_execution_requests: DataHub status → INGESTION_COMPLETE / INGESTION_FAIL /
+  no-event mapping per spec/feature/BACKEND.md §Sync step 4 (Run events).
 
 Spec: spec/feature/BACKEND.md §Ingestion Service
 Spec: spec/feature/BACKEND_SCHEMA.md §ingestion_source, §ingestion_source_dataset
@@ -413,7 +415,8 @@ class TestReverseLookupPrecedence:
         assert winner.name == "pipeline-source", (
             f"Expected 'pipeline-source' (pipeline_name derivation) to win; "
             f"got '{winner.name}'. "
-            "Spec: BACKEND_SCHEMA.md §ingestion_source_dataset — pipeline_name (high) > matched (medium)."
+            "Spec: BACKEND_SCHEMA.md §ingestion_source_dataset"
+            " — pipeline_name (high) > matched (medium)."
         )
 
     @pytest.mark.asyncio
@@ -486,3 +489,193 @@ class TestListDatasetsForSource:
         mock_scalar_query(db, None)
         with pytest.raises(EntityNotFoundError):
             await service.list_datasets_for_source(str(uuid.uuid4()))
+
+
+# ── _mirror_execution_requests: DataHub status mapping ───────────────────────
+
+
+class TestMirrorExecutionRequestsStatusMapping:
+    """Spec: spec/feature/BACKEND.md §Sync step 4 (Run events) — DataHub execution-result
+    statuses map to INGESTION_COMPLETE, INGESTION_FAIL, or no event (SKIPPED/UP_FOR_RETRY).
+
+    `list_execution_requests` (src/shared/datahub/client.py) returns only terminal requests
+    (those carrying a populated result), so RUNNING/PENDING statuses never reach this mapping.
+    The mapping operates on the terminal set the client already filtered.
+
+    Invariants per spec:
+      SUCCESS / SUCCEEDED → INGESTION.COMPLETE, status 'success'
+      SKIPPED / UP_FOR_RETRY → no Event written (non-terminal/ambiguous, not mirrored)
+      every other terminal status (FAILURE / CANCELLED / ABORTED / TIMEOUT / …)
+          → INGESTION.FAIL, status 'failure'
+    """
+
+    def _make_exec_request(self, status: str, start_ms: int = 1_700_000_000_000) -> dict:
+        return {
+            "urn": f"urn:li:dataHubExecutionRequest:test-{status}",
+            "status": status,
+            "startTimeMs": start_ms,
+            "durationMs": 1000,
+        }
+
+    def _dup_check_returns_none(self, db: AsyncMock) -> None:
+        """Make every dedup-query (scalar_one_or_none) return None → no duplicate."""
+        dup_result = MagicMock()
+        dup_result.scalar_one_or_none.return_value = None
+        db.execute = AsyncMock(return_value=dup_result)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("datahub_status", ["SUCCESS", "SUCCEEDED"])
+    async def test_success_statuses_write_complete_event(
+        self,
+        service: IngestionService,
+        db: AsyncMock,
+        datahub: AsyncMock,
+        datahub_status: str,
+    ) -> None:
+        """DataHub SUCCESS / SUCCEEDED → Event(event_type=INGESTION.COMPLETE, status='success').
+
+        Spec: spec/feature/BACKEND.md §Sync step 4 (Run events) — 'SUCCESS (and SUCCEEDED,
+        for cross-version safety) → INGESTION.COMPLETE'; dedup key is
+        (entity_id, event_type, occurred_at); entity_type = "ingestion_source".
+        """
+        from src.shared.events import INGESTION_COMPLETE
+
+        source_id = str(uuid.uuid4())
+        dh_urn = "urn:li:dataHubIngestionSource:abc"
+
+        datahub.list_execution_requests = AsyncMock(
+            return_value=[self._make_exec_request(datahub_status)]
+        )
+        self._dup_check_returns_none(db)
+
+        count = await service._mirror_execution_requests(source_id, dh_urn)
+
+        assert count == 1, (
+            f"Expected 1 event for DataHub status {datahub_status!r}; got {count}."
+        )
+        db.add.assert_called_once()
+        added_event = db.add.call_args[0][0]
+        assert added_event.event_type == INGESTION_COMPLETE, (
+            f"Expected event_type={INGESTION_COMPLETE!r} for {datahub_status!r}; "
+            f"got {added_event.event_type!r}."
+        )
+        assert added_event.status == "success"
+        # F2: assert dedup-key fields per spec — entity_type and entity_id are contract fields.
+        assert added_event.entity_type == "ingestion_source", (
+            f"Expected entity_type='ingestion_source'; got {added_event.entity_type!r}. "
+            "Spec: spec/feature/BACKEND.md §Sync step 4 (Run events) — "
+            "entity_type = 'ingestion_source' for source-level run events."
+        )
+        assert added_event.entity_id == source_id, (
+            f"Expected entity_id={source_id!r}; got {added_event.entity_id!r}. "
+            "Spec: spec/feature/BACKEND.md §Sync step 4 (Run events) — "
+            "dedup key includes entity_id = source_id."
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("datahub_status", ["SKIPPED", "UP_FOR_RETRY"])
+    async def test_non_terminal_statuses_write_no_event(
+        self,
+        service: IngestionService,
+        db: AsyncMock,
+        datahub: AsyncMock,
+        datahub_status: str,
+    ) -> None:
+        """DataHub SKIPPED / UP_FOR_RETRY → no Event row written.
+
+        Spec: spec/feature/BACKEND.md §Sync step 4 (Run events) — 'SKIPPED / UP_FOR_RETRY
+        are non-terminal/ambiguous and are not mirrored'.
+        Although list_execution_requests filters to terminal (result-populated) requests,
+        SKIPPED and UP_FOR_RETRY may still appear; the mapping explicitly drops them.
+        """
+        source_id = str(uuid.uuid4())
+        dh_urn = "urn:li:dataHubIngestionSource:abc"
+
+        datahub.list_execution_requests = AsyncMock(
+            return_value=[self._make_exec_request(datahub_status)]
+        )
+
+        count = await service._mirror_execution_requests(source_id, dh_urn)
+
+        assert count == 0, (
+            f"Expected 0 events for DataHub status {datahub_status!r} "
+            f"(non-terminal/ambiguous); got {count}."
+        )
+        db.add.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("datahub_status", ["FAILURE", "CANCELLED", "ABORTED"])
+    async def test_failure_statuses_write_fail_event(
+        self,
+        service: IngestionService,
+        db: AsyncMock,
+        datahub: AsyncMock,
+        datahub_status: str,
+    ) -> None:
+        """DataHub FAILURE / CANCELLED / ABORTED → INGESTION.FAIL event, status='failure'.
+
+        Spec: spec/feature/BACKEND.md §Sync step 4 (Run events) — 'every other terminal
+        status (FAILURE / CANCELLED / ABORTED / TIMEOUT / …) → INGESTION.FAIL'.
+        list_execution_requests returns only terminal requests; these statuses are among
+        the terminal set that maps to INGESTION.FAIL.
+        """
+        from src.shared.events import INGESTION_FAIL
+
+        source_id = str(uuid.uuid4())
+        dh_urn = "urn:li:dataHubIngestionSource:abc"
+
+        datahub.list_execution_requests = AsyncMock(
+            return_value=[self._make_exec_request(datahub_status)]
+        )
+        self._dup_check_returns_none(db)
+
+        count = await service._mirror_execution_requests(source_id, dh_urn)
+
+        assert count == 1, (
+            f"Expected 1 event for DataHub status {datahub_status!r}; got {count}."
+        )
+        db.add.assert_called_once()
+        added_event = db.add.call_args[0][0]
+        assert added_event.event_type == INGESTION_FAIL, (
+            f"Expected event_type={INGESTION_FAIL!r} for {datahub_status!r}; "
+            f"got {added_event.event_type!r}."
+        )
+        assert added_event.status == "failure"
+
+    @pytest.mark.asyncio
+    async def test_mixed_statuses_skip_and_terminal_combined(
+        self,
+        service: IngestionService,
+        db: AsyncMock,
+        datahub: AsyncMock,
+    ) -> None:
+        """Multiple requests: SUCCESS→event, SKIPPED→no event, FAILURE→event.
+
+        Spec: spec/feature/BACKEND.md §Sync step 4 (Run events) — status mapping
+        applied per-request across the terminal batch returned by list_execution_requests.
+        """
+        from src.shared.events import INGESTION_COMPLETE, INGESTION_FAIL
+
+        source_id = str(uuid.uuid4())
+        dh_urn = "urn:li:dataHubIngestionSource:abc"
+
+        # Three requests with distinct timestamps so dedup doesn't collapse them.
+        datahub.list_execution_requests = AsyncMock(
+            return_value=[
+                self._make_exec_request("SUCCESS", start_ms=1_700_000_001_000),
+                self._make_exec_request("SKIPPED", start_ms=1_700_000_002_000),
+                self._make_exec_request("FAILURE", start_ms=1_700_000_003_000),
+            ]
+        )
+        # Dedup query always returns None (no existing events).
+        dup_result = MagicMock()
+        dup_result.scalar_one_or_none.return_value = None
+        db.execute = AsyncMock(return_value=dup_result)
+
+        count = await service._mirror_execution_requests(source_id, dh_urn)
+
+        # Only SUCCESS and FAILURE produce events; SKIPPED is dropped.
+        assert count == 2
+        assert db.add.call_count == 2
+        added_types = {call[0][0].event_type for call in db.add.call_args_list}
+        assert added_types == {INGESTION_COMPLETE, INGESTION_FAIL}

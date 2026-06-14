@@ -319,9 +319,13 @@ DAG) reconciles all modes:
    stamps the source URN), `ACTIVE_CUSTOM_MANAGED` (DataSpoke's extractor stamps the source id).
    `derivation = pipeline_name` (authority `high`). Not used for `PASSIVE`.
 4. **Run events**: mirror run history into the `events` table — `listExecutionRequests` for
-   `DATAHUB_MANAGED`; `Operation` / `DataProcessInstance` observation for `PASSIVE` — with
+   `DATAHUB_MANAGED` (only terminal requests, i.e. those carrying a populated result);
+   `Operation` / `DataProcessInstance` observation for `PASSIVE` — with
    `event_type = INGESTION.COMPLETE` / `INGESTION.FAIL`, deduplicated by
-   `(entity_id, event_type, occurred_at)`.
+   `(entity_id, event_type, occurred_at)`. DataHub execution status maps as: `SUCCESS` (and
+   `SUCCEEDED`, for cross-version safety) → `INGESTION.COMPLETE`; `SKIPPED` / `UP_FOR_RETRY` are
+   non-terminal/ambiguous and are **not** mirrored; every other terminal status
+   (`FAILURE` / `CANCELLED` / `ABORTED` / `TIMEOUT` / …) → `INGESTION.FAIL`.
 5. **Unmanaged bucket**: datasets in DataHub linked to no source (served by
    `GET /spoke/ingestion/unmanaged`).
 

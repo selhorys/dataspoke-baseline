@@ -517,7 +517,8 @@ class DataHubClient:
 
         Each returned dict contains:
           - urn (str): execution request URN
-          - status (str): "SUCCEEDED" | "FAILED" | other
+          - status (str): "SUCCESS" | "FAILURE" | other terminal value
+            (CANCELLED/ABORTED/TIMEOUT/…)
           - startTimeMs (int | None): epoch ms when the task began
           - durationMs (int | None): task duration in ms
 

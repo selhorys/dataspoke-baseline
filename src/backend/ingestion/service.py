@@ -69,6 +69,15 @@ from src.shared.secrets import (
 
 logger = logging.getLogger(__name__)
 
+# DataHub execution-result status mapping:
+#   SUCCESS (and SUCCEEDED, for cross-version safety) → INGESTION_COMPLETE
+#   SKIPPED / UP_FOR_RETRY → skipped (not mirrored as events)
+#   every other terminal status (FAILURE/CANCELLED/ABORTED/TIMEOUT/…) → INGESTION_FAIL
+_DATAHUB_SUCCESS_STATUSES: frozenset[str] = frozenset({"SUCCESS", "SUCCEEDED"})
+# Non-terminal / ambiguous DataHub statuses — not real outcomes, so they are
+# not mirrored as events (UP_FOR_RETRY may still succeed; SKIPPED ran nothing).
+_DATAHUB_SKIP_STATUSES: frozenset[str] = frozenset({"SKIPPED", "UP_FOR_RETRY"})
+
 
 # ── Value objects ─────────────────────────────────────────────────────────────
 
@@ -1350,8 +1359,10 @@ class IngestionService:
         inserted = 0
         for req in requests:
             status_str = req.get("status") or ""
+            if status_str in _DATAHUB_SKIP_STATUSES:
+                continue
             event_type = (
-                INGESTION_COMPLETE if status_str == "SUCCEEDED" else INGESTION_FAIL
+                INGESTION_COMPLETE if status_str in _DATAHUB_SUCCESS_STATUSES else INGESTION_FAIL
             )
             start_ms = req.get("startTimeMs")
             if start_ms:
