@@ -16,6 +16,7 @@ import {
 import { Field } from "@/components/forms/field";
 import { ErrorState } from "@/components/ui/error-state";
 import { RecipeYamlEditor } from "@/components/ingestion/recipe-yaml-editor";
+import { SecretRefHelper } from "@/components/ingestion/secret-ref-helper";
 import { validateSourceBody } from "@/components/ingestion/recipe-yaml";
 import {
   useCreateIngestionSource,
@@ -203,32 +204,14 @@ export default function CreateIngestionSourcePage() {
         )}
       </div>
 
-      {/* Secret references helper */}
-      <section className="rounded-lg border p-4">
-        <h2 className="mb-2 text-sm font-medium">Secret references</h2>
-        {secretsUnavailable ? (
-          <p className="text-xs text-muted-foreground">
-            Secret store is unavailable (503). You can still reference
-            <code className="mx-1 font-mono">{"${name__key}"}</code>
-            tokens — the server validates them on save.
-          </p>
-        ) : secrets.data && secrets.data.secrets.length > 0 ? (
-          <ul className="flex flex-wrap gap-1.5">
-            {secrets.data.secrets.map((s) => (
-              <li key={s.ref}>
-                <code className="rounded bg-amber-500/20 px-1.5 py-0.5 font-mono text-xs font-semibold text-amber-700 dark:text-amber-400">
-                  {`\${${s.ref}}`}
-                </code>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="text-xs text-muted-foreground">
-            No source-credential references available. Admins pre-create the
-            Kubernetes Secrets out-of-band.
-          </p>
-        )}
-      </section>
+      {/* Secret references helper — list + read-only authoring guide. Shown for
+          ACTIVE_CUSTOM_MANAGED, whose recipes carry ${name__key} refs. */}
+      {mode === "ACTIVE_CUSTOM_MANAGED" && (
+        <SecretRefHelper
+          secrets={secrets.data?.secrets}
+          unavailable={secretsUnavailable}
+        />
+      )}
 
       {/* Recipe editor */}
       <section className="rounded-lg border p-5">

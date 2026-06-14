@@ -377,6 +377,20 @@ async def get_ingestion_secrets(
 
     Requires Editor or Admin role — secret name enumeration is a writer activity.
 
+    **Authoring a new reference (reference-only model).** DataSpoke has no
+    secret-write API; new source credentials are provisioned out-of-band by an
+    admin and then *referenced* from a recipe. Create the backing Secret with::
+
+        kubectl create secret generic dataspoke-source-cred-<name> \\
+            --from-literal=<key>=<value> -n <dataspoke-namespace>
+
+    The ``dataspoke-source-cred-`` name prefix is the security boundary — only
+    Secrets under that prefix are resolvable — and ``<dataspoke-namespace>`` is
+    the API pod's own namespace. Once created, the recipe references the value as
+    ``${<name>__<key>}``. The source editor UI renders this same guide next to
+    the reference list (see ``spec/feature/FRONTEND_INGESTION.md`` §Create View
+    and ``spec/feature/SECRET_RESOLUTION.md`` §Admin authoring guide).
+
     Returns ``503 STORAGE_UNAVAILABLE`` when the in-cluster Kubernetes config
     is not loadable or the k8s API is unreachable.
     """
