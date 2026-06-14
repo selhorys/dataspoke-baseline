@@ -59,7 +59,7 @@ export function IngestionEventTable({
             type="datetime-local"
             value={from}
             onChange={(e) => onFromChange(e.target.value)}
-            className="w-[200px]"
+            className="w-auto min-w-[15rem]"
           />
         </label>
         <label className="flex flex-col gap-1 text-xs text-muted-foreground">
@@ -68,7 +68,7 @@ export function IngestionEventTable({
             type="datetime-local"
             value={to}
             onChange={(e) => onToChange(e.target.value)}
-            className="w-[200px]"
+            className="w-auto min-w-[15rem]"
           />
         </label>
       </div>
