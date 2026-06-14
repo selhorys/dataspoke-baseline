@@ -23,6 +23,10 @@ T = TypeVar("T")
 _RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 _FAIL_FAST_STATUS_CODES = {401, 403}
 _DOC_HEALTH_BATCH_SIZE = 100
+# DataHub's reserved internal pipeline types. Their CLI wrappers (executorId
+# "__datahub_cli_") are NOT tagged sourceType=SYSTEM, so the GraphQL filter
+# alone misses them — deny by type here too.
+_SYSTEM_SOURCE_TYPES: frozenset[str] = frozenset({"datahub-gc", "datahub-documents"})
 
 
 @dataclass(frozen=True)
@@ -410,10 +414,14 @@ class DataHubClient:
     async def list_ingestion_sources(self) -> list[dict[str, Any]]:
         """Return non-system (user-facing) DataHub-managed ingestion sources.
 
-        Paginates listIngestionSources until all pages are consumed, passing a
-        negated ``sourceType=SYSTEM`` filter so system-internal jobs (e.g.
-        ``datahub-gc``, ``datahub-documents``) are excluded — matching the set
-        of sources shown in DataHub's Manage Data Sources view.
+        Paginates listIngestionSources until all pages are consumed. System
+        sources are excluded by two layers: a negated ``sourceType=SYSTEM``
+        GraphQL filter, plus a deny-list on the reserved system source types
+        (``datahub-gc``, ``datahub-documents``). The deny-list is required
+        because DataHub auto-creates CLI wrappers for those pipelines that are
+        NOT tagged ``sourceType=SYSTEM`` and would otherwise slip through. The
+        result matches the set of sources shown in DataHub's Manage Data
+        Sources view.
 
         Each returned dict contains:
           - urn (str): the dataHubIngestionSource URN
@@ -472,6 +480,8 @@ class DataHubClient:
             outer = (raw or {}).get("listIngestionSources") or {}
             sources_page: list[dict] = outer.get("ingestionSources") or []
             for s in sources_page:
+                if s.get("type") in _SYSTEM_SOURCE_TYPES:
+                    continue
                 schedule_raw = s.get("schedule")
                 all_sources.append(
                     {

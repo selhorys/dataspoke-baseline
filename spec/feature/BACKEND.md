@@ -302,8 +302,9 @@ DAG) reconciles all modes:
 
 1. **Source defs**: pull `DATAHUB_MANAGED` source recipes + schedules via DataHub's
    `listIngestionSources` / `ingestionSource(urn)`; upsert read-only rows. The sweep mirrors only
-   non-system sources (`sourceType != SYSTEM`), matching DataHub's own Manage Data Sources view —
-   system-internal jobs such as `datahub-gc` and `datahub-documents` are excluded. Mask plaintext
+   non-system sources (`sourceType != SYSTEM`, plus a deny-list on the reserved system source types
+   `datahub-gc` and `datahub-documents` since their CLI wrappers are not tagged SYSTEM), matching
+   DataHub's own Manage Data Sources view — system-internal jobs are excluded. Mask plaintext
    secret values in the stored/displayed recipe (DataHub returns them raw); `${...}` secret
    references are preserved as-is (not masked, not resolved).
 2. **Mapping**: list the DataHub dataset set once and rebuild `ingestion_source_dataset` by

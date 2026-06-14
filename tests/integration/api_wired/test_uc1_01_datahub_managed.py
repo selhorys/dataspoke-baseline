@@ -119,9 +119,7 @@ async def _managed_source_setup(
     datahub_token = os.environ.get("DATASPOKE_TEST_DATAHUB_TOKEN", "")
 
     if not datahub_gms_url:
-        pytest.skip(
-            "DATASPOKE_TEST_DATAHUB_GMS_URL not set; skipping DATAHUB_MANAGED UC1 test"
-        )
+        pytest.skip("DATASPOKE_TEST_DATAHUB_GMS_URL not set; skipping DATAHUB_MANAGED UC1 test")
 
     gql_headers: dict[str, str] = {"Content-Type": "application/json"}
     if datahub_token:
@@ -466,7 +464,8 @@ async def test_uc1_datahub_managed_sync_and_readonly(
     # 180s covers the full lag window.
     # spec: project_es_indexing_lag_after_reset_seed — ES lags ~2-3 min; budget ≥180s.
     # spec: USE_CASE_en.md §UC1 Case 1 — GET /sources/{id}/datasets lists mapped datasets.
-    # spec: BACKEND_SCHEMA.md §ingestion_source_dataset — derivation: emitted | pipeline_name | matched
+    # spec: BACKEND_SCHEMA.md §ingestion_source_dataset —
+    #   derivation: emitted | pipeline_name | matched
     datasets_body: dict = {}
     mapped_datasets: list = []
     # ES-gated assertion: dataset existence search indexes lag 2-3 min after seed.
@@ -496,7 +495,8 @@ async def test_uc1_datahub_managed_sync_and_readonly(
 
         # Check if any non-catalog dataset URNs have appeared
         non_catalog_mapped = [
-            d for d in mapped_datasets
+            d
+            for d in mapped_datasets
             if _EXPECTED_URN_INFIX in d.get("dataset_urn", "")
             and f"{PG_INSTANCE}.catalog." not in d.get("dataset_urn", "")
         ]
@@ -534,7 +534,8 @@ async def test_uc1_datahub_managed_sync_and_readonly(
             "spec: BACKEND_SCHEMA.md §ingestion_source_dataset — authority derived from derivation."
         )
         # Authority/derivation pairing invariant.
-        # spec: BACKEND_SCHEMA.md §ingestion_source_dataset — emitted/pipeline_name→high, matched→medium.
+        # spec: BACKEND_SCHEMA.md §ingestion_source_dataset —
+        #   emitted/pipeline_name→high, matched→medium.
         if d["derivation"] in ("emitted", "pipeline_name"):
             assert d["authority"] == "high", (
                 f"derivation={d['derivation']!r} must have authority='high'; "
@@ -577,16 +578,26 @@ async def test_uc1_datahub_managed_sync_and_readonly(
     # ── Regression guard: system sources must never appear as DATAHUB_MANAGED rows ──
     # DataHub bootstraps `datahub-gc` (optional: false) and `datahub-documents`
     # (optional: true) as sourceType=SYSTEM ingestion sources.  The sync sweep must
-    # mirror only non-system sources (sourceType != SYSTEM).
+    # mirror only non-system sources (sourceType != SYSTEM, plus a deny-list on the
+    # reserved system source types `datahub-gc` and `datahub-documents` since their
+    # CLI wrappers are not tagged SYSTEM).
     #
-    # The guard is two-part:
-    #   1. Precondition check — confirm `datahub-gc` IS present in DataHub's unfiltered
-    #      listIngestionSources (no sourceType filter).  This proves the system source
-    #      exists in the dev DataHub, making the subsequent absence assertion non-vacuous:
-    #      if the sweep drops the SYSTEM filter the URN would appear in step 2.
-    #      Skip the guard entirely (rather than false-pass) if GMS cannot confirm it.
-    #   2. Absence check — assert neither `datahub-gc` nor `datahub-documents` appears in
-    #      DataSpoke's DATAHUB_MANAGED list.
+    # The guard is three-part:
+    #   1. Precondition check — confirm DataHub's unfiltered listIngestionSources
+    #      contains AT LEAST ONE source whose type ∈ _SYSTEM_SOURCE_TYPES (covers
+    #      bare system URNs AND any `[CLI] datahub-documents`-style wrapper whose urn
+    #      contains a hash suffix).  This proves a system-typed source exists in the
+    #      dev DataHub, making the subsequent absence assertions non-vacuous: if the
+    #      sweep drops the type deny-list the row would appear in step 2 / step 3.
+    #      Skip the guard (not fail) if GMS is unreachable, returns a GraphQL error,
+    #      or contains no system-typed source at all.
+    #   2. Bare-URN absence check — assert neither `datahub-gc` nor
+    #      `datahub-documents` appears in DataSpoke's DATAHUB_MANAGED
+    #      datahub_source_urn set.
+    #   3. Platform-type absence check — assert no DATAHUB_MANAGED row has
+    #      platform ∈ _SYSTEM_SOURCE_TYPES.  The sweep stores platform = source type,
+    #      so a `datahub-documents`-typed row means a system pipeline (or its CLI
+    #      wrapper) leaked through the deny-list.
     #
     # spec: feature/BACKEND.md §Sync sweep step 1 — "the sweep mirrors only non-system
     #   sources (sourceType != SYSTEM) … datahub-gc and datahub-documents are excluded."
@@ -595,6 +606,10 @@ async def test_uc1_datahub_managed_sync_and_readonly(
         "urn:li:dataHubIngestionSource:datahub-documents",
     }
     _GC_URN = "urn:li:dataHubIngestionSource:datahub-gc"
+    # Reserved DataHub system pipeline types — same set the spec names as excluded.
+    # spec: feature/BACKEND.md §Sync sweep step 1 — deny-list covers datahub-gc and
+    #   datahub-documents (CLI wrappers share the same type but have hash-suffixed URNs).
+    _SYSTEM_SOURCE_TYPES = {"datahub-gc", "datahub-documents"}
 
     # Reuse the GMS-access pattern from _managed_source_setup: same env vars + gql_headers.
     datahub_gms_url = os.environ.get("DATASPOKE_TEST_DATAHUB_GMS_URL", "")
@@ -603,11 +618,14 @@ async def test_uc1_datahub_managed_sync_and_readonly(
     if datahub_token:
         gql_headers_guard["Authorization"] = f"Bearer {datahub_token}"
 
+    # Select both urn and type so the precondition can key on source type (catching
+    # CLI wrappers like `[CLI] datahub-documents` with hash-suffixed URNs).
     list_sources_query = """
     query listIngestionSources($input: ListIngestionSourcesInput!) {
         listIngestionSources(input: $input) {
             ingestionSources {
                 urn
+                type
             }
         }
     }
@@ -626,7 +644,7 @@ async def test_uc1_datahub_managed_sync_and_readonly(
         gms_data = gms_resp.json()
     except Exception as exc:
         pytest.skip(
-            f"Could not reach DataHub GMS to confirm datahub-gc precondition: {exc}. "
+            f"Could not reach DataHub GMS to confirm system-source precondition: {exc}. "
             "Skipping system-source guard to avoid a vacuous absence assertion."
         )
 
@@ -637,23 +655,31 @@ async def test_uc1_datahub_managed_sync_and_readonly(
             "skipping system-source guard to avoid a vacuous absence assertion."
         )
 
-    gms_urns = {
-        src["urn"]
-        for src in gms_data.get("data", {})
-        .get("listIngestionSources", {})
-        .get("ingestionSources", [])
+    gms_sources = (
+        gms_data.get("data", {}).get("listIngestionSources", {}).get("ingestionSources", [])
+    )
+    gms_urns = {src["urn"] for src in gms_sources}
+    gms_system_typed_urns = {
+        src["urn"] for src in gms_sources if src.get("type") in _SYSTEM_SOURCE_TYPES
     }
-    if _GC_URN not in gms_urns:
+
+    # Broadened precondition: guard runs when GMS contains at least one source
+    # whose type ∈ _SYSTEM_SOURCE_TYPES — this covers both the bare system URNs
+    # (datahub-gc, datahub-documents) and any [CLI] wrapper with a hash-suffixed URN.
+    # Fall back to the bare-URN check so the guard still runs on DataHub builds
+    # where type is absent from the response (older schema).
+    has_system_typed_source = bool(gms_system_typed_urns) or (_GC_URN in gms_urns)
+    if not has_system_typed_source:
         pytest.skip(
-            f"{_GC_URN!r} not found in DataHub's unfiltered listIngestionSources "
-            f"(returned {len(gms_urns)} source(s)). "
+            f"No system-typed source (type ∈ {_SYSTEM_SOURCE_TYPES}) found in DataHub's "
+            f"unfiltered listIngestionSources (returned {len(gms_urns)} source(s)) "
+            f"and bare {_GC_URN!r} is also absent. "
             "Cannot confirm the system-source precondition — "
             "skipping guard to avoid a vacuous absence assertion."
         )
 
-    # Precondition confirmed: datahub-gc IS in DataHub's unfiltered list.
-    # Now assert the sweep's SYSTEM filter works: neither system source must appear
-    # in DataSpoke's DATAHUB_MANAGED mirror.
+    # Precondition confirmed: at least one system-typed source exists in DataHub's
+    # unfiltered list.  Now assert the sweep's deny-list works end-to-end.
     managed_list_resp = await api_client.get(
         "/api/v1/spoke/ingestion/sources?mode=DATAHUB_MANAGED&limit=100",
         headers=admin_headers,
@@ -661,12 +687,32 @@ async def test_uc1_datahub_managed_sync_and_readonly(
     assert managed_list_resp.status_code == 200, managed_list_resp.text
     all_managed_sources = managed_list_resp.json().get("sources", [])
     all_managed_urns = {s.get("datahub_source_urn") for s in all_managed_sources}
+    all_managed_platforms = {s.get("platform") for s in all_managed_sources}
+
+    # Assertion 1 — bare URN absence (original guard).
     system_urns_present = _SYSTEM_SOURCE_URNS & all_managed_urns
     assert not system_urns_present, (
         f"System-internal DataHub ingestion sources must NOT appear as DATAHUB_MANAGED rows "
-        f"in DataSpoke; found: {system_urns_present}. "
-        f"Precondition verified: {_GC_URN!r} IS present in DataHub's unfiltered source list, "
-        f"so a dropped sourceType filter would surface it here. "
-        "spec: feature/BACKEND.md §Sync sweep step 1 — 'the sweep mirrors only non-system "
-        "sources (sourceType != SYSTEM) … datahub-gc and datahub-documents are excluded'."
+        f"in DataSpoke; found datahub_source_urn(s): {system_urns_present}. "
+        f"Precondition verified: system-typed source(s) present in DataHub's unfiltered list "
+        f"({gms_system_typed_urns or {_GC_URN}}), so a dropped deny-list would surface them. "
+        "spec: feature/BACKEND.md §Sync sweep step 1 — the sweep mirrors only non-system "
+        "sources; datahub-gc and datahub-documents are excluded."
+    )
+
+    # Assertion 2 — platform-type absence (catches CLI wrappers with hash-suffixed URNs).
+    # The sweep stores platform = source type, so any row with platform ∈ _SYSTEM_SOURCE_TYPES
+    # means a system pipeline or its CLI wrapper (e.g. `[CLI] datahub-documents`) leaked
+    # through the deny-list despite having a non-bare URN.
+    # spec: feature/BACKEND.md §Sync sweep step 1 — deny-list on reserved system source
+    #   types datahub-gc and datahub-documents excludes CLI wrappers that share the same type.
+    system_platforms_present = _SYSTEM_SOURCE_TYPES & all_managed_platforms
+    assert not system_platforms_present, (
+        f"No DATAHUB_MANAGED row may have platform ∈ {_SYSTEM_SOURCE_TYPES}; "
+        f"found platform(s): {system_platforms_present}. "
+        "The sweep stores platform = source type, so a matching row means a system pipeline "
+        "(or its CLI wrapper, e.g. `[CLI] datahub-documents`) leaked through the deny-list "
+        "even though its URN has a hash suffix and would not appear in the bare-URN check. "
+        "spec: feature/BACKEND.md §Sync sweep step 1 — the sweep mirrors only non-system "
+        "sources; datahub-gc and datahub-documents are excluded."
     )
