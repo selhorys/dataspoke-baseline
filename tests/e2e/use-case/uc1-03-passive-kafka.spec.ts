@@ -1,7 +1,7 @@
 /**
  * UC1 Case 3 — PASSIVE kafka source: browser UI flow.
  *
- * Mirrors tests/integration/api_wired/test_uc1_passive_kafka.py step-for-step,
+ * Mirrors tests/integration/api_wired/test_uc1_03_passive_kafka.py step-for-step,
  * with dual confirmation at each mutating step:
  *   - UI assertion (toast, redirect, rendered table contents, unmanaged count)
  *   - Backend probe via adminApi (same REST read-back the api-wired step asserts)
@@ -87,7 +87,7 @@ test("UC1 Case 3 step 0 — imazon Kafka topics appear in /unmanaged before sour
   adminApi,
 }) => {
   // Trigger the sync sweep via the internal API to populate the dataset registry.
-  // spec: test_uc1_passive_kafka.py step 0 — re-trigger sync each iteration so newly-ES-indexed URNs surface.
+  // spec: test_uc1_03_passive_kafka.py step 0 — re-trigger sync each iteration so newly-ES-indexed URNs surface.
   // This step has no UI surface — fired via adminApi with the internal token.
   // spec: TESTING.md §E2E — "[API-fired, no UI surface]" steps are probed via backend, not gestures.
   const base = apiBaseUrl();
@@ -277,7 +277,7 @@ test("UC1 Case 3 step 3 — datasets panel shows imazon Kafka topics with matche
   if (!sourceId) test.skip();
 
   // Trigger sync sweeps (backend, no UI surface) until both Kafka URNs appear in datasets.
-  // spec: test_uc1_passive_kafka.py step 4 — re-trigger sync each iteration.
+  // spec: test_uc1_03_passive_kafka.py step 4 — re-trigger sync each iteration.
   const base = apiBaseUrl();
   const token = process.env["DATASPOKE_TEST_INTERNAL_TOKEN"] ?? "";
   const deadline = Date.now() + 180_000;
@@ -359,7 +359,7 @@ test("UC1 Case 3 step 4 — imazon Kafka topics absent from /unmanaged after sou
   if (!sourceId) test.skip();
 
   // Poll until both imazon topics leave /unmanaged (≤120s).
-  // spec: test_uc1_passive_kafka.py step 5 — poll ≤120s for mapping propagation.
+  // spec: test_uc1_03_passive_kafka.py step 5 — poll ≤120s for mapping propagation.
   const deadline = Date.now() + 120_000;
   let afterUrns: string[] = [];
   while (Date.now() < deadline) {

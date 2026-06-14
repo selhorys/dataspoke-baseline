@@ -1,7 +1,7 @@
 /**
  * UC2 — Validation: browser UI flow.
  *
- * Mirrors tests/integration/api_wired/test_uc2_validation.py step-for-step,
+ * Mirrors tests/integration/api_wired/test_uc2_01_validation.py step-for-step,
  * with dual confirmation at each mutating step:
  *   - UI assertion (table rows, badges, chart panels, event log, section headings)
  *   - Backend probe via adminApi (same REST read-back the api-wired step asserts)

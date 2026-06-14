@@ -1,7 +1,7 @@
 /**
  * UC1 Case 1 — DATAHUB_MANAGED source sync: browser UI flow.
  *
- * Mirrors tests/integration/api_wired/test_uc1_datahub_managed.py step-for-step,
+ * Mirrors tests/integration/api_wired/test_uc1_01_datahub_managed.py step-for-step,
  * with dual confirmation at each mutating step:
  *   - UI assertion (badge, read-only note, table contents)
  *   - Backend probe via adminApi (same REST read-back the api-wired step asserts)
@@ -57,7 +57,7 @@ const GMS_TOKEN = process.env["DATASPOKE_TEST_DATAHUB_TOKEN"] ?? "";
 // Skip-guard at runtime (not module top level, where a conditional test.skip is
 // fragile): only skip when DataHub GMS is genuinely unconfigured. GMS is part of
 // the dev stack, so normally these tests run.
-// spec: test_uc1_datahub_managed.py fixture — skips when GMS URL absent.
+// spec: test_uc1_01_datahub_managed.py fixture — skips when GMS URL absent.
 test.beforeEach(() => {
   test.skip(!GMS_URL, "DATASPOKE_TEST_DATAHUB_GMS_URL not set; DATAHUB_MANAGED UC1 requires DataHub GMS.");
 });
@@ -123,7 +123,7 @@ test.afterAll(async ({ adminApi }) => {
 // Step 1 — Seed: create DataHub Secret + IngestionSource via GraphQL
 // (API-fired, no UI surface — DataHub is the SSOT for DATAHUB_MANAGED)
 // spec: USE_CASE_en.md §UC1 Case 1 — "team creates a DataHub Managed Ingestion source"
-// spec: test_uc1_datahub_managed.py _managed_source_setup — createSecret + createIngestionSource
+// spec: test_uc1_01_datahub_managed.py _managed_source_setup — createSecret + createIngestionSource
 // ─────────────────────────────────────────────────────────────────────────────
 test("UC1 Case 1 step 1 — seed DataHub Secret + IngestionSource", async () => {
   // Idempotency: clear any leftover secret from a prior run (createSecret errors
@@ -207,7 +207,7 @@ test("UC1 Case 1 step 1 — seed DataHub Secret + IngestionSource", async () => 
 // Step 2 — Sync sweep: DataSpoke picks up the DATAHUB_MANAGED source
 // (Backend-only: no UI surface for the sync trigger itself)
 // spec: USE_CASE_en.md §UC1 Case 1 — "DataSpoke's sync sweep pulls the definition down"
-// spec: test_uc1_datahub_managed.py step 2 — poll sync until source appears
+// spec: test_uc1_01_datahub_managed.py step 2 — poll sync until source appears
 // ─────────────────────────────────────────────────────────────────────────────
 test("UC1 Case 1 step 2 — sync sweep mirrors the DATAHUB_MANAGED source into DataSpoke", async ({
   adminApi,

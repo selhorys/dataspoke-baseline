@@ -1,7 +1,7 @@
 /**
  * UC1 Case 2 — ACTIVE_CUSTOM_MANAGED postgres source: browser UI flow.
  *
- * Mirrors tests/integration/api_wired/test_uc1_active_custom_postgres.py
+ * Mirrors tests/integration/api_wired/test_uc1_02_active_custom_postgres.py
  * step-for-step, with dual confirmation at each mutating step:
  *   - UI assertion (toast, redirect, rendered table contents)
  *   - Backend probe via adminApi (same REST read-back the api-wired step asserts)

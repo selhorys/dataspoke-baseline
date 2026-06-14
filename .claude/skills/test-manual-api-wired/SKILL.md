@@ -126,7 +126,7 @@ Honor user choice if they say "skip cleanup" — leave state for inspection
 
 ### 7. Summary
 
-Concise table (illustrating UC1 Case 2 — `test_uc1_active_custom_postgres.py`):
+Concise table (illustrating UC1 Case 2 — `test_uc1_02_active_custom_postgres.py`):
 ```
 | step | op                          | http | side-effect                          | result |
 |------|-----------------------------|------|--------------------------------------|--------|

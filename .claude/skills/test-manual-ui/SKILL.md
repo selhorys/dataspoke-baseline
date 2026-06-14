@@ -231,7 +231,7 @@ what the UI can't surface (k8s secret contents, DataHub aspects, raw event
 rows). If no probe rule matches, report "no automatic probe — confirm from the
 UI only" and continue.
 
-## Worked example — UC1 Case 2 (`test_uc1_active_custom_postgres.py`)
+## Worked example — UC1 Case 2 (`test_uc1_02_active_custom_postgres.py`)
 
 Payloads and expectations below are copied **verbatim** from the test; the skill
 generates the same for any scenario.

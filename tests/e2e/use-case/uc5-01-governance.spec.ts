@@ -1,7 +1,7 @@
 /**
  * UC5 — Governance: browser UI flow.
  *
- * Mirrors tests/integration/api_wired/test_uc5_governance.py step-for-step,
+ * Mirrors tests/integration/api_wired/test_uc5_01_governance.py step-for-step,
  * with dual confirmation at each mutating step:
  *   - UI assertion (headings, badges, table rows, chart sections, event log)
  *   - Backend probe via adminApi (same REST read-back the api-wired step asserts)

@@ -1,7 +1,7 @@
 /**
  * UC3 — Ontology Generation: browser UI flow.
  *
- * Mirrors tests/integration/api_wired/test_uc3_ontology_generation.py step-for-step,
+ * Mirrors tests/integration/api_wired/test_uc3_01_ontology_generation.py step-for-step,
  * with dual confirmation at each mutating step:
  *   - UI assertion (heading, toast, tabs, badge, panel text)
  *   - Backend probe via adminApi (same REST read-back the api-wired step asserts)

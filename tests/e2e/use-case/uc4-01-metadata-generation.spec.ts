@@ -4,7 +4,7 @@
  * TWO structurally-identical tests: stub-mode (always runs) + real-LLM (skips
  * unless stub_llm_client is false in /admin/conf).
  *
- * Mirrors tests/integration/api_wired/test_uc4_metadata_generation.py
+ * Mirrors tests/integration/api_wired/test_uc4_01_metadata_generation.py
  * step-for-step, with dual confirmation at each mutating step:
  *   - UI assertion (heading, badge, card, toast, event row)
  *   - Backend probe via adminApi (same REST read-back the api-wired step asserts)

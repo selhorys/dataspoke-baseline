@@ -36,42 +36,42 @@ group does not cover the route; the other column does.
 
 | Route | UC test | Ground test |
 |---|---|---|
-| `/ingestion` | `uc1-active-custom-postgres.spec.ts` step 7; `uc1-passive-kafka.spec.ts` step 6; `uc1-datahub-managed.spec.ts` step 3 (list view, DATAHUB_MANAGED filter) | `ground/shell/reader-write-suppressed.reader.spec.ts` (Reader read-only: "Create source" absent) |
-| `/ingestion/sources/new` | `uc1-active-custom-postgres.spec.ts` step 1 (create ACTIVE_CUSTOM_MANAGED); `uc1-passive-kafka.spec.ts` step 1 (create PASSIVE) | — |
-| `/ingestion/sources/[id]` | `uc1-active-custom-postgres.spec.ts` steps 2–7; `uc1-passive-kafka.spec.ts` steps 2–3, 5–6; `uc1-datahub-managed.spec.ts` steps 4–5 (detail, run, datasets, events, read-only, delete) | — |
-| `/ingestion/unmanaged` | `uc1-passive-kafka.spec.ts` steps 0, 4 (before/after source creation) | — |
-| `/ingestion/data/[urn]` | `uc1-active-custom-postgres.spec.ts` step 6 (reverse-lookup) | — |
+| `/ingestion` | `uc1-02-active-custom-postgres.spec.ts` step 7; `uc1-03-passive-kafka.spec.ts` step 6; `uc1-01-datahub-managed.spec.ts` step 3 (list view, DATAHUB_MANAGED filter) | `ground/shell/reader-write-suppressed.reader.spec.ts` (Reader read-only: "Create source" absent) |
+| `/ingestion/sources/new` | `uc1-02-active-custom-postgres.spec.ts` step 1 (create ACTIVE_CUSTOM_MANAGED); `uc1-03-passive-kafka.spec.ts` step 1 (create PASSIVE) | — |
+| `/ingestion/sources/[id]` | `uc1-02-active-custom-postgres.spec.ts` steps 2–7; `uc1-03-passive-kafka.spec.ts` steps 2–3, 5–6; `uc1-01-datahub-managed.spec.ts` steps 4–5 (detail, run, datasets, events, read-only, delete) | — |
+| `/ingestion/unmanaged` | `uc1-03-passive-kafka.spec.ts` steps 0, 4 (before/after source creation) | — |
+| `/ingestion/data/[urn]` | `uc1-02-active-custom-postgres.spec.ts` step 6 (reverse-lookup) | — |
 
 #### Governance (UC5)
 
 | Route | UC test | Ground test |
 |---|---|---|
-| `/governance/dashboard` | `_smoke.spec.ts` (post-login landing); `uc5-governance.spec.ts` step 3a (metric cards + trend chart) | `ground/shell/root-redirect.spec.ts` (`/` redirect target) |
-| `/governance/metrics` | `uc5-governance.spec.ts` step 3b (list: metrics, type badges, Enabled) | — |
-| `/governance/metrics/new` | `uc5-governance.spec.ts` step 1a (create form → redirect) | — |
-| `/governance/metrics/[id]` | `uc5-governance.spec.ts` steps 1c, 2, 3c, 4 (Edit→PUT, Run, attr/conf+result+event, Delete) | — |
+| `/governance/dashboard` | `_smoke.spec.ts` (post-login landing); `uc5-01-governance.spec.ts` step 3a (metric cards + trend chart) | `ground/shell/root-redirect.spec.ts` (`/` redirect target) |
+| `/governance/metrics` | `uc5-01-governance.spec.ts` step 3b (list: metrics, type badges, Enabled) | — |
+| `/governance/metrics/new` | `uc5-01-governance.spec.ts` step 1a (create form → redirect) | — |
+| `/governance/metrics/[id]` | `uc5-01-governance.spec.ts` steps 1c, 2, 3c, 4 (Edit→PUT, Run, attr/conf+result+event, Delete) | — |
 
 #### Validation (UC2)
 
 | Route | UC test | Ground test |
 |---|---|---|
-| `/validation` | `uc2-validation.spec.ts` step 3 (cross-dataset list; URNs, score badges) | — |
-| `/validation/data/[urn]` | `uc2-validation.spec.ts` steps 2, 4–7 (conf, charts, event log, delete, create, resurrect) | — |
+| `/validation` | `uc2-01-validation.spec.ts` step 3 (cross-dataset list; URNs, score badges) | — |
+| `/validation/data/[urn]` | `uc2-01-validation.spec.ts` steps 2, 4–7 (conf, charts, event log, delete, create, resurrect) | — |
 
 #### Ontology Generation (UC3)
 
 | Route | UC test | Ground test |
 |---|---|---|
-| `/ontogen` | `uc3-ontology-generation.spec.ts` steps 3–4 (Run dialog, tabs, result panels) | — |
-| `/ontogen/conf` | `uc3-ontology-generation.spec.ts` step 1 (Edit/Save conf) | — |
-| `/ontogen/seed` | `uc3-ontology-generation.spec.ts` steps 2, 5 (create seed, delete via ConfirmDialog) | — |
+| `/ontogen` | `uc3-01-ontology-generation.spec.ts` steps 3–4 (Run dialog, tabs, result panels) | — |
+| `/ontogen/conf` | `uc3-01-ontology-generation.spec.ts` step 1 (Edit/Save conf) | — |
+| `/ontogen/seed` | `uc3-01-ontology-generation.spec.ts` steps 2, 5 (create seed, delete via ConfirmDialog) | — |
 
 #### Metadata Generation (UC4)
 
 | Route | UC test | Ground test |
 |---|---|---|
-| `/metagen` | `uc4-metadata-generation.spec.ts` steps 1, 3, 4, 9 (conf, Run+RunDialog, event panel, second run) | — |
-| `/metagen/data/[urn]` | `uc4-metadata-generation.spec.ts` steps 2, 5, 6, 8 (boundary, item cards, Approve/Reject, events) | — |
+| `/metagen` | `uc4-01-metadata-generation.spec.ts` steps 1, 3, 4, 9 (conf, Run+RunDialog, event panel, second run) | — |
+| `/metagen/data/[urn]` | `uc4-01-metadata-generation.spec.ts` steps 2, 5, 6, 8 (boundary, item cards, Approve/Reject, events) | — |
 
 #### Admin / Account
 

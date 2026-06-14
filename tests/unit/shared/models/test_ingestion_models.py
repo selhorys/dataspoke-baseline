@@ -593,7 +593,7 @@ class TestBuildMatcherDatabaseScope:
     trailing dot = whole-segment match).
 
     Platform scoping (caller's responsibility) is NOT tested here — see the sync-sweep
-    unit tests and test_uc1_datahub_managed.py for that layer.
+    unit tests and test_uc1_01_datahub_managed.py for that layer.
 
     Spec: spec/feature/BACKEND.md §Sync + mapping sweep
     Spec: build_matcher docstring §Database scoping and §Caller contract

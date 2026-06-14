@@ -50,8 +50,8 @@ Tests live under `tests/` at the repo root, mirroring `src/`:
   - `spot/` — compact, independent tests of Python classes/functions or REST endpoints. The set
     must cover all integration scope on its own (api-wired removable without losing coverage).
   - `api_wired/` — REST-only tests that implement the five `USE_CASE_en.md` user stories
-    end-to-end. One or more files per UC named `test_uc{n}_<slug>.py`, covering the UC's
-    scenarios; steps mirror the user-story narrative.
+    end-to-end. One or more files per UC named `test_uc{n}_{nn}_<slug>.py`, where `{nn}` is a
+    two-digit scenario index so files sort in user-story order; steps mirror the narrative.
   - `util/` — dummy-data reset/ingest utilities with `fixtures/sql/` and `fixtures/kafka/`.
   - `conftest.py` — root fixtures: infra, lock, dummy-data lifecycle.
 - `tests/e2e/` — Playwright end-to-end tests (TypeScript), split into `use-case/` (one browser
@@ -237,9 +237,10 @@ infrastructure.
 ### Api-wired integration tests (`tests/integration/api_wired/`)
 
 Each test implements one of the five **`USE_CASE_en.md` user stories** end-to-end through the
-public REST API. Files are named `test_uc{1..5}_<slug>.py`; a UC may be split across multiple
-files when the user story has independent scenarios (e.g., `test_uc1_active_custom_postgres.py`
-and `test_uc1_passive_kafka_external_script.py` both belong to UC1).
+public REST API. Files are named `test_uc{1..5}_{nn}_<slug>.py`, where `{nn}` is a two-digit
+scenario index so files sort in user-story order; a UC may be split across multiple files when
+the user story has independent scenarios (e.g., `test_uc1_01_datahub_managed.py`,
+`test_uc1_02_active_custom_postgres.py`, and `test_uc1_03_passive_kafka.py` all belong to UC1).
 
 - **REST only**: test logic uses `httpx.AsyncClient` against `http://api.<INGRESS_IP>.nip.io/`.
   No direct imports of `src/backend`, `src/workflows`, or peripheral SDK clients in the test
@@ -382,8 +383,9 @@ Each is a Playwright project group under `tests/e2e/`.
 
 One browser flow per `USE_CASE_en.md` user story — the executable UI form of the matching
 `tests/integration/api_wired/test_uc{1..5}_*.py` file and the `/test-manual-ui` walkthrough. Files
-mirror the api-wired split: `uc{1..5}-<slug>.spec.ts` (UC1 has three —
-`uc1-datahub-managed`, `uc1-active-custom-postgres`, `uc1-passive-kafka`).
+mirror the api-wired split: `uc{1..5}-{nn}-<slug>.spec.ts`, where `{nn}` is a two-digit scenario
+index so files sort in user-story order (UC1 has three —
+`uc1-01-datahub-managed`, `uc1-02-active-custom-postgres`, `uc1-03-passive-kafka`).
 
 - **Mirrors the narrative**: steps follow the user-story prose and the api-wired step sequence
   verbatim; annotate each step with the matching `USE_CASE_en.md` paragraph.

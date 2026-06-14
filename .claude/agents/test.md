@@ -36,10 +36,10 @@ tests/
 │   ├── spot/                  # Compact, independent tests of one concern each;
 │   │                          # Python or REST; together cover all integration scope.
 │   ├── api_wired/             # REST-only USE_CASE user-story tests
-│   │   └── test_uc{1..5}_<slug>.py
+│   │   └── test_uc{1..5}_{nn}_<slug>.py   # {nn} = 2-digit scenario index (sorts in story order)
 │   └── util/                  # Dummy-data reset helpers + Airflow test utilities + fixtures
 ├── e2e/                       # Playwright/TypeScript E2E (self-contained pnpm project)
-│   ├── use-case/              # uc{1..5}-<slug>.spec.ts — one browser flow per USE_CASE story
+│   ├── use-case/              # uc{1..5}-{nn}-<slug>.spec.ts — one browser flow per USE_CASE story
 │   ├── ground/<feature>/      # narrow per-page UI-flow tests (spot analogue)
 │   ├── fixtures/              # env loader, auth storageState, api probe context
 │   ├── global-setup.ts        # lock + reset-seed + per-role login
