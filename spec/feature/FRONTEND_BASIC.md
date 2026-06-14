@@ -40,30 +40,32 @@ the surrounding systems: DataHub, Langfuse, Airflow, and the DataSpoke ReDoc API
 docs. Each icon renders only when its URL is configured — DataHub/Langfuse/Airflow
 from runtime config `datahubUrl`/`langfuseUrl`/`airflowUrl` (the
 `DATASPOKE_{DATAHUB,LANGFUSE,AIRFLOW}_URL` env vars, `NEXT_PUBLIC_*` in host dev);
-ReDoc from `apiBaseUrl` + `/redoc`. Operators control visibility by setting or
+ReDoc from `apiBaseUrl` + `/redoc`. The DataHub icon links to `<datahubUrl>/login`
+(the `/login` suffix is DataHub-specific); Langfuse and Airflow use the bare URL.
+Operators control visibility by setting or
 omitting the URLs, so deployments that should not expose an infra UI simply leave
 its URL unset.
 
 ```
-┌─────────────────────────────────────────────────────┐
-│ DataSpoke              user@imazon ▼  Logout        │
-├──────────────┬──────────────────────────────────────┤
-│ Governance ▾ │   (page content)                     │
-│  Dashboard   │                                      │
-│  Metrics     │                                      │
-│ Ingestion    │                                      │
-│ Validation   │                                      │
-│ OntoGen      │                                      │
-│ MetaGen      │                                      │
-├──────────────┤                                      │
-│ ADMIN        │   (Admin role only)                  │
-│  Users       │                                      │
-│  Configs.    │                                      │
-│ ACCOUNT      │                                      │
-│  Profile     │                                      │
-│  API Tokens  │                                      │
-│  Settings    │                                      │
-└──────────────┴──────────────────────────────────────┘
+┌────────────────────────────────────────────────────────┐
+│ DataSpoke                 user@imazon ▼  Logout         │
+├─────────────────┬──────────────────────────────────────┤
+│ Governance ▾    │   (page content)                     │
+│  Dashboard      │                                      │
+│  Metrics        │                                      │
+│ Ingestion       │                                      │
+│ Validation      │                                      │
+│ OntoGen         │                                      │
+│ MetaGen         │                                      │
+├─────────────────┤                                      │
+│ ADMIN           │   (Admin role only)                  │
+│  Users          │                                      │
+│  Configurations │                                      │
+│ ACCOUNT         │                                      │
+│  Profile        │                                      │
+│  API Tokens     │                                      │
+│  Settings       │                                      │
+└─────────────────┴──────────────────────────────────────┘
                   Application shell
 ```
 
@@ -77,7 +79,7 @@ its URL unset.
 | `/login` | Login page (email+password and Google sign-in) | `POST /auth/token`, `GET /auth/google/login` |
 | `/register` | Self-service sign-up (email + name + password ≥ 10 chars) and Google sign-up | `POST /auth/register`, `GET /auth/google/login` |
 | `/forgot-password` | Request a password-reset email | `POST /auth/password/reset/request` |
-| `/reset-password` | Submit a new password using the token from the email link (`?token=…` query param) | `POST /auth/password/reset/confirm` |
+| `/reset-password` | Submit a new password using the token from the email link (`?token=…` query param). An "Invalid link" guard state renders before any API call when `token` is missing/empty; a "Password updated" state renders on success | `POST /auth/password/reset/confirm` |
 | `/profile` | Own profile + change display name + change password | `GET /auth/me`, `PATCH /auth/me` |
 | `/profile/tokens` | Long-lived API token management — list, mint (copy-once display), revoke | `GET /auth/api-tokens`, `POST /auth/api-tokens`, `DELETE /auth/api-tokens/{id}` |
 | `/admin/users` | Admin user management — list, change name, change role, hard delete, revoke any token | `GET /admin/users`, `PATCH /admin/users/{id}`, `PATCH /admin/users/{id}/role`, `DELETE /admin/users/{id}`, `GET /admin/users/{id}/api-tokens`, `DELETE /admin/users/{id}/api-tokens/{token_id}` |
@@ -92,7 +94,7 @@ its URL unset.
 
 Route guards layer two checks:
 
-- **JWT presence** — `/login`, `/register`, `/forgot-password`, `/reset-password`, and the OAuth callback URL are public; all other routes redirect to `/login` when no access token is available.
+- **JWT presence** — `/login`, `/register`, `/forgot-password`, `/reset-password`, and the OAuth callback URL are public; all other routes redirect to `/login?next=<path>` when no access token is available. The login page honors `next` on success (default fallback `/governance/dashboard`).
 - **`users.role` (read from `GET /auth/me.role`)** — `/admin/*` is server-side gated by the API's role check (`role = 'Admin'`); the UI hides the admin-menu entry when the role is not `Admin`. Inside each function page, write actions (approve/reject buttons, edit forms, run triggers) are rendered only when `role ∈ {Editor, Admin}` — Reader users see read-only views. The API enforces the same gate via `403 READ_ONLY_ROLE` on write methods; the UI suppression is for UX hygiene, not security.
 
 ---
@@ -158,18 +160,19 @@ contract) lives in [AUTH](AUTH.md).
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  Admin · Users                       [ Search...           ] │
+│  Admin — Users                       [ Search...           ] │
 ├──────────────────────────────────────────────────────────────┤
 │  Email              Name    Role     Created     Actions     │
-│  alice@imazon       Alice   Admin ▾  2026-01-15  edit  ⋯     │
-│  bob@imazon         Bob     Editor ▾ 2026-01-20  edit  ⋯     │
-│  carol@imazon       Carol   Reader ▾ 2026-02-01  edit  ⋯     │
+│  alice@imazon       Alice   Admin ▾  2026-01-15  ✎  ⋯       │
+│  bob@imazon         Bob     Editor ▾ 2026-01-20  ✎  ⋯       │
+│  carol@imazon       Carol   Reader ▾ 2026-02-01  ✎  ⋯       │
 └──────────────────────────────────────────────────────────────┘
          Admin user list (`/admin/users`)
 ```
 
-Inline role dropdown writes `PATCH /admin/users/{id}/role`. "edit" opens an
-inline name editor writing `PATCH /admin/users/{id}`. The `⋯` menu carries
+Inline role dropdown writes `PATCH /admin/users/{id}/role`. A pencil icon
+(aria-label "Edit name") opens a name-edit dialog writing
+`PATCH /admin/users/{id}`. The `⋯` menu carries
 hard delete (writes `DELETE /admin/users/{id}` behind a `ConfirmDialog`),
 and "manage tokens" — a drawer listing the user's `api_tokens` rows with
 per-token revoke buttons (`GET /admin/users/{id}/api-tokens`,
@@ -184,7 +187,7 @@ page does not invent fields. Fields are grouped for legibility:
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  Admin · Configurations                  updated 2026-05-29  │
+│  Admin — Configurations                                      │
 ├──────────────────────────────────────────────────────────────┤
 │  LLM         provider [gemini      ]  model [gemini-3.5-…  ]  │
 │              API key  [•••••• leave blank to keep current]   │
@@ -196,7 +199,7 @@ page does not invent fields. Fields are grouped for legibility:
 │  Validation  score intervals [3]                             │
 │  Stubs       ☐ redis  ☐ llm  ☐ pgvector  ☐ notifications     │
 │  Auth        DataHub corp group [dataspoke-users          ]  │
-│                                            [ Save changes ]  │
+│                       Saved · updated 14:32   [ Save changes ]│
 └──────────────────────────────────────────────────────────────┘
        Runtime configuration (`/admin/conf`)
 ```
@@ -213,16 +216,17 @@ page does not invent fields. Fields are grouped for legibility:
   to the Kubernetes Secret, not the DB.
 - The nullable `*_reviewer_model` fields clear on blank: an empty input is sent as
   `null` (reuse `llm_model`) when changed.
-- The response `updated_at` is shown after a successful save.
+- After a successful save a "Saved · updated <timestamp>" indicator appears in
+  the footer next to Save (in-session only).
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│  Profile · API tokens                  [ + New token ]       │
-├──────────────────────────────────────────────────────────────┤
-│  Name              Role    Created     Last used     Actions │
-│  ci-jenkins        Editor  2026-04-01  2026-05-25    Revoke  │
-│  laptop-cli        Editor  2026-05-10  —             Revoke  │
-└──────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────┐
+│  Profile · API tokens                            [ + New token ]        │
+├────────────────────────────────────────────────────────────────────────┤
+│  Name          Role    Created     Last used   Expires      Actions     │
+│  ci-jenkins    Editor  2026-04-01  2026-05-25  2026-07-01   Revoke      │
+│  laptop-cli    Editor  2026-05-10  —           never        Revoke      │
+└────────────────────────────────────────────────────────────────────────┘
        Own API tokens (`/profile/tokens`)
 
 ┌─────────────────────────────────────────────────┐

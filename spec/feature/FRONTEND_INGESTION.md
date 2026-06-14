@@ -26,22 +26,28 @@ The per-dataset reverse-lookup page mirrors the per-dataset pages of Validation
 One row per source: `name`, `mode` badge (`DATAHUB_MANAGED` / `ACTIVE_CUSTOM_MANAGED` /
 `PASSIVE`), `platform`, schedule, enabled state, covered-dataset count, and latest run status.
 Filter by `mode`; paginate. A "Create source" button routes to `/ingestion/sources/new`.
-`DATAHUB_MANAGED` rows carry a read-only badge. (`GET /spoke/ingestion/sources`.)
+`DATAHUB_MANAGED` rows carry a read-only badge. (`GET /spoke/ingestion/sources`.) The covered-dataset
+count and latest run status are not fields on the list payload — each is client-derived via a
+per-source fan-out (`datasets?limit=1` and `event?limit=1`).
 
 ## Source Detail (`/ingestion/sources/[id]`)
 
-Four sections, each bound to a route:
+A header surfaces read-only management fields as badges/text outside the recipe YAML section:
+`platform`, `status`, and `datahub_source_urn`. Below it, four sections, each bound to a route:
 
 1. **Recipe** — the source JSON (`{mode, name, schedule, recipe}`, recipe-standard wording) is
    rendered/edited as **YAML, secrets masked** — the YAML view is a lossless transform of the
    JSON body
    (`GET /spoke/ingestion/sources/{id}`). For `ACTIVE_CUSTOM_MANAGED` / `PASSIVE`, editable via a
-   YAML editor (`PUT`/`PATCH`) and removable (`DELETE`). For `DATAHUB_MANAGED` the YAML is
+   YAML editor and removable (`DELETE`). Save wires `PUT` (full replace); there is no `PATCH`
+   recipe-edit surface. For `DATAHUB_MANAGED` the YAML is
    read-only — edits are disabled with an explanatory note that DataHub is SSOT (the API returns
    `409 INGESTION_SOURCE_READONLY`).
-2. **Datasets** — the source→dataset mapping table (`GET /spoke/ingestion/sources/{id}/datasets`),
-   each row showing the dataset URN, its `authority` (`high` / `medium`) and `derivation`
-   (`emitted` / `pipeline_name` / `matched`) — rendered as e.g. `high (emitted)`.
+2. **Datasets** — the source→dataset mapping table (`GET /spoke/ingestion/sources/{id}/datasets`).
+   The table carries a single `authority` column whose cell fuses both server fields, rendered as
+   e.g. `high (emitted)`: the dataset URN, its `authority` (`high` / `medium`) and `derivation`
+   (`emitted` / `pipeline_name` / `matched`). `authority` is derived from `derivation` —
+   `emitted` ⇒ `high`, `matched` ⇒ `medium`.
 3. **Run** — `POST /spoke/ingestion/sources/{id}/method/run` with a `dry_run` toggle. Shown only
    for `ACTIVE_CUSTOM_MANAGED`; other modes show an explanatory disabled state (the run happens in
    DataHub or externally; the API returns `409 INGESTION_RUN_NOT_APPLICABLE`).

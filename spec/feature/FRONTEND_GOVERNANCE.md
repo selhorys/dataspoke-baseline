@@ -27,18 +27,19 @@ The Dashboard is a read-only visualization of every enabled metric:
 
 | Block | Read | Notes |
 |---|---|---|
-| Metric cards | `GET /spoke/governance/metric` (filter `is_enabled=true`) + latest `GET .../{id}/attr/result?limit=1` per metric | One card per enabled metric. Each card shows `title`, the latest `values` dict (each key on its own line as `key: number`), and the run time |
-| Timeseries chart | `GET /spoke/governance/metric/{id}/attr/result?from=…&to=…` per metric on the same daily window | Small multiples — one chart per metric, each plotting one line per that metric's `values` key. Per-metric charts avoid collapsing shared keys (e.g. `total`) across metrics onto one ambiguous line. Default window is the last 30 days |
+| Metric cards | `GET /spoke/governance/metric` (filter `is_enabled=true`) + latest `GET .../{id}/attr/result?limit=1` per metric | One card per enabled metric. Each card shows `title`, a `metric_type` outline badge under the title, the latest `values` dict (each key on its own line as `key: value`), and the formatted measured-at date. No per-card delta indicator |
+| Timeseries chart | `GET /spoke/governance/metric/{id}/attr/result?from=…` per metric on the same daily window | Small multiples — one chart per metric, each plotting one line per that metric's `values` key. Per-metric charts avoid collapsing shared keys (e.g. `total`) across metrics onto one ambiguous line. The window sends only `from` (memoized 30-days-ago) plus a limit; `to` is open-ended (backend defaults to now). Cards and charts poll on a 15s interval (paused when the tab is hidden) per the BASIC convention |
 
 ```
 ┌──────────────────────────────────────────────────────────┐
 │  Governance · Dashboard                                  │
 ├──────────────────────────────────────────────────────────┤
 │  Ingestion Freshness    Validation Score    Doc Health   │
+│  (freshness)            (val-score)         (doc-health) │
 │  ┌────────────────┐    ┌────────────────┐  ┌──────────┐  │
 │  │ total       142│    │ total       142│  │ total  87│  │
 │  │ in-time     131│    │ sum     118.50 │  │ sum   61 │  │
-│  │ 2026-05-26 ↑   │    │ 2026-05-26 ↑   │  │ 2026-05-26│ │
+│  │ 2026-05-26     │    │ 2026-05-26     │  │ 2026-05-26│ │
 │  └────────────────┘    └────────────────┘  └──────────┘  │
 │                                                          │
 │  Daily trend (last 30 d)                                 │
@@ -64,9 +65,9 @@ list, create, edit, run, disable, delete.
 
 | Page | Read | Write |
 |---|---|---|
-| `/governance/metrics` (list) | `GET /spoke/governance/metric` (paginated; filter by `metric_type`, `mode`, `is_enabled`) | "New metric" action → `/governance/metrics/new` |
+| `/governance/metrics` (list) | `GET /spoke/governance/metric` — rendered filter bar (`metric_type` / `mode` / status Selects, mapped to query params) plus Previous/Next pagination controls with a page count | "New metric" action → `/governance/metrics/new` |
 | `/governance/metrics/new` | — | `POST /spoke/governance/metric` (definition fields **plus** a client-supplied `metric_id`) |
-| `/governance/metrics/[id]` | `GET .../attr/conf`, `GET .../attr/result?from&to`, `GET .../event` | `PUT/PATCH/DELETE .../attr/conf` (fields: `mode`, `is_enabled`, `metric_type`, `title`, `description`, `metrics`, `metric_conf`, `schedule_tier`, `dataset_filter`); `POST .../method/run` (`?dry_run=true`) |
+| `/governance/metrics/[id]` | `GET .../attr/conf`, `GET .../attr/result?from&to` (7d / 30d / 90d range selector above the chart, default 30d), `GET .../event` | `PUT/PATCH/DELETE .../attr/conf` (fields: `mode`, `is_enabled`, `metric_type`, `title`, `description`, `metrics`, `metric_conf`, `schedule_tier`, `dataset_filter`); `POST .../method/run` (`?dry_run=true`) |
 
 The create form is the edit form (below) with one extra leading field: a
 `metric_id` text input — **create-only** (validated per
@@ -81,18 +82,20 @@ to `/governance/metrics/[id]` for the new metric.
 Built-in metric types and their `metric_conf` shapes are in
 [USE_CASE §UC5](../USE_CASE_en.md#uc5-governance). `mode: "passive"` is
 reserved — the form's mode toggle disables the Save button with the hint
-*passive mode not yet supported*.
+*passive mode not yet supported*. `schedule_tier` offers hourly / daily /
+weekly (default daily) plus an "On-demand only" (null) option; list and
+detail render a null tier as *on-demand*.
 
 ```
 ┌──────────────────────────────────────────────────────┐
-│  ← doc-health-dev        [Edit] [Run] [Disable]      │
+│  ← doc-health-dev        [Edit] [Run] [Delete]       │
 ├──────────────────────────────────────────────────────┤
 │  attr/conf                                           │
 │    mode: active   metric_type: doc-health            │
 │    schedule_tier: daily    ✓ enabled                 │
 │    dataset_filter: origin=DEV                        │
 │                                                      │
-│  attr/result?from&to                                 │
+│  attr/result?from&to            [7d] [30d] [90d]     │
 │    [Recharts area chart — one line per `values` key] │
 │                                                      │
 │  event  (METRIC.RUN_COMPLETE …)                      │
@@ -113,7 +116,7 @@ reserved — the form's mode toggle disables the Save button with the hint
 │  description:  [ Daily documentation-completeness ] │
 │  metrics:      [x] total   [x] doc_health           │
 │  metric_conf:  (none for doc-health)                │
-│  schedule_tier:[ hourly | daily | weekly         v] │
+│  schedule_tier:[ hourly | daily | weekly | on-demand v]│
 │  is_enabled:   [x]                                  │
 │                                                     │
 │  dataset_filter                                     │
@@ -127,7 +130,12 @@ reserved — the form's mode toggle disables the Save button with the hint
         Config form (PUT/PATCH .../attr/conf)
 ```
 
+The detail action bar is `[Edit] [Run] [Delete]`; disabling a metric is
+done via the `is_enabled` checkbox inside the Edit form. The detail
+result/event panels poll on a 15s interval (paused when the tab is hidden)
+per the BASIC convention.
+
 Write actions (`POST /governance/metrics/new`, `PUT/PATCH/DELETE .../attr/conf`,
 `POST .../method/run`) are shown only when `role ∈ {Editor, Admin}`.
 Reader users see the list, the detail view, and the timeseries chart, but
-the Edit, Run, Disable, Delete buttons are not rendered.
+the Edit, Run, Delete buttons are not rendered.
