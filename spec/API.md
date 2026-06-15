@@ -274,13 +274,13 @@ and [DATAHUB_INTEGRATION §Ingestion Source Sync](DATAHUB_INTEGRATION.md#ingesti
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|
 | `GET` | `/spoke/ingestion/sources` | List ingestion sources (paginated; filter by `mode`) | Ingestion Control | UC1 |
-| `POST` | `/spoke/ingestion/sources` | Create a source (`ACTIVE_CUSTOM_MANAGED` or `PASSIVE` only; `DATAHUB_MANAGED` is synced, not created) | Ingestion Control | UC1 |
+| `POST` | `/spoke/ingestion/sources` | Create a source (`ACTIVE_CUSTOM_MANAGED` or `PASSIVE` only; `DATAHUB_MANAGED` is synced, not created); `422 SECRET_REF_MALFORMED` for malformed `${name__key}` recipe references | Ingestion Control | UC1 |
 | `GET` | `/spoke/ingestion/sources/{id}` | Get one source as JSON (recipe `${name__key}` references returned as-is; any plaintext secret value masked) | Ingestion Control | UC1 |
-| `PUT` | `/spoke/ingestion/sources/{id}` | Replace a source; `409 INGESTION_SOURCE_READONLY` for `DATAHUB_MANAGED` | Ingestion Control | UC1 |
-| `PATCH` | `/spoke/ingestion/sources/{id}` | Partially update a source; `409 INGESTION_SOURCE_READONLY` for `DATAHUB_MANAGED` | Ingestion Control | UC1 |
+| `PUT` | `/spoke/ingestion/sources/{id}` | Replace a source; `409 INGESTION_SOURCE_READONLY` for `DATAHUB_MANAGED`; `422 SECRET_REF_MALFORMED` for malformed `${name__key}` recipe references | Ingestion Control | UC1 |
+| `PATCH` | `/spoke/ingestion/sources/{id}` | Partially update a source; `409 INGESTION_SOURCE_READONLY` for `DATAHUB_MANAGED`; `422 SECRET_REF_MALFORMED` for malformed `${name__key}` recipe references | Ingestion Control | UC1 |
 | `DELETE` | `/spoke/ingestion/sources/{id}` | Remove a source (+ cascade its dataset mappings); `409 INGESTION_SOURCE_READONLY` for `DATAHUB_MANAGED` | Ingestion Control | UC1 |
 | `POST` | `/spoke/ingestion/sources/{id}/method/run` | Execute the extractor (`?dry_run=true` for no-write connection check); `ACTIVE_CUSTOM_MANAGED` only — `409 INGESTION_RUN_NOT_APPLICABLE` otherwise; concurrent runs return `409 INGESTION_RUNNING` | Ingestion Control | UC1 |
-| `GET` | `/spoke/ingestion/sources/{id}/datasets` | Datasets this source covers (the mapping; each row carries `authority` + `derivation`) | Ingestion Control | UC1 |
+| `GET` | `/spoke/ingestion/sources/{id}/datasets` | Datasets this source covers (the mapping; each row carries `authority` + `derivation`); paginated with mapping-list bounds (`limit` default 100, max 1000) | Ingestion Control | UC1 |
 | `GET` | `/spoke/ingestion/sources/{id}/event` | Run/event history for the source | Ingestion Control | UC1 |
 | `GET` | `/spoke/ingestion/unmanaged` | DataHub datasets (`dataset_registry.datahub_registered=true`) covered by no ingestion source (paginated) — the registry is refreshed hourly by the `datahub-sync-hourly` sweep | Ingestion Control | UC1 |
 | `GET` | `/spoke/ingestion/secrets` | List source-credential references available to recipes — one row per `(secret, key)` under the `dataspoke-source-cred-` prefix, as `{ref: "name__key", secret_name, key}`. **Values are never returned.** Admins author the K8s Secrets out-of-band (`kubectl create secret generic dataspoke-source-cred-<name> --from-literal=<key>=… -n <dataspoke-ns>`; the source editor UI renders this authoring guide next to the reference list — DataSpoke has no secret-write API, the model is reference-only); a recipe then references one as `${name__key}`. **Requires Editor or Admin** (`403 READ_ONLY_ROLE` for Reader) — exception to the Reader-GET rule, since enumerating which credential refs exist is author-only tooling | Ingestion Control | UC1 |
@@ -305,7 +305,8 @@ other. A `GET` response (and `POST`/`PUT`/`PATCH` body) carries:
 ```
 
 Responses additionally include read-only management fields outside the recipe-standard set:
-`id`, `status`, `created_at`, `updated_at`, and `datahub_source_urn` (for `DATAHUB_MANAGED`).
+`id`, `status`, `platform` (derived from `recipe.source.type`), `created_at`, `updated_at`, and
+`datahub_source_urn` (for `DATAHUB_MANAGED`).
 On `GET`, `${name__key}` references inside `recipe` are returned as-is — they are pointers to
 K8s Secrets, not secret values; any plaintext secret value is **masked**. There is no
 `schedule_tier`/`schedule_cron`/`is_enabled` on the wire — the tier is derived server-side from
