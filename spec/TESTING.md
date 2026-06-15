@@ -34,6 +34,23 @@
 | Frontend | TypeScript | Vitest + React Testing Library | TypeScript compiler, ESLint |
 | E2E | TypeScript | Playwright | TypeScript compiler |
 
+### Full test surface
+
+"Run all tests" spans five run commands across these layers — not just the Python groups:
+
+| # | Layer | Command | Cluster? |
+|---|-------|---------|----------|
+| 1 | Python unit | `uv run pytest tests/unit/` | No |
+| 2 | Frontend unit/component (Vitest) | `pnpm -C src/frontend test` | No |
+| 3 | Spot integration | `uv run pytest tests/integration/spot/` | Rec. |
+| 4 | Api-wired integration | `uv run pytest tests/integration/api_wired/` | Yes |
+| 5 | E2E (Playwright) | `pnpm -C tests/e2e test` (gate: `pnpm -C tests/e2e typecheck`) | Yes |
+
+Groups 1–2 need no cluster. Groups 3–4 are the pytest integration groups and run **separately**
+(see [Python (pytest) Execution Groups](#python-pytest-execution-groups)). Group 5 owns the
+dev-env lock and reset for its run. Integration/api-wired need `helm-charts/.env` exported; api-wired
+and E2E reset dummy data per their own protocols.
+
 > **Do not use the `datahub` CLI** -- it requires Python <= 3.11 and is incompatible with the
 > project's Python 3.13 runtime. Use Python scripts with the `acryl-datahub` SDK instead
 > (e.g., `tests/integration/util/datahub.py`).
@@ -276,9 +293,11 @@ kubectl scale deployment/dataspoke-api --replicas=0 -n "${DATASPOKE_KUBE_DATASPO
 
 The session-scoped `runtime_conf` fixture (in `tests/integration/conftest.py`) GETs `/api/v1/admin/conf` once and asserts the three infra stubs (`stub_redis_client`, `stub_pgvector_manager`, `stub_notification_service`) are true. `stub_llm_client` is intentionally unchecked so real-LLM tests (UC3/UC4 `_with_real_llm` variants) can run with it false; per-test skip decorators consult `runtime_conf.stub_llm_client` and skip when stubbed. The `require_server` fixture additionally verifies `/health` returns 200 and Airflow DAGs are registered via `/admin/dags/verify`. Spot tests opt in by depending on the fixture; api-wired tests always depend on it.
 
-### Test Execution Groups
+### Python (pytest) Execution Groups
 
-Tests must run in **three separate groups**:
+The Python (pytest) tests must run in **three separate groups** — this split is about Airflow
+contention, not the full test surface (frontend Vitest and E2E are separate layers; see
+[Full test surface](#full-test-surface)):
 
 | Group | Command | Requires server? |
 |-------|---------|-----------------|
