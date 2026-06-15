@@ -1,8 +1,9 @@
 export const meta = {
   name: 'wf-minimal',
-  description: 'Simplest example of a dynamic agent-fleet workflow: per-stage generate → adversarial-review cycles from an approved plan (CLAUDE.md §Implementation Workflow steps 4-8)',
+  description: 'Simplest example of a dynamic agent-fleet workflow: per-stage generate → adversarial-review cycles from an approved plan (CLAUDE.md §Implementation Workflow steps 4-9)',
   whenToUse: 'After a human approves an implementation plan that names generator stages. args = {plan, stages, security?}.',
   phases: [
+    { title: 'spec' },
     { title: 'backend' },
     { title: 'airflow-dag' },
     { title: 'test' },
@@ -14,8 +15,9 @@ export const meta = {
 // args contract (supplied by the main agent from the approved plan):
 //   plan:     string                  — the approved implementation plan, verbatim
 //   stages:   (string | string[])[]   — generator stages in plan order; an inner array runs
-//                                       concurrently (e.g. [["backend","airflow-dag"], "test",
-//                                       "frontend", "k8s-helm"])
+//                                       concurrently (e.g. ["spec", ["backend","airflow-dag"],
+//                                       "test", "frontend", "k8s-helm"]). The `spec` stage, when
+//                                       present, leads so later stages read the updated spec.
 //   security: string[]                — stages whose diff touches the sensitive paths listed in
 //                                       .claude/agents/security-reviewer.md (decided at plan time)
 // The harness may deliver args JSON-stringified; normalize before validating.
@@ -24,8 +26,8 @@ if (!ARGS || typeof ARGS.plan !== 'string' || !Array.isArray(ARGS.stages)) {
   throw new Error('wf-minimal requires args {plan: string, stages: array, security?: string[]}')
 }
 
-const REVIEWER_FOR = { test: 'test-reviewer' } // every other reviewed stage uses `reviewer`
-const NO_REVIEW = ['k8s-helm'] // no review loop, per CLAUDE.md step 8
+const REVIEWER_FOR = { test: 'test-reviewer', spec: 'spec-reviewer' } // every other reviewed stage uses `reviewer`
+const NO_REVIEW = ['k8s-helm'] // no review loop, per CLAUDE.md step 9
 const RANK = { APPROVE: 0, REVISE: 1, ESCALATE: 2 }
 
 const REVIEW_SCHEMA = {

@@ -6,7 +6,7 @@ disallowedTools: Write, Edit, NotebookEdit
 model: opus
 effort: xhigh
 memory: project
-color: red
+color: pink
 ---
 
 You are an independent security reviewer for the DataSpoke project.

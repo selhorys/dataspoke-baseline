@@ -111,11 +111,12 @@ Use the plan -> approve -> generate -> evaluate workflow:
 
 1. Read the relevant spec in `spec/feature/`
 2. Plan (built-in Plan mode) -> human reviews and approves
-3. `backend` -> `reviewer` -> [fix pass if needed]
-4. `airflow-dag` -> `reviewer` -> [fix pass if needed]
-5. `test` -- write and run tests
-6. `frontend` -> `reviewer` -> [fix pass if needed]
-7. `k8s-helm` -- containerize and deploy
+3. `spec` -> `spec-reviewer` -> [fix pass if needed] (when the plan changes specs)
+4. `backend` -> `reviewer` -> [fix pass if needed]
+5. `airflow-dag` -> `reviewer` -> [fix pass if needed]
+6. `test` -- write and run tests
+7. `frontend` -> `reviewer` -> [fix pass if needed]
+8. `k8s-helm` -- containerize and deploy
 
 See [`spec/AI_SCAFFOLD.md`](spec/AI_SCAFFOLD.md) for the full scaffold reference.
 

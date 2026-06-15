@@ -3,7 +3,7 @@ name: frontend
 description: Writes Next.js + TypeScript frontend code for DataSpoke in src/frontend/. Launch only with an approved implementation plan, or for a reviewer-directed fix pass.
 tools: Read, Write, Edit, Glob, Grep, Bash
 model: opus
-color: cyan
+color: blue
 hooks:
   Stop:
     - hooks:

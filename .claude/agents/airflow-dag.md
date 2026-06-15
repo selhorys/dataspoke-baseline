@@ -3,7 +3,7 @@ name: airflow-dag
 description: Writes Airflow DAG Python files and workflow parameter modules in src/workflows/. Launch only with an approved implementation plan, or for a reviewer-directed fix pass.
 tools: Read, Write, Edit, Glob, Grep, Bash
 model: sonnet
-color: green
+color: cyan
 hooks:
   PostToolUse:
     - matcher: Edit|Write

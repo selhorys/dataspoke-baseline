@@ -103,14 +103,16 @@ directly in the main conversation.
 |----------|------|-------|-------|
 | `reviewer` | Evaluator | Independently reviews code-generator output against spec + implementation plan. Produces structured pass/fail scoring across 5 criteria (spec compliance, architecture adherence, code quality, completeness, inter-component consistency). Invoked after `backend`, `airflow-dag`, and `frontend` generators | Read, Glob, Grep, Bash |
 | `test-reviewer` | Evaluator | Independently reviews test-generator output (pytest **and** Playwright E2E). Produces structured pass/fail scoring across 5 test-specific criteria: spec traceability, spec-derived (vs impl-calibrated) assertions, failure-mode coverage, plausibly-broken-impl sensitivity, and property-based testing opportunity (advisory). Invoked after the `test` generator | Read, Glob, Grep, Bash |
+| `spec-reviewer` | Evaluator | Independently reviews spec-generator output against the spec hierarchy + plan. Produces structured pass/fail scoring across 5 spec-specific criteria: hierarchy/priority compliance, internal consistency & naming, timeless & no-bloat, completeness vs plan, altitude. Invoked after the `spec` generator | Read, Glob, Grep |
 | `security-reviewer` | Evaluator | Parallel security review when a generator's diff touches sensitive paths (auth, secrets, migrations, DataHub emission, Helm credentials, new dependencies, `.prauto/`). Scores injection, authn/authz, secrets, input validation, supply chain, DataHub emission, crypto. Authoritative glob list lives in the agent file | Read, Glob, Grep, Bash |
 
-All three reviewers use read-only tools — they analyze and report but do not write code.
+All four reviewers use read-only tools — they analyze and report but do not write code.
 
-### Generators (sonnet model)
+### Generators (opus by default; sonnet for `airflow-dag` and `k8s-helm`)
 
 | Subagent | Scope | Tools |
 |----------|-------|-------|
+| `spec` | Specification documents under `spec/` (top-level + `feature/<FEATURE>.md`). Authors and harmonizes timeless reference specs via the `spec-write`/`spec-harmonize`/`spec-sync-with-impl` skills. Leads the run so code generators read the updated spec; runs only when the plan adds or changes specs. Supports fix pass mode | Read, Write, Edit, Glob, Grep |
 | `backend` | FastAPI routes, services, shared libs in `src/api/`, `src/backend/`, `src/shared/`. Reads feature specs and the approved plan. Self-verifies with `pytest`. Supports fix pass mode for reviewer findings | Read, Write, Edit, Glob, Grep, Bash |
 | `airflow-dag` | Airflow DAG Python files in `src/workflows/dags/` and workflow parameter modules. Orchestrates `src/backend/` services via HttpOperator tasks. Supports fix pass mode | Read, Write, Edit, Glob, Grep, Bash |
 | `test` | Tests across all layers in `tests/`: Python unit / spot / api-wired (pytest) **and** Playwright/TypeScript E2E in `tests/e2e/` (use-case + ground groups). Follows `spec/TESTING.md`. Supports reviewer-directed testing mode to verify specific findings | Read, Write, Edit, Glob, Grep, Bash |
@@ -121,7 +123,8 @@ All three reviewers use read-only tools — they analyze and report but do not w
 
 The standard workflow uses the **plan → approve → generate → evaluate** pattern: plan (Plan
 mode, per §Plan quality checklist) → human approves → per-agent generate+evaluate cycles
-(backend → airflow-dag → test → frontend, each followed by its evaluator — `reviewer` for code
+(`spec` when the plan changes specs, leading so later stages read it → backend → airflow-dag →
+test → frontend, each followed by its evaluator — `spec-reviewer` for `spec`, `reviewer` for code
 generators, `test-reviewer` for the `test` agent — with a single fix pass) → `k8s-helm` when
 ready (no review loop). Sequential by default; backend and airflow-dag may run
 concurrently when the DAG work does not consume new API contracts, and frontend may run concurrently
@@ -210,8 +213,8 @@ tailored to an organization's data sources, domain vocabulary, and operational r
 2. **Run `/spec-write`** — update architectural specs, then baseline and spoke feature specs
 3. **Run `/k8s-deploy install`** — bring up the DataHub environment
 4. **Implement features** using the plan → approve → generate → evaluate workflow:
-   Plan mode → approve → `backend` → `reviewer` → `airflow-dag` → `reviewer` → `test` →
-   `test-reviewer` → `frontend` → `reviewer` → `k8s-helm`
+   Plan mode → approve → `spec` → `spec-reviewer` (when specs change) → `backend` → `reviewer` →
+   `airflow-dag` → `reviewer` → `test` → `test-reviewer` → `frontend` → `reviewer` → `k8s-helm`
 
 Steps 1-2 ensure every spec follows MANIFESTO conventions.
 
@@ -250,16 +253,18 @@ Steps 1-2 ensure every spec follows MANIFESTO conventions.
    Delegate implementation to generator agents rather than writing code in the main
    conversation.
 
-8. **Generator-evaluator separation** — Generators (backend, airflow-dag, frontend, test) produce
-   code or tests and self-verify. An independent evaluator agent — `reviewer` for code,
-   `test-reviewer` for tests — then evaluates the output against the spec and approved plan.
+8. **Generator-evaluator separation** — Generators (spec, backend, airflow-dag, frontend, test)
+   produce specs, code, or tests and self-verify. An independent evaluator agent — `reviewer` for
+   code, `test-reviewer` for tests, `spec-reviewer` for specs — then evaluates the output against
+   the spec hierarchy and approved plan.
    Self-evaluation is insufficient for quality assurance — models tend to praise their own work.
    External critique from a separate context is a stronger signal. (Source:
    [Anthropic harness design research](https://www.anthropic.com/engineering/harness-design-long-running-apps).)
 
 9. **Model-appropriate roles** — Use the strongest model (opus) for evaluator roles (`reviewer`,
-   `test-reviewer`, `security-reviewer`), which require judgment, reasoning, and resistance to
-   self-praise patterns. Use faster models (sonnet) for volume code generation. Planning uses
+   `test-reviewer`, `security-reviewer`, `spec-reviewer`), which require judgment, reasoning, and resistance to
+   self-praise patterns. Generators default to opus; the more mechanical `airflow-dag` and
+   `k8s-helm` use the faster sonnet. Planning uses
    Claude's built-in Plan mode (which runs on the session's current model) rather than a
    dedicated subagent.
 

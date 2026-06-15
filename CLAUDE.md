@@ -78,22 +78,24 @@ When in doubt, plan. Never self-classify a task as "trivial" to skip planning.
 End-to-end steps:
 
 1. Read the relevant spec in `spec/feature/`
-2. **Plan (built-in Plan mode)** — produce implementation plan with files, contracts, and acceptance criteria. The plan MUST specify which generator agents (`backend`, `airflow-dag`, `frontend`, `test`, `k8s-helm`) to launch and in what order. Steps 4–8 are driven by direct Agent calls by default; the plan may opt into a dynamic workflow script when workflow-based multi-agent execution is desired (§Orchestration) — plan approval doubles as that opt-in. See `spec/AI_SCAFFOLD.md` §Plan quality checklist.
+2. **Plan (built-in Plan mode)** — produce implementation plan with files, contracts, and acceptance criteria. The plan MUST specify which generator agents (`spec`, `backend`, `airflow-dag`, `frontend`, `test`, `k8s-helm`) to launch and in what order. Steps 4–9 are driven by direct Agent calls by default; the plan may opt into a dynamic workflow script when workflow-based multi-agent execution is desired (§Orchestration) — plan approval doubles as that opt-in. See `spec/AI_SCAFFOLD.md` §Plan quality checklist.
 3. **Human approves the plan** — do NOT proceed to code generation without explicit approval
-4. `backend` agent → `reviewer` agent → [fix pass if REVISE, max 1 iteration]
-5. `airflow-dag` agent → `reviewer` agent → [fix pass if REVISE, max 1 iteration]
-   (steps 4 and 5 may run concurrently when the DAG work does not depend on new backend API contracts)
-6. `test` agent → `test-reviewer` agent → [fix pass if REVISE, max 1 iteration]
-7. `frontend` agent → `reviewer` agent → [fix pass if REVISE, max 1 iteration]
-8. `k8s-helm` agent — containerize and deploy (when ready, no review loop)
+4. `spec` agent → `spec-reviewer` agent → [fix pass if REVISE, max 1 iteration]
+   (only when the plan adds or changes specs; produces the spec the code stages read — skip if no spec change)
+5. `backend` agent → `reviewer` agent → [fix pass if REVISE, max 1 iteration]
+6. `airflow-dag` agent → `reviewer` agent → [fix pass if REVISE, max 1 iteration]
+   (steps 5 and 6 may run concurrently when the DAG work does not depend on new backend API contracts)
+7. `test` agent → `test-reviewer` agent → [fix pass if REVISE, max 1 iteration]
+8. `frontend` agent → `reviewer` agent → [fix pass if REVISE, max 1 iteration]
+9. `k8s-helm` agent — containerize and deploy (when ready, no review loop)
 
 When a generator's diff touches paths listed in `.claude/agents/security-reviewer.md`, also run `security-reviewer` in parallel with `reviewer`; merge their findings before deciding APPROVE / REVISE / ESCALATE.
 
-**Orchestration**: drive steps 4–8 with direct `Agent` calls by default — spawn each generator, then its reviewer(s), following the per-stage loop in steps 4–8 and the delegation rules below. The non-negotiable rule is generator ≠ reviewer: every reviewed stage gets a separate `reviewer` (or `test-reviewer`) before later stages build on it. An ESCALATE (or a REVISE persisting after one fix pass) halts the run — relay the findings to the user and wait. When workflow-based multi-agent execution is desired, write a dynamic workflow script (Workflow tool): compose an agent fleet from the sub-agent definitions in `.claude/agents/`, pairing each generator with an adversarial reviewer, and shape the fan-out / parallelism to the task. The per-stage loop of steps 4–8 is one of the simplest examples of such a workflow, checked in as `.claude/workflows/wf-minimal.js` (`args = {plan, stages, security}` — `stages` in plan order with concurrent stages grouped in inner arrays, `security` naming sensitive-path stages). Plan approval is standing authorization to invoke the Workflow tool when the plan opts in; the per-run launch prompt remains the user's control point.
+**Orchestration**: drive steps 4–9 with direct `Agent` calls by default — spawn each generator, then its reviewer(s), following the per-stage loop in steps 4–9 and the delegation rules below. The non-negotiable rule is generator ≠ reviewer: every reviewed stage gets a separate `reviewer` (or `test-reviewer` / `spec-reviewer`) before later stages build on it. An ESCALATE (or a REVISE persisting after one fix pass) halts the run — relay the findings to the user and wait. When workflow-based multi-agent execution is desired, write a dynamic workflow script (Workflow tool): compose an agent fleet from the sub-agent definitions in `.claude/agents/`, pairing each generator with an adversarial reviewer, and shape the fan-out / parallelism to the task. The per-stage loop of steps 4–9 is one of the simplest examples of such a workflow, checked in as `.claude/workflows/wf-minimal.js` (`args = {plan, stages, security}` — `stages` in plan order with concurrent stages grouped in inner arrays, `security` naming sensitive-path stages). Plan approval is standing authorization to invoke the Workflow tool when the plan opts in; the per-run launch prompt remains the user's control point.
 
 Delegate implementation to the appropriate generator agent rather than writing code directly in the main conversation. Each generator runs in a confined context — it sees only the approved plan, the relevant spec, and the files in its scope. The reviewer receives the plan + generator's completion report + changed files. If the reviewer's verdict is REVISE, the generator is re-invoked with the findings for a fix pass. If issues persist after one fix pass, they are escalated to the user.
 
-For spec authoring, use `/spec-write` directly.
+For standalone spec authoring outside an implementation run, use `/spec-write` directly; inside a run the `spec` agent (step 4) covers it.
 For testing conventions (unit/integration/api-wired integration/E2E, toolchain, dev-env lock protocol), see `spec/TESTING.md`. E2E (`tests/e2e/`) is Playwright with two groups — use-case (mirrors api-wired UC stories, dual UI+backend confirmation) and ground (narrow per-page flows, spot analogue); together they cover every `src/frontend/app/` route (tracked in `tests/e2e/COVERAGE.md`).
 
 ## Integration Test Protocol
@@ -117,8 +119,8 @@ env -u CLAUDECODE bash -x .prauto/heartbeat.sh
 
 **Skills**: `k8s-work`, `spec-write`, `datahub-api`, `prauto-check-status`, `prauto-run-heartbeat`, `k8s-deploy`, `ref-setup`, `spec-sync-with-impl`, `spec-harmonize`, `spec-reduce`, `spec-to-bulk-issue`, `test-manual-api-wired`, `test-manual-ui` (browser-driven sibling — manual UC walkthrough with UI+backend dual confirmation)
 _(Note: `datahub-api` requires `ref/github/datahub/` — run `/ref-setup` once if not present.)_
-**Subagents**: `reviewer` (evaluator, opus), `test-reviewer` (evaluator, opus), `security-reviewer` (evaluator, opus), `backend`, `airflow-dag`, `test`, `frontend`, `k8s-helm`. Evaluators keep persistent cross-session memory in `.claude/agent-memory/<name>/` (checked in).
-**Workflows**: dynamic workflow scripts written per task — agent fleets composed from the `.claude/agents/` sub-agent definitions with adversarial generator → reviewer pairing. `.claude/workflows/wf-minimal.js` is the simplest checked-in example (§Implementation Workflow steps 4–8; also runnable as `/wf-minimal`); the default driver remains direct Agent calls.
+**Subagents**: `reviewer` (evaluator, opus), `test-reviewer` (evaluator, opus), `security-reviewer` (evaluator, opus), `spec-reviewer` (evaluator, opus), `backend`, `airflow-dag`, `test`, `frontend`, `k8s-helm`, `spec` (spec authoring/harmonization). Evaluators keep persistent cross-session memory in `.claude/agent-memory/<name>/` (checked in).
+**Workflows**: dynamic workflow scripts written per task — agent fleets composed from the `.claude/agents/` sub-agent definitions with adversarial generator → reviewer pairing. `.claude/workflows/wf-minimal.js` is the simplest checked-in example (§Implementation Workflow steps 4–9; also runnable as `/wf-minimal`); the default driver remains direct Agent calls.
 **Permissions**: Read-only ops auto-allowed; mutating ops prompt; destructive ops blocked. See `.claude/settings.json`.
 **Hooks**: `.claude/hooks/` — integration-test preflight (blocking), plan-gate reminder, permission-hygiene warning, commit confirmation. Wired via `.claude/settings.json`; tool-event hooks are gated by settings-level `if` filters with in-script guards as backup. Generator agents additionally run per-agent hooks (ruff on edited Python files; frontend typecheck on Stop), wired in their frontmatter.
 **Statusline**: `.claude/statusline.sh` — model · effort · cwd · git-branch · 5-hour block reset countdown. Reset segment requires `ccusage` on `$PATH` (`npm i -g ccusage` on node ≥ 18, or `brew install bun && bun add -g ccusage`); omitted silently if unavailable.

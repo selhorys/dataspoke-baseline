@@ -8,7 +8,6 @@ description: >-
   the gaps, asks the user which direction to resolve each gap (spec→impl,
   impl→spec, or leave-as-flagged), then applies the chosen edits. Trigger when
   specs and code may have drifted apart and the user wants them reconciled.
-disable-model-invocation: true
 argument-hint: '[preset-scope | "free-form description of an area"]'
 allowed-tools: Read, Write, Edit, Glob, Grep
 ---

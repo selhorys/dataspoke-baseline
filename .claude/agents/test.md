@@ -2,8 +2,8 @@
 name: test
 description: Writes and runs tests for DataSpoke across all layers (unit, spot integration, api-wired integration, E2E). Launch only with an approved implementation plan, or for a test-reviewer-directed fix pass.
 tools: Read, Write, Edit, Glob, Grep, Bash
-model: sonnet
-color: yellow
+model: opus
+color: purple
 hooks:
   PostToolUse:
     - matcher: Edit|Write
