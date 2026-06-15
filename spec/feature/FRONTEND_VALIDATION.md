@@ -46,9 +46,11 @@ A range Select (7d / 30d / 90d, default 30d) drives the `from` query param.
 The historical timeseries panel plots `score` and a per-variable chart over
 `data_time` from `GET .../attr/validation/result?from=&limit=`; the UI sends
 only `from` (+ `limit`), and the backend defaults the upper bound to now. The
-event log consumes `GET .../event/validation` (one entry per accepted result
-POST). The timeseries and event panels (and the list view) poll on a 15s
-interval, paused while the tab is hidden; `from` is stable per selected window.
+event log consumes `GET .../event/validation` — config lifecycle
+(create/update/delete) plus one `RESULT_RECORDED` entry per accepted result
+POST, each rendered with its `event_type`, status, and detail. The timeseries
+and event panels (and the list view) poll on a 15s interval, paused while the
+tab is hidden; `from` is stable per selected window.
 The header "Latest score" reads the most recent result within the selected
 range window, rendered to 4 decimals.
 

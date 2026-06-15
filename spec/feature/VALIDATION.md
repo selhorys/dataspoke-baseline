@@ -74,6 +74,7 @@ the dataset to already exist in DataHub (`422 DATASET_NOT_IN_DATAHUB` otherwise)
 | `DELETE` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Soft-delete the rule (DataHub `status.removed = true`) |
 | `POST` | `/spoke/common/data/{dataset_urn}/attr/validation/result` | Append a validation result |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/validation/result` | List historic results (`?from=…&until=…`) |
+| `GET` | `/spoke/common/data/{dataset_urn}/event/validation` | Validation event timeline — config lifecycle (`CONFIG_CREATE`/`CONFIG_UPDATE`/`CONFIG_DELETE`) plus `RESULT_RECORDED`, one per accepted result POST |
 
 The cross-dataset list view at `/spoke/validation` continues to operate under
 the existing semantics in
@@ -305,8 +306,10 @@ spec'd preemptively:
 - **Result retention.** `assertionRunEvent` is timeseries and grows without bound.
   DataHub-side TTL or sampling policy is not addressed here; revisit when storage
   pressure becomes real.
-- **Notification hooks.** Pipelines may want to subscribe to "rule failed" events.
-  Out of scope; integrate with the cross-feature `event/...` surface when defined.
+- **Notification hooks.** Config lifecycle and result records already land on the
+  `event/validation` timeline (see §API Surface), but there is no push/subscription
+  delivery — pipelines that want to be notified on "rule failed" must poll. Active
+  delivery is out of scope for v1.
 
 ## References
 
