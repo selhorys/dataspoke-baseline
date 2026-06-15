@@ -301,7 +301,11 @@ test("UC1 Case 1 step 3 — /ingestion list shows DATAHUB_MANAGED row with read-
   // satisfying the assertion.
   const sourceRow = page.getByRole("row").filter({ hasText: sourceUrn! });
   await expect(sourceRow).toBeVisible({ timeout: 15_000 });
-  await expect(sourceRow.getByText("DataHub-managed")).toBeVisible({ timeout: 15_000 });
+  // exact match: the source name (e.g. "uc1-datahub-managed-…") also contains the substring
+  // "datahub-managed", so an inexact getByText resolves to both the name link and the badge.
+  await expect(sourceRow.getByText("DataHub-managed", { exact: true })).toBeVisible({
+    timeout: 15_000,
+  });
   await expect(sourceRow.getByText("read-only")).toBeVisible({ timeout: 10_000 });
   // Also confirm the registered source's name and URN subtitle appear in the same row.
   // spec: FRONTEND_INGESTION.md §List View — datahub_source_urn rendered as mono subtitle
