@@ -223,7 +223,7 @@ async def post_ingestion_source_run(
     Returns ``409 INGESTION_RUNNING`` when a concurrent run is already in progress.
     Returns ``404 INGESTION_SOURCE_NOT_FOUND`` when the id is absent.
     """
-    result = await service.run(source_id=id, dry_run=dry_run)
+    result = await service.run(source_id=id, dry_run=dry_run, manual=True)
     return IngestionRunResponse(
         run_id=result.run_id,
         status=result.status,

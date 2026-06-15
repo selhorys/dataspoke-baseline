@@ -623,7 +623,7 @@ In the listed order:
 |---|--------|-------|
 | 1 | `DataProcessInstanceProperties` | `name` describes the run (e.g. `"<source_id>-<run_id>"`); `type = BATCH_SCHEDULED` for tier runs, `BATCH_AD_HOC` for manual `sources/{id}/method/run` |
 | 2a | `DataProcessInstanceRelationships` | `parentTemplate = null`, `upstreamInstances = []` for standalone ingestion runs (DPI-to-DPI lineage; no dataset linkage on this aspect) |
-| 2b | `DataProcessInstanceOutput` | `outputs = [<dataset_urn>]` — the dataset(s) this DPI ingested into. This is what makes the DPI surface in DataHub's `dataset(urn).runs` GraphQL query. |
+| 2b | `DataProcessInstanceOutput` | `outputs = [<dataset_urn>]` — the dataset(s) this DPI ingested into. This is what makes the DPI surface in DataHub's `dataset(urn).runs` GraphQL query. Extractors that discover their target datasets dynamically during the crawl emit this aspect **after the crawl completes and before the terminal RunEvent**, since the `outputs` set is not known until then; its placement is not consumer-ordering-sensitive. |
 | 3 | `DataProcessInstanceRunEvent` (`status = STARTED`) | Emitted **before** any schema/property aspect work begins on the dataset |
 | 4 | `StatusClass`, `DatasetPropertiesClass`, `SchemaMetadataClass`, … | The actual ingested metadata. Emit whatever aspects are appropriate for the source — DPI does not constrain the metadata shape. |
 | 5 | `DataProcessInstanceRunEvent` (`status = COMPLETE`) | Emitted **after** all aspect work is finished. Carry `result.resultType = SUCCESS` for happy-path; `result.resultType = FAILURE` and `result.nativeResultType = <author-specific code>` for failures. |
@@ -644,7 +644,11 @@ up via DataHub's UI.
 
 The STARTED event must precede schema/property emission on the dataset; the
 terminal event must follow all aspect work. Out-of-order emission produces
-non-deterministic ordering for any consumer that polls run history.
+non-deterministic ordering for any consumer that polls run history. The
+`DataProcessInstanceOutput` aspect is metadata, not a RunEvent, so it falls
+outside this guarantee: extractors that resolve their `outputs` set dynamically
+may emit it after the crawl, between the dataset aspect work and the terminal
+RunEvent.
 
 ### systemMetadata requirement
 
@@ -674,7 +678,7 @@ await datahub_client.emit_aspect(dataset_urn, aspect, system_metadata=sysmeta)
 Self-verify before treating an ingestor as "done":
 
 - [ ] DPI URN is deterministic per logical run (retries reuse the same URN)
-- [ ] `Properties`, `Relationships`, and `Output` aspects are emitted before the first `RunEvent`
+- [ ] `Properties` and `Relationships` aspects are emitted before the first `RunEvent`; the `Output` aspect likewise when target datasets are statically known, or after the crawl and before the terminal `RunEvent` when discovered dynamically
 - [ ] STARTED `RunEvent` is emitted before any dataset aspect emission
 - [ ] Terminal `RunEvent` (COMPLETE/FAILED) is emitted after all aspect work, with `result.resultType` set
 - [ ] Failures emit a terminal event (do not let the run hang in STARTED)

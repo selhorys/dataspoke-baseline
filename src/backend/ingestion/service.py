@@ -620,6 +620,7 @@ class IngestionService:
         self,
         source_id: str,
         dry_run: bool = False,
+        manual: bool = False,
     ) -> IngestionRunResult:
         """Run the full ingestion pipeline for an ACTIVE_CUSTOM_MANAGED source.
 
@@ -627,11 +628,19 @@ class IngestionService:
         1. Load source; reject if mode != ACTIVE_CUSTOM_MANAGED (409 INGESTION_RUN_NOT_APPLICABLE).
         2. Redis SETNX guard key ``ingestion:running:{source_id}`` (409 INGESTION_RUNNING).
         3. Resolve ``${name__key}`` recipe secrets into plaintext in-memory.
-        4. Emit DataProcessInstance STARTED (non-dry-run).
+        4. Emit DataProcessInstance STARTED (non-dry-run). ``type`` is BATCH_AD_HOC
+           when ``manual`` else BATCH_SCHEDULED.
         5. Dispatch to extractor for recipe.source.type.
-        6. Emit DataProcessInstance COMPLETE/FAILED (non-dry-run).
-        7. Upsert emitted URNs into ingestion_source_dataset (derivation='emitted', non-dry-run).
-        8. Record INGESTION.COMPLETE / INGESTION.FAIL event.
+        6. Emit DataProcessInstanceOutput(outputs=emitted_urns) after the crawl —
+           non-dry-run, success, and non-empty emitted URNs only.
+        7. Emit DataProcessInstance COMPLETE/FAILED (non-dry-run).
+        8. Upsert emitted URNs into ingestion_source_dataset (derivation='emitted', non-dry-run).
+        9. Record INGESTION.COMPLETE / INGESTION.FAIL event.
+
+        Args:
+            manual: True for manual ``sources/{id}/method/run`` invocations (DPI
+                ``type=BATCH_AD_HOC``); False (default) for the scheduled tier-DAG
+                path (DPI ``type=BATCH_SCHEDULED``).
 
         Raises:
             EntityNotFoundError('ingestion_source', source_id): if not found.
@@ -651,12 +660,14 @@ class IngestionService:
                 )
 
         try:
-            return await self._run_inner(source_id, dry_run)
+            return await self._run_inner(source_id, dry_run, manual)
         finally:
             if self._cache is not None and lock_token is not None:
                 await self._cache.delete_if_value(lock_key, lock_token)
 
-    async def _run_inner(self, source_id: str, dry_run: bool) -> IngestionRunResult:
+    async def _run_inner(
+        self, source_id: str, dry_run: bool, manual: bool = False
+    ) -> IngestionRunResult:
         """Inner run logic (executes inside the Redis SETNX guard)."""
         run_id = str(uuid.uuid4())
 
@@ -717,7 +728,9 @@ class IngestionService:
         # Emit DPI STARTED (non-dry-run only).
         if not dry_run:
             try:
-                await self._emit_dpi_started(dpi_urn, source, run_id, start_ms, sysmeta)
+                await self._emit_dpi_started(
+                    dpi_urn, source, run_id, start_ms, sysmeta, manual=manual
+                )
             except Exception as exc:
                 logger.warning("DPI STARTED emission failed (non-fatal): %s", exc)
 
@@ -754,6 +767,13 @@ class IngestionService:
             errors = list(warnings) or ["No entities ingested from source"]
 
         status = "error" if errors else "success"
+
+        # Emit DPI Output (aspect 2b) — dynamic-discovery extractors resolve their
+        # target dataset URNs during the crawl, so this is emitted post-crawl,
+        # after the success status is known and before the terminal RunEvent.
+        # Skipped on dry-run, failure, and zero-entity runs.
+        if not dry_run and status == "success" and ingestion_result.emitted_urns:
+            await self._emit_dpi_output(dpi_urn, ingestion_result.emitted_urns, sysmeta)
 
         # Emit DPI terminal event (non-dry-run).
         if not dry_run:
@@ -806,12 +826,18 @@ class IngestionService:
         run_id: str,
         start_ms: int,
         sysmeta: SystemMetadataClass,
+        manual: bool = False,
     ) -> None:
+        run_type = (
+            DataProcessTypeClass.BATCH_AD_HOC
+            if manual
+            else DataProcessTypeClass.BATCH_SCHEDULED
+        )
         await self._datahub.emit_aspect(
             dpi_urn,
             DataProcessInstancePropertiesClass(
                 name=f"dataspoke-{source.platform}-{run_id}",
-                type=DataProcessTypeClass.BATCH_SCHEDULED,
+                type=run_type,
                 created=AuditStampClass(time=start_ms, actor="urn:li:corpuser:dataspoke"),
             ),
             system_metadata=sysmeta,
@@ -832,6 +858,26 @@ class IngestionService:
             ),
             system_metadata=sysmeta,
         )
+
+    async def _emit_dpi_output(
+        self,
+        dpi_urn: str,
+        emitted_urns: list[str],
+        sysmeta: SystemMetadataClass,
+    ) -> None:
+        """Emit DataProcessInstanceOutput (aspect 2b) linking the DPI to the
+        dataset(s) it ingested into, surfacing the run in DataHub's
+        ``dataset(urn).runs`` query. Best-effort: a successful ingestion is not
+        aborted if this aspect fails to emit.
+        """
+        try:
+            await self._datahub.emit_aspect(
+                dpi_urn,
+                DataProcessInstanceOutputClass(outputs=emitted_urns),
+                system_metadata=sysmeta,
+            )
+        except Exception as exc:
+            logger.warning("DPI Output emission failed (non-fatal): %s", exc)
 
     async def _emit_dpi_terminal(
         self,

@@ -23,7 +23,15 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from datahub.metadata.schema_classes import (  # type: ignore
+    DataProcessInstanceOutputClass,
+    DataProcessInstancePropertiesClass,
+    DataProcessInstanceRunEventClass,
+    DataProcessRunStatusClass,
+    DataProcessTypeClass,
+)
 
+from src.backend.ingestion.extractors import IngestionResult
 from src.backend.ingestion.service import IngestionService
 from src.shared.exceptions import ConflictError, EntityNotFoundError, PreconditionFailedError
 from tests.unit.backend.conftest import mock_db_refresh, mock_scalar_query
@@ -679,3 +687,348 @@ class TestMirrorExecutionRequestsStatusMapping:
         assert db.add.call_count == 2
         added_types = {call[0][0].event_type for call in db.add.call_args_list}
         assert added_types == {INGESTION_COMPLETE, INGESTION_FAIL}
+
+
+# ── DPI emission contract (run pipeline) ──────────────────────────────────────
+
+
+def _emitted_aspects(datahub: AsyncMock) -> list[object]:
+    """Return the ordered list of aspect objects passed to datahub.emit_aspect.
+
+    The mocked DataHub client records every emission as
+    ``emit_aspect(entity_urn, aspect, system_metadata=...)``. The aspect is the
+    second positional argument; this returns them in emission order.
+    """
+    return [call.args[1] for call in datahub.emit_aspect.call_args_list]
+
+
+def _dpi_properties(datahub: AsyncMock) -> DataProcessInstancePropertiesClass:
+    props = [
+        a for a in _emitted_aspects(datahub)
+        if isinstance(a, DataProcessInstancePropertiesClass)
+    ]
+    assert len(props) == 1, (
+        f"Expected exactly one DataProcessInstanceProperties emission; got {len(props)}."
+    )
+    return props[0]
+
+
+def _dpi_outputs(datahub: AsyncMock) -> list[DataProcessInstanceOutputClass]:
+    return [
+        a for a in _emitted_aspects(datahub)
+        if isinstance(a, DataProcessInstanceOutputClass)
+    ]
+
+
+def _patched_run(
+    service: IngestionService,
+    *,
+    entities_ingested: int,
+    emitted_urns: list[str],
+    errors: list[str] | None = None,
+    warnings: list[str] | None = None,
+    dry_run: bool = False,
+    manual: bool = False,
+):
+    """Drive _run_inner with the extractor and secret resolution stubbed.
+
+    Returns an async context manager wrapping the patches; the caller awaits
+    ``service._run_inner(...)`` inside the `with` block. The extractor is forced
+    to return a fixed IngestionResult so the DPI emission branches are exercised
+    deterministically without a real crawl.
+    """
+    return patch.multiple(
+        "src.backend.ingestion.service",
+        resolve_recipe_secrets=MagicMock(side_effect=lambda r: r),
+        run_extractor=AsyncMock(
+            return_value=IngestionResult(
+                entities_ingested=entities_ingested,
+                emitted_urns=emitted_urns,
+                errors=errors or [],
+                warnings=warnings or [],
+            )
+        ),
+    )
+
+
+class TestDpiEmissionContract:
+    """Spec: spec/DATAHUB_INTEGRATION.md §DPI emission contract.
+
+    The mocked DataHub client records emissions on emit_aspect.call_args_list.
+    Assertions derive from the contract's required enum values and aspect set,
+    not from incidental code constants.
+    """
+
+    @pytest.mark.asyncio
+    async def test_manual_run_emits_batch_ad_hoc(
+        self, service: IngestionService, db: AsyncMock, datahub: AsyncMock
+    ) -> None:
+        """manual=True → DataProcessInstanceProperties.type == BATCH_AD_HOC.
+
+        Spec: §DPI emission contract aspect #1 — 'type = BATCH_AD_HOC for manual
+        sources/{id}/method/run'.
+        """
+        row = _make_source_row(mode="ACTIVE_CUSTOM_MANAGED")
+        mock_scalar_query(db, row)
+
+        with _patched_run(
+            service, entities_ingested=2, emitted_urns=[_DATASET_URN]
+        ):
+            await service._run_inner(str(row.id), dry_run=False, manual=True)
+
+        props = _dpi_properties(datahub)
+        assert props.type == DataProcessTypeClass.BATCH_AD_HOC, (
+            f"Manual run must emit DPI type=BATCH_AD_HOC; got {props.type!r}. "
+            "Spec: DATAHUB_INTEGRATION.md §DPI emission contract aspect #1."
+        )
+
+    @pytest.mark.asyncio
+    async def test_scheduled_run_emits_batch_scheduled(
+        self, service: IngestionService, db: AsyncMock, datahub: AsyncMock
+    ) -> None:
+        """manual=False (default tier-DAG path) → DPI type == BATCH_SCHEDULED.
+
+        Spec: §DPI emission contract aspect #1 — 'type = BATCH_SCHEDULED for tier runs'.
+        """
+        row = _make_source_row(mode="ACTIVE_CUSTOM_MANAGED")
+        mock_scalar_query(db, row)
+
+        with _patched_run(
+            service, entities_ingested=2, emitted_urns=[_DATASET_URN]
+        ):
+            await service._run_inner(str(row.id), dry_run=False, manual=False)
+
+        props = _dpi_properties(datahub)
+        assert props.type == DataProcessTypeClass.BATCH_SCHEDULED, (
+            f"Scheduled run must emit DPI type=BATCH_SCHEDULED; got {props.type!r}. "
+            "Spec: DATAHUB_INTEGRATION.md §DPI emission contract aspect #1."
+        )
+
+    @pytest.mark.asyncio
+    async def test_run_default_manual_flag_is_scheduled(
+        self, service: IngestionService, db: AsyncMock, datahub: AsyncMock
+    ) -> None:
+        """run() without an explicit manual flag defaults to BATCH_SCHEDULED.
+
+        The tier-DAG internal activity uses the manual=False default; only the
+        public sources/{id}/method/run route opts into manual=True.
+        Spec: §DPI emission contract aspect #1.
+        """
+        row = _make_source_row(mode="ACTIVE_CUSTOM_MANAGED")
+        mock_scalar_query(db, row)
+
+        with _patched_run(
+            service, entities_ingested=2, emitted_urns=[_DATASET_URN]
+        ):
+            # No cache configured on the bare `service` fixture, so run() runs
+            # _run_inner directly with its manual default.
+            await service.run(str(row.id), dry_run=False)
+
+        props = _dpi_properties(datahub)
+        assert props.type == DataProcessTypeClass.BATCH_SCHEDULED, (
+            f"run() default must emit DPI type=BATCH_SCHEDULED; got {props.type!r}. "
+            "Spec: DATAHUB_INTEGRATION.md §DPI emission contract aspect #1."
+        )
+
+    @pytest.mark.asyncio
+    async def test_successful_run_emits_single_output_with_emitted_urns(
+        self, service: IngestionService, db: AsyncMock, datahub: AsyncMock
+    ) -> None:
+        """Non-dry-run success with ≥1 emitted URN emits exactly one
+        DataProcessInstanceOutput on the DPI URN with outputs == emitted_urns.
+
+        Spec: §DPI emission contract aspect #2b — 'outputs = [<dataset_urn>] …
+        what makes the DPI surface in dataset(urn).runs'.
+        """
+        row = _make_source_row(mode="ACTIVE_CUSTOM_MANAGED")
+        mock_scalar_query(db, row)
+        second_urn = (
+            "urn:li:dataset:(urn:li:dataPlatform:postgres,"
+            "example_db.catalog.editions,DEV)"
+        )
+        emitted = [_DATASET_URN, second_urn]
+
+        with _patched_run(service, entities_ingested=2, emitted_urns=emitted):
+            await service._run_inner(str(row.id), dry_run=False, manual=True)
+
+        outputs = _dpi_outputs(datahub)
+        assert len(outputs) == 1, (
+            f"Successful non-dry-run with emitted URNs must emit exactly one "
+            f"DataProcessInstanceOutput; got {len(outputs)}. "
+            "Spec: DATAHUB_INTEGRATION.md §DPI emission contract aspect #2b."
+        )
+        assert outputs[0].outputs == emitted, (
+            f"DataProcessInstanceOutput.outputs must equal emitted_urns {emitted}; "
+            f"got {outputs[0].outputs}. "
+            "Spec: DATAHUB_INTEGRATION.md §DPI emission contract aspect #2b."
+        )
+
+    @pytest.mark.asyncio
+    async def test_output_emitted_on_dpi_urn_with_run_systemmetadata(
+        self, service: IngestionService, db: AsyncMock, datahub: AsyncMock
+    ) -> None:
+        """The Output aspect is emitted on the DPI URN and carries the run's
+        systemMetadata (the same sysmeta reused across the run).
+
+        Spec: §DPI emission contract — the Output aspect is a DPI aspect; and
+        §systemMetadata requirement — every emit within a run carries the run's
+        non-default systemMetadata, reused across aspects.
+        """
+        row = _make_source_row(mode="ACTIVE_CUSTOM_MANAGED")
+        mock_scalar_query(db, row)
+
+        with _patched_run(
+            service, entities_ingested=1, emitted_urns=[_DATASET_URN]
+        ):
+            await service._run_inner(str(row.id), dry_run=False, manual=True)
+
+        output_calls = [
+            c for c in datahub.emit_aspect.call_args_list
+            if isinstance(c.args[1], DataProcessInstanceOutputClass)
+        ]
+        assert len(output_calls) == 1
+        output_call = output_calls[0]
+        # Emitted on the DPI URN, not a dataset URN.
+        dpi_urn = output_call.args[0]
+        assert dpi_urn.startswith("urn:li:dataProcessInstance:"), (
+            f"Output aspect must be emitted on the DPI URN; got {dpi_urn!r}. "
+            "Spec: DATAHUB_INTEGRATION.md §DPI emission contract aspect #2b "
+            "(DPI aspect)."
+        )
+        # Carries the run's systemMetadata (non-default runId), reused across the run.
+        sysmeta = output_call.kwargs.get("system_metadata")
+        assert sysmeta is not None, (
+            "Output aspect emission must carry the run's systemMetadata. "
+            "Spec: DATAHUB_INTEGRATION.md §systemMetadata requirement."
+        )
+        assert sysmeta.runId and sysmeta.runId != "no-run-id-provided", (
+            f"Output aspect systemMetadata.runId must be non-default; got "
+            f"{sysmeta.runId!r}. Spec: DATAHUB_INTEGRATION.md §systemMetadata requirement."
+        )
+        # Same sysmeta object reused across the run's emissions.
+        all_sysmetas = {
+            id(c.kwargs.get("system_metadata"))
+            for c in datahub.emit_aspect.call_args_list
+        }
+        assert len(all_sysmetas) == 1, (
+            "All emissions in a run must reuse one SystemMetadataClass instance. "
+            "Spec: DATAHUB_INTEGRATION.md §Conventions adopted by DataSpoke."
+        )
+
+    @pytest.mark.asyncio
+    async def test_output_emitted_before_terminal_complete_event(
+        self, service: IngestionService, db: AsyncMock, datahub: AsyncMock
+    ) -> None:
+        """The Output aspect is recorded BEFORE the terminal COMPLETE RunEvent.
+
+        Spec: §DPI emission contract aspect #2b — the Output aspect is emitted
+        'after the crawl completes and before the terminal RunEvent'.
+        """
+        row = _make_source_row(mode="ACTIVE_CUSTOM_MANAGED")
+        mock_scalar_query(db, row)
+
+        with _patched_run(
+            service, entities_ingested=1, emitted_urns=[_DATASET_URN]
+        ):
+            await service._run_inner(str(row.id), dry_run=False, manual=True)
+
+        aspects = _emitted_aspects(datahub)
+        output_idx = next(
+            i for i, a in enumerate(aspects)
+            if isinstance(a, DataProcessInstanceOutputClass)
+        )
+        # The terminal RunEvent is the COMPLETE one (STARTED precedes the crawl).
+        complete_idx = next(
+            i for i, a in enumerate(aspects)
+            if isinstance(a, DataProcessInstanceRunEventClass)
+            and a.status == DataProcessRunStatusClass.COMPLETE
+        )
+        assert output_idx < complete_idx, (
+            f"Output aspect (idx {output_idx}) must precede the terminal COMPLETE "
+            f"RunEvent (idx {complete_idx}). "
+            "Spec: DATAHUB_INTEGRATION.md §DPI emission contract aspect #2b — "
+            "emitted after the crawl and before the terminal RunEvent."
+        )
+
+    @pytest.mark.asyncio
+    async def test_dry_run_emits_no_output(
+        self, service: IngestionService, db: AsyncMock, datahub: AsyncMock
+    ) -> None:
+        """A dry-run emits NO DataProcessInstanceOutput aspect.
+
+        Spec: §DPI emission contract aspect #2b — Output is emitted only on a
+        non-dry-run; dry-run skips aspect emission.
+        """
+        row = _make_source_row(mode="ACTIVE_CUSTOM_MANAGED")
+        mock_scalar_query(db, row)
+
+        with _patched_run(
+            service, entities_ingested=2, emitted_urns=[_DATASET_URN]
+        ):
+            await service._run_inner(str(row.id), dry_run=True, manual=True)
+
+        assert _dpi_outputs(datahub) == [], (
+            "Dry-run must emit no DataProcessInstanceOutput aspect. "
+            "Spec: DATAHUB_INTEGRATION.md §DPI emission contract aspect #2b."
+        )
+
+    @pytest.mark.asyncio
+    async def test_failed_run_emits_no_output(
+        self, service: IngestionService, db: AsyncMock, datahub: AsyncMock
+    ) -> None:
+        """A failed run (extractor reports errors) emits NO Output aspect.
+
+        Spec: §DPI emission contract aspect #2b — Output is conditioned on
+        status=='success'; a failed run still emits the terminal RunEvent but no
+        Output.
+        """
+        row = _make_source_row(mode="ACTIVE_CUSTOM_MANAGED")
+        mock_scalar_query(db, row)
+
+        with _patched_run(
+            service,
+            entities_ingested=1,
+            emitted_urns=[_DATASET_URN],
+            errors=["extractor crawl failed"],
+        ):
+            await service._run_inner(str(row.id), dry_run=False, manual=True)
+
+        assert _dpi_outputs(datahub) == [], (
+            "Failed run must emit no DataProcessInstanceOutput aspect. "
+            "Spec: DATAHUB_INTEGRATION.md §DPI emission contract aspect #2b."
+        )
+        # A failed run still emits the terminal COMPLETE RunEvent (failure semantics).
+        complete_events = [
+            a for a in _emitted_aspects(datahub)
+            if isinstance(a, DataProcessInstanceRunEventClass)
+            and a.status == DataProcessRunStatusClass.COMPLETE
+        ]
+        assert len(complete_events) == 1, (
+            "A failed run must still emit the terminal COMPLETE RunEvent. "
+            "Spec: DATAHUB_INTEGRATION.md §Failure semantics."
+        )
+
+    @pytest.mark.asyncio
+    async def test_zero_entity_run_emits_no_output(
+        self, service: IngestionService, db: AsyncMock, datahub: AsyncMock
+    ) -> None:
+        """A non-dry-run that ingests zero entities emits NO Output aspect.
+
+        A zero-entity non-dry-run is treated as failure by the service, so the
+        success+non-empty-URN condition for Output emission is never met.
+        Spec: §DPI emission contract aspect #2b — Output requires success AND
+        non-empty emitted URNs.
+        """
+        row = _make_source_row(mode="ACTIVE_CUSTOM_MANAGED")
+        mock_scalar_query(db, row)
+
+        with _patched_run(
+            service, entities_ingested=0, emitted_urns=[]
+        ):
+            await service._run_inner(str(row.id), dry_run=False, manual=True)
+
+        assert _dpi_outputs(datahub) == [], (
+            "Zero-entity run must emit no DataProcessInstanceOutput aspect. "
+            "Spec: DATAHUB_INTEGRATION.md §DPI emission contract aspect #2b — "
+            "requires non-empty emitted URNs."
+        )
