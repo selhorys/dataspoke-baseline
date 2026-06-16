@@ -23,9 +23,15 @@ The DataSpoke project develops two core artifacts (from `spec/MANIFESTO_en.md` �
 2. **Productized Scaffold** — a framework for custom development, comprising specs, a
    deployment subsystem (`helm-charts/`), and coding-agent utilities (`.claude/`).
 
-This document covers the **AI Scaffold** subsection of the Productized Scaffold — the Claude
-Code configurations in `.claude/` that make AI-assisted development immediately productive from
-the first session. A well-structured scaffold removes the bootstrapping cost of AI coding: the
+This document covers the **Developer AI Scaffold** — the MANIFESTO §2.2 "AI Scaffold", the
+Claude Code configurations in `.claude/` that make AI-assisted *development of the product*
+immediately productive from the first session. It is complemented by a distinct, sibling
+deliverable: the **End-User AI Scaffold** — a distributable Claude Code plugin that helps
+engineers *consume a running DataSpoke* through its public API, specified in `spec/PLUGIN.md`.
+The two never overlap in access: the Developer scaffold has full repo access (specs, `src/`,
+helm, DB); the End-User plugin sees only the public API surface of a deployed instance.
+
+A well-structured scaffold removes the bootstrapping cost of AI coding: the
 agent knows the project layout, naming conventions, spec hierarchy, and operational environment
 before writing a single line of code. The Development Scaffold (Kubernetes-based deployment
 subsystem covering both dev and prod profiles) is specified separately in

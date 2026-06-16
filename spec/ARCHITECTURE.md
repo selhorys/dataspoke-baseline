@@ -477,6 +477,23 @@ The repository is organized by deployment concern and application layer. Key top
 | `helm-charts/` | Umbrella Helm chart + `bin/` install/uninstall/build scripts + dev peripherals |
 | `docker-images/` | Dockerfiles per service (api, airflow, postgres) |
 | `migrations/` | Alembic database migrations |
+| `.claude/` | Developer AI Scaffold — Claude Code config (skills, agents, hooks) for building the product. See [`AI_SCAFFOLD.md`](AI_SCAFFOLD.md) |
+| `plugin/` | End-User AI Scaffold — distributable Claude Code plugin for consuming a running DataSpoke via its public API. See [`PLUGIN.md`](PLUGIN.md) |
+
+### AI scaffolds (two complementary deliverables)
+
+The **Developer AI Scaffold** (the MANIFESTO §2.2 "AI Scaffold" — the `.claude/`
+configuration, [`AI_SCAFFOLD.md`](AI_SCAFFOLD.md)) is complemented by a distinct
+**End-User AI Scaffold** ([`PLUGIN.md`](PLUGIN.md)). They are sibling deliverables with no
+shared privilege boundary:
+
+| Scaffold | Lives in | Access | Audience |
+|----------|----------|--------|----------|
+| **Developer AI Scaffold** ([`AI_SCAFFOLD.md`](AI_SCAFFOLD.md)) | `.claude/` (in repo) | Full repo: specs, `src/`, helm, DB | Contributors building the product |
+| **End-User AI Scaffold** ([`PLUGIN.md`](PLUGIN.md)) | `plugin/` (distributable plugin) | Public API surface only (`/api/v1/{auth,spoke,hub}`, `/redoc`) | Engineers operating a deployed instance |
+
+The Developer scaffold *builds* DataSpoke; the End-User plugin *consumes* a deployed
+DataSpoke.
 
 ---
 

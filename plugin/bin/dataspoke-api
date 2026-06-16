@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# dataspoke-api — authenticated curl wrapper for the DataSpoke public API.
+#
+# The single I/O primitive every dataspoke-* skill calls, so credential handling
+# lives in one audited place. Touches ONLY the public API surface.
+#
+# Usage:
+#   dataspoke-api <METHOD> <PATH> [JSON_BODY]
+#
+#   METHOD     GET | POST | PUT | PATCH | DELETE
+#   PATH       Feature paths (/auth, /spoke, /hub) are prefixed with /api/v1
+#              automatically. Root paths (/ready, /redoc, /health, /openapi.json)
+#              and any already-/api/v1-prefixed path are used as-is.
+#   JSON_BODY  optional request body (a JSON string)
+#
+# Config resolution (first match wins):
+#   1. env: DATASPOKE_API_URL + DATASPOKE_API_TOKEN
+#   2. file: ~/.dataspoke/config.json  -> {api_base_url, token}
+#
+# Examples:
+#   dataspoke-api GET  /auth/me
+#   dataspoke-api GET  /spoke/validation
+#   dataspoke-api PUT  '/spoke/common/data/<urn>/attr/validation/conf' '{"description":"…","variables":[]}'
+#   dataspoke-api GET  /ready
+set -uo pipefail
+
+CONFIG="${HOME}/.dataspoke/config.json"
+err() { printf '%s\n' "$*" >&2; }
+
+if [[ $# -lt 2 ]]; then
+  err "usage: dataspoke-api <METHOD> <PATH> [JSON_BODY]"
+  exit 2
+fi
+
+METHOD="$1"
+PATH_ARG="$2"
+BODY="${3:-}"
+
+BASE="${DATASPOKE_API_URL:-}"
+TOKEN="${DATASPOKE_API_TOKEN:-}"
+
+if [[ -z "$BASE" || -z "$TOKEN" ]] && [[ -f "$CONFIG" ]]; then
+  # Pass the config path via env, never interpolated into the python source.
+  [[ -z "$BASE" ]] && BASE="$(DS_CONFIG="$CONFIG" python3 -c "import json,os;print(json.load(open(os.environ['DS_CONFIG'])).get('api_base_url',''))" 2>/dev/null || true)"
+  [[ -z "$TOKEN" ]] && TOKEN="$(DS_CONFIG="$CONFIG" python3 -c "import json,os;print(json.load(open(os.environ['DS_CONFIG'])).get('token',''))" 2>/dev/null || true)"
+fi
+
+if [[ -z "$BASE" ]]; then
+  err "No DataSpoke access configured."
+  err "Run /dataspoke:dataspoke-access, or export DATASPOKE_API_URL and DATASPOKE_API_TOKEN."
+  exit 3
+fi
+
+# ORIGIN = base with any trailing /api/v1 and trailing slash stripped.
+ORIGIN="${BASE%/}"
+ORIGIN="${ORIGIN%/api/v1}"
+
+case "$PATH_ARG" in
+  /api/v1/*|/ready|/redoc|/health|/openapi.json) URL="${ORIGIN}${PATH_ARG}" ;;
+  /*) URL="${ORIGIN}/api/v1${PATH_ARG}" ;;
+  *) err "PATH must start with '/': $PATH_ARG"; exit 2 ;;
+esac
+
+args=(-sS -X "$METHOD" -w $'\n%{http_code}')
+[[ -n "$TOKEN" ]] && args+=(-H "Authorization: Bearer ${TOKEN}")
+[[ -n "$BODY" ]] && args+=(-H "Content-Type: application/json" -d "$BODY")
+
+RESP="$(curl "${args[@]}" "$URL")" || { err "curl failed for ${METHOD} ${URL}"; exit 4; }
+
+CODE="${RESP##*$'\n'}"
+PAYLOAD="${RESP%$'\n'*}"
+
+if [[ -n "$PAYLOAD" ]]; then
+  printf '%s' "$PAYLOAD" | python3 -m json.tool 2>/dev/null || printf '%s\n' "$PAYLOAD"
+fi
+
+case "$CODE" in
+  2*) exit 0 ;;
+  401) err "→ HTTP 401: token missing/expired/revoked. Re-run /dataspoke:dataspoke-access to mint a fresh dsk_ token."; exit 1 ;;
+  403) err "→ HTTP 403: insufficient role. Writes need an Editor/Admin token; a Reader token gets READ_ONLY_ROLE. Check 'dataspoke-api GET /auth/me'."; exit 1 ;;
+  404) err "→ HTTP 404: not found — check the path or dataset URN."; exit 1 ;;
+  409) err "→ HTTP 409: conflict (already exists / run in progress / not applicable) — see body above."; exit 1 ;;
+  422) err "→ HTTP 422: request validation failed — see body above (e.g. UNKNOWN_VARIABLE, score out of [0,1])."; exit 1 ;;
+  *) err "→ HTTP ${CODE}"; exit 1 ;;
+esac

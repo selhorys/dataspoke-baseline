@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "dataspoke",
+  "owner": {
+    "name": "DataSpoke"
+  },
+  "description": "End-user AI scaffold for consuming a deployed DataSpoke service through its public API.",
+  "plugins": [
+    {
+      "name": "dataspoke",
+      "source": "./plugin",
+      "description": "Skills for data engineers using a deployed DataSpoke: connect, manage ingestion (UC1), manage validation and author validation routines (UC2), with ontogen/metagen/governance stubs.",
+      "category": "data"
+    }
+  ]
+}
