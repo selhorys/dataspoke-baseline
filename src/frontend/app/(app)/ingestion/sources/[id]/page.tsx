@@ -1,6 +1,11 @@
 "use client";
 
 import { use, useEffect, useMemo, useState } from "react";
+import { resolveRange } from "@/lib/range";
+import {
+  usePersistedRangeState,
+  RANGE_KEYS,
+} from "@/lib/hooks/use-range-selection";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
@@ -36,13 +41,6 @@ import type { IngestionSourceBody } from "@/types/ingestion";
 const DATASET_PAGE_SIZE = 25;
 const EVENT_PAGE_SIZE = 20;
 
-/** Convert a datetime-local string to an ISO string, or undefined when blank. */
-function localToIso(local: string): string | undefined {
-  if (!local) return undefined;
-  const d = new Date(local);
-  return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
-}
-
 export default function IngestionSourceDetailPage({
   params,
 }: {
@@ -56,8 +54,11 @@ export default function IngestionSourceDetailPage({
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [datasetOffset, setDatasetOffset] = useState(0);
   const [eventOffset, setEventOffset] = useState(0);
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
+  // Persisted selection; resolving via useMemo keeps the events query key
+  // stable until the selection changes.
+  const { selection: sel, tz, setSelection: setSel, setTz } =
+    usePersistedRangeState(RANGE_KEYS.ingestionSourceEvents);
+  const range = useMemo(() => resolveRange(sel, "datetime", tz), [sel, tz]);
 
   const { data: source, isLoading, error } = useIngestionSource(id);
 
@@ -69,8 +70,8 @@ export default function IngestionSourceDetailPage({
   const { data: events } = useIngestionSourceEvents(id, {
     offset: eventOffset,
     limit: EVENT_PAGE_SIZE,
-    from: localToIso(from),
-    to: localToIso(to),
+    from: range.from,
+    to: range.to,
   });
 
   const replace = useReplaceIngestionSource(id);
@@ -85,7 +86,7 @@ export default function IngestionSourceDetailPage({
   // Reset event pagination when the time filter changes.
   useEffect(() => {
     setEventOffset(0);
-  }, [from, to]);
+  }, [sel]);
 
   const is404 =
     error instanceof ApiError && error.error_code === "INGESTION_SOURCE_NOT_FOUND";
@@ -261,10 +262,10 @@ export default function IngestionSourceDetailPage({
         <h2 className="mb-3 text-sm font-medium">Events</h2>
         <IngestionEventTable
           events={events?.events ?? []}
-          from={from}
-          to={to}
-          onFromChange={setFrom}
-          onToChange={setTo}
+          range={sel}
+          onRangeChange={setSel}
+          tz={tz}
+          onTzChange={setTz}
           page={{
             offset: eventOffset,
             limit: EVENT_PAGE_SIZE,

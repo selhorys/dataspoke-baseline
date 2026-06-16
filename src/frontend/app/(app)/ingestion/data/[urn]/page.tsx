@@ -1,12 +1,18 @@
 "use client";
 
-import { use } from "react";
+import { use, useMemo } from "react";
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ErrorState } from "@/components/ui/error-state";
+import { RangePicker } from "@/components/range-picker";
+import { resolveRange } from "@/lib/range";
+import {
+  usePersistedRangeState,
+  RANGE_KEYS,
+} from "@/lib/hooks/use-range-selection";
 import {
   useIngestionReverseLookup,
   useIngestionDatasetEvents,
@@ -26,12 +32,29 @@ export default function IngestionDatasetDetailPage({
   const { urn: rawUrn } = use(params);
   const datasetUrn = rawUrn.startsWith("urn:") ? rawUrn : decodeURIComponent(rawUrn);
 
+  // Persisted selection; resolving via useMemo keeps the events query key
+  // stable until the selection changes.
+  const {
+    selection: eventSel,
+    tz: eventTz,
+    setSelection: setEventSel,
+    setTz: setEventTz,
+  } = usePersistedRangeState(RANGE_KEYS.ingestionDatasetEvents);
+  const eventRange = useMemo(
+    () => resolveRange(eventSel, "datetime", eventTz),
+    [eventSel, eventTz],
+  );
+
   const {
     data: lookup,
     isLoading,
     error,
   } = useIngestionReverseLookup(datasetUrn);
-  const { data: events } = useIngestionDatasetEvents(datasetUrn, 10);
+  const { data: events } = useIngestionDatasetEvents(datasetUrn, {
+    limit: 10,
+    from: eventRange.from,
+    to: eventRange.to,
+  });
 
   if (isLoading) {
     return (
@@ -136,7 +159,16 @@ export default function IngestionDatasetDetailPage({
 
       {/* Events panel */}
       <section className="rounded-lg border p-5">
-        <h2 className="mb-3 text-sm font-medium">event/ingestion (latest 10)</h2>
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-sm font-medium">event/ingestion (latest 10)</h2>
+          <RangePicker
+            value={eventSel}
+            onChange={setEventSel}
+            tz={eventTz}
+            onTzChange={setEventTz}
+            granularity="datetime"
+          />
+        </div>
         {!events && (
           <p className="text-sm text-muted-foreground">Loading events…</p>
         )}

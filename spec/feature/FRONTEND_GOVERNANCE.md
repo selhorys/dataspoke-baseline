@@ -28,7 +28,7 @@ The Dashboard is a read-only visualization of every enabled metric:
 | Block | Read | Notes |
 |---|---|---|
 | Metric cards | `GET /spoke/governance/metric` (filter `is_enabled=true`) + latest `GET .../{id}/attr/result?limit=1` per metric | One card per enabled metric. Each card shows `title`, a `metric_type` outline badge under the title, the latest `values` dict (each key on its own line as `key: value`), and the formatted measured-at date. No per-card delta indicator |
-| Timeseries chart | `GET /spoke/governance/metric/{id}/attr/result?from=…` per metric on the same daily window | Small multiples — one chart per metric, each plotting one line per that metric's `values` key. Per-metric charts avoid collapsing shared keys (e.g. `total`) across metrics onto one ambiguous line. The window sends only `from` (memoized 30-days-ago) plus a limit; `to` is open-ended (backend defaults to now). Cards and charts poll on a 15s interval (paused when the tab is hidden) per the BASIC convention |
+| Timeseries chart | `GET /spoke/governance/metric/{id}/attr/result?from=…&to=…` per metric on one shared daily window | Small multiples — one chart per metric, each plotting one line per that metric's `values` key. Per-metric charts avoid collapsing shared keys (e.g. `total`) across metrics onto one ambiguous line. A single shared [RangePicker](FRONTEND_BASIC.md#shared-component-notes) (`date` granularity, presets Last 1 day / 7 days / 2 weeks (default) / 4 weeks / 12 weeks) sits above the grid and drives every metric card's `from`/`to` (plus a limit) together. Cards and charts poll on a 15s interval (paused when the tab is hidden) per the BASIC convention |
 
 ```
 ┌──────────────────────────────────────────────────────────┐
@@ -42,7 +42,7 @@ The Dashboard is a read-only visualization of every enabled metric:
 │  │ 2026-05-26     │    │ 2026-05-26     │  │ 2026-05-26│ │
 │  └────────────────┘    └────────────────┘  └──────────┘  │
 │                                                          │
-│  Daily trend (last 30 d)                                 │
+│  Daily trend                          [Last 2 weeks ▾]   │
 │  ┌────────────────┐ ┌────────────────┐ ┌──────────────┐  │
 │  │ (one chart per │ │ (one chart per │ │ (one chart   │  │
 │  │  metric — lines│ │  metric — lines│ │  per metric) │  │
@@ -67,7 +67,7 @@ list, create, edit, run, disable, delete.
 |---|---|---|
 | `/governance/metrics` (list) | `GET /spoke/governance/metric` — rendered filter bar (`metric_type` / `mode` / status Selects, mapped to query params) plus Previous/Next pagination controls with a page count. Each row shows the `title` (link to detail) with `metric_id` as a subtitle, a `metric_type` badge, and an `Enabled`/`Disabled` status badge | "New metric" action → `/governance/metrics/new` |
 | `/governance/metrics/new` | — | `POST /spoke/governance/metric` (definition fields **plus** a client-supplied `metric_id`) |
-| `/governance/metrics/[id]` | `GET .../attr/conf`, `GET .../attr/result?from&to` (7d / 30d / 90d range selector above the chart, default 30d), `GET .../event` | `PUT/PATCH/DELETE .../attr/conf` (fields: `mode`, `is_enabled`, `metric_type`, `title`, `description`, `metrics`, `metric_conf`, `schedule_tier`, `dataset_filter`); `POST .../method/run` (`?dry_run=true`) |
+| `/governance/metrics/[id]` | `GET .../attr/conf`, `GET .../attr/result?from&to` (a `date`-granularity [RangePicker](FRONTEND_BASIC.md#shared-component-notes) above the chart drives `from`/`to`), `GET .../event?from&to` (a `datetime` RangePicker drives the event panel's `from`/`to`) | `PUT/PATCH/DELETE .../attr/conf` (fields: `mode`, `is_enabled`, `metric_type`, `title`, `description`, `metrics`, `metric_conf`, `schedule_tier`, `dataset_filter`); `POST .../method/run` (`?dry_run=true`) |
 
 The create form is the edit form (below) with one extra leading field: a
 `metric_id` text input — **create-only** (validated per
@@ -95,7 +95,7 @@ detail render a null tier as *on-demand*.
 │    schedule_tier: daily    ✓ enabled                 │
 │    dataset_filter: origin=DEV                        │
 │                                                      │
-│  attr/result?from&to            [7d] [30d] [90d]     │
+│  attr/result?from&to        [Last 2 weeks ▾]        │
 │    [Recharts area chart — one line per `values` key] │
 │                                                      │
 │  event  (METRIC.RUN_COMPLETE …)                      │

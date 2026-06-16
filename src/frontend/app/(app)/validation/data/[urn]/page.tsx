@@ -7,13 +7,12 @@ import { ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { RangePicker } from "@/components/range-picker";
+import { resolveRange } from "@/lib/range";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+  usePersistedRangeState,
+  RANGE_KEYS,
+} from "@/lib/hooks/use-range-selection";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { ValidationConfForm } from "@/components/validation/validation-conf-form";
 import { ValidationScoreChart } from "@/components/validation/validation-score-chart";
@@ -33,24 +32,6 @@ import { formatDateTime } from "@/lib/format-time";
 import { scoreBadgeVariant, scoreLabel } from "@/lib/validation-score";
 import { ErrorState } from "@/components/ui/error-state";
 import type { ValidationConfResponse } from "@/types/validation";
-
-// ── Date helpers ───────────────────────────────────────────────────────────────
-
-function daysAgoIso(days: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() - days);
-  return d.toISOString();
-}
-
-// ── Range selector ─────────────────────────────────────────────────────────────
-
-const RANGE_OPTIONS = [
-  { label: "7d", days: 7 },
-  { label: "30d", days: 30 },
-  { label: "90d", days: 90 },
-] as const;
-
-type RangeLabel = (typeof RANGE_OPTIONS)[number]["label"];
 
 const CONF_FORM_ID = "validation-conf-form";
 
@@ -118,14 +99,29 @@ export default function ValidationDetailPage({
 
   const [isEditing, setIsEditing] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
-  const [rangeLabel, setRangeLabel] = useState<RangeLabel>("30d");
-
-  const rangeDays = RANGE_OPTIONS.find((r) => r.label === rangeLabel)?.days ?? 30;
-  // from feeds the results query key; memoize on rangeDays so the key only
-  // changes when the selected range changes — not on every render. Recomputing
-  // daysAgoIso() inline would change the ISO ms each render, churning the query
-  // key and forcing an infinite refetch loop. No upper bound (backend defaults to now).
-  const from = useMemo(() => daysAgoIso(rangeDays), [rangeDays]);
+  // Range selections are persisted per surface; resolving via useMemo keeps the
+  // derived bounds (and thus query keys) stable until the selection changes.
+  // The results chart and the event log keep independent ranges.
+  const {
+    selection: resultSel,
+    tz: resultTz,
+    setSelection: setResultSel,
+    setTz: setResultTz,
+  } = usePersistedRangeState(RANGE_KEYS.validationResults);
+  const {
+    selection: eventSel,
+    tz: eventTz,
+    setSelection: setEventSel,
+    setTz: setEventTz,
+  } = usePersistedRangeState(RANGE_KEYS.validationEvents);
+  const resultRange = useMemo(
+    () => resolveRange(resultSel, "date", resultTz),
+    [resultSel, resultTz],
+  );
+  const eventRange = useMemo(
+    () => resolveRange(eventSel, "datetime", eventTz),
+    [eventSel, eventTz],
+  );
 
   // ── Queries ──────────────────────────────────────────────────────────────────
   const {
@@ -134,12 +130,18 @@ export default function ValidationDetailPage({
     error: confError,
   } = useValidationConf(datasetUrn);
 
+  // Validation result uses `until` (not `to`) for the upper bound.
   const { data: resultsData } = useValidationResults(datasetUrn, {
-    from,
+    from: resultRange.from,
+    until: resultRange.to,
     limit: 1000,
   });
 
-  const { data: eventsData } = useValidationEvents(datasetUrn, 5);
+  const { data: eventsData } = useValidationEvents(datasetUrn, {
+    limit: 5,
+    from: eventRange.from,
+    to: eventRange.to,
+  });
 
   // ── Mutations ─────────────────────────────────────────────────────────────────
   const upsert = useUpsertValidationConf(datasetUrn);
@@ -333,21 +335,13 @@ export default function ValidationDetailPage({
           <section className="rounded-lg border p-5">
             <div className="mb-3 flex items-center justify-between">
               <h2 className="text-sm font-medium">Quality Score (attr/validation/result)</h2>
-              <Select
-                value={rangeLabel}
-                onValueChange={(v) => setRangeLabel(v as RangeLabel)}
-              >
-                <SelectTrigger className="w-[100px]">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {RANGE_OPTIONS.map((r) => (
-                    <SelectItem key={r.label} value={r.label}>
-                      {r.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <RangePicker
+                value={resultSel}
+                onChange={setResultSel}
+                tz={resultTz}
+                onTzChange={setResultTz}
+                granularity="date"
+              />
             </div>
             <ValidationScoreChart
               results={resultsData?.results ?? []}
@@ -371,7 +365,16 @@ export default function ValidationDetailPage({
 
       {/* event/validation (latest 5) */}
       <section className="rounded-lg border p-5">
-        <h2 className="mb-3 text-sm font-medium">event/validation (latest 5)</h2>
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-sm font-medium">event/validation (latest 5)</h2>
+          <RangePicker
+            value={eventSel}
+            onChange={setEventSel}
+            tz={eventTz}
+            onTzChange={setEventTz}
+            granularity="datetime"
+          />
+        </div>
         {!eventsData && (
           <p className="text-sm text-muted-foreground">Loading events...</p>
         )}

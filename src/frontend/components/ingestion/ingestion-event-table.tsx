@@ -4,15 +4,15 @@
  * IngestionEventTable — run/event history for a source, newest first.
  *
  * Columns: occurred_at, status badge (via eventStatusVariant), event_type,
- * detail (mono JSON). Includes from/to datetime-local filters and pagination.
+ * detail (mono JSON). Includes a datetime range filter and pagination.
  *
  * Spec: spec/feature/FRONTEND_INGESTION.md §Source Detail §Events.
  */
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { EmptyState } from "@/components/ui/empty-state";
+import { RangePicker } from "@/components/range-picker";
 import {
   Table,
   TableBody,
@@ -23,15 +23,15 @@ import {
 } from "@/components/ui/table";
 import { eventStatusVariant } from "@/lib/event-status-variant";
 import { formatDateTime } from "@/lib/format-time";
+import type { RangeSelection, TzMode } from "@/lib/range";
 import type { IngestionEvent } from "@/types/ingestion";
 
 interface IngestionEventTableProps {
   events: IngestionEvent[];
-  /** datetime-local string ("YYYY-MM-DDTHH:MM") or "". */
-  from: string;
-  to: string;
-  onFromChange: (v: string) => void;
-  onToChange: (v: string) => void;
+  range: RangeSelection;
+  onRangeChange: (value: RangeSelection) => void;
+  tz: TzMode;
+  onTzChange: (tz: TzMode) => void;
   page: { offset: number; limit: number; totalCount: number };
   onPrev: () => void;
   onNext: () => void;
@@ -39,10 +39,10 @@ interface IngestionEventTableProps {
 
 export function IngestionEventTable({
   events,
-  from,
-  to,
-  onFromChange,
-  onToChange,
+  range,
+  onRangeChange,
+  tz,
+  onTzChange,
   page,
   onPrev,
   onNext,
@@ -53,24 +53,13 @@ export function IngestionEventTable({
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-end gap-3">
-        <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-          from
-          <Input
-            type="datetime-local"
-            value={from}
-            onChange={(e) => onFromChange(e.target.value)}
-            className="w-auto min-w-[15rem]"
-          />
-        </label>
-        <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-          to
-          <Input
-            type="datetime-local"
-            value={to}
-            onChange={(e) => onToChange(e.target.value)}
-            className="w-auto min-w-[15rem]"
-          />
-        </label>
+        <RangePicker
+          value={range}
+          onChange={onRangeChange}
+          tz={tz}
+          onTzChange={onTzChange}
+          granularity="datetime"
+        />
       </div>
 
       {events.length === 0 ? (

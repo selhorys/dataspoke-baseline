@@ -459,7 +459,7 @@ describe("useIngestionDatasetEvents — URL construction", () => {
       limit: 10,
     });
     const { result } = renderHook(
-      () => useIngestionDatasetEvents(sampleUrn, 10),
+      () => useIngestionDatasetEvents(sampleUrn, { limit: 10 }),
       { wrapper: makeWrapper() },
     );
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
@@ -471,8 +471,30 @@ describe("useIngestionDatasetEvents — URL construction", () => {
     );
   });
 
+  it("appends from and to when provided", async () => {
+    mockApiFetch.mockResolvedValue({
+      events: [],
+      total_count: 0,
+      offset: 0,
+      limit: 10,
+    });
+    const { result } = renderHook(
+      () =>
+        useIngestionDatasetEvents(sampleUrn, {
+          limit: 10,
+          from: "2024-01-01T00:00:00.000Z",
+          to: "2024-02-01T00:00:00.000Z",
+        }),
+      { wrapper: makeWrapper() },
+    );
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    const url = lastUrl();
+    expect(url).toContain("from=");
+    expect(url).toContain("to=");
+  });
+
   it("does not fire when datasetUrn is empty", () => {
-    renderHook(() => useIngestionDatasetEvents("", 10), {
+    renderHook(() => useIngestionDatasetEvents("", { limit: 10 }), {
       wrapper: makeWrapper(),
     });
     expect(mockApiFetch).not.toHaveBeenCalled();

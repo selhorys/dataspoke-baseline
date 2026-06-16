@@ -310,13 +310,31 @@ export function useIngestionReverseLookup(datasetUrn: string) {
   });
 }
 
+interface DatasetEventParams {
+  limit?: number;
+  from?: string;
+  to?: string;
+}
+
+function buildDatasetEventUrl(datasetUrn: string, params: DatasetEventParams): string {
+  const sp = new URLSearchParams();
+  sp.set("limit", String(params.limit ?? 10));
+  if (params.from) sp.set("from", params.from);
+  if (params.to) sp.set("to", params.to);
+  sp.set("sort", "occurred_at_desc");
+  return `/spoke/common/data/${encodeURIComponent(datasetUrn)}/event/ingestion?${sp.toString()}`;
+}
+
 /** GET /spoke/common/data/{urn}/event/ingestion — per-dataset ingestion events. */
-export function useIngestionDatasetEvents(datasetUrn: string, limit = 10) {
+export function useIngestionDatasetEvents(
+  datasetUrn: string,
+  params: DatasetEventParams = {},
+) {
   return usePoll<IngestionEventListResponse>({
-    queryKey: ["ingestion", "dataset-events", datasetUrn, limit],
+    queryKey: ["ingestion", "dataset-events", datasetUrn, params],
     queryFn: () =>
       apiFetch<IngestionEventListResponse>(
-        `/spoke/common/data/${encodeURIComponent(datasetUrn)}/event/ingestion?limit=${limit}&sort=occurred_at_desc`,
+        buildDatasetEventUrl(datasetUrn, params),
       ),
     enabled: !!datasetUrn,
     meta: { handledInline: true },

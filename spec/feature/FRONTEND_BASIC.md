@@ -279,6 +279,46 @@ These component IDs are referenced from per-function specs.
 - **DatasetFilterEditor** — controlled editor for the four-dimension
   `dataset_filter` (`origin` plus `tags[]` / `glossary_terms[]` /
   `dataset_urns[]`). Reused by Governance metrics, OntoGen conf, and MetaGen conf.
+- **RangePicker** — the single time-window control for every time-windowed
+  surface (validation detail results + events, governance metric detail results
+  + events, governance dashboard, ingestion source events, per-dataset ingestion
+  events). It holds a **selection**, not a fixed range: either a named preset —
+  Last 1 day, Last 7 days, **Last 2 weeks (default)**, Last 4 weeks, Last 12
+  weeks — or a custom calendar range. Two granularities: `date` (calendar only)
+  for daily timeseries surfaces, and `datetime` (calendar + start/end time) for
+  event-log surfaces; in `datetime` the start/end time fields are 24-hour
+  (`HH:mm`, no AM/PM). A per-picker **timezone toggle** — Local or UTC
+  (**default Local**) — governs how calendar days and times are interpreted and
+  displayed; the emitted/queried bounds remain canonical inclusive UTC ISO
+  regardless of the toggle. The trigger shows the preset's label (e.g. "Last 7 days")
+  when a preset is selected, or the resolved bounds for a custom range —
+  `YYYY-MM-DD – YYYY-MM-DD` (date) / `YYYY-MM-DD HH:mm – YYYY-MM-DD HH:mm`
+  (datetime) — and indicates the active timezone. Presets are **relative**: each visit re-resolves a preset to a
+  window ending at the current day, so "Last 7 days" always includes today;
+  custom ranges are **absolute**. The selection **persists across visits** in
+  browser `localStorage` under a stable key per logical panel — each panel
+  (e.g. validation results vs. validation events) persists independently and the
+  preference is shared across all entities of that panel type — so revisiting a
+  panel restores the last-used selection. The timezone choice persists per panel
+  alongside the selection. The picker's popover presents the preset
+  shortcuts alongside two calendars — a start-day calendar on the left and an
+  end-day calendar on the right, each with independent month and year
+  navigation. Every edit in the popover, including clicking a preset, is
+  **staged** and takes effect only on **Apply**; **Cancel** discards staged
+  edits. Clicking a preset stages it rather than applying immediately or closing
+  the popover, and a staged preset still commits as a relative preset on Apply
+  (keeping its label and relative-renewal behavior) only if untouched; any
+  explicit calendar-day or time edit turns the staged preset into a **custom**
+  absolute range (so an edited time is kept on Apply). The custom-range calendar renders the chosen span as a
+  highlighted band with emphasized start and end days (a UI affordance with no
+  API impact). Call sites resolve the selection to an inclusive `{from, to}`
+  ISO-8601 pair and map it to the query params each endpoint accepts (see
+  [API §Query Parameters](../API.md#query-parameters)): endpoints whose end-bound
+  param is `from`/`to` (events, governance metric `attr/result`) receive `from`
+  and `to` directly, while the validation `attr/validation/result` endpoint —
+  which names its end-bound `until` rather than `to` (see
+  [API.md](../API.md), `attr/validation/result`) — receives `until = to`. It has
+  no API of its own; it only shapes the query strings of the reads it drives.
 - **ConfirmDialog** — destructive-action gate (revoke token, delete config).
   No API of its own.
 

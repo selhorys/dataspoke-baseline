@@ -131,13 +131,29 @@ export function useValidationResults(
 
 // ── Event log ──────────────────────────────────────────────────────────────────
 
-export function useValidationEvents(datasetUrn: string, limit = 5) {
+interface ValidationEventParams {
+  limit?: number;
+  from?: string;
+  to?: string;
+}
+
+function buildEventUrl(datasetUrn: string, params: ValidationEventParams): string {
+  const sp = new URLSearchParams();
+  sp.set("limit", String(params.limit ?? 5));
+  if (params.from) sp.set("from", params.from);
+  if (params.to) sp.set("to", params.to);
+  sp.set("sort", "occurred_at_desc");
+  return `/spoke/common/data/${encodeURIComponent(datasetUrn)}/event/validation?${sp.toString()}`;
+}
+
+export function useValidationEvents(
+  datasetUrn: string,
+  params: ValidationEventParams = {},
+) {
   return usePoll<ValidationEventListResponse>({
-    queryKey: ["validation", "events", datasetUrn, limit],
+    queryKey: ["validation", "events", datasetUrn, params],
     queryFn: () =>
-      apiFetch<ValidationEventListResponse>(
-        `/spoke/common/data/${encodeURIComponent(datasetUrn)}/event/validation?limit=${limit}&sort=occurred_at_desc`,
-      ),
+      apiFetch<ValidationEventListResponse>(buildEventUrl(datasetUrn, params)),
     enabled: !!datasetUrn,
     meta: { handledInline: true },
   });

@@ -1,10 +1,10 @@
 /**
  * Tests for IngestionEventTable — empty state, event rendering,
- * from/to filter controls, pagination, and detail JSON display.
+ * range filter control, pagination, and detail JSON display.
  *
  * Spec traces:
  *   - spec/feature/FRONTEND_INGESTION.md §Source Detail §Events:
- *     event history table, newest first, from/to filters, paginated.
+ *     event history table, newest first, time-range filter, paginated.
  *   - spec/API.md §Ingestion: GET /spoke/ingestion/sources/{id}/event
  *     response shape: id, occurred_at, status, event_type, detail.
  */
@@ -12,6 +12,7 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import React from "react";
 import { IngestionEventTable } from "./ingestion-event-table";
+import type { RangeSelection } from "@/lib/range";
 import type { IngestionEvent } from "@/types/ingestion";
 
 vi.mock("next/link", () => ({
@@ -36,6 +37,7 @@ function makeEvent(overrides: Partial<IngestionEvent> = {}): IngestionEvent {
   };
 }
 
+const baseRange: RangeSelection = { kind: "preset", days: 14 };
 const basePage = { offset: 0, limit: 20, totalCount: 0 };
 const noop = () => {};
 
@@ -47,10 +49,10 @@ describe("IngestionEventTable — empty state", () => {
     render(
       <IngestionEventTable
         events={[]}
-        from=""
-        to=""
-        onFromChange={noop}
-        onToChange={noop}
+        range={baseRange}
+        onRangeChange={noop}
+        tz="local"
+        onTzChange={noop}
         page={basePage}
         onPrev={noop}
         onNext={noop}
@@ -72,10 +74,10 @@ describe("IngestionEventTable — event rows", () => {
     render(
       <IngestionEventTable
         events={events}
-        from=""
-        to=""
-        onFromChange={noop}
-        onToChange={noop}
+        range={baseRange}
+        onRangeChange={noop}
+        tz="local"
+        onTzChange={noop}
         page={{ offset: 0, limit: 20, totalCount: 2 }}
         onPrev={noop}
         onNext={noop}
@@ -95,10 +97,10 @@ describe("IngestionEventTable — event rows", () => {
     render(
       <IngestionEventTable
         events={[event]}
-        from=""
-        to=""
-        onFromChange={noop}
-        onToChange={noop}
+        range={baseRange}
+        onRangeChange={noop}
+        tz="local"
+        onTzChange={noop}
         page={{ offset: 0, limit: 20, totalCount: 1 }}
         onPrev={noop}
         onNext={noop}
@@ -113,10 +115,10 @@ describe("IngestionEventTable — event rows", () => {
     render(
       <IngestionEventTable
         events={[event]}
-        from=""
-        to=""
-        onFromChange={noop}
-        onToChange={noop}
+        range={baseRange}
+        onRangeChange={noop}
+        tz="local"
+        onTzChange={noop}
         page={{ offset: 0, limit: 20, totalCount: 1 }}
         onPrev={noop}
         onNext={noop}
@@ -128,67 +130,50 @@ describe("IngestionEventTable — event rows", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 3. From/to filter controls
+// 3. Range filter control
 // ---------------------------------------------------------------------------
-describe("IngestionEventTable — from/to filters", () => {
-  it("calls onFromChange when the from input changes", () => {
-    const onFromChange = vi.fn();
+describe("IngestionEventTable — range filter", () => {
+  it("renders the range picker trigger showing the current range", () => {
     render(
       <IngestionEventTable
         events={[]}
-        from=""
-        to=""
-        onFromChange={onFromChange}
-        onToChange={noop}
+        range={baseRange}
+        onRangeChange={noop}
+        tz="local"
+        onTzChange={noop}
         page={basePage}
         onPrev={noop}
         onNext={noop}
       />,
     );
-    // The 'from' input is labeled "from"
-    const fromInput = screen.getByLabelText(/^from$/i);
-    fireEvent.change(fromInput, { target: { value: "2024-01-01T00:00" } });
-    expect(onFromChange).toHaveBeenCalledWith("2024-01-01T00:00");
+    // The trigger button label is the active preset's label.
+    expect(screen.getByText(/last 2 weeks/i)).toBeTruthy();
   });
 
-  it("calls onToChange when the to input changes", () => {
-    const onToChange = vi.fn();
+  it("fires onRangeChange once with the staged preset on Apply", () => {
+    // Per spec/feature/FRONTEND_BASIC.md §RangePicker, clicking a preset only
+    // STAGES it — onRangeChange fires when Apply commits, not on the preset click.
+    const onRangeChange = vi.fn();
     render(
       <IngestionEventTable
         events={[]}
-        from=""
-        to=""
-        onFromChange={noop}
-        onToChange={onToChange}
+        range={baseRange}
+        onRangeChange={onRangeChange}
+        tz="local"
+        onTzChange={noop}
         page={basePage}
         onPrev={noop}
         onNext={noop}
       />,
     );
-    const toInput = screen.getByLabelText(/^to$/i);
-    fireEvent.change(toInput, { target: { value: "2024-02-01T00:00" } });
-    expect(onToChange).toHaveBeenCalledWith("2024-02-01T00:00");
-  });
-
-  it("reflects the from and to values passed via props", () => {
-    render(
-      <IngestionEventTable
-        events={[]}
-        from="2024-01-15T08:00"
-        to="2024-01-16T08:00"
-        onFromChange={noop}
-        onToChange={noop}
-        page={basePage}
-        onPrev={noop}
-        onNext={noop}
-      />,
-    );
-    expect((screen.getByLabelText(/^from$/i) as HTMLInputElement).value).toBe(
-      "2024-01-15T08:00",
-    );
-    expect((screen.getByLabelText(/^to$/i) as HTMLInputElement).value).toBe(
-      "2024-01-16T08:00",
-    );
+    // Open the popover via the trigger, then click a preset (stages only).
+    fireEvent.click(screen.getByText(/last 2 weeks/i));
+    fireEvent.click(screen.getByText(/last 7 days/i));
+    expect(onRangeChange).not.toHaveBeenCalled();
+    // Apply commits the staged preset.
+    fireEvent.click(screen.getByRole("button", { name: /^apply$/i }));
+    expect(onRangeChange).toHaveBeenCalledTimes(1);
+    expect(onRangeChange).toHaveBeenCalledWith({ kind: "preset", days: 7 });
   });
 });
 
@@ -200,10 +185,10 @@ describe("IngestionEventTable — pagination", () => {
     render(
       <IngestionEventTable
         events={[makeEvent()]}
-        from=""
-        to=""
-        onFromChange={noop}
-        onToChange={noop}
+        range={baseRange}
+        onRangeChange={noop}
+        tz="local"
+        onTzChange={noop}
         page={{ offset: 0, limit: 20, totalCount: 5 }}
         onPrev={noop}
         onNext={noop}
@@ -217,10 +202,10 @@ describe("IngestionEventTable — pagination", () => {
     render(
       <IngestionEventTable
         events={[makeEvent()]}
-        from=""
-        to=""
-        onFromChange={noop}
-        onToChange={noop}
+        range={baseRange}
+        onRangeChange={noop}
+        tz="local"
+        onTzChange={noop}
         page={{ offset: 0, limit: 20, totalCount: 45 }}
         onPrev={noop}
         onNext={noop}
@@ -237,10 +222,10 @@ describe("IngestionEventTable — pagination", () => {
     render(
       <IngestionEventTable
         events={[makeEvent()]}
-        from=""
-        to=""
-        onFromChange={noop}
-        onToChange={noop}
+        range={baseRange}
+        onRangeChange={noop}
+        tz="local"
+        onTzChange={noop}
         page={{ offset: 0, limit: 20, totalCount: 45 }}
         onPrev={noop}
         onNext={noop}
@@ -256,10 +241,10 @@ describe("IngestionEventTable — pagination", () => {
     render(
       <IngestionEventTable
         events={[makeEvent()]}
-        from=""
-        to=""
-        onFromChange={noop}
-        onToChange={noop}
+        range={baseRange}
+        onRangeChange={noop}
+        tz="local"
+        onTzChange={noop}
         // offset 40 + limit 20 = 60 >= totalCount 45 → last page
         page={{ offset: 40, limit: 20, totalCount: 45 }}
         onPrev={noop}
@@ -278,10 +263,10 @@ describe("IngestionEventTable — pagination", () => {
     render(
       <IngestionEventTable
         events={[makeEvent()]}
-        from=""
-        to=""
-        onFromChange={noop}
-        onToChange={noop}
+        range={baseRange}
+        onRangeChange={noop}
+        tz="local"
+        onTzChange={noop}
         page={{ offset: 20, limit: 20, totalCount: 60 }}
         onPrev={onPrev}
         onNext={onNext}

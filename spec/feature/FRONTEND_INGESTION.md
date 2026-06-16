@@ -53,8 +53,10 @@ A header surfaces read-only management fields as badges/text outside the recipe 
 3. **Run** — `POST /spoke/ingestion/sources/{id}/method/run` with a `dry_run` toggle. Shown only
    for `ACTIVE_CUSTOM_MANAGED`; other modes show an explanatory disabled state (the run happens in
    DataHub or externally; the API returns `409 INGESTION_RUN_NOT_APPLICABLE`).
-4. **Events** — `GET /spoke/ingestion/sources/{id}/event` history table, newest first, with
-   `from`/`to` filters.
+4. **Events** — `GET /spoke/ingestion/sources/{id}/event` history table, newest first. A
+   `datetime`-granularity [RangePicker](FRONTEND_BASIC.md#shared-component-notes) (presets Last
+   1 day / 7 days / 2 weeks (default) / 4 weeks / 12 weeks, plus a custom calendar range) drives
+   the `from`/`to` filters from its inclusive `{from, to}` pair.
 
 ## Create View (`/ingestion/sources/new`)
 
@@ -89,7 +91,9 @@ An "Ingestion" panel shows the owning source (link to `/ingestion/sources/[id]`)
 `mode`, and the latest run — from `GET /spoke/common/data/{dataset_urn}/attr/ingestion`.
 When no source covers the dataset, the panel says so and links to `/ingestion/unmanaged`.
 Below it, an events table shows per-dataset ingestion events from
-`GET /spoke/common/data/{dataset_urn}/event/ingestion`. The page is read-only.
+`GET /spoke/common/data/{dataset_urn}/event/ingestion`, with a `datetime`
+[RangePicker](FRONTEND_BASIC.md#shared-component-notes) driving the endpoint's
+`from`/`to` filters. The page is read-only.
 
 ## Components
 
@@ -100,7 +104,8 @@ Below it, an events table shows per-dataset ingestion events from
 - `SecretRefHelper` — the available-references list (`GET /spoke/ingestion/secrets`) plus the
   read-only authoring guide (kubectl recipe, namespace, `dataspoke-source-cred-` prefix,
   `${name__key}` syntax) shown in the source editor.
-- `IngestionEventTable` — shared event table bound to `…/event`.
+- `IngestionEventTable` — shared event table bound to `…/event`, paired with a `datetime`
+  [RangePicker](FRONTEND_BASIC.md#shared-component-notes) for the `from`/`to` window.
 - `UnmanagedDatasetTable` — the unmanaged-bucket list.
 
 The page consumes API routes verbatim (no invented endpoints) per

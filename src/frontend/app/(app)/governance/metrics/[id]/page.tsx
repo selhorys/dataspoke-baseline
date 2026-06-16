@@ -7,13 +7,12 @@ import { ArrowLeft, Play, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { RangePicker } from "@/components/range-picker";
+import { resolveRange } from "@/lib/range";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+  usePersistedRangeState,
+  RANGE_KEYS,
+} from "@/lib/hooks/use-range-selection";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
@@ -43,26 +42,10 @@ import type { MetricFormValues } from "@/types/governance";
 
 // ── Date helpers ───────────────────────────────────────────────────────────────
 
-function daysAgoIso(days: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() - days);
-  return d.toISOString();
-}
-
 function formatDateTime(iso: string): string {
   const d = new Date(iso);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
-
-// ── Range selector ─────────────────────────────────────────────────────────────
-
-const RANGE_OPTIONS = [
-  { label: "7d", days: 7 },
-  { label: "30d", days: 30 },
-  { label: "90d", days: 90 },
-] as const;
-
-type RangeLabel = (typeof RANGE_OPTIONS)[number]["label"];
 
 // ── Page component ─────────────────────────────────────────────────────────────
 
@@ -79,18 +62,42 @@ export default function MetricDetailPage({
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [showRunDialog, setShowRunDialog] = useState(false);
   const [dryRun, setDryRun] = useState(false);
-  const [rangeLabel, setRangeLabel] = useState<RangeLabel>("30d");
-
-  const rangeDays = RANGE_OPTIONS.find((r) => r.label === rangeLabel)?.days ?? 30;
-  // `from` feeds the results query key; memoize on rangeDays so the key only
-  // changes when the selected range changes — not on every render. No `to` —
-  // open-ended (backend defaults to now).
-  const from = useMemo(() => daysAgoIso(rangeDays), [rangeDays]);
+  // Range selections are persisted per surface; resolving via useMemo keeps the
+  // derived bounds (and thus query keys) stable until the selection changes.
+  // Results chart and event log keep independent ranges.
+  const {
+    selection: resultSel,
+    tz: resultTz,
+    setSelection: setResultSel,
+    setTz: setResultTz,
+  } = usePersistedRangeState(RANGE_KEYS.governanceMetricResults);
+  const {
+    selection: eventSel,
+    tz: eventTz,
+    setSelection: setEventSel,
+    setTz: setEventTz,
+  } = usePersistedRangeState(RANGE_KEYS.governanceMetricEvents);
+  const resultRange = useMemo(
+    () => resolveRange(resultSel, "date", resultTz),
+    [resultSel, resultTz],
+  );
+  const eventRange = useMemo(
+    () => resolveRange(eventSel, "datetime", eventTz),
+    [eventSel, eventTz],
+  );
 
   // ── Queries ────────────────────────────────────────────────────────────────
   const { data: conf, isLoading: confLoading, error: confError } = useMetricConf(metricId);
-  const { data: resultsData } = useMetricResults(metricId, { from, limit: 100 });
-  const { data: eventsData } = useMetricEvents(metricId);
+  // This endpoint uses `to` (not `until`) for the upper bound.
+  const { data: resultsData } = useMetricResults(metricId, {
+    from: resultRange.from,
+    to: resultRange.to,
+    limit: 100,
+  });
+  const { data: eventsData } = useMetricEvents(metricId, {
+    from: eventRange.from,
+    to: eventRange.to,
+  });
 
   // ── Mutations ──────────────────────────────────────────────────────────────
   const replace = useReplaceMetricConf();
@@ -287,28 +294,29 @@ export default function MetricDetailPage({
       <section className="rounded-lg border p-5">
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-sm font-medium">attr/result</h2>
-          <Select
-            value={rangeLabel}
-            onValueChange={(v) => setRangeLabel(v as RangeLabel)}
-          >
-            <SelectTrigger className="w-[100px]">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {RANGE_OPTIONS.map((r) => (
-                <SelectItem key={r.label} value={r.label}>
-                  {r.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <RangePicker
+            value={resultSel}
+            onChange={setResultSel}
+            tz={resultTz}
+            onTzChange={setResultTz}
+            granularity="date"
+          />
         </div>
         <MetricTimeseriesChart results={resultsData?.results ?? []} height={200} />
       </section>
 
       {/* event log */}
       <section className="rounded-lg border p-5">
-        <h2 className="mb-3 text-sm font-medium">event</h2>
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-sm font-medium">event</h2>
+          <RangePicker
+            value={eventSel}
+            onChange={setEventSel}
+            tz={eventTz}
+            onTzChange={setEventTz}
+            granularity="datetime"
+          />
+        </div>
         {eventsData?.events.length === 0 && (
           <p className="text-sm text-muted-foreground">No events yet.</p>
         )}
