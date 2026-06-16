@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useMemo, useState } from "react";
+import { use, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
@@ -51,6 +51,8 @@ const RANGE_OPTIONS = [
 ] as const;
 
 type RangeLabel = (typeof RANGE_OPTIONS)[number]["label"];
+
+const CONF_FORM_ID = "validation-conf-form";
 
 // ── Conf read-only view ────────────────────────────────────────────────────────
 
@@ -168,6 +170,17 @@ export default function ValidationDetailPage({
 
   // ── 404 → empty config state ───────────────────────────────────────────────
   const is404 = confError instanceof ApiError && confError.status === 404;
+  // TanStack Query retains the last successful `data` when a refetch errors, so
+  // after a soft-delete `conf` can be stale while `is404` is true. This single
+  // authoritative flag keeps the create-form and existing-conf branches mutually
+  // exclusive.
+  const confExists = !!conf && !is404;
+
+  // A lingering `isEditing=true` from before a delete must not resurface a form
+  // once the conf is gone.
+  useEffect(() => {
+    if (is404) setIsEditing(false);
+  }, [is404]);
 
   // Latest score for the header.
   const latestScore = resultsData?.results?.[0]?.score ?? null;
@@ -220,18 +233,56 @@ export default function ValidationDetailPage({
           </Badge>
         )}
 
-        {canWrite && conf && !isEditing && (
+        {canWrite && (
           <div className="ml-auto flex flex-wrap items-center gap-2">
-            <Button variant="outline" size="sm" onClick={() => setIsEditing(true)}>
-              Edit
-            </Button>
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={() => setShowDeleteDialog(true)}
-            >
-              Delete
-            </Button>
+            {confExists && !isEditing && (
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setIsEditing(true)}
+                >
+                  Edit
+                </Button>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={() => setShowDeleteDialog(true)}
+                >
+                  Delete
+                </Button>
+              </>
+            )}
+            {confExists && isEditing && (
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setIsEditing(false)}
+                  disabled={upsert.isPending}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="submit"
+                  form={CONF_FORM_ID}
+                  size="sm"
+                  disabled={upsert.isPending}
+                >
+                  {upsert.isPending ? "Saving..." : "Save"}
+                </Button>
+              </>
+            )}
+            {is404 && (
+              <Button
+                type="submit"
+                form={CONF_FORM_ID}
+                size="sm"
+                disabled={upsert.isPending}
+              >
+                {upsert.isPending ? "Saving..." : "Create"}
+              </Button>
+            )}
           </div>
         )}
       </div>
@@ -249,9 +300,9 @@ export default function ValidationDetailPage({
                   No validation config exists for this dataset. Create one below.
                 </p>
                 <ValidationConfForm
+                  formId={CONF_FORM_ID}
                   defaultValues={defaultFormValues()}
                   onSubmit={handleSave}
-                  isPending={upsert.isPending}
                   serverError={saveError}
                 />
               </>
@@ -264,20 +315,19 @@ export default function ValidationDetailPage({
         )}
 
         {/* Config exists — read-only or edit form */}
-        {conf && !isEditing && <ConfReadOnly conf={conf} />}
-        {conf && isEditing && (
+        {confExists && !isEditing && <ConfReadOnly conf={conf} />}
+        {confExists && isEditing && (
           <ValidationConfForm
+            formId={CONF_FORM_ID}
             defaultValues={toInternal(conf)}
             onSubmit={handleSave}
-            onCancel={() => setIsEditing(false)}
-            isPending={upsert.isPending}
             serverError={saveError}
           />
         )}
       </section>
 
       {/* Historical timeseries — only meaningful when a config exists or results exist */}
-      {(conf || (resultsData && resultsData.results.length > 0)) && (
+      {(confExists || (resultsData && resultsData.results.length > 0)) && (
         <>
           {/* Score chart */}
           <section className="rounded-lg border p-5">
@@ -312,7 +362,7 @@ export default function ValidationDetailPage({
             </h2>
             <ValidationVariablesChart
               results={resultsData?.results ?? []}
-              variables={conf?.variables}
+              variables={confExists ? conf.variables : undefined}
               height={160}
             />
           </section>
@@ -351,7 +401,7 @@ export default function ValidationDetailPage({
       </section>
 
       {/* Delete confirm dialog */}
-      {canWrite && conf && (
+      {canWrite && confExists && (
         <ConfirmDialog
           open={showDeleteDialog}
           onOpenChange={setShowDeleteDialog}

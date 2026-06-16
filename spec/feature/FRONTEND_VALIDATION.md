@@ -53,9 +53,11 @@ A range Select (7d / 30d / 90d, default 30d) drives the `from` query param.
 The historical timeseries panel reads `GET .../attr/validation/result?from=&limit=`;
 the UI sends only `from` (+ `limit`), and the backend defaults the upper bound
 to now. It renders a `score` line chart, then **small multiples** — one
-auto-scaled line chart per declared variable in a responsive grid, each
-captioned with the variable's name and description so differing value scales do
-not flatten each other. The
+auto-scaled, full-width line chart per declared variable stacked in a single
+column (one chart per row), each captioned with the variable's name and
+description so differing value scales do not flatten each other. Both the score
+chart and the per-variable charts draw straight lines (linear interpolation, no
+smoothing). The
 event log consumes `GET .../event/validation` — config lifecycle
 (create/update/delete) plus one `RESULT_RECORDED` entry per accepted result
 POST, each rendered with its `event_type`, status, and detail. The timeseries
@@ -64,35 +66,45 @@ tab is hidden; `from` is stable per selected window.
 The header "Latest score" reads the most recent result within the selected
 range window, rendered to 4 decimals.
 
+The detail page's primary action controls all live in the header's top-right
+cluster and are mode-driven: the read-only view shows `Edit` and `Delete`; edit
+mode shows `Cancel` and `Save`; the resurrect empty-state (after soft-delete or
+404) shows `Create`. The per-row field-array controls `+ Add` and `[×]` are not
+header controls — they stay inline inside the variables editor.
+
 Delete (button → ConfirmDialog) issues `DELETE .../attr/validation/conf` and
 redirects to `/validation`. After a soft-delete the detail route's 404 branch
 shows a create/resurrect empty-state to re-create the conf.
 
 ```
-┌──────────────────────────────────────────────────────┐
-│  ← orders.line_items     Latest score 1.0000  [30d ▾] │
-├──────────────────────────────────────────────────────┤
-│  Description (attr/validation/conf.description)      │
-│    [editable textarea, ≤ 2,000 chars]                │
-│                                                      │
-│  Variables (attr/validation/conf.variables[])        │
-│    [ row_cnt         ] [ Daily row count       ] [×] │
-│    [ qty_negative_cnt] [ Negative-qty rows     ] [×] │
-│    [ qty_total       ] [ Total quantity        ] [×] │
-│    [ user_id_null_cnt] [ Null user_id count    ] [×] │
-│                                          [+ Add]    │
-│                                                      │
-│  Historical timeseries                               │
-│    (attr/validation/result?from=…&limit=…)           │
-│    [Recharts: score line chart]                      │
-│    [small multiples: one auto-scaled line chart      │
-│     per variable, name + description caption]        │
-│                                                      │
-│  event (latest 5)                            [Delete]│
-└──────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────┐
+│  ← orders.line_items  Latest score 1.0000  [30d ▾] [Edit][Delete]│
+├───────────────────────────────────────────────────────────────┤
+│  Description (attr/validation/conf.description)               │
+│    [editable textarea, ≤ 2,000 chars]                         │
+│                                                               │
+│  Variables (attr/validation/conf.variables[])                 │
+│    [ row_cnt         ] [ Daily row count       ] [×]          │
+│    [ qty_negative_cnt] [ Negative-qty rows     ] [×]          │
+│    [ qty_total       ] [ Total quantity        ] [×]          │
+│    [ user_id_null_cnt] [ Null user_id count    ] [×]          │
+│                                          [+ Add]              │
+│                                                               │
+│  Historical timeseries                                        │
+│    (attr/validation/result?from=…&limit=…)                    │
+│    [Recharts: score line chart]                               │
+│    small multiples — one full-width chart per row:            │
+│    [ row_cnt          — line chart, full width            ]   │
+│    [ qty_negative_cnt — line chart, full width            ]   │
+│    [ qty_total        — line chart, full width            ]   │
+│    [ user_id_null_cnt — line chart, full width            ]   │
+│                                                               │
+│  event (latest 5)                                             │
+└───────────────────────────────────────────────────────────────┘
         Detail (`/validation/data/[urn]`)
 ```
 
-Write actions on the detail page (`Edit`, `+ Add`, `[×]`, save) are rendered
-only when `role ∈ {Editor, Admin}`. The list view is read-only for every
-role.
+Write actions on the detail page are rendered only when
+`role ∈ {Editor, Admin}` — the mode-driven header controls
+(`Edit`/`Delete`/`Cancel`/`Save`/`Create`) and the inline variables-editor
+controls (`+ Add`/`[×]`) alike. The list view is read-only for every role.

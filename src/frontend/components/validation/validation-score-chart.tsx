@@ -77,7 +77,7 @@ export function ValidationScoreChart({
           formatter={(value) => [typeof value === "number" ? value.toFixed(4) : value, "score"]}
         />
         <Line
-          type="monotone"
+          type="linear"
           dataKey="score"
           stroke="#6366f1"
           dot={false}

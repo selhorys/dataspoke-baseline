@@ -3,9 +3,10 @@
 /**
  * ValidationVariablesChart — small multiples of per-variable values over time.
  *
- * Renders one auto-scaled line chart per declared variable in a responsive
- * grid. Each chart is captioned with the variable's name and description so
- * differing value scales do not flatten each other on a shared Y-axis.
+ * Renders one auto-scaled line chart per declared variable, stacked in a
+ * single full-width column (one chart per row). Each chart is captioned with
+ * the variable's name and description so differing value scales do not flatten
+ * each other on a shared Y-axis.
  *
  * Props:
  *   results   — ValidationResultRow[] from GET .../attr/validation/result
@@ -73,7 +74,7 @@ export function ValidationVariablesChart({
   );
 
   return (
-    <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 xl:grid-cols-3">
+    <div className="grid grid-cols-1 gap-6">
       {charted.map((variable) => {
         const { name, description } = variable;
         const color = colorForKey(name, keys);
@@ -132,7 +133,7 @@ export function ValidationVariablesChart({
                     formatter={(value) => [value, name]}
                   />
                   <Line
-                    type="monotone"
+                    type="linear"
                     dataKey="value"
                     stroke={color}
                     dot={false}

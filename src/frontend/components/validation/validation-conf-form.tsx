@@ -8,10 +8,10 @@
  *   variables[]  — field-array of named scalars; add / remove / rename
  *
  * Props:
+ *   formId         — id assigned to the <form>; lets a submit button placed
+ *                    elsewhere in the DOM drive submission via form={formId}
  *   defaultValues  — initial form values
  *   onSubmit       — called with the serialized API request body
- *   onCancel       — optional cancel handler
- *   isPending      — loading state on Save button
  *   serverError?   — top-level error message from the mutation
  */
 
@@ -27,18 +27,16 @@ import type { ValidationConfFormValues } from "@/types/validation";
 import { validationConfSchema, fromInternal } from "./validation-conf-form.schema";
 
 interface ValidationConfFormProps {
+  formId: string;
   defaultValues: ValidationConfFormValues;
   onSubmit: (body: Record<string, unknown>) => void;
-  onCancel?: () => void;
-  isPending: boolean;
   serverError?: string;
 }
 
 export function ValidationConfForm({
+  formId,
   defaultValues,
   onSubmit,
-  onCancel,
-  isPending,
   serverError,
 }: ValidationConfFormProps) {
   const {
@@ -66,7 +64,7 @@ export function ValidationConfForm({
       : undefined;
 
   return (
-    <form onSubmit={handleSubmit(onValid)} className="space-y-5">
+    <form id={formId} onSubmit={handleSubmit(onValid)} className="space-y-5">
       {/* description */}
       <Field
         label="description"
@@ -159,17 +157,6 @@ export function ValidationConfForm({
       </div>
 
       {serverError && <ErrorText message={serverError} />}
-
-      <div className="flex justify-end gap-2">
-        {onCancel && (
-          <Button type="button" variant="outline" onClick={onCancel} disabled={isPending}>
-            Cancel
-          </Button>
-        )}
-        <Button type="submit" disabled={isPending}>
-          {isPending ? "Saving..." : "Save"}
-        </Button>
-      </div>
     </form>
   );
 }
