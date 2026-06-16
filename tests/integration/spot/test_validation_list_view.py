@@ -45,6 +45,11 @@ _RESULT_URL = f"/api/v1/spoke/common/data/{_ENC_URN}/attr/validation/result"
 _LIST_URL = "/api/v1/spoke/validation"
 
 
+def _var(name: str, description: str = "") -> dict[str, str]:
+    """Conf variable object: {name, description}. spec: VALIDATION.md §Rule Configuration."""
+    return {"name": name, "description": description}
+
+
 @pytest.mark.asyncio
 async def test_validation_list_empty_envelope_shape(
     api_client: httpx.AsyncClient,
@@ -95,7 +100,7 @@ async def test_validation_list_item_shape_after_seed(
     spec: API.md §Validation — GET /spoke/validation row shape (ValidationListItem).
     """
     description = "spot test list-view description"
-    variables = ["row_cnt", "null_rate"]
+    variables = [_var("row_cnt", "Daily row count"), _var("null_rate", "Null rate")]
 
     try:
         put_resp = await api_client.put(
@@ -170,7 +175,7 @@ async def test_validation_list_item_carries_latest_result(
         await api_client.put(
             _CONF_URL,
             headers=admin_headers,
-            json={"description": "list view result test", "variables": ["row_cnt"]},
+            json={"description": "list view result test", "variables": [_var("row_cnt")]},
         )
         # data_time far beyond any other test's results for this URN, so this
         # POST is unambiguously the most recent result (latest_* = max data_time).
@@ -238,7 +243,7 @@ async def test_validation_list_removed_filter(
         await api_client.put(
             _CONF_URL,
             headers=admin_headers,
-            json={"description": "removed filter test", "variables": ["row_cnt"]},
+            json={"description": "removed filter test", "variables": [_var("row_cnt")]},
         )
         del_resp = await api_client.delete(_CONF_URL, headers=admin_headers)
         assert del_resp.status_code == 204, (
@@ -296,7 +301,7 @@ async def test_validation_list_removed_filter(
             await api_client.put(
                 _CONF_URL,
                 headers=admin_headers,
-                json={"description": "resurrection for teardown", "variables": ["row_cnt"]},
+                json={"description": "resurrection for teardown", "variables": [_var("row_cnt")]},
             )
         with suppress(Exception):
             await api_client.delete(_CONF_URL, headers=admin_headers)
@@ -318,7 +323,7 @@ async def test_validation_list_pagination(
         await api_client.put(
             _CONF_URL,
             headers=admin_headers,
-            json={"description": "pagination test", "variables": ["row_cnt"]},
+            json={"description": "pagination test", "variables": [_var("row_cnt")]},
         )
 
         # Fetch a wide page to read the authoritative total_count.

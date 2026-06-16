@@ -262,7 +262,11 @@ PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,examp
 ```json
 {
   "description": "Daily order fulfillment quality: row count, fill rate, and anomaly score",
-  "variables": ["row_cnt", "fill_rate", "anomaly_score"]
+  "variables": [
+    {"name": "row_cnt", "description": "Rows written to the daily partition"},
+    {"name": "fill_rate", "description": "Fraction of required columns populated"},
+    {"name": "anomaly_score", "description": "Composite anomaly score, 0 = normal"}
+  ]
 }
 ```
 
@@ -290,9 +294,10 @@ DataHub's UI; the raw score is preserved in `actualAggValue` for partial-success
 semantics later.
 
 A second slot is configured on the Kafka topic `imazon.orders.events` with
-`description: "Order events stream quality: message count and lag"` and
-`variables: ["msg_cnt", "lag_seconds"]`, so the same surface covers both relational
-and streaming sources.
+`description: "Order events stream quality: message count and lag"` and variables
+`{name: "msg_cnt", description: "Messages consumed in the window"}` and
+`{name: "lag_seconds", description: "Consumer lag in seconds"}`, so the same surface
+covers both relational and streaming sources.
 
 **Historical baseline cache.** Tomorrow's quality task computes today's row-count
 anomaly against a 30-day rolling baseline. Instead of re-aggregating
@@ -308,13 +313,15 @@ and uses the prior `row_cnt` series directly. Results are returned newest first
 **Retire and resurrect.** `DELETE attr/validation/conf` soft-deletes the slot
 (returns `204`; subsequent `GET conf` returns `404`). Re-issuing `PUT` on the same
 URN reinstates it (returns `201`) and the resurrected slot may carry a new
-description and variable set — e.g.
-`variables: ["row_cnt", "fill_rate", "anomaly_score", "null_rate"]`.
+description and variable set — e.g. adding a fourth variable
+`{name: "null_rate", description: "Null rate across key columns"}`.
 
 **Cross-dataset overview.** `GET /spoke/validation` lists each dataset's
 `description`, `variable_count`, `latest_data_time`, `latest_score`, and
-`is_removed`. The list accepts `?removed=true|false` to include or exclude
-soft-deleted slots.
+`is_removed`. The list defaults to hiding soft-deleted slots; the UI sends
+`?removed=false` and offers a "Show deleted" toggle that omits the param to
+return both active and removed slots, tagging removed rows with a `deleted`
+badge.
 
 ---
 

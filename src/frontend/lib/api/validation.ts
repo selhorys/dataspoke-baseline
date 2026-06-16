@@ -16,6 +16,9 @@ interface ValidationListParams {
   offset?: number;
   limit?: number;
   sort?: string;
+  // When set, filters by soft-delete state. Omit to return active and removed
+  // slots. The list page sends `false` by default and omits it to show deleted.
+  removed?: boolean;
 }
 
 function buildListUrl(params: ValidationListParams): string {
@@ -23,6 +26,7 @@ function buildListUrl(params: ValidationListParams): string {
   if (params.offset !== undefined) sp.set("offset", String(params.offset));
   if (params.limit !== undefined) sp.set("limit", String(params.limit));
   if (params.sort) sp.set("sort", params.sort);
+  if (params.removed !== undefined) sp.set("removed", String(params.removed));
   const qs = sp.toString();
   return `/spoke/validation${qs ? `?${qs}` : ""}`;
 }

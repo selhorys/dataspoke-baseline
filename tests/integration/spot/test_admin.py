@@ -230,7 +230,7 @@ async def test_internal_admin_datahub_sync_targeted(
         headers=admin_headers,
         json={
             "description": "Admin-sync targeted-test validation conf",
-            "variables": ["row_cnt"],
+            "variables": [{"name": "row_cnt", "description": "Daily row count"}],
         },
     )
     assert put_resp.status_code in (200, 201), (

@@ -19,10 +19,15 @@ export interface ValidationListResponse {
   validations: ValidationListItem[];
 }
 
+export interface ValidationVariable {
+  name: string;
+  description: string;
+}
+
 export interface ValidationConfResponse {
   dataset_urn: string;
   description: string;
-  variables: string[];
+  variables: ValidationVariable[];
   created_at: string;
   updated_at: string;
 }
@@ -61,5 +66,5 @@ export interface ValidationEventListResponse {
 
 export interface ValidationConfFormValues {
   description: string;
-  variables: { name: string }[];
+  variables: { name: string; description: string }[];
 }

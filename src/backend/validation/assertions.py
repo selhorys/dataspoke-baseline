@@ -39,9 +39,13 @@ def build_assertion_urn(dataset_urn: str) -> str:
 def build_assertion_info(
     dataset_urn: str,
     description: str,
-    variables: list[str],
+    variables: list[dict[str, str]],
 ) -> AssertionInfoClass:
-    """Build an AssertionInfoClass for a DataSpoke validation slot."""
+    """Build an AssertionInfoClass for a DataSpoke validation slot.
+
+    ``customAssertion.logic`` is the comma-joined list of declared variable
+    **names**; descriptions live only on the conf and are not emitted here.
+    """
     return AssertionInfoClass(
         type=AssertionTypeClass.CUSTOM,
         description=description,
@@ -49,7 +53,7 @@ def build_assertion_info(
         customAssertion=CustomAssertionInfoClass(
             type="DATASPOKE_VALIDATION",
             entity=dataset_urn,
-            logic=", ".join(variables),
+            logic=", ".join(v["name"] for v in variables),
         ),
         lastUpdated=AuditStampClass(
             time=int(time.time() * 1000),

@@ -66,7 +66,7 @@ async def put_data_validation_conf(
     config, created = await service.upsert_config(
         dataset_urn=dataset_urn,
         description=body.description,
-        variables=body.variables,
+        variables=[v.model_dump() for v in body.variables],
     )
     if created:
         response.status_code = status.HTTP_201_CREATED

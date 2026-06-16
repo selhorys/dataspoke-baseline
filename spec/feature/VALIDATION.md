@@ -87,23 +87,39 @@ The configuration is a small, fixed-shape document.
 ```json
 {
   "description": "Daily row count plus key column means and null counts",
-  "variables": ["row_cnt", "col1_mean", "col2_null_cnt"]
+  "variables": [
+    {"name": "row_cnt", "description": "Daily row count"},
+    {"name": "col1_mean", "description": "Mean of col1"},
+    {"name": "col2_null_cnt", "description": "Null count of col2"}
+  ]
 }
 ```
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `description` | `string` | yes | Free-form. Surfaced in the DataHub assertion detail UI. ≤ 2,000 chars. No ASCII control characters except `\t` (0x09) and `\n` (0x0a). |
-| `variables` | `list[string]` | yes | Variable names this rule will report. Each name MUST match `\A[a-z][a-z0-9_]{0,99}\Z`, MUST be unique within the rule, and there MUST be ≥ 1 entry. Hard cap **200** entries. |
+| `description` | `string` | yes | Free-form rule description. Surfaced in the DataHub assertion detail UI. ≤ 2,000 chars. No ASCII control characters except `\t` (0x09) and `\n` (0x0a). |
+| `variables` | `list[object]` | yes | The variables this rule will report, each a `{name, description}` object. There MUST be ≥ 1 entry; hard cap **200** entries. |
+
+Each `variables` element:
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `name` | `string` | yes | Variable name. MUST match `\A[a-z][a-z0-9_]{0,99}\Z` and MUST be unique across the list. |
+| `description` | `string` | yes | Per-variable description (the meaning of the measurement). Required key, but the **empty string is allowed**. ≤ 200 chars. No ASCII control characters except `\t` (0x09) and `\n` (0x0a). |
+
+Result POSTs (§5) and stored `validation_results` are keyed by variable **name** only;
+descriptions live solely on the conf and are not echoed into results. The
+`customAssertion.logic` emitted to DataHub (§6) is the comma-joined list of variable
+**names** — descriptions are not emitted into the logic string.
 
 Notes:
 
 - The configuration carries **no** rule logic. It is purely a schema declaration that
   enables server-side validation of subsequent result POSTs (§5).
 - `PATCH` accepts a partial body. Replacing `variables` is allowed but is a breaking
-  edit: prior result rows whose keys are no longer in `variables` remain queryable but
-  the keys silently fall outside the current schema. Pipelines should treat a
-  `variables` edit as a versioning event.
+  edit: prior result rows whose keys are no longer in the declared variable **names**
+  remain queryable but silently fall outside the current schema. Pipelines should treat
+  a `variables` edit as a versioning event.
 - `DELETE` performs a soft delete by emitting `status.removed = true` on the assertion
   URN. After `DELETE`, `GET conf` returns `404` and `PATCH conf` against the tombstoned
   slot also returns `404` — the resource view treats a soft-deleted rule as absent.

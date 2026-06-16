@@ -9,7 +9,6 @@ spec: VALIDATION.md §Assertion URN
 import time
 from datetime import UTC, datetime
 
-import pytest
 from datahub.metadata.schema_classes import (
     AssertionResultTypeClass,
     AssertionRunStatusClass,
@@ -23,14 +22,16 @@ from src.backend.validation.assertions import (
     build_run_event,
 )
 
-
 # ── build_assertion_urn ───────────────────────────────────────────────────────
 
 
 class TestBuildAssertionUrn:
     def test_same_dataset_urn_produces_same_assertion_urn(self) -> None:
-        # spec: VALIDATION.md §Assertion URN — deterministic; recomputable from dataset_urn alone
-        urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.orders.daily_fulfillment_summary,DEV)"
+        # spec: VALIDATION.md §Assertion URN — deterministic; recomputable from urn
+        urn = (
+            "urn:li:dataset:(urn:li:dataPlatform:postgres,"
+            "example_db.orders.daily_fulfillment_summary,DEV)"
+        )
         assert build_assertion_urn(urn) == build_assertion_urn(urn)
 
     def test_different_dataset_urns_produce_different_assertion_urns(self) -> None:
@@ -57,8 +58,16 @@ class TestBuildAssertionUrn:
 # ── build_assertion_info ──────────────────────────────────────────────────────
 
 
-_DATASET_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.orders.daily_fulfillment_summary,DEV)"
-_VARIABLES = ["row_cnt", "col1_mean", "col2_null_cnt"]
+_DATASET_URN = (
+    "urn:li:dataset:(urn:li:dataPlatform:postgres,"
+    "example_db.orders.daily_fulfillment_summary,DEV)"
+)
+# Variables are {name, description} objects; build_assertion_info joins NAMES only.
+_VARIABLES = [
+    {"name": "row_cnt", "description": "Daily row count"},
+    {"name": "col1_mean", "description": "Mean of col1"},
+    {"name": "col2_null_cnt", "description": ""},
+]
 _DESCRIPTION = "Daily row count plus key column means and null counts"
 
 
@@ -163,8 +172,8 @@ class TestBuildRunEvent:
         assert event.result.type == AssertionResultTypeClass.FAILURE
 
     def test_score_just_under_one_produces_failure_result(self) -> None:
-        # spec: VALIDATION.md §assertionRunEvent — result.type = SUCCESS if score == 1.0 else FAILURE.
-        # Locks in the strict-equality contract: even 0.9999999999 is FAILURE, not SUCCESS.
+        # spec: VALIDATION.md §assertionRunEvent — result.type = SUCCESS iff score == 1.0.
+        # Locks in the strict-equality contract: even 0.9999999999 is FAILURE.
         data_time = datetime(2026, 5, 1, tzinfo=UTC)
         event = self._build(score=0.9999999999, data_time=data_time)
         assert event.result.type == AssertionResultTypeClass.FAILURE, (
@@ -206,8 +215,8 @@ class TestBuildRunEvent:
             variables={"row_cnt": 50.0},
         )
         native = event.result.nativeResults
-        assert native["row_cnt"] == repr(float(50.0))
-        assert native["score"] == repr(float(1.0))
+        assert native["row_cnt"] == repr(50.0)
+        assert native["score"] == repr(1.0)
 
     def test_runtime_context_ingestion_time_is_recent_epoch_ms_string(self) -> None:
         # spec: VALIDATION.md §assertionRunEvent — runtimeContext["ingestion_time"] is server now

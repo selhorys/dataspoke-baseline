@@ -34,6 +34,14 @@ def _enc(urn: str) -> str:
     return urn.replace("(", "%28").replace(")", "%29").replace(",", "%2C")
 
 
+def _var(name: str, description: str = "") -> dict[str, str]:
+    """Conf variable object: {name, description}.
+
+    spec: VALIDATION.md §Rule Configuration — each variable is a {name, description}.
+    """
+    return {"name": name, "description": description}
+
+
 # Dataset URNs used in UC2:
 #   - daily_fulfillment_summary (Postgres table) — primary subject of the narrative.
 #   - imazon.orders.events (Kafka topic) — second dataset, exercises the cross-dataset
@@ -90,33 +98,40 @@ async def test_uc2_passive_result_store(
         # fulfillment table and the upstream order-events topic."
         # spec: VALIDATION.md §Rule Configuration — description + variables required.
 
+        pg_variables = [
+            _var("row_cnt", "Daily fulfillment row count"),
+            _var("fill_rate", "Fraction of orders fully shipped"),
+            _var("anomaly_score", "Detector score for the day"),
+        ]
         put_pg_resp = await api_client.put(
             _PG_CONF_URL,
             headers=admin_headers,
-            json={
-                "description": _PG_DESCRIPTION,
-                "variables": ["row_cnt", "fill_rate", "anomaly_score"],
-            },
+            json={"description": _PG_DESCRIPTION, "variables": pg_variables},
         )
         assert put_pg_resp.status_code == 201, (
             f"Step 1: PUT postgres conf expected 201, "
             f"got {put_pg_resp.status_code}: {put_pg_resp.text}"
         )
-        assert put_pg_resp.json()["variables"] == ["row_cnt", "fill_rate", "anomaly_score"]
+        # spec: VALIDATION.md §Rule Configuration — variables round-trip as objects.
+        assert put_pg_resp.json()["variables"] == pg_variables
 
+        kafka_variables = [
+            _var("msg_cnt", "Messages produced in the window"),
+            _var("lag_seconds", "Consumer lag in seconds"),
+        ]
         put_kafka_resp = await api_client.put(
             _KAFKA_CONF_URL,
             headers=admin_headers,
             json={
                 "description": "Order events stream quality: message count and lag",
-                "variables": ["msg_cnt", "lag_seconds"],
+                "variables": kafka_variables,
             },
         )
         assert put_kafka_resp.status_code == 201, (
             f"Step 1: PUT kafka conf expected 201, "
             f"got {put_kafka_resp.status_code}: {put_kafka_resp.text}"
         )
-        assert put_kafka_resp.json()["variables"] == ["msg_cnt", "lag_seconds"]
+        assert put_kafka_resp.json()["variables"] == kafka_variables
 
         # ── Step 2: Pipelines POST results for both datasets ─────────────────
         # UC2 narrative: "Each night, the validation task runs after the partition
@@ -316,12 +331,18 @@ async def test_uc2_passive_result_store(
         # UC2 narrative: "The DE reinstates the rule with updated variable names."
         # spec: VALIDATION.md §Rule Configuration — subsequent PUT resurrects; same URN reused.
 
+        resurrect_variables = [
+            _var("row_cnt", "Daily fulfillment row count"),
+            _var("fill_rate", "Fraction of orders fully shipped"),
+            _var("anomaly_score", "Detector score for the day"),
+            _var("null_rate", "Null rate of key columns"),
+        ]
         resurrect_resp = await api_client.put(
             _PG_CONF_URL,
             headers=admin_headers,
             json={
                 "description": "Reinstated quality check with extended variables",
-                "variables": ["row_cnt", "fill_rate", "anomaly_score", "null_rate"],
+                "variables": resurrect_variables,
             },
         )
         assert resurrect_resp.status_code == 201, (
@@ -335,8 +356,12 @@ async def test_uc2_passive_result_store(
             f"got {get_after_resurrect.status_code}"
         )
         resurrected = get_after_resurrect.json()
-        assert resurrected["description"] == "Reinstated quality check with extended variables"
-        assert "null_rate" in resurrected["variables"]
+        assert resurrected["description"] == (
+            "Reinstated quality check with extended variables"
+        )
+        # spec: VALIDATION.md §Rule Configuration — variables are {name, description}.
+        resurrected_names = [v["name"] for v in resurrected["variables"]]
+        assert "null_rate" in resurrected_names
 
     finally:
         # Cleanup — best effort: delete both confs to restore clean state

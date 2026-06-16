@@ -267,7 +267,11 @@ PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,examp
 ```json
 {
   "description": "일간 주문 이행 품질: 행 수, 충족률, anomaly score",
-  "variables": ["row_cnt", "fill_rate", "anomaly_score"]
+  "variables": [
+    {"name": "row_cnt", "description": "일간 파티션에 기록된 행 수"},
+    {"name": "fill_rate", "description": "필수 컬럼이 채워진 비율"},
+    {"name": "anomaly_score", "description": "복합 anomaly score, 0 = 정상"}
+  ]
 }
 ```
 
@@ -295,8 +299,10 @@ POST .../attr/validation/result
 `actualAggValue`에 보존된다.
 
 Kafka 토픽 `imazon.orders.events`에도 두 번째 슬롯을 둔다 — `description: "주문
-이벤트 스트림 품질: 메시지 수와 lag"`, `variables: ["msg_cnt", "lag_seconds"]`.
-동일한 surface가 관계형과 스트리밍 소스를 모두 다룬다.
+이벤트 스트림 품질: 메시지 수와 lag"`, 변수는
+`{name: "msg_cnt", description: "윈도우 동안 소비된 메시지 수"}`와
+`{name: "lag_seconds", description: "컨슈머 lag(초)"}`이다. 동일한 surface가
+관계형과 스트리밍 소스를 모두 다룬다.
 
 **과거 데이터 베이스라인 캐시.** 다음 날의 품질 태스크는 30일 롤링 베이스라인 대비
 오늘의 행 수 anomaly를 계산한다. `orders.daily_fulfillment_summary`를 다시 집계하는
@@ -311,12 +317,13 @@ GET .../attr/validation/result?from=2026-04-01T00:00:00Z&until=2026-05-01T00:00:
 **폐기와 부활.** `DELETE attr/validation/conf`는 슬롯을 soft-delete한다
 (`204` 반환; 이후 `GET conf`는 `404`). 같은 URN에 `PUT`을 다시 호출하면 슬롯이
 부활하며(`201` 반환), 부활된 슬롯은 새로운 설명과 변수 집합을 가질 수 있다 —
-예: `variables: ["row_cnt", "fill_rate", "anomaly_score", "null_rate"]`.
+예: 네 번째 변수 `{name: "null_rate", description: "키 컬럼들의 null 비율"}` 추가.
 
 **크로스 데이터셋 오버뷰.** `GET /spoke/validation`은 데이터셋별로
 `description`, `variable_count`, `latest_data_time`, `latest_score`, `is_removed`
-를 보여준다. 리스트는 `?removed=true|false`로 soft-delete된 슬롯의 포함 여부를
-제어한다.
+를 보여준다. 리스트는 기본적으로 soft-delete된 슬롯을 숨기며(UI는 `?removed=false`
+전송), "삭제 항목 보기" 토글은 param을 생략해 활성/삭제 슬롯을 모두 반환하고
+삭제된 행에 `deleted` 배지를 표시한다.
 
 ---
 

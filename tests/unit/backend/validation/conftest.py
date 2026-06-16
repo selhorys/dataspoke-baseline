@@ -8,19 +8,36 @@ import pytest
 
 from src.backend.validation.service import ValidationService
 
-_DATASET_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.orders.daily_fulfillment_summary,DEV)"
+_DATASET_URN = (
+    "urn:li:dataset:(urn:li:dataPlatform:postgres,"
+    "example_db.orders.daily_fulfillment_summary,DEV)"
+)
+
+
+def _var(name: str, description: str = "") -> dict[str, str]:
+    """Build a {name, description} variable object (the JSONB column shape)."""
+    return {"name": name, "description": description}
 
 
 def _make_config_row(
     dataset_urn: str = _DATASET_URN,
     description: str = "Daily row count check",
-    variables: list[str] | None = None,
+    variables: list[dict[str, str]] | None = None,
     is_removed: bool = False,
 ) -> MagicMock:
+    """Mock a ValidationConfig ORM row.
+
+    ``variables`` is a JSONB array of ``{name, description}`` dicts per
+    BACKEND_SCHEMA.md §validation_configs.
+    """
     row = MagicMock()
     row.dataset_urn = dataset_urn
     row.description = description
-    row.variables = variables if variables is not None else ["row_cnt", "col1_mean"]
+    row.variables = (
+        variables
+        if variables is not None
+        else [_var("row_cnt", "Daily row count"), _var("col1_mean", "Mean of col1")]
+    )
     row.is_removed = is_removed
     row.created_at = datetime.now(tz=UTC)
     row.updated_at = datetime.now(tz=UTC)

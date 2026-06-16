@@ -169,7 +169,7 @@ Stores the single validation slot per dataset (passive result-store model — se
 |--------|------|-------------|
 | `dataset_urn` | `TEXT` PK | Target dataset URN (unique — at most one validation slot per dataset) |
 | `description` | `TEXT` | Free-form description (≤ 2,000 chars; surfaced in DataHub assertion detail UI) |
-| `variables` | `TEXT[]` | Declared variable names the pipeline will report. Each entry matches `[a-z][a-z0-9_]{0,99}`, unique within the row, 1..200 entries. Joined as `customAssertion.logic` on DataHub emit |
+| `variables` | `JSONB` | Declared variables the pipeline will report — a JSONB array of `{name, description}` objects. `name` matches `[a-z][a-z0-9_]{0,99}` and is unique within the row; `description` is ≤ 200 chars (empty allowed). `CHECK jsonb_array_length(variables) BETWEEN 1 AND 200`. Variable **names** are joined as `customAssertion.logic` on DataHub emit |
 | `is_removed` | `BOOLEAN` | Mirror of DataHub `status.removed` for query convenience. `true` after `DELETE`; `false` after a subsequent `PUT` resurrection |
 | `created_at` | `TIMESTAMPTZ` | |
 | `updated_at` | `TIMESTAMPTZ` | |
@@ -185,7 +185,7 @@ Also emitted to DataHub as `assertionRunEvent`. Append-only.
 | `dataset_urn` | `TEXT` | Target dataset (FK shape; matches `validation_configs.dataset_urn`) |
 | `data_time` | `TIMESTAMPTZ` | Time the underlying data is for (typically the partition timestamp). Maps to `assertionRunEvent.timestampMillis` and is the timeseries axis for `GET ?from=&until=` |
 | `score` | `DOUBLE PRECISION` | `0.0 ≤ score ≤ 1.0` (CHECK constraint). `1.0` = pass, `0.0` = fail; intermediate values reserved for partial-success semantics |
-| `variables` | `JSONB` | Map of variable name → numeric value. Keys must be a subset of `validation_configs.variables` (validated at the service layer; `422 UNKNOWN_VARIABLE` on violation) |
+| `variables` | `JSONB` | Map of variable name → numeric value. Keys must be a subset of the `validation_configs.variables` **names** (validated at the service layer; `422 UNKNOWN_VARIABLE` on violation) |
 | `ingestion_time` | `TIMESTAMPTZ` | Server-side `now()` when the row was accepted (audit trail; preserved separately from `data_time`) |
 
 Indexes: `(dataset_urn, data_time DESC)` to serve the historical-baseline GET.

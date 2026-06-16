@@ -3,6 +3,8 @@
 import { useState } from "react";
 import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
@@ -22,8 +24,15 @@ const PAGE_SIZE = 20;
 
 export default function ValidationListPage() {
   const [offset, setOffset] = useState(0);
+  const [showDeleted, setShowDeleted] = useState(false);
 
-  const { data, isLoading, error } = useValidationList({ offset, limit: PAGE_SIZE });
+  // Default hides removed slots (removed=false). The "Show deleted" toggle omits
+  // the param so the backend returns both active and removed slots.
+  const { data, isLoading, error } = useValidationList({
+    offset,
+    limit: PAGE_SIZE,
+    removed: showDeleted ? undefined : false,
+  });
 
   const totalPages = data ? Math.ceil(data.total_count / PAGE_SIZE) : 0;
   const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
@@ -32,6 +41,19 @@ export default function ValidationListPage() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold tracking-tight">Validation</h1>
+        <div className="flex items-center gap-2">
+          <Checkbox
+            id="show-deleted"
+            checked={showDeleted}
+            onCheckedChange={(checked) => {
+              setShowDeleted(checked === true);
+              setOffset(0);
+            }}
+          />
+          <Label htmlFor="show-deleted" className="cursor-pointer text-sm">
+            Show deleted
+          </Label>
+        </div>
       </div>
 
       {error && (
@@ -73,15 +95,24 @@ export default function ValidationListPage() {
             {data?.validations.map((v) => (
               <TableRow
                 key={v.dataset_urn}
-                className="cursor-pointer hover:bg-muted/50"
+                className={`cursor-pointer hover:bg-muted/50 ${
+                  v.is_removed ? "text-muted-foreground opacity-60" : ""
+                }`}
               >
                 <TableCell>
-                  <Link
-                    href={`/validation/data/${encodeURIComponent(v.dataset_urn)}`}
-                    className="font-mono text-sm hover:underline"
-                  >
-                    {v.dataset_urn}
-                  </Link>
+                  <span className="flex items-center gap-2">
+                    <Link
+                      href={`/validation/data/${encodeURIComponent(v.dataset_urn)}`}
+                      className="font-mono text-sm hover:underline"
+                    >
+                      {v.dataset_urn}
+                    </Link>
+                    {v.is_removed && (
+                      <Badge variant="outline" className="text-xs">
+                        deleted
+                      </Badge>
+                    )}
+                  </span>
                 </TableCell>
                 <TableCell className="max-w-[240px] truncate text-sm">
                   {v.description}

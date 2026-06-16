@@ -4,6 +4,10 @@ Covers result recording (variable validation, score gating, event emission,
 DataHub-failure handling) and historical result reads (window inclusivity,
 limit defaults + clamping, count semantics).
 
+Conf ``variables`` is a JSONB array of ``{name, description}`` objects; the
+result-recording subset check compares result keys against the set of declared
+variable NAMES. Result rows themselves stay a ``{name: float}`` map.
+
 spec: VALIDATION.md §Validation Result, §GET result, §Validation rules on POST
 spec: BACKEND.md §Event Catalogue — VALIDATION.RESULT_RECORDED
 """
@@ -23,7 +27,13 @@ from tests.unit.backend.validation.conftest import (
     _make_config_row,
     _scalar_count,
     _scalar_result,
+    _var,
 )
+
+_REPORT = "src.backend.validation.service.report_result"
+_BUILD_EVENT = "src.backend.validation.service.build_run_event"
+_BUILD_URN = "src.backend.validation.service.build_assertion_urn"
+_FAKE_URN = "urn:li:assertion:abc123"
 
 
 # ── record_result ─────────────────────────────────────────────────────────────
@@ -36,9 +46,9 @@ async def test_record_result_unknown_variable_key_raises(
     """record_result raises UNKNOWN_VARIABLE with sorted offending names.
 
     spec: VALIDATION.md §Validation rules on POST — unknown keys → 422 UNKNOWN_VARIABLE
-    listing the offending names.
+    listing the offending names. The subset check compares against declared NAMES.
     """
-    config = _make_config_row(variables=["row_cnt", "null_rate"])
+    config = _make_config_row(variables=[_var("row_cnt"), _var("null_rate")])
     db.execute = AsyncMock(return_value=_scalar_result(config))
 
     with pytest.raises(PreconditionFailedError) as exc_info:
@@ -60,7 +70,8 @@ async def test_record_result_score_out_of_range_raises(
 ) -> None:
     """record_result raises INVALID_SCORE before any DB query for out-of-range scores.
 
-    spec: VALIDATION.md §Validation rules on POST — score outside [0.0, 1.0] → 422 INVALID_SCORE
+    spec: VALIDATION.md §Validation rules on POST — score outside [0.0, 1.0] →
+    422 INVALID_SCORE.
     """
     with pytest.raises(PreconditionFailedError) as exc_info:
         await svc.record_result(
@@ -81,14 +92,17 @@ async def test_record_result_missing_declared_key_accepted_silently(
     spec: VALIDATION.md §Validation rules on POST — Missing declared keys are accepted
     silently (a result with partial coverage is a legitimate signal).
     """
-    config = _make_config_row(variables=["row_cnt", "col1_mean", "null_rate"])
+    config = _make_config_row(
+        variables=[_var("row_cnt"), _var("col1_mean"), _var("null_rate")]
+    )
     db.execute = AsyncMock(return_value=_scalar_result(config))
     db.commit = AsyncMock()
 
-    with patch("src.backend.validation.service.report_result", new_callable=AsyncMock, return_value=True), \
-         patch("src.backend.validation.service.build_run_event"), \
-         patch("src.backend.validation.service.build_assertion_urn", return_value="urn:li:assertion:abc123"):
-
+    with (
+        patch(_REPORT, new_callable=AsyncMock, return_value=True),
+        patch(_BUILD_EVENT),
+        patch(_BUILD_URN, return_value=_FAKE_URN),
+    ):
         mock_db_refresh(db)
 
         record = await svc.record_result(
@@ -113,7 +127,7 @@ async def test_record_result_inserts_row_with_correct_fields(
     """
     from src.shared.db.models import ValidationResult
 
-    config = _make_config_row(variables=["row_cnt"])
+    config = _make_config_row(variables=[_var("row_cnt")])
     db.execute = AsyncMock(return_value=_scalar_result(config))
     db.commit = AsyncMock()
 
@@ -129,12 +143,13 @@ async def test_record_result_inserts_row_with_correct_fields(
 
     db.add = MagicMock(side_effect=capture_add)
 
-    with patch("src.backend.validation.service.report_result", new_callable=AsyncMock, return_value=True) as mock_report, \
-         patch("src.backend.validation.service.build_assertion_urn", return_value="urn:li:assertion:abc123"):
-
+    with (
+        patch(_REPORT, new_callable=AsyncMock, return_value=True) as mock_report,
+        patch(_BUILD_URN, return_value=_FAKE_URN),
+    ):
         mock_db_refresh(db)
 
-        record = await svc.record_result(
+        await svc.record_result(
             dataset_urn=dataset_urn,
             data_time=data_time,
             score=score,
@@ -145,18 +160,13 @@ async def test_record_result_inserts_row_with_correct_fields(
     assert result_rows, "ValidationResult row must be added to db"
     row = result_rows[0]
 
-    assert row.data_time == data_time, (
-        f"row.data_time={row.data_time!r} != data_time={data_time!r}"
-    )
-    assert row.score == score, f"row.score={row.score!r} != score={score!r}"
-    assert row.variables == variables, (
-        f"row.variables={row.variables!r} != variables={variables!r}"
-    )
-    assert row.dataset_urn == dataset_urn, (
-        f"row.dataset_urn={row.dataset_urn!r} != dataset_urn={dataset_urn!r}"
-    )
+    assert row.data_time == data_time
+    assert row.score == score
+    # spec: VALIDATION.md §Validation Result — result row stays a {name: float} map.
+    assert row.variables == variables
+    assert row.dataset_urn == dataset_urn
 
-    # Verify report_result was called with a run_event whose timestampMillis = data_time epoch ms.
+    # run_event.timestampMillis must derive from data_time, not server now.
     assert mock_report.called, "report_result must be called"
     call_args = mock_report.call_args
     run_event_arg = (
@@ -164,7 +174,7 @@ async def test_record_result_inserts_row_with_correct_fields(
         if len(call_args.args) > 2
         else call_args.kwargs.get("run_event")
     )
-    assert run_event_arg is not None, "run_event must be passed to report_result as third arg"
+    assert run_event_arg is not None, "run_event must be passed to report_result"
     expected_ms = int(data_time.timestamp() * 1000)
     assert run_event_arg.timestampMillis == expected_ms, (
         f"run_event.timestampMillis={run_event_arg.timestampMillis} != {expected_ms} "
@@ -180,7 +190,7 @@ async def test_record_result_records_event_after_successful_emit(
 
     spec: BACKEND.md §Event Catalogue — VALIDATION.RESULT_RECORDED on success.
     """
-    config = _make_config_row(variables=["row_cnt"])
+    config = _make_config_row(variables=[_var("row_cnt")])
     db.execute = AsyncMock(return_value=_scalar_result(config))
     db.commit = AsyncMock()
 
@@ -191,10 +201,11 @@ async def test_record_result_records_event_after_successful_emit(
 
     db.add = MagicMock(side_effect=capture_add)
 
-    with patch("src.backend.validation.service.report_result", new_callable=AsyncMock, return_value=True), \
-         patch("src.backend.validation.service.build_run_event"), \
-         patch("src.backend.validation.service.build_assertion_urn", return_value="urn:li:assertion:abc123"):
-
+    with (
+        patch(_REPORT, new_callable=AsyncMock, return_value=True),
+        patch(_BUILD_EVENT),
+        patch(_BUILD_URN, return_value=_FAKE_URN),
+    ):
         mock_db_refresh(db)
 
         await svc.record_result(
@@ -224,7 +235,7 @@ async def test_record_result_datahub_emit_failure_raises_without_recording_event
     spec: VALIDATION.md §Validation Result — row inserted regardless of emit success;
     on emit failure DataHubUnavailableError raised; RESULT_RECORDED not recorded.
     """
-    config = _make_config_row(variables=["row_cnt"])
+    config = _make_config_row(variables=[_var("row_cnt")])
     db.execute = AsyncMock(return_value=_scalar_result(config))
     db.commit = AsyncMock()
 
@@ -235,10 +246,11 @@ async def test_record_result_datahub_emit_failure_raises_without_recording_event
 
     db.add = MagicMock(side_effect=capture_add)
 
-    with patch("src.backend.validation.service.report_result", new_callable=AsyncMock, return_value=False), \
-         patch("src.backend.validation.service.build_run_event"), \
-         patch("src.backend.validation.service.build_assertion_urn", return_value="urn:li:assertion:abc123"):
-
+    with (
+        patch(_REPORT, new_callable=AsyncMock, return_value=False),
+        patch(_BUILD_EVENT),
+        patch(_BUILD_URN, return_value=_FAKE_URN),
+    ):
         mock_db_refresh(db)
 
         with pytest.raises(DataHubUnavailableError):
@@ -268,7 +280,7 @@ async def test_get_results_from_until_filter_inclusivity(
 ) -> None:
     """from is inclusive (>=), until is exclusive (<).
 
-    spec: VALIDATION.md §GET result — from: Inclusive lower bound; until: Exclusive upper bound.
+    spec: VALIDATION.md §GET result — from: Inclusive lower bound; until: Exclusive.
     """
     count_mock = _scalar_count(3)
     rows_mock = MagicMock()
@@ -307,12 +319,14 @@ async def test_get_results_limit_default_is_1000(
     assert db.execute.call_count == 2
 
     rows_stmt = db.execute.call_args_list[1].args[0]
-    rendered = str(rows_stmt.compile(
-        dialect=postgresql.dialect(),
-        compile_kwargs={"literal_binds": True},
-    ))
+    rendered = str(
+        rows_stmt.compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
     assert re.search(r"\bLIMIT 1000\b", rendered), (
-        f"Expected 'LIMIT 1000' (word-bounded) in rows query SQL (default limit); got:\n{rendered}"
+        f"Expected 'LIMIT 1000' in rows query SQL (default limit); got:\n{rendered}"
     )
 
 
@@ -334,15 +348,17 @@ async def test_get_results_limit_20000_clamped_to_10000(
     await svc.get_results(dataset_urn=_DATASET_URN, limit=20000)
 
     rows_stmt = db.execute.call_args_list[1].args[0]
-    rendered = str(rows_stmt.compile(
-        dialect=postgresql.dialect(),
-        compile_kwargs={"literal_binds": True},
-    ))
+    rendered = str(
+        rows_stmt.compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
     assert re.search(r"\bLIMIT 10000\b", rendered), (
-        f"Expected 'LIMIT 10000' (word-bounded) in rows query SQL (clamped); got:\n{rendered}"
+        f"Expected 'LIMIT 10000' in rows query SQL (clamped); got:\n{rendered}"
     )
     assert not re.search(r"\bLIMIT 20000\b", rendered), (
-        f"Unexpected 'LIMIT 20000' in rows query SQL (should be clamped to 10000); got:\n{rendered}"
+        f"Unexpected 'LIMIT 20000' (should be clamped to 10000); got:\n{rendered}"
     )
 
 
@@ -390,10 +406,7 @@ async def test_get_results_total_count_uses_count_distinct_data_time(
     """The count query is `COUNT(DISTINCT data_time)`, not `COUNT(*)`.
 
     spec: VALIDATION.md §GET result — total_count is the number of distinct
-    data_time partitions in the window. With Postgres-side de-duplication on
-    data_time, a window containing N raw rows across K distinct partitions
-    (K ≤ N) yields total_count == K. Asserting the SQL shape here pins the
-    invariant at the unit-test layer; api-wired UC2 exercises it end-to-end.
+    data_time partitions in the window.
     """
     from sqlalchemy.dialects import postgresql
 
@@ -405,13 +418,15 @@ async def test_get_results_total_count_uses_count_distinct_data_time(
     await svc.get_results(dataset_urn=_DATASET_URN)
 
     count_stmt = db.execute.call_args_list[0].args[0]
-    rendered = str(count_stmt.compile(
-        dialect=postgresql.dialect(),
-        compile_kwargs={"literal_binds": True},
-    ))
-    assert re.search(r"count\(\s*distinct[\s(]+\S*data_time\b", rendered, re.IGNORECASE), (
-        f"Expected COUNT(DISTINCT ...data_time) in count query SQL; got:\n{rendered}"
+    rendered = str(
+        count_stmt.compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
     )
+    assert re.search(
+        r"count\(\s*distinct[\s(]+\S*data_time\b", rendered, re.IGNORECASE
+    ), f"Expected COUNT(DISTINCT ...data_time) in count query SQL; got:\n{rendered}"
 
 
 @pytest.mark.asyncio
@@ -423,19 +438,15 @@ async def test_get_results_returned_in_descending_data_time_order(
     spec: VALIDATION.md §GET result — "Rows are ordered by data_time descending
     (newest first) so the most recent partition appears at the head of the response."
     """
-    # The service receives rows from the DB in whatever order the DB returns them.
-    # The DB query applies ORDER BY data_time DESC; mock the rows already in that
-    # order (as a real DB would return them) and assert the returned list is strictly
-    # descending — verifying the *consumer-visible contract*, not SQL internals.
     dt_newest = datetime(2026, 5, 10, tzinfo=UTC)
-    dt_mid    = datetime(2026, 5, 8,  tzinfo=UTC)
-    dt_oldest = datetime(2026, 5, 5,  tzinfo=UTC)
+    dt_mid = datetime(2026, 5, 8, tzinfo=UTC)
+    dt_oldest = datetime(2026, 5, 5, tzinfo=UTC)
 
     count_mock = _scalar_count(3)
     rows_mock = MagicMock()
     rows_mock.all.return_value = [
         MagicMock(data_time=dt_newest, score=0.9, variables={"row_cnt": 51.0}),
-        MagicMock(data_time=dt_mid,    score=0.7, variables={"row_cnt": 42.0}),
+        MagicMock(data_time=dt_mid, score=0.7, variables={"row_cnt": 42.0}),
         MagicMock(data_time=dt_oldest, score=1.0, variables={"row_cnt": 50.0}),
     ]
     db.execute = AsyncMock(side_effect=[count_mock, rows_mock])
@@ -445,7 +456,6 @@ async def test_get_results_returned_in_descending_data_time_order(
     assert total_count == 3
     assert len(results) == 3
 
-    # spec: VALIDATION.md §GET result — newest first
     data_times = [r.data_time for r in results]
     for i in range(len(data_times) - 1):
         assert data_times[i] > data_times[i + 1], (
@@ -463,10 +473,8 @@ async def test_record_result_duplicate_data_time_both_calls_succeed_and_emit_eve
 
     spec: VALIDATION.md §Duplicate data_time policy — "Multiple POSTs with the same
     data_time are append-only: each becomes a distinct assertionRunEvent row."
-    The service does not deduplicate on write; last-write-wins is a read-time concern.
-    Both calls must succeed, and both must emit the RESULT_RECORDED event.
     """
-    config = _make_config_row(variables=["row_cnt"])
+    config = _make_config_row(variables=[_var("row_cnt")])
     db.commit = AsyncMock()
 
     events_added: list = []
@@ -478,10 +486,11 @@ async def test_record_result_duplicate_data_time_both_calls_succeed_and_emit_eve
 
     shared_data_time = datetime(2026, 5, 8, tzinfo=UTC)
 
-    with patch("src.backend.validation.service.report_result", new_callable=AsyncMock, return_value=True), \
-         patch("src.backend.validation.service.build_run_event"), \
-         patch("src.backend.validation.service.build_assertion_urn", return_value="urn:li:assertion:abc123"):
-
+    with (
+        patch(_REPORT, new_callable=AsyncMock, return_value=True),
+        patch(_BUILD_EVENT),
+        patch(_BUILD_URN, return_value=_FAKE_URN),
+    ):
         mock_db_refresh(db)
 
         # First call: score=1.0 (pass)
@@ -502,27 +511,23 @@ async def test_record_result_duplicate_data_time_both_calls_succeed_and_emit_eve
             variables={"row_cnt": 20.0},
         )
 
-    assert result_1 is not None, "First POST must return a result record"
-    assert result_2 is not None, "Second POST must return a result record"
+    assert result_1 is not None
+    assert result_2 is not None
     assert result_1.data_time == shared_data_time
     assert result_2.data_time == shared_data_time
 
-    # spec: VALIDATION.md §Duplicate data_time policy — each POST is a distinct row.
-    # The two records must carry their own input scores; if the impl mistakenly
-    # returned a cached/shared record, scores would collide.
-    assert result_1.score == 1.0, f"result_1.score must equal first POST's input; got {result_1.score!r}"
-    assert result_2.score == 0.0, f"result_2.score must equal second POST's input; got {result_2.score!r}"
+    # Each record carries its own input score (no cached/shared record).
+    assert result_1.score == 1.0
+    assert result_2.score == 0.0
 
-    # Two distinct ValidationResult rows must have been added — one per POST.
     from src.shared.db.models import ValidationResult
-    inserted_results = [obj for obj in events_added if isinstance(obj, ValidationResult)]
+
+    inserted_results = [o for o in events_added if isinstance(o, ValidationResult)]
     assert len(inserted_results) == 2, (
         f"Expected 2 ValidationResult rows (one per POST); got {len(inserted_results)}. "
         "spec: VALIDATION.md §Duplicate data_time policy — append-only, distinct rows."
     )
 
-    # spec: BACKEND.md §Event Catalogue — VALIDATION.RESULT_RECORDED must be emitted
-    # for each accepted POST.
     event_types = [
         getattr(obj, "event_type", None)
         for obj in events_added
@@ -530,6 +535,6 @@ async def test_record_result_duplicate_data_time_both_calls_succeed_and_emit_eve
     ]
     result_recorded_count = event_types.count(VALIDATION_RESULT_RECORDED)
     assert result_recorded_count == 2, (
-        f"Expected 2 RESULT_RECORDED events (one per POST), got {result_recorded_count}; "
-        f"all event_types: {event_types}"
+        f"Expected 2 RESULT_RECORDED events (one per POST), got "
+        f"{result_recorded_count}; all event_types: {event_types}"
     )

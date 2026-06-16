@@ -43,11 +43,16 @@ _RESULT_LIMIT_CAP = 10_000
 
 
 class ValidationConfigRecord(BaseModel):
-    """Value object for a validation configuration row."""
+    """Value object for a validation configuration row.
+
+    ``variables`` is a list of ``{"name": ..., "description": ...}`` dicts,
+    matching the JSONB column shape; the API response model coerces each entry
+    into its own ``ValidationVariable``.
+    """
 
     dataset_urn: str
     description: str
-    variables: list[str]
+    variables: list[dict[str, str]]
     is_removed: bool
     created_at: datetime
     updated_at: datetime
@@ -80,7 +85,7 @@ def _config_from_row(row: ValidationConfig) -> ValidationConfigRecord:
     return ValidationConfigRecord(
         dataset_urn=row.dataset_urn,
         description=row.description,
-        variables=list(row.variables) if row.variables else [],
+        variables=[dict(v) for v in (row.variables or [])],
         is_removed=row.is_removed,
         created_at=row.created_at,
         updated_at=row.updated_at,
@@ -117,7 +122,7 @@ class ValidationService:
         self,
         dataset_urn: str,
         description: str,
-        variables: list[str],
+        variables: list[dict[str, str]],
     ) -> tuple[ValidationConfigRecord, bool]:
         """Create or replace the validation configuration for a dataset.
 
@@ -276,7 +281,7 @@ class ValidationService:
         if config_row is None:
             raise EntityNotFoundError("config", dataset_urn)
 
-        declared = set(config_row.variables or [])
+        declared = {v["name"] for v in (config_row.variables or [])}
         unknown = sorted(k for k in variables if k not in declared)
         if unknown:
             raise PreconditionFailedError(

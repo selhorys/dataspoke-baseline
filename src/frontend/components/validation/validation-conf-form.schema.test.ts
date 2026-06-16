@@ -6,13 +6,14 @@
  *   - spec/feature/VALIDATION.md §Rule Configuration:
  *     description: ≤ 2,000 chars; no ASCII control chars except \t (0x09) and \n (0x0a)
  *     variables: each name matches \A[a-z][a-z0-9_]{0,99}\Z; unique; 1–200 entries
- *   - src/api/schemas/validation.py _VARIABLE_RE, _DESC_CTRL_RE, _validate_variables:
+ *   - src/api/schemas/validation.py ValidationVariable, _VARIABLE_RE, _DESC_CTRL_RE:
  *     _VARIABLE_RE = r"\A[a-z][a-z0-9_]{0,99}\Z"
  *     _DESC_CTRL_RE = r"[\x00-\x08\x0b-\x1f\x7f]" (excludes \t=0x09, \n=0x0a)
- *     min 1 / max 200 variable entries
+ *     min 1 / max 200 variable entries; each variable = { name, description }
+ *     variable description: required key, ≤ 200 chars, empty allowed, same control-char rule
  *   - spec/feature/FRONTEND_VALIDATION.md §Page contracts:
- *     "field constraints (description char cap, variable name regex, count cap) per
- *      VALIDATION §Rule Configuration"
+ *     "field constraints (rule-description char cap, variable name regex,
+ *      per-variable description ≤200 chars empty-allowed, count cap)"
  */
 
 import { describe, it, expect } from "vitest";
@@ -32,13 +33,16 @@ import type { ValidationConfResponse } from "@/types/validation";
 function makeValidForm(overrides: Partial<ValidationConfFormValues> = {}): ValidationConfFormValues {
   return {
     description: "Daily row count plus key column means and null counts",
-    variables: [{ name: "row_cnt" }],
+    variables: [{ name: "row_cnt", description: "Daily row count" }],
     ...overrides,
   };
 }
 
-function makeVariables(count: number): { name: string }[] {
-  return Array.from({ length: count }, (_, i) => ({ name: `var_${i}` }));
+function makeVariables(count: number): { name: string; description: string }[] {
+  return Array.from({ length: count }, (_, i) => ({
+    name: `var_${i}`,
+    description: "",
+  }));
 }
 
 // ── 1. Variable name regex — valid names ──────────────────────────────────────
@@ -277,7 +281,7 @@ describe("schema variables — count bounds 1–200 (VALIDATION.md §Rule Config
 
   it("accepts exactly 1 variable — lower bound OK", () => {
     const result = validationConfSchema.safeParse(
-      makeValidForm({ variables: [{ name: "row_cnt" }] }),
+      makeValidForm({ variables: [{ name: "row_cnt", description: "" }] }),
     );
     expect(result.success).toBe(true);
   });
@@ -309,7 +313,11 @@ describe("schema variables — uniqueness enforced by superRefine (VALIDATION.md
   it("rejects duplicate variable names with an issue on the duplicate row's path", () => {
     const result = validationConfSchema.safeParse(
       makeValidForm({
-        variables: [{ name: "row_cnt" }, { name: "col1_mean" }, { name: "row_cnt" }],
+        variables: [
+          { name: "row_cnt", description: "" },
+          { name: "col1_mean", description: "" },
+          { name: "row_cnt", description: "" },
+        ],
       }),
     );
     expect(result.success).toBe(false);
@@ -329,7 +337,10 @@ describe("schema variables — uniqueness enforced by superRefine (VALIDATION.md
   it("rejects two identical entries at index 1 — issue on [variables, 1, name]", () => {
     const result = validationConfSchema.safeParse(
       makeValidForm({
-        variables: [{ name: "row_cnt" }, { name: "row_cnt" }],
+        variables: [
+          { name: "row_cnt", description: "" },
+          { name: "row_cnt", description: "" },
+        ],
       }),
     );
     expect(result.success).toBe(false);
@@ -348,7 +359,10 @@ describe("schema variables — uniqueness enforced by superRefine (VALIDATION.md
   it("accepts two distinct variable names without duplicate issue", () => {
     const result = validationConfSchema.safeParse(
       makeValidForm({
-        variables: [{ name: "row_cnt" }, { name: "col1_mean" }],
+        variables: [
+          { name: "row_cnt", description: "" },
+          { name: "col1_mean", description: "" },
+        ],
       }),
     );
     expect(result.success).toBe(true);
@@ -358,11 +372,11 @@ describe("schema variables — uniqueness enforced by superRefine (VALIDATION.md
     const result = validationConfSchema.safeParse(
       makeValidForm({
         variables: [
-          { name: "row_cnt" },
-          { name: "col1_mean" },
-          { name: "col2_null_cnt" },
-          { name: "user_id_null_cnt" },
-          { name: "qty_total" },
+          { name: "row_cnt", description: "" },
+          { name: "col1_mean", description: "" },
+          { name: "col2_null_cnt", description: "" },
+          { name: "user_id_null_cnt", description: "" },
+          { name: "qty_total", description: "" },
         ],
       }),
     );
@@ -375,7 +389,7 @@ describe("schema variables — uniqueness enforced by superRefine (VALIDATION.md
 describe("schema variables — name regex enforcement (src/api/schemas/validation.py _VARIABLE_RE)", () => {
   it("rejects uppercase variable name 'RowCnt'", () => {
     const result = validationConfSchema.safeParse(
-      makeValidForm({ variables: [{ name: "RowCnt" }] }),
+      makeValidForm({ variables: [{ name: "RowCnt", description: "" }] }),
     );
     expect(result.success).toBe(false);
     if (!result.success) {
@@ -388,7 +402,7 @@ describe("schema variables — name regex enforcement (src/api/schemas/validatio
 
   it("rejects leading-digit variable name '1count'", () => {
     const result = validationConfSchema.safeParse(
-      makeValidForm({ variables: [{ name: "1count" }] }),
+      makeValidForm({ variables: [{ name: "1count", description: "" }] }),
     );
     expect(result.success).toBe(false);
   });
@@ -396,7 +410,7 @@ describe("schema variables — name regex enforcement (src/api/schemas/validatio
   it("rejects 101-char variable name", () => {
     const longName = "a" + "b".repeat(100); // 101 chars
     const result = validationConfSchema.safeParse(
-      makeValidForm({ variables: [{ name: longName }] }),
+      makeValidForm({ variables: [{ name: longName, description: "" }] }),
     );
     expect(result.success).toBe(false);
   });
@@ -404,21 +418,113 @@ describe("schema variables — name regex enforcement (src/api/schemas/validatio
   it("accepts exactly 100-char variable name — at the backend boundary", () => {
     const maxName = "a" + "b".repeat(99); // 100 chars
     const result = validationConfSchema.safeParse(
-      makeValidForm({ variables: [{ name: maxName }] }),
+      makeValidForm({ variables: [{ name: maxName, description: "" }] }),
     );
     expect(result.success).toBe(true);
   });
 });
 
-// ── 8. toInternal: API response → form shape ──────────────────────────────────
+// ── 8. Schema: per-variable description constraints ───────────────────────────
+//
+// Backend: ValidationVariable.description — required key, ≤ 200 chars, empty allowed,
+// same control-char rule as the rule description (_DESC_CTRL_RE).
+
+describe("schema variable description — ≤200 chars, empty allowed, control-char rule", () => {
+  it("accepts an empty variable description (empty is allowed)", () => {
+    const result = validationConfSchema.safeParse(
+      makeValidForm({ variables: [{ name: "row_cnt", description: "" }] }),
+    );
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts a normal variable description", () => {
+    const result = validationConfSchema.safeParse(
+      makeValidForm({
+        variables: [{ name: "row_cnt", description: "Daily row count" }],
+      }),
+    );
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts exactly 200 chars — at the boundary", () => {
+    const result = validationConfSchema.safeParse(
+      makeValidForm({
+        variables: [{ name: "row_cnt", description: "a".repeat(200) }],
+      }),
+    );
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects 201 chars — one over the 200-char cap", () => {
+    const result = validationConfSchema.safeParse(
+      makeValidForm({
+        variables: [{ name: "row_cnt", description: "a".repeat(201) }],
+      }),
+    );
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const issue = result.error.issues.find(
+        (i) =>
+          Array.isArray(i.path) &&
+          i.path[0] === "variables" &&
+          i.path[1] === 0 &&
+          i.path[2] === "description",
+      );
+      expect(issue).toBeDefined();
+    }
+  });
+
+  it("accepts tab \\t (0x09) in a variable description — excluded from rejection set", () => {
+    const result = validationConfSchema.safeParse(
+      makeValidForm({
+        variables: [{ name: "row_cnt", description: "row\tcount" }],
+      }),
+    );
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts newline \\n (0x0a) in a variable description — excluded from rejection set", () => {
+    const result = validationConfSchema.safeParse(
+      makeValidForm({
+        variables: [{ name: "row_cnt", description: "row\ncount" }],
+      }),
+    );
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects NUL \\x00 in a variable description — in rejection set", () => {
+    const result = validationConfSchema.safeParse(
+      makeValidForm({
+        variables: [{ name: "row_cnt", description: "row\x00count" }],
+      }),
+    );
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects DEL \\x7f in a variable description — explicitly in rejection set", () => {
+    const result = validationConfSchema.safeParse(
+      makeValidForm({
+        variables: [{ name: "row_cnt", description: "row\x7fcount" }],
+      }),
+    );
+    expect(result.success).toBe(false);
+  });
+});
+
+// ── 9. toInternal: API response → form shape ──────────────────────────────────
 //
 // Spec: toInternal converts a ValidationConfResponse into ValidationConfFormValues.
+// variables in the response are { name, description } objects.
 
 describe("toInternal — converts ValidationConfResponse into form shape (FRONTEND_VALIDATION.md §Page contracts)", () => {
   const apiResponse: ValidationConfResponse = {
     dataset_urn: "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)",
     description: "Daily row count check",
-    variables: ["row_cnt", "col1_mean", "col2_null_cnt"],
+    variables: [
+      { name: "row_cnt", description: "Daily row count" },
+      { name: "col1_mean", description: "Mean of col1" },
+      { name: "col2_null_cnt", description: "" },
+    ],
     created_at: "2026-05-01T00:00:00Z",
     updated_at: "2026-05-08T10:00:00Z",
   };
@@ -428,34 +534,39 @@ describe("toInternal — converts ValidationConfResponse into form shape (FRONTE
     expect(form.description).toBe("Daily row count check");
   });
 
-  it("wraps each variable name string in a { name } object", () => {
+  it("maps each variable's name and description into the form shape", () => {
     const form = toInternal(apiResponse);
     expect(form.variables).toEqual([
-      { name: "row_cnt" },
-      { name: "col1_mean" },
-      { name: "col2_null_cnt" },
+      { name: "row_cnt", description: "Daily row count" },
+      { name: "col1_mean", description: "Mean of col1" },
+      { name: "col2_null_cnt", description: "" },
     ]);
   });
 
-  it("preserves variable count (3 names → 3 items)", () => {
+  it("preserves variable count (3 → 3 items)", () => {
     const form = toInternal(apiResponse);
     expect(form.variables).toHaveLength(3);
   });
 
-  it("maps an empty-string description (server returned empty)", () => {
+  it("maps an empty-string rule description (server returned empty)", () => {
     const form = toInternal({ ...apiResponse, description: "" });
     expect(form.description).toBe("");
   });
 
   it("maps a single-variable response", () => {
-    const form = toInternal({ ...apiResponse, variables: ["row_cnt"] });
-    expect(form.variables).toEqual([{ name: "row_cnt" }]);
+    const form = toInternal({
+      ...apiResponse,
+      variables: [{ name: "row_cnt", description: "Daily row count" }],
+    });
+    expect(form.variables).toEqual([
+      { name: "row_cnt", description: "Daily row count" },
+    ]);
   });
 });
 
-// ── 9. fromInternal: form shape → API request body ────────────────────────────
+// ── 10. fromInternal: form shape → API request body ───────────────────────────
 //
-// Spec: PUT .../attr/validation/conf body = { description, variables: string[] }
+// Spec: PUT .../attr/validation/conf body = { description, variables: {name, description}[] }
 // Backend: PutValidationConfRequest
 
 describe("fromInternal — serializes form values to API request body (VALIDATION.md §Rule Configuration)", () => {
@@ -465,31 +576,33 @@ describe("fromInternal — serializes form values to API request body (VALIDATIO
     expect(body.description).toBe("Daily row count plus key column means and null counts");
   });
 
-  it("produces a 'variables' array of strings (not objects)", () => {
-    const body = fromInternal(
-      makeValidForm({
-        variables: [{ name: "row_cnt" }, { name: "col1_mean" }],
-      }),
-    );
-    expect(body.variables).toEqual(["row_cnt", "col1_mean"]);
-  });
-
-  it("serializes empty-string description verbatim (backend allows empty)", () => {
-    const body = fromInternal(makeValidForm({ description: "" }));
-    expect(body.description).toBe("");
-  });
-
-  it("serializes 3 variables as a flat string array", () => {
+  it("produces a 'variables' array of { name, description } objects", () => {
     const body = fromInternal(
       makeValidForm({
         variables: [
-          { name: "row_cnt" },
-          { name: "col1_mean" },
-          { name: "col2_null_cnt" },
+          { name: "row_cnt", description: "Daily row count" },
+          { name: "col1_mean", description: "Mean of col1" },
         ],
       }),
     );
-    expect(body.variables).toEqual(["row_cnt", "col1_mean", "col2_null_cnt"]);
+    expect(body.variables).toEqual([
+      { name: "row_cnt", description: "Daily row count" },
+      { name: "col1_mean", description: "Mean of col1" },
+    ]);
+  });
+
+  it("preserves empty per-variable descriptions verbatim", () => {
+    const body = fromInternal(
+      makeValidForm({
+        variables: [{ name: "row_cnt", description: "" }],
+      }),
+    );
+    expect(body.variables).toEqual([{ name: "row_cnt", description: "" }]);
+  });
+
+  it("serializes empty-string rule description verbatim (backend allows empty)", () => {
+    const body = fromInternal(makeValidForm({ description: "" }));
+    expect(body.description).toBe("");
   });
 
   it("produces exactly the two keys 'description' and 'variables' in the body", () => {
@@ -498,7 +611,7 @@ describe("fromInternal — serializes form values to API request body (VALIDATIO
   });
 });
 
-// ── 10. Round-trip: toInternal(response) → fromInternal ────────────────────────
+// ── 11. Round-trip: toInternal(response) → fromInternal ────────────────────────
 //
 // Spec: editing and saving should produce a body that round-trips through toInternal
 // without losing field values.
@@ -507,7 +620,11 @@ describe("round-trip toInternal(response) → fromInternal — preserves variabl
   const apiResponse: ValidationConfResponse = {
     dataset_urn: "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.orders.daily_fulfillment_summary,DEV)",
     description: "Row count and anomaly markers for daily fulfillment",
-    variables: ["row_cnt", "anomaly_flag", "qty_total"],
+    variables: [
+      { name: "row_cnt", description: "Daily row count" },
+      { name: "anomaly_flag", description: "" },
+      { name: "qty_total", description: "Total quantity" },
+    ],
     created_at: "2026-05-01T00:00:00Z",
     updated_at: "2026-05-08T12:00:00Z",
   };
@@ -519,20 +636,22 @@ describe("round-trip toInternal(response) → fromInternal — preserves variabl
     );
   });
 
-  it("round-trip preserves all variable names", () => {
+  it("round-trip preserves all variable names and descriptions", () => {
     const body = fromInternal(toInternal(apiResponse));
-    expect(body.variables).toEqual(["row_cnt", "anomaly_flag", "qty_total"]);
+    expect(body.variables).toEqual([
+      { name: "row_cnt", description: "Daily row count" },
+      { name: "anomaly_flag", description: "" },
+      { name: "qty_total", description: "Total quantity" },
+    ]);
   });
 
   it("round-trip body passes the validationConfSchema (valid API body)", () => {
-    // The round-tripped body when re-parsed through the Zod schema must succeed,
-    // confirming toInternal → fromInternal produces a schema-valid form state.
     const formValues = toInternal(apiResponse);
     const schemaResult = validationConfSchema.safeParse(formValues);
     expect(schemaResult.success).toBe(true);
   });
 
-  it("round-trip with empty-string description (F2 fix: empty is valid)", () => {
+  it("round-trip with empty-string rule description (empty is valid)", () => {
     const response: ValidationConfResponse = {
       ...apiResponse,
       description: "",
@@ -542,15 +661,17 @@ describe("round-trip toInternal(response) → fromInternal — preserves variabl
   });
 });
 
-// ── 11. defaultFormValues ─────────────────────────────────────────────────────
+// ── 12. defaultFormValues ─────────────────────────────────────────────────────
 
 describe("defaultFormValues — blank form state for a new config", () => {
   it("returns an empty-string description", () => {
     expect(defaultFormValues().description).toBe("");
   });
 
-  it("returns a single empty-name variable row (one row for the form to show)", () => {
-    expect(defaultFormValues().variables).toEqual([{ name: "" }]);
+  it("returns a single empty variable row with empty name and description", () => {
+    expect(defaultFormValues().variables).toEqual([
+      { name: "", description: "" },
+    ]);
   });
 
   it("has exactly 2 top-level keys: description and variables", () => {

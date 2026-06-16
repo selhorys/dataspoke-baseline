@@ -2,8 +2,11 @@
  * ValidationConfForm Zod schema and serialization helpers — extracted for testability.
  *
  * Mirrors src/api/schemas/validation.py field constraints:
- *   description: ≤ 2,000 chars; no ASCII control characters except \t (0x09) and \n (0x0a).
- *   variables:   each name matches \A[a-z][a-z0-9_]{0,99}\Z; unique; 1–200 entries.
+ *   description:           ≤ 2,000 chars; no ASCII control characters except \t (0x09) and \n (0x0a).
+ *   variables:             1–200 entries; each name unique.
+ *   variables[].name:      matches \A[a-z][a-z0-9_]{0,99}\Z.
+ *   variables[].description: required key, ≤ 200 chars, empty allowed,
+ *                          no ASCII control characters except \t (0x09) and \n (0x0a).
  *
  * Spec: spec/feature/FRONTEND_VALIDATION.md, spec/feature/VALIDATION.md §Rule Configuration.
  */
@@ -27,6 +30,9 @@ export function variableNameError(name: string): string | null {
   return null;
 }
 
+// Reject ASCII control characters except \t (0x09) and \n (0x0a), plus DEL (0x7f).
+const CONTROL_CHAR_RE = /[\x00-\x08\x0b-\x1f\x7f]/;
+
 const variableItemSchema = z.object({
   name: z
     .string()
@@ -35,6 +41,13 @@ const variableItemSchema = z.object({
       VARIABLE_NAME_RE,
       "Must start with a lowercase letter, contain only [a-z0-9_], and be ≤ 100 chars",
     ),
+  description: z
+    .string()
+    .max(200, "Variable description must not exceed 200 characters")
+    .refine(
+      (v) => !CONTROL_CHAR_RE.test(v),
+      "Variable description contains invalid control characters",
+    ),
 });
 
 export const validationConfSchema = z
@@ -42,9 +55,8 @@ export const validationConfSchema = z
     description: z
       .string()
       .max(2000, "Description must not exceed 2,000 characters")
-      // Reject ASCII control characters except \t (0x09) and \n (0x0a), plus DEL (0x7f).
       .refine(
-        (v) => !/[\x00-\x08\x0b-\x1f\x7f]/.test(v),
+        (v) => !CONTROL_CHAR_RE.test(v),
         "Description contains invalid control characters",
       ),
     variables: z
@@ -76,7 +88,10 @@ export const validationConfSchema = z
 export function toInternal(conf: ValidationConfResponse): ValidationConfFormValues {
   return {
     description: conf.description,
-    variables: conf.variables.map((name) => ({ name })),
+    variables: conf.variables.map((v) => ({
+      name: v.name,
+      description: v.description,
+    })),
   };
 }
 
@@ -84,16 +99,20 @@ export function toInternal(conf: ValidationConfResponse): ValidationConfFormValu
 export function defaultFormValues(): ValidationConfFormValues {
   return {
     description: "",
-    variables: [{ name: "" }],
+    variables: [{ name: "", description: "" }],
   };
 }
 
 /**
  * fromInternal: convert the form shape into the API request body for PUT.
+ * variables is an array of { name, description } objects.
  */
 export function fromInternal(v: ValidationConfFormValues): Record<string, unknown> {
   return {
     description: v.description,
-    variables: v.variables.map((item) => item.name),
+    variables: v.variables.map((item) => ({
+      name: item.name,
+      description: item.description,
+    })),
   };
 }

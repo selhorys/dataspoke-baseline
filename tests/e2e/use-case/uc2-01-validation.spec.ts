@@ -65,19 +65,30 @@ const KAFKA_RESULT_API = `/api/v1/spoke/common/data/${KAFKA_URN_ENC}/attr/valida
 const PG_DETAIL_URL = `/validation/data/${PG_URN_ENC}`;
 const KAFKA_DETAIL_URL = `/validation/data/${KAFKA_URN_ENC}`;
 
-// Conf payloads (verbatim from api-wired test)
+// Conf variable objects: {name, description} (verbatim shape from api-wired test).
+// spec: VALIDATION.md §Rule Configuration — each variable is a {name, description}.
 const PG_DESCRIPTION =
   "Daily order fulfillment quality: row count, fill rate, and anomaly score";
+const PG_VARIABLES = [
+  { name: "row_cnt", description: "Daily fulfillment row count" },
+  { name: "fill_rate", description: "Fraction of orders fully shipped" },
+  { name: "anomaly_score", description: "Detector score for the day" },
+];
 const PG_CONF_PAYLOAD = {
   description: PG_DESCRIPTION,
-  variables: ["row_cnt", "fill_rate", "anomaly_score"],
+  variables: PG_VARIABLES,
 };
+const KAFKA_VARIABLES = [
+  { name: "msg_cnt", description: "Messages produced in the window" },
+  { name: "lag_seconds", description: "Consumer lag in seconds" },
+];
 const KAFKA_CONF_PAYLOAD = {
   description: "Order events stream quality: message count and lag",
-  variables: ["msg_cnt", "lag_seconds"],
+  variables: KAFKA_VARIABLES,
 };
 
-// Resurrection payload (step 7)
+// Resurrection payload (step 7) — names only; descriptions default to empty
+// (the create-form description input is optional). The order matches the form gestures.
 const RESURRECT_DESCRIPTION = "Reinstated quality check with extended variables";
 const RESURRECT_VARIABLES = ["row_cnt", "fill_rate", "anomaly_score", "null_rate"];
 
@@ -146,16 +157,22 @@ test("UC2 step 1 — PUT validation confs for postgres + kafka datasets", async 
   // PUT postgres conf (idempotent: if a prior test run left state, overwrite).
   const pgResp = await adminApi.put(PG_CONF_API, { data: PG_CONF_PAYLOAD });
   expect(pgResp.status()).toBe(201);
-  const pgBody = (await pgResp.json()) as { variables: string[]; description: string };
-  expect(pgBody.variables).toEqual(["row_cnt", "fill_rate", "anomaly_score"]);
+  // spec: VALIDATION.md §Rule Configuration — variables round-trip as {name, description}.
+  const pgBody = (await pgResp.json()) as {
+    variables: Array<{ name: string; description: string }>;
+    description: string;
+  };
+  expect(pgBody.variables).toEqual(PG_VARIABLES);
   expect(pgBody.description).toBe(PG_DESCRIPTION);
   pgConfCreated = true;
 
   // PUT kafka conf.
   const kafkaResp = await adminApi.put(KAFKA_CONF_API, { data: KAFKA_CONF_PAYLOAD });
   expect(kafkaResp.status()).toBe(201);
-  const kafkaBody = (await kafkaResp.json()) as { variables: string[] };
-  expect(kafkaBody.variables).toEqual(["msg_cnt", "lag_seconds"]);
+  const kafkaBody = (await kafkaResp.json()) as {
+    variables: Array<{ name: string; description: string }>;
+  };
+  expect(kafkaBody.variables).toEqual(KAFKA_VARIABLES);
   kafkaConfCreated = true;
 });
 
@@ -359,6 +376,16 @@ test("UC2 step 4 — postgres detail page renders conf, charts, and event log", 
   await expect(page.getByText("fill_rate", { exact: true }).first()).toBeVisible();
   await expect(page.getByText("anomaly_score", { exact: true }).first()).toBeVisible();
 
+  // -- UI assertion: per-variable descriptions render in the ConfReadOnly view --
+  // spec: FRONTEND_VALIDATION.md §Page contracts — each variable shows its description.
+  // ConfReadOnly renders {v.description} next to the variable name badge.
+  await expect(
+    page.getByText("Daily fulfillment row count", { exact: false }).first()
+  ).toBeVisible({ timeout: 10_000 });
+  await expect(
+    page.getByText("Fraction of orders fully shipped", { exact: false }).first()
+  ).toBeVisible();
+
   // -- UI assertion: score chart section heading --
   // spec: FRONTEND_VALIDATION.md §Page contracts — "Quality Score (attr/validation/result)"
   await expect(
@@ -386,9 +413,12 @@ test("UC2 step 4 — postgres detail page renders conf, charts, and event log", 
   // -- Backend probe: GET conf → 200, description + variables match --
   const confResp = await adminApi.get(PG_CONF_API);
   expect(confResp.status()).toBe(200);
-  const conf = (await confResp.json()) as { description: string; variables: string[] };
+  const conf = (await confResp.json()) as {
+    description: string;
+    variables: Array<{ name: string; description: string }>;
+  };
   expect(conf.description).toBe(PG_DESCRIPTION);
-  expect(conf.variables).toEqual(["row_cnt", "fill_rate", "anomaly_score"]);
+  expect(conf.variables).toEqual(PG_VARIABLES);
 
   // -- Backend probe: GET event → 200, at least one event logged --
   // spec: VALIDATION.md §Validation Result — each accepted POST emits one event.
@@ -563,11 +593,16 @@ test("UC2 step 7 — resurrect postgres conf via create form; detail shows new d
   // spec: USE_CASE_en.md §UC2 step 6 — PUT-after-DELETE 201; GET conf 200 with new values.
   const confResp = await adminApi.get(PG_CONF_API);
   expect(confResp.status()).toBe(200);
-  const conf = (await confResp.json()) as { description: string; variables: string[] };
+  const conf = (await confResp.json()) as {
+    description: string;
+    variables: Array<{ name: string; description: string }>;
+  };
   expect(conf.description).toBe(RESURRECT_DESCRIPTION);
   // spec: VALIDATION.md §Rule Configuration — subsequent PUT resurrects with new variables.
-  expect(conf.variables).toContain("null_rate");
+  // variables are {name, description} objects; check the name set.
+  const confNames = conf.variables.map((v) => v.name);
+  expect(confNames).toContain("null_rate");
   for (const v of RESURRECT_VARIABLES) {
-    expect(conf.variables).toContain(v);
+    expect(confNames).toContain(v);
   }
 });

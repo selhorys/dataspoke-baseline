@@ -184,12 +184,12 @@ def upgrade() -> None:
         "validation_configs",
         sa.Column("dataset_urn", sa.Text(), primary_key=True),
         sa.Column("description", sa.Text(), nullable=False),
-        sa.Column("variables", sa.ARRAY(sa.Text()), nullable=False),
+        sa.Column("variables", JSONB, nullable=False),
         sa.Column("is_removed", sa.Boolean(), nullable=False, server_default="false"),
         sa.Column("created_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
         sa.Column("updated_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
         sa.CheckConstraint(
-            "array_length(variables, 1) BETWEEN 1 AND 200",
+            "jsonb_array_length(variables) BETWEEN 1 AND 200",
             name="ck_validation_configs_variables_length",
         ),
         schema=SCHEMA,
@@ -755,7 +755,7 @@ def upgrade() -> None:
         EXCEPTION WHEN insufficient_privilege THEN
           RAISE NOTICE 'ag_catalog GRANT skipped (insufficient privilege; assumed pre-granted by initdb hook)';
         END $$;
-        """
+        """  # noqa: E501
     )
 
 

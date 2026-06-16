@@ -9,6 +9,8 @@ Routes under test:
   GET    /data/{urn}/attr/validation/result
   GET    /data/{urn}/event/validation
 
+Conf request/response `variables` is an array of {name, description} objects.
+
 spec: API.md §Data Resource (validation rows).
 spec: API.md §Authentication — all spoke/common routes require valid JWT.
 spec: API_DESIGN_PRINCIPLE_en.md §HTTP method semantics.
@@ -29,12 +31,14 @@ _VALID_URN = (
     "urn:li:dataset:(urn:li:dataPlatform:postgres,"
     "example_db.reviews.user_ratings_legacy,DEV)"
 )
-_VALID_URN_ENC = (
-    _VALID_URN.replace("(", "%28").replace(")", "%29").replace(",", "%2C")
-)
+_VALID_URN_ENC = _VALID_URN.replace("(", "%28").replace(")", "%29").replace(",", "%2C")
 _CONF_URL = f"{_BASE}/{_VALID_URN_ENC}/attr/validation/conf"
 _RESULT_URL = f"{_BASE}/{_VALID_URN_ENC}/attr/validation/result"
 _EVENTS_URL = f"{_BASE}/{_VALID_URN_ENC}/event/validation"
+
+
+def _var(name: str, description: str = "") -> dict[str, str]:
+    return {"name": name, "description": description}
 
 
 @pytest.fixture
@@ -64,7 +68,10 @@ async def test_put_validation_conf_without_token_returns_401(client) -> None:
     """spec: API.md §Authentication — all write routes require valid JWT."""
     resp = await client.put(
         _CONF_URL,
-        json={"description": "null rate check", "variables": ["null_rate_rating_score"]},
+        json={
+            "description": "null rate check",
+            "variables": [_var("null_rate_rating_score")],
+        },
     )
     assert resp.status_code == 401
 
@@ -119,6 +126,7 @@ async def test_get_validation_conf_200_when_present(client, mock_svc: AsyncMock)
     """GET /attr/validation/conf returns 200 when config present.
 
     spec: feature/VALIDATION.md §API Surface — GET returns existing configuration.
+    spec: VALIDATION.md §Rule Configuration — variables = [{name, description}].
     """
     from src.backend.validation.service import ValidationConfigRecord
 
@@ -126,7 +134,7 @@ async def test_get_validation_conf_200_when_present(client, mock_svc: AsyncMock)
         return_value=ValidationConfigRecord(
             dataset_urn=_VALID_URN,
             description="null rate check",
-            variables=["null_rate_rating_score"],
+            variables=[_var("null_rate_rating_score", "Null rate of rating_score")],
             is_removed=False,
             created_at=datetime.now(tz=UTC),
             updated_at=datetime.now(tz=UTC),
@@ -135,7 +143,12 @@ async def test_get_validation_conf_200_when_present(client, mock_svc: AsyncMock)
 
     resp = await client.get(_CONF_URL, headers=auth_headers())
     assert resp.status_code == 200
-    assert resp.json()["dataset_urn"] == _VALID_URN
+    body = resp.json()
+    assert body["dataset_urn"] == _VALID_URN
+    # spec: VALIDATION.md §Rule Configuration — response variables are objects.
+    assert body["variables"] == [
+        {"name": "null_rate_rating_score", "description": "Null rate of rating_score"}
+    ]
 
 
 @pytest.mark.asyncio
@@ -163,7 +176,7 @@ async def test_put_validation_conf_201_on_create(client, mock_svc: AsyncMock) ->
             ValidationConfigRecord(
                 dataset_urn=_VALID_URN,
                 description="null rate check",
-                variables=["null_rate_rating_score"],
+                variables=[_var("null_rate_rating_score")],
                 is_removed=False,
                 created_at=datetime.now(tz=UTC),
                 updated_at=datetime.now(tz=UTC),
@@ -174,7 +187,10 @@ async def test_put_validation_conf_201_on_create(client, mock_svc: AsyncMock) ->
 
     resp = await client.put(
         _CONF_URL,
-        json={"description": "null rate check", "variables": ["null_rate_rating_score"]},
+        json={
+            "description": "null rate check",
+            "variables": [_var("null_rate_rating_score", "Null rate")],
+        },
         headers=auth_headers(),
     )
     assert resp.status_code == 201
@@ -193,7 +209,7 @@ async def test_put_validation_conf_200_on_update(client, mock_svc: AsyncMock) ->
             ValidationConfigRecord(
                 dataset_urn=_VALID_URN,
                 description="updated check",
-                variables=["null_rate_rating_score"],
+                variables=[_var("null_rate_rating_score")],
                 is_removed=False,
                 created_at=datetime.now(tz=UTC),
                 updated_at=datetime.now(tz=UTC),
@@ -204,10 +220,49 @@ async def test_put_validation_conf_200_on_update(client, mock_svc: AsyncMock) ->
 
     resp = await client.put(
         _CONF_URL,
-        json={"description": "updated check", "variables": ["null_rate_rating_score"]},
+        json={
+            "description": "updated check",
+            "variables": [_var("null_rate_rating_score")],
+        },
         headers=auth_headers(),
     )
     assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_put_validation_conf_bare_string_variable_returns_422(
+    client, mock_svc: AsyncMock
+) -> None:
+    """PUT with a bare-string variable (legacy shape) is rejected at the schema layer.
+
+    spec: VALIDATION.md §Rule Configuration — each variable is a {name, description}
+    object; a plain string is no longer accepted.
+    """
+    resp = await client.put(
+        _CONF_URL,
+        json={"description": "check", "variables": ["row_cnt"]},
+        headers=auth_headers(),
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_put_validation_conf_variable_description_over_200_returns_422(
+    client, mock_svc: AsyncMock
+) -> None:
+    """PUT with a per-variable description > 200 chars is rejected.
+
+    spec: VALIDATION.md §Rule Configuration — per-variable description ≤ 200 chars.
+    """
+    resp = await client.put(
+        _CONF_URL,
+        json={
+            "description": "check",
+            "variables": [_var("row_cnt", "x" * 201)],
+        },
+        headers=auth_headers(),
+    )
+    assert resp.status_code == 422
 
 
 @pytest.mark.asyncio
@@ -222,7 +277,7 @@ async def test_patch_validation_conf_200(client, mock_svc: AsyncMock) -> None:
         return_value=ValidationConfigRecord(
             dataset_urn=_VALID_URN,
             description="patched description",
-            variables=["null_rate_rating_score"],
+            variables=[_var("null_rate_rating_score")],
             is_removed=False,
             created_at=datetime.now(tz=UTC),
             updated_at=datetime.now(tz=UTC),
@@ -297,7 +352,9 @@ async def test_get_validation_result_limit_over_10000_returns_422(
 
 
 @pytest.mark.asyncio
-async def test_get_validation_result_200_with_results_key(client, mock_svc: AsyncMock) -> None:
+async def test_get_validation_result_200_with_results_key(
+    client, mock_svc: AsyncMock
+) -> None:
     """GET /attr/validation/result returns 200 with 'results' key.
 
     spec: API.md §Standard Response Envelope — list responses use resource-named key.
@@ -312,7 +369,9 @@ async def test_get_validation_result_200_with_results_key(client, mock_svc: Asyn
 
 
 @pytest.mark.asyncio
-async def test_get_validation_events_200_with_events_key(client, mock_svc: AsyncMock) -> None:
+async def test_get_validation_events_200_with_events_key(
+    client, mock_svc: AsyncMock
+) -> None:
     """GET /event/validation returns 200 with 'events' key.
 
     spec: API.md §Standard Response Envelope — list responses use resource-named key.

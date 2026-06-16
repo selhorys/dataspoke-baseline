@@ -69,6 +69,14 @@ _RESULT_URL = f"/api/v1/spoke/common/data/{_ENC_URN}/attr/validation/result"
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
+def _var(name: str, description: str = "") -> dict[str, str]:
+    """Build a conf variable object: {name, description}.
+
+    spec: VALIDATION.md §Rule Configuration — each variable is a {name, description}.
+    """
+    return {"name": name, "description": description}
+
+
 def _epoch_ms(dt: datetime) -> int:
     return int(dt.timestamp() * 1000)
 
@@ -97,7 +105,11 @@ async def test_put_conf_emits_assertion_info_to_datahub(
     customAssertion.entity=dataset_urn, customAssertion.logic=", ".join(variables).
     spec: VALIDATION.md §Assertion URN — deterministic; recomputable from dataset_urn.
     """
-    variables = ["row_cnt", "col1_mean", "col2_null_cnt"]
+    variables = [
+        _var("row_cnt", "Daily row count"),
+        _var("col1_mean", "Mean of col1"),
+        _var("col2_null_cnt", ""),
+    ]
     description = "Daily row count plus key column means and null counts"
 
     resp = await api_client.put(
@@ -107,7 +119,7 @@ async def test_put_conf_emits_assertion_info_to_datahub(
     )
     assert resp.status_code in (200, 201), f"PUT conf failed: {resp.text}"
 
-    # Also verify conf round-trips correctly via API
+    # Also verify conf round-trips correctly via API — variables are {name, description}.
     get_resp = await api_client.get(_CONF_URL, headers=admin_headers)
     assert get_resp.status_code == 200
     data = get_resp.json()
@@ -155,14 +167,18 @@ async def test_patch_conf_reemits_assertion_info_to_datahub(
         headers=admin_headers,
         json={
             "description": "Initial description before patch",
-            "variables": ["row_cnt", "fill_rate"],
+            "variables": [_var("row_cnt"), _var("fill_rate")],
         },
     )
     assert initial_resp.status_code in (200, 201), f"Seed PUT failed: {initial_resp.text}"
 
     # PATCH both description and variables — every PATCH re-emits assertionInfo.
     patched_description = "Patched description with extra variables"
-    patched_variables = ["row_cnt", "fill_rate", "anomaly_score"]
+    patched_variables = [
+        _var("row_cnt", "Daily row count"),
+        _var("fill_rate", "Fill rate"),
+        _var("anomaly_score", "Anomaly score"),
+    ]
     patch_resp = await api_client.patch(
         _CONF_URL,
         headers=admin_headers,
@@ -228,7 +244,7 @@ async def test_post_result_emits_assertion_run_event(
     await api_client.put(
         _CONF_URL,
         headers=admin_headers,
-        json={"description": "Spot test check", "variables": ["row_cnt"]},
+        json={"description": "Spot test check", "variables": [_var("row_cnt")]},
     )
 
     data_time = datetime(2026, 3, 15, 0, 0, 0, tzinfo=UTC)
@@ -339,7 +355,7 @@ async def test_get_result_historical_filter_and_last_write_wins(
     await api_client.put(
         _CONF_URL,
         headers=admin_headers,
-        json={"description": "Historical test", "variables": ["row_cnt"]},
+        json={"description": "Historical test", "variables": [_var("row_cnt")]},
     )
 
     base_date = datetime(2025, 1, 1, tzinfo=UTC)
@@ -425,7 +441,7 @@ async def test_delete_soft_deletes_and_get_conf_returns_removed(
     resp = await api_client.put(
         _CONF_URL,
         headers=admin_headers,
-        json={"description": "Delete test", "variables": ["row_cnt"]},
+        json={"description": "Delete test", "variables": [_var("row_cnt")]},
     )
     assert resp.status_code in (200, 201)
 
@@ -469,7 +485,7 @@ async def test_put_after_delete_resurrects_assertion(
     resp = await api_client.put(
         _CONF_URL,
         headers=admin_headers,
-        json={"description": "Original", "variables": ["row_cnt"]},
+        json={"description": "Original", "variables": [_var("row_cnt")]},
     )
     assert resp.status_code in (200, 201)
 
@@ -481,14 +497,14 @@ async def test_put_after_delete_resurrects_assertion(
     resp = await api_client.put(
         _CONF_URL,
         headers=admin_headers,
-        json={"description": new_description, "variables": ["row_cnt", "null_rate"]},
+        json={"description": new_description, "variables": [_var("row_cnt"), _var("null_rate")]},
     )
     # spec: USE_CASE_en.md §UC2 — PUT-after-DELETE (resurrection) creates anew → 201
     assert resp.status_code == 201, f"PUT-after-DELETE must return 201 Created: {resp.text}"
     second_data = resp.json()
 
     assert second_data["description"] == new_description
-    assert "null_rate" in second_data["variables"]
+    assert "null_rate" in [v["name"] for v in second_data["variables"]]
 
     # Verify GET conf shows it again
     resp = await api_client.get(_CONF_URL, headers=admin_headers)
@@ -533,7 +549,7 @@ async def test_patch_conf_on_soft_deleted_returns_404(
     put_resp = await api_client.put(
         _CONF_URL,
         headers=admin_headers,
-        json={"description": "Patch-on-deleted test", "variables": ["row_cnt"]},
+        json={"description": "Patch-on-deleted test", "variables": [_var("row_cnt")]},
     )
     assert put_resp.status_code in (200, 201), f"PUT failed: {put_resp.text}"
 
@@ -573,23 +589,18 @@ async def test_put_conf_rejects_description_with_control_chars(
 
     The Pydantic field_validator raises ValueError, which Pydantic wraps as
     PydanticValidationError; the API error handler maps that to 422
-    (INVALID_PARAMETER).
-
-    Note: spec/API.md §Error Codes lists INVALID_PARAMETER as HTTP 400, but the
-    current error handler at src/api/main.py maps PydanticValidationError to 422
-    unconditionally.  The test asserts the actual implementation behaviour (422)
-    rather than the spec value (400) — this discrepancy should be tracked separately.
+    INVALID_PARAMETER, matching the spec.
 
     spec: VALIDATION.md §Rule Configuration — description disallows ASCII control
       characters except \\t (0x09) and \\n (0x0a)
-    spec: API.md §Error Codes — INVALID_PARAMETER (spec says 400; impl returns 422)
+    spec: API.md §Application Error Codes — INVALID_PARAMETER → 422
     """
     resp = await api_client.put(
         _CONF_URL,
         headers=admin_headers,
         json={
             "description": "Bad\x01description",  # 0x01 (SOH) — disallowed
-            "variables": ["row_cnt"],
+            "variables": [_var("row_cnt")],
         },
     )
 
@@ -627,7 +638,7 @@ async def test_put_conf_accepts_description_with_tab_and_newline(
             headers=admin_headers,
             json={
                 "description": "line1\nline2\tindented column",
-                "variables": ["row_cnt"],
+                "variables": [_var("row_cnt")],
             },
         )
         # spec: VALIDATION.md §Rule Configuration — \\t and \\n are in the carve-out set;
@@ -666,7 +677,7 @@ async def test_out_of_band_tombstone_reverted_on_put(
     resp = await api_client.put(
         _CONF_URL,
         headers=admin_headers,
-        json={"description": "Tombstone revert test", "variables": ["row_cnt"]},
+        json={"description": "Tombstone revert test", "variables": [_var("row_cnt")]},
     )
     assert resp.status_code in (200, 201), f"Initial PUT failed: {resp.text}"
 
@@ -690,7 +701,7 @@ async def test_out_of_band_tombstone_reverted_on_put(
     resp = await api_client.put(
         _CONF_URL,
         headers=admin_headers,
-        json={"description": "Tombstone revert test v2", "variables": ["row_cnt"]},
+        json={"description": "Tombstone revert test v2", "variables": [_var("row_cnt")]},
     )
     assert resp.status_code in (200, 201), f"Second PUT failed: {resp.text}"
 
@@ -704,3 +715,157 @@ async def test_out_of_band_tombstone_reverted_on_put(
         f"Expected status.removed=False after PUT (tombstone revert); "
         f"got status.removed={status_after.removed!r}"
     )
+
+
+# ── Per-variable description constraints (new conf shape) ───────────────────────
+
+
+@pytest.mark.asyncio
+async def test_put_conf_stores_per_variable_descriptions(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """PUT conf with per-variable descriptions round-trips them on GET.
+
+    spec: VALIDATION.md §Rule Configuration — each variable is a {name, description}
+    object; descriptions live on the conf (not echoed into results).
+    """
+    variables = [
+        _var("row_cnt", "Daily row count of the partition"),
+        _var("fill_rate", "Fraction of orders shipped within SLA"),
+        _var("anomaly_score", ""),  # empty description is allowed
+    ]
+    try:
+        put_resp = await api_client.put(
+            _CONF_URL,
+            headers=admin_headers,
+            json={"description": "Per-variable description test", "variables": variables},
+        )
+        assert put_resp.status_code in (200, 201), f"PUT failed: {put_resp.text}"
+
+        get_resp = await api_client.get(_CONF_URL, headers=admin_headers)
+        assert get_resp.status_code == 200
+        # spec: VALIDATION.md §Rule Configuration — names AND descriptions round-trip.
+        assert get_resp.json()["variables"] == variables
+    finally:
+        with suppress(Exception):
+            await api_client.delete(_CONF_URL, headers=admin_headers)
+
+
+@pytest.mark.asyncio
+async def test_put_conf_rejects_variable_description_over_200(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """PUT conf with a per-variable description > 200 chars is rejected with 422.
+
+    spec: VALIDATION.md §Rule Configuration — per-variable description ≤ 200 chars.
+    """
+    resp = await api_client.put(
+        _CONF_URL,
+        headers=admin_headers,
+        json={
+            "description": "Variable description length test",
+            "variables": [_var("row_cnt", "x" * 201)],
+        },
+    )
+    assert resp.status_code == 422, (
+        f"PUT with a 201-char variable description expected 422; "
+        f"got {resp.status_code}: {resp.text}"
+    )
+    # 422 is pre-commit; no row created, no cleanup needed.
+
+
+@pytest.mark.asyncio
+async def test_put_conf_rejects_variable_description_with_control_char(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """PUT conf with a control char (0x01) in a per-variable description → 422.
+
+    spec: VALIDATION.md §Rule Configuration — per-variable description disallows
+    ASCII control chars except \\t (0x09) and \\n (0x0a).
+    """
+    resp = await api_client.put(
+        _CONF_URL,
+        headers=admin_headers,
+        json={
+            "description": "Variable description control-char test",
+            "variables": [_var("row_cnt", "bad\x01desc")],
+        },
+    )
+    assert resp.status_code == 422, (
+        f"PUT with a control char in a variable description expected 422; "
+        f"got {resp.status_code}: {resp.text}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_put_conf_rejects_duplicate_variable_names(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """PUT conf with duplicate variable names is rejected with 422.
+
+    spec: VALIDATION.md §Rule Configuration — variable names MUST be unique.
+    Uniqueness is enforced on the .name of each {name, description} object.
+    """
+    resp = await api_client.put(
+        _CONF_URL,
+        headers=admin_headers,
+        json={
+            "description": "Duplicate variable name test",
+            "variables": [
+                _var("row_cnt", "first"),
+                _var("row_cnt", "second"),  # duplicate name
+            ],
+        },
+    )
+    assert resp.status_code == 422, (
+        f"PUT with duplicate variable names expected 422; "
+        f"got {resp.status_code}: {resp.text}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_post_result_unknown_variable_checked_against_conf_names(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """POST result with a key not in the conf's variable NAMES → 422 UNKNOWN_VARIABLE.
+
+    spec: VALIDATION.md §Validation rules on POST — result keys must be a subset of
+    the conf's variable names; descriptions are irrelevant to the subset check.
+    """
+    try:
+        put_resp = await api_client.put(
+            _CONF_URL,
+            headers=admin_headers,
+            json={
+                "description": "Unknown-variable subset check",
+                "variables": [_var("row_cnt", "Daily row count")],
+            },
+        )
+        assert put_resp.status_code in (200, 201), f"PUT failed: {put_resp.text}"
+
+        # 'fill_rate' is not a declared variable name → rejected.
+        resp = await api_client.post(
+            _RESULT_URL,
+            headers=admin_headers,
+            json={
+                "data_time": datetime(2026, 4, 1, tzinfo=UTC).isoformat(),
+                "score": 1.0,
+                "variables": {"row_cnt": 50.0, "fill_rate": 0.9},
+            },
+        )
+        assert resp.status_code == 422, (
+            f"POST result with undeclared key expected 422; "
+            f"got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert body.get("error_code") == "UNKNOWN_VARIABLE", (
+            f"Expected error_code=UNKNOWN_VARIABLE; got: {body}"
+        )
+    finally:
+        with suppress(Exception):
+            await api_client.delete(_CONF_URL, headers=admin_headers)

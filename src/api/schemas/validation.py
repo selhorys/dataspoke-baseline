@@ -14,23 +14,41 @@ _VARIABLE_RE = re.compile(r"\A[a-z][a-z0-9_]{0,99}\Z")
 _DESC_CTRL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 
 
-def _validate_variable_name(name: str, index: int) -> str:
-    if not _VARIABLE_RE.match(name):
-        raise ValueError(
-            f"variables[{index}]: {name!r} does not match [a-z][a-z0-9_]{{0,99}}"
-        )
-    return name
+class ValidationVariable(BaseModel):
+    """One declared variable: a name plus a human-readable description."""
+
+    name: str = Field(description="Variable name, matching [a-z][a-z0-9_]{0,99}")
+    description: str = Field(
+        description="Per-variable description (≤ 200 chars; empty string allowed)"
+    )
+
+    @field_validator("name")
+    @classmethod
+    def _check_name(cls, v: str) -> str:
+        if not _VARIABLE_RE.match(v):
+            raise ValueError(f"{v!r} does not match [a-z][a-z0-9_]{{0,99}}")
+        return v
+
+    @field_validator("description")
+    @classmethod
+    def _check_description(cls, v: str) -> str:
+        if len(v) > 200:
+            raise ValueError("variable description must not exceed 200 characters")
+        if _DESC_CTRL_RE.search(v):
+            raise ValueError("variable description contains control characters")
+        return v
 
 
-def _validate_variables(variables: list[str]) -> list[str]:
+def _validate_variables(
+    variables: list[ValidationVariable],
+) -> list[ValidationVariable]:
     if len(variables) < 1:
         raise ValueError("variables must have at least 1 entry")
     if len(variables) > 200:
         raise ValueError("variables must not exceed 200 entries")
-    for i, name in enumerate(variables):
-        _validate_variable_name(name, i)
-    if len(variables) != len(set(variables)):
-        raise ValueError("variables must be unique")
+    names = [v.name for v in variables]
+    if len(names) != len(set(names)):
+        raise ValueError("variable names must be unique")
     return variables
 
 
@@ -41,10 +59,11 @@ class PutValidationConfRequest(BaseModel):
     """Body for PUT /attr/validation/conf (create or replace)."""
 
     description: str = Field(description="Free-form description (≤ 2,000 chars)")
-    variables: list[str] = Field(
+    variables: list[ValidationVariable] = Field(
         description=(
-            "Declared variable names this validation slot will report. "
-            "Each name matches [a-z][a-z0-9_]{0,99}, must be unique, 1–200 entries."
+            "Declared variables this validation slot will report. Each is a "
+            "{name, description} object; names match [a-z][a-z0-9_]{0,99}, "
+            "must be unique, 1–200 entries."
         )
     )
 
@@ -59,14 +78,20 @@ class PutValidationConfRequest(BaseModel):
 
     @field_validator("variables", mode="after")
     @classmethod
-    def _check_variables(cls, v: list[str]) -> list[str]:
+    def _check_variables(
+        cls, v: list[ValidationVariable]
+    ) -> list[ValidationVariable]:
         return _validate_variables(v)
 
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
                 "description": "Daily row count plus key column means and null counts",
-                "variables": ["row_cnt", "col1_mean", "col2_null_cnt"],
+                "variables": [
+                    {"name": "row_cnt", "description": "Daily row count"},
+                    {"name": "col1_mean", "description": "Mean of col1"},
+                    {"name": "col2_null_cnt", "description": "Null count of col2"},
+                ],
             }
         }
     )
@@ -76,12 +101,12 @@ class PatchValidationConfRequest(BaseModel):
     """Body for PATCH /attr/validation/conf (partial update)."""
 
     description: str | None = Field(default=None, description="Updated description (≤ 2,000 chars)")
-    variables: list[str] | None = Field(
+    variables: list[ValidationVariable] | None = Field(
         default=None,
         description=(
-            "Replacement variable list. "
-            "If supplied, must satisfy 1–200 entries, unique, each matching [a-z][a-z0-9_]{0,99}. "
-            "Supplying an empty list is rejected."
+            "Replacement variable list of {name, description} objects. "
+            "If supplied, must satisfy 1–200 entries, unique names, each name "
+            "matching [a-z][a-z0-9_]{0,99}. Supplying an empty list is rejected."
         ),
     )
 
@@ -96,7 +121,9 @@ class PatchValidationConfRequest(BaseModel):
 
     @field_validator("variables", mode="after")
     @classmethod
-    def _check_variables(cls, v: list[str] | None) -> list[str] | None:
+    def _check_variables(
+        cls, v: list[ValidationVariable] | None
+    ) -> list[ValidationVariable] | None:
         if v is None:
             return v
         return _validate_variables(v)
@@ -165,7 +192,9 @@ class ValidationConfResponse(SingleResponse):
 
     dataset_urn: str = Field(description="DataHub URN of the dataset")
     description: str = Field(description="Free-form description")
-    variables: list[str] = Field(description="Declared variable names")
+    variables: list[ValidationVariable] = Field(
+        description="Declared variables, each a {name, description} object"
+    )
     created_at: datetime = Field(description="UTC timestamp when the config was created")
     updated_at: datetime = Field(description="UTC timestamp of the most recent update")
 

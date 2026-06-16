@@ -96,7 +96,7 @@ export function ValidationConfForm({
             type="button"
             variant="outline"
             size="sm"
-            onClick={() => append({ name: "" })}
+            onClick={() => append({ name: "", description: "" })}
           >
             <Plus className="mr-1 h-3.5 w-3.5" />
             Add
@@ -107,18 +107,31 @@ export function ValidationConfForm({
 
         <div className="space-y-2">
           {fields.map((field, index) => {
-            const fieldError = errors.variables?.[index]?.name?.message;
+            const nameError = errors.variables?.[index]?.name?.message;
+            const descError = errors.variables?.[index]?.description?.message;
             return (
               <div key={field.id} className="flex items-start gap-2">
-                <div className="flex-1">
+                <div className="w-1/3 min-w-0">
                   <Input
                     {...register(`variables.${index}.name`)}
                     placeholder="row_cnt"
                     aria-label={`Variable name ${index + 1}`}
-                    className={fieldError ? "border-destructive" : ""}
+                    className={nameError ? "border-destructive" : ""}
                   />
-                  {fieldError && (
-                    <p className="mt-1 text-xs text-destructive">{fieldError}</p>
+                  {nameError && (
+                    <p className="mt-1 text-xs text-destructive">{nameError}</p>
+                  )}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <Input
+                    {...register(`variables.${index}.description`)}
+                    placeholder="Daily row count"
+                    aria-label={`Variable description ${index + 1}`}
+                    maxLength={200}
+                    className={descError ? "border-destructive" : ""}
+                  />
+                  {descError && (
+                    <p className="mt-1 text-xs text-destructive">{descError}</p>
                   )}
                 </div>
                 <Button
@@ -139,8 +152,9 @@ export function ValidationConfForm({
 
         <p className="text-xs text-muted-foreground">
           Each name must match{" "}
-          <code className="font-mono">{"[a-z][a-z0-9_]{0,99}"}</code>.
-          1–200 unique entries.
+          <code className="font-mono">{"[a-z][a-z0-9_]{0,99}"}</code> and be
+          unique (1–200 entries). Each description may be left blank, ≤ 200
+          characters.
         </p>
       </div>
 

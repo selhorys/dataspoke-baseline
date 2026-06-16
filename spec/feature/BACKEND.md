@@ -383,10 +383,12 @@ ingest/query — surfaced through the routes below.
 
 **Configuration CRUD** — `GET/PUT/PATCH/DELETE /attr/validation/conf`.
 
-- `PUT`/`PATCH` validates the body against the conf shape (`description ≤ 2,000` chars,
-  `variables` list ≤ 200 entries, each entry matching `[a-z][a-z0-9_]{0,99}`, unique
-  within the rule). The dataset must already exist in DataHub or the request is rejected
-  with `422 DATASET_NOT_IN_DATAHUB`. On success the service:
+- `PUT`/`PATCH` validates the body against the conf shape (`description ≤ 2,000` chars;
+  `variables` a list of `{name, description}` objects, ≤ 200 entries, each `name`
+  matching `[a-z][a-z0-9_]{0,99}` and unique within the rule, each `description`
+  required but ≤ 200 chars with the empty string allowed). The dataset must already
+  exist in DataHub or the request is rejected with `422 DATASET_NOT_IN_DATAHUB`. On
+  success the service:
   1. upserts the row in `validation_configs` (`dataset_urn` PK; clears `is_removed`),
   2. emits `assertionInfo` to DataHub with `type = CUSTOM`, `source.type = EXTERNAL`,
      `customAssertion.type = "DATASPOKE_VALIDATION"`,
@@ -405,8 +407,9 @@ ingest/query — surfaced through the routes below.
 **Result ingest and query** — `POST/GET /attr/validation/result`.
 
 - `POST` validates `data_time` (RFC 3339 → `422 INVALID_PARAMETER` if not),
-  `score ∈ [0.0, 1.0]` (else `422 INVALID_SCORE`), and `variables` keys ⊆ the conf's
-  declared `variables` (else `422 UNKNOWN_VARIABLE` listing the offending names).
+  `score ∈ [0.0, 1.0]` (else `422 INVALID_SCORE`), and `variables` keys ⊆ the set of
+  the conf's declared variable **names** (else `422 UNKNOWN_VARIABLE` listing the
+  offending names).
   Missing declared keys are accepted silently — partial coverage is a legitimate signal.
   On success the service:
   1. inserts the row in `validation_results` (`dataset_urn`, `data_time`, `score`,

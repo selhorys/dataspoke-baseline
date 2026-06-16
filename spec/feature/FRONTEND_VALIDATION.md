@@ -35,17 +35,27 @@ for the service surface.
 The list page shows one row per dataset with a validation slot — columns:
 dataset, description, declared variable count, latest `data_time`, latest
 `score` (UI header "Quality Score"; "—" until the first result row arrives).
+It defaults to active slots only (`GET /spoke/validation?removed=false`). A
+"Show deleted" toggle re-fetches without the `removed` param (returning both
+active and removed slots); rows whose `is_removed` is true render with a muted
+style and a `deleted` Badge. The list is read-only for every role.
 
 The detail page is a single editor for `description` plus a variables list.
-Each variable name is edited in place via an input with an `[×]` remove
-button (disabled at the minimum of 1 variable); `[+ Add]` appends a new one.
-Field constraints (description char cap, variable name regex, count cap) per
+Each variable row edits both a `name` input and a `description` input in
+place, with an `[×]` remove button (disabled at the minimum of 1 variable);
+`[+ Add]` appends a new `{name, description}` row. The conf read-only view
+renders each variable's description next to its name. Field constraints
+(rule-description char cap, variable name regex, per-variable description
+≤200 chars empty-allowed, count cap) per
 [VALIDATION §Rule Configuration](VALIDATION.md#rule-configuration).
 Saving issues `PUT .../attr/validation/conf`.
 A range Select (7d / 30d / 90d, default 30d) drives the `from` query param.
-The historical timeseries panel plots `score` and a per-variable chart over
-`data_time` from `GET .../attr/validation/result?from=&limit=`; the UI sends
-only `from` (+ `limit`), and the backend defaults the upper bound to now. The
+The historical timeseries panel reads `GET .../attr/validation/result?from=&limit=`;
+the UI sends only `from` (+ `limit`), and the backend defaults the upper bound
+to now. It renders a `score` line chart, then **small multiples** — one
+auto-scaled line chart per declared variable in a responsive grid, each
+captioned with the variable's name and description so differing value scales do
+not flatten each other. The
 event log consumes `GET .../event/validation` — config lifecycle
 (create/update/delete) plus one `RESULT_RECORDED` entry per accepted result
 POST, each rendered with its `event_type`, status, and detail. The timeseries
@@ -66,15 +76,17 @@ shows a create/resurrect empty-state to re-create the conf.
 │    [editable textarea, ≤ 2,000 chars]                │
 │                                                      │
 │  Variables (attr/validation/conf.variables[])        │
-│    [ row_cnt           ] [×]                         │
-│    [ qty_negative_cnt  ] [×]                         │
-│    [ qty_total         ] [×]                         │
-│    [ user_id_null_cnt  ] [×]              [+ Add]    │
+│    [ row_cnt         ] [ Daily row count       ] [×] │
+│    [ qty_negative_cnt] [ Negative-qty rows     ] [×] │
+│    [ qty_total       ] [ Total quantity        ] [×] │
+│    [ user_id_null_cnt] [ Null user_id count    ] [×] │
+│                                          [+ Add]    │
 │                                                      │
 │  Historical timeseries                               │
 │    (attr/validation/result?from=…&limit=…)           │
 │    [Recharts: score line chart]                      │
-│    [Recharts: per-variable line charts (toggle)]     │
+│    [small multiples: one auto-scaled line chart      │
+│     per variable, name + description caption]        │
 │                                                      │
 │  event (latest 5)                            [Delete]│
 └──────────────────────────────────────────────────────┘

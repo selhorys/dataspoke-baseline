@@ -20,7 +20,6 @@ from src.api.schemas.ontogen import (
 )
 from src.api.schemas.validation import (
     PutValidationConfRequest,
-    ValidationConfResponse,
     ValidationListResponse,
 )
 
@@ -69,13 +68,17 @@ class TestValidationSchemas:
     """
 
     def test_put_request_accepted(self) -> None:
-        # spec: VALIDATION.md §Rule Configuration — description + variables required
+        # spec: VALIDATION.md §Rule Configuration — description + variables required;
+        # each variable is a {name, description} object.
         req = PutValidationConfRequest(
             description="Daily row count check",
-            variables=["row_cnt", "null_rate"],
+            variables=[
+                {"name": "row_cnt", "description": "Daily row count"},
+                {"name": "null_rate", "description": ""},
+            ],
         )
         assert req.description == "Daily row count check"
-        assert req.variables == ["row_cnt", "null_rate"]
+        assert [v.name for v in req.variables] == ["row_cnt", "null_rate"]
 
     def test_list_response_default_empty(self) -> None:
         # spec: VALIDATION.md §API Surface — cross-dataset list

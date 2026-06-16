@@ -65,12 +65,33 @@ function ConfReadOnly({ conf }: { conf: ValidationConfResponse }) {
         <dt className="text-xs font-medium text-muted-foreground">
           variables ({conf.variables.length})
         </dt>
-        <dd className="mt-2 flex flex-wrap gap-1.5">
-          {conf.variables.map((v) => (
-            <Badge key={v} variant="outline" className="font-mono text-xs">
-              {v}
-            </Badge>
-          ))}
+        <dd className="mt-2 overflow-hidden rounded-md border">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b bg-muted/50 text-xs text-muted-foreground">
+                <th className="w-[35%] px-3 py-1.5 text-left font-medium">
+                  name
+                </th>
+                <th className="px-3 py-1.5 text-left font-medium">
+                  description
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {conf.variables.map((v) => (
+                <tr key={v.name} className="border-b last:border-0">
+                  <td className="px-3 py-1.5 align-top font-mono text-xs">
+                    {v.name}
+                  </td>
+                  <td className="px-3 py-1.5 align-top text-muted-foreground">
+                    {v.description || (
+                      <span className="text-muted-foreground/50">—</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </dd>
       </div>
     </div>
@@ -291,8 +312,8 @@ export default function ValidationDetailPage({
             </h2>
             <ValidationVariablesChart
               results={resultsData?.results ?? []}
-              allVariables={conf?.variables}
-              height={220}
+              variables={conf?.variables}
+              height={160}
             />
           </section>
         </>
