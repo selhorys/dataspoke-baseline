@@ -221,6 +221,13 @@ card (ConfirmDialog); `PUT/PATCH .../attr/conf` → conf editor Save;
 `DELETE ...` → delete behind ConfirmDialog; bare `GET` list/detail → the page
 renders or polls it (`[observe]`, no gesture).
 
+Caveat — passive features: for validation (UC2) the canonical conf-registration
+path is the API (DEs/pipelines `PUT .../attr/validation/conf`); the UI editor is
+a thin convenience. Classify the "register slot" step as `[API-fired, no UI
+surface]` and drive registration via curl — do not map it to a UI create form.
+Reserve UI conf gestures for steps that deliberately exercise the convenience
+editor (e.g. retire/resurrect).
+
 ## Probe selection
 
 Reuse the `/test-manual-api-wired` SKILL's "Probe selection" table verbatim —
