@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { isRejectEligible, destinationAspectLabel } from "@/lib/metagen-predicates";
 import { formatDateTime } from "@/lib/format-time";
+import { useDisplayTz } from "@/lib/preferences/timezone";
 import type { MetagenCandidate } from "@/types/metagen";
 
 const STATUS_VARIANT: Record<string, "default" | "secondary" | "outline" | "destructive"> = {
@@ -45,6 +46,7 @@ export function CandidateCard({
 }: CandidateCardProps) {
   const [approveOpen, setApproveOpen] = useState(false);
   const [rejectOpen, setRejectOpen] = useState(false);
+  const tz = useDisplayTz();
 
   const aspectLabel = destinationAspectLabel(itemKind, fieldPath);
   const rejectEligible = isRejectEligible(candidate);
@@ -73,7 +75,7 @@ export function CandidateCard({
         </span>
         {candidate.reviewed_at && (
           <span className="text-xs text-muted-foreground">
-            reviewed {formatDateTime(candidate.reviewed_at)}
+            reviewed {formatDateTime(candidate.reviewed_at, tz)}
           </span>
         )}
         {showActions && (

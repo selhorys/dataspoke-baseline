@@ -24,17 +24,15 @@ import {
 import { useGovernanceMetrics } from "@/lib/api/governance";
 import { ErrorState } from "@/components/ui/error-state";
 import { useMe } from "@/lib/auth/use-me";
+import { formatDate } from "@/lib/format-time";
+import { useDisplayTz } from "@/lib/preferences/timezone";
 import type { MetricType, MetricMode } from "@/types/governance";
 
 const PAGE_SIZE = 20;
 
-function formatDate(iso: string): string {
-  const d = new Date(iso);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
 export default function GovernanceMetricsPage() {
   const { canWrite } = useMe();
+  const tz = useDisplayTz();
 
   const [offset, setOffset] = useState(0);
   const [filterType, setFilterType] = useState<MetricType | "">("");
@@ -181,7 +179,7 @@ export default function GovernanceMetricsPage() {
                   </Badge>
                 </TableCell>
                 <TableCell className="text-sm text-muted-foreground">
-                  {formatDate(m.updated_at)}
+                  {formatDate(m.updated_at, tz)}
                 </TableCell>
               </TableRow>
             ))}

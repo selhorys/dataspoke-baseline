@@ -15,6 +15,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { CandidateCard } from "@/components/metagen/candidate-card";
 import { useMetagenItem, useReviewCandidate } from "@/lib/api/metagen";
 import { isItemFinalized, findApprovedCandidate } from "@/lib/metagen-predicates";
+import { formatDate } from "@/lib/format-time";
+import { useDisplayTz } from "@/lib/preferences/timezone";
 import { useToast } from "@/components/ui/use-toast";
 import { ApiError } from "@/lib/api/client";
 import type { MetagenItemSummary } from "@/types/metagen";
@@ -37,6 +39,7 @@ export function ItemCard({ item, canWrite }: ItemCardProps) {
   const [expanded, setExpanded] = useState(false);
   const [siblingExpanded, setSiblingExpanded] = useState(false);
   const { toast } = useToast();
+  const tz = useDisplayTz();
 
   const finalized = isItemFinalized(item);
 
@@ -143,11 +146,7 @@ export function ItemCard({ item, canWrite }: ItemCardProps) {
       {/* Finalized summary row */}
       {finalized && approvedCandidate && !expanded && (
         <div className="rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-sm text-muted-foreground">
-          Approved on{" "}
-          {approvedCandidate.reviewed_at
-            ? new Date(approvedCandidate.reviewed_at).toLocaleDateString()
-            : "—"}{" "}
-          — expand to view details
+          Approved on {formatDate(approvedCandidate.reviewed_at, tz)} — expand to view details
         </div>
       )}
 

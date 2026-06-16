@@ -37,6 +37,8 @@ import {
 } from "@/components/ui/table";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
+import { formatDate } from "@/lib/format-time";
+import { useDisplayTz } from "@/lib/preferences/timezone";
 
 const mintSchema = z.object({
   name: z.string().min(1, "Name is required").max(128, "Name is too long"),
@@ -62,12 +64,8 @@ function computeExpiresAt(value: ExpiryValue): string | null {
   return d.toISOString();
 }
 
-function formatDate(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  return new Date(iso).toLocaleDateString();
-}
-
 export default function ProfileTokensPage() {
+  const tz = useDisplayTz();
   const { data, isLoading } = useApiTokens();
   const { mutateAsync: createToken, isPending: creating } = useCreateApiToken();
   const { mutateAsync: deleteToken, isPending: deleting } = useDeleteApiToken();
@@ -158,9 +156,9 @@ export default function ProfileTokensPage() {
               <TableRow key={t.id}>
                 <TableCell className="font-medium">{t.name}</TableCell>
                 <TableCell>{t.role_snapshot}</TableCell>
-                <TableCell>{formatDate(t.created_at)}</TableCell>
-                <TableCell>{formatDate(t.last_used_at)}</TableCell>
-                <TableCell>{formatDate(t.expires_at)}</TableCell>
+                <TableCell>{formatDate(t.created_at, tz)}</TableCell>
+                <TableCell>{formatDate(t.last_used_at, tz)}</TableCell>
+                <TableCell>{formatDate(t.expires_at, tz)}</TableCell>
                 <TableCell>
                   <Button
                     variant="destructive"

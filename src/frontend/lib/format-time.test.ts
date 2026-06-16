@@ -17,7 +17,7 @@
  */
 
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { formatRelativeTime, formatDateTime } from "./format-time";
+import { formatRelativeTime, formatDateTime, formatDate } from "./format-time";
 
 // ── 1. formatRelativeTime ──────────────────────────────────────────────────────
 
@@ -225,5 +225,110 @@ describe("formatDateTime — TZ sensitivity note", () => {
   it("is deterministic: same input produces same output on repeated calls", () => {
     const iso = "2026-04-25T10:00:00.000Z";
     expect(formatDateTime(iso)).toBe(formatDateTime(iso));
+  });
+});
+
+// ── 3. tz-aware rendering ────────────────────────────────────────────────────────
+//
+// The "utc" tz uses the UTC getters, so the output is independent of the host
+// timezone — these assertions are exact and CI-TZ-safe.
+
+describe("formatDateTime — utc tz renders absolute UTC wall-clock", () => {
+  it("renders the exact UTC date and time for tz='utc'", () => {
+    expect(formatDateTime("2026-04-25T10:05:00.000Z", "utc")).toBe(
+      "2026-04-25 10:05",
+    );
+  });
+
+  it("zero-pads month/day/hour/minute in utc", () => {
+    expect(formatDateTime("2026-01-05T08:09:00.000Z", "utc")).toBe(
+      "2026-01-05 08:09",
+    );
+  });
+
+  it("returns '—' for null regardless of tz", () => {
+    expect(formatDateTime(null, "utc")).toBe("—");
+  });
+});
+
+describe("formatDateTime — local tz is offset-agnostic (round-trip against host getters)", () => {
+  // Build the expected string from the SAME Date's local getters, so the test
+  // is correct in any host timezone (no hardcoded wall-clock).
+  function localExpected(iso: string): string {
+    const d = new Date(iso);
+    const p = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  }
+
+  it("matches a string built from local getters for tz='local'", () => {
+    const iso = "2026-04-25T10:05:00.000Z";
+    expect(formatDateTime(iso, "local")).toBe(localExpected(iso));
+  });
+
+  it("matches local getters for a different instant", () => {
+    const iso = "2026-01-05T23:30:00.000Z";
+    expect(formatDateTime(iso, "local")).toBe(localExpected(iso));
+  });
+
+  it("default tz (no arg) behaves as 'local'", () => {
+    const iso = "2026-04-25T10:05:00.000Z";
+    expect(formatDateTime(iso)).toBe(formatDateTime(iso, "local"));
+    expect(formatDateTime(iso)).toBe(localExpected(iso));
+  });
+
+  it("utc and local differ iff the host offset is non-zero", () => {
+    const iso = "2026-04-25T10:05:00.000Z";
+    const offset = new Date(iso).getTimezoneOffset();
+    if (offset === 0) {
+      // Host runs in UTC — the two renderings coincide; skip the difference check.
+      expect(formatDateTime(iso, "utc")).toBe(formatDateTime(iso, "local"));
+      return;
+    }
+    expect(formatDateTime(iso, "utc")).not.toBe(formatDateTime(iso, "local"));
+  });
+});
+
+// ── 4. formatDate ────────────────────────────────────────────────────────────────
+
+describe("formatDate — null/garbage returns '—'", () => {
+  it("returns '—' for null", () => {
+    expect(formatDate(null)).toBe("—");
+  });
+
+  it("returns '—' for undefined", () => {
+    expect(formatDate(undefined)).toBe("—");
+  });
+
+  it("returns '—' for garbage", () => {
+    expect(formatDate("not-a-date")).toBe("—");
+  });
+});
+
+describe("formatDate — YYYY-MM-DD shape and tz", () => {
+  const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
+
+  it("matches YYYY-MM-DD for a valid ISO timestamp (local default)", () => {
+    expect(formatDate("2026-04-25T10:00:00.000Z")).toMatch(DATE_REGEX);
+  });
+
+  it("renders the exact UTC date for tz='utc'", () => {
+    expect(formatDate("2026-04-25T23:30:00.000Z", "utc")).toBe("2026-04-25");
+  });
+
+  it("does not include a time component", () => {
+    expect(formatDate("2026-04-25T10:00:00.000Z", "utc")).toBe("2026-04-25");
+  });
+
+  it("local tz is offset-agnostic (round-trip against host date getters)", () => {
+    const iso = "2026-04-25T23:30:00.000Z";
+    const d = new Date(iso);
+    const p = (n: number) => String(n).padStart(2, "0");
+    const expected = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+    expect(formatDate(iso, "local")).toBe(expected);
+  });
+
+  it("default tz (no arg) behaves as 'local'", () => {
+    const iso = "2026-04-25T23:30:00.000Z";
+    expect(formatDate(iso)).toBe(formatDate(iso, "local"));
   });
 });

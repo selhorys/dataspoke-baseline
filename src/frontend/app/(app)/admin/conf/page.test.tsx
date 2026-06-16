@@ -129,6 +129,7 @@ import AdminConfPage from "./page";
 // ---------------------------------------------------------------------------
 import { confSchema, toFormDefaults, buildPatch } from "./conf-form.schema";
 import type { ConfFormValues } from "./conf-form.schema";
+import { formatDateTime } from "@/lib/format-time";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -862,15 +863,16 @@ describe("AdminConfPage — updated_at footer shown after save (FRONTEND_BASIC.m
     await waitFor(() => {
       const footer = screen.getByText(/saved · updated/i);
       expect(footer).toBeTruthy();
-      // The timestamp rendered via toLocaleString — verify the date portion is present
-      const expectedDate = new Date(savedTimestamp).toLocaleString();
+      // The timestamp is rendered via the shared tz-aware formatDateTime
+      // (default display tz "local") — verify the saved value is present.
+      const expectedDate = formatDateTime(savedTimestamp);
       expect(footer.textContent).toContain(expectedDate);
     });
 
     // The initial updated_at ("10:00") must NOT appear in the footer
     // (footer shows the mutation result, not the initial load value)
     const footer = screen.getByText(/saved · updated/i);
-    const initialDate = new Date("2026-05-29T10:00:00Z").toLocaleString();
+    const initialDate = formatDateTime("2026-05-29T10:00:00Z");
     expect(footer.textContent).not.toBe(`Saved · updated ${initialDate}`);
   });
 });

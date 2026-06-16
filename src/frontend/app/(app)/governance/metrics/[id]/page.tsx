@@ -38,14 +38,9 @@ import {
 import { useMe } from "@/lib/auth/use-me";
 import { eventStatusVariant } from "@/lib/event-status-variant";
 import { ErrorState } from "@/components/ui/error-state";
+import { formatDateTime } from "@/lib/format-time";
+import { useDisplayTz } from "@/lib/preferences/timezone";
 import type { MetricFormValues } from "@/types/governance";
-
-// ── Date helpers ───────────────────────────────────────────────────────────────
-
-function formatDateTime(iso: string): string {
-  const d = new Date(iso);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-}
 
 // ── Page component ─────────────────────────────────────────────────────────────
 
@@ -65,25 +60,18 @@ export default function MetricDetailPage({
   // Range selections are persisted per surface; resolving via useMemo keeps the
   // derived bounds (and thus query keys) stable until the selection changes.
   // Results chart and event log keep independent ranges.
-  const {
-    selection: resultSel,
-    tz: resultTz,
-    setSelection: setResultSel,
-    setTz: setResultTz,
-  } = usePersistedRangeState(RANGE_KEYS.governanceMetricResults);
-  const {
-    selection: eventSel,
-    tz: eventTz,
-    setSelection: setEventSel,
-    setTz: setEventTz,
-  } = usePersistedRangeState(RANGE_KEYS.governanceMetricEvents);
+  const tz = useDisplayTz();
+  const { selection: resultSel, setSelection: setResultSel } =
+    usePersistedRangeState(RANGE_KEYS.governanceMetricResults);
+  const { selection: eventSel, setSelection: setEventSel } =
+    usePersistedRangeState(RANGE_KEYS.governanceMetricEvents);
   const resultRange = useMemo(
-    () => resolveRange(resultSel, "date", resultTz),
-    [resultSel, resultTz],
+    () => resolveRange(resultSel, "date", tz),
+    [resultSel, tz],
   );
   const eventRange = useMemo(
-    () => resolveRange(eventSel, "datetime", eventTz),
-    [eventSel, eventTz],
+    () => resolveRange(eventSel, "datetime", tz),
+    [eventSel, tz],
   );
 
   // ── Queries ────────────────────────────────────────────────────────────────
@@ -297,8 +285,7 @@ export default function MetricDetailPage({
           <RangePicker
             value={resultSel}
             onChange={setResultSel}
-            tz={resultTz}
-            onTzChange={setResultTz}
+            tz={tz}
             granularity="date"
           />
         </div>
@@ -312,8 +299,7 @@ export default function MetricDetailPage({
           <RangePicker
             value={eventSel}
             onChange={setEventSel}
-            tz={eventTz}
-            onTzChange={setEventTz}
+            tz={tz}
             granularity="datetime"
           />
         </div>
@@ -323,7 +309,7 @@ export default function MetricDetailPage({
         <ul className="space-y-2">
           {eventsData?.events.map((e) => (
             <li key={e.id} className="flex items-start gap-3 text-sm">
-              <span className="text-muted-foreground">{formatDateTime(e.occurred_at)}</span>
+              <span className="text-muted-foreground">{formatDateTime(e.occurred_at, tz)}</span>
               <Badge
                 variant={eventStatusVariant(e.status)}
                 className="text-xs"

@@ -90,7 +90,7 @@ its URL unset.
 | `/validation` | [Validation](FRONTEND_VALIDATION.md) | `/spoke/validation/...` |
 | `/ontogen` | [Ontology Generation](FRONTEND_ONTOGEN.md) | `/spoke/ontogen/...` |
 | `/metagen` | [Metadata Generation](FRONTEND_METAGEN.md) | `/spoke/metagen/...` |
-| `/settings` | Theme + locale toggle, persisted in `localStorage` only | — |
+| `/settings` | Theme, locale, and timezone (Local or UTC, **default Local**) toggles, persisted in `localStorage` only. The timezone preference is display-only — it governs how all dates and times are rendered across the app; stored and queried timestamps remain canonical UTC ISO per `API.md`. | — |
 
 Route guards layer two checks:
 
@@ -287,20 +287,20 @@ These component IDs are referenced from per-function specs.
   weeks — or a custom calendar range. Two granularities: `date` (calendar only)
   for daily timeseries surfaces, and `datetime` (calendar + start/end time) for
   event-log surfaces; in `datetime` the start/end time fields are 24-hour
-  (`HH:mm`, no AM/PM). A per-picker **timezone toggle** — Local or UTC
-  (**default Local**) — governs how calendar days and times are interpreted and
-  displayed; the emitted/queried bounds remain canonical inclusive UTC ISO
-  regardless of the toggle. The trigger shows the preset's label (e.g. "Last 7 days")
+  (`HH:mm`, no AM/PM). The picker has **no per-panel timezone control**: like
+  all timestamps in the UI, the calendar days and times it shows are interpreted
+  and displayed in the **global Settings timezone preference** (Local or UTC,
+  default Local). The emitted/queried bounds remain canonical inclusive UTC ISO
+  regardless. The trigger shows the preset's label (e.g. "Last 7 days")
   when a preset is selected, or the resolved bounds for a custom range —
   `YYYY-MM-DD – YYYY-MM-DD` (date) / `YYYY-MM-DD HH:mm – YYYY-MM-DD HH:mm`
-  (datetime) — and indicates the active timezone. Presets are **relative**: each visit re-resolves a preset to a
+  (datetime) — in the global timezone. Presets are **relative**: each visit re-resolves a preset to a
   window ending at the current day, so "Last 7 days" always includes today;
   custom ranges are **absolute**. The selection **persists across visits** in
   browser `localStorage` under a stable key per logical panel — each panel
   (e.g. validation results vs. validation events) persists independently and the
   preference is shared across all entities of that panel type — so revisiting a
-  panel restores the last-used selection. The timezone choice persists per panel
-  alongside the selection. The picker's popover presents the preset
+  panel restores the last-used selection. The picker's popover presents the preset
   shortcuts alongside two calendars — a start-day calendar on the left and an
   end-day calendar on the right, each with independent month and year
   navigation. Every edit in the popover, including clicking a preset, is

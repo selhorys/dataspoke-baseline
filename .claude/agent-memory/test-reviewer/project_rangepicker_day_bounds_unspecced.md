@@ -35,3 +35,17 @@ ISO throughout. range.test.ts kept the exact T23:59:59.999Z bounds with a "docum
 comment (acceptable per this note). Renewal invariant (clock-advance preset re-resolves to new day;
 custom stays pinned) intact at range.test.ts:86-136. Persistence hook tests
 (lib/hooks/use-range-selection.test.ts) unchanged and sound. 764/764 pass.
+
+**Per-picker tz toggle removal (2026-06-16, cycle 1, REVISE):** Feature change — the per-picker
+Local|UTC toggle was removed; the picker now takes a fixed `tz` prop from the global Settings
+preference (spec FRONTEND_BASIC.md:290 now reads "**no per-panel timezone control**"). Tests cleanly
+dropped `onTzChange`/`tzOverride`/`setTzOverride` (grep-clean across whole frontend tree); surviving
+picker tests (preset-staging, time-edit→custom, two-calendar, fixedWeeks) all still valid with the
+fixed `tz` prop, 816/816 pass. Global-tz coverage intact: timezone.test.ts (default+persist+reactive),
+format-time.test.ts (local offset-agnostic / utc exact), events-section.test.tsx (display-site
+integration). ONE must-fix: `lib/range.test.ts:223-226` spec-trace COMMENT still quotes the deleted
+spec text "A per-picker timezone toggle — Local or UTC …" — a stale, now-FALSE spec citation in a
+file labelled unchanged-must-pass. It's a comment so the suite is green, but it asserts the spec says
+the opposite of what it says (T1 traceability rot). Fix: rewrite the comment to cite the global-tz
+governance (the `tz` here is a lib/range function PARAM driven by global pref, not the removed UI
+toggle — the local/utc interpretation coverage itself is correct and must stay).

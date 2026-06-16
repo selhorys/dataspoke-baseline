@@ -21,6 +21,8 @@ import {
 } from "recharts";
 import type { MetricResult } from "@/types/governance";
 import { colorForKey } from "@/lib/chart-colors";
+import { formatDate } from "@/lib/format-time";
+import { useDisplayTz } from "@/lib/preferences/timezone";
 
 interface MetricTimeseriesChartProps {
   results: MetricResult[];
@@ -28,16 +30,13 @@ interface MetricTimeseriesChartProps {
   height?: number;
 }
 
-function formatDate(iso: string): string {
-  const d = new Date(iso);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
 export function MetricTimeseriesChart({
   results,
   valueKeys,
   height = 220,
 }: MetricTimeseriesChartProps) {
+  const tz = useDisplayTz();
+
   if (results.length === 0) {
     return (
       <div className="flex items-center justify-center text-sm text-muted-foreground" style={{ height }}>
@@ -57,7 +56,7 @@ export function MetricTimeseriesChart({
   );
 
   const data = sorted.map((r) => ({
-    date: formatDate(r.measured_at),
+    date: formatDate(r.measured_at, tz),
     ...r.values,
   }));
 

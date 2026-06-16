@@ -9,18 +9,16 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { useLatestMetricResult } from "@/lib/api/governance";
+import { formatDate } from "@/lib/format-time";
+import { useDisplayTz } from "@/lib/preferences/timezone";
 import type { MetricDefinition } from "@/types/governance";
 
 interface MetricCardProps {
   metric: MetricDefinition;
 }
 
-function formatDate(iso: string): string {
-  const d = new Date(iso);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
 export function MetricCard({ metric }: MetricCardProps) {
+  const tz = useDisplayTz();
   const { data, isLoading } = useLatestMetricResult(metric.id);
   const latest = data?.results[0] ?? null;
 
@@ -47,7 +45,7 @@ export function MetricCard({ metric }: MetricCardProps) {
                 <span className="ml-2 tabular-nums">{val}</span>
               </p>
             ))}
-            <p className="mt-1 text-xs text-muted-foreground">{formatDate(latest.measured_at)}</p>
+            <p className="mt-1 text-xs text-muted-foreground">{formatDate(latest.measured_at, tz)}</p>
           </div>
         ) : (
           <p className="text-sm text-muted-foreground">No results yet.</p>

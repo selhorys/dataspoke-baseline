@@ -18,21 +18,20 @@ import {
   YAxis,
 } from "recharts";
 import type { ValidationResultRow } from "@/types/validation";
+import { formatDate } from "@/lib/format-time";
+import { useDisplayTz } from "@/lib/preferences/timezone";
 
 interface ValidationScoreChartProps {
   results: ValidationResultRow[];
   height?: number;
 }
 
-function formatDate(iso: string): string {
-  const d = new Date(iso);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
 export function ValidationScoreChart({
   results,
   height = 200,
 }: ValidationScoreChartProps) {
+  const tz = useDisplayTz();
+
   if (results.length === 0) {
     return (
       <div
@@ -50,7 +49,7 @@ export function ValidationScoreChart({
   );
 
   const data = sorted.map((r) => ({
-    date: formatDate(r.data_time),
+    date: formatDate(r.data_time, tz),
     score: r.score,
   }));
 

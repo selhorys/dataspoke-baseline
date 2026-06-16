@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import { useValidationList } from "@/lib/api/validation";
 import { ErrorState } from "@/components/ui/error-state";
 import { formatDateTime } from "@/lib/format-time";
+import { useDisplayTz } from "@/lib/preferences/timezone";
 import { scoreBadgeVariant, scoreLabel } from "@/lib/validation-score";
 
 const PAGE_SIZE = 20;
@@ -25,6 +26,7 @@ const PAGE_SIZE = 20;
 export default function ValidationListPage() {
   const [offset, setOffset] = useState(0);
   const [showDeleted, setShowDeleted] = useState(false);
+  const tz = useDisplayTz();
 
   // Default hides removed slots (removed=false). The "Show deleted" toggle omits
   // the param so the backend returns both active and removed slots.
@@ -120,7 +122,7 @@ export default function ValidationListPage() {
                 <TableCell className="text-sm">{v.variable_count}</TableCell>
                 <TableCell className="text-sm">
                   {v.latest_data_time ? (
-                    formatDateTime(v.latest_data_time)
+                    formatDateTime(v.latest_data_time, tz)
                   ) : (
                     <span className="text-muted-foreground">—</span>
                   )}

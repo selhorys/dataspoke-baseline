@@ -10,6 +10,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { useTimezoneStore } from "@/lib/preferences/timezone";
+import type { TzMode } from "@/lib/range";
 
 const LOCALE_KEY = "dataspoke:locale";
 
@@ -36,11 +38,18 @@ function useLocale(): [Locale, (l: Locale) => void] {
 export default function SettingsPage() {
   const { theme, setTheme } = useTheme();
   const [locale, setLocale] = useLocale();
+  const tz = useTimezoneStore((s) => s.tz);
+  const setTz = useTimezoneStore((s) => s.setTz);
 
   const themes = [
     { value: "light", label: "Light" },
     { value: "dark", label: "Dark" },
     { value: "system", label: "System" },
+  ] as const;
+
+  const timezones = [
+    { value: "local", label: "Local" },
+    { value: "utc", label: "UTC" },
   ] as const;
 
   return (
@@ -59,6 +68,25 @@ export default function SettingsPage() {
               variant={theme === t.value ? "default" : "outline"}
               size="sm"
               onClick={() => setTheme(t.value)}
+            >
+              {t.label}
+            </Button>
+          ))}
+        </div>
+      </section>
+
+      <section className="space-y-3">
+        <h2 className="text-base font-medium">Timezone</h2>
+        <p className="text-sm text-muted-foreground">
+          Timezone for displaying dates and times across the app. Persisted in your browser.
+        </p>
+        <div className="flex gap-2">
+          {timezones.map((t) => (
+            <Button
+              key={t.value}
+              variant={tz === t.value ? "default" : "outline"}
+              size="sm"
+              onClick={() => setTz(t.value as TzMode)}
             >
               {t.label}
             </Button>

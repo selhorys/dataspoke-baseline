@@ -14,6 +14,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Field } from "@/components/forms/field";
 import { PasswordInput } from "@/components/forms/password-input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { formatDateTime } from "@/lib/format-time";
+import { useDisplayTz } from "@/lib/preferences/timezone";
 import { confSchema, toFormDefaults, buildPatch } from "./conf-form.schema";
 import type { ConfFormValues } from "./conf-form.schema";
 
@@ -24,6 +26,7 @@ export default function AdminConfPage() {
   const { data: conf, isLoading: confLoading } = useRuntimeConf();
   const { mutateAsync: updateConf, isPending } = useUpdateRuntimeConf();
   const [savedAt, setSavedAt] = useState<string | null>(null);
+  const tz = useDisplayTz();
 
   const {
     register,
@@ -436,7 +439,7 @@ export default function AdminConfPage() {
           </Button>
           {savedAt && (
             <p className="text-sm text-muted-foreground">
-              Saved · updated {new Date(savedAt).toLocaleString()}
+              Saved · updated {formatDateTime(savedAt, tz)}
             </p>
           )}
         </div>

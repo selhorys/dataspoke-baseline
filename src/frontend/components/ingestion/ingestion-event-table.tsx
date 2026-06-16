@@ -31,7 +31,6 @@ interface IngestionEventTableProps {
   range: RangeSelection;
   onRangeChange: (value: RangeSelection) => void;
   tz: TzMode;
-  onTzChange: (tz: TzMode) => void;
   page: { offset: number; limit: number; totalCount: number };
   onPrev: () => void;
   onNext: () => void;
@@ -42,7 +41,6 @@ export function IngestionEventTable({
   range,
   onRangeChange,
   tz,
-  onTzChange,
   page,
   onPrev,
   onNext,
@@ -57,7 +55,6 @@ export function IngestionEventTable({
           value={range}
           onChange={onRangeChange}
           tz={tz}
-          onTzChange={onTzChange}
           granularity="datetime"
         />
       </div>
@@ -79,7 +76,7 @@ export function IngestionEventTable({
               {events.map((e) => (
                 <TableRow key={e.id}>
                   <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
-                    {formatDateTime(e.occurred_at)}
+                    {formatDateTime(e.occurred_at, tz)}
                   </TableCell>
                   <TableCell>
                     <Badge variant={eventStatusVariant(e.status)} className="text-xs">

@@ -51,7 +51,6 @@ describe("RangePicker — trigger label", () => {
         value={{ kind: "preset", days: 7 }}
         onChange={vi.fn()}
         tz="utc"
-        onTzChange={vi.fn()}
         granularity="date"
       />,
     );
@@ -71,7 +70,6 @@ describe("RangePicker — trigger label", () => {
         }}
         onChange={vi.fn()}
         tz="utc"
-        onTzChange={vi.fn()}
         granularity="date"
       />,
     );
@@ -91,7 +89,6 @@ describe("RangePicker — trigger label", () => {
         }}
         onChange={vi.fn()}
         tz="utc"
-        onTzChange={vi.fn()}
         granularity="datetime"
       />,
     );
@@ -112,7 +109,7 @@ describe("RangePicker — preset staging + Apply", () => {
   it("does NOT commit or close the popover when a preset is clicked", () => {
     const onChange = vi.fn();
     render(
-      <RangePicker value={DEFAULT_SEL} onChange={onChange} tz="utc" onTzChange={vi.fn()} granularity="date" />,
+      <RangePicker value={DEFAULT_SEL} onChange={onChange} tz="utc" granularity="date" />,
     );
 
     // Open the popover via the trigger (its label is the active preset).
@@ -134,7 +131,7 @@ describe("RangePicker — preset staging + Apply", () => {
   it("highlights the staged preset (active variant) without committing", () => {
     const onChange = vi.fn();
     render(
-      <RangePicker value={DEFAULT_SEL} onChange={onChange} tz="utc" onTzChange={vi.fn()} granularity="date" />,
+      <RangePicker value={DEFAULT_SEL} onChange={onChange} tz="utc" granularity="date" />,
     );
 
     fireEvent.click(screen.getByText(/last 2 weeks/i));
@@ -150,7 +147,7 @@ describe("RangePicker — preset staging + Apply", () => {
   it("commits onChange exactly once with the staged preset on Apply (date)", () => {
     const onChange = vi.fn();
     render(
-      <RangePicker value={DEFAULT_SEL} onChange={onChange} tz="utc" onTzChange={vi.fn()} granularity="date" />,
+      <RangePicker value={DEFAULT_SEL} onChange={onChange} tz="utc" granularity="date" />,
     );
 
     fireEvent.click(screen.getByText(/last 2 weeks/i));
@@ -165,7 +162,7 @@ describe("RangePicker — preset staging + Apply", () => {
   it("commits the staged preset on Apply in datetime granularity too", () => {
     const onChange = vi.fn();
     render(
-      <RangePicker value={DEFAULT_SEL} onChange={onChange} tz="utc" onTzChange={vi.fn()} granularity="datetime" />,
+      <RangePicker value={DEFAULT_SEL} onChange={onChange} tz="utc" granularity="datetime" />,
     );
 
     fireEvent.click(screen.getByText(/last 2 weeks/i));
@@ -182,7 +179,7 @@ describe("RangePicker — preset staging + Apply", () => {
     // dropped by the relative preset.
     const onChange = vi.fn();
     render(
-      <RangePicker value={DEFAULT_SEL} onChange={onChange} tz="utc" onTzChange={vi.fn()} granularity="datetime" />,
+      <RangePicker value={DEFAULT_SEL} onChange={onChange} tz="utc" granularity="datetime" />,
     );
 
     fireEvent.click(screen.getByText(/last 2 weeks/i));
@@ -210,7 +207,7 @@ describe("RangePicker — preset staging + Apply", () => {
 describe("RangePicker — two-calendar popover layout", () => {
   it("renders two month grids (left start + right end calendars)", () => {
     render(
-      <RangePicker value={DEFAULT_SEL} onChange={vi.fn()} tz="utc" onTzChange={vi.fn()} granularity="date" />,
+      <RangePicker value={DEFAULT_SEL} onChange={vi.fn()} tz="utc" granularity="date" />,
     );
     fireEvent.click(screen.getByText(/last 2 weeks/i));
 
@@ -220,7 +217,7 @@ describe("RangePicker — two-calendar popover layout", () => {
 
   it("renders independent month/year dropdowns per calendar (dropdown captionLayout)", () => {
     render(
-      <RangePicker value={DEFAULT_SEL} onChange={vi.fn()} tz="utc" onTzChange={vi.fn()} granularity="date" />,
+      <RangePicker value={DEFAULT_SEL} onChange={vi.fn()} tz="utc" granularity="date" />,
     );
     fireEvent.click(screen.getByText(/last 2 weeks/i));
 
@@ -238,7 +235,7 @@ describe("RangePicker — Cancel discards staged edits", () => {
   it("does NOT call onChange after a staged time edit followed by Cancel", () => {
     const onChange = vi.fn();
     render(
-      <RangePicker value={DEFAULT_SEL} onChange={onChange} tz="utc" onTzChange={vi.fn()} granularity="datetime" />,
+      <RangePicker value={DEFAULT_SEL} onChange={onChange} tz="utc" granularity="datetime" />,
     );
 
     // Open the popover (seeds the draft from the resolved selection).
@@ -258,7 +255,7 @@ describe("RangePicker — Cancel discards staged edits", () => {
   it("does NOT call onChange after staging a preset followed by Cancel", () => {
     const onChange = vi.fn();
     render(
-      <RangePicker value={DEFAULT_SEL} onChange={onChange} tz="utc" onTzChange={vi.fn()} granularity="date" />,
+      <RangePicker value={DEFAULT_SEL} onChange={onChange} tz="utc" granularity="date" />,
     );
 
     fireEvent.click(screen.getByText(/last 2 weeks/i));
@@ -281,7 +278,7 @@ describe("RangePicker — Apply commits a custom selection after a day click", (
   it("emits { kind: 'custom' } when a calendar day is clicked then Apply (date)", () => {
     const onChange = vi.fn();
     render(
-      <RangePicker value={DEFAULT_SEL} onChange={onChange} tz="utc" onTzChange={vi.fn()} granularity="date" />,
+      <RangePicker value={DEFAULT_SEL} onChange={onChange} tz="utc" granularity="date" />,
     );
 
     fireEvent.click(screen.getByText(/last 2 weeks/i));
@@ -314,7 +311,7 @@ describe("RangePicker — Apply commits a custom selection after a day click", (
     // holds in any host timezone, including offset-0 CI.
     const onChange = vi.fn();
     render(
-      <RangePicker value={DEFAULT_SEL} onChange={onChange} tz="local" onTzChange={vi.fn()} granularity="datetime" />,
+      <RangePicker value={DEFAULT_SEL} onChange={onChange} tz="local" granularity="datetime" />,
     );
 
     fireEvent.click(screen.getByText(/last 2 weeks/i));
@@ -336,7 +333,7 @@ describe("RangePicker — Apply commits a custom selection after a day click", (
   it("custom commit carries the user-edited end time after a day click (datetime)", () => {
     const onChange = vi.fn();
     render(
-      <RangePicker value={DEFAULT_SEL} onChange={onChange} tz="utc" onTzChange={vi.fn()} granularity="datetime" />,
+      <RangePicker value={DEFAULT_SEL} onChange={onChange} tz="utc" granularity="datetime" />,
     );
 
     fireEvent.click(screen.getByText(/last 2 weeks/i));
@@ -372,78 +369,7 @@ describe("RangePicker — Apply commits a custom selection after a day click", (
 });
 
 // ---------------------------------------------------------------------------
-// 5. Local | UTC timezone toggle in the footer.
-//    Spec: "A per-picker timezone toggle — Local or UTC (default Local) —
-//    governs how calendar days and times are interpreted and displayed." The
-//    toggle calls onTzChange and the active zone is reflected by the active
-//    (secondary) button variant.
-// ---------------------------------------------------------------------------
-describe("RangePicker — Local | UTC toggle", () => {
-  it("renders both Local and UTC toggle buttons in the popover footer", () => {
-    render(
-      <RangePicker value={DEFAULT_SEL} onChange={vi.fn()} tz="local" onTzChange={vi.fn()} granularity="date" />,
-    );
-    fireEvent.click(screen.getByText(/last 2 weeks/i));
-
-    expect(screen.getByRole("button", { name: /^local$/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^utc$/i })).toBeInTheDocument();
-  });
-
-  it("marks the active zone with the secondary variant (Local active by default)", () => {
-    render(
-      <RangePicker value={DEFAULT_SEL} onChange={vi.fn()} tz="local" onTzChange={vi.fn()} granularity="date" />,
-    );
-    fireEvent.click(screen.getByText(/last 2 weeks/i));
-
-    const local = screen.getByRole("button", { name: /^local$/i });
-    const utc = screen.getByRole("button", { name: /^utc$/i });
-    // Active zone uses the "secondary" variant token; the inactive one does not.
-    expect(local.className).toMatch(/secondary/);
-    expect(utc.className).not.toMatch(/secondary/);
-  });
-
-  it("marks UTC active when tz='utc'", () => {
-    render(
-      <RangePicker value={DEFAULT_SEL} onChange={vi.fn()} tz="utc" onTzChange={vi.fn()} granularity="date" />,
-    );
-    fireEvent.click(screen.getByText(/last 2 weeks/i));
-
-    const local = screen.getByRole("button", { name: /^local$/i });
-    const utc = screen.getByRole("button", { name: /^utc$/i });
-    expect(utc.className).toMatch(/secondary/);
-    expect(local.className).not.toMatch(/secondary/);
-  });
-
-  it("calls onTzChange with the other mode when the inactive toggle is clicked", () => {
-    const onTzChange = vi.fn();
-    render(
-      <RangePicker value={DEFAULT_SEL} onChange={vi.fn()} tz="local" onTzChange={onTzChange} granularity="date" />,
-    );
-    fireEvent.click(screen.getByText(/last 2 weeks/i));
-
-    // Currently Local — clicking UTC switches the zone.
-    fireEvent.click(screen.getByRole("button", { name: /^utc$/i }));
-
-    expect(onTzChange).toHaveBeenCalledTimes(1);
-    expect(onTzChange).toHaveBeenCalledWith("utc");
-  });
-
-  it("does NOT call onTzChange when the already-active toggle is clicked", () => {
-    const onTzChange = vi.fn();
-    render(
-      <RangePicker value={DEFAULT_SEL} onChange={vi.fn()} tz="utc" onTzChange={onTzChange} granularity="date" />,
-    );
-    fireEvent.click(screen.getByText(/last 2 weeks/i));
-
-    // Already UTC — clicking UTC is a no-op (handleTzChange early-returns).
-    fireEvent.click(screen.getByRole("button", { name: /^utc$/i }));
-
-    expect(onTzChange).not.toHaveBeenCalled();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// 6. fixedWeeks — both calendars render a constant six-week grid so the popover
+// 5. fixedWeeks — both calendars render a constant six-week grid so the popover
 //    height does not jump between months.
 //    Spec: two calendars (start | end). The `fixedWeeks` prop on each Calendar
 //    pads every month to 6 week rows. react-day-picker exposes each week as
@@ -452,7 +378,7 @@ describe("RangePicker — Local | UTC toggle", () => {
 describe("RangePicker — fixedWeeks six-row calendars", () => {
   it("renders two grids each with six week rows (fixed height)", () => {
     render(
-      <RangePicker value={DEFAULT_SEL} onChange={vi.fn()} tz="utc" onTzChange={vi.fn()} granularity="date" />,
+      <RangePicker value={DEFAULT_SEL} onChange={vi.fn()} tz="utc" granularity="date" />,
     );
     fireEvent.click(screen.getByText(/last 2 weeks/i));
 

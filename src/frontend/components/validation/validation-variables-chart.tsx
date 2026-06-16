@@ -29,6 +29,8 @@ import {
 } from "recharts";
 import type { ValidationResultRow, ValidationVariable } from "@/types/validation";
 import { colorForKey } from "@/lib/chart-colors";
+import { formatDate } from "@/lib/format-time";
+import { useDisplayTz } from "@/lib/preferences/timezone";
 
 interface ValidationVariablesChartProps {
   results: ValidationResultRow[];
@@ -36,16 +38,13 @@ interface ValidationVariablesChartProps {
   height?: number;
 }
 
-function formatDate(iso: string): string {
-  const d = new Date(iso);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
 export function ValidationVariablesChart({
   results,
   variables,
   height = 160,
 }: ValidationVariablesChartProps) {
+  const tz = useDisplayTz();
+
   // Resolve the ordered list of variables to chart. Prefer the declared conf
   // variables; otherwise synthesize bare entries from observed result keys.
   const charted: ValidationVariable[] =
@@ -81,7 +80,7 @@ export function ValidationVariablesChart({
         const data = sorted
           .filter((r) => r.variables[name] !== undefined)
           .map((r) => ({
-            date: formatDate(r.data_time),
+            date: formatDate(r.data_time, tz),
             value: r.variables[name],
           }));
 

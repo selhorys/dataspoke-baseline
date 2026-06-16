@@ -3,9 +3,10 @@
 /**
  * DEV FIXTURE — RangePicker sandbox. Not part of the product; safe to delete.
  * Renders the date and datetime RangePicker variants side by side and shows the
- * committed selection, the active timezone, plus the resolved {from,to} bounds
- * so the popover, presets, persistence, timezone toggle, and both granularities
- * can be exercised on localhost.
+ * committed selection, the active (global) timezone, plus the resolved {from,to}
+ * bounds so the popover, presets, persistence, and both granularities can be
+ * exercised on localhost. Display timezone follows the global preference
+ * (Settings → Timezone).
  *
  * Visit: http://localhost:3000/dev/range-picker
  */
@@ -16,28 +17,25 @@ import {
   defaultSelection,
   resolveRange,
   type RangeSelection,
-  type TzMode,
 } from "@/lib/range";
 import {
   usePersistedRangeState,
   RANGE_KEYS,
 } from "@/lib/hooks/use-range-selection";
+import { useDisplayTz } from "@/lib/preferences/timezone";
 
 function Panel({
   title,
   granularity,
   selection,
   onChange,
-  tz,
-  onTzChange,
 }: {
   title: string;
   granularity: "date" | "datetime";
   selection: RangeSelection;
   onChange: (s: RangeSelection) => void;
-  tz: TzMode;
-  onTzChange: (tz: TzMode) => void;
 }) {
+  const tz = useDisplayTz();
   const resolved = resolveRange(selection, granularity, tz);
   return (
     <section className="space-y-3 rounded-lg border p-5">
@@ -52,7 +50,6 @@ function Panel({
           value={selection}
           onChange={onChange}
           tz={tz}
-          onTzChange={onTzChange}
           granularity={granularity}
         />
       </div>
@@ -68,14 +65,12 @@ export default function RangePickerSandboxPage() {
   const [dateSel, setDateSel] = React.useState<RangeSelection>(() =>
     defaultSelection(),
   );
-  const [dateTz, setDateTz] = React.useState<TzMode>("local");
   const [dtSel, setDtSel] = React.useState<RangeSelection>(() =>
     defaultSelection(),
   );
-  const [dtTz, setDtTz] = React.useState<TzMode>("local");
 
   // Persisted state — exercise localStorage round-trip across reloads.
-  const { selection, tz, setSelection, setTz } = usePersistedRangeState(
+  const { selection, setSelection } = usePersistedRangeState(
     RANGE_KEYS.ingestionSourceEvents,
   );
 
@@ -86,9 +81,9 @@ export default function RangePickerSandboxPage() {
           RangePicker sandbox
         </h1>
         <p className="text-sm text-muted-foreground">
-          Dev fixture — exercise the date and datetime variants and the Local |
-          UTC toggle. The third panel is persisted to localStorage (reload to
-          confirm selection + tz stick).
+          Dev fixture — exercise the date and datetime variants. Display timezone
+          follows the global preference (Settings → Timezone). The third panel is
+          persisted to localStorage (reload to confirm the selection sticks).
         </p>
       </div>
 
@@ -97,24 +92,18 @@ export default function RangePickerSandboxPage() {
         granularity="date"
         selection={dateSel}
         onChange={setDateSel}
-        tz={dateTz}
-        onTzChange={setDateTz}
       />
       <Panel
         title="Datetime variant"
         granularity="datetime"
         selection={dtSel}
         onChange={setDtSel}
-        tz={dtTz}
-        onTzChange={setDtTz}
       />
       <Panel
         title="Datetime + persisted (reload to verify)"
         granularity="datetime"
         selection={selection}
         onChange={setSelection}
-        tz={tz}
-        onTzChange={setTz}
       />
     </div>
   );

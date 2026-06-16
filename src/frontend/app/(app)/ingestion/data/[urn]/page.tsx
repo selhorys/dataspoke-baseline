@@ -20,6 +20,7 @@ import {
 import { modeBadgeVariant, modeLabel } from "@/lib/ingestion-mode-variant";
 import { eventStatusVariant } from "@/lib/event-status-variant";
 import { formatDateTime } from "@/lib/format-time";
+import { useDisplayTz } from "@/lib/preferences/timezone";
 
 export default function IngestionDatasetDetailPage({
   params,
@@ -34,15 +35,12 @@ export default function IngestionDatasetDetailPage({
 
   // Persisted selection; resolving via useMemo keeps the events query key
   // stable until the selection changes.
-  const {
-    selection: eventSel,
-    tz: eventTz,
-    setSelection: setEventSel,
-    setTz: setEventTz,
-  } = usePersistedRangeState(RANGE_KEYS.ingestionDatasetEvents);
+  const tz = useDisplayTz();
+  const { selection: eventSel, setSelection: setEventSel } =
+    usePersistedRangeState(RANGE_KEYS.ingestionDatasetEvents);
   const eventRange = useMemo(
-    () => resolveRange(eventSel, "datetime", eventTz),
-    [eventSel, eventTz],
+    () => resolveRange(eventSel, "datetime", tz),
+    [eventSel, tz],
   );
 
   const {
@@ -138,7 +136,7 @@ export default function IngestionDatasetDetailPage({
                       {lookup!.latest_run.status}
                     </Badge>
                     <span className="text-muted-foreground">
-                      {formatDateTime(lookup!.latest_run.occurred_at)}
+                      {formatDateTime(lookup!.latest_run.occurred_at, tz)}
                     </span>
                     {lookup!.latest_run.run_id && (
                       <span className="font-mono text-xs text-muted-foreground">
@@ -164,8 +162,7 @@ export default function IngestionDatasetDetailPage({
           <RangePicker
             value={eventSel}
             onChange={setEventSel}
-            tz={eventTz}
-            onTzChange={setEventTz}
+            tz={tz}
             granularity="datetime"
           />
         </div>
@@ -180,7 +177,7 @@ export default function IngestionDatasetDetailPage({
             {events.events.map((e) => (
               <li key={e.id} className="flex flex-wrap items-start gap-3 text-sm">
                 <span className="shrink-0 text-muted-foreground">
-                  {formatDateTime(e.occurred_at)}
+                  {formatDateTime(e.occurred_at, tz)}
                 </span>
                 <Badge variant={eventStatusVariant(e.status)} className="text-xs">
                   {e.status}

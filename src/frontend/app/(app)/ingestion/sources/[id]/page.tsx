@@ -35,6 +35,7 @@ import {
   scheduleTierLabel,
 } from "@/lib/ingestion-mode-variant";
 import { eventStatusVariant } from "@/lib/event-status-variant";
+import { useDisplayTz } from "@/lib/preferences/timezone";
 import { toast } from "@/components/ui/use-toast";
 import type { IngestionSourceBody } from "@/types/ingestion";
 
@@ -56,8 +57,10 @@ export default function IngestionSourceDetailPage({
   const [eventOffset, setEventOffset] = useState(0);
   // Persisted selection; resolving via useMemo keeps the events query key
   // stable until the selection changes.
-  const { selection: sel, tz, setSelection: setSel, setTz } =
-    usePersistedRangeState(RANGE_KEYS.ingestionSourceEvents);
+  const tz = useDisplayTz();
+  const { selection: sel, setSelection: setSel } = usePersistedRangeState(
+    RANGE_KEYS.ingestionSourceEvents,
+  );
   const range = useMemo(() => resolveRange(sel, "datetime", tz), [sel, tz]);
 
   const { data: source, isLoading, error } = useIngestionSource(id);
@@ -265,7 +268,6 @@ export default function IngestionSourceDetailPage({
           range={sel}
           onRangeChange={setSel}
           tz={tz}
-          onTzChange={setTz}
           page={{
             offset: eventOffset,
             limit: EVENT_PAGE_SIZE,

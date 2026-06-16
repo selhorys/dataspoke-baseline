@@ -220,10 +220,11 @@ describe("formatRange", () => {
 // absolute ISO string. These hold in any host timezone, including offset-0 (UTC)
 // CI environments where local and utc happen to coincide.
 //
-// Spec trace: spec/feature/FRONTEND_BASIC.md §shared-component-notes (RangePicker)
-//   — "A per-picker timezone toggle — Local or UTC … governs how calendar days
-//   and times are interpreted and displayed; the emitted/queried bounds remain
-//   canonical inclusive UTC ISO regardless of the toggle."
+// Spec trace: spec/feature/FRONTEND_BASIC.md — the global Settings timezone
+//   preference (Local/UTC) governs how calendar days and times are interpreted
+//   and displayed; the emitted/queried bounds remain canonical inclusive UTC ISO
+//   regardless. The `tz` argument here is that global preference threaded through
+//   (there is no per-picker timezone control).
 // ---------------------------------------------------------------------------
 describe("presetRange — date granularity, tz=local (offset-agnostic)", () => {
   it("from is LOCAL midnight and to is LOCAL end-of-day", () => {

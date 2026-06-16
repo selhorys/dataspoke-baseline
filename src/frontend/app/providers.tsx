@@ -5,6 +5,7 @@ import { ThemeProvider } from "next-themes";
 import { useEffect, useState } from "react";
 import { Toaster } from "@/components/ui/toaster";
 import { toastApiError } from "@/lib/toast-api-error";
+import { TimezoneHydration } from "@/lib/preferences/timezone";
 
 /**
  * Runs once on mount. If a token is already in the store (e.g. tab was never
@@ -75,6 +76,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
     <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
       <QueryClientProvider client={queryClient}>
         <SilentRefresh />
+        <TimezoneHydration />
         {children}
         <Toaster />
       </QueryClientProvider>

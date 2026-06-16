@@ -49,12 +49,10 @@ import {
 } from "@/components/ui/table";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
+import { formatDate } from "@/lib/format-time";
+import { useDisplayTz } from "@/lib/preferences/timezone";
 
 const roles: UserRole[] = ["Admin", "Editor", "Reader"];
-
-function formatDate(iso: string): string {
-  return new Date(iso).toLocaleDateString();
-}
 
 const renameSchema = z.object({
   name: z.string().min(1, "Name is required").max(128, "Name is too long"),
@@ -143,6 +141,7 @@ function UserTokensDialog({ user, onClose }: { user: AdminUser; onClose: () => v
   const { data, isLoading } = useAdminUserTokens(user.id);
   const { mutateAsync: revokeToken, isPending: revoking } = useDeleteAdminUserToken();
   const [confirmTokenId, setConfirmTokenId] = useState<string | null>(null);
+  const tz = useDisplayTz();
 
   async function onRevoke(tokenId: string) {
     try {
@@ -177,7 +176,7 @@ function UserTokensDialog({ user, onClose }: { user: AdminUser; onClose: () => v
             {data?.tokens.map((t) => (
               <TableRow key={t.id}>
                 <TableCell className="font-medium">{t.name}</TableCell>
-                <TableCell>{new Date(t.created_at).toLocaleDateString()}</TableCell>
+                <TableCell>{formatDate(t.created_at, tz)}</TableCell>
                 <TableCell>
                   <Button
                     variant="destructive"
@@ -224,6 +223,7 @@ export default function AdminUsersPage() {
   const { mutateAsync: deleteUser, isPending: deleting } = useDeleteUser();
   const [dialog, setDialog] = useState<DialogState>(null);
   const [search, setSearch] = useState("");
+  const tz = useDisplayTz();
 
   async function onDeleteUser(user: AdminUser) {
     try {
@@ -297,7 +297,7 @@ export default function AdminUsersPage() {
                 <TableCell>
                   <RoleSelect user={user} />
                 </TableCell>
-                <TableCell>{formatDate(user.created_at)}</TableCell>
+                <TableCell>{formatDate(user.created_at, tz)}</TableCell>
                 <TableCell>
                   <div className="flex items-center gap-2">
                     <Button

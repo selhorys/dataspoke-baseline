@@ -6,14 +6,13 @@
  * Trigger shows the current range (in the active timezone); a three-column
  * popover offers preset shortcuts plus two independent single-day calendars
  * (start | end, with month arrows and a month/year dropdown each), and
- * start/end time fields in datetime granularity. A Local | UTC toggle in the
- * footer controls how days/times are interpreted and displayed. Every edit —
- * including clicking a preset — is staged locally and committed to onChange only
- * on Apply; Cancel discards.
+ * start/end time fields in datetime granularity. Every edit — including clicking
+ * a preset — is staged locally and committed to onChange only on Apply; Cancel
+ * discards.
  *
  * Emits canonical inclusive {from, to} ISO-8601 (UTC) strings; see lib/range.ts.
- * The timezone only governs interpretation/display — the emitted bounds are
- * always absolute UTC instants.
+ * The `tz` prop (the global display timezone) only governs interpretation/
+ * display — the emitted bounds are always absolute UTC instants.
  */
 
 import * as React from "react";
@@ -36,7 +35,6 @@ interface RangePickerProps {
   value: RangeSelection;
   onChange: (value: RangeSelection) => void;
   tz: TzMode;
-  onTzChange: (tz: TzMode) => void;
   granularity?: RangeGranularity;
   className?: string;
 }
@@ -103,7 +101,6 @@ export function RangePicker({
   value,
   onChange,
   tz,
-  onTzChange,
   granularity = "date",
   className,
 }: RangePickerProps) {
@@ -159,30 +156,6 @@ export function RangePicker({
     setToTime(isoToTime(resolved.to, tz));
     setLeftMonth(firstOfMonth(from));
     setRightMonth(firstOfMonth(to));
-  };
-
-  // Switching tz reinterprets the current draft's absolute instants in the new
-  // zone so the calendars/time fields show the same instant displayed in the new
-  // zone. Composes the draft to absolute ISO (using the OLD tz), then re-seeds
-  // from those instants under the NEW tz.
-  const handleTzChange = (nextTz: TzMode) => {
-    if (nextTz === tz) return;
-    if (draftFrom) {
-      const fromIso = composeIso(draftFrom, fromTime, granularity, "from", tz);
-      const toIso = composeIso(draftTo ?? draftFrom, toTime, granularity, "to", tz);
-      const newFrom = isoToCalendarDate(fromIso, nextTz);
-      const newTo = isoToCalendarDate(toIso, nextTz);
-      setDraftFrom(newFrom);
-      setDraftTo(newTo);
-      setFromTime(isoToTime(fromIso, nextTz));
-      setToTime(isoToTime(toIso, nextTz));
-      setLeftMonth(firstOfMonth(newFrom));
-      setRightMonth(firstOfMonth(newTo));
-      // Reinterpreting concrete instants is a custom edit — drop any staged
-      // preset so Apply commits the absolute window.
-      setDraftDays(null);
-    }
-    onTzChange(nextTz);
   };
 
   const inRange = React.useCallback(
@@ -319,34 +292,14 @@ export function RangePicker({
             </div>
           </div>
 
-          {/* Shared footer — tz toggle (left) + Cancel/Apply (right). */}
-          <div className="flex items-center justify-between gap-2 border-t p-2">
-            <div className="inline-flex items-center gap-1">
-              <Button
-                variant={tz === "local" ? "secondary" : "ghost"}
-                size="sm"
-                className="h-7 px-2 text-xs"
-                onClick={() => handleTzChange("local")}
-              >
-                Local
-              </Button>
-              <Button
-                variant={tz === "utc" ? "secondary" : "ghost"}
-                size="sm"
-                className="h-7 px-2 text-xs"
-                onClick={() => handleTzChange("utc")}
-              >
-                UTC
-              </Button>
-            </div>
-            <div className="flex gap-2">
-              <Button variant="ghost" size="sm" onClick={() => setOpen(false)}>
-                Cancel
-              </Button>
-              <Button size="sm" onClick={handleApply} disabled={!draftFrom}>
-                Apply
-              </Button>
-            </div>
+          {/* Shared footer — Cancel/Apply. */}
+          <div className="flex items-center justify-end gap-2 border-t p-2">
+            <Button variant="ghost" size="sm" onClick={() => setOpen(false)}>
+              Cancel
+            </Button>
+            <Button size="sm" onClick={handleApply} disabled={!draftFrom}>
+              Apply
+            </Button>
           </div>
         </div>
       </PopoverContent>

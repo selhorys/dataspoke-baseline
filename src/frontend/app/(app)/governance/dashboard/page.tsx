@@ -13,6 +13,7 @@ import {
 import { MetricCard } from "@/components/governance/metric-card";
 import { MetricTimeseriesChart } from "@/components/governance/metric-timeseries-chart";
 import { useEnabledMetrics, useMetricResults } from "@/lib/api/governance";
+import { useDisplayTz } from "@/lib/preferences/timezone";
 import type { MetricDefinition } from "@/types/governance";
 
 // ── Per-metric timeseries chart (one per enabled metric) ──────────────────────
@@ -75,21 +76,17 @@ export default function GovernanceDashboardPage() {
   const { data, isLoading, error } = useEnabledMetrics();
   // One shared, persisted range for every chart on the page; resolving via
   // useMemo keeps the per-card query keys stable until the selection changes.
-  const { selection: sel, tz, setSelection: setSel, setTz } =
-    usePersistedRangeState(RANGE_KEYS.governanceDashboard);
+  const tz = useDisplayTz();
+  const { selection: sel, setSelection: setSel } = usePersistedRangeState(
+    RANGE_KEYS.governanceDashboard,
+  );
   const range = useMemo(() => resolveRange(sel, "date", tz), [sel, tz]);
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-semibold tracking-tight">Governance · Dashboard</h1>
-        <RangePicker
-          value={sel}
-          onChange={setSel}
-          tz={tz}
-          onTzChange={setTz}
-          granularity="date"
-        />
+        <RangePicker value={sel} onChange={setSel} tz={tz} granularity="date" />
       </div>
 
       {isLoading && (

@@ -22,6 +22,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { formatDateTime } from "@/lib/format-time";
+import { useDisplayTz } from "@/lib/preferences/timezone";
 import type { IngestionSourceDatasetRow } from "@/types/ingestion";
 
 interface SourceDatasetTableProps {
@@ -29,6 +30,8 @@ interface SourceDatasetTableProps {
 }
 
 export function SourceDatasetTable({ rows }: SourceDatasetTableProps) {
+  const tz = useDisplayTz();
+
   if (rows.length === 0) {
     return <EmptyState message="This source maps no datasets yet." />;
   }
@@ -61,10 +64,10 @@ export function SourceDatasetTable({ rows }: SourceDatasetTableProps) {
                 </Badge>
               </TableCell>
               <TableCell className="text-sm text-muted-foreground">
-                {formatDateTime(row.first_seen_at)}
+                {formatDateTime(row.first_seen_at, tz)}
               </TableCell>
               <TableCell className="text-sm text-muted-foreground">
-                {formatDateTime(row.last_seen_at)}
+                {formatDateTime(row.last_seen_at, tz)}
               </TableCell>
             </TableRow>
           ))}

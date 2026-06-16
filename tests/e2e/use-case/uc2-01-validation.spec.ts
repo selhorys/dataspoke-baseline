@@ -528,10 +528,11 @@ test("UC2 step 6 — postgres detail after delete shows create form, no Edit/Del
     })
   ).toBeVisible({ timeout: 10_000 });
 
-  // -- UI assertion: the create form's Save button is rendered (not Edit/Delete) --
-  // The create form has a Save button (type=submit). There is no Edit button when
-  // no conf exists, and no Delete button.
-  await expect(page.getByRole("button", { name: "Save" })).toBeVisible();
+  // -- UI assertion: the create form's Create button is rendered (not Edit/Delete) --
+  // The create/resurrect form's submit action lives in the header top-right cluster
+  // labeled "Create" (type=submit). There is no Edit button when no conf exists,
+  // and no Delete button.
+  await expect(page.getByRole("button", { name: "Create" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Edit" })).not.toBeVisible();
   await expect(page.getByRole("button", { name: "Delete" })).not.toBeVisible();
 });
@@ -550,8 +551,8 @@ test("UC2 step 7 — resurrect postgres conf via create form; detail shows new d
   await page.goto(PG_DETAIL_URL);
   await expect(page).not.toHaveURL(/\/login/);
 
-  // Wait for the create form to be present.
-  await expect(page.getByRole("button", { name: "Save" })).toBeVisible({ timeout: 15_000 });
+  // Wait for the create form to be present (header "Create" submit action).
+  await expect(page.getByRole("button", { name: "Create" })).toBeVisible({ timeout: 15_000 });
 
   // -- UI gesture: fill description field --
   // spec: FRONTEND_VALIDATION.md §Page contracts — description textarea id="validation-description"
@@ -569,8 +570,8 @@ test("UC2 step 7 — resurrect postgres conf via create form; detail shows new d
     await page.getByLabel(`Variable name ${i + 1}`).fill(RESURRECT_VARIABLES[i]!);
   }
 
-  // -- UI gesture: submit the form --
-  await page.getByRole("button", { name: "Save" }).click();
+  // -- UI gesture: submit the form (header "Create" action) --
+  await page.getByRole("button", { name: "Create" }).click();
 
   // -- UI assertion: form closes; ConfReadOnly renders with new description --
   // On success, isEditing flips to false; the conf read-only view appears.
@@ -579,8 +580,8 @@ test("UC2 step 7 — resurrect postgres conf via create form; detail shows new d
     timeout: 20_000,
   });
 
-  // -- UI assertion: no more Save button (form is closed) --
-  await expect(page.getByRole("button", { name: "Save" })).not.toBeVisible({ timeout: 5_000 });
+  // -- UI assertion: no more Create button (form closed, read-only view shown) --
+  await expect(page.getByRole("button", { name: "Create" })).not.toBeVisible({ timeout: 5_000 });
 
   // -- UI assertion: Edit + Delete buttons re-appear (conf now exists) --
   await expect(page.getByRole("button", { name: "Edit" })).toBeVisible({ timeout: 10_000 });

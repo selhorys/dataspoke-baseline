@@ -16,6 +16,7 @@ import {
 import { useMe } from "@/lib/auth/use-me";
 import { useToast } from "@/components/ui/use-toast";
 import { formatDateTime } from "@/lib/format-time";
+import { useDisplayTz } from "@/lib/preferences/timezone";
 
 export default function OntogenSeedPage() {
   const { canWrite } = useMe();
@@ -186,6 +187,7 @@ function SeedListRow({
   const { data: body, isLoading: bodyLoading } = useOntogenSeed(isOpen ? seedId : "");
   const updateMutation = useUpdateSeed(seedId);
   const { toast } = useToast();
+  const tz = useDisplayTz();
 
   function handleSave(newBody: string) {
     updateMutation.mutate(newBody, {
@@ -210,7 +212,7 @@ function SeedListRow({
           <p className="mt-0.5 truncate text-sm">{preview}</p>
         </div>
         <div className="ml-4 flex items-center gap-3 text-xs text-muted-foreground">
-          <span>{formatDateTime(updatedAt)}</span>
+          <span>{formatDateTime(updatedAt, tz)}</span>
           {canWrite && (
             <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
               <Button
