@@ -73,12 +73,18 @@ kubectl rollout status deployment/ingress-nginx-controller \
   -n "${NS}" --timeout=5m
 
 # ---------------------------------------------------------------------------
-# Wait for LoadBalancer external IP (poll up to 120s)
+# Wait for LoadBalancer external IP
+#
+# On a GKE Autopilot cluster scaling from 0 nodes, the LB controller has no
+# hosts to attach until nodes provision ("cannot EnsureLoadBalancer() with no
+# hosts"), then the GCP target pool churns for a few minutes while Autopilot
+# rebalances. A warm-cluster budget (120s) is too short for this cold start, so
+# default to 5m; override with DATASPOKE_INGRESS_IP_TIMEOUT.
 # ---------------------------------------------------------------------------
-info "Waiting for LoadBalancer external IP (up to 120s)..."
+TIMEOUT="${DATASPOKE_INGRESS_IP_TIMEOUT:-300}"
+info "Waiting for LoadBalancer external IP (up to ${TIMEOUT}s)..."
 EXTERNAL_IP=""
 ELAPSED=0
-TIMEOUT=120
 
 while [[ -z "${EXTERNAL_IP}" && ${ELAPSED} -lt ${TIMEOUT} ]]; do
   EXTERNAL_IP=$(kubectl get svc ingress-nginx-controller \
@@ -95,7 +101,7 @@ while [[ -z "${EXTERNAL_IP}" && ${ELAPSED} -lt ${TIMEOUT} ]]; do
 done
 
 if [[ -z "${EXTERNAL_IP}" ]]; then
-  error "LoadBalancer did not receive an external IP within ${TIMEOUT}s. Check GKE firewall rules and Autopilot quotas."
+  error "LoadBalancer did not receive an external IP within ${TIMEOUT}s. On an Autopilot cold start this may just be slow node provisioning — re-run, or raise DATASPOKE_INGRESS_IP_TIMEOUT. Otherwise check GKE firewall rules and Autopilot quotas."
 fi
 
 info "External IP assigned: ${EXTERNAL_IP}"
