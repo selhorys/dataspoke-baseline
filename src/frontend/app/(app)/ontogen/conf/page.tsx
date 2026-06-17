@@ -92,6 +92,7 @@ export default function OntogenConfPage() {
             {editing ? (
               <>
                 <Button
+                  key="conf-save"
                   type="submit"
                   form={CONF_FORM_ID}
                   disabled={upsertMutation.isPending}
@@ -99,6 +100,8 @@ export default function OntogenConfPage() {
                   {upsertMutation.isPending ? "Saving…" : "Save"}
                 </Button>
                 <Button
+                  key="conf-cancel"
+                  type="button"
                   variant="outline"
                   onClick={handleCancel}
                   disabled={upsertMutation.isPending}
@@ -108,10 +111,12 @@ export default function OntogenConfPage() {
               </>
             ) : (
               <>
-                <Button variant="outline" onClick={() => setEditing(true)}>
+                <Button key="conf-edit" type="button" variant="outline" onClick={() => setEditing(true)}>
                   Edit
                 </Button>
                 <Button
+                  key="conf-run"
+                  type="button"
                   onClick={() => setRunDialogOpen(true)}
                   disabled={runMutation.isPending}
                 >
