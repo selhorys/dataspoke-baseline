@@ -578,6 +578,13 @@ are to `ref/github/datahub/` v1.5.0.2.
   (`datahub-graphql-core/src/main/resources/ingestion.graphql`), returning `config.recipe`
   (JSON string), `schedule {interval, timezone}`, `type`, `name`. **Secrets in the recipe come
   back raw** — DataSpoke masks them before storing/displaying.
+- **Ad-hoc (CLI) source classification**: a source created by `datahub ingest` or a UI/API `Run`
+  click is a CLI source — still listed by `listIngestionSources`, so it syncs as
+  `DATAHUB_MANAGED`, but DataSpoke flags it `ad_hoc=true`. The decisive marker is
+  `config.executorId` starting `__datahub_cli_` (primary); fallbacks are a `cli-`-prefixed source
+  URN id (`urn:li:dataHubIngestionSource:cli-<guid>`) and a `[CLI] ` name prefix. `pipeline_name`
+  is **not** a marker (optional, and present on UI sources too). Citation:
+  `metadata-ingestion/src/datahub/ingestion/reporting/datahub_ingestion_run_summary_provider.py`.
 - **Source → dataset mapping (no native reverse lookup)**: DataHub has no query for "which
   datasets did this source produce" — no reverse edge from `dataHubIngestionSource`, and
   `systemMetadata.pipelineName`/`runId` (`metadata-models/.../mxe/SystemMetadata.pdl`) are

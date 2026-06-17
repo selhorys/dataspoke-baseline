@@ -53,7 +53,9 @@ its URL unset.
 │ Governance ▾    │   (page content)                     │
 │  Dashboard      │                                      │
 │  Metrics        │                                      │
-│ Ingestion       │                                      │
+│ Ingestion ▾     │                                      │
+│  conf           │                                      │
+│  unmanaged      │                                      │
 │ Validation      │                                      │
 │ OntoGen ▾       │                                      │
 │  conf           │                                      │
@@ -99,7 +101,9 @@ ingestion recipe YAML editor) remain one full-width field.
 | `/admin/conf` | Admin runtime configuration — view and edit the singleton behavioral tunables, dependency-stub toggles, and LLM provider/model/key | `GET /admin/conf`, `PATCH /admin/conf` |
 | `/governance/dashboard` | [Governance dashboard — home](FRONTEND_GOVERNANCE.md) | `GET /spoke/governance/metric`, `GET /spoke/governance/metric/{id}/attr/result` |
 | `/governance/metrics` | [Metric configuration](FRONTEND_GOVERNANCE.md) | `/spoke/governance/metric/...` |
-| `/ingestion` | [Ingestion Control](FRONTEND_INGESTION.md) | `/spoke/ingestion/...` |
+| `/ingestion` | 302 to `/ingestion/conf` | — |
+| `/ingestion/conf` | [Ingestion Control — source list](FRONTEND_INGESTION.md) | `/spoke/ingestion/sources` |
+| `/ingestion/unmanaged` | [Ingestion Control — unmanaged bucket](FRONTEND_INGESTION.md) | `/spoke/ingestion/unmanaged` |
 | `/validation` | [Validation](FRONTEND_VALIDATION.md) | `/spoke/validation/...` |
 | `/ontogen` | 302 to `/ontogen/result` | — |
 | `/ontogen/result` | [Ontology Generation — browser + review](FRONTEND_ONTOGEN.md) | `/spoke/ontogen/result/...` |

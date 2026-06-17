@@ -111,14 +111,15 @@ scope); DataHub owns **results** (runs, observed datasets — synced down).
 | `schedule` | `TEXT` NULL | Cron expression — the recipe-standard `schedule` field exposed verbatim in the API. For `DATAHUB_MANAGED`, mirrored from DataHub's schedule. For `ACTIVE_CUSTOM_MANAGED`, must map to one of the three allowed tiers; `NULL` means manual-only (runs only on `…/method/run`, not on any tier DAG). Null for `PASSIVE` |
 | `schedule_tier` | `TEXT` NULL | **Internal, derived — never exposed in the API.** The tier (`hourly`/`daily`/`weekly`) computed from `schedule`, cached so the Airflow tier DAG can `WHERE schedule_tier = …`. Null when `schedule` is null or for `PASSIVE` |
 | `datahub_source_urn` | `TEXT` NULL | The `dataHubIngestionSource` URN for `DATAHUB_MANAGED` (sync key; also the `systemMetadata.pipelineName` match value for the optional observed-mapping enrichment). For `ACTIVE_CUSTOM_MANAGED`, the `pipeline_name` DataSpoke's extractor stamps. Null for `PASSIVE` |
+| `ad_hoc` | `BOOLEAN NOT NULL DEFAULT false` | Derived at sync time; `true` for CLI/ad-hoc `DATAHUB_MANAGED` sources — see [DATAHUB_INTEGRATION §Ingestion Source Sync](../DATAHUB_INTEGRATION.md) for the classifier markers. SQL-filterable |
 | `status` | `TEXT` | `OK` / `ERROR` (last sync or run health) |
 | `created_at` | `TIMESTAMPTZ` | Creation timestamp |
 | `updated_at` | `TIMESTAMPTZ` | Last modification |
 
 The API request/response body mirrors the UC1 recipe YAML 1:1 in JSON, using
 DataHub-recipe-standard wording only — `{mode, name, schedule, recipe:{source:{type,config}}}`
-— plus read-only management fields (`id`, `status`, `created_at`, `updated_at`, and
-`datahub_source_urn` for `DATAHUB_MANAGED`). `schedule_tier` is internal and never appears in
+— plus read-only management fields (`id`, `status`, `created_at`, `updated_at`,
+`ad_hoc`, and `datahub_source_urn` for `DATAHUB_MANAGED`). `schedule_tier` is internal and never appears in
 the API. See [API §Ingestion](../API.md#ingestion-spokeingestion).
 
 - **Editability**: `DATAHUB_MANAGED` rows are read-only in DataSpoke (DataHub is SSOT — edits return `409 INGESTION_SOURCE_READONLY`); they are created/updated only by the sync sweep. `ACTIVE_CUSTOM_MANAGED` and `PASSIVE` are user-managed via the API.

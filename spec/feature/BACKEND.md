@@ -306,7 +306,13 @@ DAG) reconciles all modes:
    `datahub-gc` and `datahub-documents` since their CLI wrappers are not tagged SYSTEM), matching
    DataHub's own Manage Data Sources view — system-internal jobs are excluded. Mask plaintext
    secret values in the stored/displayed recipe (DataHub returns them raw); `${...}` secret
-   references are preserved as-is (not masked, not resolved).
+   references are preserved as-is (not masked, not resolved). The sweep also sets each source's
+   derived `ad_hoc` flag: a CLI/ad-hoc DataHub source (created on a `Run` click or `datahub
+   ingest`) stays `mode=DATAHUB_MANAGED` but is distinguished by its `config.executorId`
+   (`__datahub_cli_` prefix, primary marker — etc.; see DATAHUB_INTEGRATION for the full
+   set). See
+   [DATAHUB_INTEGRATION §Ingestion Source Sync](../DATAHUB_INTEGRATION.md#ingestion-source-sync)
+   for the marker fields.
 2. **Mapping**: list the DataHub dataset set once and rebuild `ingestion_source_dataset` by
    evaluating each source's **filter-matcher** — derived from the recipe's `platform`+`database`+
    `schema_pattern`/`table_pattern` for `DATAHUB_MANAGED`/`ACTIVE_CUSTOM_MANAGED`; the declared `AllowDenyPattern`

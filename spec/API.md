@@ -273,7 +273,7 @@ and [DATAHUB_INTEGRATION §Ingestion Source Sync](DATAHUB_INTEGRATION.md#ingesti
 
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|
-| `GET` | `/spoke/ingestion/sources` | List ingestion sources (paginated; filter by `mode`) | Ingestion Control | UC1 |
+| `GET` | `/spoke/ingestion/sources` | List ingestion sources (paginated; filter by `mode`, and by `ad_hoc` tri-state — unset = no constraint, `true` = ad-hoc only, `false` = regular only) | Ingestion Control | UC1 |
 | `POST` | `/spoke/ingestion/sources` | Create a source (`ACTIVE_CUSTOM_MANAGED` or `PASSIVE` only; `DATAHUB_MANAGED` is synced, not created); `422 SECRET_REF_MALFORMED` for malformed `${name__key}` recipe references | Ingestion Control | UC1 |
 | `GET` | `/spoke/ingestion/sources/{id}` | Get one source as JSON (recipe `${name__key}` references returned as-is; any plaintext secret value masked) | Ingestion Control | UC1 |
 | `PUT` | `/spoke/ingestion/sources/{id}` | Replace a source; `409 INGESTION_SOURCE_READONLY` for `DATAHUB_MANAGED`; `422 SECRET_REF_MALFORMED` for malformed `${name__key}` recipe references | Ingestion Control | UC1 |
@@ -305,8 +305,11 @@ other. A `GET` response (and `POST`/`PUT`/`PATCH` body) carries:
 ```
 
 Responses additionally include read-only management fields outside the recipe-standard set:
-`id`, `status`, `platform` (derived from `recipe.source.type`), `created_at`, `updated_at`, and
-`datahub_source_urn` (for `DATAHUB_MANAGED`).
+`id`, `status`, `platform` (derived from `recipe.source.type`), `created_at`, `updated_at`,
+`datahub_source_urn` (for `DATAHUB_MANAGED`), and `ad_hoc` (bool) — a derived flag classified at
+sync time that distinguishes CLI/ad-hoc DataHub sources (created on a `Run` click or `datahub
+ingest`) from regular DataHub-managed sources. Ad-hoc sources stay `mode=DATAHUB_MANAGED`;
+`ad_hoc` is the disjoint sub-classification the `ad_hoc` query filter selects on.
 On `GET`, `${name__key}` references inside `recipe` are returned as-is — they are pointers to
 K8s Secrets, not secret values; any plaintext secret value is **masked**. There is no
 `schedule_tier`/`schedule_cron`/`is_enabled` on the wire — the tier is derived server-side from

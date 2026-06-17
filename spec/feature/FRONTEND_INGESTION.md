@@ -8,11 +8,16 @@ Ingestion is presented **per source / recipe** (one source produces many dataset
 two jobs mirror the feature's goals: manage sources (DataHub-compatible recipes) and make all
 ingestion visible — which datasets each source covers, and which are ingested unmanaged.
 
+Ingestion is a collapsible sidebar **group** with two submenus — `conf` (the source list) and
+`unmanaged`. Navigation between the two is via the sidebar only; neither page carries an in-page
+cross-link to the other.
+
 ## Routes
 
 | Path | Purpose | API |
 |------|---------|-----|
-| `/ingestion` | Source list (filter by `mode`) | `GET /spoke/ingestion/sources` |
+| `/ingestion` | 302 to `/ingestion/conf` | — |
+| `/ingestion/conf` | Source list (filter by `mode` and `ad_hoc`) | `GET /spoke/ingestion/sources` |
 | `/ingestion/sources/new` | Create a source (`ACTIVE_CUSTOM_MANAGED` / `PASSIVE`) | `POST /spoke/ingestion/sources` |
 | `/ingestion/sources/[id]` | Source detail (recipe, datasets, runs, events) | `GET /spoke/ingestion/sources/{id}` |
 | `/ingestion/unmanaged` | Datasets covered by no source | `GET /spoke/ingestion/unmanaged` |
@@ -21,13 +26,18 @@ ingestion visible — which datasets each source covers, and which are ingested 
 The per-dataset reverse-lookup page mirrors the per-dataset pages of Validation
 (`/validation/data/[urn]`) and MetaGen (`/metagen/data/[urn]`).
 
-## List View (`/ingestion`)
+## List View (`/ingestion/conf`)
 
 One row per source: `name`, `mode` badge (`DATAHUB_MANAGED` / `ACTIVE_CUSTOM_MANAGED` /
 `PASSIVE`), `platform`, schedule, enabled state, covered-dataset count, and latest run status.
-Filter by `mode`; paginate. A "Create source" button routes to `/ingestion/sources/new`.
-`DATAHUB_MANAGED` rows carry a read-only badge. The name cell shows the source's
-`datahub_source_urn` as a gray subtitle below the name for DataHub-managed rows; rows without a URN
+A "Create source" button routes to `/ingestion/sources/new`; paginate. The filter offers
+ALL, DataHub-managed (regular), DataHub-managed (ad-hoc), Active, Passive — the two
+DataHub-managed options are disjoint and map to the `mode`+`ad_hoc` query pair on
+`GET /spoke/ingestion/sources` (regular = `mode=DATAHUB_MANAGED&ad_hoc=false`, ad-hoc =
+`mode=DATAHUB_MANAGED&ad_hoc=true`); Active/Passive map to `mode` alone.
+`DATAHUB_MANAGED` rows carry a read-only badge, and rows whose `ad_hoc` flag is set carry an
+additional "ad-hoc" badge. The name cell shows the source's `datahub_source_urn` as a gray
+subtitle below the name for DataHub-managed rows; rows without a URN
 (`ACTIVE_CUSTOM_MANAGED` / `PASSIVE`) show the name alone. (`GET /spoke/ingestion/sources`.) The
 covered-dataset count and latest run status are not fields on the list payload — each is
 client-derived via a per-source fan-out (`datasets?limit=1` and `event?limit=1`).
@@ -81,9 +91,9 @@ calls no write route. This is the UI rendering of
 
 ## Unmanaged View (`/ingestion/unmanaged`)
 
-A table of DataHub datasets covered by no source (`GET /spoke/ingestion/unmanaged`), paginated.
-This is the "what's being ingested in an unmanaged way?" answer; each row links to its dataset
-page.
+A plain paginated table of DataHub datasets covered by no source
+(`GET /spoke/ingestion/unmanaged`). This is the "what's being ingested in an unmanaged way?"
+answer; each row links to its dataset page. Reached via the sidebar `unmanaged` submenu.
 
 ## Per-dataset reverse-lookup (`/ingestion/data/[urn]`)
 
@@ -97,7 +107,7 @@ Below it, an events table shows per-dataset ingestion events from
 
 ## Components
 
-- `IngestionSourceList` — the source list with the `mode` filter.
+- `IngestionSourceList` — the source list with the `mode`+`ad_hoc` filter and the ad-hoc badge.
 - `RecipeYamlEditor` — YAML recipe view/editor; read-only for `DATAHUB_MANAGED`, secrets masked.
 - `SourceDatasetTable` — the source→dataset mapping table.
 - `IngestionRunPanel` — dry-run / run trigger with status (`ACTIVE_CUSTOM_MANAGED` only).
