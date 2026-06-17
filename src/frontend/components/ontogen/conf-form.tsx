@@ -12,6 +12,7 @@ import { z } from "zod";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Field } from "@/components/forms/field";
+import { FormGrid } from "@/components/ui/form-grid";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
@@ -91,65 +92,70 @@ export function OntogenConfForm({
 
   return (
     <form onSubmit={handleSubmit(handleFormSubmit)} className="space-y-6">
-      <Field label="is_enabled" htmlFor="conf-is-enabled">
-        <div className="flex items-center gap-2">
-          <Checkbox
-            id="conf-is-enabled"
-            checked={isEnabled}
-            onCheckedChange={(v) => setValue("is_enabled", !!v)}
+      <FormGrid>
+        <Field label="is_enabled" htmlFor="conf-is-enabled">
+          <div className="flex items-center gap-2">
+            <Checkbox
+              id="conf-is-enabled"
+              checked={isEnabled}
+              onCheckedChange={(v) => setValue("is_enabled", !!v)}
+              disabled={disabled}
+            />
+            <span className="text-sm text-muted-foreground">
+              Enable periodic inference DAG
+            </span>
+          </div>
+        </Field>
+
+        <Field
+          label="schedule_tier"
+          htmlFor="conf-schedule-tier"
+          hint="Periodic re-inference cadence"
+        >
+          <Select
+            value={scheduleTier || "none"}
+            onValueChange={(v) =>
+              setValue("schedule_tier", v === "none" ? null : (v as "hourly" | "daily" | "weekly"))
+            }
+            disabled={disabled}
+          >
+            <SelectTrigger id="conf-schedule-tier">
+              <SelectValue placeholder="None (manual only)" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="none">None (manual only)</SelectItem>
+              <SelectItem value="hourly">hourly</SelectItem>
+              <SelectItem value="daily">daily</SelectItem>
+              <SelectItem value="weekly">weekly</SelectItem>
+            </SelectContent>
+          </Select>
+        </Field>
+
+        <div className="sm:col-span-2">
+          <DatasetFilterEditor
+            value={datasetFilter}
+            onChange={onDatasetFilterChange}
             disabled={disabled}
           />
-          <span className="text-sm text-muted-foreground">
-            Enable periodic inference DAG
-          </span>
         </div>
-      </Field>
 
-      <Field
-        label="schedule_tier"
-        htmlFor="conf-schedule-tier"
-        hint="Periodic re-inference cadence"
-      >
-        <Select
-          value={scheduleTier || "none"}
-          onValueChange={(v) =>
-            setValue("schedule_tier", v === "none" ? null : (v as "hourly" | "daily" | "weekly"))
-          }
-          disabled={disabled}
+        <Field
+          label="default_run_prompt"
+          htmlFor="conf-prompt"
+          hint="Default one-shot prompt for periodic runs and bodyless manual calls (max 16 KB)"
+          error={errors.default_run_prompt?.message}
+          className="sm:col-span-2"
         >
-          <SelectTrigger id="conf-schedule-tier">
-            <SelectValue placeholder="None (manual only)" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="none">None (manual only)</SelectItem>
-            <SelectItem value="hourly">hourly</SelectItem>
-            <SelectItem value="daily">daily</SelectItem>
-            <SelectItem value="weekly">weekly</SelectItem>
-          </SelectContent>
-        </Select>
-      </Field>
-
-      <DatasetFilterEditor
-        value={datasetFilter}
-        onChange={onDatasetFilterChange}
-        disabled={disabled}
-      />
-
-      <Field
-        label="default_run_prompt"
-        htmlFor="conf-prompt"
-        hint="Default one-shot prompt for periodic runs and bodyless manual calls (max 16 KB)"
-        error={errors.default_run_prompt?.message}
-      >
-        <Textarea
-          id="conf-prompt"
-          rows={8}
-          placeholder="Describe the ontology inference prompt…"
-          disabled={disabled}
-          className="font-mono text-xs"
-          {...register("default_run_prompt")}
-        />
-      </Field>
+          <Textarea
+            id="conf-prompt"
+            rows={8}
+            placeholder="Describe the ontology inference prompt…"
+            disabled={disabled}
+            className="font-mono text-xs"
+            {...register("default_run_prompt")}
+          />
+        </Field>
+      </FormGrid>
 
       {!disabled && (
         <Button type="submit" disabled={isSubmitting}>

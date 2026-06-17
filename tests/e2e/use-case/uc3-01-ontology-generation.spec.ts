@@ -13,15 +13,20 @@
  *   - Real-LLM variant: skips when stub_llm_client=true.  Adds an assertion that
  *     at least one node/edge/triple row was persisted.
  *
+ * OntoGen layout (FRONTEND_ONTOGEN.md §Navigation): the sidebar entry is a foldable
+ * group with children conf · seed · result. /ontogen redirects to /ontogen/result.
+ * Run + Edit controls live top-right on /ontogen/conf (Editor/Admin only); the conf is a
+ * singleton so there is no Delete. /ontogen/result is the triple-ontology browser.
+ *
  * Steps (verbatim from USE_CASE_en.md §UC3 Imazon Example):
- *   1. Navigate to /ontogen/conf; fill is_enabled + schedule_tier; Save.
+ *   1. Navigate to /ontogen/conf; assert Run + Edit controls; fill is_enabled + schedule_tier; Save.
  *      Backend: PUT /spoke/ontogen/attr/conf → 200/201; round-trips fields.
  *   2. Navigate to /ontogen/seed; click "+ New Seed"; paste domain Markdown; Save seed.
  *      Backend: GET /spoke/ontogen/attr/seed → seed_id present; preview + updated_at set.
- *   3. Navigate to /ontogen; click Run button → RunDialog → Run.
+ *   3. On /ontogen/conf, click Run button → RunDialog ("Run ontology inference") → Run.
  *      Backend poll until ONTOGEN.RUN_COMPLETE event appears; assert OntogenRunSummary shape.
  *   4. GET /spoke/ontogen/event → find ONTOGEN.RUN_COMPLETE; assert debate fields.
- *   5. On /ontogen, assert Nodes/Edges/Triples tabs render panels (no-op on count under stub).
+ *   5. On /ontogen/result, assert Nodes/Edges/Triples tabs render panels (no-op on count under stub).
  *      Backend: GET result/{node,edge,triple} → standard envelope shape each.
  *   6. Cleanup: DELETE seed; PATCH conf disabled.
  *
@@ -94,18 +99,30 @@ test("UC3 step 1 — enable ontogen conf on /ontogen/conf page", async ({
   await page.goto("/ontogen/conf");
   await expect(page).not.toHaveURL(/\/login/);
 
-  // -- UI assertion: page heading rendered --
-  // spec: FRONTEND_ONTOGEN.md §Page contracts — conf page h1 "OntoGen — Configuration"
-  // ontogen/conf/page.tsx line 66: <h1>OntoGen — Configuration</h1>
+  // -- UI assertion: page heading rendered (convenience landmark) --
+  // The heading text is a navigational landmark, not the binding invariant. The binding
+  // route → surface mapping (FRONTEND_ONTOGEN.md §Navigation / §Page contracts — /ontogen/conf
+  // hosts the Run+Edit conf editor) is asserted below via the URL, the Run+Edit/no-Delete
+  // control set, and the conf-form fields.
   await expect(
     page.getByRole("heading", { name: "OntoGen — Configuration", exact: true })
   ).toBeVisible({ timeout: 15_000 });
 
-  // -- UI assertion: Edit button visible (conf may exist from prior run; skip create branch) --
-  // If the conf already exists the page shows Edit/Delete buttons.
-  // If it does not exist yet it shows an EmptyState with no Edit button.
-  // We use adminApi to PUT the conf directly, then reload to get into the known-good state,
-  // avoiding brittle conditional UI branching in the spec.
+  // -- UI assertion: foldable OntoGen sidebar group reveals conf · seed · result --
+  // spec: FRONTEND_ONTOGEN.md §Navigation — "OntoGen sidebar entry is a foldable group
+  //   with three children — conf · seed · result."
+  // The group is a role=button with accessible name "OntoGen" (aria-expanded toggles its
+  // children). Navigating to /ontogen/conf auto-expands it; assert the child links exist.
+  const ontogenGroup = page.getByRole("button", { name: /OntoGen/ });
+  await expect(ontogenGroup).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByRole("link", { name: "conf", exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "seed", exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "result", exact: true })).toBeVisible();
+
+  // -- UI assertion: conf controls present (conf may exist from prior run; skip create branch) --
+  // The conf page renders Edit/Run controls only when the singleton conf exists; otherwise an
+  // EmptyState. We use adminApi to PUT the conf directly, then reload to get into the known-good
+  // state, avoiding brittle conditional UI branching in the spec.
   //
   // Idempotent setup: PUT conf regardless of prior state.
   const putResp = await adminApi.put(CONF_API, { data: CONF_PAYLOAD });
@@ -118,11 +135,14 @@ test("UC3 step 1 — enable ontogen conf on /ontogen/conf page", async ({
     page.getByRole("heading", { name: "OntoGen — Configuration", exact: true })
   ).toBeVisible({ timeout: 15_000 });
 
-  // -- UI assertion: Edit button now visible (conf present) --
-  // spec: FRONTEND_ONTOGEN.md §Page contracts — canWrite → Edit + Delete buttons
-  // ontogen/conf/page.tsx lines 97-109: Edit + Delete buttons when conf present and not editing
+  // -- UI assertion: Run + Edit controls visible top-right (canWrite=Admin); no Delete --
+  // spec: FRONTEND_ONTOGEN.md §Page contracts — "Edit and Run controls sit top-right; the conf
+  //   is a singleton so the UI exposes no Delete."
+  // spec: FRONTEND_ONTOGEN.md §Page contracts — "renders the singleton conf with Edit and Run
+  //   controls at the top-right ... there is no Delete."
   await expect(page.getByRole("button", { name: "Edit" })).toBeVisible({ timeout: 10_000 });
-  await expect(page.getByRole("button", { name: "Delete" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Run" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Delete" })).toHaveCount(0);
 
   // -- UI assertion: the form renders (is_enabled checkbox, schedule_tier select) --
   // spec: FRONTEND_ONTOGEN.md §Page contracts — conf-form fields: is_enabled, schedule_tier
@@ -260,45 +280,38 @@ test("UC3 step 2 — create domain seed on /ontogen/seed page", async ({
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Step 3 — Trigger real (non-dry-run) inference via /ontogen Run button
+// Step 3 — Trigger real (non-dry-run) inference via /ontogen/conf Run button
 // spec: USE_CASE_en.md §UC3 §Run semantics — non-dry-run persists rows
-// spec: FRONTEND_ONTOGEN.md §Page contracts — /ontogen: POST method/run via RunDialog
+// spec: FRONTEND_ONTOGEN.md §Page contracts — /ontogen/conf: POST method/run via RunDialog
+//   ("Edit and Run controls sit top-right ... Run opens a dialog (POST .../method/run)")
 // ─────────────────────────────────────────────────────────────────────────────
-test("UC3 step 3 (stub mode) — trigger Run from /ontogen; assert OntogenRunSummary shape", async ({
+test("UC3 step 3 (stub mode) — trigger Run from /ontogen/conf; assert OntogenRunSummary shape", async ({
   page,
   adminApi,
 }) => {
   if (!confCreated || !seedId) test.skip(true, "steps 1/2 did not complete");
 
-  // Navigate to the main ontogen page.
-  // spec: FRONTEND_ONTOGEN.md §Navigation — /ontogen → Browser + review
-  await page.goto("/ontogen");
+  // Navigate to the conf page, which hosts the Run control.
+  // spec: FRONTEND_ONTOGEN.md §Navigation — /ontogen/conf → Conf editor + Run
+  await page.goto("/ontogen/conf");
   await expect(page).not.toHaveURL(/\/login/);
 
-  // -- UI assertion: page heading --
-  // spec: FRONTEND_ONTOGEN.md §Page contracts — /ontogen h1 "Ontology Generation"
-  // ontogen/page.tsx line 43: <h1>Ontology Generation</h1>
+  // -- UI assertion: conf page heading (convenience landmark) --
+  // Heading text is a landmark only; the binding route → surface invariant (FRONTEND_ONTOGEN.md
+  // §Navigation / §Page contracts — /ontogen/conf hosts the Run control) is asserted via the URL
+  // and the Run button assertion immediately below.
   await expect(
-    page.getByRole("heading", { name: "Ontology Generation", exact: true })
+    page.getByRole("heading", { name: "OntoGen — Configuration", exact: true })
   ).toBeVisible({ timeout: 15_000 });
 
-  // -- UI assertion: tabs visible (Nodes, Edges, Triples, Navigator) --
-  // spec: FRONTEND_ONTOGEN.md §Page contracts — tabs rendered for nodes/edges/triples/navigator
-  // ontogen/page.tsx lines 53-57: TabsTrigger values nodes/edges/triples/navigator
-  await expect(page.getByRole("tab", { name: "Nodes" })).toBeVisible({ timeout: 10_000 });
-  await expect(page.getByRole("tab", { name: "Edges" })).toBeVisible();
-  await expect(page.getByRole("tab", { name: "Triples" })).toBeVisible();
-  await expect(page.getByRole("tab", { name: "Navigator" })).toBeVisible();
-
-  // -- UI assertion: Run button visible (canWrite=Admin) --
-  // spec: FRONTEND_ONTOGEN.md §Page contracts — Run button: only for Editor/Admin
-  // ontogen/page.tsx line 45: <Button>Run</Button> (or "Running…" when pending)
+  // -- UI assertion: Run button visible top-right (canWrite=Admin) --
+  // spec: FRONTEND_ONTOGEN.md §Page contracts — Run control on /ontogen/conf, Editor/Admin only
   await expect(page.getByRole("button", { name: "Run" })).toBeVisible({ timeout: 10_000 });
 
   // -- UI gesture: click Run to open RunDialog --
-  // spec: FRONTEND_ONTOGEN.md §Page contracts — Run triggers RunDialog
-  // run-dialog.tsx: <Dialog> with title "Run ontology inference"
-  await page.getByRole("button", { name: "Run" }).click();
+  // spec: FRONTEND_ONTOGEN.md §Page contracts — "Run opens a dialog (POST .../method/run)"
+  // The top-right Run button is the only "Run" button until the dialog opens; click .first().
+  await page.getByRole("button", { name: "Run" }).first().click();
 
   // -- UI assertion: RunDialog visible with title --
   // run-dialog.tsx line 41: <DialogTitle>Run ontology inference</DialogTitle>
@@ -391,22 +404,38 @@ test("UC3 step 3 (stub mode) — trigger Run from /ontogen; assert OntogenRunSum
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Step 4 — /ontogen page: Nodes/Edges/Triples tabs render; result envelope shape
+// Step 4 — /ontogen/result browser: Nodes/Edges/Triples tabs render; result envelope shape
 // spec: USE_CASE_en.md §UC3 §API Mapping — list endpoints return paginated envelopes
-// spec: FRONTEND_ONTOGEN.md §Page contracts — /ontogen: tabs show node/edge/triple panels
+// spec: FRONTEND_ONTOGEN.md §Navigation — /ontogen redirects to /ontogen/result
+// spec: FRONTEND_ONTOGEN.md §Page contracts — /ontogen/result: tabs Nodes/Edges/Triples/Navigator
 // ─────────────────────────────────────────────────────────────────────────────
-test("UC3 step 4 (stub mode) — /ontogen tabs render panels; result envelopes valid", async ({
+test("UC3 step 4 (stub mode) — /ontogen/result tabs render panels; result envelopes valid", async ({
   page,
   adminApi,
 }) => {
   if (!confCreated) test.skip(true, "step 1 did not create conf");
 
+  // -- UI assertion: /ontogen lands on the result browser (redirect; mechanism-agnostic) --
+  // spec: FRONTEND_ONTOGEN.md §Navigation — "/ontogen redirects to /ontogen/result."
+  // The redirect may be server (302) or client; assert the final resting URL + heading, not how.
   await page.goto("/ontogen");
   await expect(page).not.toHaveURL(/\/login/);
+  await expect(page).toHaveURL(/\/ontogen\/result\/?$/, { timeout: 15_000 });
 
+  // -- UI assertion: result browser heading (convenience landmark) --
+  // Heading text is a landmark only; the binding route → surface invariant (FRONTEND_ONTOGEN.md
+  // §Navigation / §Page contracts — /ontogen/result is the triple-ontology browser with
+  // Nodes/Edges/Triples/Navigator tabs) is asserted via the resting URL and the tab set below.
   await expect(
     page.getByRole("heading", { name: "Ontology Generation", exact: true })
   ).toBeVisible({ timeout: 15_000 });
+
+  // -- UI assertion: tabs visible (Nodes, Edges, Triples, Navigator) --
+  // spec: FRONTEND_ONTOGEN.md §Page contracts — result browser tabs Nodes/Edges/Triples/Navigator
+  await expect(page.getByRole("tab", { name: "Nodes" })).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByRole("tab", { name: "Edges" })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Triples" })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Navigator" })).toBeVisible();
 
   // -- UI assertion: Nodes tab selected by default; panel renders --
   // ontogen/page.tsx line 51: <Tabs defaultValue="nodes">
@@ -657,15 +686,18 @@ test("UC3 real-LLM step 3 — trigger Run; assert OntogenRunSummary shape", asyn
   test.skip(stubLlm, "stub_llm_client=true; set false via PATCH /admin/conf to run real-LLM tests");
   if (!realConfCreated || !realSeedId) test.skip(true, "real-LLM steps 1/2 did not complete");
 
-  await page.goto("/ontogen");
+  // Run lives on /ontogen/conf (FRONTEND_ONTOGEN.md §Page contracts — Run control top-right).
+  await page.goto("/ontogen/conf");
   await expect(page).not.toHaveURL(/\/login/);
+  // Heading is a convenience landmark; the binding route → surface invariant (Run control on
+  // /ontogen/conf) is asserted via the URL and the Run button assertion below.
   await expect(
-    page.getByRole("heading", { name: "Ontology Generation", exact: true })
+    page.getByRole("heading", { name: "OntoGen — Configuration", exact: true })
   ).toBeVisible({ timeout: 15_000 });
   await expect(page.getByRole("button", { name: "Run" })).toBeVisible({ timeout: 10_000 });
 
   // Open RunDialog → leave dry_run unchecked → Run.
-  await page.getByRole("button", { name: "Run" }).click();
+  await page.getByRole("button", { name: "Run" }).first().click();
   await expect(
     page.getByRole("heading", { name: "Run ontology inference", exact: true })
   ).toBeVisible({ timeout: 5_000 });
@@ -733,8 +765,13 @@ test("UC3 real-LLM step 4 — result envelopes valid; ≥1 row persisted; eviden
   test.skip(stubLlm, "stub_llm_client=true; set false via PATCH /admin/conf to run real-LLM tests");
   if (!realConfCreated) test.skip(true, "real-LLM step 1 did not complete");
 
+  // /ontogen redirects to /ontogen/result (FRONTEND_ONTOGEN.md §Navigation).
   await page.goto("/ontogen");
   await expect(page).not.toHaveURL(/\/login/);
+  await expect(page).toHaveURL(/\/ontogen\/result\/?$/, { timeout: 15_000 });
+  // Heading is a convenience landmark; the binding route → surface invariant (/ontogen/result
+  // is the triple-ontology browser with Nodes/Edges/Triples tabs) is asserted via the resting
+  // URL and the tab assertions below.
   await expect(
     page.getByRole("heading", { name: "Ontology Generation", exact: true })
   ).toBeVisible({ timeout: 15_000 });

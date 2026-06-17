@@ -77,16 +77,26 @@ test("editor: sidebar does NOT show the 'Configurations' link to /admin/conf", a
 });
 
 // ── Test 4 — Main feature nav IS visible for Editor ───────────────────────────
-// spec: FRONTEND_BASIC.md §Shell — mainNav renders for every role; Editor has full
-//   read+write access to feature pages.
+// spec: FRONTEND_BASIC.md §Shell fixes mainNav entries, grouping, and order for every
+//   role (Editor has full read+write access to feature pages): Governance ▾ (Dashboard,
+//   Metrics), Ingestion, Validation, OntoGen ▾ (conf, seed, result), MetaGen.
+// Implementation realization of the §Shell grouping (not a spec mandate): each ▾ group
+//   renders as a disclosure <button>, a group auto-opens when its active route is open,
+//   and a collapsed group prunes its child links from the DOM. On /governance/dashboard
+//   the Governance group auto-opens (child links present) while the OntoGen group stays
+//   collapsed (toggle button present, children pruned).
 
 test("editor: sidebar shows all main feature nav links", async ({ page }) => {
   await gotoShell(page);
 
+  // Group toggles render as buttons (impl realization); Governance is auto-open here, OntoGen collapsed.
+  await expect(page.getByRole("button", { name: "Governance", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "OntoGen", exact: true })).toBeVisible();
+  // Governance child link is visible because the group auto-opens on /governance/dashboard.
   await expect(page.getByRole("link", { name: "Dashboard", exact: true })).toBeVisible();
+  // Flat feature links.
   await expect(page.getByRole("link", { name: "Ingestion", exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: "Validation", exact: true })).toBeVisible();
-  await expect(page.getByRole("link", { name: "OntoGen", exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: "MetaGen", exact: true })).toBeVisible();
 });
 

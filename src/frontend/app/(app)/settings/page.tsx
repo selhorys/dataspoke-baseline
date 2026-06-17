@@ -53,7 +53,7 @@ export default function SettingsPage() {
   ] as const;
 
   return (
-    <div className="max-w-lg space-y-8">
+    <div className="space-y-8">
       <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
 
       <section className="space-y-3">

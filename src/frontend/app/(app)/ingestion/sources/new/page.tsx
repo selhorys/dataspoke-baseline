@@ -14,6 +14,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Field } from "@/components/forms/field";
+import { FormGrid } from "@/components/ui/form-grid";
 import { ErrorState } from "@/components/ui/error-state";
 import { RecipeYamlEditor } from "@/components/ingestion/recipe-yaml-editor";
 import { SecretRefHelper } from "@/components/ingestion/secret-ref-helper";
@@ -132,7 +133,7 @@ export default function CreateIngestionSourcePage() {
   }
 
   return (
-    <div className="max-w-3xl space-y-6">
+    <div className="space-y-6">
       <div className="flex flex-wrap items-center gap-3">
         <Link
           href="/ingestion"
@@ -146,7 +147,7 @@ export default function CreateIngestionSourcePage() {
         </h1>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2">
+      <FormGrid>
         <Field label="mode" htmlFor="create-mode" hint={modeDescription(mode)}>
           <Select
             value={mode}
@@ -202,7 +203,7 @@ export default function CreateIngestionSourcePage() {
             </Select>
           </Field>
         )}
-      </div>
+      </FormGrid>
 
       {/* Secret references helper — list + read-only authoring guide. Shown for
           ACTIVE_CUSTOM_MANAGED, whose recipes carry ${name__key} refs. */}

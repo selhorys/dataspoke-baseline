@@ -1,15 +1,14 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { OntogenConfForm } from "@/components/ontogen/conf-form";
-import { ConfirmDialog } from "@/components/confirm-dialog";
+import { RunDialog } from "@/components/ontogen/run-dialog";
 import {
   useOntogenConf,
   useUpsertOntogenConf,
-  useDeleteOntogenConf,
+  useRunOntogen,
 } from "@/lib/api/ontogen";
 import { useMe } from "@/lib/auth/use-me";
 import { useToast } from "@/components/ui/use-toast";
@@ -22,11 +21,11 @@ export default function OntogenConfPage() {
   const { canWrite } = useMe();
   const { data: conf, isLoading, error } = useOntogenConf();
   const upsertMutation = useUpsertOntogenConf();
-  const deleteMutation = useDeleteOntogenConf();
+  const runMutation = useRunOntogen();
   const { toast } = useToast();
 
   const [editing, setEditing] = useState(false);
-  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [runDialogOpen, setRunDialogOpen] = useState(false);
   const [datasetFilter, setDatasetFilter] = useState<DatasetFilter>({});
 
   useEffect(() => {
@@ -47,20 +46,27 @@ export default function OntogenConfPage() {
     });
   }
 
-  function handleDelete() {
-    deleteMutation.mutate(undefined, {
-      onSuccess: () => {
-        setDeleteOpen(false);
-        toast({ title: "Configuration deleted" });
+  function handleRun(params: { promptMd?: string; dry_run: boolean }) {
+    runMutation.mutate(params, {
+      onSuccess: (data) => {
+        setRunDialogOpen(false);
+        const label = data.dry_run ? "Dry run complete" : "Run complete";
+        const detail = Object.entries(data.counts)
+          .map(([k, v]) => `${k}: ${v}`)
+          .join(", ");
+        toast({
+          title: label,
+          description: detail || data.status,
+        });
       },
       onError: (err) => {
-        toast({ title: "Delete failed", description: err.message, variant: "destructive" });
+        toast({ title: "Run failed", description: err.message, variant: "destructive" });
       },
     });
   }
 
   return (
-    <div className="space-y-6 max-w-2xl">
+    <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">OntoGen — Configuration</h1>
@@ -68,11 +74,21 @@ export default function OntogenConfPage() {
             Singleton operational conf for the ontology inference DAG.
           </p>
         </div>
-        <Link href="/ontogen">
-          <Button variant="outline" size="sm">
-            Back to browser
-          </Button>
-        </Link>
+        {canWrite && (
+          <div className="flex gap-2">
+            {!editing && (
+              <Button variant="outline" onClick={() => setEditing(true)}>
+                Edit
+              </Button>
+            )}
+            <Button
+              onClick={() => setRunDialogOpen(true)}
+              disabled={runMutation.isPending}
+            >
+              {runMutation.isPending ? "Running…" : "Run"}
+            </Button>
+          </div>
+        )}
       </div>
 
       {isLoading && (
@@ -93,21 +109,6 @@ export default function OntogenConfPage() {
 
       {!isLoading && !error && conf && (
         <>
-          {canWrite && !editing && (
-            <div className="flex gap-2">
-              <Button variant="outline" onClick={() => setEditing(true)}>
-                Edit
-              </Button>
-              <Button
-                variant="destructive"
-                onClick={() => setDeleteOpen(true)}
-                disabled={deleteMutation.isPending}
-              >
-                Delete
-              </Button>
-            </div>
-          )}
-
           <OntogenConfForm
             initialValues={conf}
             datasetFilter={datasetFilter}
@@ -129,14 +130,11 @@ export default function OntogenConfPage() {
         </>
       )}
 
-      <ConfirmDialog
-        open={deleteOpen}
-        onOpenChange={setDeleteOpen}
-        title="Delete ontogen configuration"
-        description="This resets the configuration to defaults. The inference DAG will be disabled. This action does not write to DataHub."
-        confirmLabel="Delete"
-        onConfirm={handleDelete}
-        loading={deleteMutation.isPending}
+      <RunDialog
+        open={runDialogOpen}
+        onOpenChange={setRunDialogOpen}
+        onRun={handleRun}
+        isRunning={runMutation.isPending}
       />
     </div>
   );

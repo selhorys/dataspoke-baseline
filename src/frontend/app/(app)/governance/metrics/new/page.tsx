@@ -50,7 +50,7 @@ export default function NewMetricPage() {
         <h1 className="text-2xl font-semibold tracking-tight">New metric</h1>
       </div>
 
-      <div className="max-w-2xl">
+      <div>
         <MetricForm
           defaultValues={DEFAULT_VALUES}
           isCreate

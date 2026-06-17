@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ConfirmDialog } from "@/components/confirm-dialog";
@@ -32,7 +31,7 @@ export default function OntogenSeedPage() {
   const [deleteSeedId, setDeleteSeedId] = useState<string | null>(null);
 
   return (
-    <div className="space-y-6 max-w-3xl">
+    <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">OntoGen — Seed Library</h1>
@@ -46,11 +45,6 @@ export default function OntogenSeedPage() {
               + New Seed
             </Button>
           )}
-          <Link href="/ontogen">
-            <Button variant="outline" size="sm">
-              Back to browser
-            </Button>
-          </Link>
         </div>
       </div>
 

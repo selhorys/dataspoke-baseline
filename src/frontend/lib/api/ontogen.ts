@@ -60,18 +60,6 @@ export function usePatchOntogenConf() {
   });
 }
 
-export function useDeleteOntogenConf() {
-  const qc = useQueryClient();
-  return useMutation<void, Error, void>({
-    mutationFn: () =>
-      apiFetch<void>("/spoke/ontogen/attr/conf", { method: "DELETE" }),
-    meta: { handledInline: true },
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ["ontogen", "conf"] });
-    },
-  });
-}
-
 // ── Seeds ─────────────────────────────────────────────────────────────────────
 
 interface ListSeedsParams {

@@ -69,11 +69,11 @@ export function mergeAndCapEvents(
 export function deriveEventDeepLink(event: NotificationEvent): string | null {
   const { source, event_type } = event;
 
-  // OntoGen: run events link to the main ontogen page
+  // OntoGen: node/edge/triple events link to the result browser; others to the main page
   if (source === "ontogen") {
-    if (event_type.includes("NODE")) return "/ontogen";
-    if (event_type.includes("EDGE")) return "/ontogen";
-    if (event_type.includes("TRIPLE")) return "/ontogen";
+    if (event_type.includes("NODE")) return "/ontogen/result";
+    if (event_type.includes("EDGE")) return "/ontogen/result";
+    if (event_type.includes("TRIPLE")) return "/ontogen/result";
     return "/ontogen";
   }
 

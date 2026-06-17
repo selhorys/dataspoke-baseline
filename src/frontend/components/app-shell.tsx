@@ -1,14 +1,18 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
   BarChart3,
+  ChevronDown,
+  ChevronRight,
   Database,
   GitBranch,
   LayoutDashboard,
   LogOut,
   Network,
+  Scale,
   Settings,
   Shield,
   SlidersHorizontal,
@@ -40,14 +44,41 @@ interface NavItem {
   icon: React.ComponentType<{ className?: string }>;
 }
 
-const mainNav: NavItem[] = [
-  { label: "Dashboard", href: "/governance/dashboard", icon: LayoutDashboard },
-  { label: "Metrics", href: "/governance/metrics", icon: BarChart3 },
+interface NavGroup {
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+  basePath: string;
+  children: NavItem[];
+}
+
+const mainNav: (NavItem | NavGroup)[] = [
+  {
+    label: "Governance",
+    icon: Scale,
+    basePath: "/governance",
+    children: [
+      { label: "Dashboard", href: "/governance/dashboard", icon: LayoutDashboard },
+      { label: "Metrics", href: "/governance/metrics", icon: BarChart3 },
+    ],
+  },
   { label: "Ingestion", href: "/ingestion", icon: Database },
   { label: "Validation", href: "/validation", icon: Shield },
-  { label: "OntoGen", href: "/ontogen", icon: Network },
+  {
+    label: "OntoGen",
+    icon: Network,
+    basePath: "/ontogen",
+    children: [
+      { label: "conf", href: "/ontogen/conf", icon: Network },
+      { label: "seed", href: "/ontogen/seed", icon: Network },
+      { label: "result", href: "/ontogen/result", icon: Network },
+    ],
+  },
   { label: "MetaGen", href: "/metagen", icon: Sparkles },
 ];
+
+function isNavGroup(entry: NavItem | NavGroup): entry is NavGroup {
+  return "children" in entry;
+}
 
 const accountNav: NavItem[] = [
   { label: "Profile", href: "/profile", icon: User },
@@ -78,6 +109,46 @@ function SidebarLink({ item }: { item: NavItem }) {
       <Icon className="h-4 w-4 shrink-0" />
       {item.label}
     </Link>
+  );
+}
+
+function SidebarNavGroup({ group }: { group: NavGroup }) {
+  const pathname = usePathname();
+  const isActive = pathname === group.basePath || pathname.startsWith(group.basePath + "/");
+  const [open, setOpen] = useState(isActive);
+  const Icon = group.icon;
+
+  useEffect(() => {
+    if (isActive) setOpen(true);
+  }, [isActive]);
+
+  const Chevron = open ? ChevronDown : ChevronRight;
+
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className={cn(
+          "flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+          isActive
+            ? "bg-accent text-accent-foreground"
+            : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+        )}
+      >
+        <Icon className="h-4 w-4 shrink-0" />
+        {group.label}
+        <Chevron className="ml-auto h-4 w-4 shrink-0" />
+      </button>
+      {open && (
+        <div className="mt-1 flex flex-col gap-1 pl-6">
+          {group.children.map((child) => (
+            <SidebarLink key={child.href} item={child} />
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -177,9 +248,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         {/* Sidebar */}
         <aside className="hidden w-56 shrink-0 flex-col border-r bg-background md:flex">
           <nav className="flex flex-1 flex-col gap-1 p-3">
-            {mainNav.map((item) => (
-              <SidebarLink key={item.href} item={item} />
-            ))}
+            {mainNav.map((entry) =>
+              isNavGroup(entry) ? (
+                <SidebarNavGroup key={entry.basePath} group={entry} />
+              ) : (
+                <SidebarLink key={entry.href} item={entry} />
+              ),
+            )}
 
             <div className="mt-auto border-t pt-3">
               {isAdmin && (

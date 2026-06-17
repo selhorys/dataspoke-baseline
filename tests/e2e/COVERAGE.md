@@ -62,8 +62,9 @@ group does not cover the route; the other column does.
 
 | Route | UC test | Ground test |
 |---|---|---|
-| `/ontogen` | `uc3-01-ontology-generation.spec.ts` steps 3–4 (Run dialog, tabs, result panels) | — |
-| `/ontogen/conf` | `uc3-01-ontology-generation.spec.ts` step 1 (Edit/Save conf) | — |
+| `/ontogen` | `uc3-01-ontology-generation.spec.ts` step 4 (redirects to `/ontogen/result`) | — |
+| `/ontogen/result` | `uc3-01-ontology-generation.spec.ts` step 4 (browser: Nodes/Edges/Triples/Navigator tabs, result envelopes) | — |
+| `/ontogen/conf` | `uc3-01-ontology-generation.spec.ts` steps 1, 3 (Run + Edit conf, no Delete; Run dialog) | — |
 | `/ontogen/seed` | `uc3-01-ontology-generation.spec.ts` steps 2, 5 (create seed, delete via ConfirmDialog) | — |
 
 #### Metadata Generation (UC4)

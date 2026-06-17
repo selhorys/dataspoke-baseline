@@ -55,7 +55,10 @@ its URL unset.
 │  Metrics        │                                      │
 │ Ingestion       │                                      │
 │ Validation      │                                      │
-│ OntoGen         │                                      │
+│ OntoGen ▾       │                                      │
+│  conf           │                                      │
+│  seed           │                                      │
+│  result         │                                      │
 │ MetaGen         │                                      │
 ├─────────────────┤                                      │
 │ ADMIN           │   (Admin role only)                  │
@@ -68,6 +71,16 @@ its URL unset.
 └─────────────────┴──────────────────────────────────────┘
                   Application shell
 ```
+
+**Content width.** Every page fills the full available content width — the
+`<main>` area inside the shell that sits to the right of the menu and carries the
+shell gutter. Pages do not impose their own narrow max-width. Multi-field forms
+lay their fields out in a responsive grid (each field roughly *available width ÷
+columns* wide): two columns from the small breakpoint up, collapsing to a single
+column on narrow viewports. Fields that need the full row — textareas,
+Markdown/YAML/recipe/code editors, full-width selects, and file inputs — span the
+whole width. Single large-editor pages (the OntoGen seed Markdown editor, the
+ingestion recipe YAML editor) remain one full-width field.
 
 ---
 
@@ -88,7 +101,10 @@ its URL unset.
 | `/governance/metrics` | [Metric configuration](FRONTEND_GOVERNANCE.md) | `/spoke/governance/metric/...` |
 | `/ingestion` | [Ingestion Control](FRONTEND_INGESTION.md) | `/spoke/ingestion/...` |
 | `/validation` | [Validation](FRONTEND_VALIDATION.md) | `/spoke/validation/...` |
-| `/ontogen` | [Ontology Generation](FRONTEND_ONTOGEN.md) | `/spoke/ontogen/...` |
+| `/ontogen` | 302 to `/ontogen/result` | — |
+| `/ontogen/result` | [Ontology Generation — browser + review](FRONTEND_ONTOGEN.md) | `/spoke/ontogen/result/...` |
+| `/ontogen/conf` | [Ontology Generation — conf + run](FRONTEND_ONTOGEN.md) | `/spoke/ontogen/attr/conf`, `/spoke/ontogen/method/run` |
+| `/ontogen/seed` | [Ontology Generation — seed library](FRONTEND_ONTOGEN.md) | `/spoke/ontogen/attr/seed/...` |
 | `/metagen` | [Metadata Generation](FRONTEND_METAGEN.md) | `/spoke/metagen/...` |
 | `/settings` | Theme, locale, and timezone (Local or UTC, **default Local**) toggles, persisted in `localStorage` only. The timezone preference is display-only — it governs how all dates and times are rendered across the app; stored and queried timestamps remain canonical UTC ISO per `API.md`. | — |
 

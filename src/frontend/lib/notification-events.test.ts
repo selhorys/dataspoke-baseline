@@ -11,7 +11,8 @@
  *   - mergeAndCapEvents aggregation contract:
  *     dedup by id, sort occurred_at DESC, cap at maxItems (default 20).
  *   - deriveEventDeepLink routing contract:
- *     source="ontogen" → "/ontogen"; source="metagen" → "/metagen";
+ *     source="ontogen" result-row events (NODE/EDGE/TRIPLE) → "/ontogen/result",
+ *     other ontogen events → "/ontogen"; source="metagen" → "/metagen";
  *     unknown/unmappable → null.
  */
 
@@ -371,8 +372,9 @@ describe("mergeAndCapEvents — merged item carries source label (feature origin
 // 6. deriveEventDeepLink — ontogen events → /ontogen
 // ---------------------------------------------------------------------------
 
-describe("deriveEventDeepLink — ontogen source → /ontogen (spec/feature/FRONTEND_BASIC.md §Routing)", () => {
-  // Contract: ontogen events link to the ontogen function page.
+describe("deriveEventDeepLink — ontogen source routing (spec/feature/FRONTEND_BASIC.md §Routing)", () => {
+  // Contract: ontogen result-row events (NODE/EDGE/TRIPLE) link to the result
+  // browser at /ontogen/result; all other ontogen events fall back to /ontogen.
   // spec/feature/FRONTEND_BASIC.md §Routing: /ontogen → Ontology Generation.
 
   function ontoEvent(event_type: string): NotificationEvent {
@@ -388,19 +390,19 @@ describe("deriveEventDeepLink — ontogen source → /ontogen (spec/feature/FRON
     };
   }
 
-  it("ontogen NODE event → /ontogen", () => {
-    expect(deriveEventDeepLink(ontoEvent("NODE_DISCOVERED"))).toBe("/ontogen");
+  it("ontogen NODE event → /ontogen/result (result-row event → result browser)", () => {
+    expect(deriveEventDeepLink(ontoEvent("NODE_DISCOVERED"))).toBe("/ontogen/result");
   });
 
-  it("ontogen EDGE event → /ontogen", () => {
-    expect(deriveEventDeepLink(ontoEvent("EDGE_DISCOVERED"))).toBe("/ontogen");
+  it("ontogen EDGE event → /ontogen/result (result-row event → result browser)", () => {
+    expect(deriveEventDeepLink(ontoEvent("EDGE_DISCOVERED"))).toBe("/ontogen/result");
   });
 
-  it("ontogen TRIPLE event → /ontogen", () => {
-    expect(deriveEventDeepLink(ontoEvent("TRIPLE_APPROVED"))).toBe("/ontogen");
+  it("ontogen TRIPLE event → /ontogen/result (result-row event → result browser)", () => {
+    expect(deriveEventDeepLink(ontoEvent("TRIPLE_APPROVED"))).toBe("/ontogen/result");
   });
 
-  it("ontogen event with generic event_type → /ontogen (all ontogen events map to the same page)", () => {
+  it("ontogen event with generic event_type → /ontogen (non-result-row events fall back to the main ontogen page)", () => {
     expect(deriveEventDeepLink(ontoEvent("run_completed"))).toBe("/ontogen");
   });
 
@@ -471,13 +473,14 @@ describe("deriveEventDeepLink — returned path must not embed raw URN colons or
       detail: {},
     });
 
-    // Current impl returns "/ontogen" which is safe; assert URN is not raw in path.
+    // NODE_DISCOVERED is a result-row event → fixed "/ontogen/result", which is
+    // safe; assert the URN is not embedded raw in the path.
     if (link !== null && link.includes("urn:li")) {
       // If any future impl embeds the URN, it must be encoded.
       expect(link).not.toMatch(/urn:li:/);
     } else {
       // Safe fixed path — no encoding issue.
-      expect(link).toBe("/ontogen");
+      expect(link).toBe("/ontogen/result");
     }
   });
 
@@ -559,10 +562,11 @@ describe("deriveEventDeepLink — unknown source → null (no broken href, no th
 
 describe("deriveEventDeepLink — returned paths match FRONTEND_BASIC.md §Routing table", () => {
   // The routes in FRONTEND_BASIC.md §Routing define the valid in-app paths.
-  // Spec: /ontogen → Ontology Generation, /metagen → Metadata Generation.
+  // Spec: /ontogen → Ontology Generation (result-row events deep-link to its
+  // result browser at /ontogen/result), /metagen → Metadata Generation.
   // Any deep link returned by this function must be a registered route.
 
-  const registeredRoutes = new Set(["/ontogen", "/metagen"]);
+  const registeredRoutes = new Set(["/ontogen", "/ontogen/result", "/metagen"]);
 
   it("ontogen link is in the registered route set", () => {
     const link = deriveEventDeepLink({

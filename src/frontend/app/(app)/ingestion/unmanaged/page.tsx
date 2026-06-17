@@ -37,7 +37,7 @@ export default function UnmanagedDatasetsPage() {
         </h1>
       </div>
 
-      <p className="max-w-2xl text-sm text-muted-foreground">
+      <p className="text-sm text-muted-foreground">
         DataHub datasets covered by no ingestion source — the &quot;what is being
         ingested in an unmanaged way?&quot; answer. The registry is refreshed
         hourly. This view is read-only.

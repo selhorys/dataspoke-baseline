@@ -11,6 +11,7 @@ import { toast } from "@/components/ui/use-toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Field } from "@/components/forms/field";
+import { FormGrid } from "@/components/ui/form-grid";
 import { PasswordInput } from "@/components/forms/password-input";
 import { Skeleton } from "@/components/ui/skeleton";
 
@@ -78,7 +79,7 @@ export default function ProfilePage() {
 
   if (isLoading) {
     return (
-      <div className="max-w-lg space-y-4">
+      <div className="space-y-4">
         <Skeleton className="h-8 w-48" />
         <Skeleton className="h-10 w-full" />
         <Skeleton className="h-10 w-full" />
@@ -87,45 +88,49 @@ export default function ProfilePage() {
   }
 
   return (
-    <div className="max-w-lg">
+    <div>
       <h1 className="mb-6 text-2xl font-semibold tracking-tight">Profile</h1>
 
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-        <Field label="Email">
-          <Input value={me?.email ?? ""} disabled />
-        </Field>
+        <FormGrid>
+          <Field label="Email">
+            <Input value={me?.email ?? ""} disabled />
+          </Field>
 
-        <Field label="Role">
-          <Input value={me?.role ?? ""} disabled />
-        </Field>
+          <Field label="Role">
+            <Input value={me?.role ?? ""} disabled />
+          </Field>
 
-        <Field label="Google" >
-          <Input value={me?.has_google ? "Linked" : "Not linked"} disabled />
-        </Field>
+          <Field label="Google">
+            <Input value={me?.has_google ? "Linked" : "Not linked"} disabled />
+          </Field>
 
-        <Field label="Name" htmlFor="name" error={errors.name?.message} required>
-          <Input
-            id="name"
-            type="text"
-            autoComplete="name"
-            {...register("name")}
-          />
-        </Field>
+          <Field label="Name" htmlFor="name" error={errors.name?.message} required>
+            <Input
+              id="name"
+              type="text"
+              autoComplete="name"
+              {...register("name")}
+            />
+          </Field>
+        </FormGrid>
 
         <div className="border-t pt-4">
           <p className="mb-3 text-sm font-medium">Change password</p>
-          <Field
-            label="New password"
-            htmlFor="password"
-            error={errors.password?.message}
-            hint="Leave blank to keep your current password. Minimum 10 characters."
-          >
-            <PasswordInput
-              id="password"
-              autoComplete="new-password"
-              {...register("password")}
-            />
-          </Field>
+          <FormGrid>
+            <Field
+              label="New password"
+              htmlFor="password"
+              error={errors.password?.message}
+              hint="Leave blank to keep your current password. Minimum 10 characters."
+            >
+              <PasswordInput
+                id="password"
+                autoComplete="new-password"
+                {...register("password")}
+              />
+            </Field>
+          </FormGrid>
         </div>
 
         <Button type="submit" disabled={isPending}>

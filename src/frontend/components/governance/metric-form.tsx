@@ -32,6 +32,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Field } from "@/components/forms/field";
+import { FormGrid } from "@/components/ui/form-grid";
 import { ErrorText } from "@/components/forms/error-text";
 import { DatasetFilterEditor } from "@/components/dataset-filter-editor";
 import {
@@ -155,176 +156,182 @@ export function MetricForm({
 
   return (
     <form onSubmit={handleSubmit(onValid)} className="space-y-5">
-      {isCreate && (
-        <Field
-          label="metric_id"
-          htmlFor="metric-id"
-          error={errors.metric_id?.message as string | undefined}
-          required
-          hint="Kebab-case identifier, e.g. doc-health-dev (immutable after create)"
-        >
-          <Input
-            id="metric-id"
-            {...register("metric_id")}
-            placeholder="doc-health-dev"
-          />
-        </Field>
-      )}
-
-      {/* mode */}
-      <Field label="mode" htmlFor="mode-active" error={undefined}>
-        <div className="flex gap-4">
-          <label className="flex cursor-pointer items-center gap-2 text-sm">
-            <input
-              type="radio"
-              {...register("mode")}
-              value="active"
-              id="mode-active"
-              className="accent-primary"
+      <FormGrid>
+        {isCreate && (
+          <Field
+            label="metric_id"
+            htmlFor="metric-id"
+            error={errors.metric_id?.message as string | undefined}
+            required
+            hint="Kebab-case identifier, e.g. doc-health-dev (immutable after create)"
+          >
+            <Input
+              id="metric-id"
+              {...register("metric_id")}
+              placeholder="doc-health-dev"
             />
-            active
-          </label>
-          <label className="flex cursor-not-allowed items-center gap-2 text-sm text-muted-foreground">
-            <input
-              type="radio"
-              {...register("mode")}
-              value="passive"
-              id="mode-passive"
-              className="accent-primary"
-              disabled
-            />
-            passive — not yet supported
-          </label>
-        </div>
-      </Field>
+          </Field>
+        )}
 
-      {/* metric_type */}
-      <Field
-        label="metric_type"
-        htmlFor="metric-type"
-        error={errors.metric_type?.message}
-        required
-      >
-        <Select
-          value={metricType}
-          onValueChange={(v) => handleMetricTypeChange(v as MetricType)}
-        >
-          <SelectTrigger id="metric-type">
-            <SelectValue placeholder="Select type" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="ingestion-freshness">ingestion-freshness</SelectItem>
-            <SelectItem value="validation-score">validation-score</SelectItem>
-            <SelectItem value="doc-health">doc-health</SelectItem>
-          </SelectContent>
-        </Select>
-      </Field>
-
-      {/* title */}
-      <Field label="title" htmlFor="title" error={errors.title?.message as string | undefined} required>
-        <Input id="title" {...register("title")} placeholder="Doc Health (DEV)" />
-      </Field>
-
-      {/* description */}
-      <Field
-        label="description"
-        htmlFor="description"
-        error={errors.description?.message as string | undefined}
-        required
-      >
-        <Textarea
-          id="description"
-          {...register("description")}
-          rows={2}
-          placeholder="Daily documentation-completeness check"
-        />
-      </Field>
-
-      {/* metrics (checkbox list) */}
-      <Field
-        label="metrics"
-        htmlFor="metrics"
-        error={(errors.metrics as { message?: string } | undefined)?.message}
-        required
-        hint="Which value keys to persist in results"
-      >
-        <div className="flex flex-wrap gap-3">
-          {emittedKeys.map((key) => (
-            <label key={key} className="flex cursor-pointer items-center gap-2 text-sm">
-              <Checkbox
-                id={`metric-key-${key}`}
-                checked={selectedMetrics?.includes(key) ?? false}
-                onCheckedChange={(checked) => handleToggleMetricKey(key, !!checked)}
+        {/* mode */}
+        <Field label="mode" htmlFor="mode-active" error={undefined} className="sm:col-span-2">
+          <div className="flex gap-4">
+            <label className="flex cursor-pointer items-center gap-2 text-sm">
+              <input
+                type="radio"
+                {...register("mode")}
+                value="active"
+                id="mode-active"
+                className="accent-primary"
               />
-              {key}
+              active
             </label>
-          ))}
-        </div>
-      </Field>
+            <label className="flex cursor-not-allowed items-center gap-2 text-sm text-muted-foreground">
+              <input
+                type="radio"
+                {...register("mode")}
+                value="passive"
+                id="mode-passive"
+                className="accent-primary"
+                disabled
+              />
+              passive — not yet supported
+            </label>
+          </div>
+        </Field>
 
-      {/* metric_conf (time_window_sec for freshness / validation-score) */}
-      {needsWindow && (
+        {/* metric_type */}
         <Field
-          label="metric_conf.time_window_sec"
-          htmlFor="time-window-sec"
-          error={errors.time_window_sec?.message}
+          label="metric_type"
+          htmlFor="metric-type"
+          error={errors.metric_type?.message}
           required
-          hint="Fallback freshness window in seconds (positive integer)"
         >
-          <Input
-            id="time-window-sec"
-            type="number"
-            min={1}
-            {...register("time_window_sec")}
-            placeholder="172800"
+          <Select
+            value={metricType}
+            onValueChange={(v) => handleMetricTypeChange(v as MetricType)}
+          >
+            <SelectTrigger id="metric-type">
+              <SelectValue placeholder="Select type" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="ingestion-freshness">ingestion-freshness</SelectItem>
+              <SelectItem value="validation-score">validation-score</SelectItem>
+              <SelectItem value="doc-health">doc-health</SelectItem>
+            </SelectContent>
+          </Select>
+        </Field>
+
+        {/* title */}
+        <Field label="title" htmlFor="title" error={errors.title?.message as string | undefined} required>
+          <Input id="title" {...register("title")} placeholder="Doc Health (DEV)" />
+        </Field>
+
+        {/* description */}
+        <Field
+          label="description"
+          htmlFor="description"
+          error={errors.description?.message as string | undefined}
+          required
+          className="sm:col-span-2"
+        >
+          <Textarea
+            id="description"
+            {...register("description")}
+            rows={2}
+            placeholder="Daily documentation-completeness check"
           />
         </Field>
-      )}
-      {!needsWindow && (
-        <p className="text-sm text-muted-foreground">
-          metric_conf: <span className="font-mono">{"{}"}</span> — no configuration required for{" "}
-          {metricType}.
-        </p>
-      )}
 
-      {/* schedule_tier */}
-      <Field label="schedule_tier" htmlFor="schedule-tier" error={errors.schedule_tier?.message as string | undefined}>
-        <Select
-          value={watch("schedule_tier") || "none"}
-          onValueChange={(v) =>
-            setValue("schedule_tier", v === "none" ? null : (v as ScheduleTier), {
-              shouldDirty: true,
-            })
-          }
+        {/* metrics (checkbox list) */}
+        <Field
+          label="metrics"
+          htmlFor="metrics"
+          error={(errors.metrics as { message?: string } | undefined)?.message}
+          required
+          hint="Which value keys to persist in results"
+          className="sm:col-span-2"
         >
-          <SelectTrigger id="schedule-tier">
-            <SelectValue placeholder="On-demand only" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="none">On-demand only</SelectItem>
-            <SelectItem value="hourly">hourly</SelectItem>
-            <SelectItem value="daily">daily</SelectItem>
-            <SelectItem value="weekly">weekly</SelectItem>
-          </SelectContent>
-        </Select>
-      </Field>
+          <div className="flex flex-wrap gap-3">
+            {emittedKeys.map((key) => (
+              <label key={key} className="flex cursor-pointer items-center gap-2 text-sm">
+                <Checkbox
+                  id={`metric-key-${key}`}
+                  checked={selectedMetrics?.includes(key) ?? false}
+                  onCheckedChange={(checked) => handleToggleMetricKey(key, !!checked)}
+                />
+                {key}
+              </label>
+            ))}
+          </div>
+        </Field>
 
-      {/* is_enabled */}
-      <div className="flex items-center gap-2">
-        <Checkbox
-          id="is-enabled"
-          checked={watch("is_enabled")}
-          onCheckedChange={(checked) =>
-            setValue("is_enabled", !!checked, { shouldDirty: true })
-          }
-        />
-        <Label htmlFor="is-enabled" className="cursor-pointer text-sm">
-          is_enabled
-        </Label>
-      </div>
+        {/* metric_conf (time_window_sec for freshness / validation-score) */}
+        {needsWindow && (
+          <Field
+            label="metric_conf.time_window_sec"
+            htmlFor="time-window-sec"
+            error={errors.time_window_sec?.message}
+            required
+            hint="Fallback freshness window in seconds (positive integer)"
+          >
+            <Input
+              id="time-window-sec"
+              type="number"
+              min={1}
+              {...register("time_window_sec")}
+              placeholder="172800"
+            />
+          </Field>
+        )}
+        {!needsWindow && (
+          <p className="text-sm text-muted-foreground sm:col-span-2">
+            metric_conf: <span className="font-mono">{"{}"}</span> — no configuration required for{" "}
+            {metricType}.
+          </p>
+        )}
 
-      {/* dataset_filter */}
-      <DatasetFilterEditor value={datasetFilter ?? {}} onChange={handleFilterChange} />
+        {/* schedule_tier */}
+        <Field label="schedule_tier" htmlFor="schedule-tier" error={errors.schedule_tier?.message as string | undefined}>
+          <Select
+            value={watch("schedule_tier") || "none"}
+            onValueChange={(v) =>
+              setValue("schedule_tier", v === "none" ? null : (v as ScheduleTier), {
+                shouldDirty: true,
+              })
+            }
+          >
+            <SelectTrigger id="schedule-tier">
+              <SelectValue placeholder="On-demand only" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="none">On-demand only</SelectItem>
+              <SelectItem value="hourly">hourly</SelectItem>
+              <SelectItem value="daily">daily</SelectItem>
+              <SelectItem value="weekly">weekly</SelectItem>
+            </SelectContent>
+          </Select>
+        </Field>
+
+        {/* is_enabled */}
+        <div className="flex items-center gap-2 sm:col-span-2">
+          <Checkbox
+            id="is-enabled"
+            checked={watch("is_enabled")}
+            onCheckedChange={(checked) =>
+              setValue("is_enabled", !!checked, { shouldDirty: true })
+            }
+          />
+          <Label htmlFor="is-enabled" className="cursor-pointer text-sm">
+            is_enabled
+          </Label>
+        </div>
+
+        {/* dataset_filter */}
+        <div className="sm:col-span-2">
+          <DatasetFilterEditor value={datasetFilter ?? {}} onChange={handleFilterChange} />
+        </div>
+      </FormGrid>
 
       {serverError && <ErrorText message={serverError} />}
 

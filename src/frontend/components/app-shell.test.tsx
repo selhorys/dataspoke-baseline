@@ -309,7 +309,13 @@ describe("AppShell — Ingestion nav entry (FRONTEND_BASIC.md §Shell)", () => {
     },
   );
 
-  it("places Ingestion between Metrics and Validation in the DOM", () => {
+  it("places Ingestion between the Governance group and Validation in the DOM", () => {
+    // spec/feature/FRONTEND_BASIC.md §Shell fixes the entries, grouping, and order:
+    // Governance ▾ · Ingestion · Validation · OntoGen ▾ · MetaGen.
+    // How the §Shell grouping is realized in this implementation: each ▾ group renders
+    // as a disclosure <button> and a group stays collapsed unless its active route is
+    // open. Under the /validation pathname mock the Governance group is collapsed, so its
+    // leading anchor in the DOM is the group toggle <button>, not its child links.
     mockUseMe.mockReturnValue({
       me: makeMe("Admin"),
       isAdmin: true,
@@ -324,13 +330,13 @@ describe("AppShell — Ingestion nav entry (FRONTEND_BASIC.md §Shell)", () => {
       </AppShell>,
     );
 
-    const metrics = screen.getByRole("link", { name: /metrics/i });
+    const governanceGroup = screen.getByRole("button", { name: /governance/i });
     const ingestion = screen.getByRole("link", { name: /ingestion/i });
     const validation = screen.getByRole("link", { name: /validation/i });
 
     // DOCUMENT_POSITION_FOLLOWING (0x04): the argument node comes AFTER `this`.
     expect(
-      metrics.compareDocumentPosition(ingestion) &
+      governanceGroup.compareDocumentPosition(ingestion) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
     expect(

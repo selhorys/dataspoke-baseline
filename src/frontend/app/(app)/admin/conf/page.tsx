@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { FormGrid } from "@/components/ui/form-grid";
 import { Field } from "@/components/forms/field";
 import { PasswordInput } from "@/components/forms/password-input";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -112,7 +113,7 @@ export default function AdminConfPage() {
 
   if (confLoading) {
     return (
-      <div className="max-w-2xl space-y-4">
+      <div className="space-y-4">
         <Skeleton className="h-8 w-56" />
         <Skeleton className="h-40 w-full" />
         <Skeleton className="h-40 w-full" />
@@ -122,7 +123,7 @@ export default function AdminConfPage() {
   }
 
   return (
-    <div className="max-w-2xl">
+    <div>
       <h1 className="mb-1 text-2xl font-semibold tracking-tight">Admin — Configurations</h1>
       <p className="mb-6 text-sm text-muted-foreground">
         Behavioral tunables, LLM settings, and dependency-stub toggles.
@@ -134,21 +135,36 @@ export default function AdminConfPage() {
           <CardHeader>
             <CardTitle className="text-base">LLM</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-4">
-            <Field label="Provider" htmlFor="llm_provider" error={errors.llm_provider?.message} required>
-              <Input id="llm_provider" {...register("llm_provider")} />
-            </Field>
-            <Field label="Model" htmlFor="llm_model" error={errors.llm_model?.message} required>
-              <Input id="llm_model" {...register("llm_model")} />
-            </Field>
-            <Field
-              label="API Key"
-              htmlFor="llm_api_key"
-              error={errors.llm_api_key?.message}
-              hint="Leave blank to keep current."
-            >
-              <PasswordInput id="llm_api_key" autoComplete="off" {...register("llm_api_key")} />
-            </Field>
+          <CardContent>
+            <FormGrid>
+              <Field
+                label="Provider"
+                htmlFor="llm_provider"
+                description="LLM vendor used for inference and embeddings. Available: gemini (default) or openai."
+                error={errors.llm_provider?.message}
+                required
+              >
+                <Input id="llm_provider" {...register("llm_provider")} />
+              </Field>
+              <Field
+                label="Model"
+                htmlFor="llm_model"
+                description="Chat/inference model id for the Producer and Reviewer — a standard model name for the selected provider, passed to its LangChain chat client (e.g. gemini-3.5-flash, gpt-4o). The embedding model is fixed per provider. Default gemini-3.5-flash."
+                error={errors.llm_model?.message}
+                required
+              >
+                <Input id="llm_model" {...register("llm_model")} />
+              </Field>
+              <Field
+                label="API Key"
+                htmlFor="llm_api_key"
+                description="Written to separated secure storage (currently a K8s Secret. customize it!), never stored in the database. Leave blank to keep current."
+                error={errors.llm_api_key?.message}
+                className="sm:col-span-2"
+              >
+                <PasswordInput id="llm_api_key" autoComplete="off" {...register("llm_api_key")} />
+              </Field>
+            </FormGrid>
           </CardContent>
         </Card>
 
@@ -157,11 +173,12 @@ export default function AdminConfPage() {
           <CardHeader>
             <CardTitle className="text-base">Ontology Generation</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid grid-cols-3 gap-4">
+          <CardContent>
+            <FormGrid>
               <Field
                 label="Max iterations"
                 htmlFor="ontogen_llm_max_iterations"
+                description="Producer inference-loop cap; one iteration = one model invocation (1–20, default 3)."
                 error={errors.ontogen_llm_max_iterations?.message}
               >
                 <Input
@@ -175,6 +192,7 @@ export default function AdminConfPage() {
               <Field
                 label="Debate turns"
                 htmlFor="ontogen_debate_max_turns"
+                description="Producer↔Reviewer adversarial-debate turn cap (2–10, default 4)."
                 error={errors.ontogen_debate_max_turns?.message}
               >
                 <Input
@@ -188,6 +206,7 @@ export default function AdminConfPage() {
               <Field
                 label="RAG k"
                 htmlFor="ontogen_debate_rag_k"
+                description="Approved-anchor items pgvector-sampled to ground the Reviewer (0–20, 0 disables)."
                 error={errors.ontogen_debate_rag_k?.message}
               >
                 <Input
@@ -198,15 +217,15 @@ export default function AdminConfPage() {
                   {...register("ontogen_debate_rag_k")}
                 />
               </Field>
-            </div>
-            <Field
-              label="Reviewer model"
-              htmlFor="ontogen_debate_reviewer_model"
-              error={errors.ontogen_debate_reviewer_model?.message}
-              hint="Optional — leave blank to clear."
-            >
-              <Input id="ontogen_debate_reviewer_model" {...register("ontogen_debate_reviewer_model")} />
-            </Field>
+              <Field
+                label="Reviewer model"
+                htmlFor="ontogen_debate_reviewer_model"
+                description="Optional separate model id (same format as Model) for the Reviewer role; blank uses the main model."
+                error={errors.ontogen_debate_reviewer_model?.message}                className="sm:col-span-2"
+              >
+                <Input id="ontogen_debate_reviewer_model" {...register("ontogen_debate_reviewer_model")} />
+              </Field>
+            </FormGrid>
           </CardContent>
         </Card>
 
@@ -215,11 +234,12 @@ export default function AdminConfPage() {
           <CardHeader>
             <CardTitle className="text-base">Metadata Generation</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid grid-cols-3 gap-4">
+          <CardContent>
+            <FormGrid>
               <Field
                 label="Max iterations"
                 htmlFor="metagen_llm_max_iterations"
+                description="Producer inference-loop cap; one iteration = one model invocation (1–20, default 3)."
                 error={errors.metagen_llm_max_iterations?.message}
               >
                 <Input
@@ -233,6 +253,7 @@ export default function AdminConfPage() {
               <Field
                 label="Debate turns"
                 htmlFor="metagen_debate_max_turns"
+                description="Producer↔Reviewer adversarial-debate turn cap (2–10, default 4)."
                 error={errors.metagen_debate_max_turns?.message}
               >
                 <Input
@@ -246,6 +267,7 @@ export default function AdminConfPage() {
               <Field
                 label="RAG k"
                 htmlFor="metagen_debate_rag_k"
+                description="Approved-anchor items pgvector-sampled to ground the Reviewer (0–20, 0 disables)."
                 error={errors.metagen_debate_rag_k?.message}
               >
                 <Input
@@ -256,19 +278,18 @@ export default function AdminConfPage() {
                   {...register("metagen_debate_rag_k")}
                 />
               </Field>
-            </div>
-            <Field
-              label="Reviewer model"
-              htmlFor="metagen_debate_reviewer_model"
-              error={errors.metagen_debate_reviewer_model?.message}
-              hint="Optional — leave blank to clear."
-            >
-              <Input id="metagen_debate_reviewer_model" {...register("metagen_debate_reviewer_model")} />
-            </Field>
-            <div className="grid grid-cols-2 gap-4">
+              <Field
+                label="Reviewer model"
+                htmlFor="metagen_debate_reviewer_model"
+                description="Optional separate model id (same format as Model) for the Reviewer role; blank uses the main model."
+                error={errors.metagen_debate_reviewer_model?.message}                className="sm:col-span-2"
+              >
+                <Input id="metagen_debate_reviewer_model" {...register("metagen_debate_reviewer_model")} />
+              </Field>
               <Field
                 label="Confidence threshold"
                 htmlFor="metagen_confidence_threshold"
+                description="Minimum candidate confidence required to persist a generated suggestion (0.0–1.0, default 0.7)."
                 error={errors.metagen_confidence_threshold?.message}
               >
                 <Input
@@ -280,12 +301,17 @@ export default function AdminConfPage() {
                   {...register("metagen_confidence_threshold")}
                 />
               </Field>
-            </div>
-            <p className="text-sm font-medium">Ontology RAG</p>
-            <div className="grid grid-cols-3 gap-4">
+              <div className="sm:col-span-2">
+                <p className="text-sm font-medium">Ontology RAG</p>
+                <p className="text-xs text-muted-foreground">
+                  Approved-ontology items retrieved as Producer-evidence grounding for metadata
+                  generation (0 disables each).
+                </p>
+              </div>
               <Field
                 label="Node k"
                 htmlFor="metagen_ontology_rag_node_k"
+                description="Ontology nodes retrieved as grounding context (0–20, default 5)."
                 error={errors.metagen_ontology_rag_node_k?.message}
               >
                 <Input
@@ -299,6 +325,7 @@ export default function AdminConfPage() {
               <Field
                 label="Edge k"
                 htmlFor="metagen_ontology_rag_edge_k"
+                description="Ontology edges retrieved as grounding context (0–20, default 5)."
                 error={errors.metagen_ontology_rag_edge_k?.message}
               >
                 <Input
@@ -312,6 +339,7 @@ export default function AdminConfPage() {
               <Field
                 label="Triple k"
                 htmlFor="metagen_ontology_rag_triple_k"
+                description="Ontology triples retrieved as grounding context (0–20, default 5)."
                 error={errors.metagen_ontology_rag_triple_k?.message}
               >
                 <Input
@@ -322,7 +350,7 @@ export default function AdminConfPage() {
                   {...register("metagen_ontology_rag_triple_k")}
                 />
               </Field>
-            </div>
+            </FormGrid>
           </CardContent>
         </Card>
 
@@ -335,6 +363,7 @@ export default function AdminConfPage() {
             <Field
               label="Score intervals"
               htmlFor="validation_score_n_intervals"
+              description="Recent result inter-arrival gaps used to size the validation-score metric window (min 1, default 3)."
               error={errors.validation_score_n_intervals?.message}
             >
               <Input
@@ -359,56 +388,80 @@ export default function AdminConfPage() {
                 name="stub_redis_client"
                 control={control}
                 render={({ field }) => (
-                  <label className="flex cursor-pointer items-center gap-3">
-                    <Checkbox
-                      id="stub_redis_client"
-                      checked={field.value}
-                      onCheckedChange={(v) => field.onChange(v === true)}
-                    />
-                    <span className="text-sm">Redis client stub</span>
-                  </label>
+                  <div>
+                    <label className="flex cursor-pointer items-center gap-3">
+                      <Checkbox
+                        id="stub_redis_client"
+                        checked={field.value}
+                        onCheckedChange={(v) => field.onChange(v === true)}
+                      />
+                      <span className="text-sm">Redis client stub</span>
+                    </label>
+                    <p className="ml-7 text-xs text-muted-foreground">
+                      Replaces Redis with an in-process stub whose cache, lock, and pub/sub ops are
+                      no-ops; leave off in normal operation.
+                    </p>
+                  </div>
                 )}
               />
               <Controller
                 name="stub_llm_client"
                 control={control}
                 render={({ field }) => (
-                  <label className="flex cursor-pointer items-center gap-3">
-                    <Checkbox
-                      id="stub_llm_client"
-                      checked={field.value}
-                      onCheckedChange={(v) => field.onChange(v === true)}
-                    />
-                    <span className="text-sm">LLM client stub</span>
-                  </label>
+                  <div>
+                    <label className="flex cursor-pointer items-center gap-3">
+                      <Checkbox
+                        id="stub_llm_client"
+                        checked={field.value}
+                        onCheckedChange={(v) => field.onChange(v === true)}
+                      />
+                      <span className="text-sm">LLM client stub</span>
+                    </label>
+                    <p className="ml-7 text-xs text-muted-foreground">
+                      Replaces the LLM client with an in-process stub returning deterministic,
+                      schema-valid payloads and no provider calls; leave off in normal operation.
+                    </p>
+                  </div>
                 )}
               />
               <Controller
                 name="stub_pgvector_manager"
                 control={control}
                 render={({ field }) => (
-                  <label className="flex cursor-pointer items-center gap-3">
-                    <Checkbox
-                      id="stub_pgvector_manager"
-                      checked={field.value}
-                      onCheckedChange={(v) => field.onChange(v === true)}
-                    />
-                    <span className="text-sm">pgvector manager stub</span>
-                  </label>
+                  <div>
+                    <label className="flex cursor-pointer items-center gap-3">
+                      <Checkbox
+                        id="stub_pgvector_manager"
+                        checked={field.value}
+                        onCheckedChange={(v) => field.onChange(v === true)}
+                      />
+                      <span className="text-sm">pgvector manager stub</span>
+                    </label>
+                    <p className="ml-7 text-xs text-muted-foreground">
+                      Replaces the pgvector manager with an in-process stub whose similarity search
+                      returns nothing, disabling RAG retrieval; leave off in normal operation.
+                    </p>
+                  </div>
                 )}
               />
               <Controller
                 name="stub_notification_service"
                 control={control}
                 render={({ field }) => (
-                  <label className="flex cursor-pointer items-center gap-3">
-                    <Checkbox
-                      id="stub_notification_service"
-                      checked={field.value}
-                      onCheckedChange={(v) => field.onChange(v === true)}
-                    />
-                    <span className="text-sm">Notification service stub</span>
-                  </label>
+                  <div>
+                    <label className="flex cursor-pointer items-center gap-3">
+                      <Checkbox
+                        id="stub_notification_service"
+                        checked={field.value}
+                        onCheckedChange={(v) => field.onChange(v === true)}
+                      />
+                      <span className="text-sm">Notification service stub</span>
+                    </label>
+                    <p className="ml-7 text-xs text-muted-foreground">
+                      Replaces the notification service with an in-process stub that sends no emails
+                      or alerts; leave off in normal operation.
+                    </p>
+                  </div>
                 )}
               />
             </div>
@@ -424,6 +477,7 @@ export default function AdminConfPage() {
             <Field
               label="DataHub corp group"
               htmlFor="auth_datahub_corp_group"
+              description="DataHub corp group whose membership is recognized for access (default dataspoke-users)."
               error={errors.auth_datahub_corp_group?.message}
               required
             >
