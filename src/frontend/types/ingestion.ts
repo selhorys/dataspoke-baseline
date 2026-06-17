@@ -10,6 +10,18 @@ export type IngestionMode =
   | "ACTIVE_CUSTOM_MANAGED"
   | "PASSIVE";
 
+/**
+ * Conf-list filter key. DATAHUB_MANAGED is split into two disjoint options
+ * (regular vs ad-hoc); each key maps to a `{ mode, adHoc }` query pair for
+ * GET /spoke/ingestion/sources (see filterKeyToQuery).
+ */
+export type IngestionFilterKey =
+  | "ALL"
+  | "DATAHUB_MANAGED_REGULAR"
+  | "DATAHUB_MANAGED_AD_HOC"
+  | "ACTIVE_CUSTOM_MANAGED"
+  | "PASSIVE";
+
 /** Confidence in the source→dataset link. */
 export type IngestionDatasetAuthority = "high" | "medium";
 
@@ -30,6 +42,7 @@ export interface IngestionSource {
   recipe: Recipe;
   platform: string;
   status: string;
+  ad_hoc: boolean;
   datahub_source_urn: string | null;
   created_at: string;
   updated_at: string;

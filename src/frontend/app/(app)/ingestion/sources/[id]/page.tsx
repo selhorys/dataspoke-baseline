@@ -114,7 +114,7 @@ export default function IngestionSourceDetailPage({
           }
         />
         <Button variant="outline" size="sm" asChild>
-          <Link href="/ingestion">Back to list</Link>
+          <Link href="/ingestion/conf">Back to list</Link>
         </Button>
       </div>
     );
@@ -140,7 +140,7 @@ export default function IngestionSourceDetailPage({
     remove.mutate(undefined, {
       onSuccess: () => {
         toast({ title: "Source deleted" });
-        router.push("/ingestion");
+        router.push("/ingestion/conf");
       },
     });
   }
@@ -150,7 +150,7 @@ export default function IngestionSourceDetailPage({
       {/* Header */}
       <div className="flex flex-wrap items-center gap-3">
         <Link
-          href="/ingestion"
+          href="/ingestion/conf"
           className="text-muted-foreground hover:text-foreground"
           aria-label="Back to ingestion list"
         >

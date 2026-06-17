@@ -85,7 +85,7 @@ export default function CreateIngestionSourcePage() {
       <div className="space-y-2">
         <ErrorState message="You need the Editor role to create an ingestion source." />
         <Button variant="outline" size="sm" asChild>
-          <Link href="/ingestion">Back to list</Link>
+          <Link href="/ingestion/conf">Back to list</Link>
         </Button>
       </div>
     );
@@ -136,7 +136,7 @@ export default function CreateIngestionSourcePage() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center gap-3">
         <Link
-          href="/ingestion"
+          href="/ingestion/conf"
           className="text-muted-foreground hover:text-foreground"
           aria-label="Back to ingestion list"
         >

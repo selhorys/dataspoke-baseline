@@ -1,11 +1,12 @@
 /**
- * Tests for IngestionSourceList — read-only badge, mode-filter select, empty state.
+ * Tests for IngestionSourceList — read-only badge, filter-key select, empty state.
  *
  * Spec traces:
- *   - spec/feature/FRONTEND_INGESTION.md §List View (line 29):
+ *   - spec/feature/FRONTEND_INGESTION.md §List View:
  *     DATAHUB_MANAGED rows carry a read-only badge; ACTIVE_CUSTOM_MANAGED and PASSIVE do not.
- *   - spec/feature/FRONTEND_INGESTION.md §List View (line 28):
- *     mode filter renders all four options (all + three modes) and fires onModeFilterChange.
+ *   - spec/feature/FRONTEND_INGESTION.md §List View:
+ *     the filter renders five options (ALL + two DataHub-managed regular/ad-hoc +
+ *     Active + Passive) and fires onFilterKeyChange.
  *   - spec/feature/FRONTEND_INGESTION.md §List View: empty state when sources=[] and isLoading=false.
  *
  * Per-row count/status fan-out is covered by tests/lib/api/ingestion.test.ts
@@ -132,6 +133,7 @@ function makeSource(
     recipe: { source: { type: "postgres", config: {} } },
     platform: "postgres",
     status: "OK",
+    ad_hoc: false,
     datahub_source_urn: mode === "DATAHUB_MANAGED" ? "urn:li:dataHubIngestionSource:x" : null,
     created_at: "2024-01-01T00:00:00Z",
     updated_at: "2024-01-02T00:00:00Z",
@@ -152,8 +154,8 @@ describe("IngestionSourceList — read-only badge", () => {
       <IngestionSourceList
         sources={[makeSource("DATAHUB_MANAGED")]}
         isLoading={false}
-        modeFilter="ALL"
-        onModeFilterChange={noop}
+        filterKey="ALL"
+        onFilterKeyChange={noop}
         page={{ ...basePage, totalCount: 1 }}
         onPrev={noop}
         onNext={noop}
@@ -167,8 +169,8 @@ describe("IngestionSourceList — read-only badge", () => {
       <IngestionSourceList
         sources={[makeSource("ACTIVE_CUSTOM_MANAGED")]}
         isLoading={false}
-        modeFilter="ALL"
-        onModeFilterChange={noop}
+        filterKey="ALL"
+        onFilterKeyChange={noop}
         page={{ ...basePage, totalCount: 1 }}
         onPrev={noop}
         onNext={noop}
@@ -182,8 +184,8 @@ describe("IngestionSourceList — read-only badge", () => {
       <IngestionSourceList
         sources={[makeSource("PASSIVE")]}
         isLoading={false}
-        modeFilter="ALL"
-        onModeFilterChange={noop}
+        filterKey="ALL"
+        onFilterKeyChange={noop}
         page={{ ...basePage, totalCount: 1 }}
         onPrev={noop}
         onNext={noop}
@@ -194,38 +196,39 @@ describe("IngestionSourceList — read-only badge", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 2. Mode-filter select — four options present + onModeFilterChange callback
+// 2. Filter-key select — five options present + onFilterKeyChange callback
 // ---------------------------------------------------------------------------
 
-describe("IngestionSourceList — mode-filter select", () => {
-  it("renders all four filter option labels in the select content", () => {
+describe("IngestionSourceList — filter-key select", () => {
+  it("renders all five filter option labels in the select content", () => {
     render(
       <IngestionSourceList
         sources={[]}
         isLoading={false}
-        modeFilter="ALL"
-        onModeFilterChange={noop}
+        filterKey="ALL"
+        onFilterKeyChange={noop}
         page={basePage}
         onPrev={noop}
         onNext={noop}
       />,
     );
     // The Radix Select renders all SelectItem labels in the DOM (hidden via CSS).
-    // We assert on the visible trigger label text and the item texts.
-    expect(screen.getByText("All modes")).toBeTruthy();
+    // DATAHUB_MANAGED is split into two disjoint regular/ad-hoc options.
+    expect(screen.getByText("All")).toBeTruthy();
+    expect(screen.getByText("DataHub-managed (regular)")).toBeTruthy();
+    expect(screen.getByText("DataHub-managed (ad-hoc)")).toBeTruthy();
     expect(screen.getByText("Active")).toBeTruthy();
-    expect(screen.getByText("DataHub-managed")).toBeTruthy();
     expect(screen.getByText("Passive")).toBeTruthy();
   });
 
-  it("fires onModeFilterChange with the selected mode value", () => {
-    const onModeFilterChange = vi.fn();
+  it("fires onFilterKeyChange with the selected filter key", () => {
+    const onFilterKeyChange = vi.fn();
     render(
       <IngestionSourceList
         sources={[]}
         isLoading={false}
-        modeFilter="ALL"
-        onModeFilterChange={onModeFilterChange}
+        filterKey="ALL"
+        onFilterKeyChange={onFilterKeyChange}
         page={basePage}
         onPrev={noop}
         onNext={noop}
@@ -234,7 +237,7 @@ describe("IngestionSourceList — mode-filter select", () => {
     // Locate the Radix SelectItem by its text and fire a click to invoke onValueChange.
     const activeOption = screen.getByText("Active");
     fireEvent.click(activeOption);
-    expect(onModeFilterChange).toHaveBeenCalledWith("ACTIVE_CUSTOM_MANAGED");
+    expect(onFilterKeyChange).toHaveBeenCalledWith("ACTIVE_CUSTOM_MANAGED");
   });
 });
 
@@ -250,8 +253,8 @@ describe("IngestionSourceList — URN subtitle", () => {
       <IngestionSourceList
         sources={[makeSource("DATAHUB_MANAGED")]}
         isLoading={false}
-        modeFilter="ALL"
-        onModeFilterChange={noop}
+        filterKey="ALL"
+        onFilterKeyChange={noop}
         page={{ ...basePage, totalCount: 1 }}
         onPrev={noop}
         onNext={noop}
@@ -267,8 +270,8 @@ describe("IngestionSourceList — URN subtitle", () => {
       <IngestionSourceList
         sources={[makeSource("ACTIVE_CUSTOM_MANAGED")]}
         isLoading={false}
-        modeFilter="ALL"
-        onModeFilterChange={noop}
+        filterKey="ALL"
+        onFilterKeyChange={noop}
         page={{ ...basePage, totalCount: 1 }}
         onPrev={noop}
         onNext={noop}
@@ -283,14 +286,52 @@ describe("IngestionSourceList — URN subtitle", () => {
       <IngestionSourceList
         sources={[makeSource("PASSIVE")]}
         isLoading={false}
-        modeFilter="ALL"
-        onModeFilterChange={noop}
+        filterKey="ALL"
+        onFilterKeyChange={noop}
         page={{ ...basePage, totalCount: 1 }}
         onPrev={noop}
         onNext={noop}
       />,
     );
     expect(screen.queryByText(/^urn:/)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 3b. Ad-hoc badge — present on ad_hoc:true rows, absent on ad_hoc:false rows
+// ---------------------------------------------------------------------------
+// Spec: spec/feature/FRONTEND_INGESTION.md §List View — an "ad-hoc" badge marks
+// rows whose ad_hoc flag is true (CLI/Run-click sources synced as DATAHUB_MANAGED).
+
+describe("IngestionSourceList — ad-hoc badge", () => {
+  it("renders an 'ad-hoc' badge for an ad_hoc:true row", () => {
+    render(
+      <IngestionSourceList
+        sources={[makeSource("DATAHUB_MANAGED", { ad_hoc: true })]}
+        isLoading={false}
+        filterKey="ALL"
+        onFilterKeyChange={noop}
+        page={{ ...basePage, totalCount: 1 }}
+        onPrev={noop}
+        onNext={noop}
+      />,
+    );
+    expect(screen.getByText("ad-hoc")).toBeTruthy();
+  });
+
+  it("does NOT render an 'ad-hoc' badge for an ad_hoc:false row", () => {
+    render(
+      <IngestionSourceList
+        sources={[makeSource("DATAHUB_MANAGED", { ad_hoc: false })]}
+        isLoading={false}
+        filterKey="ALL"
+        onFilterKeyChange={noop}
+        page={{ ...basePage, totalCount: 1 }}
+        onPrev={noop}
+        onNext={noop}
+      />,
+    );
+    expect(screen.queryByText("ad-hoc")).toBeNull();
   });
 });
 
@@ -304,8 +345,8 @@ describe("IngestionSourceList — empty state", () => {
       <IngestionSourceList
         sources={[]}
         isLoading={false}
-        modeFilter="ALL"
-        onModeFilterChange={noop}
+        filterKey="ALL"
+        onFilterKeyChange={noop}
         page={basePage}
         onPrev={noop}
         onNext={noop}
@@ -319,8 +360,8 @@ describe("IngestionSourceList — empty state", () => {
       <IngestionSourceList
         sources={[]}
         isLoading={true}
-        modeFilter="ALL"
-        onModeFilterChange={noop}
+        filterKey="ALL"
+        onFilterKeyChange={noop}
         page={basePage}
         onPrev={noop}
         onNext={noop}

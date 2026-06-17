@@ -68,7 +68,7 @@ export default function IngestionDatasetDetailPage({
       <div className="space-y-2">
         <ErrorState message={`Failed to load ingestion info: ${error.message}`} />
         <Button variant="outline" size="sm" asChild>
-          <Link href="/ingestion">Back to ingestion</Link>
+          <Link href="/ingestion/conf">Back to ingestion</Link>
         </Button>
       </div>
     );
@@ -81,7 +81,7 @@ export default function IngestionDatasetDetailPage({
       {/* Header */}
       <div className="flex flex-wrap items-center gap-3">
         <Link
-          href="/ingestion"
+          href="/ingestion/conf"
           className="text-muted-foreground hover:text-foreground"
           aria-label="Back to ingestion list"
         >

@@ -11,7 +11,7 @@
  *     the role is not Admin; write actions rendered only when role ∈ {Editor, Admin}
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import React from "react";
 import { AppShell } from "./app-shell";
 import type { Me } from "@/lib/api/types";
@@ -285,10 +285,12 @@ describe("AppShell — Admin Users link visibility (legacy, preserved)", () => {
   });
 });
 
-describe("AppShell — Ingestion nav entry (FRONTEND_BASIC.md §Shell)", () => {
+describe("AppShell — Ingestion nav group (FRONTEND_BASIC.md §Shell)", () => {
   it.each([["Admin"], ["Editor"], ["Reader"]] as const)(
-    "renders the Ingestion link at /ingestion for %s role",
+    "renders the Ingestion group with conf and unmanaged children for %s role",
     (role) => {
+      // spec/feature/FRONTEND_BASIC.md §Shell: Ingestion ▾ with submenus conf
+      // (/ingestion/conf) and unmanaged (/ingestion/unmanaged).
       mockUseMe.mockReturnValue({
         me: makeMe(role),
         isAdmin: role === "Admin",
@@ -303,19 +305,27 @@ describe("AppShell — Ingestion nav entry (FRONTEND_BASIC.md §Shell)", () => {
         </AppShell>,
       );
 
-      const link = screen.getByRole("link", { name: /ingestion/i });
-      expect(link).toBeTruthy();
-      expect(link.getAttribute("href")).toBe("/ingestion");
+      // The group renders as a disclosure button (no direct /ingestion link).
+      const ingestionToggle = screen.getByRole("button", { name: /ingestion/i });
+      expect(ingestionToggle).toBeTruthy();
+
+      // Expand the group, then assert its child links.
+      fireEvent.click(ingestionToggle);
+
+      const confLink = screen.getByRole("link", { name: /^conf$/i });
+      expect(confLink.getAttribute("href")).toBe("/ingestion/conf");
+
+      const unmanagedLink = screen.getByRole("link", { name: /^unmanaged$/i });
+      expect(unmanagedLink.getAttribute("href")).toBe("/ingestion/unmanaged");
     },
   );
 
-  it("places Ingestion between the Governance group and Validation in the DOM", () => {
+  it("places the Ingestion group between the Governance group and Validation in the DOM", () => {
     // spec/feature/FRONTEND_BASIC.md §Shell fixes the entries, grouping, and order:
-    // Governance ▾ · Ingestion · Validation · OntoGen ▾ · MetaGen.
-    // How the §Shell grouping is realized in this implementation: each ▾ group renders
-    // as a disclosure <button> and a group stays collapsed unless its active route is
-    // open. Under the /validation pathname mock the Governance group is collapsed, so its
-    // leading anchor in the DOM is the group toggle <button>, not its child links.
+    // Governance ▾ · Ingestion ▾ · Validation · OntoGen ▾ · MetaGen.
+    // Each ▾ group renders as a disclosure <button> and stays collapsed unless its
+    // active route is open. Under the /validation pathname mock both the Governance
+    // and Ingestion groups are collapsed, so each contributes its toggle <button>.
     mockUseMe.mockReturnValue({
       me: makeMe("Admin"),
       isAdmin: true,
@@ -331,16 +341,16 @@ describe("AppShell — Ingestion nav entry (FRONTEND_BASIC.md §Shell)", () => {
     );
 
     const governanceGroup = screen.getByRole("button", { name: /governance/i });
-    const ingestion = screen.getByRole("link", { name: /ingestion/i });
+    const ingestionGroup = screen.getByRole("button", { name: /ingestion/i });
     const validation = screen.getByRole("link", { name: /validation/i });
 
     // DOCUMENT_POSITION_FOLLOWING (0x04): the argument node comes AFTER `this`.
     expect(
-      governanceGroup.compareDocumentPosition(ingestion) &
+      governanceGroup.compareDocumentPosition(ingestionGroup) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
     expect(
-      ingestion.compareDocumentPosition(validation) &
+      ingestionGroup.compareDocumentPosition(validation) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
   });

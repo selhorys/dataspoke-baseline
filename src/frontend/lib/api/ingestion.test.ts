@@ -156,6 +156,35 @@ describe("useIngestionSources — URL construction", () => {
     expect(url).toContain("limit=20");
     expect(url).toContain("mode=ACTIVE_CUSTOM_MANAGED");
   });
+
+  // Tri-state ad_hoc filter — Spec: API.md §Ingestion — GET /spoke/ingestion/sources
+  // ?ad_hoc=true|false; omitting the param applies no constraint.
+  it("appends ad_hoc=true when adHoc is true", async () => {
+    const { result } = renderHook(
+      () => useIngestionSources({ mode: "DATAHUB_MANAGED", adHoc: true }),
+      { wrapper: makeWrapper() },
+    );
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(lastUrl()).toContain("ad_hoc=true");
+  });
+
+  it("appends ad_hoc=false when adHoc is false", async () => {
+    const { result } = renderHook(
+      () => useIngestionSources({ mode: "DATAHUB_MANAGED", adHoc: false }),
+      { wrapper: makeWrapper() },
+    );
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(lastUrl()).toContain("ad_hoc=false");
+  });
+
+  it("omits the ad_hoc param when adHoc is undefined", async () => {
+    const { result } = renderHook(
+      () => useIngestionSources({ mode: "DATAHUB_MANAGED" }),
+      { wrapper: makeWrapper() },
+    );
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(lastUrl()).not.toContain("ad_hoc");
+  });
 });
 
 // ---------------------------------------------------------------------------

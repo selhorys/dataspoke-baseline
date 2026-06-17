@@ -12,6 +12,7 @@ import {
   LayoutDashboard,
   LogOut,
   Network,
+  PackageOpen,
   Scale,
   Settings,
   Shield,
@@ -61,7 +62,15 @@ const mainNav: (NavItem | NavGroup)[] = [
       { label: "Metrics", href: "/governance/metrics", icon: BarChart3 },
     ],
   },
-  { label: "Ingestion", href: "/ingestion", icon: Database },
+  {
+    label: "Ingestion",
+    icon: Database,
+    basePath: "/ingestion",
+    children: [
+      { label: "conf", href: "/ingestion/conf", icon: SlidersHorizontal },
+      { label: "unmanaged", href: "/ingestion/unmanaged", icon: PackageOpen },
+    ],
+  },
   { label: "Validation", href: "/validation", icon: Shield },
   {
     label: "OntoGen",

@@ -33,25 +33,20 @@ import {
   modeBadgeVariant,
   modeLabel,
   scheduleTierLabel,
+  filterKeyLabel,
+  INGESTION_FILTER_KEYS,
 } from "@/lib/ingestion-mode-variant";
 import {
   useIngestionSourceDatasetCounts,
   useIngestionSourceLatestRuns,
 } from "@/lib/api/ingestion";
-import type { IngestionMode, IngestionSource } from "@/types/ingestion";
-
-const MODE_FILTERS: { value: IngestionMode | "ALL"; label: string }[] = [
-  { value: "ALL", label: "All modes" },
-  { value: "ACTIVE_CUSTOM_MANAGED", label: "Active" },
-  { value: "DATAHUB_MANAGED", label: "DataHub-managed" },
-  { value: "PASSIVE", label: "Passive" },
-];
+import type { IngestionFilterKey, IngestionSource } from "@/types/ingestion";
 
 interface IngestionSourceListProps {
   sources: IngestionSource[];
   isLoading: boolean;
-  modeFilter: IngestionMode | "ALL";
-  onModeFilterChange: (mode: IngestionMode | "ALL") => void;
+  filterKey: IngestionFilterKey;
+  onFilterKeyChange: (key: IngestionFilterKey) => void;
   page: { offset: number; limit: number; totalCount: number };
   onPrev: () => void;
   onNext: () => void;
@@ -60,8 +55,8 @@ interface IngestionSourceListProps {
 export function IngestionSourceList({
   sources,
   isLoading,
-  modeFilter,
-  onModeFilterChange,
+  filterKey,
+  onFilterKeyChange,
   page,
   onPrev,
   onNext,
@@ -83,16 +78,16 @@ export function IngestionSourceList({
     <div className="space-y-4">
       <div className="flex items-center gap-3">
         <Select
-          value={modeFilter}
-          onValueChange={(v) => onModeFilterChange(v as IngestionMode | "ALL")}
+          value={filterKey}
+          onValueChange={(v) => onFilterKeyChange(v as IngestionFilterKey)}
         >
-          <SelectTrigger className="w-[200px]">
+          <SelectTrigger className="w-[240px]">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            {MODE_FILTERS.map((m) => (
-              <SelectItem key={m.value} value={m.value}>
-                {m.label}
+            {INGESTION_FILTER_KEYS.map((k) => (
+              <SelectItem key={k} value={k}>
+                {filterKeyLabel(k)}
               </SelectItem>
             ))}
           </SelectContent>
@@ -157,6 +152,11 @@ export function IngestionSourceList({
                       {s.mode === "DATAHUB_MANAGED" && (
                         <Badge variant="outline" className="text-xs">
                           read-only
+                        </Badge>
+                      )}
+                      {s.ad_hoc && (
+                        <Badge variant="secondary" className="text-xs">
+                          ad-hoc
                         </Badge>
                       )}
                     </div>

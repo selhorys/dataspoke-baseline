@@ -1,8 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import Link from "next/link";
-import { ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ErrorState } from "@/components/ui/error-state";
@@ -25,13 +23,6 @@ export default function UnmanagedDatasetsPage() {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3">
-        <Link
-          href="/ingestion"
-          className="text-muted-foreground hover:text-foreground"
-          aria-label="Back to ingestion list"
-        >
-          <ArrowLeft className="h-4 w-4" />
-        </Link>
         <h1 className="text-2xl font-semibold tracking-tight">
           Unmanaged datasets
         </h1>
