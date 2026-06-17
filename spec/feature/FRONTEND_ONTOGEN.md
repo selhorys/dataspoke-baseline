@@ -29,7 +29,7 @@ The OntoGen sidebar entry is a foldable group with three children —
 |---|---|---|
 | `/ontogen/conf` | `GET /spoke/ontogen/attr/conf` | `PUT/PATCH .../attr/conf` (Edit/Save/Cancel; fields: `is_enabled`, `schedule_tier`, `dataset_filter`, `default_run_prompt`) — all action controls sit top-right; the conf is a singleton so the UI exposes no Delete. `POST .../method/run` via Run dialog (optional Markdown body — one-shot prompt; "Dry run — evaluate without persisting results" checkbox → `?dry_run=true`) |
 | `/ontogen/seed` | `GET .../attr/seed`, `GET .../attr/seed/{seed_id}` (Markdown) | `POST .../attr/seed` (Markdown body), `PATCH/DELETE .../attr/seed/{seed_id}` |
-| `/ontogen/result` | `GET .../result/{node\|edge\|triple}` and `.../{id}` (+ `/{id}/attr`, `/{id}/event`) | `POST .../result/{node\|edge\|triple}/{id}/method/review` body `{verdict: "approve"\|"reject", reason}` |
+| `/ontogen/result` | `GET .../result/{node\|edge\|triple}` (+ `/{id}/attr` for evidence) | `POST .../result/{node\|edge\|triple}/{id}/method/review` body `{verdict: "approve"\|"reject", reason}` |
 
 `dataset_filter` follows the standard four-dimension shape — see
 [API §Metric `dataset_filter`](../API.md#metric-spokegovernancemetric).
@@ -38,7 +38,7 @@ The **Nodes**, **Edges**, and **Triples** tabs each render their result set
 as a compact table — one row per item with the kind's identifying columns
 (Node: name; Edge: label · semantics; Triple: `subj --edge--> obj`), a status
 badge, the LLM confidence, and the per-row review/evidence controls. Each tab
-carries a status filter — **All / Approved-only / Unapproved-only** — applied
+carries a status filter — **All / Approved / Unapproved** — applied
 client-side over the fetched set; *Approved* is `status === "approved"` and
 *Unapproved* is every other status (`llm_pending`, `llm_approved`, `rejected`).
 Prev/Next pagination over `GET .../result/{node|edge|triple}` is shown only when
