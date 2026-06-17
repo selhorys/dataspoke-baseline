@@ -27,7 +27,7 @@ This document covers the **Developer AI Scaffold** — the MANIFESTO §2.2 "AI S
 Claude Code configurations in `.claude/` that make AI-assisted *development of the product*
 immediately productive from the first session. It is complemented by a distinct, sibling
 deliverable: the **End-User AI Scaffold** — a distributable Claude Code plugin that helps
-engineers *consume a running DataSpoke* through its public API, specified in `spec/PLUGIN.md`.
+engineers *consume a running DataSpoke* through its public API, specified in `spec/AI_PLUGIN.md`.
 The two never overlap in access: the Developer scaffold has full repo access (specs, `src/`,
 helm, DB); the End-User plugin sees only the public API surface of a deployed instance.
 

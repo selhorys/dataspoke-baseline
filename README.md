@@ -141,6 +141,7 @@ Fork this repository and adapt:
 | [spec/API_DESIGN_PRINCIPLE_en.md](spec/API_DESIGN_PRINCIPLE_en.md) | REST API conventions |
 | [spec/AI_SCAFFOLD.md](spec/AI_SCAFFOLD.md) | Claude Code scaffold: skills, subagents, hooks |
 | [spec/AI_PRAUTO.md](spec/AI_PRAUTO.md) | PRauto autonomous PR worker: lifecycle labels, heartbeat, phase state machine |
+| [spec/AI_PLUGIN.md](spec/AI_PLUGIN.md) | End-User AI Scaffold: public-API-only Claude Code plugin for consuming a deployed DataSpoke |
 | [spec/TESTING.md](spec/TESTING.md) | Testing conventions and integration test protocol |
 | [spec/feature/](spec/feature/) | Feature specs (AUTH, BACKEND, BACKEND_LLM, BACKEND_SCHEMA, VALIDATION, SECRET_RESOLUTION, FRONTEND_*, HELM_CHART) |
 

@@ -6,7 +6,7 @@ ingestion, manage validation, and **author validation routines into your own pip
 
 It is the end-user counterpart to the in-repo developer scaffold (`.claude/`, which *builds*
 DataSpoke). This plugin only ever talks to a deployment's **public API** (`/api/v1/{auth,spoke,hub}`,
-`/ready`, `/redoc`) — never helm, kubectl, source, or the database. See `spec/PLUGIN.md` for the
+`/ready`, `/redoc`) — never helm, kubectl, source, or the database. See `spec/AI_PLUGIN.md` for the
 full specification.
 
 ## Install
