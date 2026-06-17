@@ -379,6 +379,30 @@ async def seed_uc4_context(
     eu_schema = graph.get_aspect(entity_urn=EU_PROFILES_URN, aspect_type=SchemaMetadataClass)
     oe_schema = graph.get_aspect(entity_urn=ORDERS_EVENTS_URN, aspect_type=SchemaMetadataClass)
 
+    # Fail loud when the masking targets are absent from DataHub. Masking is the
+    # whole point of UC4 seeding — generating "missing" metadata to predict — so
+    # a no-op mask (which silently produces an empty-state file and leaves the
+    # datasets fully described) is never acceptable. The usual cause is running
+    # --uc4-seed before --reset-seed has ingested customers/orders into DataHub.
+    missing = [
+        name
+        for name, aspect in (
+            (f"{EU_PROFILES_URN} datasetProperties", eu_props),
+            (f"{EU_PROFILES_URN} schemaMetadata", eu_schema),
+            (f"{ORDERS_EVENTS_URN} schemaMetadata", oe_schema),
+        )
+        if aspect is None
+    ]
+    if missing:
+        raise RuntimeError(
+            "UC4 seed cannot mask absent DataHub aspects: "
+            + "; ".join(missing)
+            + ". Run `--reset-seed` (which ingests the customers/orders schemas) "
+            "and let it finish before `--uc4-seed`. These are separate, ordered "
+            "commands — the CLI does not let you combine them in one invocation "
+            "without reset running first."
+        )
+
     eu_original_dataset_description: str | None = eu_props.description if eu_props else None
 
     eu_original_field_descs: dict[str, str | None] = {}

@@ -31,6 +31,10 @@ Usage:
     uv run python -m tests.integration.util --uc4-seed
         Seed UC4 LLM context (fulfillment doc + ontogen nodes + DataHub masking).
         Writes state to /tmp/dataspoke_uc4_state.json for use with --uc4-restore.
+        Requires the customers/orders datasets already in DataHub; raises if
+        absent. Combine with a reset to seed-then-mask in one call:
+            uv run python -m tests.integration.util --reset-seed --uc4-seed
+        (reset always runs first, then UC4 staging on top of it).
 
     uv run python -m tests.integration.util --uc4-restore
         Restore DataHub aspects and delete UC4 seed state created by --uc4-seed.
@@ -66,33 +70,38 @@ def main() -> None:
         )
         sys.exit(1)
 
-    if "--uc4-seed" in args:
-        asyncio.run(_uc4_seed())
-        return
-
-    if "--uc4-restore" in args:
-        asyncio.run(_uc4_restore())
-        return
-
-    if not args or "--reset-all" in args:
+    def _reset_all() -> None:
         print("[INFO] Resetting to empty state (PG + Kafka + DataHub + DataSpoke DB + Langfuse)...")
         asyncio.run(postgres.reset_all_empty())
         kafka.reset_all_empty()
         datahub.reset_only()
         asyncio.run(dataspoke_db.reset_all())
         asyncio.run(langfuse.reset_project())
-        print("[INFO] Done.")
-        return
 
-    if "--reset-seed" in args:
+    def _reset_seed() -> None:
         print("[INFO] Resetting and seeding (PG + Kafka + DataHub + DataSpoke DB + Langfuse)...")
         asyncio.run(postgres.reset_all())
         kafka.reset_all()
         asyncio.run(datahub.seed())
         asyncio.run(dataspoke_db.reset_all())
         asyncio.run(langfuse.reset_project())
-        print("[INFO] Done.")
-        return
+
+    # Baseline reset/seed runs BEFORE UC4 staging. --uc4-seed masks the
+    # customers/orders datasets that --reset-seed ingests into DataHub, so the
+    # two compose as `--reset-seed --uc4-seed` and must run in that order. They
+    # are not collapsed into a single fast-path: reset must finish first.
+    if "--reset-all" in args:
+        _reset_all()
+    elif "--reset-seed" in args:
+        _reset_seed()
+    elif not args:
+        _reset_all()
+
+    if "--uc4-seed" in args:
+        asyncio.run(_uc4_seed())
+
+    if "--uc4-restore" in args:
+        asyncio.run(_uc4_restore())
 
     if "--pg" in args:
         print("[INFO] Resetting PostgreSQL dummy data (with seed SQL)...")

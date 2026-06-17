@@ -110,8 +110,14 @@ the cluster build) and stop.
 
 Ask once: reset-seed baseline? Default Yes (per `feedback_reset_before_api_wired`).
 Yes → `set -a && source helm-charts/.env && set +a && uv run python -m tests.integration.util --reset-seed`.
-For UC4 scenarios also run `--uc4-seed` (and `--uc4-restore` on completion), per
-`/test-manual-api-wired`.
+
+For UC4 scenarios, additionally seed the LLM context **after** the reset-seed has
+finished — `--uc4-seed` masks the `customers.eu_profiles` and `orders.events`
+descriptions that `--reset-seed` ingests into DataHub, so the datasets must be
+present first. Run it in the same invocation (reset always runs first):
+`… --reset-seed --uc4-seed`. On completion run `--uc4-restore` to unmask. If the
+masking targets are absent, `--uc4-seed` now raises rather than writing an
+empty-mask no-op — re-run `--reset-seed` and let it finish before retrying.
 
 Then have the user log in at the printed URL before Step 1.
 
