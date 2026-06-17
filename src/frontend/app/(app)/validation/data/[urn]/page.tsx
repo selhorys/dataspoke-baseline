@@ -234,6 +234,8 @@ export default function ValidationDetailPage({
             {confExists && !isEditing && (
               <>
                 <Button
+                  key="conf-edit"
+                  type="button"
                   variant="outline"
                   size="sm"
                   onClick={() => setIsEditing(true)}
@@ -241,6 +243,8 @@ export default function ValidationDetailPage({
                   Edit
                 </Button>
                 <Button
+                  key="conf-delete"
+                  type="button"
                   variant="destructive"
                   size="sm"
                   onClick={() => setShowDeleteDialog(true)}
@@ -252,6 +256,8 @@ export default function ValidationDetailPage({
             {confExists && isEditing && (
               <>
                 <Button
+                  key="conf-cancel"
+                  type="button"
                   variant="outline"
                   size="sm"
                   onClick={() => setIsEditing(false)}
@@ -260,6 +266,7 @@ export default function ValidationDetailPage({
                   Cancel
                 </Button>
                 <Button
+                  key="conf-save"
                   type="submit"
                   form={CONF_FORM_ID}
                   size="sm"
@@ -271,6 +278,7 @@ export default function ValidationDetailPage({
             )}
             {is404 && (
               <Button
+                key="conf-create"
                 type="submit"
                 form={CONF_FORM_ID}
                 size="sm"
