@@ -167,6 +167,9 @@ class IngestionSource(Base):
     schedule: Mapped[str | None] = mapped_column(Text, nullable=True)
     schedule_tier: Mapped[str | None] = mapped_column(Text, nullable=True)
     datahub_source_urn: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ad_hoc: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     status: Mapped[str] = mapped_column(Text, nullable=False, default="OK")
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()

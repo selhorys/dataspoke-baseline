@@ -431,6 +431,8 @@ class DataHubClient:
           - recipe (str): the raw JSON recipe string as DataHub returned it
             (secrets may be raw plaintext — the caller is responsible for masking
             before persisting)
+          - executor_id (str | None): the source's configured executorId, used
+            to classify CLI/ad-hoc sources (``__datahub_cli_*``)
 
         Raises:
             DataHubUnavailableError: on transport failure after retries.
@@ -451,6 +453,7 @@ class DataHubClient:
                     }
                     config {
                         recipe
+                        executorId
                     }
                 }
             }
@@ -497,6 +500,7 @@ class DataHubClient:
                             else None
                         ),
                         "recipe": (s.get("config") or {}).get("recipe") or "",
+                        "executor_id": (s.get("config") or {}).get("executorId"),
                     }
                 )
             total: int = outer.get("total") or 0

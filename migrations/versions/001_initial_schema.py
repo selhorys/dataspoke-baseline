@@ -147,6 +147,7 @@ def upgrade() -> None:
         sa.Column("schedule", sa.Text(), nullable=True),
         sa.Column("schedule_tier", sa.Text(), nullable=True),
         sa.Column("datahub_source_urn", sa.Text(), nullable=True),
+        sa.Column("ad_hoc", sa.Boolean(), nullable=False, server_default="false"),
         sa.Column("status", sa.Text(), nullable=False, server_default="OK"),
         sa.Column("created_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
         sa.Column("updated_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),

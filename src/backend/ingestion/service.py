@@ -97,6 +97,7 @@ class IngestionSourceRecord(BaseModel):
     schedule: str | None
     schedule_tier: str | None
     datahub_source_urn: str | None
+    ad_hoc: bool
     status: str
     created_at: datetime
     updated_at: datetime
@@ -149,6 +150,7 @@ def _source_from_row(row: IngestionSource) -> IngestionSourceRecord:
         schedule=row.schedule,
         schedule_tier=row.schedule_tier,
         datahub_source_urn=row.datahub_source_urn,
+        ad_hoc=row.ad_hoc,
         status=row.status,
         created_at=row.created_at,
         updated_at=row.updated_at,
@@ -166,6 +168,29 @@ def _dataset_from_row(row: IngestionSourceDataset) -> IngestionSourceDatasetReco
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+def _is_ad_hoc(executor_id: str | None, source_urn: str | None, name: str | None) -> bool:
+    """Classify a DATAHUB_MANAGED source as CLI/ad-hoc.
+
+    A source is ad-hoc when ANY of the following holds (priority order):
+      1. ``executor_id`` starts with ``__datahub_cli_`` (primary, decisive)
+      2. the source URN id starts with ``cli-`` — the id is the last
+         colon-segment of ``urn:li:dataHubIngestionSource:<id>``
+      3. the display name starts with ``[CLI] ``
+
+    ``pipeline_name`` is not a marker. Non-DATAHUB_MANAGED sources are never
+    ad-hoc and should not be passed here.
+    """
+    if executor_id and executor_id.startswith("__datahub_cli_"):
+        return True
+    if source_urn:
+        source_id = source_urn.rsplit(":", 1)[-1]
+        if source_id.startswith("cli-"):
+            return True
+    if name and name.startswith("[CLI] "):
+        return True
+    return False
 
 
 def _validate_and_derive_tier(
@@ -376,16 +401,22 @@ class IngestionService:
         offset: int = 0,
         limit: int = 20,
         mode_filter: str | None = None,
+        ad_hoc: bool | None = None,
         order_by: Any = None,
     ) -> tuple[list[IngestionSourceRecord], int]:
         """Return a paginated list of sources.
 
         Args:
             mode_filter: When provided, filter to sources with this mode value.
+            ad_hoc: Tri-state filter on the derived CLI/ad-hoc classification.
+                ``None`` applies no constraint; ``True``/``False`` filter to
+                that exact classification.
         """
         base = select(IngestionSource)
         if mode_filter is not None:
             base = base.where(IngestionSource.mode == mode_filter)
+        if ad_hoc is not None:
+            base = base.where(IngestionSource.ad_hoc == ad_hoc)
 
         count_q = select(func.count()).select_from(base.subquery())
         total_count = (await self._db.execute(count_q)).scalar() or 0
@@ -447,6 +478,7 @@ class IngestionService:
             recipe=recipe,
             schedule=schedule,
             schedule_tier=tier,
+            ad_hoc=False,
             status="OK",
         )
         self._db.add(row)
@@ -1173,6 +1205,8 @@ class IngestionService:
             row = result.scalar_one_or_none()
             now = datetime.now(tz=UTC)
 
+            ad_hoc = _is_ad_hoc(s.get("executor_id"), source_urn, s.get("name"))
+
             if row is None:
                 row = IngestionSource(
                     id=uuid.uuid4(),
@@ -1183,6 +1217,7 @@ class IngestionService:
                     schedule=schedule_interval,
                     schedule_tier=tier,
                     datahub_source_urn=source_urn,
+                    ad_hoc=ad_hoc,
                     status="OK",
                 )
                 self._db.add(row)
@@ -1192,6 +1227,7 @@ class IngestionService:
                 row.recipe = masked_recipe
                 row.schedule = schedule_interval
                 row.schedule_tier = tier
+                row.ad_hoc = ad_hoc
                 row.status = "OK"
                 row.updated_at = now
                 self._db.add(row)
