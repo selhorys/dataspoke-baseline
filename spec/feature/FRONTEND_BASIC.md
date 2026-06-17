@@ -281,13 +281,12 @@ blur). Frontend code MUST NOT introduce paths under `/spoke/.../stream/...`.
 
 These component IDs are referenced from per-function specs.
 
-- **OntologyNavigator** — flat node list with approved triples overlaid as
-  labelled arrows. Reads `GET /spoke/ontogen/result/{node,edge,triple}`.
-  Outgoing-triples-on-a-node is a client-side filter on the triple list (the
-  API exposes only the standard pagination / sort / time-range query
-  parameters from [API §Query Parameters](../API.md#query-parameters)).
-  **Read-only**: the action button for `method/review` is rendered only when
-  the caller's role permits approval (Editor / Admin).
+- **OntologyGraph** — interactive force-directed graph of the ontology. Reads
+  `GET /spoke/ontogen/result/node` (graph nodes) and `GET .../result/triple`
+  (links, source/target = subject/object node). Nodes are colored by status and
+  sized by degree; supports drag, zoom/pan, and hover-highlight of neighbors. A
+  client-side filter selects All or Approved-only. **Read-only** — review
+  actions live in the OntoGen Nodes/Edges/Triples tables, not on the graph.
 - **NotificationCenter** — bell-icon popover that merges the global
   cross-feature event feeds (`GET /spoke/ontogen/event`,
   `GET /spoke/metagen/event`) on one poll (see [Live Updates](#live-updates)).

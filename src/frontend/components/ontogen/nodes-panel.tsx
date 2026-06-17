@@ -1,19 +1,30 @@
 "use client";
 
 /**
- * NodesPanel — paginated list of ontology nodes with inline review controls.
- * GET /spoke/ontogen/result/node
+ * NodesPanel — compact table of ontology nodes with a status filter and inline
+ * status-adaptive review controls. GET /spoke/ontogen/result/node
  */
 
 import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { ReviewRow } from "@/components/ontogen/review-row";
+import { EvidenceDisclosure } from "@/components/ontogen/evidence-disclosure";
+import { ApprovalFilter } from "@/components/ontogen/approval-filter";
 import { useOntogenNodes } from "@/lib/api/ontogen";
 import { ontogenStatusLabel, ontogenStatusVariant } from "@/lib/ontogen-status-variant";
+import { filterByApproval, type ApprovalFilterMode } from "@/lib/ontogen-filter";
 
-const PAGE_SIZE = 20;
+const PAGE_SIZE = 100;
 
 interface NodesPanelProps {
   canWrite: boolean;
@@ -21,10 +32,11 @@ interface NodesPanelProps {
 
 export function NodesPanel({ canWrite }: NodesPanelProps) {
   const [offset, setOffset] = useState(0);
+  const [mode, setMode] = useState<ApprovalFilterMode>("all");
   const { data, isLoading, error } = useOntogenNodes({ offset, limit: PAGE_SIZE });
 
-  const nodes = data?.nodes ?? [];
   const total = data?.total_count ?? 0;
+  const nodes = filterByApproval(data?.nodes ?? [], mode);
   const totalPages = Math.ceil(total / PAGE_SIZE);
   const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
 
@@ -42,40 +54,50 @@ export function NodesPanel({ canWrite }: NodesPanelProps) {
     return <p className="text-sm text-destructive">Failed to load nodes: {error.message}</p>;
   }
 
-  if (nodes.length === 0) {
-    return (
-      <p className="py-8 text-center text-sm text-muted-foreground">
-        No ontology nodes yet.
-      </p>
-    );
-  }
-
   return (
     <div className="space-y-3">
-      <ul className="space-y-2">
-        {nodes.map((node) => {
-          const isPending = node.status === "llm_pending" || node.status === "llm_approved";
-          return (
-            <li key={node.id} className="rounded-md border p-3">
-              <div className="flex items-center gap-2">
-                <span className="font-semibold">{node.name}</span>
-                <Badge variant={ontogenStatusVariant(node.status)}>
-                  {ontogenStatusLabel(node.status)}
-                </Badge>
-                <span className="text-xs text-muted-foreground">
-                  conf {node.confidence_score.toFixed(2)}
-                </span>
-              </div>
-              {node.description && (
-                <p className="mt-0.5 text-xs text-muted-foreground">{node.description}</p>
-              )}
-              {isPending && canWrite && (
-                <ReviewRow id={node.id} kind="node" />
-              )}
-            </li>
-          );
-        })}
-      </ul>
+      <div className="flex justify-end">
+        <ApprovalFilter value={mode} onChange={setMode} />
+      </div>
+
+      {nodes.length === 0 ? (
+        <p className="py-8 text-center text-sm text-muted-foreground">No ontology nodes.</p>
+      ) : (
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Name</TableHead>
+              <TableHead className="w-28">Status</TableHead>
+              <TableHead className="w-16">Conf</TableHead>
+              <TableHead>Actions</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {nodes.map((node) => (
+              <TableRow key={node.id} className="align-top">
+                <TableCell>
+                  <div className="font-semibold">{node.name}</div>
+                  {node.description && (
+                    <p className="mt-0.5 text-xs text-muted-foreground">{node.description}</p>
+                  )}
+                  <EvidenceDisclosure kind="node" id={node.id} />
+                </TableCell>
+                <TableCell>
+                  <Badge variant={ontogenStatusVariant(node.status)}>
+                    {ontogenStatusLabel(node.status)}
+                  </Badge>
+                </TableCell>
+                <TableCell className="text-xs text-muted-foreground">
+                  {node.confidence_score.toFixed(2)}
+                </TableCell>
+                <TableCell>
+                  {canWrite && <ReviewRow id={node.id} kind="node" status={node.status} />}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      )}
 
       {totalPages > 1 && (
         <div className="flex items-center justify-between text-sm">

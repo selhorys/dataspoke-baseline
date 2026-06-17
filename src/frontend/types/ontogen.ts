@@ -120,6 +120,19 @@ export interface TripleListResponse {
   triples: OntogenTriple[];
 }
 
+// ── Item attr (evidence) ───────────────────────────────────────────────────────
+
+/**
+ * Per-item detail from GET /spoke/ontogen/result/{kind}/{id}/attr. `evidence` is
+ * free-form JSON (it carries the adversarial-debate transcript under `debate`)
+ * and is rendered as-is. Mirrors {Node,Edge,Triple}AttrResponse in
+ * src/api/schemas/ontogen.py; the per-kind id field is unused by the UI.
+ */
+export interface OntogenItemAttrResponse {
+  confidence_score: number;
+  evidence: Record<string, unknown>;
+}
+
 // ── Review ────────────────────────────────────────────────────────────────────
 
 export interface ReviewRequest {

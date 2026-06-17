@@ -63,7 +63,7 @@ group does not cover the route; the other column does.
 | Route | UC test | Ground test |
 |---|---|---|
 | `/ontogen` | `uc3-01-ontology-generation.spec.ts` step 4 (redirects to `/ontogen/result`) | — |
-| `/ontogen/result` | `uc3-01-ontology-generation.spec.ts` step 4 (browser: Nodes/Edges/Triples/Navigator tabs, result envelopes) | — |
+| `/ontogen/result` | `uc3-01-ontology-generation.spec.ts` steps 4, 4b (browser: Nodes/Edges/Triples/Graph tabs as compact tables, All/Approved/Unapproved status filter, Graph-tab force-directed canvas, revoke an approved row → rejected; result envelopes) | — |
 | `/ontogen/conf` | `uc3-01-ontology-generation.spec.ts` steps 1, 3 (Run + Edit conf, no Delete; Run dialog) | — |
 | `/ontogen/seed` | `uc3-01-ontology-generation.spec.ts` steps 2, 5 (create seed, delete via ConfirmDialog) | — |
 

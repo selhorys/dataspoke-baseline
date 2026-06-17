@@ -1,19 +1,30 @@
 "use client";
 
 /**
- * EdgesPanel — paginated list of ontology edges (predicates) with inline review.
- * GET /spoke/ontogen/result/edge
+ * EdgesPanel — compact table of ontology edges (predicates) with a status
+ * filter and inline status-adaptive review. GET /spoke/ontogen/result/edge
  */
 
 import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { ReviewRow } from "@/components/ontogen/review-row";
+import { EvidenceDisclosure } from "@/components/ontogen/evidence-disclosure";
+import { ApprovalFilter } from "@/components/ontogen/approval-filter";
 import { useOntogenEdges } from "@/lib/api/ontogen";
 import { ontogenStatusLabel, ontogenStatusVariant } from "@/lib/ontogen-status-variant";
+import { filterByApproval, type ApprovalFilterMode } from "@/lib/ontogen-filter";
 
-const PAGE_SIZE = 20;
+const PAGE_SIZE = 100;
 
 interface EdgesPanelProps {
   canWrite: boolean;
@@ -21,10 +32,11 @@ interface EdgesPanelProps {
 
 export function EdgesPanel({ canWrite }: EdgesPanelProps) {
   const [offset, setOffset] = useState(0);
+  const [mode, setMode] = useState<ApprovalFilterMode>("all");
   const { data, isLoading, error } = useOntogenEdges({ offset, limit: PAGE_SIZE });
 
-  const edges = data?.edges ?? [];
   const total = data?.total_count ?? 0;
+  const edges = filterByApproval(data?.edges ?? [], mode);
   const totalPages = Math.ceil(total / PAGE_SIZE);
   const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
 
@@ -42,40 +54,51 @@ export function EdgesPanel({ canWrite }: EdgesPanelProps) {
     return <p className="text-sm text-destructive">Failed to load edges: {error.message}</p>;
   }
 
-  if (edges.length === 0) {
-    return (
-      <p className="py-8 text-center text-sm text-muted-foreground">
-        No ontology edges yet.
-      </p>
-    );
-  }
-
   return (
     <div className="space-y-3">
-      <ul className="space-y-2">
-        {edges.map((edge) => {
-          const isPending = edge.status === "llm_pending" || edge.status === "llm_approved";
-          return (
-            <li key={edge.id} className="rounded-md border p-3">
-              <div className="flex items-center gap-2">
-                <span className="font-semibold">{edge.label}</span>
-                <Badge variant={ontogenStatusVariant(edge.status)}>
-                  {ontogenStatusLabel(edge.status)}
-                </Badge>
-                <span className="text-xs text-muted-foreground">
-                  conf {edge.confidence_score.toFixed(2)}
-                </span>
-              </div>
-              {edge.semantics && (
-                <p className="mt-0.5 text-xs text-muted-foreground">{edge.semantics}</p>
-              )}
-              {isPending && canWrite && (
-                <ReviewRow id={edge.id} kind="edge" />
-              )}
-            </li>
-          );
-        })}
-      </ul>
+      <div className="flex justify-end">
+        <ApprovalFilter value={mode} onChange={setMode} />
+      </div>
+
+      {edges.length === 0 ? (
+        <p className="py-8 text-center text-sm text-muted-foreground">No ontology edges.</p>
+      ) : (
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Label</TableHead>
+              <TableHead>Semantics</TableHead>
+              <TableHead className="w-28">Status</TableHead>
+              <TableHead className="w-16">Conf</TableHead>
+              <TableHead>Actions</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {edges.map((edge) => (
+              <TableRow key={edge.id} className="align-top">
+                <TableCell>
+                  <div className="font-semibold">{edge.label}</div>
+                  <EvidenceDisclosure kind="edge" id={edge.id} />
+                </TableCell>
+                <TableCell className="text-xs text-muted-foreground">
+                  {edge.semantics ?? "—"}
+                </TableCell>
+                <TableCell>
+                  <Badge variant={ontogenStatusVariant(edge.status)}>
+                    {ontogenStatusLabel(edge.status)}
+                  </Badge>
+                </TableCell>
+                <TableCell className="text-xs text-muted-foreground">
+                  {edge.confidence_score.toFixed(2)}
+                </TableCell>
+                <TableCell>
+                  {canWrite && <ReviewRow id={edge.id} kind="edge" status={edge.status} />}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      )}
 
       {totalPages > 1 && (
         <div className="flex items-center justify-between text-sm">

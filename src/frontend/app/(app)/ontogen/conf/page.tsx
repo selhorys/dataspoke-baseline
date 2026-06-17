@@ -17,6 +17,8 @@ import { EmptyState } from "@/components/ui/empty-state";
 import type { DatasetFilter } from "@/types/governance";
 import type { OntogenConfPutBody } from "@/types/ontogen";
 
+const CONF_FORM_ID = "ontogen-conf-form";
+
 export default function OntogenConfPage() {
   const { canWrite } = useMe();
   const { data: conf, isLoading, error } = useOntogenConf();
@@ -27,6 +29,9 @@ export default function OntogenConfPage() {
   const [editing, setEditing] = useState(false);
   const [runDialogOpen, setRunDialogOpen] = useState(false);
   const [datasetFilter, setDatasetFilter] = useState<DatasetFilter>({});
+  // Bumped on Cancel to remount the form, discarding dirty react-hook-form fields
+  // (the form only re-syncs from `conf` on mount / when `conf` changes).
+  const [formNonce, setFormNonce] = useState(0);
 
   useEffect(() => {
     if (conf) {
@@ -44,6 +49,14 @@ export default function OntogenConfPage() {
         toast({ title: "Save failed", description: err.message, variant: "destructive" });
       },
     });
+  }
+
+  function handleCancel() {
+    setEditing(false);
+    setDatasetFilter((conf?.dataset_filter as DatasetFilter) ?? {});
+    // Discard dirty form fields (is_enabled / schedule_tier / default_run_prompt)
+    // by remounting the form so it re-initializes from the saved conf.
+    setFormNonce((n) => n + 1);
   }
 
   function handleRun(params: { promptMd?: string; dry_run: boolean }) {
@@ -76,17 +89,36 @@ export default function OntogenConfPage() {
         </div>
         {canWrite && (
           <div className="flex gap-2">
-            {!editing && (
-              <Button variant="outline" onClick={() => setEditing(true)}>
-                Edit
-              </Button>
+            {editing ? (
+              <>
+                <Button
+                  type="submit"
+                  form={CONF_FORM_ID}
+                  disabled={upsertMutation.isPending}
+                >
+                  {upsertMutation.isPending ? "Saving…" : "Save"}
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={handleCancel}
+                  disabled={upsertMutation.isPending}
+                >
+                  Cancel
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button variant="outline" onClick={() => setEditing(true)}>
+                  Edit
+                </Button>
+                <Button
+                  onClick={() => setRunDialogOpen(true)}
+                  disabled={runMutation.isPending}
+                >
+                  {runMutation.isPending ? "Running…" : "Run"}
+                </Button>
+              </>
             )}
-            <Button
-              onClick={() => setRunDialogOpen(true)}
-              disabled={runMutation.isPending}
-            >
-              {runMutation.isPending ? "Running…" : "Run"}
-            </Button>
           </div>
         )}
       </div>
@@ -108,26 +140,15 @@ export default function OntogenConfPage() {
       )}
 
       {!isLoading && !error && conf && (
-        <>
-          <OntogenConfForm
-            initialValues={conf}
-            datasetFilter={datasetFilter}
-            onDatasetFilterChange={setDatasetFilter}
-            onSubmit={handleSubmit}
-            isSubmitting={upsertMutation.isPending}
-            disabled={!editing}
-          />
-
-          {editing && (
-            <Button
-              variant="outline"
-              onClick={() => setEditing(false)}
-              disabled={upsertMutation.isPending}
-            >
-              Cancel
-            </Button>
-          )}
-        </>
+        <OntogenConfForm
+          key={formNonce}
+          formId={CONF_FORM_ID}
+          initialValues={conf}
+          datasetFilter={datasetFilter}
+          onDatasetFilterChange={setDatasetFilter}
+          onSubmit={handleSubmit}
+          disabled={!editing}
+        />
       )}
 
       <RunDialog

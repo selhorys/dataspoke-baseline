@@ -9,7 +9,6 @@ import { useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Field } from "@/components/forms/field";
 import { FormGrid } from "@/components/ui/form-grid";
@@ -40,8 +39,9 @@ interface OntogenConfFormProps {
   datasetFilter: DatasetFilter;
   onDatasetFilterChange: (v: DatasetFilter) => void;
   onSubmit: (body: OntogenConfPutBody) => void;
-  isSubmitting: boolean;
   disabled?: boolean;
+  /** id wired to the top-right header Save button via <Button form={id} type="submit">. */
+  formId: string;
 }
 
 export function OntogenConfForm({
@@ -49,8 +49,8 @@ export function OntogenConfForm({
   datasetFilter,
   onDatasetFilterChange,
   onSubmit,
-  isSubmitting,
   disabled = false,
+  formId,
 }: OntogenConfFormProps) {
   const {
     register,
@@ -91,7 +91,7 @@ export function OntogenConfForm({
   }
 
   return (
-    <form onSubmit={handleSubmit(handleFormSubmit)} className="space-y-6">
+    <form id={formId} onSubmit={handleSubmit(handleFormSubmit)} className="space-y-6">
       <FormGrid>
         <Field label="is_enabled" htmlFor="conf-is-enabled">
           <div className="flex items-center gap-2">
@@ -156,12 +156,6 @@ export function OntogenConfForm({
           />
         </Field>
       </FormGrid>
-
-      {!disabled && (
-        <Button type="submit" disabled={isSubmitting}>
-          {isSubmitting ? "Saving…" : "Save configuration"}
-        </Button>
-      )}
     </form>
   );
 }

@@ -26,7 +26,10 @@
  *   3. On /ontogen/conf, click Run button → RunDialog ("Run ontology inference") → Run.
  *      Backend poll until ONTOGEN.RUN_COMPLETE event appears; assert OntogenRunSummary shape.
  *   4. GET /spoke/ontogen/event → find ONTOGEN.RUN_COMPLETE; assert debate fields.
- *   5. On /ontogen/result, assert Nodes/Edges/Triples tabs render panels (no-op on count under stub).
+ *   5. On /ontogen/result, assert Nodes/Edges/Triples/Graph tabs: result tabs render as compact
+ *      tables with an All/Approved/Unapproved status filter; the Graph tab mounts its force-directed
+ *      canvas (no-op on count under stub). A revoke flow (reject an approved row → rejected) is
+ *      data-conditional and round-trips when ≥1 row exists.
  *      Backend: GET result/{node,edge,triple} → standard envelope shape each.
  *   6. Cleanup: DELETE seed; PATCH conf disabled.
  *
@@ -404,12 +407,14 @@ test("UC3 step 3 (stub mode) — trigger Run from /ontogen/conf; assert OntogenR
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Step 4 — /ontogen/result browser: Nodes/Edges/Triples tabs render; result envelope shape
+// Step 4 — /ontogen/result browser: table view + status filter + Graph tab; result envelope shape
 // spec: USE_CASE_en.md §UC3 §API Mapping — list endpoints return paginated envelopes
 // spec: FRONTEND_ONTOGEN.md §Navigation — /ontogen redirects to /ontogen/result
-// spec: FRONTEND_ONTOGEN.md §Page contracts — /ontogen/result: tabs Nodes/Edges/Triples/Navigator
+// spec: FRONTEND_ONTOGEN.md §Page contracts — /ontogen/result: tabs Nodes/Edges/Triples/Graph;
+//   each result tab renders a compact table with an All/Approved/Unapproved status filter;
+//   the Graph tab hosts the force-directed view.
 // ─────────────────────────────────────────────────────────────────────────────
-test("UC3 step 4 (stub mode) — /ontogen/result tabs render panels; result envelopes valid", async ({
+test("UC3 step 4 (stub mode) — /ontogen/result tables + status filter + Graph tab; envelopes valid", async ({
   page,
   adminApi,
 }) => {
@@ -425,53 +430,95 @@ test("UC3 step 4 (stub mode) — /ontogen/result tabs render panels; result enve
   // -- UI assertion: result browser heading (convenience landmark) --
   // Heading text is a landmark only; the binding route → surface invariant (FRONTEND_ONTOGEN.md
   // §Navigation / §Page contracts — /ontogen/result is the triple-ontology browser with
-  // Nodes/Edges/Triples/Navigator tabs) is asserted via the resting URL and the tab set below.
+  // Nodes/Edges/Triples/Graph tabs) is asserted via the resting URL and the tab set below.
   await expect(
     page.getByRole("heading", { name: "Ontology Generation", exact: true })
   ).toBeVisible({ timeout: 15_000 });
 
-  // -- UI assertion: tabs visible (Nodes, Edges, Triples, Navigator) --
-  // spec: FRONTEND_ONTOGEN.md §Page contracts — result browser tabs Nodes/Edges/Triples/Navigator
+  // -- UI assertion: tabs visible (Nodes, Edges, Triples, Graph) — Navigator renamed to Graph --
+  // spec: FRONTEND_ONTOGEN.md §Page contracts — result browser tabs Nodes/Edges/Triples/Graph
   await expect(page.getByRole("tab", { name: "Nodes" })).toBeVisible({ timeout: 10_000 });
   await expect(page.getByRole("tab", { name: "Edges" })).toBeVisible();
   await expect(page.getByRole("tab", { name: "Triples" })).toBeVisible();
-  await expect(page.getByRole("tab", { name: "Navigator" })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Graph" })).toBeVisible();
+  // The Navigator tab no longer exists (replaced by Graph).
+  await expect(page.getByRole("tab", { name: "Navigator" })).toHaveCount(0);
 
-  // -- UI assertion: Nodes tab selected by default; panel renders --
-  // ontogen/page.tsx line 51: <Tabs defaultValue="nodes">
-  // NodesPanel renders either "No ontology nodes yet." or a list of nodes.
-  // Under stub mode there are zero rows; the empty-state message is shown.
-  // nodes-panel.tsx line 47: <p>No ontology nodes yet.</p>
-  // We assert the tab is visible and the panel content renders (not a JS error).
-  await expect(page.getByRole("tab", { name: "Nodes" })).toBeVisible({ timeout: 10_000 });
-
-  // The "Nodes" tab content is the default; assert panel loaded (either empty-state or rows).
-  // Under stub: "No ontology nodes yet." is the expected text.
-  // Under real LLM (skipped here): rows may be present.
-  // Either way, asserting the panel renders without error is the correct check.
-  // Wait for loading skeletons to disappear — the panel has a loading branch.
-  // Assert that the tab content area is visible (nodes tab is active by default).
-  // Use toBeVisible with a short timeout; if Skeletons clear in ~2s this passes.
-  await expect(page.getByRole("tab", { name: "Nodes" })).toBeVisible({ timeout: 5_000 });
-  // After any async load, either the empty-state or a node list renders — not a crash.
-  // We cannot assert "No ontology nodes yet." because real-LLM runs may have left nodes.
-  // Instead assert the tab panel is in a non-error state: no destructive error text.
+  // -- UI assertion: Nodes tab selected by default; panel renders without error --
+  // result/page.tsx — <Tabs defaultValue="nodes">. NodesPanel renders a compact Table when rows
+  // exist or an empty-state line otherwise. Under stub there are zero rows; either way the panel
+  // must not crash. We assert the absence of the destructive error branch.
   await expect(
     page.getByText("Failed to load nodes:", { exact: false })
   ).not.toBeVisible({ timeout: 5_000 });
 
-  // -- UI gesture: click Edges tab --
-  // ontogen/page.tsx line 53: TabsTrigger value="edges"
+  // -- UI assertion: each result tab carries an All/Approved/Unapproved status filter --
+  // spec: FRONTEND_ONTOGEN.md §Page contracts — "each result tab carries a status filter
+  //   (All / Approved / Unapproved) applied client-side over the fetched set."
+  // approval-filter.tsx exposes a Select with aria-label "Status filter".
+  const statusFilter = page.getByLabel("Status filter");
+  await expect(statusFilter.first()).toBeVisible({ timeout: 5_000 });
+
+  // Snapshot how many table rows the Nodes table shows under each filter mode. Under stub there
+  // are zero rows so all modes are empty (count 0); when rows exist (real-LLM / pre-seeded state)
+  // the Approved/Unapproved partition must be a subset of All. The binding invariant — switching
+  // the filter changes the visible set, never grows it beyond All — holds in both regimes.
+  // A table body row is <tr> inside <tbody>; locate within the active Nodes panel.
+  const nodesRows = page.getByRole("tabpanel").getByRole("row");
+  async function bodyRowCount(): Promise<number> {
+    const total = await nodesRows.count();
+    // Subtract the header row (<tr> in <thead>) when a table is present; 0 when empty-state.
+    return total > 0 ? Math.max(0, total - 1) : 0;
+  }
+  // mode=all
+  await statusFilter.first().click();
+  await page.getByRole("option", { name: "All", exact: true }).click();
+  const allCount = await bodyRowCount();
+  // mode=approved
+  await statusFilter.first().click();
+  await page.getByRole("option", { name: "Approved", exact: true }).click();
+  const approvedCount = await bodyRowCount();
+  // mode=unapproved
+  await statusFilter.first().click();
+  await page.getByRole("option", { name: "Unapproved", exact: true }).click();
+  const unapprovedCount = await bodyRowCount();
+  // The filtered partitions never exceed the unfiltered set, and approved+unapproved = all
+  // (filterByApproval partitions the fetched page). Holds at 0/0/0 under stub.
+  expect(approvedCount).toBeLessThanOrEqual(allCount);
+  expect(unapprovedCount).toBeLessThanOrEqual(allCount);
+  expect(approvedCount + unapprovedCount).toBe(allCount);
+  // Reset to All for the remaining assertions.
+  await statusFilter.first().click();
+  await page.getByRole("option", { name: "All", exact: true }).click();
+
+  // -- UI gesture: click Edges tab; panel renders without error --
   await page.getByRole("tab", { name: "Edges" }).click();
   await expect(
     page.getByText("Failed to load edges:", { exact: false })
   ).not.toBeVisible({ timeout: 5_000 });
+  await expect(page.getByLabel("Status filter").first()).toBeVisible();
 
-  // -- UI gesture: click Triples tab --
+  // -- UI gesture: click Triples tab; panel renders without error --
   await page.getByRole("tab", { name: "Triples" }).click();
   await expect(
     page.getByText("Failed to load triples:", { exact: false })
   ).not.toBeVisible({ timeout: 5_000 });
+  await expect(page.getByLabel("Status filter").first()).toBeVisible();
+
+  // -- UI gesture: click Graph tab; assert the force-graph container mounts --
+  // spec: FRONTEND_ONTOGEN.md §Page contracts — "the Graph tab hosts an interactive
+  //   force-directed view (All / Approved-only filter)." ontology-graph.tsx tags the canvas host
+  //   with data-testid="ontology-graph-canvas" and exposes a Select aria-label "Graph filter".
+  await page.getByRole("tab", { name: "Graph" }).click();
+  await expect(page.getByTestId("ontology-graph-canvas")).toBeVisible({ timeout: 15_000 });
+  // The graph carries an All / Approved-only filter (no Unapproved-only).
+  await expect(page.getByLabel("Graph filter")).toBeVisible({ timeout: 5_000 });
+  await page.getByLabel("Graph filter").click();
+  await expect(page.getByRole("option", { name: "Approved-only", exact: true })).toBeVisible();
+  await expect(page.getByRole("option", { name: "Unapproved", exact: false })).toHaveCount(0);
+  // Apply Approved-only and confirm the container stays mounted (no crash on filter change).
+  await page.getByRole("option", { name: "Approved-only", exact: true }).click();
+  await expect(page.getByTestId("ontology-graph-canvas")).toBeVisible();
 
   // -- Backend probes: GET result/{node,edge,triple} — assert standard envelope shape --
   // spec: USE_CASE_en.md §UC3 §API Mapping — paginated envelope: {nodes|edges|triples, offset, limit, total_count}
@@ -504,6 +551,89 @@ test("UC3 step 4 (stub mode) — /ontogen/result tabs render panels; result enve
       expect(rows.length).toBe(listBody.total_count);
     }
   }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Step 4b — Revoke an approved node from the result table → status flips to rejected
+// spec: FRONTEND_ONTOGEN.md §Page contracts — "review actions are status-adaptive; an approved
+//   row is revocable (offers Reject)." review-row.tsx surfaces Reject for status==="approved".
+// spec: USE_CASE_en.md §UC3 — a steward can reverse an approval decision.
+//
+// Data-conditional: rows exist only after a real-LLM run (stub runs persist zero). When the result
+// set is empty (stub default) the revoke gesture has nothing to act on, so the round-trip is
+// skipped — mirroring how step 4 treats the stub no-op. When ≥1 node exists, we drive an approved
+// row into the rejected state through the UI and confirm via the backend read-back.
+// ─────────────────────────────────────────────────────────────────────────────
+test("UC3 step 4b — revoke an approved node via the result table (Reject) round-trips to rejected", async ({
+  page,
+  adminApi,
+}) => {
+  if (!confCreated) test.skip(true, "step 1 did not create conf");
+
+  // Find a node to operate on. If none exist (stub mode), skip the revoke round-trip.
+  const NODE_LIST = "/api/v1/spoke/ontogen/result/node?offset=0&limit=10";
+  const listResp = await adminApi.get(NODE_LIST);
+  expect(listResp.status()).toBe(200);
+  const listBody = (await listResp.json()) as {
+    nodes: Array<{ id: string; name: string; status: string }>;
+  };
+  if (listBody.nodes.length === 0) {
+    test.skip(true, "no ontology nodes (stub run persists zero rows); nothing to revoke");
+  }
+
+  // Drive the chosen node into the approved state via the API so the UI presents the revoke
+  // (Reject) action. This setup mirrors a prior human approval; the test exercises the *revoke*.
+  const target = listBody.nodes[0];
+  const REVIEW = (id: string) => `/api/v1/spoke/ontogen/result/node/${id}/method/review`;
+  const approveResp = await adminApi.post(REVIEW(target.id), { data: { verdict: "approve" } });
+  expect(approveResp.status()).toBe(200);
+  const approved = (await approveResp.json()) as { status: string };
+  // spec: BACKEND_LLM.md §Review — approve sets status="approved" (no status guard).
+  expect(approved.status).toBe("approved");
+
+  // Navigate to the result browser, Nodes tab, and filter to Approved so the target row is shown.
+  await page.goto("/ontogen/result");
+  await expect(page).not.toHaveURL(/\/login/);
+  await expect(
+    page.getByRole("heading", { name: "Ontology Generation", exact: true })
+  ).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole("tab", { name: "Nodes" })).toBeVisible({ timeout: 10_000 });
+
+  // Filter to Approved to isolate the approved row.
+  await page.getByLabel("Status filter").first().click();
+  await page.getByRole("option", { name: "Approved", exact: true }).click();
+
+  // Locate the target node's row by its name (rendered in the Name cell) within the Nodes panel.
+  const nodeRow = page
+    .getByRole("tabpanel")
+    .getByRole("row")
+    .filter({ hasText: target.name });
+  await expect(nodeRow.first()).toBeVisible({ timeout: 10_000 });
+
+  // -- UI assertion: an approved row offers only Reject (revoke), no Approve --
+  // spec: FRONTEND_ONTOGEN.md §Page contracts — approved row → Reject only (reviewActionsForStatus).
+  await expect(nodeRow.first().getByRole("button", { name: "Approve" })).toHaveCount(0);
+
+  // -- UI gesture: click Reject to revoke the approval --
+  await nodeRow.first().getByRole("button", { name: "Reject", exact: true }).click();
+
+  // -- UI assertion: a "node rejectd" toast confirms the review posted --
+  // review-row.tsx — onSuccess toast title `${kind} ${verdict}d` → "node rejectd".
+  await expect(page.getByText(/node rejectd/i).first()).toBeVisible({ timeout: 15_000 });
+
+  // -- Backend probe (dual confirmation): GET the node → status === "rejected" --
+  // spec: USE_CASE_en.md §UC3 — revoke flips an approved row to rejected; the read-back reflects it.
+  await expect
+    .poll(
+      async () => {
+        const getResp = await adminApi.get(`/api/v1/spoke/ontogen/result/node/${target.id}`);
+        if (!getResp.ok()) return null;
+        const body = (await getResp.json()) as { status: string };
+        return body.status;
+      },
+      { timeout: 15_000, message: "node status did not flip to rejected after UI revoke" }
+    )
+    .toBe("rejected");
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -776,13 +906,21 @@ test("UC3 real-LLM step 4 — result envelopes valid; ≥1 row persisted; eviden
     page.getByRole("heading", { name: "Ontology Generation", exact: true })
   ).toBeVisible({ timeout: 15_000 });
 
-  // Assert tabs render without errors.
+  // Assert the result tables render without errors and carry the status filter.
+  // spec: FRONTEND_ONTOGEN.md §Page contracts — each result tab is a compact table with the
+  //   All/Approved/Unapproved filter; the Graph tab hosts the force-directed view.
   for (const tabName of ["Nodes", "Edges", "Triples"] as const) {
     await page.getByRole("tab", { name: tabName }).click();
     await expect(
       page.getByText(`Failed to load ${tabName.toLowerCase()}:`, { exact: false })
     ).not.toBeVisible({ timeout: 5_000 });
+    await expect(page.getByLabel("Status filter").first()).toBeVisible({ timeout: 5_000 });
   }
+
+  // Graph tab mounts its force-directed canvas container (real run has ≥1 node to render).
+  await page.getByRole("tab", { name: "Graph" }).click();
+  await expect(page.getByTestId("ontology-graph-canvas")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByLabel("Graph filter")).toBeVisible({ timeout: 5_000 });
 
   // Backend: result envelopes + per-row evidence.debate.
   // spec: BACKEND_LLM.md §Evidence shape — debate transcript in evidence JSONB

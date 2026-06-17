@@ -5,8 +5,8 @@
 
 OntoGen hosts the singleton operational conf, the Markdown seed library,
 and the triple-ontology browser with inline review. Approval lives here —
-inline within each per-type panel and the Navigator — gated by Editor /
-Admin role.
+inline within each per-type panel and surfaced visually in the Graph view —
+gated by Editor / Admin role.
 
 ---
 
@@ -27,46 +27,73 @@ The OntoGen sidebar entry is a foldable group with three children —
 
 | Page | Read | Write |
 |---|---|---|
-| `/ontogen/conf` | `GET /spoke/ontogen/attr/conf` | `PUT/PATCH .../attr/conf` (Edit/Save; fields: `is_enabled`, `schedule_tier`, `dataset_filter`, `default_run_prompt`) — Edit and Run controls sit top-right; the conf is a singleton so the UI exposes no Delete. `POST .../method/run` via Run dialog (optional Markdown body — one-shot prompt; "Dry run — evaluate without persisting results" checkbox → `?dry_run=true`) |
+| `/ontogen/conf` | `GET /spoke/ontogen/attr/conf` | `PUT/PATCH .../attr/conf` (Edit/Save/Cancel; fields: `is_enabled`, `schedule_tier`, `dataset_filter`, `default_run_prompt`) — all action controls sit top-right; the conf is a singleton so the UI exposes no Delete. `POST .../method/run` via Run dialog (optional Markdown body — one-shot prompt; "Dry run — evaluate without persisting results" checkbox → `?dry_run=true`) |
 | `/ontogen/seed` | `GET .../attr/seed`, `GET .../attr/seed/{seed_id}` (Markdown) | `POST .../attr/seed` (Markdown body), `PATCH/DELETE .../attr/seed/{seed_id}` |
 | `/ontogen/result` | `GET .../result/{node\|edge\|triple}` and `.../{id}` (+ `/{id}/attr`, `/{id}/event`) | `POST .../result/{node\|edge\|triple}/{id}/method/review` body `{verdict: "approve"\|"reject", reason}` |
 
 `dataset_filter` follows the standard four-dimension shape — see
 [API §Metric `dataset_filter`](../API.md#metric-spokegovernancemetric).
 
+The **Nodes**, **Edges**, and **Triples** tabs each render their result set
+as a compact table — one row per item with the kind's identifying columns
+(Node: name; Edge: label · semantics; Triple: `subj --edge--> obj`), a status
+badge, the LLM confidence, and the per-row review/evidence controls. Each tab
+carries a status filter — **All / Approved-only / Unapproved-only** — applied
+client-side over the fetched set; *Approved* is `status === "approved"` and
+*Unapproved* is every other status (`llm_pending`, `llm_approved`, `rejected`).
+Prev/Next pagination over `GET .../result/{node|edge|triple}` is shown only when
+the unfiltered total exceeds the page.
+
 Review proceeds **nodes → edges → triples** per
-[API §Ontology Generation](../API.md#ontology-generation-spokeontogen). When
-a triple's dependencies are not yet human-`approved` the UI disables the
-approve button with an inline hint naming the missing dependency; a
-dependency at `llm_approved` does not satisfy the gate. Approve and reject
-are direct actions — approval flips status in DataSpoke storage only and
-does not write to DataHub.
+[API §Ontology Generation](../API.md#ontology-generation-spokeontogen). Review
+actions adapt to the row's current status — pending (`llm_pending` /
+`llm_approved`) offers **Approve** and **Reject**, an `approved` row offers
+**Reject** (revoke), and a `rejected` row offers **Approve** (re-approve) —
+each posting `method/review` with the corresponding `verdict`. When a triple's
+dependencies are not yet human-`approved` the UI disables the approve action
+with an inline hint naming the missing dependency; a dependency at
+`llm_approved` does not satisfy the gate. Approval flips status in DataSpoke
+storage only and does not write to DataHub.
 
-The **Navigator** tab embeds `OntologyNavigator`, overlaying all outgoing
-triples for a node (pending + approved) with inline approve/reject controls
-on the pending ones.
+Each result row carries a "Show evidence" disclosure that, on demand, reads
+`GET .../result/{node|edge|triple}/{id}/attr` and renders that row's `evidence`
+(the adversarial-debate transcript) as-is.
 
-The `/ontogen/conf` page renders the singleton conf with **Edit** and **Run**
-controls at the top-right. **Run** opens a dialog (`POST .../method/run`) with
-an optional Markdown one-shot prompt and a "Dry run" checkbox, sitting next to
-the conf it runs against. **Edit** switches the fields to editable and saves via
-`PUT/PATCH .../attr/conf`; there is no Delete.
+The **Graph** tab renders an interactive force-directed graph of the ontology —
+graph nodes are ontogen nodes (`GET .../result/node`) and links are triples
+(`GET .../result/triple`, source/target = the subject/object node, labelled by
+its edge). Nodes are colored by status and sized by degree; the view supports
+drag, zoom/pan, and hover-highlight of a node's neighbors. A filter selects
+**All** or **Approved-only** (approved nodes and the triples among them); there
+is no unapproved-only view. The graph is read-only — review actions live in the
+Nodes/Edges/Triples tables.
+
+The `/ontogen/conf` page renders the singleton conf with all action controls at
+the top-right. When not editing the header shows **Edit** and **Run**; entering
+edit mode replaces them with **Save** and **Cancel** and hides Run. **Run**
+opens a dialog (`POST .../method/run`) with an optional Markdown one-shot prompt
+and a "Dry run" checkbox. **Edit** switches the fields to editable; **Save**
+persists via `PUT/PATCH .../attr/conf` and **Cancel** discards. There is no
+Delete.
 
 ```
-┌──────────────────────────────────────────────────────┐
-│  OntoGen [ Nodes | Edges | Triples | Navigator ]     │
-├──────────────────────────────────────────────────────┤
-│  Nodes  (result/node)                                │
-│    BOOK         conf 0.96   ✓ approved               │
-│    ORDER_LINE   conf 0.71   ⏳ pending               │
-│       reason: [_______________]  [Approve] [Reject]  │
-│                                                      │
-│  Triples  (result/triple)                            │
-│    ORDER_LINE --references--> BOOK   ⏳              │
-│       [Approve] (blocked: ORDER_LINE node pending)   │
-│    ORDER_LINE --placed_by --> CUSTOMER ⏳            │
-│       [Approve] (blocked: ORDER_LINE node pending)   │
-└──────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│  OntoGen [ Nodes | Edges | Triples | Graph ]              │
+├──────────────────────────────────────────────────────────┤
+│  Nodes (result/node)   filter: [ All ▾ ]                  │
+│  ┌──────────────┬───────────┬──────┬────────────────────┐ │
+│  │ name         │ status    │ conf │ actions            │ │
+│  ├──────────────┼───────────┼──────┼────────────────────┤ │
+│  │ BOOK         │ approved  │ 0.96 │ [Reject] (revoke)  │ │
+│  │ ORDER_LINE   │ pending   │ 0.71 │ [Approve][Reject]  │ │
+│  └──────────────┴───────────┴──────┴────────────────────┘ │
+│                                                            │
+│  Triples (result/triple)   filter: [ Approved ▾ ]         │
+│  ┌────────────────────────────────┬─────────┬──────────┐  │
+│  │ ORDER_LINE --references--> BOOK │ pending │ [Approve]│  │
+│  │   (blocked: ORDER_LINE node pending)                 │  │
+│  └────────────────────────────────┴─────────┴──────────┘  │
+└──────────────────────────────────────────────────────────┘
         Browser + review (`/ontogen/result`)
 ```
 

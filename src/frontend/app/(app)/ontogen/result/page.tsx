@@ -1,11 +1,21 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Skeleton } from "@/components/ui/skeleton";
 import { NodesPanel } from "@/components/ontogen/nodes-panel";
 import { EdgesPanel } from "@/components/ontogen/edges-panel";
 import { TriplesPanel } from "@/components/ontogen/triples-panel";
-import { OntologyNavigator } from "@/components/ontology-navigator";
 import { useMe } from "@/lib/auth/use-me";
+
+// The graph renders to a canvas and must run only in the browser.
+const OntologyGraph = dynamic(
+  () => import("@/components/ontogen/ontology-graph").then((m) => m.OntologyGraph),
+  {
+    ssr: false,
+    loading: () => <Skeleton className="h-[560px] w-full rounded-md" />,
+  },
+);
 
 export default function OntogenResultPage() {
   const { canWrite } = useMe();
@@ -21,7 +31,7 @@ export default function OntogenResultPage() {
           <TabsTrigger value="nodes">Nodes</TabsTrigger>
           <TabsTrigger value="edges">Edges</TabsTrigger>
           <TabsTrigger value="triples">Triples</TabsTrigger>
-          <TabsTrigger value="navigator">Navigator</TabsTrigger>
+          <TabsTrigger value="graph">Graph</TabsTrigger>
         </TabsList>
 
         <TabsContent value="nodes" className="mt-4">
@@ -36,8 +46,8 @@ export default function OntogenResultPage() {
           <TriplesPanel canWrite={canWrite} />
         </TabsContent>
 
-        <TabsContent value="navigator" className="mt-4">
-          <OntologyNavigator canWrite={canWrite} />
+        <TabsContent value="graph" className="mt-4">
+          <OntologyGraph />
         </TabsContent>
       </Tabs>
     </div>
