@@ -438,8 +438,8 @@ test("UC1 Case 3 step 6 — delete PASSIVE source; source gone from list", async
   await page.getByRole("button", { name: "Delete" }).click();
   await page.getByRole("button", { name: "Delete", exact: true }).last().click();
 
-  // -- UI assertion: redirected to /ingestion --
-  await page.waitForURL(/\/ingestion$/, { timeout: 30_000 });
+  // -- UI assertion: redirected to /ingestion/conf (source list moved to /ingestion/conf) --
+  await page.waitForURL(/\/ingestion\/conf$/, { timeout: 30_000 });
   await expect(page.getByText(SOURCE_NAME)).not.toBeVisible({ timeout: 10_000 });
 
   // -- Backend probe: GET /sources/{id} → 404 --

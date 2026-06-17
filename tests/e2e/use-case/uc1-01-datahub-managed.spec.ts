@@ -13,7 +13,7 @@
  *      DataHub is the SSOT, DataSpoke reads from it).
  *   2. Trigger sync sweep via /internal/activities/ingestion/sync (backend, no UI).
  *      Poll until the source appears in GET /spoke/ingestion/sources?mode=DATAHUB_MANAGED.
- *   3. Navigate to /ingestion; verify DATAHUB_MANAGED row appears with "read-only" badge.
+ *   3. Navigate to /ingestion/conf; verify DATAHUB_MANAGED row appears with "read-only" badge.
  *      Backend probe: GET /spoke/ingestion/sources?mode=DATAHUB_MANAGED.
  *   4. Open source detail. Assert:
  *      a. recipe YAML shows password="${UC1_POSTGRES_PASSWORD}" (preserved verbatim)
@@ -274,24 +274,24 @@ test("UC1 Case 1 step 2 — sync sweep mirrors the DATAHUB_MANAGED source into D
 // spec: USE_CASE_en.md §UC1 Case 1 — source exposed read-only via DataSpoke
 // spec: FRONTEND_INGESTION.md §List View — DATAHUB_MANAGED rows carry a read-only badge
 // ─────────────────────────────────────────────────────────────────────────────
-test("UC1 Case 1 step 3 — /ingestion list shows DATAHUB_MANAGED row with read-only badge", async ({
+test("UC1 Case 1 step 3 — /ingestion/conf list shows DATAHUB_MANAGED row with read-only badge", async ({
   page,
   adminApi,
 }) => {
   if (!sourceId) test.skip();
 
-  // Navigate to the ingestion list.
-  await page.goto("/ingestion");
+  // Navigate to the ingestion source list (moved to /ingestion/conf; /ingestion redirects here).
+  await page.goto("/ingestion/conf");
   await expect(page).not.toHaveURL(/\/login/);
   await expect(page.getByRole("heading", { name: "Ingestion" })).toBeVisible({ timeout: 15_000 });
 
-  // -- UI gesture: filter to DATAHUB_MANAGED mode --
-  // spec: FRONTEND_INGESTION.md §List View — mode filter via Select (IngestionSourceList)
-  // The mode filter has no id; locate by its SelectTrigger role (combobox) near the mode label.
-  // We click the filter combobox and select "DataHub-managed".
+  // -- UI gesture: filter to DATAHUB_MANAGED (regular) --
+  // spec: FRONTEND_INGESTION.md §List View — filter via Select (IngestionSourceList)
+  // The filter has no id; locate by its SelectTrigger role (combobox). A source synced from
+  // a DataHub UI definition is ad_hoc=false, so the "DataHub-managed (regular)" option applies.
   const modeFilter = page.getByRole("combobox");
   await modeFilter.click();
-  await page.getByRole("option", { name: "DataHub-managed" }).click();
+  await page.getByRole("option", { name: "DataHub-managed (regular)" }).click();
 
   // -- UI assertion: the registered source's row shows "DataHub-managed" and "read-only" badges --
   // spec: FRONTEND_INGESTION.md §List View — DATAHUB_MANAGED rows: mode badge + "read-only" badge

@@ -470,8 +470,8 @@ test("UC1 Case 2 step 7 — delete source; source gone from list", async ({
   // The ConfirmDialog in this page has confirmLabel="Delete".
   await page.getByRole("button", { name: "Delete", exact: true }).last().click();
 
-  // -- UI assertion: redirected to /ingestion list --
-  await page.waitForURL(/\/ingestion$/, { timeout: 30_000 });
+  // -- UI assertion: redirected to /ingestion/conf list (source list moved to /ingestion/conf) --
+  await page.waitForURL(/\/ingestion\/conf$/, { timeout: 30_000 });
 
   // -- UI assertion: source name no longer visible in list --
   await expect(page.getByText(SOURCE_NAME)).not.toBeVisible({ timeout: 10_000 });

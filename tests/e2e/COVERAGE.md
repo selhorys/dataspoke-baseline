@@ -36,7 +36,8 @@ group does not cover the route; the other column does.
 
 | Route | UC test | Ground test |
 |---|---|---|
-| `/ingestion` | `uc1-02-active-custom-postgres.spec.ts` step 7; `uc1-03-passive-kafka.spec.ts` step 6; `uc1-01-datahub-managed.spec.ts` step 3 (list view, DATAHUB_MANAGED filter) | `ground/shell/reader-write-suppressed.reader.spec.ts` (Reader read-only: "Create source" absent) |
+| `/ingestion` (redirects to `/ingestion/conf`) | — | — |
+| `/ingestion/conf` | `uc1-02-active-custom-postgres.spec.ts` step 7; `uc1-03-passive-kafka.spec.ts` step 6; `uc1-01-datahub-managed.spec.ts` step 3 (list view, DATAHUB-managed regular filter) | `ground/shell/reader-write-suppressed.reader.spec.ts` (Reader read-only: "Create source" absent) |
 | `/ingestion/sources/new` | `uc1-02-active-custom-postgres.spec.ts` step 1 (create ACTIVE_CUSTOM_MANAGED); `uc1-03-passive-kafka.spec.ts` step 1 (create PASSIVE) | — |
 | `/ingestion/sources/[id]` | `uc1-02-active-custom-postgres.spec.ts` steps 2–7; `uc1-03-passive-kafka.spec.ts` steps 2–3, 5–6; `uc1-01-datahub-managed.spec.ts` steps 4–6 (detail, run, datasets, events, read-only, INGESTION.COMPLETE event row, pipeline_name/high authority cell after real execution) | — |
 | `/ingestion/unmanaged` | `uc1-03-passive-kafka.spec.ts` steps 0, 4 (before/after source creation) | — |
@@ -97,4 +98,4 @@ provisioned sessions, not mocked `useMe`). Covered by `tests/e2e/ground/shell/`:
 | Admin nav section (Users + Configurations) visible; Account section visible; main feature nav visible; Admin above Account in DOM | `admin-nav-visible.spec.ts` | admin |
 | Admin nav section absent; Account section visible; direct `/admin/users` nav → permission-denied | `admin-nav-hidden.reader.spec.ts` | reader |
 | Admin nav section absent; Account section visible | `admin-nav-hidden.editor.spec.ts` | editor |
-| Reader write control ("Create source") suppressed on `/ingestion`; read-only content still renders | `reader-write-suppressed.reader.spec.ts` | reader |
+| Reader write control ("Create source") suppressed on `/ingestion/conf`; read-only content + sidebar "unmanaged" nav still render | `reader-write-suppressed.reader.spec.ts` | reader |

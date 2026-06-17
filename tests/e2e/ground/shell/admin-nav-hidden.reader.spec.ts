@@ -95,24 +95,25 @@ test("reader: sidebar does NOT show the 'Configurations' link to /admin/conf", a
 // ── Test 4 — Main feature nav IS visible for Reader ───────────────────────────
 // spec: FRONTEND_BASIC.md §Shell fixes mainNav entries, grouping, and order for every
 //   role (the Admin-only gate applies only to the Admin section, not the feature nav):
-//   Governance ▾ (Dashboard, Metrics), Ingestion, Validation, OntoGen ▾ (conf, seed,
-//   result), MetaGen.
+//   Governance ▾ (Dashboard, Metrics), Ingestion ▾ (conf, unmanaged), Validation,
+//   OntoGen ▾ (conf, seed, result), MetaGen.
 // Implementation realization of the §Shell grouping (not a spec mandate): each ▾ group
 //   renders as a disclosure <button>, a group auto-opens when its active route is open,
 //   and a collapsed group prunes its child links from the DOM. On /governance/dashboard
-//   the Governance group auto-opens (child links present) while the OntoGen group stays
-//   collapsed (toggle button present, children pruned).
+//   the Governance group auto-opens (child links present) while the Ingestion and OntoGen
+//   groups stay collapsed (toggle buttons present, children pruned).
 
 test("reader: sidebar shows all main feature nav links", async ({ page }) => {
   await gotoShell(page);
 
-  // Group toggles render as buttons (impl realization); Governance is auto-open here, OntoGen collapsed.
+  // Group toggles render as buttons (impl realization); Governance is auto-open here,
+  // Ingestion and OntoGen are collapsed.
   await expect(page.getByRole("button", { name: "Governance", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Ingestion", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "OntoGen", exact: true })).toBeVisible();
   // Governance child link is visible because the group auto-opens on /governance/dashboard.
   await expect(page.getByRole("link", { name: "Dashboard", exact: true })).toBeVisible();
   // Flat feature links.
-  await expect(page.getByRole("link", { name: "Ingestion", exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: "Validation", exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: "MetaGen", exact: true })).toBeVisible();
 });
@@ -161,8 +162,11 @@ test("reader: navigating to /admin/users shows permission-denied message, not a 
   // Must NOT redirect to /login — the reader is authenticated.
   await expect(page).not.toHaveURL(/\/login/, { timeout: 15_000 });
 
-  // The shell must still render (Dashboard link visible = shell mounted).
-  await expect(page.getByRole("link", { name: "Dashboard", exact: true })).toBeVisible({
+  // The shell must still render (Validation link visible = shell mounted). Validation is a
+  // top-level flat nav link, always present once the shell mounts regardless of route —
+  // unlike a collapsible group's child link (e.g. Governance ▾ Dashboard), which is pruned
+  // from the DOM when that group is collapsed on a non-/governance route like /admin/users.
+  await expect(page.getByRole("link", { name: "Validation", exact: true })).toBeVisible({
     timeout: 20_000,
   });
 

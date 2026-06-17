@@ -136,28 +136,31 @@ test("admin: sidebar shows 'Account' section with Profile, API Tokens, and Setti
 
 // ── Test 6 — Main feature nav is visible ─────────────────────────────────────
 // spec: FRONTEND_BASIC.md §Shell fixes mainNav entries, grouping, and order for every
-//   role: Governance ▾ (Dashboard, Metrics), Ingestion, Validation, OntoGen ▾ (conf,
-//   seed, result), MetaGen.
+//   role: Governance ▾ (Dashboard, Metrics), Ingestion ▾ (conf, unmanaged), Validation,
+//   OntoGen ▾ (conf, seed, result), MetaGen.
 // Implementation realization of the §Shell grouping (not a spec mandate): each ▾ group
 //   renders as a disclosure <button>, a group auto-opens when its active route is open,
 //   and a collapsed group prunes its child links from the DOM. On /governance/dashboard
 //   the Governance group auto-opens (Dashboard + Metrics child links present) while the
-//   OntoGen group stays collapsed (toggle button present, children pruned).
+//   Ingestion and OntoGen groups stay collapsed (toggle buttons present, children pruned).
 
 test("admin: sidebar shows all main feature nav links", async ({ page }) => {
   await gotoShell(page);
 
-  // Group toggles render as buttons (impl realization); Governance is auto-open here, OntoGen collapsed.
+  // Group toggles render as buttons (impl realization); Governance is auto-open here,
+  // Ingestion and OntoGen are collapsed.
   await expect(page.getByRole("button", { name: "Governance", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Ingestion", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "OntoGen", exact: true })).toBeVisible();
-  // OntoGen is collapsed on this route, so its children (conf/seed/result) are not in the
-  // DOM — proving the disclosure model the other assertions rely on.
+  // The Ingestion and OntoGen groups are collapsed on this route, so their children
+  // (Ingestion: conf/unmanaged; OntoGen: conf/seed/result) are not in the DOM — proving
+  // the disclosure model the other assertions rely on. (`conf` is a child of both groups,
+  // both collapsed here, so the count-0 assertion holds for either.)
   await expect(page.getByRole("link", { name: "conf", exact: true })).toHaveCount(0);
   // Governance children are present because the group auto-opens on /governance/dashboard.
   await expect(page.getByRole("link", { name: "Dashboard", exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: "Metrics", exact: true })).toBeVisible();
   // Flat feature links.
-  await expect(page.getByRole("link", { name: "Ingestion", exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: "Validation", exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: "MetaGen", exact: true })).toBeVisible();
 });
