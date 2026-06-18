@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import uuid
+from typing import Any
 
 import bcrypt as _bcrypt
 from sqlalchemy import func, select
@@ -225,10 +226,16 @@ async def update_role(db: AsyncSession, user_id: uuid.UUID, role: str) -> User:
 
 
 async def list_users(
-    db: AsyncSession, limit: int = 50, offset: int = 0
+    db: AsyncSession, limit: int = 20, offset: int = 0, order_by: Any = None
 ) -> tuple[list[User], int]:
     """Return a page of users plus the total row count."""
-    rows_result = await db.execute(select(User).order_by(User.created_at).limit(limit).offset(offset))
+    default_order = User.created_at
+    rows_result = await db.execute(
+        select(User)
+        .order_by(order_by if order_by is not None else default_order)
+        .limit(limit)
+        .offset(offset)
+    )
     users = list(rows_result.scalars().all())
 
     count_result = await db.execute(select(func.count()).select_from(User))

@@ -7,6 +7,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, EmailStr, Field
 
+from src.api.schemas.common import PaginatedResponse
+
 
 class TokenRequest(BaseModel):
     # str (not EmailStr) keeps token-request parsing lenient; format is enforced
@@ -37,7 +39,9 @@ class RevokeRequest(BaseModel):
 class RegisterRequest(BaseModel):
     email: EmailStr = Field(max_length=254, description="User email address")
     name: str = Field(max_length=128, description="Display name")
-    password: str = Field(min_length=10, max_length=128, description="Password (minimum 10 characters)")
+    password: str = Field(
+        min_length=10, max_length=128, description="Password (minimum 10 characters)"
+    )
 
 
 # ── Profile ───────────────────────────────────────────────────────────────────
@@ -67,7 +71,9 @@ class PasswordResetRequest(BaseModel):
 
 class PasswordResetConfirmRequest(BaseModel):
     token: str = Field(max_length=512, description="Reset token received by email")
-    new_password: str = Field(min_length=10, max_length=128, description="New password (minimum 10 characters)")
+    new_password: str = Field(
+        min_length=10, max_length=128, description="New password (minimum 10 characters)"
+    )
 
 
 # ── API tokens ─────────────────────────────────────────────────────────────────
@@ -82,9 +88,8 @@ class ApiTokenItem(BaseModel):
     expires_at: datetime | None = None
 
 
-class ApiTokenListResponse(BaseModel):
+class ApiTokenListResponse(PaginatedResponse):
     tokens: list[ApiTokenItem]
-    total: int
 
 
 class ApiTokenMintRequest(BaseModel):

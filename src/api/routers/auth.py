@@ -16,7 +16,7 @@ from datetime import timedelta
 
 import bcrypt as _bcrypt
 
-from fastapi import APIRouter, Cookie, Depends, Request, Response, status
+from fastapi import APIRouter, Cookie, Depends, Query, Request, Response, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -428,17 +428,30 @@ def _token_to_item(t: object) -> ApiTokenItem:
 @router.get("/api-tokens", response_model=ApiTokenListResponse)
 async def get_api_tokens(
     ctx: AuthContext = Depends(require_authenticated),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=1000),
+    sort: str | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
 ) -> ApiTokenListResponse:
-    """List the caller's active (non-revoked) API tokens."""
+    """List the caller's active (non-revoked) API tokens.
+
+    Paginated; sortable by created_at (default: created_at descending).
+    """
     token_list = await api_tokens.list_active(db, ctx.user.id)
+    token_list = api_tokens.sort_tokens(token_list, sort)
+    total = len(token_list)
+    page = token_list[offset : offset + limit]
     return ApiTokenListResponse(
-        tokens=[_token_to_item(t) for t in token_list],
-        total=len(token_list),
+        offset=offset,
+        limit=limit,
+        total_count=total,
+        tokens=[_token_to_item(t) for t in page],
     )
 
 
-@router.post("/api-tokens", response_model=ApiTokenMintResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/api-tokens", response_model=ApiTokenMintResponse, status_code=status.HTTP_201_CREATED
+)
 async def post_api_tokens(
     body: ApiTokenMintRequest,
     ctx: AuthContext = Depends(require_authenticated),

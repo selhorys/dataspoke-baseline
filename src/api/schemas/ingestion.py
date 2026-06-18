@@ -228,12 +228,10 @@ class IngestionSourceDatasetsResponse(PaginatedResponse):
 class IngestionUnmanagedResponse(PaginatedResponse):
     """Paginated list of dataset URNs not covered by any source."""
 
-    dataset_urns: list[str] = Field(
-        default=[], description="Dataset URNs in the unmanaged bucket"
-    )
+    dataset_urns: list[str] = Field(default=[], description="Dataset URNs in the unmanaged bucket")
 
 
-class SecretRefListResponse(SingleResponse):
+class SecretRefListResponse(PaginatedResponse):
     """Response for GET /spoke/ingestion/secrets.
 
     Lists source-credential references available for use in recipes.

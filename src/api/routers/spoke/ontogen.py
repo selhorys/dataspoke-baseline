@@ -23,6 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response,
 from src.api.auth.dependencies import AuthContext, require_authenticated, require_writer
 from src.api.dependencies import get_ontogen_service
 from src.api.schemas._paths import UuidPath
+from src.api.schemas.common import parse_sort
 from src.api.schemas.events import EventListResponse, EventResponse
 from src.api.schemas.ontogen import (
     EdgeAttrResponse,
@@ -43,6 +44,13 @@ from src.api.schemas.ontogen import (
     TripleResponse,
 )
 from src.backend.ontogen.service import OntogenService
+from src.shared.db.models import (
+    Event,
+    OntogenEdge,
+    OntogenNode,
+    OntogenSeed,
+    OntogenTriple,
+)
 
 router = APIRouter(
     prefix="/ontogen",
@@ -219,11 +227,20 @@ async def delete_ontogen_conf(
 @router.get("/attr/seed", response_model=SeedListResponse)
 async def get_ontogen_seeds(
     offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=20, ge=1, le=100),
+    limit: int = Query(default=20, ge=1, le=1000),
+    sort: str | None = Query(default=None),
     service: OntogenService = Depends(get_ontogen_service),
 ) -> SeedListResponse:
-    """List active inference seeds with preview snippets."""
-    previews, total = await service.list_seeds(offset=offset, limit=limit)
+    """List active inference seeds with preview snippets.
+
+    Paginated; sortable by created_at, updated_at (default: updated_at descending).
+    """
+    order_by = parse_sort(
+        sort,
+        {"created_at": OntogenSeed.created_at, "updated_at": OntogenSeed.updated_at},
+        None,
+    )
+    previews, total = await service.list_seeds(offset=offset, limit=limit, order_by=order_by)
     return SeedListResponse(
         offset=offset,
         limit=limit,
@@ -330,17 +347,28 @@ async def post_ontogen_run(
 @router.get("/event", response_model=EventListResponse)
 async def get_ontogen_events(
     offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=20, ge=1, le=100),
+    limit: int = Query(default=20, ge=1, le=1000),
+    sort: str | None = Query(default=None),
     from_time: datetime | None = Query(default=None, alias="from"),
     to_time: datetime | None = Query(default=None, alias="to"),
     service: OntogenService = Depends(get_ontogen_service),
 ) -> EventListResponse:
-    """Global ontogen inference-run event history."""
+    """Global ontogen inference-run event history.
+
+    Paginated; sortable by ``occurred_at`` (default: ``occurred_at`` descending).
+    """
     from src.shared.events import ONTOGEN_PREFIX
 
+    order_by = parse_sort(sort, {"occurred_at": Event.occurred_at}, None)
     events, total = await service.list_global_events(
-        "ontogen", "singleton", ONTOGEN_PREFIX, offset, limit,
-        from_dt=from_time, to_dt=to_time,
+        "ontogen",
+        "singleton",
+        ONTOGEN_PREFIX,
+        offset,
+        limit,
+        from_dt=from_time,
+        to_dt=to_time,
+        order_by=order_by,
     )
     return _event_list(events, total, offset, limit)
 
@@ -351,13 +379,18 @@ async def get_ontogen_events(
 @router.get("/result/node", response_model=NodeListResponse)
 async def get_ontogen_nodes(
     offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=20, ge=1, le=100),
+    limit: int = Query(default=20, ge=1, le=1000),
     status_filter: str | None = Query(default=None, alias="status"),
+    sort: str | None = Query(default=None),
     service: OntogenService = Depends(get_ontogen_service),
 ) -> NodeListResponse:
-    """List ontology nodes with confidence and lifecycle status."""
+    """List ontology nodes with confidence and lifecycle status.
+
+    Paginated; sortable by ``created_at`` (default: ``created_at`` descending).
+    """
+    order_by = parse_sort(sort, {"created_at": OntogenNode.created_at}, None)
     rows, total = await service.list_nodes(
-        status_filter=status_filter, offset=offset, limit=limit
+        status_filter=status_filter, offset=offset, limit=limit, order_by=order_by
     )
     return NodeListResponse(
         offset=offset,
@@ -395,15 +428,24 @@ async def get_ontogen_node_attr(
 async def get_ontogen_node_events(
     node_id: str,
     offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=20, ge=1, le=100),
+    limit: int = Query(default=20, ge=1, le=1000),
+    sort: str | None = Query(default=None),
     from_time: datetime | None = Query(default=None, alias="from"),
     to_time: datetime | None = Query(default=None, alias="to"),
     service: OntogenService = Depends(get_ontogen_service),
 ) -> EventListResponse:
-    """Node-level change history (NODE.APPROVE, NODE.REJECT)."""
+    """Node-level change history (NODE.APPROVE, NODE.REJECT).
+
+    Paginated; sortable by ``occurred_at`` (default: ``occurred_at`` descending).
+    """
+    order_by = parse_sort(sort, {"occurred_at": Event.occurred_at}, None)
     events, total = await service.list_node_events(
-        node_id=node_id, offset=offset, limit=limit,
-        from_dt=from_time, to_dt=to_time,
+        node_id=node_id,
+        offset=offset,
+        limit=limit,
+        from_dt=from_time,
+        to_dt=to_time,
+        order_by=order_by,
     )
     return _event_list(events, total, offset, limit)
 
@@ -426,13 +468,18 @@ async def post_ontogen_node_review(
 @router.get("/result/edge", response_model=EdgeListResponse)
 async def get_ontogen_edges(
     offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=20, ge=1, le=100),
+    limit: int = Query(default=20, ge=1, le=1000),
     status_filter: str | None = Query(default=None, alias="status"),
+    sort: str | None = Query(default=None),
     service: OntogenService = Depends(get_ontogen_service),
 ) -> EdgeListResponse:
-    """List ontology edges (predicates) with confidence and status."""
+    """List ontology edges (predicates) with confidence and status.
+
+    Paginated; sortable by ``created_at`` (default: ``created_at`` descending).
+    """
+    order_by = parse_sort(sort, {"created_at": OntogenEdge.created_at}, None)
     rows, total = await service.list_edges(
-        status_filter=status_filter, offset=offset, limit=limit
+        status_filter=status_filter, offset=offset, limit=limit, order_by=order_by
     )
     return EdgeListResponse(
         offset=offset,
@@ -470,15 +517,24 @@ async def get_ontogen_edge_attr(
 async def get_ontogen_edge_events(
     edge_id: str,
     offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=20, ge=1, le=100),
+    limit: int = Query(default=20, ge=1, le=1000),
+    sort: str | None = Query(default=None),
     from_time: datetime | None = Query(default=None, alias="from"),
     to_time: datetime | None = Query(default=None, alias="to"),
     service: OntogenService = Depends(get_ontogen_service),
 ) -> EventListResponse:
-    """Edge-level change history (EDGE.APPROVE, EDGE.REJECT)."""
+    """Edge-level change history (EDGE.APPROVE, EDGE.REJECT).
+
+    Paginated; sortable by ``occurred_at`` (default: ``occurred_at`` descending).
+    """
+    order_by = parse_sort(sort, {"occurred_at": Event.occurred_at}, None)
     events, total = await service.list_edge_events(
-        edge_id=edge_id, offset=offset, limit=limit,
-        from_dt=from_time, to_dt=to_time,
+        edge_id=edge_id,
+        offset=offset,
+        limit=limit,
+        from_dt=from_time,
+        to_dt=to_time,
+        order_by=order_by,
     )
     return _event_list(events, total, offset, limit)
 
@@ -501,13 +557,18 @@ async def post_ontogen_edge_review(
 @router.get("/result/triple", response_model=TripleListResponse)
 async def get_ontogen_triples(
     offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=20, ge=1, le=100),
+    limit: int = Query(default=20, ge=1, le=1000),
     status_filter: str | None = Query(default=None, alias="status"),
+    sort: str | None = Query(default=None),
     service: OntogenService = Depends(get_ontogen_service),
 ) -> TripleListResponse:
-    """List ontology triples (subject/edge/object facts) with confidence and status."""
+    """List ontology triples (subject/edge/object facts) with confidence and status.
+
+    Paginated; sortable by ``created_at`` (default: ``created_at`` descending).
+    """
+    order_by = parse_sort(sort, {"created_at": OntogenTriple.created_at}, None)
     rows, total = await service.list_triples(
-        status_filter=status_filter, offset=offset, limit=limit
+        status_filter=status_filter, offset=offset, limit=limit, order_by=order_by
     )
     return TripleListResponse(
         offset=offset,
@@ -548,15 +609,24 @@ async def get_ontogen_triple_attr(
 async def get_ontogen_triple_events(
     triple_id: str,
     offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=20, ge=1, le=100),
+    limit: int = Query(default=20, ge=1, le=1000),
+    sort: str | None = Query(default=None),
     from_time: datetime | None = Query(default=None, alias="from"),
     to_time: datetime | None = Query(default=None, alias="to"),
     service: OntogenService = Depends(get_ontogen_service),
 ) -> EventListResponse:
-    """Triple-level change history (TRIPLE.APPROVE, TRIPLE.REJECT)."""
+    """Triple-level change history (TRIPLE.APPROVE, TRIPLE.REJECT).
+
+    Paginated; sortable by ``occurred_at`` (default: ``occurred_at`` descending).
+    """
+    order_by = parse_sort(sort, {"occurred_at": Event.occurred_at}, None)
     events, total = await service.list_triple_events(
-        triple_id=triple_id, offset=offset, limit=limit,
-        from_dt=from_time, to_dt=to_time,
+        triple_id=triple_id,
+        offset=offset,
+        limit=limit,
+        from_dt=from_time,
+        to_dt=to_time,
+        order_by=order_by,
     )
     return _event_list(events, total, offset, limit)
 

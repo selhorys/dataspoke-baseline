@@ -29,6 +29,7 @@ from src.api.routers.spoke._metagen_mappers import (
     to_item_detail,
     to_item_summary,
 )
+from src.api.schemas.common import parse_sort
 from src.api.schemas.events import EventListResponse
 from src.api.schemas.metagen import (
     MetagenConfCreateRequest,
@@ -44,7 +45,12 @@ from src.api.schemas.metagen import (
     MetagenUncoveredRow,
 )
 from src.backend.metagen.service import MetagenService
-from src.shared.db.models import Event
+from src.shared.db.models import (
+    DatasetRegistry,
+    Event,
+    MetagenConfig,
+    MetagenItem,
+)
 from src.shared.events import METAGEN_PREFIX
 from src.shared.exceptions import PreconditionFailedError
 
@@ -81,10 +87,17 @@ def _conf_response(dto: Any) -> MetagenConfResponse:
 @router.get("/conf", response_model=MetagenConfListResponse)
 async def get_metagen_confs(
     offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=20, ge=1, le=100),
+    limit: int = Query(default=20, ge=1, le=1000),
+    sort: str | None = Query(default=None),
     service: MetagenService = Depends(get_metagen_service),
 ) -> MetagenConfListResponse:
-    dtos, total = await service.list_confs(offset=offset, limit=limit)
+    """List metagen confs (paginated; sortable by created_at, updated_at)."""
+    order_by = parse_sort(
+        sort,
+        {"created_at": MetagenConfig.created_at, "updated_at": MetagenConfig.updated_at},
+        None,
+    )
+    dtos, total = await service.list_confs(offset=offset, limit=limit, order_by=order_by)
     return MetagenConfListResponse(
         offset=offset,
         limit=limit,
@@ -191,11 +204,15 @@ async def get_metagen_conf_event(
     conf_id: str,
     event_type: str | None = Query(default=None),
     after: datetime | None = Query(default=None),
-    limit: int = Query(default=20, ge=1, le=100),
+    limit: int = Query(default=20, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
+    sort: str | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
 ) -> EventListResponse:
-    """Per-conf generation-run event history (METAGEN.RUN_COMPLETE, METAGEN.RUN_FAILED)."""
+    """Per-conf generation-run event history (METAGEN.RUN_COMPLETE, METAGEN.RUN_FAILED).
+
+    Paginated; sortable by ``occurred_at`` (default: ``occurred_at`` descending).
+    """
     base = select(Event).where(
         Event.entity_type == "metagen",
         Event.entity_id == conf_id,
@@ -209,7 +226,8 @@ async def get_metagen_conf_event(
     count_q = select(func.count()).select_from(base.subquery())
     total = (await db.execute(count_q)).scalar() or 0
 
-    rows_q = base.order_by(Event.occurred_at.desc()).offset(offset).limit(limit)
+    order_by = parse_sort(sort, {"occurred_at": Event.occurred_at}, Event.occurred_at.desc())
+    rows_q = base.order_by(order_by).offset(offset).limit(limit)
     rows = (await db.execute(rows_q)).scalars().all()
 
     return event_list(
@@ -238,18 +256,22 @@ async def get_metagen_conf_event(
 async def get_metagen_uncovered(
     include_disallowed: bool = Query(default=False),
     offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=100, ge=1, le=1000),
+    limit: int = Query(default=20, ge=1, le=1000),
+    sort: str | None = Query(default=None),
     service: MetagenService = Depends(get_metagen_service),
 ) -> MetagenUncoveredResponse:
     """Registered datasets reached by no enabled conf.
 
     With ``?include_disallowed=true`` also includes datasets matched by a conf but
-    blocked by the boundary. Each row carries a ``reason``.
+    blocked by the boundary. Each row carries a ``reason``. Paginated; sortable by
+    ``dataset_urn`` (default: ``dataset_urn`` ascending).
     """
+    order_by = parse_sort(sort, {"dataset_urn": DatasetRegistry.dataset_urn}, None)
     rows, total = await service.list_uncovered(
         include_disallowed=include_disallowed,
         offset=offset,
         limit=limit,
+        order_by=order_by,
     )
     return MetagenUncoveredResponse(
         offset=offset,
@@ -272,12 +294,16 @@ async def get_metagen_uncovered(
 async def get_metagen_events(
     event_type: str | None = Query(default=None),
     after: datetime | None = Query(default=None),
-    limit: int = Query(default=20, ge=1, le=100),
+    limit: int = Query(default=20, ge=1, le=1000),
     cursor: str | None = Query(default=None),
     offset: int = Query(default=0, ge=0),
+    sort: str | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
 ) -> EventListResponse:
-    """Cross-conf union of all confs' generation-run events."""
+    """Cross-conf union of all confs' generation-run events.
+
+    Paginated; sortable by ``occurred_at`` (default: ``occurred_at`` descending).
+    """
     base = select(Event).where(
         Event.entity_type == "metagen",
         Event.event_type.startswith(METAGEN_PREFIX),
@@ -290,7 +316,8 @@ async def get_metagen_events(
     count_q = select(func.count()).select_from(base.subquery())
     total = (await db.execute(count_q)).scalar() or 0
 
-    rows_q = base.order_by(Event.occurred_at.desc()).offset(offset).limit(limit)
+    order_by = parse_sort(sort, {"occurred_at": Event.occurred_at}, Event.occurred_at.desc())
+    rows_q = base.order_by(order_by).offset(offset).limit(limit)
     rows = (await db.execute(rows_q)).scalars().all()
 
     return event_list(
@@ -324,9 +351,16 @@ async def get_metagen_items(
     ),
     conf_id: str | None = Query(default=None),
     offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=20, ge=1, le=100),
+    limit: int = Query(default=20, ge=1, le=1000),
+    sort: str | None = Query(default=None),
     service: MetagenService = Depends(get_metagen_service),
 ) -> MetagenItemListResponse:
+    """List metagen items (paginated; sortable by created_at, updated_at)."""
+    order_by = parse_sort(
+        sort,
+        {"created_at": MetagenItem.created_at, "updated_at": MetagenItem.updated_at},
+        None,
+    )
     dtos, total = await service.list_items(
         dataset_urn=dataset_urn,
         kind=kind,
@@ -334,6 +368,7 @@ async def get_metagen_items(
         conf_id=conf_id,
         offset=offset,
         limit=limit,
+        order_by=order_by,
     )
     return MetagenItemListResponse(
         items=[to_item_summary(d) for d in dtos],
@@ -360,6 +395,6 @@ async def get_metagen_item_by_composite_id(
             "composite_id must be in the form '{dataset_urn}::{item_id}'",
         )
     dataset_urn = composite_id[:idx]
-    item_id = composite_id[idx + len(sep):]
+    item_id = composite_id[idx + len(sep) :]
     dto = await service.get_item(dataset_urn, item_id)
     return to_item_detail(dto)

@@ -107,7 +107,7 @@ class IngestionRunResult(BaseModel):
     """Value object for the outcome of an ingestion run."""
 
     run_id: str
-    status: str          # 'success' | 'error'
+    status: str  # 'success' | 'error'
     dry_run: bool
     entities_ingested: int
     emitted_urns: list[str]
@@ -235,9 +235,7 @@ def _verify_recipe_secret_refs(recipe: dict[str, Any]) -> None:
                 detail={"ref": ref},
             ) from exc
         except SecretResolverUnavailable as exc:
-            raise StorageUnavailableError(
-                f"Secret resolver unavailable: {exc}"
-            ) from exc
+            raise StorageUnavailableError(f"Secret resolver unavailable: {exc}") from exc
 
 
 def _reject_if_datahub_managed(mode: str, source_id: str) -> None:
@@ -348,14 +346,14 @@ def _name_from_dataset_urn(urn: str) -> str | None:
     """
     if not urn.startswith("urn:li:dataset:(") or not urn.endswith(")"):
         return None
-    inner = urn[len("urn:li:dataset:("):-1]
+    inner = urn[len("urn:li:dataset:(") : -1]
     last_comma = inner.rfind(",")
     if last_comma == -1:
         return None
     second_last_comma = inner.rfind(",", 0, last_comma)
     if second_last_comma == -1:
         return None
-    name = inner[second_last_comma + 1:last_comma].strip()
+    name = inner[second_last_comma + 1 : last_comma].strip()
     return name if name else None
 
 
@@ -388,9 +386,7 @@ class IngestionService:
         except ValueError:
             raise EntityNotFoundError("ingestion_source", source_id)
 
-        result = await self._db.execute(
-            select(IngestionSource).where(IngestionSource.id == uid)
-        )
+        result = await self._db.execute(select(IngestionSource).where(IngestionSource.id == uid))
         row = result.scalar_one_or_none()
         if row is None:
             raise EntityNotFoundError("ingestion_source", source_id)
@@ -512,9 +508,7 @@ class IngestionService:
         except ValueError:
             raise EntityNotFoundError("ingestion_source", source_id)
 
-        result = await self._db.execute(
-            select(IngestionSource).where(IngestionSource.id == uid)
-        )
+        result = await self._db.execute(select(IngestionSource).where(IngestionSource.id == uid))
         row = result.scalar_one_or_none()
         if row is None:
             raise EntityNotFoundError("ingestion_source", source_id)
@@ -570,9 +564,7 @@ class IngestionService:
         except ValueError:
             raise EntityNotFoundError("ingestion_source", source_id)
 
-        result = await self._db.execute(
-            select(IngestionSource).where(IngestionSource.id == uid)
-        )
+        result = await self._db.execute(select(IngestionSource).where(IngestionSource.id == uid))
         row = result.scalar_one_or_none()
         if row is None:
             raise EntityNotFoundError("ingestion_source", source_id)
@@ -625,9 +617,7 @@ class IngestionService:
         except ValueError:
             raise EntityNotFoundError("ingestion_source", source_id)
 
-        result = await self._db.execute(
-            select(IngestionSource).where(IngestionSource.id == uid)
-        )
+        result = await self._db.execute(select(IngestionSource).where(IngestionSource.id == uid))
         row = result.scalar_one_or_none()
         if row is None:
             raise EntityNotFoundError("ingestion_source", source_id)
@@ -861,9 +851,7 @@ class IngestionService:
         manual: bool = False,
     ) -> None:
         run_type = (
-            DataProcessTypeClass.BATCH_AD_HOC
-            if manual
-            else DataProcessTypeClass.BATCH_SCHEDULED
+            DataProcessTypeClass.BATCH_AD_HOC if manual else DataProcessTypeClass.BATCH_SCHEDULED
         )
         await self._datahub.emit_aspect(
             dpi_urn,
@@ -978,9 +966,7 @@ class IngestionService:
 
     # ── Tier DAG support ─────────────────────────────────────────────────────
 
-    async def list_active_sources_for_tier(
-        self, tier: str
-    ) -> list[IngestionSourceRecord]:
+    async def list_active_sources_for_tier(self, tier: str) -> list[IngestionSourceRecord]:
         """Return ACTIVE_CUSTOM_MANAGED sources for the given schedule tier.
 
         Used by the ingestion-active-{hourly,daily,weekly} Airflow DAGs.
@@ -1000,7 +986,8 @@ class IngestionService:
         self,
         source_id: str,
         offset: int = 0,
-        limit: int = 100,
+        limit: int = 20,
+        order_by: Any = None,
     ) -> tuple[list[IngestionSourceDatasetRecord], int]:
         """List dataset mappings for a given source.
 
@@ -1010,15 +997,14 @@ class IngestionService:
         await self.get_source(source_id)  # raises if not found
         uid = uuid.UUID(source_id)
 
-        count_q = select(func.count()).where(
-            IngestionSourceDataset.source_id == uid
-        )
+        count_q = select(func.count()).where(IngestionSourceDataset.source_id == uid)
         total_count = (await self._db.execute(count_q)).scalar() or 0
 
+        default_order = IngestionSourceDataset.last_seen_at.desc()
         rows_q = (
             select(IngestionSourceDataset)
             .where(IngestionSourceDataset.source_id == uid)
-            .order_by(IngestionSourceDataset.last_seen_at.desc())
+            .order_by(order_by if order_by is not None else default_order)
             .offset(offset)
             .limit(limit)
         )
@@ -1238,9 +1224,7 @@ class IngestionService:
 
         # Remove DATAHUB_MANAGED rows whose source URN is no longer in DataHub.
         result = await self._db.execute(
-            select(IngestionSource).where(
-                IngestionSource.mode == Mode.DATAHUB_MANAGED.value
-            )
+            select(IngestionSource).where(IngestionSource.mode == Mode.DATAHUB_MANAGED.value)
         )
         all_managed_rows = result.scalars().all()
         for row in all_managed_rows:
@@ -1433,9 +1417,7 @@ class IngestionService:
         try:
             requests = await self._datahub.list_execution_requests(datahub_source_urn)
         except Exception as exc:
-            logger.warning(
-                "list_execution_requests failed for %s: %s", datahub_source_urn, exc
-            )
+            logger.warning("list_execution_requests failed for %s: %s", datahub_source_urn, exc)
             return 0
 
         inserted = 0
@@ -1518,9 +1500,7 @@ class IngestionService:
                     limit=5,
                 )
             except Exception as exc:
-                logger.debug(
-                    "get_timeseries(Operation) failed for %s: %s", ds_row.dataset_urn, exc
-                )
+                logger.debug("get_timeseries(Operation) failed for %s: %s", ds_row.dataset_urn, exc)
                 continue
 
             for op in ops:

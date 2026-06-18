@@ -15,7 +15,6 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query
 
-from src.api.auth.dependencies import require_authenticated
 from src.api.dependencies import get_ingestion_service
 from src.api.schemas._paths import DatasetUrnPath
 from src.api.schemas.common import parse_sort
@@ -83,7 +82,7 @@ async def get_data_ingestion(
 async def get_data_ingestion_event(
     dataset_urn: DatasetUrnPath,
     offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=20, ge=1, le=100),
+    limit: int = Query(default=20, ge=1, le=1000),
     sort: str | None = Query(default=None),
     from_time: datetime | None = Query(default=None, alias="from"),
     to_time: datetime | None = Query(default=None, alias="to"),

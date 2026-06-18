@@ -109,11 +109,26 @@ async def list_active(db: AsyncSession, user_id: uuid.UUID) -> list[ApiToken]:
 async def list_all_for_user(db: AsyncSession, user_id: uuid.UUID) -> list[ApiToken]:
     """Return all tokens for *user_id* (includes revoked — for admin view)."""
     result = await db.execute(
-        select(ApiToken)
-        .where(ApiToken.user_id == user_id)
-        .order_by(ApiToken.created_at)
+        select(ApiToken).where(ApiToken.user_id == user_id).order_by(ApiToken.created_at)
     )
     return list(result.scalars().all())
+
+
+def sort_tokens(tokens: list[ApiToken], sort: str | None) -> list[ApiToken]:
+    """Order a materialised token list by the requested ``sort`` expression.
+
+    Only ``created_at`` is sortable; the default (``sort`` omitted) is
+    ``created_at`` descending — newest first — matching the standard list
+    ordering. Used by the router-side pagination of the token list endpoints
+    (``GET /auth/api-tokens``, ``GET /admin/users/{id}/api-tokens``), whose data
+    source is a small per-user in-memory list.
+    """
+    if sort is None:
+        return sorted(tokens, key=lambda t: t.created_at, reverse=True)
+    for suffix, reverse in (("_desc", True), ("_asc", False)):
+        if sort.endswith(suffix) and sort[: -len(suffix)] == "created_at":
+            return sorted(tokens, key=lambda t: t.created_at, reverse=reverse)
+    return tokens
 
 
 # ── Revoke ────────────────────────────────────────────────────────────────────
@@ -187,7 +202,10 @@ async def lookup_and_validate(db: AsyncSession, raw_token: str) -> tuple[User, s
                 (ApiToken.last_used_at.is_(None))
                 | (
                     ApiToken.last_used_at
-                    < func.now() - text("INTERVAL '60 seconds'")  # Safe: hardcoded constant. If this becomes config-driven, switch to bound parameters.
+                    < func.now()
+                    - text(
+                        "INTERVAL '60 seconds'"
+                    )  # Safe: hardcoded constant. If this becomes config-driven, switch to bound parameters.
                 ),
             )
             .values(last_used_at=func.now())

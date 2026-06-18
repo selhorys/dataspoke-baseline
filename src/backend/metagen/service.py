@@ -259,15 +259,16 @@ class MetagenService:
         return row
 
     async def list_confs(
-        self, *, offset: int = 0, limit: int = 20
+        self, *, offset: int = 0, limit: int = 20, order_by: Any = None
     ) -> tuple[list[MetagenConfDTO], int]:
         """List confs (paginated, newest first)."""
         count_q = select(func.count()).select_from(MetagenConfig)
         total = (await self._db.execute(count_q)).scalar() or 0
 
+        default_order = MetagenConfig.created_at.desc()
         rows_q = (
             select(MetagenConfig)
-            .order_by(MetagenConfig.created_at.desc())
+            .order_by(order_by if order_by is not None else default_order)
             .offset(offset)
             .limit(limit)
         )
@@ -333,9 +334,7 @@ class MetagenService:
                 )
             )
             if clash.scalar_one_or_none() is not None:
-                raise ConflictError(
-                    "METAGEN_CONF_EXISTS", f"Metagen conf {name!r} already exists"
-                )
+                raise ConflictError("METAGEN_CONF_EXISTS", f"Metagen conf {name!r} already exists")
 
         row.name = name
         row.is_enabled = data.get("is_enabled", False)
@@ -538,6 +537,7 @@ class MetagenService:
         conf_id: str | None = None,
         offset: int = 0,
         limit: int = 20,
+        order_by: Any = None,
     ) -> tuple[list[ItemSummaryDTO], int]:
         base = select(MetagenItem)
         if dataset_urn is not None:
@@ -575,7 +575,12 @@ class MetagenService:
         count_q = select(func.count()).select_from(base.subquery())
         total = (await self._db.execute(count_q)).scalar() or 0
 
-        rows_q = base.order_by(MetagenItem.updated_at.desc()).offset(offset).limit(limit)
+        default_order = MetagenItem.updated_at.desc()
+        rows_q = (
+            base.order_by(order_by if order_by is not None else default_order)
+            .offset(offset)
+            .limit(limit)
+        )
         rows = (await self._db.execute(rows_q)).scalars().all()
 
         summaries: list[ItemSummaryDTO] = []
@@ -599,9 +604,9 @@ class MetagenService:
         return await self._build_item_detail(row)
 
     async def list_items_for_dataset(
-        self, urn: str, *, offset: int = 0, limit: int = 20
+        self, urn: str, *, offset: int = 0, limit: int = 20, order_by: Any = None
     ) -> tuple[list[ItemSummaryDTO], int]:
-        return await self.list_items(dataset_urn=urn, offset=offset, limit=limit)
+        return await self.list_items(dataset_urn=urn, offset=offset, limit=limit, order_by=order_by)
 
     async def get_item_for_dataset(self, urn: str, item_id: str) -> ItemDetailDTO:
         return await self.get_item(urn, item_id)
@@ -613,7 +618,8 @@ class MetagenService:
         *,
         include_disallowed: bool = False,
         offset: int = 0,
-        limit: int = 100,
+        limit: int = 20,
+        order_by: Any = None,
     ) -> tuple[list[UncoveredRowDTO], int]:
         """Registered datasets not documented by any enabled conf.
 
@@ -627,9 +633,7 @@ class MetagenService:
         """
         # Registered datasets (the UC1 unmanaged analogue base set).
         reg_result = await self._db.execute(
-            select(DatasetRegistry.dataset_urn).where(
-                DatasetRegistry.datahub_registered.is_(True)
-            )
+            select(DatasetRegistry.dataset_urn).where(DatasetRegistry.datahub_registered.is_(True))
         )
         registered: set[str] = {r[0] for r in reg_result.all()}
 
@@ -658,8 +662,13 @@ class MetagenService:
         )
         writable_boundary: set[str] = {r[0] for r in bnd_result.all()}
 
+        # Default order: dataset_urn ascending. ?sort=dataset_urn_desc reverses
+        # the in-memory ordering (the uncovered set is computed in Python).
+        from sqlalchemy.sql import operators
+
+        reverse = order_by is not None and getattr(order_by, "modifier", None) is operators.desc_op
         rows: list[UncoveredRowDTO] = []
-        for urn in sorted(registered):
+        for urn in sorted(registered, reverse=reverse):
             if urn not in matched:
                 rows.append(UncoveredRowDTO(dataset_urn=urn, reason="no_conf_match"))
             elif include_disallowed and urn not in writable_boundary:
@@ -736,9 +745,7 @@ class MetagenService:
         conf_uuid = uuid.UUID(conf.id)
 
         # Step 1: Enumerate in-scope datasets
-        in_scope_urns, unresolved_urns = await self._enumerate_in_scope_datasets(
-            conf, dataset_urns
-        )
+        in_scope_urns, unresolved_urns = await self._enumerate_in_scope_datasets(conf, dataset_urns)
 
         run_uuid = uuid.UUID(run_id)
         items_considered = 0
@@ -851,7 +858,8 @@ class MetagenService:
                 continue
 
             accepted = [
-                c for c in candidate_output.candidates
+                c
+                for c in candidate_output.candidates
                 if c.confidence_score >= rc.metagen_confidence_threshold
             ]
 
@@ -1077,9 +1085,7 @@ class MetagenService:
         in_scope = sorted(datahub_urn_set & enabled_boundary_urns)
         return in_scope, unresolved
 
-    async def _clear_rejected_candidates(
-        self, in_scope_urns: list[str], conf_id: uuid.UUID
-    ) -> int:
+    async def _clear_rejected_candidates(self, in_scope_urns: list[str], conf_id: uuid.UUID) -> int:
         """Delete this conf's rejected candidates across in-scope datasets.
 
         Returns deleted row count. Embeddings rows in
@@ -1167,9 +1173,7 @@ class MetagenService:
 
             glossary = await self._datahub.get_aspect(urn, GlossaryTermsClass)
             if glossary and hasattr(glossary, "terms"):
-                evidence["glossaryTerms"] = [
-                    getattr(t, "urn", str(t)) for t in glossary.terms
-                ]
+                evidence["glossaryTerms"] = [getattr(t, "urn", str(t)) for t in glossary.terms]
         except Exception:
             logger.warning("metagen_evidence_fetch_failed", extra={"urn": urn}, exc_info=True)
 
@@ -1201,8 +1205,7 @@ class MetagenService:
                 nodes = nodes_result.scalars().all()
                 evidence["ontology"] = {
                     "approved_nodes": [
-                        {"id": n.id, "name": n.name, "description": n.description}
-                        for n in nodes
+                        {"id": n.id, "name": n.name, "description": n.description} for n in nodes
                     ]
                 }
         except Exception:
@@ -1392,9 +1395,7 @@ class MetagenService:
         item_row = item_result.scalar_one_or_none()
         if item_row is None:
             kind = (
-                "dataset.description"
-                if item_id == "dataset.description"
-                else "column.description"
+                "dataset.description" if item_id == "dataset.description" else "column.description"
             )
             field_path: str | None = None
             if kind == "column.description":
@@ -1485,9 +1486,7 @@ class MetagenService:
                 )
 
                 # Fetch existing to merge (preserve other field edits)
-                existing = await self._datahub.get_aspect(
-                    urn, EditableSchemaMetadataClass
-                )
+                existing = await self._datahub.get_aspect(urn, EditableSchemaMetadataClass)
                 if existing and hasattr(existing, "editableSchemaFieldInfo"):
                     field_infos = list(existing.editableSchemaFieldInfo)
                     for fi in field_infos:
@@ -1496,9 +1495,7 @@ class MetagenService:
                             break
                     else:
                         field_infos.append(
-                            EditableSchemaFieldInfoClass(
-                                fieldPath=field_path, description=value
-                            )
+                            EditableSchemaFieldInfoClass(fieldPath=field_path, description=value)
                         )
                 else:
                     field_infos = [
@@ -1523,9 +1520,7 @@ class MetagenService:
                 else "column.description"
             )
             vec = await self._llm.embed(cand.value)
-            await _upsert_candidate_embedding(
-                self._vector, str(cand.candidate_id), kind, vec
-            )
+            await _upsert_candidate_embedding(self._vector, str(cand.candidate_id), kind, vec)
         except Exception:
             logger.warning(
                 "metagen_candidate_embedding_upsert_failed",
@@ -1569,9 +1564,7 @@ class MetagenService:
         if not conf_ids:
             return {}
         result = await self._db.execute(
-            select(MetagenConfig.id, MetagenConfig.name).where(
-                MetagenConfig.id.in_(conf_ids)
-            )
+            select(MetagenConfig.id, MetagenConfig.name).where(MetagenConfig.id.in_(conf_ids))
         )
         return {r.id: r.name for r in result.all()}
 
@@ -1590,8 +1583,7 @@ class MetagenService:
             {c.conf_id for c in cand_rows if c.conf_id is not None}
         )
         candidates = [
-            _candidate_to_dto(c, name_map.get(c.conf_id) if c.conf_id else None)
-            for c in cand_rows
+            _candidate_to_dto(c, name_map.get(c.conf_id) if c.conf_id else None) for c in cand_rows
         ]
         return ItemDetailDTO(
             dataset_urn=row.dataset_urn,

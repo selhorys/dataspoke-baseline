@@ -76,7 +76,7 @@ def _source_response(record: Any) -> IngestionSourceResponse:
 @router.get("/sources", response_model=IngestionSourceListResponse)
 async def get_ingestion_sources(
     offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=20, ge=1, le=100),
+    limit: int = Query(default=20, ge=1, le=1000),
     mode: Mode | None = Query(default=None, description="Filter by ingestion mode"),
     ad_hoc: bool | None = Query(
         default=None,
@@ -252,19 +252,22 @@ async def post_ingestion_source_run(
 async def get_ingestion_source_datasets(
     id: str,
     offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=100, ge=1, le=1000),
+    limit: int = Query(default=20, ge=1, le=1000),
+    sort: str | None = Query(default=None),
     service: IngestionService = Depends(get_ingestion_service),
 ) -> IngestionSourceDatasetsResponse:
     """List datasets covered by this source (the current mapping).
 
     Each row carries ``dataset_urn``, ``authority``, ``derivation``,
     ``first_seen_at``, and ``last_seen_at``. The mapping is rebuilt by the
-    hourly sync DAG.
+    hourly sync DAG. Paginated; sortable by ``dataset_urn`` (default:
+    ``last_seen_at`` descending).
 
     Returns ``404 INGESTION_SOURCE_NOT_FOUND`` when the id is absent.
     """
+    order_by = parse_sort(sort, {"dataset_urn": IngestionSourceDataset.dataset_urn}, None)
     datasets, total_count = await service.list_datasets_for_source(
-        source_id=id, offset=offset, limit=limit
+        source_id=id, offset=offset, limit=limit, order_by=order_by
     )
     return IngestionSourceDatasetsResponse(
         offset=offset,
@@ -290,7 +293,7 @@ async def get_ingestion_source_datasets(
 async def get_ingestion_source_event(
     id: str,
     offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=20, ge=1, le=100),
+    limit: int = Query(default=20, ge=1, le=1000),
     sort: str | None = Query(default=None),
     from_time: datetime | None = Query(default=None, alias="from"),
     to_time: datetime | None = Query(default=None, alias="to"),
@@ -334,7 +337,8 @@ async def get_ingestion_source_event(
 @router.get("/unmanaged", response_model=IngestionUnmanagedResponse)
 async def get_ingestion_unmanaged(
     offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=100, ge=1, le=1000),
+    limit: int = Query(default=20, ge=1, le=1000),
+    sort: str | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
 ) -> IngestionUnmanagedResponse:
     """List DataHub dataset URNs not covered by any ingestion source.
@@ -342,6 +346,7 @@ async def get_ingestion_unmanaged(
     Returns URNs that exist in DataHub (``datahub_registered=True``) and have
     no row in ``ingestion_source_dataset``. The registry is populated by the
     hourly sync DAG; an empty list means all known datasets have an owning source.
+    Paginated; sortable by ``dataset_urn`` (default: ``dataset_urn`` ascending).
     """
     # Subquery: dataset_urns that DO have a source mapping.
     mapped_subq = select(IngestionSourceDataset.dataset_urn).scalar_subquery()
@@ -354,11 +359,12 @@ async def get_ingestion_unmanaged(
     count_q = select(func.count()).select_from(base_q.subquery())
     total_count = (await db.execute(count_q)).scalar() or 0
 
-    rows_q = (
-        base_q.order_by(DatasetRegistry.dataset_urn)
-        .offset(offset)
-        .limit(limit)
+    order_by = parse_sort(
+        sort,
+        {"dataset_urn": DatasetRegistry.dataset_urn},
+        DatasetRegistry.dataset_urn,
     )
+    rows_q = base_q.order_by(order_by).offset(offset).limit(limit)
     result = await db.execute(rows_q)
     urns = [row[0] for row in result.all()]
 
@@ -375,6 +381,9 @@ async def get_ingestion_unmanaged(
 
 @router.get("/secrets", response_model=SecretRefListResponse)
 async def get_ingestion_secrets(
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=1000),
+    sort: str | None = Query(default=None),
     _editor: AuthContext = Depends(require_editor),
 ) -> SecretRefListResponse:
     """List available source-credential references (no values returned).
@@ -399,6 +408,9 @@ async def get_ingestion_secrets(
     the reference list (see ``spec/feature/FRONTEND_INGESTION.md`` §Create View
     and ``spec/feature/SECRET_RESOLUTION.md`` §Admin authoring guide).
 
+    Paginated; sortable by ``ref`` (default: ``ref`` ascending). The data source
+    is the Kubernetes API (not a DB query), so the page is sliced in the router.
+
     Returns ``503 STORAGE_UNAVAILABLE`` when the in-cluster Kubernetes config
     is not loadable or the k8s API is unreachable.
     """
@@ -407,9 +419,17 @@ async def get_ingestion_secrets(
     except SecretResolverUnavailable as exc:
         raise StorageUnavailableError(str(exc)) from exc
 
+    # Whitelisted in-memory sort over the k8s-enumerated refs (not a DB column,
+    # so parse_sort's SQLAlchemy clauses do not apply). Allowed field: ``ref``
+    # (asc/desc); unknown values fall back to the default ``ref`` ascending.
+    reverse = sort == "ref_desc"
+    refs = sorted(refs, key=lambda r: r.ref, reverse=reverse)
+    total_count = len(refs)
+    page = refs[offset : offset + limit]
+
     return SecretRefListResponse(
-        secrets=[
-            SecretRefInfo(ref=r.ref, secret_name=r.secret_name, key=r.key)
-            for r in refs
-        ]
+        offset=offset,
+        limit=limit,
+        total_count=total_count,
+        secrets=[SecretRefInfo(ref=r.ref, secret_name=r.secret_name, key=r.key) for r in page],
     )

@@ -27,7 +27,7 @@ router = APIRouter(
 @router.get("", response_model=ValidationListResponse)
 async def get_validation(
     offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=20, ge=1, le=100),
+    limit: int = Query(default=20, ge=1, le=1000),
     sort: str | None = Query(default=None),
     removed: bool | None = Query(default=None),
     service: ValidationService = Depends(get_validation_service),

@@ -283,13 +283,20 @@ class OntogenService:
 
     # ── Seed CRUD ─────────────────────────────────────────────────────────────
 
-    async def list_seeds(self, offset: int = 0, limit: int = 20) -> tuple[list[SeedPreview], int]:
-        """Return paginated seed previews sorted by updated_at desc."""
+    async def list_seeds(
+        self, offset: int = 0, limit: int = 20, order_by: Any = None
+    ) -> tuple[list[SeedPreview], int]:
+        """Return paginated seed previews (default order: updated_at desc)."""
         base = select(OntogenSeed).where(OntogenSeed.status == "active")
         count_q = select(func.count()).select_from(base.subquery())
         total = (await self._db.execute(count_q)).scalar() or 0
 
-        rows_q = base.order_by(OntogenSeed.updated_at.desc()).offset(offset).limit(limit)
+        default_order = OntogenSeed.updated_at.desc()
+        rows_q = (
+            base.order_by(order_by if order_by is not None else default_order)
+            .offset(offset)
+            .limit(limit)
+        )
         rows = (await self._db.execute(rows_q)).scalars().all()
 
         previews = [
@@ -466,20 +473,24 @@ class OntogenService:
         # the original pending row. Rejected rows are excluded so they aren't
         # implicitly revived.
         eligible_nodes = (
-            (await self._db.execute(
-                select(OntogenNode).where(
-                    OntogenNode.status.in_(["approved", "llm_approved", "llm_pending"])
+            (
+                await self._db.execute(
+                    select(OntogenNode).where(
+                        OntogenNode.status.in_(["approved", "llm_approved", "llm_pending"])
+                    )
                 )
-            ))
+            )
             .scalars()
             .all()
         )
         eligible_edges = (
-            (await self._db.execute(
-                select(OntogenEdge).where(
-                    OntogenEdge.status.in_(["approved", "llm_approved", "llm_pending"])
+            (
+                await self._db.execute(
+                    select(OntogenEdge).where(
+                        OntogenEdge.status.in_(["approved", "llm_approved", "llm_pending"])
+                    )
                 )
-            ))
+            )
             .scalars()
             .all()
         )
@@ -786,9 +797,8 @@ class OntogenService:
 
             # Fix #12: compact evidence JSONB
             _node_reviewer_verdicts = [
-                iv for iv in (
-                    debate_result.transcript.get("item_verdicts") or []
-                )
+                iv
+                for iv in (debate_result.transcript.get("item_verdicts") or [])
                 if iv.get("item_kind") == "node" and iv.get("item_id") == node_id
             ]
             _node_evidence: dict[str, Any] = {
@@ -861,9 +871,8 @@ class OntogenService:
 
             # Fix #12: compact evidence JSONB
             _edge_reviewer_verdicts = [
-                iv for iv in (
-                    debate_result.transcript.get("item_verdicts") or []
-                )
+                iv
+                for iv in (debate_result.transcript.get("item_verdicts") or [])
                 if iv.get("item_kind") == "edge" and iv.get("item_id") == edge_id
             ]
             _edge_evidence: dict[str, Any] = {
@@ -931,9 +940,8 @@ class OntogenService:
             if existing_triple is None:
                 # Fix #12: compact evidence JSONB for triple
                 _triple_reviewer_verdicts = [
-                    iv for iv in (
-                        debate_result.transcript.get("item_verdicts") or []
-                    )
+                    iv
+                    for iv in (debate_result.transcript.get("item_verdicts") or [])
                     if iv.get("item_kind") == "triple" and iv.get("item_id") == t["id"]
                 ]
                 _triple_evidence: dict[str, Any] = {
@@ -1007,13 +1015,19 @@ class OntogenService:
         status_filter: str | None = None,
         offset: int = 0,
         limit: int = 20,
+        order_by: Any = None,
     ) -> tuple[list[OntogenNode], int]:
         base = select(OntogenNode)
         if status_filter:
             base = base.where(OntogenNode.status == status_filter)
         count_q = select(func.count()).select_from(base.subquery())
         total = (await self._db.execute(count_q)).scalar() or 0
-        rows_q = base.order_by(OntogenNode.created_at.desc()).offset(offset).limit(limit)
+        default_order = OntogenNode.created_at.desc()
+        rows_q = (
+            base.order_by(order_by if order_by is not None else default_order)
+            .offset(offset)
+            .limit(limit)
+        )
         rows = (await self._db.execute(rows_q)).scalars().all()
         return list(rows), total
 
@@ -1057,6 +1071,7 @@ class OntogenService:
         limit: int = 20,
         from_dt: datetime | None = None,
         to_dt: datetime | None = None,
+        order_by: Any = None,
     ) -> tuple[list[dict[str, Any]], int]:
         from src.shared.events import NODE_PREFIX
 
@@ -1068,6 +1083,7 @@ class OntogenService:
             limit,
             from_dt=from_dt,
             to_dt=to_dt,
+            order_by=order_by,
         )
 
     # ── Edge reads ────────────────────────────────────────────────────────────
@@ -1077,13 +1093,19 @@ class OntogenService:
         status_filter: str | None = None,
         offset: int = 0,
         limit: int = 20,
+        order_by: Any = None,
     ) -> tuple[list[OntogenEdge], int]:
         base = select(OntogenEdge)
         if status_filter:
             base = base.where(OntogenEdge.status == status_filter)
         count_q = select(func.count()).select_from(base.subquery())
         total = (await self._db.execute(count_q)).scalar() or 0
-        rows_q = base.order_by(OntogenEdge.created_at.desc()).offset(offset).limit(limit)
+        default_order = OntogenEdge.created_at.desc()
+        rows_q = (
+            base.order_by(order_by if order_by is not None else default_order)
+            .offset(offset)
+            .limit(limit)
+        )
         rows = (await self._db.execute(rows_q)).scalars().all()
         return list(rows), total
 
@@ -1109,6 +1131,7 @@ class OntogenService:
         limit: int = 20,
         from_dt: datetime | None = None,
         to_dt: datetime | None = None,
+        order_by: Any = None,
     ) -> tuple[list[dict[str, Any]], int]:
         from src.shared.events import EDGE_PREFIX
 
@@ -1120,6 +1143,7 @@ class OntogenService:
             limit,
             from_dt=from_dt,
             to_dt=to_dt,
+            order_by=order_by,
         )
 
     # ── Triple reads ──────────────────────────────────────────────────────────
@@ -1129,13 +1153,19 @@ class OntogenService:
         status_filter: str | None = None,
         offset: int = 0,
         limit: int = 20,
+        order_by: Any = None,
     ) -> tuple[list[OntogenTriple], int]:
         base = select(OntogenTriple)
         if status_filter:
             base = base.where(OntogenTriple.status == status_filter)
         count_q = select(func.count()).select_from(base.subquery())
         total = (await self._db.execute(count_q)).scalar() or 0
-        rows_q = base.order_by(OntogenTriple.created_at.desc()).offset(offset).limit(limit)
+        default_order = OntogenTriple.created_at.desc()
+        rows_q = (
+            base.order_by(order_by if order_by is not None else default_order)
+            .offset(offset)
+            .limit(limit)
+        )
         rows = (await self._db.execute(rows_q)).scalars().all()
         return list(rows), total
 
@@ -1164,6 +1194,7 @@ class OntogenService:
         limit: int = 20,
         from_dt: datetime | None = None,
         to_dt: datetime | None = None,
+        order_by: Any = None,
     ) -> tuple[list[dict[str, Any]], int]:
         from src.shared.events import TRIPLE_PREFIX
 
@@ -1175,6 +1206,7 @@ class OntogenService:
             limit,
             from_dt=from_dt,
             to_dt=to_dt,
+            order_by=order_by,
         )
 
     # ── Reviews ───────────────────────────────────────────────────────────────
@@ -1569,6 +1601,7 @@ class OntogenService:
         limit: int,
         from_dt: datetime | None = None,
         to_dt: datetime | None = None,
+        order_by: Any = None,
     ) -> tuple[list[dict[str, Any]], int]:
         """Public method for listing events — used by routers."""
         return await self._list_events(
@@ -1579,6 +1612,7 @@ class OntogenService:
             limit,
             from_dt=from_dt,
             to_dt=to_dt,
+            order_by=order_by,
         )
 
     async def _list_events(
@@ -1590,6 +1624,7 @@ class OntogenService:
         limit: int,
         from_dt: datetime | None = None,
         to_dt: datetime | None = None,
+        order_by: Any = None,
     ) -> tuple[list[dict[str, Any]], int]:
         base = select(Event).where(
             Event.entity_type == entity_type,
@@ -1604,7 +1639,12 @@ class OntogenService:
         count_q = select(func.count()).select_from(base.subquery())
         total = (await self._db.execute(count_q)).scalar() or 0
 
-        rows_q = base.order_by(Event.occurred_at.desc()).offset(offset).limit(limit)
+        default_order = Event.occurred_at.desc()
+        rows_q = (
+            base.order_by(order_by if order_by is not None else default_order)
+            .offset(offset)
+            .limit(limit)
+        )
         rows = (await self._db.execute(rows_q)).scalars().all()
         events = [
             {

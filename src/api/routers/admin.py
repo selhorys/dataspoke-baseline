@@ -31,6 +31,7 @@ from src.api.schemas.admin import (
     UsersListResponse,
 )
 from src.api.schemas.auth import ApiTokenItem, ApiTokenListResponse
+from src.api.schemas.common import parse_sort
 from src.backend.admin.config_service import get_runtime_config, patch_runtime_config
 from src.backend.admin.datahub_secret import (
     datahub_token_is_set,
@@ -314,9 +315,7 @@ async def _get_peripheral_updated_at(db: AsyncSession, name: str) -> object:
 
     from src.shared.db.models import PeripheralConfig
 
-    result = await db.execute(
-        select(PeripheralConfig).where(PeripheralConfig.name == name)
-    )
+    result = await db.execute(select(PeripheralConfig).where(PeripheralConfig.name == name))
     row = result.scalar_one_or_none()
     return row.updated_at if row else None
 
@@ -608,14 +607,20 @@ def _token_to_item(t: object) -> ApiTokenItem:
 @router.get("/users")
 async def get_users(
     offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=20, ge=1, le=100),
+    limit: int = Query(default=20, ge=1, le=1000),
+    sort: str | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
 ) -> UsersListResponse:
-    """List all DataSpoke users."""
-    user_list, total = await users.list_users(db, limit=limit, offset=offset)
+    """List all DataSpoke users (paginated; sortable by created_at, email)."""
+    from src.shared.db.models import User
+
+    order_by = parse_sort(sort, {"created_at": User.created_at, "email": User.email}, None)
+    user_list, total = await users.list_users(db, limit=limit, offset=offset, order_by=order_by)
     return UsersListResponse(
+        offset=offset,
+        limit=limit,
+        total_count=total,
         users=[_user_to_response(u) for u in user_list],
-        total=total,
     )
 
 
@@ -692,13 +697,24 @@ async def delete_user(
 @router.get("/users/{user_id}/api-tokens")
 async def get_user_api_tokens(
     user_id: uuid.UUID,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=1000),
+    sort: str | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
 ) -> ApiTokenListResponse:
-    """List all API tokens for a user (admin view — includes revoked)."""
+    """List all API tokens for a user (admin view — includes revoked).
+
+    Paginated; sortable by created_at (default: created_at descending).
+    """
     token_list = await api_tokens.list_all_for_user(db, user_id)
+    token_list = api_tokens.sort_tokens(token_list, sort)
+    total = len(token_list)
+    page = token_list[offset : offset + limit]
     return ApiTokenListResponse(
-        tokens=[_token_to_item(t) for t in token_list],
-        total=len(token_list),
+        offset=offset,
+        limit=limit,
+        total_count=total,
+        tokens=[_token_to_item(t) for t in page],
     )
 
 
@@ -733,9 +749,7 @@ async def internal_bootstrap(
     from src.shared.db.models import User
 
     # Check for any existing Admin.
-    result = await db.execute(
-        select(User).where(User.role == "Admin").limit(1)
-    )
+    result = await db.execute(select(User).where(User.role == "Admin").limit(1))
     existing_admin = result.scalar_one_or_none()
     if existing_admin is not None:
         return BootstrapResponse(created=False, user_id=None, email=None)
@@ -744,14 +758,16 @@ async def internal_bootstrap(
     runtime_config = await get_runtime_config(db)
     try:
         user = await users.create_user(
-            db, email="dataspoke@dataspoke.local", name="DataSpoke Admin", password="dataspoke", role="Admin"
+            db,
+            email="dataspoke@dataspoke.local",
+            name="DataSpoke Admin",
+            password="dataspoke",
+            role="Admin",
         )
     except ConflictError as exc:
         if exc.error_code == "EMAIL_ALREADY_REGISTERED":
             # A concurrent caller already created the admin — re-check and return no-op.
-            result2 = await db.execute(
-                select(User).where(User.role == "Admin").limit(1)
-            )
+            result2 = await db.execute(select(User).where(User.role == "Admin").limit(1))
             if result2.scalar_one_or_none() is not None:
                 return BootstrapResponse(created=False, user_id=None, email=None)
         raise

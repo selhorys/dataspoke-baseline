@@ -10,7 +10,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
-from src.api.schemas.common import SingleResponse
+from src.api.schemas.common import PaginatedResponse, SingleResponse
 
 # A single DataHub dataset URN with format and length constraints.
 DatasetUrn = Annotated[
@@ -157,9 +157,9 @@ class RuntimeConfPatchRequest(BaseModel):
     metagen_debate_max_turns: Annotated[int | None, Field(default=None, ge=2, le=10)] = None
     metagen_debate_rag_k: Annotated[int | None, Field(default=None, ge=0, le=20)] = None
     metagen_debate_reviewer_model: str | None = None
-    metagen_confidence_threshold: Annotated[
-        float | None, Field(default=None, ge=0.0, le=1.0)
-    ] = None
+    metagen_confidence_threshold: Annotated[float | None, Field(default=None, ge=0.0, le=1.0)] = (
+        None
+    )
     metagen_ontology_rag_node_k: Annotated[int | None, Field(default=None, ge=0, le=20)] = None
     metagen_ontology_rag_edge_k: Annotated[int | None, Field(default=None, ge=0, le=20)] = None
     metagen_ontology_rag_triple_k: Annotated[int | None, Field(default=None, ge=0, le=20)] = None
@@ -186,9 +186,8 @@ class UserResponse(BaseModel):
     updated_at: datetime
 
 
-class UsersListResponse(BaseModel):
+class UsersListResponse(PaginatedResponse):
     users: list[UserResponse]
-    total: int
 
 
 class UserPatchRequest(BaseModel):

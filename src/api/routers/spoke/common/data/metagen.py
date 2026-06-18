@@ -21,6 +21,7 @@ from src.api.routers.spoke._metagen_mappers import (
     to_item_summary,
 )
 from src.api.schemas._paths import DatasetUrnPath
+from src.api.schemas.common import parse_sort
 from src.api.schemas.events import EventListResponse
 from src.api.schemas.metagen import (
     MetagenBoundaryPatchRequest,
@@ -32,7 +33,7 @@ from src.api.schemas.metagen import (
     MetagenReviewRequest,
 )
 from src.backend.metagen.service import MetagenService
-from src.shared.db.models import Event
+from src.shared.db.models import Event, MetagenItem
 from src.shared.events import METAGEN_PREFIX
 
 sub_router = APIRouter()
@@ -116,10 +117,19 @@ async def delete_data_metagen_boundary(
 async def get_data_metagen_items(
     dataset_urn: DatasetUrnPath,
     offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=20, ge=1, le=100),
+    limit: int = Query(default=20, ge=1, le=1000),
+    sort: str | None = Query(default=None),
     service: MetagenService = Depends(get_metagen_service),
 ) -> MetagenItemListResponse:
-    dtos, total = await service.list_items_for_dataset(dataset_urn, offset=offset, limit=limit)
+    """Per-dataset metagen items (paginated; sortable by created_at, updated_at)."""
+    order_by = parse_sort(
+        sort,
+        {"created_at": MetagenItem.created_at, "updated_at": MetagenItem.updated_at},
+        None,
+    )
+    dtos, total = await service.list_items_for_dataset(
+        dataset_urn, offset=offset, limit=limit, order_by=order_by
+    )
     return MetagenItemListResponse(
         items=[to_item_summary(d) for d in dtos],
         total_count=total,
@@ -183,12 +193,16 @@ async def post_data_metagen_item_candidate_review(
 async def get_data_metagen_events(
     dataset_urn: DatasetUrnPath,
     offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=20, ge=1, le=100),
+    limit: int = Query(default=20, ge=1, le=1000),
+    sort: str | None = Query(default=None),
     from_time: datetime | None = Query(default=None, alias="from"),
     to_time: datetime | None = Query(default=None, alias="to"),
     db: AsyncSession = Depends(get_db),
 ) -> EventListResponse:
-    """Per-dataset metagen events (METAGEN.CANDIDATE_APPROVE, METAGEN.CANDIDATE_REJECT)."""
+    """Per-dataset metagen events (METAGEN.CANDIDATE_APPROVE, METAGEN.CANDIDATE_REJECT).
+
+    Paginated; sortable by ``occurred_at`` (default: ``occurred_at`` descending).
+    """
     base = select(Event).where(
         Event.entity_type == "dataset",
         Event.entity_id == dataset_urn,
@@ -202,7 +216,8 @@ async def get_data_metagen_events(
     count_q = select(func.count()).select_from(base.subquery())
     total = (await db.execute(count_q)).scalar() or 0
 
-    rows_q = base.order_by(Event.occurred_at.desc()).offset(offset).limit(limit)
+    order_by = parse_sort(sort, {"occurred_at": Event.occurred_at}, Event.occurred_at.desc())
+    rows_q = base.order_by(order_by).offset(offset).limit(limit)
     rows = (await db.execute(rows_q)).scalars().all()
 
     return event_list(

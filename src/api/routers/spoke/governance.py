@@ -93,7 +93,7 @@ async def post_metric(
 @router.get("", response_model=MetricDefinitionListResponse)
 async def get_metric_list(
     offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=20, ge=1, le=100),
+    limit: int = Query(default=20, ge=1, le=1000),
     sort: str | None = Query(default=None),
     metric_type: str | None = Query(default=None),
     mode: str | None = Query(default=None),
@@ -101,7 +101,15 @@ async def get_metric_list(
     service: MetricsService = Depends(get_metrics_service),
 ) -> MetricDefinitionListResponse:
     """List metric definitions with optional metric_type, mode, and is_enabled filters."""
-    order_by = parse_sort(sort, {"created_at": MetricDefinition.created_at}, None)
+    order_by = parse_sort(
+        sort,
+        {
+            "created_at": MetricDefinition.created_at,
+            "updated_at": MetricDefinition.updated_at,
+            "title": MetricDefinition.title,
+        },
+        None,
+    )
     metrics, total_count = await service.list_metrics(
         offset=offset,
         limit=limit,
@@ -212,7 +220,7 @@ async def delete_metric_conf(
 async def get_metric_results(
     metric_id: MetricIdParam,
     offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=20, ge=1, le=100),
+    limit: int = Query(default=20, ge=1, le=1000),
     sort: str | None = Query(default=None),
     from_time: datetime | None = Query(default=None, alias="from"),
     to_time: datetime | None = Query(default=None, alias="to"),
@@ -319,7 +327,7 @@ async def post_metric_run(
 async def get_metric_events(
     metric_id: MetricIdParam,
     offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=20, ge=1, le=100),
+    limit: int = Query(default=20, ge=1, le=1000),
     sort: str | None = Query(default=None),
     from_time: datetime | None = Query(default=None, alias="from"),
     to_time: datetime | None = Query(default=None, alias="to"),
