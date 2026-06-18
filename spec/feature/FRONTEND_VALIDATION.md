@@ -106,7 +106,7 @@ shows a create/resurrect empty-state to re-create the conf.
 │    [ qty_total        — line chart, full width            ]   │
 │    [ user_id_null_cnt — line chart, full width            ]   │
 │                                                               │
-│  event (latest 5)                                             │
+│  event/validation         [ Pagination ]                      │
 └───────────────────────────────────────────────────────────────┘
         Detail (`/validation/data/[urn]`)
 ```

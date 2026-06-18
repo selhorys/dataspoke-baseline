@@ -418,7 +418,7 @@ test("UC1 Case 2 step 6 — per-dataset reverse-lookup shows owning source", asy
 
   // -- UI assertion: Ingestion panel shows the owning source name --
   // spec: FRONTEND_INGESTION.md §Per-dataset reverse-lookup — source name link, mode badge
-  // exact — avoids also matching the "event/ingestion (latest 10)" heading.
+  // exact — avoids also matching the "event/ingestion" heading.
   await expect(page.getByRole("heading", { name: "Ingestion", exact: true })).toBeVisible({ timeout: 15_000 });
 
   // The source name link must be visible in the Ingestion panel.

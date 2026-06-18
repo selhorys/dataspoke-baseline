@@ -1355,9 +1355,9 @@ test("UC4 step 9 — per-dataset events include CANDIDATE_APPROVE and CANDIDATE_
   });
 
   // -- UI assertion: per-dataset events section --
-  // data/[urn]/page.tsx: <h2>event/metagen (latest 10)</h2>
+  // data/[urn]/page.tsx: <h2>event/metagen</h2>
   await expect(
-    page.getByText("event/metagen (latest 10)", { exact: true }).first(),
+    page.getByText("event/metagen", { exact: true }).first(),
   ).toBeVisible({ timeout: 10_000 });
 
   if (approvedEuDescCandidateId) {

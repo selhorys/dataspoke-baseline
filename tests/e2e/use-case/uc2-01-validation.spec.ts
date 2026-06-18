@@ -18,7 +18,7 @@
  *      - conf section (description + variable badges)
  *      - score chart panel rendered ("Quality Score (attr/validation/result)")
  *      - variables chart panel rendered ("Variables (attr/validation/result)")
- *      - event log section rendered ("event/validation (latest 5)")
+ *      - event log section rendered ("event/validation")
  *   5. DELETE postgres conf via the Delete button + ConfirmDialog:
  *      - redirected to /validation list
  *      - postgres row absent from active list
@@ -348,7 +348,7 @@ test("UC2 step 3 — /validation list shows both datasets with score badges", as
 // spec: USE_CASE_en.md §UC2 — per-dataset view shows conf, historical timeseries,
 //   and event log.
 // spec: FRONTEND_VALIDATION.md §Page contracts — detail page sections:
-//   attr/validation/conf, Quality Score chart, Variables chart, event/validation (latest 5)
+//   attr/validation/conf, Quality Score chart, Variables chart, event/validation
 // ─────────────────────────────────────────────────────────────────────────────
 test("UC2 step 4 — postgres detail page renders conf, charts, and event log", async ({
   page,
@@ -399,10 +399,10 @@ test("UC2 step 4 — postgres detail page renders conf, charts, and event log", 
   ).toBeVisible({ timeout: 10_000 });
 
   // -- UI assertion: event log section heading --
-  // spec: FRONTEND_VALIDATION.md §Page contracts — "event/validation (latest 5)"
+  // spec: FRONTEND_VALIDATION.md §Page contracts — "event/validation"
   // Use exact: true — avoids matching a longer heading that contains "validation".
   await expect(
-    page.getByRole("heading", { name: "event/validation (latest 5)", exact: true })
+    page.getByRole("heading", { name: "event/validation", exact: true })
   ).toBeVisible({ timeout: 10_000 });
 
   // -- UI assertion: Edit and Delete buttons visible (admin can write) --
