@@ -118,6 +118,12 @@ Below it, an events table shows per-dataset ingestion events from
   [RangePicker](FRONTEND_BASIC.md#shared-component-notes) for the `from`/`to` window.
 - `UnmanagedDatasetTable` — the unmanaged-bucket list.
 
+Every paged table on these pages — `IngestionSourceList`, `SourceDatasetTable`,
+`IngestionEventTable`, `UnmanagedDatasetTable`, and the per-dataset ingestion-event table — uses
+the shared [Pagination](FRONTEND_BASIC.md#shared-component-notes) control (page-size selector
+defaulting to 20, Prev/Next, numbered pages) bound to each endpoint's standard
+`offset`/`limit`/`total_count` envelope; no per-page Prev/Next is hand-rolled.
+
 The page consumes API routes verbatim (no invented endpoints) per
 [FRONTEND_BASIC.md](FRONTEND_BASIC.md). All mutations require the editor role; readers see a
 read-only view.

@@ -345,7 +345,18 @@ These component IDs are referenced from per-function specs.
   [API.md](../API.md), `attr/validation/result`) — receives `until = to`. It has
   no API of its own; it only shapes the query strings of the reads it drives.
 - **ConfirmDialog** — destructive-action gate (revoke token, delete config).
-  No API of its own.
+- **Pagination** — the single pagination control for every paged table across all
+  features. It exposes a **page-size selector** (20 / 50 / 100, default **20**), **Prev /
+  Next** buttons, **numbered pages** (with ellipsis for long ranges), and an **"M–N of T"**
+  label. It is driven by and maps directly onto the standard `offset` / `limit` /
+  `total_count` pagination envelope (see
+  [API §Query Parameters](../API.md#query-parameters) and
+  [API_DESIGN_PRINCIPLE §5](../API_DESIGN_PRINCIPLE_en.md#5-url-query-segments-are-for-filtering-sorting-and-pagination)):
+  Prev/Next and numbered pages move `offset` in `limit`-sized steps, the size selector
+  sets `limit` and resets `offset` to `0`, and the label and page count derive from
+  `total_count`. The default size of `20` matches the API's own `limit` default. It holds
+  no API of its own — it only shapes the `offset`/`limit` query params of the list read it
+  drives.
 
 ---
 

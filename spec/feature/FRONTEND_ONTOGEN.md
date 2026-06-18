@@ -34,30 +34,49 @@ The OntoGen sidebar entry is a foldable group with three children —
 `dataset_filter` follows the standard four-dimension shape — see
 [API §Metric `dataset_filter`](../API.md#metric-spokegovernancemetric).
 
-The **Nodes**, **Edges**, and **Triples** tabs each render their result set
-as a compact table — one row per item with the kind's identifying columns
-(Node: name; Edge: label · semantics; Triple: `subj --edge--> obj`), a status
-badge, the LLM confidence, and the per-row review/evidence controls. Each tab
-carries a status filter — **All / Approved / Unapproved** — applied
-client-side over the fetched set; *Approved* is `status === "approved"` and
-*Unapproved* is every other status (`llm_pending`, `llm_approved`, `rejected`).
-Prev/Next pagination over `GET .../result/{node|edge|triple}` is shown only when
-the unfiltered total exceeds the page.
+The **Nodes**, **Edges**, and **Triples** tabs each render their result set in a
+**uniform compact six-column table** — the same column layout for all three
+kinds so the panels read and scale identically:
+
+| Column | Node | Edge | Triple |
+|---|---|---|---|
+| **Title** | `name` | `label` | `subj --edge--> obj` (monospace) |
+| **Description** | `description` | `semantics` (or `—`) | `—` (triples carry no description) |
+| **Status** | status badge | status badge | status badge |
+| **Confidence** | LLM `score` + **Evidence** button | same | same |
+| **Actions** | Approve / Reject | same | same (dependency-gated) |
+| **Created At** | `created_at` (timezone-aware) | same | same |
+
+The **Description** cell is truncated to a max width with the full text on
+hover. **Created At** renders in the global Settings timezone (Local or UTC).
+
+Each tab header carries a **status filter** — **All / Approved / Unapproved**,
+applied client-side over the fetched set (*Approved* is `status === "approved"`;
+*Unapproved* is every other status — `llm_pending`, `llm_approved`, `rejected`)
+— and beside it a **sort control** offering **Created (newest)** and **Created
+(oldest)**, which set the `GET .../result/{node|edge|triple}` request's
+`?sort=created_at_desc` / `?sort=created_at_asc` (default newest-first) per the
+[API sort convention](../API.md#query-parameters). The table foot carries the
+shared **[Pagination](FRONTEND_BASIC.md#shared-component-notes)** control
+(page-size 20 / 50 / 100, default 20; Prev/Next; numbered pages) over the same
+endpoint. Changing the sort, filter, or page size resets `offset` to `0`.
 
 Review proceeds **nodes → edges → triples** per
 [API §Ontology Generation](../API.md#ontology-generation-spokeontogen). Review
 actions adapt to the row's current status — pending (`llm_pending` /
 `llm_approved`) offers **Approve** and **Reject**, an `approved` row offers
-**Reject** (revoke), and a `rejected` row offers **Approve** (re-approve) —
-each posting `method/review` with the corresponding `verdict`. When a triple's
-dependencies are not yet human-`approved` the UI disables the approve action
-with an inline hint naming the missing dependency; a dependency at
-`llm_approved` does not satisfy the gate. Approval flips status in DataSpoke
-storage only and does not write to DataHub.
+**Reject** (revoke), and a `rejected` row offers **Approve** (re-approve).
+Choosing an action opens a **review confirmation dialog** carrying a free-text
+**reason** field; confirming posts `method/review` with the corresponding
+`{verdict, reason}`. When a triple's dependencies are not yet human-`approved`
+the UI disables that triple's Approve action and surfaces the missing dependency
+as **hover text** on the disabled control; a dependency at `llm_approved` does
+not satisfy the gate. Approval flips status in DataSpoke storage only and does
+not write to DataHub.
 
-Each result row carries a "Show evidence" disclosure that, on demand, reads
-`GET .../result/{node|edge|triple}/{id}/attr` and renders that row's `evidence`
-(the adversarial-debate transcript) as-is.
+The **Confidence** cell's **Evidence** button opens a **modal dialog** that, on
+demand, reads `GET .../result/{node|edge|triple}/{id}/attr` and renders that
+row's `evidence` (the adversarial-debate transcript) as-is.
 
 The **Graph** tab renders an interactive force-directed graph of the ontology —
 graph nodes are ontogen nodes (`GET .../result/node`) and links are triples
@@ -77,23 +96,21 @@ persists via `PUT/PATCH .../attr/conf` and **Cancel** discards. There is no
 Delete.
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│  OntoGen [ Nodes | Edges | Triples | Graph ]              │
-├──────────────────────────────────────────────────────────┤
-│  Nodes (result/node)   filter: [ All ▾ ]                  │
-│  ┌──────────────┬───────────┬──────┬────────────────────┐ │
-│  │ name         │ status    │ conf │ actions            │ │
-│  ├──────────────┼───────────┼──────┼────────────────────┤ │
-│  │ BOOK         │ approved  │ 0.96 │ [Reject] (revoke)  │ │
-│  │ ORDER_LINE   │ pending   │ 0.71 │ [Approve][Reject]  │ │
-│  └──────────────┴───────────┴──────┴────────────────────┘ │
-│                                                            │
-│  Triples (result/triple)   filter: [ Approved ▾ ]         │
-│  ┌────────────────────────────────┬─────────┬──────────┐  │
-│  │ ORDER_LINE --references--> BOOK │ pending │ [Approve]│  │
-│  │   (blocked: ORDER_LINE node pending)                 │  │
-│  └────────────────────────────────┴─────────┴──────────┘  │
-└──────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│  OntoGen [ Nodes | Edges | Triples | Graph ]                              │
+├─────────────────────────────────────────────────────────────────────────┤
+│  Nodes (result/node)   filter: [ All ▾ ]   sort: [ Created (newest) ▾ ]   │
+│  ┌────────────┬──────────────┬─────────┬───────────┬──────────┬────────┐  │
+│  │ Title      │ Description   │ Status  │ Confidence│ Actions  │ Created│  │
+│  ├────────────┼──────────────┼─────────┼───────────┼──────────┼────────┤  │
+│  │ BOOK       │ catalog item │ approved│ 0.96 [Ev] │ [Reject] │ 2026-… │  │
+│  │ ORDER_LINE │ line item    │ pending │ 0.71 [Ev] │ [Apv][Rj]│ 2026-… │  │
+│  └────────────┴──────────────┴─────────┴───────────┴──────────┴────────┘  │
+│  size [ 20 ▾ ]   1–2 of 2          [ ‹ Prev ]  1  [ Next › ]              │
+│                                                                           │
+│  [Ev] → modal: row evidence JSON      [Apv]/[Rj] → confirm dialog w/ reason│
+│  disabled [Apv] on a gated triple → hover: "blocked: ORDER_LINE pending"  │
+└─────────────────────────────────────────────────────────────────────────┘
         Browser + review (`/ontogen/result`)
 ```
 

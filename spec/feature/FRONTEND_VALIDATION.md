@@ -38,7 +38,10 @@ dataset, description, declared variable count, latest `data_time`, latest
 It defaults to active slots only (`GET /spoke/validation?removed=false`). A
 "Show deleted" toggle re-fetches without the `removed` param (returning both
 active and removed slots); rows whose `is_removed` is true render with a muted
-style and a `deleted` Badge. The list is read-only for every role.
+style and a `deleted` Badge. The list is read-only for every role and paged by
+the shared [Pagination](FRONTEND_BASIC.md#shared-component-notes) control
+(page-size selector defaulting to 20, Prev/Next, numbered pages) bound to the
+`/spoke/validation` standard `offset`/`limit`/`total_count` envelope.
 
 The detail page is a single editor for `description` plus a variables list.
 Each variable row edits both a `name` input and a `description` input in

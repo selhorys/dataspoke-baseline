@@ -171,16 +171,32 @@ resource.
 
 ---
 
-### 5. URL Query Segments are for filtering and sorting
+### 5. URL Query Segments are for filtering, sorting, and pagination
 
 Use query parameters to change how data is presented while keeping the resource's canonical
-path intact.
+path intact. These three concerns share one binding convention across **every** list
+endpoint, so that clients can page and sort any collection the same way.
 
 - **Filtering:**
   - `/ticket?status=open&priority=high` (return only open, high-priority tickets)
 
-- **Sorting:**
-  - `/product?sort=price_asc` (sort by price, ascending)
+- **Sorting — the standard `sort` parameter:**
+  - Format: `sort=<field>_asc` or `sort=<field>_desc` — a field name with a direction
+    suffix. `/product?sort=price_asc` sorts by price ascending.
+  - Each endpoint **documents its own allowed sort fields and its default ordering** (the
+    ordering applied when `sort` is omitted). The convention here fixes only the parameter
+    name and value grammar; the permitted fields stay endpoint-specific.
+  - Unless an endpoint documents otherwise, resource-list endpoints accept `sort` by
+    `created_at`/`updated_at` and event-list endpoints by `occurred_at`, defaulting to
+    newest-first.
 
-- **Pagination:**
-  - `/log?offset=20&limit=10` (retrieve 10 entries starting from the 21st)
+- **Pagination — the standard envelope:**
+  - Request: `offset` (start index, default `0`) and `limit` (page size, default `20`,
+    max `1000`). `/log?offset=20&limit=10` retrieves 10 entries starting from the 21st.
+  - Response: every collection response carries `offset`, `limit`, and `total_count` as
+    metadata alongside the content key (see §1.3 *Separation of Content and Metadata*).
+    `total_count` is the unpaged size of the filtered collection, letting clients render
+    page counts without a second request.
+
+Every list endpoint references this section rather than redefining its own paging or sort
+grammar; deviations require explicit justification in the endpoint's feature spec.
