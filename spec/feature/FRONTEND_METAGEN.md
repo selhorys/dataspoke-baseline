@@ -39,7 +39,7 @@ Ingestion (`/ingestion/data/[urn]`) and Validation (`/validation/data/[urn]`).
 | `/metagen/conf` | `GET /spoke/metagen/conf` | — (a "Create conf" button routes to `/metagen/conf/new`) |
 | `/metagen/conf/new` | — | `POST /spoke/metagen/conf` (fields: `name`, `is_enabled`, `schedule_tier`, `dataset_filter`, `result_limit`, `overwrite_pending`) |
 | `/metagen/conf/[id]` | `GET /spoke/metagen/conf/{conf_id}`, `GET /spoke/metagen/conf/{conf_id}/event` | `PUT/PATCH /spoke/metagen/conf/{conf_id}`; `DELETE /spoke/metagen/conf/{conf_id}`; `POST /spoke/metagen/conf/{conf_id}/method/run` (optional body `{dataset_urns?}`; `?dry_run=true`) |
-| `/metagen/result` | `GET /spoke/metagen/item`, `GET /spoke/metagen/item/{composite_id}`, `GET /spoke/metagen/event` | — (review happens on `/metagen/data/[urn]`) |
+| `/metagen/result` | `GET /spoke/metagen/item`, `GET /spoke/metagen/event` | — (review happens on `/metagen/data/[urn]`) |
 | `/metagen/uncovered` | `GET /spoke/metagen/uncovered` (with `include_disallowed` toggle) | — |
 | `/metagen/data/[urn]` | `GET …/attr/metagen/boundary`, `GET …/attr/metagen/item`, `GET …/attr/metagen/item/{item_id}` (per-item candidates), `GET …/event/metagen` | `PUT/PATCH/DELETE …/attr/metagen/boundary` (fields: `is_enabled`, `allowed[]`, `owner`); `POST …/attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review` body `{verdict: "approve"\|"reject", reason}` |
 
@@ -138,14 +138,16 @@ uncovered list, and candidate text, with no action buttons.
 ## Components
 
 - `MetagenConfList` — the conf list with the "Create conf" button.
-- `MetagenConfEditor` — the conf form (create + edit), with the `dataset_filter` builder.
-- `MetagenRunPanel` — per-conf dry-run / run trigger with status.
-- `MetagenItemQueue` — the global cross-dataset/cross-conf item queue with `conf_id` filter.
+- `MetagenConfForm` — the conf form (create + edit), with the `dataset_filter` builder.
+- `RunDialog` — per-conf dry-run / run trigger dialog with status.
+- `QueueTable` — the global cross-dataset/cross-conf item queue with `conf_id` filter.
 - `MetagenUncoveredTable` — the uncovered-datasets list with the `include_disallowed` toggle.
-- `MetagenBoundaryEditor` — the per-dataset boundary form (`attr/metagen/boundary`).
-- `MetagenItemCard` — per-item candidate cards with Approve / Reject and the `conf_name` tag.
+- `BoundaryForm` — the per-dataset boundary form (`attr/metagen/boundary`).
+- `ItemCard` — per-item card holding the candidate sub-cards with Approve / Reject and the `conf_name` tag.
+- `CandidateCard` — a single candidate sub-card (value, `confidence_score`, `conf_name` tag, Approve / Reject) rendered inside `ItemCard`.
 - `MetagenEventTable` — shared event table bound to a `…/event` route, paired with a `datetime`
   [RangePicker](FRONTEND_BASIC.md#shared-component-notes) for the `from`/`to` window.
+- `EventsSection` — the per-dataset events panel on `/metagen/data/[urn]` over `…/event/metagen`.
 
 The page consumes API routes verbatim (no invented endpoints) per
 [FRONTEND_BASIC.md](FRONTEND_BASIC.md). All mutations require the editor role;

@@ -641,7 +641,6 @@ Lives in the `dataspoke` schema.
 | `candidate_id` | `UUID` PK FK → `metagen_candidates(candidate_id)` | Candidate identifier |
 | `embedding` | `vector(EMBEDDING_DIMENSION)` NOT NULL | Embedding vector; dimension fixed at table creation time |
 | `kind` | `TEXT` | Cached item kind (`dataset.description` or `column.description`) for filtered KNN |
-| `updated_at` | `TIMESTAMPTZ` NOT NULL | Last embedding refresh |
 
 **Index**: `metagen_candidate_embeddings_embedding_hnsw_idx` — HNSW over
 `embedding` with `vector_cosine_ops`.

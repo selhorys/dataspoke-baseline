@@ -651,11 +651,11 @@ item_id: dataset.description
 kind:    dataset.description
 status:  pending                 # no approved candidate yet
 candidates:
-  - candidate_id: c1   conf: fulfillment   status: llm_approved   confidence 0.92
+  - candidate_id: c1   conf: fulfillment   status: llm_approved   confidence_score 0.92
       "# EU Customer Profiles\n\nGDPR-scoped customer accounts for the EU region..."
-  - candidate_id: c2   conf: eu-privacy    status: llm_approved   confidence 0.90
+  - candidate_id: c2   conf: eu-privacy    status: llm_approved   confidence_score 0.90
       "# Customers (EU)\n\nAuthoritative GDPR-controlled profile records..."
-  - candidate_id: c3   conf: fulfillment   status: llm_approved   confidence 0.85
+  - candidate_id: c3   conf: fulfillment   status: llm_approved   confidence_score 0.85
       "EU profiles table — registered customer accounts under EU jurisdiction..."
 ```
 

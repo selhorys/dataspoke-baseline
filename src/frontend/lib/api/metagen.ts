@@ -234,25 +234,6 @@ export function useMetagenQueue(params: MetagenQueueParams = {}) {
   });
 }
 
-/**
- * GET /spoke/metagen/item/{composite_id} — item detail by composite id
- * `{dataset_urn}::{item_id}`. Candidates carry conf_id/conf_name.
- */
-export function useMetagenItemByCompositeId(
-  compositeId: string,
-  options: { enabled?: boolean } = {},
-) {
-  return useQuery<MetagenItemDetail>({
-    queryKey: ["metagen", "queue-item", compositeId],
-    queryFn: () =>
-      apiFetch<MetagenItemDetail>(
-        `/spoke/metagen/item/${encodeURIComponent(compositeId)}`,
-      ),
-    enabled: !!compositeId && (options.enabled ?? true),
-    meta: { handledInline: true },
-  });
-}
-
 // ── Global events ──────────────────────────────────────────────────────────────
 
 /** GET /spoke/metagen/event — cross-conf event feed, polled. */
