@@ -158,6 +158,9 @@ The pipeline POSTs results as it produces partitions. The body is small.
   measurement failed to compute).
 - `score` MUST satisfy `0.0 ≤ score ≤ 1.0`; otherwise `422 INVALID_SCORE`.
 - `data_time` MUST parse as RFC 3339; otherwise `422 INVALID_PARAMETER`.
+- The dataset MUST have an active validation conf; posting to a dataset with no
+  conf (never created, or soft-deleted) returns `404` — the same absent-resource
+  view as `GET conf`.
 
 ### Duplicate `data_time` policy
 
@@ -172,14 +175,21 @@ clean for the common case (idempotent retry from the pipeline).
 
 ```
 GET .../attr/validation/result?from=2026-05-01T00:00:00Z&until=2026-05-08T00:00:00Z
-→ [
-    { "data_time": "2026-05-07T00:00:00Z", "score": 1.0,
-      "variables": {"row_cnt": 51.0, "col1_mean": 31.1, "col2_null_cnt": 9.0} },
-    { "data_time": "2026-05-06T00:00:00Z", ... },
-    ...
-    { "data_time": "2026-05-01T00:00:00Z", ... }
-  ]
+→ {
+    "offset": 0, "limit": 1000, "total_count": 7,
+    "results": [
+      { "data_time": "2026-05-07T00:00:00Z", "score": 1.0,
+        "variables": {"row_cnt": 51.0, "col1_mean": 31.1, "col2_null_cnt": 9.0} },
+      { "data_time": "2026-05-06T00:00:00Z", ... },
+      ...
+      { "data_time": "2026-05-01T00:00:00Z", ... }
+    ]
+  }
 ```
+
+The body is the standard pagination envelope (`offset`/`limit`/`total_count` per
+[API_DESIGN_PRINCIPLE §5](../API_DESIGN_PRINCIPLE_en.md#5-url-query-segments-are-for-filtering-sorting-and-pagination)),
+with the collapsed rows under `results`.
 
 | Query param | Default | Notes |
 |---|---|---|
@@ -231,6 +241,9 @@ assertionInfo:
     type: "DATASPOKE_VALIDATION"        # Quality-tab categorization label
     entity: <dataset_urn>
     logic: "row_cnt, col1_mean, col2_null_cnt"   # comma-separated variable names
+  lastUpdated:                          # audit stamp (see DATAHUB_INTEGRATION §Assertion Aspects)
+    time: <server now() epoch ms>
+    actor: "urn:li:corpuser:dataspoke"
 ```
 
 - `customAssertion.logic` is free-form text per
