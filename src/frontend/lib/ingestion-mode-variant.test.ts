@@ -72,41 +72,30 @@ describe("TIER_TO_CANONICAL_CRON", () => {
 });
 
 // ── Conf-list filter keys ──────────────────────────────────────────────────────────
-// Spec: spec/feature/FRONTEND_INGESTION.md §List View — the 5-option filter maps each
-// key to the {mode?, adHoc?} query pair on GET /spoke/ingestion/sources. The two
-// DataHub-managed keys are disjoint (regular = adHoc false, ad-hoc = adHoc true);
-// ALL/Active/Passive carry no adHoc constraint.
+// Spec: spec/feature/FRONTEND_INGESTION.md §List View — the 4-option filter maps each
+// key to the {mode?} query pair on GET /spoke/ingestion/sources. ALL applies no
+// constraint; DataHub-managed is a single option (internal CLI wrappers are hidden by
+// the backend).
 describe("filterKeyToQuery", () => {
-  it("ALL applies no constraint (neither mode nor adHoc)", () => {
+  it("ALL applies no constraint (no mode)", () => {
     const q = filterKeyToQuery("ALL");
     expect(q.mode).toBeUndefined();
-    expect("adHoc" in q ? q.adHoc : undefined).toBeUndefined();
   });
 
-  it("DATAHUB_MANAGED_REGULAR → mode DATAHUB_MANAGED + adHoc false", () => {
-    expect(filterKeyToQuery("DATAHUB_MANAGED_REGULAR")).toEqual({
+  it("DATAHUB_MANAGED → mode DATAHUB_MANAGED", () => {
+    expect(filterKeyToQuery("DATAHUB_MANAGED")).toEqual({
       mode: "DATAHUB_MANAGED",
-      adHoc: false,
     });
   });
 
-  it("DATAHUB_MANAGED_AD_HOC → mode DATAHUB_MANAGED + adHoc true", () => {
-    expect(filterKeyToQuery("DATAHUB_MANAGED_AD_HOC")).toEqual({
-      mode: "DATAHUB_MANAGED",
-      adHoc: true,
+  it("ACTIVE_CUSTOM_MANAGED → mode only", () => {
+    expect(filterKeyToQuery("ACTIVE_CUSTOM_MANAGED")).toEqual({
+      mode: "ACTIVE_CUSTOM_MANAGED",
     });
   });
 
-  it("ACTIVE_CUSTOM_MANAGED → mode only, adHoc absent", () => {
-    const q = filterKeyToQuery("ACTIVE_CUSTOM_MANAGED");
-    expect(q.mode).toBe("ACTIVE_CUSTOM_MANAGED");
-    expect("adHoc" in q).toBe(false);
-  });
-
-  it("PASSIVE → mode only, adHoc absent", () => {
-    const q = filterKeyToQuery("PASSIVE");
-    expect(q.mode).toBe("PASSIVE");
-    expect("adHoc" in q).toBe(false);
+  it("PASSIVE → mode only", () => {
+    expect(filterKeyToQuery("PASSIVE")).toEqual({ mode: "PASSIVE" });
   });
 });
 
@@ -122,11 +111,10 @@ describe("filterKeyLabel", () => {
 });
 
 describe("INGESTION_FILTER_KEYS", () => {
-  it("lists exactly the 5 filter keys in display order", () => {
+  it("lists exactly the 4 filter keys in display order", () => {
     expect(INGESTION_FILTER_KEYS).toEqual([
       "ALL",
-      "DATAHUB_MANAGED_REGULAR",
-      "DATAHUB_MANAGED_AD_HOC",
+      "DATAHUB_MANAGED",
       "ACTIVE_CUSTOM_MANAGED",
       "PASSIVE",
     ] satisfies IngestionFilterKey[]);

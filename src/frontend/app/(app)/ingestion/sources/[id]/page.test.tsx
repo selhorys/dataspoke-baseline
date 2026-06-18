@@ -52,7 +52,6 @@ function makeSource(mode: IngestionSource["mode"]): IngestionSource {
     recipe: { source: { type: "postgres", config: {} } },
     platform: "postgres",
     status: "OK",
-    ad_hoc: false,
     datahub_source_urn: mode === "DATAHUB_MANAGED" ? "urn:li:dataHubIngestionSource:x" : null,
     created_at: "2024-01-01T00:00:00Z",
     updated_at: "2024-01-02T00:00:00Z",

@@ -157,7 +157,10 @@ class PasswordResetToken(Base):
 
 class IngestionSource(Base):
     __tablename__ = "ingestion_source"
-    __table_args__ = {"schema": SCHEMA}
+    __table_args__ = (
+        Index("ix_ingestion_source_parent", "parent_source_id"),
+        {"schema": SCHEMA},
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     mode: Mapped[str] = mapped_column(Text, nullable=False)
@@ -167,8 +170,12 @@ class IngestionSource(Base):
     schedule: Mapped[str | None] = mapped_column(Text, nullable=True)
     schedule_tier: Mapped[str | None] = mapped_column(Text, nullable=True)
     datahub_source_urn: Mapped[str | None] = mapped_column(Text, nullable=True)
-    ad_hoc: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False, server_default="false"
+    # Self-referential link: a row is a CLI wrapper iff parent_source_id IS NOT
+    # NULL, pointing at its regular DATAHUB_MANAGED parent. NULL ⇒ regular source.
+    parent_source_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(f"{SCHEMA}.ingestion_source.id", ondelete="CASCADE"),
+        nullable=True,
     )
     status: Mapped[str] = mapped_column(Text, nullable=False, default="OK")
     created_at: Mapped[datetime] = mapped_column(

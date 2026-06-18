@@ -23,18 +23,22 @@
  *      Backend probe: GET /spoke/ingestion/sources/{id} — credential and schedule invariants.
  *   5. Datasets panel: poll until non-catalog datasets appear (≤180s ES lag budget).
  *      Backend probe: GET /spoke/ingestion/sources/{id}/datasets.
- *   6. Execute the source in DataHub; DataSpoke reflects the run.
+ *   6. Execute the source in DataHub; DataSpoke reflects the run on the REGULAR source.
  *      (Mirrors api-wired test_uc1_datahub_managed_execute_and_reflect step 8.)
- *      a. Fire createIngestionExecutionRequest via GQL; poll to terminal SUCCESS/SUCCEEDED (≤180s).
- *      b. Re-run sync via /internal/activities/ingestion/sync.
- *      c. UI assertion: Events panel on source detail shows an INGESTION.COMPLETE row.
- *      d. UI assertion: Datasets panel shows ≥1 row with authority "high" and
- *         derivation "pipeline_name".
+ *      a. Fire createIngestionExecutionRequest via GQL.
+ *      b. Poll the execution request DIRECTLY (executionRequest(urn){result{status}}) to
+ *         terminal SUCCESS (≤180s) — the parent's executions relationship is empty by
+ *         design (DataHub books the run on a hidden CLI wrapper).
+ *      c. Re-run sync via /internal/activities/ingestion/sync.
+ *      d. UI assertion: Events panel on the regular source shows an INGESTION.COMPLETE
+ *         row tagged "wrapper"; Datasets panel shows ≥1 "high"/"pipeline_name" row.
  *      e. Backend probe (PRIMARY): GET /sources/{id}/event has INGESTION.COMPLETE with
- *         detail.execution_request_urn present and detail.source='datahub_sync'.
- *      f. Backend probe (SECONDARY): GET /sources/{id}/datasets has ≥1 row with
+ *         wrapper=true and status='success' (execution_request_urn used only to locate
+ *         the row — an impl detail, not a spec'd event-detail key).
+ *      f. Backend probe: the CLI wrapper is ABSENT from GET /sources?mode=DATAHUB_MANAGED.
+ *      g. Backend probe (SECONDARY): GET /sources/{id}/datasets has ≥1 row with
  *         derivation='pipeline_name' and authority='high'.
- *      Tolerant: test.skip if executor unavailable or run does not reach SUCCESS in budget.
+ *      Tolerant: test.skip only for true executor unavailability.
  *
  * spec: USE_CASE_en.md §UC1 Case 1
  * spec: USE_CASE_en.md §UC1 Case 1 — execution beat: sync mirrors run as INGESTION.COMPLETE
@@ -62,6 +66,11 @@ const SECRET_REF = "${UC1_POSTGRES_PASSWORD}";
 const PLAINTEXT_PW = "ExampleDev2024!"; // must NOT appear in any DataSpoke API response
 
 const SCHEDULE_CRON = "0 0 * * *";
+
+// Stable, human-readable name for the provisioned DataHub IngestionSource. A fixed
+// name (not a uuid suffix) lets reruns pre-clean a leftover same-named source so they
+// don't accumulate — mirrors the api-wired _SOURCE_NAME.
+const SOURCE_NAME = "dummy datahub-managed";
 
 // Runs under the admin project only — enforced by the filename convention in
 // playwright.config.ts (default *.spec.ts → admin), which supplies the admin
@@ -150,6 +159,28 @@ test("UC1 Case 1 step 1 — seed DataHub Secret + IngestionSource", async () => 
     { urn: SECRET_DH_URN }
   ).catch(() => {});
 
+  // Idempotency: drop any leftover same-named IngestionSource from a prior run so the
+  // fixed-name source doesn't accumulate as a duplicate. Best-effort — ignore errors.
+  const leftovers = await gqlMutate(
+    `query listIngestionSources($input: ListIngestionSourcesInput!) {
+       listIngestionSources(input: $input) { ingestionSources { urn name } }
+     }`,
+    { input: { start: 0, count: 100 } }
+  ).catch(() => ({}) as { data?: Record<string, unknown> });
+  const leftoverSources =
+    (
+      (leftovers.data?.["listIngestionSources"] as Record<string, unknown> | undefined)
+        ?.["ingestionSources"] as Array<{ urn: string; name: string }> | undefined
+    ) ?? [];
+  for (const src of leftoverSources) {
+    if (src.name === SOURCE_NAME && src.urn) {
+      await gqlMutate(
+        `mutation deleteIngestionSource($urn: String!) { deleteIngestionSource(urn: $urn) }`,
+        { urn: src.urn }
+      ).catch(() => {});
+    }
+  }
+
   // Create DataHub Secret
   const secretResult = await gqlMutate(
     `mutation createSecret($input: CreateSecretInput!) { createSecret(input: $input) }`,
@@ -173,7 +204,7 @@ test("UC1 Case 1 step 1 — seed DataHub Secret + IngestionSource", async () => 
   expect(secretUrn, "createSecret must return a URN").toBeTruthy();
 
   // Create IngestionSource with secret-ref recipe
-  const name = `uc1-datahub-managed-${Date.now().toString(36)}`;
+  const name = SOURCE_NAME;
   const recipe = {
     source: {
       type: "postgres",
@@ -285,14 +316,15 @@ test("UC1 Case 1 step 3 — /ingestion/conf list shows DATAHUB_MANAGED row with 
   await expect(page).not.toHaveURL(/\/login/);
   await expect(page.getByRole("heading", { name: "Ingestion" })).toBeVisible({ timeout: 15_000 });
 
-  // -- UI gesture: filter to DATAHUB_MANAGED (regular) --
-  // spec: FRONTEND_INGESTION.md §List View — filter via Select (IngestionSourceList)
+  // -- UI gesture: filter to DataHub-managed --
+  // spec: FRONTEND_INGESTION.md §List View — filter via Select (IngestionSourceList).
+  // A single DataHub-managed filter option (no regular/ad-hoc split): the backend hides
+  // CLI wrapper sources, so this lists regular DATAHUB_MANAGED sources only.
   // Target the mode filter by its accessible name (the page also renders the shared
-  // Pagination "Rows per page" combobox). A source synced from a DataHub UI definition is
-  // ad_hoc=false, so the "DataHub-managed (regular)" option applies.
+  // Pagination "Rows per page" combobox).
   const modeFilter = page.getByRole("combobox", { name: "Filter sources by mode" });
   await modeFilter.click();
-  await page.getByRole("option", { name: "DataHub-managed (regular)" }).click();
+  await page.getByRole("option", { name: "DataHub-managed", exact: true }).click();
 
   // -- UI assertion: the registered source's row shows "DataHub-managed" and "read-only" badges --
   // spec: FRONTEND_INGESTION.md §List View — DATAHUB_MANAGED rows: mode badge + "read-only" badge
@@ -302,16 +334,17 @@ test("UC1 Case 1 step 3 — /ingestion/conf list shows DATAHUB_MANAGED row with 
   // satisfying the assertion.
   const sourceRow = page.getByRole("row").filter({ hasText: sourceUrn! });
   await expect(sourceRow).toBeVisible({ timeout: 15_000 });
-  // exact match: the source name (e.g. "uc1-datahub-managed-…") also contains the substring
-  // "datahub-managed", so an inexact getByText resolves to both the name link and the badge.
+  // exact match: the source name "dummy datahub-managed" also contains the substring
+  // "datahub-managed", so an inexact getByText resolves to both the name link and the
+  // mode badge. The mode badge text is exactly "DataHub-managed" (capital H).
   await expect(sourceRow.getByText("DataHub-managed", { exact: true })).toBeVisible({
     timeout: 15_000,
   });
   await expect(sourceRow.getByText("read-only")).toBeVisible({ timeout: 10_000 });
   // Also confirm the registered source's name and URN subtitle appear in the same row.
   // spec: FRONTEND_INGESTION.md §List View — datahub_source_urn rendered as mono subtitle
-  // The source name starts with "uc1-datahub-managed-" (set in step 1).
-  await expect(sourceRow.getByText(/^uc1-datahub-managed-/)).toBeVisible({ timeout: 10_000 });
+  // The source name is "dummy datahub-managed" (set in step 1).
+  await expect(sourceRow.getByText(SOURCE_NAME, { exact: true })).toBeVisible({ timeout: 10_000 });
   await expect(sourceRow.getByText(sourceUrn!, { exact: true })).toBeVisible({ timeout: 10_000 });
 
   // -- Backend probe: GET /spoke/ingestion/sources?mode=DATAHUB_MANAGED --
@@ -346,7 +379,7 @@ test("UC1 Case 1 step 4 — source detail shows secret ref preserved; is read-on
 
   // -- UI assertion: mode badge "DataHub-managed" visible in header --
   // spec: FRONTEND_INGESTION.md §Source Detail — mode badge rendered in header
-  // exact — the source name ("uc1-datahub-managed-…") and recipe <pre> also
+  // exact — the source name ("dummy datahub-managed") and recipe <pre> also
   // contain "datahub-managed"; only the badge text is exactly "DataHub-managed".
   await expect(page.getByText("DataHub-managed", { exact: true })).toBeVisible({ timeout: 15_000 });
 
@@ -542,24 +575,22 @@ test("UC1 Case 1 step 6 — execute in DataHub; DataSpoke reflects the run", asy
     return;
   }
 
-  // -- 6b: Poll ingestionSource executions to terminal SUCCESS/SUCCEEDED (≤180s) --
+  // -- 6b: Poll the execution request DIRECTLY to terminal SUCCESS/SUCCEEDED (≤180s) --
+  // By design DataHub books the run on a hidden CLI wrapper source, so the parent's
+  // `executions` relationship is empty. Query the execution request by its own URN.
   // spec: ref/github/datahub/datahub-graphql-core/src/main/resources/ingestion.graphql
-  //   ingestionSource(urn: String!) { executions(start:0, count:5) {
-  //       total executionRequests { urn result { status } } } }
+  //   executionRequest(urn: String!): ExecutionRequest { result { status } }
+  // spec: ref/github/datahub/smoke-test/tests/managed_ingestion/managed_ingestion_test.py
+  //   _ensure_execution_request_present — confirmed query shape.
   //   result.status: String! — terminal when not null and not in
-  //   {PENDING, RUNNING, SKIPPED, UP_FOR_RETRY}. PENDING/RUNNING are in-progress (keep polling).
-  // SUCCESS / SUCCEEDED → proceed; any other terminal → tolerant skip
+  //   {PENDING, RUNNING, SKIPPED, UP_FOR_RETRY}. SUCCESS/SUCCEEDED → proceed; any other
+  //   terminal → tolerant skip.
   const pollQuery = `
-    query ingestionSource($urn: String!) {
-      ingestionSource(urn: $urn) {
-        executions(start: 0, count: 5) {
-          total
-          executionRequests {
-            urn
-            result {
-              status
-            }
-          }
+    query executionRequest($urn: String!) {
+      executionRequest(urn: $urn) {
+        urn
+        result {
+          status
         }
       }
     }
@@ -572,28 +603,20 @@ test("UC1 Case 1 step 6 — execute in DataHub; DataSpoke reflects the run", asy
   let execStatus: string | null = null;
 
   while (Date.now() < pollDeadline) {
-    const pollResult = await gqlMutate(pollQuery, { urn: sourceUrn! }).catch(() => ({})) as {
+    const pollResult = (await gqlMutate(pollQuery, { urn: executionRequestUrn }).catch(
+      () => ({})
+    )) as {
       data?: Record<string, unknown>;
       errors?: unknown[];
     };
-    const execRequests = (
-      (
-        (pollResult.data?.["ingestionSource"] as Record<string, unknown> | undefined)
-          ?.["executions"] as Record<string, unknown> | undefined
-      )?.["executionRequests"] as Array<Record<string, unknown>> | undefined
-    ) ?? [];
-
-    for (const req of execRequests) {
-      if (req["urn"] === executionRequestUrn) {
-        const result = (req["result"] as Record<string, unknown> | null) ?? null;
-        const status = (result?.["status"] as string | null) ?? null;
-        if (status && !NON_TERMINAL_STATUSES.has(status)) {
-          execStatus = status;
-          break;
-        }
-      }
+    const execRequest =
+      (pollResult.data?.["executionRequest"] as Record<string, unknown> | null) ?? null;
+    const result = (execRequest?.["result"] as Record<string, unknown> | null) ?? null;
+    const status = (result?.["status"] as string | null) ?? null;
+    if (status && !NON_TERMINAL_STATUSES.has(status)) {
+      execStatus = status;
+      break;
     }
-    if (execStatus !== null) break;
     await new Promise((r) => setTimeout(r, 8_000));
   }
 
@@ -624,12 +647,15 @@ test("UC1 Case 1 step 6 — execute in DataHub; DataSpoke reflects the run", asy
     headers: { "X-Internal-Token": token, "Content-Type": "application/json" },
   }).catch(() => {});
 
-  // -- 6d: Backend probe (PRIMARY) — GET /sources/{id}/event → INGESTION.COMPLETE --
+  // -- 6d: Backend probe (PRIMARY) — the REGULAR parent's event log surfaces the run --
+  // The run was booked on the hidden CLI wrapper; DataSpoke surfaces it ON the regular
+  // parent the user looks at, tagged wrapper=true.
   // spec: USE_CASE_en.md §UC1 Case 1 — "DataSpoke's next sync mirrors that execution
   //   into …/event as an INGESTION.COMPLETE event"
-  // spec: feature/BACKEND.md §Sync sweep step 4 — _mirror_execution_requests inserts
-  //   Event(event_type=INGESTION_COMPLETE, status='success',
-  //         detail={execution_request_urn: ..., source: 'datahub_sync'})
+  // spec: feature/BACKEND.md §Sync sweep step 4 — the regular source aggregates events
+  //   across itself and its linked wrappers; each carries a derived wrapper flag.
+  // spec: API.md §Ingestion — GET /sources/{id}/event includes linked-wrapper events
+  //   carrying wrapper: bool.
   let foundEvent: Record<string, unknown> | null = null;
   const eventDeadline = Date.now() + 30_000;
   while (Date.now() < eventDeadline) {
@@ -639,6 +665,9 @@ test("UC1 Case 1 step 6 — execute in DataHub; DataSpoke reflects the run", asy
         events: Array<Record<string, unknown>>;
       };
       for (const evt of evtBody.events ?? []) {
+        // Discriminator only: execution_request_urn is an impl-detail key (the INGESTION
+        // Event Catalogue spec'es no detail keys) used to pick the row for THIS run; not
+        // asserted as a wire contract below.
         const detail = (evt["detail"] as Record<string, unknown> | null) ?? {};
         if (
           evt["event_type"] === "INGESTION.COMPLETE" &&
@@ -661,12 +690,42 @@ test("UC1 Case 1 step 6 — execute in DataHub; DataSpoke reflects the run", asy
       "spec: feature/BACKEND.md §Sync sweep step 4 — _mirror_execution_requests."
   ).not.toBeNull();
 
-  // Verify event status and detail.source.
-  // spec: feature/BACKEND.md §Sync sweep step 4 — detail.source='datahub_sync'
+  // The run was booked on the hidden CLI wrapper, so the parent surfaces it wrapper=true.
+  // spec: API.md §Ingestion — derived wrapper flag; true for an event originating on a
+  //   linked wrapper rather than the source itself.
+  expect(
+    foundEvent!["wrapper"],
+    "The mirrored run on the regular parent must carry wrapper=true (booked on the " +
+      "hidden CLI wrapper). spec: feature/BACKEND.md §Sync sweep step 4."
+  ).toBe(true);
+
+  // Verify event status.
+  // spec: feature/BACKEND.md §Sync sweep step 4 — DataHub execution status mapping:
+  //   SUCCESS/SUCCEEDED → INGESTION.COMPLETE → status='success'.
+  // (detail.execution_request_urn was used above only as a row discriminator — an impl
+  //  detail, not a spec'd event-detail key — so it is not asserted as a contract here.)
   expect(foundEvent!["status"]).toBe("success");
-  const evtDetail = (foundEvent!["detail"] as Record<string, unknown> | null) ?? {};
-  expect(evtDetail["source"]).toBe("datahub_sync");
-  expect(evtDetail["execution_request_urn"]).toBeTruthy();
+
+  // -- 6d-bis: Backend probe — the CLI wrapper is ABSENT from the source list --
+  // The wrapper is internal plumbing; the list returns regular DATAHUB_MANAGED sources
+  // only. No listed source's URN may be a CLI wrapper (…:cli-…), and our parent stays.
+  // spec: API.md §Ingestion — DataHub CLI wrapper sources are internal and never listed.
+  // spec: feature/BACKEND.md §Sync sweep step 1 — list_sources hides wrappers.
+  const listAfterResp = await adminApi.get(
+    "/api/v1/spoke/ingestion/sources?mode=DATAHUB_MANAGED&limit=100"
+  );
+  expect(listAfterResp.status()).toBe(200);
+  const listAfterBody = (await listAfterResp.json()) as {
+    sources: Array<{ datahub_source_urn: string }>;
+  };
+  const listedUrns = listAfterBody.sources.map((s) => s.datahub_source_urn);
+  expect(listedUrns).toContain(sourceUrn);
+  const wrappersListed = listedUrns.filter((u) => u?.includes("dataHubIngestionSource:cli-"));
+  expect(
+    wrappersListed,
+    "No CLI wrapper source may appear in GET /sources?mode=DATAHUB_MANAGED. " +
+      "spec: API.md §Ingestion — wrappers are internal, never listed."
+  ).toEqual([]);
 
   // -- 6e: Backend probe (SECONDARY) — GET /sources/{id}/datasets → pipeline_name/high --
   // spec: USE_CASE_en.md §UC1 Case 1 — "upgrades the covered datasets from
@@ -717,6 +776,14 @@ test("UC1 Case 1 step 6 — execute in DataHub; DataSpoke reflects the run", asy
   // spec: FRONTEND_INGESTION.md §Source Detail §Events — INGESTION.COMPLETE rendered as row
   await expect(
     page.getByText("INGESTION.COMPLETE", { exact: false }).first()
+  ).toBeVisible({ timeout: 15_000 });
+
+  // The run was booked on the hidden CLI wrapper, so its event row carries a "wrapper"
+  // tag on the regular source's Events panel.
+  // spec: FRONTEND_INGESTION.md §Source Detail §Events — wrapper-tagged event row.
+  // spec: API.md §Ingestion — derived wrapper flag rendered as a tag.
+  await expect(
+    page.getByText("wrapper", { exact: true }).first()
   ).toBeVisible({ timeout: 15_000 });
 
   // -- 6g: UI assertion — Datasets panel shows ≥1 "high" authority row --

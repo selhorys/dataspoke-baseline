@@ -134,6 +134,44 @@ describe("IngestionEventTable — event rows", () => {
 });
 
 // ---------------------------------------------------------------------------
+// 2b. Wrapper badge — present when event.wrapper is true
+// ---------------------------------------------------------------------------
+// Spec: spec/feature/FRONTEND_INGESTION.md §Source Detail §Events — a row whose
+// `wrapper` flag is set carries a "wrapper" tag (runs booked on the source's
+// internal DataHub CLI wrapper, surfaced on the regular parent).
+describe("IngestionEventTable — wrapper badge", () => {
+  it("renders a 'wrapper' badge for a wrapper:true event", () => {
+    render(
+      <IngestionEventTable
+        events={[makeEvent({ id: "w1", wrapper: true })]}
+        range={baseRange}
+        onRangeChange={noop}
+        tz="local"
+        page={{ offset: 0, limit: 20, totalCount: 1 }}
+        onOffset={noop}
+        onLimit={noop}
+      />,
+    );
+    expect(screen.getByText("wrapper")).toBeTruthy();
+  });
+
+  it("does NOT render a 'wrapper' badge when wrapper is false/undefined", () => {
+    render(
+      <IngestionEventTable
+        events={[makeEvent({ id: "w2", wrapper: false })]}
+        range={baseRange}
+        onRangeChange={noop}
+        tz="local"
+        page={{ offset: 0, limit: 20, totalCount: 1 }}
+        onOffset={noop}
+        onLimit={noop}
+      />,
+    );
+    expect(screen.queryByText("wrapper")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 3. Range filter control
 // ---------------------------------------------------------------------------
 describe("IngestionEventTable — range filter", () => {

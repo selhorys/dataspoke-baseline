@@ -78,9 +78,16 @@ export function IngestionEventTable({
                     {formatDateTime(e.occurred_at, tz)}
                   </TableCell>
                   <TableCell>
-                    <Badge variant={eventStatusVariant(e.status)} className="text-xs">
-                      {e.status}
-                    </Badge>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <Badge variant={eventStatusVariant(e.status)} className="text-xs">
+                        {e.status}
+                      </Badge>
+                      {e.wrapper && (
+                        <Badge variant="outline" className="text-xs">
+                          wrapper
+                        </Badge>
+                      )}
+                    </div>
                   </TableCell>
                   <TableCell className="text-sm">{e.event_type}</TableCell>
                   <TableCell className="max-w-[360px]">

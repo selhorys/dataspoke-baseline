@@ -5,8 +5,8 @@
  *   - spec/feature/FRONTEND_INGESTION.md §List View:
  *     DATAHUB_MANAGED rows carry a read-only badge; ACTIVE_CUSTOM_MANAGED and PASSIVE do not.
  *   - spec/feature/FRONTEND_INGESTION.md §List View:
- *     the filter renders five options (ALL + two DataHub-managed regular/ad-hoc +
- *     Active + Passive) and fires onFilterKeyChange.
+ *     the filter renders four options (ALL + DataHub-managed + Active + Passive)
+ *     and fires onFilterKeyChange.
  *   - spec/feature/FRONTEND_INGESTION.md §List View: empty state when sources=[] and isLoading=false.
  *
  * Per-row count/status fan-out is covered by tests/lib/api/ingestion.test.ts
@@ -133,7 +133,6 @@ function makeSource(
     recipe: { source: { type: "postgres", config: {} } },
     platform: "postgres",
     status: "OK",
-    ad_hoc: false,
     datahub_source_urn: mode === "DATAHUB_MANAGED" ? "urn:li:dataHubIngestionSource:x" : null,
     created_at: "2024-01-01T00:00:00Z",
     updated_at: "2024-01-02T00:00:00Z",
@@ -200,7 +199,7 @@ describe("IngestionSourceList — read-only badge", () => {
 // ---------------------------------------------------------------------------
 
 describe("IngestionSourceList — filter-key select", () => {
-  it("renders all five filter option labels in the select content", () => {
+  it("renders all four filter option labels in the select content", () => {
     render(
       <IngestionSourceList
         sources={[]}
@@ -213,10 +212,9 @@ describe("IngestionSourceList — filter-key select", () => {
       />,
     );
     // The Radix Select renders all SelectItem labels in the DOM (hidden via CSS).
-    // DATAHUB_MANAGED is split into two disjoint regular/ad-hoc options.
+    // DataHub-managed is a single option; internal CLI wrappers are hidden by the backend.
     expect(screen.getByText("All")).toBeTruthy();
-    expect(screen.getByText("DataHub-managed (regular)")).toBeTruthy();
-    expect(screen.getByText("DataHub-managed (ad-hoc)")).toBeTruthy();
+    expect(screen.getByText("DataHub-managed")).toBeTruthy();
     expect(screen.getByText("Active")).toBeTruthy();
     expect(screen.getByText("Passive")).toBeTruthy();
   });
@@ -294,44 +292,6 @@ describe("IngestionSourceList — URN subtitle", () => {
       />,
     );
     expect(screen.queryByText(/^urn:/)).toBeNull();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// 3b. Ad-hoc badge — present on ad_hoc:true rows, absent on ad_hoc:false rows
-// ---------------------------------------------------------------------------
-// Spec: spec/feature/FRONTEND_INGESTION.md §List View — an "ad-hoc" badge marks
-// rows whose ad_hoc flag is true (CLI/Run-click sources synced as DATAHUB_MANAGED).
-
-describe("IngestionSourceList — ad-hoc badge", () => {
-  it("renders an 'ad-hoc' badge for an ad_hoc:true row", () => {
-    render(
-      <IngestionSourceList
-        sources={[makeSource("DATAHUB_MANAGED", { ad_hoc: true })]}
-        isLoading={false}
-        filterKey="ALL"
-        onFilterKeyChange={noop}
-        page={{ ...basePage, totalCount: 1 }}
-        onOffset={noop}
-        onLimit={noop}
-      />,
-    );
-    expect(screen.getByText("ad-hoc")).toBeTruthy();
-  });
-
-  it("does NOT render an 'ad-hoc' badge for an ad_hoc:false row", () => {
-    render(
-      <IngestionSourceList
-        sources={[makeSource("DATAHUB_MANAGED", { ad_hoc: false })]}
-        isLoading={false}
-        filterKey="ALL"
-        onFilterKeyChange={noop}
-        page={{ ...basePage, totalCount: 1 }}
-        onOffset={noop}
-        onLimit={noop}
-      />,
-    );
-    expect(screen.queryByText("ad-hoc")).toBeNull();
   });
 });
 

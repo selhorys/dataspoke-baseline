@@ -578,27 +578,36 @@ are to `ref/github/datahub/` v1.5.0.2.
   (`datahub-graphql-core/src/main/resources/ingestion.graphql`), returning `config.recipe`
   (JSON string), `schedule {interval, timezone}`, `type`, `name`. **Secrets in the recipe come
   back raw** — DataSpoke masks them before storing/displaying.
-- **Ad-hoc (CLI) source classification**: a source created by `datahub ingest` or a UI/API `Run`
-  click is a CLI source — still listed by `listIngestionSources`, so it syncs as
-  `DATAHUB_MANAGED`, but DataSpoke flags it `ad_hoc=true`. The decisive marker is
-  `config.executorId` starting `__datahub_cli_` (primary); fallbacks are a `cli-`-prefixed source
-  URN id (`urn:li:dataHubIngestionSource:cli-<guid>`) and a `[CLI] ` name prefix. `pipeline_name`
-  is **not** a marker (optional, and present on UI sources too). Citation:
-  `metadata-ingestion/src/datahub/ingestion/reporting/datahub_ingestion_run_summary_provider.py`.
-- **Ad-hoc CLI wrapper for a registered source**: when `datahub ingest` runs a recipe carrying a
-  `pipeline_name`, DataHub auto-creates an ad-hoc CLI wrapper ingestion source. Its own URN is
-  `urn:li:dataHubIngestionSource:cli-<hash>` (`entity_id = "cli-" + datahub_guid(key)`), and its
-  `dataHubIngestionSourceInfo.name` is constructed as `[CLI] <type> [<pipeline_name>]` — the
-  configured `pipeline_name` is embedded verbatim in the trailing brackets. When DataSpoke runs a
-  registered source, that `pipeline_name` is the **parent registered-source URN**, so the wrapper
-  name reads `[CLI] <type> [<parent_source_urn>]`. Citation:
-  `…/datahub_ingestion_run_summary_provider.py` (`generate_entity_name`, `__init__` URN
-  construction). The aspects emitted by that run are stamped
-  `systemMetadata.pipelineName = <parent registered source URN>` (the configured `pipeline_name`),
-  **not** the wrapper's own `cli-<hash>` URN — DataSpoke-observed behaviour confirmed against a
-  live dev-env run. This is the pivot the ad-hoc inheritance algorithm in
-  [BACKEND §Sync sweep](feature/BACKEND.md#ingestion-service-srcbackendingestion) depends on:
-  parse the parent URN out of the wrapper name, match it to the stamped `pipelineName`.
+- **CLI wrapper sources are internal plumbing**: DataHub does not record a managed source's
+  *executions* on the source itself. When `datahub ingest` runs (or a UI/API `Run` click fires) a
+  recipe carrying a `pipeline_name`, DataHub auto-creates a **CLI wrapper ingestion source** and
+  books the run on the wrapper, leaving the parent's `executions` relationship empty. The wrapper is
+  still listed by `listIngestionSources` (so it syncs as `DATAHUB_MANAGED`), but DataSpoke treats it
+  as internal: it is linked to its registered parent and hidden from the source list, with its runs
+  surfaced on the parent. DataHub builds the wrapper from a key containing `pipeline_name` and stores
+  the reported raw recipe — which carries the top-level `pipeline_name` field — in `config.recipe`,
+  returned by `listIngestionSources`. The wrapper's own URN is
+  `urn:li:dataHubIngestionSource:cli-<hash>` (`entity_id = "cli-" + datahub_guid(key)`), its
+  `executor_id` is `__datahub_cli_<...>`, and its `dataHubIngestionSourceInfo.name` is **derived**
+  from `pipeline_name` as `[CLI] <type> [<pipeline_name>]`. The display name is cosmetic and
+  user-editable; it is **never** used for linking. Citation:
+  `metadata-ingestion/src/datahub/ingestion/reporting/datahub_ingestion_run_summary_provider.py`
+  (`generate_entity_name`, `__init__` URN/key construction).
+- **Wrapper detection (DataHub-generated markers only)**: a synced row is a CLI wrapper when any of
+  the following DataHub-generated markers holds — the URN id carries the `cli-` prefix, the
+  `executor_id` carries the `__datahub_cli_` prefix, or (last resort) the display name carries the
+  `[CLI] ` prefix. Detection never depends on the editable name for the parent identity.
+- **Wrapper → parent linkage rule**: a detected wrapper is linked to its parent via its recipe's
+  top-level `pipeline_name` field (`recipe.pipeline_name`). DataSpoke links the wrapper to the
+  registered source whose `datahub_source_urn` equals that `pipeline_name`. The aspects the wrapper
+  run emits are stamped `systemMetadata.pipelineName = <parent registered source URN>` (== the
+  configured `pipeline_name`), **not** the wrapper's own `cli-<hash>` URN. This three-way identity
+  (`recipe.pipeline_name` == parent's `datahub_source_urn` == stamped `systemMetadata.pipelineName`)
+  is what lets the parent both adopt the wrapper as a child (`ingestion_source.parent_source_id`) and
+  aggregate the wrapper's run events and dataset enrichment. A wrapper with no `pipeline_name`, or
+  one whose `pipeline_name` resolves to no stored registered source row (the parent is a system
+  source excluded above, or has not synced), is an **orphan** — it is stale and **not stored**.
+  Wrapper-ness is fully determined by parent resolution; there is no separate user-facing classifier.
 - **Source → dataset mapping (no native reverse lookup)**: DataHub has no query for "which
   datasets did this source produce" — no reverse edge from `dataHubIngestionSource`, and
   `systemMetadata.pipelineName`/`runId` (`metadata-models/.../mxe/SystemMetadata.pdl`) are

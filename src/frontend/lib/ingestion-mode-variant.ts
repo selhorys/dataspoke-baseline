@@ -55,21 +55,19 @@ export function modeDescription(mode: IngestionMode): string {
 // ── Conf-list filter keys ──────────────────────────────────────────────────────────
 
 /**
- * Maps a conf-list filter key to the `{ mode, adHoc }` query pair on
- * GET /spoke/ingestion/sources. The two DataHub-managed keys are disjoint
- * (regular = ad_hoc false, ad-hoc = ad_hoc true); ALL applies no constraint.
+ * Maps a conf-list filter key to the `{ mode }` query pair on
+ * GET /spoke/ingestion/sources. ALL applies no constraint; each other key
+ * pins the `mode`. Internal DataHub CLI wrapper sources are hidden by the
+ * backend, so DataHub-managed shows only regular sources.
  */
 export function filterKeyToQuery(key: IngestionFilterKey): {
   mode?: IngestionMode;
-  adHoc?: boolean;
 } {
   switch (key) {
     case "ALL":
       return {};
-    case "DATAHUB_MANAGED_REGULAR":
-      return { mode: "DATAHUB_MANAGED", adHoc: false };
-    case "DATAHUB_MANAGED_AD_HOC":
-      return { mode: "DATAHUB_MANAGED", adHoc: true };
+    case "DATAHUB_MANAGED":
+      return { mode: "DATAHUB_MANAGED" };
     case "ACTIVE_CUSTOM_MANAGED":
       return { mode: "ACTIVE_CUSTOM_MANAGED" };
     case "PASSIVE":
@@ -82,10 +80,8 @@ export function filterKeyLabel(key: IngestionFilterKey): string {
   switch (key) {
     case "ALL":
       return "All";
-    case "DATAHUB_MANAGED_REGULAR":
-      return "DataHub-managed (regular)";
-    case "DATAHUB_MANAGED_AD_HOC":
-      return "DataHub-managed (ad-hoc)";
+    case "DATAHUB_MANAGED":
+      return "DataHub-managed";
     case "ACTIVE_CUSTOM_MANAGED":
       return "Active";
     case "PASSIVE":
@@ -96,8 +92,7 @@ export function filterKeyLabel(key: IngestionFilterKey): string {
 /** Ordered list of conf-list filter keys for the dropdown. */
 export const INGESTION_FILTER_KEYS: IngestionFilterKey[] = [
   "ALL",
-  "DATAHUB_MANAGED_REGULAR",
-  "DATAHUB_MANAGED_AD_HOC",
+  "DATAHUB_MANAGED",
   "ACTIVE_CUSTOM_MANAGED",
   "PASSIVE",
 ];

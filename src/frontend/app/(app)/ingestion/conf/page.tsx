@@ -18,13 +18,12 @@ export default function IngestionConfPage() {
   const [limit, setLimit] = useState(DEFAULT_PAGE_SIZE);
   const [filterKey, setFilterKey] = useState<IngestionFilterKey>("ALL");
 
-  const { mode, adHoc } = filterKeyToQuery(filterKey);
+  const { mode } = filterKeyToQuery(filterKey);
 
   const { data, isLoading, error } = useIngestionSources({
     offset,
     limit,
     mode,
-    adHoc,
   });
 
   return (

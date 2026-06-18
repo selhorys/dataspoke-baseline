@@ -64,7 +64,6 @@ def _source_response(record: Any) -> IngestionSourceResponse:
         platform=record.platform,
         status=record.status,
         datahub_source_urn=record.datahub_source_urn,
-        ad_hoc=record.ad_hoc,
         created_at=record.created_at,
         updated_at=record.updated_at,
     )
@@ -78,26 +77,21 @@ async def get_ingestion_sources(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=1000),
     mode: Mode | None = Query(default=None, description="Filter by ingestion mode"),
-    ad_hoc: bool | None = Query(
-        default=None,
-        description="Filter by ad-hoc (CLI) classification; omit for no constraint",
-    ),
     sort: str | None = Query(default=None),
     service: IngestionService = Depends(get_ingestion_service),
 ) -> IngestionSourceListResponse:
-    """List ingestion sources (paginated; filter by mode and ad-hoc classification).
+    """List ingestion sources (paginated; filter by mode).
 
-    Returns all sources by default. Pass ``?mode=ACTIVE_CUSTOM_MANAGED``,
-    ``?mode=PASSIVE``, or ``?mode=DATAHUB_MANAGED`` to narrow the list.
-    Pass ``?ad_hoc=true`` / ``?ad_hoc=false`` to filter by the derived
-    CLI/ad-hoc classification (omit for no constraint).
+    Returns all regular sources by default. Pass ``?mode=ACTIVE_CUSTOM_MANAGED``,
+    ``?mode=PASSIVE``, or ``?mode=DATAHUB_MANAGED`` to narrow the list. DataHub
+    CLI wrapper sources are internal plumbing and never appear in the list — their
+    run events surface on the regular parent.
     """
     order_by = parse_sort(sort, {"created_at": IngestionSource.created_at}, None)
     sources, total_count = await service.list_sources(
         offset=offset,
         limit=limit,
         mode_filter=mode.value if mode else None,
-        ad_hoc=ad_hoc,
         order_by=order_by,
     )
     return IngestionSourceListResponse(
@@ -325,6 +319,7 @@ async def get_ingestion_source_event(
                 status=e["status"],
                 detail=e.get("detail", {}),
                 occurred_at=e["occurred_at"],
+                wrapper=e.get("wrapper", False),
             )
             for e in events
         ],

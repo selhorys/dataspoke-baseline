@@ -300,19 +300,43 @@ in the event's `detail`; see [Event Catalogue](#event-catalogue)).
 **Sync + mapping sweep** (`IngestionService.sync()`, called hourly by the `datahub-sync-hourly`
 DAG) reconciles all modes:
 
-1. **Source defs**: pull `DATAHUB_MANAGED` source recipes + schedules via DataHub's
-   `listIngestionSources` / `ingestionSource(urn)`; upsert read-only rows. The sweep mirrors only
-   non-system sources (`sourceType != SYSTEM`, plus a deny-list on the reserved system source types
-   `datahub-gc` and `datahub-documents` since their CLI wrappers are not tagged SYSTEM), matching
-   DataHub's own Manage Data Sources view — system-internal jobs are excluded. Mask plaintext
-   secret values in the stored/displayed recipe (DataHub returns them raw); `${...}` secret
-   references are preserved as-is (not masked, not resolved). The sweep also sets each source's
-   derived `ad_hoc` flag: a CLI/ad-hoc DataHub source (created on a `Run` click or `datahub
-   ingest`) stays `mode=DATAHUB_MANAGED` but is distinguished by its `config.executorId`
-   (`__datahub_cli_` prefix, primary marker — etc.; see DATAHUB_INTEGRATION for the full
-   set). See
+1. **Source defs (reconciling sync)**: pull `DATAHUB_MANAGED` source recipes + schedules via
+   DataHub's `listIngestionSources` / `ingestionSource(urn)`; upsert read-only rows. The list is a
+   faithful **mirror** of DataHub — at the end of the sweep, any `DATAHUB_MANAGED` row no longer
+   present in DataHub is deleted, so removed and stale sources drop out of DataSpoke. The sweep
+   mirrors only non-system sources (`sourceType != SYSTEM`, plus a deny-list on the reserved system
+   source types `datahub-gc` and `datahub-documents` since their CLI wrappers are not tagged
+   SYSTEM), matching DataHub's own Manage Data Sources view — system-internal jobs are excluded.
+   Mask plaintext secret values in the stored/displayed recipe (DataHub returns them raw); `${...}`
+   secret references are preserved as-is (not masked, not resolved).
+
+   **Wrapper linkage (two passes).** When `datahub ingest` (or a UI/API `Run`) executes a
+   registered source, DataHub auto-creates a **CLI wrapper source** that books the run on its own
+   row rather than the registered source's. Wrappers are internal plumbing: they are linked to their
+   registered parent and hidden from the source list. A wrapper is **detected** by DataHub-generated
+   markers only — a `cli-` URN-id prefix, a `__datahub_cli_` `executor_id` prefix, or (last resort)
+   a `[CLI] ` display-name prefix. A wrapper is **linked** to its parent via its recipe's top-level
+   `pipeline_name` field, which DataHub sets to the registered parent's source URN. The wrapper's
+   display name (`[CLI] <type> [<pipeline_name>]`) is cosmetic and derived; it is **never** used for
+   linking, because DataHub names are user-editable and a renamed wrapper would silently lose its
+   parent. The sweep resolves the link in two passes over the listed sources:
+   - *Pass A (regular):* skip any row detected as a CLI wrapper; upsert the rest with
+     `parent_source_id = NULL` and record `datahub_source_urn → id`.
+   - *Pass B (wrappers):* for a detected wrapper, read its `recipe.pipeline_name`; if that value
+     equals a regular source's `datahub_source_urn` from Pass A, upsert the wrapper with
+     `parent_source_id = <parent id>`. A wrapper with no `pipeline_name`, or one whose
+     `pipeline_name` resolves to no stored regular parent, is an **orphan**: it is **not stored** and
+     is treated as stale.
+
+   Because resolution is two-pass, parent ordering within the DataHub list does not matter. A row is
+   a **wrapper** iff `parent_source_id IS NOT NULL`; a **regular** `DATAHUB_MANAGED` source iff it is
+   `NULL`. Stale removal runs after both passes commit — orphan wrappers and removed sources alike
+   drop out, and `ingestion_source.parent_source_id`'s `ON DELETE CASCADE` removes a deleted parent's
+   wrappers automatically. The linkage rests on a three-way identity: a wrapper's
+   `recipe.pipeline_name` == its parent's `datahub_source_urn` == the `systemMetadata.pipelineName`
+   DataHub stamps on the run's emitted aspects. See
    [DATAHUB_INTEGRATION §Ingestion Source Sync](../DATAHUB_INTEGRATION.md#ingestion-source-sync)
-   for the marker fields.
+   for wrapper detection markers and the `pipeline_name` linkage rule.
 2. **Mapping**: list the DataHub dataset set once and rebuild `ingestion_source_dataset` by
    evaluating each source's **filter-matcher** — derived from the recipe's `platform`+`database`+
    `schema_pattern`/`table_pattern` for `DATAHUB_MANAGED`/`ACTIVE_CUSTOM_MANAGED`; the declared `AllowDenyPattern`
@@ -325,19 +349,15 @@ DAG) reconciles all modes:
    stamps the source URN), `ACTIVE_CUSTOM_MANAGED` (DataSpoke's extractor stamps the source id).
    `derivation = pipeline_name` (authority `high`). Not used for `PASSIVE`. A dataset's
    `pipelineName` awards `pipeline_name`/`high` to **every** source that corresponds to it: the
-   registered source whose own `datahub_source_urn` equals the `pipelineName`, **and** any ad-hoc
-   CLI source that inherits from it. A `datahub ingest` run of a registered source auto-creates an
-   ad-hoc CLI wrapper source whose own URN is distinct from the stamped `pipelineName` but whose
-   display name embeds the parent registered-source URN (display-name grammar and the
-   parent-URN-vs-stamped-URN distinction:
-   [DATAHUB_INTEGRATION §Ingestion Source Sync](../DATAHUB_INTEGRATION.md#ingestion-source-sync)).
-   The wrapper inherits the link by parsing that parent URN out of its display name and matching it
-   to the dataset's `pipelineName`; on a match it too receives `pipeline_name`/`high`. **Fallback**:
-   if the parent URN cannot be parsed from the wrapper's display name, or no registered source row
-   matches the parsed parent URN (e.g. the parent is a system source excluded in step 1, or has not
-   yet synced), the ad-hoc source inherits nothing and retains its step-2 filter-matcher mapping
-   (`matched`/`medium`). Sources that only recipe-match the same tables (no `pipelineName`
-   correspondence) likewise stay `matched`/`medium`.
+   registered source whose own `datahub_source_urn` equals the `pipelineName`, **and** any wrapper
+   linked to that source. When DataHub runs a registered source, the aspects it emits are stamped
+   `systemMetadata.pipelineName = <parent registered-source URN>`, while the run itself is booked on
+   a CLI wrapper source. The wrapper is already linked to its parent in step 1 (via the stored
+   `parent_source_id`), so the enrichment resolves the inheritance directly from that stored link — a
+   wrapper inherits `pipeline_name`/`high` when its parent's `datahub_source_urn` equals the
+   dataset's `pipelineName`. Sources that only recipe-match
+   the same tables (no `pipelineName` correspondence) stay `matched`/`medium`. Orphan wrappers do
+   not reach this step — they are never stored (step 1).
 4. **Run events**: mirror run history into the `events` table — `listExecutionRequests` for
    `DATAHUB_MANAGED` (only terminal requests, i.e. those carrying a populated result);
    `Operation` / `DataProcessInstance` observation for `PASSIVE` — with
@@ -345,7 +365,12 @@ DAG) reconciles all modes:
    `(entity_id, event_type, occurred_at)`. DataHub execution status maps as: `SUCCESS` (and
    `SUCCEEDED`, for cross-version safety) → `INGESTION.COMPLETE`; `SKIPPED` / `UP_FOR_RETRY` are
    non-terminal/ambiguous and are **not** mirrored; every other terminal status
-   (`FAILURE` / `CANCELLED` / `ABORTED` / `TIMEOUT` / …) → `INGESTION.FAIL`.
+   (`FAILURE` / `CANCELLED` / `ABORTED` / `TIMEOUT` / …) → `INGESTION.FAIL`. Mirroring runs for
+   every `DATAHUB_MANAGED` row including wrappers, since a registered source's runs are recorded on
+   its wrapper. **The regular source aggregates events across itself and its linked wrappers**: the
+   per-source event endpoint and the per-dataset latest-run aggregation union the parent's own events
+   with its wrappers' events (each carrying the derived `wrapper` flag — see below), so the run a user
+   triggered surfaces on the regular source they look at, not on the hidden wrapper.
 5. **Unmanaged bucket**: datasets in DataHub linked to no source (served by
    `GET /spoke/ingestion/unmanaged`).
 
@@ -944,6 +969,13 @@ by every domain that owns a config — `INGESTION`, `VALIDATION`, `METRIC`,
 - **Domain-level endpoint** (`GET .../event`): additionally
   filters by `event_type` prefix (e.g., `INGESTION.%`) to return only
   domain-specific events.
+
+For the per-source ingestion event endpoint (`GET /spoke/ingestion/sources/{id}/event`), the base
+query unions the source's own `events` with those of its linked wrapper rows
+(`entity_id IN (source_id, *child_wrapper_ids)`), ordered newest-first; count and pagination run off
+the same base. Each returned row carries a **derived** `wrapper: bool` — `true` when the event's
+`entity_id` is a wrapper rather than the regular source. The flag is computed at read time and is not
+stored on the `events` row.
 
 See [BACKEND_SCHEMA §events](BACKEND_SCHEMA.md#events) for the filtering
 convention and [API §Meta-Classifier Conventions](../API.md#meta-classifier-conventions)

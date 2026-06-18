@@ -11,14 +11,13 @@ export type IngestionMode =
   | "PASSIVE";
 
 /**
- * Conf-list filter key. DATAHUB_MANAGED is split into two disjoint options
- * (regular vs ad-hoc); each key maps to a `{ mode, adHoc }` query pair for
- * GET /spoke/ingestion/sources (see filterKeyToQuery).
+ * Conf-list filter key. Each key maps to a `{ mode }` query pair for
+ * GET /spoke/ingestion/sources (see filterKeyToQuery); ALL applies no
+ * constraint. Internal DataHub CLI wrapper sources are hidden by the backend.
  */
 export type IngestionFilterKey =
   | "ALL"
-  | "DATAHUB_MANAGED_REGULAR"
-  | "DATAHUB_MANAGED_AD_HOC"
+  | "DATAHUB_MANAGED"
   | "ACTIVE_CUSTOM_MANAGED"
   | "PASSIVE";
 
@@ -42,7 +41,6 @@ export interface IngestionSource {
   recipe: Recipe;
   platform: string;
   status: string;
-  ad_hoc: boolean;
   datahub_source_urn: string | null;
   created_at: string;
   updated_at: string;
@@ -126,6 +124,11 @@ export interface IngestionEvent {
   status: string;
   detail: Record<string, unknown>;
   occurred_at: string;
+  /**
+   * Derived flag: true when the event was booked on an internal DataHub CLI
+   * wrapper source linked to this regular source (surfaced on the parent).
+   */
+  wrapper?: boolean;
 }
 
 export interface IngestionEventListResponse {

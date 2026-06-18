@@ -222,8 +222,8 @@ this single per-dataset path.
 |--------|------|---------|---------|-----|
 | `GET` | `/spoke/common/data/{dataset_urn}` | Get dataset summary (identity, owner, tags) | Data Resource | — |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr` | Get dataset attributes (schema summary, ownership, tags) | Data Resource | — |
-| `GET` | `/spoke/common/data/{dataset_urn}/attr/ingestion` | Reverse-lookup (read-only): the source that covers this dataset, its `mode`, and the latest run. Ingestion is configured per-source under `/spoke/ingestion/sources` | Ingestion Control | UC1 |
-| `GET` | `/spoke/common/data/{dataset_urn}/event/ingestion` | Ingestion event reports for this dataset (success/failure notices, mirrored from its source's runs) | Ingestion Control | UC1 |
+| `GET` | `/spoke/common/data/{dataset_urn}/attr/ingestion` | Reverse-lookup (read-only): the source that covers this dataset, its `mode`, and the latest run (spanning the source's own runs and those booked on its internal wrappers). Ingestion is configured per-source under `/spoke/ingestion/sources` | Ingestion Control | UC1 |
+| `GET` | `/spoke/common/data/{dataset_urn}/event/ingestion` | Ingestion event reports for this dataset (success/failure notices, mirrored from its source's runs incl. internal-wrapper runs; each row carries a derived `wrapper: bool`) | Ingestion Control | UC1 |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Get validation configuration (`description` + declared `variables`, each variable a `{name, description}` object) | Validation | UC2, UC5 |
 | `PUT` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Create or replace validation configuration. Body `{description, variables}` where each variable is `{name, description}` (`name` matches `[a-z][a-z0-9_]{0,99}` and is unique; `description` required, ≤200 chars, empty allowed). PUT for a URN absent from DataHub returns `422 DATASET_NOT_IN_DATAHUB` | Validation | UC2, UC5 |
 | `PATCH` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Partially update validation configuration | Validation | UC2, UC5 |
@@ -276,7 +276,7 @@ and [DATAHUB_INTEGRATION §Ingestion Source Sync](DATAHUB_INTEGRATION.md#ingesti
 
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|
-| `GET` | `/spoke/ingestion/sources` | List ingestion sources (paginated, sortable by `created_at`/`updated_at`, default `created_at_desc`; filter by `mode`, and by `ad_hoc` tri-state — unset = no constraint, `true` = ad-hoc only, `false` = regular only) | Ingestion Control | UC1 |
+| `GET` | `/spoke/ingestion/sources` | List ingestion sources (paginated, sortable by `created_at`/`updated_at`, default `created_at_desc`; filter by `mode`). DataHub-managed CLI wrapper sources are internal and never listed — `mode=DATAHUB_MANAGED` returns regular sources only | Ingestion Control | UC1 |
 | `POST` | `/spoke/ingestion/sources` | Create a source (`ACTIVE_CUSTOM_MANAGED` or `PASSIVE` only; `DATAHUB_MANAGED` is synced, not created); `422 SECRET_REF_MALFORMED` for malformed `${name__key}` recipe references | Ingestion Control | UC1 |
 | `GET` | `/spoke/ingestion/sources/{id}` | Get one source as JSON (recipe `${name__key}` references returned as-is; any plaintext secret value masked) | Ingestion Control | UC1 |
 | `PUT` | `/spoke/ingestion/sources/{id}` | Replace a source; `409 INGESTION_SOURCE_READONLY` for `DATAHUB_MANAGED`; `422 SECRET_REF_MALFORMED` for malformed `${name__key}` recipe references | Ingestion Control | UC1 |
@@ -284,7 +284,7 @@ and [DATAHUB_INTEGRATION §Ingestion Source Sync](DATAHUB_INTEGRATION.md#ingesti
 | `DELETE` | `/spoke/ingestion/sources/{id}` | Remove a source (+ cascade its dataset mappings); `409 INGESTION_SOURCE_READONLY` for `DATAHUB_MANAGED` | Ingestion Control | UC1 |
 | `POST` | `/spoke/ingestion/sources/{id}/method/run` | Execute the extractor (`?dry_run=true` for no-write connection check); `ACTIVE_CUSTOM_MANAGED` only — `409 INGESTION_RUN_NOT_APPLICABLE` otherwise; concurrent runs return `409 INGESTION_RUNNING` | Ingestion Control | UC1 |
 | `GET` | `/spoke/ingestion/sources/{id}/datasets` | Datasets this source covers (the mapping; each row carries `authority` + `derivation`); paginated, sortable by `dataset_urn`/`first_seen_at`/`last_seen_at` (default `dataset_urn_asc`) | Ingestion Control | UC1 |
-| `GET` | `/spoke/ingestion/sources/{id}/event` | Run/event history for the source (paginated, sortable by `occurred_at`, default `occurred_at_desc`) | Ingestion Control | UC1 |
+| `GET` | `/spoke/ingestion/sources/{id}/event` | Run/event history for the source, including runs booked on its internal DataHub CLI wrapper sources (paginated, sortable by `occurred_at`, default `occurred_at_desc`). Each row carries a derived `wrapper: bool` — `true` for an event originating on a linked wrapper rather than the source itself | Ingestion Control | UC1 |
 | `GET` | `/spoke/ingestion/unmanaged` | DataHub datasets (`dataset_registry.datahub_registered=true`) covered by no ingestion source (paginated, sortable by `dataset_urn`/`created_at`/`updated_at`, default `dataset_urn_asc`) — the registry is refreshed hourly by the `datahub-sync-hourly` sweep | Ingestion Control | UC1 |
 | `GET` | `/spoke/ingestion/secrets` | List source-credential references available to recipes — one row per `(secret, key)` under the `dataspoke-source-cred-` prefix, as `{ref: "name__key", secret_name, key}`. **Values are never returned.** Paginated (in-memory slice + count over the enumerated K8s Secret refs) and sortable by `ref` (default `ref_asc`). Admins author the K8s Secrets out-of-band (`kubectl create secret generic dataspoke-source-cred-<name> --from-literal=<key>=… -n <dataspoke-ns>`; the source editor UI renders this authoring guide next to the reference list — DataSpoke has no secret-write API, the model is reference-only); a recipe then references one as `${name__key}`. **Requires Editor or Admin** (`403 READ_ONLY_ROLE` for Reader) — exception to the Reader-GET rule, since enumerating which credential refs exist is author-only tooling | Ingestion Control | UC1 |
 
@@ -308,11 +308,10 @@ other. A `GET` response (and `POST`/`PUT`/`PATCH` body) carries:
 ```
 
 Responses additionally include read-only management fields outside the recipe-standard set:
-`id`, `status`, `platform` (derived from `recipe.source.type`), `created_at`, `updated_at`,
-`datahub_source_urn` (for `DATAHUB_MANAGED`), and `ad_hoc` (bool) — a derived flag classified at
-sync time that distinguishes CLI/ad-hoc DataHub sources (created on a `Run` click or `datahub
-ingest`) from regular DataHub-managed sources. Ad-hoc sources stay `mode=DATAHUB_MANAGED`;
-`ad_hoc` is the disjoint sub-classification the `ad_hoc` query filter selects on.
+`id`, `status`, `platform` (derived from `recipe.source.type`), `created_at`, `updated_at`, and
+`datahub_source_urn` (for `DATAHUB_MANAGED`). DataHub CLI wrapper sources (auto-created when a
+registered source is run) are internal plumbing — they are linked to their registered parent, never
+listed, and their runs surface on the parent via `GET /sources/{id}/event` (with `wrapper: true`).
 On `GET`, `${name__key}` references inside `recipe` are returned as-is — they are pointers to
 K8s Secrets, not secret values; any plaintext secret value is **masked**. There is no
 `schedule_tier`/`schedule_cron`/`is_enabled` on the wire — the tier is derived server-side from

@@ -97,7 +97,7 @@ class IngestionSourceRecord(BaseModel):
     schedule: str | None
     schedule_tier: str | None
     datahub_source_urn: str | None
-    ad_hoc: bool
+    parent_source_id: str | None
     status: str
     created_at: datetime
     updated_at: datetime
@@ -150,7 +150,7 @@ def _source_from_row(row: IngestionSource) -> IngestionSourceRecord:
         schedule=row.schedule,
         schedule_tier=row.schedule_tier,
         datahub_source_urn=row.datahub_source_urn,
-        ad_hoc=row.ad_hoc,
+        parent_source_id=str(row.parent_source_id) if row.parent_source_id else None,
         status=row.status,
         created_at=row.created_at,
         updated_at=row.updated_at,
@@ -170,17 +170,24 @@ def _dataset_from_row(row: IngestionSourceDataset) -> IngestionSourceDatasetReco
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
-def _is_ad_hoc(executor_id: str | None, source_urn: str | None, name: str | None) -> bool:
-    """Classify a DATAHUB_MANAGED source as CLI/ad-hoc.
+def _is_cli_wrapper(
+    executor_id: str | None,
+    source_urn: str | None,
+    name: str | None,
+) -> bool:
+    """Identify a DATAHUB_MANAGED row as an auto-created CLI wrapper source.
 
-    A source is ad-hoc when ANY of the following holds (priority order):
+    A row is a CLI wrapper when ANY of these markers holds (priority order):
       1. ``executor_id`` starts with ``__datahub_cli_`` (primary, decisive)
       2. the source URN id starts with ``cli-`` — the id is the last
          colon-segment of ``urn:li:dataHubIngestionSource:<id>``
       3. the display name starts with ``[CLI] ``
 
-    ``pipeline_name`` is not a marker. Non-DATAHUB_MANAGED sources are never
-    ad-hoc and should not be passed here.
+    This is the *detector* — it identifies a wrapper structurally, independent of
+    how its parent is resolved. The parent link is resolved separately from the
+    wrapper's ``recipe.pipeline_name`` field (see :meth:`sync` Pass B); an
+    identified wrapper whose ``pipeline_name`` resolves to no stored regular parent
+    is an orphan (not stored). Pure string parse — no DB or network access.
     """
     if executor_id and executor_id.startswith("__datahub_cli_"):
         return True
@@ -191,33 +198,6 @@ def _is_ad_hoc(executor_id: str | None, source_urn: str | None, name: str | None
     if name and name.startswith("[CLI] "):
         return True
     return False
-
-
-def _parse_cli_parent_urn(name: str | None) -> str | None:
-    """Extract the parent registered-source URN from a ``[CLI]`` wrapper name.
-
-    DataHub auto-creates an ad-hoc CLI wrapper source when ``datahub ingest``
-    runs a recipe carrying a ``pipeline_name``, with display name
-    ``[CLI] <type> [<pipeline_name>]`` — the ``pipeline_name`` embedded verbatim
-    in the trailing brackets. When DataSpoke runs a registered source, that
-    ``pipeline_name`` is the parent registered-source URN.
-
-    Returns the bracketed value when it is a ``urn:li:dataHubIngestionSource:…``
-    URN; returns None when ``name`` is absent, is not a ``[CLI] `` name, has no
-    trailing bracket, or the bracketed content is not a dataHubIngestionSource
-    URN. Pure string parse — no DB or network access.
-    """
-    if not name or not name.startswith("[CLI] "):
-        return None
-    if not name.endswith("]"):
-        return None
-    open_idx = name.rfind("[")
-    if open_idx == -1:
-        return None
-    inner = name[open_idx + 1 : -1]
-    if not inner.startswith("urn:li:dataHubIngestionSource:"):
-        return None
-    return inner
 
 
 def _validate_and_derive_tier(
@@ -424,22 +404,19 @@ class IngestionService:
         offset: int = 0,
         limit: int = 20,
         mode_filter: str | None = None,
-        ad_hoc: bool | None = None,
         order_by: Any = None,
     ) -> tuple[list[IngestionSourceRecord], int]:
         """Return a paginated list of sources.
 
+        CLI wrapper rows (``parent_source_id IS NOT NULL``) are internal plumbing
+        and are never listed — their run events surface on the regular parent.
+
         Args:
             mode_filter: When provided, filter to sources with this mode value.
-            ad_hoc: Tri-state filter on the derived CLI/ad-hoc classification.
-                ``None`` applies no constraint; ``True``/``False`` filter to
-                that exact classification.
         """
-        base = select(IngestionSource)
+        base = select(IngestionSource).where(IngestionSource.parent_source_id.is_(None))
         if mode_filter is not None:
             base = base.where(IngestionSource.mode == mode_filter)
-        if ad_hoc is not None:
-            base = base.where(IngestionSource.ad_hoc == ad_hoc)
 
         count_q = select(func.count()).select_from(base.subquery())
         total_count = (await self._db.execute(count_q)).scalar() or 0
@@ -501,7 +478,6 @@ class IngestionService:
             recipe=recipe,
             schedule=schedule,
             schedule_tier=tier,
-            ad_hoc=False,
             status="OK",
         )
         self._db.add(row)
@@ -1046,8 +1022,10 @@ class IngestionService:
         """Return the owning source for a dataset URN.
 
         Priority rule (per spec): ``emitted`` > ``pipeline_name`` > ``matched``.
-        When multiple sources map the same dataset at the same priority, returns
-        the one with the most recent ``last_seen_at``.
+        When the same dataset is mapped at the same derivation priority by both a
+        regular parent and its CLI wrapper, the regular parent wins so that the
+        latest-run aggregation roots at the parent. Within those tiebreaks, the
+        most recent ``last_seen_at`` wins.
 
         Returns None when no source claims this dataset.
         """
@@ -1062,13 +1040,27 @@ class IngestionService:
 
         _DERIVATION_PRIORITY = {"emitted": 0, "pipeline_name": 1, "matched": 2}
 
-        def _key(pair: tuple[IngestionSourceDataset, IngestionSource]) -> tuple[int, datetime]:
-            mapping, _ = pair
+        def _key(
+            pair: tuple[IngestionSourceDataset, IngestionSource],
+        ) -> tuple[int, int, float]:
+            mapping, source = pair
             priority = _DERIVATION_PRIORITY.get(mapping.derivation, 99)
-            # Negate last_seen_at so that most recent sorts first within the same priority.
-            return (priority, -mapping.last_seen_at.timestamp())
+            # Prefer the regular parent (parent_source_id IS NULL → 0) over a
+            # wrapper (1). Then negate last_seen_at so the most recent sorts first.
+            is_wrapper = 1 if source.parent_source_id is not None else 0
+            return (priority, is_wrapper, -mapping.last_seen_at.timestamp())
 
-        best_mapping, best_source = sorted(rows, key=_key)[0]
+        _best_mapping, best_source = sorted(rows, key=_key)[0]
+
+        # Wrappers are internal plumbing and must never be surfaced as the owning
+        # source. If a wrapper wins (e.g. it claims a dataset its parent does not),
+        # resolve up to its regular parent so dataset-facing endpoints only ever
+        # expose a regular source.
+        if best_source.parent_source_id is not None:
+            parent = await self._db.get(IngestionSource, best_source.parent_source_id)
+            if parent is not None:
+                best_source = parent
+
         return _source_from_row(best_source)
 
     # ── Events ────────────────────────────────────────────────────────────────
@@ -1085,11 +1077,36 @@ class IngestionService:
         """Return ingestion events for a source (paginated).
 
         Events are stored with ``entity_type='ingestion_source'`` and
-        ``entity_id=source_id``.
+        ``entity_id=source_id``. For a regular source the union also includes
+        events recorded on its linked CLI wrapper rows
+        (``parent_source_id = source_id``) — DataHub books a managed source's runs
+        on the wrapper, not the parent. Each returned row carries a derived
+        ``wrapper`` flag (``True`` when the event's ``entity_id`` is a wrapper,
+        i.e. not this source's own id).
         """
+        # Resolve linked wrapper ids; their run events surface on this source.
+        try:
+            uid = uuid.UUID(source_id)
+        except ValueError:
+            # Non-UUID source_id can match no stored row; fall back to the raw
+            # string so the (empty-result) query still runs without children.
+            canonical = source_id
+            child_ids: list[str] = []
+        else:
+            # Stored entity_id values are canonical str(uuid); normalize so a
+            # non-canonical (e.g. uppercase) path param still matches the parent's
+            # own events and does not mis-flag them as wrapper rows.
+            canonical = str(uid)
+            child_result = await self._db.execute(
+                select(IngestionSource.id).where(IngestionSource.parent_source_id == uid)
+            )
+            child_ids = [str(cid) for cid in child_result.scalars().all()]
+
+        entity_ids = [canonical, *child_ids]
+
         base = select(Event).where(
             Event.entity_type == "ingestion_source",
-            Event.entity_id == source_id,
+            Event.entity_id.in_(entity_ids),
             Event.event_type.startswith(INGESTION_PREFIX),
         )
         if from_dt is not None:
@@ -1118,6 +1135,7 @@ class IngestionService:
                 "status": row.status,
                 "detail": row.detail,
                 "occurred_at": row.occurred_at,
+                "wrapper": row.entity_id != canonical,
             }
             for row in rows
         ], total_count
@@ -1186,29 +1204,39 @@ class IngestionService:
         }
 
         # ── Step 1: Source defs (DATAHUB_MANAGED) ────────────────────────────
+        # Two-pass sync/reconcile. DataHub books a managed source's *executions*
+        # on an auto-created CLI wrapper source (`[CLI] <type> [<parent-urn>]`),
+        # not on the regular source. We store wrappers as internal plumbing linked
+        # to their regular parent via parent_source_id, and surface their run
+        # events on the parent. A wrapper with no resolvable regular parent is a
+        # stale orphan — not stored, not marked seen → dropped by stale-removal.
         dh_sources = await self._datahub.list_ingestion_sources()
         seen_urns: set[str] = set()
 
-        for s in dh_sources:
-            source_urn = s.get("urn") or ""
-            if not source_urn:
-                continue
-            seen_urns.add(source_urn)
+        # parent_by_urn: regular DATAHUB_MANAGED source datahub_source_urn → row id.
+        parent_by_urn: dict[str, uuid.UUID] = {}
+        # Defer wrapper rows to Pass B so parent ordering within the list is moot.
+        wrapper_rows: list[dict[str, Any]] = []
 
+        async def _upsert_managed_row(
+            s: dict[str, Any], parent_source_id: uuid.UUID | None
+        ) -> uuid.UUID:
+            """Upsert one DATAHUB_MANAGED row, matched on datahub_source_urn.
+
+            Returns the row id. ``parent_source_id`` links a wrapper to its
+            regular parent (None for a regular source).
+            """
+            source_urn = s["urn"]
             recipe_str = s.get("recipe") or ""
             recipe_dict = _parse_recipe_str_safe(recipe_str)
             masked_recipe = _mask_recipe_secrets(recipe_dict)
-
             source_type, _ = _safe_parse_recipe(masked_recipe)
             schedule_interval: str | None = (s.get("schedule") or {}).get("interval") or None
-
-            # Derive internal tier for informational purposes only — no error on unknown.
             try:
                 tier = cron_to_tier(schedule_interval)
             except ValueError:
                 tier = None
 
-            # Upsert the DATAHUB_MANAGED row matched on datahub_source_urn.
             result = await self._db.execute(
                 select(IngestionSource).where(
                     IngestionSource.datahub_source_urn == source_urn,
@@ -1217,8 +1245,6 @@ class IngestionService:
             )
             row = result.scalar_one_or_none()
             now = datetime.now(tz=UTC)
-
-            ad_hoc = _is_ad_hoc(s.get("executor_id"), source_urn, s.get("name"))
 
             if row is None:
                 row = IngestionSource(
@@ -1230,7 +1256,7 @@ class IngestionService:
                     schedule=schedule_interval,
                     schedule_tier=tier,
                     datahub_source_urn=source_urn,
-                    ad_hoc=ad_hoc,
+                    parent_source_id=parent_source_id,
                     status="OK",
                 )
                 self._db.add(row)
@@ -1240,16 +1266,53 @@ class IngestionService:
                 row.recipe = masked_recipe
                 row.schedule = schedule_interval
                 row.schedule_tier = tier
-                row.ad_hoc = ad_hoc
+                row.parent_source_id = parent_source_id
                 row.status = "OK"
                 row.updated_at = now
                 self._db.add(row)
-
             summary["sources_synced"] += 1
+            return row.id
+
+        # Pass A — regular sources (rows NOT identified as CLI wrappers).
+        # Wrapper-ness is determined by marker (_is_cli_wrapper), independent of
+        # whether the name encodes a resolvable parent URN; deferred wrappers are
+        # resolved in Pass B.
+        for s in dh_sources:
+            source_urn = s.get("urn") or ""
+            if not source_urn:
+                continue
+            if _is_cli_wrapper(s.get("executor_id"), source_urn, s.get("name")):
+                wrapper_rows.append(s)
+                continue
+            seen_urns.add(source_urn)
+            row_id = await _upsert_managed_row(s, parent_source_id=None)
+            parent_by_urn[source_urn] = row_id
 
         await self._db.commit()
 
-        # Remove DATAHUB_MANAGED rows whose source URN is no longer in DataHub.
+        # Pass B — wrappers: resolve the parent URN from the wrapper's reported
+        # recipe top-level `pipeline_name` field (DataHub sets it to the registered
+        # parent's source URN) and store only when it matches a regular
+        # DATAHUB_MANAGED row from Pass A. A wrapper whose recipe carries no
+        # `pipeline_name`, or one whose `pipeline_name` resolves to no stored
+        # regular parent, is an orphan: skipped (not marked seen) so stale-removal
+        # drops it. The cosmetic display name is never used for linking.
+        for s in wrapper_rows:
+            source_urn = s["urn"]
+            recipe_dict = _parse_recipe_str_safe(s.get("recipe") or "")
+            parent_urn = recipe_dict.get("pipeline_name")
+            parent_id = parent_by_urn.get(parent_urn) if parent_urn else None
+            if parent_id is None:
+                continue
+            seen_urns.add(source_urn)
+            await _upsert_managed_row(s, parent_source_id=parent_id)
+
+        await self._db.commit()
+
+        # Remove DATAHUB_MANAGED rows whose source URN is no longer in DataHub
+        # (removed/stale sources and orphan wrappers both drop out). ON DELETE
+        # CASCADE removes a parent's wrappers automatically; the explicit delete
+        # loop tolerates already-cascaded children (benign no-op).
         result = await self._db.execute(
             select(IngestionSource).where(IngestionSource.mode == Mode.DATAHUB_MANAGED.value)
         )
@@ -1369,39 +1432,41 @@ class IngestionService:
 
             # Build lookup: pipeline_name -> [source_id, …] for MANAGED sources
             # (1:many — a single pipelineName can award pipeline_name/high to both
-            # a registered source and the ad-hoc CLI wrapper that inherits from it).
-            # DATAHUB_MANAGED registered: pipelineName == datahub_source_urn (DataHub
-            #   stamps the registered source URN on emitted aspects).
-            # DATAHUB_MANAGED ad-hoc CLI wrapper: a `datahub ingest` run of a
-            #   registered source stamps aspects with pipelineName = parent registered
-            #   URN, and the wrapper's display name embeds that parent URN as
-            #   `[CLI] <type> [<parent_urn>]`. The wrapper inherits the link when its
-            #   parsed parent URN matches a registered DATAHUB_MANAGED source row.
+            # a registered source and the CLI wrapper that inherits from it).
+            # DATAHUB_MANAGED registered (parent_source_id IS NULL): pipelineName ==
+            #   datahub_source_urn (DataHub stamps the registered source URN on
+            #   emitted aspects).
+            # DATAHUB_MANAGED CLI wrapper (parent_source_id IS NOT NULL): a
+            #   `datahub ingest` run of a registered source stamps aspects with
+            #   pipelineName = parent registered URN. The wrapper inherits the link
+            #   via its stored parent's datahub_source_urn (resolved through the
+            #   id_to_urn map below) — no name re-parsing.
             # ACTIVE_CUSTOM_MANAGED: pipelineName == str(source.id) (DataSpoke extractor
             #   stamps pipelineName = source_id per the DPI emission convention).
-            registered_managed_urns = {
-                row.datahub_source_urn
+            id_to_urn: dict[uuid.UUID, str] = {
+                row.id: row.datahub_source_urn
                 for row in all_sources_rows
                 if row.mode == Mode.DATAHUB_MANAGED.value
-                and not row.ad_hoc
+                and row.parent_source_id is None
                 and row.datahub_source_urn
             }
 
             pipeline_to_sources: dict[str, list[uuid.UUID]] = {}
             for src_row in all_sources_rows:
                 if src_row.mode == Mode.DATAHUB_MANAGED.value:
-                    if not src_row.ad_hoc:
+                    if src_row.parent_source_id is None:
                         if src_row.datahub_source_urn:
                             pipeline_to_sources.setdefault(src_row.datahub_source_urn, []).append(
                                 src_row.id
                             )
                     else:
-                        # Ad-hoc CLI wrapper: inherit only when the parsed parent URN
-                        # resolves to a registered DATAHUB_MANAGED source row. Fallback
-                        # (unparseable name or no matching registered row): inherit
-                        # nothing — keep the step-2 matched/medium mapping.
-                        parent_urn = _parse_cli_parent_urn(src_row.name)
-                        if parent_urn and parent_urn in registered_managed_urns:
+                        # CLI wrapper: inherit via the stored parent link. The
+                        # parent's datahub_source_urn is the pipelineName DataHub
+                        # stamps. When the parent is missing from id_to_urn (e.g.
+                        # cascaded away mid-sweep), inherit nothing — keep the
+                        # step-2 matched/medium mapping.
+                        parent_urn = id_to_urn.get(src_row.parent_source_id)
+                        if parent_urn:
                             pipeline_to_sources.setdefault(parent_urn, []).append(src_row.id)
                 elif src_row.mode == Mode.ACTIVE_CUSTOM_MANAGED.value:
                     pipeline_to_sources.setdefault(str(src_row.id), []).append(src_row.id)

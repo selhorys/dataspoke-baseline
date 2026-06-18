@@ -3,3 +3,4 @@
 - [E2E cross-host cookie auth](project_e2e_cross_host_cookie_auth.md) — storageState auth rests on a fragile cross-host refresh-cookie chain; require a green smoke run on a real cluster before trusting it
 - [Validation INVALID_PARAMETER is 422](project_validation_invalid_param_422.md) — both API.md and VALIDATION.md say 422; flag tests claiming a 400 spec/impl discrepancy
 - [RangePicker day-bounds unspecced](project_rangepicker_day_bounds_unspecced.md) — date-mode T23:59:59.999Z is impl-only; spec only says inclusive {from,to}, 14d default, 5 presets, until=to mapping
+- [UC1 event status anchor](project_uc1_event_status_anchor.md) — status='success' anchors to USE_CASE_en.md L107-108, not BACKEND.md step 4; INGESTION catalogue names no detail keys

@@ -192,6 +192,11 @@ export default function IngestionDatasetDetailPage({
                 <Badge variant={eventStatusVariant(e.status)} className="text-xs">
                   {e.status}
                 </Badge>
+                {e.wrapper && (
+                  <Badge variant="outline" className="text-xs">
+                    wrapper
+                  </Badge>
+                )}
                 <span>{e.event_type}</span>
                 <EventDetailCell detail={e.detail} />
               </li>

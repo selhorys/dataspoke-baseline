@@ -336,6 +336,7 @@ class TestReverseLookupPrecedence:
         source_a.schedule = "0 0 * * *"
         source_a.schedule_tier = "daily"
         source_a.datahub_source_urn = None
+        source_a.parent_source_id = None
         source_a.status = "OK"
         source_a.created_at = datetime.now(tz=UTC)
         source_a.updated_at = datetime.now(tz=UTC)
@@ -349,6 +350,7 @@ class TestReverseLookupPrecedence:
         source_b.schedule = None
         source_b.schedule_tier = None
         source_b.datahub_source_urn = None
+        source_b.parent_source_id = None
         source_b.status = "OK"
         source_b.created_at = datetime.now(tz=UTC)
         source_b.updated_at = datetime.now(tz=UTC)
@@ -394,6 +396,7 @@ class TestReverseLookupPrecedence:
         source_pipeline.schedule = None
         source_pipeline.schedule_tier = None
         source_pipeline.datahub_source_urn = "urn:li:dataHubIngestionSource:abc"
+        source_pipeline.parent_source_id = None
         source_pipeline.status = "OK"
         source_pipeline.created_at = datetime.now(tz=UTC)
         source_pipeline.updated_at = datetime.now(tz=UTC)
@@ -407,6 +410,7 @@ class TestReverseLookupPrecedence:
         source_matched.schedule = None
         source_matched.schedule_tier = None
         source_matched.datahub_source_urn = None
+        source_matched.parent_source_id = None
         source_matched.status = "OK"
         source_matched.created_at = datetime.now(tz=UTC)
         source_matched.updated_at = datetime.now(tz=UTC)

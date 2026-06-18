@@ -111,7 +111,7 @@ scope); DataHub owns **results** (runs, observed datasets — synced down).
 | `schedule` | `TEXT` NULL | Cron expression — the recipe-standard `schedule` field exposed verbatim in the API. For `DATAHUB_MANAGED`, mirrored from DataHub's schedule. For `ACTIVE_CUSTOM_MANAGED`, must map to one of the three allowed tiers; `NULL` means manual-only (runs only on `…/method/run`, not on any tier DAG). Null for `PASSIVE` |
 | `schedule_tier` | `TEXT` NULL | **Internal, derived — never exposed in the API.** The tier (`hourly`/`daily`/`weekly`) computed from `schedule`, cached so the Airflow tier DAG can `WHERE schedule_tier = …`. Null when `schedule` is null or for `PASSIVE` |
 | `datahub_source_urn` | `TEXT` NULL | The `dataHubIngestionSource` URN for `DATAHUB_MANAGED` (sync key; also the `systemMetadata.pipelineName` match value for the optional observed-mapping enrichment). For `ACTIVE_CUSTOM_MANAGED`, the `pipeline_name` DataSpoke's extractor stamps. Null for `PASSIVE` |
-| `ad_hoc` | `BOOLEAN NOT NULL DEFAULT false` | Derived at sync time; `true` for CLI/ad-hoc `DATAHUB_MANAGED` sources — see [DATAHUB_INTEGRATION §Ingestion Source Sync](../DATAHUB_INTEGRATION.md) for the classifier markers. SQL-filterable |
+| `parent_source_id` | `UUID` NULL FK → `ingestion_source(id)` ON DELETE CASCADE | **Internal — never exposed in the API.** Self-referential link from a DataHub CLI wrapper source to its registered parent (resolved at sync time from the wrapper's `recipe.pipeline_name` matched against the registered parent's `datahub_source_urn` — the wrapper's display name is cosmetic and never used for linking; see [DATAHUB_INTEGRATION §Ingestion Source Sync](../DATAHUB_INTEGRATION.md#ingestion-source-sync)). A row is a **wrapper** iff this is non-null and a **regular** source iff null; the list view hides wrappers. Indexed (`ix_ingestion_source_parent`) for the per-source event union |
 | `status` | `TEXT` | `OK` / `ERROR` (last sync or run health) |
 | `created_at` | `TIMESTAMPTZ` | Creation timestamp |
 | `updated_at` | `TIMESTAMPTZ` | Last modification |
@@ -119,8 +119,10 @@ scope); DataHub owns **results** (runs, observed datasets — synced down).
 The API request/response body mirrors the UC1 recipe YAML 1:1 in JSON, using
 DataHub-recipe-standard wording only — `{mode, name, schedule, recipe:{source:{type,config}}}`
 — plus read-only management fields (`id`, `status`, `created_at`, `updated_at`,
-`ad_hoc`, and `datahub_source_urn` for `DATAHUB_MANAGED`). `schedule_tier` is internal and never appears in
-the API. See [API §Ingestion](../API.md#ingestion-spokeingestion).
+and `datahub_source_urn` for `DATAHUB_MANAGED`). `schedule_tier` and `parent_source_id` are internal
+and never appear in the API. The per-source event endpoint exposes a **derived** (not stored)
+`wrapper: bool` on each event row — `true` when the event originated on a linked wrapper rather than
+the source itself. See [API §Ingestion](../API.md#ingestion-spokeingestion).
 
 - **Editability**: `DATAHUB_MANAGED` rows are read-only in DataSpoke (DataHub is SSOT — edits return `409 INGESTION_SOURCE_READONLY`); they are created/updated only by the sync sweep. `ACTIVE_CUSTOM_MANAGED` and `PASSIVE` are user-managed via the API.
 
@@ -135,7 +137,7 @@ every source form the **unmanaged bucket**.
 |--------|------|-------------|
 | `source_id` | `UUID` FK → `ingestion_source(id)` ON DELETE CASCADE | Owning source |
 | `dataset_urn` | `TEXT` | A dataset the source covers |
-| `derivation` | `TEXT` | How the link was established: `matched` (recipe filter / declared allow-deny evaluated against the dataset set), `emitted` (`ACTIVE_CUSTOM_MANAGED` extractor's own run output), or `pipeline_name` (observed via `systemMetadata.pipelineName`, optional enrichment for the two MANAGED modes; also inherited by ad-hoc CLI sources from their parent registered source — see BACKEND §Sync sweep step 3) |
+| `derivation` | `TEXT` | How the link was established: `matched` (recipe filter / declared allow-deny evaluated against the dataset set), `emitted` (`ACTIVE_CUSTOM_MANAGED` extractor's own run output), or `pipeline_name` (observed via `systemMetadata.pipelineName`, optional enrichment for the two MANAGED modes; also inherited by a wrapper source from its registered parent via `parent_source_id` — see [BACKEND §Sync sweep](BACKEND.md#ingestion-service-srcbackendingestion)) |
 | `first_seen_at` | `TIMESTAMPTZ` | First sweep that linked this pair |
 | `last_seen_at` | `TIMESTAMPTZ` | Most recent sweep confirming the link |
 

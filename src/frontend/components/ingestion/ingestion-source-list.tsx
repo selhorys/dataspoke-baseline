@@ -151,11 +151,6 @@ export function IngestionSourceList({
                           read-only
                         </Badge>
                       )}
-                      {s.ad_hoc && (
-                        <Badge variant="secondary" className="text-xs">
-                          ad-hoc
-                        </Badge>
-                      )}
                     </div>
                   </TableCell>
                   <TableCell className="font-mono text-xs">{s.platform}</TableCell>

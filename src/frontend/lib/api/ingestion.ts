@@ -27,8 +27,6 @@ interface SourceListParams {
   offset?: number;
   limit?: number;
   mode?: IngestionMode;
-  /** Tri-state ad-hoc constraint: omit = no constraint, true/false = filter. */
-  adHoc?: boolean;
 }
 
 function buildSourceListUrl(params: SourceListParams): string {
@@ -36,7 +34,6 @@ function buildSourceListUrl(params: SourceListParams): string {
   if (params.offset !== undefined) sp.set("offset", String(params.offset));
   if (params.limit !== undefined) sp.set("limit", String(params.limit));
   if (params.mode) sp.set("mode", params.mode);
-  if (params.adHoc !== undefined) sp.set("ad_hoc", String(params.adHoc));
   const qs = sp.toString();
   return `/spoke/ingestion/sources${qs ? `?${qs}` : ""}`;
 }

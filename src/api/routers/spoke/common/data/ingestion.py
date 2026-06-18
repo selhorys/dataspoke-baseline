@@ -125,6 +125,7 @@ async def get_data_ingestion_event(
                 status=e["status"],
                 detail=e.get("detail", {}),
                 occurred_at=e["occurred_at"],
+                wrapper=e.get("wrapper", False),
             )
             for e in events
         ],

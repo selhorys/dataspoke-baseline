@@ -20,13 +20,19 @@ Steps mirror USE_CASE_en.md §UC1 Case 1:
   6. Poll GET /sources/{id}/datasets (≤180s, ES budget);
      assert non-empty, valid derivation enum, non-catalog URNs, ≥1 matched derivation.
   7. Assert schedule round-trips ('0 0 * * *') and schedule_tier is absent from wire.
-  8. Execute the source in DataHub via createIngestionExecutionRequest; poll to terminal
-     SUCCESS (≤180s); re-run sync; verify DataSpoke reflects the run:
-       PRIMARY:   GET /sources/{id}/event has INGESTION.COMPLETE with
-                  detail.execution_request_urn present and detail.source='datahub_sync'.
+  8. Execute the source in DataHub via createIngestionExecutionRequest; poll the
+     execution request DIRECTLY (executionRequest(urn){result{status}}) to terminal
+     SUCCESS (≤180s) — the parent's executions relationship is empty by design because
+     DataHub books the run on a hidden CLI wrapper. Re-run sync; verify DataSpoke
+     reflects the run on the REGULAR source:
+       PRIMARY:   GET /sources/{id}/event (the parent) has INGESTION.COMPLETE with
+                  wrapper=true and status='success'
+                  (detail.execution_request_urn is used only to locate the row — an impl
+                   detail, not a spec'd event-detail key).
+       The wrapper source is ABSENT from GET /sources?mode=DATAHUB_MANAGED.
        SECONDARY: GET /sources/{id}/datasets has ≥1 row with derivation='pipeline_name'
-                  and authority='high'.
-     Tolerant: skip if executor unavailable or run does not reach SUCCESS in budget.
+                  and authority='high'; attr/ingestion latest_run reflects the run.
+     Tolerant: skip only for true executor unavailability.
   9. Cleanup: deleteIngestionSource, deleteSecret, re-run sync to remove mirrored rows.
 
 spec: USE_CASE_en.md §UC1 Case 1
@@ -42,7 +48,6 @@ import asyncio
 import json
 import os
 import time
-import uuid
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 
@@ -90,6 +95,11 @@ _PLAINTEXT_PW_IN_FIXTURE = "ExampleDev2024!"
 # spec: feature/BACKEND.md §Sync sweep step 1 — ${...} references preserved as-is.
 _SECRET_NAME = "UC1_POSTGRES_PASSWORD"
 _SECRET_REF = f"${{{_SECRET_NAME}}}"  # "${UC1_POSTGRES_PASSWORD}"
+
+# Stable, human-readable name for the provisioned DataHub IngestionSource. A fixed
+# name (rather than a uuid suffix) lets reruns pre-clean a leftover same-named source
+# in DataHub so they don't accumulate, mirroring the secret pre-delete above.
+_SOURCE_NAME = "dummy datahub-managed"
 
 
 @dataclass
@@ -153,6 +163,48 @@ async def _managed_source_setup(
         timeout=10.0,
     )
 
+    # Idempotency: drop any leftover DataHub IngestionSource with the same fixed name
+    # from a prior interrupted run. The source name is stable (_SOURCE_NAME), so a
+    # leftover would otherwise accumulate as a duplicate. Best-effort — list the
+    # sources, delete any whose name matches, and ignore errors. Mirrors the secret
+    # pre-delete above and the e2e uc1-01 step-1 pre-delete.
+    try:
+        leftovers_resp = httpx.post(
+            f"{datahub_gms_url}/api/graphql",
+            headers=gql_headers,
+            json={
+                "query": (
+                    "query listIngestionSources($input: ListIngestionSourcesInput!) {"
+                    " listIngestionSources(input: $input) {"
+                    " ingestionSources { urn name } } }"
+                ),
+                "variables": {"input": {"start": 0, "count": 100}},
+            },
+            timeout=15.0,
+        )
+        leftover_sources = (
+            leftovers_resp.json()
+            .get("data", {})
+            .get("listIngestionSources", {})
+            .get("ingestionSources", [])
+        )
+        for src in leftover_sources:
+            if src.get("name") == _SOURCE_NAME and src.get("urn"):
+                httpx.post(
+                    f"{datahub_gms_url}/api/graphql",
+                    headers=gql_headers,
+                    json={
+                        "query": (
+                            "mutation deleteIngestionSource($urn: String!) {"
+                            " deleteIngestionSource(urn: $urn) }"
+                        ),
+                        "variables": {"urn": src["urn"]},
+                    },
+                    timeout=10.0,
+                )
+    except Exception:
+        pass
+
     # ── Step 1a: Create DataHub Secret ────────────────────────────────────────
     # spec: USE_CASE_en.md §UC1 Case 1 — DataHub-recommended credential pattern uses
     #   createSecret + ${SECRET_NAME} reference in the recipe.
@@ -192,7 +244,7 @@ async def _managed_source_setup(
     #   preserved as-is (not masked, not resolved).
     # The password field holds only the reference; the actual credential value is
     # stored in the DataHub Secret and never returned by DataHub to DataSpoke.
-    name = f"uc1-datahub-managed-secretref-{uuid.uuid4().hex[:8]}"
+    name = _SOURCE_NAME
     recipe = {
         "source": {
             "type": "postgres",
@@ -750,7 +802,8 @@ async def test_uc1_datahub_managed_execute_and_reflect(
     internal_headers: dict[str, str],
     _managed_source_setup: _ManagedSource,
 ) -> None:
-    """UC1 Case 1 step 8 — execute source in DataHub; DataSpoke reflects the run.
+    """UC1 Case 1 step 8 — execute source in DataHub; DataSpoke reflects the run on the
+    regular source via the hidden CLI wrapper linkage.
 
     Narrative from USE_CASE_en.md §UC1 Case 1:
       "When the source runs in DataHub — on its daily schedule or a run triggered
@@ -760,31 +813,47 @@ async def test_uc1_datahub_managed_execute_and_reflect(
        authority=high), because DataHub stamps the source's identity on the aspects
        the run emits."
 
-    Mechanism (ref/github/datahub/datahub-graphql-core/src/main/resources/ingestion.graphql
-    and ref/github/datahub/smoke-test/tests/managed_ingestion/managed_ingestion_test.py):
+    Mechanism — by design DataHub books a managed source's run on an auto-created CLI
+    wrapper source (own URN …:cli-<hash>), NOT on the registered source: the registered
+    source's own ``executions`` relationship stays empty. So we poll the execution
+    request DIRECTLY by its URN (executionRequest(urn){ result { status } }) rather
+    than via the parent's executions. DataSpoke's sync stores the wrapper as internal
+    plumbing linked to the regular parent and surfaces the wrapper's run events ON the
+    parent, tagged ``wrapper: true``.
+    (ref/github/datahub/datahub-graphql-core/src/main/resources/ingestion.graphql:
+     executionRequest(urn: String!): ExecutionRequest { result { status } };
+     ref/github/datahub/smoke-test/tests/managed_ingestion/managed_ingestion_test.py
+     _ensure_execution_request_present — confirmed query shape.)
+
       - Trigger: createIngestionExecutionRequest(input: {ingestionSourceUrn}) → exec URN
-      - Poll:    ingestionSource(urn){ executions(start:0,count:5){
-                     executionRequests { urn result { status } } } }
-                 until result.status ∈ {SUCCESS, SUCCEEDED} (≤180s budget)
+      - Poll:    executionRequest(urn){ result { status } }
+                 until status ∈ {SUCCESS, SUCCEEDED} (≤180s budget)
       - Re-sync: POST /internal/activities/ingestion/sync
-      - PRIMARY:   GET /sources/{id}/event → INGESTION.COMPLETE with
-                   detail.execution_request_urn present and detail.source='datahub_sync'
+      - PRIMARY:   GET /sources/{id}/event (the REGULAR parent) → INGESTION.COMPLETE
+                   with wrapper=true and status='success'
+                   (detail.execution_request_urn used only as a row discriminator — an
+                    impl detail, not a spec'd event-detail key)
+      - The wrapper source is ABSENT from GET /sources?mode=DATAHUB_MANAGED (hidden)
       - SECONDARY: GET /sources/{id}/datasets → ≥1 row with derivation='pipeline_name'
                    and authority='high'
+      - attr/ingestion latest_run on a covered dataset reflects the run (status='success')
 
     Tolerant: if createIngestionExecutionRequest errors (executor unavailable) or the
-    execution does not reach SUCCESS/SUCCEEDED within the budget, the test is skipped with
-    a clear message — mirroring the executor-unavailable skip-guard style used in the
-    fixture setup.
+    execution does not reach SUCCESS/SUCCEEDED within the budget, the test is skipped —
+    only for true executor unavailability.
 
     spec: USE_CASE_en.md §UC1 Case 1 — execution beat: sync mirrors the run as
           INGESTION.COMPLETE and upgrades datasets from matched/medium to pipeline_name/high
+    spec: feature/BACKEND.md §Sync sweep step 1 — wrappers hidden from the list; linked
+          to the regular parent via parent_source_id
     spec: feature/BACKEND.md §Sync sweep step 3 — observed enrichment writes
           derivation='pipeline_name' / authority='high' when DataHub stamps pipelineName
-    spec: feature/BACKEND.md §Sync sweep step 4 — run events: _mirror_execution_requests
-          inserts INGESTION.COMPLETE with detail.execution_request_urn + source='datahub_sync'
+    spec: feature/BACKEND.md §Sync sweep step 4 — the regular source aggregates events
+          across itself and its linked wrappers; each event carries a derived wrapper flag
+    spec: API.md §Ingestion — GET /sources/{id}/event includes linked-wrapper events
+          carrying wrapper: bool; the list returns regular sources only;
+          attr/ingestion latest_run spans the union
     spec: BACKEND_SCHEMA.md §ingestion_source_dataset — pipeline_name→high derivation/authority
-    spec: API.md §Ingestion — GET /sources/{id}/event, GET /sources/{id}/datasets
     """
     managed = _managed_source_setup
 
@@ -842,10 +911,14 @@ async def test_uc1_datahub_managed_execute_and_reflect(
             "Skipping execution-and-reflect step."
         )
 
-    # ── Step 8b: Poll the execution to terminal SUCCESS/SUCCEEDED (≤180s) ─────
+    # ── Step 8b: Poll the execution request DIRECTLY to terminal SUCCESS (≤180s) ─
+    # By design DataHub books a managed source's run on a CLI wrapper source, so the
+    # PARENT's `executions` relationship is empty. Query the execution request by its
+    # own URN instead (executionRequest(urn){ result { status } }).
     # spec: ref/github/datahub/datahub-graphql-core/src/main/resources/ingestion.graphql
-    #   ingestionSource(urn: String!) { executions(start:0, count:5) {
-    #       total executionRequests { urn result { status } } } }
+    #   executionRequest(urn: String!): ExecutionRequest { result { status } }
+    # spec: ref/github/datahub/smoke-test/tests/managed_ingestion/managed_ingestion_test.py
+    #   _ensure_execution_request_present — confirmed query shape.
     #   result.status: String! — terminal values per service.py:
     #     SUCCESS / SUCCEEDED → INGESTION_COMPLETE (→ test succeeds)
     #     every other terminal value (FAILURE, CANCELLED, ABORTED, TIMEOUT, …) →
@@ -854,16 +927,11 @@ async def test_uc1_datahub_managed_execute_and_reflect(
     #     SKIPPED / UP_FOR_RETRY → non-terminal ambiguous → keep polling
     #     None / absent result → still running → keep polling
     poll_query = """
-    query ingestionSource($urn: String!) {
-        ingestionSource(urn: $urn) {
-            executions(start: 0, count: 5) {
-                total
-                executionRequests {
-                    urn
-                    result {
-                        status
-                    }
-                }
+    query executionRequest($urn: String!) {
+        executionRequest(urn: $urn) {
+            urn
+            result {
+                status
             }
         }
     }
@@ -884,7 +952,7 @@ async def test_uc1_datahub_managed_execute_and_reflect(
             poll_resp = httpx.post(
                 f"{datahub_gms_url}/api/graphql",
                 headers=gql_headers,
-                json={"query": poll_query, "variables": {"urn": managed.urn}},
+                json={"query": poll_query, "variables": {"urn": execution_request_urn}},
                 timeout=15.0,
             )
             poll_resp.raise_for_status()
@@ -893,22 +961,12 @@ async def test_uc1_datahub_managed_execute_and_reflect(
             await asyncio.sleep(poll_interval)
             continue
 
-        exec_requests = (
-            poll_data.get("data", {})
-            .get("ingestionSource", {})
-            .get("executions", {})
-            .get("executionRequests", [])
-        )
-        # Find the execution request we triggered by URN
-        for req in exec_requests:
-            if req.get("urn") == execution_request_urn:
-                result = req.get("result") or {}
-                status = result.get("status") or None
-                if status and status not in _NON_TERMINAL_STATUSES:
-                    # Terminal: either success or failure
-                    exec_status = status
-                    break
-        if exec_status is not None:
+        exec_request = (poll_data.get("data", {}) or {}).get("executionRequest") or {}
+        result = exec_request.get("result") or {}
+        status = result.get("status") or None
+        if status and status not in _NON_TERMINAL_STATUSES:
+            # Terminal: either success or failure
+            exec_status = status
             break
         await asyncio.sleep(poll_interval)
 
@@ -940,12 +998,15 @@ async def test_uc1_datahub_managed_execute_and_reflect(
         f"got {sync_resp.status_code}: {sync_resp.text}"
     )
 
-    # ── Step 8d: PRIMARY — GET /sources/{id}/event → INGESTION.COMPLETE ──────
+    # ── Step 8d: PRIMARY — the regular parent's event log surfaces the wrapper run ─
+    # The run was booked on the hidden CLI wrapper; DataSpoke surfaces it ON the regular
+    # parent the user looks at, tagged wrapper=true.
     # spec: USE_CASE_en.md §UC1 Case 1 — "DataSpoke's next sync mirrors that execution
     #   into …/event as an INGESTION.COMPLETE event"
-    # spec: feature/BACKEND.md §Sync sweep step 4 — _mirror_execution_requests inserts
-    #   Event(event_type=INGESTION_COMPLETE, status='success',
-    #         detail={execution_request_urn: ..., source: 'datahub_sync'})
+    # spec: feature/BACKEND.md §Sync sweep step 4 — the regular source aggregates events
+    #   across itself and its linked wrappers; each carries a derived wrapper flag.
+    # spec: API.md §Ingestion — GET /sources/{id}/event includes linked-wrapper events
+    #   carrying wrapper: bool.
     # Poll briefly to let the event row settle (sync is synchronous but DB may lag).
     event_body: dict = {}
     found_event: dict | None = None
@@ -962,6 +1023,9 @@ async def test_uc1_datahub_managed_execute_and_reflect(
         event_body = event_resp.json()
         for evt in event_body.get("events", []):
             if evt.get("event_type") == "INGESTION.COMPLETE":
+                # Discriminator only: execution_request_urn is an impl-detail key (the
+                # INGESTION Event Catalogue spec'es no detail keys) used to pick the row
+                # for THIS run; not asserted as a wire contract.
                 detail = evt.get("detail") or {}
                 if detail.get("execution_request_urn") == execution_request_urn:
                     found_event = evt
@@ -972,33 +1036,63 @@ async def test_uc1_datahub_managed_execute_and_reflect(
 
     assert found_event is not None, (
         f"Expected an INGESTION.COMPLETE event with "
-        f"detail.execution_request_urn={execution_request_urn!r} in "
+        f"detail.execution_request_urn={execution_request_urn!r} on the REGULAR parent's "
         f"GET /sources/{managed.id}/event within 30s after sync. "
         f"Events returned: {event_body.get('events', [])}. "
         "spec: USE_CASE_en.md §UC1 Case 1 — sync mirrors run as INGESTION.COMPLETE event. "
-        "spec: feature/BACKEND.md §Sync sweep step 4 — _mirror_execution_requests."
+        "spec: feature/BACKEND.md §Sync sweep step 4 — the regular source aggregates the "
+        "wrapper's run events."
     )
 
-    # Verify the event's status and detail fields.
-    # spec: feature/BACKEND.md §Sync sweep step 4 — Event carries status='success',
-    #   detail.source='datahub_sync', detail.execution_request_urn=<urn>
+    # The run was booked on the hidden CLI wrapper, so the parent surfaces it tagged
+    # wrapper=true (derived at read time from the event's entity vs the source id).
+    # spec: API.md §Ingestion — GET /sources/{id}/event rows carry a derived wrapper: bool;
+    #   wrapper=true for an event originating on a linked wrapper rather than the source.
+    # spec: feature/BACKEND_SCHEMA.md §events — wrapper derived, never stored.
+    assert found_event.get("wrapper") is True, (
+        f"The mirrored run on the regular parent must carry wrapper=true (it was booked "
+        f"on the hidden CLI wrapper); got {found_event.get('wrapper')!r}. "
+        "spec: API.md §Ingestion — derived wrapper flag. "
+        "spec: feature/BACKEND.md §Sync sweep step 4 — wrapper runs surface on the parent."
+    )
+
+    # Verify the event's status.
+    # spec: feature/BACKEND.md §Sync sweep step 4 — DataHub execution status mapping:
+    #   SUCCESS/SUCCEEDED → INGESTION.COMPLETE → status='success'.
+    # (detail.execution_request_urn was used above only as a discriminator to locate the
+    #  right row; the INGESTION Event Catalogue spec'es no detail keys, so it is an impl
+    #  detail and not asserted as a wire contract here.)
     assert found_event.get("status") == "success", (
         f"INGESTION.COMPLETE event must carry status='success'; "
         f"got {found_event.get('status')!r}. "
-        "spec: feature/BACKEND.md §Sync sweep step 4 — _mirror_execution_requests."
+        "spec: feature/BACKEND.md §Sync sweep step 4 — SUCCESS→INGESTION.COMPLETE→status='success'."
     )
-    event_detail = found_event.get("detail") or {}
-    assert event_detail.get("source") == "datahub_sync", (
-        f"INGESTION.COMPLETE event detail.source must be 'datahub_sync'; "
-        f"got {event_detail.get('source')!r}. "
-        "spec: feature/BACKEND.md §Sync sweep step 4 — _mirror_execution_requests: "
-        "detail.source='datahub_sync' identifies the sync origin."
+
+    # ── Step 8d-bis: the CLI wrapper is ABSENT from the source list ───────────
+    # The wrapper is internal plumbing; the list returns regular DATAHUB_MANAGED sources
+    # only. There must be exactly one row carrying our datahub_source_urn (the regular
+    # parent), and no row whose URN is a CLI wrapper (…:cli-…).
+    # spec: API.md §Ingestion — DataHub CLI wrapper sources are internal and never listed.
+    # spec: feature/BACKEND.md §Sync sweep step 1 — list_sources hides wrappers.
+    list_after_resp = await api_client.get(
+        "/api/v1/spoke/ingestion/sources?mode=DATAHUB_MANAGED&limit=100",
+        headers=admin_headers,
     )
-    assert event_detail.get("execution_request_urn"), (
-        f"INGESTION.COMPLETE event detail.execution_request_urn must be present and non-empty; "
-        f"got {event_detail.get('execution_request_urn')!r}. "
-        "spec: feature/BACKEND.md §Sync sweep step 4 — _mirror_execution_requests: "
-        "detail carries execution_request_urn for traceability."
+    assert list_after_resp.status_code == 200, list_after_resp.text
+    listed_after = list_after_resp.json().get("sources", [])
+    listed_urns = [s.get("datahub_source_urn") for s in listed_after]
+    assert managed.urn in listed_urns, (
+        f"The regular DATAHUB_MANAGED parent {managed.urn!r} must remain in the list; "
+        f"got {listed_urns}. spec: API.md §Ingestion — regular sources are listed."
+    )
+    wrapper_urns_listed = [
+        u for u in listed_urns if u and "dataHubIngestionSource:cli-" in u
+    ]
+    assert not wrapper_urns_listed, (
+        f"No CLI wrapper source may appear in GET /sources?mode=DATAHUB_MANAGED; found "
+        f"{wrapper_urns_listed}. "
+        "spec: API.md §Ingestion — DataHub CLI wrapper sources are internal, never listed. "
+        "spec: feature/BACKEND.md §Sync sweep step 1 — wrappers hidden from the list."
     )
 
     # ── Step 8e: SECONDARY — GET /sources/{id}/datasets → pipeline_name / high ─
@@ -1055,4 +1149,41 @@ async def test_uc1_datahub_managed_execute_and_reflect(
         "to pipeline_name/high via DataHub systemMetadata.pipelineName stamping. "
         "spec: feature/BACKEND.md §Sync sweep step 3 — _link_pipeline_datasets upserts "
         "pipeline_name rows where pipelineName matches datahub_source_urn."
+    )
+
+    # ── Step 8f: attr/ingestion latest_run on a covered dataset reflects the run ─
+    # The per-dataset reverse-lookup aggregates the source's runs and those booked on
+    # its internal wrappers, so latest_run on a covered dataset shows the run that just
+    # completed (status='success').
+    # spec: API.md §Ingestion — attr/ingestion latest_run spans the source's own runs and
+    #   those booked on its internal wrappers.
+    # spec: feature/BACKEND.md §Sync sweep step 4 — per-dataset latest-run aggregation
+    #   unions the parent's own events with its wrappers' events.
+    covered_urn = pipeline_name_rows[0]["dataset_urn"]
+    attr_resp = await api_client.get(
+        f"/api/v1/spoke/common/data/{covered_urn}/attr/ingestion",
+        headers=admin_headers,
+    )
+    assert attr_resp.status_code == 200, (
+        f"GET attr/ingestion for {covered_urn} expected 200, "
+        f"got {attr_resp.status_code}: {attr_resp.text}"
+    )
+    attr_body = attr_resp.json()
+    # The covered dataset must resolve to our regular parent source.
+    assert attr_body.get("source_id") == managed.id, (
+        f"attr/ingestion for the covered dataset must resolve to the regular parent "
+        f"source_id={managed.id!r}; got {attr_body.get('source_id')!r}. "
+        "spec: feature/BACKEND.md §reverse_lookup — prefer the regular parent over its wrapper."
+    )
+    latest_run = attr_body.get("latest_run")
+    assert latest_run is not None, (
+        f"attr/ingestion latest_run must reflect the completed run, not null; "
+        f"got {attr_body!r}. "
+        "spec: API.md §Ingestion — latest_run spans the source's own runs and its wrappers'."
+    )
+    assert latest_run.get("status") == "success", (
+        f"attr/ingestion latest_run.status must be 'success' after the SUCCESS run; "
+        f"got {latest_run.get('status')!r}. "
+        "spec: feature/BACKEND.md §Sync sweep step 4 — SUCCESS/SUCCEEDED→INGESTION.COMPLETE→"
+        "status='success'; latest-run aggregation spans the source + its linked wrappers."
     )

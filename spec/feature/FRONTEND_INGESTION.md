@@ -17,7 +17,7 @@ cross-link to the other.
 | Path | Purpose | API |
 |------|---------|-----|
 | `/ingestion` | 302 to `/ingestion/conf` | — |
-| `/ingestion/conf` | Source list (filter by `mode` and `ad_hoc`) | `GET /spoke/ingestion/sources` |
+| `/ingestion/conf` | Source list (filter by `mode`) | `GET /spoke/ingestion/sources` |
 | `/ingestion/sources/new` | Create a source (`ACTIVE_CUSTOM_MANAGED` / `PASSIVE`) | `POST /spoke/ingestion/sources` |
 | `/ingestion/sources/[id]` | Source detail (recipe, datasets, runs, events) | `GET /spoke/ingestion/sources/{id}` |
 | `/ingestion/unmanaged` | Datasets covered by no source | `GET /spoke/ingestion/unmanaged` |
@@ -31,12 +31,11 @@ The per-dataset reverse-lookup page mirrors the per-dataset pages of Validation
 One row per source: `name`, `mode` badge (`DATAHUB_MANAGED` / `ACTIVE_CUSTOM_MANAGED` /
 `PASSIVE`), `platform`, schedule, enabled state, covered-dataset count, and latest run status.
 A "Create source" button routes to `/ingestion/sources/new`; paginate. The filter offers
-ALL, DataHub-managed (regular), DataHub-managed (ad-hoc), Active, Passive — the two
-DataHub-managed options are disjoint and map to the `mode`+`ad_hoc` query pair on
-`GET /spoke/ingestion/sources` (regular = `mode=DATAHUB_MANAGED&ad_hoc=false`, ad-hoc =
-`mode=DATAHUB_MANAGED&ad_hoc=true`); Active/Passive map to `mode` alone.
-`DATAHUB_MANAGED` rows carry a read-only badge, and rows whose `ad_hoc` flag is set carry an
-additional "ad-hoc" badge. The name cell shows the source's `datahub_source_urn` as a gray
+ALL, DataHub-managed, Active, Passive — each maps to the `mode` query param on
+`GET /spoke/ingestion/sources` (DataHub-managed = `mode=DATAHUB_MANAGED`). Internal DataHub CLI
+wrapper sources never appear — the backend hides them from the list, so DataHub-managed shows only
+regular sources. `DATAHUB_MANAGED` rows carry a read-only badge. The name cell shows the source's
+`datahub_source_urn` as a gray
 subtitle below the name for DataHub-managed rows; rows without a URN
 (`ACTIVE_CUSTOM_MANAGED` / `PASSIVE`) show the name alone. (`GET /spoke/ingestion/sources`.) The
 covered-dataset count and latest run status are not fields on the list payload — each is
@@ -63,7 +62,9 @@ A header surfaces read-only management fields as badges/text outside the recipe 
 3. **Run** — `POST /spoke/ingestion/sources/{id}/method/run` with a `dry_run` toggle. Shown only
    for `ACTIVE_CUSTOM_MANAGED`; other modes show an explanatory disabled state (the run happens in
    DataHub or externally; the API returns `409 INGESTION_RUN_NOT_APPLICABLE`).
-4. **Events** — `GET /spoke/ingestion/sources/{id}/event` history table, newest first. A
+4. **Events** — `GET /spoke/ingestion/sources/{id}/event` history table, newest first, aggregating
+   the source's own runs with those booked on its internal DataHub wrappers. A row whose `wrapper`
+   flag is set carries a "wrapper" tag. A
    `datetime`-granularity [RangePicker](FRONTEND_BASIC.md#shared-component-notes) (presets Last
    1 day / 7 days / 2 weeks (default) / 4 weeks / 12 weeks, plus a custom calendar range) drives
    the `from`/`to` filters from its inclusive `{from, to}` pair. The `detail` cell shows the
@@ -100,17 +101,19 @@ answer; each row links to its dataset page. Reached via the sidebar `unmanaged` 
 ## Per-dataset reverse-lookup (`/ingestion/data/[urn]`)
 
 An "Ingestion" panel shows the owning source (link to `/ingestion/sources/[id]`), its
-`mode`, and the latest run — from `GET /spoke/common/data/{dataset_urn}/attr/ingestion`.
+`mode`, and the latest run (spanning the source's own runs and internal-wrapper runs) — from
+`GET /spoke/common/data/{dataset_urn}/attr/ingestion`.
 When no source covers the dataset, the panel says so and links to `/ingestion/unmanaged`.
 Below it, an events table shows per-dataset ingestion events from
 `GET /spoke/common/data/{dataset_urn}/event/ingestion`, with a `datetime`
 [RangePicker](FRONTEND_BASIC.md#shared-component-notes) driving the endpoint's
-`from`/`to` filters; the `detail` cell shows the compact JSON truncated to ~30 characters and is
-click-to-expand into a pretty-printed JSON dialog. The page is read-only.
+`from`/`to` filters; a row whose `wrapper` flag is set carries a "wrapper" tag, and the `detail`
+cell shows the compact JSON truncated to ~30 characters and is click-to-expand into a
+pretty-printed JSON dialog. The page is read-only.
 
 ## Components
 
-- `IngestionSourceList` — the source list with the `mode`+`ad_hoc` filter and the ad-hoc badge.
+- `IngestionSourceList` — the source list with the `mode` filter (wrappers are hidden by the backend).
 - `RecipeYamlEditor` — YAML recipe view/editor; read-only for `DATAHUB_MANAGED`, secrets masked.
 - `SourceDatasetTable` — the source→dataset mapping table.
 - `IngestionRunPanel` — dry-run / run trigger with status (`ACTIVE_CUSTOM_MANAGED` only).
@@ -118,8 +121,9 @@ click-to-expand into a pretty-printed JSON dialog. The page is read-only.
   read-only authoring guide (kubectl recipe, namespace, `dataspoke-source-cred-` prefix,
   `${name__key}` syntax) shown in the source editor.
 - `IngestionEventTable` — shared event table bound to `…/event`, paired with a `datetime`
-  [RangePicker](FRONTEND_BASIC.md#shared-component-notes) for the `from`/`to` window; its `detail`
-  cell truncates the JSON to ~30 characters and is click-to-expand into a pretty-printed JSON dialog.
+  [RangePicker](FRONTEND_BASIC.md#shared-component-notes) for the `from`/`to` window; renders a
+  "wrapper" tag on rows whose `wrapper` flag is set, and its `detail` cell truncates the JSON to ~30
+  characters and is click-to-expand into a pretty-printed JSON dialog.
 - `UnmanagedDatasetTable` — the unmanaged-bucket list.
 
 Every paged table on these pages — `IngestionSourceList`, `SourceDatasetTable`,

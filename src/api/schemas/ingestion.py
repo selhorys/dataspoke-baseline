@@ -166,9 +166,6 @@ class IngestionSourceResponse(SingleResponse):
         default=None,
         description="DataHub IngestionSource URN for DATAHUB_MANAGED sources; null otherwise",
     )
-    ad_hoc: bool = Field(
-        description="True for CLI/ad-hoc DATAHUB_MANAGED sources, classified at sync time"
-    )
     created_at: datetime = Field(description="UTC timestamp when this source was created")
     updated_at: datetime = Field(description="UTC timestamp of the most recent update")
 

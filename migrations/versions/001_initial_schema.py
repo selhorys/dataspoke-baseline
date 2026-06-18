@@ -147,10 +147,21 @@ def upgrade() -> None:
         sa.Column("schedule", sa.Text(), nullable=True),
         sa.Column("schedule_tier", sa.Text(), nullable=True),
         sa.Column("datahub_source_urn", sa.Text(), nullable=True),
-        sa.Column("ad_hoc", sa.Boolean(), nullable=False, server_default="false"),
+        sa.Column(
+            "parent_source_id",
+            UUID(as_uuid=True),
+            sa.ForeignKey(f"{SCHEMA}.ingestion_source.id", ondelete="CASCADE"),
+            nullable=True,
+        ),
         sa.Column("status", sa.Text(), nullable=False, server_default="OK"),
         sa.Column("created_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
         sa.Column("updated_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
+        schema=SCHEMA,
+    )
+    op.create_index(
+        "ix_ingestion_source_parent",
+        "ingestion_source",
+        ["parent_source_id"],
         schema=SCHEMA,
     )
 

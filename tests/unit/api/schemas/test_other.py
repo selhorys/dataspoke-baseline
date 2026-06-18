@@ -189,6 +189,46 @@ class TestEventSchemas:
         )
         assert resp.detail == {}
 
+    def test_event_response_wrapper_defaults_false(self) -> None:
+        """The derived ``wrapper`` flag defaults to False (own-source event).
+
+        Spec: API.md §Ingestion — GET /sources/{id}/event rows carry a derived
+              ``wrapper: bool``; absent/own-source events are False.
+        Spec: feature/BACKEND_SCHEMA.md §events — wrapper is computed at read time,
+              defaulting False for an event recorded on the source itself.
+        """
+        now = datetime.now(tz=UTC)
+        resp = EventResponse(
+            id="e1",
+            entity_type="ingestion_source",
+            entity_id="src-1",
+            event_type="INGESTION.COMPLETE",
+            status="success",
+            occurred_at=now,
+        )
+        assert resp.wrapper is False
+
+    def test_event_response_wrapper_true_for_linked_wrapper(self) -> None:
+        """``wrapper=True`` round-trips for an event mirrored from a linked wrapper.
+
+        Spec: API.md §Ingestion — GET /sources/{id}/event includes linked-wrapper
+              events carrying ``wrapper: true``.
+        Spec: feature/BACKEND.md §Sync sweep step 4 — wrapper runs surface on the
+              regular source with the derived wrapper flag set.
+        """
+        now = datetime.now(tz=UTC)
+        resp = EventResponse(
+            id="e2",
+            entity_type="ingestion_source",
+            entity_id="wrapper-1",
+            event_type="INGESTION.COMPLETE",
+            status="success",
+            occurred_at=now,
+            wrapper=True,
+        )
+        assert resp.wrapper is True
+        assert resp.model_dump()["wrapper"] is True
+
     def test_event_list_response(self) -> None:
         resp = EventListResponse()
         assert resp.events == []

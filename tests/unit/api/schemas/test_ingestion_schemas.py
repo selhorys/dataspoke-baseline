@@ -242,7 +242,6 @@ class TestIngestionSourceResponse:
             recipe={"source": {"type": "postgres", "config": {}}},
             platform="postgres",
             status="OK",
-            ad_hoc=False,
             created_at=now,
             updated_at=now,
         )
@@ -270,6 +269,25 @@ class TestIngestionSourceResponse:
         """
         resp = self._make_response()
         assert not hasattr(resp, "is_enabled")
+
+    def test_has_no_ad_hoc(self) -> None:
+        """Response must NOT carry ad_hoc — wrapper-ness is internal plumbing.
+
+        DataHub CLI wrapper sources are hidden from the list entirely (resolved via
+        the internal parent_source_id link), so there is no user-facing ad_hoc
+        classifier on the wire.
+        Spec: API.md §Ingestion — DataHub CLI wrapper sources are internal and never
+              listed; no ad_hoc filter/field.
+        Spec: BACKEND_SCHEMA.md §ingestion_source — parent_source_id is internal,
+              never exposed; the ad_hoc column is gone.
+        """
+        resp = self._make_response()
+        assert not hasattr(resp, "ad_hoc"), (
+            "IngestionSourceResponse must not expose ad_hoc (removed; wrapper-ness "
+            "is internal via parent_source_id). "
+            "Spec: API.md §Ingestion — no ad_hoc field."
+        )
+        assert "ad_hoc" not in resp.model_dump()
 
     def test_has_recipe_intact(self) -> None:
         """Response carries recipe verbatim (${name__key} refs as-is).
