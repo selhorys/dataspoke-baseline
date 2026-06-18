@@ -36,11 +36,9 @@ import {
 } from "@/lib/ingestion-mode-variant";
 import { eventStatusVariant } from "@/lib/event-status-variant";
 import { useDisplayTz } from "@/lib/preferences/timezone";
+import { Pagination, DEFAULT_PAGE_SIZE } from "@/components/pagination";
 import { toast } from "@/components/ui/use-toast";
 import type { IngestionSourceBody } from "@/types/ingestion";
-
-const DATASET_PAGE_SIZE = 25;
-const EVENT_PAGE_SIZE = 20;
 
 export default function IngestionSourceDetailPage({
   params,
@@ -54,7 +52,9 @@ export default function IngestionSourceDetailPage({
   const [isEditing, setIsEditing] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [datasetOffset, setDatasetOffset] = useState(0);
+  const [datasetLimit, setDatasetLimit] = useState(DEFAULT_PAGE_SIZE);
   const [eventOffset, setEventOffset] = useState(0);
+  const [eventLimit, setEventLimit] = useState(DEFAULT_PAGE_SIZE);
   // Persisted selection; resolving via useMemo keeps the events query key
   // stable until the selection changes.
   const tz = useDisplayTz();
@@ -67,12 +67,12 @@ export default function IngestionSourceDetailPage({
 
   const { data: datasets } = useIngestionSourceDatasets(id, {
     offset: datasetOffset,
-    limit: DATASET_PAGE_SIZE,
+    limit: datasetLimit,
   });
 
   const { data: events } = useIngestionSourceEvents(id, {
     offset: eventOffset,
-    limit: EVENT_PAGE_SIZE,
+    limit: eventLimit,
     from: range.from,
     to: range.to,
   });
@@ -218,33 +218,16 @@ export default function IngestionSourceDetailPage({
       </section>
 
       {/* 2. Datasets */}
-      <section className="rounded-lg border p-5">
-        <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-sm font-medium">Datasets</h2>
-          {datasets && datasets.total_count > DATASET_PAGE_SIZE && (
-            <div className="flex items-center gap-2 text-sm">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() =>
-                  setDatasetOffset(Math.max(0, datasetOffset - DATASET_PAGE_SIZE))
-                }
-                disabled={datasetOffset === 0}
-              >
-                Previous
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setDatasetOffset(datasetOffset + DATASET_PAGE_SIZE)}
-                disabled={datasetOffset + DATASET_PAGE_SIZE >= datasets.total_count}
-              >
-                Next
-              </Button>
-            </div>
-          )}
-        </div>
+      <section className="space-y-3 rounded-lg border p-5">
+        <h2 className="text-sm font-medium">Datasets</h2>
         <SourceDatasetTable rows={datasets?.datasets ?? []} />
+        <Pagination
+          offset={datasetOffset}
+          limit={datasetLimit}
+          total={datasets?.total_count ?? 0}
+          onOffset={setDatasetOffset}
+          onLimit={setDatasetLimit}
+        />
       </section>
 
       {/* 3. Run */}
@@ -270,11 +253,11 @@ export default function IngestionSourceDetailPage({
           tz={tz}
           page={{
             offset: eventOffset,
-            limit: EVENT_PAGE_SIZE,
+            limit: eventLimit,
             totalCount: events?.total_count ?? 0,
           }}
-          onPrev={() => setEventOffset(Math.max(0, eventOffset - EVENT_PAGE_SIZE))}
-          onNext={() => setEventOffset(eventOffset + EVENT_PAGE_SIZE)}
+          onOffset={setEventOffset}
+          onLimit={setEventLimit}
         />
       </section>
 

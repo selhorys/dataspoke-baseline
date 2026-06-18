@@ -9,20 +9,20 @@ import { IngestionSourceList } from "@/components/ingestion/ingestion-source-lis
 import { useIngestionSources } from "@/lib/api/ingestion";
 import { useMe } from "@/lib/auth/use-me";
 import { filterKeyToQuery } from "@/lib/ingestion-mode-variant";
+import { DEFAULT_PAGE_SIZE } from "@/components/pagination";
 import type { IngestionFilterKey } from "@/types/ingestion";
-
-const PAGE_SIZE = 20;
 
 export default function IngestionConfPage() {
   const { canWrite } = useMe();
   const [offset, setOffset] = useState(0);
+  const [limit, setLimit] = useState(DEFAULT_PAGE_SIZE);
   const [filterKey, setFilterKey] = useState<IngestionFilterKey>("ALL");
 
   const { mode, adHoc } = filterKeyToQuery(filterKey);
 
   const { data, isLoading, error } = useIngestionSources({
     offset,
-    limit: PAGE_SIZE,
+    limit,
     mode,
     adHoc,
   });
@@ -57,11 +57,11 @@ export default function IngestionConfPage() {
         }}
         page={{
           offset,
-          limit: PAGE_SIZE,
+          limit,
           totalCount: data?.total_count ?? 0,
         }}
-        onPrev={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
-        onNext={() => setOffset(offset + PAGE_SIZE)}
+        onOffset={setOffset}
+        onLimit={setLimit}
       />
     </div>
   );

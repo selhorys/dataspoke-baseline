@@ -132,6 +132,7 @@ export function useValidationResults(
 // ── Event log ──────────────────────────────────────────────────────────────────
 
 interface ValidationEventParams {
+  offset?: number;
   limit?: number;
   from?: string;
   to?: string;
@@ -139,7 +140,8 @@ interface ValidationEventParams {
 
 function buildEventUrl(datasetUrn: string, params: ValidationEventParams): string {
   const sp = new URLSearchParams();
-  sp.set("limit", String(params.limit ?? 5));
+  if (params.offset !== undefined) sp.set("offset", String(params.offset));
+  sp.set("limit", String(params.limit ?? 20));
   if (params.from) sp.set("from", params.from);
   if (params.to) sp.set("to", params.to);
   sp.set("sort", "occurred_at_desc");

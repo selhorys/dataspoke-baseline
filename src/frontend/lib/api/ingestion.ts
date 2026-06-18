@@ -314,6 +314,7 @@ export function useIngestionReverseLookup(datasetUrn: string) {
 }
 
 interface DatasetEventParams {
+  offset?: number;
   limit?: number;
   from?: string;
   to?: string;
@@ -321,7 +322,8 @@ interface DatasetEventParams {
 
 function buildDatasetEventUrl(datasetUrn: string, params: DatasetEventParams): string {
   const sp = new URLSearchParams();
-  sp.set("limit", String(params.limit ?? 10));
+  if (params.offset !== undefined) sp.set("offset", String(params.offset));
+  sp.set("limit", String(params.limit ?? 20));
   if (params.from) sp.set("from", params.from);
   if (params.to) sp.set("to", params.to);
   sp.set("sort", "occurred_at_desc");

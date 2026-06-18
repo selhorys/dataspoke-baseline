@@ -28,10 +28,9 @@ import {
   RANGE_KEYS,
 } from "@/lib/hooks/use-range-selection";
 import { useDisplayTz } from "@/lib/preferences/timezone";
+import { DEFAULT_PAGE_SIZE } from "@/components/pagination";
 import type { DatasetFilter } from "@/types/governance";
 import type { MetagenConfPutBody, MetagenRunBody } from "@/types/metagen";
-
-const EVENT_PAGE_SIZE = 20;
 
 export default function MetagenConfDetailPage({
   params,
@@ -48,6 +47,7 @@ export default function MetagenConfDetailPage({
   const [runDialogOpen, setRunDialogOpen] = useState(false);
   const [datasetFilter, setDatasetFilter] = useState<DatasetFilter>({});
   const [eventOffset, setEventOffset] = useState(0);
+  const [eventLimit, setEventLimit] = useState(DEFAULT_PAGE_SIZE);
 
   const tz = useDisplayTz();
   const { selection: sel, setSelection: setSel } = usePersistedRangeState(
@@ -63,7 +63,7 @@ export default function MetagenConfDetailPage({
     from: range.from,
     to: range.to,
     offset: eventOffset,
-    limit: EVENT_PAGE_SIZE,
+    limit: eventLimit,
   });
 
   // Sync the dataset_filter editor when the conf loads.
@@ -242,11 +242,11 @@ export default function MetagenConfDetailPage({
           tz={tz}
           page={{
             offset: eventOffset,
-            limit: EVENT_PAGE_SIZE,
+            limit: eventLimit,
             totalCount: events?.total_count ?? 0,
           }}
-          onPrev={() => setEventOffset(Math.max(0, eventOffset - EVENT_PAGE_SIZE))}
-          onNext={() => setEventOffset(eventOffset + EVENT_PAGE_SIZE)}
+          onOffset={setEventOffset}
+          onLimit={setEventLimit}
         />
       </section>
 

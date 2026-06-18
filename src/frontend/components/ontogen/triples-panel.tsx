@@ -1,17 +1,18 @@
 "use client";
 
 /**
- * TriplesPanel — compact table of ontology triples with a status filter and
- * gated inline review. GET /spoke/ontogen/result/triple
+ * TriplesPanel — uniform compact table of ontology triples with an approval
+ * filter, a created-at sort control, evidence modal, gated reason-confirm
+ * review, and the shared Pagination control. GET /spoke/ontogen/result/triple
  *
- * Triple approve is gated: disabled with a hint when the subject node, predicate
- * edge, or object node is not yet status='approved'. This mirrors the backend's
- * 422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING guard.
+ * Triple approve is gated: disabled with a hover hint when the subject node,
+ * predicate edge, or object node is not yet status='approved'. This mirrors the
+ * backend's 422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING guard. The node/edge lookups
+ * for gating are fetched in bulk (not user-paged).
  */
 
 import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
@@ -21,15 +22,20 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Pagination, DEFAULT_PAGE_SIZE } from "@/components/pagination";
 import { ReviewRow } from "@/components/ontogen/review-row";
-import { EvidenceDisclosure } from "@/components/ontogen/evidence-disclosure";
+import { EvidenceDialog } from "@/components/ontogen/evidence-dialog";
 import { ApprovalFilter } from "@/components/ontogen/approval-filter";
+import { SortControl, type OntogenSortMode } from "@/components/ontogen/sort-control";
 import { useOntogenEdges, useOntogenNodes, useOntogenTriples } from "@/lib/api/ontogen";
 import { ontogenStatusLabel, ontogenStatusVariant } from "@/lib/ontogen-status-variant";
 import { tripleApprovalGate, buildNodesById, buildEdgesById } from "@/lib/ontogen-triple-gate";
 import { filterByApproval, type ApprovalFilterMode } from "@/lib/ontogen-filter";
+import { formatDateTime } from "@/lib/format-time";
+import { useDisplayTz } from "@/lib/preferences/timezone";
 
-const PAGE_SIZE = 100;
+/** Bulk fetch size for the node/edge gating lookups (not user-paged). */
+const GATE_LOOKUP_LIMIT = 1000;
 
 interface TriplesPanelProps {
   canWrite: boolean;
@@ -37,57 +43,65 @@ interface TriplesPanelProps {
 
 export function TriplesPanel({ canWrite }: TriplesPanelProps) {
   const [offset, setOffset] = useState(0);
+  const [limit, setLimit] = useState(DEFAULT_PAGE_SIZE);
   const [mode, setMode] = useState<ApprovalFilterMode>("all");
+  const [sort, setSort] = useState<OntogenSortMode>("created_at_desc");
+  const tz = useDisplayTz();
 
   // Fetch triples (paginated) plus ALL nodes and edges for gating lookup.
-  const triplesQuery = useOntogenTriples({ offset, limit: PAGE_SIZE });
-  const nodesQuery = useOntogenNodes({ limit: PAGE_SIZE });
-  const edgesQuery = useOntogenEdges({ limit: PAGE_SIZE });
+  const triplesQuery = useOntogenTriples({ offset, limit, sort });
+  const nodesQuery = useOntogenNodes({ limit: GATE_LOOKUP_LIMIT });
+  const edgesQuery = useOntogenEdges({ limit: GATE_LOOKUP_LIMIT });
 
   const total = triplesQuery.data?.total_count ?? 0;
   const triples = filterByApproval(triplesQuery.data?.triples ?? [], mode);
-  const totalPages = Math.ceil(total / PAGE_SIZE);
-  const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
 
   const nodesById = buildNodesById(nodesQuery.data?.nodes ?? []);
   const edgesById = buildEdgesById(edgesQuery.data?.edges ?? []);
 
   const isLoading = triplesQuery.isLoading || nodesQuery.isLoading || edgesQuery.isLoading;
 
-  if (isLoading) {
-    return (
-      <div className="space-y-2">
-        {Array.from({ length: 5 }).map((_, i) => (
-          <Skeleton key={i} className="h-12 w-full" />
-        ))}
-      </div>
-    );
-  }
-
-  if (triplesQuery.error) {
-    return (
-      <p className="text-sm text-destructive">
-        Failed to load triples: {triplesQuery.error.message}
-      </p>
-    );
-  }
-
   return (
     <div className="space-y-3">
-      <div className="flex justify-end">
-        <ApprovalFilter value={mode} onChange={setMode} />
+      <div className="flex flex-wrap items-center justify-end gap-3">
+        <SortControl
+          value={sort}
+          onChange={(s) => {
+            setSort(s);
+            setOffset(0);
+          }}
+        />
+        <ApprovalFilter
+          value={mode}
+          onChange={(m) => {
+            setMode(m);
+            setOffset(0);
+          }}
+        />
       </div>
 
-      {triples.length === 0 ? (
+      {isLoading ? (
+        <div className="space-y-2">
+          {Array.from({ length: 5 }).map((_, i) => (
+            <Skeleton key={i} className="h-10 w-full" />
+          ))}
+        </div>
+      ) : triplesQuery.error ? (
+        <p className="text-sm text-destructive">
+          Failed to load triples: {triplesQuery.error.message}
+        </p>
+      ) : triples.length === 0 ? (
         <p className="py-8 text-center text-sm text-muted-foreground">No ontology triples.</p>
       ) : (
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>Triple</TableHead>
-              <TableHead className="w-28">Status</TableHead>
-              <TableHead className="w-16">Conf</TableHead>
-              <TableHead>Actions</TableHead>
+              <TableHead className="text-xs">Title</TableHead>
+              <TableHead className="text-xs">Description</TableHead>
+              <TableHead className="w-28 text-xs">Status</TableHead>
+              <TableHead className="w-32 text-xs">Confidence</TableHead>
+              <TableHead className="w-44 text-xs">Actions</TableHead>
+              <TableHead className="w-36 text-xs">Created At</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -97,27 +111,34 @@ export function TriplesPanel({ canWrite }: TriplesPanelProps) {
               const edgeLabel = edgesById.get(triple.edge_id)?.label ?? triple.edge_id;
               const objectName =
                 nodesById.get(triple.object_node_id)?.name ?? triple.object_node_id;
-              const { canApprove, blockingHint } = tripleApprovalGate(triple, nodesById, edgesById);
+              const { canApprove, blockingHint } = tripleApprovalGate(
+                triple,
+                nodesById,
+                edgesById,
+              );
 
               return (
-                <TableRow key={triple.id} className="align-top">
-                  <TableCell>
-                    <span className="font-mono text-sm">
-                      {subjectName}
-                      <span className="mx-1 text-muted-foreground">--{edgeLabel}--&gt;</span>
-                      {objectName}
-                    </span>
-                    <EvidenceDisclosure kind="triple" id={triple.id} />
+                <TableRow key={triple.id} className="text-xs">
+                  <TableCell className="py-2 font-mono">
+                    {subjectName}
+                    <span className="mx-1 text-muted-foreground">--{edgeLabel}--&gt;</span>
+                    {objectName}
                   </TableCell>
-                  <TableCell>
+                  <TableCell className="py-2 text-muted-foreground">—</TableCell>
+                  <TableCell className="py-2">
                     <Badge variant={ontogenStatusVariant(triple.status)}>
                       {ontogenStatusLabel(triple.status)}
                     </Badge>
                   </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {triple.confidence_score.toFixed(2)}
+                  <TableCell className="py-2">
+                    <div className="flex items-center gap-1">
+                      <span className="text-muted-foreground">
+                        {triple.confidence_score.toFixed(2)}
+                      </span>
+                      <EvidenceDialog kind="triple" id={triple.id} />
+                    </div>
                   </TableCell>
-                  <TableCell>
+                  <TableCell className="py-2">
                     {canWrite && (
                       <ReviewRow
                         id={triple.id}
@@ -128,6 +149,9 @@ export function TriplesPanel({ canWrite }: TriplesPanelProps) {
                       />
                     )}
                   </TableCell>
+                  <TableCell className="whitespace-nowrap py-2 text-muted-foreground">
+                    {formatDateTime(triple.created_at, tz)}
+                  </TableCell>
                 </TableRow>
               );
             })}
@@ -135,31 +159,13 @@ export function TriplesPanel({ canWrite }: TriplesPanelProps) {
         </Table>
       )}
 
-      {totalPages > 1 && (
-        <div className="flex items-center justify-between text-sm">
-          <span className="text-muted-foreground">
-            Page {currentPage} of {totalPages} ({total} total)
-          </span>
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
-              disabled={offset === 0}
-            >
-              Previous
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setOffset(offset + PAGE_SIZE)}
-              disabled={offset + PAGE_SIZE >= total}
-            >
-              Next
-            </Button>
-          </div>
-        </div>
-      )}
+      <Pagination
+        offset={offset}
+        limit={limit}
+        total={total}
+        onOffset={setOffset}
+        onLimit={setLimit}
+      />
     </div>
   );
 }

@@ -11,20 +11,20 @@ import {
 import { useMe } from "@/lib/auth/use-me";
 import { ApiError } from "@/lib/api/client";
 import { useToast } from "@/components/ui/use-toast";
+import { DEFAULT_PAGE_SIZE } from "@/components/pagination";
 import type { MetagenConf, MetagenRunBody } from "@/types/metagen";
-
-const PAGE_SIZE = 20;
 
 export default function MetagenConfListPage() {
   const { canWrite } = useMe();
   const { toast } = useToast();
 
   const [offset, setOffset] = useState(0);
+  const [limit, setLimit] = useState(DEFAULT_PAGE_SIZE);
   const [runConf, setRunConf] = useState<MetagenConf | null>(null);
 
   const { data, isLoading, error } = useMetagenConfList({
     offset,
-    limit: PAGE_SIZE,
+    limit,
   });
 
   // A single run mutation keyed to the conf chosen in the dialog. The dialog
@@ -63,11 +63,11 @@ export default function MetagenConfListPage() {
         runningConfId={runMutation.isPending ? (runConf?.id ?? null) : null}
         page={{
           offset,
-          limit: PAGE_SIZE,
+          limit,
           totalCount: data?.total_count ?? 0,
         }}
-        onPrev={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
-        onNext={() => setOffset(offset + PAGE_SIZE)}
+        onOffset={setOffset}
+        onLimit={setLimit}
       />
 
       <RunDialog

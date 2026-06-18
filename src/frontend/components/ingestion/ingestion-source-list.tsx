@@ -12,7 +12,7 @@
 import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Button } from "@/components/ui/button";
+import { Pagination } from "@/components/pagination";
 import {
   Select,
   SelectContent,
@@ -48,8 +48,8 @@ interface IngestionSourceListProps {
   filterKey: IngestionFilterKey;
   onFilterKeyChange: (key: IngestionFilterKey) => void;
   page: { offset: number; limit: number; totalCount: number };
-  onPrev: () => void;
-  onNext: () => void;
+  onOffset: (offset: number) => void;
+  onLimit: (limit: number) => void;
 }
 
 export function IngestionSourceList({
@@ -58,8 +58,8 @@ export function IngestionSourceList({
   filterKey,
   onFilterKeyChange,
   page,
-  onPrev,
-  onNext,
+  onOffset,
+  onLimit,
 }: IngestionSourceListProps) {
   const ids = sources.map((s) => s.id);
   const counts = useIngestionSourceDatasetCounts(ids);
@@ -71,9 +71,6 @@ export function IngestionSourceList({
     runStatusById[s.id] = latestRuns[i]?.data?.events[0]?.status;
   });
 
-  const totalPages = Math.max(1, Math.ceil(page.totalCount / page.limit));
-  const currentPage = Math.floor(page.offset / page.limit) + 1;
-
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-3">
@@ -81,7 +78,7 @@ export function IngestionSourceList({
           value={filterKey}
           onValueChange={(v) => onFilterKeyChange(v as IngestionFilterKey)}
         >
-          <SelectTrigger className="w-[240px]">
+          <SelectTrigger className="w-[240px]" aria-label="Filter sources by mode">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -186,31 +183,13 @@ export function IngestionSourceList({
         </Table>
       </div>
 
-      {page.totalCount > page.limit && (
-        <div className="flex items-center justify-between text-sm">
-          <span className="text-muted-foreground">
-            Page {currentPage} of {totalPages} ({page.totalCount} total)
-          </span>
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={onPrev}
-              disabled={page.offset === 0}
-            >
-              Previous
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={onNext}
-              disabled={page.offset + page.limit >= page.totalCount}
-            >
-              Next
-            </Button>
-          </div>
-        </div>
-      )}
+      <Pagination
+        offset={page.offset}
+        limit={page.limit}
+        total={page.totalCount}
+        onOffset={onOffset}
+        onLimit={onLimit}
+      />
     </div>
   );
 }

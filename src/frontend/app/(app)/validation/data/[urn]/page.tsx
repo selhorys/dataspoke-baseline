@@ -14,6 +14,7 @@ import {
   RANGE_KEYS,
 } from "@/lib/hooks/use-range-selection";
 import { ConfirmDialog } from "@/components/confirm-dialog";
+import { Pagination, DEFAULT_PAGE_SIZE } from "@/components/pagination";
 import { ValidationConfForm } from "@/components/validation/validation-conf-form";
 import { ValidationScoreChart } from "@/components/validation/validation-score-chart";
 import { ValidationVariablesChart } from "@/components/validation/validation-variables-chart";
@@ -100,6 +101,8 @@ export default function ValidationDetailPage({
 
   const [isEditing, setIsEditing] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [eventOffset, setEventOffset] = useState(0);
+  const [eventLimit, setEventLimit] = useState(DEFAULT_PAGE_SIZE);
   // Range selections are persisted per surface; resolving via useMemo keeps the
   // derived bounds (and thus query keys) stable until the selection changes.
   // The results chart and the event log keep independent ranges.
@@ -132,7 +135,8 @@ export default function ValidationDetailPage({
   });
 
   const { data: eventsData } = useValidationEvents(datasetUrn, {
-    limit: 5,
+    offset: eventOffset,
+    limit: eventLimit,
     from: eventRange.from,
     to: eventRange.to,
   });
@@ -177,6 +181,11 @@ export default function ValidationDetailPage({
   useEffect(() => {
     if (is404) setIsEditing(false);
   }, [is404]);
+
+  // Reset event pagination when the time filter changes.
+  useEffect(() => {
+    setEventOffset(0);
+  }, [eventSel]);
 
   // Latest score for the header.
   const latestScore = resultsData?.results?.[0]?.score ?? null;
@@ -364,10 +373,10 @@ export default function ValidationDetailPage({
         </>
       )}
 
-      {/* event/validation (latest 5) */}
-      <section className="rounded-lg border p-5">
-        <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-sm font-medium">event/validation (latest 5)</h2>
+      {/* event/validation */}
+      <section className="space-y-3 rounded-lg border p-5">
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-medium">event/validation</h2>
           <RangePicker
             value={eventSel}
             onChange={setEventSel}
@@ -401,6 +410,13 @@ export default function ValidationDetailPage({
             ))}
           </ul>
         )}
+        <Pagination
+          offset={eventOffset}
+          limit={eventLimit}
+          total={eventsData?.total_count ?? 0}
+          onOffset={setEventOffset}
+          onLimit={setEventLimit}
+        />
       </section>
 
       {/* Delete confirm dialog */}

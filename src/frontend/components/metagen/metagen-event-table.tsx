@@ -10,8 +10,8 @@
  */
 
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
+import { Pagination } from "@/components/pagination";
 import { RangePicker } from "@/components/range-picker";
 import {
   Table,
@@ -32,8 +32,8 @@ interface MetagenEventTableProps {
   onRangeChange: (value: RangeSelection) => void;
   tz: TzMode;
   page: { offset: number; limit: number; totalCount: number };
-  onPrev: () => void;
-  onNext: () => void;
+  onOffset: (offset: number) => void;
+  onLimit: (limit: number) => void;
 }
 
 export function MetagenEventTable({
@@ -42,12 +42,9 @@ export function MetagenEventTable({
   onRangeChange,
   tz,
   page,
-  onPrev,
-  onNext,
+  onOffset,
+  onLimit,
 }: MetagenEventTableProps) {
-  const totalPages = Math.max(1, Math.ceil(page.totalCount / page.limit));
-  const currentPage = Math.floor(page.offset / page.limit) + 1;
-
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-end gap-3">
@@ -96,31 +93,13 @@ export function MetagenEventTable({
         </div>
       )}
 
-      {page.totalCount > page.limit && (
-        <div className="flex items-center justify-between text-sm">
-          <span className="text-muted-foreground">
-            Page {currentPage} of {totalPages} ({page.totalCount} total)
-          </span>
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={onPrev}
-              disabled={page.offset === 0}
-            >
-              Previous
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={onNext}
-              disabled={page.offset + page.limit >= page.totalCount}
-            >
-              Next
-            </Button>
-          </div>
-        </div>
-      )}
+      <Pagination
+        offset={page.offset}
+        limit={page.limit}
+        total={page.totalCount}
+        onOffset={onOffset}
+        onLimit={onLimit}
+      />
     </div>
   );
 }

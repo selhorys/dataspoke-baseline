@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ConfirmDialog } from "@/components/confirm-dialog";
+import { Pagination, DEFAULT_PAGE_SIZE } from "@/components/pagination";
 import { BoundaryForm } from "@/components/metagen/boundary-form";
 import { ItemCard } from "@/components/metagen/item-card";
 import { EventsSection } from "@/components/metagen/events-section";
@@ -38,6 +39,8 @@ export default function MetagenDatasetPage({
 
   const [editingBoundary, setEditingBoundary] = useState(false);
   const [deleteBoundaryOpen, setDeleteBoundaryOpen] = useState(false);
+  const [eventOffset, setEventOffset] = useState(0);
+  const [eventLimit, setEventLimit] = useState(DEFAULT_PAGE_SIZE);
 
   // ── Queries ──────────────────────────────────────────────────────────────────
   const {
@@ -47,7 +50,10 @@ export default function MetagenDatasetPage({
 
   const { data: itemsData, isLoading: itemsLoading } = useMetagenItems(datasetUrn);
 
-  const { data: eventsData } = useMetagenDatasetEvents(datasetUrn, 10);
+  const { data: eventsData } = useMetagenDatasetEvents(datasetUrn, {
+    offset: eventOffset,
+    limit: eventLimit,
+  });
 
   // ── Mutations ─────────────────────────────────────────────────────────────────
   const upsertBoundary = useUpsertMetagenBoundary(datasetUrn);
@@ -249,8 +255,8 @@ export default function MetagenDatasetPage({
       </section>
 
       {/* ── Per-dataset events ───────────────────────────────────────────────── */}
-      <section className="rounded-lg border p-5">
-        <h2 className="mb-4 text-sm font-medium">event/metagen (latest 10)</h2>
+      <section className="space-y-4 rounded-lg border p-5">
+        <h2 className="text-sm font-medium">event/metagen</h2>
         {!eventsData && <Skeleton className="h-20 w-full" />}
         {eventsData && (
           <EventsSection
@@ -258,6 +264,13 @@ export default function MetagenDatasetPage({
             emptyMessage="No dataset MetaGen events yet."
           />
         )}
+        <Pagination
+          offset={eventOffset}
+          limit={eventLimit}
+          total={eventsData?.total_count ?? 0}
+          onOffset={setEventOffset}
+          onLimit={setEventLimit}
+        />
       </section>
 
       {/* Dialogs */}

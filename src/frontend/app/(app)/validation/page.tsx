@@ -14,17 +14,16 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Button } from "@/components/ui/button";
 import { useValidationList } from "@/lib/api/validation";
 import { ErrorState } from "@/components/ui/error-state";
+import { Pagination, DEFAULT_PAGE_SIZE } from "@/components/pagination";
 import { formatDateTime } from "@/lib/format-time";
 import { useDisplayTz } from "@/lib/preferences/timezone";
 import { scoreBadgeVariant, scoreLabel } from "@/lib/validation-score";
 
-const PAGE_SIZE = 20;
-
 export default function ValidationListPage() {
   const [offset, setOffset] = useState(0);
+  const [limit, setLimit] = useState(DEFAULT_PAGE_SIZE);
   const [showDeleted, setShowDeleted] = useState(false);
   const tz = useDisplayTz();
 
@@ -32,12 +31,9 @@ export default function ValidationListPage() {
   // the param so the backend returns both active and removed slots.
   const { data, isLoading, error } = useValidationList({
     offset,
-    limit: PAGE_SIZE,
+    limit,
     removed: showDeleted ? undefined : false,
   });
-
-  const totalPages = data ? Math.ceil(data.total_count / PAGE_SIZE) : 0;
-  const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
 
   return (
     <div className="space-y-4">
@@ -142,31 +138,13 @@ export default function ValidationListPage() {
         </Table>
       </div>
 
-      {totalPages > 1 && (
-        <div className="flex items-center justify-between text-sm">
-          <span className="text-muted-foreground">
-            Page {currentPage} of {totalPages} ({data?.total_count ?? 0} total)
-          </span>
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
-              disabled={offset === 0}
-            >
-              Previous
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setOffset(offset + PAGE_SIZE)}
-              disabled={!data || offset + PAGE_SIZE >= data.total_count}
-            >
-              Next
-            </Button>
-          </div>
-        </div>
-      )}
+      <Pagination
+        offset={offset}
+        limit={limit}
+        total={data?.total_count ?? 0}
+        onOffset={setOffset}
+        onLimit={setLimit}
+      />
     </div>
   );
 }

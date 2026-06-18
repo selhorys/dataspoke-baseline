@@ -1,12 +1,13 @@
 "use client";
 
-import { use, useMemo } from "react";
+import { use, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ErrorState } from "@/components/ui/error-state";
+import { Pagination, DEFAULT_PAGE_SIZE } from "@/components/pagination";
 import { RangePicker } from "@/components/range-picker";
 import { resolveRange } from "@/lib/range";
 import {
@@ -36,6 +37,8 @@ export default function IngestionDatasetDetailPage({
   // Persisted selection; resolving via useMemo keeps the events query key
   // stable until the selection changes.
   const tz = useDisplayTz();
+  const [eventOffset, setEventOffset] = useState(0);
+  const [eventLimit, setEventLimit] = useState(DEFAULT_PAGE_SIZE);
   const { selection: eventSel, setSelection: setEventSel } =
     usePersistedRangeState(RANGE_KEYS.ingestionDatasetEvents);
   const eventRange = useMemo(
@@ -43,13 +46,19 @@ export default function IngestionDatasetDetailPage({
     [eventSel, tz],
   );
 
+  // Reset event pagination when the time filter changes.
+  useEffect(() => {
+    setEventOffset(0);
+  }, [eventSel]);
+
   const {
     data: lookup,
     isLoading,
     error,
   } = useIngestionReverseLookup(datasetUrn);
   const { data: events } = useIngestionDatasetEvents(datasetUrn, {
-    limit: 10,
+    offset: eventOffset,
+    limit: eventLimit,
     from: eventRange.from,
     to: eventRange.to,
   });
@@ -156,9 +165,9 @@ export default function IngestionDatasetDetailPage({
       </section>
 
       {/* Events panel */}
-      <section className="rounded-lg border p-5">
-        <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-sm font-medium">event/ingestion (latest 10)</h2>
+      <section className="space-y-3 rounded-lg border p-5">
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-medium">event/ingestion</h2>
           <RangePicker
             value={eventSel}
             onChange={setEventSel}
@@ -192,6 +201,13 @@ export default function IngestionDatasetDetailPage({
             ))}
           </ul>
         )}
+        <Pagination
+          offset={eventOffset}
+          limit={eventLimit}
+          total={events?.total_count ?? 0}
+          onOffset={setEventOffset}
+          onLimit={setEventLimit}
+        />
       </section>
     </div>
   );

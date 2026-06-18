@@ -1,13 +1,13 @@
 "use client";
 
 /**
- * NodesPanel — compact table of ontology nodes with a status filter and inline
- * status-adaptive review controls. GET /spoke/ontogen/result/node
+ * NodesPanel — uniform compact table of ontology nodes with an approval filter,
+ * a created-at sort control, evidence modal, reason-confirm review, and the
+ * shared Pagination control. GET /spoke/ontogen/result/node
  */
 
 import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
@@ -17,14 +17,16 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Pagination, DEFAULT_PAGE_SIZE } from "@/components/pagination";
 import { ReviewRow } from "@/components/ontogen/review-row";
-import { EvidenceDisclosure } from "@/components/ontogen/evidence-disclosure";
+import { EvidenceDialog } from "@/components/ontogen/evidence-dialog";
 import { ApprovalFilter } from "@/components/ontogen/approval-filter";
+import { SortControl, type OntogenSortMode } from "@/components/ontogen/sort-control";
 import { useOntogenNodes } from "@/lib/api/ontogen";
 import { ontogenStatusLabel, ontogenStatusVariant } from "@/lib/ontogen-status-variant";
 import { filterByApproval, type ApprovalFilterMode } from "@/lib/ontogen-filter";
-
-const PAGE_SIZE = 100;
+import { formatDateTime } from "@/lib/format-time";
+import { useDisplayTz } from "@/lib/preferences/timezone";
 
 interface NodesPanelProps {
   canWrite: boolean;
@@ -32,66 +34,81 @@ interface NodesPanelProps {
 
 export function NodesPanel({ canWrite }: NodesPanelProps) {
   const [offset, setOffset] = useState(0);
+  const [limit, setLimit] = useState(DEFAULT_PAGE_SIZE);
   const [mode, setMode] = useState<ApprovalFilterMode>("all");
-  const { data, isLoading, error } = useOntogenNodes({ offset, limit: PAGE_SIZE });
+  const [sort, setSort] = useState<OntogenSortMode>("created_at_desc");
+  const tz = useDisplayTz();
+  const { data, isLoading, error } = useOntogenNodes({ offset, limit, sort });
 
   const total = data?.total_count ?? 0;
   const nodes = filterByApproval(data?.nodes ?? [], mode);
-  const totalPages = Math.ceil(total / PAGE_SIZE);
-  const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
-
-  if (isLoading) {
-    return (
-      <div className="space-y-2">
-        {Array.from({ length: 5 }).map((_, i) => (
-          <Skeleton key={i} className="h-12 w-full" />
-        ))}
-      </div>
-    );
-  }
-
-  if (error) {
-    return <p className="text-sm text-destructive">Failed to load nodes: {error.message}</p>;
-  }
 
   return (
     <div className="space-y-3">
-      <div className="flex justify-end">
-        <ApprovalFilter value={mode} onChange={setMode} />
+      <div className="flex flex-wrap items-center justify-end gap-3">
+        <SortControl
+          value={sort}
+          onChange={(s) => {
+            setSort(s);
+            setOffset(0);
+          }}
+        />
+        <ApprovalFilter
+          value={mode}
+          onChange={(m) => {
+            setMode(m);
+            setOffset(0);
+          }}
+        />
       </div>
 
-      {nodes.length === 0 ? (
+      {isLoading ? (
+        <div className="space-y-2">
+          {Array.from({ length: 5 }).map((_, i) => (
+            <Skeleton key={i} className="h-10 w-full" />
+          ))}
+        </div>
+      ) : error ? (
+        <p className="text-sm text-destructive">Failed to load nodes: {error.message}</p>
+      ) : nodes.length === 0 ? (
         <p className="py-8 text-center text-sm text-muted-foreground">No ontology nodes.</p>
       ) : (
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>Name</TableHead>
-              <TableHead className="w-28">Status</TableHead>
-              <TableHead className="w-16">Conf</TableHead>
-              <TableHead>Actions</TableHead>
+              <TableHead className="text-xs">Title</TableHead>
+              <TableHead className="text-xs">Description</TableHead>
+              <TableHead className="w-28 text-xs">Status</TableHead>
+              <TableHead className="w-32 text-xs">Confidence</TableHead>
+              <TableHead className="w-44 text-xs">Actions</TableHead>
+              <TableHead className="w-36 text-xs">Created At</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {nodes.map((node) => (
-              <TableRow key={node.id} className="align-top">
-                <TableCell>
-                  <div className="font-semibold">{node.name}</div>
-                  {node.description && (
-                    <p className="mt-0.5 text-xs text-muted-foreground">{node.description}</p>
-                  )}
-                  <EvidenceDisclosure kind="node" id={node.id} />
+              <TableRow key={node.id} className="text-xs">
+                <TableCell className="py-2 font-medium">{node.name}</TableCell>
+                <TableCell className="max-w-[280px] truncate py-2 text-muted-foreground">
+                  {node.description || "—"}
                 </TableCell>
-                <TableCell>
+                <TableCell className="py-2">
                   <Badge variant={ontogenStatusVariant(node.status)}>
                     {ontogenStatusLabel(node.status)}
                   </Badge>
                 </TableCell>
-                <TableCell className="text-xs text-muted-foreground">
-                  {node.confidence_score.toFixed(2)}
+                <TableCell className="py-2">
+                  <div className="flex items-center gap-1">
+                    <span className="text-muted-foreground">
+                      {node.confidence_score.toFixed(2)}
+                    </span>
+                    <EvidenceDialog kind="node" id={node.id} />
+                  </div>
                 </TableCell>
-                <TableCell>
+                <TableCell className="py-2">
                   {canWrite && <ReviewRow id={node.id} kind="node" status={node.status} />}
+                </TableCell>
+                <TableCell className="whitespace-nowrap py-2 text-muted-foreground">
+                  {formatDateTime(node.created_at, tz)}
                 </TableCell>
               </TableRow>
             ))}
@@ -99,31 +116,13 @@ export function NodesPanel({ canWrite }: NodesPanelProps) {
         </Table>
       )}
 
-      {totalPages > 1 && (
-        <div className="flex items-center justify-between text-sm">
-          <span className="text-muted-foreground">
-            Page {currentPage} of {totalPages} ({total} total)
-          </span>
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
-              disabled={offset === 0}
-            >
-              Previous
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setOffset(offset + PAGE_SIZE)}
-              disabled={offset + PAGE_SIZE >= total}
-            >
-              Next
-            </Button>
-          </div>
-        </div>
-      )}
+      <Pagination
+        offset={offset}
+        limit={limit}
+        total={total}
+        onOffset={setOffset}
+        onLimit={setLimit}
+      />
     </div>
   );
 }

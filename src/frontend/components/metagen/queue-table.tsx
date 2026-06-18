@@ -13,7 +13,6 @@
 import { useState } from "react";
 import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import {
   Select,
   SelectContent,
@@ -23,6 +22,7 @@ import {
 } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Pagination, DEFAULT_PAGE_SIZE } from "@/components/pagination";
 import { useMetagenQueue } from "@/lib/api/metagen";
 import type { MetagenConf } from "@/types/metagen";
 
@@ -46,7 +46,7 @@ export function QueueTable({ confs }: QueueTableProps) {
   const [statusFilter, setStatusFilter] = useState("");
   const [confIdFilter, setConfIdFilter] = useState("");
   const [offset, setOffset] = useState(0);
-  const limit = 20;
+  const [limit, setLimit] = useState(DEFAULT_PAGE_SIZE);
 
   const { data, isLoading } = useMetagenQueue({
     dataset_urn: datasetUrnFilter || undefined,
@@ -58,8 +58,6 @@ export function QueueTable({ confs }: QueueTableProps) {
   });
 
   const total = data?.total_count ?? 0;
-  const hasNext = offset + limit < total;
-  const hasPrev = offset > 0;
 
   return (
     <div className="space-y-4">
@@ -197,33 +195,13 @@ export function QueueTable({ confs }: QueueTableProps) {
       )}
 
       {/* Pagination */}
-      {total > limit && (
-        <div className="flex items-center justify-between text-xs text-muted-foreground">
-          <span>
-            {offset + 1}–{Math.min(offset + limit, total)} of {total}
-          </span>
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-7 text-xs"
-              onClick={() => setOffset((o) => Math.max(0, o - limit))}
-              disabled={!hasPrev}
-            >
-              Prev
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-7 text-xs"
-              onClick={() => setOffset((o) => o + limit)}
-              disabled={!hasNext}
-            >
-              Next
-            </Button>
-          </div>
-        </div>
-      )}
+      <Pagination
+        offset={offset}
+        limit={limit}
+        total={total}
+        onOffset={setOffset}
+        onLimit={setLimit}
+      />
     </div>
   );
 }

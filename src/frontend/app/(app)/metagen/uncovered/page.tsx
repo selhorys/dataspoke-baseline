@@ -1,27 +1,24 @@
 "use client";
 
 import { useState } from "react";
-import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ErrorState } from "@/components/ui/error-state";
+import { Pagination, DEFAULT_PAGE_SIZE } from "@/components/pagination";
 import { MetagenUncoveredTable } from "@/components/metagen/uncovered-table";
 import { useMetagenUncovered } from "@/lib/api/metagen";
 
-const PAGE_SIZE = 50;
-
 export default function MetagenUncoveredPage() {
   const [offset, setOffset] = useState(0);
+  const [limit, setLimit] = useState(DEFAULT_PAGE_SIZE);
   const [includeDisallowed, setIncludeDisallowed] = useState(false);
 
   const { data, isLoading, error } = useMetagenUncovered(includeDisallowed, {
     offset,
-    limit: PAGE_SIZE,
+    limit,
   });
 
   const totalCount = data?.total_count ?? 0;
-  const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
-  const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
 
   return (
     <div className="space-y-4">
@@ -62,31 +59,13 @@ export default function MetagenUncoveredPage() {
         <MetagenUncoveredTable rows={data?.datasets ?? []} />
       )}
 
-      {totalCount > PAGE_SIZE && (
-        <div className="flex items-center justify-between text-sm">
-          <span className="text-muted-foreground">
-            Page {currentPage} of {totalPages} ({totalCount} total)
-          </span>
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
-              disabled={offset === 0}
-            >
-              Previous
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setOffset(offset + PAGE_SIZE)}
-              disabled={offset + PAGE_SIZE >= totalCount}
-            >
-              Next
-            </Button>
-          </div>
-        </div>
-      )}
+      <Pagination
+        offset={offset}
+        limit={limit}
+        total={totalCount}
+        onOffset={setOffset}
+        onLimit={setLimit}
+      />
     </div>
   );
 }

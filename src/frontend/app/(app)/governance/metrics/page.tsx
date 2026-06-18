@@ -23,32 +23,29 @@ import {
 } from "@/components/ui/table";
 import { useGovernanceMetrics } from "@/lib/api/governance";
 import { ErrorState } from "@/components/ui/error-state";
+import { Pagination, DEFAULT_PAGE_SIZE } from "@/components/pagination";
 import { useMe } from "@/lib/auth/use-me";
 import { formatDate } from "@/lib/format-time";
 import { useDisplayTz } from "@/lib/preferences/timezone";
 import type { MetricType, MetricMode } from "@/types/governance";
-
-const PAGE_SIZE = 20;
 
 export default function GovernanceMetricsPage() {
   const { canWrite } = useMe();
   const tz = useDisplayTz();
 
   const [offset, setOffset] = useState(0);
+  const [limit, setLimit] = useState(DEFAULT_PAGE_SIZE);
   const [filterType, setFilterType] = useState<MetricType | "">("");
   const [filterMode, setFilterMode] = useState<MetricMode | "">("");
   const [filterEnabled, setFilterEnabled] = useState<"" | "true" | "false">("");
 
   const { data, isLoading, error } = useGovernanceMetrics({
     offset,
-    limit: PAGE_SIZE,
+    limit,
     metric_type: filterType || undefined,
     mode: filterMode || undefined,
     is_enabled: filterEnabled === "" ? undefined : filterEnabled === "true",
   });
-
-  const totalPages = data ? Math.ceil(data.total_count / PAGE_SIZE) : 0;
-  const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
 
   return (
     <div className="space-y-4">
@@ -188,31 +185,13 @@ export default function GovernanceMetricsPage() {
       </div>
 
       {/* Pagination */}
-      {totalPages > 1 && (
-        <div className="flex items-center justify-between text-sm">
-          <span className="text-muted-foreground">
-            Page {currentPage} of {totalPages} ({data?.total_count ?? 0} total)
-          </span>
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
-              disabled={offset === 0}
-            >
-              Previous
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setOffset(offset + PAGE_SIZE)}
-              disabled={!data || offset + PAGE_SIZE >= data.total_count}
-            >
-              Next
-            </Button>
-          </div>
-        </div>
-      )}
+      <Pagination
+        offset={offset}
+        limit={limit}
+        total={data?.total_count ?? 0}
+        onOffset={setOffset}
+        onLimit={setLimit}
+      />
     </div>
   );
 }

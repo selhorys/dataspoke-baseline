@@ -13,11 +13,11 @@ import {
   RANGE_KEYS,
 } from "@/lib/hooks/use-range-selection";
 import { useDisplayTz } from "@/lib/preferences/timezone";
-
-const EVENT_PAGE_SIZE = 20;
+import { DEFAULT_PAGE_SIZE } from "@/components/pagination";
 
 export default function MetagenResultPage() {
   const [eventOffset, setEventOffset] = useState(0);
+  const [eventLimit, setEventLimit] = useState(DEFAULT_PAGE_SIZE);
 
   const tz = useDisplayTz();
   const { selection: sel, setSelection: setSel } = usePersistedRangeState(
@@ -32,7 +32,7 @@ export default function MetagenResultPage() {
     from: range.from,
     to: range.to,
     offset: eventOffset,
-    limit: EVENT_PAGE_SIZE,
+    limit: eventLimit,
   });
 
   useEffect(() => {
@@ -57,11 +57,11 @@ export default function MetagenResultPage() {
           tz={tz}
           page={{
             offset: eventOffset,
-            limit: EVENT_PAGE_SIZE,
+            limit: eventLimit,
             totalCount: events?.total_count ?? 0,
           }}
-          onPrev={() => setEventOffset(Math.max(0, eventOffset - EVENT_PAGE_SIZE))}
-          onNext={() => setEventOffset(eventOffset + EVENT_PAGE_SIZE)}
+          onOffset={setEventOffset}
+          onLimit={setEventLimit}
         />
       </section>
     </div>

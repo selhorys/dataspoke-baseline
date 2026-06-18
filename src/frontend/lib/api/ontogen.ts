@@ -147,13 +147,18 @@ interface ResultListParams {
   offset?: number;
   limit?: number;
   status?: string;
+  sort?: string;
 }
 
-function buildResultUrl(kind: "node" | "edge" | "triple", params: ResultListParams): string {
+export function buildResultUrl(
+  kind: "node" | "edge" | "triple",
+  params: ResultListParams,
+): string {
   const sp = new URLSearchParams();
   if (params.offset !== undefined) sp.set("offset", String(params.offset));
   if (params.limit !== undefined) sp.set("limit", String(params.limit));
   if (params.status) sp.set("status", params.status);
+  if (params.sort) sp.set("sort", params.sort);
   const qs = sp.toString();
   return `/spoke/ontogen/result/${kind}${qs ? `?${qs}` : ""}`;
 }

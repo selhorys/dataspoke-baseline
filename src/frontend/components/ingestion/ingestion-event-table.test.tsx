@@ -53,8 +53,8 @@ describe("IngestionEventTable — empty state", () => {
         onRangeChange={noop}
         tz="local"
         page={basePage}
-        onPrev={noop}
-        onNext={noop}
+        onOffset={noop}
+        onLimit={noop}
       />,
     );
     expect(screen.getByText(/no events in this range/i)).toBeTruthy();
@@ -77,8 +77,8 @@ describe("IngestionEventTable — event rows", () => {
         onRangeChange={noop}
         tz="local"
         page={{ offset: 0, limit: 20, totalCount: 2 }}
-        onPrev={noop}
-        onNext={noop}
+        onOffset={noop}
+        onLimit={noop}
       />,
     );
     expect(screen.getByText("success")).toBeTruthy();
@@ -99,8 +99,8 @@ describe("IngestionEventTable — event rows", () => {
         onRangeChange={noop}
         tz="local"
         page={{ offset: 0, limit: 20, totalCount: 1 }}
-        onPrev={noop}
-        onNext={noop}
+        onOffset={noop}
+        onLimit={noop}
       />,
     );
     // The component renders JSON.stringify(e.detail) in the detail cell
@@ -116,8 +116,8 @@ describe("IngestionEventTable — event rows", () => {
         onRangeChange={noop}
         tz="local"
         page={{ offset: 0, limit: 20, totalCount: 1 }}
-        onPrev={noop}
-        onNext={noop}
+        onOffset={noop}
+        onLimit={noop}
       />,
     );
     // When detail is empty the component shows "—"
@@ -137,8 +137,8 @@ describe("IngestionEventTable — range filter", () => {
         onRangeChange={noop}
         tz="local"
         page={basePage}
-        onPrev={noop}
-        onNext={noop}
+        onOffset={noop}
+        onLimit={noop}
       />,
     );
     // The trigger button label is the active preset's label.
@@ -156,8 +156,8 @@ describe("IngestionEventTable — range filter", () => {
         onRangeChange={onRangeChange}
         tz="local"
         page={basePage}
-        onPrev={noop}
-        onNext={noop}
+        onOffset={noop}
+        onLimit={noop}
       />,
     );
     // Open the popover via the trigger, then click a preset (stages only).
@@ -172,26 +172,10 @@ describe("IngestionEventTable — range filter", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 4. Pagination controls
+// 4. Pagination controls (shared <Pagination>)
 // ---------------------------------------------------------------------------
 describe("IngestionEventTable — pagination", () => {
-  it("hides pagination when totalCount <= limit", () => {
-    render(
-      <IngestionEventTable
-        events={[makeEvent()]}
-        range={baseRange}
-        onRangeChange={noop}
-        tz="local"
-        page={{ offset: 0, limit: 20, totalCount: 5 }}
-        onPrev={noop}
-        onNext={noop}
-      />,
-    );
-    expect(screen.queryByRole("button", { name: /previous/i })).toBeNull();
-    expect(screen.queryByRole("button", { name: /next/i })).toBeNull();
-  });
-
-  it("shows page indicator and navigation when totalCount > limit", () => {
+  it("renders the M–N of T label and Prev/Next controls", () => {
     render(
       <IngestionEventTable
         events={[makeEvent()]}
@@ -199,15 +183,14 @@ describe("IngestionEventTable — pagination", () => {
         onRangeChange={noop}
         tz="local"
         page={{ offset: 0, limit: 20, totalCount: 45 }}
-        onPrev={noop}
-        onNext={noop}
+        onOffset={noop}
+        onLimit={noop}
       />,
     );
     expect(screen.getByRole("button", { name: /previous/i })).toBeTruthy();
     expect(screen.getByRole("button", { name: /next/i })).toBeTruthy();
-    // Current page 1 of 3 (ceil(45/20)=3)
-    expect(screen.getByText(/page 1 of 3/i)).toBeTruthy();
-    expect(screen.getByText(/45 total/i)).toBeTruthy();
+    // Standard "1–20 of 45" label from the shared control.
+    expect(screen.getByText(/1.20 of 45/)).toBeTruthy();
   });
 
   it("disables the Previous button on the first page", () => {
@@ -218,8 +201,8 @@ describe("IngestionEventTable — pagination", () => {
         onRangeChange={noop}
         tz="local"
         page={{ offset: 0, limit: 20, totalCount: 45 }}
-        onPrev={noop}
-        onNext={noop}
+        onOffset={noop}
+        onLimit={noop}
       />,
     );
     expect(
@@ -237,8 +220,8 @@ describe("IngestionEventTable — pagination", () => {
         tz="local"
         // offset 40 + limit 20 = 60 >= totalCount 45 → last page
         page={{ offset: 40, limit: 20, totalCount: 45 }}
-        onPrev={noop}
-        onNext={noop}
+        onOffset={noop}
+        onLimit={noop}
       />,
     );
     expect(
@@ -247,9 +230,8 @@ describe("IngestionEventTable — pagination", () => {
     ).toBe(true);
   });
 
-  it("calls onPrev and onNext when the buttons are clicked", () => {
-    const onPrev = vi.fn();
-    const onNext = vi.fn();
+  it("calls onOffset with the new offset when Prev/Next are clicked", () => {
+    const onOffset = vi.fn();
     render(
       <IngestionEventTable
         events={[makeEvent()]}
@@ -257,13 +239,13 @@ describe("IngestionEventTable — pagination", () => {
         onRangeChange={noop}
         tz="local"
         page={{ offset: 20, limit: 20, totalCount: 60 }}
-        onPrev={onPrev}
-        onNext={onNext}
+        onOffset={onOffset}
+        onLimit={noop}
       />,
     );
     fireEvent.click(screen.getByRole("button", { name: /previous/i }));
-    expect(onPrev).toHaveBeenCalledTimes(1);
+    expect(onOffset).toHaveBeenCalledWith(0);
     fireEvent.click(screen.getByRole("button", { name: /next/i }));
-    expect(onNext).toHaveBeenCalledTimes(1);
+    expect(onOffset).toHaveBeenCalledWith(40);
   });
 });

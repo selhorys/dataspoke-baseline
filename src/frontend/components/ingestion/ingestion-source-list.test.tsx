@@ -157,8 +157,8 @@ describe("IngestionSourceList — read-only badge", () => {
         filterKey="ALL"
         onFilterKeyChange={noop}
         page={{ ...basePage, totalCount: 1 }}
-        onPrev={noop}
-        onNext={noop}
+        onOffset={noop}
+        onLimit={noop}
       />,
     );
     expect(screen.getByText("read-only")).toBeTruthy();
@@ -172,8 +172,8 @@ describe("IngestionSourceList — read-only badge", () => {
         filterKey="ALL"
         onFilterKeyChange={noop}
         page={{ ...basePage, totalCount: 1 }}
-        onPrev={noop}
-        onNext={noop}
+        onOffset={noop}
+        onLimit={noop}
       />,
     );
     expect(screen.queryByText("read-only")).toBeNull();
@@ -187,8 +187,8 @@ describe("IngestionSourceList — read-only badge", () => {
         filterKey="ALL"
         onFilterKeyChange={noop}
         page={{ ...basePage, totalCount: 1 }}
-        onPrev={noop}
-        onNext={noop}
+        onOffset={noop}
+        onLimit={noop}
       />,
     );
     expect(screen.queryByText("read-only")).toBeNull();
@@ -208,8 +208,8 @@ describe("IngestionSourceList — filter-key select", () => {
         filterKey="ALL"
         onFilterKeyChange={noop}
         page={basePage}
-        onPrev={noop}
-        onNext={noop}
+        onOffset={noop}
+        onLimit={noop}
       />,
     );
     // The Radix Select renders all SelectItem labels in the DOM (hidden via CSS).
@@ -230,8 +230,8 @@ describe("IngestionSourceList — filter-key select", () => {
         filterKey="ALL"
         onFilterKeyChange={onFilterKeyChange}
         page={basePage}
-        onPrev={noop}
-        onNext={noop}
+        onOffset={noop}
+        onLimit={noop}
       />,
     );
     // Locate the Radix SelectItem by its text and fire a click to invoke onValueChange.
@@ -256,8 +256,8 @@ describe("IngestionSourceList — URN subtitle", () => {
         filterKey="ALL"
         onFilterKeyChange={noop}
         page={{ ...basePage, totalCount: 1 }}
-        onPrev={noop}
-        onNext={noop}
+        onOffset={noop}
+        onLimit={noop}
       />,
     );
     expect(screen.getByText("urn:li:dataHubIngestionSource:x")).toBeTruthy();
@@ -273,8 +273,8 @@ describe("IngestionSourceList — URN subtitle", () => {
         filterKey="ALL"
         onFilterKeyChange={noop}
         page={{ ...basePage, totalCount: 1 }}
-        onPrev={noop}
-        onNext={noop}
+        onOffset={noop}
+        onLimit={noop}
       />,
     );
     expect(screen.queryByText(/^urn:/)).toBeNull();
@@ -289,8 +289,8 @@ describe("IngestionSourceList — URN subtitle", () => {
         filterKey="ALL"
         onFilterKeyChange={noop}
         page={{ ...basePage, totalCount: 1 }}
-        onPrev={noop}
-        onNext={noop}
+        onOffset={noop}
+        onLimit={noop}
       />,
     );
     expect(screen.queryByText(/^urn:/)).toBeNull();
@@ -312,8 +312,8 @@ describe("IngestionSourceList — ad-hoc badge", () => {
         filterKey="ALL"
         onFilterKeyChange={noop}
         page={{ ...basePage, totalCount: 1 }}
-        onPrev={noop}
-        onNext={noop}
+        onOffset={noop}
+        onLimit={noop}
       />,
     );
     expect(screen.getByText("ad-hoc")).toBeTruthy();
@@ -327,8 +327,8 @@ describe("IngestionSourceList — ad-hoc badge", () => {
         filterKey="ALL"
         onFilterKeyChange={noop}
         page={{ ...basePage, totalCount: 1 }}
-        onPrev={noop}
-        onNext={noop}
+        onOffset={noop}
+        onLimit={noop}
       />,
     );
     expect(screen.queryByText("ad-hoc")).toBeNull();
@@ -348,8 +348,8 @@ describe("IngestionSourceList — empty state", () => {
         filterKey="ALL"
         onFilterKeyChange={noop}
         page={basePage}
-        onPrev={noop}
-        onNext={noop}
+        onOffset={noop}
+        onLimit={noop}
       />,
     );
     expect(screen.getByText(/no ingestion sources found/i)).toBeTruthy();
@@ -363,8 +363,8 @@ describe("IngestionSourceList — empty state", () => {
         filterKey="ALL"
         onFilterKeyChange={noop}
         page={basePage}
-        onPrev={noop}
-        onNext={noop}
+        onOffset={noop}
+        onLimit={noop}
       />,
     );
     expect(screen.queryByText(/no ingestion sources found/i)).toBeNull();
