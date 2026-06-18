@@ -314,7 +314,7 @@ managed out-of-band.
 |--------|------|-------------|
 | `id` | `UUID` PK | Server-assigned `seed_id` |
 | `body_md` | `TEXT` | Raw Markdown body |
-| `status` | `TEXT` | `active` or `retired` |
+| `status` | `TEXT` | `active` or `retired` — `DELETE` soft-deletes by setting `retired`; only `active` seeds steer inference |
 | `created_at` | `TIMESTAMPTZ` | |
 | `updated_at` | `TIMESTAMPTZ` | |
 
