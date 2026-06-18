@@ -111,6 +111,11 @@ the cluster build) and stop.
 Ask once: reset-seed baseline? Default Yes (per `feedback_reset_before_api_wired`).
 Yes → `set -a && source helm-charts/.env && set +a && uv run python -m tests.integration.util --reset-seed`.
 
+Reset-seed re-creates the admin user, invalidating the JWT preflight minted
+before it (the next admin call returns `401 "User no longer exists."`). After a
+reset-seed completes, re-issue the token via `refresh_token.sh` before Step 1 so
+the walkthrough's first backend call does not 401.
+
 For UC4 scenarios, additionally seed the LLM context **after** the reset-seed has
 finished — `--uc4-seed` masks the `customers.eu_profiles` and `orders.events`
 descriptions that `--reset-seed` ingests into DataHub, so the datasets must be
@@ -170,9 +175,18 @@ For each step:
    For `[API-fired, no UI surface]` steps, replace `page/do` with a `REQUEST`
    block (full pretty-printed body, verbatim from the test) as in
    `/test-manual-api-wired`.
-2. **Gesture gate** (per-step mode): `AskUserQuestion` Done / Skip / Abort.
-3. **You act, then report**: describe the observed UI state, or paste a
-   screenshot. The skill checks it against `expect (UI)`.
+2. **Gate** (per-step mode): `AskUserQuestion`. Pick the verb by step type —
+   never use "Done" for a step the user has not performed:
+   - `[UI gesture]` → `Done / Skip / Abort` (the user performs the gesture, then
+     confirms it is done).
+   - `[API-fired, no UI surface]` → `Fire it / Skip / Abort` (the skill runs the
+     call on the user's behalf; the user is authorizing, not reporting). Use
+     authorization framing ("Fire it" / "Run it"), never "Done".
+   - `[observe]` reads never block on a gesture (see step 3).
+3. **Act, then report**: for `[UI gesture]` the user performs the gesture and
+   describes the observed UI state (or pastes a screenshot); the skill checks it
+   against `expect (UI)`. For `[API-fired]` the skill fires the call and reports
+   the response. `[observe]` steps confirm without a gesture gate.
 4. **Backend probe**: confirm the side effect independently —
    - the REST read-back the test asserts (the same `GET` the page makes), via
      curl with the admin token from `/tmp/_manual_test_env`; and
