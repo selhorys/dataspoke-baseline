@@ -135,7 +135,7 @@ every source form the **unmanaged bucket**.
 |--------|------|-------------|
 | `source_id` | `UUID` FK → `ingestion_source(id)` ON DELETE CASCADE | Owning source |
 | `dataset_urn` | `TEXT` | A dataset the source covers |
-| `derivation` | `TEXT` | How the link was established: `matched` (recipe filter / declared allow-deny evaluated against the dataset set), `emitted` (`ACTIVE_CUSTOM_MANAGED` extractor's own run output), or `pipeline_name` (observed via `systemMetadata.pipelineName`, optional enrichment for the two MANAGED modes) |
+| `derivation` | `TEXT` | How the link was established: `matched` (recipe filter / declared allow-deny evaluated against the dataset set), `emitted` (`ACTIVE_CUSTOM_MANAGED` extractor's own run output), or `pipeline_name` (observed via `systemMetadata.pipelineName`, optional enrichment for the two MANAGED modes; also inherited by ad-hoc CLI sources from their parent registered source — see BACKEND §Sync sweep step 3) |
 | `first_seen_at` | `TIMESTAMPTZ` | First sweep that linked this pair |
 | `last_seen_at` | `TIMESTAMPTZ` | Most recent sweep confirming the link |
 

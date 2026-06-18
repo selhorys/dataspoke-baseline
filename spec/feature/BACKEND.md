@@ -323,7 +323,21 @@ DAG) reconciles all modes:
 3. **Observed enrichment (optional, the two MANAGED modes)**: read `systemMetadata.pipelineName`
    per dataset to link datasets to their source authoritatively — `DATAHUB_MANAGED` (DataHub
    stamps the source URN), `ACTIVE_CUSTOM_MANAGED` (DataSpoke's extractor stamps the source id).
-   `derivation = pipeline_name` (authority `high`). Not used for `PASSIVE`.
+   `derivation = pipeline_name` (authority `high`). Not used for `PASSIVE`. A dataset's
+   `pipelineName` awards `pipeline_name`/`high` to **every** source that corresponds to it: the
+   registered source whose own `datahub_source_urn` equals the `pipelineName`, **and** any ad-hoc
+   CLI source that inherits from it. A `datahub ingest` run of a registered source auto-creates an
+   ad-hoc CLI wrapper source whose own URN is distinct from the stamped `pipelineName` but whose
+   display name embeds the parent registered-source URN (display-name grammar and the
+   parent-URN-vs-stamped-URN distinction:
+   [DATAHUB_INTEGRATION §Ingestion Source Sync](../DATAHUB_INTEGRATION.md#ingestion-source-sync)).
+   The wrapper inherits the link by parsing that parent URN out of its display name and matching it
+   to the dataset's `pipelineName`; on a match it too receives `pipeline_name`/`high`. **Fallback**:
+   if the parent URN cannot be parsed from the wrapper's display name, or no registered source row
+   matches the parsed parent URN (e.g. the parent is a system source excluded in step 1, or has not
+   yet synced), the ad-hoc source inherits nothing and retains its step-2 filter-matcher mapping
+   (`matched`/`medium`). Sources that only recipe-match the same tables (no `pipelineName`
+   correspondence) likewise stay `matched`/`medium`.
 4. **Run events**: mirror run history into the `events` table — `listExecutionRequests` for
    `DATAHUB_MANAGED` (only terminal requests, i.e. those carrying a populated result);
    `Operation` / `DataProcessInstance` observation for `PASSIVE` — with

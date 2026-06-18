@@ -585,6 +585,20 @@ are to `ref/github/datahub/` v1.5.0.2.
   URN id (`urn:li:dataHubIngestionSource:cli-<guid>`) and a `[CLI] ` name prefix. `pipeline_name`
   is **not** a marker (optional, and present on UI sources too). Citation:
   `metadata-ingestion/src/datahub/ingestion/reporting/datahub_ingestion_run_summary_provider.py`.
+- **Ad-hoc CLI wrapper for a registered source**: when `datahub ingest` runs a recipe carrying a
+  `pipeline_name`, DataHub auto-creates an ad-hoc CLI wrapper ingestion source. Its own URN is
+  `urn:li:dataHubIngestionSource:cli-<hash>` (`entity_id = "cli-" + datahub_guid(key)`), and its
+  `dataHubIngestionSourceInfo.name` is constructed as `[CLI] <type> [<pipeline_name>]` — the
+  configured `pipeline_name` is embedded verbatim in the trailing brackets. When DataSpoke runs a
+  registered source, that `pipeline_name` is the **parent registered-source URN**, so the wrapper
+  name reads `[CLI] <type> [<parent_source_urn>]`. Citation:
+  `…/datahub_ingestion_run_summary_provider.py` (`generate_entity_name`, `__init__` URN
+  construction). The aspects emitted by that run are stamped
+  `systemMetadata.pipelineName = <parent registered source URN>` (the configured `pipeline_name`),
+  **not** the wrapper's own `cli-<hash>` URN — DataSpoke-observed behaviour confirmed against a
+  live dev-env run. This is the pivot the ad-hoc inheritance algorithm in
+  [BACKEND §Sync sweep](feature/BACKEND.md#ingestion-service-srcbackendingestion) depends on:
+  parse the parent URN out of the wrapper name, match it to the stamped `pipelineName`.
 - **Source → dataset mapping (no native reverse lookup)**: DataHub has no query for "which
   datasets did this source produce" — no reverse edge from `dataHubIngestionSource`, and
   `systemMetadata.pipelineName`/`runId` (`metadata-models/.../mxe/SystemMetadata.pdl`) are

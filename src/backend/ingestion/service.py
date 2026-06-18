@@ -193,6 +193,33 @@ def _is_ad_hoc(executor_id: str | None, source_urn: str | None, name: str | None
     return False
 
 
+def _parse_cli_parent_urn(name: str | None) -> str | None:
+    """Extract the parent registered-source URN from a ``[CLI]`` wrapper name.
+
+    DataHub auto-creates an ad-hoc CLI wrapper source when ``datahub ingest``
+    runs a recipe carrying a ``pipeline_name``, with display name
+    ``[CLI] <type> [<pipeline_name>]`` — the ``pipeline_name`` embedded verbatim
+    in the trailing brackets. When DataSpoke runs a registered source, that
+    ``pipeline_name`` is the parent registered-source URN.
+
+    Returns the bracketed value when it is a ``urn:li:dataHubIngestionSource:…``
+    URN; returns None when ``name`` is absent, is not a ``[CLI] `` name, has no
+    trailing bracket, or the bracketed content is not a dataHubIngestionSource
+    URN. Pure string parse — no DB or network access.
+    """
+    if not name or not name.startswith("[CLI] "):
+        return None
+    if not name.endswith("]"):
+        return None
+    open_idx = name.rfind("[")
+    if open_idx == -1:
+        return None
+    inner = name[open_idx + 1 : -1]
+    if not inner.startswith("urn:li:dataHubIngestionSource:"):
+        return None
+    return inner
+
+
 def _validate_and_derive_tier(
     mode: str,
     schedule: str | None,
@@ -1340,46 +1367,75 @@ class IngestionService:
         if all_dataset_urns:
             pipeline_map = await self._datahub.get_pipeline_names(all_dataset_urns)
 
-            # Build lookup: pipeline_name -> source_id for MANAGED sources.
-            # DATAHUB_MANAGED: pipelineName == datahub_source_urn (DataHub stamps the URN).
+            # Build lookup: pipeline_name -> [source_id, …] for MANAGED sources
+            # (1:many — a single pipelineName can award pipeline_name/high to both
+            # a registered source and the ad-hoc CLI wrapper that inherits from it).
+            # DATAHUB_MANAGED registered: pipelineName == datahub_source_urn (DataHub
+            #   stamps the registered source URN on emitted aspects).
+            # DATAHUB_MANAGED ad-hoc CLI wrapper: a `datahub ingest` run of a
+            #   registered source stamps aspects with pipelineName = parent registered
+            #   URN, and the wrapper's display name embeds that parent URN as
+            #   `[CLI] <type> [<parent_urn>]`. The wrapper inherits the link when its
+            #   parsed parent URN matches a registered DATAHUB_MANAGED source row.
             # ACTIVE_CUSTOM_MANAGED: pipelineName == str(source.id) (DataSpoke extractor
             #   stamps pipelineName = source_id per the DPI emission convention).
-            pipeline_to_source: dict[str, uuid.UUID] = {}
+            registered_managed_urns = {
+                row.datahub_source_urn
+                for row in all_sources_rows
+                if row.mode == Mode.DATAHUB_MANAGED.value
+                and not row.ad_hoc
+                and row.datahub_source_urn
+            }
+
+            pipeline_to_sources: dict[str, list[uuid.UUID]] = {}
             for src_row in all_sources_rows:
-                if src_row.mode == Mode.DATAHUB_MANAGED.value and src_row.datahub_source_urn:
-                    pipeline_to_source[src_row.datahub_source_urn] = src_row.id
+                if src_row.mode == Mode.DATAHUB_MANAGED.value:
+                    if not src_row.ad_hoc:
+                        if src_row.datahub_source_urn:
+                            pipeline_to_sources.setdefault(src_row.datahub_source_urn, []).append(
+                                src_row.id
+                            )
+                    else:
+                        # Ad-hoc CLI wrapper: inherit only when the parsed parent URN
+                        # resolves to a registered DATAHUB_MANAGED source row. Fallback
+                        # (unparseable name or no matching registered row): inherit
+                        # nothing — keep the step-2 matched/medium mapping.
+                        parent_urn = _parse_cli_parent_urn(src_row.name)
+                        if parent_urn and parent_urn in registered_managed_urns:
+                            pipeline_to_sources.setdefault(parent_urn, []).append(src_row.id)
                 elif src_row.mode == Mode.ACTIVE_CUSTOM_MANAGED.value:
-                    pipeline_to_source[str(src_row.id)] = src_row.id
+                    pipeline_to_sources.setdefault(str(src_row.id), []).append(src_row.id)
 
             now = datetime.now(tz=UTC)
             for dataset_urn, pipeline_name in pipeline_map.items():
                 if not pipeline_name:
                     continue
-                source_id = pipeline_to_source.get(pipeline_name)
-                if source_id is None:
-                    continue
-
-                stmt = (
-                    pg_insert(IngestionSourceDataset)
-                    .values(
-                        source_id=source_id,
-                        dataset_urn=dataset_urn,
-                        derivation="pipeline_name",
-                        first_seen_at=now,
-                        last_seen_at=now,
+                for source_id in pipeline_to_sources.get(pipeline_name, []):
+                    stmt = (
+                        pg_insert(IngestionSourceDataset)
+                        .values(
+                            source_id=source_id,
+                            dataset_urn=dataset_urn,
+                            derivation="pipeline_name",
+                            first_seen_at=now,
+                            last_seen_at=now,
+                        )
+                        .on_conflict_do_update(
+                            index_elements=["source_id", "dataset_urn"],
+                            # F3: do not demote an emitted row to pipeline_name.
+                            # derivation is overwritten to pipeline_name only when the
+                            # WHERE guard passes; emitted rows are excluded so they stay
+                            # pristine (neither derivation nor last_seen_at bumped).
+                            set_={"derivation": "pipeline_name", "last_seen_at": now},
+                            where=(IngestionSourceDataset.derivation != "emitted"),
+                        )
                     )
-                    .on_conflict_do_update(
-                        index_elements=["source_id", "dataset_urn"],
-                        # F3: do not demote an emitted row to pipeline_name.
-                        # derivation is overwritten to pipeline_name only when the
-                        # WHERE guard passes; emitted rows are excluded so they stay
-                        # pristine (neither derivation nor last_seen_at bumped).
-                        set_={"derivation": "pipeline_name", "last_seen_at": now},
-                        where=(IngestionSourceDataset.derivation != "emitted"),
-                    )
-                )
-                await self._db.execute(stmt)
-                summary["pipeline_links"] += 1
+                    insert_result = await self._db.execute(stmt)
+                    # rowcount == 1 on INSERT, 1 on UPDATE, 0 when the WHERE guard
+                    # filtered out the conflict update (an emitted row shadows the
+                    # slot). Count only rows actually written, not upsert attempts.
+                    if insert_result.rowcount == 1:
+                        summary["pipeline_links"] += 1
 
             await self._db.commit()
 
