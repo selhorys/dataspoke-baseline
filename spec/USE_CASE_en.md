@@ -183,7 +183,7 @@ POST /api/v1/spoke/ingestion/sources/{id}/method/run?dry_run=true
 
 Dry-run exercises the extractor (connection check, schema preview) without emitting. A real run
 emits dataset aspects + a `DataProcessInstance`, and records the emitted URNs as the
-authoritative source→dataset mapping (`origin = emitted`).
+authoritative source→dataset mapping (`derivation = emitted`).
 
 #### Case 3 — `PASSIVE`, the seeded Kafka topics
 

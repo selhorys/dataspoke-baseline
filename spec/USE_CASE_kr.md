@@ -190,7 +190,7 @@ POST /api/v1/spoke/ingestion/sources/{id}/method/run?dry_run=true
 ```
 
 dry-run은 emit 없이 추출기를 실행한다(연결 점검, 스키마 미리보기). 실제 실행은 데이터셋 aspect와
-`DataProcessInstance`를 emit하고, emit한 URN을 권위 있는 소스→데이터셋 매핑(`origin = emitted`)으로
+`DataProcessInstance`를 emit하고, emit한 URN을 권위 있는 소스→데이터셋 매핑(`derivation = emitted`)으로
 기록한다.
 
 #### Case 3 — `PASSIVE`, 시드된 Kafka 토픽

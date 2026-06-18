@@ -58,7 +58,7 @@ A header surfaces read-only management fields as badges/text outside the recipe 
    The table carries a single `authority` column whose cell fuses both server fields, rendered as
    e.g. `high (emitted)`: the dataset URN, its `authority` (`high` / `medium`) and `derivation`
    (`emitted` / `pipeline_name` / `matched`). `authority` is derived from `derivation` —
-   `emitted` ⇒ `high`, `matched` ⇒ `medium`.
+   `emitted` / `pipeline_name` ⇒ `high`, `matched` ⇒ `medium`.
 3. **Run** — `POST /spoke/ingestion/sources/{id}/method/run` with a `dry_run` toggle. Shown only
    for `ACTIVE_CUSTOM_MANAGED`; other modes show an explanatory disabled state (the run happens in
    DataHub or externally; the API returns `409 INGESTION_RUN_NOT_APPLICABLE`).

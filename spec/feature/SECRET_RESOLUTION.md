@@ -339,7 +339,7 @@ to the name segment; a token with no `__` or an empty segment is `SecretRefMalfo
 
 ### Caller integration
 
-**At source PUT/PATCH** (`src/api/routers/spoke/ingestion/sources.py`):
+**At source PUT/PATCH** (`src/api/routers/spoke/ingestion.py`):
 
 ```
 1. Pydantic validates the recipe shape (recipe.source.{type,config})
