@@ -157,9 +157,9 @@ test("UC3 step 1 — enable ontogen conf on /ontogen/conf page", async ({
   // -- UI gesture: click Edit to enable the form --
   await page.getByRole("button", { name: "Edit" }).click();
 
-  // The form is now in editing mode; "Save configuration" button is visible.
-  // conf-form.tsx line 155: <Button type="submit">Save configuration</Button>
-  await expect(page.getByRole("button", { name: "Save configuration" })).toBeVisible({ timeout: 5_000 });
+  // The form is now in editing mode; the top-right header "Save" button is visible.
+  // ontogen/conf/page.tsx: <Button form={CONF_FORM_ID} type="submit">Save</Button>
+  await expect(page.getByRole("button", { name: "Save", exact: true })).toBeVisible({ timeout: 5_000 });
 
   // -- UI gesture: check is_enabled checkbox (set to checked/enabled) --
   // spec: FRONTEND_ONTOGEN.md §Page contracts — is_enabled controls DAG enable/disable
@@ -176,7 +176,7 @@ test("UC3 step 1 — enable ontogen conf on /ontogen/conf page", async ({
   await page.getByRole("option", { name: "daily" }).click();
 
   // -- UI gesture: submit the form --
-  await page.getByRole("button", { name: "Save configuration" }).click();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
 
   // -- UI assertion: "Configuration saved" toast --
   // spec: FRONTEND_ONTOGEN.md §Page contracts — on save success, toast "Configuration saved"
@@ -693,7 +693,7 @@ test("UC3 step 5 — delete seed via UI ConfirmDialog; disable conf", async ({
   seedId = null; // Mark cleaned up so afterAll does not double-delete.
 
   // -- Navigate to /ontogen/conf and disable via PATCH (API-fired) --
-  // UI path would be: Edit → uncheck is_enabled → Save configuration.
+  // UI path would be: Edit → uncheck is_enabled → Save.
   // We use adminApi for conf disable cleanup to keep the test deterministic
   // (conf page rendering depends on whether conf exists, making UI disable fragile).
   const patchResp = await adminApi.patch(CONF_API, { data: { is_enabled: false } });

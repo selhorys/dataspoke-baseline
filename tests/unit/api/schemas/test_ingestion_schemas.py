@@ -242,6 +242,7 @@ class TestIngestionSourceResponse:
             recipe={"source": {"type": "postgres", "config": {}}},
             platform="postgres",
             status="OK",
+            ad_hoc=False,
             created_at=now,
             updated_at=now,
         )

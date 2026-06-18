@@ -178,6 +178,7 @@ class TestIngestionSourceResponse:
             platform="postgres",
             status="OK",
             datahub_source_urn=None,
+            ad_hoc=False,
             created_at=now,
             updated_at=now,
         )
@@ -203,6 +204,7 @@ class TestIngestionSourceResponse:
             platform="kafka",
             status="OK",
             datahub_source_urn=None,
+            ad_hoc=False,
             created_at=now,
             updated_at=now,
         )
