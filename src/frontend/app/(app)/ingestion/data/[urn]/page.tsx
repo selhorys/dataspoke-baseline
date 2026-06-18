@@ -9,6 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { ErrorState } from "@/components/ui/error-state";
 import { Pagination, DEFAULT_PAGE_SIZE } from "@/components/pagination";
 import { RangePicker } from "@/components/range-picker";
+import { EventDetailCell } from "@/components/ingestion/event-detail-cell";
 import { resolveRange } from "@/lib/range";
 import {
   usePersistedRangeState,
@@ -192,11 +193,7 @@ export default function IngestionDatasetDetailPage({
                   {e.status}
                 </Badge>
                 <span>{e.event_type}</span>
-                {e.detail && Object.keys(e.detail).length > 0 && (
-                  <span className="font-mono text-xs text-muted-foreground">
-                    {JSON.stringify(e.detail)}
-                  </span>
-                )}
+                <EventDetailCell detail={e.detail} />
               </li>
             ))}
           </ul>

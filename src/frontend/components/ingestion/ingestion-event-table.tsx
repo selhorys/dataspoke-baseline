@@ -4,13 +4,15 @@
  * IngestionEventTable — run/event history for a source, newest first.
  *
  * Columns: occurred_at, status badge (via eventStatusVariant), event_type,
- * detail (mono JSON). Includes a datetime range filter and pagination.
+ * detail (truncated JSON, click-to-expand via EventDetailCell). Includes a
+ * datetime range filter and pagination.
  *
  * Spec: spec/feature/FRONTEND_INGESTION.md §Source Detail §Events.
  */
 
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/ui/empty-state";
+import { EventDetailCell } from "@/components/ingestion/event-detail-cell";
 import { Pagination } from "@/components/pagination";
 import { RangePicker } from "@/components/range-picker";
 import {
@@ -81,10 +83,8 @@ export function IngestionEventTable({
                     </Badge>
                   </TableCell>
                   <TableCell className="text-sm">{e.event_type}</TableCell>
-                  <TableCell className="max-w-[360px] truncate font-mono text-xs text-muted-foreground">
-                    {e.detail && Object.keys(e.detail).length > 0
-                      ? JSON.stringify(e.detail)
-                      : "—"}
+                  <TableCell className="max-w-[360px]">
+                    <EventDetailCell detail={e.detail} />
                   </TableCell>
                 </TableRow>
               ))}

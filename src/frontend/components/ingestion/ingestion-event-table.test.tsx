@@ -87,7 +87,7 @@ describe("IngestionEventTable — event rows", () => {
     expect(screen.getByText("run_failed")).toBeTruthy();
   });
 
-  it("renders JSON-stringified detail when detail has keys", () => {
+  it("renders a click-to-expand detail trigger when detail has keys", () => {
     const event = makeEvent({
       id: "e3",
       detail: { entities_ingested: 42, duration_ms: 1200 },
@@ -103,8 +103,16 @@ describe("IngestionEventTable — event rows", () => {
         onLimit={noop}
       />,
     );
-    // The component renders JSON.stringify(e.detail) in the detail cell
-    expect(screen.getByText(/"entities_ingested":42/)).toBeTruthy();
+    // The detail cell renders a truncated EventDetailCell trigger (button)
+    // with a STABLE accessible name, not the full inline JSON. The compact
+    // JSON is > 30 chars so the visible text ends in …
+    const full = JSON.stringify(event.detail);
+    expect(full.length).toBeGreaterThan(30);
+    expect(screen.queryByText(full)).toBeNull();
+    const trigger = screen.getByRole("button", { name: "View event detail" });
+    expect(trigger.textContent).toContain("…");
+    expect((trigger.textContent ?? "").length).toBeLessThanOrEqual(31);
+    expect(trigger.textContent).not.toBe(full);
   });
 
   it("renders an em-dash placeholder when detail is empty", () => {

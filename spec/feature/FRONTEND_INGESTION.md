@@ -66,7 +66,9 @@ A header surfaces read-only management fields as badges/text outside the recipe 
 4. **Events** — `GET /spoke/ingestion/sources/{id}/event` history table, newest first. A
    `datetime`-granularity [RangePicker](FRONTEND_BASIC.md#shared-component-notes) (presets Last
    1 day / 7 days / 2 weeks (default) / 4 weeks / 12 weeks, plus a custom calendar range) drives
-   the `from`/`to` filters from its inclusive `{from, to}` pair.
+   the `from`/`to` filters from its inclusive `{from, to}` pair. The `detail` cell shows the
+   compact JSON truncated to ~30 characters and is click-to-expand into a pretty-printed JSON
+   dialog.
 
 ## Create View (`/ingestion/sources/new`)
 
@@ -103,7 +105,8 @@ When no source covers the dataset, the panel says so and links to `/ingestion/un
 Below it, an events table shows per-dataset ingestion events from
 `GET /spoke/common/data/{dataset_urn}/event/ingestion`, with a `datetime`
 [RangePicker](FRONTEND_BASIC.md#shared-component-notes) driving the endpoint's
-`from`/`to` filters. The page is read-only.
+`from`/`to` filters; the `detail` cell shows the compact JSON truncated to ~30 characters and is
+click-to-expand into a pretty-printed JSON dialog. The page is read-only.
 
 ## Components
 
@@ -115,7 +118,8 @@ Below it, an events table shows per-dataset ingestion events from
   read-only authoring guide (kubectl recipe, namespace, `dataspoke-source-cred-` prefix,
   `${name__key}` syntax) shown in the source editor.
 - `IngestionEventTable` — shared event table bound to `…/event`, paired with a `datetime`
-  [RangePicker](FRONTEND_BASIC.md#shared-component-notes) for the `from`/`to` window.
+  [RangePicker](FRONTEND_BASIC.md#shared-component-notes) for the `from`/`to` window; its `detail`
+  cell truncates the JSON to ~30 characters and is click-to-expand into a pretty-printed JSON dialog.
 - `UnmanagedDatasetTable` — the unmanaged-bucket list.
 
 Every paged table on these pages — `IngestionSourceList`, `SourceDatasetTable`,

@@ -296,7 +296,8 @@ test("UC1 Case 2 step 3 — real run emits ≥ 2 catalog datasets", async ({ pag
 
   // -- UI gesture: click "Run" button --
   // spec: FRONTEND_INGESTION.md §Source Detail §Run — label is "Run" when dry_run is off
-  await page.getByRole("button", { name: "Run" }).click();
+  // exact: true so this never substring-matches another button's accessible name.
+  await page.getByRole("button", { name: "Run", exact: true }).click();
 
   // -- UI assertion: run_id appears in result panel --
   await expect(page.getByText(/^run_id\s/)).toBeVisible({ timeout: 120_000 });
