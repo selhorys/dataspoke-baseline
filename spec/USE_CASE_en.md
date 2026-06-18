@@ -519,19 +519,28 @@ the UI renders Markdown.
 Future scope (mentioned, not modelled here): proposals for `domains` and
 `globalTags`.
 
-A **global** operational conf at `/spoke/metagen/attr/conf` controls when the
-generation DAG runs and which datasets are in scope. A **per-dataset** boundary at
-`/spoke/common/data/{urn}/attr/metagen/conf` is the opt-in switch — datasets without
-an `is_enabled=true` boundary row are excluded regardless of the global filter.
+Confs are a **managed collection** at `/spoke/metagen/conf` — many named confs
+coexist, each with its own `dataset_filter`, `schedule_tier`, and generation
+budget, so teams run different documentation policies over different dataset
+groups. Unlike the UC3 ontology (one all-connected artifact, hence one singleton
+conf), metadata writers can legitimately be many; cross-conf consistency is held
+by the shared UC3 ontology that every conf reads, not by a single conf. A
+**per-dataset** boundary at `/spoke/common/data/{urn}/attr/metagen/boundary` is
+the opt-in switch shared across confs — a dataset is generated for a conf only
+when it matches that conf's `dataset_filter` **and** has an `is_enabled=true`
+boundary row, and the boundary's `allowed` caps which element kinds any conf may
+write. Datasets reached by no conf surface at `/spoke/metagen/uncovered`.
 
-For each in-scope (dataset, item) pair the generator accumulates up to
-`result_limit` candidates across runs (default `3`). The reviewer browses
-candidates, approves one (which emits the value to the editable DataHub aspect
-and locks the item), and rejects the misses. **Approval is mutable**: approving
-a different sibling atomically demotes the previously-approved candidate, so the
-reviewer can change their mind at any time. **On subsequent runs**, items with
-an `approved` candidate are skipped entirely; rejected candidates are cleared
-at the start of the next run so the item is re-proposed from scratch.
+For each (conf, dataset, item) the generator accumulates up to that conf's
+`result_limit` candidates across runs (default `3`). All confs feed **one global
+cross-dataset review queue** where the reviewer browses candidates — each tagged
+with the conf that produced it — approves one (which emits the value to the
+editable DataHub aspect and locks the item), and rejects the misses. **Approval
+is mutable and global across confs**: approving a different sibling — even one
+from another conf — atomically demotes the previously-approved candidate, so the
+reviewer can change their mind at any time. **On subsequent runs**, items with an
+`approved` candidate are skipped by every conf; a conf's rejected candidates are
+cleared at the start of its next run so the item is re-proposed from scratch.
 
 Conf field semantics, candidate status lifecycle, per-item eviction policy, run
 pipeline, and the producer / reviewer adversarial debate are specified in
@@ -543,26 +552,33 @@ and
 
 | Endpoint | Used for |
 |---|---|
-| `PUT/PATCH/GET/DELETE /spoke/metagen/attr/conf` | Singleton operational conf — see field table above |
-| `POST /spoke/metagen/method/run` | Trigger a manual generation run. Optional body `{"dataset_urns": [...]}`; `?dry_run=true` evaluates without persisting. Concurrent runs return `409 METAGEN_RUNNING`; disabled-conf non-dry-run returns `409 METAGEN_DISABLED` |
-| `GET /spoke/metagen/event` | Global generation-run event history (`METAGEN.RUN_COMPLETE`, `METAGEN.RUN_FAILED`) |
-| `GET /spoke/metagen/item` | List items across datasets (paginated; filterable by `dataset_urn`, `kind`, `status`) |
-| `GET /spoke/metagen/item/{composite_id}` | Item detail by composite id `{dataset_urn}::{item_id}`, including every candidate |
-| `PUT/PATCH/GET/DELETE /spoke/common/data/{urn}/attr/metagen/conf` | Per-dataset boundary (`is_enabled`, `allowed`) |
+| `GET/POST /spoke/metagen/conf` | List confs / create a conf (`name` + the field table above); `409 METAGEN_CONF_EXISTS` on duplicate name |
+| `GET/PUT/PATCH/DELETE /spoke/metagen/conf/{conf_id}` | Per-conf CRUD. Delete drops this conf's pending candidates and detaches its already-approved ones |
+| `POST /spoke/metagen/conf/{conf_id}/method/run` | Trigger a manual generation run for one conf. Optional body `{"dataset_urns": [...]}`; `?dry_run=true` evaluates without persisting. Concurrent runs of the same conf return `409 METAGEN_RUNNING`; disabled-conf non-dry-run returns `409 METAGEN_DISABLED` |
+| `GET /spoke/metagen/conf/{conf_id}/event` | Per-conf generation-run event history (`METAGEN.RUN_COMPLETE`, `METAGEN.RUN_FAILED`) |
+| `GET /spoke/metagen/uncovered` | Registered datasets reached by no conf; `?include_disallowed=true` also lists boundary-blocked datasets. Each row carries a `reason` |
+| `GET /spoke/metagen/event` | Cross-conf union of all confs' generation-run events |
+| `GET /spoke/metagen/item` | List items across datasets and confs (paginated; filterable by `dataset_urn`, `kind`, `status`, `conf_id`); candidates expose `conf_id`/`conf_name` |
+| `GET /spoke/metagen/item/{composite_id}` | Item detail by composite id `{dataset_urn}::{item_id}`, including every candidate with its `conf_id`/`conf_name` |
+| `PUT/PATCH/GET/DELETE /spoke/common/data/{urn}/attr/metagen/boundary` | Per-dataset boundary (`is_enabled`, `allowed`) |
 | `GET /spoke/common/data/{urn}/attr/metagen/item` | List items for one dataset |
 | `GET /spoke/common/data/{urn}/attr/metagen/item/{item_id}` | One item with all candidates |
-| `POST /spoke/common/data/{urn}/attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review` | Approve or reject one candidate — body `{ "verdict": "approve"\|"reject", "reason": "…" }`. Approve emits to DataHub and locks the item |
+| `POST /spoke/common/data/{urn}/attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review` | Approve or reject one candidate — body `{ "verdict": "approve"\|"reject", "reason": "…" }`. Approve emits to DataHub and locks the item across all confs |
 | `GET /spoke/common/data/{urn}/event/metagen` | Per-dataset metagen events (`METAGEN.CANDIDATE_APPROVE`, `METAGEN.CANDIDATE_REJECT`) |
 
 ### Imazon Example
 
-**Conf.** The governance team enables metagen globally:
+**Confs.** Imazon runs two documentation policies over different dataset groups.
+The fulfillment platform team owns a daily conf scoped to fulfillment-tagged
+datasets; the privacy office owns a separate weekly conf scoped to EU-resident
+datasets with a tighter budget:
 
 ```http
-PUT /api/v1/spoke/metagen/attr/conf
+POST /api/v1/spoke/metagen/conf
 ```
 ```json
 {
+  "name": "fulfillment",
   "is_enabled": true,
   "schedule_tier": "daily",
   "dataset_filter": {"tags": ["urn:li:tag:area:fulfillment"]},
@@ -571,11 +587,30 @@ PUT /api/v1/spoke/metagen/attr/conf
 }
 ```
 
-**Boundary.** The customer team opts `customers.eu_profiles` in for both kinds, and
-the orders team opts `imazon.orders.events` in for column descriptions only:
+```http
+POST /api/v1/spoke/metagen/conf
+```
+```json
+{
+  "name": "eu-privacy",
+  "is_enabled": true,
+  "schedule_tier": "weekly",
+  "dataset_filter": {"origin": "EU", "glossary_terms": ["urn:li:glossaryTerm:pii.gdpr"]},
+  "result_limit": 2,
+  "overwrite_pending": false
+}
+```
+
+Each `POST` returns `201` with the conf's `id`. `imazon.orders.events` falls in
+the `fulfillment` conf's scope; `customers.eu_profiles` falls in both (it is
+fulfillment-tagged and GDPR-scoped), so both confs may propose for it.
+
+**Boundary.** A conf only generates for a dataset that has also opted in. The
+customer team opts `customers.eu_profiles` in for both kinds; the orders team
+opts `imazon.orders.events` in for column descriptions only:
 
 ```http
-PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.customers.eu_profiles,DEV)/attr/metagen/conf
+PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.customers.eu_profiles,EU)/attr/metagen/boundary
 ```
 ```json
 {
@@ -584,58 +619,72 @@ PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,examp
 }
 ```
 
-**Run.** The daily Airflow DAG fires, or a reviewer triggers an immediate run:
+**Run.** The tier DAGs fire on schedule, or a reviewer triggers an immediate run
+of one conf:
 
 ```http
-POST /api/v1/spoke/metagen/method/run
+POST /api/v1/spoke/metagen/conf/{eu-privacy-conf-id}/method/run
 ```
 
-**Browse items.** After the run, the dashboard lists the dataset's items:
+**Uncovered check.** The governance lead audits what no conf documents:
 
 ```http
-GET /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.customers.eu_profiles,DEV)/attr/metagen/item
+GET /api/v1/spoke/metagen/uncovered?include_disallowed=true
 ```
 
-Returns one `dataset.description` item plus one `column.<fieldPath>.description` item
-per column. Inspecting the dataset description item:
+`imazon.warehouse.bins` (matched by no conf) returns with
+`reason: no_conf_match`; a fulfillment-tagged table whose boundary is disabled
+returns with `reason: boundary_blocked`.
+
+**Browse the global queue.** After the runs, the review queue lists every item
+across datasets and confs:
 
 ```http
-GET .../attr/metagen/item/dataset.description
+GET /api/v1/spoke/metagen/item?dataset_urn=...customers.eu_profiles...
 ```
+
+Inspecting the `customers.eu_profiles` dataset-description item shows candidates
+from both confs:
 
 ```
 item_id: dataset.description
 kind:    dataset.description
-status:  pending           # no approved candidate yet
-candidates (3 of result_limit=3):
-  - candidate_id: c1   status: llm_approved   confidence 0.92
+status:  pending                 # no approved candidate yet
+candidates:
+  - candidate_id: c1   conf: fulfillment   status: llm_approved   confidence 0.92
       "# EU Customer Profiles\n\nGDPR-scoped customer accounts for the EU region..."
-  - candidate_id: c2   status: llm_approved   confidence 0.88
-      "# Customers (EU)\n\nAuthoritative profile records for EU customers..."
-  - candidate_id: c3   status: llm_approved   confidence 0.85
+  - candidate_id: c2   conf: eu-privacy    status: llm_approved   confidence 0.90
+      "# Customers (EU)\n\nAuthoritative GDPR-controlled profile records..."
+  - candidate_id: c3   conf: fulfillment   status: llm_approved   confidence 0.85
       "EU profiles table — registered customer accounts under EU jurisdiction..."
 ```
 
-**Review.** The reviewer approves `c1`, rejects `c3`, and leaves `c2` as-is:
+**Review.** The reviewer approves the privacy-office framing `c2`, rejects `c3`,
+and leaves `c1` as-is. Review happens on the dataset surface:
 
 ```http
-POST .../attr/metagen/item/dataset.description/candidate/c1/method/review
-{ "verdict": "approve", "reason": "Best framing of the EU/GDPR scope." }
+POST .../attr/metagen/item/dataset.description/candidate/c2/method/review
+{ "verdict": "approve", "reason": "Best captures the GDPR scope." }
 
 POST .../attr/metagen/item/dataset.description/candidate/c3/method/review
 { "verdict": "reject", "reason": "Truncated and lacks the key fact." }
 ```
 
-On `c1`'s approve call, DataSpoke writes the value to
+On `c2`'s approve call, DataSpoke writes the value to
 `editableDatasetProperties.description` on the dataset; the item now reports
-`status: approved`. `c2` stays `llm_approved` as visible history, eligible for
-later approval if the reviewer changes their mind (approving `c2` would
-atomically demote `c1`). `c3` will be deleted at the start of the next run.
+`status: approved`. `c1` (from the `fulfillment` conf) stays `llm_approved` as
+visible history and remains eligible — approving it later would atomically demote
+`c2` even though they belong to different confs, because the one-approved-per-item
+invariant is global. `c3` is deleted at the start of the `fulfillment` conf's next
+run. Both confs skip this item while it has an approved candidate.
 
-**Event history.**
+**Event history.** Per-dataset candidate events live on the dataset surface; each
+conf's run events live on its own feed, and the union feed spans all confs:
 
 ```http
 GET .../event/metagen
+GET /api/v1/spoke/metagen/conf/{eu-privacy-conf-id}/event
+GET /api/v1/spoke/metagen/event
 ```
 
 ---

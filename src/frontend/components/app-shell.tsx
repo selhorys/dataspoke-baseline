@@ -82,7 +82,16 @@ const mainNav: (NavItem | NavGroup)[] = [
       { label: "result", href: "/ontogen/result", icon: Network },
     ],
   },
-  { label: "MetaGen", href: "/metagen", icon: Sparkles },
+  {
+    label: "MetaGen",
+    icon: Sparkles,
+    basePath: "/metagen",
+    children: [
+      { label: "conf", href: "/metagen/conf", icon: SlidersHorizontal },
+      { label: "result", href: "/metagen/result", icon: Sparkles },
+      { label: "uncovered", href: "/metagen/uncovered", icon: PackageOpen },
+    ],
+  },
 ];
 
 function isNavGroup(entry: NavItem | NavGroup): entry is NavGroup {

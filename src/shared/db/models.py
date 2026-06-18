@@ -275,23 +275,29 @@ class ValidationResult(Base):
     )
 
 
-# ── metagen_config (singleton) ────────────────────────────────────────────────
+# ── metagen_config (collection) ───────────────────────────────────────────────
 
 
 class MetagenConfig(Base):
     __tablename__ = "metagen_config"
     __table_args__ = (
-        CheckConstraint("id = 1", name="ck_metagen_config_singleton"),
+        UniqueConstraint("name", name="uq_metagen_config_name"),
         CheckConstraint("result_limit BETWEEN 1 AND 20", name="ck_metagen_config_result_limit"),
         {"schema": SCHEMA},
     )
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    name: Mapped[str] = mapped_column(Text, nullable=False)
     is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     schedule_tier: Mapped[str | None] = mapped_column(Text, nullable=True)
     dataset_filter: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     result_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
     overwrite_pending: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now()
+    )
     updated_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now(), onupdate=func.now()
     )
@@ -353,6 +359,7 @@ class MetagenCandidate(Base):
         ),
         Index(
             "ix_metagen_candidates_item_status_created",
+            "conf_id",
             "dataset_urn",
             "item_id",
             "status",
@@ -375,6 +382,11 @@ class MetagenCandidate(Base):
 
     candidate_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    conf_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(f"{SCHEMA}.metagen_config.id", ondelete="SET NULL"),
+        nullable=True,
     )
     dataset_urn: Mapped[str] = mapped_column(Text, nullable=False)
     item_id: Mapped[str] = mapped_column(Text, nullable=False)

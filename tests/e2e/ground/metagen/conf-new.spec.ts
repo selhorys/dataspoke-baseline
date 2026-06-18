@@ -1,0 +1,90 @@
+/**
+ * Ground spec: /metagen/conf/new — create a conf.
+ *
+ * Narrow per-page flow: fill the conf create form (name, is_enabled,
+ * schedule_tier, dataset_filter, result_limit, overwrite_pending), Submit,
+ * land on the new conf's detail page, and confirm the row persisted via
+ * GET /spoke/metagen/conf (real-stack read-back, not a UI cache).
+ *
+ * Independent: creates its own conf; deletes it in afterAll.
+ *
+ * spec: spec/feature/FRONTEND_METAGEN.md §Page contracts — /metagen/conf/new
+ *   POSTs /spoke/metagen/conf {name, is_enabled, schedule_tier, dataset_filter,
+ *   result_limit, overwrite_pending}; redirect to /metagen/conf/[id]
+ * spec: spec/TESTING.md §End-to-End (E2E) Testing — ground group, real-session role
+ */
+
+import { test, expect } from "../../fixtures/index";
+
+const CONF_API = "/api/v1/spoke/metagen/conf";
+const CONF_NAME = `ground-new-${Date.now().toString(36)}`;
+const TITLE_MASTER_URN =
+  "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)";
+
+let confId: string | null = null;
+
+test.afterAll(async ({ adminApi }) => {
+  if (confId) await adminApi.delete(`${CONF_API}/${confId}`).catch(() => null);
+});
+
+test("/metagen/conf/new — create form posts a conf and redirects to its detail", async ({
+  page,
+  adminApi,
+}) => {
+  await page.goto("/metagen/conf/new");
+  await expect(page).not.toHaveURL(/\/login/);
+
+  // -- Heading --
+  // new/page.tsx: <h1>Create conf</h1>
+  await expect(page.getByRole("heading", { name: "Create conf", exact: true })).toBeVisible({
+    timeout: 15_000,
+  });
+
+  // -- Fill the form --
+  // conf-form.tsx field ids
+  await page.locator("#metagen-conf-name").fill(CONF_NAME);
+
+  const isEnabled = page.locator("#metagen-conf-is-enabled");
+  if (!(await isEnabled.isChecked().catch(() => false))) await isEnabled.click();
+
+  await page.locator("#metagen-conf-schedule-tier").click();
+  await page.getByRole("option", { name: "weekly", exact: true }).click();
+
+  // dataset_urns dimension of the DatasetFilterEditor — dataset-filter-editor.tsx #df-dataset-urns
+  await page.locator("#df-dataset-urns").fill(TITLE_MASTER_URN);
+
+  await page.locator("#metagen-conf-result-limit").fill("5");
+
+  // -- Submit --
+  // conf-form.tsx: <Button type="submit">Create conf</Button>
+  await page.getByRole("button", { name: "Create conf", exact: true }).click();
+
+  // -- Toast + redirect to /metagen/conf/[id] --
+  // new/page.tsx onSuccess → toast({ title: "Conf created" }) + router.push
+  await expect(page.getByText("Conf created", { exact: false }).first()).toBeVisible({
+    timeout: 20_000,
+  });
+  await expect(page).toHaveURL(/\/metagen\/conf\/[^/]+$/, { timeout: 15_000 });
+
+  // -- Backend read-back: the conf persisted with the submitted fields --
+  // spec: FRONTEND_METAGEN.md §Page contracts — POST /spoke/metagen/conf
+  const listResp = await adminApi.get(`${CONF_API}?limit=100`);
+  expect(listResp.status()).toBe(200);
+  const list = (await listResp.json()) as {
+    confs: Array<{
+      id: string;
+      name: string;
+      is_enabled: boolean;
+      schedule_tier: string | null;
+      result_limit: number;
+      dataset_filter: Record<string, unknown>;
+    }>;
+  };
+  const created = list.confs.find((c) => c.name === CONF_NAME);
+  expect(created, `conf ${CONF_NAME} must exist after create`).toBeTruthy();
+  confId = created!.id;
+  expect(created!.is_enabled).toBe(true);
+  expect(created!.schedule_tier).toBe("weekly");
+  expect(created!.result_limit).toBe(5);
+  expect(created!.dataset_filter).toEqual({ dataset_urns: [TITLE_MASTER_URN] });
+});

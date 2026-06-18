@@ -25,6 +25,13 @@ Usage:
     uv run python -m tests.integration.util --reset-dataspoke-db
         DataSpoke operational DB only
 
+    uv run python -m tests.integration.util --datahub-sync
+        Run the ingestion datahub-sync only (reconcile dataset_registry +
+        ingestion sources against the current DataHub URN set). This is the same
+        pipeline the hourly datahub-sync-hourly DAG runs; --reset-seed already
+        calls it at the end, so use this standalone only to re-reconcile without
+        a full reset.
+
     uv run python -m tests.integration.util --langfuse
         Langfuse dataspoke project only (delete all traces)
 
@@ -85,6 +92,13 @@ def main() -> None:
         asyncio.run(datahub.seed())
         asyncio.run(dataspoke_db.reset_all())
         asyncio.run(langfuse.reset_project())
+        # dataspoke_db.reset_all() TRUNCATEs dataset_registry; nothing else
+        # repopulates it. Run the real ingestion datahub-sync so the registry
+        # mirrors the freshly-ingested DataHub estate — exactly what the hourly
+        # datahub-sync-hourly DAG does in a deployment. Without this, features
+        # that read the registry (UC4 metagen `uncovered`, UC1 ingestion
+        # `unmanaged`) see an empty precondition under the seeded baseline.
+        asyncio.run(_datahub_sync())
 
     # Baseline reset/seed runs BEFORE UC4 staging. --uc4-seed masks the
     # customers/orders datasets that --reset-seed ingests into DataHub, so the
@@ -122,6 +136,10 @@ def main() -> None:
     if "--reset-dataspoke-db" in args:
         print("[INFO] Resetting DataSpoke operational DB...")
         asyncio.run(dataspoke_db.reset_all())
+
+    if "--datahub-sync" in args:
+        print("[INFO] Running ingestion datahub-sync (reconcile dataset_registry)...")
+        asyncio.run(_datahub_sync())
 
     if "--langfuse" in args:
         print("[INFO] Clearing Langfuse traces in the dataspoke project...")
@@ -195,6 +213,58 @@ async def _uc4_restore() -> None:
 
     os.remove(_UC4_STATE_FILE)
     print("Restored UC4 context (or partial). State file deleted.")
+
+
+async def _datahub_sync() -> None:
+    """Run the real ingestion datahub-sync against the test DB + DataHub.
+
+    Mirrors the production path: builds IngestionService exactly as
+    /internal/activities/ingestion/sync does (DataHubClient(gms_url, token) +
+    an AsyncSession), then calls IngestionService.sync(). That reconcile is the
+    sole writer of dataset_registry, so running it after datahub.seed() +
+    dataspoke_db.reset_all() leaves the registry mirroring the freshly-ingested
+    DataHub URN set (datahub_registered=True for every ingested URN).
+
+    The session/token are constructed the same way as _uc4_seed so the util has
+    a single, consistent wiring for "talk to the test DB and DataHub".
+    Idempotent: sync() upserts by URN, so repeated runs reconcile to the same
+    state.
+    """
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+    from src.backend.ingestion.service import IngestionService
+    from src.shared.datahub.client import DataHubClient
+    from tests.integration.util.datahub import _gms_url, get_datahub_token
+
+    dh_token = get_datahub_token()
+
+    ds_host = os.environ.get("DATASPOKE_TEST_POSTGRES_HOST", "localhost")
+    ds_port = os.environ.get("DATASPOKE_TEST_POSTGRES_PORT", "9201")
+    ds_user = os.environ.get("DATASPOKE_TEST_POSTGRES_USER", "dataspoke")
+    ds_password = os.environ.get("DATASPOKE_TEST_POSTGRES_PASSWORD", "")
+    ds_db = os.environ.get("DATASPOKE_TEST_POSTGRES_DB", "dataspoke")
+
+    engine = create_async_engine(
+        f"postgresql+asyncpg://{ds_user}:{ds_password}@{ds_host}:{ds_port}/{ds_db}"
+    )
+    async_session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    datahub = DataHubClient(_gms_url, dh_token)
+    try:
+        async with async_session_factory() as session:
+            service = IngestionService(datahub=datahub, db=session)
+            summary = await service.sync()
+    finally:
+        await engine.dispose()
+
+    print(
+        "datahub-sync done: "
+        f"registry_inserted={summary['registry_inserted']} "
+        f"registry_marked_true={summary['registry_marked_true']} "
+        f"registry_marked_false={summary['registry_marked_false']} "
+        f"sources_synced={summary['sources_synced']} "
+        f"datasets_mapped={summary['datasets_mapped']}"
+    )
 
 
 if __name__ == "__main__":

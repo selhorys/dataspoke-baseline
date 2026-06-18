@@ -14,7 +14,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { splitList } from "./dataset-filter-editor";
+import { splitList, splitLines } from "./dataset-filter-editor";
 
 // ── 1. splitList — textarea-to-array parser ────────────────────────────────────
 
@@ -106,6 +106,56 @@ describe("splitList — trimming", () => {
     // splitList only trims edges, does not collapse internal spaces
     const result = splitList("urn:li:tag:a b");
     expect(result).toEqual(["urn:li:tag:a b"]);
+  });
+});
+
+// ── 1b. splitLines — newline-only parser for dataset_urns ──────────────────────
+//
+// A DataHub dataset URN embeds commas inside its (platform,name,fabric) tuple,
+// so dataset_urns must split on newline only. Comma-splitting (splitList) would
+// shred a single URN into invalid fragments and the backend rejects them with
+// 422 INVALID_DATASET_URN.
+
+describe("splitLines — dataset_urns newline-only parser", () => {
+  it("keeps a single dataset URN with internal commas as one element", () => {
+    const urn =
+      "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)";
+    expect(splitLines(urn)).toEqual([urn]);
+  });
+
+  it("splits two dataset URNs on two lines into two elements (commas preserved)", () => {
+    const a =
+      "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)";
+    const b =
+      "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.actor_master,PROD)";
+    expect(splitLines(`${a}\n${b}`)).toEqual([a, b]);
+  });
+
+  it("trims surrounding whitespace and drops blank lines", () => {
+    const a =
+      "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)";
+    const b =
+      "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.actor_master,PROD)";
+    expect(splitLines(`  ${a}  \n\n  ${b}  \n`)).toEqual([a, b]);
+  });
+
+  it("returns [] for empty and whitespace-only input", () => {
+    expect(splitLines("")).toEqual([]);
+    expect(splitLines("   \n\n  ")).toEqual([]);
+  });
+});
+
+// ── 1c. splitList still comma-splits tags / glossary_terms ─────────────────────
+//
+// Tag and glossary URNs contain no commas, so comma-separation remains valid and
+// convenient for those dimensions.
+
+describe("splitList — tags comma-split still works", () => {
+  it("splits comma-separated tag URNs", () => {
+    expect(splitList("urn:li:tag:a,urn:li:tag:b")).toEqual([
+      "urn:li:tag:a",
+      "urn:li:tag:b",
+    ]);
   });
 });
 

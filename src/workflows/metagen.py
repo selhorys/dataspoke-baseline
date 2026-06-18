@@ -17,11 +17,15 @@ from pydantic import BaseModel
 
 
 class MetagenRunParams(BaseModel):
-    """Parameters for a singleton metagen pipeline run.
+    """Parameters for a metagen tier run.
 
-    - dataset_urns: optional list of DataHub dataset URNs to scope the run.
-      When omitted, MetagenService.run() enumerates all in-scope datasets
-      from the global conf's dataset_filter intersected with enabled boundaries.
+    The activity endpoint fans out across all enabled metagen confs whose
+    schedule_tier matches the requested tier. Each conf runs under its own
+    per-conf lock; the dataset scope for each conf is determined server-side
+    from that conf's dataset_filter intersected with enabled boundaries.
+
+    - dataset_urns: optional list of DataHub dataset URNs to further scope the
+      run. When omitted, the full per-conf dataset_filter applies.
     - dry_run: when True, compute and return proposals without persisting.
     """
 

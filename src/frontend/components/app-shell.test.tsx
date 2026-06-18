@@ -279,9 +279,20 @@ describe("AppShell — Admin Users link visibility (legacy, preserved)", () => {
       </AppShell>,
     );
 
-    // Validation and MetaGen links must always be visible
+    // Validation is a flat link; MetaGen is a collapsible group (like Ingestion
+    // and OntoGen) rendered as a toggle button with conf/result/uncovered
+    // submenus underneath.
     expect(screen.getByRole("link", { name: /validation/i })).toBeTruthy();
-    expect(screen.getByRole("link", { name: /metagen/i })).toBeTruthy();
+    const metagenGroup = screen.getByRole("button", { name: /metagen/i });
+    expect(metagenGroup).toBeTruthy();
+
+    // Expanding the group reveals its conf/result/uncovered submenu links.
+    fireEvent.click(metagenGroup);
+    const confLinks = screen.getAllByRole("link", { name: /^conf$/i });
+    const metagenConfLink = confLinks.find(
+      (el) => el.getAttribute("href") === "/metagen/conf",
+    );
+    expect(metagenConfLink).toBeTruthy();
   });
 });
 

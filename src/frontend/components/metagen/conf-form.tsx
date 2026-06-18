@@ -1,8 +1,11 @@
 "use client";
 
 /**
- * MetagenConfForm — edit the singleton metagen global conf.
- * Fields: is_enabled, schedule_tier, dataset_filter, result_limit, overwrite_pending.
+ * MetagenConfForm — create / edit a metagen conf (collection model).
+ * Fields: name, is_enabled, schedule_tier, dataset_filter, result_limit,
+ * overwrite_pending.
+ *
+ * Submits a full conf body; the page wires it to POST (create) or PUT (edit).
  */
 
 import { useEffect } from "react";
@@ -21,10 +24,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { DatasetFilterEditor } from "@/components/dataset-filter-editor";
-import type { MetagenGlobalConf, MetagenGlobalConfPutBody } from "@/types/metagen";
+import type { MetagenConf, MetagenConfPutBody } from "@/types/metagen";
 import type { DatasetFilter } from "@/types/governance";
 
 const confSchema = z.object({
+  name: z.string().min(1, "Name is required").max(200),
   is_enabled: z.boolean(),
   schedule_tier: z.enum(["hourly", "daily", "weekly"]).nullable(),
   result_limit: z.number().int().min(1).max(20),
@@ -34,12 +38,15 @@ const confSchema = z.object({
 type ConfFormValues = z.infer<typeof confSchema>;
 
 interface MetagenConfFormProps {
-  initialValues: MetagenGlobalConf | null;
+  initialValues: MetagenConf | null;
   datasetFilter: DatasetFilter;
   onDatasetFilterChange: (v: DatasetFilter) => void;
-  onSubmit: (body: MetagenGlobalConfPutBody) => void;
+  onSubmit: (body: MetagenConfPutBody) => void;
   isSubmitting: boolean;
   disabled?: boolean;
+  /** Server error (e.g. 409 METAGEN_CONF_EXISTS) to surface against the name field. */
+  serverError?: string;
+  submitLabel?: string;
 }
 
 export function MetagenConfForm({
@@ -49,6 +56,8 @@ export function MetagenConfForm({
   onSubmit,
   isSubmitting,
   disabled = false,
+  serverError,
+  submitLabel,
 }: MetagenConfFormProps) {
   const {
     register,
@@ -60,6 +69,7 @@ export function MetagenConfForm({
   } = useForm<ConfFormValues>({
     resolver: zodResolver(confSchema),
     defaultValues: {
+      name: initialValues?.name ?? "",
       is_enabled: initialValues?.is_enabled ?? false,
       schedule_tier: initialValues?.schedule_tier ?? null,
       result_limit: initialValues?.result_limit ?? 3,
@@ -70,6 +80,7 @@ export function MetagenConfForm({
   useEffect(() => {
     if (initialValues) {
       reset({
+        name: initialValues.name,
         is_enabled: initialValues.is_enabled,
         schedule_tier: initialValues.schedule_tier ?? null,
         result_limit: initialValues.result_limit,
@@ -84,6 +95,7 @@ export function MetagenConfForm({
 
   function handleFormSubmit(values: ConfFormValues) {
     onSubmit({
+      name: values.name,
       is_enabled: values.is_enabled,
       schedule_tier: values.schedule_tier ?? null,
       dataset_filter: datasetFilter as Record<string, unknown>,
@@ -94,6 +106,21 @@ export function MetagenConfForm({
 
   return (
     <form onSubmit={handleSubmit(handleFormSubmit)} className="space-y-6">
+      <Field
+        label="name"
+        htmlFor="metagen-conf-name"
+        required
+        error={errors.name?.message ?? serverError}
+      >
+        <Input
+          id="metagen-conf-name"
+          placeholder="catalog documentation policy"
+          disabled={disabled}
+          maxLength={200}
+          {...register("name")}
+        />
+      </Field>
+
       <Field label="is_enabled" htmlFor="metagen-conf-is-enabled">
         <div className="flex items-center gap-2">
           <Checkbox
@@ -173,7 +200,7 @@ export function MetagenConfForm({
 
       {!disabled && (
         <Button type="submit" disabled={isSubmitting}>
-          {isSubmitting ? "Saving…" : "Save configuration"}
+          {isSubmitting ? "Saving…" : (submitLabel ?? "Save configuration")}
         </Button>
       )}
     </form>

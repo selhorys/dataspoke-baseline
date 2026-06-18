@@ -97,9 +97,11 @@ test("editor: sidebar shows all main feature nav links", async ({ page }) => {
   await expect(page.getByRole("button", { name: "OntoGen", exact: true })).toBeVisible();
   // Governance child link is visible because the group auto-opens on /governance/dashboard.
   await expect(page.getByRole("link", { name: "Dashboard", exact: true })).toBeVisible();
-  // Flat feature links.
+  // Flat feature link.
   await expect(page.getByRole("link", { name: "Validation", exact: true })).toBeVisible();
-  await expect(page.getByRole("link", { name: "MetaGen", exact: true })).toBeVisible();
+  // MetaGen is a disclosure group (conf/result/uncovered), collapsed here, so it renders
+  // as a toggle button with its children pruned — same model as Ingestion/OntoGen.
+  await expect(page.getByRole("button", { name: "MetaGen", exact: true })).toBeVisible();
 });
 
 // ── Test 5 — Account section IS visible for Editor ────────────────────────────

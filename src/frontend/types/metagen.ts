@@ -1,5 +1,10 @@
 /**
  * Metadata Generation domain types — derived from src/api/schemas/metagen.py.
+ *
+ * Confs are a managed collection: many named confs coexist, each with its own
+ * dataset_filter / schedule_tier / generation budget. All confs feed one global
+ * cross-dataset review queue; each candidate carries the conf_id/conf_name that
+ * produced it.
  */
 
 export type ScheduleTier = "hourly" | "daily" | "weekly";
@@ -7,19 +12,31 @@ export type AllowedKind = "dataset.description" | "column.description";
 export type ItemStatus = "pending" | "llm_approved" | "approved";
 export type CandidateStatus = "llm_approved" | "approved" | "rejected";
 export type ReviewVerdict = "approve" | "reject";
+export type UncoveredReason = "no_conf_match" | "boundary_blocked";
 
-// ── Global conf ───────────────────────────────────────────────────────────────
+// ── Conf collection ─────────────────────────────────────────────────────────
 
-export interface MetagenGlobalConf {
+export interface MetagenConf {
+  id: string;
+  name: string;
   is_enabled: boolean;
   schedule_tier: ScheduleTier | null;
   dataset_filter: Record<string, unknown>;
   result_limit: number;
   overwrite_pending: boolean;
+  created_at: string;
   updated_at: string;
 }
 
-export interface MetagenGlobalConfPutBody {
+export interface MetagenConfListResponse {
+  offset: number;
+  limit: number;
+  total_count: number;
+  confs: MetagenConf[];
+}
+
+export interface MetagenConfCreateBody {
+  name: string;
   is_enabled: boolean;
   schedule_tier: ScheduleTier | null;
   dataset_filter: Record<string, unknown>;
@@ -27,12 +44,30 @@ export interface MetagenGlobalConfPutBody {
   overwrite_pending: boolean;
 }
 
-export interface MetagenGlobalConfPatchBody {
+/** PUT — full replacement. Same shape as create minus that the id is in the path. */
+export type MetagenConfPutBody = MetagenConfCreateBody;
+
+export interface MetagenConfPatchBody {
+  name?: string;
   is_enabled?: boolean;
   schedule_tier?: ScheduleTier | null;
   dataset_filter?: Record<string, unknown>;
   result_limit?: number;
   overwrite_pending?: boolean;
+}
+
+// ── Uncovered ─────────────────────────────────────────────────────────────────
+
+export interface MetagenUncoveredRow {
+  dataset_urn: string;
+  reason: UncoveredReason;
+}
+
+export interface MetagenUncoveredResponse {
+  offset: number;
+  limit: number;
+  total_count: number;
+  datasets: MetagenUncoveredRow[];
 }
 
 // ── Per-dataset boundary ──────────────────────────────────────────────────────
@@ -65,6 +100,11 @@ export interface MetagenItemSummary {
   item_id: string;
   kind: AllowedKind;
   field_path: string | null;
+  /**
+   * Derived over NON-rejected candidates: `pending` when no non-rejected
+   * candidate exists, `llm_approved` when at least one does, `approved` once a
+   * candidate has been human-approved (_metagen_mappers.py §item_status).
+   */
   status: ItemStatus;
   candidate_count: number;
   composite_id: string;
@@ -79,6 +119,9 @@ export interface MetagenItemListResponse {
 
 export interface MetagenCandidate {
   candidate_id: string;
+  /** The conf that produced this candidate; null after the conf was deleted. */
+  conf_id: string | null;
+  conf_name: string | null;
   item_id: string;
   dataset_urn: string;
   value: string;
@@ -103,6 +146,7 @@ export interface MetagenRunBody {
 
 export interface MetagenRunResponse {
   run_id: string;
+  conf_id: string;
   status: "success" | "failure";
   dry_run: boolean;
   unresolved_urns: string[];

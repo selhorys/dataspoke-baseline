@@ -16,12 +16,13 @@ from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
+from src.backend._dataset_filter import resolve_dataset_scope, validate_dataset_filter_service
+from src.backend.admin.config_service import RuntimeConfigDTO, get_runtime_config
 from src.backend.metagen.debate import run_debate
 from src.backend.metagen.debate_models import MetagenLLMOutput
 from src.backend.metagen.prompts import build_run_prompt
 from src.backend.metagen.reviewer import build_metagen_review_tool
 from src.backend.metagen.validator import build_metagen_validate_tool
-from src.backend._dataset_filter import resolve_dataset_scope, validate_dataset_filter_service
 from src.backend.ontogen.embedding_search import (
     search_edge_embeddings,
     search_node_embeddings,
@@ -32,6 +33,7 @@ from src.shared.datahub.client import DataHubClient
 from src.shared.datahub.documents import fetch_related_documents
 from src.shared.db.models import (
     DatasetNodeMap,
+    DatasetRegistry,
     Event,
     MetagenBoundary,
     MetagenCandidate,
@@ -57,26 +59,32 @@ from src.shared.exceptions import (
     PreconditionFailedError,
 )
 from src.shared.llm.client import LLMClient
-from src.backend.admin.config_service import RuntimeConfigDTO, get_runtime_config
 from src.shared.vector.client import PgVectorManager
 
 logger = logging.getLogger(__name__)
 
-_LOCK_KEY = "metagen:running:singleton"
 _LOCK_TTL_SECONDS = 3600
 
 _VALID_KINDS: frozenset[str] = frozenset({"dataset.description", "column.description"})
 
 
+def _lock_key(conf_id: str) -> str:
+    """Per-conf Redis lock key (one in-flight run per conf)."""
+    return f"metagen:running:{conf_id}"
+
+
 # ── Value objects ─────────────────────────────────────────────────────────────
 
 
-class MetagenGlobalConfDTO(BaseModel):
+class MetagenConfDTO(BaseModel):
+    id: str
+    name: str
     is_enabled: bool
     schedule_tier: str | None
     dataset_filter: dict[str, Any]
     result_limit: int
     overwrite_pending: bool
+    created_at: datetime
     updated_at: datetime
 
 
@@ -91,6 +99,8 @@ class MetagenBoundaryDTO(BaseModel):
 
 class CandidateDTO(BaseModel):
     candidate_id: str
+    conf_id: str | None
+    conf_name: str | None
     dataset_urn: str
     item_id: str
     run_id: str
@@ -109,6 +119,7 @@ class ItemSummaryDTO(BaseModel):
     kind: str
     field_path: str | None
     candidate_count: int
+    non_rejected_count: int
     has_approved: bool
     created_at: datetime
     updated_at: datetime
@@ -126,6 +137,7 @@ class ItemDetailDTO(BaseModel):
 
 class RunResultDTO(BaseModel):
     run_id: str
+    conf_id: str
     status: str
     dry_run: bool
     unresolved_urns: list[str]
@@ -134,16 +146,24 @@ class RunResultDTO(BaseModel):
     producer_iterations: int | None = None
 
 
+class UncoveredRowDTO(BaseModel):
+    dataset_urn: str
+    reason: str
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
-def _conf_to_dto(row: MetagenConfig) -> MetagenGlobalConfDTO:
-    return MetagenGlobalConfDTO(
+def _conf_to_dto(row: MetagenConfig) -> MetagenConfDTO:
+    return MetagenConfDTO(
+        id=str(row.id),
+        name=row.name,
         is_enabled=row.is_enabled,
         schedule_tier=row.schedule_tier,
         dataset_filter=dict(row.dataset_filter) if row.dataset_filter else {},
         result_limit=row.result_limit,
         overwrite_pending=row.overwrite_pending,
+        created_at=row.created_at,
         updated_at=row.updated_at,
     )
 
@@ -159,9 +179,11 @@ def _boundary_to_dto(row: MetagenBoundary) -> MetagenBoundaryDTO:
     )
 
 
-def _candidate_to_dto(row: MetagenCandidate) -> CandidateDTO:
+def _candidate_to_dto(row: MetagenCandidate, conf_name: str | None = None) -> CandidateDTO:
     return CandidateDTO(
         candidate_id=str(row.candidate_id),
+        conf_id=str(row.conf_id) if row.conf_id is not None else None,
+        conf_name=conf_name,
         dataset_urn=row.dataset_urn,
         item_id=row.item_id,
         run_id=str(row.run_id),
@@ -196,7 +218,7 @@ def _event_row(
 
 
 class MetagenService:
-    """Global singleton metadata generation service.
+    """Metadata generation service over a managed conf collection.
 
     Constructor-injected dependencies (stateless service pattern per
     spec/feature/BACKEND.md §Service Pattern):
@@ -222,68 +244,148 @@ class MetagenService:
         self._llm = llm
         self._vector = vector
 
-    # ── Singleton conf CRUD ───────────────────────────────────────────────────
+    # ── Conf collection CRUD ──────────────────────────────────────────────────
 
-    async def get_global_conf(self) -> MetagenGlobalConfDTO | None:
-        result = await self._db.execute(select(MetagenConfig).where(MetagenConfig.id == 1))
+    async def _load_conf_row(self, conf_id: str) -> MetagenConfig:
+        """Load a conf row by id or raise 404 METAGEN_CONF_NOT_FOUND."""
+        try:
+            cid = uuid.UUID(conf_id)
+        except ValueError:
+            raise EntityNotFoundError("metagen_conf", conf_id)
+        result = await self._db.execute(select(MetagenConfig).where(MetagenConfig.id == cid))
         row = result.scalar_one_or_none()
-        return _conf_to_dto(row) if row else None
+        if row is None:
+            raise EntityNotFoundError("metagen_conf", conf_id)
+        return row
 
-    async def put_global_conf(self, conf: dict[str, Any]) -> MetagenGlobalConfDTO:
-        """Full replacement of the singleton conf. Emits METAGEN.CONFIG_CREATE or UPDATE.
+    async def list_confs(
+        self, *, offset: int = 0, limit: int = 20
+    ) -> tuple[list[MetagenConfDTO], int]:
+        """List confs (paginated, newest first)."""
+        count_q = select(func.count()).select_from(MetagenConfig)
+        total = (await self._db.execute(count_q)).scalar() or 0
+
+        rows_q = (
+            select(MetagenConfig)
+            .order_by(MetagenConfig.created_at.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+        rows = (await self._db.execute(rows_q)).scalars().all()
+        return [_conf_to_dto(r) for r in rows], int(total)
+
+    async def get_conf(self, conf_id: str) -> MetagenConfDTO:
+        row = await self._load_conf_row(conf_id)
+        return _conf_to_dto(row)
+
+    async def create_conf(self, data: dict[str, Any]) -> MetagenConfDTO:
+        """Create a new conf. Raises 409 METAGEN_CONF_EXISTS on duplicate name.
 
         `schedule_tier` values are constrained at the API schema layer
-        (`MetagenGlobalConfPutRequest`).
+        (`MetagenConfCreateRequest`).
         """
-        dataset_filter = conf.get("dataset_filter", {}) or {}
+        dataset_filter = data.get("dataset_filter", {}) or {}
         validate_dataset_filter_service(dataset_filter)
 
-        result = await self._db.execute(select(MetagenConfig).where(MetagenConfig.id == 1))
-        existing = result.scalar_one_or_none()
-        created = existing is None
-
-        if existing is None:
-            existing = MetagenConfig(id=1)
-            self._db.add(existing)
-
-        existing.is_enabled = conf.get("is_enabled", False)
-        existing.schedule_tier = conf.get("schedule_tier")
-        existing.dataset_filter = dataset_filter
-        existing.result_limit = conf.get("result_limit", 3)
-        existing.overwrite_pending = conf.get("overwrite_pending", True)
-        existing.updated_at = datetime.now(tz=UTC)
-
-        await self._db.commit()
-        await self._db.refresh(existing)
-
-        event_type = METAGEN_CONFIG_CREATE if created else METAGEN_CONFIG_UPDATE
-        await self._record_metagen_event(
-            "singleton",
-            event_type,
-            "success",
-            {"operation": "PUT"},
+        name = data["name"]
+        existing = await self._db.execute(
+            select(MetagenConfig.id).where(MetagenConfig.name == name)
         )
-        return _conf_to_dto(existing)
+        if existing.scalar_one_or_none() is not None:
+            raise ConflictError("METAGEN_CONF_EXISTS", f"Metagen conf {name!r} already exists")
 
-    async def patch_global_conf(self, partial: dict[str, Any]) -> MetagenGlobalConfDTO:
-        """Partial update of the singleton conf. Emits METAGEN.CONFIG_UPDATE.
+        now = datetime.now(tz=UTC)
+        row = MetagenConfig(
+            id=uuid.uuid4(),
+            name=name,
+            is_enabled=data.get("is_enabled", False),
+            schedule_tier=data.get("schedule_tier"),
+            dataset_filter=dataset_filter,
+            result_limit=data.get("result_limit", 3),
+            overwrite_pending=data.get("overwrite_pending", True),
+            created_at=now,
+            updated_at=now,
+        )
+        self._db.add(row)
+        await self._db.commit()
+        await self._db.refresh(row)
 
-        `schedule_tier` values are constrained at the API schema layer
-        (`MetagenGlobalConfPatchRequest`).
-        """
+        await self._record_metagen_event(
+            str(row.id),
+            METAGEN_CONFIG_CREATE,
+            "success",
+            {"operation": "POST", "conf_id": str(row.id), "conf_name": row.name},
+        )
+        return _conf_to_dto(row)
+
+    async def put_conf(self, conf_id: str, data: dict[str, Any]) -> MetagenConfDTO:
+        """Full replacement of a conf. Raises 404 when absent, 409 on name collision."""
+        dataset_filter = data.get("dataset_filter", {}) or {}
+        validate_dataset_filter_service(dataset_filter)
+
+        row = await self._load_conf_row(conf_id)
+
+        name = data["name"]
+        if name != row.name:
+            clash = await self._db.execute(
+                select(MetagenConfig.id).where(
+                    MetagenConfig.name == name, MetagenConfig.id != row.id
+                )
+            )
+            if clash.scalar_one_or_none() is not None:
+                raise ConflictError(
+                    "METAGEN_CONF_EXISTS", f"Metagen conf {name!r} already exists"
+                )
+
+        row.name = name
+        row.is_enabled = data.get("is_enabled", False)
+        row.schedule_tier = data.get("schedule_tier")
+        row.dataset_filter = dataset_filter
+        row.result_limit = data.get("result_limit", 3)
+        row.overwrite_pending = data.get("overwrite_pending", True)
+        row.updated_at = datetime.now(tz=UTC)
+
+        self._db.add(row)
+        await self._db.commit()
+        await self._db.refresh(row)
+
+        await self._record_metagen_event(
+            str(row.id),
+            METAGEN_CONFIG_UPDATE,
+            "success",
+            {"operation": "PUT", "conf_id": str(row.id), "conf_name": row.name},
+        )
+        return _conf_to_dto(row)
+
+    async def patch_conf(self, conf_id: str, partial: dict[str, Any]) -> MetagenConfDTO:
+        """Partial update of a conf. Raises 404 when absent, 409 on name collision."""
         if "dataset_filter" in partial and partial["dataset_filter"] is not None:
             validate_dataset_filter_service(partial["dataset_filter"])
 
-        result = await self._db.execute(select(MetagenConfig).where(MetagenConfig.id == 1))
-        row = result.scalar_one_or_none()
-        if row is None:
-            raise EntityNotFoundError("metagen_conf", "singleton")
+        row = await self._load_conf_row(conf_id)
 
-        for field_name in ("is_enabled", "schedule_tier", "dataset_filter", "result_limit", "overwrite_pending"):
+        if "name" in partial and partial["name"] is not None and partial["name"] != row.name:
+            clash = await self._db.execute(
+                select(MetagenConfig.id).where(
+                    MetagenConfig.name == partial["name"], MetagenConfig.id != row.id
+                )
+            )
+            if clash.scalar_one_or_none() is not None:
+                raise ConflictError(
+                    "METAGEN_CONF_EXISTS", f"Metagen conf {partial['name']!r} already exists"
+                )
+
+        for field_name in (
+            "name",
+            "is_enabled",
+            "dataset_filter",
+            "result_limit",
+            "overwrite_pending",
+        ):
             if field_name in partial and partial[field_name] is not None:
                 setattr(row, field_name, partial[field_name])
-            elif field_name == "schedule_tier" and field_name in partial and partial[field_name] is None:
-                row.schedule_tier = None
+        if "schedule_tier" in partial:
+            row.schedule_tier = partial["schedule_tier"]
 
         row.updated_at = datetime.now(tz=UTC)
         self._db.add(row)
@@ -291,26 +393,61 @@ class MetagenService:
         await self._db.refresh(row)
 
         await self._record_metagen_event(
-            "singleton",
+            str(row.id),
             METAGEN_CONFIG_UPDATE,
             "success",
-            {"operation": "PATCH", "fields_changed": list(partial.keys())},
+            {
+                "operation": "PATCH",
+                "conf_id": str(row.id),
+                "conf_name": row.name,
+                "fields_changed": list(partial.keys()),
+            },
         )
         return _conf_to_dto(row)
 
-    async def delete_global_conf(self) -> None:
-        """Delete the singleton conf. Emits METAGEN.CONFIG_DELETE."""
-        result = await self._db.execute(select(MetagenConfig).where(MetagenConfig.id == 1))
-        row = result.scalar_one_or_none()
-        if row is not None:
-            await self._db.delete(row)
-            await self._db.commit()
+    async def delete_conf(self, conf_id: str) -> None:
+        """Delete a conf. Deletes this conf's non-approved candidates and SET NULLs
+        conf_id on its approved candidates (already emitted to DataHub). Emits
+        METAGEN.CONFIG_DELETE.
+        """
+        row = await self._load_conf_row(conf_id)
+        cid = row.id
+
+        # Drop embeddings for this conf's non-approved candidates first (FK).
+        await self._db.execute(
+            delete(MetagenCandidateEmbedding).where(
+                MetagenCandidateEmbedding.candidate_id.in_(
+                    select(MetagenCandidate.candidate_id).where(
+                        MetagenCandidate.conf_id == cid,
+                        MetagenCandidate.status != "approved",
+                    )
+                )
+            )
+        )
+        await self._db.execute(
+            delete(MetagenCandidate).where(
+                MetagenCandidate.conf_id == cid,
+                MetagenCandidate.status != "approved",
+            )
+        )
+        # Orphan the approved candidates (retain as DataHub-emitted history).
+        await self._db.execute(
+            MetagenCandidate.__table__.update()
+            .where(
+                MetagenCandidate.conf_id == cid,
+                MetagenCandidate.status == "approved",
+            )
+            .values(conf_id=None)
+        )
+
+        await self._db.delete(row)
+        await self._db.commit()
 
         await self._record_metagen_event(
-            "singleton",
+            conf_id,
             METAGEN_CONFIG_DELETE,
             "success",
-            {"operation": "DELETE"},
+            {"operation": "DELETE", "conf_id": conf_id},
         )
 
     # ── Boundary CRUD ─────────────────────────────────────────────────────────
@@ -398,6 +535,7 @@ class MetagenService:
         dataset_urn: str | None = None,
         kind: str | None = None,
         status: str | None = None,
+        conf_id: str | None = None,
         offset: int = 0,
         limit: int = 20,
     ) -> tuple[list[ItemSummaryDTO], int]:
@@ -406,6 +544,33 @@ class MetagenService:
             base = base.where(MetagenItem.dataset_urn == dataset_urn)
         if kind is not None:
             base = base.where(MetagenItem.kind == kind)
+        if conf_id is not None:
+            try:
+                cid = uuid.UUID(conf_id)
+            except ValueError:
+                raise EntityNotFoundError("metagen_conf", conf_id)
+            base = base.where(
+                select(MetagenCandidate.candidate_id)
+                .where(
+                    MetagenCandidate.conf_id == cid,
+                    MetagenCandidate.dataset_urn == MetagenItem.dataset_urn,
+                    MetagenCandidate.item_id == MetagenItem.item_id,
+                )
+                .exists()
+            )
+        if status is not None:
+            # Only items with at least one candidate of the requested status are
+            # returned (matching _build_item_summary), so the EXISTS keeps the
+            # count consistent with the materialised page.
+            base = base.where(
+                select(MetagenCandidate.candidate_id)
+                .where(
+                    MetagenCandidate.status == status,
+                    MetagenCandidate.dataset_urn == MetagenItem.dataset_urn,
+                    MetagenCandidate.item_id == MetagenItem.item_id,
+                )
+                .exists()
+            )
 
         count_q = select(func.count()).select_from(base.subquery())
         total = (await self._db.execute(count_q)).scalar() or 0
@@ -441,28 +606,95 @@ class MetagenService:
     async def get_item_for_dataset(self, urn: str, item_id: str) -> ItemDetailDTO:
         return await self.get_item(urn, item_id)
 
+    # ── Uncovered view ────────────────────────────────────────────────────────
+
+    async def list_uncovered(
+        self,
+        *,
+        include_disallowed: bool = False,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> tuple[list[UncoveredRowDTO], int]:
+        """Registered datasets not documented by any enabled conf.
+
+        Default (`include_disallowed=false`): a registered dataset matched by no
+        enabled conf's `dataset_filter` → `reason="no_conf_match"`.
+
+        With `include_disallowed=true`: additionally includes datasets matched by
+        some enabled conf but blocked by their boundary (missing, `is_enabled=false`,
+        or empty `allowed`) → `reason="boundary_blocked"`. A dataset matched and
+        writable by at least one enabled conf is never listed.
+        """
+        # Registered datasets (the UC1 unmanaged analogue base set).
+        reg_result = await self._db.execute(
+            select(DatasetRegistry.dataset_urn).where(
+                DatasetRegistry.datahub_registered.is_(True)
+            )
+        )
+        registered: set[str] = {r[0] for r in reg_result.all()}
+
+        # Union of URNs matched by any enabled conf's dataset_filter.
+        confs_result = await self._db.execute(
+            select(MetagenConfig).where(MetagenConfig.is_enabled.is_(True))
+        )
+        enabled_confs = confs_result.scalars().all()
+
+        matched: set[str] = set()
+        for conf in enabled_confs:
+            scope = await resolve_dataset_scope(
+                self._datahub,
+                dict(conf.dataset_filter) if conf.dataset_filter else {},
+                swallow_enumerate_errors=True,
+            )
+            matched.update(scope.resolved_urns)
+        matched &= registered
+
+        # Writable boundary set: is_enabled=true with non-empty allowed.
+        bnd_result = await self._db.execute(
+            select(MetagenBoundary.dataset_urn).where(
+                MetagenBoundary.is_enabled.is_(True),
+                func.cardinality(MetagenBoundary.allowed) > 0,
+            )
+        )
+        writable_boundary: set[str] = {r[0] for r in bnd_result.all()}
+
+        rows: list[UncoveredRowDTO] = []
+        for urn in sorted(registered):
+            if urn not in matched:
+                rows.append(UncoveredRowDTO(dataset_urn=urn, reason="no_conf_match"))
+            elif include_disallowed and urn not in writable_boundary:
+                rows.append(UncoveredRowDTO(dataset_urn=urn, reason="boundary_blocked"))
+
+        total = len(rows)
+        return rows[offset : offset + limit], total
+
     # ── Run pipeline ──────────────────────────────────────────────────────────
 
     async def run(
         self,
+        conf_id: str,
         *,
         dataset_urns: list[str] | None = None,
         dry_run: bool = False,
     ) -> RunResultDTO:
-        """Global metagen inference pipeline, serialised by Redis lock.
+        """Per-conf metagen inference pipeline, serialised by a per-conf Redis lock.
 
-        - Raises ConflictError(METAGEN_RUNNING) if already running.
+        - Raises EntityNotFoundError(metagen_conf) if the conf is absent.
+        - Raises ConflictError(METAGEN_RUNNING) if this conf is already running.
         - Raises ConflictError(METAGEN_DISABLED) if conf.is_enabled=false and not dry_run.
         """
+        conf = await self.get_conf(conf_id)
+
         run_id = str(uuid.uuid4())
+        lock_key = _lock_key(conf_id)
         lock_token = secrets.token_urlsafe(16)
-        acquired = await self._cache.set_nx(_LOCK_KEY, lock_token, ttl_seconds=_LOCK_TTL_SECONDS)
+        acquired = await self._cache.set_nx(lock_key, lock_token, ttl_seconds=_LOCK_TTL_SECONDS)
         if not acquired:
-            raise ConflictError("METAGEN_RUNNING", "Metagen inference is already running")
+            raise ConflictError("METAGEN_RUNNING", f"Metagen conf {conf_id} is already running")
 
         try:
             return await self._run_inner(
-                dataset_urns=dataset_urns, dry_run=dry_run, run_id=run_id
+                conf=conf, dataset_urns=dataset_urns, dry_run=dry_run, run_id=run_id
             )
         except ConflictError:
             raise
@@ -470,29 +702,38 @@ class MetagenService:
             logger.error("metagen_run_failed", exc_info=True)
             try:
                 await self._record_metagen_event(
-                    "singleton",
+                    conf_id,
                     METAGEN_RUN_FAILED,
                     "failure",
-                    {"error": str(exc), "run_id": run_id},
+                    {
+                        "error": str(exc),
+                        "run_id": run_id,
+                        "conf_id": conf_id,
+                        "conf_name": conf.name,
+                    },
                 )
             except Exception:
                 logger.warning("metagen_run_failed_event_emit_failed", exc_info=True)
             raise
         finally:
-            await self._cache.delete_if_value(_LOCK_KEY, lock_token)
+            await self._cache.delete_if_value(lock_key, lock_token)
 
     async def _run_inner(
         self,
         *,
+        conf: MetagenConfDTO,
         dataset_urns: list[str] | None,
         dry_run: bool,
         run_id: str,
     ) -> RunResultDTO:
         rc = await get_runtime_config(self._db)
-        conf = await self._load_conf_or_default()
 
         if not conf.is_enabled and not dry_run:
-            raise ConflictError("METAGEN_DISABLED", "Metagen is disabled; only dry-run is permitted")
+            raise ConflictError(
+                "METAGEN_DISABLED", "Metagen conf is disabled; only dry-run is permitted"
+            )
+
+        conf_uuid = uuid.UUID(conf.id)
 
         # Step 1: Enumerate in-scope datasets
         in_scope_urns, unresolved_urns = await self._enumerate_in_scope_datasets(
@@ -507,9 +748,9 @@ class MetagenService:
         debate_outcome: str | None = None
         producer_iterations: int | None = None
 
-        # Step 2: Clear rejected candidates across in-scope datasets
+        # Step 2: Clear this conf's rejected candidates across in-scope datasets
         if not dry_run:
-            rejected_cleared = await self._clear_rejected_candidates(in_scope_urns)
+            rejected_cleared = await self._clear_rejected_candidates(in_scope_urns, conf_uuid)
 
         for urn in in_scope_urns:
             # Step 3: Fetch evidence
@@ -626,6 +867,7 @@ class MetagenService:
                     new_candidate_confidence=cand.confidence_score,
                     new_candidate_evidence=dict(debate_result.transcript),
                     run_id=run_uuid,
+                    conf_id=conf_uuid,
                     conf=conf,
                 )
                 if added:
@@ -647,11 +889,13 @@ class MetagenService:
             }
 
         await self._record_metagen_event(
-            "singleton",
+            conf.id,
             METAGEN_RUN_COMPLETE,
             "success",
             {
                 "run_id": run_id,
+                "conf_id": conf.id,
+                "conf_name": conf.name,
                 "unresolved_urns": unresolved_urns,
                 "counts": counts,
                 "dry_run": dry_run,
@@ -662,6 +906,7 @@ class MetagenService:
 
         return RunResultDTO(
             run_id=run_id,
+            conf_id=conf.id,
             status="success",
             dry_run=dry_run,
             unresolved_urns=unresolved_urns,
@@ -698,7 +943,8 @@ class MetagenService:
         if boundary is None or not boundary.is_enabled:
             raise PreconditionFailedError(
                 "METAGEN_DATASET_NOT_IN_BOUNDARY",
-                f"Dataset {dataset_urn!r} has no active boundary — add one via PUT .../attr/metagen/conf",
+                f"Dataset {dataset_urn!r} has no active boundary — "
+                f"add one via PUT .../attr/metagen/boundary",
             )
 
         try:
@@ -771,7 +1017,8 @@ class MetagenService:
             if cand.status == "approved":
                 raise ConflictError(
                     "METAGEN_CANNOT_REJECT_APPROVED",
-                    "Cannot reject an approved candidate — approve a different sibling to demote it",
+                    "Cannot reject an approved candidate — "
+                    "approve a different sibling to demote it",
                 )
 
             cand.status = "rejected"
@@ -792,30 +1039,17 @@ class MetagenService:
                 },
             )
 
-        return _candidate_to_dto(cand)
+        conf_name: str | None = None
+        if cand.conf_id is not None:
+            name_map = await self._conf_name_map({cand.conf_id})
+            conf_name = name_map.get(cand.conf_id)
+        return _candidate_to_dto(cand, conf_name)
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
-    async def _load_conf_or_default(self) -> MetagenGlobalConfDTO:
-        """Return the singleton conf or a disabled-default if not yet created."""
-        result = await self._db.execute(select(MetagenConfig).where(MetagenConfig.id == 1))
-        row = result.scalar_one_or_none()
-        if row is None:
-            row = MetagenConfig(
-                id=1,
-                is_enabled=False,
-                dataset_filter={},
-                result_limit=3,
-                overwrite_pending=True,
-            )
-            self._db.add(row)
-            await self._db.commit()
-            await self._db.refresh(row)
-        return _conf_to_dto(row)
-
     async def _enumerate_in_scope_datasets(
         self,
-        conf: MetagenGlobalConfDTO,
+        conf: MetagenConfDTO,
         override_urns: list[str] | None,
     ) -> tuple[list[str], list[str]]:
         """Intersect DataHub dataset_filter with metagen_boundary.is_enabled=true rows.
@@ -843,10 +1077,13 @@ class MetagenService:
         in_scope = sorted(datahub_urn_set & enabled_boundary_urns)
         return in_scope, unresolved
 
-    async def _clear_rejected_candidates(self, in_scope_urns: list[str]) -> int:
-        """Delete rejected candidates across in-scope datasets. Returns deleted row count.
+    async def _clear_rejected_candidates(
+        self, in_scope_urns: list[str], conf_id: uuid.UUID
+    ) -> int:
+        """Delete this conf's rejected candidates across in-scope datasets.
 
-        Embeddings rows in `metagen_candidate_embeddings` carry a FK to
+        Returns deleted row count. Embeddings rows in
+        `metagen_candidate_embeddings` carry a FK to
         `metagen_candidates.candidate_id`; delete them first so the candidate
         delete does not raise ForeignKeyViolationError.
         """
@@ -856,6 +1093,7 @@ class MetagenService:
             delete(MetagenCandidateEmbedding).where(
                 MetagenCandidateEmbedding.candidate_id.in_(
                     select(MetagenCandidate.candidate_id).where(
+                        MetagenCandidate.conf_id == conf_id,
                         MetagenCandidate.dataset_urn.in_(in_scope_urns),
                         MetagenCandidate.status == "rejected",
                     )
@@ -864,6 +1102,7 @@ class MetagenService:
         )
         raw = await self._db.execute(
             delete(MetagenCandidate).where(
+                MetagenCandidate.conf_id == conf_id,
                 MetagenCandidate.dataset_urn.in_(in_scope_urns),
                 MetagenCandidate.status == "rejected",
             )
@@ -1133,14 +1372,16 @@ class MetagenService:
         new_candidate_confidence: float,
         new_candidate_evidence: dict[str, Any],
         run_id: uuid.UUID,
-        conf: MetagenGlobalConfDTO,
+        conf_id: uuid.UUID,
+        conf: MetagenConfDTO,
     ) -> tuple[bool, bool]:
-        """Ensure the per-item budget and persist the new candidate.
+        """Ensure the per-(conf, item) budget and persist the new candidate.
 
-        Returns (added, evicted).
+        Returns (added, evicted). The budget counts and eviction are scoped to
+        this conf's candidates on the item; other confs' candidates are untouched.
 
-        When budget is full and overwrite_pending=true: evict oldest llm_approved,
-        then add. When budget is full and overwrite_pending=false: skip (no add, no evict).
+        When budget is full and overwrite_pending=true: evict this conf's oldest
+        llm_approved, then add. When full and overwrite_pending=false: skip.
         """
         # Materialise the item row (upsert)
         item_result = await self._db.execute(
@@ -1150,7 +1391,11 @@ class MetagenService:
         )
         item_row = item_result.scalar_one_or_none()
         if item_row is None:
-            kind = "dataset.description" if item_id == "dataset.description" else "column.description"
+            kind = (
+                "dataset.description"
+                if item_id == "dataset.description"
+                else "column.description"
+            )
             field_path: str | None = None
             if kind == "column.description":
                 field_path = item_id[len("column.") : -len(".description")]
@@ -1163,9 +1408,10 @@ class MetagenService:
             self._db.add(item_row)
             await self._db.flush()
 
-        # Count non-rejected candidates
+        # Count this conf's non-rejected candidates on the item
         count_result = await self._db.execute(
             select(func.count()).where(
+                MetagenCandidate.conf_id == conf_id,
                 MetagenCandidate.dataset_urn == urn,
                 MetagenCandidate.item_id == item_id,
                 MetagenCandidate.status != "rejected",
@@ -1177,10 +1423,11 @@ class MetagenService:
         if non_rejected_count >= conf.result_limit:
             if not conf.overwrite_pending:
                 return False, False
-            # Evict oldest llm_approved
+            # Evict this conf's oldest llm_approved
             oldest_result = await self._db.execute(
                 select(MetagenCandidate)
                 .where(
+                    MetagenCandidate.conf_id == conf_id,
                     MetagenCandidate.dataset_urn == urn,
                     MetagenCandidate.item_id == item_id,
                     MetagenCandidate.status == "llm_approved",
@@ -1198,6 +1445,7 @@ class MetagenService:
 
         new_cand = MetagenCandidate(
             candidate_id=uuid.uuid4(),
+            conf_id=conf_id,
             dataset_urn=urn,
             item_id=item_id,
             run_id=run_id,
@@ -1269,7 +1517,11 @@ class MetagenService:
     async def _refresh_candidate_embedding(self, cand: MetagenCandidate) -> None:
         """Embed the candidate value and upsert metagen_candidate_embeddings (best-effort)."""
         try:
-            kind = "dataset.description" if cand.item_id == "dataset.description" else "column.description"
+            kind = (
+                "dataset.description"
+                if cand.item_id == "dataset.description"
+                else "column.description"
+            )
             vec = await self._llm.embed(cand.value)
             await _upsert_candidate_embedding(
                 self._vector, str(cand.candidate_id), kind, vec
@@ -1295,6 +1547,7 @@ class MetagenService:
         cands = (await self._db.execute(q)).scalars().all()
 
         has_approved = any(c.status == "approved" for c in cands)
+        non_rejected_count = sum(1 for c in cands if c.status != "rejected")
 
         if status_filter is not None and not cands:
             return None
@@ -1305,10 +1558,22 @@ class MetagenService:
             kind=row.kind,
             field_path=row.field_path,
             candidate_count=len(cands),
+            non_rejected_count=non_rejected_count,
             has_approved=has_approved,
             created_at=row.created_at,
             updated_at=row.updated_at,
         )
+
+    async def _conf_name_map(self, conf_ids: set[uuid.UUID]) -> dict[uuid.UUID, str]:
+        """Resolve a set of conf ids to their names (absent ids omitted)."""
+        if not conf_ids:
+            return {}
+        result = await self._db.execute(
+            select(MetagenConfig.id, MetagenConfig.name).where(
+                MetagenConfig.id.in_(conf_ids)
+            )
+        )
+        return {r.id: r.name for r in result.all()}
 
     async def _build_item_detail(self, row: MetagenItem) -> ItemDetailDTO:
         """Build an ItemDetailDTO from a MetagenItem row (includes candidates)."""
@@ -1320,7 +1585,14 @@ class MetagenService:
             )
             .order_by(MetagenCandidate.created_at.desc())
         )
-        candidates = [_candidate_to_dto(c) for c in cands_result.scalars().all()]
+        cand_rows = cands_result.scalars().all()
+        name_map = await self._conf_name_map(
+            {c.conf_id for c in cand_rows if c.conf_id is not None}
+        )
+        candidates = [
+            _candidate_to_dto(c, name_map.get(c.conf_id) if c.conf_id else None)
+            for c in cand_rows
+        ]
         return ItemDetailDTO(
             dataset_urn=row.dataset_urn,
             item_id=row.item_id,

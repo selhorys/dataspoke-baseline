@@ -91,9 +91,9 @@ export default function MetagenDatasetPage({
       {/* Header */}
       <div className="flex flex-wrap items-center gap-3">
         <Link
-          href="/metagen"
+          href="/metagen/result"
           className="text-muted-foreground hover:text-foreground"
-          aria-label="Back to MetaGen"
+          aria-label="Back to MetaGen review queue"
         >
           <ArrowLeft className="h-4 w-4" />
         </Link>
@@ -109,7 +109,7 @@ export default function MetagenDatasetPage({
 
       {/* ── Boundary (per-dataset conf) ──────────────────────────────────────── */}
       <section className="rounded-lg border p-5">
-        <h2 className="mb-4 text-sm font-medium">attr/metagen/conf (boundary)</h2>
+        <h2 className="mb-4 text-sm font-medium">attr/metagen/boundary</h2>
 
         {boundaryLoading && <Skeleton className="h-32 w-full" />}
 

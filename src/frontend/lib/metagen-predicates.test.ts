@@ -41,6 +41,8 @@ import type { CandidateStatus, ItemStatus } from "@/types/metagen";
 function makeCandidate(status: CandidateStatus) {
   return {
     candidate_id: "cand-" + status,
+    conf_id: "conf-1",
+    conf_name: "catalog policy",
     item_id: "item-1",
     dataset_urn: "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)",
     value: "A description of the catalog.title_master table",

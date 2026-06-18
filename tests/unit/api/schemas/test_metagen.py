@@ -1,24 +1,24 @@
-"""Unit tests for src/api/schemas/metagen.py — UC4 global-conf schema surface.
+"""Unit tests for src/api/schemas/metagen.py — UC4 conf-collection schema surface.
 
-Spec: spec/API.md §Metadata Generation
-      spec/feature/BACKEND_SCHEMA.md — metagen tables constraints
+Spec: spec/API.md §Metadata Generation (/spoke/metagen)
+      spec/feature/BACKEND_SCHEMA.md §metagen_config / §metagen_candidates
 
 Constraints tested:
-  - result_limit ∈ [1, 20] (MetagenGlobalConfPutRequest and PatchRequest)
-  - dataset_filter.{tags,glossary_terms,dataset_urns} ≤ 1000 per dimension (PUT and PATCH)
+  - conf create requires unique `name` (min_length 1); result_limit ∈ [1, 20]
+  - dataset_filter.{tags,glossary_terms,dataset_urns} ≤ 1000 per dimension (POST/PUT/PATCH)
   - dataset_filter.origin accepted; origin='' rejected at schema layer (unified four-dim shape)
   - dataset_filter.dataset_urns malformed URN raises INVALID_DATASET_URN at schema layer (UC4)
-  - reason max_length=2000 (MetagenReviewRequest)
-  - verdict ∈ {approve, reject} (MetagenReviewRequest)
+  - schedule_tier ∈ {hourly, daily, weekly, null}
+  - reason max_length=2000 (MetagenReviewRequest); verdict ∈ {approve, reject}
   - MetagenBoundaryPutRequest.allowed ∈ {dataset.description, column.description}
-  - MetagenItemListResponse envelope shape uses 'total_count' (not 'total')
-  - MetagenRunResponse carries status: Literal["success","failure"]
-
-Spec traceability:
-  spec/API.md §UC4 Metadata Generation — dataset_filter unified four-dimension shape
-  spec/API.md §Payload caps — dataset_filter list dimensions capped at 1,000
-  spec/API.md §Error Catalogue — 422 INVALID_DATASET_URN for malformed URNs
+  - MetagenConfListResponse / MetagenItemListResponse / MetagenUncoveredResponse envelopes
+    use 'total_count' (not 'total')
+  - MetagenCandidate carries conf_id / conf_name
+  - MetagenUncoveredRow.reason ∈ {no_conf_match, boundary_blocked}
+  - MetagenRunResponse carries conf_id + status: Literal["success","failure"]
 """
+
+from datetime import UTC, datetime
 
 import pytest
 from pydantic import ValidationError
@@ -26,14 +26,19 @@ from pydantic import ValidationError
 from src.api.schemas.metagen import (
     MetagenBoundaryPatchRequest,
     MetagenBoundaryPutRequest,
-    MetagenGlobalConfPatchRequest,
-    MetagenGlobalConfPutRequest,
-    MetagenGlobalConfResponse,
+    MetagenCandidate,
+    MetagenConfCreateRequest,
+    MetagenConfListResponse,
+    MetagenConfPatchRequest,
+    MetagenConfPutRequest,
+    MetagenConfResponse,
     MetagenItemListResponse,
     MetagenItemSummary,
     MetagenReviewRequest,
     MetagenRunRequest,
     MetagenRunResponse,
+    MetagenUncoveredResponse,
+    MetagenUncoveredRow,
 )
 from src.shared.exceptions import InvalidDatasetUrnError
 
@@ -43,62 +48,84 @@ _REASON_MAX_LEN = 2000
 _VALID_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
 
 
-# ── MetagenGlobalConfPutRequest ───────────────────────────────────────────────
+# ── MetagenConfCreateRequest ──────────────────────────────────────────────────
 
 
-class TestMetagenGlobalConfPutRequest:
-    def test_valid_minimal_request(self) -> None:
-        """Minimal PUT request with is_enabled only is valid.
+class TestMetagenConfCreateRequest:
+    def test_valid_minimal_request_requires_name(self) -> None:
+        """A create request with only `name` is valid and applies defaults.
 
-        Spec: API.md §Metadata Generation — PUT /metagen/attr/conf accepts is_enabled.
+        Spec: API.md §Metadata Generation — POST /metagen/conf body
+        {name, is_enabled, schedule_tier, dataset_filter, result_limit, overwrite_pending}.
         """
-        req = MetagenGlobalConfPutRequest(is_enabled=False)
+        req = MetagenConfCreateRequest(name="catalog-docs")
+        assert req.name == "catalog-docs"
+        assert req.schedule_tier is None
+        # result_limit/overwrite_pending defaults are spec'd in BACKEND_SCHEMA.md
+        # §metagen_config (result_limit default 3; overwrite_pending default true).
+        assert req.result_limit == 3
+        assert req.overwrite_pending is True
+        # is_enabled default is an impl-chosen safe default (create a conf disabled,
+        # opt into scheduling explicitly) — not pinned by spec.
         assert req.is_enabled is False
-        assert req.result_limit == 3  # default
-        assert req.overwrite_pending is True  # default
+
+    def test_name_missing_raises(self) -> None:
+        """A create request without `name` raises ValidationError.
+
+        Spec: API.md §Metadata Generation — `name` is required and unique.
+        """
+        with pytest.raises(ValidationError):
+            MetagenConfCreateRequest()  # type: ignore[call-arg]
+
+    def test_name_empty_raises(self) -> None:
+        """A create request with an empty `name` raises ValidationError.
+
+        Spec: feature/BACKEND.md §Metadata Generation Service — `name` is the unique
+        conf name (min_length 1).
+        """
+        with pytest.raises(ValidationError):
+            MetagenConfCreateRequest(name="")
 
     def test_result_limit_minimum_valid(self) -> None:
         """result_limit=1 is the minimum valid value.
 
-        Spec: spec/feature/BACKEND_SCHEMA.md — metagen_config.result_limit ∈ [1, 20].
+        Spec: feature/BACKEND_SCHEMA.md — metagen_config.result_limit ∈ [1, 20].
         """
-        req = MetagenGlobalConfPutRequest(is_enabled=False, result_limit=1)
-        assert req.result_limit == 1
+        assert MetagenConfCreateRequest(name="c", result_limit=1).result_limit == 1
 
     def test_result_limit_maximum_valid(self) -> None:
         """result_limit=20 is the maximum valid value.
 
-        Spec: spec/feature/BACKEND_SCHEMA.md — metagen_config.result_limit ∈ [1, 20].
+        Spec: feature/BACKEND_SCHEMA.md — metagen_config.result_limit ∈ [1, 20].
         """
-        req = MetagenGlobalConfPutRequest(is_enabled=False, result_limit=20)
-        assert req.result_limit == 20
+        assert MetagenConfCreateRequest(name="c", result_limit=20).result_limit == 20
 
     def test_result_limit_below_minimum_raises(self) -> None:
         """result_limit=0 raises ValidationError (below minimum of 1).
 
-        Spec: spec/feature/BACKEND_SCHEMA.md — CHECK result_limit BETWEEN 1 AND 20.
+        Spec: API.md §Payload caps — conf result_limit ∈ [1, 20].
         """
         with pytest.raises(ValidationError):
-            MetagenGlobalConfPutRequest(is_enabled=False, result_limit=0)
+            MetagenConfCreateRequest(name="c", result_limit=0)
 
     def test_result_limit_above_maximum_raises(self) -> None:
         """result_limit=21 raises ValidationError (above maximum of 20).
 
-        Spec: spec/feature/BACKEND_SCHEMA.md — CHECK result_limit BETWEEN 1 AND 20.
+        Spec: API.md §Payload caps — conf result_limit ∈ [1, 20].
         """
         with pytest.raises(ValidationError):
-            MetagenGlobalConfPutRequest(is_enabled=False, result_limit=21)
+            MetagenConfCreateRequest(name="c", result_limit=21)
 
     def test_dataset_filter_urns_at_cap_valid(self) -> None:
         """dataset_filter.dataset_urns with exactly 1000 entries is valid.
 
         Spec: API.md §Payload caps — dataset_filter.dataset_urns ≤ 1,000 entries.
         """
-        urns = [f"urn:li:dataset:(urn:li:dataPlatform:postgres,db.t{i},PROD)" for i in range(_DATASET_FILTER_LIST_CAP)]
-        req = MetagenGlobalConfPutRequest(
-            is_enabled=False,
-            dataset_filter={"dataset_urns": urns},
-        )
+        urns = [
+            f"urn:li:dataset:(urn:li:dataPlatform:postgres,db.t{i},PROD)"
+            for i in range(_DATASET_FILTER_LIST_CAP)
+        ]
+        req = MetagenConfCreateRequest(name="c", dataset_filter={"dataset_urns": urns})
         assert len(req.dataset_filter["dataset_urns"]) == _DATASET_FILTER_LIST_CAP
 
     def test_dataset_filter_urns_exceeds_cap_raises(self) -> None:
@@ -106,12 +133,12 @@ class TestMetagenGlobalConfPutRequest:
 
         Spec: API.md §Payload caps — dataset_filter.dataset_urns ≤ 1,000 entries.
         """
-        too_many = [f"urn:li:dataset:(urn:li:dataPlatform:postgres,db.t{i},PROD)" for i in range(_DATASET_FILTER_LIST_CAP + 1)]
+        too_many = [
+            f"urn:li:dataset:(urn:li:dataPlatform:postgres,db.t{i},PROD)"
+            for i in range(_DATASET_FILTER_LIST_CAP + 1)
+        ]
         with pytest.raises(ValidationError):
-            MetagenGlobalConfPutRequest(
-                is_enabled=False,
-                dataset_filter={"dataset_urns": too_many},
-            )
+            MetagenConfCreateRequest(name="c", dataset_filter={"dataset_urns": too_many})
 
     @pytest.mark.parametrize("dimension", ["tags", "glossary_terms"])
     def test_dataset_filter_non_urn_dimensions_exceed_cap_raises(self, dimension: str) -> None:
@@ -120,22 +147,20 @@ class TestMetagenGlobalConfPutRequest:
         Spec: API.md §Payload caps —
         dataset_filter.{tags,glossary_terms,dataset_urns} ≤ 1,000 per dimension.
         """
-        too_many = [f"urn:li:tag:t{i}" if dimension == "tags" else f"urn:li:glossaryTerm:t{i}"
-                    for i in range(_DATASET_FILTER_LIST_CAP + 1)]
+        too_many = [
+            f"urn:li:tag:t{i}" if dimension == "tags" else f"urn:li:glossaryTerm:t{i}"
+            for i in range(_DATASET_FILTER_LIST_CAP + 1)
+        ]
         with pytest.raises(ValidationError):
-            MetagenGlobalConfPutRequest(
-                is_enabled=False,
-                dataset_filter={dimension: too_many},
-            )
+            MetagenConfCreateRequest(name="c", dataset_filter={dimension: too_many})
 
     def test_schedule_tier_accepts_valid_values(self) -> None:
         """schedule_tier accepts hourly, daily, weekly, and None.
 
-        Spec: spec/feature/BACKEND_SCHEMA.md — schedule_tier ∈ {hourly, daily, weekly, null}.
+        Spec: feature/BACKEND_SCHEMA.md — schedule_tier ∈ {hourly, daily, weekly, null}.
         """
         for tier in ("hourly", "daily", "weekly", None):
-            req = MetagenGlobalConfPutRequest(is_enabled=False, schedule_tier=tier)
-            assert req.schedule_tier == tier
+            assert MetagenConfCreateRequest(name="c", schedule_tier=tier).schedule_tier == tier
 
     def test_schedule_tier_rejects_invalid_value(self) -> None:
         """schedule_tier='minutely' raises ValidationError.
@@ -143,68 +168,203 @@ class TestMetagenGlobalConfPutRequest:
         Spec: API.md §Metadata Generation — schedule_tier is a Literal type.
         """
         with pytest.raises(ValidationError):
-            MetagenGlobalConfPutRequest(is_enabled=False, schedule_tier="minutely")  # type: ignore[arg-type]
+            MetagenConfCreateRequest(name="c", schedule_tier="minutely")  # type: ignore[arg-type]
+
+    def test_origin_only_accepted(self) -> None:
+        """dataset_filter={"origin": "DEV"} is accepted.
+
+        Spec: API.md §UC4 — dataset_filter unified four-dimension shape;
+              origin is an optional AND-filter forwarded to DataHub.
+        """
+        req = MetagenConfCreateRequest(name="c", dataset_filter={"origin": "DEV"})
+        assert req.dataset_filter == {"origin": "DEV"}
+
+    def test_empty_origin_raises(self) -> None:
+        """dataset_filter={"origin": ""} raises ValidationError.
+
+        Spec: API.md §dataset_filter — empty-or-whitespace origin rejected at POST/PUT/PATCH.
+        """
+        with pytest.raises(ValidationError):
+            MetagenConfCreateRequest(name="c", dataset_filter={"origin": ""})
+
+    def test_malformed_dataset_urn_raises_invalid_dataset_urn_error(self) -> None:
+        """Malformed dataset_urns raises InvalidDatasetUrnError at the schema layer.
+
+        Spec: API.md §Error Catalogue — 422 INVALID_DATASET_URN for malformed URNs;
+        validated at POST for metagen/conf.
+        """
+        with pytest.raises(InvalidDatasetUrnError):
+            MetagenConfCreateRequest(name="c", dataset_filter={"dataset_urns": ["not-a-urn"]})
 
 
-# ── MetagenGlobalConfPatchRequest ─────────────────────────────────────────────
+# ── MetagenConfPutRequest ─────────────────────────────────────────────────────
 
 
-class TestMetagenGlobalConfPatchRequest:
+class TestMetagenConfPutRequest:
+    def test_requires_name_and_is_enabled(self) -> None:
+        """PUT request requires `name` and `is_enabled` (full replacement).
+
+        Spec: API.md §Metadata Generation — PUT /metagen/conf/{conf_id} replaces a conf.
+        """
+        req = MetagenConfPutRequest(name="catalog-docs", is_enabled=True)
+        assert req.name == "catalog-docs"
+        assert req.is_enabled is True
+
+    def test_result_limit_below_minimum_raises(self) -> None:
+        """result_limit=0 raises ValidationError.
+
+        Spec: API.md §Payload caps — conf result_limit ∈ [1, 20].
+        """
+        with pytest.raises(ValidationError):
+            MetagenConfPutRequest(name="c", is_enabled=True, result_limit=0)
+
+    def test_malformed_dataset_urn_raises_invalid_dataset_urn_error(self) -> None:
+        """PUT with malformed dataset_urns raises InvalidDatasetUrnError.
+
+        Spec: API.md §Error Catalogue — 422 INVALID_DATASET_URN; validated at PUT.
+        """
+        with pytest.raises(InvalidDatasetUrnError):
+            MetagenConfPutRequest(
+                name="c", is_enabled=False, dataset_filter={"dataset_urns": ["not-a-urn"]}
+            )
+
+
+# ── MetagenConfPatchRequest ───────────────────────────────────────────────────
+
+
+class TestMetagenConfPatchRequest:
     def test_empty_patch_is_valid(self) -> None:
         """An empty PATCH body is valid (no fields to update).
 
         Spec: API_DESIGN_PRINCIPLE_en.md §HTTP method semantics — PATCH is partial update.
         """
-        req = MetagenGlobalConfPatchRequest()
+        req = MetagenConfPatchRequest()
+        assert req.name is None
         assert req.is_enabled is None
         assert req.result_limit is None
 
     def test_result_limit_below_minimum_raises(self) -> None:
         """result_limit=0 in PATCH raises ValidationError.
 
-        Spec: spec/feature/BACKEND_SCHEMA.md — result_limit ∈ [1, 20].
+        Spec: API.md §Payload caps — conf result_limit ∈ [1, 20].
         """
         with pytest.raises(ValidationError):
-            MetagenGlobalConfPatchRequest(result_limit=0)
-
-    def test_result_limit_above_maximum_raises(self) -> None:
-        """result_limit=21 in PATCH raises ValidationError.
-
-        Spec: spec/feature/BACKEND_SCHEMA.md — result_limit ∈ [1, 20].
-        """
-        with pytest.raises(ValidationError):
-            MetagenGlobalConfPatchRequest(result_limit=21)
+            MetagenConfPatchRequest(result_limit=0)
 
     def test_dataset_filter_urns_exceeds_cap_raises(self) -> None:
         """PATCH with dataset_filter.dataset_urns > 1000 raises ValidationError.
 
         Spec: API.md §Payload caps — dataset_filter.dataset_urns ≤ 1,000 entries.
         """
-        too_many = [f"urn:li:dataset:(urn:li:dataPlatform:postgres,db.t{i},PROD)" for i in range(_DATASET_FILTER_LIST_CAP + 1)]
+        too_many = [
+            f"urn:li:dataset:(urn:li:dataPlatform:postgres,db.t{i},PROD)"
+            for i in range(_DATASET_FILTER_LIST_CAP + 1)
+        ]
         with pytest.raises(ValidationError):
-            MetagenGlobalConfPatchRequest(dataset_filter={"dataset_urns": too_many})
+            MetagenConfPatchRequest(dataset_filter={"dataset_urns": too_many})
 
-    @pytest.mark.parametrize("dimension", ["tags", "glossary_terms"])
-    def test_dataset_filter_non_urn_dimensions_exceed_cap_raises(self, dimension: str) -> None:
-        """PATCH with dataset_filter.{tags,glossary_terms} > 1000 raises ValidationError.
+    def test_empty_origin_raises(self) -> None:
+        """PATCH with dataset_filter={"origin": ""} raises ValidationError.
 
-        Spec: API.md §Payload caps —
-        dataset_filter.{tags,glossary_terms,dataset_urns} ≤ 1,000 per dimension.
+        Spec: API.md §dataset_filter — empty-or-whitespace origin rejected at POST/PUT/PATCH.
         """
-        too_many = [f"urn:li:tag:t{i}" if dimension == "tags" else f"urn:li:glossaryTerm:t{i}"
-                    for i in range(_DATASET_FILTER_LIST_CAP + 1)]
         with pytest.raises(ValidationError):
-            MetagenGlobalConfPatchRequest(dataset_filter={dimension: too_many})
+            MetagenConfPatchRequest(dataset_filter={"origin": ""})
+
+    def test_malformed_dataset_urn_raises_invalid_dataset_urn_error(self) -> None:
+        """PATCH with malformed dataset_urns raises InvalidDatasetUrnError.
+
+        Spec: API.md §Error Catalogue — 422 INVALID_DATASET_URN; validated at PATCH.
+        """
+        with pytest.raises(InvalidDatasetUrnError):
+            MetagenConfPatchRequest(dataset_filter={"dataset_urns": ["not-a-urn"]})
 
 
-# ── MetagenBoundaryPutRequest ──────────────────────────────────────────────────
+# ── MetagenConfResponse / MetagenConfListResponse ─────────────────────────────
+
+
+class TestMetagenConfResponse:
+    def test_response_has_id_and_name_and_timestamps(self) -> None:
+        """MetagenConfResponse carries the collection identity fields id + name + created_at.
+
+        Spec: feature/BACKEND_SCHEMA.md §metagen_config — id (UUID PK), name (UNIQUE),
+        created_at; the conf is a collection row, not a singleton.
+        """
+        fields = MetagenConfResponse.model_fields
+        for field in (
+            "id",
+            "name",
+            "is_enabled",
+            "schedule_tier",
+            "dataset_filter",
+            "result_limit",
+            "overwrite_pending",
+            "created_at",
+            "updated_at",
+        ):
+            assert field in fields, (
+                f"MetagenConfResponse must have field '{field}'. "
+                "spec: feature/BACKEND_SCHEMA.md §metagen_config"
+            )
+
+    def test_list_envelope_uses_total_count_and_confs_key(self) -> None:
+        """MetagenConfListResponse uses 'total_count' and a resource-named 'confs' key.
+
+        Spec: API.md §Standard Response Envelope — pagination uses total_count;
+        list payload keyed by resource name.
+        """
+        resp = MetagenConfListResponse(total_count=2, offset=0, limit=20)
+        assert resp.total_count == 2
+        assert resp.confs == []
+
+
+# ── MetagenUncoveredResponse ──────────────────────────────────────────────────
+
+
+class TestMetagenUncoveredResponse:
+    def test_row_reason_accepts_no_conf_match(self) -> None:
+        """Uncovered row reason accepts 'no_conf_match'.
+
+        Spec: API.md §Metadata Generation — uncovered reason ∈ {no_conf_match, boundary_blocked}.
+        """
+        row = MetagenUncoveredRow(dataset_urn=_VALID_URN, reason="no_conf_match")
+        assert row.reason == "no_conf_match"
+
+    def test_row_reason_accepts_boundary_blocked(self) -> None:
+        """Uncovered row reason accepts 'boundary_blocked'.
+
+        Spec: API.md §Metadata Generation — uncovered reason ∈ {no_conf_match, boundary_blocked}.
+        """
+        row = MetagenUncoveredRow(dataset_urn=_VALID_URN, reason="boundary_blocked")
+        assert row.reason == "boundary_blocked"
+
+    def test_row_reason_rejects_invalid(self) -> None:
+        """Uncovered row reason rejects an unknown value.
+
+        Spec: API.md §Metadata Generation — reason is a Literal type.
+        """
+        with pytest.raises(ValidationError):
+            MetagenUncoveredRow(dataset_urn=_VALID_URN, reason="something_else")  # type: ignore[arg-type]
+
+    def test_list_envelope_uses_total_count_and_datasets_key(self) -> None:
+        """MetagenUncoveredResponse uses 'total_count' and a 'datasets' key.
+
+        Spec: API.md §Standard Response Envelope — pagination uses total_count.
+        """
+        resp = MetagenUncoveredResponse(total_count=0, offset=0, limit=100)
+        assert resp.total_count == 0
+        assert resp.datasets == []
+
+
+# ── MetagenBoundaryPutRequest ─────────────────────────────────────────────────
 
 
 class TestMetagenBoundaryPutRequest:
     def test_valid_with_both_kinds(self) -> None:
         """PUT boundary with both dataset.description and column.description is valid.
 
-        Spec: API.md §Metadata Generation — boundary allowed ∈ {dataset.description, column.description}.
+        Spec: API.md §Metadata Generation — boundary allowed ∈
+        {dataset.description, column.description}.
         """
         req = MetagenBoundaryPutRequest(
             is_enabled=True,
@@ -221,7 +381,7 @@ class TestMetagenBoundaryPutRequest:
         assert req.allowed == []
 
     def test_invalid_allowed_kind_raises(self) -> None:
-        """PUT boundary with invalid kind 'cross_data.md' raises ValidationError.
+        """PUT boundary with invalid kind raises ValidationError.
 
         Spec: API.md §Metadata Generation — allowed values are a Literal type.
         """
@@ -240,79 +400,110 @@ class TestMetagenBoundaryPatchRequest:
         assert req.allowed is None
 
 
-# ── MetagenItemListResponse ────────────────────────────────────────────────────
+# ── MetagenItemSummary / MetagenItemListResponse ──────────────────────────────
+
+
+class TestMetagenItemSummary:
+    def test_has_composite_id(self) -> None:
+        """MetagenItemSummary carries composite_id field.
+
+        Spec: API.md §Metadata Generation — item detail path uses
+        composite_id = {dataset_urn}::{item_id}.
+        """
+        assert "composite_id" in MetagenItemSummary.model_fields
 
 
 class TestMetagenItemListResponse:
     def test_envelope_uses_total_count_field(self) -> None:
-        """MetagenItemListResponse envelope carries 'total_count', not 'total'.
+        """MetagenItemListResponse carries 'total_count', not a bare 'total'.
 
         Spec: API.md §Standard Response Envelope — pagination uses total_count.
         """
         resp = MetagenItemListResponse(total_count=42)
-        assert resp.total_count == 42, (
-            "MetagenItemListResponse must use 'total_count'. "
-            "spec: API.md §Standard Response Envelope"
-        )
-        assert not hasattr(resp, "total") or not hasattr(MetagenItemListResponse, "total"), (
-            "MetagenItemListResponse must not expose a bare 'total' field. "
-            "spec: API.md §Standard Response Envelope"
-        )
+        assert resp.total_count == 42
+        assert "total" not in MetagenItemListResponse.model_fields
 
     def test_items_defaults_to_empty_list(self) -> None:
         """MetagenItemListResponse.items defaults to empty list.
 
         Spec: API.md §Standard Response Envelope — list responses start empty.
         """
-        resp = MetagenItemListResponse(total_count=0)
-        assert resp.items == []
+        assert MetagenItemListResponse(total_count=0).items == []
 
-    def test_envelope_has_offset_and_limit(self) -> None:
-        """MetagenItemListResponse inherits offset/limit from PaginatedResponse.
 
-        Spec: API.md §Standard Response Envelope — pagination fields offset, limit.
+# ── MetagenCandidate (conf_id / conf_name) ────────────────────────────────────
+
+
+class TestMetagenCandidate:
+    def test_candidate_carries_conf_id_and_conf_name(self) -> None:
+        """MetagenCandidate exposes conf_id and conf_name.
+
+        Spec: API.md §Metadata Generation — each candidate row exposes conf_id/conf_name.
+        Spec: feature/BACKEND_SCHEMA.md §metagen_candidates — conf_id FK (nullable).
         """
-        resp = MetagenItemListResponse(total_count=5, offset=10, limit=20)
-        assert resp.offset == 10
-        assert resp.limit == 20
-        assert resp.total_count == 5
+        for field in ("conf_id", "conf_name"):
+            assert field in MetagenCandidate.model_fields, (
+                f"MetagenCandidate must expose '{field}'. "
+                "spec: API.md §Metadata Generation — candidate carries conf_id/conf_name"
+            )
+
+    def test_conf_id_and_conf_name_nullable(self) -> None:
+        """conf_id / conf_name may be null (orphaned approved candidate after conf delete).
+
+        Spec: feature/BACKEND_SCHEMA.md §metagen_candidates — ON DELETE SET NULL for conf_id
+        on already-emitted approved candidates.
+        """
+        cand = MetagenCandidate(
+            candidate_id="cand-1",
+            conf_id=None,
+            conf_name=None,
+            item_id="dataset.description",
+            dataset_urn=_VALID_URN,
+            value="v",
+            confidence_score=0.9,
+            status="approved",
+            evidence={},
+            created_at=datetime.now(tz=UTC),
+            reviewed_at=None,
+            reviewer_id=None,
+        )
+        assert cand.conf_id is None
+        assert cand.conf_name is None
 
 
-# ── MetagenRunRequest ──────────────────────────────────────────────────────────
+# ── MetagenRunRequest / MetagenRunResponse ────────────────────────────────────
 
 
 class TestMetagenRunRequest:
     def test_defaults(self) -> None:
         """MetagenRunRequest defaults: dataset_urns=None.
 
-        Spec: API.md §Metadata Generation — POST method/run optional body
-        `{"dataset_urns": [...]}`; dry_run travels as a query parameter, not a body field.
+        Spec: API.md §Metadata Generation — POST conf/{conf_id}/method/run optional body
+        {"dataset_urns": [...]}; dry_run travels as a query parameter, not a body field.
         """
-        req = MetagenRunRequest()
-        assert req.dataset_urns is None
+        assert MetagenRunRequest().dataset_urns is None
 
     def test_dataset_urns_list(self) -> None:
         """MetagenRunRequest accepts a list of dataset_urns.
 
         Spec: API.md §Metadata Generation — optional dataset_urns scopes the run.
         """
-        req = MetagenRunRequest(dataset_urns=[_VALID_URN])
-        assert req.dataset_urns == [_VALID_URN]
+        assert MetagenRunRequest(dataset_urns=[_VALID_URN]).dataset_urns == [_VALID_URN]
 
+    def test_no_singular_dataset_urn_field(self) -> None:
+        """MetagenRunRequest does not expose a singular 'dataset_urn' field.
 
-# ── MetagenRunResponse ─────────────────────────────────────────────────────────
+        Spec: API.md §Metadata Generation — run body uses dataset_urns (plural).
+        """
+        assert "dataset_urn" not in MetagenRunRequest.model_fields
+        assert "dataset_urns" in MetagenRunRequest.model_fields
 
 
 class TestMetagenRunResponse:
-    def test_status_accepts_success(self) -> None:
-        """MetagenRunResponse accepts status='success'.
-
-        Spec: feature/BACKEND.md §Metadata Generation Service — public run
-        outcomes are 'success' or 'failure'; tier short-circuit ('skipped')
-        is owned by /internal/activities/metagen/run, not the public route.
-        """
-        resp = MetagenRunResponse(
+    def _kwargs(self, **over):
+        base = dict(
             run_id="run-1",
+            conf_id="conf-1",
             status="success",
             dry_run=False,
             unresolved_urns=[],
@@ -320,61 +511,43 @@ class TestMetagenRunResponse:
             producer_iterations=None,
             debate_outcome=None,
         )
-        assert resp.status == "success"
+        base.update(over)
+        return base
+
+    def test_carries_conf_id(self) -> None:
+        """MetagenRunResponse carries the conf_id the run was scoped to.
+
+        Spec: API.md §Metadata Generation — run is per-conf
+        (POST /metagen/conf/{conf_id}/method/run).
+        Spec: feature/BACKEND.md §Event Catalogue — RUN_COMPLETE detail carries conf_id.
+        """
+        resp = MetagenRunResponse(**self._kwargs())
+        assert resp.conf_id == "conf-1"
+
+    def test_status_accepts_success_and_failure(self) -> None:
+        """MetagenRunResponse status accepts 'success' and 'failure'.
+
+        The response status is the synchronous analogue of the two terminal run
+        events: success ↔ METAGEN.RUN_COMPLETE, failure ↔ METAGEN.RUN_FAILED.
+        Spec: feature/BACKEND.md §Event Catalogue — METAGEN emits
+        RUN_COMPLETE / RUN_FAILED at run end.
+        """
+        assert MetagenRunResponse(**self._kwargs(status="success")).status == "success"
+        assert MetagenRunResponse(**self._kwargs(status="failure")).status == "failure"
 
     def test_status_rejects_skipped(self) -> None:
-        """MetagenRunResponse rejects status='skipped' — the tier-mismatch
-        short-circuit is the activity's responsibility and is not surfaced
-        on the public run schema.
+        """MetagenRunResponse rejects status='skipped' (enum-closure).
 
-        Spec: feature/BACKEND.md §DAG Catalogue tier-DAG selection — only the
-        internal activity returns the {status: 'skipped', reason: ...} shape.
+        The status field is a closed Literal of the two terminal-event outcomes
+        (success / failure); 'skipped' is not a member.
+        Spec: feature/BACKEND.md §Event Catalogue — only RUN_COMPLETE / RUN_FAILED
+        are emitted at run end.
         """
         with pytest.raises(ValidationError):
-            MetagenRunResponse(
-                run_id="run-2",
-                status="skipped",
-                dry_run=False,
-                unresolved_urns=[],
-                counts={},
-                producer_iterations=None,
-                debate_outcome=None,
-            )
-
-    def test_status_accepts_failure(self) -> None:
-        """MetagenRunResponse accepts status='failure'.
-
-        Spec: API.md §Metadata Generation — 'failure' on error.
-        """
-        resp = MetagenRunResponse(
-            run_id="run-3",
-            status="failure",
-            dry_run=False,
-            unresolved_urns=[],
-            counts={},
-            producer_iterations=None,
-            debate_outcome=None,
-        )
-        assert resp.status == "failure"
-
-    def test_status_rejects_invalid(self) -> None:
-        """MetagenRunResponse rejects unknown status value.
-
-        Spec: API.md §Metadata Generation — status is a Literal type.
-        """
-        with pytest.raises(ValidationError):
-            MetagenRunResponse(
-                run_id="run-4",
-                status="running",  # type: ignore[arg-type]
-                dry_run=False,
-                unresolved_urns=[],
-                counts={},
-                producer_iterations=None,
-                debate_outcome=None,
-            )
+            MetagenRunResponse(**self._kwargs(status="skipped"))
 
 
-# ── MetagenReviewRequest ───────────────────────────────────────────────────────
+# ── MetagenReviewRequest ──────────────────────────────────────────────────────
 
 
 class TestMetagenReviewRequest:
@@ -383,16 +556,14 @@ class TestMetagenReviewRequest:
 
         Spec: API.md §Metadata Generation — verdict ∈ {approve, reject}.
         """
-        req = MetagenReviewRequest(verdict="approve")
-        assert req.verdict == "approve"
+        assert MetagenReviewRequest(verdict="approve").verdict == "approve"
 
     def test_verdict_reject_valid(self) -> None:
         """verdict='reject' is valid.
 
         Spec: API.md §Metadata Generation — verdict ∈ {approve, reject}.
         """
-        req = MetagenReviewRequest(verdict="reject")
-        assert req.verdict == "reject"
+        assert MetagenReviewRequest(verdict="reject").verdict == "reject"
 
     def test_verdict_invalid_raises(self) -> None:
         """verdict='maybe' raises ValidationError.
@@ -403,17 +574,17 @@ class TestMetagenReviewRequest:
             MetagenReviewRequest(verdict="maybe")  # type: ignore[arg-type]
 
     def test_reason_at_max_length_valid(self) -> None:
-        """reason at exactly max_length=2000 characters is valid.
+        """reason at exactly max_length=2000 is valid.
 
-        Spec: API.md §Metadata Generation — reason max_length 2000.
+        Spec: API.md §Payload caps — review reason ≤ 2,000 chars.
         """
         req = MetagenReviewRequest(verdict="approve", reason="x" * _REASON_MAX_LEN)
         assert len(req.reason) == _REASON_MAX_LEN
 
     def test_reason_exceeds_max_length_raises(self) -> None:
-        """reason with 2001 characters raises ValidationError.
+        """reason with 2001 chars raises ValidationError.
 
-        Spec: API.md §Metadata Generation — reason max_length 2000.
+        Spec: API.md §Payload caps — review reason ≤ 2,000 chars.
         """
         with pytest.raises(ValidationError):
             MetagenReviewRequest(verdict="approve", reason="x" * (_REASON_MAX_LEN + 1))
@@ -423,136 +594,4 @@ class TestMetagenReviewRequest:
 
         Spec: API.md §Metadata Generation — reason is optional.
         """
-        req = MetagenReviewRequest(verdict="approve")
-        assert req.reason == ""
-
-
-# ── Schema field existence checks ─────────────────────────────────────────────
-
-
-def test_global_conf_response_has_required_fields() -> None:
-    """MetagenGlobalConfResponse has all spec-mandated fields.
-
-    Spec: API.md §Metadata Generation — GET /metagen/attr/conf response shape.
-    """
-    fields = MetagenGlobalConfResponse.model_fields
-    for field in ("is_enabled", "schedule_tier", "dataset_filter", "result_limit", "overwrite_pending", "updated_at"):
-        assert field in fields, (
-            f"MetagenGlobalConfResponse must have field '{field}'. "
-            "spec: API.md §Metadata Generation"
-        )
-
-
-def test_metagen_item_summary_has_composite_id() -> None:
-    """MetagenItemSummary carries composite_id field.
-
-    Spec: API.md §Metadata Generation — item detail path uses composite_id = {dataset_urn}::{item_id}.
-    """
-    assert "composite_id" in MetagenItemSummary.model_fields, (
-        "MetagenItemSummary must expose composite_id. "
-        "spec: API.md §Metadata Generation — composite_id for item detail lookup"
-    )
-
-
-def test_run_request_does_not_require_dataset_urn_singular() -> None:
-    """MetagenRunRequest does not require a singular 'dataset_urn' field.
-
-    Spec: spec/feature/BACKEND.md §Metadata Generation Service — global singleton run
-    accepts optional dataset_urns (plural list), not a single required dataset_urn.
-    """
-    assert "dataset_urn" not in MetagenRunRequest.model_fields, (
-        "MetagenRunRequest must not have singular 'dataset_urn' (use dataset_urns list). "
-        "spec: BACKEND.md §Metadata Generation Service — global run"
-    )
-    assert "dataset_urns" in MetagenRunRequest.model_fields
-
-
-# ── dataset_filter origin and unified four-dimension shape (new behavior) ──────
-
-
-class TestMetagenDatasetFilterOrigin:
-    def test_put_with_origin_only_accepted(self) -> None:
-        """PUT with dataset_filter={"origin": "DEV"} is accepted.
-
-        Spec: spec/API.md §UC4 — dataset_filter unified four-dimension shape;
-              origin is an optional AND-filter forwarded to DataHub.
-        """
-        req = MetagenGlobalConfPutRequest(is_enabled=False, dataset_filter={"origin": "DEV"})
-        assert req.dataset_filter == {"origin": "DEV"}
-
-    def test_put_with_origin_and_tags_accepted(self) -> None:
-        """PUT with dataset_filter={"origin": "DEV", "tags": [...]} is accepted.
-
-        Spec: spec/API.md §UC4 — origin may be combined with other dimensions.
-        """
-        req = MetagenGlobalConfPutRequest(
-            is_enabled=False,
-            dataset_filter={
-                "origin": "DEV",
-                "tags": ["urn:li:tag:area:fulfillment"],
-            },
-        )
-        assert req.dataset_filter["origin"] == "DEV"
-        assert req.dataset_filter["tags"] == ["urn:li:tag:area:fulfillment"]
-
-    def test_patch_with_origin_only_accepted(self) -> None:
-        """PATCH with dataset_filter={"origin": "DEV"} is accepted.
-
-        Spec: spec/API.md §UC4 — dataset_filter unified four-dimension shape applies to PATCH.
-        """
-        req = MetagenGlobalConfPatchRequest(dataset_filter={"origin": "DEV"})
-        assert req.dataset_filter == {"origin": "DEV"}
-
-    def test_patch_with_origin_and_tags_accepted(self) -> None:
-        """PATCH with dataset_filter={"origin": "DEV", "tags": [...]} is accepted.
-
-        Spec: spec/API.md §UC4 — origin may be combined with other dimensions in PATCH.
-        """
-        req = MetagenGlobalConfPatchRequest(
-            dataset_filter={
-                "origin": "DEV",
-                "tags": ["urn:li:tag:area:fulfillment"],
-            }
-        )
-        assert req.dataset_filter["origin"] == "DEV"
-
-    def test_put_with_empty_origin_raises(self) -> None:
-        """PUT with dataset_filter={"origin": ""} raises ValidationError.
-
-        Spec: spec/API.md §UC5 Definition body §dataset_filter — empty-or-whitespace origin
-              rejected at PUT/PATCH with 422 INVALID_PARAMETER.
-        """
-        with pytest.raises(ValidationError):
-            MetagenGlobalConfPutRequest(is_enabled=False, dataset_filter={"origin": ""})
-
-    def test_patch_with_empty_origin_raises(self) -> None:
-        """PATCH with dataset_filter={"origin": ""} raises ValidationError.
-
-        Spec: spec/API.md §UC5 Definition body §dataset_filter — empty-or-whitespace origin
-              rejected at PUT/PATCH with 422 INVALID_PARAMETER.
-        """
-        with pytest.raises(ValidationError):
-            MetagenGlobalConfPatchRequest(dataset_filter={"origin": ""})
-
-    def test_put_with_malformed_dataset_urn_raises_invalid_dataset_urn_error(self) -> None:
-        """PUT with malformed dataset_urns raises InvalidDatasetUrnError.
-
-        Spec: spec/API.md §Error Catalogue — 422 INVALID_DATASET_URN for malformed URNs.
-        This is validated at the schema layer for UC4 (unified with UC5 behavior).
-        """
-        with pytest.raises(InvalidDatasetUrnError):
-            MetagenGlobalConfPutRequest(
-                is_enabled=False,
-                dataset_filter={"dataset_urns": ["not-a-valid-urn"]},
-            )
-
-    def test_patch_with_malformed_dataset_urn_raises_invalid_dataset_urn_error(self) -> None:
-        """PATCH with malformed dataset_urns raises InvalidDatasetUrnError.
-
-        Spec: spec/API.md §Error Catalogue — 422 INVALID_DATASET_URN for malformed URNs.
-        Schema-layer enforcement applies to PATCH as well.
-        """
-        with pytest.raises(InvalidDatasetUrnError):
-            MetagenGlobalConfPatchRequest(
-                dataset_filter={"dataset_urns": ["not-a-valid-urn"]},
-            )
+        assert MetagenReviewRequest(verdict="approve").reason == ""

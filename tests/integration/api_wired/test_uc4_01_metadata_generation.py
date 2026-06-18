@@ -8,8 +8,8 @@ predict, fires a run, reviews candidates (approve / reject), verifies DataHub
 changes on approval, fires the run again, and asserts approved items are skipped
 while rejected items are cleared and re-generated.
 
-Spec: spec/USE_CASE_en.md §UC4 Metadata Generation
-Spec: spec/feature/BACKEND.md §UC4 Metadata Generation
+Spec: spec/USE_CASE_en.md §UC4: Metadata Generation
+Spec: spec/feature/BACKEND.md §Metadata Generation Service
 
 Function-level coverage (conf CRUD, boundary CRUD, run-gating, candidate review
 edge cases, item filters) lives in tests/integration/spot/ and is not duplicated
@@ -74,34 +74,47 @@ async def test_uc4_metadata_generation_under_stub(
 ) -> None:
     """UC4 user-story arc under stub mode (stub_llm_client=true in runtime conf).
 
-    Steps mirror USE_CASE_en.md §UC4 Imazon Example:
+    The metagen conf is a managed COLLECTION: this arc uses TWO confs over
+    DIFFERENT dataset groups (conf EU scoped to eu_profiles, conf OE scoped to
+    orders.events) plus a third conf RIVAL also targeting eu_profiles to prove
+    cross-conf approval exclusivity. Steps mirror USE_CASE_en.md §UC4:
       1.  Seed LLM context: fulfillment document + 5 approved ontogen nodes
           mapped to both datasets
       2.  Mask descriptions in DataHub: wipe eu_profiles dataset description and
           all column descriptions; wipe first 4 orders.events column descriptions
-      3.  PUT global metagen conf (is_enabled, schedule_tier, dataset_filter, tags)
+      3.  POST two confs — conf EU (dataset_urns=[eu_profiles]) and conf OE
+          (dataset_urns=[orders.events]) — each with its own budget/events
       4.  PUT per-dataset boundaries for eu_profiles and orders.events
-      5.  POST method/run (first run) — assert MetagenRunResponse shape
-      6.  GET global event — find METAGEN.RUN_COMPLETE; assert detail keys
-      7.  GET per-dataset items for both URNs — assert item envelope shape
-      8.  Review candidates: approve eu_profiles dataset.description, reject
-          eu_profiles column.email.description, approve orders.events first masked col
+      5.  POST conf EU run + conf OE run — assert per-conf MetagenRunResponse
+          (each run_id carries its conf_id; events isolated per conf)
+      6.  GET each conf's event feed + cross-conf /event union
+      7.  GET per-dataset items for both URNs — candidates carry conf_id/conf_name
+      8.  Review candidates: approve eu_profiles dataset.description (conf EU),
+          reject eu_profiles column.email.description, approve orders.events col
+      8b. Cross-conf exclusivity: a RIVAL conf also scopes eu_profiles and runs,
+          so a shared column item holds llm_approved candidates from BOTH confs;
+          approving conf EU's then conf RIVAL's candidate on that SAME item demotes
+          conf EU's back to llm_approved (one-approved-per-item holds globally
+          across confs), verified by GET item-detail read-back
       9.  DataHub round-trip: verify approved values emitted to editable aspects
      10.  GET per-dataset metagen events — assert CANDIDATE_APPROVE / CANDIDATE_REJECT
-     11.  POST method/run (second run) — assert approved items skipped,
-          rejected item cleared and re-generated
-     12.  Cleanup (finally): delete metagen state, boundaries, conf, DataHub
+     11.  POST conf EU run (second run) — approved items skipped, rejected cleared
+     12.  Cleanup (finally): delete metagen state, boundaries, confs, DataHub
           aspect snapshots, document, ontogen nodes
 
     Spec: USE_CASE_en.md §UC4
-    Spec: BACKEND.md §UC4 Metadata Generation — MetagenRunResponse, event catalogue,
-      approval pipeline, idempotency (approved items skipped on subsequent runs)
+    Spec: BACKEND.md §Metadata Generation Service — conf collection, per-conf run +
+      events, cross-conf approval exclusivity, idempotency
     """
-    conf_url = "/api/v1/spoke/metagen/attr/conf"
-    eu_boundary_url = f"/api/v1/spoke/common/data/{_EU_ENCODED}/attr/metagen/conf"
-    oe_boundary_url = f"/api/v1/spoke/common/data/{_OE_ENCODED}/attr/metagen/conf"
-    run_url = "/api/v1/spoke/metagen/method/run"
+    conf_url = "/api/v1/spoke/metagen/conf"
+    eu_boundary_url = f"/api/v1/spoke/common/data/{_EU_ENCODED}/attr/metagen/boundary"
+    oe_boundary_url = f"/api/v1/spoke/common/data/{_OE_ENCODED}/attr/metagen/boundary"
     global_event_url = "/api/v1/spoke/metagen/event"
+
+    # Conf ids created in step 3 / 8b, used for per-conf run + event routes + cleanup.
+    conf_eu_id: str | None = None
+    conf_oe_id: str | None = None
+    conf_rival_id: str | None = None
 
     # Mutable state captured during the try block for use in finally.
     document_urn: str | None = None
@@ -123,7 +136,7 @@ async def test_uc4_metadata_generation_under_stub(
         # ── Step 1: Seed LLM context ──────────────────────────────────────────
         # 1a. Seed a fulfillment domain document so metagen evidence includes
         #     narrative context about eu_profiles and orders.events.
-        # spec: USE_CASE_en.md §UC4 L565 — LLM context includes related documents
+        # spec: USE_CASE_en.md §UC4: Metadata Generation — LLM context includes related documents
         dh_token = get_datahub_token()
         document_id = uuid.uuid4().hex[:16]
         document_urn = seed_native_document(
@@ -136,7 +149,7 @@ async def test_uc4_metadata_generation_under_stub(
 
         # 1b. Seed 5 approved ontogen nodes for fulfillment concepts and map them
         #     to both datasets so metagen evidence includes ontology context.
-        # spec: BACKEND.md §UC4 — UC4 reads UC3-approved ontology nodes via
+        # spec: BACKEND.md §Generation Pipeline — reads UC3-approved ontology nodes via
         # dataset_node_map.status='approved'.
         suffix = uuid.uuid4().hex[:8]
         node_names = ["Order", "OrderLine", "Customer", "ShipmentEvent", "DeliveryStatus"]
@@ -149,7 +162,7 @@ async def test_uc4_metadata_generation_under_stub(
 
         # ── Step 2: Mask descriptions in DataHub ──────────────────────────────
         # Snapshot the current aspects before mutation so cleanup can restore them.
-        # spec: USE_CASE_en.md §UC4 L588 — metagen generates what is currently missing
+        # spec: USE_CASE_en.md §UC4: Metadata Generation — metagen generates what is missing
         graph = DataHubGraph(DatahubClientConfig(server=_gms_url, token=dh_token))
 
         # eu_profiles: snapshot DatasetProperties + SchemaMetadata, then mask both.
@@ -162,7 +175,9 @@ async def test_uc4_metadata_generation_under_stub(
 
         # Capture original values before any in-place mutation so cleanup can
         # restore them accurately.
-        eu_original_dataset_description = eu_props_snapshot.description if eu_props_snapshot else None
+        eu_original_dataset_description = (
+            eu_props_snapshot.description if eu_props_snapshot else None
+        )
         if eu_schema_snapshot is not None and hasattr(eu_schema_snapshot, "fields"):
             for f in eu_schema_snapshot.fields:
                 eu_original_field_descs[f.fieldPath] = f.description
@@ -212,51 +227,55 @@ async def test_uc4_metadata_generation_under_stub(
                 )
             )
 
-        # ── Step 3: PUT global metagen conf ──────────────────────────────────
-        # UC4 narrative: "The governance team enables metagen globally, scoped
-        # to fulfillment-tagged datasets."
-        # spec: USE_CASE_en.md §UC4 L694–706
-        put_conf_resp = await api_client.put(
+        # ── Step 3: POST two confs over DIFFERENT dataset groups ──────────────
+        # The conf collection lets teams run different documentation policies over
+        # different dataset groups. Conf EU documents eu_profiles; conf OE documents
+        # orders.events. Each carries its own budget and event feed.
+        # spec: feature/BACKEND.md §Metadata Generation Service — conf collection;
+        #   API.md §Metadata Generation — POST /metagen/conf → 201.
+        conf_suffix = uuid.uuid4().hex[:8]
+        post_conf_eu = await api_client.post(
             conf_url,
             headers=admin_headers,
             json={
+                "name": f"uc4-eu-{conf_suffix}",
                 "is_enabled": True,
                 "schedule_tier": "daily",
-                "dataset_filter": {"origin": "DEV", "tags": [FULFILLMENT_TAG]},
+                "dataset_filter": {"dataset_urns": [EU_PROFILES_URN]},
                 "result_limit": 3,
                 "overwrite_pending": True,
             },
         )
-        assert put_conf_resp.status_code in (200, 201), (
-            f"PUT global metagen conf failed: "
-            f"{put_conf_resp.status_code} {put_conf_resp.text}. "
-            "spec: USE_CASE_en.md §UC4 L694 — PUT returns 200 or 201"
+        assert post_conf_eu.status_code == 201, (
+            f"POST conf EU failed: {post_conf_eu.status_code} {post_conf_eu.text}. "
+            "spec: API.md §Metadata Generation — POST /metagen/conf → 201"
         )
-        conf_body = put_conf_resp.json()
-        assert conf_body["is_enabled"] is True, (
-            "PUT conf response must round-trip is_enabled=True. "
-            "spec: USE_CASE_en.md §UC4 L604"
+        conf_eu_body = post_conf_eu.json()
+        conf_eu_id = conf_eu_body["id"]
+        assert conf_eu_body["is_enabled"] is True
+        assert conf_eu_body["dataset_filter"] == {"dataset_urns": [EU_PROFILES_URN]}
+
+        post_conf_oe = await api_client.post(
+            conf_url,
+            headers=admin_headers,
+            json={
+                "name": f"uc4-oe-{conf_suffix}",
+                "is_enabled": True,
+                "schedule_tier": "daily",
+                "dataset_filter": {"dataset_urns": [ORDERS_EVENTS_URN]},
+                "result_limit": 3,
+                "overwrite_pending": True,
+            },
         )
-        assert conf_body["schedule_tier"] == "daily", (
-            f"schedule_tier not preserved: {conf_body.get('schedule_tier')!r}. "
-            "spec: USE_CASE_en.md §UC4 L604"
+        assert post_conf_oe.status_code == 201, (
+            f"POST conf OE failed: {post_conf_oe.status_code} {post_conf_oe.text}. "
+            "spec: API.md §Metadata Generation — POST /metagen/conf → 201"
         )
-        assert conf_body["result_limit"] == 3, (
-            f"result_limit not preserved: {conf_body.get('result_limit')!r}. "
-            "spec: USE_CASE_en.md §UC4 L605"
-        )
-        assert conf_body["overwrite_pending"] is True, (
-            f"overwrite_pending not preserved: {conf_body.get('overwrite_pending')!r}. "
-            "spec: USE_CASE_en.md §UC4 L606"
-        )
-        assert conf_body["dataset_filter"] == {"origin": "DEV", "tags": [FULFILLMENT_TAG]}, (
-            f"dataset_filter not preserved: {conf_body.get('dataset_filter')!r}. "
-            "spec: USE_CASE_en.md §UC4 L604"
-        )
+        conf_oe_id = post_conf_oe.json()["id"]
 
         # ── Step 4: PUT per-dataset boundaries ───────────────────────────────
         # UC4 narrative: "The catalog team opts each dataset in."
-        # spec: USE_CASE_en.md §UC4 L609–615
+        # spec: USE_CASE_en.md §UC4 — API Mapping — per-dataset boundary opt-in
         put_eu_boundary_resp = await api_client.put(
             eu_boundary_url,
             headers=admin_headers,
@@ -268,16 +287,16 @@ async def test_uc4_metadata_generation_under_stub(
         assert put_eu_boundary_resp.status_code in (200, 201), (
             f"PUT eu_profiles boundary failed: "
             f"{put_eu_boundary_resp.status_code} {put_eu_boundary_resp.text}. "
-            "spec: USE_CASE_en.md §UC4 L613"
+            "spec: USE_CASE_en.md §UC4 — API Mapping"
         )
         eu_boundary_body = put_eu_boundary_resp.json()
         assert eu_boundary_body["dataset_urn"] == EU_PROFILES_URN, (
             f"boundary dataset_urn not echoed: {eu_boundary_body.get('dataset_urn')!r}. "
-            "spec: USE_CASE_en.md §UC4 L613"
+            "spec: USE_CASE_en.md §UC4 — API Mapping"
         )
         assert set(eu_boundary_body["allowed"]) == {"dataset.description", "column.description"}, (
             f"eu_profiles boundary allowed not preserved: {eu_boundary_body.get('allowed')!r}. "
-            "spec: USE_CASE_en.md §UC4 L614"
+            "spec: USE_CASE_en.md §UC4 — API Mapping"
         )
 
         put_oe_boundary_resp = await api_client.put(
@@ -291,87 +310,107 @@ async def test_uc4_metadata_generation_under_stub(
         assert put_oe_boundary_resp.status_code in (200, 201), (
             f"PUT orders.events boundary failed: "
             f"{put_oe_boundary_resp.status_code} {put_oe_boundary_resp.text}. "
-            "spec: USE_CASE_en.md §UC4 L613"
+            "spec: USE_CASE_en.md §UC4 — API Mapping"
         )
         oe_boundary_body = put_oe_boundary_resp.json()
         assert oe_boundary_body["dataset_urn"] == ORDERS_EVENTS_URN, (
             f"orders.events boundary dataset_urn not echoed: "
-            f"{oe_boundary_body.get('dataset_urn')!r}. spec: USE_CASE_en.md §UC4 L613"
+            f"{oe_boundary_body.get('dataset_urn')!r}. spec: USE_CASE_en.md §UC4 — API Mapping"
         )
         assert "column.description" in oe_boundary_body["allowed"], (
             "orders.events boundary allowed must include 'column.description'. "
-            "spec: USE_CASE_en.md §UC4 L614"
+            "spec: USE_CASE_en.md §UC4 — API Mapping"
         )
 
-        # ── Step 5: POST method/run (first run) ───────────────────────────────
-        # UC4 narrative: "The daily Airflow DAG fires (or reviewer triggers an
-        # immediate run)."
-        # spec: USE_CASE_en.md §UC4 L720–723 — POST with no body
-        # spec: BACKEND.md §UC4 — MetagenRunResponse: run_id, status, dry_run,
-        #   unresolved_urns, counts, producer_iterations, debate_outcome
-        run_resp = await api_client.post(run_url, headers=admin_headers, timeout=90.0)
+        # ── Step 5: POST per-conf runs (conf EU + conf OE) ────────────────────
+        # Each conf runs independently under its own per-conf lock; the run
+        # response carries the conf_id it ran. We run conf OE first, then conf EU
+        # (the EU run is the one we assert on in detail).
+        # spec: API.md §Metadata Generation — POST /metagen/conf/{conf_id}/method/run
+        # spec: BACKEND.md §Event Catalogue — MetagenRunResponse: run_id, conf_id, status,
+        #   dry_run, unresolved_urns, counts, producer_iterations, debate_outcome
+        oe_run_resp = await api_client.post(
+            f"{conf_url}/{conf_oe_id}/method/run", headers=admin_headers, timeout=90.0
+        )
+        assert oe_run_resp.status_code == 200, (
+            f"POST conf OE run failed: {oe_run_resp.status_code} {oe_run_resp.text}. "
+            "spec: API.md §Metadata Generation — per-conf run returns 200"
+        )
+        oe_run_id = oe_run_resp.json()["run_id"]
+        assert oe_run_resp.json()["conf_id"] == conf_oe_id, (
+            "conf OE run response must carry its own conf_id. "
+            "spec: BACKEND.md §Event Catalogue — RUN_COMPLETE detail conf_id"
+        )
+
+        run_resp = await api_client.post(
+            f"{conf_url}/{conf_eu_id}/method/run", headers=admin_headers, timeout=90.0
+        )
         assert run_resp.status_code == 200, (
-            f"POST method/run (first run) failed: "
+            f"POST conf EU run (first run) failed: "
             f"{run_resp.status_code} {run_resp.text}. "
-            "spec: USE_CASE_en.md §UC4 L720 — method/run with is_enabled=True returns 200"
+            "spec: API.md §Metadata Generation — per-conf run returns 200"
         )
         run_body = run_resp.json()
         first_run_id = run_body["run_id"]
 
         assert "run_id" in run_body, (
-            "MetagenRunResponse must carry 'run_id'. spec: BACKEND.md §UC4"
+            "MetagenRunResponse must carry 'run_id'. spec: BACKEND.md §Event Catalogue"
         )
         uuid.UUID(run_body["run_id"])  # raises ValueError if malformed
+        assert run_body["conf_id"] == conf_eu_id, (
+            "conf EU run response must carry conf_eu_id. "
+            "spec: BACKEND.md §Event Catalogue — RUN_COMPLETE detail conf_id"
+        )
         assert run_body.get("status") == "success", (
             f"MetagenRunResponse status expected 'success'; got {run_body.get('status')!r}. "
-            "spec: BACKEND.md §UC4"
+            "spec: BACKEND.md §Event Catalogue"
         )
         assert run_body.get("dry_run") is False, (
             f"MetagenRunResponse dry_run must be False for a real run; "
-            f"got {run_body.get('dry_run')!r}. spec: BACKEND.md §UC4"
+            f"got {run_body.get('dry_run')!r}. spec: BACKEND.md §Event Catalogue"
         )
         assert isinstance(run_body.get("unresolved_urns"), list), (
-            "MetagenRunResponse unresolved_urns must be a list. spec: BACKEND.md §UC4"
+            "MetagenRunResponse unresolved_urns must be a list. spec: BACKEND.md §Event Catalogue"
         )
         assert run_body["unresolved_urns"] == [], (
             f"Expected no unresolved URNs with tag-scoped filter; "
-            f"got {run_body['unresolved_urns']!r}. spec: BACKEND.md §UC4"
+            f"got {run_body['unresolved_urns']!r}. spec: BACKEND.md §Event Catalogue"
         )
 
         first_counts = run_body.get("counts")
         assert isinstance(first_counts, dict), (
-            "MetagenRunResponse counts must be a dict. spec: BACKEND.md §UC4"
+            "MetagenRunResponse counts must be a dict. spec: BACKEND.md §Event Catalogue"
         )
         assert "items_considered" in first_counts, (
             "MetagenRunResponse counts must contain 'items_considered'. "
-            "spec: BACKEND.md event catalogue L766"
+            "spec: BACKEND.md §Event Catalogue"
         )
         # eu_profiles: 1 dataset.description + 8 column descriptions = 9 items
         # orders.events: ≥1 column descriptions (4 masked) = ≥1 item
         # Total items_considered ≥ 1 deterministically.
-        # spec: BACKEND.md event catalogue L766 — items_considered = in-scope target items
+        # spec: BACKEND.md §Event Catalogue — items_considered = in-scope target items
         assert (
             isinstance(first_counts["items_considered"], int)
             and first_counts["items_considered"] >= 1
         ), (
             f"counts.items_considered must be int ≥ 1 given scoped datasets + boundaries; "
-            f"got {first_counts.get('items_considered')!r}. spec: BACKEND.md event catalogue L766"
+            f"got {first_counts.get('items_considered')!r}. spec: BACKEND.md §Event Catalogue"
         )
         assert "candidates_added" in first_counts, (
             "MetagenRunResponse counts must contain 'candidates_added' on a real run. "
-            "spec: BACKEND.md event catalogue L766"
+            "spec: BACKEND.md §Event Catalogue"
         )
-        # spec: BACKEND.md §UC4 — debate_outcome ∈ {accept, turns_exhausted, cycle_detected}
+        # spec: BACKEND.md §Event Catalogue — debate_outcome canonical set
         assert run_body.get("debate_outcome") in ("accept", "turns_exhausted", "cycle_detected"), (
             f"MetagenRunResponse debate_outcome={run_body.get('debate_outcome')!r} not in "
-            "canonical set. spec: BACKEND.md §UC4 — METAGEN.RUN_COMPLETE detail"
+            "canonical set. spec: BACKEND.md §Event Catalogue — METAGEN.RUN_COMPLETE detail"
         )
         assert (
             isinstance(run_body.get("producer_iterations"), int)
             and run_body["producer_iterations"] >= 1
         ), (
             f"MetagenRunResponse producer_iterations must be int ≥ 1; "
-            f"got {run_body.get('producer_iterations')!r}. spec: BACKEND.md §UC4"
+            f"got {run_body.get('producer_iterations')!r}. spec: BACKEND.md §Event Catalogue"
         )
         # Under stub mode the stub branches ensure at least one candidate is generated.
         # spec: BACKEND_LLM.md §Test Mode — metagen Producer stub emits one candidate
@@ -383,9 +422,35 @@ async def test_uc4_metadata_generation_under_stub(
                 "broke the stub parser."
             )
 
-        # ── Step 6: GET global event — assert METAGEN.RUN_COMPLETE detail ─────
-        # spec: BACKEND.md event catalogue L766 — detail keys: run_id, unresolved_urns,
-        #   counts, dry_run, producer_iterations, debate_outcome
+        # ── Step 6: per-conf event isolation + cross-conf union ───────────────
+        # Conf EU's event feed contains its own run, not conf OE's; the cross-conf
+        # /event union contains both.
+        # spec: API.md §Metadata Generation — /conf/{conf_id}/event per-conf;
+        #   /metagen/event cross-conf union.
+        eu_conf_ev = await api_client.get(
+            f"{conf_url}/{conf_eu_id}/event?limit=50", headers=admin_headers
+        )
+        assert eu_conf_ev.status_code == 200, (
+            f"GET conf EU event failed: {eu_conf_ev.status_code} {eu_conf_ev.text}"
+        )
+        eu_conf_run_ids = {e["detail"].get("run_id") for e in eu_conf_ev.json()["events"]}
+        assert first_run_id in eu_conf_run_ids, "conf EU feed must include conf EU's run"
+        assert oe_run_id not in eu_conf_run_ids, (
+            "conf EU feed must not include conf OE's run. "
+            "spec: API.md §Metadata Generation — per-conf event isolation"
+        )
+
+        union_ev = await api_client.get(f"{global_event_url}?limit=100", headers=admin_headers)
+        assert union_ev.status_code == 200
+        union_run_ids = {e["detail"].get("run_id") for e in union_ev.json()["events"]}
+        assert {first_run_id, oe_run_id} <= union_run_ids, (
+            "cross-conf /event union must include both confs' runs. "
+            "spec: API.md §Metadata Generation — /metagen/event union"
+        )
+
+        # ── Step 6b: GET global event — assert METAGEN.RUN_COMPLETE detail ────
+        # spec: BACKEND.md §Event Catalogue — detail keys: run_id, conf_id,
+        #   unresolved_urns, counts, dry_run, producer_iterations, debate_outcome
         event_resp = await api_client.get(
             f"{global_event_url}?limit=20",
             headers=admin_headers,
@@ -413,27 +478,27 @@ async def test_uc4_metadata_generation_under_stub(
         )
         assert run_complete_event is not None, (
             f"No METAGEN.RUN_COMPLETE event found with run_id={first_run_id!r} after method/run. "
-            "spec: BACKEND.md event catalogue L766"
+            "spec: BACKEND.md §Event Catalogue"
         )
         rc_detail = run_complete_event["detail"]
         assert "run_id" in rc_detail, (
-            "METAGEN.RUN_COMPLETE detail missing 'run_id'. spec: BACKEND.md event catalogue L766"
+            "METAGEN.RUN_COMPLETE detail missing 'run_id'. spec: BACKEND.md §Event Catalogue"
         )
         assert "unresolved_urns" in rc_detail and isinstance(rc_detail["unresolved_urns"], list), (
             "METAGEN.RUN_COMPLETE detail missing or wrong type for 'unresolved_urns'. "
-            "spec: BACKEND.md event catalogue L766"
+            "spec: BACKEND.md §Event Catalogue"
         )
         assert "counts" in rc_detail and isinstance(rc_detail["counts"], dict), (
             "METAGEN.RUN_COMPLETE detail missing or wrong type for 'counts'. "
-            "spec: BACKEND.md event catalogue L766"
+            "spec: BACKEND.md §Event Catalogue"
         )
         assert rc_detail.get("dry_run") is False, (
             f"METAGEN.RUN_COMPLETE detail dry_run expected False; "
-            f"got {rc_detail.get('dry_run')!r}. spec: BACKEND.md event catalogue L766"
+            f"got {rc_detail.get('dry_run')!r}. spec: BACKEND.md §Event Catalogue"
         )
         assert rc_detail.get("debate_outcome") in ("accept", "turns_exhausted", "cycle_detected"), (
             f"METAGEN.RUN_COMPLETE detail debate_outcome={rc_detail.get('debate_outcome')!r} "
-            "not in canonical set. spec: BACKEND.md event catalogue L766"
+            "not in canonical set. spec: BACKEND.md §Event Catalogue"
         )
         assert (
             isinstance(rc_detail.get("producer_iterations"), int)
@@ -441,12 +506,12 @@ async def test_uc4_metadata_generation_under_stub(
         ), (
             f"METAGEN.RUN_COMPLETE detail producer_iterations must be int ≥ 1; "
             f"got {rc_detail.get('producer_iterations')!r}. "
-            "spec: BACKEND.md event catalogue L766"
+            "spec: BACKEND.md §Event Catalogue"
         )
 
         # ── Step 7: GET per-dataset items for both URNs ───────────────────────
         # UC4 narrative: "After the run, the dashboard lists items for each dataset."
-        # spec: USE_CASE_en.md §UC4 L725–730
+        # spec: USE_CASE_en.md §UC4 — API Mapping
         for urn, encoded_urn in ((EU_PROFILES_URN, _EU_ENCODED), (ORDERS_EVENTS_URN, _OE_ENCODED)):
             items_resp = await api_client.get(
                 f"/api/v1/spoke/common/data/{encoded_urn}/attr/metagen/item",
@@ -467,30 +532,30 @@ async def test_uc4_metadata_generation_under_stub(
             for item in items_body["items"]:
                 assert item["kind"] in ("dataset.description", "column.description"), (
                     f"item kind {item['kind']!r} not in allowed set. "
-                    "spec: USE_CASE_en.md §UC4 L617"
+                    "spec: USE_CASE_en.md §UC4 — API Mapping"
                 )
                 assert item["status"] in ("pending", "llm_approved", "approved"), (
                     f"item status {item['status']!r} not in valid set. "
-                    "spec: src/api/schemas/metagen.py — MetagenItemSummary.status Literal"
+                    "spec: BACKEND.md §Item status — pending / llm_approved / approved"
                 )
                 assert item["dataset_urn"] == urn, (
                     f"item dataset_urn {item['dataset_urn']!r} != expected {urn!r}"
                 )
                 assert "composite_id" in item, (
-                    "item missing 'composite_id'. spec: USE_CASE_en.md §UC4 API Mapping L684"
+                    "item missing 'composite_id'. spec: USE_CASE_en.md §UC4 — API Mapping"
                 )
-                # spec: USE_CASE_en.md §UC4 L684 — composite_id = '{dataset_urn}::{item_id}'
+                # spec: USE_CASE_en.md §UC4 — API Mapping — composite_id format
                 assert item["composite_id"] == f"{item['dataset_urn']}::{item['item_id']}", (
                     f"composite_id format mismatch: {item['composite_id']!r}. "
-                    "spec: USE_CASE_en.md §UC4 API Mapping L684"
+                    "spec: USE_CASE_en.md §UC4 — API Mapping"
                 )
 
         # ── Step 8: Review candidates ─────────────────────────────────────────
         # Approve eu_profiles dataset.description, reject eu_profiles column.email.description,
         # approve orders.events column.<first_masked_field>.description.
         # Each review fetches item-detail first to find the first llm_approved candidate.
-        # spec: USE_CASE_en.md §UC4 L752–760
-        # spec: BACKEND.md §UC4 — POST .../candidate/{cid}/method/review
+        # spec: USE_CASE_en.md §UC4 — Review
+        # spec: BACKEND.md §Approval flow — POST .../candidate/{cid}/method/review
 
         # Helper to fetch the first llm_approved candidate for an item.
         async def _first_llm_approved_candidate(
@@ -525,15 +590,15 @@ async def test_uc4_metadata_generation_under_stub(
             assert review_resp.status_code == 200, (
                 f"POST approve eu_profiles dataset.description failed: "
                 f"{review_resp.status_code} {review_resp.text}. "
-                "spec: USE_CASE_en.md §UC4 L752–760"
+                "spec: USE_CASE_en.md §UC4 — Review"
             )
             review_body = review_resp.json()
             assert review_body.get("status") == "approved", (
                 f"Candidate status after approve must be 'approved'; "
-                f"got {review_body.get('status')!r}. spec: USE_CASE_en.md §UC4 L649–657"
+                f"got {review_body.get('status')!r}. spec: USE_CASE_en.md §UC4 — Review"
             )
             assert review_body.get("candidate_id") == eu_desc_cid, (
-                "candidate_id echo mismatch. spec: BACKEND.md §UC4"
+                "candidate_id echo mismatch. spec: BACKEND.md §Approval flow"
             )
 
         # 8b. Reject eu_profiles column.email.description.
@@ -553,12 +618,12 @@ async def test_uc4_metadata_generation_under_stub(
             assert reject_resp.status_code == 200, (
                 f"POST reject eu_profiles column.email.description failed: "
                 f"{reject_resp.status_code} {reject_resp.text}. "
-                "spec: USE_CASE_en.md §UC4 L752–760"
+                "spec: USE_CASE_en.md §UC4 — Review"
             )
             reject_body = reject_resp.json()
             assert reject_body.get("status") == "rejected", (
                 f"Candidate status after reject must be 'rejected'; "
-                f"got {reject_body.get('status')!r}. spec: USE_CASE_en.md §UC4 L649–657"
+                f"got {reject_body.get('status')!r}. spec: USE_CASE_en.md §UC4 — Review"
             )
 
         # 8c. Approve orders.events first masked column description.
@@ -583,21 +648,207 @@ async def test_uc4_metadata_generation_under_stub(
                 assert oe_review_resp.status_code == 200, (
                     f"POST approve orders.events column description failed: "
                     f"{oe_review_resp.status_code} {oe_review_resp.text}. "
-                    "spec: USE_CASE_en.md §UC4 L752–760"
+                    "spec: USE_CASE_en.md §UC4 — Review"
                 )
                 oe_review_body = oe_review_resp.json()
                 assert oe_review_body.get("status") == "approved", (
                     f"Candidate status after approve must be 'approved'; "
-                    f"got {oe_review_body.get('status')!r}. spec: USE_CASE_en.md §UC4 L649–657"
+                    f"got {oe_review_body.get('status')!r}. spec: USE_CASE_en.md §UC4 — Review"
                 )
+
+        # ── Step 8d: Cross-conf approval exclusivity on a SHARED item ─────────
+        # A RIVAL conf also scopes eu_profiles, so it produces its own candidates
+        # — each stamped with its own conf_id — on the SAME items as conf EU. On a
+        # shared, not-yet-approved column item we approve conf EU's candidate first,
+        # then approve conf RIVAL's candidate on that SAME item. The second approval
+        # must atomically demote conf EU's just-approved sibling back to
+        # llm_approved: the partial unique index UNIQUE (dataset_urn, item_id)
+        # WHERE status='approved' holds GLOBALLY across confs, so an item can hold
+        # at most one approved candidate regardless of which conf produced it.
+        # spec: feature/BACKEND.md §Approval flow — approving a candidate flips any
+        #   previously-approved sibling (possibly from a different conf) back to
+        #   llm_approved in the same transaction.
+        # spec: feature/BACKEND_SCHEMA.md §metagen_candidates — partial unique index
+        #   UNIQUE (dataset_urn, item_id) WHERE status='approved' (global one-
+        #   approved-per-item, across all confs).
+        #
+        # Generation skips items that already hold an approved candidate from ANY
+        # conf (§Generation Pipeline step 4). The shared item used here is a column
+        # that was NOT approved in step 8 and NOT email (rejected in 8b above), so
+        # both confs accumulate llm_approved siblings on it.
+        post_conf_rival = await api_client.post(
+            conf_url,
+            headers=admin_headers,
+            json={
+                "name": f"uc4-rival-{conf_suffix}",
+                "is_enabled": True,
+                "dataset_filter": {"dataset_urns": [EU_PROFILES_URN]},
+                "result_limit": 3,
+                "overwrite_pending": True,
+            },
+        )
+        assert post_conf_rival.status_code == 201, (
+            f"POST conf RIVAL failed: {post_conf_rival.status_code} {post_conf_rival.text}. "
+            "spec: API.md §Metadata Generation — POST /metagen/conf → 201"
+        )
+        conf_rival_id = post_conf_rival.json()["id"]
+
+        # Run conf RIVAL over eu_profiles. eu_profiles' boundary is enabled and its
+        # dataset.description is approved (skipped), but its column items are still
+        # open, so RIVAL produces RIVAL-stamped candidates on the same column items
+        # conf EU already populated.
+        rival_run_resp = await api_client.post(
+            f"{conf_url}/{conf_rival_id}/method/run", headers=admin_headers, timeout=90.0
+        )
+        assert rival_run_resp.status_code == 200, (
+            f"POST conf RIVAL run failed: {rival_run_resp.status_code} {rival_run_resp.text}. "
+            "spec: API.md §Metadata Generation — per-conf run returns 200"
+        )
+        assert rival_run_resp.json()["conf_id"] == conf_rival_id, (
+            "conf RIVAL run response must carry its own conf_id. "
+            "spec: feature/BACKEND.md §Event Catalogue — RUN_COMPLETE detail conf_id"
+        )
+
+        # Find a SHARED column item that now holds llm_approved candidates from BOTH
+        # conf EU and conf RIVAL (distinct conf_id). dataset.description is already
+        # approved (single approved candidate) and email was rejected, so we scan the
+        # column items via the per-dataset item list and probe each for a two-conf
+        # candidate set.
+        items_for_shared = await api_client.get(
+            f"/api/v1/spoke/common/data/{_EU_ENCODED}/attr/metagen/item",
+            headers=admin_headers,
+        )
+        assert items_for_shared.status_code == 200, (
+            f"GET eu_profiles items for cross-conf probe failed: "
+            f"{items_for_shared.status_code} {items_for_shared.text}"
+        )
+        shared_item_id: str | None = None
+        eu_cand_on_shared: dict | None = None
+        rival_cand_on_shared: dict | None = None
+        for item in items_for_shared.json().get("items", []):
+            item_id = item["item_id"]
+            if item_id in ("dataset.description", eu_email_item_id):
+                continue
+            encoded_item = urllib.parse.quote(item_id, safe="")
+            detail = await api_client.get(
+                f"/api/v1/spoke/common/data/{_EU_ENCODED}/attr/metagen/item/{encoded_item}",
+                headers=admin_headers,
+            )
+            if detail.status_code != 200:
+                continue
+            cands = detail.json().get("candidates", [])
+            eu_c = next(
+                (
+                    c
+                    for c in cands
+                    if c["status"] == "llm_approved" and c["conf_id"] == conf_eu_id
+                ),
+                None,
+            )
+            rival_c = next(
+                (
+                    c
+                    for c in cands
+                    if c["status"] == "llm_approved" and c["conf_id"] == conf_rival_id
+                ),
+                None,
+            )
+            if eu_c is not None and rival_c is not None:
+                shared_item_id = item_id
+                eu_cand_on_shared = eu_c
+                rival_cand_on_shared = rival_c
+                break
+
+        assert shared_item_id is not None, (
+            "Cross-conf demotion is unreachable: no eu_profiles column item carried "
+            "llm_approved candidates from BOTH conf EU and conf RIVAL after running "
+            "both confs over the shared dataset. Under stub mode each conf emits one "
+            "candidate per open column item, so a shared two-conf item must exist. "
+            "spec: feature/BACKEND.md §Generation Pipeline — items shared across confs; "
+            "spec: src/workflows/_stubs.py metagen_validate stub branch."
+        )
+        assert eu_cand_on_shared is not None and rival_cand_on_shared is not None
+        shared_encoded_item = urllib.parse.quote(shared_item_id, safe="")
+
+        # Approve conf EU's candidate on the shared item first.
+        approve_eu_shared = await api_client.post(
+            f"/api/v1/spoke/common/data/{_EU_ENCODED}"
+            f"/attr/metagen/item/{shared_encoded_item}"
+            f"/candidate/{eu_cand_on_shared['candidate_id']}/method/review",
+            headers=admin_headers,
+            json={"verdict": "approve", "reason": "cross-conf: approve EU first"},
+        )
+        assert approve_eu_shared.status_code == 200, (
+            f"Approving conf EU's shared-item candidate failed: "
+            f"{approve_eu_shared.status_code} {approve_eu_shared.text}. "
+            "spec: feature/BACKEND.md §Approval flow"
+        )
+
+        # Now approve conf RIVAL's candidate on the SAME item. This must demote
+        # conf EU's just-approved sibling back to llm_approved.
+        approve_rival_shared = await api_client.post(
+            f"/api/v1/spoke/common/data/{_EU_ENCODED}"
+            f"/attr/metagen/item/{shared_encoded_item}"
+            f"/candidate/{rival_cand_on_shared['candidate_id']}/method/review",
+            headers=admin_headers,
+            json={"verdict": "approve", "reason": "cross-conf: approve RIVAL demotes EU"},
+        )
+        assert approve_rival_shared.status_code == 200, (
+            f"Approving conf RIVAL's shared-item candidate failed: "
+            f"{approve_rival_shared.status_code} {approve_rival_shared.text}. "
+            "spec: feature/BACKEND.md §Approval flow — cross-conf approval"
+        )
+
+        # Read the truth back from the backend via GET item-detail (not the POST
+        # echo): conf RIVAL's candidate is now the sole approved candidate, and conf
+        # EU's was atomically flipped back to llm_approved. The global one-approved-
+        # per-item invariant holds across confs.
+        detail_after = await api_client.get(
+            f"/api/v1/spoke/common/data/{_EU_ENCODED}"
+            f"/attr/metagen/item/{shared_encoded_item}",
+            headers=admin_headers,
+        )
+        assert detail_after.status_code == 200, (
+            f"GET shared item detail after cross-conf approval failed: "
+            f"{detail_after.status_code} {detail_after.text}"
+        )
+        cands_after = detail_after.json().get("candidates", [])
+        approved_after = [c for c in cands_after if c["status"] == "approved"]
+        assert len(approved_after) == 1, (
+            "Exactly one approved candidate may exist per item, globally across "
+            f"confs; found {len(approved_after)}. "
+            "spec: feature/BACKEND_SCHEMA.md §metagen_candidates — partial unique "
+            "index UNIQUE (dataset_urn, item_id) WHERE status='approved'"
+        )
+        assert approved_after[0]["candidate_id"] == rival_cand_on_shared["candidate_id"], (
+            "conf RIVAL's candidate must be the sole approved candidate after its "
+            f"approval; got {approved_after[0]['candidate_id']!r}. "
+            "spec: feature/BACKEND.md §Approval flow — newly approved candidate wins"
+        )
+        assert approved_after[0]["conf_id"] == conf_rival_id, (
+            "The sole approved candidate must belong to conf RIVAL. "
+            "spec: feature/BACKEND.md §Approval flow — cross-conf approval"
+        )
+        eu_after = next(
+            (c for c in cands_after if c["candidate_id"] == eu_cand_on_shared["candidate_id"]),
+            None,
+        )
+        assert eu_after is not None and eu_after["status"] == "llm_approved", (
+            "conf EU's previously-approved candidate must be demoted back to "
+            f"'llm_approved' when conf RIVAL's sibling is approved; got "
+            f"{eu_after['status'] if eu_after else 'missing'!r}. "
+            "spec: feature/BACKEND.md §Approval flow — approving a candidate flips "
+            "the previously-approved sibling (possibly from a different conf) back "
+            "to llm_approved in the same transaction"
+        )
 
         # ── Step 9: DataHub round-trip for the two approved items ─────────────
         # After approving a dataset.description candidate, DataSpoke emits the value
         # to editableDatasetProperties.description.
         # After approving a column.description candidate, DataSpoke emits the value
         # to editableSchemaMetadata[fieldPath].description.
-        # spec: USE_CASE_en.md §UC4 L588 (table) — approval map
-        # spec: BACKEND.md §UC4 — _emit_to_datahub writes to editable aspects
+        # spec: USE_CASE_en.md §UC4 — Review — approval map
+        # spec: BACKEND.md §Approval flow — approval writes to editable DataHub aspects
         if approved_eu_desc_value is not None:
             editable_props = graph.get_aspect(
                 entity_urn=EU_PROFILES_URN,
@@ -606,12 +857,12 @@ async def test_uc4_metadata_generation_under_stub(
             assert editable_props is not None, (
                 "editableDatasetProperties aspect is None after approving dataset.description "
                 "candidate — DataSpoke did not emit to DataHub. "
-                "spec: USE_CASE_en.md §UC4 L762–764"
+                "spec: USE_CASE_en.md §UC4 — Review"
             )
             assert editable_props.description == approved_eu_desc_value, (
                 f"editableDatasetProperties.description={editable_props.description!r} "
                 f"does not match approved value={approved_eu_desc_value!r}. "
-                "spec: USE_CASE_en.md §UC4 L762–764 — approval emits value to DataHub"
+                "spec: USE_CASE_en.md §UC4 — Review — approval emits value to DataHub"
             )
 
         if approved_oe_item_id is not None and approved_oe_value is not None:
@@ -623,7 +874,7 @@ async def test_uc4_metadata_generation_under_stub(
             assert editable_schema is not None, (
                 "editableSchemaMetadata aspect is None after approving column.description "
                 "candidate — DataSpoke did not emit to DataHub. "
-                "spec: USE_CASE_en.md §UC4 L762–764"
+                "spec: USE_CASE_en.md §UC4 — Review"
             )
             field_infos = editable_schema.editableSchemaFieldInfo or []
             matched_fi = next(
@@ -631,18 +882,18 @@ async def test_uc4_metadata_generation_under_stub(
             )
             assert matched_fi is not None, (
                 f"editableSchemaMetadata has no entry for fieldPath={approved_field_path!r} "
-                "after approving column description. spec: USE_CASE_en.md §UC4 L762–764"
+                "after approving column description. spec: USE_CASE_en.md §UC4 — Review"
             )
             assert matched_fi.description == approved_oe_value, (
                 f"editableSchemaMetadata[{approved_field_path!r}].description="
                 f"{matched_fi.description!r} does not match approved value="
-                f"{approved_oe_value!r}. spec: USE_CASE_en.md §UC4 L762–764"
+                f"{approved_oe_value!r}. spec: USE_CASE_en.md §UC4 — Review"
             )
 
         # ── Step 10: GET per-dataset metagen events ───────────────────────────
         # Verify CANDIDATE_APPROVE and CANDIDATE_REJECT events are recorded.
-        # spec: USE_CASE_en.md §UC4 L769–770
-        # spec: BACKEND.md event catalogue L767 — CANDIDATE_APPROVE detail: item_id,
+        # spec: USE_CASE_en.md §UC4 — Review
+        # spec: BACKEND.md §Event Catalogue — CANDIDATE_APPROVE detail: item_id,
         #   candidate_id, reason; CANDIDATE_REJECT detail: item_id, candidate_id, reason
         if eu_desc_candidate is not None:
             eu_event_resp = await api_client.get(
@@ -668,20 +919,20 @@ async def test_uc4_metadata_generation_under_stub(
             )
             assert approve_event is not None, (
                 "No METAGEN.CANDIDATE_APPROVE event found after approving eu_profiles "
-                "dataset.description candidate. spec: BACKEND.md event catalogue L767"
+                "dataset.description candidate. spec: BACKEND.md §Event Catalogue"
             )
             ev_detail = approve_event["detail"]
             assert "item_id" in ev_detail, (
                 "METAGEN.CANDIDATE_APPROVE detail missing 'item_id'. "
-                "spec: BACKEND.md event catalogue L767"
+                "spec: BACKEND.md §Event Catalogue"
             )
             assert "candidate_id" in ev_detail, (
                 "METAGEN.CANDIDATE_APPROVE detail missing 'candidate_id'. "
-                "spec: BACKEND.md event catalogue L767"
+                "spec: BACKEND.md §Event Catalogue"
             )
             assert "reason" in ev_detail, (
                 "METAGEN.CANDIDATE_APPROVE detail missing 'reason'. "
-                "spec: BACKEND.md event catalogue L767"
+                "spec: BACKEND.md §Event Catalogue"
             )
 
         if rejected_eu_email_cid is not None:
@@ -700,34 +951,36 @@ async def test_uc4_metadata_generation_under_stub(
             )
             assert reject_event is not None, (
                 "No METAGEN.CANDIDATE_REJECT event found after rejecting eu_profiles "
-                "column.email.description candidate. spec: BACKEND.md event catalogue L767"
+                "column.email.description candidate. spec: BACKEND.md §Event Catalogue"
             )
             rj_detail = reject_event["detail"]
             assert "item_id" in rj_detail, (
                 "METAGEN.CANDIDATE_REJECT detail missing 'item_id'. "
-                "spec: BACKEND.md event catalogue L767"
+                "spec: BACKEND.md §Event Catalogue"
             )
             assert "candidate_id" in rj_detail, (
                 "METAGEN.CANDIDATE_REJECT detail missing 'candidate_id'. "
-                "spec: BACKEND.md event catalogue L767"
+                "spec: BACKEND.md §Event Catalogue"
             )
             assert "reason" in rj_detail, (
                 "METAGEN.CANDIDATE_REJECT detail missing 'reason'. "
-                "spec: BACKEND.md event catalogue L767"
+                "spec: BACKEND.md §Event Catalogue"
             )
 
         # ── Step 11: POST method/run (second run) — idempotency ───────────────
         # Approved items must be skipped; rejected items must be cleared and re-generated.
-        # spec: USE_CASE_en.md §UC4 L567 — "previously approved descriptions are
+        # spec: USE_CASE_en.md §UC4 — Review — "previously approved descriptions are
         # not overwritten on subsequent runs"
-        # spec: BACKEND.md §UC4 — _enumerate_target_items skips approved (dataset_urn, item_id)
-        # spec: BACKEND.md §UC4 — _clear_rejected_candidates deletes rejected candidates
+        # spec: BACKEND.md §Generation Pipeline — enumeration skips approved items
+        # spec: BACKEND.md §Generation Pipeline — rejected candidates cleared at run start
         #   before each run so they can be re-generated fresh
-        run2_resp = await api_client.post(run_url, headers=admin_headers, timeout=90.0)
+        run2_resp = await api_client.post(
+            f"{conf_url}/{conf_eu_id}/method/run", headers=admin_headers, timeout=90.0
+        )
         assert run2_resp.status_code == 200, (
-            f"POST method/run (second run) failed: "
+            f"POST conf EU run (second run) failed: "
             f"{run2_resp.status_code} {run2_resp.text}. "
-            "spec: USE_CASE_en.md §UC4 L720"
+            "spec: API.md §Metadata Generation — per-conf run"
         )
         run2_body = run2_resp.json()
         second_run_id = run2_body["run_id"]
@@ -749,17 +1002,17 @@ async def test_uc4_metadata_generation_under_stub(
         )
 
         # The two approved items must be excluded from the second run's scope.
-        # spec: BACKEND.md §UC4 — _enumerate_target_items filters out (urn, item_id) pairs
+        # spec: BACKEND.md §Generation Pipeline — enumeration filters out approved (urn, item_id)
         #   that already have an approved candidate.
         assert second_items_considered < first_items_considered, (
             f"Second run items_considered ({second_items_considered}) must be strictly less "
             f"than first run ({first_items_considered}) because approved items are excluded. "
-            "spec: BACKEND.md §UC4 — _enumerate_target_items skips approved items"
+            "spec: BACKEND.md §Generation Pipeline — target enumeration skips approved items"
         )
 
         # Verify approved items: GET item-detail and assert exactly one approved candidate,
         # no new llm_approved candidate from the second run.
-        # spec: BACKEND.md §UC4 — approved candidates are not evicted or overwritten
+        # spec: BACKEND.md §Approval flow — approved candidates are not evicted or overwritten
         if eu_desc_candidate is not None:
             eu_desc_encoded_item = urllib.parse.quote(eu_desc_item_id, safe="")
             detail_resp2 = await api_client.get(
@@ -774,20 +1027,20 @@ async def test_uc4_metadata_generation_under_stub(
             assert len(approved_candidates) == 1, (
                 f"Expected exactly 1 approved candidate for eu_profiles dataset.description "
                 f"after second run; got {len(approved_candidates)}. "
-                "spec: BACKEND.md §UC4 — partial unique index ensures at most one approved "
-                "candidate per (dataset_urn, item_id)"
+                "spec: BACKEND.md §Approval flow — partial unique index: at most one "
+                "approved candidate per (dataset_urn, item_id)"
             )
             assert len(candidates2) == 1, (
                 f"Approved item should have only the approved candidate after second run; "
                 f"got {len(candidates2)} candidates with statuses "
                 f"{[c['status'] for c in candidates2]}. "
-                "spec: BACKEND.md §UC4 — _enumerate_target_items skips approved items"
+                "spec: BACKEND.md §Generation Pipeline — target enumeration skips approved items"
             )
 
         # Verify the rejected eu_profiles column.email.description: prior rejected candidate
         # is gone (cleared by _clear_rejected_candidates), and a new llm_approved candidate
         # was generated.
-        # spec: USE_CASE_en.md §UC4 L637-638 — at the start of each run all rejected
+        # spec: USE_CASE_en.md §UC4 — Review — at the start of each run all rejected
         #   candidates are deleted
         if rejected_eu_email_cid is not None:
             eu_email_encoded_item2 = urllib.parse.quote(eu_email_item_id, safe="")
@@ -803,7 +1056,7 @@ async def test_uc4_metadata_generation_under_stub(
             assert len(still_rejected) == 0, (
                 f"Rejected candidate for eu_profiles column.email.description should have been "
                 f"cleared by the second run; found {len(still_rejected)} rejected candidates. "
-                "spec: BACKEND.md §UC4 — _clear_rejected_candidates removes rejected candidates"
+                "spec: BACKEND.md §Generation Pipeline — rejected candidates removed at run start"
             )
             new_llm_approved_email = [
                 c for c in email_candidates if c["status"] == "llm_approved"
@@ -811,11 +1064,11 @@ async def test_uc4_metadata_generation_under_stub(
             assert len(new_llm_approved_email) >= 1, (
                 "After clearing the rejected candidate, the second run must produce a new "
                 "llm_approved candidate for eu_profiles column.email.description. "
-                "spec: BACKEND.md §UC4 — rejected items are re-generated on the next run"
+                "spec: BACKEND.md §Generation Pipeline — rejected items re-generated next run"
             )
 
         # Verify second run RUN_COMPLETE event is recorded.
-        # spec: BACKEND.md event catalogue L766 — RUN_COMPLETE emitted on every run
+        # spec: BACKEND.md §Event Catalogue — RUN_COMPLETE emitted on every run
         event2_resp = await api_client.get(
             f"{global_event_url}?limit=50",
             headers=admin_headers,
@@ -833,7 +1086,7 @@ async def test_uc4_metadata_generation_under_stub(
         )
         assert run2_complete is not None, (
             f"No METAGEN.RUN_COMPLETE event found with run_id={second_run_id!r} "
-            "after second method/run. spec: BACKEND.md event catalogue L766"
+            "after second method/run. spec: BACKEND.md §Event Catalogue"
         )
 
     finally:
@@ -848,13 +1101,15 @@ async def test_uc4_metadata_generation_under_stub(
         with suppress(Exception):
             await delete_metagen_state_for_urn(async_session, ORDERS_EVENTS_URN)
 
-        # Delete per-dataset boundaries and global conf.
+        # Delete per-dataset boundaries and the three confs (EU, OE, RIVAL).
         with suppress(Exception):
             await api_client.delete(eu_boundary_url, headers=admin_headers)
         with suppress(Exception):
             await api_client.delete(oe_boundary_url, headers=admin_headers)
-        with suppress(Exception):
-            await api_client.delete(conf_url, headers=admin_headers)
+        for cid in (conf_eu_id, conf_oe_id, conf_rival_id):
+            if cid is not None:
+                with suppress(Exception):
+                    await api_client.delete(f"{conf_url}/{cid}", headers=admin_headers)
 
         # Restore DataHub aspect snapshots to undo the masking performed in step 2.
         # Originals are restored into the snapshot objects before re-emitting so
@@ -959,17 +1214,21 @@ async def test_uc4_metadata_generation_with_real_llm(
      12.  Cleanup (finally)
 
     Spec: USE_CASE_en.md §UC4
-    Spec: BACKEND.md §UC4 Metadata Generation
+    Spec: BACKEND.md §Metadata Generation Service
     Spec: USE_CASE_en.md §UC4 — real-LLM contract: candidates_added ≥ 1.
     """
     if runtime_conf.get("stub_llm_client"):
-        pytest.skip("stub_llm_client=true; set stub_llm_client=false via PATCH /admin/conf to run real-LLM tests")
+        pytest.skip(
+            "stub_llm_client=true; PATCH /admin/conf {stub_llm_client:false} to run real-LLM"
+        )
 
-    conf_url = "/api/v1/spoke/metagen/attr/conf"
-    eu_boundary_url = f"/api/v1/spoke/common/data/{_EU_ENCODED}/attr/metagen/conf"
-    oe_boundary_url = f"/api/v1/spoke/common/data/{_OE_ENCODED}/attr/metagen/conf"
-    run_url = "/api/v1/spoke/metagen/method/run"
+    conf_url = "/api/v1/spoke/metagen/conf"
+    eu_boundary_url = f"/api/v1/spoke/common/data/{_EU_ENCODED}/attr/metagen/boundary"
+    oe_boundary_url = f"/api/v1/spoke/common/data/{_OE_ENCODED}/attr/metagen/boundary"
     global_event_url = "/api/v1/spoke/metagen/event"
+
+    # Conf id created in step 3; used for the per-conf run route + cleanup.
+    conf_id: str | None = None
 
     document_urn: str | None = None
     node_ids: list[str] = []
@@ -1017,7 +1276,9 @@ async def test_uc4_metadata_generation_with_real_llm(
 
         # Capture original values before any in-place mutation so cleanup can
         # restore them accurately.
-        eu_original_dataset_description = eu_props_snapshot.description if eu_props_snapshot else None
+        eu_original_dataset_description = (
+            eu_props_snapshot.description if eu_props_snapshot else None
+        )
         if eu_schema_snapshot is not None and hasattr(eu_schema_snapshot, "fields"):
             for f in eu_schema_snapshot.fields:
                 eu_original_field_descs[f.fieldPath] = f.description
@@ -1065,11 +1326,15 @@ async def test_uc4_metadata_generation_with_real_llm(
                 )
             )
 
-        # ── Step 3: PUT global metagen conf ──────────────────────────────────
-        put_conf_resp = await api_client.put(
+        # ── Step 3: POST a tag-scoped metagen conf (collection) ───────────────
+        # The real-LLM mirror uses a single tag-scoped conf covering both
+        # fulfillment datasets; the cross-conf exclusivity concern is exercised by
+        # the stub test. spec: API.md §Metadata Generation — POST /metagen/conf → 201.
+        post_conf_resp = await api_client.post(
             conf_url,
             headers=admin_headers,
             json={
+                "name": f"uc4-real-{uuid.uuid4().hex[:8]}",
                 "is_enabled": True,
                 "schedule_tier": "daily",
                 "dataset_filter": {"origin": "DEV", "tags": [FULFILLMENT_TAG]},
@@ -1077,32 +1342,18 @@ async def test_uc4_metadata_generation_with_real_llm(
                 "overwrite_pending": True,
             },
         )
-        assert put_conf_resp.status_code in (200, 201), (
-            f"PUT global metagen conf failed: "
-            f"{put_conf_resp.status_code} {put_conf_resp.text}. "
-            "spec: USE_CASE_en.md §UC4 L694 — PUT returns 200 or 201"
+        assert post_conf_resp.status_code == 201, (
+            f"POST metagen conf failed: "
+            f"{post_conf_resp.status_code} {post_conf_resp.text}. "
+            "spec: API.md §Metadata Generation — POST /metagen/conf → 201"
         )
-        conf_body = put_conf_resp.json()
-        assert conf_body["is_enabled"] is True, (
-            "PUT conf response must round-trip is_enabled=True. "
-            "spec: USE_CASE_en.md §UC4 L604"
-        )
-        assert conf_body["schedule_tier"] == "daily", (
-            f"schedule_tier not preserved: {conf_body.get('schedule_tier')!r}. "
-            "spec: USE_CASE_en.md §UC4 L604"
-        )
-        assert conf_body["result_limit"] == 3, (
-            f"result_limit not preserved: {conf_body.get('result_limit')!r}. "
-            "spec: USE_CASE_en.md §UC4 L605"
-        )
-        assert conf_body["overwrite_pending"] is True, (
-            f"overwrite_pending not preserved: {conf_body.get('overwrite_pending')!r}. "
-            "spec: USE_CASE_en.md §UC4 L606"
-        )
-        assert conf_body["dataset_filter"] == {"origin": "DEV", "tags": [FULFILLMENT_TAG]}, (
-            f"dataset_filter not preserved: {conf_body.get('dataset_filter')!r}. "
-            "spec: USE_CASE_en.md §UC4 L604"
-        )
+        conf_body = post_conf_resp.json()
+        conf_id = conf_body["id"]
+        assert conf_body["is_enabled"] is True
+        assert conf_body["schedule_tier"] == "daily"
+        assert conf_body["result_limit"] == 3
+        assert conf_body["overwrite_pending"] is True
+        assert conf_body["dataset_filter"] == {"origin": "DEV", "tags": [FULFILLMENT_TAG]}
 
         # ── Step 4: PUT per-dataset boundaries ───────────────────────────────
         put_eu_boundary_resp = await api_client.put(
@@ -1116,16 +1367,16 @@ async def test_uc4_metadata_generation_with_real_llm(
         assert put_eu_boundary_resp.status_code in (200, 201), (
             f"PUT eu_profiles boundary failed: "
             f"{put_eu_boundary_resp.status_code} {put_eu_boundary_resp.text}. "
-            "spec: USE_CASE_en.md §UC4 L613"
+            "spec: USE_CASE_en.md §UC4 — API Mapping"
         )
         eu_boundary_body = put_eu_boundary_resp.json()
         assert eu_boundary_body["dataset_urn"] == EU_PROFILES_URN, (
             f"boundary dataset_urn not echoed: {eu_boundary_body.get('dataset_urn')!r}. "
-            "spec: USE_CASE_en.md §UC4 L613"
+            "spec: USE_CASE_en.md §UC4 — API Mapping"
         )
         assert set(eu_boundary_body["allowed"]) == {"dataset.description", "column.description"}, (
             f"eu_profiles boundary allowed not preserved: {eu_boundary_body.get('allowed')!r}. "
-            "spec: USE_CASE_en.md §UC4 L614"
+            "spec: USE_CASE_en.md §UC4 — API Mapping"
         )
 
         put_oe_boundary_resp = await api_client.put(
@@ -1139,24 +1390,26 @@ async def test_uc4_metadata_generation_with_real_llm(
         assert put_oe_boundary_resp.status_code in (200, 201), (
             f"PUT orders.events boundary failed: "
             f"{put_oe_boundary_resp.status_code} {put_oe_boundary_resp.text}. "
-            "spec: USE_CASE_en.md §UC4 L613"
+            "spec: USE_CASE_en.md §UC4 — API Mapping"
         )
         oe_boundary_body = put_oe_boundary_resp.json()
         assert oe_boundary_body["dataset_urn"] == ORDERS_EVENTS_URN, (
             f"orders.events boundary dataset_urn not echoed: "
-            f"{oe_boundary_body.get('dataset_urn')!r}. spec: USE_CASE_en.md §UC4 L613"
+            f"{oe_boundary_body.get('dataset_urn')!r}. spec: USE_CASE_en.md §UC4 — API Mapping"
         )
         assert "column.description" in oe_boundary_body["allowed"], (
             "orders.events boundary allowed must include 'column.description'. "
-            "spec: USE_CASE_en.md §UC4 L614"
+            "spec: USE_CASE_en.md §UC4 — API Mapping"
         )
 
-        # ── Step 5: POST method/run (first run) ───────────────────────────────
-        run_resp = await api_client.post(run_url, headers=admin_headers, timeout=90.0)
+        # ── Step 5: POST per-conf run (first run) ─────────────────────────────
+        run_resp = await api_client.post(
+            f"{conf_url}/{conf_id}/method/run", headers=admin_headers, timeout=90.0
+        )
         assert run_resp.status_code == 200, (
-            f"POST method/run (first run) failed: "
+            f"POST per-conf run (first run) failed: "
             f"{run_resp.status_code} {run_resp.text}. "
-            "spec: USE_CASE_en.md §UC4 L720"
+            "spec: API.md §Metadata Generation — per-conf run"
         )
         run_body = run_resp.json()
         first_run_id = run_body["run_id"]
@@ -1164,30 +1417,40 @@ async def test_uc4_metadata_generation_with_real_llm(
         uuid.UUID(run_body["run_id"])
         assert run_body.get("status") == "success", (
             f"MetagenRunResponse status expected 'success'; got {run_body.get('status')!r}. "
-            "spec: BACKEND.md §UC4"
+            "spec: BACKEND.md §Event Catalogue"
         )
         assert run_body.get("dry_run") is False, (
             f"MetagenRunResponse dry_run must be False; got {run_body.get('dry_run')!r}. "
-            "spec: BACKEND.md §UC4"
+            "spec: BACKEND.md §Event Catalogue"
         )
         assert isinstance(run_body.get("unresolved_urns"), list)
         assert run_body["unresolved_urns"] == [], (
             f"Expected no unresolved URNs; got {run_body['unresolved_urns']!r}. "
-            "spec: BACKEND.md §UC4"
+            "spec: BACKEND.md §Event Catalogue"
         )
         first_counts = run_body.get("counts", {})
         assert isinstance(first_counts, dict)
         assert "items_considered" in first_counts
-        assert isinstance(first_counts["items_considered"], int) and first_counts["items_considered"] >= 1, (
+        assert (
+            isinstance(first_counts["items_considered"], int)
+            and first_counts["items_considered"] >= 1
+        ), (
             f"items_considered must be int ≥ 1; got {first_counts.get('items_considered')!r}. "
-            "spec: BACKEND.md event catalogue L766"
+            "spec: BACKEND.md §Event Catalogue"
         )
         assert "candidates_added" in first_counts
         assert run_body.get("debate_outcome") in ("accept", "turns_exhausted", "cycle_detected"), (
             f"debate_outcome={run_body.get('debate_outcome')!r} not in canonical set. "
-            "spec: BACKEND.md §UC4"
+            "spec: BACKEND.md §Event Catalogue"
         )
-        assert isinstance(run_body.get("producer_iterations"), int) and run_body["producer_iterations"] >= 1
+        assert (
+            isinstance(run_body.get("producer_iterations"), int)
+            and run_body["producer_iterations"] >= 1
+        )
+        assert run_body["conf_id"] == conf_id, (
+            "Real-LLM run response must carry the conf_id it ran. "
+            "spec: BACKEND.md §Event Catalogue — RUN_COMPLETE detail conf_id"
+        )
 
         # Real-LLM invariant: must persist ≥1 candidate.
         # spec: BACKEND_LLM.md §Test Mode — real LLM must produce non-zero candidates
@@ -1219,7 +1482,7 @@ async def test_uc4_metadata_generation_with_real_llm(
         )
         assert run_complete_event is not None, (
             f"No METAGEN.RUN_COMPLETE event found with run_id={first_run_id!r}. "
-            "spec: BACKEND.md event catalogue L766"
+            "spec: BACKEND.md §Event Catalogue"
         )
         rc_detail = run_complete_event["detail"]
         assert "run_id" in rc_detail
@@ -1227,10 +1490,13 @@ async def test_uc4_metadata_generation_with_real_llm(
         assert "counts" in rc_detail and isinstance(rc_detail["counts"], dict)
         assert rc_detail.get("dry_run") is False
         assert rc_detail.get("debate_outcome") in ("accept", "turns_exhausted", "cycle_detected"), (
-            f"event detail debate_outcome={rc_detail.get('debate_outcome')!r} not in canonical set. "
-            "spec: BACKEND.md event catalogue L766"
+            f"event detail debate_outcome={rc_detail.get('debate_outcome')!r} not canonical. "
+            "spec: BACKEND.md §Event Catalogue"
         )
-        assert isinstance(rc_detail.get("producer_iterations"), int) and rc_detail["producer_iterations"] >= 1
+        assert (
+            isinstance(rc_detail.get("producer_iterations"), int)
+            and rc_detail["producer_iterations"] >= 1
+        )
 
         # ── Step 7: GET per-dataset items for both URNs ───────────────────────
         for urn, encoded_urn in ((EU_PROFILES_URN, _EU_ENCODED), (ORDERS_EVENTS_URN, _OE_ENCODED)):
@@ -1250,16 +1516,16 @@ async def test_uc4_metadata_generation_with_real_llm(
             for item in items_body["items"]:
                 assert item["kind"] in ("dataset.description", "column.description"), (
                     f"item kind {item['kind']!r} not in allowed set. "
-                    "spec: USE_CASE_en.md §UC4 L617"
+                    "spec: USE_CASE_en.md §UC4 — API Mapping"
                 )
                 assert item["status"] in ("pending", "llm_approved", "approved"), (
                     f"item status {item['status']!r} not in valid set. "
-                    "spec: src/api/schemas/metagen.py — MetagenItemSummary.status Literal"
+                    "spec: BACKEND.md §Item status — pending / llm_approved / approved"
                 )
                 assert item["dataset_urn"] == urn
                 assert "composite_id" in item
                 assert item["composite_id"] == f"{item['dataset_urn']}::{item['item_id']}", (
-                    "composite_id format mismatch. spec: USE_CASE_en.md §UC4 API Mapping L684"
+                    "composite_id format mismatch. spec: USE_CASE_en.md §UC4 — API Mapping"
                 )
 
         # ── Step 8: Review candidates ─────────────────────────────────────────
@@ -1273,10 +1539,8 @@ async def test_uc4_metadata_generation_with_real_llm(
             )
             if detail_resp.status_code != 200:
                 return None
-            return next(
-                (c for c in detail_resp.json().get("candidates", []) if c["status"] == "llm_approved"),
-                None,
-            )
+            cands = detail_resp.json().get("candidates", [])
+            return next((c for c in cands if c["status"] == "llm_approved"), None)
 
         # 8a. Approve eu_profiles dataset.description.
         eu_desc_item_id = "dataset.description"
@@ -1296,11 +1560,11 @@ async def test_uc4_metadata_generation_with_real_llm(
             assert review_resp.status_code == 200, (
                 f"POST approve eu_profiles dataset.description failed: "
                 f"{review_resp.status_code} {review_resp.text}. "
-                "spec: USE_CASE_en.md §UC4 L752–760"
+                "spec: USE_CASE_en.md §UC4 — Review"
             )
             assert review_resp.json().get("status") == "approved", (
                 "Candidate status after approve must be 'approved'. "
-                "spec: USE_CASE_en.md §UC4 L649–657"
+                "spec: USE_CASE_en.md §UC4 — Review"
             )
 
         # 8b. Reject eu_profiles column.email.description.
@@ -1320,11 +1584,11 @@ async def test_uc4_metadata_generation_with_real_llm(
             assert reject_resp.status_code == 200, (
                 f"POST reject eu_profiles column.email.description failed: "
                 f"{reject_resp.status_code} {reject_resp.text}. "
-                "spec: USE_CASE_en.md §UC4 L752–760"
+                "spec: USE_CASE_en.md §UC4 — Review"
             )
             assert reject_resp.json().get("status") == "rejected", (
                 "Candidate status after reject must be 'rejected'. "
-                "spec: USE_CASE_en.md §UC4 L649–657"
+                "spec: USE_CASE_en.md §UC4 — Review"
             )
 
         # 8c. Approve orders.events first masked column description.
@@ -1349,11 +1613,11 @@ async def test_uc4_metadata_generation_with_real_llm(
                 assert oe_review_resp.status_code == 200, (
                     f"POST approve orders.events column description failed: "
                     f"{oe_review_resp.status_code} {oe_review_resp.text}. "
-                    "spec: USE_CASE_en.md §UC4 L752–760"
+                    "spec: USE_CASE_en.md §UC4 — Review"
                 )
                 assert oe_review_resp.json().get("status") == "approved", (
                     "Candidate status after approve must be 'approved'. "
-                    "spec: USE_CASE_en.md §UC4 L649–657"
+                    "spec: USE_CASE_en.md §UC4 — Review"
                 )
 
         # ── Step 9: DataHub round-trip verify ─────────────────────────────────
@@ -1363,12 +1627,12 @@ async def test_uc4_metadata_generation_with_real_llm(
             )
             assert editable_props is not None, (
                 "editableDatasetProperties is None after approving dataset.description. "
-                "spec: USE_CASE_en.md §UC4 L762–764"
+                "spec: USE_CASE_en.md §UC4 — Review"
             )
             assert editable_props.description == approved_eu_desc_value, (
                 f"editableDatasetProperties.description={editable_props.description!r} "
                 f"!= approved value={approved_eu_desc_value!r}. "
-                "spec: USE_CASE_en.md §UC4 L762–764"
+                "spec: USE_CASE_en.md §UC4 — Review"
             )
 
         if approved_oe_item_id is not None and approved_oe_value is not None:
@@ -1378,7 +1642,7 @@ async def test_uc4_metadata_generation_with_real_llm(
             )
             assert editable_schema is not None, (
                 "editableSchemaMetadata is None after approving column description. "
-                "spec: USE_CASE_en.md §UC4 L762–764"
+                "spec: USE_CASE_en.md §UC4 — Review"
             )
             field_infos = editable_schema.editableSchemaFieldInfo or []
             matched_fi = next(
@@ -1386,12 +1650,12 @@ async def test_uc4_metadata_generation_with_real_llm(
             )
             assert matched_fi is not None, (
                 f"editableSchemaMetadata has no entry for fieldPath={approved_field_path!r}. "
-                "spec: USE_CASE_en.md §UC4 L762–764"
+                "spec: USE_CASE_en.md §UC4 — Review"
             )
             assert matched_fi.description == approved_oe_value, (
                 f"editableSchemaMetadata[{approved_field_path!r}].description="
                 f"{matched_fi.description!r} != approved value={approved_oe_value!r}. "
-                "spec: USE_CASE_en.md §UC4 L762–764"
+                "spec: USE_CASE_en.md §UC4 — Review"
             )
 
         # ── Step 10: GET per-dataset metagen events ───────────────────────────
@@ -1417,20 +1681,20 @@ async def test_uc4_metadata_generation_with_real_llm(
             )
             assert approve_event is not None, (
                 "No METAGEN.CANDIDATE_APPROVE event found after approving. "
-                "spec: BACKEND.md event catalogue L767"
+                "spec: BACKEND.md §Event Catalogue"
             )
             ev_detail = approve_event["detail"]
             assert "item_id" in ev_detail, (
                 "METAGEN.CANDIDATE_APPROVE detail missing 'item_id'. "
-                "spec: BACKEND.md event catalogue L767"
+                "spec: BACKEND.md §Event Catalogue"
             )
             assert "candidate_id" in ev_detail, (
                 "METAGEN.CANDIDATE_APPROVE detail missing 'candidate_id'. "
-                "spec: BACKEND.md event catalogue L767"
+                "spec: BACKEND.md §Event Catalogue"
             )
             assert "reason" in ev_detail, (
                 "METAGEN.CANDIDATE_APPROVE detail missing 'reason'. "
-                "spec: BACKEND.md event catalogue L767"
+                "spec: BACKEND.md §Event Catalogue"
             )
 
         if rejected_eu_email_cid is not None:
@@ -1449,19 +1713,21 @@ async def test_uc4_metadata_generation_with_real_llm(
             )
             assert reject_event is not None, (
                 "No METAGEN.CANDIDATE_REJECT event found after rejecting. "
-                "spec: BACKEND.md event catalogue L767"
+                "spec: BACKEND.md §Event Catalogue"
             )
             rj_detail = reject_event["detail"]
             assert "item_id" in rj_detail
             assert "candidate_id" in rj_detail
             assert "reason" in rj_detail
 
-        # ── Step 11: POST method/run (second run) — idempotency ───────────────
-        run2_resp = await api_client.post(run_url, headers=admin_headers, timeout=90.0)
+        # ── Step 11: POST per-conf run (second run) — idempotency ─────────────
+        run2_resp = await api_client.post(
+            f"{conf_url}/{conf_id}/method/run", headers=admin_headers, timeout=90.0
+        )
         assert run2_resp.status_code == 200, (
-            f"POST method/run (second run) failed: "
+            f"POST per-conf run (second run) failed: "
             f"{run2_resp.status_code} {run2_resp.text}. "
-            "spec: USE_CASE_en.md §UC4 L720"
+            "spec: USE_CASE_en.md §UC4 — API Mapping"
         )
         run2_body = run2_resp.json()
         second_run_id = run2_body["run_id"]
@@ -1483,7 +1749,7 @@ async def test_uc4_metadata_generation_with_real_llm(
             assert second_items_considered < first_items_considered, (
                 f"Second run items_considered ({second_items_considered}) must be strictly less "
                 f"than first run ({first_items_considered}) because approved items are excluded. "
-                "spec: BACKEND.md §UC4 — _enumerate_target_items skips approved items"
+                "spec: BACKEND.md §Generation Pipeline — target enumeration skips approved items"
             )
 
         if eu_desc_candidate is not None:
@@ -1499,13 +1765,13 @@ async def test_uc4_metadata_generation_with_real_llm(
             assert len(approved_candidates) == 1, (
                 f"Expected exactly 1 approved candidate for eu_profiles dataset.description "
                 f"after second run; got {len(approved_candidates)}. "
-                "spec: BACKEND.md §UC4 — partial unique index ensures at most one approved"
+                "spec: BACKEND.md §Approval flow — partial unique index: one approved per item"
             )
             assert len(candidates2) == 1, (
                 f"Approved item should have only the approved candidate after second run; "
                 f"got {len(candidates2)} candidates with statuses "
                 f"{[c['status'] for c in candidates2]}. "
-                "spec: BACKEND.md §UC4 — _enumerate_target_items skips approved items"
+                "spec: BACKEND.md §Generation Pipeline — target enumeration skips approved items"
             )
 
         if rejected_eu_email_cid is not None:
@@ -1520,12 +1786,12 @@ async def test_uc4_metadata_generation_with_real_llm(
             still_rejected = [c for c in email_candidates if c["status"] == "rejected"]
             assert len(still_rejected) == 0, (
                 "Rejected candidate should have been cleared by second run. "
-                "spec: BACKEND.md §UC4 — _clear_rejected_candidates"
+                "spec: BACKEND.md §Generation Pipeline — rejected candidates cleared at run start"
             )
             new_llm_approved_email = [c for c in email_candidates if c["status"] == "llm_approved"]
             assert len(new_llm_approved_email) >= 1, (
                 "Second run must produce a new llm_approved candidate for rejected item. "
-                "spec: BACKEND.md §UC4 — rejected items re-generated on next run"
+                "spec: BACKEND.md §Generation Pipeline — rejected items re-generated on next run"
             )
 
         event2_resp = await api_client.get(
@@ -1545,7 +1811,7 @@ async def test_uc4_metadata_generation_with_real_llm(
         )
         assert run2_complete is not None, (
             f"No METAGEN.RUN_COMPLETE event for second run_id={second_run_id!r}. "
-            "spec: BACKEND.md event catalogue L766"
+            "spec: BACKEND.md §Event Catalogue"
         )
 
     finally:
@@ -1559,8 +1825,9 @@ async def test_uc4_metadata_generation_with_real_llm(
             await api_client.delete(eu_boundary_url, headers=admin_headers)
         with suppress(Exception):
             await api_client.delete(oe_boundary_url, headers=admin_headers)
-        with suppress(Exception):
-            await api_client.delete(conf_url, headers=admin_headers)
+        if conf_id is not None:
+            with suppress(Exception):
+                await api_client.delete(f"{conf_url}/{conf_id}", headers=admin_headers)
 
         # Restore DataHub aspect snapshots to undo the masking performed in step 2.
         # Originals are restored into the snapshot objects before re-emitting so

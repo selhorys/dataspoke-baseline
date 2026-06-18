@@ -339,6 +339,14 @@ The shared scaffolding (cycle detection by SHA-256 hash, soft-fail
 philosophy, per-turn Langfuse trace, test-mode stub behaviour) is
 identical.
 
+A metagen run is scoped to one conf: the per-`(conf, item)` candidate budget
+and the `metagen:running:{conf_id}` lock are per-conf. The Reviewer's anchor
+RAG, however, stays **global per `kind`** — `metagen_candidate_embeddings`
+indexes every `approved` candidate `value` regardless of which conf produced
+it, because approved descriptions land in dataset-global DataHub aspects, so a
+prior approval is a valid style/consistency anchor for any conf documenting the
+same kind.
+
 **Metagen has two distinct RAG paths.** The Reviewer-side anchor RAG above
 (`metagen_candidate_embeddings`, grouped by `kind`) is one. The other is a
 **Producer-side per-dataset ontology RAG** that runs at evidence-fetch time,

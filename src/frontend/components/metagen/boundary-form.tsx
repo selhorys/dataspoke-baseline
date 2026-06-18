@@ -2,7 +2,7 @@
 
 /**
  * BoundaryForm — edit the per-dataset metagen boundary.
- * Fields: is_enabled, allowed (checkbox list of AllowedKind values).
+ * Fields: is_enabled, allowed (checkbox list of AllowedKind values), owner.
  */
 
 import { useEffect } from "react";
@@ -11,6 +11,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
 import { Field } from "@/components/forms/field";
 import type { AllowedKind, MetagenBoundary, MetagenBoundaryPutBody } from "@/types/metagen";
 
@@ -19,6 +20,7 @@ const ALLOWED_KINDS: AllowedKind[] = ["dataset.description", "column.description
 const boundarySchema = z.object({
   is_enabled: z.boolean(),
   allowed: z.array(z.enum(["dataset.description", "column.description"])),
+  owner: z.string(),
 });
 
 type BoundaryFormValues = z.infer<typeof boundarySchema>;
@@ -47,6 +49,7 @@ export function BoundaryForm({
     defaultValues: {
       is_enabled: initialValues?.is_enabled ?? false,
       allowed: initialValues?.allowed ?? [],
+      owner: initialValues?.owner ?? "",
     },
   });
 
@@ -55,6 +58,7 @@ export function BoundaryForm({
       reset({
         is_enabled: initialValues.is_enabled,
         allowed: initialValues.allowed,
+        owner: initialValues.owner ?? "",
       });
     }
   }, [initialValues, reset]);
@@ -69,9 +73,11 @@ export function BoundaryForm({
   }
 
   function handleFormSubmit(values: BoundaryFormValues) {
+    const owner = values.owner.trim();
     onSubmit({
       is_enabled: values.is_enabled,
       allowed: values.allowed as AllowedKind[],
+      owner: owner === "" ? null : owner,
     });
   }
 
@@ -118,6 +124,23 @@ export function BoundaryForm({
           </div>
         ))}
       </fieldset>
+
+      <Field label="owner" htmlFor="boundary-owner">
+        <Controller
+          control={control}
+          name="owner"
+          render={({ field }) => (
+            <Input
+              id="boundary-owner"
+              value={field.value}
+              onChange={field.onChange}
+              onBlur={field.onBlur}
+              placeholder="(unset)"
+              disabled={disabled}
+            />
+          )}
+        />
+      </Field>
 
       {!disabled && (
         <Button type="submit" disabled={isSubmitting}>

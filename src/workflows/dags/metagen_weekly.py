@@ -1,11 +1,11 @@
 """Airflow DAG: metagen-weekly
 
 Weekly metagen tier. Calls the metagen run activity with tier="weekly".
-MetagenService.run() checks metagen_config.schedule_tier; if the singleton
-conf is not set to "weekly", the run short-circuits and returns immediately
-without performing inference.
+The activity fans out across all enabled metagen confs whose schedule_tier
+equals "weekly", running each under its own per-conf lock. Confs on a
+different tier are skipped server-side.
 
-Single task — metagen is always a singleton run (no fan-out).
+Single Airflow task — fan-out is handled entirely within the activity endpoint.
 
 Spec: spec/feature/BACKEND.md §DAG Catalogue, tier-DAG selection note
 """
@@ -24,8 +24,8 @@ _TIER = "weekly"
 with DAG(
     dag_id=_DAG_ID,
     description=(
-        f"Metagen {_TIER} tier run "
-        "(short-circuits if singleton conf does not match this tier)"
+        f"Metagen {_TIER} tier run — triggers all enabled confs "
+        f"with schedule_tier='{_TIER}'"
     ),
     schedule="@weekly",
     start_date=datetime(2025, 1, 1),

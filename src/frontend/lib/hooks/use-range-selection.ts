@@ -28,6 +28,8 @@ export const RANGE_KEYS = {
   governanceDashboard: "range:governance:dashboard",
   ingestionSourceEvents: "range:ingestion:source-events",
   ingestionDatasetEvents: "range:ingestion:dataset-events",
+  metagenConfEvents: "range:metagen:conf-events",
+  metagenResultEvents: "range:metagen:result-events",
 } as const;
 
 export interface UsePersistedRangeStateResult {

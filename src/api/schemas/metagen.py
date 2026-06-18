@@ -8,39 +8,61 @@ from pydantic import BaseModel, Field, model_validator
 from src.api.schemas._dataset_filter import validate_dataset_filter
 from src.api.schemas.common import PaginatedResponse
 
-# ── Global conf ───────────────────────────────────────────────────────────────
+# ── Conf collection ───────────────────────────────────────────────────────────
+
+_FILTER_DESC = (
+    "Optional scope filter. Keys: origin (DataHub FabricType, AND-ed with the OR-group), "
+    "tags (list[str], OR), glossary_terms (list[str], OR), "
+    "dataset_urns (list[str], OR). Each list dimension capped at 1,000 entries."
+)
 
 
-class MetagenGlobalConfResponse(BaseModel):
+class MetagenConfResponse(BaseModel):
+    id: str
+    name: str
     is_enabled: bool
     schedule_tier: Literal["hourly", "daily", "weekly"] | None
     dataset_filter: dict[str, Any] = Field(default_factory=dict)
     result_limit: int
     overwrite_pending: bool
+    created_at: datetime
     updated_at: datetime
 
 
-class MetagenGlobalConfPutRequest(BaseModel):
-    is_enabled: bool
+class MetagenConfListResponse(PaginatedResponse):
+    confs: list[MetagenConfResponse] = Field(default_factory=list)
+
+
+class MetagenConfCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    is_enabled: bool = False
     schedule_tier: Literal["hourly", "daily", "weekly"] | None = None
-    dataset_filter: dict[str, Any] = Field(
-        default_factory=dict,
-        description=(
-            "Optional scope filter. Keys: origin (DataHub FabricType, AND-ed with the OR-group), "
-            "tags (list[str], OR), glossary_terms (list[str], OR), "
-            "dataset_urns (list[str], OR). Each list dimension capped at 1,000 entries."
-        ),
-    )
+    dataset_filter: dict[str, Any] = Field(default_factory=dict, description=_FILTER_DESC)
     result_limit: int = Field(default=3, ge=1, le=20)
     overwrite_pending: bool = True
 
     @model_validator(mode="after")
-    def validate_dataset_filter_fields(self) -> "MetagenGlobalConfPutRequest":
+    def validate_dataset_filter_fields(self) -> "MetagenConfCreateRequest":
         validate_dataset_filter(self.dataset_filter)
         return self
 
 
-class MetagenGlobalConfPatchRequest(BaseModel):
+class MetagenConfPutRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    is_enabled: bool
+    schedule_tier: Literal["hourly", "daily", "weekly"] | None = None
+    dataset_filter: dict[str, Any] = Field(default_factory=dict, description=_FILTER_DESC)
+    result_limit: int = Field(default=3, ge=1, le=20)
+    overwrite_pending: bool = True
+
+    @model_validator(mode="after")
+    def validate_dataset_filter_fields(self) -> "MetagenConfPutRequest":
+        validate_dataset_filter(self.dataset_filter)
+        return self
+
+
+class MetagenConfPatchRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
     is_enabled: bool | None = None
     schedule_tier: Literal["hourly", "daily", "weekly"] | None = None
     dataset_filter: dict[str, Any] | None = None
@@ -48,10 +70,22 @@ class MetagenGlobalConfPatchRequest(BaseModel):
     overwrite_pending: bool | None = None
 
     @model_validator(mode="after")
-    def validate_dataset_filter_fields(self) -> "MetagenGlobalConfPatchRequest":
+    def validate_dataset_filter_fields(self) -> "MetagenConfPatchRequest":
         if self.dataset_filter is not None:
             validate_dataset_filter(self.dataset_filter)
         return self
+
+
+# ── Uncovered ─────────────────────────────────────────────────────────────────
+
+
+class MetagenUncoveredRow(BaseModel):
+    dataset_urn: str
+    reason: Literal["no_conf_match", "boundary_blocked"]
+
+
+class MetagenUncoveredResponse(PaginatedResponse):
+    datasets: list[MetagenUncoveredRow] = Field(default_factory=list)
 
 
 # ── Per-dataset boundary ──────────────────────────────────────────────────────
@@ -99,6 +133,8 @@ class MetagenItemListResponse(PaginatedResponse):
 
 class MetagenCandidate(BaseModel):
     candidate_id: str
+    conf_id: str | None
+    conf_name: str | None
     item_id: str
     dataset_urn: str
     value: str
@@ -123,6 +159,7 @@ class MetagenRunRequest(BaseModel):
 
 class MetagenRunResponse(BaseModel):
     run_id: str
+    conf_id: str
     status: Literal["success", "failure"]
     dry_run: bool
     unresolved_urns: list[str]

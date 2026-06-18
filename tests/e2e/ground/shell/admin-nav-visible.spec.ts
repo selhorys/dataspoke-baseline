@@ -137,7 +137,7 @@ test("admin: sidebar shows 'Account' section with Profile, API Tokens, and Setti
 // ── Test 6 — Main feature nav is visible ─────────────────────────────────────
 // spec: FRONTEND_BASIC.md §Shell fixes mainNav entries, grouping, and order for every
 //   role: Governance ▾ (Dashboard, Metrics), Ingestion ▾ (conf, unmanaged), Validation,
-//   OntoGen ▾ (conf, seed, result), MetaGen.
+//   OntoGen ▾ (conf, seed, result), MetaGen ▾ (conf, result, uncovered).
 // Implementation realization of the §Shell grouping (not a spec mandate): each ▾ group
 //   renders as a disclosure <button>, a group auto-opens when its active route is open,
 //   and a collapsed group prunes its child links from the DOM. On /governance/dashboard
@@ -160,7 +160,9 @@ test("admin: sidebar shows all main feature nav links", async ({ page }) => {
   // Governance children are present because the group auto-opens on /governance/dashboard.
   await expect(page.getByRole("link", { name: "Dashboard", exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: "Metrics", exact: true })).toBeVisible();
-  // Flat feature links.
+  // Flat feature link.
   await expect(page.getByRole("link", { name: "Validation", exact: true })).toBeVisible();
-  await expect(page.getByRole("link", { name: "MetaGen", exact: true })).toBeVisible();
+  // MetaGen is a disclosure group (conf/result/uncovered), collapsed here, so it renders
+  // as a toggle button with its children pruned — same model as Ingestion/OntoGen.
+  await expect(page.getByRole("button", { name: "MetaGen", exact: true })).toBeVisible();
 });

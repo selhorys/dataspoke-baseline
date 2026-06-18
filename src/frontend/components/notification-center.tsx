@@ -119,7 +119,7 @@ export function NotificationCenter() {
   }, []);
 
   const { data: ontogenData, isLoading: ontogenLoading } = useOntogenEvents(POLL_LIMIT);
-  const { data: metaData, isLoading: metaLoading } = useMetagenEvents(POLL_LIMIT);
+  const { data: metaData, isLoading: metaLoading } = useMetagenEvents({ limit: POLL_LIMIT });
 
   const isLoading = ontogenLoading || metaLoading;
 

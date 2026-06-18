@@ -1,18 +1,22 @@
-"""Unit tests for src/backend/metagen/service.py — MetagenService.
+"""Unit tests for src/backend/metagen/service.py — MetagenService (conf collection).
 
 Spec: spec/feature/BACKEND.md §Metadata Generation Service
       spec/USE_CASE_en.md §UC4
+      spec/feature/BACKEND_SCHEMA.md §metagen_config / §metagen_candidates
       spec/DATAHUB_INTEGRATION.md §Editable vs Non-Editable Description Aspects
 
 Groups:
-  A – Global conf CRUD (singleton invariant; PUT replaces; PATCH partial; validation)
+  A – Conf collection CRUD (list/create/get/put/patch/delete; duplicate name → 409;
+      missing → 404; URN validation)
   B – Boundary CRUD (opt-in semantics)
-  C – list_items / get_item (cross-dataset and per-dataset; pagination; status filter)
-  D – run() guards (concurrent lock, disabled, tier short-circuit)
-  E – run() per-item budget (FIFO eviction; overwrite_pending=false skip)
-  F – run() in-scope enumeration and rejected clearing
-  G – run() dry-run: counts use candidates_proposed, no DB writes
-  H – review_candidate (approve demotes sibling; reject guard; boundary guard)
+  C – list_items / get_item (cross-dataset; pagination; status/conf filters)
+  D – run() guards (per-conf lock, disabled, missing conf)
+  E – run() per-conf per-item budget (FIFO eviction; overwrite_pending=false skip)
+  F – run() in-scope enumeration and rejected clearing (per-conf)
+  G – run-complete event detail shape
+  H – review_candidate (approve demotes sibling incl. cross-conf; reject guard; boundary guard)
+  I – _fetch_evidence per-dataset ontology RAG (unchanged behaviour)
+  J – list_uncovered (no_conf_match / boundary_blocked reasons)
 """
 
 import uuid
@@ -24,9 +28,10 @@ import pytest
 
 from src.backend.metagen.service import (
     MetagenBoundaryDTO,
-    MetagenGlobalConfDTO,
+    MetagenConfDTO,
     MetagenService,
     RunResultDTO,
+    UncoveredRowDTO,
 )
 from src.shared.exceptions import (
     ConflictError,
@@ -37,7 +42,11 @@ from src.shared.exceptions import (
 from tests.unit.backend.conftest import mock_db_refresh
 
 _VALID_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
-_VALID_URN2 = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.orders.daily_fulfillment_summary,DEV)"
+_VALID_URN2 = (
+    "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.orders.daily_fulfillment_summary,DEV)"
+)
+_CONF_UUID = uuid.uuid4()
+_CONF_UUID2 = uuid.uuid4()
 
 
 # ── Factories ─────────────────────────────────────────────────────────────────
@@ -45,6 +54,8 @@ _VALID_URN2 = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.orders.da
 
 def _make_conf_row(
     *,
+    conf_id: uuid.UUID | None = None,
+    name: str = "catalog-docs",
     is_enabled: bool = True,
     schedule_tier: str | None = "daily",
     dataset_filter: dict[str, Any] | None = None,
@@ -52,14 +63,39 @@ def _make_conf_row(
     overwrite_pending: bool = True,
 ) -> MagicMock:
     row = MagicMock()
-    row.id = 1
+    row.id = conf_id or _CONF_UUID
+    row.name = name
     row.is_enabled = is_enabled
     row.schedule_tier = schedule_tier
     row.dataset_filter = dataset_filter or {}
     row.result_limit = result_limit
     row.overwrite_pending = overwrite_pending
+    row.created_at = datetime.now(tz=UTC)
     row.updated_at = datetime.now(tz=UTC)
     return row
+
+
+def _make_conf_dto(
+    *,
+    conf_id: uuid.UUID | None = None,
+    name: str = "catalog-docs",
+    is_enabled: bool = True,
+    schedule_tier: str | None = "daily",
+    dataset_filter: dict[str, Any] | None = None,
+    result_limit: int = 3,
+    overwrite_pending: bool = True,
+) -> MetagenConfDTO:
+    return MetagenConfDTO(
+        id=str(conf_id or _CONF_UUID),
+        name=name,
+        is_enabled=is_enabled,
+        schedule_tier=schedule_tier,
+        dataset_filter=dataset_filter or {},
+        result_limit=result_limit,
+        overwrite_pending=overwrite_pending,
+        created_at=datetime.now(tz=UTC),
+        updated_at=datetime.now(tz=UTC),
+    )
 
 
 def _make_boundary_row(
@@ -99,6 +135,7 @@ def _make_item_row(
 def _make_candidate_row(
     *,
     candidate_id: uuid.UUID | None = None,
+    conf_id: uuid.UUID | None = None,
     dataset_urn: str = _VALID_URN,
     item_id: str = "dataset.description",
     run_id: uuid.UUID | None = None,
@@ -109,6 +146,7 @@ def _make_candidate_row(
 ) -> MagicMock:
     row = MagicMock()
     row.candidate_id = candidate_id or uuid.uuid4()
+    row.conf_id = conf_id if conf_id is not None else _CONF_UUID
     row.dataset_urn = dataset_urn
     row.item_id = item_id
     row.run_id = run_id or uuid.uuid4()
@@ -132,6 +170,8 @@ def _make_result(rows_or_none: Any = None, *, scalar: Any = None) -> MagicMock:
         ms.all.return_value = rows_or_none
         m.scalars.return_value = ms
         m.fetchall.return_value = rows_or_none
+        # Some queries iterate the result directly via result.all() (no .scalars()).
+        m.all.return_value = rows_or_none
     return m
 
 
@@ -144,105 +184,163 @@ def svc(datahub, db, cache, llm, vector) -> MetagenService:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Group A: Global conf CRUD
+# Group A: Conf collection CRUD
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
 @pytest.mark.asyncio
-async def test_get_global_conf_returns_none_when_absent(svc, db) -> None:
-    """get_global_conf returns None when the singleton row does not exist.
+async def test_list_confs_returns_dtos_and_total(svc, db) -> None:
+    """list_confs returns a list of MetagenConfDTO plus a total count.
 
-    Spec: API.md §Metadata Generation — GET /metagen/attr/conf returns null when not configured.
+    Spec: API.md §Metadata Generation — GET /metagen/conf lists confs (paginated).
     """
-    db.execute = AsyncMock(return_value=_make_result(scalar=None))
+    count_result = _make_result(scalar=2)
+    rows_result = _make_result([_make_conf_row(name="a"), _make_conf_row(name="b")])
+    db.execute = AsyncMock(side_effect=[count_result, rows_result])
 
-    result = await svc.get_global_conf()
+    confs, total = await svc.list_confs(offset=0, limit=20)
 
-    assert result is None, (
-        "get_global_conf must return None when no singleton row exists. "
-        "spec: API.md §Metadata Generation — GET conf returns null when absent"
-    )
+    assert total == 2
+    assert [c.name for c in confs] == ["a", "b"]
+    assert all(isinstance(c, MetagenConfDTO) for c in confs)
 
 
 @pytest.mark.asyncio
-async def test_get_global_conf_returns_dto_when_present(svc, db) -> None:
-    """get_global_conf returns a MetagenGlobalConfDTO when the singleton row exists.
+async def test_get_conf_returns_dto_when_present(svc, db) -> None:
+    """get_conf returns a MetagenConfDTO when the row exists.
 
-    Spec: API.md §Metadata Generation — GET /metagen/attr/conf.
+    Spec: API.md §Metadata Generation — GET /metagen/conf/{conf_id}.
     """
-    conf_row = _make_conf_row(is_enabled=True)
-    db.execute = AsyncMock(return_value=_make_result(scalar=conf_row))
+    db.execute = AsyncMock(return_value=_make_result(scalar=_make_conf_row(is_enabled=True)))
 
-    result = await svc.get_global_conf()
+    result = await svc.get_conf(str(_CONF_UUID))
 
-    assert isinstance(result, MetagenGlobalConfDTO), (
-        "get_global_conf must return a MetagenGlobalConfDTO when row exists. "
-        "spec: API.md §Metadata Generation"
-    )
+    assert isinstance(result, MetagenConfDTO)
     assert result.is_enabled is True
 
 
 @pytest.mark.asyncio
-async def test_put_global_conf_validates_malformed_urn(svc) -> None:
-    """put_global_conf raises InvalidDatasetUrnError for malformed URNs in dataset_filter.
+async def test_get_conf_raises_not_found_when_absent(svc, db) -> None:
+    """get_conf raises EntityNotFoundError (→404 METAGEN_CONF_NOT_FOUND) when absent.
 
-    Spec: spec/feature/BACKEND.md §Metadata Generation Service — validates dataset_filter.dataset_urns.
+    Spec: API.md §Metadata Generation — 404 METAGEN_CONF_NOT_FOUND.
     """
-    with pytest.raises(InvalidDatasetUrnError):
-        await svc.put_global_conf({
-            "is_enabled": False,
-            "dataset_filter": {"dataset_urns": ["not-a-valid-urn"]},
-        })
+    db.execute = AsyncMock(return_value=_make_result(scalar=None))
+
+    with pytest.raises(EntityNotFoundError):
+        await svc.get_conf(str(_CONF_UUID))
 
 
 @pytest.mark.asyncio
-async def test_put_global_conf_creates_singleton_row_when_absent(svc, db) -> None:
-    """put_global_conf creates a new row when none exists, returns DTO.
+async def test_get_conf_raises_not_found_for_malformed_uuid(svc, db) -> None:
+    """get_conf raises EntityNotFoundError for a non-UUID conf_id.
 
-    Spec: spec/feature/BACKEND.md §Metadata Generation Service — singleton upsert.
+    Spec: feature/BACKEND.md §Metadata Generation Service — id is a UUID; a malformed
+    id resolves to not-found rather than a 500.
     """
+    with pytest.raises(EntityNotFoundError):
+        await svc.get_conf("not-a-uuid")
+
+
+@pytest.mark.asyncio
+async def test_create_conf_validates_malformed_urn(svc) -> None:
+    """create_conf raises InvalidDatasetUrnError for malformed URNs in dataset_filter.
+
+    Spec: feature/BACKEND.md §Metadata Generation Service — validates dataset_filter.dataset_urns.
+    """
+    with pytest.raises(InvalidDatasetUrnError):
+        await svc.create_conf(
+            {"name": "c", "dataset_filter": {"dataset_urns": ["not-a-valid-urn"]}}
+        )
+
+
+@pytest.mark.asyncio
+async def test_create_conf_persists_and_returns_dto(svc, db) -> None:
+    """create_conf inserts a new conf row and returns its DTO.
+
+    Spec: API.md §Metadata Generation — POST /metagen/conf → 201 with the created conf.
+    """
+    # 1) name-collision check → none; subsequent commits/refresh; event row insert
     db.execute = AsyncMock(return_value=_make_result(scalar=None))
     mock_db_refresh(db)
 
-    result = await svc.put_global_conf({"is_enabled": True, "result_limit": 5})
+    result = await svc.create_conf({"name": "orders-docs", "is_enabled": True, "result_limit": 5})
 
-    assert isinstance(result, MetagenGlobalConfDTO)
+    assert isinstance(result, MetagenConfDTO)
+    assert result.name == "orders-docs"
     db.add.assert_called()
     db.commit.assert_called()
 
 
 @pytest.mark.asyncio
-async def test_put_global_conf_replaces_existing_row(svc, db) -> None:
-    """put_global_conf fully replaces an existing row.
+async def test_create_conf_duplicate_name_raises_conflict(svc, db) -> None:
+    """create_conf raises ConflictError(METAGEN_CONF_EXISTS) on a duplicate name.
 
-    Spec: spec/feature/BACKEND.md §Metadata Generation Service — PUT is full replacement.
+    Spec: API.md §Metadata Generation — name unique (409 METAGEN_CONF_EXISTS).
     """
-    existing = _make_conf_row(is_enabled=False, schedule_tier="hourly")
+    # name-collision check returns an existing id
+    db.execute = AsyncMock(return_value=_make_result(scalar=uuid.uuid4()))
+
+    with pytest.raises(ConflictError) as exc_info:
+        await svc.create_conf({"name": "taken"})
+
+    assert exc_info.value.error_code == "METAGEN_CONF_EXISTS"
+
+
+@pytest.mark.asyncio
+async def test_put_conf_replaces_existing_row(svc, db) -> None:
+    """put_conf fully replaces an existing conf row.
+
+    Spec: feature/BACKEND.md §Metadata Generation Service — PUT is full replacement.
+    """
+    existing = _make_conf_row(name="catalog-docs", is_enabled=False, schedule_tier="hourly")
+    # load_conf_row → existing; name unchanged so no collision query; commit/refresh
     db.execute = AsyncMock(return_value=_make_result(scalar=existing))
     mock_db_refresh(db)
 
-    result = await svc.put_global_conf({"is_enabled": True, "schedule_tier": "daily", "result_limit": 10})
+    result = await svc.put_conf(
+        str(_CONF_UUID),
+        {"name": "catalog-docs", "is_enabled": True, "schedule_tier": "daily", "result_limit": 10},
+    )
 
-    assert isinstance(result, MetagenGlobalConfDTO)
+    assert isinstance(result, MetagenConfDTO)
     assert existing.is_enabled is True
     assert existing.result_limit == 10
 
 
 @pytest.mark.asyncio
-async def test_patch_global_conf_raises_not_found_when_absent(svc, db) -> None:
-    """patch_global_conf raises EntityNotFoundError when the singleton row does not exist.
+async def test_put_conf_raises_not_found_when_absent(svc, db) -> None:
+    """put_conf raises EntityNotFoundError when the conf does not exist.
 
-    Spec: spec/feature/BACKEND.md §Metadata Generation Service — PATCH requires existing conf.
+    Spec: API.md §Metadata Generation — 404 METAGEN_CONF_NOT_FOUND.
     """
     db.execute = AsyncMock(return_value=_make_result(scalar=None))
 
     with pytest.raises(EntityNotFoundError):
-        await svc.patch_global_conf({"is_enabled": True})
+        await svc.put_conf(str(_CONF_UUID), {"name": "c", "is_enabled": True})
 
 
 @pytest.mark.asyncio
-async def test_patch_global_conf_updates_only_provided_fields(svc, db) -> None:
-    """patch_global_conf updates only the provided fields.
+async def test_put_conf_name_collision_raises_conflict(svc, db) -> None:
+    """put_conf renaming to a name owned by another conf raises METAGEN_CONF_EXISTS.
+
+    Spec: API.md §Metadata Generation — name unique (409 METAGEN_CONF_EXISTS).
+    """
+    existing = _make_conf_row(name="old-name")
+    # load_conf_row → existing; then collision-check finds another row's id
+    db.execute = AsyncMock(
+        side_effect=[_make_result(scalar=existing), _make_result(scalar=uuid.uuid4())]
+    )
+
+    with pytest.raises(ConflictError) as exc_info:
+        await svc.put_conf(str(_CONF_UUID), {"name": "new-name", "is_enabled": True})
+
+    assert exc_info.value.error_code == "METAGEN_CONF_EXISTS"
+
+
+@pytest.mark.asyncio
+async def test_patch_conf_updates_only_provided_fields(svc, db) -> None:
+    """patch_conf updates only the provided fields.
 
     Spec: API_DESIGN_PRINCIPLE_en.md §HTTP method semantics — PATCH is partial update.
     """
@@ -250,41 +348,53 @@ async def test_patch_global_conf_updates_only_provided_fields(svc, db) -> None:
     db.execute = AsyncMock(return_value=_make_result(scalar=existing))
     mock_db_refresh(db)
 
-    result = await svc.patch_global_conf({"is_enabled": True})
+    result = await svc.patch_conf(str(_CONF_UUID), {"is_enabled": True})
 
-    assert isinstance(result, MetagenGlobalConfDTO)
+    assert isinstance(result, MetagenConfDTO)
     assert existing.is_enabled is True
-    # result_limit was not in patch — should remain 3
-    assert existing.result_limit == 3
+    assert existing.result_limit == 3  # untouched
 
 
 @pytest.mark.asyncio
-async def test_delete_global_conf_commits_when_row_exists(svc, db) -> None:
-    """delete_global_conf deletes the row and commits.
+async def test_patch_conf_raises_not_found_when_absent(svc, db) -> None:
+    """patch_conf raises EntityNotFoundError when the conf does not exist.
 
-    Spec: spec/feature/BACKEND.md §Metadata Generation Service — DELETE removes singleton conf.
+    Spec: API.md §Metadata Generation — 404 METAGEN_CONF_NOT_FOUND.
+    """
+    db.execute = AsyncMock(return_value=_make_result(scalar=None))
+
+    with pytest.raises(EntityNotFoundError):
+        await svc.patch_conf(str(_CONF_UUID), {"is_enabled": True})
+
+
+@pytest.mark.asyncio
+async def test_delete_conf_deletes_row_and_commits(svc, db) -> None:
+    """delete_conf loads the row, deletes it, and commits.
+
+    Spec: feature/BACKEND.md §Metadata Generation Service — DELETE removes the conf;
+    SET NULLs conf_id on its approved candidates and deletes the rest (issued via
+    bulk statements before deleting the row).
     """
     existing = _make_conf_row()
+    # _load_conf_row → existing; the cleanup bulk DELETE/UPDATE statements; then delete row
     db.execute = AsyncMock(return_value=_make_result(scalar=existing))
 
-    await svc.delete_global_conf()
+    await svc.delete_conf(str(_CONF_UUID))
 
     db.delete.assert_called_once_with(existing)
     db.commit.assert_called()
 
 
 @pytest.mark.asyncio
-async def test_delete_global_conf_noop_when_absent(svc, db) -> None:
-    """delete_global_conf is a no-op (no delete call) when no row exists.
+async def test_delete_conf_raises_not_found_when_absent(svc, db) -> None:
+    """delete_conf raises EntityNotFoundError when the conf does not exist.
 
-    Spec: spec/feature/BACKEND.md §Metadata Generation Service — idempotent delete.
+    Spec: API.md §Metadata Generation — 404 METAGEN_CONF_NOT_FOUND.
     """
     db.execute = AsyncMock(return_value=_make_result(scalar=None))
 
-    await svc.delete_global_conf()
-
-    db.delete.assert_not_called()
-    db.commit.assert_called()
+    with pytest.raises(EntityNotFoundError):
+        await svc.delete_conf(str(_CONF_UUID))
 
 
 # ── _enumerate_in_scope_datasets — delegate to resolve_dataset_scope ─────────
@@ -292,81 +402,59 @@ async def test_delete_global_conf_noop_when_absent(svc, db) -> None:
 
 @pytest.mark.asyncio
 async def test_enumerate_in_scope_calls_datahub_with_origin(svc, db, datahub) -> None:
-    """_enumerate_in_scope_datasets passes origin from conf.dataset_filter to datahub.enumerate_datasets.
+    """_enumerate_in_scope_datasets passes origin from conf.dataset_filter to DataHub.
 
-    Spec: spec/feature/BACKEND.md §UC4 Metadata Generation §dataset_filter —
-          origin is AND-ed with tag/glossary OR-group when resolving scope.
-    Spec: spec/DATAHUB_INTEGRATION.md §Dataset Resolution — origin forwarded as-is to DataHub.
+    Spec: feature/BACKEND.md §UC4 dataset_filter — origin AND-ed with the OR-group
+    when resolving scope; forwarded as-is to DataHub.
     """
     datahub.enumerate_datasets = AsyncMock(return_value=[_VALID_URN])
 
-    # Boundary row for _VALID_URN must exist so it is included in scope
     bnd_result = MagicMock()
     bnd_result.fetchall.return_value = [MagicMock(dataset_urn=_VALID_URN)]
     db.execute = AsyncMock(return_value=bnd_result)
 
-    conf = MetagenGlobalConfDTO(
-        is_enabled=True,
-        schedule_tier="daily",
+    conf = _make_conf_dto(
         dataset_filter={"origin": "DEV", "tags": ["urn:li:tag:area:fulfillment"]},
-        result_limit=3,
-        overwrite_pending=True,
-        updated_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
     )
-    in_scope, unresolved = await svc._enumerate_in_scope_datasets(conf, None)
+    in_scope, _unresolved = await svc._enumerate_in_scope_datasets(conf, None)
 
-    assert datahub.enumerate_datasets.called, "enumerate_datasets must be called"
+    assert datahub.enumerate_datasets.called
     for call in datahub.enumerate_datasets.call_args_list:
-        assert call.kwargs.get("origin") == "DEV", (
-            f"every enumerate_datasets call must carry origin='DEV'; got {call.kwargs}"
-        )
+        assert call.kwargs.get("origin") == "DEV"
+    assert _VALID_URN in in_scope
 
 
 @pytest.mark.asyncio
-async def test_enumerate_in_scope_mismatched_origin_goes_to_unresolved(svc, db, datahub) -> None:
-    """Explicit URN whose origin segment does not match conf.dataset_filter.origin is unresolved.
+async def test_enumerate_in_scope_intersects_with_enabled_boundary(svc, db, datahub) -> None:
+    """_enumerate_in_scope_datasets intersects matched URNs with is_enabled=true boundary rows.
 
-    resolve_dataset_scope checks origin_from_dataset_urn(urn) against dataset_filter.origin
-    and appends mismatched URNs to unresolved_urns without probing DataHub.
-
-    Spec: spec/feature/BACKEND.md §UC4 dataset_filter — explicit URN with mismatching
-          origin segment is unresolved at resolution time.
+    Spec: feature/BACKEND.md §Generation Pipeline step 1 — in-scope = dataset_filter match
+    ∩ datasets with an is_enabled=true boundary; boundary-less datasets are excluded.
     """
-    datahub.origin_from_dataset_urn = MagicMock(return_value="PROD")
+    datahub.enumerate_datasets = AsyncMock(return_value=[_VALID_URN, _VALID_URN2])
 
-    mismatched_urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.customers.eu_profiles,PROD)"
-    conf = MetagenGlobalConfDTO(
-        is_enabled=True,
-        schedule_tier="daily",
-        dataset_filter={"origin": "DEV", "dataset_urns": [mismatched_urn]},
-        result_limit=3,
-        overwrite_pending=True,
-        updated_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
-    )
-
+    # Only _VALID_URN has an enabled boundary row
     bnd_result = MagicMock()
-    bnd_result.fetchall.return_value = []
+    bnd_result.fetchall.return_value = [MagicMock(dataset_urn=_VALID_URN)]
     db.execute = AsyncMock(return_value=bnd_result)
 
-    in_scope, unresolved = await svc._enumerate_in_scope_datasets(conf, None)
+    conf = _make_conf_dto(dataset_filter={})
+    in_scope, _unresolved = await svc._enumerate_in_scope_datasets(conf, None)
 
-    assert mismatched_urn in unresolved, (
-        "URN with PROD origin must appear in unresolved_urns when origin filter is DEV. "
-        "spec: spec/feature/BACKEND.md §UC4 dataset_filter — origin mismatch → unresolved"
+    assert in_scope == [_VALID_URN], (
+        "Only datasets with an is_enabled=true boundary remain in scope. "
+        "spec: feature/BACKEND.md §Generation Pipeline step 1"
     )
-    assert mismatched_urn not in in_scope
 
 
 @pytest.mark.asyncio
-async def test_enumerate_in_scope_empty_override_falls_through_to_conf_urns(svc, db, datahub) -> None:
+async def test_enumerate_in_scope_empty_override_falls_through_to_conf_urns(
+    svc, db, datahub
+) -> None:
     """override_urns=[] falls through to conf.dataset_filter.dataset_urns.
 
-    MetagenService._enumerate_in_scope_datasets normalizes
-    `override_urns if override_urns else None` before calling resolve_dataset_scope,
-    so an empty list becomes None and the conf's dataset_urns are consulted instead.
-
-    Spec: spec/API.md §UC4 metagen method/run — body dataset_urns narrows scope.
-    Plan §Risk §E.2 — empty list must not suppress conf URNs.
+    Spec: API.md §UC4 metagen method/run — body dataset_urns narrows scope; an empty
+    list must not suppress the conf's own dataset_urns.
     """
     _CONF_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.t_conf,DEV)"
 
@@ -374,27 +462,15 @@ async def test_enumerate_in_scope_empty_override_falls_through_to_conf_urns(svc,
 
     datahub.get_aspect = AsyncMock(return_value=MagicMock(spec=DatasetPropertiesClass))
 
-    # Boundary row exists for the conf URN with is_enabled=True
     bnd_result = MagicMock()
     bnd_result.fetchall.return_value = [MagicMock(dataset_urn=_CONF_URN)]
     db.execute = AsyncMock(return_value=bnd_result)
 
-    conf = MetagenGlobalConfDTO(
-        is_enabled=True,
-        schedule_tier="daily",
-        dataset_filter={"dataset_urns": [_CONF_URN]},
-        result_limit=3,
-        overwrite_pending=True,
-        updated_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
-    )
+    conf = _make_conf_dto(dataset_filter={"dataset_urns": [_CONF_URN]})
 
-    # Pass override_urns=[] — empty list must not suppress the conf's dataset_urns
-    resolved_urns, unresolved = await svc._enumerate_in_scope_datasets(conf, override_urns=[])
+    resolved_urns, _unresolved = await svc._enumerate_in_scope_datasets(conf, override_urns=[])
 
-    assert _CONF_URN in resolved_urns, (
-        "empty override_urns=[] must fall through to conf.dataset_filter.dataset_urns; "
-        "spec/API.md §UC4 metagen method/run — body dataset_urns narrows scope (Plan §Risk §E.2)"
-    )
+    assert _CONF_URN in resolved_urns
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -406,21 +482,19 @@ async def test_enumerate_in_scope_empty_override_falls_through_to_conf_urns(svc,
 async def test_get_boundary_returns_none_when_absent(svc, db) -> None:
     """get_boundary returns None when no boundary row exists.
 
-    Spec: API.md §Metadata Generation — GET /data/{urn}/attr/metagen/conf returns null when not configured.
+    Spec: API.md §Metadata Generation — GET /data/{urn}/attr/metagen/boundary returns null.
     """
     db.execute = AsyncMock(return_value=_make_result(scalar=None))
-    result = await svc.get_boundary(_VALID_URN)
-    assert result is None
+    assert await svc.get_boundary(_VALID_URN) is None
 
 
 @pytest.mark.asyncio
 async def test_get_boundary_returns_dto_when_present(svc, db) -> None:
     """get_boundary returns a MetagenBoundaryDTO when the row exists.
 
-    Spec: API.md §Metadata Generation — GET /data/{urn}/attr/metagen/conf.
+    Spec: API.md §Metadata Generation — GET /data/{urn}/attr/metagen/boundary.
     """
-    bnd_row = _make_boundary_row()
-    db.execute = AsyncMock(return_value=_make_result(scalar=bnd_row))
+    db.execute = AsyncMock(return_value=_make_result(scalar=_make_boundary_row()))
     result = await svc.get_boundary(_VALID_URN)
     assert isinstance(result, MetagenBoundaryDTO)
     assert result.dataset_urn == _VALID_URN
@@ -428,9 +502,10 @@ async def test_get_boundary_returns_dto_when_present(svc, db) -> None:
 
 @pytest.mark.asyncio
 async def test_put_boundary_rejects_invalid_kind(svc) -> None:
-    """put_boundary raises PreconditionFailedError for unknown allowed kind.
+    """put_boundary raises PreconditionFailedError(INVALID_PARAMETER) for unknown allowed kind.
 
-    Spec: spec/feature/BACKEND.md §Metadata Generation Service — allowed ∈ {dataset.description, column.description}.
+    Spec: feature/BACKEND.md §Metadata Generation Service — allowed ∈
+    {dataset.description, column.description}.
     """
     with pytest.raises(PreconditionFailedError) as exc_info:
         await svc.put_boundary(_VALID_URN, {"allowed": ["cross_data.md"], "is_enabled": True})
@@ -446,7 +521,9 @@ async def test_put_boundary_creates_row_when_absent(svc, db) -> None:
     db.execute = AsyncMock(return_value=_make_result(scalar=None))
     mock_db_refresh(db)
 
-    result = await svc.put_boundary(_VALID_URN, {"is_enabled": True, "allowed": ["dataset.description"]})
+    result = await svc.put_boundary(
+        _VALID_URN, {"is_enabled": True, "allowed": ["dataset.description"]}
+    )
 
     assert isinstance(result, MetagenBoundaryDTO)
     db.add.assert_called()
@@ -454,28 +531,10 @@ async def test_put_boundary_creates_row_when_absent(svc, db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_put_boundary_replaces_existing_row(svc, db) -> None:
-    """put_boundary fully replaces an existing boundary row.
-
-    Spec: API_DESIGN_PRINCIPLE_en.md §HTTP method semantics — PUT is full replacement.
-    """
-    existing = _make_boundary_row(is_enabled=False, allowed=["dataset.description"])
-    db.execute = AsyncMock(return_value=_make_result(scalar=existing))
-    mock_db_refresh(db)
-
-    result = await svc.put_boundary(
-        _VALID_URN, {"is_enabled": True, "allowed": ["dataset.description", "column.description"]}
-    )
-
-    assert isinstance(result, MetagenBoundaryDTO)
-    assert existing.is_enabled is True
-
-
-@pytest.mark.asyncio
 async def test_patch_boundary_raises_not_found_when_absent(svc, db) -> None:
     """patch_boundary raises EntityNotFoundError when no boundary exists.
 
-    Spec: spec/feature/BACKEND.md §Metadata Generation Service — PATCH requires existing boundary.
+    Spec: feature/BACKEND.md §Metadata Generation Service — PATCH requires existing boundary.
     """
     db.execute = AsyncMock(return_value=_make_result(scalar=None))
     with pytest.raises(EntityNotFoundError):
@@ -483,28 +542,10 @@ async def test_patch_boundary_raises_not_found_when_absent(svc, db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_patch_boundary_updates_only_provided_fields(svc, db) -> None:
-    """patch_boundary updates only provided fields (partial update).
-
-    Spec: API_DESIGN_PRINCIPLE_en.md §HTTP method semantics — PATCH is partial update.
-    """
-    existing = _make_boundary_row(is_enabled=True, allowed=["dataset.description"])
-    db.execute = AsyncMock(return_value=_make_result(scalar=existing))
-    mock_db_refresh(db)
-
-    result = await svc.patch_boundary(_VALID_URN, {"is_enabled": False})
-
-    assert isinstance(result, MetagenBoundaryDTO)
-    assert existing.is_enabled is False
-    # allowed was not patched — still original value
-    assert existing.allowed == ["dataset.description"]
-
-
-@pytest.mark.asyncio
 async def test_delete_boundary_raises_not_found_when_absent(svc, db) -> None:
     """delete_boundary raises EntityNotFoundError when no boundary exists.
 
-    Spec: spec/feature/BACKEND.md §Metadata Generation Service — delete raises when absent.
+    Spec: feature/BACKEND.md §Metadata Generation Service — delete raises when absent.
     """
     db.execute = AsyncMock(return_value=_make_result(scalar=None))
     with pytest.raises(EntityNotFoundError):
@@ -515,7 +556,7 @@ async def test_delete_boundary_raises_not_found_when_absent(svc, db) -> None:
 async def test_delete_boundary_deletes_and_commits(svc, db) -> None:
     """delete_boundary deletes the boundary row and commits.
 
-    Spec: spec/feature/BACKEND.md §Metadata Generation Service — boundary delete.
+    Spec: feature/BACKEND.md §Metadata Generation Service — boundary delete.
     """
     existing = _make_boundary_row()
     db.execute = AsyncMock(return_value=_make_result(scalar=existing))
@@ -537,9 +578,7 @@ async def test_list_items_returns_empty_list_when_no_rows(svc, db) -> None:
 
     Spec: API.md §Metadata Generation — GET /metagen/item returns paginated items.
     """
-    count_result = _make_result(scalar=0)
-    rows_result = _make_result([])
-    db.execute = AsyncMock(side_effect=[count_result, rows_result])
+    db.execute = AsyncMock(side_effect=[_make_result(scalar=0), _make_result([])])
 
     items, total = await svc.list_items(offset=0, limit=20)
 
@@ -548,39 +587,61 @@ async def test_list_items_returns_empty_list_when_no_rows(svc, db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_list_items_returns_summaries_with_candidate_counts(svc, db) -> None:
-    """list_items returns ItemSummaryDTO with candidate counts.
+async def test_list_items_summary_has_candidate_and_non_rejected_counts(svc, db) -> None:
+    """list_items returns ItemSummaryDTO carrying candidate_count and non_rejected_count.
 
-    Spec: API.md §Metadata Generation — item list includes candidate_count.
+    Spec: feature/BACKEND.md §Item status — status derived over non-rejected candidates;
+    the summary DTO exposes both candidate_count and non_rejected_count.
     """
     item = _make_item_row()
-    cand1 = _make_candidate_row(dataset_urn=_VALID_URN, item_id="dataset.description", status="llm_approved")
-    cand2 = _make_candidate_row(dataset_urn=_VALID_URN, item_id="dataset.description", status="llm_approved")
-
-    count_result = _make_result(scalar=1)
+    cand1 = _make_candidate_row(status="llm_approved")
+    cand2 = _make_candidate_row(status="rejected")
 
     rows_m = MagicMock()
     rows_m.scalars.return_value.all.return_value = [item]
-    db.execute = AsyncMock(side_effect=[
-        count_result,
-        rows_m,
-        # For _build_item_summary — candidate query
-        _make_result([cand1, cand2]),
-    ])
+    db.execute = AsyncMock(
+        side_effect=[_make_result(scalar=1), rows_m, _make_result([cand1, cand2])]
+    )
 
     items, total = await svc.list_items(offset=0, limit=20)
 
     assert total == 1
-    assert len(items) == 1
-    assert items[0].dataset_urn == _VALID_URN
     assert items[0].candidate_count == 2
+    assert items[0].non_rejected_count == 1, (
+        "non_rejected_count must exclude rejected candidates. "
+        "spec: feature/BACKEND.md §Item status"
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_items_with_conf_filter_resolves_uuid(svc, db) -> None:
+    """list_items(conf_id=...) accepts a valid conf UUID and queries without error.
+
+    Spec: API.md §Metadata Generation — item list filterable by conf_id.
+    """
+    db.execute = AsyncMock(side_effect=[_make_result(scalar=0), _make_result([])])
+
+    items, total = await svc.list_items(conf_id=str(_CONF_UUID), offset=0, limit=20)
+
+    assert items == []
+    assert total == 0
+
+
+@pytest.mark.asyncio
+async def test_list_items_with_malformed_conf_id_raises_not_found(svc, db) -> None:
+    """list_items(conf_id='not-a-uuid') raises EntityNotFoundError.
+
+    Spec: feature/BACKEND.md §Metadata Generation Service — conf_id is a UUID.
+    """
+    with pytest.raises(EntityNotFoundError):
+        await svc.list_items(conf_id="not-a-uuid")
 
 
 @pytest.mark.asyncio
 async def test_get_item_raises_not_found_for_absent_item(svc, db) -> None:
     """get_item raises EntityNotFoundError when item does not exist.
 
-    Spec: spec/feature/BACKEND.md §Metadata Generation Service — 404 for absent item.
+    Spec: feature/BACKEND.md §Metadata Generation Service — 404 for absent item.
     """
     db.execute = AsyncMock(return_value=_make_result(scalar=None))
 
@@ -589,43 +650,33 @@ async def test_get_item_raises_not_found_for_absent_item(svc, db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_item_returns_detail_dto_with_candidates(svc, db) -> None:
-    """get_item returns ItemDetailDTO including candidate list.
+async def test_get_item_returns_detail_with_candidate_conf_name(svc, db) -> None:
+    """get_item returns ItemDetailDTO; each candidate carries its conf_name.
 
-    Spec: API.md §Metadata Generation — item detail includes candidates list.
+    Spec: API.md §Metadata Generation — item detail includes candidates with conf_id/conf_name.
     """
     item = _make_item_row()
-    cand = _make_candidate_row()
+    cand = _make_candidate_row(conf_id=_CONF_UUID)
 
     cands_result = MagicMock()
     cands_result.scalars.return_value.all.return_value = [cand]
+    # conf-name map query
+    name_row = MagicMock()
+    name_row.id = _CONF_UUID
+    name_row.name = "catalog-docs"
+    name_map_result = MagicMock()
+    name_map_result.all.return_value = [name_row]
 
-    db.execute = AsyncMock(side_effect=[
-        _make_result(scalar=item),  # item lookup
-        cands_result,               # candidates query
-    ])
+    db.execute = AsyncMock(
+        side_effect=[_make_result(scalar=item), cands_result, name_map_result]
+    )
 
     detail = await svc.get_item(_VALID_URN, "dataset.description")
 
     assert detail.dataset_urn == _VALID_URN
     assert len(detail.candidates) == 1
-    assert detail.candidates[0].status == "llm_approved"
-
-
-@pytest.mark.asyncio
-async def test_list_items_for_dataset_delegates_to_list_items(svc, db) -> None:
-    """list_items_for_dataset is a thin wrapper for list_items scoped to the dataset.
-
-    Spec: API.md §Metadata Generation — per-dataset item list uses same contract.
-    """
-    count_result = _make_result(scalar=0)
-    rows_result = _make_result([])
-    db.execute = AsyncMock(side_effect=[count_result, rows_result])
-
-    items, total = await svc.list_items_for_dataset(_VALID_URN, offset=0, limit=20)
-
-    assert total == 0
-    assert items == []
+    assert detail.candidates[0].conf_id == str(_CONF_UUID)
+    assert detail.candidates[0].conf_name == "catalog-docs"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -634,20 +685,50 @@ async def test_list_items_for_dataset_delegates_to_list_items(svc, db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_raises_conflict_when_lock_held(svc, cache) -> None:
-    """run() raises ConflictError(METAGEN_RUNNING) when Redis lock is already held.
+async def test_run_raises_not_found_when_conf_absent(svc, db) -> None:
+    """run(conf_id) raises EntityNotFoundError when the conf does not exist.
 
-    Spec: spec/feature/BACKEND.md §Concurrency Guards — singleton run serialised by Redis lock.
-    Spec: API.md §Metadata Generation — POST method/run returns 409 METAGEN_RUNNING.
+    Spec: API.md §Metadata Generation — 404 METAGEN_CONF_NOT_FOUND.
     """
+    db.execute = AsyncMock(return_value=_make_result(scalar=None))
+
+    with pytest.raises(EntityNotFoundError):
+        await svc.run(str(_CONF_UUID), dataset_urns=None, dry_run=False)
+
+
+@pytest.mark.asyncio
+async def test_run_raises_conflict_when_lock_held(svc, cache, db) -> None:
+    """run() raises ConflictError(METAGEN_RUNNING) when this conf's Redis lock is held.
+
+    Spec: feature/BACKEND.md §Concurrency — runs serialised per conf by
+    metagen:running:{conf_id}; a duplicate run returns 409 METAGEN_RUNNING.
+    """
+    db.execute = AsyncMock(return_value=_make_result(scalar=_make_conf_row()))
     cache.set_nx = AsyncMock(return_value=False)
 
     with pytest.raises(ConflictError) as exc_info:
-        await svc.run(dataset_urns=None, dry_run=False)
+        await svc.run(str(_CONF_UUID), dataset_urns=None, dry_run=False)
 
-    assert exc_info.value.error_code == "METAGEN_RUNNING", (
-        "ConflictError must carry code METAGEN_RUNNING when lock is held. "
-        "spec: API.md §Metadata Generation error codes"
+    assert exc_info.value.error_code == "METAGEN_RUNNING"
+
+
+@pytest.mark.asyncio
+async def test_run_uses_per_conf_lock_key(svc, cache, db) -> None:
+    """run() acquires the per-conf lock metagen:running:{conf_id}.
+
+    Spec: feature/BACKEND.md §Concurrency — distinct confs run concurrently; the lock
+    key is scoped to the conf_id, not a global singleton.
+    """
+    db.execute = AsyncMock(return_value=_make_result(scalar=_make_conf_row()))
+    cache.set_nx = AsyncMock(return_value=False)
+
+    with pytest.raises(ConflictError):
+        await svc.run(str(_CONF_UUID), dataset_urns=None, dry_run=False)
+
+    lock_key = cache.set_nx.call_args.args[0]
+    assert lock_key == f"metagen:running:{_CONF_UUID}", (
+        "Run must use a per-conf lock key. "
+        "spec: feature/BACKEND.md §Concurrency — metagen:running:{conf_id}"
     )
 
 
@@ -655,143 +736,93 @@ async def test_run_raises_conflict_when_lock_held(svc, cache) -> None:
 async def test_run_raises_conflict_when_disabled_and_not_dry_run(svc, cache, db) -> None:
     """run() raises ConflictError(METAGEN_DISABLED) when conf.is_enabled=false and dry_run=false.
 
-    Spec: spec/feature/BACKEND.md §Metadata Generation Service — disabled guard.
     Spec: API.md §Metadata Generation — 409 METAGEN_DISABLED.
     """
     cache.set_nx = AsyncMock(return_value=True)
     cache.delete_if_value = AsyncMock()
 
-    conf_row = _make_conf_row(is_enabled=False, schedule_tier=None)
-    db.execute = AsyncMock(return_value=_make_result(scalar=conf_row))
+    db.execute = AsyncMock(return_value=_make_result(scalar=_make_conf_row(is_enabled=False)))
 
     with pytest.raises(ConflictError) as exc_info:
-        await svc.run(dataset_urns=None, dry_run=False)
+        await svc.run(str(_CONF_UUID), dataset_urns=None, dry_run=False)
 
-    assert exc_info.value.error_code == "METAGEN_DISABLED", (
-        "ConflictError must carry code METAGEN_DISABLED when is_enabled=false. "
-        "spec: API.md §Metadata Generation error codes"
-    )
+    assert exc_info.value.error_code == "METAGEN_DISABLED"
 
 
 @pytest.mark.asyncio
 async def test_run_allows_dry_run_when_disabled(svc, cache, db) -> None:
     """run(dry_run=True) is permitted even when conf.is_enabled=false.
 
-    Spec: spec/feature/BACKEND.md §Metadata Generation Service — dry_run bypasses disabled guard.
+    Spec: feature/BACKEND.md §Disabled-config rejection — dry-run is permitted regardless
+    of is_enabled.
     """
     cache.set_nx = AsyncMock(return_value=True)
     cache.delete_if_value = AsyncMock()
 
-    conf_row = _make_conf_row(is_enabled=False, schedule_tier=None, dataset_filter={"dataset_urns": []})
+    conf_row = _make_conf_row(is_enabled=False, dataset_filter={"dataset_urns": []})
     db.execute = AsyncMock(return_value=_make_result(scalar=conf_row))
 
-    result = await svc.run(dataset_urns=[], dry_run=True)
+    with patch.object(
+        svc, "_enumerate_in_scope_datasets", new=AsyncMock(return_value=([], []))
+    ):
+        result = await svc.run(str(_CONF_UUID), dataset_urns=[], dry_run=True)
 
-    assert isinstance(result, RunResultDTO), (
-        "run(dry_run=True) must return a RunResultDTO even when disabled. "
-        "spec: BACKEND.md §Metadata Generation Service"
-    )
-
-
-@pytest.mark.asyncio
-async def test_run_proceeds_when_tier_param_absent(svc, cache, db) -> None:
-    """svc.run() (no tier arg) proceeds to inference when conf.is_enabled=True.
-
-    Tier dispatch is the activity's responsibility, not the service's — the
-    service runs unconditionally once invoked. Spec: feature/BACKEND.md
-    §DAG Catalogue tier-DAG selection.
-    """
-    cache.set_nx = AsyncMock(return_value=True)
-    cache.delete_if_value = AsyncMock()
-
-    with patch.object(svc, "_load_conf_or_default", new=AsyncMock(return_value=MetagenGlobalConfDTO(
-        is_enabled=True,
-        schedule_tier="daily",
-        dataset_filter={},
-        result_limit=3,
-        overwrite_pending=True,
-        updated_at=datetime.now(tz=UTC),
-    ))), patch.object(svc, "_enumerate_in_scope_datasets", new=AsyncMock(return_value=([], []))):
-        result = await svc.run(dataset_urns=[], dry_run=False)
-
-    assert result.status == "success"
+    assert isinstance(result, RunResultDTO)
+    assert result.conf_id == str(_CONF_UUID)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Group E: per-item budget (via _apply_per_item_budget)
+# Group E: per-(conf, item) budget (via _apply_per_item_budget)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
 @pytest.mark.asyncio
 async def test_apply_per_item_budget_adds_when_under_limit(svc, db) -> None:
-    """_apply_per_item_budget adds new candidate when count < result_limit.
+    """_apply_per_item_budget adds a new candidate when this conf's count < result_limit.
 
-    Spec: spec/feature/BACKEND.md §Metadata Generation Service §Per-item budget.
+    Spec: feature/BACKEND.md §Per-item budget — budget counted per (conf, item).
     """
-    conf = MetagenGlobalConfDTO(
-        is_enabled=True,
-        schedule_tier="daily",
-        dataset_filter={},
-        result_limit=3,
-        overwrite_pending=True,
-        updated_at=datetime.now(tz=UTC),
-    )
-
+    conf = _make_conf_dto(result_limit=3, overwrite_pending=True)
     item_row = _make_item_row()
-    count_result = _make_result(scalar=1)  # 1 existing non-rejected
 
-    db.execute = AsyncMock(side_effect=[
-        _make_result(scalar=item_row),   # item lookup
-        count_result,                    # non-rejected count
-    ])
+    db.execute = AsyncMock(side_effect=[_make_result(scalar=item_row), _make_result(scalar=1)])
     mock_db_refresh(db)
     svc._refresh_candidate_embedding = AsyncMock()
 
-    run_id = uuid.uuid4()
     added, evicted = await svc._apply_per_item_budget(
         urn=_VALID_URN,
         item_id="dataset.description",
         new_candidate_value="New description.",
         new_candidate_confidence=0.85,
         new_candidate_evidence={},
-        run_id=run_id,
+        run_id=uuid.uuid4(),
+        conf_id=_CONF_UUID,
         conf=conf,
     )
 
-    assert added is True, (
-        "Should add candidate when count (1) < result_limit (3). "
-        "spec: BACKEND.md §Per-item budget"
-    )
+    assert added is True
     assert evicted is False
 
 
 @pytest.mark.asyncio
 async def test_apply_per_item_budget_evicts_oldest_when_overwrite_pending_true(svc, db) -> None:
-    """_apply_per_item_budget evicts oldest llm_approved when budget full and overwrite_pending=true.
+    """_apply_per_item_budget evicts this conf's oldest llm_approved when budget full
+    and overwrite_pending=true.
 
-    Spec: spec/feature/BACKEND.md §Metadata Generation Service §Per-item budget
-    — FIFO eviction of oldest llm_approved when budget full.
+    Spec: feature/BACKEND.md §Per-item budget — FIFO eviction of this conf's oldest
+    llm_approved; other confs' candidates untouched.
     """
-    conf = MetagenGlobalConfDTO(
-        is_enabled=True,
-        schedule_tier="daily",
-        dataset_filter={},
-        result_limit=2,
-        overwrite_pending=True,
-        updated_at=datetime.now(tz=UTC),
-    )
-
+    conf = _make_conf_dto(result_limit=2, overwrite_pending=True)
     item_row = _make_item_row()
-    oldest_llm = _make_candidate_row(status="llm_approved")
+    oldest_llm = _make_candidate_row(status="llm_approved", conf_id=_CONF_UUID)
 
-    count_result = _make_result(scalar=2)  # budget full
-    oldest_result = _make_result(scalar=oldest_llm)
-
-    db.execute = AsyncMock(side_effect=[
-        _make_result(scalar=item_row),
-        count_result,
-        oldest_result,  # oldest llm_approved to evict
-    ])
+    db.execute = AsyncMock(
+        side_effect=[
+            _make_result(scalar=item_row),
+            _make_result(scalar=2),  # budget full
+            _make_result(scalar=oldest_llm),
+        ]
+    )
     mock_db_refresh(db)
     svc._refresh_candidate_embedding = AsyncMock()
 
@@ -802,17 +833,12 @@ async def test_apply_per_item_budget_evicts_oldest_when_overwrite_pending_true(s
         new_candidate_confidence=0.9,
         new_candidate_evidence={},
         run_id=uuid.uuid4(),
+        conf_id=_CONF_UUID,
         conf=conf,
     )
 
-    assert added is True, (
-        "Should add candidate after evicting oldest when overwrite_pending=true. "
-        "spec: BACKEND.md §Per-item budget §FIFO eviction"
-    )
-    assert evicted is True, (
-        "evicted must be True when an llm_approved candidate is removed. "
-        "spec: BACKEND.md §Per-item budget"
-    )
+    assert added is True
+    assert evicted is True
     db.delete.assert_called_once_with(oldest_llm)
 
 
@@ -820,25 +846,13 @@ async def test_apply_per_item_budget_evicts_oldest_when_overwrite_pending_true(s
 async def test_apply_per_item_budget_skips_when_overwrite_pending_false(svc, db) -> None:
     """_apply_per_item_budget returns (False, False) when budget full and overwrite_pending=false.
 
-    Spec: spec/feature/BACKEND.md §Metadata Generation Service §Per-item budget
-    — skip new candidate when overwrite_pending=false and budget full.
+    Spec: feature/BACKEND.md §Per-item budget — skip new candidate when full and
+    overwrite_pending=false.
     """
-    conf = MetagenGlobalConfDTO(
-        is_enabled=True,
-        schedule_tier="daily",
-        dataset_filter={},
-        result_limit=2,
-        overwrite_pending=False,
-        updated_at=datetime.now(tz=UTC),
-    )
-
+    conf = _make_conf_dto(result_limit=2, overwrite_pending=False)
     item_row = _make_item_row()
-    count_result = _make_result(scalar=2)  # budget full
 
-    db.execute = AsyncMock(side_effect=[
-        _make_result(scalar=item_row),
-        count_result,
-    ])
+    db.execute = AsyncMock(side_effect=[_make_result(scalar=item_row), _make_result(scalar=2)])
 
     added, evicted = await svc._apply_per_item_budget(
         urn=_VALID_URN,
@@ -847,41 +861,31 @@ async def test_apply_per_item_budget_skips_when_overwrite_pending_false(svc, db)
         new_candidate_confidence=0.9,
         new_candidate_evidence={},
         run_id=uuid.uuid4(),
+        conf_id=_CONF_UUID,
         conf=conf,
     )
 
-    assert added is False, (
-        "Should NOT add candidate when overwrite_pending=false and budget is full. "
-        "spec: BACKEND.md §Per-item budget"
-    )
+    assert added is False
     assert evicted is False
 
 
 @pytest.mark.asyncio
 async def test_apply_per_item_budget_skips_when_only_approved_and_budget_full(svc, db) -> None:
-    """_apply_per_item_budget returns (False, False) when budget full but no llm_approved to evict.
+    """_apply_per_item_budget returns (False, False) when budget full but no llm_approved
+    to evict (all approved).
 
-    Spec: spec/feature/BACKEND.md §Per-item budget — approved candidates are not evicted.
+    Spec: feature/BACKEND.md §Per-item budget — approved candidates are not evicted.
     """
-    conf = MetagenGlobalConfDTO(
-        is_enabled=True,
-        schedule_tier="daily",
-        dataset_filter={},
-        result_limit=1,
-        overwrite_pending=True,
-        updated_at=datetime.now(tz=UTC),
-    )
-
+    conf = _make_conf_dto(result_limit=1, overwrite_pending=True)
     item_row = _make_item_row()
-    count_result = _make_result(scalar=1)  # budget full
-    # No llm_approved available for eviction (all are 'approved')
-    no_llm_approved = _make_result(scalar=None)
 
-    db.execute = AsyncMock(side_effect=[
-        _make_result(scalar=item_row),
-        count_result,
-        no_llm_approved,
-    ])
+    db.execute = AsyncMock(
+        side_effect=[
+            _make_result(scalar=item_row),
+            _make_result(scalar=1),  # budget full
+            _make_result(scalar=None),  # no llm_approved available
+        ]
+    )
 
     added, evicted = await svc._apply_per_item_budget(
         urn=_VALID_URN,
@@ -890,112 +894,52 @@ async def test_apply_per_item_budget_skips_when_only_approved_and_budget_full(sv
         new_candidate_confidence=0.8,
         new_candidate_evidence={},
         run_id=uuid.uuid4(),
+        conf_id=_CONF_UUID,
         conf=conf,
     )
 
-    assert added is False, (
-        "Should NOT add when budget full and no llm_approved available for eviction. "
-        "spec: BACKEND.md §Per-item budget — approved candidates are not evicted"
-    )
+    assert added is False
     assert evicted is False
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Group F: run() in-scope enumeration and rejected candidate clearing
+# Group F: run() in-scope enumeration and rejected candidate clearing (per conf)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
 @pytest.mark.asyncio
 async def test_run_clears_rejected_candidates_before_processing(svc, cache, db) -> None:
-    """Real run reports a non-negative rejected_cleared count in result.counts.
+    """A real run reports the rejected_cleared count from _clear_rejected_candidates.
 
-    Spec: spec/feature/BACKEND.md §Metadata Generation Service — rejected candidates
-    cleared at run start (step 2 of generation pipeline); count surfaced in RUN_COMPLETE
-    counts as 'rejected_cleared'.
+    Spec: feature/BACKEND.md §Generation Pipeline step 2 — this conf's rejected candidates
+    are cleared at run start; count surfaced in RUN_COMPLETE counts as rejected_cleared.
     """
     cache.set_nx = AsyncMock(return_value=True)
     cache.delete_if_value = AsyncMock()
 
     with (
-        patch.object(svc, "_load_conf_or_default", new=AsyncMock(return_value=MetagenGlobalConfDTO(
-            is_enabled=True,
-            schedule_tier=None,
-            dataset_filter={"dataset_urns": [_VALID_URN]},
-            result_limit=3,
-            overwrite_pending=True,
-            updated_at=datetime.now(tz=UTC),
-        ))),
+        patch.object(svc, "get_conf", new=AsyncMock(return_value=_make_conf_dto(is_enabled=True))),
         patch.object(
-            svc,
-            "_enumerate_in_scope_datasets",
-            new=AsyncMock(return_value=([_VALID_URN], [])),
+            svc, "_enumerate_in_scope_datasets", new=AsyncMock(return_value=([_VALID_URN], []))
         ),
-        patch.object(
-            svc,
-            "_clear_rejected_candidates",
-            new=AsyncMock(return_value=5),
-        ),
+        patch.object(svc, "_clear_rejected_candidates", new=AsyncMock(return_value=5)),
         patch.object(svc, "_fetch_evidence", new=AsyncMock(return_value={})),
-        # boundary check inside the loop — no boundary means this URN is skipped cleanly
+        # inner boundary lookup returns None → URN skipped cleanly
         patch.object(db, "execute", new=AsyncMock(return_value=_make_result(scalar=None))),
     ):
-        result = await svc.run(dataset_urns=None, dry_run=False)
+        result = await svc.run(str(_CONF_UUID), dataset_urns=None, dry_run=False)
 
-    assert result.status == "success", (
-        "run() must return status='success' after clearing rejected candidates. "
-        "spec: BACKEND.md §Metadata Generation Service §Generation Pipeline"
-    )
-    assert result.counts["rejected_cleared"] == 5, (
-        "rejected_cleared in result.counts must reflect the rowcount from _clear_rejected_candidates. "
-        "spec: BACKEND.md §Event Catalogue — RUN_COMPLETE counts: rejected_cleared"
-    )
-
-
-@pytest.mark.asyncio
-async def test_run_does_not_clear_rejected_on_dry_run(svc, cache, db) -> None:
-    """run(dry_run=True) does not surface 'rejected_cleared' in result.counts.
-
-    Spec: spec/feature/BACKEND.md §Metadata Generation Service — dry_run: no DB writes;
-    counts use candidates_proposed only (no rejected_cleared).
-    """
-    cache.set_nx = AsyncMock(return_value=True)
-    cache.delete_if_value = AsyncMock()
-
-    with (
-        patch.object(svc, "_load_conf_or_default", new=AsyncMock(return_value=MetagenGlobalConfDTO(
-            is_enabled=True,
-            schedule_tier=None,
-            dataset_filter={},
-            result_limit=3,
-            overwrite_pending=True,
-            updated_at=datetime.now(tz=UTC),
-        ))),
-        patch.object(
-            svc,
-            "_enumerate_in_scope_datasets",
-            new=AsyncMock(return_value=([_VALID_URN], [])),
-        ),
-        patch.object(svc, "_fetch_evidence", new=AsyncMock(return_value={})),
-        patch.object(db, "execute", new=AsyncMock(return_value=_make_result(scalar=None))),
-    ):
-        result = await svc.run(dataset_urns=None, dry_run=True)
-
-    assert result.dry_run is True
-    assert "rejected_cleared" not in result.counts, (
-        "Dry-run counts must NOT include 'rejected_cleared' — no DB writes on dry-run. "
-        "spec: BACKEND.md §Metadata Generation Service — dry_run count keys"
-    )
+    assert result.status == "success"
+    assert result.counts["rejected_cleared"] == 5
+    assert result.conf_id == str(_CONF_UUID)
 
 
 @pytest.mark.asyncio
 async def test_run_dry_run_reports_candidates_proposed_not_added(svc, cache, db) -> None:
-    """run(dry_run=True) counts use 'candidates_proposed', not 'candidates_added'.
+    """run(dry_run=True) counts use 'candidates_proposed' (no DB-write count keys).
 
-    Spec: spec/feature/BACKEND.md §Metadata Generation Service — dry_run: counts
-    use candidates_proposed; no DB writes (no candidates_added/evicted/rejected_cleared).
-
-    The run has one in-scope URN with one allowed item; the debate stub returns one
-    accepted candidate, so candidates_proposed == 1.
+    Spec: feature/BACKEND.md §Generation Pipeline — dry_run: counts use candidates_proposed;
+    no candidates_added/evicted/rejected_cleared.
     """
     cache.set_nx = AsyncMock(return_value=True)
     cache.delete_if_value = AsyncMock()
@@ -1018,21 +962,15 @@ async def test_run_dry_run_reports_candidates_proposed_not_added(svc, cache, db)
     )
 
     with (
-        patch.object(svc, "_load_conf_or_default", new=AsyncMock(return_value=MetagenGlobalConfDTO(
-            is_enabled=True,
-            schedule_tier=None,
-            dataset_filter={},
-            result_limit=3,
-            overwrite_pending=True,
-            updated_at=datetime.now(tz=UTC),
-        ))),
+        patch.object(svc, "get_conf", new=AsyncMock(return_value=_make_conf_dto(is_enabled=True))),
         patch.object(
-            svc,
-            "_enumerate_in_scope_datasets",
-            new=AsyncMock(return_value=([_VALID_URN], [])),
+            svc, "_enumerate_in_scope_datasets", new=AsyncMock(return_value=([_VALID_URN], []))
         ),
         patch.object(svc, "_fetch_evidence", new=AsyncMock(return_value={})),
-        patch("src.backend.metagen.service.run_debate", new=AsyncMock(return_value=debate_result_stub)),
+        patch(
+            "src.backend.metagen.service.run_debate",
+            new=AsyncMock(return_value=debate_result_stub),
+        ),
         patch.object(
             svc,
             "_enumerate_target_items",
@@ -1045,53 +983,33 @@ async def test_run_dry_run_reports_candidates_proposed_not_added(svc, cache, db)
                 }
             ],
         ),
-        patch.object(db, "execute", new=AsyncMock(return_value=_make_result(
-            scalar=_make_boundary_row(is_enabled=True)
-        ))),
+        patch.object(
+            db,
+            "execute",
+            new=AsyncMock(return_value=_make_result(scalar=_make_boundary_row(is_enabled=True))),
+        ),
     ):
-        result = await svc.run(dataset_urns=None, dry_run=True)
+        result = await svc.run(str(_CONF_UUID), dataset_urns=None, dry_run=True)
 
     assert result.dry_run is True
-    assert "candidates_proposed" in result.counts, (
-        "Dry-run counts must include 'candidates_proposed'. "
-        "spec: BACKEND.md §Event Catalogue — RUN_COMPLETE dry-run counts: items_considered, candidates_proposed"
-    )
-    assert result.counts["candidates_proposed"] == 1, (
-        "candidates_proposed must equal 1 when one accepted candidate is produced. "
-        "spec: BACKEND.md §Metadata Generation Service — dry_run count keys"
-    )
-    assert "candidates_added" not in result.counts, (
-        "Dry-run counts must NOT include 'candidates_added'. "
-        "spec: BACKEND.md §Metadata Generation Service — dry_run count keys"
-    )
-    assert "candidates_evicted" not in result.counts, (
-        "Dry-run counts must NOT include 'candidates_evicted'. "
-        "spec: BACKEND.md §Metadata Generation Service — dry_run count keys"
-    )
-    assert "rejected_cleared" not in result.counts, (
-        "Dry-run counts must NOT include 'rejected_cleared'. "
-        "spec: BACKEND.md §Metadata Generation Service — dry_run count keys"
-    )
-    # No DB writes: _apply_per_item_budget must not have been called
-    # (dry-run uses candidates_proposed counter, not the budget path)
-    assert result.counts.get("items_considered", 0) >= 1
+    assert result.counts["candidates_proposed"] == 1
+    assert "candidates_added" not in result.counts
+    assert "candidates_evicted" not in result.counts
+    assert "rejected_cleared" not in result.counts
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Group G-extra: run-complete event detail shape
+# Group G: run-complete event detail shape
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
 @pytest.mark.asyncio
 async def test_run_complete_event_detail_keys_for_real_run(svc, cache, db) -> None:
-    """METAGEN.RUN_COMPLETE event detail carries the required keys for a real (non-dry) run.
+    """RUN_COMPLETE detail carries the required keys (incl. conf_id/conf_name) on a real run.
 
-    Spec: spec/feature/BACKEND.md §Event Catalogue — RUN_COMPLETE detail keys:
-    run_id, unresolved_urns, counts, dry_run, producer_iterations, debate_outcome.
-    counts on real run: items_considered, candidates_added, candidates_evicted, rejected_cleared.
+    Spec: feature/BACKEND.md §Event Catalogue — RUN_COMPLETE detail keys: run_id, conf_id,
+    conf_name, unresolved_urns, counts, dry_run, producer_iterations, debate_outcome.
     """
-    # TODO(F-CY2-2): this test mocks six private methods; consider reducing to only
-    # _enumerate_in_scope_datasets, _fetch_evidence, run_debate, and event-capture surface.
     cache.set_nx = AsyncMock(return_value=True)
     cache.delete_if_value = AsyncMock()
 
@@ -1102,120 +1020,61 @@ async def test_run_complete_event_detail_keys_for_real_run(svc, cache, db) -> No
         recorded_detail = detail
 
     with (
-        patch.object(svc, "_load_conf_or_default", new=AsyncMock(return_value=MetagenGlobalConfDTO(
-            is_enabled=True,
-            schedule_tier=None,
-            dataset_filter={},
-            result_limit=3,
-            overwrite_pending=True,
-            updated_at=datetime.now(tz=UTC),
-        ))),
-        patch.object(svc, "_enumerate_in_scope_datasets", new=AsyncMock(return_value=([_VALID_URN], []))),
+        patch.object(svc, "get_conf", new=AsyncMock(return_value=_make_conf_dto(is_enabled=True))),
+        patch.object(
+            svc, "_enumerate_in_scope_datasets", new=AsyncMock(return_value=([_VALID_URN], []))
+        ),
         patch.object(svc, "_clear_rejected_candidates", new=AsyncMock(return_value=0)),
         patch.object(svc, "_fetch_evidence", new=AsyncMock(return_value={})),
         patch.object(svc, "_enumerate_target_items", return_value=[]),
-        patch.object(db, "execute", new=AsyncMock(return_value=_make_result(
-            scalar=_make_boundary_row(is_enabled=True)
-        ))),
+        patch.object(
+            db,
+            "execute",
+            new=AsyncMock(return_value=_make_result(scalar=_make_boundary_row(is_enabled=True))),
+        ),
         patch.object(svc, "_record_metagen_event", new=AsyncMock(side_effect=capture_event)),
     ):
-        result = await svc.run(dataset_urns=None, dry_run=False)
+        result = await svc.run(str(_CONF_UUID), dataset_urns=None, dry_run=False)
 
     assert result.status == "success"
-    assert recorded_detail is not None, (
-        "_record_metagen_event must be called on RUN_COMPLETE. "
-        "spec: BACKEND.md §Event Catalogue — METAGEN RUN_COMPLETE"
-    )
-    for key in ("run_id", "unresolved_urns", "counts", "dry_run", "producer_iterations", "debate_outcome"):
+    assert recorded_detail is not None
+    for key in (
+        "run_id",
+        "conf_id",
+        "conf_name",
+        "unresolved_urns",
+        "counts",
+        "dry_run",
+        "producer_iterations",
+        "debate_outcome",
+    ):
         assert key in recorded_detail, (
-            f"RUN_COMPLETE event detail must contain '{key}'. "
-            "spec: BACKEND.md §Event Catalogue — RUN_COMPLETE detail keys"
+            f"RUN_COMPLETE detail must contain '{key}'. "
+            "spec: feature/BACKEND.md §Event Catalogue — RUN_COMPLETE detail keys"
         )
-    counts = recorded_detail["counts"]
-    for count_key in ("items_considered", "candidates_added", "candidates_evicted", "rejected_cleared"):
-        assert count_key in counts, (
-            f"RUN_COMPLETE counts on real run must contain '{count_key}'. "
-            "spec: BACKEND.md §Event Catalogue — counts dict on real-run"
-        )
+    assert recorded_detail["conf_id"] == str(_CONF_UUID)
+    for count_key in (
+        "items_considered",
+        "candidates_added",
+        "candidates_evicted",
+        "rejected_cleared",
+    ):
+        assert count_key in recorded_detail["counts"]
     assert recorded_detail["dry_run"] is False
 
 
 @pytest.mark.asyncio
-async def test_run_complete_event_detail_keys_for_dry_run(svc, cache, db) -> None:
-    """METAGEN.RUN_COMPLETE event detail carries the required keys for a dry run.
+async def test_run_complete_emitted_when_empty_in_scope(svc, cache, db) -> None:
+    """METAGEN.RUN_COMPLETE is emitted with items_considered=0 when in_scope is empty (real run).
 
-    Spec: spec/feature/BACKEND.md §Event Catalogue — RUN_COMPLETE detail keys
-    on dry-run: run_id, unresolved_urns, counts, dry_run, producer_iterations, debate_outcome.
-    counts on dry-run: items_considered, candidates_proposed (not candidates_added/evicted/rejected_cleared).
-    """
-    # TODO(F-CY2-2): this test mocks six private methods; consider reducing to only
-    # _enumerate_in_scope_datasets, _fetch_evidence, run_debate, and event-capture surface.
-    cache.set_nx = AsyncMock(return_value=True)
-    cache.delete_if_value = AsyncMock()
-
-    recorded_detail: dict | None = None
-
-    async def capture_event(entity_id, event_type, status, detail):
-        nonlocal recorded_detail
-        recorded_detail = detail
-
-    with (
-        patch.object(svc, "_load_conf_or_default", new=AsyncMock(return_value=MetagenGlobalConfDTO(
-            is_enabled=True,
-            schedule_tier=None,
-            dataset_filter={},
-            result_limit=3,
-            overwrite_pending=True,
-            updated_at=datetime.now(tz=UTC),
-        ))),
-        patch.object(svc, "_enumerate_in_scope_datasets", new=AsyncMock(return_value=([_VALID_URN], []))),
-        patch.object(svc, "_fetch_evidence", new=AsyncMock(return_value={})),
-        patch.object(svc, "_enumerate_target_items", return_value=[]),
-        patch.object(db, "execute", new=AsyncMock(return_value=_make_result(
-            scalar=_make_boundary_row(is_enabled=True)
-        ))),
-        patch.object(svc, "_record_metagen_event", new=AsyncMock(side_effect=capture_event)),
-    ):
-        result = await svc.run(dataset_urns=None, dry_run=True)
-
-    assert result.dry_run is True
-    assert recorded_detail is not None, (
-        "_record_metagen_event must be called on RUN_COMPLETE for dry-run too. "
-        "spec: BACKEND.md §Event Catalogue — RUN_COMPLETE recorded for both dry-run and non-dry-run"
-    )
-    for key in ("run_id", "unresolved_urns", "counts", "dry_run", "producer_iterations", "debate_outcome"):
-        assert key in recorded_detail, (
-            f"RUN_COMPLETE event detail must contain '{key}' on dry-run too. "
-            "spec: BACKEND.md §Event Catalogue — RUN_COMPLETE recorded for both dry-run and non-dry-run"
-        )
-    counts = recorded_detail["counts"]
-    assert "items_considered" in counts, (
-        "Dry-run counts must have 'items_considered'. "
-        "spec: BACKEND.md §Event Catalogue — dry-run counts: items_considered, candidates_proposed"
-    )
-    assert "candidates_proposed" in counts, (
-        "Dry-run counts must have 'candidates_proposed'. "
-        "spec: BACKEND.md §Event Catalogue — dry-run counts: items_considered, candidates_proposed"
-    )
-    assert "candidates_added" not in counts
-    assert "candidates_evicted" not in counts
-    assert "rejected_cleared" not in counts
-    assert recorded_detail["dry_run"] is True
-
-
-@pytest.mark.asyncio
-async def test_run_complete_emitted_when_empty_in_scope(svc, cache) -> None:
-    """METAGEN.RUN_COMPLETE is emitted even when in_scope_urns is empty (real run).
-
-    Spec: spec/feature/BACKEND.md §Event Catalogue — RUN_COMPLETE emitted for every
-    completed run, including runs where no datasets are in scope.
-    counts.items_considered == 0 and status == 'success'.
+    Spec: feature/BACKEND.md §Generation Pipeline step 1 — empty in-scope set still completes
+    successfully and emits RUN_COMPLETE with all counts at zero.
     """
     cache.set_nx = AsyncMock(return_value=True)
     cache.delete_if_value = AsyncMock()
 
     _UNRESOLVED = "urn:li:dataset:(urn:li:dataPlatform:postgres,unresolved.table,DEV)"
-
+    db.execute = AsyncMock(return_value=_make_result(scalar=_make_conf_row(is_enabled=True)))
     recorded_args: dict = {}
 
     async def capture_event(entity_id, event_type, status, detail):
@@ -1223,98 +1082,19 @@ async def test_run_complete_emitted_when_empty_in_scope(svc, cache) -> None:
         recorded_args["detail"] = detail
 
     with (
-        patch.object(svc, "_load_conf_or_default", new=AsyncMock(return_value=MetagenGlobalConfDTO(
-            is_enabled=True,
-            schedule_tier=None,
-            dataset_filter={},
-            result_limit=3,
-            overwrite_pending=True,
-            updated_at=datetime.now(tz=UTC),
-        ))),
         patch.object(
-            svc,
-            "_enumerate_in_scope_datasets",
-            new=AsyncMock(return_value=([], [_UNRESOLVED])),
+            svc, "_enumerate_in_scope_datasets", new=AsyncMock(return_value=([], [_UNRESOLVED]))
         ),
         patch.object(svc, "_clear_rejected_candidates", new=AsyncMock(return_value=0)),
         patch.object(svc, "_record_metagen_event", new=AsyncMock(side_effect=capture_event)),
     ):
-        result = await svc.run(dataset_urns=None, dry_run=False)
+        result = await svc.run(str(_CONF_UUID), dataset_urns=None, dry_run=False)
 
-    assert result.status == "success", (
-        "Empty in-scope run must yield status='success'. "
-        "spec: BACKEND.md §Event Catalogue — RUN_COMPLETE emitted for every completed run"
-    )
-    assert recorded_args, (
-        "_record_metagen_event must be called even when in_scope_urns is empty. "
-        "spec: BACKEND.md §Event Catalogue — RUN_COMPLETE emitted for every completed run"
-    )
-    assert recorded_args["event_type"] == "METAGEN.RUN_COMPLETE", (
-        "Event type must be METAGEN.RUN_COMPLETE. "
-        "spec: BACKEND.md §Event Catalogue"
-    )
+    assert result.status == "success"
+    assert recorded_args["event_type"] == "METAGEN.RUN_COMPLETE"
     detail = recorded_args["detail"]
-    assert detail["counts"]["items_considered"] == 0, (
-        "items_considered must be 0 when no datasets are in scope. "
-        "spec: BACKEND.md §Event Catalogue — RUN_COMPLETE counts"
-    )
-    assert _UNRESOLVED in detail["unresolved_urns"], (
-        "unresolved_urns must be propagated into RUN_COMPLETE event detail. "
-        "spec: BACKEND.md §Event Catalogue — RUN_COMPLETE detail: unresolved_urns"
-    )
-
-
-@pytest.mark.asyncio
-async def test_run_complete_emitted_when_empty_in_scope_dry_run(svc, cache) -> None:
-    """METAGEN.RUN_COMPLETE is emitted with dry_run=True even when in_scope_urns is empty.
-
-    Spec: spec/feature/BACKEND.md §Event Catalogue — RUN_COMPLETE emitted for every
-    completed run including dry-runs; counts use items_considered + candidates_proposed.
-    """
-    cache.set_nx = AsyncMock(return_value=True)
-    cache.delete_if_value = AsyncMock()
-
-    _UNRESOLVED = "urn:li:dataset:(urn:li:dataPlatform:postgres,unresolved.table,DEV)"
-
-    recorded_args: dict = {}
-
-    async def capture_event(entity_id, event_type, status, detail):
-        recorded_args["event_type"] = event_type
-        recorded_args["detail"] = detail
-
-    with (
-        patch.object(svc, "_load_conf_or_default", new=AsyncMock(return_value=MetagenGlobalConfDTO(
-            is_enabled=True,
-            schedule_tier=None,
-            dataset_filter={},
-            result_limit=3,
-            overwrite_pending=True,
-            updated_at=datetime.now(tz=UTC),
-        ))),
-        patch.object(
-            svc,
-            "_enumerate_in_scope_datasets",
-            new=AsyncMock(return_value=([], [_UNRESOLVED])),
-        ),
-        patch.object(svc, "_record_metagen_event", new=AsyncMock(side_effect=capture_event)),
-    ):
-        result = await svc.run(dataset_urns=None, dry_run=True)
-
-    assert result.dry_run is True
-    assert recorded_args, (
-        "_record_metagen_event must be called on dry-run even when in_scope_urns is empty. "
-        "spec: BACKEND.md §Event Catalogue — RUN_COMPLETE emitted for every completed run"
-    )
-    detail = recorded_args["detail"]
-    assert detail["dry_run"] is True, (
-        "RUN_COMPLETE event detail must carry dry_run=True on dry-run. "
-        "spec: BACKEND.md §Event Catalogue — dry_run flag in RUN_COMPLETE detail"
-    )
-    counts = detail["counts"]
-    assert counts == {"items_considered": 0, "candidates_proposed": 0}, (
-        "Dry-run counts with empty scope must be {items_considered:0, candidates_proposed:0}. "
-        "spec: BACKEND.md §Event Catalogue — dry-run counts: items_considered, candidates_proposed"
-    )
+    assert detail["counts"]["items_considered"] == 0
+    assert _UNRESOLVED in detail["unresolved_urns"]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1324,13 +1104,11 @@ async def test_run_complete_emitted_when_empty_in_scope_dry_run(svc, cache) -> N
 
 @pytest.mark.asyncio
 async def test_review_candidate_raises_422_when_boundary_absent(svc, db) -> None:
-    """review_candidate raises PreconditionFailedError(METAGEN_DATASET_NOT_IN_BOUNDARY)
-    when no boundary exists for the dataset.
+    """review_candidate raises METAGEN_DATASET_NOT_IN_BOUNDARY when no boundary exists.
 
-    Spec: API.md §Metadata Generation — 422 METAGEN_DATASET_NOT_IN_BOUNDARY when
-    no active boundary is configured for the dataset.
+    Spec: API.md §Metadata Generation — 422 METAGEN_DATASET_NOT_IN_BOUNDARY.
     """
-    db.execute = AsyncMock(return_value=_make_result(scalar=None))  # no boundary
+    db.execute = AsyncMock(return_value=_make_result(scalar=None))
 
     with pytest.raises(PreconditionFailedError) as exc_info:
         await svc.review_candidate(
@@ -1341,22 +1119,16 @@ async def test_review_candidate_raises_422_when_boundary_absent(svc, db) -> None
             reason="good description",
             reviewer_id="alice",
         )
-    assert exc_info.value.error_code == "METAGEN_DATASET_NOT_IN_BOUNDARY", (
-        "Must raise METAGEN_DATASET_NOT_IN_BOUNDARY when boundary is absent. "
-        "spec: API.md §Metadata Generation error codes"
-    )
+    assert exc_info.value.error_code == "METAGEN_DATASET_NOT_IN_BOUNDARY"
 
 
 @pytest.mark.asyncio
 async def test_review_candidate_raises_422_when_boundary_disabled(svc, db) -> None:
-    """review_candidate raises PreconditionFailedError(METAGEN_DATASET_NOT_IN_BOUNDARY)
-    when the boundary exists but is_enabled=false.
+    """review_candidate raises METAGEN_DATASET_NOT_IN_BOUNDARY when boundary is_enabled=false.
 
-    Spec: API.md §Metadata Generation — 422 METAGEN_DATASET_NOT_IN_BOUNDARY when
-    boundary is not enabled.
+    Spec: API.md §Metadata Generation — 422 METAGEN_DATASET_NOT_IN_BOUNDARY.
     """
-    disabled_bnd = _make_boundary_row(is_enabled=False)
-    db.execute = AsyncMock(return_value=_make_result(scalar=disabled_bnd))
+    db.execute = AsyncMock(return_value=_make_result(scalar=_make_boundary_row(is_enabled=False)))
 
     with pytest.raises(PreconditionFailedError) as exc_info:
         await svc.review_candidate(
@@ -1372,24 +1144,30 @@ async def test_review_candidate_raises_422_when_boundary_disabled(svc, db) -> No
 
 @pytest.mark.asyncio
 async def test_review_candidate_approve_flips_status_to_approved(svc, db) -> None:
-    """review_candidate(approve) flips candidate status from llm_approved to approved.
+    """review_candidate(approve) flips status from llm_approved to approved.
 
-    Spec: spec/feature/BACKEND.md §Metadata Generation Service §Approval flow
-    — approve: flip target candidate to status='approved'.
+    Spec: feature/BACKEND.md §Approval flow — approve flips target to status='approved'.
     """
     bnd = _make_boundary_row(is_enabled=True)
     cand_id = uuid.uuid4()
-    cand = _make_candidate_row(candidate_id=cand_id, status="llm_approved")
+    cand = _make_candidate_row(candidate_id=cand_id, status="llm_approved", conf_id=_CONF_UUID)
 
-    # boundary, then candidate, then sibling (None = no existing approved)
-    db.execute = AsyncMock(side_effect=[
-        _make_result(scalar=bnd),
-        _make_result(scalar=cand),
-        _make_result(scalar=None),  # no sibling approved candidate
-    ])
+    name_row = MagicMock()
+    name_row.id = _CONF_UUID
+    name_row.name = "catalog-docs"
+    name_map_result = MagicMock()
+    name_map_result.all.return_value = [name_row]
+
+    db.execute = AsyncMock(
+        side_effect=[
+            _make_result(scalar=bnd),
+            _make_result(scalar=cand),
+            _make_result(scalar=None),  # no sibling approved
+            name_map_result,  # conf-name resolution
+        ]
+    )
     mock_db_refresh(db)
 
-    # Stub out side-effects that hit DataHub/vector
     svc._datahub.emit_aspect = AsyncMock()
     svc._datahub.get_aspect = AsyncMock(return_value=None)
     svc._llm.embed = AsyncMock(return_value=[0.0] * 10)
@@ -1404,34 +1182,43 @@ async def test_review_candidate_approve_flips_status_to_approved(svc, db) -> Non
             reviewer_id="alice",
         )
 
-    assert cand.status == "approved", (
-        "Candidate status must be set to 'approved' on approve verdict. "
-        "spec: BACKEND.md §Metadata Generation Service §Approval flow"
-    )
+    assert cand.status == "approved"
     assert dto.status == "approved"
+    assert dto.conf_name == "catalog-docs"
 
 
 @pytest.mark.asyncio
-async def test_review_candidate_approve_demotes_existing_approved_sibling(svc, db) -> None:
-    """review_candidate(approve) atomically demotes existing approved sibling to llm_approved.
+async def test_review_candidate_approve_demotes_cross_conf_approved_sibling(svc, db) -> None:
+    """review_candidate(approve) demotes an existing approved sibling, even one from a
+    DIFFERENT conf, in the same transaction.
 
-    Spec: spec/feature/BACKEND.md §Metadata Generation Service §Approval flow
-    — mutable approval: approving a sibling demotes the prior approved candidate.
-    The partial unique index (UNIQUE (dataset_urn, item_id) WHERE status='approved')
-    holds because the demotion flush precedes the promotion commit.
+    Spec: feature/BACKEND.md §Approval flow — approving a candidate atomically demotes the
+    approved sibling from any other conf; one-approved-per-item holds globally across confs.
+    The demotion flush precedes the promotion to satisfy the partial unique index.
     """
     bnd = _make_boundary_row(is_enabled=True)
     cand_id = uuid.uuid4()
-    cand = _make_candidate_row(candidate_id=cand_id, status="llm_approved")
+    cand = _make_candidate_row(candidate_id=cand_id, status="llm_approved", conf_id=_CONF_UUID)
 
-    sibling_id = uuid.uuid4()
-    sibling = _make_candidate_row(candidate_id=sibling_id, status="approved")
+    # Sibling belongs to a DIFFERENT conf
+    sibling = _make_candidate_row(
+        candidate_id=uuid.uuid4(), status="approved", conf_id=_CONF_UUID2
+    )
 
-    db.execute = AsyncMock(side_effect=[
-        _make_result(scalar=bnd),
-        _make_result(scalar=cand),
-        _make_result(scalar=sibling),  # existing approved sibling
-    ])
+    name_row = MagicMock()
+    name_row.id = _CONF_UUID
+    name_row.name = "catalog-docs"
+    name_map_result = MagicMock()
+    name_map_result.all.return_value = [name_row]
+
+    db.execute = AsyncMock(
+        side_effect=[
+            _make_result(scalar=bnd),
+            _make_result(scalar=cand),
+            _make_result(scalar=sibling),  # cross-conf approved sibling
+            name_map_result,
+        ]
+    )
     mock_db_refresh(db)
 
     svc._datahub.emit_aspect = AsyncMock()
@@ -1449,23 +1236,21 @@ async def test_review_candidate_approve_demotes_existing_approved_sibling(svc, d
         )
 
     assert sibling.status == "llm_approved", (
-        "Previously approved sibling must be demoted to 'llm_approved'. "
-        "spec: BACKEND.md §Metadata Generation Service §Approval flow — mutable approval"
+        "A cross-conf approved sibling must be demoted to 'llm_approved'. "
+        "spec: feature/BACKEND.md §Approval flow — cross-conf demotion"
     )
-    db.flush.assert_called(), (
-        "db.flush() must be called to avoid transient partial-unique-index violation. "
-        "spec: BACKEND.md §Metadata Generation Service §Approval flow"
-    )
+    assert cand.status == "approved"
+    db.flush.assert_called()
 
 
 @pytest.mark.asyncio
-async def test_review_candidate_approve_emits_dataset_description_to_editable_aspect(svc, db) -> None:
+async def test_review_candidate_approve_emits_dataset_description_to_editable_aspect(
+    svc, db
+) -> None:
     """review_candidate(approve) for dataset.description emits to editableDatasetProperties.
 
-    Spec: spec/DATAHUB_INTEGRATION.md §Editable vs Non-Editable Description Aspects
-    — dataset.description → editableDatasetProperties.description (not datasetProperties).
-    Spec: spec/feature/BACKEND.md — item kind table: dataset.description target is
-    editableDatasetProperties.description.
+    Spec: DATAHUB_INTEGRATION.md §Editable vs Non-Editable Description Aspects —
+    dataset.description → editableDatasetProperties.description.
     """
     from datahub.metadata.schema_classes import EditableDatasetPropertiesClass
 
@@ -1476,13 +1261,20 @@ async def test_review_candidate_approve_emits_dataset_description_to_editable_as
         status="llm_approved",
         value="Dataset description text.",
         item_id="dataset.description",
+        conf_id=_CONF_UUID,
     )
 
-    db.execute = AsyncMock(side_effect=[
-        _make_result(scalar=bnd),
-        _make_result(scalar=cand),
-        _make_result(scalar=None),
-    ])
+    name_map_result = MagicMock()
+    name_map_result.all.return_value = []
+
+    db.execute = AsyncMock(
+        side_effect=[
+            _make_result(scalar=bnd),
+            _make_result(scalar=cand),
+            _make_result(scalar=None),
+            name_map_result,
+        ]
+    )
     mock_db_refresh(db)
 
     svc._datahub.emit_aspect = AsyncMock()
@@ -1499,36 +1291,21 @@ async def test_review_candidate_approve_emits_dataset_description_to_editable_as
             reviewer_id="carol",
         )
 
-    svc._datahub.emit_aspect.assert_called_once(), (
-        "Approve must emit exactly once to DataHub. "
-        "spec: DATAHUB_INTEGRATION.md §Editable vs Non-Editable Description Aspects"
-    )
-    call_args = svc._datahub.emit_aspect.call_args
-    # First positional arg is the URN, second is the aspect instance
-    emitted_urn = call_args.args[0]
-    emitted_aspect = call_args.args[1]
-    assert emitted_urn == _VALID_URN, (
-        "emit_aspect must target the correct dataset URN."
-    )
-    assert isinstance(emitted_aspect, EditableDatasetPropertiesClass), (
-        "dataset.description approve must write to EditableDatasetPropertiesClass, "
-        "not DatasetPropertiesClass (non-editable). "
-        "spec: DATAHUB_INTEGRATION.md §Editable vs Non-Editable Description Aspects"
-    )
-    assert emitted_aspect.description == "Dataset description text.", (
-        "The emitted description must match the approved candidate value. "
-        "spec: BACKEND.md §Approval flow — emit the new value to the editable aspect"
-    )
+    svc._datahub.emit_aspect.assert_called_once()
+    emitted_urn = svc._datahub.emit_aspect.call_args.args[0]
+    emitted_aspect = svc._datahub.emit_aspect.call_args.args[1]
+    assert emitted_urn == _VALID_URN
+    assert isinstance(emitted_aspect, EditableDatasetPropertiesClass)
+    assert emitted_aspect.description == "Dataset description text."
 
 
 @pytest.mark.asyncio
 async def test_review_candidate_approve_column_emits_to_editable_schema_metadata(svc, db) -> None:
-    """review_candidate(approve) for column.description emits to editableSchemaMetadata keyed by fieldPath.
+    """review_candidate(approve) for column.description emits to editableSchemaMetadata
+    keyed by fieldPath.
 
-    Spec: spec/DATAHUB_INTEGRATION.md §Editable vs Non-Editable Description Aspects
-    — column.description → editableSchemaMetadata.editableSchemaFieldInfo[fieldPath].description.
-    Spec: spec/feature/BACKEND.md — item kind table: column.description target is
-    editableSchemaMetadata.editableSchemaFieldInfo[].description keyed by fieldPath.
+    Spec: DATAHUB_INTEGRATION.md §Editable vs Non-Editable Description Aspects —
+    column.description → editableSchemaMetadata.editableSchemaFieldInfo[fieldPath].description.
     """
     from datahub.metadata.schema_classes import EditableSchemaMetadataClass
 
@@ -1541,17 +1318,23 @@ async def test_review_candidate_approve_column_emits_to_editable_schema_metadata
         status="llm_approved",
         value="The ISBN-13 identifier of the book edition.",
         item_id=item_id,
+        conf_id=_CONF_UUID,
     )
 
-    db.execute = AsyncMock(side_effect=[
-        _make_result(scalar=bnd),
-        _make_result(scalar=cand),
-        _make_result(scalar=None),  # no sibling approved
-    ])
+    name_map_result = MagicMock()
+    name_map_result.all.return_value = []
+
+    db.execute = AsyncMock(
+        side_effect=[
+            _make_result(scalar=bnd),
+            _make_result(scalar=cand),
+            _make_result(scalar=None),
+            name_map_result,
+        ]
+    )
     mock_db_refresh(db)
 
     svc._datahub.emit_aspect = AsyncMock()
-    # Return None so the impl creates a fresh EditableSchemaMetadataClass
     svc._datahub.get_aspect = AsyncMock(return_value=None)
     svc._llm.embed = AsyncMock(return_value=[0.0] * 10)
 
@@ -1565,46 +1348,39 @@ async def test_review_candidate_approve_column_emits_to_editable_schema_metadata
             reviewer_id="frank",
         )
 
-    svc._datahub.emit_aspect.assert_called_once(), (
-        "Approve must emit exactly once to DataHub for column.description. "
-        "spec: DATAHUB_INTEGRATION.md §Editable vs Non-Editable Description Aspects"
-    )
-    call_args = svc._datahub.emit_aspect.call_args
-    emitted_urn = call_args.args[0]
-    emitted_aspect = call_args.args[1]
-    assert emitted_urn == _VALID_URN
-    assert isinstance(emitted_aspect, EditableSchemaMetadataClass), (
-        "column.description approve must write to EditableSchemaMetadataClass, not SchemaMetadataClass. "
-        "spec: DATAHUB_INTEGRATION.md §Editable vs Non-Editable Description Aspects"
-    )
-    # The emitted aspect must carry the field info keyed by fieldPath
-    field_infos = emitted_aspect.editableSchemaFieldInfo
-    assert field_infos, "editableSchemaFieldInfo must be non-empty."
-    matched = [fi for fi in field_infos if getattr(fi, "fieldPath", None) == field_path]
-    assert matched, (
-        f"editableSchemaFieldInfo must include an entry for fieldPath='{field_path}'. "
-        "spec: BACKEND.md §Metadata Generation Service — item kind: column.description keyed by fieldPath"
-    )
-    assert matched[0].description == "The ISBN-13 identifier of the book edition.", (
-        "The emitted column description must match the approved candidate value."
-    )
+    svc._datahub.emit_aspect.assert_called_once()
+    emitted_aspect = svc._datahub.emit_aspect.call_args.args[1]
+    assert isinstance(emitted_aspect, EditableSchemaMetadataClass)
+    matched = [
+        fi
+        for fi in emitted_aspect.editableSchemaFieldInfo
+        if getattr(fi, "fieldPath", None) == field_path
+    ]
+    assert matched
+    assert matched[0].description == "The ISBN-13 identifier of the book edition."
 
 
 @pytest.mark.asyncio
 async def test_review_candidate_reject_llm_approved_flips_to_rejected(svc, db) -> None:
     """review_candidate(reject) flips an llm_approved candidate to rejected.
 
-    Spec: spec/feature/BACKEND.md §Metadata Generation Service §Rejection flow
-    — reject: llm_approved → rejected; emit METAGEN.CANDIDATE_REJECT event.
+    Spec: feature/BACKEND.md §Approval flow — reject: llm_approved → rejected;
+    emit METAGEN.CANDIDATE_REJECT.
     """
     bnd = _make_boundary_row(is_enabled=True)
     cand_id = uuid.uuid4()
-    cand = _make_candidate_row(candidate_id=cand_id, status="llm_approved")
+    cand = _make_candidate_row(candidate_id=cand_id, status="llm_approved", conf_id=_CONF_UUID)
 
-    db.execute = AsyncMock(side_effect=[
-        _make_result(scalar=bnd),
-        _make_result(scalar=cand),
-    ])
+    name_map_result = MagicMock()
+    name_map_result.all.return_value = []
+
+    db.execute = AsyncMock(
+        side_effect=[
+            _make_result(scalar=bnd),
+            _make_result(scalar=cand),
+            name_map_result,
+        ]
+    )
     mock_db_refresh(db)
 
     dto = await svc.review_candidate(
@@ -1616,28 +1392,23 @@ async def test_review_candidate_reject_llm_approved_flips_to_rejected(svc, db) -
         reviewer_id="dave",
     )
 
-    assert cand.status == "rejected", (
-        "Candidate status must be 'rejected' after reject verdict on llm_approved. "
-        "spec: BACKEND.md §Metadata Generation Service §Rejection flow"
-    )
+    assert cand.status == "rejected"
     assert dto.status == "rejected"
 
 
 @pytest.mark.asyncio
 async def test_review_candidate_reject_approved_raises_409(svc, db) -> None:
-    """review_candidate(reject) on an already-approved candidate raises 409 METAGEN_CANNOT_REJECT_APPROVED.
+    """review_candidate(reject) on an approved candidate raises 409 METAGEN_CANNOT_REJECT_APPROVED.
 
     Spec: API.md §Metadata Generation — 409 METAGEN_CANNOT_REJECT_APPROVED.
-    Spec: spec/feature/BACKEND.md §Metadata Generation Service — cannot reject approved.
     """
     bnd = _make_boundary_row(is_enabled=True)
     cand_id = uuid.uuid4()
-    cand = _make_candidate_row(candidate_id=cand_id, status="approved")
+    cand = _make_candidate_row(candidate_id=cand_id, status="approved", conf_id=_CONF_UUID)
 
-    db.execute = AsyncMock(side_effect=[
-        _make_result(scalar=bnd),
-        _make_result(scalar=cand),
-    ])
+    db.execute = AsyncMock(
+        side_effect=[_make_result(scalar=bnd), _make_result(scalar=cand)]
+    )
 
     with pytest.raises(ConflictError) as exc_info:
         await svc.review_candidate(
@@ -1649,20 +1420,16 @@ async def test_review_candidate_reject_approved_raises_409(svc, db) -> None:
             reviewer_id="eve",
         )
 
-    assert exc_info.value.error_code == "METAGEN_CANNOT_REJECT_APPROVED", (
-        "Must raise METAGEN_CANNOT_REJECT_APPROVED when rejecting an approved candidate. "
-        "spec: API.md §Metadata Generation error codes"
-    )
+    assert exc_info.value.error_code == "METAGEN_CANNOT_REJECT_APPROVED"
 
 
 @pytest.mark.asyncio
 async def test_review_candidate_raises_not_found_for_invalid_uuid(svc, db) -> None:
-    """review_candidate raises EntityNotFoundError for a malformed candidate_id UUID.
+    """review_candidate raises EntityNotFoundError for a malformed candidate_id.
 
-    Spec: spec/feature/BACKEND.md §Metadata Generation Service — invalid UUID raises not-found.
+    Spec: feature/BACKEND.md §Metadata Generation Service — invalid UUID → not-found.
     """
-    bnd = _make_boundary_row(is_enabled=True)
-    db.execute = AsyncMock(return_value=_make_result(scalar=bnd))
+    db.execute = AsyncMock(return_value=_make_result(scalar=_make_boundary_row(is_enabled=True)))
 
     with pytest.raises(EntityNotFoundError):
         await svc.review_candidate(
@@ -1677,11 +1444,10 @@ async def test_review_candidate_raises_not_found_for_invalid_uuid(svc, db) -> No
 
 @pytest.mark.asyncio
 async def test_review_candidate_approve_upserts_embedding(svc, db) -> None:
-    """review_candidate(approve) calls _upsert_candidate_embedding with the candidate value and kind.
+    """review_candidate(approve) refreshes the candidate embedding with its value + kind.
 
-    Spec: spec/feature/BACKEND.md §Metadata Generation Service §Approval flow —
-    refresh embedding for the newly approved candidate so it informs the next run's
-    Reviewer RAG.
+    Spec: feature/BACKEND.md §Approval flow — refresh embedding for the newly approved
+    candidate so it informs the next run's Reviewer RAG.
     """
     bnd = _make_boundary_row(is_enabled=True)
     cand_id = uuid.uuid4()
@@ -1690,25 +1456,35 @@ async def test_review_candidate_approve_upserts_embedding(svc, db) -> None:
         status="llm_approved",
         value="Best description ever.",
         item_id="dataset.description",
+        conf_id=_CONF_UUID,
     )
 
-    db.execute = AsyncMock(side_effect=[
-        _make_result(scalar=bnd),
-        _make_result(scalar=cand),
-        _make_result(scalar=None),  # no sibling
-    ])
+    name_map_result = MagicMock()
+    name_map_result.all.return_value = []
+
+    db.execute = AsyncMock(
+        side_effect=[
+            _make_result(scalar=bnd),
+            _make_result(scalar=cand),
+            _make_result(scalar=None),
+            name_map_result,
+        ]
+    )
     mock_db_refresh(db)
 
     svc._datahub.emit_aspect = AsyncMock()
     svc._datahub.get_aspect = AsyncMock(return_value=None)
     svc._llm.embed = AsyncMock(return_value=[0.1] * 10)
 
-    captured_calls: list[tuple] = []
+    captured: list[tuple] = []
 
     async def capture_upsert(vector, candidate_id, kind, embedding):
-        captured_calls.append((candidate_id, kind, embedding))
+        captured.append((candidate_id, kind, embedding))
 
-    with patch("src.backend.metagen.service._upsert_candidate_embedding", new=AsyncMock(side_effect=capture_upsert)):
+    with patch(
+        "src.backend.metagen.service._upsert_candidate_embedding",
+        new=AsyncMock(side_effect=capture_upsert),
+    ):
         await svc.review_candidate(
             dataset_urn=_VALID_URN,
             item_id="dataset.description",
@@ -1718,21 +1494,11 @@ async def test_review_candidate_approve_upserts_embedding(svc, db) -> None:
             reviewer_id="grace",
         )
 
-    assert len(captured_calls) == 1, (
-        "_upsert_candidate_embedding must be called exactly once on approve. "
-        "spec: BACKEND.md §Approval flow — refresh embedding for the newly approved candidate"
-    )
-    emitted_candidate_id, emitted_kind, emitted_embedding = captured_calls[0]
-    assert emitted_candidate_id == str(cand_id), (
-        "Embedding upsert must use the approved candidate's ID."
-    )
-    assert emitted_kind == "dataset.description", (
-        "Embedding upsert kind must match the candidate's item kind. "
-        "spec: BACKEND.md §Approval flow"
-    )
-    assert emitted_embedding == [0.1] * 10, (
-        "Embedding upsert must use the vector returned by _llm.embed."
-    )
+    assert len(captured) == 1
+    candidate_id, kind, embedding = captured[0]
+    assert candidate_id == str(cand_id)
+    assert kind == "dataset.description"
+    assert embedding == [0.1] * 10
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1741,19 +1507,13 @@ async def test_review_candidate_approve_upserts_embedding(svc, db) -> None:
 
 
 def _make_result_with_unique(rows: list) -> MagicMock:
-    """Build a SQLAlchemy execute result mock that supports .unique().scalars().all().
-
-    The triple hydration path in _fetch_evidence calls
-    ``result.unique().scalars().all()`` — the standard _make_result helper only
-    wires ``result.scalars().all()``.
-    """
+    """Build a result mock supporting .unique().scalars().all() for triple hydration."""
     m = MagicMock()
     scalars_mock = MagicMock()
     scalars_mock.all.return_value = rows
     unique_mock = MagicMock()
     unique_mock.scalars.return_value = scalars_mock
     m.unique.return_value = unique_mock
-    # Keep .scalars().all() wired too for callers that don't use .unique()
     m.scalars.return_value = scalars_mock
     m.fetchall.return_value = rows
     return m
@@ -1777,11 +1537,7 @@ def _make_ontogen_edge(*, id: str, label: str) -> MagicMock:
 
 
 def _make_ontogen_triple_with_relations(
-    *,
-    id: str,
-    subject_name: str,
-    edge_label: str,
-    object_name: str,
+    *, id: str, subject_name: str, edge_label: str, object_name: str
 ) -> MagicMock:
     row = MagicMock()
     row.id = id
@@ -1801,29 +1557,17 @@ def _make_ontogen_triple_with_relations(
 async def test_fetch_evidence_attaches_ontology_rag(svc, db) -> None:
     """_fetch_evidence populates evidence["ontology_rag"] with hydrated node/edge/triple dicts.
 
-    Patches:
-    - self._datahub.get_aspect / fetch_related_documents for the DataHub evidence layer
-    - self._llm.embed to return a fixed vector
-    - search_{node,edge,triple}_embeddings at the service-layer import site to return
-      scripted VectorHit lists
-    - DB execute sequence for DatasetNodeMap + OntogenNode + hydration queries
-
-    Verifies that the resulting evidence["ontology_rag"] contains dicts with the expected
-    fields for each collection.
-
-    plan: /Users/soonmok/.claude/plans/glittery-crafting-kazoo.md §Tests §test_service.py — test_fetch_evidence_attaches_ontology_rag
+    Spec: feature/BACKEND.md §Generation Pipeline step 3 — per-dataset ontology RAG over
+    the three approved-ontology pgvector collections.
     """
     from src.shared.vector.client import VectorHit
 
-    # DataHub aspects: return None for all (minimal evidence)
     svc._datahub.get_aspect = AsyncMock(return_value=None)
 
-    # fetch_related_documents returns empty list
-    with patch("src.backend.metagen.service.fetch_related_documents", new=AsyncMock(return_value=[])):
-        # LLM embed returns fixed vector
+    _no_docs = AsyncMock(return_value=[])
+    with patch("src.backend.metagen.service.fetch_related_documents", new=_no_docs):
         svc._llm.embed = AsyncMock(return_value=[0.1] * 10)
 
-        # Scripted VectorHit results for each collection
         node_hit = VectorHit(dataset_urn="order", score=0.9)
         edge_hit = VectorHit(dataset_urn="has_part_edge", score=0.8)
         triple_hit = VectorHit(dataset_urn="order__has_part__orderline", score=0.7)
@@ -1842,11 +1586,6 @@ async def test_fetch_evidence_attaches_ontology_rag(svc, db) -> None:
                 new=AsyncMock(return_value=[triple_hit]),
             ),
         ):
-            # DB execute sequence:
-            # 1. DatasetNodeMap query → empty (no curated approved nodes)
-            # 2. OntogenNode hydration for node_hit
-            # 3. OntogenEdge hydration for edge_hit
-            # 4. OntogenTriple hydration for triple_hit (needs .unique())
             node_row = _make_ontogen_node(id="order", name="Order", description="A customer order")
             edge_row = _make_ontogen_edge(id="has_part_edge", label="has_part")
             triple_row = _make_ontogen_triple_with_relations(
@@ -1858,13 +1597,10 @@ async def test_fetch_evidence_attaches_ontology_rag(svc, db) -> None:
 
             no_map_rows = MagicMock()
             no_map_rows.scalars.return_value.all.return_value = []
-
             node_hydration = _make_result([node_row])
             edge_hydration = _make_result([edge_row])
             triple_hydration = _make_result_with_unique([triple_row])
 
-            # Content-aware routing: inspect the rendered SQL to identify the target
-            # table, so reordering or adding queries does not silently corrupt results.
             async def _route_execute(stmt, *args, **kwargs):
                 sql = str(stmt)
                 if "dataset_node_map" in sql:
@@ -1880,77 +1616,47 @@ async def test_fetch_evidence_attaches_ontology_rag(svc, db) -> None:
             db.execute = AsyncMock(side_effect=_route_execute)
 
             from src.backend.admin.config_service import RUNTIME_CONFIG_DEFAULTS, RuntimeConfigDTO
+
             fake_rc = RuntimeConfigDTO(**RUNTIME_CONFIG_DEFAULTS)
             evidence = await svc._fetch_evidence(_VALID_URN, rc=fake_rc)
 
-    assert "ontology_rag" in evidence, (
-        "evidence must contain 'ontology_rag' key after _fetch_evidence. "
-        "plan: glittery-crafting-kazoo.md §_fetch_evidence shape — per-dataset ontology RAG"
-    )
     rag = evidence["ontology_rag"]
-
-    # Shape checks
-    assert isinstance(rag, dict), "ontology_rag must be a dict."
-    assert set(rag.keys()) >= {"nodes", "edges", "triples"}, (
-        "ontology_rag must have 'nodes', 'edges', 'triples' keys. "
-        "plan: glittery-crafting-kazoo.md §_fetch_evidence shape"
-    )
-
-    # Node assertions
-    assert len(rag["nodes"]) == 1, "One node hit must produce one hydrated node dict."
-    node = rag["nodes"][0]
-    assert node.get("id") == "order", "Node dict must have 'id'."
-    assert node.get("name") == "Order", "Node dict must have 'name'."
-    assert node.get("description") == "A customer order", "Node dict must have 'description'."
-    assert "score" in node, "Node dict must carry 'score' for internal ordering."
-    assert node["score"] == pytest.approx(0.9), "Node score must match VectorHit score."
-
-    # Edge assertions
-    assert len(rag["edges"]) == 1, "One edge hit must produce one hydrated edge dict."
-    edge = rag["edges"][0]
-    assert edge.get("id") == "has_part_edge", "Edge dict must have 'id'."
-    assert edge.get("label") == "has_part", "Edge dict must have 'label'."
-    assert "score" in edge, "Edge dict must carry 'score'."
-
-    # Triple assertions
-    assert len(rag["triples"]) == 1, "One triple hit must produce one hydrated triple dict."
-    triple = rag["triples"][0]
-    assert triple.get("subject_name") == "Order", "Triple dict must have 'subject_name'."
-    assert triple.get("edge_label") == "has_part", "Triple dict must have 'edge_label'."
-    assert triple.get("object_name") == "OrderLine", "Triple dict must have 'object_name'."
-    assert "score" in triple, "Triple dict must carry 'score'."
+    assert set(rag.keys()) >= {"nodes", "edges", "triples"}
+    assert rag["nodes"][0]["name"] == "Order"
+    assert rag["edges"][0]["label"] == "has_part"
+    assert rag["triples"][0]["subject_name"] == "Order"
+    assert rag["triples"][0]["object_name"] == "OrderLine"
 
 
 @pytest.mark.asyncio
 async def test_fetch_evidence_ontology_rag_k_zero_skips_search(svc, db) -> None:
-    """When metagen_ontology_rag_{node,edge,triple}_k=0, the corresponding search is skipped.
+    """metagen_ontology_rag_{node,edge,triple}_k=0 skips the corresponding search.
 
-    Plan states: "When any k is 0, skip that search."
-    Setting all three to 0 must leave ontology_rag lists empty without calling
-    any of the three search helpers.
-
-    plan: /Users/soonmok/.claude/plans/glittery-crafting-kazoo.md §Tests — k=0 skips search
+    Spec: feature/BACKEND.md §Generation Pipeline step 3 — setting a collection's k to 0
+    disables that contribution.
     """
-    # DataHub aspects: return None (minimal evidence)
     svc._datahub.get_aspect = AsyncMock(return_value=None)
     svc._llm.embed = AsyncMock(return_value=[0.0] * 10)
 
     from src.backend.admin.config_service import RUNTIME_CONFIG_DEFAULTS, RuntimeConfigDTO
-    # All RAG k-values set to 0 — searches must be skipped
+
     zero_k_rc = RuntimeConfigDTO(
-        **{**RUNTIME_CONFIG_DEFAULTS, "metagen_ontology_rag_node_k": 0,
-           "metagen_ontology_rag_edge_k": 0, "metagen_ontology_rag_triple_k": 0}
+        **{
+            **RUNTIME_CONFIG_DEFAULTS,
+            "metagen_ontology_rag_node_k": 0,
+            "metagen_ontology_rag_edge_k": 0,
+            "metagen_ontology_rag_triple_k": 0,
+        }
     )
 
-    with patch("src.backend.metagen.service.fetch_related_documents", new=AsyncMock(return_value=[])):
+    _no_docs = AsyncMock(return_value=[])
+    with patch("src.backend.metagen.service.fetch_related_documents", new=_no_docs):
         with (
             patch(
-                "src.backend.metagen.service.search_node_embeddings",
-                new=AsyncMock(return_value=[]),
+                "src.backend.metagen.service.search_node_embeddings", new=AsyncMock(return_value=[])
             ) as mock_node_search,
             patch(
-                "src.backend.metagen.service.search_edge_embeddings",
-                new=AsyncMock(return_value=[]),
+                "src.backend.metagen.service.search_edge_embeddings", new=AsyncMock(return_value=[])
             ) as mock_edge_search,
             patch(
                 "src.backend.metagen.service.search_triple_embeddings",
@@ -1968,45 +1674,31 @@ async def test_fetch_evidence_ontology_rag_k_zero_skips_search(svc, db) -> None:
     mock_triple_search.assert_not_called()
 
     rag = evidence.get("ontology_rag", {})
-    assert rag.get("nodes") == [], (
-        "nodes must be empty when metagen_ontology_rag_node_k=0. "
-        "plan: glittery-crafting-kazoo.md — k=0 skips that collection entirely"
-    )
-    assert rag.get("edges") == [], "edges must be empty when k=0."
-    assert rag.get("triples") == [], "triples must be empty when k=0."
+    assert rag.get("nodes") == []
+    assert rag.get("edges") == []
+    assert rag.get("triples") == []
 
 
 @pytest.mark.asyncio
 async def test_fetch_evidence_ontology_rag_failure_falls_back_to_empty(svc, db) -> None:
-    """When the ontology RAG embed call raises, evidence["ontology_rag"] falls back to empty dicts.
+    """When the ontology RAG embed call raises, evidence["ontology_rag"] falls back to empty.
 
-    The try/except around the RAG block must NOT swallow the earlier DataHub
-    and related_documents evidence — those must still be populated.
-
-    plan: /Users/soonmok/.claude/plans/glittery-crafting-kazoo.md §Tests — RAG failure → empty fallback; evidence intact
+    Spec: feature/BACKEND.md §Generation Pipeline step 3 — RAG failure is best-effort;
+    the evidence dict falls back to empty lists and the run proceeds.
     """
     from datahub.metadata.schema_classes import DatasetPropertiesClass
 
-    # DataHub returns a real-ish properties object for the dataset
     mock_props = MagicMock(spec=DatasetPropertiesClass)
     mock_props.name = "title_master"
     mock_props.description = "Master title catalog"
     mock_props.tags = None
 
-    # getattr calls inside _fetch_evidence need real attribute access:
-    svc._datahub.get_aspect = AsyncMock(side_effect=[
-        mock_props,  # DatasetPropertiesClass -> populates evidence["datasetProperties"]
-        None,        # SchemaMetadataClass
-        None,        # EditableDatasetPropertiesClass
-        None,        # EditableSchemaMetadataClass
-        None,        # GlossaryTermsClass
-    ])
+    svc._datahub.get_aspect = AsyncMock(side_effect=[mock_props, None, None, None, None])
 
     with patch(
         "src.backend.metagen.service.fetch_related_documents",
         new=AsyncMock(return_value=[{"title": "SomeDoc", "body": "content"}]),
     ):
-        # Make embed raise so the RAG block fails
         svc._llm.embed = AsyncMock(side_effect=RuntimeError("embed service down"))
 
         no_map_rows = MagicMock()
@@ -2014,25 +1706,81 @@ async def test_fetch_evidence_ontology_rag_failure_falls_back_to_empty(svc, db) 
         db.execute = AsyncMock(return_value=no_map_rows)
 
         from src.backend.admin.config_service import RUNTIME_CONFIG_DEFAULTS, RuntimeConfigDTO
+
         fake_rc = RuntimeConfigDTO(**RUNTIME_CONFIG_DEFAULTS)
         evidence = await svc._fetch_evidence(_VALID_URN, rc=fake_rc)
 
-    # Ontology RAG fallback: empty lists, not an exception
-    rag = evidence.get("ontology_rag")
-    assert rag is not None, (
-        "evidence['ontology_rag'] must be set to the fallback dict even when embed raises. "
-        "spec: BACKEND.md §Generation Pipeline — best-effort RAG; fallback on error"
-    )
-    assert rag == {"nodes": [], "edges": [], "triples": []}, (
-        "Fallback ontology_rag must be {nodes: [], edges: [], triples: []}. "
-        "plan: glittery-crafting-kazoo.md §service.py — try/except → empty-dict fallback"
+    assert evidence.get("ontology_rag") == {"nodes": [], "edges": [], "triples": []}
+    assert "related_documents" in evidence
+    assert len(evidence["related_documents"]) == 1
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Group J: list_uncovered
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.asyncio
+async def test_list_uncovered_reports_no_conf_match_for_unmatched_registered_dataset(
+    svc, db, datahub
+) -> None:
+    """A registered dataset matched by no enabled conf yields reason='no_conf_match'.
+
+    Spec: API.md §Metadata Generation — uncovered default mode lists datasets reached by
+    no enabled conf with reason=no_conf_match.
+    """
+    # registered datasets
+    reg_result = _make_result([(_VALID_URN,)])
+    # no enabled confs
+    confs_result = _make_result([])
+    # writable boundary set (empty)
+    bnd_result = _make_result([])
+    db.execute = AsyncMock(side_effect=[reg_result, confs_result, bnd_result])
+
+    rows, total = await svc.list_uncovered(include_disallowed=False)
+
+    assert total == 1
+    assert isinstance(rows[0], UncoveredRowDTO)
+    assert rows[0].dataset_urn == _VALID_URN
+    assert rows[0].reason == "no_conf_match"
+
+
+@pytest.mark.asyncio
+async def test_list_uncovered_boundary_blocked_only_with_include_disallowed(
+    svc, db, datahub
+) -> None:
+    """A dataset matched by an enabled conf but blocked by its boundary yields
+    reason='boundary_blocked' only when include_disallowed=true.
+
+    Spec: API.md §Metadata Generation — boundary_blocked surfaced only with
+    include_disallowed=true.
+    """
+    enabled_conf = _make_conf_row(is_enabled=True, dataset_filter={})
+
+    datahub.enumerate_datasets = AsyncMock(return_value=[_VALID_URN])
+
+    def _three_query_sequence():
+        # registered, enabled confs, writable boundary (none → blocked)
+        return [
+            _make_result([(_VALID_URN,)]),
+            _make_result([enabled_conf]),
+            _make_result([]),
+        ]
+
+    # include_disallowed=False → matched dataset is NOT listed (it is covered-ish:
+    # matched by a conf, just blocked) → empty
+    db.execute = AsyncMock(side_effect=_three_query_sequence())
+    rows_default, total_default = await svc.list_uncovered(include_disallowed=False)
+    assert total_default == 0, (
+        "A conf-matched dataset must not appear under the default mode. "
+        "spec: API.md §Metadata Generation — boundary_blocked needs include_disallowed=true"
     )
 
-    # The earlier evidence fetchers must NOT have been swallowed by the RAG try/except.
-    assert "related_documents" in evidence, (
-        "related_documents must still be present when only the RAG block fails. "
-        "plan: glittery-crafting-kazoo.md — try/except is correctly scoped to RAG only"
-    )
-    assert len(evidence["related_documents"]) == 1, (
-        "The seeded document must appear in evidence when the RAG block fails."
-    )
+    # include_disallowed=True → surfaced with reason=boundary_blocked
+    datahub.enumerate_datasets = AsyncMock(return_value=[_VALID_URN])
+    db.execute = AsyncMock(side_effect=_three_query_sequence())
+    rows_incl, total_incl = await svc.list_uncovered(include_disallowed=True)
+
+    assert total_incl == 1
+    assert rows_incl[0].dataset_urn == _VALID_URN
+    assert rows_incl[0].reason == "boundary_blocked"

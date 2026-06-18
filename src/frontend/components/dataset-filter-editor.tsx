@@ -16,7 +16,10 @@
  *   glossary_terms  — optional string[] (glossary term URNs, OR-ed)
  *   dataset_urns    — optional string[] (explicit dataset URNs, OR-ed)
  *
- * Each multi-value field is rendered as a textarea (newline or comma-separated).
+ * tags and glossary_terms are textareas split on newline or comma (those URNs
+ * contain no commas). dataset_urns is split on newline only — a DataHub dataset
+ * URN embeds commas inside its (platform,name,fabric) tuple, so comma-splitting
+ * would shred a single URN into invalid fragments.
  */
 
 import { useCallback } from "react";
@@ -34,6 +37,17 @@ export interface DatasetFilterEditorProps {
 export function splitList(raw: string): string[] {
   return raw
     .split(/[\n,]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/**
+ * splitLines — newline-only splitter for fields whose values contain commas
+ * (dataset URNs embed commas in their (platform,name,fabric) tuple).
+ */
+export function splitLines(raw: string): string[] {
+  return raw
+    .split(/\n+/)
     .map((s) => s.trim())
     .filter(Boolean);
 }
@@ -107,14 +121,14 @@ export function DatasetFilterEditor({ value, onChange, disabled = false }: Datas
       <Field
         label="dataset_urns"
         htmlFor="df-dataset-urns"
-        hint="Explicit dataset URNs, one per line or comma-separated (OR-ed)"
+        hint="Explicit dataset URNs, one per line (OR-ed)"
       >
         <Textarea
           id="df-dataset-urns"
           rows={3}
           value={joinList(value.dataset_urns)}
           onChange={(e) => {
-            const list = splitList(e.target.value);
+            const list = splitLines(e.target.value);
             set({ dataset_urns: list.length ? list : undefined });
           }}
           placeholder="urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"

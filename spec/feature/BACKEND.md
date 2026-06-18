@@ -102,7 +102,7 @@ Route handler function names must mirror the REST path they serve.
 | `GET /spoke/governance/metric/{id}/attr/conf` | `get_metric_conf` |
 | `POST /spoke/governance/metric/{id}/method/run` | `post_metric_run` |
 | `GET /spoke/ingestion/sources/{id}/attr/conf` | `get_ingestion_source_conf` |
-| `POST /spoke/metagen/method/run` | `post_metagen_run` |
+| `POST /spoke/metagen/conf/{conf_id}/method/run` | `post_metagen_conf_run` |
 | `POST /spoke/common/data/{dataset_urn}/attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review` | `post_data_metagen_item_candidate_review` |
 | `POST /spoke/ontogen/result/node/{node_id}/method/review` | `post_ontogen_node_review` |
 | `POST /spoke/ontogen/result/edge/{edge_id}/method/review` | `post_ontogen_edge_review` |
@@ -450,36 +450,41 @@ shortcut for the 80% case, not the only path.
 ### Metadata Generation Service (`src/backend/metagen/`)
 
 **Covers**: MANIFESTO §2.1 Metadata Generation (UC4). Behavioural narrative —
-including the global-conf / per-dataset-boundary split, item / candidate
+including the conf-collection / per-dataset-boundary split, item / candidate
 model, and approval lifecycle — lives in
 [USE_CASE §UC4](../USE_CASE_en.md#uc4-metadata-generation). DataHub aspect
 write rules are catalogued in
 [DATAHUB_INTEGRATION §Editable vs Non-Editable Description Aspects](../DATAHUB_INTEGRATION.md#editable-vs-non-editable-description-aspects).
 This section describes the implementation only.
 
-**Singleton conf** at `/spoke/metagen/attr/conf` — there is no
-per-dataset operational config; the per-dataset row
-(`/spoke/common/data/{urn}/attr/metagen/conf`) is the opt-in boundary only.
-`GET` on either resource returns a `null` body with `200 OK` when the row has
-never been written; clients distinguish the unset state by `null` rather than
-by a `404`. Fields:
+**Conf collection** at `/spoke/metagen/conf` — many named confs can coexist, each
+with its own scope, schedule, and budget. Unlike the UC3 ontology (one all-connected
+artifact, hence one singleton conf), metadata writers can legitimately be many: teams
+run different documentation policies over different dataset groups, and the shared
+UC3 ontology — which every conf reads — holds cross-conf consistency. Per-conf fields:
 
 | Field | Purpose |
 |-------|---------|
-| `is_enabled` | Master switch for the metagen DAG. |
-| `schedule_tier` | `hourly` / `daily` / `weekly` re-generation cadence. |
-| `dataset_filter` | Optional scope filter — `origin` (DataHub `FabricType` value carried as the third URN segment; AND-ed with the OR-group), `tags`, `glossary_terms`, `dataset_urns` (OR-ed across the three list dimensions; `{}` means all). Each list dimension is capped at 1,000 entries (`422 INVALID_PARAMETER` on overflow); URN format validated at PUT/PATCH (`422 INVALID_DATASET_URN`); unresolved-at-runtime entries are skipped and reported in the run-complete event's `unresolved_urns`. Same shape as UC3 `ontogen/attr/conf.dataset_filter` and UC5 `metric/{metric_id}/attr/conf.dataset_filter`. |
-| `result_limit` | Integer ∈ `[1, 20]`, default `3`. Maximum candidate count per item at any time. |
-| `overwrite_pending` | Boolean, default `true`. When an item already holds `result_limit` non-rejected candidates and has no `approved` candidate, controls whether a new run evicts the oldest `llm_approved` candidate (`true`) or skips the item (`false`). |
+| `name` | Unique conf name; `409 METAGEN_CONF_EXISTS` on create collision. |
+| `is_enabled` | Master switch — enabled confs run on their `schedule_tier` and participate in the scheduled fan-out. |
+| `schedule_tier` | `hourly` / `daily` / `weekly` re-generation cadence; null = on-demand only. |
+| `dataset_filter` | Optional scope filter — `origin` (DataHub `FabricType` value carried as the third URN segment; AND-ed with the OR-group), `tags`, `glossary_terms`, `dataset_urns` (OR-ed across the three list dimensions; `{}` means all). Each list dimension is capped at 1,000 entries (`422 INVALID_PARAMETER` on overflow); URN format validated at POST/PUT/PATCH (`422 INVALID_DATASET_URN`); unresolved-at-runtime entries are skipped and reported in the run-complete event's `unresolved_urns`. Same shape as UC3 `ontogen/attr/conf.dataset_filter` and UC5 `metric/{metric_id}/attr/conf.dataset_filter`. |
+| `result_limit` | Integer ∈ `[1, 20]`, default `3`. Maximum candidate count per `(conf, item)` at any time. |
+| `overwrite_pending` | Boolean, default `true`. When this conf already holds `result_limit` non-rejected candidates on an item that has no `approved` candidate, controls whether a new run evicts the conf's oldest `llm_approved` candidate (`true`) or skips the item (`false`). |
 
-The conf is a single row in `metagen_config` (singleton table; see
+Each conf is a row in `metagen_config` (collection table keyed by `id UUID`; see
 [BACKEND_SCHEMA §metagen_config](BACKEND_SCHEMA.md#metagen_config)).
+`DELETE /spoke/metagen/conf/{conf_id}` deletes the conf's non-approved candidates
+and `SET NULL`s `conf_id` on its `approved` candidates (already in DataHub, retained
+as orphan history).
 
-**Per-dataset boundary** at `/spoke/common/data/{urn}/attr/metagen/conf`,
-stored in `metagen_boundary`. A row with `is_enabled=true` opts the dataset
-in; missing row or `is_enabled=false` is opt-out. The `allowed` array
-restricts which element kinds the global generator may write on this
-dataset. Baseline values: `dataset.description`, `column.description`.
+**Per-dataset boundary** at `/spoke/common/data/{urn}/attr/metagen/boundary`,
+stored in `metagen_boundary` and shared across all confs. A row with
+`is_enabled=true` opts the dataset in; missing row or `is_enabled=false` is opt-out.
+The `allowed` array restricts which element kinds any conf's generator may write on
+this dataset. Baseline values: `dataset.description`, `column.description`.
+`GET` returns a `null` body with `200 OK` when the boundary row has never been
+written; clients distinguish the unset state by `null` rather than by a `404`.
 
 **Item kinds**. Two values supported in baseline:
 
@@ -500,21 +505,27 @@ Future scope: `domains` and `globalTags` proposals.
 
 Status is not persisted; it is computed per request from `(has_approved, candidate_count)` over the item's candidates.
 
-**Generation Pipeline** (Airflow tier DAG, schedule from
-`metagen_config.schedule_tier`, or manual `POST /method/run`):
+**Scheduled fan-out**. The Airflow tier DAGs (`metagen-{hourly,daily,weekly}`)
+call the internal activity `POST /internal/activities/metagen/run {tier}`. That
+activity enumerates every `is_enabled=true` conf whose `schedule_tier` matches the
+fired `tier` and runs each one under its own per-conf lock. A conf already running
+(its lock held) is skipped for this tick, not retried inline. A manual
+`POST /spoke/metagen/conf/{conf_id}/method/run` drives exactly one conf.
 
-1. Enumerate **in-scope datasets** — union of datasets matching the global
-   `dataset_filter` (`origin` AND-ed with the OR-group of `tags`,
+**Generation Pipeline** (per conf — the unit of a run):
+
+1. Enumerate **in-scope datasets** for this conf — union of datasets matching the
+   conf's `dataset_filter` (`origin` AND-ed with the OR-group of `tags`,
    `glossary_terms`, `dataset_urns`) **intersected** with the set of datasets
    that have a `metagen_boundary` row with `is_enabled=true`. Boundary-less or
-   boundary-disabled datasets are excluded regardless of `dataset_filter`.
-   Unresolved `dataset_urns` entries are accumulated for the run-complete
-   event's `unresolved_urns`. If the in-scope set is empty, the run still
-   completes successfully and emits `METAGEN.RUN_COMPLETE` with all
+   boundary-disabled datasets are excluded regardless of the conf's
+   `dataset_filter`. Unresolved `dataset_urns` entries are accumulated for the
+   run-complete event's `unresolved_urns`. If the in-scope set is empty, the run
+   still completes successfully and emits `METAGEN.RUN_COMPLETE` with all
    counts at zero so reviewers and ops dashboards see every scheduled
    tick.
-2. **Clear `rejected` candidates** across all in-scope datasets so the
-   per-item budget frees up.
+2. **Clear this conf's `rejected` candidates** across the in-scope datasets so the
+   per-`(conf, item)` budget frees up.
 3. Per in-scope dataset, assemble the Producer evidence dictionary from four
    sources. The Producer prompt is the union of all four — the LLM never
    queries DataHub or pgvector itself.
@@ -545,11 +556,12 @@ Status is not persisted; it is computed per request from `(has_approved, candida
      the prompt. RAG failure is best-effort — the evidence dict falls back
      to empty lists and the run proceeds.
 4. **Enumerate target items** — `(dataset_urn, dataset.description)` and one
-   `(dataset_urn, column.<fieldPath>.description)` per column. Drop items
-   whose kind is outside the dataset's `metagen_boundary.allowed`. Drop
-   items that currently have an `approved` candidate — the reviewer has
-   expressed a settled preference, so the run pauses on this item until
-   the approval is moved to a different sibling.
+   `(dataset_urn, column.<fieldPath>.description)` per column. Items are shared
+   across confs (keyed by `(dataset_urn, item_id)`). Drop items whose kind is
+   outside the dataset's `metagen_boundary.allowed`. Drop items that currently
+   have an `approved` candidate **from any conf** — the reviewer has expressed a
+   settled preference, so every conf pauses on this item until the approval is
+   moved to a different sibling.
 5. **Producer-Reviewer Adversarial Debate** generates candidates per
    surviving (dataset, item) pair. See
    [BACKEND_LLM §Metagen Adversarial Debate](BACKEND_LLM.md#metagen-adversarial-debate).
@@ -557,14 +569,17 @@ Status is not persisted; it is computed per request from `(has_approved, candida
    against ontology context and existing approved descriptions; only
    candidates with reviewer outcome `accept` and
    `confidence_score >= METAGEN_CONFIDENCE_THRESHOLD` persist.
-6. **Apply per-item budget** — for each (dataset, item) whose surviving
-   candidate count exceeds the slack (`result_limit - non_rejected_count`),
-   either evict the oldest `llm_approved` candidate (FIFO by `created_at`,
-   when `overwrite_pending=true`) or drop the new candidate
-   (when `overwrite_pending=false`).
-7. **Persist** the accepted candidates as `metagen_candidates` rows with
-   `status='llm_approved'`. Refresh `metagen_candidate_embeddings` for the
-   approved candidates that will inform the next run's Reviewer RAG.
+6. **Apply per-`(conf, item)` budget** — for each (dataset, item) whose surviving
+   candidate count for **this conf** exceeds the slack (`result_limit -
+   non_rejected_count` counted over this conf's candidates on the item), either
+   evict this conf's oldest `llm_approved` candidate (FIFO by `created_at`, when
+   `overwrite_pending=true`) or drop the new candidate (when
+   `overwrite_pending=false`). Other confs' candidates on the same item are
+   untouched.
+7. **Persist** the accepted candidates as `metagen_candidates` rows with the
+   producing `conf_id` and `status='llm_approved'`. Refresh
+   `metagen_candidate_embeddings` for the approved candidates that will inform
+   the next run's Reviewer RAG (the anchor pool is global per `kind`, conf-agnostic).
 
 The LLM step in step 5 runs inside the
 [Inference Loop](BACKEND_LLM.md#inference-loop) with the producer-reviewer
@@ -578,13 +593,14 @@ with body `{verdict, reason}`:
 
 - `verdict: "approve"` → in a single transaction: flip the target
   candidate's status to `approved`, flip any previously-`approved` sibling
-  on the same item back to `llm_approved`, then emit the new value to the
-  corresponding editable DataHub aspect and emit `METAGEN.CANDIDATE_APPROVE`.
-  Approval is mutable — the reviewer can switch which sibling is approved at
-  any time, and the partial unique index `UNIQUE (dataset_urn, item_id)
-  WHERE status='approved'` keeps "at most one approved per item" a hard
-  invariant. Generation runs skip items that currently have an `approved`
-  candidate, so accumulating siblings only happens before the first
+  on the same item back to `llm_approved` (the sibling may belong to a
+  **different conf**), then emit the new value to the corresponding editable
+  DataHub aspect and emit `METAGEN.CANDIDATE_APPROVE`. Approval is mutable —
+  the reviewer can switch which sibling is approved at any time, and the
+  partial unique index `UNIQUE (dataset_urn, item_id) WHERE status='approved'`
+  keeps "at most one approved per item, globally across confs" a hard
+  invariant. Generation runs (any conf) skip items that currently have an
+  `approved` candidate, so accumulating siblings only happens before the first
   approval (or after the user demotes the current approval by approving a
   different sibling).
 - `verdict: "reject"` → flip the candidate's status to `rejected` and emit
@@ -598,17 +614,33 @@ Sibling `llm_approved` candidates on the same item are not auto-touched on
 approval — they remain visible as read-only history and are eligible for
 later approval.
 
-**Concurrency**. Generation runs are serialised by a global Redis lock
-(`metagen`). A duplicate `method/run` while one is in flight returns
-`409 METAGEN_RUNNING`.
+**Concurrency**. Generation runs are serialised **per conf** by a Redis lock
+`metagen:running:{conf_id}`. A duplicate `conf/{conf_id}/method/run` while that
+conf is in flight returns `409 METAGEN_RUNNING`; distinct confs run concurrently.
+The scheduled fan-out skips a conf whose lock is already held.
 
-**Disabled-config rejection**. `method/run` with `is_enabled=false` and
-`dry_run=false` raises `409 METAGEN_DISABLED`. Dry-run is permitted
-regardless of `is_enabled`.
+**Disabled-config rejection**. `conf/{conf_id}/method/run` with the conf's
+`is_enabled=false` and `dry_run=false` raises `409 METAGEN_DISABLED`. Dry-run is
+permitted regardless of `is_enabled`.
 
 **Boundary guard**. Candidate review against a dataset whose
 `metagen_boundary` is absent or `is_enabled=false` returns
 `422 METAGEN_DATASET_NOT_IN_BOUNDARY`.
+
+**Uncovered view** (`GET /spoke/metagen/uncovered`). Computes which registered
+datasets no conf documents, the metagen analogue of UC1's ingestion unmanaged
+bucket. Over `dataset_registry` rows with `datahub_registered=true`:
+
+- **Default** (`include_disallowed=false`): a dataset is `uncovered` with
+  `reason="no_conf_match"` when it matches **no** `is_enabled=true` conf's
+  `dataset_filter`.
+- **`include_disallowed=true`**: additionally includes datasets that **do** match
+  some enabled conf's `dataset_filter` but whose boundary blocks generation —
+  missing, `is_enabled=false`, or empty `allowed` — with
+  `reason="boundary_blocked"`. A dataset matched and writable by at least one
+  enabled conf is never listed.
+
+The view is paginated and read-only; it never triggers generation.
 
 ### Ontology Generation Service (`src/backend/ontogen/`)
 
@@ -628,7 +660,7 @@ config. Fields:
 |-------|---------|
 | `is_enabled` | Master switch for the inference DAG. |
 | `schedule_tier` | `hourly` / `daily` / `weekly` re-inference cadence. |
-| `dataset_filter` | Optional scope filter — `origin` (DataHub `FabricType` value carried as the third URN segment; AND-ed with the OR-group), `tags` (DataHub tag URNs), `glossary_terms` (DataHub glossary term URNs), and `dataset_urns` (explicit `urn:li:dataset:(…)` URN list). The three list dimensions are OR-ed among themselves; `{}` means all. Each list dimension is capped at 1,000 entries (`422 INVALID_PARAMETER` on overflow); URNs validated at PUT/PATCH (`422 INVALID_DATASET_URN`); unresolved-at-runtime entries are skipped and reported in the run-complete event's `unresolved_urns`. Same shape as UC4 `metagen/attr/conf.dataset_filter` and UC5 `metric/{metric_id}/attr/conf.dataset_filter`. |
+| `dataset_filter` | Optional scope filter — `origin` (DataHub `FabricType` value carried as the third URN segment; AND-ed with the OR-group), `tags` (DataHub tag URNs), `glossary_terms` (DataHub glossary term URNs), and `dataset_urns` (explicit `urn:li:dataset:(…)` URN list). The three list dimensions are OR-ed among themselves; `{}` means all. Each list dimension is capped at 1,000 entries (`422 INVALID_PARAMETER` on overflow); URNs validated at PUT/PATCH (`422 INVALID_DATASET_URN`); unresolved-at-runtime entries are skipped and reported in the run-complete event's `unresolved_urns`. Same shape as UC4 per-conf `metagen/conf.dataset_filter` and UC5 `metric/{metric_id}/attr/conf.dataset_filter`. |
 | `default_run_prompt` | Optional Markdown string used as the one-shot prompt for runs without an explicit body — i.e., the periodic Airflow DAG and manual `POST /method/run` calls with no body. Null disables the default. |
 
 UC3 inputs are sourced entirely from DataHub-resident metadata (the proofread
@@ -877,13 +909,13 @@ Event type values are **uppercase**, dot-delimited: `{DOMAIN}.{ACTION}`.
 
 Config-lifecycle actions (`CONFIG_CREATE`, `CONFIG_UPDATE`, `CONFIG_DELETE`) are emitted
 by every domain that owns a config — `INGESTION`, `VALIDATION`, `METRIC`,
-`ONTOGEN` (singleton), `METAGEN` (singleton). Domain-specific actions:
+`ONTOGEN` (singleton), `METAGEN` (per conf, `entity_id=conf_id`). Domain-specific actions:
 
 | Domain (`entity_type`) | Action | Trigger |
 |---|---|---|
 | `INGESTION` (`dataset`) | `COMPLETE` / `FAIL` | An ingestion run completes — `ACTIVE_CUSTOM_MANAGED` via `POST sources/{id}/method/run` inline; `DATAHUB_MANAGED`/`PASSIVE` mirrored by the sync sweep |
 | `VALIDATION` (`dataset`) | `RESULT_RECORDED` | `POST attr/validation/result` succeeds (one event per accepted result) |
-| `METAGEN` (`metagen`) | `RUN_COMPLETE` / `RUN_FAILED` | global generation run end; `RUN_COMPLETE` recorded for both dry-run and non-dry-run, `dry_run` flag in detail. Detail keys: `run_id` (uuid4), `unresolved_urns` (list, same shape as METRIC), `counts` (dict — `items_considered`, `candidates_added`, `candidates_evicted`, `rejected_cleared` on real-run; `items_considered`, `candidates_proposed` on dry-run), `dry_run`, `producer_iterations`, `debate_outcome` (`accept` / `turns_exhausted` / `cycle_detected`) |
+| `METAGEN` (`metagen`, `entity_id=conf_id`) | `RUN_COMPLETE` / `RUN_FAILED` | per-conf generation run end; `RUN_COMPLETE` recorded for both dry-run and non-dry-run, `dry_run` flag in detail. Detail keys: `run_id` (uuid4), `conf_id`, `conf_name`, `unresolved_urns` (list, same shape as METRIC), `counts` (dict — `items_considered`, `candidates_added`, `candidates_evicted`, `rejected_cleared` on real-run; `items_considered`, `candidates_proposed` on dry-run), `dry_run`, `producer_iterations`, `debate_outcome` (`accept` / `turns_exhausted` / `cycle_detected`) |
 | `METAGEN` (`dataset`) | `CANDIDATE_APPROVE` / `CANDIDATE_REJECT` | `POST attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review` with `verdict: "approve"\|"reject"`. Detail keys: `item_id`, `candidate_id`, `reason` |
 | `METRIC` (`metric`) | `RUN_COMPLETE` | `POST method/run` succeeds. Detail keys: `run_id`, `metric_id`, `values` (dict[str,float] — the persisted result), `dry_run`, `unresolved_urns` (list — `dataset_filter.dataset_urns` entries that didn't resolve in DataHub), `breakdown_summary` (`{dataset_count, affected_count}`) |
 | `ONTOGEN` (`ontogen`) | `SEED_CREATE` / `SEED_UPDATE` / `SEED_DELETE` | seed CRUD on `attr/seed/{seed_id}` |
@@ -942,10 +974,13 @@ Source of truth: `src/workflows/registry.py` exposes `ALL_DAG_IDS`
 | `ontogen-weekly` | `ontogen_weekly.py` | Airflow schedule | `@weekly` |
 | `auth-role-sync-daily` | `auth_role_sync_daily.py` | Airflow schedule | `@daily` |
 
-> **Tier-DAG selection**: For features with a `schedule_tier` field on their conf
-> (`ingestion`, `metrics`), the periodic DAG that runs at a given tier fetches
-> only the configs whose `schedule_tier` matches the DAG's tier. For singleton-conf
-> features (`ontogen`, `metagen`), only the tier listed on the singleton conf
+> **Tier-DAG selection**: For features with a `schedule_tier` field on a conf
+> **collection** (`ingestion`, `metrics`, `metagen`), the periodic DAG that runs
+> at a given tier fetches only the configs whose `schedule_tier` matches the DAG's
+> tier and runs each. For `metagen`, the tier DAG calls
+> `POST /internal/activities/metagen/run {tier}`, which fans out across every
+> enabled conf at that tier, each under its own `metagen:running:{conf_id}` lock.
+> For the singleton-conf `ontogen`, only the tier listed on the singleton conf
 > runs at that tier (the other two tier DAGs short-circuit when triggered).
 
 ### DataHub Sync
@@ -987,7 +1022,7 @@ smoke check by `dataspoke-test-mode.sh` and by the test fixture
 |------|-----------|-----|
 | `ingestion` | `ingestion:running:{dataset_urn}` | 1 hour |
 | `ontogen` | `ontogen:running:singleton` | 1 hour |
-| `metagen` | `metagen:running:singleton` | 1 hour |
+| `metagen` | `metagen:running:{conf_id}` | 1 hour |
 
 **Airflow DAG run conf-based dedup** (for Airflow-orchestrated DAGs):
 

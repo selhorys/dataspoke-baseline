@@ -4,9 +4,12 @@ Provides public helpers used by spot and api-wired tests that need to
 pre-populate metagen state without going through the REST API (bypassing LLM
 and run-pipeline concerns not under test):
 
+  seed_metagen_conf          — insert a metagen_config row (named conf) → returns UUID
+  seed_metagen_boundary      — insert/replace a metagen_boundary row for a dataset URN
   seed_metagen_item          — insert a metagen_items row
-  seed_metagen_candidate     — insert a metagen_candidates row (ensures parent item)
+  seed_metagen_candidate     — insert a metagen_candidates row (ensures parent item; conf_id)
   seed_metagen_event         — insert a dataspoke.events row for metagen events
+  delete_metagen_conf        — delete a metagen_config row (FK-safe)
   delete_metagen_state_for_urn — cascade-delete all metagen rows for a dataset URN
 
   seed_approved_ontogen_node — insert an approved ontogen_nodes row
@@ -60,6 +63,84 @@ def load_fulfillment_doc() -> str:
 # ── Metagen table helpers ──────────────────────────────────────────────────────
 
 
+async def seed_metagen_conf(
+    session: AsyncSession,
+    *,
+    name: str,
+    is_enabled: bool = True,
+    schedule_tier: str | None = None,
+    dataset_filter: dict | None = None,  # type: ignore[type-arg]
+    result_limit: int = 3,
+    overwrite_pending: bool = True,
+) -> str:
+    """Insert a metagen_config (collection) row via raw SQL; return its UUID as str.
+
+    The conf collection is keyed by `id UUID` with a UNIQUE `name`. Use this when a
+    spot test needs a conf present in raw state (e.g. to attach conf_id to seeded
+    candidates) without exercising the POST /spoke/metagen/conf route.
+
+    spec: feature/BACKEND_SCHEMA.md §metagen_config — id UUID PK, name UNIQUE
+    spec: feature/BACKEND.md §Metadata Generation Service — conf collection
+    """
+    conf_id = uuid.uuid4()
+    await session.execute(
+        text(
+            "INSERT INTO dataspoke.metagen_config"
+            " (id, name, is_enabled, schedule_tier, dataset_filter,"
+            "  result_limit, overwrite_pending)"
+            " VALUES (:id, :name, :is_enabled, :tier, CAST(:flt AS jsonb),"
+            "         :result_limit, :overwrite_pending)"
+        ),
+        {
+            "id": conf_id,
+            "name": name,
+            "is_enabled": is_enabled,
+            "tier": schedule_tier,
+            "flt": json.dumps(dataset_filter or {}),
+            "result_limit": result_limit,
+            "overwrite_pending": overwrite_pending,
+        },
+    )
+    await session.commit()
+    return str(conf_id)
+
+
+async def seed_metagen_boundary(
+    session: AsyncSession,
+    *,
+    dataset_urn: str,
+    is_enabled: bool = True,
+    allowed: list[str] | None = None,
+    owner: str | None = None,
+) -> None:
+    """Insert or replace a metagen_boundary row (PK dataset_urn).
+
+    The per-dataset boundary opts a dataset into metagen and caps the writable
+    element kinds. Shared across all confs.
+
+    spec: feature/BACKEND_SCHEMA.md §metagen_boundary — dataset_urn PK, allowed TEXT[]
+    """
+    allowed_arr = allowed if allowed is not None else ["dataset.description", "column.description"]
+    await session.execute(
+        text(
+            "INSERT INTO dataspoke.metagen_boundary"
+            " (dataset_urn, is_enabled, allowed, owner)"
+            " VALUES (:urn, :is_enabled, CAST(:allowed AS text[]), :owner)"
+            " ON CONFLICT (dataset_urn) DO UPDATE SET"
+            "   is_enabled = EXCLUDED.is_enabled,"
+            "   allowed = EXCLUDED.allowed,"
+            "   owner = EXCLUDED.owner"
+        ),
+        {
+            "urn": dataset_urn,
+            "is_enabled": is_enabled,
+            "allowed": "{" + ",".join(allowed_arr) + "}",
+            "owner": owner,
+        },
+    )
+    await session.commit()
+
+
 async def seed_metagen_item(
     session: AsyncSession,
     *,
@@ -97,25 +178,32 @@ async def seed_metagen_candidate(
     status: str = "llm_approved",
     confidence: float = 0.85,
     created_at: datetime | None = None,
+    conf_id: str | None = None,
+    item_kind: str = "dataset.description",
 ) -> str:
     """Insert a metagen_candidates row; ensures parent item row exists first.
 
+    `conf_id` is the producing conf's UUID (nullable FK → metagen_config); pass the
+    value returned by ``seed_metagen_conf`` to attach the candidate to a conf so the
+    candidate response carries conf_id/conf_name. ``None`` leaves it orphaned
+    (the post-conf-delete state).
+
     Returns the new candidate_id as a str (UUID hex).
 
-    spec: src/shared/db/models.py — MetagenCandidate PK candidate_id UUID;
-      FK (dataset_urn, item_id) -> metagen_items;
+    spec: feature/BACKEND_SCHEMA.md §metagen_candidates — PK candidate_id UUID;
+      conf_id FK (nullable) → metagen_config; FK (dataset_urn, item_id) → metagen_items;
       partial unique index: UNIQUE (dataset_urn, item_id) WHERE status='approved'
     spec: BACKEND.md §UC4 — candidate status in {llm_approved, approved, rejected}
     """
-    # Ensure parent item row exists.
+    # Ensure parent item row exists (with the correct kind for column items).
     await session.execute(
         text(
             "INSERT INTO dataspoke.metagen_items"
             " (dataset_urn, item_id, kind)"
-            " VALUES (:urn, :item_id, 'dataset.description')"
+            " VALUES (:urn, :item_id, :kind)"
             " ON CONFLICT (dataset_urn, item_id) DO NOTHING"
         ),
-        {"urn": dataset_urn, "item_id": item_id},
+        {"urn": dataset_urn, "item_id": item_id, "kind": item_kind},
     )
 
     candidate_id = uuid.uuid4()
@@ -125,13 +213,14 @@ async def seed_metagen_candidate(
     await session.execute(
         text(
             "INSERT INTO dataspoke.metagen_candidates"
-            " (candidate_id, dataset_urn, item_id, run_id, value,"
+            " (candidate_id, conf_id, dataset_urn, item_id, run_id, value,"
             "  confidence_score, status, evidence, created_at)"
-            " VALUES (:candidate_id, :urn, :item_id, :run_id, :value,"
+            " VALUES (:candidate_id, :conf_id, :urn, :item_id, :run_id, :value,"
             "         :confidence, :status, '{}'::jsonb, :created_at)"
         ),
         {
             "candidate_id": candidate_id,
+            "conf_id": conf_id,
             "urn": dataset_urn,
             "item_id": item_id,
             "run_id": run_id,
@@ -231,6 +320,49 @@ async def delete_metagen_state_for_urn(
                 "   AND event_type LIKE 'METAGEN.%'"
             ),
             {"urn": dataset_urn},
+        )
+        await session.commit()
+
+    with suppress(Exception):
+        await session.execute(
+            text("DELETE FROM dataspoke.metagen_boundary WHERE dataset_urn = :urn"),
+            {"urn": dataset_urn},
+        )
+        await session.commit()
+
+
+async def delete_metagen_conf(session: AsyncSession, conf_id: str) -> None:
+    """Delete a metagen_config row by id (FK-safe).
+
+    Detaches the conf from its candidates first (the ON DELETE SET NULL is enforced
+    at the DB layer, but tests that seed orphan candidates may rely on either path);
+    then deletes any per-conf run events and the conf row.
+
+    spec: feature/BACKEND_SCHEMA.md §metagen_candidates — conf_id ON DELETE SET NULL
+    spec: TESTING.md §Integration Testing — teardown must not leak state
+    """
+    with suppress(Exception):
+        await session.execute(
+            text(
+                "UPDATE dataspoke.metagen_candidates SET conf_id = NULL"
+                " WHERE conf_id = CAST(:id AS uuid)"
+            ),
+            {"id": conf_id},
+        )
+        await session.commit()
+    with suppress(Exception):
+        await session.execute(
+            text(
+                "DELETE FROM dataspoke.events"
+                " WHERE entity_type = 'metagen' AND entity_id = :id"
+            ),
+            {"id": conf_id},
+        )
+        await session.commit()
+    with suppress(Exception):
+        await session.execute(
+            text("DELETE FROM dataspoke.metagen_config WHERE id = CAST(:id AS uuid)"),
+            {"id": conf_id},
         )
         await session.commit()
 

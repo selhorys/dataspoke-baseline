@@ -218,17 +218,19 @@ def upgrade() -> None:
         schema=SCHEMA,
     )
 
-    # ── metagen_config (singleton) ───────────────────────────────────────
+    # ── metagen_config (collection) ──────────────────────────────────────
     op.create_table(
         "metagen_config",
-        sa.Column("id", sa.Integer(), primary_key=True, server_default="1"),
+        sa.Column("id", UUID(as_uuid=True), primary_key=True),
+        sa.Column("name", sa.Text(), nullable=False),
         sa.Column("is_enabled", sa.Boolean(), nullable=False, server_default="false"),
         sa.Column("schedule_tier", sa.Text(), nullable=True),
         sa.Column("dataset_filter", JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
         sa.Column("result_limit", sa.Integer(), nullable=False, server_default="3"),
         sa.Column("overwrite_pending", sa.Boolean(), nullable=False, server_default="true"),
+        sa.Column("created_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
         sa.Column("updated_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
-        sa.CheckConstraint("id = 1", name="ck_metagen_config_singleton"),
+        sa.UniqueConstraint("name", name="uq_metagen_config_name"),
         sa.CheckConstraint(
             "result_limit BETWEEN 1 AND 20", name="ck_metagen_config_result_limit"
         ),
@@ -267,6 +269,12 @@ def upgrade() -> None:
     op.create_table(
         "metagen_candidates",
         sa.Column("candidate_id", UUID(as_uuid=True), primary_key=True),
+        sa.Column(
+            "conf_id",
+            UUID(as_uuid=True),
+            sa.ForeignKey(f"{SCHEMA}.metagen_config.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
         sa.Column("dataset_urn", sa.Text(), nullable=False),
         sa.Column(
             "item_id",
@@ -294,7 +302,7 @@ def upgrade() -> None:
     op.create_index(
         "ix_metagen_candidates_item_status_created",
         "metagen_candidates",
-        ["dataset_urn", "item_id", "status", sa.text("created_at")],
+        ["conf_id", "dataset_urn", "item_id", "status", sa.text("created_at")],
         schema=SCHEMA,
     )
     op.create_index(

@@ -19,7 +19,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.shared.exceptions import DataSpokeError
-from tests.unit.api.conftest import auth_headers
 
 _INTERNAL_TOKEN = "test-internal-secret-act"
 
@@ -89,7 +88,6 @@ async def test_ingestion_list_active_returns_list_of_urns(client) -> None:
     mock_svc = AsyncMock()
     mock_svc.list_active_sources_for_tier = AsyncMock(return_value=[])
 
-    from unittest.mock import AsyncMock as AM, MagicMock as MM
 
     class _FakeSession:
         async def __aenter__(self):
@@ -130,8 +128,9 @@ async def test_ingestion_run_accepts_documented_payload(client) -> None:
     The endpoint catches DataSpokeError and returns a structured error dict (not 422).
     We stub the service.run call to raise DataSpokeError so the endpoint handles it gracefully.
     """
-    import src.backend.ingestion.service as _ing_svc
     import uuid
+
+    import src.backend.ingestion.service as _ing_svc
 
     class _FakeSession:
         async def __aenter__(self):
@@ -187,20 +186,39 @@ async def test_ingestion_list_active_missing_tier_returns_422(client) -> None:
     assert resp.status_code == 422
 
 
+def _make_metagen_conf_dto(*, conf_id: str, schedule_tier: str | None, is_enabled: bool = True):
+    """Build a MetagenConfDTO for the fan-out activity tests."""
+    from datetime import UTC, datetime
+
+    from src.backend.metagen.service import MetagenConfDTO
+
+    return MetagenConfDTO(
+        id=conf_id,
+        name=f"conf-{conf_id[:4]}",
+        is_enabled=is_enabled,
+        schedule_tier=schedule_tier,
+        dataset_filter={},
+        result_limit=3,
+        overwrite_pending=True,
+        created_at=datetime.now(tz=UTC),
+        updated_at=datetime.now(tz=UTC),
+    )
+
+
 @pytest.mark.asyncio
-async def test_metagen_run_tier_mismatch_short_circuits_without_invoking_run(client) -> None:
-    """POST /internal/activities/metagen/run with tier!=conf.schedule_tier short-circuits.
+async def test_metagen_run_fans_out_only_to_confs_matching_tier(client) -> None:
+    """POST /internal/activities/metagen/run runs only enabled confs whose schedule_tier
+    matches the fired tier; confs at other tiers are not run.
 
-    spec: feature/BACKEND.md §DAG Catalogue tier-DAG selection — "For singleton-conf
-    features (ontogen, metagen), only the tier listed on the singleton conf runs at
-    that tier (the other two tier DAGs short-circuit when triggered)."
-
-    The activity must NOT invoke service.run when the requested tier does not match
-    the singleton conf's schedule_tier — otherwise periodic DAGs over-run.
+    spec: feature/BACKEND.md §Scheduled fan-out — the activity enumerates every
+    is_enabled=true conf whose schedule_tier matches the fired tier and runs each
+    under its own per-conf lock.
     """
-    import src.backend.metagen.service as _mg_svc
+    import uuid as _uuid
 
+    import src.backend.metagen.service as _mg_svc
     from src.backend.admin.config_service import RUNTIME_CONFIG_DEFAULTS, RuntimeConfigDTO
+    from src.backend.metagen.service import RunResultDTO
 
     class _FakeSession:
         async def __aenter__(self):
@@ -209,79 +227,45 @@ async def test_metagen_run_tier_mismatch_short_circuits_without_invoking_run(cli
         async def __aexit__(self, *a):
             pass
 
-    fake_conf = MagicMock()
-    fake_conf.schedule_tier = "daily"
+    daily_conf_id = str(_uuid.uuid4())
+    hourly_conf_id = str(_uuid.uuid4())
+    confs = [
+        _make_metagen_conf_dto(conf_id=daily_conf_id, schedule_tier="daily"),
+        _make_metagen_conf_dto(conf_id=hourly_conf_id, schedule_tier="hourly"),
+    ]
     fake_rc = RuntimeConfigDTO(**RUNTIME_CONFIG_DEFAULTS)
 
-    run_mock = AsyncMock()
+    ran_conf_ids: list[str] = []
 
-    with (
-        patch("src.shared.settings.settings.internal_token", _INTERNAL_TOKEN),
-        patch("src.api.routers.internal.activities.make_datahub", return_value=MagicMock()),
-        patch("src.api.routers.internal.activities.make_redis_client", return_value=AsyncMock()),
-        patch("src.api.routers.internal.activities.make_llm_client", return_value=MagicMock()),
-        patch("src.api.routers.internal.activities.make_pgvector_manager", return_value=MagicMock()),
-        patch("src.api.routers.internal.activities.make_db_session", return_value=_FakeSession()),
-        patch(
-            "src.backend.admin.config_service.get_runtime_config",
-            new=AsyncMock(return_value=fake_rc),
-        ),
-        patch.object(_mg_svc.MetagenService, "get_global_conf", new=AsyncMock(return_value=fake_conf)),
-        patch.object(_mg_svc.MetagenService, "run", new=run_mock),
-    ):
-        resp = await client.post(
-            _METAGEN_RUN,
-            json={"tier": "hourly", "dry_run": False},
-            headers=_internal_headers(),
+    async def fake_run(self, conf_id, *, dataset_urns=None, dry_run=False):
+        ran_conf_ids.append(conf_id)
+        return RunResultDTO(
+            run_id=str(_uuid.uuid4()),
+            conf_id=conf_id,
+            status="success",
+            dry_run=dry_run,
+            unresolved_urns=[],
+            counts={"items_considered": 0},
         )
 
-    assert resp.status_code == 200, f"got {resp.status_code}: {resp.text}"
-    body = resp.json()
-    assert body["status"] == "skipped"
-    assert body["reason"] == "tier_mismatch"
-    assert body["dag_tier"] == "hourly"
-    assert body["conf_tier"] == "daily"
-    run_mock.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_metagen_run_tier_match_invokes_run(client) -> None:
-    """POST /internal/activities/metagen/run with tier==conf.schedule_tier invokes service.run.
-
-    spec: feature/BACKEND.md §DAG Catalogue tier-DAG selection — the DAG whose tier
-    matches the singleton conf is the one that actually performs inference.
-    """
-    import src.backend.metagen.service as _mg_svc
-
-    from src.backend.admin.config_service import RUNTIME_CONFIG_DEFAULTS, RuntimeConfigDTO
-
-    class _FakeSession:
-        async def __aenter__(self):
-            return AsyncMock()
-
-        async def __aexit__(self, *a):
-            pass
-
-    fake_conf = MagicMock()
-    fake_conf.schedule_tier = "daily"
-    fake_rc = RuntimeConfigDTO(**RUNTIME_CONFIG_DEFAULTS)
-
-    _ds_error = DataSpokeError("stubbed metagen failure")
-    run_mock = AsyncMock(side_effect=_ds_error)
-
     with (
         patch("src.shared.settings.settings.internal_token", _INTERNAL_TOKEN),
         patch("src.api.routers.internal.activities.make_datahub", return_value=MagicMock()),
         patch("src.api.routers.internal.activities.make_redis_client", return_value=AsyncMock()),
         patch("src.api.routers.internal.activities.make_llm_client", return_value=MagicMock()),
-        patch("src.api.routers.internal.activities.make_pgvector_manager", return_value=MagicMock()),
+        patch(
+            "src.api.routers.internal.activities.make_pgvector_manager",
+            return_value=MagicMock(),
+        ),
         patch("src.api.routers.internal.activities.make_db_session", return_value=_FakeSession()),
         patch(
             "src.backend.admin.config_service.get_runtime_config",
             new=AsyncMock(return_value=fake_rc),
         ),
-        patch.object(_mg_svc.MetagenService, "get_global_conf", new=AsyncMock(return_value=fake_conf)),
-        patch.object(_mg_svc.MetagenService, "run", new=run_mock),
+        patch.object(
+            _mg_svc.MetagenService, "list_confs", new=AsyncMock(return_value=(confs, len(confs)))
+        ),
+        patch.object(_mg_svc.MetagenService, "run", new=fake_run),
     ):
         resp = await client.post(
             _METAGEN_RUN,
@@ -289,8 +273,99 @@ async def test_metagen_run_tier_match_invokes_run(client) -> None:
             headers=_internal_headers(),
         )
 
-    run_mock.assert_called_once()
-    assert resp.status_code != 422, f"unexpected 422: {resp.text}"
+    assert resp.status_code == 200, f"got {resp.status_code}: {resp.text}"
+    assert ran_conf_ids == [daily_conf_id], (
+        "Only the daily conf must run when tier=daily. "
+        "spec: feature/BACKEND.md §Scheduled fan-out"
+    )
+    body = resp.json()
+    assert body["conf_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_metagen_run_continues_past_a_failing_conf(client) -> None:
+    """POST /internal/activities/metagen/run aggregates per-conf results and continues
+    past a conf that fails (does not abort the whole tier).
+
+    spec: feature/BACKEND.md §Scheduled fan-out — per-conf results are aggregated and a
+    failing conf does not abort the rest of the tier.
+    """
+    import uuid as _uuid
+
+    import src.backend.metagen.service as _mg_svc
+    from src.backend.admin.config_service import RUNTIME_CONFIG_DEFAULTS, RuntimeConfigDTO
+    from src.backend.metagen.service import RunResultDTO
+
+    class _FakeSession:
+        async def __aenter__(self):
+            return AsyncMock()
+
+        async def __aexit__(self, *a):
+            pass
+
+    failing_id = str(_uuid.uuid4())
+    ok_id = str(_uuid.uuid4())
+    confs = [
+        _make_metagen_conf_dto(conf_id=failing_id, schedule_tier="daily"),
+        _make_metagen_conf_dto(conf_id=ok_id, schedule_tier="daily"),
+    ]
+    fake_rc = RuntimeConfigDTO(**RUNTIME_CONFIG_DEFAULTS)
+
+    async def fake_run(self, conf_id, *, dataset_urns=None, dry_run=False):
+        if conf_id == failing_id:
+            raise DataSpokeError("stubbed metagen failure")
+        return RunResultDTO(
+            run_id=str(_uuid.uuid4()),
+            conf_id=conf_id,
+            status="success",
+            dry_run=dry_run,
+            unresolved_urns=[],
+            counts={"items_considered": 0},
+        )
+
+    with (
+        patch("src.shared.settings.settings.internal_token", _INTERNAL_TOKEN),
+        patch("src.api.routers.internal.activities.make_datahub", return_value=MagicMock()),
+        patch("src.api.routers.internal.activities.make_redis_client", return_value=AsyncMock()),
+        patch("src.api.routers.internal.activities.make_llm_client", return_value=MagicMock()),
+        patch(
+            "src.api.routers.internal.activities.make_pgvector_manager",
+            return_value=MagicMock(),
+        ),
+        patch("src.api.routers.internal.activities.make_db_session", return_value=_FakeSession()),
+        patch(
+            "src.backend.admin.config_service.get_runtime_config",
+            new=AsyncMock(return_value=fake_rc),
+        ),
+        patch.object(
+            _mg_svc.MetagenService, "list_confs", new=AsyncMock(return_value=(confs, len(confs)))
+        ),
+        patch.object(_mg_svc.MetagenService, "run", new=fake_run),
+    ):
+        resp = await client.post(
+            _METAGEN_RUN,
+            json={"tier": "daily", "dry_run": False},
+            headers=_internal_headers(),
+        )
+
+    assert resp.status_code == 200, f"got {resp.status_code}: {resp.text}"
+    body = resp.json()
+    assert body["conf_count"] == 2
+    statuses = {r["conf_id"]: r["status"] for r in body["results"]}
+    # INTERNAL-contract check (not a public API.md invariant): the
+    # /internal/activities/metagen/run aggregated-results shape is internal to the
+    # Airflow tier-DAG fan-out and is not part of API.md's public catalogue. The
+    # literal "failed" string is the internal activity's own per-conf marker.
+    assert statuses[failing_id] == "failed", (
+        "The failing conf must be recorded as failed in the aggregated results "
+        "(internal activity contract; not a public API.md route)."
+    )
+    # The OK conf must have been reached and run despite the earlier failure — its
+    # aggregated entry carries the successful run outcome, not 'failed'.
+    assert statuses[ok_id] != "failed", (
+        "A failing conf must not abort the rest of the tier; the OK conf still runs. "
+        "spec: feature/BACKEND.md §Scheduled fan-out"
+    )
 
 
 @pytest.mark.asyncio
@@ -305,7 +380,6 @@ async def test_ontogen_run_tier_mismatch_short_circuits_without_invoking_run(cli
     the singleton conf's schedule_tier — otherwise periodic DAGs over-run.
     """
     import src.backend.ontogen.service as _onto_svc
-
     from src.backend.admin.config_service import RUNTIME_CONFIG_DEFAULTS, RuntimeConfigDTO
 
     class _FakeSession:
@@ -326,7 +400,10 @@ async def test_ontogen_run_tier_mismatch_short_circuits_without_invoking_run(cli
         patch("src.api.routers.internal.activities.make_datahub", return_value=MagicMock()),
         patch("src.api.routers.internal.activities.make_redis_client", return_value=AsyncMock()),
         patch("src.api.routers.internal.activities.make_llm_client", return_value=MagicMock()),
-        patch("src.api.routers.internal.activities.make_pgvector_manager", return_value=MagicMock()),
+        patch(
+            "src.api.routers.internal.activities.make_pgvector_manager",
+            return_value=MagicMock(),
+        ),
         patch("src.api.routers.internal.activities.make_db_session", return_value=_FakeSession()),
         patch(
             "src.backend.admin.config_service.get_runtime_config",
@@ -359,7 +436,6 @@ async def test_ontogen_run_tier_match_invokes_run(client) -> None:
     matches the singleton conf is the one that actually performs inference.
     """
     import src.backend.ontogen.service as _onto_svc
-
     from src.backend.admin.config_service import RUNTIME_CONFIG_DEFAULTS, RuntimeConfigDTO
 
     class _FakeSession:
@@ -381,7 +457,10 @@ async def test_ontogen_run_tier_match_invokes_run(client) -> None:
         patch("src.api.routers.internal.activities.make_datahub", return_value=MagicMock()),
         patch("src.api.routers.internal.activities.make_redis_client", return_value=AsyncMock()),
         patch("src.api.routers.internal.activities.make_llm_client", return_value=MagicMock()),
-        patch("src.api.routers.internal.activities.make_pgvector_manager", return_value=MagicMock()),
+        patch(
+            "src.api.routers.internal.activities.make_pgvector_manager",
+            return_value=MagicMock(),
+        ),
         patch("src.api.routers.internal.activities.make_db_session", return_value=_FakeSession()),
         patch(
             "src.backend.admin.config_service.get_runtime_config",
@@ -413,7 +492,6 @@ async def test_ontogen_run_accepts_optional_prompt_md(client) -> None:
     We stub the service to raise DataSpokeError so schema acceptance is verified cleanly.
     """
     import src.backend.ontogen.service as _onto_svc
-
     from src.backend.admin.config_service import RUNTIME_CONFIG_DEFAULTS, RuntimeConfigDTO
 
     class _FakeSession:
@@ -431,7 +509,10 @@ async def test_ontogen_run_accepts_optional_prompt_md(client) -> None:
         patch("src.api.routers.internal.activities.make_datahub", return_value=MagicMock()),
         patch("src.api.routers.internal.activities.make_redis_client", return_value=AsyncMock()),
         patch("src.api.routers.internal.activities.make_llm_client", return_value=MagicMock()),
-        patch("src.api.routers.internal.activities.make_pgvector_manager", return_value=MagicMock()),
+        patch(
+            "src.api.routers.internal.activities.make_pgvector_manager",
+            return_value=MagicMock(),
+        ),
         patch("src.api.routers.internal.activities.make_db_session", return_value=_FakeSession()),
         patch(
             "src.backend.admin.config_service.get_runtime_config",
@@ -474,7 +555,6 @@ async def test_ingestion_run_threads_stub_redis_flag(client) -> None:
     spec: feature/BACKEND.md §Dependency Injection — activity endpoints thread stub flags.
     """
     import src.backend.ingestion.service as _ing_svc
-
     from src.backend.admin.config_service import RUNTIME_CONFIG_DEFAULTS, RuntimeConfigDTO
 
     class _FakeSession:
@@ -530,7 +610,6 @@ async def test_metagen_run_threads_stub_llm_flag(client) -> None:
     spec: feature/BACKEND.md §Dependency Injection — activity endpoints thread stub flags.
     """
     import src.backend.metagen.service as _mg_svc
-
     from src.backend.admin.config_service import RUNTIME_CONFIG_DEFAULTS, RuntimeConfigDTO
 
     class _FakeSession:
@@ -540,24 +619,30 @@ async def test_metagen_run_threads_stub_llm_flag(client) -> None:
         async def __aexit__(self, *a):
             pass
 
+    import uuid as _uuid
+
     fake_rc = RuntimeConfigDTO(**{**RUNTIME_CONFIG_DEFAULTS, "stub_llm_client": True})
     make_llm_mock = MagicMock(return_value=MagicMock())
 
-    fake_conf = MagicMock()
-    fake_conf.schedule_tier = "daily"
+    confs = [_make_metagen_conf_dto(conf_id=str(_uuid.uuid4()), schedule_tier="daily")]
 
     with (
         patch("src.shared.settings.settings.internal_token", _INTERNAL_TOKEN),
         patch("src.api.routers.internal.activities.make_datahub", return_value=MagicMock()),
         patch("src.api.routers.internal.activities.make_redis_client", return_value=MagicMock()),
         patch("src.api.routers.internal.activities.make_llm_client", make_llm_mock),
-        patch("src.api.routers.internal.activities.make_pgvector_manager", return_value=MagicMock()),
+        patch(
+            "src.api.routers.internal.activities.make_pgvector_manager",
+            return_value=MagicMock(),
+        ),
         patch("src.api.routers.internal.activities.make_db_session", return_value=_FakeSession()),
         patch(
             "src.backend.admin.config_service.get_runtime_config",
             new=AsyncMock(return_value=fake_rc),
         ),
-        patch.object(_mg_svc.MetagenService, "get_global_conf", new=AsyncMock(return_value=fake_conf)),
+        patch.object(
+            _mg_svc.MetagenService, "list_confs", new=AsyncMock(return_value=(confs, len(confs)))
+        ),
         patch.object(
             _mg_svc.MetagenService,
             "run",
@@ -591,7 +676,6 @@ async def test_ontogen_run_threads_stub_pgvector_flag(client) -> None:
     spec: feature/BACKEND.md §Dependency Injection — activity endpoints thread stub flags.
     """
     import src.backend.ontogen.service as _onto_svc
-
     from src.backend.admin.config_service import RUNTIME_CONFIG_DEFAULTS, RuntimeConfigDTO
 
     class _FakeSession:
@@ -635,7 +719,7 @@ async def test_ontogen_run_threads_stub_pgvector_flag(client) -> None:
         "ontogen/run did not call make_pgvector_manager at all."
     )
     assert make_pgvector_mock.call_args.kwargs.get("stub") is True, (
-        f"ontogen/run must call make_pgvector_manager(stub=True) when rc.stub_pgvector_manager=True; "
+        f"ontogen/run must call make_pgvector_manager(stub=True) when stub_pgvector_manager=True; "
         f"actual call: {make_pgvector_mock.call_args}. "
         "spec: src/workflows/_common.py — stub= kwarg must be threaded from RuntimeConfigDTO."
     )

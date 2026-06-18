@@ -62,6 +62,9 @@ export function CandidateCard({
 
   return (
     <div
+      data-testid="metagen-candidate-card"
+      data-conf-name={candidate.conf_name ?? ""}
+      data-candidate-status={candidate.status}
       className={`rounded-md border p-3 space-y-2 ${
         isApproved ? "border-primary/40 bg-primary/5" : ""
       }`}
@@ -73,6 +76,11 @@ export function CandidateCard({
         <span className="text-xs text-muted-foreground">
           conf {candidate.confidence_score.toFixed(2)}
         </span>
+        {candidate.conf_name && (
+          <Badge variant="outline" className="text-xs" title="Producing conf">
+            {candidate.conf_name}
+          </Badge>
+        )}
         {candidate.reviewed_at && (
           <span className="text-xs text-muted-foreground">
             reviewed {formatDateTime(candidate.reviewed_at, tz)}

@@ -46,11 +46,14 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from src.backend.metagen.debate_models import DebateResult
-from src.backend.metagen.prompts import build_run_prompt
 from src.backend.metagen.service import MetagenService
 from src.shared.config import EMBEDDING_DIMENSION
 from src.shared.vector.client import PgVectorManager
-from tests.integration.util.datahub import get_datahub_token, hard_delete_document, seed_native_document
+from tests.integration.util.datahub import (
+    get_datahub_token,
+    hard_delete_document,
+    seed_native_document,
+)
 
 # ── Module-level dummy-data declarations ──────────────────────────────────────
 # Catalog schema must exist in DataHub for the test URN to resolve.
@@ -148,23 +151,16 @@ async def _seed_node_embedding(
             )
 
 
-async def _seed_metagen_config(session: AsyncSession, *, dataset_urn: str) -> None:
-    """Upsert the MetagenConfig singleton with is_enabled=True targeting dataset_urn."""
-    await session.execute(
-        text(
-            "INSERT INTO dataspoke.metagen_config"
-            " (id, is_enabled, dataset_filter, result_limit, overwrite_pending, updated_at)"
-            " VALUES (1, TRUE, CAST(:df AS jsonb), 3, TRUE, :now)"
-            " ON CONFLICT (id) DO UPDATE SET"
-            " is_enabled=TRUE, dataset_filter=EXCLUDED.dataset_filter,"
-            " updated_at=EXCLUDED.updated_at"
-        ),
-        {
-            "df": json.dumps({"dataset_urns": [dataset_urn]}),
-            "now": datetime.now(tz=UTC),
-        },
+async def _seed_metagen_conf(session: AsyncSession, *, dataset_urn: str) -> str:
+    """Insert a metagen_config (collection) row scoped to dataset_urn; return its UUID."""
+    from tests.integration.util.metagen import seed_metagen_conf
+
+    return await seed_metagen_conf(
+        session,
+        name=f"spot-evidence-{uuid.uuid4().hex[:8]}",
+        is_enabled=True,
+        dataset_filter={"dataset_urns": [dataset_urn]},
     )
-    await session.commit()
 
 
 async def _seed_metagen_boundary(session: AsyncSession, *, dataset_urn: str) -> None:
@@ -208,7 +204,11 @@ async def _cleanup_metagen_config_and_boundary(
             text("DELETE FROM dataspoke.metagen_boundary WHERE dataset_urn = :urn"),
             {"urn": dataset_urn},
         )
-        await session.execute(text("DELETE FROM dataspoke.metagen_config WHERE id = 1"))
+        # The conf collection is UUID-keyed; this spot test's confs are named
+        # 'spot-evidence-*'. Drop them by name prefix to leave no orphan rows.
+        await session.execute(
+            text("DELETE FROM dataspoke.metagen_config WHERE name LIKE 'spot-evidence-%'")
+        )
         await session.commit()
 
 
@@ -251,7 +251,7 @@ async def test_uc4_evidence_reaches_producer_prompt(
     datahub_client,
     test_vector: PgVectorManager,
 ) -> None:
-    """Evidence parity: document title/body and ontology RAG node name appear in the Producer prompt.
+    """Evidence parity: document title/body and ontology RAG node name appear in the prompt.
 
     Drives MetagenService.run() end-to-end with a patched run_debate that
     captures the producer_prompt argument. Asserts the full wiring chain:
@@ -275,7 +275,7 @@ async def test_uc4_evidence_reaches_producer_prompt(
     - A distinctive substring from the document body.
     - The seeded ontology node name (proving ontology_rag reached the prompt).
 
-    plan: /Users/soonmok/.claude/plans/glittery-crafting-kazoo.md §Tests §test_uc4_evidence_reaches_producer_prompt
+    plan: glittery-crafting-kazoo.md §Tests §test_uc4_evidence_reaches_producer_prompt
     """
     suffix = uuid.uuid4().hex[:12]
     doc_id = f"spot-uc4-evidence-{suffix}"
@@ -321,8 +321,8 @@ async def test_uc4_evidence_reaches_producer_prompt(
             embedding=_FIXED_VEC,
         )
 
-        # ── Step 3: Seed MetagenConfig + MetagenBoundary ──────────────────────
-        await _seed_metagen_config(async_session, dataset_urn=_TEST_URN)
+        # ── Step 3: Seed metagen conf (collection) + MetagenBoundary ──────────
+        conf_id = await _seed_metagen_conf(async_session, dataset_urn=_TEST_URN)
         await _seed_metagen_boundary(async_session, dataset_urn=_TEST_URN)
 
         # ── Step 4: Build stub LLM with fixed embed vector ────────────────────
@@ -355,7 +355,7 @@ async def test_uc4_evidence_reaches_producer_prompt(
             "src.backend.metagen.service.run_debate",
             new=AsyncMock(side_effect=_fake_run_debate),
         ):
-            result = await svc.run(dataset_urns=[_TEST_URN])
+            result = await svc.run(conf_id, dataset_urns=[_TEST_URN])
 
         # ── Assertions ────────────────────────────────────────────────────────
         # Guard: if _TEST_URN is unresolved, the per-URN loop is skipped and

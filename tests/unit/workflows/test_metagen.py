@@ -1,7 +1,7 @@
 """Unit tests for metagen workflow params and DAG registry.
 
 spec: feature/BACKEND.md §DAG Catalogue — metagen tier DAGs.
-spec: feature/BACKEND.md §Concurrency Guards — singleton lock per run.
+spec: feature/BACKEND.md §Concurrency — per-conf lock per run.
 spec: API.md §Trigger — MetagenRunParams accepts optional dataset_urns and dry_run.
 """
 
@@ -21,8 +21,9 @@ _DAGS_DIR = Path(__file__).parents[3] / "src" / "workflows" / "dags"
 def test_params_defaults_are_none_and_false() -> None:
     """MetagenRunParams can be instantiated with no arguments; both fields default.
 
-    spec: feature/BACKEND.md §DAG Catalogue — dataset_urns is optional (None = all
-    in-scope from global conf); dry_run defaults to False.
+    spec: feature/BACKEND.md §Scheduled fan-out — dataset_urns is an optional
+    override scoping a single conf's run (None = all in-scope datasets for that
+    conf); dry_run defaults to False.
     """
     params = MetagenRunParams()
     assert params.dataset_urns is None
@@ -69,8 +70,9 @@ def test_params_accepts_both_dataset_urns_and_dry_run() -> None:
 def test_params_has_no_singular_dataset_urn_field() -> None:
     """MetagenRunParams does not expose a singular dataset_urn field.
 
-    spec: feature/BACKEND.md §DAG Catalogue — the singleton pipeline operates
-    globally; no per-dataset trigger surface on this model.
+    spec: feature/BACKEND.md §Scheduled fan-out — a tier run fans out across the
+    matching confs; the optional scope override is the plural dataset_urns, with
+    no singular per-dataset trigger surface on this model.
     """
     params = MetagenRunParams()
     assert not hasattr(params, "dataset_urn"), (

@@ -197,25 +197,27 @@ per distinct `data_time`.
 
 #### `metagen_config`
 
-Singleton row holding the Metadata Generation conf (UC4).
+One row per Metadata Generation conf (UC4) — a managed collection, not a
+singleton. Many confs can coexist, each with its own scope and budget.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `id` | `INTEGER` PK (=1) | Singleton row |
-| `is_enabled` | `BOOLEAN` | Master switch for the metagen DAG |
-| `schedule_tier` | `TEXT` NULL | `hourly`, `daily`, or `weekly` re-generation cadence. When null, no periodic DAG runs; manual `POST /method/run` is unaffected |
+| `id` | `UUID` PK | Conf identifier |
+| `name` | `TEXT` UNIQUE NOT NULL | Human-readable conf name (`409 METAGEN_CONF_EXISTS` on create collision) |
+| `is_enabled` | `BOOLEAN` | Master switch — enabled confs run on their `schedule_tier` and are eligible for scheduled fan-out |
+| `schedule_tier` | `TEXT` NULL | `hourly`, `daily`, or `weekly` re-generation cadence. When null, no periodic DAG runs; manual `POST /conf/{conf_id}/method/run` is unaffected |
 | `dataset_filter` | `JSONB` | Optional scope filter — `{"origin": "...", "tags": [...], "glossary_terms": [...], "dataset_urns": [...]}`; `origin` AND-ed with the OR-group of the three list dimensions; `{}` = all. Same shape as `ontogen_config.dataset_filter` and `metric_definitions.dataset_filter` |
-| `result_limit` | `INTEGER` | Max non-rejected candidates per item (range `[1, 20]`, default `3`) |
-| `overwrite_pending` | `BOOLEAN` | When the per-item budget is full and the item has no `approved` candidate, true = evict oldest `llm_approved` candidate; false = skip the item (default true) |
+| `result_limit` | `INTEGER` | Max non-rejected candidates per `(conf_id, item)` (range `[1, 20]`, default `3`) |
+| `overwrite_pending` | `BOOLEAN` | When this conf's per-item budget is full and the item has no `approved` candidate, true = evict oldest `llm_approved` candidate of this conf; false = skip the item (default true) |
+| `created_at` | `TIMESTAMPTZ` | |
 | `updated_at` | `TIMESTAMPTZ` | |
-
-A `CHECK (id = 1)` constraint enforces singleton.
 
 #### `metagen_boundary`
 
-Per-dataset opt-in boundary for UC4 metagen. Absence of a row, or a row with
-`is_enabled=false`, means the dataset is excluded regardless of the global
-`dataset_filter`.
+Per-dataset opt-in boundary for UC4 metagen, shared across all confs. Absence of
+a row, or a row with `is_enabled=false`, means the dataset is excluded from every
+conf regardless of any conf's `dataset_filter`. `allowed` caps which element kinds
+any conf may write on this dataset.
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -246,13 +248,14 @@ Primary key: `(dataset_urn, item_id)`.
 
 #### `metagen_candidates`
 
-One row per generated candidate value. Candidates accumulate per item across
-runs up to `metagen_config.result_limit`; `rejected` rows are deleted at the
-start of the next run.
+One row per generated candidate value. Candidates accumulate per
+`(conf_id, item)` across runs up to that conf's `result_limit`; `rejected` rows
+are deleted at the start of the next run.
 
 | Column | Type | Description |
 |--------|------|-------------|
 | `candidate_id` | `UUID` PK | Candidate identifier |
+| `conf_id` | `UUID` FK → `metagen_config(id)` NULL | The conf that produced this candidate. `ON DELETE`: this conf's non-approved candidates are deleted, and `approved` candidates are `SET NULL` (already emitted to DataHub, so retained as orphan history) |
 | `dataset_urn` | `TEXT` | Target dataset URN |
 | `item_id` | `TEXT` | Item this candidate belongs to (FK `(dataset_urn, item_id)` → `metagen_items`) |
 | `run_id` | `UUID` | The metagen run that produced this candidate |
@@ -264,13 +267,15 @@ start of the next run.
 | `reviewed_at` | `TIMESTAMPTZ` NULL | Human review timestamp |
 | `reviewer_id` | `TEXT` NULL | User ID of the reviewer |
 
-Indexes: `(dataset_urn, item_id, status, created_at)` for FIFO eviction
-queries and per-item budget checks; `(run_id)` for run-scoped cleanup.
+Indexes: `(conf_id, dataset_urn, item_id, status, created_at)` for per-conf FIFO
+eviction queries and per-`(conf_id, item)` budget checks; `(run_id)` for
+run-scoped cleanup.
 
 A partial unique index `UNIQUE (dataset_urn, item_id) WHERE status='approved'`
-enforces the invariant that an item has at most one `approved` candidate at
-any time. Approving a sibling un-approves the previously-approved one in the
-same transaction (see [BACKEND §Metadata Generation Service](BACKEND.md#metadata-generation-service-srcbackendmetagen)).
+enforces the invariant that an item has at most one `approved` candidate at any
+time — **globally across all confs**. Approving a candidate un-approves the
+previously-approved sibling (which may belong to a different conf) in the same
+transaction (see [BACKEND §Metadata Generation Service](BACKEND.md#metadata-generation-service-srcbackendmetagen)).
 
 #### `metagen_candidate_embeddings`
 
@@ -450,8 +455,8 @@ structure so clients can process them generically (see
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | `UUID` PK | Event identifier |
-| `entity_type` | `TEXT` | `dataset`, `metric`, `node`, `edge`, `triple`, `ontogen` (singleton conf + seeds) — classifies the entity, not the feature domain |
-| `entity_id` | `TEXT` | URN or metric/node/edge/triple ID; for `entity_type='ontogen'` either the literal string `singleton` (conf) or a `seed:{seed_id}` form (seed events) |
+| `entity_type` | `TEXT` | `dataset`, `metric`, `node`, `edge`, `triple`, `ontogen` (singleton conf + seeds), `metagen` (per-conf run events) — classifies the entity, not the feature domain |
+| `entity_id` | `TEXT` | URN or metric/node/edge/triple ID; for `entity_type='ontogen'` either the literal string `singleton` (conf) or a `seed:{seed_id}` form (seed events); for `entity_type='metagen'` the `conf_id` |
 | `event_type` | `TEXT` | Uppercase, dot-delimited `{DOMAIN}.{ACTION}` (e.g., `INGESTION.COMPLETE`, `METRIC.RUN_COMPLETE`, `NODE.APPROVE`, `TRIPLE.APPROVE`, `METAGEN.CANDIDATE_APPROVE`, `METAGEN.RUN_COMPLETE`, `ONTOGEN.RUN_COMPLETE`). Full catalogue in [BACKEND §Event Catalogue](BACKEND.md#event-catalogue). |
 | `status` | `TEXT` | `success`, `failure`, `warning` |
 | `detail` | `JSONB` | Event-specific payload |
@@ -468,7 +473,11 @@ prefix (e.g., `INGESTION.%`, `METAGEN.%`) to return only domain-specific events.
 The Ontology Generation singleton uses `entity_type=ontogen` and `entity_id='singleton'`
 (conf) or `entity_id='seed:{seed_id}'` (seed events) for the global event log surfaced
 at `/spoke/ontogen/event`; per-result events use `entity_type=node|edge|triple`
-and the corresponding ID.
+and the corresponding ID. Metadata Generation per-conf run events use
+`entity_type=metagen` and `entity_id=conf_id`; `/spoke/metagen/conf/{conf_id}/event`
+filters by that pair while `/spoke/metagen/event` returns the cross-conf union (all
+`entity_type=metagen` rows). Metagen candidate-review events remain `entity_type=dataset`
+(an attribute of the dataset).
 
 #### `peripheral_config`
 
@@ -488,7 +497,8 @@ a row disables the corresponding integration.
 | Table | Index | Purpose |
 |-------|-------|---------|
 | `validation_results` | `(dataset_urn, data_time DESC)` | Time-range queries on results (historical-baseline GET) |
-| `metagen_candidates` | `(dataset_urn, item_id, status, created_at)` | Per-item FIFO eviction and budget checks |
+| `metagen_candidates` | `(conf_id, dataset_urn, item_id, status, created_at)` | Per-conf, per-item FIFO eviction and budget checks |
+| `metagen_candidates` | `UNIQUE (dataset_urn, item_id) WHERE status='approved'` | Global one-approved-per-item invariant (across all confs) |
 | `metagen_candidates` | `(run_id)` | Run-scoped cleanup |
 | `metric_results` | `(metric_id, measured_at DESC)` | Time-range queries on measurements |
 | `events` | `(entity_type, entity_id, occurred_at DESC)` | Event log queries per entity |

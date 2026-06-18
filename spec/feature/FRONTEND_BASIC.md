@@ -61,7 +61,10 @@ its URL unset.
 │  conf           │                                      │
 │  seed           │                                      │
 │  result         │                                      │
-│ MetaGen         │                                      │
+│ MetaGen ▾       │                                      │
+│  conf           │                                      │
+│  result         │                                      │
+│  uncovered      │                                      │
 ├─────────────────┤                                      │
 │ ADMIN           │   (Admin role only)                  │
 │  Users          │                                      │
@@ -109,7 +112,10 @@ ingestion recipe YAML editor) remain one full-width field.
 | `/ontogen/result` | [Ontology Generation — browser + review](FRONTEND_ONTOGEN.md) | `/spoke/ontogen/result/...` |
 | `/ontogen/conf` | [Ontology Generation — conf + run](FRONTEND_ONTOGEN.md) | `/spoke/ontogen/attr/conf`, `/spoke/ontogen/method/run` |
 | `/ontogen/seed` | [Ontology Generation — seed library](FRONTEND_ONTOGEN.md) | `/spoke/ontogen/attr/seed/...` |
-| `/metagen` | [Metadata Generation](FRONTEND_METAGEN.md) | `/spoke/metagen/...` |
+| `/metagen` | 302 to `/metagen/conf` | — |
+| `/metagen/conf` | [Metadata Generation — conf list + run](FRONTEND_METAGEN.md) | `/spoke/metagen/conf/...` |
+| `/metagen/result` | [Metadata Generation — global review queue + events](FRONTEND_METAGEN.md) | `/spoke/metagen/{item,event}` |
+| `/metagen/uncovered` | [Metadata Generation — uncovered datasets](FRONTEND_METAGEN.md) | `/spoke/metagen/uncovered` |
 | `/settings` | Theme, locale, and timezone (Local or UTC, **default Local**) toggles, persisted in `localStorage` only. The timezone preference is display-only — it governs how all dates and times are rendered across the app; stored and queried timestamps remain canonical UTC ISO per `API.md`. | — |
 
 Route guards layer two checks:

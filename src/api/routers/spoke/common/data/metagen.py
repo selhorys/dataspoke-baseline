@@ -16,6 +16,7 @@ from src.api.auth.dependencies import AuthContext, require_writer
 from src.api.dependencies import get_db, get_metagen_service
 from src.api.routers.spoke._metagen_mappers import (
     event_list,
+    to_candidate,
     to_item_detail,
     to_item_summary,
 )
@@ -36,7 +37,6 @@ from src.shared.events import METAGEN_PREFIX
 
 sub_router = APIRouter()
 
-_CandStatus = Literal["llm_approved", "approved", "rejected"]
 _AllowedKind = Literal["dataset.description", "column.description"]
 
 
@@ -55,10 +55,10 @@ def _boundary_response(dto: Any) -> MetagenBoundaryResponse:
 
 
 @sub_router.get(
-    "/{dataset_urn}/attr/metagen/conf",
+    "/{dataset_urn}/attr/metagen/boundary",
     response_model=MetagenBoundaryResponse | None,
 )
-async def get_data_metagen_conf(
+async def get_data_metagen_boundary(
     dataset_urn: DatasetUrnPath,
     service: MetagenService = Depends(get_metagen_service),
 ) -> MetagenBoundaryResponse | None:
@@ -67,10 +67,10 @@ async def get_data_metagen_conf(
 
 
 @sub_router.put(
-    "/{dataset_urn}/attr/metagen/conf",
+    "/{dataset_urn}/attr/metagen/boundary",
     response_model=MetagenBoundaryResponse,
 )
-async def put_data_metagen_conf(
+async def put_data_metagen_boundary(
     dataset_urn: DatasetUrnPath,
     body: MetagenBoundaryPutRequest,
     service: MetagenService = Depends(get_metagen_service),
@@ -81,10 +81,10 @@ async def put_data_metagen_conf(
 
 
 @sub_router.patch(
-    "/{dataset_urn}/attr/metagen/conf",
+    "/{dataset_urn}/attr/metagen/boundary",
     response_model=MetagenBoundaryResponse,
 )
-async def patch_data_metagen_conf(
+async def patch_data_metagen_boundary(
     dataset_urn: DatasetUrnPath,
     body: MetagenBoundaryPatchRequest,
     service: MetagenService = Depends(get_metagen_service),
@@ -95,10 +95,10 @@ async def patch_data_metagen_conf(
 
 
 @sub_router.delete(
-    "/{dataset_urn}/attr/metagen/conf",
+    "/{dataset_urn}/attr/metagen/boundary",
     status_code=status.HTTP_204_NO_CONTENT,
 )
-async def delete_data_metagen_conf(
+async def delete_data_metagen_boundary(
     dataset_urn: DatasetUrnPath,
     service: MetagenService = Depends(get_metagen_service),
     _writer: AuthContext = Depends(require_writer),
@@ -170,18 +170,7 @@ async def post_data_metagen_item_candidate_review(
         reason=body.reason,
         reviewer_id=reviewer_id,
     )
-    return MetagenCandidate(
-        candidate_id=dto.candidate_id,
-        item_id=dto.item_id,
-        dataset_urn=dto.dataset_urn,
-        value=dto.value,
-        confidence_score=dto.confidence_score,
-        status=cast(_CandStatus, dto.status),
-        evidence=dto.evidence,
-        created_at=dto.created_at,
-        reviewed_at=dto.reviewed_at,
-        reviewer_id=dto.reviewer_id,
-    )
+    return to_candidate(dto)
 
 
 # ── Per-dataset metagen events ────────────────────────────────────────────────

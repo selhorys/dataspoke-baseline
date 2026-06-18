@@ -114,7 +114,7 @@ DataSpoke consists of four components.
   /api/v1/spoke/ingestion                     # Ingestion Control cross-dataset list
   /api/v1/spoke/validation                    # Validation cross-dataset list
   /api/v1/spoke/ontogen/…                     # Ontology Generation (global singleton)
-  /api/v1/spoke/metagen/…                     # Metadata Generation (global singleton)
+  /api/v1/spoke/metagen/…                     # Metadata Generation (conf collection + global review queue)
   /api/v1/spoke/governance/…                  # Governance metrics
   /api/v1/hub/…                               # DataHub pass-through (optional ingress for clients)
   ```

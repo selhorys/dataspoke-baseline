@@ -521,18 +521,28 @@ UI는 Markdown으로 렌더링한다.
 
 향후 범위(언급만, 여기서는 모델링하지 않음): `domains`·`globalTags` 제안.
 
-`/spoke/metagen/attr/conf`의 **글로벌** 운영 conf가 생성 DAG 실행 시점과
-스코프 데이터셋을 제어한다. `/spoke/common/data/{urn}/attr/metagen/conf`의
-**데이터셋별** 경계가 옵트인 스위치이다 — `is_enabled=true` 경계 행이 없는
-데이터셋은 글로벌 필터와 무관하게 제외된다.
+conf는 `/spoke/metagen/conf`의 **관리되는 컬렉션**이다 — 여러 개의 이름 붙은
+conf가 공존하며, 각자 고유한 `dataset_filter`·`schedule_tier`·생성 예산을 가진다.
+그래서 팀마다 서로 다른 데이터셋 그룹에 서로 다른 문서화 정책을 운영할 수 있다.
+하나의 모두 연결된 아티팩트라서 단일 싱글톤 conf인 UC3 온톨로지와 달리, 메타데이터
+작성자는 여럿일 수 있다. conf 간 일관성은 단일 conf가 아니라 모든 conf가 읽는 공유
+UC3 온톨로지가 유지한다. `/spoke/common/data/{urn}/attr/metagen/boundary`의
+**데이터셋별** 경계가 conf 전반에 공유되는 옵트인 스위치이다 — 데이터셋은 어떤
+conf의 `dataset_filter`에 매칭되고 **동시에** `is_enabled=true` 경계 행을 가질 때만
+그 conf의 생성 대상이 되며, 경계의 `allowed`가 어떤 conf든 기록할 수 있는 요소
+종류를 제한한다. 어떤 conf도 도달하지 못한 데이터셋은 `/spoke/metagen/uncovered`에
+나타난다.
 
-스코프 내 (데이터셋, 아이템) 쌍마다 생성기는 여러 실행에 걸쳐 최대 `result_limit`
-(기본 `3`)개의 후보를 누적한다. 리뷰어는 후보를 살펴보고 하나를 승인하면(그 값이
-DataHub의 편집 가능 aspect로 emit되며 아이템이 잠긴다), 마음에 들지 않는 후보는
-거부한다. **승인은 변경 가능하다**: 다른 형제 후보를 승인하면 이전에 승인된 후보가
-같은 트랜잭션 안에서 강등되므로, 리뷰어는 언제든 마음을 바꿀 수 있다. **다음
-실행부터**, `approved` 후보가 있는 아이템은 통째로 건너뛰며, 거부된 후보는 다음
-실행 시작 시점에 일괄 삭제되어 해당 아이템이 처음부터 다시 제안된다.
+(conf, 데이터셋, 아이템)마다 생성기는 여러 실행에 걸쳐 그 conf의 `result_limit`
+(기본 `3`)개까지 후보를 누적한다. 모든 conf가 **하나의 글로벌 데이터셋 전반 리뷰
+큐**로 모이며, 리뷰어는 — 각 후보가 어느 conf에서 나왔는지 태그된 채로 — 후보를
+살펴보고 하나를 승인하면(그 값이 DataHub의 편집 가능 aspect로 emit되며 아이템이
+잠긴다), 마음에 들지 않는 후보는 거부한다. **승인은 변경 가능하며 conf 전반에
+걸쳐 전역적이다**: 다른 conf의 것이라도 다른 형제 후보를 승인하면 이전에 승인된
+후보가 같은 트랜잭션 안에서 강등되므로, 리뷰어는 언제든 마음을 바꿀 수 있다. **다음
+실행부터**, `approved` 후보가 있는 아이템은 모든 conf가 건너뛰며, 한 conf의 거부된
+후보는 그 conf의 다음 실행 시작 시점에 일괄 삭제되어 해당 아이템이 처음부터 다시
+제안된다.
 
 conf 필드 의미, 후보 상태 라이프사이클, 아이템별 축출 정책, 실행 파이프라인,
 그리고 Producer / Reviewer 적대적 토론은
@@ -544,26 +554,33 @@ conf 필드 의미, 후보 상태 라이프사이클, 아이템별 축출 정책
 
 | 엔드포인트 | 용도 |
 |---|---|
-| `PUT/PATCH/GET/DELETE /spoke/metagen/attr/conf` | 싱글톤 운영 conf — 위 필드 표 참조 |
-| `POST /spoke/metagen/method/run` | 수동 생성 실행 트리거. body `{"dataset_urns": [...]}`은 선택; `?dry_run=true`는 기록 없이 평가만. 동시 실행은 `409 METAGEN_RUNNING`, 비활성 conf의 비-dry-run은 `409 METAGEN_DISABLED` 반환 |
-| `GET /spoke/metagen/event` | 글로벌 생성 실행 이벤트 이력 (`METAGEN.RUN_COMPLETE`, `METAGEN.RUN_FAILED`) |
-| `GET /spoke/metagen/item` | 데이터셋 전반의 아이템 목록 (페이지네이션·`dataset_urn`·`kind`·`status` 필터) |
-| `GET /spoke/metagen/item/{composite_id}` | `{dataset_urn}::{item_id}` 복합 ID로 아이템과 모든 후보 조회 |
-| `PUT/PATCH/GET/DELETE /spoke/common/data/{urn}/attr/metagen/conf` | 데이터셋별 경계 (`is_enabled`, `allowed`) |
+| `GET/POST /spoke/metagen/conf` | conf 목록 / conf 생성 (`name` + 위 필드 표); 이름 중복 시 `409 METAGEN_CONF_EXISTS` |
+| `GET/PUT/PATCH/DELETE /spoke/metagen/conf/{conf_id}` | conf별 CRUD. 삭제 시 이 conf의 대기 후보는 제거하고 이미 승인된 후보는 분리(detach)한다 |
+| `POST /spoke/metagen/conf/{conf_id}/method/run` | 한 conf의 수동 생성 실행 트리거. body `{"dataset_urns": [...]}`은 선택; `?dry_run=true`는 기록 없이 평가만. 같은 conf의 동시 실행은 `409 METAGEN_RUNNING`, 비활성 conf의 비-dry-run은 `409 METAGEN_DISABLED` 반환 |
+| `GET /spoke/metagen/conf/{conf_id}/event` | conf별 생성 실행 이벤트 이력 (`METAGEN.RUN_COMPLETE`, `METAGEN.RUN_FAILED`) |
+| `GET /spoke/metagen/uncovered` | 어떤 conf도 도달하지 못한 등록 데이터셋; `?include_disallowed=true`는 경계로 차단된 데이터셋도 포함. 각 행은 `reason`을 가진다 |
+| `GET /spoke/metagen/event` | 모든 conf의 생성 실행 이벤트를 합친(union) 피드 |
+| `GET /spoke/metagen/item` | 데이터셋·conf 전반의 아이템 목록 (페이지네이션·`dataset_urn`·`kind`·`status`·`conf_id` 필터); 후보는 `conf_id`/`conf_name` 노출 |
+| `GET /spoke/metagen/item/{composite_id}` | `{dataset_urn}::{item_id}` 복합 ID로 아이템과 모든 후보(각자의 `conf_id`/`conf_name` 포함) 조회 |
+| `PUT/PATCH/GET/DELETE /spoke/common/data/{urn}/attr/metagen/boundary` | 데이터셋별 경계 (`is_enabled`, `allowed`) |
 | `GET /spoke/common/data/{urn}/attr/metagen/item` | 한 데이터셋의 아이템 목록 |
 | `GET /spoke/common/data/{urn}/attr/metagen/item/{item_id}` | 아이템과 모든 후보 |
-| `POST /spoke/common/data/{urn}/attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review` | 단일 후보 승인·거부 — body `{ "verdict": "approve"\|"reject", "reason": "…" }`. 승인 시 DataHub emit과 아이템 잠금 |
+| `POST /spoke/common/data/{urn}/attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review` | 단일 후보 승인·거부 — body `{ "verdict": "approve"\|"reject", "reason": "…" }`. 승인 시 DataHub emit과 conf 전반에 걸친 아이템 잠금 |
 | `GET /spoke/common/data/{urn}/event/metagen` | 데이터셋별 metagen 이벤트 (`METAGEN.CANDIDATE_APPROVE`, `METAGEN.CANDIDATE_REJECT`) |
 
 ### Imazon 예시
 
-**Conf.** 거버넌스 팀이 metagen을 글로벌하게 활성화한다:
+**conf.** Imazon은 서로 다른 데이터셋 그룹에 두 개의 문서화 정책을 운영한다.
+풀필먼트 플랫폼 팀은 풀필먼트 태그 데이터셋을 스코프로 하는 일일 conf를 소유하고,
+프라이버시 오피스는 EU 거주 데이터셋을 스코프로 하며 예산을 더 빡빡하게 잡은
+별도 주간 conf를 소유한다:
 
 ```http
-PUT /api/v1/spoke/metagen/attr/conf
+POST /api/v1/spoke/metagen/conf
 ```
 ```json
 {
+  "name": "fulfillment",
   "is_enabled": true,
   "schedule_tier": "daily",
   "dataset_filter": {"tags": ["urn:li:tag:area:fulfillment"]},
@@ -572,11 +589,31 @@ PUT /api/v1/spoke/metagen/attr/conf
 }
 ```
 
-**경계.** 고객 팀이 `customers.eu_profiles`를 두 종류 모두 옵트인하고, 주문 팀은
+```http
+POST /api/v1/spoke/metagen/conf
+```
+```json
+{
+  "name": "eu-privacy",
+  "is_enabled": true,
+  "schedule_tier": "weekly",
+  "dataset_filter": {"origin": "EU", "glossary_terms": ["urn:li:glossaryTerm:pii.gdpr"]},
+  "result_limit": 2,
+  "overwrite_pending": false
+}
+```
+
+각 `POST`는 conf의 `id`와 함께 `201`을 반환한다. `imazon.orders.events`는
+`fulfillment` conf 스코프에, `customers.eu_profiles`는 (풀필먼트 태그이면서 GDPR
+범위이므로) 두 conf 스코프 모두에 들어가므로 두 conf 모두 이 데이터셋에 제안할 수
+있다.
+
+**경계.** conf는 옵트인한 데이터셋에만 생성한다. 고객 팀이
+`customers.eu_profiles`를 두 종류 모두 옵트인하고, 주문 팀은
 `imazon.orders.events`를 컬럼 설명에 한해 옵트인한다:
 
 ```http
-PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.customers.eu_profiles,DEV)/attr/metagen/conf
+PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.customers.eu_profiles,EU)/attr/metagen/boundary
 ```
 ```json
 {
@@ -585,58 +622,70 @@ PUT /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,examp
 }
 ```
 
-**실행.** 일일 Airflow DAG가 실행되거나, 리뷰어가 즉시 실행을 트리거한다:
+**실행.** tier DAG가 스케줄대로 실행되거나, 리뷰어가 한 conf의 즉시 실행을
+트리거한다:
 
 ```http
-POST /api/v1/spoke/metagen/method/run
+POST /api/v1/spoke/metagen/conf/{eu-privacy-conf-id}/method/run
 ```
 
-**아이템 조회.** 실행 후, 대시보드가 해당 데이터셋의 아이템 목록을 받는다:
+**uncovered 점검.** 거버넌스 리드가 어떤 conf도 문서화하지 않는 대상을 감사한다:
 
 ```http
-GET /api/v1/spoke/common/data/urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.customers.eu_profiles,DEV)/attr/metagen/item
+GET /api/v1/spoke/metagen/uncovered?include_disallowed=true
 ```
 
-`dataset.description` 아이템 하나와 컬럼당 `column.<fieldPath>.description`
-아이템이 반환된다. 데이터셋 설명 아이템을 살펴보면:
+어떤 conf에도 매칭되지 않은 `imazon.warehouse.bins`는 `reason: no_conf_match`로,
+풀필먼트 태그이지만 경계가 비활성인 테이블은 `reason: boundary_blocked`로 반환된다.
+
+**글로벌 큐 조회.** 실행 후, 리뷰 큐가 데이터셋·conf 전반의 모든 아이템을 나열한다:
 
 ```http
-GET .../attr/metagen/item/dataset.description
+GET /api/v1/spoke/metagen/item?dataset_urn=...customers.eu_profiles...
 ```
+
+`customers.eu_profiles`의 데이터셋 설명 아이템을 살펴보면 두 conf의 후보가 함께
+보인다:
 
 ```
 item_id: dataset.description
 kind:    dataset.description
-status:  pending           # 아직 승인된 후보 없음
-candidates (3 of result_limit=3):
-  - candidate_id: c1   status: llm_approved   confidence 0.92
+status:  pending                 # 아직 승인된 후보 없음
+candidates:
+  - candidate_id: c1   conf: fulfillment   status: llm_approved   confidence 0.92
       "# EU 고객 프로필\n\nEU 지역의 GDPR 범위 고객 계정..."
-  - candidate_id: c2   status: llm_approved   confidence 0.88
-      "# Customers (EU)\n\nEU 고객의 권위 있는 프로필 레코드..."
-  - candidate_id: c3   status: llm_approved   confidence 0.85
+  - candidate_id: c2   conf: eu-privacy    status: llm_approved   confidence 0.90
+      "# Customers (EU)\n\nGDPR 통제 하의 권위 있는 프로필 레코드..."
+  - candidate_id: c3   conf: fulfillment   status: llm_approved   confidence 0.85
       "EU profiles 테이블 — EU 관할 등록 고객 계정..."
 ```
 
-**리뷰.** 리뷰어가 `c1`을 승인하고, `c3`을 거부하고, `c2`는 그대로 둔다:
+**리뷰.** 리뷰어가 프라이버시 오피스의 표현 `c2`를 승인하고, `c3`을 거부하고,
+`c1`은 그대로 둔다. 리뷰는 데이터셋 표면에서 이뤄진다:
 
 ```http
-POST .../attr/metagen/item/dataset.description/candidate/c1/method/review
-{ "verdict": "approve", "reason": "EU/GDPR 범위를 가장 잘 표현했음." }
+POST .../attr/metagen/item/dataset.description/candidate/c2/method/review
+{ "verdict": "approve", "reason": "GDPR 범위를 가장 잘 담았음." }
 
 POST .../attr/metagen/item/dataset.description/candidate/c3/method/review
 { "verdict": "reject", "reason": "내용이 부족하고 핵심 사실을 빠뜨림." }
 ```
 
-`c1` 승인 호출 시 DataSpoke는 그 값을 데이터셋의
+`c2` 승인 호출 시 DataSpoke는 그 값을 데이터셋의
 `editableDatasetProperties.description`에 기록한다. 아이템 상태는
-`status: approved`로 보고된다. `c2`는 보이는 히스토리로 `llm_approved`인
-채 남고, 리뷰어가 마음을 바꾸면 `c2`를 승인할 수 있다(그 호출이 `c1`을
-원자적으로 강등한다). `c3`는 다음 실행 시작 시점에 삭제된다.
+`status: approved`로 보고된다. (`fulfillment` conf의) `c1`은 보이는 히스토리로
+`llm_approved`인 채 남고, 나중에 승인하면 — 서로 다른 conf에 속하더라도 —
+한-아이템-당-하나-승인 불변식이 전역이므로 `c2`를 원자적으로 강등한다. `c3`는
+`fulfillment` conf의 다음 실행 시작 시점에 삭제된다. 승인된 후보가 있는 동안 두
+conf 모두 이 아이템을 건너뛴다.
 
-**이벤트 이력.**
+**이벤트 이력.** 데이터셋별 후보 이벤트는 데이터셋 표면에, 각 conf의 실행 이벤트는
+그 conf의 피드에, union 피드는 모든 conf를 아우른다:
 
 ```http
 GET .../event/metagen
+GET /api/v1/spoke/metagen/conf/{eu-privacy-conf-id}/event
+GET /api/v1/spoke/metagen/event
 ```
 
 ---

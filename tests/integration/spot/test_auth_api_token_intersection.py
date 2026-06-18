@@ -24,8 +24,10 @@ import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-# Simple spoke endpoint used as the write target — auth check fires before body validation
-_WRITE_URL = "/api/v1/spoke/metagen/method/run"
+# Writer-gated spoke endpoint used as the write target — require_writer fires before
+# body validation. The singleton metagen run route became a conf collection; create
+# (POST /spoke/metagen/conf) is the representative writer-gated POST.
+_WRITE_URL = "/api/v1/spoke/metagen/conf"
 # Reader-accessible GET on /spoke/* — use the sources list (bare /spoke/ingestion removed in
 # per-source overhaul; /spoke/ingestion/sources is the correct list route).
 # spec: API.md §Ingestion — GET /spoke/ingestion/sources is Reader-allowed.

@@ -1,10 +1,10 @@
 """Unit tests for data metagen sub-resource routes.
 
 Routes under test:
-  GET    /data/{urn}/attr/metagen/conf
-  PUT    /data/{urn}/attr/metagen/conf
-  PATCH  /data/{urn}/attr/metagen/conf
-  DELETE /data/{urn}/attr/metagen/conf
+  GET    /data/{urn}/attr/metagen/boundary
+  PUT    /data/{urn}/attr/metagen/boundary
+  PATCH  /data/{urn}/attr/metagen/boundary
+  DELETE /data/{urn}/attr/metagen/boundary
   GET    /data/{urn}/attr/metagen/item
   GET    /data/{urn}/attr/metagen/item/{item_id}
   POST   /data/{urn}/attr/metagen/item/{item_id}/candidate/{cid}/method/review
@@ -25,7 +25,6 @@ import pytest
 from src.api.dependencies import get_metagen_service
 from src.api.main import app
 from src.shared.exceptions import ConflictError, EntityNotFoundError, PreconditionFailedError
-
 from tests.unit.api.conftest import auth_headers
 
 _BASE = "/api/v1/spoke/common/data"
@@ -34,7 +33,7 @@ _VALID_URN_ENC = (
     _VALID_URN.replace("(", "%28").replace(")", "%29").replace(",", "%2C")
 )
 
-_BOUNDARY_URL = f"{_BASE}/{_VALID_URN_ENC}/attr/metagen/conf"
+_BOUNDARY_URL = f"{_BASE}/{_VALID_URN_ENC}/attr/metagen/boundary"
 _ITEM_LIST_URL = f"{_BASE}/{_VALID_URN_ENC}/attr/metagen/item"
 _EVENTS_URL = f"{_BASE}/{_VALID_URN_ENC}/event/metagen"
 
@@ -67,6 +66,7 @@ def _make_item_summary_dto(
     kind: str = "dataset.description",
     has_approved: bool = False,
     candidate_count: int = 1,
+    non_rejected_count: int | None = None,
 ) -> MagicMock:
     dto = MagicMock()
     dto.dataset_urn = _VALID_URN
@@ -75,6 +75,11 @@ def _make_item_summary_dto(
     dto.field_path = None
     dto.has_approved = has_approved
     dto.candidate_count = candidate_count
+    # Default: non_rejected_count tracks candidate_count unless the caller overrides
+    # (e.g. an item whose only candidates are rejected → non_rejected_count=0).
+    dto.non_rejected_count = (
+        non_rejected_count if non_rejected_count is not None else candidate_count
+    )
     dto.created_at = datetime.now(tz=UTC)
     dto.updated_at = datetime.now(tz=UTC)
     return dto
@@ -84,9 +89,13 @@ def _make_candidate_dto(
     status: str = "llm_approved",
     candidate_id: str | None = None,
     item_id: str = "dataset.description",
+    conf_id: str | None = None,
+    conf_name: str | None = "catalog-docs",
 ) -> MagicMock:
     dto = MagicMock()
     dto.candidate_id = candidate_id or str(uuid.uuid4())
+    dto.conf_id = conf_id if conf_id is not None else str(uuid.uuid4())
+    dto.conf_name = conf_name
     dto.item_id = item_id
     dto.dataset_urn = _VALID_URN
     dto.value = "A synthetic description from the LLM."
@@ -100,16 +109,18 @@ def _make_candidate_dto(
 
 
 def _make_item_detail_dto(candidates: list | None = None) -> MagicMock:
+    cands = candidates if candidates is not None else [_make_candidate_dto()]
     dto = MagicMock()
     dto.dataset_urn = _VALID_URN
     dto.item_id = "dataset.description"
     dto.kind = "dataset.description"
     dto.field_path = None
-    dto.has_approved = False
-    dto.candidate_count = 1
+    dto.has_approved = any(c.status == "approved" for c in cands)
+    dto.candidate_count = len(cands)
+    dto.non_rejected_count = sum(1 for c in cands if c.status != "rejected")
     dto.created_at = datetime.now(tz=UTC)
     dto.updated_at = datetime.now(tz=UTC)
-    dto.candidates = candidates if candidates is not None else [_make_candidate_dto()]
+    dto.candidates = cands
     return dto
 
 
@@ -130,7 +141,7 @@ def override_service(mock_svc: AsyncMock):
 
 @pytest.mark.asyncio
 async def test_get_boundary_without_token_returns_401(client) -> None:
-    """GET /attr/metagen/conf requires a valid JWT.
+    """GET /attr/metagen/boundary requires a valid JWT.
 
     spec: API.md §Authentication — all spoke/common routes require a valid token.
     """
@@ -140,7 +151,7 @@ async def test_get_boundary_without_token_returns_401(client) -> None:
 
 @pytest.mark.asyncio
 async def test_put_boundary_without_token_returns_401(client) -> None:
-    """PUT /attr/metagen/conf requires a valid JWT.
+    """PUT /attr/metagen/boundary requires a valid JWT.
 
     spec: API.md §Authentication — all write routes require valid JWT.
     """
@@ -153,7 +164,7 @@ async def test_put_boundary_without_token_returns_401(client) -> None:
 
 @pytest.mark.asyncio
 async def test_patch_boundary_without_token_returns_401(client) -> None:
-    """PATCH /attr/metagen/conf requires a valid JWT.
+    """PATCH /attr/metagen/boundary requires a valid JWT.
 
     spec: API.md §Authentication — all write routes require valid JWT.
     """
@@ -163,7 +174,7 @@ async def test_patch_boundary_without_token_returns_401(client) -> None:
 
 @pytest.mark.asyncio
 async def test_delete_boundary_without_token_returns_401(client) -> None:
-    """DELETE /attr/metagen/conf requires a valid JWT.
+    """DELETE /attr/metagen/boundary requires a valid JWT.
 
     spec: API.md §Authentication — all write routes require valid JWT.
     """
@@ -207,7 +218,7 @@ async def test_get_events_without_token_returns_401(client) -> None:
 
 @pytest.mark.asyncio
 async def test_get_boundary_returns_200_when_present(client, mock_svc: AsyncMock) -> None:
-    """GET /attr/metagen/conf returns 200 with boundary fields when one exists.
+    """GET /attr/metagen/boundary returns 200 with boundary fields when one exists.
 
     spec: API.md §Data Resource — GET returns 200 when resource present.
     spec: feature/BACKEND.md §Metadata Generation Service §Boundary CRUD.
@@ -227,7 +238,7 @@ async def test_get_boundary_returns_200_when_present(client, mock_svc: AsyncMock
 
 @pytest.mark.asyncio
 async def test_get_boundary_returns_null_when_absent(client, mock_svc: AsyncMock) -> None:
-    """GET /attr/metagen/conf returns null body (200) when no boundary exists.
+    """GET /attr/metagen/boundary returns null body (200) when no boundary exists.
 
     spec: API.md §Data Resource — absent boundary is a 200 null, not 404.
     """
@@ -241,7 +252,7 @@ async def test_get_boundary_returns_null_when_absent(client, mock_svc: AsyncMock
 
 @pytest.mark.asyncio
 async def test_put_boundary_returns_200_with_boundary_fields(client, mock_svc: AsyncMock) -> None:
-    """PUT /attr/metagen/conf returns 200 with boundary fields (create-or-replace).
+    """PUT /attr/metagen/boundary returns 200 with boundary fields (create-or-replace).
 
     spec: API_DESIGN_PRINCIPLE_en.md §HTTP method semantics — PUT is create-or-replace.
     spec: feature/BACKEND.md §Metadata Generation Service §Boundary CRUD.
@@ -262,7 +273,7 @@ async def test_put_boundary_returns_200_with_boundary_fields(client, mock_svc: A
 
 @pytest.mark.asyncio
 async def test_put_boundary_rejects_invalid_kind(client, mock_svc: AsyncMock) -> None:
-    """PUT /attr/metagen/conf with an unknown 'allowed' kind returns 422.
+    """PUT /attr/metagen/boundary with an unknown 'allowed' kind returns 422.
 
     spec: API.md §Data Resource — metagen boundary allowed values are
     'dataset.description' and 'column.description' only.
@@ -277,8 +288,10 @@ async def test_put_boundary_rejects_invalid_kind(client, mock_svc: AsyncMock) ->
 
 
 @pytest.mark.asyncio
-async def test_put_boundary_with_owner_returns_owner_in_response(client, mock_svc: AsyncMock) -> None:
-    """PUT /attr/metagen/conf with owner returns the owner field in the response body.
+async def test_put_boundary_with_owner_returns_owner_in_response(
+    client, mock_svc: AsyncMock
+) -> None:
+    """PUT /attr/metagen/boundary with owner returns the owner field in the response body.
 
     Spec: spec/feature/BACKEND.md §Metadata Generation Service §Boundary CRUD —
     boundary has optional owner field; PUT round-trips it in the response.
@@ -303,7 +316,7 @@ async def test_put_boundary_with_owner_returns_owner_in_response(client, mock_sv
 
 @pytest.mark.asyncio
 async def test_patch_boundary_returns_200_with_updated_fields(client, mock_svc: AsyncMock) -> None:
-    """PATCH /attr/metagen/conf returns 200 with the updated boundary.
+    """PATCH /attr/metagen/boundary returns 200 with the updated boundary.
 
     spec: API_DESIGN_PRINCIPLE_en.md §HTTP method semantics — PATCH returns 200.
     """
@@ -324,7 +337,7 @@ async def test_patch_boundary_returns_200_with_updated_fields(client, mock_svc: 
 
 @pytest.mark.asyncio
 async def test_delete_boundary_returns_204(client, mock_svc: AsyncMock) -> None:
-    """DELETE /attr/metagen/conf returns 204 No Content.
+    """DELETE /attr/metagen/boundary returns 204 No Content.
 
     spec: API_DESIGN_PRINCIPLE_en.md §HTTP method semantics — DELETE returns 204.
     """
@@ -434,19 +447,20 @@ async def test_get_items_item_status_llm_approved_when_no_approved_but_candidate
 
 
 @pytest.mark.asyncio
-async def test_get_items_item_status_zero_candidates_returns_200_with_string_status(
+async def test_get_items_item_status_pending_when_no_non_rejected_candidates(
     client, mock_svc: AsyncMock
 ) -> None:
-    """Item with has_approved=False and candidate_count=0 returns 200 with a non-null string status.
+    """Item with no non-rejected candidates yields status='pending'.
 
-    # Impl-specific: spec does not define status for items with 0 candidates;
-    # assertion verifies router does not crash, not the exact value.
+    spec: feature/BACKEND.md §Item status — 'pending' when no non-rejected candidates
+    exist for the item yet (a freshly enumerated slot before its first successful run).
     """
     dto_no_cands = _make_item_summary_dto(
         item_id="column.field_b.description",
         kind="column.description",
         has_approved=False,
         candidate_count=0,
+        non_rejected_count=0,
     )
     mock_svc.list_items_for_dataset = AsyncMock(return_value=([dto_no_cands], 1))
 
@@ -454,8 +468,37 @@ async def test_get_items_item_status_zero_candidates_returns_200_with_string_sta
 
     assert resp.status_code == 200
     items = resp.json()["items"]
-    assert isinstance(items[0]["status"], str), (
-        "Router must return a string status even for items with 0 candidates."
+    assert items[0]["status"] == "pending", (
+        "An item with no non-rejected candidates must be 'pending'. "
+        "spec: feature/BACKEND.md §Item status"
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_items_item_status_pending_when_only_rejected_candidates(
+    client, mock_svc: AsyncMock
+) -> None:
+    """Item whose only candidates are rejected yields status='pending' (status is derived
+    over NON-rejected candidates).
+
+    spec: feature/BACKEND.md §Item status — status is derived over non-rejected candidates;
+    'pending' when no non-rejected candidate exists, even if rejected ones do.
+    """
+    dto_rejected_only = _make_item_summary_dto(
+        item_id="dataset.description",
+        has_approved=False,
+        candidate_count=2,  # two candidates exist...
+        non_rejected_count=0,  # ...but both are rejected
+    )
+    mock_svc.list_items_for_dataset = AsyncMock(return_value=([dto_rejected_only], 1))
+
+    resp = await client.get(_ITEM_LIST_URL, headers=auth_headers())
+
+    assert resp.status_code == 200
+    items = resp.json()["items"]
+    assert items[0]["status"] == "pending", (
+        "An item whose only candidates are rejected must be 'pending', not 'llm_approved'. "
+        "spec: feature/BACKEND.md §Item status — derived over non-rejected candidates"
     )
 
 
@@ -509,7 +552,8 @@ async def test_get_item_detail_returns_200_with_candidates(
     spec: API.md §Data Resource — item detail includes candidates.
     spec: feature/BACKEND.md §Metadata Generation Service §Item detail.
     """
-    cand = _make_candidate_dto(status="llm_approved")
+    conf_id = str(uuid.uuid4())
+    cand = _make_candidate_dto(status="llm_approved", conf_id=conf_id, conf_name="catalog-docs")
     detail_dto = _make_item_detail_dto(candidates=[cand])
     mock_svc.get_item_for_dataset = AsyncMock(return_value=detail_dto)
 
@@ -524,6 +568,37 @@ async def test_get_item_detail_returns_200_with_candidates(
     assert len(body["candidates"]) == 1
     assert body["candidates"][0]["status"] == "llm_approved"
     assert body["candidates"][0]["confidence_score"] == pytest.approx(0.87)
+
+
+@pytest.mark.asyncio
+async def test_get_item_detail_candidate_carries_conf_id_and_conf_name(
+    client, mock_svc: AsyncMock
+) -> None:
+    """Each candidate in the item detail carries conf_id and conf_name.
+
+    spec: API.md §Metadata Generation — item detail includes all candidates with
+    conf_id/conf_name (the conf that produced each candidate).
+    """
+    conf_id = str(uuid.uuid4())
+    cand = _make_candidate_dto(status="llm_approved", conf_id=conf_id, conf_name="catalog-docs")
+    detail_dto = _make_item_detail_dto(candidates=[cand])
+    mock_svc.get_item_for_dataset = AsyncMock(return_value=detail_dto)
+
+    resp = await client.get(
+        f"{_ITEM_LIST_URL}/dataset.description",
+        headers=auth_headers(),
+    )
+
+    assert resp.status_code == 200
+    candidate = resp.json()["candidates"][0]
+    assert candidate["conf_id"] == conf_id, (
+        "Candidate must carry the producing conf_id. "
+        "spec: API.md §Metadata Generation — candidate exposes conf_id/conf_name"
+    )
+    assert candidate["conf_name"] == "catalog-docs", (
+        "Candidate must carry the producing conf_name. "
+        "spec: API.md §Metadata Generation — candidate exposes conf_id/conf_name"
+    )
 
 
 @pytest.mark.asyncio
@@ -816,6 +891,7 @@ async def test_get_events_returns_200_with_events_envelope(
     # Auth (require_authenticated) issues one user-lookup query before the
     # route's count + rows queries when an auth header is present.
     from unittest.mock import MagicMock as _MagicMock
+
     from tests.unit.api.conftest import _make_mock_user
 
     auth_result = _MagicMock()

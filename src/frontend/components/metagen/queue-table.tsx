@@ -1,8 +1,13 @@
 "use client";
 
 /**
- * QueueTable — cross-dataset MetaGen item queue with filters.
- * Columns: dataset_urn (link), kind, status, candidate_count.
+ * QueueTable — cross-dataset / cross-conf MetaGen item queue with filters.
+ *
+ * Filters: dataset_urn (text), kind, status, conf_id (select populated from the
+ * conf list). Columns: dataset_urn (link to the owning dataset page where review
+ * happens), kind, field_path, status, candidate_count.
+ *
+ * Spec: spec/feature/FRONTEND_METAGEN.md §Result queue.
  */
 
 import { useState } from "react";
@@ -19,6 +24,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useMetagenQueue } from "@/lib/api/metagen";
+import type { MetagenConf } from "@/types/metagen";
 
 const STATUS_VARIANT: Record<
   string,
@@ -29,10 +35,16 @@ const STATUS_VARIANT: Record<
   approved: "default",
 };
 
-export function QueueTable() {
+interface QueueTableProps {
+  /** Confs available for the conf_id filter select. */
+  confs: MetagenConf[];
+}
+
+export function QueueTable({ confs }: QueueTableProps) {
   const [datasetUrnFilter, setDatasetUrnFilter] = useState("");
   const [kindFilter, setKindFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
+  const [confIdFilter, setConfIdFilter] = useState("");
   const [offset, setOffset] = useState(0);
   const limit = 20;
 
@@ -40,6 +52,7 @@ export function QueueTable() {
     dataset_urn: datasetUrnFilter || undefined,
     kind: kindFilter || undefined,
     status: statusFilter || undefined,
+    conf_id: confIdFilter || undefined,
     offset,
     limit,
   });
@@ -62,13 +75,13 @@ export function QueueTable() {
           }}
         />
         <Select
-          value={kindFilter}
+          value={kindFilter || "all"}
           onValueChange={(v) => {
             setKindFilter(v === "all" ? "" : v);
             setOffset(0);
           }}
         >
-          <SelectTrigger className="h-8 w-48 text-xs">
+          <SelectTrigger className="h-8 w-48 text-xs" aria-label="Filter by kind">
             <SelectValue placeholder="All kinds" />
           </SelectTrigger>
           <SelectContent>
@@ -78,13 +91,13 @@ export function QueueTable() {
           </SelectContent>
         </Select>
         <Select
-          value={statusFilter}
+          value={statusFilter || "all"}
           onValueChange={(v) => {
             setStatusFilter(v === "all" ? "" : v);
             setOffset(0);
           }}
         >
-          <SelectTrigger className="h-8 w-40 text-xs">
+          <SelectTrigger className="h-8 w-40 text-xs" aria-label="Filter by status">
             <SelectValue placeholder="All statuses" />
           </SelectTrigger>
           <SelectContent>
@@ -92,6 +105,25 @@ export function QueueTable() {
             <SelectItem value="pending">pending</SelectItem>
             <SelectItem value="llm_approved">llm_approved</SelectItem>
             <SelectItem value="approved">approved</SelectItem>
+          </SelectContent>
+        </Select>
+        <Select
+          value={confIdFilter || "all"}
+          onValueChange={(v) => {
+            setConfIdFilter(v === "all" ? "" : v);
+            setOffset(0);
+          }}
+        >
+          <SelectTrigger className="h-8 w-48 text-xs" aria-label="Filter by conf">
+            <SelectValue placeholder="All confs" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All confs</SelectItem>
+            {confs.map((c) => (
+              <SelectItem key={c.id} value={c.id}>
+                {c.name}
+              </SelectItem>
+            ))}
           </SelectContent>
         </Select>
       </div>

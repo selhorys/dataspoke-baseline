@@ -12,7 +12,7 @@ Activities:
   /ingestion/list-active  — list source IDs with ACTIVE_CUSTOM_MANAGED configs for a tier
   /ingestion/run          — execute ingestion pipeline for a single source
   /ingestion/sync         — reconcile all ingestion sources + dataset_registry against DataHub
-  /metagen/run            — execute global metagen inference pipeline (singleton)
+  /metagen/run            — run every enabled metagen conf matching the fired tier
   /metrics/list-active    — list metric IDs with is_enabled=True for a tier
   /metrics/run            — execute metric measurement for a single metric
   /ontogen/run            — execute the ontogen inference pipeline (singleton)
@@ -131,7 +131,6 @@ async def ingestion_sync() -> dict[str, object]:
     try:
         async with make_db_session() as db:
             from src.backend.ingestion.service import IngestionService
-            from src.shared.exceptions import DataHubUnavailableError
 
             datahub = await make_datahub(db)
             service = IngestionService(datahub=datahub, db=db)
@@ -153,47 +152,87 @@ class MetagenRunRequest(BaseModel):
 
 @router.post("/metagen/run")
 async def metagen_run(body: MetagenRunRequest) -> dict[str, object]:
-    """Execute the metagen pipeline (singleton).
+    """Execute the metagen pipeline across every enabled conf matching ``tier``.
 
-    Called by the three metagen tier DAGs. Each tier DAG supplies ``tier``;
-    the activity short-circuits when ``tier`` does not match
-    ``metagen_config.schedule_tier`` so only the one DAG matching the conf
-    actually runs. Manual API calls (``POST /spoke/metagen/method/run``)
-    call MetagenService.run() directly in-process.
+    Called by the three metagen tier DAGs. Each tier DAG supplies ``tier``; the
+    activity enumerates all ``is_enabled=true`` confs whose ``schedule_tier``
+    matches and runs each one under its own per-conf lock
+    (``metagen:running:{conf_id}``). A conf already in flight (its lock held) is
+    skipped for this tick. Per-conf results are aggregated in the response.
 
-    Spec: feature/BACKEND.md §DAG Catalogue tier-DAG selection.
+    Spec: feature/BACKEND.md §Scheduled fan-out.
     """
-    try:
-        async with make_db_session() as db:
-            from src.backend.admin.config_service import get_runtime_config
-            from src.backend.metagen.service import MetagenService
+    from src.backend.admin.config_service import get_runtime_config
+    from src.backend.metagen.service import MetagenService
+    from src.shared.exceptions import ConflictError
 
-            datahub = await make_datahub(db)
-            rc = await get_runtime_config(db)
-            cache = make_redis_client(stub=rc.stub_redis_client)
-            vector = make_pgvector_manager(stub=rc.stub_pgvector_manager)
-            llm = make_llm_client(stub=rc.stub_llm_client, provider=rc.llm_provider, model=rc.llm_model)
-            service = MetagenService(datahub=datahub, db=db, cache=cache, llm=llm, vector=vector)
+    async with make_db_session() as db:
+        datahub = await make_datahub(db)
+        rc = await get_runtime_config(db)
+        cache = make_redis_client(stub=rc.stub_redis_client)
+        vector = make_pgvector_manager(stub=rc.stub_pgvector_manager)
+        llm = make_llm_client(
+            stub=rc.stub_llm_client, provider=rc.llm_provider, model=rc.llm_model
+        )
+        service = MetagenService(datahub=datahub, db=db, cache=cache, llm=llm, vector=vector)
 
-            if body.tier is not None:
-                conf = await service.get_global_conf()
-                conf_tier = conf.schedule_tier if conf is not None else None
-                if body.tier != conf_tier:
-                    return {
-                        "status": "skipped",
-                        "reason": "tier_mismatch",
-                        "dag_tier": body.tier,
-                        "conf_tier": conf_tier,
+        # Enumerate enabled confs matching the requested tier.
+        confs, _ = await service.list_confs(offset=0, limit=1000)
+        targets = [
+            c
+            for c in confs
+            if c.is_enabled and (body.tier is None or c.schedule_tier == body.tier)
+        ]
+
+        results: list[dict[str, object]] = []
+        for conf in targets:
+            try:
+                result = await service.run(
+                    conf.id,
+                    dataset_urns=body.dataset_urns,
+                    dry_run=body.dry_run,
+                )
+                results.append({"conf_id": conf.id, "status": "completed", **result.model_dump()})
+            except ConflictError as exc:
+                # A conf already in flight (lock held) is skipped for this tick.
+                if getattr(exc, "error_code", None) == "METAGEN_RUNNING":
+                    results.append(
+                        {"conf_id": conf.id, "status": "skipped", "reason": "already_running"}
+                    )
+                else:
+                    results.append(
+                        {
+                            "conf_id": conf.id,
+                            "status": "failed",
+                            "error_code": getattr(exc, "error_code", None),
+                        }
+                    )
+            except DataSpokeError as exc:
+                results.append(
+                    {
+                        "conf_id": conf.id,
+                        "status": "failed",
+                        "error_code": getattr(exc, "error_code", None),
                     }
+                )
+            except Exception as exc:
+                # Aggregate the failure without aborting the rest of the tier
+                # (BACKEND.md §Scheduled fan-out). The service has already
+                # recorded RUN_FAILED for this conf before re-raising.
+                results.append(
+                    {
+                        "conf_id": conf.id,
+                        "status": "failed",
+                        "error": str(exc),
+                    }
+                )
 
-            result = await service.run(
-                dataset_urns=body.dataset_urns,
-                dry_run=body.dry_run,
-            )
-            return result.model_dump()
-    except DataSpokeError as exc:
-        non_retryable = exc.error_code != "METAGEN_RUNNING" if hasattr(exc, "error_code") else True
-        return _error_response(exc, non_retryable=non_retryable)  # type: ignore[return-value]
+        return {
+            "status": "completed",
+            "tier": body.tier,
+            "conf_count": len(targets),
+            "results": results,
+        }
 
 
 # ── /metrics ──────────────────────────────────────────────────────────────────
@@ -290,7 +329,9 @@ async def ontogen_run(body: OntogenRunRequest) -> dict[str, object]:
             rc = await get_runtime_config(db)
             cache = make_redis_client(stub=rc.stub_redis_client)
             vector = make_pgvector_manager(stub=rc.stub_pgvector_manager)
-            llm = make_llm_client(stub=rc.stub_llm_client, provider=rc.llm_provider, model=rc.llm_model)
+            llm = make_llm_client(
+                stub=rc.stub_llm_client, provider=rc.llm_provider, model=rc.llm_model
+            )
             service = OntogenService(
                 datahub=datahub,
                 db=db,
