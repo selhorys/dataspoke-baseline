@@ -536,7 +536,7 @@ async def test_get_items_respects_offset_and_limit(client, mock_svc: AsyncMock) 
 
     assert resp.status_code == 200
     mock_svc.list_items_for_dataset.assert_called_once_with(
-        _VALID_URN, offset=10, limit=5
+        _VALID_URN, offset=10, limit=5, order_by=None
     )
 
 

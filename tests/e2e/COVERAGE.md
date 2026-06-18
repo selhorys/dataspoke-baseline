@@ -64,7 +64,7 @@ group does not cover the route; the other column does.
 | Route | UC test | Ground test |
 |---|---|---|
 | `/ontogen` | `uc3-01-ontology-generation.spec.ts` step 4 (redirects to `/ontogen/result`) | — |
-| `/ontogen/result` | `uc3-01-ontology-generation.spec.ts` steps 4, 4b (browser: Nodes/Edges/Triples/Graph tabs as compact tables, All/Approved/Unapproved status filter, Graph-tab force-directed canvas, revoke an approved row → rejected; result envelopes) | — |
+| `/ontogen/result` | `uc3-01-ontology-generation.spec.ts` steps 4, 4b (browser: Nodes/Edges/Triples/Graph tabs as compact tables, All/Approved/Unapproved status filter, Graph-tab force-directed canvas, revoke an approved row → reason-confirm dialog → rejected; result envelopes) | `ground/ontogen/result-table.spec.ts` (Created-At SortControl drives `?sort=created_at_asc\|_desc` on the node fetch; shared standard Pagination control present — Rows-per-page selector default 20 + Prev/Next; data-conditional: 6 compact columns + Evidence button → modal when rows exist) |
 | `/ontogen/conf` | `uc3-01-ontology-generation.spec.ts` steps 1, 3 (Run + Edit conf, no Delete; Run dialog) | `ground/ontogen/conf-edit-no-submit.spec.ts` (clicking Edit enters edit mode and fires NO PUT /spoke/ontogen/attr/conf — real-browser guard for the morph-then-submit defect) |
 | `/ontogen/seed` | `uc3-01-ontology-generation.spec.ts` steps 2, 5 (create seed, delete via ConfirmDialog) | — |
 

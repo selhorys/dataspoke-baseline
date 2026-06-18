@@ -614,8 +614,26 @@ test("UC3 step 4b — revoke an approved node via the result table (Reject) roun
   // spec: FRONTEND_ONTOGEN.md §Page contracts — approved row → Reject only (reviewActionsForStatus).
   await expect(nodeRow.first().getByRole("button", { name: "Approve" })).toHaveCount(0);
 
-  // -- UI gesture: click Reject to revoke the approval --
+  // -- UI gesture: click Reject in the row to open the reason confirm dialog --
+  // spec: FRONTEND_ONTOGEN.md §Page contracts — review reason is entered in the Approve/Reject
+  //   confirm popup (no inline reason input); review-row.tsx opens a Dialog with a reason textarea
+  //   and a Confirm action that submits { verdict, reason }.
   await nodeRow.first().getByRole("button", { name: "Reject", exact: true }).click();
+
+  // -- UI assertion: the reason confirm dialog opens with a "Reject node" title --
+  // review-row.tsx — DialogTitle `${activeVerdict === "approve" ? "Approve" : "Reject"} ${kind}`.
+  const rejectDialog = page.getByRole("dialog");
+  await expect(
+    rejectDialog.getByRole("heading", { name: "Reject node", exact: true })
+  ).toBeVisible({ timeout: 5_000 });
+
+  // -- UI gesture: enter an optional reason in the popup (not inline) --
+  // review-row.tsx — <textarea placeholder="reason (optional)"> inside the confirm Dialog.
+  await rejectDialog.getByPlaceholder(/reason/i).fill("revoking after re-review");
+
+  // -- UI gesture: click Confirm to submit { verdict: "reject", reason } --
+  // review-row.tsx — DialogFooter Confirm button fires the review mutation.
+  await rejectDialog.getByRole("button", { name: /^confirm$/i }).click();
 
   // -- UI assertion: a "node rejectd" toast confirms the review posted --
   // review-row.tsx — onSuccess toast title `${kind} ${verdict}d` → "node rejectd".

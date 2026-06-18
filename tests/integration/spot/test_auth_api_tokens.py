@@ -129,7 +129,7 @@ async def test_list_tokens_does_not_expose_raw_token(
     assert list_resp.status_code == 200
     body = list_resp.json()
     assert "tokens" in body
-    assert "total" in body
+    assert "total_count" in body
 
     # Confirm raw token not exposed anywhere in the list response
     response_text = list_resp.text

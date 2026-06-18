@@ -287,9 +287,10 @@ test("UC1 Case 1 step 3 — /ingestion/conf list shows DATAHUB_MANAGED row with 
 
   // -- UI gesture: filter to DATAHUB_MANAGED (regular) --
   // spec: FRONTEND_INGESTION.md §List View — filter via Select (IngestionSourceList)
-  // The filter has no id; locate by its SelectTrigger role (combobox). A source synced from
-  // a DataHub UI definition is ad_hoc=false, so the "DataHub-managed (regular)" option applies.
-  const modeFilter = page.getByRole("combobox");
+  // Target the mode filter by its accessible name (the page also renders the shared
+  // Pagination "Rows per page" combobox). A source synced from a DataHub UI definition is
+  // ad_hoc=false, so the "DataHub-managed (regular)" option applies.
+  const modeFilter = page.getByRole("combobox", { name: "Filter sources by mode" });
   await modeFilter.click();
   await page.getByRole("option", { name: "DataHub-managed (regular)" }).click();
 
