@@ -20,7 +20,7 @@
  *             dataset_filter dataset_urns=[eu_profiles], result_limit, overwrite_pending).
  *             Create conf OE the same way scoped to orders.events.
  *             Backend: POST /spoke/metagen/conf → 201; round-trip fields + dataset_filter.
- *   Step 3 — Opt each dataset in via /metagen/data/[urn] boundary form.
+ *   Step 3 — Opt each dataset in via /data/[urn] (MetaGen panel) boundary form.
  *             Backend: PUT .../attr/metagen/boundary → 200/201; echo dataset_urn + allowed.
  *   Step 4 — Run conf OE then conf EU from their /metagen/conf/[id] detail pages
  *             via the Run dialog. Poll adminApi until each conf's RUN_COMPLETE present.
@@ -30,10 +30,10 @@
  *   Step 6 — /metagen/result global queue lists items; cross-conf event feed shows
  *             both confs' RUN_COMPLETE.
  *             Backend: GET /spoke/metagen/item + GET /spoke/metagen/event union.
- *   Step 7 — /metagen/data/[eu] approve a dataset.description candidate via the
+ *   Step 7 — /data/[eu] (MetaGen panel) approve a dataset.description candidate via the
  *             ItemCard → Review → CandidateCard (conf_name badge) → Approve → ConfirmDialog.
  *             Backend: candidate status=approved; per-candidate conf_name = conf EU.
- *   Step 8 — /metagen/data/[eu] reject a column.description candidate.
+ *   Step 8 — /data/[eu] (MetaGen panel) reject a column.description candidate.
  *             Backend: candidate status=rejected.
  *   Step 9 — Per-dataset events show CANDIDATE_APPROVE + CANDIDATE_REJECT.
  *             Backend: GET .../event/metagen → events with item_id, candidate_id, reason.
@@ -104,8 +104,12 @@ const CONF_LIST_URL = "/metagen/conf";
 const CONF_NEW_URL = "/metagen/conf/new";
 const RESULT_URL = "/metagen/result";
 const UNCOVERED_URL = "/metagen/uncovered";
-const EU_DATASET_URL = `/metagen/data/${EU_PROFILES_ENC}`;
-const OE_DATASET_URL = `/metagen/data/${ORDERS_EVENTS_ENC}`;
+// Per-dataset detail is the unified hub /data/[urn]; the metagen boundary form
+// and candidate items live under its "MetaGen" CollapsiblePanel (open by
+// default), and metagen events fold into the unified "Events" panel.
+// spec: FRONTEND_BASIC.md §Per-dataset page; FRONTEND_METAGEN.md §Detail (moved to /data/[urn])
+const EU_DATASET_URL = `/data/${EU_PROFILES_ENC}`;
+const OE_DATASET_URL = `/data/${ORDERS_EVENTS_ENC}`;
 
 // Repo root for running Python utilities
 const REPO_ROOT = path.resolve(__dirname, "..", "..", "..");
@@ -540,9 +544,9 @@ test("UC4 step 2 — create conf EU and conf OE over different dataset groups", 
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Step 3 — Opt each dataset in via /metagen/data/[urn] boundary form
+// Step 3 — Opt each dataset in via /data/[urn] (MetaGen panel) boundary form
 // spec: USE_CASE_en.md §UC4 — API Mapping — per-dataset boundary opt-in
-// spec: FRONTEND_METAGEN.md §Page contracts — /metagen/data/[urn] PUTs .../attr/metagen/boundary
+// spec: FRONTEND_METAGEN.md §Page contracts — /data/[urn] MetaGen panel PUTs .../attr/metagen/boundary
 // ─────────────────────────────────────────────────────────────────────────────
 test("UC4 step 3 — opt eu_profiles and orders.events in via per-dataset boundaries", async ({
   page,
@@ -558,7 +562,7 @@ test("UC4 step 3 — opt eu_profiles and orders.events in via per-dataset bounda
   });
 
   // -- UI assertion: boundary section heading present --
-  // data/[urn]/page.tsx: <h2>attr/metagen/boundary</h2>
+  // metagen-data-panel.tsx: <h3>attr/metagen/boundary</h3> (matched via getByText)
   await expect(page.getByText("attr/metagen/boundary", { exact: true })).toBeVisible({
     timeout: 10_000,
   });
@@ -790,7 +794,8 @@ test("UC4 step 7 — approve eu_profiles dataset.description candidate (conf_nam
   });
 
   // -- UI assertion: items section + dataset.description sub-heading --
-  // data/[urn]/page.tsx: <h2>attr/metagen/item</h2>, <h3>dataset.description</h3>
+  // metagen-data-panel.tsx: <h3>attr/metagen/item</h3>, <h4>dataset.description</h4>
+  //   (both matched via getByText)
   await expect(page.getByText("attr/metagen/item", { exact: true })).toBeVisible({
     timeout: 10_000,
   });
@@ -1354,11 +1359,15 @@ test("UC4 step 9 — per-dataset events include CANDIDATE_APPROVE and CANDIDATE_
     timeout: 15_000,
   });
 
-  // -- UI assertion: per-dataset events section --
-  // data/[urn]/page.tsx: <h2>event/metagen</h2>
-  await expect(
-    page.getByText("event/metagen", { exact: true }).first(),
-  ).toBeVisible({ timeout: 10_000 });
+  // -- UI assertion: the metagen review events surface in the unified "Events" panel --
+  // The former per-feature "event/metagen" section is folded into the unified
+  // Events panel (a single timeline with a major-type filter; default all checked).
+  // spec: FRONTEND_BASIC.md §Per-dataset page (Events panel).
+  const eventsPanel = page.getByRole("button", { name: /events/i }).first();
+  await expect(eventsPanel).toBeVisible({ timeout: 10_000 });
+  if ((await eventsPanel.getAttribute("aria-expanded")) === "false") {
+    await eventsPanel.click();
+  }
 
   if (approvedEuDescCandidateId) {
     await expect(

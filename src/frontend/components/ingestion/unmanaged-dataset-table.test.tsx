@@ -4,7 +4,7 @@
  * Spec traces:
  *   - spec/feature/FRONTEND_INGESTION.md §Unmanaged View:
  *     paginated table of DataHub datasets covered by no source.
- *     Each row links to /ingestion/data/[urn].
+ *     Each row links to /data/[urn].
  */
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
@@ -57,13 +57,13 @@ describe("UnmanagedDatasetTable — row data", () => {
 // 3. URN link href encoding
 // ---------------------------------------------------------------------------
 describe("UnmanagedDatasetTable — URN link href", () => {
-  it("links each URN to /ingestion/data/{encodedUrn}", () => {
+  it("links each URN to /data/{encodedUrn}", () => {
     const urn =
       "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)";
     render(<UnmanagedDatasetTable datasetUrns={[urn]} />);
     const link = screen.getByRole("link");
     expect((link as HTMLAnchorElement).href).toContain(
-      `/ingestion/data/${encodeURIComponent(urn)}`,
+      `/data/${encodeURIComponent(urn)}`,
     );
   });
 
@@ -72,7 +72,7 @@ describe("UnmanagedDatasetTable — URN link href", () => {
     render(<UnmanagedDatasetTable datasetUrns={[urn]} />);
     const link = screen.getByRole("link");
     expect((link as HTMLAnchorElement).href).toContain(
-      `/ingestion/data/${encodeURIComponent(urn)}`,
+      `/data/${encodeURIComponent(urn)}`,
     );
   });
 });

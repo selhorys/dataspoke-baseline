@@ -17,8 +17,8 @@
  *      Backend: GET /sources/{id}/datasets.
  *   5. Events panel shows INGESTION.COMPLETE for this run.
  *      Backend: GET /sources/{id}/event.
- *   6. Navigate to /ingestion/data/<catalog.title_master urn>.
- *      Assert Ingestion panel names this source; backend: GET attr/ingestion.
+ *   6. Navigate to /data/<catalog.title_master urn> (Ingestion panel).
+ *      Assert the Ingestion panel names this source; backend: GET attr/ingestion.
  *   7. Cleanup: Delete the source via ConfirmDialog.
  *      Backend: GET /sources/{id} → 404.
  *
@@ -402,9 +402,9 @@ test("UC1 Case 2 step 5 — events panel shows INGESTION.COMPLETE for the real r
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Step 6 — Per-dataset reverse-lookup: /ingestion/data/<catalog.title_master urn>
+// Step 6 — Per-dataset reverse-lookup: /data/<catalog.title_master urn>
 // spec: USE_CASE_en.md §UC1 Case 2 step 7
-// spec: FRONTEND_INGESTION.md §Per-dataset reverse-lookup
+// spec: FRONTEND_INGESTION.md §Per-dataset reverse-lookup (moved to /data/[urn])
 // ─────────────────────────────────────────────────────────────────────────────
 test("UC1 Case 2 step 6 — per-dataset reverse-lookup shows owning source", async ({
   page,
@@ -412,17 +412,21 @@ test("UC1 Case 2 step 6 — per-dataset reverse-lookup shows owning source", asy
 }) => {
   if (!sourceId) test.skip();
 
-  // Navigate to the per-dataset ingestion detail page.
-  // spec: FRONTEND_INGESTION.md §Per-dataset reverse-lookup — route /ingestion/data/[urn]
-  await page.goto(`/ingestion/data/${encodeURIComponent(CATALOG_TITLE_URN)}`);
+  // Navigate to the unified per-dataset hub; the reverse-lookup body lives under
+  // the "Ingestion" CollapsiblePanel (open by default).
+  // spec: FRONTEND_BASIC.md §Per-dataset page; FRONTEND_INGESTION.md §Per-dataset reverse-lookup
+  await page.goto(`/data/${encodeURIComponent(CATALOG_TITLE_URN)}`);
   await expect(page).not.toHaveURL(/\/login/);
 
-  // -- UI assertion: Ingestion panel shows the owning source name --
-  // spec: FRONTEND_INGESTION.md §Per-dataset reverse-lookup — source name link, mode badge
-  // exact — avoids also matching the "event/ingestion" heading.
-  await expect(page.getByRole("heading", { name: "Ingestion", exact: true })).toBeVisible({ timeout: 15_000 });
+  // -- UI assertion: the "Ingestion" CollapsiblePanel is present and expanded --
+  // spec: FRONTEND_BASIC.md §Per-dataset page — titled foldable Ingestion panel.
+  // The panel header is a toggle button (aria-expanded), distinct from the
+  // "Ingestion" summary-card title.
+  const ingestionPanel = page.getByRole("button", { name: /ingestion/i }).first();
+  await expect(ingestionPanel).toBeVisible({ timeout: 15_000 });
+  await expect(ingestionPanel).toHaveAttribute("aria-expanded", "true");
 
-  // The source name link must be visible in the Ingestion panel.
+  // The source name link must be visible inside the (open) Ingestion panel.
   await expect(page.getByRole("link", { name: SOURCE_NAME })).toBeVisible({ timeout: 30_000 });
 
   // -- UI assertion: mode badge "Active" visible (modeLabel("ACTIVE_CUSTOM_MANAGED") === "Active") --

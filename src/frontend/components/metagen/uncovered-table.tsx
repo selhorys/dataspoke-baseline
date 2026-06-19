@@ -4,7 +4,7 @@
  * MetagenUncoveredTable — registered datasets reached by no enabled conf.
  *
  * Each row carries a `reason` (no_conf_match / boundary_blocked) and links to
- * its per-dataset metagen page. Read-only.
+ * its unified per-dataset hub (/data/[urn]). Read-only.
  *
  * Spec: spec/feature/FRONTEND_METAGEN.md §Uncovered.
  */
@@ -55,7 +55,7 @@ export function MetagenUncoveredTable({ rows }: MetagenUncoveredTableProps) {
             <TableRow key={row.dataset_urn}>
               <TableCell>
                 <Link
-                  href={`/metagen/data/${encodeURIComponent(row.dataset_urn)}`}
+                  href={`/data/${encodeURIComponent(row.dataset_urn)}`}
                   className="font-mono text-xs hover:underline"
                 >
                   {row.dataset_urn}

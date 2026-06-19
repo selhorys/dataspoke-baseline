@@ -14,7 +14,11 @@ DataSpoke after each partition write.
 | UI route | Title | API base |
 |---|---|---|
 | `/validation` | List | `/spoke/validation` |
-| `/validation/data/[urn]` | Per-dataset detail | `/spoke/common/data/{dataset_urn}/attr/validation/{conf,result}`, `/event/validation` |
+| `/validation/data/[urn]` | Redirect to the unified `/data/[urn]` page (deep-link preserved) | — |
+
+The per-dataset validation detail lives as the **Validation** panel on the unified
+[`/data/[urn]`](FRONTEND_BASIC.md#per-dataset-page-dataurn) page; the dataset's validation events
+fold into that page's unified **Events** panel.
 
 ---
 
@@ -23,7 +27,7 @@ DataSpoke after each partition write.
 | Page | Read | Write |
 |---|---|---|
 | `/validation` | `GET /spoke/validation` | — |
-| `/validation/data/[urn]` | `GET .../attr/validation/conf`, `GET .../attr/validation/result?from&until&limit` (timeseries), `GET .../event/validation?from&to` | `PUT/DELETE .../attr/validation/conf` (fields: `description`, `variables[]`), `POST .../attr/validation/conf/method/restore` |
+| `/data/[urn]` Validation panel | `GET .../attr/validation/conf`, `GET .../attr/validation/result?from&until&limit` (timeseries) | `PUT/DELETE .../attr/validation/conf` (fields: `description`, `variables[]`), `POST .../attr/validation/conf/method/restore` |
 
 Each dataset has one validation slot. The data pipeline runs the validation
 logic and POSTs results to `attr/validation/result`. Teams that need multiple distinct
@@ -43,7 +47,8 @@ the shared [Pagination](FRONTEND_BASIC.md#shared-component-notes) control
 (page-size selector defaulting to 20, Prev/Next, numbered pages) bound to the
 `/spoke/validation` standard `offset`/`limit`/`total_count` envelope.
 
-The detail page is a single editor for `description` plus a variables list.
+The Validation panel on [`/data/[urn]`](FRONTEND_BASIC.md#per-dataset-page-dataurn) is a single
+editor for `description` plus a variables list.
 Each variable row edits both a `name` input and a `description` input in
 place, with an `[×]` remove button (disabled at the minimum of 1 variable);
 `[+ Add]` appends a new `{name, description}` row. The conf read-only view
@@ -62,18 +67,15 @@ auto-scaled, full-width line chart per declared variable stacked in a single
 column (one chart per row), each captioned with the variable's name and
 description so differing value scales do not flatten each other. Both the score
 chart and the per-variable charts draw straight lines (linear interpolation, no
-smoothing). The
-event log consumes `GET .../event/validation` — config lifecycle
-(create/update/delete/restore) plus one `RESULT_RECORDED` entry per accepted result
-POST, each rendered with its `event_type`, status, and detail. A `datetime`
-RangePicker drives this panel, mapping its inclusive `{from, to}` to the
-endpoint's `from`/`to` params. The timeseries
-and event panels (and the list view) poll on a 15s interval, paused while the
-tab is hidden; the selected range is stable per window.
+smoothing). Validation events — config lifecycle (create/update/delete/restore) plus one
+`RESULT_RECORDED` entry per accepted result POST — are not a separate panel here; they appear
+in the page's unified **Events** panel (narrow with `event_major_type=VALIDATION`). The
+timeseries panel (and the list view) polls on a 15s interval, paused while the tab is hidden;
+the selected range is stable per window.
 The header "Latest score" reads the most recent result within the selected
 range window, rendered to 4 decimals.
 
-The detail page's primary action controls all live in the header's top-right
+The Validation panel's primary action controls all live in the panel header's top-right
 cluster and are mode-driven by the GET-conf outcome: an active rule's read-only
 view shows `Edit` and `Delete`; edit mode shows `Cancel` and `Save`; a
 soft-deleted slot (`404 VALIDATION_CONF_REMOVED`) shows **only `Undelete`** — no
@@ -114,12 +116,12 @@ existing create empty-state with the `Create` form.
 │    [ qty_total        — line chart, full width            ]   │
 │    [ user_id_null_cnt — line chart, full width            ]   │
 │                                                               │
-│  event/validation         [ Pagination ]                      │
+│  (validation events fold into the unified Events panel)       │
 └───────────────────────────────────────────────────────────────┘
-        Detail (`/validation/data/[urn]`)
+   Validation panel on `/data/[urn]`
 ```
 
-Write actions on the detail page are rendered only when
+Write actions on the Validation panel are rendered only when
 `role ∈ {Editor, Admin}` — the mode-driven header controls
 (`Edit`/`Delete`/`Cancel`/`Save`/`Create`/`Undelete`) and the inline variables-editor
 controls (`+ Add`/`[×]`) alike. The list view is read-only for every role.

@@ -11,8 +11,17 @@ from src.api.schemas.dataset import DatasetAttributesResponse, DatasetResponse, 
 from src.api.schemas.events import EventListResponse, EventResponse
 from src.backend.dataset.service import DatasetService
 from src.shared.db.models import Event
+from src.shared.events import INGESTION_PREFIX, METAGEN_PREFIX, VALIDATION_PREFIX
 
 sub_router = APIRouter()
+
+# Maps the public ``event_major_type`` filter values to the event-type prefixes
+# used by the unified dataset timeline.
+_MAJOR_TYPE_PREFIX = {
+    "INGESTION": INGESTION_PREFIX,
+    "VALIDATION": VALIDATION_PREFIX,
+    "METAGEN": METAGEN_PREFIX,
+}
 
 
 @sub_router.get("/{dataset_urn}", response_model=DatasetResponse)
@@ -58,12 +67,27 @@ async def get_data_events(
     sort: str | None = Query(default=None),
     from_time: datetime | None = Query(default=None, alias="from"),
     to_time: datetime | None = Query(default=None, alias="to"),
+    event_major_type: list[str] = Query(default=[]),
     service: DatasetService = Depends(get_dataset_service),
 ) -> EventListResponse:
-    """List events for a dataset with time range and pagination."""
+    """List the unified per-dataset event timeline with filtering and pagination.
+
+    The timeline unions the covering source's ingestion runs with the dataset's
+    validation and metagen events. ``event_major_type`` is a repeatable filter
+    (``INGESTION`` / ``VALIDATION`` / ``METAGEN``); omitted means all.
+    """
     order_by = parse_sort(sort, {"occurred_at": Event.occurred_at}, None)
+    prefixes = {
+        _MAJOR_TYPE_PREFIX[m] for m in event_major_type if m in _MAJOR_TYPE_PREFIX
+    }
     events, total_count = await service.get_events(
-        dataset_urn, offset, limit, from_time, to_time, order_by=order_by
+        dataset_urn,
+        offset,
+        limit,
+        from_time,
+        to_time,
+        order_by=order_by,
+        event_type_prefixes=prefixes or None,
     )
     return EventListResponse(
         offset=offset,
@@ -78,6 +102,7 @@ async def get_data_events(
                 status=e.status,
                 detail=e.detail,
                 occurred_at=e.occurred_at,
+                wrapper=e.wrapper,
             )
             for e in events
         ],

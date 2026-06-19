@@ -11,7 +11,7 @@
  *     validation results URL emits `until=` (and `from=`), never `to=`.
  *
  * Strategy mirrors lib/api/ingestion.test.ts: mock @/lib/api/client so apiFetch
- * is a spy recording the URL, drive each hook via renderHook in a QueryClient
+ * is a spy recording the URL, drive the hook via renderHook in a QueryClient
  * wrapper, and assert on the captured URL only (no network).
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -35,7 +35,7 @@ vi.mock("@/lib/api/client", () => ({
   },
 }));
 
-import { useValidationResults, useValidationEvents } from "./validation";
+import { useValidationResults } from "./validation";
 
 function makeWrapper() {
   const qc = new QueryClient({
@@ -102,37 +102,5 @@ describe("useValidationResults — until=to param mapping invariant", () => {
   it("does not fire when datasetUrn is empty", () => {
     renderHook(() => useValidationResults(""), { wrapper: makeWrapper() });
     expect(mockApiFetch).not.toHaveBeenCalled();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Validation events — by contrast use the conventional `to` end-bound.
-// This guards against accidentally unifying the two param names: the event
-// endpoint must keep `to` (spec/feature/FRONTEND_BASIC.md: events receive
-// `from`/`to` directly), proving the `until` divergence is result-specific.
-// ---------------------------------------------------------------------------
-describe("useValidationEvents — conventional to= param", () => {
-  it("emits from= and to= (not until=) for the event endpoint", async () => {
-    mockApiFetch.mockResolvedValue({
-      events: [],
-      total_count: 0,
-      offset: 0,
-      limit: 5,
-    });
-    const from = "2024-01-01T00:00:00.000Z";
-    const to = "2024-02-01T00:00:00.000Z";
-    const { result } = renderHook(
-      () => useValidationEvents(sampleUrn, { from, to }),
-      { wrapper: makeWrapper() },
-    );
-    await waitFor(() => expect(result.current.isSuccess).toBe(true));
-
-    const url = lastUrl();
-    expect(url).toContain(`from=${encodeURIComponent(from)}`);
-    expect(url).toContain(`to=${encodeURIComponent(to)}`);
-    expect(url).not.toContain("until=");
-    expect(url).toContain(
-      `/spoke/common/data/${encodeURIComponent(sampleUrn)}/event/validation`,
-    );
   });
 });

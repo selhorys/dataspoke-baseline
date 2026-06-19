@@ -25,10 +25,11 @@ group/submenu pattern of [FRONTEND_INGESTION.md](FRONTEND_INGESTION.md).
 | `/metagen/conf/[id]` | Conf detail (fields, run, per-conf events) | `GET /spoke/metagen/conf/{conf_id}` |
 | `/metagen/result` | Global cross-dataset review queue + cross-conf events | `GET /spoke/metagen/item`, `GET /spoke/metagen/event` |
 | `/metagen/uncovered` | Datasets reached by no conf | `GET /spoke/metagen/uncovered` |
-| `/metagen/data/[urn]` | Per-dataset boundary + items + candidate review | `GET /spoke/common/data/{dataset_urn}/attr/metagen/{boundary,item}`, `…/event/metagen` |
+| `/metagen/data/[urn]` | Redirect to the unified `/data/[urn]` page (deep-link preserved) | — |
 
-The per-dataset page (`/metagen/data/[urn]`) mirrors the per-dataset pages of
-Ingestion (`/ingestion/data/[urn]`) and Validation (`/validation/data/[urn]`).
+The per-dataset metagen detail (boundary + items + candidate review) lives as the **MetaGen**
+panel on the unified [`/data/[urn]`](FRONTEND_BASIC.md#per-dataset-page-dataurn) page; the
+dataset's metagen events fold into that page's unified **Events** panel.
 
 ---
 
@@ -39,9 +40,9 @@ Ingestion (`/ingestion/data/[urn]`) and Validation (`/validation/data/[urn]`).
 | `/metagen/conf` | `GET /spoke/metagen/conf` | — (a "Create conf" button routes to `/metagen/conf/new`) |
 | `/metagen/conf/new` | — | `POST /spoke/metagen/conf` (fields: `name`, `is_enabled`, `schedule_tier`, `dataset_filter`, `result_limit`, `overwrite_pending`) |
 | `/metagen/conf/[id]` | `GET /spoke/metagen/conf/{conf_id}`, `GET /spoke/metagen/conf/{conf_id}/event` | `PUT/PATCH /spoke/metagen/conf/{conf_id}`; `DELETE /spoke/metagen/conf/{conf_id}`; `POST /spoke/metagen/conf/{conf_id}/method/run` (optional body `{dataset_urns?}`; `?dry_run=true`) |
-| `/metagen/result` | `GET /spoke/metagen/item`, `GET /spoke/metagen/event` | — (review happens on `/metagen/data/[urn]`) |
+| `/metagen/result` | `GET /spoke/metagen/item`, `GET /spoke/metagen/event` | — (review happens on the MetaGen panel of `/data/[urn]`) |
 | `/metagen/uncovered` | `GET /spoke/metagen/uncovered` (with `include_disallowed` toggle) | — |
-| `/metagen/data/[urn]` | `GET …/attr/metagen/boundary`, `GET …/attr/metagen/item`, `GET …/attr/metagen/item/{item_id}` (per-item candidates), `GET …/event/metagen` | `PUT/PATCH/DELETE …/attr/metagen/boundary` (fields: `is_enabled`, `allowed[]`, `owner`); `POST …/attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review` body `{verdict: "approve"\|"reject", reason}` |
+| `/data/[urn]` MetaGen panel | `GET …/attr/metagen/boundary`, `GET …/attr/metagen/item`, `GET …/attr/metagen/item/{item_id}` (per-item candidates) | `PUT/PATCH/DELETE …/attr/metagen/boundary` (fields: `is_enabled`, `allowed[]`, `owner`); `POST …/attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review` body `{verdict: "approve"\|"reject", reason}` |
 
 `dataset_filter` follows the standard four-dimension shape — see
 [API §Metric `dataset_filter`](../API.md#metric-spokegovernancemetric).
@@ -76,10 +77,10 @@ A paginated cross-dataset, cross-conf queue of items (filterable by
 `field_path`, `status`, and a `candidate_count` column
 (`GET /spoke/metagen/item`). An item aggregates candidates from one or more
 confs, so there is no single producing conf per row; `conf_id`/`conf_name`
-surface per-candidate at the item detail (see [Per-dataset](#per-dataset-metagendataurn)),
+surface per-candidate at the item detail (see [Per-dataset](#per-dataset-dataurn-metagen-panel)),
 and the `conf_id` filter narrows the queue to items holding a candidate from
 that conf. Each row links to the owning dataset page
-(`/metagen/data/[urn]`) where the candidate review happens. A second tab/section
+(`/data/[urn]`) where the candidate review happens. A second tab/section
 shows the cross-conf event feed (`GET /spoke/metagen/event`) with a `datetime`
 [RangePicker](FRONTEND_BASIC.md#shared-component-notes).
 
@@ -93,9 +94,10 @@ rows; on additionally shows `boundary_blocked` rows. This is the metagen
 analogue of the ingestion `/ingestion/unmanaged` view. Each row links to its
 dataset page. Read-only.
 
-## Per-dataset (`/metagen/data/[urn]`)
+## Per-dataset (`/data/[urn]` MetaGen panel)
 
-Shows the boundary (`is_enabled`, `allowed`, `owner`) over
+The MetaGen panel on the unified [`/data/[urn]`](FRONTEND_BASIC.md#per-dataset-page-dataurn) page
+shows the boundary (`is_enabled`, `allowed`, `owner`) over
 `attr/metagen/boundary` and the dataset's items grouped by kind. The header
 renders an enabled/disabled badge beside the dataset URN. Each item renders as
 a card with its candidate sub-cards (carrying the producing `conf_name`) and
@@ -127,11 +129,11 @@ are in [API §Metadata Generation](../API.md#metadata-generation-spokemetagen).
 │   ✓ approved by alice on 2026-05-12 (switchable)     │
 │   (sibling candidates collapsed — expand to view)    │
 └──────────────────────────────────────────────────────┘
-        Detail (`/metagen/data/[urn]`)
+   MetaGen panel on `/data/[urn]`
 ```
 
 Write actions — conf save / delete / `Run` (on `/metagen/conf/*`), boundary
-edits, `Approve`, `Reject` (on `/metagen/data/[urn]`) — render only when
+edits, `Approve`, `Reject` (on the MetaGen panel of `/data/[urn]`) — render only when
 `role ∈ {Editor, Admin}`. Reader users see conf values, the item queue, the
 uncovered list, and candidate text, with no action buttons.
 
@@ -145,12 +147,15 @@ uncovered list, and candidate text, with no action buttons.
 - `BoundaryForm` — the per-dataset boundary form (`attr/metagen/boundary`).
 - `ItemCard` — per-item card holding the candidate sub-cards with Approve / Reject and the `conf_name` tag.
 - `CandidateCard` — a single candidate sub-card (value, `confidence_score`, `conf_name` tag, Approve / Reject) rendered inside `ItemCard`.
-- `MetagenEventTable` — shared event table bound to a `…/event` route, paired with a `datetime`
-  [RangePicker](FRONTEND_BASIC.md#shared-component-notes) for the `from`/`to` window.
-- `EventsSection` — the per-dataset events panel on `/metagen/data/[urn]` over `…/event/metagen`.
+- `MetagenEventTable` — shared event table bound to a `…/event` route (conf-detail + cross-conf
+  feeds), paired with a `datetime` [RangePicker](FRONTEND_BASIC.md#shared-component-notes) for the
+  `from`/`to` window.
+- `MetagenDataPanel` — the per-dataset boundary form + item/candidate review, composed by the
+  unified [`/data/[urn]`](FRONTEND_BASIC.md#per-dataset-page-dataurn) page (its metagen events show
+  in that page's unified Events panel).
 
-Every paged table here — `MetagenConfList`, `QueueTable`, `MetagenUncoveredTable`,
-`MetagenEventTable` (conf-detail + cross-conf feeds), and `EventsSection` — uses the shared
+Every paged table here — `MetagenConfList`, `QueueTable`, `MetagenUncoveredTable`, and
+`MetagenEventTable` (conf-detail + cross-conf feeds) — uses the shared
 [Pagination](FRONTEND_BASIC.md#shared-component-notes) control (page-size selector defaulting to
 20, Prev/Next, numbered pages) bound to each endpoint's standard
 `offset`/`limit`/`total_count` envelope; no per-page Prev/Next is hand-rolled.

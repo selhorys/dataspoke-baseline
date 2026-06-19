@@ -116,6 +116,7 @@ ingestion recipe YAML editor) remain one full-width field.
 | `/metagen/conf` | [Metadata Generation — conf list + run](FRONTEND_METAGEN.md) | `/spoke/metagen/conf/...` |
 | `/metagen/result` | [Metadata Generation — global review queue + events](FRONTEND_METAGEN.md) | `/spoke/metagen/{item,event}` |
 | `/metagen/uncovered` | [Metadata Generation — uncovered datasets](FRONTEND_METAGEN.md) | `/spoke/metagen/uncovered` |
+| `/data/[urn]` | [Unified per-dataset page](#per-dataset-page-dataurn) — summary cards + Ingestion/Validation/MetaGen/Events panels | `/spoke/common/data/{urn}/...` (attr, event, validation, metagen) |
 | `/settings` | Theme, locale, and timezone (Local or UTC, **default Local**) toggles, persisted in `localStorage` only. The timezone preference is display-only — it governs how all dates and times are rendered across the app; stored and queried timestamps remain canonical UTC ISO per `API.md`. | — |
 
 Route guards layer two checks:
@@ -287,6 +288,63 @@ blur). Frontend code MUST NOT introduce paths under `/spoke/.../stream/...`.
 
 ---
 
+## Per-dataset page (`/data/[urn]`)
+
+The single hub for everything DataSpoke knows about one dataset. It supersedes the former
+per-feature detail routes — `/ingestion/data/[urn]`, `/validation/data/[urn]`, and
+`/metagen/data/[urn]` now **redirect** here (preserving deep links). It consumes only the
+per-dataset `/spoke/common/data/{urn}/…` routes verbatim, no invented endpoints.
+
+Layout, top to bottom:
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  catalog.books                          (dataset URN header)  │
+├──────────────────────────────────────────────────────────────┤
+│  ┌── Ingestion ──┐  ┌── Validation ──┐  ┌── MetaGen ──┐       │
+│  │ source / mode │  │ latest score / │  │ boundary    │       │
+│  │ last-run ●ok  │  │ status         │  │ on? · N cand│       │
+│  └───────────────┘  └────────────────┘  └─────────────┘       │
+├──────────────────────────────────────────────────────────────┤
+│  ▸ Ingestion   (reverse-lookup: owning source, mode, run)     │
+│  ▸ Validation  (conf editor + score/variables charts)         │
+│  ▸ MetaGen     (boundary form + item/candidate review)        │
+│  ▾ Events      [INGESTION][VALIDATION][METAGEN] [RangePicker]  │
+│      one table — all event types, newest first  [Pagination]  │
+└──────────────────────────────────────────────────────────────┘
+```
+
+- **Summary cards** — three horizontal cards giving an at-a-glance status:
+  - *Ingestion* — owning source / ingestor and last-run status, from
+    `GET …/attr/ingestion`.
+  - *Validation* — latest score / status, from `GET …/attr/validation/conf` +
+    most-recent `…/attr/validation/result`.
+  - *MetaGen* — boundary `is_enabled` and pending-candidate count, from
+    `GET …/attr/metagen/boundary` + `…/attr/metagen/item`.
+
+- **Four foldable panels** — each a [CollapsiblePanel](#shared-component-notes):
+  - *Ingestion* — the `IngestionDataPanel` reverse-lookup display
+    (see [FRONTEND_INGESTION](FRONTEND_INGESTION.md#per-dataset-reverse-lookup-unified-dataurn)).
+  - *Validation* — the `ValidationDataPanel` conf read-only / edit / create / Undelete editor plus
+    the score and per-variable charts
+    (see [FRONTEND_VALIDATION](FRONTEND_VALIDATION.md)).
+  - *MetaGen* — the `MetagenDataPanel` boundary form plus item/candidate review
+    (see [FRONTEND_METAGEN](FRONTEND_METAGEN.md#per-dataset-dataurn-metagen-panel)).
+  - *Events* — the unified [EventsPanel](#shared-component-notes): one table over
+    `GET …/event` (the complete per-dataset timeline — ingestion runs ∪ validation ∪ metagen,
+    newest first), driven by an [EventMajorTypeFilter](#shared-component-notes) (default all
+    checked), a `datetime` [RangePicker](#shared-component-notes), and
+    [Pagination](#shared-component-notes). Ingestion rows that originate on a linked wrapper carry
+    a "wrapper" tag; the `detail` cell truncates the compact JSON and is click-to-expand into a
+    pretty-printed dialog.
+
+Write actions inside each panel (validation edits, boundary edits, candidate review) follow the
+same role gating as their source feature — rendered only for `role ∈ {Editor, Admin}`; the API
+enforces the same via `403 READ_ONLY_ROLE`. Panels poll on the standard 15 s interval, paused on
+tab blur (see [Live Updates](#live-updates)).
+
+---
+
 ## Shared Component Notes
 
 These component IDs are referenced from per-function specs.
@@ -306,8 +364,8 @@ These component IDs are referenced from per-function specs.
   `dataset_urns[]`). Reused by Governance metrics, OntoGen conf, and MetaGen conf.
 - **RangePicker** — the single time-window control for every time-windowed
   surface (validation detail results + events, governance metric detail results
-  + events, governance dashboard, ingestion source events, per-dataset ingestion
-  events). It holds a **selection**, not a fixed range: either a named preset —
+  + events, governance dashboard, ingestion source events, the per-dataset page's
+  unified Events panel). It holds a **selection**, not a fixed range: either a named preset —
   Last 1 day, Last 7 days, **Last 2 weeks (default)**, Last 4 weeks, Last 12
   weeks — or a custom calendar range. Two granularities: `date` (calendar only)
   for daily timeseries surfaces, and `datetime` (calendar + start/end time) for
@@ -344,6 +402,21 @@ These component IDs are referenced from per-function specs.
   which names its end-bound `until` rather than `to` (see
   [API.md](../API.md), `attr/validation/result`) — receives `until = to`. It has
   no API of its own; it only shapes the query strings of the reads it drives.
+- **CollapsiblePanel** — a titled, foldable section used to compose the
+  [per-dataset page](#per-dataset-page-dataurn)'s four panels. Header row with a
+  fold/unfold chevron over a body that mounts its feature panel; follows the existing
+  `rounded-lg border` section styling.
+- **EventMajorTypeFilter** — a checkbox-group multi-select over the event major types
+  (`INGESTION` / `VALIDATION` / `METAGEN`), default **all checked**. Maps each checked box to a
+  repeated `event_major_type` query param on `GET …/event`; with all checked it sends none
+  (server returns all). Used by the per-dataset Events panel.
+- **EventsPanel** — the unified per-dataset event table over `GET /spoke/common/data/{urn}/event`
+  (the complete timeline — ingestion ∪ validation ∪ metagen). Composes an
+  [EventMajorTypeFilter](#shared-component-notes), a `datetime`
+  [RangePicker](#shared-component-notes) (→ `from`/`to`), and
+  [Pagination](#shared-component-notes) (→ `offset`/`limit`/`total_count`), and renders each row's
+  `event_type`, `occurred_at`, `status`, and a click-to-expand `detail` cell; ingestion rows whose
+  derived `wrapper` flag is set carry a "wrapper" tag.
 - **ConfirmDialog** — destructive-action gate (revoke token, delete config).
 - **Pagination** — the single pagination control for every paged table across all
   features. It exposes a **page-size selector** (20 / 50 / 100, default **20**), **Prev /

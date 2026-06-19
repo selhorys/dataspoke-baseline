@@ -7,7 +7,6 @@ import type {
   ValidationListResponse,
   ValidationConfResponse,
   ValidationResultListResponse,
-  ValidationEventListResponse,
 } from "@/types/validation";
 
 // ── Cross-dataset list ─────────────────────────────────────────────────────────
@@ -145,38 +144,6 @@ export function useValidationResults(
     queryKey: ["validation", "results", datasetUrn, params],
     queryFn: () =>
       apiFetch<ValidationResultListResponse>(buildResultUrl(datasetUrn, params)),
-    enabled: !!datasetUrn,
-    meta: { handledInline: true },
-  });
-}
-
-// ── Event log ──────────────────────────────────────────────────────────────────
-
-interface ValidationEventParams {
-  offset?: number;
-  limit?: number;
-  from?: string;
-  to?: string;
-}
-
-function buildEventUrl(datasetUrn: string, params: ValidationEventParams): string {
-  const sp = new URLSearchParams();
-  if (params.offset !== undefined) sp.set("offset", String(params.offset));
-  sp.set("limit", String(params.limit ?? 20));
-  if (params.from) sp.set("from", params.from);
-  if (params.to) sp.set("to", params.to);
-  sp.set("sort", "occurred_at_desc");
-  return `/spoke/common/data/${encodeURIComponent(datasetUrn)}/event/validation?${sp.toString()}`;
-}
-
-export function useValidationEvents(
-  datasetUrn: string,
-  params: ValidationEventParams = {},
-) {
-  return usePoll<ValidationEventListResponse>({
-    queryKey: ["validation", "events", datasetUrn, params],
-    queryFn: () =>
-      apiFetch<ValidationEventListResponse>(buildEventUrl(datasetUrn, params)),
     enabled: !!datasetUrn,
     meta: { handledInline: true },
   });

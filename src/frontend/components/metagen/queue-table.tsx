@@ -166,7 +166,7 @@ export function QueueTable({ confs }: QueueTableProps) {
                 <tr key={item.composite_id} className="hover:bg-muted/30">
                   <td className="px-3 py-2">
                     <Link
-                      href={`/metagen/data/${encodeURIComponent(item.dataset_urn)}`}
+                      href={`/data/${encodeURIComponent(item.dataset_urn)}`}
                       className="font-mono text-xs text-primary hover:underline"
                     >
                       {item.dataset_urn}

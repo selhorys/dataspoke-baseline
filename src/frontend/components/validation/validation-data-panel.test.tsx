@@ -1,19 +1,19 @@
 /**
- * Tests for the validation detail page — deleted-state affordances.
+ * Tests for ValidationDataPanel — the validation body of the unified
+ * /data/[urn] hub — covering the deleted-state freeze/restore affordances.
  *
- * Spec: spec/feature/FRONTEND_VALIDATION.md §Detail page (deleted state) +
+ * Spec: spec/feature/FRONTEND_VALIDATION.md §Detail (moved to /data/[urn]) +
  *       spec/feature/VALIDATION.md §Rule Configuration (freeze + restore):
- *   - A soft-deleted slot returns 404 VALIDATION_CONF_REMOVED — the page shows an
- *     "Undelete" button only (no Create form, no Edit/Delete). Clicking it calls
- *     the restore mutation; the result history is preserved on the backend.
- *   - A never-created slot returns 404 CONFIG_NOT_FOUND — the page shows the
- *     Create form (no Undelete).
+ *   - A soft-deleted slot returns 404 VALIDATION_CONF_REMOVED — the panel shows
+ *     an "Undelete" button only (no Create form, no Edit/Delete). Clicking it
+ *     calls the restore mutation; the result history is preserved on the backend.
+ *   - A never-created slot returns 404 CONFIG_NOT_FOUND — the Create form shows.
  *   - Reader (canWrite=false) sees no write affordances in either state.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, act, fireEvent } from "@testing-library/react";
 import React from "react";
-import ValidationDetailPage from "./page";
+import { ValidationDataPanel } from "./validation-data-panel";
 import { ApiError } from "@/lib/api/client";
 import type { ValidationConfResponse } from "@/types/validation";
 
@@ -41,7 +41,6 @@ vi.mock("@/lib/api/validation", () => ({
   useDeleteValidationConf: () => ({ mutate: vi.fn(), isPending: false, error: null }),
   useRestoreValidationConf: () => mockRestore(),
   useValidationResults: () => ({ data: { results: [], total_count: 0 } }),
-  useValidationEvents: () => ({ data: { events: [], total_count: 0 } }),
 }));
 
 // RangePicker / charts pull in calendar + recharts internals (ResizeObserver,
@@ -89,14 +88,9 @@ function makeConf(): ValidationConfResponse {
   };
 }
 
-async function renderPage() {
-  const params = Promise.resolve({ urn: DATASET_URN });
+async function renderPanel() {
   await act(async () => {
-    render(
-      <React.Suspense fallback={<div data-testid="suspense-fallback" />}>
-        <ValidationDetailPage params={params} />
-      </React.Suspense>,
-    );
+    render(<ValidationDataPanel datasetUrn={DATASET_URN} />);
   });
 }
 
@@ -113,7 +107,7 @@ beforeEach(() => {
 
 // ── VALIDATION_CONF_REMOVED → Undelete-only ─────────────────────────────────────
 
-describe("validation detail — soft-deleted (VALIDATION_CONF_REMOVED)", () => {
+describe("ValidationDataPanel — soft-deleted (VALIDATION_CONF_REMOVED)", () => {
   it("Editor sees only an Undelete button — no Create form, no Edit/Delete", async () => {
     mockUseMe.mockReturnValue({ canWrite: true, isAdmin: false, isEditor: true });
     mockConf.mockReturnValue({
@@ -121,13 +115,11 @@ describe("validation detail — soft-deleted (VALIDATION_CONF_REMOVED)", () => {
       isLoading: false,
       error: makeApiError(404, "VALIDATION_CONF_REMOVED"),
     });
-    await renderPage();
+    await renderPanel();
 
     expect(await screen.findByRole("button", { name: /undelete/i })).toBeTruthy();
-    // No Create form / Create button while frozen.
     expect(screen.queryByTestId("conf-form")).toBeNull();
     expect(screen.queryByRole("button", { name: /^create$/i })).toBeNull();
-    // No Edit/Delete affordances while frozen.
     expect(screen.queryByRole("button", { name: /^edit$/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /^delete$/i })).toBeNull();
   });
@@ -139,12 +131,11 @@ describe("validation detail — soft-deleted (VALIDATION_CONF_REMOVED)", () => {
       isLoading: false,
       error: makeApiError(404, "VALIDATION_CONF_REMOVED"),
     });
-    await renderPage();
+    await renderPanel();
 
     const button = await screen.findByRole("button", { name: /undelete/i });
     fireEvent.click(button);
     expect(restoreMutate).toHaveBeenCalledTimes(1);
-    // Undelete must not trigger a create/replace PUT.
     expect(upsertMutate).not.toHaveBeenCalled();
   });
 
@@ -155,9 +146,8 @@ describe("validation detail — soft-deleted (VALIDATION_CONF_REMOVED)", () => {
       isLoading: false,
       error: makeApiError(404, "VALIDATION_CONF_REMOVED"),
     });
-    await renderPage();
+    await renderPanel();
 
-    // The deleted-state note still renders, but no write affordances.
     expect(screen.queryByRole("button", { name: /undelete/i })).toBeNull();
     expect(screen.queryByTestId("conf-form")).toBeNull();
     expect(screen.queryByRole("button", { name: /^create$/i })).toBeNull();
@@ -166,7 +156,7 @@ describe("validation detail — soft-deleted (VALIDATION_CONF_REMOVED)", () => {
 
 // ── CONFIG_NOT_FOUND → Create form ──────────────────────────────────────────────
 
-describe("validation detail — never created (CONFIG_NOT_FOUND)", () => {
+describe("ValidationDataPanel — never created (CONFIG_NOT_FOUND)", () => {
   it("Editor sees the Create form and Create button — no Undelete", async () => {
     mockUseMe.mockReturnValue({ canWrite: true, isAdmin: false, isEditor: true });
     mockConf.mockReturnValue({
@@ -174,11 +164,10 @@ describe("validation detail — never created (CONFIG_NOT_FOUND)", () => {
       isLoading: false,
       error: makeApiError(404, "CONFIG_NOT_FOUND"),
     });
-    await renderPage();
+    await renderPanel();
 
     expect(await screen.findByTestId("conf-form")).toBeTruthy();
     expect(screen.getByRole("button", { name: /^create$/i })).toBeTruthy();
-    // Never-created is not restorable: no Undelete.
     expect(screen.queryByRole("button", { name: /undelete/i })).toBeNull();
   });
 
@@ -189,7 +178,7 @@ describe("validation detail — never created (CONFIG_NOT_FOUND)", () => {
       isLoading: false,
       error: makeApiError(404, "CONFIG_NOT_FOUND"),
     });
-    await renderPage();
+    await renderPanel();
 
     expect(screen.queryByTestId("conf-form")).toBeNull();
     expect(screen.queryByRole("button", { name: /^create$/i })).toBeNull();
@@ -199,16 +188,15 @@ describe("validation detail — never created (CONFIG_NOT_FOUND)", () => {
 
 // ── Active conf → no Undelete, Edit/Delete present ──────────────────────────────
 
-describe("validation detail — active conf", () => {
+describe("ValidationDataPanel — active conf", () => {
   it("Editor sees Edit + Delete and no Undelete; an active rule is not restorable", async () => {
     mockUseMe.mockReturnValue({ canWrite: true, isAdmin: false, isEditor: true });
     mockConf.mockReturnValue({ data: makeConf(), isLoading: false, error: null });
-    await renderPage();
+    await renderPanel();
 
     expect(await screen.findByRole("button", { name: /^edit$/i })).toBeTruthy();
     expect(screen.getByRole("button", { name: /^delete$/i })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /undelete/i })).toBeNull();
-    // No Create form while a conf exists.
     expect(screen.queryByTestId("conf-form")).toBeNull();
   });
 });

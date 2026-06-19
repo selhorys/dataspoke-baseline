@@ -167,8 +167,26 @@ they invoke the loop.
 `GET /data/{urn}/event`)
 
 Thin read-through service. Reads dataset identity/attributes from DataHub, aggregates
-cross-domain event history from the unified `events` table. Does not own any PostgreSQL
-configuration tables.
+cross-domain event history into the **unified per-dataset timeline** (`GET /data/{urn}/event`).
+Does not own any PostgreSQL configuration tables.
+
+**Unified timeline aggregation**: a dataset's events live in two places — validation and
+metagen events are booked on `entity_type="dataset"` (`entity_id=urn`), while ingestion run
+events are booked on the owning **source** (`entity_type="ingestion_source"`), not on the
+dataset. `get_events` therefore unions two streams:
+
+1. **Dataset-level events** — the `entity_type="dataset"` rows for this `urn` (validation
+   `RESULT_RECORDED`, metagen `CANDIDATE_APPROVE`/`CANDIDATE_REJECT`).
+2. **Ingestion runs** — reverse-looked-up via `IngestionService.reverse_lookup(urn)` to find
+   the covering source, then that source's aggregated run events (the source-and-wrappers union
+   already used by `GET /spoke/ingestion/sources/{id}/event`, see [§Querying Events](#querying-events)),
+   each row carrying the derived `wrapper: bool`.
+
+The two streams are merged, sorted `occurred_at` newest-first, filtered by `from`/`to` and by
+the repeatable `event_major_type` prefix set (`INGESTION`/`VALIDATION`/`METAGEN`; omitted = all),
+then paginated in-memory (per-dataset event volume is small) with a correct `total_count`. The
+`wrapper` flag is carried through unchanged; rows that are not ingestion events report
+`wrapper: false`.
 
 **DataHub aspects read**: `datasetProperties`, `editableDatasetProperties`, `ownership`,
 `globalTags`, `glossaryTerms`, `schemaMetadata`, `editableSchemaMetadata`.
@@ -990,7 +1008,7 @@ by every domain that owns a config — `INGESTION`, `VALIDATION`, `METRIC`,
 
 | Domain (`entity_type`) | Action | Trigger |
 |---|---|---|
-| `INGESTION` (`dataset`) | `COMPLETE` / `FAIL` | An ingestion run completes — `ACTIVE_CUSTOM_MANAGED` via `POST sources/{id}/method/run` inline; `DATAHUB_MANAGED`/`PASSIVE` mirrored by the sync sweep. For sync-mirrored `DATAHUB_MANAGED` rows, `detail.execution_request_urn` is the **identity key** (not merely informational): the sweep upserts at most one event per execution-request URN per source (see step 4) |
+| `INGESTION` (`ingestion_source`, `entity_id=source_id`) | `COMPLETE` / `FAIL` | An ingestion run completes — `ACTIVE_CUSTOM_MANAGED` via `POST sources/{id}/method/run` inline; `DATAHUB_MANAGED`/`PASSIVE` mirrored by the sync sweep. Booked on the owning source (not the dataset); projected onto a dataset's timeline via reverse-lookup (see [Querying Events](#querying-events)). For sync-mirrored `DATAHUB_MANAGED` rows, `detail.execution_request_urn` is the **identity key** (not merely informational): the sweep upserts at most one event per execution-request URN per source (see step 4) |
 | `VALIDATION` (`dataset`) | `RESULT_RECORDED` | `POST attr/validation/result` succeeds (one event per accepted result) |
 | `METAGEN` (`metagen`, `entity_id=conf_id`) | `RUN_COMPLETE` / `RUN_FAILED` | per-conf generation run end; `RUN_COMPLETE` recorded for both dry-run and non-dry-run, `dry_run` flag in detail. Detail keys: `run_id` (uuid4), `conf_id`, `conf_name`, `unresolved_urns` (list, same shape as METRIC), `counts` (dict — `items_considered`, `candidates_added`, `candidates_evicted`, `rejected_cleared` on real-run; `items_considered`, `candidates_proposed` on dry-run), `dry_run`, `producer_iterations`, `debate_outcome` (`accept` / `turns_exhausted` / `cycle_detected`) |
 | `METAGEN` (`dataset`) | `CANDIDATE_APPROVE` / `CANDIDATE_REJECT` | `POST attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review` with `verdict: "approve"\|"reject"`. Detail keys: `item_id`, `candidate_id`, `reason` |
@@ -1001,12 +1019,13 @@ by every domain that owns a config — `INGESTION`, `VALIDATION`, `METRIC`,
 
 ### Querying Events
 
-- **Entity-level endpoint** (`GET .../data/{urn}/event`): returns all events
-  for the entity regardless of domain — filters only by `entity_type` +
-  `entity_id`.
-- **Domain-level endpoint** (`GET .../event`): additionally
-  filters by `event_type` prefix (e.g., `INGESTION.%`) to return only
-  domain-specific events.
+- **Per-dataset timeline** (`GET .../data/{urn}/event`): the complete dataset feed.
+  Unions the `entity_type="dataset"` events (validation + metagen) with the covering
+  source's ingestion runs resolved by reverse-lookup — see the
+  [unified timeline aggregation](#dataset-service-srcbackenddataset) on the Dataset Service.
+  Supports the repeatable `event_major_type` prefix filter (`INGESTION`/`VALIDATION`/`METAGEN`).
+- **Domain-level endpoint** (`GET .../event`): filters by `event_type` prefix
+  (e.g., `INGESTION.%`) to return only that domain's events.
 
 For the per-source ingestion event endpoint (`GET /spoke/ingestion/sources/{id}/event`), the base
 query unions the source's own `events` with those of its linked wrapper rows

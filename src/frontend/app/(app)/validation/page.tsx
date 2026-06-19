@@ -100,7 +100,7 @@ export default function ValidationListPage() {
                 <TableCell>
                   <span className="flex items-center gap-2">
                     <Link
-                      href={`/validation/data/${encodeURIComponent(v.dataset_urn)}`}
+                      href={`/data/${encodeURIComponent(v.dataset_urn)}`}
                       className="font-mono text-sm hover:underline"
                     >
                       {v.dataset_urn}

@@ -21,10 +21,13 @@ cross-link to the other.
 | `/ingestion/sources/new` | Create a source (`ACTIVE_CUSTOM_MANAGED` / `PASSIVE`) | `POST /spoke/ingestion/sources` |
 | `/ingestion/sources/[id]` | Source detail (recipe, datasets, runs, events) | `GET /spoke/ingestion/sources/{id}` |
 | `/ingestion/unmanaged` | Datasets covered by no source | `GET /spoke/ingestion/unmanaged` |
-| `/ingestion/data/[urn]` | Per-dataset reverse-lookup (owning source, latest run, events) | `GET /spoke/common/data/{dataset_urn}/attr/ingestion`, `GET …/event/ingestion` |
+| `/ingestion/data/[urn]` | Redirect to the unified per-dataset page `/data/[urn]` (deep-link preserved) | — |
 
-The per-dataset reverse-lookup page mirrors the per-dataset pages of Validation
-(`/validation/data/[urn]`) and MetaGen (`/metagen/data/[urn]`).
+The per-dataset detail lives at the unified **`/data/[urn]`** page (see
+[FRONTEND_BASIC §Per-dataset page](FRONTEND_BASIC.md#per-dataset-page-dataurn)). The
+reverse-lookup display (owning source, mode, latest run) is the **Ingestion** panel there;
+the dataset's ingestion events fold into that page's unified **Events** panel
+(`GET /spoke/common/data/{dataset_urn}/event` with `event_major_type=INGESTION`).
 
 ## List View (`/ingestion/conf`)
 
@@ -98,18 +101,17 @@ A plain paginated table of DataHub datasets covered by no source
 (`GET /spoke/ingestion/unmanaged`). This is the "what's being ingested in an unmanaged way?"
 answer; each row links to its dataset page. Reached via the sidebar `unmanaged` submenu.
 
-## Per-dataset reverse-lookup (`/ingestion/data/[urn]`)
+## Per-dataset reverse-lookup (unified `/data/[urn]`)
 
-An "Ingestion" panel shows the owning source (link to `/ingestion/sources/[id]`), its
-`mode`, and the latest run (spanning the source's own runs and internal-wrapper runs) — from
-`GET /spoke/common/data/{dataset_urn}/attr/ingestion`.
-When no source covers the dataset, the panel says so and links to `/ingestion/unmanaged`.
-Below it, an events table shows per-dataset ingestion events from
-`GET /spoke/common/data/{dataset_urn}/event/ingestion`, with a `datetime`
-[RangePicker](FRONTEND_BASIC.md#shared-component-notes) driving the endpoint's
-`from`/`to` filters; a row whose `wrapper` flag is set carries a "wrapper" tag, and the `detail`
-cell shows the compact JSON truncated to ~30 characters and is click-to-expand into a
-pretty-printed JSON dialog. The page is read-only.
+The reverse-lookup display lives as the **Ingestion** panel on the unified per-dataset page
+(see [FRONTEND_BASIC §Per-dataset page](FRONTEND_BASIC.md#per-dataset-page-dataurn)). The panel
+shows the owning source (link to `/ingestion/sources/[id]`), its `mode`, and the latest run
+(spanning the source's own runs and internal-wrapper runs) — from
+`GET /spoke/common/data/{dataset_urn}/attr/ingestion`. When no source covers the dataset, the
+panel says so and links to `/ingestion/unmanaged`. The page is read-only. The dataset's
+ingestion events are not a separate table here — they appear in the page's unified **Events**
+panel (narrow with `event_major_type=INGESTION`); wrapper-origin rows carry a "wrapper" tag.
+The `IngestionDataPanel` component is composed by the `/data/[urn]` page.
 
 ## Components
 
@@ -120,14 +122,16 @@ pretty-printed JSON dialog. The page is read-only.
 - `SecretRefHelper` — the available-references list (`GET /spoke/ingestion/secrets`) plus the
   read-only authoring guide (kubectl recipe, namespace, `dataspoke-source-cred-` prefix,
   `${name__key}` syntax) shown in the source editor.
-- `IngestionEventTable` — shared event table bound to `…/event`, paired with a `datetime`
-  [RangePicker](FRONTEND_BASIC.md#shared-component-notes) for the `from`/`to` window; renders a
-  "wrapper" tag on rows whose `wrapper` flag is set, and its `detail` cell truncates the JSON to ~30
-  characters and is click-to-expand into a pretty-printed JSON dialog.
+- `IngestionEventTable` — shared event table bound to the per-source `…/sources/{id}/event`,
+  paired with a `datetime` [RangePicker](FRONTEND_BASIC.md#shared-component-notes) for the
+  `from`/`to` window; renders a "wrapper" tag on rows whose `wrapper` flag is set, and its `detail`
+  cell truncates the JSON to ~30 characters and is click-to-expand into a pretty-printed JSON dialog.
+- `IngestionDataPanel` — the per-dataset reverse-lookup display (owning source / mode / latest run),
+  composed by the unified [`/data/[urn]`](FRONTEND_BASIC.md#per-dataset-page-dataurn) page.
 - `UnmanagedDatasetTable` — the unmanaged-bucket list.
 
 Every paged table on these pages — `IngestionSourceList`, `SourceDatasetTable`,
-`IngestionEventTable`, `UnmanagedDatasetTable`, and the per-dataset ingestion-event table — uses
+`IngestionEventTable`, and `UnmanagedDatasetTable` — uses
 the shared [Pagination](FRONTEND_BASIC.md#shared-component-notes) control (page-size selector
 defaulting to 20, Prev/Next, numbered pages) bound to each endpoint's standard
 `offset`/`limit`/`total_count` envelope; no per-page Prev/Next is hand-rolled.

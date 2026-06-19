@@ -17,7 +17,6 @@ import pytest
 from src.api.dependencies import get_dataset_service
 from src.api.main import app
 from src.shared.exceptions import EntityNotFoundError
-
 from tests.unit.api.conftest import auth_headers
 
 _BASE = "/api/v1/spoke/common/data"
@@ -144,6 +143,82 @@ async def test_get_data_events_returns_200_with_events_key(client, mock_svc: Asy
     assert "events" in body
     assert "total_count" in body
     assert body["total_count"] == 0
+
+
+# ── event_major_type → prefix mapping (router layer) ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_get_data_events_major_type_maps_to_prefix(
+    client, mock_svc: AsyncMock
+) -> None:
+    """The repeatable ``event_major_type`` query param maps to the service's
+    ``event_type_prefixes`` set (VALIDATION → 'VALIDATION.', METAGEN → 'METAGEN.').
+
+    The service-layer prefix filtering itself is covered in
+    tests/unit/backend/dataset/test_service.py; this asserts only the router's
+    public-filter-value → prefix mapping (core.py:_MAJOR_TYPE_PREFIX).
+
+    spec: spec/feature/BACKEND.md §Dataset service / Event Catalogue — the unified
+      timeline's major-type filter; spec/feature/FRONTEND_BASIC.md §Per-dataset page.
+    """
+    mock_svc.get_events = AsyncMock(return_value=([], 0))
+
+    resp = await client.get(
+        f"{_BASE}/{_VALID_URN_ENC}/event"
+        "?event_major_type=VALIDATION&event_major_type=METAGEN",
+        headers=auth_headers(),
+    )
+    assert resp.status_code == 200
+
+    mock_svc.get_events.assert_awaited_once()
+    _, kwargs = mock_svc.get_events.await_args
+    assert kwargs["event_type_prefixes"] == {"VALIDATION.", "METAGEN."}
+
+
+@pytest.mark.asyncio
+async def test_get_data_events_omitted_major_type_passes_none(
+    client, mock_svc: AsyncMock
+) -> None:
+    """Omitting ``event_major_type`` passes ``event_type_prefixes=None`` (all
+    major types), so the service returns the full unified timeline.
+
+    spec: spec/feature/FRONTEND_BASIC.md §Per-dataset page — omitted filter = all.
+    """
+    mock_svc.get_events = AsyncMock(return_value=([], 0))
+
+    resp = await client.get(
+        f"{_BASE}/{_VALID_URN_ENC}/event", headers=auth_headers()
+    )
+    assert resp.status_code == 200
+
+    mock_svc.get_events.assert_awaited_once()
+    _, kwargs = mock_svc.get_events.await_args
+    assert kwargs["event_type_prefixes"] is None
+
+
+@pytest.mark.asyncio
+async def test_get_data_events_unknown_major_type_ignored(
+    client, mock_svc: AsyncMock
+) -> None:
+    """An unrecognized ``event_major_type`` value is dropped from the prefix set;
+    a lone unknown value collapses to ``None`` (no filter).
+
+    spec: spec/feature/FRONTEND_BASIC.md §Per-dataset page — only the three known
+      major types map to prefixes.
+    """
+    mock_svc.get_events = AsyncMock(return_value=([], 0))
+
+    resp = await client.get(
+        f"{_BASE}/{_VALID_URN_ENC}/event"
+        "?event_major_type=VALIDATION&event_major_type=BOGUS",
+        headers=auth_headers(),
+    )
+    assert resp.status_code == 200
+
+    mock_svc.get_events.assert_awaited_once()
+    _, kwargs = mock_svc.get_events.await_args
+    assert kwargs["event_type_prefixes"] == {"VALIDATION."}
 
 
 # ── 404 on unknown URN ────────────────────────────────────────────────────────

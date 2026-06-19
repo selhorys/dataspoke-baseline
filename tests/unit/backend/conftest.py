@@ -27,6 +27,13 @@ def mock_scalar_query(db: AsyncMock, row: object | None) -> None:
     db.execute = AsyncMock(return_value=result_mock)
 
 
+def mock_scalars_query(db: AsyncMock, rows: list) -> None:
+    """Set up db.execute to return a `.scalars().all()` list (one query)."""
+    result_mock = MagicMock()
+    result_mock.scalars.return_value.all.return_value = rows
+    db.execute = AsyncMock(return_value=result_mock)
+
+
 def mock_db_refresh(db: AsyncMock) -> None:
     """Set up db.refresh to populate server-default fields if missing."""
 

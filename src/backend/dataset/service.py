@@ -4,9 +4,10 @@ import json
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.backend.ingestion.service import IngestionService
 from src.shared.cache.client import QUALITY_CACHE_KEY, RedisClient
 from src.shared.datahub.client import DataHubClient
 from src.shared.datahub.urn import platform_from_dataset_urn
@@ -29,6 +30,10 @@ class DatasetService:
         self._datahub = datahub
         self._db = db
         self._cache = cache
+        # Compose the ingestion service for the reverse-lookup + source-run
+        # aggregation that feeds the unified dataset timeline. Shares the same
+        # constructor-injected deps (datahub, db, cache).
+        self._ingestion = IngestionService(datahub=datahub, db=db, cache=cache)
 
     async def get_summary(self, dataset_urn: str) -> DatasetSummary:
         from datahub.metadata.schema_classes import (
@@ -110,43 +115,40 @@ class DatasetService:
         from_dt: datetime | None = None,
         to_dt: datetime | None = None,
         order_by: Any = None,
-        event_type_prefix: str | None = None,
+        event_type_prefixes: set[str] | None = None,
     ) -> tuple[list[EventRecord], int]:
-        """Return paginated events for a dataset, optionally filtered by event type prefix.
+        """Return the unified per-dataset event timeline (paginated).
+
+        The timeline is the UNION of:
+
+        (a) dataset-level events (``entity_type='dataset'``) — validation events
+            and metagen candidate-review events recorded directly on the dataset, and
+        (b) the covering source's ingestion runs — found via
+            :meth:`IngestionService.reverse_lookup`, then aggregated (including the
+            CLI-wrapper union) via :meth:`IngestionService.get_events_for_source`.
+            Rows sourced from a wrapper carry ``wrapper=True``.
+
+        The merged stream is sorted ``occurred_at`` descending, the ``from``/``to``
+        range and the major-type prefix filter are applied, and the result is
+        paginated in-memory (per-dataset event volume is small). ``order_by`` is
+        accepted for API compatibility but the timeline is always newest-first.
 
         Parameters
         ----------
         dataset_urn:
             The dataset URN to query events for.
-        event_type_prefix:
-            If provided, only return events whose ``event_type`` starts with this
-            prefix (e.g. ``"INGESTION."`` or ``"VALIDATION."``).
+        event_type_prefixes:
+            If provided, only return events whose ``event_type`` starts with one of
+            these prefixes (e.g. ``{"INGESTION.", "VALIDATION.", "METAGEN."}``).
+            Omitted / empty means all major types.
         """
-        base = select(Event).where(
+        # ── (a) Dataset-level events (validation + metagen candidate review) ──
+        dataset_q = select(Event).where(
             Event.entity_type == "dataset",
             Event.entity_id == dataset_urn,
         )
-
-        if event_type_prefix is not None:
-            base = base.where(Event.event_type.like(f"{event_type_prefix}%"))
-        if from_dt is not None:
-            base = base.where(Event.occurred_at >= from_dt)
-        if to_dt is not None:
-            base = base.where(Event.occurred_at <= to_dt)
-
-        count_q = select(func.count()).select_from(base.subquery())
-        total_count = (await self._db.execute(count_q)).scalar() or 0
-
-        default_order = Event.occurred_at.desc()
-        rows_q = (
-            base.order_by(order_by if order_by is not None else default_order)
-            .offset(offset)
-            .limit(limit)
-        )
-        result = await self._db.execute(rows_q)
-        rows = result.scalars().all()
-
-        events = [
+        result = await self._db.execute(dataset_q)
+        records: list[EventRecord] = [
             EventRecord(
                 id=str(row.id),
                 entity_type=row.entity_type,
@@ -155,7 +157,45 @@ class DatasetService:
                 status=row.status,
                 detail=row.detail,
                 occurred_at=row.occurred_at,
+                wrapper=False,
             )
-            for row in rows
+            for row in result.scalars().all()
         ]
-        return events, total_count
+
+        # ── (b) Covering source ingestion runs (incl. wrapper union) ──────────
+        source = await self._ingestion.reverse_lookup(dataset_urn)
+        if source is not None:
+            # Pull the full run history for the source; the unified timeline
+            # paginates over the merged stream, so fetch without source-level
+            # pagination (a high limit covers the small per-source volume).
+            source_events, _ = await self._ingestion.get_events_for_source(
+                source.id, offset=0, limit=10_000
+            )
+            records.extend(
+                EventRecord(
+                    id=str(e["id"]),
+                    entity_type=e["entity_type"],
+                    entity_id=e["entity_id"],
+                    event_type=e["event_type"],
+                    status=e["status"],
+                    detail=e["detail"],
+                    occurred_at=e["occurred_at"],
+                    wrapper=bool(e.get("wrapper", False)),
+                )
+                for e in source_events
+            )
+
+        # ── Filter: time range + major-type prefixes ─────────────────────────
+        if from_dt is not None:
+            records = [r for r in records if r.occurred_at >= from_dt]
+        if to_dt is not None:
+            records = [r for r in records if r.occurred_at <= to_dt]
+        if event_type_prefixes:
+            prefixes = tuple(event_type_prefixes)
+            records = [r for r in records if r.event_type.startswith(prefixes)]
+
+        # ── Sort newest-first, then paginate in-memory ───────────────────────
+        records.sort(key=lambda r: r.occurred_at, reverse=True)
+        total_count = len(records)
+        page = records[offset : offset + limit]
+        return page, total_count

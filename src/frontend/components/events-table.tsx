@@ -1,25 +1,29 @@
 "use client";
 
 /**
- * EventsSection — renders a list of MetaGen events with status badges.
- * Reuses eventStatusVariant and formatDateTime.
+ * EventsTable — renders the unified per-dataset event timeline rows: occurred_at
+ * + status badge + optional `wrapper` tag + event_type + click-to-expand detail.
+ * Pure presentational; the panel owns querying and pagination.
+ *
+ * Spec: spec/feature/FRONTEND_BASIC.md §Per-dataset page (Events panel).
  */
 
 import { Badge } from "@/components/ui/badge";
+import { EventDetailCell } from "@/components/ingestion/event-detail-cell";
 import { eventStatusVariant } from "@/lib/event-status-variant";
 import { formatDateTime } from "@/lib/format-time";
 import { useDisplayTz } from "@/lib/preferences/timezone";
-import type { MetagenEvent } from "@/types/metagen";
+import type { DatasetEvent } from "@/types/data";
 
-interface EventsSectionProps {
-  events: MetagenEvent[];
+interface EventsTableProps {
+  events: DatasetEvent[];
   emptyMessage?: string;
 }
 
-export function EventsSection({
+export function EventsTable({
   events,
   emptyMessage = "No events yet.",
-}: EventsSectionProps) {
+}: EventsTableProps) {
   const tz = useDisplayTz();
 
   if (events.length === 0) {
@@ -36,12 +40,13 @@ export function EventsSection({
           <Badge variant={eventStatusVariant(e.status)} className="text-xs">
             {e.status}
           </Badge>
-          <span>{e.event_type}</span>
-          {e.detail && Object.keys(e.detail).length > 0 && (
-            <span className="font-mono text-xs text-muted-foreground">
-              {JSON.stringify(e.detail)}
-            </span>
+          {e.wrapper && (
+            <Badge variant="outline" className="text-xs">
+              wrapper
+            </Badge>
           )}
+          <span>{e.event_type}</span>
+          <EventDetailCell detail={e.detail} />
         </li>
       ))}
     </ul>

@@ -12,3 +12,4 @@ class EventRecord(BaseModel):
     status: str  # "success", "failure", "warning"
     detail: dict[str, Any] = {}
     occurred_at: datetime
+    wrapper: bool = False  # True when mirrored from a linked CLI wrapper source

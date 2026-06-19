@@ -32,6 +32,18 @@ group does not cover the route; the other column does.
 
 ### App routes (authenticated)
 
+#### Per-dataset hub (shared)
+
+The unified per-dataset page merges the formerly separate `/ingestion/data`,
+`/validation/data`, and `/metagen/data` surfaces — three summary cards
+(Ingestion / Validation / MetaGen) + four foldable panels (Ingestion, Validation,
+MetaGen, Events). The retired per-feature `/{feature}/data/[urn]` routes are
+redirects to `/data/[urn]`.
+
+| Route | UC test | Ground test |
+|---|---|---|
+| `/data/[urn]` | `uc1-02-active-custom-postgres.spec.ts` step 6 (Ingestion panel reverse-lookup); `uc2-01-validation.spec.ts` steps 2, 4–7 (Validation panel: conf, charts, freeze/restore Undelete; validation events in unified Events panel); `uc4-01-metadata-generation.spec.ts` steps 3, 7, 8, 9 (MetaGen panel boundary form, candidate review, metagen events in unified Events panel) | `ground/data/hub.spec.ts` (URN header + 3 summary cards; 4 foldable panels fold/unfold; Events major-type filter all-checked default + uncheck narrows) |
+
 #### Ingestion (UC1)
 
 | Route | UC test | Ground test |
@@ -41,7 +53,7 @@ group does not cover the route; the other column does.
 | `/ingestion/sources/new` | `uc1-02-active-custom-postgres.spec.ts` step 1 (create ACTIVE_CUSTOM_MANAGED); `uc1-03-passive-kafka.spec.ts` step 1 (create PASSIVE) | — |
 | `/ingestion/sources/[id]` | `uc1-02-active-custom-postgres.spec.ts` steps 2–7; `uc1-03-passive-kafka.spec.ts` steps 2–3, 5–6; `uc1-01-datahub-managed.spec.ts` steps 4–6 (detail, run, datasets, events, read-only, wrapper-tagged INGESTION.COMPLETE event row, pipeline_name/high authority cell after real execution) | — |
 | `/ingestion/unmanaged` | `uc1-03-passive-kafka.spec.ts` steps 0, 4 (before/after source creation) | — |
-| `/ingestion/data/[urn]` | `uc1-02-active-custom-postgres.spec.ts` step 6 (reverse-lookup) | — |
+| `/ingestion/data/[urn]` (redirects to `/data/[urn]`) | covered via `/data/[urn]` (see Per-dataset hub) | — |
 
 #### Governance (UC5)
 
@@ -57,7 +69,7 @@ group does not cover the route; the other column does.
 | Route | UC test | Ground test |
 |---|---|---|
 | `/validation` | `uc2-01-validation.spec.ts` step 3 (cross-dataset list; URNs, score badges) | — |
-| `/validation/data/[urn]` | `uc2-01-validation.spec.ts` steps 2, 4–7 (conf, charts, event log, delete, create, resurrect) | — |
+| `/validation/data/[urn]` (redirects to `/data/[urn]`) | covered via `/data/[urn]` (see Per-dataset hub) | — |
 
 #### Ontology Generation (UC3)
 
@@ -83,7 +95,7 @@ uncovered view.
 | `/metagen/conf/[id]` | `uc4-01-metadata-generation.spec.ts` steps 4, 5 (Run via RunDialog, per-conf events isolation) | `ground/metagen/conf-edit-no-submit.spec.ts` (clicking Edit enters edit mode, fires NO PUT /spoke/metagen/conf/{id} — Edit/Save morph guard) |
 | `/metagen/result` | `uc4-01-metadata-generation.spec.ts` step 6 (review-queue heading, item queue + cross-conf events, both runs in union) | `ground/metagen/result.spec.ts` (queue + events render; conf_id filter select narrows the GET /spoke/metagen/item request) |
 | `/metagen/uncovered` | `uc4-01-metadata-generation.spec.ts` step 10 (heading + include_disallowed toggle; off=no_conf_match, on⊇off) | `ground/metagen/uncovered.spec.ts` (include_disallowed toggle flips query param off→on; off⊆on reason-classification invariant) |
-| `/metagen/data/[urn]` | `uc4-01-metadata-generation.spec.ts` steps 3, 7, 8, 8b, 9 (boundary form, item cards w/ conf_name badge, Approve/Reject candidate, cross-conf demotion — approve EU then RIVAL on a shared item, one-approved-per-item across confs, per-dataset events) | — |
+| `/metagen/data/[urn]` (redirects to `/data/[urn]`) | covered via `/data/[urn]` (see Per-dataset hub) — steps 3, 7, 8, 8b, 9 (boundary form, item cards w/ conf_name badge, Approve/Reject candidate, cross-conf demotion, metagen events in unified Events panel) | — |
 
 #### Admin / Account
 

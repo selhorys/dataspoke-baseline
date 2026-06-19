@@ -3,7 +3,7 @@
 /**
  * SourceDatasetTable — the source→dataset mapping table.
  *
- * Each row links to the dataset's ingestion detail page and shows its `authority`
+ * Each row links to the dataset's unified hub (/data/[urn]) and shows its `authority`
  * (high / medium) and `derivation` (emitted / pipeline_name / matched), rendered
  * together as e.g. `high (emitted)`, plus first/last seen timestamps.
  *
@@ -52,7 +52,7 @@ export function SourceDatasetTable({ rows }: SourceDatasetTableProps) {
             <TableRow key={row.dataset_urn}>
               <TableCell>
                 <Link
-                  href={`/ingestion/data/${encodeURIComponent(row.dataset_urn)}`}
+                  href={`/data/${encodeURIComponent(row.dataset_urn)}`}
                   className="font-mono text-xs hover:underline"
                 >
                   {row.dataset_urn}

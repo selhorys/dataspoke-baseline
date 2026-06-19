@@ -3,7 +3,7 @@
  *
  * Spec traces:
  *   - spec/feature/FRONTEND_INGESTION.md §Source Detail §Datasets:
- *     source→dataset mapping table; each row links to /ingestion/data/[urn] and
+ *     source→dataset mapping table; each row links to /data/[urn] and
  *     shows authority (high/medium) + derivation (emitted/pipeline_name/matched),
  *     rendered together as e.g. `high (emitted)`.
  */
@@ -86,16 +86,16 @@ describe("SourceDatasetTable — row data", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 3. URN link encoding — /ingestion/data/[urn] must encode the URN
+// 3. URN link encoding — /data/[urn] must encode the URN
 // ---------------------------------------------------------------------------
 describe("SourceDatasetTable — URN link href", () => {
-  it("links each row's URN to /ingestion/data/{encodedUrn}", () => {
+  it("links each row's URN to /data/{encodedUrn}", () => {
     const urn =
       "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)";
     render(<SourceDatasetTable rows={[makeRow({ dataset_urn: urn })]} />);
     const link = screen.getByRole("link");
     expect((link as HTMLAnchorElement).href).toContain(
-      `/ingestion/data/${encodeURIComponent(urn)}`,
+      `/data/${encodeURIComponent(urn)}`,
     );
   });
 
@@ -104,7 +104,7 @@ describe("SourceDatasetTable — URN link href", () => {
     const urn = "urn:li:dataset:(urn:li:dataPlatform:kafka,imazon.orders.events,DEV)";
     render(<SourceDatasetTable rows={[makeRow({ dataset_urn: urn })]} />);
     const link = screen.getByRole("link");
-    const expectedPath = `/ingestion/data/${encodeURIComponent(urn)}`;
+    const expectedPath = `/data/${encodeURIComponent(urn)}`;
     expect((link as HTMLAnchorElement).href).toContain(expectedPath);
   });
 });

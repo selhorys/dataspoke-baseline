@@ -3,8 +3,8 @@
 /**
  * UnmanagedDatasetTable — DataHub datasets covered by no ingestion source.
  *
- * Read-only. Each row is a mono URN link to the dataset's ingestion detail
- * page. Renders an EmptyState when the bucket is empty.
+ * Read-only. Each row is a mono URN link to the dataset's unified hub
+ * (/data/[urn]). Renders an EmptyState when the bucket is empty.
  *
  * Spec: spec/feature/FRONTEND_INGESTION.md §Unmanaged View.
  */
@@ -44,7 +44,7 @@ export function UnmanagedDatasetTable({
             <TableRow key={urn}>
               <TableCell>
                 <Link
-                  href={`/ingestion/data/${encodeURIComponent(urn)}`}
+                  href={`/data/${encodeURIComponent(urn)}`}
                   className="font-mono text-xs hover:underline"
                 >
                   {urn}

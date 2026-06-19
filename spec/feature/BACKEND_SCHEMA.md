@@ -461,21 +461,31 @@ structure so clients can process them generically (see
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | `UUID` PK | Event identifier |
-| `entity_type` | `TEXT` | `dataset`, `metric`, `node`, `edge`, `triple`, `ontogen` (singleton conf + seeds), `metagen` (per-conf run events) — classifies the entity, not the feature domain |
-| `entity_id` | `TEXT` | URN or metric/node/edge/triple ID; for `entity_type='ontogen'` either the literal string `singleton` (conf) or a `seed:{seed_id}` form (seed events); for `entity_type='metagen'` the `conf_id` |
+| `entity_type` | `TEXT` | `dataset`, `ingestion_source` (ingestion runs, booked on the owning source), `metric`, `node`, `edge`, `triple`, `ontogen` (singleton conf + seeds), `metagen` (per-conf run events) — classifies the entity, not the feature domain |
+| `entity_id` | `TEXT` | URN or metric/node/edge/triple ID; for `entity_type='ingestion_source'` the `source_id`; for `entity_type='ontogen'` either the literal string `singleton` (conf) or a `seed:{seed_id}` form (seed events); for `entity_type='metagen'` the `conf_id` |
 | `event_type` | `TEXT` | Uppercase, dot-delimited `{DOMAIN}.{ACTION}` (e.g., `INGESTION.COMPLETE`, `METRIC.RUN_COMPLETE`, `NODE.APPROVE`, `TRIPLE.APPROVE`, `METAGEN.CANDIDATE_APPROVE`, `METAGEN.RUN_COMPLETE`, `ONTOGEN.RUN_COMPLETE`). Full catalogue in [BACKEND §Event Catalogue](BACKEND.md#event-catalogue). |
 | `status` | `TEXT` | `success`, `failure`, `warning` |
 | `detail` | `JSONB` | Event-specific payload |
 | `occurred_at` | `TIMESTAMPTZ` | Event timestamp |
 
 **Filtering convention**: `entity_type` identifies what the entity *is* (a
-dataset, a metric, an ontology node / edge / triple, the ontogen singleton).
-Ingestion, validation, and metadata generation are *attributes* of a dataset, so
-their events use `entity_type=dataset`. The dataset-level event endpoint
-(`GET .../data/{urn}/event`) filters by `entity_type=dataset` to return all
-event types for that dataset. Sub-resource event endpoints (e.g.,
-`.../event`, `.../event`) additionally filter by `event_type`
-prefix (e.g., `INGESTION.%`, `METAGEN.%`) to return only domain-specific events.
+dataset, an ingestion source, a metric, an ontology node / edge / triple, the
+ontogen singleton). Validation results and metagen candidate reviews are
+*attributes* of a dataset, so their events use `entity_type=dataset`. Ingestion
+runs, however, are booked on the owning **source** (`entity_type=ingestion_source`,
+`entity_id=source_id`), not on the dataset, because a run covers a source's whole
+extraction rather than a single dataset. The dataset-level event endpoint
+(`GET .../data/{urn}/event`) is therefore a **union**, not a single
+`entity_type=dataset` filter: it returns the `entity_type=dataset` rows for the
+URN combined with the covering source's ingestion runs, located by reverse-lookup
+(`IngestionService.reverse_lookup(urn)` → source, then that source's aggregated
+run events, each row carrying the derived `wrapper` flag). The merged stream is
+sorted newest-first, filtered by `from`/`to` and by the repeatable
+`event_major_type` prefix set (`INGESTION`/`VALIDATION`/`METAGEN`; omitted = all),
+then paginated. See [BACKEND §Dataset Service](BACKEND.md#dataset-service-srcbackenddataset) for
+the aggregation mechanics. Sub-resource event endpoints (e.g., `/spoke/ingestion/sources/{id}/event`,
+`/spoke/metagen/conf/{conf_id}/event`) additionally filter by `event_type` prefix
+(e.g., `INGESTION.%`, `METAGEN.%`) to return only domain-specific events.
 The Ontology Generation singleton uses `entity_type=ontogen` and `entity_id='singleton'`
 (conf) or `entity_id='seed:{seed_id}'` (seed events) for the global event log surfaced
 at `/spoke/ontogen/event`; per-result events use `entity_type=node|edge|triple`

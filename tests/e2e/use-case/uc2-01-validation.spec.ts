@@ -14,17 +14,17 @@
  *      Poll via adminApi until results are visible, then assert UI renders the charts.
  *   3. Cross-dataset list (/validation) shows BOTH datasets with description, variable
  *      count, latest_data_time, and Quality Score badge.
- *   4. Per-dataset detail (/validation/data/[urn]) for postgres shows:
+ *   4. Per-dataset detail (/data/[urn], "Validation" panel) for postgres shows:
  *      - conf section (description + variable badges)
  *      - score chart panel rendered ("Quality Score (attr/validation/result)")
  *      - variables chart panel rendered ("Variables (attr/validation/result)")
- *      - event log section rendered ("event/validation")
+ *      - validation events appear in the unified "Events" panel
  *   5. DELETE (freeze) postgres conf via the Delete button + ConfirmDialog:
  *      - redirected to /validation list
  *      - postgres row absent from active list
  *      - kafka row still present
  *      Backend: GET conf → 404 VALIDATION_CONF_REMOVED; ?removed=true includes postgres.
- *   6. Navigate to /validation/data/[postgres urn] (frozen now):
+ *   6. Navigate to /data/[postgres urn] (Validation panel, frozen now):
  *      - no Edit/Delete and no Create form; an "Undelete" button only.
  *   7. Restore (undelete): click Undelete to reinstate the FROZEN conf unchanged.
  *      Backend: GET conf → 200 with the SAME frozen variables (no null_rate added);
@@ -62,9 +62,13 @@ const PG_RESULT_API = `/api/v1/spoke/common/data/${PG_URN_ENC}/attr/validation/r
 const KAFKA_CONF_API = `/api/v1/spoke/common/data/${KAFKA_URN_ENC}/attr/validation/conf`;
 const KAFKA_RESULT_API = `/api/v1/spoke/common/data/${KAFKA_URN_ENC}/attr/validation/result`;
 
-// Frontend routes
-const PG_DETAIL_URL = `/validation/data/${PG_URN_ENC}`;
-const KAFKA_DETAIL_URL = `/validation/data/${KAFKA_URN_ENC}`;
+// Frontend routes — the per-dataset detail surface is the unified hub
+// /data/[urn]; the validation body now lives under its "Validation"
+// CollapsiblePanel (open by default) and the validation events fold into the
+// unified "Events" panel.
+// spec: FRONTEND_BASIC.md §Per-dataset page; FRONTEND_VALIDATION.md §Detail (moved to /data/[urn])
+const PG_DETAIL_URL = `/data/${PG_URN_ENC}`;
+const KAFKA_DETAIL_URL = `/data/${KAFKA_URN_ENC}`;
 
 // Conf variable objects: {name, description} (verbatim shape from api-wired test).
 // spec: VALIDATION.md §Rule Configuration — each variable is a {name, description}.
@@ -346,13 +350,15 @@ test("UC2 step 3 — /validation list shows both datasets with score badges", as
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Step 4 — Per-dataset detail: conf + charts + event log
+// Step 4 — Per-dataset detail: Validation panel conf + charts + unified Events
 // spec: USE_CASE_en.md §UC2 — per-dataset view shows conf, historical timeseries,
-//   and event log.
-// spec: FRONTEND_VALIDATION.md §Page contracts — detail page sections:
-//   attr/validation/conf, Quality Score chart, Variables chart, event/validation
+//   and the dataset's events.
+// spec: FRONTEND_BASIC.md §Per-dataset page — the /data/[urn] hub renders the
+//   validation conf + score/variables charts inside the "Validation"
+//   CollapsiblePanel; the per-dataset validation events fold into the unified
+//   "Events" panel (one timeline with a major-type filter, default all checked).
 // ─────────────────────────────────────────────────────────────────────────────
-test("UC2 step 4 — postgres detail page renders conf, charts, and event log", async ({
+test("UC2 step 4 — postgres detail page renders conf, charts, and validation events", async ({
   page,
   adminApi,
 }) => {
@@ -361,11 +367,11 @@ test("UC2 step 4 — postgres detail page renders conf, charts, and event log", 
   await page.goto(PG_DETAIL_URL);
   await expect(page).not.toHaveURL(/\/login/);
 
-  // -- UI assertion: conf section heading --
-  // spec: FRONTEND_VALIDATION.md §Page contracts — section heading "attr/validation/conf"
-  await expect(
-    page.getByRole("heading", { name: "attr/validation/conf", exact: true })
-  ).toBeVisible({ timeout: 15_000 });
+  // -- UI assertion: the dataset hub loaded (URN header rendered) --
+  // spec: FRONTEND_BASIC.md §Per-dataset page — header shows the dataset URN.
+  await expect(page.getByRole("heading", { name: PG_URN, exact: true })).toBeVisible({
+    timeout: 15_000,
+  });
 
   // -- UI assertion: description text rendered in the ConfReadOnly view --
   await expect(page.getByText(PG_DESCRIPTION, { exact: false })).toBeVisible({ timeout: 10_000 });
@@ -400,17 +406,35 @@ test("UC2 step 4 — postgres detail page renders conf, charts, and event log", 
     page.getByRole("heading", { name: "Variables (attr/validation/result)", exact: true })
   ).toBeVisible({ timeout: 10_000 });
 
-  // -- UI assertion: event log section heading --
-  // spec: FRONTEND_VALIDATION.md §Page contracts — "event/validation"
-  // Use exact: true — avoids matching a longer heading that contains "validation".
+  // -- UI assertion: validation events surface in the unified "Events" panel --
+  // The former per-feature "event/validation" section is folded into the unified
+  // Events panel (a single timeline with a major-type filter; default all checked).
+  // Toggle the "Events" CollapsiblePanel open if collapsed, then assert a
+  // VALIDATION.RESULT_RECORDED row appears (mirrors UC4 step 9's pattern).
+  // spec: FRONTEND_BASIC.md §Per-dataset page (Events panel).
+  const eventsPanel = page.getByRole("button", { name: /events/i }).first();
+  await expect(eventsPanel).toBeVisible({ timeout: 10_000 });
+  if ((await eventsPanel.getAttribute("aria-expanded")) === "false") {
+    await eventsPanel.click();
+  }
   await expect(
-    page.getByRole("heading", { name: "event/validation", exact: true })
-  ).toBeVisible({ timeout: 10_000 });
+    page.getByText("VALIDATION.RESULT_RECORDED", { exact: false }).first()
+  ).toBeVisible({ timeout: 20_000 });
 
   // -- UI assertion: Edit and Delete buttons visible (admin can write) --
   // spec: FRONTEND_VALIDATION.md §Page contracts — write actions rendered for Editor/Admin
-  await expect(page.getByRole("button", { name: "Edit" })).toBeVisible({ timeout: 10_000 });
-  await expect(page.getByRole("button", { name: "Delete" })).toBeVisible({ timeout: 10_000 });
+  // Scope to the Validation panel <section>: on the merged hub the MetaGen panel
+  // also renders Edit/Delete (for its boundary), so an unscoped locator can be
+  // ambiguous in strict mode.
+  const validationPanel = page
+    .locator("section")
+    .filter({ has: page.getByRole("button", { name: "Validation", exact: true }) });
+  await expect(validationPanel.getByRole("button", { name: "Edit", exact: true })).toBeVisible({
+    timeout: 10_000,
+  });
+  await expect(validationPanel.getByRole("button", { name: "Delete", exact: true })).toBeVisible({
+    timeout: 10_000,
+  });
 
   // -- Backend probe: GET conf → 200, description + variables match --
   const confResp = await adminApi.get(PG_CONF_API);
@@ -422,16 +446,29 @@ test("UC2 step 4 — postgres detail page renders conf, charts, and event log", 
   expect(conf.description).toBe(PG_DESCRIPTION);
   expect(conf.variables).toEqual(PG_VARIABLES);
 
-  // -- Backend probe: GET event → 200, at least one event logged --
+  // -- Backend probe: unified timeline filtered to VALIDATION → RESULT_RECORDED --
   // spec: VALIDATION.md §Validation Result — each accepted POST emits one event.
-  // The event route for validation is /event with domain=validation.
+  // spec: FRONTEND_BASIC.md §Per-dataset page — the per-dataset timeline is the
+  //   unified GET …/event with the repeatable event_major_type filter; VALIDATION
+  //   narrows to the dataset's validation events (VALIDATION.RESULT_RECORDED rows).
   const eventResp = await adminApi.get(
-    `/api/v1/spoke/common/data/${PG_URN_ENC}/event/validation`
+    `/api/v1/spoke/common/data/${PG_URN_ENC}/event?event_major_type=VALIDATION&limit=50`
   );
   expect(eventResp.status()).toBe(200);
-  const eventBody = (await eventResp.json()) as { events: unknown[] };
+  const eventBody = (await eventResp.json()) as {
+    events: Array<{ event_type: string }>;
+    total_count: number;
+  };
   expect(Array.isArray(eventBody.events)).toBe(true);
   expect(eventBody.events.length).toBeGreaterThanOrEqual(1);
+  // The VALIDATION filter must only return VALIDATION.* rows.
+  for (const e of eventBody.events) {
+    expect(e.event_type.startsWith("VALIDATION.")).toBe(true);
+  }
+  expect(
+    eventBody.events.some((e) => e.event_type === "VALIDATION.RESULT_RECORDED"),
+    "expected a VALIDATION.RESULT_RECORDED row in the unified timeline"
+  ).toBe(true);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -450,18 +487,28 @@ test("UC2 step 5 — Delete (freeze) postgres conf via ConfirmDialog; freeze sem
 
   await page.goto(PG_DETAIL_URL);
   await expect(page).not.toHaveURL(/\/login/);
-  await expect(
-    page.getByRole("heading", { name: "attr/validation/conf", exact: true })
-  ).toBeVisible({ timeout: 15_000 });
+  // The Validation CollapsiblePanel is open by default; wait for its Delete
+  // action to render (confirms the conf body loaded under the hub page).
+  // spec: FRONTEND_BASIC.md §Per-dataset page — Validation panel hosts the conf.
 
   // -- UI gesture: click Delete button --
   // spec: FRONTEND_VALIDATION.md §Page contracts — Delete behind ConfirmDialog
-  await page.getByRole("button", { name: "Delete" }).click();
+  // Scope to the Validation panel <section>: the merged hub's MetaGen panel can
+  // also render a Delete button (for its boundary), so an unscoped locator may
+  // be ambiguous in strict mode.
+  const validationPanel = page
+    .locator("section")
+    .filter({ has: page.getByRole("button", { name: "Validation", exact: true }) });
+  await expect(validationPanel.getByRole("button", { name: "Delete", exact: true })).toBeVisible({
+    timeout: 15_000,
+  });
+  await validationPanel.getByRole("button", { name: "Delete", exact: true }).click();
 
   // -- UI gesture: confirm in the ConfirmDialog --
   // spec: FRONTEND_BASIC.md §ConfirmDialog — confirm button label matches confirmLabel="Delete"
-  // The ConfirmDialog uses confirmLabel="Delete"; click the last "Delete" button to
-  // avoid matching the initial Delete button still in the DOM.
+  // The ConfirmDialog confirm button (also labelled "Delete") renders in a portal
+  // outside the panel section; click the last "Delete" button on the page to hit
+  // the dialog confirm rather than the panel trigger still in the DOM.
   await page.getByRole("button", { name: "Delete", exact: true }).last().click();
 
   // -- UI assertion: redirected to /validation list --
@@ -522,10 +569,11 @@ test("UC2 step 6 — postgres detail after freeze shows Undelete only, no Create
   await page.goto(PG_DETAIL_URL);
   await expect(page).not.toHaveURL(/\/login/);
 
-  // -- UI assertion: "attr/validation/conf" section still renders --
-  await expect(
-    page.getByRole("heading", { name: "attr/validation/conf", exact: true })
-  ).toBeVisible({ timeout: 15_000 });
+  // -- UI assertion: the dataset hub loaded (URN header rendered) --
+  // spec: FRONTEND_BASIC.md §Per-dataset page — header shows the dataset URN.
+  await expect(page.getByRole("heading", { name: PG_URN, exact: true })).toBeVisible({
+    timeout: 15_000,
+  });
 
   // -- UI assertion: deleted-state note shown --
   // spec: FRONTEND_VALIDATION.md §Page contracts — VALIDATION_CONF_REMOVED + canWrite:
@@ -536,11 +584,17 @@ test("UC2 step 6 — postgres detail after freeze shows Undelete only, no Create
 
   // -- UI assertion: Undelete button rendered; no Create form / Edit / Delete --
   // spec: FRONTEND_VALIDATION.md §Page contracts — Undelete-only while frozen.
-  await expect(page.getByRole("button", { name: "Undelete" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Create" })).not.toBeVisible();
-  await expect(page.getByRole("button", { name: "Edit", exact: true })).not.toBeVisible();
+  // Scope the negative Edit/Delete/Create assertions to the Validation panel
+  // <section>: the merged hub's MetaGen panel may render its own Edit/Delete (for
+  // its boundary), which an unscoped negative assertion would wrongly trip on.
+  const validationPanel = page
+    .locator("section")
+    .filter({ has: page.getByRole("button", { name: "Validation", exact: true }) });
+  await expect(validationPanel.getByRole("button", { name: "Undelete" })).toBeVisible();
+  await expect(validationPanel.getByRole("button", { name: "Create" })).not.toBeVisible();
+  await expect(validationPanel.getByRole("button", { name: "Edit", exact: true })).not.toBeVisible();
   // exact:true so this does NOT substring-match the "Undelete" button (which contains "Delete").
-  await expect(page.getByRole("button", { name: "Delete", exact: true })).not.toBeVisible();
+  await expect(validationPanel.getByRole("button", { name: "Delete", exact: true })).not.toBeVisible();
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -559,9 +613,24 @@ test("UC2 step 7 — Undelete restores the frozen conf unchanged; result history
   await page.goto(PG_DETAIL_URL);
   await expect(page).not.toHaveURL(/\/login/);
 
+  // The merged /data/[urn] hub puts the Validation and MetaGen panels on one
+  // page, so unscoped action labels collide (e.g. the MetaGen panel's "Save
+  // boundary" substring-matches a bare "Save", and a global "Save"/"Edit"
+  // would be ambiguous in strict mode). Scope every validation conf action to
+  // the Validation CollapsiblePanel <section> — the section that contains the
+  // "Validation" panel-header toggle. (The sidebar "Validation" entry is a
+  // role=link, not a button, so a button-name filter can't match it anyway;
+  // this resolves to the panel section only.)
+  // spec: FRONTEND_BASIC.md §Per-dataset page (one CollapsiblePanel per feature).
+  const validationPanel = page
+    .locator("section")
+    .filter({ has: page.getByRole("button", { name: "Validation", exact: true }) });
+
   // -- UI gesture: click Undelete to restore the frozen rule --
-  await expect(page.getByRole("button", { name: "Undelete" })).toBeVisible({ timeout: 15_000 });
-  await page.getByRole("button", { name: "Undelete" }).click();
+  await expect(validationPanel.getByRole("button", { name: "Undelete" })).toBeVisible({
+    timeout: 15_000,
+  });
+  await validationPanel.getByRole("button", { name: "Undelete" }).click();
 
   // -- UI assertion: read-only conf view returns with the ORIGINAL frozen values --
   // Restore reinstates the frozen description/variables as-is — NOT a new set.
@@ -571,9 +640,11 @@ test("UC2 step 7 — Undelete restores the frozen conf unchanged; result history
   await expect(page.getByText("null_rate", { exact: true })).not.toBeVisible();
 
   // -- UI assertion: Edit + Delete return; Undelete gone (slot active again) --
-  await expect(page.getByRole("button", { name: "Edit" })).toBeVisible({ timeout: 10_000 });
-  await expect(page.getByRole("button", { name: "Delete" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Undelete" })).not.toBeVisible();
+  await expect(validationPanel.getByRole("button", { name: "Edit", exact: true })).toBeVisible({
+    timeout: 10_000,
+  });
+  await expect(validationPanel.getByRole("button", { name: "Delete", exact: true })).toBeVisible();
+  await expect(validationPanel.getByRole("button", { name: "Undelete" })).not.toBeVisible();
 
   // Conf is active again.
   pgConfCreated = true;
@@ -609,7 +680,7 @@ test("UC2 step 7 — Undelete restores the frozen conf unchanged; result history
   // ── Edit the now-active rule (restore then edit) ─────────────────────────────
   // spec: VALIDATION.md §Rule Configuration — "To redefine a rule after restoring,
   // edit the now-active slot with the normal PUT/PATCH." Click Edit, add null_rate.
-  await page.getByRole("button", { name: "Edit" }).click();
+  await validationPanel.getByRole("button", { name: "Edit", exact: true }).click();
 
   // -- UI gesture: update description --
   // spec: FRONTEND_VALIDATION.md §Page contracts — description textarea id="validation-description"
@@ -617,11 +688,13 @@ test("UC2 step 7 — Undelete restores the frozen conf unchanged; result history
 
   // The edit form is pre-filled with the 3 frozen variables; add a 4th (null_rate).
   // spec: validation-conf-form.tsx — "Add" button appends a new variable row.
-  await page.getByRole("button", { name: "Add" }).click();
+  await validationPanel.getByRole("button", { name: "Add" }).click();
   await page.getByLabel(`Variable name ${EDIT_VARIABLES.length}`).fill("null_rate");
 
-  // -- UI gesture: save the edit (header "Save" action) --
-  await page.getByRole("button", { name: "Save" }).click();
+  // -- UI gesture: save the edit (validation panel header "Save" action) --
+  // exact:true + panel scope so this never matches the MetaGen panel's
+  // "Save boundary" button (which substring-matches a bare "Save").
+  await validationPanel.getByRole("button", { name: "Save", exact: true }).click();
 
   // -- UI assertion: read-only view shows the edited description --
   await expect(page.getByText(EDIT_DESCRIPTION, { exact: false })).toBeVisible({ timeout: 20_000 });

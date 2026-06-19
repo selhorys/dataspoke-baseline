@@ -64,7 +64,7 @@ describe("metagen uncovered page", () => {
 
     const link = screen.getByRole("link", { name: "urn:li:dataset:a" });
     expect(link.getAttribute("href")).toBe(
-      `/metagen/data/${encodeURIComponent("urn:li:dataset:a")}`,
+      `/data/${encodeURIComponent("urn:li:dataset:a")}`,
     );
   });
 });

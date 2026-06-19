@@ -240,7 +240,7 @@ this single per-dataset path.
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/metagen/item/{item_id}` | Item detail including all candidates (`candidate_id`, `conf_id`, `conf_name`, `item_id`, `dataset_urn`, `value`, `confidence_score`, `status`, `evidence`, `created_at`, `reviewed_at`, `reviewer_id`) | Metadata Generation | UC4 |
 | `POST` | `/spoke/common/data/{dataset_urn}/attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review` | Review a candidate — body `{"verdict": "approve"\|"reject", "reason": "…"}`. Approve writes the candidate `value` to the corresponding editable DataHub aspect; if a sibling on the same item was previously `approved`, it is atomically demoted to `llm_approved` so the new approval supersedes it. Reject is valid only for `llm_approved` candidates; rejecting an `approved` candidate returns `409 METAGEN_CANNOT_REJECT_APPROVED`. Returns `422 METAGEN_DATASET_NOT_IN_BOUNDARY` if the dataset has no `is_enabled=true` boundary | Metadata Generation | UC4 |
 | `GET` | `/spoke/common/data/{dataset_urn}/event/metagen` | Per-dataset metagen events (`METAGEN.CANDIDATE_APPROVE`, `METAGEN.CANDIDATE_REJECT`) | Metadata Generation | UC4 |
-| `GET` | `/spoke/common/data/{dataset_urn}/event` | Dataset-level event history (all event types including ingestion, validation, and metagen) | Data Resource | — |
+| `GET` | `/spoke/common/data/{dataset_urn}/event` | The **complete per-dataset timeline** — a single newest-first feed that unions the covering source's ingestion runs (resolved by reverse-lookup, incl. its internal-wrapper runs) with this dataset's validation and metagen events. Each row carries a derived `wrapper: bool` (`true` for an ingestion event originating on a linked wrapper). Repeatable `event_major_type` filter (`INGESTION`/`VALIDATION`/`METAGEN`; omitted = all). Paginated (`offset`/`limit`), `from`/`to` time-range, default `occurred_at_desc` | Data Resource | UC1, UC2, UC4 |
 
 ### Redefined DataHub Functions *(TBD)*
 
@@ -698,6 +698,7 @@ Single-resource responses return the object directly with `resp_time` at the top
 | `sort` | string | Field name + direction suffix `_asc` or `_desc`, e.g. `quality_score_desc`, `occurred_at_asc` |
 | `from` | string (ISO 8601) | Start of time-range filter, inclusive; used on `result` and `event` endpoints |
 | `to` | string (ISO 8601) | End of time-range filter, inclusive; used on `result` and `event` endpoints |
+| `event_major_type` | string (repeatable) | Filter the unified per-dataset timeline (`/spoke/common/data/{urn}/event`) by event-type major prefix — `INGESTION`, `VALIDATION`, or `METAGEN`. Repeat to OR multiple majors; omitted = all majors |
 | `q` | string | Natural language query (search endpoints only) |
 
 ### Meta-Classifier Conventions

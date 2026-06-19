@@ -380,31 +380,3 @@ export function useReviewCandidate() {
     },
   });
 }
-
-// ── Per-dataset events ─────────────────────────────────────────────────────────
-
-interface DatasetEventParams {
-  offset?: number;
-  limit?: number;
-}
-
-/** GET /spoke/common/data/{urn}/event/metagen — polled. */
-export function useMetagenDatasetEvents(
-  datasetUrn: string,
-  params: DatasetEventParams = {},
-) {
-  const { offset, limit = 20 } = params;
-  return usePoll<MetagenEventListResponse>({
-    queryKey: ["metagen", "dataset-events", datasetUrn, { offset, limit }],
-    queryFn: () => {
-      const sp = new URLSearchParams();
-      if (offset !== undefined) sp.set("offset", String(offset));
-      sp.set("limit", String(limit));
-      return apiFetch<MetagenEventListResponse>(
-        `/spoke/common/data/${encodeURIComponent(datasetUrn)}/event/metagen?${sp.toString()}`,
-      );
-    },
-    enabled: !!datasetUrn,
-    meta: { handledInline: true },
-  });
-}
