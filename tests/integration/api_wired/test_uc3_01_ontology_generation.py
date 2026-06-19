@@ -83,7 +83,10 @@ async def test_uc3_ontology_generation_under_stub(
             f"PUT conf response must round-trip schedule_tier='daily'; "
             f"got {conf_body.get('schedule_tier')!r}. spec: USE_CASE_en.md §UC3 §Conf"
         )
-        assert conf_body["dataset_filter"] == {"origin": "DEV", "tags": ["urn:li:tag:area:catalog"]}, (
+        assert conf_body["dataset_filter"] == {
+            "origin": "DEV",
+            "tags": ["urn:li:tag:area:catalog"],
+        }, (
             f"dataset_filter not preserved: {conf_body.get('dataset_filter')!r}. "
             "spec: USE_CASE_en.md §UC3 §Conf"
         )
@@ -136,6 +139,35 @@ async def test_uc3_ontology_generation_under_stub(
             "seed list entry missing 'updated_at'. "
             "spec: USE_CASE_en.md §UC3 — GET attr/seed returns [{seed_id, preview, updated_at}]"
         )
+
+        # ── Step 2b: Snapshot pre-existing result-row ids per type ────────────
+        # result/{node,edge,triple} is a GLOBAL listing, so it may already hold
+        # ontogen rows seeded outside this run (e.g. uc4-seed's APPROVED context
+        # nodes Order/OrderLine/Customer/ShipmentEvent/DeliveryStatus, which are
+        # fixtures carrying no debate evidence). Snapshot their ids here so the
+        # Step 6 debate-evidence assertion can be scoped to rows THIS run created.
+        baseline_ids: dict[str, set[str]] = {}
+        for result_type, list_key in [
+            ("node", "nodes"),
+            ("edge", "edges"),
+            ("triple", "triples"),
+        ]:
+            baseline_ids[result_type] = set()
+            offset = 0
+            while True:
+                snap_resp = await api_client.get(
+                    f"/api/v1/spoke/ontogen/result/{result_type}?offset={offset}&limit=100",
+                    headers=admin_headers,
+                )
+                assert snap_resp.status_code == 200, (
+                    f"GET result/{result_type} (baseline snapshot) failed: {snap_resp.status_code}"
+                )
+                snap_body = snap_resp.json()
+                snap_rows = snap_body.get(list_key, [])
+                baseline_ids[result_type].update(r["id"] for r in snap_rows)
+                offset += 100
+                if offset >= snap_body.get("total_count", 0) or not snap_rows:
+                    break
 
         # ── Step 3: POST real (non-dry-run) inference ─────────────────────────
         # spec: USE_CASE_en.md §UC3 §Run semantics — non-dry-run persists rows
@@ -256,7 +288,9 @@ async def test_uc3_ontology_generation_under_stub(
             # spec: BACKEND_LLM.md §Evidence shape — debate transcript in evidence JSONB
             # Under stub mode the Producer returns an empty payload so no rows are
             # persisted; the per-row block is intentionally a no-op.
-            rows = list_body[list_key]
+            # Scope the check to rows THIS run created — pre-existing/seeded rows
+            # (e.g. uc4-seed's context nodes) legitimately carry no debate evidence.
+            rows = [r for r in list_body[list_key] if r["id"] not in baseline_ids[result_type]]
             for row in rows:
                 attr_resp = await api_client.get(
                     f"/api/v1/spoke/ontogen/result/{result_type}/{row['id']}/attr",
@@ -345,7 +379,10 @@ async def test_uc3_ontology_generation_with_real_llm(
     Spec: BACKEND_LLM.md §Adversarial Debate Framework §Evidence shape
     """
     if runtime_conf.get("stub_llm_client"):
-        pytest.skip("stub_llm_client=true; set stub_llm_client=false via PATCH /admin/conf to run real-LLM tests")
+        pytest.skip(
+            "stub_llm_client=true; set stub_llm_client=false via PATCH /admin/conf "
+            "to run real-LLM tests"
+        )
 
     conf_url = "/api/v1/spoke/ontogen/attr/conf"
     seed_url = "/api/v1/spoke/ontogen/attr/seed"
@@ -377,7 +414,10 @@ async def test_uc3_ontology_generation_with_real_llm(
             f"PUT conf response must round-trip schedule_tier='daily'; "
             f"got {conf_body.get('schedule_tier')!r}. spec: USE_CASE_en.md §UC3 §Conf"
         )
-        assert conf_body["dataset_filter"] == {"origin": "DEV", "tags": ["urn:li:tag:area:catalog"]}, (
+        assert conf_body["dataset_filter"] == {
+            "origin": "DEV",
+            "tags": ["urn:li:tag:area:catalog"],
+        }, (
             f"dataset_filter not preserved: {conf_body.get('dataset_filter')!r}. "
             "spec: USE_CASE_en.md §UC3 §Conf"
         )
