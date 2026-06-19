@@ -116,10 +116,43 @@ test.beforeAll(async () => {
   }
 });
 
-test.beforeEach(() => {
+test.beforeEach(async ({ adminApi }) => {
   if (_skipReason) {
     test.skip(true, _skipReason);
   }
+  // Re-derive sourceId from durable backend state when module state was lost
+  // (each worker/spec file may start fresh). The source is identified by its
+  // unique SOURCE_NAME among ACTIVE_CUSTOM_MANAGED sources. If it cannot be
+  // found, leave sourceId null and let the dependent step proceed (no skip).
+  if (sourceId === null) {
+    const r = await adminApi.get(
+      "/api/v1/spoke/ingestion/sources?mode=ACTIVE_CUSTOM_MANAGED&limit=100"
+    );
+    if (r.ok()) {
+      const b = (await r.json()) as { sources?: Array<{ id: string; name: string }> };
+      const f = (b.sources ?? []).find((s) => s.name === SOURCE_NAME);
+      if (f) sourceId = f.id;
+    }
+  }
+});
+
+// Group-retry idempotency: on a serial group-retry the source created in the
+// failed attempt may still exist (afterAll runs once after the whole group, not
+// per failed attempt), so the step-1 UI create would 409 on a duplicate name.
+// Pre-delete any source matching SOURCE_NAME once before the group runs so the
+// re-create lands cleanly with a 201. (beforeAll runs again on a group-retry.)
+test.beforeAll(async ({ adminApi }) => {
+  if (_skipReason) return;
+  const r = await adminApi.get(
+    "/api/v1/spoke/ingestion/sources?mode=ACTIVE_CUSTOM_MANAGED&limit=100"
+  );
+  if (r.ok()) {
+    const b = (await r.json()) as { sources?: Array<{ id: string; name: string }> };
+    for (const s of (b.sources ?? []).filter((x) => x.name === SOURCE_NAME)) {
+      await adminApi.delete(`/api/v1/spoke/ingestion/sources/${s.id}`);
+    }
+  }
+  sourceId = null;
 });
 
 // ── Cleanup: delete the created source after all steps ────────────────────
@@ -130,6 +163,16 @@ test.afterAll(async ({ adminApi }) => {
     sourceId = null;
   }
 });
+
+// Serial mode: the steps below form one ordered, stateful scenario (each step
+// depends on module state + backend resources established by the prior step).
+// In serial mode the file's tests run as one group; if a step fails, the WHOLE
+// group is retried together — re-running every step in order and re-establishing
+// both module state and backend state. The create step is idempotent across a
+// group-retry: beforeEach re-derives sourceId and pre-deletes any leftover source
+// by name, so the UI create lands cleanly on retry.
+// spec: spec/TESTING.md §E2E — dependent sequential steps use describe.serial.
+test.describe.configure({ mode: "serial" });
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Step 1 — Create ACTIVE_CUSTOM_MANAGED source via /ingestion/sources/new
@@ -232,9 +275,6 @@ test("UC1 Case 2 step 1 — create ACTIVE_CUSTOM_MANAGED postgres source", async
 // spec: FRONTEND_INGESTION.md §Source Detail §Run — dry_run toggle + Run button
 // ─────────────────────────────────────────────────────────────────────────────
 test("UC1 Case 2 step 2 — dry_run emits nothing", async ({ page, adminApi }) => {
-  // Require step 1 to have run and captured sourceId.
-  if (!sourceId) test.skip();
-
   // Navigate to source detail.
   await page.goto(`/ingestion/sources/${encodeURIComponent(sourceId!)}`);
   await expect(page.getByRole("heading", { name: SOURCE_NAME })).toBeVisible({ timeout: 15_000 });
@@ -295,8 +335,6 @@ test("UC1 Case 2 step 2 — dry_run emits nothing", async ({ page, adminApi }) =
 // spec: FRONTEND_INGESTION.md §Source Detail §Run — dry_run OFF, Run button
 // ─────────────────────────────────────────────────────────────────────────────
 test("UC1 Case 2 step 3 — real run emits ≥ 2 catalog datasets", async ({ page, adminApi }) => {
-  if (!sourceId) test.skip();
-
   await page.goto(`/ingestion/sources/${encodeURIComponent(sourceId!)}`);
   await expect(page.getByRole("heading", { name: SOURCE_NAME })).toBeVisible({ timeout: 15_000 });
 
@@ -353,24 +391,46 @@ test("UC1 Case 2 step 4 — datasets panel shows catalog rows with emitted deriv
   page,
   adminApi,
 }) => {
-  if (!sourceId) test.skip();
+  // Readiness poll: datasets here are derived from DataHub ES, which lags the
+  // real run by ~2-3 min. Poll the backend until the catalog dataset URN is
+  // present before navigating + asserting the UI table.
+  // spec: TESTING.md §Assertion Principles — poll bounded deadline instead of fixed sleep.
+  const deadline = Date.now() + 180_000;
+  let datasetsReady = false;
+  while (Date.now() < deadline) {
+    const r = await adminApi.get(`/api/v1/spoke/ingestion/sources/${sourceId}/datasets`);
+    if (r.ok()) {
+      const body = (await r.json()) as { datasets: Array<{ dataset_urn: string }> };
+      const urns = new Set(body.datasets.map((d) => d.dataset_urn));
+      if (urns.has(CATALOG_TITLE_URN)) {
+        datasetsReady = true;
+        break;
+      }
+    }
+    await new Promise((res) => setTimeout(res, 3_000));
+  }
+  expect(datasetsReady, "catalog dataset URN not present in /datasets within deadline").toBe(true);
 
-  await page.goto(`/ingestion/sources/${encodeURIComponent(sourceId!)}`);
-  await expect(page.getByRole("heading", { name: SOURCE_NAME })).toBeVisible({ timeout: 15_000 });
+  // Navigate + assert the data-dependent UI, retrying the whole block to absorb
+  // residual client-side render lag after the backend is ready.
+  await expect(async () => {
+    await page.goto(`/ingestion/sources/${encodeURIComponent(sourceId!)}`);
+    await expect(page.getByRole("heading", { name: SOURCE_NAME })).toBeVisible({ timeout: 10_000 });
 
-  // -- UI assertion: Datasets section visible --
-  await expect(page.getByRole("heading", { name: "Datasets" })).toBeVisible();
+    // -- UI assertion: Datasets section visible --
+    await expect(page.getByRole("heading", { name: "Datasets" })).toBeVisible({ timeout: 10_000 });
 
-  // -- UI assertion: catalog URNs appear in the datasets table --
-  // spec: FRONTEND_INGESTION.md §Source Detail §Datasets — SourceDatasetTable renders URN links
-  // The SourceDatasetTable renders each dataset_urn as a link with the URN text.
-  // We check for the catalog.title_master URN specifically (the most discriminating).
-  await expect(page.getByText(CATALOG_TITLE_URN, { exact: false })).toBeVisible({ timeout: 30_000 });
+    // -- UI assertion: catalog URNs appear in the datasets table --
+    // spec: FRONTEND_INGESTION.md §Source Detail §Datasets — SourceDatasetTable renders URN links
+    // The SourceDatasetTable renders each dataset_urn as a link with the URN text.
+    // We check for the catalog.title_master URN specifically (the most discriminating).
+    await expect(page.getByText(CATALOG_TITLE_URN, { exact: false })).toBeVisible({ timeout: 10_000 });
 
-  // -- UI assertion: authority badge "high (emitted)" appears at least once --
-  // spec: FRONTEND_INGESTION.md §Source Detail §Datasets — authority rendered as "high (emitted)"
-  // Multiple catalog rows render this badge; assert at least one is present.
-  await expect(page.getByText("high (emitted)").first()).toBeVisible();
+    // -- UI assertion: authority badge "high (emitted)" appears at least once --
+    // spec: FRONTEND_INGESTION.md §Source Detail §Datasets — authority rendered as "high (emitted)"
+    // Multiple catalog rows render this badge; assert at least one is present.
+    await expect(page.getByText("high (emitted)").first()).toBeVisible({ timeout: 10_000 });
+  }).toPass({ timeout: 120_000, intervals: [2_000, 3_000, 5_000, 10_000] });
 
   // -- Backend probe: GET /sources/{id}/datasets --
   // spec: USE_CASE_en.md §UC1 Case 2 step 5 — dataset_urns subset includes catalog tables;
@@ -403,8 +463,6 @@ test("UC1 Case 2 step 5 — events panel shows INGESTION.COMPLETE for the real r
   page,
   adminApi,
 }) => {
-  if (!sourceId) test.skip();
-
   await page.goto(`/ingestion/sources/${encodeURIComponent(sourceId!)}`);
   await expect(page.getByRole("heading", { name: SOURCE_NAME })).toBeVisible({ timeout: 15_000 });
 
@@ -437,28 +495,51 @@ test("UC1 Case 2 step 6 — per-dataset reverse-lookup shows owning source", asy
   page,
   adminApi,
 }) => {
-  if (!sourceId) test.skip();
+  const encodedUrnPre = encodeURIComponent(CATALOG_TITLE_URN);
+
+  // Readiness poll: the reverse-lookup attr/ingestion is keyed off the emitted
+  // dataset in DataHub ES (~2-3 min lag). Poll until source_id is resolved (and
+  // matches this source) before navigating + asserting the Ingestion panel.
+  // spec: TESTING.md §Assertion Principles — poll bounded deadline instead of fixed sleep.
+  const deadline = Date.now() + 180_000;
+  let reverseReady = false;
+  while (Date.now() < deadline) {
+    const r = await adminApi.get(
+      `/api/v1/spoke/common/data/${encodedUrnPre}/attr/ingestion`
+    );
+    if (r.ok()) {
+      const body = (await r.json()) as { source_id: string | null };
+      if (body.source_id !== null && body.source_id === sourceId) {
+        reverseReady = true;
+        break;
+      }
+    }
+    await new Promise((res) => setTimeout(res, 3_000));
+  }
+  expect(reverseReady, "reverse-lookup source_id not resolved within deadline").toBe(true);
 
   // Navigate to the unified per-dataset hub; the reverse-lookup body lives under
-  // the "Ingestion" CollapsiblePanel (open by default).
+  // the "Ingestion" CollapsiblePanel (open by default). Retry the whole block to
+  // absorb residual client-side render lag after the backend is ready.
   // spec: FRONTEND_BASIC.md §Per-dataset page; FRONTEND_INGESTION.md §Per-dataset reverse-lookup
-  await page.goto(`/data/${encodeURIComponent(CATALOG_TITLE_URN)}`);
-  await expect(page).not.toHaveURL(/\/login/);
+  await expect(async () => {
+    await page.goto(`/data/${encodeURIComponent(CATALOG_TITLE_URN)}`);
+    await expect(page).not.toHaveURL(/\/login/);
 
-  // -- UI assertion: the "Ingestion" CollapsiblePanel is present and expanded --
-  // spec: FRONTEND_BASIC.md §Per-dataset page — titled foldable Ingestion panel.
-  // The panel header is a toggle button (aria-expanded), distinct from the
-  // "Ingestion" summary-card title.
-  const ingestionPanel = page.getByRole("button", { name: /ingestion/i }).first();
-  await expect(ingestionPanel).toBeVisible({ timeout: 15_000 });
-  await expect(ingestionPanel).toHaveAttribute("aria-expanded", "true");
+    // -- UI assertion: the owning-source link is visible inside the open Ingestion panel --
+    // The Ingestion CollapsiblePanel is open by default (CollapsiblePanel defaultOpen=true),
+    // and only its open body (IngestionDataPanel) renders the source link. So the link's
+    // visibility inherently proves the panel is open AND shows the resolved source — making
+    // a separate aria-expanded check on the panel toggle redundant. We avoid that check
+    // because the page renders TWO "Ingestion" elements (a summary Card title and the panel
+    // toggle button), so locating the toggle by name is ambiguous and flaked.
+    // spec: FRONTEND_BASIC.md §Per-dataset page; FRONTEND_INGESTION.md §Per-dataset reverse-lookup.
+    await expect(page.getByRole("link", { name: SOURCE_NAME })).toBeVisible({ timeout: 10_000 });
 
-  // The source name link must be visible inside the (open) Ingestion panel.
-  await expect(page.getByRole("link", { name: SOURCE_NAME })).toBeVisible({ timeout: 30_000 });
-
-  // -- UI assertion: mode badge "Active" visible (modeLabel("ACTIVE_CUSTOM_MANAGED") === "Active") --
-  // ingestion-mode-variant.ts modeLabel switch, line 35
-  await expect(page.getByText("Active", { exact: true })).toBeVisible();
+    // -- UI assertion: mode badge "Active" visible (modeLabel("ACTIVE_CUSTOM_MANAGED") === "Active") --
+    // ingestion-mode-variant.ts modeLabel switch, line 35
+    await expect(page.getByText("Active", { exact: true }).first()).toBeVisible({ timeout: 10_000 });
+  }).toPass({ timeout: 120_000, intervals: [2_000, 3_000, 5_000, 10_000] });
 
   // -- Backend probe: GET /spoke/common/data/{urn}/attr/ingestion --
   // spec: USE_CASE_en.md §UC1 Case 2 step 7 — source_id matches, mode=ACTIVE_CUSTOM_MANAGED,
@@ -488,8 +569,6 @@ test("UC1 Case 2 step 7 — delete source; source gone from list", async ({
   page,
   adminApi,
 }) => {
-  if (!sourceId) test.skip();
-
   await page.goto(`/ingestion/sources/${encodeURIComponent(sourceId!)}`);
   await expect(page.getByRole("heading", { name: SOURCE_NAME })).toBeVisible({ timeout: 15_000 });
 

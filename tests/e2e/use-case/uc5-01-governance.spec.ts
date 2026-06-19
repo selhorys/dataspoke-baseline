@@ -92,6 +92,16 @@ test.afterAll(async ({ adminApi }) => {
   }
 });
 
+// Serial mode: the steps below form one ordered, stateful scenario (each step
+// depends on metrics + module state established by the prior step). In serial
+// mode the file's tests run as one group; if a step fails, the WHOLE group is
+// retried together — re-running every step in order. The metric-create step is
+// idempotent across a group-retry: createMetricViaUI pre-deletes the metric_id
+// before the UI create, so the re-create lands cleanly with a 201. The negative
+// paths (1b 409 METRIC_EXISTS, 1c PUT-absent 404) remain exact.
+// spec: spec/TESTING.md §E2E — dependent sequential steps use describe.serial.
+test.describe.configure({ mode: "serial" });
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Step 1a — Create three DEV-scoped daily metrics via /governance/metrics/new
 // spec: USE_CASE_en.md §UC5 §Imazon Example — "The CDO adds the doc-health metric
@@ -280,9 +290,6 @@ test("UC5 step 1a — create doc-health metric via /governance/metrics/new", asy
 // ─────────────────────────────────────────────────────────────────────────────
 
 test("UC5 step 1b — re-POST existing metric_id → 409 METRIC_EXISTS", async ({ adminApi }) => {
-  // Requires step 1a to have created ingestion-freshness-dev.
-  if (!createdIds.has(METRIC_INGESTION.metric_id)) test.skip();
-
   // Re-POST the same metric_id — must reject with 409.
   const collisionResp = await adminApi.post("/api/v1/spoke/governance/metric", {
     data: {
@@ -315,9 +322,6 @@ test("UC5 step 1c — PUT existing metric conf → 200 + change reflected; absen
   page,
   adminApi,
 }) => {
-  // Requires step 1a to have created doc-health-dev.
-  if (!createdIds.has(METRIC_DOC.metric_id)) test.skip();
-
   // (a) PUT on existing doc-health-dev — edit via the UI Edit button + Save.
   // spec: FRONTEND_GOVERNANCE.md §Metrics §[id] — Edit button → form inline; Save → PUT attr/conf.
   const UPDATED_DESCRIPTION = "Updated description for replace-only test";
@@ -424,10 +428,12 @@ async function triggerRunViaUI(
   await page.getByRole("button", { name: "Run", exact: true }).last().click();
 
   // -- UI assertion: dialog closes (Run button in dialog disappears) --
-  // The ConfirmDialog closes on success (setShowRunDialog(false)).
+  // The ConfirmDialog closes on success (setShowRunDialog(false)). A governance metric
+  // run can take longer than 30s on the dev cluster (real computation over DataHub/
+  // Postgres), keeping the dialog open until the run resolves — allow up to 90s.
   await expect(
     page.getByRole("heading", { name: "Run metric", exact: true })
-  ).not.toBeVisible({ timeout: 30_000 });
+  ).not.toBeVisible({ timeout: 90_000 });
 
   // -- Backend probe: POST .../method/run → 200 with run_id --
   // spec: USE_CASE_en.md §UC5 §Imazon Example — run triggers a measurement; returns run_id.
@@ -446,7 +452,6 @@ test("UC5 step 2 — trigger immediate run for ingestion-freshness metric", asyn
   page,
   adminApi,
 }) => {
-  if (!createdIds.has(METRIC_INGESTION.metric_id)) test.skip();
   await triggerRunViaUI(page, adminApi, METRIC_INGESTION.metric_id, METRIC_INGESTION.title);
 });
 
@@ -454,7 +459,6 @@ test("UC5 step 2 — trigger immediate run for validation-score metric", async (
   page,
   adminApi,
 }) => {
-  if (!createdIds.has(METRIC_VALIDATION.metric_id)) test.skip();
   await triggerRunViaUI(page, adminApi, METRIC_VALIDATION.metric_id, METRIC_VALIDATION.title);
 });
 
@@ -462,7 +466,6 @@ test("UC5 step 2 — trigger immediate run for doc-health metric", async ({
   page,
   adminApi,
 }) => {
-  if (!createdIds.has(METRIC_DOC.metric_id)) test.skip();
   await triggerRunViaUI(page, adminApi, METRIC_DOC.metric_id, METRIC_DOC.title);
 });
 
@@ -477,8 +480,6 @@ test("UC5 step 3a — dashboard shows metric cards and trend chart section", asy
   page,
   adminApi,
 }) => {
-  if (!createdIds.has(METRIC_INGESTION.metric_id)) test.skip();
-
   // Poll adminApi until ≥1 result row appears for ingestion-freshness (bellwether metric).
   // spec: TESTING.md §E2E critical pitfall 3 — poll adminApi until present, THEN assert UI.
   // Runs were triggered in step 2; results should appear within ~30s of the run completing.
@@ -500,35 +501,43 @@ test("UC5 step 3a — dashboard shows metric cards and trend chart section", asy
   }
   expect(resultCount).toBeGreaterThanOrEqual(1);
 
-  // Navigate to the dashboard.
-  await page.goto("/governance/dashboard");
-  await expect(page).not.toHaveURL(/\/login/);
+  // Navigate to the dashboard and assert its heading, metric cards, and trend
+  // section render. Wrap the goto + UI visibility checks in a retry block to
+  // absorb residual client-side render lag after the backend results are
+  // confirmed present — without it a render flake fails the test and triggers a
+  // serial group-retry.
+  // spec: TESTING.md §Assertion Principles — retry bounded deadline instead of fixed sleep.
+  await expect(async () => {
+    await page.goto("/governance/dashboard");
+    await expect(page).not.toHaveURL(/\/login/);
 
-  // -- UI assertion: page heading --
-  // spec: dashboard/page.tsx — h1 "Governance · Dashboard"
-  await expect(
-    page.getByRole("heading", { name: "Governance · Dashboard", exact: true })
-  ).toBeVisible({ timeout: 15_000 });
+    // -- UI assertion: page heading --
+    // spec: dashboard/page.tsx — h1 "Governance · Dashboard"
+    await expect(
+      page.getByRole("heading", { name: "Governance · Dashboard", exact: true })
+    ).toBeVisible({ timeout: 10_000 });
 
-  // -- UI assertion: metric cards visible (async TanStack Query; wait for panel) --
-  // spec: FRONTEND_GOVERNANCE.md §Dashboard — one card per enabled metric (CardTitle = title).
-  // spec: dashboard/page.tsx — MetricCard renders CardTitle={metric.title}.
-  // Use .first() — the title may also appear in the chart section heading (pitfall 1).
-  await expect(
-    page.getByText(METRIC_INGESTION.title, { exact: true }).first()
-  ).toBeVisible({ timeout: 30_000 });
-  await expect(
-    page.getByText(METRIC_VALIDATION.title, { exact: true }).first()
-  ).toBeVisible({ timeout: 15_000 });
-  await expect(
-    page.getByText(METRIC_DOC.title, { exact: true }).first()
-  ).toBeVisible({ timeout: 15_000 });
+    // -- UI assertion: metric cards visible (async TanStack Query; wait for panel) --
+    // spec: FRONTEND_GOVERNANCE.md §Dashboard — one card per enabled metric (CardTitle = title).
+    // spec: dashboard/page.tsx — MetricCard renders CardTitle={metric.title}.
+    // Use .first() — the title may also appear in the chart section heading (pitfall 1).
+    await expect(
+      page.getByText(METRIC_INGESTION.title, { exact: true }).first()
+    ).toBeVisible({ timeout: 10_000 });
+    await expect(
+      page.getByText(METRIC_VALIDATION.title, { exact: true }).first()
+    ).toBeVisible({ timeout: 10_000 });
+    await expect(
+      page.getByText(METRIC_DOC.title, { exact: true }).first()
+    ).toBeVisible({ timeout: 10_000 });
 
-  // -- UI assertion: "Daily trend (last 30 d)" section heading visible --
-  // spec: dashboard/page.tsx — h2 "Daily trend (last 30 d)"
-  await expect(
-    page.getByRole("heading", { name: "Daily trend (last 30 d)", exact: true })
-  ).toBeVisible({ timeout: 15_000 });
+    // -- UI assertion: "Daily trend" section heading visible --
+    // spec: dashboard/page.tsx — h2 "Daily trend"; FRONTEND_GOVERNANCE.md §45 (the
+    // range "[Last 2 weeks ▾]" is a separate selector, not part of the heading text).
+    await expect(
+      page.getByRole("heading", { name: "Daily trend", exact: true })
+    ).toBeVisible({ timeout: 10_000 });
+  }).toPass({ timeout: 120_000, intervals: [2_000, 3_000, 5_000, 10_000] });
 
   // -- Backend probe: GET /spoke/governance/metric?is_enabled=true → all 3 present --
   // spec: FRONTEND_GOVERNANCE.md §Dashboard — GET metric list filtered is_enabled=true.
@@ -556,8 +565,6 @@ test("UC5 step 3b — /governance/metrics list shows all three metrics with type
   page,
   adminApi,
 }) => {
-  if (createdIds.size < 3) test.skip();
-
   await page.goto("/governance/metrics");
   await expect(page).not.toHaveURL(/\/login/);
 
@@ -622,8 +629,6 @@ test("UC5 step 3c — doc-health detail page: attr/conf, attr/result, event sect
   page,
   adminApi,
 }) => {
-  if (!createdIds.has(METRIC_DOC.metric_id)) test.skip();
-
   await page.goto(`/governance/metrics/${METRIC_DOC.metric_id}`);
   await expect(page).not.toHaveURL(/\/login/);
 
@@ -660,11 +665,17 @@ test("UC5 step 3c — doc-health detail page: attr/conf, attr/result, event sect
     page.getByRole("heading", { name: "attr/result", exact: true })
   ).toBeVisible({ timeout: 10_000 });
 
-  // -- UI assertion: range selector visible (7d / 30d / 90d) --
-  // spec: [id]/page.tsx — Select trigger renders current rangeLabel; default "30d"
-  // Radix SelectTrigger; locate by role="combobox" first occurrence in the attr/result section.
-  // The trigger renders the current rangeLabel text ("30d" by default).
-  await expect(page.getByText("30d", { exact: true }).first()).toBeVisible({ timeout: 10_000 });
+  // -- UI assertion: range-selector control present on the attr/result section --
+  // spec: [id]/page.tsx — attr/result section renders a <RangePicker> next to the h2.
+  // spec: components/range-picker.tsx — the trigger is a <Button> (PopoverTrigger) showing
+  //   selectionLabel(value) (a preset like "Last 2 weeks", or a custom range). The default
+  //   preset can vary by persisted state, so assert the control's presence rather than a
+  //   specific preset label. The attr/result section's only button is the RangePicker trigger,
+  //   so scope the button locator to that section.
+  const attrResultSection = page
+    .locator("section")
+    .filter({ has: page.getByRole("heading", { name: "attr/result", exact: true }) });
+  await expect(attrResultSection.getByRole("button").first()).toBeVisible({ timeout: 10_000 });
 
   // -- UI assertion: event section heading --
   // spec: [id]/page.tsx — section h2 "event"
@@ -768,7 +779,6 @@ test("UC5 step 4 — delete ingestion-freshness metric via ConfirmDialog", async
   page,
   adminApi,
 }) => {
-  if (!createdIds.has(METRIC_INGESTION.metric_id)) test.skip();
   await deleteMetricViaUI(page, adminApi, METRIC_INGESTION.metric_id, METRIC_INGESTION.title);
   createdIds.delete(METRIC_INGESTION.metric_id);
 });
@@ -777,7 +787,6 @@ test("UC5 step 4 — delete validation-score metric via ConfirmDialog", async ({
   page,
   adminApi,
 }) => {
-  if (!createdIds.has(METRIC_VALIDATION.metric_id)) test.skip();
   await deleteMetricViaUI(page, adminApi, METRIC_VALIDATION.metric_id, METRIC_VALIDATION.title);
   createdIds.delete(METRIC_VALIDATION.metric_id);
 });
@@ -786,7 +795,6 @@ test("UC5 step 4 — delete doc-health metric via ConfirmDialog", async ({
   page,
   adminApi,
 }) => {
-  if (!createdIds.has(METRIC_DOC.metric_id)) test.skip();
   await deleteMetricViaUI(page, adminApi, METRIC_DOC.metric_id, METRIC_DOC.title);
   createdIds.delete(METRIC_DOC.metric_id);
 });

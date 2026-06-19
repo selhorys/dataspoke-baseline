@@ -150,6 +150,15 @@ test.afterAll(async ({ adminApi }) => {
   }
 });
 
+// Serial mode: the steps below form one ordered, stateful scenario (each step
+// depends on backend resources + module state established by the prior step).
+// In serial mode the file's tests run as one group; if a step fails, the WHOLE
+// group is retried together — re-running every step in order and re-establishing
+// both module state and backend state. The create/mutate steps tolerate
+// "already exists" on a group-retry (PUT-conf and POST-result upsert → 200).
+// spec: spec/TESTING.md §E2E — dependent sequential steps use describe.serial.
+test.describe.configure({ mode: "serial" });
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Step 1 — Create validation confs for both datasets [API-fired setup]
 // spec: USE_CASE_en.md §UC2 — "The caller registers validation slots for the
@@ -162,7 +171,8 @@ test("UC2 step 1 — PUT validation confs for postgres + kafka datasets", async 
 }) => {
   // PUT postgres conf (idempotent: if a prior test run left state, overwrite).
   const pgResp = await adminApi.put(PG_CONF_API, { data: PG_CONF_PAYLOAD });
-  expect(pgResp.status()).toBe(201);
+  // 201 on first create; 200 if a group-retry re-PUTs an existing conf (upsert).
+  expect([200, 201]).toContain(pgResp.status());
   // spec: VALIDATION.md §Rule Configuration — variables round-trip as {name, description}.
   const pgBody = (await pgResp.json()) as {
     variables: Array<{ name: string; description: string }>;
@@ -174,7 +184,8 @@ test("UC2 step 1 — PUT validation confs for postgres + kafka datasets", async 
 
   // PUT kafka conf.
   const kafkaResp = await adminApi.put(KAFKA_CONF_API, { data: KAFKA_CONF_PAYLOAD });
-  expect(kafkaResp.status()).toBe(201);
+  // 201 on first create; 200 if a group-retry re-PUTs an existing conf (upsert).
+  expect([200, 201]).toContain(kafkaResp.status());
   const kafkaBody = (await kafkaResp.json()) as {
     variables: Array<{ name: string; description: string }>;
   };
@@ -194,18 +205,18 @@ test("UC2 step 2 — POST results; detail page renders score + variables charts"
   page,
   adminApi,
 }) => {
-  if (!pgConfCreated || !kafkaConfCreated) test.skip();
-
   // POST 3 daily results for postgres.
   for (const payload of PG_RESULTS) {
     const resp = await adminApi.post(PG_RESULT_API, { data: payload });
-    expect(resp.status()).toBe(201);
+    // 201 on first insert; 200 if a group-retry re-POSTs the same data_time (upsert).
+    expect([200, 201]).toContain(resp.status());
   }
 
   // POST 2 daily results for kafka.
   for (const payload of KAFKA_RESULTS) {
     const resp = await adminApi.post(KAFKA_RESULT_API, { data: payload });
-    expect(resp.status()).toBe(201);
+    // 201 on first insert; 200 if a group-retry re-POSTs the same data_time (upsert).
+    expect([200, 201]).toContain(resp.status());
   }
 
   // Poll via adminApi until all 3 postgres results are present.
@@ -227,34 +238,40 @@ test("UC2 step 2 — POST results; detail page renders score + variables charts"
   }
   expect(resultCount).toBeGreaterThanOrEqual(3);
 
-  // Navigate to the postgres detail page.
-  await page.goto(PG_DETAIL_URL);
-  await expect(page).not.toHaveURL(/\/login/);
+  // Navigate to the postgres detail page and assert its chart panels render.
+  // Wrap the goto + UI visibility checks in a retry block to absorb residual
+  // client-side render lag after the backend results are confirmed present —
+  // without it a render flake fails the test and triggers a serial group-retry.
+  // spec: TESTING.md §Assertion Principles — retry bounded deadline instead of fixed sleep.
+  await expect(async () => {
+    await page.goto(PG_DETAIL_URL);
+    await expect(page).not.toHaveURL(/\/login/);
 
-  // -- UI assertion: score chart panel rendered --
-  // spec: FRONTEND_VALIDATION.md §Page contracts — score chart section heading
-  // The section heading for the score chart is "Quality Score (attr/validation/result)".
-  // Use exact: true to avoid matching the "Quality Score" column header on the list page.
-  await expect(
-    page.getByRole("heading", { name: "Quality Score (attr/validation/result)", exact: true })
-  ).toBeVisible({ timeout: 20_000 });
+    // -- UI assertion: score chart panel rendered --
+    // spec: FRONTEND_VALIDATION.md §Page contracts — score chart section heading
+    // The section heading for the score chart is "Quality Score (attr/validation/result)".
+    // Use exact: true to avoid matching the "Quality Score" column header on the list page.
+    await expect(
+      page.getByRole("heading", { name: "Quality Score (attr/validation/result)", exact: true })
+    ).toBeVisible({ timeout: 10_000 });
 
-  // -- UI assertion: variables chart panel rendered --
-  // spec: FRONTEND_VALIDATION.md §Page contracts — variables chart section heading
-  await expect(
-    page.getByRole("heading", { name: "Variables (attr/validation/result)", exact: true })
-  ).toBeVisible({ timeout: 10_000 });
+    // -- UI assertion: variables chart panel rendered --
+    // spec: FRONTEND_VALIDATION.md §Page contracts — variables chart section heading
+    await expect(
+      page.getByRole("heading", { name: "Variables (attr/validation/result)", exact: true })
+    ).toBeVisible({ timeout: 10_000 });
 
-  // -- UI assertion: variable name badges in variables chart legend --
-  // The ValidationVariablesChart renders each variable name as a toggle button with font-mono.
-  // Use getByText to find at least one declared variable name in the legend.
-  await expect(page.getByText("row_cnt", { exact: true }).first()).toBeVisible({ timeout: 10_000 });
+    // -- UI assertion: variable name badges in variables chart legend --
+    // The ValidationVariablesChart renders each variable name as a toggle button with font-mono.
+    // Use getByText to find at least one declared variable name in the legend.
+    await expect(page.getByText("row_cnt", { exact: true }).first()).toBeVisible({ timeout: 10_000 });
 
-  // -- UI assertion: latest score badge in the header --
-  // spec: FRONTEND_VALIDATION.md §Page contracts — detail header: "Latest score {scoreLabel}"
-  // Results are confirmed present via adminApi above and fall inside the page's
-  // default 30-day window, so the badge renders on the initial query.
-  await expect(page.getByText(/Latest score/i).first()).toBeVisible({ timeout: 15_000 });
+    // -- UI assertion: latest score badge in the header --
+    // spec: FRONTEND_VALIDATION.md §Page contracts — detail header: "Latest score {scoreLabel}"
+    // Results are confirmed present via adminApi above and fall inside the page's
+    // default 30-day window, so the badge renders on the initial query.
+    await expect(page.getByText(/Latest score/i).first()).toBeVisible({ timeout: 10_000 });
+  }).toPass({ timeout: 120_000, intervals: [2_000, 3_000, 5_000, 10_000] });
 
   // -- Backend probe: GET result range → 3 rows, descending order --
   // spec: USE_CASE_en.md §UC2 step 3 — GET prior series as baseline without re-scanning.
@@ -283,40 +300,63 @@ test("UC2 step 3 — /validation list shows both datasets with score badges", as
   page,
   adminApi,
 }) => {
-  if (!pgConfCreated || !kafkaConfCreated) test.skip();
+  // Readiness poll: the cross-dataset list is sourced via DataHub ES, which lags
+  // conf/result writes by ~2-3 min. Poll until BOTH dataset URNs are present in
+  // the aggregated list before navigating + asserting the UI table.
+  // spec: TESTING.md §Assertion Principles — poll bounded deadline instead of fixed sleep.
+  const deadline = Date.now() + 180_000;
+  let listReady = false;
+  while (Date.now() < deadline) {
+    const r = await adminApi.get("/api/v1/spoke/validation?limit=100");
+    if (r.ok()) {
+      const body = (await r.json()) as {
+        validations: Array<{ dataset_urn: string }>;
+      };
+      const urns = new Set(body.validations.map((v) => v.dataset_urn));
+      if (urns.has(PG_URN) && urns.has(KAFKA_URN)) {
+        listReady = true;
+        break;
+      }
+    }
+    await new Promise((res) => setTimeout(res, 3_000));
+  }
+  expect(listReady, "both dataset URNs not present in /validation list within deadline").toBe(true);
 
-  // Navigate to the validation list page.
-  await page.goto("/validation");
-  await expect(page).not.toHaveURL(/\/login/);
+  // Navigate + assert the data-dependent UI, retrying the whole block to absorb
+  // residual client-side render lag after the backend is ready.
+  await expect(async () => {
+    await page.goto("/validation");
+    await expect(page).not.toHaveURL(/\/login/);
 
-  // -- UI assertion: page heading --
-  // spec: FRONTEND_VALIDATION.md §Navigation — list page title "Validation"
-  await expect(page.getByRole("heading", { name: "Validation", exact: true })).toBeVisible({
-    timeout: 15_000,
-  });
+    // -- UI assertion: page heading --
+    // spec: FRONTEND_VALIDATION.md §Navigation — list page title "Validation"
+    await expect(page.getByRole("heading", { name: "Validation", exact: true })).toBeVisible({
+      timeout: 10_000,
+    });
 
-  // -- UI assertion: postgres URN link visible in the table --
-  // spec: FRONTEND_VALIDATION.md §Page contracts — each row has a URN link.
-  // The table renders multiple URN strings; .first() avoids strict-mode violations
-  // when the URN appears in both a link and a raw-JSON-like cell.
-  await expect(page.getByText(PG_URN, { exact: false }).first()).toBeVisible({ timeout: 20_000 });
+    // -- UI assertion: postgres URN link visible in the table --
+    // spec: FRONTEND_VALIDATION.md §Page contracts — each row has a URN link.
+    // The table renders multiple URN strings; .first() avoids strict-mode violations
+    // when the URN appears in both a link and a raw-JSON-like cell.
+    await expect(page.getByText(PG_URN, { exact: false }).first()).toBeVisible({ timeout: 10_000 });
 
-  // -- UI assertion: kafka URN link visible --
-  await expect(page.getByText(KAFKA_URN, { exact: false }).first()).toBeVisible({ timeout: 15_000 });
+    // -- UI assertion: kafka URN link visible --
+    await expect(page.getByText(KAFKA_URN, { exact: false }).first()).toBeVisible({ timeout: 10_000 });
 
-  // -- UI assertion: postgres description rendered (truncated, within 240px cell) --
-  // spec: FRONTEND_VALIDATION.md §Page contracts — description column (max-w-[240px] truncate)
-  // We check a prefix of the description that is short enough to appear un-truncated.
-  await expect(page.getByText("Daily order fulfillment quality", { exact: false }).first()).toBeVisible();
+    // -- UI assertion: postgres description rendered (truncated, within 240px cell) --
+    // spec: FRONTEND_VALIDATION.md §Page contracts — description column (max-w-[240px] truncate)
+    // We check a prefix of the description that is short enough to appear un-truncated.
+    await expect(page.getByText("Daily order fulfillment quality", { exact: false }).first()).toBeVisible({ timeout: 10_000 });
 
-  // -- UI assertion: Quality Score badge for the postgres dataset's row --
-  // spec: FRONTEND_VALIDATION.md §Page contracts — Quality Score column: badge or "—"
-  // The badge for score=1.0 renders scoreLabel(1.0) = "1.0000".
-  // Scoped to the PG_URN row (the validation table uses <TableRow key={v.dataset_urn}>
-  // with PG_URN as the first cell text) so stale rows with a different dataset's score
-  // cannot satisfy this assertion. The URN is unique enough to anchor the row.
-  const pgRow = page.getByRole("row").filter({ hasText: PG_URN });
-  await expect(pgRow.getByText("1.0000", { exact: false })).toBeVisible({ timeout: 10_000 });
+    // -- UI assertion: Quality Score badge for the postgres dataset's row --
+    // spec: FRONTEND_VALIDATION.md §Page contracts — Quality Score column: badge or "—"
+    // The badge for score=1.0 renders scoreLabel(1.0) = "1.0000".
+    // Scoped to the PG_URN row (the validation table uses <TableRow key={v.dataset_urn}>
+    // with PG_URN as the first cell text) so stale rows with a different dataset's score
+    // cannot satisfy this assertion. The URN is unique enough to anchor the row.
+    const pgRow = page.getByRole("row").filter({ hasText: PG_URN });
+    await expect(pgRow.getByText("1.0000", { exact: false })).toBeVisible({ timeout: 10_000 });
+  }).toPass({ timeout: 120_000, intervals: [2_000, 3_000, 5_000, 10_000] });
 
   // -- Backend probe: GET /spoke/validation → BOTH URNs in validations --
   // spec: VALIDATION.md §API Surface — aggregates conf + latest result per dataset.
@@ -362,8 +402,6 @@ test("UC2 step 4 — postgres detail page renders conf, charts, and validation e
   page,
   adminApi,
 }) => {
-  if (!pgConfCreated) test.skip();
-
   await page.goto(PG_DETAIL_URL);
   await expect(page).not.toHaveURL(/\/login/);
 
@@ -483,8 +521,6 @@ test("UC2 step 5 — Delete (freeze) postgres conf via ConfirmDialog; freeze sem
   page,
   adminApi,
 }) => {
-  if (!pgConfCreated) test.skip();
-
   await page.goto(PG_DETAIL_URL);
   await expect(page).not.toHaveURL(/\/login/);
   // The Validation CollapsiblePanel is open by default; wait for its Delete

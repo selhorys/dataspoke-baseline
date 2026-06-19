@@ -107,7 +107,7 @@ function ValidationSummaryCard({ datasetUrn }: { datasetUrn: string }) {
             <div>
               {latestScore !== null ? (
                 <Badge variant={scoreBadgeVariant(latestScore)} className="text-xs">
-                  score {scoreLabel(latestScore)}
+                  Latest score {scoreLabel(latestScore)}
                 </Badge>
               ) : (
                 <span className="text-xs text-muted-foreground">No score yet</span>

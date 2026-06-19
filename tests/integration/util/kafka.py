@@ -100,18 +100,37 @@ def _create_topics(admin: AdminClient, topics: list[str]) -> None:
 def _produce_messages(producer: Producer, topic: str, jsonl_file: str) -> int:
     """Read a JSONL fixture file and produce each line as a Kafka message.
 
-    Returns the number of messages produced.
+    Wraps produce+flush in a bounded retry (up to 3 attempts, 2s/4s backoff) so a
+    transient broker connect/flush timeout self-heals instead of burning the whole
+    reset-seed. Topics are delete+recreate each reset, so re-producing is idempotent
+    for our purposes. Returns the number of messages produced.
     """
     fixture_path = _FIXTURES_DIR / jsonl_file
-    count = 0
-    for line in fixture_path.read_text().splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        producer.produce(topic, value=line.encode("utf-8"))
-        count += 1
-    producer.flush()
-    return count
+    lines = [
+        line.strip()
+        for line in fixture_path.read_text().splitlines()
+        if line.strip()
+    ]
+
+    last_exc: Exception | None = None
+    for attempt in range(3):
+        try:
+            count = 0
+            for line in lines:
+                producer.produce(topic, value=line.encode("utf-8"))
+                count += 1
+            producer.flush()
+            return count
+        except Exception as exc:  # confluent_kafka raises on a broker timeout
+            last_exc = exc
+            if attempt < 2:
+                backoff = 2 * (attempt + 1)
+                print(
+                    f"  [WARN] produce({topic}) attempt {attempt + 1} failed: "
+                    f"{exc}; retrying in {backoff}s"
+                )
+                time.sleep(backoff)
+    raise last_exc  # type: ignore[misc]
 
 
 # ---------------------------------------------------------------------------
