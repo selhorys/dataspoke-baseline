@@ -69,14 +69,17 @@ from src.shared.secrets import (
 
 logger = logging.getLogger(__name__)
 
-# DataHub execution-result status mapping:
-#   SUCCESS (and SUCCEEDED, for cross-version safety) → INGESTION_COMPLETE
-#   SKIPPED / UP_FOR_RETRY → skipped (not mirrored as events)
-#   every other terminal status (FAILURE/CANCELLED/ABORTED/TIMEOUT/…) → INGESTION_FAIL
-_DATAHUB_SUCCESS_STATUSES: frozenset[str] = frozenset({"SUCCESS", "SUCCEEDED"})
-# Non-terminal / ambiguous DataHub statuses — not real outcomes, so they are
-# not mirrored as events (UP_FOR_RETRY may still succeed; SKIPPED ran nothing).
-_DATAHUB_SKIP_STATUSES: frozenset[str] = frozenset({"SKIPPED", "UP_FOR_RETRY"})
+# DataHub execution-result status → DataSpoke event mapping.
+# Only executions that reached a real ingestion outcome are mirrored:
+#   SUCCESS / SUCCEEDED (cross-version)              → INGESTION_COMPLETE
+#   FAILURE / TIMEOUT / ABORTED / ROLLBACK_FAILED    → INGESTION_FAIL
+# Every other status is NOT mirrored:
+#   RUNNING / ROLLING_BACK / UP_FOR_RETRY            → in-progress (may still resolve)
+#   CANCELLED / DUPLICATE / ROLLED_BACK / empty      → not an ingestion outcome
+_COMPLETE_STATUSES: frozenset[str] = frozenset({"SUCCESS", "SUCCEEDED"})
+_FAIL_STATUSES: frozenset[str] = frozenset(
+    {"FAILURE", "TIMEOUT", "ABORTED", "ROLLBACK_FAILED"}
+)
 
 
 # ── Value objects ─────────────────────────────────────────────────────────────
@@ -1529,9 +1532,19 @@ class IngestionService:
         source_id: str,
         datahub_source_urn: str,
     ) -> int:
-        """Mirror terminal execution requests for a DATAHUB_MANAGED source.
+        """Mirror execution requests that reached an ingestion outcome.
 
-        Deduplicates by (entity_id, event_type, occurred_at).
+        Only executions whose status maps to a real outcome are mirrored:
+        SUCCESS/SUCCEEDED → COMPLETE, FAILURE/TIMEOUT/ABORTED/ROLLBACK_FAILED →
+        FAIL.  In-progress (RUNNING/ROLLING_BACK/UP_FOR_RETRY) and non-outcome
+        (CANCELLED/DUPLICATE/ROLLED_BACK/empty) statuses produce no event.
+
+        Identity is the execution-request URN: each request yields at most one
+        event, upserted (looked up via ``detail->>'execution_request_urn'`` for
+        this source) so repeated syncs and status transitions never duplicate.
+
+        ``occurred_at`` is ``startTimeMs`` when present (>0), else ``requestedAt``;
+        never ``now()``.
 
         Returns the count of newly inserted events.
         """
@@ -1544,28 +1557,35 @@ class IngestionService:
         inserted = 0
         for req in requests:
             status_str = req.get("status") or ""
-            if status_str in _DATAHUB_SKIP_STATUSES:
-                continue
-            event_type = (
-                INGESTION_COMPLETE if status_str in _DATAHUB_SUCCESS_STATUSES else INGESTION_FAIL
-            )
-            start_ms = req.get("startTimeMs")
-            if start_ms:
-                occurred_at = datetime.fromtimestamp(start_ms / 1000, tz=UTC)
+            if status_str in _COMPLETE_STATUSES:
+                event_type = INGESTION_COMPLETE
+            elif status_str in _FAIL_STATUSES:
+                event_type = INGESTION_FAIL
             else:
-                occurred_at = datetime.now(tz=UTC)
+                # In-progress or non-outcome status — not mirrored.
+                continue
 
-            # Deduplicate: skip if (entity_id, event_type, occurred_at) exists.
+            urn = req.get("urn") or ""
+            if not urn:
+                continue
+
+            # Idempotency: one event per execution-request URN for this source.
             dup_result = await self._db.execute(
-                select(Event).where(
+                select(Event.id).where(
                     Event.entity_type == "ingestion_source",
                     Event.entity_id == source_id,
-                    Event.event_type == event_type,
-                    Event.occurred_at == occurred_at,
+                    Event.detail["execution_request_urn"].astext == urn,
                 )
             )
-            if dup_result.scalar_one_or_none() is not None:
+            if dup_result.first() is not None:
                 continue
+
+            start_ms = req.get("startTimeMs")
+            if start_ms is not None and start_ms > 0:
+                occurred_at = datetime.fromtimestamp(start_ms / 1000, tz=UTC)
+            else:
+                requested_at = req.get("requestedAt")
+                occurred_at = datetime.fromtimestamp((requested_at or 0) / 1000, tz=UTC)
 
             self._db.add(
                 Event(
@@ -1574,7 +1594,7 @@ class IngestionService:
                     event_type=event_type,
                     status="success" if event_type == INGESTION_COMPLETE else "failure",
                     detail={
-                        "execution_request_urn": req.get("urn") or "",
+                        "execution_request_urn": urn,
                         "duration_ms": req.get("durationMs"),
                         "source": "datahub_sync",
                     },

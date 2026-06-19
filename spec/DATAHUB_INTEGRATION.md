@@ -620,8 +620,33 @@ are to `ref/github/datahub/` v1.5.0.2.
   two MANAGED modes reads `systemMetadata.pipelineName` (DataHub stamps the source URN for its
   own sources; DataSpoke's extractor stamps the source id) to link authoritatively.
 - **Run/event history**: `listExecutionRequests` +
-  `ExecutionRequestResult{status,startTimeMs,durationMs,structuredReport}` for `DATAHUB_MANAGED`;
-  `DataProcessInstance` runs + ingestion-like `Operation` aspects for `PASSIVE`.
+  `ExecutionRequestResult{status,startTimeMs,durationMs,structuredReport}` and the request `input`
+  (`requestedAt`) for `DATAHUB_MANAGED`; `DataProcessInstance` runs + ingestion-like `Operation`
+  aspects for `PASSIVE`. Mirroring follows DataHub's execution-request model:
+  - **No result aspect until the executor starts.** `CreateIngestionExecutionRequest` writes only
+    `ExecutionRequestInput` (with `requestedAt`, no status); a queued request has no result and
+    renders "Pending…" in the DataHub UI. DataSpoke mirrors **only** result-bearing executions.
+    Citations: `metadata-service/.../resolvers/ingest/execution/CreateIngestionExecutionRequestResolver.java`,
+    `datahub-web-react/.../source/IngestionSourceTableColumns.tsx`.
+  - **Canonical statuses** (`li-utils/.../Constants.java`, `RollbackService.java`; frontend
+    `ingest/source/utils.ts`): `RUNNING, FAILURE, SUCCESS, TIMEOUT, CANCELLED, ABORTED, DUPLICATE,
+    ROLLING_BACK, ROLLED_BACK, ROLLBACK_FAILED` (+ frontend `UP_FOR_RETRY`). `isExecutionRequestActive`
+    = `RUNNING || ROLLING_BACK`; the "last run" is shown with its real status (incl. Running/Pending)
+    and is **never** coerced to failure (`IngestionSourceExecutionList.tsx`, `IngestionSourceTable.tsx`).
+  - **Status → event**: `SUCCESS`/`SUCCEEDED` → `INGESTION.COMPLETE`;
+    `FAILURE`/`TIMEOUT`/`ABORTED`/`ROLLBACK_FAILED` → `INGESTION.FAIL`;
+    `RUNNING`/`ROLLING_BACK`/`UP_FOR_RETRY`/no-result (in-progress) and
+    `CANCELLED`/`DUPLICATE`/`ROLLED_BACK` (not an ingestion outcome) are **not** mirrored.
+  - **Identity = execution-request URN** (`urn:li:dataHubExecutionRequest:<id>`): DataSpoke upserts at
+    most one event per URN per source (idempotent across syncs), never appending by timestamp.
+  - **`occurred_at`** = `startTimeMs` when present (`> 0`, the optional *execution start* time —
+    absent/`0` before the executor runs and for CANCELLED/DUPLICATE-before-start, per
+    `ExecutionRequestResult.pdl` and `metadata-ingestion/.../ingest_cli.py`), else the always-present
+    `input.requestedAt`; never `now()`.
+
+  The source's `latest_run` is the latest terminal outcome (`COMPLETE`/`FAIL`); in-progress/pending
+  runs surface no event yet, mirroring DataHub's "Pending…". See
+  [BACKEND §Ingestion Service step 4](feature/BACKEND.md#ingestion-service-srcbackendingestion).
 - **Recipe secret substitution**: DataHub substitutes `${NAME}` where `NAME` matches
   `[A-Za-z_][A-Za-z0-9_]*` (`metadata-ingestion/.../configuration/config_loader.py`). DataSpoke
   uses `${name__key}` and pre-resolves it (split on the last `__` → K8s Secret

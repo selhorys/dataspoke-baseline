@@ -513,18 +513,25 @@ class DataHubClient:
     async def list_execution_requests(
         self, ingestion_source_urn: str, count: int = 100
     ) -> list[dict[str, Any]]:
-        """Return terminal execution requests for an ingestion source.
+        """Return result-bearing execution requests for an ingestion source.
 
         Uses the IngestionSource.executions(start, count) field on the source
         entity (see ingestion.graphql: IngestionSource.executions).  Only
-        requests whose result field is non-null (i.e. terminal) are returned.
+        requests whose ``result`` field is non-null are returned — i.e. the
+        executor has started and reported a status.  This INCLUDES in-progress
+        runs (RUNNING/ROLLING_BACK): the caller classifies the status into
+        terminal / in-progress / non-outcome.  Truly not-started requests
+        (no ``result``, DataHub "Pending…") are skipped here.
 
         Each returned dict contains:
           - urn (str): execution request URN
-          - status (str): "SUCCESS" | "FAILURE" | other terminal value
-            (CANCELLED/ABORTED/TIMEOUT/…)
-          - startTimeMs (int | None): epoch ms when the task began
+          - status (str): canonical DataHub status — e.g. SUCCESS / FAILURE /
+            RUNNING / TIMEOUT / ABORTED / CANCELLED / ROLLING_BACK / …
+          - startTimeMs (int | None): epoch ms when the executor began
+            (absent/0 until the task starts)
           - durationMs (int | None): task duration in ms
+          - requestedAt (int | None): epoch ms when the run was requested
+            (always present on the Input; used as the fallback timestamp)
 
         Raises:
             DataHubUnavailableError: on transport failure after retries.
@@ -536,6 +543,9 @@ class DataHubClient:
                     total
                     executionRequests {
                         urn
+                        input {
+                            requestedAt
+                        }
                         result {
                             status
                             startTimeMs
@@ -567,14 +577,16 @@ class DataHubClient:
             for req in requests_page:
                 result = req.get("result")
                 if result is None:
-                    # Non-terminal (still running) — skip.
+                    # Not started yet (DataHub "Pending…") — skip.
                     continue
+                input_node = req.get("input") or {}
                 all_requests.append(
                     {
                         "urn": req.get("urn") or "",
                         "status": result.get("status") or "",
                         "startTimeMs": result.get("startTimeMs"),
                         "durationMs": result.get("durationMs"),
+                        "requestedAt": input_node.get("requestedAt"),
                     }
                 )
 

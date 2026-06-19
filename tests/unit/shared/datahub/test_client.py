@@ -214,6 +214,92 @@ async def test_enumerate_datasets(client, mock_graph) -> None:
     assert result == urns
 
 
+async def test_list_execution_requests_returns_result_bearing(client, mock_graph) -> None:
+    """list_execution_requests returns every result-bearing execution — INCLUDING
+    in-progress (RUNNING) ones — with status + requestedAt, and skips requests whose
+    result is None (DataHub 'Pending…').
+
+    Spec: spec/feature/BACKEND.md §Sync step 4 (Run events) — the client surfaces all
+    result-bearing requests (it does not classify); the service maps status → event.
+    A RUNNING execution must reach the service (carrying status + requestedAt) so it can
+    be classified as in-progress; a request with no result aspect is skipped here.
+    """
+    mock_graph.execute_graphql.return_value = {
+        "ingestionSource": {
+            "executions": {
+                "total": 3,
+                "executionRequests": [
+                    {
+                        "urn": "urn:li:dataHubExecutionRequest:done",
+                        "input": {"requestedAt": 1_699_999_000_000},
+                        "result": {
+                            "status": "SUCCESS",
+                            "startTimeMs": 1_700_000_000_000,
+                            "durationMs": 5000,
+                        },
+                    },
+                    {
+                        "urn": "urn:li:dataHubExecutionRequest:running",
+                        "input": {"requestedAt": 1_699_999_500_000},
+                        "result": {
+                            "status": "RUNNING",
+                            "startTimeMs": 1_700_000_100_000,
+                            "durationMs": None,
+                        },
+                    },
+                    {
+                        # Pending — no result aspect yet → must be skipped.
+                        "urn": "urn:li:dataHubExecutionRequest:pending",
+                        "input": {"requestedAt": 1_699_999_900_000},
+                        "result": None,
+                    },
+                ],
+            }
+        }
+    }
+
+    result = await client.list_execution_requests("urn:li:dataHubIngestionSource:s1")
+
+    urns = [r["urn"] for r in result]
+    assert urns == [
+        "urn:li:dataHubExecutionRequest:done",
+        "urn:li:dataHubExecutionRequest:running",
+    ], "result-bearing requests are returned (incl. RUNNING); the pending one is skipped"
+
+    running = next(r for r in result if r["urn"].endswith("running"))
+    # The in-progress run carries its status so the service can classify it as in-progress,
+    # and requestedAt so the timestamp fallback is available.
+    assert running["status"] == "RUNNING"
+    assert running["requestedAt"] == 1_699_999_500_000
+    assert running["startTimeMs"] == 1_700_000_100_000
+
+    done = next(r for r in result if r["urn"].endswith("done"))
+    assert done["status"] == "SUCCESS"
+    assert done["requestedAt"] == 1_699_999_000_000
+    assert done["durationMs"] == 5000
+
+
+async def test_list_execution_requests_skips_when_all_pending(client, mock_graph) -> None:
+    """When no execution has a result aspect, list_execution_requests returns []."""
+    mock_graph.execute_graphql.return_value = {
+        "ingestionSource": {
+            "executions": {
+                "total": 1,
+                "executionRequests": [
+                    {
+                        "urn": "urn:li:dataHubExecutionRequest:pending",
+                        "input": {"requestedAt": 1_699_999_900_000},
+                        "result": None,
+                    }
+                ],
+            }
+        }
+    }
+
+    result = await client.list_execution_requests("urn:li:dataHubIngestionSource:s1")
+    assert result == []
+
+
 async def test_emit_aspect_wraps_mcp(client, mock_emitter) -> None:
     """emit_aspect wraps the aspect in MetadataChangeProposalWrapper with correct fields.
 

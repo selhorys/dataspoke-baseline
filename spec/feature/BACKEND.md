@@ -359,13 +359,34 @@ DAG) reconciles all modes:
    the same tables (no `pipelineName` correspondence) stay `matched`/`medium`. Orphan wrappers do
    not reach this step — they are never stored (step 1).
 4. **Run events**: mirror run history into the `events` table — `listExecutionRequests` for
-   `DATAHUB_MANAGED` (only terminal requests, i.e. those carrying a populated result);
-   `Operation` / `DataProcessInstance` observation for `PASSIVE` — with
-   `event_type = INGESTION.COMPLETE` / `INGESTION.FAIL`, deduplicated by
-   `(entity_id, event_type, occurred_at)`. DataHub execution status maps as: `SUCCESS` (and
-   `SUCCEEDED`, for cross-version safety) → `INGESTION.COMPLETE`; `SKIPPED` / `UP_FOR_RETRY` are
-   non-terminal/ambiguous and are **not** mirrored; every other terminal status
-   (`FAILURE` / `CANCELLED` / `ABORTED` / `TIMEOUT` / …) → `INGESTION.FAIL`. Mirroring runs for
+   `DATAHUB_MANAGED`; `Operation` / `DataProcessInstance` observation for `PASSIVE` — with
+   `event_type = INGESTION.COMPLETE` / `INGESTION.FAIL`. The mapping mirrors DataHub's own
+   execution-request model: a request has **no result aspect until the executor starts** (queued =
+   "Pending…"), `startTimeMs` is the optional *execution start* time (absent/`0` before the executor
+   runs), and DataHub's "last run" is shown with its real status — never coerced to failure. Each
+   request carries a stable URN `urn:li:dataHubExecutionRequest:<id>`. Citations:
+   [DATAHUB_INTEGRATION §Ingestion Source Sync](../DATAHUB_INTEGRATION.md#ingestion-source-sync).
+
+   - **Identity / dedup = execution-request URN.** One DataSpoke event per execution request,
+     **upserted** by its URN — never appended by timestamp. The upsert looks up an existing event for
+     the source by `detail->>'execution_request_urn'` and writes at most one row per URN, so repeated
+     syncs and status transitions are idempotent (no per-sync event growth).
+   - **Status → event** (mirror only executions that reached a real ingestion outcome):
+
+     | DataHub status | DataSpoke event |
+     |---|---|
+     | `SUCCESS`, `SUCCEEDED` (cross-version) | `INGESTION.COMPLETE` |
+     | `FAILURE`, `TIMEOUT`, `ABORTED`, `ROLLBACK_FAILED` | `INGESTION.FAIL` |
+     | `RUNNING`, `ROLLING_BACK`, `UP_FOR_RETRY`, *no result* | **not mirrored** (in-progress / pending) |
+     | `CANCELLED`, `DUPLICATE`, `ROLLED_BACK` | **not mirrored** (not an ingestion outcome) |
+
+   - **`occurred_at` = `startTimeMs` when present (`> 0`), else `requestedAt`** (the always-present
+     request time on the execution-request input) — never `now()`.
+   - **Source `latest_run` = latest *terminal* outcome** (`COMPLETE` / `FAIL`). In-progress and
+     pending runs produce no event yet, mirroring DataHub's "Pending…" — so `attr/ingestion.latest_run`
+     reflects the most recent real outcome, not a transient or spurious failure.
+
+   Mirroring runs for
    every `DATAHUB_MANAGED` row including wrappers, since a registered source's runs are recorded on
    its wrapper. **The regular source aggregates events across itself and its linked wrappers**: the
    per-source event endpoint and the per-dataset latest-run aggregation union the parent's own events
@@ -394,8 +415,9 @@ fork-and-extend path — the project's Productized-Scaffold identity.
 DataSpoke's own extractor records its runs inline (see run pipeline above). `DATAHUB_MANAGED` and
 `PASSIVE` runs are observed by the `datahub-sync-hourly` DAG — `listExecutionRequests` for
 DataHub-managed, and `DataProcessInstance` runs + ingestion-like `Operation` aspects
-(`operationType ∈ {INSERT, UPDATE, CREATE, ALTER}`) for passive. `result.resultType = SUCCESS`
-maps to `INGESTION.COMPLETE`, `FAILURE` to `INGESTION.FAIL`.
+(`operationType ∈ {INSERT, UPDATE, CREATE, ALTER}`) for passive. For `DATAHUB_MANAGED` the
+status→event mapping and execution-request identity follow the sync-sweep **step 4** table above;
+in-progress and non-outcome statuses are not mirrored.
 
 **DataSpoke's own conventions**:
 
@@ -952,7 +974,7 @@ by every domain that owns a config — `INGESTION`, `VALIDATION`, `METRIC`,
 
 | Domain (`entity_type`) | Action | Trigger |
 |---|---|---|
-| `INGESTION` (`dataset`) | `COMPLETE` / `FAIL` | An ingestion run completes — `ACTIVE_CUSTOM_MANAGED` via `POST sources/{id}/method/run` inline; `DATAHUB_MANAGED`/`PASSIVE` mirrored by the sync sweep |
+| `INGESTION` (`dataset`) | `COMPLETE` / `FAIL` | An ingestion run completes — `ACTIVE_CUSTOM_MANAGED` via `POST sources/{id}/method/run` inline; `DATAHUB_MANAGED`/`PASSIVE` mirrored by the sync sweep. For sync-mirrored `DATAHUB_MANAGED` rows, `detail.execution_request_urn` is the **identity key** (not merely informational): the sweep upserts at most one event per execution-request URN per source (see step 4) |
 | `VALIDATION` (`dataset`) | `RESULT_RECORDED` | `POST attr/validation/result` succeeds (one event per accepted result) |
 | `METAGEN` (`metagen`, `entity_id=conf_id`) | `RUN_COMPLETE` / `RUN_FAILED` | per-conf generation run end; `RUN_COMPLETE` recorded for both dry-run and non-dry-run, `dry_run` flag in detail. Detail keys: `run_id` (uuid4), `conf_id`, `conf_name`, `unresolved_urns` (list, same shape as METRIC), `counts` (dict — `items_considered`, `candidates_added`, `candidates_evicted`, `rejected_cleared` on real-run; `items_considered`, `candidates_proposed` on dry-run), `dry_run`, `producer_iterations`, `debate_outcome` (`accept` / `turns_exhausted` / `cycle_detected`) |
 | `METAGEN` (`dataset`) | `CANDIDATE_APPROVE` / `CANDIDATE_REJECT` | `POST attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review` with `verdict: "approve"\|"reject"`. Detail keys: `item_id`, `candidate_id`, `reason` |
