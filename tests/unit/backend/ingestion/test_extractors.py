@@ -5,10 +5,16 @@ Covers run_extractor dispatch behavior:
 - Registered 'postgres' type is present in the registry
 - run_extractor passes through the result from the extractor function
 
-Covers _extract_postgres dry-run contract:
-- dry_run=True → emitted_urns=[], entities_ingested=0, no emit_aspect calls
-- dry_run=False → emitted_urns non-empty, emit_aspect called per discovered table
+Covers _extract_postgres discovered/emitted contract:
+- dry_run=True → discovered_urns populated (the "would emit" plan), emitted_urns=[],
+  no emit_aspect calls
+- dry_run=False → emitted_urns non-empty, emit_aspect called per discovered table,
+  emitted_urns ⊆ discovered_urns
+- Early-return paths (connection failure / no rows / no tables matched / unregistered
+  type) → discovered_urns == [] and emitted_urns == []
 
+Spec: spec/API.md §POST /spoke/ingestion/sources/{id}/method/run — detail carries
+  discovered_urns / emitted_urns (emitted ⊆ discovered; discovered present on dry-run + real)
 Spec: spec/feature/BACKEND.md §Custom Extractor Authoring Contract
 Spec: spec/feature/BACKEND.md §Active-custom run pipeline
 Spec: spec/USE_CASE_en.md §UC1 Case 2
@@ -21,7 +27,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.backend.ingestion.extractors import IngestionResult, run_extractor
+from src.backend.ingestion.extractors import (
+    IngestionResult,
+    _make_dataset_urn,
+    run_extractor,
+)
 
 # ── Registry ──────────────────────────────────────────────────────────────────
 
@@ -68,7 +78,11 @@ class TestRunExtractor:
             run_id="test-run-id",
         )
         assert isinstance(result, IngestionResult)
-        assert result.entities_ingested == 0
+        # Unregistered type discovers nothing and emits nothing.
+        # Spec: API.md — discovered_urns is the "would emit" plan; an unrunnable
+        # extractor never reaches discovery, so both lists are empty.
+        assert result.discovered_urns == []
+        assert result.emitted_urns == []
         assert len(result.errors) > 0
         assert "oracle" in result.errors[0].lower() or "no" in result.errors[0].lower()
 
@@ -80,7 +94,7 @@ class TestRunExtractor:
         (datahub, source_id, recipe, dry_run, run_id) -> IngestionResult'.
         """
         expected = IngestionResult(
-            entities_ingested=3,
+            discovered_urns=["urn:1", "urn:2", "urn:3"],
             emitted_urns=["urn:1", "urn:2", "urn:3"],
             errors=[],
             warnings=[],
@@ -102,7 +116,8 @@ class TestRunExtractor:
                 run_id="run-456",
             )
             mock_extractor.assert_awaited_once()
-            assert result.entities_ingested == 3
+            assert result.emitted_urns == ["urn:1", "urn:2", "urn:3"]
+            assert result.discovered_urns == ["urn:1", "urn:2", "urn:3"]
         finally:
             _ext._EXTRACTOR_REGISTRY.clear()
             _ext._EXTRACTOR_REGISTRY.update(original_registry)
@@ -172,23 +187,37 @@ _FAKE_ROWS = [
     _make_asyncpg_row("public", "users", "id", 1),
 ]
 
+# Discovered URNs are built from the recipe's database/env with the SAME helper the
+# extractor uses for emission, so discovered and emitted URN strings are identical.
+# Spec: API.md §method/run — discovered_urns are dataset URNs passing the filter,
+# and emitted_urns ⊆ discovered_urns.
+_DB = _POSTGRES_RECIPE["source"]["config"]["database"]
+_ENV = _POSTGRES_RECIPE["source"]["config"]["env"]
+_EXPECTED_DISCOVERED = {
+    _make_dataset_urn("postgres", f"{_DB}.public.orders", _ENV),
+    _make_dataset_urn("postgres", f"{_DB}.public.users", _ENV),
+}
+
 
 class TestPostgresExtractorDryRunContract:
-    """Spec: spec/USE_CASE_en.md §UC1 Case 2 — dry run emits nothing.
+    """Spec: spec/USE_CASE_en.md §UC1 Case 2 — dry run emits nothing but DOES discover.
 
-    Spec: BACKEND.md §Active-custom run pipeline — 'aspect emission is skipped
-    on dry_run'.
+    Spec: spec/API.md §method/run — 'discovered_urns (dataset URNs passing the filter
+    — the "would emit" plan, present on both dry-run and real runs); emitted_urns
+    (dataset URNs actually written to DataHub; empty with count 0 on a dry-run)'.
+    Spec: BACKEND.md §Active-custom run pipeline — 'aspect emission is skipped on dry_run'.
 
-    The postgres extractor must return emitted_urns=[] on dry_run=True while
-    still discovering schema (no connection error, status not 'error').
+    The postgres extractor must return emitted_urns=[] on dry_run=True while populating
+    discovered_urns with the filtered table URNs (no connection error, status not 'error').
     """
 
     @pytest.mark.asyncio
-    async def test_dry_run_emits_no_urns(self) -> None:
-        """dry_run=True → emitted_urns is empty, entities_ingested is 0.
+    async def test_dry_run_discovers_tables_but_emits_no_urns(self) -> None:
+        """dry_run=True → discovered_urns has the filtered table URNs, emitted_urns is [].
 
-        UC1 Case 2: POST /sources/{id}/method/run with dry_run=True must return
-        detail.emitted_urns_count == 0.
+        UC1 Case 2: POST /sources/{id}/method/run with dry_run=True returns
+        detail.discovered_urns_count >= the table count and detail.emitted_urns_count == 0.
+        Spec: API.md §method/run — discovered present on dry-run; emitted empty on dry-run.
         """
         mock_datahub = MagicMock()
         mock_datahub.emit_aspect = AsyncMock()
@@ -206,11 +235,15 @@ class TestPostgresExtractorDryRunContract:
                 run_id="run-dry",
             )
 
-        assert result.emitted_urns == [], (
-            f"dry_run=True must produce emitted_urns=[] but got {result.emitted_urns!r}"
+        # Dry-run discovers the two distinct tables (public.orders, public.users).
+        assert set(result.discovered_urns) == _EXPECTED_DISCOVERED, (
+            f"dry_run=True must discover the filtered table URNs {_EXPECTED_DISCOVERED!r}; "
+            f"got {result.discovered_urns!r}. "
+            "spec: API.md §method/run — discovered_urns present on dry-run."
         )
-        assert result.entities_ingested == 0, (
-            f"dry_run=True must produce entities_ingested=0 but got {result.entities_ingested}"
+        assert result.emitted_urns == [], (
+            f"dry_run=True must produce emitted_urns=[] but got {result.emitted_urns!r}. "
+            "spec: API.md §method/run — dry-run emits nothing."
         )
         mock_datahub.emit_aspect.assert_not_called()
 
@@ -241,12 +274,14 @@ class TestPostgresExtractorDryRunContract:
         assert result.errors == []
 
     @pytest.mark.asyncio
-    async def test_real_run_emits_catalog_datasets_with_origin_emitted(self) -> None:
-        """dry_run=False → emitted_urns is non-empty for a schema that yields datasets.
+    async def test_real_run_emits_subset_of_discovered(self) -> None:
+        """dry_run=False → emitted_urns non-empty and emitted_urns ⊆ discovered_urns.
 
         This guards against regressions that would break the real-run mapping path.
-        Spec: BACKEND.md §Active-custom run pipeline step 7 — 'upsert emitted URNs
-        into ingestion_source_dataset (origin=emitted, non-dry-run)'.
+        Spec: API.md §method/run — emitted_urns ⊆ discovered_urns; both populated on a
+        real run that yields datasets.
+        Spec: BACKEND.md §Active-custom run pipeline — emitted URNs are upserted into
+        ingestion_source_dataset with derivation=emitted on a non-dry run.
         """
         mock_datahub = MagicMock()
         mock_datahub.emit_aspect = AsyncMock()
@@ -265,10 +300,21 @@ class TestPostgresExtractorDryRunContract:
             )
 
         # _FAKE_ROWS covers two distinct tables: public.orders and public.users.
-        assert len(result.emitted_urns) == 2, (
+        assert set(result.emitted_urns) == _EXPECTED_DISCOVERED, (
             f"Expected 2 emitted URNs (orders + users) but got {result.emitted_urns!r}"
         )
-        assert result.entities_ingested == 2
+        # Discovered set equals the emitted set here (every discovered table emitted ok).
+        assert set(result.discovered_urns) == _EXPECTED_DISCOVERED
+        # Core invariant: emitted ⊆ discovered. spec: API.md §method/run.
+        assert set(result.emitted_urns).issubset(set(result.discovered_urns)), (
+            f"emitted_urns must be a subset of discovered_urns; "
+            f"emitted={result.emitted_urns!r} discovered={result.discovered_urns!r}. "
+            "spec: API.md §method/run."
+        )
+        # Discovered and emitted URNs use the SAME _make_dataset_urn format.
+        assert all(
+            u in result.discovered_urns for u in result.emitted_urns
+        ), "emitted URN strings must match discovered URN strings exactly"
         assert result.errors == []
         # emit_aspect must have been called (aspects per table + containers).
         mock_datahub.emit_aspect.assert_called()
@@ -291,6 +337,79 @@ class TestPostgresExtractorDryRunContract:
                 run_id="run-fail",
             )
 
+        # Connection failure is an early return: nothing discovered, nothing emitted.
+        # spec: API.md §method/run — discovered_urns is the post-filter plan; an
+        # unreachable source never reaches discovery.
+        assert result.discovered_urns == []
         assert result.emitted_urns == []
-        assert result.entities_ingested == 0
         assert any("connection" in e.lower() or "postgresql" in e.lower() for e in result.errors)
+
+    @pytest.mark.asyncio
+    async def test_no_rows_returns_empty_discovered(self) -> None:
+        """A reachable DB with no columns → discovered_urns == [] and emitted_urns == [].
+
+        Spec: API.md §method/run — discovered_urns is the set of dataset URNs passing the
+        filter; with no tables there is nothing to discover.
+        """
+        mock_datahub = MagicMock()
+        mock_datahub.emit_aspect = AsyncMock()
+
+        mock_conn = AsyncMock()
+        mock_conn.fetch = AsyncMock(return_value=[])  # empty information_schema
+        mock_conn.close = AsyncMock()
+
+        with patch("asyncpg.connect", return_value=mock_conn):
+            result = await run_extractor(
+                datahub=mock_datahub,
+                source_id="src-empty",
+                recipe=_POSTGRES_RECIPE,
+                dry_run=False,
+                run_id="run-empty",
+            )
+
+        assert result.discovered_urns == []
+        assert result.emitted_urns == []
+        mock_datahub.emit_aspect.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_tables_matched_filter_returns_empty_discovered(self) -> None:
+        """schema_pattern that excludes every table → discovered_urns == [].
+
+        The rows exist (public.orders, public.users) but the schema_pattern filter
+        rejects them all, so nothing is discovered and nothing is emitted.
+        Spec: API.md §method/run — discovered_urns are only the URNs passing the
+        schema_pattern filter.
+        """
+        mock_datahub = MagicMock()
+        mock_datahub.emit_aspect = AsyncMock()
+
+        mock_conn = AsyncMock()
+        mock_conn.fetch = AsyncMock(return_value=_FAKE_ROWS)
+        mock_conn.close = AsyncMock()
+
+        # schema_pattern allows only a schema that does not exist in _FAKE_ROWS.
+        recipe = {
+            "source": {
+                "type": "postgres",
+                "config": {
+                    **_POSTGRES_RECIPE["source"]["config"],
+                    "schema_pattern": {"allow": ["^catalog$"]},
+                },
+            }
+        }
+
+        with patch("asyncpg.connect", return_value=mock_conn):
+            result = await run_extractor(
+                datahub=mock_datahub,
+                source_id="src-nomatch",
+                recipe=recipe,
+                dry_run=False,
+                run_id="run-nomatch",
+            )
+
+        assert result.discovered_urns == [], (
+            f"No table passes the ^catalog$ filter, so discovered_urns must be empty; "
+            f"got {result.discovered_urns!r}. spec: API.md §method/run."
+        )
+        assert result.emitted_urns == []
+        mock_datahub.emit_aspect.assert_not_called()

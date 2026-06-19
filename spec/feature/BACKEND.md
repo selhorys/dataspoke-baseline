@@ -309,11 +309,20 @@ live in [SECRET_RESOLUTION.md](SECRET_RESOLUTION.md). Failures surface as
 Redis SETNX (`ingestion:running:{source_id}`) → resolve `${name__key}` recipe secrets → emit
 `DataProcessInstanceRunEvent(STARTED)` against a deterministic DPI URN derived from `run_id`
 (skipped on `dry_run`) → dispatch to the extractor registered for `recipe.source.type`; emit
-dataset aspects (skipped on `dry_run`; a non-dry-run that ingests zero entities is treated as
+dataset aspects (skipped on `dry_run`; a non-dry-run whose emitted set is empty is treated as
 failure) → emit `DataProcessInstanceRunEvent(COMPLETE | FAILED)` (skipped on `dry_run`) → record
 the extractor's emitted URNs into `ingestion_source_dataset` (`derivation = emitted`, authority `high`)
-→ record `INGESTION.COMPLETE` / `INGESTION.FAIL` event (the run's `dry_run` boolean is preserved
-in the event's `detail`; see [Event Catalogue](#event-catalogue)).
+→ record `INGESTION.COMPLETE` / `INGESTION.FAIL` event (see [Event Catalogue](#event-catalogue)).
+
+The extractor discovers tables on **both** dry-run and real runs: it connects, crawls
+`information_schema`, and applies the recipe's `schema_pattern` filter to produce the
+**discovered** set (the dataset URNs it would emit — the plan). A dry-run stops there and emits
+nothing; a real run then emits each discovered table's aspects, and the **emitted** set is the
+subset whose aspects all wrote successfully. The run report (`detail` on both the run response and
+the event) carries the discovered set vs the emitted set, so `discovered − emitted > 0` on a real
+run signals per-table emission failures; on a dry-run the emitted set is empty. The runner only
+ever emits table datasets, so both sides are plain dataset-URN lists. Exact key names are in the
+[Event Catalogue](#event-catalogue) INGESTION row.
 
 **Sync + mapping sweep** (`IngestionService.sync()`, called hourly by the `datahub-sync-hourly`
 DAG) reconciles all modes:
@@ -1008,7 +1017,7 @@ by every domain that owns a config — `INGESTION`, `VALIDATION`, `METRIC`,
 
 | Domain (`entity_type`) | Action | Trigger |
 |---|---|---|
-| `INGESTION` (`ingestion_source`, `entity_id=source_id`) | `COMPLETE` / `FAIL` | An ingestion run completes — `ACTIVE_CUSTOM_MANAGED` via `POST sources/{id}/method/run` inline; `DATAHUB_MANAGED`/`PASSIVE` mirrored by the sync sweep. Booked on the owning source (not the dataset); projected onto a dataset's timeline via reverse-lookup (see [Querying Events](#querying-events)). For sync-mirrored `DATAHUB_MANAGED` rows, `detail.execution_request_urn` is the **identity key** (not merely informational): the sweep upserts at most one event per execution-request URN per source (see step 4) |
+| `INGESTION` (`ingestion_source`, `entity_id=source_id`) | `COMPLETE` / `FAIL` | An ingestion run completes — `ACTIVE_CUSTOM_MANAGED` via `POST sources/{id}/method/run` inline; `DATAHUB_MANAGED`/`PASSIVE` mirrored by the sync sweep. Booked on the owning source (not the dataset); projected onto a dataset's timeline via reverse-lookup (see [Querying Events](#querying-events)). For sync-mirrored `DATAHUB_MANAGED` rows, `detail.execution_request_urn` is the **identity key** (not merely informational): the sweep upserts at most one event per execution-request URN per source (see step 4). `ACTIVE_CUSTOM_MANAGED` run detail keys: `run_id`, `platform`, `dry_run`, `discovered_urns` (dataset URNs passing `schema_pattern` — the "would emit" plan, present on dry-run and real runs), `discovered_urns_count`, `emitted_urns` (dataset URNs written to DataHub; empty on dry-run), `emitted_urns_count`, `errors`, `warnings`; `emitted_urns ⊆ discovered_urns` |
 | `VALIDATION` (`dataset`) | `RESULT_RECORDED` | `POST attr/validation/result` succeeds (one event per accepted result) |
 | `METAGEN` (`metagen`, `entity_id=conf_id`) | `RUN_COMPLETE` / `RUN_FAILED` | per-conf generation run end; `RUN_COMPLETE` recorded for both dry-run and non-dry-run, `dry_run` flag in detail. Detail keys: `run_id` (uuid4), `conf_id`, `conf_name`, `unresolved_urns` (list, same shape as METRIC), `counts` (dict — `items_considered`, `candidates_added`, `candidates_evicted`, `rejected_cleared` on real-run; `items_considered`, `candidates_proposed` on dry-run), `dry_run`, `producer_iterations`, `debate_outcome` (`accept` / `turns_exhausted` / `cycle_detected`) |
 | `METAGEN` (`dataset`) | `CANDIDATE_APPROVE` / `CANDIDATE_REJECT` | `POST attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review` with `verdict: "approve"\|"reject"`. Detail keys: `item_id`, `candidate_id`, `reason` |

@@ -37,7 +37,7 @@ from src.api.schemas.ingestion import (
     SecretRefInfo,
     SecretRefListResponse,
 )
-from src.backend.ingestion.service import IngestionService
+from src.backend.ingestion.service import IngestionService, run_report_detail
 from src.shared.db.models import DatasetRegistry, Event, IngestionSource, IngestionSourceDataset
 from src.shared.exceptions import StorageUnavailableError
 from src.shared.models.ingestion import Mode
@@ -230,9 +230,8 @@ async def post_ingestion_source_run(
         run_id=result.run_id,
         status=result.status,
         detail={
-            "entities_ingested": result.entities_ingested,
             "dry_run": result.dry_run,
-            "emitted_urns_count": len(result.emitted_urns),
+            **run_report_detail(result),
             "errors": result.errors,
             "warnings": result.warnings,
         },

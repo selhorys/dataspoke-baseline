@@ -90,7 +90,12 @@ describe("IngestionEventTable — event rows", () => {
   it("renders a click-to-expand detail trigger when detail has keys", () => {
     const event = makeEvent({
       id: "e3",
-      detail: { entities_ingested: 42, duration_ms: 1200 },
+      detail: {
+        dry_run: false,
+        discovered_urns_count: 2,
+        emitted_urns_count: 2,
+        run_id: "run-e3",
+      },
     });
     render(
       <IngestionEventTable

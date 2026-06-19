@@ -10,9 +10,10 @@
  *   1. Navigate to /ingestion/sources/new; fill mode/name/schedule/recipe; Submit.
  *      Assert redirect to detail page; backend: POST → 201, body shape.
  *   2. On the detail page, enable dry_run toggle, trigger Run.
- *      Assert run result visible; backend: emitted_urns_count == 0.
+ *      Assert run result visible; backend: discovered_urns_count >= 2 and
+ *      emitted_urns_count == 0 (dry-run discovers but emits nothing).
  *   3. Disable dry_run, trigger real Run.
- *      Assert run result; backend: emitted_urns_count >= 2.
+ *      Assert run result; backend: emitted_urns_count >= 2 and emitted_urns ⊆ discovered_urns.
  *   4. Datasets panel lists ≥ 2 catalog rows with derivation=emitted.
  *      Backend: GET /sources/{id}/datasets.
  *   5. Events panel shows INGESTION.COMPLETE for this run.
@@ -259,7 +260,8 @@ test("UC1 Case 2 step 2 — dry_run emits nothing", async ({ page, adminApi }) =
   await expect(page.getByText(/^run_id\s/)).toBeVisible({ timeout: 60_000 });
 
   // -- Backend probe: POST /sources/{id}/method/run?dry_run=true --
-  // spec: USE_CASE_en.md §UC1 Case 2 step 3 — dry_run: emitted_urns_count == 0
+  // spec: USE_CASE_en.md §UC1 Case 2 step 3 — dry_run discovers but emits nothing
+  // spec: API.md §method/run — discovered_urns present on dry-run; emitted_urns empty
   const dryRunResp = await adminApi.post(
     `/api/v1/spoke/ingestion/sources/${sourceId}/method/run?dry_run=true`
   );
@@ -267,10 +269,22 @@ test("UC1 Case 2 step 2 — dry_run emits nothing", async ({ page, adminApi }) =
   const dryBody = (await dryRunResp.json()) as {
     run_id: string;
     status: string;
-    detail: { dry_run: boolean; emitted_urns_count: number };
+    detail: {
+      dry_run: boolean;
+      discovered_urns: string[];
+      discovered_urns_count: number;
+      emitted_urns: string[];
+      emitted_urns_count: number;
+    };
   };
   expect(dryBody.detail.dry_run).toBe(true);
+  // Dry-run discovers the catalog datasets (the "would emit" plan).
+  expect(dryBody.detail.discovered_urns_count).toBeGreaterThanOrEqual(2);
+  expect(dryBody.detail.discovered_urns).toContain(CATALOG_TITLE_URN);
+  expect(dryBody.detail.discovered_urns).toContain(CATALOG_EDITIONS_URN);
+  // Dry-run emits nothing.
   expect(dryBody.detail.emitted_urns_count).toBe(0);
+  expect(dryBody.detail.emitted_urns).toEqual([]);
   const failStatuses = new Set(["fail", "failed", "failure", "error", "errored"]);
   expect(failStatuses.has(dryBody.status.toLowerCase())).toBe(false);
 });
@@ -304,15 +318,28 @@ test("UC1 Case 2 step 3 — real run emits ≥ 2 catalog datasets", async ({ pag
 
   // -- Backend probe: POST /sources/{id}/method/run (no dry_run) --
   // spec: USE_CASE_en.md §UC1 Case 2 step 4 — real run: emitted_urns_count >= 2
+  // spec: API.md §method/run — emitted_urns ⊆ discovered_urns; both populated on a real run
   const runResp = await adminApi.post(`/api/v1/spoke/ingestion/sources/${sourceId}/method/run`);
   expect(runResp.status()).toBe(200);
   const runBody = (await runResp.json()) as {
     run_id: string;
     status: string;
-    detail: { dry_run: boolean; emitted_urns_count: number };
+    detail: {
+      dry_run: boolean;
+      discovered_urns: string[];
+      discovered_urns_count: number;
+      emitted_urns: string[];
+      emitted_urns_count: number;
+    };
   };
   expect(runBody.detail.dry_run).toBe(false);
+  expect(runBody.detail.discovered_urns_count).toBeGreaterThanOrEqual(2);
   expect(runBody.detail.emitted_urns_count).toBeGreaterThanOrEqual(2);
+  // emitted_urns ⊆ discovered_urns.
+  const discovered = new Set(runBody.detail.discovered_urns);
+  for (const u of runBody.detail.emitted_urns) {
+    expect(discovered.has(u)).toBe(true);
+  }
   const failStatuses = new Set(["fail", "failed", "failure", "error", "errored"]);
   expect(failStatuses.has(runBody.status.toLowerCase())).toBe(false);
 });

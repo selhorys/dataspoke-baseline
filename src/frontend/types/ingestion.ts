@@ -70,10 +70,32 @@ export interface IngestionSourcePatchBody {
 
 // ── Run ─────────────────────────────────────────────────────────────────────────
 
+/**
+ * `detail` payload of a run-response and of an `INGESTION.COMPLETE`/`INGESTION.FAIL`
+ * event. Carries the discovered ("would emit") plan and what was actually emitted.
+ * `emitted_urns ⊆ discovered_urns`; `emitted_urns` is empty (count 0) on a dry-run.
+ * The event `detail` additionally carries `run_id` and `platform`.
+ *
+ * Older events may predate these keys, so every consumer guards with nullish
+ * fallbacks rather than assuming presence.
+ */
+export interface IngestionRunDetail {
+  dry_run?: boolean;
+  discovered_urns?: string[];
+  discovered_urns_count?: number;
+  emitted_urns?: string[];
+  emitted_urns_count?: number;
+  errors?: unknown;
+  warnings?: unknown;
+  run_id?: string;
+  platform?: string;
+  [key: string]: unknown;
+}
+
 export interface IngestionRunResponse {
   run_id: string;
   status: string;
-  detail: Record<string, unknown>;
+  detail: IngestionRunDetail;
 }
 
 // ── Source → dataset mapping ─────────────────────────────────────────────────────

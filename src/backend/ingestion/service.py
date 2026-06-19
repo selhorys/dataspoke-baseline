@@ -112,10 +112,24 @@ class IngestionRunResult(BaseModel):
     run_id: str
     status: str  # 'success' | 'error'
     dry_run: bool
-    entities_ingested: int
+    discovered_urns: list[str]
     emitted_urns: list[str]
     errors: list[str]
     warnings: list[str]
+
+
+def run_report_detail(result: IngestionRunResult) -> dict[str, object]:
+    """Build the flat discovered/emitted report keys shared by the run response
+    and the ``INGESTION.COMPLETE``/``INGESTION.FAIL`` event detail.
+
+    Returns only dataset-URN lists and their counts — never resolved credentials.
+    """
+    return {
+        "discovered_urns": result.discovered_urns,
+        "discovered_urns_count": len(result.discovered_urns),
+        "emitted_urns": result.emitted_urns,
+        "emitted_urns_count": len(result.emitted_urns),
+    }
 
 
 _DERIVATION_TO_AUTHORITY = {"emitted": "high", "pipeline_name": "high", "matched": "medium"}
@@ -722,7 +736,7 @@ class IngestionService:
                 run_id=run_id,
                 status="error",
                 dry_run=dry_run,
-                entities_ingested=0,
+                discovered_urns=[],
                 emitted_urns=[],
                 errors=[str(exc)],
                 warnings=[],
@@ -738,7 +752,7 @@ class IngestionService:
                 run_id=run_id,
                 status="error",
                 dry_run=dry_run,
-                entities_ingested=0,
+                discovered_urns=[],
                 emitted_urns=[],
                 errors=[f"SecretResolverUnavailable: {exc}"],
                 warnings=[],
@@ -790,8 +804,8 @@ class IngestionService:
         errors = ingestion_result.errors
         warnings = ingestion_result.warnings
 
-        # A non-dry-run that ingested zero entities is treated as failure.
-        if not dry_run and ingestion_result.entities_ingested == 0 and not errors:
+        # A non-dry-run that emitted zero datasets is treated as failure.
+        if not dry_run and not ingestion_result.emitted_urns and not errors:
             errors = list(warnings) or ["No entities ingested from source"]
 
         status = "error" if errors else "success"
@@ -820,6 +834,16 @@ class IngestionService:
                 derivation="emitted",
             )
 
+        result = IngestionRunResult(
+            run_id=run_id,
+            status=status,
+            dry_run=dry_run,
+            discovered_urns=ingestion_result.discovered_urns,
+            emitted_urns=ingestion_result.emitted_urns,
+            errors=errors,
+            warnings=warnings,
+        )
+
         event_type = INGESTION_COMPLETE if status == "success" else INGESTION_FAIL
         await self._record_source_event(
             source_id,
@@ -828,22 +852,14 @@ class IngestionService:
             {
                 "run_id": run_id,
                 "platform": source.platform,
-                "entities_ingested": ingestion_result.entities_ingested,
                 "dry_run": dry_run,
+                **run_report_detail(result),
                 "errors": errors,
                 "warnings": warnings,
             },
         )
 
-        return IngestionRunResult(
-            run_id=run_id,
-            status=status,
-            dry_run=dry_run,
-            entities_ingested=ingestion_result.entities_ingested,
-            emitted_urns=ingestion_result.emitted_urns,
-            errors=errors,
-            warnings=warnings,
-        )
+        return result
 
     # ── DPI emission helpers ──────────────────────────────────────────────────
 

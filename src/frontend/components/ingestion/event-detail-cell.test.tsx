@@ -23,9 +23,10 @@ describe("EventDetailCell — empty detail", () => {
 
 describe("EventDetailCell — populated detail", () => {
   const detail = {
-    entities_ingested: 42,
-    duration_ms: 1200,
-    pipeline: "datahub-managed",
+    dry_run: false,
+    discovered_urns_count: 42,
+    emitted_urns_count: 42,
+    platform: "postgres",
   };
 
   it("truncates the trigger text with an ellipsis and hides the full JSON inline", () => {
@@ -56,9 +57,9 @@ describe("EventDetailCell — populated detail", () => {
     const pre = screen.getByText((_, node) => node?.tagName === "PRE");
     expect(pre.textContent).toBe(pretty);
     // All keys/values are present in the expanded view.
-    expect(pre.textContent).toContain("entities_ingested");
+    expect(pre.textContent).toContain("discovered_urns_count");
     expect(pre.textContent).toContain("42");
-    expect(pre.textContent).toContain("datahub-managed");
+    expect(pre.textContent).toContain("postgres");
   });
 
   it("renders the trigger as type=button so it never submits a form", () => {

@@ -96,7 +96,7 @@ async def ingestion_run(body: IngestionRunRequest) -> dict[str, object]:
     try:
         async with make_db_session() as db:
             from src.backend.admin.config_service import get_runtime_config
-            from src.backend.ingestion.service import IngestionService
+            from src.backend.ingestion.service import IngestionService, run_report_detail
 
             rc = await get_runtime_config(db)
             cache = make_redis_client(stub=rc.stub_redis_client)
@@ -106,8 +106,8 @@ async def ingestion_run(body: IngestionRunRequest) -> dict[str, object]:
             return {
                 "run_id": result.run_id,
                 "status": result.status,
-                "entities_ingested": result.entities_ingested,
                 "dry_run": result.dry_run,
+                **run_report_detail(result),
                 "errors": result.errors,
                 "warnings": result.warnings,
             }

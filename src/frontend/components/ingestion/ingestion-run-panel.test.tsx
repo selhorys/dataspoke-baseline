@@ -126,7 +126,7 @@ describe("IngestionRunPanel — error mapping", () => {
     expect(screen.getByText(/extractor/i)).toBeTruthy();
   });
 
-  it("renders the last run detail when present", () => {
+  it("renders the discovered/emitted summary and the discovered URN list for a real run", () => {
     render(
       <IngestionRunPanel
         mode="ACTIVE_CUSTOM_MANAGED"
@@ -137,11 +137,63 @@ describe("IngestionRunPanel — error mapping", () => {
         lastRun={{
           run_id: "run-123",
           status: "success",
-          detail: { entities_ingested: 5 },
+          detail: {
+            dry_run: false,
+            discovered_urns: ["urn:li:dataset:a", "urn:li:dataset:b"],
+            discovered_urns_count: 2,
+            emitted_urns: ["urn:li:dataset:a", "urn:li:dataset:b"],
+            emitted_urns_count: 2,
+          },
         }}
       />,
     );
     expect(screen.getByText(/run-123/)).toBeTruthy();
-    expect(screen.getByText(/entities_ingested/)).toBeTruthy();
+    // Summary line shows both discovered and emitted counts on a real run.
+    expect(screen.getByText(/Discovered 2/)).toBeTruthy();
+    expect(screen.getByText(/Emitted 2/)).toBeTruthy();
+    // The would-emit plan lists every discovered URN.
+    expect(screen.getByText("urn:li:dataset:a")).toBeTruthy();
+    expect(screen.getByText("urn:li:dataset:b")).toBeTruthy();
+  });
+
+  it("shows a no-emit message for a dry run", () => {
+    render(
+      <IngestionRunPanel
+        mode="ACTIVE_CUSTOM_MANAGED"
+        canWrite
+        onRun={vi.fn()}
+        isRunning={false}
+        error={null}
+        lastRun={{
+          run_id: "run-dry",
+          status: "success",
+          detail: {
+            dry_run: true,
+            discovered_urns: ["urn:li:dataset:a"],
+            discovered_urns_count: 1,
+            emitted_urns: [],
+            emitted_urns_count: 0,
+          },
+        }}
+      />,
+    );
+    expect(screen.getByText(/no datasets emitted \(dry run\)/i)).toBeTruthy();
+    expect(screen.getByText(/Discovered 1/)).toBeTruthy();
+  });
+
+  it("does not crash when detail predates the discovered/emitted keys", () => {
+    render(
+      <IngestionRunPanel
+        mode="ACTIVE_CUSTOM_MANAGED"
+        canWrite
+        onRun={vi.fn()}
+        isRunning={false}
+        error={null}
+        lastRun={{ run_id: "run-old", status: "success", detail: {} }}
+      />,
+    );
+    expect(screen.getByText(/run-old/)).toBeTruthy();
+    // Falls back to a zero-count summary rather than throwing.
+    expect(screen.getByText(/Discovered 0/)).toBeTruthy();
   });
 });

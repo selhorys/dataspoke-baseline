@@ -186,8 +186,10 @@ class IngestionRunResponse(SingleResponse):
     detail: dict[str, Any] = Field(
         default={},
         description=(
-            "Run metadata: entities_ingested, dry_run, emitted_urns count, "
-            "plus optional errors/warnings lists"
+            "Run report: dry_run, discovered_urns / discovered_urns_count "
+            "(dataset URNs passing the filter — present on dry-run and real runs), "
+            "emitted_urns / emitted_urns_count (dataset URNs written to DataHub; "
+            "empty on dry-run), plus errors/warnings lists. emitted_urns ⊆ discovered_urns"
         ),
     )
 

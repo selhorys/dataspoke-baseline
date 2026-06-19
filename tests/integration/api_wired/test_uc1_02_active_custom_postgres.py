@@ -266,14 +266,35 @@ async def test_uc1_active_custom_postgres(
             f"Dry-run returned fail status {dry_run_body['status']!r}. "
             "spec: USE_CASE_en.md §UC1 Case 2 — dry_run exercises connectivity"
         )
-        # Dry-run must not emit datasets — detail.emitted_urns_count = 0
+        # A dry-run DOES discover but emits nothing.
+        # spec: API.md §method/run — discovered_urns is the "would emit" plan, present on
+        # both dry-run and real runs; emitted_urns is empty with count 0 on a dry-run.
         dry_detail = dry_run_body.get("detail", {})
         assert dry_detail.get("dry_run") is True, "detail.dry_run must be true for dry runs"
-        emitted = dry_detail.get("emitted_urns_count", 0)
-        assert emitted == 0, (
-            f"Dry-run must not emit any datasets (emitted_urns_count=0); got {emitted}. "
-            "spec: feature/BACKEND.md §Active-custom run pipeline"
-            " — aspect emission skipped on dry_run"
+        dry_discovered = dry_detail.get("discovered_urns", [])
+        dry_discovered_count = dry_detail.get("discovered_urns_count", 0)
+        assert dry_discovered_count >= 2, (
+            f"Dry-run must discover ≥2 catalog datasets (title_master + editions); "
+            f"got discovered_urns_count={dry_discovered_count}. "
+            "spec: API.md §method/run — discovered_urns present on dry-run"
+        )
+        # The two seeded catalog datasets must appear in the discovery plan.
+        # spec: USE_CASE_en.md §UC1 Case 2 — catalog schema yields title_master + editions
+        for catalog_urn in (_CATALOG_TITLE_URN, _CATALOG_EDITIONS_URN):
+            assert catalog_urn in dry_discovered, (
+                f"{catalog_urn!r} must appear in dry-run discovered_urns; "
+                f"got {sorted(dry_discovered)}. "
+                "spec: API.md §method/run — discovered_urns are the filtered dataset URNs"
+            )
+        # Dry-run emits nothing.
+        assert dry_detail.get("emitted_urns_count", -1) == 0, (
+            f"Dry-run must not emit any datasets (emitted_urns_count=0); "
+            f"got {dry_detail.get('emitted_urns_count')}. "
+            "spec: API.md §method/run — emitted_urns empty on dry-run"
+        )
+        assert dry_detail.get("emitted_urns", None) == [], (
+            f"Dry-run emitted_urns must be []; got {dry_detail.get('emitted_urns')!r}. "
+            "spec: API.md §method/run — dry-run emits nothing"
         )
 
         # ── Step 4: Real run — emit dataset aspects to DataHub ────────────────
@@ -296,12 +317,28 @@ async def test_uc1_active_custom_postgres(
         )
         real_detail = real_run_body.get("detail", {})
         assert real_detail.get("dry_run") is False
-        # At least 2 catalog datasets (title_master + editions) must have been emitted.
+        # A real run discovers and emits; emitted_urns ⊆ discovered_urns.
+        # spec: API.md §method/run — both lists populated on a real run; emitted ⊆ discovered.
+        real_discovered = real_detail.get("discovered_urns", [])
+        real_discovered_count = real_detail.get("discovered_urns_count", 0)
         real_emitted = real_detail.get("emitted_urns_count", 0)
+        real_emitted_urns = real_detail.get("emitted_urns", [])
+        assert real_discovered_count >= 2, (
+            f"Real run must discover at least 2 catalog datasets "
+            f"(title_master + editions); discovered={real_discovered_count}. "
+            "spec: API.md §method/run — discovered_urns present on real runs"
+        )
+        # At least 2 catalog datasets (title_master + editions) must have been emitted.
         assert real_emitted >= 2, (
             f"Real run must emit at least 2 catalog datasets "
             f"(title_master + editions); emitted={real_emitted}. "
             "spec: USE_CASE_en.md §UC1 Case 2 — catalog schema produces multiple datasets"
+        )
+        # Core invariant: emitted_urns ⊆ discovered_urns.
+        assert set(real_emitted_urns).issubset(set(real_discovered)), (
+            f"emitted_urns must be a subset of discovered_urns; "
+            f"emitted={sorted(real_emitted_urns)} discovered={sorted(real_discovered)}. "
+            "spec: API.md §method/run — emitted_urns ⊆ discovered_urns"
         )
 
         # ── Step 5: GET /sources/{id}/datasets → derivation='emitted' rows ─────

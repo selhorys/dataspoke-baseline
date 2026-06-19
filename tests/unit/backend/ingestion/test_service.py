@@ -32,7 +32,11 @@ from datahub.metadata.schema_classes import (  # type: ignore
 )
 
 from src.backend.ingestion.extractors import IngestionResult
-from src.backend.ingestion.service import IngestionService
+from src.backend.ingestion.service import (
+    IngestionRunResult,
+    IngestionService,
+    run_report_detail,
+)
 from src.shared.exceptions import ConflictError, EntityNotFoundError, PreconditionFailedError
 from tests.unit.backend.conftest import mock_db_refresh, mock_scalar_query
 from tests.unit.backend.ingestion.conftest import (
@@ -908,8 +912,8 @@ def _dpi_outputs(datahub: AsyncMock) -> list[DataProcessInstanceOutputClass]:
 def _patched_run(
     service: IngestionService,
     *,
-    entities_ingested: int,
     emitted_urns: list[str],
+    discovered_urns: list[str] | None = None,
     errors: list[str] | None = None,
     warnings: list[str] | None = None,
     dry_run: bool = False,
@@ -921,13 +925,17 @@ def _patched_run(
     ``service._run_inner(...)`` inside the `with` block. The extractor is forced
     to return a fixed IngestionResult so the DPI emission branches are exercised
     deterministically without a real crawl.
+
+    ``discovered_urns`` defaults to ``emitted_urns`` (a clean real run where every
+    discovered table emitted ok); pass it explicitly to model a partial emit.
+    Spec: API.md §method/run — emitted_urns ⊆ discovered_urns.
     """
     return patch.multiple(
         "src.backend.ingestion.service",
         resolve_recipe_secrets=MagicMock(side_effect=lambda r: r),
         run_extractor=AsyncMock(
             return_value=IngestionResult(
-                entities_ingested=entities_ingested,
+                discovered_urns=emitted_urns if discovered_urns is None else discovered_urns,
                 emitted_urns=emitted_urns,
                 errors=errors or [],
                 warnings=warnings or [],
@@ -957,7 +965,7 @@ class TestDpiEmissionContract:
         mock_scalar_query(db, row)
 
         with _patched_run(
-            service, entities_ingested=2, emitted_urns=[_DATASET_URN]
+            service, emitted_urns=[_DATASET_URN]
         ):
             await service._run_inner(str(row.id), dry_run=False, manual=True)
 
@@ -979,7 +987,7 @@ class TestDpiEmissionContract:
         mock_scalar_query(db, row)
 
         with _patched_run(
-            service, entities_ingested=2, emitted_urns=[_DATASET_URN]
+            service, emitted_urns=[_DATASET_URN]
         ):
             await service._run_inner(str(row.id), dry_run=False, manual=False)
 
@@ -1003,7 +1011,7 @@ class TestDpiEmissionContract:
         mock_scalar_query(db, row)
 
         with _patched_run(
-            service, entities_ingested=2, emitted_urns=[_DATASET_URN]
+            service, emitted_urns=[_DATASET_URN]
         ):
             # No cache configured on the bare `service` fixture, so run() runs
             # _run_inner directly with its manual default.
@@ -1033,7 +1041,7 @@ class TestDpiEmissionContract:
         )
         emitted = [_DATASET_URN, second_urn]
 
-        with _patched_run(service, entities_ingested=2, emitted_urns=emitted):
+        with _patched_run(service, emitted_urns=emitted):
             await service._run_inner(str(row.id), dry_run=False, manual=True)
 
         outputs = _dpi_outputs(datahub)
@@ -1063,7 +1071,7 @@ class TestDpiEmissionContract:
         mock_scalar_query(db, row)
 
         with _patched_run(
-            service, entities_ingested=1, emitted_urns=[_DATASET_URN]
+            service, emitted_urns=[_DATASET_URN]
         ):
             await service._run_inner(str(row.id), dry_run=False, manual=True)
 
@@ -1113,7 +1121,7 @@ class TestDpiEmissionContract:
         mock_scalar_query(db, row)
 
         with _patched_run(
-            service, entities_ingested=1, emitted_urns=[_DATASET_URN]
+            service, emitted_urns=[_DATASET_URN]
         ):
             await service._run_inner(str(row.id), dry_run=False, manual=True)
 
@@ -1148,7 +1156,7 @@ class TestDpiEmissionContract:
         mock_scalar_query(db, row)
 
         with _patched_run(
-            service, entities_ingested=2, emitted_urns=[_DATASET_URN]
+            service, emitted_urns=[_DATASET_URN]
         ):
             await service._run_inner(str(row.id), dry_run=True, manual=True)
 
@@ -1172,7 +1180,6 @@ class TestDpiEmissionContract:
 
         with _patched_run(
             service,
-            entities_ingested=1,
             emitted_urns=[_DATASET_URN],
             errors=["extractor crawl failed"],
         ):
@@ -1208,7 +1215,7 @@ class TestDpiEmissionContract:
         mock_scalar_query(db, row)
 
         with _patched_run(
-            service, entities_ingested=0, emitted_urns=[]
+            service, emitted_urns=[]
         ):
             await service._run_inner(str(row.id), dry_run=False, manual=True)
 
@@ -1216,4 +1223,230 @@ class TestDpiEmissionContract:
             "Zero-entity run must emit no DataProcessInstanceOutput aspect. "
             "Spec: DATAHUB_INTEGRATION.md §DPI emission contract aspect #2b — "
             "requires non-empty emitted URNs."
+        )
+
+
+# ── run_report_detail helper ──────────────────────────────────────────────────
+
+
+_SECOND_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.editions,DEV)"
+
+
+class TestRunReportDetail:
+    """Spec: spec/API.md §POST /sources/{id}/method/run — the run-response detail and the
+    INGESTION event detail carry the flat discovered/emitted keys.
+
+    run_report_detail builds exactly the four flat keys
+    ``discovered_urns`` / ``discovered_urns_count`` / ``emitted_urns`` /
+    ``emitted_urns_count`` — counts equal the list lengths and emitted ⊆ discovered.
+    """
+
+    def test_returns_exactly_the_four_keys(self) -> None:
+        """run_report_detail returns only the four discovered/emitted keys.
+
+        Spec: API.md §method/run — detail carries discovered_urns / discovered_urns_count /
+        emitted_urns / emitted_urns_count (dry_run / errors / warnings / run_id / platform
+        are added by the callers, not by this helper).
+        """
+        result = IngestionRunResult(
+            run_id="r1",
+            status="success",
+            dry_run=False,
+            discovered_urns=[_DATASET_URN, _SECOND_URN],
+            emitted_urns=[_DATASET_URN, _SECOND_URN],
+            errors=[],
+            warnings=[],
+        )
+        detail = run_report_detail(result)
+        assert set(detail.keys()) == {
+            "discovered_urns",
+            "discovered_urns_count",
+            "emitted_urns",
+            "emitted_urns_count",
+        }, (
+            f"run_report_detail must return exactly the four flat keys; got "
+            f"{sorted(detail.keys())}. spec: API.md §method/run."
+        )
+
+    def test_counts_match_list_lengths(self) -> None:
+        """*_count fields equal the lengths of their lists.
+
+        Spec: API.md §method/run — discovered_urns_count / emitted_urns_count.
+        """
+        result = IngestionRunResult(
+            run_id="r2",
+            status="success",
+            dry_run=False,
+            discovered_urns=[_DATASET_URN, _SECOND_URN],
+            emitted_urns=[_DATASET_URN],
+            errors=[],
+            warnings=[],
+        )
+        detail = run_report_detail(result)
+        assert detail["discovered_urns"] == [_DATASET_URN, _SECOND_URN]
+        assert detail["discovered_urns_count"] == 2
+        assert detail["emitted_urns"] == [_DATASET_URN]
+        assert detail["emitted_urns_count"] == 1
+
+    def test_dry_run_discovers_without_emitting(self) -> None:
+        """A dry-run result discovers URNs while emitting none.
+
+        Spec: API.md §method/run — discovered_urns present on a dry-run; emitted_urns
+        empty with count 0.
+        """
+        result = IngestionRunResult(
+            run_id="r3",
+            status="success",
+            dry_run=True,
+            discovered_urns=[_DATASET_URN, _SECOND_URN],
+            emitted_urns=[],
+            errors=[],
+            warnings=[],
+        )
+        detail = run_report_detail(result)
+        assert detail["discovered_urns_count"] == 2, (
+            "dry-run still discovers. spec: API.md §method/run."
+        )
+        assert detail["emitted_urns"] == []
+        assert detail["emitted_urns_count"] == 0
+
+
+# ── Zero-emit real run = failure + event detail keys ───────────────────────────
+
+
+class TestRunZeroEmitFailureAndEventDetail:
+    """Spec: spec/API.md §method/run + spec/feature/BACKEND.md §Event Catalogue INGESTION row.
+
+    A real run that emits zero datasets is treated as a failure, and the recorded
+    INGESTION event detail carries the flat discovered/emitted report keys.
+    """
+
+    @pytest.mark.asyncio
+    async def test_real_run_emitting_zero_is_failure(
+        self, service: IngestionService, db: AsyncMock, datahub: AsyncMock
+    ) -> None:
+        """A non-dry real run with emitted_urns=[] yields status='error'.
+
+        The service's ``not emitted_urns`` check classifies a zero-emit real run as a
+        failure even when the extractor reported no errors.
+        Spec: feature/BACKEND.md §Active-custom run pipeline — zero-entity non-dry-run is
+        treated as failure.
+        """
+        row = _make_source_row(mode="ACTIVE_CUSTOM_MANAGED")
+        mock_scalar_query(db, row)
+
+        with _patched_run(service, emitted_urns=[], discovered_urns=[_DATASET_URN]):
+            result = await service._run_inner(str(row.id), dry_run=False, manual=True)
+
+        assert result.status == "error", (
+            f"A real run that emitted zero datasets must be a failure; got "
+            f"status={result.status!r}. spec: feature/BACKEND.md §Active-custom run pipeline."
+        )
+
+    @pytest.mark.asyncio
+    async def test_run_event_detail_carries_four_report_keys(
+        self, service: IngestionService, db: AsyncMock, datahub: AsyncMock
+    ) -> None:
+        """The recorded INGESTION event detail carries the four flat discovered/emitted keys.
+
+        Spec: feature/BACKEND.md §Event Catalogue INGESTION row — ACTIVE_CUSTOM_MANAGED run
+        detail keys include discovered_urns / discovered_urns_count / emitted_urns /
+        emitted_urns_count (plus run_id, platform, dry_run, errors, warnings).
+        Spec: API.md §method/run — emitted_urns ⊆ discovered_urns.
+        """
+        row = _make_source_row(mode="ACTIVE_CUSTOM_MANAGED")
+        mock_scalar_query(db, row)
+
+        # STRICT superset: emit only A, but discover A and B, so the subset check is
+        # discriminating (A ⊊ {A, B}) rather than the vacuous X ⊆ X.
+        emitted = [_DATASET_URN]
+        discovered = [_DATASET_URN, _SECOND_URN]
+        recorded: dict[str, object] = {}
+
+        async def _capture(source_id, event_type, status, detail):  # type: ignore[no-untyped-def]
+            recorded["detail"] = detail
+            recorded["event_type"] = event_type
+
+        with (
+            _patched_run(service, emitted_urns=emitted, discovered_urns=discovered),
+            patch.object(service, "_record_source_event", side_effect=_capture),
+        ):
+            await service._run_inner(str(row.id), dry_run=False, manual=True)
+
+        detail = recorded["detail"]
+        assert isinstance(detail, dict)
+        for key in (
+            "discovered_urns",
+            "discovered_urns_count",
+            "emitted_urns",
+            "emitted_urns_count",
+        ):
+            assert key in detail, (
+                f"INGESTION event detail must carry {key!r}. "
+                "spec: feature/BACKEND.md §Event Catalogue INGESTION row."
+            )
+        assert detail["emitted_urns"] == emitted
+        assert detail["emitted_urns_count"] == 1
+        assert detail["discovered_urns_count"] == 2
+        # emitted ⊊ discovered (proper subset): a swapped-field or leak bug would fail
+        # both the count check above and this strict-subset check. spec: API.md §method/run.
+        emitted_set = set(detail["emitted_urns"])
+        discovered_set = set(detail["discovered_urns"])
+        assert emitted_set < discovered_set, (
+            f"emitted_urns must be a PROPER subset of discovered_urns; "
+            f"emitted={detail['emitted_urns']!r} discovered={detail['discovered_urns']!r}. "
+            "spec: API.md §method/run."
+        )
+
+    @pytest.mark.asyncio
+    async def test_partial_emit_real_run_succeeds_with_discriminating_detail(
+        self, service: IngestionService, db: AsyncMock, datahub: AsyncMock
+    ) -> None:
+        """A real run that discovers 2 and emits 1 succeeds with discriminating detail.
+
+        ``discovered − emitted > 0`` signals per-table emit failures, but the run still
+        succeeds because emitted_urns is non-empty (and the extractor reported no errors).
+        The recorded INGESTION event detail carries discovered_urns_count=2,
+        emitted_urns_count=1, and a proper-subset emitted ⊊ discovered — a discriminating
+        partition rather than equal sets.
+        Spec: feature/BACKEND.md §Active-custom run pipeline — discovered − emitted > 0 marks
+        per-table emit failures while a non-empty emit still succeeds.
+        Spec: API.md §method/run — run detail keys; emitted_urns ⊆ discovered_urns.
+        """
+        row = _make_source_row(mode="ACTIVE_CUSTOM_MANAGED")
+        mock_scalar_query(db, row)
+
+        emitted = [_DATASET_URN]
+        discovered = [_DATASET_URN, _SECOND_URN]
+        recorded: dict[str, object] = {}
+
+        async def _capture(source_id, event_type, status, detail):  # type: ignore[no-untyped-def]
+            recorded["detail"] = detail
+
+        with (
+            _patched_run(service, emitted_urns=emitted, discovered_urns=discovered),
+            patch.object(service, "_record_source_event", side_effect=_capture),
+        ):
+            result = await service._run_inner(str(row.id), dry_run=False, manual=True)
+
+        assert result.status == "success", (
+            f"A real run with a non-empty emit must succeed even on a partial emit; got "
+            f"status={result.status!r}. spec: feature/BACKEND.md §Active-custom run pipeline."
+        )
+
+        detail = recorded["detail"]
+        assert isinstance(detail, dict)
+        assert detail["discovered_urns_count"] == 2, (
+            "partial real run discovers 2. spec: API.md §method/run."
+        )
+        assert detail["emitted_urns_count"] == 1, (
+            "partial real run emits 1. spec: API.md §method/run."
+        )
+        # discovered − emitted > 0 = per-table emit failures, run still succeeds.
+        # spec: feature/BACKEND.md §Active-custom run pipeline.
+        assert detail["discovered_urns_count"] - detail["emitted_urns_count"] == 1
+        assert set(detail["emitted_urns"]) < set(detail["discovered_urns"]), (
+            f"emitted_urns must be a PROPER subset of discovered_urns; "
+            f"emitted={detail['emitted_urns']!r} discovered={detail['discovered_urns']!r}. "
+            "spec: API.md §method/run."
         )

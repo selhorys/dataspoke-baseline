@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import logging
 import time
-import uuid
 from typing import TYPE_CHECKING, Any
 
 import asyncpg  # type: ignore[import-untyped]
@@ -29,8 +28,6 @@ from datahub.metadata.schema_classes import (  # type: ignore
     ContainerClass,
     DatasetPropertiesClass,
     DateTypeClass,
-    MapTypeClass,
-    NullTypeClass,
     NumberTypeClass,
     OtherSchemaClass,
     SchemaFieldClass,
@@ -55,7 +52,7 @@ logger = logging.getLogger(__name__)
 class IngestionResult(BaseModel):
     """Result of a single extractor invocation."""
 
-    entities_ingested: int
+    discovered_urns: list[str]
     emitted_urns: list[str]
     errors: list[str]
     warnings: list[str]
@@ -170,7 +167,7 @@ async def _extract_postgres(
         )
     except Exception as exc:
         return IngestionResult(
-            entities_ingested=0,
+            discovered_urns=[],
             emitted_urns=[],
             errors=[f"PostgreSQL connection failed: {exc}"],
             warnings=[],
@@ -199,7 +196,7 @@ async def _extract_postgres(
 
     if not rows:
         return IngestionResult(
-            entities_ingested=0,
+            discovered_urns=[],
             emitted_urns=[],
             errors=[],
             warnings=["No columns found in database"],
@@ -216,7 +213,7 @@ async def _extract_postgres(
 
     if not tables:
         return IngestionResult(
-            entities_ingested=0,
+            discovered_urns=[],
             emitted_urns=[],
             errors=[],
             warnings=["No tables matched schema_pattern filter"],
@@ -237,11 +234,25 @@ async def _extract_postgres(
         backcompat_env_as_instance=True,
     )
 
+    # Discovered set: the dataset URN for every (schema, table) that passed the
+    # schema_pattern filter — the "would emit" plan, populated on both dry-run and
+    # real runs. Built with the same name/URN logic used for emission so discovered
+    # and emitted URNs are identical strings.
+    discovered_urns: list[str] = [
+        _make_dataset_urn("postgres", f"{database}.{schema}.{table}", env)
+        for (schema, table) in tables
+    ]
+
     # Emit database container once (non-dry-run).
     if not dry_run:
         for wu in gen_containers(container_key=db_key, name=database, sub_types=["Database"]):
             mcp = wu.metadata
-            if hasattr(mcp, "entityUrn") and hasattr(mcp, "aspect") and mcp.entityUrn and mcp.aspect:
+            if (
+                hasattr(mcp, "entityUrn")
+                and hasattr(mcp, "aspect")
+                and mcp.entityUrn
+                and mcp.aspect
+            ):
                 try:
                     await datahub.emit_aspect(mcp.entityUrn, mcp.aspect, system_metadata=sysmeta)
                 except Exception as exc:
@@ -271,9 +282,16 @@ async def _extract_postgres(
                 parent_container_key=db_key,
             ):
                 mcp = wu.metadata
-                if hasattr(mcp, "entityUrn") and hasattr(mcp, "aspect") and mcp.entityUrn and mcp.aspect:
+                if (
+                    hasattr(mcp, "entityUrn")
+                    and hasattr(mcp, "aspect")
+                    and mcp.entityUrn
+                    and mcp.aspect
+                ):
                     try:
-                        await datahub.emit_aspect(mcp.entityUrn, mcp.aspect, system_metadata=sysmeta)
+                        await datahub.emit_aspect(
+                            mcp.entityUrn, mcp.aspect, system_metadata=sysmeta
+                        )
                     except Exception as exc:
                         logger.warning("Failed to emit schema container for '%s': %s", schema, exc)
 
@@ -352,7 +370,7 @@ async def _extract_postgres(
             emitted_urns.append(dataset_urn)
 
     return IngestionResult(
-        entities_ingested=len(emitted_urns),
+        discovered_urns=discovered_urns,
         emitted_urns=emitted_urns,
         errors=errors,
         warnings=[],
@@ -400,7 +418,7 @@ async def run_extractor(
 
     if extractor is None:
         return IngestionResult(
-            entities_ingested=0,
+            discovered_urns=[],
             emitted_urns=[],
             errors=[
                 f"No ACTIVE_CUSTOM_MANAGED extractor registered for source.type='{source_type}'. "
