@@ -227,7 +227,8 @@ this single per-dataset path.
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Get validation configuration (`description` + declared `variables`, each variable a `{name, description}` object) | Validation | UC2, UC5 |
 | `PUT` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Create or replace validation configuration. Body `{description, variables}` where each variable is `{name, description}` (`name` matches `[a-z][a-z0-9_]{0,99}` and is unique; `description` required, ≤200 chars, empty allowed). PUT for a URN absent from DataHub returns `422 DATASET_NOT_IN_DATAHUB` | Validation | UC2, UC5 |
 | `PATCH` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Partially update validation configuration | Validation | UC2, UC5 |
-| `DELETE` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Soft-delete the validation slot — emits DataHub `status.removed = true`. A subsequent `PUT` resurrects the same assertion URN | Validation | UC2, UC5 |
+| `DELETE` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Soft-delete (freeze) the validation slot — emits DataHub `status.removed = true` and preserves the conf + result history. A `PUT` against a soft-deleted slot is rejected (`409 VALIDATION_CONF_REMOVED`); use `method/restore` to reinstate | Validation | UC2, UC5 |
+| `POST` | `/spoke/common/data/{dataset_urn}/attr/validation/conf/method/restore` | Restore (undelete) a soft-deleted validation slot — clears `status.removed` and reinstates the frozen `description`/`variables` unchanged, keeping the result history consistent. `404` if no soft-deleted slot exists | Validation | UC2, UC5 |
 | `POST` | `/spoke/common/data/{dataset_urn}/attr/validation/result` | Append a pipeline-emitted result `{data_time, score, variables}`. Unknown variable keys return `422 UNKNOWN_VARIABLE`; `score` outside `[0,1]` returns `422 INVALID_SCORE` | Validation | UC2, UC5 |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/validation/result` | Get historical results (timeseries on `data_time`; `?from=…&until=…&limit=…` — this endpoint names its end-bound param `until` rather than the convention table's `to`; **the sole documented deviation** from the standard pagination cap: `default limit=1000`, server cap `10000`, fixed `data_time DESC` order — see [API_DESIGN_PRINCIPLE §5](API_DESIGN_PRINCIPLE_en.md#5-url-query-segments-are-for-filtering-sorting-and-pagination)) | Validation | UC2, UC5 |
 | `GET` | `/spoke/common/data/{dataset_urn}/event/validation` | Validation event reports (success/failure notices) | Validation | UC2, UC5 |
@@ -815,7 +816,8 @@ Clients should treat `detail` as optional; absent for errors that don't need it.
 | `NODE_NOT_FOUND` | 404 | Ontology node ID not found |
 | `EDGE_NOT_FOUND` | 404 | Ontology edge ID not found |
 | `TRIPLE_NOT_FOUND` | 404 | Ontology triple ID not found |
-| `CONFIG_NOT_FOUND` | 404 | Validation or other per-dataset configuration not found |
+| `CONFIG_NOT_FOUND` | 404 | Validation or other per-dataset configuration not found (never created) |
+| `VALIDATION_CONF_REMOVED` | 404 / 409 | The validation slot is soft-deleted (restorable). `404` on `GET`/`PATCH .../attr/validation/conf` (vs `CONFIG_NOT_FOUND` for a never-created slot); `409` on `PUT` (PUT does not resurrect — restore via `POST .../conf/method/restore` first) |
 | `INGESTION_SOURCE_NOT_FOUND` | 404 | Ingestion source id does not exist (`/spoke/ingestion/sources/{id}`) |
 | `SECRET_REF_MALFORMED` | 422 | A `${name__key}` reference in a recipe has no `__` separator or an empty name/key segment |
 | `SECRET_REF_NOT_FOUND` | 422 | A recipe's `${name__key}` references a `dataspoke-source-cred-<name>` Secret or `key` that does not exist at source save (also surfaces as a run-time `status="error"` if deleted later) |

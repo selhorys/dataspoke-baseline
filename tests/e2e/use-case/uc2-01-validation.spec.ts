@@ -19,15 +19,16 @@
  *      - score chart panel rendered ("Quality Score (attr/validation/result)")
  *      - variables chart panel rendered ("Variables (attr/validation/result)")
  *      - event log section rendered ("event/validation")
- *   5. DELETE postgres conf via the Delete button + ConfirmDialog:
+ *   5. DELETE (freeze) postgres conf via the Delete button + ConfirmDialog:
  *      - redirected to /validation list
  *      - postgres row absent from active list
  *      - kafka row still present
- *      Backend: GET conf → 404; ?removed=true includes postgres.
- *   6. Navigate to /validation/data/[postgres urn] (no conf now):
- *      - no Edit/Delete buttons; create form shown instead.
- *   7. PUT-after-DELETE: submit the create form to resurrect postgres conf.
- *      Backend: GET conf → 200 with new description.
+ *      Backend: GET conf → 404 VALIDATION_CONF_REMOVED; ?removed=true includes postgres.
+ *   6. Navigate to /validation/data/[postgres urn] (frozen now):
+ *      - no Edit/Delete and no Create form; an "Undelete" button only.
+ *   7. Restore (undelete): click Undelete to reinstate the FROZEN conf unchanged.
+ *      Backend: GET conf → 200 with the SAME frozen variables (no null_rate added);
+ *      the preserved result history is still queryable. Then edit the now-active rule.
  *
  * Data setup: global-setup runs --reset-seed (seeded Imazon baseline — postgres and
  * kafka datasets exist in DataHub). Results are POST-ed via adminApi directly.
@@ -87,10 +88,11 @@ const KAFKA_CONF_PAYLOAD = {
   variables: KAFKA_VARIABLES,
 };
 
-// Resurrection payload (step 7) — names only; descriptions default to empty
-// (the create-form description input is optional). The order matches the form gestures.
-const RESURRECT_DESCRIPTION = "Reinstated quality check with extended variables";
-const RESURRECT_VARIABLES = ["row_cnt", "fill_rate", "anomaly_score", "null_rate"];
+// Edit-after-restore payload (step 7) — after the frozen rule is restored as-is,
+// the now-active rule is edited via the normal Edit flow to add a new variable.
+// names only; descriptions default to empty. The order matches the form gestures.
+const EDIT_DESCRIPTION = "Reinstated quality check with extended variables";
+const EDIT_VARIABLES = ["row_cnt", "fill_rate", "anomaly_score", "null_rate"];
 
 // Result data_time values are RECENT (relative to now), not the api-wired fixed
 // May-2026 dates: the detail page queries results with from = 30 days ago, so
@@ -433,13 +435,14 @@ test("UC2 step 4 — postgres detail page renders conf, charts, and event log", 
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Step 5 — DELETE postgres conf via UI; verify soft-delete semantics
+// Step 5 — DELETE (freeze) postgres conf via UI; verify freeze semantics
 // spec: USE_CASE_en.md §UC2 — "The DE retires the rule for the fulfillment table."
-// spec: VALIDATION.md §Rule Configuration — DELETE performs soft delete; GET → 404.
+// spec: VALIDATION.md §Rule Configuration — DELETE freezes the rule; GET → 404
+//   VALIDATION_CONF_REMOVED; result history preserved.
 // spec: FRONTEND_VALIDATION.md §Page contracts — Delete button → ConfirmDialog →
 //   redirect to /validation list.
 // ─────────────────────────────────────────────────────────────────────────────
-test("UC2 step 5 — Delete postgres conf via ConfirmDialog; soft-delete semantics", async ({
+test("UC2 step 5 — Delete (freeze) postgres conf via ConfirmDialog; freeze semantics", async ({
   page,
   adminApi,
 }) => {
@@ -478,10 +481,14 @@ test("UC2 step 5 — Delete postgres conf via ConfirmDialog; soft-delete semanti
   // -- UI assertion: kafka URN still visible (not deleted) --
   await expect(page.getByText(KAFKA_URN, { exact: false }).first()).toBeVisible({ timeout: 10_000 });
 
-  // -- Backend probe: GET postgres conf → 404 --
-  // spec: VALIDATION.md §Rule Configuration — soft-delete makes GET return 404.
+  // -- Backend probe: GET postgres conf → 404 VALIDATION_CONF_REMOVED --
+  // spec: VALIDATION.md §Rule Configuration — DELETE freezes the rule; GET on the
+  // frozen slot returns 404 with error_code VALIDATION_CONF_REMOVED (a *restorable*
+  // tombstone, distinct from CONFIG_NOT_FOUND for a never-created slot).
   const confResp = await adminApi.get(PG_CONF_API);
   expect(confResp.status()).toBe(404);
+  const confErrBody = (await confResp.json()) as { error_code?: string };
+  expect(confErrBody.error_code).toBe("VALIDATION_CONF_REMOVED");
 
   // -- Backend probe: ?removed=true includes postgres --
   // spec: VALIDATION.md §Rule Configuration — ?removed=true lists tombstoned slots.
@@ -501,16 +508,17 @@ test("UC2 step 5 — Delete postgres conf via ConfirmDialog; soft-delete semanti
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Step 6 — Detail page after soft-delete: create form shown, no Edit/Delete
-// spec: USE_CASE_en.md §UC2 — after soft-delete, the slot is gone; the page
-//   shows the "No validation config" empty state for Admin/Editor.
-// spec: FRONTEND_VALIDATION.md §Page contracts — is404 branch: canWrite → create form.
+// Step 6 — Detail page after freeze: Undelete only, no create form / Edit / Delete
+// spec: USE_CASE_en.md §UC2 — after retiring, the rule is frozen; the only way back
+//   is an explicit Undelete (restore). No redefining on restore.
+// spec: FRONTEND_VALIDATION.md §Page contracts — VALIDATION_CONF_REMOVED branch:
+//   an "Undelete" button only (no Create form, no Edit/Delete while deleted).
 // ─────────────────────────────────────────────────────────────────────────────
-test("UC2 step 6 — postgres detail after delete shows create form, no Edit/Delete", async ({
+test("UC2 step 6 — postgres detail after freeze shows Undelete only, no Create/Edit/Delete", async ({
   page,
 }) => {
-  // pgConfCreated is false at this point (deleted in step 5).
-  // Navigate directly by URL; the page should 404 → empty state.
+  // The conf is frozen (soft-deleted in step 5). Navigate directly by URL; the
+  // page reads 404 VALIDATION_CONF_REMOVED → deleted (restorable) state.
   await page.goto(PG_DETAIL_URL);
   await expect(page).not.toHaveURL(/\/login/);
 
@@ -519,91 +527,117 @@ test("UC2 step 6 — postgres detail after delete shows create form, no Edit/Del
     page.getByRole("heading", { name: "attr/validation/conf", exact: true })
   ).toBeVisible({ timeout: 15_000 });
 
-  // -- UI assertion: empty-state message shown --
-  // spec: FRONTEND_VALIDATION.md §Page contracts — is404 + canWrite:
-  //   "No validation config exists for this dataset. Create one below."
+  // -- UI assertion: deleted-state note shown --
+  // spec: FRONTEND_VALIDATION.md §Page contracts — VALIDATION_CONF_REMOVED + canWrite:
+  //   "This validation config is deleted. Undelete it to restore the frozen rule…"
   await expect(
-    page.getByText("No validation config exists for this dataset. Create one below.", {
-      exact: false,
-    })
+    page.getByText("This validation config is deleted.", { exact: false })
   ).toBeVisible({ timeout: 10_000 });
 
-  // -- UI assertion: the create form's Create button is rendered (not Edit/Delete) --
-  // The create/resurrect form's submit action lives in the header top-right cluster
-  // labeled "Create" (type=submit). There is no Edit button when no conf exists,
-  // and no Delete button.
-  await expect(page.getByRole("button", { name: "Create" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Edit" })).not.toBeVisible();
-  await expect(page.getByRole("button", { name: "Delete" })).not.toBeVisible();
+  // -- UI assertion: Undelete button rendered; no Create form / Edit / Delete --
+  // spec: FRONTEND_VALIDATION.md §Page contracts — Undelete-only while frozen.
+  await expect(page.getByRole("button", { name: "Undelete" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Create" })).not.toBeVisible();
+  await expect(page.getByRole("button", { name: "Edit", exact: true })).not.toBeVisible();
+  // exact:true so this does NOT substring-match the "Undelete" button (which contains "Delete").
+  await expect(page.getByRole("button", { name: "Delete", exact: true })).not.toBeVisible();
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Step 7 — PUT-after-DELETE (resurrection) via the create form
-// spec: USE_CASE_en.md §UC2 — "The DE reinstates the rule with updated variable names."
-// spec: VALIDATION.md §Rule Configuration — subsequent PUT resurrects; same URN reused.
-// spec: FRONTEND_VALIDATION.md §Page contracts — create form submits PUT; on success
-//   conf renders in read-only view.
+// Step 7 — Restore (undelete) reinstates the FROZEN rule unchanged, then edit
+// spec: USE_CASE_en.md §UC2 — "The DE restores the retired rule; it comes back
+//   exactly as it was, with its result history intact, and is edited afterward."
+// spec: VALIDATION.md §Rule Configuration — restore reinstates the frozen
+//   description/variables exactly (no redefinition); editing uses the active PUT/PATCH.
+// spec: FRONTEND_VALIDATION.md §Page contracts — after restore the page returns to
+//   the normal read/Edit/Delete state.
 // ─────────────────────────────────────────────────────────────────────────────
-test("UC2 step 7 — resurrect postgres conf via create form; detail shows new description", async ({
+test("UC2 step 7 — Undelete restores the frozen conf unchanged; result history intact; then edit", async ({
   page,
   adminApi,
 }) => {
   await page.goto(PG_DETAIL_URL);
   await expect(page).not.toHaveURL(/\/login/);
 
-  // Wait for the create form to be present (header "Create" submit action).
-  await expect(page.getByRole("button", { name: "Create" })).toBeVisible({ timeout: 15_000 });
+  // -- UI gesture: click Undelete to restore the frozen rule --
+  await expect(page.getByRole("button", { name: "Undelete" })).toBeVisible({ timeout: 15_000 });
+  await page.getByRole("button", { name: "Undelete" }).click();
 
-  // -- UI gesture: fill description field --
-  // spec: FRONTEND_VALIDATION.md §Page contracts — description textarea id="validation-description"
-  await page.locator("#validation-description").fill(RESURRECT_DESCRIPTION);
+  // -- UI assertion: read-only conf view returns with the ORIGINAL frozen values --
+  // Restore reinstates the frozen description/variables as-is — NOT a new set.
+  await expect(page.getByText(PG_DESCRIPTION, { exact: false })).toBeVisible({ timeout: 20_000 });
+  // The original variables come back; null_rate (added only on a later edit) is absent.
+  await expect(page.getByText("row_cnt", { exact: true }).first()).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("null_rate", { exact: true })).not.toBeVisible();
 
-  // -- UI gesture: fill the first variable field (pre-filled with empty input) --
-  // The form starts with one empty variable row.
-  // spec: validation-conf-form.tsx — aria-label="Variable name 1" for the first input.
-  await page.getByLabel("Variable name 1").fill(RESURRECT_VARIABLES[0]!);
-
-  // -- UI gesture: add additional variable fields via "+ Add" button --
-  // spec: validation-conf-form.tsx — "Add" button appends a new variable row.
-  for (let i = 1; i < RESURRECT_VARIABLES.length; i++) {
-    await page.getByRole("button", { name: "Add" }).click();
-    await page.getByLabel(`Variable name ${i + 1}`).fill(RESURRECT_VARIABLES[i]!);
-  }
-
-  // -- UI gesture: submit the form (header "Create" action) --
-  await page.getByRole("button", { name: "Create" }).click();
-
-  // -- UI assertion: form closes; ConfReadOnly renders with new description --
-  // On success, isEditing flips to false; the conf read-only view appears.
-  // The new description should be visible within the section.
-  await expect(page.getByText(RESURRECT_DESCRIPTION, { exact: false })).toBeVisible({
-    timeout: 20_000,
-  });
-
-  // -- UI assertion: no more Create button (form closed, read-only view shown) --
-  await expect(page.getByRole("button", { name: "Create" })).not.toBeVisible({ timeout: 5_000 });
-
-  // -- UI assertion: Edit + Delete buttons re-appear (conf now exists) --
+  // -- UI assertion: Edit + Delete return; Undelete gone (slot active again) --
   await expect(page.getByRole("button", { name: "Edit" })).toBeVisible({ timeout: 10_000 });
   await expect(page.getByRole("button", { name: "Delete" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Undelete" })).not.toBeVisible();
 
-  // Mark as created so afterAll cleans up.
+  // Conf is active again.
   pgConfCreated = true;
 
-  // -- Backend probe: GET conf → 200 with new description and extended variables --
-  // spec: USE_CASE_en.md §UC2 step 6 — PUT-after-DELETE 201; GET conf 200 with new values.
-  const confResp = await adminApi.get(PG_CONF_API);
-  expect(confResp.status()).toBe(200);
-  const conf = (await confResp.json()) as {
+  // -- Backend probe: GET conf → 200 with the SAME frozen variables (no redefinition) --
+  // spec: VALIDATION.md §Rule Configuration — restore reinstates frozen variables exactly.
+  const restoredResp = await adminApi.get(PG_CONF_API);
+  expect(restoredResp.status()).toBe(200);
+  const restored = (await restoredResp.json()) as {
     description: string;
     variables: Array<{ name: string; description: string }>;
   };
-  expect(conf.description).toBe(RESURRECT_DESCRIPTION);
-  // spec: VALIDATION.md §Rule Configuration — subsequent PUT resurrects with new variables.
-  // variables are {name, description} objects; check the name set.
-  const confNames = conf.variables.map((v) => v.name);
-  expect(confNames).toContain("null_rate");
-  for (const v of RESURRECT_VARIABLES) {
-    expect(confNames).toContain(v);
+  expect(restored.description).toBe(PG_DESCRIPTION);
+  expect(restored.variables).toEqual(PG_VARIABLES);
+  expect(restored.variables.map((v) => v.name)).not.toContain("null_rate");
+
+  // -- Backend probe: the preserved result history is still queryable, unchanged --
+  // spec: VALIDATION.md §Rule Configuration — validation_results survive freeze/restore.
+  const from = daysAgoIso(5);
+  const until = daysAgoIso(-1);
+  const resultsResp = await adminApi.get(
+    `${PG_RESULT_API}?from=${encodeURIComponent(from)}&until=${encodeURIComponent(until)}&limit=10`
+  );
+  expect(resultsResp.status()).toBe(200);
+  const resultsBody = (await resultsResp.json()) as {
+    total_count: number;
+    results: Array<{ data_time: string }>;
+  };
+  expect(resultsBody.total_count).toBe(3);
+  const dates = resultsBody.results.map((r) => r.data_time.slice(0, 10));
+  expect(dates).toEqual([dateOnly(1), dateOnly(2), dateOnly(3)]);
+
+  // ── Edit the now-active rule (restore then edit) ─────────────────────────────
+  // spec: VALIDATION.md §Rule Configuration — "To redefine a rule after restoring,
+  // edit the now-active slot with the normal PUT/PATCH." Click Edit, add null_rate.
+  await page.getByRole("button", { name: "Edit" }).click();
+
+  // -- UI gesture: update description --
+  // spec: FRONTEND_VALIDATION.md §Page contracts — description textarea id="validation-description"
+  await page.locator("#validation-description").fill(EDIT_DESCRIPTION);
+
+  // The edit form is pre-filled with the 3 frozen variables; add a 4th (null_rate).
+  // spec: validation-conf-form.tsx — "Add" button appends a new variable row.
+  await page.getByRole("button", { name: "Add" }).click();
+  await page.getByLabel(`Variable name ${EDIT_VARIABLES.length}`).fill("null_rate");
+
+  // -- UI gesture: save the edit (header "Save" action) --
+  await page.getByRole("button", { name: "Save" }).click();
+
+  // -- UI assertion: read-only view shows the edited description --
+  await expect(page.getByText(EDIT_DESCRIPTION, { exact: false })).toBeVisible({ timeout: 20_000 });
+
+  // -- Backend probe: GET conf → 200 with the edited description + null_rate added --
+  // spec: VALIDATION.md §Rule Configuration — an active-slot PUT replaces the rule.
+  const editedResp = await adminApi.get(PG_CONF_API);
+  expect(editedResp.status()).toBe(200);
+  const edited = (await editedResp.json()) as {
+    description: string;
+    variables: Array<{ name: string; description: string }>;
+  };
+  expect(edited.description).toBe(EDIT_DESCRIPTION);
+  const editedNames = edited.variables.map((v) => v.name);
+  expect(editedNames).toContain("null_rate");
+  for (const v of EDIT_VARIABLES) {
+    expect(editedNames).toContain(v);
   }
 });

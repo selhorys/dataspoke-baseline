@@ -21,6 +21,8 @@ import urllib.parse
 import httpx
 import pytest
 
+from tests.integration.util import dataspoke_db
+
 # Dummy-data: catalog schema must exist in DataHub so that ensure_dataset_registered()
 # finds it (datahub_registered=True) when the validation-conf PUT is called.
 # spec: TESTING.md §Per-Module Dummy-Data Reset
@@ -220,6 +222,11 @@ async def test_internal_admin_datahub_sync_targeted(
     enc_urn = urllib.parse.quote(test_urn, safe="")
     conf_url = f"/api/v1/spoke/common/data/{enc_urn}/attr/validation/conf"
 
+    # Isolate: a prior run's cleanup may have left a soft-deleted conf for this urn,
+    # and PUT no longer resurrects a tombstone (409 VALIDATION_CONF_REMOVED). Hard-purge
+    # so the setup PUT creates a fresh active conf regardless of prior-run state.
+    await dataspoke_db.purge_urn(test_urn)
+
     # Step 1: PUT validation conf for the target dataset. This calls
     # ensure_dataset_registered(), which checks DataHub and inserts a
     # dataset_registry row with datahub_registered=True. catalog.title_master
@@ -263,5 +270,6 @@ async def test_internal_admin_datahub_sync_targeted(
             "spec: feature/BACKEND_SCHEMA.md §dataset_registry §Creation."
         )
     finally:
-        # Clean up the validation conf so other tests are not affected.
-        await api_client.delete(conf_url, headers=admin_headers)
+        # Hard-purge (not soft-delete) so a re-run's setup PUT is not blocked by a
+        # leftover tombstone — PUT no longer resurrects a soft-deleted slot.
+        await dataspoke_db.purge_urn(test_urn)

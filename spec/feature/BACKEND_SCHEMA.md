@@ -173,7 +173,7 @@ Stores the single validation slot per dataset (passive result-store model — se
 | `dataset_urn` | `TEXT` PK | Target dataset URN (unique — at most one validation slot per dataset) |
 | `description` | `TEXT` | Free-form description (≤ 2,000 chars; surfaced in DataHub assertion detail UI) |
 | `variables` | `JSONB` | Declared variables the pipeline will report — a JSONB array of `{name, description}` objects. `name` matches `[a-z][a-z0-9_]{0,99}` and is unique within the row; `description` is ≤ 200 chars (empty allowed). `CHECK jsonb_array_length(variables) BETWEEN 1 AND 200`. Variable **names** are joined as `customAssertion.logic` on DataHub emit |
-| `is_removed` | `BOOLEAN` | Mirror of DataHub `status.removed` for query convenience. `true` after `DELETE`; `false` after a subsequent `PUT` resurrection |
+| `is_removed` | `BOOLEAN` | Mirror of DataHub `status.removed` for query convenience. `true` after `DELETE` (soft-delete freezes the row in place — `description`/`variables` are preserved, not wiped); `false` after a `method/restore` (undelete), which reinstates the frozen row unchanged |
 | `created_at` | `TIMESTAMPTZ` | |
 | `updated_at` | `TIMESTAMPTZ` | |
 
@@ -190,6 +190,10 @@ Also emitted to DataHub as `assertionRunEvent`. Append-only.
 | `score` | `DOUBLE PRECISION` | `0.0 ≤ score ≤ 1.0` (CHECK constraint). `1.0` = pass, `0.0` = fail; intermediate values reserved for partial-success semantics |
 | `variables` | `JSONB` | Map of variable name → numeric value. Keys must be a subset of the `validation_configs.variables` **names** (validated at the service layer; `422 UNKNOWN_VARIABLE` on violation) |
 | `ingestion_time` | `TIMESTAMPTZ` | Server-side `now()` when the row was accepted (audit trail; preserved separately from `data_time`) |
+
+`validation_results` rows are never purged by a conf soft-delete — they survive a
+`DELETE` and are restored intact on `method/restore`, so the result history always stays
+consistent with the (unchanged) restored variable set. No schema change supports this.
 
 Indexes: `(dataset_urn, data_time DESC)` to serve the historical-baseline GET.
 

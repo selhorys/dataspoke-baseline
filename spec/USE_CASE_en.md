@@ -238,14 +238,15 @@ Teams that need multiple distinct checks per dataset (separate freshness / volum
 field assertions, per-column validators, multi-team ownership) use **DataHub's native
 assertion APIs** directly — DataSpoke is the opinionated single-rule shortcut for the
 80% case, not the only path. The full contract — conf pre-conditions, result row
-shape, soft-delete / resurrect semantics, and DataHub assertion-aspect emission —
+shape, soft-delete (freeze) / restore (undelete) semantics, and DataHub assertion-aspect emission —
 lives in [`spec/feature/VALIDATION.md`](feature/VALIDATION.md).
 
 ### API Mapping
 
 | Endpoint | Used for |
 |---|---|
-| `GET/PUT/PATCH/DELETE /spoke/common/data/{urn}/attr/validation/conf` | Read / create-or-replace / partial-update / soft-delete the validation slot (`description` + `variables`). PUT for a URN absent from DataHub returns `422 DATASET_NOT_IN_DATAHUB` |
+| `GET/PUT/PATCH/DELETE /spoke/common/data/{urn}/attr/validation/conf` | Read / create-or-replace / partial-update / soft-delete (freeze) the validation slot (`description` + `variables`). PUT for a URN absent from DataHub returns `422 DATASET_NOT_IN_DATAHUB`; PUT against a soft-deleted slot returns `409 VALIDATION_CONF_REMOVED` |
+| `POST /spoke/common/data/{urn}/attr/validation/conf/method/restore` | Restore (undelete) a soft-deleted slot, reinstating the frozen conf unchanged so the result history stays consistent |
 | `POST /spoke/common/data/{urn}/attr/validation/result` | Append a result `{data_time, score, variables}`. Unknown variable keys → `422 UNKNOWN_VARIABLE`; `score` outside `[0,1]` → `422 INVALID_SCORE` |
 | `GET /spoke/common/data/{urn}/attr/validation/result?from=…&until=…&limit=…` | Historical results filtered by `data_time` (RFC 3339, `from` inclusive, `until` exclusive). Default `limit=1000`, server cap `10000` |
 | `GET /spoke/common/data/{urn}/event/validation` | Per-dataset validation event history |
@@ -310,11 +311,14 @@ GET .../attr/validation/result?from=2026-04-01T00:00:00Z&until=2026-05-01T00:00:
 and uses the prior `row_cnt` series directly. Results are returned newest first
 (descending `data_time`).
 
-**Retire and resurrect.** `DELETE attr/validation/conf` soft-deletes the slot
-(returns `204`; subsequent `GET conf` returns `404`). Re-issuing `PUT` on the same
-URN reinstates it (returns `201`) and the resurrected slot may carry a new
-description and variable set — e.g. adding a fourth variable
-`{name: "null_rate", description: "Null rate across key columns"}`.
+**Retire and restore.** `DELETE attr/validation/conf` soft-deletes (freezes) the slot
+(returns `204`; subsequent `GET conf` returns `404 VALIDATION_CONF_REMOVED`), preserving
+the conf and its full result history. `POST attr/validation/conf/method/restore`
+reinstates the **same** rule unchanged (returns `200` with the frozen
+`description`/`variables`), so the preserved results stay consistent. A `PUT` against a
+soft-deleted slot is rejected (`409 VALIDATION_CONF_REMOVED`) — to redefine the rule, the
+steward restores it first, then edits the now-active slot with `PUT`/`PATCH` (e.g. adding
+a variable `{name: "null_rate", description: "Null rate across key columns"}`).
 
 **Cross-dataset overview.** `GET /spoke/validation` lists each dataset's
 `description`, `variable_count`, `latest_data_time`, `latest_score`, and

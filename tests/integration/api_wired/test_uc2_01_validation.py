@@ -7,7 +7,8 @@ Test in this module:
   - test_uc2_passive_result_store: caller creates conf for two datasets (a Postgres
     table and a Kafka topic), pipelines POST results, caller queries historical
     series in descending data_time order, cross-dataset list shows both datasets,
-    caller deletes the Postgres conf, resurrection cycle verified.
+    caller deletes (freezes) the Postgres conf, then restores (undeletes) it as-is —
+    the frozen variables and the preserved result history come back unchanged.
 
 Prerequisites (spec/TESTING.md §Integration Testing):
   ./helm-charts/bin/install.sh --profile dev --components api --skip-build
@@ -57,6 +58,9 @@ _KAFKA_URN = (
 )
 
 _PG_CONF_URL = f"/api/v1/spoke/common/data/{_enc(_PG_URN)}/attr/validation/conf"
+_PG_RESTORE_URL = (
+    f"/api/v1/spoke/common/data/{_enc(_PG_URN)}/attr/validation/conf/method/restore"
+)
 _PG_RESULT_URL = f"/api/v1/spoke/common/data/{_enc(_PG_URN)}/attr/validation/result"
 _KAFKA_CONF_URL = f"/api/v1/spoke/common/data/{_enc(_KAFKA_URN)}/attr/validation/conf"
 _KAFKA_RESULT_URL = (
@@ -88,9 +92,13 @@ async def test_uc2_passive_result_store(
       3. GET postgres result?from=…&until=… → 3 rows, descending by data_time
       4. Cross-dataset GET /validation → shows BOTH datasets with their descriptions,
          variable counts, latest_data_time, latest_score
-      5. DELETE postgres conf → 204; GET conf → 404; ?removed=true includes postgres,
-         ?removed=false includes kafka but not postgres
-      6. PUT postgres again → 201 (resurrected); GET conf → 200 with new description
+      5. DELETE postgres conf → 204 (freeze); GET conf → 404 VALIDATION_CONF_REMOVED;
+         PATCH on tombstone → 404 VALIDATION_CONF_REMOVED; PUT on tombstone → 409
+         VALIDATION_CONF_REMOVED (PUT does not resurrect); ?removed=true includes
+         postgres, ?removed=false includes kafka but not postgres
+      6. POST conf/method/restore → 200 reinstating the SAME frozen variables (no
+         new variable set); the prior result series is still queryable and unchanged;
+         editing the now-active rule via PUT/PATCH works
     """
     try:
         # ── Step 1: Caller creates confs for both datasets ───────────────────
@@ -267,18 +275,26 @@ async def test_uc2_passive_result_store(
         assert kafka_item["latest_score"] is not None
         assert kafka_item["is_removed"] is False
 
-        # ── Step 5: DELETE postgres → 204; GET conf → 404; list visibility ───
+        # ── Step 5: DELETE postgres → 204 (freeze); GET conf → 404; list visibility ─
         # UC2 narrative: "The DE retires the rule for the fulfillment table."
-        # spec: VALIDATION.md §Rule Configuration — DELETE performs soft delete.
+        # spec: VALIDATION.md §Rule Configuration — DELETE performs a soft delete
+        # (freeze): the conf and the entire result history are preserved untouched.
 
         del_resp = await api_client.delete(_PG_CONF_URL, headers=admin_headers)
         assert del_resp.status_code == 204, (
             f"Step 5: DELETE expected 204, got {del_resp.status_code}: {del_resp.text}"
         )
 
+        # spec: VALIDATION.md §Rule Configuration — after DELETE, GET conf returns 404
+        # with error_code VALIDATION_CONF_REMOVED (a *restorable* tombstone, distinct
+        # from CONFIG_NOT_FOUND for a never-created slot).
         get_after_del = await api_client.get(_PG_CONF_URL, headers=admin_headers)
         assert get_after_del.status_code == 404, (
             f"Step 5: GET conf after DELETE expected 404, got {get_after_del.status_code}"
+        )
+        assert get_after_del.json().get("error_code") == "VALIDATION_CONF_REMOVED", (
+            f"Step 5: GET on frozen slot must carry error_code VALIDATION_CONF_REMOVED; "
+            f"got: {get_after_del.json()}"
         )
 
         # ?removed=true → includes postgres (kafka is still active so not required here)
@@ -308,60 +324,144 @@ async def test_uc2_passive_result_store(
             f"got: {active_urns}"
         )
 
-        # ── Step 5.5: PATCH on soft-deleted slot → 404 ────────────────────────────
-        # spec: VALIDATION.md §Rule Configuration — after DELETE, PATCH targets
-        # the same resource view as GET; tombstoned slot is invisible.
+        # ── Step 5.5: PATCH and PUT on the frozen slot are rejected ───────────────
+        # spec: VALIDATION.md §Rule Configuration — PATCH on a tombstoned slot returns
+        # 404 VALIDATION_CONF_REMOVED; PUT does NOT resurrect — it is rejected with
+        # 409 VALIDATION_CONF_REMOVED. The rule must be restored first.
         patch_deleted_resp = await api_client.patch(
             _PG_CONF_URL,
             headers=admin_headers,
             json={"description": "should not apply to soft-deleted slot"},
         )
         assert patch_deleted_resp.status_code == 404, (
-            f"Step 5.5: PATCH on soft-deleted conf expected 404, "
+            f"Step 5.5: PATCH on frozen conf expected 404, "
             f"got {patch_deleted_resp.status_code}: {patch_deleted_resp.text}"
         )
-        # spec: API.md §Standard Envelope — every non-2xx response carries an error_code field.
-        patch_deleted_body = patch_deleted_resp.json()
-        assert patch_deleted_body.get("error_code"), (
-            f"Step 5.5: 404 response must carry error_code per API.md §Standard Envelope; "
-            f"got: {patch_deleted_body}"
+        assert patch_deleted_resp.json().get("error_code") == "VALIDATION_CONF_REMOVED", (
+            f"Step 5.5: PATCH on frozen slot must carry VALIDATION_CONF_REMOVED; "
+            f"got: {patch_deleted_resp.json()}"
         )
 
-        # ── Step 6: PUT-after-DELETE resurrects the postgres assertion ───────
-        # UC2 narrative: "The DE reinstates the rule with updated variable names."
-        # spec: VALIDATION.md §Rule Configuration — subsequent PUT resurrects; same URN reused.
+        # PUT on the tombstone → 409 VALIDATION_CONF_REMOVED (PUT does not resurrect).
+        put_deleted_resp = await api_client.put(
+            _PG_CONF_URL,
+            headers=admin_headers,
+            json={
+                "description": "PUT must not resurrect a frozen rule",
+                "variables": [_var("null_rate", "Null rate of key columns")],
+            },
+        )
+        assert put_deleted_resp.status_code == 409, (
+            f"Step 5.5: PUT on frozen conf expected 409 (PUT does not resurrect), "
+            f"got {put_deleted_resp.status_code}: {put_deleted_resp.text}"
+        )
+        assert put_deleted_resp.json().get("error_code") == "VALIDATION_CONF_REMOVED", (
+            f"Step 5.5: PUT on frozen slot must carry VALIDATION_CONF_REMOVED; "
+            f"got: {put_deleted_resp.json()}"
+        )
 
-        resurrect_variables = [
+        # ── Step 6: Restore (undelete) reinstates the FROZEN rule unchanged ──
+        # UC2 narrative: "The DE restores the retired rule; it comes back exactly as
+        # it was, with its result history intact, and is edited afterward."
+        # spec: VALIDATION.md §Rule Configuration — restore via method/restore returns
+        # 200 and reinstates the frozen description/variables exactly as they were —
+        # no redefinition on restore.
+
+        restore_resp = await api_client.post(_PG_RESTORE_URL, headers=admin_headers)
+        assert restore_resp.status_code == 200, (
+            f"Step 6: POST conf/method/restore expected 200, "
+            f"got {restore_resp.status_code}: {restore_resp.text}"
+        )
+        restored = restore_resp.json()
+        # The frozen description + variables are reinstated verbatim — NOT a new
+        # variable set. The original pg_variables (no null_rate) come back.
+        assert restored["description"] == _PG_DESCRIPTION, (
+            "Step 6: restore must reinstate the frozen description; "
+            f"got {restored['description']!r}"
+        )
+        assert restored["variables"] == pg_variables, (
+            f"Step 6: restore must reinstate the SAME frozen variables (no redefinition); "
+            f"got {restored['variables']}"
+        )
+        restored_names = [v["name"] for v in restored["variables"]]
+        assert "null_rate" not in restored_names, (
+            "Step 6: restore must NOT introduce a new variable (e.g. null_rate); "
+            "the frozen variable set is reinstated as-is"
+        )
+
+        # GET conf is active again (200) and matches the restored rule.
+        get_after_restore = await api_client.get(_PG_CONF_URL, headers=admin_headers)
+        assert get_after_restore.status_code == 200, (
+            "Step 6: GET conf after restore expected 200, "
+            f"got {get_after_restore.status_code}: {get_after_restore.text}"
+        )
+        assert get_after_restore.json()["variables"] == pg_variables
+
+        # The preserved result series is still queryable and unchanged after restore —
+        # the 3 original postgres rows remain consistent with the restored variables.
+        # spec: VALIDATION.md §Rule Configuration — validation_results survive the
+        # freeze/restore cycle and stay consistent with the restored variable set.
+        get_results_after_restore = await api_client.get(
+            _PG_RESULT_URL,
+            params={"from": from_dt, "until": until_dt, "limit": 10},
+            headers=admin_headers,
+        )
+        assert get_results_after_restore.status_code == 200, (
+            f"Step 6: GET result after restore expected 200, "
+            f"got {get_results_after_restore.status_code}: {get_results_after_restore.text}"
+        )
+        restored_results = get_results_after_restore.json()
+        assert restored_results["total_count"] == 3, (
+            f"Step 6: result history must survive the freeze/restore cycle (expected 3 rows), "
+            f"got total_count={restored_results['total_count']}"
+        )
+        restored_dates = [r["data_time"][:10] for r in restored_results["results"]]
+        assert restored_dates == ["2026-05-03", "2026-05-02", "2026-05-01"], (
+            f"Step 6: restored result series must be unchanged; got {restored_dates}"
+        )
+
+        # ── Step 6.5: Edit the now-active rule (restore then edit) ───────────
+        # spec: VALIDATION.md §Rule Configuration — "To redefine a rule after
+        # restoring, edit the now-active slot with the normal PUT/PATCH."
+        # PUT replaces the active rule (200).
+        edit_variables = [
             _var("row_cnt", "Daily fulfillment row count"),
             _var("fill_rate", "Fraction of orders fully shipped"),
             _var("anomaly_score", "Detector score for the day"),
             _var("null_rate", "Null rate of key columns"),
         ]
-        resurrect_resp = await api_client.put(
+        edit_put_resp = await api_client.put(
             _PG_CONF_URL,
             headers=admin_headers,
             json={
                 "description": "Reinstated quality check with extended variables",
-                "variables": resurrect_variables,
+                "variables": edit_variables,
             },
         )
-        assert resurrect_resp.status_code == 201, (
-            f"Step 6: PUT-after-DELETE expected 201, "
-            f"got {resurrect_resp.status_code}: {resurrect_resp.text}"
+        assert edit_put_resp.status_code == 200, (
+            f"Step 6.5: PUT on the restored (active) slot replaces it → expected 200, "
+            f"got {edit_put_resp.status_code}: {edit_put_resp.text}"
         )
+        assert edit_put_resp.json()["variables"] == edit_variables
 
-        get_after_resurrect = await api_client.get(_PG_CONF_URL, headers=admin_headers)
-        assert get_after_resurrect.status_code == 200, (
-            "Step 6: GET conf after resurrection expected 200, "
-            f"got {get_after_resurrect.status_code}"
+        # PATCH on the active slot adjusts the description only.
+        edit_patch_resp = await api_client.patch(
+            _PG_CONF_URL,
+            headers=admin_headers,
+            json={"description": "Patched after restore"},
         )
-        resurrected = get_after_resurrect.json()
-        assert resurrected["description"] == (
-            "Reinstated quality check with extended variables"
+        assert edit_patch_resp.status_code == 200, (
+            f"Step 6.5: PATCH on the active slot → expected 200, "
+            f"got {edit_patch_resp.status_code}: {edit_patch_resp.text}"
         )
-        # spec: VALIDATION.md §Rule Configuration — variables are {name, description}.
-        resurrected_names = [v["name"] for v in resurrected["variables"]]
-        assert "null_rate" in resurrected_names
+        assert edit_patch_resp.json()["description"] == "Patched after restore"
+        # The variable set from the prior PUT is unchanged by a description-only PATCH.
+        assert [v["name"] for v in edit_patch_resp.json()["variables"]] == [
+            "row_cnt",
+            "fill_rate",
+            "anomaly_score",
+            "null_rate",
+        ]
 
     finally:
         # Cleanup — best effort: delete both confs to restore clean state

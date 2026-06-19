@@ -23,14 +23,17 @@ from src.shared.db.registry import ensure_dataset_registered
 from src.shared.events import (
     VALIDATION_CONFIG_CREATE,
     VALIDATION_CONFIG_DELETE,
+    VALIDATION_CONFIG_RESTORE,
     VALIDATION_CONFIG_UPDATE,
     VALIDATION_PREFIX,
     VALIDATION_RESULT_RECORDED,
 )
 from src.shared.exceptions import (
+    ConflictError,
     DataHubUnavailableError,
     EntityNotFoundError,
     PreconditionFailedError,
+    ValidationConfRemovedError,
 )
 
 logger = logging.getLogger(__name__)
@@ -109,14 +112,21 @@ class ValidationService:
     # ── Config CRUD ──────────────────────────────────────────────────────────
 
     async def get_config(self, dataset_urn: str) -> ValidationConfigRecord | None:
+        """Return the active config record, ``None`` if the slot never existed.
+
+        A soft-deleted (frozen) slot is *restorable*, not absent — it raises
+        ``ValidationConfRemovedError`` (404 ``VALIDATION_CONF_REMOVED``) so the
+        caller can offer a restore affordance instead of a create form.
+        """
         result = await self._db.execute(
-            select(ValidationConfig).where(
-                ValidationConfig.dataset_urn == dataset_urn,
-                ValidationConfig.is_removed.is_(False),
-            )
+            select(ValidationConfig).where(ValidationConfig.dataset_urn == dataset_urn)
         )
         row = result.scalar_one_or_none()
-        return _config_from_row(row) if row is not None else None
+        if row is None:
+            return None
+        if row.is_removed:
+            raise ValidationConfRemovedError(dataset_urn)
+        return _config_from_row(row)
 
     async def upsert_config(
         self,
@@ -128,6 +138,12 @@ class ValidationService:
 
         Precondition: dataset must be registered in DataHub
         (``dataset_registry.datahub_registered=true``).
+
+        PUT does not resurrect a frozen rule: against a soft-deleted
+        (``is_removed=True``) row this raises ``ConflictError`` (409
+        ``VALIDATION_CONF_REMOVED``) — the slot must be restored first via
+        ``restore_config``. An active slot is replaced (200); an absent slot is
+        created (201).
 
         DB write is committed first, then assertionInfo + status(removed=False)
         emitted to DataHub. On DataHub failure the exception propagates (502/503).
@@ -141,16 +157,19 @@ class ValidationService:
         )
         existing = result.scalar_one_or_none()
 
+        if existing is not None and existing.is_removed:
+            raise ConflictError(
+                "VALIDATION_CONF_REMOVED",
+                f"validation slot for '{dataset_urn}' is soft-deleted; "
+                "restore it via POST .../conf/method/restore before editing",
+            )
+
         if existing:
-            was_soft_deleted = existing.is_removed
             existing.description = description
             existing.variables = variables
-            existing.is_removed = False
             existing.updated_at = datetime.now(tz=UTC)
             self._db.add(existing)
-            # A soft-deleted rule is consumer-absent (GET returns 404 per
-            # spec §Rule Configuration), so resurrecting it via PUT is a create.
-            created = was_soft_deleted
+            created = False
         else:
             existing = ValidationConfig(
                 dataset_urn=dataset_urn,
@@ -185,19 +204,20 @@ class ValidationService:
     ) -> ValidationConfigRecord:
         """Partially update the validation configuration.
 
-        A soft-deleted slot is invisible to PATCH — the select filters
-        `is_removed=False` so a tombstoned row mirrors the GET resource view
-        and the call raises EntityNotFoundError. Use PUT to resurrect.
+        A soft-deleted (frozen) slot is not patchable: it raises
+        ``ValidationConfRemovedError`` (404 ``VALIDATION_CONF_REMOVED``) so the
+        caller can offer a restore affordance, distinct from a never-created
+        slot which raises ``EntityNotFoundError`` (404 ``CONFIG_NOT_FOUND``).
+        Restore via ``restore_config`` before editing.
         """
         result = await self._db.execute(
-            select(ValidationConfig).where(
-                ValidationConfig.dataset_urn == dataset_urn,
-                ValidationConfig.is_removed.is_(False),
-            )
+            select(ValidationConfig).where(ValidationConfig.dataset_urn == dataset_urn)
         )
         row = result.scalar_one_or_none()
         if row is None:
             raise EntityNotFoundError("config", dataset_urn)
+        if row.is_removed:
+            raise ValidationConfRemovedError(dataset_urn)
 
         if "description" in patch and patch["description"] is not None:
             row.description = patch["description"]
@@ -245,6 +265,43 @@ class ValidationService:
             "success",
             {"operation": "DELETE"},
         )
+
+    async def restore_config(self, dataset_urn: str) -> ValidationConfigRecord:
+        """Restore (undelete) a soft-deleted validation slot.
+
+        Loads the ``is_removed=True`` row (else ``EntityNotFoundError`` → 404
+        ``CONFIG_NOT_FOUND``), flips it back to active, and preserves the frozen
+        ``description``/``variables`` exactly as they were — no redefinition on
+        restore, so the preserved ``validation_results`` history stays consistent
+        with the variable set. Re-emits ``assertionInfo`` + ``status(removed=False)``
+        at the same deterministic URN and records a ``CONFIG_RESTORE`` event.
+        """
+        result = await self._db.execute(
+            select(ValidationConfig).where(ValidationConfig.dataset_urn == dataset_urn)
+        )
+        row = result.scalar_one_or_none()
+        if row is None or not row.is_removed:
+            # Never created, or already active — nothing to restore.
+            raise EntityNotFoundError("config", dataset_urn)
+
+        row.is_removed = False
+        row.updated_at = datetime.now(tz=UTC)
+        self._db.add(row)
+        await self._db.commit()
+        await self._db.refresh(row)
+
+        assertion_urn = build_assertion_urn(dataset_urn)
+        info = build_assertion_info(dataset_urn, row.description, list(row.variables))
+        await register_assertion(self._datahub, assertion_urn, info)
+
+        await self._record_event(
+            dataset_urn,
+            VALIDATION_CONFIG_RESTORE,
+            "success",
+            {"operation": "RESTORE", "variable_count": len(row.variables or [])},
+        )
+
+        return _config_from_row(row)
 
     # ── Results ──────────────────────────────────────────────────────────────
 

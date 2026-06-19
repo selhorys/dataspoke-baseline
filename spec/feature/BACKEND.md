@@ -456,17 +456,31 @@ ingest/query — surfaced through the routes below.
   required but ≤ 200 chars with the empty string allowed). The dataset must already
   exist in DataHub or the request is rejected with `422 DATASET_NOT_IN_DATAHUB`. On
   success the service:
-  1. upserts the row in `validation_configs` (`dataset_urn` PK; clears `is_removed`),
+  1. upserts the row in `validation_configs` (`dataset_urn` PK). A `PUT` against
+     a soft-deleted (`is_removed = true`) row is **rejected** with
+     `409 VALIDATION_CONF_REMOVED` — the slot must be restored first; PUT does not
+     resurrect. A `PATCH` against the same tombstoned slot returns
+     `404 VALIDATION_CONF_REMOVED` (see `DELETE` below). On an active slot the
+     upsert keeps `is_removed = false`,
   2. emits `assertionInfo` to DataHub with `type = CUSTOM`, `source.type = EXTERNAL`,
      `customAssertion.type = "DATASPOKE_VALIDATION"`,
      `customAssertion.entity = <dataset_urn>`, and
      `customAssertion.logic = "<comma-joined declared variable names>"`,
-  3. emits `status.removed = false` together with `assertionInfo` to clear any prior
-     soft-delete and resurrect the assertion at the same deterministic URN
-     (`urn:li:assertion:<datahub_guid({"platform": "dataspoke-validation", "entity": dataset_urn})>`).
-- `DELETE` performs a soft-delete: marks the row `is_removed = true` in
-  `validation_configs` and emits `status.removed = true` to DataHub. The deterministic
-  URN is preserved so a later `PUT` resurrects the same assertion.
+  3. emits `status.removed = false` together with `assertionInfo` at the same
+     deterministic URN
+     (`urn:li:assertion:<datahub_guid({"platform": "dataspoke-validation", "entity": dataset_urn})>`),
+     reverting any out-of-band tombstone on the active rule.
+- `DELETE` performs a soft-delete (freeze): marks the row `is_removed = true` in
+  `validation_configs` and emits `status.removed = true` to DataHub. The
+  `description`/`variables` and the `validation_results` history are preserved untouched.
+  A `GET`/`PATCH` on the tombstoned slot returns `404 VALIDATION_CONF_REMOVED` (vs
+  `CONFIG_NOT_FOUND` for a never-created slot).
+- `POST .../conf/method/restore` undeletes a soft-deleted slot: loads the
+  `is_removed = true` row (else `404`), sets `is_removed = false`, preserves the frozen
+  `description`/`variables`, re-emits `assertionInfo` + `status.removed = false` at the
+  same deterministic URN, records a `CONFIG_RESTORE` lifecycle event, and returns the
+  restored conf. The preserved results stay consistent because the variable set is
+  unchanged.
 - A DataHub error during `assertionInfo` / `status` emission surfaces as `502` or `503`
   per the DataHub error envelope — config save and DataHub assertion lifecycle are
   coupled by design because DataHub is the SSOT for assertion definitions.
@@ -962,7 +976,9 @@ Event type values are **uppercase**, dot-delimited: `{DOMAIN}.{ACTION}`.
   `METRIC`, `NODE`, `EDGE`, `TRIPLE`, `ONTOGEN`.
 - **Action** describes what happened. Two categories:
   - *Config lifecycle*: `CONFIG_CREATE`, `CONFIG_UPDATE`, `CONFIG_DELETE` —
-    emitted by PUT, PATCH, DELETE on a configuration resource.
+    emitted by PUT, PATCH, DELETE on a configuration resource. `VALIDATION` adds
+    `CONFIG_RESTORE`, emitted by `POST .../conf/method/restore` when a soft-deleted
+    slot is undeleted.
   - *Action*: domain-specific operations beyond CRUD (pipeline runs, approvals,
     state transitions).
 
@@ -1171,8 +1187,8 @@ failures.
 
 | Exception | HTTP Status | Error Code |
 |-----------|-------------|------------|
-| `EntityNotFoundError` | 404 | `DATASET_NOT_FOUND`, `CONFIG_NOT_FOUND`, `INGESTION_SOURCE_NOT_FOUND`, `METRIC_NOT_FOUND`, `NODE_NOT_FOUND`, `EDGE_NOT_FOUND`, `TRIPLE_NOT_FOUND` |
-| `ConflictError` | 409 | `DUPLICATE_CONFIG`, `INGESTION_RUNNING`, `INGESTION_SOURCE_READONLY`, `INGESTION_RUN_NOT_APPLICABLE`, `METAGEN_RUNNING`, `METRIC_RUNNING`, `ONTOGEN_RUNNING`, `METAGEN_DISABLED`, `METRIC_DISABLED`, `ONTOGEN_DISABLED`, `METAGEN_CANNOT_REJECT_APPROVED` |
+| `EntityNotFoundError` | 404 | `DATASET_NOT_FOUND`, `CONFIG_NOT_FOUND`, `VALIDATION_CONF_REMOVED`, `INGESTION_SOURCE_NOT_FOUND`, `METRIC_NOT_FOUND`, `NODE_NOT_FOUND`, `EDGE_NOT_FOUND`, `TRIPLE_NOT_FOUND` |
+| `ConflictError` | 409 | `DUPLICATE_CONFIG`, `VALIDATION_CONF_REMOVED`, `INGESTION_RUNNING`, `INGESTION_SOURCE_READONLY`, `INGESTION_RUN_NOT_APPLICABLE`, `METAGEN_RUNNING`, `METRIC_RUNNING`, `ONTOGEN_RUNNING`, `METAGEN_DISABLED`, `METRIC_DISABLED`, `ONTOGEN_DISABLED`, `METAGEN_CANNOT_REJECT_APPROVED` |
 | `DataHubUnavailableError` | 502 | `DATAHUB_UNAVAILABLE` |
 | `StorageUnavailableError` | 503 | `STORAGE_UNAVAILABLE` |
 | `ValidationError` (Pydantic), `RequestValidationError` (FastAPI routing-layer validation) | 422 | `INVALID_PARAMETER`, `INVALID_DATASET_URN` |

@@ -14,12 +14,21 @@ Concerns covered:
   actualAggValue == score; nativeResults["score"] round-trips.
 - GET result historical: ~10 rows with distinct data_time; from/until filters correctly;
   last-write-wins on duplicate data_time.
-- DELETE → DataHub status.removed == True; subsequent GET conf returns 404.
-- PATCH on soft-deleted slot → 404 (mirrors GET resource view).
+- DELETE → DataHub status.removed == True; subsequent GET conf returns 404
+  with error_code VALIDATION_CONF_REMOVED.
+- PATCH on soft-deleted slot → 404 VALIDATION_CONF_REMOVED.
 - PUT with control char in description → 422 (Pydantic boundary).
-- PUT-after-DELETE → assertion resurrected (status.removed=False);
-  same URN reused; assertionInfo overwritten with new description.
-- Out-of-band tombstone reverted on next PUT.
+- PUT on a soft-deleted slot → 409 VALIDATION_CONF_REMOVED (PUT no longer
+  resurrects); POST conf/method/restore → 200 reinstating the FROZEN conf
+  unchanged (status.removed=False; assertionInfo re-emitted verbatim).
+- Out-of-band tombstone on an ACTIVE slot reverted on next PUT.
+
+Per-test isolation: an autouse fixture hard-deletes the operational
+``validation_configs`` row (active OR soft-deleted tombstone) for the shared
+dataset URN before and after every test, so a freeze in one test cannot leak a
+409 into the next. The tombstone is a single row carrying ``is_removed`` (not a
+second row), so a single DELETE of the URN clears either state — matching the
+``dataspoke_db.purge_urn`` pattern used by the api-wired ``purge_urns`` fixture.
 
 Prerequisites (per spec/TESTING.md §Integration Testing):
   ./helm-charts/bin/install.sh --profile dev --components api --skip-build
@@ -27,12 +36,13 @@ Prerequisites (per spec/TESTING.md §Integration Testing):
   uv run pytest tests/integration/spot/test_validation_passive_store.py
 
 Spec:
-- spec/VALIDATION.md §DataHub Aspect Mapping
-- spec/VALIDATION.md §Validation Result §Duplicate data_time policy
-- spec/VALIDATION.md §Rule Configuration §DELETE (soft-delete + resurrection)
+- spec/feature/VALIDATION.md §DataHub Aspect Mapping
+- spec/feature/VALIDATION.md §Validation Result §Duplicate data_time policy
+- spec/feature/VALIDATION.md §Rule Configuration (soft-delete freeze + restore)
 - spec/DATAHUB_INTEGRATION.md §Assertion Aspects
 """
 
+import asyncio
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 
@@ -63,7 +73,36 @@ _ENC_URN = (
 )
 
 _CONF_URL = f"/api/v1/spoke/common/data/{_ENC_URN}/attr/validation/conf"
+_RESTORE_URL = (
+    f"/api/v1/spoke/common/data/{_ENC_URN}/attr/validation/conf/method/restore"
+)
 _RESULT_URL = f"/api/v1/spoke/common/data/{_ENC_URN}/attr/validation/result"
+
+
+# ── Per-test isolation ────────────────────────────────────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def _reset_validation_state() -> None:
+    """Hard-clean the operational validation state for the shared dataset URN.
+
+    All tests in this module share one ``_DATASET_URN``. Without a per-test
+    reset, a test that soft-deletes (freezes) the slot leaves an
+    ``is_removed=true`` tombstone behind, and the next PUT-based test then hits
+    ``409 VALIDATION_CONF_REMOVED`` instead of starting from a clean slate.
+
+    The tombstone is a single ``validation_configs`` row carrying the
+    ``is_removed`` flag (not a second row), so deleting the URN's row clears the
+    active OR frozen state in one shot. ``dataspoke_db.purge_urn`` does exactly
+    that (plus the matching ``validation_results`` and ``events`` rows), mirroring
+    the api-wired ``purge_urns`` autouse fixture. DB cleanup lives here in the
+    fixture; the test bodies stay REST-only.
+    """
+    from tests.integration.util import dataspoke_db
+
+    asyncio.run(dataspoke_db.purge_urn(_DATASET_URN))
+    yield  # type: ignore[misc]
+    asyncio.run(dataspoke_db.purge_urn(_DATASET_URN))
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -431,10 +470,13 @@ async def test_delete_soft_deletes_and_get_conf_returns_removed(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """DELETE soft-deletes; GET conf returns 404; DataHub status.removed=True.
+    """DELETE soft-deletes (freeze); GET conf returns 404 VALIDATION_CONF_REMOVED;
+    DataHub status.removed=True.
 
-    spec: VALIDATION.md §Rule Configuration — DELETE performs a soft delete:
-    DataHub status.removed=true; subsequent GET returns 404.
+    spec: VALIDATION.md §Rule Configuration — DELETE performs a soft delete (freeze):
+    DataHub status.removed=true; subsequent GET conf returns 404 with error code
+    VALIDATION_CONF_REMOVED (distinguishing a restorable tombstone from a
+    never-created slot, which returns CONFIG_NOT_FOUND).
     spec: VALIDATION.md §DataHub Aspect Mapping §status — emitted on DELETE: removed=True.
     """
     # Create conf
@@ -445,14 +487,19 @@ async def test_delete_soft_deletes_and_get_conf_returns_removed(
     )
     assert resp.status_code in (200, 201)
 
-    # Delete
+    # Delete (soft-delete / freeze)
     resp = await api_client.delete(_CONF_URL, headers=admin_headers)
     assert resp.status_code == 204, f"DELETE failed: {resp.text}"
 
-    # GET conf should now return 404 (soft-deleted)
+    # GET conf should now return 404 with error_code VALIDATION_CONF_REMOVED.
     resp = await api_client.get(_CONF_URL, headers=admin_headers)
     assert resp.status_code == 404, (
         f"Expected 404 after DELETE, got {resp.status_code}: {resp.text}"
+    )
+    assert resp.json().get("error_code") == "VALIDATION_CONF_REMOVED", (
+        "GET on a frozen slot must carry error_code VALIDATION_CONF_REMOVED "
+        "(restorable tombstone, distinct from CONFIG_NOT_FOUND); "
+        f"got: {resp.json()}"
     )
 
     # Verify DataHub status.removed=True
@@ -468,66 +515,128 @@ async def test_delete_soft_deletes_and_get_conf_returns_removed(
 
 
 @pytest.mark.asyncio
-async def test_put_after_delete_resurrects_assertion(
+async def test_put_on_tombstone_rejected_and_restore_reinstates_frozen_conf(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """PUT-after-DELETE resurrects the assertion at the same URN; assertionInfo overwritten.
+    """A PUT against a soft-deleted slot is rejected (409); restore (not PUT) is the
+    only way back, reinstating the FROZEN conf unchanged at the same URN.
 
-    spec: VALIDATION.md §Rule Configuration — A subsequent PUT resurrects the assertion
-    (clears removed) and overwrites assertionInfo. Same URN reused.
-    spec: VALIDATION.md §DataHub Aspect Mapping §status — resurrection: removed=False.
+    spec: VALIDATION.md §Rule Configuration — a PUT against a soft-deleted slot is
+    rejected with 409 VALIDATION_CONF_REMOVED; PUT does not resurrect, the rule must
+    be restored first. Restore via POST .../conf/method/restore returns 200, reinstates
+    the frozen description/variables exactly as they were (no redefinition on restore),
+    and re-emits assertionInfo + status.removed=false.
+    spec: VALIDATION.md §DataHub Aspect Mapping §status — restore clears removed (False).
     """
-    # Compute the expected URN once — same URN must be used throughout
+    # Compute the expected URN once — same URN must be reused across the cycle.
     assertion_urn = build_assertion_urn(_DATASET_URN)
 
-    # Create
+    # Create the frozen-to-be conf with its original description + variables.
+    original_description = "Original frozen rule"
+    original_variables = [
+        _var("row_cnt", "Daily row count"),
+        _var("fill_rate", "Fill rate"),
+    ]
     resp = await api_client.put(
         _CONF_URL,
         headers=admin_headers,
-        json={"description": "Original", "variables": [_var("row_cnt")]},
+        json={"description": original_description, "variables": original_variables},
     )
     assert resp.status_code in (200, 201)
 
-    # Delete
-    await api_client.delete(_CONF_URL, headers=admin_headers)
+    # DELETE (freeze).
+    del_resp = await api_client.delete(_CONF_URL, headers=admin_headers)
+    assert del_resp.status_code == 204, f"DELETE failed: {del_resp.text}"
 
-    # Resurrect with new description and variables
-    new_description = "Resurrected"
-    resp = await api_client.put(
+    # PUT on the tombstone is rejected with 409 VALIDATION_CONF_REMOVED — PUT does
+    # NOT resurrect; the rule must be restored first.
+    put_on_tombstone = await api_client.put(
         _CONF_URL,
         headers=admin_headers,
-        json={"description": new_description, "variables": [_var("row_cnt"), _var("null_rate")]},
+        json={
+            "description": "Attempted redefine via PUT",
+            "variables": [_var("row_cnt"), _var("null_rate")],
+        },
     )
-    # spec: USE_CASE_en.md §UC2 — PUT-after-DELETE (resurrection) creates anew → 201
-    assert resp.status_code == 201, f"PUT-after-DELETE must return 201 Created: {resp.text}"
-    second_data = resp.json()
+    assert put_on_tombstone.status_code == 409, (
+        f"PUT on a frozen slot must be rejected with 409 (PUT does not resurrect); "
+        f"got {put_on_tombstone.status_code}: {put_on_tombstone.text}"
+    )
+    assert put_on_tombstone.json().get("error_code") == "VALIDATION_CONF_REMOVED", (
+        f"409 on frozen slot must carry error_code VALIDATION_CONF_REMOVED; "
+        f"got: {put_on_tombstone.json()}"
+    )
 
-    assert second_data["description"] == new_description
-    assert "null_rate" in [v["name"] for v in second_data["variables"]]
+    # Restore is the only way back — it reinstates the FROZEN conf unchanged.
+    restore_resp = await api_client.post(_RESTORE_URL, headers=admin_headers)
+    assert restore_resp.status_code == 200, (
+        f"POST conf/method/restore expected 200, "
+        f"got {restore_resp.status_code}: {restore_resp.text}"
+    )
+    restored = restore_resp.json()
+    # The original (unchanged) description + variables come back — NOT the values
+    # the rejected PUT attempted; null_rate must NOT be present.
+    assert restored["description"] == original_description, (
+        f"Restore must reinstate the frozen description verbatim; got {restored['description']!r}"
+    )
+    assert restored["variables"] == original_variables, (
+        f"Restore must reinstate the SAME frozen variables (no redefinition); "
+        f"got {restored['variables']}"
+    )
+    assert "null_rate" not in [v["name"] for v in restored["variables"]], (
+        "Restore must not introduce a variable from the rejected PUT"
+    )
 
-    # Verify GET conf shows it again
+    # GET conf is active again (200) and matches the frozen rule.
     resp = await api_client.get(_CONF_URL, headers=admin_headers)
     assert resp.status_code == 200
-    assert resp.json()["description"] == new_description
+    assert resp.json()["description"] == original_description
+    assert resp.json()["variables"] == original_variables
 
-    # Verify DataHub: same URN, status.removed=False, assertionInfo has new description
+    # Verify DataHub: same URN, status.removed=False, assertionInfo re-emitted with
+    # the ORIGINAL (unchanged) description.
     graph = _make_datahub_graph()
 
     status = graph.get_aspect(entity_urn=assertion_urn, aspect_type=StatusClass)
     assert status is not None, (
-        f"status aspect not found at URN {assertion_urn} after resurrection"
+        f"status aspect not found at URN {assertion_urn} after restore"
     )
     assert status.removed is False, (
-        f"Expected status.removed=False after PUT-after-DELETE, got {status.removed!r}"
+        f"Expected status.removed=False after restore, got {status.removed!r}"
     )
 
     info = graph.get_aspect(entity_urn=assertion_urn, aspect_type=AssertionInfoClass)
     assert info is not None, (
-        f"assertionInfo not found at URN {assertion_urn} after resurrection"
+        f"assertionInfo not found at URN {assertion_urn} after restore"
     )
-    assert info.description == new_description, (
-        f"Expected description={new_description!r} after resurrection, got {info.description!r}"
+    assert info.description == original_description, (
+        f"Expected assertionInfo.description={original_description!r} re-emitted "
+        f"verbatim after restore, got {info.description!r}"
+    )
+    assert info.customAssertion is not None
+    expected_logic = "row_cnt, fill_rate"
+    assert info.customAssertion.logic == expected_logic, (
+        f"Restore re-emits the frozen variable names; expected logic={expected_logic!r}, "
+        f"got {info.customAssertion.logic!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_restore_with_nothing_to_restore_returns_404(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """Restore on a slot with no soft-deleted row to restore returns 404.
+
+    spec: VALIDATION.md §Rule Configuration — restore returns 404 if there is no
+    soft-deleted row to restore.
+    """
+    # Per-test reset guarantees no validation_configs row exists for this URN.
+    restore_resp = await api_client.post(_RESTORE_URL, headers=admin_headers)
+    assert restore_resp.status_code == 404, (
+        f"Restore with nothing to restore expected 404, "
+        f"got {restore_resp.status_code}: {restore_resp.text}"
     )
 
 
@@ -536,14 +645,15 @@ async def test_patch_conf_on_soft_deleted_returns_404(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """PATCH on a soft-deleted validation slot returns 404.
+    """PATCH on a soft-deleted validation slot returns 404 VALIDATION_CONF_REMOVED.
 
-    DELETE performs a soft delete.  After DELETE, both GET and PATCH treat
-    the tombstoned slot as absent — the resource view is unified, so any
-    operation that reads the slot first returns 404 when the slot is removed.
+    DELETE performs a soft delete (freeze).  After DELETE, both GET and PATCH treat
+    the tombstoned slot as a restorable tombstone — the resource view is unified, so
+    any operation that reads the slot returns 404 with error_code
+    VALIDATION_CONF_REMOVED when the slot is frozen.
 
-    spec: VALIDATION.md §Rule Configuration — after DELETE, PATCH on tombstoned
-      slot returns 404 (mirrors GET resource view)
+    spec: VALIDATION.md §Rule Configuration — PATCH against the tombstoned slot
+      returns 404 VALIDATION_CONF_REMOVED.
     """
     # PUT to create the slot
     put_resp = await api_client.put(
@@ -557,9 +667,9 @@ async def test_patch_conf_on_soft_deleted_returns_404(
     del_resp = await api_client.delete(_CONF_URL, headers=admin_headers)
     assert del_resp.status_code == 204, f"DELETE failed: {del_resp.text}"
 
-    # PATCH on the tombstoned slot must return 404.
-    # spec: VALIDATION.md §Rule Configuration — after DELETE, PATCH on tombstoned
-    # slot returns 404 (mirrors GET resource view); no mutation occurs.
+    # PATCH on the tombstoned slot must return 404 VALIDATION_CONF_REMOVED.
+    # spec: VALIDATION.md §Rule Configuration — PATCH against the tombstoned slot
+    # returns 404 VALIDATION_CONF_REMOVED; no mutation occurs.
     patch_resp = await api_client.patch(
         _CONF_URL,
         headers=admin_headers,
@@ -569,10 +679,10 @@ async def test_patch_conf_on_soft_deleted_returns_404(
         f"PATCH on soft-deleted slot expected 404, "
         f"got {patch_resp.status_code}: {patch_resp.text}"
     )
-    # spec: API.md §Standard Envelope — every non-2xx response carries an error_code field.
     patch_body = patch_resp.json()
-    assert patch_body.get("error_code"), (
-        f"404 response must carry error_code per API.md §Standard Envelope; got: {patch_body}"
+    assert patch_body.get("error_code") == "VALIDATION_CONF_REMOVED", (
+        f"PATCH on a frozen slot must carry error_code VALIDATION_CONF_REMOVED; "
+        f"got: {patch_body}"
     )
 
 
@@ -658,10 +768,18 @@ async def test_out_of_band_tombstone_reverted_on_put(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """An out-of-band DataHub tombstone is reverted when DataSpoke PUTs the conf again.
+    """An out-of-band DataHub tombstone on an ACTIVE slot is reverted on the next PUT.
 
-    spec: DATAHUB_INTEGRATION.md §Assertion Aspects — register_assertion emits
-    status(removed=False) on every PUT/PATCH, reverting any external tombstone.
+    The DataSpoke row stays active throughout — the slot is never soft-deleted via
+    DELETE. Only the DataHub status aspect is tombstoned out-of-band (as an external
+    tool would). On an active rule, a PUT replaces it and re-emits status.removed=false,
+    reverting the external tombstone. (A PUT against a *DataSpoke* soft-deleted slot is
+    instead rejected 409 — covered by
+    test_put_on_tombstone_rejected_and_restore_reinstates_frozen_conf.)
+
+    spec: VALIDATION.md §DataHub Aspect Mapping §status — status(removed=False) is
+    emitted on every PUT/PATCH; on an active rule this reverts out-of-band tombstones.
+    spec: DATAHUB_INTEGRATION.md §Assertion Aspects.
     """
     from datahub.emitter.mcp import MetadataChangeProposalWrapper
     from datahub.emitter.rest_emitter import DatahubRestEmitter

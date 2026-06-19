@@ -23,6 +23,7 @@ import {
   useValidationConf,
   useUpsertValidationConf,
   useDeleteValidationConf,
+  useRestoreValidationConf,
   useValidationResults,
   useValidationEvents,
 } from "@/lib/api/validation";
@@ -144,6 +145,7 @@ export default function ValidationDetailPage({
   // ── Mutations ─────────────────────────────────────────────────────────────────
   const upsert = useUpsertValidationConf(datasetUrn);
   const deleteConf = useDeleteValidationConf(datasetUrn);
+  const restoreConf = useRestoreValidationConf(datasetUrn);
 
   // ── Handlers ─────────────────────────────────────────────────────────────────
 
@@ -161,6 +163,10 @@ export default function ValidationDetailPage({
     });
   };
 
+  const handleRestore = () => {
+    restoreConf.mutate();
+  };
+
   // ── Error messages ────────────────────────────────────────────────────────────
 
   const saveError =
@@ -168,8 +174,23 @@ export default function ValidationDetailPage({
       ? `${upsert.error.error_code}: ${upsert.error.message}`
       : upsert.error?.message;
 
+  const restoreError =
+    restoreConf.error instanceof ApiError
+      ? `${restoreConf.error.error_code}: ${restoreConf.error.message}`
+      : restoreConf.error?.message;
+
   // ── 404 → empty config state ───────────────────────────────────────────────
   const is404 = confError instanceof ApiError && confError.status === 404;
+  // A soft-deleted slot returns 404 with VALIDATION_CONF_REMOVED — it is
+  // *restorable* (frozen variables/description + result history intact), so the
+  // deleted state shows an Undelete button only (no Create form, no Edit). A
+  // never-existed slot returns CONFIG_NOT_FOUND → the Create form.
+  const isRemoved =
+    confError instanceof ApiError &&
+    confError.status === 404 &&
+    confError.error_code === "VALIDATION_CONF_REMOVED";
+  // 404 that is *not* a tombstone → no config yet → create state.
+  const isAbsent = is404 && !isRemoved;
   // TanStack Query retains the last successful `data` when a refetch errors, so
   // after a soft-delete `conf` can be stale while `is404` is true. This single
   // authoritative flag keeps the create-form and existing-conf branches mutually
@@ -285,7 +306,7 @@ export default function ValidationDetailPage({
                 </Button>
               </>
             )}
-            {is404 && (
+            {isAbsent && (
               <Button
                 key="conf-create"
                 type="submit"
@@ -296,6 +317,17 @@ export default function ValidationDetailPage({
                 {upsert.isPending ? "Saving..." : "Create"}
               </Button>
             )}
+            {isRemoved && (
+              <Button
+                key="conf-restore"
+                type="button"
+                size="sm"
+                onClick={handleRestore}
+                disabled={restoreConf.isPending}
+              >
+                {restoreConf.isPending ? "Restoring..." : "Undelete"}
+              </Button>
+            )}
           </div>
         )}
       </div>
@@ -304,8 +336,22 @@ export default function ValidationDetailPage({
       <section className="rounded-lg border p-5">
         <h2 className="mb-3 text-sm font-medium">attr/validation/conf</h2>
 
+        {/* Soft-deleted — restorable, no Create/Edit affordances */}
+        {isRemoved && (
+          <div className="space-y-2">
+            <p className="text-sm text-muted-foreground">
+              {canWrite
+                ? "This validation config is deleted. Undelete it to restore the frozen rule and its result history unchanged, then edit while active."
+                : "This validation config is deleted."}
+            </p>
+            {restoreError && (
+              <p className="text-sm text-destructive">{restoreError}</p>
+            )}
+          </div>
+        )}
+
         {/* No config yet — show create form or empty state */}
-        {is404 && (
+        {isAbsent && (
           <>
             {canWrite ? (
               <>

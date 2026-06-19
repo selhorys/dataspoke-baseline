@@ -99,6 +99,27 @@ export function useDeleteValidationConf(datasetUrn: string) {
   });
 }
 
+// ── Restore (undelete) conf ──────────────────────────────────────────────────────
+
+// Restores a soft-deleted conf as-is (preserving frozen variables/description and
+// the result history). On success re-fetches the now-active conf so the detail
+// page leaves the deleted state.
+export function useRestoreValidationConf(datasetUrn: string) {
+  const qc = useQueryClient();
+  return useMutation<ValidationConfResponse, Error, void>({
+    mutationFn: () =>
+      apiFetch<ValidationConfResponse>(
+        `/spoke/common/data/${encodeURIComponent(datasetUrn)}/attr/validation/conf/method/restore`,
+        { method: "POST" },
+      ),
+    meta: { handledInline: true },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["validation", "conf", datasetUrn] });
+      void qc.invalidateQueries({ queryKey: ["validation", "list"] });
+    },
+  });
+}
+
 // ── Historical results ─────────────────────────────────────────────────────────
 
 interface ValidationResultsParams {

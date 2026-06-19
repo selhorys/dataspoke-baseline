@@ -58,6 +58,21 @@ class EntityNotFoundError(DataSpokeError):
         super().__init__(f"{entity_type} '{_safe_id}' not found")
 
 
+class ValidationConfRemovedError(EntityNotFoundError):
+    """Raised on GET/PATCH against a soft-deleted (frozen) validation slot.
+
+    Maps to HTTP 404 with error_code ``VALIDATION_CONF_REMOVED`` (vs
+    ``CONFIG_NOT_FOUND`` for a never-created slot), so the client can tell a
+    *restorable* slot from a new one. The slot is reinstated via
+    ``POST .../attr/validation/conf/method/restore``. The 409 PUT-on-tombstone
+    case uses ``ConflictError("VALIDATION_CONF_REMOVED")`` instead.
+    """
+
+    def __init__(self, dataset_urn: str) -> None:
+        super().__init__("config", dataset_urn)
+        self.error_code = "VALIDATION_CONF_REMOVED"
+
+
 class ConflictError(DataSpokeError):
     """Raised when an operation conflicts with current state (HTTP 409).
 
@@ -79,6 +94,10 @@ class ConflictError(DataSpokeError):
       ONTOGEN_DISABLED              — ontogen conf has is_enabled=false; only dry-run permitted
       METAGEN_DISABLED              — metagen conf has is_enabled=false; only dry-run permitted
       METAGEN_CANNOT_REJECT_APPROVED — reject verdict on a candidate whose status is approved
+      VALIDATION_CONF_REMOVED       — PUT against a soft-deleted validation slot; restore
+                                      via POST .../conf/method/restore first (PUT does not
+                                      resurrect). The GET/PATCH 404 variant uses
+                                      ValidationConfRemovedError.
     """
 
     def __init__(self, error_code: str, message: str = "") -> None:

@@ -23,7 +23,7 @@ DataSpoke after each partition write.
 | Page | Read | Write |
 |---|---|---|
 | `/validation` | `GET /spoke/validation` | — |
-| `/validation/data/[urn]` | `GET .../attr/validation/conf`, `GET .../attr/validation/result?from&until&limit` (timeseries), `GET .../event/validation?from&to` | `PUT/DELETE .../attr/validation/conf` (fields: `description`, `variables[]`) |
+| `/validation/data/[urn]` | `GET .../attr/validation/conf`, `GET .../attr/validation/result?from&until&limit` (timeseries), `GET .../event/validation?from&to` | `PUT/DELETE .../attr/validation/conf` (fields: `description`, `variables[]`), `POST .../attr/validation/conf/method/restore` |
 
 Each dataset has one validation slot. The data pipeline runs the validation
 logic and POSTs results to `attr/validation/result`. Teams that need multiple distinct
@@ -64,7 +64,7 @@ description so differing value scales do not flatten each other. Both the score
 chart and the per-variable charts draw straight lines (linear interpolation, no
 smoothing). The
 event log consumes `GET .../event/validation` — config lifecycle
-(create/update/delete) plus one `RESULT_RECORDED` entry per accepted result
+(create/update/delete/restore) plus one `RESULT_RECORDED` entry per accepted result
 POST, each rendered with its `event_type`, status, and detail. A `datetime`
 RangePicker drives this panel, mapping its inclusive `{from, to}` to the
 endpoint's `from`/`to` params. The timeseries
@@ -74,14 +74,22 @@ The header "Latest score" reads the most recent result within the selected
 range window, rendered to 4 decimals.
 
 The detail page's primary action controls all live in the header's top-right
-cluster and are mode-driven: the read-only view shows `Edit` and `Delete`; edit
-mode shows `Cancel` and `Save`; the resurrect empty-state (after soft-delete or
-404) shows `Create`. The per-row field-array controls `+ Add` and `[×]` are not
-header controls — they stay inline inside the variables editor.
+cluster and are mode-driven by the GET-conf outcome: an active rule's read-only
+view shows `Edit` and `Delete`; edit mode shows `Cancel` and `Save`; a
+soft-deleted slot (`404 VALIDATION_CONF_REMOVED`) shows **only `Undelete`** — no
+`Create`, no `Edit`, no editable form while deleted; a never-created slot
+(`404 CONFIG_NOT_FOUND`) shows `Create`. The per-row field-array controls
+`+ Add` and `[×]` are not header controls — they stay inline inside the
+variables editor (rendered only in `Create`/edit modes, never in the
+soft-deleted state).
 
 Delete (button → ConfirmDialog) issues `DELETE .../attr/validation/conf` and
-redirects to `/validation`. After a soft-delete the detail route's 404 branch
-shows a create/resurrect empty-state to re-create the conf.
+redirects to `/validation`. The two `404` branches diverge by `error_code`:
+`VALIDATION_CONF_REMOVED` renders a frozen-rule empty-state whose single action
+is `Undelete` → `POST .../attr/validation/conf/method/restore`, which reinstates
+the same rule unchanged; on success the page re-fetches the now-active conf and
+returns to the normal read view (`Edit`/`Delete`). `CONFIG_NOT_FOUND` renders the
+existing create empty-state with the `Create` form.
 
 ```
 ┌───────────────────────────────────────────────────────────────┐
@@ -113,5 +121,5 @@ shows a create/resurrect empty-state to re-create the conf.
 
 Write actions on the detail page are rendered only when
 `role ∈ {Editor, Admin}` — the mode-driven header controls
-(`Edit`/`Delete`/`Cancel`/`Save`/`Create`) and the inline variables-editor
+(`Edit`/`Delete`/`Cancel`/`Save`/`Create`/`Undelete`) and the inline variables-editor
 controls (`+ Add`/`[×]`) alike. The list view is read-only for every role.
