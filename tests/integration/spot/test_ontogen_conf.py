@@ -65,29 +65,54 @@ async def test_ontogen_conf_put(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """PUT /spoke/ontogen/attr/conf creates or replaces the singleton conf."""
-    resp = await api_client.put(
-        "/api/v1/spoke/ontogen/attr/conf",
-        headers=admin_headers,
-        json={
-            "is_enabled": True,
-            "schedule_tier": "daily",
-            "dataset_filter": {},
-            "default_run_prompt": None,
-        },
-    )
+    """PUT /spoke/ontogen/attr/conf creates or replaces the singleton conf.
 
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["is_enabled"] is True
-    assert body["schedule_tier"] == "daily"
+    The PUT response must echo the values just written — a full replacement round-trip,
+    not stale pre-write state. A non-empty dataset_filter makes the response read-back
+    assertion deterministic regardless of prior conf state.
 
-    # Cleanup — reset to disabled
-    await api_client.patch(
-        "/api/v1/spoke/ontogen/attr/conf",
-        headers=admin_headers,
-        json={"is_enabled": False},
-    )
+    spec: spec/API.md §UC3 — PUT replaces the singleton conf; response reflects the write.
+    """
+    conf_url = "/api/v1/spoke/ontogen/attr/conf"
+    expected_filter = {"origin": "PROD"}
+    try:
+        resp = await api_client.put(
+            conf_url,
+            headers=admin_headers,
+            json={
+                "is_enabled": True,
+                "schedule_tier": "daily",
+                "dataset_filter": expected_filter,
+                "default_run_prompt": None,
+            },
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["is_enabled"] is True
+        assert body["schedule_tier"] == "daily"
+        assert body["dataset_filter"] == expected_filter, (
+            f"PUT response dataset_filter not preserved: {body.get('dataset_filter')!r}. "
+            "spec: API.md §UC3 — PUT response reflects the write"
+        )
+
+        # The write must also persist — a fresh GET confirms read-back independent of
+        # the in-response echo.
+        get_body = (await api_client.get(conf_url, headers=admin_headers)).json()
+        assert get_body["dataset_filter"] == expected_filter, (
+            f"GET round-trip dataset_filter mismatch: {get_body.get('dataset_filter')!r}. "
+            "spec: API.md §UC3 — PUT replacement is persisted"
+        )
+    finally:
+        # Cleanup — reset to disabled with an empty filter (unconditional, so a
+        # mid-test failure can't leave {"origin": "PROD"} resident and mask a retry).
+        from contextlib import suppress
+        with suppress(Exception):
+            await api_client.patch(
+                conf_url,
+                headers=admin_headers,
+                json={"is_enabled": False, "dataset_filter": {}},
+            )
 
 
 @pytest.mark.asyncio

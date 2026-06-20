@@ -220,7 +220,14 @@ class OntogenService:
         await self._db.execute(stmt)
         await self._db.commit()
 
-        result = await self._db.execute(select(OntogenConfig).where(OntogenConfig.id == 1))
+        # populate_existing refreshes the identity-map instance loaded above with the
+        # row just written by the Core upsert; without it the expire_on_commit=False
+        # session would return the stale pre-upsert object.
+        result = await self._db.execute(
+            select(OntogenConfig)
+            .where(OntogenConfig.id == 1)
+            .execution_options(populate_existing=True)
+        )
         existing = result.scalar_one()
 
         event_type = ONTOGEN_CONFIG_CREATE if created else ONTOGEN_CONFIG_UPDATE
