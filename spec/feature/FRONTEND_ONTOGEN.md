@@ -28,11 +28,18 @@ The OntoGen sidebar entry is a foldable group with three children —
 | Page | Read | Write |
 |---|---|---|
 | `/ontogen/conf` | `GET /spoke/ontogen/attr/conf` | `PUT/PATCH .../attr/conf` (Edit/Save/Cancel; fields: `is_enabled`, `schedule_tier`, `dataset_filter`, `default_run_prompt`) — all action controls sit top-right; the conf is a singleton so the UI exposes no Delete. `POST .../method/run` via Run dialog (optional Markdown body — one-shot prompt; "Dry run — evaluate without persisting results" checkbox → `?dry_run=true`) |
-| `/ontogen/seed` | `GET .../attr/seed`, `GET .../attr/seed/{seed_id}` (Markdown) | `POST .../attr/seed` (Markdown body), `PATCH/DELETE .../attr/seed/{seed_id}` |
+| `/ontogen/seed` | `GET .../attr/seed`, `GET .../attr/seed/{seed_id}` (Markdown) | `POST .../attr/seed` (Markdown body), `PATCH/DELETE .../attr/seed/{seed_id}`, `PATCH .../attr/seed/{seed_id}/attr/enabled` (JSON `{is_enabled}`) |
 | `/ontogen/result` | `GET .../result/{node\|edge\|triple}` (+ `/{id}/attr` for evidence) | `POST .../result/{node\|edge\|triple}/{id}/method/review` body `{verdict: "approve"\|"reject", reason}` |
 
 `dataset_filter` follows the standard four-dimension shape — see
 [API §Metric `dataset_filter`](../API.md#metric-spokegovernancemetric).
+
+The **Seed library** (`/ontogen/seed`) lists **all** seeds — enabled and disabled — each
+row showing an enabled/disabled indicator and a per-seed enable/disable toggle
+(`PATCH .../attr/seed/{seed_id}/attr/enabled`). Only enabled seeds steer inference, so a
+disabled seed stays in the library and can be re-enabled at any time. `+ New Seed`
+(`POST .../attr/seed`) creates the seed **disabled** — the steward enables it once the
+body is reviewed. `Delete` is a hard delete behind a [ConfirmDialog](FRONTEND_BASIC.md#shared-component-notes).
 
 The **Nodes**, **Edges**, and **Triples** tabs each render their result set in a
 **uniform compact six-column table** — the same column layout for all three

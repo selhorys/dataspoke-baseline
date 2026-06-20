@@ -13,8 +13,11 @@ from typing import Any
 from pydantic import BaseModel
 from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.backend._dataset_filter import resolve_dataset_scope, validate_dataset_filter_service
+from src.backend.admin.config_service import get_runtime_config
 from src.backend.ontogen.debate import run_debate
 from src.backend.ontogen.embedding_search import search_node_embeddings as _search_node_embeddings
 from src.backend.ontogen.evidence import gather_evidence
@@ -27,7 +30,6 @@ from src.backend.ontogen.models import (
 from src.backend.ontogen.prompts import build_run_prompt
 from src.backend.ontogen.reviewer import build_ontogen_review_tool
 from src.backend.ontogen.slug import assert_edge_id, assert_node_id, make_snake_id
-from src.backend._dataset_filter import resolve_dataset_scope, validate_dataset_filter_service
 from src.backend.ontogen.validator import (
     ValidationError,
     build_ontogen_validate_tool,
@@ -66,7 +68,6 @@ from src.shared.exceptions import (
     PreconditionFailedError,
 )
 from src.shared.llm.client import LLMClient
-from src.backend.admin.config_service import get_runtime_config
 from src.shared.vector.client import PgVectorManager, VectorHit
 
 logger = logging.getLogger(__name__)
@@ -89,6 +90,7 @@ class SeedPreview(BaseModel):
     """Summary row returned by list_seeds()."""
 
     seed_id: str
+    is_enabled: bool
     updated_at: datetime
     preview: str  # first 200 chars of body_md, newlines normalised
 
@@ -177,14 +179,15 @@ class OntogenService:
         result = await self._db.execute(select(OntogenConfig).where(OntogenConfig.id == 1))
         row = result.scalar_one_or_none()
         if row is None:
-            row = OntogenConfig(
-                id=1,
-                is_enabled=False,
-                dataset_filter={},
+            stmt = (
+                pg_insert(OntogenConfig)
+                .values(id=1, is_enabled=False, dataset_filter={})
+                .on_conflict_do_nothing(index_elements=["id"])
             )
-            self._db.add(row)
+            await self._db.execute(stmt)
             await self._db.commit()
-            await self._db.refresh(row)
+            result = await self._db.execute(select(OntogenConfig).where(OntogenConfig.id == 1))
+            row = result.scalar_one()
         return row
 
     async def put_conf(self, conf: dict[str, Any]) -> OntogenConfig:
@@ -202,18 +205,23 @@ class OntogenService:
         existing = result.scalar_one_or_none()
         created = existing is None
 
-        if existing is None:
-            existing = OntogenConfig(id=1)
-            self._db.add(existing)
-
-        existing.is_enabled = conf.get("is_enabled", False)
-        existing.schedule_tier = conf.get("schedule_tier")
-        existing.dataset_filter = dataset_filter
-        existing.default_run_prompt = conf.get("default_run_prompt")
-        existing.updated_at = datetime.now(tz=UTC)
-
+        fields = {
+            "is_enabled": conf.get("is_enabled", False),
+            "schedule_tier": conf.get("schedule_tier"),
+            "dataset_filter": dataset_filter,
+            "default_run_prompt": conf.get("default_run_prompt"),
+            "updated_at": datetime.now(tz=UTC),
+        }
+        stmt = (
+            pg_insert(OntogenConfig)
+            .values(id=1, **fields)
+            .on_conflict_do_update(index_elements=["id"], set_=fields)
+        )
+        await self._db.execute(stmt)
         await self._db.commit()
-        await self._db.refresh(existing)
+
+        result = await self._db.execute(select(OntogenConfig).where(OntogenConfig.id == 1))
+        existing = result.scalar_one()
 
         event_type = ONTOGEN_CONFIG_CREATE if created else ONTOGEN_CONFIG_UPDATE
         await self._record_ontogen_event(
@@ -286,8 +294,12 @@ class OntogenService:
     async def list_seeds(
         self, offset: int = 0, limit: int = 20, order_by: Any = None
     ) -> tuple[list[SeedPreview], int]:
-        """Return paginated seed previews (default order: updated_at desc)."""
-        base = select(OntogenSeed).where(OntogenSeed.status == "active")
+        """Return paginated seed previews — enabled and disabled.
+
+        Default order: updated_at desc. Each preview carries its ``is_enabled``
+        state so a disabled seed can be found and re-enabled.
+        """
+        base = select(OntogenSeed)
         count_q = select(func.count()).select_from(base.subquery())
         total = (await self._db.execute(count_q)).scalar() or 0
 
@@ -302,6 +314,7 @@ class OntogenService:
         previews = [
             SeedPreview(
                 seed_id=str(r.id),
+                is_enabled=r.is_enabled,
                 updated_at=r.updated_at,
                 preview=_preview(r.body_md),
             )
@@ -310,8 +323,13 @@ class OntogenService:
         return previews, total
 
     async def create_seed(self, body_md: str) -> OntogenSeed:
-        """Create a new active seed and emit ONTOGEN.SEED_CREATE."""
-        seed = OntogenSeed(body_md=body_md, status="active")
+        """Create a new seed (disabled by default) and emit ONTOGEN.SEED_CREATE.
+
+        A new seed ships ``is_enabled=False``: it does not participate in
+        inference until explicitly enabled, consistent with the conf/metric
+        factory default-false convention.
+        """
+        seed = OntogenSeed(body_md=body_md, is_enabled=False)
         self._db.add(seed)
         await self._db.commit()
         await self._db.refresh(seed)
@@ -353,12 +371,31 @@ class OntogenService:
         )
         return row
 
-    async def delete_seed(self, seed_id: str) -> None:
-        """Retire (soft-delete) a seed and emit ONTOGEN.SEED_DELETE."""
+    async def set_seed_enabled(self, seed_id: str, is_enabled: bool) -> OntogenSeed:
+        """Enable or disable a seed and emit ONTOGEN.SEED_UPDATE.
+
+        A disabled seed is retained and fully visible but excluded from the
+        inference pipeline. Toggling is reversible both ways.
+        """
         row = await self.get_seed(seed_id)
-        row.status = "retired"
+        row.is_enabled = is_enabled
         row.updated_at = datetime.now(tz=UTC)
         self._db.add(row)
+        await self._db.commit()
+        await self._db.refresh(row)
+
+        await self._record_ontogen_event(
+            f"seed:{seed_id}",
+            ONTOGEN_SEED_UPDATE,
+            "success",
+            {"seed_id": seed_id, "is_enabled": is_enabled},
+        )
+        return row
+
+    async def delete_seed(self, seed_id: str) -> None:
+        """Hard-delete a seed and emit ONTOGEN.SEED_DELETE."""
+        row = await self.get_seed(seed_id)
+        await self._db.delete(row)
         await self._db.commit()
 
         await self._record_ontogen_event(
@@ -383,7 +420,7 @@ class OntogenService:
         2. Resolve effective one-shot prompt.
         3. Enumerate datasets per dataset_filter.
         4. Gather evidence per dataset.
-        5. Load active seeds.
+        5. Load enabled seeds.
         6. Build LLM prompt.
         7. Load approved nodes/edges + embeddings for reuse.
         8. Call LLM, process proposals (node/edge/triple reuse, confidence scoring).
@@ -453,9 +490,9 @@ class OntogenService:
                     exc_info=True,
                 )
 
-        # Step 5: Load active seeds
+        # Step 5: Load enabled seeds
         seed_rows = (
-            (await self._db.execute(select(OntogenSeed).where(OntogenSeed.status == "active")))
+            (await self._db.execute(select(OntogenSeed).where(OntogenSeed.is_enabled)))
             .scalars()
             .all()
         )

@@ -231,7 +231,6 @@ class ValidationListItem(BaseModel):
     variable_count: int
     latest_data_time: datetime | None
     latest_score: float | None
-    is_removed: bool
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)

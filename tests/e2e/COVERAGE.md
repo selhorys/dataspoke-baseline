@@ -42,7 +42,7 @@ redirects to `/data/[urn]`.
 
 | Route | UC test | Ground test |
 |---|---|---|
-| `/data/[urn]` | `uc1-02-active-custom-postgres.spec.ts` step 6 (Ingestion panel reverse-lookup); `uc2-01-validation.spec.ts` steps 2, 4–7 (Validation panel: conf, charts, freeze/restore Undelete gated by the page-level "Show deleted" toggle — default OFF reads removed slot as Create empty-state, ON reveals the frozen Undelete view; validation events in unified Events panel); `uc4-01-metadata-generation.spec.ts` steps 3, 7, 8, 9 (MetaGen panel boundary form, candidate review, metagen events in unified Events panel) | `ground/data/hub.spec.ts` (URN header + 3 summary cards; 4 foldable panels fold/unfold; Events major-type filter all-checked default + uncheck narrows) |
+| `/data/[urn]` | `uc1-02-active-custom-postgres.spec.ts` step 6 (Ingestion panel reverse-lookup); `uc2-01-validation.spec.ts` steps 2, 4–7 (Validation panel: conf, charts, hard-delete via ConfirmDialog with cascade — afterwards reads as a never-created Create empty-state, no Undelete/Show-deleted toggle; recreate via the Create form; validation events in unified Events panel); `uc4-01-metadata-generation.spec.ts` steps 3, 7, 8, 9 (MetaGen panel boundary form, candidate review, metagen events in unified Events panel) | `ground/data/hub.spec.ts` (URN header + 3 summary cards; 4 foldable panels fold/unfold; Events major-type filter all-checked default + uncheck narrows) |
 
 #### Ingestion (UC1)
 

@@ -299,7 +299,7 @@ Layout, top to bottom:
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  catalog.books              [□ Show deleted]  (dataset header)│
+│  catalog.books                               (dataset header)│
 ├──────────────────────────────────────────────────────────────┤
 │  ┌── Ingestion ──┐  ┌── Validation ──┐  ┌── MetaGen ──┐       │
 │  │ source / mode │  │ latest score / │  │ boundary    │       │
@@ -314,16 +314,7 @@ Layout, top to bottom:
 └──────────────────────────────────────────────────────────────┘
 ```
 
-- **Header row** — the dataset URN title plus a page-level
-  [ShowDeletedToggle](#shared-component-notes) (default **off**). The toggle governs the
-  visibility of any panel whose `GET conf` resolves to a soft-deleted (tombstoned) slot —
-  today only the Validation panel has soft-delete semantics (Ingestion / MetaGen / Events do
-  not). With the toggle **off**, a soft-deleted Validation slot is hidden: its panel and
-  summary card render the Create / absent empty-state, identical to a never-created slot. With
-  it **on**, the soft-deleted slot reveals its frozen-rule `Undelete` state. The control is
-  presentation-only — it maps the already-fetched `GET …/attr/validation/conf` error code
-  (`VALIDATION_CONF_REMOVED` vs `CONFIG_NOT_FOUND`) to visibility and adds no endpoint
-  (see [FRONTEND_VALIDATION](FRONTEND_VALIDATION.md)).
+- **Header row** — the dataset URN title.
 
 - **Summary cards** — three horizontal cards giving an at-a-glance status:
   - *Ingestion* — owning source / ingestor and last-run status, from
@@ -336,7 +327,7 @@ Layout, top to bottom:
 - **Four foldable panels** — each a [CollapsiblePanel](#shared-component-notes):
   - *Ingestion* — the `IngestionDataPanel` reverse-lookup display
     (see [FRONTEND_INGESTION](FRONTEND_INGESTION.md#per-dataset-reverse-lookup-unified-dataurn)).
-  - *Validation* — the `ValidationDataPanel` conf read-only / edit / create / Undelete editor plus
+  - *Validation* — the `ValidationDataPanel` conf read-only / edit / create editor plus
     the score and per-variable charts
     (see [FRONTEND_VALIDATION](FRONTEND_VALIDATION.md)).
   - *MetaGen* — the `MetagenDataPanel` boundary form plus item/candidate review
@@ -417,12 +408,6 @@ These component IDs are referenced from per-function specs.
   [per-dataset page](#per-dataset-page-dataurn)'s four panels. Header row with a
   fold/unfold chevron over a body that mounts its feature panel; follows the existing
   `rounded-lg border` section styling.
-- **ShowDeletedToggle** — a single page-level checkbox in the [per-dataset page](#per-dataset-page-dataurn)
-  header (default **off**) that governs visibility of any panel resolving to a soft-deleted slot.
-  Off renders such panels in their Create / absent empty-state; on reveals the frozen-rule
-  `Undelete` state. Presentation-only — it maps an already-fetched `GET conf` error code to
-  visibility, no API of its own. (Distinct from the `/validation` list's own "Show deleted"
-  toggle, which re-fetches with the `removed` param.)
 - **EventMajorTypeFilter** — a checkbox-group multi-select over the event major types
   (`INGESTION` / `VALIDATION` / `METAGEN`), default **all checked**. Maps each checked box to a
   repeated `event_major_type` query param on `GET …/event`; with all checked it sends none

@@ -5,3 +5,5 @@
 - [RangePicker day-bounds unspecced](project_rangepicker_day_bounds_unspecced.md) — date-mode T23:59:59.999Z is impl-only; spec only says inclusive {from,to}, 14d default, 5 presets, until=to mapping
 - [UC1 event status anchor](project_uc1_event_status_anchor.md) — status='success' anchors to USE_CASE_en.md L107-108, not BACKEND.md step 4; INGESTION catalogue names no detail keys
 - [Data hub panel has no section headings](project_data_hub_panel_no_section_headings.md) — /data/[urn] ValidationDataPanel renders no attr/validation/conf or event/validation heading; events fold into unified EventsPanel
+- [Validation emits no status aspect](project_validation_no_status_aspect_divergence.md) — spec says no status aspect; impl still emits StatusClass(removed=False) on PUT; flag tests pinning it
+- [Seed create-disabled copy pinned](project_seed_create_disabled_copy.md) — ontogen seed Vitest pins exact "new seeds ship disabled" copy; spec only says create-disabled

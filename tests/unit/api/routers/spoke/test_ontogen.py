@@ -14,11 +14,9 @@ import pytest
 from src.api.dependencies import get_ontogen_service
 from src.api.main import app
 from src.shared.exceptions import (
-    EntityNotFoundError,
     PreconditionFailedError,
 )
-
-from tests.unit.api.conftest import auth_headers, make_token
+from tests.unit.api.conftest import auth_headers
 
 _BASE = "/api/v1/spoke/ontogen"
 
@@ -40,11 +38,11 @@ def _make_conf_row() -> MagicMock:
     return row
 
 
-def _make_seed_row() -> MagicMock:
+def _make_seed_row(is_enabled: bool = False) -> MagicMock:
     row = MagicMock()
     row.id = uuid.uuid4()
     row.body_md = "# Test seed"
-    row.status = "active"
+    row.is_enabled = is_enabled
     row.updated_at = datetime.now(tz=UTC)
     return row
 
@@ -110,7 +108,10 @@ async def test_put_conf_validates_dataset_filter_list_cap(client, mock_svc: Asyn
     Cap: _DATASET_FILTER_LIST_CAP (impl-cap; spec gap surfaced 2026-05-01).
     """
     # impl-cap; spec gap surfaced 2026-05-01
-    too_many_urns = [f"urn:li:dataset:(urn:li:dataPlatform:postgres,t{i},PROD)" for i in range(_DATASET_FILTER_LIST_CAP + 1)]
+    too_many_urns = [
+        f"urn:li:dataset:(urn:li:dataPlatform:postgres,t{i},PROD)"
+        for i in range(_DATASET_FILTER_LIST_CAP + 1)
+    ]
 
     resp = await client.put(
         f"{_BASE}/attr/conf",
@@ -166,6 +167,47 @@ async def test_get_seed_malformed_uuid_returns_422(client, mock_svc: AsyncMock) 
     """GET /ontogen/attr/seed/{bad_id} with non-UUID path segment returns 422."""
     resp = await client.get(
         f"{_BASE}/attr/seed/not-a-uuid-at-all",
+        headers=auth_headers(),
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_patch_seed_enabled_returns_200_with_state(
+    client, mock_svc: AsyncMock
+) -> None:
+    """PATCH /ontogen/attr/seed/{id}/attr/enabled flips and returns is_enabled.
+
+    spec: API.md §PATCH attr/seed/{seed_id}/attr/enabled — JSON {is_enabled: bool},
+    returns 200; a disabled seed stays visible but is excluded from inference.
+    """
+    seed = _make_seed_row(is_enabled=True)
+    mock_svc.set_seed_enabled = AsyncMock(return_value=seed)
+
+    resp = await client.patch(
+        f"{_BASE}/attr/seed/{seed.id}/attr/enabled",
+        json={"is_enabled": True},
+        headers=auth_headers(),
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["is_enabled"] is True
+    # The router delegates the toggle to set_seed_enabled with the requested flag.
+    assert mock_svc.set_seed_enabled.await_args.args[1] is True
+
+
+@pytest.mark.asyncio
+async def test_patch_seed_enabled_requires_is_enabled_field(
+    client, mock_svc: AsyncMock
+) -> None:
+    """PATCH attr/seed/{id}/attr/enabled with no is_enabled field is a 422 schema error.
+
+    spec: API.md §PATCH attr/seed/{seed_id}/attr/enabled — body is JSON {is_enabled: bool}.
+    """
+    seed = _make_seed_row()
+    resp = await client.patch(
+        f"{_BASE}/attr/seed/{seed.id}/attr/enabled",
+        json={},
         headers=auth_headers(),
     )
     assert resp.status_code == 422
@@ -231,7 +273,8 @@ async def test_post_run_body_too_large_returns_413(client, mock_svc: AsyncMock) 
 
 @pytest.mark.asyncio
 async def test_post_triple_review_dependency_error_returns_422(client, mock_svc: AsyncMock) -> None:
-    """POST .../result/triple/{id}/method/review with ONTOGEN_TRIPLE_DEPENDENCY_PENDING returns 422."""
+    """POST .../result/triple/{id}/method/review with ONTOGEN_TRIPLE_DEPENDENCY_PENDING
+    returns 422."""
     mock_svc.review_triple = AsyncMock(
         side_effect=PreconditionFailedError("ONTOGEN_TRIPLE_DEPENDENCY_PENDING", "not approved")
     )
@@ -288,7 +331,7 @@ def test_ontogen_conf_schemas_omit_query_caps() -> None:
     Spec anchor: spec/feature/BACKEND_SCHEMA.md ontogen_config (columns removed);
     spec/API.md §UC3 conf fields.
     """
-    from src.api.schemas.ontogen import OntogenConfPutRequest, OntogenConfPatchRequest
+    from src.api.schemas.ontogen import OntogenConfPatchRequest, OntogenConfPutRequest
 
     for schema_cls in (OntogenConfPutRequest, OntogenConfPatchRequest):
         for dropped_field in ("max_manual_queries_per_dataset", "max_system_queries_per_dataset"):

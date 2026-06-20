@@ -8,7 +8,6 @@ from pydantic import BaseModel, Field, model_validator
 from src.api.schemas._dataset_filter import validate_dataset_filter
 from src.api.schemas.common import PaginatedResponse, SingleResponse
 
-
 # ── Conf ──────────────────────────────────────────────────────────────────────
 
 
@@ -78,6 +77,9 @@ class OntogenConfPatchRequest(BaseModel):
 
 class SeedListItem(BaseModel):
     seed_id: str = Field(description="Unique identifier of the seed")
+    is_enabled: bool = Field(
+        description="Whether the seed participates in the inference pipeline"
+    )
     updated_at: datetime = Field(description="UTC timestamp of the most recent update")
     preview: str = Field(
         description="Short Markdown snippet (first ~200 chars, newlines normalised)",
@@ -86,6 +88,12 @@ class SeedListItem(BaseModel):
 
 class SeedListResponse(PaginatedResponse):
     seeds: list[SeedListItem] = Field(default=[], description="Page of seed preview records")
+
+
+class SeedEnabledRequest(BaseModel):
+    is_enabled: bool = Field(
+        description="Enable (true) or disable (false) the seed for the inference pipeline"
+    )
 
 
 # ── Run ───────────────────────────────────────────────────────────────────────

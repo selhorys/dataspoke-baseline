@@ -37,6 +37,7 @@ export interface OntogenConfPatchBody {
 
 export interface SeedListItem {
   seed_id: string;
+  is_enabled: boolean;
   updated_at: string;
   preview: string;
 }
@@ -50,6 +51,12 @@ export interface SeedListResponse {
 
 export interface SeedCreateResponse {
   seed_id: string;
+  updated_at: string;
+}
+
+export interface SeedEnabledResponse {
+  seed_id: string;
+  is_enabled: boolean;
   updated_at: string;
 }
 

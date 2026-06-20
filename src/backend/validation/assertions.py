@@ -116,14 +116,6 @@ async def register_assertion(
     await datahub.emit_aspect(assertion_urn, StatusClass(removed=False))
 
 
-async def tombstone_assertion(
-    datahub: DataHubClient,
-    assertion_urn: str,
-) -> None:
-    """Emit status(removed=True) to DataHub.  Errors propagate."""
-    await datahub.emit_aspect(assertion_urn, StatusClass(removed=True))
-
-
 async def report_result(
     datahub: DataHubClient,
     assertion_urn: str,

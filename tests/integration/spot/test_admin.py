@@ -222,9 +222,8 @@ async def test_internal_admin_datahub_sync_targeted(
     enc_urn = urllib.parse.quote(test_urn, safe="")
     conf_url = f"/api/v1/spoke/common/data/{enc_urn}/attr/validation/conf"
 
-    # Isolate: a prior run's cleanup may have left a soft-deleted conf for this urn,
-    # and PUT no longer resurrects a tombstone (409 VALIDATION_CONF_REMOVED). Hard-purge
-    # so the setup PUT creates a fresh active conf regardless of prior-run state.
+    # Isolate: purge any prior-run conf (+ its results/events) for this urn so the
+    # setup PUT creates a fresh conf regardless of prior-run state.
     await dataspoke_db.purge_urn(test_urn)
 
     # Step 1: PUT validation conf for the target dataset. This calls
@@ -270,6 +269,5 @@ async def test_internal_admin_datahub_sync_targeted(
             "spec: feature/BACKEND_SCHEMA.md §dataset_registry §Creation."
         )
     finally:
-        # Hard-purge (not soft-delete) so a re-run's setup PUT is not blocked by a
-        # leftover tombstone — PUT no longer resurrects a soft-deleted slot.
+        # Purge the conf (+ its results/events) so a re-run starts from a clean slate.
         await dataspoke_db.purge_urn(test_urn)

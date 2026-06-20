@@ -220,7 +220,7 @@ DataHub is deployed and managed separately. DataSpoke interacts through three ch
 | Channel | Direction | Purpose |
 |---------|-----------|---------|
 | Python SDK (read) | DataHub → DataSpoke | Query metadata aspects, ingestion run history, assertion results, `document` entities (filtered by `relatedAssets` on in-scope datasets) |
-| Python SDK (write) | DataSpoke → DataHub | Emit ingestion-extracted aspects, validation `assertionInfo` (on conf upsert) + `assertionRunEvent` (per pipeline-posted result) + `status` (on soft-delete / restore), editable description aspects (`editableDatasetProperties`, `editableSchemaMetadata`), `documentInfo` on `document` entities (and `Status.removed=true` for soft-delete) |
+| Python SDK (write) | DataSpoke → DataHub | Emit ingestion-extracted aspects, validation `assertionInfo` (on conf upsert) + `assertionRunEvent` (per pipeline-posted result) + hard-delete of the assertion entity on conf DELETE, editable description aspects (`editableDatasetProperties`, `editableSchemaMetadata`), `documentInfo` on `document` entities |
 | Kafka events *(optional)* | DataHub → DataSpoke | Available for future event-driven extensions; not consumed by baseline UC1–UC5 flows |
 
 For SDK entry points, aspect catalog, error handling, and configuration, see
@@ -246,7 +246,7 @@ the cross-cutting flow that ties the features together.
 | UC | Trigger surface | Implementation entry | DataHub side-effect |
 |---|---|---|---|
 | UC1 Ingestion Control | Airflow tier DAG (`ACTIVE_CUSTOM_MANAGED`) or hourly `datahub-sync-hourly` DAG (`DATAHUB_MANAGED`/`PASSIVE` sync); manual `POST .../sources/{id}/method/run` (`ACTIVE_CUSTOM_MANAGED` only) | `IngestionService` | `ACTIVE_CUSTOM_MANAGED`: pluggable extractor emits `Status` + `DatasetProperties` + `SchemaMetadata` + `DataProcessInstance` aspects. `DATAHUB_MANAGED`/`PASSIVE`: no aspect writes; syncs source defs + run history and rebuilds the source→dataset mapping. |
-| UC2 Validation | External pipeline `POST .../attr/validation/result` after each partition write; `PUT/PATCH/DELETE .../attr/validation/conf` for configuration | `ValidationService` (config + result store; runs no validation logic) | Emits `assertionInfo` on conf upsert; emits `assertionRunEvent` per pipeline-posted result (timestamped to `data_time`); emits `status.removed` on DELETE / restore (`method/restore`). |
+| UC2 Validation | External pipeline `POST .../attr/validation/result` after each partition write; `PUT/PATCH/DELETE .../attr/validation/conf` for configuration | `ValidationService` (config + result store; runs no validation logic) | Emits `assertionInfo` on conf upsert; emits `assertionRunEvent` per pipeline-posted result (timestamped to `data_time`); on conf DELETE hard-deletes the assertion entity and cascades the dataset's results + validation events. |
 | UC3 Ontology Generation | Airflow tier DAG (singleton conf); manual `POST /spoke/ontogen/method/run` | `OntogenService` | None — UC3 is read-only on the DataHub side; approval flips status in DataSpoke storage only. |
 | UC4 Metadata Generation | Airflow tier DAG fans out across enabled confs at the tier; manual `POST /spoke/metagen/conf/{conf_id}/method/run` per conf | `MetagenService` | On reviewer approval of a candidate only: writes to the editable description aspect (`editableDatasetProperties.description` for dataset-description items, `editableSchemaMetadata.editableSchemaFieldInfo[].description` for column-description items) — never to non-editable counterparts. |
 | UC5 Governance | Airflow tier DAG; manual `POST /spoke/governance/metric/{id}/method/run` | `MetricsService` (pure aggregation, no source-DB reads) + `OverviewService` | Read-only — never writes aspects. Aggregates over DataHub metadata + DataSpoke result tables. |
@@ -275,7 +275,7 @@ Each feature owns a top-level namespace under `/spoke/`.
 | Feature | UC | API Route | Backend Services | Infrastructure |
 |---------|----|-----------|------------------|----------------|
 | Ingestion Control | UC1 | `/spoke/ingestion/sources` (per-source CRUD + `/method/run`, `/datasets`, `/event`), `/spoke/ingestion/unmanaged`, read-only `/spoke/common/data/{urn}/attr/ingestion` | Ingestion Service (pluggable extractors + DataHub-managed/passive sync), Extractor Registry | Airflow (tier-based periodic DAGs + hourly `datahub-sync-hourly`), Redis (concurrency guard), DataHub SDK, PostgreSQL |
-| Validation | UC2 | `/spoke/validation` (cross-dataset list) + `/spoke/common/data/{urn}/attr/validation/{conf,result}` + `/event/validation` | Validation Config Manager (PUT/PATCH/DELETE conf → `assertionInfo` / `status`), Result Store (POST/GET result → `assertionRunEvent`) | DataHub SDK, PostgreSQL |
+| Validation | UC2 | `/spoke/validation` (cross-dataset list) + `/spoke/common/data/{urn}/attr/validation/{conf,result}` + `/event/validation` | Validation Config Manager (PUT/PATCH conf → `assertionInfo`; DELETE → assertion hard-delete + cascade), Result Store (POST/GET result → `assertionRunEvent`) | DataHub SDK, PostgreSQL |
 | Ontology Generation | UC3 | `/spoke/ontogen/` (singleton conf + Markdown seeds + node / edge / triple browse + review) | LLM Classification, Relationship Inference, Triple Composition, Review Queue (node + edge + triple) | LLM API, PostgreSQL (pgvector), Airflow (tier-based periodic DAG) |
 | Metadata Generation | UC4 | `/spoke/metagen/conf` (conf collection: CRUD + per-conf `/method/run`, `/event`) + `/spoke/metagen/{item,event,uncovered}` (global review queue, cross-conf events, uncovered datasets) + `/spoke/common/data/{urn}/attr/metagen/{boundary,item}` + `/event/metagen` | Metadata Generation Service, Producer-Reviewer Adversarial Debate, Per-Item Candidate Review Queue | LLM API, PostgreSQL (pgvector for `metagen_candidate_embeddings`), DataHub SDK (read context + approved writes to editable description aspects), Airflow (tier-based periodic DAGs fanning out across confs) |
 | Governance | UC5 | `/spoke/governance/metric/` | Metrics Aggregator (pure aggregation, no source-DB reads), Built-in measurers (`ingestion-freshness`, `validation-score`, `doc-health`), Per-Dataset Breakdown, Factory-Default Bootstrap | Airflow (tier-based periodic DAGs + on-demand `metrics`), PostgreSQL, DataHub GraphQL |
@@ -323,7 +323,7 @@ on related `document` entities) and human-authored Markdown seeds.
    triples via `POST /spoke/ontogen/result/{node|edge|triple}/{id}/method/review`
 
 **Storage** (PostgreSQL with pgvector):
-- `ontogen_seeds` — id, markdown body, status (relational)
+- `ontogen_seeds` — id, markdown body, is_enabled (relational)
 - `ontogen_nodes` — id, name, description, confidence, status (relational)
 - `dataset_node_map` — dataset_urn, node_id, confidence_score, is_primary (relational)
 - `ontogen_edges` — id, label, semantics, confidence, status (relational)

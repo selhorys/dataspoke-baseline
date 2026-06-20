@@ -2,14 +2,16 @@
 
 /**
  * ValidationDataPanel — the validation body for the unified /data/[urn] page:
- * the conf (read-only / edit / create / undelete) plus the score and
- * per-variable charts. The per-dataset validation event list lives in the
- * shared Events panel. The freeze/restore state logic mirrors the standalone
- * validation detail page: a soft-deleted slot (404 VALIDATION_CONF_REMOVED) is
- * restorable (Undelete only); a never-created slot (404) shows the Create form.
+ * the conf (read-only / edit / create) plus the score and per-variable charts.
+ * The per-dataset validation event list lives in the shared Events panel.
+ *
+ * The conf has two states: an existing slot (200) renders read-only with
+ * Edit/Delete (or an edit form), and an absent slot (404 CONFIG_NOT_FOUND)
+ * renders the Create empty-state. Delete is a hard delete — afterwards the
+ * dataset reads as never-created and a fresh PUT simply creates a new conf.
  *
  * Spec: spec/feature/FRONTEND_VALIDATION.md §Detail (moved to /data/[urn]),
- *       spec/feature/VALIDATION.md §Rule Configuration (freeze + restore).
+ *       spec/feature/VALIDATION.md §Rule Configuration.
  */
 
 import { useEffect, useMemo, useState } from "react";
@@ -36,7 +38,6 @@ import {
   useValidationConf,
   useUpsertValidationConf,
   useDeleteValidationConf,
-  useRestoreValidationConf,
   useValidationResults,
 } from "@/lib/api/validation";
 import { useMe } from "@/lib/auth/use-me";
@@ -89,13 +90,9 @@ function ConfReadOnly({ conf }: { conf: ValidationConfResponse }) {
 
 interface ValidationDataPanelProps {
   datasetUrn: string;
-  showDeleted: boolean;
 }
 
-export function ValidationDataPanel({
-  datasetUrn,
-  showDeleted,
-}: ValidationDataPanelProps) {
+export function ValidationDataPanel({ datasetUrn }: ValidationDataPanelProps) {
   const { canWrite } = useMe();
   const router = useRouter();
   const tz = useDisplayTz();
@@ -126,7 +123,6 @@ export function ValidationDataPanel({
   // ── Mutations ─────────────────────────────────────────────────────────────────
   const upsert = useUpsertValidationConf(datasetUrn);
   const deleteConf = useDeleteValidationConf(datasetUrn);
-  const restoreConf = useRestoreValidationConf(datasetUrn);
 
   // ── Handlers ─────────────────────────────────────────────────────────────────
   const handleSave = (body: Record<string, unknown>) => {
@@ -139,38 +135,18 @@ export function ValidationDataPanel({
     });
   };
 
-  const handleRestore = () => {
-    restoreConf.mutate();
-  };
-
   // ── Error messages ────────────────────────────────────────────────────────────
   const saveError =
     upsert.error instanceof ApiError
-      ? upsert.error.status === 409 &&
-        upsert.error.error_code === "VALIDATION_CONF_REMOVED"
-        ? "This dataset's validation rule is deleted. Enable 'Show deleted' above to restore it."
-        : `${upsert.error.error_code}: ${upsert.error.message}`
+      ? `${upsert.error.error_code}: ${upsert.error.message}`
       : upsert.error?.message;
 
-  const restoreError =
-    restoreConf.error instanceof ApiError
-      ? `${restoreConf.error.error_code}: ${restoreConf.error.message}`
-      : restoreConf.error?.message;
-
   // ── State flags ────────────────────────────────────────────────────────────────
+  // A slot is either present (200 conf) or absent (404 CONFIG_NOT_FOUND); an
+  // absent slot shows the Create empty-state.
   const is404 = confError instanceof ApiError && confError.status === 404;
-  const isRemoved =
-    confError instanceof ApiError &&
-    confError.status === 404 &&
-    confError.error_code === "VALIDATION_CONF_REMOVED";
-  const isAbsent = is404 && !isRemoved;
+  const isAbsent = is404;
   const confExists = !!conf && !is404;
-
-  // The page-level "Show deleted" toggle gates the frozen Undelete state: while
-  // off, a soft-deleted slot renders the Create empty-state like a never-created
-  // one, matching the /validation list default.
-  const effectiveRemoved = isRemoved && showDeleted;
-  const effectiveAbsent = isAbsent || (isRemoved && !showDeleted);
 
   // A lingering `isEditing=true` from before a delete must not resurface a form
   // once the conf is gone.
@@ -191,14 +167,12 @@ export function ValidationDataPanel({
     );
   }
 
-  const hasTimeseries =
-    confExists ||
-    (!(isRemoved && !showDeleted) && (resultsData?.results.length ?? 0) > 0);
+  const hasTimeseries = confExists;
 
   // ── Render ────────────────────────────────────────────────────────────────────
   return (
     <div className="space-y-6">
-      {/* Conf — actions + read-only/edit/create/undelete */}
+      {/* Conf — actions + read-only/edit/create */}
       <div className="space-y-4">
         {canWrite && (
           <div className="flex flex-wrap items-center justify-end gap-2">
@@ -247,7 +221,7 @@ export function ValidationDataPanel({
                 </Button>
               </>
             )}
-            {effectiveAbsent && (
+            {isAbsent && (
               <Button
                 key="conf-create"
                 type="submit"
@@ -258,36 +232,11 @@ export function ValidationDataPanel({
                 {upsert.isPending ? "Saving..." : "Create"}
               </Button>
             )}
-            {effectiveRemoved && (
-              <Button
-                key="conf-restore"
-                type="button"
-                size="sm"
-                onClick={handleRestore}
-                disabled={restoreConf.isPending}
-              >
-                {restoreConf.isPending ? "Restoring..." : "Undelete"}
-              </Button>
-            )}
-          </div>
-        )}
-
-        {/* Soft-deleted — restorable, no Create/Edit affordances */}
-        {effectiveRemoved && (
-          <div className="space-y-2">
-            <p className="text-sm text-muted-foreground">
-              {canWrite
-                ? "This validation config is deleted. Undelete it to restore the frozen rule and its result history unchanged, then edit while active."
-                : "This validation config is deleted."}
-            </p>
-            {restoreError && (
-              <p className="text-sm text-destructive">{restoreError}</p>
-            )}
           </div>
         )}
 
         {/* No config yet — show create form or empty state */}
-        {effectiveAbsent && (
+        {isAbsent && (
           <>
             {canWrite ? (
               <>
@@ -361,7 +310,7 @@ export function ValidationDataPanel({
           open={showDeleteDialog}
           onOpenChange={setShowDeleteDialog}
           title="Delete validation config"
-          description={`Soft-delete the validation config for "${datasetUrn}". You will be returned to the validation list.`}
+          description={`Delete the validation config for "${datasetUrn}". This also removes its result history and validation events, and cannot be undone. You will be returned to the validation list.`}
           confirmLabel="Delete"
           onConfirm={handleDelete}
           loading={deleteConf.isPending}

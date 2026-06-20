@@ -29,10 +29,9 @@ async def get_validation(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=1000),
     sort: str | None = Query(default=None),
-    removed: bool | None = Query(default=None),
     service: ValidationService = Depends(get_validation_service),
 ) -> ValidationListResponse:
-    """List validation attributes across datasets (paginated, filterable by removed status).
+    """List validation attributes across datasets (paginated).
 
     Each row aggregates per-dataset attr/validation/* (conf description + variable count
     + latest result data_time and score).  Default ordering: updated_at DESC.
@@ -41,7 +40,6 @@ async def get_validation(
     items, total_count = await service.list_configs(
         offset=offset,
         limit=limit,
-        removed_filter=removed,
         order_by=order_by,
     )
     return ValidationListResponse(

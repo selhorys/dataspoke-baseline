@@ -143,15 +143,21 @@ async def test_ontogen_conf_delete_resets(
 
 
 @pytest.mark.asyncio
-async def test_ontogen_seed_create_list_get_patch_delete(
+async def test_ontogen_seed_create_list_get_patch_enable_delete(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """Seed CRUD: create (201), list, get body, patch, delete (204)."""
+    """Seed CRUD: create disabled (201), list (with is_enabled), get body, patch,
+    enable/disable toggle, hard delete (204, gone from list).
+
+    spec: USE_CASE_en.md §UC3 — a seed ships disabled; enable/disable is reversible;
+    DELETE is a hard delete (the row is removed outright).
+    spec: API.md §attr/seed routes, §PATCH attr/seed/{seed_id}/attr/enabled.
+    """
     base_seed = "/api/v1/spoke/ontogen/attr/seed"
     seed_md = "# Imazon Ontology Seed\n\nImazon is an online bookstore."
 
-    # Create
+    # Create — a new seed ships disabled.
     create_resp = await api_client.post(
         base_seed,
         headers={**admin_headers, "content-type": "text/markdown"},
@@ -160,13 +166,16 @@ async def test_ontogen_seed_create_list_get_patch_delete(
     assert create_resp.status_code == 201, create_resp.text
     seed_id = create_resp.json()["seed_id"]
 
-    # List — seed_id must appear
+    # List — seed_id must appear with is_enabled=false (ships disabled).
     list_resp = await api_client.get(base_seed, headers=admin_headers)
     assert list_resp.status_code == 200
     list_body = list_resp.json()
     assert "seeds" in list_body
-    seed_ids = [s["seed_id"] for s in list_body["seeds"]]
-    assert seed_id in seed_ids
+    by_id = {s["seed_id"]: s for s in list_body["seeds"]}
+    assert seed_id in by_id
+    assert by_id[seed_id]["is_enabled"] is False, (
+        "a new seed must be created disabled. spec: USE_CASE_en.md §UC3"
+    )
 
     # Get body
     get_resp = await api_client.get(f"{base_seed}/{seed_id}", headers=admin_headers)
@@ -182,16 +191,43 @@ async def test_ontogen_seed_create_list_get_patch_delete(
     )
     assert patch_resp.status_code == 200
 
-    # Delete (soft-delete: status -> "retired"; DELETE returns 204)
+    # Enable — flips is_enabled true; reversible.
+    # spec: API.md §PATCH attr/seed/{seed_id}/attr/enabled — JSON {is_enabled: bool}.
+    enable_resp = await api_client.patch(
+        f"{base_seed}/{seed_id}/attr/enabled",
+        headers=admin_headers,
+        json={"is_enabled": True},
+    )
+    assert enable_resp.status_code == 200, enable_resp.text
+    assert enable_resp.json()["is_enabled"] is True
+
+    # A disabled seed stays visible in the list (enabled AND disabled are returned).
+    disable_resp = await api_client.patch(
+        f"{base_seed}/{seed_id}/attr/enabled",
+        headers=admin_headers,
+        json={"is_enabled": False},
+    )
+    assert disable_resp.status_code == 200
+    assert disable_resp.json()["is_enabled"] is False
+    list_disabled = await api_client.get(base_seed, headers=admin_headers)
+    assert seed_id in {s["seed_id"] for s in list_disabled.json()["seeds"]}, (
+        "a disabled seed must stay visible in the list so it can be re-enabled"
+    )
+
+    # Delete is a hard delete — DELETE returns 204; the seed is gone from the list.
     del_resp = await api_client.delete(f"{base_seed}/{seed_id}", headers=admin_headers)
     assert del_resp.status_code == 204
 
-    # Soft-delete semantics: GET still returns the markdown body (record stays for audit),
-    # but the seed_id is removed from the active list.
     list_after = await api_client.get(base_seed, headers=admin_headers)
     assert list_after.status_code == 200
-    active_ids_after = [s["seed_id"] for s in list_after.json()["seeds"]]
-    assert seed_id not in active_ids_after
+    ids_after = {s["seed_id"] for s in list_after.json()["seeds"]}
+    assert seed_id not in ids_after, "hard-deleted seed must be gone from the list"
+
+    # GET on the deleted seed returns 404 (the row is removed outright).
+    get_after = await api_client.get(f"{base_seed}/{seed_id}", headers=admin_headers)
+    assert get_after.status_code == 404, (
+        f"GET on a hard-deleted seed must 404; got {get_after.status_code}"
+    )
 
 
 # ── Payload cap and schedule_tier boundary tests ──────────────────────────────

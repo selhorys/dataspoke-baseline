@@ -8,7 +8,6 @@ export interface ValidationListItem {
   variable_count: number;
   latest_data_time: string | null;
   latest_score: number | null;
-  is_removed: boolean;
   updated_at: string;
 }
 

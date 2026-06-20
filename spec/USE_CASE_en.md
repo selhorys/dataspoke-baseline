@@ -238,15 +238,14 @@ Teams that need multiple distinct checks per dataset (separate freshness / volum
 field assertions, per-column validators, multi-team ownership) use **DataHub's native
 assertion APIs** directly — DataSpoke is the opinionated single-rule shortcut for the
 80% case, not the only path. The full contract — conf pre-conditions, result row
-shape, soft-delete (freeze) / restore (undelete) semantics, and DataHub assertion-aspect emission —
+shape, hard-delete-with-cascade semantics, and DataHub assertion-aspect emission —
 lives in [`spec/feature/VALIDATION.md`](feature/VALIDATION.md).
 
 ### API Mapping
 
 | Endpoint | Used for |
 |---|---|
-| `GET/PUT/PATCH/DELETE /spoke/common/data/{urn}/attr/validation/conf` | Read / create-or-replace / partial-update / soft-delete (freeze) the validation slot (`description` + `variables`). PUT for a URN absent from DataHub returns `422 DATASET_NOT_IN_DATAHUB`; PUT against a soft-deleted slot returns `409 VALIDATION_CONF_REMOVED` |
-| `POST /spoke/common/data/{urn}/attr/validation/conf/method/restore` | Restore (undelete) a soft-deleted slot, reinstating the frozen conf unchanged so the result history stays consistent |
+| `GET/PUT/PATCH/DELETE /spoke/common/data/{urn}/attr/validation/conf` | Read / create-or-replace / partial-update / hard-delete the validation slot (`description` + `variables`). PUT for a URN absent from DataHub returns `422 DATASET_NOT_IN_DATAHUB`. DELETE cascades the dataset's results and validation events and hard-deletes the DataHub assertion (`204`); afterwards the slot reads as never-created (`404 CONFIG_NOT_FOUND`) and a fresh PUT creates a new conf |
 | `POST /spoke/common/data/{urn}/attr/validation/result` | Append a result `{data_time, score, variables}`. Unknown variable keys → `422 UNKNOWN_VARIABLE`; `score` outside `[0,1]` → `422 INVALID_SCORE` |
 | `GET /spoke/common/data/{urn}/attr/validation/result?from=…&until=…&limit=…` | Historical results filtered by `data_time` (RFC 3339, `from` inclusive, `until` exclusive). Default `limit=1000`, server cap `10000` |
 | `GET /spoke/common/data/{urn}/event/validation` | Per-dataset validation event history |
@@ -311,21 +310,17 @@ GET .../attr/validation/result?from=2026-04-01T00:00:00Z&until=2026-05-01T00:00:
 and uses the prior `row_cnt` series directly. Results are returned newest first
 (descending `data_time`).
 
-**Retire and restore.** `DELETE attr/validation/conf` soft-deletes (freezes) the slot
-(returns `204`; subsequent `GET conf` returns `404 VALIDATION_CONF_REMOVED`), preserving
-the conf and its full result history. `POST attr/validation/conf/method/restore`
-reinstates the **same** rule unchanged (returns `200` with the frozen
-`description`/`variables`), so the preserved results stay consistent. A `PUT` against a
-soft-deleted slot is rejected (`409 VALIDATION_CONF_REMOVED`) — to redefine the rule, the
-steward restores it first, then edits the now-active slot with `PUT`/`PATCH` (e.g. adding
-a variable `{name: "null_rate", description: "Null rate across key columns"}`).
+**Delete.** `DELETE attr/validation/conf` is a hard delete (returns `204`): in one
+transaction it removes the conf, cascades the dataset's full result history and its
+validation events, and hard-deletes the DataHub assertion. Afterwards `GET conf` returns
+`404 CONFIG_NOT_FOUND` — the slot reads as never-created, with no restore path. To use a
+validation slot again the steward issues a fresh `PUT` (e.g. with an added variable
+`{name: "null_rate", description: "Null rate across key columns"}`), which creates a new
+conf from scratch.
 
 **Cross-dataset overview.** `GET /spoke/validation` lists each dataset's
-`description`, `variable_count`, `latest_data_time`, `latest_score`, and
-`is_removed`. The list defaults to hiding soft-deleted slots; the UI sends
-`?removed=false` and offers a "Show deleted" toggle that omits the param to
-return both active and removed slots, tagging removed rows with a `deleted`
-badge.
+`description`, `variable_count`, `latest_data_time`, and `latest_score`. A deleted
+dataset drops off the list entirely.
 
 ---
 
@@ -381,9 +376,10 @@ The producer / reviewer adversarial-debate inference loop is in
 | Endpoint | Used for |
 |---|---|
 | `PUT/PATCH/GET/DELETE /spoke/ontogen/attr/conf` | Singleton operational conf — see field table above |
-| `GET /spoke/ontogen/attr/seed` | List seeds — `[{seed_id, updated_at, preview}]` (Markdown bodies fetched per-seed below) |
-| `POST /spoke/ontogen/attr/seed` | Create an inference seed — body is a raw Markdown document (`Content-Type: text/markdown`); server assigns `seed_id` |
-| `GET/PATCH/DELETE /spoke/ontogen/attr/seed/{seed_id}` | Read, refine, or retire a seed |
+| `GET /spoke/ontogen/attr/seed` | List **all** seeds — `[{seed_id, updated_at, is_enabled, preview}]` (Markdown bodies fetched per-seed below) |
+| `POST /spoke/ontogen/attr/seed` | Create an inference seed — body is a raw Markdown document (`Content-Type: text/markdown`); server assigns `seed_id`. Created **disabled** (does not participate in inference until enabled) |
+| `GET/PATCH/DELETE /spoke/ontogen/attr/seed/{seed_id}` | Read, refine, or hard-delete a seed |
+| `PATCH /spoke/ontogen/attr/seed/{seed_id}/attr/enabled` | Enable or disable a seed — JSON `{is_enabled: bool}`. A disabled seed stays visible but is excluded from the inference pipeline; reversible both ways |
 | `POST /spoke/ontogen/method/run` | Trigger a manual re-inference. Optional `Content-Type: text/markdown` body acts as a one-shot prompt for this run; `?dry_run=true` evaluates without persisting. Concurrent runs return `409 ONTOGEN_RUNNING` |
 | `GET /spoke/ontogen/event` | Global inference-run history (`ONTOGEN.RUN_COMPLETE`, `ONTOGEN.RUN_FAILED`) |
 | `GET /spoke/ontogen/result/node` | List nodes (subjects / objects) with confidence and status |
@@ -431,6 +427,10 @@ ISBN-13 and is sold in multiple formats (Hardcover, Paperback, eBook, Audiobook)
 distinct editions. Customers may submit ratings tied to a specific edition. Prefer
 business-domain language over warehouse schema names whenever both are available.
 ```
+
+The seed is created **disabled**; the steward reviews it, then enables it via
+`PATCH .../attr/seed/{seed_id}/attr/enabled {"is_enabled": true}` so it joins the next
+inference run. Disabling it again later keeps the seed on file but out of the pipeline.
 
 **Inferred output.** Four nodes, two edges, two triples — each row's `status` is
 either `llm_approved` (high confidence) or `llm_pending` (awaiting human review):

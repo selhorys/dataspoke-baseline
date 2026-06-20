@@ -27,7 +27,7 @@ fold into that page's unified **Events** panel.
 | Page | Read | Write |
 |---|---|---|
 | `/validation` | `GET /spoke/validation` | — |
-| `/data/[urn]` Validation panel | `GET .../attr/validation/conf`, `GET .../attr/validation/result?from&until&limit` (timeseries) | `PUT/DELETE .../attr/validation/conf` (fields: `description`, `variables[]`), `POST .../attr/validation/conf/method/restore` |
+| `/data/[urn]` Validation panel | `GET .../attr/validation/conf`, `GET .../attr/validation/result?from&until&limit` (timeseries) | `PUT/DELETE .../attr/validation/conf` (fields: `description`, `variables[]`) |
 
 Each dataset has one validation slot. The data pipeline runs the validation
 logic and POSTs results to `attr/validation/result`. Teams that need multiple distinct
@@ -39,10 +39,7 @@ for the service surface.
 The list page shows one row per dataset with a validation slot — columns:
 dataset, description, declared variable count, latest `data_time`, latest
 `score` (UI header "Quality Score"; "—" until the first result row arrives).
-It defaults to active slots only (`GET /spoke/validation?removed=false`). A
-"Show deleted" toggle re-fetches without the `removed` param (returning both
-active and removed slots); rows whose `is_removed` is true render with a muted
-style and a `deleted` Badge. The list is read-only for every role and paged by
+It reads `GET /spoke/validation`. The list is read-only for every role and paged by
 the shared [Pagination](FRONTEND_BASIC.md#shared-component-notes) control
 (page-size selector defaulting to 20, Prev/Next, numbered pages) bound to the
 `/spoke/validation` standard `offset`/`limit`/`total_count` envelope.
@@ -67,7 +64,7 @@ auto-scaled, full-width line chart per declared variable stacked in a single
 column (one chart per row), each captioned with the variable's name and
 description so differing value scales do not flatten each other. Both the score
 chart and the per-variable charts draw straight lines (linear interpolation, no
-smoothing). Validation events — config lifecycle (create/update/delete/restore) plus one
+smoothing). Validation events — config lifecycle (create/update) plus one
 `RESULT_RECORDED` entry per accepted result POST — are not a separate panel here; they appear
 in the page's unified **Events** panel (narrow with `event_major_type=VALIDATION`). The
 timeseries panel (and the list view) polls on a 15s interval, paused while the tab is hidden;
@@ -76,34 +73,18 @@ The header "Latest score" reads the most recent result within the selected
 range window, rendered to 4 decimals.
 
 The Validation panel's primary action controls all live in the panel header's top-right
-cluster and are mode-driven by the GET-conf outcome and the page-level
-[ShowDeletedToggle](FRONTEND_BASIC.md#shared-component-notes) (default **off**): an active
-rule's read-only view shows `Edit` and `Delete`; edit mode shows `Cancel` and `Save`; a
-never-created slot (`404 CONFIG_NOT_FOUND`) shows `Create`. A soft-deleted slot
-(`404 VALIDATION_CONF_REMOVED`) is **hidden by default**: while the toggle is off the panel
-renders the Create empty-state, identical to `CONFIG_NOT_FOUND`. The frozen-rule view with
-**only `Undelete`** — no `Create`, no `Edit`, no editable form — appears solely when the
-toggle is on. The summary card follows the same rule: with the toggle off a soft-deleted slot
-reads as absent (Create empty-state); with it on the card may reflect the frozen, deleted slot.
-The per-row field-array controls `+ Add` and `[×]` are not header controls — they stay inline
-inside the variables editor (rendered only in `Create`/edit modes, never in the soft-deleted
-state).
+cluster and are mode-driven by the GET-conf outcome: an existing rule's read-only view
+shows `Edit` and `Delete`; edit mode shows `Cancel` and `Save`; a slot with no conf
+(`404 CONFIG_NOT_FOUND`) shows `Create`. The per-row field-array controls `+ Add` and
+`[×]` are not header controls — they stay inline inside the variables editor (rendered
+only in `Create`/edit modes).
 
 Delete (button → ConfirmDialog) issues `DELETE .../attr/validation/conf` and
-redirects to `/validation`. The two `404` branches diverge by `error_code`.
-`CONFIG_NOT_FOUND` renders the create empty-state with the `Create` form.
-`VALIDATION_CONF_REMOVED` is gated by the page-level toggle: when on it renders a
-frozen-rule empty-state whose single action is `Undelete` →
-`POST .../attr/validation/conf/method/restore`, which reinstates the same rule
-unchanged — on success the page re-fetches the now-active conf and returns to the
-normal read view (`Edit`/`Delete`); when off it renders the same Create empty-state as
-`CONFIG_NOT_FOUND`. On a hidden tombstone the Create form's submit issues
-`PUT .../attr/validation/conf`, which the backend rejects with `409 VALIDATION_CONF_REMOVED`
-(a `PUT` does not resurrect a frozen rule); the panel catches that specific code and surfaces a
-targeted inline hint — e.g. "This dataset's validation rule is deleted. Enable 'Show deleted'
-above to restore it." — rather than a generic save error. The control is presentation-only and
-introduces no endpoint; it only maps the already-fetched conf error code
-(`VALIDATION_CONF_REMOVED` vs `CONFIG_NOT_FOUND`) to visibility.
+redirects to `/validation`. The delete is a hard delete: afterwards the dataset reads as
+never-created, so a re-fetch returns `404 CONFIG_NOT_FOUND` and the panel renders the
+Create empty-state with the `Create` form. Submitting that form issues
+`PUT .../attr/validation/conf`, which creates a fresh conf — there is no resurrection
+branch and no deleted/frozen state to surface.
 
 ```
 ┌───────────────────────────────────────────────────────────────┐
@@ -135,5 +116,5 @@ introduces no endpoint; it only maps the already-fetched conf error code
 
 Write actions on the Validation panel are rendered only when
 `role ∈ {Editor, Admin}` — the mode-driven header controls
-(`Edit`/`Delete`/`Cancel`/`Save`/`Create`/`Undelete`) and the inline variables-editor
+(`Edit`/`Delete`/`Cancel`/`Save`/`Create`) and the inline variables-editor
 controls (`+ Add`/`[×]`) alike. The list view is read-only for every role.

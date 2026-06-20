@@ -53,7 +53,7 @@ control.
 | Accept timeseries result POSTs from external pipelines | Schedule validation runs |
 | Serve historical results for use as baselines | Maintain a rule grammar (freshness/volume/field/schema/sql/...) |
 | Emit `assertionInfo` and `assertionRunEvent` to DataHub | Run anomaly detection or ML over results |
-| Soft-delete (freeze) + restore (undelete) the rule | Manage the source-platform connection or credentials |
+| Hard-delete the rule (cascading its results and events) | Manage the source-platform connection or credentials |
 
 The single rule is a free-form bag of named scalar variables plus a single pass/fail
 score. Interpretation of the variables is the pipeline's responsibility; DataSpoke just
@@ -71,11 +71,10 @@ the dataset to already exist in DataHub (`422 DATASET_NOT_IN_DATAHUB` otherwise)
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Get the validation configuration |
 | `PUT` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Create or replace the validation configuration |
 | `PATCH` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Partially update the validation configuration |
-| `DELETE` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Soft-delete (freeze) the rule (DataHub `status.removed = true`) — preserves the conf and result history |
-| `POST` | `/spoke/common/data/{dataset_urn}/attr/validation/conf/method/restore` | Restore (undelete) a soft-deleted rule, reinstating the frozen conf unchanged |
+| `DELETE` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Hard-delete the rule — removes the conf, cascades its results and validation events, and hard-deletes the DataHub assertion entity (`204`) |
 | `POST` | `/spoke/common/data/{dataset_urn}/attr/validation/result` | Append a validation result |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/validation/result` | List historic results (`?from=…&until=…`) |
-| `GET` | `/spoke/common/data/{dataset_urn}/event/validation` | Validation event timeline — config lifecycle (`CONFIG_CREATE`/`CONFIG_UPDATE`/`CONFIG_DELETE`/`CONFIG_RESTORE`) plus `RESULT_RECORDED`, one per accepted result POST |
+| `GET` | `/spoke/common/data/{dataset_urn}/event/validation` | Validation event timeline — config lifecycle (`CONFIG_CREATE`/`CONFIG_UPDATE`) plus `RESULT_RECORDED`, one per accepted result POST |
 
 The cross-dataset list view at `/spoke/validation` continues to operate under
 the existing semantics in
@@ -121,24 +120,15 @@ Notes:
   edit: prior result rows whose keys are no longer in the declared variable **names**
   remain queryable but silently fall outside the current schema. Pipelines should treat
   a `variables` edit as a versioning event.
-- `DELETE` performs a **soft delete (freeze)** by emitting `status.removed = true` on the
-  assertion URN. The whole rule is frozen as-is: the `description`, the declared
-  `variables`, and the entire `validation_results` history are all preserved untouched.
-  After `DELETE`, `GET conf` returns `404` with error code `VALIDATION_CONF_REMOVED`
-  (distinguishing a *restorable* tombstone from a never-created slot, which returns
-  `CONFIG_NOT_FOUND`), and `PATCH conf` against the tombstoned slot likewise returns
-  `404 VALIDATION_CONF_REMOVED`. A `PUT` against a soft-deleted slot is **rejected**
-  with `409 VALIDATION_CONF_REMOVED` — PUT does not resurrect; the rule must be restored
-  first. The cross-dataset list at `/spoke/validation` continues to surface deleted rows
-  under `?removed=true`.
-- **Restore (undelete)** via `POST .../attr/validation/conf/method/restore` is the only
-  way back. It clears `status.removed` (sets `is_removed = false`), reinstates the frozen
-  `description`/`variables` **exactly as they were** — no redefinition on restore — and
-  re-emits `assertionInfo` + `status.removed = false`. Because the conf is unchanged, the
-  preserved `validation_results` always remain consistent with the restored variable set.
-  Restore returns `200` with the restored conf; if there is no soft-deleted row to
-  restore it returns `404`. To redefine a rule after restoring, edit the now-active slot
-  with the normal `PUT`/`PATCH` (a `variables` change is the existing breaking edit).
+- `DELETE` performs a **hard delete with cascade**, in a single transaction: the
+  `validation_configs` row is removed, the dataset's `validation_results` history is
+  deleted, the dataset's validation events (`VALIDATION.*`) are deleted, and the DataHub
+  assertion entity is hard-deleted (no `status.removed` tombstone is left behind). It
+  records **no** event — the cascade wipes the dataset's validation events, so its
+  validation events panel becomes empty. `DELETE` returns `204`. Afterwards the dataset
+  reads as **never-created**: `GET conf` and `PATCH conf` return `404 CONFIG_NOT_FOUND`,
+  the dataset is absent from `/spoke/validation`, and a fresh `PUT` simply creates a new
+  conf (`201`) — there is no resurrection concept and no `409`.
 
 ## Validation Result
 
@@ -170,9 +160,8 @@ The pipeline POSTs results as it produces partitions. The body is small.
   measurement failed to compute).
 - `score` MUST satisfy `0.0 ≤ score ≤ 1.0`; otherwise `422 INVALID_SCORE`.
 - `data_time` MUST parse as RFC 3339; otherwise `422 INVALID_PARAMETER`.
-- The dataset MUST have an active validation conf; posting to a dataset with no
-  conf (never created, or soft-deleted) returns `404` — the same absent-resource
-  view as `GET conf`.
+- The dataset MUST have a validation conf; posting to a dataset with no conf returns
+  `404` — the same absent-resource view as `GET conf`.
 
 ### Duplicate `data_time` policy
 
@@ -223,9 +212,10 @@ result-store contract.
 
 ## DataHub Aspect Mapping
 
-DataSpoke writes three native DataHub aspects on the assertion entity:
-`assertionInfo` (versioned, on PUT/PATCH/restore), `assertionRunEvent` (timeseries, per
-result POST), and `status` (versioned, on DELETE / restore). No metadata-model extensions.
+DataSpoke writes two native DataHub aspects on the assertion entity:
+`assertionInfo` (versioned, on PUT/PATCH) and `assertionRunEvent` (timeseries, per
+result POST). `DELETE` hard-deletes the whole assertion entity. No metadata-model
+extensions.
 
 ### Assertion URN
 
@@ -237,11 +227,12 @@ urn:li:assertion:<datahub_guid({
 ```
 
 Deterministic — recomputable from `dataset_urn` alone. PUT and PATCH are idempotent;
-the soft-delete / restore cycle reuses the same URN.
+`DELETE` hard-deletes this assertion entity. A subsequent `PUT` re-creates the entity
+under the same URN.
 
 ### `assertionInfo` (versioned aspect)
 
-Emitted on PUT, PATCH, and restore.
+Emitted on PUT and PATCH.
 
 ```
 assertionInfo:
@@ -305,16 +296,14 @@ Key choices, with rationale:
 | `partitionSpec` | omitted (DataHub default) | DataHub's `PartitionType` enum is `@deprecated` ("Unused!" — see `PartitionSpec.pdl`) and the assertion / Quality tab UI does not consume `partitionSpec`. Partition identity already lives in `timestampMillis` (= `data_time`); setting `partitionSpec` would be decoration with no consumer. |
 | `runtimeContext.ingestion_time` | server now() | Preserves the audit trail of when the result was actually accepted by DataSpoke. |
 
-### `status` (versioned aspect)
+### Deletion (hard-delete)
 
-Emitted alongside `assertionInfo` on every PUT/PATCH/restore: `status.removed = false`.
-On an active rule this reverts out-of-band tombstones — DataSpoke is authoritative for
-the assertion lifecycle, so a DataHub-UI admin manually setting `status.removed = true`
-is overwritten on the next config save. The explicit clear of a soft-delete happens only
-on **restore** (`POST .../conf/method/restore`), never as a side effect of a PUT — a PUT
-against a soft-deleted slot is rejected (`409 VALIDATION_CONF_REMOVED`). To durably hide
-a DataSpoke assertion, use `DELETE /attr/validation/conf`. Emitted on DELETE:
-`status.removed = true`.
+`DELETE /attr/validation/conf` hard-deletes the assertion entity from DataHub — it does
+**not** leave a `status.removed = true` tombstone. The assertion URN is derived
+deterministically from the dataset URN, so a subsequent `PUT` re-creates a fresh
+assertion under the same URN. DataSpoke therefore emits no `status` aspect; it is
+authoritative for the assertion lifecycle and the entity simply ceases to exist on
+delete.
 
 ### What does NOT need to be emitted
 

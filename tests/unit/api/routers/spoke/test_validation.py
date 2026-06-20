@@ -46,13 +46,12 @@ def _var(name: str, description: str = "") -> dict[str, str]:
 _DEFAULT_VARS = [_var("row_cnt", "Daily row count"), _var("col1_mean", "Mean of col1")]
 
 
-def _make_conf_record(is_removed: bool = False) -> MagicMock:
+def _make_conf_record() -> MagicMock:
     rec = MagicMock()
     payload = {
         "dataset_urn": _VALID_URN,
         "description": "Daily row count check",
         "variables": _DEFAULT_VARS,
-        "is_removed": is_removed,
         "created_at": datetime.now(tz=UTC),
         "updated_at": datetime.now(tz=UTC),
     }
@@ -145,7 +144,6 @@ async def test_get_conf_200_when_present(client, mock_svc: AsyncMock) -> None:
             dataset_urn=_VALID_URN,
             description="Daily row count check",
             variables=_DEFAULT_VARS,
-            is_removed=False,
             created_at=datetime.now(tz=UTC),
             updated_at=datetime.now(tz=UTC),
         )
@@ -187,7 +185,6 @@ async def test_put_conf_201_on_first_create(client, mock_svc: AsyncMock) -> None
                 dataset_urn=_VALID_URN,
                 description="Daily row count check",
                 variables=_DEFAULT_VARS,
-                is_removed=False,
                 created_at=datetime.now(tz=UTC),
                 updated_at=datetime.now(tz=UTC),
             ),
@@ -217,7 +214,6 @@ async def test_put_conf_200_on_subsequent_update(client, mock_svc: AsyncMock) ->
                 dataset_urn=_VALID_URN,
                 description="Updated check",
                 variables=[_var("row_cnt")],
-                is_removed=False,
                 created_at=datetime.now(tz=UTC),
                 updated_at=datetime.now(tz=UTC),
             ),
@@ -249,7 +245,6 @@ async def test_patch_conf_200_with_merged_response(client, mock_svc: AsyncMock) 
             dataset_urn=_VALID_URN,
             description="Updated description",
             variables=_DEFAULT_VARS,
-            is_removed=False,
             created_at=datetime.now(tz=UTC),
             updated_at=datetime.now(tz=UTC),
         )
@@ -436,12 +431,54 @@ async def test_get_result_honors_from_until_limit_params(
 
 
 @pytest.mark.asyncio
-async def test_get_validation_list_removed_true_filter(
+async def test_get_validation_list_item_shape_has_no_removed_field(
     client, mock_svc: AsyncMock
 ) -> None:
-    """GET /spoke/validation?removed=true filters to soft-deleted entries.
+    """GET /spoke/validation rows carry the aggregated fields and no is_removed flag.
 
-    spec: VALIDATION.md §API Surface — cross-dataset list filterable by removed status.
+    spec: API.md §GET /spoke/validation — the aggregated row no longer carries
+    is_removed, and there is no ?removed query param (soft-delete is gone).
+    """
+    from src.backend.validation.service import ValidationListItem
+
+    item = ValidationListItem(
+        dataset_urn=_VALID_URN,
+        description="Daily row count check",
+        variable_count=2,
+        latest_data_time=datetime(2026, 5, 8, tzinfo=UTC),
+        latest_score=1.0,
+        updated_at=datetime.now(tz=UTC),
+    )
+    mock_svc.list_configs = AsyncMock(return_value=([item], 1))
+
+    resp = await client.get(f"{_VALIDATION_BASE}?limit=10", headers=auth_headers())
+    assert resp.status_code == 200
+
+    data = resp.json()
+    assert "validations" in data and "total_count" in data
+    rows = data["validations"]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["dataset_urn"] == _VALID_URN
+    assert row["variable_count"] == 2
+    assert "is_removed" not in row, (
+        "validation list row must not carry an is_removed field — soft-delete is gone. "
+        f"got keys: {list(row.keys())}"
+    )
+    # The service is queried without any removed_filter argument.
+    call_kwargs = mock_svc.list_configs.call_args.kwargs
+    assert "removed_filter" not in call_kwargs
+
+
+@pytest.mark.asyncio
+async def test_get_validation_list_ignores_removed_query_param(
+    client, mock_svc: AsyncMock
+) -> None:
+    """GET /spoke/validation?removed=… does not thread a removed_filter — the param is gone.
+
+    spec: API.md §GET /spoke/validation — the ?removed query param was removed
+    along with soft-delete. A stray ?removed must not become a removed_filter
+    argument to the service (the filter no longer exists).
     """
     mock_svc.list_configs = AsyncMock(return_value=([], 0))
 
@@ -449,28 +486,23 @@ async def test_get_validation_list_removed_true_filter(
         f"{_VALIDATION_BASE}?removed=true",
         headers=auth_headers(),
     )
-    assert resp.status_code == 200
-    call_kwargs = mock_svc.list_configs.call_args.kwargs
-    assert call_kwargs.get("removed_filter") is True
 
-
-@pytest.mark.asyncio
-async def test_get_validation_list_removed_false_filter(
-    client, mock_svc: AsyncMock
-) -> None:
-    """GET /spoke/validation?removed=false filters to active entries.
-
-    spec: VALIDATION.md §API Surface — cross-dataset list filterable by removed status.
-    """
-    mock_svc.list_configs = AsyncMock(return_value=([], 0))
-
-    resp = await client.get(
-        f"{_VALIDATION_BASE}?removed=false",
-        headers=auth_headers(),
+    # FastAPI ignores the unknown ?removed param, so the request succeeds and the
+    # service IS reached — assert that first, so the test fails loudly rather than
+    # passing vacuously if a future routing change rejects the request.
+    assert resp.status_code == 200, (
+        f"a stray ?removed must be ignored, not rejected; got {resp.status_code}: {resp.text}"
     )
-    assert resp.status_code == 200
+    assert mock_svc.list_configs.call_args is not None, (
+        "list_configs was never awaited — the ?removed request must still reach the service "
+        "(the param is simply ignored)."
+    )
+
+    # The service must never receive a removed_filter argument.
     call_kwargs = mock_svc.list_configs.call_args.kwargs
-    assert call_kwargs.get("removed_filter") is False
+    assert "removed_filter" not in call_kwargs, (
+        "the ?removed param must not be threaded into the service as removed_filter"
+    )
 
 
 # ── DatasetUrnPath URL encoding ───────────────────────────────────────────────
@@ -496,7 +528,6 @@ async def test_url_with_encoded_parens_decoded_correctly(
             dataset_urn=dataset_urn,
             description="check",
             variables=[_var("row_cnt")],
-            is_removed=False,
             created_at=datetime.now(tz=UTC),
             updated_at=datetime.now(tz=UTC),
         )
@@ -510,19 +541,18 @@ async def test_url_with_encoded_parens_decoded_correctly(
     )
 
 
-# ── Resurrection: PUT after soft-delete returns 201 ──────────────────────────
+# ── Recreate after delete: PUT after a hard delete returns 201 ───────────────
 
 
 @pytest.mark.asyncio
-async def test_resurrection_via_put_after_delete_returns_201_at_route_layer(
+async def test_put_after_delete_creates_new_conf_201(
     client, mock_svc: AsyncMock
 ) -> None:
-    """PUT on a soft-deleted (absent) config returns HTTP 201 (resurrection = create).
+    """PUT after a hard delete creates a fresh conf (201) — no resurrection concept.
 
-    spec: API.md §HTTP status table — 201 is for "PUT targeting a new resource".
-    spec: VALIDATION.md §Rule Configuration — after DELETE, GET conf returns 404;
-    a subsequent PUT therefore targets an absent resource → 201.
-    spec: USE_CASE_en.md §UC2 — soft-delete + PUT resurrects the same assertion URN.
+    spec: API.md §DELETE attr/validation/conf — after delete the dataset reads as
+    never-created; a fresh PUT creates a new conf (201). The route returns 201
+    whenever the service reports created=True.
     """
     from src.backend.validation.service import ValidationConfigRecord
 
@@ -530,111 +560,28 @@ async def test_resurrection_via_put_after_delete_returns_201_at_route_layer(
         return_value=(
             ValidationConfigRecord(
                 dataset_urn=_VALID_URN,
-                description="Resurrected daily row count check",
+                description="Freshly recreated daily row count check",
                 variables=[_var("row_cnt")],
-                is_removed=False,
                 created_at=datetime.now(tz=UTC),
                 updated_at=datetime.now(tz=UTC),
             ),
-            True,  # created=True — both first creation AND resurrection
+            True,  # created=True — a brand-new conf, not a resurrection
         )
     )
 
     resp = await client.put(
         _CONF_URL,
         json={
-            "description": "Resurrected daily row count check",
+            "description": "Freshly recreated daily row count check",
             "variables": [_var("row_cnt")],
         },
         headers=auth_headers(),
     )
 
     assert resp.status_code == 201, (
-        f"Expected HTTP 201 for PUT-after-delete (resurrection), "
+        f"Expected HTTP 201 for PUT after delete (new conf); "
         f"got {resp.status_code}: {resp.text}"
     )
-
-
-# ── GET /spoke/validation — removed filter response content ─────────────
-
-
-@pytest.mark.asyncio
-async def test_get_validation_list_removed_true_returns_only_removed_items(
-    client, mock_svc: AsyncMock
-) -> None:
-    """GET /spoke/validation?removed=true returns only soft-deleted items.
-
-    spec: VALIDATION.md §API Surface — cross-dataset list filterable by removed status.
-    """
-    from src.backend.validation.service import ValidationListItem
-
-    removed_item = ValidationListItem(
-        dataset_urn=_VALID_URN,
-        description="Deleted check",
-        variable_count=1,
-        latest_data_time=None,
-        latest_score=None,
-        is_removed=True,
-        updated_at=datetime.now(tz=UTC),
-    )
-    mock_svc.list_configs = AsyncMock(return_value=([removed_item], 1))
-
-    resp = await client.get(
-        f"{_VALIDATION_BASE}?removed=true",
-        headers=auth_headers(),
-    )
-    assert resp.status_code == 200
-
-    call_kwargs = mock_svc.list_configs.call_args.kwargs
-    assert call_kwargs.get("removed_filter") is True
-
-    data = resp.json()
-    assert isinstance(data, dict)
-    assert "validations" in data and "total_count" in data, (
-        f"Response must carry 'validations' and 'total_count'; "
-        f"got keys: {list(data.keys())}. spec: API.md §Standard Response Envelope"
-    )
-    items = data["validations"]
-    assert len(items) >= 1
-    assert all(item.get("is_removed") is True for item in items)
-
-
-@pytest.mark.asyncio
-async def test_get_validation_list_removed_false_returns_only_active_items(
-    client, mock_svc: AsyncMock
-) -> None:
-    """GET /spoke/validation?removed=false returns only active (non-deleted) items.
-
-    spec: VALIDATION.md §API Surface — cross-dataset list filterable by removed status.
-    """
-    from src.backend.validation.service import ValidationListItem
-
-    active_item = ValidationListItem(
-        dataset_urn=_VALID_URN,
-        description="Active daily row count check",
-        variable_count=2,
-        latest_data_time=datetime(2026, 5, 8, tzinfo=UTC),
-        latest_score=1.0,
-        is_removed=False,
-        updated_at=datetime.now(tz=UTC),
-    )
-    mock_svc.list_configs = AsyncMock(return_value=([active_item], 1))
-
-    resp = await client.get(
-        f"{_VALIDATION_BASE}?removed=false",
-        headers=auth_headers(),
-    )
-    assert resp.status_code == 200
-
-    call_kwargs = mock_svc.list_configs.call_args.kwargs
-    assert call_kwargs.get("removed_filter") is False
-
-    data = resp.json()
-    assert isinstance(data, dict)
-    assert "validations" in data and "total_count" in data
-    items = data["validations"]
-    assert len(items) >= 1
-    assert all(item.get("is_removed") is False for item in items)
 
 
 # ── Real service score validation (F14) ──────────────────────────────────────

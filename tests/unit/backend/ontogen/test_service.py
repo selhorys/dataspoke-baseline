@@ -10,14 +10,13 @@ from src.backend.ontogen.debate_models import DebateResult
 from src.backend.ontogen.service import OntogenRunSummary, OntogenService, _status_for_outcome
 from src.shared.config import ONTOLOGY_CONFIDENCE_THRESHOLD
 from src.shared.db.models import Event, OntogenEdge, OntogenNode, OntogenTriple
-from src.shared.events import ONTOGEN_RUN_COMPLETE
+from src.shared.events import ONTOGEN_RUN_COMPLETE, ONTOGEN_SEED_DELETE
 from src.shared.exceptions import (
     ConflictError,
     EntityNotFoundError,
     InvalidDatasetUrnError,
     PreconditionFailedError,
 )
-from src.shared.llm.loop_trace import LoopResult, LoopTrace
 from tests.unit.backend.conftest import (
     make_dataset_node_map_row,
     make_ontogen_edge_row,
@@ -31,7 +30,13 @@ from tests.unit.backend.conftest import (
 
 
 @pytest.fixture
-def svc(datahub: AsyncMock, db: AsyncMock, cache: AsyncMock, llm: AsyncMock, vector: AsyncMock) -> OntogenService:
+def svc(
+    datahub: AsyncMock,
+    db: AsyncMock,
+    cache: AsyncMock,
+    llm: AsyncMock,
+    vector: AsyncMock,
+) -> OntogenService:
     return OntogenService(
         datahub=datahub,
         db=db,
@@ -47,14 +52,18 @@ def svc(datahub: AsyncMock, db: AsyncMock, cache: AsyncMock, llm: AsyncMock, vec
 @pytest.mark.asyncio
 async def test_get_conf_returns_default_when_absent(svc: OntogenService, db: AsyncMock) -> None:
     """get_conf creates and returns a default row when none exists."""
-    result_mock = MagicMock()
-    result_mock.scalar_one_or_none.return_value = None
-    db.execute = AsyncMock(return_value=result_mock)
-    mock_db_refresh(db)
+    absent = MagicMock()
+    absent.scalar_one_or_none.return_value = None
+    persisted_row = MagicMock(id=1, is_enabled=False, dataset_filter={})
+    persisted = MagicMock()
+    persisted.scalar_one.return_value = persisted_row
+    # SELECT (absent) → conflict-safe INSERT → re-SELECT (persisted default)
+    db.execute = AsyncMock(side_effect=[absent, MagicMock(), persisted])
 
     row = await svc.get_conf()
     assert row.is_enabled is False
     assert row.id == 1
+    assert row.dataset_filter == {}
 
 
 @pytest.mark.asyncio
@@ -117,7 +126,11 @@ async def test_enumerate_datasets_calls_datahub_with_origin(
         assert call.kwargs.get("origin") == "DEV", (
             f"every enumerate_datasets call must carry origin='DEV'; got {call.kwargs}"
         )
-    assert "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)" in resolved
+    expected_urn = (
+        "urn:li:dataset:(urn:li:dataPlatform:postgres,"
+        "example_db.catalog.title_master,DEV)"
+    )
+    assert expected_urn in resolved
 
 
 @pytest.mark.asyncio
@@ -135,7 +148,10 @@ async def test_enumerate_datasets_mismatched_origin_goes_to_unresolved(
     datahub.origin_from_dataset_urn = MagicMock(return_value="PROD")
 
     # PROD URN but origin filter is DEV — should be unresolved
-    mismatched_urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,PROD)"
+    mismatched_urn = (
+        "urn:li:dataset:(urn:li:dataPlatform:postgres,"
+        "example_db.catalog.title_master,PROD)"
+    )
     dataset_filter = {"origin": "DEV", "dataset_urns": [mismatched_urn]}
 
     resolved, unresolved = await svc._enumerate_datasets(dataset_filter)
@@ -151,17 +167,29 @@ async def test_enumerate_datasets_mismatched_origin_goes_to_unresolved(
 
 
 @pytest.mark.asyncio
-async def test_create_seed_round_trips_markdown(svc: OntogenService, db: AsyncMock) -> None:
-    """create_seed stores markdown body and returns a seed with an ID."""
+async def test_create_seed_round_trips_markdown_and_ships_disabled(
+    svc: OntogenService, db: AsyncMock
+) -> None:
+    """create_seed stores markdown body and ships the seed disabled by default.
+
+    spec: USE_CASE_en.md §UC3 — a new seed is created disabled (is_enabled=false);
+    it does not participate in inference until explicitly enabled.
+    spec: BACKEND.md §Factory defaults — conf/seed/metric ship disabled.
+    """
     mock_db_refresh(db)
     body_md = "# Test seed\n\nSome content"
     seed = await svc.create_seed(body_md)
     assert seed.body_md == body_md
+    assert seed.is_enabled is False, (
+        "a new seed must ship disabled (is_enabled=False). spec: USE_CASE_en.md §UC3"
+    )
     db.add.assert_called()
 
 
 @pytest.mark.asyncio
-async def test_get_seed_malformed_uuid_raises_entity_not_found(svc: OntogenService, db: AsyncMock) -> None:
+async def test_get_seed_malformed_uuid_raises_entity_not_found(
+    svc: OntogenService, db: AsyncMock
+) -> None:
     """get_seed raises EntityNotFoundError (not ValueError) for malformed UUID seed_id."""
     with pytest.raises(EntityNotFoundError):
         await svc.get_seed("not-a-uuid")
@@ -179,19 +207,114 @@ async def test_get_seed_absent_raises_entity_not_found(svc: OntogenService, db: 
 
 
 @pytest.mark.asyncio
-async def test_delete_seed_sets_retired_status(svc: OntogenService, db: AsyncMock) -> None:
-    """delete_seed marks the seed as 'retired'."""
+async def test_delete_seed_hard_deletes_row(svc: OntogenService, db: AsyncMock) -> None:
+    """delete_seed hard-deletes the seed row (db.delete) AND records SEED_DELETE.
+
+    Unlike validation's no-event hard delete, ontogen's seed hard-delete still emits
+    an ONTOGEN.SEED_DELETE event. The test asserts both the hard delete and that an
+    Event row with event_type == ONTOGEN_SEED_DELETE is added — so an impl regression
+    dropping the event (making ontogen behave like validation) fails here.
+
+    spec: USE_CASE_en.md §UC3 — DELETE a seed is a hard delete; the row is removed
+    outright. There is no retired/soft-delete state.
+    spec: BACKEND.md §Event Catalogue — ONTOGEN emits SEED_CREATE / SEED_UPDATE /
+    SEED_DELETE on seed CRUD; the seed hard-delete records SEED_DELETE.
+    """
     seed_row = MagicMock()
     seed_row.id = uuid.uuid4()
     seed_row.body_md = "# Old seed"
-    seed_row.status = "active"
+    seed_row.is_enabled = True
+    seed_row.updated_at = None
+    result_mock = MagicMock()
+    result_mock.scalar_one_or_none.return_value = seed_row
+    db.execute = AsyncMock(return_value=result_mock)
+    db.delete = AsyncMock()
+
+    await svc.delete_seed(str(seed_row.id))
+
+    db.delete.assert_awaited_once_with(seed_row)
+
+    # An ONTOGEN.SEED_DELETE event row is recorded (contrast: validation delete is
+    # event-less). spec: BACKEND.md §Event Catalogue.
+    added_args = [call.args[0] for call in db.add.call_args_list]
+    event_rows = [a for a in added_args if isinstance(a, Event)]
+    delete_events = [e for e in event_rows if e.event_type == ONTOGEN_SEED_DELETE]
+    assert len(delete_events) == 1, (
+        f"Expected exactly one ONTOGEN_SEED_DELETE event on seed hard-delete; "
+        f"got event types {[e.event_type for e in event_rows]!r}. "
+        "spec: BACKEND.md §Event Catalogue — ONTOGEN seed hard-delete records SEED_DELETE."
+    )
+    assert delete_events[0].entity_id == f"seed:{seed_row.id}", (
+        f"SEED_DELETE event entity_id must identify the deleted seed; "
+        f"got {delete_events[0].entity_id!r}."
+    )
+
+
+@pytest.mark.asyncio
+async def test_set_seed_enabled_toggles_flag(svc: OntogenService, db: AsyncMock) -> None:
+    """set_seed_enabled flips is_enabled both ways and persists the seed.
+
+    spec: USE_CASE_en.md §UC3 — enabling/disabling a seed is reversible; a disabled
+    seed is retained and fully visible but excluded from inference.
+    spec: API.md §PATCH attr/seed/{seed_id}/attr/enabled.
+    """
+    mock_db_refresh(db)
+    seed_row = MagicMock()
+    seed_row.id = uuid.uuid4()
+    seed_row.body_md = "# A seed"
+    seed_row.is_enabled = False
     seed_row.updated_at = None
     result_mock = MagicMock()
     result_mock.scalar_one_or_none.return_value = seed_row
     db.execute = AsyncMock(return_value=result_mock)
 
-    await svc.delete_seed(str(seed_row.id))
-    assert seed_row.status == "retired"
+    # Enable.
+    await svc.set_seed_enabled(str(seed_row.id), True)
+    assert seed_row.is_enabled is True
+
+    # Disable again — reversible.
+    await svc.set_seed_enabled(str(seed_row.id), False)
+    assert seed_row.is_enabled is False
+    db.add.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_list_seeds_returns_all_with_enabled_state(
+    svc: OntogenService, db: AsyncMock
+) -> None:
+    """list_seeds returns enabled AND disabled seeds, each carrying its is_enabled state.
+
+    spec: USE_CASE_en.md §UC3 — GET attr/seed lists all seeds (enabled and disabled)
+    so a disabled seed can be found and re-enabled.
+    spec: API.md §GET attr/seed — returns [{seed_id, updated_at, is_enabled, preview}].
+    """
+    from datetime import UTC, datetime
+
+    enabled_row = MagicMock()
+    enabled_row.id = uuid.uuid4()
+    enabled_row.body_md = "# enabled seed body"
+    enabled_row.is_enabled = True
+    enabled_row.updated_at = datetime.now(tz=UTC)
+
+    disabled_row = MagicMock()
+    disabled_row.id = uuid.uuid4()
+    disabled_row.body_md = "# disabled seed body"
+    disabled_row.is_enabled = False
+    disabled_row.updated_at = datetime.now(tz=UTC)
+
+    count_mock = MagicMock()
+    count_mock.scalar.return_value = 2
+    rows_mock = MagicMock()
+    rows_mock.scalars.return_value.all.return_value = [enabled_row, disabled_row]
+    db.execute = AsyncMock(side_effect=[count_mock, rows_mock])
+
+    previews, total = await svc.list_seeds()
+
+    assert total == 2
+    by_enabled = {p.is_enabled for p in previews}
+    assert by_enabled == {True, False}, (
+        "list_seeds must include both enabled and disabled seeds with their is_enabled state"
+    )
 
 
 # ── Verdict enum validation ────────────────────────────────────────────────────
@@ -245,7 +368,8 @@ async def test_review_triple_rejects_invalid_verdict(svc: OntogenService, db: As
 async def test_review_triple_dependency_gate_raises_when_nodes_not_approved(
     svc: OntogenService, db: AsyncMock
 ) -> None:
-    """review_triple(approve) raises ONTOGEN_TRIPLE_DEPENDENCY_PENDING when nodes aren't approved."""
+    """review_triple(approve) raises ONTOGEN_TRIPLE_DEPENDENCY_PENDING when nodes
+    are not yet approved."""
     triple = make_ontogen_triple_row(
         subject_node_id="book",
         edge_id="has_edition",
@@ -264,7 +388,6 @@ async def test_review_triple_dependency_gate_raises_when_nodes_not_approved(
         return mock
 
     calls = [triple, subj_node, edge_row, obj_node]
-    call_iter = iter(calls)
 
     def make_result(row):
         m = MagicMock()
@@ -296,7 +419,9 @@ async def test_run_raises_conflict_when_lock_held(svc: OntogenService, cache: As
 
 
 @pytest.mark.asyncio
-async def test_run_rejects_non_dry_run_when_disabled(svc: OntogenService, db: AsyncMock, cache: AsyncMock) -> None:
+async def test_run_rejects_non_dry_run_when_disabled(
+    svc: OntogenService, db: AsyncMock, cache: AsyncMock
+) -> None:
     """Non-dry-run raises ConflictError('ONTOGEN_DISABLED') when singleton conf is disabled.
 
     spec: BACKEND.md §Ontology Generation Service — is_enabled=false rejects
@@ -751,7 +876,8 @@ async def test_review_triple_dependency_gate_and_no_datahub_side_effects(
         object_node_id="edition",
         status="llm_pending",
     )
-    subj_node = make_ontogen_node_row(id="book", status="llm_pending")  # not approved — triggers gate
+    # not approved — triggers the dependency gate
+    subj_node = make_ontogen_node_row(id="book", status="llm_pending")
     edge_row = make_ontogen_edge_row(id="has_edition", status="approved")
     obj_node = make_ontogen_node_row(id="edition", status="approved")
 
@@ -896,11 +1022,14 @@ async def test_run_validation_telemetry_surfaces_in_run_complete_event(
 
     # Spec: BACKEND_LLM.md §Inference Loop — 'producer_errors_dropped (row count)'
     # partition_clean_rows contract: one SLUG_FORMAT error at nodes[0].id → 1 node dropped.
-    # Expected dropped_count derived from partition_clean_rows spec invariant, not impl introspection.
+    # Expected dropped_count derived from partition_clean_rows spec invariant,
+    # not impl introspection.
     assert detail.get("producer_errors_dropped") == 1, (
-        f"detail['validation_errors_dropped'] must be 1 (one node dropped by partition_clean_rows); "
+        f"detail['validation_errors_dropped'] must be 1 "
+        f"(one node dropped by partition_clean_rows); "
         f"got {detail.get('validation_errors_dropped')!r}. "
-        "Spec: BACKEND.md §LLM Inference Loop — 'run-complete event carries validation_errors_dropped'."
+        "Spec: BACKEND.md §LLM Inference Loop — "
+        "'run-complete event carries validation_errors_dropped'."
     )
 
 
@@ -998,7 +1127,9 @@ async def test_turns_exhausted_persists_rows_as_llm_pending(
                     "name": "BookTitle",
                     "id": "book_title",
                     "confidence_score": high_score,  # above threshold
-                    "dataset_urns": ["urn:li:dataset:(urn:li:dataPlatform:postgres,db.catalog,PROD)"],
+                    "dataset_urns": [
+                        "urn:li:dataset:(urn:li:dataPlatform:postgres,db.catalog,PROD)"
+                    ],
                 }
             ],
             "edges": [
@@ -1030,11 +1161,12 @@ async def test_turns_exhausted_persists_rows_as_llm_pending(
         outcome="turns_exhausted",
     )
 
-    with patch("src.backend.ontogen.service.build_run_prompt", return_value="prompt"), \
-         patch("src.backend.ontogen.service.run_debate", new=AsyncMock(return_value=debate_stub)), \
-         patch("src.backend.ontogen.service._search_node_embeddings", new=AsyncMock(return_value=[])), \
-         patch("src.backend.ontogen.service._upsert_node_embedding", new=AsyncMock(return_value=None)), \
-         patch("src.backend.ontogen.service._upsert_edge_embedding", new=AsyncMock(return_value=None)):
+    _svc = "src.backend.ontogen.service"
+    with patch(f"{_svc}.build_run_prompt", return_value="prompt"), \
+         patch(f"{_svc}.run_debate", new=AsyncMock(return_value=debate_stub)), \
+         patch(f"{_svc}._search_node_embeddings", new=AsyncMock(return_value=[])), \
+         patch(f"{_svc}._upsert_node_embedding", new=AsyncMock(return_value=None)), \
+         patch(f"{_svc}._upsert_edge_embedding", new=AsyncMock(return_value=None)):
         await svc.run(dry_run=False)
 
     # Every OntogenNode / OntogenEdge / OntogenTriple added must have status='llm_pending'
@@ -1112,7 +1244,9 @@ async def test_cycle_detected_persists_rows_as_llm_pending(
                     "name": "Customer",
                     "id": "customer",
                     "confidence_score": high_score,
-                    "dataset_urns": ["urn:li:dataset:(urn:li:dataPlatform:postgres,db.customers,PROD)"],
+                    "dataset_urns": [
+                        "urn:li:dataset:(urn:li:dataPlatform:postgres,db.customers,PROD)"
+                    ],
                 }
             ],
             "edges": [
@@ -1144,11 +1278,12 @@ async def test_cycle_detected_persists_rows_as_llm_pending(
         outcome="cycle_detected",
     )
 
-    with patch("src.backend.ontogen.service.build_run_prompt", return_value="prompt"), \
-         patch("src.backend.ontogen.service.run_debate", new=AsyncMock(return_value=debate_stub)), \
-         patch("src.backend.ontogen.service._search_node_embeddings", new=AsyncMock(return_value=[])), \
-         patch("src.backend.ontogen.service._upsert_node_embedding", new=AsyncMock(return_value=None)), \
-         patch("src.backend.ontogen.service._upsert_edge_embedding", new=AsyncMock(return_value=None)):
+    _svc = "src.backend.ontogen.service"
+    with patch(f"{_svc}.build_run_prompt", return_value="prompt"), \
+         patch(f"{_svc}.run_debate", new=AsyncMock(return_value=debate_stub)), \
+         patch(f"{_svc}._search_node_embeddings", new=AsyncMock(return_value=[])), \
+         patch(f"{_svc}._upsert_node_embedding", new=AsyncMock(return_value=None)), \
+         patch(f"{_svc}._upsert_edge_embedding", new=AsyncMock(return_value=None)):
         await svc.run(dry_run=False)
 
     added_args = [call.args[0] for call in db.add.call_args_list]
@@ -1281,7 +1416,8 @@ async def test_reuse_lookup_where_clause_includes_all_three_eligible_statuses(
     )
 
     assert node_sql is not None, (
-        f"No SELECT against ontogen_nodes captured; got {[compiled_sql(s) for s in captured_stmts]!r}. "
+        f"No SELECT against ontogen_nodes captured; "
+        f"got {[compiled_sql(s) for s in captured_stmts]!r}. "
         "Spec: plan §7 — service must query eligible nodes for reuse."
     )
     assert edge_sql is not None, (
@@ -1294,3 +1430,111 @@ async def test_reuse_lookup_where_clause_includes_all_three_eligible_statuses(
                 f"{table} WHERE clause must include {required}; got SQL:\n{sql}\n"
                 "Spec: plan §7 — reuse-lookup is `status IN (approved, llm_approved, llm_pending)`."
             )
+
+
+# ── Seed-load filters on is_enabled — verifies WHERE clause directly ─────────
+
+
+@pytest.mark.asyncio
+async def test_inference_seed_load_filters_on_is_enabled(
+    svc: OntogenService, db: AsyncMock, cache: AsyncMock
+) -> None:
+    """The inference seed-load SELECT must constrain on ``is_enabled`` (enabled-only).
+
+    Captures the actual ``select(OntogenSeed)`` statement the run pipeline emits to
+    db.execute, compiles it to SQL, and asserts the ``ontogen_seeds`` query has a
+    WHERE clause on ``is_enabled``. This proves the negative half of the seed
+    lifecycle guarantee at the SQL layer: a disabled seed (``is_enabled = false``)
+    is excluded from inference, while an enabled one participates. A regression that
+    drops the filter (loading all seeds) makes the compiled SQL lose its WHERE on
+    ``is_enabled`` and this test fails immediately — observable in the SQL string,
+    not in downstream behaviour a dumb mock could fake.
+
+    Spec: BACKEND.md §Inference Pipeline — "Load enabled seeds
+    (ontogen_seeds.is_enabled = true)".
+    Spec: USE_CASE_en.md §UC3 — a disabled seed does not steer inference; enabling it
+    makes it participate.
+    """
+    cache.set_nx = AsyncMock(return_value=True)
+    cache.delete_if_value = AsyncMock(return_value=None)
+
+    conf = MagicMock()
+    conf.id = 1
+    conf.is_enabled = True
+    conf.default_run_prompt = None
+    conf.dataset_filter = {}
+
+    def make_result(scalar_val=None, scalars_val=None):
+        m = MagicMock()
+        m.scalar_one_or_none.return_value = scalar_val
+        ms = MagicMock()
+        ms.all.return_value = scalars_val or []
+        m.scalars.return_value = ms
+        m.scalar.return_value = 0
+        return m
+
+    conf_result = MagicMock()
+    conf_result.scalar_one_or_none.return_value = conf
+
+    canned = [
+        conf_result,                  # get_conf
+        make_result(scalars_val=[]),  # OntogenSeed query
+        make_result(scalars_val=[]),  # eligible_nodes
+        make_result(scalars_val=[]),  # eligible_edges
+        make_result(scalars_val=[]),  # approved_triples (or similar)
+    ]
+    captured_stmts: list[Any] = []
+
+    async def capture_execute(stmt, *args, **kwargs):
+        captured_stmts.append(stmt)
+        if len(captured_stmts) <= len(canned):
+            return canned[len(captured_stmts) - 1]
+        return make_result()
+
+    db.execute = capture_execute
+    svc._datahub.enumerate_datasets = AsyncMock(return_value=[])
+
+    debate_stub = DebateResult(
+        payload={"nodes": [], "edges": [], "triples": []},
+        transcript={
+            "turns_completed": 1, "outcome": "accept", "final_reviewer_verdict": "accept",
+            "rag_anchors": [], "history": [], "producer_iterations": 1,
+            "producer_errors_dropped": 0, "item_verdicts": [],
+        },
+        outcome="accept",
+    )
+
+    with patch("src.backend.ontogen.service.build_run_prompt", return_value="prompt"), \
+         patch(
+             "src.backend.ontogen.service.run_debate",
+             new=AsyncMock(return_value=debate_stub),
+         ):
+        await svc.run(dry_run=True)
+
+    def compiled_sql(stmt: Any) -> str:
+        try:
+            return str(stmt.compile(compile_kwargs={"literal_binds": True}))
+        except Exception:
+            return str(stmt)
+
+    seed_sql = next(
+        (
+            compiled_sql(s)
+            for s in captured_stmts
+            if "ontogen_seeds" in compiled_sql(s).lower()
+        ),
+        None,
+    )
+
+    assert seed_sql is not None, (
+        f"No SELECT against ontogen_seeds captured; "
+        f"got {[compiled_sql(s) for s in captured_stmts]!r}. "
+        "Spec: BACKEND.md §Inference Pipeline — service must load seeds for inference."
+    )
+    lowered = seed_sql.lower()
+    assert "where" in lowered and "is_enabled" in lowered, (
+        f"ontogen_seeds seed-load must filter on is_enabled (enabled-only); got SQL:\n"
+        f"{seed_sql}\n"
+        "Spec: BACKEND.md §Inference Pipeline — 'Load enabled seeds "
+        "(ontogen_seeds.is_enabled = true)'. A disabled seed must not steer inference."
+    )

@@ -112,7 +112,7 @@ Each MANIFESTO feature has a clear integration direction:
 |---------|----|-----------|-------------------|
 | Ingestion Control (`ACTIVE_CUSTOM_MANAGED`) | UC1 | **Write** | The pluggable extractor emits dataset metadata (`Status`, `DatasetProperties`, `SchemaMetadata`) plus per-run `DataProcessInstance` aspects. |
 | Ingestion Control (`DATAHUB_MANAGED` / `PASSIVE`) | UC1 | **Read** | The hourly `datahub-sync-hourly` DAG syncs source defs (`listIngestionSources`), rebuilds the source→dataset mapping, and mirrors run history (`listExecutionRequests` / `DataProcessInstance` / `Operation`). No aspect writes by DataSpoke. |
-| Validation | UC2 | **Write** | Emit `assertionInfo` on conf upsert (variable list joined as `customAssertion.logic`); emit `assertionRunEvent` per pipeline-posted result (timestamped to `data_time`); emit `status.removed` on DELETE / clear on restore (`method/restore`). Validation logic lives in the data pipeline. |
+| Validation | UC2 | **Write** | Emit `assertionInfo` on conf upsert (variable list joined as `customAssertion.logic`); emit `assertionRunEvent` per pipeline-posted result (timestamped to `data_time`); hard-delete the assertion entity on conf DELETE. Validation logic lives in the data pipeline. |
 | Ontology Generation | UC3 | **Read** | Read `datasetProperties`, `schemaMetadata`, `editableDatasetProperties`, `editableSchemaMetadata`, `glossaryTerms`, and `documentInfo` on `document` entities whose `relatedAssets` reference an in-scope dataset. Ontology is modelled as a subject / predicate / object triple set (nodes / edges / triples) and stored entirely in DataSpoke (PostgreSQL relational + pgvector). |
 | Metadata Generation | UC4 | **Read + Write (editable description only)** | Read the same DataHub aspect set as UC3 (`datasetProperties`, `schemaMetadata`, `editableDatasetProperties`, `editableSchemaMetadata`, `glossaryTerms`, `documentInfo`) plus UC3-approved nodes/triples from DataSpoke storage. On reviewer approval of a candidate, write only to the *editable* description aspects — `editableDatasetProperties.description` for `dataset.description` items, `editableSchemaMetadata.editableSchemaFieldInfo[].description` for `column.<fieldPath>.description` items. Tag and glossary-term proposals are future scope. |
 | Governance | UC5 | **Read** | Aggregate pre-existing metadata (properties, ownership, tags) and DataSpoke validation / ontology state |
@@ -281,10 +281,10 @@ are append-only — DataHub retains history.
 
 Assertions are stored on `assertion` entities (not `dataset` entities). DataSpoke's
 Validation feature (UC2) is a **passive result store** — external pipelines compute
-results and POST them; DataSpoke writes three aspects:
-`assertionInfo` (versioned, on `PUT/PATCH /attr/validation/conf`),
-`assertionRunEvent` (timeseries, per `POST /attr/validation/result`), and `status`
-(versioned, on `DELETE` and on restore via `POST .../conf/method/restore`). The full
+results and POST them; DataSpoke writes two aspects:
+`assertionInfo` (versioned, on `PUT/PATCH /attr/validation/conf`) and
+`assertionRunEvent` (timeseries, per `POST /attr/validation/result`). `DELETE`
+hard-deletes the assertion entity. The full
 contract — URN derivation, aspect contents, `customAssertion.logic` format,
 `result.type` mapping, `nativeResults` serialization, and intentionally omitted
 aspects — lives in [`spec/feature/VALIDATION.md` §DataHub Aspect Mapping](feature/VALIDATION.md#datahub-aspect-mapping).
@@ -301,15 +301,11 @@ Mandatory conventions for the DataSpoke emission path:
 3. **Deterministic URN.**
    `urn:li:assertion:<datahub_guid({"platform": "dataspoke-validation", "entity": dataset_urn})>`.
    Recomputable from `dataset_urn` alone — one slot per dataset. PUT/PATCH is
-   idempotent. The soft-delete / restore cycle reuses the same URN: `DELETE`
-   emits `status.removed = true` (freezing the conf in place); `POST .../conf/method/restore`
-   emits `status.removed = false` together with `assertionInfo`, reinstating the frozen
-   conf unchanged. A `PUT` against a soft-deleted slot is rejected
-   (`409 VALIDATION_CONF_REMOVED`) and emits nothing — PUT does not resurrect. DataSpoke
-   is authoritative for the assertion lifecycle — out-of-band tombstones (e.g. a DataHub
-   UI admin manually setting `status.removed=true`) are reverted on the next config
-   PUT/PATCH of an active rule. Operators who want to durably hide a DataSpoke assertion
-   use `DELETE /attr/validation/conf`.
+   idempotent. `DELETE /attr/validation/conf` **hard-deletes the assertion entity**
+   from DataHub — no `status.removed` tombstone is left behind. Because the URN is
+   derived deterministically, a subsequent `PUT` re-creates a fresh assertion under the
+   same URN. DataSpoke is authoritative for the assertion lifecycle; on delete the entity
+   simply ceases to exist.
 4. **`lastUpdated` audit stamp.** Populate `AssertionInfoClass.lastUpdated` with
    the DataSpoke service-user URN; otherwise the DataHub UI history card shows
    "unknown actor".
@@ -335,7 +331,6 @@ Mandatory conventions for the DataSpoke emission path:
 |--------|----------|-------------|----------------|
 | `assertionInfo` | `AssertionInfoClass` | `assertion` | `POST /openapi/v3/entity/assertion` |
 | `assertionRunEvent` | `AssertionRunEventClass` | `assertion` | `POST /openapi/v3/entity/assertion` |
-| `status` | `StatusClass` | `assertion` | `POST /openapi/v3/entity/assertion` |
 
 ### Document Aspects
 
@@ -407,7 +402,7 @@ nest under the same database → schema hierarchy as DataHub's managed-PG source
 | `globalTags` | W | — | — | — *(future scope)* | R *(dataset_filter.tags)* |
 | `glossaryTerms` | — | — | R | R | R *(dataset_filter.glossary_terms)* |
 | `upstreamLineage` | W | R | — | — | — |
-| `status` | W | W (assertion entity, on DELETE / restore) | — | — | — |
+| `status` | W | — (conf DELETE hard-deletes the assertion entity, no `status` write) | — | — | — |
 | `deprecation` | — | — | — | — | — |
 | `datasetProfile` | — | — | — | — | — |
 | `operation` | — | — | — | — | — |

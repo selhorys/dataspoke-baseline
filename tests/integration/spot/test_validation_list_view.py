@@ -7,11 +7,10 @@ Concerns covered:
 - Empty list when no configs exist: envelope structure (offset, limit,
   total_count, validations=[]).
 - Listed items appear after seeding one validation conf; each row carries
-  dataset_urn, description, variable_count, is_removed, updated_at as
-  specified by the ValidationListItem schema.
+  dataset_urn, description, variable_count, updated_at as specified by the
+  ValidationListItem schema (no is_removed — soft-delete is gone).
 - Pagination: offset/limit controls the returned slice; total_count is stable.
-- Filter ?removed=false excludes soft-deleted rows; ?removed=true returns only
-  removed rows.
+- Hard delete removes the dataset from the cross-dataset list entirely.
 - latest_data_time and latest_score are populated after POSTing a result.
 
 Prerequisites (per spec/TESTING.md §Integration Testing):
@@ -94,8 +93,8 @@ async def test_validation_list_item_shape_after_seed(
 ) -> None:
     """After seeding one validation conf, GET /spoke/validation includes its row.
 
-    The row must carry: dataset_urn, description, variable_count, is_removed,
-    updated_at.  latest_data_time and latest_score are null before any results.
+    The row must carry: dataset_urn, description, variable_count, updated_at.
+    latest_data_time and latest_score are null before any results.
 
     spec: API.md §Validation — GET /spoke/validation row shape (ValidationListItem).
     """
@@ -138,9 +137,9 @@ async def test_validation_list_item_shape_after_seed(
             f"Expected variable_count={len(variables)}; got {row['variable_count']!r}. "
             "spec: API.md §Validation — row.variable_count == len(conf.variables)"
         )
-        assert row["is_removed"] is False, (
-            f"is_removed must be False for an active conf; got {row['is_removed']!r}. "
-            "spec: API.md §Validation — is_removed field"
+        assert "is_removed" not in row, (
+            f"row must not carry is_removed — soft-delete is gone; got keys: {list(row)}. "
+            "spec: API.md §Validation — aggregated row has no is_removed field"
         )
         assert "updated_at" in row and row["updated_at"], (
             "updated_at must be present and non-empty. spec: API.md §Validation"
@@ -228,81 +227,78 @@ async def test_validation_list_item_carries_latest_result(
 
 
 @pytest.mark.asyncio
-async def test_validation_list_removed_filter(
+async def test_validation_list_hard_delete_removes_from_list(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """GET /spoke/validation?removed=false excludes soft-deleted rows;
-    ?removed=true returns only removed rows.
+    """A hard delete removes the dataset from GET /spoke/validation entirely.
 
-    spec: API.md §Validation — GET /spoke/validation filterable by removed status.
-    spec/feature/VALIDATION.md §Rule Configuration — DELETE performs a soft delete.
+    There is no soft-delete state and no ?removed filter — after DELETE the
+    dataset is gone from the cross-dataset list, and GET conf reads as
+    never-created (404 CONFIG_NOT_FOUND).
+
+    spec: API.md §DELETE attr/validation/conf — hard delete; dataset absent from
+    /spoke/validation; GET conf → 404 CONFIG_NOT_FOUND afterwards.
+    spec: feature/VALIDATION.md §Rule Configuration — DELETE is a hard delete.
     """
     try:
-        # Seed conf, then soft-delete it.
+        # Seed conf so it appears in the list, then hard-delete it.
         await api_client.put(
             _CONF_URL,
             headers=admin_headers,
-            json={"description": "removed filter test", "variables": [_var("row_cnt")]},
+            json={"description": "hard delete test", "variables": [_var("row_cnt")]},
         )
+
+        # Guard: keep total_count <= limit so a single-page membership check is
+        # sound (a present URN can't hide on page 2+).
+        _LIMIT = 100
+        before_resp = await api_client.get(
+            _LIST_URL, headers=admin_headers, params={"limit": _LIMIT}
+        )
+        assert before_resp.status_code == 200
+        before_body = before_resp.json()
+        assert before_body["total_count"] <= _LIMIT, (
+            f"total_count={before_body['total_count']} exceeds limit={_LIMIT}; "
+            "single-page membership check no longer valid — increase _LIMIT. "
+            "spec: API.md §Pagination"
+        )
+        before_urns = [v["dataset_urn"] for v in before_body["validations"]]
+        assert _DATASET_URN in before_urns, (
+            f"Seeded URN {_DATASET_URN!r} must appear in the list before delete."
+        )
+
         del_resp = await api_client.delete(_CONF_URL, headers=admin_headers)
         assert del_resp.status_code == 204, (
             f"DELETE failed: {del_resp.status_code} {del_resp.text}"
         )
 
-        # ?removed=false must NOT contain our dataset_urn.
-        # Guard: if the total_count of active configs exceeds the page size, a
-        # single-page membership check could be vacuously true (URN on page 2+).
-        # We assert total_count <= limit so a false-pass is impossible.
-        _LIMIT = 100
-        active_resp = await api_client.get(
-            _LIST_URL,
-            headers=admin_headers,
-            params={"removed": "false", "limit": _LIMIT},
+        # The dataset is gone from the cross-dataset list entirely.
+        after_resp = await api_client.get(
+            _LIST_URL, headers=admin_headers, params={"limit": _LIMIT}
         )
-        assert active_resp.status_code == 200, (
-            f"GET /spoke/validation?removed=false failed: {active_resp.status_code}"
-        )
-        active_body = active_resp.json()
-        assert active_body["total_count"] <= _LIMIT, (
-            f"total_count={active_body['total_count']} exceeds limit={_LIMIT}; "
-            "page-1-only membership check is no longer valid — increase _LIMIT or paginate. "
+        assert after_resp.status_code == 200
+        after_body = after_resp.json()
+        assert after_body["total_count"] <= _LIMIT, (
+            f"total_count={after_body['total_count']} exceeds limit={_LIMIT}; "
+            "single-page membership check no longer valid — increase _LIMIT. "
             "spec: API.md §Pagination"
         )
-        active_urns = [v["dataset_urn"] for v in active_body["validations"]]
-        assert _DATASET_URN not in active_urns, (
-            f"Soft-deleted URN {_DATASET_URN!r} must not appear in ?removed=false list. "
-            "spec: API.md §Validation — removed filter"
+        after_urns = [v["dataset_urn"] for v in after_body["validations"]]
+        assert _DATASET_URN not in after_urns, (
+            f"Hard-deleted URN {_DATASET_URN!r} must NOT appear in /spoke/validation. "
+            "spec: API.md §DELETE attr/validation/conf — dataset absent after delete"
         )
 
-        # ?removed=true must contain our dataset_urn.
-        removed_resp = await api_client.get(
-            _LIST_URL,
-            headers=admin_headers,
-            params={"removed": "true", "limit": _LIMIT},
+        # GET conf reads as never-created (404 CONFIG_NOT_FOUND).
+        get_conf_resp = await api_client.get(_CONF_URL, headers=admin_headers)
+        assert get_conf_resp.status_code == 404, (
+            f"GET conf after hard delete expected 404; got {get_conf_resp.status_code}"
         )
-        assert removed_resp.status_code == 200, (
-            f"GET /spoke/validation?removed=true failed: {removed_resp.status_code}"
-        )
-        removed_body = removed_resp.json()
-        assert removed_body["total_count"] <= _LIMIT, (
-            f"total_count={removed_body['total_count']} exceeds limit={_LIMIT}; "
-            "page-1-only membership check is no longer valid — increase _LIMIT or paginate. "
-            "spec: API.md §Pagination"
-        )
-        removed_urns = [v["dataset_urn"] for v in removed_body["validations"]]
-        assert _DATASET_URN in removed_urns, (
-            f"Soft-deleted URN {_DATASET_URN!r} must appear in ?removed=true list. "
-            "spec: API.md §Validation — removed filter"
+        assert get_conf_resp.json().get("error_code") == "CONFIG_NOT_FOUND", (
+            f"GET conf after delete must carry CONFIG_NOT_FOUND; got {get_conf_resp.json()}. "
+            "spec: API.md §DELETE attr/validation/conf"
         )
     finally:
-        # Resurrect for clean teardown (DELETE idempotent on already-removed).
-        with suppress(Exception):
-            await api_client.put(
-                _CONF_URL,
-                headers=admin_headers,
-                json={"description": "resurrection for teardown", "variables": [_var("row_cnt")]},
-            )
         with suppress(Exception):
             await api_client.delete(_CONF_URL, headers=admin_headers)
 

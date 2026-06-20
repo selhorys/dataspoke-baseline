@@ -243,14 +243,14 @@ DataHub에 `assertionRunEvent`를 emit하며, 과거 시계열을 조회 가능�
 데이터셋당 여러 개의 점검(별도의 freshness/volume/field assertion, 컬럼 단위 검증,
 다중 팀 소유 등)이 필요한 팀은 **DataHub의 native assertion API**를 직접 사용한다 —
 DataSpoke는 80% 케이스를 위한 의견 있는 단일 슬롯 단축 경로일 뿐, 유일한 경로가 아니다.
-전체 계약 — conf 사전 조건, 결과 행 형태, soft-delete / 부활 의미, DataHub assertion
+전체 계약 — conf 사전 조건, 결과 행 형태, 캐스케이드 하드 삭제 의미, DataHub assertion
 aspect emission — 은 [`spec/feature/VALIDATION.md`](feature/VALIDATION.md)에 정의되어 있다.
 
 ### API Mapping
 
 | 엔드포인트 | 용도 |
 |---|---|
-| `GET/PUT/PATCH/DELETE /spoke/common/data/{urn}/attr/validation/conf` | 검증 슬롯의 읽기 / 생성·교체 / 부분 갱신 / soft-delete (`description` + `variables`). DataHub에 없는 URN에 PUT하면 `422 DATASET_NOT_IN_DATAHUB` |
+| `GET/PUT/PATCH/DELETE /spoke/common/data/{urn}/attr/validation/conf` | 검증 슬롯의 읽기 / 생성·교체 / 부분 갱신 / 하드 삭제 (`description` + `variables`). DataHub에 없는 URN에 PUT하면 `422 DATASET_NOT_IN_DATAHUB`. DELETE는 데이터셋의 결과와 검증 이벤트를 캐스케이드 삭제하고 DataHub assertion을 하드 삭제한다(`204`); 이후 슬롯은 생성된 적 없는 상태(`404 CONFIG_NOT_FOUND`)로 읽히며 새 PUT이 conf를 새로 생성한다 |
 | `POST /spoke/common/data/{urn}/attr/validation/result` | 결과 `{data_time, score, variables}`를 추가. 미선언 변수 키는 `422 UNKNOWN_VARIABLE`; `score`가 `[0,1]` 범위를 벗어나면 `422 INVALID_SCORE` |
 | `GET /spoke/common/data/{urn}/attr/validation/result?from=…&until=…&limit=…` | `data_time`을 기준으로 한 과거 결과 (RFC 3339, `from` 포함, `until` 미포함). 기본 `limit=1000`, 서버 상한 `10000` |
 | `GET /spoke/common/data/{urn}/event/validation` | 데이터셋별 검증 이벤트 이력 |
@@ -314,16 +314,16 @@ GET .../attr/validation/result?from=2026-04-01T00:00:00Z&until=2026-05-01T00:00:
 
 결과는 최신 행부터(즉 `data_time` 내림차순) 반환된다.
 
-**폐기와 부활.** `DELETE attr/validation/conf`는 슬롯을 soft-delete한다
-(`204` 반환; 이후 `GET conf`는 `404`). 같은 URN에 `PUT`을 다시 호출하면 슬롯이
-부활하며(`201` 반환), 부활된 슬롯은 새로운 설명과 변수 집합을 가질 수 있다 —
-예: 네 번째 변수 `{name: "null_rate", description: "키 컬럼들의 null 비율"}` 추가.
+**삭제.** `DELETE attr/validation/conf`는 하드 삭제다(`204` 반환): 단일 트랜잭션으로
+conf를 제거하고 데이터셋의 전체 결과 이력과 검증 이벤트를 캐스케이드 삭제하며
+DataHub assertion을 하드 삭제한다. 이후 `GET conf`는 `404 CONFIG_NOT_FOUND`를 반환한다 —
+슬롯은 생성된 적 없는 상태로 읽히며 복원 경로는 없다. 검증 슬롯을 다시 쓰려면 스튜어드가
+새 `PUT`을 호출해(예: 변수 `{name: "null_rate", description: "키 컬럼들의 null 비율"}`
+추가) conf를 처음부터 새로 생성한다.
 
 **크로스 데이터셋 오버뷰.** `GET /spoke/validation`은 데이터셋별로
-`description`, `variable_count`, `latest_data_time`, `latest_score`, `is_removed`
-를 보여준다. 리스트는 기본적으로 soft-delete된 슬롯을 숨기며(UI는 `?removed=false`
-전송), "삭제 항목 보기" 토글은 param을 생략해 활성/삭제 슬롯을 모두 반환하고
-삭제된 행에 `deleted` 배지를 표시한다.
+`description`, `variable_count`, `latest_data_time`, `latest_score`를 보여준다.
+삭제된 데이터셋은 리스트에서 완전히 빠진다.
 
 ---
 
@@ -380,9 +380,10 @@ conf 필드 의미, seed 라이프사이클, 추론 파이프라인과 증분 �
 | 엔드포인트 | 용도 |
 |---|---|
 | `PUT/PATCH/GET/DELETE /spoke/ontogen/attr/conf` | 싱글톤 운영 conf — 위 필드 표 참조 |
-| `GET /spoke/ontogen/attr/seed` | seed 리스트 — `[{seed_id, updated_at, preview}]` (Markdown 본문은 아래 항목으로 개별 조회) |
-| `POST /spoke/ontogen/attr/seed` | 추론 seed 생성 — 본문은 원시 Markdown(`Content-Type: text/markdown`); 서버가 `seed_id` 부여 |
-| `GET/PATCH/DELETE /spoke/ontogen/attr/seed/{seed_id}` | seed 조회·보강·폐기 |
+| `GET /spoke/ontogen/attr/seed` | **모든** seed 리스트 — `[{seed_id, updated_at, is_enabled, preview}]` (Markdown 본문은 아래 항목으로 개별 조회) |
+| `POST /spoke/ontogen/attr/seed` | 추론 seed 생성 — 본문은 원시 Markdown(`Content-Type: text/markdown`); 서버가 `seed_id` 부여. **비활성** 상태로 생성됨(활성화 전까지 추론에 참여하지 않음) |
+| `GET/PATCH/DELETE /spoke/ontogen/attr/seed/{seed_id}` | seed 조회·보강·하드 삭제 |
+| `PATCH /spoke/ontogen/attr/seed/{seed_id}/attr/enabled` | seed 활성화/비활성화 — JSON `{is_enabled: bool}`. 비활성 seed는 계속 보이지만 추론 파이프라인에서 제외되며, 양방향 전환 가능 |
 | `POST /spoke/ontogen/method/run` | 수동 재추론 트리거. 선택적 `Content-Type: text/markdown` 본문은 해당 실행에만 적용되는 일회성 프롬프트로 작동; `?dry_run=true`는 기록 없이 평가만. 동시 실행은 `409 ONTOGEN_RUNNING` |
 | `GET /spoke/ontogen/event` | 글로벌 추론 실행 이력(`ONTOGEN.RUN_COMPLETE`, `ONTOGEN.RUN_FAILED`) |
 | `GET /spoke/ontogen/result/node` | 노드(주어 / 목적어) 리스트(confidence·상태 포함) |
@@ -430,6 +431,10 @@ Imazon은 도서를 전문으로 하는 온라인 서점이다. 각 타이틀은
 고객은 특정 에디션에 평점을 남길 수 있다. 가능한 한 웨어하우스 스키마명보다
 비즈니스 도메인 언어를 선호한다.
 ```
+
+seed는 **비활성** 상태로 생성된다; 스튜어드가 검토 후
+`PATCH .../attr/seed/{seed_id}/attr/enabled {"is_enabled": true}`로 활성화하면 다음
+추론 실행에 합류한다. 이후 다시 비활성화하면 seed는 보존되지만 파이프라인에서 제외된다.
 
 **추론 출력.** 노드 넷, 엣지 둘, 트리플 둘 — 각 행의 `status`는 높은 신뢰도면
 `llm_approved`, 사람 리뷰가 필요하면 `llm_pending`이다:

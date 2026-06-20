@@ -173,7 +173,6 @@ Stores the single validation slot per dataset (passive result-store model — se
 | `dataset_urn` | `TEXT` PK | Target dataset URN (unique — at most one validation slot per dataset) |
 | `description` | `TEXT` | Free-form description (≤ 2,000 chars; surfaced in DataHub assertion detail UI) |
 | `variables` | `JSONB` | Declared variables the pipeline will report — a JSONB array of `{name, description}` objects. `name` matches `[a-z][a-z0-9_]{0,99}` and is unique within the row; `description` is ≤ 200 chars (empty allowed). `CHECK jsonb_array_length(variables) BETWEEN 1 AND 200`. Variable **names** are joined as `customAssertion.logic` on DataHub emit |
-| `is_removed` | `BOOLEAN` | Mirror of DataHub `status.removed` for query convenience. `true` after `DELETE` (soft-delete freezes the row in place — `description`/`variables` are preserved, not wiped); `false` after a `method/restore` (undelete), which reinstates the frozen row unchanged |
 | `created_at` | `TIMESTAMPTZ` | |
 | `updated_at` | `TIMESTAMPTZ` | |
 
@@ -191,9 +190,10 @@ Also emitted to DataHub as `assertionRunEvent`. Append-only.
 | `variables` | `JSONB` | Map of variable name → numeric value. Keys must be a subset of the `validation_configs.variables` **names** (validated at the service layer; `422 UNKNOWN_VARIABLE` on violation) |
 | `ingestion_time` | `TIMESTAMPTZ` | Server-side `now()` when the row was accepted (audit trail; preserved separately from `data_time`) |
 
-`validation_results` rows are never purged by a conf soft-delete — they survive a
-`DELETE` and are restored intact on `method/restore`, so the result history always stays
-consistent with the (unchanged) restored variable set. No schema change supports this.
+`validation_results` rows are deleted by the conf `DELETE` cascade: deleting a dataset's
+`validation_configs` row removes that dataset's `validation_results` (and its validation
+events) in the same service-level transaction. There is no FK cascade — the service
+issues the deletes explicitly keyed on `dataset_urn`.
 
 Indexes: `(dataset_urn, data_time DESC)` to serve the historical-baseline GET.
 
@@ -320,7 +320,7 @@ managed out-of-band.
 |--------|------|-------------|
 | `id` | `UUID` PK | Server-assigned `seed_id` |
 | `body_md` | `TEXT` | Raw Markdown body |
-| `status` | `TEXT` | `active` or `retired` — `DELETE` soft-deletes by setting `retired`; only `active` seeds steer inference |
+| `is_enabled` | `BOOLEAN` | Defaults `false` (created disabled). Only `is_enabled = true` seeds steer inference; toggled via `PATCH .../attr/seed/{seed_id}/attr/enabled`. `DELETE` is a hard delete (row removed) |
 | `created_at` | `TIMESTAMPTZ` | |
 | `updated_at` | `TIMESTAMPTZ` | |
 

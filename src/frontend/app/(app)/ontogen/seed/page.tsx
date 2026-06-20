@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ConfirmDialog } from "@/components/confirm-dialog";
@@ -11,6 +12,7 @@ import {
   useCreateSeed,
   useUpdateSeed,
   useDeleteSeed,
+  useSetSeedEnabled,
 } from "@/lib/api/ontogen";
 import { useMe } from "@/lib/auth/use-me";
 import { useToast } from "@/components/ui/use-toast";
@@ -36,7 +38,8 @@ export default function OntogenSeedPage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">OntoGen — Seed Library</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Markdown seeds provide context for the ontology inference DAG.
+            Markdown seeds provide context for the ontology inference DAG. Only
+            enabled seeds steer inference; new seeds ship disabled.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -81,6 +84,7 @@ export default function OntogenSeedPage() {
             seedId={seed.seed_id}
             preview={seed.preview}
             updatedAt={seed.updated_at}
+            isEnabled={seed.is_enabled}
             isOpen={openSeedId === seed.seed_id}
             isEditing={editingSeedId === seed.seed_id}
             canWrite={canWrite}
@@ -157,6 +161,7 @@ function SeedListRow({
   seedId,
   preview,
   updatedAt,
+  isEnabled,
   isOpen,
   isEditing,
   canWrite,
@@ -169,6 +174,7 @@ function SeedListRow({
   seedId: string;
   preview: string;
   updatedAt: string;
+  isEnabled: boolean;
   isOpen: boolean;
   isEditing: boolean;
   canWrite: boolean;
@@ -180,6 +186,7 @@ function SeedListRow({
 }) {
   const { data: body, isLoading: bodyLoading } = useOntogenSeed(isOpen ? seedId : "");
   const updateMutation = useUpdateSeed(seedId);
+  const enabledMutation = useSetSeedEnabled(seedId);
   const { toast } = useToast();
   const tz = useDisplayTz();
 
@@ -188,6 +195,20 @@ function SeedListRow({
       onSuccess: () => onEditSaved(),
       onError: (err) => {
         toast({ title: "Update failed", description: err.message, variant: "destructive" });
+      },
+    });
+  }
+
+  function handleToggleEnabled() {
+    enabledMutation.mutate(!isEnabled, {
+      onSuccess: () =>
+        toast({ title: isEnabled ? "Seed disabled" : "Seed enabled" }),
+      onError: (err) => {
+        toast({
+          title: isEnabled ? "Disable failed" : "Enable failed",
+          description: err.message,
+          variant: "destructive",
+        });
       },
     });
   }
@@ -202,13 +223,30 @@ function SeedListRow({
         onKeyDown={(e) => e.key === "Enter" && onToggle()}
       >
         <div className="min-w-0 flex-1">
-          <p className="truncate font-mono text-xs text-muted-foreground">{seedId}</p>
+          <div className="flex items-center gap-2">
+            <p className="truncate font-mono text-xs text-muted-foreground">{seedId}</p>
+            <Badge
+              variant={isEnabled ? "default" : "secondary"}
+              className="text-xs"
+            >
+              {isEnabled ? "enabled" : "disabled"}
+            </Badge>
+          </div>
           <p className="mt-0.5 truncate text-sm">{preview}</p>
         </div>
         <div className="ml-4 flex items-center gap-3 text-xs text-muted-foreground">
           <span>{formatDateTime(updatedAt, tz)}</span>
           {canWrite && (
             <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-xs"
+                onClick={handleToggleEnabled}
+                disabled={enabledMutation.isPending}
+              >
+                {isEnabled ? "Disable" : "Enable"}
+              </Button>
               <Button
                 size="sm"
                 variant="outline"

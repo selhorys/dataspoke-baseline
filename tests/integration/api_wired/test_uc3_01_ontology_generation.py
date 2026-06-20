@@ -40,13 +40,15 @@ async def test_uc3_ontology_generation_under_stub(
     Steps mirror USE_CASE_en.md §UC3 Imazon Example:
       1. PUT singleton ontogen conf (is_enabled, schedule_tier, dataset_filter)
       2. POST Markdown seed — assert 201, capture seed_id; GET seed list and
-         assert entry shows preview and updated_at
+         assert entry shows preview, updated_at, and is_enabled=false (ships disabled)
+      2c. PATCH attr/seed/{id}/attr/enabled {is_enabled: true} — the seed joins
+          inference; the list now shows is_enabled=true
       3. POST real (non-dry-run) inference — assert OntogenRunSummary shape
       4. GET /event — find ONTOGEN.RUN_COMPLETE; assert debate fields in detail
       5. GET result/{node,edge,triple} — assert standard envelope shape for each
       6. For each persisted row, GET result/{type}/{id}/attr — assert evidence.debate
          keys (no-op under stub because stub Producer returns empty payload)
-      7. Cleanup: DELETE seed, PATCH conf disabled
+      7. Cleanup: DELETE seed (hard delete — gone from list), PATCH conf disabled
 
     Spec: USE_CASE_en.md §UC3
     Spec: BACKEND_LLM.md §Adversarial Debate Framework §Evidence shape
@@ -133,11 +135,46 @@ async def test_uc3_ontology_generation_under_stub(
         seed_entry = seeds_by_id[seed_id]
         assert "preview" in seed_entry, (
             "seed list entry missing 'preview'. "
-            "spec: USE_CASE_en.md §UC3 — GET attr/seed returns [{seed_id, preview, updated_at}]"
+            "spec: USE_CASE_en.md §UC3 — GET attr/seed returns "
+            "[{seed_id, preview, updated_at, is_enabled}]"
         )
         assert "updated_at" in seed_entry, (
             "seed list entry missing 'updated_at'. "
-            "spec: USE_CASE_en.md §UC3 — GET attr/seed returns [{seed_id, preview, updated_at}]"
+            "spec: USE_CASE_en.md §UC3 — GET attr/seed returns "
+            "[{seed_id, preview, updated_at, is_enabled}]"
+        )
+        # A new seed ships disabled — it does not participate in inference until enabled.
+        # spec: USE_CASE_en.md §UC3 — POST attr/seed creates the seed disabled.
+        assert seed_entry.get("is_enabled") is False, (
+            "a new seed must be created disabled; got "
+            f"is_enabled={seed_entry.get('is_enabled')!r}. "
+            "spec: USE_CASE_en.md §UC3 — seed ships disabled"
+        )
+
+        # ── Step 2c: Enable the seed so it joins the inference run ─────────────
+        # UC3 narrative: "The seed is created disabled; the steward reviews it, then
+        # enables it via PATCH .../attr/seed/{seed_id}/attr/enabled so it joins the
+        # next inference run."
+        # spec: API.md §PATCH attr/seed/{seed_id}/attr/enabled — JSON {is_enabled: bool}.
+        enable_resp = await api_client.patch(
+            f"{seed_url}/{seed_id}/attr/enabled",
+            headers=admin_headers,
+            json={"is_enabled": True},
+        )
+        assert enable_resp.status_code == 200, (
+            f"PATCH attr/enabled failed: {enable_resp.status_code} {enable_resp.text}. "
+            "spec: API.md §PATCH attr/seed/{seed_id}/attr/enabled"
+        )
+        assert enable_resp.json().get("is_enabled") is True, (
+            "enable response must round-trip is_enabled=true"
+        )
+        # The list now reflects the enabled state (disabled seeds stay visible too).
+        relist_resp = await api_client.get(seed_url, headers=admin_headers)
+        assert relist_resp.status_code == 200
+        relisted = {s["seed_id"]: s for s in relist_resp.json()["seeds"]}
+        assert relisted[seed_id]["is_enabled"] is True, (
+            "after enabling, the seed list must show is_enabled=true. "
+            "spec: USE_CASE_en.md §UC3 — GET attr/seed lists all seeds with is_enabled"
         )
 
         # ── Step 2b: Snapshot pre-existing result-row ids per type ────────────
@@ -341,6 +378,24 @@ async def test_uc3_ontology_generation_under_stub(
                         f"got {actual_actor!r}. spec: BACKEND_LLM.md §Loop shape"
                     )
 
+        # ── Step 6b: DELETE the seed is a hard delete — gone from the list ────
+        # UC3 narrative: "DELETE removes the seed outright."
+        # spec: USE_CASE_en.md §UC3 — DELETE attr/seed/{id} hard-deletes the seed.
+        del_seed_resp = await api_client.delete(
+            f"{seed_url}/{seed_id}", headers=admin_headers
+        )
+        assert del_seed_resp.status_code == 204, (
+            f"DELETE seed expected 204, got {del_seed_resp.status_code}: {del_seed_resp.text}"
+        )
+        post_delete_list = await api_client.get(seed_url, headers=admin_headers)
+        assert post_delete_list.status_code == 200
+        post_delete_ids = {s["seed_id"] for s in post_delete_list.json()["seeds"]}
+        assert seed_id not in post_delete_ids, (
+            f"hard-deleted seed {seed_id!r} must be absent from the list; "
+            f"got: {post_delete_ids}"
+        )
+        seed_id = None  # already deleted — skip the finally cleanup
+
     finally:
         # ── Step 7: Cleanup ───────────────────────────────────────────────────
         if seed_id is not None:
@@ -366,14 +421,15 @@ async def test_uc3_ontology_generation_with_real_llm(
     Steps mirror USE_CASE_en.md §UC3 Imazon Example:
       1. PUT singleton ontogen conf (is_enabled, schedule_tier, dataset_filter)
       2. POST Markdown seed — assert 201, capture seed_id; GET seed list and
-         assert entry shows preview and updated_at
+         assert entry shows preview, updated_at, and is_enabled=false (ships disabled)
+      2c. PATCH attr/seed/{id}/attr/enabled {is_enabled: true} — the seed joins inference
       3. POST real (non-dry-run) inference — assert OntogenRunSummary shape
       4. GET /event — find ONTOGEN.RUN_COMPLETE; assert debate fields in detail
       5. GET result/{node,edge,triple} — assert standard envelope shape for each
       6. For each persisted row, GET result/{type}/{id}/attr — assert evidence.debate
          keys; track any_rows_found across all three result types
       7. Assert any_rows_found is True
-      8. Cleanup: DELETE seed, PATCH conf disabled
+      8. Cleanup: DELETE seed (hard delete), PATCH conf disabled
 
     Spec: USE_CASE_en.md §UC3
     Spec: BACKEND_LLM.md §Adversarial Debate Framework §Evidence shape
@@ -453,11 +509,37 @@ async def test_uc3_ontology_generation_with_real_llm(
         seed_entry = seeds_by_id[seed_id]
         assert "preview" in seed_entry, (
             "seed list entry missing 'preview'. "
-            "spec: USE_CASE_en.md §UC3 — GET attr/seed returns [{seed_id, preview, updated_at}]"
+            "spec: USE_CASE_en.md §UC3 — GET attr/seed returns "
+            "[{seed_id, preview, updated_at, is_enabled}]"
         )
         assert "updated_at" in seed_entry, (
             "seed list entry missing 'updated_at'. "
-            "spec: USE_CASE_en.md §UC3 — GET attr/seed returns [{seed_id, preview, updated_at}]"
+            "spec: USE_CASE_en.md §UC3 — GET attr/seed returns "
+            "[{seed_id, preview, updated_at, is_enabled}]"
+        )
+        # A new seed ships disabled.
+        # spec: USE_CASE_en.md §UC3 — POST attr/seed creates the seed disabled.
+        assert seed_entry.get("is_enabled") is False, (
+            "a new seed must be created disabled; got "
+            f"is_enabled={seed_entry.get('is_enabled')!r}. "
+            "spec: USE_CASE_en.md §UC3 — seed ships disabled"
+        )
+
+        # ── Step 2c: Enable the seed so it joins the inference run ─────────────
+        # UC3 narrative: "The steward enables the seed via PATCH .../attr/enabled so
+        # it joins the next inference run."
+        # spec: API.md §PATCH attr/seed/{seed_id}/attr/enabled — JSON {is_enabled: bool}.
+        enable_resp = await api_client.patch(
+            f"{seed_url}/{seed_id}/attr/enabled",
+            headers=admin_headers,
+            json={"is_enabled": True},
+        )
+        assert enable_resp.status_code == 200, (
+            f"PATCH attr/enabled failed: {enable_resp.status_code} {enable_resp.text}. "
+            "spec: API.md §PATCH attr/seed/{seed_id}/attr/enabled"
+        )
+        assert enable_resp.json().get("is_enabled") is True, (
+            "enable response must round-trip is_enabled=true"
         )
 
         # ── Step 3: POST real (non-dry-run) inference ─────────────────────────
@@ -634,6 +716,23 @@ async def test_uc3_ontology_generation_with_real_llm(
             "Real LLM run produced zero rows — verify prompt/filter pipeline. "
             "spec: BACKEND_LLM.md §Test Mode — real LLM must persist ≥1 row"
         )
+
+        # ── Step 7b: DELETE the seed is a hard delete — gone from the list ───
+        # spec: USE_CASE_en.md §UC3 — DELETE attr/seed/{id} hard-deletes the seed.
+        del_seed_resp = await api_client.delete(
+            f"{seed_url}/{seed_id}", headers=admin_headers
+        )
+        assert del_seed_resp.status_code == 204, (
+            f"DELETE seed expected 204, got {del_seed_resp.status_code}: {del_seed_resp.text}"
+        )
+        post_delete_list = await api_client.get(seed_url, headers=admin_headers)
+        assert post_delete_list.status_code == 200
+        post_delete_ids = {s["seed_id"] for s in post_delete_list.json()["seeds"]}
+        assert seed_id not in post_delete_ids, (
+            f"hard-deleted seed {seed_id!r} must be absent from the list; "
+            f"got: {post_delete_ids}"
+        )
+        seed_id = None  # already deleted — skip the finally cleanup
 
     finally:
         # ── Step 8: Cleanup ───────────────────────────────────────────────────

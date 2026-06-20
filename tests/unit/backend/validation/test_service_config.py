@@ -1,8 +1,8 @@
 """Unit tests for ValidationService config CRUD + listing.
 
-Covers upsert_config (precondition, first PUT, second PUT, freeze-rejection),
-get_config (active / never-existed / soft-deleted error-code split), patch_config,
-delete_config, restore_config, list_configs (filters + aggregation), get_events.
+Covers upsert_config (precondition, first PUT, second PUT, recreate-after-delete),
+get_config (present / absent), patch_config, delete_config (hard delete + cascade),
+list_configs (aggregation), get_events.
 
 Conf ``variables`` is a JSONB array of ``{name, description}`` objects.
 
@@ -18,15 +18,12 @@ import pytest
 
 from src.backend.validation.service import ValidationService
 from src.shared.events import (
-    VALIDATION_CONFIG_RESTORE,
     VALIDATION_PREFIX,
     VALIDATION_RESULT_RECORDED,
 )
 from src.shared.exceptions import (
-    ConflictError,
     EntityNotFoundError,
     PreconditionFailedError,
-    ValidationConfRemovedError,
 )
 from tests.unit.backend.conftest import mock_db_refresh
 from tests.unit.backend.validation.conftest import (
@@ -40,7 +37,6 @@ from tests.unit.backend.validation.conftest import (
 _REGISTER = "src.backend.validation.service.register_assertion"
 _BUILD_INFO = "src.backend.validation.service.build_assertion_info"
 _BUILD_URN = "src.backend.validation.service.build_assertion_urn"
-_TOMBSTONE = "src.backend.validation.service.tombstone_assertion"
 _FAKE_URN = "urn:li:assertion:abc123"
 
 
@@ -48,58 +44,38 @@ _FAKE_URN = "urn:li:assertion:abc123"
 
 
 @pytest.mark.asyncio
-async def test_get_config_active_returns_record(
+async def test_get_config_present_returns_record(
     svc: ValidationService, db: AsyncMock
 ) -> None:
-    """get_config returns the record for an active slot.
+    """get_config returns the record for an existing slot.
 
-    spec: VALIDATION.md §Rule Configuration — GET returns the active conf.
+    spec: VALIDATION.md §Rule Configuration — GET returns the conf.
     """
-    active = _make_config_row(description="active check")
-    db.execute = AsyncMock(return_value=_scalar_result(active))
+    existing = _make_config_row(description="row count check")
+    db.execute = AsyncMock(return_value=_scalar_result(existing))
 
     record = await svc.get_config(dataset_urn=_DATASET_URN)
 
     assert record is not None
-    assert record.is_removed is False
-    assert record.description == "active check"
+    assert record.description == "row count check"
 
 
 @pytest.mark.asyncio
-async def test_get_config_never_created_returns_none(
+async def test_get_config_absent_returns_none(
     svc: ValidationService, db: AsyncMock
 ) -> None:
-    """get_config returns None when the slot never existed (router → CONFIG_NOT_FOUND).
+    """get_config returns None when the slot does not exist (router → CONFIG_NOT_FOUND).
 
-    spec: VALIDATION.md §Rule Configuration — a never-created slot returns 404
-    CONFIG_NOT_FOUND, the absent-resource view distinct from a restorable tombstone.
+    spec: VALIDATION.md §Rule Configuration — a slot that does not exist returns
+    404 CONFIG_NOT_FOUND. After a DELETE the dataset reads as never-created, so
+    the service returns None and the router raises CONFIG_NOT_FOUND.
+    spec: API.md §DELETE attr/validation/conf — afterwards GET → 404 CONFIG_NOT_FOUND.
     """
     db.execute = AsyncMock(return_value=_scalar_result(None))
 
     record = await svc.get_config(dataset_urn=_DATASET_URN)
 
     assert record is None
-
-
-@pytest.mark.asyncio
-async def test_get_config_soft_deleted_raises_conf_removed(
-    svc: ValidationService, db: AsyncMock
-) -> None:
-    """get_config on a soft-deleted slot raises VALIDATION_CONF_REMOVED (404).
-
-    spec: VALIDATION.md §Rule Configuration — "After DELETE, GET conf returns 404
-    with error code VALIDATION_CONF_REMOVED (distinguishing a restorable tombstone
-    from a never-created slot, which returns CONFIG_NOT_FOUND)."
-    """
-    deleted = _make_config_row(is_removed=True)
-    db.execute = AsyncMock(return_value=_scalar_result(deleted))
-
-    with pytest.raises(ValidationConfRemovedError) as exc_info:
-        await svc.get_config(dataset_urn=_DATASET_URN)
-
-    assert exc_info.value.error_code == "VALIDATION_CONF_REMOVED"
-    # It is an EntityNotFoundError subclass (404 family) but a distinct code.
-    assert isinstance(exc_info.value, EntityNotFoundError)
 
 
 # ── upsert_config ─────────────────────────────────────────────────────────────
@@ -132,10 +108,10 @@ async def test_upsert_config_precondition_dataset_not_in_datahub(
 async def test_upsert_config_first_put_creates_row(
     svc: ValidationService, db: AsyncMock, datahub: AsyncMock
 ) -> None:
-    """First PUT creates a row, returns (record, created=True), emits info + status.
+    """First PUT creates a row, returns (record, created=True), emits assertion info.
 
     spec: VALIDATION.md §Rule Configuration — PUT creates or replaces the config.
-    spec: VALIDATION.md §DataHub Aspect Mapping — emits assertionInfo + status.
+    spec: VALIDATION.md §DataHub Aspect Mapping — emits assertionInfo.
     """
     registry_row = MagicMock()
     registry_row.datahub_registered = True
@@ -159,7 +135,6 @@ async def test_upsert_config_first_put_creates_row(
         )
 
     assert created is True
-    assert record.is_removed is False
     # spec: BACKEND_SCHEMA.md — variables persisted as {name, description} objects.
     assert record.variables == [
         {"name": "row_cnt", "description": "Daily row count"},
@@ -202,23 +177,22 @@ async def test_upsert_config_second_put_updates_row(
 
 
 @pytest.mark.asyncio
-async def test_upsert_config_put_on_soft_deleted_rejected_409(
+async def test_upsert_config_recreates_after_delete(
     svc: ValidationService, db: AsyncMock, datahub: AsyncMock
 ) -> None:
-    """PUT on a soft-deleted (frozen) slot is rejected; it does not resurrect.
+    """PUT after a hard delete simply creates a fresh conf (created=True) — no 409.
 
-    spec: VALIDATION.md §Rule Configuration — "A PUT against a soft-deleted slot
-    is rejected with 409 VALIDATION_CONF_REMOVED — PUT does not resurrect; the
-    rule must be restored first." The frozen row stays removed and no
-    assertionInfo is re-emitted.
+    spec: API.md §DELETE attr/validation/conf — after delete the dataset reads as
+    never-created; a fresh PUT creates a new conf (201). There is no resurrection
+    concept and no VALIDATION_CONF_REMOVED conflict.
     """
     registry_row = MagicMock()
     registry_row.datahub_registered = True
     registry_result = _scalar_result(registry_row)
-    deleted_config = _make_config_row(is_removed=True)
-    config_result = _scalar_result(deleted_config)
+    # The prior conf was hard-deleted, so the slot select returns nothing.
+    config_miss = _scalar_result(None)
 
-    db.execute = AsyncMock(side_effect=[registry_result, config_result])
+    db.execute = AsyncMock(side_effect=[registry_result, config_miss])
     db.commit = AsyncMock()
 
     with (
@@ -228,18 +202,15 @@ async def test_upsert_config_put_on_soft_deleted_rejected_409(
     ):
         mock_db_refresh(db)
 
-        with pytest.raises(ConflictError) as exc_info:
-            await svc.upsert_config(
-                dataset_urn=_DATASET_URN,
-                description="should not resurrect",
-                variables=[_var("null_rate")],
-            )
+        _record, created = await svc.upsert_config(
+            dataset_urn=_DATASET_URN,
+            description="recreated after delete",
+            variables=[_var("null_rate")],
+        )
 
-    assert exc_info.value.error_code == "VALIDATION_CONF_REMOVED"
-    # The frozen row is untouched (still removed, variables not overwritten).
-    assert deleted_config.is_removed is True
-    mock_register.assert_not_called()
-    db.commit.assert_not_called()
+    assert created is True, "PUT after delete must create a new conf (201), not resurrect"
+    mock_register.assert_called_once()
+    db.commit.assert_awaited()
 
 
 # ── patch_config ──────────────────────────────────────────────────────────────
@@ -310,13 +281,13 @@ async def test_patch_config_replaces_variables_with_objects(
 
 
 @pytest.mark.asyncio
-async def test_patch_config_never_created_returns_config_not_found(
+async def test_patch_config_absent_returns_config_not_found(
     svc: ValidationService, db: AsyncMock
 ) -> None:
-    """PATCH on a never-created slot raises EntityNotFoundError (CONFIG_NOT_FOUND).
+    """PATCH on an absent slot raises EntityNotFoundError (CONFIG_NOT_FOUND).
 
-    spec: VALIDATION.md §Rule Configuration — a never-created slot returns 404
-    CONFIG_NOT_FOUND (distinct from the restorable-tombstone case below).
+    spec: VALIDATION.md §Rule Configuration — a slot that does not exist returns
+    404 CONFIG_NOT_FOUND. There is no removed-tombstone state.
     """
     db.execute = AsyncMock(return_value=_scalar_result(None))
 
@@ -327,241 +298,150 @@ async def test_patch_config_never_created_returns_config_not_found(
         )
 
     assert exc_info.value.error_code == "CONFIG_NOT_FOUND"
-    assert not isinstance(exc_info.value, ValidationConfRemovedError)
+
+
+# ── delete_config (hard delete + cascade) ─────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_patch_config_on_soft_deleted_raises_conf_removed(
-    svc: ValidationService, db: AsyncMock
+async def test_delete_config_hard_deletes_conf_and_assertion(
+    svc: ValidationService, db: AsyncMock, datahub: AsyncMock
 ) -> None:
-    """PATCH on a soft-deleted (frozen) slot raises VALIDATION_CONF_REMOVED.
+    """delete_config hard-deletes the conf row and hard-deletes the DataHub assertion.
 
-    spec: VALIDATION.md §Rule Configuration — "PATCH conf against the tombstoned
-    slot likewise returns 404 VALIDATION_CONF_REMOVED" (a *restorable* tombstone,
-    distinct from CONFIG_NOT_FOUND). The frozen row must not be mutated.
-    """
-    deleted = _make_config_row(is_removed=True, description="frozen description")
-    db.execute = AsyncMock(return_value=_scalar_result(deleted))
-    db.commit = AsyncMock()
-
-    with pytest.raises(ValidationConfRemovedError) as exc_info:
-        await svc.patch_config(
-            dataset_urn=_DATASET_URN,
-            patch={"description": "should not apply to a tombstoned slot"},
-        )
-
-    assert exc_info.value.error_code == "VALIDATION_CONF_REMOVED"
-    # The frozen row is not mutated.
-    assert deleted.description == "frozen description"
-    db.commit.assert_not_called()
-
-
-# ── delete_config ─────────────────────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_delete_config_sets_is_removed_true(
-    svc: ValidationService, db: AsyncMock
-) -> None:
-    """delete_config soft-deletes the row and emits status(removed=True).
-
-    spec: VALIDATION.md §Rule Configuration — DELETE performs soft delete.
+    spec: API.md §DELETE attr/validation/conf — removes the conf row and
+    hard-deletes the DataHub assertion entity (no status.removed tombstone).
+    spec: VALIDATION.md §Rule Configuration — DELETE is a hard delete.
     """
     existing = _make_config_row()
     db.execute = AsyncMock(return_value=_scalar_result(existing))
     db.commit = AsyncMock()
+    db.delete = AsyncMock()
+    datahub.hard_delete_entity = AsyncMock()
 
-    with (
-        patch(_TOMBSTONE, new_callable=AsyncMock) as mock_tombstone,
-        patch(_BUILD_URN, return_value=_FAKE_URN),
-    ):
+    with patch(_BUILD_URN, return_value=_FAKE_URN):
         await svc.delete_config(dataset_urn=_DATASET_URN)
 
-    assert existing.is_removed is True
-    mock_tombstone.assert_called_once_with(svc._datahub, _FAKE_URN)
-
-
-# ── restore_config ────────────────────────────────────────────────────────────
+    # The conf row is removed outright (no is_removed soft-delete flag set).
+    db.delete.assert_awaited_once_with(existing)
+    # The DataHub assertion is hard-deleted at the deterministic assertion URN.
+    datahub.hard_delete_entity.assert_awaited_once_with(_FAKE_URN)
+    db.commit.assert_awaited()
 
 
 @pytest.mark.asyncio
-async def test_restore_config_reinstates_frozen_conf_unchanged(
-    svc: ValidationService, db: AsyncMock
+async def test_delete_config_cascades_results_and_validation_events(
+    svc: ValidationService, db: AsyncMock, datahub: AsyncMock
 ) -> None:
-    """restore_config flips is_removed back to False and preserves variables verbatim.
+    """delete_config cascades to delete the dataset's results and validation events.
 
-    spec: VALIDATION.md §Rule Configuration — "Restore reinstates the frozen
-    description/variables exactly as they were — no redefinition on restore — and
-    re-emits assertionInfo + status.removed=false." Returns the restored conf (200).
+    spec: API.md §DELETE attr/validation/conf — cascades to delete the dataset's
+    validation results and validation events.
+    spec: BACKEND.md §Validation Service — cascade scoped to VALIDATION.* events;
+    other features' events for the same dataset are untouched.
+
+    The two cascade DELETE statements (results, then validation-scoped events) plus
+    the conf-row delete are issued before commit; the assertion hard-delete follows.
     """
-    frozen_vars = [_var("row_cnt", "Daily row count"), _var("col1_mean", "Mean")]
-    deleted = _make_config_row(
-        is_removed=True,
-        description="frozen description",
-        variables=frozen_vars,
+    existing = _make_config_row()
+    # 1 select (find the conf) + 2 cascade deletes (results, events) on db.execute.
+    select_result = _scalar_result(existing)
+    delete_results_stmt = MagicMock()
+    delete_events_stmt = MagicMock()
+    db.execute = AsyncMock(
+        side_effect=[select_result, delete_results_stmt, delete_events_stmt]
     )
-    db.execute = AsyncMock(return_value=_scalar_result(deleted))
     db.commit = AsyncMock()
+    db.delete = AsyncMock()
+    datahub.hard_delete_entity = AsyncMock()
 
-    with (
-        patch(_REGISTER, new_callable=AsyncMock) as mock_register,
-        patch(_BUILD_INFO) as mock_build_info,
-        patch(_BUILD_URN, return_value=_FAKE_URN),
-    ):
-        mock_db_refresh(db)
+    from sqlalchemy.dialects import postgresql
 
-        record = await svc.restore_config(dataset_urn=_DATASET_URN)
+    with patch(_BUILD_URN, return_value=_FAKE_URN):
+        await svc.delete_config(dataset_urn=_DATASET_URN)
 
-    # The slot is active again and the frozen conf is preserved exactly.
-    assert deleted.is_removed is False
-    assert record.is_removed is False
-    assert record.description == "frozen description"
-    assert record.variables == frozen_vars
-    # status.removed=false is re-emitted via assertionInfo at the same URN.
-    mock_register.assert_called_once()
-    # build_assertion_info called with the *frozen* (unchanged) variable set.
-    info_call = mock_build_info.call_args
-    assert info_call.args[1] == "frozen description"
-    assert info_call.args[2] == frozen_vars
+    # Two cascade DELETE statements were executed (after the initial SELECT).
+    assert db.execute.await_count == 3, (
+        "delete_config must issue 1 SELECT + 2 cascade DELETE statements; "
+        f"got {db.execute.await_count} db.execute calls"
+    )
+
+    # Render both cascade DELETE statements and assert they target the right tables.
+    cascade_stmts = [
+        str(
+            call.args[0].compile(
+                dialect=postgresql.dialect(),
+                compile_kwargs={"literal_binds": True},
+            )
+        )
+        for call in db.execute.await_args_list[1:]
+    ]
+    joined = "\n".join(cascade_stmts)
+    assert "DELETE FROM" in joined and "validation_results" in joined, (
+        "delete_config must DELETE the dataset's validation_results rows. "
+        f"Cascade statements:\n{joined}"
+    )
+    assert "events" in joined, (
+        "delete_config must DELETE the dataset's validation events. "
+        f"Cascade statements:\n{joined}"
+    )
+    # The events cascade is scoped to VALIDATION.* events only.
+    assert VALIDATION_PREFIX in joined, (
+        "events cascade must be scoped to VALIDATION.* events (event_type prefix); "
+        f"got:\n{joined}"
+    )
+
+    db.delete.assert_awaited_once_with(existing)
+    datahub.hard_delete_entity.assert_awaited_once_with(_FAKE_URN)
 
 
 @pytest.mark.asyncio
-async def test_restore_config_records_restore_event(
-    svc: ValidationService, db: AsyncMock
+async def test_delete_config_absent_raises_config_not_found(
+    svc: ValidationService, db: AsyncMock, datahub: AsyncMock
 ) -> None:
-    """restore_config records a VALIDATION.CONFIG_RESTORE lifecycle event.
+    """delete_config on an absent slot raises CONFIG_NOT_FOUND; no cascade, no DataHub call.
 
-    spec: VALIDATION.md §Rule Configuration / §DataHub Aspect Mapping — restore is
-    an explicit lifecycle action distinct from PUT/PATCH.
+    spec: API.md §DELETE attr/validation/conf — DELETE on an absent slot is a 404.
     """
-    deleted = _make_config_row(is_removed=True)
-    db.execute = AsyncMock(return_value=_scalar_result(deleted))
+    db.execute = AsyncMock(return_value=_scalar_result(None))
     db.commit = AsyncMock()
+    db.delete = AsyncMock()
+    datahub.hard_delete_entity = AsyncMock()
+
+    with patch(_BUILD_URN, return_value=_FAKE_URN):
+        with pytest.raises(EntityNotFoundError) as exc_info:
+            await svc.delete_config(dataset_urn=_DATASET_URN)
+
+    assert exc_info.value.error_code == "CONFIG_NOT_FOUND"
+    db.delete.assert_not_awaited()
+    datahub.hard_delete_entity.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_delete_config_records_no_event(
+    svc: ValidationService, db: AsyncMock, datahub: AsyncMock
+) -> None:
+    """delete_config records no event — the cascade wipes the dataset's validation events.
+
+    spec: API.md §DELETE attr/validation/conf — the delete records no event; the
+    cascade removes the dataset's validation events so its events panel is empty.
+    """
+    existing = _make_config_row()
+    db.execute = AsyncMock(return_value=_scalar_result(existing))
+    db.commit = AsyncMock()
+    db.delete = AsyncMock()
+    datahub.hard_delete_entity = AsyncMock()
 
     with (
-        patch(_REGISTER, new_callable=AsyncMock),
-        patch(_BUILD_INFO),
         patch(_BUILD_URN, return_value=_FAKE_URN),
         patch.object(svc, "_record_event", new_callable=AsyncMock) as mock_event,
     ):
-        mock_db_refresh(db)
+        await svc.delete_config(dataset_urn=_DATASET_URN)
 
-        await svc.restore_config(dataset_urn=_DATASET_URN)
-
-    mock_event.assert_awaited_once()
-    assert mock_event.await_args.args[1] == VALIDATION_CONFIG_RESTORE
-
-
-@pytest.mark.asyncio
-async def test_restore_config_never_created_raises_not_found(
-    svc: ValidationService, db: AsyncMock
-) -> None:
-    """restore_config raises EntityNotFoundError when there is no row at all.
-
-    spec: VALIDATION.md §Rule Configuration — "if there is no soft-deleted row to
-    restore it returns 404."
-    """
-    db.execute = AsyncMock(return_value=_scalar_result(None))
-
-    with pytest.raises(EntityNotFoundError) as exc_info:
-        await svc.restore_config(dataset_urn=_DATASET_URN)
-
-    assert exc_info.value.error_code == "CONFIG_NOT_FOUND"
-
-
-@pytest.mark.asyncio
-async def test_restore_config_on_active_slot_raises_not_found(
-    svc: ValidationService, db: AsyncMock
-) -> None:
-    """restore_config on an already-active slot is a no-op → 404 (nothing to restore).
-
-    spec: VALIDATION.md §Rule Configuration — restore targets a soft-deleted row;
-    an active slot has nothing to restore.
-    """
-    active = _make_config_row(is_removed=False)
-    db.execute = AsyncMock(return_value=_scalar_result(active))
-    db.commit = AsyncMock()
-
-    with pytest.raises(EntityNotFoundError) as exc_info:
-        await svc.restore_config(dataset_urn=_DATASET_URN)
-
-    assert exc_info.value.error_code == "CONFIG_NOT_FOUND"
-    db.commit.assert_not_called()
+    mock_event.assert_not_awaited()
 
 
 # ── list_configs ──────────────────────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_list_configs_removed_true_filter(
-    svc: ValidationService, db: AsyncMock
-) -> None:
-    """removed_filter=True shows only soft-deleted configs; SQL has is_removed=true.
-
-    spec: VALIDATION.md §API Surface — cross-dataset list filterable by removed status.
-    """
-    from sqlalchemy.dialects import postgresql
-
-    count_mock = _scalar_count(1)
-    config_row = _make_config_row(is_removed=True)
-    rows_mock = MagicMock()
-    rows_mock.scalars.return_value.all.return_value = [config_row]
-
-    latest_mock = MagicMock()
-    latest_mock.all.return_value = []
-
-    db.execute = AsyncMock(side_effect=[count_mock, rows_mock, latest_mock])
-
-    items, total_count = await svc.list_configs(removed_filter=True)
-    assert total_count == 1
-    assert all(item.is_removed for item in items)
-
-    first_stmt = db.execute.call_args_list[0].args[0]
-    rendered = str(
-        first_stmt.compile(
-            dialect=postgresql.dialect(),
-            compile_kwargs={"literal_binds": True},
-        )
-    )
-    assert "is_removed" in rendered, (
-        f"Expected 'is_removed' in count query SQL; got:\n{rendered}"
-    )
-
-
-@pytest.mark.asyncio
-async def test_list_configs_removed_false_filter(
-    svc: ValidationService, db: AsyncMock
-) -> None:
-    """removed_filter=False shows only active configs; SQL targets the is_removed column.
-
-    spec: VALIDATION.md §API Surface — cross-dataset list filterable by removed status.
-    """
-    from sqlalchemy.dialects import postgresql
-
-    count_mock = _scalar_count(2)
-    active_row = _make_config_row(is_removed=False)
-    rows_mock = MagicMock()
-    rows_mock.scalars.return_value.all.return_value = [active_row]
-
-    latest_mock = MagicMock()
-    latest_mock.all.return_value = []
-
-    db.execute = AsyncMock(side_effect=[count_mock, rows_mock, latest_mock])
-
-    items, total_count = await svc.list_configs(removed_filter=False)
-    assert total_count == 2
-    assert all(not item.is_removed for item in items)
-
-    first_stmt = db.execute.call_args_list[0].args[0]
-    rendered = str(
-        first_stmt.compile(
-            dialect=postgresql.dialect(),
-            compile_kwargs={"literal_binds": True},
-        )
-    )
-    assert "is_removed" in rendered, (
-        f"Expected 'is_removed' in count query SQL; got:\n{rendered}"
-    )
 
 
 @pytest.mark.asyncio

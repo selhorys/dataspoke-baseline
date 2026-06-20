@@ -223,27 +223,50 @@ def test_is_enabled_column_on_config_models() -> None:
     """Mutable config models that have lifecycle scheduling use is_enabled (not is_active).
 
     spec: BACKEND_SCHEMA.md — is_enabled present on MetagenConfig, MetagenBoundary,
-    MetricDefinition, OntogenConfig. IngestionSource uses status column instead.
-    ValidationConfig uses is_removed instead.
+    MetricDefinition, OntogenConfig, OntogenSeed. IngestionSource uses status column
+    instead. ValidationConfig has no lifecycle flag (hard-delete, no soft-delete).
     """
-    enabled_models = [MetagenConfig, MetagenBoundary, MetricDefinition, OntogenConfig]
+    enabled_models = [
+        MetagenConfig,
+        MetagenBoundary,
+        MetricDefinition,
+        OntogenConfig,
+        OntogenSeed,
+    ]
     for model in enabled_models:
         col_names = {col.name for col in model.__table__.columns}
         assert "is_enabled" in col_names, f"{model.__name__} missing is_enabled column"
         assert "is_active" not in col_names, f"{model.__name__} has obsolete is_active column"
 
 
-def test_validation_config_is_removed_column() -> None:
-    """ValidationConfig uses is_removed for soft-delete (not is_enabled).
+def test_validation_config_has_no_lifecycle_flag() -> None:
+    """ValidationConfig has no is_removed/is_enabled/is_active lifecycle flag.
 
-    spec: VALIDATION.md §Rule Configuration — DELETE performs a soft delete;
-    PUT-after-DELETE resurrects the assertion.
+    DELETE is a hard delete + cascade — there is no soft-delete (freeze) state to
+    track on the row.
+
+    spec: VALIDATION.md §Rule Configuration — DELETE is a hard delete.
     spec: BACKEND_SCHEMA.md §validation_configs.
     """
     col_names = {col.name for col in ValidationConfig.__table__.columns}
-    assert "is_removed" in col_names, "ValidationConfig missing is_removed column"
+    assert "is_removed" not in col_names, "ValidationConfig should not have is_removed"
     assert "is_enabled" not in col_names, "ValidationConfig should not have is_enabled"
     assert "is_active" not in col_names, "ValidationConfig should not have is_active"
+
+
+def test_ontogen_seed_uses_is_enabled_not_status() -> None:
+    """OntogenSeed uses an is_enabled lifecycle flag, not a status column.
+
+    A seed ships disabled and is enabled/disabled to join or leave the inference
+    pipeline; there is no active/retired status.
+
+    spec: BACKEND_SCHEMA.md §ontogen_seeds — is_enabled (default false).
+    spec: USE_CASE_en.md §UC3 — seeds created disabled, enabled via attr/enabled.
+    """
+    col_names = {col.name for col in OntogenSeed.__table__.columns}
+    assert "is_enabled" in col_names, "OntogenSeed missing is_enabled column"
+    assert "status" not in col_names, "OntogenSeed must not carry a status column"
+    assert "body_md" in col_names, "OntogenSeed missing body_md column"
 
 
 def test_timestamptz_columns() -> None:
@@ -461,7 +484,7 @@ def test_indexes_exist() -> None:
 def test_validation_config_columns() -> None:
     """ValidationConfig must have the passive result-store columns.
 
-    spec: VALIDATION.md §Rule Configuration — description, variables, is_removed;
+    spec: VALIDATION.md §Rule Configuration — description, variables;
     spec: BACKEND_SCHEMA.md §validation_configs.
     """
     col_names = {col.name for col in ValidationConfig.__table__.columns}
@@ -469,12 +492,16 @@ def test_validation_config_columns() -> None:
     assert "dataset_urn" in col_names, "ValidationConfig missing dataset_urn (PK)"
     assert "description" in col_names, "ValidationConfig missing description"
     assert "variables" in col_names, "ValidationConfig missing variables"
-    assert "is_removed" in col_names, "ValidationConfig missing is_removed"
     assert "created_at" in col_names
     assert "updated_at" in col_names
     # Old columns must be gone
     assert "rules" not in col_names, "ValidationConfig has stale rules column"
     assert "owner" not in col_names, "ValidationConfig has stale owner column"
+    # Soft-delete is gone: hard-delete + cascade replaces the is_removed freeze.
+    assert "is_removed" not in col_names, (
+        "ValidationConfig must not carry is_removed — DELETE is a hard delete + cascade. "
+        "spec: BACKEND_SCHEMA.md §validation_configs"
+    )
 
 
 def test_validation_result_columns() -> None:

@@ -17,6 +17,7 @@ import type {
   OntogenTriple,
   ReviewRequest,
   SeedCreateResponse,
+  SeedEnabledResponse,
   SeedListResponse,
   TripleListResponse,
 } from "@/types/ontogen";
@@ -125,6 +126,29 @@ export function useUpdateSeed(seedId: string) {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["ontogen", "seeds"] });
       void qc.invalidateQueries({ queryKey: ["ontogen", "seed", seedId] });
+    },
+  });
+}
+
+/**
+ * Enable or disable a seed via the per-attribute JSON PATCH
+ * (`PATCH .../attr/seed/{seed_id}/attr/enabled`). Only enabled seeds steer
+ * inference; a disabled seed is retained and visible. Toggling is reversible.
+ */
+export function useSetSeedEnabled(seedId: string) {
+  const qc = useQueryClient();
+  return useMutation<SeedEnabledResponse, Error, boolean>({
+    mutationFn: (isEnabled) =>
+      apiFetch<SeedEnabledResponse>(
+        `/spoke/ontogen/attr/seed/${seedId}/attr/enabled`,
+        {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ is_enabled: isEnabled }),
+        },
+      ),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["ontogen", "seeds"] });
     },
   });
 }

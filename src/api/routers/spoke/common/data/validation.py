@@ -5,7 +5,6 @@ Routes served:
   PUT    /data/{dataset_urn}/attr/validation/conf
   PATCH  /data/{dataset_urn}/attr/validation/conf
   DELETE /data/{dataset_urn}/attr/validation/conf
-  POST   /data/{dataset_urn}/attr/validation/conf/method/restore
   POST   /data/{dataset_urn}/attr/validation/result
   GET    /data/{dataset_urn}/attr/validation/result
   GET    /data/{dataset_urn}/event/validation
@@ -96,25 +95,6 @@ async def delete_data_validation_conf(
     _writer: AuthContext = Depends(require_writer),
 ) -> None:
     await service.delete_config(dataset_urn)
-
-
-@sub_router.post(
-    "/{dataset_urn}/attr/validation/conf/method/restore",
-    response_model=ValidationConfResponse,
-    status_code=status.HTTP_200_OK,
-)
-async def restore_data_validation_conf(
-    dataset_urn: DatasetUrnPath,
-    service: ValidationService = Depends(get_validation_service),
-    _writer: AuthContext = Depends(require_writer),
-) -> ValidationConfResponse:
-    """Restore (undelete) a soft-deleted validation slot.
-
-    Reinstates the frozen conf unchanged (200). Returns 404 CONFIG_NOT_FOUND if
-    there is no soft-deleted row to restore.
-    """
-    config = await service.restore_config(dataset_urn)
-    return ValidationConfResponse.model_validate(config)
 
 
 # ── Results ───────────────────────────────────────────────────────────────────

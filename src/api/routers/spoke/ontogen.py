@@ -4,6 +4,7 @@ Routes:
   conf CRUD           GET/PUT/PATCH/DELETE /ontogen/attr/conf
   seed list/CRUD      GET/POST /ontogen/attr/seed
                       GET/PATCH/DELETE /ontogen/attr/seed/{seed_id}
+                      PATCH /ontogen/attr/seed/{seed_id}/attr/enabled
   run                 POST /ontogen/method/run
   global events       GET /ontogen/event
   node result set     GET/GET/{id}/GET/{id}/attr/GET/{id}/event/POST/{id}/method/review
@@ -37,6 +38,7 @@ from src.api.schemas.ontogen import (
     OntogenConfResponse,
     OntogenRunResponse,
     ReviewRequest,
+    SeedEnabledRequest,
     SeedListItem,
     SeedListResponse,
     TripleAttrResponse,
@@ -231,7 +233,7 @@ async def get_ontogen_seeds(
     sort: str | None = Query(default=None),
     service: OntogenService = Depends(get_ontogen_service),
 ) -> SeedListResponse:
-    """List active inference seeds with preview snippets.
+    """List inference seeds (enabled and disabled) with preview snippets.
 
     Paginated; sortable by created_at, updated_at (default: updated_at descending).
     """
@@ -248,6 +250,7 @@ async def get_ontogen_seeds(
         seeds=[
             SeedListItem(
                 seed_id=p.seed_id,
+                is_enabled=p.is_enabled,
                 updated_at=p.updated_at,
                 preview=p.preview,
             )
@@ -296,13 +299,33 @@ async def patch_ontogen_seed(
     return {"seed_id": str(seed.id), "updated_at": seed.updated_at.isoformat()}
 
 
+@router.patch("/attr/seed/{seed_id}/attr/enabled")
+async def patch_ontogen_seed_enabled(
+    seed_id: UuidPath,
+    body: SeedEnabledRequest,
+    service: OntogenService = Depends(get_ontogen_service),
+    _writer: AuthContext = Depends(require_writer),
+) -> dict[str, Any]:
+    """Enable or disable a seed (JSON ``{is_enabled}``).
+
+    A disabled seed is retained and fully visible but excluded from the
+    inference pipeline. Toggling is reversible both ways.
+    """
+    seed = await service.set_seed_enabled(seed_id, body.is_enabled)
+    return {
+        "seed_id": str(seed.id),
+        "is_enabled": seed.is_enabled,
+        "updated_at": seed.updated_at.isoformat(),
+    }
+
+
 @router.delete("/attr/seed/{seed_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_ontogen_seed(
     seed_id: UuidPath,
     service: OntogenService = Depends(get_ontogen_service),
     _writer: AuthContext = Depends(require_writer),
 ) -> None:
-    """Retire a seed (soft-delete)."""
+    """Delete a seed (hard delete)."""
     await service.delete_seed(seed_id)
 
 

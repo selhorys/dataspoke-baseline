@@ -12,13 +12,11 @@
  * Spec: spec/feature/FRONTEND_BASIC.md §Per-dataset page.
  */
 
-import { use, useState } from "react";
+import { use } from "react";
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Label } from "@/components/ui/label";
 import { CollapsiblePanel } from "@/components/collapsible-panel";
 import { EventsPanel } from "@/components/events-panel";
 import { IngestionDataPanel } from "@/components/ingestion/ingestion-data-panel";
@@ -83,26 +81,12 @@ function IngestionSummaryCard({ datasetUrn }: { datasetUrn: string }) {
   );
 }
 
-function ValidationSummaryCard({
-  datasetUrn,
-  showDeleted,
-}: {
-  datasetUrn: string;
-  showDeleted: boolean;
-}) {
+function ValidationSummaryCard({ datasetUrn }: { datasetUrn: string }) {
   const { data: conf, isLoading, error } = useValidationConf(datasetUrn);
   const { data: resultsData } = useValidationResults(datasetUrn, { limit: 1 });
   const is404 = error instanceof ApiError && error.status === 404;
-  const isRemoved =
-    error instanceof ApiError &&
-    error.status === 404 &&
-    error.error_code === "VALIDATION_CONF_REMOVED";
-  // A deleted rule stays hidden behind the page toggle: present it as a
-  // never-created slot ("No config" + "No score yet") so neither the config
-  // nor the result history leaks while "Show deleted" is off.
-  const hiddenRemoved = isRemoved && !showDeleted;
   const showConf = conf && !is404;
-  const latestScore = hiddenRemoved ? null : (resultsData?.results?.[0]?.score ?? null);
+  const latestScore = resultsData?.results?.[0]?.score ?? null;
 
   return (
     <Card>
@@ -188,8 +172,6 @@ export default function DatasetHubPage({
     ? rawUrn
     : decodeURIComponent(rawUrn);
 
-  const [showDeleted, setShowDeleted] = useState(false);
-
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -206,22 +188,12 @@ export default function DatasetHubPage({
             {datasetUrn}
           </h1>
         </div>
-        <div className="flex items-center gap-2">
-          <Checkbox
-            id="show-deleted"
-            checked={showDeleted}
-            onCheckedChange={(checked) => setShowDeleted(checked === true)}
-          />
-          <Label htmlFor="show-deleted" className="cursor-pointer text-sm">
-            Show deleted
-          </Label>
-        </div>
       </div>
 
       {/* Summary cards */}
       <div className="grid gap-4 sm:grid-cols-3">
         <IngestionSummaryCard datasetUrn={datasetUrn} />
-        <ValidationSummaryCard datasetUrn={datasetUrn} showDeleted={showDeleted} />
+        <ValidationSummaryCard datasetUrn={datasetUrn} />
         <MetagenSummaryCard datasetUrn={datasetUrn} />
       </div>
 
@@ -231,7 +203,7 @@ export default function DatasetHubPage({
       </CollapsiblePanel>
 
       <CollapsiblePanel title="Validation">
-        <ValidationDataPanel datasetUrn={datasetUrn} showDeleted={showDeleted} />
+        <ValidationDataPanel datasetUrn={datasetUrn} />
       </CollapsiblePanel>
 
       <CollapsiblePanel title="MetaGen">

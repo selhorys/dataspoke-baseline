@@ -135,7 +135,6 @@ async def test_get_validation_conf_200_when_present(client, mock_svc: AsyncMock)
             dataset_urn=_VALID_URN,
             description="null rate check",
             variables=[_var("null_rate_rating_score", "Null rate of rating_score")],
-            is_removed=False,
             created_at=datetime.now(tz=UTC),
             updated_at=datetime.now(tz=UTC),
         )
@@ -177,7 +176,6 @@ async def test_put_validation_conf_201_on_create(client, mock_svc: AsyncMock) ->
                 dataset_urn=_VALID_URN,
                 description="null rate check",
                 variables=[_var("null_rate_rating_score")],
-                is_removed=False,
                 created_at=datetime.now(tz=UTC),
                 updated_at=datetime.now(tz=UTC),
             ),
@@ -210,7 +208,6 @@ async def test_put_validation_conf_200_on_update(client, mock_svc: AsyncMock) ->
                 dataset_urn=_VALID_URN,
                 description="updated check",
                 variables=[_var("null_rate_rating_score")],
-                is_removed=False,
                 created_at=datetime.now(tz=UTC),
                 updated_at=datetime.now(tz=UTC),
             ),
@@ -278,7 +275,6 @@ async def test_patch_validation_conf_200(client, mock_svc: AsyncMock) -> None:
             dataset_urn=_VALID_URN,
             description="patched description",
             variables=[_var("null_rate_rating_score")],
-            is_removed=False,
             created_at=datetime.now(tz=UTC),
             updated_at=datetime.now(tz=UTC),
         )
@@ -294,15 +290,25 @@ async def test_patch_validation_conf_200(client, mock_svc: AsyncMock) -> None:
 
 
 @pytest.mark.asyncio
-async def test_delete_validation_conf_204(client, mock_svc: AsyncMock) -> None:
-    """DELETE /attr/validation/conf returns 204 No Content.
+async def test_delete_validation_conf_204_hard_delete(
+    client, mock_svc: AsyncMock
+) -> None:
+    """DELETE /attr/validation/conf returns 204 and delegates a hard delete.
 
+    The route delegates to delete_config (which hard-deletes the conf row,
+    cascades results + validation events, and hard-deletes the DataHub
+    assertion); the route contract is the 204 No Content response.
+
+    spec: API.md §DELETE attr/validation/conf — hard delete + cascade → 204.
     spec: feature/VALIDATION.md §API Surface — DELETE returns 204.
     """
     mock_svc.delete_config = AsyncMock(return_value=None)
 
     resp = await client.delete(_CONF_URL, headers=auth_headers())
     assert resp.status_code == 204
+    # The route calls the (cascading) hard-delete service method for this URN.
+    mock_svc.delete_config.assert_awaited_once()
+    assert mock_svc.delete_config.await_args.args[0] == _VALID_URN
 
 
 @pytest.mark.asyncio

@@ -22,7 +22,9 @@
  *   1. Navigate to /ontogen/conf; assert Run + Edit controls; fill is_enabled + schedule_tier; Save.
  *      Backend: PUT /spoke/ontogen/attr/conf → 200/201; round-trips fields.
  *   2. Navigate to /ontogen/seed; click "+ New Seed"; paste domain Markdown; Save seed.
- *      Backend: GET /spoke/ontogen/attr/seed → seed_id present; preview + updated_at set.
+ *      The seed ships disabled (badge "disabled"); click Enable so it joins inference.
+ *      Backend: GET /spoke/ontogen/attr/seed → seed_id present; is_enabled false→true;
+ *      preview + updated_at set.
  *   3. On /ontogen/conf, click Run button → RunDialog ("Run ontology inference") → Run.
  *      Backend poll until ONTOGEN.RUN_COMPLETE event appears; assert OntogenRunSummary shape.
  *   4. GET /spoke/ontogen/event → find ONTOGEN.RUN_COMPLETE; assert debate fields.
@@ -280,6 +282,43 @@ test("UC3 step 2 — create domain seed on /ontogen/seed page", async ({
   await expect(page.getByText(resolvedSeed.preview, { exact: false }).first()).toBeVisible({
     timeout: 10_000,
   });
+
+  // -- Backend probe: the new seed ships disabled --
+  // spec: USE_CASE_en.md §UC3 — POST attr/seed creates the seed disabled; the list
+  // entry carries is_enabled. (Re-fetch to read the is_enabled flag on the row.)
+  const listResp2 = await adminApi.get(`${SEED_API}?limit=50`);
+  expect(listResp2.status()).toBe(200);
+  const listBody2 = (await listResp2.json()) as {
+    seeds: Array<{ seed_id: string; is_enabled: boolean }>;
+  };
+  const ourRow = listBody2.seeds.find((s) => s.seed_id === seedId)!;
+  expect(ourRow.is_enabled).toBe(false);
+
+  // -- UI assertion: the seed row shows the "disabled" badge --
+  // spec: FRONTEND_ONTOGEN.md §Seed Library — each row shows an enabled/disabled badge.
+  // Scope to the row containing our seed_id (truncated font-mono text on the row).
+  const seedRow = page.locator('[role="button"]').filter({ hasText: seedId!.slice(0, 8) });
+  await expect(seedRow.getByText("disabled", { exact: true }).first()).toBeVisible({
+    timeout: 10_000,
+  });
+
+  // -- UI gesture: click "Enable" so the seed joins the next inference run --
+  // UC3 narrative: "The steward reviews the seed, then enables it so it joins the
+  // next inference run."
+  // spec: FRONTEND_ONTOGEN.md §Seed Library — per-row Enable/Disable toggle.
+  // spec: API.md §PATCH attr/seed/{seed_id}/attr/enabled.
+  await seedRow.getByRole("button", { name: "Enable", exact: true }).first().click();
+  await expect(page.getByText("Seed enabled", { exact: false }).first()).toBeVisible({
+    timeout: 10_000,
+  });
+
+  // -- Backend probe (dual confirmation): the seed is now enabled --
+  const listResp3 = await adminApi.get(`${SEED_API}?limit=50`);
+  expect(listResp3.status()).toBe(200);
+  const listBody3 = (await listResp3.json()) as {
+    seeds: Array<{ seed_id: string; is_enabled: boolean }>;
+  };
+  expect(listBody3.seeds.find((s) => s.seed_id === seedId)!.is_enabled).toBe(true);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

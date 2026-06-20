@@ -23,7 +23,6 @@ def _make_config_row(
     dataset_urn: str = _DATASET_URN,
     description: str = "Daily row count check",
     variables: list[dict[str, str]] | None = None,
-    is_removed: bool = False,
 ) -> MagicMock:
     """Mock a ValidationConfig ORM row.
 
@@ -38,7 +37,6 @@ def _make_config_row(
         if variables is not None
         else [_var("row_cnt", "Daily row count"), _var("col1_mean", "Mean of col1")]
     )
-    row.is_removed = is_removed
     row.created_at = datetime.now(tz=UTC)
     row.updated_at = datetime.now(tz=UTC)
     return row

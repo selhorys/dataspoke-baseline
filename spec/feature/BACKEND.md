@@ -484,31 +484,22 @@ ingest/query — surfaced through the routes below.
   exist in DataHub or the request is rejected with `422 DATASET_NOT_IN_DATAHUB`. On
   success the service:
   1. upserts the row in `validation_configs` (`dataset_urn` PK). A `PUT` against
-     a soft-deleted (`is_removed = true`) row is **rejected** with
-     `409 VALIDATION_CONF_REMOVED` — the slot must be restored first; PUT does not
-     resurrect. A `PATCH` against the same tombstoned slot returns
-     `404 VALIDATION_CONF_REMOVED` (see `DELETE` below). On an active slot the
-     upsert keeps `is_removed = false`,
-  2. emits `assertionInfo` to DataHub with `type = CUSTOM`, `source.type = EXTERNAL`,
+     an absent slot simply creates it (`201`); there is no deleted/frozen state and
+     no resurrection concept,
+  2. emits `assertionInfo` to DataHub at the deterministic URN
+     (`urn:li:assertion:<datahub_guid({"platform": "dataspoke-validation", "entity": dataset_urn})>`)
+     with `type = CUSTOM`, `source.type = EXTERNAL`,
      `customAssertion.type = "DATASPOKE_VALIDATION"`,
      `customAssertion.entity = <dataset_urn>`, and
-     `customAssertion.logic = "<comma-joined declared variable names>"`,
-  3. emits `status.removed = false` together with `assertionInfo` at the same
-     deterministic URN
-     (`urn:li:assertion:<datahub_guid({"platform": "dataspoke-validation", "entity": dataset_urn})>`),
-     reverting any out-of-band tombstone on the active rule.
-- `DELETE` performs a soft-delete (freeze): marks the row `is_removed = true` in
-  `validation_configs` and emits `status.removed = true` to DataHub. The
-  `description`/`variables` and the `validation_results` history are preserved untouched.
-  A `GET`/`PATCH` on the tombstoned slot returns `404 VALIDATION_CONF_REMOVED` (vs
-  `CONFIG_NOT_FOUND` for a never-created slot).
-- `POST .../conf/method/restore` undeletes a soft-deleted slot: loads the
-  `is_removed = true` row (else `404`), sets `is_removed = false`, preserves the frozen
-  `description`/`variables`, re-emits `assertionInfo` + `status.removed = false` at the
-  same deterministic URN, records a `CONFIG_RESTORE` lifecycle event, and returns the
-  restored conf. The preserved results stay consistent because the variable set is
-  unchanged.
-- A DataHub error during `assertionInfo` / `status` emission surfaces as `502` or `503`
+     `customAssertion.logic = "<comma-joined declared variable names>"`.
+- `DELETE` performs a **hard delete with cascade**, in a single transaction: it deletes
+  the dataset's `validation_results` rows, deletes the dataset's validation events
+  (`VALIDATION.*` only — other-feature events for the same dataset are untouched), deletes
+  the `validation_configs` row, then hard-deletes the DataHub assertion **entity** (no
+  `status.removed` tombstone). It records **no** event — the cascade wipes the dataset's
+  validation events. Returns `204`. Afterwards `GET`/`PATCH` return `404 CONFIG_NOT_FOUND`
+  and a fresh `PUT` re-creates the conf and the assertion under the same URN.
+- A DataHub error during `assertionInfo` emission or the assertion hard-delete surfaces as `502` or `503`
   per the DataHub error envelope — config save and DataHub assertion lifecycle are
   coupled by design because DataHub is the SSOT for assertion definitions.
 
@@ -774,9 +765,13 @@ The conf is a single row in `ontogen_config` (singleton table; see
 **Seeds** at `/spoke/ontogen/attr/seed/{seed_id}` are human-authored Markdown
 documents (prompts, domain hints, naming conventions) that the inference run consumes
 alongside the data sources. The endpoint accepts and returns raw Markdown
-(`Content-Type: text/markdown`); only `seed_id` and timestamps are managed out-of-band.
-Stored in `ontogen_seeds` (see
-[BACKEND_SCHEMA §ontogen_seeds](BACKEND_SCHEMA.md#ontogen_seeds)).
+(`Content-Type: text/markdown`); only `seed_id`, `is_enabled`, and timestamps are
+managed out-of-band. A seed is created **disabled** (`is_enabled = false`, consistent
+with the conf/metric factory-default convention) and does not participate in inference
+until enabled via `PATCH .../attr/seed/{seed_id}/attr/enabled` (JSON `{is_enabled}`);
+disabling is reversible and retains the seed. `DELETE` is a hard delete. `list_seeds`
+returns **all** seeds (enabled and disabled) with their `is_enabled` state. Stored in
+`ontogen_seeds` (see [BACKEND_SCHEMA §ontogen_seeds](BACKEND_SCHEMA.md#ontogen_seeds)).
 
 **Triple model**. The baseline ontology is built around three independently reviewable
 result types — *node* (subject / object), *edge* (predicate), *triple*
@@ -804,7 +799,7 @@ or manual `POST /method/run`):
    `metagen_candidates` with `status='llm_approved'`, so *presence* in DataHub is
    the approval signal — UC3 reads DataHub directly with no JOIN against
    `metagen_candidates`.
-4. Load active seeds (`ontogen_seeds.status='active'`). Resolve the one-shot prompt:
+4. Load enabled seeds (`ontogen_seeds.is_enabled = true`). Resolve the one-shot prompt:
    if the `POST /method/run` request carries a non-empty `text/markdown` body, use
    that body; otherwise fall back to `ontogen_config.default_run_prompt` (used by both
    the periodic Airflow DAG and bodyless manual calls). The one-shot prompt is
@@ -1003,17 +998,21 @@ Event type values are **uppercase**, dot-delimited: `{DOMAIN}.{ACTION}`.
   `METRIC`, `NODE`, `EDGE`, `TRIPLE`, `ONTOGEN`.
 - **Action** describes what happened. Two categories:
   - *Config lifecycle*: `CONFIG_CREATE`, `CONFIG_UPDATE`, `CONFIG_DELETE` —
-    emitted by PUT, PATCH, DELETE on a configuration resource. `VALIDATION` adds
-    `CONFIG_RESTORE`, emitted by `POST .../conf/method/restore` when a soft-deleted
-    slot is undeleted.
+    emitted by PUT, PATCH, DELETE on a configuration resource. `VALIDATION` is the
+    exception: it emits `CONFIG_CREATE`/`CONFIG_UPDATE` but no `CONFIG_DELETE`, because
+    deleting a validation conf hard-deletes the dataset's validation events as part of
+    its cascade.
   - *Action*: domain-specific operations beyond CRUD (pipeline runs, approvals,
     state transitions).
 
 ### Event Catalogue
 
 Config-lifecycle actions (`CONFIG_CREATE`, `CONFIG_UPDATE`, `CONFIG_DELETE`) are emitted
-by every domain that owns a config — `INGESTION`, `VALIDATION`, `METRIC`,
-`ONTOGEN` (singleton), `METAGEN` (per conf, `entity_id=conf_id`). Domain-specific actions:
+by every domain that owns a config — `INGESTION`, `METRIC`,
+`ONTOGEN` (singleton), `METAGEN` (per conf, `entity_id=conf_id`). `VALIDATION` emits
+`CONFIG_CREATE`/`CONFIG_UPDATE` but **no** `CONFIG_DELETE`: deleting a validation conf
+hard-deletes the dataset's validation events as part of its cascade, so recording a
+delete event would be self-defeating. Domain-specific actions:
 
 | Domain (`entity_type`) | Action | Trigger |
 |---|---|---|
@@ -1215,8 +1214,8 @@ failures.
 
 | Exception | HTTP Status | Error Code |
 |-----------|-------------|------------|
-| `EntityNotFoundError` | 404 | `DATASET_NOT_FOUND`, `CONFIG_NOT_FOUND`, `VALIDATION_CONF_REMOVED`, `INGESTION_SOURCE_NOT_FOUND`, `METRIC_NOT_FOUND`, `NODE_NOT_FOUND`, `EDGE_NOT_FOUND`, `TRIPLE_NOT_FOUND` |
-| `ConflictError` | 409 | `DUPLICATE_CONFIG`, `VALIDATION_CONF_REMOVED`, `INGESTION_RUNNING`, `INGESTION_SOURCE_READONLY`, `INGESTION_RUN_NOT_APPLICABLE`, `METAGEN_RUNNING`, `METRIC_RUNNING`, `ONTOGEN_RUNNING`, `METAGEN_DISABLED`, `METRIC_DISABLED`, `ONTOGEN_DISABLED`, `METAGEN_CANNOT_REJECT_APPROVED` |
+| `EntityNotFoundError` | 404 | `DATASET_NOT_FOUND`, `CONFIG_NOT_FOUND`, `INGESTION_SOURCE_NOT_FOUND`, `METRIC_NOT_FOUND`, `NODE_NOT_FOUND`, `EDGE_NOT_FOUND`, `TRIPLE_NOT_FOUND` |
+| `ConflictError` | 409 | `DUPLICATE_CONFIG`, `INGESTION_RUNNING`, `INGESTION_SOURCE_READONLY`, `INGESTION_RUN_NOT_APPLICABLE`, `METAGEN_RUNNING`, `METRIC_RUNNING`, `ONTOGEN_RUNNING`, `METAGEN_DISABLED`, `METRIC_DISABLED`, `ONTOGEN_DISABLED`, `METAGEN_CANNOT_REJECT_APPROVED` |
 | `DataHubUnavailableError` | 502 | `DATAHUB_UNAVAILABLE` |
 | `StorageUnavailableError` | 503 | `STORAGE_UNAVAILABLE` |
 | `ValidationError` (Pydantic), `RequestValidationError` (FastAPI routing-layer validation) | 422 | `INVALID_PARAMETER`, `INVALID_DATASET_URN` |

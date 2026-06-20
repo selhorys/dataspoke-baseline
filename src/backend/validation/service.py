@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.backend.validation.assertions import (
@@ -15,25 +15,20 @@ from src.backend.validation.assertions import (
     build_run_event,
     register_assertion,
     report_result,
-    tombstone_assertion,
 )
 from src.shared.datahub.client import DataHubClient
 from src.shared.db.models import Event, ValidationConfig, ValidationResult
 from src.shared.db.registry import ensure_dataset_registered
 from src.shared.events import (
     VALIDATION_CONFIG_CREATE,
-    VALIDATION_CONFIG_DELETE,
-    VALIDATION_CONFIG_RESTORE,
     VALIDATION_CONFIG_UPDATE,
     VALIDATION_PREFIX,
     VALIDATION_RESULT_RECORDED,
 )
 from src.shared.exceptions import (
-    ConflictError,
     DataHubUnavailableError,
     EntityNotFoundError,
     PreconditionFailedError,
-    ValidationConfRemovedError,
 )
 
 logger = logging.getLogger(__name__)
@@ -56,7 +51,6 @@ class ValidationConfigRecord(BaseModel):
     dataset_urn: str
     description: str
     variables: list[dict[str, str]]
-    is_removed: bool
     created_at: datetime
     updated_at: datetime
 
@@ -77,7 +71,6 @@ class ValidationListItem(BaseModel):
     variable_count: int
     latest_data_time: datetime | None
     latest_score: float | None
-    is_removed: bool
     updated_at: datetime
 
 
@@ -89,7 +82,6 @@ def _config_from_row(row: ValidationConfig) -> ValidationConfigRecord:
         dataset_urn=row.dataset_urn,
         description=row.description,
         variables=[dict(v) for v in (row.variables or [])],
-        is_removed=row.is_removed,
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
@@ -112,11 +104,10 @@ class ValidationService:
     # ── Config CRUD ──────────────────────────────────────────────────────────
 
     async def get_config(self, dataset_urn: str) -> ValidationConfigRecord | None:
-        """Return the active config record, ``None`` if the slot never existed.
+        """Return the config record, ``None`` if the slot does not exist.
 
-        A soft-deleted (frozen) slot is *restorable*, not absent — it raises
-        ``ValidationConfRemovedError`` (404 ``VALIDATION_CONF_REMOVED``) so the
-        caller can offer a restore affordance instead of a create form.
+        The caller raises ``EntityNotFoundError`` (404 ``CONFIG_NOT_FOUND``) on
+        ``None``.
         """
         result = await self._db.execute(
             select(ValidationConfig).where(ValidationConfig.dataset_urn == dataset_urn)
@@ -124,8 +115,6 @@ class ValidationService:
         row = result.scalar_one_or_none()
         if row is None:
             return None
-        if row.is_removed:
-            raise ValidationConfRemovedError(dataset_urn)
         return _config_from_row(row)
 
     async def upsert_config(
@@ -139,11 +128,7 @@ class ValidationService:
         Precondition: dataset must be registered in DataHub
         (``dataset_registry.datahub_registered=true``).
 
-        PUT does not resurrect a frozen rule: against a soft-deleted
-        (``is_removed=True``) row this raises ``ConflictError`` (409
-        ``VALIDATION_CONF_REMOVED``) — the slot must be restored first via
-        ``restore_config``. An active slot is replaced (200); an absent slot is
-        created (201).
+        An existing slot is replaced (200); an absent slot is created (201).
 
         DB write is committed first, then assertionInfo + status(removed=False)
         emitted to DataHub. On DataHub failure the exception propagates (502/503).
@@ -157,13 +142,6 @@ class ValidationService:
         )
         existing = result.scalar_one_or_none()
 
-        if existing is not None and existing.is_removed:
-            raise ConflictError(
-                "VALIDATION_CONF_REMOVED",
-                f"validation slot for '{dataset_urn}' is soft-deleted; "
-                "restore it via POST .../conf/method/restore before editing",
-            )
-
         if existing:
             existing.description = description
             existing.variables = variables
@@ -175,7 +153,6 @@ class ValidationService:
                 dataset_urn=dataset_urn,
                 description=description,
                 variables=variables,
-                is_removed=False,
             )
             self._db.add(existing)
             created = True
@@ -204,11 +181,8 @@ class ValidationService:
     ) -> ValidationConfigRecord:
         """Partially update the validation configuration.
 
-        A soft-deleted (frozen) slot is not patchable: it raises
-        ``ValidationConfRemovedError`` (404 ``VALIDATION_CONF_REMOVED``) so the
-        caller can offer a restore affordance, distinct from a never-created
-        slot which raises ``EntityNotFoundError`` (404 ``CONFIG_NOT_FOUND``).
-        Restore via ``restore_config`` before editing.
+        A never-created slot raises ``EntityNotFoundError`` (404
+        ``CONFIG_NOT_FOUND``).
         """
         result = await self._db.execute(
             select(ValidationConfig).where(ValidationConfig.dataset_urn == dataset_urn)
@@ -216,8 +190,6 @@ class ValidationService:
         row = result.scalar_one_or_none()
         if row is None:
             raise EntityNotFoundError("config", dataset_urn)
-        if row.is_removed:
-            raise ValidationConfRemovedError(dataset_urn)
 
         if "description" in patch and patch["description"] is not None:
             row.description = patch["description"]
@@ -243,7 +215,18 @@ class ValidationService:
         return _config_from_row(row)
 
     async def delete_config(self, dataset_urn: str) -> None:
-        """Soft-delete: set is_removed=True and emit status(removed=True) to DataHub."""
+        """Hard-delete a dataset's validation slot, cascading its history.
+
+        In a single transaction this removes the dataset's
+        ``validation_results`` rows, its validation events (``VALIDATION.*``
+        only — other features' events for the same dataset are untouched), and
+        the ``validation_configs`` row itself. The DataHub assertion entity is
+        then hard-deleted from DataHub; on DataHub failure the exception
+        propagates (502/503) after the local cascade has committed. No event is
+        recorded — the cascade wipes the dataset's validation event history.
+
+        Returns ``404 CONFIG_NOT_FOUND`` when the slot does not exist.
+        """
         result = await self._db.execute(
             select(ValidationConfig).where(ValidationConfig.dataset_urn == dataset_urn)
         )
@@ -251,57 +234,21 @@ class ValidationService:
         if row is None:
             raise EntityNotFoundError("config", dataset_urn)
 
-        row.is_removed = True
-        row.updated_at = datetime.now(tz=UTC)
-        self._db.add(row)
+        await self._db.execute(
+            delete(ValidationResult).where(ValidationResult.dataset_urn == dataset_urn)
+        )
+        await self._db.execute(
+            delete(Event).where(
+                Event.entity_type == "dataset",
+                Event.entity_id == dataset_urn,
+                Event.event_type.startswith(VALIDATION_PREFIX),
+            )
+        )
+        await self._db.delete(row)
         await self._db.commit()
 
         assertion_urn = build_assertion_urn(dataset_urn)
-        await tombstone_assertion(self._datahub, assertion_urn)
-
-        await self._record_event(
-            dataset_urn,
-            VALIDATION_CONFIG_DELETE,
-            "success",
-            {"operation": "DELETE"},
-        )
-
-    async def restore_config(self, dataset_urn: str) -> ValidationConfigRecord:
-        """Restore (undelete) a soft-deleted validation slot.
-
-        Loads the ``is_removed=True`` row (else ``EntityNotFoundError`` → 404
-        ``CONFIG_NOT_FOUND``), flips it back to active, and preserves the frozen
-        ``description``/``variables`` exactly as they were — no redefinition on
-        restore, so the preserved ``validation_results`` history stays consistent
-        with the variable set. Re-emits ``assertionInfo`` + ``status(removed=False)``
-        at the same deterministic URN and records a ``CONFIG_RESTORE`` event.
-        """
-        result = await self._db.execute(
-            select(ValidationConfig).where(ValidationConfig.dataset_urn == dataset_urn)
-        )
-        row = result.scalar_one_or_none()
-        if row is None or not row.is_removed:
-            # Never created, or already active — nothing to restore.
-            raise EntityNotFoundError("config", dataset_urn)
-
-        row.is_removed = False
-        row.updated_at = datetime.now(tz=UTC)
-        self._db.add(row)
-        await self._db.commit()
-        await self._db.refresh(row)
-
-        assertion_urn = build_assertion_urn(dataset_urn)
-        info = build_assertion_info(dataset_urn, row.description, list(row.variables))
-        await register_assertion(self._datahub, assertion_urn, info)
-
-        await self._record_event(
-            dataset_urn,
-            VALIDATION_CONFIG_RESTORE,
-            "success",
-            {"operation": "RESTORE", "variable_count": len(row.variables or [])},
-        )
-
-        return _config_from_row(row)
+        await self._datahub.hard_delete_entity(assertion_urn)
 
     # ── Results ──────────────────────────────────────────────────────────────
 
@@ -460,17 +407,14 @@ class ValidationService:
         self,
         offset: int = 0,
         limit: int = 20,
-        removed_filter: bool | None = None,
         order_by: Any = None,
     ) -> tuple[list[ValidationListItem], int]:
         """List configs with latest result joined per dataset.
 
         Each row contains dataset_urn, description, variable_count,
-        latest_data_time, latest_score, is_removed, updated_at.
+        latest_data_time, latest_score, updated_at.
         """
         base = select(ValidationConfig)
-        if removed_filter is not None:
-            base = base.where(ValidationConfig.is_removed == removed_filter)
 
         count_q = select(func.count()).select_from(base.subquery())
         total_count = (await self._db.execute(count_q)).scalar() or 0
@@ -525,7 +469,6 @@ class ValidationService:
                     variable_count=len(row.variables) if row.variables else 0,
                     latest_data_time=latest[0] if latest else None,
                     latest_score=latest[1] if latest else None,
-                    is_removed=row.is_removed,
                     updated_at=row.updated_at,
                 )
             )

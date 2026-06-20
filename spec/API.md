@@ -227,8 +227,7 @@ this single per-dataset path.
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Get validation configuration (`description` + declared `variables`, each variable a `{name, description}` object) | Validation | UC2, UC5 |
 | `PUT` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Create or replace validation configuration. Body `{description, variables}` where each variable is `{name, description}` (`name` matches `[a-z][a-z0-9_]{0,99}` and is unique; `description` required, ≤200 chars, empty allowed). PUT for a URN absent from DataHub returns `422 DATASET_NOT_IN_DATAHUB` | Validation | UC2, UC5 |
 | `PATCH` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Partially update validation configuration | Validation | UC2, UC5 |
-| `DELETE` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Soft-delete (freeze) the validation slot — emits DataHub `status.removed = true` and preserves the conf + result history. A `PUT` against a soft-deleted slot is rejected (`409 VALIDATION_CONF_REMOVED`); use `method/restore` to reinstate | Validation | UC2, UC5 |
-| `POST` | `/spoke/common/data/{dataset_urn}/attr/validation/conf/method/restore` | Restore (undelete) a soft-deleted validation slot — clears `status.removed` and reinstates the frozen `description`/`variables` unchanged, keeping the result history consistent. `404` if no soft-deleted slot exists | Validation | UC2, UC5 |
+| `DELETE` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Hard-delete the validation slot — removes the conf row, cascades to delete the dataset's validation results and validation events, and hard-deletes the DataHub assertion entity. Returns `204`; afterwards the dataset reads as never-created (`GET`/`PATCH` → `404 CONFIG_NOT_FOUND`) and a fresh `PUT` creates a new conf | Validation | UC2, UC5 |
 | `POST` | `/spoke/common/data/{dataset_urn}/attr/validation/result` | Append a pipeline-emitted result `{data_time, score, variables}`. Unknown variable keys return `422 UNKNOWN_VARIABLE`; `score` outside `[0,1]` returns `422 INVALID_SCORE` | Validation | UC2, UC5 |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/validation/result` | Get historical results (timeseries on `data_time`; `?from=…&until=…&limit=…` — this endpoint names its end-bound param `until` rather than the convention table's `to`; **the sole documented deviation** from the standard pagination cap: `default limit=1000`, server cap `10000`, fixed `data_time DESC` order — see [API_DESIGN_PRINCIPLE §5](API_DESIGN_PRINCIPLE_en.md#5-url-query-segments-are-for-filtering-sorting-and-pagination)) | Validation | UC2, UC5 |
 | `GET` | `/spoke/common/data/{dataset_urn}/event/validation` | Validation event reports (success/failure notices) | Validation | UC2, UC5 |
@@ -340,7 +339,7 @@ Per-dataset detail and result writes live on the canonical `data/{dataset_urn}` 
 
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|
-| `GET` | `/spoke/validation` | List validation attributes across datasets — each row aggregates the per-dataset `attr/validation/*` (conf description + variable count + latest result `data_time` and `score` + `is_removed`) (paginated, sortable by `dataset_urn`/`updated_at`, default `updated_at_desc`; filterable). `?removed=true` returns only soft-deleted slots, `?removed=false` only active slots; omitting `removed` returns both | Validation | UC2, UC5 |
+| `GET` | `/spoke/validation` | List validation attributes across datasets — each row aggregates the per-dataset `attr/validation/*` (conf description + variable count + latest result `data_time` and `score`) (paginated, sortable by `dataset_urn`/`updated_at`, default `updated_at_desc`; filterable) | Validation | UC2, UC5 |
 
 ### Ontology Generation (`/spoke/ontogen`)
 
@@ -359,11 +358,12 @@ proceeds nodes → edges → triples.
 | `PUT` | `/spoke/ontogen/attr/conf` | Create or replace operational conf | Ontology Generation | UC3 |
 | `PATCH` | `/spoke/ontogen/attr/conf` | Partially update operational conf | Ontology Generation | UC3 |
 | `DELETE` | `/spoke/ontogen/attr/conf` | Remove operational conf (effectively disables) | Ontology Generation | UC3 |
-| `GET` | `/spoke/ontogen/attr/seed` | List seeds — returns `[{seed_id, updated_at, preview}]` (preview is a short Markdown snippet); the seed body is fetched per-seed below. Paginated, sortable by `created_at`/`updated_at` (default `updated_at_desc`) | Ontology Generation | UC3 |
-| `POST` | `/spoke/ontogen/attr/seed` | Create an inference seed — body is a raw Markdown document (`Content-Type: text/markdown`); server assigns `seed_id` | Ontology Generation | UC3 |
+| `GET` | `/spoke/ontogen/attr/seed` | List seeds — returns **all** seeds (enabled and disabled) as `[{seed_id, updated_at, is_enabled, preview}]` (preview is a short Markdown snippet); the seed body is fetched per-seed below. Paginated, sortable by `created_at`/`updated_at` (default `updated_at_desc`) | Ontology Generation | UC3 |
+| `POST` | `/spoke/ontogen/attr/seed` | Create an inference seed — body is a raw Markdown document (`Content-Type: text/markdown`); server assigns `seed_id`. Created **disabled** (`is_enabled = false`) — it does not participate in inference until explicitly enabled | Ontology Generation | UC3 |
 | `GET` | `/spoke/ontogen/attr/seed/{seed_id}` | Get seed Markdown document (`Content-Type: text/markdown`) | Ontology Generation | UC3 |
 | `PATCH` | `/spoke/ontogen/attr/seed/{seed_id}` | Replace seed Markdown body (`Content-Type: text/markdown`) | Ontology Generation | UC3 |
-| `DELETE` | `/spoke/ontogen/attr/seed/{seed_id}` | Retire a seed | Ontology Generation | UC3 |
+| `PATCH` | `/spoke/ontogen/attr/seed/{seed_id}/attr/enabled` | Enable or disable a seed — body JSON `{is_enabled: bool}` (`Content-Type: application/json`). A disabled seed is retained and fully visible but excluded from the inference pipeline; reversible both ways | Ontology Generation | UC3 |
+| `DELETE` | `/spoke/ontogen/attr/seed/{seed_id}` | Hard-delete a seed — the row is removed outright | Ontology Generation | UC3 |
 | `POST` | `/spoke/ontogen/method/run` | Trigger a manual re-inference. Optional `Content-Type: text/markdown` body acts as a **one-shot prompt** for this run, on top of the persistent seeds (not stored). With no body — including periodic Airflow invocations — falls back to `attr/conf.default_run_prompt`. `?dry_run=true` evaluates without persisting. Concurrent runs return `409 ONTOGEN_RUNNING`. Rejected with `409 ONTOGEN_DISABLED` when the conf is disabled and `dry_run` is not true | Ontology Generation | UC3 |
 | `GET` | `/spoke/ontogen/event` | Global inference-run event history (e.g. `ONTOGEN.RUN_COMPLETE`, `ONTOGEN.RUN_FAILED`). Paginated, sortable by `occurred_at` (default `occurred_at_desc`) | Ontology Generation | UC3 |
 | `GET` | `/spoke/ontogen/result/node` | List nodes (subjects / objects) with confidence and status. Supports `?sort=created_at_asc\|created_at_desc` (default `created_at_desc`) per the [sort convention](API_DESIGN_PRINCIPLE_en.md#5-url-query-segments-are-for-filtering-sorting-and-pagination) | Ontology Generation | UC3 |
@@ -817,8 +817,7 @@ Clients should treat `detail` as optional; absent for errors that don't need it.
 | `NODE_NOT_FOUND` | 404 | Ontology node ID not found |
 | `EDGE_NOT_FOUND` | 404 | Ontology edge ID not found |
 | `TRIPLE_NOT_FOUND` | 404 | Ontology triple ID not found |
-| `CONFIG_NOT_FOUND` | 404 | Validation or other per-dataset configuration not found (never created) |
-| `VALIDATION_CONF_REMOVED` | 404 / 409 | The validation slot is soft-deleted (restorable). `404` on `GET`/`PATCH .../attr/validation/conf` (vs `CONFIG_NOT_FOUND` for a never-created slot); `409` on `PUT` (PUT does not resurrect — restore via `POST .../conf/method/restore` first) |
+| `CONFIG_NOT_FOUND` | 404 | Validation or other per-dataset configuration not found (never created, or deleted) |
 | `INGESTION_SOURCE_NOT_FOUND` | 404 | Ingestion source id does not exist (`/spoke/ingestion/sources/{id}`) |
 | `SECRET_REF_MALFORMED` | 422 | A `${name__key}` reference in a recipe has no `__` separator or an empty name/key segment |
 | `SECRET_REF_NOT_FOUND` | 422 | A recipe's `${name__key}` references a `dataspoke-source-cred-<name>` Secret or `key` that does not exist at source save (also surfaces as a run-time `status="error"` if deleted later) |

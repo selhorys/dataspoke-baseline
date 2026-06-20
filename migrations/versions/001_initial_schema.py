@@ -197,7 +197,6 @@ def upgrade() -> None:
         sa.Column("dataset_urn", sa.Text(), primary_key=True),
         sa.Column("description", sa.Text(), nullable=False),
         sa.Column("variables", JSONB, nullable=False),
-        sa.Column("is_removed", sa.Boolean(), nullable=False, server_default="false"),
         sa.Column("created_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
         sa.Column("updated_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
         sa.CheckConstraint(
@@ -505,7 +504,7 @@ def upgrade() -> None:
         "ontogen_seeds",
         sa.Column("id", UUID(as_uuid=True), primary_key=True),
         sa.Column("body_md", sa.Text(), nullable=False),
-        sa.Column("status", sa.Text(), nullable=False, server_default="active"),
+        sa.Column("is_enabled", sa.Boolean(), nullable=False, server_default="false"),
         sa.Column("created_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
         sa.Column("updated_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
         schema=SCHEMA,
