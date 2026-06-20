@@ -192,7 +192,9 @@ For each step:
      curl with the admin token from `/tmp/_manual_test_env`; and
    - deeper probes the UI cannot show (k8s secret, DataHub aspect, event row)
      via `helpers/probes.py` (see §Probe selection).
-   On HTTP 401, run `refresh_token.sh` and retry once.
+   Build the curl per §Backend probe — request conventions (three call families,
+   three prefixes + headers). On HTTP 401, run `refresh_token.sh` and retry once;
+   inside a poll loop, check the HTTP status — never treat a 401 body as "absent".
 5. **Result line**: ✓ pass (UI ✓ + backend ✓) / ✗ fail / ⚠ warn — one-line
    reason. If UI and backend disagree, the step is ✗ and the disagreement is the
    headline (e.g. "backend emitted 2 datasets but the Datasets table is empty").
@@ -247,6 +249,39 @@ a thin convenience. Classify the "register slot" step as `[API-fired, no UI
 surface]` and drive registration via curl — do not map it to a UI create form.
 Reserve UI conf gestures for steps that deliberately exercise the convenience
 editor (e.g. retire/resurrect).
+
+## Backend probe — request conventions
+
+The backend probes are hand-built curls against the live cluster, **not** the pytest
+`api_client` (which hides the base-URL split, the auth header, and URL-encoding —
+so reading the test alone will mislead you). `/tmp/_manual_test_env` (written by
+`setup_env.sh`) exports `BASE`, `ADMIN_TOKEN`, `GMS`, `GMS_TOKEN`, `INTERNAL_TOKEN`.
+Three call families take three different prefixes + auth headers — getting one wrong
+reads as a spurious `404`/`401`, i.e. "side effect missing" when it isn't:
+
+| Call family | URL | Auth header |
+|---|---|---|
+| Public spoke / hub | `$BASE/api/v1/spoke/…` (or `/hub/…`) | `Authorization: Bearer $ADMIN_TOKEN` |
+| Internal activity | `$BASE/internal/…` — **no `/api/v1`** | `X-Internal-Token: $INTERNAL_TOKEN` |
+| DataHub GMS GraphQL | `$GMS/api/graphql` | `Authorization: Bearer $GMS_TOKEN` |
+
+Why the split trips you up: the test drives both with the **same** `api_client`, whose
+base-URL is the host root. So internal calls appear as `api_client.post("/internal/…")`
+(router mounted with no API prefix) while public calls carry an explicit `/api/v1/spoke/…`
+in the test string. Mirror that in curl — do **not** prefix internal routes with
+`/api/v1`, and use the `X-Internal-Token` header (not `Bearer`) for them. GMS GraphQL
+**always** needs `Bearer $GMS_TOKEN`; an unauthenticated GMS call returns a bare
+`401 Unauthorized` JSON. URL-encode dataset URNs in path params
+(`urllib.parse.quote(urn, safe='')`) — they contain `(` `)` `,` `:`.
+
+**Long-poll trap (JWT expiry masquerading as a timeout):** the admin JWT TTL is short
+(~15 min). A poll loop (ES-settle reads budget ≥60–180s) can out-run it; the API then
+returns `401 "Token has expired."`, and a loop that only inspects a body field
+(`r.get('source_id')`) sees the 401 error-body parse to a falsy value **identical** to
+"not indexed yet" — a real pass disguised as a 180s timeout. Defences: (1) call
+`refresh_token.sh` proactively right before any ES-poll step; (2) in poll loops capture
+the HTTP status (`curl -w '%{http_code}'`) and treat `401` as refresh-and-retry, never
+as "absent".
 
 ## Probe selection
 
@@ -367,5 +402,10 @@ expect (backend): GET .../sources/{id} → 404.
   loop (`feedback_no_onthefly_fix_during_manual_test`). Editing the test file or
   this skill to correct a step is fine.
 - **Reset before run** unless the user opts out (`feedback_reset_before_api_wired`).
-- **JWT TTL is short.** Refresh proactively on 401 via `refresh_token.sh`.
+- **JWT TTL is short.** Refresh proactively via `refresh_token.sh` — before each
+  ES-poll step, not just on a visible 401. A token that expires mid-poll surfaces as
+  a misleading empty read, not an error (see §Backend probe — request conventions).
+- **Curl the right family.** Internal routes are `$BASE/internal/…` (no `/api/v1`)
+  with `X-Internal-Token`; GMS GraphQL needs `Bearer $GMS_TOKEN`. The pytest
+  `api_client` hides this — don't copy its paths/headers verbatim into curl.
 - **Never truncate** response bodies in the backend-probe output.
