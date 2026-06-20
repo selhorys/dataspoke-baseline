@@ -9,7 +9,6 @@ import { useEffect } from "react";
 import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Field } from "@/components/forms/field";
@@ -26,16 +25,16 @@ const boundarySchema = z.object({
 type BoundaryFormValues = z.infer<typeof boundarySchema>;
 
 interface BoundaryFormProps {
+  formId: string;
   initialValues: MetagenBoundary | null;
   onSubmit: (body: MetagenBoundaryPutBody) => void;
-  isSubmitting: boolean;
   disabled?: boolean;
 }
 
 export function BoundaryForm({
+  formId,
   initialValues,
   onSubmit,
-  isSubmitting,
   disabled = false,
 }: BoundaryFormProps) {
   const {
@@ -82,7 +81,11 @@ export function BoundaryForm({
   }
 
   return (
-    <form onSubmit={handleSubmit(handleFormSubmit)} className="space-y-4">
+    <form
+      id={formId}
+      onSubmit={handleSubmit(handleFormSubmit)}
+      className="space-y-4"
+    >
       <Field label="is_enabled" htmlFor="boundary-is-enabled">
         <div className="flex items-center gap-2">
           <Controller
@@ -141,12 +144,6 @@ export function BoundaryForm({
           )}
         />
       </Field>
-
-      {!disabled && (
-        <Button type="submit" disabled={isSubmitting}>
-          {isSubmitting ? "Saving…" : "Save boundary"}
-        </Button>
-      )}
     </form>
   );
 }

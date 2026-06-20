@@ -109,9 +109,15 @@ prior approval (possibly from a different conf) to `llm_approved`. Review
 semantics (approve-supersedes-sibling-across-confs, reject-only-on-llm-approved)
 are in [API §Metadata Generation](../API.md#metadata-generation-spokemetagen).
 
+The boundary section's action controls live in its section header's top-right
+cluster, mirroring the [Validation panel's header-right action pattern](FRONTEND_VALIDATION.md):
+read mode (a boundary exists) shows `Edit`; create / edit mode shows
+`Save boundary`, plus `Cancel` when editing an existing boundary. All map to
+`PUT .../attr/metagen/boundary`.
+
 ```
 ┌──────────────────────────────────────────────────────┐
-│  ← catalog.books             boundary: [edit]        │
+│  ← catalog.books                   boundary  [Edit]  │
 │  is_enabled: ✓   allowed: [dataset.description,      │
 │                            column.description]       │
 ├──────────────────────────────────────────────────────┤

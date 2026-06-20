@@ -27,6 +27,8 @@ import { useMe } from "@/lib/auth/use-me";
 import { useToast } from "@/components/ui/use-toast";
 import type { MetagenBoundaryPutBody } from "@/types/metagen";
 
+const BOUNDARY_FORM_ID = "metagen-boundary-form";
+
 interface MetagenDataPanelProps {
   datasetUrn: string;
 }
@@ -86,7 +88,72 @@ export function MetagenDataPanel({ datasetUrn }: MetagenDataPanelProps) {
     <div className="space-y-6">
       {/* ── Boundary (per-dataset conf) ──────────────────────────────────────── */}
       <div className="space-y-4">
-        <h3 className="text-sm font-medium">attr/metagen/boundary</h3>
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-medium">attr/metagen/boundary</h3>
+          {canWrite && !boundaryLoading && (
+            <div className="flex items-center gap-2">
+              {boundary === null && (
+                <Button
+                  key="boundary-create"
+                  type="submit"
+                  form={BOUNDARY_FORM_ID}
+                  size="sm"
+                  disabled={upsertBoundary.isPending}
+                >
+                  {upsertBoundary.isPending ? "Saving…" : "Save boundary"}
+                </Button>
+              )}
+              {boundary !== null &&
+                boundary !== undefined &&
+                !editingBoundary && (
+                  <>
+                    <Button
+                      key="boundary-edit"
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setEditingBoundary(true)}
+                    >
+                      Edit
+                    </Button>
+                    <Button
+                      key="boundary-delete"
+                      type="button"
+                      variant="destructive"
+                      size="sm"
+                      onClick={() => setDeleteBoundaryOpen(true)}
+                      disabled={deleteBoundary.isPending}
+                    >
+                      Delete
+                    </Button>
+                  </>
+                )}
+              {boundary !== null && boundary !== undefined && editingBoundary && (
+                <>
+                  <Button
+                    key="boundary-cancel"
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setEditingBoundary(false)}
+                    disabled={upsertBoundary.isPending}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    key="boundary-save"
+                    type="submit"
+                    form={BOUNDARY_FORM_ID}
+                    size="sm"
+                    disabled={upsertBoundary.isPending}
+                  >
+                    {upsertBoundary.isPending ? "Saving…" : "Save boundary"}
+                  </Button>
+                </>
+              )}
+            </div>
+          )}
+        </div>
 
         {boundaryLoading && <Skeleton className="h-32 w-full" />}
 
@@ -99,9 +166,9 @@ export function MetagenDataPanel({ datasetUrn }: MetagenDataPanelProps) {
                   it in MetaGen runs.
                 </p>
                 <BoundaryForm
+                  formId={BOUNDARY_FORM_ID}
                   initialValues={null}
                   onSubmit={handleSaveBoundary}
-                  isSubmitting={upsertBoundary.isPending}
                 />
               </>
             ) : (
@@ -114,26 +181,6 @@ export function MetagenDataPanel({ datasetUrn }: MetagenDataPanelProps) {
 
         {!boundaryLoading && boundary !== null && boundary !== undefined && (
           <>
-            {canWrite && !editingBoundary && (
-              <div className="flex gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setEditingBoundary(true)}
-                >
-                  Edit
-                </Button>
-                <Button
-                  variant="destructive"
-                  size="sm"
-                  onClick={() => setDeleteBoundaryOpen(true)}
-                  disabled={deleteBoundary.isPending}
-                >
-                  Delete
-                </Button>
-              </div>
-            )}
-
             {!editingBoundary && (
               <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-3">
                 <div>
@@ -172,22 +219,11 @@ export function MetagenDataPanel({ datasetUrn }: MetagenDataPanelProps) {
             )}
 
             {editingBoundary && (
-              <>
-                <BoundaryForm
-                  initialValues={boundary}
-                  onSubmit={handleSaveBoundary}
-                  isSubmitting={upsertBoundary.isPending}
-                />
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="mt-3"
-                  onClick={() => setEditingBoundary(false)}
-                  disabled={upsertBoundary.isPending}
-                >
-                  Cancel
-                </Button>
-              </>
+              <BoundaryForm
+                formId={BOUNDARY_FORM_ID}
+                initialValues={boundary}
+                onSubmit={handleSaveBoundary}
+              />
             )}
           </>
         )}

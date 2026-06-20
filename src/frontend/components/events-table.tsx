@@ -1,14 +1,22 @@
 "use client";
 
 /**
- * EventsTable — renders the unified per-dataset event timeline rows: occurred_at
- * + status badge + optional `wrapper` tag + event_type + click-to-expand detail.
- * Pure presentational; the panel owns querying and pagination.
+ * EventsTable — renders the unified per-dataset event timeline as one table:
+ * Time + status badge + optional `wrapper` tag + event_type + click-to-expand
+ * detail. Pure presentational; the panel owns querying and pagination.
  *
  * Spec: spec/feature/FRONTEND_BASIC.md §Per-dataset page (Events panel).
  */
 
 import { Badge } from "@/components/ui/badge";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { EventDetailCell } from "@/components/ingestion/event-detail-cell";
 import { eventStatusVariant } from "@/lib/event-status-variant";
 import { formatDateTime } from "@/lib/format-time";
@@ -26,29 +34,54 @@ export function EventsTable({
 }: EventsTableProps) {
   const tz = useDisplayTz();
 
-  if (events.length === 0) {
-    return <p className="text-sm text-muted-foreground">{emptyMessage}</p>;
-  }
-
   return (
-    <ul className="space-y-2">
-      {events.map((e) => (
-        <li key={e.id} className="flex flex-wrap items-start gap-3 text-sm">
-          <span className="shrink-0 text-muted-foreground">
-            {formatDateTime(e.occurred_at, tz)}
-          </span>
-          <Badge variant={eventStatusVariant(e.status)} className="text-xs">
-            {e.status}
-          </Badge>
-          {e.wrapper && (
-            <Badge variant="outline" className="text-xs">
-              wrapper
-            </Badge>
+    <div className="rounded-md border">
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Time</TableHead>
+            <TableHead>Status</TableHead>
+            <TableHead>Type</TableHead>
+            <TableHead>Detail</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {events.length === 0 ? (
+            <TableRow>
+              <TableCell
+                colSpan={4}
+                className="text-center text-sm text-muted-foreground"
+              >
+                {emptyMessage}
+              </TableCell>
+            </TableRow>
+          ) : (
+            events.map((e) => (
+              <TableRow key={e.id}>
+                <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
+                  {formatDateTime(e.occurred_at, tz)}
+                </TableCell>
+                <TableCell>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <Badge variant={eventStatusVariant(e.status)} className="text-xs">
+                      {e.status}
+                    </Badge>
+                    {e.wrapper && (
+                      <Badge variant="outline" className="text-xs">
+                        wrapper
+                      </Badge>
+                    )}
+                  </div>
+                </TableCell>
+                <TableCell className="text-sm">{e.event_type}</TableCell>
+                <TableCell className="max-w-[360px]">
+                  <EventDetailCell detail={e.detail} />
+                </TableCell>
+              </TableRow>
+            ))
           )}
-          <span>{e.event_type}</span>
-          <EventDetailCell detail={e.detail} />
-        </li>
-      ))}
-    </ul>
+        </TableBody>
+      </Table>
+    </div>
   );
 }

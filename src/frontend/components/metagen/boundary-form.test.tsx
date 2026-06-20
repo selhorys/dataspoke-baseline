@@ -38,11 +38,16 @@ describe("BoundaryForm — owner round-trip", () => {
   it("seeds the owner input from initialValues and includes it in the PUT body", async () => {
     const onSubmit = vi.fn<(body: MetagenBoundaryPutBody) => void>();
     render(
-      <BoundaryForm
-        initialValues={makeBoundary({ owner: "data-stewards" })}
-        onSubmit={onSubmit}
-        isSubmitting={false}
-      />,
+      <>
+        <BoundaryForm
+          formId="boundary-form"
+          initialValues={makeBoundary({ owner: "data-stewards" })}
+          onSubmit={onSubmit}
+        />
+        <button type="submit" form="boundary-form">
+          Save boundary
+        </button>
+      </>,
     );
 
     const ownerInput = screen.getByLabelText("owner") as HTMLInputElement;
@@ -58,11 +63,16 @@ describe("BoundaryForm — owner round-trip", () => {
   it("preserves a previously-set owner when only other fields are edited", async () => {
     const onSubmit = vi.fn<(body: MetagenBoundaryPutBody) => void>();
     render(
-      <BoundaryForm
-        initialValues={makeBoundary({ owner: "data-stewards", allowed: [] })}
-        onSubmit={onSubmit}
-        isSubmitting={false}
-      />,
+      <>
+        <BoundaryForm
+          formId="boundary-form"
+          initialValues={makeBoundary({ owner: "data-stewards", allowed: [] })}
+          onSubmit={onSubmit}
+        />
+        <button type="submit" form="boundary-form">
+          Save boundary
+        </button>
+      </>,
     );
 
     // Toggle an allowed aspect without touching the owner field.
@@ -78,11 +88,16 @@ describe("BoundaryForm — owner round-trip", () => {
   it("sends owner as null when the input is left empty", async () => {
     const onSubmit = vi.fn<(body: MetagenBoundaryPutBody) => void>();
     render(
-      <BoundaryForm
-        initialValues={makeBoundary({ owner: null })}
-        onSubmit={onSubmit}
-        isSubmitting={false}
-      />,
+      <>
+        <BoundaryForm
+          formId="boundary-form"
+          initialValues={makeBoundary({ owner: null })}
+          onSubmit={onSubmit}
+        />
+        <button type="submit" form="boundary-form">
+          Save boundary
+        </button>
+      </>,
     );
 
     const ownerInput = screen.getByLabelText("owner") as HTMLInputElement;
