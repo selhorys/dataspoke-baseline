@@ -33,7 +33,6 @@ spec: spec/TESTING.md §Spot vs Api-Wired Integration Tests
 """
 
 import asyncio
-import json
 import os
 import uuid
 from contextlib import suppress
@@ -107,15 +106,14 @@ async def _seed_ontogen_node(
     await session.execute(
         text(
             "INSERT INTO dataspoke.ontogen_nodes"
-            " (id, name, description, confidence_score, status, evidence)"
-            " VALUES (:id, :name, :desc, 0.9, 'approved', CAST(:ev AS jsonb))"
+            " (id, name, description, confidence_score, status)"
+            " VALUES (:id, :name, :desc, 0.9, 'approved')"
             " ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, status=EXCLUDED.status"
         ),
         {
             "id": node_id,
             "name": name,
             "desc": description,
-            "ev": json.dumps({"source": "spot-test"}),
         },
     )
     await session.commit()

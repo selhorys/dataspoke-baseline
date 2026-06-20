@@ -80,4 +80,30 @@ describe("RootLayout runtime-config injection", () => {
 
     expect(renderLayoutScript()).toContain('"apiBaseUrl":""');
   });
+
+  it("injects the request-time DATASPOKE_LANGFUSE_PROJECT_ID into the runtime config script", () => {
+    const originalProject = process.env.DATASPOKE_LANGFUSE_PROJECT_ID;
+    process.env.DATASPOKE_LANGFUSE_PROJECT_ID = "dataspoke-project";
+    try {
+      expect(renderLayoutScript()).toContain('"langfuseProjectId":"dataspoke-project"');
+    } finally {
+      if (originalProject === undefined) {
+        delete process.env.DATASPOKE_LANGFUSE_PROJECT_ID;
+      } else {
+        process.env.DATASPOKE_LANGFUSE_PROJECT_ID = originalProject;
+      }
+    }
+  });
+
+  it("injects an empty langfuseProjectId when DATASPOKE_LANGFUSE_PROJECT_ID is unset", () => {
+    const originalProject = process.env.DATASPOKE_LANGFUSE_PROJECT_ID;
+    delete process.env.DATASPOKE_LANGFUSE_PROJECT_ID;
+    try {
+      expect(renderLayoutScript()).toContain('"langfuseProjectId":""');
+    } finally {
+      if (originalProject !== undefined) {
+        process.env.DATASPOKE_LANGFUSE_PROJECT_ID = originalProject;
+      }
+    }
+  });
 });

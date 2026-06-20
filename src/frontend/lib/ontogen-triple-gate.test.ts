@@ -40,6 +40,7 @@ function makeNode(id: string, status: OntogenStatus, name = id): OntogenNode {
     description: "",
     confidence_score: 0.9,
     status,
+    run_id: null,
     created_at: "2025-01-01T00:00:00Z",
     updated_at: "2025-01-01T00:00:00Z",
   };
@@ -52,6 +53,7 @@ function makeEdge(id: string, status: OntogenStatus, label = id): OntogenEdge {
     semantics: null,
     confidence_score: 0.9,
     status,
+    run_id: null,
     created_at: "2025-01-01T00:00:00Z",
     updated_at: "2025-01-01T00:00:00Z",
   };
@@ -69,6 +71,7 @@ function makeTriple(
     object_node_id: objectNodeId,
     confidence_score: 0.8,
     status: "llm_pending",
+    run_id: null,
     created_at: "2025-01-01T00:00:00Z",
     updated_at: "2025-01-01T00:00:00Z",
   };

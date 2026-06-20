@@ -93,7 +93,7 @@ export function DatasetFilterEditor({ value, onChange, disabled = false }: Datas
             const list = splitList(e.target.value);
             set({ tags: list.length ? list : undefined });
           }}
-          placeholder="urn:li:tag:env:DEV"
+          placeholder="urn:li:tag:area:catalog"
           disabled={disabled}
           className="font-mono text-xs"
         />

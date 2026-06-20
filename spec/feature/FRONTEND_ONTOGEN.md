@@ -29,7 +29,7 @@ The OntoGen sidebar entry is a foldable group with three children —
 |---|---|---|
 | `/ontogen/conf` | `GET /spoke/ontogen/attr/conf` | `PUT/PATCH .../attr/conf` (Edit/Save/Cancel; fields: `is_enabled`, `schedule_tier`, `dataset_filter`, `default_run_prompt`) — all action controls sit top-right; the conf is a singleton so the UI exposes no Delete. `POST .../method/run` via Run dialog (optional Markdown body — one-shot prompt; "Dry run — evaluate without persisting results" checkbox → `?dry_run=true`) |
 | `/ontogen/seed` | `GET .../attr/seed`, `GET .../attr/seed/{seed_id}` (Markdown) | `POST .../attr/seed` (Markdown body), `PATCH/DELETE .../attr/seed/{seed_id}`, `PATCH .../attr/seed/{seed_id}/attr/enabled` (JSON `{is_enabled}`) |
-| `/ontogen/result` | `GET .../result/{node\|edge\|triple}` (+ `/{id}/attr` for evidence) | `POST .../result/{node\|edge\|triple}/{id}/method/review` body `{verdict: "approve"\|"reject", reason}` |
+| `/ontogen/result` | `GET .../result/{node\|edge\|triple}` (each row carries `run_id`) | `POST .../result/{node\|edge\|triple}/{id}/method/review` body `{verdict: "approve"\|"reject", reason}` |
 
 `dataset_filter` follows the standard four-dimension shape — see
 [API §Metric `dataset_filter`](../API.md#metric-spokegovernancemetric).
@@ -42,7 +42,7 @@ disabled seed stays in the library and can be re-enabled at any time. `+ New See
 body is reviewed. `Delete` is a hard delete behind a [ConfirmDialog](FRONTEND_BASIC.md#shared-component-notes).
 
 The **Nodes**, **Edges**, and **Triples** tabs each render their result set in a
-**uniform compact six-column table** — the same column layout for all three
+**uniform compact seven-column table** — the same column layout for all three
 kinds so the panels read and scale identically:
 
 | Column | Node | Edge | Triple |
@@ -50,9 +50,10 @@ kinds so the panels read and scale identically:
 | **Title** | `name` | `label` | `subj --edge--> obj` (monospace) |
 | **Description** | `description` | `semantics` (or `—`) | `—` (triples carry no description) |
 | **Status** | status badge | status badge | status badge |
-| **Confidence** | LLM `score` + **Evidence** button | same | same |
+| **Confidence** | LLM `score` | same | same |
 | **Actions** | Approve / Reject | same | same (dependency-gated) |
 | **Created At** | `created_at` (timezone-aware) | same | same |
+| **Evidence** | Langfuse **Link** (from `run_id`) | same | same |
 
 The **Description** cell is truncated to a max width with the full text on
 hover. **Created At** renders in the global Settings timezone (Local or UTC).
@@ -81,9 +82,20 @@ as **hover text** on the disabled control; a dependency at `llm_approved` does
 not satisfy the gate. Approval flips status in DataSpoke storage only and does
 not write to DataHub.
 
-The **Confidence** cell's **Evidence** button opens a **modal dialog** that, on
-demand, reads `GET .../result/{node|edge|triple}/{id}/attr` and renders that
-row's `evidence` (the adversarial-debate transcript) as-is.
+The **Evidence** cell renders a **Link** that opens the row's Langfuse session
+in a new tab (`target="_blank" rel="noopener noreferrer"`). The URL is built
+client-side as `{langfuseUrl}/project/{langfuseProjectId}/sessions/{run_id}`,
+where `langfuseUrl` is the existing runtime-config Langfuse host
+([FRONTEND_BASIC §Shell](FRONTEND_BASIC.md#shell)) and `langfuseProjectId` is a
+runtime-config key for the Langfuse project slug (the `DATASPOKE_LANGFUSE_PROJECT_ID`
+env var, `NEXT_PUBLIC_LANGFUSE_PROJECT_ID` in host dev). Both resolve to the
+browser-reachable host, not the in-cluster one; `run_id` is the row's creating
+inference run.
+The session holds every producer/reviewer LLM call of that run — the
+adversarial-debate transcript — traced under `session_id = run_id`. The Link
+renders only when all three values are present; otherwise the cell shows `—`
+(seeded rows have no `run_id`; a deployment with tracing disabled has no
+Langfuse config).
 
 The **Graph** tab renders an interactive force-directed graph of the ontology —
 graph nodes are ontogen nodes (`GET .../result/node`) and links are triples
@@ -107,15 +119,16 @@ Delete.
 │  OntoGen [ Nodes | Edges | Triples | Graph ]                              │
 ├─────────────────────────────────────────────────────────────────────────┤
 │  Nodes (result/node)   filter: [ All ▾ ]   sort: [ Created (newest) ▾ ]   │
-│  ┌────────────┬──────────────┬─────────┬───────────┬──────────┬────────┐  │
-│  │ Title      │ Description   │ Status  │ Confidence│ Actions  │ Created│  │
-│  ├────────────┼──────────────┼─────────┼───────────┼──────────┼────────┤  │
-│  │ BOOK       │ catalog item │ approved│ 0.96 [Ev] │ [Reject] │ 2026-… │  │
-│  │ ORDER_LINE │ line item    │ pending │ 0.71 [Ev] │ [Apv][Rj]│ 2026-… │  │
-│  └────────────┴──────────────┴─────────┴───────────┴──────────┴────────┘  │
+│  ┌──────────┬────────────┬────────┬──────────┬─────────┬───────┬────────┐ │
+│  │ Title    │ Description │ Status │ Confidence│ Actions │ Created│ Evidence│
+│  ├──────────┼────────────┼────────┼──────────┼─────────┼───────┼────────┤ │
+│  │ BOOK     │ catalog itm│approved│ 0.96     │ [Reject]│ 2026-…│ [Link] │ │
+│  │ ORDER_LN │ line item  │pending │ 0.71     │[Apv][Rj]│ 2026-…│   —    │ │
+│  └──────────┴────────────┴────────┴──────────┴─────────┴───────┴────────┘ │
 │  size [ 20 ▾ ]   1–2 of 2          [ ‹ Prev ]  1  [ Next › ]              │
 │                                                                           │
-│  [Ev] → modal: row evidence JSON      [Apv]/[Rj] → confirm dialog w/ reason│
+│  [Link] → Langfuse session in new tab; — when no run_id / tracing off     │
+│  [Apv]/[Rj] → confirm dialog w/ reason                                    │
 │  disabled [Apv] on a gated triple → hover: "blocked: ORDER_LINE pending"  │
 └─────────────────────────────────────────────────────────────────────────┘
         Browser + review (`/ontogen/result`)

@@ -29,6 +29,10 @@ config:
   datahubUrl: ""
   # URL of the Langfuse UI. Used for the header infra link (hidden when empty).
   langfuseUrl: ""
+  # Langfuse project ID. Combined with langfuseUrl and a run_id to build deep
+  # links to Langfuse session traces. Injected server-side at request time (not
+  # baked at build time). Set to the project ID created by langfuse.sh.
+  langfuseProjectId: ""
   # URL of the Airflow UI. Used for the header infra link (hidden when empty).
   airflowUrl: ""
 

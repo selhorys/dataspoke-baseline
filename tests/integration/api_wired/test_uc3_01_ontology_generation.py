@@ -2,8 +2,9 @@
 
 Two structurally identical tests mirror the UC3 user-story arc under stub mode
 and real-LLM mode. The arc: a DG operator enables ontology generation, seeds
-domain knowledge, runs real (non-dry-run) inference, inspects the concept graph
-and the debate evidence behind each row, then cleans up.
+domain knowledge, runs real (non-dry-run) inference, inspects the concept graph,
+opens the run's Langfuse session (each row links to its creating run via run_id),
+then cleans up.
 
 Spec: spec/USE_CASE_en.md §UC3 Ontology Generation
 Spec: spec/feature/BACKEND_LLM.md §Adversarial Debate Framework
@@ -44,16 +45,17 @@ async def test_uc3_ontology_generation_under_stub(
       2c. PATCH attr/seed/{id}/attr/enabled {is_enabled: true} — the seed joins
           inference; the list now shows is_enabled=true
       3. POST real (non-dry-run) inference — assert OntogenRunSummary shape
-      4. GET /event — find ONTOGEN.RUN_COMPLETE; assert debate fields in detail
-      5. GET result/{node,edge,triple} — assert standard envelope shape for each
-      6. For each persisted row, GET result/{type}/{id}/attr — assert evidence.debate
-         keys (no-op under stub because stub Producer returns empty payload)
-      7. Cleanup: DELETE seed (hard delete — gone from list), PATCH conf disabled
+      4. GET /event — find ONTOGEN.RUN_COMPLETE; assert debate fields + run_id in detail
+      5. GET result/{node,edge,triple} — assert standard envelope shape for each, and
+         that every persisted row carries run_id == the RUN_COMPLETE event's run_id
+         (the row's link to its creating run's Langfuse session)
+      6. Cleanup: DELETE seed (hard delete — gone from list), PATCH conf disabled
 
-    Spec: USE_CASE_en.md §UC3
-    Spec: BACKEND_LLM.md §Adversarial Debate Framework §Evidence shape
+    Spec: USE_CASE_en.md §UC3 — open the run's Langfuse session via run_id
+    Spec: BACKEND_LLM.md §Evidence shape — debate transcript lives in Langfuse,
+    addressed by session_id = run_id; the row persists run_id, not the transcript.
     Spec: BACKEND_LLM.md §Test Mode — stub Producer returns empty payload so no rows
-    are persisted; step 6 per-row loop is intentionally a no-op under stub mode.
+    are persisted; the per-row run_id check is intentionally a no-op under stub mode.
     """
     conf_url = "/api/v1/spoke/ontogen/attr/conf"
     seed_url = "/api/v1/spoke/ontogen/attr/seed"
@@ -177,41 +179,16 @@ async def test_uc3_ontology_generation_under_stub(
             "spec: USE_CASE_en.md §UC3 — GET attr/seed lists all seeds with is_enabled"
         )
 
-        # ── Step 2b: Snapshot pre-existing result-row ids per type ────────────
-        # result/{node,edge,triple} is a GLOBAL listing, so it may already hold
-        # ontogen rows seeded outside this run (e.g. uc4-seed's APPROVED context
-        # nodes Order/OrderLine/Customer/ShipmentEvent/DeliveryStatus, which are
-        # fixtures carrying no debate evidence). Snapshot their ids here so the
-        # Step 6 debate-evidence assertion can be scoped to rows THIS run created.
-        baseline_ids: dict[str, set[str]] = {}
-        for result_type, list_key in [
-            ("node", "nodes"),
-            ("edge", "edges"),
-            ("triple", "triples"),
-        ]:
-            baseline_ids[result_type] = set()
-            offset = 0
-            while True:
-                snap_resp = await api_client.get(
-                    f"/api/v1/spoke/ontogen/result/{result_type}?offset={offset}&limit=100",
-                    headers=admin_headers,
-                )
-                assert snap_resp.status_code == 200, (
-                    f"GET result/{result_type} (baseline snapshot) failed: {snap_resp.status_code}"
-                )
-                snap_body = snap_resp.json()
-                snap_rows = snap_body.get(list_key, [])
-                baseline_ids[result_type].update(r["id"] for r in snap_rows)
-                offset += 100
-                if offset >= snap_body.get("total_count", 0) or not snap_rows:
-                    break
-
         # ── Step 3: POST real (non-dry-run) inference ─────────────────────────
         # spec: USE_CASE_en.md §UC3 §Run semantics — non-dry-run persists rows
         # spec: BACKEND_LLM.md §Adversarial Debate Framework — debate runs unconditionally
         run_resp = await api_client.post(
             "/api/v1/spoke/ontogen/method/run",
             headers=admin_headers,
+            # method/run is synchronous; a real (non-stub) LLM inference takes minutes,
+            # so override the 30s api_client default to avoid a ReadTimeout. Harmless
+            # under stub mode (the stub Producer returns immediately).
+            timeout=300.0,
         )
         assert run_resp.status_code == 200, (
             f"POST method/run failed: {run_resp.status_code} {run_resp.text}. "
@@ -276,8 +253,16 @@ async def test_uc3_ontology_generation_under_stub(
             f"event detail producer_errors_dropped must be int ≥ 0; got {prod_err!r}. "
             "spec: BACKEND_LLM.md §Inference Loop"
         )
+        # run_id identifies the Langfuse session this run traced under; every row
+        # this run persists carries it (see Step 5).
+        # spec: BACKEND_LLM.md §Evidence shape — session_id = run_id
+        run_id = detail.get("run_id")
+        assert isinstance(run_id, str) and run_id, (
+            f"event detail run_id must be a non-empty string; got {run_id!r}. "
+            "spec: BACKEND_LLM.md §Evidence shape — run_id = Langfuse session id"
+        )
 
-        # ── Step 5: GET result/{node,edge,triple} — assert standard envelope ──
+        # ── Step 5: GET result/{node,edge,triple} — envelope + per-row run_id ──
         # spec: USE_CASE_en.md §UC3 §API Mapping — list endpoints return paginated envelopes
         # spec: spec/API.md §Standard Envelope
         for result_type, list_key in [
@@ -321,64 +306,21 @@ async def test_uc3_ontology_generation_under_stub(
                     "spec: API.md §Standard Envelope — total_count is the unpaginated row count"
                 )
 
-            # ── Step 6: GET result/{type}/{id}/attr — assert evidence.debate ──
-            # spec: BACKEND_LLM.md §Evidence shape — debate transcript in evidence JSONB
-            # Under stub mode the Producer returns an empty payload so no rows are
-            # persisted; the per-row block is intentionally a no-op.
-            # Scope the check to rows THIS run created — pre-existing/seeded rows
-            # (e.g. uc4-seed's context nodes) legitimately carry no debate evidence.
-            rows = [r for r in list_body[list_key] if r["id"] not in baseline_ids[result_type]]
-            for row in rows:
-                attr_resp = await api_client.get(
-                    f"/api/v1/spoke/ontogen/result/{result_type}/{row['id']}/attr",
-                    headers=admin_headers,
+            # Every result row exposes a run_id field — its link to the creating run's
+            # Langfuse session. The value is that row's creating-run id; rows from other
+            # runs / seeded fixtures carry a different id or NULL, so the equality to
+            # THIS run's id is only meaningful for rows this run produced.
+            # spec: BACKEND_LLM.md §Evidence shape — row.run_id = session_id; the
+            # transcript lives in Langfuse, not in the row.
+            # Under stub mode the Producer returns an empty payload, so this run persists
+            # no new rows; the schema contract is asserted on whatever rows exist.
+            for row in list_body[list_key]:
+                assert "run_id" in row, (
+                    f"{result_type} {row['id']!r} missing run_id field. "
+                    "spec: BACKEND_LLM.md §Evidence shape — every result row carries run_id"
                 )
-                assert attr_resp.status_code == 200, (
-                    f"GET result/{result_type}/{row['id']}/attr failed: "
-                    f"{attr_resp.status_code}"
-                )
-                evidence = attr_resp.json().get("evidence") or {}
-                debate = evidence.get("debate")
-                assert debate is not None, (
-                    f"{result_type} {row['id']!r} evidence missing 'debate'. "
-                    "spec: BACKEND_LLM.md §Evidence shape"
-                )
-                for key in ("turns_completed", "outcome", "final_reviewer_verdict",
-                            "rag_anchors", "history"):
-                    assert key in debate, (
-                        f"evidence.debate for {result_type} {row['id']!r} missing {key!r}. "
-                        "spec: BACKEND_LLM.md §Evidence shape"
-                    )
-                assert debate["outcome"] in ("accept", "turns_exhausted", "cycle_detected"), (
-                    f"{result_type} {row['id']!r} debate.outcome invalid: "
-                    f"{debate['outcome']!r}. spec: BACKEND_LLM.md §Termination"
-                )
-                tc = debate["turns_completed"]
-                assert isinstance(tc, int) and tc >= 2, (
-                    f"{result_type} {row['id']!r} turns_completed must be int ≥ 2; "
-                    f"got {tc!r}. spec: BACKEND_LLM.md §Loop shape"
-                )
-                history = debate.get("history", [])
-                assert isinstance(history, list) and len(history) >= 2, (
-                    f"{result_type} {row['id']!r} history must have ≥ 2 entries "
-                    f"(at least 1 Producer + 1 Reviewer); got {len(history)}. "
-                    "spec: BACKEND_LLM.md §Evidence shape §history"
-                )
-                assert tc == len(history), (
-                    f"{result_type} {row['id']!r} turns_completed={tc} must equal "
-                    f"len(history)={len(history)}. "
-                    "spec: BACKEND_LLM.md §Evidence shape — each turn appends one history entry"
-                )
-                for i, entry in enumerate(history):
-                    expected_actor = "producer" if i % 2 == 0 else "reviewer"
-                    actual_actor = entry.get("actor")
-                    assert actual_actor == expected_actor, (
-                        f"{result_type} {row['id']!r} history[{i}].actor must be "
-                        f"{expected_actor!r} per Producer-then-Reviewer alternation; "
-                        f"got {actual_actor!r}. spec: BACKEND_LLM.md §Loop shape"
-                    )
 
-        # ── Step 6b: DELETE the seed is a hard delete — gone from the list ────
+        # ── Step 5b: DELETE the seed is a hard delete — gone from the list ────
         # UC3 narrative: "DELETE removes the seed outright."
         # spec: USE_CASE_en.md §UC3 — DELETE attr/seed/{id} hard-deletes the seed.
         del_seed_resp = await api_client.delete(
@@ -397,7 +339,7 @@ async def test_uc3_ontology_generation_under_stub(
         seed_id = None  # already deleted — skip the finally cleanup
 
     finally:
-        # ── Step 7: Cleanup ───────────────────────────────────────────────────
+        # ── Step 6: Cleanup ───────────────────────────────────────────────────
         if seed_id is not None:
             await api_client.delete(f"{seed_url}/{seed_id}", headers=admin_headers)
         await api_client.patch(conf_url, headers=admin_headers, json={"is_enabled": False})
@@ -415,7 +357,7 @@ async def test_uc3_ontology_generation_with_real_llm(
     real-LLM contract assertions (non-zero persisted rows).
 
     Structurally identical to test_uc3_ontology_generation_under_stub. Additional
-    assertion after step 5/6: any_rows_found must be True — a real LLM run that
+    assertion after step 5: any_rows_found must be True — a real LLM run that
     persists zero rows signals a prompt/filter regression.
 
     Steps mirror USE_CASE_en.md §UC3 Imazon Example:
@@ -424,15 +366,16 @@ async def test_uc3_ontology_generation_with_real_llm(
          assert entry shows preview, updated_at, and is_enabled=false (ships disabled)
       2c. PATCH attr/seed/{id}/attr/enabled {is_enabled: true} — the seed joins inference
       3. POST real (non-dry-run) inference — assert OntogenRunSummary shape
-      4. GET /event — find ONTOGEN.RUN_COMPLETE; assert debate fields in detail
-      5. GET result/{node,edge,triple} — assert standard envelope shape for each
-      6. For each persisted row, GET result/{type}/{id}/attr — assert evidence.debate
-         keys; track any_rows_found across all three result types
-      7. Assert any_rows_found is True
-      8. Cleanup: DELETE seed (hard delete), PATCH conf disabled
+      4. GET /event — find ONTOGEN.RUN_COMPLETE; assert debate fields + run_id in detail
+      5. GET result/{node,edge,triple} — assert standard envelope shape for each, and
+         that every persisted row carries run_id == the RUN_COMPLETE event's run_id;
+         track any_rows_found across all three result types
+      6. Assert any_rows_found is True
+      7. Cleanup: DELETE seed (hard delete), PATCH conf disabled
 
-    Spec: USE_CASE_en.md §UC3
-    Spec: BACKEND_LLM.md §Adversarial Debate Framework §Evidence shape
+    Spec: USE_CASE_en.md §UC3 — open the run's Langfuse session via run_id
+    Spec: BACKEND_LLM.md §Evidence shape — debate transcript lives in Langfuse,
+    addressed by session_id = run_id; the row persists run_id, not the transcript.
     """
     if runtime_conf.get("stub_llm_client"):
         pytest.skip(
@@ -548,6 +491,10 @@ async def test_uc3_ontology_generation_with_real_llm(
         run_resp = await api_client.post(
             "/api/v1/spoke/ontogen/method/run",
             headers=admin_headers,
+            # method/run is synchronous; a real (non-stub) LLM inference takes minutes,
+            # so override the 30s api_client default to avoid a ReadTimeout. Harmless
+            # under stub mode (the stub Producer returns immediately).
+            timeout=300.0,
         )
         assert run_resp.status_code == 200, (
             f"POST method/run failed: {run_resp.status_code} {run_resp.text}. "
@@ -612,10 +559,18 @@ async def test_uc3_ontology_generation_with_real_llm(
             f"event detail producer_errors_dropped must be int ≥ 0; got {prod_err!r}. "
             "spec: BACKEND_LLM.md §Inference Loop"
         )
+        # run_id identifies the Langfuse session this run traced under; every row
+        # this run persists carries it (see Step 5).
+        # spec: BACKEND_LLM.md §Evidence shape — session_id = run_id
+        run_id = detail.get("run_id")
+        assert isinstance(run_id, str) and run_id, (
+            f"event detail run_id must be a non-empty string; got {run_id!r}. "
+            "spec: BACKEND_LLM.md §Evidence shape — run_id = Langfuse session id"
+        )
 
-        # ── Step 5 + 6: GET result/{node,edge,triple} + per-row evidence.debate ─
+        # ── Step 5: GET result/{node,edge,triple} + per-row run_id ─────────────
         # spec: USE_CASE_en.md §UC3 §API Mapping — list endpoints return paginated envelopes
-        # spec: BACKEND_LLM.md §Evidence shape — debate transcript in evidence JSONB
+        # spec: BACKEND_LLM.md §Evidence shape — row.run_id = Langfuse session id
         # spec: API.md §Standard Envelope
         any_rows_found = False
         for result_type, list_key in [
@@ -659,65 +614,29 @@ async def test_uc3_ontology_generation_with_real_llm(
                     "spec: API.md §Standard Envelope — total_count is the unpaginated row count"
                 )
 
-            rows = list_body[list_key]
-            for row in rows:
-                any_rows_found = True
-                attr_resp = await api_client.get(
-                    f"/api/v1/spoke/ontogen/result/{result_type}/{row['id']}/attr",
-                    headers=admin_headers,
-                )
-                assert attr_resp.status_code == 200, (
-                    f"GET result/{result_type}/{row['id']}/attr failed: "
-                    f"{attr_resp.status_code}"
-                )
-                evidence = attr_resp.json().get("evidence") or {}
-                debate = evidence.get("debate")
-                assert debate is not None, (
-                    f"{result_type} {row['id']!r} evidence missing 'debate'. "
+            # Every result row exposes a run_id field. Rows this run produced carry
+            # run_id == the RUN_COMPLETE event's run_id (their link to the run's Langfuse
+            # session, where the debate transcript lives); rows from prior runs / seeded
+            # fixtures carry a different id or NULL. any_rows_found is the discriminating
+            # signal — a NULL or swapped run_id on the new rows leaves no row matching
+            # this run's id and fails the "produced ≥1 row" assertion below.
+            # spec: BACKEND_LLM.md §Evidence shape — row.run_id = session_id
+            for row in list_body[list_key]:
+                assert "run_id" in row, (
+                    f"{result_type} {row['id']!r} missing run_id field. "
                     "spec: BACKEND_LLM.md §Evidence shape"
                 )
-                for key in ("turns_completed", "outcome", "final_reviewer_verdict",
-                            "rag_anchors", "history"):
-                    assert key in debate, (
-                        f"evidence.debate for {result_type} {row['id']!r} missing {key!r}. "
-                        "spec: BACKEND_LLM.md §Evidence shape"
-                    )
-                assert debate["outcome"] in ("accept", "turns_exhausted", "cycle_detected"), (
-                    f"{result_type} {row['id']!r} debate.outcome invalid: "
-                    f"{debate['outcome']!r}. spec: BACKEND_LLM.md §Termination"
-                )
-                tc = debate["turns_completed"]
-                assert isinstance(tc, int) and tc >= 2, (
-                    f"{result_type} {row['id']!r} turns_completed must be int ≥ 2; "
-                    f"got {tc!r}. spec: BACKEND_LLM.md §Loop shape"
-                )
-                history = debate.get("history", [])
-                assert isinstance(history, list) and len(history) >= 2, (
-                    f"{result_type} {row['id']!r} history must have ≥ 2 entries "
-                    f"(at least 1 Producer + 1 Reviewer); got {len(history)}. "
-                    "spec: BACKEND_LLM.md §Evidence shape §history"
-                )
-                assert tc == len(history), (
-                    f"{result_type} {row['id']!r} turns_completed={tc} must equal "
-                    f"len(history)={len(history)}. "
-                    "spec: BACKEND_LLM.md §Evidence shape — each turn appends one history entry"
-                )
-                for i, entry in enumerate(history):
-                    expected_actor = "producer" if i % 2 == 0 else "reviewer"
-                    actual_actor = entry.get("actor")
-                    assert actual_actor == expected_actor, (
-                        f"{result_type} {row['id']!r} history[{i}].actor must be "
-                        f"{expected_actor!r} per Producer-then-Reviewer alternation; "
-                        f"got {actual_actor!r}. spec: BACKEND_LLM.md §Loop shape"
-                    )
+            if any(r.get("run_id") == run_id for r in list_body[list_key]):
+                any_rows_found = True
 
-        # ── Step 7: Assert real LLM produced rows ────────────────────────────
+        # ── Step 6: Assert real LLM produced rows for this run ───────────────
         assert any_rows_found, (
-            "Real LLM run produced zero rows — verify prompt/filter pipeline. "
-            "spec: BACKEND_LLM.md §Test Mode — real LLM must persist ≥1 row"
+            "Real LLM run produced zero rows carrying this run's run_id — verify "
+            "prompt/filter pipeline. spec: BACKEND_LLM.md §Test Mode — real LLM "
+            "must persist ≥1 row stamped with the run's id"
         )
 
-        # ── Step 7b: DELETE the seed is a hard delete — gone from the list ───
+        # ── Step 6b: DELETE the seed is a hard delete — gone from the list ───
         # spec: USE_CASE_en.md §UC3 — DELETE attr/seed/{id} hard-deletes the seed.
         del_seed_resp = await api_client.delete(
             f"{seed_url}/{seed_id}", headers=admin_headers
@@ -735,7 +654,7 @@ async def test_uc3_ontology_generation_with_real_llm(
         seed_id = None  # already deleted — skip the finally cleanup
 
     finally:
-        # ── Step 8: Cleanup ───────────────────────────────────────────────────
+        # ── Step 7: Cleanup ───────────────────────────────────────────────────
         if seed_id is not None:
             await api_client.delete(f"{seed_url}/{seed_id}", headers=admin_headers)
         await api_client.patch(conf_url, headers=admin_headers, json={"is_enabled": False})

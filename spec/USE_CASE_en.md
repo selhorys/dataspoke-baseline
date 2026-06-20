@@ -382,19 +382,16 @@ The producer / reviewer adversarial-debate inference loop is in
 | `PATCH /spoke/ontogen/attr/seed/{seed_id}/attr/enabled` | Enable or disable a seed — JSON `{is_enabled: bool}`. A disabled seed stays visible but is excluded from the inference pipeline; reversible both ways |
 | `POST /spoke/ontogen/method/run` | Trigger a manual re-inference. Optional `Content-Type: text/markdown` body acts as a one-shot prompt for this run; `?dry_run=true` evaluates without persisting. Concurrent runs return `409 ONTOGEN_RUNNING` |
 | `GET /spoke/ontogen/event` | Global inference-run history (`ONTOGEN.RUN_COMPLETE`, `ONTOGEN.RUN_FAILED`) |
-| `GET /spoke/ontogen/result/node` | List nodes (subjects / objects) with confidence and status |
+| `GET /spoke/ontogen/result/node` | List nodes (subjects / objects) — each row carries `score`, `status`, and the `run_id` that produced it (Langfuse session for the debate behind the row) |
 | `GET /spoke/ontogen/result/node/{node_id}` | Node detail incl. member datasets |
-| `GET /spoke/ontogen/result/node/{node_id}/attr` | Node attributes (confidence, source evidence) |
 | `GET /spoke/ontogen/result/node/{node_id}/event` | Node-level change history (proposed → approved / rejected, member additions) |
 | `POST /spoke/ontogen/result/node/{node_id}/method/review` | Approve or reject a pending node |
-| `GET /spoke/ontogen/result/edge` | List edges (predicates) with confidence and status |
+| `GET /spoke/ontogen/result/edge` | List edges (predicates) — each row carries `score`, `status`, and `run_id` |
 | `GET /spoke/ontogen/result/edge/{edge_id}` | Edge detail |
-| `GET /spoke/ontogen/result/edge/{edge_id}/attr` | Edge attributes (confidence, source evidence) |
 | `GET /spoke/ontogen/result/edge/{edge_id}/event` | Edge-level change history |
 | `POST /spoke/ontogen/result/edge/{edge_id}/method/review` | Approve or reject a pending edge |
-| `GET /spoke/ontogen/result/triple` | List triples — `(subject_node_id, edge_id, object_node_id)` facts — with confidence and status |
+| `GET /spoke/ontogen/result/triple` | List triples — `(subject_node_id, edge_id, object_node_id)` facts — each row carries `score`, `status`, and `run_id` |
 | `GET /spoke/ontogen/result/triple/{triple_id}` | Triple detail (resolved subject node, edge, object node) |
-| `GET /spoke/ontogen/result/triple/{triple_id}/attr` | Triple attributes (confidence, source evidence) |
 | `GET /spoke/ontogen/result/triple/{triple_id}/event` | Triple-level change history |
 | `POST /spoke/ontogen/result/triple/{triple_id}/method/review` | Approve or reject a pending triple — returns `422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING` if any of subject node, edge, or object node is not yet approved |
 
@@ -441,9 +438,9 @@ Nodes (subjects / objects):
   EDITION    confidence 0.94   member: catalog.editions       (primary)
   CUSTOMER   confidence 0.93   member: customers.eu_profiles  (primary)
   RATING     confidence 0.72   member: reviews.user_ratings   (primary)
-    evidence:
-      - foreign key edition_id → catalog.editions.edition_id (schemaMetadata)
-      - foreign key user_id → customers.eu_profiles.user_id (schemaMetadata)
+
+  Each row carries the run_id that produced it; the producer/reviewer debate
+  behind every concept is traced to that run's Langfuse session.
 
 Edges (predicates):
   is_edition_of  confidence 0.95   semantics: format-of relationship
@@ -455,7 +452,9 @@ Triples (subject — predicate — object):
 ```
 
 **Review flow — nodes first.** `RATING` has the lowest node confidence (0.72, due to
-LLM ambiguity between "rating" and "review"), so the reviewer starts with nodes:
+LLM ambiguity between "rating" and "review"), so the reviewer starts with nodes. To
+understand why the LLM proposed it, the reviewer opens the row's `run_id` Langfuse
+session, which holds the full producer/reviewer debate transcript:
 
 ```http
 GET /api/v1/spoke/ontogen/result/node

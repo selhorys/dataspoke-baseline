@@ -7,7 +7,7 @@ Routes:
                       PATCH /ontogen/attr/seed/{seed_id}/attr/enabled
   run                 POST /ontogen/method/run
   global events       GET /ontogen/event
-  node result set     GET/GET/{id}/GET/{id}/attr/GET/{id}/event/POST/{id}/method/review
+  node result set     GET/GET/{id}/GET/{id}/event/POST/{id}/method/review
   edge result set     (same shape)
   triple result set   (same shape; requires dependency check on review)
 
@@ -27,10 +27,8 @@ from src.api.schemas._paths import UuidPath
 from src.api.schemas.common import parse_sort
 from src.api.schemas.events import EventListResponse, EventResponse
 from src.api.schemas.ontogen import (
-    EdgeAttrResponse,
     EdgeListResponse,
     EdgeResponse,
-    NodeAttrResponse,
     NodeListResponse,
     NodeResponse,
     OntogenConfPatchRequest,
@@ -41,7 +39,6 @@ from src.api.schemas.ontogen import (
     SeedEnabledRequest,
     SeedListItem,
     SeedListResponse,
-    TripleAttrResponse,
     TripleListResponse,
     TripleResponse,
 )
@@ -132,6 +129,7 @@ def _node_resp(row: object) -> NodeResponse:
         description=row.description or "",  # type: ignore[attr-defined]
         confidence_score=row.confidence_score,  # type: ignore[attr-defined]
         status=row.status,  # type: ignore[attr-defined]
+        run_id=row.run_id,  # type: ignore[attr-defined]
         created_at=row.created_at,  # type: ignore[attr-defined]
         updated_at=row.updated_at,  # type: ignore[attr-defined]
     )
@@ -144,6 +142,7 @@ def _edge_resp(row: object) -> EdgeResponse:
         semantics=row.semantics,  # type: ignore[attr-defined]
         confidence_score=row.confidence_score,  # type: ignore[attr-defined]
         status=row.status,  # type: ignore[attr-defined]
+        run_id=row.run_id,  # type: ignore[attr-defined]
         created_at=row.created_at,  # type: ignore[attr-defined]
         updated_at=row.updated_at,  # type: ignore[attr-defined]
     )
@@ -157,6 +156,7 @@ def _triple_resp(row: object) -> TripleResponse:
         object_node_id=row.object_node_id,  # type: ignore[attr-defined]
         confidence_score=row.confidence_score,  # type: ignore[attr-defined]
         status=row.status,  # type: ignore[attr-defined]
+        run_id=row.run_id,  # type: ignore[attr-defined]
         created_at=row.created_at,  # type: ignore[attr-defined]
         updated_at=row.updated_at,  # type: ignore[attr-defined]
     )
@@ -433,20 +433,6 @@ async def get_ontogen_node(
     return _node_resp(row)
 
 
-@router.get("/result/node/{node_id}/attr", response_model=NodeAttrResponse)
-async def get_ontogen_node_attr(
-    node_id: str,
-    service: OntogenService = Depends(get_ontogen_service),
-) -> NodeAttrResponse:
-    """Get node attributes (confidence, source evidence)."""
-    attr = await service.get_node_attr(node_id)
-    return NodeAttrResponse(
-        node_id=attr["node_id"],
-        confidence_score=attr["confidence_score"],
-        evidence=attr.get("evidence") or {},
-    )
-
-
 @router.get("/result/node/{node_id}/event", response_model=EventListResponse)
 async def get_ontogen_node_events(
     node_id: str,
@@ -522,20 +508,6 @@ async def get_ontogen_edge(
     return _edge_resp(row)
 
 
-@router.get("/result/edge/{edge_id}/attr", response_model=EdgeAttrResponse)
-async def get_ontogen_edge_attr(
-    edge_id: str,
-    service: OntogenService = Depends(get_ontogen_service),
-) -> EdgeAttrResponse:
-    """Get edge attributes (confidence, source evidence)."""
-    attr = await service.get_edge_attr(edge_id)
-    return EdgeAttrResponse(
-        edge_id=attr["edge_id"],
-        confidence_score=attr["confidence_score"],
-        evidence=attr.get("evidence") or {},
-    )
-
-
 @router.get("/result/edge/{edge_id}/event", response_model=EventListResponse)
 async def get_ontogen_edge_events(
     edge_id: str,
@@ -609,23 +581,6 @@ async def get_ontogen_triple(
     """Get ontology triple detail (resolved subject node, edge, object node)."""
     row = await service.get_triple(triple_id)
     return _triple_resp(row)
-
-
-@router.get("/result/triple/{triple_id}/attr", response_model=TripleAttrResponse)
-async def get_ontogen_triple_attr(
-    triple_id: str,
-    service: OntogenService = Depends(get_ontogen_service),
-) -> TripleAttrResponse:
-    """Get triple attributes (confidence, source evidence)."""
-    attr = await service.get_triple_attr(triple_id)
-    return TripleAttrResponse(
-        triple_id=attr["triple_id"],
-        subject_node_id=attr["subject_node_id"],
-        edge_id=attr["edge_id"],
-        object_node_id=attr["object_node_id"],
-        confidence_score=attr["confidence_score"],
-        evidence=attr.get("evidence") or {},
-    )
 
 
 @router.get("/result/triple/{triple_id}/event", response_model=EventListResponse)

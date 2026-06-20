@@ -8,19 +8,21 @@
  *     GET /spoke/ontogen/result/node request (server-side sort);
  *   - the shared standard Pagination control is present (Rows-per-page selector
  *     defaulting to 20, Prev/Next), replacing the old inline Prev/Next;
- *   - when rows exist, the Nodes table renders the uniform 6 compact columns
- *     (Title, Description, Status, Confidence, Actions, Created At) and the
- *     Confidence cell carries an Evidence button that opens a modal.
+ *   - when rows exist, the Nodes table renders the uniform 7 compact columns
+ *     (Title, Description, Status, Confidence, Actions, Created At, Evidence) and
+ *     the Evidence cell carries a Langfuse session Link (or an em dash when the
+ *     row has no run / tracing is unconfigured).
  *
- * Data-conditional parts (6 columns, Evidence modal) act on whatever rows the
+ * Data-conditional parts (7 columns, Evidence Link) act on whatever rows the
  * current result set holds — under the stub default the set is empty (stub runs
  * persist zero rows), so those steps self-skip, mirroring UC3 step 4/4b.
  *
  * Runs under the admin (writer) storageState (`*.spec.ts` → admin project) so the
  * Actions column and review controls render.
  *
- * spec: spec/feature/FRONTEND_ONTOGEN.md §Result table — uniform 6-column compact
- *   layout; evidence-as-modal; Created-At sort control; standard Pagination.
+ * spec: spec/feature/FRONTEND_ONTOGEN.md §Result table — uniform 7-column compact
+ *   layout; Evidence column links to the run's Langfuse session; Created-At sort
+ *   control; standard Pagination.
  * spec: spec/API.md §UC3 result rows — ?sort=created_at_asc|created_at_desc
  *   (default created_at_desc); offset/limit pagination envelope.
  * spec: spec/feature/FRONTEND_BASIC.md §Pagination — shared control (size selector
@@ -117,10 +119,10 @@ test("/ontogen/result — Nodes panel renders the shared Pagination control", as
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// When rows exist: uniform 6 compact columns + Evidence button → modal.
+// When rows exist: uniform 7 compact columns + Evidence column → Langfuse Link.
 // Data-conditional — self-skips under the stub default (zero persisted rows).
 // ─────────────────────────────────────────────────────────────────────────────
-test("/ontogen/result — node rows render 6 columns; Evidence opens a modal", async ({
+test("/ontogen/result — node rows render 7 columns; Evidence cell links to the run's Langfuse session", async ({
   page,
   adminApi,
 }) => {
@@ -128,11 +130,17 @@ test("/ontogen/result — node rows render 6 columns; Evidence opens a modal", a
   const listResp = await adminApi.get(`${NODE_RESULT_API}?offset=0&limit=10`);
   expect(listResp.status()).toBe(200);
   const listBody = (await listResp.json()) as {
-    nodes: Array<{ id: string; name: string }>;
+    nodes: Array<{ id: string; name: string; run_id: string | null }>;
   };
   if (listBody.nodes.length === 0) {
     test.skip(true, "no ontology nodes (stub run persists zero rows); nothing to render");
   }
+
+  // Read the browser-reachable Langfuse host + project slug to compute the expected href.
+  // spec: FRONTEND_ONTOGEN.md §Result table — the Evidence Link targets
+  //   {langfuseUrl}/project/{langfuseProjectId}/sessions/{run_id}.
+  const cfgResp = await adminApi.get("/api/v1/admin/conf");
+  expect(cfgResp.status()).toBe(200);
 
   await page.goto("/ontogen/result");
   await expect(page).not.toHaveURL(/\/login/);
@@ -142,30 +150,51 @@ test("/ontogen/result — node rows render 6 columns; Evidence opens a modal", a
 
   const panel = page.getByRole("tabpanel");
 
-  // -- UI assertion: the uniform 6-column header set --
+  // -- UI assertion: the uniform 7-column header set (Evidence after Created At) --
   // spec: FRONTEND_ONTOGEN.md §Result table — Title, Description, Status, Confidence,
-  //   Actions, Created At (uniform across Node/Edge/Triple).
-  for (const header of ["Title", "Description", "Status", "Confidence", "Actions", "Created At"]) {
+  //   Actions, Created At, Evidence (uniform across Node/Edge/Triple).
+  for (const header of [
+    "Title",
+    "Description",
+    "Status",
+    "Confidence",
+    "Actions",
+    "Created At",
+    "Evidence",
+  ]) {
     await expect(panel.getByRole("columnheader", { name: header, exact: true })).toBeVisible({
       timeout: 10_000,
     });
   }
-  await expect(panel.getByRole("columnheader")).toHaveCount(6);
+  await expect(panel.getByRole("columnheader")).toHaveCount(7);
 
-  // -- UI assertion: the first node row carries an Evidence button in the Confidence cell --
-  // spec: FRONTEND_ONTOGEN.md §Result table — Confidence cell hosts an Evidence button
-  //   (opens a modal rendering the evidence JSON); evidence-dialog.tsx.
+  // -- UI assertion: the Confidence cell no longer hosts an Evidence button --
+  // spec: FRONTEND_ONTOGEN.md §Result table — Confidence is score-only; the per-row
+  //   debate transcript lives in Langfuse, reached via the Evidence column Link.
   const firstRow = panel.getByRole("row").nth(1); // row 0 is the header
-  const evidenceButton = firstRow.getByRole("button", { name: /evidence/i });
-  await expect(evidenceButton).toBeVisible({ timeout: 10_000 });
+  await expect(firstRow.getByRole("button", { name: /evidence/i })).toHaveCount(0);
 
-  // -- UI gesture: click Evidence → the modal opens --
-  await evidenceButton.click();
-
-  // -- UI assertion: an "Evidence" dialog opens (modal, not inline disclosure) --
-  // evidence-dialog.tsx — DialogTitle "Evidence"; lazily fetches the item attr on open.
-  const dialog = page.getByRole("dialog");
-  await expect(dialog.getByRole("heading", { name: "Evidence", exact: true })).toBeVisible({
-    timeout: 10_000,
-  });
+  // -- UI assertion: the Evidence cell renders a "Link" (new tab) or an em dash --
+  // spec: FRONTEND_ONTOGEN.md §Result table — when run_id + Langfuse host + project slug
+  //   are all present the cell is an external Link (target=_blank, rel=noopener); else "—".
+  // evidence-link.tsx renders <a target="_blank" rel="noopener noreferrer">Link</a>.
+  const targetNode = listBody.nodes[0];
+  const link = firstRow.getByRole("link", { name: "Link", exact: true });
+  if (await link.count()) {
+    // A configured row: the anchor opens a new tab and points at the run's session.
+    await expect(link.first()).toHaveAttribute("target", "_blank");
+    await expect(link.first()).toHaveAttribute("rel", /noopener/);
+    // The href encodes the row's own run_id under .../sessions/{run_id}; assert the
+    // session segment matches the backend row's run_id (the row's link to its run).
+    if (targetNode.run_id) {
+      await expect(link.first()).toHaveAttribute(
+        "href",
+        new RegExp(`/sessions/${encodeURIComponent(targetNode.run_id)}$`)
+      );
+      await expect(link.first()).toHaveAttribute("href", /\/project\/.+\/sessions\//);
+    }
+  } else {
+    // Unconfigured row (no run_id, or Langfuse host/slug absent): the cell is an em dash.
+    await expect(firstRow.getByText("—", { exact: true }).first()).toBeVisible({ timeout: 5_000 });
+  }
 });

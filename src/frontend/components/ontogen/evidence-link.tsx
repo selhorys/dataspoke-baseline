@@ -1,0 +1,43 @@
+"use client";
+
+/**
+ * EvidenceLink — renders the Evidence cell of an OntoGen result row. A row's
+ * `run_id` doubles as its Langfuse session id, so the full adversarial-debate
+ * transcript lives in Langfuse rather than in the row. When `run_id` and the
+ * browser-reachable Langfuse host + project slug are all present, this renders an
+ * external "Link" opening `{langfuseUrl}/project/{projectId}/sessions/{run_id}`
+ * in a new tab. Otherwise (seeded rows with no run, or tracing disabled), it
+ * renders an em dash.
+ */
+
+import { ExternalLink } from "lucide-react";
+import { getRuntimeConfig } from "@/lib/runtime-config";
+
+interface EvidenceLinkProps {
+  /** Creating run's id; equals the Langfuse session id. */
+  runId: string | null;
+}
+
+export function EvidenceLink({ runId }: EvidenceLinkProps) {
+  const { langfuseUrl, langfuseProjectId } = getRuntimeConfig();
+
+  if (!runId || !langfuseUrl || !langfuseProjectId) {
+    return <span className="text-muted-foreground">—</span>;
+  }
+
+  const href = `${langfuseUrl.replace(/\/+$/, "")}/project/${encodeURIComponent(
+    langfuseProjectId,
+  )}/sessions/${encodeURIComponent(runId)}`;
+
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="inline-flex items-center gap-1 text-primary hover:underline"
+    >
+      Link
+      <ExternalLink className="h-3 w-3" aria-hidden="true" />
+    </a>
+  );
+}

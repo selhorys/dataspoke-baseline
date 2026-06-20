@@ -11,7 +11,6 @@ import type {
   OntogenConfPutBody,
   OntogenEdge,
   OntogenEventListResponse,
-  OntogenItemAttrResponse,
   OntogenNode,
   OntogenRunResponse,
   OntogenTriple,
@@ -207,23 +206,6 @@ export function useOntogenTriples(params: ResultListParams = {}) {
   return usePoll<TripleListResponse>({
     queryKey: ["ontogen", "triples", params],
     queryFn: () => apiFetch<TripleListResponse>(buildResultUrl("triple", params)),
-    meta: { handledInline: true },
-  });
-}
-
-// ── Item attr (evidence) ───────────────────────────────────────────────────────
-
-/**
- * GET /spoke/ontogen/result/{kind}/{id}/attr — per-item detail incl. the
- * `evidence` JSON (debate transcript). `enabled`-gated so it only fetches when
- * the row's evidence disclosure is opened.
- */
-export function useOntogenItemAttr(kind: ReviewKind, id: string, enabled: boolean) {
-  return useQuery<OntogenItemAttrResponse>({
-    queryKey: ["ontogen", kind, id, "attr"],
-    queryFn: () =>
-      apiFetch<OntogenItemAttrResponse>(`/spoke/ontogen/result/${kind}/${id}/attr`),
-    enabled: enabled && !!id,
     meta: { handledInline: true },
   });
 }

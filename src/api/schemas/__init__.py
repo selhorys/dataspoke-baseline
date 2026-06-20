@@ -59,10 +59,8 @@ from src.api.schemas.metrics import (
     ReplaceMetricConfigRequest,
 )
 from src.api.schemas.ontogen import (
-    EdgeAttrResponse,
     EdgeListResponse,
     EdgeResponse,
-    NodeAttrResponse,
     NodeListResponse,
     NodeResponse,
     OntogenConfPatchRequest,
@@ -72,7 +70,6 @@ from src.api.schemas.ontogen import (
     ReviewRequest,
     SeedListItem,
     SeedListResponse,
-    TripleAttrResponse,
     TripleListResponse,
     TripleResponse,
 )
@@ -144,10 +141,8 @@ __all__ = [
     "PatchMetricConfigRequest",
     "ReplaceMetricConfigRequest",
     # ontogen
-    "EdgeAttrResponse",
     "EdgeListResponse",
     "EdgeResponse",
-    "NodeAttrResponse",
     "NodeListResponse",
     "NodeResponse",
     "OntogenConfPatchRequest",
@@ -157,7 +152,6 @@ __all__ = [
     "ReviewRequest",
     "SeedListItem",
     "SeedListResponse",
-    "TripleAttrResponse",
     "TripleListResponse",
     "TripleResponse",
     # validation

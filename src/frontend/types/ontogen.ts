@@ -77,6 +77,8 @@ export interface OntogenNode {
   description: string;
   confidence_score: number;
   status: OntogenStatus;
+  /** Creating run's id; doubles as the Langfuse session id. null for seeded rows. */
+  run_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -96,6 +98,8 @@ export interface OntogenEdge {
   semantics: string | null;
   confidence_score: number;
   status: OntogenStatus;
+  /** Creating run's id; doubles as the Langfuse session id. null for seeded rows. */
+  run_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -116,6 +120,8 @@ export interface OntogenTriple {
   object_node_id: string;
   confidence_score: number;
   status: OntogenStatus;
+  /** Creating run's id; doubles as the Langfuse session id. null for seeded rows. */
+  run_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -125,19 +131,6 @@ export interface TripleListResponse {
   limit: number;
   total_count: number;
   triples: OntogenTriple[];
-}
-
-// ── Item attr (evidence) ───────────────────────────────────────────────────────
-
-/**
- * Per-item detail from GET /spoke/ontogen/result/{kind}/{id}/attr. `evidence` is
- * free-form JSON (it carries the adversarial-debate transcript under `debate`)
- * and is rendered as-is. Mirrors {Node,Edge,Triple}AttrResponse in
- * src/api/schemas/ontogen.py; the per-kind id field is unused by the UI.
- */
-export interface OntogenItemAttrResponse {
-  confidence_score: number;
-  evidence: Record<string, unknown>;
 }
 
 // ── Review ────────────────────────────────────────────────────────────────────

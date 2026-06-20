@@ -10,4 +10,5 @@ data:
   DATASPOKE_API_BASE_URL: {{ .Values.config.apiBaseUrl | quote }}
   DATASPOKE_DATAHUB_URL: {{ .Values.config.datahubUrl | quote }}
   DATASPOKE_LANGFUSE_URL: {{ .Values.config.langfuseUrl | quote }}
+  DATASPOKE_LANGFUSE_PROJECT_ID: {{ .Values.config.langfuseProjectId | quote }}
   DATASPOKE_AIRFLOW_URL: {{ .Values.config.airflowUrl | quote }}

@@ -3,20 +3,24 @@
  * Node / Edge / Triple result tables).
  *
  * Spec traces:
- *   - spec/feature/FRONTEND_ONTOGEN.md §Result table (6-column compact layout):
- *     Title, Description, Status, Confidence (+ Evidence button → modal),
- *     Actions (Approve/Reject → reason confirm), Created At.
+ *   - spec/feature/FRONTEND_ONTOGEN.md §Result table (7-column compact layout):
+ *     Title, Description, Status, Confidence (score only), Actions
+ *     (Approve/Reject → reason confirm), Created At, Evidence (Langfuse session
+ *     Link, new tab).
  *   - spec/API.md §UC3 result rows: ?sort=created_at_asc|_desc (default desc),
  *     offset/limit pagination via the shared <Pagination> control.
- *   - Plan Workstream B: evidence as modal; reason entered in the confirm popup;
- *     review submits { verdict, reason }; sort + pagination change query params.
+ *   - Plan: each row's run_id doubles as its Langfuse session id; the Evidence
+ *     cell renders an external Link to {langfuseUrl}/project/{projectId}/sessions/
+ *     {run_id} (or — when run_id / Langfuse config is missing); review submits
+ *     { verdict, reason }; sort + pagination change query params.
  *
- * Strategy: mock @/lib/api/ontogen (data + review + item-attr hooks), and stub
- * the Radix Dialog/Select with simple open-aware renderers so assertions stay on
- * behavior rather than jsdom portal/focus-trap mechanics. The data hook is a spy
- * so we can read the {offset, limit, sort} params the panel threads on each render.
+ * Strategy: mock @/lib/api/ontogen (data + review hooks), and stub the Radix
+ * Dialog/Select with simple open-aware renderers so assertions stay on behavior
+ * rather than jsdom portal/focus-trap mechanics. The data hook is a spy so we can
+ * read the {offset, limit, sort} params the panel threads on each render. The
+ * Langfuse runtime config is injected via window.__DATASPOKE_RUNTIME_CONFIG__.
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, within } from "@testing-library/react";
 import React from "react";
 import type { OntogenNode } from "@/types/ontogen";
@@ -25,17 +29,13 @@ import type { OntogenNode } from "@/types/ontogen";
 const {
   useNodesSpy,
   reviewMutateSpy,
-  useItemAttrSpy,
 } = vi.hoisted(() => ({
   useNodesSpy: vi.fn(),
   reviewMutateSpy: vi.fn(),
-  useItemAttrSpy: vi.fn(),
 }));
 
 vi.mock("@/lib/api/ontogen", () => ({
   useOntogenNodes: (params: unknown) => useNodesSpy(params),
-  useOntogenItemAttr: (kind: string, id: string, enabled: boolean) =>
-    useItemAttrSpy(kind, id, enabled),
   useReviewOntogenItem: () => ({ mutate: reviewMutateSpy, isPending: false }),
 }));
 
@@ -136,6 +136,7 @@ function makeNode(overrides: Partial<OntogenNode> = {}): OntogenNode {
     description: "A published title",
     confidence_score: 0.87,
     status: "llm_pending",
+    run_id: "11111111-1111-1111-1111-111111111111",
     created_at: "2026-01-02T03:04:05Z",
     updated_at: "2026-01-02T03:04:05Z",
     ...overrides,
@@ -152,20 +153,36 @@ function mockNodesResult(nodes: OntogenNode[], total = nodes.length) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  useItemAttrSpy.mockReturnValue({ data: { evidence: {} }, isLoading: false, error: null });
+  // Default Langfuse runtime config so the Evidence link can be built.
+  window.__DATASPOKE_RUNTIME_CONFIG__ = {
+    langfuseUrl: "http://langfuse.example.com",
+    langfuseProjectId: "dataspoke-project",
+  };
+});
+
+afterEach(() => {
+  delete window.__DATASPOKE_RUNTIME_CONFIG__;
 });
 
 // ---------------------------------------------------------------------------
-// 1. Uniform 6-column layout
+// 1. Uniform 7-column layout
 // ---------------------------------------------------------------------------
-describe("NodesPanel — 6-column compact layout", () => {
-  it("renders the six standard column headers", () => {
+describe("NodesPanel — 7-column compact layout", () => {
+  it("renders the seven standard column headers", () => {
     mockNodesResult([makeNode()]);
     render(<NodesPanel canWrite={false} />);
-    for (const header of ["Title", "Description", "Status", "Confidence", "Actions", "Created At"]) {
+    for (const header of [
+      "Title",
+      "Description",
+      "Status",
+      "Confidence",
+      "Actions",
+      "Created At",
+      "Evidence",
+    ]) {
       expect(screen.getByRole("columnheader", { name: header })).toBeTruthy();
     }
-    expect(screen.getAllByRole("columnheader")).toHaveLength(6);
+    expect(screen.getAllByRole("columnheader")).toHaveLength(7);
   });
 
   it("renders the node name, description, and 2-dp confidence", () => {
@@ -178,29 +195,37 @@ describe("NodesPanel — 6-column compact layout", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 2. Evidence modal
+// 2. Evidence Langfuse-session link
 // ---------------------------------------------------------------------------
-describe("NodesPanel — evidence modal", () => {
-  it("opens an Evidence dialog and lazily fetches the item attr on open", () => {
-    mockNodesResult([makeNode({ id: "n-ev" })]);
-    useItemAttrSpy.mockReturnValue({
-      data: { evidence: { verdict: "approve", rounds: 2 } },
-      isLoading: false,
-      error: null,
-    });
+describe("NodesPanel — evidence Langfuse-session link", () => {
+  it("renders an external Link to the run's Langfuse session, opening a new tab", () => {
+    mockNodesResult([
+      makeNode({ id: "n-ev", run_id: "22222222-2222-2222-2222-222222222222" }),
+    ]);
     render(<NodesPanel canWrite={false} />);
 
-    // Closed initially: the attr hook is called with enabled=false.
-    expect(useItemAttrSpy).toHaveBeenCalledWith("node", "n-ev", false);
-    expect(screen.queryByRole("dialog")).toBeNull();
+    const link = screen.getByRole("link", { name: /link/i });
+    expect(link.getAttribute("href")).toBe(
+      "http://langfuse.example.com/project/dataspoke-project/sessions/22222222-2222-2222-2222-222222222222",
+    );
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(link.getAttribute("rel")).toBe("noopener noreferrer");
+  });
 
-    fireEvent.click(screen.getByRole("button", { name: /evidence/i }));
+  it("renders — (no link) when the row has no run_id", () => {
+    mockNodesResult([makeNode({ id: "n-seeded", run_id: null })]);
+    render(<NodesPanel canWrite={false} />);
 
-    // Open: dialog visible and the attr hook now enabled (lazy fetch).
-    expect(screen.getByRole("dialog")).toBeTruthy();
-    expect(useItemAttrSpy).toHaveBeenCalledWith("node", "n-ev", true);
-    // Evidence JSON is rendered.
-    expect(screen.getByText(/"rounds": 2/)).toBeTruthy();
+    expect(screen.queryByRole("link", { name: /link/i })).toBeNull();
+    expect(screen.getAllByText("—").length).toBeGreaterThan(0);
+  });
+
+  it("renders — (no link) when the Langfuse runtime config is unset", () => {
+    delete window.__DATASPOKE_RUNTIME_CONFIG__;
+    mockNodesResult([makeNode({ id: "n-unconfigured" })]);
+    render(<NodesPanel canWrite={false} />);
+
+    expect(screen.queryByRole("link", { name: /link/i })).toBeNull();
   });
 });
 

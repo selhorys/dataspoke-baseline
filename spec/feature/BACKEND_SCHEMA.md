@@ -268,7 +268,7 @@ are deleted at the start of the next run.
 | `value` | `TEXT` | Markdown proposal (≤ 16 KiB) |
 | `confidence_score` | `REAL` | Producer-Reviewer debate confidence (`[0.0, 1.0]`) |
 | `status` | `TEXT` | `llm_approved` (debate-accepted, awaiting human), `approved` (human accepted, emitted to DataHub), `rejected` (human rejected, deleted next run) |
-| `evidence` | `JSONB` | Debate transcript (same shape as ontogen `evidence`) plus per-item Reviewer verdicts |
+| `evidence` | `JSONB` | Debate transcript plus per-item Reviewer verdicts |
 | `created_at` | `TIMESTAMPTZ` | |
 | `reviewed_at` | `TIMESTAMPTZ` NULL | Human review timestamp |
 | `reviewer_id` | `TEXT` NULL | User ID of the reviewer |
@@ -336,7 +336,7 @@ There is no parent/child hierarchy.
 | `description` | `TEXT` | LLM-generated description |
 | `confidence_score` | `REAL` | LLM inference confidence (0.0–1.0) |
 | `status` | `TEXT` | `llm_pending`, `llm_approved`, `approved`, `rejected` — `llm_pending` is the LLM-created default; `llm_approved` is set when the Adversarial Debate ends with `outcome=accept` and confidence ≥ `ONTOLOGY_CONFIDENCE_THRESHOLD`; `approved` and `rejected` are written only by the human review endpoint |
-| `evidence` | `JSONB` NULL | Snapshot of LLM evidence (signals from each input source) |
+| `run_id` | `UUID` NULL | The inference run that produced this row, written **only on insert** (never overwritten on reuse/update). `NULL` for seeded rows. Identifies the run's Langfuse session (`session_id = run_id`) holding the debate transcript — see [BACKEND_LLM §Evidence](BACKEND_LLM.md#evidence--the-runs-langfuse-session) |
 | `created_at` | `TIMESTAMPTZ` | |
 | `updated_at` | `TIMESTAMPTZ` | |
 
@@ -365,7 +365,7 @@ on its own and is reused across many triples.
 | `semantics` | `TEXT` NULL | LLM-generated short semantics description |
 | `confidence_score` | `REAL` | LLM inference confidence (0.0–1.0) |
 | `status` | `TEXT` | `llm_pending`, `llm_approved`, `approved`, `rejected` — same semantics as `ontogen_nodes.status` |
-| `evidence` | `JSONB` NULL | Snapshot of LLM evidence |
+| `run_id` | `UUID` NULL | The inference run that produced this row; same semantics as `ontogen_nodes.run_id` (insert-only, `NULL` for seeded rows) |
 | `created_at` | `TIMESTAMPTZ` | |
 | `updated_at` | `TIMESTAMPTZ` | |
 
@@ -383,7 +383,7 @@ themselves `approved`.
 | `object_node_id` | `TEXT` FK → `ontogen_nodes(id)` | Object node |
 | `confidence_score` | `REAL` | LLM inference confidence |
 | `status` | `TEXT` | `llm_pending`, `llm_approved`, `approved`, `rejected` — same semantics as `ontogen_nodes.status`. Human approval is gated on all three component rows (`subject_node_id`, `edge_id`, `object_node_id`) being `approved`; an LLM-approved component does NOT satisfy the gate |
-| `evidence` | `JSONB` NULL | Snapshot of LLM evidence |
+| `run_id` | `UUID` NULL | The inference run that produced this row; same semantics as `ontogen_nodes.run_id` (insert-only, `NULL` for seeded rows) |
 | `created_at` | `TIMESTAMPTZ` | |
 | `updated_at` | `TIMESTAMPTZ` | |
 

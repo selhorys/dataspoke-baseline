@@ -2,8 +2,9 @@
 
 /**
  * TriplesPanel — uniform compact table of ontology triples with an approval
- * filter, a created-at sort control, evidence modal, gated reason-confirm
- * review, and the shared Pagination control. GET /spoke/ontogen/result/triple
+ * filter, a created-at sort control, gated reason-confirm review, a per-row
+ * Langfuse-session evidence link, and the shared Pagination control.
+ * GET /spoke/ontogen/result/triple
  *
  * Triple approve is gated: disabled with a hover hint when the subject node,
  * predicate edge, or object node is not yet status='approved'. This mirrors the
@@ -24,7 +25,7 @@ import {
 } from "@/components/ui/table";
 import { Pagination, DEFAULT_PAGE_SIZE } from "@/components/pagination";
 import { ReviewRow } from "@/components/ontogen/review-row";
-import { EvidenceDialog } from "@/components/ontogen/evidence-dialog";
+import { EvidenceLink } from "@/components/ontogen/evidence-link";
 import { ApprovalFilter } from "@/components/ontogen/approval-filter";
 import { SortControl, type OntogenSortMode } from "@/components/ontogen/sort-control";
 import { useOntogenEdges, useOntogenNodes, useOntogenTriples } from "@/lib/api/ontogen";
@@ -93,15 +94,16 @@ export function TriplesPanel({ canWrite }: TriplesPanelProps) {
       ) : triples.length === 0 ? (
         <p className="py-8 text-center text-sm text-muted-foreground">No ontology triples.</p>
       ) : (
-        <Table>
+        <Table className="table-fixed">
           <TableHeader>
             <TableRow>
-              <TableHead className="text-xs">Title</TableHead>
-              <TableHead className="text-xs">Description</TableHead>
-              <TableHead className="w-28 text-xs">Status</TableHead>
-              <TableHead className="w-32 text-xs">Confidence</TableHead>
-              <TableHead className="w-44 text-xs">Actions</TableHead>
-              <TableHead className="w-36 text-xs">Created At</TableHead>
+              <TableHead className="w-[18%] text-xs">Title</TableHead>
+              <TableHead className="w-[30%] text-xs">Description</TableHead>
+              <TableHead className="w-[9%] text-xs">Status</TableHead>
+              <TableHead className="w-[9%] text-xs">Confidence</TableHead>
+              <TableHead className="w-[13%] text-xs">Actions</TableHead>
+              <TableHead className="w-[11%] text-xs">Created At</TableHead>
+              <TableHead className="w-[10%] text-xs">Evidence</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -119,7 +121,10 @@ export function TriplesPanel({ canWrite }: TriplesPanelProps) {
 
               return (
                 <TableRow key={triple.id} className="text-xs">
-                  <TableCell className="py-2 font-mono">
+                  <TableCell
+                    className="truncate py-2 font-mono"
+                    title={`${subjectName} --${edgeLabel}--> ${objectName}`}
+                  >
                     {subjectName}
                     <span className="mx-1 text-muted-foreground">--{edgeLabel}--&gt;</span>
                     {objectName}
@@ -131,12 +136,9 @@ export function TriplesPanel({ canWrite }: TriplesPanelProps) {
                     </Badge>
                   </TableCell>
                   <TableCell className="py-2">
-                    <div className="flex items-center gap-1">
-                      <span className="text-muted-foreground">
-                        {triple.confidence_score.toFixed(2)}
-                      </span>
-                      <EvidenceDialog kind="triple" id={triple.id} />
-                    </div>
+                    <span className="text-muted-foreground">
+                      {triple.confidence_score.toFixed(2)}
+                    </span>
                   </TableCell>
                   <TableCell className="py-2">
                     {canWrite && (
@@ -151,6 +153,9 @@ export function TriplesPanel({ canWrite }: TriplesPanelProps) {
                   </TableCell>
                   <TableCell className="whitespace-nowrap py-2 text-muted-foreground">
                     {formatDateTime(triple.created_at, tz)}
+                  </TableCell>
+                  <TableCell className="py-2">
+                    <EvidenceLink runId={triple.run_id} />
                   </TableCell>
                 </TableRow>
               );

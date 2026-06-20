@@ -210,9 +210,6 @@ def test_jsonb_columns() -> None:
         (MetricResult, "breakdown"),
         (Event, "detail"),
         (OntogenConfig, "dataset_filter"),
-        (OntogenNode, "evidence"),
-        (OntogenEdge, "evidence"),
-        (OntogenTriple, "evidence"),
     ]
     for model, col_name in jsonb_checks:
         col = model.__table__.columns[col_name]

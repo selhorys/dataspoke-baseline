@@ -386,8 +386,8 @@ async def seed_approved_ontogen_node(
     row = await session.execute(
         text(
             "INSERT INTO dataspoke.ontogen_nodes"
-            " (id, name, description, confidence_score, status, evidence)"
-            " VALUES (:id, :name, :desc, :conf, 'approved', CAST(:ev AS jsonb))"
+            " (id, name, description, confidence_score, status)"
+            " VALUES (:id, :name, :desc, :conf, 'approved')"
             " ON CONFLICT (name) DO UPDATE"
             "  SET description = EXCLUDED.description"
             " RETURNING id"
@@ -397,7 +397,6 @@ async def seed_approved_ontogen_node(
             "name": name,
             "desc": "Fulfillment domain ontology node",
             "conf": 0.90,
-            "ev": json.dumps({"source": "uc4-api-wired-test"}),
         },
     )
     await session.commit()

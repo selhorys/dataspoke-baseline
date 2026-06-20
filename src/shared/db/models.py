@@ -613,7 +613,7 @@ class OntogenNode(Base):
     description: Mapped[str] = mapped_column(Text, nullable=False)
     confidence_score: Mapped[float] = mapped_column(Float, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="llm_pending")
-    evidence: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    run_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
     )
@@ -649,7 +649,7 @@ class OntogenEdge(Base):
     semantics: Mapped[str | None] = mapped_column(Text, nullable=True)
     confidence_score: Mapped[float] = mapped_column(Float, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="llm_pending")
-    evidence: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    run_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
     )
@@ -690,7 +690,7 @@ class OntogenTriple(Base):
     )
     confidence_score: Mapped[float] = mapped_column(Float, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="llm_pending")
-    evidence: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    run_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
     )

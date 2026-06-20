@@ -9,9 +9,10 @@
  * TWO structurally identical variants:
  *   - Stub-mode variant (stub_llm_client=true, dev default): all steps run.
  *     Under stub the LLM Producer returns an empty payload, so zero rows are
- *     persisted; the per-row evidence loop is intentionally a no-op.
+ *     persisted; the per-row run_id check is intentionally a no-op.
  *   - Real-LLM variant: skips when stub_llm_client=true.  Adds an assertion that
- *     at least one node/edge/triple row was persisted.
+ *     at least one node/edge/triple row was persisted carrying this run's run_id
+ *     (the row's link to its creating run's Langfuse session).
  *
  * OntoGen layout (FRONTEND_ONTOGEN.md §Navigation): the sidebar entry is a foldable
  * group with children conf · seed · result. /ontogen redirects to /ontogen/result.
@@ -29,10 +30,11 @@
  *      Backend poll until ONTOGEN.RUN_COMPLETE event appears; assert OntogenRunSummary shape.
  *   4. GET /spoke/ontogen/event → find ONTOGEN.RUN_COMPLETE; assert debate fields.
  *   5. On /ontogen/result, assert Nodes/Edges/Triples/Graph tabs: result tabs render as compact
- *      tables with an All/Approved/Unapproved status filter; the Graph tab mounts its force-directed
- *      canvas (no-op on count under stub). A revoke flow (reject an approved row → rejected) is
- *      data-conditional and round-trips when ≥1 row exists.
- *      Backend: GET result/{node,edge,triple} → standard envelope shape each.
+ *      tables with an All/Approved/Unapproved status filter and an Evidence column linking each row
+ *      to its run's Langfuse session; the Graph tab mounts its force-directed canvas (no-op on count
+ *      under stub). A revoke flow (reject an approved row → rejected) is data-conditional and
+ *      round-trips when ≥1 row exists.
+ *      Backend: GET result/{node,edge,triple} → standard envelope shape each; rows carry run_id.
  *   6. Cleanup: DELETE seed; PATCH conf disabled.
  *
  * spec: USE_CASE_en.md §UC3
@@ -883,12 +885,20 @@ test("UC3 real-LLM step 3 — trigger Run; assert OntogenRunSummary shape", asyn
   ).toBeVisible({ timeout: 15_000 });
   await expect(page.getByRole("button", { name: "Run" })).toBeVisible({ timeout: 10_000 });
 
-  // Open RunDialog → leave dry_run unchecked → Run.
+  // Open RunDialog → leave dry_run unchecked → Run. Capture the single run's
+  // response for the OntogenRunSummary shape assertion below — do NOT fire a
+  // second run: run_id is written only on insert, so a second real-LLM run would
+  // mostly reuse rows (keeping run 1's id) and skew step 4's run_id scoping.
   await page.getByRole("button", { name: "Run" }).first().click();
   await expect(
     page.getByRole("heading", { name: "Run ontology inference", exact: true })
   ).toBeVisible({ timeout: 5_000 });
+  const runRespPromise = page.waitForResponse(
+    (r) => r.url().includes("/spoke/ontogen/method/run") && r.request().method() === "POST",
+    { timeout: 300_000 }
+  );
   await page.getByRole("button", { name: "Run" }).last().click();
+  const runResp = await runRespPromise;
 
   // Wait for run-complete toast (real LLM may take longer).
   await expect(
@@ -922,8 +932,7 @@ test("UC3 real-LLM step 3 — trigger Run; assert OntogenRunSummary shape", asyn
   expect(typeof detail["producer_errors_dropped"]).toBe("number");
   expect(detail["producer_errors_dropped"] as number).toBeGreaterThanOrEqual(0);
 
-  // OntogenRunSummary shape.
-  const runResp = await adminApi.post(RUN_API);
+  // OntogenRunSummary shape (from the single UI run's response, captured above).
   expect(runResp.status()).toBe(200);
   const runBody = (await runResp.json()) as {
     status: string;
@@ -940,11 +949,11 @@ test("UC3 real-LLM step 3 — trigger Run; assert OntogenRunSummary shape", asyn
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Real-LLM step 4 — result envelopes + evidence.debate keys; assert any_rows_found
-// spec: USE_CASE_en.md §UC3 — real LLM must persist ≥1 row
-// spec: BACKEND_LLM.md §Evidence shape — debate transcript in evidence JSONB
+// Real-LLM step 4 — result envelopes + per-row run_id (Langfuse session link); any_rows_found
+// spec: USE_CASE_en.md §UC3 — real LLM must persist ≥1 row; open the run's Langfuse session
+// spec: BACKEND_LLM.md §Evidence shape — row.run_id = session id; transcript lives in Langfuse
 // ─────────────────────────────────────────────────────────────────────────────
-test("UC3 real-LLM step 4 — result envelopes valid; ≥1 row persisted; evidence.debate keys present", async ({
+test("UC3 real-LLM step 4 — result envelopes valid; ≥1 row persisted; rows carry run_id; Evidence Link present", async ({
   page,
   adminApi,
 }) => {
@@ -979,8 +988,22 @@ test("UC3 real-LLM step 4 — result envelopes valid; ≥1 row persisted; eviden
   await expect(page.getByTestId("ontology-graph-canvas")).toBeVisible({ timeout: 15_000 });
   await expect(page.getByLabel("Graph filter")).toBeVisible({ timeout: 5_000 });
 
-  // Backend: result envelopes + per-row evidence.debate.
-  // spec: BACKEND_LLM.md §Evidence shape — debate transcript in evidence JSONB
+  // Resolve the latest run's id from the RUN_COMPLETE event — it doubles as the
+  // Langfuse session id that every row this run persisted points at.
+  // spec: BACKEND_LLM.md §Evidence shape — session_id = run_id (detail.run_id).
+  const evResp = await adminApi.get(EVENT_API);
+  expect(evResp.status()).toBe(200);
+  const evBody = (await evResp.json()) as {
+    events: Array<{ event_type: string; detail: { run_id?: string } }>;
+  };
+  const runComplete = evBody.events.find((e) => e.event_type === "ONTOGEN.RUN_COMPLETE");
+  expect(runComplete, "no ONTOGEN.RUN_COMPLETE event").toBeTruthy();
+  const runId = runComplete!.detail.run_id;
+  expect(typeof runId, "RUN_COMPLETE detail.run_id must be a string").toBe("string");
+  expect((runId as string).length).toBeGreaterThan(0);
+
+  // Backend: result envelopes + per-row run_id (the row's link to its Langfuse session).
+  // spec: BACKEND_LLM.md §Evidence shape — row.run_id = session_id; no persisted transcript.
   let anyRowsFound = false;
 
   for (const [resultType, listKey] of [
@@ -1008,39 +1031,45 @@ test("UC3 real-LLM step 4 — result envelopes valid; ≥1 row persisted; eviden
       expect((listBody[listKey] as unknown[]).length).toBe(listBody.total_count);
     }
 
-    const rows = listBody[listKey] as Array<{ id: string }>;
+    // Every result row exposes a run_id; rows this run produced carry run_id == the
+    // RUN_COMPLETE event's run_id (their link to the run's Langfuse session). Rows from
+    // prior runs / seeded fixtures carry a different id or null, so scope the "produced
+    // ≥1 row" check to this run — anyRowsFound is the discriminating signal (a null or
+    // swapped run_id leaves no matching row and fails the assertion below).
+    // spec: BACKEND_LLM.md §Evidence shape — row.run_id = session_id
+    const rows = listBody[listKey] as Array<{ id: string; run_id: string | null }>;
     for (const row of rows) {
+      expect(row, `${resultType} ${row.id} missing run_id field`).toHaveProperty("run_id");
+    }
+    if (rows.some((r) => r.run_id === runId)) {
       anyRowsFound = true;
-      const attrResp = await adminApi.get(
-        `/api/v1/spoke/ontogen/result/${resultType}/${row.id}/attr`
-      );
-      expect(attrResp.status()).toBe(200);
-      const attrBody = (await attrResp.json()) as {
-        evidence?: { debate?: Record<string, unknown> } | null;
-      };
-      const debate = attrBody.evidence?.debate;
-      expect(
-        debate,
-        `${resultType} ${row.id} evidence missing 'debate' key`
-      ).toBeTruthy();
-      for (const key of [
-        "turns_completed",
-        "outcome",
-        "final_reviewer_verdict",
-        "rag_anchors",
-        "history",
-      ]) {
-        expect(key in debate!, `evidence.debate for ${resultType} ${row.id} missing '${key}'`).toBe(
-          true
-        );
-      }
-      // spec: BACKEND_LLM.md §Termination
-      expect(["accept", "turns_exhausted", "cycle_detected"]).toContain(debate!["outcome"]);
     }
   }
 
-  // spec: BACKEND_LLM.md §Test Mode — real LLM must persist ≥1 row
-  expect(anyRowsFound, "Real LLM run produced zero rows — verify prompt/filter pipeline").toBe(true);
+  // spec: BACKEND_LLM.md §Test Mode — real LLM must persist ≥1 row stamped with this run's id
+  expect(anyRowsFound, "Real LLM run produced zero rows carrying this run's run_id").toBe(true);
+
+  // -- UI assertion: the Nodes table exposes the Evidence column with a Langfuse Link --
+  // spec: FRONTEND_ONTOGEN.md §Result table — Evidence column (after Created At) renders a
+  //   Link opening the run's Langfuse session in a new tab; the Confidence cell is score-only.
+  // evidence-link.tsx renders <a target="_blank" rel="noopener noreferrer">Link</a>.
+  await page.getByRole("tab", { name: "Nodes" }).click();
+  const nodesPanel = page.getByRole("tabpanel");
+  await expect(
+    nodesPanel.getByRole("columnheader", { name: "Evidence", exact: true })
+  ).toBeVisible({ timeout: 10_000 });
+  // The Confidence cell no longer hosts an Evidence button.
+  await expect(nodesPanel.getByRole("button", { name: /evidence/i })).toHaveCount(0);
+  // When the langfuse host + slug are configured for the browser, the row's Evidence cell
+  // is an external Link to .../sessions/{run_id}; otherwise it is an em dash. Assert whichever
+  // the configured deployment renders, and that any Link opens a new tab.
+  const firstNodeRow = nodesPanel.getByRole("row").nth(1);
+  const evidenceLink = firstNodeRow.getByRole("link", { name: "Link", exact: true });
+  if (await evidenceLink.count()) {
+    await expect(evidenceLink.first()).toHaveAttribute("target", "_blank");
+    await expect(evidenceLink.first()).toHaveAttribute("rel", /noopener/);
+    await expect(evidenceLink.first()).toHaveAttribute("href", /\/sessions\//);
+  }
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

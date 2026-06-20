@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from typing import Any, Literal
+from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -125,20 +126,19 @@ class NodeResponse(SingleResponse):
             "approved (human-approved), or rejected (human-rejected)"
         )
     )
+    run_id: UUID | None = Field(
+        default=None,
+        description=(
+            "ID of the inference run that created this node — also the Langfuse "
+            "session id holding the debate trace. Null for seeded rows."
+        ),
+    )
     created_at: datetime = Field(description="UTC timestamp when the node was created")
     updated_at: datetime = Field(description="UTC timestamp of the most recent update")
 
 
 class NodeListResponse(PaginatedResponse):
     nodes: list[NodeResponse] = Field(default=[], description="Page of node records")
-
-
-class NodeAttrResponse(SingleResponse):
-    node_id: str = Field(description="Slug ID of the ontology node")
-    confidence_score: float = Field(description="LLM confidence score")
-    evidence: dict[str, Any] = Field(
-        default={}, description="Source evidence collected for this node"
-    )
 
 
 # ── Edge ─────────────────────────────────────────────────────────────────────
@@ -156,20 +156,19 @@ class EdgeResponse(SingleResponse):
             "approved (human-approved), or rejected (human-rejected)"
         )
     )
+    run_id: UUID | None = Field(
+        default=None,
+        description=(
+            "ID of the inference run that created this edge — also the Langfuse "
+            "session id holding the debate trace. Null for seeded rows."
+        ),
+    )
     created_at: datetime = Field(description="UTC timestamp when the edge was created")
     updated_at: datetime = Field(description="UTC timestamp of the most recent update")
 
 
 class EdgeListResponse(PaginatedResponse):
     edges: list[EdgeResponse] = Field(default=[], description="Page of edge records")
-
-
-class EdgeAttrResponse(SingleResponse):
-    edge_id: str = Field(description="Slug ID of the ontology edge")
-    confidence_score: float = Field(description="LLM confidence score")
-    evidence: dict[str, Any] = Field(
-        default={}, description="Source evidence collected for this edge"
-    )
 
 
 # ── Triple ────────────────────────────────────────────────────────────────────
@@ -190,23 +189,19 @@ class TripleResponse(SingleResponse):
             "approved (human-approved), or rejected (human-rejected)"
         )
     )
+    run_id: UUID | None = Field(
+        default=None,
+        description=(
+            "ID of the inference run that created this triple — also the Langfuse "
+            "session id holding the debate trace. Null for seeded rows."
+        ),
+    )
     created_at: datetime = Field(description="UTC timestamp when the triple was created")
     updated_at: datetime = Field(description="UTC timestamp of the most recent update")
 
 
 class TripleListResponse(PaginatedResponse):
     triples: list[TripleResponse] = Field(default=[], description="Page of triple records")
-
-
-class TripleAttrResponse(SingleResponse):
-    triple_id: str = Field(description="Composite triple ID")
-    subject_node_id: str = Field(description="ID of the subject node")
-    edge_id: str = Field(description="ID of the predicate edge")
-    object_node_id: str = Field(description="ID of the object node")
-    confidence_score: float = Field(description="LLM confidence score")
-    evidence: dict[str, Any] = Field(
-        default={}, description="Source evidence collected for this triple"
-    )
 
 
 # ── Review ────────────────────────────────────────────────────────────────────

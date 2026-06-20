@@ -7,3 +7,4 @@
 - [Data hub panel has no section headings](project_data_hub_panel_no_section_headings.md) — /data/[urn] ValidationDataPanel renders no attr/validation/conf or event/validation heading; events fold into unified EventsPanel
 - [Validation emits no status aspect](project_validation_no_status_aspect_divergence.md) — spec says no status aspect; impl still emits StatusClass(removed=False) on PUT; flag tests pinning it
 - [Seed create-disabled copy pinned](project_seed_create_disabled_copy.md) — ontogen seed Vitest pins exact "new seeds ship disabled" copy; spec only says create-disabled
+- [run_id filter-then-assert tautology](project_run_id_filter_then_assert_tautology.md) — UC3 evidence-Langfuse run_id row check is tautological; real signal is any_rows_found; E2E double-run scoping can false-negative

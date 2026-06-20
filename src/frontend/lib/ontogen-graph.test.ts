@@ -9,6 +9,7 @@ function node(id: string, name: string, status: OntogenStatus): OntogenNode {
     description: "",
     confidence_score: 0.9,
     status,
+    run_id: null,
     created_at: "",
     updated_at: "",
   };
@@ -21,6 +22,7 @@ function edge(id: string, label: string, status: OntogenStatus): OntogenEdge {
     semantics: null,
     confidence_score: 0.9,
     status,
+    run_id: null,
     created_at: "",
     updated_at: "",
   };
@@ -40,6 +42,7 @@ function triple(
     object_node_id,
     confidence_score: 0.9,
     status,
+    run_id: null,
     created_at: "",
     updated_at: "",
   };

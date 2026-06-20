@@ -839,22 +839,9 @@ class OntogenService:
                 )
                 continue
 
-            # Fix #12: compact evidence JSONB
-            _node_reviewer_verdicts = [
-                iv
-                for iv in (debate_result.transcript.get("item_verdicts") or [])
-                if iv.get("item_kind") == "node" and iv.get("item_id") == node_id
-            ]
-            _node_evidence: dict[str, Any] = {
-                "datasets": [u[:1024] for u in (n.get("dataset_urns") or [])],
-                "run_at": n.get("run_at", ""),
-                "debate": debate_result.transcript,
-                "reviewer_verdicts": _node_reviewer_verdicts,
-            }
-
             if n["is_reuse"]:
                 # An approved or pending node already exists with this name or
-                # by embedding-similarity. Leave its row content + evidence
+                # by embedding-similarity. Leave its row content + run_id
                 # untouched; only refresh DatasetNodeMap so the new run's
                 # dataset coverage merges with whatever was there before.
                 await self._upsert_dataset_node_maps(
@@ -867,25 +854,27 @@ class OntogenService:
             ).scalar_one_or_none()
 
             if existing is None:
+                # run_id is stamped only at insert; it points at the Langfuse
+                # session of the run that created this row and is never
+                # overwritten by a later reuse/update run.
                 orm_node = OntogenNode(
                     id=node_id,
                     name=n["name"],
                     description=n["description"],
                     confidence_score=n["confidence_score"],
                     status=n["status"],
-                    evidence=_node_evidence,
+                    run_id=run_id,
                 )
                 self._db.add(orm_node)
                 nodes_added += 1
             else:
-                # Update if description/name changed; always refresh evidence
+                # Update if description/name changed; never touch run_id.
                 if existing.description != n["description"] or existing.name != n["name"]:
                     existing.name = n["name"]
                     existing.description = n["description"]
                     existing.confidence_score = n["confidence_score"]
                     existing.updated_at = datetime.now(tz=UTC)
-                existing.evidence = _node_evidence
-                self._db.add(existing)
+                    self._db.add(existing)
 
         await self._db.flush()
 
@@ -913,37 +902,22 @@ class OntogenService:
                 )
                 continue
 
-            # Fix #12: compact evidence JSONB
-            _edge_reviewer_verdicts = [
-                iv
-                for iv in (debate_result.transcript.get("item_verdicts") or [])
-                if iv.get("item_kind") == "edge" and iv.get("item_id") == edge_id
-            ]
-            _edge_evidence: dict[str, Any] = {
-                "run_at": e.get("run_at", ""),
-                "debate": debate_result.transcript,
-                "reviewer_verdicts": _edge_reviewer_verdicts,
-            }
-
             existing_edge: OntogenEdge | None = (
                 await self._db.execute(select(OntogenEdge).where(OntogenEdge.id == edge_id))
             ).scalar_one_or_none()
 
             if existing_edge is None:
+                # run_id stamped only at insert; never overwritten on reuse.
                 orm_edge = OntogenEdge(
                     id=edge_id,
                     label=e["label"],
                     semantics=e.get("semantics"),
                     confidence_score=e["confidence_score"],
                     status=e["status"],
-                    evidence=_edge_evidence,
+                    run_id=run_id,
                 )
                 self._db.add(orm_edge)
                 edges_added += 1
-            else:
-                # Refresh evidence on every run (cheaply)
-                existing_edge.evidence = _edge_evidence
-                self._db.add(existing_edge)
 
         await self._db.commit()
 
@@ -982,26 +956,8 @@ class OntogenService:
             ).scalar_one_or_none()
 
             if existing_triple is None:
-                # Fix #12: compact evidence JSONB for triple
-                _triple_reviewer_verdicts = [
-                    iv
-                    for iv in (debate_result.transcript.get("item_verdicts") or [])
-                    if iv.get("item_kind") == "triple" and iv.get("item_id") == t["id"]
-                ]
-                _triple_evidence: dict[str, Any] = {
-                    "datasets": sorted(
-                        {
-                            u
-                            for n in nodes_to_upsert
-                            if n["id"] in (t["subject_node_id"], t["object_node_id"])
-                            for u in (n.get("dataset_urns") or [])
-                        }
-                    ),
-                    "run_at": t.get("run_at", ""),
-                    "debate": debate_result.transcript,
-                    "reviewer_verdicts": _triple_reviewer_verdicts,
-                }
-
+                # run_id stamped only at insert; points at the creating run's
+                # Langfuse session.
                 orm_triple = OntogenTriple(
                     id=t["id"],
                     subject_node_id=t["subject_node_id"],
@@ -1009,7 +965,7 @@ class OntogenService:
                     object_node_id=t["object_node_id"],
                     confidence_score=t["confidence_score"],
                     status=t["status"],
-                    evidence=_triple_evidence,
+                    run_id=run_id,
                 )
                 self._db.add(orm_triple)
                 triples_added += 1
@@ -1099,15 +1055,6 @@ class OntogenService:
 
         return row
 
-    async def get_node_attr(self, node_id: str) -> dict[str, Any]:
-        """Return confidence + evidence for a node."""
-        row = await self.get_node(node_id)
-        return {
-            "node_id": node_id,
-            "confidence_score": row.confidence_score,
-            "evidence": row.evidence,
-        }
-
     async def list_node_events(
         self,
         node_id: str,
@@ -1160,14 +1107,6 @@ class OntogenService:
             raise EntityNotFoundError("edge", edge_id)
         return row
 
-    async def get_edge_attr(self, edge_id: str) -> dict[str, Any]:
-        row = await self.get_edge(edge_id)
-        return {
-            "edge_id": edge_id,
-            "confidence_score": row.confidence_score,
-            "evidence": row.evidence,
-        }
-
     async def list_edge_events(
         self,
         edge_id: str,
@@ -1219,17 +1158,6 @@ class OntogenService:
         if row is None:
             raise EntityNotFoundError("triple", triple_id)
         return row
-
-    async def get_triple_attr(self, triple_id: str) -> dict[str, Any]:
-        row = await self.get_triple(triple_id)
-        return {
-            "triple_id": triple_id,
-            "subject_node_id": row.subject_node_id,
-            "edge_id": row.edge_id,
-            "object_node_id": row.object_node_id,
-            "confidence_score": row.confidence_score,
-            "evidence": row.evidence,
-        }
 
     async def list_triple_events(
         self,

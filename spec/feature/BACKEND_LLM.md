@@ -117,7 +117,7 @@ below.
 ```
 turn 0  Producer  → emits OntogenLLMOutput candidate (ontogen_validate ok)
 turn 1  Reviewer  → consumes candidate + RAG anchors, calls ontogen_review
-        accept    → terminate, persist with debate transcript on each row
+        accept    → terminate, persist each row tagged with the run_id
         revise|reject → feed verdicts back to Producer
 turn 2  Producer  → revises (apply, drop, or rebut per item) + revalidate
 turn 3  Reviewer  → re-reviews
@@ -126,7 +126,7 @@ exit    accept | turns_exhausted | cycle_detected
 ```
 
 Whole-output verdict only. Per-item verdicts are emitted by the Reviewer for
-the human reviewer's benefit (persisted into per-row `evidence`) but do not
+the human reviewer's benefit (traced to the run's Langfuse session) but do not
 gate the loop — ontogen runs persist as a single batch at the end of the
 inference job, so partial acceptance has no operational benefit.
 
@@ -233,7 +233,7 @@ disagree on the same item across turns.
 
 | Outcome | Meaning |
 |---------|---------|
-| `accept` | Reviewer returned `overall_verdict='accept'`; persist with transcript. Rows whose `confidence_score >= ONTOLOGY_CONFIDENCE_THRESHOLD` are persisted as `status=llm_approved` (LLM gate cleared, awaiting human review); rows below the threshold persist as `status=llm_pending`. |
+| `accept` | Reviewer returned `overall_verdict='accept'`; persist each row tagged with the `run_id`. Rows whose `confidence_score >= ONTOLOGY_CONFIDENCE_THRESHOLD` are persisted as `status=llm_approved` (LLM gate cleared, awaiting human review); rows below the threshold persist as `status=llm_pending`. |
 | `turns_exhausted` | Reached `max_turns` without an accept; last candidate is kept. Rows persist with `status=llm_pending` regardless of confidence_score — non-accept outcomes always require a human gate. |
 | `cycle_detected` | Producer's revised payload duplicated a prior turn's payload; last candidate is kept. Rows persist with `status=llm_pending` regardless of confidence_score. |
 
@@ -261,53 +261,27 @@ Downstream query rules:
 - **Triple-review dependency gate**: dependencies must be `status='approved'` (strict; an `llm_approved` dep does not satisfy the gate).
 - **Metagen reads of UC3 ontogen** (UC4): `status='approved'` only — only human-curated ontology entities feed metagen's generation context. UC4's own candidate statuses (`llm_approved` / `approved` / `rejected`) are independent — there is no `llm_pending` for metagen, since debate-rejected candidates are dropped rather than persisted (see [§Metagen Adversarial Debate](#metagen-adversarial-debate)).
 
-### Evidence shape
+### Evidence — the run's Langfuse session
 
-The debate transcript is stored in the existing `evidence` JSONB column of
-`ontogen_nodes` / `_edges` / `_triples`. No schema migration needed.
+The debate transcript is **not** persisted on the result rows. Every
+producer/reviewer LLM call of a run is already traced to Langfuse under
+`session_id = run_id` (see [§Observability](#observability)), which is the
+single source of truth for debate evidence. Each result row instead records
+only the `run_id` that produced it — a `run_id uuid NULL` column on
+`ontogen_nodes` / `_edges` / `_triples` (see
+[BACKEND_SCHEMA](BACKEND_SCHEMA.md#ontogen_nodes)). Seeded rows
+have no run and carry `run_id = NULL`.
 
-```json
-{
-  "source": "ontogen-run",
-  "run_id": "ru_<iso8601-utc>_<short>",
-  "debate": {
-    "turns_completed": 4,
-    "outcome": "accept",
-    "final_reviewer_verdict": "accept",
-    "rag_anchors": [
-      {"kind": "node",  "approved_id": "order",       "similarity": 0.82},
-      {"kind": "node",  "approved_id": "order_line",  "similarity": 0.74}
-    ],
-    "history": [
-      {"turn": 0, "actor": "producer", "candidate_hash": "<sha256-prefix>"},
-      {"turn": 1, "actor": "reviewer", "verdict": "revise",
-       "item_verdicts_count": 4, "issues_seen": ["confidence_miscalibrated"],
-       "comment_summary": "0.95 too high; only 2 schema fields support this node"},
-      {"turn": 2, "actor": "producer", "candidate_hash": "<sha256-prefix>",
-       "applied": ["confidence_score: 0.95→0.7"], "rebuttals": []},
-      {"turn": 3, "actor": "reviewer", "verdict": "accept"}
-    ]
-  }
-}
-```
+`run_id` is written **only on row insert** and never overwritten when a later
+run reuses or updates an existing row, so a row always points at the session
+where its own debate happened. The UC3 review UI turns `run_id` into a link to
+the run's Langfuse session
+(`{langfuseUrl}/project/{langfuseProjectId}/sessions/{run_id}`); it renders no
+link when `run_id` is `NULL` or Langfuse is not configured (tracing disabled).
 
-Per-item Reviewer verdicts (matching the `ontogen_review` schema) are merged
-into the same row's `evidence` so the UC3 review UI can render naming /
-confidence / coherence flags in the per-item detail pane:
-
-```json
-{
-  "reviewer_verdicts": [
-    {"verdict": "revise",
-     "issues": ["confidence_miscalibrated"],
-     "comment": "...",
-     "suggested_revision": {"confidence_score": 0.7}}
-  ]
-}
-```
-
-A row may carry multiple entries when the same item was revised across
-turns; the array is ordered oldest to newest.
+Per-run debate outcome remains queryable from the run's events — the
+`ONTOGEN.RUN_COMPLETE` event detail carries `debate_outcome` and
+`producer_iterations` (sourced from the run, not from per-row columns).
 
 ### Wiring
 

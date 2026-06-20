@@ -1,6 +1,6 @@
-"""Spot tests for Ontology Generation — review approve/reject, detail/evidence, triple dep gate.
+"""Spot tests for Ontology Generation — review approve/reject and triple dep gate.
 
-Concerns covered (11 test functions, including 1 parametrized over 2 values = 12 test cases):
+Concerns covered (7 test functions, including 1 parametrized over 2 values = 8 test cases):
 
 Review approve/reject:
   test_ontogen_node_review_approve
@@ -8,10 +8,6 @@ Review approve/reject:
   test_ontogen_triple_review_dependency_order
   test_ontogen_node_review_reject
   test_ontogen_edge_review_reject
-
-Detail/evidence:
-  test_ontogen_node_detail_carries_evidence
-  test_ontogen_node_detail_round_trips_evidence_debate
 
 Triple dep gate:
   test_triple_dep_gate_blocks_when_deps_not_human_approved (parametrized: llm_pending, llm_approved)
@@ -27,9 +23,6 @@ review handlers per src/backend/ontogen/service.py); regression coverage lives i
 
 Spec traceability:
 - spec/feature/BACKEND.md §Ontology Generation Service §Approval flow
-- spec/feature/BACKEND_SCHEMA.md §Graph (ontogen_triples → AGE)
-- spec/feature/BACKEND_SCHEMA.md §node_embeddings (pgvector)
-- spec/feature/BACKEND_LLM.md §Adversarial Debate Framework §Evidence shape
 - spec/USE_CASE_en.md §UC3 L350-L356 — triple cannot be approved unless deps are approved
 - spec/DATAHUB_INTEGRATION.md L114 — UC3 direction is Read-only
 """
@@ -41,8 +34,8 @@ import httpx
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-# Declare DataHub fixture dependency so module_dummy_data ingests catalog.title_master
-# into DataHub before tests that seed NATIVE documents (evidence path tests).
+# Declare DataHub fixture dependency so module_dummy_data resets a clean DataHub
+# baseline (catalog.title_master) around these review/dep-gate tests.
 # spec: TESTING.md §Per-Module Dummy-Data Reset
 DUMMY_DATA_DATAHUB_SCHEMAS: frozenset[str] = frozenset({"catalog"})
 
@@ -63,7 +56,6 @@ async def _insert_pending_node(session: AsyncSession, node_id: str, name: str) -
             description="Spot test ontogen node.",
             confidence_score=0.85,
             status="llm_pending",
-            evidence={"source": "spot-test"},
         )
     )
     await session.commit()
@@ -80,7 +72,6 @@ async def _insert_pending_edge(session: AsyncSession, edge_id: str, label: str) 
             semantics="Spot test ontogen edge.",
             confidence_score=0.85,
             status="llm_pending",
-            evidence={"source": "spot-test"},
         )
     )
     await session.commit()
@@ -105,7 +96,6 @@ async def _insert_pending_triple(
             object_node_id=object_id,
             confidence_score=0.85,
             status="llm_pending",
-            evidence={"source": "spot-test"},
         )
     )
     await session.commit()
@@ -180,7 +170,7 @@ async def test_ontogen_triple_review_dependency_order(
     admin_headers: dict[str, str],
     async_session: AsyncSession,
 ) -> None:
-    """Triple dep-gate strict: llm_approved deps block triple approve (422); human-approved deps allow it.
+    """Triple dep-gate strict: llm_approved deps block approve (422); human-approved deps allow it.
 
     Deps seeded as 'llm_approved' (LLM Reviewer accepted, high confidence — but no human review
     yet).  The strict dep-gate (status='approved' only) must reject the triple approve with
@@ -206,7 +196,6 @@ async def test_ontogen_triple_review_dependency_order(
         description="Spot test subject node.",
         confidence_score=0.95,
         status="llm_approved",
-        evidence={"source": "spot-test"},
     ))
     async_session.add(OntogenNode(
         id=obj_id,
@@ -214,7 +203,6 @@ async def test_ontogen_triple_review_dependency_order(
         description="Spot test object node.",
         confidence_score=0.95,
         status="llm_approved",
-        evidence={"source": "spot-test"},
     ))
     async_session.add(OntogenEdge(
         id=edge_id,
@@ -222,7 +210,6 @@ async def test_ontogen_triple_review_dependency_order(
         semantics="Spot test triple edge.",
         confidence_score=0.95,
         status="llm_approved",
-        evidence={"source": "spot-test"},
     ))
     await async_session.commit()
 
@@ -356,200 +343,6 @@ async def test_ontogen_edge_review_reject(
         await _delete_row(async_session, OntogenEdge, edge_id)
 
 
-# ── Detail / evidence tests ───────────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_ontogen_node_detail_carries_evidence(
-    api_client: httpx.AsyncClient,
-    admin_headers: dict[str, str],
-    async_session: AsyncSession,
-) -> None:
-    """GET /result/node/{id}/attr returns confidence_score (float >= 0) and evidence (dict).
-
-    Shape-only assertion — does not pin specific values because evidence content is
-    LLM-generated and varies.
-    spec: spec/feature/BACKEND_SCHEMA.md §ontogen_nodes — confidence_score FLOAT NOT NULL,
-    evidence JSONB.
-    Route: src/api/routers/spoke/ontogen.py:373-384
-      GET /result/node/{node_id}/attr → NodeAttrResponse {node_id, confidence_score, evidence}
-    """
-    from src.shared.db.models import OntogenNode
-
-    suffix = uuid.uuid4().hex[:8]
-    node_id = f"spot_ev_node_{suffix}"
-
-    session = async_session
-    from src.shared.db.models import OntogenNode as _OntogenNode
-
-    # status='llm_pending': LLM created this node, awaiting human review — sufficient for
-    # evidence shape check (the endpoint returns evidence regardless of review status).
-    session.add(
-        _OntogenNode(
-            id=node_id,
-            name=f"SpotEvidenceNode-{suffix}",
-            description="Spot test node for evidence shape check.",
-            confidence_score=0.91,
-            status="llm_pending",
-            evidence={"source": "spot-test", "datasets": ["urn:li:dataset:test"]},
-        )
-    )
-    await session.commit()
-
-    try:
-        get_resp = await api_client.get(
-            f"/api/v1/spoke/ontogen/result/node/{node_id}/attr",
-            headers=admin_headers,
-        )
-        assert get_resp.status_code == 200, get_resp.text
-        body = get_resp.json()
-        # spec: BACKEND_SCHEMA.md §ontogen_nodes — confidence_score is FLOAT NOT NULL
-        assert isinstance(body.get("confidence_score"), float), (
-            f"confidence_score must be a float; got {type(body.get('confidence_score'))!r}. "
-            "spec: BACKEND_SCHEMA.md §ontogen_nodes"
-        )
-        assert body["confidence_score"] >= 0, (
-            f"confidence_score must be >= 0; got {body['confidence_score']!r}. "
-            "spec: BACKEND_SCHEMA.md §ontogen_nodes"
-        )
-        # spec: BACKEND_SCHEMA.md §ontogen_nodes — evidence JSONB (shape check only)
-        assert isinstance(body.get("evidence"), dict), (
-            f"evidence must be a dict; got {type(body.get('evidence'))!r}. "
-            "spec: BACKEND_SCHEMA.md §ontogen_nodes"
-        )
-    finally:
-        await _delete_row(async_session, OntogenNode, node_id)
-
-
-# UC3 read-only boundary is enforced structurally (no DataHub emit code paths in review
-# handlers per `src/backend/ontogen/service.py`); regression coverage lives in unit tests.
-
-
-@pytest.mark.asyncio
-async def test_ontogen_node_detail_round_trips_evidence_debate(
-    api_client: httpx.AsyncClient,
-    admin_headers: dict[str, str],
-    async_session: AsyncSession,
-) -> None:
-    """GET /result/node/{id}/attr returns the full debate sub-tree stored in evidence JSONB.
-
-    Seeds an ontogen_nodes row with a structured evidence dict containing a 'debate'
-    sub-tree and asserts the REST endpoint returns every field intact.
-
-    Spec: spec/feature/BACKEND_LLM.md §Adversarial Debate Framework §Evidence shape —
-    evidence JSONB stores: source, run_id, debate.{turns_completed, outcome,
-    final_reviewer_verdict, rag_anchors, history[{turn, actor, ...}]}.
-    Spec: spec/feature/BACKEND_SCHEMA.md §ontogen_nodes — evidence JSONB column.
-    Route: GET /result/node/{node_id}/attr → NodeAttrResponse {node_id, confidence_score,
-    evidence}.
-    """
-    from src.shared.db.models import OntogenNode as _OntogenNode
-
-    suffix = uuid.uuid4().hex[:8]
-    node_id = f"spot_debate_{suffix}"
-
-    seeded_evidence = {
-        "source": "spot-test",
-        "run_id": "spot-test-debate",
-        "debate": {
-            "turns_completed": 2,
-            "outcome": "accept",
-            "final_reviewer_verdict": "accept",
-            "rag_anchors": [],
-            "history": [
-                {"turn": 0, "actor": "producer", "candidate_hash": "deadbeef"},
-                {"turn": 1, "actor": "reviewer", "verdict": "accept"},
-            ],
-        },
-    }
-
-    # status='llm_pending': LLM created this node, awaiting human review — the evidence
-    # round-trip test only needs a readable row; review status doesn't affect the /attr route.
-    async_session.add(
-        _OntogenNode(
-            id=node_id,
-            name=f"SpotDebateNode-{suffix}",
-            description="Spot test node for debate evidence round-trip.",
-            confidence_score=0.85,
-            status="llm_pending",
-            evidence=seeded_evidence,
-        )
-    )
-    await async_session.commit()
-
-    try:
-        # ── GET /result/node/{node_id}/attr ────────────────────────────────────
-        # spec: BACKEND_LLM.md §Evidence shape — evidence round-trips through JSONB
-        get_resp = await api_client.get(
-            f"/api/v1/spoke/ontogen/result/node/{node_id}/attr",
-            headers=admin_headers,
-        )
-        assert get_resp.status_code == 200, get_resp.text
-        body = get_resp.json()
-
-        evidence = body.get("evidence")
-        assert isinstance(evidence, dict), (
-            f"evidence must be a dict; got {type(evidence)!r}. "
-            "spec: BACKEND_SCHEMA.md §ontogen_nodes — evidence JSONB"
-        )
-
-        # ── Assert top-level evidence fields ──────────────────────────────────
-        # spec: BACKEND_LLM.md §Evidence shape — source and run_id fields
-        assert evidence.get("source") == "spot-test", (
-            f"evidence['source'] must be 'spot-test'; got {evidence.get('source')!r}. "
-            "spec: BACKEND_LLM.md §Evidence shape"
-        )
-        assert evidence.get("run_id") == "spot-test-debate", (
-            f"evidence['run_id'] must be 'spot-test-debate'; got {evidence.get('run_id')!r}. "
-            "spec: BACKEND_LLM.md §Evidence shape"
-        )
-
-        # ── Assert debate sub-tree ─────────────────────────────────────────────
-        # spec: BACKEND_LLM.md §Evidence shape — debate.{turns_completed, outcome,
-        # final_reviewer_verdict, rag_anchors, history}
-        debate = evidence.get("debate")
-        assert isinstance(debate, dict), (
-            f"evidence['debate'] must be a dict; got {type(debate)!r}. "
-            "spec: BACKEND_LLM.md §Evidence shape"
-        )
-        assert debate.get("turns_completed") == 2, (
-            f"debate['turns_completed'] must be 2; got {debate.get('turns_completed')!r}. "
-            "spec: BACKEND_LLM.md §Evidence shape"
-        )
-        assert debate.get("outcome") == "accept", (
-            f"debate['outcome'] must be 'accept'; got {debate.get('outcome')!r}. "
-            "spec: BACKEND_LLM.md §Evidence shape"
-        )
-        assert debate.get("final_reviewer_verdict") == "accept", (
-            f"debate['final_reviewer_verdict'] must be 'accept'; "
-            f"got {debate.get('final_reviewer_verdict')!r}. "
-            "spec: BACKEND_LLM.md §Evidence shape"
-        )
-
-        # ── Assert history list ────────────────────────────────────────────────
-        # spec: BACKEND_LLM.md §Evidence shape — history is ordered list of turns
-        history = debate.get("history")
-        assert isinstance(history, list), (
-            f"debate['history'] must be a list; got {type(history)!r}. "
-            "spec: BACKEND_LLM.md §Evidence shape — history: list of turns"
-        )
-        assert len(history) == 2, (
-            f"debate['history'] must have 2 entries; got {len(history)}. "
-            "spec: BACKEND_LLM.md §Evidence shape"
-        )
-        assert history[0].get("actor") == "producer", (
-            f"history[0]['actor'] must be 'producer'; got {history[0].get('actor')!r}. "
-            "spec: BACKEND_LLM.md §Evidence shape — turn 0 is Producer"
-        )
-        assert history[1].get("actor") == "reviewer", (
-            f"history[1]['actor'] must be 'reviewer'; got {history[1].get('actor')!r}. "
-            "spec: BACKEND_LLM.md §Evidence shape — turn 1 is Reviewer"
-        )
-
-    finally:
-        await _delete_row(async_session, _OntogenNode, node_id)
-
-
 # ── Triple dep gate regression tests ─────────────────────────────────────────
 
 
@@ -561,7 +354,7 @@ async def test_triple_dep_gate_blocks_when_deps_not_human_approved(
     admin_headers: dict[str, str],
     async_session: AsyncSession,
 ) -> None:
-    """Triple review approve returns 422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING when deps are not human-approved.
+    """Triple approve returns 422 DEPENDENCY_PENDING when deps are not human-approved.
 
     Parametrized over dep_status in ['llm_pending', 'llm_approved'] — both LLM-only
     states must be blocked by the strict dep-gate.  This catches regressions where
@@ -586,7 +379,6 @@ async def test_triple_dep_gate_blocks_when_deps_not_human_approved(
         description="Regression test subject node.",
         confidence_score=0.95,
         status=dep_status,
-        evidence={"source": "regression-test"},
     ))
     async_session.add(OntogenNode(
         id=obj_id,
@@ -594,7 +386,6 @@ async def test_triple_dep_gate_blocks_when_deps_not_human_approved(
         description="Regression test object node.",
         confidence_score=0.95,
         status=dep_status,
-        evidence={"source": "regression-test"},
     ))
     async_session.add(OntogenEdge(
         id=edge_id,
@@ -602,7 +393,6 @@ async def test_triple_dep_gate_blocks_when_deps_not_human_approved(
         semantics="Regression test edge.",
         confidence_score=0.95,
         status=dep_status,
-        evidence={"source": "regression-test"},
     ))
     await async_session.commit()
 
@@ -614,7 +404,6 @@ async def test_triple_dep_gate_blocks_when_deps_not_human_approved(
         object_node_id=obj_id,
         confidence_score=0.95,
         status=dep_status,
-        evidence={"source": "regression-test"},
     ))
     await async_session.commit()
 
@@ -628,7 +417,7 @@ async def test_triple_dep_gate_blocks_when_deps_not_human_approved(
         assert resp.status_code == 422, (
             f"Expected 422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING when all deps are {dep_status!r}; "
             f"got {resp.status_code}: {resp.text}. "
-            "Spec: plan §9 — neither llm_pending nor llm_approved is sufficient for the strict dep-gate."
+            "Spec: plan §9 — neither llm_pending nor llm_approved passes the strict dep-gate."
         )
         assert resp.json().get("error_code") == "ONTOGEN_TRIPLE_DEPENDENCY_PENDING", (
             f"Expected error_code ONTOGEN_TRIPLE_DEPENDENCY_PENDING; got {resp.json()!r}. "
@@ -669,7 +458,6 @@ async def test_triple_dep_gate_passes_when_deps_are_human_approved(
         description="Human-approved subject node.",
         confidence_score=0.95,
         status="approved",
-        evidence={"source": "regression-test"},
     ))
     async_session.add(OntogenNode(
         id=obj_id,
@@ -677,7 +465,6 @@ async def test_triple_dep_gate_passes_when_deps_are_human_approved(
         description="Human-approved object node.",
         confidence_score=0.95,
         status="approved",
-        evidence={"source": "regression-test"},
     ))
     async_session.add(OntogenEdge(
         id=edge_id,
@@ -685,7 +472,6 @@ async def test_triple_dep_gate_passes_when_deps_are_human_approved(
         semantics="Human-approved edge.",
         confidence_score=0.95,
         status="approved",
-        evidence={"source": "regression-test"},
     ))
     await async_session.commit()
 
@@ -697,7 +483,6 @@ async def test_triple_dep_gate_passes_when_deps_are_human_approved(
         object_node_id=obj_id,
         confidence_score=0.95,
         status="llm_pending",
-        evidence={"source": "regression-test"},
     ))
     await async_session.commit()
 
@@ -706,7 +491,7 @@ async def test_triple_dep_gate_passes_when_deps_are_human_approved(
         resp = await api_client.post(
             f"/api/v1/spoke/ontogen/result/triple/{triple_id}/method/review",
             headers=admin_headers,
-            json={"verdict": "approve", "reason": "regression: dep-gate passes human-approved deps"},
+            json={"verdict": "approve", "reason": "regression: gate passes human-approved deps"},
         )
         assert resp.status_code == 200, (
             f"Expected 200 when all deps are human-approved; "

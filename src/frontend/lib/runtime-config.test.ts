@@ -20,6 +20,7 @@ describe("getRuntimeConfig — fallback precedence", () => {
     vi.stubEnv("NEXT_PUBLIC_API_BASE_URL", undefined as unknown as string);
     vi.stubEnv("NEXT_PUBLIC_DATAHUB_URL", undefined as unknown as string);
     vi.stubEnv("NEXT_PUBLIC_LANGFUSE_URL", undefined as unknown as string);
+    vi.stubEnv("NEXT_PUBLIC_LANGFUSE_PROJECT_ID", undefined as unknown as string);
     vi.stubEnv("NEXT_PUBLIC_AIRFLOW_URL", undefined as unknown as string);
   });
 
@@ -36,6 +37,7 @@ describe("getRuntimeConfig — fallback precedence", () => {
     expect(config.apiBaseUrl).toBe("");
     expect(config.datahubUrl).toBe("");
     expect(config.langfuseUrl).toBe("");
+    expect(config.langfuseProjectId).toBe("");
     expect(config.airflowUrl).toBe("");
   });
 
@@ -43,6 +45,7 @@ describe("getRuntimeConfig — fallback precedence", () => {
     vi.stubEnv("NEXT_PUBLIC_API_BASE_URL", "http://api.example.com");
     vi.stubEnv("NEXT_PUBLIC_DATAHUB_URL", "http://datahub.example.com");
     vi.stubEnv("NEXT_PUBLIC_LANGFUSE_URL", "http://langfuse.example.com");
+    vi.stubEnv("NEXT_PUBLIC_LANGFUSE_PROJECT_ID", "dataspoke-project");
     vi.stubEnv("NEXT_PUBLIC_AIRFLOW_URL", "http://airflow.example.com");
 
     const { getRuntimeConfig } = await import("./runtime-config");
@@ -51,6 +54,7 @@ describe("getRuntimeConfig — fallback precedence", () => {
     expect(config.apiBaseUrl).toBe("http://api.example.com");
     expect(config.datahubUrl).toBe("http://datahub.example.com");
     expect(config.langfuseUrl).toBe("http://langfuse.example.com");
+    expect(config.langfuseProjectId).toBe("dataspoke-project");
     expect(config.airflowUrl).toBe("http://airflow.example.com");
   });
 
@@ -58,12 +62,14 @@ describe("getRuntimeConfig — fallback precedence", () => {
     vi.stubEnv("NEXT_PUBLIC_API_BASE_URL", "http://build-time.example.com");
     vi.stubEnv("NEXT_PUBLIC_DATAHUB_URL", "http://build-time-hub.example.com");
     vi.stubEnv("NEXT_PUBLIC_LANGFUSE_URL", "http://build-time-langfuse.example.com");
+    vi.stubEnv("NEXT_PUBLIC_LANGFUSE_PROJECT_ID", "build-time-project");
     vi.stubEnv("NEXT_PUBLIC_AIRFLOW_URL", "http://build-time-airflow.example.com");
 
     window.__DATASPOKE_RUNTIME_CONFIG__ = {
       apiBaseUrl: "http://runtime.example.com",
       datahubUrl: "http://runtime-hub.example.com",
       langfuseUrl: "http://runtime-langfuse.example.com",
+      langfuseProjectId: "runtime-project",
       airflowUrl: "http://runtime-airflow.example.com",
     };
 
@@ -73,6 +79,7 @@ describe("getRuntimeConfig — fallback precedence", () => {
     expect(config.apiBaseUrl).toBe("http://runtime.example.com");
     expect(config.datahubUrl).toBe("http://runtime-hub.example.com");
     expect(config.langfuseUrl).toBe("http://runtime-langfuse.example.com");
+    expect(config.langfuseProjectId).toBe("runtime-project");
     expect(config.airflowUrl).toBe("http://runtime-airflow.example.com");
   });
 
@@ -98,12 +105,14 @@ describe("getRuntimeConfig — fallback precedence", () => {
     vi.stubEnv("NEXT_PUBLIC_API_BASE_URL", "http://build-time.example.com");
     vi.stubEnv("NEXT_PUBLIC_DATAHUB_URL", "http://build-time-hub.example.com");
     vi.stubEnv("NEXT_PUBLIC_LANGFUSE_URL", "http://build-time-langfuse.example.com");
+    vi.stubEnv("NEXT_PUBLIC_LANGFUSE_PROJECT_ID", "build-time-project");
     vi.stubEnv("NEXT_PUBLIC_AIRFLOW_URL", "http://build-time-airflow.example.com");
 
     window.__DATASPOKE_RUNTIME_CONFIG__ = {
       apiBaseUrl: "",
       datahubUrl: "",
       langfuseUrl: "",
+      langfuseProjectId: "",
       airflowUrl: "",
     };
 
@@ -113,6 +122,7 @@ describe("getRuntimeConfig — fallback precedence", () => {
     expect(config.apiBaseUrl).toBe("http://build-time.example.com");
     expect(config.datahubUrl).toBe("http://build-time-hub.example.com");
     expect(config.langfuseUrl).toBe("http://build-time-langfuse.example.com");
+    expect(config.langfuseProjectId).toBe("build-time-project");
     expect(config.airflowUrl).toBe("http://build-time-airflow.example.com");
   });
 });
