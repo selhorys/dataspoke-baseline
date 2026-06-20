@@ -13,7 +13,7 @@
  * without re-exercising the bodies.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, act } from "@testing-library/react";
+import { render, screen, act, fireEvent } from "@testing-library/react";
 import React from "react";
 import DatasetHubPage from "./page";
 
@@ -48,9 +48,20 @@ vi.mock("@/components/ingestion/ingestion-data-panel", () => ({
   IngestionDataPanel: () =>
     React.createElement("div", { "data-testid": "ingestion-body" }, "ingestion body"),
 }));
+// The validation body is covered by its own component test; here it is stubbed,
+// but the stub reflects the `showDeleted` prop the page threads through so the
+// page test can assert the page-level toggle drives the panel. The panel's real
+// behavior (removed + OFF → Create empty-state; removed + ON → Undelete) is
+// asserted in validation-data-panel.test.tsx; here the stub renders the
+// affordance the panel WOULD show for the toggle state, so the page test proves
+// the wiring, not the panel internals.
 vi.mock("@/components/validation/validation-data-panel", () => ({
-  ValidationDataPanel: () =>
-    React.createElement("div", { "data-testid": "validation-body" }, "validation body"),
+  ValidationDataPanel: ({ showDeleted }: { showDeleted: boolean }) =>
+    React.createElement(
+      "div",
+      { "data-testid": "validation-body" },
+      showDeleted ? "Undelete" : "Create",
+    ),
 }));
 vi.mock("@/components/metagen/metagen-data-panel", () => ({
   MetagenDataPanel: () =>
@@ -182,5 +193,77 @@ describe("DatasetHubPage — /data/[urn]", () => {
     await renderPage();
     expect(screen.getByText(/no config/i)).toBeTruthy();
     expect(screen.getByText(/no score yet/i)).toBeTruthy();
+  });
+});
+
+// ── Page-level "Show deleted" toggle ─────────────────────────────────────────────
+// Spec: spec/feature/FRONTEND_BASIC.md §Per-dataset page (ShowDeletedToggle) +
+//       spec/feature/FRONTEND_VALIDATION.md §Detail — the page header carries a
+//       page-level "Show deleted" checkbox (default OFF) that gates the deleted
+//       validation slot's frozen view. While OFF a removed slot reads as
+//       never-created (no leaked config/score); flipping it ON reveals the frozen
+//       Undelete state.
+
+describe("DatasetHubPage — Show deleted toggle", () => {
+  // Put the page in the removed-slot state so the toggle has an observable effect.
+  async function renderRemoved() {
+    const { ApiError } = await import("@/lib/api/client");
+    const removedError = new ApiError(
+      {
+        error_code: "VALIDATION_CONF_REMOVED",
+        message: "removed",
+        trace_id: "t",
+        resp_time: "2026-06-19T00:00:00Z",
+      },
+      404,
+    );
+    mockValidationConf.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      error: removedError,
+    });
+    // A removed slot still has preserved results on the backend; the page must
+    // NOT leak that history while the toggle is off.
+    mockValidationResults.mockReturnValue({
+      data: { results: [{ score: 0.95 }], total_count: 1 },
+    });
+    await renderPage();
+  }
+
+  it("renders the page-level 'Show deleted' checkbox, default OFF", async () => {
+    await renderPage();
+    const checkbox = screen.getByRole("checkbox", { name: /show deleted/i });
+    expect(checkbox).toBeTruthy();
+    // Radix surfaces unchecked as aria-checked="false".
+    expect(checkbox.getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("toggling 'Show deleted' flips the Validation panel between Create (OFF) and Undelete (ON)", async () => {
+    await renderRemoved();
+
+    // Default OFF → the removed slot reads as never-created: Create empty-state.
+    const validationBody = screen.getByTestId("validation-body");
+    expect(validationBody.textContent).toContain("Create");
+    expect(validationBody.textContent).not.toContain("Undelete");
+
+    // Flip the page-level toggle ON.
+    const checkbox = screen.getByRole("checkbox", { name: /show deleted/i });
+    await act(async () => {
+      fireEvent.click(checkbox);
+    });
+
+    // ON → the frozen Undelete state appears.
+    expect(screen.getByTestId("validation-body").textContent).toContain("Undelete");
+    expect(screen.getByTestId("validation-body").textContent).not.toContain("Create");
+  });
+
+  it("Validation summary card shows No config / No score yet while OFF + removed (no leaked score)", async () => {
+    await renderRemoved();
+
+    // While OFF the removed slot must present as a never-created slot — neither
+    // the (preserved) config nor the (preserved) latest score may leak.
+    expect(screen.getByText(/no config/i)).toBeTruthy();
+    expect(screen.getByText(/no score yet/i)).toBeTruthy();
+    expect(screen.queryByText(/latest score/i)).toBeNull();
   });
 });

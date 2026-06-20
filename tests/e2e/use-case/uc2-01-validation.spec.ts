@@ -25,8 +25,12 @@
  *      - kafka row still present
  *      Backend: GET conf → 404 VALIDATION_CONF_REMOVED; ?removed=true includes postgres.
  *   6. Navigate to /data/[postgres urn] (Validation panel, frozen now):
- *      - no Edit/Delete and no Create form; an "Undelete" button only.
- *   7. Restore (undelete): click Undelete to reinstate the FROZEN conf unchanged.
+ *      - by default (page-level "Show deleted" OFF) the panel reads as a
+ *        never-created slot: a Create empty-state, no Undelete, no frozen note.
+ *      - after checking the header "Show deleted" box the frozen-rule view
+ *        appears: the deleted note + an "Undelete" button only (no Create/Edit/Delete).
+ *   7. Restore (undelete): enable "Show deleted", click Undelete to reinstate the
+ *      FROZEN conf unchanged.
  *      Backend: GET conf → 200 with the SAME frozen variables (no null_rate added);
  *      the preserved result history is still queryable. Then edit the now-active rule.
  *
@@ -591,17 +595,22 @@ test("UC2 step 5 — Delete (freeze) postgres conf via ConfirmDialog; freeze sem
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Step 6 — Detail page after freeze: Undelete only, no create form / Edit / Delete
+// Step 6 — Detail page after freeze: gated by the page-level "Show deleted" toggle.
 // spec: USE_CASE_en.md §UC2 — after retiring, the rule is frozen; the only way back
 //   is an explicit Undelete (restore). No redefining on restore.
-// spec: FRONTEND_VALIDATION.md §Page contracts — VALIDATION_CONF_REMOVED branch:
-//   an "Undelete" button only (no Create form, no Edit/Delete while deleted).
+// spec: FRONTEND_BASIC.md §Per-dataset page (ShowDeletedToggle) +
+//       FRONTEND_VALIDATION.md §Detail — the soft-deleted slot
+//   (VALIDATION_CONF_REMOVED) is HIDDEN BY DEFAULT: while the page-level
+//   "Show deleted" checkbox is OFF the Validation panel reads as a never-created
+//   slot (Create empty-state, no Undelete). Flipping the header checkbox ON
+//   reveals the frozen-rule view: the deleted note + an "Undelete" button only
+//   (no Create form, no Edit/Delete).
 // ─────────────────────────────────────────────────────────────────────────────
-test("UC2 step 6 — postgres detail after freeze shows Undelete only, no Create/Edit/Delete", async ({
+test("UC2 step 6 — postgres detail after freeze: Create empty-state by default, frozen Undelete only after 'Show deleted'", async ({
   page,
 }) => {
   // The conf is frozen (soft-deleted in step 5). Navigate directly by URL; the
-  // page reads 404 VALIDATION_CONF_REMOVED → deleted (restorable) state.
+  // page reads 404 VALIDATION_CONF_REMOVED.
   await page.goto(PG_DETAIL_URL);
   await expect(page).not.toHaveURL(/\/login/);
 
@@ -611,21 +620,36 @@ test("UC2 step 6 — postgres detail after freeze shows Undelete only, no Create
     timeout: 15_000,
   });
 
-  // -- UI assertion: deleted-state note shown --
-  // spec: FRONTEND_VALIDATION.md §Page contracts — VALIDATION_CONF_REMOVED + canWrite:
+  // Scope conf affordances to the Validation panel <section>: the merged hub's
+  // MetaGen panel may render its own Edit/Delete (for its boundary), which an
+  // unscoped negative assertion would wrongly trip on.
+  const validationPanel = page
+    .locator("section")
+    .filter({ has: page.getByRole("button", { name: "Validation", exact: true }) });
+
+  // -- UI assertion: default (toggle OFF) → Create empty-state, NO Undelete, no
+  //    leaked frozen note --
+  // spec: FRONTEND_VALIDATION.md §Detail — removed slot hidden by default reads as
+  //   never-created (Create empty-state, identical to CONFIG_NOT_FOUND).
+  await expect(validationPanel.getByRole("button", { name: "Create" })).toBeVisible({
+    timeout: 10_000,
+  });
+  await expect(validationPanel.getByRole("button", { name: "Undelete" })).not.toBeVisible();
+  await expect(
+    page.getByText("This validation config is deleted.", { exact: false })
+  ).not.toBeVisible();
+
+  // -- UI gesture: enable the page-level "Show deleted" checkbox in the header --
+  // spec: FRONTEND_BASIC.md §Per-dataset page — header carries a "Show deleted"
+  //   checkbox (default OFF) that unhides the frozen validation slot.
+  await page.getByRole("checkbox", { name: "Show deleted" }).check();
+
+  // -- UI assertion: frozen-rule view appears — deleted note + Undelete only --
+  // spec: FRONTEND_VALIDATION.md §Detail — VALIDATION_CONF_REMOVED + Show deleted ON:
   //   "This validation config is deleted. Undelete it to restore the frozen rule…"
   await expect(
     page.getByText("This validation config is deleted.", { exact: false })
   ).toBeVisible({ timeout: 10_000 });
-
-  // -- UI assertion: Undelete button rendered; no Create form / Edit / Delete --
-  // spec: FRONTEND_VALIDATION.md §Page contracts — Undelete-only while frozen.
-  // Scope the negative Edit/Delete/Create assertions to the Validation panel
-  // <section>: the merged hub's MetaGen panel may render its own Edit/Delete (for
-  // its boundary), which an unscoped negative assertion would wrongly trip on.
-  const validationPanel = page
-    .locator("section")
-    .filter({ has: page.getByRole("button", { name: "Validation", exact: true }) });
   await expect(validationPanel.getByRole("button", { name: "Undelete" })).toBeVisible();
   await expect(validationPanel.getByRole("button", { name: "Create" })).not.toBeVisible();
   await expect(validationPanel.getByRole("button", { name: "Edit", exact: true })).not.toBeVisible();
@@ -661,6 +685,12 @@ test("UC2 step 7 — Undelete restores the frozen conf unchanged; result history
   const validationPanel = page
     .locator("section")
     .filter({ has: page.getByRole("button", { name: "Validation", exact: true }) });
+
+  // -- UI gesture: enable the page-level "Show deleted" toggle to reveal the
+  //    frozen slot (default OFF presents the removed slot as never-created) --
+  // spec: FRONTEND_BASIC.md §Per-dataset page (ShowDeletedToggle) — the frozen
+  //   Undelete affordance is gated by the header "Show deleted" checkbox.
+  await page.getByRole("checkbox", { name: "Show deleted" }).check();
 
   // -- UI gesture: click Undelete to restore the frozen rule --
   await expect(validationPanel.getByRole("button", { name: "Undelete" })).toBeVisible({

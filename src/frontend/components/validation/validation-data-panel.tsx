@@ -89,9 +89,13 @@ function ConfReadOnly({ conf }: { conf: ValidationConfResponse }) {
 
 interface ValidationDataPanelProps {
   datasetUrn: string;
+  showDeleted: boolean;
 }
 
-export function ValidationDataPanel({ datasetUrn }: ValidationDataPanelProps) {
+export function ValidationDataPanel({
+  datasetUrn,
+  showDeleted,
+}: ValidationDataPanelProps) {
   const { canWrite } = useMe();
   const router = useRouter();
   const tz = useDisplayTz();
@@ -142,7 +146,10 @@ export function ValidationDataPanel({ datasetUrn }: ValidationDataPanelProps) {
   // ── Error messages ────────────────────────────────────────────────────────────
   const saveError =
     upsert.error instanceof ApiError
-      ? `${upsert.error.error_code}: ${upsert.error.message}`
+      ? upsert.error.status === 409 &&
+        upsert.error.error_code === "VALIDATION_CONF_REMOVED"
+        ? "This dataset's validation rule is deleted. Enable 'Show deleted' above to restore it."
+        : `${upsert.error.error_code}: ${upsert.error.message}`
       : upsert.error?.message;
 
   const restoreError =
@@ -158,6 +165,12 @@ export function ValidationDataPanel({ datasetUrn }: ValidationDataPanelProps) {
     confError.error_code === "VALIDATION_CONF_REMOVED";
   const isAbsent = is404 && !isRemoved;
   const confExists = !!conf && !is404;
+
+  // The page-level "Show deleted" toggle gates the frozen Undelete state: while
+  // off, a soft-deleted slot renders the Create empty-state like a never-created
+  // one, matching the /validation list default.
+  const effectiveRemoved = isRemoved && showDeleted;
+  const effectiveAbsent = isAbsent || (isRemoved && !showDeleted);
 
   // A lingering `isEditing=true` from before a delete must not resurface a form
   // once the conf is gone.
@@ -179,7 +192,8 @@ export function ValidationDataPanel({ datasetUrn }: ValidationDataPanelProps) {
   }
 
   const hasTimeseries =
-    confExists || (resultsData != null && resultsData.results.length > 0);
+    confExists ||
+    (!(isRemoved && !showDeleted) && (resultsData?.results.length ?? 0) > 0);
 
   // ── Render ────────────────────────────────────────────────────────────────────
   return (
@@ -233,7 +247,7 @@ export function ValidationDataPanel({ datasetUrn }: ValidationDataPanelProps) {
                 </Button>
               </>
             )}
-            {isAbsent && (
+            {effectiveAbsent && (
               <Button
                 key="conf-create"
                 type="submit"
@@ -244,7 +258,7 @@ export function ValidationDataPanel({ datasetUrn }: ValidationDataPanelProps) {
                 {upsert.isPending ? "Saving..." : "Create"}
               </Button>
             )}
-            {isRemoved && (
+            {effectiveRemoved && (
               <Button
                 key="conf-restore"
                 type="button"
@@ -259,7 +273,7 @@ export function ValidationDataPanel({ datasetUrn }: ValidationDataPanelProps) {
         )}
 
         {/* Soft-deleted — restorable, no Create/Edit affordances */}
-        {isRemoved && (
+        {effectiveRemoved && (
           <div className="space-y-2">
             <p className="text-sm text-muted-foreground">
               {canWrite
@@ -273,7 +287,7 @@ export function ValidationDataPanel({ datasetUrn }: ValidationDataPanelProps) {
         )}
 
         {/* No config yet — show create form or empty state */}
-        {isAbsent && (
+        {effectiveAbsent && (
           <>
             {canWrite ? (
               <>
