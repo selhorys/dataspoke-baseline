@@ -12,15 +12,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GITHUB_DIR="${SCRIPT_DIR}/github"
 
-# Load DataHub version from dev_env/.env
-DEV_ENV_FILE="${SCRIPT_DIR}/../dev_env/.env"
-if [[ ! -f "${DEV_ENV_FILE}" ]]; then
-    echo "❌ Error: dev_env/.env not found at ${DEV_ENV_FILE}"
-    exit 1
-fi
-
-source "${DEV_ENV_FILE}"
-DATAHUB_VERSION="v1.5.0.2"
+# DataHub source tag to clone for AI reference. Override via the DATAHUB_VERSION
+# env var; default tracks the deployed DataHub version (helm-charts/.env).
+DATAHUB_VERSION="${DATAHUB_VERSION:-v1.6.0}"
 DATAHUB_REPO="https://github.com/datahub-project/datahub.git"
 DATAHUB_DIR="${GITHUB_DIR}/datahub"
 

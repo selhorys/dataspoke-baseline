@@ -310,7 +310,7 @@ DataSpoke deliberately exposes **one** validation slot per dataset (description 
 
 ## Note — "Smart DataHub" / AI Auto-Documentation Is Not in OSS
 
-AI-driven auto-documentation and intelligent SQL-parsing features (sometimes marketed as "Smart DataHub") are **DataHub Cloud / Acryl-hosted** offerings and are **not present in the OSS `ref/github/datahub/` v1.5.0.2 source**. There is no public SDK, GraphQL, or REST surface in OSS for:
+AI-driven auto-documentation and intelligent SQL-parsing features (sometimes marketed as "Smart DataHub") are **DataHub Cloud / Acryl-hosted** offerings and are **not present in the OSS `ref/github/datahub/` v1.6.0 source**. There is no public SDK, GraphQL, or REST surface in OSS for:
 
 - LLM-generated dataset/column descriptions
 - Automatic glossary term suggestions

@@ -104,7 +104,7 @@ kubectl get pods -n "${NS}"
 # ---------------------------------------------------------------------------
 # Step 3: Install datahub WITHOUT --wait
 # ---------------------------------------------------------------------------
-DATAHUB_VERSION="${DATASPOKE_DEV_KUBE_DATAHUB_CHART_VERSION:-0.9.10}"
+DATAHUB_VERSION="${DATASPOKE_DEV_KUBE_DATAHUB_CHART_VERSION:-1.0.1}"
 
 oidc_args=()
 if [[ -n "${DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_ID:-}" && -n "${DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_SECRET:-}" ]]; then
@@ -134,7 +134,7 @@ else
   info "Google OIDC disabled on DataHub (no DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_ID/SECRET in .env)"
 fi
 
-info "Installing datahub (chart ${DATAHUB_VERSION}, app v1.5.0.2) — no --wait, polling manually..."
+info "Installing datahub (chart ${DATAHUB_VERSION}, app v1.6.0) — no --wait, polling manually..."
 helm upgrade --install datahub datahub/datahub \
   --version "${DATAHUB_VERSION}" \
   --namespace "${NS}" \

@@ -35,8 +35,10 @@ class DocumentationAspects:
 
     table_description:           DatasetProperties.description (base)
     editable_table_description:  EditableDatasetProperties.description (overlay)
-    field_descriptions:          All schemaMetadata fields — fieldPath → description (empty str when absent)
-    editable_field_descriptions: EditableSchemaMetadata fields that have a description set — fieldPath → description
+    field_descriptions:          All schemaMetadata fields — fieldPath → description
+                                 (empty str when absent)
+    editable_field_descriptions: EditableSchemaMetadata fields that have a
+                                 description set — fieldPath → description
 
     When ``field_descriptions`` is empty the dataset has no schema metadata; the
     measurer treats this as "no documentable columns → score 0.0".
@@ -310,24 +312,24 @@ class DataHubClient:
         OR-clause dimensions, a single AND clause with just origin is emitted.
         """
         origin_clause: dict | None = (
-            {"field": "origin", "value": origin} if origin else None
+            {"field": "origin", "values": [origin]} if origin else None
         )
 
         or_groups: list[dict] = []
         if platform:
             and_clauses: list[dict] = [
-                {"field": "platform", "value": f"urn:li:dataPlatform:{platform}"}
+                {"field": "platform", "values": [f"urn:li:dataPlatform:{platform}"]}
             ]
             if origin_clause:
                 and_clauses.append(origin_clause)
             or_groups.append({"and": and_clauses})
         for tag in (tags or []):
-            and_clauses = [{"field": "tags", "value": tag}]
+            and_clauses = [{"field": "tags", "values": [tag]}]
             if origin_clause:
                 and_clauses.append(origin_clause)
             or_groups.append({"and": and_clauses})
         for term in (glossary_terms or []):
-            and_clauses = [{"field": "glossaryTerms", "value": term}]
+            and_clauses = [{"field": "glossaryTerms", "values": [term]}]
             if origin_clause:
                 and_clauses.append(origin_clause)
             or_groups.append({"and": and_clauses})

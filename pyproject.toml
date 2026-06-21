@@ -22,7 +22,7 @@ dependencies = [
     "alembic>=1.14",
     # Infrastructure clients
     "aiosmtplib>=3.0",
-    "acryl-datahub>=1.5,<2.0",
+    "acryl-datahub>=1.6,<2.0",
     "redis[hiredis]>=5.2",
     "pgvector>=0.3.0",
     "langchain>=1,<2",

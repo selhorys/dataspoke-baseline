@@ -62,7 +62,11 @@ follow.
 All integration code uses the `acryl-datahub` Python SDK — **never the `datahub` CLI**, which is
 limited to Python ≤ 3.11 and incompatible with the project's Python 3.13 runtime. For any task
 that would traditionally use the CLI (ingestion, metadata emission, dataset operations), write a
-Python script using the SDK instead. Three communication channels exist:
+Python script using the SDK instead. The SDK is pinned to the DataHub minor line in lockstep
+with the deployed DataHub app (`acryl-datahub >=1.6,<2.0`, tracking DataHub app v1.6.0): the
+floor matches the running GMS so aspect schemas and search-filter shapes agree, and the `<2.0`
+ceiling guards against a major-version break landing implicitly. Three communication channels
+exist:
 
 ```
 DataSpoke ──────────────────────────────────── DataHub
@@ -372,7 +376,7 @@ metadata generation.)
 
 A `relatedAssets[].asset` URN must point at one of the entity types accepted by
 the `document` entity registry — see
-[`RelatedAsset.pdl`](https://github.com/datahub-project/datahub/blob/v1.5.0.2/metadata-models/src/main/pegasus/com/linkedin/knowledge/RelatedAsset.pdl)
+[`RelatedAsset.pdl`](https://github.com/datahub-project/datahub/blob/v1.6.0/metadata-models/src/main/pegasus/com/linkedin/knowledge/RelatedAsset.pdl)
 in the DataHub source for the authoritative list. DataSpoke populates
 `relatedAssets` with dataset URNs in the baseline.
 
@@ -569,7 +573,7 @@ DataSpoke models ingestion **per source / recipe** in three modes (`DATAHUB_MANA
 `ACTIVE_CUSTOM_MANAGED`, `PASSIVE` — see
 [BACKEND §Ingestion Service](feature/BACKEND.md#ingestion-service-srcbackendingestion)). This
 section catalogues the DataHub surfaces the hourly `datahub-sync-hourly` sweep uses; citations
-are to `ref/github/datahub/` v1.5.0.2.
+are to `ref/github/datahub/` v1.6.0.
 
 - **Reading managed source defs**: `DATAHUB_MANAGED` sources are synced down (DataHub is SSOT)
   via GraphQL `listIngestionSources` / `ingestionSource(urn)`
@@ -813,12 +817,15 @@ rejected by DataHub at query time rather than by DataSpoke at PUT/PATCH time.
 
 The resolver in `DataHubClient.enumerate_datasets` emits `origin` as its own
 AND-clause within each `scrollAcrossEntities` `or` group so that DataHub combines
-`origin` with the OR-ed `tags` / `glossaryTerms` / explicit-URN groups:
+`origin` with the OR-ed `tags` / `glossaryTerms` / explicit-URN groups. Each filter
+rule uses the **`values` array** form (`{field, values: [...]}`) — the DataHub search
+filter API expresses a single match as a one-element array, not a singular `value`
+scalar:
 
 ```
 or: [
-  { and: [{ field: "origin", value: "PROD" }, { field: "tags", value: "urn:li:tag:PII" }] },
-  { and: [{ field: "origin", value: "PROD" }, { field: "glossaryTerms", value: "urn:li:glossaryTerm:..." }] },
+  { and: [{ field: "origin", values: ["PROD"] }, { field: "tags", values: ["urn:li:tag:PII"] }] },
+  { and: [{ field: "origin", values: ["PROD"] }, { field: "glossaryTerms", values: ["urn:li:glossaryTerm:..."] }] },
   ...
 ]
 ```
@@ -926,5 +933,3 @@ deployment.
   routing?
 - [ ] Should write operations go through a centralized DataHub client wrapper in `src/shared/`,
   or can features instantiate their own emitters?
-- [ ] How to handle DataHub version upgrades that change aspect schemas — do we pin to a
-  specific `acryl-datahub` SDK version?

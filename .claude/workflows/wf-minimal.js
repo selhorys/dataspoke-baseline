@@ -53,13 +53,15 @@ const REVIEW_SCHEMA = {
   required: ['verdict', 'findings', 'summary'],
 }
 
+const NO_COMMIT = 'DO NOT commit, stage (git add), or push anything, and do not create branches or tags. Leave every change unstaged in the working tree for the human to review.'
+
 function genPrompt(stage, findings) {
   const base = `You are the ${stage} generator in CLAUDE.md §Implementation Workflow.
 
 APPROVED IMPLEMENTATION PLAN:
 ${ARGS.plan}
 
-Implement your stage's scope from the plan, following your agent instructions (read the relevant specs first). End with your structured completion report.`
+Implement your stage's scope from the plan, following your agent instructions (read the relevant specs first). ${NO_COMMIT} End with your structured completion report.`
   if (!findings) return base
   return `${base}
 

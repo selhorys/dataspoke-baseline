@@ -533,7 +533,7 @@ Run independently or as part of a full `--profile dev` install.
 | Chart | Version | App Version |
 |---|---|---|
 | `datahub/datahub-prerequisites` | 0.3.0 | — |
-| `datahub/datahub` | 0.9.10 | v1.5.0.2 (pinned via `global.datahub.version` override) |
+| `datahub/datahub` | 1.0.1 | v1.6.0 (pinned via `global.datahub.version` override) |
 
 Dev decisions:
 

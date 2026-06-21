@@ -214,6 +214,72 @@ async def test_enumerate_datasets(client, mock_graph) -> None:
     assert result == urns
 
 
+def _all_filter_rules(or_filters: list[dict]) -> list[dict]:
+    """Flatten every leaf filter rule out of an extra_or_filters structure
+    (a list of {"and": [rule, ...]} groups)."""
+    rules: list[dict] = []
+    for group in or_filters or []:
+        for rule in group.get("and", []):
+            rules.append(rule)
+    return rules
+
+
+async def test_enumerate_datasets_emits_values_array_filter_shape(client, mock_graph) -> None:
+    """enumerate_datasets builds each search-filter rule in the DataHub 1.6
+    ``{field, values: [...]}`` array form — never the dropped singular ``value`` scalar.
+
+    Spec: spec/DATAHUB_INTEGRATION.md §Origin filter group — 'Each filter rule uses the
+    **values array** form ({field, values: [...]}) — the DataHub search filter API
+    expresses a single match as a one-element array, not a singular value scalar.'
+    """
+    mock_graph.get_urns_by_filter.return_value = []
+
+    await client.enumerate_datasets(
+        platform="postgres",
+        tags=["urn:li:tag:PII"],
+        glossary_terms=["urn:li:glossaryTerm:gdpr"],
+        origin="PROD",
+    )
+
+    or_filters = mock_graph.get_urns_by_filter.call_args.kwargs["extra_or_filters"]
+    rules = _all_filter_rules(or_filters)
+    assert rules, "expected at least one filter rule to be emitted"
+
+    for rule in rules:
+        # 1.6 shape: a values array, not a singular scalar.
+        assert "values" in rule, f"rule must carry a values array: {rule!r}"
+        assert "value" not in rule, (
+            f"singular 'value' key was dropped in DataHub 1.6: {rule!r}"
+        )
+        assert isinstance(rule["values"], list) and rule["values"], (
+            f"values must be a non-empty list: {rule!r}"
+        )
+        assert "field" in rule, f"rule must name a field: {rule!r}"
+
+    # Each non-origin OR group must AND-in the origin clause (also in values form).
+    fields = {r["field"] for r in rules}
+    assert {"platform", "tags", "glossaryTerms", "origin"} <= fields
+    origin_rules = [r for r in rules if r["field"] == "origin"]
+    assert all(r["values"] == ["PROD"] for r in origin_rules)
+
+
+async def test_enumerate_datasets_origin_only_single_and_clause(client, mock_graph) -> None:
+    """With no OR-dimension filters but an origin set, enumerate_datasets emits a single
+    AND group containing only the origin rule (in values-array form).
+
+    Spec: spec/DATAHUB_INTEGRATION.md §Origin filter group — 'When the OR-group dimensions
+    are all empty, origin becomes the single AND-clause and the enumeration returns every
+    dataset with that origin.'
+    """
+    mock_graph.get_urns_by_filter.return_value = []
+
+    await client.enumerate_datasets(origin="DEV")
+
+    or_filters = mock_graph.get_urns_by_filter.call_args.kwargs["extra_or_filters"]
+    rules = _all_filter_rules(or_filters)
+    assert rules == [{"field": "origin", "values": ["DEV"]}]
+
+
 async def test_list_execution_requests_returns_result_bearing(client, mock_graph) -> None:
     """list_execution_requests returns every result-bearing execution — INCLUDING
     in-progress (RUNNING) ones — with status + requestedAt, and skips requests whose

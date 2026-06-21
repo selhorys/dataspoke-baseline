@@ -26,9 +26,9 @@ Reference materials are version-locked to match the DataSpoke development enviro
 
 | Component | Version | Location | Source |
 |-----------|---------|----------|--------|
-| DataHub OSS | v1.4.0.3 | `github/datahub/` | https://github.com/datahub-project/datahub |
+| DataHub OSS | v1.6.0 | `github/datahub/` | https://github.com/datahub-project/datahub |
 
-> **Note**: When `dev_env/.env` is updated with new DataHub versions, re-run the corresponding setup script to fetch matching source code.
+> **Note**: The pinned version lives in `setup.sh` (`DATAHUB_VERSION`, default tracks the deployed DataHub in `helm-charts/.env`). To fetch a different version, override it: `DATAHUB_VERSION=vX.Y.Z ./setup.sh datahub`.
 
 ## Setup
 

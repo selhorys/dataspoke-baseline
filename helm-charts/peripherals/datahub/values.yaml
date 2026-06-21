@@ -1,5 +1,5 @@
 # DataHub Helm values — dev sizing
-# Chart: datahub/datahub version 0.9.10 (app version v1.5.0.2)
+# Chart: datahub/datahub version 1.0.1 (app version v1.6.0)
 # Total memory limits (datahub services): ~6.5 GiB
 #
 # Service name overrides point to the datahub-prerequisites release.
@@ -10,8 +10,8 @@
 global:
   datahub:
     # Pin every datahub image (gms, frontend, actions, mae/mce, ingestion,
-    # system-update, setup jobs) to v1.5.0.2. Chart 0.9.10's default is v1.5.0.1.
-    version: "v1.5.0.2"
+    # system-update, setup jobs) to v1.6.0. Chart 1.0.1 defaults to v1.6.0.
+    version: "v1.6.0"
   sql:
     datasource:
       host: "datahub-prerequisites-mysql:3306"
