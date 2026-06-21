@@ -723,6 +723,64 @@ def hard_delete_documents_for_dataset(dataset_urn: str) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Search-index readiness gate (eventual-consistency, not timeout inflation)
+# ---------------------------------------------------------------------------
+
+
+def wait_until_datasets_searchable(
+    expected_urns: set[str],
+    platform: str,
+    timeout: float = 120.0,
+    interval: float = 3.0,
+) -> None:
+    """Block until ``expected_urns`` are visible through the search-backed read path.
+
+    Eventual-consistency gate, NOT a timeout inflation to mask infra. The
+    DataHub REST emitter writes aspects to GMS synchronously, but the
+    Elasticsearch search index that ``get_urns_by_filter`` (and the backend
+    sync sweep's ``enumerate_datasets``) read from lags that write by a few
+    seconds. Without this gate, a freshly emitted dataset can be invisible to
+    the very next search-backed read, so a sync sweep run immediately after
+    seeding maps only the already-indexed subset.
+
+    The poll exits as soon as every expected URN is searchable (normally a few
+    seconds). ``timeout`` is only an upper bound before declaring a genuine
+    seeding failure — on timeout this raises ``TimeoutError`` naming the URNs
+    still missing, so a real failure is loud rather than silently passed.
+
+    Scope: this gates the platform/name search index (``platform``-filtered),
+    which is a proxy for the sweep's unscoped ``enumerate_datasets`` read — it is
+    strictly narrower (a URN visible under its platform facet is visible
+    unscoped), so it cannot pass before the sweep would see the URN. It does NOT
+    cover the slower tag/glossary-term index, which lags longer (~2-3 min); a
+    caller depending on tag-search readiness needs a separate, longer gate.
+
+    spec: project_es_indexing_lag_after_reset_seed — ES indexing lags GMS emit.
+    spec: TESTING.md §Per-Module Dummy-Data Reset — ingest post-condition is
+          "emitted AND searchable" so the sync sweep sees the full universe.
+    """
+    if not expected_urns:
+        return
+
+    graph = DataHubGraph(DatahubClientConfig(server=_gms_url, token=_get_token()))
+    deadline = time.time() + timeout
+    seen: set[str] = set()
+    while True:
+        seen = set(graph.get_urns_by_filter(entity_types=["dataset"], platform=platform))
+        if expected_urns <= seen:
+            return
+        if time.time() >= deadline:
+            missing = sorted(expected_urns - seen)
+            raise TimeoutError(
+                f"Datasets not searchable on platform {platform!r} after {timeout:.0f}s. "
+                f"Still missing {len(missing)} URN(s): {missing}. "
+                "GMS emitted them but the ES search index never caught up — "
+                "this is a genuine seeding/infra failure, not a poll-too-short."
+            )
+        time.sleep(interval)
+
+
+# ---------------------------------------------------------------------------
 # Ingest: emit DatasetProperties + SchemaMetadata for each table
 # ---------------------------------------------------------------------------
 
@@ -1005,6 +1063,12 @@ async def ingest_pg_datasets(schemas: frozenset[str] | None = None) -> int:
 
     await _mark_registry_registered(list(datasets.keys()))
 
+    # Gate the post-condition on "emitted AND searchable" so callers (the
+    # module fixture, --reset-seed) don't return before the backend sync
+    # sweep's search-backed read can see these table datasets.
+    # spec: project_es_indexing_lag_after_reset_seed
+    wait_until_datasets_searchable(set(datasets.keys()), platform=PG_PLATFORM)
+
     print(
         f"  Ingested {len(datasets)} PG datasets "
         f"({sum(len(c) for c in datasets.values())} columns)."
@@ -1213,6 +1277,12 @@ async def ingest_kafka_datasets(topics: frozenset[str] | None = None) -> int:
             )
 
     await _mark_registry_registered(list(datasets.keys()))
+
+    # Gate the post-condition on "emitted AND searchable" — the sync-sweep
+    # matcher enumerates topics via the same ES-backed search read, so an
+    # unindexed topic would be silently dropped from the mapping.
+    # spec: project_es_indexing_lag_after_reset_seed
+    wait_until_datasets_searchable(set(datasets.keys()), platform=KAFKA_PLATFORM)
 
     print(
         f"  Ingested {len(datasets)} Kafka datasets "
