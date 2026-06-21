@@ -21,15 +21,17 @@ export function isItemFinalized(item: Pick<MetagenItemSummary, "status">): boole
 /**
  * Returns true when the candidate is eligible for a Reject action.
  *
- * The backend raises 409 METAGEN_CANNOT_REJECT_APPROVED when rejecting a
- * candidate whose status is "approved". Reject is valid only on
- * "llm_approved" candidates (the normal case).
+ * Reject is valid on both "llm_approved" (the normal case) and "approved"
+ * candidates. Rejecting an "approved" candidate flips it to "rejected" and
+ * removes the editable DataHub description it had written; a "rejected"
+ * candidate is not reject-eligible.
  *
  * Candidate statuses: "llm_approved" | "approved" | "rejected"
- * Source of truth: src/api/schemas/metagen.py MetagenCandidate.status
+ * Source of truth: src/api/schemas/metagen.py MetagenCandidate.status and
+ * src/backend/metagen/service.py §review_candidate.
  */
 export function isRejectEligible(candidate: Pick<MetagenCandidate, "status">): boolean {
-  return candidate.status === "llm_approved";
+  return candidate.status === "llm_approved" || candidate.status === "approved";
 }
 
 /**

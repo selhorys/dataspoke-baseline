@@ -88,6 +88,24 @@ class MetagenUncoveredResponse(PaginatedResponse):
     datasets: list[MetagenUncoveredRow] = Field(default_factory=list)
 
 
+# ── Covered datasets (per-conf) ───────────────────────────────────────────────
+
+
+class MetagenCoveredDatasetSummary(BaseModel):
+    dataset_urn: str
+    is_enabled: bool
+    allowed: list[Literal["dataset.description", "column.description"]] = Field(
+        default_factory=list
+    )
+    owner: str | None
+    blocked: bool
+    reason: Literal["boundary_blocked"] | None
+
+
+class MetagenCoveredDatasetListResponse(PaginatedResponse):
+    datasets: list[MetagenCoveredDatasetSummary] = Field(default_factory=list)
+
+
 # ── Per-dataset boundary ──────────────────────────────────────────────────────
 
 
@@ -124,6 +142,7 @@ class MetagenItemSummary(BaseModel):
     field_path: str | None
     status: Literal["pending", "llm_approved", "approved"]
     candidate_count: int
+    created_at: datetime
     composite_id: str
 
 
@@ -137,6 +156,7 @@ class MetagenCandidate(BaseModel):
     conf_name: str | None
     item_id: str
     dataset_urn: str
+    run_id: str
     value: str
     confidence_score: float
     status: Literal["llm_approved", "approved", "rejected"]

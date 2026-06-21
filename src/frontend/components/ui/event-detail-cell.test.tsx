@@ -1,11 +1,13 @@
 /**
- * Tests for EventDetailCell — the ingestion event `detail` cell.
+ * Tests for EventDetailCell — the shared event `detail` cell.
  *
  * Spec traces:
  *   - spec/feature/FRONTEND_INGESTION.md §Source Detail §Events: the detail
  *     column truncates compact JSON (~30 chars) and is click-to-expand into a
  *     pretty-printed JSON dialog. Applies to both the Source Detail Events
  *     table and the per-dataset reverse-lookup event/ingestion table.
+ *   - spec/feature/FRONTEND_METAGEN.md §Components MetagenEventTable: the
+ *     conf-detail event detail cell truncates with click-to-expand pretty-JSON.
  */
 import { describe, it, expect } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";

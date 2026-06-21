@@ -17,7 +17,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { EventDetailCell } from "@/components/ingestion/event-detail-cell";
+import { EventDetailCell } from "@/components/ui/event-detail-cell";
 import { eventStatusVariant } from "@/lib/event-status-variant";
 import { formatDateTime } from "@/lib/format-time";
 import { useDisplayTz } from "@/lib/preferences/timezone";

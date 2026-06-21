@@ -70,6 +70,24 @@ export interface MetagenUncoveredResponse {
   datasets: MetagenUncoveredRow[];
 }
 
+// ── Covered datasets (per-conf) ─────────────────────────────────────────────────
+
+export interface MetagenCoveredDatasetSummary {
+  dataset_urn: string;
+  is_enabled: boolean;
+  allowed: AllowedKind[];
+  owner: string | null;
+  blocked: boolean;
+  reason: string | null;
+}
+
+export interface MetagenCoveredDatasetResponse {
+  offset: number;
+  limit: number;
+  total_count: number;
+  datasets: MetagenCoveredDatasetSummary[];
+}
+
 // ── Per-dataset boundary ──────────────────────────────────────────────────────
 
 export interface MetagenBoundary {
@@ -108,6 +126,7 @@ export interface MetagenItemSummary {
   status: ItemStatus;
   candidate_count: number;
   composite_id: string;
+  created_at: string;
 }
 
 export interface MetagenItemListResponse {
@@ -122,6 +141,8 @@ export interface MetagenCandidate {
   /** The conf that produced this candidate; null after the conf was deleted. */
   conf_id: string | null;
   conf_name: string | null;
+  /** Creating run's id; doubles as the Langfuse session id for the Evidence link. */
+  run_id: string | null;
   item_id: string;
   dataset_urn: string;
   value: string;

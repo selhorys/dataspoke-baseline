@@ -38,6 +38,11 @@ vi.mock("@/lib/api/metagen", () => ({
   useDeleteMetagenConf: () => ({ mutate: vi.fn(), isPending: false, error: null }),
   useRunMetagenConf: () => ({ mutate: vi.fn(), isPending: false, error: null }),
   useMetagenConfEvents: () => ({ data: { events: [], total_count: 0 } }),
+  useMetagenCoveredDatasets: () => ({
+    data: { datasets: [], total_count: 0 },
+    isLoading: false,
+    error: null,
+  }),
 }));
 
 vi.mock("@/components/ui/use-toast", () => ({
@@ -76,6 +81,10 @@ vi.mock("@/components/metagen/conf-form", () => ({
 
 vi.mock("@/components/metagen/metagen-event-table", () => ({
   MetagenEventTable: () => React.createElement("div", { "data-testid": "event-table" }),
+}));
+
+vi.mock("@/components/metagen/covered-table", () => ({
+  MetagenCoveredTable: () => React.createElement("div", { "data-testid": "covered-table" }),
 }));
 
 vi.mock("@/components/metagen/run-dialog", () => ({

@@ -78,7 +78,6 @@ class ConflictError(DataSpokeError):
       METRIC_DISABLED               — metric definition has is_enabled=false; only dry-run permitted
       ONTOGEN_DISABLED              — ontogen conf has is_enabled=false; only dry-run permitted
       METAGEN_DISABLED              — metagen conf has is_enabled=false; only dry-run permitted
-      METAGEN_CANNOT_REJECT_APPROVED — reject verdict on a candidate whose status is approved
     """
 
     def __init__(self, error_code: str, message: str = "") -> None:

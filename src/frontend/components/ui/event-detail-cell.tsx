@@ -1,13 +1,14 @@
 "use client";
 
 /**
- * EventDetailCell — renders an ingestion event's `detail` JSON in a table cell.
- * Empty detail shows a muted em-dash; otherwise the compact JSON is
- * truncated to MAX chars and is a click-to-expand trigger that opens a modal
- * with the pretty-printed JSON.
+ * EventDetailCell — renders an event's `detail` JSON in a table cell. Empty
+ * detail shows a muted em-dash; otherwise the compact JSON is truncated to MAX
+ * chars and is a click-to-expand trigger that opens a modal with the
+ * pretty-printed JSON.
  *
- * Spec: spec/feature/FRONTEND_INGESTION.md §Source Detail §Events (and the
- * per-dataset reverse-lookup event/ingestion table).
+ * Shared across the ingestion event tables and the metagen conf-detail event
+ * table (spec/feature/FRONTEND_INGESTION.md §Events,
+ * spec/feature/FRONTEND_METAGEN.md §Components MetagenEventTable).
  */
 
 import { useState } from "react";

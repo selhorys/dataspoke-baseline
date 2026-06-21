@@ -37,7 +37,7 @@ import uuid
 from contextlib import suppress
 from datetime import UTC, datetime
 
-from sqlalchemy import text
+from sqlalchemy import ARRAY, Text, bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # ── Module-level constants ─────────────────────────────────────────────────────
@@ -121,20 +121,21 @@ async def seed_metagen_boundary(
     spec: feature/BACKEND_SCHEMA.md §metagen_boundary — dataset_urn PK, allowed TEXT[]
     """
     allowed_arr = allowed if allowed is not None else ["dataset.description", "column.description"]
+    stmt = text(
+        "INSERT INTO dataspoke.metagen_boundary"
+        " (dataset_urn, is_enabled, allowed, owner)"
+        " VALUES (:urn, :is_enabled, :allowed, :owner)"
+        " ON CONFLICT (dataset_urn) DO UPDATE SET"
+        "   is_enabled = EXCLUDED.is_enabled,"
+        "   allowed = EXCLUDED.allowed,"
+        "   owner = EXCLUDED.owner"
+    ).bindparams(bindparam("allowed", type_=ARRAY(Text())))
     await session.execute(
-        text(
-            "INSERT INTO dataspoke.metagen_boundary"
-            " (dataset_urn, is_enabled, allowed, owner)"
-            " VALUES (:urn, :is_enabled, CAST(:allowed AS text[]), :owner)"
-            " ON CONFLICT (dataset_urn) DO UPDATE SET"
-            "   is_enabled = EXCLUDED.is_enabled,"
-            "   allowed = EXCLUDED.allowed,"
-            "   owner = EXCLUDED.owner"
-        ),
+        stmt,
         {
             "urn": dataset_urn,
             "is_enabled": is_enabled,
-            "allowed": "{" + ",".join(allowed_arr) + "}",
+            "allowed": allowed_arr,
             "owner": owner,
         },
     )

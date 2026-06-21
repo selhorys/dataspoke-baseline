@@ -4,13 +4,15 @@
  * MetagenEventTable — a metagen event feed bound to a `…/event` route, paired
  * with a datetime RangePicker for the from/to window. Newest first.
  *
- * Columns: occurred_at, status badge, event_type, detail (mono JSON).
+ * Columns: occurred_at, status badge, event_type, detail (truncated JSON with
+ * click-to-expand pretty-JSON via the shared EventDetailCell).
  *
  * Spec: spec/feature/FRONTEND_METAGEN.md §Components (MetagenEventTable).
  */
 
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/ui/empty-state";
+import { EventDetailCell } from "@/components/ui/event-detail-cell";
 import { Pagination } from "@/components/pagination";
 import { RangePicker } from "@/components/range-picker";
 import {
@@ -81,10 +83,8 @@ export function MetagenEventTable({
                     </Badge>
                   </TableCell>
                   <TableCell className="text-sm">{e.event_type}</TableCell>
-                  <TableCell className="max-w-[360px] truncate font-mono text-xs text-muted-foreground">
-                    {e.detail && Object.keys(e.detail).length > 0
-                      ? JSON.stringify(e.detail)
-                      : "—"}
+                  <TableCell>
+                    <EventDetailCell detail={e.detail ?? {}} />
                   </TableCell>
                 </TableRow>
               ))}

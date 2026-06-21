@@ -3,7 +3,8 @@
  *
  * Spec traces:
  *   - spec/feature/FRONTEND_METAGEN.md §Page contracts:
- *     "reject only valid on llm_approved"; "finalized items collapse to a single approved row";
+ *     "reject valid on both llm_approved and approved (approved case removes the
+ *     DataHub description)"; "finalized items collapse to a single approved row";
  *     "confirm dialog labels the destination DataHub aspect"
  *   - src/api/schemas/metagen.py MetagenCandidate.status:
  *     "llm_approved" | "approved" | "rejected"
@@ -12,8 +13,9 @@
  *   - src/api/schemas/metagen.py MetagenBoundaryPutRequest.allowed / MetagenItemSummary.kind:
  *     "dataset.description" | "column.description"
  *   - src/backend/metagen/service.py §review_candidate:
- *     reject raises 409 ConflictError("METAGEN_CANNOT_REJECT_APPROVED", ...) when
- *     cand.status == "approved"; only "llm_approved" is reject-eligible.
+ *     reject is valid on both "llm_approved" and "approved"; rejecting an
+ *     "approved" candidate flips it to "rejected" and removes the editable
+ *     DataHub description. Only "rejected" is not reject-eligible.
  *   - src/backend/metagen/service.py §_emit_to_datahub (~L1218-1262):
  *     dataset.description  → EditableDatasetPropertiesClass  → aspect "editableDatasetProperties.description"
  *     column.<fp>.description → EditableSchemaMetadataClass[fieldPath] → aspect "editableSchemaMetadata"
@@ -43,6 +45,7 @@ function makeCandidate(status: CandidateStatus) {
     candidate_id: "cand-" + status,
     conf_id: "conf-1",
     conf_name: "catalog policy",
+    run_id: "run-1",
     item_id: "item-1",
     dataset_urn: "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)",
     value: "A description of the catalog.title_master table",
@@ -68,14 +71,15 @@ function makeItemSummary(status: ItemStatus) {
 }
 
 // ---------------------------------------------------------------------------
-// 1. isRejectEligible — mirrors backend 409 precondition
+// 1. isRejectEligible — reject valid on both llm_approved and approved
 // ---------------------------------------------------------------------------
 //
-// Backend: reject raises ConflictError("METAGEN_CANNOT_REJECT_APPROVED") when
-// cand.status == "approved". Only "llm_approved" is reject-eligible.
-// (src/backend/metagen/service.py §review_candidate L770-775)
+// Backend: reject is valid on both "llm_approved" and "approved" candidates.
+// Rejecting an "approved" candidate flips it to "rejected" and removes the
+// editable DataHub description it had written; "rejected" is not reject-eligible.
+// (src/backend/metagen/service.py §review_candidate)
 
-describe('isRejectEligible — reject-eligibility mirrors backend METAGEN_CANNOT_REJECT_APPROVED precondition (service.py §review_candidate)', () => {
+describe('isRejectEligible — reject valid on both llm_approved and approved candidates (service.py §review_candidate)', () => {
   // Drive from the exhaustive candidate status table from src/api/schemas/metagen.py
   type Row = { status: CandidateStatus; expected: boolean; reason: string };
 
@@ -87,8 +91,8 @@ describe('isRejectEligible — reject-eligibility mirrors backend METAGEN_CANNOT
     },
     {
       status: "approved",
-      expected: false,
-      reason: "backend raises 409 METAGEN_CANNOT_REJECT_APPROVED for approved candidates",
+      expected: true,
+      reason: "rejecting an approved candidate flips it to rejected and removes the DataHub description",
     },
     {
       status: "rejected",
@@ -103,10 +107,10 @@ describe('isRejectEligible — reject-eligibility mirrors backend METAGEN_CANNOT
     });
   });
 
-  it("only 'llm_approved' returns true — exactly one status is reject-eligible", () => {
+  it("'llm_approved' and 'approved' return true — only 'rejected' is excluded", () => {
     const allStatuses: CandidateStatus[] = ["llm_approved", "approved", "rejected"];
     const eligibleStatuses = allStatuses.filter((s) => isRejectEligible(makeCandidate(s)));
-    expect(eligibleStatuses).toEqual(["llm_approved"]);
+    expect(eligibleStatuses).toEqual(["llm_approved", "approved"]);
   });
 
   it("default-deny for unknown/future status — isRejectEligible must not return true for unknown inputs", () => {
@@ -404,16 +408,17 @@ describe('destinationAspectLabel — aspect names derived from service.py §_emi
 // 5. Cross-predicate consistency: isRejectEligible + isItemFinalized alignment
 // ---------------------------------------------------------------------------
 //
-// When a candidate is "approved", isRejectEligible must be false.
-// When an item is "approved" (finalized), it holds an approved candidate.
-// These invariants must be consistent across the two predicates.
+// When an item is "approved" (finalized), it holds an approved candidate that is
+// still reject-eligible (rejecting it removes the DataHub description). Only a
+// "rejected" candidate is not reject-eligible. These invariants must be
+// consistent across the two predicates.
 
 describe('cross-predicate consistency — approved state is coherent across isRejectEligible and isItemFinalized', () => {
-  it("approved candidate is not reject-eligible AND approved item is finalized", () => {
+  it("approved candidate is reject-eligible AND approved item is finalized", () => {
     const approvedCandidate = makeCandidate("approved");
     const approvedItem = makeItemSummary("approved");
 
-    expect(isRejectEligible(approvedCandidate)).toBe(false);
+    expect(isRejectEligible(approvedCandidate)).toBe(true);
     expect(isItemFinalized(approvedItem)).toBe(true);
   });
 
@@ -425,12 +430,17 @@ describe('cross-predicate consistency — approved state is coherent across isRe
     expect(isItemFinalized(llmItem)).toBe(false);
   });
 
-  it("findApprovedCandidate returning non-null corresponds to item status=approved in a finalized item", () => {
+  it("rejected candidate is not reject-eligible — the single non-eligible status", () => {
+    expect(isRejectEligible(makeCandidate("rejected"))).toBe(false);
+  });
+
+  it("findApprovedCandidate returning non-null corresponds to a reject-eligible approved candidate", () => {
     const candidates = [makeCandidate("approved"), makeCandidate("llm_approved")];
     const approved = findApprovedCandidate(candidates);
 
-    // If findApprovedCandidate found an approved candidate, isRejectEligible must be false for it
+    // The approved candidate found is still reject-eligible (Reject removes the
+    // DataHub description it wrote).
     expect(approved).not.toBeNull();
-    expect(isRejectEligible(approved!)).toBe(false);
+    expect(isRejectEligible(approved!)).toBe(true);
   });
 });

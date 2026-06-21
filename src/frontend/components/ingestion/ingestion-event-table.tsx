@@ -12,7 +12,7 @@
 
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/ui/empty-state";
-import { EventDetailCell } from "@/components/ingestion/event-detail-cell";
+import { EventDetailCell } from "@/components/ui/event-detail-cell";
 import { Pagination } from "@/components/pagination";
 import { RangePicker } from "@/components/range-picker";
 import {

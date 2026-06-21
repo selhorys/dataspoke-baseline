@@ -42,6 +42,7 @@ def to_candidate(c: Any) -> MetagenCandidate:
         conf_name=c.conf_name,
         item_id=c.item_id,
         dataset_urn=c.dataset_urn,
+        run_id=c.run_id,
         value=c.value,
         confidence_score=c.confidence_score,
         status=cast(_CandStatus, c.status),
@@ -60,6 +61,7 @@ def to_item_summary(dto: Any) -> MetagenItemSummary:
         field_path=dto.field_path,
         status=item_status(dto.has_approved, dto.non_rejected_count),
         candidate_count=dto.candidate_count,
+        created_at=dto.created_at,
         composite_id=f"{dto.dataset_urn}::{dto.item_id}",
     )
 
@@ -75,6 +77,7 @@ def to_item_detail(dto: Any) -> MetagenItemDetailResponse:
         field_path=dto.field_path,
         status=item_status(has_approved, non_rejected_count),
         candidate_count=len(cands),
+        created_at=dto.created_at,
         composite_id=f"{dto.dataset_urn}::{dto.item_id}",
         candidates=cands,
     )

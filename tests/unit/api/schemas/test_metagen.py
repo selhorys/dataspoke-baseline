@@ -459,6 +459,7 @@ class TestMetagenCandidate:
             conf_name=None,
             item_id="dataset.description",
             dataset_urn=_VALID_URN,
+            run_id="run-1",
             value="v",
             confidence_score=0.9,
             status="approved",

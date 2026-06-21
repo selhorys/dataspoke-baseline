@@ -1,18 +1,22 @@
 "use client";
 
 /**
- * CandidateCard — displays a single MetaGen candidate with Approve/Reject actions.
+ * CandidateCard — displays a single MetaGen candidate with Approve/Reject actions
+ * and an Evidence link to its Langfuse trace (from the candidate's run_id).
  *
  * Approve: available for writer when candidate is not already approved.
  *          On finalized items, approving a sibling demotes the current approved
  *          candidate (backend supports switching — service.py §review_candidate).
- * Reject:  available only when candidate.status === "llm_approved".
+ * Reject:  available when candidate.status is "llm_approved" or "approved".
+ *          Rejecting an "approved" candidate removes the editable DataHub
+ *          description it wrote; the confirm dialog warns about this.
  */
 
 import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/confirm-dialog";
+import { EvidenceLink } from "@/components/ontogen/evidence-link";
 import { isRejectEligible, destinationAspectLabel } from "@/lib/metagen-predicates";
 import { formatDateTime } from "@/lib/format-time";
 import { useDisplayTz } from "@/lib/preferences/timezone";
@@ -55,7 +59,7 @@ export function CandidateCard({
   // Show action buttons for writer role.
   // Approve is suppressed on the already-approved candidate (no-op; approving a
   // sibling via the switch path handles demotion at the backend).
-  // Reject is gated by isRejectEligible (llm_approved only).
+  // Reject is gated by isRejectEligible (llm_approved or approved).
   const showApprove = canWrite && !isApproved;
   const showReject = canWrite && rejectEligible;
   const showActions = showApprove || showReject;
@@ -86,6 +90,10 @@ export function CandidateCard({
             reviewed {formatDateTime(candidate.reviewed_at, tz)}
           </span>
         )}
+        <span className="inline-flex items-center gap-1 text-xs">
+          <span className="text-muted-foreground">Evidence</span>
+          <EvidenceLink runId={candidate.run_id} />
+        </span>
         {showActions && (
           <div className="ml-auto flex items-center gap-1.5">
             {showApprove && (
@@ -135,7 +143,11 @@ export function CandidateCard({
         open={rejectOpen}
         onOpenChange={setRejectOpen}
         title="Reject candidate"
-        description="This candidate will be marked rejected and cleared on the next run."
+        description={
+          isApproved
+            ? `This candidate will be marked rejected and the editable description it wrote to ${aspectLabel} in DataHub will be removed.`
+            : "This candidate will be marked rejected and cleared on the next run."
+        }
         confirmLabel="Reject"
         onConfirm={() => {
           setRejectOpen(false);

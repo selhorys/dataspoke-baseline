@@ -48,6 +48,7 @@ const queueResponse: MetagenItemListResponse = {
       status: "llm_approved",
       candidate_count: 2,
       composite_id: "urn:li:dataset:a::dataset.description",
+      created_at: "2026-05-01T12:00:00Z",
     },
   ],
 };

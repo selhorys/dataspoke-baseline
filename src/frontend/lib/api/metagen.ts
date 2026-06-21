@@ -8,6 +8,7 @@ import type {
   MetagenBoundaryPutBody,
   MetagenCandidate,
   MetagenConf,
+  MetagenCoveredDatasetResponse,
   MetagenConfCreateBody,
   MetagenConfListResponse,
   MetagenConfPatchBody,
@@ -174,6 +175,31 @@ export function useMetagenConfEvents(
   return usePoll<MetagenEventListResponse>({
     queryKey: ["metagen", "conf-events", confId, params],
     queryFn: () => apiFetch<MetagenEventListResponse>(buildUrl()),
+    enabled: !!confId,
+    meta: { handledInline: true },
+  });
+}
+
+// ── Covered datasets (per-conf) ─────────────────────────────────────────────────
+
+/** GET /spoke/metagen/conf/{conf_id}/dataset?include_disallowed=<bool> — polled. */
+export function useMetagenCoveredDatasets(
+  confId: string,
+  includeDisallowed: boolean,
+  params: { offset?: number; limit?: number } = {},
+) {
+  function buildUrl(): string {
+    const sp = new URLSearchParams();
+    if (includeDisallowed) sp.set("include_disallowed", "true");
+    if (params.offset !== undefined) sp.set("offset", String(params.offset));
+    if (params.limit !== undefined) sp.set("limit", String(params.limit));
+    const qs = sp.toString();
+    return `/spoke/metagen/conf/${encodeURIComponent(confId)}/dataset${qs ? `?${qs}` : ""}`;
+  }
+
+  return usePoll<MetagenCoveredDatasetResponse>({
+    queryKey: ["metagen", "covered", confId, includeDisallowed, params],
+    queryFn: () => apiFetch<MetagenCoveredDatasetResponse>(buildUrl()),
     enabled: !!confId,
     meta: { handledInline: true },
   });
@@ -353,8 +379,9 @@ interface ReviewCandidateVars {
 /**
  * POST /spoke/common/data/{urn}/attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review
  *
- * Returns the updated candidate.
- * 409 METAGEN_CANNOT_REJECT_APPROVED when trying to reject an approved candidate.
+ * Returns the updated candidate. Reject is valid on both llm_approved and
+ * approved candidates; rejecting an approved candidate flips it to rejected and
+ * removes the editable DataHub description it had written.
  * 422 METAGEN_DATASET_NOT_IN_BOUNDARY when the dataset has no is_enabled boundary.
  */
 export function useReviewCandidate() {

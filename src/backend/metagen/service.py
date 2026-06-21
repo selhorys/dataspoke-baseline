@@ -151,6 +151,15 @@ class UncoveredRowDTO(BaseModel):
     reason: str
 
 
+class CoveredDatasetRowDTO(BaseModel):
+    dataset_urn: str
+    is_enabled: bool
+    allowed: list[str]
+    owner: str | None
+    blocked: bool
+    reason: str | None
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
@@ -677,6 +686,75 @@ class MetagenService:
         total = len(rows)
         return rows[offset : offset + limit], total
 
+    # ── Covered datasets view ─────────────────────────────────────────────────
+
+    async def list_covered_datasets(
+        self,
+        conf_id: str,
+        *,
+        include_disallowed: bool = False,
+        offset: int = 0,
+        limit: int = 20,
+        order_by: Any = None,
+    ) -> tuple[list[CoveredDatasetRowDTO], int]:
+        """Datasets a conf's `dataset_filter` matches (the per-conf covered view).
+
+        Resolves the conf's `dataset_filter` via `resolve_dataset_scope`, then
+        left-joins each matched dataset's `metagen_boundary`. A dataset is
+        `blocked` when its boundary is missing, `is_enabled=false`, or has empty
+        `allowed` (`reason="boundary_blocked"`); writable datasets carry
+        `blocked=false` and `reason=None`.
+
+        Default (`include_disallowed=false`) returns only non-blocked rows;
+        `include_disallowed=true` returns all matched rows with their blocked flag.
+
+        Raises EntityNotFoundError(metagen_conf) when the conf is absent.
+        """
+        conf = await self._load_conf_row(conf_id)
+
+        scope = await resolve_dataset_scope(
+            self._datahub,
+            dict(conf.dataset_filter) if conf.dataset_filter else {},
+            swallow_enumerate_errors=True,
+        )
+        matched: list[str] = scope.resolved_urns
+
+        # Left-join boundary rows for the matched datasets.
+        boundaries: dict[str, MetagenBoundary] = {}
+        if matched:
+            bnd_result = await self._db.execute(
+                select(MetagenBoundary).where(MetagenBoundary.dataset_urn.in_(matched))
+            )
+            boundaries = {b.dataset_urn: b for b in bnd_result.scalars().all()}
+
+        # Default order: dataset_urn ascending. ?sort=dataset_urn_desc reverses
+        # the in-memory ordering (the covered set is computed in Python).
+        from sqlalchemy.sql import operators
+
+        reverse = order_by is not None and getattr(order_by, "modifier", None) is operators.desc_op
+
+        rows: list[CoveredDatasetRowDTO] = []
+        for urn in sorted(matched, reverse=reverse):
+            boundary = boundaries.get(urn)
+            blocked = (
+                boundary is None or not boundary.is_enabled or len(boundary.allowed) == 0
+            )
+            if blocked and not include_disallowed:
+                continue
+            rows.append(
+                CoveredDatasetRowDTO(
+                    dataset_urn=urn,
+                    is_enabled=boundary.is_enabled if boundary is not None else False,
+                    allowed=list(boundary.allowed) if boundary is not None else [],
+                    owner=boundary.owner if boundary is not None else None,
+                    blocked=blocked,
+                    reason="boundary_blocked" if blocked else None,
+                )
+            )
+
+        total = len(rows)
+        return rows[offset : offset + limit], total
+
     # ── Run pipeline ──────────────────────────────────────────────────────────
 
     async def run(
@@ -939,8 +1017,8 @@ class MetagenService:
 
         - approve: demote any existing approved sibling; flip target to approved;
           emit to DataHub editable aspect; emit METAGEN.CANDIDATE_APPROVE.
-        - reject: only valid for llm_approved; raises 409 if already approved;
-          emit METAGEN.CANDIDATE_REJECT.
+        - reject: flip target to rejected; when it was approved, clear the editable
+          DataHub aspect it had written; emit METAGEN.CANDIDATE_REJECT either way.
         - Raises 422 METAGEN_DATASET_NOT_IN_BOUNDARY if boundary absent/disabled.
         """
         # Boundary guard
@@ -1022,12 +1100,7 @@ class MetagenService:
             )
 
         elif verdict == "reject":
-            if cand.status == "approved":
-                raise ConflictError(
-                    "METAGEN_CANNOT_REJECT_APPROVED",
-                    "Cannot reject an approved candidate — "
-                    "approve a different sibling to demote it",
-                )
+            was_approved = cand.status == "approved"
 
             cand.status = "rejected"
             cand.reviewed_at = now
@@ -1035,6 +1108,12 @@ class MetagenService:
             self._db.add(cand)
             await self._db.commit()
             await self._db.refresh(cand)
+
+            # Rejecting a previously-approved candidate removes the editable
+            # DataHub aspect it had written (best-effort). Rejecting an
+            # llm_approved candidate never touched DataHub, so nothing to clear.
+            if was_approved:
+                await self._clear_datahub_aspect(urn=dataset_urn, item_id=item_id)
 
             await self._record_dataset_event(
                 dataset_urn,
@@ -1474,9 +1553,18 @@ class MetagenService:
             if item_id == "dataset.description":
                 from datahub.metadata.schema_classes import EditableDatasetPropertiesClass
 
-                await self._datahub.emit_aspect(
-                    urn, EditableDatasetPropertiesClass(description=value)
+                # Merge into the existing aspect so a co-located editable `name`
+                # (and audit stamps) survives the whole-aspect overwrite.
+                existing = await self._datahub.get_aspect(
+                    urn, EditableDatasetPropertiesClass
                 )
+                if existing is not None:
+                    existing.description = value
+                    await self._datahub.emit_aspect(urn, existing)
+                else:
+                    await self._datahub.emit_aspect(
+                        urn, EditableDatasetPropertiesClass(description=value)
+                    )
 
             elif item_id.startswith("column.") and item_id.endswith(".description"):
                 field_path = item_id[len("column.") : -len(".description")]
@@ -1507,6 +1595,51 @@ class MetagenService:
         except Exception:
             logger.warning(
                 "metagen_datahub_emit_failed",
+                extra={"urn": urn, "item_id": item_id},
+                exc_info=True,
+            )
+
+    async def _clear_datahub_aspect(self, urn: str, item_id: str) -> None:
+        """Remove the editable DataHub aspect an approved candidate had written.
+
+        Mirrors `_emit_to_datahub` and preserves co-located user metadata, since
+        `emit_aspect` overwrites the whole aspect via a single MCP:
+        dataset.description → clear only `description` on the existing
+          editableDatasetProperties (keep `name`/`deleted`/audit stamps).
+        column.<fieldPath>.description → clear only `description` on that field's
+          editableSchemaFieldInfo entry (keep its globalTags/glossaryTerms and
+          sibling fields); leaves DataHub's non-editable fallback.
+        """
+        try:
+            if item_id == "dataset.description":
+                from datahub.metadata.schema_classes import EditableDatasetPropertiesClass
+
+                existing = await self._datahub.get_aspect(
+                    urn, EditableDatasetPropertiesClass
+                )
+                if existing is not None:
+                    existing.description = None
+                    await self._datahub.emit_aspect(urn, existing)
+
+            elif item_id.startswith("column.") and item_id.endswith(".description"):
+                field_path = item_id[len("column.") : -len(".description")]
+                from datahub.metadata.schema_classes import EditableSchemaMetadataClass
+
+                existing = await self._datahub.get_aspect(urn, EditableSchemaMetadataClass)
+                if existing and hasattr(existing, "editableSchemaFieldInfo"):
+                    field_infos = list(existing.editableSchemaFieldInfo)
+                    for fi in field_infos:
+                        if getattr(fi, "fieldPath", None) == field_path:
+                            fi.description = None
+                            break
+                    else:
+                        return
+                    await self._datahub.emit_aspect(
+                        urn, EditableSchemaMetadataClass(editableSchemaFieldInfo=field_infos)
+                    )
+        except Exception:
+            logger.warning(
+                "metagen_datahub_clear_failed",
                 extra={"urn": urn, "item_id": item_id},
                 exc_info=True,
             )

@@ -22,7 +22,7 @@ group/submenu pattern of [FRONTEND_INGESTION.md](FRONTEND_INGESTION.md).
 | `/metagen` | 302 to `/metagen/conf` | — |
 | `/metagen/conf` | Conf list (create / edit / run) | `GET /spoke/metagen/conf` |
 | `/metagen/conf/new` | Create a conf | `POST /spoke/metagen/conf` |
-| `/metagen/conf/[id]` | Conf detail (fields, run, per-conf events) | `GET /spoke/metagen/conf/{conf_id}` |
+| `/metagen/conf/[id]` | Conf detail (fields, run, covered datasets, per-conf events) | `GET /spoke/metagen/conf/{conf_id}`, `GET /spoke/metagen/conf/{conf_id}/dataset` |
 | `/metagen/result` | Global cross-dataset review queue + cross-conf events | `GET /spoke/metagen/item`, `GET /spoke/metagen/event` |
 | `/metagen/uncovered` | Datasets reached by no conf | `GET /spoke/metagen/uncovered` |
 | `/metagen/data/[urn]` | Redirect to the unified `/data/[urn]` page (deep-link preserved) | — |
@@ -39,7 +39,7 @@ dataset's metagen events fold into that page's unified **Events** panel.
 |---|---|---|
 | `/metagen/conf` | `GET /spoke/metagen/conf` | — (a "Create conf" button routes to `/metagen/conf/new`) |
 | `/metagen/conf/new` | — | `POST /spoke/metagen/conf` (fields: `name`, `is_enabled`, `schedule_tier`, `dataset_filter`, `result_limit`, `overwrite_pending`) |
-| `/metagen/conf/[id]` | `GET /spoke/metagen/conf/{conf_id}`, `GET /spoke/metagen/conf/{conf_id}/event` | `PUT/PATCH /spoke/metagen/conf/{conf_id}`; `DELETE /spoke/metagen/conf/{conf_id}`; `POST /spoke/metagen/conf/{conf_id}/method/run` (optional body `{dataset_urns?}`; `?dry_run=true`) |
+| `/metagen/conf/[id]` | `GET /spoke/metagen/conf/{conf_id}`, `GET /spoke/metagen/conf/{conf_id}/dataset` (with `include_disallowed` toggle), `GET /spoke/metagen/conf/{conf_id}/event` | `PUT/PATCH /spoke/metagen/conf/{conf_id}`; `DELETE /spoke/metagen/conf/{conf_id}`; `POST /spoke/metagen/conf/{conf_id}/method/run` (optional body `{dataset_urns?}`; `?dry_run=true`) |
 | `/metagen/result` | `GET /spoke/metagen/item`, `GET /spoke/metagen/event` | — (review happens on the MetaGen panel of `/data/[urn]`) |
 | `/metagen/uncovered` | `GET /spoke/metagen/uncovered` (with `include_disallowed` toggle) | — |
 | `/data/[urn]` MetaGen panel | `GET …/attr/metagen/boundary`, `GET …/attr/metagen/item`, `GET …/attr/metagen/item/{item_id}` (per-item candidates) | `PUT/PATCH/DELETE …/attr/metagen/boundary` (fields: `is_enabled`, `allowed[]`, `owner`); `POST …/attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review` body `{verdict: "approve"\|"reject", reason}` |
@@ -66,16 +66,28 @@ already-approved descriptions stay in DataHub while this conf's pending
 candidates are dropped), and triggers a run with a `dry_run` toggle
 (`POST /spoke/metagen/conf/{conf_id}/method/run`; concurrent run returns
 `409 METAGEN_RUNNING`, disabled non-dry-run returns `409 METAGEN_DISABLED`).
-Below the form an events table shows this conf's run history
+
+Below the form a paginated **Covered datasets** table
+(`GET /spoke/metagen/conf/{conf_id}/dataset`) lists the datasets this conf's
+`dataset_filter` matches. Each row renders `dataset_urn` (linking to
+`/data/[urn]`) and a boundary-setting summary (an `is_enabled` badge plus an
+`allowed` summary). A read-only "Show boundary-blocked" toggle maps to the
+`?include_disallowed` query param: off (default) shows only writable covered
+datasets; on additionally surfaces boundary-blocked covered rows (each carrying
+its `blocked`/`reason`). The table sits **above** the events panel.
+
+Below the Covered datasets table an events table shows this conf's run history
 (`GET /spoke/metagen/conf/{conf_id}/event`), newest first, with a `datetime`
-[RangePicker](FRONTEND_BASIC.md#shared-component-notes) driving `from`/`to`.
+[RangePicker](FRONTEND_BASIC.md#shared-component-notes) driving `from`/`to`. Each
+row's detail cell truncates by default and expands to pretty-printed JSON on
+click.
 
 ## Result queue (`/metagen/result`)
 
 A paginated cross-dataset, cross-conf queue of items (filterable by
 `dataset_urn` text, `kind`, `status`, and a `conf_id` select), rendering
-`field_path`, `status`, and a `candidate_count` column
-(`GET /spoke/metagen/item`). An item aggregates candidates from one or more
+`field_path`, `status`, a `candidate_count` column, and a `Created At` column
+(from the row's `created_at`) (`GET /spoke/metagen/item`). An item aggregates candidates from one or more
 confs, so there is no single producing conf per row; `conf_id`/`conf_name`
 surface per-candidate at the item detail (see [Per-dataset](#per-dataset-dataurn-metagen-panel)),
 and the `conf_id` filter narrows the queue to items holding a candidate from
@@ -88,8 +100,8 @@ shows the cross-conf event feed (`GET /spoke/metagen/event`) with a `datetime`
 
 A paginated table of registered datasets reached by no conf
 (`GET /spoke/metagen/uncovered`), each row carrying a `reason`
-(`no_conf_match` / `boundary_blocked`). An `include_disallowed` toggle maps to
-the `?include_disallowed` query param: off (default) shows only `no_conf_match`
+(`no_conf_match` / `boundary_blocked`). A "Show boundary-blocked datasets"
+toggle maps to the `?include_disallowed` query param: off (default) shows only `no_conf_match`
 rows; on additionally shows `boundary_blocked` rows. This is the metagen
 analogue of the ingestion `/ingestion/unmanaged` view. Each row links to its
 dataset page. Read-only.
@@ -102,12 +114,17 @@ shows the boundary (`is_enabled`, `allowed`, `owner`) over
 renders an enabled/disabled badge beside the dataset URN. Each item renders as
 a card with its candidate sub-cards (carrying the producing `conf_name`) and
 Approve / Reject buttons; the confirm dialog labels the destination DataHub
-aspect. Finalized items collapse to a single approved row; sibling candidates —
-including ones from other confs — are shown as collapsed history and remain
-selectable. Approving a sibling switches the approved candidate, demoting the
-prior approval (possibly from a different conf) to `llm_approved`. Review
-semantics (approve-supersedes-sibling-across-confs, reject-only-on-llm-approved)
-are in [API §Metadata Generation](../API.md#metadata-generation-spokemetagen).
+aspect. Each candidate sub-card also renders an **Evidence** link to its
+Langfuse trace, built from the candidate's `run_id`. An `approved` candidate
+shows a **Reject** action; its confirm dialog notes that the editable DataHub
+description this candidate wrote will be removed. Finalized items collapse to a
+single approved row; sibling candidates — including ones from other confs — are
+shown as collapsed history and remain selectable. Approving a sibling switches
+the approved candidate, demoting the prior approval (possibly from a different
+conf) to `llm_approved`. Review semantics
+(approve-supersedes-sibling-across-confs; reject valid on both `llm_approved`
+and `approved`, with the approved case removing the DataHub description) are in
+[API §Metadata Generation](../API.md#metadata-generation-spokemetagen).
 
 The boundary section's action controls live in its section header's top-right
 cluster, mirroring the [Validation panel's header-right action pattern](FRONTEND_VALIDATION.md):
@@ -123,16 +140,19 @@ read mode (a boundary exists) shows `Edit`; create / edit mode shows
 ├──────────────────────────────────────────────────────┤
 │  dataset.description            status: pending      │
 │   ┌────────────────────────────────────────────────┐ │
-│   │ c1  conf 0.92  [fulfillment]  [Approve][Reject]│ │
+│   │ c1  conf 0.92 [fulfillment] [Evidence]         │ │
+│   │                            [Approve][Reject]   │ │
 │   │ "# Books\n\nMaster catalog of every title…"    │ │
 │   └────────────────────────────────────────────────┘ │
 │   ┌────────────────────────────────────────────────┐ │
-│   │ c2  conf 0.88  [eu-privacy]   [Approve][Reject]│ │
+│   │ c2  conf 0.88 [eu-privacy]  [Evidence]         │ │
+│   │                            [Approve][Reject]   │ │
 │   │ "# Catalog: Books\n\nThe authoritative…"       │ │
 │   └────────────────────────────────────────────────┘ │
 │                                                      │
 │  column.book_id.description     status: approved     │
-│   ✓ approved by alice on 2026-05-12 (switchable)     │
+│   ✓ approved by alice on 2026-05-12 [Evidence][Reject]│
+│     (switchable; Reject removes the DataHub desc.)   │
 │   (sibling candidates collapsed — expand to view)    │
 └──────────────────────────────────────────────────────┘
    MetaGen panel on `/data/[urn]`
@@ -152,16 +172,17 @@ uncovered list, and candidate text, with no action buttons.
 - `MetagenUncoveredTable` — the uncovered-datasets list with the `include_disallowed` toggle.
 - `BoundaryForm` — the per-dataset boundary form (`attr/metagen/boundary`).
 - `ItemCard` — per-item card holding the candidate sub-cards with Approve / Reject and the `conf_name` tag.
-- `CandidateCard` — a single candidate sub-card (value, `confidence_score`, `conf_name` tag, Approve / Reject) rendered inside `ItemCard`.
+- `CandidateCard` — a single candidate sub-card (value, `confidence_score`, `conf_name` tag, an Evidence Langfuse link from `run_id`, Approve / Reject — Reject also shown on `approved` candidates) rendered inside `ItemCard`.
+- `MetagenCoveredTable` — the per-conf covered-datasets list with the "Show boundary-blocked" toggle (`?include_disallowed`), on `/metagen/conf/[id]` above `MetagenEventTable`.
 - `MetagenEventTable` — shared event table bound to a `…/event` route (conf-detail + cross-conf
   feeds), paired with a `datetime` [RangePicker](FRONTEND_BASIC.md#shared-component-notes) for the
-  `from`/`to` window.
+  `from`/`to` window. The detail cell truncates with click-to-expand pretty-JSON.
 - `MetagenDataPanel` — the per-dataset boundary form + item/candidate review, composed by the
   unified [`/data/[urn]`](FRONTEND_BASIC.md#per-dataset-page-dataurn) page (its metagen events show
   in that page's unified Events panel).
 
-Every paged table here — `MetagenConfList`, `QueueTable`, `MetagenUncoveredTable`, and
-`MetagenEventTable` (conf-detail + cross-conf feeds) — uses the shared
+Every paged table here — `MetagenConfList`, `QueueTable`, `MetagenUncoveredTable`,
+`MetagenCoveredTable`, and `MetagenEventTable` (conf-detail + cross-conf feeds) — uses the shared
 [Pagination](FRONTEND_BASIC.md#shared-component-notes) control (page-size selector defaulting to
 20, Prev/Next, numbered pages) bound to each endpoint's standard
 `offset`/`limit`/`total_count` envelope; no per-page Prev/Next is hand-rolled.

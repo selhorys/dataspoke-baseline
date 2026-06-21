@@ -1383,6 +1383,10 @@ async def test_review_candidate_reject_llm_approved_flips_to_rejected(svc, db) -
     )
     mock_db_refresh(db)
 
+    # An llm_approved candidate was never written to DataHub, so rejecting it must
+    # not touch DataHub (no editable aspect to clear).
+    svc._datahub.emit_aspect = AsyncMock()
+
     dto = await svc.review_candidate(
         dataset_urn=_VALID_URN,
         item_id="dataset.description",
@@ -1394,33 +1398,150 @@ async def test_review_candidate_reject_llm_approved_flips_to_rejected(svc, db) -
 
     assert cand.status == "rejected"
     assert dto.status == "rejected"
+    # No DataHub write: only an approved candidate had a live editable aspect to clear.
+    svc._datahub.emit_aspect.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_review_candidate_reject_approved_raises_409(svc, db) -> None:
-    """review_candidate(reject) on an approved candidate raises 409 METAGEN_CANNOT_REJECT_APPROVED.
+async def test_review_candidate_reject_approved_dataset_desc_clears_datahub(svc, db) -> None:
+    """review_candidate(reject) on an APPROVED dataset.description flips to rejected
+    AND clears the editableDatasetProperties description it had written.
 
-    Spec: API.md §Metadata Generation — 409 METAGEN_CANNOT_REJECT_APPROVED.
+    Reject is valid on an approved candidate (no error). The approved candidate had
+    emitted an editableDatasetProperties.description; rejecting it removes that
+    editable aspect (description=None) so the dataset falls back to its non-editable
+    description. Mirrors the api-wired case A intent at the unit layer.
+
+    Spec: API.md §Metadata Generation — reject valid on approved candidate; removes editable aspect.
+    Spec: feature/BACKEND.md §Approval flow — rejecting an approved candidate flips it to
+      rejected and removes the editable DataHub aspect (the editable dataset description
+      is cleared while co-located editable fields like name are preserved). The exact
+      clear-form (None vs "") and whether the impl reads-back-then-merges are impl
+      tactics, not spec guarantees — assert the cleared invariant, not the tactic.
     """
+    from datahub.metadata.schema_classes import EditableDatasetPropertiesClass
+
     bnd = _make_boundary_row(is_enabled=True)
     cand_id = uuid.uuid4()
     cand = _make_candidate_row(candidate_id=cand_id, status="approved", conf_id=_CONF_UUID)
 
+    name_map_result = MagicMock()
+    name_map_result.all.return_value = []
+
     db.execute = AsyncMock(
-        side_effect=[_make_result(scalar=bnd), _make_result(scalar=cand)]
+        side_effect=[
+            _make_result(scalar=bnd),
+            _make_result(scalar=cand),
+            name_map_result,
+        ]
+    )
+    mock_db_refresh(db)
+
+    # The approved candidate had previously written an editable description, co-located
+    # with an editable name. Rejecting must clear the description while preserving name.
+    existing_props = EditableDatasetPropertiesClass(
+        name="EU Customer Profile",
+        description="Imazon EU customer profile dataset.",
+    )
+    svc._datahub.get_aspect = AsyncMock(return_value=existing_props)
+    svc._datahub.emit_aspect = AsyncMock()
+
+    dto = await svc.review_candidate(
+        dataset_urn=_VALID_URN,
+        item_id="dataset.description",
+        candidate_id=str(cand_id),
+        verdict="reject",
+        reason="want to reject the approved one",
+        reviewer_id="eve",
     )
 
-    with pytest.raises(ConflictError) as exc_info:
-        await svc.review_candidate(
-            dataset_urn=_VALID_URN,
-            item_id="dataset.description",
-            candidate_id=str(cand_id),
-            verdict="reject",
-            reason="want to reject the approved one",
-            reviewer_id="eve",
-        )
+    # Status flips to rejected (no error raised).
+    assert cand.status == "rejected"
+    assert dto.status == "rejected"
 
-    assert exc_info.value.error_code == "METAGEN_CANNOT_REJECT_APPROVED"
+    # The editable description is cleared (None or "" — both are valid clear-forms).
+    svc._datahub.emit_aspect.assert_awaited_once()
+    cleared_urn = svc._datahub.emit_aspect.call_args.args[0]
+    cleared_aspect = svc._datahub.emit_aspect.call_args.args[1]
+    assert cleared_urn == _VALID_URN
+    assert isinstance(cleared_aspect, EditableDatasetPropertiesClass)
+    assert cleared_aspect.description in (None, "")
+    # Co-located editable name is preserved (the load-bearing merge invariant).
+    assert cleared_aspect.name == "EU Customer Profile"
+
+
+@pytest.mark.asyncio
+async def test_review_candidate_reject_approved_column_desc_clears_field_entry(svc, db) -> None:
+    """review_candidate(reject) on an APPROVED column.description flips to rejected
+    AND drops that field's editableSchemaFieldInfo description from editableSchemaMetadata,
+    preserving sibling fields.
+
+    Spec: feature/BACKEND.md §Approval flow — rejecting an approved column.description
+      candidate clears that field's description while preserving sibling fields. Whether
+      the target entry is dropped or retained-with-None is an impl tactic; the
+      sibling-preservation is the load-bearing invariant.
+    """
+    from datahub.metadata.schema_classes import (
+        EditableSchemaFieldInfoClass,
+        EditableSchemaMetadataClass,
+    )
+
+    bnd = _make_boundary_row(is_enabled=True)
+    cand_id = uuid.uuid4()
+    field_path = "email"
+    item_id = f"column.{field_path}.description"
+    cand = _make_candidate_row(
+        candidate_id=cand_id,
+        status="approved",
+        item_id=item_id,
+        conf_id=_CONF_UUID,
+    )
+
+    name_map_result = MagicMock()
+    name_map_result.all.return_value = []
+
+    db.execute = AsyncMock(
+        side_effect=[
+            _make_result(scalar=bnd),
+            _make_result(scalar=cand),
+            name_map_result,
+        ]
+    )
+    mock_db_refresh(db)
+
+    # Existing editable schema with the target field + a sibling that must survive.
+    existing_schema = EditableSchemaMetadataClass(
+        editableSchemaFieldInfo=[
+            EditableSchemaFieldInfoClass(fieldPath="email", description="Customer email."),
+            EditableSchemaFieldInfoClass(fieldPath="user_id", description="Sibling — keep me."),
+        ]
+    )
+    svc._datahub.get_aspect = AsyncMock(return_value=existing_schema)
+    svc._datahub.emit_aspect = AsyncMock()
+
+    dto = await svc.review_candidate(
+        dataset_urn=_VALID_URN,
+        item_id=item_id,
+        candidate_id=str(cand_id),
+        verdict="reject",
+        reason="reject the approved column desc",
+        reviewer_id="eve",
+    )
+
+    assert cand.status == "rejected"
+    assert dto.status == "rejected"
+
+    svc._datahub.emit_aspect.assert_awaited_once()
+    emitted_aspect = svc._datahub.emit_aspect.call_args.args[1]
+    assert isinstance(emitted_aspect, EditableSchemaMetadataClass)
+    by_path = {
+        fi.fieldPath: fi.description for fi in emitted_aspect.editableSchemaFieldInfo
+    }
+    # Target field's description cleared — tolerates the entry being dropped (absent)
+    # OR retained with a None/"" description; all are valid clear-forms.
+    assert by_path.get("email") in (None,)
+    # Sibling field preserved unchanged (the load-bearing merge invariant).
+    assert by_path["user_id"] == "Sibling — keep me."
 
 
 @pytest.mark.asyncio

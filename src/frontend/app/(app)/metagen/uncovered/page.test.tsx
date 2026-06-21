@@ -52,7 +52,7 @@ describe("metagen uncovered page", () => {
   it("toggling include_disallowed switches the hook arg and reveals boundary_blocked rows", () => {
     render(<MetagenUncoveredPage />);
 
-    const toggle = screen.getByLabelText(/include_disallowed/i);
+    const toggle = screen.getByLabelText(/show boundary-blocked datasets/i);
     fireEvent.click(toggle);
 
     expect(mockUncovered).toHaveBeenCalledWith(true);

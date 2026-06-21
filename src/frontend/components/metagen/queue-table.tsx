@@ -5,7 +5,7 @@
  *
  * Filters: dataset_urn (text), kind, status, conf_id (select populated from the
  * conf list). Columns: dataset_urn (link to the owning dataset page where review
- * happens), kind, field_path, status, candidate_count.
+ * happens), kind, field_path, status, candidate_count, created_at.
  *
  * Spec: spec/feature/FRONTEND_METAGEN.md §Result queue.
  */
@@ -13,6 +13,8 @@
 import { useState } from "react";
 import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
+import { formatDateTime } from "@/lib/format-time";
+import { useDisplayTz } from "@/lib/preferences/timezone";
 import {
   Select,
   SelectContent,
@@ -41,6 +43,7 @@ interface QueueTableProps {
 }
 
 export function QueueTable({ confs }: QueueTableProps) {
+  const tz = useDisplayTz();
   const [datasetUrnFilter, setDatasetUrnFilter] = useState("");
   const [kindFilter, setKindFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
@@ -159,6 +162,9 @@ export function QueueTable({ confs }: QueueTableProps) {
                 <th className="px-3 py-2 text-right text-xs font-medium text-muted-foreground">
                   candidates
                 </th>
+                <th className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">
+                  created_at
+                </th>
               </tr>
             </thead>
             <tbody className="divide-y">
@@ -186,6 +192,9 @@ export function QueueTable({ confs }: QueueTableProps) {
                   </td>
                   <td className="px-3 py-2 text-right text-xs tabular-nums">
                     {item.candidate_count}
+                  </td>
+                  <td className="whitespace-nowrap px-3 py-2 text-xs text-muted-foreground">
+                    {formatDateTime(item.created_at, tz)}
                   </td>
                 </tr>
               ))}

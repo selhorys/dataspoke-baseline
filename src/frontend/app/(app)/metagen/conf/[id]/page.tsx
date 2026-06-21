@@ -12,12 +12,14 @@ import { ConfirmDialog } from "@/components/confirm-dialog";
 import { MetagenConfForm } from "@/components/metagen/conf-form";
 import { RunDialog } from "@/components/metagen/run-dialog";
 import { MetagenEventTable } from "@/components/metagen/metagen-event-table";
+import { MetagenCoveredTable } from "@/components/metagen/covered-table";
 import {
   useMetagenConf,
   useUpdateMetagenConf,
   useDeleteMetagenConf,
   useRunMetagenConf,
   useMetagenConfEvents,
+  useMetagenCoveredDatasets,
 } from "@/lib/api/metagen";
 import { useMe } from "@/lib/auth/use-me";
 import { ApiError } from "@/lib/api/client";
@@ -48,6 +50,9 @@ export default function MetagenConfDetailPage({
   const [datasetFilter, setDatasetFilter] = useState<DatasetFilter>({});
   const [eventOffset, setEventOffset] = useState(0);
   const [eventLimit, setEventLimit] = useState(DEFAULT_PAGE_SIZE);
+  const [coveredOffset, setCoveredOffset] = useState(0);
+  const [coveredLimit, setCoveredLimit] = useState(DEFAULT_PAGE_SIZE);
+  const [coveredIncludeDisallowed, setCoveredIncludeDisallowed] = useState(false);
 
   const tz = useDisplayTz();
   const { selection: sel, setSelection: setSel } = usePersistedRangeState(
@@ -64,6 +69,14 @@ export default function MetagenConfDetailPage({
     to: range.to,
     offset: eventOffset,
     limit: eventLimit,
+  });
+  const {
+    data: covered,
+    isLoading: coveredLoading,
+    error: coveredError,
+  } = useMetagenCoveredDatasets(id, coveredIncludeDisallowed, {
+    offset: coveredOffset,
+    limit: coveredLimit,
   });
 
   // Sync the dataset_filter editor when the conf loads.
@@ -229,6 +242,28 @@ export default function MetagenConfDetailPage({
           disabled={!editing}
           serverError={editing ? saveError : undefined}
           submitLabel="Save conf"
+        />
+      </section>
+
+      {/* Covered datasets */}
+      <section className="rounded-lg border p-5">
+        <h2 className="mb-3 text-sm font-medium">Covered datasets</h2>
+        <MetagenCoveredTable
+          rows={covered?.datasets ?? []}
+          isLoading={coveredLoading}
+          error={coveredError}
+          includeDisallowed={coveredIncludeDisallowed}
+          onIncludeDisallowedChange={(v) => {
+            setCoveredIncludeDisallowed(v);
+            setCoveredOffset(0);
+          }}
+          page={{
+            offset: coveredOffset,
+            limit: coveredLimit,
+            total: covered?.total_count ?? 0,
+          }}
+          onOffset={setCoveredOffset}
+          onLimit={setCoveredLimit}
         />
       </section>
 

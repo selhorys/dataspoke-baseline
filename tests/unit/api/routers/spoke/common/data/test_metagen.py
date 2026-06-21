@@ -24,7 +24,7 @@ import pytest
 
 from src.api.dependencies import get_metagen_service
 from src.api.main import app
-from src.shared.exceptions import ConflictError, EntityNotFoundError, PreconditionFailedError
+from src.shared.exceptions import EntityNotFoundError, PreconditionFailedError
 from tests.unit.api.conftest import auth_headers
 
 _BASE = "/api/v1/spoke/common/data"
@@ -91,6 +91,7 @@ def _make_candidate_dto(
     item_id: str = "dataset.description",
     conf_id: str | None = None,
     conf_name: str | None = "catalog-docs",
+    run_id: str | None = None,
 ) -> MagicMock:
     dto = MagicMock()
     dto.candidate_id = candidate_id or str(uuid.uuid4())
@@ -98,6 +99,9 @@ def _make_candidate_dto(
     dto.conf_name = conf_name
     dto.item_id = item_id
     dto.dataset_urn = _VALID_URN
+    # run_id links each candidate to the generation run that produced it
+    # (required on MetagenCandidate response). spec: API.md §Metadata Generation.
+    dto.run_id = run_id or str(uuid.uuid4())
     dto.value = "A synthetic description from the LLM."
     dto.confidence_score = 0.87
     dto.status = status
@@ -373,6 +377,11 @@ async def test_get_items_returns_200_with_items_and_total_count(
     assert item["dataset_urn"] == _VALID_URN
     assert item["item_id"] == "dataset.description"
     assert item["kind"] == "dataset.description"
+    # created_at is present and sourced from the DTO (catches a swapped/wrong-source
+    # wiring that a missing-field serialization error would not). spec: API.md
+    # §Metadata Generation — item summary carries created_at.
+    assert item["created_at"] is not None
+    assert datetime.fromisoformat(item["created_at"]) == dto.created_at
 
 
 @pytest.mark.asyncio
@@ -568,6 +577,10 @@ async def test_get_item_detail_returns_200_with_candidates(
     assert len(body["candidates"]) == 1
     assert body["candidates"][0]["status"] == "llm_approved"
     assert body["candidates"][0]["confidence_score"] == pytest.approx(0.87)
+    # run_id is present and sourced from the DTO (catches a swapped/wrong-source
+    # wiring that a missing-field serialization error would not). spec: API.md
+    # §Metadata Generation — each candidate links to its generation run_id.
+    assert body["candidates"][0]["run_id"] == cand.run_id
 
 
 @pytest.mark.asyncio
@@ -681,30 +694,37 @@ async def test_review_reject_returns_200_with_rejected_status(
 
 
 @pytest.mark.asyncio
-async def test_review_reject_approved_returns_409(client, mock_svc: AsyncMock) -> None:
-    """POST .../method/review with verdict=reject on an approved candidate returns 409.
+async def test_review_reject_approved_returns_200(client, mock_svc: AsyncMock) -> None:
+    """POST .../method/review with verdict=reject on an approved candidate returns 200.
 
-    spec: feature/BACKEND.md §Metadata Generation Service §Approval flow —
-    cannot reject an approved candidate (METAGEN_CANNOT_REJECT_APPROVED).
+    Reject is valid on an approved candidate: the router forwards verdict='reject' to
+    the service and returns the rejected candidate dto (200). The service-layer side
+    effect of clearing the editable DataHub aspect is covered at the service/spot layers;
+    here the router contract is that reject-on-approved is a normal success, not a 409.
+
+    spec: API.md §Metadata Generation — reject valid on approved candidate (no 409).
+    spec: feature/BACKEND.md §Approval flow — rejecting an approved candidate flips it to
+      rejected and removes the editable DataHub aspect.
     """
     cid = str(uuid.uuid4())
-    mock_svc.review_candidate = AsyncMock(
-        side_effect=ConflictError(
-            "METAGEN_CANNOT_REJECT_APPROVED",
-            "Cannot reject an approved candidate — approve a different sibling to demote it",
-        )
-    )
+    # The service flips the (previously approved) candidate to 'rejected'.
+    rejected_dto = _make_candidate_dto(status="rejected", candidate_id=cid)
+    mock_svc.review_candidate = AsyncMock(return_value=rejected_dto)
 
     url = _candidate_review_url("dataset.description", cid)
     resp = await client.post(
         url,
-        json={"verdict": "reject"},
+        json={"verdict": "reject", "reason": "reject the approved one"},
         headers=auth_headers(),
     )
 
-    assert resp.status_code == 409
+    assert resp.status_code == 200
     body = resp.json()
-    assert body["error_code"] == "METAGEN_CANNOT_REJECT_APPROVED"
+    assert body["candidate_id"] == cid
+    assert body["status"] == "rejected"
+    # Router forwarded the reject verdict to the service unchanged.
+    mock_svc.review_candidate.assert_awaited_once()
+    assert mock_svc.review_candidate.await_args.kwargs["verdict"] == "reject"
 
 
 @pytest.mark.asyncio

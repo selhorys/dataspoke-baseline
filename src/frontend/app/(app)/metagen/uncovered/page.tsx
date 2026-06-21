@@ -45,7 +45,7 @@ export default function MetagenUncoveredPage() {
           htmlFor="uncovered-include-disallowed"
           className="cursor-pointer text-sm"
         >
-          include_disallowed — also show boundary-blocked datasets
+          Show boundary-blocked datasets
         </label>
       </div>
 

@@ -698,10 +698,20 @@ with body `{verdict, reason}`:
   different sibling).
 - `verdict: "reject"` → flip the candidate's status to `rejected` and emit
   `METAGEN.CANDIDATE_REJECT`. The row is deleted at the start of the next
-  run. Reject is only valid for `llm_approved` candidates; rejecting an
-  `approved` candidate returns `409 METAGEN_CANNOT_REJECT_APPROVED` (to
-  drop the current approval the reviewer approves a different sibling,
-  which atomically demotes the current one).
+  run. Reject is valid on both `llm_approved` and `approved` candidates:
+  - Rejecting an `llm_approved` candidate writes nothing to DataHub — the
+    candidate had never been emitted.
+  - Rejecting an `approved` candidate additionally **clears the editable
+    DataHub description it had written** so the dataset falls back to its
+    non-editable description. The clear is merge-preserving — it reads the
+    existing aspect, nulls only the relevant description field, and re-emits,
+    leaving co-located editable metadata intact. By item kind:
+    `dataset.description` → clears `EditableDatasetProperties.description`,
+    preserving any editable `name` and audit stamps; `column.description` →
+    nulls only that field's `editableSchemaFieldInfo.description`, retaining
+    the field entry so its `globalTags`/`glossaryTerms` and sibling fields
+    survive. The clear is best-effort, mirroring the approve-time emit; the
+    status flip and event are not rolled back if the DataHub write fails.
 
 Sibling `llm_approved` candidates on the same item are not auto-touched on
 approval — they remain visible as read-only history and are eligible for
@@ -734,6 +744,23 @@ bucket. Over `dataset_registry` rows with `datahub_registered=true`:
   enabled conf is never listed.
 
 The view is paginated and read-only; it never triggers generation.
+
+**Covered-datasets view** (`GET /spoke/metagen/conf/{conf_id}/dataset`). The
+per-conf inverse of the uncovered view: lists the datasets this conf's
+`dataset_filter` matches. Resolution reuses `resolve_dataset_scope`
+(`src/backend/_dataset_filter.py`) for the conf's filter, then left-joins each
+matched dataset's `metagen_boundary`. Each row carries `dataset_urn`,
+`is_enabled`, `allowed`, `owner`, `blocked` (bool), and `reason`.
+
+- A dataset is `blocked` when its boundary is missing, `is_enabled=false`, or has
+  empty `allowed` — the same `boundary_blocked` reason vocabulary as the uncovered
+  view. Writable datasets carry `blocked=false`.
+- **Default** (`include_disallowed=false`): only writable (non-blocked) covered
+  datasets are returned.
+- **`include_disallowed=true`**: also includes boundary-blocked covered datasets.
+
+`404 METAGEN_CONF_NOT_FOUND` when the conf is absent. The view is paginated
+(sortable by `dataset_urn`, default `dataset_urn_asc`) and read-only.
 
 ### Ontology Generation Service (`src/backend/ontogen/`)
 
@@ -1215,7 +1242,7 @@ failures.
 | Exception | HTTP Status | Error Code |
 |-----------|-------------|------------|
 | `EntityNotFoundError` | 404 | `DATASET_NOT_FOUND`, `CONFIG_NOT_FOUND`, `INGESTION_SOURCE_NOT_FOUND`, `METRIC_NOT_FOUND`, `NODE_NOT_FOUND`, `EDGE_NOT_FOUND`, `TRIPLE_NOT_FOUND` |
-| `ConflictError` | 409 | `DUPLICATE_CONFIG`, `INGESTION_RUNNING`, `INGESTION_SOURCE_READONLY`, `INGESTION_RUN_NOT_APPLICABLE`, `METAGEN_RUNNING`, `METRIC_RUNNING`, `ONTOGEN_RUNNING`, `METAGEN_DISABLED`, `METRIC_DISABLED`, `ONTOGEN_DISABLED`, `METAGEN_CANNOT_REJECT_APPROVED` |
+| `ConflictError` | 409 | `DUPLICATE_CONFIG`, `INGESTION_RUNNING`, `INGESTION_SOURCE_READONLY`, `INGESTION_RUN_NOT_APPLICABLE`, `METAGEN_RUNNING`, `METRIC_RUNNING`, `ONTOGEN_RUNNING`, `METAGEN_DISABLED`, `METRIC_DISABLED`, `ONTOGEN_DISABLED` |
 | `DataHubUnavailableError` | 502 | `DATAHUB_UNAVAILABLE` |
 | `StorageUnavailableError` | 503 | `STORAGE_UNAVAILABLE` |
 | `ValidationError` (Pydantic), `RequestValidationError` (FastAPI routing-layer validation) | 422 | `INVALID_PARAMETER`, `INVALID_DATASET_URN` |

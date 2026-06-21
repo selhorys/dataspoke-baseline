@@ -28,6 +28,7 @@ from datahub.ingestion.graph.client import DatahubClientConfig, DataHubGraph
 from datahub.metadata.schema_classes import (
     DatasetPropertiesClass,
     EditableDatasetPropertiesClass,
+    EditableSchemaFieldInfoClass,
     EditableSchemaMetadataClass,
     SchemaMetadataClass,
 )
@@ -43,11 +44,16 @@ from tests.integration.util.metagen import (
     EU_PROFILES_URN,
     FULFILLMENT_TAG,
     ORDERS_EVENTS_URN,
+    delete_metagen_conf,
     delete_metagen_state_for_urn,
     delete_ontogen_node,
     load_fulfillment_doc,
     seed_approved_ontogen_node,
     seed_dataset_node_map,
+    seed_metagen_boundary,
+    seed_metagen_candidate,
+    seed_metagen_conf,
+    seed_metagen_item,
 )
 
 # ── Module-level constants ─────────────────────────────────────────────────────
@@ -1177,6 +1183,532 @@ async def test_uc4_metadata_generation_under_stub(
         for nid in node_ids:
             with suppress(Exception):
                 await delete_ontogen_node(async_session, nid)
+
+
+# ── Focused: covered-datasets view + reject-approved + run_id/created_at ─────────
+#
+# These cases assert backend invariants that the UC4 narrative arc above does not
+# naturally reach. They seed metagen state via raw SQL (boundary states, an
+# already-emitted approved candidate) because the concern under test is the
+# query/review behaviour, not the LLM run pipeline that would produce the data.
+# They run in stub mode (no LLM dependency); real-LLM-only assertions are not
+# needed here. spec: TESTING.md §Spot vs Api-Wired — raw-SQL seeding when the
+# concern is review/query behaviour, not the run pipeline.
+
+
+@pytest.mark.asyncio
+async def test_uc4_covered_datasets_view(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    async_session: AsyncSession,
+) -> None:
+    """GET /spoke/metagen/conf/{conf_id}/dataset — covered datasets boundary view.
+
+    A conf scoped (via an explicit dataset_urns filter) to two datasets:
+      - eu_profiles: writable boundary (is_enabled=true, non-empty allowed) → not blocked
+      - orders.events: blocked boundary (is_enabled=false) → boundary-blocked
+
+    Asserts the spec invariants for the covered view:
+      1. Default (include_disallowed omitted): only the writable covered dataset is
+         returned; the boundary-blocked one is hidden.
+      2. ?include_disallowed=true: both appear; the blocked one carries blocked=true
+         with a reason; the writable one carries blocked=false.
+      3. Each row's is_enabled / allowed / owner boundary summary is correct.
+      4. Unknown conf_id → 404 METAGEN_CONF_NOT_FOUND.
+
+    Spec: API.md §Metadata Generation — GET /spoke/metagen/conf/{conf_id}/dataset
+    Spec: feature/BACKEND.md §Covered-datasets view
+    """
+    conf_id: str | None = None
+    owner_label = "uc4-covered-owner@imazon.test"
+    try:
+        # Seed a conf scoped to exactly the two fulfillment datasets via dataset_urns.
+        # spec: feature/BACKEND.md §Covered-datasets view — resolution reuses
+        #   resolve_dataset_scope for the conf's dataset_filter.
+        conf_id = await seed_metagen_conf(
+            async_session,
+            name=f"uc4-covered-{uuid.uuid4().hex[:8]}",
+            is_enabled=True,
+            schedule_tier="daily",
+            dataset_filter={"dataset_urns": [EU_PROFILES_URN, ORDERS_EVENTS_URN]},
+        )
+
+        # eu_profiles: writable boundary (enabled + non-empty allowed) → blocked=false.
+        await seed_metagen_boundary(
+            async_session,
+            dataset_urn=EU_PROFILES_URN,
+            is_enabled=True,
+            allowed=["dataset.description", "column.description"],
+            owner=owner_label,
+        )
+        # orders.events: disabled boundary → boundary-blocked.
+        await seed_metagen_boundary(
+            async_session,
+            dataset_urn=ORDERS_EVENTS_URN,
+            is_enabled=False,
+            allowed=["column.description"],
+            owner=None,
+        )
+
+        covered_url = f"/api/v1/spoke/metagen/conf/{conf_id}/dataset"
+
+        # ── 1. Default response excludes the boundary-blocked covered dataset ──
+        # spec: feature/BACKEND.md §Covered-datasets view — default returns only
+        #   writable (non-blocked) covered datasets.
+        default_resp = await api_client.get(covered_url, headers=admin_headers)
+        assert default_resp.status_code == 200, (
+            f"GET covered datasets (default) failed: "
+            f"{default_resp.status_code} {default_resp.text}. "
+            "spec: API.md §Metadata Generation — GET /conf/{conf_id}/dataset"
+        )
+        default_body = default_resp.json()
+        # Standard envelope. spec: API.md §Standard Envelope
+        for key in ("offset", "limit", "total_count"):
+            assert key in default_body, (
+                f"covered-datasets response missing '{key}'. spec: API.md §Standard Envelope"
+            )
+        # The covered view mirrors /uncovered, whose rows live under 'datasets'.
+        # spec: API.md §Metadata Generation — /conf/{conf_id}/dataset mirrors /uncovered
+        assert "datasets" in default_body and isinstance(default_body["datasets"], list), (
+            "covered-datasets response must carry a 'datasets' list of rows. "
+            "spec: API.md §Metadata Generation — mirrors /uncovered"
+        )
+        default_urns = {r["dataset_urn"] for r in default_body["datasets"]}
+        assert EU_PROFILES_URN in default_urns, (
+            "Writable covered dataset eu_profiles must appear in the default covered view. "
+            "spec: feature/BACKEND.md §Covered-datasets view — writable datasets returned"
+        )
+        assert ORDERS_EVENTS_URN not in default_urns, (
+            "Boundary-blocked covered dataset orders.events must be hidden by default. "
+            "spec: feature/BACKEND.md §Covered-datasets view — default hides blocked"
+        )
+        for r in default_body["datasets"]:
+            assert r["blocked"] is False, (
+                f"Default covered view must only contain non-blocked rows; got "
+                f"blocked={r['blocked']!r} for {r['dataset_urn']!r}. "
+                "spec: feature/BACKEND.md §Covered-datasets view"
+            )
+
+        # ── 2. ?include_disallowed=true reveals the blocked covered dataset ───
+        # spec: feature/BACKEND.md §Covered-datasets view — include_disallowed adds
+        #   boundary-blocked covered datasets flagged with a reason.
+        all_resp = await api_client.get(
+            f"{covered_url}?include_disallowed=true", headers=admin_headers
+        )
+        assert all_resp.status_code == 200, (
+            f"GET covered datasets (include_disallowed) failed: "
+            f"{all_resp.status_code} {all_resp.text}"
+        )
+        all_rows = all_resp.json()["datasets"]
+        by_urn = {r["dataset_urn"]: r for r in all_rows}
+        assert EU_PROFILES_URN in by_urn and ORDERS_EVENTS_URN in by_urn, (
+            "include_disallowed=true must reveal both the writable and the blocked "
+            f"covered dataset; got {sorted(by_urn)!r}. "
+            "spec: feature/BACKEND.md §Covered-datasets view"
+        )
+
+        # ── 3. Per-row boundary summary correctness ──────────────────────────
+        eu_row = by_urn[EU_PROFILES_URN]
+        assert eu_row["blocked"] is False, (
+            "eu_profiles has an enabled, non-empty-allowed boundary → blocked=false. "
+            "spec: feature/BACKEND.md §Covered-datasets view"
+        )
+        assert eu_row["is_enabled"] is True, (
+            f"eu_profiles boundary is_enabled must echo true; got {eu_row['is_enabled']!r}. "
+            "spec: API.md §Metadata Generation — covered row carries is_enabled"
+        )
+        assert set(eu_row["allowed"]) == {"dataset.description", "column.description"}, (
+            f"eu_profiles allowed not echoed: {eu_row['allowed']!r}. "
+            "spec: API.md §Metadata Generation — covered row carries allowed"
+        )
+        assert eu_row["owner"] == owner_label, (
+            f"eu_profiles owner not echoed: {eu_row['owner']!r} != {owner_label!r}. "
+            "spec: API.md §Metadata Generation — covered row carries owner"
+        )
+
+        oe_row = by_urn[ORDERS_EVENTS_URN]
+        assert oe_row["blocked"] is True, (
+            "orders.events has a disabled boundary → blocked=true under include_disallowed. "
+            "spec: feature/BACKEND.md §Covered-datasets view — disabled boundary blocks"
+        )
+        assert oe_row["is_enabled"] is False, (
+            f"orders.events boundary is_enabled must echo false; got {oe_row['is_enabled']!r}. "
+            "spec: feature/BACKEND.md §Covered-datasets view"
+        )
+        assert oe_row.get("reason"), (
+            "A boundary-blocked covered row must carry a non-empty 'reason'. "
+            "spec: feature/BACKEND.md §Covered-datasets view — boundary_blocked reason"
+        )
+
+        # ── 4. Unknown conf → 404 METAGEN_CONF_NOT_FOUND ─────────────────────
+        # spec: API.md §Metadata Generation — 404 METAGEN_CONF_NOT_FOUND when absent
+        # spec: API.md §Error Codes — METAGEN_CONF_NOT_FOUND
+        missing_resp = await api_client.get(
+            f"/api/v1/spoke/metagen/conf/{uuid.uuid4()}/dataset", headers=admin_headers
+        )
+        assert missing_resp.status_code == 404, (
+            f"Unknown conf_id must return 404; got {missing_resp.status_code} {missing_resp.text}. "
+            "spec: API.md §Metadata Generation — 404 METAGEN_CONF_NOT_FOUND"
+        )
+        assert missing_resp.json().get("error_code") == "METAGEN_CONF_NOT_FOUND", (
+            f"Unknown conf error code must be METAGEN_CONF_NOT_FOUND; got "
+            f"{missing_resp.json().get('error_code')!r}. spec: API.md §Error Codes"
+        )
+
+    finally:
+        with suppress(Exception):
+            await delete_metagen_state_for_urn(async_session, EU_PROFILES_URN)
+        with suppress(Exception):
+            await delete_metagen_state_for_urn(async_session, ORDERS_EVENTS_URN)
+        if conf_id is not None:
+            with suppress(Exception):
+                await delete_metagen_conf(async_session, conf_id)
+
+
+@pytest.mark.asyncio
+async def test_uc4_reject_approved_clears_datahub_description(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    async_session: AsyncSession,
+) -> None:
+    """Rejecting an approved candidate flips it to rejected AND clears DataHub.
+
+    Mirrors plan #7. Two parallel cases on eu_profiles:
+      A. dataset.description: seed an llm_approved candidate → approve via REST
+         (writes EditableDatasetProperties.description in DataHub, GMS read-back
+         confirms) → reject via REST → status becomes 'rejected', the editable
+         DataHub description is removed (GMS read-back is empty/None), and a
+         METAGEN.CANDIDATE_REJECT event is recorded.
+      B. control: an llm_approved candidate (never approved, no DataHub write) is
+         rejected → status 'rejected' and a pre-existing sentinel editable aspect
+         is left UNTOUCHED (the llm_approved reject does not write to DataHub).
+
+    Spec: API.md §Metadata Generation — reject valid on approved; removes editable aspect
+    Spec: feature/BACKEND.md §Approval flow — reject branch (approved vs llm_approved)
+    """
+    boundary_url = f"/api/v1/spoke/common/data/{_EU_ENCODED}/attr/metagen/boundary"
+    graph: DataHubGraph | None = None
+    approved_item_id = "dataset.description"
+    control_item_id = "column.email.description"
+    approved_value = "Imazon EU customer profile dataset (uc4 reject-approved test)."
+    sentinel_value = "uc4 sentinel — llm_approved reject must not touch DataHub"
+    try:
+        dh_token = get_datahub_token()
+        graph = DataHubGraph(DatahubClientConfig(server=_gms_url, token=dh_token))
+
+        # Enabled boundary so review passes the boundary guard.
+        # spec: feature/BACKEND.md §Boundary guard — review needs is_enabled=true boundary.
+        put_boundary = await api_client.put(
+            boundary_url,
+            headers=admin_headers,
+            json={
+                "is_enabled": True,
+                "allowed": ["dataset.description", "column.description"],
+            },
+        )
+        assert put_boundary.status_code in (200, 201), (
+            f"PUT eu_profiles boundary failed: {put_boundary.status_code} {put_boundary.text}"
+        )
+
+        # ── Case A: seed an llm_approved dataset.description candidate ────────
+        await seed_metagen_item(
+            async_session,
+            dataset_urn=EU_PROFILES_URN,
+            item_id=approved_item_id,
+            kind="dataset.description",
+        )
+        approved_cid = await seed_metagen_candidate(
+            async_session,
+            dataset_urn=EU_PROFILES_URN,
+            item_id=approved_item_id,
+            value=approved_value,
+            status="llm_approved",
+            item_kind="dataset.description",
+        )
+
+        approved_encoded = urllib.parse.quote(approved_item_id, safe="")
+        review_base = (
+            f"/api/v1/spoke/common/data/{_EU_ENCODED}"
+            f"/attr/metagen/item/{approved_encoded}/candidate/{approved_cid}/method/review"
+        )
+
+        # Approve → writes editable DataHub aspect.
+        # spec: API.md §Metadata Generation — approve writes value to editable aspect.
+        approve_resp = await api_client.post(
+            review_base,
+            headers=admin_headers,
+            json={"verdict": "approve", "reason": "uc4 reject-approved: approve first"},
+        )
+        assert approve_resp.status_code == 200, (
+            f"Approve dataset.description failed: {approve_resp.status_code} {approve_resp.text}"
+        )
+        assert approve_resp.json().get("status") == "approved", (
+            "Candidate status after approve must be 'approved'. spec: USE_CASE_en.md §UC4 — Review"
+        )
+
+        # GMS read-back: editable description now holds the approved value.
+        # spec: API.md §Metadata Generation — approve emits to editableDatasetProperties.
+        editable_after_approve = graph.get_aspect(
+            entity_urn=EU_PROFILES_URN, aspect_type=EditableDatasetPropertiesClass
+        )
+        assert editable_after_approve is not None, (
+            "editableDatasetProperties is None after approve — DataSpoke did not emit. "
+            "spec: API.md §Metadata Generation — approve writes editable aspect"
+        )
+        assert editable_after_approve.description == approved_value, (
+            f"editableDatasetProperties.description={editable_after_approve.description!r} "
+            f"!= approved value={approved_value!r} after approve. "
+            "spec: API.md §Metadata Generation — approve emits value to DataHub"
+        )
+
+        # Now REJECT the approved candidate.
+        # spec: API.md §Metadata Generation — reject valid on approved candidate.
+        reject_resp = await api_client.post(
+            review_base,
+            headers=admin_headers,
+            json={"verdict": "reject", "reason": "uc4 reject-approved: reject after approve"},
+        )
+        assert reject_resp.status_code == 200, (
+            f"Reject of approved candidate must succeed (200); got "
+            f"{reject_resp.status_code} {reject_resp.text}. "
+            "spec: API.md §Metadata Generation — reject valid on approved candidate"
+        )
+        assert reject_resp.json().get("status") == "rejected", (
+            f"Candidate status after rejecting an approved candidate must be 'rejected'; "
+            f"got {reject_resp.json().get('status')!r}. "
+            "spec: feature/BACKEND.md §Approval flow — reject flips to rejected"
+        )
+
+        # GMS read-back: the editable description it had written is removed.
+        # spec: feature/BACKEND.md §Approval flow — reject of approved sets
+        #   EditableDatasetProperties.description="" (falls back to non-editable).
+        editable_after_reject = graph.get_aspect(
+            entity_urn=EU_PROFILES_URN, aspect_type=EditableDatasetPropertiesClass
+        )
+        cleared_desc = (
+            editable_after_reject.description if editable_after_reject is not None else None
+        )
+        assert cleared_desc in (None, ""), (
+            f"Rejecting an approved dataset.description candidate must remove the editable "
+            f"DataHub description (expected ''/None); got {cleared_desc!r}. "
+            "spec: feature/BACKEND.md §Approval flow — reject of approved removes editable aspect"
+        )
+
+        # The DB row is now rejected (read-back via item detail).
+        detail_resp = await api_client.get(
+            f"/api/v1/spoke/common/data/{_EU_ENCODED}/attr/metagen/item/{approved_encoded}",
+            headers=admin_headers,
+        )
+        assert detail_resp.status_code == 200
+        detail_cands = detail_resp.json().get("candidates", [])
+        target = next((c for c in detail_cands if c["candidate_id"] == approved_cid), None)
+        assert target is not None and target["status"] == "rejected", (
+            f"Item-detail read-back must show the candidate as 'rejected'; got "
+            f"{target['status'] if target else 'missing'!r}. "
+            "spec: feature/BACKEND.md §Approval flow"
+        )
+
+        # A METAGEN.CANDIDATE_REJECT event is recorded for this candidate.
+        # spec: feature/BACKEND.md §Event Catalogue — reject emits METAGEN.CANDIDATE_REJECT.
+        events_resp = await api_client.get(
+            f"/api/v1/spoke/common/data/{_EU_ENCODED}/event/metagen?limit=50",
+            headers=admin_headers,
+        )
+        assert events_resp.status_code == 200
+        reject_event = next(
+            (
+                e
+                for e in events_resp.json().get("events", [])
+                if e["event_type"] == "METAGEN.CANDIDATE_REJECT"
+                and e.get("detail", {}).get("candidate_id") == approved_cid
+            ),
+            None,
+        )
+        assert reject_event is not None, (
+            "No METAGEN.CANDIDATE_REJECT event found for the rejected approved candidate. "
+            "spec: feature/BACKEND.md §Event Catalogue — CANDIDATE_REJECT"
+        )
+
+        # ── Case B: llm_approved reject must NOT touch DataHub ────────────────
+        # Pre-write a sentinel editable column aspect for the control field, then
+        # reject the llm_approved candidate. The sentinel must survive.
+        # spec: feature/BACKEND.md §Approval flow — rejecting an llm_approved
+        #   candidate writes nothing to DataHub.
+        graph.emit_mcp(
+            MetadataChangeProposalWrapper(
+                entityUrn=EU_PROFILES_URN,
+                aspect=EditableSchemaMetadataClass(
+                    editableSchemaFieldInfo=[
+                        EditableSchemaFieldInfoClass(
+                            fieldPath="email", description=sentinel_value
+                        )
+                    ]
+                ),
+            )
+        )
+
+        await seed_metagen_item(
+            async_session,
+            dataset_urn=EU_PROFILES_URN,
+            item_id=control_item_id,
+            kind="column.description",
+            field_path="email",
+        )
+        control_cid = await seed_metagen_candidate(
+            async_session,
+            dataset_urn=EU_PROFILES_URN,
+            item_id=control_item_id,
+            value="never-emitted column description",
+            status="llm_approved",
+            item_kind="column.description",
+        )
+        control_encoded = urllib.parse.quote(control_item_id, safe="")
+        control_reject = await api_client.post(
+            f"/api/v1/spoke/common/data/{_EU_ENCODED}"
+            f"/attr/metagen/item/{control_encoded}/candidate/{control_cid}/method/review",
+            headers=admin_headers,
+            json={"verdict": "reject", "reason": "uc4 reject-approved: llm_approved control"},
+        )
+        assert control_reject.status_code == 200, (
+            f"Reject of llm_approved candidate failed: "
+            f"{control_reject.status_code} {control_reject.text}"
+        )
+        assert control_reject.json().get("status") == "rejected", (
+            "llm_approved candidate must flip to 'rejected'. "
+            "spec: feature/BACKEND.md §Approval flow"
+        )
+
+        # Sentinel editable aspect is untouched (no DataHub write on llm_approved reject).
+        editable_control = graph.get_aspect(
+            entity_urn=EU_PROFILES_URN, aspect_type=EditableSchemaMetadataClass
+        )
+        control_fi = next(
+            (
+                fi
+                for fi in (editable_control.editableSchemaFieldInfo or [])
+                if fi.fieldPath == "email"
+            ),
+            None,
+        ) if editable_control is not None else None
+        assert control_fi is not None and control_fi.description == sentinel_value, (
+            "Rejecting an llm_approved candidate must NOT alter DataHub: the sentinel "
+            f"editable description must survive; got "
+            f"{control_fi.description if control_fi else 'missing'!r}. "
+            "spec: feature/BACKEND.md §Approval flow — llm_approved reject writes nothing"
+        )
+
+    finally:
+        with suppress(Exception):
+            await delete_metagen_state_for_urn(async_session, EU_PROFILES_URN)
+        with suppress(Exception):
+            await api_client.delete(boundary_url, headers=admin_headers)
+        # Remove the editable overrides written during the test (approve + sentinel).
+        if graph is not None:
+            with suppress(Exception):
+                graph.emit_mcp(
+                    MetadataChangeProposalWrapper(
+                        entityUrn=EU_PROFILES_URN,
+                        aspect=EditableDatasetPropertiesClass(description=None),
+                    )
+                )
+            with suppress(Exception):
+                graph.emit_mcp(
+                    MetadataChangeProposalWrapper(
+                        entityUrn=EU_PROFILES_URN,
+                        aspect=EditableSchemaMetadataClass(editableSchemaFieldInfo=[]),
+                    )
+                )
+
+
+@pytest.mark.asyncio
+async def test_uc4_run_id_and_created_at_exposed(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    async_session: AsyncSession,
+) -> None:
+    """Candidate responses carry run_id; item-list rows carry created_at.
+
+    Mirrors plan #6 (evidence link from candidate run_id; result table Created At
+    column). Seeds one item + candidate and reads:
+      - the per-dataset item LIST rows → each carries non-null created_at
+      - the item DETAIL candidate → carries run_id and created_at
+
+    Spec: API.md §Metadata Generation — item-list row carries created_at;
+      item-detail candidate carries run_id, created_at.
+    """
+    boundary_url = f"/api/v1/spoke/common/data/{_EU_ENCODED}/attr/metagen/boundary"
+    item_id = "dataset.description"
+    try:
+        await seed_metagen_boundary(
+            async_session,
+            dataset_urn=EU_PROFILES_URN,
+            is_enabled=True,
+            allowed=["dataset.description", "column.description"],
+        )
+        await seed_metagen_item(
+            async_session,
+            dataset_urn=EU_PROFILES_URN,
+            item_id=item_id,
+            kind="dataset.description",
+        )
+        cid = await seed_metagen_candidate(
+            async_session,
+            dataset_urn=EU_PROFILES_URN,
+            item_id=item_id,
+            value="run_id/created_at exposure probe",
+            status="llm_approved",
+            item_kind="dataset.description",
+        )
+
+        # ── Item LIST rows carry created_at ──────────────────────────────────
+        # spec: API.md §Metadata Generation — item row carries created_at.
+        list_resp = await api_client.get(
+            f"/api/v1/spoke/common/data/{_EU_ENCODED}/attr/metagen/item",
+            headers=admin_headers,
+        )
+        assert list_resp.status_code == 200, (
+            f"GET item list failed: {list_resp.status_code} {list_resp.text}"
+        )
+        list_rows = list_resp.json().get("items", [])
+        target_row = next((r for r in list_rows if r["item_id"] == item_id), None)
+        assert target_row is not None, (
+            "Seeded item must appear in the per-dataset item list."
+        )
+        assert "created_at" in target_row and target_row["created_at"], (
+            f"Item-list row must carry a non-empty 'created_at'; got "
+            f"{target_row.get('created_at')!r}. "
+            "spec: API.md §Metadata Generation — item row carries created_at"
+        )
+
+        # ── Item DETAIL candidate carries run_id + created_at ────────────────
+        # spec: API.md §Metadata Generation — item-detail candidate carries run_id, created_at.
+        encoded_item = urllib.parse.quote(item_id, safe="")
+        detail_resp = await api_client.get(
+            f"/api/v1/spoke/common/data/{_EU_ENCODED}/attr/metagen/item/{encoded_item}",
+            headers=admin_headers,
+        )
+        assert detail_resp.status_code == 200, (
+            f"GET item detail failed: {detail_resp.status_code} {detail_resp.text}"
+        )
+        cands = detail_resp.json().get("candidates", [])
+        cand = next((c for c in cands if c["candidate_id"] == cid), None)
+        assert cand is not None, "Seeded candidate must appear in item detail."
+        assert "run_id" in cand and cand["run_id"], (
+            f"Candidate response must carry a non-empty 'run_id'; got {cand.get('run_id')!r}. "
+            "spec: API.md §Metadata Generation — item-detail candidate carries run_id"
+        )
+        uuid.UUID(str(cand["run_id"]))  # raises ValueError if malformed
+        assert "created_at" in cand and cand["created_at"], (
+            f"Candidate response must carry a non-empty 'created_at'; got "
+            f"{cand.get('created_at')!r}. "
+            "spec: API.md §Metadata Generation — item-detail candidate carries created_at"
+        )
+
+    finally:
+        with suppress(Exception):
+            await delete_metagen_state_for_urn(async_session, EU_PROFILES_URN)
+        with suppress(Exception):
+            await api_client.delete(boundary_url, headers=admin_headers)
 
 
 @pytest.mark.asyncio

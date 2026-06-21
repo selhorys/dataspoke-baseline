@@ -37,6 +37,8 @@ from src.api.schemas.metagen import (
     MetagenConfPatchRequest,
     MetagenConfPutRequest,
     MetagenConfResponse,
+    MetagenCoveredDatasetListResponse,
+    MetagenCoveredDatasetSummary,
     MetagenItemDetailResponse,
     MetagenItemListResponse,
     MetagenRunRequest,
@@ -65,6 +67,8 @@ _ScheduleTier = Literal["hourly", "daily", "weekly"]
 _DebateOutcome = Literal["accept", "turns_exhausted", "cycle_detected"]
 _RunStatus = Literal["success", "failure"]
 _UncoveredReason = Literal["no_conf_match", "boundary_blocked"]
+_CoveredReason = Literal["boundary_blocked"]
+_AllowedKind = Literal["dataset.description", "column.description"]
 
 
 def _conf_response(dto: Any) -> MetagenConfResponse:
@@ -281,6 +285,51 @@ async def get_metagen_uncovered(
             MetagenUncoveredRow(
                 dataset_urn=r.dataset_urn,
                 reason=cast(_UncoveredReason, r.reason),
+            )
+            for r in rows
+        ],
+    )
+
+
+# ── Covered datasets (per-conf) ─────────────────────────────────────────────────
+
+
+@router.get("/conf/{conf_id}/dataset", response_model=MetagenCoveredDatasetListResponse)
+async def get_metagen_conf_covered_datasets(
+    conf_id: str,
+    include_disallowed: bool = Query(default=False),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=1000),
+    sort: str | None = Query(default=None),
+    service: MetagenService = Depends(get_metagen_service),
+) -> MetagenCoveredDatasetListResponse:
+    """Datasets this conf's ``dataset_filter`` matches (the covered view).
+
+    Each row carries its boundary setting plus a ``blocked`` flag. Default hides
+    boundary-blocked datasets; ``?include_disallowed=true`` reveals them with
+    ``reason="boundary_blocked"``. Paginated; sortable by ``dataset_urn`` (default
+    ``dataset_urn`` ascending). ``404 METAGEN_CONF_NOT_FOUND`` when absent.
+    """
+    order_by = parse_sort(sort, {"dataset_urn": DatasetRegistry.dataset_urn}, None)
+    rows, total = await service.list_covered_datasets(
+        conf_id,
+        include_disallowed=include_disallowed,
+        offset=offset,
+        limit=limit,
+        order_by=order_by,
+    )
+    return MetagenCoveredDatasetListResponse(
+        offset=offset,
+        limit=limit,
+        total_count=total,
+        datasets=[
+            MetagenCoveredDatasetSummary(
+                dataset_urn=r.dataset_urn,
+                is_enabled=r.is_enabled,
+                allowed=cast(list[_AllowedKind], r.allowed),
+                owner=r.owner,
+                blocked=r.blocked,
+                reason=cast(_CoveredReason | None, r.reason),
             )
             for r in rows
         ],

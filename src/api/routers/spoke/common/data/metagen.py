@@ -168,8 +168,9 @@ async def post_data_metagen_item_candidate_review(
 ) -> MetagenCandidate:
     """Review a candidate — approve or reject.
 
-    409 METAGEN_CANNOT_REJECT_APPROVED if rejecting an approved candidate.
-    422 METAGEN_DATASET_NOT_IN_BOUNDARY if no is_enabled=true boundary.
+    Rejecting an approved candidate flips it to rejected and removes the editable
+    DataHub description it wrote; rejecting an llm_approved candidate makes no
+    DataHub write. 422 METAGEN_DATASET_NOT_IN_BOUNDARY if no is_enabled=true boundary.
     """
     reviewer_id: str | None = str(ctx.user.id)
     dto = await service.review_candidate(

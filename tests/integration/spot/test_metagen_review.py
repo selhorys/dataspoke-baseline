@@ -11,7 +11,7 @@ Candidate review (Group 5, raw-SQL seeded):
   test_metagen_candidate_approve_flips_status_and_emits_event
   test_metagen_candidate_approve_demotes_prior_approved_sibling
   test_metagen_candidate_reject_emits_event
-  test_metagen_candidate_reject_approved_returns_409_METAGEN_CANNOT_REJECT_APPROVED
+  test_metagen_candidate_reject_approved_clears_datahub_description
   test_metagen_item_status_pending_when_only_rejected_candidates
   test_metagen_candidate_approve_demotes_cross_conf_sibling
   test_metagen_candidate_review_without_enabled_boundary_returns_422_METAGEN_DATASET_NOT_IN_BOUNDARY
@@ -674,63 +674,182 @@ async def test_metagen_candidate_reject_emits_event(
 
 
 @pytest.mark.asyncio
-async def test_metagen_candidate_reject_approved_returns_409_METAGEN_CANNOT_REJECT_APPROVED(
+async def test_metagen_candidate_reject_approved_clears_datahub_description(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
     async_session: AsyncSession,
 ) -> None:
-    """Rejecting an already-approved candidate returns 409 METAGEN_CANNOT_REJECT_APPROVED.
+    """Rejecting an APPROVED candidate flips it to rejected, emits CANDIDATE_REJECT,
+    and removes the editable DataHub description it had written.
 
-    spec: USE_CASE_en.md §UC4 — Review — rejecting an approved candidate is refused
-      with 409 METAGEN_CANNOT_REJECT_APPROVED
-    spec: BACKEND.md §Approval flow — reject is only valid for llm_approved
-      candidates; rejecting an approved candidate returns 409
-    spec: BACKEND.md §Approval flow — 409 METAGEN_CANNOT_REJECT_APPROVED
-    spec: BACKEND.md §Approval flow — reject of an approved candidate is refused
+    Reject is valid on an approved candidate (no 409). The approve step writes
+    EditableDatasetProperties.description to DataHub; rejecting that approved
+    candidate runs the aspect-clear path so the editable description falls back to
+    empty/None. We seed via raw-SQL (spot-appropriate), approve over REST to produce
+    the editable aspect, then reject over REST and read the truth back: status via
+    item-detail, the event via the metagen event feed, and the cleared editable
+    description via a GMS aspect read-back (the same read-back the api-wired UC4 test
+    uses). `make_datahub()` always returns the real client, so the editable aspect is
+    written/cleared in DataHub even under stub mode.
+
+    spec: API.md §Metadata Generation — reject valid on approved candidate; removes editable aspect
+    spec: feature/BACKEND.md §Approval flow — rejecting an approved candidate flips it to
+      rejected and removes the editable DataHub aspect (dataset.description →
+      EditableDatasetProperties.description=""); emits METAGEN.CANDIDATE_REJECT
     """
+    from datahub.ingestion.graph.client import DatahubClientConfig, DataHubGraph
+    from datahub.metadata.schema_classes import EditableDatasetPropertiesClass
+
+    from tests.integration.util.datahub import _gms_url, get_datahub_token
+
     item_id = "dataset.description"
+    approved_value = "Imazon title_master dataset (spot reject-approved test)."
+    unique_reason = f"spot reject approved {uuid.uuid4()}"
     boundary_url = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/boundary"
+    dataset_event_url = f"/api/v1/spoke/common/data/{_ENCODED_URN}/event/metagen"
+    review_url = (
+        f"/api/v1/spoke/common/data/{_ENCODED_URN}"
+        f"/attr/metagen/item/{item_id}/candidate"
+    )
+    graph: DataHubGraph | None = None
 
     try:
+        dh_token = get_datahub_token()
+        graph = DataHubGraph(DatahubClientConfig(server=_gms_url, token=dh_token))
+
         await api_client.put(
             boundary_url,
             headers=admin_headers,
             json={"is_enabled": True, "allowed": ["dataset.description"]},
         )
 
-        # Seed a candidate directly with status='approved' (bypasses approve flow)
+        # Seed an llm_approved candidate, then APPROVE it over REST so DataSpoke
+        # writes EditableDatasetProperties.description to DataHub.
         cid = await seed_metagen_candidate(
             async_session,
             dataset_urn=_TEST_URN,
             item_id=item_id,
-            value="Already approved candidate.",
-            status="approved",
+            value=approved_value,
+            status="llm_approved",
+        )
+        approve_resp = await api_client.post(
+            f"{review_url}/{cid}/method/review",
+            headers=admin_headers,
+            json={"verdict": "approve", "reason": "approve before reject"},
+        )
+        assert approve_resp.status_code == 200, (
+            f"Approve before reject failed: {approve_resp.status_code} {approve_resp.text}"
+        )
+        assert approve_resp.json().get("status") == "approved", (
+            f"candidate must be approved before the reject step; "
+            f"got {approve_resp.json().get('status')!r}. spec: USE_CASE_en.md §UC4 — Review"
         )
 
-        review_url = (
-            f"/api/v1/spoke/common/data/{_ENCODED_URN}"
-            f"/attr/metagen/item/{item_id}/candidate/{cid}/method/review"
+        # GMS read-back: the editable description now holds the approved value.
+        editable_after_approve = graph.get_aspect(
+            entity_urn=_TEST_URN, aspect_type=EditableDatasetPropertiesClass
         )
+        assert (
+            editable_after_approve is not None
+            and editable_after_approve.description == approved_value
+        ), (
+            "editableDatasetProperties.description must equal the approved value after "
+            f"approve; got {getattr(editable_after_approve, 'description', None)!r}. "
+            "spec: API.md §Metadata Generation — approve emits value to editable aspect"
+        )
+
+        # Now REJECT the approved candidate. Must succeed (no 409) and flip to rejected.
         reject_resp = await api_client.post(
-            review_url,
+            f"{review_url}/{cid}/method/review",
             headers=admin_headers,
-            json={"verdict": "reject", "reason": "attempt to reject approved"},
+            json={"verdict": "reject", "reason": unique_reason},
         )
-        assert reject_resp.status_code == 409, (
-            f"Reject on approved candidate must return 409; "
+        assert reject_resp.status_code == 200, (
+            f"Reject on approved candidate must succeed (200); "
             f"got {reject_resp.status_code} {reject_resp.text}. "
-            "spec: BACKEND.md §Approval flow — reject of approved returns 409"
+            "spec: API.md §Metadata Generation — reject valid on approved candidate"
         )
-        assert "METAGEN_CANNOT_REJECT_APPROVED" in str(reject_resp.json()), (
-            f"409 response must carry METAGEN_CANNOT_REJECT_APPROVED code; "
-            f"got {reject_resp.json()!r}. "
-            "spec: BACKEND.md §Approval flow — 409 METAGEN_CANNOT_REJECT_APPROVED"
+        assert reject_resp.json().get("status") == "rejected", (
+            f"candidate status after rejecting an approved candidate must be 'rejected'; "
+            f"got {reject_resp.json().get('status')!r}. "
+            "spec: feature/BACKEND.md §Approval flow — reject flips to rejected"
+        )
+
+        # REST read-back: item detail shows the candidate as rejected.
+        detail_resp = await api_client.get(
+            f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/item/{item_id}",
+            headers=admin_headers,
+        )
+        assert detail_resp.status_code == 200, (
+            f"GET item detail failed: {detail_resp.status_code} {detail_resp.text}"
+        )
+        target = next(
+            (
+                c
+                for c in detail_resp.json().get("candidates", [])
+                if c["candidate_id"] == cid
+            ),
+            None,
+        )
+        assert target is not None and target["status"] == "rejected", (
+            f"item-detail read-back must show the candidate as 'rejected'; got "
+            f"{target['status'] if target else 'missing'!r}. "
+            "spec: feature/BACKEND.md §Approval flow"
+        )
+
+        # METAGEN.CANDIDATE_REJECT event recorded, bound by candidate_id + unique reason.
+        ev_resp = await api_client.get(
+            f"{dataset_event_url}?limit=20", headers=admin_headers
+        )
+        assert ev_resp.status_code == 200
+        reject_event = next(
+            (
+                e
+                for e in ev_resp.json().get("events", [])
+                if e["event_type"] == "METAGEN.CANDIDATE_REJECT"
+                and e["detail"].get("candidate_id") == cid
+            ),
+            None,
+        )
+        assert reject_event is not None, (
+            f"METAGEN.CANDIDATE_REJECT event for candidate_id={cid!r} must be emitted. "
+            "spec: feature/BACKEND.md §Event Catalogue — METAGEN (dataset) CANDIDATE_REJECT"
+        )
+        assert reject_event["detail"].get("reason") == unique_reason, (
+            f"CANDIDATE_REJECT detail reason must be {unique_reason!r}; "
+            f"got {reject_event['detail'].get('reason')!r}. "
+            "spec: feature/BACKEND.md §Event Catalogue — METAGEN (dataset) CANDIDATE_REJECT"
+        )
+
+        # GMS read-back: the aspect-clear path ran — editable description is removed.
+        editable_after_reject = graph.get_aspect(
+            entity_urn=_TEST_URN, aspect_type=EditableDatasetPropertiesClass
+        )
+        cleared_desc = (
+            editable_after_reject.description if editable_after_reject is not None else None
+        )
+        assert cleared_desc in (None, ""), (
+            f"Rejecting an approved dataset.description candidate must remove the editable "
+            f"DataHub description (expected ''/None); got {cleared_desc!r}. "
+            "spec: feature/BACKEND.md §Approval flow — reject of approved removes editable aspect"
         )
 
     finally:
         await delete_metagen_state_for_urn(async_session, _TEST_URN)
         with suppress(Exception):
             await api_client.delete(boundary_url, headers=admin_headers)
+        # Remove the editable override written during approve so the dataset falls
+        # back to its seeded non-editable description.
+        if graph is not None:
+            with suppress(Exception):
+                from datahub.emitter.mcp import MetadataChangeProposalWrapper
+
+                graph.emit_mcp(
+                    MetadataChangeProposalWrapper(
+                        entityUrn=_TEST_URN,
+                        aspect=EditableDatasetPropertiesClass(description=None),
+                    )
+                )
 
 
 @pytest.mark.asyncio
