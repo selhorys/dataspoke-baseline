@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Statusline: model · effort · cwd · git-branch · 5-hour block reset
+# Statusline: model · effort · context-usage · cwd · git-branch · 5-hour usage window
 #
 # Claude Code feeds session JSON on stdin. We compose a single line of text
 # to stdout. Keep it fast — the statusline is re-rendered frequently.
@@ -24,35 +24,40 @@ for f in \
   fi
 done
 
-# ccusage 5-hour block reset countdown — compact "reset in Xh Ym".
-# Usage % is intentionally omitted: claude.ai computes it on a cost-weighted
-# budget that doesn't align with ccusage's raw token total.
-# Silent on any failure so the statusline keeps rendering.
-# Install once: `npm i -g ccusage` (needs node >= 18) or `brew install bun && bun add -g ccusage`.
-reset=""
-blocks_json=""
-if command -v ccusage >/dev/null 2>&1; then
-  blocks_json=$(ccusage blocks --active --json 2>/dev/null || true)
-elif command -v bunx >/dev/null 2>&1; then
-  blocks_json=$(bunx ccusage@latest blocks --active --json 2>/dev/null || true)
+# Context usage — tokens in the current window, "ctx Xk (Y%)".
+# Native stdin fields (Claude Code >= 2.1.132): total_input_tokens is the live
+# context size (input + cache read + cache write); used_percentage is
+# pre-computed against context_window_size. Both 0/null before the first API
+# response — omit the segment then.
+ctx=""
+read -r used pct < <(printf '%s' "$input" | jq -r '
+  [ (.context_window.total_input_tokens // 0),
+    (.context_window.used_percentage   // 0) ] | @tsv')
+if [[ -n "${used:-}" && "$used" -gt 0 ]] 2>/dev/null; then
+  ctx=$(awk -v u="$used" -v p="$pct" 'BEGIN{
+    if (u >= 1000) printf "ctx %.0fk (%d%%)", u/1000, p+0.5;
+    else           printf "ctx %d (%d%%)", u, p+0.5;
+  }')
 fi
 
-if [[ -n "$blocks_json" ]]; then
-  end_iso=$(printf '%s' "$blocks_json" | jq -r '.blocks[0].endTime // empty' 2>/dev/null)
-  if [[ -n "$end_iso" ]]; then
-    # Parse the ISO8601 endTime as UTC (macOS date -j treats bare strings as local time).
-    end_epoch=$(TZ=UTC date -j -f "%Y-%m-%dT%H:%M:%S" "${end_iso%.*}" +%s 2>/dev/null \
-                || date -d "$end_iso" +%s 2>/dev/null)
-    now_epoch=$(date +%s)
-    if [[ -n "$end_epoch" ]] && (( end_epoch > now_epoch )); then
-      rem=$(( (end_epoch - now_epoch) / 60 ))
-      h=$(( rem / 60 ))
-      m=$(( rem % 60 ))
-      if (( h > 0 )); then
-        reset="reset in ${h}h ${m}m"
-      else
-        reset="reset in ${m}m"
-      fi
+# 5-hour usage window — accurate server-side reset, "5h 23%, reset in 3h 22m".
+# Native stdin fields (Claude Code, Claude.ai Pro/Max): rate_limits.five_hour
+# carries used_percentage (0-100) and resets_at (unix epoch seconds). Absent on
+# free tier and before the first API response — omit the segment then. This
+# replaces the ccusage estimate, which inferred the window from local token logs.
+reset=""
+read -r resets_at limit_pct < <(printf '%s' "$input" | jq -r '
+  [ (.rate_limits.five_hour.resets_at      // empty),
+    (.rate_limits.five_hour.used_percentage // empty) ] | @tsv')
+if [[ -n "${resets_at:-}" ]]; then
+  now_epoch=$(date +%s)
+  if (( resets_at > now_epoch )); then
+    rem=$(( (resets_at - now_epoch) / 60 ))
+    h=$(( rem / 60 ))
+    m=$(( rem % 60 ))
+    if (( h > 0 )); then reset="reset in ${h}h ${m}m"; else reset="reset in ${m}m"; fi
+    if [[ -n "${limit_pct:-}" ]]; then
+      reset=$(awk -v p="$limit_pct" -v r="$reset" 'BEGIN{ printf "5h %d%%, %s", p+0.5, r }')
     fi
   fi
 fi
@@ -62,6 +67,8 @@ segments=()
 [[ -n "$model" ]] && segments+=("$model")
 
 [[ -n "$effort" ]] && segments+=("$effort")
+
+[[ -n "$ctx" ]] && segments+=("$ctx")
 
 [[ -n "$cwd" ]] && segments+=("$(basename "$cwd")")
 
