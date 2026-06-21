@@ -372,17 +372,54 @@ async def test_delete_conf_deletes_row_and_commits(svc, db) -> None:
     """delete_conf loads the row, deletes it, and commits.
 
     Spec: feature/BACKEND.md §Metadata Generation Service — DELETE removes the conf;
-    SET NULLs conf_id on its approved candidates and deletes the rest (issued via
-    bulk statements before deleting the row).
+    the metagen_candidates.conf_id FK (ondelete=SET NULL) orphans all of its
+    candidates regardless of status. Items, candidates, and embeddings are retained.
     """
     existing = _make_conf_row()
-    # _load_conf_row → existing; the cleanup bulk DELETE/UPDATE statements; then delete row
+    # _load_conf_row → existing; then delete row (FK SET NULL orphans candidates)
     db.execute = AsyncMock(return_value=_make_result(scalar=existing))
 
     await svc.delete_conf(str(_CONF_UUID))
 
     db.delete.assert_called_once_with(existing)
     db.commit.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_delete_conf_retains_candidates_no_manual_delete_statements(svc, db) -> None:
+    """delete_conf RETAINS all candidates/items/embeddings — it issues NO DELETE
+    statement of its own. Orphaning is the DB FK's job (conf_id ondelete=SET NULL).
+
+    A manual ``delete(MetagenCandidate...)`` / ``delete(MetagenCandidateEmbedding...)``
+    would strand zero-candidate items and destroy retained results, so the service
+    must rely solely on the FK: the only ORM mutation is ``db.delete(conf_row)``, and
+    no bulk DELETE statement is executed.
+
+    Spec: feature/BACKEND.md §Metadata Generation Service — deleting a conf retains
+      every item, candidate (pending/llm_approved/approved), and candidate embedding;
+      they become parentless (conf_id=NULL) forever via the FK SET NULL.
+    Spec: feature/BACKEND_SCHEMA.md §metagen_candidates — conf_id FK ON DELETE SET NULL.
+    """
+    from sqlalchemy.sql.dml import Delete
+
+    existing = _make_conf_row()
+    db.execute = AsyncMock(return_value=_make_result(scalar=existing))
+
+    await svc.delete_conf(str(_CONF_UUID))
+
+    # The only ORM delete is the conf row itself — never a candidate/embedding/item.
+    db.delete.assert_called_once_with(existing)
+
+    # No bulk DELETE statement was executed (the stale impl deleted non-approved
+    # candidates + their embeddings and SET-NULLed approved ones; the new impl does
+    # none of that — the FK orphans every candidate regardless of status).
+    for call in db.execute.call_args_list:
+        stmt = call.args[0] if call.args else None
+        assert not isinstance(stmt, Delete), (
+            "delete_conf must not issue any DELETE statement; candidates, embeddings, "
+            "and items are retained and orphaned by the FK SET NULL. "
+            "spec: feature/BACKEND.md §Metadata Generation Service — retention on conf delete"
+        )
 
 
 @pytest.mark.asyncio

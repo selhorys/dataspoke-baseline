@@ -80,9 +80,17 @@ export function CandidateCard({
         <span className="text-xs text-muted-foreground">
           conf {candidate.confidence_score.toFixed(2)}
         </span>
-        {candidate.conf_name && (
+        {candidate.conf_name ? (
           <Badge variant="outline" className="text-xs" title="Producing conf">
             {candidate.conf_name}
+          </Badge>
+        ) : (
+          <Badge
+            variant="outline"
+            className="text-xs italic text-muted-foreground"
+            title="Producing conf was deleted; this result is parentless"
+          >
+            no conf
           </Badge>
         )}
         {candidate.reviewed_at && (

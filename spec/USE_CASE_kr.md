@@ -559,7 +559,7 @@ conf 필드 의미, 후보 상태 라이프사이클, 아이템별 축출 정책
 | 엔드포인트 | 용도 |
 |---|---|
 | `GET/POST /spoke/metagen/conf` | conf 목록 / conf 생성 (`name` + 위 필드 표); 이름 중복 시 `409 METAGEN_CONF_EXISTS` |
-| `GET/PUT/PATCH/DELETE /spoke/metagen/conf/{conf_id}` | conf별 CRUD. 삭제 시 이 conf의 대기 후보는 제거하고 이미 승인된 후보는 분리(detach)한다 |
+| `GET/PUT/PATCH/DELETE /spoke/metagen/conf/{conf_id}` | conf별 CRUD. 삭제 시 이 conf의 아이템과 후보(상태 무관)는 부모 없는 결과로 남고, 이미 승인된 설명은 DataHub에 그대로 유지된다 |
 | `POST /spoke/metagen/conf/{conf_id}/method/run` | 한 conf의 수동 생성 실행 트리거. body `{"dataset_urns": [...]}`은 선택; `?dry_run=true`는 기록 없이 평가만. 같은 conf의 동시 실행은 `409 METAGEN_RUNNING`, 비활성 conf의 비-dry-run은 `409 METAGEN_DISABLED` 반환 |
 | `GET /spoke/metagen/conf/{conf_id}/event` | conf별 생성 실행 이벤트 이력 (`METAGEN.RUN_COMPLETE`, `METAGEN.RUN_FAILED`) |
 | `GET /spoke/metagen/uncovered` | 어떤 conf도 도달하지 못한 등록 데이터셋; `?include_disallowed=true`는 경계로 차단된 데이터셋도 포함. 각 행은 `reason`을 가진다 |

@@ -556,7 +556,7 @@ and
 | Endpoint | Used for |
 |---|---|
 | `GET/POST /spoke/metagen/conf` | List confs / create a conf (`name` + the field table above); `409 METAGEN_CONF_EXISTS` on duplicate name |
-| `GET/PUT/PATCH/DELETE /spoke/metagen/conf/{conf_id}` | Per-conf CRUD. Delete drops this conf's pending candidates and detaches its already-approved ones |
+| `GET/PUT/PATCH/DELETE /spoke/metagen/conf/{conf_id}` | Per-conf CRUD. Delete orphans this conf's items and candidates (any status) as parentless results; already-approved descriptions stay in DataHub |
 | `POST /spoke/metagen/conf/{conf_id}/method/run` | Trigger a manual generation run for one conf. Optional body `{"dataset_urns": [...]}`; `?dry_run=true` evaluates without persisting. Concurrent runs of the same conf return `409 METAGEN_RUNNING`; disabled-conf non-dry-run returns `409 METAGEN_DISABLED` |
 | `GET /spoke/metagen/conf/{conf_id}/event` | Per-conf generation-run event history (`METAGEN.RUN_COMPLETE`, `METAGEN.RUN_FAILED`) |
 | `GET /spoke/metagen/uncovered` | Registered datasets reached by no conf; `?include_disallowed=true` also lists boundary-blocked datasets. Each row carries a `reason` |

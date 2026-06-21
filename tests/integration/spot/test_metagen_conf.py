@@ -30,6 +30,8 @@ from contextlib import suppress
 
 import httpx
 import pytest
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 # Declare DataHub fixture dependency so module_dummy_data ingests catalog.title_master.
 # spec: TESTING.md §Per-Module Dummy-Data Reset
@@ -317,6 +319,140 @@ async def test_metagen_conf_dataset_filter_dimension_caps(
     finally:
         if created_id is not None:
             await _delete_conf(api_client, admin_headers, created_id)
+
+
+@pytest.mark.asyncio
+async def test_metagen_conf_delete_retains_and_orphans_candidates_and_items(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    async_session: AsyncSession,
+) -> None:
+    """Deleting a conf RETAINS every item + candidate (all statuses) and ORPHANS the
+    candidates (conf_id=NULL) — none are deleted.
+
+    Seeds a conf with a boundary, an item, and one candidate of each real status
+    (llm_approved, approved, rejected), all attached to the conf. Then DELETEs the
+    conf via REST and asserts:
+      - the candidates still exist with conf_id=NULL (the FK ondelete=SET NULL path);
+      - the item still exists and is listable via the per-dataset item route;
+      - the orphaned candidates are still listable via the cross-conf /metagen/item
+        queue (item detail), each carrying conf_id=null / conf_name=null.
+
+    Raw-SQL seeding is the correct path here: producing these rows through the run
+    pipeline would require the LLM/debate machinery not under test, and the concern
+    is the delete-retention contract over already-existing review state.
+
+    spec: feature/BACKEND.md §Metadata Generation Service — deleting a conf retains
+      every item, candidate (llm_approved/approved/rejected), and candidate embedding;
+      they become parentless (conf_id=NULL) forever.
+    spec: feature/BACKEND_SCHEMA.md §metagen_candidates — conf_id FK ON DELETE SET NULL.
+    spec: API.md §Metadata Generation — items remain listable per-dataset and via the
+      cross-conf /metagen/item queue after their producing conf is gone.
+    """
+    from tests.integration.util.metagen import (
+        delete_metagen_state_for_urn,
+        seed_metagen_boundary,
+        seed_metagen_candidate,
+        seed_metagen_conf,
+    )
+
+    item_id = "dataset.description"
+    conf_id = await seed_metagen_conf(
+        async_session,
+        name=_unique_name("retain-on-delete"),
+        is_enabled=True,
+        dataset_filter={"dataset_urns": [_TEST_URN]},
+    )
+    try:
+        await seed_metagen_boundary(
+            async_session,
+            dataset_urn=_TEST_URN,
+            is_enabled=True,
+            allowed=["dataset.description"],
+        )
+        # One candidate of each real status, all produced by the conf.
+        cand_ids = {
+            status: await seed_metagen_candidate(
+                async_session,
+                dataset_urn=_TEST_URN,
+                item_id=item_id,
+                value=f"{status} description for retention test.",
+                status=status,
+                conf_id=conf_id,
+            )
+            for status in ("llm_approved", "approved", "rejected")
+        }
+
+        # DELETE the conf via the public REST route → 204.
+        del_resp = await api_client.delete(
+            f"{_CONF_URL}/{conf_id}", headers=admin_headers
+        )
+        assert del_resp.status_code == 204, (
+            f"DELETE conf must return 204; got {del_resp.status_code} {del_resp.text}"
+        )
+
+        # The conf is gone.
+        get_conf = await api_client.get(f"{_CONF_URL}/{conf_id}", headers=admin_headers)
+        assert get_conf.status_code == 404
+
+        # All candidates retained with conf_id=NULL (FK SET NULL orphaning).
+        rows = (
+            await async_session.execute(
+                text(
+                    "SELECT candidate_id, status, conf_id"
+                    " FROM dataspoke.metagen_candidates"
+                    " WHERE dataset_urn = :urn AND item_id = :item_id"
+                ),
+                {"urn": _TEST_URN, "item_id": item_id},
+            )
+        ).all()
+        surviving = {str(r.candidate_id): r for r in rows}
+        for status, cid in cand_ids.items():
+            assert cid in surviving, (
+                f"{status} candidate must be retained after conf delete, not deleted. "
+                "spec: feature/BACKEND.md §Metadata Generation Service — retention on delete"
+            )
+            assert surviving[cid].conf_id is None, (
+                f"{status} candidate must be orphaned (conf_id=NULL) after conf delete. "
+                "spec: feature/BACKEND_SCHEMA.md §metagen_candidates — conf_id ON DELETE SET NULL"
+            )
+
+        # The item is still listable on the per-dataset item route.
+        per_ds = await api_client.get(
+            f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/item?limit=100",
+            headers=admin_headers,
+        )
+        assert per_ds.status_code == 200
+        per_ds_items = {i["item_id"] for i in per_ds.json()["items"]}
+        assert item_id in per_ds_items, (
+            "The orphaned item must remain on the per-dataset item route. "
+            "spec: API.md §Data Resource — per-dataset metagen items"
+        )
+
+        # The orphaned candidates remain reachable via the cross-conf /metagen/item
+        # queue (item detail), each carrying conf_id=null / conf_name=null.
+        composite_id = urllib.parse.quote(f"{_TEST_URN}::{item_id}", safe="")
+        detail = await api_client.get(
+            f"/api/v1/spoke/metagen/item/{composite_id}", headers=admin_headers
+        )
+        assert detail.status_code == 200, (
+            f"Item detail must remain reachable; got {detail.status_code} {detail.text}"
+        )
+        detail_cands = {c["candidate_id"]: c for c in detail.json()["candidates"]}
+        for status, cid in cand_ids.items():
+            assert cid in detail_cands, (
+                f"{status} candidate must remain in the cross-conf item queue. "
+                "spec: API.md §Metadata Generation — /metagen/item queue"
+            )
+            assert detail_cands[cid]["conf_id"] is None, (
+                f"{status} candidate's conf_id must read back null after conf delete"
+            )
+            assert detail_cands[cid]["conf_name"] is None, (
+                f"{status} candidate's conf_name must read back null after conf delete"
+            )
+    finally:
+        await delete_metagen_state_for_urn(async_session, _TEST_URN)
+        await _delete_conf(api_client, admin_headers, conf_id)
 
 
 # ── Group 2: Per-dataset boundary CRUD ───────────────────────────────────────

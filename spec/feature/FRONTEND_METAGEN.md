@@ -61,9 +61,9 @@ dataset_filter, result_limit, overwrite_pending}`, submitting via
 `POST /spoke/metagen/conf`; a duplicate `name` surfaces `409 METAGEN_CONF_EXISTS`.
 
 The detail page edits the same fields (`PUT` full replace / `PATCH` partial),
-deletes the conf (button → ConfirmDialog → `DELETE`; the dialog notes that
-already-approved descriptions stay in DataHub while this conf's pending
-candidates are dropped), and triggers a run with a `dry_run` toggle
+deletes the conf (button → ConfirmDialog → `DELETE`; the dialog notes that this
+conf's generated items and candidates are retained as parentless results while
+already-approved descriptions stay in DataHub), and triggers a run with a `dry_run` toggle
 (`POST /spoke/metagen/conf/{conf_id}/method/run`; concurrent run returns
 `409 METAGEN_RUNNING`, disabled non-dry-run returns `409 METAGEN_DISABLED`).
 
@@ -112,9 +112,10 @@ The MetaGen panel on the unified [`/data/[urn]`](FRONTEND_BASIC.md#per-dataset-p
 shows the boundary (`is_enabled`, `allowed`, `owner`) over
 `attr/metagen/boundary` and the dataset's items grouped by kind. The header
 renders an enabled/disabled badge beside the dataset URN. Each item renders as
-a card with its candidate sub-cards (carrying the producing `conf_name`) and
-Approve / Reject buttons; the confirm dialog labels the destination DataHub
-aspect. Each candidate sub-card also renders an **Evidence** link to its
+a card with its candidate sub-cards (carrying the producing `conf_name`, or a
+muted "no conf" indicator when `conf_name` is null because the producing conf
+was deleted) and Approve / Reject buttons; the confirm dialog labels the
+destination DataHub aspect. Each candidate sub-card also renders an **Evidence** link to its
 Langfuse trace, built from the candidate's `run_id`. An `approved` candidate
 shows a **Reject** action; its confirm dialog notes that the editable DataHub
 description this candidate wrote will be removed. Finalized items collapse to a
@@ -172,7 +173,7 @@ uncovered list, and candidate text, with no action buttons.
 - `MetagenUncoveredTable` — the uncovered-datasets list with the `include_disallowed` toggle.
 - `BoundaryForm` — the per-dataset boundary form (`attr/metagen/boundary`).
 - `ItemCard` — per-item card holding the candidate sub-cards with Approve / Reject and the `conf_name` tag.
-- `CandidateCard` — a single candidate sub-card (value, `confidence_score`, `conf_name` tag, an Evidence Langfuse link from `run_id`, Approve / Reject — Reject also shown on `approved` candidates) rendered inside `ItemCard`.
+- `CandidateCard` — a single candidate sub-card (value, `confidence_score`, `conf_name` tag — a muted "no conf" indicator when `conf_name` is null, an Evidence Langfuse link from `run_id`, Approve / Reject — Reject also shown on `approved` candidates) rendered inside `ItemCard`.
 - `MetagenCoveredTable` — the per-conf covered-datasets list with the "Show boundary-blocked" toggle (`?include_disallowed`), on `/metagen/conf/[id]` above `MetagenEventTable`.
 - `MetagenEventTable` — shared event table bound to a `…/event` route (conf-detail + cross-conf
   feeds), paired with a `datetime` [RangePicker](FRONTEND_BASIC.md#shared-component-notes) for the

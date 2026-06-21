@@ -567,9 +567,11 @@ UC3 ontology — which every conf reads — holds cross-conf consistency. Per-co
 
 Each conf is a row in `metagen_config` (collection table keyed by `id UUID`; see
 [BACKEND_SCHEMA §metagen_config](BACKEND_SCHEMA.md#metagen_config)).
-`DELETE /spoke/metagen/conf/{conf_id}` deletes the conf's non-approved candidates
-and `SET NULL`s `conf_id` on its `approved` candidates (already in DataHub, retained
-as orphan history).
+`DELETE /spoke/metagen/conf/{conf_id}` is a hard delete that retains every item,
+candidate (any status), and candidate embedding the conf produced. The FK `metagen_candidates.conf_id` (`ON DELETE SET
+NULL`, nullable) orphans all of the conf's candidates by nulling their `conf_id`;
+they become parentless results forever with no re-linking. Read paths are
+null-safe, so orphaned candidates surface without a producing conf.
 
 **Per-dataset boundary** at `/spoke/common/data/{urn}/attr/metagen/boundary`,
 stored in `metagen_boundary` and shared across all confs. A row with

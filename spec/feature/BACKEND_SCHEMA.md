@@ -261,7 +261,7 @@ are deleted at the start of the next run.
 | Column | Type | Description |
 |--------|------|-------------|
 | `candidate_id` | `UUID` PK | Candidate identifier |
-| `conf_id` | `UUID` FK → `metagen_config(id)` NULL | The conf that produced this candidate. `ON DELETE`: this conf's non-approved candidates are deleted, and `approved` candidates are `SET NULL` (already emitted to DataHub, so retained as orphan history) |
+| `conf_id` | `UUID` FK → `metagen_config(id)` NULL | The conf that produced this candidate. `ON DELETE SET NULL`: deleting the conf orphans every candidate it produced (any status) by nulling `conf_id`, retaining each as a parentless result with no re-linking |
 | `dataset_urn` | `TEXT` | Target dataset URN |
 | `item_id` | `TEXT` | Item this candidate belongs to (FK `(dataset_urn, item_id)` → `metagen_items`) |
 | `run_id` | `UUID` | The metagen run that produced this candidate |

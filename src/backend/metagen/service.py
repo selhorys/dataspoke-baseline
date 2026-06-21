@@ -414,39 +414,13 @@ class MetagenService:
         return _conf_to_dto(row)
 
     async def delete_conf(self, conf_id: str) -> None:
-        """Delete a conf. Deletes this conf's non-approved candidates and SET NULLs
-        conf_id on its approved candidates (already emitted to DataHub). Emits
+        """Hard-delete a conf, orphaning all of its candidates. The
+        metagen_candidates.conf_id FK (ondelete="SET NULL") nulls every candidate
+        of this conf regardless of status; items, candidates, and candidate
+        embeddings are all retained and become parentless forever. Emits
         METAGEN.CONFIG_DELETE.
         """
         row = await self._load_conf_row(conf_id)
-        cid = row.id
-
-        # Drop embeddings for this conf's non-approved candidates first (FK).
-        await self._db.execute(
-            delete(MetagenCandidateEmbedding).where(
-                MetagenCandidateEmbedding.candidate_id.in_(
-                    select(MetagenCandidate.candidate_id).where(
-                        MetagenCandidate.conf_id == cid,
-                        MetagenCandidate.status != "approved",
-                    )
-                )
-            )
-        )
-        await self._db.execute(
-            delete(MetagenCandidate).where(
-                MetagenCandidate.conf_id == cid,
-                MetagenCandidate.status != "approved",
-            )
-        )
-        # Orphan the approved candidates (retain as DataHub-emitted history).
-        await self._db.execute(
-            MetagenCandidate.__table__.update()
-            .where(
-                MetagenCandidate.conf_id == cid,
-                MetagenCandidate.status == "approved",
-            )
-            .values(conf_id=None)
-        )
 
         await self._db.delete(row)
         await self._db.commit()
