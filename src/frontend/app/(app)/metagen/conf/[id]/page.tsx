@@ -34,6 +34,8 @@ import { DEFAULT_PAGE_SIZE } from "@/components/pagination";
 import type { DatasetFilter } from "@/types/governance";
 import type { MetagenConfPutBody, MetagenRunBody } from "@/types/metagen";
 
+const CONF_FORM_ID = "metagen-conf-form";
+
 export default function MetagenConfDetailPage({
   params,
 }: {
@@ -45,6 +47,7 @@ export default function MetagenConfDetailPage({
   const router = useRouter();
 
   const [editing, setEditing] = useState(false);
+  const [formNonce, setFormNonce] = useState(0);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [runDialogOpen, setRunDialogOpen] = useState(false);
   const [datasetFilter, setDatasetFilter] = useState<DatasetFilter>({});
@@ -185,48 +188,65 @@ export default function MetagenConfDetailPage({
 
         {canWrite && (
           <div className="ml-auto flex gap-2">
-            {/* Distinct React keys keep Edit and Cancel from sharing a node slot;
+            {/* Distinct React keys keep Edit/Save and Cancel from sharing a node slot;
                 without them React reuses the button and the Edit click submits
                 the form on first render (project_frontend_button_submit_morph). */}
             {editing ? (
-              <Button
-                key="conf-cancel"
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => setEditing(false)}
-                disabled={put.isPending}
-              >
-                Cancel
-              </Button>
+              <>
+                <Button
+                  key="conf-save"
+                  type="submit"
+                  form={CONF_FORM_ID}
+                  size="sm"
+                  disabled={put.isPending}
+                >
+                  {put.isPending ? "Saving…" : "Save"}
+                </Button>
+                <Button
+                  key="conf-cancel"
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setEditing(false);
+                    setDatasetFilter((conf.dataset_filter as DatasetFilter) ?? {});
+                    setFormNonce((n) => n + 1);
+                  }}
+                  disabled={put.isPending}
+                >
+                  Cancel
+                </Button>
+              </>
             ) : (
-              <Button
-                key="conf-edit"
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => setEditing(true)}
-              >
-                Edit
-              </Button>
+              <>
+                <Button
+                  key="conf-edit"
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setEditing(true)}
+                >
+                  Edit
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => setRunDialogOpen(true)}
+                  disabled={runMutation.isPending}
+                >
+                  {runMutation.isPending ? "Running…" : "Run"}
+                </Button>
+                <Button
+                  type="button"
+                  variant="destructive"
+                  size="sm"
+                  onClick={() => setDeleteOpen(true)}
+                  disabled={deleteConf.isPending}
+                >
+                  Delete
+                </Button>
+              </>
             )}
-            <Button
-              type="button"
-              size="sm"
-              onClick={() => setRunDialogOpen(true)}
-              disabled={runMutation.isPending}
-            >
-              {runMutation.isPending ? "Running…" : "Run"}
-            </Button>
-            <Button
-              type="button"
-              variant="destructive"
-              size="sm"
-              onClick={() => setDeleteOpen(true)}
-              disabled={deleteConf.isPending}
-            >
-              Delete
-            </Button>
           </div>
         )}
       </div>
@@ -234,14 +254,14 @@ export default function MetagenConfDetailPage({
       {/* Conf form */}
       <section className="rounded-lg border p-5">
         <MetagenConfForm
+          key={formNonce}
+          formId={CONF_FORM_ID}
           initialValues={conf}
           datasetFilter={datasetFilter}
           onDatasetFilterChange={setDatasetFilter}
           onSubmit={handleSave}
-          isSubmitting={put.isPending}
           disabled={!editing}
           serverError={editing ? saveError : undefined}
-          submitLabel="Save conf"
         />
       </section>
 
@@ -290,7 +310,7 @@ export default function MetagenConfDetailPage({
         open={deleteOpen}
         onOpenChange={setDeleteOpen}
         title="Delete conf"
-        description={`Remove "${conf.name}". Already-approved descriptions stay in DataHub; this conf's pending candidates are dropped.`}
+        description={`Remove "${conf.name}". Its generated items and candidates are retained as parentless results, and already-approved descriptions stay in DataHub.`}
         confirmLabel="Delete"
         onConfirm={handleDelete}
         loading={deleteConf.isPending}

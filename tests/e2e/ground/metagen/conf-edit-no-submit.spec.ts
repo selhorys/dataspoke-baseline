@@ -1,26 +1,32 @@
 /**
  * Ground spec: /metagen/conf/[id] — clicking "Edit" enters edit mode WITHOUT
- * submitting/saving the conf form. Real-browser regression guard for the
- * Edit/Save-morph defect (memory project_frontend_button_submit_morph).
+ * submitting/saving the conf form, and Save (in the page header) PUTs the conf.
+ * Real-browser regression guard for the Edit/Save-morph defect
+ * (memory project_frontend_button_submit_morph).
  *
- * The header renders `editing ? Cancel : Edit` in one conditional slot. If React
- * reuses the same DOM node across the ternary, the Edit click can perform the
- * browser's default submit on the now-morphed control, firing a stray
+ * The Save/Create submit lives in the top-right page header (external submit via
+ * <Button type="submit" form="metagen-conf-form">), mirroring OntoGen. The header
+ * renders `editing ? (Save, Cancel) : (Edit, Run, Delete)` in one conditional slot.
+ * If React reuses the same DOM node across the ternary, the Edit click can perform
+ * the browser's default submit on the now-morphed control, firing a stray
  * PUT /spoke/metagen/conf/{id} and "Conf saved" toast instead of entering edit
- * mode. Distinct `key` props (conf-edit / conf-cancel in conf/[id]/page.tsx)
- * give each branch its own node and prevent the morph. jsdom cannot model the
- * default-action phase, so this real-Chromium spec is the genuine guard.
+ * mode. Distinct `key` props (conf-edit / conf-save / conf-cancel in
+ * conf/[id]/page.tsx) give each branch its own node and prevent the morph. jsdom
+ * cannot model the default-action phase, so this real-Chromium spec is the guard.
  *
- * Independent: seeds one conf via REST, runs the gesture, deletes it in afterAll.
+ * Independent: seeds one conf via REST, runs the gestures, deletes it in afterAll.
  *
  * Assertions:
  *   (a) clicking Edit fires NO PUT /spoke/metagen/conf/{id} request;
- *   (b) edit mode is entered — Cancel + a "Save conf" submit become available
+ *   (b) edit mode is entered — Save + Cancel become visible, Run/Delete hidden,
  *       and the form fields are enabled (is_enabled checkbox no longer disabled);
- *   (c) no "Conf saved" toast fires (the defect's tell).
+ *   (c) no "Conf saved" toast fires on Edit (the defect's tell);
+ *   (d) positive leg — editing result_limit and clicking the header Save fires
+ *       exactly one PUT, shows a "Conf saved" toast, and the change reads back
+ *       over REST.
  *
  * spec: spec/feature/FRONTEND_METAGEN.md §Conf create / detail — the detail page
- *   edits fields via PUT, fired only by Save, never by Edit
+ *   edits fields via PUT, fired only by Save (header external submit), never by Edit
  * spec: spec/TESTING.md §End-to-End (E2E) Testing — ground group, real-session role
  */
 
@@ -72,12 +78,13 @@ test("/metagen/conf/[id] — clicking Edit enters edit mode and does NOT PUT the
     timeout: 15_000,
   });
 
-  // -- Precondition: view mode — Edit visible, no Save, fields disabled --
-  // conf/[id]/page.tsx: header renders Edit (not Cancel) when not editing;
-  // conf-form.tsx renders the submit button only when !disabled.
-  const editButton = page.getByRole("button", { name: "Edit", exact: true });
+  // -- Precondition: read-mode header = Edit + Run + Delete; no Save; fields disabled --
+  // conf/[id]/page.tsx: header renders Edit/Run/Delete when not editing.
+  const editButton = page.getByRole("button", { name: /^edit$/i });
   await expect(editButton).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByRole("button", { name: "Save conf", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^run$/i })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^delete$/i })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^save$/i })).toHaveCount(0);
 
   const isEnabledCheckbox = page.locator("#metagen-conf-is-enabled");
   await expect(isEnabledCheckbox).toBeVisible({ timeout: 10_000 });
@@ -86,13 +93,19 @@ test("/metagen/conf/[id] — clicking Edit enters edit mode and does NOT PUT the
   // -- Gesture: click Edit --
   await editButton.click();
 
-  // -- (b) edit mode entered — Cancel + Save conf appear, Edit gone, fields enabled --
-  await expect(page.getByRole("button", { name: "Cancel", exact: true })).toBeVisible({
-    timeout: 10_000,
-  });
-  await expect(page.getByRole("button", { name: "Save conf", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Edit", exact: true })).toHaveCount(0);
+  // -- (b) edit mode entered — Save + Cancel appear, Edit/Run/Delete gone, fields enabled --
+  const saveButton = page.getByRole("button", { name: /^save$/i });
+  await expect(saveButton).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByRole("button", { name: /^cancel$/i })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^edit$/i })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^run$/i })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^delete$/i })).toHaveCount(0);
   await expect(isEnabledCheckbox).toBeEnabled();
+
+  // -- Save is a header external-submit bound to the conf form --
+  // conf/[id]/page.tsx: <Button type="submit" form="metagen-conf-form">Save</Button>
+  await expect(saveButton).toHaveAttribute("type", "submit");
+  await expect(saveButton).toHaveAttribute("form", "metagen-conf-form");
 
   // -- (c) no "Conf saved" toast fired (the defect's tell) --
   // conf/[id]/page.tsx: toast({ title: "Conf saved" }) only on Save success
@@ -105,4 +118,56 @@ test("/metagen/conf/[id] — clicking Edit enters edit mode and does NOT PUT the
     confPuts,
     `clicking Edit must not PUT the conf; observed: ${JSON.stringify(confPuts)}`,
   ).toHaveLength(0);
+});
+
+test("/metagen/conf/[id] — header Save PUTs the edited conf exactly once", async ({
+  page,
+  adminApi,
+}) => {
+  // Positive leg: editing a field and clicking the header Save fires exactly one
+  // PUT, shows the "Conf saved" toast, and the change reads back over REST.
+  const confPuts: string[] = [];
+  const putPath = `${CONF_API}/${confId}`;
+  page.on("request", (req) => {
+    if (req.method() === "PUT" && req.url().includes(putPath)) {
+      confPuts.push(req.url());
+    }
+  });
+
+  await page.goto(`/metagen/conf/${confId}`);
+  await expect(page).not.toHaveURL(/\/login/);
+  await expect(page.getByRole("heading", { name: CONF_NAME, exact: true })).toBeVisible({
+    timeout: 15_000,
+  });
+
+  // Enter edit mode.
+  await page.getByRole("button", { name: /^edit$/i }).click();
+  const resultLimit = page.locator("#metagen-conf-result-limit");
+  await expect(resultLimit).toBeEnabled({ timeout: 10_000 });
+
+  // Edit result_limit 3 → 5.
+  const NEW_LIMIT = 5;
+  await resultLimit.fill(String(NEW_LIMIT));
+
+  // Click the header Save (external submit).
+  await page.getByRole("button", { name: /^save$/i }).click();
+
+  // "Conf saved" toast appears.
+  await expect(page.getByText("Conf saved", { exact: true })).toBeVisible({ timeout: 10_000 });
+
+  // Exactly one PUT fired.
+  await page.waitForTimeout(500);
+  expect(
+    confPuts,
+    `Save must PUT the conf exactly once; observed: ${JSON.stringify(confPuts)}`,
+  ).toHaveLength(1);
+
+  // Header returns to read mode (Edit/Run/Delete restored).
+  await expect(page.getByRole("button", { name: /^edit$/i })).toBeVisible({ timeout: 10_000 });
+
+  // -- Dual confirmation: REST read-back of the persisted result_limit --
+  const readResp = await adminApi.get(putPath);
+  expect(readResp.ok(), `GET ${putPath} failed: ${await readResp.text()}`).toBeTruthy();
+  const persisted = (await readResp.json()) as { result_limit: number };
+  expect(persisted.result_limit).toBe(NEW_LIMIT);
 });

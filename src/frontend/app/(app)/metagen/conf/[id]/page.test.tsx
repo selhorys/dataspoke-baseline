@@ -9,9 +9,12 @@
  *     same slot need distinct keys. jsdom can't catch the real submit-on-morph,
  *     but it CAN verify that clicking Edit fires no PUT mutation.
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, beforeAll } from "vitest";
 import { render, screen, act, fireEvent } from "@testing-library/react";
 import React from "react";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import MetagenConfDetailPage from "./page";
 import type { MetagenConf } from "@/types/metagen";
 
@@ -56,27 +59,12 @@ vi.mock("@/components/range-picker", () => ({
 
 // MetagenConfForm pulls in Radix Select / DatasetFilterEditor (ResizeObserver,
 // not in jsdom). The detail page exercises header gating + the Edit→Save morph,
-// not the form internals, so stub it: it renders the Save button only when not
-// disabled (edit mode on), mirroring the real component's contract.
+// not the form internals, so stub it as a bare <form id={formId}> shell with NO
+// internal submit button — mirroring the real component's contract (the Save
+// button lives in the page header and is wired via form={formId} type="submit").
 vi.mock("@/components/metagen/conf-form", () => ({
-  MetagenConfForm: ({
-    disabled,
-    submitLabel,
-  }: {
-    disabled?: boolean;
-    submitLabel?: string;
-  }) =>
-    React.createElement(
-      "form",
-      { "data-testid": "conf-form" },
-      disabled
-        ? null
-        : React.createElement(
-            "button",
-            { type: "submit" },
-            submitLabel ?? "Save configuration",
-          ),
-    ),
+  MetagenConfForm: ({ formId }: { formId: string }) =>
+    React.createElement("form", { id: formId, "data-testid": "conf-form" }),
 }));
 
 vi.mock("@/components/metagen/metagen-event-table", () => ({
@@ -116,6 +104,17 @@ async function renderPage() {
   });
 }
 
+// Radix Dialog/portal internals depend on ResizeObserver, absent in jsdom.
+beforeAll(() => {
+  if (!globalThis.ResizeObserver) {
+    globalThis.ResizeObserver = class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    };
+  }
+});
+
 beforeEach(() => {
   mockUseMe.mockReset();
   mockConf.mockReset();
@@ -145,7 +144,7 @@ describe("metagen conf detail — write gating", () => {
     expect(screen.queryByRole("button", { name: /^delete$/i })).toBeNull();
   });
 
-  it("clicking Edit does NOT submit the form (no PUT mutation fires)", async () => {
+  it("clicking Edit switches to Save/Cancel and HIDES Run/Delete, without firing PUT", async () => {
     mockUseMe.mockReturnValue({ canWrite: true });
     mockConf.mockReturnValue({ data: makeConf(), isLoading: false, error: null });
 
@@ -157,10 +156,122 @@ describe("metagen conf detail — write gating", () => {
     });
 
     // Edit only toggles edit mode; it must not trigger the conf PUT mutation.
+    // jsdom can't reproduce the real-browser morph-then-submit, so this guards
+    // the state transition, not the defect (the e2e ground spec is the real guard).
     expect(putMutate).not.toHaveBeenCalled();
-    // After clicking Edit, the form's Save button appears (edit mode is on).
-    expect(screen.getByRole("button", { name: /save conf/i })).toBeTruthy();
+
+    // After clicking Edit, the header Save button appears (label "Save", not the
+    // old internal "Save conf" label), bound to the conf form via form=.
+    const saveButton = screen.getByRole("button", {
+      name: /^save$/i,
+    }) as HTMLButtonElement;
+    expect(saveButton.type).toBe("submit");
+    expect(saveButton.getAttribute("form")).toBe("metagen-conf-form");
+
     // Cancel replaces Edit (distinct keys, no node reuse).
     expect(screen.getByRole("button", { name: /^cancel$/i })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^edit$/i })).toBeNull();
+
+    // Run and Delete are hidden while editing.
+    expect(screen.queryByRole("button", { name: /^run$/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^delete$/i })).toBeNull();
+  });
+
+  it("clicking Cancel returns to read mode (Edit/Run/Delete restored)", async () => {
+    mockUseMe.mockReturnValue({ canWrite: true });
+    mockConf.mockReturnValue({ data: makeConf(), isLoading: false, error: null });
+
+    await renderPage();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^cancel$/i }));
+    });
+
+    // Back to read mode: Edit/Run/Delete shown, Save/Cancel gone.
+    expect(screen.getByRole("button", { name: /^edit$/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^run$/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^delete$/i })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^save$/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^cancel$/i })).toBeNull();
+    expect(putMutate).not.toHaveBeenCalled();
+  });
+
+  it("structurally — the conditional header buttons carry distinct key props", () => {
+    // The ACTUAL morph fix: distinct `key` props on the conditional header buttons
+    // force React to create a separate DOM node per ternary branch instead of
+    // reusing/morphing one <button> into the type="submit" Save node during the
+    // setEditing flush. `key` is a React-internal prop (not rendered to the DOM),
+    // so assert its presence in the page source. Removing any reintroduces the bug.
+    const here = dirname(fileURLToPath(import.meta.url));
+    const src = readFileSync(join(here, "page.tsx"), "utf-8");
+    for (const key of ['key="conf-save"', 'key="conf-cancel"', 'key="conf-edit"']) {
+      expect(
+        src,
+        `page.tsx must keep ${key} on the conditional header button`,
+      ).toContain(key);
+    }
+  });
+});
+
+describe("metagen conf-form — no internal submit element (header external-submit)", () => {
+  it("conf-form.tsx renders no internal submit button", () => {
+    // The Save/Create submit lives in the page header (external submit via
+    // form={formId}); the form component itself must carry NO submit element,
+    // mirroring OntoGen. Read the component source and assert it.
+    const here = dirname(fileURLToPath(import.meta.url));
+    // app/(app)/metagen/conf/[id] → repo src/frontend/components/metagen/conf-form.tsx
+    const formPath = join(
+      here,
+      "..",
+      "..",
+      "..",
+      "..",
+      "..",
+      "components",
+      "metagen",
+      "conf-form.tsx",
+    );
+    let formSrc = readFileSync(formPath, "utf-8");
+    // Strip comments so a documented "submit" in prose doesn't false-RED.
+    formSrc = formSrc
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+
+    // No <Button> may default to type="submit": any <Button> tag without an
+    // explicit type="button" is a default-submit button (false-RED-safe: a
+    // legitimate type="button" Button is allowed).
+    const defaultSubmitButtons = (formSrc.match(/<Button\b(?:[^>]|=>)*?>/g) ?? []).filter(
+      (tag) => !/type=["']button["']/.test(tag),
+    );
+    expect(defaultSubmitButtons).toEqual([]);
+
+    // And no explicit type="submit" anywhere in the form component.
+    expect(/type=["']submit["']/.test(formSrc)).toBe(false);
+  });
+});
+
+describe("metagen conf detail — delete confirm copy", () => {
+  it("the delete dialog states results are retained as parentless, not dropped", async () => {
+    mockUseMe.mockReturnValue({ canWrite: true });
+    mockConf.mockReturnValue({ data: makeConf(), isLoading: false, error: null });
+
+    await renderPage();
+
+    const deleteButton = screen.getByRole("button", { name: /^delete$/i });
+    await act(async () => {
+      fireEvent.click(deleteButton);
+    });
+
+    // The confirm dialog must communicate RETENTION, not deletion, of generated
+    // items/candidates. Deleting a conf orphans them (parentless), it does not
+    // drop them. spec: feature/BACKEND.md §Metadata Generation Service — retention.
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog.textContent ?? "").toMatch(/retained/i);
+    expect(dialog.textContent ?? "").toMatch(/parentless/i);
+    // Must NOT use deletion/drop language for the retained results.
+    expect(dialog.textContent ?? "").not.toMatch(/dropped|deleted along|will be removed/i);
   });
 });

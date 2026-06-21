@@ -12,7 +12,6 @@ import { useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Field } from "@/components/forms/field";
@@ -42,11 +41,11 @@ interface MetagenConfFormProps {
   datasetFilter: DatasetFilter;
   onDatasetFilterChange: (v: DatasetFilter) => void;
   onSubmit: (body: MetagenConfPutBody) => void;
-  isSubmitting: boolean;
   disabled?: boolean;
   /** Server error (e.g. 409 METAGEN_CONF_EXISTS) to surface against the name field. */
   serverError?: string;
-  submitLabel?: string;
+  /** id wired to the top-right header Save button via <Button form={id} type="submit">. */
+  formId: string;
 }
 
 export function MetagenConfForm({
@@ -54,10 +53,9 @@ export function MetagenConfForm({
   datasetFilter,
   onDatasetFilterChange,
   onSubmit,
-  isSubmitting,
   disabled = false,
   serverError,
-  submitLabel,
+  formId,
 }: MetagenConfFormProps) {
   const {
     register,
@@ -105,7 +103,7 @@ export function MetagenConfForm({
   }
 
   return (
-    <form onSubmit={handleSubmit(handleFormSubmit)} className="space-y-6">
+    <form id={formId} onSubmit={handleSubmit(handleFormSubmit)} className="space-y-6">
       <Field
         label="name"
         htmlFor="metagen-conf-name"
@@ -197,12 +195,6 @@ export function MetagenConfForm({
           </span>
         </div>
       </Field>
-
-      {!disabled && (
-        <Button type="submit" disabled={isSubmitting}>
-          {isSubmitting ? "Saving…" : (submitLabel ?? "Save configuration")}
-        </Button>
-      )}
     </form>
   );
 }
