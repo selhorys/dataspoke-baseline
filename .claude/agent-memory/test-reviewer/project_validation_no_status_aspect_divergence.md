@@ -5,15 +5,15 @@ metadata:
   type: project
 ---
 
-After the remove-soft-delete change, VALIDATION.md (L215-218 "writes two aspects:
-assertionInfo + assertionRunEvent", L304 "DataSpoke therefore emits no `status`
-aspect") and DATAHUB_INTEGRATION.md (L405 status cell: "no `status` write") say the
-validation feature writes NO `status` aspect at all — DELETE hard-deletes the assertion
-entity instead of tombstoning.
+VALIDATION.md (L215-218 "writes two aspects: assertionInfo + assertionRunEvent",
+L304 "DataSpoke therefore emits no `status` aspect") and DATAHUB_INTEGRATION.md
+(L405 status cell: "no `status` write") say the validation feature writes NO
+`status` aspect at all — DELETE hard-deletes the assertion entity instead of
+tombstoning.
 
-But the impl `src/backend/validation/assertions.py::register_assertion` still emits
-`StatusClass(removed=False)` on every PUT/PATCH (the backend stage removed
-`tombstone_assertion()` but left the PUT-time status emit).
+But the impl `src/backend/validation/assertions.py::register_assertion` emits
+`StatusClass(removed=False)` on every PUT/PATCH — a PUT-time status emit with no
+spec basis. There is no tombstone path; DELETE hard-deletes.
 
 **Why:** This is the T2 test-concealment trap. The spot test
 `test_out_of_band_tombstone_reverted_on_put` asserts the impl's leftover

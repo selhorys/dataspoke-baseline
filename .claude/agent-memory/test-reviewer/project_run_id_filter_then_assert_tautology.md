@@ -1,6 +1,6 @@
 ---
 name: run-id-filter-then-assert-tautology
-description: UC3 evidence-Langfuse run_id tests — the filter-then-assert looks tautological but the scoping is INTENTIONAL (result tables hold multiple runs' rows); discriminate via any_rows_found + run_id field-presence, NOT by asserting every row==this run_id
+description: UC3 ontogen run_id tests — the filter-then-assert looks tautological but the scoping is INTENTIONAL (result tables hold multiple runs' rows); discriminate via any_rows_found + run_id field-presence, NOT by asserting every row==this run_id
 metadata:
   type: project
 ---
@@ -21,10 +21,10 @@ failed on a `title` node left by a prior run). The correct, non-tautological pat
 the discriminator. (The "assert a seeded row carries a different run_id" idea only works when
 deliberately-seeded ontogen rows exist — the standard UC3 api-wired flow has none.)
 
-**E2E double-run (FIXED):** the E2E real-LLM step formerly fired TWO method/run calls (UI Run +
-an adminApi shape-probe) and scoped any_rows_found to the *latest* — a false-negative because
-reused rows keep run-1's id. It now captures the single UI run's response via
-`page.waitForResponse`; do not reintroduce a second run.
+**E2E double-run:** the E2E real-LLM step must fire exactly ONE method/run call and capture its
+response via `page.waitForResponse`. Do not add a second call (e.g. a UI Run plus an adminApi
+shape-probe) and scope any_rows_found to the latter — reused rows keep the first run's id, so the
+second-run scoping false-negatives.
 
 **method/run is synchronous + slow under real LLM:** the run POST blocks for minutes, so the
 real-LLM tests pass a per-call `timeout=300.0` (api-wired) / `waitForResponse({timeout:300_000})`

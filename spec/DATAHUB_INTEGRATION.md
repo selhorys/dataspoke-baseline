@@ -818,9 +818,8 @@ rejected by DataHub at query time rather than by DataSpoke at PUT/PATCH time.
 The resolver in `DataHubClient.enumerate_datasets` emits `origin` as its own
 AND-clause within each `scrollAcrossEntities` `or` group so that DataHub combines
 `origin` with the OR-ed `tags` / `glossaryTerms` / explicit-URN groups. Each filter
-rule uses the **`values` array** form (`{field, values: [...]}`) — the DataHub search
-filter API expresses a single match as a one-element array, not a singular `value`
-scalar:
+rule uses the **`values` array** form (`{field, values: [...]}`); the DataHub search
+filter API expresses a single match as a one-element array:
 
 ```
 or: [
