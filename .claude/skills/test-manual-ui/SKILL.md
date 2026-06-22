@@ -302,18 +302,23 @@ generates the same for any scenario.
 ```
 page:   /ingestion/sources/new
 do:     mode selector → ACTIVE_CUSTOM_MANAGED; in the YAML recipe editor enter
-        the lossless YAML form of this body, then Submit:
+        the lossless NESTED YAML form of this body, then Submit. Render the recipe as
+        genuinely nested mappings — never dotted-key shorthand (`schema_pattern.allow:`),
+        which YAML parses as a literal flat key the extractor ignores (→ allow-all):
           mode: ACTIVE_CUSTOM_MANAGED
           name: dummy postgres example_db in catalog schema
           schedule: '0 0 * * *'
-          recipe.source.type: postgres
-          recipe.source.config:
-            host_port: example-postgres.dataspoke-dummy-data-01.svc.cluster.local:5432
-            database: example_db
-            username: postgres
-            password: ${dummy-data-pg__password}
-            env: DEV
-            schema_pattern.allow: ['^catalog$']
+          recipe:
+            source:
+              type: postgres
+              config:
+                host_port: example-postgres.dataspoke-dummy-data-01.svc.cluster.local:5432
+                database: example_db
+                username: postgres
+                password: ${dummy-data-pg__password}
+                env: DEV
+                schema_pattern:
+                  allow: ['^catalog$']
 expect (UI):      success → redirect to source detail; Recipe panel renders the
                   YAML with password masked as ${dummy-data-pg__password}
                   (never the plaintext); mode badge ACTIVE_CUSTOM_MANAGED.
