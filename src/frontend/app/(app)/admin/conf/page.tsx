@@ -20,6 +20,8 @@ import { useDisplayTz } from "@/lib/preferences/timezone";
 import { confSchema, toFormDefaults, buildPatch } from "./conf-form.schema";
 import type { ConfFormValues } from "./conf-form.schema";
 
+const ADMIN_CONF_FORM_ID = "admin-conf-form";
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function AdminConfPage() {
@@ -124,12 +126,26 @@ export default function AdminConfPage() {
 
   return (
     <div>
-      <h1 className="mb-1 text-2xl font-semibold tracking-tight">Admin — Configurations</h1>
-      <p className="mb-6 text-sm text-muted-foreground">
-        Behavioral tunables, LLM settings, and dependency-stub toggles.
-      </p>
+      <div className="mb-6 flex items-start justify-between gap-4">
+        <div>
+          <h1 className="mb-1 text-2xl font-semibold tracking-tight">Admin — Configurations</h1>
+          <p className="text-sm text-muted-foreground">
+            Behavioral tunables, LLM settings, and dependency-stub toggles.
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-4">
+          {savedAt && (
+            <p className="text-sm text-muted-foreground">
+              Saved · updated {formatDateTime(savedAt, tz)}
+            </p>
+          )}
+          <Button type="submit" form={ADMIN_CONF_FORM_ID} disabled={isPending}>
+            {isPending ? "Saving..." : "Save changes"}
+          </Button>
+        </div>
+      </div>
 
-      <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
+      <form id={ADMIN_CONF_FORM_ID} onSubmit={handleSubmit(onSubmit)} className="space-y-6">
         {/* LLM */}
         <Card>
           <CardHeader>
@@ -486,17 +502,6 @@ export default function AdminConfPage() {
           </CardContent>
         </Card>
 
-        {/* Footer */}
-        <div className="flex items-center gap-4">
-          <Button type="submit" disabled={isPending}>
-            {isPending ? "Saving..." : "Save changes"}
-          </Button>
-          {savedAt && (
-            <p className="text-sm text-muted-foreground">
-              Saved · updated {formatDateTime(savedAt, tz)}
-            </p>
-          )}
-        </div>
       </form>
     </div>
   );

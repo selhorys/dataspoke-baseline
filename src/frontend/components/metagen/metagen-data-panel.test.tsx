@@ -50,9 +50,9 @@ vi.mock("@/lib/api/metagen", () => ({
   useDeleteMetagenBoundary: () => mockDelete(),
 }));
 
-// ItemCard / ConfirmDialog are out of scope for the boundary cluster; stub them.
-vi.mock("@/components/metagen/item-card", () => ({
-  ItemCard: () => React.createElement("div", { "data-testid": "item-card" }),
+// ItemKindTable / ConfirmDialog are out of scope for the boundary cluster; stub them.
+vi.mock("@/components/metagen/item-kind-table", () => ({
+  ItemKindTable: () => React.createElement("div", { "data-testid": "item-kind-table" }),
 }));
 vi.mock("@/components/confirm-dialog", () => ({
   ConfirmDialog: () => React.createElement("div", { "data-testid": "confirm-dialog" }),

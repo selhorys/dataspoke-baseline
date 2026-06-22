@@ -9,6 +9,7 @@ import type {
   MetagenCandidate,
   MetagenConf,
   MetagenCoveredDatasetResponse,
+  MetagenDatasetListResponse,
   MetagenConfCreateBody,
   MetagenConfListResponse,
   MetagenConfPatchBody,
@@ -126,7 +127,7 @@ export function useDeleteMetagenConf(confId: string) {
       void qc.invalidateQueries({ queryKey: ["metagen", "confs"] });
       void qc.invalidateQueries({ queryKey: ["metagen", "conf", confId] });
       void qc.invalidateQueries({ queryKey: ["metagen", "items"] });
-      void qc.invalidateQueries({ queryKey: ["metagen", "queue"] });
+      void qc.invalidateQueries({ queryKey: ["metagen", "datasets"] });
       void qc.invalidateQueries({ queryKey: ["metagen", "uncovered"] });
     },
   });
@@ -150,7 +151,7 @@ export function useRunMetagenConf(confId: string) {
     },
     meta: { handledInline: true },
     onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ["metagen", "queue"] });
+      void qc.invalidateQueries({ queryKey: ["metagen", "datasets"] });
       void qc.invalidateQueries({ queryKey: ["metagen", "events"] });
       void qc.invalidateQueries({ queryKey: ["metagen", "conf-events", confId] });
     },
@@ -228,34 +229,30 @@ export function useMetagenUncovered(
   });
 }
 
-// ── Cross-dataset / cross-conf item queue ──────────────────────────────────────
+// ── Per-dataset result rollup (cross-conf) ──────────────────────────────────────
 
-interface MetagenQueueParams {
+interface MetagenDatasetParams {
   dataset_urn?: string;
-  kind?: string;
-  status?: string;
   conf_id?: string;
   offset?: number;
   limit?: number;
 }
 
-function buildQueueUrl(params: MetagenQueueParams): string {
+function buildDatasetUrl(params: MetagenDatasetParams): string {
   const sp = new URLSearchParams();
   if (params.dataset_urn) sp.set("dataset_urn", params.dataset_urn);
-  if (params.kind) sp.set("kind", params.kind);
-  if (params.status) sp.set("status", params.status);
   if (params.conf_id) sp.set("conf_id", params.conf_id);
   if (params.offset !== undefined) sp.set("offset", String(params.offset));
   if (params.limit !== undefined) sp.set("limit", String(params.limit));
   const qs = sp.toString();
-  return `/spoke/metagen/item${qs ? `?${qs}` : ""}`;
+  return `/spoke/metagen/dataset${qs ? `?${qs}` : ""}`;
 }
 
-/** GET /spoke/metagen/item — cross-dataset/cross-conf queue, polled. */
-export function useMetagenQueue(params: MetagenQueueParams = {}) {
-  return usePoll<MetagenItemListResponse>({
-    queryKey: ["metagen", "queue", params],
-    queryFn: () => apiFetch<MetagenItemListResponse>(buildQueueUrl(params)),
+/** GET /spoke/metagen/dataset — per-dataset result rollup, polled. */
+export function useMetagenDatasets(params: MetagenDatasetParams = {}) {
+  return usePoll<MetagenDatasetListResponse>({
+    queryKey: ["metagen", "datasets", params],
+    queryFn: () => apiFetch<MetagenDatasetListResponse>(buildDatasetUrl(params)),
     meta: { handledInline: true },
   });
 }
@@ -400,7 +397,7 @@ export function useReviewCandidate() {
       void qc.invalidateQueries({
         queryKey: ["metagen", "items", vars.datasetUrn],
       });
-      void qc.invalidateQueries({ queryKey: ["metagen", "queue"] });
+      void qc.invalidateQueries({ queryKey: ["metagen", "datasets"] });
       void qc.invalidateQueries({
         queryKey: ["metagen", "dataset-events", vars.datasetUrn],
       });

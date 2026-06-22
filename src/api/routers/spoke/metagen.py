@@ -26,6 +26,7 @@ from src.api.auth.dependencies import AuthContext, require_authenticated, requir
 from src.api.dependencies import get_db, get_metagen_service
 from src.api.routers.spoke._metagen_mappers import (
     event_list,
+    to_dataset_summary,
     to_item_detail,
     to_item_summary,
 )
@@ -39,6 +40,7 @@ from src.api.schemas.metagen import (
     MetagenConfResponse,
     MetagenCoveredDatasetListResponse,
     MetagenCoveredDatasetSummary,
+    MetagenDatasetListResponse,
     MetagenItemDetailResponse,
     MetagenItemListResponse,
     MetagenRunRequest,
@@ -421,6 +423,41 @@ async def get_metagen_items(
     )
     return MetagenItemListResponse(
         items=[to_item_summary(d) for d in dtos],
+        total_count=total,
+        offset=offset,
+        limit=limit,
+    )
+
+
+# ── Per-dataset rollup ────────────────────────────────────────────────────────
+
+
+@router.get("/dataset", response_model=MetagenDatasetListResponse)
+async def get_metagen_datasets(
+    dataset_urn: str | None = Query(default=None),
+    conf_id: str | None = Query(default=None),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=1000),
+    sort: str | None = Query(default=None),
+    service: MetagenService = Depends(get_metagen_service),
+) -> MetagenDatasetListResponse:
+    """Per-dataset rollup of generation results.
+
+    Aggregates the cross-dataset item queue into one row per dataset with
+    candidate-level counts and the dataset's boundary. Paginated; sortable by
+    ``last_modified_at`` (default ``last_modified_at_desc``). ``dataset_urn`` is a
+    substring filter; ``conf_id`` scopes both row membership and counts to that conf.
+    """
+    sort_desc = sort != "last_modified_at_asc"
+    dtos, total = await service.list_dataset_summaries(
+        dataset_urn=dataset_urn,
+        conf_id=conf_id,
+        offset=offset,
+        limit=limit,
+        sort_desc=sort_desc,
+    )
+    return MetagenDatasetListResponse(
+        datasets=[to_dataset_summary(d) for d in dtos],
         total_count=total,
         offset=offset,
         limit=limit,

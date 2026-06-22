@@ -395,7 +395,11 @@ each with its own `dataset_filter`, `schedule_tier`, and generation budget, so t
 run different documentation policies over different dataset groups. Cross-conf
 consistency is held by the shared UC3 ontology that every conf reads, not by a single
 conf. Each conf carries its own run trigger and event feed; all confs feed **one
-global cross-dataset review queue** (`/spoke/metagen/item`).
+global cross-dataset review queue** (`/spoke/metagen/item`). A complementary
+**per-dataset rollup** (`/spoke/metagen/dataset`) aggregates that queue into one
+row per dataset — item count, candidate-level approved/rejected/total counts, and
+the boundary — with a `conf_id` filter that scopes both membership and counts to a
+single conf.
 
 Per-dataset participation is opt-in via a separate boundary row at
 `/spoke/common/data/{dataset_urn}/attr/metagen/boundary`. A dataset is generated for a
@@ -432,6 +436,7 @@ ontogen): [BACKEND_LLM §Metagen Adversarial Debate](feature/BACKEND_LLM.md#meta
 | `GET` | `/spoke/metagen/event` | Cross-conf union of all confs' generation-run events (e.g. `METAGEN.RUN_COMPLETE`, `METAGEN.RUN_FAILED`). Paginated, sortable by `occurred_at` (default `occurred_at_desc`) | Metadata Generation | UC4 |
 | `GET` | `/spoke/metagen/item` | List items across datasets and confs (paginated, sortable by `created_at`/`updated_at`/`dataset_urn` (default `created_at_desc`); filterable by `dataset_urn`, `kind`, `status`, `conf_id`). Each row carries `dataset_urn`, `item_id`, `kind`, `field_path`, `status`, `candidate_count`, `created_at`, `composite_id` — `conf_id`/`conf_name` surface per-candidate at the item-detail route, not on these item rows | Metadata Generation | UC4 |
 | `GET` | `/spoke/metagen/item/{composite_id}` | Item detail by composite id `{dataset_urn}::{item_id}` — includes all candidates (with `conf_id`/`conf_name`) and their statuses | Metadata Generation | UC4 |
+| `GET` | `/spoke/metagen/dataset` | Per-dataset rollup of generation results (paginated, sortable by `last_modified_at` (default `last_modified_at_desc`); filterable by `dataset_urn` text and `conf_id`). Each row carries `dataset_urn`, `is_enabled`, `allowed` (boundary; `is_enabled=false`/`allowed=[]` when none), `item_count`, candidate-level `approved_count`/`rejected_count`/`candidate_count`, and `last_modified_at`. Counts are candidate-level; with `conf_id` set, rows are restricted to datasets holding a candidate from that conf and counts are scoped to that conf's candidates | Metadata Generation | UC4 |
 
 `uncovered` `reason` values: `no_conf_match` (matched by no enabled conf's
 `dataset_filter`) and `boundary_blocked` (matched by a conf but the boundary is

@@ -93,9 +93,9 @@ uncovered view.
 | `/metagen/conf` | `uc4-01-metadata-generation.spec.ts` steps 1, 2 (list heading, Create-conf link, both confs as rows) | `ground/metagen/conf-list.spec.ts` (list render, Create-conf link href, seeded-conf row + per-row Run) |
 | `/metagen/conf/new` | `uc4-01-metadata-generation.spec.ts` step 2 (create conf EU + conf OE → redirect) | `ground/metagen/conf-new.spec.ts` (fill form → POST → redirect → backend read-back of fields + dataset_filter) |
 | `/metagen/conf/[id]` | `uc4-01-metadata-generation.spec.ts` steps 4, 5 (Run via RunDialog, per-conf events isolation) | `ground/metagen/conf-edit-no-submit.spec.ts` (read-mode header Edit/Run/Delete; clicking Edit enters edit mode + hides Run/Delete + fires NO PUT — Edit/Save morph guard; header Save external-submit PUTs once + "Conf saved" toast + REST read-back) |
-| `/metagen/result` | `uc4-01-metadata-generation.spec.ts` step 6 (review-queue heading, item queue + cross-conf events, both runs in union) | `ground/metagen/result.spec.ts` (queue + events render; conf_id filter select narrows the GET /spoke/metagen/item request) |
+| `/metagen/result` | `uc4-01-metadata-generation.spec.ts` step 6 (result-rollup heading, per-dataset rollup + cross-conf events, both runs in union; GET /spoke/metagen/dataset row read-back) | `ground/metagen/result.spec.ts` (per-dataset rollup + events render; conf_id filter select narrows the GET /spoke/metagen/dataset request) |
 | `/metagen/uncovered` | `uc4-01-metadata-generation.spec.ts` step 10 (heading + include_disallowed toggle; off=no_conf_match, on⊇off) | `ground/metagen/uncovered.spec.ts` (include_disallowed toggle flips query param off→on; off⊆on reason-classification invariant) |
-| `/metagen/data/[urn]` (redirects to `/data/[urn]`) | covered via `/data/[urn]` (see Per-dataset hub) — steps 3, 7, 8, 8b, 9 (boundary form, item cards w/ conf_name badge, Approve/Reject candidate, cross-conf demotion, metagen events in unified Events panel) | — |
+| `/metagen/data/[urn]` (redirects to `/data/[urn]`) | covered via `/data/[urn]` (see Per-dataset hub) — steps 3, 7, 8, 8b, 9 (boundary form, per-kind ItemKindTable candidate rows w/ conf_name badge, column.description grouped by field_path, per-row Approve/Reject candidate, cross-conf demotion, metagen events in unified Events panel) | — |
 
 #### Admin / Account
 

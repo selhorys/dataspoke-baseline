@@ -88,6 +88,28 @@ export interface MetagenCoveredDatasetResponse {
   datasets: MetagenCoveredDatasetSummary[];
 }
 
+// ── Per-dataset result rollup (cross-conf) ──────────────────────────────────────
+
+export interface MetagenDatasetSummary {
+  dataset_urn: string;
+  /** false when the dataset has no boundary. */
+  is_enabled: boolean;
+  /** Empty when no boundary exists. */
+  allowed: AllowedKind[];
+  item_count: number;
+  approved_count: number;
+  rejected_count: number;
+  candidate_count: number;
+  last_modified_at: string | null;
+}
+
+export interface MetagenDatasetListResponse {
+  offset: number;
+  limit: number;
+  total_count: number;
+  datasets: MetagenDatasetSummary[];
+}
+
 // ── Per-dataset boundary ──────────────────────────────────────────────────────
 
 export interface MetagenBoundary {

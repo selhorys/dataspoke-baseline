@@ -170,6 +170,26 @@ class MetagenItemDetailResponse(MetagenItemSummary):
     candidates: list[MetagenCandidate]
 
 
+# ── Per-dataset rollup ────────────────────────────────────────────────────────
+
+
+class MetagenDatasetSummary(BaseModel):
+    dataset_urn: str
+    is_enabled: bool
+    allowed: list[Literal["dataset.description", "column.description"]] = Field(
+        default_factory=list
+    )
+    item_count: int
+    approved_count: int
+    rejected_count: int
+    candidate_count: int
+    last_modified_at: datetime | None
+
+
+class MetagenDatasetListResponse(PaginatedResponse):
+    datasets: list[MetagenDatasetSummary] = Field(default_factory=list)
+
+
 # ── Run ───────────────────────────────────────────────────────────────────────
 
 

@@ -12,9 +12,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 from pydantic import ValidationError as PydanticValidationError
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import and_, delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import aliased, joinedload
 
 from src.backend._dataset_filter import resolve_dataset_scope, validate_dataset_filter_service
 from src.backend.admin.config_service import RuntimeConfigDTO, get_runtime_config
@@ -133,6 +133,17 @@ class ItemDetailDTO(BaseModel):
     created_at: datetime
     updated_at: datetime
     candidates: list[CandidateDTO]
+
+
+class DatasetSummaryDTO(BaseModel):
+    dataset_urn: str
+    is_enabled: bool
+    allowed: list[str]
+    item_count: int
+    approved_count: int
+    rejected_count: int
+    candidate_count: int
+    last_modified_at: datetime | None
 
 
 class RunResultDTO(BaseModel):
@@ -593,6 +604,123 @@ class MetagenService:
 
     async def get_item_for_dataset(self, urn: str, item_id: str) -> ItemDetailDTO:
         return await self.get_item(urn, item_id)
+
+    # ── Per-dataset rollup ──────────────────────────────────────────────────────
+
+    async def list_dataset_summaries(
+        self,
+        *,
+        dataset_urn: str | None = None,
+        conf_id: str | None = None,
+        offset: int = 0,
+        limit: int = 20,
+        sort_desc: bool = True,
+    ) -> tuple[list[DatasetSummaryDTO], int]:
+        """Per-dataset rollup of generation results.
+
+        Aggregates the cross-dataset item queue into one row per dataset:
+        `item_count` is the distinct count of items; candidate counts
+        (`approved_count`/`rejected_count`/`candidate_count`) are candidate-level,
+        joined on (dataset_urn, item_id). Boundary `is_enabled`/`allowed` come from
+        a LEFT JOIN (defaults `false`/`[]` when no boundary). `last_modified_at` is
+        the max item `created_at` for the dataset.
+
+        When `conf_id` is set, rows are restricted to datasets holding a candidate
+        from that conf and all candidate counts are scoped to that conf's candidates.
+        """
+        cid: uuid.UUID | None = None
+        if conf_id is not None:
+            try:
+                cid = uuid.UUID(conf_id)
+            except ValueError:
+                raise EntityNotFoundError("metagen_conf", conf_id)
+
+        # Candidate-count subquery (optionally conf-scoped), grouped per item.
+        cand_filters = [
+            MetagenCandidate.dataset_urn == MetagenItem.dataset_urn,
+            MetagenCandidate.item_id == MetagenItem.item_id,
+        ]
+        if cid is not None:
+            cand_filters.append(MetagenCandidate.conf_id == cid)
+
+        approved_count = func.count(MetagenCandidate.candidate_id).filter(
+            MetagenCandidate.status == "approved"
+        )
+        rejected_count = func.count(MetagenCandidate.candidate_id).filter(
+            MetagenCandidate.status == "rejected"
+        )
+        candidate_count = func.count(MetagenCandidate.candidate_id)
+
+        agg = (
+            select(
+                MetagenItem.dataset_urn.label("dataset_urn"),
+                func.count(func.distinct(MetagenItem.item_id)).label("item_count"),
+                func.max(MetagenItem.created_at).label("last_modified_at"),
+                approved_count.label("approved_count"),
+                rejected_count.label("rejected_count"),
+                candidate_count.label("candidate_count"),
+            )
+            .select_from(MetagenItem)
+            .outerjoin(MetagenCandidate, and_(*cand_filters))
+            .group_by(MetagenItem.dataset_urn)
+        )
+        if dataset_urn is not None:
+            agg = agg.where(MetagenItem.dataset_urn.ilike(f"%{dataset_urn}%"))
+        if cid is not None:
+            # Restrict to datasets that hold at least one candidate from this conf.
+            # Use a distinct alias: MetagenCandidate is already in the aggregate's
+            # FROM (via the outerjoin above), so reusing it here would auto-correlate
+            # and strip the subquery's own FROM clause at compile time.
+            mc = aliased(MetagenCandidate)
+            agg = agg.where(
+                select(mc.candidate_id)
+                .where(
+                    mc.conf_id == cid,
+                    mc.dataset_urn == MetagenItem.dataset_urn,
+                )
+                .exists()
+            )
+
+        agg_sub = agg.subquery()
+
+        count_q = select(func.count()).select_from(agg_sub)
+        total = (await self._db.execute(count_q)).scalar() or 0
+
+        order_col = agg_sub.c.last_modified_at
+        order_by = order_col.desc() if sort_desc else order_col.asc()
+
+        rows_q = (
+            select(
+                agg_sub,
+                MetagenBoundary.is_enabled,
+                MetagenBoundary.allowed,
+            )
+            .select_from(
+                agg_sub.outerjoin(
+                    MetagenBoundary,
+                    MetagenBoundary.dataset_urn == agg_sub.c.dataset_urn,
+                )
+            )
+            .order_by(order_by)
+            .offset(offset)
+            .limit(limit)
+        )
+        rows = (await self._db.execute(rows_q)).all()
+
+        summaries = [
+            DatasetSummaryDTO(
+                dataset_urn=r.dataset_urn,
+                is_enabled=bool(r.is_enabled) if r.is_enabled is not None else False,
+                allowed=list(r.allowed) if r.allowed is not None else [],
+                item_count=int(r.item_count),
+                approved_count=int(r.approved_count),
+                rejected_count=int(r.rejected_count),
+                candidate_count=int(r.candidate_count),
+                last_modified_at=r.last_modified_at,
+            )
+            for r in rows
+        ]
+        return summaries, int(total)
 
     # ── Uncovered view ────────────────────────────────────────────────────────
 

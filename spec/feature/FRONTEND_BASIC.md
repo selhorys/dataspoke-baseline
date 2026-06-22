@@ -114,7 +114,7 @@ ingestion recipe YAML editor) remain one full-width field.
 | `/ontogen/seed` | [Ontology Generation — seed library](FRONTEND_ONTOGEN.md) | `/spoke/ontogen/attr/seed/...` |
 | `/metagen` | 302 to `/metagen/conf` | — |
 | `/metagen/conf` | [Metadata Generation — conf list + run](FRONTEND_METAGEN.md) | `/spoke/metagen/conf/...` |
-| `/metagen/result` | [Metadata Generation — global review queue + events](FRONTEND_METAGEN.md) | `/spoke/metagen/{item,event}` |
+| `/metagen/result` | [Metadata Generation — per-dataset result rollup + events](FRONTEND_METAGEN.md) | `/spoke/metagen/{dataset,event}` |
 | `/metagen/uncovered` | [Metadata Generation — uncovered datasets](FRONTEND_METAGEN.md) | `/spoke/metagen/uncovered` |
 | `/data/[urn]` | [Unified per-dataset page](#per-dataset-page-dataurn) — summary cards + Ingestion/Validation/MetaGen/Events panels | `/spoke/common/data/{urn}/...` (attr, event, validation, metagen) |
 | `/settings` | Theme, locale, and timezone (Local or UTC, **default Local**) toggles, persisted in `localStorage` only. The timezone preference is display-only — it governs how all dates and times are rendered across the app; stored and queried timestamps remain canonical UTC ISO per `API.md`. | — |

@@ -13,6 +13,7 @@ from typing import Any, Literal, cast
 from src.api.schemas.events import EventListResponse, EventResponse
 from src.api.schemas.metagen import (
     MetagenCandidate,
+    MetagenDatasetSummary,
     MetagenItemDetailResponse,
     MetagenItemSummary,
 )
@@ -80,6 +81,19 @@ def to_item_detail(dto: Any) -> MetagenItemDetailResponse:
         created_at=dto.created_at,
         composite_id=f"{dto.dataset_urn}::{dto.item_id}",
         candidates=cands,
+    )
+
+
+def to_dataset_summary(dto: Any) -> MetagenDatasetSummary:
+    return MetagenDatasetSummary(
+        dataset_urn=dto.dataset_urn,
+        is_enabled=dto.is_enabled,
+        allowed=[cast(_KindLiteral, k) for k in dto.allowed],
+        item_count=dto.item_count,
+        approved_count=dto.approved_count,
+        rejected_count=dto.rejected_count,
+        candidate_count=dto.candidate_count,
+        last_modified_at=dto.last_modified_at,
     )
 
 

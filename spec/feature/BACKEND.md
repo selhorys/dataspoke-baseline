@@ -764,6 +764,18 @@ matched dataset's `metagen_boundary`. Each row carries `dataset_urn`,
 `404 METAGEN_CONF_NOT_FOUND` when the conf is absent. The view is paginated
 (sortable by `dataset_urn`, default `dataset_urn_asc`) and read-only.
 
+**Per-dataset rollup view** (`GET /spoke/metagen/dataset`,
+`list_dataset_summaries`). Aggregates the global item queue into one row per
+dataset: groups `metagen_items` by `dataset_urn` for `item_count` and
+`last_modified_at` (max item `created_at`), derives candidate-level
+`approved_count`/`rejected_count`/`candidate_count` from the joined
+`metagen_candidates`, and left-joins `metagen_boundary` for `is_enabled`/`allowed`
+(`is_enabled=false`, `allowed=[]` when no boundary). The `dataset_urn` filter is a
+text match; a `conf_id` filter (validated UUID, `404 metagen_conf` when absent)
+restricts rows to datasets holding a candidate from that conf and scopes the
+candidate counts to that conf's candidates. Paginated, sortable by
+`last_modified_at` (default `last_modified_at_desc`), read-only.
+
 ### Ontology Generation Service (`src/backend/ontogen/`)
 
 **Covers**: MANIFESTO §2.1 Ontology Generation (UC3). Consumed by Metadata Generation

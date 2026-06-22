@@ -10,7 +10,7 @@
  * DIFFERENT dataset groups (conf EU scoped to eu_profiles, conf OE scoped to
  * orders.events), opts each dataset in via its per-dataset boundary, runs each
  * conf, reviews candidates in the UI (approve / reject) with backend read-back,
- * inspects the global cross-conf review queue + events, and the uncovered view.
+ * inspects the per-dataset result rollup + cross-conf events, and the uncovered view.
  *
  * Arc (verbatim from USE_CASE_en.md §UC4 / api-wired steps):
  *   Setup  — --uc4-seed: fulfillment document + approved ontogen nodes, mask
@@ -27,13 +27,16 @@
  *             Backend: POST /spoke/metagen/conf/{id}/method/run → 200; run_id carries conf_id.
  *   Step 5 — /metagen/conf/[id] per-conf events show this conf's RUN_COMPLETE only.
  *             Backend: GET /spoke/metagen/conf/{id}/event → EU run present, OE run absent.
- *   Step 6 — /metagen/result global queue lists items; cross-conf event feed shows
+ *   Step 6 — /metagen/result per-dataset rollup lists datasets (one row per dataset
+ *             with candidate-level counts + boundary); cross-conf event feed shows
  *             both confs' RUN_COMPLETE.
- *             Backend: GET /spoke/metagen/item + GET /spoke/metagen/event union.
+ *             Backend: GET /spoke/metagen/dataset + GET /spoke/metagen/event union.
  *   Step 7 — /data/[eu] (MetaGen panel) approve a dataset.description candidate via the
- *             ItemCard → Review → CandidateCard (conf_name badge) → Approve → ConfirmDialog.
+ *             dataset.description ItemKindTable candidate row (conf_name + status badges)
+ *             → per-row Approve → ConfirmDialog.
  *             Backend: candidate status=approved; per-candidate conf_name = conf EU.
- *   Step 8 — /data/[eu] (MetaGen panel) reject a column.description candidate.
+ *   Step 8 — /data/[eu] (MetaGen panel) reject a column.description candidate via its
+ *             column-grouped row in the column.description ItemKindTable.
  *             Backend: candidate status=rejected.
  *   Step 9 — Per-dataset events show CANDIDATE_APPROVE + CANDIDATE_REJECT.
  *             Backend: GET .../event/metagen → events with item_id, candidate_id, reason.
@@ -95,7 +98,7 @@ const CONF_API = "/api/v1/spoke/metagen/conf";
 const EU_BOUNDARY_API = `/api/v1/spoke/common/data/${EU_PROFILES_ENC}/attr/metagen/boundary`;
 const OE_BOUNDARY_API = `/api/v1/spoke/common/data/${ORDERS_EVENTS_ENC}/attr/metagen/boundary`;
 const GLOBAL_EVENT_API = "/api/v1/spoke/metagen/event";
-const GLOBAL_ITEM_API = "/api/v1/spoke/metagen/item";
+const GLOBAL_DATASET_API = "/api/v1/spoke/metagen/dataset";
 const UNCOVERED_API = "/api/v1/spoke/metagen/uncovered";
 
 // Frontend routes
@@ -716,10 +719,10 @@ test("UC4 step 5 — conf EU detail shows its own RUN_COMPLETE; OE run does not 
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Step 6 — /metagen/result global queue + cross-conf event union
-// spec: FRONTEND_METAGEN.md §Result queue — GET /spoke/metagen/item, /spoke/metagen/event
+// Step 6 — /metagen/result per-dataset rollup + cross-conf event union
+// spec: FRONTEND_METAGEN.md §Result rollup — GET /spoke/metagen/dataset, /spoke/metagen/event
 // ─────────────────────────────────────────────────────────────────────────────
-test("UC4 step 6 — review queue lists items; cross-conf events show both runs", async ({
+test("UC4 step 6 — result rollup lists datasets; cross-conf events show both runs", async ({
   page,
   adminApi,
 }) => {
@@ -728,19 +731,28 @@ test("UC4 step 6 — review queue lists items; cross-conf events show both runs"
   await page.goto(RESULT_URL);
   await expect(page).not.toHaveURL(/\/login/);
 
-  // -- UI assertion: review-queue heading + queue + events sections --
-  // result/page.tsx: <h1>Review queue</h1>, item queue + Run events sections
-  await expect(page.getByRole("heading", { name: "Review queue", exact: true })).toBeVisible({
+  // -- UI assertion: result-rollup heading + per-dataset rollup + events sections --
+  // result/page.tsx: <h1>Result rollup</h1>, per-dataset rollup + Run events sections
+  await expect(page.getByRole("heading", { name: "Result rollup", exact: true })).toBeVisible({
     timeout: 15_000,
   });
   await expect(
-    page.getByText("item queue (cross-dataset, cross-conf)", { exact: true }),
+    page.getByText("datasets (per-dataset rollup)", { exact: true }),
   ).toBeVisible();
   await expect(page.getByText("Run events (cross-conf)", { exact: true })).toBeVisible();
 
   // -- UI assertion: cross-conf RUN_COMPLETE visible in the events section --
   await expect(
     page.getByText("METAGEN.RUN_COMPLETE", { exact: false }).first(),
+  ).toBeVisible({ timeout: 30_000 });
+
+  // -- UI assertion: the rollup table renders a row linking to eu_profiles --
+  // dataset-table.tsx: dataset cell is a <Link href=/data/{urn}> with the URN text.
+  // The two runs (EU on eu_profiles, OE on orders.events) produce items on both
+  // datasets, so the rollup must surface at least the eu_profiles row.
+  // spec: FRONTEND_METAGEN.md §Result rollup — one row per dataset, dataset_urn links to /data/[urn]
+  await expect(
+    page.getByRole("link", { name: EU_PROFILES_URN, exact: false }).first(),
   ).toBeVisible({ timeout: 30_000 });
 
   // -- Backend probe: cross-conf /event union contains BOTH confs' runs --
@@ -758,23 +770,46 @@ test("UC4 step 6 — review queue lists items; cross-conf events show both runs"
   expect(runIds.has(euRunId), "cross-conf union must include EU run").toBeTruthy();
   expect(runIds.has(oeRunId), "cross-conf union must include OE run").toBeTruthy();
 
-  // -- Backend probe: global item queue carries items with composite_id + valid status/kind --
-  // spec: API.md §Metadata Generation — GET /spoke/metagen/item; composite_id = {urn}::{item_id}
-  const itemsResp = await adminApi.get(`${GLOBAL_ITEM_API}?limit=100`);
-  expect(itemsResp.status()).toBe(200);
-  const itemsBody = (await itemsResp.json()) as {
-    items: Array<{ dataset_urn: string; composite_id: string; status: string; kind: string }>;
+  // -- Backend probe (dual confirmation): per-dataset rollup carries one row per
+  //    dataset with candidate-level counts + boundary; eu_profiles and orders.events
+  //    each appear with item_count ≥ 1 after their runs. --
+  // spec: API.md §Metadata Generation — GET /spoke/metagen/dataset row shape:
+  //   dataset_urn, is_enabled, allowed, item_count, approved/rejected/candidate_count,
+  //   last_modified_at
+  const dsResp = await adminApi.get(`${GLOBAL_DATASET_API}?limit=100`);
+  expect(dsResp.status()).toBe(200);
+  const dsBody = (await dsResp.json()) as {
+    datasets: Array<{
+      dataset_urn: string;
+      is_enabled: boolean;
+      allowed: string[];
+      item_count: number;
+      approved_count: number;
+      rejected_count: number;
+      candidate_count: number;
+      last_modified_at: string | null;
+    }>;
     offset: number;
     limit: number;
     total_count: number;
   };
-  expect(itemsBody).toHaveProperty("offset");
-  expect(itemsBody).toHaveProperty("total_count");
-  expect(Array.isArray(itemsBody.items)).toBe(true);
-  for (const item of itemsBody.items) {
-    expect(item.composite_id.startsWith(`${item.dataset_urn}::`)).toBe(true);
-    expect(["pending", "llm_approved", "approved"]).toContain(item.status);
-    expect(["dataset.description", "column.description"]).toContain(item.kind);
+  expect(dsBody).toHaveProperty("offset");
+  expect(dsBody).toHaveProperty("total_count");
+  expect(Array.isArray(dsBody.datasets)).toBe(true);
+  const byUrn = new Map(dsBody.datasets.map((d) => [d.dataset_urn, d]));
+  const euRow = byUrn.get(EU_PROFILES_URN);
+  expect(euRow, "eu_profiles must appear as a rollup row after its run").toBeTruthy();
+  // eu_profiles boundary was enabled in step 3 with both kinds allowed.
+  expect(euRow!.is_enabled, "eu_profiles boundary is enabled").toBe(true);
+  expect(euRow!.allowed).toContain("dataset.description");
+  expect(euRow!.item_count, "eu_profiles rollup item_count ≥ 1").toBeGreaterThanOrEqual(1);
+  // candidate_count is candidate-level and ≥ item_count when candidates exist.
+  expect(euRow!.candidate_count, "eu_profiles candidate_count ≥ 1").toBeGreaterThanOrEqual(1);
+  for (const d of dsBody.datasets) {
+    expect(typeof d.is_enabled).toBe("boolean");
+    expect(Array.isArray(d.allowed)).toBe(true);
+    // candidate_count is the total; approved + rejected never exceed it.
+    expect(d.approved_count + d.rejected_count).toBeLessThanOrEqual(d.candidate_count);
   }
 });
 
@@ -793,9 +828,9 @@ test("UC4 step 7 — approve eu_profiles dataset.description candidate (conf_nam
     timeout: 15_000,
   });
 
-  // -- UI assertion: items section + dataset.description sub-heading --
-  // metagen-data-panel.tsx: <h3>attr/metagen/item</h3>, <h4>dataset.description</h4>
-  //   (both matched via getByText)
+  // -- UI assertion: items section + dataset.description foldable panel --
+  // metagen-data-panel.tsx: <h3>attr/metagen/item</h3> + a CollapsiblePanel titled
+  //   "dataset.description" (default-open) holding the ItemKindTable.
   await expect(page.getByText("attr/metagen/item", { exact: true })).toBeVisible({
     timeout: 10_000,
   });
@@ -861,25 +896,31 @@ test("UC4 step 7 — approve eu_profiles dataset.description candidate (conf_nam
   }
   approvedEuDescCandidateId = llmApproved.candidate_id;
   // Per-candidate conf_name is the producing conf (conf EU here).
-  // spec: FRONTEND_METAGEN.md §Result queue — candidates carry conf_id/conf_name
+  // spec: FRONTEND_METAGEN.md §Per-dataset — candidates carry conf_id/conf_name
   expect(llmApproved.conf_name).toBe(CONF_EU_NAME);
 
-  // -- UI gesture: expand the item card (Review) --
-  // item-card.tsx: ghost button "Review" (non-finalized) / "View" (finalized)
-  const reviewButton = page.getByRole("button", { name: "Review" }).first();
-  await expect(reviewButton).toBeVisible({ timeout: 20_000 });
-  await reviewButton.click();
+  // -- UI gesture: the dataset.description ItemKindTable renders one candidate row
+  //    per candidate (panel default-open; no expand gesture). Scope to the conf EU,
+  //    llm_approved row via the row testid + data-attributes so the acted-on row
+  //    is the one the backend probe tracked, then Approve it. --
+  // item-kind-table.tsx: <tr data-testid="metagen-candidate-row"
+  //   data-conf-name={conf_name} data-candidate-status={status}> with a per-row
+  //   Approve button + producing-conf badge + status badge.
+  const euDescRow = page
+    .locator(
+      `[data-testid="metagen-candidate-row"][data-conf-name="${CONF_EU_NAME}"]` +
+        `[data-candidate-status="llm_approved"]`,
+    )
+    .first();
+  await expect(euDescRow).toBeVisible({ timeout: 20_000 });
 
-  // -- UI assertion: producing conf name badge + llm_approved status badge --
-  // candidate-card.tsx: <Badge>{conf_name}</Badge>, <Badge>{status}</Badge>
-  await expect(page.getByText("llm_approved", { exact: true }).first()).toBeVisible({
-    timeout: 15_000,
-  });
-  await expect(page.getByText(CONF_EU_NAME, { exact: true }).first()).toBeVisible();
+  // -- UI assertion: producing conf name badge + llm_approved status badge in-row --
+  await expect(euDescRow.getByText("llm_approved", { exact: true }).first()).toBeVisible();
+  await expect(euDescRow.getByText(CONF_EU_NAME, { exact: true }).first()).toBeVisible();
 
   // -- UI gesture: Approve → ConfirmDialog → Approve --
-  // candidate-card.tsx: Approve button → ConfirmDialog title "Approve candidate"
-  await page.getByRole("button", { name: "Approve", exact: true }).first().click();
+  // item-kind-table.tsx: per-row Approve button → ConfirmDialog title "Approve candidate"
+  await euDescRow.getByRole("button", { name: "Approve", exact: true }).click();
   await expect(
     page.getByRole("heading", { name: "Approve candidate", exact: true }),
   ).toBeVisible({ timeout: 10_000 });
@@ -987,61 +1028,58 @@ test("UC4 step 8 — reject eu_profiles column.description candidate", async ({
   }
   rejectedEuColCandidateId = llmApproved.candidate_id;
 
-  // -- UI assertion: column.description sub-heading --
+  // -- UI assertion: column.description foldable panel (default-open) --
   await expect(
     page.getByText("column.description", { exact: true }).first(),
   ).toBeVisible({ timeout: 30_000 });
 
-  // -- UI gesture: open the ItemCard for the SAME item the backend probe tracked
-  //    (colItem / rejectedEuColCandidateId), expand ITS Review, and reject ITS
-  //    candidate — so the tracked id and the acted-on id are the same item. --
-  // The earlier first-vs-last bug clicked reviewButtons.last() (a DIFFERENT column
-  // item than colItem.first()), so the reject hit another candidate while the
-  // backend verify still read rejectedEuColCandidateId as llm_approved → failed.
-  // Scope by the ItemCard heading: item-card.tsx renders the heading span as
-  // `${item.kind} (${item.field_path})` for column items (field_path present), or
-  // bare `item.kind` otherwise. We locate the card root div that contains exactly
-  // that heading text, then operate strictly within it.
-  // item-card.tsx: root <div class="rounded-lg border p-4 ...">, heading
-  //   <span class="font-mono text-sm font-medium">{label}</span>
-  const colItemLabel = colItem.field_path
-    ? `${colItem.kind} (${colItem.field_path})`
-    : colItem.kind;
-  const colItemCard = page
-    .locator("div.rounded-lg.border")
-    .filter({ has: page.getByText(colItemLabel, { exact: true }) })
+  // -- UI gesture: reject the candidate of the SAME column the backend probe tracked
+  //    (colItem.field_path / rejectedEuColCandidateId). The column.description
+  //    ItemKindTable groups rows by column: the field_path cell (rowSpan) leads the
+  //    column group, and each candidate is a <tr data-testid="metagen-candidate-row">.
+  //    At this point only conf EU has run on eu_profiles (RIVAL runs in step 8b), so
+  //    each column has exactly one conf-EU llm_approved candidate row. We scope to the
+  //    row that carries the tracked column's field_path text AND the conf-EU /
+  //    llm_approved attributes, so the acted-on candidate is the tracked one. --
+  // item-kind-table.tsx: leading <td>{field_path}</td> + per-row Approve/Reject.
+  const colFieldPath = colItem.field_path ?? "";
+  const colRow = page
+    .locator(
+      `[data-testid="metagen-candidate-row"][data-conf-name="${CONF_EU_NAME}"]` +
+        `[data-candidate-status="llm_approved"]`,
+    )
+    .filter({ hasText: colFieldPath })
     .first();
-  // The card must render: we confirmed via the backend probe that this exact item
-  // exists with an open llm_approved candidate, and we reloaded after the readiness
-  // poll. A missing card under stub mode is a real UI bug (the per-dataset item
-  // review list is not surfacing this item), not a benign all-finalized state.
-  const cardVisible = await colItemCard
+  // The row must render: the backend probe confirmed this column has an open
+  // llm_approved conf-EU candidate, and we reloaded after the readiness poll. A
+  // missing row under stub mode is a real UI bug (the per-kind table is not
+  // surfacing the column), not a benign all-finalized state.
+  const rowVisible = await colRow
     .waitFor({ state: "visible", timeout: 20_000 })
     .then(() => true)
     .catch(() => false);
-  if (!cardVisible) {
+  if (!rowVisible) {
     if (stubLlmClient) {
       throw new Error(
-        "[uc4 step 8] STUB regression: backend has an open llm_approved column " +
-          `candidate on item "${colItemLabel}" but its ItemCard did not render in the ` +
-          "UI after readiness poll + reload + bounded wait. The per-dataset item " +
-          "review list (data/[urn]/page.tsx ItemCard) is not surfacing this item.",
+        "[uc4 step 8] STUB regression: backend has an open llm_approved conf-EU " +
+          `candidate on column "${colFieldPath}" but its row did not render in the ` +
+          "column.description ItemKindTable after readiness poll + reload + bounded " +
+          "wait. The per-kind table (item-kind-table.tsx) is not surfacing this column.",
       );
     }
-    console.warn("[uc4 step 8] real-LLM mode: tracked column ItemCard did not render; skipping.");
+    console.warn("[uc4 step 8] real-LLM mode: tracked column row did not render; skipping.");
     return;
   }
-  // Expand THIS card's Review (the ghost toggle inside this card only).
-  await colItemCard.getByRole("button", { name: "Review" }).click();
 
-  // -- UI assertion: this card's candidate is llm_approved --
-  await expect(colItemCard.getByText("llm_approved", { exact: true }).first()).toBeVisible({
+  // -- UI assertion: this row's candidate is llm_approved --
+  await expect(colRow.getByText("llm_approved", { exact: true }).first()).toBeVisible({
     timeout: 15_000,
   });
 
-  // -- UI gesture: Reject this card's candidate → ConfirmDialog → Reject --
-  // candidate-card.tsx: Reject button (llm_approved only) → ConfirmDialog "Reject candidate"
-  const rejectButton = colItemCard.getByRole("button", { name: "Reject", exact: true }).first();
+  // -- UI gesture: Reject this row's candidate → ConfirmDialog → Reject --
+  // item-kind-table.tsx: per-row Reject button (eligible on llm_approved) →
+  //   ConfirmDialog title "Reject candidate"
+  const rejectButton = colRow.getByRole("button", { name: "Reject", exact: true });
   await expect(rejectButton).toBeVisible({ timeout: 10_000 });
   await rejectButton.click();
   await expect(
@@ -1080,11 +1118,12 @@ test("UC4 step 8 — reject eu_profiles column.description candidate", async ({
 // demote conf EU's just-approved sibling back to llm_approved, leaving exactly one
 // approved candidate (RIVAL's).
 //
-// The approval gestures run through the per-dataset UI (CandidateCard Approve →
-// ConfirmDialog). The end-state invariant is read back from the backend GET
-// item-detail (the source of truth — the POST echo is not used), mirroring the
-// api-wired step 8d exactly. The UI is independently confirmed to surface exactly
-// one approved CandidateCard whose producing-conf badge is RIVAL's.
+// The approval gestures run through the per-dataset UI (ItemKindTable candidate
+// row [data-testid="metagen-candidate-row"] Approve → ConfirmDialog). The end-state
+// invariant is read back from the backend GET item-detail (the source of truth —
+// the POST echo is not used), mirroring the api-wired step 8d exactly. The UI is
+// independently confirmed to surface exactly one approved metagen-candidate-row
+// whose producing-conf badge is RIVAL's.
 //
 // spec: USE_CASE_en.md §UC4 — Review (one approved description per item)
 // spec: BACKEND.md §Approval flow — approving flips the previously-approved
@@ -1143,8 +1182,9 @@ test("UC4 step 8b — cross-conf approval supersedes the sibling globally (one a
     items: Array<{ item_id: string; kind: string; field_path: string | null; status: string }>;
   };
 
+  // The shared item is always a column.description item (the scan below filters on
+  // item.kind === "column.description").
   let sharedItemId: string | null = null;
-  let sharedItemKind: string | null = null;
   let sharedFieldPath: string | null = null;
   let euCandId: string | null = null;
   let rivalCandId: string | null = null;
@@ -1169,7 +1209,6 @@ test("UC4 step 8b — cross-conf approval supersedes the sibling globally (one a
     );
     if (euC && rivalC) {
       sharedItemId = item.item_id;
-      sharedItemKind = item.kind;
       sharedFieldPath = item.field_path;
       euCandId = euC.candidate_id;
       rivalCandId = rivalC.candidate_id;
@@ -1187,44 +1226,37 @@ test("UC4 step 8b — cross-conf approval supersedes the sibling globally (one a
   ).toBeTruthy();
   const sharedItemEnc = encodeURIComponent(sharedItemId!);
 
-  // -- UI gesture: open the SHARED item's card on the per-dataset page and approve
-  //    conf EU's candidate. Scope every gesture to the shared item's ItemCard so the
-  //    tracked id (euCandId on sharedItemId) and the acted-on candidate are the same
-  //    item — the same first-vs-last / tracked-vs-acted discipline as step 8. A
-  //    page-wide "div has CONF_EU_NAME + Approve, .last()" would pick an arbitrary
-  //    column item's EU candidate card (8 column items each carry one), not the
-  //    shared item, and the sharedItemEnc backend verify below would then fail. --
+  // -- UI gesture: on the per-dataset page, approve conf EU's candidate on the SHARED
+  //    column. The column.description ItemKindTable groups rows by column; the shared
+  //    column carries two candidate rows (conf EU + conf RIVAL, both llm_approved).
+  //    Scope to the row carrying the shared column's field_path AND the conf-EU /
+  //    llm_approved attributes so the tracked id (euCandId on sharedItemId) and the
+  //    acted-on candidate are the same — the same tracked-vs-acted discipline as
+  //    step 8. A page-wide conf-EU row .last() would pick an arbitrary column's EU
+  //    candidate, not the shared column, and the sharedItemEnc verify below would
+  //    then fail. --
   await page.goto(EU_DATASET_URL);
   await expect(page.getByText(EU_PROFILES_URN, { exact: false }).first()).toBeVisible({
     timeout: 15_000,
   });
 
-  // Locate the shared item's ItemCard by its heading label (item-card.tsx renders
-  // `${kind} (${field_path})` for column items), then expand THIS card's Review.
-  const sharedItemLabel = sharedFieldPath
-    ? `${sharedItemKind} (${sharedFieldPath})`
-    : sharedItemKind!;
-  const sharedCard = page
-    .locator("div.rounded-lg.border")
-    .filter({ has: page.getByText(sharedItemLabel, { exact: true }) })
+  // item-kind-table.tsx: <tr data-testid="metagen-candidate-row"
+  //   data-conf-name={conf_name} data-candidate-status={status}> with the leading
+  //   field_path cell (rowSpan) on the column group. The shared column's EU row
+  //   carries the field_path text (the rowSpan field cell is the group's first row).
+  const sharedFieldText = sharedFieldPath ?? "";
+  const euRow = page
+    .locator(
+      `[data-testid="metagen-candidate-row"][data-conf-name="${CONF_EU_NAME}"]` +
+        `[data-candidate-status="llm_approved"]`,
+    )
+    .filter({ hasText: sharedFieldText })
     .first();
   await expect(
-    sharedCard,
-    `shared item ItemCard "${sharedItemLabel}" must render`,
+    euRow,
+    `conf EU llm_approved row for shared column "${sharedFieldText}" must render`,
   ).toBeVisible({ timeout: 20_000 });
-  await sharedCard.getByRole("button", { name: "Review" }).click();
-
-  // Within the shared card, scope to the candidate sub-card carrying the conf EU
-  // producing-conf badge + an Approve button, then approve it and confirm.
-  const euCard = sharedCard
-    .getByTestId("metagen-candidate-card")
-    .filter({ has: page.getByText(CONF_EU_NAME, { exact: true }) })
-    .filter({ has: page.getByRole("button", { name: "Approve", exact: true }) })
-    .first();
-  await expect(euCard, "conf EU CandidateCard with an Approve button must be visible").toBeVisible({
-    timeout: 20_000,
-  });
-  await euCard.getByRole("button", { name: "Approve", exact: true }).click();
+  await euRow.getByRole("button", { name: "Approve", exact: true }).click();
   await expect(
     page.getByRole("heading", { name: "Approve candidate", exact: true }),
   ).toBeVisible({ timeout: 10_000 });
@@ -1248,11 +1280,12 @@ test("UC4 step 8b — cross-conf approval supersedes the sibling globally (one a
 
   // -- RIVAL cross-conf approval: driven via the public review API by candidate_id. --
   // Division of labour for this step: the EU approval above exercises the real UI
-  // approve gesture on a shared item (CandidateCard Approve → ConfirmDialog), giving
-  // genuine UI coverage of the approve flow. The RIVAL cross-conf approval is driven
+  // approve gesture on a shared item (ItemKindTable candidate row
+  // [data-testid="metagen-candidate-row"] Approve → ConfirmDialog), giving genuine
+  // UI coverage of the approve flow. The RIVAL cross-conf approval is driven
   // through the public review API by candidate_id (not a sibling-click) for
-  // DETERMINISTIC targeting: the candidate-card DOM exposes no candidate_id, so
-  // selecting the correct sibling among multiple candidate sub-cards after the
+  // DETERMINISTIC targeting: the metagen-candidate-row DOM exposes no candidate_id,
+  // so selecting the correct sibling among multiple candidate rows after the
   // post-approval re-render is non-deterministic and would act on an arbitrary
   // candidate. The cross-conf demotion invariant itself is asserted authoritatively
   // from GET item-detail below (the global one-approved-per-item check), independent
@@ -1297,35 +1330,30 @@ test("UC4 step 8b — cross-conf approval supersedes the sibling globally (one a
     "conf EU's previously-approved candidate must be demoted back to llm_approved",
   ).toBe("llm_approved");
 
-  // -- UI confirmation: the SHARED item now surfaces exactly one approved
-  //    CandidateCard, carrying conf RIVAL's producing-conf badge. Scope to the shared
-  //    item's ItemCard (re-resolved after reload) so the assertion reads the same
-  //    item the invariant acted on. --
+  // -- UI confirmation: the shared column now surfaces exactly one approved candidate
+  //    row, carrying conf RIVAL's producing-conf badge. The column.description
+  //    ItemKindTable re-fetches the item after review, so the demoted EU row reads
+  //    llm_approved and RIVAL's reads approved. RIVAL approved exactly one candidate
+  //    (on the shared column), so the (RIVAL, approved) row is unique. --
   await page.reload();
   await expect(page.getByText(EU_PROFILES_URN, { exact: false }).first()).toBeVisible({
     timeout: 15_000,
   });
-  const sharedCardAfter = page
-    .locator("div.rounded-lg.border")
-    .filter({ has: page.getByText(sharedItemLabel, { exact: true }) })
+  const sharedFieldTextAfter = sharedFieldPath ?? "";
+  const approvedRow = page
+    .locator(
+      `[data-testid="metagen-candidate-row"][data-conf-name="${CONF_RIVAL_NAME}"]` +
+        `[data-candidate-status="approved"]`,
+    )
+    .filter({ hasText: sharedFieldTextAfter })
     .first();
-  await expect(sharedCardAfter, `shared item ItemCard "${sharedItemLabel}" must render`).toBeVisible(
-    { timeout: 15_000 },
-  );
-  const sharedViewBtn = sharedCardAfter.getByRole("button", { name: "View" }).first();
-  if (await sharedViewBtn.isVisible().catch(() => false)) await sharedViewBtn.click();
-  // The approved CandidateCard (status badge "approved") must carry conf RIVAL's
-  // producing-conf badge. Scope to the candidate sub-card with both texts inside the
-  // shared item's card.
-  const approvedCard = sharedCardAfter
-    .getByTestId("metagen-candidate-card")
-    .filter({ has: page.getByText("approved", { exact: true }) })
-    .filter({ has: page.getByText(CONF_RIVAL_NAME, { exact: true }) })
-    .last();
   await expect(
-    approvedCard,
-    "the approved CandidateCard must carry conf RIVAL's producing-conf badge",
+    approvedRow,
+    "the approved candidate row must carry conf RIVAL's producing-conf badge",
   ).toBeVisible({ timeout: 20_000 });
+  // The row's status badge reads "approved" and its conf badge is RIVAL's.
+  await expect(approvedRow.getByText("approved", { exact: true }).first()).toBeVisible();
+  await expect(approvedRow.getByText(CONF_RIVAL_NAME, { exact: true }).first()).toBeVisible();
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

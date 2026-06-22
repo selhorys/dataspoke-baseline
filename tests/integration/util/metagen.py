@@ -149,24 +149,48 @@ async def seed_metagen_item(
     item_id: str,
     kind: str = "dataset.description",
     field_path: str | None = None,
+    created_at: datetime | None = None,
 ) -> None:
     """Insert a metagen_items row (composite PK: dataset_urn, item_id).
 
     Uses ON CONFLICT DO NOTHING so callers can safely call this multiple
     times for the same (dataset_urn, item_id) pair.
 
+    Pass ``created_at`` to pin the row's timestamp; the rollup view's
+    ``last_modified_at`` is the max item ``created_at`` per dataset, so tests
+    that assert rollup ordering set distinct values here. ``None`` falls back to
+    the column server default (``now()``).
+
     spec: src/shared/db/models.py — MetagenItem composite PK (dataset_urn, item_id)
     spec: BACKEND.md §UC4 — item kind in {dataset.description, column.description}
+    spec: feature/BACKEND.md §Per-dataset rollup view — last_modified_at = max item created_at
     """
-    await session.execute(
-        text(
-            "INSERT INTO dataspoke.metagen_items"
-            " (dataset_urn, item_id, kind, field_path)"
-            " VALUES (:urn, :item_id, :kind, :fp)"
-            " ON CONFLICT (dataset_urn, item_id) DO NOTHING"
-        ),
-        {"urn": dataset_urn, "item_id": item_id, "kind": kind, "fp": field_path},
-    )
+    if created_at is None:
+        await session.execute(
+            text(
+                "INSERT INTO dataspoke.metagen_items"
+                " (dataset_urn, item_id, kind, field_path)"
+                " VALUES (:urn, :item_id, :kind, :fp)"
+                " ON CONFLICT (dataset_urn, item_id) DO NOTHING"
+            ),
+            {"urn": dataset_urn, "item_id": item_id, "kind": kind, "fp": field_path},
+        )
+    else:
+        await session.execute(
+            text(
+                "INSERT INTO dataspoke.metagen_items"
+                " (dataset_urn, item_id, kind, field_path, created_at)"
+                " VALUES (:urn, :item_id, :kind, :fp, :created_at)"
+                " ON CONFLICT (dataset_urn, item_id) DO NOTHING"
+            ),
+            {
+                "urn": dataset_urn,
+                "item_id": item_id,
+                "kind": kind,
+                "fp": field_path,
+                "created_at": created_at,
+            },
+        )
     await session.commit()
 
 

@@ -204,15 +204,18 @@ airflow:
         cpu: "2"
         memory: 1Gi
         ephemeral-storage: 8Gi
+  # The scheduler runs tasks in-process (LocalExecutor), so memory is sized for
+  # concurrent on-demand DAG runs (metric / ingestion / metagen) plus a heavy
+  # reset-seed ingest, not just steady-state scheduling.
   scheduler:
     resources:
       requests:
         cpu: 250m
-        memory: 512Mi
+        memory: 1Gi
         ephemeral-storage: 4Gi
       limits:
         cpu: 500m
-        memory: 1Gi
+        memory: 2Gi
         ephemeral-storage: 8Gi
     logGroomerSidecar:
       resources: &logGroomerResources

@@ -2,9 +2,11 @@
 
 /**
  * MetagenDataPanel — the MetaGen body for the unified /data/[urn] page: the
- * boundary conf (read-only / edit / create) plus the candidate items grouped by
- * kind (each ItemCard owns its own review flow). The per-dataset metagen event
- * list lives in the shared Events panel.
+ * boundary conf (read-only / edit / create) plus the candidate items rendered as
+ * two foldable per-kind tables (dataset.description, column.description). Each
+ * table's rows are candidates; the review flow is keyed per
+ * (dataset_urn, item_id, candidate_id). The per-dataset metagen event list lives
+ * in the shared Events panel.
  *
  * Spec: spec/feature/FRONTEND_METAGEN.md §Per-dataset (moved to /data/[urn]).
  */
@@ -15,8 +17,9 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ConfirmDialog } from "@/components/confirm-dialog";
+import { CollapsiblePanel } from "@/components/collapsible-panel";
 import { BoundaryForm } from "@/components/metagen/boundary-form";
-import { ItemCard } from "@/components/metagen/item-card";
+import { ItemKindTable } from "@/components/metagen/item-kind-table";
 import {
   useMetagenBoundary,
   useUpsertMetagenBoundary,
@@ -245,33 +248,31 @@ export function MetagenDataPanel({ datasetUrn }: MetagenDataPanelProps) {
         )}
 
         {datasetDescItems.length > 0 && (
-          <div className="space-y-3">
-            <h4 className="font-mono text-xs font-medium text-muted-foreground">
-              dataset.description
-            </h4>
-            {datasetDescItems.map((item) => (
-              <ItemCard
-                key={item.composite_id}
-                item={item}
-                canWrite={canWrite}
-              />
-            ))}
-          </div>
+          <CollapsiblePanel
+            title={
+              <span className="font-mono text-xs">dataset.description</span>
+            }
+          >
+            <ItemKindTable
+              items={datasetDescItems}
+              groupByColumn={false}
+              canWrite={canWrite}
+            />
+          </CollapsiblePanel>
         )}
 
         {columnDescItems.length > 0 && (
-          <div className="space-y-3">
-            <h4 className="font-mono text-xs font-medium text-muted-foreground">
-              column.description
-            </h4>
-            {columnDescItems.map((item) => (
-              <ItemCard
-                key={item.composite_id}
-                item={item}
-                canWrite={canWrite}
-              />
-            ))}
-          </div>
+          <CollapsiblePanel
+            title={
+              <span className="font-mono text-xs">column.description</span>
+            }
+          >
+            <ItemKindTable
+              items={columnDescItems}
+              groupByColumn
+              canWrite={canWrite}
+            />
+          </CollapsiblePanel>
         )}
       </div>
 

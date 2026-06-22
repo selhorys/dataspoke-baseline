@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { QueueTable } from "@/components/metagen/queue-table";
+import { MetagenDatasetTable } from "@/components/metagen/dataset-table";
 import { MetagenEventTable } from "@/components/metagen/metagen-event-table";
 import {
   useMetagenConfList,
@@ -25,7 +25,7 @@ export default function MetagenResultPage() {
   );
   const range = useMemo(() => resolveRange(sel, "datetime", tz), [sel, tz]);
 
-  // Confs drive the queue's conf_id filter select. Read a generous first page.
+  // Confs drive the rollup's conf_id filter select. Read a generous first page.
   const { data: confsData } = useMetagenConfList({ offset: 0, limit: 100 });
 
   const { data: events } = useMetagenEvents({
@@ -41,11 +41,11 @@ export default function MetagenResultPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-semibold tracking-tight">Review queue</h1>
+      <h1 className="text-2xl font-semibold tracking-tight">Result rollup</h1>
 
       <section className="rounded-lg border p-5">
-        <h2 className="mb-4 text-sm font-medium">item queue (cross-dataset, cross-conf)</h2>
-        <QueueTable confs={confsData?.confs ?? []} />
+        <h2 className="mb-4 text-sm font-medium">datasets (per-dataset rollup)</h2>
+        <MetagenDatasetTable confs={confsData?.confs ?? []} />
       </section>
 
       <section className="rounded-lg border p-5">

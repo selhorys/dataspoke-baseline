@@ -36,6 +36,8 @@ type FormValues = {
   password?: string;
 };
 
+const PROFILE_FORM_ID = "profile-form";
+
 export default function ProfilePage() {
   const { me, isLoading } = useMe();
   const { mutateAsync: updateProfile, isPending } = useUpdateProfile();
@@ -89,9 +91,14 @@ export default function ProfilePage() {
 
   return (
     <div>
-      <h1 className="mb-6 text-2xl font-semibold tracking-tight">Profile</h1>
+      <div className="mb-6 flex items-center justify-between gap-4">
+        <h1 className="text-2xl font-semibold tracking-tight">Profile</h1>
+        <Button type="submit" form={PROFILE_FORM_ID} disabled={isPending}>
+          {isPending ? "Saving..." : "Save changes"}
+        </Button>
+      </div>
 
-      <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+      <form id={PROFILE_FORM_ID} onSubmit={handleSubmit(onSubmit)} className="space-y-4">
         <FormGrid>
           <Field label="Email">
             <Input value={me?.email ?? ""} disabled />
@@ -132,10 +139,6 @@ export default function ProfilePage() {
             </Field>
           </FormGrid>
         </div>
-
-        <Button type="submit" disabled={isPending}>
-          {isPending ? "Saving..." : "Save changes"}
-        </Button>
       </form>
     </div>
   );
