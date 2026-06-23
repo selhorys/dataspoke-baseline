@@ -49,7 +49,13 @@ kubectl create secret generic example-postgres-secret \
 # ---------------------------------------------------------------------------
 # Apply manifests
 # ---------------------------------------------------------------------------
-INGRESS_IP="${DATASPOKE_KUBE_INGRESS_IP:-localhost}"
+# Host advertised by the example-kafka EXTERNAL listener. In managed mode this
+# is the ingress LoadBalancer IP (nginx TCP passthrough); in shared mode it is
+# 127.0.0.1, reached via `kubectl port-forward` (bin/port-forward.sh). Clients
+# reconnect to this host after the initial metadata lookup, so it must be
+# reachable from the test environment.
+INGRESS_IP="$(tcp_access_host)"
+[[ -z "${INGRESS_IP}" ]] && INGRESS_IP="localhost"
 info "Applying manifests (EXTERNAL listener → ${INGRESS_IP}:9104)..."
 for manifest in "$PERIPHERALS_DIR/dummy-data/manifests/"*.yaml; do
   sed "s/__INGRESS_IP__/${INGRESS_IP}/g" "$manifest" | kubectl apply -n "${NS}" -f -

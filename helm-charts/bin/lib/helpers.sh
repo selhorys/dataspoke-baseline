@@ -40,6 +40,31 @@ use_context() {
   kubectl config use-context "${cluster}"
 }
 
+# ingress_mode
+# Echo the ingress deployment mode from DATASPOKE_KUBE_INGRESS_MODE:
+#   managed — this project installs and owns an nginx-ingress controller plus a
+#             LoadBalancer that assigns an external IP, and derives the
+#             <IP>.nip.io domain (GKE Autopilot / minikube default).
+#   shared  — reuse a pre-existing cluster ingress controller. No controller
+#             install and no LoadBalancer IP; HTTP rides a pre-set domain
+#             (DATASPOKE_KUBE_INGRESS_DOMAIN) and TCP services are reached via
+#             `kubectl port-forward` (bin/port-forward.sh), not the ingress.
+# Default: managed (preserves existing behavior when the var is unset).
+ingress_mode() { echo "${DATASPOKE_KUBE_INGRESS_MODE:-managed}"; }
+
+# tcp_access_host
+# Echo the host that laptop/test clients use to reach TCP services (Postgres,
+# Redis, Kafka, dev-lock). In shared mode these are not published on the shared
+# controller, so access is via `kubectl port-forward` to 127.0.0.1. In managed
+# mode they ride the owned ingress LoadBalancer IP.
+tcp_access_host() {
+  if [[ "$(ingress_mode)" == "shared" ]]; then
+    echo "127.0.0.1"
+  else
+    echo "${DATASPOKE_KUBE_INGRESS_IP:-}"
+  fi
+}
+
 # ensure_namespace <ns>
 # Get-or-create a Kubernetes namespace, idempotent.
 ensure_namespace() {

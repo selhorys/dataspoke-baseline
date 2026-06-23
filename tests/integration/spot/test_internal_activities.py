@@ -15,19 +15,18 @@ Internal routes are mounted WITHOUT the /api/v1 prefix (see src/api/main.py line
 # spec: BACKEND.md §Validation Service / §Metrics Service
 
 import os
-import urllib.parse
 
 import httpx
 import pytest
 
 _FAIL_TAIL: frozenset[str] = frozenset({"fail", "failed", "failure", "error", "errored"})
 
-# In-cluster hostname for the dummy-data postgres (resolvable inside the cluster).
+# In-cluster cluster-DNS address of the dummy-data postgres (resolvable inside
+# the cluster; mode-independent — recipes are consumed in-cluster). Populated by
+# install.sh; required (no default) so an unset env fails loud rather than
+# guessing a namespace.
 # spec: TESTING.md — example_db on the dev-env host.
-_PG_HOST_PORT = os.environ.get(
-    "DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST_PORT",
-    "example-postgres.dataspoke-dummy-data-01.svc.cluster.local:5432",
-)
+_PG_HOST_PORT = os.environ["DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST_PORT"]
 # Secret reference: provisioned K8s Secret dataspoke-source-cred-dummy-data-pg, key 'password'.
 # spec: SECRET_RESOLUTION.md §Name prefix policy — DNS-label-safe (hyphens, no underscores).
 _SECRET_REF_HOURLY = "${dummy-data-pg__password}"
@@ -194,8 +193,8 @@ async def test_ingestion_run_activity(
         body = resp.json()
         # spec: BACKEND.md §Active-custom run pipeline — response carries run_id and status
         assert "run_id" in body and "status" in body, (
-            f"Expected both 'run_id' and 'status' in ingestion run response, got: {list(body.keys())}. "
-            "spec: BACKEND.md §Active-custom run pipeline"
+            f"Expected both 'run_id' and 'status' in ingestion run response, "
+            f"got: {list(body.keys())}. spec: BACKEND.md §Active-custom run pipeline"
         )
         assert body["status"].lower() not in _FAIL_TAIL, (
             f"run unexpectedly returned fail-tail status {body['status']!r} — "

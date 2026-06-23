@@ -17,6 +17,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="$(cd "$SCRIPT_DIR/.." && pwd)/.env"
 
+# shellcheck source=lib/helpers.sh
+source "$SCRIPT_DIR/lib/helpers.sh"
+
 QUICK=false
 KEEP_LOCK=false
 FORCE_RELEASE=false
@@ -48,13 +51,25 @@ source "$ENV_FILE"
 # ---------------------------------------------------------------------------
 # Ingress coordinates
 # ---------------------------------------------------------------------------
+INGRESS_MODE="$(ingress_mode)"
 INGRESS_IP="${DATASPOKE_KUBE_INGRESS_IP:-}"
 DOMAIN="${DATASPOKE_KUBE_INGRESS_DOMAIN:-}"
 
-if [[ -z "$INGRESS_IP" || -z "$DOMAIN" ]]; then
-  echo -e "\033[0;31m[ERROR]\033[0m DATASPOKE_KUBE_INGRESS_IP and DATASPOKE_KUBE_INGRESS_DOMAIN must be set in .env." >&2
-  echo "       Run helm-charts/bin/peripherals/nginx-ingress.sh first." >&2
-  exit 1
+if [[ "$INGRESS_MODE" == "shared" ]]; then
+  # Shared mode: HTTP rides the pre-set domain; TCP services are reached on
+  # 127.0.0.1 via `kubectl port-forward` (bin/port-forward.sh). No ingress IP.
+  if [[ -z "$DOMAIN" ]]; then
+    echo -e "\033[0;31m[ERROR]\033[0m DATASPOKE_KUBE_INGRESS_DOMAIN must be set in .env (shared ingress mode)." >&2
+    exit 1
+  fi
+  TCP_HOST="127.0.0.1"
+else
+  if [[ -z "$INGRESS_IP" || -z "$DOMAIN" ]]; then
+    echo -e "\033[0;31m[ERROR]\033[0m DATASPOKE_KUBE_INGRESS_IP and DATASPOKE_KUBE_INGRESS_DOMAIN must be set in .env." >&2
+    echo "       Run helm-charts/bin/peripherals/nginx-ingress.sh first." >&2
+    exit 1
+  fi
+  TCP_HOST="${INGRESS_IP}"
 fi
 
 # ---------------------------------------------------------------------------
@@ -68,30 +83,32 @@ DS_AIRFLOW_USER="${DATASPOKE_TEST_AIRFLOW_USER:-admin}"
 DS_AIRFLOW_PASSWORD="${DATASPOKE_TEST_AIRFLOW_PASSWORD:-admin}"
 
 # ---------------------------------------------------------------------------
-# Tier B: TCP services via ingress IP + fixed ports
+# Tier B: TCP services — managed: ingress IP; shared: 127.0.0.1 via port-forward.
+# Each prefers its DATASPOKE_TEST_* host if one was written to .env.
 # ---------------------------------------------------------------------------
-DS_PG_HOST="${INGRESS_IP}"
-DS_PG_PORT=9201
+DS_PG_HOST="${DATASPOKE_TEST_POSTGRES_HOST:-${TCP_HOST}}"
+DS_PG_PORT="${DATASPOKE_TEST_POSTGRES_PORT:-9201}"
 DS_PG_USER="${DATASPOKE_TEST_POSTGRES_USER:-dataspoke}"
 DS_PG_DB="${DATASPOKE_TEST_POSTGRES_DB:-dataspoke}"
 
-DS_REDIS_HOST="${INGRESS_IP}"
-DS_REDIS_PORT=9202
+DS_REDIS_HOST="${DATASPOKE_TEST_REDIS_HOST:-${TCP_HOST}}"
+DS_REDIS_PORT="${DATASPOKE_TEST_REDIS_PORT:-9202}"
 DS_REDIS_PASSWORD="${DATASPOKE_TEST_REDIS_PASSWORD:-}"
 
-DH_KAFKA_HOST="${INGRESS_IP}"
-DH_KAFKA_PORT=9005
+DH_KAFKA_BROKERS="${DATASPOKE_TEST_DATAHUB_KAFKA_BROKERS:-${TCP_HOST}:9005}"
+DH_KAFKA_HOST="${DH_KAFKA_BROKERS%%:*}"
+DH_KAFKA_PORT="${DH_KAFKA_BROKERS##*:}"
 
-DD_PG_HOST="${DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST:-${INGRESS_IP}}"
+DD_PG_HOST="${DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST:-${TCP_HOST}}"
 DD_PG_PORT="${DATASPOKE_TEST_DUMMY_DATA_POSTGRES_PORT:-9102}"
 DD_PG_USER="${DATASPOKE_DEV_DUMMY_DATA_POSTGRES_USER:-postgres}"
 DD_PG_DB="${DATASPOKE_DEV_DUMMY_DATA_POSTGRES_DB:-example_db}"
 
-_DD_KAFKA_BROKERS="${DATASPOKE_TEST_DUMMY_DATA_KAFKA_BROKERS:-${INGRESS_IP}:9104}"
+_DD_KAFKA_BROKERS="${DATASPOKE_TEST_DUMMY_DATA_KAFKA_BROKERS:-${TCP_HOST}:9104}"
 DD_KAFKA_HOST="${_DD_KAFKA_BROKERS%%:*}"
 DD_KAFKA_PORT="${_DD_KAFKA_BROKERS##*:}"
 
-LOCK_HOST="${INGRESS_IP}"
+LOCK_HOST="${TCP_HOST}"
 LOCK_PORT=9221
 
 # ---------------------------------------------------------------------------
@@ -127,6 +144,15 @@ _http_alive() {
   local code
   code=$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 3 --max-time 5 "$@" "$url" 2>/dev/null) || true
   [[ "$code" != "000" ]]
+}
+
+# Gate for HTTP-service checks. In managed mode a quick probe to the ingress
+# IP:80 confirms the LoadBalancer is up before the deep HTTP check. In shared
+# mode there is no single ingress IP to probe (it may be an internal LB behind
+# a hostname), so skip the probe and let the HTTP check itself decide.
+_ingress_port_open() {
+  if [[ "$INGRESS_MODE" == "shared" ]]; then return 0; fi
+  _tcp_check "${INGRESS_IP}" 80
 }
 
 # ---------------------------------------------------------------------------
@@ -235,8 +261,8 @@ check_dataspoke_redis() {
 
 check_dataspoke_airflow() {
   local label="dataspoke-airflow (${AIRFLOW_URL})"
-  if ! _tcp_check "${INGRESS_IP}" 80; then
-    _fail "$label — ingress port 80 not reachable"
+  if ! _ingress_port_open; then
+    _fail "$label — ingress not reachable"
     ((FAILURES++)); return
   fi
   if $QUICK; then _pass "$label (tcp)"; return; fi
@@ -259,8 +285,8 @@ check_dataspoke_airflow() {
 
 check_dataspoke_api() {
   local label="dataspoke-api (${DS_API_URL})"
-  if ! _tcp_check "${INGRESS_IP}" 80; then
-    _fail "$label — ingress port 80 not reachable"
+  if ! _ingress_port_open; then
+    _fail "$label — ingress not reachable"
     ((FAILURES++)); return
   fi
   if $QUICK; then _pass "$label (tcp)"; return; fi
@@ -275,8 +301,8 @@ check_dataspoke_api() {
 check_dataspoke_frontend() {
   local fe_url="http://app.${DOMAIN}"
   local label="dataspoke-frontend (${fe_url})"
-  if ! _tcp_check "${INGRESS_IP}" 80; then
-    _fail "$label — ingress port 80 not reachable"
+  if ! _ingress_port_open; then
+    _fail "$label — ingress not reachable"
     ((FAILURES++)); return
   fi
   if $QUICK; then _pass "$label (tcp)"; return; fi
@@ -292,8 +318,8 @@ check_dataspoke_frontend() {
 check_dataspoke_langfuse() {
   local lf_url="http://langfuse.${DOMAIN}"
   local label="langfuse-web (${lf_url})"
-  if ! _tcp_check "${INGRESS_IP}" 80; then
-    _fail "$label — ingress port 80 not reachable"
+  if ! _ingress_port_open; then
+    _fail "$label — ingress not reachable"
     ((FAILURES++)); return
   fi
   if $QUICK; then _pass "$label (tcp)"; return; fi
@@ -322,8 +348,8 @@ check_dataspoke_langfuse() {
 
 check_datahub_gms() {
   local label="datahub-gms (${DH_GMS_URL})"
-  if ! _tcp_check "${INGRESS_IP}" 80; then
-    _fail "$label — ingress port 80 not reachable"
+  if ! _ingress_port_open; then
+    _fail "$label — ingress not reachable"
     ((FAILURES++)); return
   fi
   if $QUICK; then _pass "$label (tcp)"; return; fi
@@ -432,7 +458,11 @@ check_lock_service() {
 echo ""
 echo "DataSpoke health check"
 echo "======================"
-echo "  Ingress IP:     ${INGRESS_IP}"
+if [[ "$INGRESS_MODE" == "shared" ]]; then
+  echo "  Ingress mode:   shared (TCP via 127.0.0.1 port-forward — run bin/port-forward.sh)"
+else
+  echo "  Ingress IP:     ${INGRESS_IP}"
+fi
 echo "  Ingress domain: ${DOMAIN}"
 $QUICK && echo "(quick mode — TCP only, no deep checks)"
 echo ""

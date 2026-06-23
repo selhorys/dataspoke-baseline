@@ -40,11 +40,11 @@ from tests.integration.util.datahub import discover_catalog_tables
 
 # ── Environment / credential references ──────────────────────────────────────
 
-# The in-cluster hostname for the dummy-data postgres (resolvable inside the cluster).
-_PG_HOST_PORT = os.environ.get(
-    "DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST_PORT",
-    "example-postgres.dataspoke-dummy-data-01.svc.cluster.local:5432",
-)
+# In-cluster cluster-DNS address of the dummy-data postgres (resolvable inside
+# the cluster; mode-independent — the recipe is consumed by the API pod / DataHub
+# executor IN-CLUSTER). Populated by install.sh; required (no default) so an unset
+# env fails loud rather than guessing a namespace.
+_PG_HOST_PORT = os.environ["DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST_PORT"]
 
 # Secret reference: K8s Secret dataspoke-source-cred-dummy-data-pg, key 'password'.
 # The <name> segment (dummy-data-pg) must be DNS-label-safe (hyphens, no underscores).

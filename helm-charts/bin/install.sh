@@ -952,12 +952,28 @@ if [[ "$PROFILE" == "dev" ]]; then
     _sync_env_from_secret "${NS}" "DATASPOKE_INTERNAL_TOKEN"    "DATASPOKE_TEST_INTERNAL_TOKEN"
     _sync_env_from_secret "${NS}" "DATASPOKE_JWT_SECRET_KEY"    "DATASPOKE_TEST_JWT_SECRET_KEY"
 
-    # Laptop-side host/port for direct DB/cache access (via NodePort / LoadBalancer)
-    _write_env_var "DATASPOKE_TEST_POSTGRES_HOST" "${DATASPOKE_KUBE_INGRESS_IP:-}"
+    # Laptop-side host/port for direct DB/cache access. In managed mode this is
+    # the ingress LoadBalancer IP; in shared mode it is 127.0.0.1, reached via
+    # `kubectl port-forward` (bin/port-forward.sh) on the same canonical ports.
+    TCP_HOST="$(tcp_access_host)"
+    _write_env_var "DATASPOKE_TEST_POSTGRES_HOST" "${TCP_HOST}"
     _write_env_var "DATASPOKE_TEST_POSTGRES_PORT" "9201"
-    _write_env_var "DATASPOKE_TEST_REDIS_HOST"    "${DATASPOKE_KUBE_INGRESS_IP:-}"
+    _write_env_var "DATASPOKE_TEST_REDIS_HOST"    "${TCP_HOST}"
     _write_env_var "DATASPOKE_TEST_REDIS_PORT"    "9202"
     _write_env_var "DATASPOKE_TEST_AIRFLOW_URL"   "http://airflow.${DATASPOKE_KUBE_INGRESS_DOMAIN:-dev.dataspoke.example.com}"
+
+    # Dummy-data source access. In shared mode TCP_HOST is 127.0.0.1 (port-forward);
+    # in managed mode it is the LoadBalancer IP (nginx TCP passthrough).
+    # _POSTGRES_HOST_PORT is the in-cluster cluster-DNS address used by the
+    # DataSpoke API pod when building ingestion source recipes — it is the same
+    # in both modes because the API always runs in-cluster.
+    _write_env_var "DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST"      "${TCP_HOST}"
+    _write_env_var "DATASPOKE_TEST_DUMMY_DATA_KAFKA_BROKERS"      "${TCP_HOST}:9104"
+    _write_env_var "DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST_PORT" \
+      "example-postgres.${DATASPOKE_DEV_KUBE_DUMMY_DATA_NAMESPACE}.svc.cluster.local:5432"
+
+    # Dev-lock URL — same pattern: 127.0.0.1 in shared mode, LoadBalancer IP in managed.
+    _write_env_var "DATASPOKE_LOCK_URL" "http://${TCP_HOST}:9221"
 
     info ".env updated with DATASPOKE_TEST_* values."
   fi
@@ -1008,7 +1024,11 @@ if [[ "$PROFILE" == "dev" ]]; then
     "${DATASPOKE_DEV_KUBE_LANGFUSE_NAMESPACE}" \
     "${DATASPOKE_DEV_KUBE_DUMMY_DATA_NAMESPACE}" 2>/dev/null || true
   echo ""
-  echo "Ingress endpoints (via nginx-ingress at ${DATASPOKE_KUBE_INGRESS_IP:-<not set>}):"
+  if [[ "$(ingress_mode)" == "shared" ]]; then
+    echo "Ingress endpoints (via shared cluster ingress; domain ${DATASPOKE_KUBE_INGRESS_DOMAIN:-<not set>}):"
+  else
+    echo "Ingress endpoints (via nginx-ingress at ${DATASPOKE_KUBE_INGRESS_IP:-<not set>}):"
+  fi
   echo ""
   echo "  DataHub UI:    http://datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN:-<not set>}/"
   echo "  DataHub GMS:   http://datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN:-<not set>}/gms/"
@@ -1016,12 +1036,19 @@ if [[ "$PROFILE" == "dev" ]]; then
   echo "  Airflow UI:    http://airflow.${DATASPOKE_KUBE_INGRESS_DOMAIN:-<not set>}/"
   echo "  Langfuse UI:   ${DATASPOKE_TEST_LANGFUSE_HOST:-http://langfuse.<not set>}/"
   echo ""
-  echo "  PostgreSQL:    ${DATASPOKE_KUBE_INGRESS_IP:-<not set>}:9201"
-  echo "  Redis:         ${DATASPOKE_KUBE_INGRESS_IP:-<not set>}:9202"
-  echo "  DataHub Kafka: ${DATASPOKE_KUBE_INGRESS_IP:-<not set>}:9005"
-  echo "  Example PG:    ${DATASPOKE_KUBE_INGRESS_IP:-<not set>}:9102"
-  echo "  Example Kafka: ${DATASPOKE_KUBE_INGRESS_IP:-<not set>}:9104"
-  echo "  Lock API:      ${DATASPOKE_KUBE_INGRESS_IP:-<not set>}:9221"
+  if [[ "$(ingress_mode)" == "shared" ]]; then
+    echo "  TCP services (Postgres/Redis/Kafka/lock) are not on the shared ingress."
+    echo "  Open them on 127.0.0.1 with: ./helm-charts/bin/port-forward.sh"
+    echo "    PostgreSQL 127.0.0.1:9201   Redis 127.0.0.1:9202   DataHub Kafka 127.0.0.1:9005"
+    echo "    Example PG 127.0.0.1:9102   Example Kafka 127.0.0.1:9104   Lock API 127.0.0.1:9221"
+  else
+    echo "  PostgreSQL:    ${DATASPOKE_KUBE_INGRESS_IP:-<not set>}:9201"
+    echo "  Redis:         ${DATASPOKE_KUBE_INGRESS_IP:-<not set>}:9202"
+    echo "  DataHub Kafka: ${DATASPOKE_KUBE_INGRESS_IP:-<not set>}:9005"
+    echo "  Example PG:    ${DATASPOKE_KUBE_INGRESS_IP:-<not set>}:9102"
+    echo "  Example Kafka: ${DATASPOKE_KUBE_INGRESS_IP:-<not set>}:9104"
+    echo "  Lock API:      ${DATASPOKE_KUBE_INGRESS_IP:-<not set>}:9221"
+  fi
   echo ""
   echo "  Credentials (auto-generated): see DATASPOKE_TEST_AIRFLOW_{USER,PASSWORD} in helm-charts/.env"
   echo "  Langfuse: ${DATASPOKE_DEV_LANGFUSE_INIT_USER_EMAIL:-dataspoke@dataspoke.local} / ${DATASPOKE_DEV_LANGFUSE_INIT_USER_PASSWORD:-<see .env>}"

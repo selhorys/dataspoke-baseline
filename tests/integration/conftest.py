@@ -35,8 +35,6 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-import httpx
-
 from src.shared.cache.client import RedisClient
 from src.shared.datahub.client import DataHubClient
 
@@ -301,7 +299,11 @@ def acquire_lock() -> None:
         yield  # type: ignore[misc]
         return
 
-    _ingress_ip = os.environ["DATASPOKE_KUBE_INGRESS_IP"]
+    # Two ingress modes: managed (LoadBalancer IP populated in DATASPOKE_KUBE_INGRESS_IP)
+    # and shared (no IP — lock reached on 127.0.0.1 via port-forward). install.sh writes
+    # DATASPOKE_LOCK_URL for both modes, so prefer it; the IP is only a legacy fallback
+    # and is read defensively (empty in shared mode) to avoid a KeyError.
+    _ingress_ip = os.environ.get("DATASPOKE_KUBE_INGRESS_IP", "")
     lock_url = os.environ.get("DATASPOKE_LOCK_URL", f"http://{_ingress_ip}:9221")
     try:
         resp = httpx.post(

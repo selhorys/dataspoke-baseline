@@ -63,8 +63,9 @@ helm-charts/
 │   ├── install.sh                       # main installer
 │   ├── uninstall.sh                     # main uninstaller
 │   ├── health-check.sh                  # service-by-service probe
-│   ├── build-image.sh                   # api | airflow | postgres (Cloud Build or local)
-│   ├── lib/helpers.sh                   # logging + kubectl/helm wrappers
+│   ├── build-image.sh                   # api | airflow | postgres | frontend (Cloud Build / ECR / local)
+│   ├── port-forward.sh                  # forward TCP services to 127.0.0.1 (shared ingress mode)
+│   ├── lib/helpers.sh                   # logging + kubectl/helm wrappers + ingress-mode helpers
 │   ├── peripherals/                     # dev-only orchestrators
 │   │   ├── nginx-ingress.sh
 │   │   ├── datahub.sh
@@ -104,7 +105,7 @@ helm-charts/
 | Frontend subchart | ✗ (host `npm run dev`) | ✓ |
 | Event-consumer subchart | ✗ | ✗ (opt-in by operator) |
 | RuntimeConfig stub fields (`stub_redis_client`, `stub_llm_client`, `stub_pgvector_manager`, `stub_notification_service`) seeded `true` | ✓ | ✗ (defaults `false`) |
-| nginx-ingress install | ✓ | ✗ (operator's controller) |
+| nginx-ingress install | ✓ (managed mode); ✗ (shared mode reuses the operator's controller) | ✗ (operator's controller) |
 | DataHub install | ✓ (in-cluster) | ✗ (external; operator-managed) |
 | Langfuse install | ✓ (in-cluster) | ✗ (external; operator-managed) |
 | Dummy data | ✓ | ✗ |
@@ -299,9 +300,25 @@ Same convention in both profiles; values differ.
 - `DATASPOKE_KUBE_CLUSTER` — kubectl context
 - `DATASPOKE_KUBE_DATASPOKE_NAMESPACE` — namespace for the umbrella chart
 - `DATASPOKE_KUBE_IMAGE_REGISTRY` — registry prefix for built images
-- `DATASPOKE_KUBE_CLOUD_VENDOR` — `GCP` (Cloud Build), `AWS` (TODO), or empty (local Docker)
-- `DATASPOKE_KUBE_INGRESS_IP` — populated by nginx-ingress install in dev; operator-supplied in prod
-- `DATASPOKE_KUBE_INGRESS_DOMAIN` — derived (e.g. `<IP>.nip.io` in dev) or operator-supplied
+- `DATASPOKE_KUBE_CLOUD_VENDOR` — image-build dispatch: `GCP` (Cloud Build,
+  no local Docker), `AWS` (ECR login + ensure-repository + local Docker build
+  and push, authenticating with `DATASPOKE_AWS_PROFILE`), or empty (local
+  Docker build + push). See §Image Builds.
+- `DATASPOKE_KUBE_INGRESS_MODE` — `managed` (default) or `shared`. `managed`:
+  DataSpoke installs and owns an nginx-ingress controller + LoadBalancer
+  (GKE Autopilot / minikube). `shared`: DataSpoke reuses a pre-existing
+  cluster ingress controller and installs nothing (AWS/EKS). See §Ingress.
+- `DATASPOKE_KUBE_INGRESS_CLASS` — IngressClass name DataSpoke's Ingress
+  resources reference (default `nginx`). Consulted only in shared mode, where
+  the install verifies this class exists; in managed mode the installed
+  controller registers the fixed `nginx` class from `values-dev.yaml`.
+- `DATASPOKE_KUBE_INGRESS_IP` — managed: populated by the nginx-ingress
+  install from the LoadBalancer external IP; shared: blank (no owned
+  LoadBalancer); prod: operator-supplied as needed.
+- `DATASPOKE_KUBE_INGRESS_DOMAIN` — managed: derived `<IP>.nip.io`; shared:
+  operator-pre-set to a real cluster-published hostname (e.g.
+  `dataspoke-dev.your-host.com`, DNS published by the cluster's external-dns);
+  prod: operator-supplied.
 
 ### Tier 3 — Dev-only inputs (`DATASPOKE_DEV_*`)
 
@@ -339,7 +356,16 @@ read these.
 
 Auto-populated by `install.sh` post-install via `_sync_env_from_secret`. Read by
 `tests/integration/{conftest.py,util/*}` for laptop-side access to in-cluster
-services via nginx-ingress. App pods never read these.
+services. App pods never read these.
+
+The **laptop-side host** these point at is ingress-mode-dependent: in managed
+mode it is the LoadBalancer external IP (TCP passthrough on the owned
+controller); in shared mode it is `127.0.0.1`, reached via
+`bin/port-forward.sh` on the same canonical ports. The TCP service ports
+(9201/9202/9005/9102/9104/9221) are identical in both modes. The `_PORT`
+fields are these fixed passthrough ports, carried statically in `.env.example`;
+only the host-bearing values (`_HOST`, `_HOST_PORT`, `_KAFKA_BROKERS`,
+`DATASPOKE_LOCK_URL`) are written by `install.sh`.
 
 - DataSpoke subsystem: `DATASPOKE_TEST_POSTGRES_{HOST,PORT,USER,PASSWORD,DB}`,
   `DATASPOKE_TEST_REDIS_{HOST,PORT,PASSWORD}`,
@@ -349,7 +375,18 @@ services via nginx-ingress. App pods never read these.
   so locally-minted JWTs verify against the API pod)
 - DataHub access: `DATASPOKE_TEST_DATAHUB_{GMS_URL,TOKEN,KAFKA_BROKERS}`
 - Langfuse access: `DATASPOKE_TEST_LANGFUSE_{HOST,PUBLIC_KEY,SECRET_KEY}`
+- Dev-lock access: `DATASPOKE_LOCK_URL` — full base URL of the dev-env lock
+  service (`http://<host>:9221`, host per the laptop-side rule above). The
+  integration and E2E lock protocol uses `$DATASPOKE_LOCK_URL/lock/...`.
 - Dummy data source access: `DATASPOKE_TEST_DUMMY_DATA_{POSTGRES_HOST,POSTGRES_PORT,KAFKA_BROKERS}`
+  — laptop-side, mode-dependent host (per the rule above), used by tests that
+  read the example source directly.
+- `DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST_PORT` — **in-cluster**
+  cluster-DNS address of the example Postgres
+  (`example-postgres.<dummy-data-ns>.svc.cluster.local:5432`),
+  **mode-independent**. Used by the in-cluster API pod when it builds
+  ingestion source recipes, so it is always the cluster-internal address
+  regardless of how a laptop reaches the same database.
 
 ### Policies
 
@@ -377,11 +414,16 @@ All credentials are managed via a pre-created K8s Secret (`secrets.existingSecre
 in the values overlay) — no credentials in `.env` for prod operators.
 
 In dev, the **auto-populated** block is written by install scripts, not edited by
-hand: `DATASPOKE_KUBE_INGRESS_{IP,DOMAIN}` (by `peripherals/nginx-ingress.sh`),
-`DATASPOKE_TEST_DATAHUB_*` (by `peripherals/datahub.sh`),
-`DATASPOKE_TEST_LANGFUSE_*` (by `peripherals/langfuse.sh`), and the full
-`DATASPOKE_TEST_*` subsystem block (by `install.sh _sync_env_from_secret`
-post-install, extracting credentials from the `dataspoke-secrets` K8s Secret).
+hand: in managed mode `DATASPOKE_KUBE_INGRESS_{IP,DOMAIN}` (by
+`peripherals/nginx-ingress.sh`; shared mode leaves `INGRESS_IP` blank and reads
+the operator-pre-set `INGRESS_DOMAIN`), `DATASPOKE_TEST_DATAHUB_*` (by
+`peripherals/datahub.sh`), `DATASPOKE_TEST_LANGFUSE_*` (by
+`peripherals/langfuse.sh`), and the full `DATASPOKE_TEST_*` subsystem block —
+including `DATASPOKE_LOCK_URL` and
+`DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST_PORT` — by `install.sh`
+post-install (`_sync_env_from_secret` extracts credentials from the
+`dataspoke-secrets` K8s Secret; the host-bearing vars take the laptop-side
+TCP host for the active ingress mode).
 
 ---
 
@@ -494,12 +536,20 @@ Dockerfiles live under `docker-images/{api,airflow,postgres}/Dockerfile`.
 The Airflow image bakes DAGs in via `COPY src/workflows/dags/`; the
 PostgreSQL image layers `pgvector` + Apache AGE on the Bitnami PG 17 runtime.
 
-`bin/build-image.sh <name> [<tag>]` is the unified entrypoint. It dispatches
-on `DATASPOKE_KUBE_CLOUD_VENDOR`:
+`bin/build-image.sh <name> [<tag>]` (`<name>` ∈ {api, airflow, postgres,
+frontend}) is the unified entrypoint. It dispatches on
+`DATASPOKE_KUBE_CLOUD_VENDOR`:
 
-- `GCP` → `gcloud builds submit` (no local Docker required)
-- `AWS` → CodeBuild (TODO)
-- empty → local `docker build` + `docker push`
+- `GCP` → `gcloud builds submit` (no local Docker required); the GCP project is
+  parsed from the `<region>-docker.pkg.dev/<project>/<repo>` registry host.
+- `AWS` → `aws ecr get-login-password` (using the required `DATASPOKE_AWS_PROFILE`
+  CLI profile), an idempotent `describe-repositories` / `create-repository`
+  ensure step, then a local `docker build --platform ${DATASPOKE_IMAGE_PLATFORM:-linux/amd64}`
+  and `docker push`. The AWS region is parsed from the
+  `<acct>.dkr.ecr.<region>.amazonaws.com` registry host. Set
+  `DATASPOKE_DOCKER_SUDO=true` to prefix `docker` with `sudo` on hosts that
+  require root for the daemon socket.
+- empty → local `docker build` + `docker push`.
 
 **Parallelism**: the install script's bootstrap phase runs all three image
 builds with bash `&`/`wait`, optionally alongside the DataHub and Langfuse
@@ -521,12 +571,26 @@ Run independently or as part of a full `--profile dev` install.
 
 ### nginx-ingress
 
+`peripherals/nginx-ingress.sh` behaves per `DATASPOKE_KUBE_INGRESS_MODE`
+(see §Ingress for the full mode contract).
+
+**Managed mode** (default — GKE Autopilot / minikube):
+
 | Aspect | Value |
 |---|---|
 | Namespace | `ingress-nginx` |
 | Source | `peripherals/nginx-ingress/values-dev.yaml` (helm release) |
-| Function | Single LoadBalancer for all dev namespaces — HTTP virtual hosts (port 80) + TCP passthrough (PG 9201, Redis 9202, DataHub Kafka 9005, example PG 9102, example Kafka 9104, lock 9221) |
-| Writes to .env | `DATASPOKE_KUBE_INGRESS_IP`, `DATASPOKE_KUBE_INGRESS_DOMAIN` |
+| Function | Installs and owns a single LoadBalancer for all dev namespaces — HTTP virtual hosts (port 80) + TCP passthrough (PG 9201, Redis 9202, DataHub Kafka 9005, example PG 9102, example Kafka 9104, lock 9221) |
+| Writes to .env | `DATASPOKE_KUBE_INGRESS_IP`, `DATASPOKE_KUBE_INGRESS_DOMAIN`, plus the IP-derived `DATASPOKE_TEST_*` host/broker vars |
+
+**Shared mode** (AWS/EKS, or any cluster with a pre-existing controller): the
+script installs nothing. It verifies the `DATASPOKE_KUBE_INGRESS_CLASS`
+IngressClass (default `nginx`) exists and that the operator has pre-set
+`DATASPOKE_KUBE_INGRESS_DOMAIN`, then early-exits — leaving the controller
+untouched (`uninstall.sh` likewise leaves it alone). The shared controller
+serves HTTP virtual hosts only; the TCP datastores are not published on it and
+are reached on `127.0.0.1` via `bin/port-forward.sh`. No `INGRESS_IP` is
+written (it stays blank).
 
 ### DataHub
 
@@ -603,8 +667,10 @@ Plain Kubernetes manifests under `peripherals/dummy-data/manifests/` in the
 | Kafka | `apache/kafka:3.9.0` (KRaft) | 512 Mi | 4 Gi PVC | `example-kafka:9092` (internal), `:9094` (EXTERNAL) |
 
 Separate from DataHub's prerequisites Kafka. Simulates an external data
-source for ingestion testing. EXTERNAL listener advertises `<INGRESS_IP>:9104`
-for host-side access via TCP passthrough on nginx-ingress.
+source for ingestion testing. The Kafka EXTERNAL listener advertises the
+laptop-side TCP host on `:9104` — the LoadBalancer IP in managed mode (TCP
+passthrough on nginx-ingress), or `127.0.0.1` in shared mode (reached via
+`bin/port-forward.sh`).
 
 Imazon-themed seed data (5 schemas, 6 tables, 200 rows; 2 Kafka topics, 35
 messages; 8 DataHub dataset entities) is loaded by
@@ -732,6 +798,24 @@ default.
 
 ### Ingress
 
+DataSpoke supports two dev ingress modes, selected by
+`DATASPOKE_KUBE_INGRESS_MODE`:
+
+| | **Managed** (default) | **Shared** |
+|---|---|---|
+| Target cluster | GKE Autopilot, minikube | AWS/EKS, or any cluster with a pre-existing controller |
+| Controller | DataSpoke installs & owns nginx-ingress + a LoadBalancer | reuses the operator's controller; installs nothing |
+| Domain | derived `<IP>.nip.io` from the LoadBalancer IP | operator-pre-set real hostname (DNS published by the cluster, e.g. external-dns) |
+| HTTP virtual hosts | ✓ (app/api/datahub/airflow/langfuse) | ✓ (same hosts, on the operator's controller) |
+| TCP datastores | exposed via LoadBalancer TCP passthrough on the IP | not exposed — reached on `127.0.0.1` via `bin/port-forward.sh` |
+| Kafka EXTERNAL listener advertises | `<INGRESS_IP>:<port>` | `127.0.0.1:<port>` |
+| Teardown | `uninstall.sh` removes the controller | controller left untouched |
+
+Shared mode is the path for clusters where another system owns the ingress
+controller and DNS, so DataSpoke must not install or modify them. Prod follows
+the same reuse posture: the operator's controller serves the hosts, with
+`values.yaml` ingress hosts and TLS secrets operator-supplied.
+
 Frontend, API, and Airflow each have an `ingress` block in their values
 supporting `className` (nginx, alb, traefik, etc.), TLS via cert-manager
 annotations, and customizable host/path rules.
@@ -744,14 +828,20 @@ annotations, and customizable host/path rules.
 | `peripherals/datahub/gms-ingress.yaml` | kubectl manifest | `datahub.<INGRESS_IP>.nip.io/gms` → `datahub-datahub-gms:8080` |
 | `datahub-frontend.ingress` values | DataHub chart (native) | `datahub.<INGRESS_IP>.nip.io/` → `datahub-frontend:9002` |
 
-TCP passthrough (PostgreSQL :9201, Redis :9202, DataHub Kafka :9005, example
-PG :9102, example Kafka :9104, lock :9221) is handled by the nginx-ingress
-`tcp-services` ConfigMap — no Ingress resource needed. Kafka services
-advertise `<INGRESS_IP>:<port>` as their EXTERNAL listener so host-side
-producers/consumers reach them through the controller.
+In **managed** mode, TCP passthrough (PostgreSQL :9201, Redis :9202, DataHub
+Kafka :9005, example PG :9102, example Kafka :9104, lock :9221) is handled by
+the nginx-ingress `tcp-services` ConfigMap (the `tcp` block in
+`peripherals/nginx-ingress/values-dev.yaml`) — no Ingress resource needed.
+Kafka services advertise `<INGRESS_IP>:<port>` as their EXTERNAL listener so
+host-side producers/consumers reach them through the controller.
 
-In prod, the operator's ingress controller takes the same role; `values.yaml`
-ingress hosts and TLS secrets are operator-supplied.
+In **shared** mode the operator's controller serves only HTTP, so the TCP
+datastores are not on the ingress. `bin/port-forward.sh` runs in the
+foreground and `kubectl port-forward`s the same six services to their canonical
+ports on `127.0.0.1`; Kafka EXTERNAL listeners advertise `127.0.0.1:<port>`.
+Integration tests, `health-check.sh`, and `helm-charts/.env`'s
+`DATASPOKE_TEST_*` host values all resolve to `127.0.0.1` while the
+port-forward holds.
 
 ### Network Policy
 
@@ -823,7 +913,8 @@ PUT/PATCH that touches `secret_ref`.
 ## Health Check
 
 `bin/health-check.sh` probes each service through nginx-ingress (HTTP
-endpoints) or cluster DNS (TCP services). Required before any integration
+endpoints) or the laptop-side TCP host (TCP services — the ingress IP in
+managed mode, `127.0.0.1` via `bin/port-forward.sh` in shared mode). Required before any integration
 test run per `TESTING.md §Prerequisites`. On failure, reinstall the
 affected subsystem via `bin/install.sh --profile dev --components <name>`.
 

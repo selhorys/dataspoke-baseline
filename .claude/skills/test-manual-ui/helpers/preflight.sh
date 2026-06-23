@@ -31,7 +31,7 @@ CLUSTER_URL="http://app.${DOMAIN}/"
 
 # ── 3. Locate the reachable frontend ─────────────────────────────────────────
 # --frontend local  → host `pnpm dev` at :3000 (talks to the in-cluster API)
-# --frontend cluster → containerised UI at app.<INGRESS_IP>.nip.io
+# --frontend cluster → containerised UI at app.<INGRESS_DOMAIN> (<IP>.nip.io managed / operator host shared)
 probe() { curl -sS -o /dev/null -m 5 -w '%{http_code}' "$1" 2>/dev/null || echo 000; }
 
 echo

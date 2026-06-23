@@ -22,9 +22,15 @@ if [[ ! -f "$ENV_FILE" ]]; then
 fi
 source "$ENV_FILE"
 
-# nginx-ingress must have populated DATASPOKE_KUBE_INGRESS_IP before Kafka's
-# EXTERNAL advertised listener can be configured correctly.
-: "${DATASPOKE_KUBE_INGRESS_IP:?required — run bin/peripherals/nginx-ingress.sh first to populate this in .env}"
+# Host used by Kafka's EXTERNAL advertised listener and for laptop-side test
+# access to the broker. In managed mode this is the ingress LoadBalancer IP
+# (which must already be populated by nginx-ingress.sh); in shared mode it is
+# 127.0.0.1, reached via `kubectl port-forward` (bin/port-forward.sh), as the
+# broker advertises 127.0.0.1:9005 so a forwarded client reconnects correctly.
+if [[ "$(ingress_mode)" != "shared" ]]; then
+  : "${DATASPOKE_KUBE_INGRESS_IP:?required in managed mode — run bin/peripherals/nginx-ingress.sh first to populate this in .env}"
+fi
+KAFKA_EXTERNAL_HOST="$(tcp_access_host)"
 
 NS="${DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE}"
 
@@ -75,7 +81,7 @@ helm upgrade --install datahub-prerequisites datahub/datahub-prerequisites \
   --version "${PREREQS_VERSION}" \
   --namespace "${NS}" \
   --values "$PERIPHERALS_DIR/datahub/prerequisites-values.yaml" \
-  --set-string "kafka.listeners.advertisedListeners=CLIENT://datahub-prerequisites-kafka-controller-0.datahub-prerequisites-kafka-controller-headless.${NS}.svc.cluster.local:9092\,INTERNAL://datahub-prerequisites-kafka-controller-0.datahub-prerequisites-kafka-controller-headless.${NS}.svc.cluster.local:9094\,EXTERNAL://${DATASPOKE_KUBE_INGRESS_IP}:9005" \
+  --set-string "kafka.listeners.advertisedListeners=CLIENT://datahub-prerequisites-kafka-controller-0.datahub-prerequisites-kafka-controller-headless.${NS}.svc.cluster.local:9092\,INTERNAL://datahub-prerequisites-kafka-controller-0.datahub-prerequisites-kafka-controller-headless.${NS}.svc.cluster.local:9094\,EXTERNAL://${KAFKA_EXTERNAL_HOST}:9005" \
   --timeout 5m
 
 # ---------------------------------------------------------------------------
@@ -230,16 +236,16 @@ fi
 # connection details from the peripheral_config DB (seeded with the
 # in-cluster URL by post-install/seed-peripheral-config.sh), not from .env.
 # ---------------------------------------------------------------------------
-if [[ -n "${DATASPOKE_KUBE_INGRESS_DOMAIN:-}" && -n "${DATASPOKE_KUBE_INGRESS_IP:-}" ]]; then
+if [[ -n "${DATASPOKE_KUBE_INGRESS_DOMAIN:-}" ]]; then
   upsert_env_var DATASPOKE_TEST_DATAHUB_GMS_URL \
     "http://datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN}/gms" \
     "$ENV_FILE"
   upsert_env_var DATASPOKE_TEST_DATAHUB_KAFKA_BROKERS \
-    "${DATASPOKE_KUBE_INGRESS_IP}:9005" \
+    "${KAFKA_EXTERNAL_HOST}:9005" \
     "$ENV_FILE"
   info "DATASPOKE_TEST_DATAHUB_GMS_URL and DATASPOKE_TEST_DATAHUB_KAFKA_BROKERS written to .env."
 else
-  warn "DATASPOKE_KUBE_INGRESS_DOMAIN / _IP not set — skipping DataHub .env addresses."
+  warn "DATASPOKE_KUBE_INGRESS_DOMAIN not set — skipping DataHub .env addresses."
 fi
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,13 @@
-# nginx-ingress controller values — dev (GKE Autopilot)
-# Installed by helm-charts/bin/peripherals/nginx-ingress.sh as release "ingress-nginx"
-# in namespace "ingress-nginx".
+# nginx-ingress controller values — MANAGED ingress mode only (GKE Autopilot / minikube).
+#
+# Applied by helm-charts/bin/peripherals/nginx-ingress.sh when
+# DATASPOKE_KUBE_INGRESS_MODE=managed (the default). DataSpoke installs and owns
+# the controller and its LoadBalancer. In shared mode the script reuses a
+# pre-existing cluster controller and never reads this file.
+#
+# Installed as Helm release "ingress-nginx" in namespace "ingress-nginx".
+# Namespace names in the tcp: block must match the DATASPOKE_*_NAMESPACE values
+# used in the active .env (defaults: dataspoke-01, datahub-01, dataspoke-dummy-data-01).
 
 controller:
   ingressClassResource:

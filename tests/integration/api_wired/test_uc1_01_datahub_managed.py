@@ -61,6 +61,12 @@ from tests.integration.util.datahub import (
     TARGET_SCHEMAS,
 )
 
+# In-cluster cluster-DNS address of the dummy-data postgres; mode-independent
+# (the DataHub executor consumes ingestion recipes IN-CLUSTER via cluster DNS).
+# Populated by install.sh; required (no default) so an unset env fails loud
+# rather than guessing a namespace.
+_PG_HOST_PORT = os.environ["DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST_PORT"]
+
 # ── Dummy-data module constants ────────────────────────────────────────────────
 # spec: TESTING.md §Per-Module Dummy-Data Reset
 # Seed all TARGET_SCHEMAS so the matcher sweep has non-catalog URNs to map.
@@ -249,7 +255,7 @@ async def _managed_source_setup(
         "source": {
             "type": "postgres",
             "config": {
-                "host_port": "example-postgres.dataspoke-dummy-data-01.svc.cluster.local:5432",
+                "host_port": _PG_HOST_PORT,
                 "database": "example_db",
                 "username": "postgres",
                 "password": _SECRET_REF,  # "${UC1_POSTGRES_PASSWORD}"

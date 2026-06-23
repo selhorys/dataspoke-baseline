@@ -143,9 +143,12 @@ and Steps 3/6 (dummy-data reset) at module scope. It also loads `helm-charts/.en
 1. **Write test scenarios** -- map to [Imazon](USE_CASE_en.md) entities. Place compact
    per-concern tests under `integration/spot/`; reserve `integration/api_wired/` for the five
    UC user-story tests (see [Spot vs Api-Wired Integration Tests](#spot-vs-api-wired-integration-tests)).
-2. **Acquire dev-env lock** -- `POST http://<INGRESS_IP>:9221/lock/acquire` with
+2. **Acquire dev-env lock** -- `POST $DATASPOKE_LOCK_URL/lock/acquire` with
    `{"owner": "...", "message": "..."}`. Returns `409` if held by another tester. Set
    `DATASPOKE_DEV_ENV_LOCK_PREACQUIRED=1` if an outer process already holds it.
+   `DATASPOKE_LOCK_URL` is auto-populated in `helm-charts/.env` by `install.sh`
+   (`http://<INGRESS_IP>:9221` in managed ingress mode; `http://127.0.0.1:9221`
+   via `bin/port-forward.sh` in shared ingress mode).
 3. **Reset dummy data** -- always reset before running, even if data appears clean.
    `conftest.py` resets via `tests/integration/util/`. Manual:
    `uv run python -m tests.integration.util --reset-seed`.
@@ -154,8 +157,8 @@ and Steps 3/6 (dummy-data reset) at module scope. It also loads `helm-charts/.en
 5. **Run and iterate** -- `uv run pytest tests/integration/`. Re-run from Step 3 as needed.
 6. **Reset on exit** -- module-scoped teardowns restore baseline. Manual fallback:
    `--reset-seed`.
-7. **Release lock** -- `POST http://<INGRESS_IP>:9221/lock/release` with `{"owner": "..."}`.
-   Force-release: `DELETE http://<INGRESS_IP>:9221/lock`.
+7. **Release lock** -- `POST $DATASPOKE_LOCK_URL/lock/release` with `{"owner": "..."}`.
+   Force-release: `DELETE $DATASPOKE_LOCK_URL/lock`.
 
 #### Per-Module Dummy-Data Reset
 
@@ -452,7 +455,7 @@ tests select the matching project. Non-admin users are provisioned via the admin
 
 Same dev-env lock and data-reset protocol as integration tests, driven from Playwright's
 `globalSetup`/`globalTeardown` by **reusing the existing Python utilities** — acquire the lock
-(`POST http://<INGRESS_IP>:9221/lock/acquire`, honouring `DATASPOKE_DEV_ENV_LOCK_PREACQUIRED`),
+(`POST $DATASPOKE_LOCK_URL/lock/acquire`, honouring `DATASPOKE_DEV_ENV_LOCK_PREACQUIRED`),
 `uv run python -m tests.integration.util --reset-seed`, run, reset, release. UC4 uses the same
 `--uc4-seed` / `--uc4-restore` staging as the manual skill.
 

@@ -25,7 +25,8 @@ helm-charts/
 │   ├── install.sh              # --profile {dev|prod} [--components …] [--frontend none|local|cluster] [--skip-build] …
 │   ├── uninstall.sh            # --profile {dev|prod} [--components frontend] [--no-question] [--delete-pvcs] [--delete-namespaces] [--delete-all]
 │   ├── health-check.sh
-│   ├── build-image.sh          # api | airflow | postgres | frontend
+│   ├── port-forward.sh         # shared ingress mode: TCP services → 127.0.0.1
+│   ├── build-image.sh          # api | airflow | postgres | frontend (GCP Cloud Build / AWS ECR / local)
 │   ├── lib/helpers.sh          # info/warn/error/step/upsert_env_var/wait_for_pod
 │   ├── peripherals/            # nginx-ingress, datahub, langfuse, dummy-data, dev-lock (dev only)
 │   └── post-install/           # seed-peripheral-config, seed-runtime-config (dev only)

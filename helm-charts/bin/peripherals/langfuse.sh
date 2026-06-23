@@ -35,7 +35,10 @@ LANGFUSE_NS="${DATASPOKE_DEV_KUBE_LANGFUSE_NAMESPACE}"
 info "Checking required environment variables..."
 : "${DATASPOKE_KUBE_CLUSTER:?DATASPOKE_KUBE_CLUSTER must be set in .env}"
 : "${DATASPOKE_DEV_KUBE_LANGFUSE_NAMESPACE:?DATASPOKE_DEV_KUBE_LANGFUSE_NAMESPACE must be set in .env}"
-: "${DATASPOKE_KUBE_INGRESS_IP:?DATASPOKE_KUBE_INGRESS_IP must be set in .env (run bin/peripherals/nginx-ingress.sh first)}"
+# DATASPOKE_KUBE_INGRESS_DOMAIN must be present in both modes:
+#   managed — auto-written by nginx-ingress.sh (e.g. <IP>.nip.io)
+#   shared  — operator pre-set to the cluster-published domain
+: "${DATASPOKE_KUBE_INGRESS_DOMAIN:?DATASPOKE_KUBE_INGRESS_DOMAIN must be set in .env (run bin/peripherals/nginx-ingress.sh first, or pre-set it for shared ingress mode)}"
 info "Required environment variables present."
 
 # ---------------------------------------------------------------------------
@@ -162,7 +165,7 @@ info "dataspoke-langfuse-secret applied in ${LANGFUSE_NS}."
 # ---------------------------------------------------------------------------
 # Helm install/upgrade
 # ---------------------------------------------------------------------------
-INGRESS_DOMAIN="${DATASPOKE_KUBE_INGRESS_IP}.nip.io"
+INGRESS_DOMAIN="${DATASPOKE_KUBE_INGRESS_DOMAIN}"
 LANGFUSE_HOST="http://langfuse.${INGRESS_DOMAIN}"
 
 info "Installing/upgrading langfuse Helm release in namespace ${LANGFUSE_NS}..."

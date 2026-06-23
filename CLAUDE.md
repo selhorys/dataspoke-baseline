@@ -21,9 +21,9 @@ Run every command from the directory it expects (usually project root). Do not `
 ./helm-charts/bin/install.sh --profile dev --frontend local              # Full dev stack + write src/frontend/.env.local for host `pnpm dev`
 ```
 
-Settings in `helm-charts/.env`. See `helm-charts/README.md` for access details and ingress endpoints; `spec/feature/HELM_CHART.md` for the full deployment subsystem.
+Settings in `helm-charts/.env`. `DATASPOKE_KUBE_INGRESS_MODE` selects `managed` (default — install & own nginx-ingress; GKE/minikube) or `shared` (reuse a pre-existing cluster controller; AWS/EKS — TCP services then reached on 127.0.0.1 via `./helm-charts/bin/port-forward.sh`). See `helm-charts/README.md` for access details and ingress endpoints; `spec/feature/HELM_CHART.md` for the full deployment subsystem.
 
-The API runs **in-cluster** alongside Airflow so that workflow callbacks work via cluster DNS. Developers access it via nginx-ingress (`http://api.<INGRESS_IP>.nip.io/api/v1/`). Code changes are picked up by `install.sh --profile dev --components api` (docker build + `helm upgrade` + rollout).
+The API runs **in-cluster** alongside Airflow so that workflow callbacks work via cluster DNS. Developers access it via nginx-ingress (`http://api.<INGRESS_DOMAIN>/api/v1/`, where the domain is `<IP>.nip.io` in managed mode or the operator's host in shared mode). Code changes are picked up by `install.sh --profile dev --components api` (docker build + `helm upgrade` + rollout).
 
 The **frontend** (`src/frontend/`, Next.js 15 + pnpm) is a thin reference UI. A full install's `--frontend` flag (default `none` in dev, `cluster` in prod) controls it: `none` deploys nothing; `local` (dev-only) writes `src/frontend/.env.local` so host `pnpm dev` reaches the in-cluster API; `cluster` deploys the containerised UI. `--components frontend` is the standalone rebuild+redeploy iteration path. Frontend tests run via `pnpm -C src/frontend test` (Vitest, mocked); full-stack browser E2E lives in `tests/e2e/` (Playwright — use-case + ground groups) and runs against the `--frontend cluster` UI via `pnpm -C tests/e2e test`, separate from the Python `pytest` groups.
 

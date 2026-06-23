@@ -99,7 +99,8 @@ bash .claude/skills/test-manual-ui/helpers/preflight.sh
 This runs `./helm-charts/bin/health-check.sh`, bootstraps `/tmp/_manual_test_env`
 via `setup_env.sh`, resolves and **curl-probes the frontend URL** (host
 `pnpm dev` at `http://localhost:3000` when `--frontend local`, else the cluster
-`http://app.<INGRESS_IP>.nip.io/`), and prints the app URL plus the admin login
+`http://app.<INGRESS_DOMAIN>/` — `<IP>.nip.io` in managed mode or the operator's
+host in shared mode), and prints the app URL plus the admin login
 (`dataspoke@dataspoke.local` / `dataspoke`).
 
 On any health-check FAIL: name the failed subsystem, offer to reinstall via

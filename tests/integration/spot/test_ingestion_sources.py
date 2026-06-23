@@ -57,8 +57,11 @@ DUMMY_DATA_DATAHUB_TOPICS: frozenset[str] = frozenset({
 _TEST_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
 _ENCODED_URN = urllib.parse.quote(_TEST_URN, safe="")
 
-_PG_HOST = os.environ.get("DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST", "dataspoke-example-postgresql")
-_PG_PORT = int(os.environ.get("DATASPOKE_TEST_DUMMY_DATA_POSTGRES_PORT", "9102"))
+# In-cluster cluster-DNS address of the dummy-data postgres. The recipe is
+# consumed by the API pod IN-CLUSTER, so it must be the cluster-DNS host:port,
+# NOT the laptop-side ingress/port-forward address. Populated by install.sh;
+# required (no default) so an unset env fails loud rather than guessing.
+_PG_HOST_PORT = os.environ["DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST_PORT"]
 _PG_DB = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_DB", "example_db")
 _PG_USER = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_USER", "postgres")
 
@@ -176,7 +179,7 @@ def _catalog_recipe(secret_ref: str = _DUMMY_DATA_SECRET_REF) -> dict:
         "source": {
             "type": "postgres",
             "config": {
-                "host_port": f"{_PG_HOST}:{_PG_PORT}",
+                "host_port": _PG_HOST_PORT,
                 "database": _PG_DB,
                 "username": _PG_USER,
                 "password": f"${{{secret_ref}}}",
@@ -408,7 +411,7 @@ async def test_create_source_with_nonexistent_secret_ref_returns_422(
                 "source": {
                     "type": "postgres",
                     "config": {
-                        "host_port": f"{_PG_HOST}:{_PG_PORT}",
+                        "host_port": _PG_HOST_PORT,
                         "database": _PG_DB,
                         "username": _PG_USER,
                         "password": "${nope__missing}",  # this K8s secret does not exist

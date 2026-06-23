@@ -22,7 +22,7 @@ fi
 source "$ENV_FILE"
 
 echo ""
-echo "=== Installing nginx-ingress controller ==="
+echo "=== Configuring ingress (nginx-ingress) ==="
 echo ""
 
 # ---------------------------------------------------------------------------
@@ -36,6 +36,46 @@ info "kubectl and helm are available."
 # Switch Kubernetes context
 # ---------------------------------------------------------------------------
 use_context "${DATASPOKE_KUBE_CLUSTER}"
+
+# ---------------------------------------------------------------------------
+# Shared mode: reuse a pre-existing cluster ingress controller.
+#
+# We do NOT install, upgrade, or own the controller (other systems on the
+# cluster depend on it). We only verify it is present and that the operator
+# has pre-set DATASPOKE_KUBE_INGRESS_DOMAIN. HTTP services ride that domain
+# (records published by the cluster's external-dns); TCP services are reached
+# via `kubectl port-forward` (bin/port-forward.sh), not the ingress — so no
+# IP or TCP test variables are derived here.
+# ---------------------------------------------------------------------------
+if [[ "$(ingress_mode)" == "shared" ]]; then
+  info "Ingress mode: shared — using the pre-existing cluster ingress controller."
+
+  : "${DATASPOKE_KUBE_INGRESS_DOMAIN:?DATASPOKE_KUBE_INGRESS_DOMAIN must be pre-set in .env for shared ingress mode (e.g. dataspoke-dev.your-host.com)}"
+
+  INGRESS_CLASS="${DATASPOKE_KUBE_INGRESS_CLASS:-nginx}"
+  if ! kubectl get ingressclass "${INGRESS_CLASS}" >/dev/null 2>&1; then
+    error "IngressClass '${INGRESS_CLASS}' not found in the cluster. Set DATASPOKE_KUBE_INGRESS_CLASS to the shared controller's class, or install a controller."
+  fi
+  info "IngressClass '${INGRESS_CLASS}' is present."
+
+  echo ""
+  info "Shared ingress verified. DataSpoke HTTP hosts will be published under:"
+  echo "  DataSpoke UI:  http://app.${DATASPOKE_KUBE_INGRESS_DOMAIN}/"
+  echo "  DataSpoke API: http://api.${DATASPOKE_KUBE_INGRESS_DOMAIN}/api/v1/..."
+  echo "  DataHub UI:    http://datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN}/"
+  echo "  Airflow UI:    http://airflow.${DATASPOKE_KUBE_INGRESS_DOMAIN}/"
+  echo "  Langfuse UI:   http://langfuse.${DATASPOKE_KUBE_INGRESS_DOMAIN}/"
+  echo ""
+  echo "TCP services (Postgres/Redis/Kafka/lock) are not exposed via the shared"
+  echo "controller — reach them from a laptop with: ./helm-charts/bin/port-forward.sh"
+  echo ""
+  info "nginx-ingress step complete (shared mode — controller left untouched)."
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Managed mode: install and own an nginx-ingress controller (GKE/minikube).
+# ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
 # Add / update Helm repo

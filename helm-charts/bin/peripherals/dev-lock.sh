@@ -49,7 +49,10 @@ kubectl rollout status deployment/dev-lock \
 # ---------------------------------------------------------------------------
 # Print access info
 # ---------------------------------------------------------------------------
-INGRESS_IP="${DATASPOKE_KUBE_INGRESS_IP:-<ingress-ip>}"
+# In shared mode the lock API is reached on 127.0.0.1 via port-forward
+# (bin/port-forward.sh); in managed mode it rides the ingress LoadBalancer IP.
+INGRESS_IP="$(tcp_access_host)"
+[[ -z "${INGRESS_IP}" ]] && INGRESS_IP="<ingress-ip>"
 echo ""
 info "dev-lock installation complete."
 echo ""

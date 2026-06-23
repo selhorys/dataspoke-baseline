@@ -215,14 +215,18 @@ if [[ "$PROFILE" == "dev" ]]; then
   done
 
   # 6. nginx-ingress
-  info "Removing nginx-ingress controller..."
-  if helm status ingress-nginx -n "ingress-nginx" >/dev/null 2>&1; then
-    helm uninstall ingress-nginx -n "ingress-nginx"
+  if [[ "$(ingress_mode)" == "shared" ]]; then
+    info "Ingress mode: shared — leaving the pre-existing cluster ingress controller untouched."
   else
-    warn "Helm release 'ingress-nginx' not found — skipping."
-  fi
-  if kubectl get namespace "ingress-nginx" >/dev/null 2>&1; then
-    kubectl delete namespace "ingress-nginx"
+    info "Removing nginx-ingress controller..."
+    if helm status ingress-nginx -n "ingress-nginx" >/dev/null 2>&1; then
+      helm uninstall ingress-nginx -n "ingress-nginx"
+    else
+      warn "Helm release 'ingress-nginx' not found — skipping."
+    fi
+    if kubectl get namespace "ingress-nginx" >/dev/null 2>&1; then
+      kubectl delete namespace "ingress-nginx"
+    fi
   fi
 
   # 7. Optionally delete PVCs (dataspoke + Langfuse)

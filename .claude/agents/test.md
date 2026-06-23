@@ -69,7 +69,8 @@ Agent-specific notes:
 - **Toolchain**: `pnpm -C tests/e2e install`, `pnpm -C tests/e2e test` (Playwright runner),
   `pnpm -C tests/e2e typecheck` (`tsc --noEmit`). Never `npm`/`yarn`/`npx`-install. Use `pnpm` /
   Playwright's own runner; full stack against the **cluster** frontend (`baseURL` =
-  `PLAYWRIGHT_BASE_URL` ?? `http://app.<INGRESS_IP>.nip.io`).
+  `PLAYWRIGHT_BASE_URL` ?? `http://app.<INGRESS_DOMAIN>`, where the domain is
+  `<IP>.nip.io` in managed ingress mode or the operator's host in shared mode).
 - **Two groups**: `use-case/` mirrors `tests/integration/api_wired/test_uc{1..5}_*.py` (one
   browser flow per `USE_CASE_en.md` story, narrative annotated verbatim) and `/test-manual-ui`
   gestures; `ground/<feature>/` is the spot analogue — narrow single-concern UI flows filling the
@@ -82,7 +83,7 @@ Agent-specific notes:
   status badges). List needed test-ids in your completion report so they can be added in a frontend
   fix pass.
 - **Lock + reset + stub mode**: reuse the existing Python utilities from `globalSetup`/
-  `globalTeardown` (lock at `:9221`, `uv run python -m tests.integration.util --reset-seed`,
+  `globalTeardown` (lock via `$DATASPOKE_LOCK_URL`, `uv run python -m tests.integration.util --reset-seed`,
   UC4 `--uc4-seed`). Do not reimplement reset/lock in TypeScript. Gate UC3/UC4 real-LLM variants on
   `stub_llm_client` from `GET /admin/conf` (`test.skip` when stubbed), mirroring api-wired.
 - **Readability over DRY**: inline gestures and expected values per step (mirrors the api-wired
