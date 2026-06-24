@@ -37,6 +37,12 @@ global:
   graph_service_impl: elasticsearch
 
 datahub-gms:
+  # The chart defaults the GMS service to LoadBalancer, which provisions a
+  # redundant NLB beside the nginx Ingress and exposes the metadata API plus
+  # jmx/prometheus ports. Access is via the nginx Ingress (datahub-gms Ingress
+  # at datahub.<domain>/gms), so keep GMS as in-cluster ClusterIP.
+  service:
+    type: ClusterIP
   extraEnvs:
     # Disable the system-update wait that gates the MAE consumer startup.
     # In dev, the system-update job always completes before GMS boots, so
@@ -71,6 +77,10 @@ datahub-gms:
     failureThreshold: 4
 
 datahub-frontend:
+  # Access is served via the nginx Ingress (datahub-frontend Ingress at
+  # datahub.<domain>/); avoid a redundant LoadBalancer.
+  service:
+    type: ClusterIP
   resources:
     requests:
       cpu: "250m"

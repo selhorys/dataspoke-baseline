@@ -663,6 +663,12 @@ Dev decisions:
 - **Frontend ingress uses `className: "nginx"`** — the subchart (0.3.4) uses
   `className`, not `ingressClassName`; the wrong key is silently dropped and
   GKE falls back to provisioning a GCE LoadBalancer.
+- **`datahub-gms` and `datahub-frontend` Services are `ClusterIP`** — the chart
+  defaults both to `LoadBalancer`, which on AWS/EKS provisions redundant NLBs
+  beside the nginx Ingress and exposes the GMS metadata API plus jmx/prometheus
+  ports. DataSpoke overrides both to `ClusterIP`; external access is solely
+  through the nginx Ingress (GMS at `datahub.<domain>/gms`, frontend at
+  `datahub.<domain>/`).
 
 Service name prefixes: `datahub-prerequisites-*` for the prerequisites
 release (MySQL, Kafka controller); `opensearch-cluster-master` for the
