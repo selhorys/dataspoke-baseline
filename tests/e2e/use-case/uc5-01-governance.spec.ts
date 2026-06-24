@@ -17,7 +17,8 @@
  *   2.  Trigger immediate first run for each metric via the Run button + ConfirmDialog.
  *       Backend: POST .../method/run → 200 with run_id.
  *   3.  Poll adminApi until ≥1 result row is present for each metric, THEN:
- *       - Dashboard (/governance/dashboard): metric cards and trend chart section visible.
+ *       - Dashboard (/governance/dashboard): one combined card per enabled metric
+ *         (title + metric_type badge + latest values + inline trend chart).
  *       - Metric list (/governance/metrics): all three rows listed with title + type badge.
  *       - Per-metric detail (/governance/metrics/[id]): attr/conf, attr/result chart,
  *         event log sections; Edit/Run/Delete buttons rendered for admin.
@@ -348,14 +349,19 @@ test("UC5 step 1c — PUT existing metric conf → 200 + change reflected; absen
   await page.getByRole("button", { name: "Save" }).click();
 
   // -- UI assertion: form closes on PUT success (isEditing→false on onSuccess) --
-  // The metric detail attr/conf section does NOT render `description` (it shows
-  // mode/type/schedule/enabled/metrics), so the visible UI confirmation that the
-  // PUT landed is the form closing without error; the backend probe below verifies
-  // the new description value.
+  // spec: [id]/page.tsx — Save → PUT attr/conf → onSuccess sets isEditing=false,
+  //   re-rendering the read-only attr/conf view with the Edit button back.
   await expect(page.getByRole("button", { name: "Save" })).not.toBeVisible({ timeout: 15_000 });
   await expect(
     page.getByRole("button", { name: "Edit" })
   ).toBeVisible({ timeout: 10_000 });
+
+  // -- UI assertion: read-only detail view renders the updated `description` --
+  // spec: FRONTEND_GOVERNANCE.md §Metrics — the detail read-only view renders
+  //   `description` alongside mode/metric_type/schedule_tier/is_enabled/metrics/
+  //   metric_conf/dataset_filter. The visible confirmation that the PUT landed is
+  //   the new description text appearing on the page.
+  await expect(page.getByText(UPDATED_DESCRIPTION)).toBeVisible({ timeout: 10_000 });
 
   // -- Backend probe: GET attr/conf → updated description --
   // spec: API.md §Metric — PUT replaces existing definition, returns 200.
@@ -470,13 +476,17 @@ test("UC5 step 2 — trigger immediate run for doc-health metric", async ({
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Step 3a — Dashboard: metric cards + trend chart section visible after results land
+// Step 3a — Dashboard: combined metric cards visible after results land
 // spec: USE_CASE_en.md §UC5 §Imazon Example — "A week later, trends are pulled"
-// spec: FRONTEND_GOVERNANCE.md §Dashboard — metric cards + small-multiples chart section.
-// spec: dashboard/page.tsx — DashboardContent: MetricCard + MetricTimeseriesChart per metric.
+// spec: FRONTEND_GOVERNANCE.md §Dashboard — a responsive grid of combined cards,
+//   one per enabled metric, each stacking the title, a metric_type outline badge,
+//   the latest values, and that metric's inline trend chart. No separate
+//   "Daily trend" section.
+// spec: dashboard/page.tsx — DashboardContent: one MetricCard per enabled metric
+//   (title + metric_type badge + latest values + inline MetricTimeseriesChart).
 // ─────────────────────────────────────────────────────────────────────────────
 
-test("UC5 step 3a — dashboard shows metric cards and trend chart section", async ({
+test("UC5 step 3a — dashboard shows combined metric cards (title, type badge, inline chart)", async ({
   page,
   adminApi,
 }) => {
@@ -501,8 +511,8 @@ test("UC5 step 3a — dashboard shows metric cards and trend chart section", asy
   }
   expect(resultCount).toBeGreaterThanOrEqual(1);
 
-  // Navigate to the dashboard and assert its heading, metric cards, and trend
-  // section render. Wrap the goto + UI visibility checks in a retry block to
+  // Navigate to the dashboard and assert its heading plus the combined metric
+  // cards render. Wrap the goto + UI visibility checks in a retry block to
   // absorb residual client-side render lag after the backend results are
   // confirmed present — without it a render flake fails the test and triggers a
   // serial group-retry.
@@ -517,10 +527,11 @@ test("UC5 step 3a — dashboard shows metric cards and trend chart section", asy
       page.getByRole("heading", { name: "Governance · Dashboard", exact: true })
     ).toBeVisible({ timeout: 10_000 });
 
-    // -- UI assertion: metric cards visible (async TanStack Query; wait for panel) --
-    // spec: FRONTEND_GOVERNANCE.md §Dashboard — one card per enabled metric (CardTitle = title).
+    // -- UI assertion: one combined card per enabled metric (CardTitle = title) --
+    // spec: FRONTEND_GOVERNANCE.md §Dashboard — one card per enabled metric; each
+    //   card's first line is the metric `title`.
     // spec: dashboard/page.tsx — MetricCard renders CardTitle={metric.title}.
-    // Use .first() — the title may also appear in the chart section heading (pitfall 1).
+    // Use .first() — the title may also surface elsewhere (e.g. nav) (pitfall 1).
     await expect(
       page.getByText(METRIC_INGESTION.title, { exact: true }).first()
     ).toBeVisible({ timeout: 10_000 });
@@ -531,12 +542,30 @@ test("UC5 step 3a — dashboard shows metric cards and trend chart section", asy
       page.getByText(METRIC_DOC.title, { exact: true }).first()
     ).toBeVisible({ timeout: 10_000 });
 
-    // -- UI assertion: "Daily trend" section heading visible --
-    // spec: dashboard/page.tsx — h2 "Daily trend"; FRONTEND_GOVERNANCE.md §45 (the
-    // range "[Last 2 weeks ▾]" is a separate selector, not part of the heading text).
+    // -- UI assertion: the bellwether card is a *combined* card --
+    // spec: FRONTEND_GOVERNANCE.md §Dashboard — each card stacks the title, a
+    //   metric_type outline badge, the latest values, and that metric's inline
+    //   trend chart. There is no separate "Daily trend" section any more.
+    // Scope to the card via its stable test id (metric-card.tsx renders
+    // data-testid={`metric-card-${metric.id}`}) — document-order-independent and
+    // not self-referential, so the chart assertion below is load-bearing.
+    const ingestionCard = page.getByTestId(`metric-card-${METRIC_INGESTION.metric_id}`);
+    // (a) the metric_type outline badge text is present inside the card.
     await expect(
-      page.getByRole("heading", { name: "Daily trend", exact: true })
+      ingestionCard.getByText(METRIC_INGESTION.metric_type, { exact: true }).first()
     ).toBeVisible({ timeout: 10_000 });
+    // (b) a Recharts chart is mounted inside the card (decoupled from the scope
+    //     predicate — the card was selected by test id, not by containing a chart).
+    await expect(
+      ingestionCard.locator(".recharts-wrapper, svg.recharts-surface").first()
+    ).toBeVisible({ timeout: 10_000 });
+
+    // -- UI assertion: no separate "Daily trend" section --
+    // spec: FRONTEND_GOVERNANCE.md §Dashboard — combined card only; guard against a
+    //   regression reintroducing a standalone trend section.
+    await expect(
+      page.getByRole("heading", { name: "Daily trend" })
+    ).toHaveCount(0);
   }).toPass({ timeout: 120_000, intervals: [2_000, 3_000, 5_000, 10_000] });
 
   // -- Backend probe: GET /spoke/governance/metric?is_enabled=true → all 3 present --

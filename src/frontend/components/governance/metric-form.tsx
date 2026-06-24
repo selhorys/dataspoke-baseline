@@ -13,6 +13,7 @@
  *   onSubmit       — called with validated form data
  *   isPending      — shows loading state on the Save button
  *   serverError?   — top-level error from the mutation
+ *   title?         — optional panel heading rendered left of the top action bar
  */
 
 import { useCallback, useEffect } from "react";
@@ -69,6 +70,7 @@ interface MetricFormProps {
   onCancel?: () => void;
   isPending: boolean;
   serverError?: string;
+  title?: string;
 }
 
 export function MetricForm({
@@ -78,6 +80,7 @@ export function MetricForm({
   onCancel,
   isPending,
   serverError,
+  title,
 }: MetricFormProps) {
   const schema = isCreate ? createSchema : baseSchema;
 
@@ -156,6 +159,30 @@ export function MetricForm({
 
   return (
     <form onSubmit={handleSubmit(onValid)} className="space-y-5">
+      {/* Top action bar: optional heading on the left, buttons right-aligned. */}
+      <div className="flex items-center justify-between gap-2">
+        {title ? (
+          <h2 className="text-sm font-medium">{title}</h2>
+        ) : (
+          <span />
+        )}
+        <div className="flex items-center gap-2">
+          {isPassive && (
+            <p className="text-xs text-muted-foreground">
+              Passive mode not yet supported
+            </p>
+          )}
+          {onCancel && (
+            <Button type="button" variant="outline" onClick={onCancel} disabled={isPending}>
+              Cancel
+            </Button>
+          )}
+          <Button type="submit" disabled={isPending || isPassive}>
+            {isPending ? "Saving..." : "Save"}
+          </Button>
+        </div>
+      </div>
+
       <FormGrid>
         {isCreate && (
           <Field
@@ -334,22 +361,6 @@ export function MetricForm({
       </FormGrid>
 
       {serverError && <ErrorText message={serverError} />}
-
-      <div className="flex justify-end gap-2">
-        {onCancel && (
-          <Button type="button" variant="outline" onClick={onCancel} disabled={isPending}>
-            Cancel
-          </Button>
-        )}
-        <Button type="submit" disabled={isPending || isPassive}>
-          {isPending ? "Saving..." : "Save"}
-        </Button>
-        {isPassive && (
-          <p className="self-center text-xs text-muted-foreground">
-            Passive mode not yet supported
-          </p>
-        )}
-      </div>
     </form>
   );
 }

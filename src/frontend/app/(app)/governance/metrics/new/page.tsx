@@ -6,6 +6,7 @@ import { ArrowLeft } from "lucide-react";
 import { ApiError } from "@/lib/api/client";
 import { useCreateMetric } from "@/lib/api/governance";
 import { MetricForm } from "@/components/governance/metric-form";
+import { toast } from "@/components/ui/use-toast";
 import type { CreateMetricFormValues, MetricFormValues } from "@/types/governance";
 
 const DEFAULT_VALUES: MetricFormValues = {
@@ -22,17 +23,27 @@ const DEFAULT_VALUES: MetricFormValues = {
 
 export default function NewMetricPage() {
   const router = useRouter();
-  const { mutate, isPending, error } = useCreateMetric();
-
-  const serverError =
-    error instanceof ApiError
-      ? `${error.error_code}: ${error.message}`
-      : error?.message;
+  const { mutate, isPending } = useCreateMetric();
 
   const handleSubmit = (values: MetricFormValues | CreateMetricFormValues) => {
     mutate(values as CreateMetricFormValues, {
       onSuccess: (created) => {
         router.push(`/governance/metrics/${created.id}`);
+      },
+      onError: (err) => {
+        if (err instanceof ApiError) {
+          toast({
+            variant: "destructive",
+            title: err.error_code,
+            description: err.message,
+          });
+        } else {
+          toast({
+            variant: "destructive",
+            title: "Failed to create metric",
+            description: err.message,
+          });
+        }
       },
     });
   };
@@ -57,7 +68,6 @@ export default function NewMetricPage() {
           onSubmit={handleSubmit}
           onCancel={() => router.push("/governance/metrics")}
           isPending={isPending}
-          serverError={serverError}
         />
       </div>
     </div>

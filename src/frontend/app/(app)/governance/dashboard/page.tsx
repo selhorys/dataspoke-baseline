@@ -11,27 +11,9 @@ import {
   RANGE_KEYS,
 } from "@/lib/hooks/use-range-selection";
 import { MetricCard } from "@/components/governance/metric-card";
-import { MetricTimeseriesChart } from "@/components/governance/metric-timeseries-chart";
-import { useEnabledMetrics, useMetricResults } from "@/lib/api/governance";
+import { useEnabledMetrics } from "@/lib/api/governance";
 import { useDisplayTz } from "@/lib/preferences/timezone";
 import type { MetricDefinition } from "@/types/governance";
-
-// ── Per-metric timeseries chart (one per enabled metric) ──────────────────────
-
-function MetricChart({ metric, range }: { metric: MetricDefinition; range: RangeValue }) {
-  const { data } = useMetricResults(metric.id, {
-    from: range.from,
-    to: range.to,
-    limit: 100,
-  });
-
-  return (
-    <div className="rounded-lg border p-4">
-      <h3 className="mb-2 text-sm font-medium">{metric.title}</h3>
-      <MetricTimeseriesChart results={data?.results ?? []} height={180} />
-    </div>
-  );
-}
 
 // ── Inner component (rendered after enabled metrics load) ─────────────────────
 
@@ -49,24 +31,11 @@ function DashboardContent({
   }
 
   return (
-    <>
-      {/* Metric cards */}
-      <div className="flex flex-wrap gap-4">
-        {metrics.map((m) => (
-          <MetricCard key={m.id} metric={m} />
-        ))}
-      </div>
-
-      {/* Small multiples — one chart per metric */}
-      <section className="mt-6">
-        <h2 className="mb-3 text-sm font-medium text-muted-foreground">Daily trend</h2>
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-          {metrics.map((m) => (
-            <MetricChart key={m.id} metric={m} range={range} />
-          ))}
-        </div>
-      </section>
-    </>
+    <div className="grid gap-4 [grid-template-columns:repeat(auto-fit,minmax(22rem,1fr))]">
+      {metrics.map((m) => (
+        <MetricCard key={m.id} metric={m} range={range} />
+      ))}
+    </div>
   );
 }
 
@@ -90,9 +59,9 @@ export default function GovernanceDashboardPage() {
       </div>
 
       {isLoading && (
-        <div className="flex flex-wrap gap-4">
+        <div className="grid gap-4 [grid-template-columns:repeat(auto-fit,minmax(22rem,1fr))]">
           {Array.from({ length: 3 }).map((_, i) => (
-            <Skeleton key={i} className="h-[120px] w-[180px] rounded-lg" />
+            <Skeleton key={i} className="h-[280px] w-full rounded-lg" />
           ))}
         </div>
       )}

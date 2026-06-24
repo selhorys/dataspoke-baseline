@@ -219,7 +219,10 @@ export default function MetricDetailPage({
 
       {/* attr/conf — read-only summary or edit form */}
       <section className="rounded-lg border p-5">
-        <h2 className="mb-3 text-sm font-medium">attr/conf</h2>
+        {/* While editing, the form's `title` prop renders the attr/conf heading
+            (and the Cancel/Save buttons on the same row), so suppress the
+            page's own heading to avoid duplication. */}
+        {!isEditing && <h2 className="mb-3 text-sm font-medium">attr/conf</h2>}
 
         {!isEditing ? (
           <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-3">
@@ -249,6 +252,10 @@ export default function MetricDetailPage({
               <dt className="text-muted-foreground">metrics</dt>
               <dd className="font-mono text-xs">{conf.metrics.join(", ")}</dd>
             </div>
+            <div className="col-span-full">
+              <dt className="text-muted-foreground">description</dt>
+              <dd>{conf.description}</dd>
+            </div>
             {conf.metric_conf && Object.keys(conf.metric_conf).length > 0 && (
               <div>
                 <dt className="text-muted-foreground">metric_conf</dt>
@@ -268,6 +275,7 @@ export default function MetricDetailPage({
           </dl>
         ) : (
           <MetricForm
+            title="attr/conf"
             defaultValues={formDefaults}
             isCreate={false}
             onSubmit={(values) => handleSave(values as MetricFormValues)}

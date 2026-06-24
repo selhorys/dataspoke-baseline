@@ -23,32 +23,31 @@ a route in `API.md`.
 
 ## Dashboard (`/governance/dashboard`)
 
-The Dashboard is a read-only visualization of every enabled metric:
+The Dashboard is a read-only visualization of every enabled metric as a
+responsive grid of combined cards:
 
-| Block | Read | Notes |
+| Element | Read | Notes |
 |---|---|---|
-| Metric cards | `GET /spoke/governance/metric` (filter `is_enabled=true`) + latest `GET .../{id}/attr/result?limit=1` per metric | One card per enabled metric. Each card shows `title`, a `metric_type` outline badge under the title, the latest `values` dict (each key on its own line as `key: value`), and the formatted measured-at date. No per-card delta indicator |
-| Timeseries chart | `GET /spoke/governance/metric/{id}/attr/result?from=…&to=…` per metric on one shared daily window | Small multiples — one chart per metric, each plotting one line per that metric's `values` key. Per-metric charts avoid collapsing shared keys (e.g. `total`) across metrics onto one ambiguous line. A single shared [RangePicker](FRONTEND_BASIC.md#shared-component-notes) (`date` granularity, presets Last 1 day / 7 days / 2 weeks (default) / 4 weeks / 12 weeks) sits above the grid and drives every metric card's `from`/`to` (plus a limit) together. Cards and charts poll on a 15s interval (paused when the tab is hidden) per the BASIC convention |
+| Combined metric card | `GET /spoke/governance/metric` (filter `is_enabled=true`) + latest `GET .../{id}/attr/result?limit=1` per metric + trend `GET .../{id}/attr/result?from=…&to=…` per metric | One card per enabled metric. Each card stacks, top to bottom: the metric `title`, a `metric_type` outline badge, the latest `values` dict (each key on its own line as `key: value`) with its measured-at date, and that metric's per-metric trend chart (one line per that metric's `values` key). Per-metric charts avoid collapsing shared keys (e.g. `total`) across metrics onto one ambiguous line. No per-card delta indicator |
+| Shared RangePicker | drives every card's trend `from`/`to` (plus a limit) | A single [RangePicker](FRONTEND_BASIC.md#shared-component-notes) (`date` granularity, presets Last 1 day / 7 days / 2 weeks (default) / 4 weeks / 12 weeks) sits above the grid and applies the same window to every card's chart together |
+| Responsive grid | — | Equal-width cards with an enforced minimum width, laid out as `repeat(auto-fit, minmax(~22rem, 1fr))`. The grid wraps dynamically 3→2→1 as the viewport narrows, with **no fixed column cap** — on an ultra-wide viewport with more than three enabled metrics a fourth may pack into a row |
+
+Cards and charts poll on the 15s interval (paused when the tab is hidden) per
+the BASIC convention.
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│  Governance · Dashboard                                  │
+│  Governance · Dashboard               [Last 2 weeks ▾]   │
 ├──────────────────────────────────────────────────────────┤
-│  Ingestion Freshness    Validation Score    Doc Health   │
-│  (freshness)            (val-score)         (doc-health) │
-│  ┌────────────────┐    ┌────────────────┐  ┌──────────┐  │
-│  │ total       142│    │ total       142│  │ total  87│  │
-│  │ in-time     131│    │ sum     118.50 │  │ sum   61 │  │
-│  │ 2026-05-26     │    │ 2026-05-26     │  │ 2026-05-26│ │
-│  └────────────────┘    └────────────────┘  └──────────┘  │
-│                                                          │
-│  Daily trend                          [Last 2 weeks ▾]   │
-│  ┌────────────────┐ ┌────────────────┐ ┌──────────────┐  │
-│  │ (one chart per │ │ (one chart per │ │ (one chart   │  │
-│  │  metric — lines│ │  metric — lines│ │  per metric) │  │
-│  │  per values    │ │  per values    │ │              │  │
-│  │  key)          │ │  key)          │ │              │  │
-│  └────────────────┘ └────────────────┘ └──────────────┘  │
+│  ┌─────────────────┐ ┌─────────────────┐ ┌─────────────┐ │
+│  │ Ingestion Fresh.│ │ Validation Score│ │ Doc Health  │ │
+│  │ (freshness)     │ │ (val-score)     │ │ (doc-health)│ │
+│  │ total       142 │ │ total       142 │ │ total    87 │ │
+│  │ in-time     131 │ │ sum     118.50  │ │ doc_h    61 │ │
+│  │ 2026-05-26      │ │ 2026-05-26      │ │ 2026-05-26  │ │
+│  │ ╭─trend chart─╮ │ │ ╭─trend chart─╮ │ │ ╭─trend───╮ │ │
+│  │ ╰─────────────╯ │ │ ╰─────────────╯ │ │ ╰─────────╯ │ │
+│  └─────────────────┘ └─────────────────┘ └─────────────┘ │
 └──────────────────────────────────────────────────────────┘
         Dashboard (`/governance/dashboard`)
 ```
@@ -76,6 +75,15 @@ malformed input surfaced inline). On `/governance/metrics/[id]` the id
 comes from the path and is shown read-only. On success the page redirects
 to `/governance/metrics/[id]` for the new metric.
 
+The form's **Cancel/Save buttons sit top-right**. On
+`/governance/metrics/new` they occupy the form's top action bar; on
+`/governance/metrics/[id]` they sit top-right of the `attr/conf` panel
+header (the same row as the `attr/conf` heading) while editing.
+
+The detail read-only view (`/governance/metrics/[id]`, not editing) renders
+`description` alongside `mode`, `metric_type`, `schedule_tier`,
+`is_enabled`, `metrics`, `metric_conf`, and `dataset_filter`.
+
 `dataset_filter` follows the standard four-dimension shape — see
 [API §Metric `dataset_filter`](../API.md#metric-spokegovernancemetric).
 
@@ -92,7 +100,9 @@ detail render a null tier as *on-demand*.
 ├──────────────────────────────────────────────────────┤
 │  attr/conf                                           │
 │    mode: active   metric_type: doc-health            │
+│    description: Daily documentation-completeness      │
 │    schedule_tier: daily    ✓ enabled                 │
+│    metrics: total, doc_health   metric_conf: (none)  │
 │    dataset_filter: origin=DEV                        │
 │                                                      │
 │  attr/result?from&to        [Last 2 weeks ▾]        │
@@ -107,7 +117,7 @@ detail render a null tier as *on-demand*.
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│  Metric definition                                  │
+│  Metric definition                  [Cancel] [Save] │
 ├─────────────────────────────────────────────────────┤
 │  metric_id:    [ doc-health-dev          ] (create) │
 │  mode:         ( • active )  ( passive — disabled ) │
@@ -124,8 +134,6 @@ detail render a null tier as *on-demand*.
 │    tags[]:           [urn:li:tag:env:DEV,     ]     │
 │    glossary_terms[]: [urn:li:glossaryTerm:…,  ]     │
 │    dataset_urns[]:   [urn:li:dataset:(…),     ]     │
-│                                                     │
-│  [Cancel]                                  [Save]   │
 └─────────────────────────────────────────────────────┘
         Config form (PUT/PATCH .../attr/conf)
 ```
