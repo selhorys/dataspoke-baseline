@@ -388,8 +388,13 @@ lock protocol, see [`spec/TESTING.md`](TESTING.md).
 
 ### Kubernetes Topology
 
+> **Example namespace names.** `dataspoke-01`, `datahub-01`, `langfuse-01`, and
+> `dataspoke-dummy-data-01` below are illustrative. Every namespace is
+> operator-chosen via four `.env` vars and defaulted only in `.env.example`; see
+> [`spec/feature/HELM_CHART.md` §Namespace Sourcing](feature/HELM_CHART.md#namespace-sourcing).
+
 DataHub runs in a separate namespace or cluster. DataSpoke deploys into its own namespace
-(`dataspoke-01` by default) containing: `dataspoke-frontend` + `dataspoke-api` (Deployments, ingress-exposed),
+(e.g. `dataspoke-01`) containing: `dataspoke-frontend` + `dataspoke-api` (Deployments, ingress-exposed),
 `dataspoke-event-consumer` (optional Kafka consumer Deployment — opt-in for organisations
 adding event-driven extensions; not deployed in the baseline),
 `dataspoke-airflow-api-server` + `dataspoke-airflow-scheduler` +
@@ -402,7 +407,7 @@ and `datahub-kafka:9092` (event streaming).
 via Airflow tier DAGs and do not subscribe to DataHub MCL events. Enable the separate pod
 when an organisation adds event-driven extensions; Kafka consumers scale by partition count.
 
-Langfuse runs as a sibling subsystem in its own namespace (`langfuse-01` by default) — web,
+Langfuse runs as a sibling subsystem in its own namespace (e.g. `langfuse-01`) — web,
 worker, and bundled Postgres / Redis / ClickHouse / MinIO — installed from
 `helm-charts/langfuse/`. DataSpoke reads the Langfuse connection (host + public/secret key)
 from the DB `peripheral_config` table, set via `/api/v1/admin/peripherals/langfuse`; absence

@@ -6,8 +6,10 @@
 # pre-existing cluster controller and never reads this file.
 #
 # Installed as Helm release "ingress-nginx" in namespace "ingress-nginx".
-# Namespace names in the tcp: block must match the DATASPOKE_*_NAMESPACE values
-# used in the active .env (defaults: dataspoke-01, datahub-01, dataspoke-dummy-data-01).
+# The tcp: block below uses __*_NS__ placeholders which bin/peripherals/nginx-ingress.sh
+# renders from the active .env (DATASPOKE_KUBE_DATASPOKE_NAMESPACE,
+# DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE, DATASPOKE_DEV_KUBE_DUMMY_DATA_NAMESPACE)
+# before passing to helm. Do not hardcode namespaces here.
 
 controller:
   ingressClassResource:
@@ -37,13 +39,13 @@ controller:
 #
 # Tier B: dev-only TCP passthrough for datastores and message brokers.
 tcp:
-  # DataSpoke infra (dataspoke-01)
-  9201: "dataspoke-01/dataspoke-postgresql:5432"
-  9202: "dataspoke-01/dataspoke-redis-master:6379"
-  # DataHub Kafka (datahub-01)
-  9005: "datahub-01/datahub-kafka-external:9095"
-  # Example data sources (dataspoke-dummy-data-01)
-  9102: "dataspoke-dummy-data-01/example-postgres:5432"
-  9104: "dataspoke-dummy-data-01/example-kafka:9094"
-  # Dev-env lock service (dataspoke-01)
-  9221: "dataspoke-01/dev-lock:8080"
+  # DataSpoke infra (__DATASPOKE_NS__)
+  9201: "__DATASPOKE_NS__/dataspoke-postgresql:5432"
+  9202: "__DATASPOKE_NS__/dataspoke-redis-master:6379"
+  # DataHub Kafka (__DATAHUB_NS__)
+  9005: "__DATAHUB_NS__/datahub-kafka-external:9095"
+  # Example data sources (__DUMMY_DATA_NS__)
+  9102: "__DUMMY_DATA_NS__/example-postgres:5432"
+  9104: "__DUMMY_DATA_NS__/example-kafka:9094"
+  # Dev-env lock service (__DATASPOKE_NS__)
+  9221: "__DATASPOKE_NS__/dev-lock:8080"

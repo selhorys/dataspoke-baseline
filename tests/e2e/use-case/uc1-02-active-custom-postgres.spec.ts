@@ -35,10 +35,16 @@
 
 import { spawnSync } from "child_process";
 import { test, expect, IMAZON_URNS } from "../fixtures/index";
+import { required } from "../fixtures/env";
 
 // ── Constants (verbatim from api-wired test) ────────────────────────────────
 
 const SOURCE_NAME = "dummy postgres example_db in catalog schema";
+
+// In-cluster host:port of the dummy-data postgres, read from the auto-populated env var
+// so the dummy-data namespace isn't hardcoded (mirrors api-wired _PG_HOST_PORT); no
+// hardcoded fallback so a wrong host fails the run loudly.
+const PG_HOST_PORT = required("DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST_PORT");
 
 // Secret ref: ${dummy-data-pg__password} — the bare ref without ${...} wrapper.
 const SECRET_REF_BARE = "dummy-data-pg__password";
@@ -53,7 +59,7 @@ const CATALOG_EDITIONS_URN = IMAZON_URNS.editions;
 const RECIPE_YAML = `source:
   type: postgres
   config:
-    host_port: example-postgres.dataspoke-dummy-data-01.svc.cluster.local:5432
+    host_port: ${PG_HOST_PORT}
     database: example_db
     username: postgres
     password: \${dummy-data-pg__password}
@@ -93,8 +99,9 @@ test.beforeAll(async () => {
   }
 
   // Resolve namespace from env (mirrors _resolve_namespace() in util/k8s.py).
-  const namespace =
-    process.env["DATASPOKE_KUBE_DATASPOKE_NAMESPACE"] ?? "dataspoke-01";
+  // required, not defaulted — a baked example namespace would silently target the
+  // wrong namespace.
+  const namespace = required("DATASPOKE_KUBE_DATASPOKE_NAMESPACE");
 
   // Idempotent kubectl create: --dry-run=client -o yaml | apply -f -
   // "apply" is idempotent; the --dry-run+pipe pattern avoids the "already exists"

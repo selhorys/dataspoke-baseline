@@ -9,17 +9,18 @@
 5. [Uninstallation](#uninstallation)
 6. [Umbrella Chart Structure](#umbrella-chart-structure)
 7. [Configuration — Four-Tier Env Vars](#configuration--four-tier-env-vars)
-8. [The .env File](#the-env-file)
-9. [Configuration Flow](#configuration-flow)
-10. [Image Builds](#image-builds)
-11. [Dev-Only Peripherals](#dev-only-peripherals)
-12. [Post-Install Seeding](#post-install-seeding)
-13. [Resource Sizing](#resource-sizing)
-14. [Ingress & Network Policy](#ingress--network-policy)
-15. [Secrets Management](#secrets-management)
-16. [Health Check](#health-check)
-17. [Troubleshooting](#troubleshooting)
-18. [References](#references)
+8. [Namespace Sourcing](#namespace-sourcing)
+9. [The .env File](#the-env-file)
+10. [Configuration Flow](#configuration-flow)
+11. [Image Builds](#image-builds)
+12. [Dev-Only Peripherals](#dev-only-peripherals)
+13. [Post-Install Seeding](#post-install-seeding)
+14. [Resource Sizing](#resource-sizing)
+15. [Ingress & Network Policy](#ingress--network-policy)
+16. [Secrets Management](#secrets-management)
+17. [Health Check](#health-check)
+18. [Troubleshooting](#troubleshooting)
+19. [References](#references)
 
 ---
 
@@ -40,6 +41,14 @@ and development. It comprises:
 The same umbrella chart serves both profiles. The **profile** (`dev` or `prod`)
 selects the values overlay and the surrounding component set; the chart itself
 is profile-agnostic.
+
+> **Example namespace names.** `dataspoke-01`, `datahub-01`, `langfuse-01`, and
+> `dataspoke-dummy-data-01` appear throughout this document as illustrative
+> values only. Every namespace is operator-chosen via the four `.env` vars
+> `DATASPOKE_KUBE_DATASPOKE_NAMESPACE`, `DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE`,
+> `DATASPOKE_DEV_KUBE_LANGFUSE_NAMESPACE`, and
+> `DATASPOKE_DEV_KUBE_DUMMY_DATA_NAMESPACE`. `.env.example` ships the names above
+> as examples; see §Namespace Sourcing.
 
 ```
 helm-charts/bin/install.sh --profile dev      # full dev stack incl. peripherals
@@ -393,6 +402,44 @@ only the host-bearing values (`_HOST`, `_HOST_PORT`, `_KAFKA_BROKERS`,
 - Password policy: 16+ chars, mixed case, at least one special character.
 - API keys: never committed; `.env` is gitignored. CI/CD injects via K8s
   Secrets or a secrets manager.
+
+---
+
+## Namespace Sourcing
+
+Every namespace DataSpoke deploys into is operator-chosen, declared once in
+`helm-charts/.env` and sourced from there by every consumer. The four vars are:
+
+| Var | Namespace |
+|---|---|
+| `DATASPOKE_KUBE_DATASPOKE_NAMESPACE` | umbrella chart (API, Airflow, PG, Redis, dev-lock) |
+| `DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE` | DataHub peripheral install |
+| `DATASPOKE_DEV_KUBE_LANGFUSE_NAMESPACE` | Langfuse sibling chart |
+| `DATASPOKE_DEV_KUBE_DUMMY_DATA_NAMESPACE` | dummy-data peripheral install |
+
+`.env.example` ships illustrative values (`dataspoke-01`, `datahub-01`,
+`langfuse-01`, `dataspoke-dummy-data-01`). These are examples, not contractual
+names — an operator may pick any DNS-label-safe namespace.
+
+**No baked example default.** Scripts (`bin/*.sh`), tests
+(`tests/integration/{conftest.py,util/*}`), and chart values source the four
+vars with no embedded fallback to an example name. A consumer that reads an
+unset var fails fast rather than silently targeting the wrong namespace — a
+wrong default would route an install or a destructive reset at a namespace the
+operator never named.
+
+**Static namespace-embedding YAML is rendered at install.** The one place a
+namespace must appear inside a static manifest — the nginx-ingress `tcp:`
+service map in `peripherals/nginx-ingress/values-dev.yaml`, which names the
+backend Services by `<namespace>/<service>` — carries `__*_NS__` placeholders
+(`__DATASPOKE_NS__`, `__DATAHUB_NS__`, `__DUMMY_DATA_NS__`) that the install
+substitutes from `.env` via `sed`, mirroring the existing
+`__DATAHUB_INGRESS_HOST__` rendering in `bin/peripherals/datahub.sh`.
+
+**Kafka `advertisedListeners`** is not embedded statically either:
+`datahub.sh` injects it with `--set-string` from the datahub namespace plus the
+resolved ingress host, so the advertised EXTERNAL listener always matches the
+operator's namespace and host.
 
 ---
 
@@ -831,7 +878,10 @@ annotations, and customizable host/path rules.
 In **managed** mode, TCP passthrough (PostgreSQL :9201, Redis :9202, DataHub
 Kafka :9005, example PG :9102, example Kafka :9104, lock :9221) is handled by
 the nginx-ingress `tcp-services` ConfigMap (the `tcp` block in
-`peripherals/nginx-ingress/values-dev.yaml`) — no Ingress resource needed.
+`peripherals/nginx-ingress/values-dev.yaml`) — no Ingress resource needed. That
+block names its backend Services by `<namespace>/<service>`; the namespace
+segments carry `__*_NS__` placeholders rendered from `.env` at install (see
+§Namespace Sourcing).
 Kafka services advertise `<INGRESS_IP>:<port>` as their EXTERNAL listener so
 host-side producers/consumers reach them through the controller.
 

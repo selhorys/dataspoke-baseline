@@ -330,7 +330,7 @@ check_dataspoke_langfuse() {
     _skip "$label — not responding (may not be installed; run: install.sh --profile dev --components langfuse)"
   fi
 
-  local worker_ns="${DATASPOKE_DEV_KUBE_LANGFUSE_NAMESPACE:-langfuse-01}"
+  local worker_ns="${DATASPOKE_DEV_KUBE_LANGFUSE_NAMESPACE}"
   if kubectl get deployment/langfuse-worker -n "${worker_ns}" >/dev/null 2>&1; then
     local ready
     ready=$(kubectl get deployment/langfuse-worker -n "${worker_ns}" \

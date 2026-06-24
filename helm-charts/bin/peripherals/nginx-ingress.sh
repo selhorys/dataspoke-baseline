@@ -94,10 +94,28 @@ NS="ingress-nginx"
 # Install / upgrade ingress-nginx
 # ---------------------------------------------------------------------------
 PERIPHERALS_DIR="$(cd "$BIN_DIR/../peripherals" && pwd)"
+
+# ---------------------------------------------------------------------------
+# Render namespace placeholders in values-dev.yaml before passing to Helm.
+# This mirrors the __DATAHUB_INGRESS_HOST__ sed pattern in bin/peripherals/datahub.sh.
+# The tcp: map carries __*_NS__ tokens that must resolve to actual namespace names.
+# ---------------------------------------------------------------------------
+: "${DATASPOKE_KUBE_DATASPOKE_NAMESPACE:?required in .env for nginx-ingress tcp services}"
+: "${DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE:?required in .env for nginx-ingress tcp services}"
+: "${DATASPOKE_DEV_KUBE_DUMMY_DATA_NAMESPACE:?required in .env for nginx-ingress tcp services}"
+
+RENDERED_VALUES="$(mktemp)"
+trap 'rm -f "$RENDERED_VALUES"' EXIT
+sed \
+  -e "s|__DATASPOKE_NS__|${DATASPOKE_KUBE_DATASPOKE_NAMESPACE}|g" \
+  -e "s|__DATAHUB_NS__|${DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE}|g" \
+  -e "s|__DUMMY_DATA_NS__|${DATASPOKE_DEV_KUBE_DUMMY_DATA_NAMESPACE}|g" \
+  "$PERIPHERALS_DIR/nginx-ingress/values-dev.yaml" > "$RENDERED_VALUES"
+
 info "Installing ingress-nginx controller..."
 helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
   --namespace "${NS}" \
-  --values "$PERIPHERALS_DIR/nginx-ingress/values-dev.yaml" \
+  --values "$RENDERED_VALUES" \
   --timeout 5m
 
 # ---------------------------------------------------------------------------

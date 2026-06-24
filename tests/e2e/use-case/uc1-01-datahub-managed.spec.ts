@@ -51,7 +51,7 @@
  */
 
 import { test, expect } from "../fixtures/index";
-import { apiBaseUrl, loadDotenv } from "../fixtures/env";
+import { apiBaseUrl, loadDotenv, required } from "../fixtures/env";
 
 // Ensure helm-charts/.env is loaded before reading GMS env at module scope —
 // this module is evaluated at collection time, before the config's loadDotenv
@@ -60,6 +60,11 @@ import { apiBaseUrl, loadDotenv } from "../fixtures/env";
 loadDotenv();
 
 // ── Constants (verbatim from api-wired test) ────────────────────────────────
+
+// In-cluster host:port of the dummy-data postgres, read from the auto-populated env var
+// so the dummy-data namespace isn't hardcoded (mirrors api-wired _PG_HOST_PORT); no
+// hardcoded fallback so a wrong host fails the run loudly.
+const PG_HOST_PORT = required("DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST_PORT");
 
 const SECRET_NAME = "UC1_POSTGRES_PASSWORD";
 const SECRET_REF = "${UC1_POSTGRES_PASSWORD}";
@@ -209,7 +214,7 @@ test("UC1 Case 1 step 1 — seed DataHub Secret + IngestionSource", async () => 
     source: {
       type: "postgres",
       config: {
-        host_port: "example-postgres.dataspoke-dummy-data-01.svc.cluster.local:5432",
+        host_port: PG_HOST_PORT,
         database: "example_db",
         username: "postgres",
         password: SECRET_REF,

@@ -64,7 +64,7 @@ fi
 # ── 4. Provision dataspoke-source-cred-dummy-data-pg (create-if-absent) ──────
 # Required for UC1 Case 2 (ACTIVE_CUSTOM_MANAGED). Idempotent on re-run.
 # spec: feature/SECRET_RESOLUTION.md §Reference-only model — out-of-band provisioning
-NS="${DATASPOKE_KUBE_DATASPOKE_NAMESPACE:-dataspoke-01}"
+NS="${DATASPOKE_KUBE_DATASPOKE_NAMESPACE}"
 PG_PASS="${DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD:-}"
 if [[ -n "$PG_PASS" ]] && command -v kubectl &>/dev/null; then
   echo

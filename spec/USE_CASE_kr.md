@@ -21,6 +21,12 @@
 모든 인증된 사용자는 모든 기능에 접근하며, 쓰기 동작은 역할(Reader / Editor / Admin)로
 게이팅된다.
 
+> **예시 네임스페이스 이름.** 아래 레시피의 호스트
+> (`example-postgres.dataspoke-dummy-data-01.svc.cluster.local`)에서
+> `dataspoke-dummy-data-01`은 예시 네임스페이스다.
+> 이 값은 `DATASPOKE_DEV_KUBE_DUMMY_DATA_NAMESPACE`로 운영자가 선택하며
+> (`.env.example`에만 기본값이 들어 있다), 실제 레시피는 운영자가 고른 네임스페이스를 담는다.
+
 ---
 
 ## 가상 회사 프로필: Imazon

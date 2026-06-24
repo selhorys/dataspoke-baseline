@@ -46,7 +46,7 @@ export function loadDotenv(): void {
 
 // ── Typed accessors (throw clearly when a required var is absent) ─────────────
 
-function required(key: string): string {
+export function required(key: string): string {
   const v = process.env[key];
   if (!v) throw new Error(`Required env var ${key} is not set. Source helm-charts/.env first.`);
   return v;

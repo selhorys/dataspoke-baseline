@@ -18,9 +18,6 @@ import os
 
 logger = logging.getLogger(__name__)
 
-# Default namespace — resolved at call time from env/context, defaulting to this.
-_DEFAULT_NAMESPACE = "dataspoke-01"
-
 _SOURCE_CRED_NAME_PREFIX = "dataspoke-source-cred-"
 
 
@@ -32,7 +29,9 @@ def _resolve_namespace() -> str:
     1. DATASPOKE_KUBE_DATASPOKE_NAMESPACE env var (set by helm-charts/.env; also used by
        tests/integration/spot/test_admin_peripherals.py)
     2. In-cluster namespace file at /var/run/secrets/kubernetes.io/serviceaccount/namespace
-    3. Falls back to "dataspoke-01"
+
+    Raises RuntimeError if neither source is available — never a baked example
+    default that could silently provision secrets in the wrong namespace.
 
     spec: spec/feature/SECRET_RESOLUTION.md §Design — in-cluster init reads namespace file
     """
@@ -47,7 +46,13 @@ def _resolve_namespace() -> str:
             return ns
     except OSError:
         pass
-    return _DEFAULT_NAMESPACE
+    raise RuntimeError(
+        "Cannot resolve DataSpoke's namespace: set DATASPOKE_KUBE_DATASPOKE_NAMESPACE "
+        "(source helm-charts/.env) or run in-cluster with a service-account namespace "
+        "file at /var/run/secrets/kubernetes.io/serviceaccount/namespace. Refusing to "
+        "fall back to a baked example default that could silently provision secrets in "
+        "the wrong namespace."
+    )
 
 
 def _build_k8s_client():

@@ -20,6 +20,12 @@ pre-creates the Kubernetes Secret out-of-band (`kubectl`, Terraform, External Se
 Operator, …); DataSpoke only **lists** the available references, **verifies** they exist at
 source-save time, and **resolves** them when an `ACTIVE_CUSTOM_MANAGED` extractor runs.
 
+> **Example namespace name.** `dataspoke-01` used below for DataSpoke's own namespace is
+> illustrative; it is operator-chosen via `DATASPOKE_KUBE_DATASPOKE_NAMESPACE` (defaulted only
+> in `.env.example`). The API does not read it from configuration — at runtime it discovers its
+> own namespace from the in-cluster service-account file
+> (`/var/run/secrets/kubernetes.io/serviceaccount/namespace`).
+
 The reference syntax is `${name__key}`, embedded directly in `recipe.source.config` (e.g.
 `password: '${team-pg__password}'`) — the same `${...}` substitution DataHub's own recipe
 loader uses, so the recipe stays byte-compatible. `${name__key}` resolves to Kubernetes

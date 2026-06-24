@@ -197,7 +197,7 @@ def gms_lastingested(urn: str) -> dict:
 @_probe("<name> [namespace]  — read+decode a k8s Secret")
 def k8s_secret(name: str, namespace: str | None = None) -> dict:
     env = _load_env()
-    ns = namespace or env.get("DATASPOKE_K8S_NAMESPACE", "dataspoke-01")
+    ns = namespace or env["DATASPOKE_K8S_NAMESPACE"]
     res = subprocess.run(
         ["kubectl", "get", "secret", name, "-n", ns, "-o", "json"],
         capture_output=True, text=True, timeout=15,

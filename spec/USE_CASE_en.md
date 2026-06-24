@@ -17,6 +17,12 @@ The baseline organises both the UI and the API around the five MANIFESTO §2.1 f
 themselves — every authenticated user reaches every feature, with role (Reader / Editor /
 Admin) gating writes.
 
+> **Example namespace name.** The recipe hosts below
+> (`example-postgres.dataspoke-dummy-data-01.svc.cluster.local`) use
+> `dataspoke-dummy-data-01` as an illustrative namespace. It is operator-chosen via
+> `DATASPOKE_DEV_KUBE_DUMMY_DATA_NAMESPACE` (defaulted only in `.env.example`); a real
+> recipe carries whichever namespace the operator picked.
+
 ---
 
 ## Imaginary Company Profile: Imazon

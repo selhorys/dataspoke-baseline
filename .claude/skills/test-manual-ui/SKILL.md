@@ -33,6 +33,12 @@ Use when:
 Do not use as a substitute for `pytest tests/integration/api_wired/...` (the
 regression gate) or `/test-manual-api-wired` (the curl-level harness).
 
+> **Example namespace names.** Where scenario recipes show in-cluster hosts such as
+> `dataspoke-01` (in `kubectl -n …`) and `dataspoke-dummy-data-01` (in the recipe
+> `host_port`) — these are illustrative. Substitute your actual namespaces from
+> `helm-charts/.env` (`DATASPOKE_KUBE_DATASPOKE_NAMESPACE`,
+> `DATASPOKE_DEV_KUBE_DUMMY_DATA_NAMESPACE`) before running the commands verbatim.
+
 ## Division of labour
 
 No browser-automation tool is available, so the work is split:

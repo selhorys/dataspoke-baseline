@@ -106,7 +106,7 @@ def _db_delete_peripheral_rows() -> None:
 
 def _k8s_delete_peripheral_secrets() -> None:
     """Delete the two K8s Secrets used by peripherals, ignoring errors if absent."""
-    namespace = os.environ.get("DATASPOKE_KUBE_DATASPOKE_NAMESPACE", "dataspoke-01")
+    namespace = os.environ["DATASPOKE_KUBE_DATASPOKE_NAMESPACE"]
     for secret_name in ("dataspoke-datahub-secret", "dataspoke-langfuse-secret"):
         subprocess.run(
             ["kubectl", "delete", "secret", secret_name, "-n", namespace, "--ignore-not-found"],
