@@ -8,3 +8,4 @@
 - [Validation emits no status aspect](project_validation_no_status_aspect_divergence.md) — spec says no status aspect; impl still emits StatusClass(removed=False) on PUT; flag tests pinning it
 - [Seed create-disabled copy pinned](project_seed_create_disabled_copy.md) — ontogen seed Vitest pins exact "new seeds ship disabled" copy; spec only says create-disabled
 - [run_id filter-then-assert tautology](project_run_id_filter_then_assert_tautology.md) — UC3 ontogen run_id row check is tautological; real signal is any_rows_found; single-run E2E scoping avoids false-negative
+- [UC5 governance E2E anchors](project_uc5_governance_e2e_anchors.md) — identity facts (metric.id==metric_id), recharts classes, testid scoping, TzMode "utc" mock that make UC5 governance assertions load-bearing
