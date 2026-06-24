@@ -709,6 +709,12 @@ public/secret API keys, and writes them back to `.env`.
 Writes to .env: `DATASPOKE_TEST_LANGFUSE_{HOST,PUBLIC_KEY,SECRET_KEY}` plus
 the Langfuse internals (`DATASPOKE_DEV_LANGFUSE_*`) on first install.
 
+**Startup ordering**: the Langfuse `web` and `worker` containers run ClickHouse
+migrations in their entrypoint before serving. On a cold install ClickHouse is
+not yet accepting connections on `:9000`, so both gate on ClickHouse TCP
+readiness via a `wait-for-clickhouse` init container that blocks until the port
+is open. Without it the pods crash-loop until ClickHouse happens to come up.
+
 ### Dummy data
 
 Plain Kubernetes manifests under `peripherals/dummy-data/manifests/` in the

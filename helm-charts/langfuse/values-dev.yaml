@@ -36,6 +36,25 @@ langfuse:
         name: dataspoke-langfuse-secret
         key: LANGFUSE_ENCRYPTION_KEY
 
+    # ---- ClickHouse readiness gate (cold install) ----
+    # web and worker run ClickHouse migrations in their entrypoint before
+    # serving. On a cold install ClickHouse isn't accepting on :9000 yet,
+    # so the migration fails (connection refused → exit 1) and K8s crash-loops
+    # the pod. This init container blocks both deployments until ClickHouse
+    # accepts TCP connections, eliminating the crash-loop on first install.
+    extraInitContainers:
+      - name: wait-for-clickhouse
+        image: busybox:1.36
+        command:
+          - sh
+          - -c
+          - |
+            echo "Waiting for ClickHouse at langfuse-clickhouse:9000..."
+            until nc -z langfuse-clickhouse 9000; do
+              echo "  clickhouse not ready — retrying in 3s"; sleep 3
+            done
+            echo "ClickHouse is reachable; proceeding."
+
     # ---- Ingress: no TLS in dev ----
     ingress:
       enabled: true
