@@ -817,6 +817,10 @@ limits simultaneously, so limits are generous to absorb transient spikes
 | example-kafka | dataspoke-dummy-data-01 | 1024 Mi | 4 Gi PVC |
 | **Total (limits)** | | **~25 Gi** | |
 
+The dev airflow scheduler and triggerer carry raised resource floors above the
+table's nominal split so they survive parse/heartbeat spikes; the concrete
+requests/limits live in `helm-charts/dataspoke/values-dev.yaml`.
+
 ### Ephemeral storage budget (Autopilot)
 
 GKE Autopilot applies a **1 GiB ephemeral-storage request = 1 GiB limit** per
