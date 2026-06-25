@@ -11,6 +11,8 @@ __pycache__/
 .venv/
 
 helm-charts/.env
+helm-charts/.env.dev
+helm-charts/.env.prod
 helm-charts/dataspoke/charts/
 helm-charts/dev-peripherals/langfuse/charts/
 memory/

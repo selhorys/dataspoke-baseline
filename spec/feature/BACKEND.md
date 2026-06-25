@@ -269,6 +269,13 @@ COMMENT, the dataset description falls back to
 no profiling, no stateful-ingestion soft-delete. `?dry_run=true` runs the extractor and returns
 the schema preview without emitting any aspects.
 
+The dataset URN's env/fabric segment is taken from the recipe's `source.config.env`; when the
+recipe omits it, the extractor falls back to the DataHub peripheral's configured `default_env`
+(see [`spec/API.md`](../API.md) `/admin/peripherals/datahub`), not a hardcoded literal. Likewise
+the corpuser actor stamped on the assertion `lastUpdated` and the ingestion
+run-event (`DataProcessInstance` `created`) audit stamps is the configured
+`service_corpuser_urn`, defaulting to `urn:li:corpuser:dataspoke` when unset.
+
 #### Implementation
 
 CRUD for ingestion sources (PostgreSQL: `ingestion_source`, keyed on `id`). The recipe is
@@ -517,7 +524,9 @@ ingest/query — surfaced through the routes below.
      UTC), `runId = uuid4()`, `result.type = SUCCESS` if `score == 1.0` else `FAILURE`,
      `result.actualAggValue = score`, `result.nativeResults` populated as
      `Map<string,string>` with `repr(float)` of each variable plus `"score"` itself,
-     `runtimeContext.ingestion_time = now()`.
+     `runtimeContext.ingestion_time = now()`. The acting corpuser URN is the DataHub
+     peripheral's configured `service_corpuser_urn` (default `urn:li:corpuser:dataspoke`),
+     not a hardcoded constant.
 - `GET` filters `validation_results` by `data_time ∈ [from, until)` (server cap
   `limit ≤ 10,000`, default `1,000`); when multiple rows share a `data_time`, returns
   the most recent (last-write-wins) — see VALIDATION.md §Duplicate `data_time` policy.

@@ -96,8 +96,8 @@ helm_repo_add_if_missing() {
 # that do not contain literal pipe characters.
 upsert_env_var() {
   local key="$1" value="$2"
-  # Default: walk up from the sourcing script's dir to find helm-charts/.env
-  local file="${3:-${ENV_FILE:-$(cd "$(dirname "${BASH_SOURCE[1]}")" && pwd)/../../.env}}"
+  # Default: walk up from the sourcing script's dir to find helm-charts/.env.dev
+  local file="${3:-${ENV_FILE:-$(cd "$(dirname "${BASH_SOURCE[1]}")" && pwd)/../../.env.dev}}"
   if grep -q "^${key}=" "${file}" 2>/dev/null; then
     sed -i.bak "s|^${key}=.*|${key}=${value}|" "${file}" && rm -f "${file}.bak"
   else

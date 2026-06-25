@@ -81,6 +81,8 @@ class DatahubPeripheralResponse(SingleResponse):
     gms_url: str
     kafka_brokers: str
     token: str
+    service_corpuser_urn: str
+    default_env: str
     is_configured: bool
     updated_at: datetime | None = None
 
@@ -92,11 +94,23 @@ class DatahubPeripheralPatchRequest(BaseModel):
     ``token`` is routed to the Kubernetes Secret rather than the DB.
     An explicitly provided ``""`` clears the token; ``None`` (or omitting
     the field) means "leave the token unchanged".
+
+    ``service_corpuser_urn`` and ``default_env`` are non-secret connection
+    settings stored in the DB; they drive the emitted DataHub actor URN and the
+    ingestion fabric/env default respectively.
     """
 
     gms_url: Annotated[str | None, Field(default=None, max_length=512)] = None
     kafka_brokers: Annotated[str | None, Field(default=None, max_length=512)] = None
     token: Annotated[str | None, Field(default=None, max_length=8192)] = None
+    service_corpuser_urn: Annotated[
+        str | None,
+        Field(default=None, max_length=512, pattern=r"^$|^urn:li:corpuser:[^\s,()]+$"),
+    ] = None
+    default_env: Annotated[
+        str | None,
+        Field(default=None, max_length=64, pattern=r"^$|^[A-Za-z][A-Za-z0-9_]*$"),
+    ] = None
 
 
 class LangfusePeripheralResponse(SingleResponse):
@@ -109,6 +123,8 @@ class LangfusePeripheralResponse(SingleResponse):
     host: str
     public_key: str
     secret_key: str
+    project_id: str
+    environment_tag: str
     is_configured: bool
     updated_at: datetime | None = None
 
@@ -120,11 +136,17 @@ class LangfusePeripheralPatchRequest(BaseModel):
     ``secret_key`` is routed to the Kubernetes Secret rather than the DB.
     An explicitly provided ``""`` clears the secret key; ``None`` (or omitting
     the field) means "leave the secret key unchanged".
+
+    ``project_id`` and ``environment_tag`` are non-secret connection settings
+    stored in the DB; ``environment_tag`` drives the Langfuse trace environment
+    and ``project_id`` is surfaced as trace metadata.
     """
 
     host: Annotated[str | None, Field(default=None, max_length=512)] = None
     public_key: Annotated[str | None, Field(default=None, max_length=512)] = None
     secret_key: Annotated[str | None, Field(default=None, max_length=8192)] = None
+    project_id: Annotated[str | None, Field(default=None, max_length=256)] = None
+    environment_tag: Annotated[str | None, Field(default=None, max_length=64)] = None
 
 
 class PeripheralsStatusResponse(SingleResponse):

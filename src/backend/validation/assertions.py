@@ -40,11 +40,15 @@ def build_assertion_info(
     dataset_urn: str,
     description: str,
     variables: list[dict[str, str]],
+    actor_urn: str | None = None,
 ) -> AssertionInfoClass:
     """Build an AssertionInfoClass for a DataSpoke validation slot.
 
     ``customAssertion.logic`` is the comma-joined list of declared variable
     **names**; descriptions live only on the conf and are not emitted here.
+
+    ``actor_urn`` stamps the audit actor — pass the configured DataHub service
+    corpuser URN; falls back to ``_DATASPOKE_ACTOR_URN`` when unset.
     """
     return AssertionInfoClass(
         type=AssertionTypeClass.CUSTOM,
@@ -57,7 +61,7 @@ def build_assertion_info(
         ),
         lastUpdated=AuditStampClass(
             time=int(time.time() * 1000),
-            actor=_DATASPOKE_ACTOR_URN,
+            actor=actor_urn or _DATASPOKE_ACTOR_URN,
         ),
     )
 

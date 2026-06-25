@@ -5,17 +5,17 @@
 # application layer — not just that the TCP port is open.
 #
 # Usage:
-#   ./helm-charts/bin/health-check.sh                   # Check all; prompt to release held lock
-#   ./helm-charts/bin/health-check.sh --quick           # TCP-only (skip deep checks)
-#   ./helm-charts/bin/health-check.sh --keep-lock       # Don't touch an existing lock
-#   ./helm-charts/bin/health-check.sh --force-release   # Release held lock without prompting
-#   ./helm-charts/bin/health-check.sh --help            # Print this usage message
+#   ./helm-charts/bin/health-check.sh                          # Check all; prompt to release held lock
+#   ./helm-charts/bin/health-check.sh --quick                  # TCP-only (skip deep checks)
+#   ./helm-charts/bin/health-check.sh --keep-lock              # Don't touch an existing lock
+#   ./helm-charts/bin/health-check.sh --force-release          # Release held lock without prompting
+#   ./helm-charts/bin/health-check.sh --env-file <path>        # Use a specific env file
+#   ./helm-charts/bin/health-check.sh --help                   # Print this usage message
 #
 # Exit codes: 0 = all healthy, 1 = one or more unhealthy
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ENV_FILE="$(cd "$SCRIPT_DIR/.." && pwd)/.env"
 
 # shellcheck source=lib/helpers.sh
 source "$SCRIPT_DIR/lib/helpers.sh"
@@ -23,27 +23,31 @@ source "$SCRIPT_DIR/lib/helpers.sh"
 QUICK=false
 KEEP_LOCK=false
 FORCE_RELEASE=false
-for arg in "$@"; do
-  case "$arg" in
-    --quick) QUICK=true ;;
-    --keep-lock) KEEP_LOCK=true ;;
-    --force-release) FORCE_RELEASE=true ;;
+ENV_FILE_ARG=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --quick) QUICK=true; shift ;;
+    --keep-lock) KEEP_LOCK=true; shift ;;
+    --force-release) FORCE_RELEASE=true; shift ;;
+    --env-file) ENV_FILE_ARG="${2:-}"; shift 2 ;;
     --help|-h)
       awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "$0"
       exit 0
       ;;
     *)
-      echo -e "\033[0;31m[ERROR]\033[0m Unknown option: $arg (use --help)" >&2
+      echo -e "\033[0;31m[ERROR]\033[0m Unknown option: $1 (use --help)" >&2
       exit 1
       ;;
   esac
 done
 
+ENV_FILE="${ENV_FILE_ARG:-${ENV_FILE:-$(cd "$SCRIPT_DIR/.." && pwd)/.env.dev}}"
+
 # ---------------------------------------------------------------------------
 # Load configuration
 # ---------------------------------------------------------------------------
 if [[ ! -f "$ENV_FILE" ]]; then
-  echo -e "\033[0;31m[ERROR]\033[0m .env not found at $ENV_FILE" >&2
+  echo -e "\033[0;31m[ERROR]\033[0m Env file not found at $ENV_FILE — copy helm-charts/.env.dev.example and edit it." >&2
   exit 1
 fi
 source "$ENV_FILE"

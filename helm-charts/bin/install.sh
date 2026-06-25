@@ -4,6 +4,7 @@
 # Usage: install.sh --profile {dev|prod} [OPTIONS]
 #
 # OPTIONS
+#   --env-file <path>           Path to the env file (default: helm-charts/.env.<PROFILE>).
 #   --components <csv>          Subset of components to install (default: all-for-profile).
 #                               Names: nginx-ingress, datahub, langfuse, dataspoke-infra,
 #                                      api, frontend, dummy-data, dev-lock, seed
@@ -35,7 +36,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HELM_CHARTS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$HELM_CHARTS_DIR/.." && pwd)"
 CHART_DIR="$HELM_CHARTS_DIR/dataspoke"
-ENV_FILE="$HELM_CHARTS_DIR/.env"
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -47,6 +47,7 @@ source "$SCRIPT_DIR/lib/helpers.sh"
 # Argument parsing
 # ---------------------------------------------------------------------------
 PROFILE=""
+ENV_FILE_ARG=""
 COMPONENTS_CSV=""
 FROM_COMPONENT=""
 FRONTEND_MODE=""
@@ -58,6 +59,7 @@ IMAGE_TAG="dev"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --profile)         PROFILE="${2:-}"; shift 2 ;;
+    --env-file)        ENV_FILE_ARG="${2:-}"; shift 2 ;;
     --components)      COMPONENTS_CSV="${2:-}"; shift 2 ;;
     --from-component)  FROM_COMPONENT="${2:-}"; shift 2 ;;
     --frontend)        FRONTEND_MODE="${2:-}"; shift 2 ;;
@@ -93,11 +95,15 @@ if [[ "$FRONTEND_MODE" == "local" && "$PROFILE" == "prod" ]]; then
   error "--frontend local is dev-only (no localhost story for prod)."
 fi
 
+# Resolve env file: explicit --env-file wins; otherwise profile-aware default.
+ENV_FILE="${ENV_FILE_ARG:-$HELM_CHARTS_DIR/.env.$PROFILE}"
+export ENV_FILE
+
 # ---------------------------------------------------------------------------
 # Load configuration
 # ---------------------------------------------------------------------------
 if [[ ! -f "$ENV_FILE" ]]; then
-  error ".env not found at $ENV_FILE — copy helm-charts/.env.example and edit it."
+  error "Env file not found at $ENV_FILE — copy helm-charts/.env.${PROFILE}.example (or .env.dev.example for dev) and edit it."
 fi
 source "$ENV_FILE"
 # Harden permissions immediately — the file may have been created via cp or
@@ -356,7 +362,7 @@ EOF
 
 # _sync_env_from_secret <namespace> <secret_key> <env_var_name> [<secret_name>]
 # Extracts <secret_key> from the consolidated Secret and writes/updates
-# <env_var_name>=<value> in helm-charts/.env. Idempotent.
+# <env_var_name>=<value> in helm-charts/.env.<profile>. Idempotent.
 # <secret_name> defaults to "dataspoke-secrets".
 _sync_env_from_secret() {
   local ns="$1"
@@ -386,7 +392,7 @@ _sync_env_from_secret() {
 }
 
 # _write_env_var <env_var_name> <value>
-# Writes/updates a plain (non-Secret) value in helm-charts/.env. Idempotent.
+# Writes/updates a plain (non-Secret) value in helm-charts/.env.<profile>. Idempotent.
 _write_env_var() {
   local env_var_name="$1"
   local value="$2"
@@ -699,7 +705,7 @@ if [[ "$PROFILE" == "dev" ]]; then
     fi
     echo ""
     echo "  To run integration tests:"
-    echo "    set -a && source helm-charts/.env && set +a && uv run pytest tests/integration/api_wired/ -v"
+    echo "    set -a && source ${ENV_FILE} && set +a && uv run pytest tests/integration/api_wired/ -v"
     echo ""
     echo "  To stop the API:"
     echo "    kubectl scale deployment/dataspoke-api --replicas=0 -n '${NS}'"
@@ -1061,7 +1067,7 @@ if [[ "$PROFILE" == "dev" ]]; then
     echo "  Lock API:      ${DATASPOKE_KUBE_INGRESS_IP:-<not set>}:9221"
   fi
   echo ""
-  echo "  Credentials (auto-generated): see DATASPOKE_TEST_AIRFLOW_{USER,PASSWORD} in helm-charts/.env"
+  echo "  Credentials (auto-generated): see DATASPOKE_TEST_AIRFLOW_{USER,PASSWORD} in ${ENV_FILE}"
   echo "  Langfuse: ${DATASPOKE_DEV_LANGFUSE_INIT_USER_EMAIL:-dataspoke@dataspoke.local} / ${DATASPOKE_DEV_LANGFUSE_INIT_USER_PASSWORD:-<see .env>}"
   echo ""
   case "$FRONTEND_MODE" in

@@ -1,7 +1,7 @@
 """Shared fixtures for integration tests against the dev-env infrastructure.
 
 Services are accessed via nginx-ingress (HTTP) or TCP passthrough ports.
-All endpoint values are read from helm-charts/.env, which is populated by the
+All endpoint values are read from helm-charts/.env.dev, which is populated by the
 install scripts.  Tier B TCP defaults:
 - PostgreSQL (dataspoke)  : <INGRESS_IP>:9201
 - Redis                   : <INGRESS_IP>:9202
@@ -42,14 +42,14 @@ _PROJECT_ROOT = str(Path(__file__).resolve().parents[2])
 
 
 def _load_dotenv() -> None:
-    """Load helm-charts/.env into os.environ (without overwriting existing vars).
+    """Load helm-charts/.env.dev into os.environ (without overwriting existing vars).
 
     Searches from the project root (two levels above this file) upward, which
-    handles git worktrees where helm-charts/.env lives in the main worktree.
+    handles git worktrees where helm-charts/.env.dev lives in the main worktree.
     """
     start = Path(__file__).resolve().parents[2]
     for candidate in (start, *start.parents):
-        env_path = candidate / "helm-charts" / ".env"
+        env_path = candidate / "helm-charts" / ".env.dev"
         if env_path.is_file():
             break
     else:

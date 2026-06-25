@@ -3,6 +3,7 @@
 #
 # Usage: uninstall.sh --profile {dev|prod} [OPTIONS]
 #
+#   --env-file <path>      Path to the env file (default: helm-charts/.env.<PROFILE>).
 #   --profile {dev|prod}   Required. Selects which component set to tear down.
 #   --components frontend  Targeted teardown of the frontend only — helm upgrade
 #                          with frontend.enabled=false (the frontend is an optional
@@ -23,7 +24,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HELM_CHARTS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 CHART_DIR="$HELM_CHARTS_DIR/dataspoke"
-ENV_FILE="$HELM_CHARTS_DIR/.env"
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -35,6 +35,7 @@ source "$SCRIPT_DIR/lib/helpers.sh"
 # Argument parsing
 # ---------------------------------------------------------------------------
 PROFILE=""
+ENV_FILE_ARG=""
 COMPONENTS_CSV=""
 NO_QUESTION=false
 DELETE_PVCS=false
@@ -43,6 +44,7 @@ DELETE_NAMESPACES=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --profile) PROFILE="${2:-}"; shift 2 ;;
+    --env-file) ENV_FILE_ARG="${2:-}"; shift 2 ;;
     --components) COMPONENTS_CSV="${2:-}"; shift 2 ;;
     --no-question) NO_QUESTION=true; shift ;;
     --delete-pvcs) DELETE_PVCS=true; shift ;;
@@ -60,11 +62,15 @@ if [[ "$PROFILE" != "dev" && "$PROFILE" != "prod" ]]; then
   error "Invalid profile '${PROFILE}'. Must be 'dev' or 'prod'."
 fi
 
+# Resolve env file: explicit --env-file wins; otherwise profile-aware default.
+ENV_FILE="${ENV_FILE_ARG:-$HELM_CHARTS_DIR/.env.$PROFILE}"
+export ENV_FILE
+
 # ---------------------------------------------------------------------------
 # Load configuration
 # ---------------------------------------------------------------------------
 if [[ ! -f "$ENV_FILE" ]]; then
-  error ".env not found at $ENV_FILE"
+  error "Env file not found at $ENV_FILE — copy helm-charts/.env.${PROFILE}.example (or .env.dev.example for dev) and edit it."
 fi
 source "$ENV_FILE"
 

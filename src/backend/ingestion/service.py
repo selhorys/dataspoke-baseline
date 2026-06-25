@@ -66,6 +66,7 @@ from src.shared.secrets import (
     resolve_recipe_secrets,
     verify_secret_ref,
 )
+from src.workflows._common import read_datahub_actor_urn, read_datahub_default_env
 
 logger = logging.getLogger(__name__)
 
@@ -778,12 +779,14 @@ class IngestionService:
 
         # Run extractor.
         try:
+            default_env = await read_datahub_default_env(self._db)
             ingestion_result = await run_extractor(
                 datahub=self._datahub,
                 source_id=source_id,
                 recipe=resolved_recipe,
                 dry_run=dry_run,
                 run_id=run_id,
+                default_env=default_env,
             )
         except Exception as exc:
             if not dry_run:
@@ -875,12 +878,13 @@ class IngestionService:
         run_type = (
             DataProcessTypeClass.BATCH_AD_HOC if manual else DataProcessTypeClass.BATCH_SCHEDULED
         )
+        actor_urn = await read_datahub_actor_urn(self._db)
         await self._datahub.emit_aspect(
             dpi_urn,
             DataProcessInstancePropertiesClass(
                 name=f"dataspoke-{source.platform}-{run_id}",
                 type=run_type,
-                created=AuditStampClass(time=start_ms, actor="urn:li:corpuser:dataspoke"),
+                created=AuditStampClass(time=start_ms, actor=actor_urn),
             ),
             system_metadata=sysmeta,
         )

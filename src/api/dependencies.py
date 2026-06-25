@@ -15,6 +15,7 @@ applies on all paths (including manual metagen/ontogen API runs).
 """
 
 from collections.abc import AsyncGenerator
+from typing import TYPE_CHECKING
 
 from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,6 +28,13 @@ from src.shared.db.session import SessionLocal
 from src.shared.vector.client import PgVectorManager
 from src.workflows.airflow.client import AirflowClient
 
+if TYPE_CHECKING:
+    from src.backend.metagen.service import MetagenService
+    from src.backend.metrics.service import MetricsService
+    from src.backend.ontogen.service import OntogenService
+    from src.backend.validation.service import ValidationService
+    from src.shared.notifications.service import NotificationService
+
 # NOTE: LLMClient is NOT imported here. LLM instances are built per-request
 # inside get_metagen_service / get_ontogen_service via make_llm_client() so that
 # RuntimeConfig changes and stub toggling are always honoured.
@@ -34,7 +42,7 @@ from src.workflows.airflow.client import AirflowClient
 # ── Infrastructure client providers ──────────────────────────────
 
 
-async def get_db() -> AsyncGenerator[AsyncSession, None]:
+async def get_db() -> AsyncGenerator[AsyncSession]:
     async with SessionLocal() as session:
         yield session
 
@@ -142,8 +150,16 @@ async def get_metagen_service(
     from src.workflows._common import make_llm_client, read_langfuse_config
 
     rc = await get_runtime_config(db)
-    lf_host, lf_pk = await read_langfuse_config(db)
-    llm = make_llm_client(stub=rc.stub_llm_client, provider=rc.llm_provider, model=rc.llm_model, langfuse_host=lf_host, langfuse_public_key=lf_pk)
+    lf_host, lf_pk, lf_project_id, lf_env = await read_langfuse_config(db)
+    llm = make_llm_client(
+        stub=rc.stub_llm_client,
+        provider=rc.llm_provider,
+        model=rc.llm_model,
+        langfuse_host=lf_host,
+        langfuse_public_key=lf_pk,
+        langfuse_environment=lf_env,
+        langfuse_project_id=lf_project_id,
+    )
     return MetagenService(datahub=datahub, db=db, cache=cache, llm=llm, vector=vector)
 
 
@@ -158,8 +174,16 @@ async def get_ontogen_service(
     from src.workflows._common import make_llm_client, read_langfuse_config
 
     rc = await get_runtime_config(db)
-    lf_host, lf_pk = await read_langfuse_config(db)
-    llm = make_llm_client(stub=rc.stub_llm_client, provider=rc.llm_provider, model=rc.llm_model, langfuse_host=lf_host, langfuse_public_key=lf_pk)
+    lf_host, lf_pk, lf_project_id, lf_env = await read_langfuse_config(db)
+    llm = make_llm_client(
+        stub=rc.stub_llm_client,
+        provider=rc.llm_provider,
+        model=rc.llm_model,
+        langfuse_host=lf_host,
+        langfuse_public_key=lf_pk,
+        langfuse_environment=lf_env,
+        langfuse_project_id=lf_project_id,
+    )
     return OntogenService(
         datahub=datahub,
         db=db,

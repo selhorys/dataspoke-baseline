@@ -33,6 +33,51 @@ from src.backend.ingestion.extractors import (
     run_extractor,
 )
 
+# ── _parse_env_from_config: recipe env vs configured default_env ──────────────
+
+
+class TestParseEnvFromConfig:
+    """A recipe omitting ``source.config.env`` adopts the configured default_env.
+
+    The DataHub peripheral's ``default_env`` is the fabric/env applied to ingested
+    datasets when an ingestion recipe does not pin ``env``.  When the recipe DOES
+    pin ``env``, the recipe value wins.
+
+    spec: spec/feature/BACKEND.md §ingestion — recipe omits ``env`` → extractor
+        falls back to the peripheral's configured ``default_env`` (line ~273).
+    spec: spec/API.md §/admin/peripherals/datahub — ``default_env`` applied when an
+        ingestion recipe omits ``env``.
+    """
+
+    def test_recipe_omitting_env_adopts_configured_default_env(self) -> None:
+        from src.backend.ingestion.extractors import _parse_env_from_config
+
+        # No "env" key in config → the configured default_env is used.
+        result = _parse_env_from_config({"database": "imazon"}, default_env="PROD")
+        assert result == "PROD", (
+            "A recipe without 'env' must adopt the configured default_env. "
+            "spec: spec/feature/BACKEND.md §ingestion."
+        )
+
+    def test_recipe_env_overrides_configured_default_env(self) -> None:
+        from src.backend.ingestion.extractors import _parse_env_from_config
+
+        # Explicit recipe env wins over the configured default.
+        result = _parse_env_from_config({"env": "QA"}, default_env="PROD")
+        assert result == "QA", (
+            "An explicit recipe 'env' must override the configured default_env. "
+            "spec: spec/feature/BACKEND.md §ingestion."
+        )
+
+    def test_default_env_fallback_is_dev_when_caller_omits_it(self) -> None:
+        from src.backend.ingestion.extractors import _parse_env_from_config
+
+        # When neither the recipe nor the caller supplies a fabric, 'DEV' is the
+        # documented baseline default.
+        # spec: spec/API.md §/admin/peripherals/datahub — factory default_env → DEV.
+        assert _parse_env_from_config({}) == "DEV"
+
+
 # ── Registry ──────────────────────────────────────────────────────────────────
 
 

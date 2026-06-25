@@ -2,7 +2,7 @@
  * Environment loader and typed accessors for E2E tests.
  *
  * Mirrors the Python _load_dotenv() pattern from
- * tests/integration/conftest.py: reads helm-charts/.env into process.env
+ * tests/integration/conftest.py: reads helm-charts/.env.dev into process.env
  * without overwriting existing values. Searches upward from the repo root
  * to handle git worktrees.
  *
@@ -13,15 +13,15 @@ import * as fs from "fs";
 import * as path from "path";
 
 /**
- * Load helm-charts/.env into process.env without overwriting existing vars.
+ * Load helm-charts/.env.dev into process.env without overwriting existing vars.
  * Searches upward from this file's location to find the repo root, matching
  * the worktree-aware logic in tests/integration/conftest.py _load_dotenv().
  */
 export function loadDotenv(): void {
-  // Walk upward from tests/e2e/fixtures/ to find helm-charts/.env
+  // Walk upward from tests/e2e/fixtures/ to find helm-charts/.env.dev
   let dir = path.resolve(__dirname);
   while (true) {
-    const candidate = path.join(dir, "helm-charts", ".env");
+    const candidate = path.join(dir, "helm-charts", ".env.dev");
     if (fs.existsSync(candidate)) {
       const content = fs.readFileSync(candidate, "utf-8");
       for (const raw of content.split("\n")) {
@@ -48,7 +48,7 @@ export function loadDotenv(): void {
 
 export function required(key: string): string {
   const v = process.env[key];
-  if (!v) throw new Error(`Required env var ${key} is not set. Source helm-charts/.env first.`);
+  if (!v) throw new Error(`Required env var ${key} is not set. Source helm-charts/.env.dev first.`);
   return v;
 }
 

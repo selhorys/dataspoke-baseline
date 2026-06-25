@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import time
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from sqlalchemy.exc import IntegrityError
@@ -38,7 +38,6 @@ from src.backend.admin.peripheral_service import (
     patch_peripheral_config,
 )
 from src.shared.db.models import PeripheralConfig
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -140,6 +139,97 @@ async def test_get_langfuse_returns_correct_dto() -> None:
     )
     assert result.host == "http://langfuse:3000"
     assert result.public_key == "pk-test"
+
+
+# ── 3b. get — new non-secret connection settings round-trip into the DTOs ─────
+
+
+@pytest.mark.asyncio
+async def test_get_datahub_dto_carries_service_corpuser_urn_and_default_env() -> None:
+    """A datahub row with the new settings keys yields a DTO carrying them.
+
+    The non-secret ``service_corpuser_urn`` + ``default_env`` keys stored in the
+    settings JSONB must round-trip out of ``_row_to_dto`` into the DTO consumers read.
+
+    spec: spec/feature/BACKEND_SCHEMA.md §peripheral_config — settings JSONB carries
+        DataHub service_corpuser_urn / default_env.
+    spec: spec/API.md §/admin/peripherals/datahub — non-secret connection settings.
+    """
+    row = _make_row(
+        "datahub",
+        {
+            "gms_url": "http://gms:8080",
+            "kafka_brokers": "kafka:9092",
+            "service_corpuser_urn": "urn:li:corpuser:imazon-svc",
+            "default_env": "PROD",
+        },
+    )
+    db = _db_with_row(row)
+
+    result = await get_peripheral_config(db, "datahub")
+
+    assert isinstance(result, DatahubConfigDTO)
+    assert result.service_corpuser_urn == "urn:li:corpuser:imazon-svc", (
+        "DatahubConfigDTO must surface service_corpuser_urn from settings JSONB. "
+        "spec: spec/feature/BACKEND_SCHEMA.md §peripheral_config."
+    )
+    assert result.default_env == "PROD", (
+        "DatahubConfigDTO must surface default_env from settings JSONB. "
+        "spec: spec/feature/BACKEND_SCHEMA.md §peripheral_config."
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_datahub_dto_new_fields_default_to_empty_when_absent() -> None:
+    """A datahub row without the new keys yields empty DTO fields (no spurious values).
+
+    The service layer returns "" for absent keys; the API layer is responsible for
+    substituting the read-back factory defaults.
+
+    spec: src/backend/admin/peripheral_service.py _row_to_dto — s.get(key, "").
+    """
+    row = _make_row("datahub", {"gms_url": "http://gms:8080", "kafka_brokers": "kafka:9092"})
+    db = _db_with_row(row)
+
+    result = await get_peripheral_config(db, "datahub")
+
+    assert isinstance(result, DatahubConfigDTO)
+    assert result.service_corpuser_urn == "", (
+        "Absent service_corpuser_urn key must yield '' at the service layer."
+    )
+    assert result.default_env == "", "Absent default_env key must yield '' at the service layer."
+
+
+@pytest.mark.asyncio
+async def test_get_langfuse_dto_carries_project_id_and_environment_tag() -> None:
+    """A langfuse row with the new settings keys yields a DTO carrying them.
+
+    spec: spec/feature/BACKEND_SCHEMA.md §peripheral_config — settings JSONB carries
+        Langfuse project_id / environment_tag.
+    spec: spec/API.md §/admin/peripherals/langfuse — non-secret connection settings.
+    """
+    row = _make_row(
+        "langfuse",
+        {
+            "host": "http://langfuse:3000",
+            "public_key": "pk-test",
+            "project_id": "imazon-metadata",
+            "environment_tag": "production",
+        },
+    )
+    db = _db_with_row(row)
+
+    result = await get_peripheral_config(db, "langfuse")
+
+    assert isinstance(result, LangfuseConfigDTO)
+    assert result.project_id == "imazon-metadata", (
+        "LangfuseConfigDTO must surface project_id from settings JSONB. "
+        "spec: spec/feature/BACKEND_SCHEMA.md §peripheral_config."
+    )
+    assert result.environment_tag == "production", (
+        "LangfuseConfigDTO must surface environment_tag from settings JSONB. "
+        "spec: spec/feature/BACKEND_SCHEMA.md §peripheral_config."
+    )
 
 
 # ── 4. get — cache hit within TTL ────────────────────────────────────────────

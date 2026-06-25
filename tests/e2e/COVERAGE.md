@@ -103,6 +103,7 @@ uncovered view.
 |---|---|---|
 | `/admin/conf` | `_smoke.spec.ts` (adminApi probe) | `ground/admin/conf.spec.ts` (form renders from GET conf; edit `validation_score_n_intervals` → Save → persist → revert); `ground/shell/admin-nav-*` (link visible to Admin, absent for editor/reader) |
 | `/admin/users` | — | `ground/admin/users.spec.ts` (list; role change via Radix Select; delete via ⋯ ConfirmDialog); `ground/shell/admin-nav-hidden.reader.spec.ts` (Reader direct-nav → permission-denied) |
+| `/admin/peripherals` | — | `ground/admin/peripherals.spec.ts` (DataHub + Langfuse cards render from GET; non-secret fields prefilled, secret inputs blank; edit DataHub `default_env` → Save DataHub → persist confirmed via adminApi → revert; secret/`is_configured` untouched) |
 | `/profile` | — | `ground/account/profile.spec.ts` (email/role locked; change name → Save → confirm via /auth/me → revert) |
 | `/profile/tokens` | — | `ground/account/tokens.spec.ts` (mint → dsk_ reveal → in list; revoke via ConfirmDialog → gone) |
 | `/settings` | — | `ground/account/settings.spec.ts` (Theme Dark → `html.dark`; locale Select → localStorage) |

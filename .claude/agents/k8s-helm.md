@@ -20,7 +20,7 @@ Your job is to write Helm charts, Dockerfiles, and dev environment scripts.
 ```
 helm-charts/
 ├── README.md                  # Operational guide for bin/ scripts
-├── .env.example                # 3-section env file (kube deployment / dev profile / auto-populated test access)
+├── .env.dev.example            # 3-section env file (kube deployment / dev profile / auto-populated test access)
 ├── bin/
 │   ├── install.sh              # --profile {dev|prod} [--components …] [--frontend none|local|cluster] [--skip-build] …
 │   ├── uninstall.sh            # --profile {dev|prod} [--components frontend] [--no-question] [--delete-pvcs] [--delete-namespaces] [--delete-all]
@@ -58,7 +58,7 @@ In dev the umbrella defaults to `frontend.enabled=false` (developers run host `p
 
 ## Dev script conventions
 
-Match `helm-charts/bin/dev-peripherals/datahub.sh` style: `#!/usr/bin/env bash`, `set -euo pipefail`, source `bin/lib/helpers.sh` and `helm-charts/.env`.
+Match `helm-charts/bin/dev-peripherals/datahub.sh` style: `#!/usr/bin/env bash`, `set -euo pipefail`, source `bin/lib/helpers.sh` and `helm-charts/.env.dev`.
 
 ## Completion report
 

@@ -8,7 +8,7 @@ Playwright/TypeScript end-to-end tests for the full stack (browser → API → D
    `./helm-charts/bin/install.sh --profile dev --frontend cluster`
 2. Health check passes: `./helm-charts/bin/health-check.sh`
 3. Playwright Chromium installed: `pnpm -C tests/e2e exec playwright install chromium`
-4. `helm-charts/.env` exported: `set -a && source helm-charts/.env && set +a`
+4. `helm-charts/.env.dev` exported: `set -a && source helm-charts/.env.dev && set +a`
 
 ## Run commands
 
@@ -39,7 +39,7 @@ tests/e2e/
 ├── use-case/          # uc{1..5}-<slug>.spec.ts — one browser flow per USE_CASE_en.md story
 ├── ground/<feature>/  # narrow per-page UI-flow tests (spot analogue)
 ├── fixtures/
-│   ├── env.ts         # helm-charts/.env loader + typed accessors (single source of truth)
+│   ├── env.ts         # helm-charts/.env.dev loader + typed accessors (single source of truth)
 │   └── index.ts       # custom Playwright fixtures (adminApi, toggleStub, IMAZON_URNS)
 ├── global-setup.ts    # lock + reset-seed + per-role login → .auth/*.json
 ├── global-teardown.ts # reset-seed + lock release

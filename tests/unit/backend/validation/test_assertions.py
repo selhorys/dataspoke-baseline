@@ -115,6 +115,43 @@ class TestBuildAssertionInfo:
         assert 0 <= age_ms <= 5000, f"lastUpdated.time is {age_ms}ms old"
 
 
+# ── build_assertion_info: configurable actor URN (service_corpuser_urn wiring) ──
+
+
+class TestBuildAssertionInfoActorUrn:
+    """The emitted assertion actor honors the configured DataHub service corpuser URN.
+
+    spec: spec/feature/BACKEND.md §Active-custom run pipeline — DataSpoke stamps the
+        audit actor with the DataHub peripheral's configured ``service_corpuser_urn``
+        (line ~527), defaulting to ``urn:li:corpuser:dataspoke`` when unset.
+    spec: spec/API.md §/admin/peripherals/datahub — ``service_corpuser_urn`` names the
+        corpuser actor DataSpoke writes as on assertion runs.
+    """
+
+    def test_actor_uses_configured_corpuser_urn(self) -> None:
+        # A configured service_corpuser_urn must be stamped as lastUpdated.actor.
+        info = build_assertion_info(
+            _DATASET_URN,
+            _DESCRIPTION,
+            _VARIABLES,
+            actor_urn="urn:li:corpuser:imazon-svc",
+        )
+        assert info.lastUpdated is not None
+        assert info.lastUpdated.actor == "urn:li:corpuser:imazon-svc", (
+            "build_assertion_info must stamp the configured actor_urn. "
+            "spec: spec/feature/BACKEND.md §Active-custom run pipeline."
+        )
+
+    def test_actor_falls_back_to_dataspoke_when_actor_urn_none(self) -> None:
+        # actor_urn=None (peripheral unset) → documented default actor URN.
+        info = build_assertion_info(_DATASET_URN, _DESCRIPTION, _VARIABLES, actor_urn=None)
+        assert info.lastUpdated is not None
+        assert info.lastUpdated.actor == "urn:li:corpuser:dataspoke", (
+            "Unset actor_urn must fall back to urn:li:corpuser:dataspoke. "
+            "spec: spec/API.md §/admin/peripherals/datahub — factory default."
+        )
+
+
 # ── build_run_event ───────────────────────────────────────────────────────────
 
 

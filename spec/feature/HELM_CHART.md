@@ -47,7 +47,7 @@ is profile-agnostic.
 > values only. Every namespace is operator-chosen via the four `.env` vars
 > `DATASPOKE_KUBE_DATASPOKE_NAMESPACE`, `DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE`,
 > `DATASPOKE_DEV_KUBE_LANGFUSE_NAMESPACE`, and
-> `DATASPOKE_DEV_KUBE_DUMMY_DATA_NAMESPACE`. `.env.example` ships the names above
+> `DATASPOKE_DEV_KUBE_DUMMY_DATA_NAMESPACE`. `.env.dev.example` ships the names above
 > as examples; see §Namespace Sourcing.
 
 ```
@@ -66,7 +66,7 @@ step of `install.sh` (`--components api` runs only the rebuild + helm-upgrade
 ```
 helm-charts/
 ├── README.md                           # operational guide for bin/ scripts
-├── .env.example                         # dev canonical env-var listing (3 sections)
+├── .env.dev.example                     # dev canonical env-var listing (3 sections)
 ├── .env.prod.example                    # prod operator template (deployment shape only)
 ├── bin/
 │   ├── install.sh                       # main installer
@@ -138,6 +138,7 @@ wires them via the runtime admin API (`/api/v1/admin/peripherals/{datahub,langfu
 | Flag | Default | Effect |
 |---|---|---|
 | `--profile {dev\|prod}` | required | Selects component set + values overlay. |
+| `--env-file <path>` | `helm-charts/.env.<profile>` | Env file to source. Defaults to `.env.dev` for `--profile dev`, `.env.prod` for `--profile prod`. Exported so child and post-install scripts inherit the same resolved file. |
 | `--components <list>` | all-for-profile | Comma-separated subset (e.g. `api`, `dataspoke-infra`, `datahub`). |
 | `--from-component <name>` | — | Resume an interrupted full install at this component. |
 | `--skip-build` | false | Skip Docker image rebuild (api/airflow/postgres). |
@@ -199,7 +200,10 @@ and `cluster` install summaries surface the Web UI URL and the default
 
 ## Uninstallation
 
-`bin/uninstall.sh --profile {dev|prod} [--components frontend] [--no-question] [--delete-pvcs] [--delete-namespaces] [--delete-all]`
+`bin/uninstall.sh --profile {dev|prod} [--env-file <path>] [--components frontend] [--no-question] [--delete-pvcs] [--delete-namespaces] [--delete-all]`
+
+`--env-file` carries the same profile-aware default as `install.sh`
+(`.env.dev` for dev, `.env.prod` for prod) and is exported for child scripts.
 
 `--components frontend` is a targeted teardown: `helm upgrade --reuse-values
 --set frontend.enabled=false` on the `dataspoke` release, leaving all other
@@ -269,7 +273,7 @@ Each component has a `<component>.enabled` toggle.
 
 Same names in dev and prod, different values. Injected into pods via ConfigMap
 (non-sensitive) or Secret (sensitive) from the `dataspoke-secrets` K8s Secret per
-§Configuration Flow. Not present in `helm-charts/.env`.
+§Configuration Flow. Not present in `helm-charts/.env.dev` / `helm-charts/.env.prod`.
 
 - `DATASPOKE_POSTGRES_{HOST,PORT,USER,PASSWORD,DB}`
 - `DATASPOKE_REDIS_{HOST,PORT,PASSWORD}`
@@ -296,8 +300,10 @@ lives in the `runtime_config` DB row (`stub_redis_client`, `stub_llm_client`,
 `BACKEND_LLM.md §Test Mode` and `TESTING.md §Stub Toggles`.
 
 > DataHub, Langfuse, and LLM provider/model/key are **not** app-runtime env
-> vars. Their **non-secret** settings (DataHub `gms_url`/`kafka_brokers`,
-> Langfuse `host`/`public_key`, LLM provider/model + generation knobs) live in
+> vars. Their **non-secret** settings (DataHub
+> `gms_url`/`kafka_brokers`/`service_corpuser_urn`/`default_env`, Langfuse
+> `host`/`public_key`/`project_id`/`environment_tag`, LLM provider/model +
+> generation knobs) live in
 > the DB `peripheral_config` and `runtime_config` tables, updated via
 > `/api/v1/admin/peripherals/{datahub,langfuse}` and `/api/v1/admin/conf`. Their
 > **secret** fields (DataHub token, Langfuse `secret_key`, LLM API key) never
@@ -375,7 +381,7 @@ mode it is the LoadBalancer external IP (TCP passthrough on the owned
 controller); in shared mode it is `127.0.0.1`, reached via
 `bin/port-forward.sh` on the same canonical ports. The TCP service ports
 (9201/9202/9005/9102/9104/9221) are identical in both modes. The `_PORT`
-fields are these fixed passthrough ports, carried statically in `.env.example`;
+fields are these fixed passthrough ports, carried statically in `.env.dev.example`;
 only the host-bearing values (`_HOST`, `_HOST_PORT`, `_KAFKA_BROKERS`,
 `DATASPOKE_LOCK_URL`) are written by `install.sh`.
 
@@ -411,7 +417,7 @@ only the host-bearing values (`_HOST`, `_HOST_PORT`, `_KAFKA_BROKERS`,
 ## Namespace Sourcing
 
 Every namespace DataSpoke deploys into is operator-chosen, declared once in
-`helm-charts/.env` and sourced from there by every consumer. The four vars are:
+`helm-charts/.env.<profile>` and sourced from there by every consumer. The four vars are:
 
 | Var | Namespace |
 |---|---|
@@ -420,7 +426,7 @@ Every namespace DataSpoke deploys into is operator-chosen, declared once in
 | `DATASPOKE_DEV_KUBE_LANGFUSE_NAMESPACE` | Langfuse dev peripheral chart |
 | `DATASPOKE_DEV_KUBE_DUMMY_DATA_NAMESPACE` | dummy-data peripheral install |
 
-`.env.example` ships illustrative values (`dataspoke-01`, `datahub-01`,
+`.env.dev.example` ships illustrative values (`dataspoke-01`, `datahub-01`,
 `langfuse-01`, `dataspoke-dummy-data-01`). These are examples, not contractual
 names — an operator may pick any DNS-label-safe namespace.
 
@@ -450,16 +456,21 @@ operator's namespace and host.
 
 | Path | Tracked | Purpose |
 |---|---|---|
-| `helm-charts/.env` | gitignored | Per-developer / per-cluster values |
-| `helm-charts/.env.example` | tracked | Dev canonical listing (three sections) |
+| `helm-charts/.env.dev` | gitignored | Per-developer dev-profile values |
+| `helm-charts/.env.prod` | gitignored | Per-cluster prod-profile values |
+| `helm-charts/.env.dev.example` | tracked | Dev canonical listing (three sections) |
 | `helm-charts/.env.prod.example` | tracked | Prod operator template (deployment shape only) |
+
+The runtime env file is profile-named (`.env.<profile>`); copy the matching
+`.example` to create it. `install.sh`/`uninstall.sh` resolve it from `--env-file`
+or default to `.env.<profile>`. No auto-rename shim is provided.
 
 Dev layout: three top-level sections — Kube deployment operator inputs, Dev
 profile operator inputs, Auto-populated block (ingress + `DATASPOKE_TEST_*`).
 `bin/*.sh` scripts source it; `tests/integration/conftest.py` loads it for
 integration tests.
 
-Prod `.env` contains only the five `DATASPOKE_KUBE_*` deployment-shape vars.
+Prod `.env.prod` contains only the five `DATASPOKE_KUBE_*` deployment-shape vars.
 All credentials are managed via a pre-created K8s Secret (`secrets.existingSecret`
 in the values overlay) — no credentials in `.env` for prod operators.
 
@@ -480,7 +491,7 @@ TCP host for the active ingress mode).
 ## Configuration Flow
 
 ```
-.env  →  bin/install.sh (dev)
+.env.dev  →  bin/install.sh (dev)
               │
               ├─ _ensure_dataspoke_secrets
               │    dev: auto-generate dataspoke-secrets (openssl rand) on first install;
@@ -499,7 +510,7 @@ TCP host for the active ingress mode).
               │  Deployment envFrom → container env vars (DATASPOKE_* names)
               │
               ├─ _sync_env_from_secret
-              │    Extract dataspoke-secrets values → append DATASPOKE_TEST_* block to .env
+              │    Extract dataspoke-secrets values → append DATASPOKE_TEST_* block to .env.dev
               │    Also appends DATASPOKE_TEST_DATAHUB_*, DATASPOKE_TEST_LANGFUSE_*,
               │    DATASPOKE_TEST_DUMMY_DATA_* from peripheral install outputs
               │
@@ -558,7 +569,8 @@ chart at it via `secrets.existingSecret: <name>`.
 ### DB-backed (no env var)
 
 - `peripheral_config` table — non-secret connection fields for DataHub
-  (`gms_url`, `kafka_brokers`), Langfuse (`host`, `public_key`), and SMTP
+  (`gms_url`, `kafka_brokers`, `service_corpuser_urn`, `default_env`), Langfuse
+  (`host`, `public_key`, `project_id`, `environment_tag`), and SMTP
   (`host`, `port`, `username`, `from_address`, `use_tls`) — updated via
   `/api/v1/admin/peripherals/{datahub,langfuse,smtp}`. Per-peripheral secret
   fields (`datahub.token`, `langfuse.secret_key`, `smtp.password`) are
@@ -631,7 +643,7 @@ Run independently or as part of a full `--profile dev` install.
 | Namespace | `ingress-nginx` |
 | Source | `dev-peripherals/nginx-ingress/values.yaml` (helm release) |
 | Function | Installs and owns a single LoadBalancer for all dev namespaces — HTTP virtual hosts (port 80) + TCP passthrough (PG 9201, Redis 9202, DataHub Kafka 9005, example PG 9102, example Kafka 9104, lock 9221) |
-| Writes to .env | `DATASPOKE_KUBE_INGRESS_IP`, `DATASPOKE_KUBE_INGRESS_DOMAIN`, plus the IP-derived `DATASPOKE_TEST_*` host/broker vars |
+| Writes to .env.dev | `DATASPOKE_KUBE_INGRESS_IP`, `DATASPOKE_KUBE_INGRESS_DOMAIN`, plus the IP-derived `DATASPOKE_TEST_*` host/broker vars |
 
 **Shared mode** (AWS/EKS, or any cluster with a pre-existing controller): the
 script installs nothing. It verifies the `DATASPOKE_KUBE_INGRESS_CLASS`
@@ -677,7 +689,7 @@ Service name prefixes: `datahub-prerequisites-*` for the prerequisites
 release (MySQL, Kafka controller); `opensearch-cluster-master` for the
 OpenSearch subchart's own release.
 
-Writes to .env: `DATASPOKE_TEST_DATAHUB_GMS_URL`, `DATASPOKE_TEST_DATAHUB_TOKEN`
+Writes to .env.dev: `DATASPOKE_TEST_DATAHUB_GMS_URL`, `DATASPOKE_TEST_DATAHUB_TOKEN`
 (generated PAT), `DATASPOKE_TEST_DATAHUB_KAFKA_BROKERS`.
 
 **Google OIDC SSO**: `helm-charts/dev-peripherals/datahub.sh` configures DataHub's
@@ -709,9 +721,9 @@ Dev-only peripheral chart `helm-charts/dev-peripherals/langfuse/` installed in `
 Langfuse wired via the admin API. The
 `langfuse.sh` script auto-generates the NextAuth/salt/encryption/ClickHouse/
 MinIO/Postgres/Redis secrets on first run, creates the `dataspoke` project +
-public/secret API keys, and writes them back to `.env`.
+public/secret API keys, and writes them back to `.env.dev`.
 
-Writes to .env: `DATASPOKE_TEST_LANGFUSE_{HOST,PUBLIC_KEY,SECRET_KEY}` plus
+Writes to .env.dev: `DATASPOKE_TEST_LANGFUSE_{HOST,PUBLIC_KEY,SECRET_KEY}` plus
 the Langfuse internals (`DATASPOKE_DEV_LANGFUSE_*`) on first install.
 
 **Startup ordering**: the Langfuse `web` and `worker` containers run ClickHouse
@@ -910,7 +922,7 @@ In **shared** mode the operator's controller serves only HTTP, so the TCP
 datastores are not on the ingress. `bin/port-forward.sh` runs in the
 foreground and `kubectl port-forward`s the same six services to their canonical
 ports on `127.0.0.1`; Kafka EXTERNAL listeners advertise `127.0.0.1:<port>`.
-Integration tests, `health-check.sh`, and `helm-charts/.env`'s
+Integration tests, `health-check.sh`, and `helm-charts/.env.dev`'s
 `DATASPOKE_TEST_*` host values all resolve to `127.0.0.1` while the
 port-forward holds.
 

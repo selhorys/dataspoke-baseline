@@ -544,9 +544,9 @@ instead of a JWT.
 | `DELETE` | `/admin/users/{id}` | — | `204` | JWT + Admin role |
 | `GET` | `/admin/users/{id}/api-tokens` | — | a user's API tokens (same shape as `GET /auth/api-tokens`, sans raw token; paginated with the standard `offset`/`limit`/`total_count` envelope, sortable by `created_at`, default `created_at_desc`) | JWT + Admin role |
 | `DELETE` | `/admin/users/{id}/api-tokens/{token_id}` | — | `204` — revokes a user's token (incident response) | JWT + Admin role |
-| `GET` | `/admin/peripherals/datahub` | — | current DataHub config: `{gms_url, kafka_brokers, token, is_configured, updated_at}`. `token` is masked (`""` unset, `"********"` set) | JWT + Admin role |
+| `GET` | `/admin/peripherals/datahub` | — | current DataHub config: `{gms_url, kafka_brokers, token, service_corpuser_urn, default_env, is_configured, updated_at}`. `token` is masked (`""` unset, `"********"` set); `service_corpuser_urn` and `default_env` are non-secret and returned plain | JWT + Admin role |
 | `PATCH` | `/admin/peripherals/datahub` | partial DataHub fields | updated DataHub config (with `token` masked) | JWT + Admin role |
-| `GET` | `/admin/peripherals/langfuse` | — | current Langfuse config: `{host, public_key, secret_key, is_configured, updated_at}`. `secret_key` is masked (`""` unset, `"********"` set) | JWT + Admin role |
+| `GET` | `/admin/peripherals/langfuse` | — | current Langfuse config: `{host, public_key, secret_key, project_id, environment_tag, is_configured, updated_at}`. `secret_key` is masked (`""` unset, `"********"` set); `project_id` and `environment_tag` are non-secret and returned plain | JWT + Admin role |
 | `PATCH` | `/admin/peripherals/langfuse` | partial Langfuse fields | updated Langfuse config (with `secret_key` masked) | JWT + Admin role |
 | `GET` | `/admin/peripherals/smtp` | — | current SMTP config: `{host, port, username, from_address, use_tls, password, is_configured, updated_at}`. `password` is masked (`""` unset, `"********"` set) | JWT + Admin role |
 | `PATCH` | `/admin/peripherals/smtp` | partial SMTP fields | updated SMTP config (with `password` masked) | JWT + Admin role |
@@ -594,6 +594,20 @@ is routed to a dedicated K8s Secret `dataspoke-smtp-secret` (data key
 fails `POST /auth/password/reset/request` with
 `503 PERIPHERAL_NOT_CONFIGURED` (`detail.peripheral = "smtp"`); all other
 auth flows remain functional.
+
+The DataHub and Langfuse peripherals carry non-secret connection settings
+alongside their masked credential. For DataHub, `service_corpuser_urn` names
+the corpuser actor DataSpoke stamps on the assertion `lastUpdated` and ingestion run-event audit stamps
+and `default_env` is the fabric/env (`PROD`/`DEV`/`QA`/`TEST`, …) applied when
+an ingestion recipe omits `env`. For Langfuse, `project_id` and
+`environment_tag` are surfaced to LLM tracing — `environment_tag` becomes the
+Langfuse trace `environment`. These fields are non-secret: stored in the
+`peripheral_config.settings` JSONB and returned plain (never masked). Unset
+rows read back factory defaults (`service_corpuser_urn` →
+`urn:li:corpuser:dataspoke`, `default_env` → `DEV`; `project_id` /
+`environment_tag` → `""`). Behavioral wiring is detailed in
+[`spec/feature/BACKEND.md`](feature/BACKEND.md) and
+[`spec/feature/BACKEND_LLM.md`](feature/BACKEND_LLM.md).
 
 ### Internal Admin (`/internal/admin`)
 

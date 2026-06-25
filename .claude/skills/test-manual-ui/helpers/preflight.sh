@@ -4,7 +4,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../../../.." && pwd)"
-ENV_FILE="${REPO_ROOT}/helm-charts/.env"
+ENV_FILE="${REPO_ROOT}/helm-charts/.env.dev"
 SIBLING="${REPO_ROOT}/.claude/skills/test-manual-api-wired/helpers"
 
 # ── 1. Health-check ──────────────────────────────────────────────────────────
@@ -17,7 +17,7 @@ echo "── env bootstrap (setup_env.sh) ────────────�
 bash "${SIBLING}/setup_env.sh"
 
 if [[ ! -f "$ENV_FILE" ]]; then
-  echo "ERROR: $ENV_FILE not found. Run /k8s-deploy configure first." >&2
+  echo "ERROR: $ENV_FILE not found. Copy helm-charts/.env.dev.example and edit it, or run /k8s-deploy configure first." >&2
   exit 1
 fi
 set -a

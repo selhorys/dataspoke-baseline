@@ -93,7 +93,7 @@ test.beforeAll(async () => {
   if (!password) {
     _skipReason =
       "DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD is not set. " +
-      "Source helm-charts/.env before running this test. " +
+      "Source helm-charts/.env.dev before running this test. " +
       "spec: feature/SECRET_RESOLUTION.md §Admin authoring guide.";
     return;
   }

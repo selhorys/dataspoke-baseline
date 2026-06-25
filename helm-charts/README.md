@@ -15,14 +15,15 @@ dev-only peripheral manifests in `helm-charts/dev-peripherals/`.
 ### Configure
 
 ```bash
-cp helm-charts/.env.example helm-charts/.env
-# Edit helm-charts/.env — set DATASPOKE_KUBE_CLUSTER, DATASPOKE_KUBE_IMAGE_REGISTRY, etc.
+cp helm-charts/.env.dev.example helm-charts/.env.dev
+# Edit helm-charts/.env.dev — set DATASPOKE_KUBE_CLUSTER, DATASPOKE_KUBE_IMAGE_REGISTRY, etc.
 ```
 
 ### Dev profile (full install)
 
 ```bash
 ./helm-charts/bin/install.sh --profile dev
+# Defaults to helm-charts/.env.dev; override with --env-file <path>
 ```
 
 The `--frontend` flag controls how the Next.js UI is handled:
@@ -72,7 +73,7 @@ are exposed on dedicated ports.
 | DataSpoke Web UI (dev `--frontend local`) | `http://localhost:3000` | same as above |
 | DataSpoke API | `http://api.<INGRESS_IP>.nip.io/api/v1/` | per `.env` JWT |
 | Airflow UI | `http://airflow.<INGRESS_IP>.nip.io/` | `admin` / `admin` (see `.env`) |
-| Langfuse UI | `http://langfuse.<INGRESS_IP>.nip.io/` | `DATASPOKE_DEV_LANGFUSE_INIT_USER_{EMAIL,PASSWORD}` in `helm-charts/.env` (auto-generated on first install) |
+| Langfuse UI | `http://langfuse.<INGRESS_IP>.nip.io/` | `DATASPOKE_DEV_LANGFUSE_INIT_USER_{EMAIL,PASSWORD}` in `helm-charts/.env.dev` (auto-generated on first install) |
 | DataSpoke PostgreSQL | `<INGRESS_IP>:9201` | per `.env` |
 | Redis | `<INGRESS_IP>:9202` | per `.env` |
 | DataHub Kafka | `<INGRESS_IP>:9005` | -- |
@@ -101,7 +102,7 @@ To deploy the containerised frontend in-cluster instead:
 The `--components frontend` fast path (rebuild + redeploy only the frontend pod) remains available as a code-iteration shortcut.
 
 Replace `<INGRESS_IP>` with the value of `DATASPOKE_KUBE_INGRESS_IP` from
-`helm-charts/.env`. The `nip.io` suffix provides automatic wildcard DNS
+`helm-charts/.env.dev`. The `nip.io` suffix provides automatic wildcard DNS
 resolution — no `/etc/hosts` entries needed.
 
 ---
@@ -160,7 +161,7 @@ Component names: `nginx-ingress`, `datahub`, `langfuse`, `dataspoke-infra`,
 The dev-lock service provides an advisory mutex for coordinating multi-tester
 access to shared dev-env resources.
 
-`install.sh` auto-populates `DATASPOKE_LOCK_URL` in `helm-charts/.env`
+`install.sh` auto-populates `DATASPOKE_LOCK_URL` in `helm-charts/.env.dev`
 (`http://<INGRESS_IP>:9221` in managed mode, `http://127.0.0.1:9221` via
 `bin/port-forward.sh` in shared mode), so the same command works in both:
 

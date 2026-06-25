@@ -53,7 +53,7 @@
 import { test, expect } from "../fixtures/index";
 import { apiBaseUrl, loadDotenv, required } from "../fixtures/env";
 
-// Ensure helm-charts/.env is loaded before reading GMS env at module scope —
+// Ensure helm-charts/.env.dev is loaded before reading GMS env at module scope —
 // this module is evaluated at collection time, before the config's loadDotenv
 // is guaranteed to have run in this process. loadDotenv is idempotent and never
 // overwrites already-set vars.

@@ -36,7 +36,7 @@ regression gate) or `/test-manual-api-wired` (the curl-level harness).
 > **Example namespace names.** Where scenario recipes show in-cluster hosts such as
 > `dataspoke-01` (in `kubectl -n …`) and `dataspoke-dummy-data-01` (in the recipe
 > `host_port`) — these are illustrative. Substitute your actual namespaces from
-> `helm-charts/.env` (`DATASPOKE_KUBE_DATASPOKE_NAMESPACE`,
+> `helm-charts/.env.dev` (`DATASPOKE_KUBE_DATASPOKE_NAMESPACE`,
 > `DATASPOKE_DEV_KUBE_DUMMY_DATA_NAMESPACE`) before running the commands verbatim.
 
 ## Division of labour
@@ -116,7 +116,7 @@ for `--frontend local`, or `install.sh --profile dev --components frontend` for
 the cluster build) and stop.
 
 Ask once: reset-seed baseline? Default Yes (per `feedback_reset_before_api_wired`).
-Yes → `set -a && source helm-charts/.env && set +a && uv run python -m tests.integration.util --reset-seed`.
+Yes → `set -a && source helm-charts/.env.dev && set +a && uv run python -m tests.integration.util --reset-seed`.
 
 Reset-seed re-creates the admin user, invalidating the JWT preflight minted
 before it (the next admin call returns `401 "User no longer exists."`). After a

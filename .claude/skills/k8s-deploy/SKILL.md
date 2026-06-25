@@ -47,21 +47,21 @@ are specified, operate on **all-for-profile**.
 
 ## Action: configure
 
-1. Read `helm-charts/.env`. If it does not exist, create it from `helm-charts/.env.example`.
+1. Read `helm-charts/.env.dev` (dev profile) or `helm-charts/.env.prod` (prod profile). If it does not exist, create it from `helm-charts/.env.dev.example` (dev) or `helm-charts/.env.prod.example` (prod).
 2. If it already exists, verify the canonical variables are present per spec `spec/feature/HELM_CHART.md §Configuration — Four-Tier Env Vars`:
    - **Kube deployment** (both profiles): `DATASPOKE_KUBE_CLUSTER`, `DATASPOKE_KUBE_DATASPOKE_NAMESPACE`, `DATASPOKE_KUBE_IMAGE_REGISTRY`, `DATASPOKE_KUBE_CLOUD_VENDOR` (`GCP` → Cloud Build; `AWS` → ECR via `DATASPOKE_AWS_PROFILE`, optional `DATASPOKE_DOCKER_SUDO`; empty → local Docker), `DATASPOKE_KUBE_INGRESS_MODE` (`managed` default — install & own nginx-ingress; `shared` — reuse a pre-existing controller), `DATASPOKE_KUBE_INGRESS_CLASS` (shared mode), `DATASPOKE_KUBE_INGRESS_IP` (managed: auto-populated in dev; shared: blank), `DATASPOKE_KUBE_INGRESS_DOMAIN` (managed: auto-populated `<IP>.nip.io`; shared: operator pre-set).
    - **App runtime** (`DATASPOKE_*`): not in `.env` — injected into pods from the `dataspoke-secrets` K8s Secret via `envFrom`. In dev, `install.sh` auto-generates the Secret; in prod, the operator pre-creates it. `DATASPOKE_CORS_ORIGINS` is rendered from chart values (`config.corsOrigins`).
    - **Dev only** (dev profile): `DATASPOKE_DEV_KUBE_{DATAHUB,LANGFUSE,DUMMY_DATA}_NAMESPACE`, `DATASPOKE_DEV_KUBE_DATAHUB_{,PREREQUISITES_}CHART_VERSION`, `DATASPOKE_DEV_DATAHUB_MYSQL_{ROOT_,}PASSWORD`, `DATASPOKE_DEV_DUMMY_DATA_{KAFKA_INSTANCE,POSTGRES_USER,POSTGRES_PASSWORD,POSTGRES_DB}`, `DATASPOKE_DEV_LLM_{PROVIDER,API_KEY,MODEL}`. The Langfuse internals and peripheral connection outputs are auto-populated by the peripheral install scripts.
    - **Test access** (`DATASPOKE_TEST_*`): auto-populated by `install.sh` post-install via `_sync_env_from_secret`; never manually edited. Read by `tests/integration/` for laptop-side cluster access.
-3. **Do NOT** add `DATASPOKE_ENABLE_STUB_AUTH` to `.env` — it's a chart value only (`api.enableStubAuth`). Stub-mode toggles for the four dependency factories live in the `runtime_config` DB row (`stub_redis_client`, `stub_llm_client`, `stub_pgvector_manager`, `stub_notification_service`) — flippable via `PATCH /api/v1/admin/conf`, not in `.env`.
+3. **Do NOT** add `DATASPOKE_ENABLE_STUB_AUTH` to `.env.dev` — it's a chart value only (`api.enableStubAuth`). Stub-mode toggles for the four dependency factories live in the `runtime_config` DB row (`stub_redis_client`, `stub_llm_client`, `stub_pgvector_manager`, `stub_notification_service`) — flippable via `PATCH /api/v1/admin/conf`, not in the env file.
 4. Generate secure passwords (16+ chars, mixed case, at least one special character) for any missing password variables.
-5. **Show the final `.env` content to the user and ask for confirmation before writing.** Do not proceed until the user approves. (Skip confirmation if `.env` already has all required variables.)
+5. **Show the final env file content to the user and ask for confirmation before writing.** Do not proceed until the user approves. (Skip confirmation if the env file already has all required variables.)
 
 ---
 
 ## Action: install
 
-Run `configure` first if `helm-charts/.env` does not exist or is missing required variables.
+Run `configure` first if the profile env file (`helm-charts/.env.dev` or `helm-charts/.env.prod`) does not exist or is missing required variables.
 
 ### Pre-flight checks
 
@@ -99,8 +99,8 @@ Run `configure` first if `helm-charts/.env` does not exist or is missing require
    ```bash
    uv run python -m tests.integration.util --reset-seed
    ```
-3. Show access information (ingress endpoints table is in `helm-charts/README.md §Ingress Endpoints`; substitute `DATASPOKE_KUBE_INGRESS_IP` / `DATASPOKE_KUBE_INGRESS_DOMAIN` from `helm-charts/.env`). In **shared** ingress mode `INGRESS_IP` is blank — HTTP services ride the operator-set `DATASPOKE_KUBE_INGRESS_DOMAIN`, and TCP services (Postgres/Redis/Kafka/lock) are reached on `127.0.0.1` by running `./helm-charts/bin/port-forward.sh` in a separate shell held open for the session.
-4. Inform the user that `helm-charts/.env` has been populated with runtime variables (hosts, URLs, ports — including `DATASPOKE_LOCK_URL` and `DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST_PORT`) by `install.sh` (managed mode also derives ingress IP/domain in `dev-peripherals/nginx-ingress.sh`), and that they should run `source helm-charts/.env` to load them into their shell.
+3. Show access information (ingress endpoints table is in `helm-charts/README.md §Ingress Endpoints`; substitute `DATASPOKE_KUBE_INGRESS_IP` / `DATASPOKE_KUBE_INGRESS_DOMAIN` from `helm-charts/.env.dev`). In **shared** ingress mode `INGRESS_IP` is blank — HTTP services ride the operator-set `DATASPOKE_KUBE_INGRESS_DOMAIN`, and TCP services (Postgres/Redis/Kafka/lock) are reached on `127.0.0.1` by running `./helm-charts/bin/port-forward.sh` in a separate shell held open for the session.
+4. Inform the user that `helm-charts/.env.dev` has been populated with runtime variables (hosts, URLs, ports — including `DATASPOKE_LOCK_URL` and `DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST_PORT`) by `install.sh` (managed mode also derives ingress IP/domain in `dev-peripherals/nginx-ingress.sh`), and that they should run `source helm-charts/.env.dev` to load them into their shell.
 5. The post-install seeding step (dev profile) has already wired DataHub + Langfuse + LLM provider/model into the API's runtime config via `/internal/admin/peripherals/*` and `/internal/admin/conf` — no manual admin-API calls needed unless `--skip-seed` was set.
 
 ---
@@ -184,7 +184,7 @@ Rebuild the DataSpoke API Docker image, redeploy it via `helm upgrade`, and roll
 
 ### Pre-flight
 
-1. Verify `helm-charts/.env` exists. If not, run **configure** first.
+1. Verify `helm-charts/.env.dev` (or `.env.prod` for prod) exists. If not, run **configure** first.
 2. If the user requests it (or `--health-check` flag), run `./helm-charts/bin/health-check.sh --quick` to confirm infrastructure is reachable. If it fails, suggest `/k8s-deploy health-check` or `/k8s-deploy install` and stop.
 3. Run `uv sync` to ensure Python dependencies are up to date.
 
@@ -207,7 +207,7 @@ Parse `$ARGUMENTS` and the user's request for these options:
    - API URL: `http://api.${DATASPOKE_KUBE_INGRESS_DOMAIN}/api/v1/`
    - ReDoc UI: `http://api.${DATASPOKE_KUBE_INGRESS_DOMAIN}/redoc`
    - Health: `http://api.${DATASPOKE_KUBE_INGRESS_DOMAIN}/health`
-   - How to run tests: `set -a && source helm-charts/.env && set +a && uv run pytest tests/integration/spot/` (spot) or `… tests/integration/api_wired/` (UC user stories) — run in separate invocations. The conftest `runtime_conf` fixture verifies the API has `stub_redis_client / stub_pgvector_manager / stub_notification_service` all `true` before the suite runs.
+   - How to run tests: `set -a && source helm-charts/.env.dev && set +a && uv run pytest tests/integration/spot/` (spot) or `… tests/integration/api_wired/` (UC user stories) — run in separate invocations. The conftest `runtime_conf` fixture verifies the API has `stub_redis_client / stub_pgvector_manager / stub_notification_service` all `true` before the suite runs.
    - How to stop: `kubectl scale deployment/dataspoke-api --replicas=0 -n "${DATASPOKE_KUBE_DATASPOKE_NAMESPACE}"`
 
 ### Stop

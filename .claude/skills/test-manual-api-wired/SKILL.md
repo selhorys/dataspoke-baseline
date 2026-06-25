@@ -53,7 +53,7 @@ Run `./helm-charts/bin/health-check.sh`. On any FAIL:
 - Do not proceed until green.
 
 Ask once: reset-seed baseline? Default Yes (per `feedback_reset_before_api_wired`).
-Yes → `set -a && source helm-charts/.env && set +a && uv run python -m tests.integration.util --reset-seed`.
+Yes → `set -a && source helm-charts/.env.dev && set +a && uv run python -m tests.integration.util --reset-seed`.
 
 For UC4 scenarios: after reset-seed, run `uv run python -m tests.integration.util --uc4-seed` to pre-stage the LLM context (fulfillment doc + ontogen nodes + DataHub masking); run `uv run python -m tests.integration.util --uc4-restore` to clean up when done.
 

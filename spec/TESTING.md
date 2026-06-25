@@ -48,7 +48,7 @@
 
 Groups 1–2 need no cluster. Groups 3–4 are the pytest integration groups and run **separately**
 (see [Python (pytest) Execution Groups](#python-pytest-execution-groups)). Group 5 owns the
-dev-env lock and reset for its run. Integration/api-wired need `helm-charts/.env` exported; api-wired
+dev-env lock and reset for its run. Integration/api-wired need `helm-charts/.env.dev` exported; api-wired
 and E2E reset dummy data per their own protocols.
 
 > **Do not use the `datahub` CLI** -- it requires Python <= 3.11 and is incompatible with the
@@ -137,7 +137,7 @@ exploration. Code changes require `docker build` + `helm upgrade` (automated by
 ### Workflow
 
 Follow these seven steps in order. `conftest.py` automates Steps 2/7 (lock) at session scope
-and Steps 3/6 (dummy-data reset) at module scope. It also loads `helm-charts/.env` and runs
+and Steps 3/6 (dummy-data reset) at module scope. It also loads `helm-charts/.env.dev` and runs
 `alembic upgrade head`. The manual commands below are for reference.
 
 1. **Write test scenarios** -- map to [Imazon](USE_CASE_en.md) entities. Place compact
@@ -146,7 +146,7 @@ and Steps 3/6 (dummy-data reset) at module scope. It also loads `helm-charts/.en
 2. **Acquire dev-env lock** -- `POST $DATASPOKE_LOCK_URL/lock/acquire` with
    `{"owner": "...", "message": "..."}`. Returns `409` if held by another tester. Set
    `DATASPOKE_DEV_ENV_LOCK_PREACQUIRED=1` if an outer process already holds it.
-   `DATASPOKE_LOCK_URL` is auto-populated in `helm-charts/.env` by `install.sh`
+   `DATASPOKE_LOCK_URL` is auto-populated in `helm-charts/.env.dev` by `install.sh`
    (`http://<INGRESS_IP>:9221` in managed ingress mode; `http://127.0.0.1:9221`
    via `bin/port-forward.sh` in shared ingress mode).
 3. **Reset dummy data** -- always reset before running, even if data appears clean.
@@ -204,7 +204,7 @@ and DataHub with descriptions and typed columns.
 ### Airflow Integration Test Pitfalls
 
 - **Connection**: Airflow is accessed via nginx-ingress at `http://airflow.<INGRESS_IP>.nip.io`
-  (`DATASPOKE_TEST_AIRFLOW_URL` in `helm-charts/.env`). `conftest.py` loads this automatically;
+  (`DATASPOKE_TEST_AIRFLOW_URL` in `helm-charts/.env.dev`). `conftest.py` loads this automatically;
   tests in worktrees must source it explicitly.
 - **Direct activity testing**: Preferred approach -- call `/internal/activities/{domain}/*` via
   `httpx.AsyncClient` (ASGI transport) without Airflow orchestration.
@@ -277,18 +277,18 @@ the user story has independent scenarios (e.g., `test_uc1_01_datahub_managed.py`
 
 ### Running
 
-Export `helm-charts/.env` into the shell before invoking pytest — `conftest.py` and `util/*.py` consume the `DATASPOKE_TEST_*` block it contains: `set -a && source helm-charts/.env && set +a`.
+Export `helm-charts/.env.dev` into the shell before invoking pytest — `conftest.py` and `util/*.py` consume the `DATASPOKE_TEST_*` block it contains: `set -a && source helm-charts/.env.dev && set +a`.
 
 ```bash
 # Spot
 ./helm-charts/bin/install.sh --profile dev --components api --skip-build   # safe to run; idempotent
 uv run python -m tests.integration.util --reset-seed
-set -a && source helm-charts/.env && set +a && uv run pytest tests/integration/spot/
+set -a && source helm-charts/.env.dev && set +a && uv run pytest tests/integration/spot/
 
 # Api-wired
 ./helm-charts/bin/install.sh --profile dev --components api --skip-build
 uv run python -m tests.integration.util --reset-seed
-set -a && source helm-charts/.env && set +a && uv run pytest tests/integration/api_wired/
+set -a && source helm-charts/.env.dev && set +a && uv run pytest tests/integration/api_wired/
 
 # Teardown (optional; leave running if you'll iterate)
 kubectl scale deployment/dataspoke-api --replicas=0 -n "${DATASPOKE_KUBE_DATASPOKE_NAMESPACE}"
@@ -334,7 +334,7 @@ uv run python -m tests.integration.util --reset-seed               # Seed Imazon
 ### Authentication
 
 ```bash
-# Replace <INGRESS_IP> with DATASPOKE_KUBE_INGRESS_IP from helm-charts/.env
+# Replace <INGRESS_IP> with DATASPOKE_KUBE_INGRESS_IP from helm-charts/.env.dev
 TOKEN=$(curl -s -X POST http://api.<INGRESS_IP>.nip.io/api/v1/auth/token \
   -H "Content-Type: application/json" \
   -d '{"email": "admin", "password": "admin"}' | jq -r .access_token)
@@ -394,7 +394,7 @@ All services running, including the **cluster-deployed frontend**:
 `http://app.<INGRESS_IP>.nip.io/`; the API is at `http://api.<INGRESS_IP>.nip.io/api/v1/`. Run
 `./helm-charts/bin/health-check.sh` first. Playwright's `baseURL` resolves from
 `PLAYWRIGHT_BASE_URL`, defaulting to the cluster URL derived from `DATASPOKE_KUBE_INGRESS_DOMAIN`
-in `helm-charts/.env`.
+in `helm-charts/.env.dev`.
 
 ### Two groups
 
@@ -464,7 +464,7 @@ Same dev-env lock and data-reset protocol as integration tests, driven from Play
 ```bash
 ./helm-charts/bin/install.sh --profile dev --frontend cluster   # deploy the cluster UI
 ./helm-charts/bin/health-check.sh
-set -a && source helm-charts/.env && set +a                     # export DATASPOKE_* for fixtures
+set -a && source helm-charts/.env.dev && set +a                 # export DATASPOKE_* for fixtures
 pnpm -C tests/e2e install
 pnpm -C tests/e2e test                                          # --headed / --ui to debug
 ```

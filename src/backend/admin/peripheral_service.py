@@ -6,7 +6,8 @@ accessed via ``datahub_secret`` / ``langfuse_secret`` / ``smtp_secret``.
 
 Public surface:
     get_peripheral_config(db, name) -> DatahubConfigDTO | LangfuseConfigDTO | SmtpConfigDTO | None
-    patch_peripheral_config(db, name, **partial) -> DatahubConfigDTO | LangfuseConfigDTO | SmtpConfigDTO
+    patch_peripheral_config(db, name, **partial)
+        -> DatahubConfigDTO | LangfuseConfigDTO | SmtpConfigDTO
     invalidate_peripheral_config_cache(name=None)
 """
 
@@ -29,12 +30,16 @@ PERIPHERAL_NAMES: set[str] = {"datahub", "langfuse", "smtp"}
 class DatahubConfigDTO:
     gms_url: str
     kafka_brokers: str
+    service_corpuser_urn: str = ""
+    default_env: str = ""
 
 
 @dataclass(frozen=True)
 class LangfuseConfigDTO:
     host: str
     public_key: str
+    project_id: str = ""
+    environment_tag: str = ""
 
 
 @dataclass(frozen=True)
@@ -71,6 +76,8 @@ def _row_to_dto(row: PeripheralConfig) -> _DTO_TYPE:
         return DatahubConfigDTO(
             gms_url=s.get("gms_url", ""),
             kafka_brokers=s.get("kafka_brokers", ""),
+            service_corpuser_urn=s.get("service_corpuser_urn", ""),
+            default_env=s.get("default_env", ""),
         )
     if row.name == "smtp":
         return SmtpConfigDTO(
@@ -83,6 +90,8 @@ def _row_to_dto(row: PeripheralConfig) -> _DTO_TYPE:
     return LangfuseConfigDTO(
         host=s.get("host", ""),
         public_key=s.get("public_key", ""),
+        project_id=s.get("project_id", ""),
+        environment_tag=s.get("environment_tag", ""),
     )
 
 

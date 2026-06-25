@@ -366,6 +366,12 @@ Langfuse instance is a dev-only peripheral (chart `helm-charts/dev-peripherals/l
 by `helm-charts/bin/dev-peripherals/langfuse.sh`) deployed in its own `langfuse-01` namespace. In
 production the operator supplies their own Langfuse and wires the connection via the admin API.
 
+Beyond `host`/`public_key`/`secret_key`, the Langfuse peripheral carries two non-secret
+settings (see [`spec/API.md`](../API.md) `/admin/peripherals/langfuse`): `environment_tag`
+is passed as the Langfuse trace `environment` so operators can segment dev/staging/prod
+traces in one project, and `project_id` is surfaced as trace metadata. Both are optional —
+absence omits them and tracing still works.
+
 ### Test-side Langfuse env contract
 
 App-runtime Langfuse connection is read from `peripheral_config.langfuse` per `HELM_CHART.md §Configuration Flow`; the table below describes only the test-tooling env vars consumed by `tests/integration/util/langfuse.py`.
@@ -390,6 +396,8 @@ LangChain's `RunnableConfig`. Langfuse captures:
   turns of one ontogen run into a single Langfuse session.
 - `metadata.actor` = `"producer"` or `"reviewer"`.
 - `metadata.turn` = integer turn index within the debate.
+- Trace `environment` = the configured `environment_tag`, and `metadata.project_id` = the
+  configured `project_id`, when those Langfuse peripheral settings are present.
 
 Session grouping uses LangChain `RunnableConfig.metadata.langfuse_session_id`, set equal to the ontogen run_id. The dedicated `session_id` argument on `LLMClient` methods takes precedence over any caller-supplied `metadata.langfuse_session_id`.
 

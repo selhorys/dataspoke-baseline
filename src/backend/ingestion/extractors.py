@@ -86,9 +86,13 @@ _PG_TO_DATAHUB_TYPE: dict[str, object] = {
 }
 
 
-def _parse_env_from_config(config: dict[str, Any]) -> str:
-    """Extract the DataHub env string from recipe config, defaulting to 'DEV'."""
-    return config.get("env", "DEV")
+def _parse_env_from_config(config: dict[str, Any], default_env: str = "DEV") -> str:
+    """Extract the DataHub env string from recipe config.
+
+    Falls back to ``default_env`` (the configured DataHub fabric/env) when the
+    recipe omits ``env``.
+    """
+    return config.get("env", default_env)
 
 
 def _make_dataset_urn(platform: str, name: str, env: str) -> str:
@@ -106,6 +110,7 @@ async def _extract_postgres(
     recipe: dict[str, Any],
     dry_run: bool,
     run_id: str,
+    default_env: str = "DEV",
 ) -> IngestionResult:
     """Connect to PostgreSQL via resolved recipe.source.config; emit metadata.
 
@@ -142,7 +147,7 @@ async def _extract_postgres(
     database: str = config.get("database", "")
     username: str = config.get("username", "")
     password: str = config.get("password", "")
-    env: str = _parse_env_from_config(config)
+    env: str = _parse_env_from_config(config, default_env)
 
     # Build schema allow/deny predicate from schema_pattern.
     schema_allow: list[str] = [".*"]
@@ -387,7 +392,8 @@ async def _extract_postgres(
 
 _EXTRACTOR_REGISTRY: dict[
     str,
-    Any,  # Callable[[DataHubClient, str, dict, bool, str], Coroutine[Any, Any, IngestionResult]]
+    # Callable[[DataHubClient, str, dict, bool, str, str], Coroutine[Any, Any, IngestionResult]]
+    Any,
 ] = {
     "postgres": _extract_postgres,
 }
@@ -399,16 +405,19 @@ async def run_extractor(
     recipe: dict[str, Any],
     dry_run: bool,
     run_id: str,
+    default_env: str = "DEV",
 ) -> IngestionResult:
     """Dispatch to the registered extractor for ``recipe.source.type``.
 
     Args:
-        datahub:   DataHub client (pre-configured).
-        source_id: The ``ingestion_source.id`` UUID string — stamped as
-                   ``systemMetadata.pipelineName`` for observed-mapping.
-        recipe:    The RESOLVED recipe dict (plaintext credentials in-memory).
-        dry_run:   When True, discover schema but do not emit any aspects.
-        run_id:    A fresh UUID string per run for DPI URN derivation.
+        datahub:     DataHub client (pre-configured).
+        source_id:   The ``ingestion_source.id`` UUID string — stamped as
+                     ``systemMetadata.pipelineName`` for observed-mapping.
+        recipe:      The RESOLVED recipe dict (plaintext credentials in-memory).
+        dry_run:     When True, discover schema but do not emit any aspects.
+        run_id:      A fresh UUID string per run for DPI URN derivation.
+        default_env: The configured DataHub fabric/env, used when the recipe
+                     omits ``source.config.env``.
 
     Returns:
         IngestionResult with emitted_urns populated (empty on dry_run or error).
@@ -436,4 +445,4 @@ async def run_extractor(
             "run_id": run_id,
         },
     )
-    return await extractor(datahub, source_id, recipe, dry_run, run_id)
+    return await extractor(datahub, source_id, recipe, dry_run, run_id, default_env)

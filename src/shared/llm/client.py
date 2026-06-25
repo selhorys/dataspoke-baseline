@@ -33,11 +33,14 @@ class LLMClient:
         langfuse_host: str | None = None,
         langfuse_public_key: str | None = None,
         langfuse_secret_key: str | None = None,
+        langfuse_environment: str | None = None,
+        langfuse_project_id: str | None = None,
     ) -> None:
         self._provider = provider.lower()
         self._api_key = api_key
         self._model = _create_chat_model(provider, api_key, model)
         self._embeddings = _create_embeddings_model(self._provider, self._api_key)
+        self._langfuse_project_id = langfuse_project_id or None
 
         if langfuse_host and langfuse_public_key and langfuse_secret_key:
             from langfuse import Langfuse
@@ -45,11 +48,15 @@ class LLMClient:
 
             # Register credentials in LangfuseResourceManager's singleton before
             # constructing the handler — v4 CallbackHandler only accepts public_key.
-            Langfuse(
-                public_key=langfuse_public_key,
-                secret_key=langfuse_secret_key,
-                host=langfuse_host,
-            )
+            # ``environment`` segments traces (dev/staging/prod) within one project.
+            langfuse_kwargs: dict[str, Any] = {
+                "public_key": langfuse_public_key,
+                "secret_key": langfuse_secret_key,
+                "host": langfuse_host,
+            }
+            if langfuse_environment:
+                langfuse_kwargs["environment"] = langfuse_environment
+            Langfuse(**langfuse_kwargs)
             self._langfuse_handler: Any = CallbackHandler(public_key=langfuse_public_key)
         else:
             self._langfuse_handler = None
@@ -65,6 +72,10 @@ class LLMClient:
         meta: dict[str, Any] = {}
         if metadata:
             meta.update(metadata)
+        # Surface the configured Langfuse project_id as trace metadata without
+        # clobbering a caller-supplied value.
+        if self._langfuse_project_id is not None:
+            meta.setdefault("project_id", self._langfuse_project_id)
         # Set after caller metadata so langfuse_session_id cannot be overridden.
         if session_id is not None:
             meta["langfuse_session_id"] = session_id
@@ -219,7 +230,10 @@ class LLMClient:
                 last_iter_errors = iter_errors
                 messages.append(
                     HumanMessage(
-                        content=f"You must call the `{success_tool_name}` tool with your proposed payload. Do not return plain text."
+                        content=(
+                            f"You must call the `{success_tool_name}` tool with your "
+                            "proposed payload. Do not return plain text."
+                        )
                     )
                 )
                 continue
@@ -359,7 +373,11 @@ def _create_chat_model(provider: str, api_key: str, model: str):  # type: ignore
 
 
 def _create_embeddings_model(provider: str, api_key: str):  # type: ignore[no-untyped-def]
-    from src.shared.config import EMBEDDING_DIMENSION, EMBEDDING_MODEL_GOOGLE, EMBEDDING_MODEL_OPENAI
+    from src.shared.config import (
+        EMBEDDING_DIMENSION,
+        EMBEDDING_MODEL_GOOGLE,
+        EMBEDDING_MODEL_OPENAI,
+    )
 
     if provider == "openai":
         from langchain_openai import OpenAIEmbeddings

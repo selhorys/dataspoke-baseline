@@ -51,8 +51,8 @@ DataSpoke ships as an umbrella Helm chart at `helm-charts/dataspoke/`. The produ
 The dev profile installs infrastructure (DataHub, PostgreSQL with pgvector + Apache AGE, Redis, Airflow, self-hosted Langfuse for LLM observability, example data sources) into a Kubernetes cluster via the umbrella Helm chart plus dev peripherals. The API runs **in-cluster** alongside Airflow (for workflow callbacks); frontend runs on the host.
 
 ```bash
-cp helm-charts/.env.example helm-charts/.env       # Set your Kubernetes context
-./helm-charts/bin/install.sh --profile dev          # ~5-10 min first run
+cp helm-charts/.env.dev.example helm-charts/.env.dev   # Set your Kubernetes context
+./helm-charts/bin/install.sh --profile dev              # ~5-10 min first run
 ```
 
 > Using Claude Code? Run `/k8s-deploy install` for guided setup.

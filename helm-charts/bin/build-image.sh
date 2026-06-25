@@ -47,9 +47,9 @@ fi
 # ---------------------------------------------------------------------------
 # Load configuration
 # ---------------------------------------------------------------------------
-ENV_FILE="$SCRIPT_DIR/../.env"
+ENV_FILE="${ENV_FILE:-$SCRIPT_DIR/../.env.dev}"
 if [[ ! -f "$ENV_FILE" ]]; then
-  error ".env not found at $ENV_FILE — copy helm-charts/.env.example and edit it."
+  error "Env file not found at $ENV_FILE — copy helm-charts/.env.dev.example and edit it."
 fi
 source "$ENV_FILE"
 

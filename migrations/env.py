@@ -21,9 +21,9 @@ target_metadata = Base.metadata
 
 
 def _load_dotenv() -> None:
-    """Load helm-charts/.env into os.environ without overwriting existing vars."""
+    """Load helm-charts/.env.dev into os.environ without overwriting existing vars."""
     start = Path(__file__).resolve().parent.parent
-    env_path = start / "helm-charts" / ".env"
+    env_path = start / "helm-charts" / ".env.dev"
     if not env_path.is_file():
         return
     for line in env_path.read_text().splitlines():

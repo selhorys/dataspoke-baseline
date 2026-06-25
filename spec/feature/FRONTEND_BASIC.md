@@ -31,7 +31,7 @@ A single application shell hosts every page. The shell has a top header
 (product name, user menu, logout) and a left-side menu. The menu lists the
 MANIFESTO §2.1 feature pages at the top, then two labelled sections pinned to
 the bottom: an **Admin** section and, below it, an **Account** section. The
-Admin section (entries **Users** and **Configurations**) renders only when the
+Admin section (entries **Users**, **Configurations**, and **Peripherals**) renders only when the
 caller's role is `Admin`; the Account section (Profile, API Tokens, Settings)
 renders for everyone. The page area on the right renders the active route.
 
@@ -102,6 +102,7 @@ ingestion recipe YAML editor) remain one full-width field.
 | `/profile/tokens` | Long-lived API token management — list, mint (copy-once display), revoke | `GET /auth/api-tokens`, `POST /auth/api-tokens`, `DELETE /auth/api-tokens/{id}` |
 | `/admin/users` | Admin user management — list, change name, change role, hard delete, revoke any token | `GET /admin/users`, `PATCH /admin/users/{id}`, `PATCH /admin/users/{id}/role`, `DELETE /admin/users/{id}`, `GET /admin/users/{id}/api-tokens`, `DELETE /admin/users/{id}/api-tokens/{token_id}` |
 | `/admin/conf` | Admin runtime configuration — view and edit the singleton behavioral tunables, dependency-stub toggles, and LLM provider/model/key | `GET /admin/conf`, `PATCH /admin/conf` |
+| `/admin/peripherals` | Admin peripheral connections — view and edit DataHub and Langfuse connection settings (two cards, per-card partial PATCH) | `GET /admin/peripherals/datahub`, `PATCH /admin/peripherals/datahub`, `GET /admin/peripherals/langfuse`, `PATCH /admin/peripherals/langfuse` |
 | `/governance/dashboard` | [Governance dashboard — home](FRONTEND_GOVERNANCE.md) | `GET /spoke/governance/metric`, `GET /spoke/governance/metric/{id}/attr/result` |
 | `/governance/metrics` | [Metric configuration](FRONTEND_GOVERNANCE.md) | `/spoke/governance/metric/...` |
 | `/ingestion` | 302 to `/ingestion/conf` | — |
@@ -245,6 +246,64 @@ page does not invent fields. Fields are grouped for legibility:
   `null` (reuse `llm_model`) when changed.
 - After a successful save a "Saved · updated <timestamp>" indicator appears in
   the footer next to Save (in-session only).
+
+### Peripherals (`/admin/peripherals`)
+
+One page with two independent `Card`s — DataHub and Langfuse — each its own
+`<form>` with its own Save button. Each card reads its peripheral with the
+matching `GET /admin/peripherals/{datahub,langfuse}` and saves a partial
+`PATCH` of only the changed fields. The field sets are exactly the peripheral
+contracts in [API.md](../API.md) §`/admin/peripherals` — the page invents no
+fields.
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  Admin — Peripherals                                         │
+├──────────────────────────────────────────────────────────────┤
+│  DataHub                                                     │
+│    GMS URL        [ http://datahub-gms…              ]       │
+│    Kafka brokers  [ broker:9092                      ]       │
+│    Token          [ •••••• leave blank to keep current ]    │
+│    Service corpuser URN [ urn:li:corpuser:dataspoke  ]       │
+│    Default env    [ DEV                              ]       │
+│                       Saved · updated 14:32   [ Save ]       │
+├──────────────────────────────────────────────────────────────┤
+│  Langfuse                                                    │
+│    Host           [ http://langfuse…                 ]       │
+│    Public key     [ pk-lf-…                           ]       │
+│    Secret key     [ •••••• leave blank to keep current ]    │
+│    Project ID     [ default                          ]       │
+│    Environment tag[ production                       ]       │
+│                       Saved · updated 14:31   [ Save ]       │
+└──────────────────────────────────────────────────────────────┘
+       Peripheral connections (`/admin/peripherals`)
+```
+
+| Card | Field | API field | Notes |
+|---|---|---|---|
+| DataHub | GMS URL | `gms_url` | Plain text |
+| DataHub | Kafka brokers | `kafka_brokers` | Plain text |
+| DataHub | Token | `token` | Masked write-only secret (see below) |
+| DataHub | Service corpuser URN | `service_corpuser_urn` | Non-secret, returned plain; default `urn:li:corpuser:dataspoke` |
+| DataHub | Default env | `default_env` | Non-secret, returned plain; fabric/env, default `DEV` |
+| Langfuse | Host | `host` | Plain text |
+| Langfuse | Public key | `public_key` | Plain text |
+| Langfuse | Secret key | `secret_key` | Masked write-only secret (see below) |
+| Langfuse | Project ID | `project_id` | Non-secret, returned plain |
+| Langfuse | Environment tag | `environment_tag` | Non-secret, returned plain |
+
+- **Masked secrets** (`token`, `secret_key`) use `PasswordInput` and behave like
+  `llm_api_key` on `/admin/conf`: `GET` returns `""` (unset) or `"********"`
+  (set); the field shows "leave blank to keep current"; an empty submission omits
+  the field (unchanged), and the `"********"` sentinel is never echoed back as a
+  written value. Secrets are routed to Kubernetes Secrets, not the DB.
+- **Non-secret fields** (`service_corpuser_urn`, `default_env`, `project_id`,
+  `environment_tag`) are plain inputs prefilled from the `GET` response and sent
+  verbatim on `PATCH`.
+- Each card's Save submits only the fields that changed within that card; the two
+  cards never share a submit. A "Saved · updated <timestamp>" indicator appears in
+  the saved card's footer (in-session only).
+- The page is gated by the `useMe` admin check, like the other `/admin/*` pages.
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐

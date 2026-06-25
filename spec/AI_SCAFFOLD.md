@@ -68,7 +68,7 @@ They live in `.claude/skills/<name>/SKILL.md` and are loaded when invoked explic
 
 | Skill | Purpose |
 |-------|---------|
-| `k8s-work` | Kubernetes cluster management: one-time health checks, continuous monitoring with polling during installs, and kubectl/helm operations. Runs as a forked subagent; reads cluster config from `helm-charts/.env` |
+| `k8s-work` | Kubernetes cluster management: one-time health checks, continuous monitoring with polling during installs, and kubectl/helm operations. Runs as a forked subagent; reads cluster config from `helm-charts/.env.dev` (dev) or `helm-charts/.env.prod` (prod) |
 | `spec-write` | Author timeless specification documents in `spec/` (top-level or `spec/feature/<FEATURE>.md`) following the project hierarchy, naming conventions, and templates. Not for implementation plans |
 | `datahub-api` | Reference and coding guide for DataHub integration in backend development. Covers entities, aspects, lineage, URNs, ingestion/emission, GraphQL, REST, and the `acryl-datahub` SDK. Requires `/ref-setup` first |
 | `prauto-check-status` | Status dashboard across all prauto lifecycle labels; predicts what the next heartbeat will do |
@@ -209,7 +209,7 @@ tailored to an organization's data sources, domain vocabulary, and operational r
 | Tech stack, system components | `spec/ARCHITECTURE.md` |
 | Baseline feature specs | `spec/feature/` |
 | API routers and backend services | `src/api/`, `src/backend/` |
-| Cluster and namespace config | `helm-charts/.env` |
+| Cluster and namespace config | `helm-charts/.env.dev` / `helm-charts/.env.prod` |
 | Org-specific agent conventions | `.claude/agents/` |
 
 ### Recommended sequence

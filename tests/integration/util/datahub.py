@@ -8,7 +8,7 @@ Usage (as a module):
     uv run python -m tests.integration.util.datahub --reset  # delete + ingest
     uv run python -m tests.integration.util.datahub --reset-only  # delete only
 
-Environment variables (loaded from helm-charts/.env if present):
+Environment variables (loaded from helm-charts/.env.dev if present):
     DATASPOKE_TEST_DATAHUB_GMS_URL       (default: http://localhost:9004)
     DATASPOKE_TEST_DATAHUB_TOKEN         (default: empty — auto-fetched via frontend login)
     DATASPOKE_DEV_DATAHUB_FRONTEND_URL   (default: http://localhost:9002)
@@ -179,10 +179,10 @@ _PG_TO_DATAHUB_TYPE: dict[str, object] = {
 
 
 def _load_dotenv() -> None:
-    """Load helm-charts/.env into os.environ without overwriting existing vars."""
+    """Load helm-charts/.env.dev into os.environ without overwriting existing vars."""
     start = Path(__file__).resolve().parents[3]
     for candidate in (start, *start.parents):
-        env_path = candidate / "helm-charts" / ".env"
+        env_path = candidate / "helm-charts" / ".env.dev"
         if env_path.is_file():
             break
     else:

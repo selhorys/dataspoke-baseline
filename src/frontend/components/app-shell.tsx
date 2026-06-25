@@ -107,6 +107,7 @@ const accountNav: NavItem[] = [
 const adminNav: NavItem[] = [
   { label: "Users", href: "/admin/users", icon: Users },
   { label: "Configurations", href: "/admin/conf", icon: SlidersHorizontal },
+  { label: "Peripherals", href: "/admin/peripherals", icon: Network },
 ];
 
 function SidebarLink({ item }: { item: NavItem }) {

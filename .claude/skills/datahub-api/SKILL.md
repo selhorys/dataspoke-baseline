@@ -68,8 +68,8 @@ Run these checks before executing any code:
 python3 -c "import datahub; print('acryl-datahub', datahub.__version__)" 2>/dev/null \
   || pip3 install acryl-datahub --quiet
 
-# 2. Derive GMS URL from .env (ingress-based)
-source helm-charts/.env 2>/dev/null || true
+# 2. Derive GMS URL from .env.dev (ingress-based)
+source helm-charts/.env.dev 2>/dev/null || true
 DATAHUB_GMS_URL="http://datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN}/gms"
 
 # 3. Check GMS is reachable via ingress
@@ -91,7 +91,7 @@ If any prerequisite fails, stop and inform the user with the fix instructions.
 
 Only use this if the static `ref/` files don't answer the question.
 
-Derive the base URLs from `helm-charts/.env`: `source helm-charts/.env`, then:
+Derive the base URLs from `helm-charts/.env.dev`: `source helm-charts/.env.dev`, then:
 - GMS base: `http://datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN}/gms`
 - DataHub UI: `http://datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN}`
 
@@ -108,7 +108,7 @@ Derive the base URLs from `helm-charts/.env`: `source helm-charts/.env`, then:
 
 ### 5.1 SDK Setup Pattern
 
-Read the GMS URL from the environment (set by `source helm-charts/.env`):
+Read the GMS URL from the environment (set by `source helm-charts/.env.dev`):
 ```python
 from datahub.ingestion.graph.client import DataHubGraph, DatahubClientConfig
 import os

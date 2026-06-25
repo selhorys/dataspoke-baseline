@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Install the nginx-ingress controller and write the assigned external IP/domain
-# back to helm-charts/.env for downstream scripts.
+# back to helm-charts/.env.dev for downstream scripts.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-ENV_FILE="$(cd "$BIN_DIR/.." && pwd)/.env"
+ENV_FILE="${ENV_FILE:-$(cd "$BIN_DIR/.." && pwd)/.env.dev}"
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -17,7 +17,7 @@ source "$BIN_DIR/lib/helpers.sh"
 # Load configuration
 # ---------------------------------------------------------------------------
 if [[ ! -f "$ENV_FILE" ]]; then
-  error ".env not found at $ENV_FILE — copy helm-charts/.env.example and edit it."
+  error "Env file not found at $ENV_FILE — copy helm-charts/.env.dev.example and edit it."
 fi
 source "$ENV_FILE"
 

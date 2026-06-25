@@ -6,6 +6,10 @@ import type {
   AdminUser,
   ApiTokenItem,
   ApiTokenListResponse,
+  DatahubPeripheral,
+  DatahubPeripheralPatch,
+  LangfusePeripheral,
+  LangfusePeripheralPatch,
   RuntimeConf,
   RuntimeConfPatch,
   UsersListResponse,
@@ -128,6 +132,56 @@ export function useUpdateRuntimeConf() {
     meta: { handledInline: true },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["admin", "conf"] });
+    },
+  });
+}
+
+// ── DataHub peripheral ─────────────────────────────────────────────────────────
+
+export function useDatahubPeripheral() {
+  return useQuery<DatahubPeripheral>({
+    queryKey: ["admin", "peripherals", "datahub"],
+    queryFn: () => apiFetch<DatahubPeripheral>("/admin/peripherals/datahub"),
+    meta: { handledInline: true },
+  });
+}
+
+export function useUpdateDatahubPeripheral() {
+  const qc = useQueryClient();
+  return useMutation<DatahubPeripheral, Error, DatahubPeripheralPatch>({
+    mutationFn: (body) =>
+      apiFetch<DatahubPeripheral>("/admin/peripherals/datahub", {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      }),
+    meta: { handledInline: true },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["admin", "peripherals", "datahub"] });
+    },
+  });
+}
+
+// ── Langfuse peripheral ────────────────────────────────────────────────────────
+
+export function useLangfusePeripheral() {
+  return useQuery<LangfusePeripheral>({
+    queryKey: ["admin", "peripherals", "langfuse"],
+    queryFn: () => apiFetch<LangfusePeripheral>("/admin/peripherals/langfuse"),
+    meta: { handledInline: true },
+  });
+}
+
+export function useUpdateLangfusePeripheral() {
+  const qc = useQueryClient();
+  return useMutation<LangfusePeripheral, Error, LangfusePeripheralPatch>({
+    mutationFn: (body) =>
+      apiFetch<LangfusePeripheral>("/admin/peripherals/langfuse", {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      }),
+    meta: { handledInline: true },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["admin", "peripherals", "langfuse"] });
     },
   });
 }

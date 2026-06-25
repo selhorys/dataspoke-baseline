@@ -505,7 +505,7 @@ a row disables the corresponding integration.
 | Column | Type | Description |
 |--------|------|-------------|
 | `name` | `VARCHAR(32)` PK | Peripheral name; `CHECK` ∈ `datahub`, `langfuse`, `smtp` |
-| `settings` | `JSONB` | Peripheral-specific **non-secret** connection settings (DataHub `gms_url`/`kafka_brokers`, Langfuse `host`/`public_key`, SMTP host/port/username). Secret fields (DataHub token, Langfuse `secret_key`, SMTP password) are never stored here — they live in K8s Secrets, resolved at runtime via the API's RBAC. |
+| `settings` | `JSONB` | Peripheral-specific **non-secret** connection settings (DataHub `gms_url`/`kafka_brokers`/`service_corpuser_urn`/`default_env`, Langfuse `host`/`public_key`/`project_id`/`environment_tag`, SMTP host/port/username). Secret fields (DataHub token, Langfuse `secret_key`, SMTP password) are never stored here — they live in K8s Secrets, resolved at runtime via the API's RBAC. |
 | `updated_at` | `TIMESTAMPTZ` | |
 
 ### Indexes

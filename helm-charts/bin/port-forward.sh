@@ -4,29 +4,35 @@
 # In shared ingress mode the cluster's ingress controller exposes only HTTP
 # (80/443), so the TCP services (Postgres, Redis, Kafka, dev-lock) are not
 # reachable through it. This script forwards them to localhost on the exact
-# ports that integration tests and helm-charts/.env expect (the DATASPOKE_TEST_*
+# ports that integration tests and helm-charts/.env.dev expect (the DATASPOKE_TEST_*
 # ports), so laptop-side tests and health-check.sh work against 127.0.0.1.
 #
 # Runs in the foreground and holds all forwards open; Ctrl-C tears them all down.
 #
 # Usage:
-#   ./helm-charts/bin/port-forward.sh           # forward all TCP services
+#   ./helm-charts/bin/port-forward.sh                   # forward all TCP services
+#   ./helm-charts/bin/port-forward.sh --env-file <path> # use a specific env file
 #   ./helm-charts/bin/port-forward.sh --help
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ENV_FILE="$(cd "$SCRIPT_DIR/.." && pwd)/.env"
 
 # shellcheck source=lib/helpers.sh
 source "$SCRIPT_DIR/lib/helpers.sh"
 
-if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
-  print_usage "$0"
-  exit 0
-fi
+ENV_FILE_ARG=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --env-file) ENV_FILE_ARG="${2:-}"; shift 2 ;;
+    --help|-h) print_usage "$0"; exit 0 ;;
+    *) error "Unknown option: $1 (use --help)" ;;
+  esac
+done
+
+ENV_FILE="${ENV_FILE_ARG:-${ENV_FILE:-$(cd "$SCRIPT_DIR/.." && pwd)/.env.dev}}"
 
 if [[ ! -f "$ENV_FILE" ]]; then
-  error ".env not found at $ENV_FILE — copy helm-charts/.env.example and edit it."
+  error "Env file not found at $ENV_FILE — copy helm-charts/.env.dev.example and edit it."
 fi
 source "$ENV_FILE"
 
@@ -90,6 +96,6 @@ fi
 echo ""
 info "${#PIDS[@]} port-forward(s) active. Leave this running while you test."
 info "Run integration tests in another shell:"
-echo "  set -a && source helm-charts/.env && set +a && uv run pytest tests/integration/api_wired/ -v"
+echo "  set -a && source ${ENV_FILE} && set +a && uv run pytest tests/integration/api_wired/ -v"
 echo ""
 wait

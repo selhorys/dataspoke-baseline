@@ -92,6 +92,12 @@ def make_redis_client(*, stub: bool = False) -> RedisClient:
     return RedisClient(settings.redis_host, settings.redis_port, settings.redis_password)
 
 
+# Fallback DataHub service actor URN when the peripheral leaves it unset.
+DEFAULT_DATAHUB_ACTOR_URN = "urn:li:corpuser:dataspoke"
+# Fallback DataHub fabric/env when the peripheral leaves it unset.
+DEFAULT_DATAHUB_DEFAULT_ENV = "DEV"
+
+
 def make_llm_client(
     *,
     stub: bool = False,
@@ -100,6 +106,8 @@ def make_llm_client(
     model_override: str | None = None,
     langfuse_host: str | None = None,
     langfuse_public_key: str | None = None,
+    langfuse_environment: str | None = None,
+    langfuse_project_id: str | None = None,
 ) -> LLMClient:
     """Return an LLMClient, or a stub when ``stub=True``.
 
@@ -108,6 +116,11 @@ def make_llm_client(
     peripheral_config by async callers via ``read_langfuse_config(db)``
     and passed in.  When omitted (e.g. stub mode or callers without
     Langfuse configured), Langfuse tracing is disabled.
+
+    ``langfuse_environment`` and ``langfuse_project_id`` are non-secret Langfuse
+    peripheral settings: the former drives the Langfuse trace environment, the
+    latter is surfaced as trace metadata.  Both are optional — absence omits
+    them and tracing still works.
 
     ``model_override`` replaces ``model`` while keeping the same provider and
     api_key — used by the Reviewer path when a separate reviewer model is
@@ -131,21 +144,68 @@ def make_llm_client(
         langfuse_host=langfuse_host,
         langfuse_public_key=langfuse_public_key,
         langfuse_secret_key=langfuse_secret_key,
+        langfuse_environment=langfuse_environment,
+        langfuse_project_id=langfuse_project_id,
     )
 
 
-async def read_langfuse_config(db: "AsyncSession") -> tuple[str | None, str | None]:
-    """Read Langfuse host and public_key from peripheral_config.
+async def read_langfuse_config(
+    db: "AsyncSession",
+) -> tuple[str | None, str | None, str | None, str | None]:
+    """Read Langfuse connection settings from peripheral_config.
 
-    Returns (host, public_key) when configured, (None, None) when absent.
-    Async callers should pre-read this and pass the result to make_llm_client().
+    Returns ``(host, public_key, project_id, environment_tag)`` when configured,
+    ``(None, None, None, None)`` when absent.  Async callers should pre-read
+    this and pass the result to ``make_llm_client()``.
     """
     from src.backend.admin.peripheral_service import LangfuseConfigDTO, get_peripheral_config
 
     langfuse_dto = await get_peripheral_config(db, "langfuse")
     if langfuse_dto is not None and isinstance(langfuse_dto, LangfuseConfigDTO):
-        return langfuse_dto.host or None, langfuse_dto.public_key or None
-    return None, None
+        return (
+            langfuse_dto.host or None,
+            langfuse_dto.public_key or None,
+            langfuse_dto.project_id or None,
+            langfuse_dto.environment_tag or None,
+        )
+    return None, None, None, None
+
+
+async def read_datahub_actor_urn(db: "AsyncSession") -> str:
+    """Read the configured DataHub service corpuser URN from peripheral_config.
+
+    Returns the configured ``service_corpuser_urn`` when set, else the
+    ``DEFAULT_DATAHUB_ACTOR_URN`` fallback.  This URN is stamped as the actor on
+    DataSpoke-emitted DataHub aspects (validation assertions, ingestion runs).
+    """
+    from src.backend.admin.peripheral_service import DatahubConfigDTO, get_peripheral_config
+
+    datahub_dto = await get_peripheral_config(db, "datahub")
+    if (
+        datahub_dto is not None
+        and isinstance(datahub_dto, DatahubConfigDTO)
+        and datahub_dto.service_corpuser_urn
+    ):
+        return datahub_dto.service_corpuser_urn
+    return DEFAULT_DATAHUB_ACTOR_URN
+
+
+async def read_datahub_default_env(db: "AsyncSession") -> str:
+    """Read the configured DataHub default fabric/env from peripheral_config.
+
+    Returns the configured ``default_env`` when set, else ``"DEV"``.  Used by the
+    ingestion extractor when a recipe omits ``source.config.env``.
+    """
+    from src.backend.admin.peripheral_service import DatahubConfigDTO, get_peripheral_config
+
+    datahub_dto = await get_peripheral_config(db, "datahub")
+    if (
+        datahub_dto is not None
+        and isinstance(datahub_dto, DatahubConfigDTO)
+        and datahub_dto.default_env
+    ):
+        return datahub_dto.default_env
+    return DEFAULT_DATAHUB_DEFAULT_ENV
 
 
 def make_pgvector_manager(*, stub: bool = False) -> PgVectorManager:

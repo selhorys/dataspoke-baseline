@@ -9,15 +9,19 @@ Tests the factory stub behavior:
 - make_db_session() always returns a real session.
 - urn_to_workflow_id produces a stable 12-char hex string from the same URN.
 
-spec: src/workflows/_common.py — make_* factories accept stub= kwarg; DataHub and DB are always real.
+spec: src/workflows/_common.py — make_* factories accept stub= kwarg;
+DataHub and DB are always real.
 """
 
 import pytest
 import pytest_asyncio  # noqa: F401 — ensures asyncio mode is active
 
+from src.shared.cache.client import RedisClient
+from src.shared.datahub.client import DataHubClient
+from src.shared.llm.client import LLMClient
+from src.shared.vector.client import PgVectorManager
 from src.workflows._common import (
     make_datahub,
-    make_db_session,
     make_llm_client,
     make_notification_service,
     make_pgvector_manager,
@@ -30,11 +34,6 @@ from src.workflows._stubs import (
     StubPgVectorManager,
     StubRedisClient,
 )
-from src.shared.datahub.client import DataHubClient
-from src.shared.cache.client import RedisClient
-from src.shared.llm.client import LLMClient
-from src.shared.vector.client import PgVectorManager
-
 
 # ── make_llm_client with stub=True ────────────────────────────────────────────
 
@@ -121,7 +120,7 @@ def test_make_pgvector_manager_defaults_to_real_client() -> None:
 
 
 def test_make_notification_service_defaults_to_real_client() -> None:
-    """make_notification_service() returns NotificationService when stub kwarg is omitted (default=False).
+    """make_notification_service() returns NotificationService when stub omitted (default=False).
 
     Guards against a regression flipping the default stub=False → True, which would
     silently use StubNotificationService in production.
@@ -208,7 +207,7 @@ def test_make_notification_service_returns_stub_when_stub_true() -> None:
 def test_make_notification_service_returns_real_service_when_stub_false() -> None:
     """make_notification_service() returns NotificationService when stub=False.
 
-    spec: src/workflows/_common.py — make_notification_service(stub=False) → real NotificationService.
+    spec: src/workflows/_common.py — make_notification_service(stub=False) → real service.
     """
     from src.shared.notifications.service import NotificationService
 
@@ -230,7 +229,7 @@ async def test_make_datahub_always_returns_datahub_client(monkeypatch) -> None:
     at the source module level (lazy imports inside make_datahub resolve from
     the source module at call time).
 
-    spec: src/workflows/_common.py — DataHub is never stubbed; make_datahub always returns DataHubClient.
+    spec: src/workflows/_common.py — DataHub never stubbed; make_datahub returns DataHubClient.
     """
     from unittest.mock import AsyncMock
 
@@ -257,6 +256,262 @@ async def test_make_datahub_always_returns_datahub_client(monkeypatch) -> None:
     assert result._emitter._gms_server == "http://gms-stub:8080", (
         f"DataHubClient must be constructed with the gms_url from peripheral config. "
         f"Expected 'http://gms-stub:8080', got {result._emitter._gms_server!r}. "
+    )
+
+
+# ── read_datahub_actor_urn: corpuser URN wiring ───────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_read_datahub_actor_urn_returns_configured_value(monkeypatch) -> None:
+    """read_datahub_actor_urn returns the configured service_corpuser_urn when set.
+
+    The DataHub peripheral's ``service_corpuser_urn`` is the corpuser actor
+    DataSpoke writes as on emitted DataHub audit stamps (assertion ``lastUpdated``,
+    ingestion run-event ``created``).  When configured, the reader must surface
+    that exact URN.
+
+    spec: spec/feature/BACKEND.md §Active-custom run pipeline — DataSpoke stamps
+        the audit actor with the peripheral's configured ``service_corpuser_urn``
+        (line ~276 / ~527).
+    spec: spec/API.md §/admin/peripherals/datahub — ``service_corpuser_urn`` names
+        the corpuser actor DataSpoke writes as.
+    """
+    from unittest.mock import AsyncMock
+
+    from src.backend.admin.peripheral_service import DatahubConfigDTO
+    from src.workflows._common import read_datahub_actor_urn
+
+    configured = DatahubConfigDTO(
+        gms_url="http://gms:8080",
+        kafka_brokers="kafka:9092",
+        service_corpuser_urn="urn:li:corpuser:imazon-svc",
+        default_env="PROD",
+    )
+    monkeypatch.setattr(
+        "src.backend.admin.peripheral_service.get_peripheral_config",
+        AsyncMock(return_value=configured),
+    )
+
+    result = await read_datahub_actor_urn(AsyncMock())
+
+    assert result == "urn:li:corpuser:imazon-svc", (
+        "read_datahub_actor_urn must return the configured service_corpuser_urn. "
+        "spec: spec/feature/BACKEND.md §Active-custom run pipeline."
+    )
+
+
+@pytest.mark.asyncio
+async def test_read_datahub_actor_urn_falls_back_when_unset(monkeypatch) -> None:
+    """read_datahub_actor_urn falls back to urn:li:corpuser:dataspoke when unset.
+
+    An empty ``service_corpuser_urn`` (or absent peripheral row) must resolve to
+    the documented default actor URN, not an empty string.
+
+    spec: spec/API.md §/admin/peripherals/datahub — unset rows read back factory
+        default ``service_corpuser_urn`` → ``urn:li:corpuser:dataspoke``.
+    spec: spec/feature/BACKEND.md §Active-custom run pipeline — defaulting to
+        ``urn:li:corpuser:dataspoke`` when unset (line ~276).
+    """
+    from unittest.mock import AsyncMock
+
+    from src.backend.admin.peripheral_service import DatahubConfigDTO
+    from src.workflows._common import DEFAULT_DATAHUB_ACTOR_URN, read_datahub_actor_urn
+
+    # Empty service_corpuser_urn on a configured row.
+    unset = DatahubConfigDTO(gms_url="http://gms:8080", kafka_brokers="kafka:9092")
+    monkeypatch.setattr(
+        "src.backend.admin.peripheral_service.get_peripheral_config",
+        AsyncMock(return_value=unset),
+    )
+    result_unset = await read_datahub_actor_urn(AsyncMock())
+    assert result_unset == DEFAULT_DATAHUB_ACTOR_URN == "urn:li:corpuser:dataspoke", (
+        "Empty service_corpuser_urn must fall back to urn:li:corpuser:dataspoke. "
+        "spec: spec/API.md §/admin/peripherals/datahub — factory default."
+    )
+
+    # No peripheral row at all → same fallback.
+    monkeypatch.setattr(
+        "src.backend.admin.peripheral_service.get_peripheral_config",
+        AsyncMock(return_value=None),
+    )
+    result_none = await read_datahub_actor_urn(AsyncMock())
+    assert result_none == "urn:li:corpuser:dataspoke", (
+        "Absent peripheral row must fall back to urn:li:corpuser:dataspoke."
+    )
+
+
+# ── read_datahub_default_env: ingestion fabric/env wiring ──────────────────────
+
+
+@pytest.mark.asyncio
+async def test_read_datahub_default_env_returns_configured_value(monkeypatch) -> None:
+    """read_datahub_default_env returns the configured default_env when set.
+
+    spec: spec/API.md §/admin/peripherals/datahub — ``default_env`` is the
+        fabric/env applied when an ingestion recipe omits ``env``.
+    spec: spec/feature/BACKEND.md §ingestion — recipe omits ``env`` → extractor
+        falls back to the peripheral's configured ``default_env`` (line ~273).
+    """
+    from unittest.mock import AsyncMock
+
+    from src.backend.admin.peripheral_service import DatahubConfigDTO
+    from src.workflows._common import read_datahub_default_env
+
+    configured = DatahubConfigDTO(
+        gms_url="http://gms:8080",
+        kafka_brokers="kafka:9092",
+        default_env="PROD",
+    )
+    monkeypatch.setattr(
+        "src.backend.admin.peripheral_service.get_peripheral_config",
+        AsyncMock(return_value=configured),
+    )
+
+    result = await read_datahub_default_env(AsyncMock())
+
+    assert result == "PROD", (
+        "read_datahub_default_env must return the configured default_env. "
+        "spec: spec/feature/BACKEND.md §ingestion — configured default_env."
+    )
+
+
+@pytest.mark.asyncio
+async def test_read_datahub_default_env_falls_back_to_dev_when_unset(monkeypatch) -> None:
+    """read_datahub_default_env falls back to 'DEV' when unset or unconfigured.
+
+    spec: spec/API.md §/admin/peripherals/datahub — unset rows read back factory
+        default ``default_env`` → ``DEV``.
+    """
+    from unittest.mock import AsyncMock
+
+    from src.backend.admin.peripheral_service import DatahubConfigDTO
+    from src.workflows._common import DEFAULT_DATAHUB_DEFAULT_ENV, read_datahub_default_env
+
+    unset = DatahubConfigDTO(gms_url="http://gms:8080", kafka_brokers="kafka:9092")
+    monkeypatch.setattr(
+        "src.backend.admin.peripheral_service.get_peripheral_config",
+        AsyncMock(return_value=unset),
+    )
+    assert await read_datahub_default_env(AsyncMock()) == DEFAULT_DATAHUB_DEFAULT_ENV == "DEV", (
+        "Empty default_env must fall back to 'DEV'. "
+        "spec: spec/API.md §/admin/peripherals/datahub — factory default."
+    )
+
+    monkeypatch.setattr(
+        "src.backend.admin.peripheral_service.get_peripheral_config",
+        AsyncMock(return_value=None),
+    )
+    assert await read_datahub_default_env(AsyncMock()) == "DEV", (
+        "Absent peripheral row must fall back to 'DEV'."
+    )
+
+
+# ── read_langfuse_config: env tag + project surfaced ───────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_read_langfuse_config_surfaces_project_and_environment_tag(monkeypatch) -> None:
+    """read_langfuse_config returns (host, public_key, project_id, environment_tag).
+
+    ``environment_tag`` drives the Langfuse trace ``environment`` and ``project_id``
+    is surfaced as trace metadata.  Both non-secret fields must round-trip out of
+    the peripheral DTO into the tuple the LLM-client factory consumes.
+
+    spec: spec/API.md §/admin/peripherals/langfuse — ``project_id`` /
+        ``environment_tag`` surfaced to LLM tracing.
+    spec: spec/feature/BACKEND_LLM.md §Observability — trace ``environment`` =
+        configured ``environment_tag``; ``metadata.project_id`` = configured
+        ``project_id`` (lines ~399-400).
+    """
+    from unittest.mock import AsyncMock
+
+    from src.backend.admin.peripheral_service import LangfuseConfigDTO
+    from src.workflows._common import read_langfuse_config
+
+    configured = LangfuseConfigDTO(
+        host="http://langfuse:3000",
+        public_key="pk-imazon",
+        project_id="imazon-metadata",
+        environment_tag="production",
+    )
+    monkeypatch.setattr(
+        "src.backend.admin.peripheral_service.get_peripheral_config",
+        AsyncMock(return_value=configured),
+    )
+
+    host, public_key, project_id, environment_tag = await read_langfuse_config(AsyncMock())
+
+    assert host == "http://langfuse:3000"
+    assert public_key == "pk-imazon"
+    assert project_id == "imazon-metadata", (
+        "read_langfuse_config must surface project_id as the 3rd tuple element. "
+        "spec: spec/feature/BACKEND_LLM.md §Observability."
+    )
+    assert environment_tag == "production", (
+        "read_langfuse_config must surface environment_tag as the 4th tuple element. "
+        "spec: spec/feature/BACKEND_LLM.md §Observability."
+    )
+
+
+@pytest.mark.asyncio
+async def test_read_langfuse_config_omits_blank_project_and_environment_tag(monkeypatch) -> None:
+    """read_langfuse_config maps blank project_id/environment_tag to None (omit).
+
+    Absence must omit the optional fields (None) so tracing still works without
+    them, per the spec's "Both are optional — absence omits them" rule.
+
+    spec: spec/feature/BACKEND_LLM.md §Observability — both optional; absence omits.
+    """
+    from unittest.mock import AsyncMock
+
+    from src.backend.admin.peripheral_service import LangfuseConfigDTO
+    from src.workflows._common import read_langfuse_config
+
+    blank = LangfuseConfigDTO(host="http://langfuse:3000", public_key="pk")
+    monkeypatch.setattr(
+        "src.backend.admin.peripheral_service.get_peripheral_config",
+        AsyncMock(return_value=blank),
+    )
+
+    host, public_key, project_id, environment_tag = await read_langfuse_config(AsyncMock())
+
+    assert host == "http://langfuse:3000"
+    assert public_key == "pk"
+    assert project_id is None, "blank project_id must map to None (omit). "
+    assert environment_tag is None, "blank environment_tag must map to None (omit)."
+
+
+def test_make_llm_client_threads_langfuse_project_id(monkeypatch) -> None:
+    """make_llm_client threads langfuse_project_id into the constructed LLMClient.
+
+    The non-secret Langfuse ``project_id`` must reach the real LLMClient so it can
+    be surfaced as trace metadata.  ``secret_key`` is left unset here so no
+    handler/network is constructed; ``_langfuse_project_id`` is stored regardless.
+
+    The complementary ``environment_tag`` → Langfuse ``environment`` and
+    ``project_id`` → trace ``metadata.project_id`` behaviors are asserted in
+    tests/unit/shared/llm/test_langfuse_instrumentation.py.
+
+    spec: spec/feature/BACKEND_LLM.md §Observability — project_id → trace metadata.
+    """
+    monkeypatch.setattr("src.backend.admin.llm_secret.get_llm_api_key", lambda: "test-key")
+    monkeypatch.setattr(
+        "src.backend.admin.langfuse_secret.get_langfuse_secret_key", lambda: None
+    )
+
+    client = make_llm_client(
+        stub=False,
+        langfuse_host="http://langfuse:3000",
+        langfuse_public_key="pk-test",
+        langfuse_environment="production",
+        langfuse_project_id="imazon-metadata",
+    )
+
+    assert isinstance(client, LLMClient)
+    assert client._langfuse_project_id == "imazon-metadata", (
+        "make_llm_client must thread langfuse_project_id into the LLMClient. "
+        "spec: spec/feature/BACKEND_LLM.md §Observability."
     )
 
 

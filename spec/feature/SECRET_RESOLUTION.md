@@ -22,7 +22,7 @@ source-save time, and **resolves** them when an `ACTIVE_CUSTOM_MANAGED` extracto
 
 > **Example namespace name.** `dataspoke-01` used below for DataSpoke's own namespace is
 > illustrative; it is operator-chosen via `DATASPOKE_KUBE_DATASPOKE_NAMESPACE` (defaulted only
-> in `.env.example`). The API does not read it from configuration — at runtime it discovers its
+> in `.env.dev.example`). The API does not read it from configuration — at runtime it discovers its
 > own namespace from the in-cluster service-account file
 > (`/var/run/secrets/kubernetes.io/serviceaccount/namespace`).
 

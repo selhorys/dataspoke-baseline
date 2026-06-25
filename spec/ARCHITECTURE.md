@@ -390,7 +390,7 @@ lock protocol, see [`spec/TESTING.md`](TESTING.md).
 
 > **Example namespace names.** `dataspoke-01`, `datahub-01`, `langfuse-01`, and
 > `dataspoke-dummy-data-01` below are illustrative. Every namespace is
-> operator-chosen via four `.env` vars and defaulted only in `.env.example`; see
+> operator-chosen via four `.env.dev` vars and defaulted only in `.env.dev.example`; see
 > [`spec/feature/HELM_CHART.md` §Namespace Sourcing](feature/HELM_CHART.md#namespace-sourcing).
 
 DataHub runs in a separate namespace or cluster. DataSpoke deploys into its own namespace
@@ -436,8 +436,8 @@ and `/api/v1/admin/conf` (see [`spec/API.md` §Admin](API.md)), seeded with fact
 App-runtime variables (`DATASPOKE_*`) are the same names in dev and prod — only the values
 differ. In dev they point to the nginx-ingress external IP (TCP services) or ingress hostnames
 (HTTP services); in prod they are injected via Helm values → ConfigMap/Secret. Groups carried
-by `.env` and Secret: PostgreSQL, Redis, Airflow, internal-auth token. Chart-values-only
-toggles (rendered onto the API pod from `values{-dev}.yaml`, never via `.env`): CORS origins,
+by `.env.dev`/`.env.prod` and Secret: PostgreSQL, Redis, Airflow, internal-auth token. Chart-values-only
+toggles (rendered onto the API pod from `values{-dev}.yaml`, never via the env file): CORS origins,
 stub-auth, test-mode LLM real-call.
 
 Kube-deployment variables (`DATASPOKE_KUBE_*`) configure the cluster context, namespace, image
@@ -445,13 +445,13 @@ registry, cloud vendor, and ingress IP/domain — all needed by install scripts 
 
 Dev-only variables (`DATASPOKE_DEV_*`) hold install-time credentials and seed values for the
 in-cluster peripherals (DataHub MySQL, Langfuse internals, dummy data, LLM provider/model/key).
-The peripheral scripts auto-populate the connection outputs back into `.env` and then PATCH
+The peripheral scripts auto-populate the connection outputs back into `.env.dev` and then PATCH
 them into the runtime DB. The application code never reads `DATASPOKE_DEV_*`.
 
 The LLM API key is read at runtime from the `dataspoke-llm-secret` Kubernetes Secret (rotated
 online through `/api/v1/admin/conf`) — not an env var on the deployed app.
 
-For full variable listings, the `.env.example` layout, and production Secret options, see
+For full variable listings, the `.env.dev.example` layout, and production Secret options, see
 [`spec/feature/HELM_CHART.md`](feature/HELM_CHART.md).
 
 ### Development Environment

@@ -30,6 +30,7 @@ from src.shared.exceptions import (
     EntityNotFoundError,
     PreconditionFailedError,
 )
+from src.workflows._common import read_datahub_actor_urn
 
 logger = logging.getLogger(__name__)
 
@@ -161,7 +162,8 @@ class ValidationService:
         await self._db.refresh(existing)
 
         assertion_urn = build_assertion_urn(dataset_urn)
-        info = build_assertion_info(dataset_urn, description, variables)
+        actor_urn = await read_datahub_actor_urn(self._db)
+        info = build_assertion_info(dataset_urn, description, variables, actor_urn=actor_urn)
         await register_assertion(self._datahub, assertion_urn, info)
 
         event_type = VALIDATION_CONFIG_CREATE if created else VALIDATION_CONFIG_UPDATE
@@ -202,7 +204,10 @@ class ValidationService:
         await self._db.refresh(row)
 
         assertion_urn = build_assertion_urn(dataset_urn)
-        info = build_assertion_info(dataset_urn, row.description, list(row.variables))
+        actor_urn = await read_datahub_actor_urn(self._db)
+        info = build_assertion_info(
+            dataset_urn, row.description, list(row.variables), actor_urn=actor_urn
+        )
         await register_assertion(self._datahub, assertion_urn, info)
 
         await self._record_event(

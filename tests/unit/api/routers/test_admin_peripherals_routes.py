@@ -72,6 +72,20 @@ _INTERNAL_TOKEN = "test-internal-secret"
 _FAKE_DH_DTO = DatahubConfigDTO(gms_url="http://gms:8080", kafka_brokers="kafka:9092")
 _FAKE_LF_DTO = LangfuseConfigDTO(host="http://langfuse:3000", public_key="pk-test")
 
+# DTOs with the non-secret connection settings populated.
+_FAKE_DH_DTO_FULL = DatahubConfigDTO(
+    gms_url="http://gms:8080",
+    kafka_brokers="kafka:9092",
+    service_corpuser_urn="urn:li:corpuser:imazon-svc",
+    default_env="PROD",
+)
+_FAKE_LF_DTO_FULL = LangfuseConfigDTO(
+    host="http://langfuse:3000",
+    public_key="pk-test",
+    project_id="imazon-metadata",
+    environment_tag="production",
+)
+
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
 
@@ -545,7 +559,7 @@ async def test_get_datahub_peripheral_empty_fields_when_unconfigured(client) -> 
 
 @pytest.mark.asyncio
 async def test_patch_datahub_token_routes_to_secret_not_db(client) -> None:
-    """PATCH /admin/peripherals/datahub with only token calls set_datahub_token; NOT patch_peripheral_config.
+    """PATCH /admin/peripherals/datahub with only token calls set_datahub_token, NOT the DB.
 
     When only token is sent, db_updates is empty so the router calls
     invalidate_peripheral_config_cache + get_peripheral_config (not patch_peripheral_config).
@@ -561,16 +575,21 @@ async def test_patch_datahub_token_routes_to_secret_not_db(client) -> None:
     mock_patch_db = AsyncMock(return_value=_FAKE_DH_DTO)
     mock_invalidate = MagicMock()
     try:
-        with patch("src.api.routers.admin.set_datahub_token", mock_set_token):
-            with patch("src.api.routers.admin.patch_peripheral_config", mock_patch_db):
-                with patch("src.api.routers.admin.invalidate_peripheral_config_cache", mock_invalidate):
-                    with patch("src.api.routers.admin.get_peripheral_config", AsyncMock(return_value=_FAKE_DH_DTO)):
-                        with patch("src.api.routers.admin.datahub_token_is_set", return_value=True):
-                            resp = await client.patch(
-                                _PERIPHERALS_DH,
-                                json={"token": "dh-token-value"},
-                                headers=auth_headers(["admin"]),
-                            )
+        with (
+            patch("src.api.routers.admin.set_datahub_token", mock_set_token),
+            patch("src.api.routers.admin.patch_peripheral_config", mock_patch_db),
+            patch("src.api.routers.admin.invalidate_peripheral_config_cache", mock_invalidate),
+            patch(
+                "src.api.routers.admin.get_peripheral_config",
+                AsyncMock(return_value=_FAKE_DH_DTO),
+            ),
+            patch("src.api.routers.admin.datahub_token_is_set", return_value=True),
+        ):
+            resp = await client.patch(
+                _PERIPHERALS_DH,
+                json={"token": "dh-token-value"},
+                headers=auth_headers(["admin"]),
+            )
     finally:
         app.dependency_overrides.pop(get_db, None)
 
@@ -691,7 +710,7 @@ async def test_patch_datahub_omitting_token_does_not_touch_secret(client) -> Non
 
 @pytest.mark.asyncio
 async def test_patch_datahub_gms_url_and_kafka_brokers_written_to_db(client) -> None:
-    """PATCH /admin/peripherals/datahub with gms_url and kafka_brokers calls patch_peripheral_config.
+    """PATCH /admin/peripherals/datahub with gms_url + kafka_brokers calls the DB patch.
 
     Non-secret fields (gms_url, kafka_brokers) are written to the DB.
 
@@ -1104,3 +1123,293 @@ async def test_patch_datahub_empty_body_does_not_create_row(client) -> None:
         "set_datahub_token must NOT be called when token field is absent. "
         "spec: plan/scalable-beaming-hamster.md §Backend — token omitted = leave unchanged."
     )
+
+
+# ── New non-secret connection settings: round-trip through PATCH / GET ─────────
+#
+# spec: spec/API.md §/admin/peripherals/datahub + /langfuse — service_corpuser_urn,
+#   default_env, project_id, environment_tag are non-secret and returned plain
+#   (never masked); unset rows read back factory defaults.
+# spec: src/api/schemas/admin.py Datahub/LangfusePeripheral{Response,PatchRequest}.
+
+
+@pytest.mark.asyncio
+async def test_get_datahub_returns_service_corpuser_urn_and_default_env_plain(client) -> None:
+    """GET /admin/peripherals/datahub returns service_corpuser_urn + default_env plain (not masked).
+
+    spec: spec/API.md §/admin/peripherals/datahub — non-secret connection settings
+        returned plain alongside the masked token.
+    """
+    _, db_gen = _fake_db()
+    app.dependency_overrides[get_db] = db_gen
+    try:
+        with (
+            patch(
+                "src.api.routers.admin.get_peripheral_config",
+                AsyncMock(return_value=_FAKE_DH_DTO_FULL),
+            ),
+            patch("src.api.routers.admin.datahub_token_is_set", return_value=True),
+        ):
+            resp = await client.get(_PERIPHERALS_DH, headers=auth_headers(["admin"]))
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["service_corpuser_urn"] == "urn:li:corpuser:imazon-svc", (
+        "service_corpuser_urn must be returned plain. "
+        "spec: spec/API.md §/admin/peripherals/datahub."
+    )
+    assert body["default_env"] == "PROD", (
+        "default_env must be returned plain. spec: spec/API.md §/admin/peripherals/datahub."
+    )
+    # Plain (non-secret) — never masked.
+    assert body["service_corpuser_urn"] != "********"
+    assert body["default_env"] != "********"
+
+
+@pytest.mark.asyncio
+async def test_get_datahub_unconfigured_reads_back_factory_defaults(client) -> None:
+    """GET /admin/peripherals/datahub on an unconfigured row reads back factory defaults.
+
+    spec: spec/API.md §/admin/peripherals/datahub — unset rows read back factory
+        defaults (service_corpuser_urn → urn:li:corpuser:dataspoke, default_env → DEV).
+    """
+    _, db_gen = _fake_db()
+    app.dependency_overrides[get_db] = db_gen
+    try:
+        with (
+            patch(
+                "src.api.routers.admin.get_peripheral_config",
+                AsyncMock(return_value=None),
+            ),
+            patch("src.api.routers.admin.datahub_token_is_set", return_value=False),
+        ):
+            resp = await client.get(_PERIPHERALS_DH, headers=auth_headers(["admin"]))
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["service_corpuser_urn"] == "urn:li:corpuser:dataspoke", (
+        "Unset service_corpuser_urn must read back the factory default. "
+        "spec: spec/API.md §/admin/peripherals/datahub."
+    )
+    assert body["default_env"] == "DEV", (
+        "Unset default_env must read back the factory default 'DEV'. "
+        "spec: spec/API.md §/admin/peripherals/datahub."
+    )
+
+
+@pytest.mark.asyncio
+async def test_patch_datahub_new_fields_written_to_db_and_reflected(client) -> None:
+    """PATCH /admin/peripherals/datahub with the new fields writes them to the DB and echoes them.
+
+    The non-secret service_corpuser_urn + default_env must be passed to
+    patch_peripheral_config and reflected in the response.
+
+    spec: spec/API.md §/admin/peripherals/datahub — non-secret fields stored in
+        peripheral_config.settings JSONB.
+    """
+    _, db_gen = _fake_db()
+    app.dependency_overrides[get_db] = db_gen
+    try:
+        with (
+            patch(
+                "src.api.routers.admin.patch_peripheral_config",
+                AsyncMock(return_value=_FAKE_DH_DTO_FULL),
+            ) as mock_patch_db,
+            patch("src.api.routers.admin.datahub_token_is_set", return_value=True),
+        ):
+            resp = await client.patch(
+                _PERIPHERALS_DH,
+                json={
+                    "service_corpuser_urn": "urn:li:corpuser:imazon-svc",
+                    "default_env": "PROD",
+                },
+                headers=auth_headers(["admin"]),
+            )
+            mock_patch_db.assert_called_once()
+            _, kwargs = mock_patch_db.call_args
+            assert kwargs.get("service_corpuser_urn") == "urn:li:corpuser:imazon-svc", (
+                "service_corpuser_urn must be forwarded to patch_peripheral_config. "
+                f"got kwargs={kwargs!r}."
+            )
+            assert kwargs.get("default_env") == "PROD", (
+                "default_env must be forwarded to patch_peripheral_config. "
+                f"got kwargs={kwargs!r}."
+            )
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["service_corpuser_urn"] == "urn:li:corpuser:imazon-svc"
+    assert body["default_env"] == "PROD"
+
+
+@pytest.mark.asyncio
+async def test_get_langfuse_returns_project_id_and_environment_tag_plain(client) -> None:
+    """GET /admin/peripherals/langfuse returns project_id + environment_tag plain (not masked).
+
+    spec: spec/API.md §/admin/peripherals/langfuse — non-secret settings returned
+        plain alongside the masked secret_key.
+    """
+    _, db_gen = _fake_db()
+    app.dependency_overrides[get_db] = db_gen
+    try:
+        with (
+            patch(
+                "src.api.routers.admin.get_peripheral_config",
+                AsyncMock(return_value=_FAKE_LF_DTO_FULL),
+            ),
+            patch("src.api.routers.admin.langfuse_secret_key_is_set", return_value=True),
+        ):
+            resp = await client.get(_PERIPHERALS_LF, headers=auth_headers(["admin"]))
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["project_id"] == "imazon-metadata", (
+        "project_id must be returned plain. spec: spec/API.md §/admin/peripherals/langfuse."
+    )
+    assert body["environment_tag"] == "production", (
+        "environment_tag must be returned plain. "
+        "spec: spec/API.md §/admin/peripherals/langfuse."
+    )
+    assert body["project_id"] != "********"
+    assert body["environment_tag"] != "********"
+
+
+@pytest.mark.asyncio
+async def test_patch_langfuse_new_fields_written_to_db_and_reflected(client) -> None:
+    """PATCH /admin/peripherals/langfuse with project_id + environment_tag writes + echoes them.
+
+    spec: spec/API.md §/admin/peripherals/langfuse — non-secret fields stored in
+        peripheral_config.settings JSONB and surfaced to LLM tracing.
+    """
+    _, db_gen = _fake_db()
+    app.dependency_overrides[get_db] = db_gen
+    try:
+        with (
+            patch(
+                "src.api.routers.admin.patch_peripheral_config",
+                AsyncMock(return_value=_FAKE_LF_DTO_FULL),
+            ) as mock_patch_db,
+            patch("src.api.routers.admin.langfuse_secret_key_is_set", return_value=True),
+        ):
+            resp = await client.patch(
+                _PERIPHERALS_LF,
+                json={"project_id": "imazon-metadata", "environment_tag": "production"},
+                headers=auth_headers(["admin"]),
+            )
+            mock_patch_db.assert_called_once()
+            _, kwargs = mock_patch_db.call_args
+            assert kwargs.get("project_id") == "imazon-metadata", (
+                f"project_id must be forwarded to patch_peripheral_config; got {kwargs!r}."
+            )
+            assert kwargs.get("environment_tag") == "production", (
+                f"environment_tag must be forwarded to patch_peripheral_config; got {kwargs!r}."
+            )
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["project_id"] == "imazon-metadata"
+    assert body["environment_tag"] == "production"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bad_value",
+    ["not-a-urn", "urn:li:corpuser:has space", "urn:li:corpuser:a,b", "urn:li:dataset:x"],
+)
+async def test_patch_datahub_rejects_malformed_corpuser_urn(client, bad_value) -> None:
+    """PATCH rejects a malformed service_corpuser_urn with 422 before it reaches the DB.
+
+    The actor URN is stamped verbatim on emitted DataHub audit aspects, so a
+    non-corpuser / structurally-invalid value must be refused at the API boundary.
+
+    spec: spec/API.md §/admin/peripherals/datahub — service_corpuser_urn names the
+        corpuser actor DataSpoke stamps on emitted audit aspects.
+    """
+    _, db_gen = _fake_db()
+    app.dependency_overrides[get_db] = db_gen
+    try:
+        with patch(
+            "src.api.routers.admin.patch_peripheral_config",
+            AsyncMock(return_value=_FAKE_DH_DTO_FULL),
+        ) as mock_patch_db:
+            resp = await client.patch(
+                _PERIPHERALS_DH,
+                json={"service_corpuser_urn": bad_value},
+                headers=auth_headers(["admin"]),
+            )
+            assert resp.status_code == 422, f"expected 422 for {bad_value!r}"
+            mock_patch_db.assert_not_called()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_value", ["1prod", "has space", "a,b", "(x)"])
+async def test_patch_datahub_rejects_malformed_default_env(client, bad_value) -> None:
+    """PATCH rejects a malformed default_env with 422 before it reaches the DB.
+
+    default_env becomes the DataHub fabric of emitted dataset URNs when a recipe
+    omits env; a structurally-invalid value must be refused at the API boundary
+    rather than failing at emit time.
+
+    spec: spec/API.md §/admin/peripherals/datahub — default_env is the fabric/env
+        applied when an ingestion recipe omits env.
+    """
+    _, db_gen = _fake_db()
+    app.dependency_overrides[get_db] = db_gen
+    try:
+        with patch(
+            "src.api.routers.admin.patch_peripheral_config",
+            AsyncMock(return_value=_FAKE_DH_DTO_FULL),
+        ) as mock_patch_db:
+            resp = await client.patch(
+                _PERIPHERALS_DH,
+                json={"default_env": bad_value},
+                headers=auth_headers(["admin"]),
+            )
+            assert resp.status_code == 422, f"expected 422 for {bad_value!r}"
+            mock_patch_db.assert_not_called()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+@pytest.mark.asyncio
+async def test_patch_datahub_accepts_empty_strings_to_clear_new_fields(client) -> None:
+    """PATCH accepts "" for the new non-secret fields (clears back to factory default).
+
+    An explicit empty string is a valid "reset" signal and must pass validation so
+    the read-back falls through to the factory default; the validators reject only
+    malformed *non-empty* values.
+
+    spec: spec/API.md §/admin/peripherals/datahub — unset rows read back factory
+        defaults (service_corpuser_urn → urn:li:corpuser:dataspoke, default_env → DEV).
+    """
+    _, db_gen = _fake_db()
+    app.dependency_overrides[get_db] = db_gen
+    try:
+        with (
+            patch(
+                "src.api.routers.admin.patch_peripheral_config",
+                AsyncMock(return_value=_FAKE_DH_DTO_FULL),
+            ),
+            patch("src.api.routers.admin.datahub_token_is_set", return_value=True),
+        ):
+            resp = await client.patch(
+                _PERIPHERALS_DH,
+                json={"service_corpuser_urn": "", "default_env": ""},
+                headers=auth_headers(["admin"]),
+            )
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert resp.status_code == 200

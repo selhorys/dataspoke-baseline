@@ -1,7 +1,8 @@
 """Admin endpoints — system configuration and operational tasks.
 
 Accessible to users with Admin role via ``/api/v1/admin/…``.
-Also mounted as ``/internal/admin/…`` for scripts and automation (requires ``X-Internal-Token`` shared-secret header via ``require_internal_token``).
+Also mounted as ``/internal/admin/…`` for scripts and automation (requires the
+``X-Internal-Token`` shared-secret header via ``require_internal_token``).
 """
 
 import logging
@@ -35,11 +36,9 @@ from src.api.schemas.common import parse_sort
 from src.backend.admin.config_service import get_runtime_config, patch_runtime_config
 from src.backend.admin.datahub_secret import (
     datahub_token_is_set,
-    invalidate_datahub_token_cache,
     set_datahub_token,
 )
 from src.backend.admin.langfuse_secret import (
-    invalidate_langfuse_secret_key_cache,
     langfuse_secret_key_is_set,
     set_langfuse_secret_key,
 )
@@ -261,6 +260,10 @@ async def internal_patch_conf(
 
 # ── Peripheral configuration ───────────────────────────────────────────────────
 
+# Read-back defaults for non-secret DataHub settings when the row is unset.
+_DEFAULT_SERVICE_CORPUSER_URN = "urn:li:corpuser:dataspoke"
+_DEFAULT_INGESTION_ENV = "DEV"
+
 
 def _datahub_dto_to_response(
     dto: object | None,
@@ -273,6 +276,8 @@ def _datahub_dto_to_response(
             gms_url="",
             kafka_brokers="",
             token="",
+            service_corpuser_urn=_DEFAULT_SERVICE_CORPUSER_URN,
+            default_env=_DEFAULT_INGESTION_ENV,
             is_configured=False,
             updated_at=updated_at,  # type: ignore[arg-type]
         )
@@ -281,6 +286,8 @@ def _datahub_dto_to_response(
         gms_url=dto.gms_url,
         kafka_brokers=dto.kafka_brokers,
         token="********" if token_set else "",
+        service_corpuser_urn=dto.service_corpuser_urn or _DEFAULT_SERVICE_CORPUSER_URN,
+        default_env=dto.default_env or _DEFAULT_INGESTION_ENV,
         is_configured=token_set,
         updated_at=updated_at,  # type: ignore[arg-type]
     )
@@ -297,6 +304,8 @@ def _langfuse_dto_to_response(
             host="",
             public_key="",
             secret_key="",
+            project_id="",
+            environment_tag="",
             is_configured=False,
             updated_at=updated_at,  # type: ignore[arg-type]
         )
@@ -305,6 +314,8 @@ def _langfuse_dto_to_response(
         host=dto.host,
         public_key=dto.public_key,
         secret_key="********" if secret_set else "",
+        project_id=dto.project_id,
+        environment_tag=dto.environment_tag,
         is_configured=secret_set,
         updated_at=updated_at,  # type: ignore[arg-type]
     )
@@ -401,8 +412,9 @@ async def internal_patch_datahub_peripheral(
     body: DatahubPeripheralPatchRequest,
     db: AsyncSession = Depends(get_db),
 ) -> DatahubPeripheralResponse:
-    """Apply a partial update to the DataHub peripheral configuration (internal — requires X-Internal-Token).
+    """Apply a partial update to the DataHub peripheral configuration.
 
+    Internal — requires the ``X-Internal-Token`` header.
     Intended for install scripts and dev-env seeding.
     """
     return await _apply_datahub_patch_and_respond(body, db)
@@ -468,8 +480,9 @@ async def internal_patch_langfuse_peripheral(
     body: LangfusePeripheralPatchRequest,
     db: AsyncSession = Depends(get_db),
 ) -> LangfusePeripheralResponse:
-    """Apply a partial update to the Langfuse peripheral configuration (internal — requires X-Internal-Token).
+    """Apply a partial update to the Langfuse peripheral configuration.
 
+    Internal — requires the ``X-Internal-Token`` header.
     Intended for install scripts and dev-env seeding.
     """
     return await _apply_langfuse_patch_and_respond(body, db)
@@ -565,8 +578,9 @@ async def internal_patch_smtp_peripheral(
     body: SmtpPeripheralPatchRequest,
     db: AsyncSession = Depends(get_db),
 ) -> SmtpPeripheralResponse:
-    """Apply a partial update to the SMTP peripheral configuration (internal — requires X-Internal-Token).
+    """Apply a partial update to the SMTP peripheral configuration.
 
+    Internal — requires the ``X-Internal-Token`` header.
     Intended for install scripts and dev-env seeding.
     """
     return await _apply_smtp_patch_and_respond(body, db)

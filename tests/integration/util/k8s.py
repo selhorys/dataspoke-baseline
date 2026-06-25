@@ -26,7 +26,7 @@ def _resolve_namespace() -> str:
 
     Resolution order (the test-context convention; the runtime resolver in
     src/shared/secrets/k8s.py reads only the in-cluster namespace file):
-    1. DATASPOKE_KUBE_DATASPOKE_NAMESPACE env var (set by helm-charts/.env; also used by
+    1. DATASPOKE_KUBE_DATASPOKE_NAMESPACE env var (set by helm-charts/.env.dev; also used by
        tests/integration/spot/test_admin_peripherals.py)
     2. In-cluster namespace file at /var/run/secrets/kubernetes.io/serviceaccount/namespace
 
@@ -48,7 +48,7 @@ def _resolve_namespace() -> str:
         pass
     raise RuntimeError(
         "Cannot resolve DataSpoke's namespace: set DATASPOKE_KUBE_DATASPOKE_NAMESPACE "
-        "(source helm-charts/.env) or run in-cluster with a service-account namespace "
+        "(source helm-charts/.env.dev) or run in-cluster with a service-account namespace "
         "file at /var/run/secrets/kubernetes.io/serviceaccount/namespace. Refusing to "
         "fall back to a baked example default that could silently provision secrets in "
         "the wrong namespace."

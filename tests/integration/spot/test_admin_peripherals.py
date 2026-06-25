@@ -431,6 +431,163 @@ async def test_patch_langfuse_and_get_reflects_values(
         _reset_peripheral_state()
 
 
+# ── 3b. New non-secret fields round-trip through PATCH then GET ───────────────
+
+
+@pytest.mark.asyncio
+async def test_patch_datahub_new_fields_round_trip(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """PATCH service_corpuser_urn + default_env → GET reflects them plain (not masked).
+
+    The two non-secret DataHub connection settings must persist to the
+    peripheral_config settings JSONB and read back verbatim (never masked).
+
+    spec: spec/API.md §/admin/peripherals/datahub — service_corpuser_urn /
+        default_env are non-secret and returned plain.
+    spec: spec/feature/BACKEND_SCHEMA.md §peripheral_config — settings JSONB carries
+        the new keys.
+    """
+    _reset_peripheral_state()
+    try:
+        patch_resp = await api_client.patch(
+            _ADMIN_PERIPHERALS_DH,
+            headers=admin_headers,
+            json={
+                "gms_url": "http://datahub-gms:8080",
+                "kafka_brokers": "kafka:9092",
+                "token": "round-trip-token",
+                "service_corpuser_urn": "urn:li:corpuser:imazon-svc",
+                "default_env": "PROD",
+            },
+        )
+        assert patch_resp.status_code == 200, (
+            f"PATCH new datahub fields returned {patch_resp.status_code}: {patch_resp.text}"
+        )
+        patch_body = patch_resp.json()
+        assert patch_body["service_corpuser_urn"] == "urn:li:corpuser:imazon-svc", (
+            "PATCH response must echo service_corpuser_urn plain. "
+            "spec: spec/API.md §/admin/peripherals/datahub."
+        )
+        assert patch_body["default_env"] == "PROD", (
+            "PATCH response must echo default_env plain. "
+            "spec: spec/API.md §/admin/peripherals/datahub."
+        )
+
+        get_resp = await api_client.get(_ADMIN_PERIPHERALS_DH, headers=admin_headers)
+        assert get_resp.status_code == 200
+        get_body = get_resp.json()
+        assert get_body["service_corpuser_urn"] == "urn:li:corpuser:imazon-svc", (
+            f"GET after PATCH must reflect service_corpuser_urn; "
+            f"got {get_body['service_corpuser_urn']!r}."
+        )
+        assert get_body["default_env"] == "PROD", (
+            f"GET after PATCH must reflect default_env; got {get_body['default_env']!r}."
+        )
+        # Non-secret — must never be masked.
+        assert get_body["service_corpuser_urn"] != "********"
+        assert get_body["default_env"] != "********"
+    finally:
+        _reset_peripheral_state()
+
+
+@pytest.mark.asyncio
+async def test_patch_langfuse_new_fields_round_trip(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """PATCH project_id + environment_tag → GET reflects them plain (not masked).
+
+    spec: spec/API.md §/admin/peripherals/langfuse — project_id / environment_tag
+        are non-secret and returned plain.
+    spec: spec/feature/BACKEND_SCHEMA.md §peripheral_config — settings JSONB carries
+        the new keys.
+    """
+    _reset_peripheral_state()
+    try:
+        patch_resp = await api_client.patch(
+            _ADMIN_PERIPHERALS_LF,
+            headers=admin_headers,
+            json={
+                "host": "http://langfuse:3000",
+                "public_key": "pk-test",
+                "secret_key": "sk-round-trip",
+                "project_id": "imazon-metadata",
+                "environment_tag": "production",
+            },
+        )
+        assert patch_resp.status_code == 200, (
+            f"PATCH new langfuse fields returned {patch_resp.status_code}: {patch_resp.text}"
+        )
+        patch_body = patch_resp.json()
+        assert patch_body["project_id"] == "imazon-metadata"
+        assert patch_body["environment_tag"] == "production"
+
+        get_resp = await api_client.get(_ADMIN_PERIPHERALS_LF, headers=admin_headers)
+        assert get_resp.status_code == 200
+        get_body = get_resp.json()
+        assert get_body["project_id"] == "imazon-metadata", (
+            f"GET after PATCH must reflect project_id; got {get_body['project_id']!r}."
+        )
+        assert get_body["environment_tag"] == "production", (
+            f"GET after PATCH must reflect environment_tag; got {get_body['environment_tag']!r}."
+        )
+        assert get_body["project_id"] != "********"
+        assert get_body["environment_tag"] != "********"
+    finally:
+        _reset_peripheral_state()
+
+
+@pytest.mark.asyncio
+async def test_patch_datahub_partial_new_field_preserves_others(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """A partial PATCH of one new field merges without clobbering the others.
+
+    After fully configuring datahub, PATCHing only default_env must leave
+    service_corpuser_urn, gms_url, and kafka_brokers unchanged (shallow JSONB merge).
+
+    spec: src/backend/admin/peripheral_service.py patch_peripheral_config — shallow
+        merge of settings JSONB; existing keys preserved.
+    """
+    _reset_peripheral_state()
+    try:
+        await api_client.patch(
+            _ADMIN_PERIPHERALS_DH,
+            headers=admin_headers,
+            json={
+                "gms_url": "http://datahub-gms:8080",
+                "kafka_brokers": "kafka:9092",
+                "token": "merge-token",
+                "service_corpuser_urn": "urn:li:corpuser:imazon-svc",
+                "default_env": "DEV",
+            },
+        )
+
+        # Partial PATCH: only default_env.
+        partial_resp = await api_client.patch(
+            _ADMIN_PERIPHERALS_DH,
+            headers=admin_headers,
+            json={"default_env": "PROD"},
+        )
+        assert partial_resp.status_code == 200
+
+        get_resp = await api_client.get(_ADMIN_PERIPHERALS_DH, headers=admin_headers)
+        get_body = get_resp.json()
+        assert get_body["default_env"] == "PROD", "default_env must reflect the partial PATCH."
+        assert get_body["service_corpuser_urn"] == "urn:li:corpuser:imazon-svc", (
+            "service_corpuser_urn must be preserved through a partial PATCH of default_env. "
+            "spec: src/backend/admin/peripheral_service.py — shallow merge."
+        )
+        assert get_body["gms_url"] == "http://datahub-gms:8080", (
+            "gms_url must be preserved through a partial PATCH."
+        )
+    finally:
+        _reset_peripheral_state()
+
+
 # ── 4. PATCH {token: ""} clears secret → GET shows is_configured=False ────────
 
 

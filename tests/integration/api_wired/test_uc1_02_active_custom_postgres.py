@@ -16,7 +16,7 @@ Steps mirror USE_CASE_en.md §UC1 Case 2:
 
 The K8s Secret dataspoke-source-cred-dummy-data-pg is provisioned in the setup fixture
 (create-if-absent, idempotent) using DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD from
-helm-charts/.env. The test skips cleanly only if that env var is unset.
+helm-charts/.env.dev. The test skips cleanly only if that env var is unset.
 
 spec: USE_CASE_en.md §UC1 Case 2
 spec: API.md §Ingestion (/spoke/ingestion/sources)
@@ -55,7 +55,7 @@ _SECRET_REF = "${dummy-data-pg__password}"
 _SECRET_REF_BARE = "dummy-data-pg__password"  # the inside of ${...}
 
 # F4: plaintext password for negative-secret assertion.
-# Populated by the dev install from helm-charts/.env DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD;
+# Populated by the dev install from helm-charts/.env.dev DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD;
 # mirrors the value stored in the dataspoke-source-cred-dummy-data-pg K8s secret.
 _PG_PLAINTEXT_PASSWORD = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD", "")
 
@@ -69,7 +69,7 @@ def _provision_source_cred_secret() -> None:
     """Provision dataspoke-source-cred-dummy-data-pg K8s Secret before any test in this module.
 
     Creates the Secret idempotently (never overwrites an existing value) using
-    DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD from helm-charts/.env. This is the
+    DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD from helm-charts/.env.dev. This is the
     test-setup analogue of the operator authoring step in
     spec/feature/SECRET_RESOLUTION.md §Admin authoring guide.
 
@@ -84,7 +84,7 @@ def _provision_source_cred_secret() -> None:
     if not password:
         pytest.skip(
             "DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD is not set. "
-            "Source helm-charts/.env before running this test. "
+            "Source helm-charts/.env.dev before running this test. "
             "spec: feature/SECRET_RESOLUTION.md §Admin authoring guide."
         )
 
@@ -227,12 +227,12 @@ async def test_uc1_active_custom_postgres(
         )
         # F4: negative check — the API must never return plaintext credentials.
         # The K8s secret dataspoke-source-cred-dummy-data-pg holds the same value as
-        # DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD in helm-charts/.env.
+        # DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD in helm-charts/.env.dev.
         # spec: API.md §Ingestion §Source body shape — secret refs never expanded in responses
         assert _PG_PLAINTEXT_PASSWORD, (
             "DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD not set; "
             "cannot verify plaintext is absent from the API response. "
-            "Source helm-charts/.env before running this test."
+            "Source helm-charts/.env.dev before running this test."
         )
         create_resp_text = create_resp.text
         assert _PG_PLAINTEXT_PASSWORD not in create_resp_text, (

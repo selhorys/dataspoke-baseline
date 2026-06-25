@@ -21,7 +21,7 @@ Run every command from the directory it expects (usually project root). Do not `
 ./helm-charts/bin/install.sh --profile dev --frontend local              # Full dev stack + write src/frontend/.env.local for host `pnpm dev`
 ```
 
-Settings in `helm-charts/.env`. `DATASPOKE_KUBE_INGRESS_MODE` selects `managed` (default — install & own nginx-ingress; GKE/minikube) or `shared` (reuse a pre-existing cluster controller; AWS/EKS — TCP services then reached on 127.0.0.1 via `./helm-charts/bin/port-forward.sh`). See `helm-charts/README.md` for access details and ingress endpoints; `spec/feature/HELM_CHART.md` for the full deployment subsystem.
+Settings in `helm-charts/.env.dev` (dev) / `helm-charts/.env.prod` (prod); see `helm-charts/.env.dev.example`. `DATASPOKE_KUBE_INGRESS_MODE` selects `managed` (default — install & own nginx-ingress; GKE/minikube) or `shared` (reuse a pre-existing cluster controller; AWS/EKS — TCP services then reached on 127.0.0.1 via `./helm-charts/bin/port-forward.sh`). See `helm-charts/README.md` for access details and ingress endpoints; `spec/feature/HELM_CHART.md` for the full deployment subsystem.
 
 The API runs **in-cluster** alongside Airflow so that workflow callbacks work via cluster DNS. Developers access it via nginx-ingress (`http://api.<INGRESS_DOMAIN>/api/v1/`, where the domain is `<IP>.nip.io` in managed mode or the operator's host in shared mode). Code changes are picked up by `install.sh --profile dev --components api` (docker build + `helm upgrade` + rollout).
 
@@ -104,7 +104,7 @@ Follow `spec/TESTING.md §Integration Testing` for the full 7-step workflow, pre
 
 - Run `./helm-charts/bin/health-check.sh` before any integration test run; reinstall any failing subsystem per `spec/TESTING.md §Prerequisites` before proceeding.
 - Run tests in three **separate** groups (unit → spot integration → api-wired integration). Mixing causes Airflow resource contention.
-- Spot/api-wired tests need `helm-charts/.env` exported into the shell. Stub-mode toggles are DB-backed in `/admin/conf` (per memory `project_runtime_config_admin_conf`), not env-driven. Canonical command: `set -a && source helm-charts/.env && set +a && uv run pytest tests/integration/{spot,api_wired}/` (the `set -a` is required because `helm-charts/.env` has no `export` prefixes).
+- Spot/api-wired tests need `helm-charts/.env.dev` exported into the shell. Stub-mode toggles are DB-backed in `/admin/conf` (per memory `project_runtime_config_admin_conf`), not env-driven. Canonical command: `set -a && source helm-charts/.env.dev && set +a && uv run pytest tests/integration/{spot,api_wired}/` (the `set -a` is required because `helm-charts/.env.dev` has no `export` prefixes).
 - Never truncate integration test output (no `| tail`, `| head`, or piped filters) — always show complete pytest output.
 
 ## Testing prauto

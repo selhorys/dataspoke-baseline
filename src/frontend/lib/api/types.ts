@@ -100,6 +100,50 @@ export interface RuntimeConf {
   updated_at: string | null;
 }
 
+// ── Peripheral Configuration ──────────────────────────────────────────────────
+
+export interface DatahubPeripheral {
+  resp_time: string;
+  gms_url: string;
+  kafka_brokers: string;
+  /** Masked indicator only: "" when unset, "********" when set. */
+  token: string;
+  service_corpuser_urn: string;
+  default_env: string;
+  is_configured: boolean;
+  updated_at: string | null;
+}
+
+export interface DatahubPeripheralPatch {
+  gms_url?: string;
+  kafka_brokers?: string;
+  /** Plaintext token; omit to keep current, "" to clear. */
+  token?: string;
+  service_corpuser_urn?: string;
+  default_env?: string;
+}
+
+export interface LangfusePeripheral {
+  resp_time: string;
+  host: string;
+  public_key: string;
+  /** Masked indicator only: "" when unset, "********" when set. */
+  secret_key: string;
+  project_id: string;
+  environment_tag: string;
+  is_configured: boolean;
+  updated_at: string | null;
+}
+
+export interface LangfusePeripheralPatch {
+  host?: string;
+  public_key?: string;
+  /** Plaintext secret key; omit to keep current, "" to clear. */
+  secret_key?: string;
+  project_id?: string;
+  environment_tag?: string;
+}
+
 export interface RuntimeConfPatch {
   llm_provider?: string;
   llm_model?: string;

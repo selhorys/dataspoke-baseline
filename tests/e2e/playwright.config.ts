@@ -2,7 +2,7 @@
  * Playwright configuration for DataSpoke E2E tests.
  *
  * baseURL: PLAYWRIGHT_BASE_URL env override, else http://app.<INGRESS_DOMAIN>
- *   INGRESS_DOMAIN is read from DATASPOKE_KUBE_INGRESS_DOMAIN (in helm-charts/.env).
+ *   INGRESS_DOMAIN is read from DATASPOKE_KUBE_INGRESS_DOMAIN (in helm-charts/.env.dev).
  *
  * Projects are keyed on role (admin / editor / reader), each pointing at its
  * per-role storageState. The refresh token (HttpOnly cookie) is captured in
@@ -16,7 +16,7 @@ import * as path from "path";
 import { defineConfig, devices } from "@playwright/test";
 import { loadDotenv, appBaseUrl } from "./fixtures/env";
 
-// Load helm-charts/.env so DATASPOKE_KUBE_INGRESS_DOMAIN is available at config time.
+// Load helm-charts/.env.dev so DATASPOKE_KUBE_INGRESS_DOMAIN is available at config time.
 loadDotenv();
 
 const AUTH_DIR = path.join(__dirname, ".auth");

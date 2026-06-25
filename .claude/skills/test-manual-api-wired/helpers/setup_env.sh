@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # Bootstrap manual-test env into /tmp/_manual_test_env.
-# Sources helm-charts/.env, acquires an admin JWT, writes BASE/tokens/PG creds.
+# Sources helm-charts/.env.dev, acquires an admin JWT, writes BASE/tokens/PG creds.
 # Re-run idempotently to refresh.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../../../.." && pwd)"
-ENV_FILE="${REPO_ROOT}/helm-charts/.env"
+ENV_FILE="${REPO_ROOT}/helm-charts/.env.dev"
 OUT="/tmp/_manual_test_env"
 
 if [[ ! -f "$ENV_FILE" ]]; then
-  echo "ERROR: $ENV_FILE not found. Run /k8s-deploy configure first." >&2
+  echo "ERROR: $ENV_FILE not found. Copy helm-charts/.env.dev.example and edit it, or run /k8s-deploy configure first." >&2
   exit 1
 fi
 
