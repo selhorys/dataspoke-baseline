@@ -1,6 +1,6 @@
 # Custom Ingress for DataHub GMS.
 # The DataHub Helm chart does not provide a native GMS ingress resource,
-# so this manifest is applied separately by helm-charts/bin/peripherals/datahub.sh.
+# so this manifest is applied separately by helm-charts/bin/dev-peripherals/datahub.sh.
 #
 # The install script replaces __DATAHUB_INGRESS_HOST__ with the actual
 # nip.io hostname (e.g. datahub.<INGRESS_IP>.nip.io) before applying.

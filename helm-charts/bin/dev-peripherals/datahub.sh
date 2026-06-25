@@ -6,7 +6,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 ENV_FILE="$(cd "$BIN_DIR/.." && pwd)/.env"
-PERIPHERALS_DIR="$(cd "$BIN_DIR/../peripherals" && pwd)"
+PERIPHERALS_DIR="$(cd "$BIN_DIR/../dev-peripherals" && pwd)"
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -28,7 +28,7 @@ source "$ENV_FILE"
 # 127.0.0.1, reached via `kubectl port-forward` (bin/port-forward.sh), as the
 # broker advertises 127.0.0.1:9005 so a forwarded client reconnects correctly.
 if [[ "$(ingress_mode)" != "shared" ]]; then
-  : "${DATASPOKE_KUBE_INGRESS_IP:?required in managed mode — run bin/peripherals/nginx-ingress.sh first to populate this in .env}"
+  : "${DATASPOKE_KUBE_INGRESS_IP:?required in managed mode — run bin/dev-peripherals/nginx-ingress.sh first to populate this in .env}"
 fi
 KAFKA_EXTERNAL_HOST="$(tcp_access_host)"
 

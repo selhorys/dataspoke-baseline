@@ -2,7 +2,7 @@
 
 Single deployment subsystem for DataSpoke — both production and development.
 Scripts live in `helm-charts/bin/`, chart values in `helm-charts/dataspoke/`, and
-dev-only peripheral manifests in `helm-charts/peripherals/`.
+dev-only peripheral manifests in `helm-charts/dev-peripherals/`.
 
 ## Prerequisites
 

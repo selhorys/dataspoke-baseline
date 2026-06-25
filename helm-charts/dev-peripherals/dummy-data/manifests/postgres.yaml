@@ -1,5 +1,5 @@
 ---
-# Secret is created by helm-charts/bin/peripherals/dummy-data.sh from helm-charts/.env variables.
+# Secret is created by helm-charts/bin/dev-peripherals/dummy-data.sh from helm-charts/.env variables.
 # Keys: POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB
 
 ---

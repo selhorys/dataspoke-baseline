@@ -12,7 +12,7 @@
 #   Listeners: CLIENT (9092) in-cluster, INTERBROKER (9094) self-talk,
 #   EXTERNAL (9095) → nginx-ingress TCP passthrough on DATASPOKE_KUBE_INGRESS_IP:9005.
 #   The full advertisedListeners string (CLIENT, INTERNAL, and EXTERNAL entries)
-#   is built and injected by bin/peripherals/datahub.sh via --set-string from the
+#   is built and injected by bin/dev-peripherals/datahub.sh via --set-string from the
 #   DataHub namespace + resolved TCP host; static YAML can't know these values.
 # ----------------------------------------------------------------------------
 kafka:
@@ -74,7 +74,7 @@ kafka:
       name: EXTERNAL
     overrideListeners: "CONTROLLER://:9093,CLIENT://:9092,INTERNAL://:9094,EXTERNAL://:9095"
     securityProtocolMap: "CONTROLLER:PLAINTEXT,CLIENT:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT"
-    # advertisedListeners is injected by bin/peripherals/datahub.sh via --set-string
+    # advertisedListeners is injected by bin/dev-peripherals/datahub.sh via --set-string
     # (it embeds the DataHub namespace + external host, which static YAML can't know)
     # — do not hardcode it here.
 

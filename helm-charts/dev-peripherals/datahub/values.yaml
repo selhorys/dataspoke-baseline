@@ -103,7 +103,7 @@ datahub-frontend:
     className: "nginx"
     annotations:
       nginx.ingress.kubernetes.io/ssl-redirect: "false"
-    # Host is overridden by bin/peripherals/datahub.sh --set using DATASPOKE_KUBE_INGRESS_DOMAIN.
+    # Host is overridden by bin/dev-peripherals/datahub.sh --set using DATASPOKE_KUBE_INGRESS_DOMAIN.
     # The placeholder below is intentionally obvious so a missed --set fails loud.
     hosts:
       - host: "REPLACE-WITH-INGRESS-DOMAIN.invalid"

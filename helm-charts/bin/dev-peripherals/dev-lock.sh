@@ -5,7 +5,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 ENV_FILE="$(cd "$BIN_DIR/.." && pwd)/.env"
-PERIPHERALS_DIR="$(cd "$BIN_DIR/../peripherals" && pwd)"
+PERIPHERALS_DIR="$(cd "$BIN_DIR/../dev-peripherals" && pwd)"
 
 # ---------------------------------------------------------------------------
 # Shared helpers

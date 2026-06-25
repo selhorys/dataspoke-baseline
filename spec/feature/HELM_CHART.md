@@ -31,12 +31,12 @@ and development. It comprises:
 
 - `helm-charts/dataspoke/` — umbrella Helm chart packaging frontend, API,
   event-consumer, PostgreSQL, Redis, and Airflow.
-- `helm-charts/langfuse/` — sibling chart for the self-hosted Langfuse LLM
-  observability subsystem (own namespace, bundled Postgres/Redis/ClickHouse/MinIO).
 - `helm-charts/bin/` — install/uninstall/build/health scripts that orchestrate the
   charts plus dev-only peripherals.
-- `helm-charts/peripherals/` — values files and plain-K8s manifests for the
-  dev-only peripheral components (nginx-ingress, DataHub, dummy data, dev-lock).
+- `helm-charts/dev-peripherals/` — values files, charts, and plain-K8s manifests for
+  the dev-only peripheral components (nginx-ingress, DataHub, Langfuse, dummy data,
+  dev-lock). Langfuse lives here as `dev-peripherals/langfuse/` — a chart whose single
+  `values.yaml` holds dev-profile values; in production the operator supplies their own.
 
 The same umbrella chart serves both profiles. The **profile** (`dev` or `prod`)
 selects the values overlay and the surrounding component set; the chart itself
@@ -75,7 +75,7 @@ helm-charts/
 │   ├── build-image.sh                   # api | airflow | postgres | frontend (Cloud Build / ECR / local)
 │   ├── port-forward.sh                  # forward TCP services to 127.0.0.1 (shared ingress mode)
 │   ├── lib/helpers.sh                   # logging + kubectl/helm wrappers + ingress-mode helpers
-│   ├── peripherals/                     # dev-only orchestrators
+│   ├── dev-peripherals/                 # dev-only orchestrators
 │   │   ├── nginx-ingress.sh
 │   │   ├── datahub.sh
 │   │   ├── langfuse.sh
@@ -91,14 +91,14 @@ helm-charts/
 │   ├── templates/                       # api-deployment/service/ingress, configmap, secrets, RBAC, networkpolicy
 │   ├── subcharts/{frontend,event-consumer}/
 │   └── charts/                          # bitnami pg/redis, apache-airflow (resolved deps)
-├── langfuse/                            # sibling chart for Langfuse subsystem
-└── peripherals/                         # dev-only values + manifests
-    ├── nginx-ingress/values-dev.yaml
+└── dev-peripherals/                     # dev-only values + manifests + charts
+    ├── nginx-ingress/values.yaml
     ├── datahub/
     │   ├── values.yaml
     │   ├── prerequisites-values.yaml
     │   ├── gms-ingress.yaml
     │   └── kafka-external-svc.yaml
+    ├── langfuse/                        # chart for Langfuse subsystem (single dev-profile values.yaml)
     ├── dummy-data/manifests/            # plain K8s manifests (PG + Kafka KRaft)
     └── dev-lock/manifests/              # plain K8s manifests (Python HTTP service)
 ```
@@ -152,9 +152,9 @@ wires them via the runtime admin API (`/api/v1/admin/peripherals/{datahub,langfu
 | # | Phase | Components | Notes |
 |---|---|---|---|
 | 1 | Pre-flight | tool check, context switch, namespace ensure, nginx-ingress install | nginx-ingress must complete first to provide `INGRESS_IP` / `_DOMAIN` for downstream. |
-| 2 | **Parallel bootstrap** | `build-image.sh api` ‖ `build-image.sh airflow` ‖ `build-image.sh postgres` ‖ `peripherals/datahub.sh` ‖ `peripherals/langfuse.sh` | bash `&` + `wait`. Failures of any branch abort the install. `build-image.sh frontend` is added only when `--frontend cluster`. |
+| 2 | **Parallel bootstrap** | `build-image.sh api` ‖ `build-image.sh airflow` ‖ `build-image.sh postgres` ‖ `dev-peripherals/datahub.sh` ‖ `dev-peripherals/langfuse.sh` | bash `&` + `wait`. Failures of any branch abort the install. `build-image.sh frontend` is added only when `--frontend cluster`. |
 | 3 | Umbrella chart | `helm upgrade --install dataspoke ./helm-charts/dataspoke -f values-dev.yaml` | Depends on phase 2: images pulled by deployment, DataHub URL/PAT/Kafka + Langfuse host/public-key fed via `--set` for downstream seeding. `frontend.enabled` is `false` unless `--frontend cluster`, which appends the frontend `--set` flags and waits for the `dataspoke-frontend` rollout. |
-| 4 | **Parallel post-bootstrap** | `peripherals/dummy-data.sh` ‖ `peripherals/dev-lock.sh` | Both depend on cluster connectivity but not on each other. |
+| 4 | **Parallel post-bootstrap** | `dev-peripherals/dummy-data.sh` ‖ `dev-peripherals/dev-lock.sh` | Both depend on cluster connectivity but not on each other. |
 | 5 | Post-install seeding | `seed-peripheral-config.sh`, `seed-runtime-config.sh`, `seed-admin-user.sh` | PATCHes `/internal/admin/peripherals/{datahub,langfuse}`, `/internal/admin/conf`, and POSTs `/internal/admin/bootstrap` (idempotent: seeds the default `dataspoke@dataspoke.local / dataspoke` Admin only when no Admin exists). Skipped by `--skip-seed`. |
 
 ### Phases — prod profile
@@ -174,14 +174,14 @@ but is out of baseline scope.
 
 | Component | Profiles | Source |
 |---|---|---|
-| `nginx-ingress` | dev | `peripherals/nginx-ingress.sh` |
-| `datahub` | dev | `peripherals/datahub.sh` |
-| `langfuse` | dev | `peripherals/langfuse.sh` |
+| `nginx-ingress` | dev | `dev-peripherals/nginx-ingress.sh` |
+| `datahub` | dev | `dev-peripherals/datahub.sh` |
+| `langfuse` | dev | `dev-peripherals/langfuse.sh` |
 | `dataspoke-infra` | dev, prod | `dataspoke/` umbrella chart (alias: `chart`, `umbrella`) |
 | `api` | dev, prod | umbrella chart, `api.*` block (rebuilds api image and `helm upgrade` of the API only) |
 | `frontend` | dev, prod | umbrella chart, `frontend.*` block (rebuilds frontend image and `helm upgrade` of the UI only) |
-| `dummy-data` | dev | `peripherals/dummy-data.sh` |
-| `dev-lock` | dev | `peripherals/dev-lock.sh` |
+| `dummy-data` | dev | `dev-peripherals/dummy-data.sh` |
+| `dev-lock` | dev | `dev-peripherals/dev-lock.sh` |
 | `seed` | dev | `post-install/*` |
 
 `--components api` replaces the previous standalone `dataspoke-test-mode.sh` —
@@ -262,7 +262,7 @@ Each component has a `<component>.enabled` toggle.
 |---|---|---|---|
 | App runtime | `DATASPOKE_*` (no `KUBE` / `DEV` / `TEST`) | Both profiles | DataSpoke Python/Node code via K8s ConfigMap/Secret (`envFrom`) |
 | Kube deployment | `DATASPOKE_KUBE_*` | Both profiles | `bin/*.sh` install / uninstall / build scripts |
-| Dev-only inputs | `DATASPOKE_DEV_*` | Dev profile only | `bin/peripherals/*.sh`, `bin/post-install/*.sh` |
+| Dev-only inputs | `DATASPOKE_DEV_*` | Dev profile only | `bin/dev-peripherals/*.sh`, `bin/post-install/*.sh` |
 | Test access | `DATASPOKE_TEST_*` | Dev profile only | `tests/integration/{conftest.py,util/*}`; auto-populated by install.sh post-install; never read by app pods |
 
 ### Tier 1 — App runtime (`DATASPOKE_*`)
@@ -296,11 +296,14 @@ lives in the `runtime_config` DB row (`stub_redis_client`, `stub_llm_client`,
 `BACKEND_LLM.md §Test Mode` and `TESTING.md §Stub Toggles`.
 
 > DataHub, Langfuse, and LLM provider/model/key are **not** app-runtime env
-> vars. They live in the DB `peripheral_config` and `runtime_config` tables,
-> updated via `/api/v1/admin/peripherals/{datahub,langfuse}` and
-> `/api/v1/admin/conf`. The LLM API key is read at runtime from the
-> `dataspoke-llm-secret` K8s Secret via the API's RBAC. See §Secrets
-> Management and `BACKEND_LLM.md §LLM API key`.
+> vars. Their **non-secret** settings (DataHub `gms_url`/`kafka_brokers`,
+> Langfuse `host`/`public_key`, LLM provider/model + generation knobs) live in
+> the DB `peripheral_config` and `runtime_config` tables, updated via
+> `/api/v1/admin/peripherals/{datahub,langfuse}` and `/api/v1/admin/conf`. Their
+> **secret** fields (DataHub token, Langfuse `secret_key`, LLM API key) never
+> touch the DB — they live in K8s Secrets (`dataspoke-datahub-secret`,
+> `dataspoke-langfuse-secret`, `dataspoke-llm-secret`), read at runtime via the
+> API's RBAC. See §Secrets Management and `BACKEND_LLM.md §LLM API key`.
 
 ### Tier 2 — Kube deployment (`DATASPOKE_KUBE_*`)
 
@@ -414,7 +417,7 @@ Every namespace DataSpoke deploys into is operator-chosen, declared once in
 |---|---|
 | `DATASPOKE_KUBE_DATASPOKE_NAMESPACE` | umbrella chart (API, Airflow, PG, Redis, dev-lock) |
 | `DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE` | DataHub peripheral install |
-| `DATASPOKE_DEV_KUBE_LANGFUSE_NAMESPACE` | Langfuse sibling chart |
+| `DATASPOKE_DEV_KUBE_LANGFUSE_NAMESPACE` | Langfuse dev peripheral chart |
 | `DATASPOKE_DEV_KUBE_DUMMY_DATA_NAMESPACE` | dummy-data peripheral install |
 
 `.env.example` ships illustrative values (`dataspoke-01`, `datahub-01`,
@@ -430,11 +433,11 @@ operator never named.
 
 **Static namespace-embedding YAML is rendered at install.** The one place a
 namespace must appear inside a static manifest — the nginx-ingress `tcp:`
-service map in `peripherals/nginx-ingress/values-dev.yaml`, which names the
+service map in `dev-peripherals/nginx-ingress/values.yaml`, which names the
 backend Services by `<namespace>/<service>` — carries `__*_NS__` placeholders
 (`__DATASPOKE_NS__`, `__DATAHUB_NS__`, `__DUMMY_DATA_NS__`) that the install
 substitutes from `.env` via `sed`, mirroring the existing
-`__DATAHUB_INGRESS_HOST__` rendering in `bin/peripherals/datahub.sh`.
+`__DATAHUB_INGRESS_HOST__` rendering in `bin/dev-peripherals/datahub.sh`.
 
 **Kafka `advertisedListeners`** is not embedded statically either:
 `datahub.sh` injects it with `--set-string` from the datahub namespace plus the
@@ -462,10 +465,10 @@ in the values overlay) — no credentials in `.env` for prod operators.
 
 In dev, the **auto-populated** block is written by install scripts, not edited by
 hand: in managed mode `DATASPOKE_KUBE_INGRESS_{IP,DOMAIN}` (by
-`peripherals/nginx-ingress.sh`; shared mode leaves `INGRESS_IP` blank and reads
+`dev-peripherals/nginx-ingress.sh`; shared mode leaves `INGRESS_IP` blank and reads
 the operator-pre-set `INGRESS_DOMAIN`), `DATASPOKE_TEST_DATAHUB_*` (by
-`peripherals/datahub.sh`), `DATASPOKE_TEST_LANGFUSE_*` (by
-`peripherals/langfuse.sh`), and the full `DATASPOKE_TEST_*` subsystem block —
+`dev-peripherals/datahub.sh`), `DATASPOKE_TEST_LANGFUSE_*` (by
+`dev-peripherals/langfuse.sh`), and the full `DATASPOKE_TEST_*` subsystem block —
 including `DATASPOKE_LOCK_URL` and
 `DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST_PORT` — by `install.sh`
 post-install (`_sync_env_from_secret` extracts credentials from the
@@ -613,12 +616,12 @@ automated by `bin/install.sh --components api` (or `airflow`, `postgres`).
 
 ## Dev-Only Peripherals
 
-Each `bin/peripherals/*.sh` is an idempotent installer for one peripheral.
+Each `bin/dev-peripherals/*.sh` is an idempotent installer for one peripheral.
 Run independently or as part of a full `--profile dev` install.
 
 ### nginx-ingress
 
-`peripherals/nginx-ingress.sh` behaves per `DATASPOKE_KUBE_INGRESS_MODE`
+`dev-peripherals/nginx-ingress.sh` behaves per `DATASPOKE_KUBE_INGRESS_MODE`
 (see §Ingress for the full mode contract).
 
 **Managed mode** (default — GKE Autopilot / minikube):
@@ -626,7 +629,7 @@ Run independently or as part of a full `--profile dev` install.
 | Aspect | Value |
 |---|---|
 | Namespace | `ingress-nginx` |
-| Source | `peripherals/nginx-ingress/values-dev.yaml` (helm release) |
+| Source | `dev-peripherals/nginx-ingress/values.yaml` (helm release) |
 | Function | Installs and owns a single LoadBalancer for all dev namespaces — HTTP virtual hosts (port 80) + TCP passthrough (PG 9201, Redis 9202, DataHub Kafka 9005, example PG 9102, example Kafka 9104, lock 9221) |
 | Writes to .env | `DATASPOKE_KUBE_INGRESS_IP`, `DATASPOKE_KUBE_INGRESS_DOMAIN`, plus the IP-derived `DATASPOKE_TEST_*` host/broker vars |
 
@@ -677,7 +680,7 @@ OpenSearch subchart's own release.
 Writes to .env: `DATASPOKE_TEST_DATAHUB_GMS_URL`, `DATASPOKE_TEST_DATAHUB_TOKEN`
 (generated PAT), `DATASPOKE_TEST_DATAHUB_KAFKA_BROKERS`.
 
-**Google OIDC SSO**: `helm-charts/peripherals/datahub.sh` configures DataHub's
+**Google OIDC SSO**: `helm-charts/dev-peripherals/datahub.sh` configures DataHub's
 frontend to authenticate users via the same Google OAuth client as DataSpoke,
 so a user logging into DataHub natively resolves to the same corpuser URN
 (`urn:li:corpuser:<email>`) that DataSpoke wrote. The peripheral install
@@ -700,8 +703,10 @@ chart.
 
 ### Langfuse
 
-Sibling Helm chart `helm-charts/langfuse/` installed in `langfuse-01`
-(default) with bundled Postgres, Redis, ClickHouse, MinIO subcharts. The
+Dev-only peripheral chart `helm-charts/dev-peripherals/langfuse/` installed in `langfuse-01`
+(default) with bundled Postgres, Redis, ClickHouse, MinIO subcharts; its single
+`values.yaml` holds dev-profile values, and in prod the operator supplies their own
+Langfuse wired via the admin API. The
 `langfuse.sh` script auto-generates the NextAuth/salt/encryption/ClickHouse/
 MinIO/Postgres/Redis secrets on first run, creates the `dataspoke` project +
 public/secret API keys, and writes them back to `.env`.
@@ -717,7 +722,7 @@ is open. Without it the pods crash-loop until ClickHouse happens to come up.
 
 ### Dummy data
 
-Plain Kubernetes manifests under `peripherals/dummy-data/manifests/` in the
+Plain Kubernetes manifests under `dev-peripherals/dummy-data/manifests/` in the
 `dataspoke-dummy-data-01` namespace.
 
 | Component | Image | Mem Limit | Storage | Service |
@@ -888,13 +893,13 @@ annotations, and customizable host/path rules.
 | `templates/api-ingress.yaml` | umbrella chart | `api.<INGRESS_IP>.nip.io/` → `dataspoke-api:8002` |
 | `subcharts/frontend/templates/ingress.yaml` | frontend subchart | `app.<INGRESS_IP>.nip.io/` → `dataspoke-frontend:3000` |
 | `airflow.ingress` values | airflow chart (native) | `airflow.<INGRESS_IP>.nip.io/` → `dataspoke-airflow-api-server:8080` |
-| `peripherals/datahub/gms-ingress.yaml` | kubectl manifest | `datahub.<INGRESS_IP>.nip.io/gms` → `datahub-datahub-gms:8080` |
+| `dev-peripherals/datahub/gms-ingress.yaml` | kubectl manifest | `datahub.<INGRESS_IP>.nip.io/gms` → `datahub-datahub-gms:8080` |
 | `datahub-frontend.ingress` values | DataHub chart (native) | `datahub.<INGRESS_IP>.nip.io/` → `datahub-frontend:9002` |
 
 In **managed** mode, TCP passthrough (PostgreSQL :9201, Redis :9202, DataHub
 Kafka :9005, example PG :9102, example Kafka :9104, lock :9221) is handled by
 the nginx-ingress `tcp-services` ConfigMap (the `tcp` block in
-`peripherals/nginx-ingress/values-dev.yaml`) — no Ingress resource needed. That
+`dev-peripherals/nginx-ingress/values.yaml`) — no Ingress resource needed. That
 block names its backend Services by `<namespace>/<service>`; the namespace
 segments carry `__*_NS__` placeholders rendered from `.env` at install (see
 §Namespace Sourcing).
@@ -1008,7 +1013,7 @@ large logs.
 ### OpenSearch OOM-killed during startup
 
 Off-heap usage (Lucene cache, index recovery) spikes above the JVM heap.
-Already mitigated — `peripherals/datahub/prerequisites-values.yaml` sets the
+Already mitigated — `dev-peripherals/datahub/prerequisites-values.yaml` sets the
 memory limit to 3 Gi.
 
 ### MySQL OOM-killed on restart

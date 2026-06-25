@@ -1,10 +1,14 @@
-# Langfuse Chart — Dev Overlay
-# Applied on top of values.yaml by helm-charts/bin/peripherals/langfuse.sh.
-# Langfuse runs in its own namespace (langfuse-01) with bundled single-replica
+# Langfuse Chart — Dev Profile Values
+# Applied by helm-charts/bin/dev-peripherals/langfuse.sh. Langfuse is a dev-only
+# peripheral: it runs in its own namespace (langfuse-01) with bundled single-replica
 # Postgres, Redis, ClickHouse, and MinIO subcharts. No dependency on dataspoke-01.
-# Ingress host overridden at install time via --set-string.
+# In production the operator supplies their own Langfuse and wires the connection
+# via /api/v1/admin/peripherals/langfuse. Ingress host overridden at install time
+# via --set-string.
 #
-# Key nesting: see values.yaml header for explanation of langfuse.langfuse.* nesting.
+# Key nesting: the upstream Langfuse chart wraps its own config under a top-level
+# `langfuse:` key, so application settings live at langfuse.langfuse.*,
+# infrastructure settings at langfuse.postgresql.*, etc.
 
 # ---------------------------------------------------------------------------
 # Langfuse subchart values (nested under langfuse.<key> per subchart structure)
@@ -15,6 +19,14 @@ langfuse:
       allowInsecureImages: true
 
   langfuse:
+    # ---- Feature flags ----
+    features:
+      # Disable open self-service sign-up to the LLM-trace UI. Accounts are
+      # provisioned via the headless-init seed below. Using the idiomatic
+      # signUpDisabled key (chart 1.5.x); do NOT also set
+      # additionalEnv[AUTH_DISABLE_SIGNUP] — the chart rejects both at once.
+      signUpDisabled: true
+
     # ---- NextAuth ----
     nextauth:
       # install.sh overrides this to http://langfuse.<INGRESS_IP>.nip.io
@@ -103,6 +115,11 @@ langfuse:
         periodSeconds: 10
         timeoutSeconds: 10
         failureThreshold: 20
+      # Eviction resilience — keep the web pod off scale-down/compaction churn.
+      # PDB: langfuse.langfuse.web.pdb.{create,minAvailable}
+      pdb:
+        create: true
+        minAvailable: 1
       # ---- Headless-init seeded org/project/user/API key (dev) ----
       # On first web start with an empty DB, Langfuse provisions:
       #   org=DataSpoke / project=dataspoke / user=dataspoke@dataspoke.local
@@ -112,6 +129,8 @@ langfuse:
       # The dataspoke-langfuse-secret is created in langfuse-01 by install.sh
       # with the full key set; pods resolve it locally within their namespace.
       pod:
+        annotations:
+          cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
         additionalEnv:
           - name: LANGFUSE_INIT_USER_EMAIL
             valueFrom:
@@ -161,6 +180,13 @@ langfuse:
 
     # ---- Worker resources (dev) ----
     worker:
+      # Eviction resilience — langfuse.langfuse.worker.{pod.annotations,pdb}.
+      pod:
+        annotations:
+          cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+      pdb:
+        create: true
+        minAvailable: 1
       resources:
         requests:
           cpu: 200m
@@ -186,7 +212,13 @@ langfuse:
         userPasswordKey: LANGFUSE_POSTGRES_PASSWORD
         adminPasswordKey: LANGFUSE_POSTGRES_PASSWORD
       database: "langfuse"
+    # Bitnami postgresql primary eviction resilience keys.
     primary:
+      podAnnotations:
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+      pdb:
+        create: true
+        minAvailable: 1
       persistence:
         size: 6Gi
 
@@ -200,7 +232,13 @@ langfuse:
       existingSecret: "dataspoke-langfuse-secret"
       existingSecretPasswordKey: LANGFUSE_REDIS_PASSWORD
       database: 0
+    # Bitnami valkey primary eviction resilience keys.
     primary:
+      podAnnotations:
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+      pdb:
+        create: true
+        minAvailable: 1
       persistence:
         size: 6Gi
     networkPolicy:
@@ -211,6 +249,12 @@ langfuse:
     deploy: true
     replicaCount: 1
     clusterEnabled: false
+    # Bitnami clickhouse top-level eviction resilience keys.
+    podAnnotations:
+      cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+    pdb:
+      create: true
+      minAvailable: 1
     auth:
       password: ""
       existingSecret: "dataspoke-langfuse-secret"

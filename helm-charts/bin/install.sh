@@ -797,7 +797,7 @@ if [[ "$PROFILE" == "dev" ]]; then
   # -----------------------------------------------------------------------
   if _has_component nginx-ingress; then
     step 1 5 "nginx-ingress"
-    bash "$SCRIPT_DIR/peripherals/nginx-ingress.sh"
+    bash "$SCRIPT_DIR/dev-peripherals/nginx-ingress.sh"
     # Re-source .env so DATASPOKE_KUBE_INGRESS_IP/_DOMAIN are available
     source "$ENV_FILE"
   fi
@@ -822,10 +822,10 @@ if [[ "$PROFILE" == "dev" ]]; then
   fi
 
   if _has_component datahub; then
-    _run_bg "datahub" bash "$SCRIPT_DIR/peripherals/datahub.sh"
+    _run_bg "datahub" bash "$SCRIPT_DIR/dev-peripherals/datahub.sh"
   fi
   if _has_component langfuse; then
-    _run_bg "langfuse" bash "$SCRIPT_DIR/peripherals/langfuse.sh"
+    _run_bg "langfuse" bash "$SCRIPT_DIR/dev-peripherals/langfuse.sh"
   fi
 
   _wait_all
@@ -995,10 +995,10 @@ if [[ "$PROFILE" == "dev" ]]; then
   step 4 5 "parallel post-bootstrap (dummy-data + dev-lock)"
 
   if _has_component dummy-data; then
-    _run_bg "dummy-data" bash "$SCRIPT_DIR/peripherals/dummy-data.sh"
+    _run_bg "dummy-data" bash "$SCRIPT_DIR/dev-peripherals/dummy-data.sh"
   fi
   if _has_component dev-lock; then
-    _run_bg "dev-lock" bash "$SCRIPT_DIR/peripherals/dev-lock.sh"
+    _run_bg "dev-lock" bash "$SCRIPT_DIR/dev-peripherals/dev-lock.sh"
   fi
 
   _wait_all

@@ -58,7 +58,7 @@ In dev the umbrella defaults to `frontend.enabled=false` (developers run host `p
 
 ## Dev script conventions
 
-Match `helm-charts/bin/peripherals/datahub.sh` style: `#!/usr/bin/env bash`, `set -euo pipefail`, source `bin/lib/helpers.sh` and `helm-charts/.env`.
+Match `helm-charts/bin/dev-peripherals/datahub.sh` style: `#!/usr/bin/env bash`, `set -euo pipefail`, source `bin/lib/helpers.sh` and `helm-charts/.env`.
 
 ## Completion report
 

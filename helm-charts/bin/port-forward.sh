@@ -45,7 +45,7 @@ DH_NS="${DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE}"
 DD_NS="${DATASPOKE_DEV_KUBE_DUMMY_DATA_NAMESPACE}"
 
 # Each spec: "<local-port>:<namespace>/<service>:<remote-port>".
-# Mirrors the Tier-B map in peripherals/nginx-ingress/values-dev.yaml — the
+# Mirrors the Tier-B map in dev-peripherals/nginx-ingress/values.yaml — the
 # local ports are the canonical DATASPOKE_TEST_* ports.
 PF_SPECS=(
   "9201:${DS_NS}/dataspoke-postgresql:5432"

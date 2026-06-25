@@ -151,7 +151,7 @@ if [[ "$PROFILE" == "dev" ]]; then
   # 2. dummy-data
   info "Removing dummy-data resources..."
   if kubectl get namespace "${DUMMY_NS}" >/dev/null 2>&1; then
-    PERIPHERALS_DIR="$(cd "$SCRIPT_DIR/../peripherals" && pwd)"
+    PERIPHERALS_DIR="$(cd "$SCRIPT_DIR/../dev-peripherals" && pwd)"
     kubectl delete -f "$PERIPHERALS_DIR/dummy-data/manifests/" \
       --namespace "${DUMMY_NS}" --ignore-not-found=true || true
     if kubectl get secret/example-postgres-secret -n "${DUMMY_NS}" >/dev/null 2>&1; then

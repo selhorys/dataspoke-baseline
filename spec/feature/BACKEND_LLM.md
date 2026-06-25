@@ -361,10 +361,10 @@ The stub toggle is consulted by `make_llm_client()` regardless of consumer servi
 
 ## Observability
 
-DataSpoke ships self-hosted [Langfuse](https://langfuse.com/) as its LLM trace store. The
-Langfuse instance is an independent subsystem (sibling chart `helm-charts/langfuse/`, installed
-by `helm-charts/bin/peripherals/langfuse.sh`) deployed in its own `langfuse-01` namespace,
-following the same `values.yaml` + `values-dev.yaml` overlay convention as the umbrella chart.
+DataSpoke ships self-hosted [Langfuse](https://langfuse.com/) as its LLM trace store in dev. The
+Langfuse instance is a dev-only peripheral (chart `helm-charts/dev-peripherals/langfuse/`, installed
+by `helm-charts/bin/dev-peripherals/langfuse.sh`) deployed in its own `langfuse-01` namespace. In
+production the operator supplies their own Langfuse and wires the connection via the admin API.
 
 ### Test-side Langfuse env contract
 
@@ -411,8 +411,8 @@ for per-run LLM trace browsing.
 
 Langfuse traces capture the full content of LLM interactions: dataset URNs, schema field names,
 evidence text (DataHub descriptions, owner identities), completion text, and tool-call payloads.
-For prod deployments using external Postgres/S3 configured in `helm-charts/langfuse/values.yaml`,
-this prompt corpus persists in operator-controlled storage. Operator responsibility: enable SSO/auth
+For prod deployments the operator's own Langfuse persists this prompt corpus in
+operator-controlled storage. Operator responsibility: enable SSO/auth
 on the Langfuse UI before exposing the hostname; consider Langfuse's `mask=` callable on the `Langfuse()`
 constructor for field-level redaction if sensitive schema names must be excluded from traces.
 

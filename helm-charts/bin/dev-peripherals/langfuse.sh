@@ -6,7 +6,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$BIN_DIR/../.." && pwd)"
-CHART_DIR="$REPO_ROOT/helm-charts/langfuse"
+CHART_DIR="$REPO_ROOT/helm-charts/dev-peripherals/langfuse"
 ENV_FILE="$(cd "$BIN_DIR/.." && pwd)/.env"
 
 # ---------------------------------------------------------------------------
@@ -38,7 +38,7 @@ info "Checking required environment variables..."
 # DATASPOKE_KUBE_INGRESS_DOMAIN must be present in both modes:
 #   managed — auto-written by nginx-ingress.sh (e.g. <IP>.nip.io)
 #   shared  — operator pre-set to the cluster-published domain
-: "${DATASPOKE_KUBE_INGRESS_DOMAIN:?DATASPOKE_KUBE_INGRESS_DOMAIN must be set in .env (run bin/peripherals/nginx-ingress.sh first, or pre-set it for shared ingress mode)}"
+: "${DATASPOKE_KUBE_INGRESS_DOMAIN:?DATASPOKE_KUBE_INGRESS_DOMAIN must be set in .env (run bin/dev-peripherals/nginx-ingress.sh first, or pre-set it for shared ingress mode)}"
 info "Required environment variables present."
 
 # ---------------------------------------------------------------------------
@@ -171,7 +171,6 @@ LANGFUSE_HOST="http://langfuse.${INGRESS_DOMAIN}"
 info "Installing/upgrading langfuse Helm release in namespace ${LANGFUSE_NS}..."
 helm upgrade --install langfuse "$CHART_DIR" \
   -f "$CHART_DIR/values.yaml" \
-  -f "$CHART_DIR/values-dev.yaml" \
   -n "${LANGFUSE_NS}" \
   --set-string "langfuse.langfuse.nextauth.url=${LANGFUSE_HOST}" \
   --set-string "langfuse.langfuse.ingress.hosts[0].host=langfuse.${INGRESS_DOMAIN}" \

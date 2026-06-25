@@ -407,9 +407,10 @@ and `datahub-kafka:9092` (event streaming).
 via Airflow tier DAGs and do not subscribe to DataHub MCL events. Enable the separate pod
 when an organisation adds event-driven extensions; Kafka consumers scale by partition count.
 
-Langfuse runs as a sibling subsystem in its own namespace (e.g. `langfuse-01`) — web,
+Langfuse is a **dev-only peripheral** in its own namespace (e.g. `langfuse-01`) — web,
 worker, and bundled Postgres / Redis / ClickHouse / MinIO — installed from
-`helm-charts/langfuse/`. DataSpoke reads the Langfuse connection (host + public/secret key)
+`helm-charts/dev-peripherals/langfuse/`. In production the operator supplies their own
+Langfuse. Either way DataSpoke reads the Langfuse connection (host + public/secret key)
 from the DB `peripheral_config` table, set via `/api/v1/admin/peripherals/langfuse`; absence
 of the configuration disables tracing without affecting LLM call success.
 
@@ -429,7 +430,7 @@ and `/api/v1/admin/conf` (see [`spec/API.md` §Admin](API.md)), seeded with fact
 |--------|-------|-------------|
 | `DATASPOKE_*` (no `KUBE`/`DEV`/`TEST`) | App runtime, both profiles | DataSpoke app code (FastAPI, frontend) |
 | `DATASPOKE_KUBE_*` | Kube deployment, both profiles | `helm-charts/bin/*.sh` install/uninstall/build scripts |
-| `DATASPOKE_DEV_*` | Dev profile only | `helm-charts/bin/peripherals/*.sh`, `helm-charts/bin/post-install/*.sh` |
+| `DATASPOKE_DEV_*` | Dev profile only | `helm-charts/bin/dev-peripherals/*.sh`, `helm-charts/bin/post-install/*.sh` |
 | `DATASPOKE_TEST_*` | Dev profile only | `tests/integration/{conftest.py,util/*}` — laptop-side test access auto-populated by `install.sh`; never read by app pods |
 
 App-runtime variables (`DATASPOKE_*`) are the same names in dev and prod — only the values

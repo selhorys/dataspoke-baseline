@@ -66,7 +66,7 @@ if [[ "$INGRESS_MODE" == "shared" ]]; then
 else
   if [[ -z "$INGRESS_IP" || -z "$DOMAIN" ]]; then
     echo -e "\033[0;31m[ERROR]\033[0m DATASPOKE_KUBE_INGRESS_IP and DATASPOKE_KUBE_INGRESS_DOMAIN must be set in .env." >&2
-    echo "       Run helm-charts/bin/peripherals/nginx-ingress.sh first." >&2
+    echo "       Run helm-charts/bin/dev-peripherals/nginx-ingress.sh first." >&2
     exit 1
   fi
   TCP_HOST="${INGRESS_IP}"

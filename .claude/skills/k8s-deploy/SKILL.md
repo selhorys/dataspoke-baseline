@@ -100,7 +100,7 @@ Run `configure` first if `helm-charts/.env` does not exist or is missing require
    uv run python -m tests.integration.util --reset-seed
    ```
 3. Show access information (ingress endpoints table is in `helm-charts/README.md §Ingress Endpoints`; substitute `DATASPOKE_KUBE_INGRESS_IP` / `DATASPOKE_KUBE_INGRESS_DOMAIN` from `helm-charts/.env`). In **shared** ingress mode `INGRESS_IP` is blank — HTTP services ride the operator-set `DATASPOKE_KUBE_INGRESS_DOMAIN`, and TCP services (Postgres/Redis/Kafka/lock) are reached on `127.0.0.1` by running `./helm-charts/bin/port-forward.sh` in a separate shell held open for the session.
-4. Inform the user that `helm-charts/.env` has been populated with runtime variables (hosts, URLs, ports — including `DATASPOKE_LOCK_URL` and `DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST_PORT`) by `install.sh` (managed mode also derives ingress IP/domain in `peripherals/nginx-ingress.sh`), and that they should run `source helm-charts/.env` to load them into their shell.
+4. Inform the user that `helm-charts/.env` has been populated with runtime variables (hosts, URLs, ports — including `DATASPOKE_LOCK_URL` and `DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST_PORT`) by `install.sh` (managed mode also derives ingress IP/domain in `dev-peripherals/nginx-ingress.sh`), and that they should run `source helm-charts/.env` to load them into their shell.
 5. The post-install seeding step (dev profile) has already wired DataHub + Langfuse + LLM provider/model into the API's runtime config via `/internal/admin/peripherals/*` and `/internal/admin/conf` — no manual admin-API calls needed unless `--skip-seed` was set.
 
 ---
@@ -159,7 +159,7 @@ There is no dedicated `reinstall.sh`, and `uninstall.sh` does not support `--com
    helm uninstall dataspoke -n "${DATASPOKE_KUBE_DATASPOKE_NAMESPACE}"
    ./helm-charts/bin/install.sh --profile dev --components dataspoke-infra
    ```
-   For peripherals managed by plain manifests (dev-lock, dummy-data), `kubectl delete -f helm-charts/peripherals/<name>/manifests/` before reinstalling.
+   For peripherals managed by plain manifests (dev-lock, dummy-data), `kubectl delete -f helm-charts/dev-peripherals/<name>/manifests/` before reinstalling.
 3. Monitor output for errors. If teardown or rollout fails, report the error and suggest remediation.
 4. On success, confirm the component is running and report access URLs.
 

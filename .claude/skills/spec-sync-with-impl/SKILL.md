@@ -64,7 +64,7 @@ Presets (numbers or keywords, comma-separated):
   2. prauto       — .prauto scripts, prauto-related specs and skills
   3. ai-scaffold  — CLAUDE.md, .claude/ settings, hooks, agents, all skills
   4. k8s-deploy   — helm-charts/bin scripts, k8s-deploy skill
-  5. helm-charts  — Helm chart definitions, helm-charts/peripherals/, HELM_CHART spec
+  5. helm-charts  — Helm chart definitions, helm-charts/dev-peripherals/, HELM_CHART spec
   6. api          — API specs, src/api/ code
   7. ref          — ref/ setup scripts and reference materials
   8. backend      — Backend services, Airflow workflows (TBD presets)
@@ -87,7 +87,7 @@ Parse the user's reply: split on commas; each item is either a preset (number/ke
 | `prauto` | `spec/AI_PRAUTO.md`, prauto-related skill declarations, `.prauto/README.md` | `.prauto/` scripts and libs, prauto-related skill logic bodies |
 | `ai-scaffold` | `spec/AI_SCAFFOLD.md`, `CLAUDE.md`, all skill declarations across `.claude/skills/` | `.claude/` settings/hooks/agents, all skill logic bodies |
 | `k8s-deploy` | `spec/feature/HELM_CHART.md` (bin/ + workflow sections), k8s-deploy skill declaration, `helm-charts/README.md` | `helm-charts/bin/` scripts, k8s-deploy skill logic body |
-| `helm-charts` | `spec/feature/HELM_CHART.md` | `helm-charts/dataspoke/`, `helm-charts/langfuse/`, `helm-charts/peripherals/` charts/values/templates/manifests |
+| `helm-charts` | `spec/feature/HELM_CHART.md` | `helm-charts/dataspoke/`, `helm-charts/dev-peripherals/` (incl. `langfuse/`) charts/values/templates/manifests |
 | `api` | `spec/API.md`, `spec/API_DESIGN_PRINCIPLE_en.md`, `src/api/README.md` | `src/api/` routers/schemas/auth/middleware |
 | `ref` | `spec/AI_SCAFFOLD.md` (ref section), ref-setup skill declaration, `ref/README.md` | `ref/` setup scripts and reference materials, ref-setup skill logic body |
 | `backend` | TBD | TBD |
