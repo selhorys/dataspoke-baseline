@@ -163,11 +163,22 @@ _wait_all() {
 # `helm dependency build` does not re-package an unchanged-version file://
 # dependency, so edits to a local subchart's templates would otherwise ship a
 # stale package. Drop the local subchart archives first so the build re-packages
-# them from the current source (remote deps stay cached).
+# them from the current source. This forces a full re-resolve, so the remote OCI
+# deps (bitnami postgresql/redis) get re-pulled from Docker's CDN — a fetch that
+# intermittently resets the connection. Retry the build to ride out those
+# transient resets rather than failing the whole install on one bad pull.
 _build_chart_deps() {
   local chart_dir="$1"
   rm -f "${chart_dir}"/charts/frontend-*.tgz "${chart_dir}"/charts/event-consumer-*.tgz
-  helm dependency build "${chart_dir}"
+  local attempt
+  for attempt in 1 2 3 4 5; do
+    if helm dependency build "${chart_dir}"; then
+      return 0
+    fi
+    warn "  helm dependency build failed (attempt ${attempt}/5) — retrying in 5s..."
+    sleep 5
+  done
+  error "helm dependency build for '${chart_dir}' failed after 5 attempts."
 }
 
 # ---------------------------------------------------------------------------
