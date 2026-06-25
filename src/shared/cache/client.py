@@ -3,6 +3,10 @@
 from collections.abc import AsyncIterator
 
 import redis.asyncio as aioredis
+from redis.asyncio.retry import Retry
+from redis.backoff import ExponentialBackoff
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import TimeoutError as RedisTimeoutError
 
 # Cache key conventions — see spec/feature/BACKEND.md §Cache Key Conventions.
 VALIDATION_CACHE_KEY = "validation:{dataset_urn}:result"
@@ -14,11 +18,19 @@ class RedisClient:
     """Async Redis wrapper with connection pooling and pub/sub."""
 
     def __init__(self, host: str, port: int, password: str) -> None:
+        # Transparent retry + reconnect so a Redis blip or pod move is
+        # recovered in-place instead of surfacing as an error to callers.
         self._redis = aioredis.Redis(
             host=host,
             port=port,
             password=password,
             decode_responses=True,
+            socket_connect_timeout=5,
+            socket_timeout=5,
+            socket_keepalive=True,
+            health_check_interval=30,
+            retry=Retry(ExponentialBackoff(), 3),
+            retry_on_error=[RedisConnectionError, RedisTimeoutError],
         )
 
     async def get(self, key: str) -> str | None:

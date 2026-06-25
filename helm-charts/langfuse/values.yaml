@@ -35,8 +35,16 @@ langfuse:
     security:
       allowInsecureImages: true
 
-  # ---- NextAuth ----
+  # ---- Feature flags ----
   langfuse:
+    features:
+      # Disable open self-service sign-up to the LLM-trace UI. Operators
+      # provision accounts via the Langfuse admin API or headless-init.
+      # Using langfuse.features.signUpDisabled (idiomatic key, chart 1.5.x).
+      # Do NOT also set additionalEnv[AUTH_DISABLE_SIGNUP] — the chart's
+      # validations.yaml rejects having both set simultaneously.
+      signUpDisabled: true
+
     nextauth:
       # Override in prod overlay: https://langfuse.your-domain.com
       url: "http://localhost:3000"
@@ -75,6 +83,15 @@ langfuse:
 
     # ---- Web resources (prod) ----
     web:
+      # Eviction resilience. Langfuse chart 1.5.x pod annotation path:
+      # langfuse.langfuse.web.pod.annotations (inside the `pod:` subkey).
+      pod:
+        annotations:
+          cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+      # PDB: langfuse.langfuse.web.pdb.{create,minAvailable}
+      pdb:
+        create: true
+        minAvailable: 1
       service:
         port: 3000
       resources:
@@ -87,6 +104,14 @@ langfuse:
 
     # ---- Worker resources (prod) ----
     worker:
+      # Langfuse chart 1.5.x pod annotation path: langfuse.langfuse.worker.pod.annotations
+      pod:
+        annotations:
+          cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+      # PDB: langfuse.langfuse.worker.pdb.{create,minAvailable}
+      pdb:
+        create: true
+        minAvailable: 1
       resources:
         requests:
           cpu: 500m
@@ -106,6 +131,13 @@ langfuse:
     auth:
       username: "langfuse"
       database: "langfuse"
+    # Bitnami postgresql primary eviction resilience keys (verified against bundled chart).
+    primary:
+      podAnnotations:
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+      pdb:
+        create: true
+        minAvailable: 1
 
   # ---- Redis — bundled by default; override deploy=false + host in prod for external ----
   redis:
@@ -117,12 +149,26 @@ langfuse:
       database: 1
     networkPolicy:
       enabled: false
+    # Bitnami valkey primary eviction resilience (verified against bundled valkey chart).
+    # primary.pdb.create defaults true in the valkey chart; the PDB renders.
+    primary:
+      podAnnotations:
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+      pdb:
+        create: true
+        minAvailable: 1
 
   # ---- ClickHouse — bundled, HA in prod (3 replicas) ----
   clickhouse:
     deploy: true
     replicaCount: 3
     clusterEnabled: true
+    # Bitnami clickhouse top-level podAnnotations and pdb keys (verified against bundled chart).
+    podAnnotations:
+      cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+    pdb:
+      create: true
+      minAvailable: 1
     auth:
       password: ""
       existingSecret: "dataspoke-langfuse-secret"

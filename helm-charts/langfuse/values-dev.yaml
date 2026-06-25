@@ -82,13 +82,17 @@ langfuse:
     web:
       service:
         port: 3000
+      # langfuse 3.179.1 (Next.js 16) exhausts a 1Gi container's V8 heap during
+      # the in-process init scripts ("FATAL ERROR: Reached heap limit ... JS heap
+      # out of memory") and SIGABRTs (exit 134) into a restart loop. 2Gi gives
+      # Node headroom to size its heap past startup.
       resources:
         requests:
           cpu: 200m
-          memory: 512Mi
+          memory: 1Gi
         limits:
           cpu: 500m
-          memory: 1Gi
+          memory: 2Gi
       livenessProbe:
         initialDelaySeconds: 180
         periodSeconds: 15

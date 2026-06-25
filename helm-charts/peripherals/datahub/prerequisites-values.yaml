@@ -25,6 +25,13 @@ kafka:
   controller:
     replicaCount: 1
     controllerOnly: false
+    # Annotation-only eviction guard. The Bitnami kafka chart defaults
+    # controller.pdb.maxUnavailable: 1 and renders minAvailable/maxUnavailable
+    # independently, so adding minAvailable here would emit an invalid both-fields
+    # PodDisruptionBudget that the apiserver rejects. kafka is DataHub's event bus,
+    # not the metadata store, so the autoscaler annotation alone is sufficient.
+    podAnnotations:
+      cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
     resources:
       requests:
         cpu: "250m"
@@ -86,6 +93,13 @@ cp-helm-charts:
 opensearch:
   enabled: true
   singleNode: true
+  # Annotation-only eviction guard. The opensearch chart's PDB supports only
+  # maxUnavailable, gated on a truthy value: maxUnavailable:0 (which would actually
+  # block disruption) is falsy and renders no PDB, while any positive value permits
+  # that many disruptions. A PDB therefore cannot protect this single-node install;
+  # the safe-to-evict annotation is the effective guard.
+  podAnnotations:
+    cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
   config:
     opensearch.yml: |
       plugins:
@@ -127,6 +141,12 @@ mysql:
     # Secret must contain keys: mysql-root-password, mysql-password
   primary:
     extraFlags: "--character-set-server=utf8mb4 --collation-server=utf8mb4_bin"
+    # Bitnami mysql primary eviction resilience keys (verified against bundled chart).
+    podAnnotations:
+      cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+    pdb:
+      create: true
+      minAvailable: 1
     resources:
       requests:
         cpu: "250m"

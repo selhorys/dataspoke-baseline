@@ -55,13 +55,29 @@ def test_database_url_from_env() -> None:
 
 
 def test_engine_pool_size() -> None:
-    """Pool size must be 10 per spec/feature/BACKEND.md §Shared Services: 'Pool size 10, max overflow 5'."""
+    """Pool size must be 10 per spec/feature/BACKEND.md §Shared Services:
+    'Pool size 10, max overflow 5'."""
     assert engine.pool.size() == 10
 
 
 def test_engine_max_overflow() -> None:
-    """Max overflow must be 5 per spec/feature/BACKEND.md §Shared Services: 'Pool size 10, max overflow 5'."""
+    """Max overflow must be 5 per spec/feature/BACKEND.md §Shared Services:
+    'Pool size 10, max overflow 5'."""
     assert engine.pool._max_overflow == 5
+
+
+def test_engine_pool_pre_ping_enabled() -> None:
+    """Pre-ping validates and transparently replaces a connection invalidated by a
+    Postgres pod reschedule before checkout, so a stale socket never surfaces as a
+    query error to callers. SQLAlchemy 2.0 records this on the pool as `_pre_ping`."""
+    assert engine.pool._pre_ping is True
+
+
+def test_engine_pool_recycle_set() -> None:
+    """A positive recycle window (1800s) drops connections that have outlived a
+    backend move so they are not reused indefinitely; SQLAlchemy's default is
+    -1 (recycling disabled)."""
+    assert engine.pool._recycle == 1800
 
 
 def test_session_factory_expire_on_commit_false() -> None:

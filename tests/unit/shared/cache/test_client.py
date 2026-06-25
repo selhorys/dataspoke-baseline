@@ -14,6 +14,10 @@ Spec-anchored TTLs (BACKEND.md §Cache Key Conventions):
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from redis.asyncio.retry import Retry
+from redis.backoff import ExponentialBackoff
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from src.shared.cache.client import (
     QUALITY_CACHE_KEY,
@@ -34,6 +38,18 @@ def mock_redis():
 @pytest.fixture
 def client(mock_redis):
     return RedisClient(host="localhost", port=6379, password="test")
+
+
+@pytest.fixture
+def real_client_kwargs():
+    """Connection kwargs from a *real* (unmocked) RedisClient.
+
+    The redis-py async ctor only records connection parameters into the pool;
+    it opens no socket until first command, so constructing it here is safe and
+    lets us assert the resilience knobs that were actually passed through.
+    """
+    client = RedisClient(host="localhost", port=6379, password="test")
+    return client._redis.connection_pool.connection_kwargs
 
 
 async def test_get_returns_value(client, mock_redis) -> None:
@@ -103,3 +119,62 @@ def test_cache_key_formatting() -> None:
         QUALITY_CACHE_KEY.format(dataset_urn="urn:li:dataset:x") == "quality:urn:li:dataset:x:score"
     )
     assert RATE_LIMIT_KEY.format(user_id="user-1") == "rate_limit:user-1"
+
+
+# ── Connection resilience knobs ───────────────────────────────────────────────
+#
+# These pin the resilience contract from the backend hardening change: a Redis
+# blip or pod move must be recovered in-place instead of hanging or surfacing as
+# an unretried error. They introspect the pool's recorded connection_kwargs, which
+# is where redis-py stores the parameters handed to the async Redis ctor.
+
+
+def test_socket_timeouts_configured(real_client_kwargs) -> None:
+    """Bounded socket timeouts so a vanished Redis (pod reschedule, network
+    partition) fails fast at 5s instead of hanging a request indefinitely on a
+    dead connection."""
+    assert real_client_kwargs["socket_connect_timeout"] == 5
+    assert real_client_kwargs["socket_timeout"] == 5
+
+
+def test_socket_keepalive_enabled(real_client_kwargs) -> None:
+    """TCP keepalive so a connection silently dropped by an intermediary (NAT/LB
+    idle reap after a Redis move) is detected rather than reused as a black hole."""
+    assert real_client_kwargs["socket_keepalive"] is True
+
+
+def test_health_check_interval(real_client_kwargs) -> None:
+    """Periodic health pings (every 30s) so an idle pooled connection invalidated
+    by a backend move is proactively validated before a caller checks it out."""
+    assert real_client_kwargs["health_check_interval"] == 30
+
+
+def test_retry_configured_with_exponential_backoff(real_client_kwargs) -> None:
+    """Transparent retry with exponential backoff so a transient connection error
+    during a Redis blip is recovered in-place instead of bubbling to the caller.
+
+    The backoff-class check is the revert sentinel: redis 7.4.0's DEFAULT retry
+    backoff is ExponentialWithJitterBackoff, which is NOT a subclass of
+    ExponentialBackoff, so this assertion fails if the explicit Retry config is
+    dropped. The retries==3 check alone cannot detect a revert because 3 is also
+    the redis default; the backoff-class check is what catches it.
+    """
+    retry = real_client_kwargs["retry"]
+    assert isinstance(retry, Retry)
+    assert isinstance(retry._backoff, ExponentialBackoff)
+    assert retry._retries == 3
+
+
+def test_retry_on_connection_and_timeout_errors(real_client_kwargs) -> None:
+    """Retry is armed for the two transient failures a Redis move produces —
+    ConnectionError and TimeoutError — so they are absorbed by the retry loop
+    rather than propagated as request failures."""
+    retry_on_error = real_client_kwargs["retry_on_error"]
+    assert RedisConnectionError in retry_on_error
+    assert RedisTimeoutError in retry_on_error
+
+
+def test_decode_responses_preserved(real_client_kwargs) -> None:
+    """decode_responses stays True so the resilience change did not silently flip
+    return types from str to bytes and break every caller that reads cache values."""
+    assert real_client_kwargs["decode_responses"] is True

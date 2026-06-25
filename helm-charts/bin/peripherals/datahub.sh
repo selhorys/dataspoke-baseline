@@ -123,17 +123,30 @@ if [[ -n "${DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_ID:-}" && -n "${DATASPOKE_DEV_GOOG
   # extraEnvs duplicate would break the strategic-merge patch on helm upgrade) so the
   # OAuth redirect_uri matches the registered http://datahub.../callback/oidc.
   # provider=google makes the chart set the OIDC discoveryUri automatically.
+
+  # Store the OIDC client secret in a K8s Secret so it never appears in helm
+  # release values, kubectl get deploy -o yaml, ps output, or CI logs.
+  # Verified against datahub-frontend subchart template (datahub-1.0.1):
+  #   oidcAuthentication.clientSecretRef.secretRef  → secretKeyRef.name
+  #   oidcAuthentication.clientSecretRef.secretKey  → secretKeyRef.key
+  info "Creating datahub-oidc-secret in namespace '${NS}'..."
+  kubectl create secret generic datahub-oidc-secret \
+    --namespace "${NS}" \
+    --from-literal=client-secret="${DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_SECRET}" \
+    --dry-run=client -o yaml | kubectl apply -f -
+
   oidc_base="http://datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN:-dev.dataspoke.example.com}"
   oidc_args+=(
     --set "datahub-frontend.oidcAuthentication.enabled=true"
     --set-string "datahub-frontend.oidcAuthentication.provider=google"
     --set-string "datahub-frontend.oidcAuthentication.clientId=${DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_ID}"
-    --set-string "datahub-frontend.oidcAuthentication.clientSecret=${DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_SECRET}"
+    --set-string "datahub-frontend.oidcAuthentication.clientSecretRef.secretRef=datahub-oidc-secret"
+    --set-string "datahub-frontend.oidcAuthentication.clientSecretRef.secretKey=client-secret"
     --set-string "datahub-frontend.oidcAuthentication.oidcBaseUrl=${oidc_base}"
     --set-string "datahub-frontend.oidcAuthentication.user_name_claim=email"
     --set-string "datahub-frontend.oidcAuthentication.user_name_claim_regex=(.*)"
   )
-  info "Google OIDC enabled on DataHub (using DataSpoke OAuth credentials)"
+  info "Google OIDC enabled on DataHub (client secret stored in datahub-oidc-secret)"
 elif [[ -n "${DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_ID:-}" || -n "${DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_SECRET:-}" ]]; then
   warn "Google OIDC partially configured (only one of CLIENT_ID/CLIENT_SECRET set); both required — skipping OIDC"
 else

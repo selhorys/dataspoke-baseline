@@ -30,6 +30,9 @@ spec:
         {{- if .Values.config.createConfigMap }}
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
         {{- end }}
+        {{- with .Values.api.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
     spec:
       enableServiceLinks: false
       {{- if .Values.api.secretReader.enabled }}
@@ -38,8 +41,38 @@ spec:
       {{- with .Values.api.imagePullSecrets }}
       imagePullSecrets: {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- if .Values.api.migrate.enabled }}
+      {{- if or .Values.api.waitForDeps.enabled .Values.api.migrate.enabled }}
       initContainers:
+        {{- if .Values.api.waitForDeps.enabled }}
+        - name: wait-for-postgres
+          image: {{ .Values.api.waitForDeps.image }}
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for PostgreSQL at ${DATASPOKE_POSTGRES_HOST}:${DATASPOKE_POSTGRES_PORT:-5432}..."
+              until nc -z "${DATASPOKE_POSTGRES_HOST}" "${DATASPOKE_POSTGRES_PORT:-5432}"; do
+                echo "  postgres not ready — retrying in 3s"; sleep 3
+              done
+              echo "PostgreSQL is reachable; proceeding."
+          envFrom:
+            {{- if .Values.config.createConfigMap }}
+            - configMapRef:
+                name: {{ include "dataspoke.fullname" . }}-app-config
+                optional: true
+            {{- end }}
+            - secretRef:
+                name: {{ .Values.secrets.existingSecret | default "dataspoke-secrets" }}
+                optional: true
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+        {{- end }}
+        {{- if .Values.api.migrate.enabled }}
         - name: alembic-migrate
           image: "{{ .Values.api.image.repository }}:{{ .Values.api.image.tag }}"
           imagePullPolicy: {{ .Values.api.image.pullPolicy }}
@@ -52,6 +85,7 @@ spec:
             - secretRef:
                 name: {{ .Values.secrets.existingSecret | default "dataspoke-secrets" }}
           resources: {{- toYaml .Values.api.migrate.resources | nindent 12 }}
+        {{- end }}
       {{- end }}
       containers:
         - name: api

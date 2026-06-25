@@ -45,6 +45,7 @@ import asyncio
 import json
 import os
 import uuid
+from collections.abc import Iterator
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 
@@ -87,6 +88,38 @@ async def _get_ds_conn() -> asyncpg.Connection:
         password=os.environ.get("DATASPOKE_TEST_POSTGRES_PASSWORD", ""),
         database=os.environ.get("DATASPOKE_TEST_POSTGRES_DB", "dataspoke"),
     )
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _reset_factory_metric_conf() -> Iterator[None]:
+    """Restore the factory metric rows to their seeded disabled defaults at both
+    module setup and teardown.
+
+    Many tests in this module enable a factory metric (is_enabled=True) and scope
+    it via dataset_filter while running it; if one dies mid-body before its inline
+    restore PATCH, that mutated state would otherwise leak into the next pytest
+    session and violate the factory-defaults invariant
+    (spec/USE_CASE_en.md §UC5 §Factory defaults — seeds ship is_enabled=False with
+    an empty dataset_filter). The reset is performed directly in the operational DB
+    rather than through the API so that it cannot itself be skipped by an API-layer
+    guard, an auth failure, or a metric left in a running state.
+    """
+
+    async def _restore() -> None:
+        conn = await _get_ds_conn()
+        try:
+            await conn.execute(
+                "UPDATE dataspoke.metric_definitions "
+                "SET is_enabled = FALSE, dataset_filter = '{}'::jsonb "
+                "WHERE id = ANY($1::text[])",
+                list(_FACTORY_IDS),
+            )
+        finally:
+            await conn.close()
+
+    asyncio.run(_restore())
+    yield
+    asyncio.run(_restore())
 
 
 # ── Factory defaults ──────────────────────────────────────────────────────────
@@ -1280,7 +1313,8 @@ async def test_ingestion_freshness_active_custom_daily_window(
         )
 
         # Insert ingestion_source_dataset rows (derivation='emitted') for both datasets
-        # spec: BACKEND_SCHEMA.md §ingestion_source_dataset — (source_id, dataset_urn, derivation, ...)
+        # spec: BACKEND_SCHEMA.md §ingestion_source_dataset
+        # — (source_id, dataset_urn, derivation, ...)
         for urn in (urn_fresh, urn_stale):
             await conn.execute(
                 "INSERT INTO dataspoke.ingestion_source_dataset "

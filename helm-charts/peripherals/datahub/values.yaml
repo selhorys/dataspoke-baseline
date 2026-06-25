@@ -43,6 +43,9 @@ datahub-gms:
   # at datahub.<domain>/gms), so keep GMS as in-cluster ClusterIP.
   service:
     type: ClusterIP
+  # Annotation-only eviction guard — datahub-gms subchart has no PDB template.
+  podAnnotations:
+    cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
   extraEnvs:
     # Disable the system-update wait that gates the MAE consumer startup.
     # In dev, the system-update job always completes before GMS boots, so
@@ -108,6 +111,9 @@ datahub-frontend:
           - /
 
 datahub-mae-consumer:
+  # Annotation-only eviction guard — datahub-mae-consumer subchart has no PDB template.
+  podAnnotations:
+    cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
   resources:
     requests:
       cpu: "250m"
@@ -119,6 +125,9 @@ datahub-mae-consumer:
       ephemeral-storage: "8Gi"
 
 datahub-mce-consumer:
+  # Annotation-only eviction guard — datahub-mce-consumer subchart has no PDB template.
+  podAnnotations:
+    cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
   resources:
     requests:
       cpu: "250m"
@@ -130,6 +139,9 @@ datahub-mce-consumer:
       ephemeral-storage: "8Gi"
 
 acryl-datahub-actions:
+  # Annotation-only eviction guard — acryl-datahub-actions subchart has no PDB template.
+  podAnnotations:
+    cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
   resources:
     requests:
       cpu: "500m"

@@ -1,5 +1,16 @@
 replicaCount: 1
 
+# Annotations merged onto every pod template — used to set the
+# cluster-autoscaler safe-to-evict guard on this stateless workload.
+podAnnotations:
+  cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+
+# PodDisruptionBudget — keeps minAvailable pods running during voluntary
+# disruptions (node drains, Karpenter scale-in, cluster upgrades).
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
 image:
   repository: dataspoke/frontend
   tag: latest

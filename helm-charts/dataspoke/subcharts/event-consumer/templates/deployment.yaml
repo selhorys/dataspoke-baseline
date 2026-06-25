@@ -13,17 +13,49 @@ spec:
     metadata:
       labels:
         {{- include "event-consumer.selectorLabels" . | nindent 8 }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
     spec:
+      {{- if .Values.waitForDeps.enabled }}
+      initContainers:
+        - name: wait-for-postgres
+          image: {{ .Values.waitForDeps.image }}
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for PostgreSQL at ${DATASPOKE_POSTGRES_HOST}:${DATASPOKE_POSTGRES_PORT:-5432}..."
+              until nc -z "${DATASPOKE_POSTGRES_HOST}" "${DATASPOKE_POSTGRES_PORT:-5432}"; do
+                echo "  postgres not ready — retrying in 3s"; sleep 3
+              done
+              echo "PostgreSQL is reachable; proceeding."
+          envFrom:
+            - configMapRef:
+                name: dataspoke-app-config
+                optional: true
+            - secretRef:
+                name: dataspoke-secrets
+                optional: true
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+      {{- end }}
       containers:
         - name: event-consumer
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           envFrom:
             - configMapRef:
-                name: {{ .Release.Name }}-config
+                name: dataspoke-app-config
                 optional: true
             - secretRef:
-                name: {{ .Release.Name }}-secrets
+                name: dataspoke-secrets
                 optional: true
           {{- with .Values.resources }}
           resources:

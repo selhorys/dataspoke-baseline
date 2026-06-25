@@ -5,4 +5,19 @@ image:
   tag: latest
   pullPolicy: IfNotPresent
 
+# Annotations merged onto every pod template.
+podAnnotations:
+  cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+
+# PodDisruptionBudget keeps at least one replica live during voluntary disruptions.
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# Init container that waits for PostgreSQL to be reachable before the
+# event-consumer process starts — prevents crash-loops on cold deploy.
+waitForDeps:
+  enabled: true
+  image: "busybox:1.37"
+
 resources: {}

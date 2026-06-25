@@ -17,6 +17,11 @@ engine = create_async_engine(
     DATABASE_URL,
     pool_size=10,
     max_overflow=5,
+    # Survive a Postgres pod reschedule: pre_ping validates (and transparently
+    # replaces) a connection invalidated by the move before checkout, and
+    # recycle drops connections older than 30 minutes.
+    pool_pre_ping=True,
+    pool_recycle=1800,
 )
 
 SessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
