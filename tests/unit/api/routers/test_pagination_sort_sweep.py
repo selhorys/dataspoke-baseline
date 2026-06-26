@@ -27,8 +27,10 @@ import pytest
 
 from src.api.dependencies import (
     get_ingestion_service,
+    get_metagen_service,
     get_metrics_service,
     get_ontogen_service,
+    get_validation_service,
 )
 from src.api.main import app
 from tests.unit.api.conftest import auth_headers
@@ -40,6 +42,18 @@ def _order_str(call) -> str | None:
     """Render the ``order_by`` kwarg of a mocked-service call to a SQL string."""
     ob = call.kwargs.get("order_by")
     return None if ob is None else str(ob)
+
+
+def _make_unmanaged_user() -> MagicMock:
+    """A mock User row so require_authenticated resolves the JWT when the test
+    supplies its own capturing get_db override (replacing the conftest session)."""
+    u = MagicMock()
+    u.id = uuid.UUID("aaaaaaaa-0000-0000-0000-000000000001")
+    u.email = "unit-test@example.com"
+    u.name = "Unit Test User"
+    u.role = "Admin"
+    u.google_sub = None
+    return u
 
 
 @pytest.fixture
@@ -205,6 +219,271 @@ async def test_ingestion_source_datasets_sort_by_dataset_urn(client) -> None:
         assert rendered is not None and rendered.endswith("DESC")
     finally:
         app.dependency_overrides.pop(get_ingestion_service, None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "sort, suffix",
+    [("first_seen_at_desc", "DESC"), ("last_seen_at_asc", "ASC")],
+)
+async def test_ingestion_source_datasets_extra_sort_fields(client, sort, suffix) -> None:
+    """GET /ingestion/sources/{id}/datasets honours first_seen_at / last_seen_at sorts.
+
+    spec/API.md §286 — sortable by dataset_urn / first_seen_at / last_seen_at.
+    The router previously omitted the two timestamp fields, silently ignoring them.
+    """
+    svc = AsyncMock()
+    svc.list_datasets_for_source = AsyncMock(return_value=([], 0))
+    app.dependency_overrides[get_ingestion_service] = lambda: svc
+    try:
+        resp = await client.get(
+            f"/api/v1/spoke/ingestion/sources/src-1/datasets?sort={sort}",
+            headers=auth_headers(),
+        )
+        assert resp.status_code == 200
+        rendered = _order_str(svc.list_datasets_for_source.await_args)
+        assert rendered is not None and rendered.endswith(suffix), (
+            f"sort={sort} must forward a {suffix} order_by; got {rendered!r}"
+        )
+        assert sort.rsplit("_", 1)[0] in rendered
+    finally:
+        app.dependency_overrides.pop(get_ingestion_service, None)
+
+
+@pytest.mark.asyncio
+async def test_ingestion_source_datasets_default_is_dataset_urn_asc(client) -> None:
+    """GET /ingestion/sources/{id}/datasets with no sort forwards dataset_urn ASC.
+
+    spec/API.md §286 — default ``dataset_urn_asc``. The router pins this explicitly
+    (the service's own None-fallback is last_seen_at desc), so the contract default
+    must be visible at the router boundary.
+    """
+    svc = AsyncMock()
+    svc.list_datasets_for_source = AsyncMock(return_value=([], 0))
+    app.dependency_overrides[get_ingestion_service] = lambda: svc
+    try:
+        resp = await client.get(
+            "/api/v1/spoke/ingestion/sources/src-1/datasets",
+            headers=auth_headers(),
+        )
+        assert resp.status_code == 200
+        rendered = _order_str(svc.list_datasets_for_source.await_args)
+        assert rendered is not None and rendered.endswith("ASC")
+        assert "dataset_urn" in rendered
+    finally:
+        app.dependency_overrides.pop(get_ingestion_service, None)
+
+
+@pytest.mark.asyncio
+async def test_ingestion_sources_sort_by_updated_at(client) -> None:
+    """GET /ingestion/sources?sort=updated_at_desc forwards a DESC order_by.
+
+    spec/API.md §279 — sortable by created_at / updated_at; updated_at was missing.
+    """
+    svc = AsyncMock()
+    svc.list_sources = AsyncMock(return_value=([], 0))
+    app.dependency_overrides[get_ingestion_service] = lambda: svc
+    try:
+        resp = await client.get(
+            "/api/v1/spoke/ingestion/sources?sort=updated_at_desc",
+            headers=auth_headers(),
+        )
+        assert resp.status_code == 200
+        rendered = _order_str(svc.list_sources.await_args)
+        assert rendered is not None and rendered.endswith("DESC")
+        assert "updated_at" in rendered
+    finally:
+        app.dependency_overrides.pop(get_ingestion_service, None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "sort, field, suffix",
+    [
+        ("created_at_desc", "created_at", "DESC"),
+        ("created_at_asc", "created_at", "ASC"),
+        ("updated_at_desc", "updated_at", "DESC"),
+        ("updated_at_asc", "updated_at", "ASC"),
+    ],
+)
+async def test_ingestion_unmanaged_extra_sort_fields(client, sort, field, suffix) -> None:
+    """GET /ingestion/unmanaged honours created_at / updated_at sorts.
+
+    spec/API.md §288 — sortable by dataset_urn / created_at / updated_at (default
+    dataset_urn_asc). The handler builds the query inline (no mockable service), so
+    we override get_db with a capturing session and render the ORDER BY clause of the
+    rows query passed to db.execute. The router previously widened its sort dict but
+    had no test exercising the two timestamp fields.
+    """
+    from sqlalchemy.dialects import postgresql
+
+    from src.api.dependencies import get_db
+
+    captured: list[str] = []
+
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = _make_unmanaged_user()
+    mock_result.scalar.return_value = 0
+    mock_result.all.return_value = []
+
+    async def _capturing_execute(stmt, *args, **kwargs):
+        captured.append(
+            str(stmt.compile(dialect=postgresql.dialect()))
+        )
+        return mock_result
+
+    mock_session = AsyncMock()
+    mock_session.execute = AsyncMock(side_effect=_capturing_execute)
+
+    async def _mock_db():
+        yield mock_session
+
+    app.dependency_overrides[get_db] = _mock_db
+    try:
+        resp = await client.get(
+            f"/api/v1/spoke/ingestion/unmanaged?sort={sort}",
+            headers=auth_headers(),
+        )
+        assert resp.status_code == 200
+        # The rows query is the only statement carrying an ORDER BY clause.
+        order_stmts = [s for s in captured if "ORDER BY" in s]
+        assert order_stmts, "expected a rows query with an ORDER BY clause"
+        rendered = order_stmts[-1]
+        order_clause = rendered.split("ORDER BY", 1)[1]
+        assert field in order_clause, f"sort={sort} must order by {field}; got {order_clause!r}"
+        assert suffix in order_clause, f"sort={sort} must order {suffix}; got {order_clause!r}"
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+@pytest.mark.asyncio
+async def test_ingestion_unmanaged_default_is_dataset_urn_asc(client) -> None:
+    """GET /ingestion/unmanaged with no sort orders by dataset_urn ASC.
+
+    spec/API.md §288 — default ``dataset_urn_asc``. The handler pins this at the
+    parse_sort default, so the contract default is visible in the rows query.
+    """
+    from sqlalchemy.dialects import postgresql
+
+    from src.api.dependencies import get_db
+
+    captured: list[str] = []
+
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = _make_unmanaged_user()
+    mock_result.scalar.return_value = 0
+    mock_result.all.return_value = []
+
+    async def _capturing_execute(stmt, *args, **kwargs):
+        captured.append(str(stmt.compile(dialect=postgresql.dialect())))
+        return mock_result
+
+    mock_session = AsyncMock()
+    mock_session.execute = AsyncMock(side_effect=_capturing_execute)
+
+    async def _mock_db():
+        yield mock_session
+
+    app.dependency_overrides[get_db] = _mock_db
+    try:
+        resp = await client.get(
+            "/api/v1/spoke/ingestion/unmanaged", headers=auth_headers()
+        )
+        assert resp.status_code == 200
+        order_stmts = [s for s in captured if "ORDER BY" in s]
+        assert order_stmts, "expected a rows query with an ORDER BY clause"
+        order_clause = order_stmts[-1].split("ORDER BY", 1)[1]
+        # Ascending default: SQLAlchemy renders the bare column (no explicit ASC),
+        # so the contract is dataset_urn ordering with no DESC.
+        assert "dataset_urn" in order_clause
+        assert "DESC" not in order_clause
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+@pytest.mark.asyncio
+async def test_validation_sort_by_dataset_urn(client) -> None:
+    """GET /spoke/validation?sort=dataset_urn_asc forwards an ASC order_by.
+
+    spec/API.md §342 — sortable by dataset_urn / updated_at; dataset_urn was missing.
+    """
+    svc = AsyncMock()
+    svc.list_configs = AsyncMock(return_value=([], 0))
+    app.dependency_overrides[get_validation_service] = lambda: svc
+    try:
+        resp = await client.get(
+            "/api/v1/spoke/validation?sort=dataset_urn_asc",
+            headers=auth_headers(),
+        )
+        assert resp.status_code == 200
+        rendered = _order_str(svc.list_configs.await_args)
+        assert rendered is not None and rendered.endswith("ASC")
+        assert "dataset_urn" in rendered
+    finally:
+        app.dependency_overrides.pop(get_validation_service, None)
+
+
+@pytest.mark.asyncio
+async def test_metagen_conf_sort_by_name(client) -> None:
+    """GET /spoke/metagen/conf?sort=name_asc forwards an ASC order_by.
+
+    spec/API.md §426 — sortable by created_at / updated_at / name; name was missing.
+    """
+    svc = AsyncMock()
+    svc.list_confs = AsyncMock(return_value=([], 0))
+    app.dependency_overrides[get_metagen_service] = lambda: svc
+    try:
+        resp = await client.get(
+            "/api/v1/spoke/metagen/conf?sort=name_asc",
+            headers=auth_headers(),
+        )
+        assert resp.status_code == 200
+        rendered = _order_str(svc.list_confs.await_args)
+        assert rendered is not None and rendered.endswith("ASC")
+        assert "name" in rendered
+    finally:
+        app.dependency_overrides.pop(get_metagen_service, None)
+
+
+@pytest.mark.asyncio
+async def test_metagen_item_sort_by_dataset_urn(client) -> None:
+    """GET /spoke/metagen/item?sort=dataset_urn_desc forwards a DESC order_by.
+
+    spec/API.md §437 — sortable by created_at / updated_at / dataset_urn; the latter
+    was missing.
+    """
+    svc = AsyncMock()
+    svc.list_items = AsyncMock(return_value=([], 0))
+    app.dependency_overrides[get_metagen_service] = lambda: svc
+    try:
+        resp = await client.get(
+            "/api/v1/spoke/metagen/item?sort=dataset_urn_desc",
+            headers=auth_headers(),
+        )
+        assert resp.status_code == 200
+        rendered = _order_str(svc.list_items.await_args)
+        assert rendered is not None and rendered.endswith("DESC")
+        assert "dataset_urn" in rendered
+    finally:
+        app.dependency_overrides.pop(get_metagen_service, None)
+
+
+@pytest.mark.asyncio
+async def test_admin_users_sort_by_updated_at(client) -> None:
+    """GET /admin/users?sort=updated_at_desc forwards a DESC order_by.
+
+    spec/API.md §541 — sortable by created_at / updated_at / email; updated_at was missing.
+    """
+    with patch(
+        "src.backend.auth.users.list_users", new=AsyncMock(return_value=([], 0))
+    ) as mock_list:
+        resp = await client.get(
+            "/api/v1/admin/users?sort=updated_at_desc", headers=auth_headers()
+        )
+        assert resp.status_code == 200
+        rendered = _order_str(mock_list.await_args)
+        assert rendered is not None and rendered.endswith("DESC")
+        assert "updated_at" in rendered
 
 
 # ── Governance metric list — representative resource list ─────────────────────

@@ -11,10 +11,15 @@ Ensures Pydantic schemas follow API.md conventions:
 import importlib
 import pkgutil
 import re
+from datetime import UTC, datetime, timedelta, timezone
 
+import pytest
 from pydantic import BaseModel
 
 from src.api.schemas.common import ErrorResponse, PaginatedResponse, SingleResponse
+
+# Exactly millisecond precision, trailing Z, no offset (API.md §750/§794).
+_MS_Z_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
 
 # ── Schema discovery ──────────────────────────────────────────────────────────
 
@@ -86,6 +91,47 @@ def test_error_response_has_required_fields() -> None:
     assert {"error_code", "message", "trace_id"} <= fields
 
 
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        # microseconds truncated to milliseconds (no rounding)
+        (datetime(2026, 2, 27, 10, 0, 0, 123456, tzinfo=UTC), "2026-02-27T10:00:00.123Z"),
+        # zero fractional seconds still rendered as .000
+        (datetime(2026, 2, 27, 10, 0, 0, 0, tzinfo=UTC), "2026-02-27T10:00:00.000Z"),
+        # sub-millisecond microseconds floor to .000
+        (datetime(2026, 2, 27, 10, 0, 0, 500, tzinfo=UTC), "2026-02-27T10:00:00.000Z"),
+        # non-UTC offset normalised to UTC before formatting
+        (
+            datetime(2026, 2, 27, 19, 0, 0, 1000, tzinfo=timezone(timedelta(hours=9))),
+            "2026-02-27T10:00:00.001Z",
+        ),
+    ],
+)
+def test_resp_time_serializes_to_millisecond_z(value: datetime, expected: str) -> None:
+    """Success-envelope resp_time emits ISO-8601 UTC millisecond precision with a Z.
+
+    API.md §750/§794 — resp_time is `2026-02-27T10:00:00.000Z`. Pydantic v2's default
+    datetime serializer drifts (microseconds; drops the fractional part when zero), so
+    the three envelope bases override it to match the error-path format byte-for-byte.
+    """
+    for model_dump in (
+        SingleResponse(resp_time=value).model_dump(mode="json"),
+        PaginatedResponse(resp_time=value).model_dump(mode="json"),
+        ErrorResponse(
+            error_code="X", message="m", trace_id="t", resp_time=value
+        ).model_dump(mode="json"),
+    ):
+        rendered = model_dump["resp_time"]
+        assert rendered == expected
+        assert _MS_Z_RE.match(rendered), f"{rendered!r} not millisecond-Z format"
+
+
+def test_resp_time_default_factory_is_millisecond_z() -> None:
+    """The default-factory resp_time (no explicit value) also renders millisecond-Z."""
+    rendered = SingleResponse().model_dump(mode="json")["resp_time"]
+    assert _MS_Z_RE.match(rendered), f"{rendered!r} not millisecond-Z format"
+
+
 def test_discovered_models_are_not_empty() -> None:
     """Sanity check: ensure discovery finds at least one response model.
 
@@ -93,7 +139,7 @@ def test_discovered_models_are_not_empty() -> None:
     to avoid false failures as the schema set evolves. — spec gap surfaced 2026-05-01
     """
     assert len(_ALL_RESPONSE_MODELS) > 0, (
-        f"Schema discovery found no response models — check src/api/schemas/"
+        "Schema discovery found no response models — check src/api/schemas/"
     )
 
 
@@ -104,7 +150,7 @@ async def test_no_remaining_501_stubs() -> None:
     for importer, mod_name, _ in pkgutil.walk_packages(
         routers_pkg.__path__, prefix=routers_pkg.__name__ + "."
     ):
-        mod = importlib.import_module(mod_name)
+        importlib.import_module(mod_name)
 
     # After importing all routers, check the app's routes
     from src.api.main import app
