@@ -191,29 +191,14 @@ then paginated in-memory (per-dataset event volume is small) with a correct `tot
 **DataHub aspects read**: `datasetProperties`, `editableDatasetProperties`, `ownership`,
 `globalTags`, `glossaryTerms`, `schemaMetadata`, `editableSchemaMetadata`.
 
-**`quality_score` (server-side)**: A 0–100 composite score computed from DataHub
-aspects. The dataset service delegates to `src/backend/dataset/scoring.py`, which
-combines five dimensions with fixed weights (must sum to 1.0):
-
-| Dimension | Weight | Source aspect(s) | Computation |
-|-----------|--------|------------------|-------------|
-| `completeness` | 0.25 | `SchemaMetadata` | Percentage of fields with a non-empty `description`. |
-| `freshness` | 0.25 | `Operation` (timeseries, latest) | 100 if last operation ≤ 1 day ago, 0 if ≥ 30 days, linear in between. |
-| `schema_stability` | 0.15 | DataHub Timeline `getSchemaVersionList` | Starts at 100; subtracts `10 × major_changes + 1 × minor_change` over the last 30 days. Single-version (initial 0.0.0) scores 100. |
-| `data_quality` | 0.20 | `DatasetProfile` (timeseries, latest) | Starts at 100; subtracts `avg(nullProportion) × 100`; further -30 if `rowCount == 0`. |
-| `ownership_tags` | 0.15 | `Ownership`, `GlobalTags` | 100 if both present, 50 if exactly one, 0 if neither. |
-
-`overall = round(sum(dimensions[k] × weights[k]), 2)`, clamped to `[0, 100]`. The
-score is read-through cached at `quality:{dataset_urn}:score` (TTL 300s; see
-[Cache Key Conventions](#cache-key-conventions)) and surfaced as the `quality_score`
-field on per-dataset rows of the function list views (`GET /spoke/ingestion`,
-`GET /spoke/validation`).
-The full breakdown (`overall_score`, `dimensions`, optional `dimension_details`) is
-returned by the dataset domain via the `QualityScore` model. The score is independent
-of the validation feature — datasets without validation configs still have a
-`quality_score` derived from aspects alone. The governance metric `validation-score`
-(see §Metrics Service) is a separate measurement computed from `validation_results`,
-not from aspects.
+**`quality_score` (optional, cache-backed)**: an optional composite quality score
+exposed via the `QualityScore` model (`overall_score`, `dimensions`). The dataset
+service reads it from the Redis cache key `quality:{dataset_urn}:score` (see
+[Cache Key Conventions](#cache-key-conventions)) and returns `null` when the key is
+absent — it does **not** compute the score itself. The baseline ships no scoring
+engine, so the field reads `null` unless an out-of-band process populates the cache.
+Dashboard-facing quality measurement is owned by the governance `validation-score`
+metric (see §Metrics Service), computed from `validation_results`.
 
 ### Ingestion Service (`src/backend/ingestion/`)
 
@@ -682,7 +667,8 @@ fired `tier` and runs each one under its own per-conf lock. A conf already runni
    untouched.
 7. **Persist** the accepted candidates as `metagen_candidates` rows with the
    producing `conf_id` and `status='llm_approved'`. Refresh
-   `metagen_candidate_embeddings` for the approved candidates that will inform
+   `metagen_candidate_embeddings` for these newly `llm_approved` candidates (and again
+   when a candidate is later promoted to `approved` via review) that will inform
    the next run's Reviewer RAG (the anchor pool is global per `kind`, conf-agnostic).
 
 The LLM step in step 5 runs inside the
@@ -856,7 +842,8 @@ or manual `POST /method/run`):
    appended after the seeds and is not stored.
 5. LLM proposes nodes per dataset. For each candidate, look up the closest existing
    node via `node_embeddings` (cosine similarity, threshold
-   `ONTOLOGY_NODE_REUSE_THRESHOLD`); if a match exists, reuse the existing node ID.
+   `ONTOLOGY_CONFIDENCE_THRESHOLD` — node reuse shares the confidence threshold, with no
+   separate constant); if a match exists, reuse the existing node ID.
    The reuse pool spans all non-`rejected` statuses (`llm_pending`, `llm_approved`,
    `approved`) so same-name proposals consolidate to one row regardless of which
    gate it has cleared. Otherwise emit a new `llm_pending` node.
@@ -940,7 +927,7 @@ not create. `PATCH` applies a partial update. The factory-default bootstrap inse
 directly and is unaffected by the create route.
 
 **Mode**: `active` runs the built-in measurer matching `metric_type`. `passive` is
-rejected at the schema layer with `501 NOT_IMPLEMENTED` — placeholder for ingesting
+rejected in the route handler with `501 NOT_IMPLEMENTED` — placeholder for ingesting
 results emitted by an external system, deferred to a future release.
 
 **Time windows** (`ingestion-freshness`, `validation-score`): the measurement window is
@@ -1058,8 +1045,10 @@ Event type values are **uppercase**, dot-delimited: `{DOMAIN}.{ACTION}`.
 ### Event Catalogue
 
 Config-lifecycle actions (`CONFIG_CREATE`, `CONFIG_UPDATE`, `CONFIG_DELETE`) are emitted
-by every domain that owns a config — `INGESTION`, `METRIC`,
-`ONTOGEN` (singleton), `METAGEN` (per conf, `entity_id=conf_id`). `VALIDATION` emits
+by every domain that owns a config — `METRIC`,
+`ONTOGEN` (singleton), `METAGEN` (per conf, `entity_id=conf_id`). `INGESTION` names its
+config-lifecycle events `SOURCE_CREATE`/`SOURCE_UPDATE`/`SOURCE_DELETE` instead, since its
+configuration resource is a source. `VALIDATION` emits
 `CONFIG_CREATE`/`CONFIG_UPDATE` but **no** `CONFIG_DELETE`: deleting a validation conf
 hard-deletes the dataset's validation events as part of its cascade, so recording a
 delete event would be self-defeating. Domain-specific actions:
@@ -1152,7 +1141,9 @@ the live DataHub URN set. Accepts an optional `dataset_urns` list in the body
 found in DataHub, false when it has disappeared. Returns counts
 `{checked, flipped_true, flipped_false, unchanged, not_found}`. This endpoint is the
 **on-demand / scoped** path (e.g. validation's per-dataset precision check). Scheduled
-full-estate reconciliation runs **hourly** as part of the `datahub-sync-hourly` sweep, which
+full-estate reconciliation runs **hourly** as part of the `datahub-sync-hourly` sweep
+(the DAG drives it via `POST /internal/activities/ingestion/sync`, i.e.
+`IngestionService.sync()` — not this admin endpoint), which
 enumerates DataHub once and reconciles `dataset_registry` — inserting newly-seen URNs and
 soft-flagging `datahub_registered` true/false — alongside the ingestion source→dataset mapping.
 An empty (but successful) enumeration is treated as "no signal" and skips the deregister pass
@@ -1192,7 +1183,15 @@ smoke check by `dataspoke-test-mode.sh` and by the test fixture
 | `metrics` | `metrics-{metric_id}` |
 
 If a duplicate is detected, the API returns `409 Conflict` with the appropriate `*_RUNNING`
-error code (`METAGEN_RUNNING`, `METRIC_RUNNING`, `ONTOGEN_RUNNING`, …).
+error code (`METAGEN_RUNNING`, `METRIC_RUNNING`, `ONTOGEN_RUNNING`, …). The conf-based
+dedup is enforced by `AirflowClient.check_no_duplicate()`, which queries running DAG runs
+and rejects when a run with a matching `conf` key/value already exists.
+
+**Airflow `max_active_runs`** caps concurrent runs per DAG independently of the locks
+above: `ingestion-active-*` = 5, `metrics-*` = 2, and `metagen-*`/`ontogen-*`/
+`datahub-sync-hourly`/`auth-role-sync-daily` = 1. Tier DAGs enumerate their work via
+the `list-active` activity endpoints (`/internal/activities/{ingestion,metrics}/list-active`,
+plus metagen's tier parameter) and fan out with Airflow `expand()`.
 
 ### Ingestion Workflow
 
@@ -1307,7 +1306,7 @@ Resilience and tuning constants defined in `src/shared/config.py`:
 | `BULK_BATCH_DELAY_MS` | 100 | Delay between bulk batches |
 | `EMBEDDING_DIMENSION` | 1536 | Vector dimension (matches LLM model) |
 | `ONTOLOGY_CONFIDENCE_THRESHOLD` | 0.7 | Ontogen: below this -> row persists as `llm_pending` |
-| `METAGEN_CONFIDENCE_THRESHOLD` | 0.7 | Metagen: below this -> candidate is dropped (metagen has no `llm_pending`) |
+| `METAGEN_CONFIDENCE_THRESHOLD` | 0.7 | Metagen: below this -> candidate is dropped (metagen has no `llm_pending`). Default only — the live value is the runtime-tunable `runtime_config.metagen_confidence_threshold` (`PATCH /admin/conf`), not a static constant |
 
 ---
 
@@ -1325,7 +1324,7 @@ This section captures the service-layer composition only.
 
 | Module | Responsibility |
 |--------|---------------|
-| `users.py` | DataSpoke user repository — create / read / update name / update password / hard delete; reads and writes `users.role`. bcrypt via `passlib.hash.bcrypt` at cost factor 12. Google `sub` linking onto existing rows. UNIQUE(email) → `409 EMAIL_ALREADY_REGISTERED`. |
+| `users.py` | DataSpoke user repository — create / read / update name / update password / hard delete; reads and writes `users.role`. bcrypt via the `bcrypt` library at cost factor 12. Google `sub` linking onto existing rows. UNIQUE(email) → `409 EMAIL_ALREADY_REGISTERED`. |
 | `tokens.py` | JWT issue / refresh / revoke. Refresh-token revocation list in Redis under `revoked_refresh:{sha256[:16]}`. The JWT carries identity only (`sub`, `email`, `exp`, `iat`); role is **not** in the JWT (read from `users.role` per request). |
 | `api_tokens.py` | Long-lived opaque API token CRUD. Mint generates `dsk_<token_urlsafe(32)>`, stores SHA-256 hash in `api_tokens.token_hash`, snapshots `users.role` into `role_snapshot`. Enforces 10-token-per-user cap (`409 TOKEN_LIMIT_EXCEEDED`). On lookup: computes `effective_role = min(role_snapshot, users.role)`; updates `last_used_at` throttled to per-minute granularity. Revoke sets `revoked_at = now()`. |
 | `oauth_google.py` | Google OAuth handler via `authlib.integrations.starlette_client`. State cookie (random opaque, HMAC-signed with `DATASPOKE_OAUTH_STATE_SECRET`) + ID-token `nonce` validation. On callback: resolve user by Google `sub`, then by email; create otherwise. |

@@ -167,7 +167,9 @@ does not serve. Host `pnpm dev` should use password login.
 `GET /auth/me` returns the caller's `users` row (without `password_hash`),
 including `users.role`. `PATCH /auth/me` accepts `{name?, password?}`:
 name updates write to DataSpoke `users` and propagate the new display name to
-DataHub via `corpUserInfo`; password updates rewrite `users.password_hash` only
+DataHub via `corpUserInfo` on a best-effort basis (a DataHub failure is logged and does
+not block the update — DataSpoke remains SSOT; the same best-effort posture applies to the
+name refresh on Google-OAuth login); password updates rewrite `users.password_hash` only
 and do not touch DataHub (consistent with the no-`corpUserCredentials`-writes
 rule).
 
