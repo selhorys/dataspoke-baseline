@@ -70,7 +70,6 @@ export function ValidationConfForm({
         label="description"
         htmlFor="validation-description"
         error={errors.description?.message}
-        required
       >
         <Textarea
           id="validation-description"
