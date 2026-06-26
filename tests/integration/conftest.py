@@ -107,7 +107,7 @@ _airflow_user = os.environ.get("DATASPOKE_TEST_AIRFLOW_USER", "")
 _airflow_password = os.environ.get("DATASPOKE_TEST_AIRFLOW_PASSWORD", "")
 
 _lock_owner = os.environ.get(
-    "DATASPOKE_LOCK_OWNER",
+    "DATASPOKE_TEST_LOCK_OWNER",
     f"integration-test-{os.environ.get('USER', 'unknown')}",
 )
 
@@ -301,10 +301,10 @@ def acquire_lock() -> None:
 
     # Two ingress modes: managed (LoadBalancer IP populated in DATASPOKE_KUBE_INGRESS_IP)
     # and shared (no IP — lock reached on 127.0.0.1 via port-forward). install.sh writes
-    # DATASPOKE_LOCK_URL for both modes, so prefer it; the IP is only a legacy fallback
+    # DATASPOKE_TEST_LOCK_URL for both modes, so prefer it; the IP is only a legacy fallback
     # and is read defensively (empty in shared mode) to avoid a KeyError.
     _ingress_ip = os.environ.get("DATASPOKE_KUBE_INGRESS_IP", "")
-    lock_url = os.environ.get("DATASPOKE_LOCK_URL", f"http://{_ingress_ip}:9221")
+    lock_url = os.environ.get("DATASPOKE_TEST_LOCK_URL", f"http://{_ingress_ip}:9221")
     try:
         resp = httpx.post(
             f"{lock_url}/lock/acquire",

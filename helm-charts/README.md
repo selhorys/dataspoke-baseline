@@ -161,12 +161,12 @@ Component names: `nginx-ingress`, `datahub`, `langfuse`, `dataspoke-infra`,
 The dev-lock service provides an advisory mutex for coordinating multi-tester
 access to shared dev-env resources.
 
-`install.sh` auto-populates `DATASPOKE_LOCK_URL` in `helm-charts/.env.dev`
+`install.sh` auto-populates `DATASPOKE_TEST_LOCK_URL` in `helm-charts/.env.dev`
 (`http://<INGRESS_IP>:9221` in managed mode, `http://127.0.0.1:9221` via
 `bin/port-forward.sh` in shared mode), so the same command works in both:
 
 ```bash
-LOCK_URL=$(grep DATASPOKE_LOCK_URL helm-charts/.env.dev | cut -d= -f2)
+LOCK_URL=$(grep DATASPOKE_TEST_LOCK_URL helm-charts/.env.dev | cut -d= -f2)
 curl -s -X POST ${LOCK_URL}/lock/acquire \
   -H "Content-Type: application/json" \
   -d '{"owner": "alice", "message": "running ingestion test"}'

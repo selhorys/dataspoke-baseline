@@ -990,7 +990,7 @@ if [[ "$PROFILE" == "dev" ]]; then
       "example-postgres.${DATASPOKE_DEV_KUBE_DUMMY_DATA_NAMESPACE}.svc.cluster.local:5432"
 
     # Dev-lock URL — same pattern: 127.0.0.1 in shared mode, LoadBalancer IP in managed.
-    _write_env_var "DATASPOKE_LOCK_URL" "http://${TCP_HOST}:9221"
+    _write_env_var "DATASPOKE_TEST_LOCK_URL" "http://${TCP_HOST}:9221"
 
     info ".env updated with DATASPOKE_TEST_* values."
   fi

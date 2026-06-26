@@ -387,7 +387,7 @@ controller); in shared mode it is `127.0.0.1`, reached via
 (9201/9202/9005/9102/9104/9221) are identical in both modes. The `_PORT`
 fields are these fixed passthrough ports, carried statically in `.env.dev.example`;
 only the host-bearing values (`_HOST`, `_HOST_PORT`, `_KAFKA_BROKERS`,
-`DATASPOKE_LOCK_URL`) are written by `install.sh`.
+`DATASPOKE_TEST_LOCK_URL`) are written by `install.sh`.
 
 - DataSpoke subsystem: `DATASPOKE_TEST_POSTGRES_{HOST,PORT,USER,PASSWORD,DB}`,
   `DATASPOKE_TEST_REDIS_{HOST,PORT,PASSWORD}`,
@@ -397,9 +397,9 @@ only the host-bearing values (`_HOST`, `_HOST_PORT`, `_KAFKA_BROKERS`,
   so locally-minted JWTs verify against the API pod)
 - DataHub access: `DATASPOKE_TEST_DATAHUB_{GMS_URL,TOKEN,KAFKA_BROKERS}`
 - Langfuse access: `DATASPOKE_TEST_LANGFUSE_{HOST,PUBLIC_KEY,SECRET_KEY}`
-- Dev-lock access: `DATASPOKE_LOCK_URL` — full base URL of the dev-env lock
+- Dev-lock access: `DATASPOKE_TEST_LOCK_URL` — full base URL of the dev-env lock
   service (`http://<host>:9221`, host per the laptop-side rule above). The
-  integration and E2E lock protocol uses `$DATASPOKE_LOCK_URL/lock/...`.
+  integration and E2E lock protocol uses `$DATASPOKE_TEST_LOCK_URL/lock/...`.
 - Dummy data source access: `DATASPOKE_TEST_DUMMY_DATA_{POSTGRES_HOST,POSTGRES_PORT,KAFKA_BROKERS}`
   — laptop-side, mode-dependent host (per the rule above), used by tests that
   read the example source directly.
@@ -484,7 +484,7 @@ hand: in managed mode `DATASPOKE_KUBE_INGRESS_{IP,DOMAIN}` (by
 the operator-pre-set `INGRESS_DOMAIN`), `DATASPOKE_TEST_DATAHUB_*` (by
 `dev-peripherals/datahub.sh`), `DATASPOKE_TEST_LANGFUSE_*` (by
 `dev-peripherals/langfuse.sh`), and the full `DATASPOKE_TEST_*` subsystem block —
-including `DATASPOKE_LOCK_URL` and
+including `DATASPOKE_TEST_LOCK_URL` and
 `DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST_PORT` — by `install.sh`
 post-install (`_sync_env_from_secret` extracts credentials from the
 `dataspoke-secrets` K8s Secret; the host-bearing vars take the laptop-side
@@ -779,7 +779,7 @@ Dev only. Runs after the umbrella chart's API deployment is Ready.
 
 | Script | Effect |
 |---|---|
-| `bin/post-install/seed-peripheral-config.sh` | PATCH `/internal/admin/peripherals/datahub` with `{gms_url, kafka_brokers}` and `/internal/admin/peripherals/langfuse` with `{host, public_key}`. The token / secret_key fields are populated into K8s Secrets out-of-band by the install script (so the API reads them via RBAC); only non-secret fields go through the admin API. |
+| `bin/post-install/seed-peripheral-config.sh` | PATCH `/internal/admin/peripherals/datahub` with `{gms_url, kafka_brokers}` and `/internal/admin/peripherals/langfuse` with `{host, public_key}`. When set in `.env.dev`, the script also forwards optional operator-supplied non-secret fields from `DATASPOKE_DEV_*` env vars: DataHub `service_corpuser_urn` and `default_env`; Langfuse `project_id` (from `DATASPOKE_DEV_LANGFUSE_INIT_PROJECT_ID`) and `environment_tag`. The secret fields — DataHub PAT `token` and Langfuse `secret_key` — are placed into K8s Secrets out-of-band by the install script before the API pod starts (the API reads them via RBAC); the seed script does not send them through the admin API — only non-secret fields go through it. |
 | `bin/post-install/seed-runtime-config.sh` | PATCH `/internal/admin/conf` with `{llm_provider, llm_model}` from `DATASPOKE_DEV_LLM_{PROVIDER,MODEL}`, then a second PATCH setting the four `stub_*` dependency flags (`stub_redis_client`, `stub_llm_client`, `stub_pgvector_manager`, `stub_notification_service`) to `true` for the dev profile. |
 | `bin/post-install/seed-admin-user.sh` | POST `/internal/admin/bootstrap` to idempotently seed the built-in `dataspoke@dataspoke.local / dataspoke` Admin user (returns `{created: false}` when any Admin already exists). Tolerates `503 DATAHUB_SYNC_FAILED` retries while DataHub finishes indexing corpuser/corpGroup aspects on a fresh install. See [feature/AUTH.md §Built-in Bootstrap Admin](AUTH.md#built-in-bootstrap-admin). |
 
