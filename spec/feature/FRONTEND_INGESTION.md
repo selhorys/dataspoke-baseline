@@ -32,7 +32,7 @@ the dataset's ingestion events fold into that page's unified **Events** panel
 ## List View (`/ingestion/conf`)
 
 One row per source: `name`, `mode` badge (`DATAHUB_MANAGED` / `ACTIVE_CUSTOM_MANAGED` /
-`PASSIVE`), `platform`, schedule, enabled state, covered-dataset count, and latest run status.
+`PASSIVE`), `platform`, schedule, covered-dataset count, and latest run status.
 A "Create source" button routes to `/ingestion/sources/new`; paginate. The filter offers
 ALL, DataHub-managed, Active, Passive — each maps to the `mode` query param on
 `GET /spoke/ingestion/sources` (DataHub-managed = `mode=DATAHUB_MANAGED`). Internal DataHub CLI

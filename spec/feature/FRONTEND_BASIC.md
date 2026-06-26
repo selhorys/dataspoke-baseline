@@ -42,6 +42,9 @@ from runtime config `datahubUrl`/`langfuseUrl`/`airflowUrl` (the
 `DATASPOKE_{DATAHUB,LANGFUSE,AIRFLOW}_URL` env vars, `NEXT_PUBLIC_*` in host dev);
 ReDoc from `apiBaseUrl` + `/redoc`. The DataHub icon links to `<datahubUrl>/login`
 (the `/login` suffix is DataHub-specific); Langfuse and Airflow use the bare URL.
+The same runtime config also carries `langfuseProjectId` (`DATASPOKE_LANGFUSE_PROJECT_ID`,
+`NEXT_PUBLIC_*` in host dev), used to deep-link evidence references into their Langfuse
+trace sessions.
 Operators control visibility by setting or
 omitting the URLs, so deployments that should not expose an infra UI simply leave
 its URL unset.

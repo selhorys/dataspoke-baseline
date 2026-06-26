@@ -97,7 +97,7 @@ The configuration is a small, fixed-shape document.
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `description` | `string` | yes | Free-form rule description. Surfaced in the DataHub assertion detail UI. ≤ 2,000 chars. No ASCII control characters except `\t` (0x09) and `\n` (0x0a). |
+| `description` | `string` | yes | Free-form rule description. Surfaced in the DataHub assertion detail UI. Required key, but the empty string is allowed. ≤ 2,000 chars. No ASCII control characters except `\t` (0x09) and `\n` (0x0a). |
 | `variables` | `list[object]` | yes | The variables this rule will report, each a `{name, description}` object. There MUST be ≥ 1 entry; hard cap **200** entries. |
 
 Each `variables` element:
