@@ -41,7 +41,7 @@ When both `_en.md` and `_kr.md` exist, read only English unless directed otherwi
 
 - H1 title; H2 sections; H3 sub-headings. ASCII diagrams for component/flow illustrations; tables for comparisons and field definitions; code blocks for schemas/interfaces/API examples.
 - Baseline feature names match MANIFESTO §2.1 exactly: **Ingestion Control**, **Validation**, **Ontology Generation**, **Metadata Generation**, **Governance**. Product name is always `DataSpoke` (no space).
-- API URIs follow the function-namespace pattern: `/api/v1/spoke/{ingestion,validation,ontogen,metagen,governance}/…`, per-dataset cross-feature routes at `/api/v1/spoke/common/data/{dataset_urn}/…`, plus `/api/v1/hub/…` for DataHub pass-through.
+- API URIs follow the function-namespace pattern: `/api/v1/spoke/{ingestion,validation,ontogen,metagen,governance}/…`, per-dataset cross-feature routes at `/api/v1/spoke/common/data/{dataset_urn}/…`.
 - **Focus on architecture, decisions, and constraints.** Remove verbatim template code, full code blocks, and script snippets that duplicate impl files. Bridge to third-party refs (DataHub etc.) briefly with links — don't duplicate field tables, don't omit.
 - **Timeless, present-state only.** Describe what the system is, not what it was. No historical record ("X was removed", "no longer Y", version/date/author metadata blocks).
 - For DataHub or API convention details, reference `DATAHUB_INTEGRATION.md` / `API_DESIGN_PRINCIPLE_en.md` rather than restating their rules.

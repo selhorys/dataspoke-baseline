@@ -79,7 +79,7 @@ existing DataHub installations; loose coupling enables independent deployment an
    `/spoke/common/data/{dataset_urn}/…` (the dataset resource). Cross-dataset list
    views and global features live under one namespace per MANIFESTO §2.1 feature —
    `/spoke/ingestion`, `/spoke/validation`, `/spoke/ontogen/`, `/spoke/metagen/`,
-   `/spoke/governance/`. DataHub pass-through under `/hub/`.
+   `/spoke/governance/`.
 4. **API-First** — The FastAPI implementation in `src/api/` is the single source of truth for the
    API contract, with auto-generated OpenAPI docs enabling parallel frontend development and
    AI-agent iteration.
@@ -96,7 +96,7 @@ existing DataHub installations; loose coupling enables independent deployment an
    nightly `auth-role-sync-daily` DAG reconciles drift (DataSpoke wins). DataHub UI access uses
    Google OIDC pointed at the same OAuth client as DataSpoke. JWT carries identity only
    (`sub`, `email`, `exp`, `iat`); per-request DB role lookup gates `/admin/*` and applies the
-   method × role matrix on `/spoke/*` and `/hub/*` (Reader = GET only). Long-lived API tokens
+   method × role matrix on `/spoke/*` (Reader = GET only). Long-lived API tokens
    are opaque, self-service minted under `/auth/api-tokens`, with intersection privilege
    (`effective = min(role_snapshot, current users.role)`). See [feature/AUTH.md](feature/AUTH.md).
 
@@ -179,7 +179,6 @@ Function-based URI structure — one namespace per MANIFESTO §2.1 feature:
 /api/v1/spoke/ontogen/...                    → Ontology Generation (global singleton)
 /api/v1/spoke/metagen/...                    → Metadata Generation (conf collection + global review queue)
 /api/v1/spoke/governance/...                 → Governance metrics
-/api/v1/hub/...                              → DataHub pass-through (optional ingress for clients)
 ```
 
 RESTful CRUD only — the baseline API has no WebSocket or SSE surface; clients poll
@@ -496,7 +495,7 @@ shared privilege boundary:
 | Scaffold | Lives in | Access | Audience |
 |----------|----------|--------|----------|
 | **Developer AI Scaffold** ([`AI_SCAFFOLD.md`](AI_SCAFFOLD.md)) | `.claude/` (in repo) | Full repo: specs, `src/`, helm, DB | Contributors building the product |
-| **End-User AI Scaffold** ([`AI_PLUGIN.md`](AI_PLUGIN.md)) | `plugin/` (distributable plugin) | Public API surface only (`/api/v1/{auth,spoke,hub}`, `/redoc`) | Engineers operating a deployed instance |
+| **End-User AI Scaffold** ([`AI_PLUGIN.md`](AI_PLUGIN.md)) | `plugin/` (distributable plugin) | Public API surface only (`/api/v1/{auth,spoke}`, `/redoc`) | Engineers operating a deployed instance |
 
 The Developer scaffold *builds* DataSpoke; the End-User plugin *consumes* a deployed
 DataSpoke.
@@ -520,7 +519,7 @@ DataSpoke.
 | Decision | Rationale |
 |----------|-----------|
 | DataHub as external dependency | Enterprises have existing installations; sidecar pattern enables independent lifecycle |
-| Two-axis URI segmentation | Per-dataset cross-feature surface at `/spoke/common/data/{dataset_urn}/…`; cross-dataset list views + global features under one namespace per MANIFESTO §2.1 feature (`/spoke/ingestion`, `/spoke/validation`, `/spoke/ontogen/`, `/spoke/metagen/`, `/spoke/governance/`); `/hub/` for DataHub pass-through |
+| Two-axis URI segmentation | Per-dataset cross-feature surface at `/spoke/common/data/{dataset_urn}/…`; cross-dataset list views + global features under one namespace per MANIFESTO §2.1 feature (`/spoke/ingestion`, `/spoke/validation`, `/spoke/ontogen/`, `/spoke/metagen/`, `/spoke/governance/`) |
 | Ontology Generation as a first-class feature | Metadata Generation (UC4) and Governance (UC5) both consume the node / triple graph; making Ontology Generation (UC3) a standalone feature avoids duplication and ensures consistency across consumers |
 | Validation as a passive result store | Validation logic belongs in the data pipeline (right credentials, right scale, right environment). DataSpoke contributes a centralized schema-disciplined result store, a historical-result baseline cache, and DataHub assertion emission on the pipeline's behalf. Teams that need multiple distinct checks per dataset use DataHub's native assertion APIs directly. See [`spec/feature/VALIDATION.md`](feature/VALIDATION.md). |
 | LLM as external service | Model-agnostic; swap providers without code changes; no GPU infrastructure required |

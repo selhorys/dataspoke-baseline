@@ -40,7 +40,6 @@ need — access to the deployment internals.
 |---------|-----|
 | `/api/v1/auth/…` | Login, profile, mint/list/revoke API tokens |
 | `/api/v1/spoke/…` | The five baseline features (ingestion, validation, ontogen, metagen, governance) |
-| `/api/v1/hub/…` | DataHub pass-through (notably `POST /hub/graphql` for dataset URN resolution) |
 | `/ready`, `/redoc` | Readiness probe and the live OpenAPI reference |
 
 **Out of scope** — explicitly never touched by any skill:
@@ -76,13 +75,16 @@ The plugin lives in a `plugin/` directory, and the repository that hosts it doub
     ├── .claude-plugin/
     │   └── plugin.json        ← plugin manifest (name "dataspoke", version, skills)
     ├── skills/<skill>/SKILL.md
-    └── bin/dataspoke-api      ← auth + base-URL curl wrapper
+    ├── bin/dataspoke-api      ← auth + base-URL curl wrapper
+    └── bin/datahub-graphql    ← direct-DataHub GraphQL helper (URN search)
 ```
 
-`bin/dataspoke-api` is the single I/O primitive: it resolves the base URL and token (see
-§Credential Model), attaches the `Authorization` header, and shells out to `curl`. Every
-skill calls the API through this wrapper rather than constructing auth inline, so credential
-handling lives in one audited place.
+`bin/dataspoke-api` is the single I/O primitive for the DataSpoke API: it resolves the base
+URL and token (see §Credential Model), attaches the `Authorization` header, and shells out to
+`curl`. Every skill calls the API through this wrapper rather than constructing auth inline, so
+credential handling lives in one audited place. `bin/datahub-graphql` is the parallel primitive
+for direct DataHub access — it resolves `datahub_gms_url` + `datahub_token` and posts a GraphQL
+query to `<datahub_gms_url>/graphql`, used by the validation skill for dataset-URN search.
 
 ### Distribution
 
@@ -123,12 +125,26 @@ Resolved configuration lives in `~/.dataspoke/config.json`, written `chmod 600`:
   "api_base_url": "https://dataspoke.example.com/api/v1",
   "token": "dsk_…",
   "redoc_url": "https://dataspoke.example.com/redoc",
-  "ui_url": "https://dataspoke.example.com"
+  "ui_url": "https://dataspoke.example.com",
+  "datahub_gms_url": "https://datahub.example.com/api/gms",
+  "datahub_token": "<DataHub PAT>"
 }
 ```
 
 Environment variables override the file when present, for CI and ephemeral shells:
-`DATASPOKE_API_URL`, `DATASPOKE_API_TOKEN`.
+`DATASPOKE_API_URL`, `DATASPOKE_API_TOKEN`, `DATAHUB_GMS_URL`, `DATAHUB_TOKEN`.
+
+### Optional DataHub access
+
+Alongside the `dsk_` token, the config may carry **optional** direct-DataHub
+credentials — a DataHub GMS URL (`datahub_gms_url`) and a DataHub personal access
+token (`datahub_token`). They are the user's own DataHub credentials, distinct from
+the DataSpoke token, and the same `chmod 600` file holds both. These power the
+validation skill's dataset-URN search, which queries DataHub's GraphQL endpoint
+directly (see §Validation Routine Authoring). DataHub access is optional: when it is
+absent, the URN-search capability is preserved — the plugin requests the user's
+DataHub GMS URL and token at the point of use and offers to persist them, rather than
+dropping the capability.
 
 ### Effective role
 
@@ -223,9 +239,15 @@ The engineer rarely knows the exact URN. The skill resolves it carefully, never 
    platform / schema / table signals.
 2. **Confirm with the user** — restate the inferred platform + schema + table and get
    explicit agreement before any lookup.
-3. **Resolve via DataHub search** — query `POST /api/v1/hub/graphql` (the pass-through) to
-   find candidate dataset URNs matching the confirmed identifiers.
-4. **Double-check** — present the resolved URN back to the user for final confirmation
+3. **Resolve via DataHub search** — query DataHub's GraphQL endpoint **directly** through
+   the `datahub-graphql` plugin helper, which posts a search query to `<datahub_gms_url>/graphql`
+   authenticated with the user-supplied DataHub token (§Optional DataHub access), to find
+   candidate dataset URNs matching the confirmed identifiers. When DataHub access is not yet
+   configured, the helper prompts for the GMS URL and token first.
+4. **Manual entry as a last resort** — when DataHub search returns no candidate (e.g. a
+   dataset not yet search-indexed), the skill accepts a user-supplied URN, never defaulting
+   to manual entry while search is viable.
+5. **Double-check** — present the resolved URN back to the user for final confirmation
    before it is used in any conf or result call. A wrong URN silently writes to the wrong
    dataset, so this confirmation is mandatory.
 

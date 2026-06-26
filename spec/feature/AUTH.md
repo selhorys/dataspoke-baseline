@@ -310,14 +310,14 @@ The privilege model is two-axis: URI prefix × HTTP method.
 | URI prefix | Reader | Editor | Admin |
 |------------|--------|--------|-------|
 | `/auth/*` (self-scoped) | ✓ all methods | ✓ all methods | ✓ all methods |
-| `/spoke/*`, `/hub/*` | ✓ `GET` / `HEAD` / `OPTIONS` only | ✓ all methods | ✓ all methods |
+| `/spoke/*` | ✓ `GET` / `HEAD` / `OPTIONS` only | ✓ all methods | ✓ all methods |
 | `/admin/*` | ✗ | ✗ | ✓ all methods |
 
 Failure responses:
 
 | Condition | Response |
 |---|---|
-| Reader attempting a write method on `/spoke/*` or `/hub/*` | `403 READ_ONLY_ROLE` |
+| Reader attempting a write method on `/spoke/*` | `403 READ_ONLY_ROLE` |
 | Reader on `GET /spoke/ingestion/secrets` (Editor+ exception — see below) | `403 READ_ONLY_ROLE` |
 | Editor or Reader attempting `/admin/*` | `403 FORBIDDEN` |
 | Role row missing (defensive — should not occur post-registration) | `403 FORBIDDEN` |
@@ -597,6 +597,6 @@ The following are explicitly not part of the baseline auth surface:
   the real DataSpoke user. User-level audit lives in the DataSpoke `events`
   table. See [DATAHUB_INTEGRATION §Service Credential Model](../DATAHUB_INTEGRATION.md#service-credential-model).
 - **Per-feature fine-grained authorisation.** The baseline gates routes by
-  prefix (`/spoke/*`, `/hub/*`, `/admin/*`) and HTTP method × role;
+  prefix (`/spoke/*`, `/admin/*`) and HTTP method × role;
   per-resource ACLs on individual datasets, runs, or reviews are out of
   scope and live in DataHub policies.

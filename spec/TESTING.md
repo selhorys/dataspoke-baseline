@@ -354,7 +354,7 @@ URN format: `urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.<schema>.<t
 the Imazon company narrative lives at the dataset / column level, not in the URN segment.)
 
 Route namespaces: `/api/v1/spoke/{governance,ingestion,validation,ontogen,metagen}/…`,
-`/api/v1/hub/…`, `/api/v1/auth/…` (public).
+`/api/v1/auth/…` (public).
 
 ### Verifying Side Effects
 

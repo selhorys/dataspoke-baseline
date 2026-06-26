@@ -20,7 +20,6 @@ from src.api.middleware.rate_limit import limiter
 from src.api.routers import admin as admin_router
 from src.api.routers import auth as auth_router
 from src.api.routers import health
-from src.api.routers import hub as hub_router
 from src.api.routers.internal import activities as internal_activities
 from src.api.routers.spoke import governance as spoke_governance
 from src.api.routers.spoke import ingestion as spoke_ingestion
@@ -52,7 +51,6 @@ _TRACE_HEADER = "X-Trace-Id"
 API_PREFIX = "/api/v1"
 SPOKE = f"{API_PREFIX}/spoke"
 SPOKE_COMMON = f"{SPOKE}/common"
-HUB = f"{API_PREFIX}/hub"
 
 
 @asynccontextmanager
@@ -318,10 +316,6 @@ def create_app() -> FastAPI:
             ),
         },
         {
-            "name": "hub",
-            "description": "Pass-through proxy to DataHub GMS GraphQL. Authenticated.",
-        },
-        {
             "name": "auth",
             "description": "JWT token management. No authentication required.",
         },
@@ -410,9 +404,6 @@ def create_app() -> FastAPI:
     app.include_router(spoke_ingestion.router,   prefix=SPOKE)
     app.include_router(spoke_validation.router,  prefix=SPOKE)
     app.include_router(spoke_governance.router,  prefix=f"{SPOKE}/governance")
-
-    # ── Hub pass-through routes ────────────────────────────────────────────────
-    app.include_router(hub_router.router, prefix=API_PREFIX)
 
     # ── Admin routes (Admin role only) ────────────────────────────────────────
     app.include_router(admin_router.router, prefix=API_PREFIX)

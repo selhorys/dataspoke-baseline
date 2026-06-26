@@ -34,7 +34,7 @@ Does the implementation match the feature spec?
 
 ### 2. Architecture adherence (weight: high)
 Does it follow DataSpoke conventions?
-- Three-tier API routing (`/api/v1/spoke/common/…`, `/api/v1/spoke/[de|da|dg]/…`, `/api/v1/hub/…`)
+- API routing (`/api/v1/spoke/common/…`, `/api/v1/spoke/[de|da|dg]/…`)
 - Service layer separation (routers thin, logic in `src/backend/`)
 - DataHub integration patterns per `spec/DATAHUB_INTEGRATION.md`
 - Airflow DAG conventions (max_active_runs, retries, HttpOperator)

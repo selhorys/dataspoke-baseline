@@ -170,7 +170,7 @@ class ForbiddenError(DataSpokeError):
 
     Valid error_code values:
       FORBIDDEN        — default; caller role not sufficient (e.g. Reader on /admin/*)
-      READ_ONLY_ROLE   — Reader attempting a write method on /spoke/* or /hub/*
+      READ_ONLY_ROLE   — Reader attempting a write method on /spoke/*
     """
 
     error_code: str = "FORBIDDEN"

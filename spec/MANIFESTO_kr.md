@@ -117,7 +117,6 @@ DataSpoke는 네 가지 컴포넌트로 구성된다.
   /api/v1/spoke/ontogen/…                     # 온톨로지 생성 (글로벌 싱글톤)
   /api/v1/spoke/metagen/…                     # 메타데이터 생성 (conf 컬렉션 + 글로벌 리뷰 큐)
   /api/v1/spoke/governance/…                  # 거버넌스 메트릭
-  /api/v1/hub/…                               # DataHub 패스스루 (클라이언트용 선택적 인그레스)
   ```
 - **DataSpoke Backend/Pipeline**: 인제스션, 검증, 온톨로지 생성,
   메타데이터 생성, 거버넌스(§2.1의 다섯 가지 기능) 등 핵심 로직 처리.

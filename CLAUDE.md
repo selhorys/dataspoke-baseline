@@ -33,7 +33,7 @@ Prod uses the same umbrella chart with `values.yaml` plus an operator-supplied o
 
 - **DataHub-backed SSOT**: DataHub stores metadata; DataSpoke extends without modifying core
 - **API-first**: FastAPI implementation in `src/api/` is the SSOT for the API contract; all APIs follow `spec/API_DESIGN_PRINCIPLE_en.md`
-- **Two-axis API routing**: per-dataset cross-feature routes at `/api/v1/spoke/common/data/{dataset_urn}/…`; cross-dataset list views and global features under `/api/v1/spoke/{ingestion,validation,ontogen,metagen,governance}/…`; `/api/v1/hub/…` for DataHub pass-through
+- **Two-axis API routing**: per-dataset cross-feature routes at `/api/v1/spoke/common/data/{dataset_urn}/…`; cross-dataset list views and global features under `/api/v1/spoke/{ingestion,validation,ontogen,metagen,governance}/…`
 - **Airflow 3.1.8** for workflow orchestration (fixed schedule tiers + on-demand HTTP triggers, LocalExecutor); **PostgreSQL 17** (with `pgvector` for vector search and Apache `age` installed as reserved graph infrastructure) for operational DB
 - **Self-hosted Langfuse** for LLM observability — dev-only peripheral in its own `langfuse-01` namespace (prod: operator-supplied); connection (host + keys) stored in the DB `peripheral_config` table via `/api/v1/admin/peripherals/langfuse` (absence disables tracing). See `spec/feature/BACKEND_LLM.md §Observability`.
 - **Headless / API-first**: backend's primary task is to support `spec/API.md`; frontend is a thin reference UI that consumes API routes verbatim (no invented endpoints); per `spec/feature/FRONTEND_BASIC.md` no streaming surface exists in the baseline — clients poll `event/...` and `attr/.../result`

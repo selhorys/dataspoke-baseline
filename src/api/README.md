@@ -10,7 +10,6 @@ Route namespaces (per [`spec/API.md`](../../spec/API.md)):
 - `/api/v1/spoke/ontogen/…` — ontology generation (global singleton)
 - `/api/v1/spoke/metagen/…` — metadata generation (global singleton)
 - `/api/v1/spoke/governance/…` — governance metrics
-- `/api/v1/hub/…` — DataHub pass-through
 - `/api/v1/auth/…` — JWT issue / refresh / revoke
 - `/api/v1/admin/…`, `/internal/…` — admin and internal-token-gated routes
 

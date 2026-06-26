@@ -146,7 +146,7 @@ async def test_require_authenticated_jwt_token_uses_jwt_path() -> None:
 async def test_require_writer_reader_on_post_raises_forbidden() -> None:
     """Reader + POST raises ForbiddenError('READ_ONLY_ROLE').
 
-    spec: spec/feature/AUTH.md §Privilege Model — Reader role on /spoke/* or /hub/*
+    spec: spec/feature/AUTH.md §Privilege Model — Reader role on /spoke/*
     POST/PUT/PATCH/DELETE → 403 READ_ONLY_ROLE.
     spec: spec/API.md §Access Control §Method × role gate.
     """
@@ -171,7 +171,7 @@ async def test_require_writer_reader_on_post_raises_forbidden() -> None:
 async def test_require_writer_reader_on_get_is_allowed() -> None:
     """Reader + GET is allowed (Reader can perform read-only operations).
 
-    spec: spec/feature/AUTH.md §Privilege Model — Reader can GET on /spoke/* and /hub/*.
+    spec: spec/feature/AUTH.md §Privilege Model — Reader can GET on /spoke/*.
     spec: spec/API.md §Access Control — Reader: GET/HEAD/OPTIONS only.
     """
     from src.backend.auth.privilege import require_writer
@@ -190,7 +190,7 @@ async def test_require_writer_reader_on_get_is_allowed() -> None:
 async def test_require_writer_editor_on_post_is_allowed() -> None:
     """Editor + POST is allowed.
 
-    spec: spec/feature/AUTH.md §Privilege Model — Editor can use all methods on /spoke/* and /hub/*.
+    spec: spec/feature/AUTH.md §Privilege Model — Editor can use all methods on /spoke/*.
     """
     from src.backend.auth.privilege import require_writer
 

@@ -268,7 +268,7 @@ reads as a spurious `404`/`401`, i.e. "side effect missing" when it isn't:
 
 | Call family | URL | Auth header |
 |---|---|---|
-| Public spoke / hub | `$BASE/api/v1/spoke/…` (or `/hub/…`) | `Authorization: Bearer $ADMIN_TOKEN` |
+| Public spoke | `$BASE/api/v1/spoke/…` | `Authorization: Bearer $ADMIN_TOKEN` |
 | Internal activity | `$BASE/internal/…` — **no `/api/v1`** | `X-Internal-Token: $INTERNAL_TOKEN` |
 | DataHub GMS GraphQL | `$GMS/api/graphql` | `Authorization: Bearer $GMS_TOKEN` |
 

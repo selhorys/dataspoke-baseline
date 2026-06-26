@@ -2,7 +2,7 @@
 name: dataspoke-validation
 description: Manage DataSpoke validation (UC2) and author validation routines into your own data pipeline. Use to register/edit a dataset's validation slot, post or query results, browse the cross-dataset list — and, the flagship capability, to generate a validation routine (compute metrics, fetch baseline, forecast, decide score, POST result) into the engineer's pipeline script. Triggers on "add a validation routine", "validate table X", "register validation metrics".
 argument-hint: "[manage | routine] [question or dataset]"
-allowed-tools: Read, Write, Edit, Grep, Glob, Bash(dataspoke-api *), WebFetch, AskUserQuestion
+allowed-tools: Read, Write, Edit, Grep, Glob, Bash(dataspoke-api *), Bash(datahub-graphql *), WebFetch, AskUserQuestion
 ---
 
 ## Purpose
@@ -61,11 +61,14 @@ Drive three phases in order.
 1. **Gather hints** — Grep/Glob the engineer's workspace (pipeline scripts, SQL, configs, dbt/
    Airflow files) for platform / schema / table signals.
 2. **Confirm** — restate the inferred platform + schema + table; get explicit agreement.
-3. **Resolve via DataHub search** — query the pass-through:
+3. **Resolve via DataHub search** — query DataHub's GraphQL endpoint directly:
    ```bash
-   dataspoke-api POST /hub/graphql '{"query":"query($q:String!){ search(input:{type:DATASET, query:$q, start:0, count:10}){ searchResults{ entity{ urn } } } }","variables":{"q":"<schema.table>"}}'
+   datahub-graphql '{"query":"query($q:String!){ search(input:{type:DATASET, query:$q, start:0, count:10}){ searchResults{ entity{ urn } } } }","variables":{"q":"<schema.table>"}}'
    ```
-   Present the candidate URNs.
+   Present the candidate URNs. This URN-search capability is preserved in full — if
+   `datahub-graphql` reports no DataHub access, send the user to `/dataspoke:dataspoke-access`
+   to add a DataHub GMS URL + token, then retry the search. Only if they decline DataHub access,
+   fall back to asking them to supply the exact URN manually (a last resort, never the default).
 4. **Double-check** — confirm the exact URN with the user before it is used in any call. A wrong
    URN silently writes to the wrong dataset.
 

@@ -1386,13 +1386,13 @@ implements the [Privilege Model](AUTH.md#privilege-model) matrix:
 
 - `require_authenticated` — JWT decode or API-token lookup; populates
   `request.state.user` and `request.state.effective_role`.
-- `require_writer` — used on `/spoke/*` and `/hub/*` write methods (POST /
+- `require_writer` — used on `/spoke/*` write methods (POST /
   PUT / PATCH / DELETE). Rejects with `403 READ_ONLY_ROLE` if
   `effective_role == "Reader"`.
 - `require_admin` — used on `/admin/*`. Rejects with `403 FORBIDDEN` if
   `effective_role != "Admin"`.
 
-GET / HEAD / OPTIONS on `/spoke/*` and `/hub/*` use `require_authenticated`
+GET / HEAD / OPTIONS on `/spoke/*` use `require_authenticated`
 only. `/auth/*` writes use `require_authenticated` only (the method gate is
 exempt — self-scoped writes).
 

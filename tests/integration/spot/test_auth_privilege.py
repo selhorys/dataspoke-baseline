@@ -139,7 +139,7 @@ async def test_reader_get_spoke_common_allowed(
     """Reader + GET on /spoke/* → allowed (200).
 
     spec: spec/feature/AUTH.md §Privilege Model —
-    Reader on /spoke/* and /hub/*: GET/HEAD/OPTIONS only → allowed.
+    Reader on /spoke/*: GET/HEAD/OPTIONS only → allowed.
     """
     resp = await api_client.get(
         _SPOKE_COMMON_GET_URL,
@@ -158,7 +158,7 @@ async def test_reader_post_spoke_common_returns_403(
 ) -> None:
     """Reader + POST on /spoke/* → 403 READ_ONLY_ROLE.
 
-    spec: spec/feature/AUTH.md §Privilege Model — Reader role on /spoke/* or /hub/*
+    spec: spec/feature/AUTH.md §Privilege Model — Reader role on /spoke/*
     POST/PUT/PATCH/DELETE → 403 READ_ONLY_ROLE.
     spec: spec/API.md §Authentication — method × role gate.
     """
@@ -205,7 +205,7 @@ async def test_editor_post_spoke_common_allowed(
 ) -> None:
     """Editor + POST on /spoke/* is allowed (not 403).
 
-    spec: spec/feature/AUTH.md §Privilege Model — Editor can use all methods on /spoke/* and /hub/*.
+    spec: spec/feature/AUTH.md §Privilege Model — Editor can use all methods on /spoke/*.
     """
     resp = await api_client.post(
         _SPOKE_COMMON_POST_URL,

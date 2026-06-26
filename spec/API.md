@@ -41,7 +41,6 @@ axes:
 /api/v1/spoke/ontogen/…                    — Ontology Generation (global singleton)
 /api/v1/spoke/metagen/…                    — Metadata Generation (conf collection + global review queue)
 /api/v1/spoke/governance/…                 — Governance metrics
-/api/v1/hub/…                              — DataHub pass-through (optional ingress for clients)
 ```
 
 The API is the only **HTTP-facing** component for external clients (the portal UI and
@@ -147,10 +146,10 @@ callers. The DB lookup is in the same request transaction as other route work
 | URI prefix | Gate | Notes |
 |------------|------|-------|
 | `/auth/…` | none (public) | login, register, password reset, OAuth callback are public; `/auth/me`, `/auth/api-tokens`, `/auth/token/refresh`, `/auth/token/revoke` require an authenticated caller |
-| `/spoke/…`, `/hub/…` | authenticated; method × role gate applies (see below) | all authenticated users, with method-based restriction by role |
+| `/spoke/…` | authenticated; method × role gate applies (see below) | all authenticated users, with method-based restriction by role |
 | `/admin/…` | `users.role = 'Admin'` | Admin only |
 
-**Method × role gate** (applies on `/spoke/*` and `/hub/*`):
+**Method × role gate** (applies on `/spoke/*`):
 
 | Role | GET / HEAD / OPTIONS | POST / PUT / PATCH / DELETE |
 |------|---------------------|-----------------------------|
@@ -522,17 +521,6 @@ validation.
 **Payload caps** (validated at the schema layer; cap violations return `422`):
 - `attr/conf.dataset_filter.{tags,glossary_terms,dataset_urns}` ≤ 1,000 entries per dimension
 
-### DataHub Pass-Through (`/hub`)
-
-Optional ingress that forwards requests to DataHub GMS. Useful for clients that want a
-single base URL. Authentication is still enforced by DataSpoke; the request is proxied
-after JWT validation.
-
-| Method | Path | Purpose |
-|--------|------|---------|
-| `POST` | `/hub/graphql` | Proxy DataHub GraphQL queries |
-| `*` | `/hub/openapi/{path:path}` | Proxy DataHub REST OpenAPI endpoints (all methods) |
-
 ### Admin (`/admin`)
 
 Operator and system routes accessible to users with the DataSpoke `Admin` role.
@@ -773,7 +761,7 @@ default 120 req/min). On 429 the response body matches the standard error envelo
 (`error_code: "RATE_LIMIT_EXCEEDED"`, `message`, `trace_id`, `resp_time`) and headers
 include `Retry-After` plus `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`;
 (4) **JWT validation** — verify signature/expiry and extract claims;
-(5) **role enforcement** — read `users.role`, apply the method × role gate on `/spoke/*` and `/hub/*` and the Admin-only gate on `/admin/*`;
+(5) **role enforcement** — read `users.role`, apply the method × role gate on `/spoke/*` and the Admin-only gate on `/admin/*`;
 (6) **route handler** — FastAPI DI + business logic;
 (7) **response logging** — status, latency, trace ID.
 
@@ -880,7 +868,7 @@ Clients should treat `detail` as optional; absent for errors that don't need it.
 | `OAUTH_NOT_CONFIGURED` | 503 | `GET /auth/google/{login,callback}` invoked while Google OAuth credentials or the OAuth-state HMAC secret are not configured — operator must set `DATASPOKE_GOOGLE_OAUTH_CLIENT_{ID,SECRET}` and `DATASPOKE_OAUTH_STATE_SECRET` |
 | `GOOGLE_ACCOUNT_LINKED_ELSEWHERE` | 409 | `GET /auth/google/callback` resolved a Google `sub` that is already linked to a different DataSpoke user (one Google account per user) |
 | `INVALID_REFRESH_TOKEN` | 401 | `POST /auth/token/refresh` received a structurally-valid JWT whose `type` claim is not `"refresh"` (e.g. an access token presented at the refresh endpoint) |
-| `READ_ONLY_ROLE` | 403 | Caller has `Reader` role (or an API token with effective `Reader` privilege); route requires `Editor` or `Admin` (any write method on `/spoke/*` or `/hub/*`, or the Editor+ read route `GET /spoke/ingestion/secrets`) |
+| `READ_ONLY_ROLE` | 403 | Caller has `Reader` role (or an API token with effective `Reader` privilege); route requires `Editor` or `Admin` (any write method on `/spoke/*`, or the Editor+ read route `GET /spoke/ingestion/secrets`) |
 | `INVALID_API_TOKEN` | 401 | `Authorization: Bearer dsk_...` token does not match any `api_tokens` row, or the format is malformed |
 | `TOKEN_REVOKED` | 401 | API token row exists but `revoked_at` is set |
 | `TOKEN_EXPIRED` | 401 | API token row exists but `expires_at` is in the past |

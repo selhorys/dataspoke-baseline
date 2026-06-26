@@ -5,7 +5,7 @@ Claude at your organization's DataSpoke, ask how things work, and drive the publ
 ingestion, manage validation, and **author validation routines into your own pipelines**.
 
 It is the end-user counterpart to the in-repo developer scaffold (`.claude/`, which *builds*
-DataSpoke). This plugin only ever talks to a deployment's **public API** (`/api/v1/{auth,spoke,hub}`,
+DataSpoke). This plugin only ever talks to a deployment's **public API** (`/api/v1/{auth,spoke}`,
 `/ready`, `/redoc`) — never helm, kubectl, source, or the database. See `spec/AI_PLUGIN.md` for the
 full specification.
 

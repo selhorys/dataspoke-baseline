@@ -8,7 +8,7 @@
 #   dataspoke-api <METHOD> <PATH> [JSON_BODY]
 #
 #   METHOD     GET | POST | PUT | PATCH | DELETE
-#   PATH       Feature paths (/auth, /spoke, /hub) are prefixed with /api/v1
+#   PATH       Feature paths (/auth, /spoke) are prefixed with /api/v1
 #              automatically. Root paths (/ready, /redoc, /health, /openapi.json)
 #              and any already-/api/v1-prefixed path are used as-is.
 #   JSON_BODY  optional request body (a JSON string)

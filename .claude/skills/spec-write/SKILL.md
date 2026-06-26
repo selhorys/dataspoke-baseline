@@ -77,7 +77,7 @@ Use the template for the chosen destination. Follow these style rules for both:
 - Code blocks for schemas, interfaces, API examples
 - Baseline feature names must match the MANIFESTO §2.1 exactly: **Ingestion Control**, **Validation**, **Ontology Generation**, **Metadata Generation**, **Governance**
 - Product name is always `DataSpoke` (no space)
-- API URIs follow the function-namespace pattern: `/api/v1/spoke/{governance,ingestion,validation,ontogen,metagen}/…` plus `/api/v1/hub/…` (DataHub pass-through)
+- API URIs follow the function-namespace pattern: `/api/v1/spoke/{governance,ingestion,validation,ontogen,metagen}/…`
 - For DataHub integration details, reference `DATAHUB_INTEGRATION.md` rather than duplicating SDK patterns or aspect catalogs
 - For API convention details, reference `API_DESIGN_PRINCIPLE_en.md` rather than restating URI/response format rules
 - When referencing architecture-level concepts (shared services, data flows, tech stack), align with `ARCHITECTURE.md`

@@ -8,3 +8,4 @@
 - [EXISTS subquery auto-correlate](feedback_exists_subquery_autocorrelate.md) — EXISTS over a table already in outer FROM raises InvalidRequestError at build; compile real SQL, mocks miss it
 - [Helm stale local subchart tgz](project_helm_stale_local_subchart_tgz.md) — umbrella renders stale charts/*.tgz not subcharts/ source; verify via standalone render
 - [Runtime env-file rename blast radius](project_runtime_envfile_rename_blast_radius.md) — renaming helm-charts/.env→.env.dev breaks ~17 hardcoded loaders/skills + a gitignore secret-leak gotcha
+- ["No references remain" brace grep](feedback_no_references_remain_brace_grep.md) — `/hub` grep stays clean while `{auth,spoke,hub}` brace-list survives; grep token-level minus homographs

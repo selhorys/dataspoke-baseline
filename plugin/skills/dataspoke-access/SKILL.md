@@ -18,11 +18,17 @@ Access lives in `~/.dataspoke/config.json` (`chmod 600`):
   "api_base_url": "https://dataspoke.example.com/api/v1",
   "token": "dsk_…",
   "redoc_url": "https://dataspoke.example.com/redoc",
-  "ui_url": "https://dataspoke.example.com"
+  "ui_url": "https://dataspoke.example.com",
+  "datahub_gms_url": "https://datahub.example.com/gms",
+  "datahub_token": "…"
 }
 ```
 
-Environment variables override the file when present: `DATASPOKE_API_URL`, `DATASPOKE_API_TOKEN`.
+`datahub_gms_url` and `datahub_token` are **optional** — they are only needed for the validation
+skill's DataHub URN search (the `datahub-graphql` helper), not for basic DataSpoke access.
+
+Environment variables override the file when present: `DATASPOKE_API_URL`, `DATASPOKE_API_TOKEN`
+(and, for the DataHub URN search, `DATAHUB_GMS_URL`, `DATAHUB_TOKEN`).
 
 ## Modes
 
@@ -65,15 +71,23 @@ already exists, otherwise `set`.
      Capture `token` from the second response immediately — it is never retrievable again.
      Never echo the password back; do not store it.
 
-3. **Write the config.** Restrict the directory **before** writing the file, so the token is
+3. **Optionally collect DataHub access.** Ask whether the user wants to enable the validation
+   skill's DataHub URN search. If yes, collect the DataHub GMS origin (e.g.
+   `https://datahub.example.com/gms`) and a DataHub personal access token, to be written as
+   `datahub_gms_url` and `datahub_token`. These are optional — skip them for basic DataSpoke
+   access. Treat the DataHub token exactly like the `dsk_` token: never echo it back, never store
+   it anywhere but the mode-600 config (or the env override).
+
+4. **Write the config.** Restrict the directory **before** writing the file, so the token is
    never briefly readable by other local users during the write:
    ```bash
    mkdir -p ~/.dataspoke && chmod 700 ~/.dataspoke
    # write config.json with api_base_url, token, redoc_url, ui_url
+   # (plus optional datahub_gms_url, datahub_token when DataHub URN search is enabled)
    chmod 600 ~/.dataspoke/config.json
    ```
 
-4. **Verify** with `dataspoke-api GET /auth/me` and report the resolved role. Remind the user
+5. **Verify** with `dataspoke-api GET /auth/me` and report the resolved role. Remind the user
    that **write** operations (ingestion source CRUD, validation conf/result writes) require an
    **Editor** or **Admin** role; a Reader token returns `403 READ_ONLY_ROLE`.
 
