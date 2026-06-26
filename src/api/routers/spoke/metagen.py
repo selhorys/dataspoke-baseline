@@ -97,10 +97,14 @@ async def get_metagen_confs(
     sort: str | None = Query(default=None),
     service: MetagenService = Depends(get_metagen_service),
 ) -> MetagenConfListResponse:
-    """List metagen confs (paginated; sortable by created_at, updated_at)."""
+    """List metagen confs (paginated; sortable by created_at, updated_at, name)."""
     order_by = parse_sort(
         sort,
-        {"created_at": MetagenConfig.created_at, "updated_at": MetagenConfig.updated_at},
+        {
+            "created_at": MetagenConfig.created_at,
+            "updated_at": MetagenConfig.updated_at,
+            "name": MetagenConfig.name,
+        },
         None,
     )
     dtos, total = await service.list_confs(offset=offset, limit=limit, order_by=order_by)
@@ -406,10 +410,14 @@ async def get_metagen_items(
     sort: str | None = Query(default=None),
     service: MetagenService = Depends(get_metagen_service),
 ) -> MetagenItemListResponse:
-    """List metagen items (paginated; sortable by created_at, updated_at)."""
+    """List metagen items (paginated; sortable by created_at, updated_at, dataset_urn)."""
     order_by = parse_sort(
         sort,
-        {"created_at": MetagenItem.created_at, "updated_at": MetagenItem.updated_at},
+        {
+            "created_at": MetagenItem.created_at,
+            "updated_at": MetagenItem.updated_at,
+            "dataset_urn": MetagenItem.dataset_urn,
+        },
         None,
     )
     dtos, total = await service.list_items(

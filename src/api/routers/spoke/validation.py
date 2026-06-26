@@ -36,7 +36,14 @@ async def get_validation(
     Each row aggregates per-dataset attr/validation/* (conf description + variable count
     + latest result data_time and score).  Default ordering: updated_at DESC.
     """
-    order_by = parse_sort(sort, {"updated_at": ValidationConfig.updated_at}, None)
+    order_by = parse_sort(
+        sort,
+        {
+            "dataset_urn": ValidationConfig.dataset_urn,
+            "updated_at": ValidationConfig.updated_at,
+        },
+        None,
+    )
     items, total_count = await service.list_configs(
         offset=offset,
         limit=limit,

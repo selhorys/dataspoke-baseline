@@ -628,7 +628,15 @@ async def get_users(
     """List all DataSpoke users (paginated; sortable by created_at, email)."""
     from src.shared.db.models import User
 
-    order_by = parse_sort(sort, {"created_at": User.created_at, "email": User.email}, None)
+    order_by = parse_sort(
+        sort,
+        {
+            "created_at": User.created_at,
+            "updated_at": User.updated_at,
+            "email": User.email,
+        },
+        None,
+    )
     user_list, total = await users.list_users(db, limit=limit, offset=offset, order_by=order_by)
     return UsersListResponse(
         offset=offset,

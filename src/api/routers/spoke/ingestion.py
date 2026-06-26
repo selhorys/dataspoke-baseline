@@ -87,7 +87,14 @@ async def get_ingestion_sources(
     CLI wrapper sources are internal plumbing and never appear in the list — their
     run events surface on the regular parent.
     """
-    order_by = parse_sort(sort, {"created_at": IngestionSource.created_at}, None)
+    order_by = parse_sort(
+        sort,
+        {
+            "created_at": IngestionSource.created_at,
+            "updated_at": IngestionSource.updated_at,
+        },
+        None,
+    )
     sources, total_count = await service.list_sources(
         offset=offset,
         limit=limit,
@@ -253,12 +260,20 @@ async def get_ingestion_source_datasets(
 
     Each row carries ``dataset_urn``, ``authority``, ``derivation``,
     ``first_seen_at``, and ``last_seen_at``. The mapping is rebuilt by the
-    hourly sync DAG. Paginated; sortable by ``dataset_urn`` (default:
-    ``last_seen_at`` descending).
+    hourly sync DAG. Paginated; sortable by ``dataset_urn`` / ``first_seen_at`` /
+    ``last_seen_at`` (default: ``dataset_urn`` ascending).
 
     Returns ``404 INGESTION_SOURCE_NOT_FOUND`` when the id is absent.
     """
-    order_by = parse_sort(sort, {"dataset_urn": IngestionSourceDataset.dataset_urn}, None)
+    order_by = parse_sort(
+        sort,
+        {
+            "dataset_urn": IngestionSourceDataset.dataset_urn,
+            "first_seen_at": IngestionSourceDataset.first_seen_at,
+            "last_seen_at": IngestionSourceDataset.last_seen_at,
+        },
+        IngestionSourceDataset.dataset_urn.asc(),
+    )
     datasets, total_count = await service.list_datasets_for_source(
         source_id=id, offset=offset, limit=limit, order_by=order_by
     )
@@ -340,7 +355,8 @@ async def get_ingestion_unmanaged(
     Returns URNs that exist in DataHub (``datahub_registered=True``) and have
     no row in ``ingestion_source_dataset``. The registry is populated by the
     hourly sync DAG; an empty list means all known datasets have an owning source.
-    Paginated; sortable by ``dataset_urn`` (default: ``dataset_urn`` ascending).
+    Paginated; sortable by ``dataset_urn`` / ``created_at`` / ``updated_at``
+    (default: ``dataset_urn_asc``).
     """
     # Subquery: dataset_urns that DO have a source mapping.
     mapped_subq = select(IngestionSourceDataset.dataset_urn).scalar_subquery()
@@ -355,7 +371,11 @@ async def get_ingestion_unmanaged(
 
     order_by = parse_sort(
         sort,
-        {"dataset_urn": DatasetRegistry.dataset_urn},
+        {
+            "dataset_urn": DatasetRegistry.dataset_urn,
+            "created_at": DatasetRegistry.created_at,
+            "updated_at": DatasetRegistry.updated_at,
+        },
         DatasetRegistry.dataset_urn,
     )
     rows_q = base_q.order_by(order_by).offset(offset).limit(limit)

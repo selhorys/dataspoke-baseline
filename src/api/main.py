@@ -363,12 +363,15 @@ def create_app() -> FastAPI:
     app.add_exception_handler(StorageUnavailableError, _handle_storage)  # type: ignore[arg-type]
     app.add_exception_handler(DataSpokeError, _handle_dataspoke_generic)  # type: ignore[arg-type]
 
-    # ── Middleware (applied bottom-up; order matches spec/feature/API.md) ──────
-    # 5. Rate limiting
+    # ── Middleware (applied bottom-up; outermost = last added) ────────────────
+    # Spec stack order (API.md §Middleware): 1 CORS, 2 logging, 3 rate-limit,
+    # 4 JWT, 5 role, 6 handler. Steps 4–6 run as route-level Depends (see NOTE
+    # below), so only 1–3 are registered as Starlette middleware here.
+    # 3. Rate limiting
     app.add_middleware(SlowAPIMiddleware)
     # 2. Request logging (also adds trace ID header)
     app.add_middleware(RequestLoggingMiddleware)
-    # 1b. Session (required by authlib OAuth state/nonce storage)
+    # Session (auxiliary — required by authlib OAuth state/nonce storage)
     app.add_middleware(
         SessionMiddleware,
         secret_key=settings.oauth_state_secret or settings.jwt_secret_key,
