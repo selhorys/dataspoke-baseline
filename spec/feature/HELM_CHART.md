@@ -327,10 +327,13 @@ Same convention in both profiles; values differ.
   DataSpoke installs and owns an nginx-ingress controller + LoadBalancer
   (GKE Autopilot / minikube). `shared`: DataSpoke reuses a pre-existing
   cluster ingress controller and installs nothing (AWS/EKS). See §Ingress.
-- `DATASPOKE_KUBE_INGRESS_CLASS` — IngressClass name DataSpoke's Ingress
-  resources reference (default `nginx`). Consulted only in shared mode, where
-  the install verifies this class exists; in managed mode the installed
-  controller registers the fixed `nginx` class from `values-dev.yaml`.
+- `DATASPOKE_KUBE_INGRESS_CLASS` — IngressClass name. Currently the only
+  supported value is `nginx`: DataSpoke's Ingress resources hardcode this class
+  (`values{,-dev}.yaml`, `install.sh`) and carry nginx-specific annotations, so
+  the variable is consulted only in shared mode, where the install verifies the
+  class exists. In managed mode the installed controller registers the fixed
+  `nginx` class from `values-dev.yaml`. Non-`nginx` classes are future work
+  (see §Ingress).
 - `DATASPOKE_KUBE_INGRESS_IP` — managed: populated by the nginx-ingress
   install from the LoadBalancer external IP; shared: blank (no owned
   LoadBalancer); prod: operator-supplied as needed.
