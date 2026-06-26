@@ -14,10 +14,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.api.main import app
 from src.api.dependencies import get_airflow_client, get_datahub, get_db
-
-from tests.unit.api.conftest import auth_headers, make_token
+from src.api.main import app
+from tests.unit.api.conftest import auth_headers
 
 _ADMIN_VERIFY = "/api/v1/admin/dags/verify"
 _INTERNAL_VERIFY = "/internal/admin/dags/verify"
@@ -65,7 +64,7 @@ async def test_verify_dags_admin_role_returns_200(client) -> None:
 
     spec: feature/BACKEND.md §DAG Catalogue — response contains found, missing, total_expected.
     """
-    from src.api.auth.dependencies import require_authenticated, require_admin
+    from src.api.auth.dependencies import require_admin, require_authenticated
     from src.backend.auth.privilege import AuthContext
     from tests.unit.api.conftest import _make_mock_user
 
@@ -78,7 +77,7 @@ async def test_verify_dags_admin_role_returns_200(client) -> None:
     app.dependency_overrides[require_admin] = lambda: admin_ctx
     app.dependency_overrides[get_airflow_client] = lambda: mock_airflow
     try:
-        resp = await client.post(_ADMIN_VERIFY, headers=auth_headers(["admin"]))
+        resp = await client.post(_ADMIN_VERIFY, headers=auth_headers())
     finally:
         app.dependency_overrides.pop(require_authenticated, None)
         app.dependency_overrides.pop(require_admin, None)

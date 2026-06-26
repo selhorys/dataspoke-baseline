@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from src.backend.auth.tokens import issue_access_token
 from src.api.main import app
+from src.backend.auth.tokens import issue_access_token
 
 _STATE_ATTRS = ("datahub", "redis", "vector", "airflow")
 
@@ -55,7 +55,11 @@ async def client() -> AsyncClient:
     The mocks are torn down after each test so they don't leak across modules.
     """
     from src.api.dependencies import get_db, get_redis
-    from src.backend.admin.config_service import RUNTIME_CONFIG_DEFAULTS, RuntimeConfigDTO, get_runtime_config
+    from src.backend.admin.config_service import (
+        RUNTIME_CONFIG_DEFAULTS,
+        RuntimeConfigDTO,
+        get_runtime_config,
+    )
 
     for attr in _STATE_ATTRS:
         setattr(app.state, attr, MagicMock(name=attr))
@@ -99,25 +103,27 @@ async def client() -> AsyncClient:
                 delattr(app.state, attr)
 
 
-def make_token(role: str = "Editor", subject: str | None = None) -> str:
-    """Create a real (signed) access token for the given role.
+def make_token(subject: str | None = None) -> str:
+    """Create a real (signed) access token.
 
     ``subject`` must be a UUID string; a random UUID is generated when omitted.
-    The token sub carries the UUID; the DB role lookup in require_authenticated
-    must be mocked in tests that call protected endpoints.
+    The token sub carries the UUID and no role claim — the principal's role is
+    resolved from the DB row in ``require_authenticated`` (see
+    ``src/backend/auth/privilege.py``). Tests that exercise role-gated endpoints
+    set the role on the mocked ``User`` (or override ``require_authenticated`` /
+    ``require_admin``) at their own call site.
     """
     user_id = uuid.UUID(subject) if subject else uuid.uuid4()
     token, _ = issue_access_token(user_id, f"{user_id}@test.example.com")
     return token
 
 
-def auth_headers(
-    role: str = "Editor",
-    subject: str | None = None,
-) -> dict[str, str]:
-    """Return Authorization header dict.
+def auth_headers(subject: str | None = None) -> dict[str, str]:
+    """Return an Authorization header dict for a freshly signed access token.
 
-    ``role`` is used only when callers override ``require_authenticated`` via
-    ``app.dependency_overrides``; the JWT itself carries no role or groups claim.
+    The JWT carries no role or groups claim; authorization derives from the DB
+    role of the resolved principal. The ``client`` fixture's DB mock returns an
+    Admin ``User`` by default — tests needing a different role set it on that
+    mocked ``User`` or override ``require_authenticated`` / ``require_admin``.
     """
-    return {"Authorization": f"Bearer {make_token(role=role, subject=subject)}"}
+    return {"Authorization": f"Bearer {make_token(subject=subject)}"}

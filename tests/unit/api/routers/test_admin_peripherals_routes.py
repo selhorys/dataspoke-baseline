@@ -277,7 +277,7 @@ async def test_get_peripherals_is_configured_true_when_dto_and_secret_set(client
             patch("src.api.routers.admin.datahub_token_is_set", return_value=True),
             patch("src.api.routers.admin.langfuse_secret_key_is_set", return_value=True),
         ):
-            resp = await client.get(_PERIPHERALS, headers=auth_headers(["admin"]))
+            resp = await client.get(_PERIPHERALS, headers=auth_headers())
     finally:
         app.dependency_overrides.pop(get_db, None)
 
@@ -307,7 +307,7 @@ async def test_get_peripherals_is_configured_false_when_dto_none(client) -> None
             patch("src.api.routers.admin.datahub_token_is_set", return_value=True),
             patch("src.api.routers.admin.langfuse_secret_key_is_set", return_value=True),
         ):
-            resp = await client.get(_PERIPHERALS, headers=auth_headers(["admin"]))
+            resp = await client.get(_PERIPHERALS, headers=auth_headers())
     finally:
         app.dependency_overrides.pop(get_db, None)
 
@@ -340,7 +340,7 @@ async def test_get_peripherals_is_configured_false_when_dto_present_but_secret_u
             patch("src.api.routers.admin.datahub_token_is_set", return_value=False),
             patch("src.api.routers.admin.langfuse_secret_key_is_set", return_value=False),
         ):
-            resp = await client.get(_PERIPHERALS, headers=auth_headers(["admin"]))
+            resp = await client.get(_PERIPHERALS, headers=auth_headers())
     finally:
         app.dependency_overrides.pop(get_db, None)
 
@@ -378,7 +378,7 @@ async def test_get_peripherals_is_configured_false_when_secret_set_but_dto_none(
             patch("src.api.routers.admin.datahub_token_is_set", return_value=True),
             patch("src.api.routers.admin.langfuse_secret_key_is_set", return_value=True),
         ):
-            resp = await client.get(_PERIPHERALS, headers=auth_headers(["admin"]))
+            resp = await client.get(_PERIPHERALS, headers=auth_headers())
     finally:
         app.dependency_overrides.pop(get_db, None)
 
@@ -416,7 +416,7 @@ async def test_get_datahub_peripheral_is_configured_false_when_secret_set_but_dt
             ),
             patch("src.api.routers.admin.datahub_token_is_set", return_value=True),
         ):
-            resp = await client.get(_PERIPHERALS_DH, headers=auth_headers(["admin"]))
+            resp = await client.get(_PERIPHERALS_DH, headers=auth_headers())
     finally:
         app.dependency_overrides.pop(get_db, None)
 
@@ -447,7 +447,7 @@ async def test_get_langfuse_peripheral_is_configured_false_when_secret_set_but_d
             ),
             patch("src.api.routers.admin.langfuse_secret_key_is_set", return_value=True),
         ):
-            resp = await client.get(_PERIPHERALS_LF, headers=auth_headers(["admin"]))
+            resp = await client.get(_PERIPHERALS_LF, headers=auth_headers())
     finally:
         app.dependency_overrides.pop(get_db, None)
 
@@ -479,7 +479,7 @@ async def test_get_datahub_peripheral_token_masked_when_set(client) -> None:
             ),
             patch("src.api.routers.admin.datahub_token_is_set", return_value=True),
         ):
-            resp = await client.get(_PERIPHERALS_DH, headers=auth_headers(["admin"]))
+            resp = await client.get(_PERIPHERALS_DH, headers=auth_headers())
     finally:
         app.dependency_overrides.pop(get_db, None)
 
@@ -514,7 +514,7 @@ async def test_get_datahub_peripheral_token_empty_when_unset(client) -> None:
             ),
             patch("src.api.routers.admin.datahub_token_is_set", return_value=False),
         ):
-            resp = await client.get(_PERIPHERALS_DH, headers=auth_headers(["admin"]))
+            resp = await client.get(_PERIPHERALS_DH, headers=auth_headers())
     finally:
         app.dependency_overrides.pop(get_db, None)
 
@@ -542,7 +542,7 @@ async def test_get_datahub_peripheral_empty_fields_when_unconfigured(client) -> 
             ),
             patch("src.api.routers.admin.datahub_token_is_set", return_value=False),
         ):
-            resp = await client.get(_PERIPHERALS_DH, headers=auth_headers(["admin"]))
+            resp = await client.get(_PERIPHERALS_DH, headers=auth_headers())
     finally:
         app.dependency_overrides.pop(get_db, None)
 
@@ -588,7 +588,7 @@ async def test_patch_datahub_token_routes_to_secret_not_db(client) -> None:
             resp = await client.patch(
                 _PERIPHERALS_DH,
                 json={"token": "dh-token-value"},
-                headers=auth_headers(["admin"]),
+                headers=auth_headers(),
             )
     finally:
         app.dependency_overrides.pop(get_db, None)
@@ -630,7 +630,7 @@ async def test_patch_datahub_secret_write_failure_returns_503_and_skips_db(clien
             resp = await client.patch(
                 _PERIPHERALS_DH,
                 json={"token": "sk-test", "gms_url": "http://gms:8080"},
-                headers=auth_headers(["admin"]),
+                headers=auth_headers(),
             )
             # DB must NOT be updated when Secret write failed.
             mock_patch_db.assert_not_called()
@@ -665,7 +665,7 @@ async def test_patch_datahub_empty_token_clears_secret(client) -> None:
             resp = await client.patch(
                 _PERIPHERALS_DH,
                 json={"token": ""},
-                headers=auth_headers(["admin"]),
+                headers=auth_headers(),
             )
             mock_set_token.assert_called_once_with("")
     finally:
@@ -699,7 +699,7 @@ async def test_patch_datahub_omitting_token_does_not_touch_secret(client) -> Non
             resp = await client.patch(
                 _PERIPHERALS_DH,
                 json={"gms_url": "http://new-gms:8080"},
-                headers=auth_headers(["admin"]),
+                headers=auth_headers(),
             )
             mock_set_token.assert_not_called()
     finally:
@@ -730,7 +730,7 @@ async def test_patch_datahub_gms_url_and_kafka_brokers_written_to_db(client) -> 
             resp = await client.patch(
                 _PERIPHERALS_DH,
                 json={"gms_url": "http://new-gms:8080", "kafka_brokers": "kafka-new:9092"},
-                headers=auth_headers(["admin"]),
+                headers=auth_headers(),
             )
             mock_patch_db.assert_called_once()
             call_args = mock_patch_db.call_args
@@ -766,7 +766,7 @@ async def test_get_langfuse_peripheral_secret_key_masked_when_set(client) -> Non
             ),
             patch("src.api.routers.admin.langfuse_secret_key_is_set", return_value=True),
         ):
-            resp = await client.get(_PERIPHERALS_LF, headers=auth_headers(["admin"]))
+            resp = await client.get(_PERIPHERALS_LF, headers=auth_headers())
     finally:
         app.dependency_overrides.pop(get_db, None)
 
@@ -800,7 +800,7 @@ async def test_get_langfuse_peripheral_empty_fields_when_unconfigured(client) ->
             ),
             patch("src.api.routers.admin.langfuse_secret_key_is_set", return_value=False),
         ):
-            resp = await client.get(_PERIPHERALS_LF, headers=auth_headers(["admin"]))
+            resp = await client.get(_PERIPHERALS_LF, headers=auth_headers())
     finally:
         app.dependency_overrides.pop(get_db, None)
 
@@ -843,7 +843,7 @@ async def test_patch_langfuse_secret_key_routes_to_secret_not_db(client) -> None
             resp = await client.patch(
                 _PERIPHERALS_LF,
                 json={"secret_key": "lf-secret-value"},
-                headers=auth_headers(["admin"]),
+                headers=auth_headers(),
             )
             mock_set_secret.assert_called_once_with("lf-secret-value")
             call_kwargs = mock_patch_db.call_args
@@ -884,7 +884,7 @@ async def test_patch_langfuse_secret_write_failure_returns_503(client) -> None:
             resp = await client.patch(
                 _PERIPHERALS_LF,
                 json={"secret_key": "lf-secret", "host": "http://langfuse:3000"},
-                headers=auth_headers(["admin"]),
+                headers=auth_headers(),
             )
             mock_patch_db.assert_not_called()
     finally:
@@ -915,7 +915,7 @@ async def test_patch_langfuse_empty_secret_key_clears_secret(client) -> None:
             resp = await client.patch(
                 _PERIPHERALS_LF,
                 json={"secret_key": ""},
-                headers=auth_headers(["admin"]),
+                headers=auth_headers(),
             )
             mock_set_secret.assert_called_once_with("")
     finally:
@@ -1106,7 +1106,7 @@ async def test_patch_datahub_empty_body_does_not_create_row(client) -> None:
             resp = await client.patch(
                 _PERIPHERALS_DH,
                 json={},
-                headers=auth_headers(["admin"]),
+                headers=auth_headers(),
             )
     finally:
         app.dependency_overrides.pop(get_db, None)
@@ -1150,7 +1150,7 @@ async def test_get_datahub_returns_service_corpuser_urn_and_default_env_plain(cl
             ),
             patch("src.api.routers.admin.datahub_token_is_set", return_value=True),
         ):
-            resp = await client.get(_PERIPHERALS_DH, headers=auth_headers(["admin"]))
+            resp = await client.get(_PERIPHERALS_DH, headers=auth_headers())
     finally:
         app.dependency_overrides.pop(get_db, None)
 
@@ -1185,7 +1185,7 @@ async def test_get_datahub_unconfigured_reads_back_factory_defaults(client) -> N
             ),
             patch("src.api.routers.admin.datahub_token_is_set", return_value=False),
         ):
-            resp = await client.get(_PERIPHERALS_DH, headers=auth_headers(["admin"]))
+            resp = await client.get(_PERIPHERALS_DH, headers=auth_headers())
     finally:
         app.dependency_overrides.pop(get_db, None)
 
@@ -1227,7 +1227,7 @@ async def test_patch_datahub_new_fields_written_to_db_and_reflected(client) -> N
                     "service_corpuser_urn": "urn:li:corpuser:imazon-svc",
                     "default_env": "PROD",
                 },
-                headers=auth_headers(["admin"]),
+                headers=auth_headers(),
             )
             mock_patch_db.assert_called_once()
             _, kwargs = mock_patch_db.call_args
@@ -1265,7 +1265,7 @@ async def test_get_langfuse_returns_project_id_and_environment_tag_plain(client)
             ),
             patch("src.api.routers.admin.langfuse_secret_key_is_set", return_value=True),
         ):
-            resp = await client.get(_PERIPHERALS_LF, headers=auth_headers(["admin"]))
+            resp = await client.get(_PERIPHERALS_LF, headers=auth_headers())
     finally:
         app.dependency_overrides.pop(get_db, None)
 
@@ -1302,7 +1302,7 @@ async def test_patch_langfuse_new_fields_written_to_db_and_reflected(client) -> 
             resp = await client.patch(
                 _PERIPHERALS_LF,
                 json={"project_id": "imazon-metadata", "environment_tag": "production"},
-                headers=auth_headers(["admin"]),
+                headers=auth_headers(),
             )
             mock_patch_db.assert_called_once()
             _, kwargs = mock_patch_db.call_args
@@ -1345,7 +1345,7 @@ async def test_patch_datahub_rejects_malformed_corpuser_urn(client, bad_value) -
             resp = await client.patch(
                 _PERIPHERALS_DH,
                 json={"service_corpuser_urn": bad_value},
-                headers=auth_headers(["admin"]),
+                headers=auth_headers(),
             )
             assert resp.status_code == 422, f"expected 422 for {bad_value!r}"
             mock_patch_db.assert_not_called()
@@ -1375,7 +1375,7 @@ async def test_patch_datahub_rejects_malformed_default_env(client, bad_value) ->
             resp = await client.patch(
                 _PERIPHERALS_DH,
                 json={"default_env": bad_value},
-                headers=auth_headers(["admin"]),
+                headers=auth_headers(),
             )
             assert resp.status_code == 422, f"expected 422 for {bad_value!r}"
             mock_patch_db.assert_not_called()
@@ -1407,7 +1407,7 @@ async def test_patch_datahub_accepts_empty_strings_to_clear_new_fields(client) -
             resp = await client.patch(
                 _PERIPHERALS_DH,
                 json={"service_corpuser_urn": "", "default_env": ""},
-                headers=auth_headers(["admin"]),
+                headers=auth_headers(),
             )
     finally:
         app.dependency_overrides.pop(get_db, None)

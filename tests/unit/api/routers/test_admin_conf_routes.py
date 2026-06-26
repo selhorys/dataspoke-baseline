@@ -297,7 +297,7 @@ async def test_get_conf_returns_200_with_all_22_fields(client) -> None:
             ),
             patch("src.api.routers.admin.llm_api_key_is_set", return_value=False),
         ):
-            resp = await client.get(_ADMIN_CONF, headers=auth_headers(["admin"]))
+            resp = await client.get(_ADMIN_CONF, headers=auth_headers())
     finally:
         app.dependency_overrides.pop(get_db, None)
 
@@ -332,7 +332,7 @@ async def test_get_conf_includes_resp_time(client) -> None:
             ),
             patch("src.api.routers.admin.llm_api_key_is_set", return_value=False),
         ):
-            resp = await client.get(_ADMIN_CONF, headers=auth_headers(["admin"]))
+            resp = await client.get(_ADMIN_CONF, headers=auth_headers())
     finally:
         app.dependency_overrides.pop(get_db, None)
 
@@ -359,7 +359,7 @@ async def test_get_conf_includes_updated_at(client) -> None:
             ),
             patch("src.api.routers.admin.llm_api_key_is_set", return_value=False),
         ):
-            resp = await client.get(_ADMIN_CONF, headers=auth_headers(["admin"]))
+            resp = await client.get(_ADMIN_CONF, headers=auth_headers())
     finally:
         app.dependency_overrides.pop(get_db, None)
 
@@ -389,7 +389,7 @@ async def test_get_conf_llm_api_key_masked_when_set(client) -> None:
             ),
             patch("src.api.routers.admin.llm_api_key_is_set", return_value=True),
         ):
-            resp = await client.get(_ADMIN_CONF, headers=auth_headers(["admin"]))
+            resp = await client.get(_ADMIN_CONF, headers=auth_headers())
     finally:
         app.dependency_overrides.pop(get_db, None)
 
@@ -419,7 +419,7 @@ async def test_get_conf_llm_api_key_empty_when_unset(client) -> None:
             ),
             patch("src.api.routers.admin.llm_api_key_is_set", return_value=False),
         ):
-            resp = await client.get(_ADMIN_CONF, headers=auth_headers(["admin"]))
+            resp = await client.get(_ADMIN_CONF, headers=auth_headers())
     finally:
         app.dependency_overrides.pop(get_db, None)
 
@@ -459,7 +459,7 @@ async def test_patch_conf_returns_200_with_updated_fields(client) -> None:
             resp = await client.patch(
                 _ADMIN_CONF,
                 json={"llm_model": "gpt-4o-mini", "ontogen_debate_max_turns": 6},
-                headers=auth_headers(["admin"]),
+                headers=auth_headers(),
             )
     finally:
         app.dependency_overrides.pop(get_db, None)
@@ -495,7 +495,7 @@ async def test_patch_conf_llm_api_key_routes_to_secret_not_db(client) -> None:
             resp = await client.patch(
                 _ADMIN_CONF,
                 json={"llm_api_key": "sk-test-key"},
-                headers=auth_headers(["admin"]),
+                headers=auth_headers(),
             )
 
             # set_llm_api_key must be called with the plaintext value.
@@ -547,7 +547,7 @@ async def test_patch_conf_llm_api_key_empty_string_clears_key(client) -> None:
             resp = await client.patch(
                 _ADMIN_CONF,
                 json={"llm_api_key": ""},
-                headers=auth_headers(["admin"]),
+                headers=auth_headers(),
             )
 
             mock_set_key.assert_called_once_with("")
@@ -573,7 +573,7 @@ async def test_patch_conf_out_of_bounds_value_returns_422(client) -> None:
     resp = await client.patch(
         _ADMIN_CONF,
         json={"ontogen_debate_max_turns": 11},
-        headers=auth_headers(["admin"]),
+        headers=auth_headers(),
     )
     assert resp.status_code == 422, (
         f"ontogen_debate_max_turns=11 exceeds le=10 bound; "
@@ -590,7 +590,7 @@ async def test_patch_conf_confidence_threshold_above_1_returns_422(client) -> No
     resp = await client.patch(
         _ADMIN_CONF,
         json={"metagen_confidence_threshold": 1.5},
-        headers=auth_headers(["admin"]),
+        headers=auth_headers(),
     )
     assert resp.status_code == 422, (
         f"metagen_confidence_threshold=1.5 exceeds le=1.0 bound; "
@@ -607,7 +607,7 @@ async def test_patch_conf_validation_score_n_intervals_zero_returns_422(client) 
     resp = await client.patch(
         _ADMIN_CONF,
         json={"validation_score_n_intervals": 0},
-        headers=auth_headers(["admin"]),
+        headers=auth_headers(),
     )
     assert resp.status_code == 422, (
         f"validation_score_n_intervals=0 violates ge=1 bound; "
@@ -629,7 +629,7 @@ async def test_patch_conf_llm_api_key_over_8192_chars_returns_422(client) -> Non
     resp = await client.patch(
         _ADMIN_CONF,
         json={"llm_api_key": oversized_key},
-        headers=auth_headers(["admin"]),
+        headers=auth_headers(),
     )
     assert resp.status_code == 422, (
         f"llm_api_key longer than 8192 chars must return 422 (schema bound); "
@@ -660,7 +660,7 @@ async def test_patch_conf_llm_api_key_out_of_cluster_returns_503(client) -> None
             resp = await client.patch(
                 _ADMIN_CONF,
                 json={"llm_api_key": "sk-test-key"},
-                headers=auth_headers(["admin"]),
+                headers=auth_headers(),
             )
     finally:
         app.dependency_overrides.pop(get_db, None)

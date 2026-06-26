@@ -265,8 +265,7 @@ fi
 # Generate Personal Access Token (PAT) for SDK/CLI access
 # ---------------------------------------------------------------------------
 if [[ -n "${DATASPOKE_KUBE_INGRESS_DOMAIN:-}" ]]; then
-  DATAHUB_FRONTEND="http://datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN}"
-  GMS_URL="${DATAHUB_FRONTEND}/gms"
+  GMS_URL="http://datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN}/gms"
 
   # Re-read .env to pick up any existing token
   source "$ENV_FILE"
@@ -289,49 +288,55 @@ if [[ -n "${DATASPOKE_KUBE_INGRESS_DOMAIN:-}" ]]; then
 
   if [[ "$NEED_TOKEN" == "true" ]]; then
     info "Generating DataHub personal access token..."
-    COOKIE_FILE=$(mktemp)
-    trap 'rm -f "$COOKIE_FILE"' EXIT
-    curl -s -X POST "${DATAHUB_FRONTEND}/logIn" \
-      -H "Content-Type: application/json" \
-      -d '{"username":"datahub","password":"datahub"}' \
-      -c "$COOKIE_FILE" -o /dev/null 2>/dev/null
 
-    # Poll for the createAccessToken privilege to bootstrap.
-    info "  Waiting for createAccessToken privilege to bootstrap..."
-    PRIV_TIMEOUT=120
-    PRIV_ELAPSED=0
-    PRIV_READY=false
-    while (( PRIV_ELAPSED < PRIV_TIMEOUT )); do
-      HAS_PRIV=$(curl -s -X POST "${DATAHUB_FRONTEND}/api/graphql" \
-        -H "Content-Type: application/json" \
-        -b "$COOKIE_FILE" \
-        -d '{"query":"{ me { platformPrivileges { generatePersonalAccessTokens } } }"}' 2>/dev/null \
-        | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['me']['platformPrivileges']['generatePersonalAccessTokens'])" 2>/dev/null \
-        || echo "false")
-      if [[ "$HAS_PRIV" == "True" ]]; then
-        PRIV_READY=true
-        break
-      fi
-      sleep 5
-      (( PRIV_ELAPSED += 5 ))
-    done
-    if [[ "$PRIV_READY" != "true" ]]; then
-      warn "  generatePersonalAccessTokens privilege did not bootstrap within ${PRIV_TIMEOUT}s — attempting anyway."
+    # The system client id is the DataHub default identifier (config
+    # DATAHUB_SYSTEM_CLIENT_ID, default __datahub_system); it is not a Secret.
+    # Only the system_client_secret lives in datahub-auth-secrets.
+    SYS_ID="${DATAHUB_SYSTEM_CLIENT_ID:-__datahub_system}"
+    SYS_SECRET=$(kubectl get secret datahub-auth-secrets -n "${NS}" \
+      -o jsonpath='{.data.system_client_secret}' 2>/dev/null \
+      | base64 -d 2>/dev/null || echo "")
+
+    if [[ -z "$SYS_SECRET" ]]; then
+      error "datahub-auth-secrets in namespace '${NS}' is missing or lacks system_client_secret — cannot mint PAT."
     fi
 
-    PAT_RESPONSE=$(curl -s -X POST "${DATAHUB_FRONTEND}/api/graphql" \
+    # Obtain a GMS session token for the datahub user via system-auth.
+    # The Authorization header carries credentials in plaintext (<id>:<secret>);
+    # DataHub's DataHubSystemAuthenticator splits on ':' after stripping "Basic ".
+    # userId is sent in the JSON body (AuthServiceController reads it from there).
+    # Retry to tolerate GMS still initialising after the readiness gates above.
+    info "  Obtaining GMS session token for datahub user..."
+    MINT_TIMEOUT=120
+    MINT_ELAPSED=0
+    SESSION_TOKEN=""
+    while (( MINT_ELAPSED < MINT_TIMEOUT )); do
+      RESP=$(curl -s -X POST \
+        "${GMS_URL}/auth/generateSessionTokenForUser?userId=datahub" \
+        -H "Authorization: Basic ${SYS_ID}:${SYS_SECRET}" \
+        -H "Content-Type: application/json" \
+        -d '{"userId":"datahub"}' \
+        2>/dev/null || echo "")
+      SESSION_TOKEN=$(printf '%s' "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['accessToken'] if isinstance(d, dict) else d)" 2>/dev/null || echo "")
+      [[ -n "$SESSION_TOKEN" ]] && break
+      sleep 10
+      (( MINT_ELAPSED += 10 ))
+    done
+
+    if [[ -z "$SESSION_TOKEN" ]]; then
+      error "Failed to obtain a GMS session token after ${MINT_TIMEOUT}s — cannot mint PAT."
+    fi
+
+    PAT_RESPONSE=$(curl -s -X POST "${GMS_URL}/api/graphql" \
+      -H "Authorization: Bearer ${SESSION_TOKEN}" \
       -H "Content-Type: application/json" \
-      -b "$COOKIE_FILE" \
-      -d '{"query":"mutation { createAccessToken(input: { type: PERSONAL, actorUrn: \"urn:li:corpuser:datahub\", duration: NO_EXPIRY, name: \"dev-env-token\" }) { accessToken } }"}' 2>/dev/null)
-    rm -f "$COOKIE_FILE"
-    trap - EXIT
+      -d '{"query":"mutation { createAccessToken(input: { type: PERSONAL, actorUrn: \"urn:li:corpuser:datahub\", duration: NO_EXPIRY, name: \"dev-env-token\" }) { accessToken } }"}' 2>/dev/null || echo "")
 
     NEW_TOKEN=$(echo "$PAT_RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['createAccessToken']['accessToken'])" 2>/dev/null || echo "")
     if [[ -n "$NEW_TOKEN" ]]; then
       upsert_env_var DATASPOKE_TEST_DATAHUB_TOKEN "${NEW_TOKEN}" "$ENV_FILE"
       info "DataHub PAT written to .env as DATASPOKE_TEST_DATAHUB_TOKEN."
     else
-      warn "Failed to generate DataHub PAT. You may need to create one manually."
       # Extract only the errors[] array — never log the raw response which may
       # contain a partial token, user URNs, or platform-privilege metadata.
       ERRORS=$(echo "$PAT_RESPONSE" | python3 -c "
@@ -344,6 +349,7 @@ except Exception as e:
     print(f'<unparseable response: {e}>')
 ")
       warn "DataHub GraphQL errors: $ERRORS"
+      error "Failed to generate DataHub PAT — cannot proceed without DATASPOKE_TEST_DATAHUB_TOKEN."
     fi
   fi
 fi

@@ -12,7 +12,6 @@ install scripts.  Tier B TCP defaults:
 """
 
 import asyncio
-import base64
 import json
 import os
 import uuid
@@ -25,7 +24,6 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 import pytest_asyncio
-import requests
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
@@ -37,6 +35,7 @@ from sqlalchemy.ext.asyncio import (
 
 from src.shared.cache.client import RedisClient
 from src.shared.datahub.client import DataHubClient
+from tests.integration.util.auth import login_headers
 
 _PROJECT_ROOT = str(Path(__file__).resolve().parents[2])
 
@@ -92,7 +91,6 @@ def _shared_ingress_url() -> str:
 # ── Shared infrastructure env vars ────────────────────────────────────────────
 
 _datahub_gms_url = os.environ["DATASPOKE_TEST_DATAHUB_GMS_URL"]
-_datahub_frontend_url = os.environ.get("DATASPOKE_DEV_DATAHUB_FRONTEND_URL", "")
 _datahub_token = os.environ.get("DATASPOKE_TEST_DATAHUB_TOKEN", "")
 
 _redis_host = os.environ["DATASPOKE_TEST_REDIS_HOST"]
@@ -110,42 +108,6 @@ _lock_owner = os.environ.get(
     "DATASPOKE_TEST_LOCK_OWNER",
     f"integration-test-{os.environ.get('USER', 'unknown')}",
 )
-
-
-# ── Shared helpers ────────────────────────────────────────────────────────────
-
-
-def _get_datahub_session_token() -> str:
-    """Get a DataHub session token via frontend login for dev-env testing."""
-    resp = requests.post(
-        f"{_datahub_frontend_url}/logIn",
-        json={"username": "datahub", "password": "datahub"},
-        timeout=5,
-    )
-    resp.raise_for_status()
-    cookie = resp.headers.get("Set-Cookie", "")
-    if "PLAY_SESSION=" not in cookie:
-        return ""
-    play_session = cookie.split("PLAY_SESSION=")[1].split(";")[0]
-    payload = play_session.split(".")[1]
-    payload += "=" * (4 - len(payload) % 4)
-    data = json.loads(base64.b64decode(payload))
-    return data.get("data", {}).get("token", "")
-
-
-def _auth_headers() -> dict[str, str]:
-    """Create JWT auth headers for integration test requests.
-
-    Signs a token using the backend token helper so the secret matches the
-    one the in-cluster API pod uses (synced via DATASPOKE_TEST_JWT_SECRET_KEY).
-    """
-    import uuid
-
-    from src.backend.auth.tokens import issue_access_token
-
-    fake_user_id = uuid.UUID("00000000-0000-0000-0000-000000000001")
-    token, _ = issue_access_token(fake_user_id, "integration-test@example.com")
-    return {"Authorization": f"Bearer {token}"}
 
 
 # ── Shared fixtures ───────────────────────────────────────────────────────────
@@ -179,13 +141,101 @@ async def async_session(async_engine: AsyncEngine) -> AsyncGenerator[AsyncSessio
 
 @pytest_asyncio.fixture
 async def datahub_client():
-    token = _datahub_token
-    if not token:
+    if not _datahub_token:
+        pytest.skip("DATASPOKE_TEST_DATAHUB_TOKEN not set")
+    return DataHubClient(gms_url=_datahub_gms_url, token=_datahub_token)
+
+
+# ── API server + auth fixtures (shared by spot + api_wired layers) ────────────
+
+
+@pytest.fixture(scope="session", autouse=True)
+def require_server(runtime_conf) -> None:  # noqa: ARG001 — runtime_conf performs stub preflight
+    """Assert the API server is reachable, infra stubs are on, and DAGs are registered.
+
+    Shared by both the spot and api-wired layers (inherited from this parent
+    conftest). Checks:
+    1. runtime_conf preflight confirms stub_redis_client, stub_pgvector_manager,
+       stub_notification_service are true (stub_llm_client intentionally excluded
+       so real-LLM tests can run).
+    2. GET /health returns 200.
+    3. Best-effort POST /internal/admin/bootstrap so the admin account exists even
+       after a prior `--reset-all` wiped it (real login failures still surface in
+       step 4). spot previously skipped this and silently relied on the admin being
+       seeded elsewhere.
+    4. POST /api/v1/admin/dags/verify returns 200 (admin JWT auth).
+
+    If any check fails, the test session is aborted with a clear message.
+    """
+    base_url = _shared_ingress_url()
+
+    # Check liveness — /health has no /api/v1 prefix (mounted at root)
+    try:
+        resp = httpx.get(f"{base_url}/health", timeout=10.0)
+        if resp.status_code != 200:
+            pytest.fail(
+                f"GET /health returned {resp.status_code}. Server not running? Try: "
+                "./helm-charts/bin/install.sh --profile dev --components api --skip-build"
+            )
+    except httpx.ConnectError as exc:
+        pytest.fail(
+            f"Cannot connect to API at {base_url}: {exc}. Try: "
+            "./helm-charts/bin/install.sh --profile dev --components api --skip-build"
+        )
+
+    # Ensure the bootstrap admin user exists before minting a token.
+    internal_token = os.environ.get("DATASPOKE_TEST_INTERNAL_TOKEN", "")
+    if internal_token:
         try:
-            token = _get_datahub_session_token()
+            httpx.post(
+                f"{base_url}/internal/admin/bootstrap",
+                headers={"X-Internal-Token": internal_token, "Content-Type": "application/json"},
+                content="{}",
+                timeout=30.0,
+            )
         except Exception:
-            pytest.skip("Cannot obtain DataHub token (frontend unreachable)")
-    return DataHubClient(gms_url=_datahub_gms_url, token=token)
+            pass  # Best-effort — may already exist; token login below will surface real failures.
+
+    # Obtain admin token and verify DAGs
+    try:
+        headers = login_headers(base_url, "dataspoke@dataspoke.local", "dataspoke")
+    except Exception as exc:
+        pytest.fail(f"Cannot obtain admin token: {exc}")
+
+    try:
+        verify_resp = httpx.post(
+            f"{base_url}/api/v1/admin/dags/verify",
+            headers=headers,
+            timeout=30.0,
+        )
+        if verify_resp.status_code != 200:
+            pytest.fail(
+                f"POST /admin/dags/verify returned {verify_resp.status_code}: {verify_resp.text}. "
+                "DAGs may not be registered. Try: "
+                "./helm-charts/bin/install.sh --profile dev --components api --skip-build"
+            )
+    except Exception as exc:
+        pytest.fail(f"POST /admin/dags/verify failed: {exc}")
+
+    yield  # type: ignore[misc]
+
+
+@pytest.fixture(scope="session")
+def admin_headers(require_server) -> dict[str, str]:  # noqa: ARG001 — gates on server readiness
+    """Session-scoped Authorization header dict for the bootstrap admin user."""
+    return login_headers(_shared_ingress_url(), "dataspoke@dataspoke.local", "dataspoke")
+
+
+@pytest.fixture(scope="session")
+def admin_token(admin_headers: dict[str, str]) -> str:
+    """Session-scoped admin JWT access token (bare token, no ``Bearer `` prefix)."""
+    return admin_headers["Authorization"].removeprefix("Bearer ")
+
+
+@pytest.fixture(scope="session")
+def internal_headers() -> dict[str, str]:
+    """Session-scoped X-Internal-Token header dict for internal routes."""
+    return {"X-Internal-Token": os.environ["DATASPOKE_TEST_INTERNAL_TOKEN"]}
 
 
 @pytest.fixture(scope="session")

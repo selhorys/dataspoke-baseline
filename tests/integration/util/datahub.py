@@ -10,8 +10,7 @@ Usage (as a module):
 
 Environment variables (loaded from helm-charts/.env.dev if present):
     DATASPOKE_TEST_DATAHUB_GMS_URL       (default: http://localhost:9004)
-    DATASPOKE_TEST_DATAHUB_TOKEN         (default: empty — auto-fetched via frontend login)
-    DATASPOKE_DEV_DATAHUB_FRONTEND_URL   (default: http://localhost:9002)
+    DATASPOKE_TEST_DATAHUB_TOKEN         (required for DataHub-touching helpers)
     DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST                        (default: localhost)
     DATASPOKE_TEST_DUMMY_DATA_POSTGRES_PORT                        (default: 9102)
     DATASPOKE_DEV_DUMMY_DATA_POSTGRES_USER      (default: postgres)
@@ -23,7 +22,6 @@ Environment variables (loaded from helm-charts/.env.dev if present):
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import os
 import re
@@ -200,7 +198,6 @@ def _load_dotenv() -> None:
 _load_dotenv()
 
 _gms_url = os.environ.get("DATASPOKE_TEST_DATAHUB_GMS_URL", "http://localhost:9004")
-_frontend_url = os.environ.get("DATASPOKE_DEV_DATAHUB_FRONTEND_URL", "http://localhost:9002")
 _token_env = os.environ.get("DATASPOKE_TEST_DATAHUB_TOKEN", "")
 
 _pg_host = os.environ.get("DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST", "localhost")
@@ -218,35 +215,9 @@ _kafka_instance = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_KAFKA_INSTANCE", "exa
 _token: str | None = None
 
 
-def _get_datahub_session_token() -> str:
-    """Get a DataHub session token via frontend login for dev-env."""
-    resp = requests.post(
-        f"{_frontend_url}/logIn",
-        json={"username": "datahub", "password": "datahub"},
-        timeout=5,
-    )
-    resp.raise_for_status()
-    cookie = resp.headers.get("Set-Cookie", "")
-    if "PLAY_SESSION=" not in cookie:
-        return ""
-    play_session = cookie.split("PLAY_SESSION=")[1].split(";")[0]
-    payload = play_session.split(".")[1]
-    payload += "=" * (4 - len(payload) % 4)
-    data = json.loads(base64.b64decode(payload))
-    return data.get("data", {}).get("token", "")
-
-
 def _resolve_token() -> str | None:
-    """Return auth token: env var first, then frontend login, then None."""
-    if _token_env:
-        return _token_env
-    try:
-        token = _get_datahub_session_token()
-        if token:
-            return token
-    except Exception as exc:
-        print(f"  [WARN] Could not obtain DataHub session token: {exc}")
-    return None
+    """Return the DataHub auth token from the environment, or None if unset."""
+    return _token_env or None
 
 
 def _get_token() -> str | None:
@@ -268,8 +239,8 @@ def get_datahub_token() -> str:
     tok = _get_token()
     if not tok:
         raise RuntimeError(
-            "Cannot obtain a DataHub token. "
-            "Ensure DATASPOKE_TEST_DATAHUB_TOKEN is set or the DataHub frontend is reachable."
+            "Cannot obtain a DataHub token. Set DATASPOKE_TEST_DATAHUB_TOKEN "
+            "(populated from helm-charts/.env.dev by the install scripts)."
         )
     return tok
 
