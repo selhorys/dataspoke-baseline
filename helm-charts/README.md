@@ -166,7 +166,7 @@ access to shared dev-env resources.
 `bin/port-forward.sh` in shared mode), so the same command works in both:
 
 ```bash
-LOCK_URL=$(grep DATASPOKE_LOCK_URL helm-charts/.env | cut -d= -f2)
+LOCK_URL=$(grep DATASPOKE_LOCK_URL helm-charts/.env.dev | cut -d= -f2)
 curl -s -X POST ${LOCK_URL}/lock/acquire \
   -H "Content-Type: application/json" \
   -d '{"owner": "alice", "message": "running ingestion test"}'

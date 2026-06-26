@@ -83,7 +83,8 @@ helm-charts/
 │   │   └── dev-lock.sh
 │   └── post-install/                    # dev-only admin-API seeding
 │       ├── seed-peripheral-config.sh
-│       └── seed-runtime-config.sh
+│       ├── seed-runtime-config.sh
+│       └── seed-admin-user.sh
 ├── dataspoke/                           # umbrella Helm chart
 │   ├── Chart.yaml
 │   ├── values.yaml                      # prod defaults
@@ -470,7 +471,7 @@ profile operator inputs, Auto-populated block (ingress + `DATASPOKE_TEST_*`).
 `bin/*.sh` scripts source it; `tests/integration/conftest.py` loads it for
 integration tests.
 
-Prod `.env.prod` contains only the five `DATASPOKE_KUBE_*` deployment-shape vars.
+Prod `.env.prod` contains only the `DATASPOKE_KUBE_*` deployment-shape vars.
 All credentials are managed via a pre-created K8s Secret (`secrets.existingSecret`
 in the values overlay) — no credentials in `.env` for prod operators.
 
@@ -776,7 +777,7 @@ Dev only. Runs after the umbrella chart's API deployment is Ready.
 | Script | Effect |
 |---|---|
 | `bin/post-install/seed-peripheral-config.sh` | PATCH `/internal/admin/peripherals/datahub` with `{gms_url, kafka_brokers}` and `/internal/admin/peripherals/langfuse` with `{host, public_key}`. The token / secret_key fields are populated into K8s Secrets out-of-band by the install script (so the API reads them via RBAC); only non-secret fields go through the admin API. |
-| `bin/post-install/seed-runtime-config.sh` | PATCH `/internal/admin/conf` with `{llm_provider, llm_model}` from `DATASPOKE_DEV_LLM_{PROVIDER,MODEL}`. |
+| `bin/post-install/seed-runtime-config.sh` | PATCH `/internal/admin/conf` with `{llm_provider, llm_model}` from `DATASPOKE_DEV_LLM_{PROVIDER,MODEL}`, then a second PATCH setting the four `stub_*` dependency flags (`stub_redis_client`, `stub_llm_client`, `stub_pgvector_manager`, `stub_notification_service`) to `true` for the dev profile. |
 | `bin/post-install/seed-admin-user.sh` | POST `/internal/admin/bootstrap` to idempotently seed the built-in `dataspoke@dataspoke.local / dataspoke` Admin user (returns `{created: false}` when any Admin already exists). Tolerates `503 DATAHUB_SYNC_FAILED` retries while DataHub finishes indexing corpuser/corpGroup aspects on a fresh install. See [feature/AUTH.md §Built-in Bootstrap Admin](AUTH.md#built-in-bootstrap-admin). |
 
 Auth: both use the `DATASPOKE_INTERNAL_TOKEN` read from the `dataspoke-secrets` Secret
@@ -907,6 +908,7 @@ annotations, and customizable host/path rules.
 | `airflow.ingress` values | airflow chart (native) | `airflow.<INGRESS_IP>.nip.io/` → `dataspoke-airflow-api-server:8080` |
 | `dev-peripherals/datahub/gms-ingress.yaml` | kubectl manifest | `datahub.<INGRESS_IP>.nip.io/gms` → `datahub-datahub-gms:8080` |
 | `datahub-frontend.ingress` values | DataHub chart (native) | `datahub.<INGRESS_IP>.nip.io/` → `datahub-frontend:9002` |
+| `langfuse.ingress` values | Langfuse chart (native) | `langfuse.<INGRESS_IP>.nip.io/` → langfuse web:3000 |
 
 In **managed** mode, TCP passthrough (PostgreSQL :9201, Redis :9202, DataHub
 Kafka :9005, example PG :9102, example Kafka :9104, lock :9221) is handled by
