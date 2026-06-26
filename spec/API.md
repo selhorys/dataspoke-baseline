@@ -127,6 +127,9 @@ DataSpoke uses **JWT (JSON Web Tokens)** for stateless authentication.
 ### JWT Claims
 
 Access-token payload: `sub` (user uuid), `email`, `exp`, `iat`.
+Refresh-token payload: `sub` (user uuid), `exp`, `iat`, and `type` = `"refresh"`
+(the claim the refresh endpoint checks to reject access tokens — see
+`INVALID_REFRESH_TOKEN`).
 
 The JWT carries identity only — it does **not** encode role. Routes are gated
 by `users.role` read per-request from the DB — see
@@ -193,13 +196,13 @@ in [feature/AUTH.md](feature/AUTH.md).
 | Method | Path | Purpose |
 |--------|------|---------|
 | `POST` | `/auth/register` | Create a new user account (open self-service; body `{email, name, password}`; password ≥ 10 chars). Mirrors the user into DataHub as a corpuser with Reader role. |
-| `POST` | `/auth/token` | Issue access + refresh tokens (body `{email, password}`) |
+| `POST` | `/auth/token` | Issue tokens (body `{email, password}`). Returns `{access_token, token_type: "bearer", expires_in}` and sets the refresh token as an HttpOnly cookie scoped to path `/api/v1/auth/token` |
 | `POST` | `/auth/token/refresh` | Refresh access token from the HttpOnly refresh cookie |
 | `POST` | `/auth/token/revoke` | Revoke refresh token (logout) |
 | `GET` | `/auth/me` | Get the current user's profile — returns `{id, email, name, has_google, role, created_at, updated_at}` (all DataSpoke `users` columns; `password_hash` is never returned) |
 | `PATCH` | `/auth/me` | Update own display name and/or password (body `{name?, password?}`); returns the updated profile in the same shape as `GET /auth/me` |
 | `POST` | `/auth/password/reset/request` | Send password-reset email (body `{email}`). Silent for unknown emails (no account-enumeration leak). |
-| `POST` | `/auth/password/reset/confirm` | Confirm reset with token + new password (body `{token, new_password}`) |
+| `POST` | `/auth/password/reset/confirm` | Confirm reset with token + new password (body `{token, new_password}`); returns `204` on success |
 | `GET` | `/auth/google/login` | Begin Google OAuth: establish state cookie and 302 to Google consent screen |
 | `GET` | `/auth/google/callback` | Google OAuth callback; on success either logs in an existing user, links Google to an existing email, or creates a fresh user with Reader role |
 | `GET` | `/auth/api-tokens` | List own API tokens (content key `tokens: [{id, name, role_snapshot, created_at, last_used_at, expires_at}]` — never the raw token; paginated with the standard `offset`/`limit`/`total_count` envelope, sortable by `created_at`, default `created_at_desc`). Authenticated. |
@@ -231,7 +234,7 @@ this single per-dataset path.
 | `POST` | `/spoke/common/data/{dataset_urn}/attr/validation/result` | Append a pipeline-emitted result `{data_time, score, variables}`. Unknown variable keys return `422 UNKNOWN_VARIABLE`; `score` outside `[0,1]` returns `422 INVALID_SCORE` | Validation | UC2, UC5 |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/validation/result` | Get historical results (timeseries on `data_time`; `?from=…&until=…&limit=…` — this endpoint names its end-bound param `until` rather than the convention table's `to`; **the sole documented deviation** from the standard pagination cap: `default limit=1000`, server cap `10000`, fixed `data_time DESC` order — see [API_DESIGN_PRINCIPLE §5](API_DESIGN_PRINCIPLE_en.md#5-url-query-segments-are-for-filtering-sorting-and-pagination)) | Validation | UC2, UC5 |
 | `GET` | `/spoke/common/data/{dataset_urn}/event/validation` | Validation event reports (success/failure notices) | Validation | UC2, UC5 |
-| `GET` | `/spoke/common/data/{dataset_urn}/attr/metagen/boundary` | Get per-dataset metagen boundary (`dataset_urn`, `is_enabled`, `allowed`, `owner`, `created_at`, `updated_at`) | Metadata Generation | UC4 |
+| `GET` | `/spoke/common/data/{dataset_urn}/attr/metagen/boundary` | Get per-dataset metagen boundary (`dataset_urn`, `is_enabled`, `allowed`, `owner`, `created_at`, `updated_at`). Returns `200` with a `null` body when no boundary exists (unlike validation `conf`, which `404`s) | Metadata Generation | UC4 |
 | `PUT` | `/spoke/common/data/{dataset_urn}/attr/metagen/boundary` | Create or replace the per-dataset boundary; sets which element kinds (`dataset.description`, `column.description`) any conf's generator may write on this dataset | Metadata Generation | UC4 |
 | `PATCH` | `/spoke/common/data/{dataset_urn}/attr/metagen/boundary` | Partially update the boundary | Metadata Generation | UC4 |
 | `DELETE` | `/spoke/common/data/{dataset_urn}/attr/metagen/boundary` | Remove the boundary — dataset is excluded from future runs | Metadata Generation | UC4 |
@@ -240,6 +243,14 @@ this single per-dataset path.
 | `POST` | `/spoke/common/data/{dataset_urn}/attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review` | Review a candidate — body `{"verdict": "approve"\|"reject", "reason": "…"}`. Approve writes the candidate `value` to the corresponding editable DataHub aspect; if a sibling on the same item was previously `approved`, it is atomically demoted to `llm_approved` so the new approval supersedes it. Reject is valid on both `llm_approved` and `approved` candidates: rejecting an `llm_approved` candidate flips it to `rejected` with no DataHub write; rejecting an `approved` candidate flips it to `rejected` **and removes the editable DataHub description it had written**. Returns `422 METAGEN_DATASET_NOT_IN_BOUNDARY` if the dataset has no `is_enabled=true` boundary | Metadata Generation | UC4 |
 | `GET` | `/spoke/common/data/{dataset_urn}/event/metagen` | Per-dataset metagen events (`METAGEN.CANDIDATE_APPROVE`, `METAGEN.CANDIDATE_REJECT`) | Metadata Generation | UC4 |
 | `GET` | `/spoke/common/data/{dataset_urn}/event` | The **complete per-dataset timeline** — a single newest-first feed that unions the covering source's ingestion runs (resolved by reverse-lookup, incl. its internal-wrapper runs) with this dataset's validation and metagen events. Each row carries a derived `wrapper: bool` (`true` for an ingestion event originating on a linked wrapper). Repeatable `event_major_type` filter (`INGESTION`/`VALIDATION`/`METAGEN`; omitted = all). Paginated (`offset`/`limit`), `from`/`to` time-range, default `occurred_at_desc` | Data Resource | UC1, UC2, UC4 |
+
+> **Event endpoints share one envelope.** Every `event/<feature>` feed and the
+> unified `event` timeline return standard `EventResponse` rows and support
+> pagination (`offset`/`limit`, sortable by `occurred_at`, default
+> `occurred_at_desc`) plus a `from`/`to` time-range. Each row always carries
+> `wrapper: bool`; it is only meaningful for ingestion events (`true` when the
+> event originates on a linked DataHub-CLI wrapper) and is `false` for
+> validation and metagen events.
 
 ### Redefined DataHub Functions *(TBD)*
 
@@ -366,15 +377,15 @@ proceeds nodes → edges → triples.
 | `DELETE` | `/spoke/ontogen/attr/seed/{seed_id}` | Hard-delete a seed — the row is removed outright | Ontology Generation | UC3 |
 | `POST` | `/spoke/ontogen/method/run` | Trigger a manual re-inference. Optional `Content-Type: text/markdown` body acts as a **one-shot prompt** for this run, on top of the persistent seeds (not stored). With no body — including periodic Airflow invocations — falls back to `attr/conf.default_run_prompt`. `?dry_run=true` evaluates without persisting. Concurrent runs return `409 ONTOGEN_RUNNING`. Rejected with `409 ONTOGEN_DISABLED` when the conf is disabled and `dry_run` is not true | Ontology Generation | UC3 |
 | `GET` | `/spoke/ontogen/event` | Global inference-run event history (e.g. `ONTOGEN.RUN_COMPLETE`, `ONTOGEN.RUN_FAILED`). Paginated, sortable by `occurred_at` (default `occurred_at_desc`) | Ontology Generation | UC3 |
-| `GET` | `/spoke/ontogen/result/node` | List nodes (subjects / objects). Each row carries `confidence_score`, `status`, `created_at`, and `run_id` (uuid, nullable — the inference run that produced the row; `null` for seeded rows). Supports `?sort=created_at_asc\|created_at_desc` (default `created_at_desc`) per the [sort convention](API_DESIGN_PRINCIPLE_en.md#5-url-query-segments-are-for-filtering-sorting-and-pagination) | Ontology Generation | UC3 |
+| `GET` | `/spoke/ontogen/result/node` | List nodes (subjects / objects). Each row carries `confidence_score`, `status`, `created_at`, and `run_id` (uuid, nullable — the inference run that produced the row; `null` for seeded rows). Supports `?sort=created_at_asc\|created_at_desc` (default `created_at_desc`); filterable by `?status`. Per the [sort convention](API_DESIGN_PRINCIPLE_en.md#5-url-query-segments-are-for-filtering-sorting-and-pagination) | Ontology Generation | UC3 |
 | `GET` | `/spoke/ontogen/result/node/{node_id}` | Get node detail (incl. member datasets) | Ontology Generation | UC3 |
 | `GET` | `/spoke/ontogen/result/node/{node_id}/event` | Node-level change history | Ontology Generation | UC3 |
 | `POST` | `/spoke/ontogen/result/node/{node_id}/method/review` | Review a pending node — body: `{"verdict": "approve"\|"reject", "reason": "…"}` | Ontology Generation | UC3 |
-| `GET` | `/spoke/ontogen/result/edge` | List edges (predicates). Each row carries `confidence_score`, `status`, `created_at`, and `run_id` (uuid, nullable — the inference run that produced the row; `null` for seeded rows). Supports `?sort=created_at_asc\|created_at_desc` (default `created_at_desc`) per the [sort convention](API_DESIGN_PRINCIPLE_en.md#5-url-query-segments-are-for-filtering-sorting-and-pagination) | Ontology Generation | UC3 |
+| `GET` | `/spoke/ontogen/result/edge` | List edges (predicates). Each row carries `confidence_score`, `status`, `created_at`, and `run_id` (uuid, nullable — the inference run that produced the row; `null` for seeded rows). Supports `?sort=created_at_asc\|created_at_desc` (default `created_at_desc`); filterable by `?status`. Per the [sort convention](API_DESIGN_PRINCIPLE_en.md#5-url-query-segments-are-for-filtering-sorting-and-pagination) | Ontology Generation | UC3 |
 | `GET` | `/spoke/ontogen/result/edge/{edge_id}` | Get edge detail | Ontology Generation | UC3 |
 | `GET` | `/spoke/ontogen/result/edge/{edge_id}/event` | Edge-level change history | Ontology Generation | UC3 |
 | `POST` | `/spoke/ontogen/result/edge/{edge_id}/method/review` | Review a pending edge — body: `{"verdict": "approve"\|"reject", "reason": "…"}` | Ontology Generation | UC3 |
-| `GET` | `/spoke/ontogen/result/triple` | List triples — `(subject_node_id, edge_id, object_node_id)` facts. Each row carries `confidence_score`, `status`, `created_at`, and `run_id` (uuid, nullable — the inference run that produced the row; `null` for seeded rows). Supports `?sort=created_at_asc\|created_at_desc` (default `created_at_desc`) per the [sort convention](API_DESIGN_PRINCIPLE_en.md#5-url-query-segments-are-for-filtering-sorting-and-pagination) | Ontology Generation | UC3 |
+| `GET` | `/spoke/ontogen/result/triple` | List triples — `(subject_node_id, edge_id, object_node_id)` facts. Each row carries `confidence_score`, `status`, `created_at`, and `run_id` (uuid, nullable — the inference run that produced the row; `null` for seeded rows). Supports `?sort=created_at_asc\|created_at_desc` (default `created_at_desc`); filterable by `?status`. Per the [sort convention](API_DESIGN_PRINCIPLE_en.md#5-url-query-segments-are-for-filtering-sorting-and-pagination) | Ontology Generation | UC3 |
 | `GET` | `/spoke/ontogen/result/triple/{triple_id}` | Get triple detail (resolved subject node, edge, object node) | Ontology Generation | UC3 |
 | `GET` | `/spoke/ontogen/result/triple/{triple_id}/event` | Triple-level change history | Ontology Generation | UC3 |
 | `POST` | `/spoke/ontogen/result/triple/{triple_id}/method/review` | Review a triple — body: `{"verdict": "approve"\|"reject", "reason": "…"}`. Returns `422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING` if any of subject node, edge, or object node is not yet `status='approved'` (an `llm_approved` dependency does not satisfy the gate) | Ontology Generation | UC3 |
@@ -477,7 +488,7 @@ route paths for read/update/delete and as the DAG-name suffix `metrics-{metric_i
 
 | Field | Type | Notes |
 |---|---|---|
-| `metric_id` | string | **Create only** (`POST /spoke/governance/metric` body). Kebab-case slug matching `^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$\|^[a-z0-9]$`; `422 INVALID_PARAMETER` on bad format, `409 METRIC_EXISTS` on collision. On PUT/PATCH the id comes from the path |
+| `metric_id` | string | **Create only** (`POST /spoke/governance/metric` body). Kebab-case slug matching `^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$\|^[a-z0-9]$`; `422 INVALID_PARAMETER` on bad format, `409 METRIC_EXISTS` on collision. On PUT/PATCH the id comes from the path. The create-body `metric_id` is returned as `id` in responses |
 | `mode` | `"active"` \| `"passive"` | `passive` is reserved; create/PUT with `mode: "passive"` returns `501 NOT_IMPLEMENTED` |
 | `is_enabled` | bool | Required; controls scheduled execution |
 | `metric_type` | `"ingestion-freshness"` \| `"validation-score"` \| `"doc-health"` | Unsupported values return `422 INVALID_PARAMETER` |
@@ -499,14 +510,14 @@ validation.
 | `GET` | `/spoke/governance/metric` | List all metrics (paginated, sortable by `created_at`/`updated_at`/`title` (default `created_at_desc`); filterable by `metric_type`, `mode`, `is_enabled`). The display label is `title` — `metric_definitions` has no `name` column | Governance | UC5 |
 | `POST` | `/spoke/governance/metric` | Create a metric; `metric_id` supplied in body. Returns `409 METRIC_EXISTS` on a colliding id, `501 NOT_IMPLEMENTED` when `mode: "passive"` | Governance | UC5 |
 | `GET` | `/spoke/governance/metric/{metric_id}` | Get metric summary (identity, mode, metric_type, enabled status) | Governance | UC5 |
-| `GET` | `/spoke/governance/metric/{metric_id}/attr` | Get metric attributes overview (mode, metric_type, schedule_tier, enabled status, latest `values`) | Governance | UC5 |
+| `GET` | `/spoke/governance/metric/{metric_id}/attr` | Get metric attributes overview (`id`, `title`, mode, metric_type, schedule_tier, enabled status, latest `values`, `latest_measured_at`) | Governance | UC5 |
 | `GET` | `/spoke/governance/metric/{metric_id}/attr/conf` | Get full metric definition | Governance | UC5 |
 | `PUT` | `/spoke/governance/metric/{metric_id}/attr/conf` | Replace an existing metric definition; `404 METRIC_NOT_FOUND` when the id is absent (use `POST /spoke/governance/metric` to create) | Governance | UC5 |
 | `PATCH` | `/spoke/governance/metric/{metric_id}/attr/conf` | Update metric definition fields | Governance | UC5 |
 | `DELETE` | `/spoke/governance/metric/{metric_id}/attr/conf` | Remove metric definition | Governance | UC5 |
-| `GET` | `/spoke/governance/metric/{metric_id}/attr/result` | Get measurement results (each row carries `values: dict[str,float]` and `breakdown`; `?from=…&to=…` for time range) | Governance | UC5 |
+| `GET` | `/spoke/governance/metric/{metric_id}/attr/result` | Get measurement results (each row carries `values: dict[str,float]` and `breakdown`; paginated, sortable by `measured_at`; `?from=…&to=…` for time range) | Governance | UC5 |
 | `POST` | `/spoke/governance/metric/{metric_id}/method/run` | Trigger a metric measurement run; `?dry_run=true` evaluates without persisting. Concurrent runs return `409 METRIC_RUNNING`. Rejected with `409 METRIC_DISABLED` when the metric is disabled and `dry_run` is not true | Governance | UC5 |
-| `GET` | `/spoke/governance/metric/{metric_id}/event` | Metric run events (run completions, definition changes). Paginated, sortable by `occurred_at` (default `occurred_at_desc`) | Governance | UC5 |
+| `GET` | `/spoke/governance/metric/{metric_id}/event` | Metric run events (run completions, definition changes). Paginated, sortable by `occurred_at` (default `occurred_at_desc`), `from`/`to` time-range | Governance | UC5 |
 
 **Payload caps** (validated at the schema layer; cap violations return `422`):
 - `attr/conf.dataset_filter.{tags,glossary_terms,dataset_urns}` ≤ 1,000 entries per dimension
@@ -620,6 +631,8 @@ Airflow DAGs, and automation.
 | `POST` | `/internal/admin/dags/verify` | — | `{found, missing, total_expected}` | `X-Internal-Token` |
 | `POST` | `/internal/admin/datahub/sync` | `{"dataset_urns": list[str] \| null}` | `{checked, flipped_true, flipped_false, unchanged, not_found}` | `X-Internal-Token` |
 | `PATCH` | `/internal/admin/conf` | partial conf fields | updated runtime config | `X-Internal-Token` |
+| `PATCH` | `/internal/admin/peripherals/datahub` | partial DataHub fields | updated DataHub config (with `token` masked) | `X-Internal-Token` |
+| `PATCH` | `/internal/admin/peripherals/langfuse` | partial Langfuse fields | updated Langfuse config (with `secret_key` masked) | `X-Internal-Token` |
 | `PATCH` | `/internal/admin/peripherals/smtp` | partial SMTP fields | updated SMTP config (with `password` masked) | `X-Internal-Token` |
 
 `POST /internal/admin/bootstrap` seeds the built-in `dataspoke@dataspoke.local / dataspoke` admin user when no
@@ -827,6 +840,7 @@ Clients should treat `detail` as optional; absent for errors that don't need it.
 | `error_code` | HTTP | Description |
 |-------------|------|-------------|
 | `INVALID_PARAMETER` | 422 | Query param or body field fails schema-layer validation (e.g., `PUT/PATCH /spoke/common/data/{urn}/attr/validation/conf` body where `description` carries ASCII control characters other than `\t` (0x09) and `\n` (0x0a) — see [VALIDATION.md §Rule Configuration](feature/VALIDATION.md#rule-configuration)) |
+| `INVALID_ROLE` | 422 | A supplied role value is not one of `Reader`/`Editor`/`Admin` (e.g. `POST /auth/register`, `POST /admin/users`, or `PATCH /admin/users/{id}/role` with an unrecognized role) |
 | `UNAUTHORIZED` | 401 | Token missing, expired, or malformed |
 | `FORBIDDEN` | 403 | Valid token; caller's role does not satisfy route requirement |
 | `DATASET_NOT_FOUND` | 404 | Dataset URN does not exist in DataHub (read paths, e.g. `GET /spoke/common/data/{urn}`) |
