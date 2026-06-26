@@ -128,6 +128,27 @@ def _producer_result_2() -> LoopResult:
     return LoopResult(payload=_producer_payload_2(), trace=_trace())
 
 
+def _producer_payload_rebuttal() -> dict[str, Any]:
+    """Revision candidate that KEEPS the flagged node and attaches a producer_rebuttal."""
+    return {
+        "nodes": [
+            {
+                "name": "Book",
+                "id": "book",
+                "confidence_score": 0.95,
+                "dataset_urns": ["urn:x"],
+                "producer_rebuttal": "Confidence reflects a fully-profiled primary key.",
+            }
+        ],
+        "edges": [],
+        "triples": [],
+    }
+
+
+def _producer_result_rebuttal() -> LoopResult:
+    return LoopResult(payload=_producer_payload_rebuttal(), trace=_trace())
+
+
 def _fake_validate_tool() -> MagicMock:
     tool = MagicMock()
     tool.name = "ontogen_validate"
@@ -761,4 +782,63 @@ async def test_run_debate_threads_stub_llm_client_to_reviewer_model(stub_flag: b
         f"run_debate must pass stub={stub_flag!r} to make_llm_client when stub_llm_client={stub_flag!r}; "
         f"actual call kwargs: {mock_make_llm_client.call_args.kwargs!r}. "
         "Spec: src/backend/ontogen/debate.py — make_llm_client(stub=stub_llm_client, ...)."
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Group H: producer_rebuttal reaches the debate transcript
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_producer_rebuttal_surfaces_in_transcript() -> None:
+    """A producer_rebuttal on a revised candidate is recorded in the transcript history.
+
+    Spec: BACKEND_LLM.md §Producer revision — 'The producer_rebuttal channel is the
+    explicit adversarial affordance — without it the Producer is incentivised to always
+    concede, which collapses the debate.' §Evidence — the transcript history is the
+    legible record of the exchange (Langfuse is the durable SSOT, but the in-memory
+    transcript must not silently discard the rebuttal).
+
+    Loop: P1(turn 0) → Reviewer revise(turn 1) → P-with-rebuttal(turn 2) → accept(turn 3).
+    The turn-2 Producer keeps the flagged node and rebuts. The transcript's turn-2
+    producer entry must carry that rationale under 'rebuttals'.
+    """
+    llm = FakeLLM([
+        _producer_result_1(),          # turn 0: Producer → P1
+        _revise_result(),              # turn 1: Reviewer → revise (confidence too high)
+        _producer_result_rebuttal(),   # turn 2: Producer → keeps node + rebuttal
+        _accept_result(),              # turn 3: Reviewer → accept
+    ])
+
+    result = await _run(llm)
+
+    assert result.outcome == "accept", (
+        f"Expected accept after rebuttal-then-accept; got {result.outcome!r}. "
+        "spec: BACKEND_LLM.md §Termination"
+    )
+
+    history = result.transcript["history"]
+    producer_turn_2 = next(
+        (e for e in history if e["actor"] == "producer" and e["turn"] == 2), None
+    )
+    assert producer_turn_2 is not None, (
+        f"Expected a producer entry at turn 2; history={history!r}. "
+        "spec: BACKEND_LLM.md §Evidence shape §history"
+    )
+    assert producer_turn_2.get("rebuttals") == [
+        "Confidence reflects a fully-profiled primary key."
+    ], (
+        f"Producer's turn-2 rebuttal must be preserved in the transcript; "
+        f"got {producer_turn_2.get('rebuttals')!r}. "
+        "spec: BACKEND_LLM.md §Producer revision — rebuttal is the adversarial affordance"
+    )
+
+    # turn-0 producer made no rebuttal → its entry must not carry one.
+    producer_turn_0 = next(
+        e for e in history if e["actor"] == "producer" and e["turn"] == 0
+    )
+    assert "rebuttals" not in producer_turn_0, (
+        f"Turn-0 producer had no rebuttal; entry must omit 'rebuttals'. "
+        f"got {producer_turn_0!r}. spec: BACKEND_LLM.md §Evidence shape"
     )

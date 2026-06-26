@@ -16,12 +16,19 @@ _BoundedId = Annotated[str, StringConstraints(max_length=200)]
 _BoundedUrn = Annotated[str, StringConstraints(max_length=1024)]
 
 
+# Adversarial-debate affordance: on a revision turn the Producer may keep an item
+# the Reviewer flagged and attach a one-sentence rationale here instead of conceding
+# (spec/feature/BACKEND_LLM.md §Producer revision). Captured so it is not stripped.
+_Rebuttal = Annotated[str | None, StringConstraints(max_length=500)]
+
+
 class OntogenLLMNode(BaseModel):
-    id: str | None = Field(default=None, max_length=200)  # optional hint; service always re-slugs from name
+    id: str | None = Field(default=None, max_length=200)  # hint only; service re-slugs from name
     name: constr(strip_whitespace=True, min_length=1, max_length=200)  # type: ignore[valid-type]
     description: constr(max_length=4000) = ""  # type: ignore[valid-type]
     confidence_score: float = Field(default=0.0, ge=0.0, le=1.0)
     dataset_urns: list[_BoundedUrn] = Field(default_factory=list, max_length=100)
+    producer_rebuttal: _Rebuttal = None
 
 
 class OntogenLLMEdge(BaseModel):
@@ -29,6 +36,7 @@ class OntogenLLMEdge(BaseModel):
     label: constr(strip_whitespace=True, min_length=1, max_length=200)  # type: ignore[valid-type]
     semantics: constr(max_length=4000) = ""  # type: ignore[valid-type]
     confidence_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    producer_rebuttal: _Rebuttal = None
 
 
 class OntogenLLMTriple(BaseModel):
@@ -36,6 +44,7 @@ class OntogenLLMTriple(BaseModel):
     edge_id: _BoundedId = Field(..., max_length=200)
     object_node_id: _BoundedId = Field(..., max_length=200)
     confidence_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    producer_rebuttal: _Rebuttal = None
 
 
 class OntogenLLMOutput(BaseModel):

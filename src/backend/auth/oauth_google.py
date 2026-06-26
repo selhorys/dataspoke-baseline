@@ -44,10 +44,10 @@ def is_configured(settings: Any) -> bool:
 
 # ── OAuth client ──────────────────────────────────────────────────────────────
 
-_oauth_instance: "OAuth | None" = None
+_oauth_instance: OAuth | None = None
 
 
-def build_oauth_client(settings: Any) -> "OAuth":
+def build_oauth_client(settings: Any) -> OAuth:
     """Return a memoized authlib OAuth client registered with the Google provider.
 
     Registers ``google`` with the OpenID Connect discovery URL so authlib
@@ -89,14 +89,14 @@ def invalidate_oauth_client() -> None:
 
 
 async def resolve_or_create_user(
-    db: "AsyncSession",
-    datahub: "DataHubClient",
+    db: AsyncSession,
+    datahub: DataHubClient,
     *,
     google_sub: str,
     email: str,
     name: str,
-    runtime_config: "RuntimeConfigDTO",
-) -> "User":
+    runtime_config: RuntimeConfigDTO,
+) -> User:
     """Resolve an existing user or create a new one from Google ID-token claims.
 
     Resolution order per spec/feature/AUTH.md §Google OAuth registration & login:
@@ -159,7 +159,11 @@ async def resolve_or_create_user(
         )
         await dh_users.propagate_role(datahub, dh_users.corpuser_urn(new_user.email), "Reader")
     except Exception as exc:
-        # Compensating delete — leave DB in clean state.
+        # Compensating cleanup. create_user only flushed the new row (the caller
+        # commits on success), so it is still uncommitted here — rollback removes
+        # it cleanly and no explicit hard_delete is needed. This is the same intent
+        # as the bootstrap path's hard_delete()+commit(), which diverges only
+        # because that flow owns its own commit boundary.
         await db.rollback()
         logger.warning(
             "oauth_google_mirror_failed_compensating_delete",

@@ -805,6 +805,9 @@ async def internal_bootstrap(
         )
         await dh_users.propagate_role(datahub, dh_users.corpuser_urn(user.email), "Admin")
     except Exception as exc:
+        # Bootstrap owns its own commit boundary (it commits below), so unlike the
+        # register flow's rollback() this path compensates with an explicit
+        # hard_delete() + commit() to remove the orphaned row.
         await users.hard_delete(db, user.id)
         await db.commit()
         raise DataHubSyncError("DataHub mirror failed during bootstrap; rolled back.") from exc

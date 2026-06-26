@@ -1427,3 +1427,81 @@ def test_model_validator_passes_through_unmodified_when_already_normalized() -> 
         f"triple.object_node_id 'line_item' must be unchanged; "
         f"got {triple.object_node_id!r}. spec: plan §3 — id_remap defaults to identity"
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Group N: producer_rebuttal — adversarial-debate affordance survives validation
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_producer_rebuttal_defaults_to_none_when_absent() -> None:
+    """Spec: BACKEND_LLM.md §Producer revision — producer_rebuttal is an optional field.
+    A candidate that does not carry the field validates with producer_rebuttal=None
+    on every item kind (the common turn-0 case, where no rebuttal exists yet).
+    """
+    out = OntogenLLMOutput.model_validate(_valid_payload())
+    assert out.nodes[0].producer_rebuttal is None
+    assert out.edges[0].producer_rebuttal is None
+    assert out.triples[0].producer_rebuttal is None
+
+
+def test_producer_rebuttal_survives_model_validation() -> None:
+    """Spec: BACKEND_LLM.md §Producer revision — 'Keep the item as-is and attach a
+    producer_rebuttal field ... with a one-sentence rationale.'
+
+    The rationale must be captured by the schema (not silently dropped by Pydantic)
+    on each of node/edge/triple, so the explicit adversarial affordance is preserved.
+    """
+    payload = {
+        "nodes": [
+            {
+                "name": "Order",
+                "id": "order",
+                "confidence_score": 0.9,
+                "dataset_urns": ["urn:li:dataset:(urn:li:dataPlatform:postgres,db.orders,PROD)"],
+                "producer_rebuttal": "Confidence is grounded in the order_total column profile.",
+            }
+        ],
+        "edges": [
+            {
+                "label": "has item",
+                "id": "has_item",
+                "confidence_score": 0.8,
+                "producer_rebuttal": "Edge label is the business term used by stewards.",
+            }
+        ],
+        "triples": [
+            {
+                "subject_node_id": "order",
+                "edge_id": "has_item",
+                "object_node_id": "order",
+                "confidence_score": 0.7,
+                "producer_rebuttal": "Self-reference models nested orders; not a duplicate.",
+            }
+        ],
+    }
+    out = OntogenLLMOutput.model_validate(payload)
+    assert out.nodes[0].producer_rebuttal == (
+        "Confidence is grounded in the order_total column profile."
+    )
+    assert out.edges[0].producer_rebuttal == (
+        "Edge label is the business term used by stewards."
+    )
+    assert out.triples[0].producer_rebuttal == (
+        "Self-reference models nested orders; not a duplicate."
+    )
+
+
+def test_oversized_producer_rebuttal_rejected_by_pydantic() -> None:
+    """Spec: BACKEND_LLM.md §Producer revision — the rebuttal is a one-sentence rationale.
+    A rebuttal beyond the max_length bound must raise pydantic.ValidationError so an
+    untrusted LLM cannot smuggle an oversized payload through the field.
+    """
+    with pytest.raises(pydantic.ValidationError):
+        OntogenLLMNode(
+            name="order",
+            id="order",
+            confidence_score=0.9,
+            dataset_urns=["urn:li:dataset:(urn:li:dataPlatform:postgres,db.orders,PROD)"],
+            producer_rebuttal="x" * 501,  # exceeds max_length=500
+        )

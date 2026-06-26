@@ -43,6 +43,25 @@ def _canonical_hash(payload: dict[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _extract_rebuttals(payload: dict[str, Any]) -> list[str] | None:
+    """Collect producer_rebuttal rationales attached to a Producer candidate.
+
+    On a revision turn the Producer may keep a Reviewer-flagged item and attach a
+    one-sentence rationale (spec/feature/BACKEND_LLM.md §Producer revision). These
+    are surfaced into the debate transcript so the adversarial exchange is legible
+    rather than silently discarded.
+    """
+    rebuttals: list[str] = []
+    for kind in ("nodes", "edges", "triples"):
+        for item in payload.get(kind, []) or []:
+            if not isinstance(item, dict):
+                continue
+            rationale = item.get("producer_rebuttal")
+            if isinstance(rationale, str) and rationale.strip():
+                rebuttals.append(rationale.strip())
+    return rebuttals or None
+
+
 async def run_debate(
     *,
     llm: LLMClient,
@@ -72,7 +91,12 @@ async def run_debate(
     # Langfuse tracing is not wired to the reviewer; it uses the same provider/key
     # as the producer but with a different model.
     reviewer_llm: LLMClient = (
-        make_llm_client(stub=stub_llm_client, provider=llm_provider, model=llm_base_model, model_override=reviewer_model)
+        make_llm_client(
+            stub=stub_llm_client,
+            provider=llm_provider,
+            model=llm_base_model,
+            model_override=reviewer_model,
+        )
         if reviewer_model
         else llm
     )
@@ -107,6 +131,7 @@ async def run_debate(
         last_producer_payload = loop_result.payload
 
         candidate_hash = _canonical_hash(last_producer_payload)
+        producer_rebuttals = _extract_rebuttals(last_producer_payload)
 
         if candidate_hash in producer_hashes:
             history.append(
@@ -114,6 +139,7 @@ async def run_debate(
                     turn=producer_turn,
                     actor="producer",
                     candidate_hash=candidate_hash[:16],
+                    rebuttals=producer_rebuttals,
                 )
             )
             turns_completed = producer_turn + 1
@@ -138,6 +164,7 @@ async def run_debate(
                 turn=producer_turn,
                 actor="producer",
                 candidate_hash=candidate_hash[:16],
+                rebuttals=producer_rebuttals,
             )
         )
         turns_completed = producer_turn + 1
