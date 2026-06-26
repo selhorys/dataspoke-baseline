@@ -1,10 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ConfirmDialog } from "@/components/confirm-dialog";
+import { Pagination, DEFAULT_PAGE_SIZE } from "@/components/pagination";
 import { SeedEditor } from "@/components/ontogen/seed-editor";
 import {
   useOntogenSeeds,
@@ -23,8 +24,19 @@ export default function OntogenSeedPage() {
   const { canWrite } = useMe();
   const { toast } = useToast();
 
-  const { data: seedList, isLoading: listLoading } = useOntogenSeeds({ limit: 50 });
+  const [offset, setOffset] = useState(0);
+  const [limit, setLimit] = useState(DEFAULT_PAGE_SIZE);
+  const { data: seedList, isLoading: listLoading } = useOntogenSeeds({ offset, limit });
   const seeds = seedList?.seeds ?? [];
+  const total = seedList?.total_count ?? 0;
+
+  // Clamp a past-the-end offset (e.g. deleting the last seed on the final page)
+  // back to the last valid page.
+  useEffect(() => {
+    if (!listLoading && total > 0 && offset >= total) {
+      setOffset(Math.max(0, (Math.ceil(total / limit) - 1) * limit));
+    }
+  }, [listLoading, total, offset, limit]);
 
   // Track which seed is open in expanded view/edit mode
   const [openSeedId, setOpenSeedId] = useState<string | null>(null);
@@ -69,7 +81,7 @@ export default function OntogenSeedPage() {
         </div>
       )}
 
-      {!listLoading && seeds.length === 0 && !creatingNew && (
+      {!listLoading && total === 0 && !creatingNew && (
         <div className="rounded-md border border-dashed p-8 text-center">
           <p className="text-sm text-muted-foreground">
             No seeds yet. Create one to guide ontology inference.
@@ -104,6 +116,16 @@ export default function OntogenSeedPage() {
           />
         ))}
       </ul>
+
+      {!listLoading && total > 0 && (
+        <Pagination
+          offset={offset}
+          limit={limit}
+          total={total}
+          onOffset={setOffset}
+          onLimit={setLimit}
+        />
+      )}
 
       {deleteSeedId && (
         <DeleteSeedDialog
