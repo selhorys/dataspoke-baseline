@@ -43,10 +43,12 @@ subsystem covering both dev and prod profiles) is specified separately in
 
 `.claude/` contains: `skills/` (prompt extensions — one directory per skill), `agents/`
 (subagent system prompts — one `.md` per agent), `hooks/` (shell scripts invoked by Claude Code
-lifecycle events — integration-test preflight, plan-gate reminder, permission-hygiene warning,
-commit confirmation), `statusline.sh` (status line composer), `settings.json` (tool permissions
-+ hooks + statusLine), and `settings.local.json` (local overrides). See §Skills and §Subagents
-below for the full catalogue.
+events — `settings.json`-wired lifecycle hooks: integration-test preflight, plan-gate reminder,
+permission-hygiene warning, commit confirmation; plus per-agent hooks wired in agent frontmatter:
+ruff lint on edited Python files, frontend typecheck on Stop), `workflows/` (dynamic agent-fleet
+scripts, e.g. `wf-minimal.js`), `statusline.sh` (status line composer), `settings.json` (tool
+permissions + hooks + statusLine), and `settings.local.json` (local overrides). See §Skills and
+§Subagents below for the full catalogue.
 
 The scaffold works alongside these structural elements:
 

@@ -1,7 +1,7 @@
 ---
 name: ref-setup
 description: Download AI reference materials (external source code for AI assistant reference). Offers individual or all references.
-allowed-tools: Bash(bash ref/*), Bash(ls *), Bash(test *), Bash(tail *), Bash(sleep *), Read
+allowed-tools: Bash(bash ref/*), Bash(ls *), Bash(test *), Bash(tail *), Bash(sleep *), Read, AskUserQuestion
 ---
 
 ## Step 1 — Ask which reference to install
