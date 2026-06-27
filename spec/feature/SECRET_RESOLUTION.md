@@ -388,8 +388,10 @@ There is no `auth` field and no vault request shape — both are removed in the 
 |---|---|---|
 | `api.secretReader.enabled` | `true` | Gates the `Role` + `RoleBinding` bundle |
 
-The `Role` grants `get`, `list` on `secrets` in the API namespace.
-`Values.api.secretReader.namespaces[]` does not exist; cross-namespace access is not supported.
+The `Role` grants `get`, `list`, `create`, `patch` on `secrets` in the API namespace
+(`create`/`patch` serve the infra accessors — see [RBAC model](#rbac-model); the source-cred
+resolver uses only `get`/`list`). `Values.api.secretReader.namespaces[]` does not exist;
+cross-namespace access is not supported.
 
 Cross-reference: secret-management for DataSpoke's own infra credentials lives in
 [HELM_CHART §Secrets Management](HELM_CHART.md#secrets-management). That section governs

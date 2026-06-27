@@ -368,9 +368,9 @@ tokens on behalf of other users — only the owner can mint.
 ### Token carriage
 
 API tokens are carried in the same `Authorization: Bearer <token>` header as
-JWTs. The middleware attempts JWT decode first; on failure (e.g., the token
-is not a valid JWT shape), it falls back to opaque-token lookup against
-`api_tokens.token_hash`. Either form populates the same request-context
+JWTs. The auth dependency routes on the token shape: a value with the `dsk_`
+prefix goes straight to opaque-token lookup against `api_tokens.token_hash`;
+any other value is JWT-decoded. Either form populates the same request-context
 identity. There is no separate header.
 
 ### Effective privilege — intersection

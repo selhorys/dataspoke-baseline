@@ -115,7 +115,7 @@ async def confirm_reset(
     Marks the token row as ``used_at = now()`` so it cannot be replayed.
 
     Raises:
-        PreconditionFailedError('INVALID_RESET_TOKEN')  — missing, used, or expired token.
+        BadRequestError('INVALID_RESET_TOKEN')  — missing, used, or expired token (HTTP 400).
     """
     token_hash = _hash(raw_token)
 
