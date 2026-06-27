@@ -46,14 +46,6 @@ class Settings(BaseSettings):
 
     # Rate limiting
     rate_limit_per_minute: int = 120
-    rate_limit_burst: int = 20
-
-    # PostgreSQL
-    postgres_host: str = "localhost"
-    postgres_port: int = 5432
-    postgres_user: str = "postgres"
-    postgres_password: str = "postgres"
-    postgres_db: str = "dataspoke"
 
     # Redis
     redis_host: str = "localhost"
@@ -65,6 +57,5 @@ class Settings(BaseSettings):
     airflow_user: str = ""
     airflow_password: str = ""
     airflow_callback_base_url: str = "http://dataspoke-api:8002"
-    airflow_ingestion_concurrent: int = 5
 
 settings = Settings()

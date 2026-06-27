@@ -13,7 +13,6 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import func, select, text, update
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.shared.db.models import ApiToken, User

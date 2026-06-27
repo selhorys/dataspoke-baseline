@@ -1302,8 +1302,6 @@ Resilience and tuning constants defined in `src/shared/config.py`:
 | `RETRY_BACKOFF_BASE_MS` | 500 | Exponential backoff base |
 | `CIRCUIT_BREAKER_THRESHOLD` | 5 | Consecutive failures to open breaker |
 | `CIRCUIT_BREAKER_RESET_MS` | 60000 | Time before probe attempt |
-| `BULK_BATCH_SIZE` | 100 | DataHub bulk scan batch size |
-| `BULK_BATCH_DELAY_MS` | 100 | Delay between bulk batches |
 | `EMBEDDING_DIMENSION` | 1536 | Vector dimension (matches LLM model) |
 | `ONTOLOGY_CONFIDENCE_THRESHOLD` | 0.7 | Ontogen: below this -> row persists as `llm_pending` |
 | `METAGEN_CONFIDENCE_THRESHOLD` | 0.7 | Metagen: below this -> candidate is dropped (metagen has no `llm_pending`). Default only — the live value is the runtime-tunable `runtime_config.metagen_confidence_threshold` (`PATCH /admin/conf`), not a static constant |

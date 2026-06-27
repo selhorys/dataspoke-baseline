@@ -19,8 +19,7 @@ from __future__ import annotations
 
 import html
 import logging
-from collections.abc import AsyncGenerator, Callable
-from contextlib import asynccontextmanager
+from collections.abc import Callable
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Any

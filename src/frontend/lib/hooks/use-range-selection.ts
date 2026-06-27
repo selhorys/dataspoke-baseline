@@ -22,12 +22,10 @@ import {
 /** Stable localStorage keys, one per range-bearing surface type. */
 export const RANGE_KEYS = {
   validationResults: "range:validation:results",
-  validationEvents: "range:validation:events",
   governanceMetricResults: "range:governance:metric-results",
   governanceMetricEvents: "range:governance:metric-events",
   governanceDashboard: "range:governance:dashboard",
   ingestionSourceEvents: "range:ingestion:source-events",
-  ingestionDatasetEvents: "range:ingestion:dataset-events",
   metagenConfEvents: "range:metagen:conf-events",
   metagenResultEvents: "range:metagen:result-events",
   dataEvents: "range:data:events",

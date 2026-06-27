@@ -10,16 +10,8 @@ RETRY_BACKOFF_BASE_MS: int = 500
 CIRCUIT_BREAKER_THRESHOLD: int = 5
 CIRCUIT_BREAKER_RESET_MS: int = 60000
 
-# Bulk DataHub scan batching
-BULK_BATCH_SIZE: int = 100
-BULK_BATCH_DELAY_MS: int = 100
-
-# Redis cache TTLs (seconds)
-VALIDATION_RESULT_CACHE_TTL: int = 60
-
 # Vector search
 EMBEDDING_DIMENSION: int = 1536
-SEARCH_SCORE_THRESHOLD: float = 0.3
 EMBEDDING_COLLECTION: str = "dataset_embeddings"
 EMBEDDING_MODEL_OPENAI: str = "text-embedding-3-small"
 EMBEDDING_MODEL_GOOGLE: str = "models/gemini-embedding-001"
@@ -29,5 +21,4 @@ ONTOLOGY_CONFIDENCE_THRESHOLD: float = 0.7
 
 # Kafka consumer tuning
 CONSUMER_POLL_TIMEOUT_S: float = 1.0
-CONSUMER_MAX_POLL_RECORDS: int = 500
 HANDLER_TIMEOUT_S: int = 30

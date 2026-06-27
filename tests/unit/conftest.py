@@ -42,9 +42,3 @@ def llm():
 def vector():
     """Mock PgVectorManager — no real pgvector DB connection."""
     return AsyncMock()
-
-
-@pytest.fixture
-def notification():
-    """Mock notification service — no real email sends."""
-    return AsyncMock()
