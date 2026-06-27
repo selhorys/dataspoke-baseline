@@ -117,14 +117,14 @@ test("UC3 step 1 — enable ontogen conf on /ontogen/conf page", async ({
 
   // -- UI assertion: foldable OntoGen sidebar group reveals conf · seed · result --
   // spec: FRONTEND_ONTOGEN.md §Navigation — "OntoGen sidebar entry is a foldable group
-  //   with three children — conf · seed · result."
+  //   with three children — Config · Seed · Result."
   // The group is a role=button with accessible name "OntoGen" (aria-expanded toggles its
   // children). Navigating to /ontogen/conf auto-expands it; assert the child links exist.
   const ontogenGroup = page.getByRole("button", { name: /OntoGen/ });
   await expect(ontogenGroup).toBeVisible({ timeout: 10_000 });
-  await expect(page.getByRole("link", { name: "conf", exact: true })).toBeVisible();
-  await expect(page.getByRole("link", { name: "seed", exact: true })).toBeVisible();
-  await expect(page.getByRole("link", { name: "result", exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Config", exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Seed", exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Result", exact: true })).toBeVisible();
 
   // -- UI assertion: conf controls present (conf may exist from prior run; skip create branch) --
   // The conf page renders Edit/Run controls only when the singleton conf exists; otherwise an

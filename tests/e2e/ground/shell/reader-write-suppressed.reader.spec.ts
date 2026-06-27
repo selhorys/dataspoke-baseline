@@ -83,22 +83,22 @@ test("reader: /ingestion/conf page heading 'Ingestion' is visible (read-only con
   await expect(page).not.toHaveURL(/\/login/);
 });
 
-// ── Test 3 — sidebar "unmanaged" navigation link IS visible for Reader ─────────
+// ── Test 3 — sidebar "Unmanaged" navigation link IS visible for Reader ─────────
 // spec: FRONTEND_BASIC.md §Routing — Reader sees the read-only view; the sidebar
-//   Ingestion → "unmanaged" link is a navigation control (not a write control)
+//   Ingestion → "Unmanaged" link is a navigation control (not a write control)
 //   rendered unconditionally.
 // Source: app-shell.tsx mainNav Ingestion NavGroup child
-//   { label: "unmanaged", href: "/ingestion/unmanaged" } — outside any canWrite guard.
+//   { label: "Unmanaged", href: "/ingestion/unmanaged" } — outside any canWrite guard.
 
-test("reader: sidebar shows the Ingestion 'unmanaged' navigation link", async ({ page }) => {
+test("reader: sidebar shows the Ingestion 'Unmanaged' navigation link", async ({ page }) => {
   await page.goto("/ingestion/conf");
 
   await expect(page.getByRole("heading", { name: "Ingestion", exact: true })).toBeVisible({
     timeout: 20_000,
   });
 
-  // -- UI assertion: sidebar "unmanaged" link (non-write nav control) is present --
-  const unmanagedLink = page.getByRole("link", { name: "unmanaged", exact: true });
+  // -- UI assertion: sidebar "Unmanaged" link (non-write nav control) is present --
+  const unmanagedLink = page.getByRole("link", { name: "Unmanaged", exact: true });
   await expect(unmanagedLink).toBeVisible({ timeout: 10_000 });
   await expect(unmanagedLink).toHaveAttribute("href", "/ingestion/unmanaged");
 });
