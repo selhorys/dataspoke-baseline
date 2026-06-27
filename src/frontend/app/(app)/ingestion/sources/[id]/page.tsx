@@ -29,11 +29,8 @@ import {
 } from "@/lib/api/ingestion";
 import { useMe } from "@/lib/auth/use-me";
 import { ApiError } from "@/lib/api/client";
-import {
-  modeBadgeVariant,
-  modeLabel,
-  scheduleTierLabel,
-} from "@/lib/ingestion-mode-variant";
+import { modeBadgeVariant, modeLabel } from "@/lib/ingestion-mode-variant";
+import { ScheduleTierLink } from "@/components/ingestion/schedule-tier-link";
 import { eventStatusVariant } from "@/lib/event-status-variant";
 import { useDisplayTz } from "@/lib/preferences/timezone";
 import { Pagination, DEFAULT_PAGE_SIZE } from "@/components/pagination";
@@ -169,9 +166,10 @@ export default function IngestionSourceDetailPage({
         >
           {source.status}
         </Badge>
-        <span className="text-sm text-muted-foreground">
-          {scheduleTierLabel(source.schedule)}
-        </span>
+        <ScheduleTierLink
+          schedule={source.schedule}
+          className="text-sm text-muted-foreground"
+        />
         {source.datahub_source_urn && (
           <span className="truncate font-mono text-xs text-muted-foreground">
             {source.datahub_source_urn}

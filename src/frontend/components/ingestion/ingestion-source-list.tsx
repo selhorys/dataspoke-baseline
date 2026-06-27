@@ -32,10 +32,10 @@ import { eventStatusVariant } from "@/lib/event-status-variant";
 import {
   modeBadgeVariant,
   modeLabel,
-  scheduleTierLabel,
   filterKeyLabel,
   INGESTION_FILTER_KEYS,
 } from "@/lib/ingestion-mode-variant";
+import { ScheduleTierLink } from "@/components/ingestion/schedule-tier-link";
 import {
   useIngestionSourceDatasetCounts,
   useIngestionSourceLatestRuns,
@@ -155,7 +155,7 @@ export function IngestionSourceList({
                   </TableCell>
                   <TableCell className="font-mono text-xs">{s.platform}</TableCell>
                   <TableCell className="text-sm">
-                    {scheduleTierLabel(s.schedule)}
+                    <ScheduleTierLink schedule={s.schedule} />
                   </TableCell>
                   <TableCell className="text-sm tabular-nums">
                     {countById[s.id] ?? (
