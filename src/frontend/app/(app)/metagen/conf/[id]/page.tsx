@@ -5,11 +5,11 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ErrorState } from "@/components/ui/error-state";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { MetagenConfForm } from "@/components/metagen/conf-form";
+import { MetagenConfView } from "@/components/metagen/conf-view";
 import { RunDialog } from "@/components/metagen/run-dialog";
 import { MetagenEventTable } from "@/components/metagen/metagen-event-table";
 import { MetagenCoveredTable } from "@/components/metagen/covered-table";
@@ -179,12 +179,6 @@ export default function MetagenConfDetailPage({
           <ArrowLeft className="h-4 w-4" />
         </Link>
         <h1 className="text-lg font-semibold tracking-tight">{conf.name}</h1>
-        <Badge variant={conf.is_enabled ? "default" : "secondary"} className="text-xs">
-          {conf.is_enabled ? "enabled" : "disabled"}
-        </Badge>
-        <span className="text-sm text-muted-foreground">
-          {conf.schedule_tier ?? "manual"}
-        </span>
 
         {canWrite && (
           <div className="ml-auto flex gap-2">
@@ -251,18 +245,22 @@ export default function MetagenConfDetailPage({
         )}
       </div>
 
-      {/* Conf form */}
+      {/* Conf view / form */}
       <section className="rounded-lg border p-5">
-        <MetagenConfForm
-          key={formNonce}
-          formId={CONF_FORM_ID}
-          initialValues={conf}
-          datasetFilter={datasetFilter}
-          onDatasetFilterChange={setDatasetFilter}
-          onSubmit={handleSave}
-          disabled={!editing}
-          serverError={editing ? saveError : undefined}
-        />
+        <h2 className="mb-3 text-sm font-medium">Config</h2>
+        {editing ? (
+          <MetagenConfForm
+            key={formNonce}
+            formId={CONF_FORM_ID}
+            initialValues={conf}
+            datasetFilter={datasetFilter}
+            onDatasetFilterChange={setDatasetFilter}
+            onSubmit={handleSave}
+            serverError={saveError}
+          />
+        ) : (
+          <MetagenConfView conf={conf} datasetFilter={datasetFilter} />
+        )}
       </section>
 
       {/* Covered datasets */}

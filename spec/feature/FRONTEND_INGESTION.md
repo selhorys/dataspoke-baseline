@@ -32,7 +32,9 @@ the dataset's ingestion events fold into that page's unified **Events** panel
 ## List View (`/ingestion/conf`)
 
 One row per source: `name`, `mode` badge (`DATAHUB_MANAGED` / `ACTIVE_CUSTOM_MANAGED` /
-`PASSIVE`), `platform`, schedule, covered-dataset count, and latest run status.
+`PASSIVE`), `platform`, schedule, covered-dataset count, and latest run status. The schedule
+cell renders the scheduled tier (hourly / daily / weekly) as a link to its backing Airflow
+DAG (`ingestion-active-<tier>`); an unscheduled / custom-cron value renders as plain text.
 A "Create source" button routes to `/ingestion/sources/new`; paginate. The filter offers
 ALL, DataHub-managed, Active, Passive — each maps to the `mode` query param on
 `GET /spoke/ingestion/sources` (DataHub-managed = `mode=DATAHUB_MANAGED`). Internal DataHub CLI
@@ -47,16 +49,21 @@ client-derived via a per-source fan-out (`datasets?limit=1` and `event?limit=1`)
 ## Source Detail (`/ingestion/sources/[id]`)
 
 A header surfaces read-only management fields as badges/text outside the recipe YAML section:
-`platform`, `status`, and `datahub_source_urn`. Below it, four sections, each bound to a route:
+`platform`, `status`, `datahub_source_urn`, and the schedule — the latter rendering its tier
+(hourly / daily / weekly) as a link to the backing Airflow DAG (`ingestion-active-<tier>`),
+plain text otherwise. Below it, four sections, each bound to a route:
 
 1. **Recipe** — the source JSON (`{mode, name, schedule, recipe}`, recipe-standard wording) is
    rendered/edited as **YAML, secrets masked** — the YAML view is a lossless transform of the
    JSON body
    (`GET /spoke/ingestion/sources/{id}`). For `ACTIVE_CUSTOM_MANAGED` / `PASSIVE`, editable via a
    YAML editor and removable (`DELETE`). Save wires `PUT` (full replace); partial recipe
-   edits use `PATCH /sources/{id}`. For `DATAHUB_MANAGED` the YAML is
-   read-only — edits are disabled with an explanatory note that DataHub is SSOT (the API returns
-   `409 INGESTION_SOURCE_READONLY`).
+   edits use `PATCH /sources/{id}`. View-mode shows `Edit` / `Delete` at the section header's
+   top-right; edit-mode replaces them with `Save` / `Cancel` in that same slot (the editor's own
+   bottom actions are suppressed), and surfaces the collapsible `SecretRefAuthoringGuide` under
+   the editor's secret-ref line for `ACTIVE_CUSTOM_MANAGED` sources. For `DATAHUB_MANAGED` the
+   YAML is read-only — edits are disabled with an explanatory note that DataHub is SSOT (the API
+   returns `409 INGESTION_SOURCE_READONLY`).
 2. **Datasets** — the source→dataset mapping table (`GET /spoke/ingestion/sources/{id}/datasets`).
    The table carries a single `authority` column whose cell fuses both server fields, rendered as
    e.g. `high (emitted)`: the dataset URN, its `authority` (`high` / `medium`) and `derivation`
@@ -120,8 +127,10 @@ The `IngestionDataPanel` component is composed by the `/data/[urn]` page.
 - `SourceDatasetTable` — the source→dataset mapping table.
 - `IngestionRunPanel` — dry-run / run trigger with status (`ACTIVE_CUSTOM_MANAGED` only).
 - `SecretRefHelper` — the available-references list (`GET /spoke/ingestion/secrets`) plus the
-  read-only authoring guide (kubectl recipe, namespace, `dataspoke-source-cred-` prefix,
-  `${name__key}` syntax) shown in the source editor.
+  `SecretRefAuthoringGuide`, shown in the Create page.
+- `SecretRefAuthoringGuide` — the collapsible read-only authoring guide (kubectl recipe,
+  namespace, `dataspoke-source-cred-` prefix, `${name__key}` syntax); reused by `SecretRefHelper`
+  and the source-detail recipe editor.
 - `IngestionEventTable` — shared event table bound to the per-source `…/sources/{id}/event`,
   paired with a `datetime` [RangePicker](FRONTEND_BASIC.md#shared-component-notes) for the
   `from`/`to` window; renders a "wrapper" tag on rows whose `wrapper` flag is set, and its `detail`

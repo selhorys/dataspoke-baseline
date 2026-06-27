@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { OntogenConfForm } from "@/components/ontogen/conf-form";
+import { OntogenConfView } from "@/components/ontogen/conf-view";
 import { RunDialog } from "@/components/ontogen/run-dialog";
 import {
   useOntogenConf,
@@ -145,15 +146,18 @@ export default function OntogenConfPage() {
       )}
 
       {!isLoading && !error && conf && (
-        <OntogenConfForm
-          key={formNonce}
-          formId={CONF_FORM_ID}
-          initialValues={conf}
-          datasetFilter={datasetFilter}
-          onDatasetFilterChange={setDatasetFilter}
-          onSubmit={handleSubmit}
-          disabled={!editing}
-        />
+        editing ? (
+          <OntogenConfForm
+            key={formNonce}
+            formId={CONF_FORM_ID}
+            initialValues={conf}
+            datasetFilter={datasetFilter}
+            onDatasetFilterChange={setDatasetFilter}
+            onSubmit={handleSubmit}
+          />
+        ) : (
+          <OntogenConfView conf={conf} datasetFilter={datasetFilter} />
+        )
       )}
 
       <RunDialog

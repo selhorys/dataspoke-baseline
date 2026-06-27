@@ -39,7 +39,6 @@ interface OntogenConfFormProps {
   datasetFilter: DatasetFilter;
   onDatasetFilterChange: (v: DatasetFilter) => void;
   onSubmit: (body: OntogenConfPutBody) => void;
-  disabled?: boolean;
   /** id wired to the top-right header Save button via <Button form={id} type="submit">. */
   formId: string;
 }
@@ -49,7 +48,6 @@ export function OntogenConfForm({
   datasetFilter,
   onDatasetFilterChange,
   onSubmit,
-  disabled = false,
   formId,
 }: OntogenConfFormProps) {
   const {
@@ -99,7 +97,6 @@ export function OntogenConfForm({
               id="conf-is-enabled"
               checked={isEnabled}
               onCheckedChange={(v) => setValue("is_enabled", !!v)}
-              disabled={disabled}
             />
             <span className="text-sm text-muted-foreground">
               Enable periodic inference DAG
@@ -117,7 +114,6 @@ export function OntogenConfForm({
             onValueChange={(v) =>
               setValue("schedule_tier", v === "none" ? null : (v as "hourly" | "daily" | "weekly"))
             }
-            disabled={disabled}
           >
             <SelectTrigger id="conf-schedule-tier">
               <SelectValue placeholder="None (manual only)" />
@@ -135,7 +131,6 @@ export function OntogenConfForm({
           <DatasetFilterEditor
             value={datasetFilter}
             onChange={onDatasetFilterChange}
-            disabled={disabled}
           />
         </div>
 
@@ -150,7 +145,6 @@ export function OntogenConfForm({
             id="conf-prompt"
             rows={8}
             placeholder="Describe the ontology inference prompt…"
-            disabled={disabled}
             className="font-mono text-xs"
             {...register("default_run_prompt")}
           />

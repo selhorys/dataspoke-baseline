@@ -121,6 +121,36 @@ beforeEach(() => {
   putMutate.mockReset();
 });
 
+describe("metagen conf detail — read-only view vs edit form", () => {
+  it("opens as a read-only view (plain text, no form) and swaps to the form on Edit", async () => {
+    mockUseMe.mockReturnValue({ canWrite: true });
+    mockConf.mockReturnValue({ data: makeConf(), isLoading: false, error: null });
+
+    await renderPage();
+
+    // View mode: the conf is rendered as plain text, not the editable form.
+    expect(screen.queryByTestId("conf-form")).toBeNull();
+    // is_enabled shows as text ("enabled" for the enabled conf).
+    expect(screen.getAllByText("enabled").length).toBeGreaterThan(0);
+
+    // Edit swaps the view for the form.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+    });
+    expect(screen.getByTestId("conf-form")).toBeInTheDocument();
+  });
+
+  it("Reader sees the read-only view and no form", async () => {
+    mockUseMe.mockReturnValue({ canWrite: false });
+    mockConf.mockReturnValue({ data: makeConf(), isLoading: false, error: null });
+
+    await renderPage();
+
+    expect(screen.queryByTestId("conf-form")).toBeNull();
+    expect(screen.getAllByText("enabled").length).toBeGreaterThan(0);
+  });
+});
+
 describe("metagen conf detail — write gating", () => {
   it("Editor sees Edit, Run, and Delete controls", async () => {
     mockUseMe.mockReturnValue({ canWrite: true });

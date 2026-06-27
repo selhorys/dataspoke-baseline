@@ -17,14 +17,18 @@
  * header controls render.
  *
  * Assertions:
- *   (a) clicking Edit fires NO PUT /spoke/ontogen/attr/conf request;
- *   (b) edit mode is entered — Save + Cancel become visible and the form fields
- *       are enabled (is_enabled checkbox no longer disabled).
+ *   (a) read-mode renders the conf as a plain-text VIEW (OntogenConfView), not a
+ *       disabled form — no form control is in the DOM, and the rendered is_enabled
+ *       value matches the conf read back over REST (dual confirmation);
+ *   (b) clicking Edit fires NO PUT /spoke/ontogen/attr/conf request;
+ *   (c) edit mode is entered — Save + Cancel become visible and the editable form
+ *       replaces the view (is_enabled checkbox appears, enabled).
  *
  * spec: spec/feature/FRONTEND_ONTOGEN.md §Navigation — /ontogen/conf hosts the
  *   Run + Edit conf editor (Editor/Admin only); the conf is a singleton (no Delete).
- * spec: spec/feature/FRONTEND_ONTOGEN.md §Page contracts — /ontogen/conf:
- *   PUT /spoke/ontogen/attr/conf is fired only by Save, never by Edit.
+ * spec: spec/feature/FRONTEND_ONTOGEN.md §/ontogen/conf — when not editing it shows
+ *   a read-only view of the conf fields as plain text; Edit swaps the view for the
+ *   form; PUT /spoke/ontogen/attr/conf is fired only by Save, never by Edit.
  * spec: spec/TESTING.md §End-to-End (E2E) Testing — ground group, real-session role.
  */
 
@@ -41,6 +45,7 @@ const CONF_PUT_PATH = "/api/v1/spoke/ontogen/attr/conf";
 // ─────────────────────────────────────────────────────────────────────────────
 test("/ontogen/conf — clicking Edit enters edit mode and does NOT PUT the conf", async ({
   page,
+  adminApi,
 }) => {
   // Capture every PUT to the conf endpoint for the lifetime of the page.
   // The defect manifests as such a request firing on the Edit click.
@@ -62,37 +67,49 @@ test("/ontogen/conf — clicking Edit enters edit mode and does NOT PUT the conf
     page.getByRole("heading", { name: "OntoGen — Configuration", exact: true })
   ).toBeVisible({ timeout: 15_000 });
 
-  // -- Precondition: view mode — Edit visible, Save absent, fields disabled --
-  // spec: conf/page.tsx — header renders Edit + Run when not editing; conf-form disabled
+  // -- Precondition: view mode — Edit visible, Save absent --
+  // spec: conf/page.tsx — header renders Edit + Run when not editing.
   const editButton = page.getByRole("button", { name: /^edit$/i });
   await expect(editButton).toBeVisible({ timeout: 15_000 });
   await expect(page.getByRole("button", { name: /^save$/i })).toHaveCount(0);
 
-  // The is_enabled checkbox (Radix renders a <button role="checkbox">) is the
-  // disabled/enabled probe — disabled in view mode.
-  // spec: conf-form.tsx — Checkbox id="conf-is-enabled" disabled={!editing}
+  // -- UI assertion (a): read-mode renders a plain-text VIEW, not a disabled form.
+  //    OntogenConfView shows is_enabled as "enabled"/"disabled" text; confirm the
+  //    rendered value against the conf read back over REST (dual confirmation). --
+  // spec: conf-view.tsx — <FieldValue label="is_enabled">{... ? "enabled" : "disabled"}
+  const confResp = await adminApi.get("/api/v1/spoke/ontogen/attr/conf");
+  expect(confResp.ok(), `GET /spoke/ontogen/attr/conf failed: ${await confResp.text()}`).toBeTruthy();
+  const conf = (await confResp.json()) as { is_enabled: boolean };
+  await expect(
+    page.getByText(conf.is_enabled ? "enabled" : "disabled", { exact: true }),
+  ).toBeVisible({ timeout: 10_000 });
+
+  // The form's is_enabled checkbox is absent from the DOM in view mode (form only
+  // rendered when editing).
+  // spec: conf/page.tsx — OntogenConfForm rendered only when editing.
   const isEnabledCheckbox = page.locator("#conf-is-enabled");
-  await expect(isEnabledCheckbox).toBeVisible({ timeout: 10_000 });
-  await expect(isEnabledCheckbox).toBeDisabled();
+  await expect(isEnabledCheckbox).toHaveCount(0);
 
   // -- UI gesture: click Edit --
   await editButton.click();
 
-  // -- UI assertion (b): edit mode entered — Save + Cancel visible, Edit gone --
+  // -- UI assertion (c): edit mode entered — Save + Cancel visible, Edit gone --
   // spec: conf/page.tsx — editing ? (Save, Cancel) : (Edit, Run)
   await expect(page.getByRole("button", { name: /^save$/i })).toBeVisible({ timeout: 10_000 });
   await expect(page.getByRole("button", { name: /^cancel$/i })).toBeVisible();
   await expect(page.getByRole("button", { name: /^edit$/i })).toHaveCount(0);
 
-  // -- UI assertion (b cont.): form fields are now enabled --
-  // spec: conf-form.tsx — fields enabled when disabled={!editing} is false
+  // -- UI assertion (c cont.): the editable form replaces the view — the is_enabled
+  //    checkbox now exists and is enabled. --
+  // spec: conf-form.tsx — Checkbox id="conf-is-enabled", enabled when editing.
+  await expect(isEnabledCheckbox).toBeVisible({ timeout: 10_000 });
   await expect(isEnabledCheckbox).toBeEnabled();
 
   // -- UI assertion: no "Configuration saved" toast fired (the defect's tell) --
   // spec: conf/page.tsx — toast({ title: "Configuration saved" }) only on Save success
   await expect(page.getByText("Configuration saved", { exact: true })).toHaveCount(0);
 
-  // -- Core assertion (a): NO PUT /spoke/ontogen/attr/conf was made on Edit --
+  // -- Core assertion (b): NO PUT /spoke/ontogen/attr/conf was made on Edit --
   // Give any stray default-action submit a moment to surface before asserting.
   await page.waitForTimeout(500);
   expect(

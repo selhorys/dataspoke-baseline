@@ -11,7 +11,7 @@
  * Spec: spec/feature/FRONTEND_INGESTION.md §Source Detail §Recipe.
  */
 
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { ErrorText } from "@/components/forms/error-text";
@@ -43,6 +43,16 @@ interface RecipeYamlEditorProps {
   /** Server error to echo inline (e.g. "INGESTION_SOURCE_READONLY: ..."). */
   serverError?: string;
   validateOptions?: ValidateOptions;
+  /**
+   * When set, the editable view is wrapped in a `<form id={formId}>` so a Save
+   * button rendered elsewhere (e.g. a page section header) can submit it via
+   * `<Button type="submit" form={formId}>`.
+   */
+  formId?: string;
+  /** Suppress the editor's own Save/Cancel chrome (when the page drives them). */
+  hideActions?: boolean;
+  /** Optional node rendered under the "Secret refs" line (e.g. an authoring guide). */
+  secretRefGuide?: ReactNode;
 }
 
 const SECRET_REF_SPLIT_RE = /(\$\{[^}]*__[^}]*\})/g;
@@ -83,6 +93,9 @@ export function RecipeYamlEditor({
   isSaving = false,
   serverError,
   validateOptions,
+  formId,
+  hideActions = false,
+  secretRefGuide,
 }: RecipeYamlEditorProps) {
   const [text, setText] = useState(value);
   const [clientError, setClientError] = useState<string | undefined>();
@@ -140,7 +153,14 @@ export function RecipeYamlEditor({
   }
 
   return (
-    <div className="space-y-3">
+    <form
+      id={formId}
+      className="space-y-3"
+      onSubmit={(e) => {
+        e.preventDefault();
+        handleSave();
+      }}
+    >
       <Textarea
         aria-label="recipe YAML"
         rows={18}
@@ -163,17 +183,20 @@ export function RecipeYamlEditor({
           ))}
         </p>
       )}
+      {secretRefGuide}
       <ErrorText message={clientError ?? serverError} />
-      <div className="flex gap-2">
-        <Button onClick={handleSave} disabled={isSaving}>
-          {isSaving ? "Saving…" : "Save"}
-        </Button>
-        {onCancel && (
-          <Button variant="outline" onClick={onCancel} disabled={isSaving}>
-            Cancel
+      {!hideActions && (
+        <div className="flex gap-2">
+          <Button type="submit" disabled={isSaving}>
+            {isSaving ? "Saving…" : "Save"}
           </Button>
-        )}
-      </div>
-    </div>
+          {onCancel && (
+            <Button type="button" variant="outline" onClick={onCancel} disabled={isSaving}>
+              Cancel
+            </Button>
+          )}
+        </div>
+      )}
+    </form>
   );
 }

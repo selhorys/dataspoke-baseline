@@ -7,7 +7,7 @@
  *   - Reader: no write controls.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, act } from "@testing-library/react";
+import { render, screen, act, fireEvent } from "@testing-library/react";
 import React from "react";
 import IngestionSourceDetailPage from "./page";
 import type { IngestionSource } from "@/types/ingestion";
@@ -92,6 +92,28 @@ describe("ingestion source detail — write gating", () => {
     expect(await screen.findByRole("button", { name: /^edit$/i })).toBeTruthy();
     expect(screen.getByRole("button", { name: /^delete$/i })).toBeTruthy();
     expect(screen.getByRole("button", { name: /^run$/i })).toBeTruthy();
+  });
+
+  it("ACTIVE edit-mode swaps Edit/Delete for Save/Cancel and shows the authoring guide", async () => {
+    mockUseMe.mockReturnValue({ canWrite: true, isAdmin: false, isEditor: true });
+    mockSource.mockReturnValue({
+      data: makeSource("ACTIVE_CUSTOM_MANAGED"),
+      isLoading: false,
+      error: null,
+    });
+    await renderPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: /^edit$/i }));
+
+    // Header now offers Save/Cancel; Edit/Delete are gone.
+    expect(screen.getByRole("button", { name: /^save$/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^cancel$/i })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^edit$/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^delete$/i })).toBeNull();
+    // The collapsible secret-ref authoring guide is offered under the editor.
+    expect(
+      screen.getByText(/how to author a new source-credential reference/i),
+    ).toBeTruthy();
   });
 
   it("DATAHUB_MANAGED + Editor hides Edit/Delete and shows the read-only note", async () => {

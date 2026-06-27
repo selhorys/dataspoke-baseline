@@ -10,7 +10,8 @@
  *
  * spec: spec/feature/FRONTEND_METAGEN.md §Routes — /metagen/conf conf list
  * spec: spec/feature/FRONTEND_METAGEN.md §Conf list — name link, is_enabled badge,
- *   schedule_tier, dataset_filter summary, result_limit, per-row Run; Create conf button
+ *   schedule_tier (links to its backing Airflow DAG metagen-<tier> when set),
+ *   dataset_filter summary, result_limit, per-row Run; Create conf button
  * spec: spec/TESTING.md §End-to-End (E2E) Testing — ground group, real-session role
  */
 
@@ -70,4 +71,20 @@ test("/metagen/conf — lists confs with a Create-conf link and per-row Run acti
   await expect(
     page.getByRole("button", { name: `Run conf ${CONF_NAME}`, exact: true }),
   ).toBeVisible();
+
+  // -- schedule_tier "daily" links to its backing Airflow DAG (metagen-daily) --
+  // conf-list.tsx: <ScheduleTierLink tier dagId={scheduleDagId("metagen", "daily")} />
+  // The DAG-id prefix logic is unit-tested in Vitest; here we verify the deployed
+  // frontend renders the tier as an external DAG link against the real DAG id. When
+  // no airflowUrl is configured the component renders plain text (no link) instead.
+  // spec: FRONTEND_METAGEN.md §Conf list — schedule_tier cell links to metagen-<tier> when set
+  const tierLink = page.getByRole("link", { name: "daily", exact: true });
+  if ((await tierLink.count()) > 0) {
+    await expect(tierLink).toBeVisible();
+    await expect(tierLink).toHaveAttribute("href", /\/dags\/metagen-daily$/);
+    await expect(tierLink).toHaveAttribute("target", "_blank");
+  } else {
+    // No Airflow URL configured in this deployment — the tier renders as plain text.
+    await expect(page.getByText("daily", { exact: true })).toBeVisible();
+  }
 });

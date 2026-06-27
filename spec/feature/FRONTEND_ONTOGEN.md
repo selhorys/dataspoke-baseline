@@ -107,10 +107,14 @@ is no unapproved-only view. The graph is read-only — review actions live in th
 Nodes/Edges/Triples tables.
 
 The `/ontogen/conf` page renders the singleton conf with all action controls at
-the top-right. When not editing the header shows **Edit** and **Run**; entering
+the top-right. When not editing it shows a read-only **view** of the conf fields
+(`is_enabled`, `schedule_tier`, `dataset_filter`, `default_run_prompt`) as plain
+text — the `schedule_tier` value links to its backing Airflow DAG
+(`ontogen-<tier>`), and `default_run_prompt` renders as a preformatted text block
+(em dash when empty). The header shows **Edit** and **Run**; entering
 edit mode replaces them with **Save** and **Cancel** and hides Run. **Run**
 opens a dialog (`POST .../method/run`) with an optional Markdown one-shot prompt
-and a "Dry run" checkbox. **Edit** switches the fields to editable; **Save**
+and a "Dry run" checkbox. **Edit** swaps the view for the editable form; **Save**
 persists via `PUT/PATCH .../attr/conf` and **Cancel** discards. There is no
 Delete.
 

@@ -255,3 +255,46 @@ describe("RecipeYamlEditor — validateOptions.recipeOnly", () => {
     expect(screen.getByText(/source\.type/i)).toBeTruthy();
   });
 });
+
+// ---------------------------------------------------------------------------
+// 5. External-submit chrome — hideActions / formId / secretRefGuide
+//    (source-detail page drives Save from a header button via the form id)
+// ---------------------------------------------------------------------------
+describe("RecipeYamlEditor — external-submit chrome", () => {
+  it("suppresses the internal Save/Cancel buttons when hideActions is set", () => {
+    render(<RecipeYamlEditor value={validYaml} editing hideActions onCancel={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: /save/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /cancel/i })).toBeNull();
+  });
+
+  it("submits via an external button targeting formId, calling onSave", () => {
+    const onSave = vi.fn();
+    render(
+      <>
+        <RecipeYamlEditor
+          value={validYaml}
+          editing
+          hideActions
+          formId="recipe-form"
+          onSave={onSave}
+        />
+        <button type="submit" form="recipe-form">
+          External Save
+        </button>
+      </>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /external save/i }));
+    expect(onSave).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders secretRefGuide under the editor", () => {
+    render(
+      <RecipeYamlEditor
+        value={yamlWithSecretRef}
+        editing
+        secretRefGuide={<div>guide-node</div>}
+      />,
+    );
+    expect(screen.getByText("guide-node")).toBeTruthy();
+  });
+});

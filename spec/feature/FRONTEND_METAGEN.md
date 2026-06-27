@@ -50,9 +50,10 @@ dataset's metagen events fold into that page's unified **Events** panel.
 ## Conf list (`/metagen/conf`)
 
 One row per conf: `name`, `is_enabled` badge, `schedule_tier`, a
-`dataset_filter` summary, and `result_limit`. A "Create conf" button routes to
-`/metagen/conf/new`; paginate (`GET /spoke/metagen/conf`). Each row links to
-`/metagen/conf/[id]`.
+`dataset_filter` summary, and `result_limit`. The `schedule_tier` cell links to
+its backing Airflow DAG (`metagen-<tier>`) when set; an unscheduled conf renders
+plain `manual` text. A "Create conf" button routes to `/metagen/conf/new`;
+paginate (`GET /spoke/metagen/conf`). Each row links to `/metagen/conf/[id]`.
 
 ## Conf create / detail (`/metagen/conf/new`, `/metagen/conf/[id]`)
 
@@ -60,7 +61,12 @@ The create page is a form over `{name, is_enabled, schedule_tier,
 dataset_filter, result_limit, overwrite_pending}`, submitting via
 `POST /spoke/metagen/conf`; a duplicate `name` surfaces `409 METAGEN_CONF_EXISTS`.
 
-The detail page edits the same fields (`PUT` full replace / `PATCH` partial),
+The detail page opens as a read-only **view** rendering the conf fields
+(`is_enabled`, `schedule_tier`, `result_limit`, `overwrite_pending`,
+`dataset_filter`) as plain text rather than disabled inputs; the `schedule_tier`
+value links to its backing Airflow DAG (`metagen-<tier>`) as in the conf list.
+`Edit` swaps the view for the form over the same fields (`PUT` full replace /
+`PATCH` partial). The detail page also
 deletes the conf (button → ConfirmDialog → `DELETE`; the dialog notes that this
 conf's generated items and candidates are retained as parentless results while
 already-approved descriptions stay in DataHub), and triggers a run with a `dry_run` toggle
@@ -195,6 +201,7 @@ uncovered list, and candidate text, with no action buttons.
 
 - `MetagenConfList` — the conf list with the "Create conf" button.
 - `MetagenConfForm` — the conf form (create + edit), with the `dataset_filter` builder.
+- `MetagenConfView` — the read-only conf view (plain-text fields, `schedule_tier` as a DAG link, `dataset_filter` via `DatasetFilterView`), shown on `/metagen/conf/[id]` until `Edit`.
 - `RunDialog` — per-conf dry-run / run trigger dialog with status.
 - `MetagenDatasetTable` — the per-dataset result rollup on `/metagen/result` (`GET /spoke/metagen/dataset`) with the `dataset_urn` text filter and `conf_id` select.
 - `MetagenUncoveredTable` — the uncovered-datasets list with the `include_disallowed` toggle.

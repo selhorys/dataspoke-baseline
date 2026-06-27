@@ -41,7 +41,6 @@ interface MetagenConfFormProps {
   datasetFilter: DatasetFilter;
   onDatasetFilterChange: (v: DatasetFilter) => void;
   onSubmit: (body: MetagenConfPutBody) => void;
-  disabled?: boolean;
   /** Server error (e.g. 409 METAGEN_CONF_EXISTS) to surface against the name field. */
   serverError?: string;
   /** id wired to the top-right header Save button via <Button form={id} type="submit">. */
@@ -53,7 +52,6 @@ export function MetagenConfForm({
   datasetFilter,
   onDatasetFilterChange,
   onSubmit,
-  disabled = false,
   serverError,
   formId,
 }: MetagenConfFormProps) {
@@ -113,7 +111,6 @@ export function MetagenConfForm({
         <Input
           id="metagen-conf-name"
           placeholder="catalog documentation policy"
-          disabled={disabled}
           maxLength={200}
           {...register("name")}
         />
@@ -125,7 +122,6 @@ export function MetagenConfForm({
             id="metagen-conf-is-enabled"
             checked={isEnabled}
             onCheckedChange={(v) => setValue("is_enabled", !!v)}
-            disabled={disabled}
           />
           <span className="text-sm text-muted-foreground">
             Enable periodic inference DAG
@@ -146,7 +142,6 @@ export function MetagenConfForm({
               v === "none" ? null : (v as "hourly" | "daily" | "weekly"),
             )
           }
-          disabled={disabled}
         >
           <SelectTrigger id="metagen-conf-schedule-tier">
             <SelectValue placeholder="None (manual only)" />
@@ -163,7 +158,6 @@ export function MetagenConfForm({
       <DatasetFilterEditor
         value={datasetFilter}
         onChange={onDatasetFilterChange}
-        disabled={disabled}
       />
 
       <Field
@@ -177,7 +171,6 @@ export function MetagenConfForm({
           type="number"
           min={1}
           max={20}
-          disabled={disabled}
           {...register("result_limit", { valueAsNumber: true })}
         />
       </Field>
@@ -188,7 +181,6 @@ export function MetagenConfForm({
             id="metagen-conf-overwrite-pending"
             checked={overwritePending}
             onCheckedChange={(v) => setValue("overwrite_pending", !!v)}
-            disabled={disabled}
           />
           <span className="text-sm text-muted-foreground">
             Overwrite pending (llm_approved) candidates on the next run

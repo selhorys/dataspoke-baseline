@@ -478,6 +478,14 @@ These component IDs are referenced from per-function specs.
 - **DatasetFilterEditor** — controlled editor for the four-dimension
   `dataset_filter` (`origin` plus `tags[]` / `glossary_terms[]` /
   `dataset_urns[]`). Reused by Governance metrics, OntoGen conf, and MetaGen conf.
+- **DatasetFilterView** — read-only render of the four-dimension `dataset_filter`,
+  the view-mode analogue of DatasetFilterEditor (empty dimensions show an em dash).
+  Reused by the OntoGen and MetaGen conf views.
+- **ScheduleTierLink** — renders a schedule tier (hourly / daily / weekly) as a
+  link to its backing Airflow DAG, or plain text for an unscheduled / custom value.
+  Reused by Ingestion (`ingestion-active-<tier>`), MetaGen (`metagen-<tier>`), and
+  OntoGen (`ontogen-<tier>`). Links only when the runtime-config Airflow host and a
+  DAG id are both present; target `_blank rel=noopener`.
 - **RangePicker** — the single time-window control for every time-windowed
   surface (validation detail results + events, governance metric detail results
   + events, governance dashboard, ingestion source events, the per-dataset page's

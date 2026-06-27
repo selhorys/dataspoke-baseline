@@ -34,8 +34,9 @@ import {
   modeLabel,
   filterKeyLabel,
   INGESTION_FILTER_KEYS,
+  scheduleTierLabel,
 } from "@/lib/ingestion-mode-variant";
-import { ScheduleTierLink } from "@/components/ingestion/schedule-tier-link";
+import { ScheduleTierLink, scheduleDagId } from "@/components/schedule-tier-link";
 import {
   useIngestionSourceDatasetCounts,
   useIngestionSourceLatestRuns,
@@ -155,7 +156,15 @@ export function IngestionSourceList({
                   </TableCell>
                   <TableCell className="font-mono text-xs">{s.platform}</TableCell>
                   <TableCell className="text-sm">
-                    <ScheduleTierLink schedule={s.schedule} />
+                    {(() => {
+                      const tier = scheduleTierLabel(s.schedule);
+                      return (
+                        <ScheduleTierLink
+                          tier={tier}
+                          dagId={scheduleDagId("ingestion-active", tier)}
+                        />
+                      );
+                    })()}
                   </TableCell>
                   <TableCell className="text-sm tabular-nums">
                     {countById[s.id] ?? (

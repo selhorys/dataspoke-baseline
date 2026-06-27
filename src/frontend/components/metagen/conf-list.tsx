@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/table";
 import { summarizeDatasetFilter } from "@/lib/metagen-filter-summary";
 import { Pagination } from "@/components/pagination";
+import { ScheduleTierLink, scheduleDagId } from "@/components/schedule-tier-link";
 import type { MetagenConf } from "@/types/metagen";
 
 interface MetagenConfListProps {
@@ -99,7 +100,10 @@ export function MetagenConfList({
                     </Badge>
                   </TableCell>
                   <TableCell className="text-sm text-muted-foreground">
-                    {conf.schedule_tier ?? "manual"}
+                    <ScheduleTierLink
+                      tier={conf.schedule_tier ?? "manual"}
+                      dagId={scheduleDagId("metagen", conf.schedule_tier)}
+                    />
                   </TableCell>
                   <TableCell className="text-xs text-muted-foreground">
                     {summarizeDatasetFilter(conf.dataset_filter)}

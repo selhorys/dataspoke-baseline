@@ -149,12 +149,13 @@ beforeEach(() => {
 // 1. Initial (view) state — form disabled, Edit shown, no mutation
 // ---------------------------------------------------------------------------
 describe("OntogenConfPage — initial view state (FRONTEND_ONTOGEN.md §Configuration)", () => {
-  it("renders the form fields disabled, shows Edit, and does NOT call the upsert mutation", () => {
+  it("renders the read-only view (no form inputs), shows Edit, and does NOT call the upsert mutation", () => {
     render(<OntogenConfPage />);
 
-    // The conf form renders (GET returns a default conf, never null).
-    expect(isEnabledCheckbox()).toBeInTheDocument();
-    expect(checkboxIsDisabled(isEnabledCheckbox())).toBe(true);
+    // View mode renders plain text, not the editable form — no conf inputs present.
+    expect(document.getElementById("conf-is-enabled")).toBeNull();
+    // is_enabled is shown as plain text (default conf has is_enabled:false).
+    expect(screen.getByText("disabled")).toBeInTheDocument();
 
     // An Edit button is shown; Save is not.
     expect(screen.getByRole("button", { name: /^edit$/i })).toBeInTheDocument();
@@ -175,16 +176,17 @@ describe("OntogenConfPage — initial view state (FRONTEND_ONTOGEN.md §Configur
 // plus the structural key assertion below.
 // ---------------------------------------------------------------------------
 describe("OntogenConfPage — Edit enters edit mode without submitting (UC3 defect)", () => {
-  it("clicking Edit enables fields and reveals Save, and does NOT fire the upsert mutation", async () => {
+  it("clicking Edit reveals the editable form and Save, and does NOT fire the upsert mutation", async () => {
     const user = userEvent.setup();
     render(<OntogenConfPage />);
 
     await user.click(screen.getByRole("button", { name: /^edit$/i }));
 
-    // Edit mode: fields enabled, Save visible, Edit gone.
+    // Edit mode: the form inputs appear (enabled), Save visible, Edit gone.
     await waitFor(() => {
-      expect(checkboxIsDisabled(isEnabledCheckbox())).toBe(false);
+      expect(document.getElementById("conf-is-enabled")).not.toBeNull();
     });
+    expect(checkboxIsDisabled(isEnabledCheckbox())).toBe(false);
     expect(screen.getByRole("button", { name: /^save$/i })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^edit$/i })).toBeNull();
 
@@ -266,11 +268,11 @@ describe("OntogenConfPage — Cancel discards edits without writing", () => {
 
     await user.click(screen.getByRole("button", { name: /^cancel$/i }));
 
-    // Back to view mode: Edit shown, fields disabled again.
+    // Back to view mode: Edit shown, the editable form inputs gone.
     await waitFor(() => {
       expect(screen.getByRole("button", { name: /^edit$/i })).toBeInTheDocument();
     });
-    expect(checkboxIsDisabled(isEnabledCheckbox())).toBe(true);
+    expect(document.getElementById("conf-is-enabled")).toBeNull();
 
     // Cancel never writes.
     expect(mockUpsertMutate).not.toHaveBeenCalled();

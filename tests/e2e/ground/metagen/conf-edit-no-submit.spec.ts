@@ -17,16 +17,19 @@
  * Independent: seeds one conf via REST, runs the gestures, deletes it in afterAll.
  *
  * Assertions:
- *   (a) clicking Edit fires NO PUT /spoke/metagen/conf/{id} request;
- *   (b) edit mode is entered — Save + Cancel become visible, Run/Delete hidden,
- *       and the form fields are enabled (is_enabled checkbox no longer disabled);
- *   (c) no "Conf saved" toast fires on Edit (the defect's tell);
- *   (d) positive leg — editing result_limit and clicking the header Save fires
+ *   (a) read-mode renders the conf as a plain-text VIEW (MetagenConfView), not a
+ *       disabled form — no form control is in the DOM, the view value renders;
+ *   (b) clicking Edit fires NO PUT /spoke/metagen/conf/{id} request;
+ *   (c) edit mode is entered — Save + Cancel become visible, Run/Delete hidden,
+ *       and the editable form replaces the view (is_enabled checkbox appears, enabled);
+ *   (d) no "Conf saved" toast fires on Edit (the defect's tell);
+ *   (e) positive leg — editing result_limit and clicking the header Save fires
  *       exactly one PUT, shows a "Conf saved" toast, and the change reads back
  *       over REST.
  *
- * spec: spec/feature/FRONTEND_METAGEN.md §Conf create / detail — the detail page
- *   edits fields via PUT, fired only by Save (header external submit), never by Edit
+ * spec: spec/feature/FRONTEND_METAGEN.md §Conf detail — the detail page opens as a
+ *   read-only view (conf fields as plain text); Edit swaps it for the form; PUT is
+ *   fired only by Save (header external submit), never by Edit
  * spec: spec/TESTING.md §End-to-End (E2E) Testing — ground group, real-session role
  */
 
@@ -78,7 +81,7 @@ test("/metagen/conf/[id] — clicking Edit enters edit mode and does NOT PUT the
     timeout: 15_000,
   });
 
-  // -- Precondition: read-mode header = Edit + Run + Delete; no Save; fields disabled --
+  // -- Precondition: read-mode header = Edit + Run + Delete; no Save --
   // conf/[id]/page.tsx: header renders Edit/Run/Delete when not editing.
   const editButton = page.getByRole("button", { name: /^edit$/i });
   await expect(editButton).toBeVisible({ timeout: 15_000 });
@@ -86,20 +89,29 @@ test("/metagen/conf/[id] — clicking Edit enters edit mode and does NOT PUT the
   await expect(page.getByRole("button", { name: /^delete$/i })).toBeVisible();
   await expect(page.getByRole("button", { name: /^save$/i })).toHaveCount(0);
 
+  // -- (a) read-mode renders a plain-text VIEW, not a disabled form. The seeded
+  //    conf has overwrite_pending=true → "yes", which only the view renders (the
+  //    form represents it as a checkbox + descriptive span). --
+  // conf-view.tsx: <FieldValue label="overwrite_pending">{... ? "yes" : "no"}
+  await expect(page.getByText("yes", { exact: true })).toBeVisible({ timeout: 10_000 });
+
+  // The form's is_enabled checkbox is absent from the DOM in view mode (no form rendered).
+  // conf/[id]/page.tsx: MetagenConfForm rendered only when editing.
   const isEnabledCheckbox = page.locator("#metagen-conf-is-enabled");
-  await expect(isEnabledCheckbox).toBeVisible({ timeout: 10_000 });
-  await expect(isEnabledCheckbox).toBeDisabled();
+  await expect(isEnabledCheckbox).toHaveCount(0);
 
   // -- Gesture: click Edit --
   await editButton.click();
 
-  // -- (b) edit mode entered — Save + Cancel appear, Edit/Run/Delete gone, fields enabled --
+  // -- (c) edit mode entered — Save + Cancel appear, Edit/Run/Delete gone; the
+  //    editable form replaces the view (is_enabled checkbox now present + enabled) --
   const saveButton = page.getByRole("button", { name: /^save$/i });
   await expect(saveButton).toBeVisible({ timeout: 10_000 });
   await expect(page.getByRole("button", { name: /^cancel$/i })).toBeVisible();
   await expect(page.getByRole("button", { name: /^edit$/i })).toHaveCount(0);
   await expect(page.getByRole("button", { name: /^run$/i })).toHaveCount(0);
   await expect(page.getByRole("button", { name: /^delete$/i })).toHaveCount(0);
+  await expect(isEnabledCheckbox).toBeVisible({ timeout: 10_000 });
   await expect(isEnabledCheckbox).toBeEnabled();
 
   // -- Save is a header external-submit bound to the conf form --
@@ -107,11 +119,11 @@ test("/metagen/conf/[id] — clicking Edit enters edit mode and does NOT PUT the
   await expect(saveButton).toHaveAttribute("type", "submit");
   await expect(saveButton).toHaveAttribute("form", "metagen-conf-form");
 
-  // -- (c) no "Conf saved" toast fired (the defect's tell) --
+  // -- (d) no "Conf saved" toast fired (the defect's tell) --
   // conf/[id]/page.tsx: toast({ title: "Conf saved" }) only on Save success
   await expect(page.getByText("Conf saved", { exact: true })).toHaveCount(0);
 
-  // -- (a) core assertion: NO PUT fired on Edit --
+  // -- (b) core assertion: NO PUT fired on Edit --
   // Give any stray default-action submit a moment to surface before asserting.
   await page.waitForTimeout(500);
   expect(

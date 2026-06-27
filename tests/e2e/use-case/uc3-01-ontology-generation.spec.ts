@@ -151,19 +151,25 @@ test("UC3 step 1 — enable ontogen conf on /ontogen/conf page", async ({
   await expect(page.getByRole("button", { name: "Run" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Delete" })).toHaveCount(0);
 
-  // -- UI assertion: the form renders (is_enabled checkbox, schedule_tier select) --
-  // spec: FRONTEND_ONTOGEN.md §Page contracts — conf-form fields: is_enabled, schedule_tier
-  // conf-form.tsx line 96: Checkbox id="conf-is-enabled"
-  await expect(page.locator("#conf-is-enabled")).toBeVisible();
-  // conf-form.tsx line 121: SelectTrigger id="conf-schedule-tier"
-  await expect(page.locator("#conf-schedule-tier")).toBeVisible();
+  // -- UI assertion: read-mode shows a plain-text VIEW, not the form yet --
+  // spec: FRONTEND_ONTOGEN.md §/ontogen/conf — when not editing it shows a read-only
+  //   view of the conf fields as plain text; the form (is_enabled checkbox, schedule_tier
+  //   select) renders only after Edit.
+  await expect(page.locator("#conf-is-enabled")).toHaveCount(0);
+  await expect(page.locator("#conf-schedule-tier")).toHaveCount(0);
 
-  // -- UI gesture: click Edit to enable the form --
+  // -- UI gesture: click Edit to swap the view for the editable form --
   await page.getByRole("button", { name: "Edit" }).click();
 
   // The form is now in editing mode; the top-right header "Save" button is visible.
   // ontogen/conf/page.tsx: <Button form={CONF_FORM_ID} type="submit">Save</Button>
   await expect(page.getByRole("button", { name: "Save", exact: true })).toBeVisible({ timeout: 5_000 });
+
+  // -- UI assertion: the editable form now renders (is_enabled checkbox, schedule_tier select) --
+  // spec: FRONTEND_ONTOGEN.md §Page contracts — conf-form fields: is_enabled, schedule_tier
+  // conf-form.tsx: Checkbox id="conf-is-enabled"; SelectTrigger id="conf-schedule-tier"
+  await expect(page.locator("#conf-is-enabled")).toBeVisible();
+  await expect(page.locator("#conf-schedule-tier")).toBeVisible();
 
   // -- UI gesture: check is_enabled checkbox (set to checked/enabled) --
   // spec: FRONTEND_ONTOGEN.md §Page contracts — is_enabled controls DAG enable/disable

@@ -15,6 +15,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { ErrorState } from "@/components/ui/error-state";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { RecipeYamlEditor } from "@/components/ingestion/recipe-yaml-editor";
+import { SecretRefAuthoringGuide } from "@/components/ingestion/secret-ref-authoring-guide";
 import { SourceDatasetTable } from "@/components/ingestion/source-dataset-table";
 import { IngestionRunPanel } from "@/components/ingestion/ingestion-run-panel";
 import { IngestionEventTable } from "@/components/ingestion/ingestion-event-table";
@@ -29,13 +30,19 @@ import {
 } from "@/lib/api/ingestion";
 import { useMe } from "@/lib/auth/use-me";
 import { ApiError } from "@/lib/api/client";
-import { modeBadgeVariant, modeLabel } from "@/lib/ingestion-mode-variant";
-import { ScheduleTierLink } from "@/components/ingestion/schedule-tier-link";
+import {
+  modeBadgeVariant,
+  modeLabel,
+  scheduleTierLabel,
+} from "@/lib/ingestion-mode-variant";
+import { ScheduleTierLink, scheduleDagId } from "@/components/schedule-tier-link";
 import { eventStatusVariant } from "@/lib/event-status-variant";
 import { useDisplayTz } from "@/lib/preferences/timezone";
 import { Pagination, DEFAULT_PAGE_SIZE } from "@/components/pagination";
 import { toast } from "@/components/ui/use-toast";
 import type { IngestionSourceBody } from "@/types/ingestion";
+
+const RECIPE_FORM_ID = "ingestion-recipe-form";
 
 export default function IngestionSourceDetailPage({
   params,
@@ -167,7 +174,11 @@ export default function IngestionSourceDetailPage({
           {source.status}
         </Badge>
         <ScheduleTierLink
-          schedule={source.schedule}
+          tier={scheduleTierLabel(source.schedule)}
+          dagId={scheduleDagId(
+            "ingestion-active",
+            scheduleTierLabel(source.schedule),
+          )}
           className="text-sm text-muted-foreground"
         />
         {source.datahub_source_urn && (
@@ -181,20 +192,52 @@ export default function IngestionSourceDetailPage({
       <section className="rounded-lg border p-5">
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-sm font-medium">Recipe (YAML)</h2>
-          {isEditable && !isEditing && (
-            <div className="flex gap-2">
-              <Button variant="outline" size="sm" onClick={() => setIsEditing(true)}>
-                Edit
-              </Button>
-              <Button
-                variant="destructive"
-                size="sm"
-                onClick={() => setShowDeleteDialog(true)}
-              >
-                Delete
-              </Button>
-            </div>
-          )}
+          {/* Distinct React keys keep Edit/Save from sharing a node slot; without
+              them React reuses the button and the Edit click submits the form on
+              first render (project_frontend_button_submit_morph). */}
+          {isEditable &&
+            (isEditing ? (
+              <div className="flex gap-2">
+                <Button
+                  key="recipe-save"
+                  type="submit"
+                  form={RECIPE_FORM_ID}
+                  size="sm"
+                  disabled={replace.isPending}
+                >
+                  {replace.isPending ? "Saving…" : "Save"}
+                </Button>
+                <Button
+                  key="recipe-cancel"
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setIsEditing(false)}
+                  disabled={replace.isPending}
+                >
+                  Cancel
+                </Button>
+              </div>
+            ) : (
+              <div className="flex gap-2">
+                <Button
+                  key="recipe-edit"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setIsEditing(true)}
+                >
+                  Edit
+                </Button>
+                <Button
+                  key="recipe-delete"
+                  variant="destructive"
+                  size="sm"
+                  onClick={() => setShowDeleteDialog(true)}
+                >
+                  Delete
+                </Button>
+              </div>
+            ))}
         </div>
 
         {source.mode === "DATAHUB_MANAGED" && (
@@ -208,10 +251,17 @@ export default function IngestionSourceDetailPage({
           value={yamlValue}
           readOnly={!isEditable}
           editing={isEditing}
+          formId={RECIPE_FORM_ID}
+          hideActions
           onCancel={() => setIsEditing(false)}
           onSave={handleSave}
           isSaving={replace.isPending}
           serverError={saveError}
+          secretRefGuide={
+            source.mode === "ACTIVE_CUSTOM_MANAGED" ? (
+              <SecretRefAuthoringGuide />
+            ) : undefined
+          }
         />
       </section>
 
