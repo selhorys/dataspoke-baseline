@@ -234,7 +234,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   aria-label={`Open ${l.label}`}
                 >
                   <a href={l.href} target="_blank" rel="noopener noreferrer">
-                    <Icon className="h-[18px] w-[18px]" />
+                    <Icon className="h-[18px] w-auto" />
                   </a>
                 </Button>
               );
