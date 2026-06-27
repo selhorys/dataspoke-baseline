@@ -110,7 +110,7 @@ const UNCOVERED_URL = "/metagen/uncovered";
 // Per-dataset detail is the unified hub /data/[urn]; the metagen boundary form
 // and candidate items live under its "MetaGen" CollapsiblePanel (open by
 // default), and metagen events fold into the unified "Events" panel.
-// spec: FRONTEND_BASIC.md §Per-dataset page; FRONTEND_METAGEN.md §Detail (moved to /data/[urn])
+// spec: FRONTEND_BASIC.md §Per-dataset page; FRONTEND_METAGEN.md §Per-dataset (/data/[urn] MetaGen panel)
 const EU_DATASET_URL = `/data/${EU_PROFILES_ENC}`;
 const OE_DATASET_URL = `/data/${ORDERS_EVENTS_ENC}`;
 
@@ -673,7 +673,7 @@ test("UC4 step 4 — run conf OE then conf EU; each RUN_COMPLETE carries its con
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Step 5 — Per-conf events on /metagen/conf/[id] show this conf's RUN_COMPLETE only
-// spec: FRONTEND_METAGEN.md §Conf detail — GET /spoke/metagen/conf/{id}/event
+// spec: FRONTEND_METAGEN.md §Conf create / detail — GET /spoke/metagen/conf/{id}/event
 // ─────────────────────────────────────────────────────────────────────────────
 test("UC4 step 5 — conf EU detail shows its own RUN_COMPLETE; OE run does not leak", async ({
   page,

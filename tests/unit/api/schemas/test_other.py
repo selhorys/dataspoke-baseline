@@ -39,13 +39,13 @@ class TestPaginationParams:
         with pytest.raises(ValidationError):
             PaginationParams(limit=0)
 
-    def test_rejects_limit_over_100(self) -> None:
+    def test_rejects_limit_over_1000(self) -> None:
         with pytest.raises(ValidationError):
-            PaginationParams(limit=101)
+            PaginationParams(limit=1001)
 
     def test_accepts_max_limit(self) -> None:
-        p = PaginationParams(limit=100)
-        assert p.limit == 100
+        p = PaginationParams(limit=1000)
+        assert p.limit == 1000
 
 
 class TestTimeRangeParams:

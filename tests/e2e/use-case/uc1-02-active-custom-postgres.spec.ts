@@ -205,7 +205,7 @@ test("UC1 Case 2 step 1 — create ACTIVE_CUSTOM_MANAGED postgres source", async
 
   // Schedule dropdown — select "daily" (resolves to cron '0 0 * * *')
   // spec: USE_CASE_en.md §UC1 Case 2 — "schedule: '0 0 * * *'"
-  // spec: FRONTEND_INGESTION.md §Create View — schedule selector (hourly/daily/weekly/manual)
+  // spec: FRONTEND_INGESTION.md §Create View — schedule selector (hourly/daily/weekly)
   // The schedule field has id="create-schedule"; select "daily" which is the default.
   // We verify the trigger exists, then use selectOption on the underlying select.
   const scheduleTrigger = page.locator("#create-schedule");

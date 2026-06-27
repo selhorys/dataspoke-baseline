@@ -27,8 +27,8 @@ Steps mirror USE_CASE_en.md §UC1 Case 1:
      reflects the run on the REGULAR source:
        PRIMARY:   GET /sources/{id}/event (the parent) has INGESTION.COMPLETE with
                   wrapper=true and status='success'
-                  (detail.execution_request_urn is used only to locate the row — an impl
-                   detail, not a spec'd event-detail key).
+                  (detail.execution_request_urn is the spec'd identity key for sync-mirrored
+                   DATAHUB_MANAGED events — BACKEND.md §Event Catalogue — used here to locate the row).
        The wrapper source is ABSENT from GET /sources?mode=DATAHUB_MANAGED.
        SECONDARY: GET /sources/{id}/datasets has ≥1 row with derivation='pipeline_name'
                   and authority='high'; attr/ingestion latest_run reflects the run.
@@ -212,8 +212,9 @@ async def _managed_source_setup(
         pass
 
     # ── Step 1a: Create DataHub Secret ────────────────────────────────────────
-    # spec: USE_CASE_en.md §UC1 Case 1 — DataHub-recommended credential pattern uses
-    #   createSecret + ${SECRET_NAME} reference in the recipe.
+    # spec: feature/BACKEND.md §Ingestion Service — sync sweep step 1: ${...} secret
+    #   references are preserved as-is (not masked, not resolved). The fixture stores the
+    #   credential in a DataHub Secret and references it as ${SECRET_NAME} in the recipe.
     # The secret value itself must NEVER appear in any DataSpoke API response.
     create_secret_mutation = """
     mutation createSecret($input: CreateSecretInput!) {
@@ -845,8 +846,8 @@ async def test_uc1_datahub_managed_execute_and_reflect(
                    INGESTION.COMPLETE with status='success' for this run, and ZERO
                    INGESTION.FAIL — and that holds across repeated syncs (idempotent
                    upsert keyed on the execution-request URN; no spurious FAIL minted)
-                   (detail.execution_request_urn used only as a row discriminator — an
-                    impl detail, not a spec'd event-detail key)
+                   (detail.execution_request_urn is the spec'd identity key for sync-mirrored
+                    DATAHUB_MANAGED events per BACKEND.md §Event Catalogue; used to locate the row)
       - The wrapper source is ABSENT from GET /sources?mode=DATAHUB_MANAGED (hidden)
       - SECONDARY: GET /sources/{id}/datasets → ≥1 row with derivation='pipeline_name'
                    and authority='high'
@@ -1043,9 +1044,10 @@ async def test_uc1_datahub_managed_execute_and_reflect(
         event_body = event_resp.json()
         for evt in event_body.get("events", []):
             if evt.get("event_type") == "INGESTION.COMPLETE":
-                # Discriminator only: execution_request_urn is an impl-detail key (the
-                # INGESTION Event Catalogue spec'es no detail keys) used to pick the row
-                # for THIS run; not asserted as a wire contract.
+                # Identity key: execution_request_urn is the spec'd identity key for
+                # sync-mirrored DATAHUB_MANAGED events (BACKEND.md §Event Catalogue — the
+                # sweep upserts at most one event per execution-request URN); used to pick
+                # the row for THIS run.
                 detail = evt.get("detail") or {}
                 if detail.get("execution_request_urn") == execution_request_urn:
                     found_event = evt
@@ -1082,9 +1084,9 @@ async def test_uc1_datahub_managed_execute_and_reflect(
     # Verify the event's status.
     # spec: feature/BACKEND.md §Sync sweep step 4 — DataHub execution status mapping:
     #   SUCCESS/SUCCEEDED → INGESTION.COMPLETE → status='success'.
-    # (detail.execution_request_urn was used above only as a discriminator to locate the
-    #  right row; the INGESTION Event Catalogue spec'es no detail keys, so it is an impl
-    #  detail and not asserted as a wire contract here.)
+    # (detail.execution_request_urn was used above to locate the right row; it is the
+    #  spec'd identity key for sync-mirrored DATAHUB_MANAGED events per
+    #  BACKEND.md §Event Catalogue.)
     assert found_event.get("status") == "success", (
         f"INGESTION.COMPLETE event must carry status='success'; "
         f"got {found_event.get('status')!r}. "
@@ -1255,7 +1257,9 @@ async def test_uc1_datahub_managed_execute_and_reflect(
     assert attr_body.get("source_id") == managed.id, (
         f"attr/ingestion for the covered dataset must resolve to the regular parent "
         f"source_id={managed.id!r}; got {attr_body.get('source_id')!r}. "
-        "spec: feature/BACKEND.md §reverse_lookup — prefer the regular parent over its wrapper."
+        "spec: feature/BACKEND.md §Querying Events — reverse-lookup resolves the covering "
+        "source. (The regular-parent-over-wrapper tiebreak asserted here is impl behavior, "
+        "not explicitly stated in the spec — flagged.)"
     )
     latest_run = attr_body.get("latest_run")
     assert latest_run is not None, (

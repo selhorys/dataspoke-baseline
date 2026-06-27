@@ -2,10 +2,10 @@
  * Tests for lib/metagen-predicates.ts — all four exported predicates.
  *
  * Spec traces:
- *   - spec/feature/FRONTEND_METAGEN.md §Page contracts:
+ *   - spec/feature/FRONTEND_METAGEN.md §Per-dataset:
  *     "reject valid on both llm_approved and approved (approved case removes the
- *     DataHub description)"; "finalized items collapse to a single approved row";
- *     "confirm dialog labels the destination DataHub aspect"
+ *     DataHub description)"; "the Reject action's dialog labels the destination
+ *     DataHub aspect"
  *   - src/api/schemas/metagen.py MetagenCandidate.status:
  *     "llm_approved" | "approved" | "rejected"
  *   - src/api/schemas/metagen.py MetagenItemSummary.status:
@@ -16,7 +16,7 @@
  *     reject is valid on both "llm_approved" and "approved"; rejecting an
  *     "approved" candidate flips it to "rejected" and removes the editable
  *     DataHub description. Only "rejected" is not reject-eligible.
- *   - src/backend/metagen/service.py §_emit_to_datahub (~L1218-1262):
+ *   - src/backend/metagen/service.py §_emit_to_datahub:
  *     dataset.description  → EditableDatasetPropertiesClass  → aspect "editableDatasetProperties.description"
  *     column.<fp>.description → EditableSchemaMetadataClass[fieldPath] → aspect "editableSchemaMetadata"
  *
@@ -124,11 +124,12 @@ describe('isRejectEligible — reject valid on both llm_approved and approved ca
 // 2. isItemFinalized — item collapses when status === "approved"
 // ---------------------------------------------------------------------------
 //
-// spec/feature/FRONTEND_METAGEN.md: "Finalized items collapse to a single approved row"
-// Item statuses from src/api/schemas/metagen.py MetagenItemSummary.status:
+// isItemFinalized flags an item as finalized when its status is "approved"
+// (impl lib/metagen-predicates.ts). Item statuses from
+// src/api/schemas/metagen.py MetagenItemSummary.status:
 //   "pending" | "llm_approved" | "approved"
 
-describe('isItemFinalized — item collapses to single approved row when status==="approved" (FRONTEND_METAGEN.md §Page contracts)', () => {
+describe('isItemFinalized — true when item status==="approved" (FRONTEND_METAGEN.md §Per-dataset)', () => {
   type Row = { status: ItemStatus; expected: boolean };
 
   const table: Row[] = [
@@ -244,7 +245,7 @@ describe('findApprovedCandidate — returns approved candidate or null (FRONTEND
 // WRONG (historical bug): "datasetProperties.description"
 // CORRECT: "editableDatasetProperties.description"
 
-describe('destinationAspectLabel — aspect names derived from service.py §_emit_to_datahub (~L1218-1262)', () => {
+describe('destinationAspectLabel — aspect names derived from service.py §_emit_to_datahub', () => {
   describe('kind="dataset.description" → editableDatasetProperties.description (NOT datasetProperties.description)', () => {
     it('returns "editableDatasetProperties.description" for dataset.description (editable aspect, not read-only)', () => {
       // Backend: EditableDatasetPropertiesClass — editable aspect, not DatasetPropertiesClass

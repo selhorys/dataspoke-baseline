@@ -153,13 +153,14 @@ DataHub description) are in
 
 The boundary section's action controls live in its section header's top-right
 cluster, mirroring the [Validation panel's header-right action pattern](FRONTEND_VALIDATION.md):
-read mode (a boundary exists) shows `Edit`; create / edit mode shows
-`Save boundary`, plus `Cancel` when editing an existing boundary. All map to
-`PUT .../attr/metagen/boundary`.
+read mode (a boundary exists) shows `Edit` and `Delete`; create / edit mode shows
+`Save boundary`, plus `Cancel` when editing an existing boundary. `Edit` /
+`Save boundary` map to `PUT .../attr/metagen/boundary`; `Delete` maps to
+`DELETE .../attr/metagen/boundary`.
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
-│  ← catalog.books                            boundary  [Edit]    │
+│  ← catalog.books                     boundary  [Edit] [Delete] │
 │  is_enabled: ✓   allowed: [dataset.description,                │
 │                            column.description]                 │
 ├────────────────────────────────────────────────────────────────┤

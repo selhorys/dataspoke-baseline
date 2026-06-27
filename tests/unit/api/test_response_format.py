@@ -18,7 +18,8 @@ from pydantic import BaseModel
 
 from src.api.schemas.common import ErrorResponse, PaginatedResponse, SingleResponse
 
-# Exactly millisecond precision, trailing Z, no offset (API.md §750/§794).
+# Exactly millisecond precision, trailing Z, no offset
+# (API.md §Date/Time; §Standard Response Envelope resp_time).
 _MS_Z_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
 
 # ── Schema discovery ──────────────────────────────────────────────────────────
@@ -110,7 +111,8 @@ def test_error_response_has_required_fields() -> None:
 def test_resp_time_serializes_to_millisecond_z(value: datetime, expected: str) -> None:
     """Success-envelope resp_time emits ISO-8601 UTC millisecond precision with a Z.
 
-    API.md §750/§794 — resp_time is `2026-02-27T10:00:00.000Z`. Pydantic v2's default
+    API.md §Date/Time; §Standard Response Envelope — resp_time is
+    `2026-02-27T10:00:00.000Z`. Pydantic v2's default
     datetime serializer drifts (microseconds; drops the fractional part when zero), so
     the three envelope bases override it to match the error-path format byte-for-byte.
     """
@@ -135,8 +137,9 @@ def test_resp_time_default_factory_is_millisecond_z() -> None:
 def test_discovered_models_are_not_empty() -> None:
     """Sanity check: ensure discovery finds at least one response model.
 
-    The threshold '>= 15' was impl-pinned to the current model count; dropped to '>0'
-    to avoid false failures as the schema set evolves. — spec gap surfaced 2026-05-01
+    This is a discovery sanity check, not a spec-mandated count: it asserts the schema
+    scan finds at least one response model so the envelope sweep above has something to
+    exercise. No API.md contract pins the exact model count.
     """
     assert len(_ALL_RESPONSE_MODELS) > 0, (
         "Schema discovery found no response models — check src/api/schemas/"

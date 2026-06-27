@@ -14,10 +14,10 @@ Tests the peripheral-config-aware consumer restart logic in consumer.py:
    - Does not return when broker address stays the same.
 
 spec traceability:
-- plan/scalable-beaming-hamster.md §Kafka Consumer Reconfig — _read_kafka_brokers
+- DATAHUB §Event Subscription (impl: consumer.py) — _read_kafka_brokers
   invalidates cache; outer loop rebuilds consumer on broker change.
 - src/shared/datahub/consumer.py — _read_kafka_brokers, _run_inner_loop.
-- spec/DATAHUB_INTEGRATION.md §Kafka consumer — peripheral-config-backed broker address.
+- spec/DATAHUB_INTEGRATION.md §Event Subscription — peripheral-config-backed broker address.
 """
 
 import asyncio
@@ -36,7 +36,7 @@ from src.shared.datahub.consumer import _read_kafka_brokers
 async def test_read_kafka_brokers_returns_configured_value(monkeypatch) -> None:
     """_read_kafka_brokers returns the kafka_brokers string when peripheral is configured.
 
-    spec: plan/scalable-beaming-hamster.md §Kafka Consumer Reconfig.
+    spec: DATAHUB §Event Subscription (impl: consumer.py).
     """
     from src.backend.admin.peripheral_service import DatahubConfigDTO
 
@@ -65,7 +65,7 @@ async def test_read_kafka_brokers_returns_configured_value(monkeypatch) -> None:
 
     assert result == "kafka-host:9092", (
         f"Expected 'kafka-host:9092' from peripheral config, got {result!r}. "
-        "spec: plan/scalable-beaming-hamster.md §Kafka Consumer Reconfig."
+        "spec: DATAHUB §Event Subscription (impl: consumer.py)."
     )
     mock_invalidate.assert_called_once_with("datahub")
 
@@ -77,7 +77,7 @@ async def test_read_kafka_brokers_returns_none_when_dto_is_none(monkeypatch) -> 
     When the peripheral is unconfigured, the consumer outer loop should
     sleep and retry rather than attempt to connect to Kafka.
 
-    spec: plan/scalable-beaming-hamster.md §Kafka Consumer Reconfig —
+    spec: DATAHUB §Event Subscription (impl: consumer.py) —
     outer loop sleeps when peripheral unconfigured.
     """
     mock_db = AsyncMock()
@@ -100,7 +100,7 @@ async def test_read_kafka_brokers_returns_none_when_dto_is_none(monkeypatch) -> 
 
     assert result is None, (
         f"Expected None when peripheral is unconfigured, got {result!r}. "
-        "spec: plan/scalable-beaming-hamster.md §Kafka Consumer Reconfig."
+        "spec: DATAHUB §Event Subscription (impl: consumer.py)."
     )
 
 
@@ -148,7 +148,7 @@ async def test_read_kafka_brokers_invalidates_cache_before_reading(monkeypatch) 
     The cache is invalidated BEFORE the DB read so that broker changes are visible
     within the 5-second reconfig check interval (not masked by the 30-second TTL).
 
-    spec: plan/scalable-beaming-hamster.md §Kafka Consumer Reconfig —
+    spec: DATAHUB §Event Subscription (impl: consumer.py) —
     invalidate cache before read so broker changes are visible promptly.
     spec: src/shared/datahub/consumer.py _read_kafka_brokers — invalidate then read.
     """
@@ -202,7 +202,7 @@ async def test_run_inner_loop_returns_when_broker_changes() -> None:
     When the new broker address differs from current_brokers, _run_inner_loop
     returns so the outer loop can rebuild the consumer.
 
-    spec: plan/scalable-beaming-hamster.md §Kafka Consumer Reconfig —
+    spec: DATAHUB §Event Subscription (impl: consumer.py) —
     consumer rebuilt when kafka_brokers changes.
     spec: src/shared/datahub/consumer.py _run_inner_loop — returns on broker change.
     """
@@ -313,7 +313,7 @@ async def test_run_consumer_outer_loop_closes_old_consumer_before_building_new(
     monkeypatching _UNCONFIGURED_SLEEP_S=0.001 keeps the test fast in case
     run_consumer ever sleeps.
 
-    spec: plan/scalable-beaming-hamster.md §Kafka Consumer Reconfig —
+    spec: DATAHUB §Event Subscription (impl: consumer.py) —
     consumer rebuilt when kafka_brokers changes; old consumer closed first.
     spec: src/shared/datahub/consumer.py run_consumer — outer loop rebuilds on
     broker change; consumer.close() in finally block.
@@ -400,7 +400,7 @@ async def test_run_consumer_outer_loop_closes_old_consumer_before_building_new(
     assert idx_old < idx_inner, (
         f"Consumer(old) must be constructed before inner_loop enters. "
         f"Positions: Consumer(old)={idx_old}, inner_loop={idx_inner}. "
-        "spec: plan/scalable-beaming-hamster.md §Kafka Consumer Reconfig."
+        "spec: DATAHUB §Event Subscription (impl: consumer.py)."
     )
     assert idx_inner < idx_close, (
         f"inner_loop must run before close(). "
@@ -410,6 +410,6 @@ async def test_run_consumer_outer_loop_closes_old_consumer_before_building_new(
     assert idx_close < idx_new, (
         f"close() must be called before the new Consumer is constructed. "
         f"Positions: close={idx_close}, Consumer(new)={idx_new}. "
-        "spec: plan/scalable-beaming-hamster.md §Kafka Consumer Reconfig — "
+        "spec: DATAHUB §Event Subscription (impl: consumer.py) — "
         "old consumer closed before new one is built."
     )

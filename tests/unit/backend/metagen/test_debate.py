@@ -257,7 +257,7 @@ async def test_run_debate_revise_then_accept() -> None:
     actors = [(e["actor"], e["turn"]) for e in history]
     assert actors == [("producer", 0), ("reviewer", 1), ("producer", 2), ("reviewer", 3)], (
         f"History actors/turns out of order: {actors!r}. "
-        "spec: BACKEND_LLM.md §Evidence shape §history"
+        "spec: BACKEND_LLM.md §Evidence history (impl: metagen/debate.py)"
     )
 
 
@@ -271,7 +271,8 @@ async def test_run_debate_turns_exhausted_outcome() -> None:
     """Loop reaches max_turns=4 without accept; outcome=turns_exhausted.
 
     Spec: BACKEND_LLM.md §Termination — turns_exhausted: last candidate is kept in payload.
-    Spec: BACKEND_LLM.md §Metagen Adversarial Debate — turns_exhausted drops candidates (no llm_pending).
+    Spec: BACKEND_LLM.md §Metagen Adversarial Debate — turns_exhausted drops
+    candidates (no llm_pending).
     """
     llm = FakeLLM([
         _producer_result_1(),   # turn 0
@@ -434,7 +435,7 @@ async def test_run_debate_cold_start_no_crash() -> None:
     )
     assert result.transcript.get("rag_anchors") == [], (
         "rag_anchors must be empty on cold start. "
-        "spec: BACKEND_LLM.md §Evidence shape"
+        "spec: BACKEND_LLM.md §Evidence (impl: metagen/debate.py)"
     )
 
 
@@ -447,7 +448,8 @@ async def test_run_debate_cold_start_no_crash() -> None:
 async def test_run_debate_reviewer_model_override_calls_make_llm_client() -> None:
     """When reviewer_model is set, make_llm_client(model_override=...) is called for the Reviewer.
 
-    Spec: BACKEND_LLM.md §Settings Reference — DATASPOKE_METAGEN_DEBATE_REVIEWER_MODEL.
+    Spec: BACKEND_LLM.md §Settings Reference §Runtime configuration —
+    `metagen_debate_reviewer_model` (default null → reuse `llm_model`).
     Debate module must use make_llm_client() so stub toggling applies to the Reviewer.
     """
     producer_llm = FakeLLM([_producer_result_1()])
@@ -510,7 +512,8 @@ async def test_run_debate_threads_stub_llm_client_to_reviewer_model(stub_flag: b
     test only asserts model_override presence.  This test asserts the stub kwarg is also
     present — with both True and False values.
 
-    Spec: src/backend/metagen/debate.py — make_llm_client(stub=stub_llm_client, ...) when reviewer_model is set.
+    Spec: src/backend/metagen/debate.py — make_llm_client(stub=stub_llm_client, ...)
+    when reviewer_model is set.
     Spec: feature/BACKEND_LLM.md §Adversarial Debate Framework — Reviewer constructed via factory.
     """
     producer_llm = FakeLLM([_producer_result_1()])
@@ -552,7 +555,8 @@ async def test_run_debate_threads_stub_llm_client_to_reviewer_model(stub_flag: b
         "make_llm_client must be called when reviewer_model is set."
     )
     assert mock_make_llm_client.call_args.kwargs.get("stub") is stub_flag, (
-        f"run_debate must pass stub={stub_flag!r} to make_llm_client when stub_llm_client={stub_flag!r}; "
+        f"run_debate must pass stub={stub_flag!r} to make_llm_client "
+        f"when stub_llm_client={stub_flag!r}; "
         f"actual call kwargs: {mock_make_llm_client.call_args.kwargs!r}. "
         "Spec: src/backend/metagen/debate.py — make_llm_client(stub=stub_llm_client, ...)."
     )

@@ -9,7 +9,7 @@ Routes under test:
   POST /internal/activities/metrics/run
   POST /internal/activities/ontogen/run
 
-spec: API.md §Internal routes — X-Internal-Token header required.
+spec: API.md §Internal Activities — X-Internal-Token header required.
 spec: feature/BACKEND.md §DAG Catalogue + §Dependency Injection — activity endpoints
       accept documented payload shapes and return 400 (non-retryable) / 500 (retryable).
 """
@@ -47,7 +47,7 @@ def _internal_headers() -> dict:
 async def test_ingestion_list_active_without_token_returns_401(client) -> None:
     """POST /internal/activities/ingestion/list-active without token returns 401.
 
-    spec: API.md §Internal routes — X-Internal-Token required.
+    spec: API.md §Internal Activities — X-Internal-Token required.
     """
     with patch("src.shared.settings.settings.internal_token", _INTERNAL_TOKEN):
         resp = await client.post(_INGESTION_LIST, json={"tier": "daily"})
@@ -58,7 +58,7 @@ async def test_ingestion_list_active_without_token_returns_401(client) -> None:
 async def test_metrics_list_active_without_token_returns_401(client) -> None:
     """POST /internal/activities/metrics/list-active without token returns 401.
 
-    spec: API.md §Internal routes — X-Internal-Token required.
+    spec: API.md §Internal Activities — X-Internal-Token required.
     """
     with patch("src.shared.settings.settings.internal_token", _INTERNAL_TOKEN):
         resp = await client.post(_METRICS_LIST, json={"tier": "daily"})
@@ -69,7 +69,7 @@ async def test_metrics_list_active_without_token_returns_401(client) -> None:
 async def test_ontogen_run_without_token_returns_401(client) -> None:
     """POST /internal/activities/ontogen/run without token returns 401.
 
-    spec: API.md §Internal routes — X-Internal-Token required.
+    spec: API.md §Internal Activities — X-Internal-Token required.
     """
     with patch("src.shared.settings.settings.internal_token", _INTERNAL_TOKEN):
         resp = await client.post(_ONTOGEN_RUN, json={"dry_run": False})
@@ -210,9 +210,9 @@ async def test_metagen_run_fans_out_only_to_confs_matching_tier(client) -> None:
     """POST /internal/activities/metagen/run runs only enabled confs whose schedule_tier
     matches the fired tier; confs at other tiers are not run.
 
-    spec: feature/BACKEND.md §Scheduled fan-out — the activity enumerates every
-    is_enabled=true conf whose schedule_tier matches the fired tier and runs each
-    under its own per-conf lock.
+    spec: feature/BACKEND.md §DAG Catalogue (Tier-DAG selection) + §Concurrency Guards —
+    the activity enumerates every is_enabled=true conf whose schedule_tier matches the
+    fired tier and runs each under its own per-conf metagen:running:{conf_id} lock.
     """
     import uuid as _uuid
 
@@ -276,7 +276,7 @@ async def test_metagen_run_fans_out_only_to_confs_matching_tier(client) -> None:
     assert resp.status_code == 200, f"got {resp.status_code}: {resp.text}"
     assert ran_conf_ids == [daily_conf_id], (
         "Only the daily conf must run when tier=daily. "
-        "spec: feature/BACKEND.md §Scheduled fan-out"
+        "spec: feature/BACKEND.md §DAG Catalogue (Tier-DAG selection) + §Concurrency Guards"
     )
     body = resp.json()
     assert body["conf_count"] == 1
@@ -287,8 +287,8 @@ async def test_metagen_run_continues_past_a_failing_conf(client) -> None:
     """POST /internal/activities/metagen/run aggregates per-conf results and continues
     past a conf that fails (does not abort the whole tier).
 
-    spec: feature/BACKEND.md §Scheduled fan-out — per-conf results are aggregated and a
-    failing conf does not abort the rest of the tier.
+    spec: feature/BACKEND.md §DAG Catalogue (Tier-DAG selection) + §Concurrency Guards —
+    per-conf results are aggregated and a failing conf does not abort the rest of the tier.
     """
     import uuid as _uuid
 
@@ -364,7 +364,7 @@ async def test_metagen_run_continues_past_a_failing_conf(client) -> None:
     # aggregated entry carries the successful run outcome, not 'failed'.
     assert statuses[ok_id] != "failed", (
         "A failing conf must not abort the rest of the tier; the OK conf still runs. "
-        "spec: feature/BACKEND.md §Scheduled fan-out"
+        "spec: feature/BACKEND.md §DAG Catalogue (Tier-DAG selection) + §Concurrency Guards"
     )
 
 
@@ -487,7 +487,8 @@ async def test_ontogen_run_tier_match_invokes_run(client) -> None:
 async def test_ontogen_run_accepts_optional_prompt_md(client) -> None:
     """POST /internal/activities/ontogen/run accepts optional prompt_md field.
 
-    spec: feature/BACKEND.md §Ontogen Workflow — ontogen/run accepts {dry_run, prompt_md}.
+    spec: feature/BACKEND.md §Ontology Generation Service — ontogen/run accepts
+    {dry_run, prompt_md}.
     The endpoint catches DataSpokeError and returns a structured dict (not 422).
     We stub the service to raise DataSpokeError so schema acceptance is verified cleanly.
     """

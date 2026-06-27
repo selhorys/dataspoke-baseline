@@ -85,7 +85,7 @@ async def test_ontogen_result_sort_asc_reverses_default(
 ) -> None:
     """GET /ontogen/result/{kind}?sort=created_at_asc forwards an ASC order_by.
 
-    spec/API.md §UC3 result rows — sortable by created_at (default created_at_desc).
+    spec/API.md §Ontology Generation — result rows sortable by created_at (default created_at_desc).
     """
     resp = await client.get(
         f"/api/v1/spoke/ontogen/result/{kind}?sort=created_at_asc",
@@ -229,7 +229,7 @@ async def test_ingestion_source_datasets_sort_by_dataset_urn(client) -> None:
 async def test_ingestion_source_datasets_extra_sort_fields(client, sort, suffix) -> None:
     """GET /ingestion/sources/{id}/datasets honours first_seen_at / last_seen_at sorts.
 
-    spec/API.md §286 — sortable by dataset_urn / first_seen_at / last_seen_at.
+    spec/API.md §Ingestion — sortable by dataset_urn / first_seen_at / last_seen_at.
     The router previously omitted the two timestamp fields, silently ignoring them.
     """
     svc = AsyncMock()
@@ -254,7 +254,7 @@ async def test_ingestion_source_datasets_extra_sort_fields(client, sort, suffix)
 async def test_ingestion_source_datasets_default_is_dataset_urn_asc(client) -> None:
     """GET /ingestion/sources/{id}/datasets with no sort forwards dataset_urn ASC.
 
-    spec/API.md §286 — default ``dataset_urn_asc``. The router pins this explicitly
+    spec/API.md §Ingestion — default ``dataset_urn_asc``. The router pins this explicitly
     (the service's own None-fallback is last_seen_at desc), so the contract default
     must be visible at the router boundary.
     """
@@ -278,7 +278,7 @@ async def test_ingestion_source_datasets_default_is_dataset_urn_asc(client) -> N
 async def test_ingestion_sources_sort_by_updated_at(client) -> None:
     """GET /ingestion/sources?sort=updated_at_desc forwards a DESC order_by.
 
-    spec/API.md §279 — sortable by created_at / updated_at; updated_at was missing.
+    spec/API.md §Ingestion — sources sortable by created_at / updated_at; updated_at was missing.
     """
     svc = AsyncMock()
     svc.list_sources = AsyncMock(return_value=([], 0))
@@ -309,7 +309,7 @@ async def test_ingestion_sources_sort_by_updated_at(client) -> None:
 async def test_ingestion_unmanaged_extra_sort_fields(client, sort, field, suffix) -> None:
     """GET /ingestion/unmanaged honours created_at / updated_at sorts.
 
-    spec/API.md §288 — sortable by dataset_urn / created_at / updated_at (default
+    spec/API.md §Ingestion — unmanaged sortable by dataset_urn / created_at / updated_at (default
     dataset_urn_asc). The handler builds the query inline (no mockable service), so
     we override get_db with a capturing session and render the ORDER BY clause of the
     rows query passed to db.execute. The router previously widened its sort dict but
@@ -360,7 +360,7 @@ async def test_ingestion_unmanaged_extra_sort_fields(client, sort, field, suffix
 async def test_ingestion_unmanaged_default_is_dataset_urn_asc(client) -> None:
     """GET /ingestion/unmanaged with no sort orders by dataset_urn ASC.
 
-    spec/API.md §288 — default ``dataset_urn_asc``. The handler pins this at the
+    spec/API.md §Ingestion — unmanaged default ``dataset_urn_asc``. The handler pins this at the
     parse_sort default, so the contract default is visible in the rows query.
     """
     from sqlalchemy.dialects import postgresql
@@ -405,7 +405,7 @@ async def test_ingestion_unmanaged_default_is_dataset_urn_asc(client) -> None:
 async def test_validation_sort_by_dataset_urn(client) -> None:
     """GET /spoke/validation?sort=dataset_urn_asc forwards an ASC order_by.
 
-    spec/API.md §342 — sortable by dataset_urn / updated_at; dataset_urn was missing.
+    spec/API.md §Validation — list sortable by dataset_urn / updated_at; dataset_urn was missing.
     """
     svc = AsyncMock()
     svc.list_configs = AsyncMock(return_value=([], 0))
@@ -427,7 +427,7 @@ async def test_validation_sort_by_dataset_urn(client) -> None:
 async def test_metagen_conf_sort_by_name(client) -> None:
     """GET /spoke/metagen/conf?sort=name_asc forwards an ASC order_by.
 
-    spec/API.md §426 — sortable by created_at / updated_at / name; name was missing.
+    spec/API.md §Metadata Generation — sortable by created_at / updated_at / name; name was missing.
     """
     svc = AsyncMock()
     svc.list_confs = AsyncMock(return_value=([], 0))
@@ -449,8 +449,8 @@ async def test_metagen_conf_sort_by_name(client) -> None:
 async def test_metagen_item_sort_by_dataset_urn(client) -> None:
     """GET /spoke/metagen/item?sort=dataset_urn_desc forwards a DESC order_by.
 
-    spec/API.md §437 — sortable by created_at / updated_at / dataset_urn; the latter
-    was missing.
+    spec/API.md §Metadata Generation — sortable by created_at / updated_at / dataset_urn;
+    the latter was missing.
     """
     svc = AsyncMock()
     svc.list_items = AsyncMock(return_value=([], 0))
@@ -472,7 +472,8 @@ async def test_metagen_item_sort_by_dataset_urn(client) -> None:
 async def test_admin_users_sort_by_updated_at(client) -> None:
     """GET /admin/users?sort=updated_at_desc forwards a DESC order_by.
 
-    spec/API.md §541 — sortable by created_at / updated_at / email; updated_at was missing.
+    spec/API.md §Admin (/admin) — sortable by created_at / updated_at / email;
+    updated_at was missing.
     """
     with patch(
         "src.backend.auth.users.list_users", new=AsyncMock(return_value=([], 0))
@@ -588,7 +589,7 @@ async def test_auth_api_tokens_envelope_and_default_sort(client) -> None:
     """GET /auth/api-tokens carries total_count; default order is created_at_desc
     (newest first) and an explicit ?sort=created_at_asc reverses to oldest first.
 
-    spec/API.md L205 (priority-1) — `/auth/api-tokens` is 'paginated with the
+    spec/API.md §Auth — GET `/auth/api-tokens` is 'paginated with the
     standard offset/limit/total_count envelope, sortable by created_at, default
     created_at_desc'. The default (sort omitted) MUST surface the newest token
     first, regardless of the order the underlying query materialises rows in.

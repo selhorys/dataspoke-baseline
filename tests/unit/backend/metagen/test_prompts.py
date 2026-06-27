@@ -3,7 +3,7 @@
 Verifies the spec-mandated evidence-parity additions:
   - Related documents appear in the prompt (title + body) when present.
   - Related documents are omitted when the list is empty.
-  - Related documents are capped at 5 per the plan contract.
+  - Related documents are capped at 5 per BACKEND.md §Generation Pipeline (mirrors ontogen).
   - Long document bodies are truncated with the _TRUNCATION_MARKER.
   - Ontology RAG nodes / edges / triples appear when present.
   - Ontology RAG section is omitted when all three lists are empty / absent.
@@ -11,7 +11,7 @@ Verifies the spec-mandated evidence-parity additions:
   - Untrusted-data markers wrap both new evidence blocks.
 
 spec: spec/feature/BACKEND.md §Metadata Generation Service §Generation Pipeline
-plan: glittery-crafting-kazoo.md §Tests §test_prompts.py
+impl: src/backend/metagen/prompts.py — build_run_prompt
 
 No DB, no LLM, no mocking — pure build_run_prompt() calls.
 """
@@ -57,7 +57,7 @@ def test_related_documents_appear_in_prompt() -> None:
 
     spec: spec/feature/BACKEND.md §Metadata Generation Service §Generation Pipeline
     — evidence must include related documents (per-dataset context from DataHub).
-    plan: glittery-crafting-kazoo.md §Tests case a.
+    spec: BACKEND.md §Generation Pipeline — case a.
     """
     prompt = _build(
         {"related_documents": [{"title": "Fulfillment SOP", "body": "Pick-and-pack guide."}]}
@@ -82,7 +82,7 @@ def test_related_documents_absent_when_empty_list() -> None:
 
     spec: spec/feature/BACKEND.md §Metadata Generation Service §Generation Pipeline
     — section is conditionally included; empty list yields no header.
-    plan: glittery-crafting-kazoo.md §Tests case b.
+    spec: BACKEND.md §Generation Pipeline — case b.
     """
     with_docs = _build(
         {"related_documents": [{"title": "Fulfillment SOP", "body": "Pick-and-pack guide."}]}
@@ -101,7 +101,7 @@ def test_related_documents_capped_at_five() -> None:
 
     spec: spec/feature/BACKEND.md §Metadata Generation Service §Generation Pipeline
     — document list capped at 5 per dataset (mirrors ontogen cap).
-    plan: glittery-crafting-kazoo.md §Tests case c.
+    spec: BACKEND.md §Generation Pipeline — case c.
     """
     docs = [{"title": f"Doc{i}", "body": f"Body{i}"} for i in range(6)]
     prompt = _build({"related_documents": docs})
@@ -119,7 +119,7 @@ def test_related_document_body_truncated_when_too_long() -> None:
 
     spec: spec/feature/BACKEND.md §Metadata Generation Service §Generation Pipeline
     — untrusted text is capped at _MAX_UNTRUSTED_BYTES to protect the context window.
-    plan: glittery-crafting-kazoo.md §Tests case d.
+    spec: BACKEND.md §Generation Pipeline — case d.
     """
     long_body = "X" * (_MAX_UNTRUSTED_BYTES + 100)
     prompt = _build({"related_documents": [{"title": "BigDoc", "body": long_body}]})
@@ -136,7 +136,7 @@ def test_related_document_body_truncated_when_too_long() -> None:
 def test_ontology_rag_nodes_appear_in_prompt() -> None:
     """Ontology RAG node id, name, and description surface in the prompt.
 
-    plan: /Users/soonmok/.claude/plans/glittery-crafting-kazoo.md §Tests case e
+    spec: BACKEND.md §Generation Pipeline — case e
     — per-dataset ontology RAG nodes appear in the evidence block.
     """
     prompt = _build(
@@ -157,7 +157,7 @@ def test_ontology_rag_nodes_appear_in_prompt() -> None:
 def test_ontology_rag_edges_appear_in_prompt() -> None:
     """Ontology RAG edge id and label surface in the prompt.
 
-    plan: /Users/soonmok/.claude/plans/glittery-crafting-kazoo.md §Tests case f
+    spec: BACKEND.md §Generation Pipeline — case f
     — per-dataset ontology RAG edges appear in the evidence block.
     """
     prompt = _build(
@@ -177,7 +177,7 @@ def test_ontology_rag_edges_appear_in_prompt() -> None:
 def test_ontology_rag_triples_appear_in_prompt() -> None:
     """Ontology RAG triple subject, edge_label, and object surface in the prompt.
 
-    plan: /Users/soonmok/.claude/plans/glittery-crafting-kazoo.md §Tests case g
+    spec: BACKEND.md §Generation Pipeline — case g
     — per-dataset ontology RAG triples appear in the evidence block.
     """
     prompt = _build(
@@ -205,7 +205,7 @@ def test_ontology_rag_triples_appear_in_prompt() -> None:
 def test_ontology_rag_omitted_when_all_lists_empty() -> None:
     """Ontology RAG section is absent when nodes, edges, and triples are all empty.
 
-    plan: /Users/soonmok/.claude/plans/glittery-crafting-kazoo.md §Tests case h
+    spec: BACKEND.md §Generation Pipeline — case h
     — section is rendered only when at least one list is non-empty.
     """
     with_rag = _build(
@@ -224,7 +224,7 @@ def test_ontology_rag_omitted_when_all_lists_empty() -> None:
     assert "n1" in with_rag, "Sanity: node id must appear when ontology_rag is populated."
     assert "ontology RAG" not in without_rag.lower(), (
         "'ontology RAG' header must not appear when all three lists are empty. "
-        "plan: glittery-crafting-kazoo.md §Tests case h — conditional section rendering"
+        "spec: BACKEND.md §Generation Pipeline — case h — conditional section rendering"
     )
 
 
@@ -232,7 +232,7 @@ def test_ontology_rag_absent_when_key_missing() -> None:
     """Ontology RAG section is absent when ontology_rag key is entirely missing from evidence.
 
     This is the same spec invariant as the empty-lists case — the section is optional.
-    plan: glittery-crafting-kazoo.md §Tests case h (missing-key variant).
+    spec: BACKEND.md §Generation Pipeline — case h (missing-key variant).
     """
     prompt = _build({})  # No ontology_rag key at all
 
@@ -251,8 +251,8 @@ def test_untrusted_data_markers_wrap_document_body() -> None:
     The per-run nonce + markers prevent prompt injection from untrusted document
     content stored in DataHub.
 
-    spec: spec/feature/BACKEND_LLM.md §Prompt Injection Hardening
-    plan: glittery-crafting-kazoo.md §Tests case j.
+    impl: src/backend/metagen/prompts.py — untrusted-data nonce markers (unspecced)
+    spec: BACKEND.md §Generation Pipeline — case j.
     """
     distinctive_body = "SpecialBodyContent_abc123"
     prompt = _build(
@@ -271,15 +271,15 @@ def test_untrusted_data_markers_wrap_document_body() -> None:
 
     assert begin_idx < body_idx < end_idx, (
         "Document body must appear between DATA-nonce-BEGIN and DATA-nonce-END markers. "
-        "spec: BACKEND_LLM.md §Prompt Injection Hardening"
+        "impl: metagen/prompts.py — untrusted-data nonce markers (unspecced)"
     )
 
 
 def test_untrusted_data_markers_wrap_ontology_rag_node() -> None:
     """Ontology RAG node id appears inside the DATA-{nonce}-BEGIN/END wrapper.
 
-    plan: glittery-crafting-kazoo.md §Tests case j (ontology RAG variant).
-    spec: spec/feature/BACKEND_LLM.md §Prompt Injection Hardening
+    spec: BACKEND.md §Generation Pipeline — case j (ontology RAG variant).
+    impl: src/backend/metagen/prompts.py — untrusted-data nonce markers (unspecced)
     """
     prompt = _build(
         {
@@ -302,5 +302,5 @@ def test_untrusted_data_markers_wrap_ontology_rag_node() -> None:
 
     assert begin_idx < node_idx < end_idx, (
         "Ontology RAG node id must appear between DATA-nonce-BEGIN and DATA-nonce-END markers. "
-        "spec: BACKEND_LLM.md §Prompt Injection Hardening"
+        "impl: metagen/prompts.py — untrusted-data nonce markers (unspecced)"
     )

@@ -3,7 +3,8 @@
  *
  * Spec: spec/feature/FRONTEND_VALIDATION.md §Page contracts:
  *   "small multiples — one auto-scaled line chart per declared variable in a
- *    responsive grid, each captioned with the variable's name and description".
+ *    single full-width column (one chart per row), each captioned with the
+ *    variable's name and description".
  *
  * recharts is mocked to a lightweight stub so the grid structure and per-chart
  * captions can be asserted without ResponsiveContainer DOM measurement.

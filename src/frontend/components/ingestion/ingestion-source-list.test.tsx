@@ -195,7 +195,7 @@ describe("IngestionSourceList — read-only badge", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 2. Filter-key select — five options present + onFilterKeyChange callback
+// 2. Filter-key select — four options present + onFilterKeyChange callback
 // ---------------------------------------------------------------------------
 
 describe("IngestionSourceList — filter-key select", () => {

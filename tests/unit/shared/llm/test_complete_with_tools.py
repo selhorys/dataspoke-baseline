@@ -2,7 +2,7 @@
 
 Derives from:
   - spec/feature/BACKEND.md §LLM Inference Loop
-  - /Users/soonmok/.claude/plans/quizzical-hatching-shamir.md §PR1 scope
+  - src/shared/llm/client.py — complete_with_tools (impl SSOT)
 
 Groups:
   A – Happy path (single-iteration success)
@@ -73,7 +73,7 @@ def _ai_tool_call(tool_name: str, args: dict, call_id: str = "call_1") -> AIMess
 async def test_a1_single_iter_success_trace(mock_create: MagicMock, mock_embed: MagicMock) -> None:
     """Spec: BACKEND.md §LLM Inference Loop — loop terminates on first ok:true; returns
     LoopResult(iterations=1, errors_per_iter with one entry, final_errors=[]).
-    Plan §PR1: F5 fix — iter_errors for the success iteration is the actual list accumulated,
+    impl: F5 fix — iter_errors for the success iteration is the actual list accumulated,
     not a hardcoded [].  When no errors occurred in iter 1, errors_per_iter[-1] == [].
     The inner list is [] (not None) because F5 initialises iter_errors = [] each iteration.
     """
@@ -106,7 +106,7 @@ async def test_a1_single_iter_success_trace(mock_create: MagicMock, mock_embed: 
 async def test_a2_payload_extraction_nested(mock_create: MagicMock, mock_embed: MagicMock) -> None:
     """Spec: BACKEND.md §LLM Inference Loop — when tool args contain a 'payload' key,
     the returned payload is the inner dict (unwrapped one level).
-    Plan §PR1: candidate_payload = args.get('payload', args).
+    impl: candidate_payload = args.get('payload', args).
     """
     mock_model = _make_model()
     bound = mock_model.bind_tools.return_value
@@ -134,7 +134,7 @@ async def test_a2_payload_extraction_nested(mock_create: MagicMock, mock_embed: 
 async def test_a3_payload_extraction_flat(mock_create: MagicMock, mock_embed: MagicMock) -> None:
     """Spec: BACKEND.md §LLM Inference Loop — when tool args are flat (no 'payload' key),
     the whole args dict is the payload.
-    Plan §PR1: candidate_payload = args.get('payload', args).
+    impl: candidate_payload = args.get('payload', args).
     """
     mock_model = _make_model()
     bound = mock_model.bind_tools.return_value
@@ -354,7 +354,7 @@ async def test_d1_wrong_tool_records_error_and_feeds_back(
 ) -> None:
     """Spec: BACKEND.md §LLM Inference Loop — calling the wrong tool must produce a
     WRONG_TOOL error recorded in iter_errors and a ToolMessage fed back.
-    Plan §PR1: code='WRONG_TOOL', ToolMessage appended with the error.
+    impl: code='WRONG_TOOL', ToolMessage appended with the error.
     """
     mock_model = _make_model()
     bound = mock_model.bind_tools.return_value
@@ -433,7 +433,7 @@ async def test_d2_wrong_tool_message_contains_error(
 async def test_d3_wrong_tool_and_right_tool_same_message(
     mock_create: MagicMock, mock_embed: MagicMock
 ) -> None:
-    """Spec: BACKEND.md §LLM Inference Loop — Plan §PR1 F5 fix: when wrong tool and
+    """Spec: BACKEND.md §LLM Inference Loop —F5 fix: when wrong tool and
     right tool both appear in the same AIMessage and the right tool returns ok:true,
     the iteration succeeds but errors_per_iter[-1] contains the WRONG_TOOL error
     (trace fidelity — not an empty list).
@@ -473,7 +473,7 @@ async def test_d3_wrong_tool_and_right_tool_same_message(
 async def test_d4_wrong_tool_name_truncated_to_64_chars(
     mock_create: MagicMock, mock_embed: MagicMock
 ) -> None:
-    """Spec: BACKEND.md §LLM Inference Loop — Plan §PR1 F9: attacker-controlled tool
+    """Spec: BACKEND.md §LLM Inference Loop —F9: attacker-controlled tool
     name is truncated to 64 chars before being echoed back in the WRONG_TOOL error message.
     """
     mock_model = _make_model()
@@ -526,7 +526,7 @@ async def test_e1_no_tool_call_records_no_tool_call_error(
 ) -> None:
     """Spec: BACKEND.md §LLM Inference Loop — model must call the tool before returning.
     Text-only response records NO_TOOL_CALL error and appends a corrective HumanMessage.
-    Plan §PR1: code='NO_TOOL_CALL'.
+    impl: code='NO_TOOL_CALL'.
     """
     mock_model = _make_model()
     bound = mock_model.bind_tools.return_value
@@ -635,7 +635,7 @@ async def test_e3_exhaustion_on_all_no_tool_calls_returns_empty_payload(
 async def test_f1_missing_success_tool_raises_before_loop(
     mock_create: MagicMock, mock_embed: MagicMock
 ) -> None:
-    """Spec: BACKEND.md §LLM Inference Loop — Plan §PR1 F4 fix: calling
+    """Spec: BACKEND.md §LLM Inference Loop —F4 fix: calling
     complete_with_tools with a success_tool_name that is not in the tools list raises
     ValueError BEFORE entering the loop; no ainvoke call should occur.
     """
@@ -664,7 +664,7 @@ async def test_f1_missing_success_tool_raises_before_loop(
 @patch("src.shared.llm.client._create_embeddings_model")
 @patch("src.shared.llm.client._create_chat_model")
 async def test_f2_empty_tools_raises(mock_create: MagicMock, mock_embed: MagicMock) -> None:
-    """Spec: BACKEND.md §LLM Inference Loop — Plan §PR1 F4 fix: an empty tools list
+    """Spec: BACKEND.md §LLM Inference Loop —F4 fix: an empty tools list
     means success_tool_name is never present; raises ValueError before entering the loop.
     """
     mock_model = _make_model()
@@ -694,7 +694,7 @@ async def test_f2_empty_tools_raises(mock_create: MagicMock, mock_embed: MagicMo
 async def test_g1_schema_failure_records_schema_error(
     mock_create: MagicMock, mock_embed: MagicMock
 ) -> None:
-    """Spec: BACKEND.md §LLM Inference Loop — Plan §PR1 F6 fix: tool args that fail
+    """Spec: BACKEND.md §LLM Inference Loop —F6 fix: tool args that fail
     schema.model_validate append SCHEMA error to iter_errors and a synthetic
     ToolMessage, without invoking the validator tool.
     """
@@ -735,7 +735,7 @@ async def test_g1_schema_failure_records_schema_error(
 async def test_g2_schema_failure_does_not_invoke_validator_tool(
     mock_create: MagicMock, mock_embed: MagicMock
 ) -> None:
-    """Spec: BACKEND.md §LLM Inference Loop — Plan §PR1 F6 fix: when schema validation
+    """Spec: BACKEND.md §LLM Inference Loop —F6 fix: when schema validation
     fails, the validator tool's ainvoke must NOT be called for that iteration.
     The shape layer catches the error before the semantic layer runs.
     """
@@ -777,7 +777,7 @@ async def test_g2_schema_failure_does_not_invoke_validator_tool(
 async def test_h1_tool_pydantic_validation_error_recovered(
     mock_create: MagicMock, mock_embed: MagicMock
 ) -> None:
-    """Spec: BACKEND.md §LLM Inference Loop — Plan §PR1 F2 fix (orphan tool-call fix):
+    """Spec: BACKEND.md §LLM Inference Loop —F2 fix (orphan tool-call fix):
     pydantic.ValidationError raised by tool.ainvoke is recovered; iter_errors gets
     ITERATION_ERROR; a synthetic ToolMessage is appended; loop continues.
     Error message is type(exc).__name__ only, not str(exc).
@@ -832,7 +832,7 @@ async def test_h2_tool_runtime_error_propagates(
 ) -> None:
     """Spec: BACKEND.md §LLM Inference Loop — non-recoverable exceptions (RuntimeError)
     from tool.ainvoke must propagate out of complete_with_tools; they are NOT swallowed.
-    Plan §PR1: only _RECOVERABLE_EXCEPTIONS are caught inside the loop.
+    impl: only _RECOVERABLE_EXCEPTIONS are caught inside the loop.
     """
     mock_model = _make_model()
     bound = mock_model.bind_tools.return_value
@@ -889,7 +889,7 @@ async def test_h3_model_ainvoke_runtime_error_propagates(
 @patch("src.shared.llm.client._create_embeddings_model")
 @patch("src.shared.llm.client._create_chat_model")
 async def test_h4_tool_keyerror_recovered(mock_create: MagicMock, mock_embed: MagicMock) -> None:
-    """Spec: BACKEND.md §LLM Inference Loop — Plan §PR1 F2 fix: KeyError raised by
+    """Spec: BACKEND.md §LLM Inference Loop —F2 fix: KeyError raised by
     tool.ainvoke is in _RECOVERABLE_EXCEPTIONS; loop records ITERATION_ERROR with
     message 'KeyError', appends synthetic ToolMessage with matching tool_call_id, continues.
     """
@@ -932,7 +932,7 @@ async def test_h4_tool_keyerror_recovered(mock_create: MagicMock, mock_embed: Ma
 async def test_h5_tool_attributeerror_recovered(
     mock_create: MagicMock, mock_embed: MagicMock
 ) -> None:
-    """Spec: BACKEND.md §LLM Inference Loop — Plan §PR1 F2 fix: AttributeError raised by
+    """Spec: BACKEND.md §LLM Inference Loop —F2 fix: AttributeError raised by
     tool.ainvoke is in _RECOVERABLE_EXCEPTIONS; loop records ITERATION_ERROR with
     message 'AttributeError', appends synthetic ToolMessage with matching tool_call_id, continues.
     """
@@ -973,7 +973,7 @@ async def test_h5_tool_attributeerror_recovered(
 @patch("src.shared.llm.client._create_embeddings_model")
 @patch("src.shared.llm.client._create_chat_model")
 async def test_h6_tool_typeerror_recovered(mock_create: MagicMock, mock_embed: MagicMock) -> None:
-    """Spec: BACKEND.md §LLM Inference Loop — Plan §PR1 F2 fix: TypeError raised by
+    """Spec: BACKEND.md §LLM Inference Loop —F2 fix: TypeError raised by
     tool.ainvoke is in _RECOVERABLE_EXCEPTIONS; loop records ITERATION_ERROR with
     message 'TypeError', appends synthetic ToolMessage with matching tool_call_id, continues.
     """
@@ -1016,7 +1016,7 @@ async def test_h6_tool_typeerror_recovered(mock_create: MagicMock, mock_embed: M
 async def test_h7_tool_returns_malformed_json_string_recovered(
     mock_create: MagicMock, mock_embed: MagicMock
 ) -> None:
-    """Spec: BACKEND.md §LLM Inference Loop — Plan §PR1 F2 fix: when tool.ainvoke
+    """Spec: BACKEND.md §LLM Inference Loop —F2 fix: when tool.ainvoke
     returns a string that is not valid JSON, the json.loads branch raises JSONDecodeError
     which is in _RECOVERABLE_EXCEPTIONS; loop records ITERATION_ERROR with message
     'JSONDecodeError' and continues to the next iteration.
@@ -1146,7 +1146,7 @@ async def test_j1_stub_returns_loop_result_with_schema_valid_payload() -> None:
 
 async def test_j2_stub_returns_single_iteration_trace() -> None:
     """Spec: BACKEND.md §LLM Inference Loop — stub loop never iterates; iterations == 1.
-    Plan §PR1: StubLLMClient.complete_with_tools returns LoopTrace(iterations=1,
+    impl: StubLLMClient.complete_with_tools returns LoopTrace(iterations=1,
     errors_per_iter=[], final_errors=[]).
     """
     stub = StubLLMClient()
@@ -1160,7 +1160,7 @@ async def test_j2_stub_returns_single_iteration_trace() -> None:
     )
 
     assert result.trace.iterations == 1
-    # Stub returns empty outer list; live impl returns [[]] for 1-iter success — plan §PR1.
+    # Stub returns empty outer list; live impl returns [[]] for 1-iter success — impl.
     assert result.trace.errors_per_iter == []
     assert result.trace.final_errors == []
 

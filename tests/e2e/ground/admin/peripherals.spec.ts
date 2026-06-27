@@ -11,7 +11,7 @@
  * K8s Secret and clearing them would break the dev cluster's DataHub/Langfuse
  * connectivity. The non-secret field edited here is reverted before the test ends.
  *
- * spec: spec/feature/FRONTEND_BASIC.md §Admin Peripherals (/admin/peripherals)
+ * spec: spec/feature/FRONTEND_BASIC.md §Peripherals (/admin/peripherals)
  * spec: spec/API.md §/admin/peripherals/datahub — GET returns non-secret
  *   service_corpuser_urn/default_env plain; PATCH (partial, changed fields only)
  * spec: spec/TESTING.md §End-to-End (E2E) Testing — dual confirmation, selector guidance
@@ -59,7 +59,7 @@ test.afterAll(async ({ adminApi }) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Test 1 — /admin/peripherals renders both cards populated from GET
-// spec: FRONTEND_BASIC.md §Admin Peripherals — DataHub + Langfuse cards; non-secret
+// spec: FRONTEND_BASIC.md §Peripherals — DataHub + Langfuse cards; non-secret
 //   fields prefilled from GET; secret inputs render blank.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -125,7 +125,7 @@ test("/admin/peripherals — cards render with values from GET; secrets blank", 
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Test 2 — Edit DataHub default_env → Save → confirm persisted → revert
-// spec: FRONTEND_BASIC.md §Admin Peripherals — per-card partial PATCH; save shows
+// spec: FRONTEND_BASIC.md §Peripherals — per-card partial PATCH; save shows
 //   "Saved · updated <timestamp>" + a success toast; reverted afterward.
 // CRITICAL: the secret inputs (token, secret_key) are NOT touched.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -176,7 +176,7 @@ test("/admin/peripherals — edit DataHub default_env → Save → persisted →
   await expect(defaultEnvInput).toHaveValue(NEW_VALUE, { timeout: 5_000 });
 
   // -- Backend probe (dual confirmation): GET → new value persisted, secret intact --
-  // spec: FRONTEND_BASIC.md §Admin Peripherals — PATCH writes the value; GET reflects it.
+  // spec: FRONTEND_BASIC.md §Peripherals — PATCH writes the value; GET reflects it.
   const afterResp = await adminApi.get("/api/v1/admin/peripherals/datahub");
   expect(afterResp.status()).toBe(200);
   const after = (await afterResp.json()) as DatahubPeripheral;

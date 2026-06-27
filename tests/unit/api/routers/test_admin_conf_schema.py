@@ -12,7 +12,8 @@ Concerns covered:
    accepted.
 
 Spec traceability:
-- task brief §What's under test — field bounds:
+- spec/API.md §Admin (/admin) — PATCH numeric fields are bound-validated (out-of-range → 422);
+  exact bound values live in impl (src/api/schemas/admin.py RuntimeConfPatchRequest) — field bounds:
     ontogen_debate_max_turns: ge=2, le=10
     ontogen_llm_max_iterations: ge=1, le=20
     ontogen_debate_rag_k: ge=0, le=20
@@ -22,8 +23,8 @@ Spec traceability:
     metagen_confidence_threshold: ge=0.0, le=1.0
     metagen_ontology_rag_{node,edge,triple}_k: ge=0, le=20
     validation_score_n_intervals: ge=1
-- task brief §Unit — 'Schema bound validation: RuntimeConfPatchRequest rejects
-  out-of-bounds values ... — pydantic ValidationError. Accepts None / partial.'
+- spec/API.md §Admin (/admin) — out-of-range values rejected (422); PATCH is partial
+  (accepts None / partial). RuntimeConfPatchRequest raises pydantic ValidationError.
 - src/api/schemas/admin.py RuntimeConfPatchRequest
 """
 
@@ -53,7 +54,8 @@ def _expect_invalid(**kwargs) -> None:
 class TestOntogenDebateMaxTurnsBounds:
     """ontogen_debate_max_turns: ge=2, le=10.
 
-    Spec: task brief §Unit — 'ontogen_debate_max_turns=1, =11 rejected'.
+    Spec: API.md §Admin (/admin) — out-of-range rejected (422); bounds in
+    src/api/schemas/admin.py (ontogen_debate_max_turns=1, =11 rejected).
     """
 
     def test_below_minimum_rejected(self) -> None:
@@ -78,7 +80,8 @@ class TestOntogenDebateMaxTurnsBounds:
 class TestMetagenDebateMaxTurnsBounds:
     """metagen_debate_max_turns: ge=2, le=10.
 
-    Spec: task brief §Unit — same bounds as ontogen_debate_max_turns.
+    Spec: API.md §Admin (/admin) — out-of-range rejected (422); same impl bounds as
+    ontogen_debate_max_turns (src/api/schemas/admin.py).
     """
 
     def test_below_minimum_rejected(self) -> None:
@@ -200,7 +203,8 @@ class TestMetagenOntologyRagKBounds:
 class TestMetagenConfidenceThresholdBounds:
     """metagen_confidence_threshold: ge=0.0, le=1.0.
 
-    Spec: task brief §Unit — 'metagen_confidence_threshold=1.5 rejected'.
+    Spec: API.md §Admin (/admin) — out-of-range rejected (422); bounds in
+    src/api/schemas/admin.py (metagen_confidence_threshold=1.5 rejected).
     """
 
     def test_above_maximum_rejected(self) -> None:
@@ -228,7 +232,8 @@ class TestMetagenConfidenceThresholdBounds:
 class TestValidationScoreNIntervalsBounds:
     """validation_score_n_intervals: ge=1 (no upper bound).
 
-    Spec: task brief §Unit — 'validation_score_n_intervals=0 rejected'.
+    Spec: API.md §Admin (/admin) — out-of-range rejected (422); bounds in
+    src/api/schemas/admin.py (validation_score_n_intervals=0 rejected).
     """
 
     def test_zero_rejected(self) -> None:
@@ -252,7 +257,7 @@ class TestValidationScoreNIntervalsBounds:
 def test_empty_patch_request_is_valid() -> None:
     """An empty RuntimeConfPatchRequest (all fields omitted) is valid.
 
-    Spec: task brief §Unit — 'Accepts None / partial.'
+    Spec: API.md §Admin (/admin) — PATCH is partial (accepts None / partial).
     All 16 fields are optional; callers supply only the fields to update.
     """
     req = RuntimeConfPatchRequest()
@@ -278,7 +283,7 @@ def test_empty_patch_request_is_valid() -> None:
 def test_single_field_patch_is_valid() -> None:
     """A single-field RuntimeConfPatchRequest is valid; unset fields are None.
 
-    Spec: task brief §Unit — partial updates are the primary use case.
+    Spec: API.md §Admin (/admin) — PATCH is partial; partial updates are the primary use case.
     """
     req = RuntimeConfPatchRequest(llm_model="gpt-4o-mini")
     assert req.llm_model == "gpt-4o-mini"
@@ -289,7 +294,8 @@ def test_single_field_patch_is_valid() -> None:
 def test_none_for_optional_string_fields_is_valid() -> None:
     """reviewer_model fields accept None explicitly (nullable string).
 
-    Spec: task brief §What's under test — 'ontogen_debate_reviewer_model: str|None'.
+    Spec: API.md §Admin (/admin) — runtime config carries the ontogen debate knobs;
+    ontogen_debate_reviewer_model: str|None (field shape in src/api/schemas/admin.py).
     """
     req = RuntimeConfPatchRequest(
         ontogen_debate_reviewer_model=None,

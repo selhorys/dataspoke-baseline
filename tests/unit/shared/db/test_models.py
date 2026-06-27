@@ -504,8 +504,8 @@ def test_validation_config_columns() -> None:
 def test_validation_result_columns() -> None:
     """ValidationResult must have the passive result-store columns.
 
-    spec: VALIDATION.md §Validation Result — data_time, score, variables, ingestion_time;
-    spec: BACKEND_SCHEMA.md §validation_results.
+    spec: VALIDATION.md §Validation Result — data_time, score, variables;
+    spec: BACKEND_SCHEMA.md §validation_results — ingestion_time audit column.
     """
     col_names = {col.name for col in ValidationResult.__table__.columns}
     assert "id" in col_names, "ValidationResult missing id (UUID PK)"

@@ -99,8 +99,10 @@ User JWTs are the default for browser clients. Long-lived API tokens are
 opaque (`dsk_` prefix, 32 random URL-safe bytes), minted by users for
 non-interactive clients (CI, AI agents, third-party integrations). The
 middleware accepts either form on the same `Authorization: Bearer` header
-— it tries JWT decode first, then falls back to API-token hash lookup. Both
-paths populate the same identity context and run the same role-based gate.
+and dispatches by prefix: a bearer carrying the `dsk_` API-token prefix is
+resolved via API-token hash lookup (JWT decode is skipped for it); every
+other bearer is JWT-decoded. Both paths populate the same identity context
+and run the same role-based gate.
 
 API-token effective privilege is the **intersection** of the token's
 mint-time snapshot and the owner's current role: demoting a user
@@ -554,10 +556,12 @@ instead of a JWT.
 that shape LLM inference and generation (`llm_provider`, `llm_model`, the ontogen/metagen debate,
 RAG, and iteration knobs, `metagen_confidence_threshold`, `validation_score_n_intervals`) plus the
 auth-mirror knob `auth_datahub_corp_group` (string, default `dataspoke-users`) that names the
-DataHub corpGroup used as the DataSpoke-user provenance marker. It is seeded with factory
-defaults and persisted in the `runtime_config` table (see
-[`spec/feature/BACKEND_SCHEMA.md`](feature/BACKEND_SCHEMA.md)). `PATCH` is partial; numeric fields
-are bound-validated (out-of-range → `422`).
+DataHub corpGroup used as the DataSpoke-user provenance marker. The surface also carries four
+boolean dependency toggles — `stub_redis_client`, `stub_llm_client`, `stub_pgvector_manager`,
+`stub_notification_service` — that force the named external dependency into stub or real mode
+at runtime (no restart). It is seeded with factory defaults and persisted in the `runtime_config`
+table (see [`spec/feature/BACKEND_SCHEMA.md`](feature/BACKEND_SCHEMA.md); defaults live in impl,
+not here). `PATCH` is partial; numeric fields are bound-validated (out-of-range → `422`).
 
 The conf surface also carries `llm_api_key` for **online** key rotation, but it is stored in the
 `dataspoke-llm-secret` Kubernetes Secret (not the DB): `PATCH` with `llm_api_key` writes the
@@ -608,6 +612,14 @@ rows read back factory defaults (`service_corpuser_urn` →
 [`spec/feature/BACKEND.md`](feature/BACKEND.md) and
 [`spec/feature/BACKEND_LLM.md`](feature/BACKEND_LLM.md).
 
+Across all peripherals, `is_configured` is a logical AND: it is `true` only when both the
+config row is present **and** the associated K8s Secret is set. A DB row without its secret, or
+a secret without its row, reads back `false`. On `PATCH`, a request carrying the secret field
+(`token` / `secret_key` / `password`) writes that value to the K8s Secret **first**; the DB write
+is skipped if the Secret write fails (`503`). A secret field omitted from the body leaves the
+Secret unchanged; an empty-string secret clears it. An empty `PATCH` body is a no-op (neither
+Secret nor DB is written).
+
 ### Internal Admin (`/internal/admin`)
 
 Internal-only routes gated by the `X-Internal-Token` shared-secret header. Used by scripts,
@@ -651,7 +663,13 @@ not call these routes; they are not exposed through ingress.
 | Method | Path | Purpose |
 |--------|------|---------|
 | `GET` | `/health` | Liveness check (no auth required) |
-| `GET` | `/ready` | Readiness check (verifies DataHub, PostgreSQL, Redis connectivity) |
+| `GET` | `/ready` | Readiness check — per-dependency reachability for DataHub, PostgreSQL, Redis |
+
+`/ready` always returns `200` with `{status, checks}`, where `checks` carries a boolean per
+dependency (`datahub`, `postgres`, `redis`). `status` is `"ok"` only when every check is `true`,
+otherwise `"degraded"`. An unconfigured or unreachable peripheral (e.g. DataHub) yields its
+`checks` flag `false` and a `"degraded"` status — never a `503`. The endpoint reports state for
+probes to interpret rather than gating on dependency presence.
 
 > **Prefix exception**: System routes are mounted at the root (`/health`, `/ready`) — not
 > under `/api/v1/…` — so probes from kubelet, ingress, and platform tooling stay independent

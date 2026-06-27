@@ -21,7 +21,7 @@ Concerns covered:
 13. Secret name and key constants: _SECRET_NAME="dataspoke-datahub-secret", _SECRET_KEY="token".
 
 Spec traceability:
-- plan/scalable-beaming-hamster.md §Backend — datahub_secret mirrors llm_secret pattern.
+- BACKEND_LLM.md §LLM API key (pattern) — datahub_secret mirrors llm_secret pattern.
 - src/backend/admin/datahub_secret.py — public surface.
 """
 
@@ -113,7 +113,7 @@ def flush_cache():
 def test_secret_name_constant() -> None:
     """_SECRET_NAME must be 'dataspoke-datahub-secret'.
 
-    spec: plan/scalable-beaming-hamster.md §Backend — hardcoded name guards security boundary.
+    spec: BACKEND_LLM.md §LLM API key (pattern) — hardcoded name guards security boundary.
     """
     assert _mod._SECRET_NAME == "dataspoke-datahub-secret", (
         "_SECRET_NAME must be 'dataspoke-datahub-secret' — cannot be parameterized."
@@ -123,7 +123,7 @@ def test_secret_name_constant() -> None:
 def test_secret_key_constant() -> None:
     """_SECRET_KEY must be 'token'.
 
-    spec: plan/scalable-beaming-hamster.md §Backend — DataHub token stored under 'token' key.
+    spec: BACKEND_LLM.md §LLM API key (pattern) — DataHub token stored under 'token' key.
     """
     assert _mod._SECRET_KEY == "token", (
         "_SECRET_KEY must be 'token' for DataHub secret."
@@ -136,7 +136,7 @@ def test_secret_key_constant() -> None:
 def test_get_returns_base64_decoded_value() -> None:
     """get_datahub_token() decodes the Kubernetes Secret's base64-encoded token.
 
-    spec: plan/scalable-beaming-hamster.md §Backend — token stored as base64
+    spec: BACKEND_LLM.md §LLM API key (pattern) — token stored as base64
     in dataspoke-datahub-secret.
     """
     secret = _fake_secret("my-datahub-token")
@@ -157,7 +157,7 @@ def test_get_returns_base64_decoded_value() -> None:
 def test_get_cache_hit_does_not_re_read() -> None:
     """A second call within TTL returns the cached value without re-reading the Secret.
 
-    spec: plan/scalable-beaming-hamster.md §Backend — short-TTL process cache.
+    spec: BACKEND_LLM.md §LLM API key (pattern) — short-TTL process cache.
     """
     secret = _fake_secret("cached-token")
     core = _make_core(read_return=secret)
@@ -179,7 +179,7 @@ def test_get_cache_hit_does_not_re_read() -> None:
 def test_get_re_reads_after_ttl_expires(monkeypatch) -> None:
     """Once the TTL has elapsed the next call re-reads the Secret.
 
-    spec: plan/scalable-beaming-hamster.md §Backend — TTL-based cache; stale entry causes re-read.
+    spec: BACKEND_LLM.md §LLM API key (pattern) — TTL-based cache; stale entry causes re-read.
     """
     import time as _time
 
@@ -205,7 +205,7 @@ def test_get_re_reads_after_ttl_expires(monkeypatch) -> None:
 def test_get_404_returns_empty_string_and_caches() -> None:
     """read_namespaced_secret raises 404 → get returns "" and caches it.
 
-    spec: plan/scalable-beaming-hamster.md §Backend — Secret absent → treat as unset; cache empty.
+    spec: BACKEND_LLM.md §LLM API key (pattern) — Secret absent → treat as unset; cache empty.
     """
     core = _make_core(read_side_effect=_api_exception(404))
 
@@ -227,7 +227,7 @@ def test_get_404_returns_empty_string_and_caches() -> None:
 def test_get_403_returns_empty_string_not_cached() -> None:
     """read_namespaced_secret raises 403 → returns "" WITHOUT caching.
 
-    spec: plan/scalable-beaming-hamster.md §Backend — RBAC 403 → fail safe, do not cache.
+    spec: BACKEND_LLM.md §LLM API key (pattern) — RBAC 403 → fail safe, do not cache.
     """
     core = _make_core(read_side_effect=_api_exception(403))
 
@@ -252,7 +252,7 @@ def test_get_403_logs_warning(caplog) -> None:
     3. Invalidate the cache, then call get_datahub_token against a 403-returning k8s mock.
     4. Assert a warning was emitted AND the sentinel does NOT appear in any log record.
 
-    spec: plan/scalable-beaming-hamster.md §Backend — plaintext token is NEVER logged.
+    spec: BACKEND_LLM.md §LLM API key (pattern) — plaintext token is NEVER logged.
     """
     _SENTINEL = "plaintext-sentinel-12345"
 
@@ -278,7 +278,7 @@ def test_get_403_logs_warning(caplog) -> None:
         assert _SENTINEL not in record.getMessage(), (
             f"Plaintext token '{_SENTINEL}' must never appear in any log record. "
             f"Offending message: {record.getMessage()!r}. "
-            "spec: plan/scalable-beaming-hamster.md §Backend — plaintext token never logged."
+            "spec: BACKEND_LLM.md §LLM API key (pattern) — plaintext token never logged."
         )
 
 
@@ -288,7 +288,7 @@ def test_get_403_logs_warning(caplog) -> None:
 def test_get_500_raises_resolver_unavailable() -> None:
     """read_namespaced_secret raises ApiException(500) → SecretResolverUnavailable propagated.
 
-    spec: plan/scalable-beaming-hamster.md §Backend — other k8s errors propagate as unavailable.
+    spec: BACKEND_LLM.md §LLM API key (pattern) — other k8s errors propagate as unavailable.
     """
     core = _make_core(read_side_effect=_api_exception(500))
 
@@ -328,7 +328,7 @@ def test_get_returns_empty_string_when_key_absent_from_data() -> None:
 def test_set_create_path_calls_create_with_base64_value() -> None:
     """set_datahub_token creates the Secret when it does not exist.
 
-    spec: plan/scalable-beaming-hamster.md §Backend — create-or-patch write semantics.
+    spec: BACKEND_LLM.md §LLM API key (pattern) — create-or-patch write semantics.
     """
     core = MagicMock()
     core.read_namespaced_secret.side_effect = _api_exception(404)
@@ -344,7 +344,7 @@ def test_set_create_path_calls_create_with_base64_value() -> None:
     # Use subset check to avoid pinning the body shape (metadata, kind, etc.).
     assert created_body.data[_SECRET_KEY] == _b64("new-token"), (
         f"create_namespaced_secret body.data[{_SECRET_KEY!r}] must be base64('new-token'). "
-        "spec: plan/scalable-beaming-hamster.md §Backend — token stored as base64 in K8s Secret."
+        "spec: BACKEND_LLM.md §LLM API key (pattern) — token stored as base64 in K8s Secret."
     )
 
 
@@ -354,7 +354,7 @@ def test_set_create_path_calls_create_with_base64_value() -> None:
 def test_set_patch_path_calls_patch_with_correct_body() -> None:
     """set_datahub_token patches the Secret when it already exists.
 
-    spec: plan/scalable-beaming-hamster.md §Backend — patch merges only the token field.
+    spec: BACKEND_LLM.md §LLM API key (pattern) — patch merges only the token field.
     """
     existing_secret = _fake_secret("old-token")
     core = MagicMock()
@@ -372,7 +372,7 @@ def test_set_patch_path_calls_patch_with_correct_body() -> None:
     # Use subset check: assert the key/value we care about, not the entire dict shape.
     assert patch_body["data"][_SECRET_KEY] == _b64("updated-token"), (
         f"patch body['data'][{_SECRET_KEY!r}] must be base64('updated-token'). "
-        "spec: plan/scalable-beaming-hamster.md §Backend — patch merges only the token field."
+        "spec: BACKEND_LLM.md §LLM API key (pattern) — patch merges only the token field."
     )
 
 
@@ -382,7 +382,7 @@ def test_set_patch_path_calls_patch_with_correct_body() -> None:
 def test_set_out_of_cluster_raises() -> None:
     """set_datahub_token propagates SecretResolverUnavailable on k8s client init failure.
 
-    spec: plan/scalable-beaming-hamster.md §Backend — PATCH cannot persist when k8s
+    spec: BACKEND_LLM.md §LLM API key (pattern) — PATCH cannot persist when k8s
     client is unavailable.
     """
     with patch(
@@ -399,7 +399,7 @@ def test_set_out_of_cluster_raises() -> None:
 def test_set_invalidates_cache_so_next_get_re_reads() -> None:
     """After set, the next get re-reads the Secret (cache was invalidated).
 
-    spec: plan/scalable-beaming-hamster.md §Backend — invalidates cache on success.
+    spec: BACKEND_LLM.md §LLM API key (pattern) — invalidates cache on success.
     """
     # Prime cache.
     secret_v1 = _fake_secret("v1-token")
@@ -432,7 +432,7 @@ def test_set_invalidates_cache_so_next_get_re_reads() -> None:
 def test_datahub_token_is_set_true_when_present() -> None:
     """datahub_token_is_set returns True when the Secret contains a non-empty token.
 
-    spec: plan/scalable-beaming-hamster.md §Backend — is_set used for is_configured predicate.
+    spec: BACKEND_LLM.md §LLM API key (pattern) — is_set used for is_configured predicate.
     """
     secret = _fake_secret("live-token")
     core = _make_core(read_return=secret)
@@ -446,7 +446,7 @@ def test_datahub_token_is_set_true_when_present() -> None:
 def test_datahub_token_is_set_false_when_absent() -> None:
     """datahub_token_is_set returns False when the Secret is absent (404).
 
-    spec: plan/scalable-beaming-hamster.md §Backend — is_set false when unset.
+    spec: BACKEND_LLM.md §LLM API key (pattern) — is_set false when unset.
     """
     core = _make_core(read_side_effect=_api_exception(404))
 
@@ -459,7 +459,7 @@ def test_datahub_token_is_set_false_when_absent() -> None:
 def test_datahub_token_is_set_false_when_key_absent() -> None:
     """datahub_token_is_set returns False when the Secret exists but token key is missing.
 
-    spec: plan/scalable-beaming-hamster.md §Backend — is_set false when key absent.
+    spec: BACKEND_LLM.md §LLM API key (pattern) — is_set false when key absent.
     """
     secret = _fake_secret("")  # data={}
     core = _make_core(read_return=secret)

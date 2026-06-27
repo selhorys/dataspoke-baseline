@@ -1,6 +1,6 @@
 """Unit tests for src/backend/ontogen/validator.py.
 
-Spec: spec/feature/BACKEND.md §Ontogen validator rules (8-rule table).
+Spec: spec/feature/BACKEND_LLM.md §Ontogen Validator (8-rule table).
 Each group defends one rule (or helper) from the spec invariant —
 NOT from current line-by-line impl behaviour.
 
@@ -82,7 +82,7 @@ def _valid_output() -> OntogenLLMOutput:
 
 
 def test_schema_failure_returns_single_schema_error() -> None:
-    """Spec: BACKEND.md §Ontogen validator rules — 'Pydantic shape of OntogenLLMOutput → SCHEMA'.
+    """Spec: BACKEND_LLM.md §Ontogen Validator — 'Pydantic shape of OntogenLLMOutput → SCHEMA'.
     A payload with 'nodes' set to a string (not a list) violates the Pydantic shape contract.
     The function must return exactly one error with code=SCHEMA and path=''.
 
@@ -98,7 +98,7 @@ def test_schema_failure_returns_single_schema_error() -> None:
 
 
 def test_schema_failure_short_circuits_other_rules() -> None:
-    """Spec: BACKEND.md §Ontogen validator rules — SCHEMA short-circuit.
+    """Spec: BACKEND_LLM.md §Ontogen Validator — SCHEMA short-circuit.
     A payload that would ALSO fail SLUG_FORMAT (uppercase id) but has invalid shape
     must return only the SCHEMA error — no additional rule codes should fire.
     The SCHEMA rule runs first and returns immediately without evaluating semantic rules.
@@ -123,7 +123,7 @@ def test_schema_failure_short_circuits_other_rules() -> None:
 
 
 def test_check_slug_rejects_uppercase() -> None:
-    """Spec: BACKEND.md §Ontogen validator rules — SLUG_FORMAT.
+    """Spec: BACKEND_LLM.md §Ontogen Validator — SLUG_FORMAT.
     _check_slug (defence-in-depth layer) fires SLUG_FORMAT for an uppercase id 'Order'
     even though the model_validator normalises LLM-supplied ids upstream.
     This test pins the _check_slug contract directly — it is the low-level guard
@@ -137,7 +137,7 @@ def test_check_slug_rejects_uppercase() -> None:
 
 
 def test_check_slug_rejects_leading_hyphen() -> None:
-    """Spec: BACKEND.md §Ontogen validator rules — SLUG_FORMAT.
+    """Spec: BACKEND_LLM.md §Ontogen Validator — SLUG_FORMAT.
     _check_slug fires SLUG_FORMAT for id='-foo' (leading hyphen) which does not match
     ^[a-z0-9_]{1,64}$.  Tests the defence-in-depth guard directly; model_validator
     normalises hyphens upstream but this layer remains the invariant sentinel.
@@ -150,7 +150,7 @@ def test_check_slug_rejects_leading_hyphen() -> None:
 
 
 def test_check_slug_flags_double_underscore() -> None:
-    """Spec: BACKEND.md §Ontogen validator rules — 'no __; DOUBLE_UNDERSCORE'.
+    """Spec: BACKEND_LLM.md §Ontogen Validator — 'no __; DOUBLE_UNDERSCORE'.
     _check_slug fires DOUBLE_UNDERSCORE (not SLUG_FORMAT) for id='order__line'.
     Tests the defence-in-depth guard directly; model_validator collapses __ → _
     upstream, but _check_slug remains the authoritative slug-invariant sentinel.
@@ -163,7 +163,7 @@ def test_check_slug_flags_double_underscore() -> None:
 
 
 def test_valid_node_slug_passes() -> None:
-    """Spec: BACKEND.md §Ontogen validator rules — SLUG_FORMAT.
+    """Spec: BACKEND_LLM.md §Ontogen Validator — SLUG_FORMAT.
     id='order_line_v1' is a valid snake_case slug (^[a-z0-9_]{1,64}$) on the node path.
     No SLUG_FORMAT or DOUBLE_UNDERSCORE error must appear.
     """
@@ -191,7 +191,7 @@ def test_valid_node_slug_passes() -> None:
 
 
 def test_check_slug_applies_to_edge_path() -> None:
-    """Spec: BACKEND.md §Ontogen validator rules — SLUG_FORMAT applied to edge.id.
+    """Spec: BACKEND_LLM.md §Ontogen Validator — SLUG_FORMAT applied to edge.id.
     _check_slug fires SLUG_FORMAT for edge id 'HAS-ITEM' (uppercase + hyphen).
     Tests the defence-in-depth guard directly on an edge path; model_validator
     normalises upstream but this sentinel layer must flag it regardless.
@@ -204,7 +204,7 @@ def test_check_slug_applies_to_edge_path() -> None:
 
 
 def test_none_id_skipped_by_slug_check() -> None:
-    """Spec: BACKEND.md §Ontogen validator rules — SLUG_FORMAT / DOUBLE_UNDERSCORE.
+    """Spec: BACKEND_LLM.md §Ontogen Validator — SLUG_FORMAT / DOUBLE_UNDERSCORE.
     id=None is a legitimate LLM omission (service always re-slugs from name).
     Validator must NOT fire SLUG_FORMAT or DOUBLE_UNDERSCORE for None ids.
     Defends against false-positive on valid omitted-id pattern.
@@ -238,7 +238,7 @@ def test_none_id_skipped_by_slug_check() -> None:
 
 
 def test_duplicate_node_id_fires_dup_id() -> None:
-    """Spec: BACKEND.md §Ontogen validator rules — 'No duplicate ids within nodes; DUP_ID'.
+    """Spec: BACKEND_LLM.md §Ontogen Validator — 'No duplicate ids within nodes; DUP_ID'.
     Two nodes both with id='foo' must fire DUP_ID on the second node (index 1).
     """
     payload = {
@@ -266,7 +266,7 @@ def test_duplicate_node_id_fires_dup_id() -> None:
 
 
 def test_duplicate_edge_id_fires_dup_id() -> None:
-    """Spec: BACKEND.md §Ontogen validator rules — 'No duplicate ids within edges; DUP_ID'.
+    """Spec: BACKEND_LLM.md §Ontogen Validator — 'No duplicate ids within edges; DUP_ID'.
     Two edges both with id='rel' must fire DUP_ID on the second edge (index 1).
     """
     payload = {
@@ -291,7 +291,7 @@ def test_duplicate_edge_id_fires_dup_id() -> None:
 
 
 def test_none_id_nodes_not_treated_as_duplicates() -> None:
-    """Spec: BACKEND.md §Ontogen validator rules — DUP_ID.
+    """Spec: BACKEND_LLM.md §Ontogen Validator — DUP_ID.
     Two nodes both with id=None must NOT fire DUP_ID.
     id=None is a legitimate LLM omission; None values must be excluded from
     the deduplication set (F1 reviewer fix — critical contract).
@@ -322,7 +322,7 @@ def test_none_id_nodes_not_treated_as_duplicates() -> None:
 
 
 def test_none_id_edges_not_treated_as_duplicates() -> None:
-    """Spec: BACKEND.md §Ontogen validator rules — DUP_ID.
+    """Spec: BACKEND_LLM.md §Ontogen Validator — DUP_ID.
     Two edges both with id=None must NOT fire DUP_ID.
     Same contract as for nodes: None is excluded from deduplication.
     """
@@ -354,7 +354,7 @@ def test_none_id_edges_not_treated_as_duplicates() -> None:
 
 
 def test_triple_subject_unknown_fires_unknown_node_ref() -> None:
-    """Spec: BACKEND.md §Ontogen validator rules — 'Every triple.subject_node_id resolves
+    """Spec: BACKEND_LLM.md §Ontogen Validator — 'Every triple.subject_node_id resolves
     to a node in the payload; UNKNOWN_NODE_REF'.
     subject_node_id='ghost' is not in nodes → code='UNKNOWN_NODE_REF',
     path='triples[0].subject_node_id'.
@@ -387,7 +387,7 @@ def test_triple_subject_unknown_fires_unknown_node_ref() -> None:
 
 
 def test_triple_object_unknown_fires_unknown_node_ref() -> None:
-    """Spec: BACKEND.md §Ontogen validator rules — 'Every triple.object_node_id resolves
+    """Spec: BACKEND_LLM.md §Ontogen Validator — 'Every triple.object_node_id resolves
     to a node in the payload; UNKNOWN_NODE_REF'.
     object_node_id='phantom' is not in nodes → UNKNOWN_NODE_REF on object path.
     """
@@ -419,7 +419,7 @@ def test_triple_object_unknown_fires_unknown_node_ref() -> None:
 
 
 def test_triple_with_valid_node_refs_passes() -> None:
-    """Spec: BACKEND.md §Ontogen validator rules — UNKNOWN_NODE_REF.
+    """Spec: BACKEND_LLM.md §Ontogen Validator — UNKNOWN_NODE_REF.
     Triple whose both subject and object resolve to nodes in the payload must not fire
     UNKNOWN_NODE_REF.
     """
@@ -461,7 +461,7 @@ def test_triple_with_valid_node_refs_passes() -> None:
 
 
 def test_triple_edge_unknown_fires_unknown_edge_ref() -> None:
-    """Spec: BACKEND.md §Ontogen validator rules — 'Every triple.edge_id resolves to an
+    """Spec: BACKEND_LLM.md §Ontogen Validator — 'Every triple.edge_id resolves to an
     edge in the payload; UNKNOWN_EDGE_REF'.
     edge_id='ghost-edge' is not in edges → code='UNKNOWN_EDGE_REF',
     path='triples[0].edge_id'.
@@ -494,7 +494,7 @@ def test_triple_edge_unknown_fires_unknown_edge_ref() -> None:
 
 
 def test_triple_with_valid_edge_ref_passes() -> None:
-    """Spec: BACKEND.md §Ontogen validator rules — UNKNOWN_EDGE_REF.
+    """Spec: BACKEND_LLM.md §Ontogen Validator — UNKNOWN_EDGE_REF.
     Triple whose edge_id resolves to an edge in the payload must not fire UNKNOWN_EDGE_REF.
     """
     payload = {
@@ -529,7 +529,7 @@ def test_triple_with_valid_edge_ref_passes() -> None:
 
 
 def test_valid_confidence_in_range_passes() -> None:
-    """Spec: BACKEND.md §Ontogen validator rules — 'confidence_score ∈ [0.0, 1.0]; CONF_OUT_OF_RANGE'.
+    """Spec: BACKEND_LLM.md §Ontogen Validator — 'confidence_score ∈ [0.0, 1.0]; CONF_OUT_OF_RANGE'.
     Values 0.0, 0.5, and 1.0 are all within the valid range and must not produce
     CONF_OUT_OF_RANGE errors.
     """
@@ -552,7 +552,7 @@ def test_valid_confidence_in_range_passes() -> None:
 
 
 def test_confidence_at_boundary_passes() -> None:
-    """Spec: BACKEND.md §Ontogen validator rules — 'confidence_score ∈ [0.0, 1.0]'.
+    """Spec: BACKEND_LLM.md §Ontogen Validator — 'confidence_score ∈ [0.0, 1.0]'.
     Boundary values 0.0 and 1.0 are inclusive per Pydantic Field(ge=0.0, le=1.0).
     Neither value must produce CONF_OUT_OF_RANGE.
     """
@@ -577,7 +577,7 @@ def test_confidence_at_boundary_passes() -> None:
 
 
 def test_confidence_out_of_range_direct_dict_yields_schema_error() -> None:
-    """Spec: BACKEND.md §Ontogen validator rules — CONF_OUT_OF_RANGE / SCHEMA interaction.
+    """Spec: BACKEND_LLM.md §Ontogen Validator — CONF_OUT_OF_RANGE / SCHEMA interaction.
 
     Note: confidence_score has Field(ge=0.0, le=1.0) in OntogenLLMNode, so passing
     confidence_score=1.5 in a dict to validate_ontogen_output first hits Pydantic's
@@ -585,7 +585,7 @@ def test_confidence_out_of_range_direct_dict_yields_schema_error() -> None:
     The validator therefore returns code='SCHEMA', not 'CONF_OUT_OF_RANGE'.
 
     The belt-and-suspenders semantic CONF_OUT_OF_RANGE check exists for the edge case
-    where with_structured_output coerces rather than rejects (architect's note in plan §F6).
+    where with_structured_output coerces rather than rejects (impl: ontogen/validator.py).
     Confirming here that Pydantic always catches it first in the normal dict-validate path.
     """
     payload = {
@@ -612,7 +612,7 @@ def test_confidence_out_of_range_direct_dict_yields_schema_error() -> None:
 
 
 def test_node_with_empty_dataset_urns_fires_missing() -> None:
-    """Spec: BACKEND.md §Ontogen validator rules — 'node.dataset_urns is non-empty;
+    """Spec: BACKEND_LLM.md §Ontogen Validator — 'node.dataset_urns is non-empty;
     MISSING_DATASET_URNS'.
     A node with dataset_urns=[] must produce code='MISSING_DATASET_URNS' with
     path='nodes[i].dataset_urns'.
@@ -636,7 +636,7 @@ def test_node_with_empty_dataset_urns_fires_missing() -> None:
 
 
 def test_node_with_non_empty_dataset_urns_passes() -> None:
-    """Spec: BACKEND.md §Ontogen validator rules — MISSING_DATASET_URNS.
+    """Spec: BACKEND_LLM.md §Ontogen Validator — MISSING_DATASET_URNS.
     A node with a non-empty dataset_urns list of in-scope URNs must not fire
     MISSING_DATASET_URNS.
     """
@@ -663,7 +663,7 @@ def test_node_with_non_empty_dataset_urns_passes() -> None:
 
 
 def test_node_with_out_of_scope_urn_fires_out_of_scope() -> None:
-    """Spec: BACKEND.md §Ontogen validator rules — 'every entry ∈ in-scope dataset URNs;
+    """Spec: BACKEND_LLM.md §Ontogen Validator — 'every entry ∈ in-scope dataset URNs;
     OUT_OF_SCOPE_URN'.
     A node URN not present in in_scope_urns must produce code='OUT_OF_SCOPE_URN'.
     The path must include the URN index: 'nodes[i].dataset_urns[j]'.
@@ -688,7 +688,7 @@ def test_node_with_out_of_scope_urn_fires_out_of_scope() -> None:
 
 
 def test_node_with_all_in_scope_urns_passes() -> None:
-    """Spec: BACKEND.md §Ontogen validator rules — OUT_OF_SCOPE_URN.
+    """Spec: BACKEND_LLM.md §Ontogen Validator — OUT_OF_SCOPE_URN.
     All URNs present in in_scope_urns must not produce OUT_OF_SCOPE_URN.
     """
     scope = frozenset([
@@ -716,7 +716,7 @@ def test_node_with_all_in_scope_urns_passes() -> None:
 
 
 def test_mixed_in_scope_and_out_of_scope_urns_one_error() -> None:
-    """Spec: BACKEND.md §Ontogen validator rules — OUT_OF_SCOPE_URN.
+    """Spec: BACKEND_LLM.md §Ontogen Validator — OUT_OF_SCOPE_URN.
     When a node has two URNs — one in-scope and one out-of-scope — exactly one
     OUT_OF_SCOPE_URN error must be produced pointing at the out-of-scope URN index.
     """
@@ -748,7 +748,7 @@ def test_mixed_in_scope_and_out_of_scope_urns_one_error() -> None:
 
 
 def test_duplicate_triple_fires_dup_triple() -> None:
-    """Spec: BACKEND.md §Ontogen validator rules — 'No duplicate (subject_node_id, edge_id,
+    """Spec: BACKEND_LLM.md §Ontogen Validator — 'No duplicate (subject_node_id, edge_id,
     object_node_id) triples; DUP_TRIPLE'.
     Two triples with the same (subject, edge, object) tuple must produce code='DUP_TRIPLE'
     on the second triple.
@@ -792,7 +792,7 @@ def test_duplicate_triple_fires_dup_triple() -> None:
 
 
 def test_different_triples_pass() -> None:
-    """Spec: BACKEND.md §Ontogen validator rules — DUP_TRIPLE.
+    """Spec: BACKEND_LLM.md §Ontogen Validator — DUP_TRIPLE.
     Three triples with distinct (subject, edge, object) combinations must not fire DUP_TRIPLE.
     """
     scope = frozenset([
@@ -856,7 +856,7 @@ def test_different_triples_pass() -> None:
 
 
 async def test_tool_returns_ok_true_on_valid_payload() -> None:
-    """Spec: BACKEND.md §Ontogen validator rules — build_ontogen_validate_tool.
+    """Spec: BACKEND_LLM.md §Ontogen Validator — build_ontogen_validate_tool.
     A LangChain StructuredTool wrapping the validator with a known in_scope_urns set,
     invoked with a valid payload dict, must return {'ok': True, 'errors': []}.
     """
@@ -880,7 +880,7 @@ async def test_tool_returns_ok_true_on_valid_payload() -> None:
 
 
 async def test_tool_returns_ok_false_with_errors_on_invalid() -> None:
-    """Spec: BACKEND.md §Ontogen validator rules — build_ontogen_validate_tool.
+    """Spec: BACKEND_LLM.md §Ontogen Validator — build_ontogen_validate_tool.
     A payload that fires SLUG_FORMAT must cause the tool to return
     {'ok': False, 'errors': [{'path': 'nodes[0].id', 'code': 'SLUG_FORMAT', 'message': ...}]}.
 
@@ -914,7 +914,7 @@ async def test_tool_returns_ok_false_with_errors_on_invalid() -> None:
 
 
 async def test_tool_closes_over_in_scope_urns() -> None:
-    """Spec: BACKEND.md §Ontogen validator rules — build_ontogen_validate_tool.
+    """Spec: BACKEND_LLM.md §Ontogen Validator — build_ontogen_validate_tool.
     Two tools built with different in_scope_urns sets must evaluate the same payload
     differently: the tool whose scope includes the URN returns ok=True; the other
     returns ok=False with OUT_OF_SCOPE_URN.
@@ -950,7 +950,7 @@ async def test_tool_closes_over_in_scope_urns() -> None:
 
 
 def test_tool_name_and_description_set() -> None:
-    """Spec: BACKEND.md §Ontogen validator rules — build_ontogen_validate_tool.
+    """Spec: BACKEND_LLM.md §Ontogen Validator — build_ontogen_validate_tool.
     The returned StructuredTool must have name='ontogen_validate' and a non-empty description.
     No length-pinning on description — the contract only requires it to be present.
     """
@@ -966,7 +966,7 @@ def test_tool_name_and_description_set() -> None:
 
 
 def test_partition_no_errors_passes_through() -> None:
-    """Spec: BACKEND.md §Ontogen validator rules / LLM Inference Loop — partition_clean_rows.
+    """Spec: BACKEND_LLM.md §Ontogen Validator / LLM Inference Loop — partition_clean_rows.
     With an empty errors list, all rows must survive; dropped_count must be 0.
     """
     output = OntogenLLMOutput(
@@ -988,7 +988,7 @@ def test_partition_no_errors_passes_through() -> None:
 
 
 def test_partition_drops_bad_node_only() -> None:
-    """Spec: BACKEND.md §Ontogen validator rules — partition_clean_rows.
+    """Spec: BACKEND_LLM.md §Ontogen Validator — partition_clean_rows.
     A node that fails SLUG_FORMAT (path='nodes[0].id') must be removed.
     dropped_count must equal 1.
     """
@@ -1009,7 +1009,7 @@ def test_partition_drops_bad_node_only() -> None:
 
 
 def test_partition_cascade_drops_triple_referencing_bad_node() -> None:
-    """Spec: BACKEND.md §Ontogen validator rules — partition_clean_rows cascade.
+    """Spec: BACKEND_LLM.md §Ontogen Validator — partition_clean_rows cascade.
     When a node is dropped due to a SLUG_FORMAT error, any triple referencing that
     node as subject_node_id must also be dropped (cascade).
     The flat drop count must be node + cascaded triple = 2.
@@ -1041,7 +1041,7 @@ def test_partition_cascade_drops_triple_referencing_bad_node() -> None:
 
 
 def test_partition_cascade_drops_triple_referencing_bad_object_node() -> None:
-    """Spec: BACKEND.md §Ontogen validator rules — partition_clean_rows cascade.
+    """Spec: BACKEND_LLM.md §Ontogen Validator — partition_clean_rows cascade.
     A triple referencing a dropped node as object_node_id must also be cascade-dropped.
     Flat count: 1 (bad node) + 1 (cascaded triple) = 2.
     """
@@ -1070,7 +1070,7 @@ def test_partition_cascade_drops_triple_referencing_bad_object_node() -> None:
 
 
 def test_partition_cascade_drops_triple_referencing_bad_edge() -> None:
-    """Spec: BACKEND.md §Ontogen validator rules — partition_clean_rows cascade.
+    """Spec: BACKEND_LLM.md §Ontogen Validator — partition_clean_rows cascade.
     A triple referencing a dropped edge must be cascade-dropped.
     Flat count: 1 (bad edge) + 1 (cascaded triple) = 2.
     """
@@ -1098,7 +1098,7 @@ def test_partition_cascade_drops_triple_referencing_bad_edge() -> None:
 
 
 def test_partition_schema_error_drops_everything_and_counts() -> None:
-    """Spec: BACKEND.md §Ontogen validator rules — partition_clean_rows SCHEMA handling.
+    """Spec: BACKEND_LLM.md §Ontogen Validator — partition_clean_rows SCHEMA handling.
     When errors list contains a SCHEMA error, the payload shape is untrustworthy.
     All rows must be dropped; dropped_count = original total row count.
     Defends the F2 reviewer fix.
@@ -1128,7 +1128,7 @@ def test_partition_schema_error_drops_everything_and_counts() -> None:
 
 
 def test_partition_independent_triple_error_drops_only_triple() -> None:
-    """Spec: BACKEND.md §Ontogen validator rules — partition_clean_rows.
+    """Spec: BACKEND_LLM.md §Ontogen Validator — partition_clean_rows.
     A DUP_TRIPLE error path (e.g. 'triples[1]') drops only that triple.
     Its referenced node and edge are clean and must not be dropped.
     dropped_count must equal 1.
@@ -1162,7 +1162,7 @@ def test_partition_independent_triple_error_drops_only_triple() -> None:
 
 
 def test_oversized_node_id_rejected_by_pydantic() -> None:
-    """Spec: BACKEND.md §Ontogen validator rules — OntogenLLMNode field constraints.
+    """Spec: BACKEND_LLM.md §Ontogen Validator — OntogenLLMNode field constraints.
     OntogenLLMNode with id='x' * 201 must raise pydantic.ValidationError.
     The max_length=200 constraint on OntogenLLMNode.id prevents oversized LLM-supplied ids.
     """
@@ -1176,7 +1176,7 @@ def test_oversized_node_id_rejected_by_pydantic() -> None:
 
 
 def test_oversized_dataset_urn_rejected_by_pydantic() -> None:
-    """Spec: BACKEND.md §Ontogen validator rules — OntogenLLMNode field constraints.
+    """Spec: BACKEND_LLM.md §Ontogen Validator — OntogenLLMNode field constraints.
     A URN string of length 1025 exceeds the per-URN max_length=1024 constraint
     and must raise pydantic.ValidationError.
     """
@@ -1190,7 +1190,7 @@ def test_oversized_dataset_urn_rejected_by_pydantic() -> None:
 
 
 def test_too_many_dataset_urns_rejected_by_pydantic() -> None:
-    """Spec: BACKEND.md §Ontogen validator rules — OntogenLLMNode field constraints.
+    """Spec: BACKEND_LLM.md §Ontogen Validator — OntogenLLMNode field constraints.
     dataset_urns list with 101 entries exceeds list max_length=100
     and must raise pydantic.ValidationError.
     """
@@ -1204,7 +1204,7 @@ def test_too_many_dataset_urns_rejected_by_pydantic() -> None:
 
 
 def test_too_many_nodes_rejected_by_pydantic() -> None:
-    """Spec: BACKEND.md §Ontogen validator rules — OntogenLLMOutput field constraints.
+    """Spec: BACKEND_LLM.md §Ontogen Validator — OntogenLLMOutput field constraints.
     OntogenLLMOutput with 501 nodes exceeds list max_length=500
     and must raise pydantic.ValidationError.
     """
@@ -1223,12 +1223,12 @@ def test_too_many_nodes_rejected_by_pydantic() -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Group M: model_validator / _check_slug new contract tests (plan §10)
+# Group M: model_validator / _check_slug new contract tests (BACKEND_LLM §Ontogen Validator / impl)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 def test_hyphen_in_id_fails_check_slug() -> None:
-    """Spec: BACKEND.md §Ontogen validator rules — SLUG_FORMAT.
+    """Spec: BACKEND_LLM.md §Ontogen Validator — SLUG_FORMAT.
     _check_slug rejects 'has-edition' because hyphen is not in ^[a-z0-9_]{1,64}$.
     This is the spec-mandated defence-in-depth guard for slug-format enforcement.
     """
@@ -1237,7 +1237,7 @@ def test_hyphen_in_id_fails_check_slug() -> None:
     slug_errors = [e for e in errors if e.code == "SLUG_FORMAT"]
     assert len(slug_errors) == 1, (
         "SLUG_FORMAT must fire for 'has-edition' (hyphen not allowed in snake_case slugs). "
-        "spec: BACKEND.md §Ontogen validator rules — id regex ^[a-z0-9_]{1,64}$"
+        "spec: BACKEND_LLM.md §Ontogen Validator — id regex ^[a-z0-9_]{1,64}$"
     )
     assert slug_errors[0].path == "nodes[0].id"
 
@@ -1246,7 +1246,7 @@ def test_model_validator_normalizes_node_id() -> None:
     """Spec: BACKEND.md §Ontology Generation Service §Inference Pipeline — model_validator.
     OntogenLLMOutput.model_validate normalises node id='Order Line' (spaced, mixed case)
     to snake_case 'order_line' before any field validators run.
-    spec: plan §3 — server-side normalisation at schema boundary via @model_validator(mode='before')
+    spec: BACKEND_LLM §Ontogen Validator / impl src/backend/ontogen (slug normalisation) — server-side normalisation at schema boundary via @model_validator(mode='before')
     """
     result = OntogenLLMOutput.model_validate({
         "nodes": [
@@ -1263,7 +1263,7 @@ def test_model_validator_normalizes_node_id() -> None:
     assert result.nodes[0].id == "order_line", (
         f"model_validator must normalise 'Order Line' → 'order_line'; "
         f"got {result.nodes[0].id!r}. "
-        "spec: plan §3 — server-side slug normalisation"
+        "spec: BACKEND_LLM §Ontogen Validator / impl src/backend/ontogen (slug normalisation) — server-side slug normalisation"
     )
 
 
@@ -1271,7 +1271,7 @@ def test_model_validator_normalizes_edge_id() -> None:
     """Spec: BACKEND.md §Ontology Generation Service §Inference Pipeline — model_validator.
     OntogenLLMOutput.model_validate normalises edge id='Has Edition' (spaced, mixed case)
     to snake_case 'has_edition'.
-    spec: plan §3 — model_validator normalises both node and edge id fields
+    spec: BACKEND_LLM §Ontogen Validator / impl src/backend/ontogen (slug normalisation) — model_validator normalises both node and edge id fields
     """
     result = OntogenLLMOutput.model_validate({
         "nodes": [],
@@ -1287,7 +1287,7 @@ def test_model_validator_normalizes_edge_id() -> None:
     assert result.edges[0].id == "has_edition", (
         f"model_validator must normalise 'Has Edition' → 'has_edition'; "
         f"got {result.edges[0].id!r}. "
-        "spec: plan §3 — server-side slug normalisation for edge ids"
+        "spec: BACKEND_LLM §Ontogen Validator / impl src/backend/ontogen (slug normalisation) — server-side slug normalisation for edge ids"
     )
 
 
@@ -1296,7 +1296,7 @@ def test_model_validator_remaps_triples() -> None:
     When node id='Order Line' normalises to 'order_line' and edge id='Has Edition' normalises
     to 'has_edition', any triple referencing the original pre-normalisation ids must be
     rewritten to the post-normalisation ids.
-    spec: plan §3 — triple subject/edge/object refs rewritten via id_remap dict
+    spec: BACKEND_LLM §Ontogen Validator / impl src/backend/ontogen (slug normalisation) — triple subject/edge/object refs rewritten via id_remap dict
     """
     result = OntogenLLMOutput.model_validate({
         "nodes": [
@@ -1328,15 +1328,15 @@ def test_model_validator_remaps_triples() -> None:
     triple = result.triples[0]
     assert triple.subject_node_id == "order_line", (
         f"triple.subject_node_id must be remapped to 'order_line'; got {triple.subject_node_id!r}. "
-        "spec: plan §3 — triple refs rewritten through id_remap"
+        "spec: BACKEND_LLM §Ontogen Validator / impl src/backend/ontogen (slug normalisation) — triple refs rewritten through id_remap"
     )
     assert triple.edge_id == "has_edition", (
         f"triple.edge_id must be remapped to 'has_edition'; got {triple.edge_id!r}. "
-        "spec: plan §3 — triple refs rewritten through edge_id_remap"
+        "spec: BACKEND_LLM §Ontogen Validator / impl src/backend/ontogen (slug normalisation) — triple refs rewritten through edge_id_remap"
     )
     assert triple.object_node_id == "order_line", (
         f"triple.object_node_id must be remapped to 'order_line'; got {triple.object_node_id!r}. "
-        "spec: plan §3 — triple refs rewritten through id_remap"
+        "spec: BACKEND_LLM §Ontogen Validator / impl src/backend/ontogen (slug normalisation) — triple refs rewritten through id_remap"
     )
 
 
@@ -1345,7 +1345,7 @@ def test_model_validator_absent_id_left_as_none() -> None:
     A node submitted without an 'id' key (absent, not null) must have id=None after validate.
     The service derives the final id via make_snake_id(name) later; absent id is a valid
     LLM omission and must not be overwritten with a placeholder.
-    spec: plan §3 — 'Absent id fields stay None — service.py derives them via make_snake_id later'
+    spec: BACKEND_LLM §Ontogen Validator / impl src/backend/ontogen (slug normalisation) — 'Absent id fields stay None — service.py derives them via make_snake_id later'
     """
     result = OntogenLLMOutput.model_validate({
         "nodes": [
@@ -1362,7 +1362,7 @@ def test_model_validator_absent_id_left_as_none() -> None:
     assert result.nodes[0].id is None, (
         f"node with absent 'id' key must have id=None after model_validate; "
         f"got {result.nodes[0].id!r}. "
-        "spec: plan §3 — absent id stays None for service.py to derive"
+        "spec: BACKEND_LLM §Ontogen Validator / impl src/backend/ontogen (slug normalisation) — absent id stays None for service.py to derive"
     )
 
 
@@ -1373,7 +1373,7 @@ def test_model_validator_passes_through_unmodified_when_already_normalized() -> 
       (b) Idempotency: an already-snake_case id 'line_item' is unchanged.
       (c) Triple refs referencing the pre-normalisation id are rewritten; already-snake_case
           triple ref is kept verbatim.
-    spec: plan §3 — server-side normalisation at schema boundary; to_snake is idempotent
+    spec: BACKEND_LLM §Ontogen Validator / impl src/backend/ontogen (slug normalisation) — server-side normalisation at schema boundary; to_snake is idempotent
     """
     result = OntogenLLMOutput.model_validate({
         "nodes": [
@@ -1409,23 +1409,23 @@ def test_model_validator_passes_through_unmodified_when_already_normalized() -> 
     # (a) validator ran and normalised the non-snake_case id
     assert result.nodes[0].id == "order_line", (
         f"'Order Line' must normalise to 'order_line'; got {result.nodes[0].id!r}. "
-        "spec: plan §3 — server-side slug normalisation"
+        "spec: BACKEND_LLM §Ontogen Validator / impl src/backend/ontogen (slug normalisation) — server-side slug normalisation"
     )
     # (b) already-snake_case id is unchanged (idempotency)
     assert result.nodes[1].id == "line_item", (
         f"Already-snake_case 'line_item' must be unchanged; got {result.nodes[1].id!r}. "
-        "spec: plan §3 — to_snake is idempotent on valid snake_case slugs"
+        "spec: BACKEND_LLM §Ontogen Validator / impl src/backend/ontogen (slug normalisation) — to_snake is idempotent on valid snake_case slugs"
     )
     triple = result.triples[0]
     # (c) triple subject ref was pre-normalisation id → must be rewritten
     assert triple.subject_node_id == "order_line", (
         f"triple.subject_node_id must be rewritten from 'Order Line' to 'order_line'; "
-        f"got {triple.subject_node_id!r}. spec: plan §3 — triple refs rewritten through id_remap"
+        f"got {triple.subject_node_id!r}. spec: BACKEND_LLM §Ontogen Validator / impl src/backend/ontogen (slug normalisation) — triple refs rewritten through id_remap"
     )
     # (c) triple object ref was already snake_case → stays
     assert triple.object_node_id == "line_item", (
         f"triple.object_node_id 'line_item' must be unchanged; "
-        f"got {triple.object_node_id!r}. spec: plan §3 — id_remap defaults to identity"
+        f"got {triple.object_node_id!r}. spec: BACKEND_LLM §Ontogen Validator / impl src/backend/ontogen (slug normalisation) — id_remap defaults to identity"
     )
 
 

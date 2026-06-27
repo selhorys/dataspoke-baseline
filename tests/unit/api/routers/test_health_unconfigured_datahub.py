@@ -15,7 +15,7 @@ StorageUnavailableError) does NOT propagate as 503 but is caught locally and
 reported as checks["datahub"]=False.
 
 spec traceability:
-- plan/scalable-beaming-hamster.md §/ready degraded when peripheral unconfigured —
+- spec/API.md §System — /ready degraded when peripheral unconfigured, never 503 —
   /ready must return 200 with status="degraded"; never 503.
 - spec/API.md §System — /ready reports DataHub, PostgreSQL, Redis per-check flags.
 - src/api/routers/health.py ready() — StorageUnavailableError caught; checks["datahub"]=False.
@@ -72,7 +72,7 @@ async def test_ready_returns_200_not_503_when_datahub_unconfigured() -> None:
     the /ready handler must catch it locally and report checks["datahub"]=False
     rather than letting the global exception handler convert it to 503.
 
-    spec: plan/scalable-beaming-hamster.md §/ready degraded when peripheral unconfigured.
+    spec: spec/API.md §System — /ready degraded when peripheral unconfigured, never 503.
     spec: src/api/routers/health.py ready() — StorageUnavailableError caught locally.
     """
     from src.shared.exceptions import StorageUnavailableError
@@ -90,7 +90,7 @@ async def test_ready_returns_200_not_503_when_datahub_unconfigured() -> None:
     assert response.status_code == 200, (
         f"GET /ready must return 200 even when DataHub is unconfigured; "
         f"got {response.status_code}. "
-        "spec: plan/scalable-beaming-hamster.md §/ready degraded when peripheral unconfigured."
+        "spec: spec/API.md §System — /ready degraded when peripheral unconfigured, never 503."
     )
 
 
@@ -98,7 +98,7 @@ async def test_ready_returns_200_not_503_when_datahub_unconfigured() -> None:
 async def test_ready_checks_datahub_false_when_unconfigured() -> None:
     """GET /ready reports checks["datahub"]=False when DataHub peripheral is unconfigured.
 
-    spec: plan/scalable-beaming-hamster.md §/ready degraded when peripheral unconfigured.
+    spec: spec/API.md §System — /ready degraded when peripheral unconfigured, never 503.
     spec: API.md §System — /ready must verify DataHub connectivity per subsystem.
     """
     from src.shared.exceptions import StorageUnavailableError
@@ -118,7 +118,7 @@ async def test_ready_checks_datahub_false_when_unconfigured() -> None:
     assert body["checks"]["datahub"] is False, (
         f"checks['datahub'] must be False when peripheral unconfigured; "
         f"got {body['checks']['datahub']!r}. "
-        "spec: plan/scalable-beaming-hamster.md §/ready degraded."
+        "spec: API.md §System — /ready degraded, never 503."
     )
 
 

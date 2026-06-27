@@ -149,7 +149,8 @@ class PostValidationResultRequest(BaseModel):
     variables: dict[str, Annotated[float, Field(allow_inf_nan=False)]] = Field(
         description=(
             "Measured values keyed by variable name (subset of conf.variables). "
-            "Keys must match [a-z][a-z0-9_]{0,99}; 1–200 entries."
+            "Keys must match [a-z][a-z0-9_]{0,99}; ≤ 200 entries "
+            "(a result may report partial coverage, including none)."
         )
     )
 
@@ -158,8 +159,6 @@ class PostValidationResultRequest(BaseModel):
     def _check_variables(
         cls, v: dict[str, float]
     ) -> dict[str, float]:
-        if len(v) < 1:
-            raise ValueError("variables must have at least 1 entry")
         if len(v) > 200:
             raise ValueError("variables must not exceed 200 entries")
         for key in v:

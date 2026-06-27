@@ -225,7 +225,7 @@ async def test_get_boundary_returns_200_when_present(client, mock_svc: AsyncMock
     """GET /attr/metagen/boundary returns 200 with boundary fields when one exists.
 
     spec: API.md §Data Resource — GET returns 200 when resource present.
-    spec: feature/BACKEND.md §Metadata Generation Service §Boundary CRUD.
+    spec: feature/BACKEND.md §Metadata Generation Service — per-dataset boundary CRUD.
     """
     mock_svc.get_boundary = AsyncMock(return_value=_make_boundary_dto())
 
@@ -259,7 +259,7 @@ async def test_put_boundary_returns_200_with_boundary_fields(client, mock_svc: A
     """PUT /attr/metagen/boundary returns 200 with boundary fields (create-or-replace).
 
     spec: API_DESIGN_PRINCIPLE_en.md §HTTP method semantics — PUT is create-or-replace.
-    spec: feature/BACKEND.md §Metadata Generation Service §Boundary CRUD.
+    spec: feature/BACKEND.md §Metadata Generation Service — per-dataset boundary CRUD.
     """
     mock_svc.put_boundary = AsyncMock(return_value=_make_boundary_dto())
 
@@ -297,8 +297,8 @@ async def test_put_boundary_with_owner_returns_owner_in_response(
 ) -> None:
     """PUT /attr/metagen/boundary with owner returns the owner field in the response body.
 
-    Spec: spec/feature/BACKEND.md §Metadata Generation Service §Boundary CRUD —
-    boundary has optional owner field; PUT round-trips it in the response.
+    Spec: spec/feature/BACKEND.md §Metadata Generation Service — per-dataset boundary
+    has optional owner field; PUT round-trips it in the response.
     """
     dto = _make_boundary_dto()
     dto.owner = "some-user"
@@ -314,7 +314,7 @@ async def test_put_boundary_with_owner_returns_owner_in_response(
     body = resp.json()
     assert body["owner"] == "some-user", (
         "PUT with owner must round-trip the owner value in the response. "
-        "spec: BACKEND.md §Boundary CRUD — boundary has optional owner field"
+        "spec: BACKEND.md §Metadata Generation Service — per-dataset boundary owner field"
     )
 
 
@@ -534,7 +534,7 @@ async def test_get_items_composite_id_uses_double_colon_separator(
 async def test_get_items_respects_offset_and_limit(client, mock_svc: AsyncMock) -> None:
     """GET /attr/metagen/item passes offset and limit to the service.
 
-    spec: API.md §Pagination — offset and limit query params forwarded to service.
+    spec: API.md §Query Parameters — offset and limit query params forwarded to service.
     """
     mock_svc.list_items_for_dataset = AsyncMock(return_value=([], 0))
 
@@ -783,7 +783,7 @@ async def test_review_candidate_not_found_returns_404(
 async def test_review_invalid_verdict_returns_422(client, mock_svc: AsyncMock) -> None:
     """POST .../method/review with invalid verdict returns 422.
 
-    spec: API.md §Data Resource — verdict must be 'approve' or 'reject'.
+    spec: API.md §Metadata Generation — review verdict must be 'approve' or 'reject'.
     """
     cid = str(uuid.uuid4())
     url = _candidate_review_url("dataset.description", cid)
@@ -801,7 +801,7 @@ async def test_review_invalid_verdict_returns_422(client, mock_svc: AsyncMock) -
 async def test_review_reason_too_long_returns_422(client, mock_svc: AsyncMock) -> None:
     """POST .../method/review with reason > 2000 chars returns 422.
 
-    spec: API.md §Data Resource — reason max_length=2000.
+    spec: API.md §Metadata Generation (Payload caps) — review.reason ≤ 2,000 chars.
     """
     cid = str(uuid.uuid4())
     url = _candidate_review_url("dataset.description", cid)
@@ -821,7 +821,7 @@ async def test_review_reason_exactly_2000_chars_is_accepted(
 ) -> None:
     """POST .../method/review with reason exactly 2000 chars is valid.
 
-    spec: API.md §Data Resource — reason max_length=2000 is inclusive.
+    spec: API.md §Metadata Generation (Payload caps) — review.reason ≤ 2,000 chars (inclusive).
     """
     cid = str(uuid.uuid4())
     approved_dto = _make_candidate_dto(status="approved", candidate_id=cid)

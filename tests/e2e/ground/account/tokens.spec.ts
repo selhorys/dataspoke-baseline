@@ -6,7 +6,7 @@
  * and it can be revoked via the ConfirmDialog, after which it is gone from the
  * list. Thorough afterAll cleanup deletes any leftover token via adminApi.
  *
- * spec: spec/feature/FRONTEND_BASIC.md §API tokens (/profile/tokens)
+ * spec: spec/feature/FRONTEND_BASIC.md §Authentication (Own API tokens, /profile/tokens)
  * spec: spec/feature/FRONTEND_BASIC.md §Routing — /profile/tokens: GET /auth/api-tokens,
  *   POST /auth/api-tokens, DELETE /auth/api-tokens/{id}
  * spec: spec/TESTING.md §End-to-End (E2E) Testing — dual confirmation, ConfirmDialog,
@@ -47,7 +47,7 @@ test.afterAll(async ({ adminApi }) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Test 1 — /profile/tokens renders the token list and "New token" button
-// spec: FRONTEND_BASIC.md §API tokens — GET /auth/api-tokens populates the table;
+// spec: FRONTEND_BASIC.md §Authentication (API tokens) — GET /auth/api-tokens populates the table;
 //   h1 "API Tokens"; Button "New token".
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -69,7 +69,7 @@ test("/profile/tokens — page renders with heading and New token button", async
 // ─────────────────────────────────────────────────────────────────────────────
 // Test 2 — Mint a token (dialog shows dsk_ token), confirm in list, revoke via
 //           ConfirmDialog, confirm gone.
-// spec: FRONTEND_BASIC.md §API tokens — Dialog "New API token" → Create → one-shot
+// spec: FRONTEND_BASIC.md §Authentication (API tokens) — Dialog "New API token" → Create → one-shot
 //   reveal dialog showing dsk_ token → Close → token in table → Revoke →
 //   ConfirmDialog → token gone.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -114,14 +114,14 @@ test("/profile/tokens — mint token → dsk_ in reveal dialog → in list → r
   await page.getByRole("button", { name: "Create", exact: true }).click();
 
   // -- UI assertion: one-shot reveal dialog "Your new token" opens --
-  // spec: FRONTEND_BASIC.md §API tokens — token reveal dialog shows "Your new token";
+  // spec: FRONTEND_BASIC.md §Authentication (API tokens) — token reveal dialog shows "Your new token";
   //   the raw token starts with dsk_.
   await expect(
     page.getByRole("heading", { name: "Your new token", exact: true })
   ).toBeVisible({ timeout: 15_000 });
 
   // -- UI assertion: token text starts with dsk_ --
-  // spec: FRONTEND_BASIC.md §API tokens — "dsk_AbCdEf1234ZyXw..."
+  // spec: FRONTEND_BASIC.md §Authentication (API tokens) — "dsk_AbCdEf1234ZyXw..."
   // The token is rendered in a <code> element inside the dialog.
   // We can't locate it by role, so locate the code element text — it must start with dsk_.
   const tokenCode = page.locator("code").first();
@@ -151,7 +151,7 @@ test("/profile/tokens — mint token → dsk_ in reveal dialog → in list → r
   ).toBeVisible({ timeout: 20_000 });
 
   // -- Backend probe (dual confirmation): GET /auth/api-tokens → throwaway in list --
-  // spec: FRONTEND_BASIC.md §API tokens — POST /auth/api-tokens creates a token row.
+  // spec: FRONTEND_BASIC.md §Authentication (API tokens) — POST /auth/api-tokens creates a token row.
   const afterMintResp = await adminApi.get("/api/v1/auth/api-tokens");
   expect(afterMintResp.status()).toBe(200);
   const afterMintBody = (await afterMintResp.json()) as {
@@ -196,7 +196,7 @@ test("/profile/tokens — mint token → dsk_ in reveal dialog → in list → r
   ).not.toBeVisible({ timeout: 15_000 });
 
   // -- Backend probe (dual confirmation): GET /auth/api-tokens → throwaway gone --
-  // spec: FRONTEND_BASIC.md §API tokens — DELETE /auth/api-tokens/{id} removes the token.
+  // spec: FRONTEND_BASIC.md §Authentication (API tokens) — DELETE /auth/api-tokens/{id} removes the token.
   const afterRevokeResp = await adminApi.get("/api/v1/auth/api-tokens");
   expect(afterRevokeResp.status()).toBe(200);
   const afterRevokeBody = (await afterRevokeResp.json()) as {

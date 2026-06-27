@@ -8,11 +8,13 @@ Concerns covered:
 - POST /internal/admin/datahub/sync — 401 when X-Internal-Token header is missing
 
 Targeted-sync pre-seeding note:
-  dataset_registry is populated lazily via ensure_dataset_registered(), which is
-  called only by ValidationService.upsert_config() (PUT /attr/validation/conf).
-  The ingestion sync sweep writes to ingestion_source_dataset, NOT dataset_registry.
-  To get a dataset_registry row for catalog.title_master, this test calls the
-  validation-conf PUT endpoint, which is the real mechanism that inserts the row.
+  The targeted POST /internal/admin/datahub/sync (the endpoint under test) reconciles
+  datahub_registered on dataset_registry rows that already exist — a URN with no row is
+  reported not_found, not inserted. So this test first creates a dataset_registry row for
+  catalog.title_master via the validation-conf PUT endpoint
+  (ValidationService.upsert_config → ensure_dataset_registered). The hourly full sweep
+  (IngestionService.sync()) does insert newly-seen URNs into dataset_registry, but that
+  path is not exercised by this targeted endpoint.
 """
 
 import os
@@ -200,10 +202,11 @@ async def test_internal_admin_datahub_sync_targeted(
     """POST /internal/admin/datahub/sync with dataset_urns performs a targeted sync.
 
     Pre-seeds dataset_registry for catalog.title_master by calling the validation-conf
-    PUT endpoint. ensure_dataset_registered() (called by ValidationService.upsert_config)
-    is the only code path that inserts dataset_registry rows; the ingestion sync sweep
-    only writes to ingestion_source_dataset, which is a separate table. The sync DAG
-    reconciles existing registry rows against DataHub — it does not create new rows.
+    PUT endpoint (ValidationService.upsert_config → ensure_dataset_registered). The
+    targeted POST /internal/admin/datahub/sync reconciles datahub_registered on existing
+    rows — a URN with no row is reported not_found, not inserted — so the row must exist
+    first. (The hourly full sweep, IngestionService.sync(), does insert newly-seen URNs;
+    that path is separate from this targeted endpoint.)
 
     Setup:
       1. PUT /attr/validation/conf for catalog.title_master → ensure_dataset_registered()
@@ -213,10 +216,11 @@ async def test_internal_admin_datahub_sync_targeted(
          because the registry row now exists.
 
     spec: API.md §Internal Admin — POST /internal/admin/datahub/sync response shape.
-    spec: feature/BACKEND_SCHEMA.md §dataset_registry — created lazily via
+    spec: feature/BACKEND_SCHEMA.md §dataset_registry — row created here via
         ensure_dataset_registered() on validation-conf PUT.
-    spec: feature/BACKEND.md §DataHub Sync — reconciles existing registry rows;
-        does not create new rows.
+    spec: feature/BACKEND.md §DataHub Sync — the targeted admin endpoint reconciles
+        datahub_registered on existing rows (not_found when a URN has no row); the
+        hourly sweep inserts newly-seen URNs.
     """
     test_urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
     enc_urn = urllib.parse.quote(test_urn, safe="")

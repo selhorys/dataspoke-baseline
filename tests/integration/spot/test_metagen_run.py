@@ -133,8 +133,10 @@ async def test_metagen_run_dry_run_permitted_when_disabled(
 ) -> None:
     """dry_run=true is permitted on a disabled conf; counts use candidates_proposed.
 
-    spec: feature/BACKEND.md §Disabled-config rejection — dry-run permitted regardless
-      of is_enabled; dry-run counts are {items_considered, candidates_proposed}.
+    spec: feature/BACKEND.md §Metadata Generation Service §Disabled-config rejection —
+      dry-run permitted regardless of is_enabled.
+    spec: feature/BACKEND.md §Event Catalogue — METAGEN dry-run counts are
+      {items_considered, candidates_proposed}.
     """
     conf_id = await _create_conf(
         api_client, admin_headers, is_enabled=False, dataset_filter={"dataset_urns": [_TEST_URN]}
@@ -153,7 +155,7 @@ async def test_metagen_run_dry_run_permitted_when_disabled(
         assert "items_considered" in counts and "candidates_proposed" in counts
         assert "candidates_added" not in counts, (
             "Dry-run counts must not include candidates_added. "
-            "spec: feature/BACKEND.md §Generation Pipeline — dry-run count keys"
+            "spec: feature/BACKEND.md §Event Catalogue — METAGEN dry-run count keys"
         )
     finally:
         await _delete_conf(api_client, admin_headers, conf_id)

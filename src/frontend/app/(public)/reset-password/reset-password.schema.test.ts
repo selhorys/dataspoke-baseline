@@ -2,7 +2,7 @@
  * Tests for reset-password form schema.
  *
  * Spec traces:
- *   - spec/API.md §POST /auth/password/reset/confirm: new_password minimum 10 chars
+ *   - src/api/schemas/auth.py PasswordResetConfirmRequest.new_password: min_length=10 (minimum 10 characters)
  *   - spec/feature/FRONTEND_BASIC.md §Routing: /reset-password submits POST /auth/password/reset/confirm
  */
 import { describe, it, expect } from "vitest";

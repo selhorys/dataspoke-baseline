@@ -31,8 +31,8 @@ def test_hash_then_verify_round_trip() -> None:
     Uses create_user to produce the hash (via the public API) so the test
     does not replicate the internal _hash_password protocol.
 
-    spec: spec/feature/AUTH.md §Lifecycle §Login — bcrypt verify on the stored hash.
-    spec: spec/feature/AUTH.md §Security Considerations §Password storage.
+    spec: spec/feature/AUTH.md §Security Considerations §Password storage — bcrypt
+    verify on the stored hash.
     """
     import asyncio
 
@@ -73,7 +73,8 @@ def test_hash_then_verify_wrong_password_returns_false() -> None:
 
     Uses create_user to produce the hash via the public API.
 
-    spec: spec/feature/AUTH.md §Lifecycle §Login — invalid credentials → 401 UNAUTHORIZED.
+    spec: spec/feature/AUTH.md §Security Considerations §Password storage — invalid
+    credentials fail bcrypt verify → 401 UNAUTHORIZED.
     """
     import asyncio
 
@@ -238,5 +239,5 @@ async def test_link_google_sub_duplicate_raises_conflict() -> None:
     assert exc_info.value.error_code == "GOOGLE_ACCOUNT_LINKED_ELSEWHERE", (
         "Google sub already linked to another user must raise "
         "ConflictError('GOOGLE_ACCOUNT_LINKED_ELSEWHERE') "
-        "per spec/feature/AUTH.md §Lifecycle §Google OAuth"
+        "per spec/feature/AUTH.md §Lifecycle §Google OAuth registration & login"
     )

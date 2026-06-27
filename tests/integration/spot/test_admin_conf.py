@@ -31,11 +31,11 @@ PATCH so later tests start from a known baseline.  The cache is automatically
 warmed with the restored values by that cleanup PATCH.
 
 Spec traceability:
-- task brief §api-wired — all concerns listed above.
-- task brief §What's under test — factory defaults, 15 fields, auth rules,
+- API.md §Admin (/admin) — all concerns listed above.
+- src/api/schemas/admin.py RuntimeConfResponse / config_service.py RUNTIME_CONFIG_DEFAULTS — factory defaults, 15 fields, auth rules,
   no-secret-in-response, updated_at, resp_time invariants.
 - spec/API.md §Access Control — Admin role required for /admin/*
-- spec/API.md §Internal routes — X-Internal-Token for /internal/…
+- spec/API.md §Internal Admin (/internal/admin) — X-Internal-Token for /internal/…
 - src/api/schemas/admin.py RuntimeConfResponse, RuntimeConfPatchRequest bounds.
 - src/backend/admin/config_service.py RUNTIME_CONFIG_DEFAULTS.
 """
@@ -53,8 +53,11 @@ _INTERNAL_CONF = "/internal/admin/conf"
 
 
 # ── Factory default values used in assertions ─────────────────────────────────
-# These are the spec-documented values (task brief §What's under test).
-# We do NOT derive them from current impl output — they come from the spec.
+# These are the factory-default values pinned to the impl SSOT
+# (src/backend/admin/config_service.py RUNTIME_CONFIG_DEFAULTS). They are
+# asserted as constants — NOT derived from the live API response — so the test
+# fails if a default drifts. (API.md §Admin documents the /admin/conf tunables
+# but not their default values, so the values themselves are an impl contract.)
 
 _EXPECTED_DEFAULTS: dict[str, object] = {
     "llm_provider": "gemini",
@@ -118,9 +121,9 @@ async def test_get_conf_returns_factory_defaults(
     After reset to factory defaults the response values MUST match the
     documented factory defaults exactly.
 
-    spec: task brief §api-wired — 'GET on a fresh DB returns all 15 fields at
+    spec: API.md §Admin (/admin) — 'GET on a fresh DB returns all 15 fields at
     factory defaults, includes resp_time, contains NO llm_api_key / no secret key.'
-    spec: task brief §What's under test — factory defaults section.
+    spec: src/api/schemas/admin.py RuntimeConfResponse / config_service.py RUNTIME_CONFIG_DEFAULTS — factory defaults section.
     """
     # Drive to known state via PATCH (cache-safe).
     await _reset_to_defaults(api_client, admin_headers)
@@ -134,7 +137,7 @@ async def test_get_conf_returns_factory_defaults(
         assert field in body, f"Field '{field}' missing from response"
         assert body[field] == expected, (
             f"Field '{field}': expected {expected!r}, got {body[field]!r}. "
-            f"spec: task brief §What's under test — factory default for {field}."
+            f"spec: src/api/schemas/admin.py RuntimeConfResponse / config_service.py RUNTIME_CONFIG_DEFAULTS — factory default for {field}."
         )
 
 
@@ -145,17 +148,17 @@ async def test_get_conf_includes_resp_time_and_updated_at(
 ) -> None:
     """GET /admin/conf includes resp_time and updated_at in the response.
 
-    spec: task brief §api-wired — 'includes resp_time'.
-    spec: task brief §What's under test — 'RuntimeConfResponse: 15 fields +
+    spec: API.md §Admin (/admin) — 'includes resp_time'.
+    spec: src/api/schemas/admin.py RuntimeConfResponse / config_service.py RUNTIME_CONFIG_DEFAULTS — 'RuntimeConfResponse: 15 fields +
     updated_at + resp_time'.
-    spec: API.md §SingleResponse — resp_time on every response.
+    spec: API.md §Standard Response Envelope — resp_time on every response.
     """
     resp = await api_client.get(_ADMIN_CONF, headers=admin_headers)
     assert resp.status_code == 200
     body = resp.json()
 
-    assert "resp_time" in body, "resp_time must be present (spec: API.md §SingleResponse)"
-    assert "updated_at" in body, "updated_at must be present (spec: task brief §What's under test)"
+    assert "resp_time" in body, "resp_time must be present (spec: API.md §Standard Response Envelope)"
+    assert "updated_at" in body, "updated_at must be present (spec: src/api/schemas/admin.py RuntimeConfResponse / config_service.py RUNTIME_CONFIG_DEFAULTS)"
 
 
 @pytest.mark.asyncio
@@ -211,7 +214,7 @@ async def test_get_conf_without_auth_returns_401(
 ) -> None:
     """GET /admin/conf without Authorization header returns 401.
 
-    spec: task brief §api-wired — 'without auth → 401'.
+    spec: API.md §Admin (/admin) — 'without auth → 401'.
     spec: API.md §Authentication — admin routes require valid JWT.
     """
     resp = await api_client.get(_ADMIN_CONF)
@@ -281,7 +284,7 @@ async def test_patch_conf_without_auth_returns_401(
 ) -> None:
     """PATCH /admin/conf without Authorization header returns 401.
 
-    spec: task brief §api-wired — 'without auth → 401'.
+    spec: API.md §Admin (/admin) — 'without auth → 401'.
     """
     resp = await api_client.patch(
         _ADMIN_CONF,
@@ -358,7 +361,7 @@ async def test_patch_conf_partial_body_updates_and_get_reflects(
 ) -> None:
     """PATCH /admin/conf with partial body returns 200; subsequent GET reflects values.
 
-    spec: task brief §api-wired — 'PATCH with a partial body returns 200 with
+    spec: API.md §Admin (/admin) — 'PATCH with a partial body returns 200 with
     updated values; a subsequent GET reflects them.'
     Inline JSON payloads per project convention (feedback_test_readability).
     """
@@ -380,11 +383,11 @@ async def test_patch_conf_partial_body_updates_and_get_reflects(
         # Updated fields reflected in the PATCH response itself.
         assert patch_body["ontogen_debate_max_turns"] == 6, (
             "PATCH response must reflect the updated ontogen_debate_max_turns value. "
-            "spec: task brief §api-wired."
+            "spec: API.md §Admin (/admin)."
         )
         assert patch_body["llm_model"] == "gpt-4o-mini", (
             "PATCH response must reflect the updated llm_model. "
-            "spec: task brief §api-wired."
+            "spec: API.md §Admin (/admin)."
         )
 
         # Subsequent GET must also return the patched values.
@@ -393,11 +396,11 @@ async def test_patch_conf_partial_body_updates_and_get_reflects(
         get_body = get_resp.json()
         assert get_body["ontogen_debate_max_turns"] == 6, (
             "GET /admin/conf after PATCH must reflect ontogen_debate_max_turns=6. "
-            "spec: task brief §api-wired — 'subsequent GET reflects them'."
+            "spec: API.md §Admin (/admin) — 'subsequent GET reflects them'."
         )
         assert get_body["llm_model"] == "gpt-4o-mini", (
             "GET /admin/conf after PATCH must reflect llm_model='gpt-4o-mini'. "
-            "spec: task brief §api-wired — 'subsequent GET reflects them'."
+            "spec: API.md §Admin (/admin) — 'subsequent GET reflects them'."
         )
 
     finally:
@@ -411,7 +414,7 @@ async def test_patch_conf_only_updates_supplied_fields(
 ) -> None:
     """PATCH /admin/conf updates only the supplied fields; others are unchanged.
 
-    spec: task brief §Unit — 'patch_runtime_config applies only provided fields,
+    spec: src/api/schemas/admin.py RuntimeConfPatchRequest — 'patch_runtime_config applies only provided fields,
     leaves others at prior values.'
     """
     try:
@@ -436,7 +439,7 @@ async def test_patch_conf_only_updates_supplied_fields(
                 continue
             assert body[field] == expected, (
                 f"Field '{field}' must remain at factory default {expected!r} after partial "
-                f"patch; got {body[field]!r}. spec: task brief §Unit — partial patch."
+                f"patch; got {body[field]!r}. spec: src/api/schemas/admin.py RuntimeConfPatchRequest — partial patch."
             )
 
     finally:
@@ -455,7 +458,7 @@ async def test_patch_conf_above_max_debate_turns_returns_422(
 
     Pydantic enforces le=10 before the service layer is reached.
 
-    spec: task brief §api-wired — 'PATCH with out-of-bounds value → 422'.
+    spec: API.md §Admin (/admin) — 'PATCH with out-of-bounds value → 422'.
     spec: src/api/schemas/admin.py RuntimeConfPatchRequest — ontogen_debate_max_turns le=10.
     """
     resp = await api_client.patch(
@@ -478,7 +481,7 @@ async def test_patch_conf_below_min_debate_turns_returns_422(
 
     Pydantic enforces ge=2 before the service layer is reached.
 
-    spec: task brief §Unit — 'ontogen_debate_max_turns=1 rejected'.
+    spec: src/api/schemas/admin.py RuntimeConfPatchRequest — 'ontogen_debate_max_turns=1 rejected'.
     spec: src/api/schemas/admin.py RuntimeConfPatchRequest — ge=2.
     """
     resp = await api_client.patch(
@@ -499,7 +502,7 @@ async def test_patch_conf_confidence_threshold_too_high_returns_422(
 ) -> None:
     """PATCH /admin/conf with metagen_confidence_threshold=1.5 returns 422.
 
-    spec: task brief §Unit — 'metagen_confidence_threshold=1.5 rejected'.
+    spec: src/api/schemas/admin.py RuntimeConfPatchRequest — 'metagen_confidence_threshold=1.5 rejected'.
     spec: src/api/schemas/admin.py RuntimeConfPatchRequest — le=1.0.
     """
     resp = await api_client.patch(
@@ -520,7 +523,7 @@ async def test_patch_conf_validation_intervals_zero_returns_422(
 ) -> None:
     """PATCH /admin/conf with validation_score_n_intervals=0 returns 422.
 
-    spec: task brief §Unit — 'validation_score_n_intervals=0 rejected'.
+    spec: src/api/schemas/admin.py RuntimeConfPatchRequest — 'validation_score_n_intervals=0 rejected'.
     spec: src/api/schemas/admin.py RuntimeConfPatchRequest — ge=1.
     """
     resp = await api_client.patch(
@@ -545,9 +548,9 @@ async def test_internal_patch_conf_valid_token_returns_200_and_get_reflects(
 ) -> None:
     """PATCH /internal/admin/conf with valid X-Internal-Token → 200; GET reflects it.
 
-    spec: task brief §api-wired — 'PATCH /internal/admin/conf with valid
+    spec: API.md §Admin (/admin) — 'PATCH /internal/admin/conf with valid
     X-Internal-Token → 200 and reflected by GET'.
-    spec: API.md §Internal routes — valid token grants access.
+    spec: API.md §Internal Admin (/internal/admin) — valid token grants access.
     """
     try:
         await _reset_to_defaults(api_client, admin_headers)
@@ -560,7 +563,7 @@ async def test_internal_patch_conf_valid_token_returns_200_and_get_reflects(
 
         # 200 from the internal endpoint (or 503 if token unset — handled below).
         if patch_resp.status_code == 503:
-            # spec: API.md §503 — INTERNAL_AUTH_NOT_CONFIGURED when token unset.
+            # spec: API.md §Application Error Codes — INTERNAL_AUTH_NOT_CONFIGURED when token unset.
             body = patch_resp.json()
             assert body.get("detail", {}).get("error_code") == "INTERNAL_AUTH_NOT_CONFIGURED", (
                 "503 response must carry INTERNAL_AUTH_NOT_CONFIGURED error_code "
@@ -583,7 +586,7 @@ async def test_internal_patch_conf_valid_token_returns_200_and_get_reflects(
         assert get_body["metagen_debate_max_turns"] == 8, (
             "GET /admin/conf after PATCH /internal/admin/conf must reflect the "
             "updated metagen_debate_max_turns value. "
-            "spec: task brief §api-wired — 'reflected by GET'."
+            "spec: API.md §Admin (/admin) — 'reflected by GET'."
         )
 
     finally:
@@ -596,10 +599,10 @@ async def test_internal_patch_conf_missing_token_returns_401_or_503(
 ) -> None:
     """PATCH /internal/admin/conf without X-Internal-Token → 401 or 503.
 
-    spec: task brief §api-wired — 'without/with wrong token → 401 (or 503 if
+    spec: API.md §Admin (/admin) — 'without/with wrong token → 401 (or 503 if
     INTERNAL_TOKEN unset — match how existing internal-route tests assert)'.
-    spec: API.md §Internal routes — 401 for missing/wrong token, 503 if unset.
-    spec: API.md §503 — INTERNAL_AUTH_NOT_CONFIGURED.
+    spec: API.md §Internal Admin (/internal/admin) — 401 for missing/wrong token, 503 if unset.
+    spec: API.md §Application Error Codes — INTERNAL_AUTH_NOT_CONFIGURED.
     """
     resp = await api_client.patch(
         _INTERNAL_CONF,
@@ -609,7 +612,7 @@ async def test_internal_patch_conf_missing_token_returns_401_or_503(
     # 401 when token is set server-side but omitted here; 503 when token unset.
     assert resp.status_code in (401, 503), (
         f"Missing X-Internal-Token must return 401 or 503; got {resp.status_code}: {resp.text}. "
-        "spec: API.md §Internal routes / §503 INTERNAL_AUTH_NOT_CONFIGURED."
+        "spec: API.md §Internal Admin (/internal/admin) / §Application Error Codes (INTERNAL_AUTH_NOT_CONFIGURED)."
     )
 
 
@@ -620,8 +623,8 @@ async def test_internal_patch_conf_wrong_token_returns_401(
 ) -> None:
     """PATCH /internal/admin/conf with wrong X-Internal-Token → 401.
 
-    spec: task brief §api-wired — 'with wrong token → 401'.
-    spec: API.md §Internal routes — constant-time compare; mismatch → 401.
+    spec: API.md §Admin (/admin) — 'with wrong token → 401'.
+    spec: API.md §Internal Admin (/internal/admin) — constant-time compare; mismatch → 401.
     """
     resp = await api_client.patch(
         _INTERNAL_CONF,

@@ -441,8 +441,8 @@ async def test_reverse_lookup_shape_for_unmapped_dataset(
     """GET /data/{urn}/attr/ingestion for an unmapped dataset returns the correct shape
     with all nullable fields as null.
 
-    spec: API.md §Ingestion — 'Returns the owning source for a dataset, or null if unmapped'.
-    spec: API.md §Ingestion — response shape: {dataset_urn, source_id, mode, name, latest_run}.
+    spec: API.md §Data Resource — 'Returns the owning source for a dataset, or null if unmapped'.
+    spec: API.md §Data Resource — response shape: {dataset_urn, source_id, mode, name, latest_run}.
     """
     reverse_url = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/ingestion"
     resp = await api_client.get(reverse_url, headers=admin_headers)
@@ -450,7 +450,7 @@ async def test_reverse_lookup_shape_for_unmapped_dataset(
         f"Expected 200 on reverse-lookup; got {resp.status_code}: {resp.text}"
     )
     body = resp.json()
-    # spec: API.md §Ingestion — required shape fields
+    # spec: API.md §Data Resource — required shape fields
     assert "dataset_urn" in body, "Response must have 'dataset_urn' field"
     assert body["dataset_urn"] == _TEST_URN, (
         f"dataset_urn must reflect queried URN; got {body['dataset_urn']!r}"
@@ -485,7 +485,7 @@ async def test_sync_sweep_passive_kafka_matcher_maps_topics(
     surface even when api-wired tests are skipped.
 
     spec: USE_CASE_en.md §UC1 Case 3 — PASSIVE source declares allow/deny scope; sync maps topics.
-    spec: feature/BACKEND.md §Ingestion Service §Sync sweep step 2 — derivation=matched.
+    spec: feature/BACKEND.md §Ingestion Service — Sync + mapping sweep, step 2 (Mapping) — derivation=matched.
     spec: TESTING.md §Coverage rule — spot set must catch backend regressions independently.
     """
     # Clean slate: remove any leftover ingestion_source rows.
@@ -522,7 +522,7 @@ async def test_sync_sweep_passive_kafka_matcher_maps_topics(
         source_id = create_resp.json()["id"]
 
         # Step 2: Trigger the sync sweep (activity endpoint used by the hourly DAG).
-        # spec: feature/BACKEND.md §Ingestion Service §Sync sweep — sync() reconciles all modes.
+        # spec: feature/BACKEND.md §Ingestion Service — Sync + mapping sweep, sync() reconciles all modes.
         sync_resp = await api_client.post(
             "/internal/activities/ingestion/sync",
             headers=internal_headers,
@@ -560,13 +560,13 @@ async def test_sync_sweep_passive_kafka_matcher_maps_topics(
         )
 
         # All mapped rows must have derivation='matched' (PASSIVE sync path).
-        # spec: feature/BACKEND.md §Sync sweep step 2 — PASSIVE: derivation=matched.
+        # spec: feature/BACKEND.md §Ingestion Service — Sync + mapping sweep, step 2 (Mapping) — PASSIVE: derivation=matched.
         for d in datasets_body["datasets"]:
             if d["dataset_urn"] in (_KAFKA_ORDERS_URN, _KAFKA_SHIPPING_URN):
                 assert d["derivation"] == "matched", (
                     f"PASSIVE source dataset {d['dataset_urn']!r} must have "
                     f"derivation='matched'; got {d['derivation']!r}. "
-                    "spec: feature/BACKEND.md §Sync sweep step 2 — PASSIVE uses matched derivation."
+                    "spec: feature/BACKEND.md §Ingestion Service — Sync + mapping sweep, step 2 (Mapping) — PASSIVE uses matched derivation."
                 )
 
     finally:
@@ -702,7 +702,7 @@ async def test_populated_reverse_lookup_after_real_run(
     Skipped when the dummy-data-pg K8s Secret is not provisioned in the cluster.
 
     spec: USE_CASE_en.md §UC1 API Mapping — reverse-lookup: source, mode, latest run.
-    spec: API.md §Ingestion — GET /spoke/common/data/{urn}/attr/ingestion response shape.
+    spec: API.md §Data Resource — GET /spoke/common/data/{urn}/attr/ingestion response shape.
     spec: feature/BACKEND.md §Active-custom run pipeline — run records emitted URNs in
           ingestion_source_dataset.
     spec: SECRET_RESOLUTION.md §Reference discovery — skip guard via list endpoint.
@@ -751,7 +751,7 @@ async def test_populated_reverse_lookup_after_real_run(
         )
 
         # Reverse-lookup on the catalog.title_master URN.
-        # spec: API.md §Ingestion — GET /spoke/common/data/{urn}/attr/ingestion
+        # spec: API.md §Data Resource — GET /spoke/common/data/{urn}/attr/ingestion
         reverse_resp = await api_client.get(
             f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/ingestion",
             headers=admin_headers,
@@ -763,7 +763,7 @@ async def test_populated_reverse_lookup_after_real_run(
         rev_body = reverse_resp.json()
 
         # source_id must match the source we just created.
-        # spec: API.md §Ingestion — source_id populated when dataset is mapped.
+        # spec: API.md §Data Resource — source_id populated when dataset is mapped.
         assert rev_body.get("source_id") == source_id, (
             f"Reverse-lookup source_id must equal the created source {source_id!r}; "
             f"got {rev_body.get('source_id')!r}. "
@@ -771,7 +771,7 @@ async def test_populated_reverse_lookup_after_real_run(
         )
 
         # mode must reflect the source's mode.
-        # spec: API.md §Ingestion — mode in reverse-lookup response.
+        # spec: API.md §Data Resource — mode in reverse-lookup response.
         assert rev_body.get("mode") == "ACTIVE_CUSTOM_MANAGED", (
             f"Reverse-lookup mode must be 'ACTIVE_CUSTOM_MANAGED'; "
             f"got {rev_body.get('mode')!r}. "
@@ -779,11 +779,11 @@ async def test_populated_reverse_lookup_after_real_run(
         )
 
         # latest_run must be present and reflect a successful run.
-        # spec: API.md §Ingestion — IngestionReverseLookupResponse.latest_run shape.
+        # spec: API.md §Data Resource — IngestionReverseLookupResponse.latest_run shape.
         latest_run = rev_body.get("latest_run")
         assert latest_run is not None, (
             "Reverse-lookup must include latest_run after a real run. "
-            "spec: API.md §Ingestion — IngestionReverseLookupResponse.latest_run."
+            "spec: API.md §Data Resource — IngestionReverseLookupResponse.latest_run."
         )
         assert latest_run.get("status") == "success", (
             f"latest_run.status must be 'success'; got {latest_run.get('status')!r}. "

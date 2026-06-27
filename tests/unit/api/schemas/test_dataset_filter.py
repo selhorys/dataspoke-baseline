@@ -1,9 +1,10 @@
 """Unit tests for src/api/schemas/_dataset_filter.py — shared dataset_filter validators.
 
 Spec traceability:
-- spec/API.md §Payload caps — dataset_filter list dimensions capped at 1,000
+- spec/API.md §Governance — Metric (Payload caps) — dataset_filter list dimensions capped at 1,000
 - spec/API.md §Error Catalogue — 422 INVALID_DATASET_URN for malformed URNs
-- spec/API.md §Common filter shape — origin: str | None; forwarded verbatim to DataHub
+- spec/API.md §Governance — Metric (Definition body) — origin: str | None;
+  forwarded verbatim to DataHub
 """
 
 import pytest
@@ -142,28 +143,31 @@ class TestCheckOrigin:
     def test_none_origin_does_not_raise(self) -> None:
         """origin=None is accepted; null means no origin filter is applied.
 
-        Spec: spec/API.md §dataset_filter — origin is optional; null means all origins.
+        Spec: spec/API.md §Governance — Metric (Definition body) — origin is optional;
+              null means all origins.
         """
         check_origin({"origin": None})
 
     def test_prod_origin_does_not_raise(self) -> None:
         """origin='PROD' is accepted; forwarded verbatim to DataHub.
 
-        Spec: spec/API.md §dataset_filter — non-empty origin forwarded verbatim; DataHub validates enum.
+        Spec: spec/API.md §Governance — Metric (Definition body) — non-empty origin forwarded
+              verbatim; DataHub validates enum.
         """
         check_origin({"origin": "PROD"})
 
     def test_lowercase_origin_accepted_verbatim(self) -> None:
         """origin='dev' (lowercase) is accepted and forwarded verbatim.
 
-        Spec: spec/API.md §dataset_filter — case is forwarded to DataHub, not validated here.
+        Spec: spec/API.md §Governance — Metric (Definition body) — case is forwarded to
+              DataHub, not validated here.
         """
         check_origin({"origin": "dev"})
 
     def test_empty_string_origin_raises_value_error(self) -> None:
         """origin='' raises ValueError — empty strings are rejected after strip().
 
-        Spec: spec/API.md §UC5 Definition body §dataset_filter — empty-or-whitespace origin
+        Spec: spec/API.md §Governance — Metric (Definition body) — empty-or-whitespace origin
               rejected at PUT/PATCH with 422 INVALID_PARAMETER.
         """
         with pytest.raises(ValueError, match="origin"):
@@ -172,7 +176,7 @@ class TestCheckOrigin:
     def test_whitespace_only_origin_raises_value_error(self) -> None:
         """origin='   ' (whitespace only) raises ValueError after trim.
 
-        Spec: spec/API.md §UC5 Definition body §dataset_filter — empty-or-whitespace origin
+        Spec: spec/API.md §Governance — Metric (Definition body) — empty-or-whitespace origin
               rejected at PUT/PATCH with 422 INVALID_PARAMETER.
         """
         with pytest.raises(ValueError, match="origin"):
@@ -181,7 +185,7 @@ class TestCheckOrigin:
     def test_missing_origin_key_does_not_raise(self) -> None:
         """dataset_filter without origin key is accepted (same as origin=None).
 
-        Spec: spec/API.md §dataset_filter — origin key is optional.
+        Spec: spec/API.md §Governance — Metric (Definition body) — origin key is optional.
         """
         check_origin({})
         check_origin({"tags": ["urn:li:tag:foo"]})
@@ -203,22 +207,25 @@ class TestValidateDatasetFilter:
     def test_full_shape_accepted(self) -> None:
         """A dataset_filter with all four dimensions populated is accepted.
 
-        Spec: spec/API.md §dataset_filter — {origin, tags, glossary_terms, dataset_urns}
-              is the unified four-dimension shape across UC3, UC4, UC5.
+        Spec: spec/API.md §Governance — Metric (Definition body) — {origin, tags,
+              glossary_terms, dataset_urns} is the unified four-dimension shape
+              across UC3, UC4, UC5.
         """
         validate_dataset_filter(self._FULL_SHAPE)
 
     def test_empty_dict_accepted(self) -> None:
         """An empty dataset_filter ({}) is accepted; all dimensions are optional.
 
-        Spec: spec/API.md §dataset_filter — empty filter enumerates all datasets.
+        Spec: spec/API.md §Governance — Metric (Definition body) — empty filter
+              enumerates all datasets.
         """
         validate_dataset_filter({})
 
     def test_origin_only_accepted(self) -> None:
         """dataset_filter with only origin is accepted.
 
-        Spec: spec/API.md §dataset_filter — partial filter with origin=DEV is valid.
+        Spec: spec/API.md §Governance — Metric (Definition body) — partial filter
+              with origin=DEV is valid.
         """
         validate_dataset_filter({"origin": "DEV"})
 
@@ -242,7 +249,8 @@ class TestValidateDatasetFilter:
     def test_empty_origin_raises(self) -> None:
         """origin='' raises ValueError after trim check.
 
-        Spec: spec/API.md §dataset_filter — origin must be non-empty if provided.
+        Spec: spec/API.md §Governance — Metric (Definition body) — origin must be
+              non-empty if provided.
         """
         with pytest.raises(ValueError):
             validate_dataset_filter({"origin": ""})

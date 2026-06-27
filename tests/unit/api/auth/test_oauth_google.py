@@ -29,8 +29,8 @@ import pytest
 def test_is_configured_all_present_returns_true() -> None:
     """is_configured returns True when all three OAuth fields are non-empty.
 
-    spec: spec/feature/AUTH.md §Lifecycle §Google OAuth — when client_id is empty,
-    both routes return 503 OAUTH_NOT_CONFIGURED.
+    spec: spec/feature/AUTH.md §Security Considerations §OAuth flow hardening — when
+    client_id is empty, both routes return 503 OAUTH_NOT_CONFIGURED.
     """
     from src.backend.auth.oauth_google import is_configured
 
@@ -41,14 +41,15 @@ def test_is_configured_all_present_returns_true() -> None:
 
     assert is_configured(mock_settings) is True, (
         "is_configured must return True when all three credentials are present "
-        "per spec/feature/AUTH.md §Lifecycle §Google OAuth"
+        "per spec/feature/AUTH.md §Security Considerations §OAuth flow hardening"
     )
 
 
 def test_is_configured_missing_client_id_returns_false() -> None:
     """is_configured returns False when google_oauth_client_id is empty.
 
-    spec: spec/feature/AUTH.md §Lifecycle §Google OAuth — empty client_id → 503 OAUTH_NOT_CONFIGURED.
+    spec: spec/feature/AUTH.md §Security Considerations §OAuth flow hardening —
+    empty client_id → 503 OAUTH_NOT_CONFIGURED.
     """
     from src.backend.auth.oauth_google import is_configured
 
@@ -63,7 +64,7 @@ def test_is_configured_missing_client_id_returns_false() -> None:
 def test_is_configured_missing_client_secret_returns_false() -> None:
     """is_configured returns False when google_oauth_client_secret is empty.
 
-    spec: spec/feature/AUTH.md §Lifecycle §Google OAuth
+    spec: spec/feature/AUTH.md §Security Considerations §OAuth flow hardening
     """
     from src.backend.auth.oauth_google import is_configured
 
@@ -144,7 +145,7 @@ async def test_resolve_known_google_sub_same_name_no_update() -> None:
     assert result is existing_user
     mock_update_name.assert_not_called(), (
         "update_name must NOT be called when the name is unchanged "
-        "per spec/feature/AUTH.md §Lifecycle §Google OAuth"
+        "per spec/feature/AUTH.md §Lifecycle §Google OAuth registration & login"
     )
 
 
@@ -186,11 +187,11 @@ async def test_resolve_known_google_sub_different_name_updates_and_propagates() 
     assert result is updated_user
     mock_update_name.assert_called_once(), (
         "update_name must be called when name changed "
-        "per spec/feature/AUTH.md §Lifecycle §Google OAuth"
+        "per spec/feature/AUTH.md §Lifecycle §Google OAuth registration & login"
     )
     mock_dh.assert_called_once(), (
         "ensure_corpuser_exists must be called to propagate name to DataHub "
-        "per spec/feature/AUTH.md §Lifecycle §Google OAuth"
+        "per spec/feature/AUTH.md §Lifecycle §Google OAuth registration & login"
     )
 
 
@@ -198,7 +199,7 @@ async def test_resolve_known_google_sub_different_name_updates_and_propagates() 
 async def test_resolve_known_google_sub_different_name_swallows_datahub_error() -> None:
     """DataHubUnavailableError during name propagation is swallowed (best-effort).
 
-    spec: spec/feature/AUTH.md §Lifecycle §Google OAuth — name propagation is
+    spec: spec/feature/AUTH.md §Lifecycle §Google OAuth registration & login — name propagation is
     best-effort; DataHub failure must not block login.
     """
     from src.backend.auth import users as _users
@@ -233,7 +234,7 @@ async def test_resolve_known_google_sub_different_name_swallows_datahub_error() 
 
     assert result is updated_user, (
         "DataHubUnavailableError during name propagation must be swallowed (best-effort) "
-        "per spec/feature/AUTH.md §Lifecycle §Google OAuth"
+        "per spec/feature/AUTH.md §Lifecycle §Google OAuth registration & login"
     )
 
 
@@ -275,7 +276,7 @@ async def test_resolve_no_google_sub_known_email_links_sub() -> None:
     assert result is linked_user
     mock_link.assert_called_once(), (
         "link_google_sub must be called when email matches but no google_sub "
-        "per spec/feature/AUTH.md §Lifecycle §Google OAuth Row 2"
+        "per spec/feature/AUTH.md §Lifecycle §Google OAuth registration & login (Row 2)"
     )
 
 
@@ -320,7 +321,7 @@ async def test_resolve_new_user_mirror_success() -> None:
     assert result is new_user
     mock_create.assert_called_once(), (
         "create_user must be called for a completely unknown email "
-        "per spec/feature/AUTH.md §Lifecycle §Google OAuth Row 3"
+        "per spec/feature/AUTH.md §Lifecycle §Google OAuth registration & login (Row 3)"
     )
 
 

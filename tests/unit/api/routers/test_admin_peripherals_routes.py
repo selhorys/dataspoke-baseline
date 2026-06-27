@@ -43,9 +43,9 @@ Concerns covered:
 7. PATCH /internal/admin/peripherals/langfuse with correct token → 200.
 
 Spec traceability:
-- plan/scalable-beaming-hamster.md §Peripheral configuration — is_configured predicate.
+- spec/API.md §Admin (/admin) — is_configured predicate (DB row AND Secret).
 - spec/API.md §Access Control — Admin role required for /admin/*.
-- spec/API.md §Internal routes — X-Internal-Token required.
+- spec/API.md §Internal Admin (/internal/admin) — X-Internal-Token required.
 - src/api/routers/admin.py _apply_datahub_patch_and_respond — token to Secret first.
 - src/api/schemas/admin.py DatahubPeripheralResponse — token masking.
 """
@@ -235,7 +235,7 @@ async def test_internal_patch_datahub_unset_token_returns_503(client) -> None:
 async def test_internal_patch_datahub_without_token_returns_401(client) -> None:
     """PATCH /internal/admin/peripherals/datahub without X-Internal-Token → 401.
 
-    spec: API.md §Internal routes — X-Internal-Token required.
+    spec: API.md §Internal Admin (/internal/admin) — X-Internal-Token required.
     """
     with patch("src.shared.settings.settings.internal_token", _INTERNAL_TOKEN):
         resp = await client.patch(_INTERNAL_DH, json={"gms_url": "http://gms:8080"})
@@ -246,7 +246,7 @@ async def test_internal_patch_datahub_without_token_returns_401(client) -> None:
 async def test_internal_patch_datahub_wrong_token_returns_401(client) -> None:
     """PATCH /internal/admin/peripherals/datahub with wrong X-Internal-Token → 401.
 
-    spec: API.md §Internal routes — constant-time compare; mismatch → 401.
+    spec: API.md §Internal Admin (/internal/admin) — constant-time compare; mismatch → 401.
     """
     with patch("src.shared.settings.settings.internal_token", _INTERNAL_TOKEN):
         resp = await client.patch(
@@ -264,7 +264,7 @@ async def test_internal_patch_datahub_wrong_token_returns_401(client) -> None:
 async def test_get_peripherals_is_configured_true_when_dto_and_secret_set(client) -> None:
     """is_configured=True only when dto is not None AND secret is set.
 
-    spec: plan/scalable-beaming-hamster.md §is_configured predicate.
+    spec: spec/API.md §Admin (/admin) — is_configured predicate.
     """
     _, db_gen = _fake_db()
     app.dependency_overrides[get_db] = db_gen
@@ -285,7 +285,7 @@ async def test_get_peripherals_is_configured_true_when_dto_and_secret_set(client
     body = resp.json()
     assert body["datahub"]["is_configured"] is True, (
         "is_configured must be True when dto is not None and token is set. "
-        "spec: plan/scalable-beaming-hamster.md §is_configured predicate."
+        "spec: spec/API.md §Admin (/admin) — is_configured predicate."
     )
     assert body["langfuse"]["is_configured"] is True
 
@@ -294,7 +294,7 @@ async def test_get_peripherals_is_configured_true_when_dto_and_secret_set(client
 async def test_get_peripherals_is_configured_false_when_dto_none(client) -> None:
     """is_configured=False when dto is None (peripheral not configured in DB).
 
-    spec: plan/scalable-beaming-hamster.md §is_configured predicate — False if dto absent.
+    spec: spec/API.md §Admin (/admin) — is_configured predicate — False if dto absent.
     """
     _, db_gen = _fake_db()
     app.dependency_overrides[get_db] = db_gen
@@ -315,7 +315,7 @@ async def test_get_peripherals_is_configured_false_when_dto_none(client) -> None
     body = resp.json()
     assert body["datahub"]["is_configured"] is False, (
         "is_configured must be False when dto is None. "
-        "spec: plan/scalable-beaming-hamster.md §is_configured predicate."
+        "spec: spec/API.md §Admin (/admin) — is_configured predicate."
     )
     assert body["langfuse"]["is_configured"] is False
 
@@ -326,7 +326,7 @@ async def test_get_peripherals_is_configured_false_when_dto_present_but_secret_u
 ) -> None:
     """is_configured=False when dto is present but secret is unset.
 
-    spec: plan/scalable-beaming-hamster.md §is_configured predicate —
+    spec: spec/API.md §Admin (/admin) — is_configured predicate —
     False if secret unset (row exists but K8s Secret not written).
     """
     _, db_gen = _fake_db()
@@ -348,7 +348,7 @@ async def test_get_peripherals_is_configured_false_when_dto_present_but_secret_u
     body = resp.json()
     assert body["datahub"]["is_configured"] is False, (
         "is_configured must be False when dto present but secret is unset. "
-        "spec: plan/scalable-beaming-hamster.md §is_configured predicate."
+        "spec: spec/API.md §Admin (/admin) — is_configured predicate."
     )
     assert body["langfuse"]["is_configured"] is False
 
@@ -362,7 +362,7 @@ async def test_get_peripherals_is_configured_false_when_secret_set_but_dto_none(
     is_configured is an AND predicate: dto present AND secret set.
     A K8s Secret without a DB row is not a configured state.
 
-    spec: plan/scalable-beaming-hamster.md §is_configured predicate —
+    spec: spec/API.md §Admin (/admin) — is_configured predicate —
     is_configured = (dto is not None) AND (secret is set).
     """
     _, db_gen = _fake_db()
@@ -388,7 +388,7 @@ async def test_get_peripherals_is_configured_false_when_secret_set_but_dto_none(
         "is_configured must be False when dto is None even if secret is set. "
         "is_configured = (dto not None) AND (secret set); "
         "secret-only does not suffice. "
-        "spec: plan/scalable-beaming-hamster.md §is_configured predicate."
+        "spec: spec/API.md §Admin (/admin) — is_configured predicate."
     )
     assert body["langfuse"]["is_configured"] is False, (
         "is_configured must be False for langfuse when dto is None even if secret_key is set."
@@ -404,7 +404,7 @@ async def test_get_datahub_peripheral_is_configured_false_when_secret_set_but_dt
     This tests the per-peripheral GET endpoint (not the list endpoint).
     is_configured is AND: a K8s Secret without the DB row must not be 'configured'.
 
-    spec: plan/scalable-beaming-hamster.md §is_configured predicate.
+    spec: spec/API.md §Admin (/admin) — is_configured predicate.
     """
     _, db_gen = _fake_db()
     app.dependency_overrides[get_db] = db_gen
@@ -425,7 +425,7 @@ async def test_get_datahub_peripheral_is_configured_false_when_secret_set_but_dt
     assert body["is_configured"] is False, (
         "GET /admin/peripherals/datahub must return is_configured=False when dto=None, "
         "even if the K8s Secret is set. "
-        "spec: plan/scalable-beaming-hamster.md §is_configured predicate."
+        "spec: spec/API.md §Admin (/admin) — is_configured predicate."
     )
 
 
@@ -435,7 +435,7 @@ async def test_get_langfuse_peripheral_is_configured_false_when_secret_set_but_d
 ) -> None:
     """GET /admin/peripherals/langfuse: is_configured=False when dto=None and secret IS set.
 
-    spec: plan/scalable-beaming-hamster.md §is_configured predicate.
+    spec: spec/API.md §Admin (/admin) — is_configured predicate.
     """
     _, db_gen = _fake_db()
     app.dependency_overrides[get_db] = db_gen
@@ -456,7 +456,7 @@ async def test_get_langfuse_peripheral_is_configured_false_when_secret_set_but_d
     assert body["is_configured"] is False, (
         "GET /admin/peripherals/langfuse must return is_configured=False when dto=None, "
         "even if the K8s Secret is set. "
-        "spec: plan/scalable-beaming-hamster.md §is_configured predicate."
+        "spec: spec/API.md §Admin (/admin) — is_configured predicate."
     )
 
 
@@ -491,7 +491,7 @@ async def test_get_datahub_peripheral_token_masked_when_set(client) -> None:
     )
     assert "my-datahub-token" not in str(body), (
         "Plaintext token value must never appear anywhere in the response body. "
-        "spec: plan/scalable-beaming-hamster.md §API surface — token masking."
+        "spec: spec/API.md §Admin (/admin) — token masking."
     )
     assert body["gms_url"] == "http://gms:8080"
     assert body["kafka_brokers"] == "kafka:9092"
@@ -777,7 +777,7 @@ async def test_get_langfuse_peripheral_secret_key_masked_when_set(client) -> Non
     )
     assert "sk-langfuse-key" not in str(body), (
         "Plaintext secret_key value must never appear anywhere in the response body. "
-        "spec: plan/scalable-beaming-hamster.md §API surface — secret masking."
+        "spec: spec/API.md §Admin (/admin) — secret masking."
     )
     assert body["host"] == "http://langfuse:3000"
     assert body["public_key"] == "pk-test"
@@ -933,7 +933,7 @@ async def test_patch_langfuse_empty_secret_key_clears_secret(client) -> None:
 async def test_internal_patch_datahub_valid_token_returns_200(client) -> None:
     """PATCH /internal/admin/peripherals/datahub with correct X-Internal-Token → 200.
 
-    spec: API.md §Internal routes — valid token grants access.
+    spec: API.md §Internal Admin (/internal/admin) — valid token grants access.
     """
     _, db_gen = _fake_db()
     app.dependency_overrides[get_db] = db_gen
@@ -966,7 +966,7 @@ async def test_internal_patch_datahub_valid_token_returns_200(client) -> None:
 async def test_internal_patch_langfuse_valid_token_returns_200(client) -> None:
     """PATCH /internal/admin/peripherals/langfuse with correct X-Internal-Token → 200.
 
-    spec: API.md §Internal routes — valid token grants access.
+    spec: API.md §Internal Admin (/internal/admin) — valid token grants access.
     """
     _, db_gen = _fake_db()
     app.dependency_overrides[get_db] = db_gen
@@ -1002,7 +1002,7 @@ async def test_internal_patch_datahub_token_calls_set_datahub_token(client) -> N
     The internal route must call set_datahub_token just as the admin route does.
     Proves the internal endpoint also routes the secret through the K8s Secret.
 
-    spec: plan/scalable-beaming-hamster.md §API surface — all PATCH routes write
+    spec: spec/API.md §Admin (/admin) — all PATCH routes write
     token to K8s Secret, never to DB.
     spec: src/api/routers/admin.py _apply_datahub_patch_and_respond shared helper.
     """
@@ -1031,7 +1031,7 @@ async def test_internal_patch_datahub_token_calls_set_datahub_token(client) -> N
     assert resp.status_code == 200
     mock_set_token.assert_called_once_with("x"), (
         "The internal PATCH /datahub route must call set_datahub_token('x'). "
-        "spec: plan/scalable-beaming-hamster.md §API surface."
+        "spec: spec/API.md §Admin (/admin)."
     )
 
 
@@ -1041,7 +1041,7 @@ async def test_internal_patch_langfuse_token_calls_set_langfuse_secret_key(clien
 
     The internal route must call set_langfuse_secret_key just as the admin route does.
 
-    spec: plan/scalable-beaming-hamster.md §API surface — all PATCH routes write
+    spec: spec/API.md §Admin (/admin) — all PATCH routes write
     secret_key to K8s Secret, never to DB.
     """
     _, db_gen = _fake_db()
@@ -1069,7 +1069,7 @@ async def test_internal_patch_langfuse_token_calls_set_langfuse_secret_key(clien
     assert resp.status_code == 200
     mock_set_secret.assert_called_once_with("x"), (
         "The internal PATCH /langfuse route must call set_langfuse_secret_key('x'). "
-        "spec: plan/scalable-beaming-hamster.md §API surface."
+        "spec: spec/API.md §Admin (/admin)."
     )
 
 
@@ -1083,7 +1083,7 @@ async def test_patch_datahub_empty_body_does_not_create_row(client) -> None:
     An empty body contains no DB fields and no token, so neither
     patch_peripheral_config nor set_datahub_token should be called.
 
-    spec: plan/scalable-beaming-hamster.md §Backend — F6: empty partial no-op.
+    spec: spec/API.md §Admin (/admin) — F6: empty partial no-op.
     spec: src/api/routers/admin.py _apply_datahub_patch_and_respond — skips Secret
     write when token is None; skips DB write when db_updates is empty.
     """
@@ -1113,15 +1113,15 @@ async def test_patch_datahub_empty_body_does_not_create_row(client) -> None:
 
     assert resp.status_code == 200, (
         f"Empty PATCH body must return 200; got {resp.status_code}: {resp.text}. "
-        "spec: plan/scalable-beaming-hamster.md §Backend — F6: empty partial no-op."
+        "spec: spec/API.md §Admin (/admin) — F6: empty partial no-op."
     )
     mock_patch_db.assert_not_called(), (
         "patch_peripheral_config must NOT be called for an empty PATCH body. "
-        "spec: plan/scalable-beaming-hamster.md §Backend — no-op empty partial."
+        "spec: spec/API.md §Admin (/admin) — no-op empty partial."
     )
     mock_set_token.assert_not_called(), (
         "set_datahub_token must NOT be called when token field is absent. "
-        "spec: plan/scalable-beaming-hamster.md §Backend — token omitted = leave unchanged."
+        "spec: spec/API.md §Admin (/admin) — token omitted = leave unchanged."
     )
 
 

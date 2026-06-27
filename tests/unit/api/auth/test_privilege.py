@@ -8,7 +8,7 @@ Concerns covered:
 
 spec: spec/feature/AUTH.md §Privilege Model
 spec: spec/API.md §Access Control
-spec: spec/API.md §Authentication §Authentication Mechanisms
+spec: spec/API.md §Authentication & Authorization §Authentication Mechanisms
 """
 
 from __future__ import annotations

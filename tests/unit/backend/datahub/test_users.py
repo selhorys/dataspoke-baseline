@@ -27,26 +27,26 @@ import pytest
 def test_corpuser_urn_format() -> None:
     """corpuser_urn returns urn:li:corpuser:<email>.
 
-    spec: spec/feature/AUTH.md §DataHub Mirror Semantics §URN conventions —
+    spec: spec/DATAHUB_INTEGRATION.md §URN Conventions —
     corpuser URN: urn:li:corpuser:<email>. The email-as-id form aligns with
     DataHub's AUTH_OIDC_USER_ID_CLAIM=email.
     """
     from src.backend.datahub.users import corpuser_urn
 
     assert corpuser_urn("alice@example.com") == "urn:li:corpuser:alice@example.com", (
-        "corpuser URN must be urn:li:corpuser:<email> per spec/feature/AUTH.md §DataHub Mirror Semantics"
+        "corpuser URN must be urn:li:corpuser:<email> per DATAHUB_INTEGRATION.md §URN Conventions"
     )
 
 
 def test_corpgroup_urn_format() -> None:
     """corpgroup_urn returns urn:li:corpGroup:<name>.
 
-    spec: spec/feature/AUTH.md §Marker corpGroup — group URN: urn:li:corpGroup:<name>.
+    spec: spec/DATAHUB_INTEGRATION.md §URN Conventions — group URN: urn:li:corpGroup:<name>.
     """
     from src.backend.datahub.users import corpgroup_urn
 
     assert corpgroup_urn("dataspoke-users") == "urn:li:corpGroup:dataspoke-users", (
-        "corpGroup URN must be urn:li:corpGroup:<name> per spec/feature/AUTH.md §Marker corpGroup"
+        "corpGroup URN must be urn:li:corpGroup:<name> per DATAHUB_INTEGRATION.md §URN Conventions"
     )
 
 
@@ -88,7 +88,7 @@ async def test_ensure_corpuser_exists_emits_correct_mcp() -> None:
     # Inspect the MCP that was passed
     mcp = mock_client.emit_mcp.call_args[0][0]
     assert mcp.entityUrn == "urn:li:corpuser:bob@example.com", (
-        "MCP entityUrn must be urn:li:corpuser:<email> per spec/feature/AUTH.md §DataHub Mirror Semantics"
+        "MCP entityUrn must be urn:li:corpuser:<email> per DATAHUB_INTEGRATION.md §URN Conventions"
     )
     # The aspect should have the right fields
     aspect = mcp.aspect
@@ -237,7 +237,7 @@ async def test_propagate_role_issues_batch_assign_role_mutation() -> None:
     variables = call_args[1]
 
     assert variables["r"] == "urn:li:dataHubRole:Reader", (
-        "batchAssignRole must use urn:li:dataHubRole:Reader per spec/feature/AUTH.md §DataHub Mirror Semantics"
+        "role URN must be urn:li:dataHubRole:Reader per DATAHUB_INTEGRATION.md §URN Conventions"
     )
     assert user_urn in variables["u"], (
         "batchAssignRole must include the corpuser URN"
@@ -305,8 +305,8 @@ async def test_read_role_propagates_datahub_unavailable() -> None:
     """read_role uses strict=True so transient read failures surface as
     DataHubUnavailableError rather than being mis-recorded as 'no role'.
 
-    spec: spec/feature/AUTH.md §Role Drift Reconciliation — the activity
-    catches DataHubUnavailableError, counts as error, skips the user.
+    spec: spec/DATAHUB_INTEGRATION.md §Failure Handling — GraphQL role read failure:
+    skip-and-log the affected user; next nightly run retries.
     """
     from src.backend.datahub.users import read_role
     from src.shared.exceptions import DataHubUnavailableError

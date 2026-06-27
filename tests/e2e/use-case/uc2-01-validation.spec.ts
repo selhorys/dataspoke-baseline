@@ -68,7 +68,7 @@ const KAFKA_RESULT_API = `/api/v1/spoke/common/data/${KAFKA_URN_ENC}/attr/valida
 // /data/[urn]; the validation body now lives under its "Validation"
 // CollapsiblePanel (open by default) and the validation events fold into the
 // unified "Events" panel.
-// spec: FRONTEND_BASIC.md §Per-dataset page; FRONTEND_VALIDATION.md §Detail (moved to /data/[urn])
+// spec: FRONTEND_BASIC.md §Per-dataset page; FRONTEND_VALIDATION.md §Page contracts (moved to /data/[urn])
 const PG_DETAIL_URL = `/data/${PG_URN_ENC}`;
 const KAFKA_DETAIL_URL = `/data/${KAFKA_URN_ENC}`;
 
@@ -331,7 +331,7 @@ test("UC2 step 3 — /validation list shows both datasets with score badges", as
     await expect(page).not.toHaveURL(/\/login/);
 
     // -- UI assertion: page heading --
-    // spec: FRONTEND_VALIDATION.md §Navigation — list page title "Validation"
+    // spec: FRONTEND_VALIDATION.md §Navigation — /validation is the cross-dataset List page (H1 text unspecced)
     await expect(page.getByRole("heading", { name: "Validation", exact: true })).toBeVisible({
       timeout: 10_000,
     });
@@ -605,7 +605,7 @@ test("UC2 step 5 — Delete (hard delete + cascade) postgres conf via ConfirmDia
 // Step 6 — Detail page after hard delete: reads as a never-created slot.
 // spec: USE_CASE_en.md §UC2 — after deletion the dataset reads as never-created;
 //   there is no restore.
-// spec: FRONTEND_VALIDATION.md §Detail — a deleted slot (404 CONFIG_NOT_FOUND) renders
+// spec: FRONTEND_VALIDATION.md §Page contracts — a deleted slot (404 CONFIG_NOT_FOUND) renders
 //   the plain Create empty-state. There is no Undelete, no frozen note, and no
 //   "Show deleted" toggle anywhere on the page (soft-delete is gone).
 // ─────────────────────────────────────────────────────────────────────────────
@@ -631,7 +631,7 @@ test("UC2 step 6 — postgres detail after delete reads as a never-created Creat
     .filter({ has: page.getByRole("button", { name: "Validation", exact: true }) });
 
   // -- UI assertion: plain Create empty-state — no Undelete, no frozen note --
-  // spec: FRONTEND_VALIDATION.md §Detail — a CONFIG_NOT_FOUND slot renders the Create
+  // spec: FRONTEND_VALIDATION.md §Page contracts — a CONFIG_NOT_FOUND slot renders the Create
   //   form. The spec'd contract is the Create affordance + the absence of any
   //   Undelete/frozen-rule affordance; the empty-state body copy is incidental DOM and
   //   deliberately not pinned here (a copy tweak with no behavior change must not break E2E).

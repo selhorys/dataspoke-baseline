@@ -282,8 +282,10 @@ class TestVerify:
     def test_non_utf8_value_verifies_ok(self) -> None:
         """Non-UTF-8 value passes verify — verify never decodes the value.
 
-        Spec: SECRET_RESOLUTION.md §Design — 'current verify never base64-decodes
-        (non-UTF-8 value passes save, fails at run)'.
+        Verify only checks that data[key] exists (SECRET_RESOLUTION.md
+        §Reference verify flow step 4); it never base64-decodes, so a non-UTF-8
+        value passes save and only surfaces at run-time resolve. Impl-backed in
+        src/shared/secrets/k8s_backend.py.
         """
         raw_bytes = b"\xff\xfe"
         secret = MagicMock()

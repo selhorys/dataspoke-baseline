@@ -10,7 +10,7 @@
  * One CRUD concern per test; tests are sequentially ordered but kept idempotent
  * via thorough afterAll cleanup.
  *
- * spec: spec/feature/FRONTEND_BASIC.md §Admin user list (/admin/users)
+ * spec: spec/feature/FRONTEND_BASIC.md §Authentication (Admin user list, /admin/users)
  * spec: spec/feature/FRONTEND_BASIC.md §Routing — /admin/users: GET /admin/users,
  *   PATCH /admin/users/{id}/role, DELETE /admin/users/{id}
  * spec: spec/TESTING.md §End-to-End (E2E) Testing — dual confirmation, ConfirmDialog,
@@ -48,7 +48,7 @@ test.afterAll(async ({ adminApi }) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Test 1 — /admin/users renders with bootstrap admin + E2E users visible
-// spec: FRONTEND_BASIC.md §Admin user list — table renders Email, Name, Role,
+// spec: FRONTEND_BASIC.md §Authentication (Admin user list) — table renders Email, Name, Role,
 //   Created columns; all provisioned users show in the list.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -87,7 +87,7 @@ test("/admin/users — user list renders with bootstrap admin and E2E users", as
   await expect(page.getByText(ADMIN_EMAIL, { exact: true })).toBeVisible({ timeout: 20_000 });
 
   // -- UI assertion: E2E provisioned users visible --
-  // spec: FRONTEND_BASIC.md §Admin user list — all provisioned rows render.
+  // spec: FRONTEND_BASIC.md §Authentication (Admin user list) — all provisioned rows render.
   await expect(page.getByText(EDITOR_EMAIL, { exact: true })).toBeVisible({ timeout: 10_000 });
   await expect(page.getByText(READER_EMAIL, { exact: true })).toBeVisible({ timeout: 10_000 });
 
@@ -99,7 +99,7 @@ test("/admin/users — user list renders with bootstrap admin and E2E users", as
 // ─────────────────────────────────────────────────────────────────────────────
 // Test 2 — Create throwaway via adminApi, change role via inline Radix Select,
 //           confirm via UI row + adminApi GET, hard-delete via ⋯ → ConfirmDialog.
-// spec: FRONTEND_BASIC.md §Admin user list — inline role dropdown writes
+// spec: FRONTEND_BASIC.md §Authentication (Admin user list) — inline role dropdown writes
 //   PATCH /admin/users/{id}/role; ⋯ menu → Delete user → ConfirmDialog →
 //   DELETE /admin/users/{id}.
 // spec: TESTING.md §E2E — Radix Select: click the trigger, then getByRole("option").

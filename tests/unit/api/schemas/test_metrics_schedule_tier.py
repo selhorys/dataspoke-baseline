@@ -13,7 +13,7 @@ Spec sources:
     - schedule_tier: "hourly" | "daily" | "weekly" | null
   spec/feature/BACKEND_SCHEMA.md §metric_definitions — column shapes.
   spec/USE_CASE_en.md §UC5 §Built-in active metric types — emitted keys per type.
-  spec/feature/BACKEND.md §Metrics Service §Create vs replace — metric_id in body,
+  spec/API.md §Governance — Metric (Definition body) — metric_id in body,
     kebab pattern, 422 on bad format, 409 METRIC_EXISTS on collision.
 """
 
@@ -327,7 +327,7 @@ class TestCreateMetricConfigRequest:
 
     Spec: spec/USE_CASE_en.md §UC5 §API Mapping — POST /spoke/governance/metric; metric_id
           is supplied in the request body. Bad-format metric_id → 422. Collision → 409.
-    Spec: spec/feature/BACKEND.md §Metrics Service §Create vs replace —
+    Spec: spec/API.md §Governance — Metric (Definition body) —
           metric_id kebab pattern: ^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$|^[a-z0-9]$.
     """
 
@@ -336,7 +336,7 @@ class TestCreateMetricConfigRequest:
     def test_valid_metric_id_accepted(self) -> None:
         """CreateMetricConfigRequest accepts a well-formed kebab metric_id.
 
-        Spec: spec/feature/BACKEND.md §Metrics Service §Create vs replace —
+        Spec: spec/API.md §Governance — Metric (Definition body) —
               metric_id kebab pattern allows lowercase alphanumeric and hyphens,
               must start and end with an alnum character.
         """
@@ -349,7 +349,7 @@ class TestCreateMetricConfigRequest:
     def test_single_char_metric_id_accepted(self) -> None:
         """Single lowercase alphanumeric character is a valid metric_id.
 
-        Spec: spec/feature/BACKEND.md §Metrics Service §Create vs replace —
+        Spec: spec/API.md §Governance — Metric (Definition body) —
               pattern ^[a-z0-9]$ matches single-char ids.
         """
         req = CreateMetricConfigRequest(
@@ -361,7 +361,7 @@ class TestCreateMetricConfigRequest:
     def test_metric_id_with_numbers_accepted(self) -> None:
         """metric_id containing digits is accepted.
 
-        Spec: spec/feature/BACKEND.md §Metrics Service §Create vs replace —
+        Spec: spec/API.md §Governance — Metric (Definition body) —
               pattern allows [a-z0-9] characters.
         """
         req = CreateMetricConfigRequest(
@@ -373,7 +373,7 @@ class TestCreateMetricConfigRequest:
     def test_uppercase_metric_id_rejected(self) -> None:
         """metric_id with uppercase letters raises ValidationError (422-equivalent).
 
-        Spec: spec/feature/BACKEND.md §Metrics Service §Create vs replace —
+        Spec: spec/API.md §Governance — Metric (Definition body) —
               metric_id must be lowercase kebab; uppercase is rejected with 422.
         """
         with pytest.raises(ValidationError):
@@ -385,7 +385,7 @@ class TestCreateMetricConfigRequest:
     def test_metric_id_with_underscore_rejected(self) -> None:
         """metric_id containing underscores raises ValidationError.
 
-        Spec: spec/feature/BACKEND.md §Metrics Service §Create vs replace —
+        Spec: spec/API.md §Governance — Metric (Definition body) —
               metric_id pattern only allows hyphens as separators, not underscores.
         """
         with pytest.raises(ValidationError):
@@ -397,7 +397,7 @@ class TestCreateMetricConfigRequest:
     def test_metric_id_with_leading_hyphen_rejected(self) -> None:
         """metric_id starting with a hyphen raises ValidationError.
 
-        Spec: spec/feature/BACKEND.md §Metrics Service §Create vs replace —
+        Spec: spec/API.md §Governance — Metric (Definition body) —
               metric_id must start with [a-z0-9]; a leading hyphen is rejected.
         """
         with pytest.raises(ValidationError):
@@ -409,7 +409,7 @@ class TestCreateMetricConfigRequest:
     def test_metric_id_with_trailing_hyphen_rejected(self) -> None:
         """metric_id ending with a hyphen raises ValidationError.
 
-        Spec: spec/feature/BACKEND.md §Metrics Service §Create vs replace —
+        Spec: spec/API.md §Governance — Metric (Definition body) —
               metric_id must end with [a-z0-9]; a trailing hyphen is rejected.
         """
         with pytest.raises(ValidationError):
@@ -421,7 +421,7 @@ class TestCreateMetricConfigRequest:
     def test_metric_id_with_space_rejected(self) -> None:
         """metric_id containing a space raises ValidationError.
 
-        Spec: spec/feature/BACKEND.md §Metrics Service §Create vs replace —
+        Spec: spec/API.md §Governance — Metric (Definition body) —
               metric_id is a strict kebab slug; spaces are not allowed.
         """
         with pytest.raises(ValidationError):

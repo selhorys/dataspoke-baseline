@@ -3,10 +3,10 @@
  *
  * Spec traces:
  *   - spec/API.md §Auth: Admin role has user-management access; Editor/Reader do not
- *   - spec/feature/FRONTEND_BASIC.md §Shell: Admin section (Users + Configurations links)
- *     renders ONLY when isAdmin is true; placed ABOVE the Account section which always
- *     renders for everyone; adminNav = [{label:"Users",href:"/admin/users"},
- *     {label:"Configurations",href:"/admin/conf"}]
+ *   - spec/feature/FRONTEND_BASIC.md §Shell: Admin section (Users + Configurations +
+ *     Peripherals links) renders ONLY when isAdmin is true; placed ABOVE the Account
+ *     section which always renders for everyone; adminNav = [{label:"Users",href:"/admin/users"},
+ *     {label:"Configurations",href:"/admin/conf"}, {label:"Peripherals",href:"/admin/peripherals"}]
  *   - spec/feature/FRONTEND_BASIC.md §Routing: the UI hides the admin-menu entry when
  *     the role is not Admin; write actions rendered only when role ∈ {Editor, Admin}
  */

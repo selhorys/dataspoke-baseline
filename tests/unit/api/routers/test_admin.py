@@ -6,7 +6,7 @@ Routes under test:
   POST /internal/admin/datahub/sync    — requires X-Internal-Token header
 
 spec: API.md §Access Control — Admin role required for /admin/*
-spec: API.md §Internal routes — X-Internal-Token required for /internal/…
+spec: API.md §Internal Admin (/internal/admin) — X-Internal-Token required for /internal/…
 spec: feature/BACKEND.md §DAG Catalogue — verify returns found/missing/total_expected.
 """
 
@@ -97,7 +97,7 @@ async def test_verify_dags_admin_role_returns_200(client) -> None:
 async def test_internal_verify_dags_without_token_returns_401(client) -> None:
     """POST /internal/admin/dags/verify without X-Internal-Token returns 401.
 
-    spec: API.md §Internal routes — X-Internal-Token shared-secret required.
+    spec: API.md §Internal Admin (/internal/admin) — X-Internal-Token shared-secret required.
     """
     with patch("src.shared.settings.settings.internal_token", _INTERNAL_TOKEN):
         resp = await client.post(_INTERNAL_VERIFY)
@@ -108,7 +108,7 @@ async def test_internal_verify_dags_without_token_returns_401(client) -> None:
 async def test_internal_verify_dags_wrong_token_returns_401(client) -> None:
     """POST /internal/admin/dags/verify with wrong token returns 401.
 
-    spec: API.md §Internal routes — constant-time compare; mismatch → 401.
+    spec: API.md §Internal Admin (/internal/admin) — constant-time compare; mismatch → 401.
     """
     with patch("src.shared.settings.settings.internal_token", _INTERNAL_TOKEN):
         resp = await client.post(
@@ -122,7 +122,7 @@ async def test_internal_verify_dags_wrong_token_returns_401(client) -> None:
 async def test_internal_verify_dags_correct_token_returns_200(client) -> None:
     """POST /internal/admin/dags/verify with correct X-Internal-Token returns 200.
 
-    spec: API.md §Internal routes — valid token grants access.
+    spec: API.md §Internal Admin (/internal/admin) — valid token grants access.
     """
     mock_airflow = AsyncMock()
     mock_airflow.list_dags = AsyncMock(return_value=[])
@@ -147,7 +147,7 @@ async def test_internal_verify_dags_correct_token_returns_200(client) -> None:
 async def test_internal_datahub_sync_without_token_returns_401(client) -> None:
     """POST /internal/admin/datahub/sync without X-Internal-Token returns 401.
 
-    spec: API.md §Internal routes — X-Internal-Token required.
+    spec: API.md §Internal Admin (/internal/admin) — X-Internal-Token required.
     """
     with patch("src.shared.settings.settings.internal_token", _INTERNAL_TOKEN):
         resp = await client.post(_INTERNAL_SYNC)
@@ -158,7 +158,7 @@ async def test_internal_datahub_sync_without_token_returns_401(client) -> None:
 async def test_internal_datahub_sync_correct_token_returns_200(client) -> None:
     """POST /internal/admin/datahub/sync with correct token returns 200.
 
-    spec: API.md §Internal routes — valid token grants access to datahub sync.
+    spec: API.md §Internal Admin (/internal/admin) — valid token grants access to datahub sync.
     """
     mock_db = AsyncMock()
     mock_db.commit = AsyncMock()

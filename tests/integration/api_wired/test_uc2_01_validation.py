@@ -231,7 +231,7 @@ async def test_uc2_passive_result_store(
         # ── Step 4: Cross-dataset list shows BOTH datasets ───────────────────
         # UC2 narrative: "The caller checks the cross-dataset validation list
         # to see which datasets have recent quality signals."
-        # spec: VALIDATION.md §API Surface — GET /spoke/validation aggregates
+        # spec: API.md §Validation — GET /spoke/validation aggregates
         # conf + latest result.
 
         list_resp = await api_client.get(
@@ -253,8 +253,8 @@ async def test_uc2_passive_result_store(
             f"got: {list(by_urn)}"
         )
 
-        # spec: VALIDATION.md §API Surface — each row aggregates:
-        # description + variable_count + latest result.
+        # spec: API.md §Validation — GET /spoke/validation aggregates conf + latest result
+        #   (each row: description + variable_count + latest result).
         pg_item = by_urn[_PG_URN]
         assert pg_item["description"] == _PG_DESCRIPTION
         assert pg_item["variable_count"] == 3, (

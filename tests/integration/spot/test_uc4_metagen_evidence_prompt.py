@@ -28,7 +28,7 @@ breaking the contract. Spot is the right home.
 Per feedback_spot_is_stub_only: the LLM embed call is stubbed (fixed vector);
 no real LLM inference runs.
 
-plan: /Users/soonmok/.claude/plans/glittery-crafting-kazoo.md §Tests §spot test
+spec: spec/feature/BACKEND.md §Metadata Generation Service (Generation Pipeline, step 3 — evidence sources incl. related documents + per-dataset ontology RAG)
 spec: spec/TESTING.md §Spot vs Api-Wired Integration Tests
 """
 
@@ -222,7 +222,7 @@ async def _poll_until_document_indexed(
     a fixed sleep per feedback_no_increase_timeout: fail fast with a clear
     message rather than masking the problem with a blind wait.
 
-    plan: /Users/soonmok/.claude/plans/glittery-crafting-kazoo.md §Tests §spot test
+    spec: spec/feature/BACKEND.md §Metadata Generation Service (Generation Pipeline, step 3 — evidence sources incl. related documents + per-dataset ontology RAG)
     """
     from src.shared.datahub.documents import fetch_related_documents
 
@@ -273,7 +273,7 @@ async def test_uc4_evidence_reaches_producer_prompt(
     - A distinctive substring from the document body.
     - The seeded ontology node name (proving ontology_rag reached the prompt).
 
-    plan: glittery-crafting-kazoo.md §Tests §test_uc4_evidence_reaches_producer_prompt
+    spec: feature/BACKEND.md §Metadata Generation Service (Generation Pipeline, step 3 — evidence reaches the Producer prompt)
     """
     suffix = uuid.uuid4().hex[:12]
     doc_id = f"spot-uc4-evidence-{suffix}"
@@ -373,19 +373,19 @@ async def test_uc4_evidence_reaches_producer_prompt(
         # (a) Document title appears in the prompt.
         assert doc_title in prompt, (
             f"Document title {doc_title!r} must appear in the Producer prompt. "
-            "plan: glittery-crafting-kazoo.md §Tests — related_documents wired to prompt"
+            "spec: feature/BACKEND.md §Metadata Generation Service (Generation Pipeline step 3) — related_documents wired to prompt"
         )
 
         # (b) Distinctive document body substring appears.
         assert f"distinctive_{suffix}" in prompt, (
             "Distinctive document body fragment must appear in the Producer prompt. "
-            "plan: glittery-crafting-kazoo.md §Tests — related_documents body forwarded to LLM"
+            "spec: feature/BACKEND.md §Metadata Generation Service (Generation Pipeline step 3) — related_documents body forwarded to LLM"
         )
 
         # (c) Seeded ontology node name appears (RAG round-trip proof).
         assert node_name in prompt, (
             f"Ontology RAG node name {node_name!r} must appear in the Producer prompt. "
-            "plan: glittery-crafting-kazoo.md §Tests — per-dataset ontology RAG wired to prompt"
+            "spec: feature/BACKEND.md §Metadata Generation Service (Generation Pipeline step 3) — per-dataset ontology RAG wired to prompt"
         )
 
     finally:

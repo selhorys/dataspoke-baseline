@@ -74,16 +74,15 @@ async def test_ready_all_ok() -> None:
     assert checks["datahub"] is True
     assert checks["postgres"] is True
     assert checks["redis"] is True
-    # status value ("ok") is impl-pinned; spec gap surfaced 2026-05-01
+    # spec: API.md §System — status is "ok" only when every check is true
     assert "status" in body
 
 
 async def test_ready_degraded_when_one_fails() -> None:
     """GET /ready with postgres down returns 200 with postgres check False.
 
-    spec: API.md §System — /ready verifies DataHub, PostgreSQL, Redis connectivity.
-    Note: the exact status string ("degraded") is impl-pinned; spec mandates subsystem checks
-    reflect actual connectivity, not the summary string value.
+    spec: API.md §System — /ready verifies DataHub, PostgreSQL, Redis connectivity;
+    status is "degraded" when any check is false (and the run never returns 503).
     """
     test_app = _override_ready_deps(datahub_ok=True, postgres_ok=False, redis_ok=True)
     async with AsyncClient(
@@ -95,7 +94,7 @@ async def test_ready_degraded_when_one_fails() -> None:
     body = response.json()
     # spec: API.md §System — /ready must reflect actual connectivity per subsystem
     assert body["checks"]["postgres"] is False
-    # status string ("degraded") is impl-pinned; spec gap surfaced 2026-05-01
+    # spec: API.md §System — status is "degraded" when any check is false
     assert "status" in body
 
 

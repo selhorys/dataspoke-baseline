@@ -53,8 +53,8 @@ A header surfaces read-only management fields as badges/text outside the recipe 
    rendered/edited as **YAML, secrets masked** — the YAML view is a lossless transform of the
    JSON body
    (`GET /spoke/ingestion/sources/{id}`). For `ACTIVE_CUSTOM_MANAGED` / `PASSIVE`, editable via a
-   YAML editor and removable (`DELETE`). Save wires `PUT` (full replace); there is no `PATCH`
-   recipe-edit surface. For `DATAHUB_MANAGED` the YAML is
+   YAML editor and removable (`DELETE`). Save wires `PUT` (full replace); partial recipe
+   edits use `PATCH /sources/{id}`. For `DATAHUB_MANAGED` the YAML is
    read-only — edits are disabled with an explanatory note that DataHub is SSOT (the API returns
    `409 INGESTION_SOURCE_READONLY`).
 2. **Datasets** — the source→dataset mapping table (`GET /spoke/ingestion/sources/{id}/datasets`).

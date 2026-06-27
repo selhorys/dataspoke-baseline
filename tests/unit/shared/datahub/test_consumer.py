@@ -34,7 +34,7 @@ from src.shared.exceptions import EventProcessingError
 def test_mcl_topics_contains_versioned_and_timeseries() -> None:
     """MCL_TOPICS must include both versioned and timeseries topic names.
 
-    spec: DATAHUB_INTEGRATION.md §Kafka consumer — subscribed topics.
+    spec: DATAHUB_INTEGRATION.md §Event Subscription — subscribed topics.
     """
     assert "MetadataChangeLog_Versioned_v1" in MCL_TOPICS, (
         "MCL_TOPICS must include 'MetadataChangeLog_Versioned_v1'"
@@ -50,7 +50,7 @@ def test_mcl_topics_contains_versioned_and_timeseries() -> None:
 def test_deserialize_mcl_maps_camelcase_to_snake_case() -> None:
     """deserialize_mcl maps DataHub camelCase fields to snake_case model attributes.
 
-    spec: DATAHUB_INTEGRATION.md §MCL envelope — entityType, entityUrn, aspectName, changeType.
+    spec: DATAHUB_INTEGRATION.md §Event Subscription — MCL envelope camelCase fields.
     """
     payload = {
         "entityType": "dataset",
@@ -76,7 +76,7 @@ def test_deserialize_mcl_maps_camelcase_to_snake_case() -> None:
 def test_deserialize_mcl_missing_optional_fields_defaults_to_none() -> None:
     """deserialize_mcl must not raise when optional fields (aspect, created) are absent.
 
-    spec: DATAHUB_INTEGRATION.md §MCL envelope — aspect and created are optional.
+    spec: DATAHUB_INTEGRATION.md §Event Subscription — aspect and created are optional.
     """
     payload = {
         "entityType": "dataset",
@@ -94,7 +94,7 @@ def test_deserialize_mcl_missing_optional_fields_defaults_to_none() -> None:
 def test_deserialize_mcl_raises_on_invalid_json() -> None:
     """deserialize_mcl must raise EventProcessingError on invalid JSON bytes.
 
-    spec: DATAHUB_INTEGRATION.md §Kafka consumer — malformed messages are skipped
+    spec: DATAHUB_INTEGRATION.md §Event Subscription — malformed messages are skipped
           (offset committed) after raising EventProcessingError.
     """
     with pytest.raises(EventProcessingError):
@@ -104,7 +104,7 @@ def test_deserialize_mcl_raises_on_invalid_json() -> None:
 def test_deserialize_mcl_raises_on_non_bytes_like() -> None:
     """deserialize_mcl must raise EventProcessingError on None input.
 
-    spec: DATAHUB_INTEGRATION.md §Kafka consumer — error handling for corrupt messages.
+    spec: DATAHUB_INTEGRATION.md §Event Subscription — error handling for corrupt messages.
     """
     with pytest.raises(EventProcessingError):
         deserialize_mcl(None)  # type: ignore[arg-type]
@@ -117,7 +117,7 @@ def test_deserialize_mcl_raises_on_non_bytes_like() -> None:
 async def test_event_router_dispatches_to_registered_handler() -> None:
     """EventRouter.dispatch calls handlers registered for the event's aspect_name.
 
-    spec: DATAHUB_INTEGRATION.md §Kafka consumer — event routed to registered handler.
+    spec: DATAHUB_INTEGRATION.md §Event Subscription — event routed to registered handler.
     """
     called: list[str] = []
 
@@ -144,7 +144,7 @@ async def test_event_router_dispatches_to_registered_handler() -> None:
 async def test_event_router_does_not_dispatch_to_other_aspect_handlers() -> None:
     """EventRouter does not dispatch when aspect_name does not match registered handler.
 
-    spec: DATAHUB_INTEGRATION.md §Kafka consumer — routing is by aspect_name.
+    spec: DATAHUB_INTEGRATION.md §Event Subscription — routing is by aspect_name.
     """
     called: list[str] = []
 

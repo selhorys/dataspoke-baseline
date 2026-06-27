@@ -30,7 +30,7 @@ is stub-only (feedback_spot_is_stub_only).
 
 Spec: spec/DATAHUB_INTEGRATION.md §Ingestion Source Sync — wrapper→parent linkage via
     recipe.pipeline_name; orphan wrapper = stale (not stored).
-Spec: spec/feature/BACKEND.md §Sync sweep step 1 — Pass A/Pass B (Pass B links via
+Spec: spec/feature/BACKEND.md §Ingestion Service — Sync + mapping sweep, step 1 (Source defs) — Pass A/Pass B (Pass B links via
     recipe.pipeline_name); orphan wrappers dropped; wrappers never listed.
 Spec: spec/API.md §Ingestion — GET /spoke/ingestion/sources returns regular
     DATAHUB_MANAGED sources only (CLI wrapper sources are internal, never listed).
@@ -101,7 +101,7 @@ async def test_sync_links_wrapper_to_parent_and_drops_orphan(
     and drops the orphan as stale. Display names carry no parent and are never used
     for linking.
 
-    spec: feature/BACKEND.md §Sync sweep step 1 — Pass A regular (parent_source_id
+    spec: feature/BACKEND.md §Ingestion Service — Sync + mapping sweep, step 1 (Source defs) — Pass A regular (parent_source_id
         NULL), Pass B wrappers (linked when recipe.pipeline_name resolves; orphan not
         stored).
     spec: DATAHUB_INTEGRATION.md §Ingestion Source Sync — linkage via
@@ -169,7 +169,7 @@ async def test_sync_links_wrapper_to_parent_and_drops_orphan(
         # Regular source stored with parent_source_id NULL.
         assert parent_urn in by_urn, (
             f"Regular registered source {parent_urn!r} must be stored. "
-            "spec: feature/BACKEND.md §Sync sweep step 1 Pass A."
+            "spec: feature/BACKEND.md §Ingestion Service — Sync + mapping sweep, step 1 (Source defs) Pass A."
         )
         parent_row = by_urn[parent_urn]
         assert parent_row[2] is None, (
@@ -181,13 +181,13 @@ async def test_sync_links_wrapper_to_parent_and_drops_orphan(
         # Wrapper stored linked to its registered parent's id.
         assert wrapper_urn in by_urn, (
             f"Wrapper {wrapper_urn!r} whose recipe.pipeline_name resolves must be "
-            "stored. spec: feature/BACKEND.md §Sync sweep step 1 Pass B."
+            "stored. spec: feature/BACKEND.md §Ingestion Service — Sync + mapping sweep, step 1 (Source defs) Pass B."
         )
         wrapper_row = by_urn[wrapper_urn]
         assert str(wrapper_row[2]) == str(parent_row[1]), (
             f"Wrapper must persist parent_source_id = its registered parent's id "
             f"({parent_row[1]!r}); got {wrapper_row[2]!r}. "
-            "spec: feature/BACKEND.md §Sync sweep step 1 Pass B — wrapper linked to "
+            "spec: feature/BACKEND.md §Ingestion Service — Sync + mapping sweep, step 1 (Source defs) Pass B — wrapper linked to "
             "the regular source whose datahub_source_urn equals recipe.pipeline_name."
         )
 
@@ -195,7 +195,7 @@ async def test_sync_links_wrapper_to_parent_and_drops_orphan(
         assert orphan_wrapper_urn not in by_urn, (
             f"Orphan wrapper {orphan_wrapper_urn!r} (recipe.pipeline_name matches no "
             "registered source) must NOT be stored. "
-            "spec: feature/BACKEND.md §Sync sweep step 1 Pass B — orphan wrappers are "
+            "spec: feature/BACKEND.md §Ingestion Service — Sync + mapping sweep, step 1 (Source defs) Pass B — orphan wrappers are "
             "stale and not stored. "
             "spec: DATAHUB_INTEGRATION.md §Ingestion Source Sync — orphan wrapper = stale."
         )
@@ -275,7 +275,7 @@ async def test_list_sources_hides_wrappers(
 
     spec: API.md §Ingestion — DataHub CLI wrapper sources are internal and never
         listed; mode=DATAHUB_MANAGED returns regular sources only.
-    spec: feature/BACKEND.md §Sync sweep step 1 — list_sources hard-filters
+    spec: feature/BACKEND.md §Ingestion Service — Sync + mapping sweep, step 1 (Source defs) — list_sources hard-filters
         parent_source_id IS NULL.
     spec: feature/BACKEND_SCHEMA.md §ingestion_source — parent_source_id never exposed.
     """
@@ -309,7 +309,7 @@ async def test_list_sources_hides_wrappers(
             f"Wrapper source {wrapper_id!r} must NOT appear in the list (internal "
             f"plumbing). Returned ids: {sorted(ids)}. "
             "spec: API.md §Ingestion — DataHub CLI wrapper sources are never listed. "
-            "spec: feature/BACKEND.md §Sync sweep step 1 — list hides wrappers."
+            "spec: feature/BACKEND.md §Ingestion Service — Sync + mapping sweep, step 1 (Source defs) — list hides wrappers."
         )
 
         # No internal/removed fields leak on the wire.

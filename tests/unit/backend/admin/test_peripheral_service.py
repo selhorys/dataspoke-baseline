@@ -16,7 +16,7 @@ Concerns covered:
 12. invalidate_peripheral_config_cache called by patch to refresh the cache.
 
 Spec traceability:
-- plan/scalable-beaming-hamster.md §Backend — peripheral_service contracts.
+- API.md §Admin (/admin/peripherals) — peripheral_service contracts.
 - src/backend/admin/peripheral_service.py — public surface.
 """
 
@@ -90,7 +90,7 @@ def flush_cache():
 async def test_get_returns_none_when_row_absent() -> None:
     """get_peripheral_config returns None when no row exists in DB.
 
-    spec: plan/scalable-beaming-hamster.md §Backend — absent row = unconfigured.
+    spec: API.md §Admin (/admin/peripherals) — absent row = unconfigured.
     """
     db = _db_with_row(None)
     result = await get_peripheral_config(db, "datahub")
@@ -106,7 +106,7 @@ async def test_get_returns_none_when_row_absent() -> None:
 async def test_get_datahub_returns_correct_dto() -> None:
     """get_peripheral_config('datahub') returns DatahubConfigDTO with correct fields.
 
-    spec: plan/scalable-beaming-hamster.md §Backend — DatahubConfigDTO(gms_url, kafka_brokers).
+    spec: API.md §Admin (/admin/peripherals) — DatahubConfigDTO(gms_url, kafka_brokers).
     """
     row = _make_row("datahub", {"gms_url": "http://gms:8080", "kafka_brokers": "kafka:9092"})
     db = _db_with_row(row)
@@ -127,7 +127,7 @@ async def test_get_datahub_returns_correct_dto() -> None:
 async def test_get_langfuse_returns_correct_dto() -> None:
     """get_peripheral_config('langfuse') returns LangfuseConfigDTO with correct fields.
 
-    spec: plan/scalable-beaming-hamster.md §Backend — LangfuseConfigDTO(host, public_key).
+    spec: API.md §Admin (/admin/peripherals) — LangfuseConfigDTO(host, public_key).
     """
     row = _make_row("langfuse", {"host": "http://langfuse:3000", "public_key": "pk-test"})
     db = _db_with_row(row)
@@ -239,7 +239,7 @@ async def test_get_langfuse_dto_carries_project_id_and_environment_tag() -> None
 async def test_get_cache_hit_does_not_re_query() -> None:
     """A second call within TTL returns the cached DTO without re-querying the DB.
 
-    spec: plan/scalable-beaming-hamster.md §Backend — 30s TTL process-level cache.
+    spec: API.md §Admin (/admin/peripherals) — 30s TTL process-level cache.
     """
     row = _make_row("datahub", {"gms_url": "http://gms:8080", "kafka_brokers": "k:9092"})
     db = _db_with_row(row)
@@ -288,7 +288,7 @@ async def test_get_re_reads_after_ttl_expires(monkeypatch) -> None:
 async def test_invalidate_by_name_evicts_only_named_entry() -> None:
     """invalidate_peripheral_config_cache('datahub') evicts datahub but not langfuse.
 
-    spec: plan/scalable-beaming-hamster.md §Backend — invalidate_peripheral_config_cache(name).
+    spec: API.md §Admin (/admin/peripherals) — invalidate_peripheral_config_cache(name).
     """
     dh_row = _make_row("datahub", {"gms_url": "http://gms:8080", "kafka_brokers": "k:9092"})
     lf_row = _make_row("langfuse", {"host": "http://lf:3000", "public_key": "pk"})
@@ -320,7 +320,7 @@ async def test_invalidate_by_name_evicts_only_named_entry() -> None:
 async def test_invalidate_none_clears_all_entries() -> None:
     """invalidate_peripheral_config_cache(name=None) evicts all peripheral caches.
 
-    spec: plan/scalable-beaming-hamster.md §Backend — invalidate with name=None.
+    spec: API.md §Admin (/admin/peripherals) — invalidate with name=None.
     """
     dh_row = _make_row("datahub", {"gms_url": "http://gms:8080", "kafka_brokers": "k:9092"})
     lf_row = _make_row("langfuse", {"host": "http://lf:3000", "public_key": "pk"})
@@ -354,7 +354,7 @@ async def test_patch_empty_partial_does_not_create_row() -> None:
     where a token-only PATCH routes the secret first, then calls patch with
     remaining (empty) DB fields.
 
-    spec: plan/scalable-beaming-hamster.md §Backend — F6 fix: empty partial no-op.
+    spec: API.md §Admin (/admin/peripherals) — F6 fix: empty partial no-op.
     """
     db = _db_with_row(None)  # No row exists
 
@@ -375,7 +375,7 @@ async def test_patch_empty_partial_does_not_create_row() -> None:
 async def test_patch_creates_row_on_first_call() -> None:
     """patch_peripheral_config creates a new row when one does not yet exist.
 
-    spec: plan/scalable-beaming-hamster.md §Backend — row created lazily on first PATCH.
+    spec: API.md §Admin (/admin/peripherals) — row created lazily on first PATCH.
     """
     db = _db_with_row(None)
 
@@ -403,7 +403,7 @@ async def test_patch_creates_row_on_first_call() -> None:
 async def test_patch_merges_partial_update() -> None:
     """patch_peripheral_config merges partial fields without clobbering existing ones.
 
-    spec: plan/scalable-beaming-hamster.md §Backend — shallow merge of settings JSONB.
+    spec: API.md §Admin (/admin/peripherals) — shallow merge of settings JSONB.
     """
     existing_settings = {"gms_url": "http://old:8080", "kafka_brokers": "old:9092"}
     row = _make_row("datahub", existing_settings)
@@ -436,7 +436,7 @@ async def test_patch_recovers_from_integrity_error_on_concurrent_insert() -> Non
     Fixture: existing row has {kafka_brokers: "k:9092"}, PATCH adds gms_url="http://new:8080".
     After IntegrityError recovery, both fields must be present in the merged result.
 
-    spec: plan/scalable-beaming-hamster.md §Backend — concurrent-PATCH race recovery.
+    spec: API.md §Admin (/admin/peripherals) — concurrent-PATCH race recovery.
     """
     # Existing row has kafka_brokers already set; the new PATCH is only adding gms_url.
     existing_row = _make_row("datahub", {"kafka_brokers": "k:9092"})
@@ -466,15 +466,15 @@ async def test_patch_recovers_from_integrity_error_on_concurrent_insert() -> Non
     # The new gms_url must reach the existing row via the merge.
     assert existing_row.settings["gms_url"] == "http://new:8080", (
         "After IntegrityError recovery the new gms_url must be merged into the existing row. "
-        "spec: plan/scalable-beaming-hamster.md §Backend — re-select and merge on race."
+        "spec: API.md §Admin (/admin/peripherals) — re-select and merge on race."
     )
     # The pre-existing kafka_brokers must be preserved (not clobbered).
     assert existing_row.settings["kafka_brokers"] == "k:9092", (
         "After IntegrityError recovery the pre-existing kafka_brokers must be preserved. "
-        "spec: plan/scalable-beaming-hamster.md §Backend — shallow merge; existing keys preserved."
+        "spec: API.md §Admin (/admin/peripherals) — shallow merge; existing keys preserved."
     )
     # The returned DTO must reflect the merged new value.
     assert result.gms_url == "http://new:8080", (
         "Returned DTO must reflect the merged gms_url value. "
-        "spec: plan/scalable-beaming-hamster.md §Backend — DTO returned after race recovery."
+        "spec: API.md §Admin (/admin/peripherals) — DTO returned after race recovery."
     )

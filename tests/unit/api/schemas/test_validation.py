@@ -374,14 +374,15 @@ class TestPostValidationResultRequestVariables:
                 variables={"BadKey": 1.0},
             )
 
-    def test_at_least_one_variable_entry_required(self) -> None:
-        # spec: VALIDATION.md §Validation Result — variables must have ≥ 1 entry
-        with pytest.raises(ValidationError, match=r"at least 1|minimum|too_short"):
-            PostValidationResultRequest(
-                data_time=datetime(2026, 5, 1, tzinfo=UTC),
-                score=1.0,
-                variables={},
-            )
+    def test_empty_variables_accepted(self) -> None:
+        # spec: VALIDATION.md §Validation Result — a result may report partial coverage
+        # (including none); results impose no ≥1 floor (only conf declares ≥1 variables).
+        req = PostValidationResultRequest(
+            data_time=datetime(2026, 5, 1, tzinfo=UTC),
+            score=1.0,
+            variables={},
+        )
+        assert req.variables == {}
 
     def test_200_variable_entries_accepted(self) -> None:
         # spec: VALIDATION.md §Validation Result — ≤ 200 entries

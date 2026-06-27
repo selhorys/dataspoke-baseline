@@ -44,10 +44,10 @@ CLEANUP: Each test (or try/finally block) deletes the peripheral_config rows and
 the K8s Secrets at setup AND teardown so tests are order-independent.
 
 Spec traceability:
-- plan/scalable-beaming-hamster.md §API surface — all endpoint shapes, masking,
+- API.md §Admin (/admin) — all endpoint shapes, masking,
   is_configured predicate, F6 empty-PATCH guard.
 - spec/API.md §Access Control — Admin role required for /admin/*.
-- spec/API.md §Internal routes — X-Internal-Token required.
+- spec/API.md §Internal Admin (/internal/admin) — X-Internal-Token required.
 - src/api/schemas/admin.py DatahubPeripheralResponse / LangfusePeripheralResponse.
 - src/backend/admin/peripheral_service.py — patch_peripheral_config empty partial.
 """
@@ -254,7 +254,7 @@ async def test_get_datahub_peripheral_unconfigured_returns_empty_fields(
     Both the DB row and the K8s Secret are absent. The response must have
     is_configured=False and all fields empty ("").
 
-    spec: plan/scalable-beaming-hamster.md §API surface — unconfigured state.
+    spec: API.md §Admin (/admin) — unconfigured state.
     spec: src/api/routers/admin.py _datahub_dto_to_response — None dto → all empty.
     """
     _reset_peripheral_state()
@@ -267,7 +267,7 @@ async def test_get_datahub_peripheral_unconfigured_returns_empty_fields(
     body = resp.json()
     assert body["is_configured"] is False, (
         f"is_configured must be False when no DB row and no K8s Secret; got {body!r}. "
-        "spec: plan/scalable-beaming-hamster.md §is_configured predicate."
+        "spec: API.md §Admin (/admin)."
     )
     assert body["gms_url"] == "", (
         f"gms_url must be '' when unconfigured; got {body['gms_url']!r}."
@@ -292,7 +292,7 @@ async def test_get_langfuse_peripheral_unconfigured_returns_empty_fields(
 ) -> None:
     """GET /admin/peripherals/langfuse on an unconfigured peripheral returns empty fields.
 
-    spec: plan/scalable-beaming-hamster.md §API surface — unconfigured state.
+    spec: API.md §Admin (/admin) — unconfigured state.
     spec: src/api/routers/admin.py _langfuse_dto_to_response — None dto → all empty.
     """
     _reset_peripheral_state()
@@ -324,7 +324,7 @@ async def test_patch_datahub_and_get_reflects_values(
     Step 3: GET — assert gms_url, kafka_brokers are preserved; token="********".
     Step 4: Assert is_configured=True.
 
-    spec: plan/scalable-beaming-hamster.md §API surface — PATCH round-trip,
+    spec: API.md §Admin (/admin) — PATCH round-trip,
     token masking, is_configured=True after full config.
     """
     _reset_peripheral_state()
@@ -348,11 +348,11 @@ async def test_patch_datahub_and_get_reflects_values(
         # Step 2: token must be masked in the PATCH response.
         assert patch_body["token"] == "********", (
             f"PATCH response must mask token as '********'; got {patch_body['token']!r}. "
-            "spec: plan/scalable-beaming-hamster.md §API surface — token masking."
+            "spec: API.md §Admin (/admin) — token masking."
         )
         assert "test-datahub-token-abc" not in str(patch_body), (
             "Plaintext token must never appear in the PATCH response. "
-            "spec: plan/scalable-beaming-hamster.md §API surface."
+            "spec: API.md §Admin (/admin)."
         )
         assert patch_body["gms_url"] == "http://datahub-test-gms:8080"
         assert patch_body["kafka_brokers"] == "datahub-test-kafka:9092"
@@ -374,7 +374,7 @@ async def test_patch_datahub_and_get_reflects_values(
         )
         assert get_body["is_configured"] is True, (
             f"is_configured must be True after full PATCH; got {get_body['is_configured']!r}. "
-            "spec: plan/scalable-beaming-hamster.md §is_configured predicate."
+            "spec: API.md §Admin (/admin)."
         )
 
     finally:
@@ -388,7 +388,7 @@ async def test_patch_langfuse_and_get_reflects_values(
 ) -> None:
     """PATCH /admin/peripherals/langfuse → 200 with masked secret_key; GET reflects values.
 
-    spec: plan/scalable-beaming-hamster.md §API surface — PATCH round-trip,
+    spec: API.md §Admin (/admin) — PATCH round-trip,
     secret_key masking, is_configured=True after full config.
     """
     _reset_peripheral_state()
@@ -598,7 +598,7 @@ async def test_patch_datahub_clear_token_makes_is_configured_false(
 ) -> None:
     """PATCH {token: ''} clears the K8s Secret; subsequent GET shows is_configured=False, token=''.
 
-    spec: plan/scalable-beaming-hamster.md §API surface — token="" clears secret.
+    spec: API.md §Admin (/admin) — token="" clears secret.
     spec: src/api/routers/admin.py _apply_datahub_patch_and_respond — explicit "" clears.
     """
     _reset_peripheral_state()
@@ -627,7 +627,7 @@ async def test_patch_datahub_clear_token_makes_is_configured_false(
         clear_body = clear_resp.json()
         assert clear_body["token"] == "", (
             f"PATCH response with token='' must return token=''; got {clear_body['token']!r}. "
-            "spec: plan/scalable-beaming-hamster.md §API surface."
+            "spec: API.md §Admin (/admin)."
         )
 
         # GET must reflect is_configured=False (secret cleared) even though DB row still exists.
@@ -640,7 +640,7 @@ async def test_patch_datahub_clear_token_makes_is_configured_false(
         )
         assert get_body["is_configured"] is False, (
             f"is_configured must be False after token cleared; got {get_body['is_configured']!r}. "
-            "spec: plan/scalable-beaming-hamster.md §is_configured predicate — "
+            "spec: API.md §Admin (/admin) — "
             "secret unset → is_configured=False even if DB row exists."
         )
 
@@ -655,7 +655,7 @@ async def test_patch_langfuse_clear_secret_key_makes_is_configured_false(
 ) -> None:
     """PATCH {secret_key: ''} clears the K8s Secret → GET shows is_configured=False.
 
-    spec: plan/scalable-beaming-hamster.md §API surface — secret_key="" clears secret.
+    spec: API.md §Admin (/admin) — secret_key="" clears secret.
     """
     _reset_peripheral_state()
     try:
@@ -686,7 +686,7 @@ async def test_patch_langfuse_clear_secret_key_makes_is_configured_false(
         assert get_body["is_configured"] is False, (
             "is_configured must be False after secret_key cleared; "
             f"got {get_body['is_configured']!r}. "
-            "spec: plan/scalable-beaming-hamster.md §is_configured predicate."
+            "spec: API.md §Admin (/admin)."
         )
 
     finally:
@@ -710,7 +710,7 @@ async def test_patch_datahub_token_only_does_not_create_db_row(
 
     This proves the F6 empty-PATCH guard end-to-end.
 
-    spec: plan/scalable-beaming-hamster.md §Backend — F6: empty partial no-op.
+    spec: src/backend/admin/peripheral_service.py patch_peripheral_config — F6: empty partial no-op.
     spec: src/backend/admin/peripheral_service.py patch_peripheral_config —
     empty partial returns None without creating a row.
     """
@@ -749,7 +749,7 @@ async def test_patch_datahub_token_only_does_not_create_db_row(
         assert row_count == 0, (
             f"peripheral_config must have 0 rows for 'datahub' after token-only PATCH; "
             f"got {row_count}. "
-            "spec: plan/scalable-beaming-hamster.md §Backend — F6: empty partial no-op. "
+            "spec: src/backend/admin/peripheral_service.py patch_peripheral_config — F6: empty partial no-op. "
             "Token-only PATCH must not create a DB row."
         )
 
@@ -770,8 +770,8 @@ async def test_internal_patch_datahub_valid_token_returns_200_and_get_reflects(
 
     The internal PATCH must write to DB and be reflected by the admin GET.
 
-    spec: plan/scalable-beaming-hamster.md §API surface — internal-token variant.
-    spec: API.md §Internal routes — X-Internal-Token required.
+    spec: API.md §Admin (/admin) — internal-token variant.
+    spec: API.md §Internal Admin (/internal/admin) — X-Internal-Token required.
     """
     _reset_peripheral_state()
     try:
@@ -802,7 +802,7 @@ async def test_internal_patch_datahub_valid_token_returns_200_and_get_reflects(
 
         assert get_body["gms_url"] == "http://internal-gms:8080", (
             f"GET after internal PATCH must reflect gms_url; got {get_body['gms_url']!r}. "
-            "spec: plan/scalable-beaming-hamster.md §API surface."
+            "spec: API.md §Admin (/admin)."
         )
         assert get_body["kafka_brokers"] == "internal-kafka:9092"
 
@@ -818,7 +818,7 @@ async def test_internal_patch_langfuse_valid_token_returns_200_and_get_reflects(
 ) -> None:
     """PATCH /internal/admin/peripherals/langfuse with valid X-Internal-Token → 200.
 
-    spec: plan/scalable-beaming-hamster.md §API surface — internal-token variant.
+    spec: API.md §Admin (/admin) — internal-token variant.
     """
     _reset_peripheral_state()
     try:
@@ -858,7 +858,7 @@ async def test_patch_datahub_idempotent(
 ) -> None:
     """Applying the same PATCH body twice to /admin/peripherals/datahub both return 200.
 
-    spec: plan/scalable-beaming-hamster.md §API surface — idempotent PATCH.
+    spec: API.md §Admin (/admin) — idempotent PATCH.
     """
     _reset_peripheral_state()
     try:
@@ -880,7 +880,7 @@ async def test_patch_datahub_idempotent(
         )
         assert second_resp.status_code == 200, (
             f"Second (idempotent) PATCH returned {second_resp.status_code}: {second_resp.text}. "
-            "spec: plan/scalable-beaming-hamster.md §API surface — idempotent PATCH."
+            "spec: API.md §Admin (/admin) — idempotent PATCH."
         )
 
     finally:
@@ -894,7 +894,7 @@ async def test_patch_langfuse_idempotent(
 ) -> None:
     """Applying the same PATCH body twice to /admin/peripherals/langfuse both return 200.
 
-    spec: plan/scalable-beaming-hamster.md §API surface — idempotent PATCH.
+    spec: API.md §Admin (/admin) — idempotent PATCH.
     """
     _reset_peripheral_state()
     try:
@@ -986,8 +986,8 @@ async def test_internal_patch_datahub_missing_token_returns_401_or_503(
     401 when server has DATASPOKE_TEST_INTERNAL_TOKEN set but client omitted the header;
     503 (INTERNAL_AUTH_NOT_CONFIGURED) when token unset on the server side.
 
-    spec: API.md §Internal routes — missing header → 401.
-    spec: API.md §503 — INTERNAL_AUTH_NOT_CONFIGURED when token unset.
+    spec: API.md §Internal Admin (/internal/admin) — missing header → 401.
+    spec: API.md §Application Error Codes — INTERNAL_AUTH_NOT_CONFIGURED when token unset.
     """
     resp = await api_client.patch(
         _INTERNAL_PERIPHERALS_DH,
@@ -997,7 +997,7 @@ async def test_internal_patch_datahub_missing_token_returns_401_or_503(
     assert resp.status_code in (401, 503), (
         f"Missing X-Internal-Token must return 401 or 503; "
         f"got {resp.status_code}: {resp.text}. "
-        "spec: API.md §Internal routes / §503 INTERNAL_AUTH_NOT_CONFIGURED."
+        "spec: API.md §Internal Admin (/internal/admin) / §Application Error Codes (INTERNAL_AUTH_NOT_CONFIGURED)."
     )
 
 
@@ -1007,7 +1007,7 @@ async def test_internal_patch_langfuse_missing_token_returns_401_or_503(
 ) -> None:
     """PATCH /internal/admin/peripherals/langfuse without X-Internal-Token → 401 or 503.
 
-    spec: API.md §Internal routes — missing header → 401.
+    spec: API.md §Internal Admin (/internal/admin) — missing header → 401.
     """
     resp = await api_client.patch(
         _INTERNAL_PERIPHERALS_LF,

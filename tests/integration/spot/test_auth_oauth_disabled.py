@@ -23,8 +23,8 @@ def _oauth_is_configured(api_client: httpx.AsyncClient) -> bool:
     Probe GET /auth/google/login synchronously (httpx.get) and treat any
     non-503 response as "OAuth configured" (e.g. a 302 redirect).
 
-    spec: feature/AUTH.md §Lifecycle §Google OAuth — 503 OAUTH_NOT_CONFIGURED is
-    returned only when google_oauth_client_id is empty.
+    spec: feature/AUTH.md §Lifecycle §Google OAuth registration & login —
+    503 OAUTH_NOT_CONFIGURED is returned only when google_oauth_client_id is empty.
     """
     # The api_client base_url is set at fixture time; extract it from the session-
     # level spot conftest base URL.  Use a sync request because this runs in the
@@ -53,27 +53,28 @@ async def test_google_login_returns_503_when_oauth_not_configured(
     Skips when the dev install provisions OAuth credentials (non-503 response to the
     probe) — the 503 contract only holds in a no-OAuth environment.
 
-    spec: spec/feature/AUTH.md §Lifecycle §Google OAuth — if settings.google_oauth_client_id
-    is empty, both routes return 503 OAUTH_NOT_CONFIGURED.
+    spec: spec/feature/AUTH.md §Lifecycle §Google OAuth registration & login —
+    if settings.google_oauth_client_id is empty, both routes return 503 OAUTH_NOT_CONFIGURED.
     """
     if _oauth_is_configured(api_client):
         pytest.skip(
             "GET /api/v1/auth/google/login did not return 503 — OAuth credentials are "
             "provisioned in this dev install. The 503 OAUTH_NOT_CONFIGURED contract only "
             "applies when google_oauth_client_id is empty. "
-            "spec: feature/AUTH.md §Lifecycle §Google OAuth."
+            "spec: feature/AUTH.md §Lifecycle §Google OAuth registration & login."
         )
 
     resp = await api_client.get("/api/v1/auth/google/login")
 
     assert resp.status_code == 503, (
         "GET /auth/google/login must return 503 OAUTH_NOT_CONFIGURED when OAuth is "
-        "not configured per spec/feature/AUTH.md §Lifecycle §Google OAuth, "
+        "not configured per spec/feature/AUTH.md §Lifecycle §Google OAuth registration & login, "
         f"got {resp.status_code}: {resp.text}"
     )
     body = resp.json()
     assert body.get("error_code") == "OAUTH_NOT_CONFIGURED", (
-        "Error code must be OAUTH_NOT_CONFIGURED per spec/feature/AUTH.md §Lifecycle §Google OAuth"
+        "Error code must be OAUTH_NOT_CONFIGURED per spec/feature/AUTH.md "
+        "§Lifecycle §Google OAuth registration & login"
     )
 
 
@@ -85,15 +86,16 @@ async def test_google_callback_returns_503_when_oauth_not_configured(
 
     Skips when the dev install provisions OAuth credentials — see login test above.
 
-    spec: spec/feature/AUTH.md §Lifecycle §Google OAuth — both login and callback routes
-    return 503 OAUTH_NOT_CONFIGURED when google_oauth_client_id is empty.
+    spec: spec/feature/AUTH.md §Lifecycle §Google OAuth registration & login —
+    both login and callback routes return 503 OAUTH_NOT_CONFIGURED when
+    google_oauth_client_id is empty.
     """
     if _oauth_is_configured(api_client):
         pytest.skip(
             "GET /api/v1/auth/google/login did not return 503 — OAuth credentials are "
             "provisioned in this dev install. The 503 OAUTH_NOT_CONFIGURED contract only "
             "applies when google_oauth_client_id is empty. "
-            "spec: feature/AUTH.md §Lifecycle §Google OAuth."
+            "spec: feature/AUTH.md §Lifecycle §Google OAuth registration & login."
         )
 
     resp = await api_client.get(
@@ -103,7 +105,7 @@ async def test_google_callback_returns_503_when_oauth_not_configured(
 
     assert resp.status_code == 503, (
         "GET /auth/google/callback must return 503 OAUTH_NOT_CONFIGURED when OAuth is "
-        "not configured per spec/feature/AUTH.md §Lifecycle §Google OAuth, "
+        "not configured per spec/feature/AUTH.md §Lifecycle §Google OAuth registration & login, "
         f"got {resp.status_code}: {resp.text}"
     )
     body = resp.json()

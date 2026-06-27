@@ -5,9 +5,9 @@ Tests the spec-mandated behavior of the logging middleware:
 - Returns X-Trace-Id response header.
 - Uses X-Trace-Id from request when provided; generates UUID when absent.
 
-spec: API.md §Middleware (line 555) — request logging records method, path, trace_id,
+spec: API.md §Middleware Stack — request logging records method, path, trace_id,
       client_ip before the handler.
-spec: API.md §Trace ID (lines 574-576) — X-Trace-Id assigned at layer 2; echoed in
+spec: API.md §Trace ID — X-Trace-Id assigned at layer 2; echoed in
       response; request-supplied value reused.
 """
 

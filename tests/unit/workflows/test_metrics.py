@@ -1,7 +1,7 @@
 """Unit tests for metrics workflow: tier query logic.
 
 Spec: spec/feature/BACKEND.md §DAG Catalogue, §Workflow Design Conventions.
-Tier-DAG selection (BACKEND.md L583-L586): the periodic DAG that runs at a
+Tier-DAG selection (BACKEND.md §DAG Catalogue): the periodic DAG that runs at a
 given tier fetches only the configs whose schedule_tier matches the DAG's tier
 AND is_enabled=True.
 """
@@ -86,7 +86,7 @@ async def test_get_metrics_for_tier_sql_references_tier_and_is_enabled():
     schedule_tier values. The function must only return the metric whose row satisfies
     BOTH conditions (schedule_tier == 'daily' AND is_enabled == True).
 
-    Spec: spec/feature/BACKEND.md §Workflow Design Conventions L583-L586 —
+    Spec: spec/feature/BACKEND.md §DAG Catalogue (Tier-DAG selection) —
     'the periodic DAG that runs at a given tier fetches only the configs
     whose schedule_tier matches the DAG's tier'.  is_enabled guard ensures
     disabled metrics are not executed by the scheduler.
@@ -121,7 +121,7 @@ async def test_get_metrics_for_tier_sql_references_tier_and_is_enabled():
     result = await get_metrics_for_tier(db, _TIER_DAILY)
     assert result == [_MATCHING_ID], (
         f"Expected only '{_MATCHING_ID}' from get_metrics_for_tier('daily'). "
-        "Spec: spec/feature/BACKEND.md §Workflow Design Conventions L583-L586."
+        "Spec: spec/feature/BACKEND.md §DAG Catalogue (Tier-DAG selection)."
     )
 
     # Verify the SQL statement passed to db.execute contains both filter predicates
@@ -140,15 +140,15 @@ async def test_get_metrics_for_tier_sql_references_tier_and_is_enabled():
 
     assert "schedule_tier" in sql_text, (
         "Query must reference schedule_tier column. "
-        "Spec: spec/feature/BACKEND.md §Workflow Design Conventions L583-L586."
+        "Spec: spec/feature/BACKEND.md §DAG Catalogue (Tier-DAG selection)."
     )
     assert _TIER_DAILY in sql_text, (
         f"Query must bind the tier value '{_TIER_DAILY}'. "
-        "Spec: spec/feature/BACKEND.md §Workflow Design Conventions L583-L586."
+        "Spec: spec/feature/BACKEND.md §DAG Catalogue (Tier-DAG selection)."
     )
     assert "is_enabled" in sql_text, (
         "Query must reference is_enabled column. "
-        "Spec: spec/feature/BACKEND.md §Workflow Design Conventions L583-L586."
+        "Spec: spec/feature/BACKEND.md §DAG Catalogue (Tier-DAG selection)."
     )
     # Accept either 'is_enabled = true' or 'is_enabled IS TRUE' (dialect variants)
     is_enabled_true_pattern = re.compile(
@@ -158,12 +158,12 @@ async def test_get_metrics_for_tier_sql_references_tier_and_is_enabled():
         "Query must filter is_enabled to True (not False or NULL). "
         "Accepted patterns: 'is_enabled = true' or 'is_enabled IS TRUE'. "
         f"Actual SQL fragment: {sql_text!r}. "
-        "Spec: spec/feature/BACKEND.md §Workflow Design Conventions L583-L586."
+        "Spec: spec/feature/BACKEND.md §DAG Catalogue (Tier-DAG selection)."
     )
 
     # Second call: no matching rows — function returns empty list (not None or exception)
     result_empty = await get_metrics_for_tier(db, _TIER_HOURLY)
     assert result_empty == [], (
         "get_metrics_for_tier must return [] when no metrics match. "
-        "Spec: spec/feature/BACKEND.md §Workflow Design Conventions L583-L586."
+        "Spec: spec/feature/BACKEND.md §DAG Catalogue (Tier-DAG selection)."
     )

@@ -10,7 +10,7 @@ Covers:
             editableDatasetProperties, editableSchemaMetadata, glossaryTerms,
             related documents) all surfaced
 
-Spec: spec/USE_CASE_en.md §UC3 Inputs
+Spec: BACKEND.md §Inference Pipeline (step 3 evidence)
       spec/feature/BACKEND.md §Ontology Generation Service §Inference Pipeline
       spec/DATAHUB_INTEGRATION.md §Document Aspects — orFilters, types=DOCUMENT
 """
@@ -252,7 +252,7 @@ def _fetched_aspect_class_names(datahub_mock) -> list[str]:
 async def test_evidence_does_not_read_upstream_lineage() -> None:
     """gather_evidence never fetches UpstreamLineageClass.
 
-    Spec anchor: spec/USE_CASE_en.md §UC3 Inputs — lineage (upstreamLineage)
+    Spec anchor: BACKEND.md §Inference Pipeline (step 3 evidence) — lineage (upstreamLineage)
     is absent from the unified six-aspect input set; it was dropped from the
     evidence boundary in the UC3/UC4 refactor.
     """
@@ -271,7 +271,7 @@ async def test_evidence_does_not_read_upstream_lineage() -> None:
 async def test_evidence_does_not_read_usage_stats() -> None:
     """gather_evidence never fetches DatasetUsageStatisticsClass.
 
-    Spec anchor: spec/USE_CASE_en.md §UC3 Inputs — datasetUsageStatistics
+    Spec anchor: BACKEND.md §Inference Pipeline (step 3 evidence) — datasetUsageStatistics
     is absent from the unified six-aspect input set.
     """
     datahub = _make_datahub_with_documents([])
@@ -288,7 +288,7 @@ async def test_evidence_does_not_read_usage_stats() -> None:
 async def test_evidence_does_not_read_global_tags() -> None:
     """gather_evidence fetches GlossaryTermsClass but not GlobalTagsClass.
 
-    Spec anchor: spec/USE_CASE_en.md §UC3 Inputs — glossaryTerms is in the
+    Spec anchor: BACKEND.md §Inference Pipeline (step 3 evidence) — glossaryTerms is in the
     unified six-aspect set; globalTags is not.
     """
     datahub = _make_datahub_with_documents([])
@@ -314,7 +314,7 @@ async def test_evidence_does_not_read_global_tags() -> None:
 async def test_evidence_does_not_fetch_query_entities() -> None:
     """gather_evidence never calls any DataHub method to list or fetch Query entities.
 
-    Spec anchor: spec/USE_CASE_en.md §UC3 Inputs — DataHub Query entities
+    Spec anchor: BACKEND.md §Inference Pipeline (step 3 evidence) — DataHub Query entities
     (listQueries / queryProperties / querySubjects) are absent from the
     unified six-aspect input set.
 
@@ -355,8 +355,8 @@ async def test_evidence_includes_unified_aspect_set() -> None:
     editableDatasetProperties, editableSchemaMetadata, glossaryTerms,
     and document entities (via relatedAssets).
 
-    Spec anchor: spec/USE_CASE_en.md §UC3 Inputs; spec/feature/BACKEND.md
-    §Ontology Generation Service §Inference Pipeline (step 4: Gather evidence).
+    Spec anchor: BACKEND.md §Inference Pipeline (step 3 evidence); spec/feature/BACKEND.md
+    §Ontology Generation Service §Inference Pipeline (step 3: Fetch DataHub evidence).
     """
     from unittest.mock import MagicMock, AsyncMock
 

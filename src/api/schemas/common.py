@@ -63,7 +63,7 @@ class SingleResponse(BaseModel):
 class PaginationParams(BaseModel):
     offset: int = Field(default=0, ge=0, description="Number of items to skip (0-based)")
     limit: int = Field(
-        default=20, ge=1, le=100, description="Maximum number of items to return (1–100)"
+        default=20, ge=1, le=1000, description="Maximum number of items to return (1–1000)"
     )
     sort: str | None = Field(
         default=None,

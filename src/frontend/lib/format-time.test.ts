@@ -2,12 +2,14 @@
  * Tests for lib/format-time.ts — formatRelativeTime and formatDateTime.
  *
  * Spec traces:
- *   - spec/feature/FRONTEND_INGESTION.md §List wireframe: "events" column shows
- *     relative time (e.g. "2h ✓", "3d ▲") — produced by formatRelativeTime.
- *   - spec/feature/FRONTEND_INGESTION.md §Detail wireframe: event log shows
- *     absolute timestamps (e.g. "2026-04-25 ✓") — produced by formatDateTime.
+ *   - spec/feature/FRONTEND_INGESTION.md §List View: each source row shows latest
+ *     run status; formatRelativeTime renders its compact relative age
+ *     (format behavior in impl lib/format-time.ts).
+ *   - spec/feature/FRONTEND_INGESTION.md §Source Detail (Events): the event history
+ *     table shows timestamps; formatDateTime renders the absolute value
+ *     (format behavior in impl lib/format-time.ts).
  *   - Both formatters are shared utilities reused by validation, metagen, and
- *     governance event logs (Phases 5–7).
+ *     governance event logs.
  *
  * TZ sensitivity note:
  *   formatDateTime uses local time (new Date().getHours() etc.) — it is
@@ -86,7 +88,7 @@ describe("formatRelativeTime — deterministic relative strings via vi.setSystem
   it("returns '2h' for a timestamp 2 hours ago", () => {
     vi.useFakeTimers();
     vi.setSystemTime(NOW);
-    // List wireframe shows "2h ✓" — this is the relative-time portion
+    // formatRelativeTime renders the compact relative age (e.g. "2h")
     expect(formatRelativeTime("2026-04-25T10:00:00.000Z")).toBe("2h");
   });
 
@@ -108,7 +110,7 @@ describe("formatRelativeTime — deterministic relative strings via vi.setSystem
   it("returns '3d' for a timestamp 3 days ago (list wireframe: '3d ▲')", () => {
     vi.useFakeTimers();
     vi.setSystemTime(NOW);
-    // Detail wireframe example: "3d ▲" for a warning-status event 3 days ago
+    // formatRelativeTime renders the compact relative age in days (e.g. "3d")
     expect(formatRelativeTime("2026-04-22T12:00:00.000Z")).toBe("3d");
   });
 
@@ -206,7 +208,7 @@ describe("formatDateTime — output format is YYYY-MM-DD HH:MM (TZ-agnostic shap
   });
 
   it("does not include seconds in the output", () => {
-    // Spec shows timestamps as "2026-04-25 ✓ INGESTION.COMPLETE" — minutes precision.
+    // formatDateTime renders to minute precision, no seconds (impl lib/format-time.ts).
     const result = formatDateTime("2026-04-25T10:05:30.000Z");
     const timePart = result.split(" ")[1];
     // Should be HH:MM (no third colon-separated seconds segment).

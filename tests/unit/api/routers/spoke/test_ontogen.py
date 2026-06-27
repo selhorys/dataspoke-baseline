@@ -20,11 +20,10 @@ from tests.unit.api.conftest import auth_headers
 
 _BASE = "/api/v1/spoke/ontogen"
 
-# Named constants — cap values from the implementation
-# impl-cap; spec gap surfaced 2026-05-01 (not defined in API_DESIGN_PRINCIPLE_en.md)
-_REASON_MAX_LEN = 2000
-_BODY_MAX_BYTES = 128 * 1024  # 128 KiB
-# impl-cap; spec gap surfaced 2026-05-01 (not defined in API_DESIGN_PRINCIPLE_en.md)
+# Named constants — payload caps mandated by API.md §Ontology Generation (Payload caps)
+_REASON_MAX_LEN = 2000  # API.md §Ontology Generation — review.reason ≤ 2,000 chars
+_BODY_MAX_BYTES = 128 * 1024  # API.md §Ontology Generation — seed/run Markdown ≤ 128 KiB
+# API.md §Ontology Generation — dataset_filter.{tags,glossary_terms,dataset_urns} ≤ 1,000/dim
 _DATASET_FILTER_LIST_CAP = 1000
 
 
@@ -105,9 +104,9 @@ async def test_put_conf_returns_200(client, mock_svc: AsyncMock) -> None:
 async def test_put_conf_validates_dataset_filter_list_cap(client, mock_svc: AsyncMock) -> None:
     """PUT /ontogen/attr/conf with dataset_filter.dataset_urns > 1000 entries returns 422.
 
-    Cap: _DATASET_FILTER_LIST_CAP (impl-cap; spec gap surfaced 2026-05-01).
+    Cap: _DATASET_FILTER_LIST_CAP — API.md §Ontology Generation (Payload caps),
+    ≤ 1,000 entries per dimension.
     """
-    # impl-cap; spec gap surfaced 2026-05-01
     too_many_urns = [
         f"urn:li:dataset:(urn:li:dataPlatform:postgres,t{i},PROD)"
         for i in range(_DATASET_FILTER_LIST_CAP + 1)
@@ -221,10 +220,10 @@ async def test_post_run_returns_200_with_run_summary_body(client, mock_svc: Asyn
     """POST /ontogen/method/run returns 200 with OntogenRunSummary body containing
     spec-mandated fields.
 
-    Spec: spec/feature/BACKEND.md §Inference Pipeline L400-401 — ?dry_run=true evaluates
-    steps 2-8 without persisting; run returns OntogenRunSummary.
-    Spec: spec/feature/BACKEND.md L354 / L523 — unresolved_urns carries dataset URNs that
-    did not resolve in DataHub at run time (ONTOGEN RUN_COMPLETE event payload).
+    Spec: spec/feature/BACKEND.md §Ontology Generation Service — ?dry_run=true evaluates
+    without persisting; run returns OntogenRunSummary.
+    Spec: spec/feature/BACKEND.md §Ontology Generation Service — unresolved_urns carries
+    dataset URNs that did not resolve in DataHub at run time (ONTOGEN RUN_COMPLETE payload).
     """
     from src.backend.ontogen.service import OntogenRunSummary
 
@@ -242,10 +241,10 @@ async def test_post_run_returns_200_with_run_summary_body(client, mock_svc: Asyn
     )
     assert resp.status_code == 200
     body = resp.json()
-    # Spec-mandated: unresolved_urns must be a list (BACKEND.md L354/L523 — dataset_filter
-    # URNs that don't resolve are skipped and reported here)
+    # Spec-mandated: unresolved_urns must be a list (BACKEND.md §Ontology Generation Service
+    # — dataset_filter URNs that don't resolve are skipped and reported here)
     assert "unresolved_urns" in body and isinstance(body["unresolved_urns"], list)
-    # Spec-mandated: dry_run echoed in response body (BACKEND.md L400-401)
+    # Spec-mandated: dry_run echoed in response body (BACKEND.md §Ontology Generation Service)
     assert "dry_run" in body and isinstance(body["dry_run"], bool)
 
 
@@ -296,11 +295,11 @@ async def test_post_triple_review_dependency_error_returns_422(client, mock_svc:
 async def test_post_node_review_reason_too_long_returns_422(client, mock_svc: AsyncMock) -> None:
     """POST .../result/node/{id}/method/review with reason > 2000 chars returns 422.
 
-    Cap: _REASON_MAX_LEN (impl-cap; spec gap surfaced 2026-05-01).
+    Cap: _REASON_MAX_LEN — API.md §Ontology Generation (Payload caps), review.reason ≤ 2,000 chars.
     """
     resp = await client.post(
         f"{_BASE}/result/node/book/method/review",
-        json={"verdict": "approve", "reason": "x" * (_REASON_MAX_LEN + 1)},  # impl-cap
+        json={"verdict": "approve", "reason": "x" * (_REASON_MAX_LEN + 1)},
         headers=auth_headers(),
     )
     assert resp.status_code == 422
@@ -329,7 +328,7 @@ def test_ontogen_conf_schemas_omit_query_caps() -> None:
     max_manual_queries_per_dataset or max_system_queries_per_dataset fields.
 
     Spec anchor: spec/feature/BACKEND_SCHEMA.md ontogen_config (columns removed);
-    spec/API.md §UC3 conf fields.
+    spec/API.md §Ontology Generation conf fields.
     """
     from src.api.schemas.ontogen import OntogenConfPatchRequest, OntogenConfPutRequest
 
@@ -354,7 +353,7 @@ async def test_put_conf_with_origin_and_tags_returns_200(
     with the validated dict. This exercises the unified dataset_filter shape at the
     HTTP layer for UC3.
 
-    Spec: spec/API.md §UC3 Ontology Generation — dataset_filter unified four-dimension shape.
+    Spec: spec/API.md §Ontology Generation — dataset_filter unified four-dimension shape.
     """
     conf_row = _make_conf_row()
     conf_row.dataset_filter = {"origin": "DEV", "tags": ["urn:li:tag:area:fulfillment"]}
@@ -371,7 +370,7 @@ async def test_put_conf_with_origin_and_tags_returns_200(
     assert resp.status_code == 200, (
         f"PUT with origin+tags dataset_filter must return 200; "
         f"got {resp.status_code}: {resp.text}. "
-        "spec: API.md §UC3 — dataset_filter unified four-dimension shape"
+        "spec: API.md §Ontology Generation — dataset_filter unified four-dimension shape"
     )
 
 
@@ -385,7 +384,7 @@ async def test_put_conf_with_malformed_urn_returns_422_invalid_dataset_urn(
     for InvalidDatasetUrnError maps it to 422 with error_code='INVALID_DATASET_URN'.
 
     Spec: spec/API.md §Error Catalogue — 422 INVALID_DATASET_URN for malformed URNs.
-    Spec: spec/API.md §UC3 — URN format validated at schema layer.
+    Spec: spec/API.md §Ontology Generation — URN format validated at schema layer.
     """
     resp = await client.put(
         f"{_BASE}/attr/conf",

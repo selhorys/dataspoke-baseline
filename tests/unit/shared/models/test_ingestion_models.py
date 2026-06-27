@@ -5,7 +5,7 @@ All tests are pure (no DB, no network, no LLM) — these are stable spec invaria
 
 Spec: spec/feature/BACKEND.md §Ingestion Service
 Spec: spec/feature/BACKEND_SCHEMA.md §ingestion_source
-Spec: spec/feature/SECRET_RESOLUTION.md §Reference syntax
+Spec: spec/feature/SECRET_RESOLUTION.md §Overview (reference syntax ${name__key})
 Spec: spec/USE_CASE_en.md §UC1
 """
 
@@ -127,7 +127,7 @@ class TestExtractSecretRefs:
     def test_ignores_plain_var_without_double_underscore(self) -> None:
         """${plainvar} without __ does not match the secret ref pattern and is ignored.
 
-        Spec: SECRET_RESOLUTION.md §Reference syntax — the pattern requires an explicit
+        Spec: SECRET_RESOLUTION.md §Overview — the pattern requires an explicit
         __ separator; tokens without __ are not matched and are silently skipped.
         """
         recipe = {

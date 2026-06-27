@@ -18,14 +18,14 @@ DAG and on-demand inference runs as the ONLY sync triggers — the review endpoi
 not a trigger.
 
 NOTE: AGE graph materialisation is verified at the run-level integration test.
-spec/feature/BACKEND.md L397-398 mandates AGE persistence as part of the inference
+spec/feature/BACKEND.md §Ontology Generation Service §Inference Pipeline mandates AGE persistence as part of the inference
 pipeline (step 9); the triple-approve REST endpoint best-effort materialises, which is
-not spec-mandated per BACKEND.md L411-414.
+not spec-mandated per BACKEND.md §Ontology Generation Service §Approval flow.
 
 Spec traceability:
 - spec/feature/BACKEND.md §Ontology Generation Service §Inference Pipeline
-- spec/feature/BACKEND.md L661 — RUN_COMPLETE emitted for dry-run and non-dry-run
-- spec/USE_CASE_en.md L541 — ONTOGEN_DISABLED on non-dry run with is_enabled=False
+- spec/feature/BACKEND.md §Event Catalogue — RUN_COMPLETE emitted for dry-run and non-dry-run
+- spec/feature/BACKEND.md §Ontology Generation Service §Disabled-config rejection — ONTOGEN_DISABLED on non-dry run with is_enabled=False
 - spec/USE_CASE_en.md §UC3 §Inputs — document evidence read path
 - spec/DATAHUB_INTEGRATION.md §Document Aspects — relatedAssets discovery filter
 """
@@ -59,7 +59,7 @@ async def test_ontogen_run_dry_run(
     Spec: spec/feature/BACKEND.md §Ontology Generation Service §Inference Pipeline
     — ?dry_run=true evaluates steps 2–8 without persisting; returns OntogenRunSummary
     with status (str), dry_run (bool), unresolved_urns (list), counts (dict).
-    Spec: spec/feature/BACKEND.md L661 — RUN_COMPLETE recorded for both dry-run and
+    Spec: spec/feature/BACKEND.md §Event Catalogue — RUN_COMPLETE recorded for both dry-run and
     non-dry-run; dry_run flag in detail.
     """
     event_url = "/api/v1/spoke/ontogen/event"
@@ -88,7 +88,7 @@ async def test_ontogen_run_dry_run(
     assert body["dry_run"] is True
 
     # Assert exactly one new ONTOGEN.RUN_COMPLETE event was emitted
-    # spec: BACKEND.md L661 — RUN_COMPLETE recorded for dry-run; dry_run flag in detail
+    # spec: BACKEND.md §Event Catalogue — RUN_COMPLETE recorded for dry-run; dry_run flag in detail
     post_resp = await api_client.get(
         f"{event_url}?limit=100",
         headers=admin_headers,
@@ -101,7 +101,7 @@ async def test_ontogen_run_dry_run(
     assert post_count == pre_count + 1, (
         f"Expected exactly one new ONTOGEN.RUN_COMPLETE event after dry-run; "
         f"pre_count={pre_count}, post_count={post_count}. "
-        "spec: BACKEND.md L661 — dry-run must emit RUN_COMPLETE"
+        "spec: BACKEND.md §Event Catalogue — dry-run must emit RUN_COMPLETE"
     )
 
     # The newest event is first (ordered by occurred_at desc)
@@ -109,21 +109,21 @@ async def test_ontogen_run_dry_run(
     assert new_event["detail"].get("dry_run") is True, (
         f"ONTOGEN.RUN_COMPLETE event detail must carry dry_run=true; "
         f"got detail={new_event['detail']!r}. "
-        "spec: BACKEND.md L661 — dry_run flag in detail"
+        "spec: BACKEND.md §Event Catalogue — dry_run flag in detail"
     )
     # counts in event detail must match the response body's counts field exactly
-    # spec: BACKEND.md L661 — RUN_COMPLETE payload carries counts
+    # spec: BACKEND.md §Event Catalogue — RUN_COMPLETE payload carries counts
     assert new_event["detail"].get("counts") == body["counts"], (
         f"Event detail counts={new_event['detail'].get('counts')!r} must match "
         f"response counts={body['counts']!r}. "
-        "spec: BACKEND.md L661 — event and response must agree on counts"
+        "spec: BACKEND.md §Event Catalogue — event and response must agree on counts"
     )
     # unresolved_urns in event detail must match the response body's unresolved_urns
-    # spec: BACKEND.md L661 — unresolved_urns is part of the RUN_COMPLETE payload
+    # spec: BACKEND.md §Event Catalogue — unresolved_urns is part of the RUN_COMPLETE payload
     assert new_event["detail"].get("unresolved_urns") == body["unresolved_urns"], (
         f"Event detail unresolved_urns={new_event['detail'].get('unresolved_urns')!r} must "
         f"match response unresolved_urns={body['unresolved_urns']!r}. "
-        "spec: BACKEND.md L661 — event and response must agree on unresolved_urns"
+        "spec: BACKEND.md §Event Catalogue — event and response must agree on unresolved_urns"
     )
     # run_id (uuid4) must be present in detail and match the UUID4 pattern
     # spec: BACKEND_LLM.md §Observability — run_id generated in service.run(),
@@ -288,10 +288,10 @@ async def test_ontogen_run_is_enabled_false_non_dry_run_returns_409_ONTOGEN_DISA
     """POST /method/run (no dry_run) with is_enabled=False returns 409 ONTOGEN_DISABLED;
     dry-run with the same conf returns 200; no ONTOGEN.RUN_COMPLETE event on rejected run.
 
-    spec: USE_CASE_en.md L541 — 'When is_enabled=false, non-dry-run calls to
+    spec: BACKEND.md §Ontology Generation Service §Disabled-config rejection — 'When is_enabled=false, non-dry-run calls to
     method/run return 409 ONTOGEN_DISABLED. Dry-run (?dry_run=true) is always
     permitted regardless of is_enabled.'
-    spec: BACKEND.md L661 — RUN_COMPLETE is emitted only when the run completes;
+    spec: BACKEND.md §Event Catalogue — RUN_COMPLETE is emitted only when the run completes;
     a rejected (409) call must not emit it.
     """
     conf_url = "/api/v1/spoke/ontogen/attr/conf"
@@ -326,16 +326,16 @@ async def test_ontogen_run_is_enabled_false_non_dry_run_returns_409_ONTOGEN_DISA
         assert run_resp.status_code == 409, (
             f"Expected 409 ONTOGEN_DISABLED when is_enabled=False; "
             f"got {run_resp.status_code}: {run_resp.text}. "
-            "spec: USE_CASE_en.md L541"
+            "spec: BACKEND.md §Ontology Generation Service §Disabled-config rejection"
         )
         body = run_resp.json()
         assert body.get("error_code") == "ONTOGEN_DISABLED", (
             f"Expected error_code 'ONTOGEN_DISABLED'; got: {body}. "
-            "spec: USE_CASE_en.md L541"
+            "spec: BACKEND.md §Ontology Generation Service §Disabled-config rejection"
         )
 
         # Negative-parity: no ONTOGEN.RUN_COMPLETE event must have been emitted
-        # spec: BACKEND.md L661 — event is for completed runs only; rejected calls are not runs
+        # spec: BACKEND.md §Event Catalogue — event is for completed runs only; rejected calls are not runs
         post_resp = await api_client.get(f"{event_url}?limit=100", headers=admin_headers)
         assert post_resp.status_code == 200, post_resp.text
         post_run_complete_count = sum(
@@ -345,11 +345,11 @@ async def test_ontogen_run_is_enabled_false_non_dry_run_returns_409_ONTOGEN_DISA
         assert post_run_complete_count == pre_run_complete_count, (
             f"No new ONTOGEN.RUN_COMPLETE event must be emitted after a 409-rejected run; "
             f"pre={pre_run_complete_count}, post={post_run_complete_count}. "
-            "spec: BACKEND.md L661"
+            "spec: BACKEND.md §Event Catalogue"
         )
 
         # Dry-run must still succeed when is_enabled=False — disabled gate is
-        # scoped to non-dry-run only. spec: USE_CASE_en.md L541
+        # scoped to non-dry-run only. spec: BACKEND.md §Ontology Generation Service §Disabled-config rejection
         dry_resp = await api_client.post(
             "/api/v1/spoke/ontogen/method/run?dry_run=true",
             headers=admin_headers,
@@ -357,7 +357,7 @@ async def test_ontogen_run_is_enabled_false_non_dry_run_returns_409_ONTOGEN_DISA
         assert dry_resp.status_code == 200, (
             f"Dry-run must succeed even when is_enabled=False; "
             f"got {dry_resp.status_code}: {dry_resp.text}. "
-            "spec: USE_CASE_en.md L541"
+            "spec: BACKEND.md §Ontology Generation Service §Disabled-config rejection"
         )
     finally:
         await api_client.patch(conf_url, headers=admin_headers, json={"is_enabled": False})

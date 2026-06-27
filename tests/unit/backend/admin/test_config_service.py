@@ -26,7 +26,7 @@ Concerns covered:
    match the ORM column defaults on RuntimeConfig.
 
 Spec traceability:
-- Task brief §Unit — service-layer contracts for the runtime_config singleton.
+- BACKEND_LLM.md §Settings Reference — runtime_config singleton service contracts.
 - src/backend/admin/config_service.py — lazy get-or-create, 30-second cache,
   invalidation on patch.
 - src/shared/db/models.py RuntimeConfig — ORM column defaults.
@@ -103,7 +103,7 @@ def clear_cache():
 async def test_get_runtime_config_seeds_defaults_on_empty_db() -> None:
     """get_runtime_config on an empty DB inserts id=1 with factory defaults.
 
-    Spec: task brief §Unit — 'get_runtime_config on empty DB seeds the id=1 row
+    Spec: BACKEND_SCHEMA §runtime_config / impl src/backend/admin/config_service.py — 'get_runtime_config on empty DB seeds the id=1 row
     with EXACTLY the factory defaults; returns a DTO with those values.'
 
     Primary assertion: the RuntimeConfig object handed to db.add (i.e. the
@@ -151,13 +151,13 @@ async def test_get_runtime_config_seeds_defaults_on_empty_db() -> None:
     inserted = added_rows[0]
     assert isinstance(inserted, RuntimeConfig), (
         "db.add must receive a RuntimeConfig ORM instance, not a mock or plain dict. "
-        "spec: task brief §Unit — impl constructs RuntimeConfig(id=1, **RUNTIME_CONFIG_DEFAULTS)."
+        "spec: BACKEND_SCHEMA §runtime_config / impl src/backend/admin/config_service.py — impl constructs RuntimeConfig(id=1, **RUNTIME_CONFIG_DEFAULTS)."
     )
 
     # id=1 is required by the singleton contract.
     assert inserted.id == 1, (
         "impl must seed with id=1. "
-        "spec: task brief §Unit — 'singleton RuntimeConfig row with id=1'."
+        "spec: BACKEND_SCHEMA §runtime_config / impl src/backend/admin/config_service.py — 'singleton RuntimeConfig row with id=1'."
     )
 
     # Every one of the 15 RUNTIME_CONFIG_DEFAULTS fields must be set on the
@@ -253,7 +253,7 @@ async def test_get_runtime_config_seeds_defaults_on_empty_db() -> None:
 async def test_get_runtime_config_returns_existing_row() -> None:
     """get_runtime_config with an existing DB row returns its values without inserting.
 
-    Spec: task brief §Unit — lazy get-or-create; does not re-create when row exists.
+    Spec: BACKEND_SCHEMA §runtime_config / impl src/backend/admin/config_service.py — lazy get-or-create; does not re-create when row exists.
     """
     existing = _make_runtime_config_row(llm_model="gpt-4-turbo")
     db = _db_with_row(existing)
@@ -271,7 +271,7 @@ async def test_get_runtime_config_returns_existing_row() -> None:
 async def test_patch_runtime_config_applies_only_provided_fields() -> None:
     """patch_runtime_config only modifies supplied fields; others stay unchanged.
 
-    Spec: task brief §Unit — 'patch_runtime_config applies only provided fields,
+    Spec: BACKEND_SCHEMA §runtime_config / impl src/backend/admin/config_service.py — 'patch_runtime_config applies only provided fields,
     leaves others at prior values, and bumps updated_at.'
     """
     existing = _make_runtime_config_row()
@@ -304,7 +304,7 @@ async def test_patch_runtime_config_applies_only_provided_fields() -> None:
 async def test_patch_runtime_config_commits_and_invalidates_cache() -> None:
     """patch_runtime_config commits the session and the subsequent get returns the new value.
 
-    Spec: task brief §Unit — 'patch invalidates the cache so a subsequent get
+    Spec: BACKEND_SCHEMA §runtime_config / impl src/backend/admin/config_service.py — 'patch invalidates the cache so a subsequent get
     reflects the patch.'
 
     To prove the returned value comes from the patch (not a coincidental DB
@@ -351,7 +351,7 @@ async def test_patch_runtime_config_commits_and_invalidates_cache() -> None:
     dto = await get_runtime_config(db)
     assert dto.llm_model == "new-model", (
         "get_runtime_config after patch must return the patched value. "
-        "spec: task brief §Unit — 'subsequent get reflects the patch'."
+        "spec: BACKEND_SCHEMA §runtime_config / impl src/backend/admin/config_service.py — 'subsequent get reflects the patch'."
     )
 
 
@@ -362,7 +362,7 @@ async def test_patch_runtime_config_commits_and_invalidates_cache() -> None:
 async def test_get_runtime_config_cache_hit_does_not_requery() -> None:
     """A second get_runtime_config call within TTL does not issue a DB query.
 
-    Spec: task brief §Unit — '~30s process cache; second call within TTL does
+    Spec: BACKEND_SCHEMA §runtime_config / impl src/backend/admin/config_service.py — '~30s process cache; second call within TTL does
     NOT re-query.'
     """
     existing = _make_runtime_config_row()
@@ -389,7 +389,7 @@ async def test_get_runtime_config_cache_hit_does_not_requery() -> None:
 async def test_invalidate_runtime_config_cache_forces_fresh_read() -> None:
     """invalidate_runtime_config_cache() causes the next call to re-query.
 
-    Spec: task brief §Unit — 'invalidate_runtime_config_cache() forces a fresh
+    Spec: BACKEND_SCHEMA §runtime_config / impl src/backend/admin/config_service.py — 'invalidate_runtime_config_cache() forces a fresh
     read.'
     """
     existing = _make_runtime_config_row(llm_model="model-v1")
@@ -417,7 +417,7 @@ async def test_invalidate_runtime_config_cache_forces_fresh_read() -> None:
 async def test_cache_is_not_reused_after_expiry(monkeypatch) -> None:
     """A cache entry past its TTL triggers a fresh DB read.
 
-    Spec: task brief §Unit — TTL-based cache; stale entry causes re-query.
+    Spec: BACKEND_SCHEMA §runtime_config / impl src/backend/admin/config_service.py — TTL-based cache; stale entry causes re-query.
 
     Technique: populate the cache via get_runtime_config (cache stores
     expires_at = now + 30s), then monkeypatch time.monotonic in the service
@@ -450,7 +450,7 @@ async def test_cache_is_not_reused_after_expiry(monkeypatch) -> None:
 async def test_after_patch_subsequent_get_reflects_updated_value() -> None:
     """After patch_runtime_config a subsequent get_runtime_config returns the new value.
 
-    Spec: task brief §Unit — 'patch invalidates the cache so a subsequent get
+    Spec: BACKEND_SCHEMA §runtime_config / impl src/backend/admin/config_service.py — 'patch invalidates the cache so a subsequent get
     reflects the patch.'
 
     The end-to-end invariant: patch → get must show the patched value.
@@ -488,7 +488,7 @@ async def test_after_patch_subsequent_get_reflects_updated_value() -> None:
     assert dto.ontogen_debate_rag_k == 10, (
         "get_runtime_config after patch must return the patched value (k=10). "
         "If k=5 is returned the cache was not populated by the patch path. "
-        "spec: task brief §Unit — 'subsequent get reflects the patch'."
+        "spec: BACKEND_SCHEMA §runtime_config / impl src/backend/admin/config_service.py — 'subsequent get reflects the patch'."
     )
 
 
@@ -498,10 +498,10 @@ async def test_after_patch_subsequent_get_reflects_updated_value() -> None:
 def test_runtime_config_defaults_match_documented_factory_defaults() -> None:
     """RUNTIME_CONFIG_DEFAULTS values equal the documented factory defaults.
 
-    Spec: task brief §Unit — 'Defaults single-source: assert RUNTIME_CONFIG_DEFAULTS
+    Spec: BACKEND_SCHEMA §runtime_config / impl src/backend/admin/config_service.py — 'Defaults single-source: assert RUNTIME_CONFIG_DEFAULTS
     values equal the documented factory defaults AND match the ORM column defaults.'
     These values are the single source of truth — asserted here so any drift from
-    the documented spec (task brief §What's under test, Factory defaults section)
+    the documented spec (BACKEND_LLM.md §Settings Reference §Runtime configuration)
     is caught immediately.
     """
     assert RUNTIME_CONFIG_DEFAULTS["llm_provider"] == "gemini"
@@ -528,7 +528,7 @@ def test_runtime_config_defaults_match_documented_factory_defaults() -> None:
 def test_runtime_config_defaults_match_orm_column_defaults() -> None:
     """RUNTIME_CONFIG_DEFAULTS values match the ORM column defaults on RuntimeConfig.
 
-    Spec: task brief §Unit — drift guard ensures defaults dict and ORM column
+    Spec: BACKEND_SCHEMA §runtime_config / impl src/backend/admin/config_service.py — drift guard ensures defaults dict and ORM column
     defaults stay in sync.  A mismatch here means the lazy-seed path would write
     a value different from what the DB column would produce on a raw INSERT.
     """
@@ -577,12 +577,12 @@ def test_runtime_config_defaults_match_orm_column_defaults() -> None:
             assert col.default is None, (
                 f"ORM column '{field}' must have no default (nullable reviewer model); "
                 "found an unexpected default. "
-                "spec: task brief §Defaults drift guard — nullable columns must stay defaultless."
+                "spec: BACKEND_SCHEMA.md §runtime_config — nullable columns must stay defaultless."
             )
             assert RUNTIME_CONFIG_DEFAULTS[field] is None, (
                 f"RUNTIME_CONFIG_DEFAULTS['{field}'] must be None for nullable reviewer model; "
                 f"got {RUNTIME_CONFIG_DEFAULTS[field]!r}. "
-                "spec: task brief §Defaults drift guard."
+                "spec: BACKEND_SCHEMA.md §runtime_config."
             )
         elif col.default is not None:
             # SQLAlchemy ScalarElementColumnDefault stores the value in `.arg`.
@@ -590,7 +590,7 @@ def test_runtime_config_defaults_match_orm_column_defaults() -> None:
             assert orm_default == expected, (
                 f"ORM column default for '{field}' ({orm_default!r}) does not "
                 f"match RUNTIME_CONFIG_DEFAULTS ({expected!r}). "
-                "spec: task brief §Defaults drift guard — ORM and DEFAULTS dict must agree."
+                "spec: BACKEND_SCHEMA.md §runtime_config — ORM and DEFAULTS dict must agree."
             )
 
     # Also assert the RUNTIME_CONFIG_DEFAULTS dict exactly matches col_defaults.
@@ -604,8 +604,8 @@ def test_runtime_config_defaults_match_orm_column_defaults() -> None:
 def test_runtime_config_defaults_covers_all_19_fields() -> None:
     """RUNTIME_CONFIG_DEFAULTS contains exactly the 20 documented fields.
 
-    Spec: plan §stub toggles — 15 behavioral tunables + 4 stub toggle booleans +
-    auth_datahub_corp_group.
+    Spec: BACKEND_SCHEMA.md §runtime_config — 15 behavioral tunables + 4 stub toggle
+    booleans + auth_datahub_corp_group.
     spec: src/backend/admin/config_service.py RUNTIME_CONFIG_DEFAULTS.
     """
     expected_fields = {

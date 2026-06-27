@@ -456,7 +456,7 @@ async def test_delete_metric_config_not_found(service, db):
 async def test_create_metric_config_dataset_filter_over_cap_raises(service, db):
     """create_metric_config with dataset_filter 1001-entry list raises PreconditionFailedError.
 
-    Spec: spec/USE_CASE_en.md §UC5 §dataset_filter — lists capped at 1,000 each.
+    Spec: spec/API.md §Governance — Payload caps (≤ 1,000 entries per dimension).
     Spec: spec/API.md §Metric — 422 INVALID_PARAMETER for over-cap dimensions.
     """
     mock_scalar_query(db, None)

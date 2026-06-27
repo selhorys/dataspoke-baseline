@@ -23,9 +23,10 @@ class TestParseNameKey:
     def test_simple_valid_ref_splits_correctly(self) -> None:
         """'team-pg__password' splits into name='team-pg', key='password'.
 
-        Spec: SECRET_RESOLUTION.md §Reference syntax — '${name__key}' resolves to
+        Spec: SECRET_RESOLUTION.md §Overview — '${name__key}' resolves to
         Secret 'dataspoke-source-cred-<name>', data key '<key>'. name is a
-        DNS-label-safe token (lowercase alphanumerics and hyphens).
+        DNS-label-safe token (lowercase alphanumerics and hyphens, per
+        §Name prefix policy).
         """
         name, key = parse_name_key("team-pg__password")
         assert name == "team-pg", f"Expected name='team-pg', got {name!r}"
@@ -105,7 +106,7 @@ class TestParseNameKey:
 
 
 class TestSecretRefRe:
-    """Spec: SECRET_RESOLUTION.md §Reference syntax — the ${name__key} grammar."""
+    """Spec: SECRET_RESOLUTION.md §Overview — the ${name__key} grammar."""
 
     def test_matches_valid_ref_with_lowercase_name(self) -> None:
         """Pattern matches ${team-pg__password} — DNS-label-safe name."""
@@ -160,8 +161,10 @@ class TestPatternIdentityGuarantee:
     """The save-time pattern (extract_secret_refs) and run-time pattern (resolver
     substitution) are the same compiled object — not just equal, but identical.
 
-    Spec: SECRET_RESOLUTION.md §Design — 'One grammar definition: … both the resolver
-    substitution and extract_secret_refs import it.'
+    The neutral resolver layer owns one grammar definition (SECRET_RESOLUTION.md
+    §Backend extensibility lists 'grammar' among the backend-independent resolver
+    internals); both the resolver substitution and extract_secret_refs import the
+    same compiled SECRET_REF_RE. Object-identity guarantee is impl-backed.
     """
 
     def test_ingestion_model_uses_same_compiled_pattern_object_as_grammar(self) -> None:

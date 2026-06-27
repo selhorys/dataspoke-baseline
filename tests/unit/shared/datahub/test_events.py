@@ -30,7 +30,7 @@ from src.shared.datahub.events import (
 def test_mcl_event_required_fields_enforced() -> None:
     """MetadataChangeLogEvent must require entity_type, entity_urn, aspect_name, change_type.
 
-    spec: DATAHUB_INTEGRATION.md §MCL envelope — required fields.
+    spec: DATAHUB_INTEGRATION.md §Event Subscription — required fields.
     """
     from pydantic import ValidationError
 
@@ -41,7 +41,7 @@ def test_mcl_event_required_fields_enforced() -> None:
 def test_mcl_event_optional_fields_default_to_none() -> None:
     """MetadataChangeLogEvent.aspect and .created default to None.
 
-    spec: DATAHUB_INTEGRATION.md §MCL envelope — aspect, created are optional.
+    spec: DATAHUB_INTEGRATION.md §Event Subscription — aspect, created are optional.
     """
     event = MetadataChangeLogEvent(
         entity_type="dataset",
@@ -56,7 +56,7 @@ def test_mcl_event_optional_fields_default_to_none() -> None:
 def test_mcl_event_stores_aspect_dict() -> None:
     """MetadataChangeLogEvent.aspect stores the provided dict.
 
-    spec: DATAHUB_INTEGRATION.md §MCL envelope — aspect carries the changed aspect value.
+    spec: DATAHUB_INTEGRATION.md §Event Subscription — aspect carries the changed aspect value.
     """
     aspect_data = {"description": "A new table description"}
     event = MetadataChangeLogEvent(
@@ -75,7 +75,7 @@ def test_mcl_event_stores_aspect_dict() -> None:
 def test_deserialize_mcl_round_trip_all_fields() -> None:
     """deserialize_mcl produces a MetadataChangeLogEvent with all fields populated.
 
-    spec: DATAHUB_INTEGRATION.md §MCL envelope — full field mapping.
+    spec: DATAHUB_INTEGRATION.md §Event Subscription — full field mapping.
     """
     payload = {
         "entityType": "dataset",
@@ -101,7 +101,7 @@ def test_deserialize_mcl_round_trip_all_fields() -> None:
 def test_event_router_registered_aspects_is_dict() -> None:
     """EventRouter.registered_aspects returns a dict mapping aspect names to handler lists.
 
-    spec: DATAHUB_INTEGRATION.md §Kafka consumer — routing table is accessible.
+    spec: DATAHUB_INTEGRATION.md §Event Subscription — routing table is accessible.
     """
     router = EventRouter()
     assert isinstance(router.registered_aspects, dict)
@@ -110,7 +110,7 @@ def test_event_router_registered_aspects_is_dict() -> None:
 def test_event_router_register_adds_to_registered_aspects() -> None:
     """EventRouter.register adds handler to the registered_aspects mapping.
 
-    spec: DATAHUB_INTEGRATION.md §Kafka consumer — router.register wires handler.
+    spec: DATAHUB_INTEGRATION.md §Event Subscription — router.register wires handler.
     """
     async def _handler(event: MetadataChangeLogEvent) -> None:
         pass

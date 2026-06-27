@@ -1,8 +1,8 @@
 """Tests for src/shared/models/ — verifies shared Pydantic domain models (QualityScore,
 QualityIssue, DatasetSummary, DatasetAttributes, EventRecord) against spec/feature/BACKEND.md
 §Shared Services (Domain Models row): internal domain objects, not API schemas.
-Also covers URN round-trip and InvalidDatasetUrnError rejection per spec/API.md L586
-and spec/DATAHUB_INTEGRATION.md §URN Construction."""
+Also covers URN round-trip and InvalidDatasetUrnError rejection per
+API.md §Application Error Codes and spec/DATAHUB_INTEGRATION.md §URN Construction."""
 
 from datetime import UTC, datetime
 
@@ -154,7 +154,7 @@ def test_make_dataset_urn_round_trip(platform: str, name: str, env: str) -> None
     Verifies spec/DATAHUB_INTEGRATION.md §URN Construction: 'Always use the builder
     function — never construct URN strings manually.' The built URN must conform to
     the urn:li:dataset:(urn:li:dataPlatform:<platform>,<name>,<env>) schema so it
-    is accepted by DataHub and by DataSpoke's own URN validation (spec/API.md L586).
+    is accepted by DataHub and by DataSpoke's own URN validation (API.md §Application Error Codes).
 
     Genuine round-trip: parse the produced URN back to (platform, name, env) via
     DatasetUrn and verify equality with the original inputs.
@@ -274,7 +274,7 @@ def test_make_dataset_urn_empty_env_rejected() -> None:
 def test_invalid_dataset_urn_rejected_by_ontogen_validator(bad_urn: str) -> None:
     """Malformed URNs are rejected by the shared check_dataset_urn_format function.
 
-    Verifies spec/API.md L586: 'INVALID_DATASET_URN — A dataset_filter.dataset_urns
+    Verifies API.md §Application Error Codes: 'INVALID_DATASET_URN — A dataset_filter.dataset_urns
     entry is not a well-formed urn:li:dataset:(…) URN.' The shared validator at
     src/api/schemas/_dataset_filter.py rejects strings that do not match
     ^urn:li:dataset:\\(.+\\)$ and raises InvalidDatasetUrnError.
@@ -286,7 +286,7 @@ def test_invalid_dataset_urn_rejected_by_ontogen_validator(bad_urn: str) -> None
 
 
 def test_invalid_dataset_urn_error_code() -> None:
-    """InvalidDatasetUrnError.error_code must be INVALID_DATASET_URN per spec/API.md L586."""
+    """error_code must be INVALID_DATASET_URN per API.md §Application Error Codes."""
     exc = InvalidDatasetUrnError("bad-urn-string")
     assert exc.error_code == "INVALID_DATASET_URN"
     assert "bad-urn-string" in str(exc)

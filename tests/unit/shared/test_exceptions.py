@@ -52,7 +52,7 @@ def test_entity_not_found_various_types() -> None:
     assert EntityNotFoundError("config", "cfg").error_code == "CONFIG_NOT_FOUND"
 
 
-# Exhaustive spec-anchored mapping from spec/API.md §Application Error Codes L572-578.
+# Exhaustive spec-anchored mapping from spec/API.md §Application Error Codes.
 # Each tuple is (entity_type, expected_error_code).  The mapping is taken verbatim
 # from the spec table so any drift between impl and spec causes a test failure.
 _ENTITY_ERROR_CODE_MAP = [
@@ -69,12 +69,12 @@ _ENTITY_ERROR_CODE_MAP = [
 def test_entity_not_found_error_code_matches_spec(entity_type: str, expected_code: str) -> None:
     """EntityNotFoundError.error_code must match the spec/API.md §Application Error Codes table.
 
-    Exhaustively covers all six entity types defined in spec/API.md L572-578:
+    Exhaustively covers all six entity types defined in spec/API.md §Application Error Codes:
     DATASET_NOT_FOUND, CONFIG_NOT_FOUND, METRIC_NOT_FOUND, NODE_NOT_FOUND,
     EDGE_NOT_FOUND, TRIPLE_NOT_FOUND.  Tests both directions: every spec entry has a
     test, and no extra codes are silently produced.
 
-    HTTP 404 mapping: spec/API.md L572-578 mandates 404 for all six entity types.
+    HTTP 404 mapping: spec/API.md §Application Error Codes mandates 404 for all six entity types.
     EntityNotFoundError does not carry an http_status attribute — the 404 is applied
     by the _handle_not_found exception handler in src/api/main.py. The handler
     mapping is verified by test_entity_not_found_http_handler_maps_to_404 below.
@@ -94,7 +94,7 @@ def test_entity_not_found_error_code_matches_spec(entity_type: str, expected_cod
 def test_entity_not_found_http_handler_maps_to_404() -> None:
     """The API exception handler for EntityNotFoundError must return HTTP 404.
 
-    spec/API.md L572-578 mandates HTTP 404 for all six entity-not-found codes.
+    spec/API.md §Application Error Codes mandates HTTP 404 for all six entity-not-found codes.
     The mapping is implemented in src/api/main.py:_handle_not_found.
     This test verifies the handler is registered and returns 404 by inspecting
     the handler registration — no live server required.
@@ -111,7 +111,7 @@ def test_entity_not_found_http_handler_maps_to_404() -> None:
     # Verify the function body returns a 404 JSONResponse by inspecting source
     source = inspect.getsource(_handle_not_found)
     assert "404" in source, (
-        "_handle_not_found must return HTTP 404 per spec/API.md L572-578"
+        "_handle_not_found must return HTTP 404 per spec/API.md §Application Error Codes"
     )
 
 

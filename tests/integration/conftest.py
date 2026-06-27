@@ -479,7 +479,7 @@ def datahub_actions_pod_required() -> None:
       - kubectl reachable but no matching pod → skip (actions pod not deployed)
       - kubectl exits with non-zero status (real error) → raise, not skip
 
-    spec: plan §test_uc1_passive_postgres_via_datahub_managed_ingestion
+    spec: USE_CASE_en.md §UC1 — DataHub Managed Ingestion execution
     spec: TESTING.md §Spot vs Api-Wired Integration Tests — environment-missing guard
     """
     import subprocess

@@ -19,8 +19,8 @@ Concerns covered:
 Spec traceability:
 - src/api/schemas/admin.py DatahubPeripheralPatchRequest — field bounds.
 - src/api/schemas/admin.py LangfusePeripheralPatchRequest — field bounds.
-- plan/scalable-beaming-hamster.md §Peripheral PATCH — exclude_unset semantics;
-  explicit "" must reach set_* to trigger clear.
+- spec/API.md §Admin (/admin) — PATCH is partial (omitted secret = unchanged);
+  explicit "" clears the Secret.
 """
 
 import pytest
@@ -71,7 +71,7 @@ class TestDatahubPeripheralPatchRequestEmpty:
     def test_exclude_unset_empty_request_yields_empty_dict(self) -> None:
         """An empty request produces an empty exclude_unset dump.
 
-        spec: plan/scalable-beaming-hamster.md — exclude_unset semantics;
+        spec: API.md §Admin (/admin) — PATCH is partial; omitted field = unchanged;
         no fields provided → nothing patched.
         """
         req = DatahubPeripheralPatchRequest()
@@ -137,7 +137,7 @@ class TestDatahubTokenBounds:
     def test_token_empty_string_accepted(self) -> None:
         """token="" is valid — represents an explicit clear operation.
 
-        spec: plan/scalable-beaming-hamster.md — explicit "" clears the K8s Secret.
+        spec: API.md §Admin (/admin) — explicit "" clears the K8s Secret.
         """
         req = _dh_valid(token="")
         assert req.token == ""
@@ -170,7 +170,7 @@ class TestDatahubExcludeUnsetSemantics:
     def test_explicit_token_empty_string_preserved(self) -> None:
         """token="" must survive exclude_unset dump so the router can detect a clear op.
 
-        spec: plan/scalable-beaming-hamster.md — set_datahub_token("") is triggered by
+        spec: API.md §Admin (/admin) — set_datahub_token("") is triggered by
         an explicit "" field; omitting the field must not reach set_datahub_token at all.
         """
         req = DatahubPeripheralPatchRequest(token="")
@@ -260,7 +260,7 @@ class TestLangfuseSecretKeyBounds:
     def test_secret_key_empty_string_accepted(self) -> None:
         """secret_key="" is valid — represents an explicit clear operation.
 
-        spec: plan/scalable-beaming-hamster.md — explicit "" clears the K8s Secret.
+        spec: API.md §Admin (/admin) — explicit "" clears the K8s Secret.
         """
         req = _lf_valid(secret_key="")
         assert req.secret_key == ""
@@ -287,7 +287,7 @@ class TestLangfuseExcludeUnsetSemantics:
     def test_explicit_secret_key_empty_string_preserved(self) -> None:
         """secret_key="" must survive exclude_unset dump so the router detects a clear op.
 
-        spec: plan/scalable-beaming-hamster.md — set_langfuse_secret_key("") triggered by "".
+        spec: API.md §Admin (/admin) — set_langfuse_secret_key("") triggered by "".
         """
         req = LangfusePeripheralPatchRequest(secret_key="")
         dump = req.model_dump(exclude_unset=True)

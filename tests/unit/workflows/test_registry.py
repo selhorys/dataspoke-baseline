@@ -58,7 +58,7 @@ _TIERS = ("hourly", "daily", "weekly")
 
 
 def test_all_dag_ids_exact_match_spec_catalogue() -> None:
-    """ALL_DAG_IDS must equal the 16 DAG IDs enumerated in spec/feature/BACKEND.md §DAG Catalogue.
+    """ALL_DAG_IDS must equal the 15 DAG IDs enumerated in spec/feature/BACKEND.md §DAG Catalogue.
 
     spec: feature/BACKEND.md §DAG Catalogue.
     """

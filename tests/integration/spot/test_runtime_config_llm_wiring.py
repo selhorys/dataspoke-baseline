@@ -18,13 +18,14 @@ Redis, and pgvector are replaced with sentinels. No real LLM call is made.
 
 spec: src/api/dependencies.py — ``get_metagen_service``, ``get_ontogen_service``
       (per-request LLM construction from RuntimeConfigDTO).
-spec: spec/feature/BACKEND.md §Admin Config — runtime_config DB-backed singleton.
+spec: spec/feature/BACKEND_SCHEMA.md §runtime_config — runtime_config DB-backed singleton.
+spec: spec/API.md §Admin (/admin) — GET/PATCH /admin/conf reads and writes runtime_config.
 """
 
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 import pytest_asyncio
@@ -35,14 +36,13 @@ from src.backend.admin.config_service import (
     patch_runtime_config,
 )
 
-
 # ── Fixture: async_session is provided by tests/integration/conftest.py ──────
 # (session-scoped async_engine + function-scoped async_session)
 # No additional DB fixture is needed here.
 
 
 @pytest_asyncio.fixture
-async def restored_runtime_config(async_session) -> AsyncGenerator[None, None]:
+async def restored_runtime_config(async_session) -> AsyncGenerator[None]:
     """Restore the runtime_config row to the dev-env baseline after each test.
 
     Dev baseline = RUNTIME_CONFIG_DEFAULTS with all four stub_* overridden to True
@@ -93,7 +93,7 @@ async def test_get_metagen_service_calls_make_llm_with_runtime_config_values(
     is the object make_llm_client returned.
 
     spec: src/api/dependencies.py — get_metagen_service per-request LLM wiring.
-    spec: spec/feature/BACKEND.md §Admin Config — provider/model in runtime_config.
+    spec: spec/feature/BACKEND_SCHEMA.md §runtime_config — provider/model in runtime_config.
     """
     await patch_runtime_config(
         async_session,
@@ -106,7 +106,9 @@ async def test_get_metagen_service_calls_make_llm_with_runtime_config_values(
 
     from src.api.dependencies import get_metagen_service
 
-    with patch("src.workflows._common.make_llm_client", return_value=sentinel_llm) as mock_make_llm_client:
+    with patch(
+        "src.workflows._common.make_llm_client", return_value=sentinel_llm
+    ) as mock_make_llm_client:
         service = await get_metagen_service(
             datahub=_STUB_DATAHUB,
             db=async_session,
@@ -124,7 +126,8 @@ async def test_get_metagen_service_calls_make_llm_with_runtime_config_values(
     )
     assert service._llm is sentinel_llm, (
         "MetagenService._llm must be the object returned by make_llm_client. "
-        "spec: src/api/dependencies.py — llm = make_llm_client(...); MetagenService(..., llm=llm, ...)"
+        "spec: src/api/dependencies.py — llm = make_llm_client(...); "
+        "MetagenService(..., llm=llm, ...)"
     )
 
 
@@ -139,7 +142,7 @@ async def test_get_ontogen_service_calls_make_llm_with_runtime_config_values(
     correct LLM instance constructed from the current runtime_config row.
 
     spec: src/api/dependencies.py — get_ontogen_service per-request LLM wiring.
-    spec: spec/feature/BACKEND.md §Admin Config — provider/model in runtime_config.
+    spec: spec/feature/BACKEND_SCHEMA.md §runtime_config — provider/model in runtime_config.
     """
     await patch_runtime_config(
         async_session,
@@ -152,7 +155,9 @@ async def test_get_ontogen_service_calls_make_llm_with_runtime_config_values(
 
     from src.api.dependencies import get_ontogen_service
 
-    with patch("src.workflows._common.make_llm_client", return_value=sentinel_llm) as mock_make_llm_client:
+    with patch(
+        "src.workflows._common.make_llm_client", return_value=sentinel_llm
+    ) as mock_make_llm_client:
         service = await get_ontogen_service(
             datahub=_STUB_DATAHUB,
             db=async_session,
@@ -170,7 +175,8 @@ async def test_get_ontogen_service_calls_make_llm_with_runtime_config_values(
     )
     assert service._llm is sentinel_llm, (
         "OntogenService._llm must be the object returned by make_llm_client. "
-        "spec: src/api/dependencies.py — llm = make_llm_client(...); OntogenService(..., llm=llm, ...)"
+        "spec: src/api/dependencies.py — llm = make_llm_client(...); "
+        "OntogenService(..., llm=llm, ...)"
     )
 
 
@@ -224,7 +230,9 @@ async def test_runtime_config_change_honored_immediately_by_get_metagen_service(
     )
 
     second_sentinel = object()
-    with patch("src.workflows._common.make_llm_client", return_value=second_sentinel) as mock_second:
+    with patch(
+        "src.workflows._common.make_llm_client", return_value=second_sentinel
+    ) as mock_second:
         service_second = await get_metagen_service(
             datahub=_STUB_DATAHUB,
             db=async_session,

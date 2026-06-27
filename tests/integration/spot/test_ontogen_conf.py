@@ -22,7 +22,7 @@ These tests are pure REST and do not require raw-SQL seeding or DataHub document
 
 Spec traceability:
 - spec/feature/BACKEND.md §Ontology Generation Service §Inference Pipeline
-- spec/USE_CASE_en.md §UC3 L389 — OntogenConfResponse fields
+- spec/API.md §Ontology Generation — OntogenConfResponse fields (GET attr/conf)
 - spec/API.md §UC3 Payload caps — dataset_filter.{tags,glossary_terms,dataset_urns} ≤ 1,000
 - spec/TESTING.md §Spot vs Api-Wired Integration Tests
 """
@@ -51,7 +51,7 @@ async def test_ontogen_conf_get_returns_defaults(
 
     assert resp.status_code == 200
     body = resp.json()
-    # spec: USE_CASE_en.md §UC3 L389 — OntogenConfResponse fields: is_enabled, schedule_tier,
+    # spec: API.md §Ontology Generation — OntogenConfResponse fields: is_enabled, schedule_tier,
     # dataset_filter, default_run_prompt, updated_at (max_manual/system_queries removed)
     assert "is_enabled" in body
     assert "schedule_tier" in body

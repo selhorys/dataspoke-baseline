@@ -9,7 +9,7 @@ Concerns covered:
 
 spec: spec/feature/AUTH.md §Lifecycle §Login
 spec: spec/API.md §JWT Claims
-spec: spec/API.md §Authentication §Token Strategy
+spec: spec/API.md §Authentication & Authorization §Token Strategy
 """
 
 from __future__ import annotations
@@ -123,7 +123,7 @@ def test_decode_access_token_rejects_refresh_token() -> None:
     """decode_access_token raises AuthenticationError('UNAUTHORIZED') for a refresh token.
 
     Security fix from B2: refresh tokens must not be usable for authentication.
-    spec: spec/feature/AUTH.md §Security Considerations — token-type confusion rejected.
+    spec: spec/feature/AUTH.md §Security Considerations §Token-type confusion rejected.
     spec: spec/API.md §Authentication — access tokens are for auth; refresh for rotation only.
     """
     from src.backend.auth.tokens import decode_access_token, issue_refresh_token

@@ -274,7 +274,7 @@ async def test_read_datahub_actor_urn_returns_configured_value(monkeypatch) -> N
     spec: spec/feature/BACKEND.md §Active-custom run pipeline — DataSpoke stamps
         the audit actor with the peripheral's configured ``service_corpuser_urn``
         (line ~276 / ~527).
-    spec: spec/API.md §/admin/peripherals/datahub — ``service_corpuser_urn`` names
+    spec: spec/API.md §Admin (/admin/peripherals/datahub) — ``service_corpuser_urn`` names
         the corpuser actor DataSpoke writes as.
     """
     from unittest.mock import AsyncMock
@@ -308,7 +308,7 @@ async def test_read_datahub_actor_urn_falls_back_when_unset(monkeypatch) -> None
     An empty ``service_corpuser_urn`` (or absent peripheral row) must resolve to
     the documented default actor URN, not an empty string.
 
-    spec: spec/API.md §/admin/peripherals/datahub — unset rows read back factory
+    spec: spec/API.md §Admin (/admin/peripherals/datahub) — unset rows read back factory
         default ``service_corpuser_urn`` → ``urn:li:corpuser:dataspoke``.
     spec: spec/feature/BACKEND.md §Active-custom run pipeline — defaulting to
         ``urn:li:corpuser:dataspoke`` when unset (line ~276).
@@ -327,7 +327,7 @@ async def test_read_datahub_actor_urn_falls_back_when_unset(monkeypatch) -> None
     result_unset = await read_datahub_actor_urn(AsyncMock())
     assert result_unset == DEFAULT_DATAHUB_ACTOR_URN == "urn:li:corpuser:dataspoke", (
         "Empty service_corpuser_urn must fall back to urn:li:corpuser:dataspoke. "
-        "spec: spec/API.md §/admin/peripherals/datahub — factory default."
+        "spec: spec/API.md §Admin (/admin/peripherals/datahub) — factory default."
     )
 
     # No peripheral row at all → same fallback.
@@ -348,10 +348,10 @@ async def test_read_datahub_actor_urn_falls_back_when_unset(monkeypatch) -> None
 async def test_read_datahub_default_env_returns_configured_value(monkeypatch) -> None:
     """read_datahub_default_env returns the configured default_env when set.
 
-    spec: spec/API.md §/admin/peripherals/datahub — ``default_env`` is the
+    spec: spec/API.md §Admin (/admin/peripherals/datahub) — ``default_env`` is the
         fabric/env applied when an ingestion recipe omits ``env``.
-    spec: spec/feature/BACKEND.md §ingestion — recipe omits ``env`` → extractor
-        falls back to the peripheral's configured ``default_env`` (line ~273).
+    spec: spec/feature/BACKEND.md §Ingestion Service — recipe omits ``env`` → extractor
+        falls back to the peripheral's configured ``default_env``.
     """
     from unittest.mock import AsyncMock
 
@@ -372,7 +372,7 @@ async def test_read_datahub_default_env_returns_configured_value(monkeypatch) ->
 
     assert result == "PROD", (
         "read_datahub_default_env must return the configured default_env. "
-        "spec: spec/feature/BACKEND.md §ingestion — configured default_env."
+        "spec: spec/feature/BACKEND.md §Ingestion Service — configured default_env."
     )
 
 
@@ -380,7 +380,7 @@ async def test_read_datahub_default_env_returns_configured_value(monkeypatch) ->
 async def test_read_datahub_default_env_falls_back_to_dev_when_unset(monkeypatch) -> None:
     """read_datahub_default_env falls back to 'DEV' when unset or unconfigured.
 
-    spec: spec/API.md §/admin/peripherals/datahub — unset rows read back factory
+    spec: spec/API.md §Admin (/admin/peripherals/datahub) — unset rows read back factory
         default ``default_env`` → ``DEV``.
     """
     from unittest.mock import AsyncMock
@@ -395,7 +395,7 @@ async def test_read_datahub_default_env_falls_back_to_dev_when_unset(monkeypatch
     )
     assert await read_datahub_default_env(AsyncMock()) == DEFAULT_DATAHUB_DEFAULT_ENV == "DEV", (
         "Empty default_env must fall back to 'DEV'. "
-        "spec: spec/API.md §/admin/peripherals/datahub — factory default."
+        "spec: spec/API.md §Admin (/admin/peripherals/datahub) — factory default."
     )
 
     monkeypatch.setattr(
@@ -521,8 +521,8 @@ def test_make_llm_client_threads_langfuse_project_id(monkeypatch) -> None:
 def test_urn_to_workflow_id_returns_12_char_hex() -> None:
     """urn_to_workflow_id must return a 12-character hex string.
 
-    spec: feature/BACKEND.md §Concurrency Control / Airflow DAG run conf-based dedup
-          (line ~786) — URN-scoped workflow IDs prevent concurrent duplicate DAG runs.
+    spec: feature/BACKEND.md §Concurrency Guards (conf-based dedup)
+URN-scoped workflow IDs prevent concurrent duplicate DAG runs.
     """
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.orders,DEV)"
     wf_id = urn_to_workflow_id(urn)
@@ -535,8 +535,8 @@ def test_urn_to_workflow_id_returns_12_char_hex() -> None:
 def test_urn_to_workflow_id_is_stable() -> None:
     """urn_to_workflow_id produces the same ID for the same URN on every call.
 
-    spec: feature/BACKEND.md §Concurrency Control / Airflow DAG run conf-based dedup
-          (line ~786) — deterministic ID derived from URN for dedup keying.
+    spec: feature/BACKEND.md §Concurrency Guards (conf-based dedup)
+deterministic ID derived from URN for dedup keying.
     """
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.catalog.title_master,DEV)"
     assert urn_to_workflow_id(urn) == urn_to_workflow_id(urn)
@@ -545,8 +545,8 @@ def test_urn_to_workflow_id_is_stable() -> None:
 def test_urn_to_workflow_id_differs_for_different_urns() -> None:
     """Different URNs produce different workflow IDs.
 
-    spec: feature/BACKEND.md §Concurrency Control / Airflow DAG run conf-based dedup
-          (line ~786) — per-URN IDs must be distinct to prevent cross-dataset dedup collisions.
+    spec: feature/BACKEND.md §Concurrency Guards (conf-based dedup)
+per-URN IDs must be distinct to prevent cross-dataset dedup collisions.
     """
     urn_a = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.a,DEV)"
     urn_b = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.b,DEV)"

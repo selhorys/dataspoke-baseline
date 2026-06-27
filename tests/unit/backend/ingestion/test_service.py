@@ -452,7 +452,7 @@ class TestReverseLookupPrecedence:
 
 
 class TestListActiveSourcesForTier:
-    """Spec: BACKEND.md §Tier DAG support — returns ACTIVE_CUSTOM_MANAGED sources
+    """Spec: BACKEND.md §DAG Catalogue — returns ACTIVE_CUSTOM_MANAGED sources
     for the given schedule tier.
     """
 
@@ -462,7 +462,7 @@ class TestListActiveSourcesForTier:
     ) -> None:
         """list_active_sources_for_tier returns sources matching mode+tier.
 
-        Spec: BACKEND.md §Tier DAG support — 'Used by the ingestion-active-{hourly,daily,weekly}
+        Spec: BACKEND.md §DAG Catalogue — 'Used by the ingestion-active-{hourly,daily,weekly}
         Airflow DAGs.'
         """
         rows = [_make_source_row(mode="ACTIVE_CUSTOM_MANAGED", schedule_tier="daily")]
@@ -492,7 +492,7 @@ class TestListActiveSourcesForTier:
 
 
 class TestListDatasetsForSource:
-    """Spec: BACKEND.md §Dataset mapping queries."""
+    """Spec: BACKEND_SCHEMA.md §ingestion_source_dataset — dataset-mapping queries."""
 
     @pytest.mark.asyncio
     async def test_unknown_source_raises_entity_not_found(

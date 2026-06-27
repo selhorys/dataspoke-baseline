@@ -142,7 +142,7 @@ async def test_run_complete_event_detail_contains_uuid4_run_id(
 
     assert len(complete_events) == 1, (
         f"Expected exactly one ONTOGEN_RUN_COMPLETE event; got {len(complete_events)}. "
-        "Spec: BACKEND.md §Inference Pipeline Step 12"
+        "Spec: BACKEND.md §Event Catalogue (ONTOGEN.RUN_COMPLETE)"
     )
 
     detail = complete_events[0].detail

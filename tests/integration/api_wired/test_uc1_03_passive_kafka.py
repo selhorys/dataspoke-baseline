@@ -29,7 +29,7 @@ topic_patterns → they map zero Kafka datasets → the imazon topics remain unm
 
 spec: USE_CASE_en.md §UC1 Case 3
 spec: API.md §Ingestion — PASSIVE mode, INGESTION_RUN_NOT_APPLICABLE
-spec: feature/BACKEND.md §Ingestion Service §Sync sweep step 2 (mapping via AllowDenyPattern)
+spec: feature/BACKEND.md §Ingestion Service — Sync + mapping sweep step 2 (AllowDenyPattern)
 spec: TESTING.md §Api-Wired Integration Tests
 """
 
@@ -97,7 +97,7 @@ async def test_uc1_passive_kafka(
 
     spec: USE_CASE_en.md §UC1 Case 3
     spec: API.md §Ingestion — POST /spoke/ingestion/sources (PASSIVE)
-    spec: feature/BACKEND.md §Ingestion Service §Sync sweep step 2 (AllowDenyPattern)
+    spec: feature/BACKEND.md §Ingestion Service — Sync + mapping sweep step 2 (AllowDenyPattern)
     """
     source_id: str | None = None
 
@@ -118,7 +118,8 @@ async def test_uc1_passive_kafka(
         # spec: API.md §Ingestion — GET /spoke/ingestion/unmanaged: datasets in DataHub
         #   linked to no source
         # spec: project_es_indexing_lag_after_reset_seed — ES lags ~2-3 min after seed.
-        # spec: feature/BACKEND.md §Sync sweep — populates dataset_registry from DataHub
+        # spec: feature/BACKEND.md §Ingestion Service — Sync + mapping sweep —
+        #   populates dataset_registry from DataHub
         poll_deadline_step0 = time.time() + 180.0
         poll_interval = 5.0
         before_unmanaged_urns: set[str] = set()
@@ -190,7 +191,7 @@ async def test_uc1_passive_kafka(
         )
 
         # ── Step 2: Assert 201 body shape ──────────────────────────────────────
-        # spec: API.md §Ingestion §Source body shape — PASSIVE has no schedule
+        # spec: API.md §Ingestion — Source body shape — PASSIVE has no schedule
         body = create_resp.json()
         assert "id" in body
         source_id = body["id"]
@@ -204,10 +205,10 @@ async def test_uc1_passive_kafka(
             f"PASSIVE source must have schedule=null; got {body.get('schedule')!r}. "
             "spec: USE_CASE_en.md §UC1 Case 3 — no schedule on PASSIVE sources"
         )
-        # spec: API.md §Ingestion §Source body shape — no schedule_tier on the wire
+        # spec: API.md §Ingestion — Source body shape — no schedule_tier on the wire
         assert "schedule_tier" not in body, (
             "schedule_tier must NOT appear in the API response. "
-            "spec: API.md §Ingestion §Source body shape"
+            "spec: API.md §Ingestion — Source body shape"
         )
         assert body.get("platform") == "kafka", (
             "platform must be 'kafka' (derived from recipe.source.type); "
@@ -262,7 +263,8 @@ async def test_uc1_passive_kafka(
         # Poll: re-trigger sync each iteration so newly-ES-indexed URNs surface.
         # Budget 180s covers remaining ES lag from the seed operation.
         #
-        # spec: feature/BACKEND.md §Sync sweep step 2 — "evaluate each source's
+        # spec: feature/BACKEND.md §Ingestion Service — Sync + mapping sweep
+        #   step 2 — "evaluate each source's
         #   filter-matcher — derived from the declared AllowDenyPattern scope for PASSIVE;
         #   derivation = matched"
         # spec: TESTING.md §Imazon Dummy-Data Reference — both Kafka topics seeded in DataHub.
@@ -303,7 +305,8 @@ async def test_uc1_passive_kafka(
         assert _ORDERS_URN in dataset_urns, (
             f"imazon.orders.events must be mapped to the PASSIVE source after sync; "
             f"found: {sorted(dataset_urns)}. "
-            "spec: USE_CASE_en.md §UC1 Case 3 + feature/BACKEND.md §Sync sweep step 2"
+            "spec: USE_CASE_en.md §UC1 Case 3 + feature/BACKEND.md "
+            "§Ingestion Service — Sync + mapping sweep step 2"
         )
         assert _SHIPPING_URN in dataset_urns, (
             f"imazon.shipping.updates must be mapped to the PASSIVE source after sync; "
@@ -312,14 +315,16 @@ async def test_uc1_passive_kafka(
         )
 
         # Mapped datasets must have derivation='matched' (PASSIVE scope-based mapping).
-        # spec: feature/BACKEND.md §Sync sweep step 2 — derivation=matched for PASSIVE.
+        # spec: feature/BACKEND.md §Ingestion Service — Sync + mapping sweep
+        #   step 2 — derivation=matched for PASSIVE.
         # spec: BACKEND_SCHEMA.md §ingestion_source_dataset — matched→authority=medium.
         for d in datasets_body["datasets"]:
             if d["dataset_urn"] in (_ORDERS_URN, _SHIPPING_URN):
                 assert d["derivation"] == "matched", (
                     f"PASSIVE source dataset {d['dataset_urn']!r} must have "
                     f"derivation='matched'; got {d['derivation']!r}. "
-                    "spec: feature/BACKEND.md §Sync sweep step 2 — PASSIVE uses matched derivation"
+                    "spec: feature/BACKEND.md §Ingestion Service — Sync + mapping "
+                    "sweep step 2 — PASSIVE uses matched derivation"
                 )
                 assert d["authority"] == "medium", (
                     f"PASSIVE source dataset {d['dataset_urn']!r} must have authority='medium'; "

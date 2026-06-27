@@ -194,9 +194,9 @@ async def test_get_downstream_lineage_graphql(client, mock_graph) -> None:
     call_args = mock_graph.execute_graphql.call_args
     query_str = call_args[0][0]
     assert "DOWNSTREAM" in query_str, "GraphQL query must specify direction: DOWNSTREAM"
-    # spec/DATAHUB_INTEGRATION.md L325: query must filter types: [DATASET]
+    # spec/DATAHUB_INTEGRATION.md §Downstream Lineage: query must filter types: [DATASET]
     assert "DATASET" in query_str, (
-        "GraphQL query must include types: [DATASET] per DATAHUB_INTEGRATION.md L325"
+        "GraphQL query must include types: [DATASET] per DATAHUB_INTEGRATION.md §Downstream Lineage"
     )
     # Verify the source URN is passed as a variable, not interpolated into the query string.
     # Don't pin the variable key name — assert the value appears somewhere in variables.

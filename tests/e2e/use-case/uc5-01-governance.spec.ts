@@ -741,7 +741,7 @@ test("UC5 step 3c — doc-health detail page: attr/conf, attr/result, event sect
 
   // -- Backend probe: GET event → ≥1 METRIC.RUN_COMPLETE event after the run --
   // spec: [id]/page.tsx — event section renders eventsData.events; METRIC.RUN_COMPLETE
-  // spec: API.md §Governance events — POST .../method/run emits METRIC.RUN_COMPLETE
+  // spec: API.md §Metric — POST .../method/run emits METRIC.RUN_COMPLETE (BACKEND.md §Event Catalogue)
   const eventResp = await adminApi.get(
     `/api/v1/spoke/governance/metric/${METRIC_DOC.metric_id}/event`
   );

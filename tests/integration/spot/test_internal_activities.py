@@ -213,8 +213,8 @@ async def test_metagen_run_activity_dry(
 ) -> None:
     """POST /internal/activities/metagen/run executes the global metagen pipeline (dry_run).
 
-    spec: BACKEND.md §UC4 Generation Pipeline — singleton run, response carries status.
-    spec: USE_CASE_en.md §UC4 — dry_run permitted regardless of is_enabled.
+    spec: BACKEND.md §Metadata Generation Service — singleton run, response carries status.
+    spec: USE_CASE_en.md §UC4: Metadata Generation — dry_run permitted regardless of is_enabled.
     """
     resp = await api_client.post(
         "/internal/activities/metagen/run",
@@ -224,7 +224,7 @@ async def test_metagen_run_activity_dry(
 
     assert resp.status_code == 200
     body = resp.json()
-    # spec: BACKEND.md §UC4 — MetagenRunResponse carries status
+    # spec: BACKEND.md §Metadata Generation Service — MetagenRunResponse carries status
     assert "status" in body, (
         f"Expected 'status' in metagen run response, got: {list(body.keys())}"
     )
@@ -242,8 +242,8 @@ async def test_metrics_list_active_hourly(
     spec: BACKEND.md §Tier-DAG selection — tier filter applies to metric_definitions
     """
     # spec: BACKEND.md §Tier-DAG selection
-    # spec: API.md §DG metric — POST /spoke/governance/metric is the explicit create
-    # (metric_id in body); PUT /metric/{id}/attr/conf replaces an existing one.
+    # spec: API.md §Metric (/spoke/governance/metric) — POST /spoke/governance/metric is the
+    # explicit create (metric_id in body); PUT /metric/{id}/attr/conf replaces an existing one.
     metric_id_hourly = "spot-list-freshness-hourly"
     metric_id_daily = "spot-list-freshness-daily"
     conf_hourly = f"/api/v1/spoke/governance/metric/{metric_id_hourly}/attr/conf"
@@ -308,8 +308,8 @@ async def test_metrics_run_activity(
     spec: BACKEND.md §Metrics Service — response carries run_id + status.
     """
     # spec: BACKEND.md §Metrics Service
-    # spec: API.md §DG metric — POST /spoke/governance/metric is the explicit create
-    # (metric_id in body); PUT /metric/{id}/attr/conf replaces an existing one.
+    # spec: API.md §Metric (/spoke/governance/metric) — POST /spoke/governance/metric is the
+    # explicit create (metric_id in body); PUT /metric/{id}/attr/conf replaces an existing one.
     metric_id = "spot-activity-freshness"
     conf_url = f"/api/v1/spoke/governance/metric/{metric_id}/attr/conf"
 
@@ -359,7 +359,7 @@ async def test_ontogen_run_activity_dry(
 ) -> None:
     """POST /internal/activities/ontogen/run executes ontogen inference (dry_run).
 
-    spec: BACKEND.md §Ontogen Inference Pipeline — response carries status.
+    spec: BACKEND.md §Ontology Generation Service — response carries status.
     """
     # spec: BACKEND.md §Ontology Generation Service
     resp = await api_client.post(
@@ -370,7 +370,7 @@ async def test_ontogen_run_activity_dry(
 
     assert resp.status_code == 200
     body = resp.json()
-    # spec: BACKEND.md §Ontogen Inference Pipeline — response must carry status
+    # spec: BACKEND.md §Ontology Generation Service — response must carry status
     assert "status" in body, (
         f"Expected 'status' in ontogen run response, got: {list(body.keys())}"
     )

@@ -52,7 +52,8 @@ async def test_uc3_ontology_generation_under_stub(
       6. Cleanup: DELETE seed (hard delete — gone from list), PATCH conf disabled
 
     Spec: USE_CASE_en.md §UC3 — open the run's Langfuse session via run_id
-    Spec: BACKEND_LLM.md §Evidence shape — debate transcript lives in Langfuse,
+    Spec: BACKEND_LLM.md §Evidence — the run's Langfuse session — debate transcript
+    lives in Langfuse,
     addressed by session_id = run_id; the row persists run_id, not the transcript.
     Spec: BACKEND_LLM.md §Test Mode — stub Producer returns empty payload so no rows
     are persisted; the per-row run_id check is intentionally a no-op under stub mode.
@@ -64,7 +65,7 @@ async def test_uc3_ontology_generation_under_stub(
     try:
         # ── Step 1: PUT ontogen conf ──────────────────────────────────────────
         # UC3 narrative: "The governance team enables ontology generation."
-        # spec: USE_CASE_en.md §UC3 §Conf
+        # spec: USE_CASE_en.md §UC3 §Imazon Example
         put_conf_resp = await api_client.put(
             conf_url,
             headers=admin_headers,
@@ -76,29 +77,29 @@ async def test_uc3_ontology_generation_under_stub(
         )
         assert put_conf_resp.status_code in (200, 201), (
             f"PUT ontogen conf failed: {put_conf_resp.status_code} {put_conf_resp.text}. "
-            "spec: USE_CASE_en.md §UC3 §Conf — PUT returns 200 or 201"
+            "spec: USE_CASE_en.md §UC3 §Imazon Example — PUT returns 200 or 201"
         )
         conf_body = put_conf_resp.json()
         assert conf_body["is_enabled"] is True, (
             "PUT conf response must round-trip is_enabled=True. "
-            "spec: USE_CASE_en.md §UC3 §Conf"
+            "spec: USE_CASE_en.md §UC3 §Imazon Example"
         )
         assert conf_body["schedule_tier"] == "daily", (
             f"PUT conf response must round-trip schedule_tier='daily'; "
-            f"got {conf_body.get('schedule_tier')!r}. spec: USE_CASE_en.md §UC3 §Conf"
+            f"got {conf_body.get('schedule_tier')!r}. spec: USE_CASE_en.md §UC3 §Imazon Example"
         )
         assert conf_body["dataset_filter"] == {
             "origin": "DEV",
             "tags": ["urn:li:tag:area:catalog"],
         }, (
             f"dataset_filter not preserved: {conf_body.get('dataset_filter')!r}. "
-            "spec: USE_CASE_en.md §UC3 §Conf"
+            "spec: USE_CASE_en.md §UC3 §Imazon Example"
         )
 
         # ── Step 2: POST Markdown seed ────────────────────────────────────────
         # UC3 narrative: "They post a domain seed (Markdown) to steer the LLM
         # toward bookstore-friendly names."
-        # spec: USE_CASE_en.md §UC3 §Seeds steer inference
+        # spec: USE_CASE_en.md §UC3 §Imazon Example
         seed_md = (
             "# Imazon Bookstore Domain\n\n"
             "Imazon is an online retailer specialising in books. The storefront sells "
@@ -123,7 +124,7 @@ async def test_uc3_ontology_generation_under_stub(
         )
         assert create_seed_resp.status_code == 201, (
             f"POST seed failed: {create_seed_resp.status_code} {create_seed_resp.text}. "
-            "spec: USE_CASE_en.md §UC3 §Seeds steer inference — POST returns 201"
+            "spec: USE_CASE_en.md §UC3 §Imazon Example — POST returns 201"
         )
         seed_id = create_seed_resp.json()["seed_id"]
         assert seed_id, "server must assign a non-empty seed_id"
@@ -180,7 +181,7 @@ async def test_uc3_ontology_generation_under_stub(
         )
 
         # ── Step 3: POST real (non-dry-run) inference ─────────────────────────
-        # spec: USE_CASE_en.md §UC3 §Run semantics — non-dry-run persists rows
+        # spec: USE_CASE_en.md §UC3 §API Mapping — non-dry-run persists rows
         # spec: BACKEND_LLM.md §Adversarial Debate Framework — debate runs unconditionally
         run_resp = await api_client.post(
             "/api/v1/spoke/ontogen/method/run",
@@ -192,7 +193,7 @@ async def test_uc3_ontology_generation_under_stub(
         )
         assert run_resp.status_code == 200, (
             f"POST method/run failed: {run_resp.status_code} {run_resp.text}. "
-            "spec: USE_CASE_en.md §UC3 §Run semantics — method/run with is_enabled=True returns 200"
+            "spec: USE_CASE_en.md §UC3 §API Mapping — method/run with is_enabled=True returns 200"
         )
         run_body = run_resp.json()
         status = run_body.get("status")
@@ -220,8 +221,9 @@ async def test_uc3_ontology_generation_under_stub(
             )
 
         # ── Step 4: GET /event — find ONTOGEN.RUN_COMPLETE ───────────────────
-        # spec: BACKEND_LLM.md §Adversarial Debate Framework §Wiring — _run_inner emits
-        # debate_outcome, producer_iterations, producer_errors_dropped in event detail
+        # spec: BACKEND_LLM.md §Inference Loop (producer_iterations,
+        #   producer_errors_dropped) + §Evidence — the run's Langfuse session
+        #   (ONTOGEN.RUN_COMPLETE detail carries debate_outcome, producer_iterations)
         event_resp = await api_client.get(
             "/api/v1/spoke/ontogen/event?limit=20",
             headers=admin_headers,
@@ -255,16 +257,17 @@ async def test_uc3_ontology_generation_under_stub(
         )
         # run_id identifies the Langfuse session this run traced under; every row
         # this run persists carries it (see Step 5).
-        # spec: BACKEND_LLM.md §Evidence shape — session_id = run_id
+        # spec: BACKEND_LLM.md §Evidence — the run's Langfuse session — session_id = run_id
         run_id = detail.get("run_id")
         assert isinstance(run_id, str) and run_id, (
             f"event detail run_id must be a non-empty string; got {run_id!r}. "
-            "spec: BACKEND_LLM.md §Evidence shape — run_id = Langfuse session id"
+            "spec: BACKEND_LLM.md §Evidence — the run's Langfuse session — "
+            "run_id = Langfuse session id"
         )
 
         # ── Step 5: GET result/{node,edge,triple} — envelope + per-row run_id ──
         # spec: USE_CASE_en.md §UC3 §API Mapping — list endpoints return paginated envelopes
-        # spec: spec/API.md §Standard Envelope
+        # spec: spec/API.md §Standard Response Envelope
         for result_type, list_key in [
             ("node", "nodes"),
             ("edge", "edges"),
@@ -280,44 +283,47 @@ async def test_uc3_ontology_generation_under_stub(
             list_body = list_resp.json()
             assert list_key in list_body, (
                 f"GET result/{result_type} response missing list field '{list_key}'. "
-                "spec: API.md §Standard Envelope"
+                "spec: API.md §Standard Response Envelope"
             )
             assert isinstance(list_body[list_key], list), (
                 f"GET result/{result_type} '{list_key}' must be a list. "
-                "spec: API.md §Standard Envelope"
+                "spec: API.md §Standard Response Envelope"
             )
             assert list_body.get("offset") == 0, (
                 f"GET result/{result_type} offset expected 0; got {list_body.get('offset')!r}. "
-                "spec: API.md §Standard Envelope"
+                "spec: API.md §Standard Response Envelope"
             )
             assert list_body.get("limit") == 10, (
                 f"GET result/{result_type} limit expected 10; got {list_body.get('limit')!r}. "
-                "spec: API.md §Standard Envelope"
+                "spec: API.md §Standard Response Envelope"
             )
             total = list_body.get("total_count")
             assert isinstance(total, int) and total >= 0, (
                 f"GET result/{result_type} total_count must be non-negative int; "
-                f"got {total!r}. spec: API.md §Standard Envelope"
+                f"got {total!r}. spec: API.md §Standard Response Envelope"
             )
             if total <= 10:
                 assert len(list_body[list_key]) == total, (
                     f"GET result/{result_type}: total_count={total} but list has "
                     f"{len(list_body[list_key])} entries — envelope incoherent. "
-                    "spec: API.md §Standard Envelope — total_count is the unpaginated row count"
+                    "spec: API.md §Standard Response Envelope — total_count is "
+                    "the unpaginated row count"
                 )
 
             # Every result row exposes a run_id field — its link to the creating run's
             # Langfuse session. The value is that row's creating-run id; rows from other
             # runs / seeded fixtures carry a different id or NULL, so the equality to
             # THIS run's id is only meaningful for rows this run produced.
-            # spec: BACKEND_LLM.md §Evidence shape — row.run_id = session_id; the
+            # spec: BACKEND_LLM.md §Evidence — the run's Langfuse session —
+            # row.run_id = session_id; the
             # transcript lives in Langfuse, not in the row.
             # Under stub mode the Producer returns an empty payload, so this run persists
             # no new rows; the schema contract is asserted on whatever rows exist.
             for row in list_body[list_key]:
                 assert "run_id" in row, (
                     f"{result_type} {row['id']!r} missing run_id field. "
-                    "spec: BACKEND_LLM.md §Evidence shape — every result row carries run_id"
+                    "spec: BACKEND_LLM.md §Evidence — the run's Langfuse session — "
+                    "every result row carries run_id"
                 )
 
         # ── Step 5b: DELETE the seed is a hard delete — gone from the list ────
@@ -374,7 +380,8 @@ async def test_uc3_ontology_generation_with_real_llm(
       7. Cleanup: DELETE seed (hard delete), PATCH conf disabled
 
     Spec: USE_CASE_en.md §UC3 — open the run's Langfuse session via run_id
-    Spec: BACKEND_LLM.md §Evidence shape — debate transcript lives in Langfuse,
+    Spec: BACKEND_LLM.md §Evidence — the run's Langfuse session — debate transcript
+    lives in Langfuse,
     addressed by session_id = run_id; the row persists run_id, not the transcript.
     """
     if runtime_conf.get("stub_llm_client"):
@@ -390,7 +397,7 @@ async def test_uc3_ontology_generation_with_real_llm(
     try:
         # ── Step 1: PUT ontogen conf ──────────────────────────────────────────
         # UC3 narrative: "The governance team enables ontology generation."
-        # spec: USE_CASE_en.md §UC3 §Conf
+        # spec: USE_CASE_en.md §UC3 §Imazon Example
         put_conf_resp = await api_client.put(
             conf_url,
             headers=admin_headers,
@@ -402,29 +409,29 @@ async def test_uc3_ontology_generation_with_real_llm(
         )
         assert put_conf_resp.status_code in (200, 201), (
             f"PUT ontogen conf failed: {put_conf_resp.status_code} {put_conf_resp.text}. "
-            "spec: USE_CASE_en.md §UC3 §Conf — PUT returns 200 or 201"
+            "spec: USE_CASE_en.md §UC3 §Imazon Example — PUT returns 200 or 201"
         )
         conf_body = put_conf_resp.json()
         assert conf_body["is_enabled"] is True, (
             "PUT conf response must round-trip is_enabled=True. "
-            "spec: USE_CASE_en.md §UC3 §Conf"
+            "spec: USE_CASE_en.md §UC3 §Imazon Example"
         )
         assert conf_body["schedule_tier"] == "daily", (
             f"PUT conf response must round-trip schedule_tier='daily'; "
-            f"got {conf_body.get('schedule_tier')!r}. spec: USE_CASE_en.md §UC3 §Conf"
+            f"got {conf_body.get('schedule_tier')!r}. spec: USE_CASE_en.md §UC3 §Imazon Example"
         )
         assert conf_body["dataset_filter"] == {
             "origin": "DEV",
             "tags": ["urn:li:tag:area:catalog"],
         }, (
             f"dataset_filter not preserved: {conf_body.get('dataset_filter')!r}. "
-            "spec: USE_CASE_en.md §UC3 §Conf"
+            "spec: USE_CASE_en.md §UC3 §Imazon Example"
         )
 
         # ── Step 2: POST Markdown seed ────────────────────────────────────────
         # UC3 narrative: "They post a domain seed (Markdown) to steer the LLM
         # toward bookstore-friendly names."
-        # spec: USE_CASE_en.md §UC3 §Seeds steer inference
+        # spec: USE_CASE_en.md §UC3 §Imazon Example
         seed_md = (
             "# Imazon Bookstore Domain\n\n"
             "Imazon sells books online. Key concepts: Title (keyed by ISBN-13), "
@@ -438,7 +445,7 @@ async def test_uc3_ontology_generation_with_real_llm(
         )
         assert create_seed_resp.status_code == 201, (
             f"POST seed failed: {create_seed_resp.status_code} {create_seed_resp.text}. "
-            "spec: USE_CASE_en.md §UC3 §Seeds steer inference — POST returns 201"
+            "spec: USE_CASE_en.md §UC3 §Imazon Example — POST returns 201"
         )
         seed_id = create_seed_resp.json()["seed_id"]
         assert seed_id, "server must assign a non-empty seed_id"
@@ -486,7 +493,7 @@ async def test_uc3_ontology_generation_with_real_llm(
         )
 
         # ── Step 3: POST real (non-dry-run) inference ─────────────────────────
-        # spec: USE_CASE_en.md §UC3 §Run semantics — non-dry-run persists rows
+        # spec: USE_CASE_en.md §UC3 §API Mapping — non-dry-run persists rows
         # spec: BACKEND_LLM.md §Adversarial Debate Framework — debate runs unconditionally
         run_resp = await api_client.post(
             "/api/v1/spoke/ontogen/method/run",
@@ -498,7 +505,7 @@ async def test_uc3_ontology_generation_with_real_llm(
         )
         assert run_resp.status_code == 200, (
             f"POST method/run failed: {run_resp.status_code} {run_resp.text}. "
-            "spec: USE_CASE_en.md §UC3 §Run semantics — method/run with is_enabled=True returns 200"
+            "spec: USE_CASE_en.md §UC3 §API Mapping — method/run with is_enabled=True returns 200"
         )
         run_body = run_resp.json()
         status = run_body.get("status")
@@ -526,8 +533,9 @@ async def test_uc3_ontology_generation_with_real_llm(
             )
 
         # ── Step 4: GET /event — find ONTOGEN.RUN_COMPLETE ───────────────────
-        # spec: BACKEND_LLM.md §Adversarial Debate Framework §Wiring — _run_inner emits
-        # debate_outcome, producer_iterations, producer_errors_dropped in event detail
+        # spec: BACKEND_LLM.md §Inference Loop (producer_iterations,
+        #   producer_errors_dropped) + §Evidence — the run's Langfuse session
+        #   (ONTOGEN.RUN_COMPLETE detail carries debate_outcome, producer_iterations)
         event_resp = await api_client.get(
             "/api/v1/spoke/ontogen/event?limit=20",
             headers=admin_headers,
@@ -561,17 +569,19 @@ async def test_uc3_ontology_generation_with_real_llm(
         )
         # run_id identifies the Langfuse session this run traced under; every row
         # this run persists carries it (see Step 5).
-        # spec: BACKEND_LLM.md §Evidence shape — session_id = run_id
+        # spec: BACKEND_LLM.md §Evidence — the run's Langfuse session — session_id = run_id
         run_id = detail.get("run_id")
         assert isinstance(run_id, str) and run_id, (
             f"event detail run_id must be a non-empty string; got {run_id!r}. "
-            "spec: BACKEND_LLM.md §Evidence shape — run_id = Langfuse session id"
+            "spec: BACKEND_LLM.md §Evidence — the run's Langfuse session — "
+            "run_id = Langfuse session id"
         )
 
         # ── Step 5: GET result/{node,edge,triple} + per-row run_id ─────────────
         # spec: USE_CASE_en.md §UC3 §API Mapping — list endpoints return paginated envelopes
-        # spec: BACKEND_LLM.md §Evidence shape — row.run_id = Langfuse session id
-        # spec: API.md §Standard Envelope
+        # spec: BACKEND_LLM.md §Evidence — the run's Langfuse session —
+        # row.run_id = Langfuse session id
+        # spec: API.md §Standard Response Envelope
         any_rows_found = False
         for result_type, list_key in [
             ("node", "nodes"),
@@ -588,30 +598,31 @@ async def test_uc3_ontology_generation_with_real_llm(
             list_body = list_resp.json()
             assert list_key in list_body, (
                 f"GET result/{result_type} response missing list field '{list_key}'. "
-                "spec: API.md §Standard Envelope"
+                "spec: API.md §Standard Response Envelope"
             )
             assert isinstance(list_body[list_key], list), (
                 f"GET result/{result_type} '{list_key}' must be a list. "
-                "spec: API.md §Standard Envelope"
+                "spec: API.md §Standard Response Envelope"
             )
             assert list_body.get("offset") == 0, (
                 f"GET result/{result_type} offset expected 0; got {list_body.get('offset')!r}. "
-                "spec: API.md §Standard Envelope"
+                "spec: API.md §Standard Response Envelope"
             )
             assert list_body.get("limit") == 10, (
                 f"GET result/{result_type} limit expected 10; got {list_body.get('limit')!r}. "
-                "spec: API.md §Standard Envelope"
+                "spec: API.md §Standard Response Envelope"
             )
             total = list_body.get("total_count")
             assert isinstance(total, int) and total >= 0, (
                 f"GET result/{result_type} total_count must be non-negative int; "
-                f"got {total!r}. spec: API.md §Standard Envelope"
+                f"got {total!r}. spec: API.md §Standard Response Envelope"
             )
             if total <= 10:
                 assert len(list_body[list_key]) == total, (
                     f"GET result/{result_type}: total_count={total} but list has "
                     f"{len(list_body[list_key])} entries — envelope incoherent. "
-                    "spec: API.md §Standard Envelope — total_count is the unpaginated row count"
+                    "spec: API.md §Standard Response Envelope — total_count is "
+                    "the unpaginated row count"
                 )
 
             # Every result row exposes a run_id field. Rows this run produced carry
@@ -620,11 +631,11 @@ async def test_uc3_ontology_generation_with_real_llm(
             # fixtures carry a different id or NULL. any_rows_found is the discriminating
             # signal — a NULL or swapped run_id on the new rows leaves no row matching
             # this run's id and fails the "produced ≥1 row" assertion below.
-            # spec: BACKEND_LLM.md §Evidence shape — row.run_id = session_id
+            # spec: BACKEND_LLM.md §Evidence — the run's Langfuse session — row.run_id = session_id
             for row in list_body[list_key]:
                 assert "run_id" in row, (
                     f"{result_type} {row['id']!r} missing run_id field. "
-                    "spec: BACKEND_LLM.md §Evidence shape"
+                    "spec: BACKEND_LLM.md §Evidence — the run's Langfuse session"
                 )
             if any(r.get("run_id") == run_id for r in list_body[list_key]):
                 any_rows_found = True

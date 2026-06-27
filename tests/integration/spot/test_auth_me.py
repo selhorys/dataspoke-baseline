@@ -30,8 +30,10 @@ async def me_user_token(integration_db_url: str) -> str:
     Uses DB seeding instead of /auth/register to avoid rate-limit exhaustion.
     Seeds via google_sub (password_hash=NULL) — these tests never call POST /auth/token.
     """
-    from sqlalchemy import pool as sa_pool, text
+    from sqlalchemy import pool as sa_pool
+    from sqlalchemy import text
     from sqlalchemy.ext.asyncio import create_async_engine
+
     from src.backend.auth.tokens import issue_access_token
 
     email = _unique_email("me-mod")
@@ -46,7 +48,12 @@ async def me_user_token(integration_db_url: str) -> str:
                     "INSERT INTO dataspoke.users (id, email, name, google_sub, role)"
                     " VALUES (:id, :email, :name, :google_sub, 'Reader')"
                 ),
-                {"id": str(user_id), "email": email, "name": "Original Name", "google_sub": google_sub},
+                {
+                    "id": str(user_id),
+                    "email": email,
+                    "name": "Original Name",
+                    "google_sub": google_sub,
+                },
             )
     finally:
         await engine.dispose()
@@ -74,7 +81,8 @@ async def test_get_me_bootstrap_admin_shape(
 ) -> None:
     """GET /auth/me returns correct shape for bootstrap admin.
 
-    spec: spec/API.md §Auth GET /auth/me — returns {id, email, name, has_google, role, created_at, updated_at};
+    spec: spec/API.md §Auth GET /auth/me — returns
+    {id, email, name, has_google, role, created_at, updated_at};
     password_hash is never returned.
     spec: spec/feature/AUTH.md §Identity Model — DataSpoke is the SSOT for user identity.
     """
@@ -82,7 +90,9 @@ async def test_get_me_bootstrap_admin_shape(
         "/api/v1/auth/me",
         headers={"Authorization": f"Bearer {admin_token}"},
     )
-    assert resp.status_code == 200, f"GET /auth/me must return 200, got {resp.status_code}: {resp.text}"
+    assert resp.status_code == 200, (
+        f"GET /auth/me must return 200, got {resp.status_code}: {resp.text}"
+    )
 
     me = resp.json()
 
@@ -98,7 +108,8 @@ async def test_get_me_bootstrap_admin_shape(
 
     # Bootstrap admin has role=Admin
     assert me["role"] == "Admin", (
-        "Bootstrap admin (dataspoke) must have Admin role per plan §Bootstrap"
+        "Bootstrap admin (dataspoke) must have Admin role "
+        "per spec/feature/AUTH.md §Built-in Bootstrap Admin"
     )
 
 
@@ -158,6 +169,7 @@ async def test_patch_me_password_update_allows_new_login(
     Uses create_user to produce the password hash — the test never sees the hash.
     """
     from sqlalchemy import text
+
     from src.backend.auth import users as user_service
 
     email = _unique_email("patch-pw")
@@ -198,8 +210,8 @@ async def test_patch_me_password_update_allows_new_login(
             json={"email": email, "password": "newpassword567"},
         )
         assert new_login.status_code == 200, (
-            f"New password must be accepted after PATCH /auth/me per spec/feature/AUTH.md §Lifecycle, "
-            f"got {new_login.status_code}"
+            f"New password must be accepted after PATCH /auth/me "
+            f"per spec/feature/AUTH.md §Lifecycle, got {new_login.status_code}"
         )
         assert "access_token" in new_login.json()
     finally:

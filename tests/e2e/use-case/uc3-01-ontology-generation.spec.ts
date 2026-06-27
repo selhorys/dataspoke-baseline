@@ -325,7 +325,7 @@ test("UC3 step 2 — create domain seed on /ontogen/seed page", async ({
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Step 3 — Trigger real (non-dry-run) inference via /ontogen/conf Run button
-// spec: USE_CASE_en.md §UC3 §Run semantics — non-dry-run persists rows
+// spec: spec/feature/BACKEND.md §Ontology Generation Service — non-dry-run persists rows
 // spec: FRONTEND_ONTOGEN.md §Page contracts — /ontogen/conf: POST method/run via RunDialog
 //   ("Edit and Run controls sit top-right ... Run opens a dialog (POST .../method/run)")
 // ─────────────────────────────────────────────────────────────────────────────
@@ -423,7 +423,7 @@ test("UC3 step 3 (stub mode) — trigger Run from /ontogen/conf; assert OntogenR
   expect(prodErr as number).toBeGreaterThanOrEqual(0);
 
   // -- Backend probe: POST method/run to verify OntogenRunSummary shape --
-  // spec: USE_CASE_en.md §UC3 §Run semantics — 200, dry_run=false, counts dict
+  // spec: API.md §Ontology Generation (/spoke/ontogen) — method/run: 200, dry_run=false, counts dict
   // NOTE: This fires a SECOND run to probe the shape. Under stub this is fast and harmless.
   const runResp = await adminApi.post(RUN_API);
   expect(runResp.status()).toBe(200);
@@ -598,7 +598,7 @@ test("UC3 step 4 (stub mode) — /ontogen/result tables + status filter + Graph 
 // Step 4b — Revoke an approved node from the result table → status flips to rejected
 // spec: FRONTEND_ONTOGEN.md §Page contracts — "review actions are status-adaptive; an approved
 //   row is revocable (offers Reject)." review-row.tsx surfaces Reject for status==="approved".
-// spec: USE_CASE_en.md §UC3 — a steward can reverse an approval decision.
+// spec: FRONTEND_ONTOGEN.md §Page contracts — an approved row is revocable (offers Reject).
 //
 // Data-conditional: rows exist only after a real-LLM run (stub runs persist zero). When the result
 // set is empty (stub default) the revoke gesture has nothing to act on, so the round-trip is
@@ -676,12 +676,12 @@ test("UC3 step 4b — revoke an approved node via the result table (Reject) roun
   // review-row.tsx — DialogFooter Confirm button fires the review mutation.
   await rejectDialog.getByRole("button", { name: /^confirm$/i }).click();
 
-  // -- UI assertion: a "node rejectd" toast confirms the review posted --
-  // review-row.tsx — onSuccess toast title `${kind} ${verdict}d` → "node rejectd".
-  await expect(page.getByText(/node rejectd/i).first()).toBeVisible({ timeout: 15_000 });
+  // -- UI assertion: a "node rejected" toast confirms the review posted --
+  // review-row.tsx — onSuccess toast title `${kind} <past-tense verdict>` → "node rejected".
+  await expect(page.getByText(/node rejected/i).first()).toBeVisible({ timeout: 15_000 });
 
   // -- Backend probe (dual confirmation): GET the node → status === "rejected" --
-  // spec: USE_CASE_en.md §UC3 — revoke flips an approved row to rejected; the read-back reflects it.
+  // spec: FRONTEND_ONTOGEN.md §Page contracts — revoke (Reject on an approved row) flips it to rejected; the read-back reflects it.
   await expect
     .poll(
       async () => {

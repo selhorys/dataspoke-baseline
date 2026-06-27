@@ -7,7 +7,7 @@ Tests spec-mandated public surface: ensure_collection, upsert, search, delete.
 - delete is a no-op for an empty ids list (no DB call).
 - check_connectivity returns True on successful DB ping, False on failure.
 
-spec: feature/BACKEND.md §Vector Search Service — PgVectorManager wraps pgvector;
+spec: feature/BACKEND.md §Shared Services (Vector row) — PgVectorManager wraps pgvector;
       collection name must match EMBEDDING_COLLECTION (whitelist guard).
 """
 
@@ -31,7 +31,7 @@ def _make_manager() -> PgVectorManager:
 def test_validate_collection_raises_for_unknown_name() -> None:
     """PgVectorManager must reject collection names outside EMBEDDING_COLLECTION.
 
-    spec: feature/BACKEND.md §Vector Search Service — collection whitelist prevents
+    spec: feature/BACKEND.md §Shared Services (Vector row) — collection whitelist prevents
           SQL injection via table-name interpolation.
     """
     mgr = _make_manager()
@@ -42,7 +42,7 @@ def test_validate_collection_raises_for_unknown_name() -> None:
 def test_validate_collection_accepts_embedding_collection() -> None:
     """PgVectorManager must accept EMBEDDING_COLLECTION without raising.
 
-    spec: feature/BACKEND.md §Vector Search Service — EMBEDDING_COLLECTION is the
+    spec: feature/BACKEND.md §Shared Services (Vector row) — EMBEDDING_COLLECTION is the
           only valid collection name.
     """
     mgr = _make_manager()
@@ -57,7 +57,7 @@ def test_validate_collection_accepts_embedding_collection() -> None:
 async def test_search_raises_for_unsupported_filter_key() -> None:
     """PgVectorManager.search raises NotImplementedError for unsupported filter keys.
 
-    spec: feature/BACKEND.md §Vector Search Service — only 'platform' and 'has_pii'
+    spec: feature/BACKEND.md §Shared Services (Vector row) — only 'platform' and 'has_pii'
           are supported filter keys; unknown keys raise loudly.
     """
     # Need a real session that returns empty rows when execute is called
@@ -87,7 +87,7 @@ async def test_search_raises_for_unsupported_filter_key() -> None:
 async def test_upsert_no_op_for_empty_hits() -> None:
     """PgVectorManager.upsert does not raise when hits is empty.
 
-    spec: feature/BACKEND.md §Vector Search Service — empty upsert must not fail.
+    spec: feature/BACKEND.md §Shared Services (Vector row) — empty upsert must not fail.
     """
     mock_factory = MagicMock()
     mgr = PgVectorManager(session_factory=mock_factory)
@@ -103,7 +103,7 @@ async def test_upsert_no_op_for_empty_hits() -> None:
 async def test_delete_no_op_for_empty_ids() -> None:
     """PgVectorManager.delete does not raise when ids is empty.
 
-    spec: feature/BACKEND.md §Vector Search Service — empty delete must not fail.
+    spec: feature/BACKEND.md §Shared Services (Vector row) — empty delete must not fail.
     """
     mock_factory = MagicMock()
     mgr = PgVectorManager(session_factory=mock_factory)
@@ -119,7 +119,7 @@ async def test_delete_no_op_for_empty_ids() -> None:
 async def test_check_connectivity_returns_true_on_success() -> None:
     """PgVectorManager.check_connectivity returns True when DB is reachable.
 
-    spec: feature/BACKEND.md §Vector Search Service — connectivity check for health.
+    spec: feature/BACKEND.md §Shared Services (Vector row) — connectivity check for health.
     """
     mock_session = AsyncMock()
     mock_session.execute = AsyncMock()
@@ -136,7 +136,7 @@ async def test_check_connectivity_returns_true_on_success() -> None:
 async def test_check_connectivity_returns_false_on_exception() -> None:
     """PgVectorManager.check_connectivity returns False when DB is unreachable.
 
-    spec: feature/BACKEND.md §Vector Search Service — graceful False on failure.
+    spec: feature/BACKEND.md §Shared Services (Vector row) — graceful False on failure.
     """
     mock_factory = MagicMock()
     mock_factory.return_value.__aenter__ = AsyncMock(side_effect=Exception("db down"))
@@ -153,7 +153,7 @@ async def test_check_connectivity_returns_false_on_exception() -> None:
 def test_vector_hit_has_required_fields() -> None:
     """VectorHit must carry dataset_urn, score, payload, and embedding.
 
-    spec: feature/BACKEND.md §Vector Search Service — VectorHit shape.
+    spec: feature/BACKEND.md §Shared Services (Vector row) — VectorHit shape.
     """
     hit = VectorHit(dataset_urn="urn:li:dataset:test", score=0.95)
     assert hit.dataset_urn == "urn:li:dataset:test"

@@ -441,8 +441,8 @@ async def test_delete_conf_raises_not_found_when_absent(svc, db) -> None:
 async def test_enumerate_in_scope_calls_datahub_with_origin(svc, db, datahub) -> None:
     """_enumerate_in_scope_datasets passes origin from conf.dataset_filter to DataHub.
 
-    Spec: feature/BACKEND.md §UC4 dataset_filter — origin AND-ed with the OR-group
-    when resolving scope; forwarded as-is to DataHub.
+    Spec: feature/BACKEND.md §Metadata Generation Service — dataset_filter origin
+    AND-ed with the OR-group when resolving scope; forwarded as-is to DataHub.
     """
     datahub.enumerate_datasets = AsyncMock(return_value=[_VALID_URN])
 
@@ -490,7 +490,7 @@ async def test_enumerate_in_scope_empty_override_falls_through_to_conf_urns(
 ) -> None:
     """override_urns=[] falls through to conf.dataset_filter.dataset_urns.
 
-    Spec: API.md §UC4 metagen method/run — body dataset_urns narrows scope; an empty
+    Spec: API.md §Metadata Generation (/spoke/metagen) — body dataset_urns narrows scope; empty
     list must not suppress the conf's own dataset_urns.
     """
     _CONF_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.t_conf,DEV)"

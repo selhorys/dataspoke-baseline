@@ -173,8 +173,9 @@ class TestMetagenConfCreateRequest:
     def test_origin_only_accepted(self) -> None:
         """dataset_filter={"origin": "DEV"} is accepted.
 
-        Spec: API.md §UC4 — dataset_filter unified four-dimension shape;
-              origin is an optional AND-filter forwarded to DataHub.
+        Spec: API.md §Governance — Metric (Definition body) — dataset_filter unified
+              four-dimension shape (shared by UC4); origin is an optional AND-filter
+              forwarded to DataHub.
         """
         req = MetagenConfCreateRequest(name="c", dataset_filter={"origin": "DEV"})
         assert req.dataset_filter == {"origin": "DEV"}
@@ -182,7 +183,8 @@ class TestMetagenConfCreateRequest:
     def test_empty_origin_raises(self) -> None:
         """dataset_filter={"origin": ""} raises ValidationError.
 
-        Spec: API.md §dataset_filter — empty-or-whitespace origin rejected at POST/PUT/PATCH.
+        Spec: API.md §Governance — Metric (Definition body) — empty-or-whitespace origin
+        rejected at POST/PUT/PATCH.
         """
         with pytest.raises(ValidationError):
             MetagenConfCreateRequest(name="c", dataset_filter={"origin": ""})
@@ -266,7 +268,8 @@ class TestMetagenConfPatchRequest:
     def test_empty_origin_raises(self) -> None:
         """PATCH with dataset_filter={"origin": ""} raises ValidationError.
 
-        Spec: API.md §dataset_filter — empty-or-whitespace origin rejected at POST/PUT/PATCH.
+        Spec: API.md §Governance — Metric (Definition body) — empty-or-whitespace origin
+        rejected at POST/PUT/PATCH.
         """
         with pytest.raises(ValidationError):
             MetagenConfPatchRequest(dataset_filter={"origin": ""})

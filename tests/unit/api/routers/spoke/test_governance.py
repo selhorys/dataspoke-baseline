@@ -166,7 +166,7 @@ async def test_post_metric_create_passive_mode_returns_501(
 ) -> None:
     """POST /spoke/governance/metric with mode='passive' returns 501 NOT_IMPLEMENTED.
 
-    Spec: spec/USE_CASE_en.md §UC5 §Modes — passive is reserved; POST with
+    Spec: API.md §Governance — Metric (Definition body) — passive mode is reserved; POST with
           mode:'passive' returns 501 NOT_IMPLEMENTED.
     Spec: spec/API.md §Metric — 'passive' mode reserved.
     """
@@ -189,7 +189,7 @@ async def test_post_metric_create_passive_mode_returns_501(
 
     assert resp.status_code == 501, (
         f"Expected 501 for mode='passive' on POST create, got {resp.status_code}: {resp.text}. "
-        "Spec: spec/USE_CASE_en.md §UC5 §Modes."
+        "Spec: API.md §Governance — Metric (Definition body) — passive mode → 501."
     )
     body = resp.json()
     assert body.get("error_code") == "NOT_IMPLEMENTED", (
@@ -325,7 +325,7 @@ async def test_put_metric_conf_passive_mode_returns_501(
 ) -> None:
     """PUT .../attr/conf with mode='passive' returns 501 NOT_IMPLEMENTED.
 
-    Spec: spec/USE_CASE_en.md §UC5 §Modes — passive is reserved; PUT with
+    Spec: API.md §Governance — Metric (Definition body) — passive mode is reserved; PUT with
           mode:'passive' returns 501 NOT_IMPLEMENTED.
     """
     resp = await client.put(
@@ -346,7 +346,7 @@ async def test_put_metric_conf_passive_mode_returns_501(
 
     assert resp.status_code == 501, (
         f"Expected 501 for mode='passive' on PUT replace, got {resp.status_code}: {resp.text}. "
-        "Spec: spec/USE_CASE_en.md §UC5 §Modes."
+        "Spec: API.md §Governance — Metric (Definition body) — passive mode → 501."
     )
     body = resp.json()
     assert body.get("error_code") == "NOT_IMPLEMENTED"
@@ -369,10 +369,8 @@ async def test_post_metric_run_disabled_returns_409(
     Proves the guard fires upstream of both airflow.trigger_and_wait and cache.set_nx,
     so neither is called when the metric is disabled.
 
-    spec: USE_CASE_en.md §UC5 — "When is_enabled=false, non-dry-run calls to
-    method/run on a metric return 409 METRIC_DISABLED. Dry-run is always
-    permitted regardless of is_enabled." (L739)
-    spec: API.md §Metric (/spoke/governance/metric) — POST /{metric_id}/method/run
+    spec: API.md §Governance — Metric (/spoke/governance/metric) — POST /{metric_id}/method/run
+    is "Rejected with 409 METRIC_DISABLED when the metric is disabled and dry_run is not true".
     """
     metric_id = "ingestion-freshness"
     definition = _make_definition_record(metric_id=metric_id, is_enabled=False)

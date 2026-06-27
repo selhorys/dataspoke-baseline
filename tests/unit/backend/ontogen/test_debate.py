@@ -238,33 +238,33 @@ async def test_run_debate_accepts_turn_1() -> None:
         "spec: BACKEND_LLM.md §Loop shape"
     )
 
-    # spec: §Evidence shape — payload is the Producer's candidate
+    # spec: §Evidence (impl: ontogen/debate.py) — payload is the Producer's candidate
     assert result.payload == _producer_payload_1(), (
         f"Expected P1 payload; got {result.payload!r}. "
-        "spec: BACKEND_LLM.md §Evidence shape"
+        "spec: BACKEND_LLM.md §Evidence (impl: ontogen/debate.py)"
     )
 
     history = result.transcript["history"]
     assert len(history) == 2, (
         f"Expected 2 history entries; got {len(history)}. "
-        "spec: BACKEND_LLM.md §Evidence shape §history"
+        "spec: BACKEND_LLM.md §Evidence history (impl: ontogen/debate.py)"
     )
     assert history[0]["actor"] == "producer" and history[0]["turn"] == 0, (
         f"First history entry must be Producer turn 0; got {history[0]!r}. "
-        "spec: BACKEND_LLM.md §Evidence shape §history"
+        "spec: BACKEND_LLM.md §Evidence history (impl: ontogen/debate.py)"
     )
     assert history[1]["actor"] == "reviewer" and history[1]["turn"] == 1, (
         f"Second history entry must be Reviewer turn 1; got {history[1]!r}. "
-        "spec: BACKEND_LLM.md §Evidence shape §history"
+        "spec: BACKEND_LLM.md §Evidence history (impl: ontogen/debate.py)"
     )
     assert history[1].get("verdict") == "accept", (
         f"Reviewer turn 1 verdict must be 'accept'; got {history[1].get('verdict')!r}. "
         "spec: BACKEND_LLM.md §Termination"
     )
-    # spec: §Evidence shape — candidate_hash present on producer entry
+    # spec: §Evidence (impl: ontogen/debate.py) — candidate_hash present on producer entry
     assert "candidate_hash" in history[0], (
         "Producer history entry must carry candidate_hash. "
-        "spec: BACKEND_LLM.md §Evidence shape"
+        "spec: BACKEND_LLM.md §Evidence (impl: ontogen/debate.py)"
     )
 
 
@@ -312,7 +312,7 @@ async def test_run_debate_revise_then_accept() -> None:
     history = result.transcript["history"]
     assert len(history) == 4, (
         f"Expected 4 history entries; got {len(history)}. "
-        "spec: BACKEND_LLM.md §Evidence shape"
+        "spec: BACKEND_LLM.md §Evidence (impl: ontogen/debate.py)"
     )
     actors = [(e["actor"], e["turn"]) for e in history]
     assert actors == [
@@ -322,7 +322,7 @@ async def test_run_debate_revise_then_accept() -> None:
         ("reviewer", 3),
     ], (
         f"History actors/turns out of order: {actors!r}. "
-        "spec: BACKEND_LLM.md §Evidence shape §history"
+        "spec: BACKEND_LLM.md §Evidence history (impl: ontogen/debate.py)"
     )
 
     # Reviewer turn 3 verdict must be accept
@@ -383,7 +383,7 @@ async def test_run_debate_turns_exhausted() -> None:
     history = result.transcript["history"]
     assert len(history) == 4, (
         f"Expected 4 history entries on turns_exhausted; got {len(history)}. "
-        "spec: BACKEND_LLM.md §Evidence shape"
+        "spec: BACKEND_LLM.md §Evidence (impl: ontogen/debate.py)"
     )
 
 
@@ -442,7 +442,7 @@ async def test_run_debate_cycle_detected() -> None:
     # There must be at least 3 entries: P(0), R(1), P(2-cycle)
     assert len(history) >= 3, (
         f"Expected ≥3 history entries (P0, R1, P2-cycle); got {len(history)}. "
-        "spec: BACKEND_LLM.md §Evidence shape"
+        "spec: BACKEND_LLM.md §Evidence (impl: ontogen/debate.py)"
     )
     # The cycle-trigger turn must be recorded with the producer actor
     cycle_turn = history[-1]
@@ -454,7 +454,7 @@ async def test_run_debate_cycle_detected() -> None:
     # candidate_hash must be present so the human reviewer can identify the cycle
     assert "candidate_hash" in cycle_turn, (
         "Cycle-trigger producer entry must carry candidate_hash. "
-        "spec: BACKEND_LLM.md §Evidence shape"
+        "spec: BACKEND_LLM.md §Evidence (impl: ontogen/debate.py)"
     )
 
 
@@ -524,7 +524,7 @@ async def test_run_debate_cycle_detected_skip_one_pattern() -> None:
     # Must have ≥ 5 entries: P(0), R(1), P(2), R(3), P(4-cycle)
     assert len(history) >= 5, (
         f"Expected ≥5 history entries (P0, R1, P2, R3, P4-cycle); got {len(history)}. "
-        "spec: BACKEND_LLM.md §Evidence shape"
+        "spec: BACKEND_LLM.md §Evidence (impl: ontogen/debate.py)"
     )
     # The cycle-trigger turn (last entry) must be actor='producer'
     assert history[-1]["actor"] == "producer", (
@@ -635,7 +635,7 @@ async def test_run_debate_empty_rag_anchors_cold_start() -> None:
     # rag_anchors list must exist and be empty (no approved items to sample from)
     assert result.transcript["rag_anchors"] == [], (
         f"Expected empty rag_anchors list on cold start; got {result.transcript['rag_anchors']!r}. "
-        "spec: BACKEND_LLM.md §Evidence shape"
+        "spec: BACKEND_LLM.md §Evidence (impl: ontogen/debate.py)"
     )
 
 
@@ -648,9 +648,9 @@ async def test_run_debate_empty_rag_anchors_cold_start() -> None:
 async def test_run_debate_reviewer_model_override() -> None:
     """When reviewer_model is set, make_llm_client(model_override=...) is called for the Reviewer.
 
-    Spec: BACKEND_LLM.md §Settings Reference — DATASPOKE_ONTOGEN_DEBATE_REVIEWER_MODEL
-    — 'When set, instantiate a second LLMClient with the override model for the Reviewer
-    turns only.'
+    Spec: BACKEND_LLM.md §Settings Reference §Runtime configuration —
+    `ontogen_debate_reviewer_model` (default null → reuse `llm_model`). When set, the
+    Reviewer turns use a second LLMClient built with the override model.
 
     The test patches make_llm_client at its import site in debate.py and asserts it was
     called with model_override='some-other-model'. make_llm_client() is the spec-mandated
@@ -724,7 +724,8 @@ async def test_run_debate_threads_stub_llm_client_to_reviewer_model(stub_flag: b
     test only asserts model_override presence.  This test asserts the stub kwarg is also
     present — with both True and False values.
 
-    Spec: src/backend/ontogen/debate.py — make_llm_client(stub=stub_llm_client, ...) when reviewer_model is set.
+    Spec: src/backend/ontogen/debate.py — make_llm_client(stub=stub_llm_client, ...)
+    when reviewer_model is set.
     Spec: feature/BACKEND_LLM.md §Adversarial Debate Framework — Reviewer constructed via factory.
     """
     producer_llm = FakeLLM([
@@ -779,7 +780,8 @@ async def test_run_debate_threads_stub_llm_client_to_reviewer_model(stub_flag: b
         "make_llm_client must be called when reviewer_model is set."
     )
     assert mock_make_llm_client.call_args.kwargs.get("stub") is stub_flag, (
-        f"run_debate must pass stub={stub_flag!r} to make_llm_client when stub_llm_client={stub_flag!r}; "
+        f"run_debate must pass stub={stub_flag!r} to make_llm_client "
+        f"when stub_llm_client={stub_flag!r}; "
         f"actual call kwargs: {mock_make_llm_client.call_args.kwargs!r}. "
         "Spec: src/backend/ontogen/debate.py — make_llm_client(stub=stub_llm_client, ...)."
     )
@@ -824,7 +826,7 @@ async def test_producer_rebuttal_surfaces_in_transcript() -> None:
     )
     assert producer_turn_2 is not None, (
         f"Expected a producer entry at turn 2; history={history!r}. "
-        "spec: BACKEND_LLM.md §Evidence shape §history"
+        "spec: BACKEND_LLM.md §Evidence history (impl: ontogen/debate.py)"
     )
     assert producer_turn_2.get("rebuttals") == [
         "Confidence reflects a fully-profiled primary key."
@@ -840,5 +842,5 @@ async def test_producer_rebuttal_surfaces_in_transcript() -> None:
     )
     assert "rebuttals" not in producer_turn_0, (
         f"Turn-0 producer had no rebuttal; entry must omit 'rebuttals'. "
-        f"got {producer_turn_0!r}. spec: BACKEND_LLM.md §Evidence shape"
+        f"got {producer_turn_0!r}. spec: BACKEND_LLM.md §Evidence (impl: ontogen/debate.py)"
     )

@@ -46,7 +46,9 @@ async def test_register_valid_user_returns_tokens(
     body = resp.json()
     assert "access_token" in body, "register response must include access_token"
     assert "expires_in" in body, "register response must include expires_in"
-    assert body["expires_in"] == 900, "expires_in must be 900s (15 min) per spec/API.md §Token Strategy"
+    assert body["expires_in"] == 900, (
+        "expires_in must be 900s (15 min) per spec/API.md §Token Strategy"
+    )
 
     # Refresh token must be in the HttpOnly cookie
     assert "refresh_token" in resp.cookies, (
@@ -139,7 +141,8 @@ async def test_register_short_password_returns_422(
         json={"email": _unique_email(), "name": "Short Pass", "password": "short"},
     )
     assert resp.status_code == 422, (
-        f"Password < 10 chars must return 422 per spec/feature/AUTH.md §Lifecycle §Registration, "
+        f"Password < 10 chars must return 422 "
+        f"per spec/feature/AUTH.md §Lifecycle §Email + password registration, "
         f"got {resp.status_code}"
     )
 
@@ -148,7 +151,7 @@ async def test_register_short_password_returns_422(
 async def test_register_case_insensitive_duplicate_email_returns_409(
     api_client: httpx.AsyncClient,
 ) -> None:
-    """Second registration with a case-variant of an existing email returns 409 EMAIL_ALREADY_REGISTERED.
+    """Case-variant of an existing email on re-register returns 409 EMAIL_ALREADY_REGISTERED.
 
     The users.email column is CITEXT — case-insensitive unique. Registering
     'FOO@example.com' when 'foo@example.com' is already registered must be rejected.

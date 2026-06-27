@@ -43,9 +43,9 @@ class TestParseEnvFromConfig:
     datasets when an ingestion recipe does not pin ``env``.  When the recipe DOES
     pin ``env``, the recipe value wins.
 
-    spec: spec/feature/BACKEND.md §ingestion — recipe omits ``env`` → extractor
-        falls back to the peripheral's configured ``default_env`` (line ~273).
-    spec: spec/API.md §/admin/peripherals/datahub — ``default_env`` applied when an
+    spec: spec/feature/BACKEND.md §Ingestion Service — recipe omits ``env`` → extractor
+        falls back to the peripheral's configured ``default_env``.
+    spec: spec/API.md §Admin (/admin/peripherals/datahub) — ``default_env`` applied when an
         ingestion recipe omits ``env``.
     """
 
@@ -56,7 +56,7 @@ class TestParseEnvFromConfig:
         result = _parse_env_from_config({"database": "imazon"}, default_env="PROD")
         assert result == "PROD", (
             "A recipe without 'env' must adopt the configured default_env. "
-            "spec: spec/feature/BACKEND.md §ingestion."
+            "spec: spec/feature/BACKEND.md §Ingestion Service."
         )
 
     def test_recipe_env_overrides_configured_default_env(self) -> None:
@@ -66,7 +66,7 @@ class TestParseEnvFromConfig:
         result = _parse_env_from_config({"env": "QA"}, default_env="PROD")
         assert result == "QA", (
             "An explicit recipe 'env' must override the configured default_env. "
-            "spec: spec/feature/BACKEND.md §ingestion."
+            "spec: spec/feature/BACKEND.md §Ingestion Service."
         )
 
     def test_default_env_fallback_is_dev_when_caller_omits_it(self) -> None:
@@ -74,7 +74,7 @@ class TestParseEnvFromConfig:
 
         # When neither the recipe nor the caller supplies a fabric, 'DEV' is the
         # documented baseline default.
-        # spec: spec/API.md §/admin/peripherals/datahub — factory default_env → DEV.
+        # spec: spec/API.md §Admin (/admin/peripherals/datahub) — factory default_env → DEV.
         assert _parse_env_from_config({}) == "DEV"
 
 

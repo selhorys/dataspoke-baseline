@@ -543,7 +543,8 @@ async def test_metagen_boundary_put_allowed_validation_422(
 ) -> None:
     """PUT boundary with an invalid kind in allowed returns 422.
 
-    spec: API.md §Metadata Generation — allowed ∈ {dataset.description, column.description}.
+    spec: API.md §Data Resource — PUT attr/metagen/boundary sets element kinds
+      allowed ∈ {dataset.description, column.description}.
     """
     boundary_url = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/boundary"
     resp = await api_client.put(
@@ -553,5 +554,5 @@ async def test_metagen_boundary_put_allowed_validation_422(
     )
     assert resp.status_code == 422, (
         f"Invalid allowed kind must return 422; got {resp.status_code} {resp.text}. "
-        "spec: API.md §Metadata Generation — allowed Literal"
+        "spec: API.md §Data Resource — attr/metagen/boundary allowed Literal"
     )

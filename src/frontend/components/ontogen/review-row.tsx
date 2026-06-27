@@ -65,7 +65,7 @@ export function ReviewRow({ id, kind, status, disabled = false, disabledHint }: 
         onSuccess: () => {
           setReason("");
           setActiveVerdict(null);
-          toast({ title: `${kind} ${verdict}d` });
+          toast({ title: `${kind} ${verdict === "approve" ? "approved" : "rejected"}` });
         },
         onError: (err) => {
           toast({ title: "Review failed", description: err.message, variant: "destructive" });

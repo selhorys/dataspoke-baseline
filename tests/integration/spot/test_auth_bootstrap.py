@@ -6,8 +6,9 @@ Concerns covered:
 - Bootstrap endpoint requires X-Internal-Token header (401 without it)
 - Bootstrap admin's corpuser exists in DataHub after bootstrap with active=True
 
-spec: plan §Bootstrap — first-admin bootstrap = built-in default dataspoke@dataspoke.local/dataspoke.
-spec: spec/API.md §Internal — /internal/* routes gated by X-Internal-Token.
+spec: spec/feature/AUTH.md §Built-in Bootstrap Admin — first-admin bootstrap =
+      built-in default dataspoke@dataspoke.local/dataspoke.
+spec: spec/API.md §Internal Admin (/internal/admin) — /internal/* routes gated by X-Internal-Token.
 spec: spec/feature/AUTH.md §DataHub Mirror Semantics §Mirror create sequence —
       bootstrap admin is mirrored to DataHub like any registered user.
 """
@@ -21,10 +22,11 @@ async def test_bootstrap_is_idempotent(
     api_client: httpx.AsyncClient,
     internal_headers: dict[str, str],
 ) -> None:
-    """Two consecutive calls to /internal/admin/bootstrap: first may create, second always returns created=False.
+    """Two calls to /internal/admin/bootstrap: first may create, second returns created=False.
 
-    spec: plan §Bootstrap — if no Admin exists, creates the bootstrap admin (created=True);
-    if any Admin already exists, returns 200 with {created: false} (idempotent no-op).
+    spec: spec/feature/AUTH.md §Built-in Bootstrap Admin — if no Admin exists, creates the
+    bootstrap admin (created=True); if any Admin already exists, returns 200 with
+    {created: false} (idempotent no-op).
     """
     # First call — may already have been bootstrapped; both cases are valid
     first = await api_client.post(
@@ -46,7 +48,7 @@ async def test_bootstrap_is_idempotent(
     assert second.status_code == 200, f"Second bootstrap call must return 200: {second.text}"
     assert second.json()["created"] is False, (
         "Second bootstrap call must return created=False (idempotent) "
-        "per plan §Bootstrap"
+        "per spec/feature/AUTH.md §Built-in Bootstrap Admin"
     )
 
 
@@ -56,7 +58,8 @@ async def test_bootstrap_requires_internal_token(
 ) -> None:
     """/internal/admin/bootstrap without X-Internal-Token returns 401.
 
-    spec: spec/API.md §Internal — /internal/* gated by X-Internal-Token shared-secret header.
+    spec: spec/API.md §Internal Admin (/internal/admin) — /internal/* gated by
+    X-Internal-Token shared-secret header.
     """
     resp = await api_client.post(
         "/internal/admin/bootstrap",
@@ -65,7 +68,7 @@ async def test_bootstrap_requires_internal_token(
     )
     assert resp.status_code == 401, (
         f"/internal/admin/bootstrap without X-Internal-Token must return 401 "
-        f"per spec/API.md §Internal, got {resp.status_code}"
+        f"per spec/API.md §Internal Admin (/internal/admin), got {resp.status_code}"
     )
 
 
@@ -76,7 +79,8 @@ async def test_bootstrap_admin_can_login(
 ) -> None:
     """After bootstrap, dataspoke@dataspoke.local/dataspoke credentials work for login.
 
-    spec: plan §Bootstrap — built-in default dataspoke@dataspoke.local/dataspoke (parallel to DataHub's datahub/datahub).
+    spec: spec/feature/AUTH.md §Built-in Bootstrap Admin — built-in default
+    dataspoke@dataspoke.local/dataspoke (parallel to DataHub's datahub/datahub).
     """
     # Ensure bootstrap has run
     await api_client.post(
@@ -91,7 +95,8 @@ async def test_bootstrap_admin_can_login(
         json={"email": "dataspoke@dataspoke.local", "password": "dataspoke"},
     )
     assert login.status_code == 200, (
-        f"Bootstrap admin dataspoke@dataspoke.local/dataspoke must be able to login per plan §Bootstrap, "
+        f"Bootstrap admin dataspoke@dataspoke.local/dataspoke must be able to login "
+        f"per spec/feature/AUTH.md §Built-in Bootstrap Admin, "
         f"got {login.status_code}: {login.text}"
     )
     assert "access_token" in login.json()
@@ -108,7 +113,8 @@ async def test_bootstrap_admin_corpuser_exists_in_datahub(
     spec: spec/feature/AUTH.md §DataHub Mirror Semantics §Mirror create sequence —
           every managed user, including the bootstrap admin, is mirrored into DataHub
           as a corpuser with the corpUserInfo aspect.
-    spec: plan §Bootstrap — built-in default dataspoke@dataspoke.local/dataspoke; corpuser URN
+    spec: spec/feature/AUTH.md §Built-in Bootstrap Admin — built-in default
+          dataspoke@dataspoke.local/dataspoke; corpuser URN
           urn:li:corpuser:dataspoke@dataspoke.local.
     """
     from datahub.metadata.schema_classes import CorpUserInfoClass

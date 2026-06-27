@@ -388,6 +388,8 @@ where the ordering is `Admin > Editor > Reader`. This means:
 - Promoting a user does **not** automatically elevate their existing
   tokens; the user must mint a new token to gain the higher privilege via
   PAT. (Mint time is fast; no migration concern.)
+- A token whose hash matches no stored token fails authentication with
+  `401 INVALID_API_TOKEN`.
 - A revoked token (`revoked_at IS NOT NULL`) fails authentication with
   `401 TOKEN_REVOKED` regardless of the owner's current role.
 - An expired token (`expires_at` in the past) fails with `401 TOKEN_EXPIRED`.
@@ -554,6 +556,14 @@ exchange. The callback rejects ID tokens with `email_verified=false`
 resolve to a DataSpoke account. If the credentials or the session
 secret are unset, `/auth/google/{login,callback}` returns
 `503 OAUTH_NOT_CONFIGURED`.
+
+### Token-type confusion rejected
+
+The access-token decoder rejects a JWT carrying `type = "refresh"` (→ `401`),
+so a refresh token cannot be replayed on the `Authorization: Bearer` header to
+authenticate a request. Symmetrically, the refresh endpoint accepts only
+`type = "refresh"` JWTs (an access token presented there fails with
+`INVALID_REFRESH_TOKEN`). Each token type is honoured only on its own path.
 
 ### Password storage
 

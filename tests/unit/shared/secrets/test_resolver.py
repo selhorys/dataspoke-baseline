@@ -307,8 +307,9 @@ class TestVerifySecretRef:
     def test_calls_backend_verify_not_read_value(self, fake: FakeBackend) -> None:
         """verify_secret_ref calls backend.verify(), not backend.read_value().
 
-        Spec: SECRET_RESOLUTION.md §Design — 'Verify must stay distinct from read:
-        current verify never base64-decodes … never consults the cache.'
+        Verify is the save-time existence check (SECRET_RESOLUTION.md §Reference
+        verify flow); it routes through backend.verify() and never reads or
+        decodes the value. Impl-backed in src/shared/secrets/_resolver.py.
         """
         verify_secret_ref("team-pg__password")
         assert fake.verify_calls == [("team-pg", "password")]
@@ -317,8 +318,10 @@ class TestVerifySecretRef:
     def test_verify_does_not_populate_cache(self, fake: FakeBackend) -> None:
         """verify does not write to the cache.
 
-        Spec: SECRET_RESOLUTION.md §Design — verify 'never consults the cache … a
-        just-deleted Secret must fail verify even with a <60s-old cache entry'.
+        The 60s cache (SECRET_RESOLUTION.md §Cache) is populated only by the
+        run-time resolve flow; verify bypasses it, so a just-deleted Secret
+        still fails verify even with a recent cache entry. Impl-backed in
+        src/shared/secrets/_resolver.py.
         """
         verify_secret_ref("team-pg__password")
         assert ("team-pg", "password") not in _resolver._cache
@@ -328,7 +331,9 @@ class TestVerifySecretRef:
     ) -> None:
         """A cached resolve does not satisfy a subsequent verify — backend is still called.
 
-        Spec: SECRET_RESOLUTION.md §Design — verify bypasses the cache entirely.
+        Verify bypasses the resolve cache (SECRET_RESOLUTION.md §Cache covers
+        the resolve-path cache only). Impl-backed in
+        src/shared/secrets/_resolver.py.
         """
         resolve_secret_ref("team-pg__password")
         assert ("team-pg", "password") in _resolver._cache  # cached

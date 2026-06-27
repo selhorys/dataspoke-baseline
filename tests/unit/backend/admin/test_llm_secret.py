@@ -103,7 +103,7 @@ def flush_cache():
     """Evict the module-level cache before and after every test.
 
     Prevents cache state from leaking across tests in the same process.
-    spec: task brief — autouse fixture calls invalidate_llm_api_key_cache().
+    spec: BACKEND_LLM.md §LLM API key — autouse fixture calls invalidate_llm_api_key_cache().
     """
     invalidate_llm_api_key_cache()
     yield

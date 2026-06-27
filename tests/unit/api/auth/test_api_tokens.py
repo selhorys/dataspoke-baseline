@@ -206,7 +206,8 @@ async def test_intersection_snapshot_admin_current_reader_returns_reader() -> No
 
     assert effective_role == "Reader", (
         "min(Admin, Reader) must be Reader — demoting a user immediately downgrades all "
-        "their existing tokens per spec/feature/AUTH.md §API Tokens §Effective privilege"
+        "their existing tokens per spec/feature/AUTH.md "
+        "§API Tokens §Effective privilege — intersection"
     )
     assert user is mock_user
 
@@ -215,7 +216,7 @@ async def test_intersection_snapshot_admin_current_reader_returns_reader() -> No
 async def test_intersection_snapshot_reader_current_admin_returns_reader() -> None:
     """effective_role = min(snapshot=Reader, current=Admin) → Reader via lookup_and_validate.
 
-    spec: spec/feature/AUTH.md §API Tokens §Effective privilege — promoting a user
+    spec: spec/feature/AUTH.md §API Tokens §Effective privilege — intersection: promoting a user
     does NOT automatically elevate existing tokens; must mint a new one.
     """
     from src.backend.auth.api_tokens import lookup_and_validate
@@ -249,7 +250,7 @@ async def test_intersection_snapshot_reader_current_admin_returns_reader() -> No
 
     assert effective_role == "Reader", (
         "min(Reader, Admin) must be Reader — promoting a user does not auto-elevate "
-        "existing tokens per spec/feature/AUTH.md §API Tokens §Effective privilege"
+        "existing tokens per spec/feature/AUTH.md §API Tokens §Effective privilege — intersection"
     )
     assert user is mock_user
 
@@ -258,7 +259,7 @@ async def test_intersection_snapshot_reader_current_admin_returns_reader() -> No
 async def test_intersection_equal_roles_preserved() -> None:
     """effective_role = min(Editor, Editor) → Editor via lookup_and_validate.
 
-    spec: spec/feature/AUTH.md §API Tokens §Effective privilege — equal snapshot and
+    spec: spec/feature/AUTH.md §API Tokens §Effective privilege — intersection: equal snapshot and
     current role should yield the same role.
     """
     from src.backend.auth.api_tokens import lookup_and_validate
@@ -291,7 +292,8 @@ async def test_intersection_equal_roles_preserved() -> None:
         user, effective_role = await lookup_and_validate(mock_db, "dsk_editor_snapshot_editor_current")
 
     assert effective_role == "Editor", (
-        "min(Editor, Editor) must be Editor per spec/feature/AUTH.md §API Tokens §Effective privilege"
+        "min(Editor, Editor) must be Editor per spec/feature/AUTH.md "
+        "§API Tokens §Effective privilege — intersection"
     )
     assert user is mock_user
 
@@ -303,7 +305,8 @@ async def test_intersection_equal_roles_preserved() -> None:
 async def test_lookup_and_validate_unknown_token_raises_invalid() -> None:
     """lookup_and_validate raises AuthenticationError('INVALID_API_TOKEN') for unknown token.
 
-    spec: spec/feature/AUTH.md §API Tokens §Effective privilege — invalid → 401 INVALID_API_TOKEN.
+    spec: spec/feature/AUTH.md §API Tokens §Effective privilege — intersection:
+    invalid → 401 INVALID_API_TOKEN.
     """
     from src.backend.auth.api_tokens import lookup_and_validate
     from src.shared.exceptions import AuthenticationError
@@ -327,7 +330,8 @@ async def test_lookup_and_validate_unknown_token_raises_invalid() -> None:
 async def test_lookup_and_validate_revoked_token_raises_token_revoked() -> None:
     """lookup_and_validate raises AuthenticationError('TOKEN_REVOKED') for revoked token.
 
-    spec: spec/feature/AUTH.md §API Tokens §Effective privilege — revoked → 401 TOKEN_REVOKED.
+    spec: spec/feature/AUTH.md §API Tokens §Effective privilege — intersection:
+    revoked → 401 TOKEN_REVOKED.
     spec: spec/feature/AUTH.md §Failure Modes — API token revoked while in use → 401 TOKEN_REVOKED.
     """
     from src.backend.auth.api_tokens import lookup_and_validate
@@ -352,7 +356,7 @@ async def test_lookup_and_validate_revoked_token_raises_token_revoked() -> None:
 
     assert exc_info.value.error_code == "TOKEN_REVOKED", (
         "Revoked token must raise AuthenticationError('TOKEN_REVOKED') "
-        "per spec/feature/AUTH.md §API Tokens §Effective privilege"
+        "per spec/feature/AUTH.md §API Tokens §Effective privilege — intersection"
     )
 
 
@@ -360,7 +364,8 @@ async def test_lookup_and_validate_revoked_token_raises_token_revoked() -> None:
 async def test_lookup_and_validate_expired_token_raises_token_expired() -> None:
     """lookup_and_validate raises AuthenticationError('TOKEN_EXPIRED') for expired token.
 
-    spec: spec/feature/AUTH.md §API Tokens §Effective privilege — expired → 401 TOKEN_EXPIRED.
+    spec: spec/feature/AUTH.md §API Tokens §Effective privilege — intersection:
+    expired → 401 TOKEN_EXPIRED.
     """
     from src.backend.auth.api_tokens import lookup_and_validate
     from src.shared.exceptions import AuthenticationError
@@ -385,7 +390,7 @@ async def test_lookup_and_validate_expired_token_raises_token_expired() -> None:
 
     assert exc_info.value.error_code == "TOKEN_EXPIRED", (
         "Expired token must raise AuthenticationError('TOKEN_EXPIRED') "
-        "per spec/feature/AUTH.md §API Tokens §Effective privilege"
+        "per spec/feature/AUTH.md §API Tokens §Effective privilege — intersection"
     )
 
 

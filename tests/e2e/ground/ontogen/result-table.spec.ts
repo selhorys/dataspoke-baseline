@@ -20,12 +20,12 @@
  * Runs under the admin (writer) storageState (`*.spec.ts` → admin project) so the
  * Actions column and review controls render.
  *
- * spec: spec/feature/FRONTEND_ONTOGEN.md §Result table — uniform 7-column compact
+ * spec: spec/feature/FRONTEND_ONTOGEN.md §Page contracts — uniform 7-column compact
  *   layout; Evidence column links to the run's Langfuse session; Created-At sort
  *   control; standard Pagination.
- * spec: spec/API.md §UC3 result rows — ?sort=created_at_asc|created_at_desc
+ * spec: spec/API.md §Ontology Generation (/spoke/ontogen) — ?sort=created_at_asc|created_at_desc
  *   (default created_at_desc); offset/limit pagination envelope.
- * spec: spec/feature/FRONTEND_BASIC.md §Pagination — shared control (size selector
+ * spec: spec/feature/FRONTEND_BASIC.md §Shared Component Notes — shared control (size selector
  *   20/50/100 default 20, Prev/Next, numbered pages).
  * spec: spec/TESTING.md §E2E — ground group, real-session role, single concern.
  */
@@ -55,12 +55,12 @@ test("/ontogen/result — Created-At sort control drives ?sort= on the node fetc
   ).toBeVisible({ timeout: 15_000 });
 
   // Nodes tab is the default; its panel carries the SortControl (aria-label "Sort order").
-  // spec: FRONTEND_ONTOGEN.md §Result table — Created-At sort control beside the status filter.
+  // spec: FRONTEND_ONTOGEN.md §Page contracts — Created-At sort control beside the status filter.
   const sortControl = page.getByLabel("Sort order").first();
   await expect(sortControl).toBeVisible({ timeout: 10_000 });
 
   // -- Default: the initial fetch sorts created_at_desc (newest first) --
-  // spec: API.md §UC3 result rows — default ordering created_at_desc.
+  // spec: API.md §Ontology Generation (/spoke/ontogen) — default ordering created_at_desc.
   await expect
     .poll(() => sortParams.length, { timeout: 10_000 })
     .toBeGreaterThan(0);
@@ -95,13 +95,13 @@ test("/ontogen/result — Nodes panel renders the shared Pagination control", as
   const panel = page.getByRole("tabpanel");
 
   // -- Standard control: "Rows per page" size selector, defaulting to 20 --
-  // spec: FRONTEND_BASIC.md §Pagination — page-size selector (20/50/100), default 20.
+  // spec: FRONTEND_BASIC.md §Shared Component Notes — page-size selector (20/50/100), default 20.
   const sizeSelect = panel.getByLabel("Rows per page");
   await expect(sizeSelect).toBeVisible({ timeout: 10_000 });
   await expect(sizeSelect).toContainText("20");
 
   // -- Standard control: Prev/Next buttons (replacing the old inline Prev/Next) --
-  // spec: FRONTEND_BASIC.md §Pagination — Prev/Next + numbered pages.
+  // spec: FRONTEND_BASIC.md §Shared Component Notes — Prev/Next + numbered pages.
   await expect(panel.getByRole("button", { name: /previous/i })).toBeVisible();
   await expect(panel.getByRole("button", { name: /next/i })).toBeVisible();
 
@@ -137,7 +137,7 @@ test("/ontogen/result — node rows render 7 columns; Evidence cell links to the
   }
 
   // Read the browser-reachable Langfuse host + project slug to compute the expected href.
-  // spec: FRONTEND_ONTOGEN.md §Result table — the Evidence Link targets
+  // spec: FRONTEND_ONTOGEN.md §Page contracts — the Evidence Link targets
   //   {langfuseUrl}/project/{langfuseProjectId}/sessions/{run_id}.
   const cfgResp = await adminApi.get("/api/v1/admin/conf");
   expect(cfgResp.status()).toBe(200);
@@ -151,7 +151,7 @@ test("/ontogen/result — node rows render 7 columns; Evidence cell links to the
   const panel = page.getByRole("tabpanel");
 
   // -- UI assertion: the uniform 7-column header set (Evidence after Created At) --
-  // spec: FRONTEND_ONTOGEN.md §Result table — Title, Description, Status, Confidence,
+  // spec: FRONTEND_ONTOGEN.md §Page contracts — Title, Description, Status, Confidence,
   //   Actions, Created At, Evidence (uniform across Node/Edge/Triple).
   for (const header of [
     "Title",
@@ -169,13 +169,13 @@ test("/ontogen/result — node rows render 7 columns; Evidence cell links to the
   await expect(panel.getByRole("columnheader")).toHaveCount(7);
 
   // -- UI assertion: the Confidence cell no longer hosts an Evidence button --
-  // spec: FRONTEND_ONTOGEN.md §Result table — Confidence is score-only; the per-row
+  // spec: FRONTEND_ONTOGEN.md §Page contracts — Confidence is score-only; the per-row
   //   debate transcript lives in Langfuse, reached via the Evidence column Link.
   const firstRow = panel.getByRole("row").nth(1); // row 0 is the header
   await expect(firstRow.getByRole("button", { name: /evidence/i })).toHaveCount(0);
 
   // -- UI assertion: the Evidence cell renders a "Link" (new tab) or an em dash --
-  // spec: FRONTEND_ONTOGEN.md §Result table — when run_id + Langfuse host + project slug
+  // spec: FRONTEND_ONTOGEN.md §Page contracts — when run_id + Langfuse host + project slug
   //   are all present the cell is an external Link (target=_blank, rel=noopener); else "—".
   // evidence-link.tsx renders <a target="_blank" rel="noopener noreferrer">Link</a>.
   const targetNode = listBody.nodes[0];

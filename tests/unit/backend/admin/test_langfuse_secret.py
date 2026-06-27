@@ -22,7 +22,7 @@ Concerns covered:
     _SECRET_KEY="secret_key".
 
 Spec traceability:
-- plan/scalable-beaming-hamster.md §Backend — langfuse_secret mirrors llm_secret pattern.
+- BACKEND_LLM.md §LLM API key (pattern) — langfuse_secret mirrors llm_secret pattern.
 - src/backend/admin/langfuse_secret.py — public surface.
 """
 
@@ -111,7 +111,7 @@ def flush_cache():
 def test_secret_name_constant() -> None:
     """_SECRET_NAME must be 'dataspoke-langfuse-secret'.
 
-    spec: plan/scalable-beaming-hamster.md §Backend — hardcoded name guards security boundary.
+    spec: BACKEND_LLM.md §LLM API key (pattern) — hardcoded name guards security boundary.
     """
     assert _mod._SECRET_NAME == "dataspoke-langfuse-secret", (
         "_SECRET_NAME must be 'dataspoke-langfuse-secret' — cannot be parameterized."
@@ -121,7 +121,7 @@ def test_secret_name_constant() -> None:
 def test_secret_key_constant() -> None:
     """_SECRET_KEY must be 'secret_key'.
 
-    spec: plan/scalable-beaming-hamster.md §Backend — Langfuse secret stored under 'secret_key'.
+    spec: BACKEND_LLM.md §LLM API key (pattern) — Langfuse secret stored under 'secret_key'.
     """
     assert _mod._SECRET_KEY == "secret_key", (
         "_SECRET_KEY must be 'secret_key' for Langfuse secret."
@@ -134,7 +134,7 @@ def test_secret_key_constant() -> None:
 def test_get_returns_base64_decoded_value() -> None:
     """get_langfuse_secret_key() decodes the Kubernetes Secret's base64-encoded secret_key.
 
-    spec: plan/scalable-beaming-hamster.md §Backend — key stored as base64
+    spec: BACKEND_LLM.md §LLM API key (pattern) — key stored as base64
     in dataspoke-langfuse-secret.
     """
     secret = _fake_secret("sk-langfuse-key")
@@ -155,7 +155,7 @@ def test_get_returns_base64_decoded_value() -> None:
 def test_get_cache_hit_does_not_re_read() -> None:
     """A second call within TTL returns the cached value without re-reading the Secret.
 
-    spec: plan/scalable-beaming-hamster.md §Backend — short-TTL process cache.
+    spec: BACKEND_LLM.md §LLM API key (pattern) — short-TTL process cache.
     """
     secret = _fake_secret("cached-key")
     core = _make_core(read_return=secret)
@@ -177,7 +177,7 @@ def test_get_cache_hit_does_not_re_read() -> None:
 def test_get_re_reads_after_ttl_expires(monkeypatch) -> None:
     """Once the TTL has elapsed the next call re-reads the Secret.
 
-    spec: plan/scalable-beaming-hamster.md §Backend — TTL-based cache; stale entry causes re-read.
+    spec: BACKEND_LLM.md §LLM API key (pattern) — TTL-based cache; stale entry causes re-read.
     """
     import time as _time
 
@@ -203,7 +203,7 @@ def test_get_re_reads_after_ttl_expires(monkeypatch) -> None:
 def test_get_404_returns_empty_string_and_caches() -> None:
     """read_namespaced_secret raises 404 → get returns "" and caches it.
 
-    spec: plan/scalable-beaming-hamster.md §Backend — Secret absent → treat as unset; cache empty.
+    spec: BACKEND_LLM.md §LLM API key (pattern) — Secret absent → treat as unset; cache empty.
     """
     core = _make_core(read_side_effect=_api_exception(404))
 
@@ -225,7 +225,7 @@ def test_get_404_returns_empty_string_and_caches() -> None:
 def test_get_403_returns_empty_string_not_cached() -> None:
     """read_namespaced_secret raises 403 → returns "" WITHOUT caching.
 
-    spec: plan/scalable-beaming-hamster.md §Backend — RBAC 403 → fail safe, do not cache.
+    spec: BACKEND_LLM.md §LLM API key (pattern) — RBAC 403 → fail safe, do not cache.
     """
     core = _make_core(read_side_effect=_api_exception(403))
 
@@ -249,7 +249,7 @@ def test_get_403_logs_warning(caplog) -> None:
     2. Invalidate the cache, then call get_langfuse_secret_key against a 403-returning k8s mock.
     3. Assert a warning was emitted AND the sentinel does NOT appear in any log record.
 
-    spec: plan/scalable-beaming-hamster.md §Backend — plaintext secret is NEVER logged.
+    spec: BACKEND_LLM.md §LLM API key (pattern) — plaintext secret is NEVER logged.
     """
     _SENTINEL = "plaintext-sentinel-lf-67890"
 
@@ -274,7 +274,7 @@ def test_get_403_logs_warning(caplog) -> None:
         assert _SENTINEL not in record.getMessage(), (
             f"Plaintext secret_key '{_SENTINEL}' must never appear in any log record. "
             f"Offending message: {record.getMessage()!r}. "
-            "spec: plan/scalable-beaming-hamster.md §Backend — plaintext secret never logged."
+            "spec: BACKEND_LLM.md §LLM API key (pattern) — plaintext secret never logged."
         )
 
 
@@ -284,7 +284,7 @@ def test_get_403_logs_warning(caplog) -> None:
 def test_get_500_raises_resolver_unavailable() -> None:
     """read_namespaced_secret raises ApiException(500) → SecretResolverUnavailable propagated.
 
-    spec: plan/scalable-beaming-hamster.md §Backend — other k8s errors propagate as unavailable.
+    spec: BACKEND_LLM.md §LLM API key (pattern) — other k8s errors propagate as unavailable.
     """
     core = _make_core(read_side_effect=_api_exception(500))
 
@@ -324,7 +324,7 @@ def test_get_returns_empty_string_when_key_absent_from_data() -> None:
 def test_set_create_path_calls_create_with_base64_value() -> None:
     """set_langfuse_secret_key creates the Secret when it does not exist.
 
-    spec: plan/scalable-beaming-hamster.md §Backend — create-or-patch write semantics.
+    spec: BACKEND_LLM.md §LLM API key (pattern) — create-or-patch write semantics.
     """
     core = MagicMock()
     core.read_namespaced_secret.side_effect = _api_exception(404)
@@ -339,7 +339,7 @@ def test_set_create_path_calls_create_with_base64_value() -> None:
     # Subset check: verify the key/value we care about without pinning the full body shape.
     assert created_body.data[_SECRET_KEY] == _b64("new-lf-key"), (
         f"create_namespaced_secret body.data[{_SECRET_KEY!r}] must be base64('new-lf-key'). "
-        "spec: plan/scalable-beaming-hamster.md §Backend — secret stored as base64 in K8s Secret."
+        "spec: BACKEND_LLM.md §LLM API key (pattern) — secret stored as base64 in K8s Secret."
     )
 
 
@@ -349,7 +349,7 @@ def test_set_create_path_calls_create_with_base64_value() -> None:
 def test_set_patch_path_calls_patch_with_correct_body() -> None:
     """set_langfuse_secret_key patches the Secret when it already exists.
 
-    spec: plan/scalable-beaming-hamster.md §Backend — patch merges only the secret_key field.
+    spec: BACKEND_LLM.md §LLM API key (pattern) — patch merges only the secret_key field.
     """
     existing_secret = _fake_secret("old-lf-key")
     core = MagicMock()
@@ -365,7 +365,7 @@ def test_set_patch_path_calls_patch_with_correct_body() -> None:
     # Subset check: verify the key/value we care about without pinning the full body shape.
     assert patch_body["data"][_SECRET_KEY] == _b64("updated-lf-key"), (
         f"patch body['data'][{_SECRET_KEY!r}] must be base64('updated-lf-key'). "
-        "spec: plan/scalable-beaming-hamster.md §Backend — patch merges only the secret_key field."
+        "spec: BACKEND_LLM.md §LLM API key (pattern) — patch merges only the secret_key field."
     )
 
 
@@ -375,7 +375,7 @@ def test_set_patch_path_calls_patch_with_correct_body() -> None:
 def test_set_out_of_cluster_raises() -> None:
     """set_langfuse_secret_key propagates SecretResolverUnavailable on k8s client init failure.
 
-    spec: plan/scalable-beaming-hamster.md §Backend — PATCH cannot persist when k8s
+    spec: BACKEND_LLM.md §LLM API key (pattern) — PATCH cannot persist when k8s
     client is unavailable.
     """
     with patch(
@@ -392,7 +392,7 @@ def test_set_out_of_cluster_raises() -> None:
 def test_set_invalidates_cache_so_next_get_re_reads() -> None:
     """After set, the next get re-reads the Secret (cache was invalidated).
 
-    spec: plan/scalable-beaming-hamster.md §Backend — invalidates cache on success.
+    spec: BACKEND_LLM.md §LLM API key (pattern) — invalidates cache on success.
     """
     secret_v1 = _fake_secret("v1-key")
     core_v1 = _make_core(read_return=secret_v1)
@@ -419,7 +419,7 @@ def test_set_invalidates_cache_so_next_get_re_reads() -> None:
 def test_langfuse_secret_key_is_set_true_when_present() -> None:
     """langfuse_secret_key_is_set returns True when the Secret contains a non-empty key.
 
-    spec: plan/scalable-beaming-hamster.md §Backend — is_set used for is_configured predicate.
+    spec: BACKEND_LLM.md §LLM API key (pattern) — is_set used for is_configured predicate.
     """
     secret = _fake_secret("live-lf-key")
     core = _make_core(read_return=secret)
@@ -433,7 +433,7 @@ def test_langfuse_secret_key_is_set_true_when_present() -> None:
 def test_langfuse_secret_key_is_set_false_when_absent() -> None:
     """langfuse_secret_key_is_set returns False when the Secret is absent (404).
 
-    spec: plan/scalable-beaming-hamster.md §Backend — is_set false when unset.
+    spec: BACKEND_LLM.md §LLM API key (pattern) — is_set false when unset.
     """
     core = _make_core(read_side_effect=_api_exception(404))
 
@@ -446,7 +446,7 @@ def test_langfuse_secret_key_is_set_false_when_absent() -> None:
 def test_langfuse_secret_key_is_set_false_when_key_absent() -> None:
     """langfuse_secret_key_is_set returns False when Secret exists but key is missing.
 
-    spec: plan/scalable-beaming-hamster.md §Backend — is_set false when key absent.
+    spec: BACKEND_LLM.md §LLM API key (pattern) — is_set false when key absent.
     """
     secret = _fake_secret("")  # data={}
     core = _make_core(read_return=secret)

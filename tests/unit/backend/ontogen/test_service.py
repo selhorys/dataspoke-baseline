@@ -428,7 +428,7 @@ async def test_run_rejects_non_dry_run_when_disabled(
     non-dry-run with 409 ONTOGEN_DISABLED.
     spec: USE_CASE_en.md §UC3 — "When is_enabled=false, non-dry-run calls to
     method/run return 409 ONTOGEN_DISABLED. Dry-run is always permitted
-    regardless of is_enabled." (L479)
+    regardless of is_enabled."
     """
     cache.set_nx = AsyncMock(return_value=True)
     cache.delete_if_value = AsyncMock()
@@ -596,9 +596,9 @@ async def test_run_real_run_emits_complete_event_with_dry_run_false(
 ) -> None:
     """run(dry_run=False) emits ONTOGEN.RUN_COMPLETE with dry_run=False and unresolved_urns.
 
-    spec: spec/feature/BACKEND.md §Ontology Generation Service §Inference Pipeline
-    — Step 12 emits RUN_COMPLETE with dry_run key; real-run sets it to False.
-    spec: spec/feature/BACKEND.md L661 — RUN_COMPLETE recorded for both dry-run
+    spec: spec/feature/BACKEND.md §Event Catalogue (ONTOGEN.RUN_COMPLETE)
+    — RUN_COMPLETE carries a dry_run key; real-run sets it to False.
+    spec: spec/feature/BACKEND.md §Event Catalogue — RUN_COMPLETE recorded for both dry-run
     and non-dry-run; dry_run flag and unresolved_urns are present in detail.
     """
     cache.set_nx = AsyncMock(return_value=True)
@@ -648,13 +648,13 @@ async def test_run_real_run_emits_complete_event_with_dry_run_false(
     assert summary.dry_run is False
 
     # Exactly one Event row added with ONTOGEN_RUN_COMPLETE and dry_run=False.
-    # spec: BACKEND.md §Inference Pipeline Step 12 — real-run emits RUN_COMPLETE
+    # spec: BACKEND.md §Event Catalogue (ONTOGEN.RUN_COMPLETE) — real-run emits RUN_COMPLETE
     # with dry_run=False; unresolved_urns present in detail.
     added_args = [call.args[0] for call in db.add.call_args_list]
     event_rows = [a for a in added_args if isinstance(a, Event)]
     assert len(event_rows) == 1, (
         f"Expected exactly one Event row on real-run; got {len(event_rows)}. "
-        "spec: BACKEND.md §Inference Pipeline Step 12"
+        "spec: BACKEND.md §Event Catalogue (ONTOGEN.RUN_COMPLETE)"
     )
     assert event_rows[0].event_type == ONTOGEN_RUN_COMPLETE, (
         f"Event type must be ONTOGEN_RUN_COMPLETE; got {event_rows[0].event_type!r}. "
@@ -663,18 +663,18 @@ async def test_run_real_run_emits_complete_event_with_dry_run_false(
     assert event_rows[0].detail["dry_run"] is False, (
         f"detail['dry_run'] must be False on real-run path; "
         f"got {event_rows[0].detail.get('dry_run')!r}. "
-        "spec: BACKEND.md L661 — dry_run flag in detail"
+        "spec: BACKEND.md §Event Catalogue — dry_run flag in detail"
     )
     # unresolved_urns must be present in detail and agree with the summary
-    # spec: BACKEND.md L661 — unresolved_urns in RUN_COMPLETE payload
+    # spec: BACKEND.md §Event Catalogue — unresolved_urns in RUN_COMPLETE payload
     assert "unresolved_urns" in event_rows[0].detail, (
-        "detail must carry 'unresolved_urns'. spec: BACKEND.md L661"
+        "detail must carry 'unresolved_urns'. spec: BACKEND.md §Event Catalogue"
     )
     assert event_rows[0].detail["unresolved_urns"] == summary.unresolved_urns, (
         f"detail['unresolved_urns'] must match summary.unresolved_urns; "
         f"detail={event_rows[0].detail['unresolved_urns']!r}, "
         f"summary={summary.unresolved_urns!r}. "
-        "spec: BACKEND.md L661 — event and summary must agree on unresolved_urns"
+        "spec: BACKEND.md §Event Catalogue — event and summary must agree on unresolved_urns"
     )
 
 
@@ -1033,13 +1033,13 @@ async def test_run_validation_telemetry_surfaces_in_run_complete_event(
     )
 
 
-# ── _status_for_outcome regression gate (plan §8) ────────────────────────────
+# ── _status_for_outcome gate (BACKEND_LLM §Status lifecycle) ─────────────────
 
 
 def test_status_for_outcome_approved_only_when_accept_and_high_confidence() -> None:
     """_status_for_outcome returns 'llm_approved' only for outcome='accept' with score >= threshold.
 
-    Spec: plan §8 — four-state vocabulary: 'llm_approved' when accept + high confidence;
+    Spec: BACKEND_LLM §Status lifecycle — 'llm_approved' on accept + high confidence;
     'llm_pending' in all other cases.  Non-accept outcomes (turns_exhausted, cycle_detected)
     must never produce 'llm_approved' regardless of confidence_score.
 
@@ -1062,13 +1062,13 @@ def test_status_for_outcome_approved_only_when_accept_and_high_confidence() -> N
     # (3) turns_exhausted + high confidence → llm_pending (not llm_approved!)
     assert _status_for_outcome(high, "turns_exhausted") == "llm_pending", (
         "turns_exhausted with high confidence must NOT produce 'llm_approved'. "
-        "Spec: plan §8 — non-accept outcomes always yield llm_pending."
+        "Spec: BACKEND_LLM §Status lifecycle — non-accept outcomes yield llm_pending."
     )
 
     # (4) cycle_detected + high confidence → llm_pending (not llm_approved!)
     assert _status_for_outcome(high, "cycle_detected") == "llm_pending", (
         "cycle_detected with high confidence must NOT produce 'llm_approved'. "
-        "Spec: plan §8 — non-accept outcomes always yield llm_pending."
+        "Spec: BACKEND_LLM §Status lifecycle — non-accept outcomes yield llm_pending."
     )
 
 
@@ -1317,7 +1317,7 @@ async def test_cycle_detected_persists_rows_as_llm_pending(
     )
 
 
-# ── New regression tests (plan §9) ───────────────────────────────────────────
+# ── Reuse-lookup regression tests (BACKEND_LLM §Status lifecycle) ────────────
 
 
 # ── F1: Reuse-lookup includes llm_pending — verifies WHERE clause directly ───
@@ -1336,8 +1336,8 @@ async def test_reuse_lookup_where_clause_includes_all_three_eligible_statuses(
     observable in the compiled SQL string, not in any downstream behaviour that a
     dumb mock could fake.
 
-    Spec: plan §7 reuse-lookup — `status IN ('approved','llm_approved','llm_pending')`.
-    Spec: BACKEND.md §Inference Pipeline Step 7 — eligible-nodes load for reuse.
+    Spec: BACKEND_LLM §Status lifecycle — Reuse lookup: status IN non-rejected.
+    Spec: BACKEND.md §Inference Pipeline step 5 — node reuse pool (non-rejected).
     """
     cache.set_nx = AsyncMock(return_value=True)
     cache.delete_if_value = AsyncMock(return_value=None)
@@ -1418,17 +1418,17 @@ async def test_reuse_lookup_where_clause_includes_all_three_eligible_statuses(
     assert node_sql is not None, (
         f"No SELECT against ontogen_nodes captured; "
         f"got {[compiled_sql(s) for s in captured_stmts]!r}. "
-        "Spec: plan §7 — service must query eligible nodes for reuse."
+        "Spec: BACKEND_LLM §Status lifecycle — query eligible nodes for reuse."
     )
     assert edge_sql is not None, (
-        "No SELECT against ontogen_edges captured. Spec: plan §7 — eligible edges loaded for reuse."
+        "No SELECT vs ontogen_edges. Spec: BACKEND_LLM §Status lifecycle (reuse)."
     )
 
     for sql, table in [(node_sql, "ontogen_nodes"), (edge_sql, "ontogen_edges")]:
         for required in ("'approved'", "'llm_approved'", "'llm_pending'"):
             assert required in sql, (
                 f"{table} WHERE clause must include {required}; got SQL:\n{sql}\n"
-                "Spec: plan §7 — reuse-lookup is `status IN (approved, llm_approved, llm_pending)`."
+                "Spec: BACKEND_LLM §Status lifecycle — reuse-lookup status IN non-rejected."
             )
 
 

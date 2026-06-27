@@ -39,7 +39,7 @@ Spec traceability:
 - spec/feature/BACKEND_LLM.md §LLM API key — masked GET, write to Secret on PATCH,
   SecretResolverUnavailable → 503.
 - spec/API.md §Access Control — Admin role required for /admin/*
-- spec/API.md §Internal routes — X-Internal-Token required for /internal/…
+- spec/API.md §Internal Admin (/internal/admin) — X-Internal-Token required for /internal/…
 - src/api/schemas/admin.py RuntimeConfResponse — resp_time, updated_at, masked llm_api_key.
 """
 
@@ -249,7 +249,7 @@ async def test_internal_patch_conf_unset_token_returns_503(client) -> None:
 async def test_internal_patch_conf_without_token_returns_401(client) -> None:
     """PATCH /internal/admin/conf without X-Internal-Token returns 401.
 
-    spec: API.md §Internal routes — X-Internal-Token required.
+    spec: API.md §Internal Admin (/internal/admin) — X-Internal-Token required.
     """
     with patch("src.shared.settings.settings.internal_token", _INTERNAL_TOKEN):
         resp = await client.patch(_INTERNAL_CONF, json={"llm_model": "gpt-4o-mini"})
@@ -260,7 +260,7 @@ async def test_internal_patch_conf_without_token_returns_401(client) -> None:
 async def test_internal_patch_conf_wrong_token_returns_401(client) -> None:
     """PATCH /internal/admin/conf with wrong token returns 401.
 
-    spec: API.md §Internal routes — constant-time compare; mismatch → 401.
+    spec: API.md §Internal Admin (/internal/admin) — constant-time compare; mismatch → 401.
     """
     with patch("src.shared.settings.settings.internal_token", _INTERNAL_TOKEN):
         resp = await client.patch(
@@ -283,7 +283,7 @@ async def test_get_conf_returns_200_with_all_22_fields(client) -> None:
     Any extra or missing key fails the assertion.
 
     spec: BACKEND_LLM.md §LLM API key — GET returns llm_api_key as masked indicator.
-    spec: plan §stub toggles — four stub_* fields added to RuntimeConfResponse.
+    spec: API.md §Admin (/admin) — four stub_* toggles on /admin/conf.
     """
     row = _make_row_mock()
     db, db_gen = _fake_db_with_row(row)
@@ -318,7 +318,7 @@ async def test_get_conf_returns_200_with_all_22_fields(client) -> None:
 async def test_get_conf_includes_resp_time(client) -> None:
     """GET /admin/conf response includes resp_time (SingleResponse envelope).
 
-    spec: API.md §SingleResponse — resp_time included on every response.
+    spec: API.md §Standard Response Envelope — resp_time included on every response.
     """
     row = _make_row_mock()
     _, db_gen = _fake_db_with_row(row)
@@ -340,7 +340,7 @@ async def test_get_conf_includes_resp_time(client) -> None:
     body = resp.json()
     assert "resp_time" in body, (
         "resp_time must be present in every RuntimeConfResponse "
-        "(spec: API.md §SingleResponse envelope)"
+        "(spec: API.md §Standard Response Envelope)"
     )
 
 
@@ -437,7 +437,7 @@ async def test_get_conf_llm_api_key_empty_when_unset(client) -> None:
 async def test_patch_conf_returns_200_with_updated_fields(client) -> None:
     """PATCH /admin/conf with valid partial body returns 200 reflecting updated values.
 
-    spec: task brief — PATCH with partial body returns 200 with updated values.
+    spec: API.md §Admin (/admin) — PATCH /admin/conf is partial; returns updated runtime config.
     """
     patched_dto = _make_dto(llm_model="gpt-4o-mini", ontogen_debate_max_turns=6)
     row = _make_row_mock(llm_model="gpt-4o-mini", ontogen_debate_max_turns=6)
@@ -677,7 +677,7 @@ async def test_patch_conf_llm_api_key_out_of_cluster_returns_503(client) -> None
 async def test_internal_patch_conf_valid_token_returns_200(client) -> None:
     """PATCH /internal/admin/conf with correct X-Internal-Token returns 200.
 
-    spec: API.md §Internal routes — valid token grants access.
+    spec: API.md §Internal Admin (/internal/admin) — valid token grants access.
     """
     patched_dto = _make_dto(llm_model="gpt-4o-mini")
     row = _make_row_mock(llm_model="gpt-4o-mini")

@@ -35,7 +35,7 @@ class TestInfraProviders:
         We patch get_peripheral_config and get_datahub_token at the source module
         level because both are imported lazily inside get_datahub.
 
-        spec: plan/scalable-beaming-hamster.md — get_datahub is per-request factory.
+        spec: feature/BACKEND.md §Dependency Injection — get_datahub is per-request factory.
         spec: API.md §DataHub client — constructed from peripheral_config + K8s secret.
         """
         from src.backend.admin.peripheral_service import DatahubConfigDTO
