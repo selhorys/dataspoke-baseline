@@ -10,9 +10,11 @@
  *     List "Quality Score" column: "—" until first result row arrives.
  *     Detail header badge: shown only when latestScore !== null.
  *
- * scoreBadgeVariant mirrors the DataHub assertion result.type boundary exactly:
- *   score === 1.0  → "default"      (SUCCESS / pass)
- *   0 ≤ score < 1  → "destructive"  (FAILURE / fail)
+ * scoreBadgeVariant mirrors the DataHub assertion result.type boundary exactly,
+ * using the semantic status tokens from spec/feature/FRONTEND_BASIC.md §Design
+ * system › Color tokens ("a status reads as a status"):
+ *   score === 1.0  → "success"      (SUCCESS / pass — green)
+ *   0 ≤ score < 1  → "destructive"  (FAILURE / fail — red)
  *   null/undefined → "outline"      (no data, display "—")
  */
 
@@ -22,9 +24,9 @@ import { scoreBadgeVariant, scoreLabel } from "./validation-score";
 // ── 1. scoreBadgeVariant — three branches ─────────────────────────────────────
 
 describe("scoreBadgeVariant — maps score to Badge variant (VALIDATION.md §Validation Result boundary)", () => {
-  // Branch 1: score === 1.0 → SUCCESS / "default"
-  it("returns 'default' for score === 1.0 (SUCCESS boundary)", () => {
-    expect(scoreBadgeVariant(1.0)).toBe("default");
+  // Branch 1: score === 1.0 → SUCCESS / "success" (semantic green status token)
+  it("returns 'success' for score === 1.0 (SUCCESS boundary)", () => {
+    expect(scoreBadgeVariant(1.0)).toBe("success");
   });
 
   // Branch 2: 0 ≤ score < 1 → FAILURE / "destructive"

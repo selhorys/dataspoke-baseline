@@ -78,7 +78,7 @@ export function ValidationScoreChart({
         <Line
           type="linear"
           dataKey="score"
-          stroke="#6366f1"
+          stroke="hsl(var(--brand))"
           dot={false}
           strokeWidth={2}
           connectNulls

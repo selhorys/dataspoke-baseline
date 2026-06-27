@@ -24,6 +24,7 @@ import {
 import { useGovernanceMetrics } from "@/lib/api/governance";
 import { ErrorState } from "@/components/ui/error-state";
 import { Pagination, DEFAULT_PAGE_SIZE } from "@/components/pagination";
+import { PageHeader } from "@/components/page-header";
 import { useMe } from "@/lib/auth/use-me";
 import { formatDate } from "@/lib/format-time";
 import { useDisplayTz } from "@/lib/preferences/timezone";
@@ -49,17 +50,19 @@ export default function GovernanceMetricsPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold tracking-tight">Governance · Metrics</h1>
-        {canWrite && (
-          <Button asChild size="sm">
-            <Link href="/governance/metrics/new">
-              <Plus className="mr-1 h-4 w-4" />
-              New metric
-            </Link>
-          </Button>
-        )}
-      </div>
+      <PageHeader
+        title="Governance · Metrics"
+        actions={
+          canWrite && (
+            <Button asChild size="sm">
+              <Link href="/governance/metrics/new">
+                <Plus className="mr-1 h-4 w-4" />
+                New metric
+              </Link>
+            </Button>
+          )
+        }
+      />
 
       {/* Filters */}
       <div className="flex flex-wrap gap-2">

@@ -25,6 +25,58 @@ not inlined at build time, so one image serves any environment.
 
 ---
 
+## Design system
+
+A small, deliberate visual vocabulary applied uniformly across every page.
+
+### Color tokens
+
+shadcn-style HSL CSS variables in `app/globals.css`, defined twice — for light
+(`:root`) and dark (`.dark`). Components consume the tokens, never raw colors.
+Exact values live in `globals.css`; this spec fixes only their roles and intent.
+
+- **`--brand`** — the single indigo brand accent; `--primary` and `--ring`
+  derive from it. Used with restraint: primary buttons, the active nav item,
+  focus rings, and the open-panel chevron. Brand is a punctuation color, not a
+  fill.
+- **Semantic status tokens** — `--success` (green), `--warning` (amber), and
+  `--info` (sky), each with a `*-foreground` pair. Status badges and
+  status-variant helpers map to these rather than overloading `default` /
+  `secondary`, so a status reads as a status. An unrecognized or empty status
+  carries no semantic color: it falls back to the neutral `secondary` variant.
+- **Feature hues** (the signature) — five muted per-feature accents, one each
+  for Ingestion, Validation, OntoGen, MetaGen, and Governance. A feature hue
+  appears only in three narrow places: a thin left "spine" on that feature's
+  `CollapsiblePanel`, a tick on its summary card, and its sidebar group icon.
+  This encodes the product truth that a dataset is viewed through five feature
+  lenses (hub and spoke). The hues are intentionally desaturated so the five
+  coexist without clashing and stay distinct from the success / warning / info /
+  destructive status hues.
+
+### Typography
+
+A three-role font system wired via `next/font` in `app/layout.tsx` and exposed
+as Tailwind families in `tailwind.config.ts`. Each role has one job:
+
+- **Display** (`font-display`, Space Grotesk) — page titles and section / panel
+  headers only.
+- **Body** (`font-sans`, Inter) — default body text and dense tables.
+- **Mono** (`font-mono`, JetBrains Mono) — URNs, run-ids, and code.
+
+### Type scale
+
+Three header registers establish hierarchy:
+
+- **Page title** — `font-display text-2xl font-semibold tracking-tight`,
+  unified across pages through a shared `PageHeader` component.
+- **Section / panel header** — `font-display text-sm font-semibold` paired with
+  a muted header bar, a divider when open, and the feature spine, so a section
+  header is unmistakable even at small size.
+- **Eyebrow labels** — field-group and sidebar section labels (e.g. Admin,
+  Account) use `text-xs font-semibold uppercase tracking-wider`.
+
+---
+
 ## Shell
 
 A single application shell hosts every page. The shell has a top header
@@ -57,17 +109,17 @@ its URL unset.
 │  Dashboard      │                                      │
 │  Metrics        │                                      │
 │ Ingestion ▾     │                                      │
-│  conf           │                                      │
-│  unmanaged      │                                      │
+│  Config         │                                      │
+│  Unmanaged      │                                      │
 │ Validation      │                                      │
 │ OntoGen ▾       │                                      │
-│  conf           │                                      │
-│  seed           │                                      │
-│  result         │                                      │
+│  Config         │                                      │
+│  Seed           │                                      │
+│  Result         │                                      │
 │ MetaGen ▾       │                                      │
-│  conf           │                                      │
-│  result         │                                      │
-│  uncovered      │                                      │
+│  Config         │                                      │
+│  Result         │                                      │
+│  Uncovered      │                                      │
 ├─────────────────┤                                      │
 │ ADMIN           │   (Admin role only)                  │
 │  Users          │                                      │

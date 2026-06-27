@@ -13,10 +13,9 @@
  */
 
 import { use } from "react";
-import Link from "next/link";
-import { ArrowLeft } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { PageHeader } from "@/components/page-header";
 import { CollapsiblePanel } from "@/components/collapsible-panel";
 import { EventsPanel } from "@/components/events-panel";
 import { IngestionDataPanel } from "@/components/ingestion/ingestion-data-panel";
@@ -37,7 +36,7 @@ function IngestionSummaryCard({ datasetUrn }: { datasetUrn: string }) {
   const unmapped = !isLoading && (!lookup || lookup.source_id === null);
 
   return (
-    <Card>
+    <Card className="border-t-2 border-t-feature-ingestion">
       <CardHeader className="p-4 pb-2">
         <CardTitle className="text-sm font-medium">Ingestion</CardTitle>
       </CardHeader>
@@ -89,7 +88,7 @@ function ValidationSummaryCard({ datasetUrn }: { datasetUrn: string }) {
   const latestScore = resultsData?.results?.[0]?.score ?? null;
 
   return (
-    <Card>
+    <Card className="border-t-2 border-t-feature-validation">
       <CardHeader className="p-4 pb-2">
         <CardTitle className="text-sm font-medium">Validation</CardTitle>
       </CardHeader>
@@ -127,7 +126,7 @@ function MetagenSummaryCard({ datasetUrn }: { datasetUrn: string }) {
   const itemCount = itemsData?.total_count ?? itemsData?.items.length ?? 0;
 
   return (
-    <Card>
+    <Card className="border-t-2 border-t-feature-metagen">
       <CardHeader className="p-4 pb-2">
         <CardTitle className="text-sm font-medium">MetaGen</CardTitle>
       </CardHeader>
@@ -175,20 +174,12 @@ export default function DatasetHubPage({
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex min-w-0 flex-wrap items-center gap-3">
-          <Link
-            href="/governance/dashboard"
-            className="text-muted-foreground hover:text-foreground"
-            aria-label="Back to dashboard"
-          >
-            <ArrowLeft className="h-4 w-4" />
-          </Link>
-          <h1 className="truncate font-mono text-lg font-semibold tracking-tight">
-            {datasetUrn}
-          </h1>
-        </div>
-      </div>
+      <PageHeader
+        title={datasetUrn}
+        titleClassName="font-mono text-lg"
+        backHref="/governance/dashboard"
+        backLabel="Back to dashboard"
+      />
 
       {/* Summary cards */}
       <div className="grid gap-4 sm:grid-cols-3">
@@ -198,15 +189,15 @@ export default function DatasetHubPage({
       </div>
 
       {/* Foldable feature panels */}
-      <CollapsiblePanel title="Ingestion">
+      <CollapsiblePanel title="Ingestion" accent="ingestion">
         <IngestionDataPanel datasetUrn={datasetUrn} />
       </CollapsiblePanel>
 
-      <CollapsiblePanel title="Validation">
+      <CollapsiblePanel title="Validation" accent="validation">
         <ValidationDataPanel datasetUrn={datasetUrn} />
       </CollapsiblePanel>
 
-      <CollapsiblePanel title="MetaGen">
+      <CollapsiblePanel title="MetaGen" accent="metagen">
         <MetagenDataPanel datasetUrn={datasetUrn} />
       </CollapsiblePanel>
 

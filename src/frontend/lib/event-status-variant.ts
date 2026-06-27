@@ -4,17 +4,28 @@
  * Spec: spec/feature/FRONTEND_GOVERNANCE.md §Metrics detail event log.
  * EventStatus values: src/shared/models/enums.py EventStatus.
  *
- * Mapping:
+ * Mapping (semantic status tokens — a status reads as a status):
  *   failure | error   → "destructive"  (signals a run that failed)
- *   warning           → "secondary"    (signals a degraded but non-fatal run)
- *   success | ok | running | info → "default"  (benign; never destructive)
+ *   warning           → "warning"      (signals a degraded but non-fatal run)
+ *   success | ok      → "success"      (a run that completed cleanly)
+ *   running | info    → "info"         (known in-flight / informational states)
+ *   unknown / empty   → "secondary"    (neutral — no status claim asserted)
  */
 
-export type BadgeVariant = "default" | "secondary" | "destructive" | "outline";
+export type BadgeVariant =
+  | "default"
+  | "secondary"
+  | "destructive"
+  | "success"
+  | "warning"
+  | "info"
+  | "outline";
 
 export function eventStatusVariant(status: string): BadgeVariant {
   if (status === "failure" || status === "error") return "destructive";
-  if (status === "warning") return "secondary";
-  // success, ok, running, info — neutral/default
-  return "default";
+  if (status === "warning") return "warning";
+  if (status === "success" || status === "ok") return "success";
+  if (status === "running" || status === "info") return "info";
+  // Unknown / empty / unrecognized — read neutral, assert no status.
+  return "secondary";
 }

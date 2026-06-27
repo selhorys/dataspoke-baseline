@@ -10,12 +10,12 @@
  *   Detail header shows latest score badge.
  */
 
-export type BadgeVariant = "default" | "destructive" | "outline";
+export type BadgeVariant = "success" | "destructive" | "outline";
 
 /**
  * Maps a nullable score value to the Badge variant to render.
  *
- *   score === 1.0   → "default"     (pass / SUCCESS — green / primary)
+ *   score === 1.0   → "success"     (pass / SUCCESS — green)
  *   0 ≤ score < 1  → "destructive"  (fail / FAILURE — red)
  *   null/undefined  → "outline"      (no data — neutral, display "—")
  *
@@ -24,7 +24,7 @@ export type BadgeVariant = "default" | "destructive" | "outline";
  */
 export function scoreBadgeVariant(score: number | null | undefined): BadgeVariant {
   if (score === null || score === undefined) return "outline";
-  if (score === 1.0) return "default";
+  if (score === 1.0) return "success";
   return "destructive";
 }
 

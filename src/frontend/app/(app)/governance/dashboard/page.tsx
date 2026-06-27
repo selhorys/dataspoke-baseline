@@ -5,6 +5,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { ErrorState } from "@/components/ui/error-state";
 import { EmptyState } from "@/components/ui/empty-state";
 import { RangePicker } from "@/components/range-picker";
+import { PageHeader } from "@/components/page-header";
 import { resolveRange, type RangeValue } from "@/lib/range";
 import {
   usePersistedRangeState,
@@ -53,10 +54,12 @@ export default function GovernanceDashboardPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-2xl font-semibold tracking-tight">Governance · Dashboard</h1>
-        <RangePicker value={sel} onChange={setSel} tz={tz} granularity="date" />
-      </div>
+      <PageHeader
+        title="Governance · Dashboard"
+        actions={
+          <RangePicker value={sel} onChange={setSel} tz={tz} granularity="date" />
+        }
+      />
 
       {isLoading && (
         <div className="grid gap-4 [grid-template-columns:repeat(auto-fit,minmax(22rem,1fr))]">

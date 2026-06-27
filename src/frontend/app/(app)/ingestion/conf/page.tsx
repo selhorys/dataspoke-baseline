@@ -10,6 +10,7 @@ import { useIngestionSources } from "@/lib/api/ingestion";
 import { useMe } from "@/lib/auth/use-me";
 import { filterKeyToQuery } from "@/lib/ingestion-mode-variant";
 import { DEFAULT_PAGE_SIZE } from "@/components/pagination";
+import { PageHeader } from "@/components/page-header";
 import type { IngestionFilterKey } from "@/types/ingestion";
 
 export default function IngestionConfPage() {
@@ -28,19 +29,19 @@ export default function IngestionConfPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-2xl font-semibold tracking-tight">Ingestion</h1>
-        <div className="flex items-center gap-2">
-          {canWrite && (
+      <PageHeader
+        title="Ingestion"
+        actions={
+          canWrite && (
             <Button size="sm" asChild>
               <Link href="/ingestion/sources/new">
                 <Plus className="mr-2 h-4 w-4" />
                 Create source
               </Link>
             </Button>
-          )}
-        </div>
-      </div>
+          )
+        }
+      />
 
       {error && (
         <ErrorState message={`Failed to load ingestion sources: ${error.message}`} />

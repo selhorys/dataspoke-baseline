@@ -5,6 +5,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { ErrorState } from "@/components/ui/error-state";
 import { Pagination, DEFAULT_PAGE_SIZE } from "@/components/pagination";
 import { UnmanagedDatasetTable } from "@/components/ingestion/unmanaged-dataset-table";
+import { PageHeader } from "@/components/page-header";
 import { useIngestionUnmanaged } from "@/lib/api/ingestion";
 
 export default function UnmanagedDatasetsPage() {
@@ -19,11 +20,7 @@ export default function UnmanagedDatasetsPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-3">
-        <h1 className="text-2xl font-semibold tracking-tight">
-          Unmanaged datasets
-        </h1>
-      </div>
+      <PageHeader title="Unmanaged datasets" />
 
       <p className="text-sm text-muted-foreground">
         DataHub datasets covered by no ingestion source — the &quot;what is being

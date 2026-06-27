@@ -280,15 +280,16 @@ describe("AppShell — Admin Users link visibility (legacy, preserved)", () => {
     );
 
     // Validation is a flat link; MetaGen is a collapsible group (like Ingestion
-    // and OntoGen) rendered as a toggle button with conf/result/uncovered
-    // submenus underneath.
+    // and OntoGen) rendered as a toggle button with Config/Result/Uncovered
+    // submenus underneath. Child labels use sentence case per the FRONTEND_BASIC.md
+    // §Shell sidebar diagram; hrefs stay at the /metagen/{conf,result,uncovered} routes.
     expect(screen.getByRole("link", { name: /validation/i })).toBeTruthy();
     const metagenGroup = screen.getByRole("button", { name: /metagen/i });
     expect(metagenGroup).toBeTruthy();
 
-    // Expanding the group reveals its conf/result/uncovered submenu links.
+    // Expanding the group reveals its Config/Result/Uncovered submenu links.
     fireEvent.click(metagenGroup);
-    const confLinks = screen.getAllByRole("link", { name: /^conf$/i });
+    const confLinks = screen.getAllByRole("link", { name: /^config$/i });
     const metagenConfLink = confLinks.find(
       (el) => el.getAttribute("href") === "/metagen/conf",
     );
@@ -298,10 +299,12 @@ describe("AppShell — Admin Users link visibility (legacy, preserved)", () => {
 
 describe("AppShell — Ingestion nav group (FRONTEND_BASIC.md §Shell)", () => {
   it.each([["Admin"], ["Editor"], ["Reader"]] as const)(
-    "renders the Ingestion group with conf and unmanaged children for %s role",
+    "renders the Ingestion group with Config and Unmanaged children for %s role",
     (role) => {
-      // spec/feature/FRONTEND_BASIC.md §Shell: Ingestion ▾ with submenus conf
-      // (/ingestion/conf) and unmanaged (/ingestion/unmanaged).
+      // spec/feature/FRONTEND_BASIC.md §Shell: Ingestion ▾ with submenus Config
+      // (/ingestion/conf) and Unmanaged (/ingestion/unmanaged). Child labels use
+      // sentence case per the FRONTEND_BASIC.md §Shell sidebar diagram; hrefs are
+      // unchanged.
       mockUseMe.mockReturnValue({
         me: makeMe(role),
         isAdmin: role === "Admin",
@@ -323,7 +326,7 @@ describe("AppShell — Ingestion nav group (FRONTEND_BASIC.md §Shell)", () => {
       // Expand the group, then assert its child links.
       fireEvent.click(ingestionToggle);
 
-      const confLink = screen.getByRole("link", { name: /^conf$/i });
+      const confLink = screen.getByRole("link", { name: /^config$/i });
       expect(confLink.getAttribute("href")).toBe("/ingestion/conf");
 
       const unmanagedLink = screen.getByRole("link", { name: /^unmanaged$/i });

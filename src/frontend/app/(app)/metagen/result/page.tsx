@@ -14,6 +14,7 @@ import {
 } from "@/lib/hooks/use-range-selection";
 import { useDisplayTz } from "@/lib/preferences/timezone";
 import { DEFAULT_PAGE_SIZE } from "@/components/pagination";
+import { PageHeader } from "@/components/page-header";
 
 export default function MetagenResultPage() {
   const [eventOffset, setEventOffset] = useState(0);
@@ -41,7 +42,7 @@ export default function MetagenResultPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-semibold tracking-tight">Result rollup</h1>
+      <PageHeader title="Result rollup" />
 
       <section className="rounded-lg border p-5">
         <h2 className="mb-4 text-sm font-medium">datasets (per-dataset rollup)</h2>

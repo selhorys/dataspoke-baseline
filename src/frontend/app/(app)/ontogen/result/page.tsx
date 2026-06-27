@@ -6,6 +6,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { NodesPanel } from "@/components/ontogen/nodes-panel";
 import { EdgesPanel } from "@/components/ontogen/edges-panel";
 import { TriplesPanel } from "@/components/ontogen/triples-panel";
+import { PageHeader } from "@/components/page-header";
 import { useMe } from "@/lib/auth/use-me";
 
 // The graph renders to a canvas and must run only in the browser.
@@ -22,9 +23,7 @@ export default function OntogenResultPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold tracking-tight">Ontology Generation</h1>
-      </div>
+      <PageHeader title="Ontology Generation" />
 
       <Tabs defaultValue="nodes">
         <TabsList>

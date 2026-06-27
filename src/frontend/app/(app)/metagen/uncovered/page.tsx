@@ -6,6 +6,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { ErrorState } from "@/components/ui/error-state";
 import { Pagination, DEFAULT_PAGE_SIZE } from "@/components/pagination";
 import { MetagenUncoveredTable } from "@/components/metagen/uncovered-table";
+import { PageHeader } from "@/components/page-header";
 import { useMetagenUncovered } from "@/lib/api/metagen";
 
 export default function MetagenUncoveredPage() {
@@ -22,7 +23,7 @@ export default function MetagenUncoveredPage() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-semibold tracking-tight">Uncovered datasets</h1>
+      <PageHeader title="Uncovered datasets" />
 
       <p className="text-sm text-muted-foreground">
         Registered datasets reached by no enabled conf. By default only{" "}

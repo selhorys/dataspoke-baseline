@@ -43,12 +43,16 @@ interface NavItem {
   label: string;
   href: string;
   icon: React.ComponentType<{ className?: string }>;
+  /** Optional feature-hue tint for the icon (the hub-and-spoke signature). */
+  iconClassName?: string;
 }
 
 interface NavGroup {
   label: string;
   icon: React.ComponentType<{ className?: string }>;
   basePath: string;
+  /** Optional feature-hue tint for the group icon. */
+  iconClassName?: string;
   children: NavItem[];
 }
 
@@ -56,6 +60,7 @@ const mainNav: (NavItem | NavGroup)[] = [
   {
     label: "Governance",
     icon: Scale,
+    iconClassName: "text-feature-governance",
     basePath: "/governance",
     children: [
       { label: "Dashboard", href: "/governance/dashboard", icon: LayoutDashboard },
@@ -65,31 +70,39 @@ const mainNav: (NavItem | NavGroup)[] = [
   {
     label: "Ingestion",
     icon: Database,
+    iconClassName: "text-feature-ingestion",
     basePath: "/ingestion",
     children: [
-      { label: "conf", href: "/ingestion/conf", icon: SlidersHorizontal },
-      { label: "unmanaged", href: "/ingestion/unmanaged", icon: PackageOpen },
+      { label: "Config", href: "/ingestion/conf", icon: SlidersHorizontal },
+      { label: "Unmanaged", href: "/ingestion/unmanaged", icon: PackageOpen },
     ],
   },
-  { label: "Validation", href: "/validation", icon: Shield },
+  {
+    label: "Validation",
+    href: "/validation",
+    icon: Shield,
+    iconClassName: "text-feature-validation",
+  },
   {
     label: "OntoGen",
     icon: Network,
+    iconClassName: "text-feature-ontogen",
     basePath: "/ontogen",
     children: [
-      { label: "conf", href: "/ontogen/conf", icon: Network },
-      { label: "seed", href: "/ontogen/seed", icon: Network },
-      { label: "result", href: "/ontogen/result", icon: Network },
+      { label: "Config", href: "/ontogen/conf", icon: Network },
+      { label: "Seed", href: "/ontogen/seed", icon: Network },
+      { label: "Result", href: "/ontogen/result", icon: Network },
     ],
   },
   {
     label: "MetaGen",
     icon: Sparkles,
+    iconClassName: "text-feature-metagen",
     basePath: "/metagen",
     children: [
-      { label: "conf", href: "/metagen/conf", icon: SlidersHorizontal },
-      { label: "result", href: "/metagen/result", icon: Sparkles },
-      { label: "uncovered", href: "/metagen/uncovered", icon: PackageOpen },
+      { label: "Config", href: "/metagen/conf", icon: SlidersHorizontal },
+      { label: "Result", href: "/metagen/result", icon: Sparkles },
+      { label: "Uncovered", href: "/metagen/uncovered", icon: PackageOpen },
     ],
   },
 ];
@@ -125,7 +138,7 @@ function SidebarLink({ item }: { item: NavItem }) {
           : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
       )}
     >
-      <Icon className="h-4 w-4 shrink-0" />
+      <Icon className={cn("h-4 w-4 shrink-0", item.iconClassName)} />
       {item.label}
     </Link>
   );
@@ -156,7 +169,7 @@ function SidebarNavGroup({ group }: { group: NavGroup }) {
             : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
         )}
       >
-        <Icon className="h-4 w-4 shrink-0" />
+        <Icon className={cn("h-4 w-4 shrink-0", group.iconClassName)} />
         {group.label}
         <Chevron className="ml-auto h-4 w-4 shrink-0" />
       </button>

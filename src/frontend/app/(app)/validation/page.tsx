@@ -15,6 +15,7 @@ import {
 import { useValidationList } from "@/lib/api/validation";
 import { ErrorState } from "@/components/ui/error-state";
 import { Pagination, DEFAULT_PAGE_SIZE } from "@/components/pagination";
+import { PageHeader } from "@/components/page-header";
 import { formatDateTime } from "@/lib/format-time";
 import { useDisplayTz } from "@/lib/preferences/timezone";
 import { scoreBadgeVariant, scoreLabel } from "@/lib/validation-score";
@@ -28,9 +29,7 @@ export default function ValidationListPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold tracking-tight">Validation</h1>
-      </div>
+      <PageHeader title="Validation" />
 
       {error && (
         <ErrorState message={`Failed to load validation configs: ${error.message}`} />

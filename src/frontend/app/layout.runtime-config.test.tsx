@@ -13,9 +13,21 @@ import { render, cleanup } from "@testing-library/react";
 import React from "react";
 
 // next/font/google is a build-time loader unavailable under jsdom; stub it so
-// the layout module imports. The font's only effect is a CSS variable class.
+// the layout module imports. The layout wires the three-role font system
+// (FRONTEND_BASIC.md §Design system › Typography): Inter (body), Space Grotesk
+// (display), JetBrains Mono (mono). Each loader's only effect the code reads is
+// the `variable` CSS-variable class, so each mock returns that field. The values
+// are distinct test sentinels so an assertion on the rendered <body> className can
+// prove every one of the three is wired (and fail if any single one is dropped).
+const FONT_VAR = {
+  inter: "sentinel-font-inter",
+  spaceGrotesk: "sentinel-font-space-grotesk",
+  jetbrainsMono: "sentinel-font-jetbrains-mono",
+} as const;
 vi.mock("next/font/google", () => ({
-  Inter: () => ({ variable: "--font-inter" }),
+  Inter: () => ({ variable: "sentinel-font-inter" }),
+  Space_Grotesk: () => ({ variable: "sentinel-font-space-grotesk" }),
+  JetBrains_Mono: () => ({ variable: "sentinel-font-jetbrains-mono" }),
 }));
 
 // Keep the render lightweight and provider-agnostic; this suite only inspects
@@ -43,6 +55,22 @@ function renderLayoutScript(): string {
   return script?.innerHTML ?? "";
 }
 
+// RootLayout renders <body className={...}>. Under jsdom React may render the
+// <body> nested in the RTL container or apply its attributes to document.body;
+// locate whichever <body> carries the layout's font-sans class and return its
+// className so the three-font wiring can be asserted regardless of placement.
+function renderLayoutBodyClassName(): string {
+  render(
+    <RootLayout>
+      <div>child</div>
+    </RootLayout>,
+  );
+  const bodies = Array.from(document.querySelectorAll("body"));
+  const body =
+    bodies.find((b) => b.className.includes("font-sans")) ?? document.body;
+  return body.className;
+}
+
 describe("RootLayout runtime-config injection", () => {
   const original = process.env[ENV_KEY];
 
@@ -66,6 +94,21 @@ describe("RootLayout runtime-config injection", () => {
 
   it("is configured for dynamic per-request rendering", () => {
     expect(dynamic).toBe("force-dynamic");
+  });
+
+  it("wires all three font CSS-variable classes plus font-sans onto <body>", () => {
+    // spec/feature/FRONTEND_BASIC.md §Design system › Typography: the three-role
+    // font system (Inter body, Space Grotesk display, JetBrains Mono mono) is
+    // wired via next/font in app/layout.tsx; <body> carries each loader's
+    // `.variable` CSS-variable class plus the font-sans family. Asserting all
+    // three sentinel variables means this fails if any single font is dropped
+    // from the <body> className.
+    const className = renderLayoutBodyClassName();
+
+    expect(className).toContain(FONT_VAR.inter);
+    expect(className).toContain(FONT_VAR.spaceGrotesk);
+    expect(className).toContain(FONT_VAR.jetbrainsMono);
+    expect(className).toContain("font-sans");
   });
 
   it("injects the request-time DATASPOKE_API_BASE_URL into the runtime config script", () => {
