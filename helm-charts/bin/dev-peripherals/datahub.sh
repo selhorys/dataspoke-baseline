@@ -327,12 +327,38 @@ if [[ -n "${DATASPOKE_KUBE_INGRESS_DOMAIN:-}" ]]; then
       error "Failed to obtain a GMS session token after ${MINT_TIMEOUT}s — cannot mint PAT."
     fi
 
-    PAT_RESPONSE=$(curl -s -X POST "${GMS_URL}/api/graphql" \
-      -H "Authorization: Bearer ${SESSION_TOKEN}" \
-      -H "Content-Type: application/json" \
-      -d '{"query":"mutation { createAccessToken(input: { type: PERSONAL, actorUrn: \"urn:li:corpuser:datahub\", duration: NO_EXPIRY, name: \"dev-env-token\" }) { accessToken } }"}' 2>/dev/null || echo "")
+    # Mint the PAT. Immediately after a fresh DataHub boot the DataHubAuthorizer's
+    # policy cache may not yet hold the default policy that grants the root datahub
+    # user GENERATE_PERSONAL_ACCESS_TOKENS — the policy index in OpenSearch lags
+    # pod-readiness — so createAccessToken returns a transient 403 UNAUTHORIZED even
+    # though the session token authenticates fine. Retry until the privilege
+    # resolves, refreshing the session token in case it expires during the wait.
+    PAT_TIMEOUT=180
+    PAT_ELAPSED=0
+    NEW_TOKEN=""
+    PAT_RESPONSE=""
+    while :; do
+      PAT_RESPONSE=$(curl -s -X POST "${GMS_URL}/api/graphql" \
+        -H "Authorization: Bearer ${SESSION_TOKEN}" \
+        -H "Content-Type: application/json" \
+        -d '{"query":"mutation { createAccessToken(input: { type: PERSONAL, actorUrn: \"urn:li:corpuser:datahub\", duration: NO_EXPIRY, name: \"dev-env-token\" }) { accessToken } }"}' 2>/dev/null || echo "")
+      NEW_TOKEN=$(echo "$PAT_RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['createAccessToken']['accessToken'])" 2>/dev/null || echo "")
+      [[ -n "$NEW_TOKEN" ]] && break
+      (( PAT_ELAPSED >= PAT_TIMEOUT )) && break
+      info "  PAT not yet authorized (policy cache warming) — retrying in 10s..."
+      sleep 10
+      (( PAT_ELAPSED += 10 ))
+      # Refresh the session token; it may have expired during the wait.
+      RESP=$(curl -s -X POST \
+        "${GMS_URL}/auth/generateSessionTokenForUser?userId=datahub" \
+        -H "Authorization: Basic ${SYS_ID}:${SYS_SECRET}" \
+        -H "Content-Type: application/json" \
+        -d '{"userId":"datahub"}' \
+        2>/dev/null || echo "")
+      FRESH_TOKEN=$(printf '%s' "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['accessToken'] if isinstance(d, dict) else d)" 2>/dev/null || echo "")
+      [[ -n "$FRESH_TOKEN" ]] && SESSION_TOKEN="$FRESH_TOKEN"
+    done
 
-    NEW_TOKEN=$(echo "$PAT_RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['createAccessToken']['accessToken'])" 2>/dev/null || echo "")
     if [[ -n "$NEW_TOKEN" ]]; then
       upsert_env_var DATASPOKE_TEST_DATAHUB_TOKEN "${NEW_TOKEN}" "$ENV_FILE"
       info "DataHub PAT written to .env as DATASPOKE_TEST_DATAHUB_TOKEN."
