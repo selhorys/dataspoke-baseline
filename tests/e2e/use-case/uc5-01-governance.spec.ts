@@ -225,7 +225,7 @@ async function createMetricViaUI(
   ).toBeVisible({ timeout: 15_000 });
 
   // -- UI assertion: metric_type badge visible in attr/conf section --
-  // spec: [id]/page.tsx — attr/conf dl section renders metric_type as Badge variant="outline"
+  // spec: [id]/page.tsx — attr/conf section renders metric_type as Badge variant="outline"
   // getByText is substring-insensitive; exact:true targets the badge text specifically.
   // Multiple elements may contain the type string (table row etc.); use .first().
   await expect(

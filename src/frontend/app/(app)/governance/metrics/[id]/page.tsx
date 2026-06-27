@@ -26,6 +26,10 @@ import { toast } from "@/components/ui/use-toast";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { MetricForm } from "@/components/governance/metric-form";
 import { MetricTimeseriesChart } from "@/components/governance/metric-timeseries-chart";
+import { FieldPanel } from "@/components/forms/field-panel";
+import { FormGrid } from "@/components/ui/form-grid";
+import { DatasetFilterView } from "@/components/dataset-filter-view";
+import { ScheduleTierLink, scheduleDagId } from "@/components/schedule-tier-link";
 import { ApiError } from "@/lib/api/client";
 import {
   useMetricConf,
@@ -258,54 +262,46 @@ export default function MetricDetailPage({
         {!isEditing && <h2 className="mb-3 text-sm font-medium">attr/conf</h2>}
 
         {!isEditing ? (
-          <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-3">
-            <div>
-              <dt className="text-muted-foreground">mode</dt>
-              <dd>{conf.mode}</dd>
-            </div>
-            <div>
-              <dt className="text-muted-foreground">metric_type</dt>
-              <dd>
-                <Badge variant="outline">{conf.metric_type}</Badge>
-              </dd>
-            </div>
-            <div>
-              <dt className="text-muted-foreground">schedule_tier</dt>
-              <dd>{conf.schedule_tier ?? "on-demand"}</dd>
-            </div>
-            <div>
-              <dt className="text-muted-foreground">is_enabled</dt>
-              <dd>
-                <Badge variant={conf.is_enabled ? "default" : "secondary"}>
-                  {conf.is_enabled ? "Enabled" : "Disabled"}
-                </Badge>
-              </dd>
-            </div>
-            <div>
-              <dt className="text-muted-foreground">metrics</dt>
-              <dd className="font-mono text-xs">{conf.metrics.join(", ")}</dd>
-            </div>
-            <div className="col-span-full">
-              <dt className="text-muted-foreground">description</dt>
-              <dd>{conf.description}</dd>
-            </div>
+          <FormGrid>
+            <FieldPanel label="mode">{conf.mode}</FieldPanel>
+
+            <FieldPanel label="metric_type">
+              <Badge variant="outline">{conf.metric_type}</Badge>
+            </FieldPanel>
+
+            <FieldPanel label="schedule_tier">
+              <ScheduleTierLink
+                tier={conf.schedule_tier ?? "on-demand"}
+                dagId={scheduleDagId("metrics", conf.schedule_tier)}
+              />
+            </FieldPanel>
+
+            <FieldPanel label="is_enabled">
+              <Badge variant={conf.is_enabled ? "default" : "secondary"}>
+                {conf.is_enabled ? "Enabled" : "Disabled"}
+              </Badge>
+            </FieldPanel>
+
+            <FieldPanel label="metrics" className="sm:col-span-2">
+              <span className="font-mono text-xs">{conf.metrics.join(", ")}</span>
+            </FieldPanel>
+
+            <FieldPanel label="description" className="sm:col-span-2">
+              {conf.description}
+            </FieldPanel>
+
             {conf.metric_conf && Object.keys(conf.metric_conf).length > 0 && (
-              <div>
-                <dt className="text-muted-foreground">metric_conf</dt>
-                <dd className="font-mono text-xs">
+              <FieldPanel label="metric_conf" className="sm:col-span-2">
+                <span className="font-mono text-xs">
                   {JSON.stringify(conf.metric_conf)}
-                </dd>
-              </div>
+                </span>
+              </FieldPanel>
             )}
-            {conf.dataset_filter && Object.keys(conf.dataset_filter).length > 0 && (
-              <div className="col-span-full">
-                <dt className="text-muted-foreground">dataset_filter</dt>
-                <dd className="font-mono text-xs">
-                  {JSON.stringify(conf.dataset_filter)}
-                </dd>
-              </div>
-            )}
-          </dl>
+
+            <div className="sm:col-span-2">
+              <DatasetFilterView value={conf.dataset_filter} />
+            </div>
+          </FormGrid>
         ) : (
           <MetricForm
             title="attr/conf"
