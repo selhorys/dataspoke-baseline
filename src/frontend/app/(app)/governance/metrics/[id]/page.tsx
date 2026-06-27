@@ -3,7 +3,7 @@
 import { use, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, Play, Trash2 } from "lucide-react";
+import { ArrowLeft, Play, Power, PowerOff, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -32,6 +32,7 @@ import {
   useMetricResults,
   useMetricEvents,
   useReplaceMetricConf,
+  useUpdateMetricConf,
   useDeleteMetric,
   useRunMetric,
 } from "@/lib/api/governance";
@@ -89,6 +90,7 @@ export default function MetricDetailPage({
 
   // ── Mutations ──────────────────────────────────────────────────────────────
   const replace = useReplaceMetricConf();
+  const updateConf = useUpdateMetricConf();
   const deleteMetric = useDeleteMetric();
   const runMetric = useRunMetric();
 
@@ -191,6 +193,37 @@ export default function MetricDetailPage({
 
         {canWrite && !isEditing && (
           <div className="ml-auto flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              data-testid="metric-toggle-enabled"
+              disabled={updateConf.isPending}
+              onClick={() =>
+                updateConf.mutate(
+                  { metricId, patch: { is_enabled: !conf.is_enabled } },
+                  {
+                    onError: (err) => {
+                      const message =
+                        err instanceof ApiError
+                          ? `${err.error_code}: ${err.message}`
+                          : err.message;
+                      toast({ title: message, variant: "destructive" });
+                    },
+                  },
+                )
+              }
+            >
+              {conf.is_enabled ? (
+                <PowerOff className="mr-1 h-3.5 w-3.5" />
+              ) : (
+                <Power className="mr-1 h-3.5 w-3.5" />
+              )}
+              {updateConf.isPending
+                ? "Saving..."
+                : conf.is_enabled
+                  ? "Disable"
+                  : "Enable"}
+            </Button>
             <Button variant="outline" size="sm" onClick={() => setIsEditing(true)}>
               Edit
             </Button>

@@ -229,6 +229,39 @@ export function useReplaceMetricConf() {
   });
 }
 
+// ── Update metric conf (PATCH — partial) ───────────────────────────────────────
+
+/** Partial conf body — a subset of the editable conf definition fields. */
+interface PatchMetricBody {
+  mode?: string;
+  is_enabled?: boolean;
+  metric_type?: string;
+  title?: string;
+  description?: string;
+  metrics?: string[];
+  metric_conf?: Record<string, unknown>;
+  schedule_tier?: ScheduleTier | null;
+  dataset_filter?: DatasetFilter;
+}
+
+export function useUpdateMetricConf() {
+  const qc = useQueryClient();
+  return useMutation<MetricDefinition, Error, { metricId: string; patch: PatchMetricBody }>({
+    mutationFn: ({ metricId, patch }) =>
+      apiFetch<MetricDefinition>(`/spoke/governance/metric/${metricId}/attr/conf`, {
+        method: "PATCH",
+        body: JSON.stringify(patch),
+      }),
+    meta: { handledInline: true },
+    onSuccess: (_data, vars) => {
+      void qc.invalidateQueries({ queryKey: ["governance", "metrics"] });
+      void qc.invalidateQueries({
+        queryKey: ["governance", "metrics", vars.metricId, "conf"],
+      });
+    },
+  });
+}
+
 // ── Delete metric conf ─────────────────────────────────────────────────────────
 
 export function useDeleteMetric() {

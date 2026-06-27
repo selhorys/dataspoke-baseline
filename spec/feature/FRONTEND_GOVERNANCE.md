@@ -32,8 +32,9 @@ responsive grid of combined cards:
 | Shared RangePicker | drives every card's trend `from`/`to` (plus a limit) | A single [RangePicker](FRONTEND_BASIC.md#shared-component-notes) (`date` granularity, presets Last 1 day / 7 days / 2 weeks (default) / 4 weeks / 12 weeks) sits above the grid and applies the same window to every card's chart together |
 | Responsive grid | — | Equal-width cards with an enforced minimum width, laid out as `repeat(auto-fit, minmax(~22rem, 1fr))`. The grid wraps dynamically 3→2→1 as the viewport narrows, with **no fixed column cap** — on an ultra-wide viewport with more than three enabled metrics a fourth may pack into a row |
 
-Cards and charts poll on the 15s interval (paused when the tab is hidden) per
-the BASIC convention.
+Trend charts poll on the 15s interval (paused when the tab is hidden) per the
+BASIC convention; the latest-`values` snapshot on each card is fetched once per
+load (refreshed on range change or manual refetch), not polled.
 
 ```
 ┌──────────────────────────────────────────────────────────┐
@@ -64,7 +65,7 @@ list, create, edit, run, disable, delete.
 
 | Page | Read | Write |
 |---|---|---|
-| `/governance/metrics` (list) | `GET /spoke/governance/metric` — rendered filter bar (`metric_type` / `mode` / status Selects, mapped to query params) plus the shared [Pagination](FRONTEND_BASIC.md#shared-component-notes) control (page-size selector defaulting to 20, Prev/Next, numbered pages) bound to the standard `offset`/`limit`/`total_count` envelope. Each row shows the `title` (link to detail) with `metric_id` as a subtitle, a `metric_type` badge, and an `Enabled`/`Disabled` status badge | "New metric" action → `/governance/metrics/new` |
+| `/governance/metrics` (list) | `GET /spoke/governance/metric` — rendered filter bar (`metric_type` / `mode` / status Selects, mapped to query params) plus the shared [Pagination](FRONTEND_BASIC.md#shared-component-notes) control (page-size selector defaulting to 20, Prev/Next, numbered pages) bound to the standard `offset`/`limit`/`total_count` envelope. Each row shows the `title` (link to detail) with `metric_id` as a subtitle, a `metric_type` badge, the `mode` and `schedule_tier`, an `Enabled`/`Disabled` status badge, and the `updated_at` timestamp | "New metric" action → `/governance/metrics/new` |
 | `/governance/metrics/new` | — | `POST /spoke/governance/metric` (definition fields **plus** a client-supplied `metric_id`) |
 | `/governance/metrics/[id]` | `GET .../attr/conf`, `GET .../attr/result?from&to` (a `date`-granularity [RangePicker](FRONTEND_BASIC.md#shared-component-notes) above the chart drives `from`/`to`), `GET .../event?from&to` (a `datetime` RangePicker drives the event panel's `from`/`to`) | `PUT/PATCH/DELETE .../attr/conf` (fields: `mode`, `is_enabled`, `metric_type`, `title`, `description`, `metrics`, `metric_conf`, `schedule_tier`, `dataset_filter`); `POST .../method/run` (`?dry_run=true`) |
 
@@ -106,7 +107,7 @@ detail render a null tier as *on-demand*.
 │    dataset_filter: origin=DEV                        │
 │                                                      │
 │  attr/result?from&to        [Last 2 weeks ▾]        │
-│    [Recharts area chart — one line per `values` key] │
+│    [Recharts line chart — one line per `values` key] │
 │                                                      │
 │  event  (METRIC.RUN_COMPLETE …)                      │
 │    2026-04-25 values: total 142, doc_health 119      │

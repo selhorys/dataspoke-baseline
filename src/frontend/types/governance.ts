@@ -52,7 +52,6 @@ export interface MetricResult {
   id: string;
   metric_id: string;
   values: Record<string, number>;
-  breakdown: Record<string, unknown> | null;
   measured_at: string;
 }
 

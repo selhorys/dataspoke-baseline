@@ -78,7 +78,6 @@ function result(measuredAt: string, values: Record<string, number>): MetricResul
     id: `r-${measuredAt}`,
     metric_id: METRIC.id,
     values,
-    breakdown: null,
     measured_at: measuredAt,
   };
 }
