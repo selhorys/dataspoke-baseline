@@ -9,3 +9,4 @@
 - [Helm stale local subchart tgz](project_helm_stale_local_subchart_tgz.md) — umbrella renders stale charts/*.tgz not subcharts/ source; verify via standalone render
 - [Runtime env-file rename blast radius](project_runtime_envfile_rename_blast_radius.md) — renaming helm-charts/.env→.env.dev breaks ~17 hardcoded loaders/skills + a gitignore secret-leak gotcha
 - ["No references remain" brace grep](feedback_no_references_remain_brace_grep.md) — `/hub` grep stays clean while `{auth,spoke,hub}` brace-list survives; grep token-level minus homographs
+- [Recharts var() in SVG attr](project_recharts_css_var_svg_attr.md) — var() DOES resolve in SVG presentation attrs (Chromium-verified); Recharts hsl(var(--token)) stroke is fine, not a regression
