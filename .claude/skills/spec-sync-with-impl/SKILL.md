@@ -67,8 +67,8 @@ Presets (numbers or keywords, comma-separated):
   5. helm-charts  — Helm chart definitions, helm-charts/dev-peripherals/, HELM_CHART spec
   6. api          — API specs, src/api/ code
   7. ref          — ref/ setup scripts and reference materials
-  8. backend      — Backend services, Airflow workflows (TBD presets)
-  9. frontend     — Next.js frontend code (TBD presets)
+  8. backend      — Backend services, shared libs, Airflow workflows
+  9. frontend     — Next.js frontend code
 
 Or describe a free-form scope in plain text, e.g.:
   - "recently developed backend ingestion secret resolution"
@@ -90,12 +90,11 @@ Parse the user's reply: split on commas; each item is either a preset (number/ke
 | `helm-charts` | `spec/feature/HELM_CHART.md` | `helm-charts/dataspoke/`, `helm-charts/dev-peripherals/` (incl. `langfuse/`) charts/values/templates/manifests |
 | `api` | `spec/API.md`, `spec/API_DESIGN_PRINCIPLE_en.md`, `src/api/README.md` | `src/api/` routers/schemas/auth/middleware |
 | `ref` | `spec/AI_SCAFFOLD.md` (ref section), ref-setup skill declaration, `ref/README.md` | `ref/` setup scripts and reference materials, ref-setup skill logic body |
-| `backend` | TBD | TBD |
-| `frontend` | TBD | TBD |
+| `backend` | `spec/feature/BACKEND.md`, `BACKEND_LLM.md`, `BACKEND_SCHEMA.md`, `AUTH.md`, `VALIDATION.md`, `SECRET_RESOLUTION.md` | `src/backend/` per-feature services, `src/shared/` (config/db/llm/datahub/models/secrets/vector/graph), `src/workflows/` Airflow DAGs + params |
+| `frontend` | `spec/feature/FRONTEND_BASIC.md` + `FRONTEND_{GOVERNANCE,INGESTION,VALIDATION,ONTOGEN,METAGEN}.md`, `src/frontend/README.md` | `src/frontend/` app routes, components, lib, types |
 | `all` | All of the above | All of the above |
 
 - If the user selects `all`, expand to every preset scope that has both spec and impl files present.
-- For presets marked **TBD**: inform the user that the preset mapping is not yet defined; suggest using a free-form description instead, or skip with a note.
 
 ### Free-form scope resolution
 
