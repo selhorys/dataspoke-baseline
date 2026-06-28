@@ -25,7 +25,7 @@ Fork or copy this repository to create a data catalog for your organization.
 
 DataSpoke ships as an umbrella Helm chart at `helm-charts/dataspoke/`. The production profile (`values.yaml`) enables the application components (frontend, API) and infrastructure (PostgreSQL with pgvector + Apache AGE, Redis, Airflow). The optional event-consumer subchart is shipped disabled — baseline UC1–UC5 are schedule-driven via Airflow rather than event-driven.
 
-1. **Build and push images**: `docker build -t <registry>/dataspoke/api:latest -f docker-images/api/Dockerfile .` (Frontend image TBD; event-consumer is disabled by default)
+1. **Build and push images**: `docker build -t <registry>/dataspoke/api:latest -f docker-images/api/Dockerfile .` and `docker build -t <registry>/dataspoke/frontend:latest -f src/frontend/Dockerfile .` (event-consumer is disabled by default)
 2. **Configure**: Copy `helm-charts/dataspoke/values.yaml` and customize — container images, ingress hosts/TLS, DataHub connection (`config.datahub.gmsUrl`), and secrets (PostgreSQL, Redis, JWT, LLM API key). For production secrets management, consider [External Secrets Operator](https://external-secrets.io/).
 3. **Install**:
    ```bash
@@ -44,11 +44,11 @@ DataSpoke ships as an umbrella Helm chart at `helm-charts/dataspoke/`. The produ
 - **kubectl** + **Helm v3** installed and configured
 - A Kubernetes cluster (GKE Autopilot recommended; Docker Desktop, minikube, or kind also work) with **8+ CPUs / 24 GB RAM / 150 GB storage**
 - **Python 3.13** and [`uv`](https://github.com/astral-sh/uv)
-- **Node.js 18+** (TBD — frontend not yet implemented)
+- **Node.js 22+** and [`pnpm`](https://pnpm.io/) — for host frontend development (`--frontend local`)
 
 ### Dev Environment Setup
 
-The dev profile installs infrastructure (DataHub, PostgreSQL with pgvector + Apache AGE, Redis, Airflow, self-hosted Langfuse for LLM observability, example data sources) into a Kubernetes cluster via the umbrella Helm chart plus dev peripherals. The API runs **in-cluster** alongside Airflow (for workflow callbacks); frontend runs on the host.
+The dev profile installs infrastructure (DataHub, PostgreSQL with pgvector + Apache AGE, Redis, Airflow, self-hosted Langfuse for LLM observability, example data sources) into a Kubernetes cluster via the umbrella Helm chart plus dev peripherals. The API runs **in-cluster** alongside Airflow (for workflow callbacks). The frontend is deployed per the `--frontend` flag (default `none` in dev): `local` writes `src/frontend/.env.local` so a host `pnpm dev` reaches the in-cluster API, `cluster` deploys the containerised UI.
 
 ```bash
 cp helm-charts/.env.dev.example helm-charts/.env.dev   # Set your Kubernetes context
@@ -76,11 +76,17 @@ Services are accessed via nginx-ingress endpoints — HTTP services use virtual-
 ```bash
 uv sync                                                                # Install dependencies
 ./helm-charts/bin/install.sh --profile dev --components api            # Rebuild + redeploy the API
-kubectl scale deployment/dataspoke-api --replicas=0 \
-  -n "${DATASPOKE_KUBE_DATASPOKE_NAMESPACE}"                           # Scale down in-cluster API
 ```
 
 The API is accessible via nginx-ingress at `http://api.<INGRESS_IP>.nip.io/api/v1/`. See [`spec/TESTING.md`](spec/TESTING.md) for testing modes.
+
+For the frontend, either iterate on the host against the in-cluster API or rebuild the containerised UI:
+
+```bash
+./helm-charts/bin/install.sh --profile dev --frontend local           # Write src/frontend/.env.local
+pnpm -C src/frontend install && pnpm -C src/frontend dev              # Host dev server (http://localhost:3000)
+./helm-charts/bin/install.sh --profile dev --components frontend       # Rebuild + redeploy the cluster UI
+```
 
 ### Implementation Status
 
@@ -93,7 +99,7 @@ The API is accessible via nginx-ingress at `http://api.<INGRESS_IP>.nip.io/api/v
 | Docker image (API) | Done | `docker-images/api/` |
 | Helm charts | Done | `helm-charts/dataspoke/` |
 | Tests (unit + integration) | Done | `tests/` |
-| Frontend (Next.js) | TBD | `src/frontend/` |
+| Frontend (Next.js) | Done | `src/frontend/` |
 
 ### Testing
 
@@ -114,7 +120,7 @@ Use the plan -> approve -> generate -> evaluate workflow:
 3. `spec` -> `spec-reviewer` -> [fix pass if needed] (when the plan changes specs)
 4. `backend` -> `reviewer` -> [fix pass if needed]
 5. `airflow-dag` -> `reviewer` -> [fix pass if needed]
-6. `test` -- write and run tests
+6. `test` -> `test-reviewer` -> [fix pass if needed]
 7. `frontend` -> `reviewer` -> [fix pass if needed]
 8. `k8s-helm` -- containerize and deploy
 
