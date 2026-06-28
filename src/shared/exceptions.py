@@ -181,8 +181,12 @@ class ForbiddenError(DataSpokeError):
 
 
 class PeripheralNotConfiguredError(DataSpokeError):
-    """Raised when an operation requires a peripheral (e.g. smtp) that is not
-    configured. Maps to HTTP 503.
+    """Raised when an operation requires a peripheral that is not configured.
+    Maps to HTTP 503.
+
+    Valid peripheral values:
+      "smtp"     — email notifications (password reset, alerts)
+      "datahub"  — DataHub GMS connection / token not configured
 
     error_code: PERIPHERAL_NOT_CONFIGURED
     detail: {"peripheral": "<name>"}

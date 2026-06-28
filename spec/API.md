@@ -839,7 +839,7 @@ Clients should treat `detail` as optional; absent for errors that don't need it.
 | `429 Too Many Requests` | Rate limit exceeded. Body uses the standard error envelope with `error_code: "RATE_LIMIT_EXCEEDED"`; response carries `Retry-After` and `X-RateLimit-*` headers (limit, remaining, reset) |
 | `500 Internal Server Error` | Fallback for an unhandled `DataSpokeError` with no specific status mapping |
 | `502 Bad Gateway` | DataHub GMS unreachable or returned an unexpected error |
-| `503 Service Unavailable` | PostgreSQL, Redis, or other storage-tier dependency unreachable; or internal auth secret not configured |
+| `503 Service Unavailable` | PostgreSQL, Redis, or other storage-tier dependency unreachable; a required peripheral (DataHub/SMTP) not configured; or internal auth secret not configured |
 
 ### Application Error Codes
 
@@ -893,8 +893,8 @@ Clients should treat `detail` as optional; absent for errors that don't need it.
 | `TOKEN_NOT_FOUND` | 404 | `DELETE /auth/api-tokens/{id}` or `DELETE /admin/users/{id}/api-tokens/{token_id}` references a non-existent token |
 | `TOKEN_LIMIT_EXCEEDED` | 409 | `POST /auth/api-tokens` attempted while user already has 10 active (non-revoked) tokens |
 | `DATAHUB_SYNC_FAILED` | 503 | DataHub-side user mirror operation failed (create / role change / role propagation). For user creation this triggers a compensating hard-delete of the partial DataSpoke `users` row; for role propagation the DataSpoke write is preserved and the nightly DAG reconciles |
-| `PERIPHERAL_NOT_CONFIGURED` | 503 | A required peripheral (e.g. SMTP for `/auth/password/reset/request`) is not configured. `detail.peripheral` identifies which one (`"smtp"`, …) |
-| `DATAHUB_UNAVAILABLE` | 502 | DataHub GMS did not respond or returned an error |
+| `PERIPHERAL_NOT_CONFIGURED` | 503 | A required peripheral is not configured. `detail.peripheral` identifies which one (`"smtp"` for `/auth/password/reset/request`; `"datahub"` for any DataHub-requiring endpoint when DataHub is unconfigured). Distinct from `DATAHUB_UNAVAILABLE` (502), which is the configured-but-unreachable case. The `/ready` health endpoint is the exception that reports an unconfigured peripheral as `degraded` rather than returning this code |
+| `DATAHUB_UNAVAILABLE` | 502 | DataHub GMS is configured but did not respond or returned an error |
 | `STORAGE_UNAVAILABLE` | 503 | PostgreSQL or Redis connection failed (including auth refresh fail-closed when the revocation store is unreachable) |
 | `INTERNAL_AUTH_NOT_CONFIGURED` | 503 | `X-Internal-Token` shared-secret header is required for `/internal/*` routes but the server-side secret is unset |
 | `RATE_LIMIT_EXCEEDED` | 429 | Too many requests; back off and retry |

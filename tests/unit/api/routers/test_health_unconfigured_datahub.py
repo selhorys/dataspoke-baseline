@@ -2,8 +2,8 @@
 
 Concern:
 - GET /ready returns 200 with status="degraded" and checks["datahub"]=False
-  when the DataHub peripheral is not configured (StorageUnavailableError raised
-  by get_datahub).
+  when the DataHub peripheral is not configured (PeripheralNotConfiguredError
+  raised by get_datahub).
 - GET /ready never returns 503 — it always returns 200 with per-check flags.
 - GET /ready returns 200 with checks["datahub"]=True when DataHub is configured
   and reachable.
@@ -11,14 +11,17 @@ Concern:
 This is a targeted complement to test_health.py: existing tests use
 dependency_overrides to inject a working mock DataHub. These tests verify that
 the unconfigured path (no dependency_override and get_datahub raises
-StorageUnavailableError) does NOT propagate as 503 but is caught locally and
-reported as checks["datahub"]=False.
+PeripheralNotConfiguredError("datahub")) does NOT propagate as 503 but is caught
+locally and reported as checks["datahub"]=False.
 
 spec traceability:
 - spec/API.md §System — /ready degraded when peripheral unconfigured, never 503 —
   /ready must return 200 with status="degraded"; never 503.
+- spec/ARCHITECTURE.md §Peripheral availability contract — /ready is the reporting
+  exception: an unconfigured peripheral is surfaced as "degraded" rather than
+  PERIPHERAL_NOT_CONFIGURED.
 - spec/API.md §System — /ready reports DataHub, PostgreSQL, Redis per-check flags.
-- src/api/routers/health.py ready() — StorageUnavailableError caught; checks["datahub"]=False.
+- src/api/routers/health.py ready() — get_datahub exception caught; checks["datahub"]=False.
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -68,17 +71,17 @@ def _make_ready_client(
 async def test_ready_returns_200_not_503_when_datahub_unconfigured() -> None:
     """GET /ready returns 200 even when DataHub peripheral is unconfigured.
 
-    When get_datahub raises StorageUnavailableError (peripheral not configured),
+    When get_datahub raises PeripheralNotConfiguredError (peripheral not configured),
     the /ready handler must catch it locally and report checks["datahub"]=False
     rather than letting the global exception handler convert it to 503.
 
     spec: spec/API.md §System — /ready degraded when peripheral unconfigured, never 503.
-    spec: src/api/routers/health.py ready() — StorageUnavailableError caught locally.
+    spec: src/api/routers/health.py ready() — get_datahub exception caught locally.
     """
-    from src.shared.exceptions import StorageUnavailableError
+    from src.shared.exceptions import PeripheralNotConfiguredError
 
     async def _get_datahub_raises(db):
-        raise StorageUnavailableError("DataHub peripheral not configured")
+        raise PeripheralNotConfiguredError("datahub")
 
     # Patch get_datahub at the source so the health router's manual resolution
     # picks up the raising version (the health router calls get_datahub(db) directly
@@ -101,10 +104,10 @@ async def test_ready_checks_datahub_false_when_unconfigured() -> None:
     spec: spec/API.md §System — /ready degraded when peripheral unconfigured, never 503.
     spec: API.md §System — /ready must verify DataHub connectivity per subsystem.
     """
-    from src.shared.exceptions import StorageUnavailableError
+    from src.shared.exceptions import PeripheralNotConfiguredError
 
     async def _get_datahub_raises(db):
-        raise StorageUnavailableError("DataHub peripheral not configured")
+        raise PeripheralNotConfiguredError("datahub")
 
     with patch("src.api.routers.health.get_datahub", side_effect=_get_datahub_raises):
         async with _make_ready_client() as ac:
@@ -131,10 +134,10 @@ async def test_ready_status_degraded_when_datahub_unconfigured() -> None:
     spec: src/api/routers/health.py ready() — all_ok=all(checks.values());
     "degraded" when not all_ok.
     """
-    from src.shared.exceptions import StorageUnavailableError
+    from src.shared.exceptions import PeripheralNotConfiguredError
 
     async def _get_datahub_raises(db):
-        raise StorageUnavailableError("DataHub peripheral not configured")
+        raise PeripheralNotConfiguredError("datahub")
 
     with patch("src.api.routers.health.get_datahub", side_effect=_get_datahub_raises):
         async with _make_ready_client() as ac:
@@ -155,10 +158,10 @@ async def test_ready_postgres_and_redis_still_checked_when_datahub_unconfigured(
 
     spec: API.md §System — /ready verifies DataHub, PostgreSQL, Redis.
     """
-    from src.shared.exceptions import StorageUnavailableError
+    from src.shared.exceptions import PeripheralNotConfiguredError
 
     async def _get_datahub_raises(db):
-        raise StorageUnavailableError("DataHub peripheral not configured")
+        raise PeripheralNotConfiguredError("datahub")
 
     with patch("src.api.routers.health.get_datahub", side_effect=_get_datahub_raises):
         async with _make_ready_client(postgres_ok=True, redis_ok=True) as ac:
@@ -201,10 +204,10 @@ async def test_ready_never_returns_503() -> None:
     spec: src/api/routers/health.py ready() docstring —
     'Reports state; never returns 503.'
     """
-    from src.shared.exceptions import StorageUnavailableError
+    from src.shared.exceptions import PeripheralNotConfiguredError
 
     async def _get_datahub_raises(db):
-        raise StorageUnavailableError("DataHub peripheral not configured")
+        raise PeripheralNotConfiguredError("datahub")
 
     # Worst case: DataHub unconfigured, PostgreSQL and Redis down
     with patch("src.api.routers.health.get_datahub", side_effect=_get_datahub_raises):

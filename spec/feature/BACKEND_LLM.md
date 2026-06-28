@@ -366,6 +366,11 @@ Langfuse instance is a dev-only peripheral (chart `helm-charts/dev-peripherals/l
 by `helm-charts/bin/dev-peripherals/langfuse.sh`) deployed in its own `langfuse-01` namespace. In
 production the operator supplies their own Langfuse and wires the connection via the admin API.
 
+As observability-only infrastructure Langfuse **fails open**: when the connection is unconfigured
+or unreachable, tracing is disabled and the LLM call plus its enclosing endpoint still succeed.
+This is the deliberate counterpart of DataHub's fail-closed behavior as the metadata SSOT — see
+[`ARCHITECTURE.md` §Peripheral availability contract](../ARCHITECTURE.md#peripheral-availability-contract).
+
 Beyond `host`/`public_key`/`secret_key`, the Langfuse peripheral carries two non-secret
 settings (see [`spec/API.md`](../API.md) `/admin/peripherals/langfuse`): `environment_tag`
 is passed as the Langfuse trace `environment` so operators can segment dev/staging/prod

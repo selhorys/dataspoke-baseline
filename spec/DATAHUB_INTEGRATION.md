@@ -882,6 +882,11 @@ spec is provided for this in the baseline contract.
    traces) — these are logged server-side only. The user-facing `message` is a
    stable, generic string; the underlying detail is correlated via the trace_id in
    server logs.
+7. **DataHub fails closed with a two-state distinction.** A DataHub-requiring endpoint or
+   DAG returns `503 PERIPHERAL_NOT_CONFIGURED` (`detail.peripheral = "datahub"`) when DataHub
+   is unconfigured, and `502 DATAHUB_UNAVAILABLE` when it is configured but unreachable —
+   never a silent or partial success. See
+   [`ARCHITECTURE.md` §Peripheral availability contract](ARCHITECTURE.md#peripheral-availability-contract).
 
 ### Circuit Breaker
 

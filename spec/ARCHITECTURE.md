@@ -410,12 +410,29 @@ Langfuse is a **dev-only peripheral** in its own namespace (e.g. `langfuse-01`) 
 worker, and bundled Postgres / Redis / ClickHouse / MinIO — installed from
 `helm-charts/dev-peripherals/langfuse/`. In production the operator supplies their own
 Langfuse. Either way DataSpoke reads the Langfuse connection (host + public/secret key)
-from the DB `peripheral_config` table, set via `/api/v1/admin/peripherals/langfuse`; absence
-of the configuration disables tracing without affecting LLM call success.
+from the DB `peripheral_config` table, set via `/api/v1/admin/peripherals/langfuse`. Langfuse
+fails open per the [Peripheral availability contract](#peripheral-availability-contract) below.
 
 For replica counts, resource requests/limits, PV sizes, component matrix, and network policy,
 see [`spec/feature/HELM_CHART.md`](feature/HELM_CHART.md). DataSpoke's namespace requires egress
 access to the DataHub namespace; configure NetworkPolicy in clusters with default-deny.
+
+### Peripheral availability contract
+
+DataHub and Langfuse may be absent or unreachable in production. They sit on opposite sides of
+a deliberate fail-closed / fail-open split, because one is the system-of-record and the other is
+observability-only.
+
+- **DataHub fails closed.** It is the metadata system-of-record (SSOT), so any API endpoint or
+  Airflow DAG that requires DataHub surfaces an error rather than a silent or partial success.
+  Unconfigured → `503 PERIPHERAL_NOT_CONFIGURED` with `detail.peripheral = "datahub"`;
+  configured-but-unreachable → `502 DATAHUB_UNAVAILABLE`.
+- **Langfuse fails open.** It is observability-only, so its absence disables tracing while the
+  LLM call and the enclosing endpoint still succeed.
+
+Rationale: SSOT correctness must never be silently skipped, whereas trace logging may be. The
+`/ready` health endpoint is the one reporting exception — it surfaces an unconfigured or
+unreachable peripheral as `"degraded"` rather than failing (see [`spec/API.md` §System](API.md#system)).
 
 ### Configuration
 

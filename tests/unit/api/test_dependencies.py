@@ -60,6 +60,69 @@ class TestInfraProviders:
             "get_datahub must return a DataHubClient when peripheral is configured"
         )
 
+    async def test_get_datahub_raises_peripheral_not_configured_when_no_row(self) -> None:
+        """get_datahub(db) raises PeripheralNotConfiguredError when the peripheral row is absent.
+
+        DataHub fails closed: an endpoint that requires DataHub must surface
+        503 PERIPHERAL_NOT_CONFIGURED with detail.peripheral="datahub" when the
+        peripheral is unconfigured — never a silent or partial success.
+
+        spec: spec/ARCHITECTURE.md §Peripheral availability contract — DataHub fails
+              closed; unconfigured → 503 PERIPHERAL_NOT_CONFIGURED, detail.peripheral="datahub".
+        spec: spec/API.md §Application Error Codes — PERIPHERAL_NOT_CONFIGURED (503).
+        """
+        from src.shared.exceptions import PeripheralNotConfiguredError
+
+        mock_db = AsyncMock()
+
+        with (
+            patch(
+                "src.backend.admin.peripheral_service.get_peripheral_config",
+                AsyncMock(return_value=None),
+            ),
+            patch(
+                "src.backend.admin.datahub_secret.get_datahub_token",
+                new=lambda: "test-token",
+            ),
+            pytest.raises(PeripheralNotConfiguredError) as exc_info,
+        ):
+            await get_datahub(db=mock_db)
+
+        assert exc_info.value.error_code == "PERIPHERAL_NOT_CONFIGURED"
+        assert exc_info.value.detail["peripheral"] == "datahub"
+
+    async def test_get_datahub_raises_peripheral_not_configured_when_token_absent(self) -> None:
+        """get_datahub(db) raises PeripheralNotConfiguredError when the token is empty.
+
+        A peripheral row present but with no resolvable token is still unconfigured
+        for DataHub's fail-closed contract.
+
+        spec: spec/ARCHITECTURE.md §Peripheral availability contract — DataHub fails
+              closed; unconfigured → 503 PERIPHERAL_NOT_CONFIGURED, detail.peripheral="datahub".
+        spec: spec/API.md §Application Error Codes — PERIPHERAL_NOT_CONFIGURED (503).
+        """
+        from src.backend.admin.peripheral_service import DatahubConfigDTO
+        from src.shared.exceptions import PeripheralNotConfiguredError
+
+        _fake_dto = DatahubConfigDTO(gms_url="http://gms-test:8080", kafka_brokers="k:9092")
+        mock_db = AsyncMock()
+
+        with (
+            patch(
+                "src.backend.admin.peripheral_service.get_peripheral_config",
+                AsyncMock(return_value=_fake_dto),
+            ),
+            patch(
+                "src.backend.admin.datahub_secret.get_datahub_token",
+                new=lambda: "",
+            ),
+            pytest.raises(PeripheralNotConfiguredError) as exc_info,
+        ):
+            await get_datahub(db=mock_db)
+
+        assert exc_info.value.error_code == "PERIPHERAL_NOT_CONFIGURED"
+        assert exc_info.value.detail["peripheral"] == "datahub"
+
     @patch("src.api.dependencies.SessionLocal")
     async def test_get_db_yields_session(self, mock_session_local: object) -> None:
         mock_session = AsyncMock(spec=AsyncSession)
@@ -164,7 +227,8 @@ class TestGetVectorProvider:
             result = await get_vector(request=request, db=mock_db)
 
         assert isinstance(result, StubPgVectorManager), (
-            f"Expected StubPgVectorManager when stub_pgvector_manager=True; got {type(result).__name__}. "
+            "Expected StubPgVectorManager when stub_pgvector_manager=True; "
+            f"got {type(result).__name__}. "
             "spec: src/api/dependencies.py get_vector."
         )
 
@@ -187,7 +251,8 @@ class TestGetVectorProvider:
             result = await get_vector(request=request, db=mock_db)
 
         assert result is sentinel_vector, (
-            "get_vector must return the pooled vector manager from app.state when stub_pgvector_manager=False."
+            "get_vector must return the pooled vector manager from app.state "
+            "when stub_pgvector_manager=False."
         )
 
 
@@ -198,14 +263,16 @@ class TestGetNotificationProvider:
     """get_notification returns StubNotificationService when rc.stub_notification_service=True.
 
     spec: src/workflows/_common.py — make_notification_service(stub=...) factory contract.
-    spec: src/api/dependencies.py — get_notification consults RuntimeConfigDTO.stub_notification_service.
+    spec: src/api/dependencies.py — get_notification consults
+          RuntimeConfigDTO.stub_notification_service.
     """
 
     @pytest.mark.asyncio
     async def test_get_notification_returns_stub_when_stub_flag_true(self) -> None:
         """get_notification returns StubNotificationService when rc.stub_notification_service=True.
 
-        spec: src/workflows/_common.py — make_notification_service(stub=True) → StubNotificationService.
+        spec: src/workflows/_common.py — make_notification_service(stub=True) →
+              StubNotificationService.
         spec: src/api/dependencies.py — stub_notification_service=True → StubNotificationService().
         """
         from src.workflows._stubs import StubNotificationService
@@ -220,7 +287,8 @@ class TestGetNotificationProvider:
             result = await get_notification(db=mock_db)
 
         assert isinstance(result, StubNotificationService), (
-            f"Expected StubNotificationService when stub_notification_service=True; got {type(result).__name__}. "
+            "Expected StubNotificationService when stub_notification_service=True; "
+            f"got {type(result).__name__}. "
             "spec: src/api/dependencies.py get_notification."
         )
 
@@ -228,7 +296,8 @@ class TestGetNotificationProvider:
     async def test_get_notification_returns_real_when_stub_flag_false(self) -> None:
         """get_notification returns NotificationService when rc.stub_notification_service=False.
 
-        spec: src/workflows/_common.py — make_notification_service(stub=False) → real NotificationService.
+        spec: src/workflows/_common.py — make_notification_service(stub=False) →
+              real NotificationService.
         spec: src/api/dependencies.py — stub_notification_service=False → NotificationService().
         """
         from src.shared.notifications.service import NotificationService
@@ -243,7 +312,8 @@ class TestGetNotificationProvider:
             result = await get_notification(db=mock_db)
 
         assert isinstance(result, NotificationService), (
-            f"Expected NotificationService when stub_notification_service=False; got {type(result).__name__}. "
+            "Expected NotificationService when stub_notification_service=False; "
+            f"got {type(result).__name__}. "
             "spec: src/api/dependencies.py get_notification."
         )
 
@@ -270,9 +340,8 @@ class TestAdminGroupEnforcement:
         spec: API.md §Access Control — /admin/* requires Admin role.
         spec: API.md §Application Error Codes — FORBIDDEN (403) for valid token; wrong role.
         """
-        from unittest.mock import MagicMock
 
-        from src.api.auth.dependencies import require_authenticated, require_admin
+        from src.api.auth.dependencies import require_authenticated
         from src.api.main import app
         from src.backend.auth.privilege import AuthContext
 
@@ -298,7 +367,6 @@ class TestAdminGroupEnforcement:
 
         spec: API.md §Access Control — /admin/* requires Admin role.
         """
-        from unittest.mock import MagicMock
 
         from src.api.auth.dependencies import require_authenticated
         from src.api.main import app
@@ -328,9 +396,9 @@ class TestAdminGroupEnforcement:
         We inject an AsyncMock AirflowClient and an Admin AuthContext so the route
         can complete without a real database or Airflow instance.
         """
-        from unittest.mock import AsyncMock, MagicMock
+        from unittest.mock import AsyncMock
 
-        from src.api.auth.dependencies import require_authenticated, require_admin
+        from src.api.auth.dependencies import require_admin, require_authenticated
         from src.api.dependencies import get_airflow_client
         from src.api.main import app
         from src.backend.auth.privilege import AuthContext

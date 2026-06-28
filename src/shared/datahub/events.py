@@ -17,6 +17,7 @@ from src.shared.config import HANDLER_TIMEOUT_S
 from src.shared.exceptions import (
     DataHubUnavailableError,
     EventProcessingError,
+    PeripheralNotConfiguredError,
     StorageUnavailableError,
 )
 from src.shared.settings import settings
@@ -85,8 +86,9 @@ class EventRouter:
         """Dispatch event to all handlers registered for its aspect name.
 
         Handlers run sequentially. If any handler raises a retryable error
-        (DataHubUnavailableError, StorageUnavailableError), it propagates to
-        the caller so the consumer can skip the offset commit.
+        (DataHubUnavailableError, StorageUnavailableError,
+        PeripheralNotConfiguredError), it propagates to the caller so the
+        consumer can skip the offset commit.
         """
         handlers = self._handlers.get(event.aspect_name, [])
         for handler in handlers:
@@ -100,7 +102,11 @@ class EventRouter:
                     entity_urn=event.entity_urn,
                     timeout_s=HANDLER_TIMEOUT_S,
                 )
-            except (DataHubUnavailableError, StorageUnavailableError):
+            except (
+                DataHubUnavailableError,
+                StorageUnavailableError,
+                PeripheralNotConfiguredError,
+            ):
                 raise
             except Exception:
                 logger.exception(

@@ -259,6 +259,71 @@ async def test_make_datahub_always_returns_datahub_client(monkeypatch) -> None:
     )
 
 
+@pytest.mark.asyncio
+async def test_make_datahub_raises_peripheral_not_configured_when_no_row(monkeypatch) -> None:
+    """make_datahub(db) raises PeripheralNotConfiguredError when the peripheral row is absent.
+
+    DataHub fails closed in workflow activities too: when the peripheral is
+    unconfigured the factory surfaces PeripheralNotConfiguredError("datahub")
+    rather than building a client against missing config.
+
+    spec: spec/ARCHITECTURE.md §Peripheral availability contract — DataHub fails
+          closed; unconfigured → 503 PERIPHERAL_NOT_CONFIGURED, detail.peripheral="datahub".
+    """
+    from unittest.mock import AsyncMock
+
+    from src.shared.exceptions import PeripheralNotConfiguredError
+
+    monkeypatch.setattr(
+        "src.backend.admin.peripheral_service.get_peripheral_config",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        "src.backend.admin.datahub_secret.get_datahub_token",
+        lambda: "stub-token",
+    )
+
+    mock_db = AsyncMock()
+    with pytest.raises(PeripheralNotConfiguredError) as exc_info:
+        await make_datahub(mock_db)
+
+    assert exc_info.value.error_code == "PERIPHERAL_NOT_CONFIGURED"
+    assert exc_info.value.detail["peripheral"] == "datahub"
+
+
+@pytest.mark.asyncio
+async def test_make_datahub_raises_peripheral_not_configured_when_token_absent(monkeypatch) -> None:
+    """make_datahub(db) raises PeripheralNotConfiguredError when the token is empty.
+
+    A peripheral row present but with no resolvable token is still unconfigured
+    for DataHub's fail-closed contract.
+
+    spec: spec/ARCHITECTURE.md §Peripheral availability contract — DataHub fails
+          closed; unconfigured → 503 PERIPHERAL_NOT_CONFIGURED, detail.peripheral="datahub".
+    """
+    from unittest.mock import AsyncMock
+
+    from src.backend.admin.peripheral_service import DatahubConfigDTO
+    from src.shared.exceptions import PeripheralNotConfiguredError
+
+    _fake_dto = DatahubConfigDTO(gms_url="http://gms-stub:8080", kafka_brokers="kafka-stub:9092")
+    monkeypatch.setattr(
+        "src.backend.admin.peripheral_service.get_peripheral_config",
+        AsyncMock(return_value=_fake_dto),
+    )
+    monkeypatch.setattr(
+        "src.backend.admin.datahub_secret.get_datahub_token",
+        lambda: "",
+    )
+
+    mock_db = AsyncMock()
+    with pytest.raises(PeripheralNotConfiguredError) as exc_info:
+        await make_datahub(mock_db)
+
+    assert exc_info.value.error_code == "PERIPHERAL_NOT_CONFIGURED"
+    assert exc_info.value.detail["peripheral"] == "datahub"
+
+
 # ── read_datahub_actor_urn: corpuser URN wiring ───────────────────────────────
 
 

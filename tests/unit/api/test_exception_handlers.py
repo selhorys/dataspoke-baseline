@@ -10,6 +10,7 @@ from src.shared.exceptions import (
     DataHubUnavailableError,
     DataSpokeError,
     EntityNotFoundError,
+    PeripheralNotConfiguredError,
     StorageUnavailableError,
 )
 
@@ -35,6 +36,10 @@ def _make_app() -> FastAPI:
     @app.get("/test/storage")
     async def raise_storage() -> None:
         raise StorageUnavailableError("PostgreSQL unreachable")
+
+    @app.get("/test/peripheral")
+    async def raise_peripheral(name: str) -> None:
+        raise PeripheralNotConfiguredError(name)
 
     @app.get("/test/generic")
     async def raise_generic() -> None:
@@ -88,6 +93,29 @@ async def test_storage_returns_503(exc_client: AsyncClient) -> None:
     assert resp.status_code == 503
     body = resp.json()
     assert body["error_code"] == "STORAGE_UNAVAILABLE"
+
+
+@pytest.mark.parametrize("peripheral", ["datahub", "smtp"])
+async def test_peripheral_not_configured_returns_503_with_detail(
+    exc_client: AsyncClient, peripheral: str
+) -> None:
+    """PeripheralNotConfiguredError → 503 PERIPHERAL_NOT_CONFIGURED, detail.peripheral set.
+
+    Covers both the new "datahub" case and the existing "smtp" case through the
+    same global handler envelope.
+
+    spec: spec/ARCHITECTURE.md §Peripheral availability contract — DataHub fails
+          closed: unconfigured → 503 PERIPHERAL_NOT_CONFIGURED with
+          detail.peripheral = "datahub".
+    spec: spec/API.md §Application Error Codes — PERIPHERAL_NOT_CONFIGURED (503);
+          detail.peripheral identifies which peripheral ("datahub" / "smtp").
+    """
+    resp = await exc_client.get("/test/peripheral", params={"name": peripheral})
+    assert resp.status_code == 503
+    body = resp.json()
+    assert body["error_code"] == "PERIPHERAL_NOT_CONFIGURED"
+    assert body["detail"]["peripheral"] == peripheral
+    assert "trace_id" in body
 
 
 async def test_generic_dataspoke_returns_500(exc_client: AsyncClient) -> None:

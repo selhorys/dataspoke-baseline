@@ -50,17 +50,17 @@ async def get_db() -> AsyncGenerator[AsyncSession]:
 async def get_datahub(db: AsyncSession = Depends(get_db)) -> DataHubClient:
     """Construct a per-request DataHubClient from the peripheral_config DB row.
 
-    Raises StorageUnavailableError (→ 503) when the DataHub peripheral is not
-    configured or the token is absent.
+    Raises PeripheralNotConfiguredError (→ 503 PERIPHERAL_NOT_CONFIGURED) when the
+    DataHub peripheral is not configured or the token is absent.
     """
     from src.backend.admin.datahub_secret import get_datahub_token
     from src.backend.admin.peripheral_service import get_peripheral_config
-    from src.shared.exceptions import StorageUnavailableError
+    from src.shared.exceptions import PeripheralNotConfiguredError
 
     dto = await get_peripheral_config(db, "datahub")
     token = get_datahub_token()
     if dto is None or not token:
-        raise StorageUnavailableError("datahub peripheral not configured")
+        raise PeripheralNotConfiguredError("datahub")
     return DataHubClient(dto.gms_url, token)
 
 

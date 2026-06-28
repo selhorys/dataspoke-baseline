@@ -71,16 +71,16 @@ async def make_datahub(db: "AsyncSession") -> DataHubClient:
     (pass a session opened via make_db_session()).  Never opens a fresh session
     internally — callers own the session lifecycle.
 
-    Raises StorageUnavailableError when the DataHub peripheral is unconfigured.
+    Raises PeripheralNotConfiguredError when the DataHub peripheral is unconfigured.
     """
     from src.backend.admin.datahub_secret import get_datahub_token
     from src.backend.admin.peripheral_service import get_peripheral_config
-    from src.shared.exceptions import StorageUnavailableError
+    from src.shared.exceptions import PeripheralNotConfiguredError
 
     dto = await get_peripheral_config(db, "datahub")
     token = get_datahub_token()
     if dto is None or not token:
-        raise StorageUnavailableError("datahub peripheral not configured")
+        raise PeripheralNotConfiguredError("datahub")
     return DataHubClient(dto.gms_url, token)
 
 

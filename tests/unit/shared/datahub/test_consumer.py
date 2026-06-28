@@ -19,14 +19,13 @@ import json
 
 import pytest
 
+from src.shared.datahub.consumer import MCL_TOPICS
 from src.shared.datahub.events import (
     EventRouter,
     MetadataChangeLogEvent,
     deserialize_mcl,
 )
-from src.shared.datahub.consumer import MCL_TOPICS
 from src.shared.exceptions import EventProcessingError
-
 
 # ── MCL_TOPICS ────────────────────────────────────────────────────────────────
 
@@ -165,5 +164,74 @@ async def test_event_router_does_not_dispatch_to_other_aspect_handlers() -> None
     assert called == [], (
         "Handler for 'globalTags' must not be called for 'schemaMetadata' event."
     )
+
+
+@pytest.mark.asyncio
+async def test_event_router_propagates_peripheral_not_configured() -> None:
+    """A handler raising PeripheralNotConfiguredError propagates out of dispatch.
+
+    DataHub fails closed: an unconfigured DataHub encountered while processing a
+    Kafka MCL event must NOT be swallowed like a generic handler exception. It
+    propagates so the consumer skips the offset commit and the message is retried,
+    rather than silently dropping the event.
+
+    spec: spec/ARCHITECTURE.md §Peripheral availability contract — DataHub fails
+          closed: any path requiring DataHub surfaces an error rather than a silent
+          or partial success.
+    """
+    from src.shared.exceptions import PeripheralNotConfiguredError
+
+    async def _handler(event: MetadataChangeLogEvent) -> None:
+        raise PeripheralNotConfiguredError("datahub")
+
+    router = EventRouter()
+    router.register("schemaMetadata", _handler)
+
+    event = MetadataChangeLogEvent(
+        entity_type="dataset",
+        entity_urn="urn:li:dataset:test",
+        aspect_name="schemaMetadata",
+        change_type="UPSERT",
+    )
+
+    with pytest.raises(PeripheralNotConfiguredError) as exc_info:
+        await router.dispatch(event)
+
+    assert exc_info.value.detail["peripheral"] == "datahub"
+
+
+@pytest.mark.asyncio
+async def test_event_router_swallows_generic_handler_exception() -> None:
+    """A handler raising a generic exception is swallowed (logged) by dispatch.
+
+    Contrast with the retryable PeripheralNotConfiguredError path: a generic
+    failure does not propagate, so dispatch returns normally and the consumer
+    commits the offset. This proves the retryable re-raise tuple is selective.
+
+    spec: spec/ARCHITECTURE.md §Peripheral availability contract — only fail-closed
+          / storage-tier errors are retryable; other handler failures are skipped.
+    """
+    invoked = False
+
+    async def _handler(event: MetadataChangeLogEvent) -> None:
+        nonlocal invoked
+        invoked = True
+        raise RuntimeError("non-retryable handler bug")
+
+    router = EventRouter()
+    router.register("schemaMetadata", _handler)
+
+    event = MetadataChangeLogEvent(
+        entity_type="dataset",
+        entity_urn="urn:li:dataset:test",
+        aspect_name="schemaMetadata",
+        change_type="UPSERT",
+    )
+
+    # Must NOT raise — generic exceptions are caught and logged.
+    await router.dispatch(event)
+
+    # The handler ran (so the swallow path was exercised, not a no-op).
+    assert invoked is True
 
 
