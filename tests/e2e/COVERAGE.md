@@ -62,7 +62,7 @@ redirects to `/data/[urn]`.
 | `/governance/dashboard` | `_smoke.spec.ts` (post-login landing); `uc5-01-governance.spec.ts` step 3a (metric cards + trend chart) | `ground/shell/root-redirect.spec.ts` (`/` redirect target) |
 | `/governance/metrics` | `uc5-01-governance.spec.ts` step 3b (list: metrics, type badges, Enabled) | — |
 | `/governance/metrics/new` | `uc5-01-governance.spec.ts` step 1a (create form → redirect) | — |
-| `/governance/metrics/[id]` | `uc5-01-governance.spec.ts` steps 1c, 2, 3c, 4 (Edit→PUT, Run, attr/conf+result+event, Delete) | — |
+| `/governance/metrics/[id]` | `uc5-01-governance.spec.ts` steps 1c, 2, 3c, 4 (Edit→PUT, Run, Config+Result+Event, Delete) | — |
 
 #### Validation (UC2)
 

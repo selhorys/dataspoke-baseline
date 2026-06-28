@@ -259,28 +259,30 @@ export default function MetricDetailPage({
         {/* While editing, the form's `title` prop renders the attr/conf heading
             (and the Cancel/Save buttons on the same row), so suppress the
             page's own heading to avoid duplication. */}
-        {!isEditing && <h2 className="mb-3 text-sm font-medium">attr/conf</h2>}
+        {!isEditing && <h2 className="mb-3 text-sm font-medium">Config</h2>}
 
         {!isEditing ? (
           <FormGrid>
-            <FieldPanel label="mode">{conf.mode}</FieldPanel>
+            <div className="grid grid-cols-2 gap-x-6 gap-y-5 sm:col-span-2 sm:grid-cols-4">
+              <FieldPanel label="mode">{conf.mode}</FieldPanel>
 
-            <FieldPanel label="metric_type">
-              <Badge variant="outline">{conf.metric_type}</Badge>
-            </FieldPanel>
+              <FieldPanel label="metric_type">
+                <Badge variant="outline">{conf.metric_type}</Badge>
+              </FieldPanel>
 
-            <FieldPanel label="schedule_tier">
-              <ScheduleTierLink
-                tier={conf.schedule_tier ?? "on-demand"}
-                dagId={scheduleDagId("metrics", conf.schedule_tier)}
-              />
-            </FieldPanel>
+              <FieldPanel label="schedule_tier">
+                <ScheduleTierLink
+                  tier={conf.schedule_tier ?? "on-demand"}
+                  dagId={scheduleDagId("metrics", conf.schedule_tier)}
+                />
+              </FieldPanel>
 
-            <FieldPanel label="is_enabled">
-              <Badge variant={conf.is_enabled ? "default" : "secondary"}>
-                {conf.is_enabled ? "Enabled" : "Disabled"}
-              </Badge>
-            </FieldPanel>
+              <FieldPanel label="is_enabled">
+                <Badge variant={conf.is_enabled ? "default" : "secondary"}>
+                  {conf.is_enabled ? "Enabled" : "Disabled"}
+                </Badge>
+              </FieldPanel>
+            </div>
 
             <FieldPanel label="metrics" className="sm:col-span-2">
               <span className="font-mono text-xs">{conf.metrics.join(", ")}</span>
@@ -304,7 +306,7 @@ export default function MetricDetailPage({
           </FormGrid>
         ) : (
           <MetricForm
-            title="attr/conf"
+            title="Config"
             defaultValues={formDefaults}
             isCreate={false}
             onSubmit={(values) => handleSave(values as MetricFormValues)}
@@ -318,7 +320,7 @@ export default function MetricDetailPage({
       {/* attr/result — timeseries chart */}
       <section className="rounded-lg border p-5">
         <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-sm font-medium">attr/result</h2>
+          <h2 className="text-sm font-medium">Result</h2>
           <RangePicker
             value={resultSel}
             onChange={setResultSel}
@@ -332,7 +334,7 @@ export default function MetricDetailPage({
       {/* event log */}
       <section className="rounded-lg border p-5">
         <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-sm font-medium">event</h2>
+          <h2 className="text-sm font-medium">Event</h2>
           <RangePicker
             value={eventSel}
             onChange={setEventSel}

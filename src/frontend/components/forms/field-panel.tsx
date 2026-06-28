@@ -14,7 +14,7 @@ interface FieldPanelProps {
  */
 export function FieldPanel({ label, className, children }: FieldPanelProps) {
   return (
-    <fieldset className={cn("space-y-2 rounded-md border p-4", className)}>
+    <fieldset className={cn("space-y-1 rounded-md border px-4 pb-4 pt-2.5", className)}>
       <legend className="px-1 text-sm font-medium text-muted-foreground">{label}</legend>
       <div className="text-sm">{children}</div>
     </fieldset>

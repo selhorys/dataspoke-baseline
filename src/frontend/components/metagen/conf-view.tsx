@@ -21,26 +21,28 @@ interface MetagenConfViewProps {
 export function MetagenConfView({ conf, datasetFilter }: MetagenConfViewProps) {
   return (
     <FormGrid>
-      <FieldPanel label="is_enabled">
-        <Badge variant={conf.is_enabled ? "default" : "secondary"} className="text-xs">
-          {conf.is_enabled ? "enabled" : "disabled"}
-        </Badge>
-      </FieldPanel>
+      <div className="grid grid-cols-2 gap-x-6 gap-y-5 sm:col-span-2 sm:grid-cols-4">
+        <FieldPanel label="is_enabled">
+          <Badge variant={conf.is_enabled ? "default" : "secondary"} className="text-xs">
+            {conf.is_enabled ? "enabled" : "disabled"}
+          </Badge>
+        </FieldPanel>
 
-      <FieldPanel label="schedule_tier">
-        <ScheduleTierLink
-          tier={conf.schedule_tier ?? "manual"}
-          dagId={scheduleDagId("metagen", conf.schedule_tier)}
-        />
-      </FieldPanel>
+        <FieldPanel label="schedule_tier">
+          <ScheduleTierLink
+            tier={conf.schedule_tier ?? "manual"}
+            dagId={scheduleDagId("metagen", conf.schedule_tier)}
+          />
+        </FieldPanel>
 
-      <FieldPanel label="result_limit">
-        <span className="tabular-nums">{conf.result_limit}</span>
-      </FieldPanel>
+        <FieldPanel label="result_limit">
+          <span className="tabular-nums">{conf.result_limit}</span>
+        </FieldPanel>
 
-      <FieldPanel label="overwrite_pending">
-        {conf.overwrite_pending ? "yes" : "no"}
-      </FieldPanel>
+        <FieldPanel label="overwrite_pending">
+          {conf.overwrite_pending ? "yes" : "no"}
+        </FieldPanel>
+      </div>
 
       <div className="sm:col-span-2">
         <DatasetFilterView value={datasetFilter} />

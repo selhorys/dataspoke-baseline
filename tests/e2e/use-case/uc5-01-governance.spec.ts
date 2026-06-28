@@ -20,8 +20,8 @@
  *       - Dashboard (/governance/dashboard): one combined card per enabled metric
  *         (title + metric_type badge + latest values + inline trend chart).
  *       - Metric list (/governance/metrics): all three rows listed with title + type badge.
- *       - Per-metric detail (/governance/metrics/[id]): attr/conf, attr/result chart,
- *         event log sections; Edit/Run/Delete buttons rendered for admin.
+ *       - Per-metric detail (/governance/metrics/[id]): Config, Result chart,
+ *         Event log sections; Edit/Run/Delete buttons rendered for admin.
  *   4.  Cleanup: delete the three metrics via ConfirmDialog; backend: GET → 404.
  *
  * Data setup: global-setup runs --reset-seed (seeded Imazon baseline).
@@ -224,8 +224,8 @@ async function createMetricViaUI(
     page.getByRole("heading", { name: cfg.title, exact: true })
   ).toBeVisible({ timeout: 15_000 });
 
-  // -- UI assertion: metric_type badge visible in attr/conf section --
-  // spec: [id]/page.tsx — attr/conf section renders metric_type as Badge variant="outline"
+  // -- UI assertion: metric_type badge visible in Config section --
+  // spec: [id]/page.tsx — Config section renders metric_type as Badge variant="outline"
   // getByText is substring-insensitive; exact:true targets the badge text specifically.
   // Multiple elements may contain the type string (table row etc.); use .first().
   await expect(
@@ -333,7 +333,7 @@ test("UC5 step 1c — PUT existing metric conf → 200 + change reflected; absen
   ).toBeVisible({ timeout: 15_000 });
 
   // -- UI gesture: click Edit button --
-  // spec: [id]/page.tsx — Button "Edit" sets isEditing=true; form rendered inline in attr/conf.
+  // spec: [id]/page.tsx — Button "Edit" sets isEditing=true; form rendered inline in the Config panel.
   await page.getByRole("button", { name: "Edit" }).click();
 
   // -- UI assertion: form appears (Save button visible) --
@@ -350,7 +350,7 @@ test("UC5 step 1c — PUT existing metric conf → 200 + change reflected; absen
 
   // -- UI assertion: form closes on PUT success (isEditing→false on onSuccess) --
   // spec: [id]/page.tsx — Save → PUT attr/conf → onSuccess sets isEditing=false,
-  //   re-rendering the read-only attr/conf view with the Edit button back.
+  //   re-rendering the read-only Config view with the Edit button back.
   await expect(page.getByRole("button", { name: "Save" })).not.toBeVisible({ timeout: 15_000 });
   await expect(
     page.getByRole("button", { name: "Edit" })
@@ -648,13 +648,13 @@ test("UC5 step 3b — /governance/metrics list shows all three metrics with type
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Step 3c — Per-metric detail: attr/conf, attr/result chart, event log
+// Step 3c — Per-metric detail: Config, Result chart, Event log
 // spec: FRONTEND_GOVERNANCE.md §Metrics §[id] — detail page sections:
-//   attr/conf (read-only dl), attr/result (MetricTimeseriesChart), event (log list).
-// spec: [id]/page.tsx — section h2 labels: "attr/conf", "attr/result", "event".
+//   Config (read-only panels), Result (MetricTimeseriesChart), Event (log list).
+// spec: [id]/page.tsx — section h2 labels: "Config", "Result", "Event".
 // ─────────────────────────────────────────────────────────────────────────────
 
-test("UC5 step 3c — doc-health detail page: attr/conf, attr/result, event sections; Edit/Run/Delete buttons", async ({
+test("UC5 step 3c — doc-health detail page: Config, Result, Event sections; Edit/Run/Delete buttons", async ({
   page,
   adminApi,
 }) => {
@@ -673,10 +673,10 @@ test("UC5 step 3c — doc-health detail page: attr/conf, attr/result, event sect
     page.getByText(METRIC_DOC.metric_id, { exact: true })
   ).toBeVisible({ timeout: 10_000 });
 
-  // -- UI assertion: attr/conf section heading --
-  // spec: [id]/page.tsx — h2 "attr/conf"
+  // -- UI assertion: Config section heading --
+  // spec: [id]/page.tsx — h2 "Config"
   await expect(
-    page.getByRole("heading", { name: "attr/conf", exact: true })
+    page.getByRole("heading", { name: "Config", exact: true })
   ).toBeVisible({ timeout: 10_000 });
 
   // -- UI assertion: key conf fields rendered in the dl --
@@ -688,28 +688,28 @@ test("UC5 step 3c — doc-health detail page: attr/conf, attr/result, event sect
     page.getByText("doc-health", { exact: true }).first()
   ).toBeVisible({ timeout: 10_000 });
 
-  // -- UI assertion: attr/result section heading --
-  // spec: [id]/page.tsx — section h2 "attr/result"
+  // -- UI assertion: Result section heading --
+  // spec: [id]/page.tsx — section h2 "Result"
   await expect(
-    page.getByRole("heading", { name: "attr/result", exact: true })
+    page.getByRole("heading", { name: "Result", exact: true })
   ).toBeVisible({ timeout: 10_000 });
 
-  // -- UI assertion: range-selector control present on the attr/result section --
-  // spec: [id]/page.tsx — attr/result section renders a <RangePicker> next to the h2.
+  // -- UI assertion: range-selector control present on the Result section --
+  // spec: [id]/page.tsx — Result section renders a <RangePicker> next to the h2.
   // spec: components/range-picker.tsx — the trigger is a <Button> (PopoverTrigger) showing
   //   selectionLabel(value) (a preset like "Last 2 weeks", or a custom range). The default
   //   preset can vary by persisted state, so assert the control's presence rather than a
-  //   specific preset label. The attr/result section's only button is the RangePicker trigger,
+  //   specific preset label. The Result section's only button is the RangePicker trigger,
   //   so scope the button locator to that section.
-  const attrResultSection = page
+  const resultSection = page
     .locator("section")
-    .filter({ has: page.getByRole("heading", { name: "attr/result", exact: true }) });
-  await expect(attrResultSection.getByRole("button").first()).toBeVisible({ timeout: 10_000 });
+    .filter({ has: page.getByRole("heading", { name: "Result", exact: true }) });
+  await expect(resultSection.getByRole("button").first()).toBeVisible({ timeout: 10_000 });
 
-  // -- UI assertion: event section heading --
-  // spec: [id]/page.tsx — section h2 "event"
+  // -- UI assertion: Event section heading --
+  // spec: [id]/page.tsx — section h2 "Event"
   await expect(
-    page.getByRole("heading", { name: "event", exact: true })
+    page.getByRole("heading", { name: "Event", exact: true })
   ).toBeVisible({ timeout: 10_000 });
 
   // -- UI assertion: Edit, Run, Delete buttons visible (admin can write) --

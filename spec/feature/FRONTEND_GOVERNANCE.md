@@ -78,8 +78,8 @@ to `/governance/metrics/[id]` for the new metric.
 
 The form's **Cancel/Save buttons sit top-right**. On
 `/governance/metrics/new` they occupy the form's top action bar; on
-`/governance/metrics/[id]` they sit top-right of the `attr/conf` panel
-header (the same row as the `attr/conf` heading) while editing.
+`/governance/metrics/[id]` they sit top-right of the `Config` panel
+header (the same row as the `Config` heading) while editing.
 
 The detail read-only view (`/governance/metrics/[id]`, not editing) renders
 `description` alongside `mode`, `metric_type`, `schedule_tier`,
@@ -99,17 +99,17 @@ detail render a null tier as *on-demand*.
 ┌──────────────────────────────────────────────────────┐
 │  ← doc-health-dev        [Edit] [Run] [Delete]       │
 ├──────────────────────────────────────────────────────┤
-│  attr/conf                                           │
-│    mode: active   metric_type: doc-health            │
-│    description: Daily documentation-completeness      │
-│    schedule_tier: daily    ✓ enabled                 │
+│  Config                                              │
+│    mode: active  metric_type: doc-health             │
+│      schedule_tier: daily   ✓ enabled               │
 │    metrics: total, doc_health   metric_conf: (none)  │
+│    description: Daily documentation-completeness      │
 │    dataset_filter: origin=DEV                        │
 │                                                      │
-│  attr/result?from&to        [Last 2 weeks ▾]        │
+│  Result                      [Last 2 weeks ▾]        │
 │    [Recharts line chart — one line per `values` key] │
 │                                                      │
-│  event  (METRIC.RUN_COMPLETE …)                      │
+│  Event  (METRIC.RUN_COMPLETE …)                      │
 │    2026-04-25 values: total 142, doc_health 119      │
 │    2026-04-18 values: total 140, doc_health 112      │
 └──────────────────────────────────────────────────────┘
