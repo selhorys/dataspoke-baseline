@@ -216,10 +216,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="fixed inset-0 flex flex-col">
       {/* Header */}
-      <header className="flex h-14 shrink-0 items-center border-b bg-background px-4">
-        <span className="mr-auto text-base font-semibold tracking-tight">DataSpoke</span>
+      <header className="relative flex h-14 shrink-0 items-center overflow-hidden border-b bg-background px-4">
+        {/* Traditional Korean meander/lattice pattern; black line-art flipped to light via dark:invert */}
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-0 z-0 bg-[url('/brand/menu-pattern.png')] bg-[length:auto_100%] bg-repeat-x opacity-60 dark:opacity-50 dark:invert"
+        />
+        <span className="relative z-10 mr-auto text-base font-semibold tracking-tight">DataSpoke</span>
 
-        <div className="flex items-center gap-2">
+        <div className="relative z-10 flex items-center gap-2">
           {infraLinks
             .filter((l) => l.href)
             .map((l) => {
