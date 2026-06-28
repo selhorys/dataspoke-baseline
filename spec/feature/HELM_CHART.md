@@ -1079,7 +1079,6 @@ target pod is `1/1 Running`. Re-run `bin/health-check.sh` once pods are ready.
 - [Bitnami PostgreSQL Chart](https://github.com/bitnami/charts/tree/main/bitnami/postgresql)
 - [Bitnami Redis Chart](https://github.com/bitnami/charts/tree/main/bitnami/redis)
 - [Apache Airflow Helm Chart](https://github.com/apache/airflow/tree/main/chart)
-- [External Secrets Operator](https://external-secrets.io/)
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — system architecture, env-var convention
 - [TESTING.md](../TESTING.md) — testing conventions, dev-env lock protocol
 - [SECRET_RESOLUTION.md](SECRET_RESOLUTION.md) — source-credential Secret model
