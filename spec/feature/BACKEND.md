@@ -163,12 +163,30 @@ they invoke the loop.
 
 ### Dataset Service (`src/backend/dataset/`)
 
-**Covers**: Base dataset resource endpoints (`GET /data/{urn}`, `GET /data/{urn}/attr`,
-`GET /data/{urn}/event`)
+**Covers**: Base dataset resource endpoints (`GET /data`, `GET /data/{urn}`,
+`GET /data/{urn}/attr`, `GET /data/{urn}/event`)
 
 Thin read-through service. Reads dataset identity/attributes from DataHub, aggregates
 cross-domain event history into the **unified per-dataset timeline** (`GET /data/{urn}/event`).
 Does not own any PostgreSQL configuration tables.
+
+**Dataset catalog (`list_datasets` → `GET /data`)**: the cross-feature collection root.
+It pages `dataset_registry` in SQL first (offset/limit/total_count, sortable by `dataset_urn`
+via `parse_sort` — the same registry-paging pattern as `/ingestion/unmanaged`), then resolves
+ingestion and metagen coverage **only for the page's URNs**, so cost is bounded by page size,
+not by the whole registry. Coverage is composed from two sibling services: `IngestionService`
+(already held for the unified timeline) and `MetagenService`. Each row carries `dataset_urn`,
+the `ingestion` summary (`{source_id, name, mode}` or `null`), and the `metagen` conf list
+(`[{conf_id, name}]`, possibly empty).
+
+- **`IngestionService.reverse_lookup_batch(urns)`** — batched reverse-lookup that resolves the
+  covering source per URN in two queries (one over `IngestionSourceDataset` filtered by
+  `dataset_urn IN urns` with the existing per-URN priority key, one over the parent
+  `IngestionSource` rows), avoiding the per-URN N+1 of calling `reverse_lookup` in a loop.
+- **`MetagenService.match_confs_for_urns(urns)`** — inverts the enabled-conf `dataset_filter`
+  resolution into a `urn → [{conf_id, name}]` map. It iterates each enabled conf once,
+  resolves its scope via `resolve_dataset_scope` (the same matcher `list_uncovered` uses), and
+  buckets matches by URN; cost is bounded by the conf count, not the dataset count.
 
 **Unified timeline aggregation**: a dataset's events live in two places — validation and
 metagen events are booked on `entity_type="dataset"` (`entity_id=urn`), while ingestion run
@@ -528,6 +546,24 @@ so the pipeline can decide whether to retry.
 
 **Trigger surface.** The data pipeline is the trigger — it computes the result and
 POSTs it.
+
+**Cross-dataset list view** — `list_configs` (`GET /spoke/validation`). Each row aggregates
+a dataset's `attr/validation/*` (conf `description` + `variable_count` + latest result
+`data_time`/`score`). The `coverage` param (`covered` \| `uncovered` \| `both`, default
+`covered`) selects the row set, kept SQL-paginated in all branches:
+
+- `covered` — datasets that hold a `validation_configs` slot, joined to their latest result
+  (current behavior, unchanged).
+- `uncovered` — registered URNs (`dataset_registry`) `NOT IN (SELECT validation_configs.dataset_urn)`,
+  the same registry-difference shape as `/ingestion/unmanaged`; no result join, conf fields null.
+- `both` — `dataset_registry LEFT JOIN validation_configs`, conf fields null for the uncovered
+  rows.
+
+In `uncovered`/`both` the ordering is tiebroken by `dataset_urn` (null `updated_at` last) so
+paging stays deterministic regardless of the requested `sort`.
+
+Uncovered rows carry null `description`, null `variable_count`, null `latest_data_time`, and
+null `latest_score`.
 
 **Multi-rule scope-out.** Teams that need multiple distinct checks per dataset (separate
 freshness / volume / field assertions, per-column validators, multi-team ownership) use

@@ -3,13 +3,26 @@
  *
  * Spec: spec/feature/FRONTEND_INGESTION.md §Source Detail §Run:
  *   Run is shown only for ACTIVE_CUSTOM_MANAGED; other modes show an
- *   explanatory disabled state. INGESTION_RUNNING / INGESTION_RUN_NOT_APPLICABLE
- *   map to human-readable messages.
+ *   explanatory disabled state with a `datahub-sync-hourly` Airflow-DAG note
+ *   (linked when airflowUrl is configured, plain text otherwise).
+ *   INGESTION_RUNNING / INGESTION_RUN_NOT_APPLICABLE map to human-readable messages.
  */
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { IngestionRunPanel } from "./ingestion-run-panel";
 import { ApiError } from "@/lib/api/client";
+
+// The non-runnable branch reads airflowUrl from getRuntimeConfig to gate the
+// datahub-sync-hourly DAG link; control it per test. Default: unset.
+const mockGetRuntimeConfig = vi.fn();
+vi.mock("@/lib/runtime-config", () => ({
+  getRuntimeConfig: () => mockGetRuntimeConfig(),
+}));
+
+beforeEach(() => {
+  mockGetRuntimeConfig.mockReset();
+  mockGetRuntimeConfig.mockReturnValue({ airflowUrl: "" });
+});
 
 function makeApiError(code: string, status = 409): ApiError {
   return new ApiError(
@@ -95,6 +108,63 @@ describe("IngestionRunPanel — mode gating", () => {
     fireEvent.click(screen.getByLabelText(/dry_run/i));
     fireEvent.click(screen.getByRole("button", { name: /dry run/i }));
     expect(onRun).toHaveBeenCalledWith(true);
+  });
+});
+
+describe("IngestionRunPanel — datahub-sync note (non-runnable modes)", () => {
+  // spec: FRONTEND_INGESTION.md §Source Detail §Run — non-active modes add a
+  // datahub-sync-hourly DAG description; the DAG name links to Airflow only when
+  // airflowUrl is configured, else it renders as plain (font-mono) text.
+  it.each(["DATAHUB_MANAGED", "PASSIVE"] as const)(
+    "names the datahub-sync-hourly DAG for %s mode",
+    (mode) => {
+      render(
+        <IngestionRunPanel
+          mode={mode}
+          canWrite
+          onRun={vi.fn()}
+          isRunning={false}
+          error={null}
+        />,
+      );
+      expect(screen.getByText("datahub-sync-hourly")).toBeTruthy();
+      // Anchor on the DAG's role descriptor (an Airflow DAG performs the sync),
+      // not incidental phrasing.
+      expect(screen.getByText(/Airflow DAG/i)).toBeTruthy();
+    },
+  );
+
+  it("links datahub-sync-hourly to Airflow when airflowUrl is configured", () => {
+    mockGetRuntimeConfig.mockReturnValue({ airflowUrl: "http://airflow.example.com" });
+    render(
+      <IngestionRunPanel
+        mode="DATAHUB_MANAGED"
+        canWrite
+        onRun={vi.fn()}
+        isRunning={false}
+        error={null}
+      />,
+    );
+    const link = screen.getByRole("link", { name: /datahub-sync-hourly/i });
+    expect((link as HTMLAnchorElement).getAttribute("href")).toBe(
+      "http://airflow.example.com/dags/datahub-sync-hourly",
+    );
+    expect(link.getAttribute("target")).toBe("_blank");
+  });
+
+  it("renders the DAG name as plain text (no link) when airflowUrl is unset", () => {
+    // mockGetRuntimeConfig default returns airflowUrl: "".
+    render(
+      <IngestionRunPanel
+        mode="PASSIVE"
+        canWrite
+        onRun={vi.fn()}
+        isRunning={false}
+        error={null}
+      />,
+    );
+    expect(screen.getByText("datahub-sync-hourly")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: /datahub-sync-hourly/i })).toBeNull();
   });
 });
 

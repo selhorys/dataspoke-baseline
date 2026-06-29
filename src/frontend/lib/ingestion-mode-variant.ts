@@ -12,20 +12,14 @@ import type { IngestionFilterKey, IngestionMode } from "@/types/ingestion";
 export type BadgeVariant = "default" | "secondary" | "destructive" | "outline";
 
 /**
- * Maps an ingestion mode to a Badge variant.
- *   ACTIVE_CUSTOM_MANAGED → "default"    (DataSpoke runs the extractor)
- *   DATAHUB_MANAGED       → "secondary"  (synced, read-only)
- *   PASSIVE               → "outline"    (tracked, not executed)
+ * Maps an ingestion mode to a Badge variant. All three modes share the neutral
+ * "secondary" style (grey background / black foreground) — the textual label
+ * carries the distinction, not the colour. The `mode` parameter is retained for
+ * a stable call signature across the codebase.
  */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 export function modeBadgeVariant(mode: IngestionMode): BadgeVariant {
-  switch (mode) {
-    case "ACTIVE_CUSTOM_MANAGED":
-      return "default";
-    case "DATAHUB_MANAGED":
-      return "secondary";
-    case "PASSIVE":
-      return "outline";
-  }
+  return "secondary";
 }
 
 /** Short human-readable mode label. */

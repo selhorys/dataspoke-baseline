@@ -296,7 +296,51 @@ describe("IngestionSourceList — URN subtitle", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 4. Empty state — sources=[] and isLoading=false
+// 4. Schedule column — `delegated` for non-active modes, tier for ACTIVE
+// ---------------------------------------------------------------------------
+// spec: FRONTEND_INGESTION.md §List View — only ACTIVE_CUSTOM_MANAGED renders a
+// schedule tier (linked to ingestion-active-<tier>); DATAHUB_MANAGED / PASSIVE
+// render plain "delegated" (the periodic sync is owned by datahub-sync-hourly).
+
+describe("IngestionSourceList — schedule column", () => {
+  it("renders the schedule tier (daily) for an ACTIVE_CUSTOM_MANAGED row, not 'delegated'", () => {
+    // makeSource("ACTIVE_CUSTOM_MANAGED") sets schedule "0 0 * * *" → tier "daily".
+    render(
+      <IngestionSourceList
+        sources={[makeSource("ACTIVE_CUSTOM_MANAGED")]}
+        isLoading={false}
+        filterKey="ALL"
+        onFilterKeyChange={noop}
+        page={{ ...basePage, totalCount: 1 }}
+        onOffset={noop}
+        onLimit={noop}
+      />,
+    );
+    expect(screen.getByText("daily")).toBeTruthy();
+    expect(screen.queryByText("delegated")).toBeNull();
+  });
+
+  it.each([["DATAHUB_MANAGED"], ["PASSIVE"]] as const)(
+    "renders 'delegated' (not a tier) for a %s row",
+    (mode) => {
+      render(
+        <IngestionSourceList
+          sources={[makeSource(mode)]}
+          isLoading={false}
+          filterKey="ALL"
+          onFilterKeyChange={noop}
+          page={{ ...basePage, totalCount: 1 }}
+          onOffset={noop}
+          onLimit={noop}
+        />,
+      );
+      expect(screen.getByText("delegated")).toBeTruthy();
+    },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// 5. Empty state — sources=[] and isLoading=false
 // ---------------------------------------------------------------------------
 
 describe("IngestionSourceList — empty state", () => {

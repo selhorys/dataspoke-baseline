@@ -13,6 +13,7 @@
 import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/ui/empty-state";
+import { DatahubDatasetLink } from "@/components/datahub-dataset-link";
 import {
   Table,
   TableBody,
@@ -42,6 +43,7 @@ export function SourceDatasetTable({ rows }: SourceDatasetTableProps) {
         <TableHeader>
           <TableRow>
             <TableHead>dataset_urn</TableHead>
+            <TableHead>datahub</TableHead>
             <TableHead>authority</TableHead>
             <TableHead>first_seen_at</TableHead>
             <TableHead>last_seen_at</TableHead>
@@ -57,6 +59,12 @@ export function SourceDatasetTable({ rows }: SourceDatasetTableProps) {
                 >
                   {row.dataset_urn}
                 </Link>
+              </TableCell>
+              <TableCell>
+                <DatahubDatasetLink
+                  urn={row.dataset_urn}
+                  fallback={<span className="text-muted-foreground">—</span>}
+                />
               </TableCell>
               <TableCell>
                 <Badge variant="outline" className="text-xs">

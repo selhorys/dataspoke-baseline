@@ -82,3 +82,44 @@ describe("CreateIngestionSourcePage", () => {
     expect(screen.getByText(/name must be a string of 1–512 characters/i)).toBeInTheDocument();
   });
 });
+
+// ── Top action bar: Cancel + external-submit Save ──────────────────────────────
+// spec: FRONTEND_INGESTION.md §Create — top-right Cancel (→ /ingestion/conf) and
+// Save (external submit bound to the recipe form; the editor's own bottom save is
+// suppressed).
+
+describe("CreateIngestionSourcePage — Save/Cancel action bar", () => {
+  it("renders a Cancel control linking back to /ingestion/conf", () => {
+    render(<CreateIngestionSourcePage />);
+    const cancel = screen.getByRole("link", { name: /^cancel$/i });
+    expect(cancel.getAttribute("href")).toBe("/ingestion/conf");
+  });
+
+  it("binds the Save button to the recipe form as an external submit", () => {
+    const { container } = render(<CreateIngestionSourcePage />);
+    const save = screen.getByRole("button", { name: /^save$/i });
+    expect(save.getAttribute("type")).toBe("submit");
+
+    // Save lives outside the recipe form and submits it via the `form` attribute.
+    // Read the actual form id from the DOM rather than hardcoding it, so the test
+    // tracks the page's wiring instead of a magic string.
+    const recipeForm = container.querySelector("form");
+    expect(recipeForm).not.toBeNull();
+    expect(recipeForm!.id).toBeTruthy();
+    expect(save.getAttribute("form")).toBe(recipeForm!.id);
+  });
+
+  it("exposes exactly one Save control — the editor's own bottom save is suppressed", () => {
+    render(<CreateIngestionSourcePage />);
+    // hideActions on the editor removes its bottom save, so the only save control
+    // is the page-owned top-bar Save.
+    expect(screen.getAllByRole("button", { name: /save/i })).toHaveLength(1);
+  });
+
+  it("disables Save and shows 'Saving…' while the create mutation is pending", () => {
+    mockCreate.mockReturnValue({ mutate, isPending: true, error: null });
+    render(<CreateIngestionSourcePage />);
+    const save = screen.getByRole("button", { name: /saving/i });
+    expect((save as HTMLButtonElement).disabled).toBe(true);
+  });
+});

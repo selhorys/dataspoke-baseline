@@ -17,7 +17,7 @@ from src.backend.validation.assertions import (
     report_result,
 )
 from src.shared.datahub.client import DataHubClient
-from src.shared.db.models import Event, ValidationConfig, ValidationResult
+from src.shared.db.models import DatasetRegistry, Event, ValidationConfig, ValidationResult
 from src.shared.db.registry import ensure_dataset_registered
 from src.shared.events import (
     VALIDATION_CONFIG_CREATE,
@@ -65,14 +65,19 @@ class ValidationResultRecord(BaseModel):
 
 
 class ValidationListItem(BaseModel):
-    """Value object for the cross-dataset list view."""
+    """Value object for the cross-dataset list view.
+
+    ``description``/``variable_count``/``latest_*`` are ``None`` for uncovered
+    rows (registered datasets with no validation conf) under
+    ``coverage=uncovered|both``.
+    """
 
     dataset_urn: str
-    description: str
-    variable_count: int
-    latest_data_time: datetime | None
-    latest_score: float | None
-    updated_at: datetime
+    description: str | None = None
+    variable_count: int | None = None
+    latest_data_time: datetime | None = None
+    latest_score: float | None = None
+    updated_at: datetime | None = None
 
 
 # ── ORM row converters ────────────────────────────────────────────────────────
@@ -408,36 +413,16 @@ class ValidationService:
         ]
         return collapsed, total_count
 
-    async def list_configs(
-        self,
-        offset: int = 0,
-        limit: int = 20,
-        order_by: Any = None,
-    ) -> tuple[list[ValidationListItem], int]:
-        """List configs with latest result joined per dataset.
+    async def _latest_results_by_urn(
+        self, urns: list[str]
+    ) -> dict[str, tuple[datetime, float]]:
+        """Batch latest-result lookup (last-write-wins per dataset) for ``urns``.
 
-        Each row contains dataset_urn, description, variable_count,
-        latest_data_time, latest_score, updated_at.
+        One windowed query keyed on the page's URNs — shared by the ``covered``
+        and ``both`` coverage branches so neither does a per-URN N+1.
         """
-        base = select(ValidationConfig)
-
-        count_q = select(func.count()).select_from(base.subquery())
-        total_count = (await self._db.execute(count_q)).scalar() or 0
-
-        default_order = ValidationConfig.updated_at.desc()
-        config_q = (
-            base.order_by(order_by if order_by is not None else default_order)
-            .offset(offset)
-            .limit(limit)
-        )
-        config_result = await self._db.execute(config_q)
-        config_rows = config_result.scalars().all()
-
-        if not config_rows:
-            return [], total_count
-
-        urns = [r.dataset_urn for r in config_rows]
-
+        if not urns:
+            return {}
         latest_sub = (
             select(
                 ValidationResult.dataset_urn,
@@ -458,11 +443,62 @@ class ValidationService:
             latest_sub.c.data_time,
             latest_sub.c.score,
         ).where(latest_sub.c.rn == 1)
+        result = await self._db.execute(latest_q)
+        return {r.dataset_urn: (r.data_time, r.score) for r in result.all()}
 
-        latest_result = await self._db.execute(latest_q)
-        latest_by_urn: dict[str, tuple[datetime, float]] = {}
-        for r in latest_result.all():
-            latest_by_urn[r.dataset_urn] = (r.data_time, r.score)
+    async def list_configs(
+        self,
+        offset: int = 0,
+        limit: int = 20,
+        order_by: Any = None,
+        coverage: str = "covered",
+    ) -> tuple[list[ValidationListItem], int]:
+        """List validation rows across datasets (paginated), per ``coverage``.
+
+        ``covered`` (default) — datasets that hold a validation conf, with the
+        latest result joined (``dataset_urn``, ``description``, ``variable_count``,
+        ``latest_data_time``, ``latest_score``, ``updated_at``).
+
+        ``uncovered`` — registered datasets (``dataset_registry``,
+        ``datahub_registered=True``) with no validation conf, ordered by
+        ``dataset_urn``; conf/result fields are null and ``updated_at`` is the
+        registry row's.
+
+        ``both`` — the union (registered datasets LEFT JOIN validation conf),
+        ordered ``updated_at DESC NULLS LAST`` then ``dataset_urn`` so uncovered
+        rows sort last and paging stays deterministic.
+
+        Every branch is SQL-paginated.
+        """
+        if coverage == "uncovered":
+            return await self._list_uncovered(offset, limit)
+        if coverage == "both":
+            return await self._list_both(offset, limit)
+        return await self._list_covered(offset, limit, order_by)
+
+    async def _list_covered(
+        self,
+        offset: int,
+        limit: int,
+        order_by: Any,
+    ) -> tuple[list[ValidationListItem], int]:
+        base = select(ValidationConfig)
+
+        count_q = select(func.count()).select_from(base.subquery())
+        total_count = (await self._db.execute(count_q)).scalar() or 0
+
+        default_order = ValidationConfig.updated_at.desc()
+        config_q = (
+            base.order_by(order_by if order_by is not None else default_order)
+            .offset(offset)
+            .limit(limit)
+        )
+        config_rows = (await self._db.execute(config_q)).scalars().all()
+        if not config_rows:
+            return [], total_count
+
+        urns = [r.dataset_urn for r in config_rows]
+        latest_by_urn = await self._latest_results_by_urn(urns)
 
         items: list[ValidationListItem] = []
         for row in config_rows:
@@ -477,7 +513,112 @@ class ValidationService:
                     updated_at=row.updated_at,
                 )
             )
+        return items, total_count
 
+    async def _list_uncovered(
+        self,
+        offset: int,
+        limit: int,
+    ) -> tuple[list[ValidationListItem], int]:
+        # Registered datasets with no validation conf (the /unmanaged analogue).
+        conf_subq = select(ValidationConfig.dataset_urn).scalar_subquery()
+        base = select(
+            DatasetRegistry.dataset_urn,
+            DatasetRegistry.updated_at,
+        ).where(
+            DatasetRegistry.datahub_registered.is_(True),
+            DatasetRegistry.dataset_urn.not_in(conf_subq),
+        )
+
+        count_q = select(func.count()).select_from(base.subquery())
+        total_count = (await self._db.execute(count_q)).scalar() or 0
+
+        rows_q = (
+            base.order_by(DatasetRegistry.dataset_urn.asc()).offset(offset).limit(limit)
+        )
+        rows = (await self._db.execute(rows_q)).all()
+        items = [
+            ValidationListItem(
+                dataset_urn=r.dataset_urn,
+                description=None,
+                variable_count=None,
+                latest_data_time=None,
+                latest_score=None,
+                updated_at=r.updated_at,
+            )
+            for r in rows
+        ]
+        return items, total_count
+
+    async def _list_both(
+        self,
+        offset: int,
+        limit: int,
+    ) -> tuple[list[ValidationListItem], int]:
+        # Registered datasets LEFT JOIN their validation conf. Conf fields are
+        # NULL for uncovered rows (ValidationConfig.description is NOT NULL, so a
+        # NULL description reliably marks an uncovered row).
+        base = (
+            select(
+                DatasetRegistry.dataset_urn,
+                DatasetRegistry.updated_at.label("registry_updated_at"),
+                ValidationConfig.description,
+                ValidationConfig.variables,
+                ValidationConfig.updated_at.label("conf_updated_at"),
+            )
+            .select_from(DatasetRegistry)
+            .outerjoin(
+                ValidationConfig,
+                ValidationConfig.dataset_urn == DatasetRegistry.dataset_urn,
+            )
+            .where(DatasetRegistry.datahub_registered.is_(True))
+        )
+
+        count_q = select(func.count()).select_from(base.subquery())
+        total_count = (await self._db.execute(count_q)).scalar() or 0
+
+        # Conf updated_at DESC NULLS LAST (uncovered rows last), tiebreak by
+        # dataset_urn so paging stays deterministic across the union.
+        rows_q = (
+            base.order_by(
+                ValidationConfig.updated_at.desc().nullslast(),
+                DatasetRegistry.dataset_urn.asc(),
+            )
+            .offset(offset)
+            .limit(limit)
+        )
+        rows = (await self._db.execute(rows_q)).all()
+        if not rows:
+            return [], total_count
+
+        covered_urns = [r.dataset_urn for r in rows if r.description is not None]
+        latest_by_urn = await self._latest_results_by_urn(covered_urns)
+
+        items: list[ValidationListItem] = []
+        for r in rows:
+            if r.description is None:
+                items.append(
+                    ValidationListItem(
+                        dataset_urn=r.dataset_urn,
+                        description=None,
+                        variable_count=None,
+                        latest_data_time=None,
+                        latest_score=None,
+                        updated_at=r.registry_updated_at,
+                    )
+                )
+            else:
+                latest = latest_by_urn.get(r.dataset_urn)
+                items.append(
+                    ValidationListItem(
+                        dataset_urn=r.dataset_urn,
+                        description=r.description,
+                        variable_count=len(r.variables) if r.variables else 0,
+                        latest_data_time=latest[0] if latest else None,
+                        latest_score=latest[1] if latest else None,
+                        updated_at=r.conf_updated_at,
+                    )
+                )
         return items, total_count
 
     # ── Events ────────────────────────────────────────────────────────────────

@@ -1192,10 +1192,12 @@ async def test_uc1_datahub_managed_execute_and_reflect(
     # the aspects emitted by the run.  In the dev-env the executor targets the
     # example-postgres instance which is also the DataHub sink; systemMetadata.pipelineName
     # is stamped by the DataHub ingestion framework to the source URN.  We give the ES
-    # index a brief settle window via the same sync+poll pattern.
+    # index a settle window via the same sync+poll pattern.
+    # spec: project_es_indexing_lag_after_reset_seed — ES lags ~2-3 min; budget ≥180s
+    #   (matches the 180s budget used by this test's other ES-dependent steps above).
     datasets_body: dict = {}
     pipeline_name_rows: list = []
-    deadline = time.time() + 60.0
+    deadline = time.time() + 180.0
     while time.time() < deadline:
         # Re-trigger sync so any freshly-indexed pipelineName aspects are picked up.
         try:
@@ -1227,7 +1229,7 @@ async def test_uc1_datahub_managed_execute_and_reflect(
     assert pipeline_name_rows, (
         f"Expected ≥1 dataset row with derivation='pipeline_name' and authority='high' "
         f"in GET /sources/{managed.id}/datasets after a successful DataHub execution "
-        f"and re-sync (within 60s). "
+        f"and re-sync (within 180s). "
         f"Datasets returned: {datasets_body.get('datasets', [])}. "
         "spec: USE_CASE_en.md §UC1 Case 1 — execution upgrades datasets from matched/medium "
         "to pipeline_name/high via DataHub systemMetadata.pipelineName stamping. "

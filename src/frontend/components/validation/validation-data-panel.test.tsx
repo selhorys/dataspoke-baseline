@@ -176,6 +176,36 @@ describe("ValidationDataPanel — absent slot (CONFIG_NOT_FOUND)", () => {
   });
 });
 
+// ── Config heading row ──────────────────────────────────────────────────────────
+// spec: FRONTEND_VALIDATION.md §Detail — the conf block leads with a `Config`
+// heading (same register as the Quality Score / Variables headings) with the
+// Edit/Delete (or Cancel/Save, or Create) cluster on the same row.
+
+describe("ValidationDataPanel — Config heading", () => {
+  it("renders a 'Config' heading above the conf when a conf exists", async () => {
+    mockUseMe.mockReturnValue({ canWrite: true, isAdmin: false, isEditor: true });
+    mockConf.mockReturnValue({ data: makeConf(), isLoading: false, error: null });
+    await renderPanel();
+
+    // Exact match so it is not confused with "Quality Score" / "Variables" headings.
+    expect(screen.getByRole("heading", { name: /^config$/i })).toBeTruthy();
+  });
+
+  it("renders the 'Config' heading in the absent-slot (Create) state too", async () => {
+    mockUseMe.mockReturnValue({ canWrite: true, isAdmin: false, isEditor: true });
+    mockConf.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      error: makeApiError(404, "CONFIG_NOT_FOUND"),
+    });
+    await renderPanel();
+
+    expect(screen.getByRole("heading", { name: /^config$/i })).toBeTruthy();
+    // The Create button sits on the same heading row.
+    expect(screen.getByRole("button", { name: /^create$/i })).toBeTruthy();
+  });
+});
+
 // ── Active conf → Edit/Delete, charts present ──────────────────────────────────
 
 describe("ValidationDataPanel — existing conf", () => {

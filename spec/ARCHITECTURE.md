@@ -173,6 +173,7 @@ For layout, shared components, routing, and auth, see
 Function-based URI structure — one namespace per MANIFESTO §2.1 feature:
 
 ```
+/api/v1/spoke/common/data                    → Dataset catalog (collection root: all datasets + cross-feature coverage)
 /api/v1/spoke/common/data/{dataset_urn}/...  → Dataset resource (per-dataset, cross-feature)
 /api/v1/spoke/ingestion                      → Ingestion Control cross-dataset list
 /api/v1/spoke/validation                     → Validation cross-dataset list

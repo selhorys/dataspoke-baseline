@@ -8,6 +8,8 @@ Auth: authenticated; writes require Editor or Admin (require_writer).
 Spec: API.md §Validation (/spoke/validation).
 """
 
+from typing import Literal
+
 from fastapi import APIRouter, Depends, Query
 
 from src.api.auth.dependencies import require_authenticated
@@ -29,12 +31,18 @@ async def get_validation(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=1000),
     sort: str | None = Query(default=None),
+    coverage: Literal["covered", "uncovered", "both"] = Query(default="covered"),
     service: ValidationService = Depends(get_validation_service),
 ) -> ValidationListResponse:
     """List validation attributes across datasets (paginated).
 
     Each row aggregates per-dataset attr/validation/* (conf description + variable count
     + latest result data_time and score).  Default ordering: updated_at DESC.
+
+    ``coverage`` selects the row set: ``covered`` (default) returns datasets that
+    hold a validation conf; ``uncovered`` returns registered datasets with no
+    conf (null conf/result fields); ``both`` unions them, ordering uncovered rows
+    last (null ``updated_at``) so paging stays deterministic.
     """
     order_by = parse_sort(
         sort,
@@ -48,6 +56,7 @@ async def get_validation(
         offset=offset,
         limit=limit,
         order_by=order_by,
+        coverage=coverage,
     )
     return ValidationListResponse(
         offset=offset,

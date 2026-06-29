@@ -36,13 +36,14 @@ group does not cover the route; the other column does.
 
 The unified per-dataset page merges the formerly separate `/ingestion/data`,
 `/validation/data`, and `/metagen/data` surfaces — three summary cards
-(Ingestion / Validation / MetaGen) + four foldable panels (Ingestion, Validation,
-MetaGen, Events). The retired per-feature `/{feature}/data/[urn]` routes are
-redirects to `/data/[urn]`.
+(Ingestion / Validation / MetaGen) + three foldable panels (Validation, MetaGen,
+Events). The ingestion reverse-lookup folds into the Ingestion summary card (no
+standalone Ingestion panel); the header carries a shared DataHub deep-link. The
+retired per-feature `/{feature}/data/[urn]` routes are redirects to `/data/[urn]`.
 
 | Route | UC test | Ground test |
 |---|---|---|
-| `/data/[urn]` | `uc1-02-active-custom-postgres.spec.ts` step 6 (Ingestion panel reverse-lookup); `uc2-01-validation.spec.ts` steps 2, 4–7 (Validation panel: conf, charts, hard-delete via ConfirmDialog with cascade — afterwards reads as a never-created Create empty-state, no Undelete/Show-deleted toggle; recreate via the Create form; validation events in unified Events panel); `uc4-01-metadata-generation.spec.ts` steps 3, 7, 8, 9 (MetaGen panel boundary form, candidate review, metagen events in unified Events panel) | `ground/data/hub.spec.ts` (URN header + 3 summary cards; 4 foldable panels fold/unfold; Events major-type filter all-checked default + uncheck narrows) |
+| `/data/[urn]` | `uc1-02-active-custom-postgres.spec.ts` step 6 (Ingestion panel reverse-lookup); `uc2-01-validation.spec.ts` steps 2, 4–7 (Validation panel: conf, charts, hard-delete via ConfirmDialog with cascade — afterwards reads as a never-created Create empty-state, no Undelete/Show-deleted toggle; recreate via the Create form; validation events in unified Events panel); `uc4-01-metadata-generation.spec.ts` steps 3, 7, 8, 9 (MetaGen panel boundary form, candidate review, metagen events in unified Events panel) | `ground/data/hub.spec.ts` (URN header + 3 summary cards; 3 foldable panels fold/unfold + NO Ingestion panel; consolidated Ingestion card + header DataHub deep-link; Events major-type filter all-checked default + uncheck narrows) |
 
 #### Ingestion (UC1)
 
@@ -63,12 +64,13 @@ redirects to `/data/[urn]`.
 | `/governance/metrics` | `uc5-01-governance.spec.ts` step 3b (list: metrics, type badges, Enabled) | — |
 | `/governance/metrics/new` | `uc5-01-governance.spec.ts` step 1a (create form → redirect) | — |
 | `/governance/metrics/[id]` | `uc5-01-governance.spec.ts` steps 1c, 2, 3c, 4 (Edit→PUT, Run, Config+Result+Event, Delete) | — |
+| `/governance/datasets` | — | `ground/governance/datasets.spec.ts` (Governance-menu navigation + 4 column headers; dataset_urn → /data/[urn] link, datahub deep-link, click-through to the hub; dual-confirmed against GET /spoke/common/data) |
 
 #### Validation (UC2)
 
 | Route | UC test | Ground test |
 |---|---|---|
-| `/validation` | `uc2-01-validation.spec.ts` step 3 (cross-dataset list; URNs, score badges) | — |
+| `/validation` | `uc2-01-validation.spec.ts` step 3 (cross-dataset list; URNs, score badges) | `ground/validation/coverage-filter.spec.ts` (covered/uncovered checkbox default state; none-checked → select-a-filter empty state; uncovered toggle surfaces a registered-no-conf row, dual-confirmed against GET /spoke/validation?coverage=uncovered) |
 | `/validation/data/[urn]` (redirects to `/data/[urn]`) | covered via `/data/[urn]` (see Per-dataset hub) | — |
 
 #### Ontology Generation (UC3)

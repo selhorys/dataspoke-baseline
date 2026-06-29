@@ -18,8 +18,8 @@
  *      Backend: GET /sources/{id}/datasets.
  *   5. Events panel shows INGESTION.COMPLETE for this run.
  *      Backend: GET /sources/{id}/event.
- *   6. Navigate to /data/<catalog.title_master urn> (Ingestion panel).
- *      Assert the Ingestion panel names this source; backend: GET attr/ingestion.
+ *   6. Navigate to /data/<catalog.title_master urn> (Ingestion summary card).
+ *      Assert the Ingestion card names this source; backend: GET attr/ingestion.
  *   7. Cleanup: Delete the source via ConfirmDialog.
  *      Backend: GET /sources/{id} → 404.
  *
@@ -525,22 +525,18 @@ test("UC1 Case 2 step 6 — per-dataset reverse-lookup shows owning source", asy
   }
   expect(reverseReady, "reverse-lookup source_id not resolved within deadline").toBe(true);
 
-  // Navigate to the unified per-dataset hub; the reverse-lookup body lives under
-  // the "Ingestion" CollapsiblePanel (open by default). Retry the whole block to
-  // absorb residual client-side render lag after the backend is ready.
+  // Navigate to the unified per-dataset hub; the reverse-lookup folds into the
+  // Ingestion summary card (no standalone Ingestion panel). Retry the whole block
+  // to absorb residual client-side render lag after the backend is ready.
   // spec: FRONTEND_BASIC.md §Per-dataset page; FRONTEND_INGESTION.md §Per-dataset reverse-lookup
   await expect(async () => {
     await page.goto(`/data/${encodeURIComponent(CATALOG_TITLE_URN)}`);
     await expect(page).not.toHaveURL(/\/login/);
 
-    // -- UI assertion: the owning-source link is visible inside the open Ingestion panel --
-    // The Ingestion CollapsiblePanel is open by default (CollapsiblePanel defaultOpen=true),
-    // and only its open body (IngestionDataPanel) renders the source link. So the link's
-    // visibility inherently proves the panel is open AND shows the resolved source — making
-    // a separate aria-expanded check on the panel toggle redundant. We avoid that check
-    // because the page renders TWO "Ingestion" elements (a summary Card title and the panel
-    // toggle button), so locating the toggle by name is ambiguous and flaked.
-    // spec: FRONTEND_BASIC.md §Per-dataset page; FRONTEND_INGESTION.md §Per-dataset reverse-lookup.
+    // -- UI assertion: the owning-source link is visible in the Ingestion summary card --
+    // The IngestionSummaryCard renders the resolved source name as a Link to the
+    // source detail page, so the link's visibility proves the reverse-lookup resolved.
+    // spec: FRONTEND_BASIC.md §Per-dataset page — Ingestion summary card (owning-source link).
     await expect(page.getByRole("link", { name: SOURCE_NAME })).toBeVisible({ timeout: 10_000 });
 
     // -- UI assertion: mode badge "Active" visible (modeLabel("ACTIVE_CUSTOM_MANAGED") === "Active") --

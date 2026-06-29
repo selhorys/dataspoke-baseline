@@ -4,18 +4,48 @@ import json
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select
+from pydantic import BaseModel
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.backend.ingestion.service import IngestionService
+from src.backend.metagen.service import MetagenService
 from src.shared.cache.client import QUALITY_CACHE_KEY, RedisClient
 from src.shared.datahub.client import DataHubClient
 from src.shared.datahub.urn import platform_from_dataset_urn
-from src.shared.db.models import Event
+from src.shared.db.models import DatasetRegistry, Event
 from src.shared.exceptions import EntityNotFoundError
 from src.shared.models.dataset import DatasetAttributes, DatasetSummary
 from src.shared.models.events import EventRecord
 from src.shared.models.quality import QualityScore
+
+# ── Catalog value objects (service-local) ─────────────────────────────────────
+# The router maps these to the src/api/schemas/dataset.py response models, so the
+# backend stays off the api.schemas boundary (BACKEND.md §Domain Models) — mirrors
+# ValidationService's local ValidationListItem.
+
+
+class DatasetCatalogIngestion(BaseModel):
+    """Owning-source summary for a catalog row (``mode`` is the raw Mode value)."""
+
+    source_id: str
+    name: str
+    mode: str
+
+
+class DatasetCatalogMetagenConf(BaseModel):
+    """One enabled metagen conf whose dataset_filter matches a catalog row."""
+
+    conf_id: str
+    name: str
+
+
+class DatasetCatalogRow(BaseModel):
+    """One row of the cross-feature dataset catalog (DatasetService.list_datasets)."""
+
+    dataset_urn: str
+    ingestion: DatasetCatalogIngestion | None = None
+    metagen: list[DatasetCatalogMetagenConf] = []
 
 
 class DatasetService:
@@ -34,6 +64,72 @@ class DatasetService:
         # aggregation that feeds the unified dataset timeline. Shares the same
         # constructor-injected deps (datahub, db, cache).
         self._ingestion = IngestionService(datahub=datahub, db=db, cache=cache)
+        # Compose the metagen service for the catalog's conf-coverage lookup.
+        # Only its read-only match_confs_for_urns path is used here, so no LLM
+        # or vector client is needed (both default to None).
+        self._metagen = MetagenService(datahub=datahub, db=db, cache=cache)
+
+    async def list_datasets(
+        self,
+        offset: int = 0,
+        limit: int = 20,
+        order_by: Any = None,
+    ) -> tuple[list[DatasetCatalogRow], int]:
+        """Cross-feature catalog of registered datasets (paginated).
+
+        Pages ``dataset_registry`` (``datahub_registered=True``) in SQL — the same
+        base set as ``/ingestion/unmanaged`` and ``/metagen/uncovered`` — without
+        materializing the whole registry in Python. Ingestion + metagen coverage
+        is then resolved for ONLY the page's URNs via two batched lookups
+        (:meth:`IngestionService.reverse_lookup_batch` and
+        :meth:`MetagenService.match_confs_for_urns`), avoiding any per-URN N+1.
+
+        ``ingestion`` is ``None`` when no source covers the URN; ``metagen`` is
+        ``[]`` when no enabled conf matches. Page order follows the SQL ordering.
+        """
+        base_q = select(DatasetRegistry.dataset_urn).where(
+            DatasetRegistry.datahub_registered.is_(True)
+        )
+
+        count_q = select(func.count()).select_from(base_q.subquery())
+        total_count = (await self._db.execute(count_q)).scalar() or 0
+
+        rows_q = (
+            base_q.order_by(
+                order_by if order_by is not None else DatasetRegistry.dataset_urn
+            )
+            .offset(offset)
+            .limit(limit)
+        )
+        result = await self._db.execute(rows_q)
+        urns = [row[0] for row in result.all()]
+        if not urns:
+            return [], total_count
+
+        ingestion_by_urn = await self._ingestion.reverse_lookup_batch(urns)
+        metagen_by_urn = await self._metagen.match_confs_for_urns(urns)
+
+        items: list[DatasetCatalogRow] = []
+        for urn in urns:
+            source = ingestion_by_urn.get(urn)
+            ingestion = (
+                DatasetCatalogIngestion(
+                    source_id=source.id,
+                    name=source.name,
+                    mode=source.mode,
+                )
+                if source is not None
+                else None
+            )
+            metagen = [
+                DatasetCatalogMetagenConf(conf_id=conf_id, name=name)
+                for conf_id, name in metagen_by_urn.get(urn, [])
+            ]
+            items.append(
+                DatasetCatalogRow(dataset_urn=urn, ingestion=ingestion, metagen=metagen)
+            )
+
+        return items, total_count
 
     async def get_summary(self, dataset_urn: str) -> DatasetSummary:
         from datahub.metadata.schema_classes import (

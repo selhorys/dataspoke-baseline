@@ -7,20 +7,23 @@
  * One concern per test:
  *   1. Header renders the dataset URN; the three summary cards
  *      (Ingestion / Validation / MetaGen) render.
- *   2. The four foldable CollapsiblePanels (Ingestion, Validation, MetaGen,
- *      Events) render, default open, and each folds/unfolds via its header.
- *   3. The Events panel's major-type filter exposes a checkbox per major type
+ *   2. The three foldable CollapsiblePanels (Validation, MetaGen, Events) render,
+ *      default open, and each folds/unfolds via its header. The ingestion
+ *      reverse-lookup is a summary card, not a panel — there is NO Ingestion panel.
+ *   3. The consolidated Ingestion summary card renders, and the per-dataset header
+ *      exposes a DataHub deep-link (datahubUrl is configured in the dev cluster).
+ *   4. The Events panel's major-type filter exposes a checkbox per major type
  *      (INGESTION / VALIDATION / METAGEN), all checked by default; unchecking one
  *      narrows the timeline without emptying the table area.
  *
  * Data setup: global-setup runs --reset-seed (seeded Imazon baseline — every
- * dataset present in DataHub). title_master is owned by a DataHub-managed source
- * in the seed, so its Ingestion card/panel are populated; no mutation is made
- * here (read-only page), so no cleanup is required.
+ * dataset present in DataHub). No mutation is made here (read-only page), so no
+ * cleanup is required.
  *
- * spec: spec/feature/FRONTEND_BASIC.md §Per-dataset page (cards + four foldable
- *   panels + Events major-type filter; CollapsiblePanel / EventsPanel /
- *   EventMajorTypeFilter primitives).
+ * spec: spec/feature/FRONTEND_BASIC.md §Per-dataset page (three summary cards +
+ *   three foldable panels + Events major-type filter; the Ingestion reverse-lookup
+ *   folds into the summary card, the standalone Ingestion panel is removed; shared
+ *   DataHub dataset deep-link in the header).
  * spec: spec/TESTING.md §End-to-End (E2E) Testing — ground group, selector guidance.
  */
 
@@ -29,7 +32,7 @@ import { test, expect, IMAZON_URNS } from "../../fixtures/index";
 const DATASET_URN = IMAZON_URNS.titleMaster;
 const DATA_URL = `/data/${encodeURIComponent(DATASET_URN)}`;
 
-const PANEL_TITLES = ["Ingestion", "Validation", "MetaGen", "Events"] as const;
+const PANEL_TITLES = ["Validation", "MetaGen", "Events"] as const;
 const MAJOR_TYPES = ["INGESTION", "VALIDATION", "METAGEN"] as const;
 
 // ── Test 1 — header URN + three summary cards ──────────────────────────────────
@@ -58,11 +61,12 @@ test("data hub renders the dataset URN header and the three summary cards", asyn
   }
 });
 
-// ── Test 2 — four foldable panels fold/unfold ──────────────────────────────────
-// spec: FRONTEND_BASIC.md §Per-dataset page — four CollapsiblePanels, default open,
-//   header toggles the body.
+// ── Test 2 — three foldable panels fold/unfold; no Ingestion panel ─────────────
+// spec: FRONTEND_BASIC.md §Per-dataset page — three CollapsiblePanels (Validation,
+//   MetaGen, Events), default open, header toggles the body; the Ingestion
+//   reverse-lookup is a summary card, not a panel.
 
-test("data hub renders four foldable panels that each fold and unfold", async ({
+test("data hub renders three foldable panels that each fold and unfold", async ({
   page,
 }) => {
   await page.goto(DATA_URL);
@@ -98,9 +102,70 @@ test("data hub renders four foldable panels that each fold and unfold", async ({
     await header.click();
     await expect(header).toHaveAttribute("aria-expanded", "true");
   }
+
+  // No standalone Ingestion panel: there is no CollapsiblePanel toggle button
+  // (the only buttons carrying aria-controls) named "Ingestion" in <main>.
+  const ingestionPanel = page
+    .getByRole("main")
+    .getByRole("button", { name: /^ingestion$/i })
+    .and(page.locator("[aria-controls]"));
+  await expect(ingestionPanel).toHaveCount(0);
 });
 
-// ── Test 3 — Events major-type filter ──────────────────────────────────────────
+// ── Test 3 — consolidated Ingestion card + header DataHub deep-link ─────────────
+// spec: FRONTEND_BASIC.md §Per-dataset page — the ingestion reverse-lookup folds
+//   into the Ingestion summary card; the header carries a shared DataHub deep-link
+//   (datahubUrl is configured in the dev cluster).
+
+test("data hub shows the consolidated Ingestion card and a header DataHub link", async ({
+  page,
+  adminApi,
+}) => {
+  await page.goto(DATA_URL);
+  await expect(page).not.toHaveURL(/\/login/);
+  await expect(
+    page.getByRole("heading", { name: DATASET_URN, exact: true }),
+  ).toBeVisible({ timeout: 15_000 });
+
+  // -- Backend dual-confirmation: read the reverse-lookup so the Ingestion-card
+  //    assertion tracks real backend state rather than a bare title presence. --
+  // spec: API.md §Data Resource — GET /spoke/common/data/{urn}/attr/ingestion
+  const enc = encodeURIComponent(DATASET_URN);
+  const probe = await adminApi.get(
+    `/api/v1/spoke/common/data/${enc}/attr/ingestion`,
+  );
+  expect(probe.ok(), `reverse-lookup probe failed: ${await probe.text()}`).toBeTruthy();
+  const lookup = (await probe.json()) as {
+    source_id: string | null;
+    name: string | null;
+  };
+
+  // -- UI assertion: the Ingestion summary card reflects the reverse-lookup --
+  // The card is the only place on the hub that renders an owning-source link, so
+  // its presence (covered) / the Unmanaged state (no source) proves the card mirrors
+  // the backend — independently meaningful, not a bare label presence check.
+  const main = page.getByRole("main");
+  if (lookup.source_id !== null && lookup.name) {
+    const sourceLink = main.getByRole("link", { name: lookup.name });
+    await expect(sourceLink.first()).toBeVisible({ timeout: 10_000 });
+    await expect(sourceLink.first()).toHaveAttribute(
+      "href",
+      `/ingestion/sources/${encodeURIComponent(lookup.source_id)}`,
+    );
+  } else {
+    await expect(main.getByText(/unmanaged/i).first()).toBeVisible({ timeout: 10_000 });
+  }
+
+  // -- UI assertion: the header DataHub deep-link is present in <main> --
+  // The app-shell header also carries a "DataHub" infra icon (aria-label
+  // "Open DataHub") — scope to <main> to select the per-dataset deep-link, whose
+  // visible text is "DataHub" and href points at the DataHub dataset page.
+  const datahubLink = main.getByRole("link", { name: "DataHub" });
+  await expect(datahubLink).toBeVisible({ timeout: 10_000 });
+  await expect(datahubLink).toHaveAttribute("href", /\/dataset\//);
+});
+
+// ── Test 4 — Events major-type filter ──────────────────────────────────────────
 // spec: FRONTEND_BASIC.md §Per-dataset page (Events filter) — checkbox-group over
 //   INGESTION / VALIDATION / METAGEN, default all checked; toggling narrows the
 //   timeline.

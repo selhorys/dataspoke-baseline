@@ -267,8 +267,9 @@ async def test_uc1_active_custom_postgres(
             "spec: USE_CASE_en.md §UC1 Case 2 — dry_run exercises connectivity"
         )
         # A dry-run DOES discover but emits nothing.
-        # spec: API.md §Ingestion — method/run — discovered_urns is the "would emit" plan, present on
-        # both dry-run and real runs; emitted_urns is empty with count 0 on a dry-run.
+        # spec: API.md §Ingestion — method/run — discovered_urns is the "would emit"
+        # plan, present on both dry-run and real runs; emitted_urns is empty with
+        # count 0 on a dry-run.
         dry_detail = dry_run_body.get("detail", {})
         assert dry_detail.get("dry_run") is True, "detail.dry_run must be true for dry runs"
         dry_discovered = dry_detail.get("discovered_urns", [])
@@ -286,7 +287,8 @@ async def test_uc1_active_custom_postgres(
             assert catalog_urn in dry_discovered, (
                 f"{catalog_urn!r} must appear in dry-run discovered_urns; "
                 f"got {sorted(dry_discovered)}. "
-                "spec: API.md §Ingestion — method/run — discovered_urns are the filtered dataset URNs"
+                "spec: API.md §Ingestion — method/run — discovered_urns are the "
+                "filtered dataset URNs"
             )
         # Dry-run emits nothing.
         assert dry_detail.get("emitted_urns_count", -1) == 0, (
@@ -320,7 +322,8 @@ async def test_uc1_active_custom_postgres(
         real_detail = real_run_body.get("detail", {})
         assert real_detail.get("dry_run") is False
         # A real run discovers and emits; emitted_urns ⊆ discovered_urns.
-        # spec: API.md §Ingestion — method/run — both lists populated on a real run; emitted ⊆ discovered.
+        # spec: API.md §Ingestion — method/run — both lists populated on a real
+        # run; emitted ⊆ discovered.
         real_discovered = real_detail.get("discovered_urns", [])
         real_discovered_count = real_detail.get("discovered_urns_count", 0)
         real_emitted = real_detail.get("emitted_urns_count", 0)
@@ -485,6 +488,57 @@ async def test_uc1_active_custom_postgres(
         )
         assert latest_run.get("status") == "success", (
             f"latest_run.status must be 'success'; got {latest_run.get('status')!r}"
+        )
+
+        # ── Step 8: Dataset catalog reflects ingestion coverage ──────────────
+        # The dataset-catalog collection root GET /spoke/common/data composes the
+        # same ingestion reverse-lookup per row. After this real run the catalog
+        # row for title_master must carry ingestion={source_id, name, mode} for
+        # the source we just created (the same reverse-lookup, batched).
+        # spec: API.md §Data Resource — GET /spoke/common/data row.ingestion shape
+        #       ({source_id, name, mode} | null)
+        catalog_resp = await api_client.get(
+            "/api/v1/spoke/common/data",
+            headers=admin_headers,
+            params={"limit": 200, "offset": 0},
+        )
+        assert catalog_resp.status_code == 200, (
+            f"GET /spoke/common/data expected 200, got "
+            f"{catalog_resp.status_code}: {catalog_resp.text}"
+        )
+        catalog_body = catalog_resp.json()
+        for key in ("offset", "limit", "total_count", "datasets"):
+            assert key in catalog_body, (
+                f"catalog envelope missing key {key!r}; got {list(catalog_body)}. "
+                "spec: API.md §Data Resource — GET /spoke/common/data envelope"
+            )
+        title_row = next(
+            (d for d in catalog_body["datasets"] if d["dataset_urn"] == _CATALOG_TITLE_URN),
+            None,
+        )
+        assert title_row is not None, (
+            f"{_CATALOG_TITLE_URN!r} must appear in the dataset catalog "
+            "(it is a registered catalog dataset). "
+            "spec: API.md §Data Resource — GET /spoke/common/data lists registered datasets"
+        )
+        assert title_row["ingestion"] is not None, (
+            "title_master catalog row must carry ingestion coverage after the run "
+            f"that emitted it; got ingestion=None. row={title_row}. "
+            "spec: API.md §Data Resource — row.ingestion is the reverse-lookup summary"
+        )
+        assert title_row["ingestion"]["source_id"] == source_id, (
+            f"catalog row.ingestion.source_id must be {source_id!r}; "
+            f"got {title_row['ingestion'].get('source_id')!r}. "
+            "spec: API.md §Data Resource — row.ingestion.source_id is the owning source"
+        )
+        assert title_row["ingestion"]["mode"] == "ACTIVE_CUSTOM_MANAGED", (
+            f"catalog row.ingestion.mode must be 'ACTIVE_CUSTOM_MANAGED'; "
+            f"got {title_row['ingestion'].get('mode')!r}. "
+            "spec: API.md §Data Resource — row.ingestion.mode echoes the source mode"
+        )
+        assert title_row["ingestion"].get("name"), (
+            "catalog row.ingestion.name must be the owning source name (non-empty). "
+            "spec: API.md §Data Resource — row.ingestion.name"
         )
 
     finally:

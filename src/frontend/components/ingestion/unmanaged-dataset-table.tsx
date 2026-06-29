@@ -11,6 +11,7 @@
 
 import Link from "next/link";
 import { EmptyState } from "@/components/ui/empty-state";
+import { DatahubDatasetLink } from "@/components/datahub-dataset-link";
 import {
   Table,
   TableBody,
@@ -37,6 +38,7 @@ export function UnmanagedDatasetTable({
         <TableHeader>
           <TableRow>
             <TableHead>dataset_urn</TableHead>
+            <TableHead>datahub</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -49,6 +51,12 @@ export function UnmanagedDatasetTable({
                 >
                   {urn}
                 </Link>
+              </TableCell>
+              <TableCell>
+                <DatahubDatasetLink
+                  urn={urn}
+                  fallback={<span className="text-muted-foreground">—</span>}
+                />
               </TableCell>
             </TableRow>
           ))}

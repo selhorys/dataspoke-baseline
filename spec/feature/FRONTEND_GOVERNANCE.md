@@ -3,10 +3,14 @@
 > Conforms to [MANIFESTO](../MANIFESTO_en.md). Shared shell in
 > [FRONTEND_BASIC](FRONTEND_BASIC.md). API in [API.md](../API.md).
 
-Governance hosts the metric catalogue and a Dashboard view that visualises
-the metric timeseries. `/governance/dashboard` is the post-login home —
-clients hitting `/` are redirected here. Every UI element below traces to
-a route in `API.md`.
+Governance hosts the metric catalogue, a Dashboard view that visualises
+the metric timeseries, and a cross-feature Datasets catalog. `/governance/dashboard`
+is the post-login home — clients hitting `/` are redirected here. Every UI element
+below traces to a route in `API.md`.
+
+The Datasets page lives under the Governance menu for navigation convenience; its
+API is the cross-feature collection root `GET /spoke/common/data`, not a governance
+route (menu placement and API namespace need not match).
 
 ---
 
@@ -15,6 +19,7 @@ a route in `API.md`.
 | UI route | Title | API base |
 |---|---|---|
 | `/governance/dashboard` | Dashboard | `/spoke/governance/metric`, `/spoke/governance/metric/{id}/attr/result` |
+| `/governance/datasets` | Dataset catalog | `/spoke/common/data` |
 | `/governance/metrics` | Metric list | `/spoke/governance/metric` |
 | `/governance/metrics/new` | Metric create | `/spoke/governance/metric` |
 | `/governance/metrics/[id]` | Metric detail | `/spoke/governance/metric/{id}` |
@@ -55,6 +60,32 @@ load (refreshed on range change or manual refetch), not polled.
 
 The Dashboard issues no writes. Reader, Editor, and Admin roles see the
 same view.
+
+---
+
+## Datasets (`/governance/datasets`)
+
+A read-only catalog of every registered dataset and its cross-feature coverage,
+backed by `GET /spoke/common/data`. It answers "what datasets exist, who ingests
+each, and which metagen confs cover it" in one cross-dataset table.
+
+| Element | Read | Notes |
+|---|---|---|
+| Dataset table | `GET /spoke/common/data` (paginated `offset`/`limit`/`total_count`, sortable by `dataset_urn`) | One row per registered dataset. Columns below |
+| Shared Pagination | the standard envelope | [Pagination](FRONTEND_BASIC.md#shared-component-notes) (page-size selector, Prev/Next, numbered pages) |
+
+Columns:
+
+| Column | Source | Renders |
+|---|---|---|
+| `dataset_urn` | row `dataset_urn` | the URN, linked to `/data/[urn]` |
+| `datahub` | row `dataset_urn` | the shared [DataHub dataset deep-link](FRONTEND_BASIC.md#shared-component-notes) (`<datahubUrl>/dataset/{urn}`); omitted when `datahubUrl` is unset |
+| `ingestion` | row `ingestion` | the owning source `name`, linked to `/ingestion/sources/[source_id]`, with the source `mode` badge alongside (matching the per-dataset Ingestion card); `—` when `ingestion` is `null` (unmanaged) |
+| `metagen` | row `metagen` | each matching conf `name`, linked to `/metagen/conf/[conf_id]`; `—` when the list is empty |
+
+The page issues no writes; Reader, Editor, and Admin see the same view. It sits
+under the Governance sidebar group even though its data is the cross-feature
+`common/data` collection root.
 
 ---
 

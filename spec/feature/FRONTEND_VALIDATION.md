@@ -36,11 +36,17 @@ checks per dataset use DataHub's native assertion APIs directly. See
 [BACKEND §Validation Service](BACKEND.md#validation-service-srcbackendvalidation)
 for the service surface.
 
-The list page shows one row per dataset with a validation slot — columns:
-dataset, description, declared variable count, latest `data_time`, latest
-`score` (UI header "Quality Score"; "—" until the first result row arrives).
-It reads `GET /spoke/validation`. The list is read-only for every role and paged by
-the shared [Pagination](FRONTEND_BASIC.md#shared-component-notes) control
+The list page shows one row per dataset — columns: dataset, description, declared
+variable count, latest `data_time`, latest `score` (UI header "Quality Score"; "—"
+until the first result row arrives). It reads `GET /spoke/validation`. A pair of
+checkboxes — **covered** (default checked) and **uncovered** (default unchecked) —
+filters the row set by mapping to the `coverage` query param: covered-only →
+`coverage=covered` (the default current view), both checked → `coverage=both`,
+uncovered-only → `coverage=uncovered`, and neither checked → an empty result.
+Toggling a checkbox resets pagination. Uncovered rows (registered datasets with no
+validation slot) carry null conf/result fields, so their description, variable count,
+`data_time`, and `score` cells render "—". The list is read-only for every role and
+paged by the shared [Pagination](FRONTEND_BASIC.md#shared-component-notes) control
 (page-size selector defaulting to 20, Prev/Next, numbered pages) bound to the
 `/spoke/validation` standard `offset`/`limit`/`total_count` envelope.
 
@@ -72,9 +78,11 @@ the selected range is stable per window.
 The header "Latest score" reads the most recent result within the selected
 range window, rendered to 4 decimals.
 
-The Validation panel's primary action controls all live in the panel header's top-right
-cluster and are mode-driven by the GET-conf outcome: an existing rule's read-only view
-shows `Edit` and `Delete`; edit mode shows `Cancel` and `Save`; a slot with no conf
+The conf editor sits under a `Config` section heading (same heading register as the
+`Quality Score` and `Variables` headings). The panel's primary action controls live on
+that `Config` heading's row (`justify-between` — heading left, controls right) and are
+mode-driven by the GET-conf outcome: an existing rule's read-only view shows `Edit` and
+`Delete`; edit mode shows `Cancel` and `Save`; a slot with no conf
 (`404 CONFIG_NOT_FOUND`) shows `Create`. The per-row field-array controls `+ Add` and
 `[×]` are not header controls — they stay inline inside the variables editor (rendered
 only in `Create`/edit modes).
@@ -88,8 +96,9 @@ branch and no deleted/frozen state to surface.
 
 ```
 ┌───────────────────────────────────────────────────────────────┐
-│  ← orders.line_items  Latest score 1.0000  [Last 2 weeks ▾] [Edit][Delete]│
+│  ← orders.line_items  Latest score 1.0000  [Last 2 weeks ▾]   │
 ├───────────────────────────────────────────────────────────────┤
+│  Config                                       [Edit] [Delete] │
 │  Description (attr/validation/conf.description)               │
 │    [editable textarea, ≤ 2,000 chars]                         │
 │                                                               │

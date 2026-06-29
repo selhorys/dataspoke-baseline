@@ -156,15 +156,19 @@ export function IngestionSourceList({
                   </TableCell>
                   <TableCell className="font-mono text-xs">{s.platform}</TableCell>
                   <TableCell className="text-sm">
-                    {(() => {
-                      const tier = scheduleTierLabel(s.schedule);
-                      return (
-                        <ScheduleTierLink
-                          tier={tier}
-                          dagId={scheduleDagId("ingestion-active", tier)}
-                        />
-                      );
-                    })()}
+                    {s.mode === "ACTIVE_CUSTOM_MANAGED" ? (
+                      (() => {
+                        const tier = scheduleTierLabel(s.schedule);
+                        return (
+                          <ScheduleTierLink
+                            tier={tier}
+                            dagId={scheduleDagId("ingestion-active", tier)}
+                          />
+                        );
+                      })()
+                    ) : (
+                      <span className="text-muted-foreground">delegated</span>
+                    )}
                   </TableCell>
                   <TableCell className="text-sm tabular-nums">
                     {countById[s.id] ?? (

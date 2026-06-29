@@ -3,14 +3,17 @@
  *
  * Spec: spec/feature/FRONTEND_BASIC.md §Per-dataset page:
  *   - three summary Cards (Ingestion / Validation / MetaGen) reading the
- *     reverse-lookup, validation conf+latest result, and metagen boundary+items,
- *   - four foldable CollapsiblePanels (Ingestion, Validation, MetaGen, Events),
- *     each wrapping the corresponding per-feature body / the unified timeline.
+ *     reverse-lookup, validation conf+latest result, and metagen boundary+items.
+ *     The Ingestion summary card carries the owning-source link plus the
+ *     last-run status badge and time (the ingestion reverse-lookup folds into the
+ *     card — there is NO separate Ingestion foldable panel).
+ *   - three foldable CollapsiblePanels (Validation, MetaGen, Events), each
+ *     wrapping the corresponding per-feature body / the unified timeline.
  *
- * The panel BODIES (IngestionDataPanel, ValidationDataPanel, MetagenDataPanel,
- * EventsPanel) are covered by their own component tests; here they are stubbed so
- * the page test asserts COMPOSITION — the three cards and four titled panels —
- * without re-exercising the bodies.
+ * The panel BODIES (ValidationDataPanel, MetagenDataPanel, EventsPanel) are
+ * covered by their own component tests; here they are stubbed so the page test
+ * asserts COMPOSITION — the three cards and three titled panels — without
+ * re-exercising the bodies.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, act } from "@testing-library/react";
@@ -43,11 +46,9 @@ vi.mock("@/lib/api/metagen", () => ({
 }));
 
 // Panel bodies — stubbed (covered by their own tests). Each renders a testid so
-// the page test can assert it is mounted inside its CollapsiblePanel.
-vi.mock("@/components/ingestion/ingestion-data-panel", () => ({
-  IngestionDataPanel: () =>
-    React.createElement("div", { "data-testid": "ingestion-body" }, "ingestion body"),
-}));
+// the page test can assert it is mounted inside its CollapsiblePanel. There is
+// no Ingestion panel body: the ingestion reverse-lookup is folded into the
+// Ingestion summary card, not a CollapsiblePanel.
 // The validation body is covered by its own component test; here it is stubbed
 // so the page test asserts COMPOSITION, not the panel internals.
 vi.mock("@/components/validation/validation-data-panel", () => ({
@@ -92,7 +93,7 @@ beforeEach(() => {
       source_id: "src-1",
       name: "orders-source",
       mode: "DATAHUB_MANAGED",
-      latest_run: { status: "success" },
+      latest_run: { status: "success", occurred_at: "2026-06-20T12:00:00Z" },
     },
     isLoading: false,
   });
@@ -125,8 +126,8 @@ describe("DatasetHubPage — /data/[urn]", () => {
 
   it("renders the three summary cards (Ingestion / Validation / MetaGen)", async () => {
     await renderPage();
-    // Card titles. There is one of each at card-title level; the panels reuse the
-    // same labels, so assert each label appears at least once.
+    // Card titles. Ingestion appears only as the summary-card title now (there is
+    // no Ingestion panel); Validation/MetaGen appear as card title + panel header.
     expect(screen.getAllByText("Ingestion").length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText("Validation").length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText("MetaGen").length).toBeGreaterThanOrEqual(1);
@@ -138,19 +139,39 @@ describe("DatasetHubPage — /data/[urn]", () => {
     expect(screen.getByText(/2 candidate items/i)).toBeTruthy(); // metagen item count
   });
 
-  it("renders the four foldable panels with the panel bodies mounted", async () => {
+  it("Ingestion summary card links the source name to its detail and shows the last-run time", async () => {
+    // The reverse-lookup folds into the Ingestion card: the source name is a Link
+    // to /ingestion/sources/[id] and the latest_run time renders beside the badge.
+    // spec: FRONTEND_BASIC.md §Per-dataset page — Ingestion summary card carries
+    // last-run time + owning-source link.
     await renderPage();
-    // Four CollapsiblePanel headers (toggle buttons) — one per feature + Events.
-    expect(screen.getByRole("button", { name: /ingestion/i })).toBeTruthy();
+
+    const sourceLink = screen.getByRole("link", { name: "orders-source" });
+    expect((sourceLink as HTMLAnchorElement).getAttribute("href")).toBe(
+      "/ingestion/sources/src-1",
+    );
+    // latest_run.occurred_at = 2026-06-20T12:00:00Z → formatDateTime renders the
+    // date; tz offset can shift only to the adjacent day, never out of month.
+    expect(screen.getByText(/2026-06-2[01]/)).toBeTruthy();
+  });
+
+  it("renders three foldable panels (Validation / MetaGen / Events) and NO Ingestion panel", async () => {
+    await renderPage();
+    // Three CollapsiblePanel headers (toggle buttons) — Validation, MetaGen, Events.
     expect(screen.getByRole("button", { name: /validation/i })).toBeTruthy();
     expect(screen.getByRole("button", { name: /metagen/i })).toBeTruthy();
     expect(screen.getByRole("button", { name: /events/i })).toBeTruthy();
 
-    // Each panel hosts its stubbed body (open by default).
-    expect(screen.getByTestId("ingestion-body")).toBeTruthy();
+    // The Ingestion reverse-lookup is a summary card, not a panel — there is no
+    // CollapsiblePanel toggle button named "Ingestion".
+    expect(screen.queryByRole("button", { name: /^ingestion$/i })).toBeNull();
+
+    // Each remaining panel hosts its stubbed body (open by default).
     expect(screen.getByTestId("validation-body")).toBeTruthy();
     expect(screen.getByTestId("metagen-body")).toBeTruthy();
     expect(screen.getByTestId("events-body")).toBeTruthy();
+    // No ingestion panel body is mounted.
+    expect(screen.queryByTestId("ingestion-body")).toBeNull();
   });
 
   it("Ingestion card shows the Unmanaged state when the dataset has no source", async () => {

@@ -370,6 +370,60 @@ describe("AppShell — Ingestion nav group (FRONTEND_BASIC.md §Shell)", () => {
   });
 });
 
+describe("AppShell — header home link", () => {
+  // spec: FRONTEND_BASIC.md §Shell — the product name links to /governance/dashboard.
+  beforeEach(() => {
+    mockUseMe.mockReturnValue({
+      me: makeMe("Reader"),
+      isAdmin: false,
+      isEditor: false,
+      canWrite: false,
+      isLoading: false,
+    });
+  });
+
+  it("renders the DataSpoke product name as a link to /governance/dashboard", () => {
+    render(
+      <AppShell>
+        <div />
+      </AppShell>,
+    );
+    const home = screen.getByRole("link", { name: "DataSpoke" });
+    expect(home.getAttribute("href")).toBe("/governance/dashboard");
+  });
+});
+
+describe("AppShell — Governance Datasets nav entry", () => {
+  // spec: FRONTEND_GOVERNANCE.md §Datasets — a `Datasets` entry under the
+  // Governance group links to /governance/datasets.
+  it.each([["Admin"], ["Editor"], ["Reader"]] as const)(
+    "exposes a Datasets link at /governance/datasets under the Governance group for %s",
+    (role) => {
+      mockUseMe.mockReturnValue({
+        me: makeMe(role),
+        isAdmin: role === "Admin",
+        isEditor: role === "Editor",
+        canWrite: role !== "Reader",
+        isLoading: false,
+      });
+
+      render(
+        <AppShell>
+          <div />
+        </AppShell>,
+      );
+
+      // Governance is a collapsible group; under the /validation pathname mock it
+      // is collapsed, so expand it to reveal its children.
+      const governanceToggle = screen.getByRole("button", { name: /governance/i });
+      fireEvent.click(governanceToggle);
+
+      const datasetsLink = screen.getByRole("link", { name: /^datasets$/i });
+      expect(datasetsLink.getAttribute("href")).toBe("/governance/datasets");
+    },
+  );
+});
+
 describe("AppShell — infra icon links", () => {
   beforeEach(() => {
     mockUseMe.mockReturnValue({

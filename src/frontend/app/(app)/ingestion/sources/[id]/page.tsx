@@ -173,14 +173,18 @@ export default function IngestionSourceDetailPage({
         >
           {source.status}
         </Badge>
-        <ScheduleTierLink
-          tier={scheduleTierLabel(source.schedule)}
-          dagId={scheduleDagId(
-            "ingestion-active",
-            scheduleTierLabel(source.schedule),
-          )}
-          className="text-sm text-muted-foreground"
-        />
+        {source.mode === "ACTIVE_CUSTOM_MANAGED" ? (
+          <ScheduleTierLink
+            tier={scheduleTierLabel(source.schedule)}
+            dagId={scheduleDagId(
+              "ingestion-active",
+              scheduleTierLabel(source.schedule),
+            )}
+            className="text-sm text-muted-foreground"
+          />
+        ) : (
+          <span className="text-sm text-muted-foreground">delegated</span>
+        )}
         {source.datahub_source_urn && (
           <span className="truncate font-mono text-xs text-muted-foreground">
             {source.datahub_source_urn}

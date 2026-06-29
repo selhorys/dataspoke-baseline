@@ -35,6 +35,7 @@ axes:
   MANIFESTO §2.1 feature.
 
 ```
+/api/v1/spoke/common/data                  — Dataset catalog (collection root — all registered datasets)
 /api/v1/spoke/common/data/{dataset_urn}/…  — Dataset resource (per-dataset, cross-feature)
 /api/v1/spoke/ingestion                    — Ingestion Control cross-dataset list
 /api/v1/spoke/validation                   — Validation cross-dataset list
@@ -212,8 +213,11 @@ in [feature/AUTH.md](feature/AUTH.md).
 
 ### Data Resource (`/spoke/common/data`)
 
-The canonical resource for a dataset. Every per-dataset surface — ingestion,
-validation, metagen — is a sub-resource of `/spoke/common/data/{dataset_urn}/`.
+The canonical resource for a dataset. The collection root `GET /spoke/common/data`
+lists every registered dataset with its cross-feature coverage (ingestion + metagen);
+each dataset is then an item resource at `/spoke/common/data/{dataset_urn}`. Every
+per-dataset surface — ingestion, validation, metagen — is a sub-resource of
+`/spoke/common/data/{dataset_urn}/`.
 The three meta-classifiers group sub-resources by feature: state and configuration
 live under `attr/<feature>/` (`conf`, plus `result` for validation timeseries and
 `item` for the per-dataset metagen review queue), action triggers under
@@ -224,6 +228,7 @@ this single per-dataset path.
 
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|
+| `GET` | `/spoke/common/data` | Paginated catalog of every registered dataset (`dataset_registry`, the same base set as `/ingestion/unmanaged` and `/metagen/uncovered`). Each row carries `dataset_urn`; `ingestion` (`{source_id, name, mode}`, or `null` when no source covers the dataset); and `metagen` (a list of `{conf_id, name}` for enabled metagen confs whose `dataset_filter` matches the dataset — possibly empty). Composes the per-dataset ingestion reverse-lookup and the metagen filter-match views over one registry page. Paginated (`offset`/`limit`/`total_count`), sortable by `dataset_urn` (`dataset_urn`/`dataset_urn_desc`, default `dataset_urn_asc`) | Data Resource | — |
 | `GET` | `/spoke/common/data/{dataset_urn}` | Get dataset summary (identity, owner, tags) | Data Resource | — |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr` | Get dataset attributes (schema summary, ownership, tags) | Data Resource | — |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/ingestion` | Reverse-lookup (read-only): the source that covers this dataset, its `mode`, and the latest run (spanning the source's own runs and those booked on its internal wrappers). Ingestion is configured per-source under `/spoke/ingestion/sources` | Ingestion Control | UC1 |
@@ -351,7 +356,7 @@ Per-dataset detail and result writes live on the canonical `data/{dataset_urn}` 
 
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|
-| `GET` | `/spoke/validation` | List validation attributes across datasets — each row aggregates the per-dataset `attr/validation/*` (conf description + variable count + latest result `data_time` and `score`) (paginated, sortable by `dataset_urn`/`updated_at`, default `updated_at_desc`; filterable) | Validation | UC2, UC5 |
+| `GET` | `/spoke/validation` | List validation attributes across datasets — each row aggregates the per-dataset `attr/validation/*` (conf description + variable count + latest result `data_time` and `score`) (paginated, sortable by `dataset_urn`/`updated_at`, default `updated_at_desc`; filterable). The `coverage` query param (`covered` \| `uncovered` \| `both`, default `covered`) selects the row set: `covered` returns datasets that hold a validation slot (current behavior); `uncovered` returns registered datasets (`dataset_registry`) with no validation conf; `both` unions them. Uncovered rows carry null `description`, null `variable_count`, null `latest_data_time`, and null `latest_score`; in `uncovered`/`both` the ordering is tiebroken by `dataset_urn` (null `updated_at` sorts last) so paging stays deterministic | Validation | UC2, UC5 |
 
 ### Ontology Generation (`/spoke/ontogen`)
 

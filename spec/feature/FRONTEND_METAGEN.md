@@ -121,7 +121,9 @@ A paginated table of registered datasets reached by no conf
 toggle maps to the `?include_disallowed` query param: off (default) shows only `no_conf_match`
 rows; on additionally shows `boundary_blocked` rows. This is the metagen
 analogue of the ingestion `/ingestion/unmanaged` view. Each row links to its
-dataset page. Read-only.
+dataset page, and its second column is `datahub` — the shared
+[DataHub dataset deep-link](FRONTEND_BASIC.md#shared-component-notes) (rendered only when
+`datahubUrl` is set). Read-only.
 
 ## Per-dataset (`/data/[urn]` MetaGen panel)
 
@@ -204,7 +206,7 @@ uncovered list, and candidate text, with no action buttons.
 - `MetagenConfView` — the read-only conf view (plain-text fields, `schedule_tier` as a DAG link, `dataset_filter` via `DatasetFilterView`), shown on `/metagen/conf/[id]` until `Edit`.
 - `RunDialog` — per-conf dry-run / run trigger dialog with status.
 - `MetagenDatasetTable` — the per-dataset result rollup on `/metagen/result` (`GET /spoke/metagen/dataset`) with the `dataset_urn` text filter and `conf_id` select.
-- `MetagenUncoveredTable` — the uncovered-datasets list with the `include_disallowed` toggle.
+- `MetagenUncoveredTable` — the uncovered-datasets list with the `include_disallowed` toggle and a `datahub` deep-link second column.
 - `BoundaryForm` — the per-dataset boundary form (`attr/metagen/boundary`).
 - `ItemKindTable` — one per item kind on the `/data/[urn]` MetaGen panel, inside a foldable panel: a candidate-row table (generated value, run info, status, Approve / Reject). The `column.description` instance adds a leading `field_path` column and groups its rows by column (item). Each row's `Approve` / `Reject` is keyed to that row's `(dataset_urn, item_id, candidate_id)`.
 - `MetagenCoveredTable` — the per-conf covered-datasets list with the "Show boundary-blocked" toggle (`?include_disallowed`), on `/metagen/conf/[id]` above `MetagenEventTable`.

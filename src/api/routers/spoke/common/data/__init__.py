@@ -11,12 +11,15 @@ from src.api.auth.dependencies import require_authenticated
 
 from . import core, ingestion, metagen, validation
 
+# The ``/data`` prefix is applied per-include (not on the package router) so the
+# collection-root handler ``GET /data`` in ``core.sub_router`` — registered at the
+# empty path — resolves to a non-empty path at include time. FastAPI rejects an
+# empty include-prefix combined with an empty route path.
 router = APIRouter(
-    prefix="/data",
     tags=["common/data"],
     dependencies=[Depends(require_authenticated)],
 )
-router.include_router(core.sub_router)
-router.include_router(ingestion.sub_router)
-router.include_router(validation.sub_router)
-router.include_router(metagen.sub_router)
+router.include_router(core.sub_router, prefix="/data")
+router.include_router(ingestion.sub_router, prefix="/data")
+router.include_router(validation.sub_router, prefix="/data")
+router.include_router(metagen.sub_router, prefix="/data")

@@ -2,13 +2,19 @@
  * Validation domain types — derived from src/api/schemas/validation.py.
  */
 
+/** Coverage filter for the validation list — covered (default), uncovered, or both. */
+export type ValidationCoverage = "covered" | "uncovered" | "both";
+
 export interface ValidationListItem {
   dataset_urn: string;
-  description: string;
-  variable_count: number;
+  // Uncovered rows (registered datasets with no validation conf) carry null
+  // description / variable_count and null latest_* fields.
+  description: string | null;
+  variable_count: number | null;
   latest_data_time: string | null;
   latest_score: number | null;
-  updated_at: string;
+  // Null for uncovered rows (no conf); registry timestamp otherwise.
+  updated_at: string | null;
 }
 
 export interface ValidationListResponse {

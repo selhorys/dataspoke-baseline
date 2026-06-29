@@ -80,7 +80,8 @@ Three header registers establish hierarchy:
 ## Shell
 
 A single application shell hosts every page. The shell has a top header
-(product name, user menu, logout) and a left-side menu. The menu lists the
+(product name, user menu, logout) and a left-side menu. The product name links
+to `/governance/dashboard` (the post-login home). The menu lists the
 MANIFESTO §2.1 feature pages at the top, then two labelled sections pinned to
 the bottom: an **Admin** section and, below it, an **Account** section. The
 Admin section (entries **Users**, **Configurations**, and **Peripherals**) renders only when the
@@ -107,6 +108,7 @@ its URL unset.
 ├─────────────────┬──────────────────────────────────────┤
 │ Governance ▾    │   (page content)                     │
 │  Dashboard      │                                      │
+│  Datasets       │                                      │
 │  Metrics        │                                      │
 │ Ingestion ▾     │                                      │
 │  Config         │                                      │
@@ -159,6 +161,7 @@ ingestion recipe YAML editor) remain one full-width field.
 | `/admin/conf` | Admin runtime configuration — view and edit the singleton behavioral tunables, dependency-stub toggles, and LLM provider/model/key | `GET /admin/conf`, `PATCH /admin/conf` |
 | `/admin/peripherals` | Admin peripheral connections — view and edit DataHub and Langfuse connection settings (two cards, per-card partial PATCH) | `GET /admin/peripherals/datahub`, `PATCH /admin/peripherals/datahub`, `GET /admin/peripherals/langfuse`, `PATCH /admin/peripherals/langfuse` |
 | `/governance/dashboard` | [Governance dashboard — home](FRONTEND_GOVERNANCE.md) | `GET /spoke/governance/metric`, `GET /spoke/governance/metric/{id}/attr/result` |
+| `/governance/datasets` | [Dataset catalog](FRONTEND_GOVERNANCE.md) — cross-feature dataset list (UI under Governance, API in common/data) | `GET /spoke/common/data` |
 | `/governance/metrics` | [Metric configuration](FRONTEND_GOVERNANCE.md) | `/spoke/governance/metric/...` |
 | `/ingestion` | 302 to `/ingestion/conf` | — |
 | `/ingestion/conf` | [Ingestion Control — source list](FRONTEND_INGESTION.md) | `/spoke/ingestion/sources` |
@@ -172,7 +175,7 @@ ingestion recipe YAML editor) remain one full-width field.
 | `/metagen/conf` | [Metadata Generation — conf list + run](FRONTEND_METAGEN.md) | `/spoke/metagen/conf/...` |
 | `/metagen/result` | [Metadata Generation — per-dataset result rollup + events](FRONTEND_METAGEN.md) | `/spoke/metagen/{dataset,event}` |
 | `/metagen/uncovered` | [Metadata Generation — uncovered datasets](FRONTEND_METAGEN.md) | `/spoke/metagen/uncovered` |
-| `/data/[urn]` | [Unified per-dataset page](#per-dataset-page-dataurn) — summary cards + Ingestion/Validation/MetaGen/Events panels | `/spoke/common/data/{urn}/...` (attr, event, validation, metagen) |
+| `/data/[urn]` | [Unified per-dataset page](#per-dataset-page-dataurn) — summary cards (incl. the Ingestion reverse-lookup) + Validation/MetaGen/Events panels | `/spoke/common/data/{urn}/...` (attr, event, validation, metagen) |
 | `/settings` | Theme, locale, and timezone (Local or UTC, **default Local**) toggles, persisted in `localStorage` only. The timezone preference is display-only — it governs how all dates and times are rendered across the app; stored and queried timestamps remain canonical UTC ISO per `API.md`. | — |
 
 Route guards layer two checks:
@@ -420,7 +423,6 @@ Layout, top to bottom:
 │  │ last-run ●ok  │  │ status         │  │ on? · N cand│       │
 │  └───────────────┘  └────────────────┘  └─────────────┘       │
 ├──────────────────────────────────────────────────────────────┤
-│  ▸ Ingestion   (reverse-lookup: owning source, mode, run)     │
 │  ▸ Validation  (conf editor + score/variables charts)         │
 │  ▸ MetaGen     (boundary form + item/candidate review)        │
 │  ▾ Events      [INGESTION][VALIDATION][METAGEN] [RangePicker]  │
@@ -428,19 +430,21 @@ Layout, top to bottom:
 └──────────────────────────────────────────────────────────────┘
 ```
 
-- **Header row** — the dataset URN title.
+- **Header row** — the dataset URN title, followed by the shared
+  [DataHub dataset deep-link](#shared-component-notes) (`<datahubUrl>/dataset/{urn}`,
+  rendered only when `datahubUrl` is configured).
 
 - **Summary cards** — three horizontal cards giving an at-a-glance status:
-  - *Ingestion* — owning source / ingestor and last-run status, from
-    `GET …/attr/ingestion`.
+  - *Ingestion* — owning source / ingestor, mode, and the latest-run **time** and status,
+    from `GET …/attr/ingestion`. The source name links to its `/ingestion/sources/[id]`
+    detail. This card carries the reverse-lookup content in full — there is no separate
+    Ingestion foldable panel.
   - *Validation* — latest score / status, from `GET …/attr/validation/conf` +
     most-recent `…/attr/validation/result`.
   - *MetaGen* — boundary `is_enabled` and pending-candidate count, from
     `GET …/attr/metagen/boundary` + `…/attr/metagen/item`.
 
-- **Four foldable panels** — each a [CollapsiblePanel](#shared-component-notes):
-  - *Ingestion* — the `IngestionDataPanel` reverse-lookup display
-    (see [FRONTEND_INGESTION](FRONTEND_INGESTION.md#per-dataset-reverse-lookup-unified-dataurn)).
+- **Three foldable panels** — each a [CollapsiblePanel](#shared-component-notes):
   - *Validation* — the `ValidationDataPanel` conf read-only / edit / create editor plus
     the score and per-variable charts
     (see [FRONTEND_VALIDATION](FRONTEND_VALIDATION.md)).
@@ -526,8 +530,15 @@ These component IDs are referenced from per-function specs.
   which names its end-bound `until` rather than `to` (see
   [API.md](../API.md), `attr/validation/result`) — receives `until = to`. It has
   no API of its own; it only shapes the query strings of the reads it drives.
+- **DatahubDatasetLink** — a shared external deep-link to a dataset's DataHub page,
+  `<datahubUrl>/dataset/{urn}` (URN URL-encoded), from runtime config `datahubUrl`.
+  It renders a labelled new-tab link (`_blank rel=noopener`) only when `datahubUrl` is
+  set, mirroring the header infra-link gating; otherwise nothing. Reused across the
+  dataset tables (the Governance dataset catalog, the Ingestion unmanaged + source
+  Datasets tables, the MetaGen uncovered table) and the per-dataset page header. It has
+  no API of its own.
 - **CollapsiblePanel** — a titled, foldable section used to compose the
-  [per-dataset page](#per-dataset-page-dataurn)'s four panels. Header row with a
+  [per-dataset page](#per-dataset-page-dataurn)'s foldable panels. Header row with a
   fold/unfold chevron over a body that mounts its feature panel; follows the existing
   `rounded-lg border` section styling.
 - **EventMajorTypeFilter** — a checkbox-group multi-select over the event major types

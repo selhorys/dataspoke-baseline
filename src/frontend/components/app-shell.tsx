@@ -65,6 +65,7 @@ const mainNav: (NavItem | NavGroup)[] = [
     children: [
       { label: "Dashboard", href: "/governance/dashboard", icon: LayoutDashboard },
       { label: "Metrics", href: "/governance/metrics", icon: BarChart3 },
+      { label: "Datasets", href: "/governance/datasets", icon: Database },
     ],
   },
   {
@@ -222,7 +223,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           aria-hidden
           className="pointer-events-none absolute inset-0 z-0 bg-[url('/brand/menu-pattern.png')] bg-[length:auto_100%] bg-repeat-x opacity-60 dark:opacity-50 dark:invert"
         />
-        <span className="relative z-10 mr-auto text-base font-semibold tracking-tight">DataSpoke</span>
+        <Link
+          href="/governance/dashboard"
+          className="relative z-10 mr-auto text-base font-semibold tracking-tight"
+        >
+          DataSpoke
+        </Link>
 
         <div className="relative z-10 flex items-center gap-2">
           {infraLinks

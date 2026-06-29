@@ -56,6 +56,8 @@ const PASSIVE_TEMPLATE = `source:
       - include: "s3://bucket/path/*"
 `;
 
+const RECIPE_FORM_ID = "ingestion-create-recipe-form";
+
 export default function CreateIngestionSourcePage() {
   const router = useRouter();
   const { canWrite } = useMe();
@@ -134,17 +136,33 @@ export default function CreateIngestionSourcePage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center gap-3">
-        <Link
-          href="/ingestion/conf"
-          className="text-muted-foreground hover:text-foreground"
-          aria-label="Back to ingestion list"
-        >
-          <ArrowLeft className="h-4 w-4" />
-        </Link>
-        <h1 className="text-2xl font-semibold tracking-tight">
-          Create ingestion source
-        </h1>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <Link
+            href="/ingestion/conf"
+            className="text-muted-foreground hover:text-foreground"
+            aria-label="Back to ingestion list"
+          >
+            <ArrowLeft className="h-4 w-4" />
+          </Link>
+          <h1 className="text-2xl font-semibold tracking-tight">
+            Create ingestion source
+          </h1>
+        </div>
+        <div className="flex gap-2">
+          <Button key="create-cancel" variant="outline" size="sm" asChild>
+            <Link href="/ingestion/conf">Cancel</Link>
+          </Button>
+          <Button
+            key="create-save"
+            type="submit"
+            form={RECIPE_FORM_ID}
+            size="sm"
+            disabled={create.isPending}
+          >
+            {create.isPending ? "Saving…" : "Save"}
+          </Button>
+        </div>
       </div>
 
       <FormGrid>
@@ -221,6 +239,8 @@ export default function CreateIngestionSourcePage() {
           key={recipeKey}
           value={editorValue}
           editing
+          formId={RECIPE_FORM_ID}
+          hideActions
           onRecipeSave={handleRecipeSave}
           isSaving={create.isPending}
           serverError={serverError}

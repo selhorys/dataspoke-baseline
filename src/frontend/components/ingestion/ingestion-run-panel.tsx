@@ -13,14 +13,18 @@
  */
 
 import { useState } from "react";
+import { ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ErrorText } from "@/components/forms/error-text";
 import { eventStatusVariant } from "@/lib/event-status-variant";
 import { modeDescription } from "@/lib/ingestion-mode-variant";
+import { getRuntimeConfig } from "@/lib/runtime-config";
 import { ApiError } from "@/lib/api/client";
 import type { IngestionMode, IngestionRunResponse } from "@/types/ingestion";
+
+const DATAHUB_SYNC_DAG_ID = "datahub-sync-hourly";
 
 interface IngestionRunPanelProps {
   mode: IngestionMode;
@@ -57,10 +61,34 @@ export function IngestionRunPanel({
   const runnable = mode === "ACTIVE_CUSTOM_MANAGED";
 
   if (!runnable) {
+    const { airflowUrl } = getRuntimeConfig();
+    const dagHref = airflowUrl
+      ? `${airflowUrl}/dags/${DATAHUB_SYNC_DAG_ID}`
+      : null;
     return (
-      <p className="text-sm text-muted-foreground">
-        Run is not available for this source. {modeDescription(mode)}
-      </p>
+      <div className="space-y-2">
+        <p className="text-sm text-muted-foreground">
+          Run is not available for this source. {modeDescription(mode)}
+        </p>
+        <p className="text-sm text-muted-foreground">
+          The{" "}
+          {dagHref ? (
+            <a
+              href={dagHref}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={`Open ${DATAHUB_SYNC_DAG_ID} in Airflow`}
+              className="inline-flex items-center gap-1 hover:underline"
+            >
+              {DATAHUB_SYNC_DAG_ID}
+              <ExternalLink className="h-3 w-3" aria-hidden="true" />
+            </a>
+          ) : (
+            <span className="font-mono">{DATAHUB_SYNC_DAG_ID}</span>
+          )}{" "}
+          Airflow DAG performs the periodic sync for this source.
+        </p>
+      </div>
     );
   }
 

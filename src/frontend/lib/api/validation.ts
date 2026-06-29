@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, ApiError } from "@/lib/api/client";
 import { usePoll } from "@/lib/hooks/use-poll";
 import type {
+  ValidationCoverage,
   ValidationListResponse,
   ValidationConfResponse,
   ValidationResultListResponse,
@@ -15,6 +16,8 @@ interface ValidationListParams {
   offset?: number;
   limit?: number;
   sort?: string;
+  /** covered (default) | uncovered | both — server-side coverage filter. */
+  coverage?: ValidationCoverage;
 }
 
 function buildListUrl(params: ValidationListParams): string {
@@ -22,14 +25,19 @@ function buildListUrl(params: ValidationListParams): string {
   if (params.offset !== undefined) sp.set("offset", String(params.offset));
   if (params.limit !== undefined) sp.set("limit", String(params.limit));
   if (params.sort) sp.set("sort", params.sort);
+  if (params.coverage) sp.set("coverage", params.coverage);
   const qs = sp.toString();
   return `/spoke/validation${qs ? `?${qs}` : ""}`;
 }
 
-export function useValidationList(params: ValidationListParams = {}) {
+export function useValidationList(
+  params: ValidationListParams = {},
+  options: { enabled?: boolean } = {},
+) {
   return usePoll<ValidationListResponse>({
     queryKey: ["validation", "list", params],
     queryFn: () => apiFetch<ValidationListResponse>(buildListUrl(params)),
+    enabled: options.enabled ?? true,
     meta: { handledInline: true },
   });
 }

@@ -76,9 +76,9 @@ the dataset to already exist in DataHub (`422 DATASET_NOT_IN_DATAHUB` otherwise)
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/validation/result` | List historic results (`?from=…&until=…`) |
 | `GET` | `/spoke/common/data/{dataset_urn}/event/validation` | Validation event timeline — config lifecycle (`CONFIG_CREATE`/`CONFIG_UPDATE`) plus `RESULT_RECORDED`, one per accepted result POST |
 
-The cross-dataset list view at `/spoke/validation` continues to operate under
-the existing semantics in
-[API §Validation](../API.md#validation-spokevalidation).
+The cross-dataset list view at `/spoke/validation` follows the semantics in
+[API §Validation](../API.md#validation-spokevalidation), including the `coverage`
+filter (default `covered`) that selects covered / uncovered / both row sets.
 
 ## Rule Configuration
 

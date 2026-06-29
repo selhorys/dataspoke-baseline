@@ -25,16 +25,20 @@ cross-link to the other.
 
 The per-dataset detail lives at the unified **`/data/[urn]`** page (see
 [FRONTEND_BASIC §Per-dataset page](FRONTEND_BASIC.md#per-dataset-page-dataurn)). The
-reverse-lookup display (owning source, mode, latest run) is the **Ingestion** panel there;
-the dataset's ingestion events fold into that page's unified **Events** panel
+reverse-lookup display (owning source, mode, latest-run time and status) is the
+**Ingestion summary card** there — there is no separate Ingestion foldable panel; the
+dataset's ingestion events fold into that page's unified **Events** panel
 (`GET /spoke/common/data/{dataset_urn}/event` with `event_major_type=INGESTION`).
 
 ## List View (`/ingestion/conf`)
 
 One row per source: `name`, `mode` badge (`DATAHUB_MANAGED` / `ACTIVE_CUSTOM_MANAGED` /
-`PASSIVE`), `platform`, schedule, covered-dataset count, and latest run status. The schedule
-cell renders the scheduled tier (hourly / daily / weekly) as a link to its backing Airflow
-DAG (`ingestion-active-<tier>`); an unscheduled / custom-cron value renders as plain text.
+`PASSIVE`), `platform`, schedule, covered-dataset count, and latest run status. All three
+`mode` badges share **one neutral style** (no per-mode color). The schedule cell renders a
+tier (hourly / daily / weekly) as a link to its backing Airflow DAG (`ingestion-active-<tier>`)
+**only for `ACTIVE_CUSTOM_MANAGED`**; for `DATAHUB_MANAGED` and `PASSIVE` it renders plain text
+`delegated` (no Airflow link), since their scheduling lives in DataHub or outside DataSpoke. An
+unscheduled / custom-cron active value renders as plain text.
 A "Create source" button routes to `/ingestion/sources/new`; paginate. The filter offers
 ALL, DataHub-managed, Active, Passive — each maps to the `mode` query param on
 `GET /spoke/ingestion/sources` (DataHub-managed = `mode=DATAHUB_MANAGED`). Internal DataHub CLI
@@ -49,9 +53,10 @@ client-derived via a per-source fan-out (`datasets?limit=1` and `event?limit=1`)
 ## Source Detail (`/ingestion/sources/[id]`)
 
 A header surfaces read-only management fields as badges/text outside the recipe YAML section:
-`platform`, `status`, `datahub_source_urn`, and the schedule — the latter rendering its tier
-(hourly / daily / weekly) as a link to the backing Airflow DAG (`ingestion-active-<tier>`),
-plain text otherwise. Below it, four sections, each bound to a route:
+`platform`, `status`, `datahub_source_urn`, the `mode` badge (the shared neutral style), and
+the schedule — the latter linking its tier (hourly / daily / weekly) to the backing Airflow DAG
+(`ingestion-active-<tier>`) **only for `ACTIVE_CUSTOM_MANAGED`**; for `DATAHUB_MANAGED` and
+`PASSIVE` it renders plain text `delegated`. Below it, four sections, each bound to a route:
 
 1. **Recipe** — the source JSON (`{mode, name, schedule, recipe}`, recipe-standard wording) is
    rendered/edited as **YAML, secrets masked** — the YAML view is a lossless transform of the
@@ -65,13 +70,19 @@ plain text otherwise. Below it, four sections, each bound to a route:
    YAML is read-only — edits are disabled with an explanatory note that DataHub is SSOT (the API
    returns `409 INGESTION_SOURCE_READONLY`).
 2. **Datasets** — the source→dataset mapping table (`GET /spoke/ingestion/sources/{id}/datasets`).
-   The table carries a single `authority` column whose cell fuses both server fields, rendered as
-   e.g. `high (emitted)`: the dataset URN, its `authority` (`high` / `medium`) and `derivation`
-   (`emitted` / `pipeline_name` / `matched`). `authority` is derived from `derivation` —
-   `emitted` / `pipeline_name` ⇒ `high`, `matched` ⇒ `medium`.
+   Its second column is `datahub` — the shared
+   [DataHub dataset deep-link](FRONTEND_BASIC.md#shared-component-notes) (`<datahubUrl>/dataset/{urn}`,
+   rendered only when `datahubUrl` is set). The table also carries a single `authority` column whose
+   cell fuses both server fields, rendered as e.g. `high (emitted)`: the dataset URN, its `authority`
+   (`high` / `medium`) and `derivation` (`emitted` / `pipeline_name` / `matched`). `authority` is
+   derived from `derivation` — `emitted` / `pipeline_name` ⇒ `high`, `matched` ⇒ `medium`.
 3. **Run** — `POST /spoke/ingestion/sources/{id}/method/run` with a `dry_run` toggle. Shown only
    for `ACTIVE_CUSTOM_MANAGED`; other modes show an explanatory disabled state (the run happens in
-   DataHub or externally; the API returns `409 INGESTION_RUN_NOT_APPLICABLE`).
+   DataHub or externally; the API returns `409 INGESTION_RUN_NOT_APPLICABLE`). For `DATAHUB_MANAGED`
+   and `PASSIVE`, a second line below the read-only explanation briefly describes the
+   `datahub-sync-hourly` DAG's role (it refreshes the source→dataset mapping and mirrors run status
+   on a fixed hourly cadence) with an Airflow link to `<airflowUrl>/dags/datahub-sync-hourly`
+   (rendered only when `airflowUrl` is set).
 4. **Events** — `GET /spoke/ingestion/sources/{id}/event` history table, newest first, aggregating
    the source's own runs with those booked on its internal DataHub wrappers. A row whose `wrapper`
    flag is set carries a "wrapper" tag. A
@@ -88,6 +99,10 @@ is synced from DataHub) plus a YAML recipe editor. `ACTIVE_CUSTOM_MANAGED` recip
 `schedule` (validated to one of hourly/daily/weekly) and `${name__key}` secret references;
 `PASSIVE` recipes carry only the declared allow/deny scope. Submits via
 `POST /spoke/ingestion/sources`.
+
+The page places `Cancel` (→ `/ingestion/conf`) and `Save` at the **top-right**, beside the
+title — mirroring the source-detail edit-mode wiring. `Save` submits the recipe form
+externally and the editor's own bottom save is suppressed.
 
 A **secret reference helper** sits beside the editor for `ACTIVE_CUSTOM_MANAGED` recipes. It
 lists the source-credential references available to recipes (`GET /spoke/ingestion/secrets` — one
@@ -106,19 +121,21 @@ calls no write route. This is the UI rendering of
 
 A plain paginated table of DataHub datasets covered by no source
 (`GET /spoke/ingestion/unmanaged`). This is the "what's being ingested in an unmanaged way?"
-answer; each row links to its dataset page. Reached via the sidebar `unmanaged` submenu.
+answer; each row links to its dataset page, and its second column is `datahub` — the shared
+[DataHub dataset deep-link](FRONTEND_BASIC.md#shared-component-notes) (rendered only when
+`datahubUrl` is set). Reached via the sidebar `unmanaged` submenu.
 
 ## Per-dataset reverse-lookup (unified `/data/[urn]`)
 
-The reverse-lookup display lives as the **Ingestion** panel on the unified per-dataset page
-(see [FRONTEND_BASIC §Per-dataset page](FRONTEND_BASIC.md#per-dataset-page-dataurn)). The panel
-shows the owning source (link to `/ingestion/sources/[id]`), its `mode`, and the latest run
-(spanning the source's own runs and internal-wrapper runs) — from
+The reverse-lookup display lives in the **Ingestion summary card** on the unified per-dataset
+page (see [FRONTEND_BASIC §Per-dataset page](FRONTEND_BASIC.md#per-dataset-page-dataurn)) — there
+is no separate Ingestion foldable panel. The card shows the owning source (link to
+`/ingestion/sources/[id]`), its `mode`, and the latest run's **time** and status (spanning the
+source's own runs and internal-wrapper runs) — from
 `GET /spoke/common/data/{dataset_urn}/attr/ingestion`. When no source covers the dataset, the
-panel says so and links to `/ingestion/unmanaged`. The page is read-only. The dataset's
+card says so and links to `/ingestion/unmanaged`. The display is read-only. The dataset's
 ingestion events are not a separate table here — they appear in the page's unified **Events**
 panel (narrow with `event_major_type=INGESTION`); wrapper-origin rows carry a "wrapper" tag.
-The `IngestionDataPanel` component is composed by the `/data/[urn]` page.
 
 ## Components
 
@@ -135,9 +152,10 @@ The `IngestionDataPanel` component is composed by the `/data/[urn]` page.
   paired with a `datetime` [RangePicker](FRONTEND_BASIC.md#shared-component-notes) for the
   `from`/`to` window; renders a "wrapper" tag on rows whose `wrapper` flag is set, and its `detail`
   cell truncates the JSON to ~30 characters and is click-to-expand into a pretty-printed JSON dialog.
-- `IngestionDataPanel` — the per-dataset reverse-lookup display (owning source / mode / latest run),
-  composed by the unified [`/data/[urn]`](FRONTEND_BASIC.md#per-dataset-page-dataurn) page.
-- `UnmanagedDatasetTable` — the unmanaged-bucket list.
+- `IngestionSummaryCard` — the per-dataset reverse-lookup display (owning source link / mode /
+  latest-run time and status), composed by the unified
+  [`/data/[urn]`](FRONTEND_BASIC.md#per-dataset-page-dataurn) page.
+- `UnmanagedDatasetTable` — the unmanaged-bucket list, with a `datahub` deep-link second column.
 
 Every paged table on these pages — `IngestionSourceList`, `SourceDatasetTable`,
 `IngestionEventTable`, and `UnmanagedDatasetTable` — uses

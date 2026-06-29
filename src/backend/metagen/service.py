@@ -255,12 +255,15 @@ class MetagenService:
         datahub: DataHubClient,
         db: AsyncSession,
         cache: RedisClient,
-        llm: LLMClient,
-        vector: PgVectorManager,
+        llm: LLMClient | None = None,
+        vector: PgVectorManager | None = None,
     ) -> None:
         self._datahub = datahub
         self._db = db
         self._cache = cache
+        # ``llm``/``vector`` are only exercised by the LLM run/debate paths. The
+        # read-only coverage queries (e.g. match_confs_for_urns) need neither, so
+        # a composing service (DatasetService) may build this without them.
         self._llm = llm
         self._vector = vector
 
@@ -722,6 +725,49 @@ class MetagenService:
         ]
         return summaries, int(total)
 
+    # ── Coverage lookup (batched) ─────────────────────────────────────────────
+
+    async def match_confs_for_urns(
+        self,
+        urns: list[str],
+    ) -> dict[str, list[tuple[str, str]]]:
+        """Map each URN to the enabled confs whose ``dataset_filter`` matches it.
+
+        Inverse of the ``list_uncovered`` matched-set loop: iterate every ENABLED
+        conf once, resolve its scope via :func:`resolve_dataset_scope`, and invert
+        into ``urn -> [(conf_id, name), ...]``. Cost is bounded by the number of
+        enabled confs, not the number of datasets, so this stays cheap when called
+        for a single page of the catalog.
+
+        Returns a dict keyed by every URN in ``urns``; the value is ``[]`` when no
+        enabled conf matches (so callers can read every URN unconditionally).
+        """
+        result: dict[str, list[tuple[str, str]]] = {urn: [] for urn in urns}
+        if not urns:
+            return result
+
+        target: set[str] = set(urns)
+        # Order by name so each URN's resulting conf list is stable across calls.
+        confs_result = await self._db.execute(
+            select(MetagenConfig)
+            .where(MetagenConfig.is_enabled.is_(True))
+            .order_by(MetagenConfig.name)
+        )
+        enabled_confs = confs_result.scalars().all()
+
+        for conf in enabled_confs:
+            scope = await resolve_dataset_scope(
+                self._datahub,
+                dict(conf.dataset_filter) if conf.dataset_filter else {},
+                swallow_enumerate_errors=True,
+            )
+            conf_id = str(conf.id)
+            for urn in scope.resolved_urns:
+                if urn in target:
+                    result[urn].append((conf_id, conf.name))
+
+        return result
+
     # ── Uncovered view ────────────────────────────────────────────────────────
 
     async def list_uncovered(
@@ -915,6 +961,11 @@ class MetagenService:
         dry_run: bool,
         run_id: str,
     ) -> RunResultDTO:
+        # The run pipeline (evidence retrieval, debate, embedding refresh) needs
+        # both LLM and vector clients; a coverage-only composer omits them.
+        assert self._llm is not None, "MetagenService run pipeline requires an LLM client"
+        assert self._vector is not None, "MetagenService run pipeline requires a vector client"
+
         rc = await get_runtime_config(self._db)
 
         if not conf.is_enabled and not dry_run:

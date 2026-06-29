@@ -4,21 +4,23 @@
  * Unified per-dataset hub — /data/[urn].
  *
  * Merges the formerly separate /ingestion/data, /validation/data and
- * /metagen/data surfaces into one page: a header (dataset URN), three summary
- * Cards (Ingestion / Validation / MetaGen), and four CollapsiblePanels —
- * Ingestion, Validation, MetaGen (each the per-feature body, event list
- * removed) and Events (the unified timeline with a major-type filter).
+ * /metagen/data surfaces into one page: a header (dataset URN + DataHub
+ * deep-link), three summary Cards (Ingestion / Validation / MetaGen), and three
+ * CollapsiblePanels — Validation, MetaGen (each the per-feature body, event list
+ * removed) and Events (the unified timeline with a major-type filter). The
+ * ingestion reverse-lookup folds into the Ingestion summary card.
  *
  * Spec: spec/feature/FRONTEND_BASIC.md §Per-dataset page.
  */
 
 import { use } from "react";
+import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { PageHeader } from "@/components/page-header";
 import { CollapsiblePanel } from "@/components/collapsible-panel";
 import { EventsPanel } from "@/components/events-panel";
-import { IngestionDataPanel } from "@/components/ingestion/ingestion-data-panel";
+import { DatahubDatasetLink } from "@/components/datahub-dataset-link";
 import { ValidationDataPanel } from "@/components/validation/validation-data-panel";
 import { MetagenDataPanel } from "@/components/metagen/metagen-data-panel";
 import { useIngestionReverseLookup } from "@/lib/api/ingestion";
@@ -28,10 +30,13 @@ import { ApiError } from "@/lib/api/client";
 import { eventStatusVariant } from "@/lib/event-status-variant";
 import { modeBadgeVariant, modeLabel } from "@/lib/ingestion-mode-variant";
 import { scoreBadgeVariant, scoreLabel } from "@/lib/validation-score";
+import { formatDateTime } from "@/lib/format-time";
+import { useDisplayTz } from "@/lib/preferences/timezone";
 
 // ── Summary cards ────────────────────────────────────────────────────────────────
 
 function IngestionSummaryCard({ datasetUrn }: { datasetUrn: string }) {
+  const tz = useDisplayTz();
   const { data: lookup, isLoading } = useIngestionReverseLookup(datasetUrn);
   const unmapped = !isLoading && (!lookup || lookup.source_id === null);
 
@@ -50,23 +55,31 @@ function IngestionSummaryCard({ datasetUrn }: { datasetUrn: string }) {
         {!isLoading && !unmapped && lookup && (
           <>
             <div className="flex flex-wrap items-center gap-2">
-              <span className="truncate font-medium">
+              <Link
+                href={`/ingestion/sources/${encodeURIComponent(lookup.source_id!)}`}
+                className="truncate font-medium hover:underline"
+              >
                 {lookup.name ?? lookup.source_id}
-              </span>
+              </Link>
               {lookup.mode && (
                 <Badge variant={modeBadgeVariant(lookup.mode)} className="text-xs">
                   {modeLabel(lookup.mode)}
                 </Badge>
               )}
             </div>
-            <div>
+            <div className="flex flex-wrap items-center gap-2">
               {lookup.latest_run ? (
-                <Badge
-                  variant={eventStatusVariant(lookup.latest_run.status)}
-                  className="text-xs"
-                >
-                  last run {lookup.latest_run.status}
-                </Badge>
+                <>
+                  <Badge
+                    variant={eventStatusVariant(lookup.latest_run.status)}
+                    className="text-xs"
+                  >
+                    last run {lookup.latest_run.status}
+                  </Badge>
+                  <span className="text-xs text-muted-foreground">
+                    {formatDateTime(lookup.latest_run.occurred_at, tz)}
+                  </span>
+                </>
               ) : (
                 <span className="text-xs text-muted-foreground">
                   No run recorded
@@ -179,6 +192,7 @@ export default function DatasetHubPage({
         titleClassName="font-mono text-lg"
         backHref="/governance/dashboard"
         backLabel="Back to dashboard"
+        actions={<DatahubDatasetLink urn={datasetUrn} />}
       />
 
       {/* Summary cards */}
@@ -189,10 +203,6 @@ export default function DatasetHubPage({
       </div>
 
       {/* Foldable feature panels */}
-      <CollapsiblePanel title="Ingestion" accent="ingestion">
-        <IngestionDataPanel datasetUrn={datasetUrn} />
-      </CollapsiblePanel>
-
       <CollapsiblePanel title="Validation" accent="validation">
         <ValidationDataPanel datasetUrn={datasetUrn} />
       </CollapsiblePanel>

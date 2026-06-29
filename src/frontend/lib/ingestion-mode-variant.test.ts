@@ -12,10 +12,20 @@ import {
 import type { IngestionFilterKey } from "@/types/ingestion";
 
 describe("modeBadgeVariant", () => {
-  it("maps each mode to a distinct variant", () => {
-    expect(modeBadgeVariant("ACTIVE_CUSTOM_MANAGED")).toBe("default");
-    expect(modeBadgeVariant("DATAHUB_MANAGED")).toBe("secondary");
-    expect(modeBadgeVariant("PASSIVE")).toBe("outline");
+  // spec: FRONTEND_INGESTION.md §List View — mode badges share one neutral style;
+  // the textual label carries the distinction, not the colour.
+  const MODES = ["ACTIVE_CUSTOM_MANAGED", "DATAHUB_MANAGED", "PASSIVE"] as const;
+
+  it("returns one uniform, neutral variant for every mode", () => {
+    const variants = MODES.map(modeBadgeVariant);
+    // Uniformity: all three modes resolve to the same variant.
+    expect(new Set(variants).size).toBe(1);
+    // Neutral, not the coloured primary ("default").
+    for (const v of variants) {
+      expect(v).not.toBe("default");
+    }
+    // The neutral variant is "secondary" (the shared neutral grey badge).
+    expect(modeBadgeVariant("ACTIVE_CUSTOM_MANAGED")).toBe("secondary");
   });
 });
 

@@ -7,10 +7,16 @@ from fastapi import APIRouter, Depends, Query
 from src.api.dependencies import get_dataset_service
 from src.api.schemas._paths import DatasetUrnPath
 from src.api.schemas.common import parse_sort
-from src.api.schemas.dataset import DatasetAttributesResponse, DatasetResponse, QualityScoreResponse
+from src.api.schemas.dataset import (
+    DatasetAttributesResponse,
+    DatasetListItem,
+    DatasetListResponse,
+    DatasetResponse,
+    QualityScoreResponse,
+)
 from src.api.schemas.events import EventListResponse, EventResponse
 from src.backend.dataset.service import DatasetService
-from src.shared.db.models import Event
+from src.shared.db.models import DatasetRegistry, Event
 from src.shared.events import INGESTION_PREFIX, METAGEN_PREFIX, VALIDATION_PREFIX
 
 sub_router = APIRouter()
@@ -22,6 +28,39 @@ _MAJOR_TYPE_PREFIX = {
     "VALIDATION": VALIDATION_PREFIX,
     "METAGEN": METAGEN_PREFIX,
 }
+
+
+@sub_router.get("", response_model=DatasetListResponse)
+async def get_data_list(
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=1000),
+    sort: str | None = Query(default=None),
+    service: DatasetService = Depends(get_dataset_service),
+) -> DatasetListResponse:
+    """List all registered datasets with cross-feature coverage (paginated).
+
+    The base set is the DataHub-registered ``dataset_registry`` (same as
+    ``/ingestion/unmanaged`` and ``/metagen/uncovered``). Each row carries its
+    owning ingestion source (``ingestion``, null when uncovered) and the enabled
+    metadata-generation confs whose filter matches it (``metagen``, possibly
+    empty). Sortable by ``dataset_urn`` (default: ``dataset_urn_asc``).
+    """
+    order_by = parse_sort(
+        sort,
+        {"dataset_urn": DatasetRegistry.dataset_urn},
+        DatasetRegistry.dataset_urn,
+    )
+    items, total_count = await service.list_datasets(
+        offset=offset,
+        limit=limit,
+        order_by=order_by,
+    )
+    return DatasetListResponse(
+        offset=offset,
+        limit=limit,
+        total_count=total_count,
+        datasets=[DatasetListItem.model_validate(row) for row in items],
+    )
 
 
 @sub_router.get("/{dataset_urn}", response_model=DatasetResponse)

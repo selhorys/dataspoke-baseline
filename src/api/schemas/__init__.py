@@ -9,6 +9,9 @@ from src.api.schemas.common import (
 )
 from src.api.schemas.dataset import (
     DatasetAttributesResponse,
+    DatasetListIngestion,
+    DatasetListItem,
+    DatasetListMetagenConf,
     DatasetListResponse,
     DatasetResponse,
 )
@@ -93,6 +96,9 @@ __all__ = [
     "TimeRangeParams",
     # dataset
     "DatasetAttributesResponse",
+    "DatasetListIngestion",
+    "DatasetListItem",
+    "DatasetListMetagenConf",
     "DatasetListResponse",
     "DatasetResponse",
     # events

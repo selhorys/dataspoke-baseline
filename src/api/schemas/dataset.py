@@ -5,6 +5,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.api.schemas.common import PaginatedResponse, SingleResponse
+from src.shared.models.ingestion import Mode
 
 
 class QualityScoreResponse(BaseModel):
@@ -24,8 +25,45 @@ class DatasetResponse(SingleResponse):
     tags: list[str] = Field(default=[], description="Tags associated with this dataset in DataHub")
 
 
+class DatasetListIngestion(BaseModel):
+    """Owning-source summary for one dataset in the catalog list."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    source_id: str = Field(description="Id of the ingestion source that covers this dataset")
+    name: str = Field(description="Display name of the owning ingestion source")
+    mode: Mode = Field(description="Ingestion mode of the owning source")
+
+
+class DatasetListMetagenConf(BaseModel):
+    """One enabled metagen conf whose dataset_filter matches the dataset."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    conf_id: str = Field(description="Id of the matching metadata-generation config")
+    name: str = Field(description="Display name of the matching metadata-generation config")
+
+
+class DatasetListItem(BaseModel):
+    """One row in the cross-feature dataset catalog list."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    dataset_urn: str = Field(description="DataHub URN of the registered dataset")
+    ingestion: DatasetListIngestion | None = Field(
+        default=None,
+        description="Owning ingestion source, or null when no source covers this dataset",
+    )
+    metagen: list[DatasetListMetagenConf] = Field(
+        default=[],
+        description="Enabled metagen confs whose filter matches this dataset (possibly empty)",
+    )
+
+
 class DatasetListResponse(PaginatedResponse):
-    datasets: list[DatasetResponse] = Field(default=[], description="Page of dataset records")
+    datasets: list[DatasetListItem] = Field(
+        default=[], description="Page of registered datasets with cross-feature coverage"
+    )
 
 
 class DatasetAttributesResponse(SingleResponse):

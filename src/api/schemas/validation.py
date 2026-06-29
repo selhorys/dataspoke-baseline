@@ -223,14 +223,18 @@ class ValidationResultListResponse(PaginatedResponse):
 
 
 class ValidationListItem(BaseModel):
-    """One row in the cross-dataset list response."""
+    """One row in the cross-dataset list response.
+
+    ``description``/``variable_count``/``latest_*`` are null for uncovered rows
+    (registered datasets with no validation conf) under ``coverage=uncovered|both``.
+    """
 
     dataset_urn: str
-    description: str
-    variable_count: int
-    latest_data_time: datetime | None
-    latest_score: float | None
-    updated_at: datetime
+    description: str | None = None
+    variable_count: int | None = None
+    latest_data_time: datetime | None = None
+    latest_score: float | None = None
+    updated_at: datetime | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
