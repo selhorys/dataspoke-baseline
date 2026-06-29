@@ -144,6 +144,45 @@ export interface LangfusePeripheralPatch {
   environment_tag?: string;
 }
 
+// ── Workflow schedules (DAG groups) ───────────────────────────────────────────
+
+/** The five controllable DAG groups (operational schedule control via Airflow). */
+export type DagGroup =
+  | "datahub_sync"
+  | "ingestion_active"
+  | "ontogen"
+  | "metagen"
+  | "metrics";
+
+/** Paused state of a single member DAG within a group. */
+export interface DagDetail {
+  dag_id: string;
+  paused: boolean;
+}
+
+/**
+ * Schedule (paused) status of one controllable DAG group.
+ * `paused` is true only when all member DAGs are paused; `mixed` is true when
+ * members disagree (some paused, some not).
+ */
+export interface DagGroupStatus {
+  group: DagGroup;
+  paused: boolean;
+  mixed: boolean;
+  dags: DagDetail[];
+}
+
+/** Response for GET /admin/dags. */
+export interface DagGroupsResponse {
+  resp_time: string;
+  groups: DagGroupStatus[];
+}
+
+/** Request body for PATCH /admin/dags/{group}. */
+export interface DagGroupPatch {
+  paused: boolean;
+}
+
 export interface RuntimeConfPatch {
   llm_provider?: string;
   llm_model?: string;

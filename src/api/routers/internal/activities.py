@@ -349,6 +349,8 @@ async def ontogen_run(body: OntogenRunRequest) -> dict[str, object]:
                         "dag_tier": body.tier,
                         "conf_tier": conf.schedule_tier,
                     }
+                if not conf.is_enabled:
+                    return {"status": "skipped", "reason": "disabled"}
 
             summary = await service.run(prompt_md=body.prompt_md, dry_run=body.dry_run)
             return {

@@ -119,6 +119,20 @@ class StorageUnavailableError(DataSpokeError):
     error_code: str = "STORAGE_UNAVAILABLE"
 
 
+class AirflowUnavailableError(DataSpokeError):
+    """Raised when the in-cluster Airflow REST API is unreachable or errors.
+
+    Maps to HTTP 503. Used by the admin DAG-control routes (``GET``/``PATCH
+    /admin/dags``) when reading or setting per-DAG ``is_paused`` state fails at
+    the transport level. Airflow is not a peripheral connection, so this is
+    distinct from PeripheralNotConfiguredError.
+
+    error_code: AIRFLOW_UNAVAILABLE
+    """
+
+    error_code: str = "AIRFLOW_UNAVAILABLE"
+
+
 class AuthenticationError(DataSpokeError):
     """Raised for auth flow failures (invalid credentials, missing/revoked refresh
     cookie, malformed JWT). Maps to HTTP 401.

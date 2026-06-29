@@ -541,6 +541,8 @@ instead of a JWT.
 | Method | Path | Body | Response | Auth |
 |--------|------|------|----------|------|
 | `POST` | `/admin/dags/verify` | — | `{found, missing, total_expected}` | JWT + Admin role |
+| `GET` | `/admin/dags` | — | `{groups: [{group, paused, mixed, dags: [{dag_id, paused}]}]}` — schedule (paused) state of the five controllable DAG groups. A fixed status object, **not** a record collection: no pagination or `sort` | JWT + Admin role |
+| `PATCH` | `/admin/dags/{group}` | `{paused: bool}` | updated group status `{group, paused, mixed, dags: [{dag_id, paused}]}` | JWT + Admin role |
 | `GET` | `/admin/conf` | — | runtime config (behavioral tunables + `updated_at`) | JWT + Admin role |
 | `PATCH` | `/admin/conf` | partial conf fields | updated runtime config | JWT + Admin role |
 | `GET` | `/admin/peripherals` | — | `{datahub: {is_configured}, langfuse: {is_configured}, smtp: {is_configured}}` — quick status overview consumed by the admin landing page. A fixed status object, **not** a record collection: no pagination or `sort` | JWT + Admin role |
@@ -556,6 +558,32 @@ instead of a JWT.
 | `PATCH` | `/admin/peripherals/langfuse` | partial Langfuse fields | updated Langfuse config (with `secret_key` masked) | JWT + Admin role |
 | `GET` | `/admin/peripherals/smtp` | — | current SMTP config: `{host, port, username, from_address, use_tls, password, is_configured, updated_at}`. `password` is masked (`""` unset, `"********"` set) | JWT + Admin role |
 | `PATCH` | `/admin/peripherals/smtp` | partial SMTP fields | updated SMTP config (with `password` masked) | JWT + Admin role |
+
+`/admin/dags` is **operational schedule control**: it pauses and unpauses the periodic
+DAGs that Airflow runs, and Airflow is the SSOT for paused state (DataSpoke keeps no copy).
+This is a distinct axis from `/admin/peripherals` (external **connections** — DataHub,
+Langfuse, SMTP) and from `/admin/conf` (behavioral **tunables**). Airflow is not a peripheral;
+a DAG's paused state and a feature's conf-level enablement are independent — a paused DAG never
+fires regardless of enabled confs, and an unpaused DAG still skips disabled confs at run time.
+
+The five controllable groups and their member DAGs (the group→DAG map is owned by the backend;
+see [`spec/feature/BACKEND.md` §DAG Catalogue](feature/BACKEND.md#dag-catalogue)):
+
+| `group` | Member DAGs |
+|---------|-------------|
+| `datahub_sync` | `datahub-sync-hourly` |
+| `ingestion_active` | `ingestion-active-{hourly,daily,weekly}` |
+| `ontogen` | `ontogen-{hourly,daily,weekly}` |
+| `metagen` | `metagen-{hourly,daily,weekly}` |
+| `metrics` | `metrics-{hourly,daily,weekly}` |
+
+`GET /admin/dags` reads paused state for every member DAG in one Airflow call and folds it per
+group: `paused` is `true` only when **all** members are paused, and `mixed` is `true` when members
+disagree (some paused, some not). The per-DAG `dags[]` detail is always returned. `PATCH
+/admin/dags/{group}` sets `is_paused` on every member DAG of the group to the request's `paused`
+value and returns the recomputed group status. An unknown `group` returns `404 DAG_GROUP_NOT_FOUND`;
+when Airflow is unreachable both routes return `503 AIRFLOW_UNAVAILABLE`. Scheduled DAGs ship paused at
+creation, so operators unpause the groups they want active here. No `/internal` mirror exists.
 
 `/admin/conf` reads and updates the singleton runtime configuration — the behavioral tunables
 that shape LLM inference and generation (`llm_provider`, `llm_model`, the ontogen/metagen debate,
@@ -864,6 +892,7 @@ Clients should treat `detail` as optional; absent for errors that don't need it.
 | `SECRET_REF_MALFORMED` | 422 | A `${name__key}` reference in a recipe has no `__` separator or an empty name/key segment |
 | `SECRET_REF_NOT_FOUND` | 422 | A recipe's `${name__key}` references a `dataspoke-source-cred-<name>` Secret or `key` that does not exist at source save (also surfaces as a run-time `status="error"` if deleted later) |
 | `METRIC_NOT_FOUND` | 404 | Metric ID does not exist |
+| `DAG_GROUP_NOT_FOUND` | 404 | `PATCH /admin/dags/{group}` references a group that is not one of `datahub_sync`/`ingestion_active`/`ontogen`/`metagen`/`metrics` |
 | `DUPLICATE_CONFIG` | 409 | Config with same name already exists |
 | `INGESTION_SOURCE_READONLY` | 409 | Create/update/delete attempted on a `DATAHUB_MANAGED` source; DataHub is SSOT, so it is synced down and read-only in DataSpoke |
 | `INGESTION_RUN_NOT_APPLICABLE` | 409 | `…/sources/{id}/method/run` called on a non-`ACTIVE_CUSTOM_MANAGED` source; only DataSpoke-managed sources have a DataSpoke-side run pipeline |
@@ -900,6 +929,7 @@ Clients should treat `detail` as optional; absent for errors that don't need it.
 | `DATAHUB_SYNC_FAILED` | 503 | DataHub-side user mirror operation failed (create / role change / role propagation). For user creation this triggers a compensating hard-delete of the partial DataSpoke `users` row; for role propagation the DataSpoke write is preserved and the nightly DAG reconciles |
 | `PERIPHERAL_NOT_CONFIGURED` | 503 | A required peripheral is not configured. `detail.peripheral` identifies which one (`"smtp"` for `/auth/password/reset/request`; `"datahub"` for any DataHub-requiring endpoint when DataHub is unconfigured). Distinct from `DATAHUB_UNAVAILABLE` (502), which is the configured-but-unreachable case. The `/ready` health endpoint is the exception that reports an unconfigured peripheral as `degraded` rather than returning this code |
 | `DATAHUB_UNAVAILABLE` | 502 | DataHub GMS is configured but did not respond or returned an error |
+| `AIRFLOW_UNAVAILABLE` | 503 | The in-cluster Airflow REST API did not respond or returned an error while reading or setting DAG paused state (`GET`/`PATCH /admin/dags`) |
 | `STORAGE_UNAVAILABLE` | 503 | PostgreSQL or Redis connection failed (including auth refresh fail-closed when the revocation store is unreachable) |
 | `INTERNAL_AUTH_NOT_CONFIGURED` | 503 | `X-Internal-Token` shared-secret header is required for `/internal/*` routes but the server-side secret is unset |
 | `RATE_LIMIT_EXCEEDED` | 429 | Too many requests; back off and retry |

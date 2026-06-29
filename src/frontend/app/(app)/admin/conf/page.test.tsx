@@ -76,12 +76,17 @@ vi.mock("@/lib/auth/use-me", () => ({
 // useRuntimeConf + useUpdateRuntimeConf — separate controllable mocks
 const mockUseRuntimeConf = vi.fn();
 const mockMutateAsync = vi.fn();
+// WorkflowSchedulesCard (rendered by the page) also calls useDagGroups +
+// useSetDagGroupPaused — stub both so the page renders without network.
+const mockSetDagPaused = vi.fn();
 vi.mock("@/lib/api/admin", () => ({
   useRuntimeConf: () => mockUseRuntimeConf(),
   useUpdateRuntimeConf: () => ({
     mutateAsync: mockMutateAsync,
     isPending: false,
   }),
+  useDagGroups: () => ({ data: { resp_time: "", groups: [] }, isLoading: false, isError: false }),
+  useSetDagGroupPaused: () => ({ mutate: mockSetDagPaused, isPending: false, variables: undefined }),
 }));
 
 // toast — capture calls

@@ -264,6 +264,13 @@ Cross-cutting invariants:
 - All `method/run` actions (UC1, UC3, UC4, UC5) are guarded by per-resource concurrency
   locks (`409 *_RUNNING`), and reviewer triples gate on dependency status
   (`422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING`).
+- Scheduled DAGs ship **paused** at creation; operators unpause the groups they want active
+  via `GET`/`PATCH /admin/dags`. Airflow is the SSOT for paused state — DataSpoke holds no copy
+  and only proxies reads/writes. This is operational schedule control, a separate axis from the
+  peripheral **connection** contract (Airflow is not a peripheral) and from conf-level
+  enablement: a paused DAG never fires, and an unpaused DAG still skips disabled confs at run
+  time. The five controllable groups (`datahub_sync`, `ingestion_active`, `ontogen`, `metagen`,
+  `metrics`) are catalogued in [BACKEND.md §DAG Catalogue](feature/BACKEND.md#dag-catalogue).
 
 ---
 

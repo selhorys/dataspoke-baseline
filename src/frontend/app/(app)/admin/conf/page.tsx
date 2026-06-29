@@ -19,6 +19,7 @@ import { formatDateTime } from "@/lib/format-time";
 import { useDisplayTz } from "@/lib/preferences/timezone";
 import { confSchema, toFormDefaults, buildPatch } from "./conf-form.schema";
 import type { ConfFormValues } from "./conf-form.schema";
+import { WorkflowSchedulesCard } from "./workflow-schedules-card";
 
 const ADMIN_CONF_FORM_ID = "admin-conf-form";
 
@@ -503,6 +504,13 @@ export default function AdminConfPage() {
         </Card>
 
       </form>
+
+      {/* Workflow schedules — operational DAG paused-state control (Airflow), a
+          self-contained section OUTSIDE the runtime-conf form with its own
+          per-toggle immediate PATCH, not the form's single Save. */}
+      <div className="mt-6">
+        <WorkflowSchedulesCard />
+      </div>
     </div>
   );
 }

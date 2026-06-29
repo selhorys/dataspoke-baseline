@@ -32,7 +32,7 @@ class AirflowClient:
         self._username = username
         self._password = password
         self._token: str | None = None
-        self._token_lock: asyncio.Lock | None = None  # lazy — bound to the running loop on first use
+        self._token_lock: asyncio.Lock | None = None  # lazy — bound to running loop on first use
         self._client: httpx.AsyncClient | None = None  # lazy — avoids stale anyio connection events
         self._client_loop: asyncio.AbstractEventLoop | None = None
 
@@ -267,7 +267,8 @@ class AirflowClient:
         ``None`` when the entry does not exist (Airflow returns 404 before
         the task pushes a value, or when the task never pushed).
 
-        Airflow REST: GET /api/v2/dags/{dag_id}/dagRuns/{dag_run_id}/taskInstances/{task_id}/xcomEntries/{key}
+        Airflow REST: GET /api/v2/dags/{dag_id}/dagRuns/{dag_run_id}
+        /taskInstances/{task_id}/xcomEntries/{key}
         """
         path = (
             f"/api/v2/dags/{dag_id}/dagRuns/{dag_run_id}"
@@ -299,3 +300,27 @@ class AirflowClient:
         if prefix:
             dags = [d for d in dags if d.get("dag_id", "").startswith(prefix)]
         return dags
+
+    async def get_dag_paused_states(self) -> dict[str, bool]:
+        """Return a ``{dag_id: is_paused}`` map for every loaded DAG in one call.
+
+        Reads the ``is_paused`` field from GET /api/v2/dags. Used by the admin
+        DAG-control service to fold per-DAG paused state into group status
+        without one request per DAG.
+        """
+        dags = await self.list_dags()
+        return {
+            d["dag_id"]: bool(d.get("is_paused", False))
+            for d in dags
+            if d.get("dag_id")
+        }
+
+    async def set_dag_paused(self, dag_id: str, paused: bool) -> None:
+        """Set a DAG's ``is_paused`` flag via PATCH /api/v2/dags/{dag_id}."""
+        resp = await self._authed_call(
+            lambda: self._get_client().patch(
+                f"/api/v2/dags/{dag_id}",
+                json={"is_paused": paused},
+            )
+        )
+        resp.raise_for_status()

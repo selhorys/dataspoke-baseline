@@ -28,6 +28,7 @@ from src.api.routers.spoke import ontogen as spoke_ontogen
 from src.api.routers.spoke import validation as spoke_validation
 from src.api.routers.spoke.common import data as common_data
 from src.shared.exceptions import (
+    AirflowUnavailableError,
     AuthenticationError,
     BadRequestError,
     ConflictError,
@@ -218,6 +219,16 @@ async def _handle_storage(request: Request, exc: StorageUnavailableError) -> JSO
     return _error_json(request, 503, exc.error_code, str(exc))
 
 
+async def _handle_airflow_unavailable(
+    request: Request, exc: AirflowUnavailableError
+) -> JSONResponse:
+    logger.warning(
+        "airflow_unavailable",
+        extra={"detail": str(exc), "path": request.url.path},
+    )
+    return _error_json(request, 503, exc.error_code, str(exc))
+
+
 async def _handle_not_implemented(request: Request, exc: NotImplementedAPIError) -> JSONResponse:
     return _error_json(request, 501, exc.error_code, str(exc))
 
@@ -355,6 +366,7 @@ def create_app() -> FastAPI:
     app.add_exception_handler(RequestValidationError, _handle_request_validation)  # type: ignore[arg-type]
     app.add_exception_handler(DataHubUnavailableError, _handle_datahub)  # type: ignore[arg-type]
     app.add_exception_handler(StorageUnavailableError, _handle_storage)  # type: ignore[arg-type]
+    app.add_exception_handler(AirflowUnavailableError, _handle_airflow_unavailable)  # type: ignore[arg-type]
     app.add_exception_handler(DataSpokeError, _handle_dataspoke_generic)  # type: ignore[arg-type]
 
     # ── Middleware (applied bottom-up; outermost = last added) ────────────────

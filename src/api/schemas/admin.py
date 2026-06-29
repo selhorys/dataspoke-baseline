@@ -34,6 +34,47 @@ class DatahubSyncRequest(BaseModel):
     dataset_urns: Annotated[list[DatasetUrn], Field(max_length=10_000)] | None = None
 
 
+# ── DAG schedule control ───────────────────────────────────────────────────────
+
+# The five controllable DAG groups (operational schedule control via Airflow).
+DagGroup = Literal["datahub_sync", "ingestion_active", "ontogen", "metagen", "metrics"]
+
+
+class DagDetail(BaseModel):
+    """Paused state of a single member DAG within a group."""
+
+    dag_id: str
+    paused: bool
+
+
+class DagGroupStatus(BaseModel):
+    """Schedule (paused) status of one controllable DAG group.
+
+    ``paused`` is true only when all member DAGs are paused; ``mixed`` is true
+    when members disagree (some paused, some not).
+    """
+
+    group: DagGroup
+    paused: bool
+    mixed: bool
+    dags: list[DagDetail]
+
+
+class DagGroupsResponse(SingleResponse):
+    """Response for GET /admin/dags — a fixed status object, not a record collection."""
+
+    groups: list[DagGroupStatus]
+
+
+class DagGroupPatchRequest(BaseModel):
+    """Request body for PATCH /admin/dags/{group}.
+
+    Sets ``is_paused`` on every member DAG of the group to ``paused``.
+    """
+
+    paused: bool
+
+
 # ── Runtime configuration ──────────────────────────────────────────────────────
 
 

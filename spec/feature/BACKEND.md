@@ -1168,6 +1168,36 @@ Source of truth: `src/workflows/registry.py` exposes `ALL_DAG_IDS`
 > enabled conf at that tier, each under its own `metagen:running:{conf_id}` lock.
 > For the singleton-conf `ontogen`, only the tier listed on the singleton conf
 > runs at that tier (the other two tier DAGs short-circuit when triggered).
+> When the singleton conf's tier matches but its `is_enabled` is `false`, the
+> `ontogen` activity **skips** (returns `{status: "skipped", reason: "disabled"}`)
+> rather than failing — a disabled conf is a no-op, not an error.
+
+### Schedule Control
+
+Every periodic DAG ships `is_paused_upon_creation=True`; nothing unpauses it
+automatically. Operators control schedules through `GET`/`PATCH /admin/dags`,
+which proxies Airflow's per-DAG `is_paused` flag. Airflow is the SSOT for paused
+state — DataSpoke stores no copy (no DB column, no runtime-config field). The
+routes expose five **groups**, each backed by a fixed list of member DAGs (the
+group→DAG map is the single source of truth, owned by the admin DAG-control
+service):
+
+| `group` | Member DAGs |
+|---------|-------------|
+| `datahub_sync` | `datahub-sync-hourly` |
+| `ingestion_active` | `ingestion-active-hourly`, `ingestion-active-daily`, `ingestion-active-weekly` |
+| `ontogen` | `ontogen-hourly`, `ontogen-daily`, `ontogen-weekly` |
+| `metagen` | `metagen-hourly`, `metagen-daily`, `metagen-weekly` |
+| `metrics` | `metrics-hourly`, `metrics-daily`, `metrics-weekly` |
+
+`GET` reads paused state for all member DAGs in a single Airflow call and folds
+each group: `paused` is `true` only when **all** members are paused; `mixed` is
+`true` when members disagree. `PATCH /admin/dags/{group}` sets `is_paused` on
+every member DAG of the group. An unknown group raises `404 DAG_GROUP_NOT_FOUND`;
+an Airflow transport failure raises `503 AIRFLOW_UNAVAILABLE`. The on-demand
+`metrics` DAG and `auth-role-sync-daily` are not group-controllable. Paused state
+is independent of conf-level enablement: pausing a group stops its schedule
+entirely, while leaving it unpaused still skips disabled confs at run time.
 
 ### DataHub Sync
 

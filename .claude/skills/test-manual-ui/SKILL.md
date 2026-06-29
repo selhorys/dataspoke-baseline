@@ -131,6 +131,15 @@ present first. Run it in the same invocation (reset always runs first):
 masking targets are absent, `--uc4-seed` now raises rather than writing an
 empty-mask no-op — re-run `--reset-seed` and let it finish before retrying.
 
+For UC1 Case 1 (`test_uc1_01_datahub_managed`) and UC1 Case 3
+(`test_uc1_03_passive_kafka`), guard against an out-of-band hourly sweep: these
+scenarios assert read-only mirroring of `dataset_registry` / source state, and
+the `datahub-sync-hourly` DAG mutating it mid-walkthrough would cause flaky
+observations. Read `GET /admin/dags`; if the `datahub_sync` group is unpaused
+(`paused: false`), ask via `AskUserQuestion` whether to pause it for the run
+(default Yes) — `PATCH /admin/dags/datahub_sync {"paused": true}`. Restore the
+prior state (`{"paused": false}`) on completion if you paused it.
+
 Then have the user log in at the printed URL before Step 1.
 
 ### 3. Granularity prompt (once)

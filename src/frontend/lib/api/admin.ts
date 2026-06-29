@@ -6,6 +6,10 @@ import type {
   AdminUser,
   ApiTokenItem,
   ApiTokenListResponse,
+  DagGroup,
+  DagGroupPatch,
+  DagGroupStatus,
+  DagGroupsResponse,
   DatahubPeripheral,
   DatahubPeripheralPatch,
   LangfusePeripheral,
@@ -132,6 +136,31 @@ export function useUpdateRuntimeConf() {
     meta: { handledInline: true },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["admin", "conf"] });
+    },
+  });
+}
+
+// ── Workflow schedules (DAG groups) ──────────────────────────────────────────
+
+export function useDagGroups() {
+  return useQuery<DagGroupsResponse>({
+    queryKey: ["admin", "dags"],
+    queryFn: () => apiFetch<DagGroupsResponse>("/admin/dags"),
+    meta: { handledInline: true },
+  });
+}
+
+export function useSetDagGroupPaused() {
+  const qc = useQueryClient();
+  return useMutation<DagGroupStatus, Error, { group: DagGroup; paused: boolean }>({
+    mutationFn: ({ group, paused }) =>
+      apiFetch<DagGroupStatus>(`/admin/dags/${group}`, {
+        method: "PATCH",
+        body: JSON.stringify({ paused } satisfies DagGroupPatch),
+      }),
+    meta: { handledInline: true },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["admin", "dags"] });
     },
   });
 }

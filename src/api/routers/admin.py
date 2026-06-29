@@ -16,6 +16,9 @@ from src.api.auth.internal import require_internal_token
 from src.api.dependencies import get_airflow_client, get_datahub, get_db
 from src.api.schemas.admin import (
     BootstrapResponse,
+    DagGroupPatchRequest,
+    DagGroupsResponse,
+    DagGroupStatus,
     DatahubPeripheralPatchRequest,
     DatahubPeripheralResponse,
     DatahubSyncRequest,
@@ -34,6 +37,7 @@ from src.api.schemas.admin import (
 from src.api.schemas.auth import ApiTokenItem, ApiTokenListResponse
 from src.api.schemas.common import parse_sort
 from src.backend.admin.config_service import get_runtime_config, patch_runtime_config
+from src.backend.admin.dag_control_service import get_dag_groups, set_group_paused
 from src.backend.admin.datahub_secret import (
     datahub_token_is_set,
     set_datahub_token,
@@ -110,6 +114,39 @@ async def internal_verify_dags(
 ) -> dict:
     """Verify that all expected Airflow DAGs are loaded (internal — requires X-Internal-Token)."""
     return await _verify_dags(airflow)
+
+
+# ── DAG schedule control ───────────────────────────────────────────────────────
+
+
+@router.get("/dags")
+async def get_dags_schedule(
+    airflow: AirflowClient = Depends(get_airflow_client),
+) -> DagGroupsResponse:
+    """Return the schedule (paused) state of the five controllable DAG groups.
+
+    Operational schedule control — distinct from ``/admin/peripherals``
+    (connections) and ``/admin/conf`` (behavioral tunables). Airflow is the SSOT
+    for paused state. Returns ``503 AIRFLOW_UNAVAILABLE`` when Airflow is
+    unreachable.
+    """
+    groups = await get_dag_groups(airflow)
+    return DagGroupsResponse(groups=groups)
+
+
+@router.patch("/dags/{group}")
+async def patch_dag_group_schedule(
+    group: str,
+    body: DagGroupPatchRequest,
+    airflow: AirflowClient = Depends(get_airflow_client),
+) -> DagGroupStatus:
+    """Pause or unpause every member DAG of a controllable group.
+
+    Sets ``is_paused`` on each member DAG to ``body.paused`` and returns the
+    recomputed group status. An unknown ``group`` returns ``404
+    DAG_GROUP_NOT_FOUND``; Airflow unreachable returns ``503 AIRFLOW_UNAVAILABLE``.
+    """
+    return await set_group_paused(airflow, group, body.paused)
 
 
 @internal_router.post("/datahub/sync")
