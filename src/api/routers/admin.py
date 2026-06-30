@@ -123,7 +123,7 @@ async def internal_verify_dags(
 async def get_dags_schedule(
     airflow: AirflowClient = Depends(get_airflow_client),
 ) -> DagGroupsResponse:
-    """Return the schedule (paused) state of the five controllable DAG groups.
+    """Return the schedule (paused) state of all controllable DAG groups.
 
     Operational schedule control — distinct from ``/admin/peripherals``
     (connections) and ``/admin/conf`` (behavioral tunables). Airflow is the SSOT

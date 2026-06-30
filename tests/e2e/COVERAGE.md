@@ -64,7 +64,7 @@ retired per-feature `/{feature}/data/[urn]` routes are redirects to `/data/[urn]
 | `/governance/metrics` | `uc5-01-governance.spec.ts` step 3b (list: metrics, type badges, Enabled) | — |
 | `/governance/metrics/new` | `uc5-01-governance.spec.ts` step 1a (create form → redirect) | — |
 | `/governance/metrics/[id]` | `uc5-01-governance.spec.ts` steps 1c, 2, 3c, 4 (Edit→PUT, Run, Config+Result+Event, Delete) | — |
-| `/governance/datasets` | — | `ground/governance/datasets.spec.ts` (Governance-menu navigation + 4 column headers; dataset_urn → /data/[urn] link, datahub deep-link, click-through to the hub; dual-confirmed against GET /spoke/common/data) |
+| `/governance/datasets` | — | `ground/governance/datasets.spec.ts` (Governance-menu navigation + 5 column headers incl. validation; dataset_urn → /data/[urn] link, datahub deep-link, click-through to the hub; dual-confirmed against GET /spoke/common/data) |
 
 #### Validation (UC2)
 

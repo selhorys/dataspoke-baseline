@@ -68,6 +68,20 @@ describe("RecipeYamlEditor — readOnly=true", () => {
     expect(screen.queryByRole("button", { name: /edit/i })).toBeNull();
   });
 
+  it("caps the read-only recipe height and keeps it scrollable for long recipes", () => {
+    // spec: FRONTEND_INGESTION.md §Source Detail §Recipe — the read-only recipe
+    // view is height-capped and scrolls (overflow-auto) rather than expanding the
+    // page, so a long recipe stays in a bounded box.
+    const longYaml = Array.from({ length: 60 }, (_, i) => `line_${i}: v${i}`).join("\n");
+    const { container } = render(<RecipeYamlEditor value={longYaml} readOnly />);
+    const pre = container.querySelector("pre");
+    expect(pre).not.toBeNull();
+    const cls = pre!.className;
+    // A max-height cap bounds the box, and overflow-auto preserves scrolling.
+    expect(cls).toMatch(/max-h-/);
+    expect(cls).toContain("overflow-auto");
+  });
+
   it("highlights secret refs in the read-only view", () => {
     render(<RecipeYamlEditor value={yamlWithSecretRef} readOnly />);
     // The secret ref span has a title attribute

@@ -29,7 +29,6 @@ from tests.unit.backend.conftest import (
     mock_scalar_query,
 )
 
-
 # ── Row factories ─────────────────────────────────────────────────────────────
 
 
@@ -80,6 +79,31 @@ def _make_result_row(
     return row
 
 
+def _mock_list_metrics_query(
+    db: MagicMock,
+    rows: list,
+    total_count: int,
+    last_run_by_id: dict | None = None,
+) -> None:
+    """Mock the THREE db.execute calls list_metrics issues.
+
+    list_metrics runs: (1) count, (2) page rows, and (3) the page-bounded
+    last-run batch — a grouped ``MAX(occurred_at)`` over ``METRIC.RUN_COMPLETE``
+    events whose ``entity_id`` is in the page, returned as ``(entity_id,
+    occurred_at)`` pairs via ``result.all()``.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service — List last_run_at (page-bounded
+          batch over METRIC.RUN_COMPLETE events).
+    """
+    count_result = MagicMock()
+    count_result.scalar.return_value = total_count
+    rows_result = MagicMock()
+    rows_result.scalars.return_value.all.return_value = rows
+    lr_result = MagicMock()
+    lr_result.all.return_value = list((last_run_by_id or {}).items())
+    db.execute = AsyncMock(side_effect=[count_result, rows_result, lr_result])
+
+
 @pytest.fixture
 def service(datahub, db, cache):
     return MetricsService(datahub=datahub, db=db, cache=cache)
@@ -97,7 +121,7 @@ async def test_create_metric_config_inserts_new_row(service, db):
     mock_scalar_query(db, None)  # no existing row
     mock_db_refresh(db)
 
-    definition = await service.create_metric_config(
+    await service.create_metric_config(
         metric_id="ingestion-freshness",
         mode="active",
         metric_type="ingestion-freshness",
@@ -150,7 +174,7 @@ async def test_create_metric_config_doc_health_empty_metric_conf(service, db):
     mock_scalar_query(db, None)
     mock_db_refresh(db)
 
-    definition = await service.create_metric_config(
+    await service.create_metric_config(
         metric_id="doc-health",
         mode="active",
         metric_type="doc-health",
@@ -186,7 +210,7 @@ async def test_replace_metric_config_overwrites_all_fields(service, db):
     mock_scalar_query(db, existing)
     mock_db_refresh(db)
 
-    definition = await service.replace_metric_config(
+    await service.replace_metric_config(
         metric_id="ingestion-freshness",
         mode="active",
         metric_type="ingestion-freshness",
@@ -261,7 +285,7 @@ async def test_patch_metric_config_is_enabled_only_does_not_touch_other_fields(s
 
 
 async def test_patch_metric_type_to_doc_health_with_time_window_raises(service, db):
-    """PATCH metric_type='doc-health' when metric_conf has time_window_sec raises PreconditionFailedError.
+    """PATCH metric_type='doc-health' with time_window_sec in conf raises PreconditionFailedError.
 
     Spec: spec/feature/BACKEND.md §Metrics Service — PATCH enforces cross-field invariants
           on merged state; doc-health requires metric_conf={}.
@@ -326,7 +350,7 @@ async def test_list_metrics_filter_by_metric_type(service, db):
     Spec: spec/API.md §Metric — GET /spoke/governance/metric filterable by metric_type.
     """
     rows = [_make_definition_row(metric_type="doc-health")]
-    mock_paginated_query(db, rows, total_count=1)
+    _mock_list_metrics_query(db, rows, total_count=1)
 
     metrics, total = await service.list_metrics(metric_type_filter="doc-health")
     assert total == 1
@@ -340,7 +364,7 @@ async def test_list_metrics_filter_by_mode(service, db):
     Spec: spec/API.md §Metric — GET /spoke/governance/metric filterable by mode.
     """
     rows = [_make_definition_row(mode="active")]
-    mock_paginated_query(db, rows, total_count=1)
+    _mock_list_metrics_query(db, rows, total_count=1)
 
     metrics, total = await service.list_metrics(mode_filter="active")
     assert total == 1
@@ -353,7 +377,7 @@ async def test_list_metrics_filter_by_is_enabled(service, db):
     Spec: spec/API.md §Metric — GET /spoke/governance/metric filterable by is_enabled.
     """
     rows = [_make_definition_row(is_enabled=True)]
-    mock_paginated_query(db, rows, total_count=1)
+    _mock_list_metrics_query(db, rows, total_count=1)
 
     metrics, total = await service.list_metrics(is_enabled_filter=True)
     assert total == 1
@@ -367,11 +391,45 @@ async def test_list_metrics_pagination_returns_tuple(service, db):
           offset, limit, total_count.
     """
     rows = [_make_definition_row(metric_id=f"m{i}") for i in range(3)]
-    mock_paginated_query(db, rows, total_count=10)
+    _mock_list_metrics_query(db, rows, total_count=10)
 
     metrics, total = await service.list_metrics(offset=0, limit=3)
     assert total == 10
     assert len(metrics) == 3
+
+
+async def test_list_metrics_rows_carry_last_run_at(service, db):
+    """List rows carry last_run_at = the latest METRIC.RUN_COMPLETE occurred_at;
+    a metric with no completed run carries last_run_at=None.
+
+    Spec: spec/API.md §Metric — GET /spoke/governance/metric — each row carries
+          last_run_at (occurred_at of the latest METRIC.RUN_COMPLETE event, null
+          when the metric has never completed a run).
+    Spec: spec/feature/BACKEND.md §Metrics Service — List last_run_at derivation.
+    """
+    ran = _make_definition_row(metric_id="has-run")
+    never = _make_definition_row(metric_id="never-run")
+    last_run = datetime.now(tz=UTC) - timedelta(hours=2)
+    # The page-bounded batch returns a row only for the metric that has completed
+    # a run; the metric absent from the batch must surface last_run_at=None.
+    _mock_list_metrics_query(
+        db,
+        [ran, never],
+        total_count=2,
+        last_run_by_id={"has-run": last_run},
+    )
+
+    metrics, total = await service.list_metrics(offset=0, limit=20)
+    assert total == 2
+    by_id = {m.id: m for m in metrics}
+    assert by_id["has-run"].last_run_at == last_run, (
+        "last_run_at must equal the latest METRIC.RUN_COMPLETE occurred_at. "
+        "Spec: spec/feature/BACKEND.md §Metrics Service — List last_run_at."
+    )
+    assert by_id["never-run"].last_run_at is None, (
+        "a metric with no completed run must carry last_run_at=None. "
+        "Spec: spec/API.md §Metric — last_run_at null when never run."
+    )
 
 
 # ── get_metric_attr ───────────────────────────────────────────────────────────
@@ -618,9 +676,13 @@ async def test_run_allows_dry_run_when_disabled(service, db, datahub):
 
 
 async def test_definition_record_field_set_matches_spec(service, db):
-    """MetricDefinitionRecord exposes exactly the spec'd field set.
+    """MetricDefinitionRecord exposes the metric_definitions field set plus the
+    derived ``last_run_at`` (the value object carries it for list-row composition;
+    it defaults to None on single-GET, which does not resolve a run).
 
-    Spec: spec/feature/BACKEND_SCHEMA.md §metric_definitions.
+    Spec: spec/feature/BACKEND_SCHEMA.md §metric_definitions (persisted columns).
+    Spec: spec/feature/BACKEND.md §Metrics Service — List last_run_at (derived field
+          on the record, surfaced only on list rows).
     """
     row = _make_definition_row()
     mock_scalar_query(db, row)
@@ -640,8 +702,11 @@ async def test_definition_record_field_set_matches_spec(service, db):
         "is_enabled",
         "created_at",
         "updated_at",
+        "last_run_at",
     }
     assert actual_fields == expected
+    # single-GET does not resolve a run → last_run_at defaults to None.
+    assert definition.last_run_at is None
 
 
 # ── MetricResultRecord shape ──────────────────────────────────────────────────

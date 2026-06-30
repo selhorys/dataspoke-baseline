@@ -52,6 +52,7 @@ export default function GovernanceDatasetsPage() {
               <TableHead>dataset_urn</TableHead>
               <TableHead>datahub</TableHead>
               <TableHead>ingestion</TableHead>
+              <TableHead>validation</TableHead>
               <TableHead>metagen</TableHead>
             </TableRow>
           </TableHeader>
@@ -59,7 +60,7 @@ export default function GovernanceDatasetsPage() {
             {isLoading &&
               Array.from({ length: 5 }).map((_, i) => (
                 <TableRow key={i}>
-                  {Array.from({ length: 4 }).map((__, j) => (
+                  {Array.from({ length: 5 }).map((__, j) => (
                     <TableCell key={j}>
                       <Skeleton className="h-4 w-full" />
                     </TableCell>
@@ -68,7 +69,7 @@ export default function GovernanceDatasetsPage() {
               ))}
             {!isLoading && rows.length === 0 && (
               <TableRow>
-                <TableCell colSpan={4} className="py-8 text-center text-muted-foreground">
+                <TableCell colSpan={5} className="py-8 text-center text-muted-foreground">
                   No registered datasets found.
                 </TableCell>
               </TableRow>
@@ -87,21 +88,39 @@ export default function GovernanceDatasetsPage() {
                   <DatahubDatasetLink urn={row.dataset_urn} fallback={EM_DASH} />
                 </TableCell>
                 <TableCell className="text-sm">
-                  {row.ingestion ? (
-                    <span className="flex flex-wrap items-center gap-2">
-                      <Link
-                        href={`/ingestion/sources/${encodeURIComponent(row.ingestion.source_id)}`}
-                        className="font-medium hover:underline"
-                      >
-                        {row.ingestion.name}
-                      </Link>
-                      <Badge variant={modeBadgeVariant(row.ingestion.mode)} className="text-xs">
-                        {modeLabel(row.ingestion.mode)}
-                      </Badge>
+                  {row.ingestion.length > 0 ? (
+                    <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                      {row.ingestion.map((src) => (
+                        <span
+                          key={src.source_id}
+                          className="flex items-center gap-1.5"
+                        >
+                          <Link
+                            href={`/ingestion/sources/${encodeURIComponent(src.source_id)}`}
+                            className="font-medium hover:underline"
+                          >
+                            {src.platform}
+                          </Link>
+                          <Badge
+                            variant={modeBadgeVariant(src.mode)}
+                            className="text-xs"
+                          >
+                            {modeLabel(src.mode)}
+                          </Badge>
+                        </span>
+                      ))}
                     </span>
                   ) : (
                     EM_DASH
                   )}
+                </TableCell>
+                <TableCell className="text-sm">
+                  <Badge
+                    variant={row.validation.covered ? "default" : "secondary"}
+                    className="text-xs"
+                  >
+                    {row.validation.covered ? "Covered" : "Uncovered"}
+                  </Badge>
                 </TableCell>
                 <TableCell className="text-sm">
                   {row.metagen.length > 0 ? (

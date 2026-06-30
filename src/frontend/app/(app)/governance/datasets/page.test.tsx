@@ -5,11 +5,14 @@
  *   every registered dataset, consuming GET /spoke/common/data. Columns:
  *     dataset_urn  → /data/[urn]
  *     datahub      → external DataHub deep-link (gated on runtime datahubUrl)
- *     ingestion    → owning source name → /ingestion/sources/[id], or em-dash
+ *     ingestion    → one label per covering source; label text = platform, linked to
+ *                    /ingestion/sources/[id], with a mode badge; em-dash when none
+ *     validation   → "Covered" / "Uncovered" badge from validation.covered
  *     metagen      → matching conf names → /metagen/conf/[id], or em-dash
  *   Shared offset/limit Pagination over `total_count`.
  * Spec: spec/API.md §Data Resource — GET /spoke/common/data row shape
- *   ({dataset_urn, ingestion: {source_id,name,mode}|null, metagen: [{conf_id,name}]}).
+ *   ({dataset_urn, ingestion: [{source_id,name,mode,platform}], validation: {covered},
+ *    metagen: [{conf_id,name}]}).
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, act } from "@testing-library/react";
@@ -38,14 +41,18 @@ vi.mock("@/lib/runtime-config", () => ({
 const COVERED_ROW: DatasetListItem = {
   dataset_urn:
     "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)",
-  ingestion: { source_id: "src-9", name: "catalog-source", mode: "DATAHUB_MANAGED" },
+  ingestion: [
+    { source_id: "src-9", name: "catalog-source", mode: "DATAHUB_MANAGED", platform: "postgres" },
+  ],
+  validation: { covered: true },
   metagen: [{ conf_id: "conf-1", name: "Catalog descriptions" }],
 };
 
 const UNMANAGED_ROW: DatasetListItem = {
   dataset_urn:
     "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.editions,DEV)",
-  ingestion: null,
+  ingestion: [],
+  validation: { covered: false },
   metagen: [],
 };
 
@@ -73,11 +80,12 @@ beforeEach(() => {
 // ── Columns + links ─────────────────────────────────────────────────────────────
 
 describe("GovernanceDatasetsPage — columns and links", () => {
-  it("renders the four column headers", async () => {
+  it("renders the five column headers including validation", async () => {
     await renderPage();
     expect(screen.getByRole("columnheader", { name: "dataset_urn" })).toBeTruthy();
     expect(screen.getByRole("columnheader", { name: "datahub" })).toBeTruthy();
     expect(screen.getByRole("columnheader", { name: "ingestion" })).toBeTruthy();
+    expect(screen.getByRole("columnheader", { name: "validation" })).toBeTruthy();
     expect(screen.getByRole("columnheader", { name: "metagen" })).toBeTruthy();
   });
 
@@ -89,12 +97,24 @@ describe("GovernanceDatasetsPage — columns and links", () => {
     );
   });
 
-  it("links the owning ingestion source to /ingestion/sources/[id] with a mode badge", async () => {
+  it("renders the ingestion source as a platform-labelled link to /ingestion/sources/[id] with a mode badge", async () => {
     await renderPage();
-    const sourceLink = screen.getByRole("link", { name: "catalog-source" });
+    // The ingestion column label text is the source platform ("postgres"), NOT the
+    // source name — spec: FRONTEND_GOVERNANCE §Datasets — ingestion type label.
+    const sourceLink = screen.getByRole("link", { name: "postgres" });
     expect(sourceLink.getAttribute("href")).toBe("/ingestion/sources/src-9");
-    // modeLabel(DATAHUB_MANAGED) === "DataHub-managed".
+    // The source name is not used as the label text.
+    expect(screen.queryByRole("link", { name: "catalog-source" })).toBeNull();
+    // modeLabel(DATAHUB_MANAGED) === "DataHub-managed" rendered as the adjacent badge.
     expect(screen.getByText("DataHub-managed")).toBeTruthy();
+  });
+
+  it("renders Covered/Uncovered validation badges from validation.covered", async () => {
+    await renderPage();
+    // COVERED_ROW.validation.covered === true → "Covered"; UNMANAGED_ROW false →
+    // "Uncovered". spec: FRONTEND_GOVERNANCE §Datasets — validation coverage column.
+    expect(screen.getByText("Covered")).toBeTruthy();
+    expect(screen.getByText("Uncovered")).toBeTruthy();
   });
 
   it("links each matching metagen conf to /metagen/conf/[id]", async () => {
@@ -117,14 +137,16 @@ describe("GovernanceDatasetsPage — columns and links", () => {
 // ── Em-dash for missing coverage ────────────────────────────────────────────────
 
 describe("GovernanceDatasetsPage — null/empty coverage", () => {
-  it("renders an em-dash for null ingestion and empty metagen", async () => {
+  it("renders an em-dash for empty ingestion and empty metagen, Uncovered for validation", async () => {
     setData([UNMANAGED_ROW]);
     await renderPage();
-    // ingestion null + metagen [] → two em-dash cells for this row.
+    // ingestion [] + metagen [] → two em-dash cells for this row.
     const emDashes = screen.getAllByText("—");
     expect(emDashes.length).toBeGreaterThanOrEqual(2);
-    // No source/conf links for an unmanaged, unmatched dataset.
-    expect(screen.queryByRole("link", { name: "catalog-source" })).toBeNull();
+    // validation.covered false → an "Uncovered" badge (not an em-dash).
+    expect(screen.getByText("Uncovered")).toBeTruthy();
+    // No source/platform links for an unmanaged dataset.
+    expect(screen.queryByRole("link", { name: "postgres" })).toBeNull();
   });
 
   it("falls back to an em-dash in the datahub column when datahubUrl is unset", async () => {

@@ -2085,3 +2085,112 @@ async def test_metric_values_filtered_to_declared_subset(
     finally:
         with suppress(Exception):
             await api_client.delete(base_conf, headers=admin_headers)
+
+
+# ── List last_run_at ──────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_list_last_run_at_reflects_latest_run_complete_event(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """GET /spoke/governance/metric list rows carry last_run_at = the latest
+    METRIC.RUN_COMPLETE occurred_at; a metric that never completed a run carries null.
+
+    Seeded directly because the value derives from the newest METRIC.RUN_COMPLETE
+    event for the metric: two events with controlled occurred_at are inserted so the
+    NEWEST one must win, and a sibling metric with NO completed-run event must
+    surface last_run_at=null. The api-wired pipeline cannot reach the "never run"
+    null case (running a metric requires Airflow), so spot owns this with raw-SQL
+    state per spec/TESTING.md §Spot integration tests.
+
+    Spec: spec/API.md §Metric — GET /spoke/governance/metric — each row carries
+          last_run_at (occurred_at of the latest METRIC.RUN_COMPLETE event, null
+          when never run).
+    Spec: spec/feature/BACKEND.md §Metrics Service — List last_run_at: newest
+          METRIC.RUN_COMPLETE per metric, resolved page-bounded.
+    """
+    ran_id = "spot-last-run-ran"
+    never_id = "spot-last-run-never"
+    ran_conf = f"/api/v1/spoke/governance/metric/{ran_id}/attr/conf"
+    never_conf = f"/api/v1/spoke/governance/metric/{never_id}/attr/conf"
+
+    _CREATE = {
+        "mode": "active",
+        "is_enabled": False,
+        "metric_type": "doc-health",
+        "title": "Last-run spot",
+        "description": "Seeds METRIC.RUN_COMPLETE events to assert last_run_at.",
+        "metrics": ["total", "doc_health"],
+        "metric_conf": {},
+        "schedule_tier": "daily",
+        "dataset_filter": {},
+    }
+
+    # Two RUN_COMPLETE events: the OLDER and the NEWER. last_run_at must equal the
+    # newer one's occurred_at (relative ordering, not wall-clock).
+    newer = datetime(2026, 3, 2, 12, 0, 0, tzinfo=UTC)
+    older = newer - timedelta(days=3)
+
+    # Clean slate
+    await api_client.delete(ran_conf, headers=admin_headers)
+    await api_client.delete(never_conf, headers=admin_headers)
+
+    conn = await _get_ds_conn()
+    try:
+        for mid in (ran_id, never_id):
+            resp = await api_client.post(
+                "/api/v1/spoke/governance/metric",
+                headers=admin_headers,
+                json={**_CREATE, "metric_id": mid},
+            )
+            assert resp.status_code == 201, resp.text
+
+        # Seed only the "ran" metric with two completed-run events.
+        for ts in (older, newer):
+            await conn.execute(
+                "INSERT INTO dataspoke.events "
+                "(id, entity_type, entity_id, event_type, status, detail, occurred_at) "
+                "VALUES (gen_random_uuid(), $1, $2, $3, $4, $5::jsonb, $6)",
+                "metric", ran_id, "METRIC.RUN_COMPLETE", "success",
+                json.dumps({"run_id": str(uuid.uuid4())}), ts,
+            )
+
+        resp = await api_client.get(
+            "/api/v1/spoke/governance/metric?limit=200", headers=admin_headers
+        )
+        assert resp.status_code == 200, resp.text
+        by_id = {m["id"]: m for m in resp.json()["metrics"]}
+        assert ran_id in by_id and never_id in by_id, (
+            f"both seeded metrics must appear in the list; got {list(by_id)}."
+        )
+
+        # The run metric's last_run_at is the NEWER event's occurred_at.
+        assert "last_run_at" in by_id[ran_id], (
+            "list rows must carry last_run_at. Spec: spec/API.md §Metric."
+        )
+        served = datetime.fromisoformat(
+            by_id[ran_id]["last_run_at"].replace("Z", "+00:00")
+        )
+        assert served == newer, (
+            f"last_run_at must equal the NEWEST METRIC.RUN_COMPLETE occurred_at "
+            f"({newer.isoformat()}); got {by_id[ran_id]['last_run_at']!r}. "
+            "Spec: spec/feature/BACKEND.md §Metrics Service — newest RUN_COMPLETE wins."
+        )
+
+        # The never-run metric has no completed-run event → last_run_at is null.
+        assert by_id[never_id]["last_run_at"] is None, (
+            "a metric with no METRIC.RUN_COMPLETE event must carry last_run_at=null. "
+            "Spec: spec/API.md §Metric — null when never run."
+        )
+    finally:
+        await conn.execute(
+            "DELETE FROM dataspoke.events WHERE entity_type='metric' AND entity_id=$1",
+            ran_id,
+        )
+        await conn.close()
+        with suppress(Exception):
+            await api_client.delete(ran_conf, headers=admin_headers)
+        with suppress(Exception):
+            await api_client.delete(never_conf, headers=admin_headers)

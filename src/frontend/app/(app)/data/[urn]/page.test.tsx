@@ -16,7 +16,7 @@
  * re-exercising the bodies.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, act } from "@testing-library/react";
+import { render, screen, act, within } from "@testing-library/react";
 import React from "react";
 import DatasetHubPage from "./page";
 
@@ -181,6 +181,30 @@ describe("DatasetHubPage — /data/[urn]", () => {
     });
     await renderPage();
     expect(screen.getByText(/unmanaged/i)).toBeTruthy();
+  });
+
+  it("Validation card shows the latest result data_time beside the score", async () => {
+    // spec: FRONTEND_BASIC.md §Per-dataset page — the Validation summary card
+    // shows the latest result's data_time (resultsData.results[0].data_time)
+    // formatted with the tz helper, alongside the latest score.
+    mockValidationResults.mockReturnValue({
+      data: {
+        results: [{ score: 0.9, data_time: "2026-05-10T08:00:00Z" }],
+        total_count: 1,
+      },
+    });
+    await renderPage();
+    // Scope to the score row inside the Validation card: the data_time renders as a
+    // sibling of the "Latest score" badge in the same flex row, proving it is shown
+    // specifically alongside the score (not merely somewhere on the page).
+    const scoreEl = screen.getByText(/latest score/i);
+    const scoreRow = scoreEl.closest("div.flex");
+    expect(scoreRow).not.toBeNull();
+    // formatDateTime renders YYYY-MM-DD; local tz can shift the day by ±1, never
+    // out of the month (mirrors the ingestion-card date assertion above).
+    expect(
+      within(scoreRow as HTMLElement).getByText(/2026-05-(09|10|11)/),
+    ).toBeTruthy();
   });
 
   it("Validation card shows No config / No score when the conf 404s and no results", async () => {

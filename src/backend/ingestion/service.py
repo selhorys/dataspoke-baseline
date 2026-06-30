@@ -193,13 +193,16 @@ _DERIVATION_PRIORITY = {"emitted": 0, "pipeline_name": 1, "matched": 2}
 def _reverse_lookup_key(
     pair: tuple[IngestionSourceDataset, IngestionSource],
 ) -> tuple[int, int, float]:
-    """Sort key selecting the owning source for a dataset URN.
+    """Sort key selecting the single owning source for a dataset URN.
 
-    Shared by :meth:`IngestionService.reverse_lookup` (single URN) and
-    :meth:`IngestionService.reverse_lookup_batch` (many URNs) so both apply
-    one rule: ``emitted`` > ``pipeline_name`` > ``matched``; a regular parent
+    Used only by :meth:`IngestionService.reverse_lookup` (single-winner
+    selection): ``emitted`` > ``pipeline_name`` > ``matched``; a regular parent
     (``parent_source_id IS NULL`` → 0) wins over its CLI wrapper (1); within
     those ties the most recent ``last_seen_at`` sorts first.
+
+    :meth:`IngestionService.reverse_lookup_all_batch` intentionally does NOT use
+    this key — it returns every covering source sorted by ``(name, id)`` without
+    applying the priority rule.
     """
     mapping, source = pair
     priority = _DERIVATION_PRIORITY.get(mapping.derivation, 99)
@@ -1096,24 +1099,31 @@ class IngestionService:
 
         return _source_from_row(best_source)
 
-    async def reverse_lookup_batch(
+    async def reverse_lookup_all_batch(
         self,
         urns: list[str],
-    ) -> dict[str, IngestionSourceRecord | None]:
-        """Batched :meth:`reverse_lookup` — owning source per dataset URN.
+    ) -> dict[str, list[IngestionSourceRecord]]:
+        """Batched all-sources reverse-lookup — **every** covering source per URN.
 
-        Applies the SAME priority rule as :meth:`reverse_lookup` (via the shared
-        :func:`_reverse_lookup_key`) but resolves a whole page of URNs with a
-        bounded number of queries instead of one round-trip per URN:
+        Unlike :meth:`reverse_lookup` (single priority winner), this returns
+        ALL sources covering each URN, since ``ingestion_source_dataset`` is keyed
+        ``(source_id, dataset_urn)`` and a dataset may be claimed by several
+        sources. Two queries bound the cost regardless of page size:
 
         1. one mapping⋈source join filtered by ``dataset_urn IN urns``;
-        2. one ``IngestionSource.id IN parent_ids`` query resolving the winning
-           wrappers up to their regular parent.
+        2. one ``IngestionSource.id IN parent_ids`` query resolving any winning
+           wrapper up to its regular parent.
 
-        Returns a dict keyed by every URN in ``urns``; the value is ``None`` when
-        no source claims that URN (so callers can read every URN unconditionally).
+        CLI wrappers are internal plumbing and are never surfaced: each covering
+        wrapper is resolved up to its regular parent, then results are
+        de-duplicated by source id (a parent reached via several wrappers, or
+        directly, appears once). Each list is sorted by source ``name`` then ``id``
+        for deterministic ordering.
+
+        Returns a dict keyed by every URN in ``urns``; the value is ``[]`` when no
+        source claims that URN (so callers can read every URN unconditionally).
         """
-        result: dict[str, IngestionSourceRecord | None] = dict.fromkeys(urns)
+        result: dict[str, list[IngestionSourceRecord]] = {urn: [] for urn in urns}
         if not urns:
             return result
 
@@ -1126,20 +1136,12 @@ class IngestionService:
         if not rows:
             return result
 
-        # Group mapping/source pairs by dataset URN, then pick the winner per URN.
-        by_urn: dict[str, list[tuple[IngestionSourceDataset, IngestionSource]]] = {}
-        for mapping, source in rows:
-            by_urn.setdefault(mapping.dataset_urn, []).append((mapping, source))
-
-        winners: dict[str, IngestionSource] = {}
-        parent_ids: set[uuid.UUID] = set()
-        for urn, pairs in by_urn.items():
-            _best_mapping, best_source = sorted(pairs, key=_reverse_lookup_key)[0]
-            winners[urn] = best_source
-            if best_source.parent_source_id is not None:
-                parent_ids.add(best_source.parent_source_id)
-
-        # Resolve every winning wrapper to its regular parent in ONE query.
+        # Resolve every covering wrapper to its regular parent in ONE query.
+        parent_ids: set[uuid.UUID] = {
+            source.parent_source_id
+            for _mapping, source in rows
+            if source.parent_source_id is not None
+        }
         parents: dict[uuid.UUID, IngestionSource] = {}
         if parent_ids:
             parent_result = await self._db.execute(
@@ -1147,13 +1149,23 @@ class IngestionService:
             )
             parents = {p.id: p for p in parent_result.scalars().all()}
 
-        for urn, best_source in winners.items():
-            resolved = best_source
-            if best_source.parent_source_id is not None:
-                parent = parents.get(best_source.parent_source_id)
+        # Group resolved sources per URN, de-duplicating by resolved source id.
+        seen: dict[str, set[str]] = {urn: set() for urn in urns}
+        for mapping, source in rows:
+            resolved = source
+            if source.parent_source_id is not None:
+                parent = parents.get(source.parent_source_id)
                 if parent is not None:
                     resolved = parent
-            result[urn] = _source_from_row(resolved)
+            sid = str(resolved.id)
+            urn = mapping.dataset_urn
+            if sid in seen[urn]:
+                continue
+            seen[urn].add(sid)
+            result[urn].append(_source_from_row(resolved))
+
+        for sources in result.values():
+            sources.sort(key=lambda r: (r.name, r.id))
 
         return result
 

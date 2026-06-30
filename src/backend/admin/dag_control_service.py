@@ -21,9 +21,10 @@ from src.workflows.airflow.client import AirflowClient
 
 logger = logging.getLogger(__name__)
 
-# The five controllable groups and their member DAGs — single source of truth.
+# The controllable groups and their member DAGs — single source of truth.
 GROUP_TO_DAG_IDS: dict[str, tuple[str, ...]] = {
     "datahub_sync": ("datahub-sync-hourly",),
+    "auth_role_sync": ("auth-role-sync-daily",),
     "ingestion_active": (
         "ingestion-active-hourly",
         "ingestion-active-daily",
@@ -57,7 +58,7 @@ def _fold_group(group: str, paused_states: dict[str, bool]) -> DagGroupStatus:
 
 
 async def get_dag_groups(airflow: AirflowClient) -> list[DagGroupStatus]:
-    """Return the schedule (paused) status of all five controllable groups.
+    """Return the schedule (paused) status of every controllable group.
 
     Reads paused state for every member DAG in one Airflow call.
     Raises AirflowUnavailableError (503) on a transport failure.

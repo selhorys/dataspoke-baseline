@@ -5,11 +5,17 @@
 
 import type { IngestionMode } from "@/types/ingestion";
 
-/** Owning ingestion source summary for a dataset, or null when unmanaged. */
+/** One ingestion source covering a dataset in the catalog list. */
 export interface DatasetListIngestion {
   source_id: string;
   name: string;
   mode: IngestionMode;
+  platform: string;
+}
+
+/** Validation-coverage summary for a dataset in the catalog list. */
+export interface DatasetListValidation {
+  covered: boolean;
 }
 
 /** A metagen conf whose scope matches the dataset. */
@@ -20,7 +26,8 @@ export interface DatasetListMetagenConf {
 
 export interface DatasetListItem {
   dataset_urn: string;
-  ingestion: DatasetListIngestion | null;
+  ingestion: DatasetListIngestion[];
+  validation: DatasetListValidation;
   metagen: DatasetListMetagenConf[];
 }
 

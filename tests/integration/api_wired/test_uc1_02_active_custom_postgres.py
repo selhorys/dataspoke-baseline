@@ -492,11 +492,11 @@ async def test_uc1_active_custom_postgres(
 
         # ── Step 8: Dataset catalog reflects ingestion coverage ──────────────
         # The dataset-catalog collection root GET /spoke/common/data composes the
-        # same ingestion reverse-lookup per row. After this real run the catalog
-        # row for title_master must carry ingestion={source_id, name, mode} for
-        # the source we just created (the same reverse-lookup, batched).
+        # all-sources reverse-lookup per row. After this real run the catalog row
+        # for title_master must list the source we just created in its ingestion
+        # array, carrying {source_id, name, mode, platform} (batched reverse-lookup).
         # spec: API.md §Data Resource — GET /spoke/common/data row.ingestion shape
-        #       ({source_id, name, mode} | null)
+        #       (list of {source_id, name, mode, platform}, empty when none)
         catalog_resp = await api_client.get(
             "/api/v1/spoke/common/data",
             headers=admin_headers,
@@ -521,22 +521,30 @@ async def test_uc1_active_custom_postgres(
             "(it is a registered catalog dataset). "
             "spec: API.md §Data Resource — GET /spoke/common/data lists registered datasets"
         )
-        assert title_row["ingestion"] is not None, (
-            "title_master catalog row must carry ingestion coverage after the run "
-            f"that emitted it; got ingestion=None. row={title_row}. "
-            "spec: API.md §Data Resource — row.ingestion is the reverse-lookup summary"
+        assert isinstance(title_row["ingestion"], list) and title_row["ingestion"], (
+            "title_master catalog row must list ingestion coverage after the run "
+            f"that emitted it; got ingestion={title_row['ingestion']!r}. row={title_row}. "
+            "spec: API.md §Data Resource — row.ingestion is the all-sources reverse-lookup"
         )
-        assert title_row["ingestion"]["source_id"] == source_id, (
-            f"catalog row.ingestion.source_id must be {source_id!r}; "
-            f"got {title_row['ingestion'].get('source_id')!r}. "
-            "spec: API.md §Data Resource — row.ingestion.source_id is the owning source"
+        covering = next(
+            (s for s in title_row["ingestion"] if s["source_id"] == source_id), None
         )
-        assert title_row["ingestion"]["mode"] == "ACTIVE_CUSTOM_MANAGED", (
+        assert covering is not None, (
+            f"catalog row.ingestion must include the source {source_id!r} that emitted "
+            f"title_master; got {title_row['ingestion']!r}. "
+            "spec: API.md §Data Resource — row.ingestion lists every covering source"
+        )
+        assert covering["mode"] == "ACTIVE_CUSTOM_MANAGED", (
             f"catalog row.ingestion.mode must be 'ACTIVE_CUSTOM_MANAGED'; "
-            f"got {title_row['ingestion'].get('mode')!r}. "
+            f"got {covering.get('mode')!r}. "
             "spec: API.md §Data Resource — row.ingestion.mode echoes the source mode"
         )
-        assert title_row["ingestion"].get("name"), (
+        assert covering["platform"] == "postgres", (
+            f"catalog row.ingestion.platform must be 'postgres' (the source platform); "
+            f"got {covering.get('platform')!r}. "
+            "spec: API.md §Data Resource — row.ingestion.platform"
+        )
+        assert covering.get("name"), (
             "catalog row.ingestion.name must be the owning source name (non-empty). "
             "spec: API.md §Data Resource — row.ingestion.name"
         )

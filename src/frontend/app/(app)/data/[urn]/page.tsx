@@ -94,11 +94,13 @@ function IngestionSummaryCard({ datasetUrn }: { datasetUrn: string }) {
 }
 
 function ValidationSummaryCard({ datasetUrn }: { datasetUrn: string }) {
+  const tz = useDisplayTz();
   const { data: conf, isLoading, error } = useValidationConf(datasetUrn);
   const { data: resultsData } = useValidationResults(datasetUrn, { limit: 1 });
   const is404 = error instanceof ApiError && error.status === 404;
   const showConf = conf && !is404;
-  const latestScore = resultsData?.results?.[0]?.score ?? null;
+  const latest = resultsData?.results?.[0] ?? null;
+  const latestScore = latest?.score ?? null;
 
   return (
     <Card className="border-t-2 border-t-feature-validation">
@@ -117,11 +119,18 @@ function ValidationSummaryCard({ datasetUrn }: { datasetUrn: string }) {
             ) : (
               <span className="text-muted-foreground">No config</span>
             )}
-            <div>
+            <div className="flex flex-wrap items-center gap-2">
               {latestScore !== null ? (
-                <Badge variant={scoreBadgeVariant(latestScore)} className="text-xs">
-                  Latest score {scoreLabel(latestScore)}
-                </Badge>
+                <>
+                  <Badge variant={scoreBadgeVariant(latestScore)} className="text-xs">
+                    Latest score {scoreLabel(latestScore)}
+                  </Badge>
+                  {latest?.data_time && (
+                    <span className="text-xs text-muted-foreground">
+                      {formatDateTime(latest.data_time, tz)}
+                    </span>
+                  )}
+                </>
               ) : (
                 <span className="text-xs text-muted-foreground">No score yet</span>
               )}

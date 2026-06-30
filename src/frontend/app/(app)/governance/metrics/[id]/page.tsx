@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useMemo, useState } from "react";
+import { use, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, Play, Power, PowerOff, Trash2 } from "lucide-react";
@@ -26,6 +26,7 @@ import { toast } from "@/components/ui/use-toast";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { MetricForm } from "@/components/governance/metric-form";
 import { MetricTimeseriesChart } from "@/components/governance/metric-timeseries-chart";
+import { MetricEventTable } from "@/components/governance/metric-event-table";
 import { FieldPanel } from "@/components/forms/field-panel";
 import { FormGrid } from "@/components/ui/form-grid";
 import { DatasetFilterView } from "@/components/dataset-filter-view";
@@ -41,9 +42,8 @@ import {
   useRunMetric,
 } from "@/lib/api/governance";
 import { useMe } from "@/lib/auth/use-me";
-import { eventStatusVariant } from "@/lib/event-status-variant";
 import { ErrorState } from "@/components/ui/error-state";
-import { formatDateTime } from "@/lib/format-time";
+import { DEFAULT_PAGE_SIZE } from "@/components/pagination";
 import { useDisplayTz } from "@/lib/preferences/timezone";
 import type { MetricFormValues } from "@/types/governance";
 
@@ -62,6 +62,8 @@ export default function MetricDetailPage({
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [showRunDialog, setShowRunDialog] = useState(false);
   const [dryRun, setDryRun] = useState(false);
+  const [eventOffset, setEventOffset] = useState(0);
+  const [eventLimit, setEventLimit] = useState(DEFAULT_PAGE_SIZE);
   // Range selections are persisted per surface; resolving via useMemo keeps the
   // derived bounds (and thus query keys) stable until the selection changes.
   // Results chart and event log keep independent ranges.
@@ -90,7 +92,15 @@ export default function MetricDetailPage({
   const { data: eventsData } = useMetricEvents(metricId, {
     from: eventRange.from,
     to: eventRange.to,
+    offset: eventOffset,
+    limit: eventLimit,
+    sort: "occurred_at_desc",
   });
+
+  // Reset event pagination when the time filter changes.
+  useEffect(() => {
+    setEventOffset(0);
+  }, [eventSel]);
 
   // ── Mutations ──────────────────────────────────────────────────────────────
   const replace = useReplaceMetricConf();
@@ -333,37 +343,20 @@ export default function MetricDetailPage({
 
       {/* event log */}
       <section className="rounded-lg border p-5">
-        <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-sm font-medium">Event</h2>
-          <RangePicker
-            value={eventSel}
-            onChange={setEventSel}
-            tz={tz}
-            granularity="datetime"
-          />
-        </div>
-        {eventsData?.events.length === 0 && (
-          <p className="text-sm text-muted-foreground">No events yet.</p>
-        )}
-        <ul className="space-y-2">
-          {eventsData?.events.map((e) => (
-            <li key={e.id} className="flex items-start gap-3 text-sm">
-              <span className="text-muted-foreground">{formatDateTime(e.occurred_at, tz)}</span>
-              <Badge
-                variant={eventStatusVariant(e.status)}
-                className="text-xs"
-              >
-                {e.status}
-              </Badge>
-              <span>{e.event_type}</span>
-              {e.detail && Object.keys(e.detail).length > 0 && (
-                <span className="font-mono text-xs text-muted-foreground">
-                  {JSON.stringify(e.detail)}
-                </span>
-              )}
-            </li>
-          ))}
-        </ul>
+        <h2 className="mb-3 text-sm font-medium">Event</h2>
+        <MetricEventTable
+          events={eventsData?.events ?? []}
+          range={eventSel}
+          onRangeChange={setEventSel}
+          tz={tz}
+          page={{
+            offset: eventOffset,
+            limit: eventLimit,
+            totalCount: eventsData?.total_count ?? 0,
+          }}
+          onOffset={setEventOffset}
+          onLimit={setEventLimit}
+        />
       </section>
 
       {/* Run dialog */}

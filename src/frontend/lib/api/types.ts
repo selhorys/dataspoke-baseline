@@ -149,6 +149,7 @@ export interface LangfusePeripheralPatch {
 /** The five controllable DAG groups (operational schedule control via Airflow). */
 export type DagGroup =
   | "datahub_sync"
+  | "auth_role_sync"
   | "ingestion_active"
   | "ontogen"
   | "metagen"

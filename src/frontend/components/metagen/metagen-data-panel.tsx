@@ -92,7 +92,7 @@ export function MetagenDataPanel({ datasetUrn }: MetagenDataPanelProps) {
       {/* ── Boundary (per-dataset conf) ──────────────────────────────────────── */}
       <div className="space-y-4">
         <div className="flex items-center justify-between">
-          <h3 className="text-sm font-medium">attr/metagen/boundary</h3>
+          <h3 className="text-sm font-medium">Boundary Config</h3>
           {canWrite && !boundaryLoading && (
             <div className="flex items-center gap-2">
               {boundary === null && (
@@ -185,7 +185,7 @@ export function MetagenDataPanel({ datasetUrn }: MetagenDataPanelProps) {
         {!boundaryLoading && boundary !== null && boundary !== undefined && (
           <>
             {!editingBoundary && (
-              <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-3">
+              <dl className="grid grid-cols-2 gap-x-6 gap-y-2 rounded-md border p-3 text-sm sm:grid-cols-3">
                 <div>
                   <dt className="text-muted-foreground">is_enabled</dt>
                   <dd>
@@ -234,7 +234,7 @@ export function MetagenDataPanel({ datasetUrn }: MetagenDataPanelProps) {
 
       {/* ── Items grouped by kind ────────────────────────────────────────────── */}
       <div className="space-y-4">
-        <h3 className="text-sm font-medium">attr/metagen/item</h3>
+        <h3 className="text-sm font-medium">Generated Items</h3>
 
         {itemsLoading && !itemsData && (
           <div className="space-y-2">

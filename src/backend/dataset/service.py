@@ -13,7 +13,7 @@ from src.backend.metagen.service import MetagenService
 from src.shared.cache.client import QUALITY_CACHE_KEY, RedisClient
 from src.shared.datahub.client import DataHubClient
 from src.shared.datahub.urn import platform_from_dataset_urn
-from src.shared.db.models import DatasetRegistry, Event
+from src.shared.db.models import DatasetRegistry, Event, ValidationConfig
 from src.shared.exceptions import EntityNotFoundError
 from src.shared.models.dataset import DatasetAttributes, DatasetSummary
 from src.shared.models.events import EventRecord
@@ -26,11 +26,18 @@ from src.shared.models.quality import QualityScore
 
 
 class DatasetCatalogIngestion(BaseModel):
-    """Owning-source summary for a catalog row (``mode`` is the raw Mode value)."""
+    """One covering ingestion source for a catalog row (``mode`` is the raw Mode value)."""
 
     source_id: str
     name: str
     mode: str
+    platform: str
+
+
+class DatasetCatalogValidation(BaseModel):
+    """Validation-coverage summary for a catalog row."""
+
+    covered: bool
 
 
 class DatasetCatalogMetagenConf(BaseModel):
@@ -44,7 +51,8 @@ class DatasetCatalogRow(BaseModel):
     """One row of the cross-feature dataset catalog (DatasetService.list_datasets)."""
 
     dataset_urn: str
-    ingestion: DatasetCatalogIngestion | None = None
+    ingestion: list[DatasetCatalogIngestion] = []
+    validation: DatasetCatalogValidation
     metagen: list[DatasetCatalogMetagenConf] = []
 
 
@@ -79,13 +87,16 @@ class DatasetService:
 
         Pages ``dataset_registry`` (``datahub_registered=True``) in SQL — the same
         base set as ``/ingestion/unmanaged`` and ``/metagen/uncovered`` — without
-        materializing the whole registry in Python. Ingestion + metagen coverage
-        is then resolved for ONLY the page's URNs via two batched lookups
-        (:meth:`IngestionService.reverse_lookup_batch` and
+        materializing the whole registry in Python. Ingestion, validation, and
+        metagen coverage is then resolved for ONLY the page's URNs via batched
+        lookups (:meth:`IngestionService.reverse_lookup_all_batch`, a
+        validation-coverage set query, and
         :meth:`MetagenService.match_confs_for_urns`), avoiding any per-URN N+1.
 
-        ``ingestion`` is ``None`` when no source covers the URN; ``metagen`` is
-        ``[]`` when no enabled conf matches. Page order follows the SQL ordering.
+        ``ingestion`` is ``[]`` when no source covers the URN;
+        ``validation.covered`` is ``True`` when a validation conf exists for the
+        URN; ``metagen`` is ``[]`` when no enabled conf matches. Page order follows
+        the SQL ordering.
         """
         base_q = select(DatasetRegistry.dataset_urn).where(
             DatasetRegistry.datahub_registered.is_(True)
@@ -106,27 +117,41 @@ class DatasetService:
         if not urns:
             return [], total_count
 
-        ingestion_by_urn = await self._ingestion.reverse_lookup_batch(urns)
+        ingestion_by_urn = await self._ingestion.reverse_lookup_all_batch(urns)
         metagen_by_urn = await self._metagen.match_confs_for_urns(urns)
+
+        # Validation coverage: one batch query over the page's URNs. Membership in
+        # the result set drives the per-URN ``validation.covered`` flag (mirrors the
+        # ingestion batch pattern — one extra query per page).
+        cov_result = await self._db.execute(
+            select(ValidationConfig.dataset_urn).where(
+                ValidationConfig.dataset_urn.in_(urns)
+            )
+        )
+        covered_urns = set(cov_result.scalars().all())
 
         items: list[DatasetCatalogRow] = []
         for urn in urns:
-            source = ingestion_by_urn.get(urn)
-            ingestion = (
+            ingestion = [
                 DatasetCatalogIngestion(
                     source_id=source.id,
                     name=source.name,
                     mode=source.mode,
+                    platform=source.platform,
                 )
-                if source is not None
-                else None
-            )
+                for source in ingestion_by_urn.get(urn, [])
+            ]
             metagen = [
                 DatasetCatalogMetagenConf(conf_id=conf_id, name=name)
                 for conf_id, name in metagen_by_urn.get(urn, [])
             ]
             items.append(
-                DatasetCatalogRow(dataset_urn=urn, ingestion=ingestion, metagen=metagen)
+                DatasetCatalogRow(
+                    dataset_urn=urn,
+                    ingestion=ingestion,
+                    validation=DatasetCatalogValidation(covered=urn in covered_urns),
+                    metagen=metagen,
+                )
             )
 
         return items, total_count

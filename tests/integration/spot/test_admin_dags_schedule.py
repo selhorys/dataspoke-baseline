@@ -7,7 +7,8 @@ the feature (the api-wired UC stories never touch admin schedule control, so the
 set alone owns it):
 
 Concerns covered:
-- GET /admin/dags returns the five controllable groups with the spec group→DAG map
+- GET /admin/dags returns the controllable groups (incl. auth_role_sync) with the
+  spec group→DAG map
 - PATCH /admin/dags/{group} {paused} flips Airflow's is_paused for every member DAG
   (single-member datahub_sync AND multi-member ontogen, to catch a partial-loop bug)
 - GET /admin/dags folds per-DAG state into group paused/mixed aggregation
@@ -33,10 +34,11 @@ from sqlalchemy import text
 from src.backend.auth.tokens import issue_access_token
 from src.workflows.airflow.client import AirflowClient
 
-# The five controllable groups and their member DAGs — inlined from the spec
+# The controllable groups and their member DAGs — inlined from the spec
 # group→DAG table (spec/API.md §Admin, spec/feature/BACKEND.md §Schedule Control).
 EXPECTED_GROUP_DAGS: dict[str, set[str]] = {
     "datahub_sync": {"datahub-sync-hourly"},
+    "auth_role_sync": {"auth-role-sync-daily"},
     "ingestion_active": {
         "ingestion-active-hourly",
         "ingestion-active-daily",
@@ -60,12 +62,12 @@ async def test_get_dag_groups_structure(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """GET /admin/dags returns all five groups, each with the spec member-DAG set.
+    """GET /admin/dags returns all controllable groups, each with the spec member-DAG set.
 
     spec: API.md §Admin — GET /admin/dags response
         {groups: [{group, paused, mixed, dags: [{dag_id, paused}]}]}.
-    spec: feature/BACKEND.md §Schedule Control — the five controllable groups and
-        their member DAGs (group→DAG map).
+    spec: feature/BACKEND.md §Schedule Control — the controllable groups (incl.
+        auth_role_sync → auth-role-sync-daily) and their member DAGs (group→DAG map).
     """
     resp = await api_client.get("/api/v1/admin/dags", headers=admin_headers)
 
@@ -75,7 +77,7 @@ async def test_get_dag_groups_structure(
 
     returned_groups = {g["group"] for g in body["groups"]}
     assert returned_groups == set(EXPECTED_GROUP_DAGS), (
-        f"GET /admin/dags must return exactly the five controllable groups "
+        f"GET /admin/dags must return exactly the controllable groups "
         f"{set(EXPECTED_GROUP_DAGS)}; got {returned_groups}"
     )
 
@@ -139,6 +141,52 @@ async def test_patch_group_pause_unpause_flips_airflow(
         # Unpause the group → Airflow shows it not paused; response.paused is false.
         resp = await api_client.patch(
             "/api/v1/admin/dags/datahub_sync",
+            headers=admin_headers,
+            json={"paused": False},
+        )
+        assert resp.status_code == 200, resp.text
+        status = resp.json()
+        assert status["paused"] is False
+        assert status["mixed"] is False
+        assert (await airflow_client.get_dag_paused_states())[dag_id] is False
+    finally:
+        await airflow_client.set_dag_paused(dag_id, initial)
+
+
+@pytest.mark.asyncio
+async def test_patch_auth_role_sync_pause_unpause_flips_airflow(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    airflow_client: AirflowClient,
+) -> None:
+    """PATCH /admin/dags/auth_role_sync flips is_paused on its member DAG in Airflow.
+
+    auth_role_sync is the single-member group mapping to auth-role-sync-daily. The
+    flip is confirmed independently by reading Airflow's is_paused directly (Airflow
+    is the SSOT), and the PATCH response's folded group status must agree.
+
+    spec: API.md §Admin — DagGroup includes auth_role_sync; PATCH /admin/dags/{group}
+        {paused} sets is_paused on every member DAG and returns the group status.
+    spec: feature/BACKEND.md §Schedule Control — auth_role_sync → auth-role-sync-daily.
+    """
+    dag_id = "auth-role-sync-daily"
+    initial = (await airflow_client.get_dag_paused_states()).get(dag_id, False)
+    try:
+        resp = await api_client.patch(
+            "/api/v1/admin/dags/auth_role_sync",
+            headers=admin_headers,
+            json={"paused": True},
+        )
+        assert resp.status_code == 200, resp.text
+        status = resp.json()
+        assert status["group"] == "auth_role_sync"
+        assert status["paused"] is True
+        assert status["mixed"] is False  # single-member group is never mixed
+        assert {d["dag_id"] for d in status["dags"]} == {dag_id}
+        assert (await airflow_client.get_dag_paused_states())[dag_id] is True
+
+        resp = await api_client.patch(
+            "/api/v1/admin/dags/auth_role_sync",
             headers=admin_headers,
             json={"paused": False},
         )

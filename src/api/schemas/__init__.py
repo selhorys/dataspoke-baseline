@@ -53,6 +53,7 @@ from src.api.schemas.metagen import (
 from src.api.schemas.metrics import (
     CreateMetricConfigRequest,
     MetricAttrResponse,
+    MetricDefinitionListItem,
     MetricDefinitionListResponse,
     MetricDefinitionResponse,
     MetricResultListResponse,
@@ -138,6 +139,7 @@ __all__ = [
     "MetagenUncoveredRow",
     # metrics
     "MetricAttrResponse",
+    "MetricDefinitionListItem",
     "MetricDefinitionListResponse",
     "CreateMetricConfigRequest",
     "MetricDefinitionResponse",

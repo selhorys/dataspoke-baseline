@@ -169,3 +169,61 @@ describe("ingestion source detail — write gating", () => {
     expect(await screen.findByText(/not found/i)).toBeTruthy();
   });
 });
+
+// ── F7: datahub_source_urn link to the DataHub ingestion-sources list ───────────
+// spec: spec/feature/FRONTEND_INGESTION.md §Source Detail — the datahub_source_urn
+// links to {datahubUrl}/ingestion/sources?hideSystem=true (new tab) when datahubUrl
+// is configured; otherwise it renders as plain text.
+describe("ingestion source detail — datahub_source_urn link", () => {
+  const DATAHUB_URN = "urn:li:dataHubIngestionSource:x";
+
+  function setRuntimeConfig(datahubUrl: string): void {
+    (
+      window as unknown as { __DATASPOKE_RUNTIME_CONFIG__?: { datahubUrl: string } }
+    ).__DATASPOKE_RUNTIME_CONFIG__ = { datahubUrl };
+  }
+
+  function clearRuntimeConfig(): void {
+    delete (window as unknown as { __DATASPOKE_RUNTIME_CONFIG__?: unknown })
+      .__DATASPOKE_RUNTIME_CONFIG__;
+  }
+
+  it("links the urn to the DataHub sources list (new tab) when datahubUrl is set", async () => {
+    setRuntimeConfig("http://datahub.example.com");
+    try {
+      mockUseMe.mockReturnValue({ canWrite: true, isAdmin: false, isEditor: true });
+      mockSource.mockReturnValue({
+        data: makeSource("DATAHUB_MANAGED"),
+        isLoading: false,
+        error: null,
+      });
+      await renderPage();
+
+      const link = (await screen.findByRole("link", {
+        name: DATAHUB_URN,
+      })) as HTMLAnchorElement;
+      expect(link.getAttribute("href")).toBe(
+        "http://datahub.example.com/ingestion/sources?hideSystem=true",
+      );
+      expect(link.getAttribute("target")).toBe("_blank");
+      expect(link.getAttribute("rel")).toContain("noopener");
+    } finally {
+      clearRuntimeConfig();
+    }
+  });
+
+  it("renders the urn as plain text (no link) when datahubUrl is empty", async () => {
+    clearRuntimeConfig(); // no window config + no NEXT_PUBLIC → datahubUrl === ""
+    mockUseMe.mockReturnValue({ canWrite: true, isAdmin: false, isEditor: true });
+    mockSource.mockReturnValue({
+      data: makeSource("DATAHUB_MANAGED"),
+      isLoading: false,
+      error: null,
+    });
+    await renderPage();
+
+    // The urn text is present but NOT a link.
+    expect(await screen.findByText(DATAHUB_URN)).toBeTruthy();
+    expect(screen.queryByRole("link", { name: DATAHUB_URN })).toBeNull();
+  });
+});

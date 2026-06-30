@@ -26,7 +26,7 @@ import { ErrorState } from "@/components/ui/error-state";
 import { Pagination, DEFAULT_PAGE_SIZE } from "@/components/pagination";
 import { PageHeader } from "@/components/page-header";
 import { useMe } from "@/lib/auth/use-me";
-import { formatDate } from "@/lib/format-time";
+import { formatDate, formatDateTime } from "@/lib/format-time";
 import { useDisplayTz } from "@/lib/preferences/timezone";
 import type { MetricType, MetricMode } from "@/types/governance";
 
@@ -135,13 +135,14 @@ export default function GovernanceMetricsPage() {
               <TableHead>schedule_tier</TableHead>
               <TableHead>Enabled</TableHead>
               <TableHead>Updated</TableHead>
+              <TableHead>Last Run</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {isLoading &&
               Array.from({ length: 5 }).map((_, i) => (
                 <TableRow key={i}>
-                  {Array.from({ length: 6 }).map((__, j) => (
+                  {Array.from({ length: 7 }).map((__, j) => (
                     <TableCell key={j}>
                       <Skeleton className="h-4 w-full" />
                     </TableCell>
@@ -150,7 +151,7 @@ export default function GovernanceMetricsPage() {
               ))}
             {!isLoading && data?.metrics.length === 0 && (
               <TableRow>
-                <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">
+                <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">
                   No metrics found.
                 </TableCell>
               </TableRow>
@@ -180,6 +181,9 @@ export default function GovernanceMetricsPage() {
                 </TableCell>
                 <TableCell className="text-sm text-muted-foreground">
                   {formatDate(m.updated_at, tz)}
+                </TableCell>
+                <TableCell className="text-sm text-muted-foreground">
+                  {m.last_run_at ? formatDateTime(m.last_run_at, tz) : "—"}
                 </TableCell>
               </TableRow>
             ))}

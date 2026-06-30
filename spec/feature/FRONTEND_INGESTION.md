@@ -54,14 +54,18 @@ client-derived via a per-source fan-out (`datasets?limit=1` and `event?limit=1`)
 
 A header surfaces read-only management fields as badges/text outside the recipe YAML section:
 `platform`, `status`, `datahub_source_urn`, the `mode` badge (the shared neutral style), and
-the schedule — the latter linking its tier (hourly / daily / weekly) to the backing Airflow DAG
+the schedule. `datahub_source_urn` renders as a link (new tab) to the DataHub ingestion-sources
+list `<datahubUrl>/ingestion/sources?hideSystem=true` — a list deep-link, not a per-source page —
+falling back to plain text when `datahubUrl` is unset. The schedule links its tier (hourly /
+daily / weekly) to the backing Airflow DAG
 (`ingestion-active-<tier>`) **only for `ACTIVE_CUSTOM_MANAGED`**; for `DATAHUB_MANAGED` and
 `PASSIVE` it renders plain text `delegated`. Below it, four sections, each bound to a route:
 
 1. **Recipe** — the source JSON (`{mode, name, schedule, recipe}`, recipe-standard wording) is
    rendered/edited as **YAML, secrets masked** — the YAML view is a lossless transform of the
    JSON body
-   (`GET /spoke/ingestion/sources/{id}`). For `ACTIVE_CUSTOM_MANAGED` / `PASSIVE`, editable via a
+   (`GET /spoke/ingestion/sources/{id}`). The read-only `<pre>` view caps its height at ~25
+   lines and scrolls (`overflow-auto`) for longer recipes; the edit-mode textarea is unbounded. For `ACTIVE_CUSTOM_MANAGED` / `PASSIVE`, editable via a
    YAML editor and removable (`DELETE`). Save wires `PUT` (full replace); partial recipe
    edits use `PATCH /sources/{id}`. View-mode shows `Edit` / `Delete` at the section header's
    top-right; edit-mode replaces them with `Save` / `Cancel` in that same slot (the editor's own

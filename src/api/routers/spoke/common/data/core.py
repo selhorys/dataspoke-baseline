@@ -40,10 +40,12 @@ async def get_data_list(
     """List all registered datasets with cross-feature coverage (paginated).
 
     The base set is the DataHub-registered ``dataset_registry`` (same as
-    ``/ingestion/unmanaged`` and ``/metagen/uncovered``). Each row carries its
-    owning ingestion source (``ingestion``, null when uncovered) and the enabled
-    metadata-generation confs whose filter matches it (``metagen``, possibly
-    empty). Sortable by ``dataset_urn`` (default: ``dataset_urn_asc``).
+    ``/ingestion/unmanaged`` and ``/metagen/uncovered``). Each row carries the
+    ingestion sources covering it (``ingestion``, empty list when no source
+    covers it), a validation-coverage summary (``validation``, ``{covered}``),
+    and the enabled metadata-generation confs whose filter matches it
+    (``metagen``, possibly empty). Sortable by ``dataset_urn`` (default:
+    ``dataset_urn_asc``).
     """
     order_by = parse_sort(
         sort,

@@ -269,8 +269,9 @@ Cross-cutting invariants:
   and only proxies reads/writes. This is operational schedule control, a separate axis from the
   peripheral **connection** contract (Airflow is not a peripheral) and from conf-level
   enablement: a paused DAG never fires, and an unpaused DAG still skips disabled confs at run
-  time. The five controllable groups (`datahub_sync`, `ingestion_active`, `ontogen`, `metagen`,
-  `metrics`) are catalogued in [BACKEND.md §DAG Catalogue](feature/BACKEND.md#dag-catalogue).
+  time. The six controllable groups (`datahub_sync`, `auth_role_sync`, `ingestion_active`,
+  `ontogen`, `metagen`, `metrics`) are catalogued in
+  [BACKEND.md §DAG Catalogue](feature/BACKEND.md#dag-catalogue).
 
 ---
 

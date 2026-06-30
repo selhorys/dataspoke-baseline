@@ -158,7 +158,7 @@ ingestion recipe YAML editor) remain one full-width field.
 | `/profile` | Own profile + change display name + change password | `GET /auth/me`, `PATCH /auth/me` |
 | `/profile/tokens` | Long-lived API token management — list, mint (copy-once display), revoke | `GET /auth/api-tokens`, `POST /auth/api-tokens`, `DELETE /auth/api-tokens/{id}` |
 | `/admin/users` | Admin user management — list, change name, change role, hard delete, revoke any token | `GET /admin/users`, `PATCH /admin/users/{id}`, `PATCH /admin/users/{id}/role`, `DELETE /admin/users/{id}`, `GET /admin/users/{id}/api-tokens`, `DELETE /admin/users/{id}/api-tokens/{token_id}` |
-| `/admin/conf` | Admin runtime configuration — view and edit the singleton behavioral tunables, dependency-stub toggles, and LLM provider/model/key, plus a self-contained **Workflow schedules** section to pause/unpause the five DAG groups | `GET /admin/conf`, `PATCH /admin/conf`, `GET /admin/dags`, `PATCH /admin/dags/{group}` |
+| `/admin/conf` | Admin runtime configuration — view and edit the singleton behavioral tunables, dependency-stub toggles, and LLM provider/model/key, plus a self-contained **Workflow schedules** section to pause/unpause the six DAG groups | `GET /admin/conf`, `PATCH /admin/conf`, `GET /admin/dags`, `PATCH /admin/dags/{group}` |
 | `/admin/peripherals` | Admin peripheral connections — view and edit DataHub and Langfuse connection settings (two cards, per-card partial PATCH) | `GET /admin/peripherals/datahub`, `PATCH /admin/peripherals/datahub`, `GET /admin/peripherals/langfuse`, `PATCH /admin/peripherals/langfuse` |
 | `/governance/dashboard` | [Governance dashboard — home](FRONTEND_GOVERNANCE.md) | `GET /spoke/governance/metric`, `GET /spoke/governance/metric/{id}/attr/result` |
 | `/governance/datasets` | [Dataset catalog](FRONTEND_GOVERNANCE.md) — cross-feature dataset list (UI under Governance, API in common/data) | `GET /spoke/common/data` |
@@ -312,7 +312,7 @@ A self-contained `Card` rendered as a sibling section **outside** the runtime-co
 behavioral tunable, so it does not share the form's single Save button. The card
 reads `GET /admin/dags` and renders one checkbox per DAG group; each toggle fires
 its own immediate `PATCH /admin/dags/{group}` and the section invalidates the
-`["admin","dags"]` query on success. The five groups and labels come verbatim from
+`["admin","dags"]` query on success. The six groups and labels come verbatim from
 [API.md](../API.md) §`/admin/dags` — the page invents no rows.
 
 ```
@@ -320,8 +320,8 @@ its own immediate `PATCH /admin/dags/{group}` and the section invalidates the
 │  Workflow schedules                                          │
 ├──────────────────────────────────────────────────────────────┤
 │  ☑ DataHub hourly sync        ☑ Metadata generation         │
-│  ☑ Active ingestion           ☑ Metrics                     │
-│  ☐ Ontology generation                                      │
+│  ☑ Auth role sync             ☑ Metrics                     │
+│  ☑ Active ingestion           ☐ Ontology generation         │
 └──────────────────────────────────────────────────────────────┘
        Workflow schedules (`/admin/dags`)
 ```
@@ -329,6 +329,7 @@ its own immediate `PATCH /admin/dags/{group}` and the section invalidates the
 | Checkbox label | `group` |
 |---|---|
 | DataHub hourly sync | `datahub_sync` |
+| Auth role sync | `auth_role_sync` |
 | Active ingestion | `ingestion_active` |
 | Ontology generation | `ontogen` |
 | Metadata generation | `metagen` |
@@ -477,7 +478,8 @@ Layout, top to bottom:
     detail. This card carries the reverse-lookup content in full — there is no separate
     Ingestion foldable panel.
   - *Validation* — latest score / status, from `GET …/attr/validation/conf` +
-    most-recent `…/attr/validation/result`.
+    most-recent `…/attr/validation/result`. Alongside the score it shows that result's
+    `data_time` (`results[0].data_time`) formatted with the shared tz/datetime helper.
   - *MetaGen* — boundary `is_enabled` and pending-candidate count, from
     `GET …/attr/metagen/boundary` + `…/attr/metagen/item`.
 
@@ -485,8 +487,11 @@ Layout, top to bottom:
   - *Validation* — the `ValidationDataPanel` conf read-only / edit / create editor plus
     the score and per-variable charts
     (see [FRONTEND_VALIDATION](FRONTEND_VALIDATION.md)).
-  - *MetaGen* — the `MetagenDataPanel` boundary form plus item/candidate review
-    (see [FRONTEND_METAGEN](FRONTEND_METAGEN.md#per-dataset-dataurn-metagen-panel)).
+  - *MetaGen* — the `MetagenDataPanel`, with a **Boundary Config** sub-section
+    (`GET/PUT/PATCH …/attr/metagen/boundary`; its `is_enabled` + `allowed` fields wrapped in an
+    outlined group box) and a **Generated Items** sub-section (`GET …/attr/metagen/item`,
+    item/candidate review) (see
+    [FRONTEND_METAGEN](FRONTEND_METAGEN.md#per-dataset-dataurn-metagen-panel)).
   - *Events* — the unified [EventsPanel](#shared-component-notes): one table over
     `GET …/event` (the complete per-dataset timeline — ingestion runs ∪ validation ∪ metagen,
     newest first), driven by an [EventMajorTypeFilter](#shared-component-notes) (default all

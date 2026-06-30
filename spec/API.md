@@ -228,7 +228,7 @@ this single per-dataset path.
 
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|
-| `GET` | `/spoke/common/data` | Paginated catalog of every registered dataset (`dataset_registry`, the same base set as `/ingestion/unmanaged` and `/metagen/uncovered`). Each row carries `dataset_urn`; `ingestion` (`{source_id, name, mode}`, or `null` when no source covers the dataset); and `metagen` (a list of `{conf_id, name}` for enabled metagen confs whose `dataset_filter` matches the dataset — possibly empty). Composes the per-dataset ingestion reverse-lookup and the metagen filter-match views over one registry page. Paginated (`offset`/`limit`/`total_count`), sortable by `dataset_urn` (`dataset_urn`/`dataset_urn_desc`, default `dataset_urn_asc`) | Data Resource | — |
+| `GET` | `/spoke/common/data` | Paginated catalog of every registered dataset (`dataset_registry`, the same base set as `/ingestion/unmanaged` and `/metagen/uncovered`). Each row carries `dataset_urn`; `ingestion` (a list of `{source_id, name, mode, platform}` for **every** source that covers the dataset — empty when none, since `ingestion_source_dataset` is keyed `(source_id, dataset_urn)` and a dataset may be covered by several sources); `validation` (`{covered}`, `true` when a validation conf exists for the dataset); and `metagen` (a list of `{conf_id, name}` for enabled metagen confs whose `dataset_filter` matches the dataset — possibly empty). Composes the per-dataset ingestion reverse-lookup (all sources), the validation-coverage set, and the metagen filter-match views over one registry page. Paginated (`offset`/`limit`/`total_count`), sortable by `dataset_urn` (`dataset_urn`/`dataset_urn_desc`, default `dataset_urn_asc`) | Data Resource | — |
 | `GET` | `/spoke/common/data/{dataset_urn}` | Get dataset summary (identity, owner, tags) | Data Resource | — |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr` | Get dataset attributes (schema summary, ownership, tags) | Data Resource | — |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/ingestion` | Reverse-lookup (read-only): the source that covers this dataset, its `mode`, and the latest run (spanning the source's own runs and those booked on its internal wrappers). Ingestion is configured per-source under `/spoke/ingestion/sources` | Ingestion Control | UC1 |
@@ -513,7 +513,7 @@ validation.
 
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|
-| `GET` | `/spoke/governance/metric` | List all metrics (paginated, sortable by `created_at`/`updated_at`/`title` (default `created_at_desc`); filterable by `metric_type`, `mode`, `is_enabled`). The display label is `title` — `metric_definitions` has no `name` column | Governance | UC5 |
+| `GET` | `/spoke/governance/metric` | List all metrics (paginated, sortable by `created_at`/`updated_at`/`title` (default `created_at_desc`); filterable by `metric_type`, `mode`, `is_enabled`). The display label is `title` — `metric_definitions` has no `name` column. Each row also carries `last_run_at` (the `occurred_at` of the latest `METRIC.RUN_COMPLETE` event for the metric, or `null` when it has never completed a run) | Governance | UC5 |
 | `POST` | `/spoke/governance/metric` | Create a metric; `metric_id` supplied in body. Returns `409 METRIC_EXISTS` on a colliding id, `501 NOT_IMPLEMENTED` when `mode: "passive"` | Governance | UC5 |
 | `GET` | `/spoke/governance/metric/{metric_id}` | Get metric summary (identity, mode, metric_type, enabled status) | Governance | UC5 |
 | `GET` | `/spoke/governance/metric/{metric_id}/attr` | Get metric attributes overview (`id`, `title`, mode, metric_type, schedule_tier, enabled status, latest `values`, `latest_measured_at`) | Governance | UC5 |
@@ -541,7 +541,7 @@ instead of a JWT.
 | Method | Path | Body | Response | Auth |
 |--------|------|------|----------|------|
 | `POST` | `/admin/dags/verify` | — | `{found, missing, total_expected}` | JWT + Admin role |
-| `GET` | `/admin/dags` | — | `{groups: [{group, paused, mixed, dags: [{dag_id, paused}]}]}` — schedule (paused) state of the five controllable DAG groups. A fixed status object, **not** a record collection: no pagination or `sort` | JWT + Admin role |
+| `GET` | `/admin/dags` | — | `{groups: [{group, paused, mixed, dags: [{dag_id, paused}]}]}` — schedule (paused) state of the six controllable DAG groups. A fixed status object, **not** a record collection: no pagination or `sort` | JWT + Admin role |
 | `PATCH` | `/admin/dags/{group}` | `{paused: bool}` | updated group status `{group, paused, mixed, dags: [{dag_id, paused}]}` | JWT + Admin role |
 | `GET` | `/admin/conf` | — | runtime config (behavioral tunables + `updated_at`) | JWT + Admin role |
 | `PATCH` | `/admin/conf` | partial conf fields | updated runtime config | JWT + Admin role |
@@ -566,12 +566,13 @@ Langfuse, SMTP) and from `/admin/conf` (behavioral **tunables**). Airflow is not
 a DAG's paused state and a feature's conf-level enablement are independent — a paused DAG never
 fires regardless of enabled confs, and an unpaused DAG still skips disabled confs at run time.
 
-The five controllable groups and their member DAGs (the group→DAG map is owned by the backend;
+The six controllable groups and their member DAGs (the group→DAG map is owned by the backend;
 see [`spec/feature/BACKEND.md` §DAG Catalogue](feature/BACKEND.md#dag-catalogue)):
 
 | `group` | Member DAGs |
 |---------|-------------|
 | `datahub_sync` | `datahub-sync-hourly` |
+| `auth_role_sync` | `auth-role-sync-daily` |
 | `ingestion_active` | `ingestion-active-{hourly,daily,weekly}` |
 | `ontogen` | `ontogen-{hourly,daily,weekly}` |
 | `metagen` | `metagen-{hourly,daily,weekly}` |
@@ -892,7 +893,7 @@ Clients should treat `detail` as optional; absent for errors that don't need it.
 | `SECRET_REF_MALFORMED` | 422 | A `${name__key}` reference in a recipe has no `__` separator or an empty name/key segment |
 | `SECRET_REF_NOT_FOUND` | 422 | A recipe's `${name__key}` references a `dataspoke-source-cred-<name>` Secret or `key` that does not exist at source save (also surfaces as a run-time `status="error"` if deleted later) |
 | `METRIC_NOT_FOUND` | 404 | Metric ID does not exist |
-| `DAG_GROUP_NOT_FOUND` | 404 | `PATCH /admin/dags/{group}` references a group that is not one of `datahub_sync`/`ingestion_active`/`ontogen`/`metagen`/`metrics` |
+| `DAG_GROUP_NOT_FOUND` | 404 | `PATCH /admin/dags/{group}` references a group that is not one of `datahub_sync`/`auth_role_sync`/`ingestion_active`/`ontogen`/`metagen`/`metrics` |
 | `DUPLICATE_CONFIG` | 409 | Config with same name already exists |
 | `INGESTION_SOURCE_READONLY` | 409 | Create/update/delete attempted on a `DATAHUB_MANAGED` source; DataHub is SSOT, so it is synced down and read-only in DataSpoke |
 | `INGESTION_RUN_NOT_APPLICABLE` | 409 | `…/sources/{id}/method/run` called on a non-`ACTIVE_CUSTOM_MANAGED` source; only DataSpoke-managed sources have a DataSpoke-side run pipeline |

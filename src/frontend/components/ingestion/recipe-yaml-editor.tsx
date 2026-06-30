@@ -64,7 +64,7 @@ const SECRET_REF_TEST_RE = /^\$\{[^}]*__[^}]*\}$/;
 function HighlightedYaml({ text }: { text: string }) {
   const parts = text.split(SECRET_REF_SPLIT_RE);
   return (
-    <pre className="overflow-auto rounded-md border bg-muted/40 p-4 font-mono text-xs leading-relaxed whitespace-pre-wrap">
+    <pre className="max-h-[30rem] overflow-auto rounded-md border bg-muted/40 p-4 font-mono text-xs leading-relaxed whitespace-pre-wrap">
       {parts.map((part, i) =>
         SECRET_REF_TEST_RE.test(part) ? (
           <span

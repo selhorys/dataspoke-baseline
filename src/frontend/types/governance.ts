@@ -41,11 +41,20 @@ export interface MetricDefinition {
   updated_at: string;
 }
 
+/**
+ * List-only row shape. Adds `last_run_at` (derived from the latest
+ * METRIC.RUN_COMPLETE event) — present only on the list response, not on the
+ * single-GET / CRUD MetricDefinition.
+ */
+export interface MetricDefinitionListItem extends MetricDefinition {
+  last_run_at: string | null;
+}
+
 export interface MetricDefinitionListResponse {
   offset: number;
   limit: number;
   total_count: number;
-  metrics: MetricDefinition[];
+  metrics: MetricDefinitionListItem[];
 }
 
 export interface MetricResult {

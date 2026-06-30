@@ -19,12 +19,15 @@ from tests.unit.api.conftest import auth_headers
 _METRIC_RUN_URL = "/api/v1/spoke/governance/metric/{metric_id}/method/run"
 _METRIC_CONF_URL = "/api/v1/spoke/governance/metric/{metric_id}/attr/conf"
 _METRIC_CREATE_URL = "/api/v1/spoke/governance/metric"
+_METRIC_LIST_URL = "/api/v1/spoke/governance/metric"
+_METRIC_GET_URL = "/api/v1/spoke/governance/metric/{metric_id}"
 
 
 def _make_definition_record(
     metric_id: str = "ingestion-freshness",
     is_enabled: bool = True,
     metric_conf: dict | None = None,
+    last_run_at: datetime | None = None,
 ) -> MagicMock:
     rec = MagicMock()
     rec.id = metric_id
@@ -39,6 +42,7 @@ def _make_definition_record(
     rec.is_enabled = is_enabled
     rec.created_at = datetime.now(tz=UTC)
     rec.updated_at = datetime.now(tz=UTC)
+    rec.last_run_at = last_run_at
     return rec
 
 
@@ -69,6 +73,67 @@ def override_dependencies(mock_service: AsyncMock, mock_airflow: AsyncMock, mock
     app.dependency_overrides.pop(get_metrics_service, None)
     app.dependency_overrides.pop(get_airflow_client, None)
     app.dependency_overrides.pop(get_redis, None)
+
+
+# ── GET /spoke/governance/metric — list (last_run_at exposure) ───────────────────────
+
+
+@pytest.mark.asyncio
+async def test_get_metric_list_row_carries_last_run_at(
+    client,
+    mock_service: AsyncMock,
+) -> None:
+    """GET /spoke/governance/metric list rows surface last_run_at from the record.
+
+    Spec: spec/API.md §Metric — GET /spoke/governance/metric — each row carries
+          last_run_at (occurred_at of the latest METRIC.RUN_COMPLETE, null when
+          never run).
+    """
+    last_run = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
+    ran = _make_definition_record(metric_id="has-run", last_run_at=last_run)
+    never = _make_definition_record(metric_id="never-run", last_run_at=None)
+    mock_service.list_metrics = AsyncMock(return_value=([ran, never], 2))
+
+    resp = await client.get(_METRIC_LIST_URL, headers=auth_headers())
+
+    assert resp.status_code == 200, resp.text
+    rows = {r["id"]: r for r in resp.json()["metrics"]}
+    assert "last_run_at" in rows["has-run"], (
+        "list rows must carry last_run_at. Spec: spec/API.md §Metric — list row."
+    )
+    served = datetime.fromisoformat(rows["has-run"]["last_run_at"].replace("Z", "+00:00"))
+    assert served == last_run, (
+        f"last_run_at must echo the record's value; got {rows['has-run']['last_run_at']!r}."
+    )
+    assert rows["never-run"]["last_run_at"] is None, (
+        "a metric with no completed run must serialize last_run_at=null. "
+        "Spec: spec/API.md §Metric — null when never run."
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_metric_single_omits_last_run_at(
+    client,
+    mock_service: AsyncMock,
+) -> None:
+    """GET /spoke/governance/metric/{id} uses the bare definition response and does
+    NOT expose last_run_at (a list-row-only field).
+
+    Spec: spec/feature/BACKEND.md §Metrics Service — last_run_at is list-row-only.
+    Spec: spec/API.md §Metric — single-GET returns the bare definition.
+    """
+    rec = _make_definition_record(metric_id="ingestion-freshness")
+    mock_service.get_metric = AsyncMock(return_value=rec)
+
+    resp = await client.get(
+        _METRIC_GET_URL.format(metric_id="ingestion-freshness"), headers=auth_headers()
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert "last_run_at" not in resp.json(), (
+        "single-GET must not expose last_run_at (list-row-only field). "
+        "Spec: spec/feature/BACKEND.md §Metrics Service."
+    )
 
 
 # ── POST /spoke/governance/metric — create ───────────────────────────────────────────

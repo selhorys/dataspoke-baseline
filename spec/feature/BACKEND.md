@@ -173,16 +173,23 @@ Does not own any PostgreSQL configuration tables.
 **Dataset catalog (`list_datasets` → `GET /data`)**: the cross-feature collection root.
 It pages `dataset_registry` in SQL first (offset/limit/total_count, sortable by `dataset_urn`
 via `parse_sort` — the same registry-paging pattern as `/ingestion/unmanaged`), then resolves
-ingestion and metagen coverage **only for the page's URNs**, so cost is bounded by page size,
-not by the whole registry. Coverage is composed from two sibling services: `IngestionService`
-(already held for the unified timeline) and `MetagenService`. Each row carries `dataset_urn`,
-the `ingestion` summary (`{source_id, name, mode}` or `null`), and the `metagen` conf list
-(`[{conf_id, name}]`, possibly empty).
+ingestion, validation, and metagen coverage **only for the page's URNs**, so cost is bounded by
+page size, not by the whole registry. Coverage is composed from sibling services: `IngestionService`
+(already held for the unified timeline) and `MetagenService`, plus a direct validation-coverage
+lookup. Each row carries `dataset_urn`, the `ingestion` source list
+(`[{source_id, name, mode, platform}]`, empty when no source covers the dataset), the `validation`
+summary (`{covered}`), and the `metagen` conf list (`[{conf_id, name}]`, possibly empty).
 
-- **`IngestionService.reverse_lookup_batch(urns)`** — batched reverse-lookup that resolves the
-  covering source per URN in two queries (one over `IngestionSourceDataset` filtered by
-  `dataset_urn IN urns` with the existing per-URN priority key, one over the parent
-  `IngestionSource` rows), avoiding the per-URN N+1 of calling `reverse_lookup` in a loop.
+- **`IngestionService.reverse_lookup_all_batch(urns)`** — batched reverse-lookup that resolves
+  **every** covering source per URN in two queries (one over `IngestionSourceDataset` filtered by
+  `dataset_urn IN urns`, one over the parent `IngestionSource` rows to pull `name`, `mode`, and
+  `platform`), grouped per URN. Because `ingestion_source_dataset` is keyed `(source_id,
+  dataset_urn)`, a dataset may be covered by several sources; this method returns all of them
+  rather than collapsing to a single priority winner. Avoids the per-URN N+1 of calling
+  `reverse_lookup` in a loop.
+- **Validation coverage** — a single batch query (`SELECT dataset_urn FROM validation_configs
+  WHERE dataset_urn IN (...)`) over the page's URN list; membership in the result set drives the
+  per-URN `validation.covered` flag. Mirrors the ingestion batch pattern (one extra query per page).
 - **`MetagenService.match_confs_for_urns(urns)`** — inverts the enabled-conf `dataset_filter`
   resolution into a `urn → [{conf_id, name}]` map. It iterates each enabled conf once,
   resolves its scope via `resolve_dataset_scope` (the same matcher `list_uncovered` uses), and
@@ -962,6 +969,16 @@ definition only (`replace_metric_config` raises `404 METRIC_NOT_FOUND` when abse
 not create. `PATCH` applies a partial update. The factory-default bootstrap inserts rows
 directly and is unaffected by the create route.
 
+**List `last_run_at`**: `list_metrics` (→ `GET /spoke/governance/metric`) augments each row with
+`last_run_at`, the `occurred_at` of the latest `METRIC.RUN_COMPLETE` event for the metric (`null`
+when it has never completed a run). It is resolved in a page-bounded batch lookup: one grouped
+query (`SELECT entity_id, MAX(occurred_at) ... WHERE entity_type='metric' AND
+event_type='METRIC.RUN_COMPLETE' AND entity_id IN (page ids) GROUP BY entity_id`) returns the
+newest run per metric on the page; the `events(entity_type, entity_id, occurred_at DESC)` index
+serves it without a per-row N+1. `last_run_at` is a list-row-only field (carried by the
+`MetricDefinitionListItem` schema); single-GET, `attr/conf`, create, replace, and patch
+responses use the bare `MetricDefinitionResponse` and do not expose it.
+
 **Mode**: `active` runs the built-in measurer matching `metric_type`. `passive` is
 rejected in the route handler with `501 NOT_IMPLEMENTED` — placeholder for ingesting
 results emitted by an external system, deferred to a future release.
@@ -1178,13 +1195,14 @@ Every periodic DAG ships `is_paused_upon_creation=True`; nothing unpauses it
 automatically. Operators control schedules through `GET`/`PATCH /admin/dags`,
 which proxies Airflow's per-DAG `is_paused` flag. Airflow is the SSOT for paused
 state — DataSpoke stores no copy (no DB column, no runtime-config field). The
-routes expose five **groups**, each backed by a fixed list of member DAGs (the
+routes expose six **groups**, each backed by a fixed list of member DAGs (the
 group→DAG map is the single source of truth, owned by the admin DAG-control
 service):
 
 | `group` | Member DAGs |
 |---------|-------------|
 | `datahub_sync` | `datahub-sync-hourly` |
+| `auth_role_sync` | `auth-role-sync-daily` |
 | `ingestion_active` | `ingestion-active-hourly`, `ingestion-active-daily`, `ingestion-active-weekly` |
 | `ontogen` | `ontogen-hourly`, `ontogen-daily`, `ontogen-weekly` |
 | `metagen` | `metagen-hourly`, `metagen-daily`, `metagen-weekly` |
@@ -1195,7 +1213,7 @@ each group: `paused` is `true` only when **all** members are paused; `mixed` is
 `true` when members disagree. `PATCH /admin/dags/{group}` sets `is_paused` on
 every member DAG of the group. An unknown group raises `404 DAG_GROUP_NOT_FOUND`;
 an Airflow transport failure raises `503 AIRFLOW_UNAVAILABLE`. The on-demand
-`metrics` DAG and `auth-role-sync-daily` are not group-controllable. Paused state
+`metrics` DAG is not group-controllable. Paused state
 is independent of conf-level enablement: pausing a group stops its schedule
 entirely, while leaving it unpaused still skips disabled confs at run time.
 

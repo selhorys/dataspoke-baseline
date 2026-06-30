@@ -9,10 +9,11 @@ import { Skeleton } from "@/components/ui/skeleton";
 import type { DagGroup, DagGroupStatus } from "@/lib/api/types";
 
 // Fixed group order + labels — verbatim from spec/API.md §/admin/dags. The page
-// invents no rows: it renders exactly these five groups in this order, looking up
+// invents no rows: it renders exactly these groups in this order, looking up
 // each group's status from the GET /admin/dags response.
 const GROUPS: { group: DagGroup; label: string }[] = [
   { group: "datahub_sync", label: "DataHub hourly sync" },
+  { group: "auth_role_sync", label: "Auth role sync" },
   { group: "ingestion_active", label: "Active ingestion" },
   { group: "ontogen", label: "Ontology generation" },
   { group: "metagen", label: "Metadata generation" },

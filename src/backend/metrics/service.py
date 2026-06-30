@@ -64,6 +64,7 @@ class MetricDefinitionRecord(BaseModel):
     is_enabled: bool
     created_at: datetime
     updated_at: datetime
+    last_run_at: datetime | None = None
 
 
 class MetricResultRecord(BaseModel):
@@ -84,7 +85,9 @@ class MetricRunResult(BaseModel):
     detail: dict[str, Any]
 
 
-def _definition_from_row(row: MetricDefinition) -> MetricDefinitionRecord:
+def _definition_from_row(
+    row: MetricDefinition, last_run_at: datetime | None = None
+) -> MetricDefinitionRecord:
     return MetricDefinitionRecord(
         id=row.id,
         mode=row.mode,
@@ -98,6 +101,7 @@ def _definition_from_row(row: MetricDefinition) -> MetricDefinitionRecord:
         is_enabled=row.is_enabled,
         created_at=row.created_at,
         updated_at=row.updated_at,
+        last_run_at=last_run_at,
     )
 
 
@@ -155,7 +159,26 @@ class MetricsService:
         result = await self._db.execute(rows_q)
         rows = result.scalars().all()
 
-        return [_definition_from_row(r) for r in rows], total_count
+        # last_run_at: newest METRIC.RUN_COMPLETE per metric, resolved for ONLY the
+        # page's ids in one batch query (page-bounded, mirrors the catalog pattern).
+        metric_ids = [r.id for r in rows]
+        last_run_by_id: dict[str, datetime] = {}
+        if metric_ids:
+            lr_q = (
+                select(Event.entity_id, func.max(Event.occurred_at))
+                .where(
+                    Event.entity_type == "metric",
+                    Event.event_type == METRIC_RUN_COMPLETE,
+                    Event.entity_id.in_(metric_ids),
+                )
+                .group_by(Event.entity_id)
+            )
+            lr_result = await self._db.execute(lr_q)
+            last_run_by_id = {eid: ts for eid, ts in lr_result.all()}
+
+        return [
+            _definition_from_row(r, last_run_at=last_run_by_id.get(r.id)) for r in rows
+        ], total_count
 
     async def get_metric(self, metric_id: str) -> MetricDefinitionRecord:
         result = await self._db.execute(

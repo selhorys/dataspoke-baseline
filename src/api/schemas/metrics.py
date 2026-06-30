@@ -145,8 +145,25 @@ class MetricDefinitionResponse(SingleResponse):
     updated_at: datetime = Field(description="UTC timestamp of the most recent update")
 
 
+class MetricDefinitionListItem(MetricDefinitionResponse):
+    """List-row variant of the metric definition.
+
+    Adds ``last_run_at`` — a list-only field derived from the latest
+    METRIC.RUN_COMPLETE event. Single-GET / conf / create / update / patch use
+    the bare ``MetricDefinitionResponse`` and do NOT expose this field.
+    """
+
+    last_run_at: datetime | None = Field(
+        default=None,
+        description=(
+            "UTC timestamp of the latest METRIC.RUN_COMPLETE event for this metric, "
+            "or null when it has never completed a run. Present on list rows only."
+        ),
+    )
+
+
 class MetricDefinitionListResponse(PaginatedResponse):
-    metrics: list[MetricDefinitionResponse] = Field(
+    metrics: list[MetricDefinitionListItem] = Field(
         default=[], description="Page of metric definition records"
     )
 

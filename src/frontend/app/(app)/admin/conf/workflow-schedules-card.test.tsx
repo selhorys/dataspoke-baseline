@@ -58,6 +58,7 @@ function groupsResponse(groups: DagGroupStatus[]): DagGroupsResponse {
 
 const ALL_ENABLED = groupsResponse([
   status("datahub_sync", false),
+  status("auth_role_sync", false),
   status("ingestion_active", false),
   status("ontogen", false),
   status("metagen", false),
@@ -75,19 +76,33 @@ beforeEach(() => {
 });
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
-describe("WorkflowSchedulesCard — renders five group toggles (FRONTEND_BASIC.md §Workflow schedules)", () => {
-  it("renders all five labelled DAG-group checkboxes", () => {
+describe("WorkflowSchedulesCard — renders six group toggles (FRONTEND_BASIC.md §Workflow schedules)", () => {
+  it("renders all six labelled DAG-group checkboxes and no extra/missing group", () => {
     render(<WorkflowSchedulesCard />);
+    // spec: API.md §/admin/dags + FRONTEND_BASIC §Workflow schedules — the DagGroup
+    // set is exactly these six. Each label appears verbatim.
     expect(screen.getByText("DataHub hourly sync")).toBeTruthy();
+    expect(screen.getByText("Auth role sync")).toBeTruthy();
     expect(screen.getByText("Active ingestion")).toBeTruthy();
     expect(screen.getByText("Ontology generation")).toBeTruthy();
     expect(screen.getByText("Metadata generation")).toBeTruthy();
     expect(screen.getByText("Metrics")).toBeTruthy();
 
-    const boxes = (["datahub_sync", "ingestion_active", "ontogen", "metagen", "metrics"] as DagGroup[]).map(
-      (g) => document.getElementById(`dag-group-${g}`),
-    );
+    const boxes = (
+      [
+        "datahub_sync",
+        "auth_role_sync",
+        "ingestion_active",
+        "ontogen",
+        "metagen",
+        "metrics",
+      ] as DagGroup[]
+    ).map((g) => document.getElementById(`dag-group-${g}`));
     expect(boxes.every((b) => b !== null)).toBe(true);
+
+    // Exact-count guard: exactly six group checkboxes — a dropped (e.g. auth_role_sync)
+    // or a phantom group would change this count and fail the test.
+    expect(document.querySelectorAll('[id^="dag-group-"]').length).toBe(6);
   });
 
   it("renders an unpaused group as checked (checked = unpaused)", () => {
@@ -125,6 +140,32 @@ describe("WorkflowSchedulesCard — renders five group toggles (FRONTEND_BASIC.m
     });
     render(<WorkflowSchedulesCard />);
     expect(dagState("dag-group-ingestion_active")).toBe("indeterminate");
+  });
+});
+
+describe("WorkflowSchedulesCard — auth_role_sync group row (API.md §/admin/dags DagGroup)", () => {
+  it("renders the 'Auth role sync' labelled checkbox", () => {
+    render(<WorkflowSchedulesCard />);
+    // spec: API.md §/admin/dags — DagGroup includes auth_role_sync.
+    expect(screen.getByText("Auth role sync")).toBeTruthy();
+    expect(document.getElementById("dag-group-auth_role_sync")).not.toBeNull();
+  });
+
+  it("renders the auth_role_sync group as checked when unpaused", () => {
+    render(<WorkflowSchedulesCard />);
+    expect(dagState("dag-group-auth_role_sync")).toBe("checked");
+  });
+
+  it("toggling the enabled auth_role_sync group sends {paused: true}", async () => {
+    const user = userEvent.setup();
+    render(<WorkflowSchedulesCard />);
+
+    await user.click(document.getElementById("dag-group-auth_role_sync")!);
+
+    await waitFor(() => expect(mockMutate).toHaveBeenCalled());
+    const arg = mockMutate.mock.calls[0][0] as { group: DagGroup; paused: boolean };
+    expect(arg.group).toBe("auth_role_sync");
+    expect(arg.paused).toBe(true);
   });
 });
 

@@ -36,8 +36,15 @@ class DatahubSyncRequest(BaseModel):
 
 # ── DAG schedule control ───────────────────────────────────────────────────────
 
-# The five controllable DAG groups (operational schedule control via Airflow).
-DagGroup = Literal["datahub_sync", "ingestion_active", "ontogen", "metagen", "metrics"]
+# The controllable DAG groups (operational schedule control via Airflow).
+DagGroup = Literal[
+    "datahub_sync",
+    "auth_role_sync",
+    "ingestion_active",
+    "ontogen",
+    "metagen",
+    "metrics",
+]
 
 
 class DagDetail(BaseModel):

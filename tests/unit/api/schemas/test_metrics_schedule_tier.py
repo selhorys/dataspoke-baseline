@@ -22,10 +22,11 @@ from pydantic import ValidationError
 
 from src.api.schemas.metrics import (
     CreateMetricConfigRequest,
+    MetricDefinitionListItem,
+    MetricDefinitionResponse,
     PatchMetricConfigRequest,
     ReplaceMetricConfigRequest,
 )
-
 
 _DATASET_FILTER_LIST_CAP = 1000
 
@@ -433,7 +434,7 @@ class TestCreateMetricConfigRequest:
     # ── Inherited validators fire ─────────────────────────────────────────────
 
     def test_inherited_metric_conf_validator_fires(self) -> None:
-        """CreateMetricConfigRequest inherits metric_conf validation from ReplaceMetricConfigRequest.
+        """CreateMetricConfigRequest inherits metric_conf validation from the replace body.
 
         Spec: spec/API.md §Metric — ingestion-freshness requires time_window_sec;
               CreateMetricConfigRequest must apply the same rules as ReplaceMetricConfigRequest.
@@ -466,14 +467,18 @@ class TestCreateMetricConfigRequest:
             f"urn:li:dataset:(urn:li:dataPlatform:postgres,db.t{i},PROD)"
             for i in range(_DATASET_FILTER_LIST_CAP + 1)
         ]
-        body = {**_VALID_INGESTION_BODY, "metric_id": "my-metric", "dataset_filter": {"dataset_urns": over_cap}}
+        body = {
+            **_VALID_INGESTION_BODY,
+            "metric_id": "my-metric",
+            "dataset_filter": {"dataset_urns": over_cap},
+        }
         with pytest.raises(ValidationError):
             CreateMetricConfigRequest(**body)
 
     # ── Field set ─────────────────────────────────────────────────────────────
 
     def test_field_set_includes_metric_id(self) -> None:
-        """CreateMetricConfigRequest has metric_id in addition to all ReplaceMetricConfigRequest fields.
+        """CreateMetricConfigRequest has metric_id plus all replace-body fields.
 
         Spec: spec/USE_CASE_en.md §UC5 §API Mapping — POST /spoke/governance/metric accepts
               metric_id in the request body alongside the definition fields.
@@ -485,3 +490,39 @@ class TestCreateMetricConfigRequest:
             "CreateMetricConfigRequest must include all ReplaceMetricConfigRequest fields."
         )
         assert actual == replace_fields | {"metric_id"}
+
+
+class TestLastRunAtExposure:
+    """``last_run_at`` is a list-row-only field.
+
+    Spec: spec/API.md §Metric — GET /spoke/governance/metric — each list row
+          carries last_run_at; single-GET / attr/conf / create / replace / patch
+          use the bare definition response and do NOT expose it.
+    Spec: spec/feature/BACKEND.md §Metrics Service — last_run_at is a
+          list-row-only field.
+    """
+
+    def test_list_item_exposes_last_run_at(self) -> None:
+        """MetricDefinitionListItem (list-row schema) carries last_run_at."""
+        assert "last_run_at" in MetricDefinitionListItem.model_fields, (
+            "GET /spoke/governance/metric list rows must carry last_run_at. "
+            "Spec: spec/API.md §Metric — list-row last_run_at."
+        )
+
+    def test_definition_response_omits_last_run_at(self) -> None:
+        """The bare MetricDefinitionResponse (single-GET / conf / create / replace /
+        patch) must NOT expose last_run_at."""
+        assert "last_run_at" not in MetricDefinitionResponse.model_fields, (
+            "single-GET / attr/conf / create / replace / patch responses use the "
+            "bare MetricDefinitionResponse and must not expose last_run_at. "
+            "Spec: spec/feature/BACKEND.md §Metrics Service — list-row-only field."
+        )
+
+    def test_list_item_is_superset_of_bare_response(self) -> None:
+        """The list-row schema is the bare response plus exactly last_run_at."""
+        bare = set(MetricDefinitionResponse.model_fields.keys())
+        list_row = set(MetricDefinitionListItem.model_fields.keys())
+        assert list_row == bare | {"last_run_at"}, (
+            "MetricDefinitionListItem must be MetricDefinitionResponse + last_run_at. "
+            "Spec: spec/API.md §Metric — list adds only last_run_at."
+        )

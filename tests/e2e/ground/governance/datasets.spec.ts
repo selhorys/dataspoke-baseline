@@ -6,7 +6,7 @@
  *
  * One concern per test:
  *   1. Navigate from the Governance sidebar group → Datasets lands on
- *      /governance/datasets with the four column headers.
+ *      /governance/datasets with the five column headers (incl. validation).
  *   2. The dataset_urn cell links to the per-dataset hub /data/[urn], and the
  *      datahub cell exposes an external DataHub deep-link (datahubUrl configured
  *      in the dev cluster). Dual-confirmed against GET /spoke/common/data.
@@ -17,8 +17,8 @@
  * datasets are registered before the read-only assertions run. No cleanup required.
  *
  * spec: spec/feature/FRONTEND_GOVERNANCE.md §Datasets — table (dataset_urn →
- *   /data/[urn], datahub → external, ingestion → owning source, metagen → confs)
- *   + Governance sidebar entry.
+ *   /data/[urn], datahub → external, ingestion → covering sources, validation →
+ *   Covered/Uncovered, metagen → confs) + Governance sidebar entry.
  * spec: spec/API.md §Data Resource — GET /spoke/common/data (collection root).
  * spec: spec/TESTING.md §End-to-End (E2E) Testing — ground group; one concern per test.
  */
@@ -90,8 +90,10 @@ test("navigates to the Datasets page from the Governance sidebar group", async (
     page.getByRole("heading", { name: "Datasets", exact: true }),
   ).toBeVisible({ timeout: 10_000 });
 
-  // -- UI assertion: the four column headers render --
-  for (const col of ["dataset_urn", "datahub", "ingestion", "metagen"]) {
+  // -- UI assertion: the five column headers render (validation added) --
+  // spec: FRONTEND_GOVERNANCE.md §Datasets — columns dataset_urn, datahub,
+  // ingestion, validation (Covered/Uncovered), metagen.
+  for (const col of ["dataset_urn", "datahub", "ingestion", "validation", "metagen"]) {
     await expect(page.getByRole("columnheader", { name: col })).toBeVisible({
       timeout: 10_000,
     });

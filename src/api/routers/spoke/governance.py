@@ -18,6 +18,7 @@ from src.api.schemas.events import EventListResponse, EventResponse
 from src.api.schemas.metrics import (
     CreateMetricConfigRequest,
     MetricAttrResponse,
+    MetricDefinitionListItem,
     MetricDefinitionListResponse,
     MetricDefinitionResponse,
     MetricResultListResponse,
@@ -56,6 +57,25 @@ def _definition_response(m: "MetricDefinitionRecord") -> MetricDefinitionRespons
         dataset_filter=m.dataset_filter,
         created_at=m.created_at,
         updated_at=m.updated_at,
+    )
+
+
+def _definition_list_item(m: "MetricDefinitionRecord") -> MetricDefinitionListItem:
+    """Build a LIST-row response carrying ``last_run_at`` (list-only field)."""
+    return MetricDefinitionListItem(
+        id=m.id,
+        mode=m.mode,
+        is_enabled=m.is_enabled,
+        metric_type=m.metric_type,
+        title=m.title,
+        description=m.description,
+        metrics=m.metrics,
+        metric_conf=m.metric_conf,
+        schedule_tier=m.schedule_tier,
+        dataset_filter=m.dataset_filter,
+        created_at=m.created_at,
+        updated_at=m.updated_at,
+        last_run_at=m.last_run_at,
     )
 
 
@@ -122,7 +142,7 @@ async def get_metric_list(
         offset=offset,
         limit=limit,
         total_count=total_count,
-        metrics=[_definition_response(m) for m in metrics],
+        metrics=[_definition_list_item(m) for m in metrics],
     )
 
 

@@ -565,8 +565,8 @@ test("UC4 step 3 — opt eu_profiles and orders.events in via per-dataset bounda
   });
 
   // -- UI assertion: boundary section heading present --
-  // metagen-data-panel.tsx: <h3>attr/metagen/boundary</h3> (matched via getByText)
-  await expect(page.getByText("attr/metagen/boundary", { exact: true })).toBeVisible({
+  // metagen-data-panel.tsx: <h3>Boundary Config</h3> (matched via getByText)
+  await expect(page.getByText("Boundary Config", { exact: true })).toBeVisible({
     timeout: 10_000,
   });
 
@@ -829,9 +829,9 @@ test("UC4 step 7 — approve eu_profiles dataset.description candidate (conf_nam
   });
 
   // -- UI assertion: items section + dataset.description foldable panel --
-  // metagen-data-panel.tsx: <h3>attr/metagen/item</h3> + a CollapsiblePanel titled
+  // metagen-data-panel.tsx: <h3>Generated Items</h3> + a CollapsiblePanel titled
   //   "dataset.description" (default-open) holding the ItemKindTable.
-  await expect(page.getByText("attr/metagen/item", { exact: true })).toBeVisible({
+  await expect(page.getByText("Generated Items", { exact: true })).toBeVisible({
     timeout: 10_000,
   });
   await expect(

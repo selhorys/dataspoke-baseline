@@ -40,28 +40,35 @@ export function MetricCard({ metric, range }: MetricCardProps) {
 
   return (
     <Card className="w-full" data-testid={`metric-card-${metric.id}`}>
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-medium">{metric.title}</CardTitle>
+      <CardHeader className="gap-1.5 pb-3">
+        <CardTitle className="text-lg font-semibold leading-tight">
+          {metric.title}
+        </CardTitle>
         <Badge variant="outline" className="w-fit text-xs">
           {metric.metric_type}
         </Badge>
       </CardHeader>
-      <CardContent className="space-y-3">
+      <CardContent className="space-y-4">
         {isLoading ? (
-          <div className="space-y-1.5">
-            <Skeleton className="h-4 w-24" />
-            <Skeleton className="h-4 w-20" />
-            <Skeleton className="h-3 w-28" />
+          <div className="space-y-2">
+            <Skeleton className="h-5 w-28" />
+            <Skeleton className="h-3 w-24" />
           </div>
         ) : latest ? (
-          <div className="space-y-1">
-            {Object.entries(latest.values).map(([key, val]) => (
-              <p key={key} className="text-sm">
-                <span className="font-medium">{key}</span>
-                <span className="ml-2 tabular-nums">{val}</span>
-              </p>
-            ))}
-            <p className="mt-1 text-xs text-muted-foreground">{formatDate(latest.measured_at, tz)}</p>
+          <div className="space-y-2">
+            <div className="flex flex-wrap gap-x-6 gap-y-2">
+              {Object.entries(latest.values).map(([key, val]) => (
+                <div key={key} className="flex flex-col">
+                  <span className="text-xs text-muted-foreground">{key}</span>
+                  <span className="text-xl font-semibold tabular-nums leading-tight">
+                    {val}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {formatDate(latest.measured_at, tz)}
+            </p>
           </div>
         ) : (
           <p className="text-sm text-muted-foreground">No results yet.</p>

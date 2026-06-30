@@ -87,6 +87,19 @@ beforeEach(() => {
   mockDelete.mockReturnValue({ mutate: deleteMutate, isPending: false });
 });
 
+// ── Section titles ──────────────────────────────────────────────────────────────
+describe("MetagenDataPanel — section titles", () => {
+  it("renders the 'Boundary Config' and 'Generated Items' section headings", () => {
+    // spec: FRONTEND_BASIC.md §Per-dataset page / FRONTEND_METAGEN §Per-dataset —
+    // attr/metagen/boundary → "Boundary Config"; attr/metagen/item → "Generated Items".
+    mockBoundary.mockReturnValue({ data: makeBoundary(), isLoading: false });
+    render(<MetagenDataPanel datasetUrn={DATASET_URN} />);
+
+    expect(screen.getByRole("heading", { name: "Boundary Config" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Generated Items" })).toBeTruthy();
+  });
+});
+
 // ── No boundary (null) → create form + Save boundary only ───────────────────────
 describe("MetagenDataPanel — no boundary", () => {
   it("shows only Save boundary in the cluster (no Edit/Cancel/Delete)", () => {

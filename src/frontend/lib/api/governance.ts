@@ -114,6 +114,7 @@ export function useLatestMetricResult(metricId: string) {
 interface MetricEventParams {
   from?: string;
   to?: string;
+  offset?: number;
   limit?: number;
   sort?: string;
 }
@@ -122,6 +123,7 @@ function buildMetricEventUrl(metricId: string, params: MetricEventParams): strin
   const sp = new URLSearchParams();
   if (params.from) sp.set("from", params.from);
   if (params.to) sp.set("to", params.to);
+  if (params.offset !== undefined) sp.set("offset", String(params.offset));
   if (params.limit !== undefined) sp.set("limit", String(params.limit));
   if (params.sort) sp.set("sort", params.sort);
   const qs = sp.toString();

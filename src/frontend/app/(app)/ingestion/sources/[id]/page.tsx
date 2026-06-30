@@ -37,6 +37,7 @@ import {
 } from "@/lib/ingestion-mode-variant";
 import { ScheduleTierLink, scheduleDagId } from "@/components/schedule-tier-link";
 import { eventStatusVariant } from "@/lib/event-status-variant";
+import { getRuntimeConfig } from "@/lib/runtime-config";
 import { useDisplayTz } from "@/lib/preferences/timezone";
 import { Pagination, DEFAULT_PAGE_SIZE } from "@/components/pagination";
 import { toast } from "@/components/ui/use-toast";
@@ -62,6 +63,7 @@ export default function IngestionSourceDetailPage({
   // Persisted selection; resolving via useMemo keeps the events query key
   // stable until the selection changes.
   const tz = useDisplayTz();
+  const { datahubUrl } = getRuntimeConfig();
   const { selection: sel, setSelection: setSel } = usePersistedRangeState(
     RANGE_KEYS.ingestionSourceEvents,
   );
@@ -185,11 +187,21 @@ export default function IngestionSourceDetailPage({
         ) : (
           <span className="text-sm text-muted-foreground">delegated</span>
         )}
-        {source.datahub_source_urn && (
-          <span className="truncate font-mono text-xs text-muted-foreground">
-            {source.datahub_source_urn}
-          </span>
-        )}
+        {source.datahub_source_urn &&
+          (datahubUrl ? (
+            <a
+              href={`${datahubUrl}/ingestion/sources?hideSystem=true`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="truncate font-mono text-xs text-muted-foreground hover:text-foreground hover:underline"
+            >
+              {source.datahub_source_urn}
+            </a>
+          ) : (
+            <span className="truncate font-mono text-xs text-muted-foreground">
+              {source.datahub_source_urn}
+            </span>
+          ))}
       </div>
 
       {/* 1. Recipe */}

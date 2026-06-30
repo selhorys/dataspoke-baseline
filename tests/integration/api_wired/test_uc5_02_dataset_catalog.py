@@ -7,16 +7,21 @@ the collection root GET /spoke/common/data (the same base set as
 
 This file exercises the catalog endpoint REST-only:
   - envelope shape (offset/limit/total_count/datasets) + total_count == registry;
-  - row shape (dataset_urn; ingestion {source_id,name,mode}|null; metagen list);
+  - row shape (dataset_urn; ingestion list of {source_id,name,mode,platform};
+    validation {covered}; metagen list);
   - metagen coverage: an enabled conf whose dataset_filter matches a dataset makes
     that dataset's row list the conf; an unmatched dataset's metagen stays empty;
-  - ingestion null for a dataset no source covers (fresh-seed baseline);
+  - validation coverage: a dataset with a validation conf has validation.covered
+    true; a dataset with none has it false;
+  - ingestion empty list ([]) for a dataset no source covers (fresh-seed baseline);
   - pagination envelope + sort=dataset_urn[_desc].
 
-The ingestion-COVERED case ({source_id,name,mode} populated) is exercised by the
-UC1 active-custom run in test_uc1_02_active_custom_postgres.py step 8 (the catalog
-read-back after a real run), where the api-wired pipeline naturally produces a
-covered dataset — not duplicated here.
+The ingestion-COVERED case ({source_id,name,mode,platform} populated for a single
+source) is exercised by the UC1 active-custom run in
+test_uc1_02_active_custom_postgres.py step 8 (the catalog read-back after a real run),
+where the api-wired pipeline naturally produces a covered dataset. The MULTIPLE-source
+case (a dataset covered by several sources) is spot-owned in
+tests/integration/spot/test_common_data_catalog.py — neither is duplicated here.
 
 Prerequisites (spec/TESTING.md §Integration Testing):
   ./helm-charts/bin/install.sh --profile dev --components api --skip-build
@@ -31,6 +36,7 @@ spec: feature/FRONTEND_GOVERNANCE.md §Datasets
 
 import asyncio
 import time
+import urllib.parse
 import uuid
 from collections.abc import AsyncGenerator
 
@@ -133,7 +139,8 @@ async def test_catalog_envelope_and_row_shape(
 
     spec: API.md §Data Resource — GET /spoke/common/data: envelope
     (offset/limit/total_count/datasets); each row carries dataset_urn,
-    ingestion ({source_id,name,mode}|null), metagen (list of {conf_id,name}).
+    ingestion (list of {source_id,name,mode,platform}), validation ({covered}),
+    metagen (list of {conf_id,name}).
     """
     resp = await api_client.get(
         _CATALOG_URL, headers=admin_headers, params={"limit": 200, "offset": 0}
@@ -166,12 +173,22 @@ async def test_catalog_envelope_and_row_shape(
             f"row.dataset_urn must be a non-empty string; got {row.get('dataset_urn')!r}."
         )
         ingestion = row["ingestion"]
-        assert ingestion is None or (
-            isinstance(ingestion, dict)
-            and {"source_id", "name", "mode"} <= set(ingestion)
+        assert isinstance(ingestion, list), (
+            f"row.ingestion must be a list (empty when no source covers it); "
+            f"got {type(ingestion).__name__}. "
+            "spec: API.md §Data Resource — row.ingestion is a list of covering sources"
+        )
+        for src in ingestion:
+            assert {"source_id", "name", "mode", "platform"} <= set(src), (
+                f"each ingestion entry must carry source_id/name/mode/platform; got {src!r}. "
+                "spec: API.md §Data Resource — row.ingestion entry shape"
+            )
+        # validation coverage is a {covered: bool} object on every row.
+        assert isinstance(row["validation"], dict) and isinstance(
+            row["validation"].get("covered"), bool
         ), (
-            f"row.ingestion must be null or carry source_id/name/mode; got {ingestion!r}. "
-            "spec: API.md §Data Resource — row.ingestion shape"
+            f"row.validation must carry a bool 'covered'; got {row.get('validation')!r}. "
+            "spec: API.md §Data Resource — row.validation ({covered})"
         )
         assert isinstance(row["metagen"], list), (
             f"row.metagen must be a list; got {type(row['metagen']).__name__}. "
@@ -183,10 +200,10 @@ async def test_catalog_envelope_and_row_shape(
                 "spec: API.md §Data Resource — row.metagen entry shape"
             )
 
-    # With ingestion_source reset, no source covers any catalog dataset → null.
-    assert title_row["ingestion"] is None, (
-        "title_master ingestion must be null with no ingestion source covering it. "
-        "spec: API.md §Data Resource — row.ingestion is null when unmanaged"
+    # With ingestion_source reset, no source covers any catalog dataset → empty list.
+    assert title_row["ingestion"] == [], (
+        "title_master ingestion must be an empty list with no source covering it. "
+        "spec: API.md §Data Resource — row.ingestion is [] when unmanaged"
     )
 
     # total_count equals the number of rows when a single wide page holds them all.
@@ -265,6 +282,57 @@ async def test_catalog_metagen_coverage(
             await api_client.delete(
                 f"{_METAGEN_CONF_URL}/{conf_id}", headers=admin_headers
             )
+
+
+@pytest.mark.asyncio
+async def test_catalog_validation_coverage(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """A dataset with a validation conf has validation.covered true; a dataset with
+    none has it false.
+
+    spec: API.md §Data Resource — row.validation.covered is true when a validation
+    conf exists for the dataset, false otherwise.
+    """
+    enc_title = urllib.parse.quote(_CATALOG_TITLE_URN, safe="")
+    val_conf_url = f"/api/v1/spoke/common/data/{enc_title}/attr/validation/conf"
+    try:
+        # title_master gets a validation conf → covered; editions keeps none.
+        put = await api_client.put(
+            val_conf_url,
+            headers=admin_headers,
+            json={
+                "description": "UC5 catalog coverage seed",
+                "variables": [{"name": "row_cnt", "description": "row count"}],
+            },
+        )
+        assert put.status_code in (200, 201), (
+            f"PUT validation conf failed: {put.status_code} {put.text}. "
+            "spec: API.md §Validation — PUT attr/validation/conf"
+        )
+
+        resp = await api_client.get(
+            _CATALOG_URL, headers=admin_headers, params={"limit": 200}
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        title_row = _row_for(body, _CATALOG_TITLE_URN)
+        editions_row = _row_for(body, _CATALOG_EDITIONS_URN)
+        assert title_row is not None and editions_row is not None, (
+            "both catalog datasets must be registered and present in the catalog."
+        )
+
+        assert title_row["validation"]["covered"] is True, (
+            "title_master must have validation.covered=true after a conf is created. "
+            "spec: API.md §Data Resource — covered when a validation conf exists"
+        )
+        assert editions_row["validation"]["covered"] is False, (
+            "editions (no validation conf) must have validation.covered=false. "
+            "spec: API.md §Data Resource — uncovered when no conf exists"
+        )
+    finally:
+        await api_client.delete(val_conf_url, headers=admin_headers)
 
 
 @pytest.mark.asyncio
