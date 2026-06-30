@@ -1760,13 +1760,14 @@ class IngestionService:
 
                 event_type = INGESTION_COMPLETE
 
-                # Deduplicate.
+                # Deduplicate on source, event type, timestamp, and dataset URN.
                 dup_result = await self._db.execute(
                     select(Event).where(
                         Event.entity_type == "ingestion_source",
                         Event.entity_id == source_id,
                         Event.event_type == event_type,
                         Event.occurred_at == occurred_at,
+                        Event.detail["dataset_urn"].astext == ds_row.dataset_urn,
                     )
                 )
                 if dup_result.scalar_one_or_none() is not None:

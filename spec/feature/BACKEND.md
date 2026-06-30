@@ -414,7 +414,10 @@ DAG) reconciles all modes:
    - **Identity / dedup = execution-request URN.** One DataSpoke event per execution request,
      **upserted** by its URN — never appended by timestamp. The upsert looks up an existing event for
      the source by `detail->>'execution_request_urn'` and writes at most one row per URN, so repeated
-     syncs and status transitions are idempotent (no per-sync event growth).
+     syncs and status transitions are idempotent (no per-sync event growth). For `PASSIVE`
+     `Operation` observation the identity is the **(source, dataset URN, `occurred_at`)** triple —
+     dedup keys on all three (the dataset URN lives in `detail->>'dataset_urn'`), so two datasets
+     mapped to one source whose Operations share an `occurred_at` each retain their own event.
    - **Status → event** (mirror only executions that reached a real ingestion outcome):
 
      | DataHub status | DataSpoke event |

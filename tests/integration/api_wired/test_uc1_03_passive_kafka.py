@@ -13,11 +13,15 @@ Steps mirror USE_CASE_en.md §UC1 Case 3:
   3. POST /sources/{id}/method/run → 409 INGESTION_RUN_NOT_APPLICABLE (dry and non-dry)
   4. Trigger sync (PASSIVE source now exists) → GET /sources/{id}/datasets maps
      imazon.* topics with derivation=matched
-  5. After-sync negative check — poll GET /spoke/ingestion/unmanaged (≤120s) until
+  5. Passive observation — emit ONE fresh DataHub Operation on imazon.orders.events at
+     millisecond T (via util), poll sync (≤120s), then assert GET /sources/{id}/event
+     carries a fresh passive_observation event for that topic at occurred_at==T (proves the
+     observe-and-mirror path is live; dedup behavior is covered by unit tests, not here).
+  6. After-sync negative check — poll GET /spoke/ingestion/unmanaged (≤120s) until
      both imazon.* topics are ABSENT (they are now mapped to the PASSIVE source)
-  6. GET /sources/{id}/event → 200
+  7. GET /sources/{id}/event → 200
 
-Before/after delta (steps 0 and 5) proves the /unmanaged contract:
+Before/after delta (steps 0 and 6) proves the /unmanaged contract:
   - Step 0: registry is populated + no source maps the topics → they appear in /unmanaged.
   - Step 5: after sync with the PASSIVE source present → they are absent from /unmanaged.
 
@@ -36,6 +40,7 @@ spec: TESTING.md §Api-Wired Integration Tests
 import asyncio
 import time
 from collections.abc import AsyncGenerator
+from datetime import UTC, datetime
 
 import httpx
 import pytest
@@ -92,8 +97,12 @@ async def test_uc1_passive_kafka(
     Before/after delta for /unmanaged:
       - Step 0 (before source): registry populated by sync; imazon.* topics appear in
         /unmanaged because no source maps them yet.
-      - Step 5 (after sync with PASSIVE source present): topics mapped to this source
+      - Step 6 (after sync with PASSIVE source present): topics mapped to this source
         → absent from /unmanaged.
+
+    Step 5 adds the passive-observation assertion: one fresh DataHub Operation on the
+    orders topic at millisecond T must mirror into a passive_observation event at
+    occurred_at==T (a fresh observation, distinct from any seed-time event).
 
     spec: USE_CASE_en.md §UC1 Case 3
     spec: API.md §Ingestion — POST /spoke/ingestion/sources (PASSIVE)
@@ -332,12 +341,102 @@ async def test_uc1_passive_kafka(
                     "spec: BACKEND_SCHEMA.md §ingestion_source_dataset — matched→medium."
                 )
 
-        # ── Step 5: AFTER-SYNC — mapped URNs must be ABSENT from /unmanaged ────
+        # ── Step 5: PASSIVE observation — a fresh Operation mirrors to an event ───
+        # The Imazon Kafka topics are appended to by their external ingestor. Each
+        # append lands in DataHub as an Operation timeseries record. For a PASSIVE
+        # source, the sync sweep observes that Operation on its mapped dataset and
+        # mirrors it as a passive_observation event whose occurred_at is the Operation's
+        # lastUpdatedTimestamp.
+        #
+        # This step emits ONE fresh INSERT Operation on the orders topic and asserts a
+        # corresponding fresh passive_observation event surfaces — proving the
+        # observe-and-mirror path is live. (Dedup behavior is covered exhaustively by the
+        # unit tests; this is not a dedup/collision test.) The emit is a DataHub-side
+        # action via util; the assertion reads stay REST-only (GET /sources/{id}/event).
+        #
+        # spec: USE_CASE_en.md §UC1 Case 3 — "DataSpoke ... syncs results from DataHub"
+        # spec: feature/BACKEND.md §Ingestion Service — Sync step 4 — "For PASSIVE
+        #   sources, observe Operation timeseries on mapped datasets"
+        from tests.integration.util import datahub
+
+        # The test owns T: the fresh Operation's millisecond timestamp. The resulting
+        # passive_observation event's occurred_at must equal T, distinguishing it from any
+        # seed-time observation.
+        T = int(time.time() * 1000)
+        await datahub.emit_operation(_ORDERS_URN, T)
+
+        # occurred_at for a passive_observation event is derived from the Operation's
+        # lastUpdatedTimestamp (== T). Compare instants, not strings: parse both sides to
+        # aware datetimes so trailing-zero / offset formatting differences don't matter.
+        # spec: feature/BACKEND.md §Ingestion Service — Sync step 4 (occurred_at from
+        #   Operation lastUpdatedTimestamp).
+        expected_occurred_at = datetime.fromtimestamp(T / 1000, tz=UTC)
+
+        # Poll: re-trigger sync each iteration so the Operation-observation sweep runs
+        # after DataHub indexes the freshly-emitted timeseries record. Budget ≤120s.
+        poll_interval_step5 = 5.0
+        poll_deadline_step5 = time.time() + 120.0
+        fresh_event: dict | None = None
+        while time.time() < poll_deadline_step5:
+            try:
+                sync_resp_5 = await api_client.post(
+                    "/internal/activities/ingestion/sync",
+                    headers=internal_headers,
+                )
+                assert sync_resp_5.status_code == 200, (
+                    f"POST /internal/activities/ingestion/sync expected 200, "
+                    f"got {sync_resp_5.status_code}: {sync_resp_5.text}"
+                )
+            except Exception:
+                pass  # transient; outer deadline handles retry
+
+            event_resp_5 = await api_client.get(source_event_url, headers=admin_headers)
+            if event_resp_5.status_code == 200:
+                for ev in event_resp_5.json().get("events", []):
+                    detail = ev.get("detail") or {}
+                    if detail.get("source") != "passive_observation":
+                        continue
+                    if detail.get("dataset_urn") != _ORDERS_URN:
+                        continue
+                    raw = ev.get("occurred_at")
+                    if not raw:
+                        continue
+                    occurred_at = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+                    # Source timestamp T is integer-ms, so a sub-millisecond tolerance is
+                    # exact-enough while staying robust to timestamp serialization changes.
+                    if abs((occurred_at - expected_occurred_at).total_seconds()) < 0.001:
+                        fresh_event = ev
+                        break
+                if fresh_event is not None:
+                    break
+            await asyncio.sleep(poll_interval_step5)
+
+        # A fresh Operation on the mapped dataset must surface as a passive_observation
+        # event at occurred_at==T — proving the observe-and-mirror path is live (distinct
+        # from any seed-time event).
+        # spec: feature/BACKEND.md §Ingestion Service — Sync step 4 — observe Operation
+        #   timeseries on mapped datasets.
+        assert fresh_event is not None, (
+            f"A fresh passive_observation event for {_ORDERS_URN} at "
+            f"occurred_at=={expected_occurred_at.isoformat()} (T={T}) must surface after a "
+            f"fresh Operation is emitted and the sync sweep runs. None found within 120s. "
+            "spec: feature/BACKEND.md §Ingestion Service — Sync step 4 — PASSIVE Operation "
+            "observation."
+        )
+        fresh_detail = fresh_event["detail"]
+        assert fresh_detail["source"] == "passive_observation"
+        assert fresh_detail["dataset_urn"] == _ORDERS_URN
+        assert fresh_detail.get("operation_type"), (
+            "passive_observation detail must carry the Operation's operation_type. "
+            "spec: feature/BACKEND.md §Ingestion Service — Sync step 4."
+        )
+
+        # ── Step 6: AFTER-SYNC — mapped URNs must be ABSENT from /unmanaged ────
         # Negative invariant (mapped ⇒ not unmanaged). Poll until both imazon topics
         # leave /unmanaged (mapping commit + ES propagation may take a moment).
         # Bounded: ≤120s. Fails loudly if topics remain unmanaged past the deadline.
         #
-        # The before/after delta (steps 0+5) prevents vacuous passes: if /unmanaged
+        # The before/after delta (steps 0+6) prevents vacuous passes: if /unmanaged
         # were always empty, step 0 would already have failed. Here we assert that
         # the topics — which were confirmed present in step 0 — are now absent after
         # the PASSIVE source maps them.
@@ -346,10 +445,10 @@ async def test_uc1_passive_kafka(
         #   GET /spoke/ingestion/unmanaged"
         # spec: API.md §Ingestion — GET /spoke/ingestion/unmanaged: datasets in DataHub
         #   linked to no source
-        poll_deadline_step5 = time.time() + 120.0
+        poll_deadline_step6 = time.time() + 120.0
         after_unmanaged_urns: set[str] = set()
         mapped_but_still_unmanaged: set[str] = _IMAZON_KAFKA_URNS.copy()
-        while time.time() < poll_deadline_step5:
+        while time.time() < poll_deadline_step6:
             unmanaged_resp = await api_client.get(
                 "/api/v1/spoke/ingestion/unmanaged?limit=500",
                 headers=admin_headers,
@@ -370,9 +469,10 @@ async def test_uc1_passive_kafka(
             "spec: USE_CASE_en.md §UC1 — mapped datasets absent from unmanaged bucket"
         )
 
-        # ── Step 6: GET /sources/{id}/event — events list accessible ─────────
-        # spec: API.md §Ingestion — GET /sources/{id}/event returns event history
-        # For a PASSIVE source with no actual run, the list may be empty but must be 200.
+        # ── Step 7: GET /sources/{id}/event — events list accessible ─────────
+        # spec: API.md §Ingestion — GET /sources/{id}/event returns event history.
+        # After step 5 the list carries the passive_observation events; assert the
+        # endpoint shape (200 + events list) holds.
         event_resp = await api_client.get(source_event_url, headers=admin_headers)
         assert event_resp.status_code == 200, (
             f"GET /sources/{source_id}/event expected 200, "

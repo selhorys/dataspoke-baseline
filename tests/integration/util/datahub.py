@@ -1263,6 +1263,57 @@ async def ingest_kafka_datasets(topics: frozenset[str] | None = None) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Emit: Operation timeseries records (passive-observation source signal)
+# ---------------------------------------------------------------------------
+
+# Imazon Kafka dataset URN observed by the passive ingestion source (UC1-03).
+ORDERS_KAFKA_URN = _make_kafka_urn("imazon.orders.events")
+
+
+async def emit_operation(
+    dataset_urn: str,
+    last_updated_ts_ms: int,
+    operation_type: str = "INSERT",
+) -> int:
+    """Emit one Operation timeseries record on ``dataset_urn``.
+
+    ``timestampMillis`` and ``lastUpdatedTimestamp`` are both set to
+    ``last_updated_ts_ms`` so the passive-observation sweep derives the event's
+    ``occurred_at`` from a caller-controlled timestamp. ``operation_type`` is the
+    string name of an ``OperationTypeClass`` member (default ``INSERT``).
+
+    Returns ``last_updated_ts_ms`` (the timestamp emitted).
+    """
+    token = _get_token()
+    emitter = DatahubRestEmitter(gms_server=_gms_url, token=token)
+    emitter.emit_mcp(
+        MetadataChangeProposalWrapper(
+            entityUrn=dataset_urn,
+            aspect=OperationClass(
+                timestampMillis=last_updated_ts_ms,
+                lastUpdatedTimestamp=last_updated_ts_ms,
+                operationType=getattr(OperationTypeClass, operation_type),
+            ),
+        )
+    )
+    print(f"  Emitted Operation({operation_type}@{last_updated_ts_ms}) on {dataset_urn}")
+    return last_updated_ts_ms
+
+
+async def emit_fresh_kafka_operation(dataset_urn: str = ORDERS_KAFKA_URN) -> int:
+    """Emit ONE fresh INSERT Operation on an Imazon Kafka topic at the current time.
+
+    Models the external ingestor appending to the topic. The passive-observation
+    sweep observes this Operation on the mapped dataset and mirrors it as a fresh
+    passive_observation event (occurred_at == the emitted millisecond). Returns the
+    emitted ``now_ms`` so callers can match the resulting event.
+    """
+    now_ms = int(time.time() * 1000)
+    await emit_operation(dataset_urn, now_ms)
+    return now_ms
+
+
+# ---------------------------------------------------------------------------
 # Reset-only and seed helpers
 # ---------------------------------------------------------------------------
 

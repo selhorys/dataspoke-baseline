@@ -140,6 +140,13 @@ observations. Read `GET /admin/dags`; if the `datahub_sync` group is unpaused
 (default Yes) — `PATCH /admin/dags/datahub_sync {"paused": true}`. Restore the
 prior state (`{"paused": false}`) on completion if you paused it.
 
+For UC1 Case 3, after the imazon kafka topics are mapped to the PASSIVE source,
+add a passive-observation assertion phase: emit a fresh `Operation` aspect on the
+mapped topics (`uv run python -m tests.integration.util --emit-passive-kafka-ops`),
+re-trigger the sync sweep (`POST /internal/activities/ingestion/sync`), then confirm
+a fresh `passive_observation` event in the Events panel and via
+`GET /spoke/ingestion/sources/{id}/event` (one event per mapped dataset URN).
+
 Then have the user log in at the printed URL before Step 1.
 
 ### 3. Granularity prompt (once)

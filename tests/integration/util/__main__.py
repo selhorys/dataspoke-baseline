@@ -32,6 +32,12 @@ Usage:
         calls it at the end, so use this standalone only to re-reconcile without
         a full reset.
 
+    uv run python -m tests.integration.util --emit-passive-kafka-ops
+        Emit one fresh Operation on the orders Kafka topic
+        (imazon.orders.events) — the passive-observation signal for UC1-03.
+        Prints EMITTED_OCCURRED_AT_MS=<int> so callers can match the resulting
+        passive_observation event.
+
     uv run python -m tests.integration.util --langfuse
         Langfuse dataspoke project only (delete all traces)
 
@@ -140,6 +146,13 @@ def main() -> None:
     if "--datahub-sync" in args:
         print("[INFO] Running ingestion datahub-sync (reconcile dataset_registry)...")
         asyncio.run(_datahub_sync())
+
+    if "--emit-passive-kafka-ops" in args:
+        print("[INFO] Emitting one fresh Operation on the orders Kafka topic...")
+        emitted_ms = asyncio.run(datahub.emit_fresh_kafka_operation())
+        # Parseable marker line so callers (E2E Step 5) can grep the emit timestamp and
+        # match the resulting fresh passive_observation event.
+        print(f"EMITTED_OCCURRED_AT_MS={emitted_ms}")
 
     if "--langfuse" in args:
         print("[INFO] Clearing Langfuse traces in the dataspoke project...")

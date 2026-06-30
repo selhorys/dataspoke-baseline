@@ -17,9 +17,14 @@
  *      Backend probe: GET /sources/{id}/datasets confirms both Kafka URNs with matched.
  *   4. After sync: /ingestion/unmanaged does NOT show imazon.* topics (now mapped).
  *      Backend probe: GET /spoke/ingestion/unmanaged confirms topics absent.
- *   5. Events panel accessible (may be empty for PASSIVE; 200 response).
+ *   5. Passive observation: emit ONE fresh DataHub Operation on imazon.orders.events (via
+ *      util --emit-passive-kafka-ops), re-trigger sync, then confirm a fresh
+ *      passive_observation event for that topic surfaces at the emit timestamp. Backend
+ *      probe: GET /sources/{id}/event has a passive_observation event for the orders URN at T.
+ *      UI: Events panel renders the INGESTION.COMPLETE row.
+ *   6. Events panel accessible (200 response).
  *      Backend probe: GET /sources/{id}/event → 200.
- *   6. Cleanup: Delete source via ConfirmDialog.
+ *   7. Cleanup: Delete source via ConfirmDialog.
  *      Backend probe: GET /sources/{id} → 404.
  *
  * Design note: step 0's positive check relies on the global-setup --reset-seed having run
@@ -33,6 +38,8 @@
  * spec: spec/TESTING.md §End-to-End (E2E) Testing — dual confirmation
  */
 
+import { execSync } from "child_process";
+import * as path from "path";
 import { test, expect } from "../fixtures/index";
 import { apiBaseUrl } from "../fixtures/env";
 
@@ -349,7 +356,7 @@ test("UC1 Case 3 step 3 — datasets panel shows imazon Kafka topics with matche
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Step 4 — After sync: imazon.* topics absent from /unmanaged (now mapped)
-// spec: USE_CASE_en.md §UC1 Case 3 step 5
+// spec: USE_CASE_en.md §UC1 Case 3 step 6
 // spec: FRONTEND_INGESTION.md §Unmanaged View — mapped datasets absent from unmanaged
 // ─────────────────────────────────────────────────────────────────────────────
 test("UC1 Case 3 step 4 — imazon Kafka topics absent from /unmanaged after source maps them", async ({
@@ -359,7 +366,7 @@ test("UC1 Case 3 step 4 — imazon Kafka topics absent from /unmanaged after sou
   if (!sourceId) test.skip();
 
   // Poll until both imazon topics leave /unmanaged (≤120s).
-  // spec: test_uc1_03_passive_kafka.py step 5 — poll ≤120s for mapping propagation.
+  // spec: test_uc1_03_passive_kafka.py step 6 — poll ≤120s for mapping propagation.
   const deadline = Date.now() + 120_000;
   let afterUrns: string[] = [];
   while (Date.now() < deadline) {
@@ -396,11 +403,109 @@ test("UC1 Case 3 step 4 — imazon Kafka topics absent from /unmanaged after sou
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Step 5 — Events panel accessible (200; may be empty for PASSIVE)
-// spec: USE_CASE_en.md §UC1 Case 3 step 6
+// Step 5 — Passive observation: a fresh Kafka Operation surfaces as an event
+// spec: USE_CASE_en.md §UC1 Case 3 step 5 — "DataSpoke ... syncs results from DataHub"
+// spec: feature/BACKEND.md §Ingestion Service — Sync step 4 — PASSIVE Operation observation
 // spec: FRONTEND_INGESTION.md §Source Detail §Events — IngestionEventTable
 // ─────────────────────────────────────────────────────────────────────────────
-test("UC1 Case 3 step 5 — events panel is accessible for PASSIVE source", async ({
+test("UC1 Case 3 step 5 — fresh Kafka Operation surfaces as a passive_observation event", async ({
+  page,
+  adminApi,
+}) => {
+  if (!sourceId) test.skip();
+
+  // Emit ONE fresh DataHub Operation on the orders Kafka topic via the Python util —
+  // mirrors global-setup.ts's execSync(uv run python -m tests.integration.util ...) pattern.
+  // repoRoot is three levels above tests/e2e/use-case/. Capture stdout to read back the
+  // emit timestamp (EMITTED_OCCURRED_AT_MS=<int>); surface stderr on failure.
+  // spec: test_uc1_03_passive_kafka.py step 5 — datahub.emit_operation on the orders URN.
+  const repoRoot = path.resolve(__dirname, "..", "..", "..");
+  let emitStdout: string;
+  try {
+    emitStdout = execSync("uv run python -m tests.integration.util --emit-passive-kafka-ops", {
+      cwd: repoRoot,
+      encoding: "utf-8",
+      timeout: 120_000,
+    });
+  } catch (err) {
+    const e = err as { stdout?: string; stderr?: string };
+    throw new Error(
+      `--emit-passive-kafka-ops failed.\nstdout:\n${e.stdout ?? ""}\nstderr:\n${e.stderr ?? ""}`
+    );
+  }
+
+  // The util prints the emit timestamp on its own line; parse it so the probe can match
+  // THIS fresh Operation (distinct from any seed-time passive_observation event).
+  const tsMatch = /EMITTED_OCCURRED_AT_MS=(\d+)/.exec(emitStdout);
+  expect(
+    tsMatch,
+    `util must print EMITTED_OCCURRED_AT_MS=<int>; stdout was:\n${emitStdout}`
+  ).toBeTruthy();
+  const emittedMs = Number(tsMatch![1]);
+
+  // Re-trigger the sync sweep (backend, no UI surface) so the passive-observation pass
+  // observes the freshly-emitted Operation; poll the events endpoint until the orders topic
+  // has a passive_observation event AT THE EMIT TIMESTAMP. ≤120s, 5s interval.
+  // Source timestamp is integer-ms, so a sub-ms tolerance is exact-enough. Matching the
+  // fresh T proves a new observation surfaced (not just the seed-time event).
+  // spec: test_uc1_03_passive_kafka.py step 5 — re-trigger sync each iteration; match occurred_at==T.
+  const base = apiBaseUrl();
+  const token = process.env["DATASPOKE_TEST_INTERNAL_TOKEN"] ?? "";
+  const deadline = Date.now() + 120_000;
+  let freshObserved = false;
+  while (Date.now() < deadline) {
+    try {
+      await fetch(`${base}/internal/activities/ingestion/sync`, {
+        method: "POST",
+        headers: { "X-Internal-Token": token, "Content-Type": "application/json" },
+      });
+    } catch {
+      // transient
+    }
+    const resp = await adminApi.get(`/api/v1/spoke/ingestion/sources/${sourceId}/event`);
+    if (resp.ok()) {
+      const body = (await resp.json()) as {
+        events: Array<{ occurred_at: string; detail: { source?: string; dataset_urn?: string } }>;
+      };
+      freshObserved = body.events.some(
+        (e) =>
+          e.detail?.source === "passive_observation" &&
+          e.detail?.dataset_urn === ORDERS_URN &&
+          Math.abs(new Date(e.occurred_at).getTime() - emittedMs) < 1
+      );
+      if (freshObserved) break;
+    }
+    await new Promise((r) => setTimeout(r, 5_000));
+  }
+
+  // -- Backend probe: the orders topic has a FRESH passive_observation event at T --
+  // A fresh Operation on the mapped dataset must surface as a passive_observation event at
+  // occurred_at==T, proving the observe-and-mirror path is live (distinct from the seed
+  // event). Dedup behavior is covered by the unit tests, not here.
+  // spec: feature/BACKEND.md §Ingestion Service — Sync step 4 — PASSIVE Operation observation.
+  expect(
+    freshObserved,
+    `${ORDERS_URN} must have a passive_observation event at the emit timestamp ` +
+      `(${emittedMs} ms) after the sync sweep. ` +
+      "spec: feature/BACKEND.md §Sync step 4 — PASSIVE Operation observation."
+  ).toBe(true);
+
+  // -- UI confirmation: Events panel renders the passive-observation row --
+  // passive_observation events carry event_type=INGESTION.COMPLETE; the IngestionEventTable
+  // renders that string in the event_type column. Auto-waiting toBeVisible (not isVisible).
+  // spec: FRONTEND_INGESTION.md §Source Detail §Events — event_type column.
+  await page.goto(`/ingestion/sources/${encodeURIComponent(sourceId!)}`);
+  await expect(page.getByRole("heading", { name: SOURCE_NAME })).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole("heading", { name: "Events" })).toBeVisible();
+  await expect(page.getByText("INGESTION.COMPLETE").first()).toBeVisible({ timeout: 15_000 });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Step 6 — Events panel accessible (200; list shape)
+// spec: USE_CASE_en.md §UC1 Case 3 step 7
+// spec: FRONTEND_INGESTION.md §Source Detail §Events — IngestionEventTable
+// ─────────────────────────────────────────────────────────────────────────────
+test("UC1 Case 3 step 6 — events panel is accessible for PASSIVE source", async ({
   page,
   adminApi,
 }) => {
@@ -410,7 +515,7 @@ test("UC1 Case 3 step 5 — events panel is accessible for PASSIVE source", asyn
   await expect(page.getByRole("heading", { name: SOURCE_NAME })).toBeVisible({ timeout: 15_000 });
 
   // -- UI assertion: Events section rendered --
-  // spec: FRONTEND_INGESTION.md §Source Detail §Events — always rendered (even when empty)
+  // spec: FRONTEND_INGESTION.md §Source Detail §Events — always rendered
   await expect(page.getByRole("heading", { name: "Events" })).toBeVisible();
 
   // -- Backend probe: GET /sources/{id}/event → 200, events is a list --
@@ -422,10 +527,10 @@ test("UC1 Case 3 step 5 — events panel is accessible for PASSIVE source", asyn
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Step 6 — Cleanup: delete PASSIVE source via ConfirmDialog
+// Step 7 — Cleanup: delete PASSIVE source via ConfirmDialog
 // spec: FRONTEND_INGESTION.md §Source Detail — Delete button → ConfirmDialog
 // ─────────────────────────────────────────────────────────────────────────────
-test("UC1 Case 3 step 6 — delete PASSIVE source; source gone from list", async ({
+test("UC1 Case 3 step 7 — delete PASSIVE source; source gone from list", async ({
   page,
   adminApi,
 }) => {

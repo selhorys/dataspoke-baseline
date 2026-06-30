@@ -1450,3 +1450,269 @@ class TestRunZeroEmitFailureAndEventDetail:
             f"emitted={detail['emitted_urns']!r} discovered={detail['discovered_urns']!r}. "
             "spec: API.md §method/run."
         )
+
+
+# ── _observe_passive_operations: per-dataset observation identity ─────────────
+
+
+class TestObservePassiveOperations:
+    """Spec: spec/feature/BACKEND.md §Sync step 4 (Run events) — 'For PASSIVE sources,
+    observe Operation timeseries on mapped datasets.'
+
+    Spec invariant under test (per-dataset observation identity): every dataset mapped to
+    a PASSIVE source that has a fresh DataHub Operation yields its OWN passive_observation
+    event — a distinct row keyed on its dataset_urn. Two datasets under the same PASSIVE
+    source whose Operations share an identical millisecond lastUpdatedTimestamp must each
+    produce an event; they must NOT collide into one. The event detail carries
+    {dataset_urn, operation_type, source='passive_observation'} and occurred_at is derived
+    from the Operation's lastUpdatedTimestamp.
+
+    The success/failure status-string vocabulary is anchored in USE_CASE_en.md §UC1
+    API Mapping (BACKEND.md §Sync step 4 maps DataHub status → event type only).
+    """
+
+    _ORDERS_URN = (
+        "urn:li:dataset:(urn:li:dataPlatform:kafka,example_kafka.imazon.orders.events,DEV)"
+    )
+    _SHIPPING_URN = (
+        "urn:li:dataset:(urn:li:dataPlatform:kafka,example_kafka.imazon.shipping.updates,DEV)"
+    )
+
+    @staticmethod
+    def _make_ds_row(source_id: str, dataset_urn: str) -> MagicMock:
+        """An IngestionSourceDataset row mapped to the PASSIVE source."""
+        row = MagicMock()
+        row.source_id = uuid.UUID(source_id)
+        row.dataset_urn = dataset_urn
+        return row
+
+    @staticmethod
+    def _make_op(ts_ms: int | None, op_type: str | None = "INSERT") -> MagicMock:
+        """A DataHub Operation timeseries record exposing operationType +
+        lastUpdatedTimestamp (the only attributes the sweep reads)."""
+        op = MagicMock()
+        op.operationType = op_type
+        op.lastUpdatedTimestamp = ts_ms
+        return op
+
+    @staticmethod
+    def _wire_fake_session(
+        db: AsyncMock,
+        datahub: AsyncMock,
+        dataset_rows: list[object],
+        ops_by_urn: dict[str, list[object]],
+    ) -> list[object]:
+        """Wire a fake AsyncSession + DataHub stub for _observe_passive_operations and
+        return the list of Event objects passed to db.add().
+
+        In-memory dedup simulation: the fake session dedups by exactly the bind values the
+        running code puts in its WHERE clause — so the test adapts to whatever dedup key the
+        impl uses (pre-fix: no dataset_urn → collision; fixed: dataset_urn → no collision)
+        without pinning to the service's current bytes. State (seen_keys/added_events) lives
+        in this closure, so it persists across repeated _observe_passive_operations calls —
+        modelling a flushed/committed row visible to a later sweep's dedup read.
+        """
+        from sqlalchemy.dialects import postgresql
+
+        seen_keys: set[tuple[str, ...]] = set()
+        added_events: list[object] = []
+        pending: dict[str, tuple[str, ...] | None] = {"key": None}
+
+        def _where_key(stmt: object) -> tuple[str, ...]:
+            compiled = stmt.compile(dialect=postgresql.dialect())  # type: ignore[attr-defined]
+            return tuple(sorted(str(v) for v in compiled.params.values()))
+
+        async def _fake_execute(stmt: object, *args: object, **kwargs: object) -> MagicMock:
+            sql = str(stmt.compile(dialect=postgresql.dialect()))  # type: ignore[attr-defined]
+            if "ingestion_source_dataset" in sql:
+                result = MagicMock()
+                result.scalars.return_value.all.return_value = dataset_rows
+                return result
+            # Dedup query on the events table: match iff this WHERE key was already inserted.
+            key = _where_key(stmt)
+            pending["key"] = key
+            result = MagicMock()
+            result.scalar_one_or_none.return_value = object() if key in seen_keys else None
+            return result
+
+        def _fake_add(obj: object) -> None:
+            added_events.append(obj)
+            if pending["key"] is not None:
+                seen_keys.add(pending["key"])
+                pending["key"] = None
+
+        datahub.get_timeseries = AsyncMock(
+            side_effect=lambda urn, *args, **kwargs: ops_by_urn.get(urn, [])
+        )
+        db.execute = AsyncMock(side_effect=_fake_execute)
+        db.add = MagicMock(side_effect=_fake_add)
+        return added_events
+
+    @staticmethod
+    def _passive(added_events: list[object]) -> list[object]:
+        """Filter to the passive_observation events among db.add() calls."""
+        return [
+            e
+            for e in added_events
+            if getattr(e, "detail", {}).get("source") == "passive_observation"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_two_datasets_sharing_occurred_at_yield_two_events(
+        self,
+        service: IngestionService,
+        db: AsyncMock,
+        datahub: AsyncMock,
+    ) -> None:
+        """Two PASSIVE-mapped datasets with Operations at the SAME millisecond timestamp
+        produce TWO distinct passive_observation events — one per dataset_urn.
+
+        Spec: spec/feature/BACKEND.md §Sync step 4 — per-dataset Operation observation.
+        Asserts the spec invariant (each mapped dataset with a fresh Operation gets its own
+        observation event), not the dedup query's internals. The shared occurred_at is the
+        regression trigger: a dedup key that omits dataset_urn would drop the second event,
+        leaving 1 — so this asserts 2 to fail on that collision and pass on the fix.
+        """
+        from src.shared.events import INGESTION_COMPLETE
+
+        source_id = str(uuid.uuid4())
+        dataset_rows = [
+            self._make_ds_row(source_id, self._ORDERS_URN),
+            self._make_ds_row(source_id, self._SHIPPING_URN),
+        ]
+        # Both Operations carry the IDENTICAL millisecond lastUpdatedTimestamp — the
+        # collision condition. operationType=INSERT is an ingestion-class op.
+        shared_ts_ms = 1_700_000_000_000
+        ops_by_urn = {
+            self._ORDERS_URN: [self._make_op(shared_ts_ms)],
+            self._SHIPPING_URN: [self._make_op(shared_ts_ms)],
+        }
+        added_events = self._wire_fake_session(db, datahub, dataset_rows, ops_by_urn)
+
+        inserted = await service._observe_passive_operations(source_id)
+
+        assert inserted == 2, (
+            "Two datasets mapped to one PASSIVE source, each with a fresh Operation at the "
+            f"same millisecond, must yield two passive_observation events; got {inserted}. "
+            "A dedup key omitting dataset_urn collapses them into one. "
+            "Spec: spec/feature/BACKEND.md §Sync step 4."
+        )
+
+        passive = self._passive(added_events)
+        observed_urns = {e.detail["dataset_urn"] for e in passive}
+        assert observed_urns == {self._ORDERS_URN, self._SHIPPING_URN}, (
+            "Each mapped dataset must get its own passive_observation event keyed on its "
+            f"dataset_urn; observed {observed_urns!r}. Spec: spec/feature/BACKEND.md §Sync step 4."
+        )
+        for e in passive:
+            assert e.event_type == INGESTION_COMPLETE
+            assert e.status == "success"
+            assert e.detail["operation_type"] == "INSERT"
+            # occurred_at derived from the Operation's lastUpdatedTimestamp, not now().
+            assert e.occurred_at == datetime.fromtimestamp(shared_ts_ms / 1000, tz=UTC)
+
+    @pytest.mark.asyncio
+    async def test_non_ingestion_operation_types_yield_no_event(
+        self,
+        service: IngestionService,
+        db: AsyncMock,
+        datahub: AsyncMock,
+    ) -> None:
+        """Operations whose operationType is not an ingestion-class type (e.g. 'DROP', or
+        absent/None) produce NO passive_observation event and NO commit.
+
+        Spec: spec/feature/BACKEND.md §Sync step 4 — only ingestion-class Operations
+        (INSERT/UPDATE/CREATE/ALTER) are observed as ingestion-completion signals; a DROP or
+        a typeless Operation is not an ingestion outcome.
+        """
+        source_id = str(uuid.uuid4())
+        dataset_rows = [self._make_ds_row(source_id, self._ORDERS_URN)]
+        ops_by_urn = {
+            self._ORDERS_URN: [
+                self._make_op(1_700_000_000_000, op_type="DROP"),
+                self._make_op(1_700_000_000_500, op_type=None),
+            ]
+        }
+        added_events = self._wire_fake_session(db, datahub, dataset_rows, ops_by_urn)
+
+        inserted = await service._observe_passive_operations(source_id)
+
+        assert inserted == 0, (
+            f"Non-ingestion Operations (DROP / typeless) must mint no events; got {inserted}. "
+            "Spec: spec/feature/BACKEND.md §Sync step 4."
+        )
+        assert self._passive(added_events) == []
+        db.commit.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_empty_timeseries_yields_no_event(
+        self,
+        service: IngestionService,
+        db: AsyncMock,
+        datahub: AsyncMock,
+    ) -> None:
+        """A mapped dataset whose Operation timeseries is empty produces NO event, NO commit.
+
+        Spec: spec/feature/BACKEND.md §Sync step 4 — a dataset with no observed Operation has
+        nothing to mirror.
+        """
+        source_id = str(uuid.uuid4())
+        dataset_rows = [self._make_ds_row(source_id, self._ORDERS_URN)]
+        ops_by_urn: dict[str, list[object]] = {self._ORDERS_URN: []}
+        added_events = self._wire_fake_session(db, datahub, dataset_rows, ops_by_urn)
+
+        inserted = await service._observe_passive_operations(source_id)
+
+        assert inserted == 0, (
+            f"An empty Operation timeseries must mint no events; got {inserted}. "
+            "Spec: spec/feature/BACKEND.md §Sync step 4."
+        )
+        assert self._passive(added_events) == []
+        db.commit.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_same_operation_across_two_sweeps_yields_one_event(
+        self,
+        service: IngestionService,
+        db: AsyncMock,
+        datahub: AsyncMock,
+    ) -> None:
+        """The SAME Operation surfacing on two consecutive sweeps yields exactly ONE event
+        for that (source, dataset_urn, occurred_at) — no per-sweep growth.
+
+        This is the positive-dedup complement of the collision test: the (source, dataset
+        URN, occurred_at) triple is the observation identity, so a repeat sweep over an
+        unchanged Operation must not append a duplicate. Sweep 2's dedup read sees sweep 1's
+        persisted row (modelled by the shared in-memory store).
+
+        Spec: spec/feature/BACKEND.md §Sync step 4 — one passive_observation event per
+        (source, mapped dataset URN, Operation timestamp).
+        """
+        source_id = str(uuid.uuid4())
+        ts_ms = 1_700_000_000_000
+        dataset_rows = [self._make_ds_row(source_id, self._ORDERS_URN)]
+        ops_by_urn = {self._ORDERS_URN: [self._make_op(ts_ms)]}
+        added_events = self._wire_fake_session(db, datahub, dataset_rows, ops_by_urn)
+
+        # Sweep 1: the Operation is observed for the first time → one event.
+        inserted_1 = await service._observe_passive_operations(source_id)
+        assert inserted_1 == 1, (
+            f"First sweep over a fresh Operation must mint exactly one event; got {inserted_1}."
+        )
+
+        # Sweep 2: the SAME Operation (same source/URN/timestamp) → dedup finds the first
+        # sweep's row → no new event.
+        inserted_2 = await service._observe_passive_operations(source_id)
+        assert inserted_2 == 0, (
+            f"Re-observing the same Operation must mint no further event (idempotent); "
+            f"got {inserted_2}. Spec: spec/feature/BACKEND.md §Sync step 4 — one event per "
+            "(source, dataset URN, occurred_at)."
+        )
+
+        passive = self._passive(added_events)
+        assert len(passive) == 1, (
+            f"Exactly one passive_observation event must exist for the URN across both sweeps; "
+            f"got {len(passive)}. No per-sweep growth."
+        )
+        assert passive[0].detail["dataset_urn"] == self._ORDERS_URN
+        assert passive[0].occurred_at == datetime.fromtimestamp(ts_ms / 1000, tz=UTC)
