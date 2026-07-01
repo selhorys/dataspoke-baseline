@@ -491,9 +491,9 @@ Layout, top to bottom:
     the score and per-variable charts
     (see [FRONTEND_VALIDATION](FRONTEND_VALIDATION.md)).
   - *MetaGen* — the `MetagenDataPanel`, with a **Boundary Config** sub-section
-    (`GET/PUT/PATCH …/attr/metagen/boundary`; its `is_enabled` + `allowed` fields wrapped in an
-    outlined group box) and a **Generated Items** sub-section (`GET …/attr/metagen/item`,
-    item/candidate review) (see
+    (`GET/PUT/PATCH …/attr/metagen/boundary`; its `is_enabled` and `allowed` fields render as two
+    outlined group boxes laid out horizontally in a single row) and a **Generated Items**
+    sub-section (`GET …/attr/metagen/item`, item/candidate review) (see
     [FRONTEND_METAGEN](FRONTEND_METAGEN.md#per-dataset-dataurn-metagen-panel)).
   - *Events* — the unified [EventsPanel](#shared-component-notes): one table over
     `GET …/event` (the complete per-dataset timeline — ingestion runs ∪ validation ∪ metagen,

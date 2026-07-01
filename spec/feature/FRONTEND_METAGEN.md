@@ -137,8 +137,8 @@ dataset page, and its second column is `datahub` — the shared
 ## Per-dataset (`/data/[urn]` MetaGen panel)
 
 The MetaGen panel on the unified [`/data/[urn]`](FRONTEND_BASIC.md#per-dataset-page-dataurn) page
-shows the boundary (`is_enabled`, `allowed`) over
-`attr/metagen/boundary`, then the dataset's candidates in **two foldable panels —
+has a **Boundary Config** section over `attr/metagen/boundary`, then a **Generated Items**
+section listing the dataset's candidates in **two foldable panels —
 one per item kind**: `dataset.description` and `column.description`. The header
 renders an enabled/disabled badge beside the dataset URN. Each panel holds a
 single **table whose rows are candidates** (fetched per item via
@@ -168,18 +168,30 @@ valid on both `llm_approved` and `approved`, with the approved case removing the
 DataHub description) are in
 [API §Metadata Generation](../API.md#metadata-generation-spokemetagen).
 
-The boundary section's action controls live in its section header's top-right
-cluster, mirroring the [Validation panel's header-right action pattern](FRONTEND_VALIDATION.md):
-read mode (a boundary exists) shows `Edit` and `Delete`; create / edit mode shows
-`Save boundary`, plus `Cancel` when editing an existing boundary. `Edit` /
-`Save boundary` map to `PUT .../attr/metagen/boundary`; `Delete` maps to
+The **Boundary Config** section renders from `GET .../attr/metagen/boundary` (the boundary
+model carries only `is_enabled` and `allowed` — there is no owner field). When the dataset
+has no boundary (`200` with a null body) the section shows only a short "no config yet"
+empty-state line and a `Create` button, with no `is_enabled`/`allowed` sub-sections;
+`Create` enters the edit state. In display (read) mode a boundary renders as **two outlined
+group boxes** titled `is_enabled` and `allowed`, laid out **horizontally in a single row**.
+Edit mode (create or edit) shows the same two boxes with their controls — the `is_enabled`
+box carries its toggle, and the `allowed` box holds the two allowed-kind toggles
+`dataset.description` and `column.description`. While editing, the **Generated Items**
+section is not shown.
+
+The Boundary Config action controls live in the section header's top-right cluster,
+mirroring the [Validation panel's header-right action pattern](FRONTEND_VALIDATION.md):
+read mode (a boundary exists) shows `Edit` and `Delete`; create / edit mode shows `Save`
+and `Cancel`. `Edit` / `Save` map to `PUT .../attr/metagen/boundary`; `Delete` maps to
 `DELETE .../attr/metagen/boundary`.
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
-│  ← catalog.books                     boundary  [Edit] [Delete] │
-│  is_enabled: ✓   allowed: [dataset.description,                │
-│                            column.description]                 │
+│  ← catalog.books                Boundary Config [Edit] [Delete]│
+│  ┌─ is_enabled ──┐  ┌─ allowed ─────────────────────────────┐  │
+│  │ ✓ enabled     │  │ ✓ dataset.description                 │  │
+│  │               │  │ ✓ column.description                  │  │
+│  └───────────────┘  └───────────────────────────────────────┘  │
 ├────────────────────────────────────────────────────────────────┤
 │  ▾ dataset.description                                          │
 │   ┌──────────────────────┬───────────────────┬────────┬───────┐│

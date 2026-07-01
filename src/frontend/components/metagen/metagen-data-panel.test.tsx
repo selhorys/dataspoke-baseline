@@ -5,11 +5,15 @@
  *
  * Spec: spec/feature/FRONTEND_METAGEN.md §Per-dataset (moved to /data/[urn]) —
  * the boundary action controls live in a header-right cluster, mode-driven:
- *   - no boundary (null)        → create form + "Save boundary" only.
- *   - boundary exists, read     → "Edit" + "Delete"; read-only <dl> body.
- *   - boundary exists, edit     → "Cancel" + "Save boundary"; editable form body.
- *   - "Save boundary" is type=submit bound to the form via form= so it submits
- *     the BoundaryForm and drives the upsert; on success it returns to read mode.
+ *   - no boundary (null)        → "No config yet." empty-state + a "Create"
+ *     button only; the BoundaryForm is NOT auto-mounted.
+ *   - clicking "Create" enters edit state → BoundaryForm + "Save" + "Cancel";
+ *     the Generated Items section is hidden while editing.
+ *   - boundary exists, read     → "Edit" + "Delete"; two outlined group boxes
+ *     titled `is_enabled` and `allowed`, laid out horizontally.
+ *   - boundary exists, edit     → "Cancel" + "Save"; editable form body.
+ *   - "Save" is type=submit bound to the form via form= so it submits the
+ *     BoundaryForm and drives the upsert; on success it returns to read mode.
  *   - write controls are gated on canWrite (Editor/Admin); a reader sees none.
  */
 import { describe, it, expect, vi, beforeEach, beforeAll } from "vitest";
@@ -99,63 +103,89 @@ describe("MetagenDataPanel — section titles", () => {
   });
 });
 
-// ── No boundary (null) → create form + Save boundary only ───────────────────────
+// ── No boundary (null) → empty-state + Create only; form not auto-mounted ────────
 describe("MetagenDataPanel — no boundary", () => {
-  it("shows only Save boundary in the cluster (no Edit/Cancel/Delete)", () => {
+  it("shows the 'No config yet.' empty-state + Create only (no Edit/Cancel/Delete/Save), form not mounted", () => {
     mockBoundary.mockReturnValue({ data: null, isLoading: false });
-    render(<MetagenDataPanel datasetUrn={DATASET_URN} />);
+    const { container } = render(<MetagenDataPanel datasetUrn={DATASET_URN} />);
 
-    expect(screen.getByRole("button", { name: "Save boundary" })).toBeTruthy();
+    expect(screen.getByText(/no config yet/i)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^create$/i })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /^edit$/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /^cancel$/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /^delete$/i })).toBeNull();
-    // The create form body is present (the is_enabled checkbox is editable).
-    expect(screen.getByLabelText("is_enabled")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^save$/i })).toBeNull();
+    // The BoundaryForm is NOT auto-mounted — its is_enabled checkbox is absent.
+    expect(container.querySelector("#boundary-is-enabled")).toBeNull();
+  });
+
+  it("clicking Create mounts the BoundaryForm (Save + Cancel) and hides Generated Items", () => {
+    mockBoundary.mockReturnValue({ data: null, isLoading: false });
+    const { container } = render(<MetagenDataPanel datasetUrn={DATASET_URN} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /^create$/i }));
+
+    // Now editing: the form body (is_enabled checkbox) + Save/Cancel cluster appear.
+    expect(container.querySelector("#boundary-is-enabled")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^save$/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^cancel$/i })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^create$/i })).toBeNull();
+    expect(screen.queryByText(/no config yet/i)).toBeNull();
+    // Generated Items is hidden while editing the boundary.
+    expect(screen.queryByRole("heading", { name: "Generated Items" })).toBeNull();
   });
 });
 
-// ── Boundary exists, read mode → Edit + Delete; read-only body ───────────────────
+// ── Boundary exists, read mode → Edit + Delete; two group boxes ──────────────────
 describe("MetagenDataPanel — boundary exists (read mode)", () => {
-  it("shows Edit + Delete (no Save/Cancel) and a read-only body", () => {
+  it("shows Edit + Delete (no Save/Cancel) and the two outlined group boxes", () => {
     mockBoundary.mockReturnValue({ data: makeBoundary(), isLoading: false });
-    render(<MetagenDataPanel datasetUrn={DATASET_URN} />);
+    const { container } = render(<MetagenDataPanel datasetUrn={DATASET_URN} />);
 
     expect(screen.getByRole("button", { name: /^edit$/i })).toBeTruthy();
     expect(screen.getByRole("button", { name: /^delete$/i })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Save boundary" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^save$/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /^cancel$/i })).toBeNull();
-    // Read-only: no editable form fields (the is_enabled checkbox only exists in edit/create).
-    expect(screen.queryByLabelText("is_enabled")).toBeNull();
-    // The read-only <dl> surfaces the configured allowed aspect.
+    // Read-only: no editable form field (the is_enabled checkbox only exists in edit/create).
+    expect(container.querySelector("#boundary-is-enabled")).toBeNull();
+    // Two outlined group boxes titled `is_enabled` and `allowed` (legends).
+    const legends = Array.from(container.querySelectorAll("legend")).map((l) =>
+      l.textContent,
+    );
+    expect(legends).toContain("is_enabled");
+    expect(legends).toContain("allowed");
+    // The `allowed` box surfaces the configured aspect as a badge.
     expect(screen.getByText("dataset.description")).toBeTruthy();
   });
 });
 
-// ── Edit mode → Cancel + Save boundary; editable body ───────────────────────────
+// ── Edit mode → Cancel + Save; editable body; Generated Items hidden ─────────────
 describe("MetagenDataPanel — boundary exists, edit mode", () => {
-  it("clicking Edit swaps the cluster to Cancel + Save boundary and shows the form", () => {
+  it("clicking Edit swaps the cluster to Cancel + Save, shows the form, hides Generated Items", () => {
     mockBoundary.mockReturnValue({ data: makeBoundary(), isLoading: false });
     render(<MetagenDataPanel datasetUrn={DATASET_URN} />);
 
     fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
 
     expect(screen.getByRole("button", { name: /^cancel$/i })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Save boundary" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^save$/i })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /^edit$/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /^delete$/i })).toBeNull();
     // Editable form body: the allowed checkbox is now present and seeded.
     const allowedCheckbox = screen.getByLabelText("dataset.description") as HTMLInputElement;
     expect(allowedCheckbox).toBeTruthy();
+    // Generated Items is hidden while editing the boundary.
+    expect(screen.queryByRole("heading", { name: "Generated Items" })).toBeNull();
   });
 
-  it("clicking Save boundary submits the form → upsert mutation with the boundary body", async () => {
+  it("clicking Save submits the form → upsert mutation with the boundary body", async () => {
     mockBoundary.mockReturnValue({ data: makeBoundary(), isLoading: false });
     // On success, the panel calls the mutation's onSuccess (returning to read mode).
     upsertMutate.mockImplementation((_body, opts) => opts?.onSuccess?.());
     render(<MetagenDataPanel datasetUrn={DATASET_URN} />);
 
     fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
-    fireEvent.click(screen.getByRole("button", { name: "Save boundary" }));
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
 
     await waitFor(() => expect(upsertMutate).toHaveBeenCalledTimes(1));
     const body = upsertMutate.mock.calls[0][0] as MetagenBoundaryPutBody;
@@ -168,7 +198,37 @@ describe("MetagenDataPanel — boundary exists, edit mode", () => {
     await waitFor(() =>
       expect(screen.getByRole("button", { name: /^edit$/i })).toBeTruthy(),
     );
-    expect(screen.queryByRole("button", { name: "Save boundary" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^save$/i })).toBeNull();
+  });
+
+  it("a failed Save fires a destructive error toast and stays in edit mode", async () => {
+    // spec: FRONTEND_METAGEN.md §Per-dataset — a boundary PUT failure surfaces an
+    // error and leaves the user in the editable form to retry.
+    mockBoundary.mockReturnValue({ data: makeBoundary(), isLoading: false });
+    // The mutation invokes onError with an Error-shaped rejection.
+    upsertMutate.mockImplementation((_body, opts) =>
+      opts?.onError?.(new Error("boundary write rejected")),
+    );
+    render(<MetagenDataPanel datasetUrn={DATASET_URN} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() => expect(upsertMutate).toHaveBeenCalledTimes(1));
+
+    // Destructive error toast surfacing the server message. The title copy is
+    // not spec-mandated, so assert only the variant + propagated message.
+    expect(mockToast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        description: "boundary write rejected",
+        variant: "destructive",
+      }),
+    );
+
+    // The panel stays in edit mode (Cancel + Save remain; no read-mode Edit).
+    expect(screen.getByRole("button", { name: /^save$/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^cancel$/i })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^edit$/i })).toBeNull();
   });
 });
 
@@ -180,7 +240,7 @@ describe("MetagenDataPanel — reader", () => {
     render(<MetagenDataPanel datasetUrn={DATASET_URN} />);
 
     expect(screen.queryByRole("button", { name: /^edit$/i })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Save boundary" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^save$/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /^delete$/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /^cancel$/i })).toBeNull();
   });

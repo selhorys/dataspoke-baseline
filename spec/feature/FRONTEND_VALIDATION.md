@@ -50,11 +50,13 @@ paged by the shared [Pagination](FRONTEND_BASIC.md#shared-component-notes) contr
 (page-size selector defaulting to 20, Prev/Next, numbered pages) bound to the
 `/spoke/validation` standard `offset`/`limit`/`total_count` envelope.
 
-The Validation panel on [`/data/[urn]`](FRONTEND_BASIC.md#per-dataset-page-dataurn) is a single
-editor for `description` plus a variables list.
-Each variable row edits both a `name` input and a `description` input in
+The Validation panel on [`/data/[urn]`](FRONTEND_BASIC.md#per-dataset-page-dataurn) renders three
+sections — `Config`, `Quality Score`, and `Variables`. The `Config` section is a single editor
+for `description` plus a **declared-variables list** (the conf's `variables[]` — distinct from the
+top-level `Variables` charts section that plots each variable's result timeseries).
+Each declared-variable row edits both a `name` input and a `description` input in
 place, with an `[×]` remove button (disabled at the minimum of 1 variable);
-`[+ Add]` appends a new `{name, description}` row. The conf read-only view
+`[+ Add]` appends a new `{name, description}` row. The `Config` read-only view
 renders each variable's description next to its name. Field constraints
 (rule-description char cap, variable name regex, per-variable description
 ≤200 chars empty-allowed, count cap) per
@@ -62,20 +64,19 @@ renders each variable's description next to its name. Field constraints
 Saving issues `PUT .../attr/validation/conf`.
 The shared [RangePicker](FRONTEND_BASIC.md#shared-component-notes) (presets Last
 1 day / 7 days / 2 weeks (default) / 4 weeks / 12 weeks, plus a custom calendar
-range) drives both time-windowed panels. In `date` granularity it feeds the
-timeseries panel: the RangePicker's inclusive `{from, to}` maps to
-`?from=&until=&limit=` — `until` is the endpoint's end-bound param
-(`until = to`). It renders a `score` line chart, then **small multiples** — one
-auto-scaled, full-width line chart per declared variable stacked in a single
-column (one chart per row), each captioned with the variable's name and
-description so differing value scales do not flatten each other. Both the score
-chart and the per-variable charts draw straight lines (linear interpolation, no
-smoothing). Validation events — config lifecycle (create/update) plus one
-`RESULT_RECORDED` entry per accepted result POST — are not a separate panel here; they appear
-in the page's unified **Events** panel (narrow with `event_major_type=VALIDATION`). The
-timeseries panel (and the list view) polls on a 15s interval, paused while the tab is hidden;
-the selected range is stable per window.
-The header "Latest score" reads the most recent result within the selected
+range) drives the `Quality Score` and `Variables` sections, both reading
+`attr/validation/result`. In `date` granularity the RangePicker's inclusive `{from, to}`
+maps to `?from=&until=&limit=` — `until` is the endpoint's end-bound param
+(`until = to`). The `Quality Score` section renders a `score` line chart; the `Variables`
+section renders **small multiples** — one auto-scaled, full-width line chart per declared
+variable stacked in a single column (one chart per row), each captioned with the variable's
+name and description so differing value scales do not flatten each other. Both draw straight
+lines (linear interpolation, no smoothing). Validation events — config lifecycle
+(create/update) plus one `RESULT_RECORDED` entry per accepted result POST — are not a
+separate panel here; they appear in the page's unified **Events** panel (narrow with
+`event_major_type=VALIDATION`). The `Quality Score` and `Variables` sections (and the list
+view) poll on a 15s interval, paused while the tab is hidden; the selected range is stable
+per window. The header "Latest score" reads the most recent result within the selected
 range window, rendered to 4 decimals.
 
 The conf editor sits under a `Config` section heading (same heading register as the
@@ -83,35 +84,41 @@ The conf editor sits under a `Config` section heading (same heading register as 
 that `Config` heading's row (`justify-between` — heading left, controls right) and are
 mode-driven by the GET-conf outcome: an existing rule's read-only view shows `Edit` and
 `Delete`; edit mode shows `Cancel` and `Save`; a slot with no conf
-(`404 CONFIG_NOT_FOUND`) shows `Create`. The per-row field-array controls `+ Add` and
-`[×]` are not header controls — they stay inline inside the variables editor (rendered
-only in `Create`/edit modes).
+(`404 CONFIG_NOT_FOUND`) shows **only** the `Config` section — a short "no config yet"
+empty-state line and a `Create` button, with no description/variables sub-sections until
+editing. `Create` and `Edit` enter the same editable `Config` form. While editing (create
+or edit) the panel renders **only** the `Config` section, with description and variables as
+input controls; the `Quality Score` chart and the per-variable `Variables` timeseries are
+not shown — they appear only in the has-conf read-only view (Config read-only + Quality
+Score + Variables charts). The per-row field-array controls `+ Add` and `[×]` are not
+header controls — they stay inline inside the variables editor (rendered only in
+`Create`/edit modes).
 
-Delete (button → ConfirmDialog) issues `DELETE .../attr/validation/conf` and
-redirects to `/validation`. The delete is a hard delete: afterwards the dataset reads as
+Delete (button → ConfirmDialog) issues `DELETE .../attr/validation/conf`; the user stays
+on the `/data/[urn]` page. The delete is a hard delete: afterwards the conf reads as
 never-created, so a re-fetch returns `404 CONFIG_NOT_FOUND` and the panel renders the
-Create empty-state with the `Create` form. Submitting that form issues
-`PUT .../attr/validation/conf`, which creates a fresh conf — there is no resurrection
-branch and no deleted/frozen state to surface.
+`Config` empty-state with the `Create` button. Clicking `Create` opens the editable form;
+submitting it issues `PUT .../attr/validation/conf`, which creates a fresh conf — there is
+no resurrection branch and no deleted/frozen state to surface.
 
 ```
 ┌───────────────────────────────────────────────────────────────┐
 │  ← orders.line_items  Latest score 1.0000  [Last 2 weeks ▾]   │
 ├───────────────────────────────────────────────────────────────┤
 │  Config                                       [Edit] [Delete] │
-│  Description (attr/validation/conf.description)               │
-│    [editable textarea, ≤ 2,000 chars]                         │
+│  Description                                                  │
+│    Daily integrity checks for the line-items table           │
+│  Variables (declared)                                        │
+│    row_cnt          — Daily row count                        │
+│    qty_negative_cnt — Negative-qty rows                      │
+│    qty_total        — Total quantity                         │
+│    user_id_null_cnt — Null user_id count                     │
 │                                                               │
-│  Variables (attr/validation/conf.variables[])                 │
-│    [ row_cnt         ] [ Daily row count       ] [×]          │
-│    [ qty_negative_cnt] [ Negative-qty rows     ] [×]          │
-│    [ qty_total       ] [ Total quantity        ] [×]          │
-│    [ user_id_null_cnt] [ Null user_id count    ] [×]          │
-│                                          [+ Add]              │
-│                                                               │
-│  Historical timeseries                                        │
+│  Quality Score                                                │
 │    (attr/validation/result?from=…&until=…&limit=…)            │
 │    [Recharts: score line chart]                               │
+│                                                               │
+│  Variables                                                    │
 │    small multiples — one full-width chart per row:            │
 │    [ row_cnt          — line chart, full width            ]   │
 │    [ qty_negative_cnt — line chart, full width            ]   │
@@ -120,7 +127,24 @@ branch and no deleted/frozen state to surface.
 │                                                               │
 │  (validation events fold into the unified Events panel)       │
 └───────────────────────────────────────────────────────────────┘
-   Validation panel on `/data/[urn]`
+   Validation panel on `/data/[urn]` — has-config read-only view
+```
+
+The empty-state (no conf) and edit-state (create or edit) render the `Config`
+section alone, with the `Quality Score` and `Variables` chart sections hidden:
+
+```
+Empty-state (404 CONFIG_NOT_FOUND):   Edit-state (Create or Edit):
+┌─────────────────────────────┐       ┌─────────────────────────────────┐
+│  Config           [Create]  │       │  Config        [Cancel] [Save]  │
+│  No config yet.             │       │  Description                    │
+└─────────────────────────────┘       │    [editable textarea ≤ 2,000]  │
+                                       │  Variables (declared)           │
+                                       │    [ row_cnt ] [ Daily … ] [×]  │
+                                       │                        [+ Add]  │
+                                       │  (Quality Score / Variables     │
+                                       │   charts hidden while editing)  │
+                                       └─────────────────────────────────┘
 ```
 
 Write actions on the Validation panel are rendered only when

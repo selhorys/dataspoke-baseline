@@ -10,3 +10,4 @@
 - [run_id filter-then-assert tautology](project_run_id_filter_then_assert_tautology.md) — UC3 ontogen run_id row check is tautological; real signal is any_rows_found; single-run E2E scoping avoids false-negative
 - [UC5 governance E2E anchors](project_uc5_governance_e2e_anchors.md) — identity facts (metric.id==metric_id), recharts classes, testid scoping, TzMode "utc" mock that make UC5 governance assertions load-bearing
 - [admin/dags spot drives real Airflow](project_admin_dags_spot_real_airflow.md) — schedule-control spot legitimately hits real Airflow (no stub dim, no UC pipeline); 503 covered by unit fake; do not flag
+- [Data hub action-button scoping](project_data_hub_action_button_scoping.md) — /data/[urn] Validation+MetaGen share Create/Edit/Save/Delete; unscoped .first() hits wrong panel

@@ -257,19 +257,43 @@ async function fillDatasetUrnFilter(page: Page, urn: string): Promise<void> {
 }
 
 /**
- * Enter boundary edit mode if a boundary already exists (an "Edit" button renders);
- * when no boundary exists the create form is already shown. Either way, confirm
- * the editable form is actually present afterwards by asserting an edit-mode-only
- * control (the is_enabled checkbox) is visible — so a broken Edit gesture fails
- * here rather than silently leaving us on a read-only view.
+ * Enter boundary edit mode. The BoundaryForm is never auto-mounted: when a
+ * boundary already exists the header shows an "Edit" button; when none exists it
+ * shows the "No config yet." empty-state with a "Create" button. Both enter the
+ * same edit state. Either way, confirm the editable form is actually present
+ * afterwards by asserting an edit-mode-only control (the is_enabled checkbox) is
+ * visible — so a broken gesture fails here rather than silently leaving us on the
+ * read-only view / empty-state.
  *
+ * spec: FRONTEND_METAGEN.md §Per-dataset — no boundary → empty-state + Create;
+ *   boundary exists → Edit; Create/Edit enter the same editable form.
  * boundary-form.tsx: <Checkbox id="boundary-is-enabled"> renders only in the
- * editable form, never in the read-only allowed-badges view.
+ * editable form, never in the read-only two-group-box view.
  */
+/**
+ * The MetaGen CollapsiblePanel <section> on /data/[urn]. Scoping to it keeps the
+ * boundary "Save"/"Delete" locators from colliding with the Validation panel's
+ * own Save/Delete controls (both share the exact same labels post-refactor).
+ * collapsible-panel.tsx renders <section> with a toggle <button> named by title.
+ */
+function metagenPanel(page: Page) {
+  return page
+    .locator("section")
+    .filter({ has: page.getByRole("button", { name: "MetaGen", exact: true }) });
+}
+
 async function enterBoundaryEditMode(page: Page): Promise<void> {
-  const editButton = page.getByRole("button", { name: "Edit", exact: true }).first();
+  // Scope to the MetaGen section: the merged /data/[urn] hub renders the
+  // Validation panel BEFORE MetaGen, and a dataset with no validation conf shows
+  // its own "Create" button — an unscoped `.first()` would grab the Validation
+  // panel's control and mount the wrong form.
+  const panel = metagenPanel(page);
+  const editButton = panel.getByRole("button", { name: "Edit", exact: true });
   if (await editButton.isVisible().catch(() => false)) {
     await editButton.click();
+  } else {
+    // No boundary yet — the empty-state Create button enters edit state.
+    await panel.getByRole("button", { name: "Create", exact: true }).click();
   }
   await expect(
     page.locator("#boundary-is-enabled"),
@@ -586,9 +610,9 @@ test("UC4 step 3 — opt eu_profiles and orders.events in via per-dataset bounda
   const euColDesc = page.locator("#boundary-allowed-column\\.description");
   if (!(await euColDesc.isChecked().catch(() => false))) await euColDesc.click();
 
-  // -- UI gesture: submit --
-  // boundary-form.tsx: <Button type="submit">Save boundary</Button>
-  await page.getByRole("button", { name: "Save boundary" }).click();
+  // -- UI gesture: submit via the boundary section's header "Save" action --
+  // metagen-data-panel.tsx: <Button type="submit" form="metagen-boundary-form">Save</Button>
+  await metagenPanel(page).getByRole("button", { name: "Save", exact: true }).click();
 
   // -- UI assertion: toast "Boundary saved" + read-only allowed badges --
   await expect(page.getByText("Boundary saved", { exact: false }).first()).toBeVisible({
@@ -630,7 +654,7 @@ test("UC4 step 3 — opt eu_profiles and orders.events in via per-dataset bounda
   const oeDatasetDesc = page.locator("#boundary-allowed-dataset\\.description");
   if (await oeDatasetDesc.isChecked().catch(() => false)) await oeDatasetDesc.click();
 
-  await page.getByRole("button", { name: "Save boundary" }).click();
+  await metagenPanel(page).getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByText("Boundary saved", { exact: false }).first()).toBeVisible({
     timeout: 20_000,
   });

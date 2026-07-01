@@ -14,8 +14,11 @@ sections and some section headings:
   `Quality Score (attr/validation/result)` and `Variables (attr/validation/result)`. It does NOT
   render `attr/validation/conf` nor `event/validation` headings — those existed only on the old
   `/validation/data/[urn]` page (now a redirect).
-- `MetagenDataPanel` DOES still render `attr/metagen/boundary` and `attr/metagen/item` (as `<h3>`,
-  matched via getByText), but NOT `event/metagen`.
+- `MetagenDataPanel` renders `<h3>` headings **`Boundary Config`** and **`Generated Items`**
+  (NOT `attr/metagen/boundary` / `attr/metagen/item` — that was an earlier impl; current impl
+  as of 2026-07 uses the spec strings, FRONTEND_METAGEN.md L139-140), plus per-kind
+  CollapsiblePanels titled `dataset.description` / `column.description`; it does NOT render
+  `event/metagen`. (`ValidationDataPanel` correspondingly renders a `<h3>Config</h3>` heading.)
 - Per-feature event lists all fold into the shared `EventsPanel`/`EventsTable` under the "Events"
   CollapsiblePanel; `EventsTable` renders each row's `event_type` as text, toggled by the
   EventMajorTypeFilter (default all checked). Assert event rows there, not in a feature panel.

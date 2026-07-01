@@ -10,7 +10,6 @@ import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Field } from "@/components/forms/field";
 import type { AllowedKind, MetagenBoundary, MetagenBoundaryPutBody } from "@/types/metagen";
 
 const ALLOWED_KINDS: AllowedKind[] = ["dataset.description", "column.description"];
@@ -80,47 +79,55 @@ export function BoundaryForm({
       onSubmit={handleSubmit(handleFormSubmit)}
       className="space-y-4"
     >
-      <Field label="is_enabled" htmlFor="boundary-is-enabled">
-        <div className="flex items-center gap-2">
-          <Controller
-            control={control}
-            name="is_enabled"
-            render={({ field }) => (
-              <Checkbox
-                id="boundary-is-enabled"
-                checked={field.value}
-                onCheckedChange={(v) => field.onChange(!!v)}
-                disabled={disabled}
-              />
-            )}
-          />
-          <span className="text-sm text-muted-foreground">
-            Include this dataset in MetaGen runs
-          </span>
-        </div>
-      </Field>
-
-      <fieldset className="space-y-2 rounded-md border p-3" disabled={disabled}>
-        <legend className="px-1 text-sm font-medium text-muted-foreground">
-          allowed aspects
-        </legend>
-        {ALLOWED_KINDS.map((kind) => (
-          <div key={kind} className="flex items-center gap-2">
-            <Checkbox
-              id={`boundary-allowed-${kind}`}
-              checked={allowed.includes(kind)}
-              onCheckedChange={() => toggleKind(kind)}
-              disabled={disabled}
+      <div className="grid grid-cols-2 gap-3">
+        <fieldset className="space-y-2 rounded-md border p-3" disabled={disabled}>
+          <legend className="px-1 text-sm font-medium text-muted-foreground">
+            is_enabled
+          </legend>
+          <div className="flex items-center gap-2">
+            <Controller
+              control={control}
+              name="is_enabled"
+              render={({ field }) => (
+                <Checkbox
+                  id="boundary-is-enabled"
+                  checked={field.value}
+                  onCheckedChange={(v) => field.onChange(!!v)}
+                  disabled={disabled}
+                />
+              )}
             />
             <label
-              htmlFor={`boundary-allowed-${kind}`}
-              className="cursor-pointer font-mono text-sm"
+              htmlFor="boundary-is-enabled"
+              className="cursor-pointer text-sm text-muted-foreground"
             >
-              {kind}
+              Include this dataset in MetaGen runs
             </label>
           </div>
-        ))}
-      </fieldset>
+        </fieldset>
+
+        <fieldset className="space-y-2 rounded-md border p-3" disabled={disabled}>
+          <legend className="px-1 text-sm font-medium text-muted-foreground">
+            allowed
+          </legend>
+          {ALLOWED_KINDS.map((kind) => (
+            <div key={kind} className="flex items-center gap-2">
+              <Checkbox
+                id={`boundary-allowed-${kind}`}
+                checked={allowed.includes(kind)}
+                onCheckedChange={() => toggleKind(kind)}
+                disabled={disabled}
+              />
+              <label
+                htmlFor={`boundary-allowed-${kind}`}
+                className="cursor-pointer font-mono text-sm"
+              >
+                {kind}
+              </label>
+            </div>
+          ))}
+        </fieldset>
+      </div>
     </form>
   );
 }

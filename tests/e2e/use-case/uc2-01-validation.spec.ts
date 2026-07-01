@@ -517,8 +517,9 @@ test("UC2 step 4 — postgres detail page renders conf, charts, and validation e
 // spec: API.md §DELETE attr/validation/conf — hard delete: conf row removed, results
 //   + validation events cascaded, DataHub assertion hard-deleted; afterwards GET → 404
 //   CONFIG_NOT_FOUND and the dataset is absent from /spoke/validation.
-// spec: FRONTEND_VALIDATION.md §Page contracts — Delete button → ConfirmDialog →
-//   redirect to /validation list.
+// spec: FRONTEND_VALIDATION.md §Detail — Delete button → ConfirmDialog; the user
+//   stays on /data/[urn] and the conf query invalidates → 404 → the Config
+//   empty-state ("No config yet." + Create) re-renders in place (no navigation).
 // ─────────────────────────────────────────────────────────────────────────────
 test("UC2 step 5 — Delete (hard delete + cascade) postgres conf via ConfirmDialog", async ({
   page,
@@ -550,21 +551,23 @@ test("UC2 step 5 — Delete (hard delete + cascade) postgres conf via ConfirmDia
   // the dialog confirm rather than the panel trigger still in the DOM.
   await page.getByRole("button", { name: "Delete", exact: true }).last().click();
 
-  // -- UI assertion: redirected to /validation list --
-  // spec: FRONTEND_VALIDATION.md §Page contracts — on delete, router.push("/validation")
-  await page.waitForURL(/\/validation$/, { timeout: 30_000 });
-
   // Mark as deleted so afterAll does not attempt a double-delete.
   pgConfCreated = false;
 
-  // -- UI assertion: postgres URN link no longer visible in the list --
-  // The list has no `removed` filter — a hard-deleted dataset is simply gone.
-  await expect(page.getByText(PG_URN, { exact: false }).first()).not.toBeVisible({
-    timeout: 10_000,
-  });
+  // -- UI assertion: the page STAYS on /data/[urn] (no redirect to /validation) --
+  // spec: FRONTEND_VALIDATION.md §Detail — Delete does not navigate; the panel
+  //   re-renders the empty-state in place.
+  await expect(page).toHaveURL(/\/data\//);
+  await expect(page).not.toHaveURL(/\/validation$/);
 
-  // -- UI assertion: kafka URN still visible (not deleted) --
-  await expect(page.getByText(KAFKA_URN, { exact: false }).first()).toBeVisible({ timeout: 10_000 });
+  // -- UI assertion: the Validation panel Config section re-renders the empty-state --
+  // spec: FRONTEND_VALIDATION.md §Detail — after delete the conf reads 404 and the
+  //   Config section shows the "No config yet." line + a Create control, in place.
+  await expect(validationPanel.getByRole("button", { name: "Create" })).toBeVisible({
+    timeout: 30_000,
+  });
+  await expect(validationPanel.getByText("No config yet.", { exact: false })).toBeVisible();
+  await expect(validationPanel.getByRole("button", { name: "Delete", exact: true })).toHaveCount(0);
 
   // -- Backend probe: GET postgres conf → 404 CONFIG_NOT_FOUND (never-created) --
   // spec: API.md §DELETE attr/validation/conf — after a hard delete the dataset reads
@@ -631,10 +634,11 @@ test("UC2 step 6 — postgres detail after delete reads as a never-created Creat
     .filter({ has: page.getByRole("button", { name: "Validation", exact: true }) });
 
   // -- UI assertion: plain Create empty-state — no Undelete, no frozen note --
-  // spec: FRONTEND_VALIDATION.md §Page contracts — a CONFIG_NOT_FOUND slot renders the Create
-  //   form. The spec'd contract is the Create affordance + the absence of any
-  //   Undelete/frozen-rule affordance; the empty-state body copy is incidental DOM and
-  //   deliberately not pinned here (a copy tweak with no behavior change must not break E2E).
+  // spec: FRONTEND_VALIDATION.md §Detail — a CONFIG_NOT_FOUND slot renders the Create
+  //   empty-state (a "No config yet." line + a plain Create button that enters edit
+  //   state; the form is not auto-mounted). The spec'd contract is the Create affordance
+  //   + the absence of any Undelete/frozen-rule affordance; the empty-state body copy is
+  //   incidental DOM and deliberately not pinned here (a copy tweak must not break E2E).
   await expect(validationPanel.getByRole("button", { name: "Create" })).toBeVisible({
     timeout: 10_000,
   });
@@ -654,7 +658,8 @@ test("UC2 step 6 — postgres detail after delete reads as a never-created Creat
 //   it is a fresh slot, not a resurrected one.
 // spec: API.md §DELETE attr/validation/conf — a fresh PUT creates a new conf (201);
 //   the result series starts empty (the prior cascade is not undone).
-// spec: FRONTEND_VALIDATION.md §Page contracts — the Create form submits a PUT.
+// spec: FRONTEND_VALIDATION.md §Detail — Create enters edit state; the Config form's
+//   Save submits a PUT.
 // ─────────────────────────────────────────────────────────────────────────────
 test("UC2 step 7 — recreate postgres conf via the Create form; fresh conf, empty result series", async ({
   page,
@@ -670,24 +675,31 @@ test("UC2 step 7 — recreate postgres conf via the Create form; fresh conf, emp
     .locator("section")
     .filter({ has: page.getByRole("button", { name: "Validation", exact: true }) });
 
-  // The Create form is rendered inline for the never-created slot.
+  // The never-created slot shows the empty-state (Create button); the form is NOT
+  // auto-mounted.
+  // spec: FRONTEND_VALIDATION.md §Detail — Create is a plain button that enters edit state.
   await expect(validationPanel.getByRole("button", { name: "Create" })).toBeVisible({
     timeout: 15_000,
   });
 
+  // -- UI gesture: click Create to enter edit state → the Config form mounts --
+  await validationPanel.getByRole("button", { name: "Create" }).click();
+
   // -- UI gesture: fill description --
   // spec: FRONTEND_VALIDATION.md §Page contracts — description textarea id="validation-description"
+  await expect(page.locator("#validation-description")).toBeVisible({ timeout: 10_000 });
   await page.locator("#validation-description").fill(RECREATE_DESCRIPTION);
 
   // -- UI gesture: fill the first variable row, then Add a second --
-  // The Create form starts with one empty variable row ("Variable name 1").
+  // The Config form starts with one empty variable row ("Variable name 1").
   // spec: validation-conf-form.tsx — "Add" appends a new variable row.
   await page.getByLabel("Variable name 1").fill(RECREATE_VARIABLES[0]);
   await validationPanel.getByRole("button", { name: "Add" }).click();
   await page.getByLabel("Variable name 2").fill(RECREATE_VARIABLES[1]);
 
-  // -- UI gesture: submit the Create form (header "Create" action) --
-  await validationPanel.getByRole("button", { name: "Create" }).click();
+  // -- UI gesture: submit the form via the header "Save" action --
+  // spec: FRONTEND_VALIDATION.md §Detail — while editing, the submit control is "Save".
+  await validationPanel.getByRole("button", { name: "Save", exact: true }).click();
 
   // Conf is created again (fresh).
   pgConfCreated = true;

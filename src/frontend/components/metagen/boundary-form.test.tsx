@@ -2,8 +2,10 @@
  * Tests for BoundaryForm — the per-dataset metagen boundary editor.
  *
  * Spec: spec/feature/FRONTEND_METAGEN.md §per-dataset page — the boundary write
- * fields are is_enabled and allowed[]. The save uses PUT (full replace), so both
- * fields must round-trip through the form.
+ * fields are is_enabled and allowed[], laid out as two outlined group boxes:
+ * `is_enabled` (its own toggle, checkbox id `#boundary-is-enabled`) and `allowed`
+ * (two allowed-kind toggles). The save uses PUT (full replace), so both fields
+ * must round-trip through the form.
  */
 import { describe, it, expect, vi, beforeAll } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
@@ -43,14 +45,14 @@ describe("BoundaryForm — allowed round-trip", () => {
           onSubmit={onSubmit}
         />
         <button type="submit" form="boundary-form">
-          Save boundary
+          Submit
         </button>
       </>,
     );
 
     // Add a second allowed aspect, then submit.
     fireEvent.click(screen.getByLabelText("column.description"));
-    fireEvent.click(screen.getByRole("button", { name: /save boundary/i }));
+    fireEvent.click(screen.getByRole("button", { name: /submit/i }));
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
     const body = onSubmit.mock.calls[0][0];
@@ -60,7 +62,7 @@ describe("BoundaryForm — allowed round-trip", () => {
 
   it("preserves a previously-set allowed aspect when is_enabled is toggled", async () => {
     const onSubmit = vi.fn<(body: MetagenBoundaryPutBody) => void>();
-    render(
+    const { container } = render(
       <>
         <BoundaryForm
           formId="boundary-form"
@@ -71,14 +73,17 @@ describe("BoundaryForm — allowed round-trip", () => {
           onSubmit={onSubmit}
         />
         <button type="submit" form="boundary-form">
-          Save boundary
+          Submit
         </button>
       </>,
     );
 
-    // Toggle is_enabled off without touching the allowed list.
-    fireEvent.click(screen.getByLabelText("is_enabled"));
-    fireEvent.click(screen.getByRole("button", { name: /save boundary/i }));
+    // Toggle is_enabled off without touching the allowed list. The is_enabled
+    // toggle lives in its own group box; target it by its stable id.
+    const isEnabled = container.querySelector("#boundary-is-enabled") as HTMLElement;
+    expect(isEnabled).toBeTruthy();
+    fireEvent.click(isEnabled);
+    fireEvent.click(screen.getByRole("button", { name: /submit/i }));
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
     const body = onSubmit.mock.calls[0][0];
@@ -96,14 +101,14 @@ describe("BoundaryForm — allowed round-trip", () => {
           onSubmit={onSubmit}
         />
         <button type="submit" form="boundary-form">
-          Save boundary
+          Submit
         </button>
       </>,
     );
 
     // Remove the seeded aspect.
     fireEvent.click(screen.getByLabelText("dataset.description"));
-    fireEvent.click(screen.getByRole("button", { name: /save boundary/i }));
+    fireEvent.click(screen.getByRole("button", { name: /submit/i }));
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
     expect(onSubmit.mock.calls[0][0].allowed).toEqual([]);

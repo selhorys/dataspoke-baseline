@@ -3,15 +3,18 @@
  * /data/[urn] hub.
  *
  * Spec: spec/feature/FRONTEND_VALIDATION.md §Detail (moved to /data/[urn]):
- *   - An absent slot returns 404 CONFIG_NOT_FOUND → the Create empty-state
- *     (Create form + Create button) for an Editor; a Reader sees a plain
- *     "no config" message with no write affordances.
- *   - An existing slot (200) is read-only with Edit/Delete; Delete is a hard
- *     delete. There is no Undelete and no deleted/frozen state to surface.
+ *   - An absent slot returns 404 CONFIG_NOT_FOUND → the Config empty-state: a
+ *     short "No config yet." line plus a `Create` button. The Create form is NOT
+ *     auto-mounted; `Create` is a plain button that enters edit state. A Reader
+ *     sees the same "No config yet." line with no `Create` button.
+ *   - Clicking `Create` mounts the Config form (Cancel + Save); while editing
+ *     the Quality Score / Variables timeseries charts are not rendered.
+ *   - An existing slot (200) is read-only with Edit/Delete + charts; Delete is a
+ *     hard delete. There is no Undelete and no deleted/frozen state to surface.
  *   - Reader (canWrite=false) sees no write affordances in either state.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, act } from "@testing-library/react";
+import { render, screen, act, fireEvent } from "@testing-library/react";
 import React from "react";
 import { ValidationDataPanel } from "./validation-data-panel";
 import { ApiError } from "@/lib/api/client";
@@ -114,7 +117,7 @@ beforeEach(() => {
 // ── CONFIG_NOT_FOUND → Create form ──────────────────────────────────────────────
 
 describe("ValidationDataPanel — absent slot (CONFIG_NOT_FOUND)", () => {
-  it("Editor sees the Create form and Create button — no charts", async () => {
+  it("Editor sees the empty-state (Create button + 'No config yet.'), no auto-mounted form, no charts", async () => {
     mockUseMe.mockReturnValue({ canWrite: true, isAdmin: false, isEditor: true });
     mockConf.mockReturnValue({
       data: undefined,
@@ -123,15 +126,42 @@ describe("ValidationDataPanel — absent slot (CONFIG_NOT_FOUND)", () => {
     });
     await renderPanel();
 
-    expect(await screen.findByTestId("conf-form")).toBeTruthy();
+    // Empty-state: the "No config yet." line + a Create button, and NOT the form.
+    expect(screen.getByText(/no config yet/i)).toBeTruthy();
     expect(screen.getByRole("button", { name: /^create$/i })).toBeTruthy();
+    expect(screen.queryByTestId("conf-form")).toBeNull();
     expect(screen.queryByRole("button", { name: /^edit$/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /^delete$/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^save$/i })).toBeNull();
     expect(screen.queryByTestId("score-chart")).toBeNull();
     expect(screen.queryByTestId("variables-chart")).toBeNull();
   });
 
-  it("Reader sees a plain no-config message — no Create form", async () => {
+  it("clicking Create mounts the Config form (Cancel + Save) and hides the empty-state and charts", async () => {
+    mockUseMe.mockReturnValue({ canWrite: true, isAdmin: false, isEditor: true });
+    mockConf.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      error: makeApiError(404, "CONFIG_NOT_FOUND"),
+    });
+    await renderPanel();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^create$/i }));
+    });
+
+    // Now editing: the form is mounted with the Cancel + Save cluster.
+    expect(screen.getByTestId("conf-form")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^cancel$/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^save$/i })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^create$/i })).toBeNull();
+    expect(screen.queryByText(/no config yet/i)).toBeNull();
+    // Charts stay hidden while editing.
+    expect(screen.queryByTestId("score-chart")).toBeNull();
+    expect(screen.queryByTestId("variables-chart")).toBeNull();
+  });
+
+  it("Reader sees the 'No config yet.' line — no Create button, no form", async () => {
     mockUseMe.mockReturnValue({ canWrite: false, isAdmin: false, isEditor: false });
     mockConf.mockReturnValue({
       data: undefined,
@@ -142,7 +172,7 @@ describe("ValidationDataPanel — absent slot (CONFIG_NOT_FOUND)", () => {
 
     expect(screen.queryByTestId("conf-form")).toBeNull();
     expect(screen.queryByRole("button", { name: /^create$/i })).toBeNull();
-    expect(screen.getByText(/no validation config for this dataset/i)).toBeTruthy();
+    expect(screen.getByText(/no config yet/i)).toBeTruthy();
   });
 
   it("a non-404 conf failure surfaces the error state", async () => {
@@ -171,6 +201,12 @@ describe("ValidationDataPanel — absent slot (CONFIG_NOT_FOUND)", () => {
       error: makeApiError(422, "INVALID_PARAMETER"),
     });
     await renderPanel();
+
+    // The form is not auto-mounted; enter edit state via Create, then the
+    // panel-computed serverError propagates into the form.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^create$/i }));
+    });
 
     expect(await screen.findByText(/INVALID_PARAMETER message/)).toBeTruthy();
   });
@@ -230,5 +266,29 @@ describe("ValidationDataPanel — existing conf", () => {
     expect(screen.queryByRole("button", { name: /^edit$/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /^delete$/i })).toBeNull();
     expect(screen.queryByTestId("conf-form")).toBeNull();
+  });
+
+  it("clicking Edit on an existing conf mounts the form and hides the charts", async () => {
+    // spec: FRONTEND_VALIDATION.md §Detail — the Quality Score / Variables
+    // timeseries appear only in the has-conf read-only view; while editing (create
+    // OR edit) the panel shows the Config section alone.
+    mockUseMe.mockReturnValue({ canWrite: true, isAdmin: false, isEditor: true });
+    mockConf.mockReturnValue({ data: makeConf(), isLoading: false, error: null });
+    await renderPanel();
+
+    // Read-only view: charts present.
+    expect(screen.getByTestId("score-chart")).toBeTruthy();
+    expect(screen.getByTestId("variables-chart")).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+    });
+
+    // Editing: the form is mounted (Cancel + Save) and the charts are gone.
+    expect(screen.getByTestId("conf-form")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^cancel$/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^save$/i })).toBeTruthy();
+    expect(screen.queryByTestId("score-chart")).toBeNull();
+    expect(screen.queryByTestId("variables-chart")).toBeNull();
   });
 });

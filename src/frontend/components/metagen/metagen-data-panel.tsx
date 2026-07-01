@@ -95,15 +95,14 @@ export function MetagenDataPanel({ datasetUrn }: MetagenDataPanelProps) {
           <h3 className="text-sm font-medium">Boundary Config</h3>
           {canWrite && !boundaryLoading && (
             <div className="flex items-center gap-2">
-              {boundary === null && (
+              {boundary === null && !editingBoundary && (
                 <Button
                   key="boundary-create"
-                  type="submit"
-                  form={BOUNDARY_FORM_ID}
+                  type="button"
                   size="sm"
-                  disabled={upsertBoundary.isPending}
+                  onClick={() => setEditingBoundary(true)}
                 >
-                  {upsertBoundary.isPending ? "Saving…" : "Save boundary"}
+                  Create
                 </Button>
               )}
               {boundary !== null &&
@@ -131,7 +130,7 @@ export function MetagenDataPanel({ datasetUrn }: MetagenDataPanelProps) {
                     </Button>
                   </>
                 )}
-              {boundary !== null && boundary !== undefined && editingBoundary && (
+              {editingBoundary && (
                 <>
                   <Button
                     key="boundary-cancel"
@@ -150,7 +149,7 @@ export function MetagenDataPanel({ datasetUrn }: MetagenDataPanelProps) {
                     size="sm"
                     disabled={upsertBoundary.isPending}
                   >
-                    {upsertBoundary.isPending ? "Saving…" : "Save boundary"}
+                    {upsertBoundary.isPending ? "Saving…" : "Save"}
                   </Button>
                 </>
               )}
@@ -160,115 +159,103 @@ export function MetagenDataPanel({ datasetUrn }: MetagenDataPanelProps) {
 
         {boundaryLoading && <Skeleton className="h-32 w-full" />}
 
-        {!boundaryLoading && boundary === null && (
-          <>
-            {canWrite ? (
-              <>
-                <p className="text-sm text-muted-foreground">
-                  No boundary configured for this dataset. Create one to include
-                  it in MetaGen runs.
-                </p>
-                <BoundaryForm
-                  formId={BOUNDARY_FORM_ID}
-                  initialValues={null}
-                  onSubmit={handleSaveBoundary}
-                />
-              </>
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                No boundary configured for this dataset.
-              </p>
-            )}
-          </>
+        {/* No boundary yet, not editing — empty-state line only */}
+        {!boundaryLoading && boundary === null && !editingBoundary && (
+          <p className="text-sm text-muted-foreground">No config yet.</p>
         )}
 
-        {!boundaryLoading && boundary !== null && boundary !== undefined && (
-          <>
-            {!editingBoundary && (
-              <dl className="grid grid-cols-2 gap-x-6 gap-y-2 rounded-md border p-3 text-sm sm:grid-cols-3">
-                <div>
-                  <dt className="text-muted-foreground">is_enabled</dt>
-                  <dd>
-                    <Badge variant={boundary.is_enabled ? "default" : "secondary"}>
-                      {boundary.is_enabled ? "Enabled" : "Disabled"}
-                    </Badge>
-                  </dd>
-                </div>
-                <div>
-                  <dt className="text-muted-foreground">allowed</dt>
-                  <dd className="flex flex-wrap gap-1">
-                    {boundary.allowed.length === 0 ? (
-                      <span className="text-muted-foreground">none</span>
-                    ) : (
-                      boundary.allowed.map((k) => (
-                        <Badge
-                          key={k}
-                          variant="outline"
-                          className="font-mono text-xs"
-                        >
-                          {k}
-                        </Badge>
-                      ))
-                    )}
-                  </dd>
-                </div>
-              </dl>
-            )}
+        {/* Editing (create or edit) — the boundary form */}
+        {!boundaryLoading && editingBoundary && (
+          <BoundaryForm
+            formId={BOUNDARY_FORM_ID}
+            initialValues={boundary ?? null}
+            onSubmit={handleSaveBoundary}
+          />
+        )}
 
-            {editingBoundary && (
-              <BoundaryForm
-                formId={BOUNDARY_FORM_ID}
-                initialValues={boundary}
-                onSubmit={handleSaveBoundary}
+        {/* Boundary exists, not editing — two outlined group boxes */}
+        {!boundaryLoading &&
+          boundary !== null &&
+          boundary !== undefined &&
+          !editingBoundary && (
+            <div className="grid grid-cols-2 gap-3">
+              <fieldset className="rounded-md border p-3">
+                <legend className="px-1 text-sm font-medium text-muted-foreground">
+                  is_enabled
+                </legend>
+                <Badge variant={boundary.is_enabled ? "default" : "secondary"}>
+                  {boundary.is_enabled ? "Enabled" : "Disabled"}
+                </Badge>
+              </fieldset>
+              <fieldset className="rounded-md border p-3">
+                <legend className="px-1 text-sm font-medium text-muted-foreground">
+                  allowed
+                </legend>
+                <div className="flex flex-wrap gap-1">
+                  {boundary.allowed.length === 0 ? (
+                    <span className="text-sm text-muted-foreground">none</span>
+                  ) : (
+                    boundary.allowed.map((k) => (
+                      <Badge
+                        key={k}
+                        variant="outline"
+                        className="font-mono text-xs"
+                      >
+                        {k}
+                      </Badge>
+                    ))
+                  )}
+                </div>
+              </fieldset>
+            </div>
+          )}
+      </div>
+
+      {/* ── Items grouped by kind (hidden while editing the boundary) ────────── */}
+      {!editingBoundary && (
+        <div className="space-y-4">
+          <h3 className="text-sm font-medium">Generated Items</h3>
+
+          {itemsLoading && !itemsData && (
+            <div className="space-y-2">
+              <Skeleton className="h-24 w-full" />
+              <Skeleton className="h-24 w-full" />
+            </div>
+          )}
+
+          {!itemsLoading && items.length === 0 && (
+            <EmptyState message="No items yet. Run MetaGen to generate candidates for this dataset." />
+          )}
+
+          {datasetDescItems.length > 0 && (
+            <CollapsiblePanel
+              title={
+                <span className="font-mono text-xs">dataset.description</span>
+              }
+            >
+              <ItemKindTable
+                items={datasetDescItems}
+                groupByColumn={false}
+                canWrite={canWrite}
               />
-            )}
-          </>
-        )}
-      </div>
+            </CollapsiblePanel>
+          )}
 
-      {/* ── Items grouped by kind ────────────────────────────────────────────── */}
-      <div className="space-y-4">
-        <h3 className="text-sm font-medium">Generated Items</h3>
-
-        {itemsLoading && !itemsData && (
-          <div className="space-y-2">
-            <Skeleton className="h-24 w-full" />
-            <Skeleton className="h-24 w-full" />
-          </div>
-        )}
-
-        {!itemsLoading && items.length === 0 && (
-          <EmptyState message="No items yet. Run MetaGen to generate candidates for this dataset." />
-        )}
-
-        {datasetDescItems.length > 0 && (
-          <CollapsiblePanel
-            title={
-              <span className="font-mono text-xs">dataset.description</span>
-            }
-          >
-            <ItemKindTable
-              items={datasetDescItems}
-              groupByColumn={false}
-              canWrite={canWrite}
-            />
-          </CollapsiblePanel>
-        )}
-
-        {columnDescItems.length > 0 && (
-          <CollapsiblePanel
-            title={
-              <span className="font-mono text-xs">column.description</span>
-            }
-          >
-            <ItemKindTable
-              items={columnDescItems}
-              groupByColumn
-              canWrite={canWrite}
-            />
-          </CollapsiblePanel>
-        )}
-      </div>
+          {columnDescItems.length > 0 && (
+            <CollapsiblePanel
+              title={
+                <span className="font-mono text-xs">column.description</span>
+              }
+            >
+              <ItemKindTable
+                items={columnDescItems}
+                groupByColumn
+                canWrite={canWrite}
+              />
+            </CollapsiblePanel>
+          )}
+        </div>
+      )}
 
       <ConfirmDialog
         open={deleteBoundaryOpen}

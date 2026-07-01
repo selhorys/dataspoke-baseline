@@ -15,7 +15,6 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ErrorState } from "@/components/ui/error-state";
@@ -84,7 +83,6 @@ interface ValidationDataPanelProps {
 
 export function ValidationDataPanel({ datasetUrn }: ValidationDataPanelProps) {
   const { canWrite } = useMe();
-  const router = useRouter();
   const tz = useDisplayTz();
 
   const [isEditing, setIsEditing] = useState(false);
@@ -114,9 +112,9 @@ export function ValidationDataPanel({ datasetUrn }: ValidationDataPanelProps) {
   };
 
   const handleDelete = () => {
-    deleteConf.mutate(undefined, {
-      onSuccess: () => router.push("/validation"),
-    });
+    // After delete the conf query invalidates → 404 → the empty-state renders
+    // automatically; the useEffect below resets any lingering edit state.
+    deleteConf.mutate(undefined);
   };
 
   // ── Error messages ────────────────────────────────────────────────────────────
@@ -147,7 +145,9 @@ export function ValidationDataPanel({ datasetUrn }: ValidationDataPanelProps) {
     return <ErrorState message={`Failed to load validation config: ${confError.message}`} />;
   }
 
-  const hasTimeseries = confExists;
+  // The timeseries render only in the has-conf read-only view; while editing
+  // (create or edit) the panel shows the Config section alone.
+  const hasTimeseries = confExists && !isEditing;
 
   // ── Render ────────────────────────────────────────────────────────────────────
   return (
@@ -180,7 +180,7 @@ export function ValidationDataPanel({ datasetUrn }: ValidationDataPanelProps) {
                   </Button>
                 </>
               )}
-              {confExists && isEditing && (
+              {isEditing && (
                 <>
                   <Button
                     key="conf-cancel"
@@ -203,54 +203,37 @@ export function ValidationDataPanel({ datasetUrn }: ValidationDataPanelProps) {
                   </Button>
                 </>
               )}
-              {isAbsent && (
+              {isAbsent && !isEditing && (
                 <Button
                   key="conf-create"
-                  type="submit"
-                  form={CONF_FORM_ID}
+                  type="button"
                   size="sm"
-                  disabled={upsert.isPending}
+                  onClick={() => setIsEditing(true)}
                 >
-                  {upsert.isPending ? "Saving..." : "Create"}
+                  Create
                 </Button>
               )}
             </div>
           )}
         </div>
 
-        {/* No config yet — show create form or empty state */}
-        {isAbsent && (
-          <>
-            {canWrite ? (
-              <>
-                <p className="text-sm text-muted-foreground">
-                  No validation config exists for this dataset. Create one below.
-                </p>
-                <ValidationConfForm
-                  formId={CONF_FORM_ID}
-                  defaultValues={defaultFormValues()}
-                  onSubmit={handleSave}
-                  serverError={saveError}
-                />
-              </>
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                No validation config for this dataset.
-              </p>
-            )}
-          </>
+        {/* No config yet, not editing — empty-state line only */}
+        {isAbsent && !isEditing && (
+          <p className="text-sm text-muted-foreground">No config yet.</p>
         )}
 
-        {/* Config exists — read-only or edit form */}
-        {confExists && !isEditing && <ConfReadOnly conf={conf} />}
-        {confExists && isEditing && (
+        {/* Editing (create or edit) — the Config form */}
+        {isEditing && (
           <ValidationConfForm
             formId={CONF_FORM_ID}
-            defaultValues={toInternal(conf)}
+            defaultValues={confExists ? toInternal(conf) : defaultFormValues()}
             onSubmit={handleSave}
             serverError={saveError}
           />
         )}
+
+        {/* Config exists, not editing — read-only view */}
+        {confExists && !isEditing && <ConfReadOnly conf={conf} />}
       </div>
 
       {/* Historical timeseries */}
@@ -281,7 +264,7 @@ export function ValidationDataPanel({ datasetUrn }: ValidationDataPanelProps) {
           open={showDeleteDialog}
           onOpenChange={setShowDeleteDialog}
           title="Delete validation config"
-          description={`Delete the validation config for "${datasetUrn}". This also removes its result history and validation events, and cannot be undone. You will be returned to the validation list.`}
+          description={`Delete the validation config for "${datasetUrn}". This also removes its result history and validation events, and cannot be undone.`}
           confirmLabel="Delete"
           onConfirm={handleDelete}
           loading={deleteConf.isPending}
