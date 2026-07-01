@@ -82,6 +82,8 @@ def _conf_response(dto: Any) -> MetagenConfResponse:
         dataset_filter=dto.dataset_filter,
         result_limit=dto.result_limit,
         overwrite_pending=dto.overwrite_pending,
+        dataset_affected_count=dto.dataset_affected_count,
+        last_run_at=dto.last_run_at,
         created_at=dto.created_at,
         updated_at=dto.updated_at,
     )
@@ -333,7 +335,6 @@ async def get_metagen_conf_covered_datasets(
                 dataset_urn=r.dataset_urn,
                 is_enabled=r.is_enabled,
                 allowed=cast(list[_AllowedKind], r.allowed),
-                owner=r.owner,
                 blocked=r.blocked,
                 reason=cast(_CoveredReason | None, r.reason),
             )

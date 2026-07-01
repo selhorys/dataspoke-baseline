@@ -253,7 +253,6 @@ def upgrade() -> None:
         sa.Column("dataset_urn", sa.Text(), primary_key=True),
         sa.Column("is_enabled", sa.Boolean(), nullable=False, server_default="false"),
         sa.Column("allowed", sa.ARRAY(sa.Text()), nullable=False),
-        sa.Column("owner", sa.Text(), nullable=True),
         sa.Column("created_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
         sa.Column("updated_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
         schema=SCHEMA,

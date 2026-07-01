@@ -24,6 +24,10 @@ export interface MetagenConf {
   dataset_filter: Record<string, unknown>;
   result_limit: number;
   overwrite_pending: boolean;
+  /** Distinct datasets that already have candidates from this conf. */
+  dataset_affected_count: number;
+  /** Timestamp of this conf's most recent completed/failed run; null if never run. */
+  last_run_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -76,7 +80,6 @@ export interface MetagenCoveredDatasetSummary {
   dataset_urn: string;
   is_enabled: boolean;
   allowed: AllowedKind[];
-  owner: string | null;
   blocked: boolean;
   reason: string | null;
 }
@@ -116,7 +119,6 @@ export interface MetagenBoundary {
   dataset_urn: string;
   is_enabled: boolean;
   allowed: AllowedKind[];
-  owner: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -124,13 +126,11 @@ export interface MetagenBoundary {
 export interface MetagenBoundaryPutBody {
   is_enabled: boolean;
   allowed: AllowedKind[];
-  owner?: string | null;
 }
 
 export interface MetagenBoundaryPatchBody {
   is_enabled?: boolean;
   allowed?: AllowedKind[];
-  owner?: string | null;
 }
 
 // ── Item & candidate ──────────────────────────────────────────────────────────
@@ -155,6 +155,8 @@ export interface MetagenItemListResponse {
   offset: number;
   limit: number;
   total_count: number;
+  /** Count of all candidates for this dataset (all statuses); matches the result page. */
+  candidate_count: number;
   items: MetagenItemSummary[];
 }
 

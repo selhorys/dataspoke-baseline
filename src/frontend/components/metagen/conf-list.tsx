@@ -4,7 +4,8 @@
  * MetagenConfList — paginated conf list with a "Create conf" button.
  *
  * One row per conf: name (link to detail), is_enabled badge, schedule_tier,
- * a dataset_filter summary, result_limit, and a per-row Run action.
+ * a dataset_filter summary, datasets_affected count, result_limit, and a run
+ * column carrying the last_run_at timestamp plus a per-row Run action.
  *
  * Spec: spec/feature/FRONTEND_METAGEN.md §Conf list.
  */
@@ -24,9 +25,13 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { summarizeDatasetFilter } from "@/lib/metagen-filter-summary";
+import { formatDateTime } from "@/lib/format-time";
+import { useDisplayTz } from "@/lib/preferences/timezone";
 import { Pagination } from "@/components/pagination";
 import { ScheduleTierLink, scheduleDagId } from "@/components/schedule-tier-link";
 import type { MetagenConf } from "@/types/metagen";
+
+const EM_DASH = <span className="text-muted-foreground">—</span>;
 
 interface MetagenConfListProps {
   confs: MetagenConf[];
@@ -49,6 +54,7 @@ export function MetagenConfList({
   onOffset,
   onLimit,
 }: MetagenConfListProps) {
+  const tz = useDisplayTz();
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -76,8 +82,9 @@ export function MetagenConfList({
                 <TableHead>is_enabled</TableHead>
                 <TableHead>schedule_tier</TableHead>
                 <TableHead>dataset_filter</TableHead>
+                <TableHead className="text-right">datasets affected</TableHead>
                 <TableHead className="text-right">result_limit</TableHead>
-                {canWrite && <TableHead className="text-right">run</TableHead>}
+                <TableHead className="text-right">run</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -109,23 +116,31 @@ export function MetagenConfList({
                     {summarizeDatasetFilter(conf.dataset_filter)}
                   </TableCell>
                   <TableCell className="text-right text-sm tabular-nums">
+                    {conf.dataset_affected_count}
+                  </TableCell>
+                  <TableCell className="text-right text-sm tabular-nums">
                     {conf.result_limit}
                   </TableCell>
-                  {canWrite && (
-                    <TableCell className="text-right">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="h-7 px-2 text-xs"
-                        onClick={() => onRun(conf)}
-                        disabled={runningConfId === conf.id}
-                        aria-label={`Run conf ${conf.name}`}
-                      >
-                        <Play className="mr-1 h-3.5 w-3.5" />
-                        {runningConfId === conf.id ? "Running…" : "Run"}
-                      </Button>
-                    </TableCell>
-                  )}
+                  <TableCell className="text-right">
+                    <div className="flex items-center justify-end gap-2">
+                      <span className="text-xs text-muted-foreground">
+                        {conf.last_run_at ? formatDateTime(conf.last_run_at, tz) : EM_DASH}
+                      </span>
+                      {canWrite && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7 px-2 text-xs"
+                          onClick={() => onRun(conf)}
+                          disabled={runningConfId === conf.id}
+                          aria-label={`Run conf ${conf.name}`}
+                        >
+                          <Play className="mr-1 h-3.5 w-3.5" />
+                          {runningConfId === conf.id ? "Running…" : "Run"}
+                        </Button>
+                      )}
+                    </div>
+                  </TableCell>
                 </TableRow>
               ))}
             </TableBody>

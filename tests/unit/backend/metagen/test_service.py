@@ -103,13 +103,11 @@ def _make_boundary_row(
     dataset_urn: str = _VALID_URN,
     is_enabled: bool = True,
     allowed: list[str] | None = None,
-    owner: str | None = None,
 ) -> MagicMock:
     row = MagicMock()
     row.dataset_urn = dataset_urn
     row.is_enabled = is_enabled
     row.allowed = allowed or ["dataset.description", "column.description"]
-    row.owner = owner
     row.created_at = datetime.now(tz=UTC)
     row.updated_at = datetime.now(tz=UTC)
     return row
@@ -194,15 +192,32 @@ async def test_list_confs_returns_dtos_and_total(svc, db) -> None:
 
     Spec: API.md §Metadata Generation — GET /metagen/conf lists confs (paginated).
     """
+    id_a, id_b = uuid.uuid4(), uuid.uuid4()
     count_result = _make_result(scalar=2)
-    rows_result = _make_result([_make_conf_row(name="a"), _make_conf_row(name="b")])
-    db.execute = AsyncMock(side_effect=[count_result, rows_result])
+    rows_result = _make_result(
+        [_make_conf_row(conf_id=id_a, name="a"), _make_conf_row(conf_id=id_b, name="b")]
+    )
+    # list_confs then issues two grouped rollup queries (dataset_affected_count,
+    # last_run_at), each iterated via result.all(). Only conf "a" has candidates;
+    # only conf "b" has a recorded run.
+    last_run_ts = datetime.now(tz=UTC)
+    affected_result = _make_result([(id_a, 5)])
+    last_run_result = _make_result([(str(id_b), last_run_ts)])
+    db.execute = AsyncMock(
+        side_effect=[count_result, rows_result, affected_result, last_run_result]
+    )
 
     confs, total = await svc.list_confs(offset=0, limit=20)
 
     assert total == 2
     assert [c.name for c in confs] == ["a", "b"]
     assert all(isinstance(c, MetagenConfDTO) for c in confs)
+    by_name = {c.name: c for c in confs}
+    # Rollups attach per-conf; confs without candidates/runs fall back to 0 / None.
+    assert by_name["a"].dataset_affected_count == 5
+    assert by_name["a"].last_run_at is None
+    assert by_name["b"].dataset_affected_count == 0
+    assert by_name["b"].last_run_at == last_run_ts
 
 
 @pytest.mark.asyncio

@@ -290,7 +290,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <div className="flex flex-1 overflow-hidden">
         {/* Sidebar */}
         <aside className="hidden w-56 shrink-0 flex-col border-r bg-background md:flex">
-          <nav className="flex flex-1 flex-col gap-1 p-3">
+          <nav className="flex flex-1 flex-col gap-1 overflow-y-auto min-h-0 p-3">
             {mainNav.map((entry) =>
               isNavGroup(entry) ? (
                 <SidebarNavGroup key={entry.basePath} group={entry} />

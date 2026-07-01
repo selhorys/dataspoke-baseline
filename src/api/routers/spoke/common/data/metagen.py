@@ -46,7 +46,6 @@ def _boundary_response(dto: Any) -> MetagenBoundaryResponse:
         dataset_urn=dto.dataset_urn,
         is_enabled=dto.is_enabled,
         allowed=cast(list[_AllowedKind], dto.allowed),
-        owner=dto.owner,
         created_at=dto.created_at,
         updated_at=dto.updated_at,
     )
@@ -130,9 +129,11 @@ async def get_data_metagen_items(
     dtos, total = await service.list_items_for_dataset(
         dataset_urn, offset=offset, limit=limit, order_by=order_by
     )
+    candidate_count = await service.count_dataset_candidates(dataset_urn)
     return MetagenItemListResponse(
         items=[to_item_summary(d) for d in dtos],
         total_count=total,
+        candidate_count=candidate_count,
         offset=offset,
         limit=limit,
     )

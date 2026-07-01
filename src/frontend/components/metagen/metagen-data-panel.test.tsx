@@ -66,7 +66,6 @@ function makeBoundary(overrides: Partial<MetagenBoundary> = {}): MetagenBoundary
     dataset_urn: DATASET_URN,
     is_enabled: true,
     allowed: ["dataset.description"],
-    owner: "data-stewards",
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
     ...overrides,
@@ -110,8 +109,8 @@ describe("MetagenDataPanel — no boundary", () => {
     expect(screen.queryByRole("button", { name: /^edit$/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /^cancel$/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /^delete$/i })).toBeNull();
-    // The create form body is present (owner field is editable).
-    expect(screen.getByLabelText("owner")).toBeTruthy();
+    // The create form body is present (the is_enabled checkbox is editable).
+    expect(screen.getByLabelText("is_enabled")).toBeTruthy();
   });
 });
 
@@ -125,10 +124,10 @@ describe("MetagenDataPanel — boundary exists (read mode)", () => {
     expect(screen.getByRole("button", { name: /^delete$/i })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Save boundary" })).toBeNull();
     expect(screen.queryByRole("button", { name: /^cancel$/i })).toBeNull();
-    // Read-only: no editable form fields (the owner input only exists in edit/create).
-    expect(screen.queryByLabelText("owner")).toBeNull();
-    // The read-only <dl> surfaces the configured owner value.
-    expect(screen.getByText("data-stewards")).toBeTruthy();
+    // Read-only: no editable form fields (the is_enabled checkbox only exists in edit/create).
+    expect(screen.queryByLabelText("is_enabled")).toBeNull();
+    // The read-only <dl> surfaces the configured allowed aspect.
+    expect(screen.getByText("dataset.description")).toBeTruthy();
   });
 });
 
@@ -144,9 +143,9 @@ describe("MetagenDataPanel — boundary exists, edit mode", () => {
     expect(screen.getByRole("button", { name: "Save boundary" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /^edit$/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /^delete$/i })).toBeNull();
-    // Editable form body: the owner input is now present and seeded.
-    const ownerInput = screen.getByLabelText("owner") as HTMLInputElement;
-    expect(ownerInput.value).toBe("data-stewards");
+    // Editable form body: the allowed checkbox is now present and seeded.
+    const allowedCheckbox = screen.getByLabelText("dataset.description") as HTMLInputElement;
+    expect(allowedCheckbox).toBeTruthy();
   });
 
   it("clicking Save boundary submits the form → upsert mutation with the boundary body", async () => {
@@ -163,7 +162,6 @@ describe("MetagenDataPanel — boundary exists, edit mode", () => {
     expect(body).toMatchObject({
       is_enabled: true,
       allowed: ["dataset.description"],
-      owner: "data-stewards",
     });
 
     // On success the panel exits edit mode → read-only cluster (Edit/Delete) returns.

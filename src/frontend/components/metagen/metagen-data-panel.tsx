@@ -212,12 +212,6 @@ export function MetagenDataPanel({ datasetUrn }: MetagenDataPanelProps) {
                     )}
                   </dd>
                 </div>
-                {boundary.owner && (
-                  <div>
-                    <dt className="text-muted-foreground">owner</dt>
-                    <dd className="font-mono text-xs">{boundary.owner}</dd>
-                  </div>
-                )}
               </dl>
             )}
 

@@ -55,7 +55,6 @@ def _make_boundary_dto() -> MagicMock:
     dto.dataset_urn = _VALID_URN
     dto.is_enabled = True
     dto.allowed = ["dataset.description", "column.description"]
-    dto.owner = "alice@example.com"
     dto.created_at = datetime.now(tz=UTC)
     dto.updated_at = datetime.now(tz=UTC)
     return dto
@@ -237,7 +236,6 @@ async def test_get_boundary_returns_200_when_present(client, mock_svc: AsyncMock
     assert body["is_enabled"] is True
     assert "dataset.description" in body["allowed"]
     assert "column.description" in body["allowed"]
-    assert body["owner"] == "alice@example.com"
 
 
 @pytest.mark.asyncio
@@ -292,33 +290,6 @@ async def test_put_boundary_rejects_invalid_kind(client, mock_svc: AsyncMock) ->
 
 
 @pytest.mark.asyncio
-async def test_put_boundary_with_owner_returns_owner_in_response(
-    client, mock_svc: AsyncMock
-) -> None:
-    """PUT /attr/metagen/boundary with owner returns the owner field in the response body.
-
-    Spec: spec/feature/BACKEND.md §Metadata Generation Service — per-dataset boundary
-    has optional owner field; PUT round-trips it in the response.
-    """
-    dto = _make_boundary_dto()
-    dto.owner = "some-user"
-    mock_svc.put_boundary = AsyncMock(return_value=dto)
-
-    resp = await client.put(
-        _BOUNDARY_URL,
-        json={"is_enabled": True, "allowed": ["dataset.description"], "owner": "some-user"},
-        headers=auth_headers(),
-    )
-
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["owner"] == "some-user", (
-        "PUT with owner must round-trip the owner value in the response. "
-        "spec: BACKEND.md §Metadata Generation Service — per-dataset boundary owner field"
-    )
-
-
-@pytest.mark.asyncio
 async def test_patch_boundary_returns_200_with_updated_fields(client, mock_svc: AsyncMock) -> None:
     """PATCH /attr/metagen/boundary returns 200 with the updated boundary.
 
@@ -366,12 +337,17 @@ async def test_get_items_returns_200_with_items_and_total_count(
     """
     dto = _make_item_summary_dto()
     mock_svc.list_items_for_dataset = AsyncMock(return_value=([dto], 1))
+    mock_svc.count_dataset_candidates = AsyncMock(return_value=3)
 
     resp = await client.get(_ITEM_LIST_URL, headers=auth_headers())
 
     assert resp.status_code == 200
     body = resp.json()
     assert body["total_count"] == 1
+    # candidate_count is the dataset-wide candidate total (all statuses), distinct
+    # from total_count (item count); it matches the per-dataset result view.
+    # spec: API.md §Metadata Generation — item list carries candidate_count.
+    assert body["candidate_count"] == 3
     assert len(body["items"]) == 1
     item = body["items"][0]
     assert item["dataset_urn"] == _VALID_URN

@@ -1251,7 +1251,6 @@ async def test_uc4_covered_datasets_view(
     Spec: feature/BACKEND.md §Metadata Generation Service — Covered-datasets view
     """
     conf_id: str | None = None
-    owner_label = "uc4-covered-owner@imazon.test"
     try:
         # Seed a conf scoped to exactly the two fulfillment datasets via dataset_urns.
         # spec: feature/BACKEND.md §Metadata Generation Service — Covered-datasets view — resolution
@@ -1271,7 +1270,6 @@ async def test_uc4_covered_datasets_view(
             dataset_urn=EU_PROFILES_URN,
             is_enabled=True,
             allowed=["dataset.description", "column.description"],
-            owner=owner_label,
         )
         # orders.events: disabled boundary → boundary-blocked.
         await seed_metagen_boundary(
@@ -1279,7 +1277,6 @@ async def test_uc4_covered_datasets_view(
             dataset_urn=ORDERS_EVENTS_URN,
             is_enabled=False,
             allowed=["column.description"],
-            owner=None,
         )
 
         covered_url = f"/api/v1/spoke/metagen/conf/{conf_id}/dataset"
@@ -1357,10 +1354,6 @@ async def test_uc4_covered_datasets_view(
         assert set(eu_row["allowed"]) == {"dataset.description", "column.description"}, (
             f"eu_profiles allowed not echoed: {eu_row['allowed']!r}. "
             "spec: API.md §Metadata Generation — covered row carries allowed"
-        )
-        assert eu_row["owner"] == owner_label, (
-            f"eu_profiles owner not echoed: {eu_row['owner']!r} != {owner_label!r}. "
-            "spec: API.md §Metadata Generation — covered row carries owner"
         )
 
         oe_row = by_urn[ORDERS_EVENTS_URN]
@@ -1830,7 +1823,6 @@ async def test_uc4_dataset_rollup_view(
             dataset_urn=EU_PROFILES_URN,
             is_enabled=True,
             allowed=["dataset.description", "column.description"],
-            owner="uc4-rollup-owner@imazon.test",
         )
         # dataset.description: conf EU approved + conf EU rejected.
         await seed_metagen_item(

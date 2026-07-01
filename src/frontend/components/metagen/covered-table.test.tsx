@@ -23,7 +23,6 @@ const writable: MetagenCoveredDatasetSummary = {
   dataset_urn: "urn:li:dataset:writable",
   is_enabled: true,
   allowed: ["dataset.description"],
-  owner: "stewards",
   blocked: false,
   reason: null,
 };
@@ -32,7 +31,6 @@ const blocked: MetagenCoveredDatasetSummary = {
   dataset_urn: "urn:li:dataset:blocked",
   is_enabled: false,
   allowed: [],
-  owner: null,
   blocked: true,
   reason: "boundary_disabled",
 };

@@ -94,7 +94,7 @@ export default function ValidationListPage() {
               <TableHead>dataset_urn</TableHead>
               <TableHead>description</TableHead>
               <TableHead>variables</TableHead>
-              <TableHead>latest data_time</TableHead>
+              <TableHead>latest check</TableHead>
               <TableHead>Quality Score</TableHead>
             </TableRow>
           </TableHeader>

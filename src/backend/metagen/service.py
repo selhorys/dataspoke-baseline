@@ -84,6 +84,8 @@ class MetagenConfDTO(BaseModel):
     dataset_filter: dict[str, Any]
     result_limit: int
     overwrite_pending: bool
+    dataset_affected_count: int = 0
+    last_run_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -92,7 +94,6 @@ class MetagenBoundaryDTO(BaseModel):
     dataset_urn: str
     is_enabled: bool
     allowed: list[str]
-    owner: str | None
     created_at: datetime
     updated_at: datetime
 
@@ -166,7 +167,6 @@ class CoveredDatasetRowDTO(BaseModel):
     dataset_urn: str
     is_enabled: bool
     allowed: list[str]
-    owner: str | None
     blocked: bool
     reason: str | None
 
@@ -193,7 +193,6 @@ def _boundary_to_dto(row: MetagenBoundary) -> MetagenBoundaryDTO:
         dataset_urn=row.dataset_urn,
         is_enabled=row.is_enabled,
         allowed=list(row.allowed),
-        owner=row.owner,
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
@@ -296,11 +295,63 @@ class MetagenService:
             .limit(limit)
         )
         rows = (await self._db.execute(rows_q)).scalars().all()
-        return [_conf_to_dto(r) for r in rows], int(total)
+        dtos = [_conf_to_dto(r) for r in rows]
+
+        # Attach per-conf rollups for this page only (two cheap grouped queries).
+        conf_uuids = [r.id for r in rows]
+        if conf_uuids:
+            affected_map, last_run_map = await self._load_conf_rollups(conf_uuids)
+            for dto in dtos:
+                dto.dataset_affected_count = affected_map.get(dto.id, 0)
+                dto.last_run_at = last_run_map.get(dto.id)
+
+        return dtos, int(total)
+
+    async def _load_conf_rollups(
+        self, conf_uuids: list[uuid.UUID]
+    ) -> tuple[dict[str, int], dict[str, datetime]]:
+        """Compute per-conf rollups (dataset_affected_count, last_run_at).
+
+        Returns ``(affected_map, last_run_map)`` keyed by the conf id string. Both
+        maps only contain entries for confs with data, so callers apply defaults
+        (0 / None) via ``.get``.
+        """
+        # Distinct datasets that already hold a candidate from each conf.
+        affected_q = (
+            select(
+                MetagenCandidate.conf_id,
+                func.count(func.distinct(MetagenCandidate.dataset_urn)),
+            )
+            .where(MetagenCandidate.conf_id.in_(conf_uuids))
+            .group_by(MetagenCandidate.conf_id)
+        )
+        affected_map: dict[str, int] = {
+            str(cid): int(cnt) for cid, cnt in (await self._db.execute(affected_q)).all()
+        }
+
+        # Last run-complete/run-failed event per conf (events.entity_id is text).
+        conf_id_strs = [str(u) for u in conf_uuids]
+        last_run_q = (
+            select(Event.entity_id, func.max(Event.occurred_at))
+            .where(
+                Event.entity_type == "metagen",
+                Event.entity_id.in_(conf_id_strs),
+                Event.event_type.in_([METAGEN_RUN_COMPLETE, METAGEN_RUN_FAILED]),
+            )
+            .group_by(Event.entity_id)
+        )
+        last_run_map: dict[str, datetime] = {
+            eid: occurred for eid, occurred in (await self._db.execute(last_run_q)).all()
+        }
+        return affected_map, last_run_map
 
     async def get_conf(self, conf_id: str) -> MetagenConfDTO:
         row = await self._load_conf_row(conf_id)
-        return _conf_to_dto(row)
+        dto = _conf_to_dto(row)
+        affected_map, last_run_map = await self._load_conf_rollups([row.id])
+        dto.dataset_affected_count = affected_map.get(dto.id, 0)
+        dto.last_run_at = last_run_map.get(dto.id)
+        return dto
 
     async def create_conf(self, data: dict[str, Any]) -> MetagenConfDTO:
         """Create a new conf. Raises 409 METAGEN_CONF_EXISTS on duplicate name.
@@ -377,7 +428,11 @@ class MetagenService:
             "success",
             {"operation": "PUT", "conf_id": str(row.id), "conf_name": row.name},
         )
-        return _conf_to_dto(row)
+        dto = _conf_to_dto(row)
+        affected_map, last_run_map = await self._load_conf_rollups([row.id])
+        dto.dataset_affected_count = affected_map.get(dto.id, 0)
+        dto.last_run_at = last_run_map.get(dto.id)
+        return dto
 
     async def patch_conf(self, conf_id: str, partial: dict[str, Any]) -> MetagenConfDTO:
         """Partial update of a conf. Raises 404 when absent, 409 on name collision."""
@@ -425,7 +480,11 @@ class MetagenService:
                 "fields_changed": list(partial.keys()),
             },
         )
-        return _conf_to_dto(row)
+        dto = _conf_to_dto(row)
+        affected_map, last_run_map = await self._load_conf_rollups([row.id])
+        dto.dataset_affected_count = affected_map.get(dto.id, 0)
+        dto.last_run_at = last_run_map.get(dto.id)
+        return dto
 
     async def delete_conf(self, conf_id: str) -> None:
         """Hard-delete a conf, orphaning all of its candidates. The
@@ -476,7 +535,6 @@ class MetagenService:
 
         existing.is_enabled = boundary.get("is_enabled", False)
         existing.allowed = allowed
-        existing.owner = boundary.get("owner")
         existing.updated_at = datetime.now(tz=UTC)
 
         await self._db.commit()
@@ -500,11 +558,9 @@ class MetagenService:
         if row is None:
             raise EntityNotFoundError("metagen_boundary", urn)
 
-        for field_name in ("is_enabled", "allowed", "owner"):
+        for field_name in ("is_enabled", "allowed"):
             if field_name in patch and patch[field_name] is not None:
                 setattr(row, field_name, patch[field_name])
-            elif field_name == "owner" and "owner" in patch and patch["owner"] is None:
-                row.owner = None
 
         row.updated_at = datetime.now(tz=UTC)
         self._db.add(row)
@@ -604,6 +660,19 @@ class MetagenService:
         self, urn: str, *, offset: int = 0, limit: int = 20, order_by: Any = None
     ) -> tuple[list[ItemSummaryDTO], int]:
         return await self.list_items(dataset_urn=urn, offset=offset, limit=limit, order_by=order_by)
+
+    async def count_dataset_candidates(self, urn: str) -> int:
+        """Total candidate count for a dataset across all statuses.
+
+        Same definition as ``list_dataset_summaries.candidate_count`` so the number
+        equals the per-dataset result view.
+        """
+        q = (
+            select(func.count())
+            .select_from(MetagenCandidate)
+            .where(MetagenCandidate.dataset_urn == urn)
+        )
+        return int((await self._db.execute(q)).scalar() or 0)
 
     async def get_item_for_dataset(self, urn: str, item_id: str) -> ItemDetailDTO:
         return await self.get_item(urn, item_id)
@@ -894,7 +963,6 @@ class MetagenService:
                     dataset_urn=urn,
                     is_enabled=boundary.is_enabled if boundary is not None else False,
                     allowed=list(boundary.allowed) if boundary is not None else [],
-                    owner=boundary.owner if boundary is not None else None,
                     blocked=blocked,
                     reason="boundary_blocked" if blocked else None,
                 )

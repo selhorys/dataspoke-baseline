@@ -478,7 +478,6 @@ async def test_metagen_boundary_roundtrip_put_get_patch_delete(
             json={
                 "is_enabled": True,
                 "allowed": ["dataset.description", "column.description"],
-                "owner": "test-owner",
             },
         )
         assert put_resp.status_code in (200, 201), (
@@ -488,7 +487,6 @@ async def test_metagen_boundary_roundtrip_put_get_patch_delete(
         assert put_body["dataset_urn"] == _TEST_URN
         assert put_body["is_enabled"] is True
         assert set(put_body["allowed"]) == {"dataset.description", "column.description"}
-        assert put_body["owner"] == "test-owner"
 
         get_resp = await api_client.get(boundary_url, headers=admin_headers)
         assert get_resp.status_code == 200

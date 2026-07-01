@@ -25,6 +25,8 @@ class MetagenConfResponse(BaseModel):
     dataset_filter: dict[str, Any] = Field(default_factory=dict)
     result_limit: int
     overwrite_pending: bool
+    dataset_affected_count: int = 0
+    last_run_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -97,7 +99,6 @@ class MetagenCoveredDatasetSummary(BaseModel):
     allowed: list[Literal["dataset.description", "column.description"]] = Field(
         default_factory=list
     )
-    owner: str | None
     blocked: bool
     reason: Literal["boundary_blocked"] | None
 
@@ -113,7 +114,6 @@ class MetagenBoundaryResponse(BaseModel):
     dataset_urn: str
     is_enabled: bool
     allowed: list[Literal["dataset.description", "column.description"]]
-    owner: str | None
     created_at: datetime
     updated_at: datetime
 
@@ -123,13 +123,11 @@ class MetagenBoundaryPutRequest(BaseModel):
     allowed: list[Literal["dataset.description", "column.description"]] = Field(
         default_factory=list
     )
-    owner: str | None = None
 
 
 class MetagenBoundaryPatchRequest(BaseModel):
     is_enabled: bool | None = None
     allowed: list[Literal["dataset.description", "column.description"]] | None = None
-    owner: str | None = None
 
 
 # ── Item & candidate ──────────────────────────────────────────────────────────
@@ -148,6 +146,7 @@ class MetagenItemSummary(BaseModel):
 
 class MetagenItemListResponse(PaginatedResponse):
     items: list[MetagenItemSummary] = Field(default_factory=list)
+    candidate_count: int = 0
 
 
 class MetagenCandidate(BaseModel):

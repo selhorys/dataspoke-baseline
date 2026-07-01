@@ -145,7 +145,7 @@ function ValidationSummaryCard({ datasetUrn }: { datasetUrn: string }) {
 function MetagenSummaryCard({ datasetUrn }: { datasetUrn: string }) {
   const { data: boundary, isLoading } = useMetagenBoundary(datasetUrn);
   const { data: itemsData } = useMetagenItems(datasetUrn);
-  const itemCount = itemsData?.total_count ?? itemsData?.items.length ?? 0;
+  const candidateCount = itemsData?.candidate_count ?? 0;
 
   return (
     <Card className="border-t-2 border-t-feature-metagen">
@@ -169,7 +169,7 @@ function MetagenSummaryCard({ datasetUrn }: { datasetUrn: string }) {
               )}
             </div>
             <span className="text-xs text-muted-foreground">
-              {itemCount} candidate item{itemCount === 1 ? "" : "s"}
+              {candidateCount} candidate{candidateCount === 1 ? "" : "s"}
             </span>
           </>
         )}

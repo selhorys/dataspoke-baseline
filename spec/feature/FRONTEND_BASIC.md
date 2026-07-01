@@ -480,8 +480,11 @@ Layout, top to bottom:
   - *Validation* — latest score / status, from `GET …/attr/validation/conf` +
     most-recent `…/attr/validation/result`. Alongside the score it shows that result's
     `data_time` (`results[0].data_time`) formatted with the shared tz/datetime helper.
-  - *MetaGen* — boundary `is_enabled` and pending-candidate count, from
-    `GET …/attr/metagen/boundary` + `…/attr/metagen/item`.
+  - *MetaGen* — boundary `is_enabled` and candidate count, from
+    `GET …/attr/metagen/boundary` + `…/attr/metagen/item`. The count reads the
+    item-list response's dataset-level `candidate_count` aggregate (total candidates
+    of any status), so it matches the number the result rollup reports for the
+    same dataset.
 
 - **Three foldable panels** — each a [CollapsiblePanel](#shared-component-notes):
   - *Validation* — the `ValidationDataPanel` conf read-only / edit / create editor plus

@@ -9,6 +9,7 @@
  */
 
 import { useEffect } from "react";
+import Link from "next/link";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -123,9 +124,7 @@ export function MetagenConfForm({
             checked={isEnabled}
             onCheckedChange={(v) => setValue("is_enabled", !!v)}
           />
-          <span className="text-sm text-muted-foreground">
-            Enable periodic inference DAG
-          </span>
+          <span className="text-sm text-muted-foreground">enabled</span>
         </div>
       </Field>
 
@@ -133,6 +132,15 @@ export function MetagenConfForm({
         label="schedule_tier"
         htmlFor="metagen-conf-schedule-tier"
         hint="Periodic re-inference cadence"
+        description={
+          <>
+            The Airflow DAG must be unpaused in{" "}
+            <Link href="/admin/conf" className="text-primary hover:underline">
+              admin configuration
+            </Link>{" "}
+            for scheduled runs to fire.
+          </>
+        }
       >
         <Select
           value={scheduleTier || "none"}

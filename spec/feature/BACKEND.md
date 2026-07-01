@@ -613,6 +613,13 @@ NULL`, nullable) orphans all of the conf's candidates by nulling their `conf_id`
 they become parentless results forever with no re-linking. Read paths are
 null-safe, so orphaned candidates surface without a producing conf.
 
+`GET /spoke/metagen/conf` attaches two DB-derived rollup fields to each listed
+conf, computed from cheap grouped queries keyed by the page's conf ids (no live
+DataHub call): `dataset_affected_count` (`COUNT(DISTINCT dataset_urn)` over
+`metagen_candidates` for the conf — distinct datasets already holding a candidate
+it produced) and `last_run_at` (newest `RUN_COMPLETE`/`RUN_FAILED` event time from
+`events`, `null` when the conf has never run).
+
 **Per-dataset boundary** at `/spoke/common/data/{urn}/attr/metagen/boundary`,
 stored in `metagen_boundary` and shared across all confs. A row with
 `is_enabled=true` opts the dataset in; missing row or `is_enabled=false` is opt-out.
@@ -793,7 +800,7 @@ per-conf inverse of the uncovered view: lists the datasets this conf's
 `dataset_filter` matches. Resolution reuses `resolve_dataset_scope`
 (`src/backend/_dataset_filter.py`) for the conf's filter, then left-joins each
 matched dataset's `metagen_boundary`. Each row carries `dataset_urn`,
-`is_enabled`, `allowed`, `owner`, `blocked` (bool), and `reason`.
+`is_enabled`, `allowed`, `blocked` (bool), and `reason`.
 
 - A dataset is `blocked` when its boundary is missing, `is_enabled=false`, or has
   empty `allowed` — the same `boundary_blocked` reason vocabulary as the uncovered

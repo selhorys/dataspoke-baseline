@@ -42,7 +42,7 @@ dataset's metagen events fold into that page's unified **Events** panel.
 | `/metagen/conf/[id]` | `GET /spoke/metagen/conf/{conf_id}`, `GET /spoke/metagen/conf/{conf_id}/dataset` (with `include_disallowed` toggle), `GET /spoke/metagen/conf/{conf_id}/event` | `PUT/PATCH /spoke/metagen/conf/{conf_id}`; `DELETE /spoke/metagen/conf/{conf_id}`; `POST /spoke/metagen/conf/{conf_id}/method/run` (optional body `{dataset_urns?}`; `?dry_run=true`) |
 | `/metagen/result` | `GET /spoke/metagen/dataset`, `GET /spoke/metagen/event` | — (review happens on the MetaGen panel of `/data/[urn]`) |
 | `/metagen/uncovered` | `GET /spoke/metagen/uncovered` (with `include_disallowed` toggle) | — |
-| `/data/[urn]` MetaGen panel | `GET …/attr/metagen/boundary`, `GET …/attr/metagen/item`, `GET …/attr/metagen/item/{item_id}` (per-item candidates) | `PUT/DELETE …/attr/metagen/boundary` (fields: `is_enabled`, `allowed[]`, `owner`); `POST …/attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review` body `{verdict: "approve"\|"reject", reason}` |
+| `/data/[urn]` MetaGen panel | `GET …/attr/metagen/boundary`, `GET …/attr/metagen/item`, `GET …/attr/metagen/item/{item_id}` (per-item candidates) | `PUT/DELETE …/attr/metagen/boundary` (fields: `is_enabled`, `allowed[]`); `POST …/attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review` body `{verdict: "approve"\|"reject", reason}` |
 
 `dataset_filter` follows the standard four-dimension shape — see
 [API §Metric `dataset_filter`](../API.md#metric-spokegovernancemetric).
@@ -50,16 +50,25 @@ dataset's metagen events fold into that page's unified **Events** panel.
 ## Conf list (`/metagen/conf`)
 
 One row per conf: `name`, `is_enabled` badge, `schedule_tier`, a
-`dataset_filter` summary, and `result_limit`. The `schedule_tier` cell links to
-its backing Airflow DAG (`metagen-<tier>`) when set; an unscheduled conf renders
-plain `manual` text. A "Create conf" button routes to `/metagen/conf/new`;
-paginate (`GET /spoke/metagen/conf`). Each row links to `/metagen/conf/[id]`.
+`dataset_filter` summary, a **datasets affected** count (`dataset_affected_count`
+— distinct datasets already holding a candidate from this conf), `result_limit`,
+and a **run** cell pairing the manual-run button with the conf's `last_run_at`
+(formatted via the shared datetime helper; EM_DASH when the conf has never run).
+The `schedule_tier` cell links to its backing Airflow DAG (`metagen-<tier>`) when
+set; an unscheduled conf renders plain `manual` text. A "Create conf" button
+routes to `/metagen/conf/new`; paginate (`GET /spoke/metagen/conf`). Each row
+links to `/metagen/conf/[id]`.
 
 ## Conf create / detail (`/metagen/conf/new`, `/metagen/conf/[id]`)
 
 The create page is a form over `{name, is_enabled, schedule_tier,
 dataset_filter, result_limit, overwrite_pending}`, submitting via
 `POST /spoke/metagen/conf`; a duplicate `name` surfaces `409 METAGEN_CONF_EXISTS`.
+The `is_enabled` control is labelled **enabled** — it gates whether runs of this
+conf execute (a disabled conf's non-dry-run trigger returns `409 METAGEN_DISABLED`);
+it does **not** unpause the backing Airflow DAG. The `schedule_tier` field carries
+a note that scheduled runs also require the `metagen` DAG to be unpaused in
+[admin configuration](FRONTEND_BASIC.md#configurations-adminconf) (`/admin/conf`).
 
 The detail page opens as a read-only **view** rendering the conf fields
 (`is_enabled`, `schedule_tier`, `result_limit`, `overwrite_pending`,
@@ -128,7 +137,7 @@ dataset page, and its second column is `datahub` — the shared
 ## Per-dataset (`/data/[urn]` MetaGen panel)
 
 The MetaGen panel on the unified [`/data/[urn]`](FRONTEND_BASIC.md#per-dataset-page-dataurn) page
-shows the boundary (`is_enabled`, `allowed`, `owner`) over
+shows the boundary (`is_enabled`, `allowed`) over
 `attr/metagen/boundary`, then the dataset's candidates in **two foldable panels —
 one per item kind**: `dataset.description` and `column.description`. The header
 renders an enabled/disabled badge beside the dataset URN. Each panel holds a

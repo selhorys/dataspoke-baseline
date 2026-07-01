@@ -114,7 +114,11 @@ beforeEach(() => {
     isLoading: false,
   });
   mockMetagenItems.mockReturnValue({
-    data: { items: [{ id: "i1" }, { id: "i2" }], total_count: 2 },
+    data: {
+      items: [{ id: "i1" }, { id: "i2" }],
+      total_count: 2,
+      candidate_count: 2,
+    },
   });
 });
 
@@ -136,7 +140,7 @@ describe("DatasetHubPage — /data/[urn]", () => {
     expect(screen.getByText("orders-source")).toBeTruthy(); // ingestion source name
     expect(screen.getByText(/last run success/i)).toBeTruthy(); // latest_run status
     expect(screen.getByText(/1 variable/i)).toBeTruthy(); // validation conf var count
-    expect(screen.getByText(/2 candidate items/i)).toBeTruthy(); // metagen item count
+    expect(screen.getByText(/2 candidates/i)).toBeTruthy(); // metagen candidate count
   });
 
   it("Ingestion summary card links the source name to its detail and shows the last-run time", async () => {

@@ -111,7 +111,6 @@ async def seed_metagen_boundary(
     dataset_urn: str,
     is_enabled: bool = True,
     allowed: list[str] | None = None,
-    owner: str | None = None,
 ) -> None:
     """Insert or replace a metagen_boundary row (PK dataset_urn).
 
@@ -123,12 +122,11 @@ async def seed_metagen_boundary(
     allowed_arr = allowed if allowed is not None else ["dataset.description", "column.description"]
     stmt = text(
         "INSERT INTO dataspoke.metagen_boundary"
-        " (dataset_urn, is_enabled, allowed, owner)"
-        " VALUES (:urn, :is_enabled, :allowed, :owner)"
+        " (dataset_urn, is_enabled, allowed)"
+        " VALUES (:urn, :is_enabled, :allowed)"
         " ON CONFLICT (dataset_urn) DO UPDATE SET"
         "   is_enabled = EXCLUDED.is_enabled,"
-        "   allowed = EXCLUDED.allowed,"
-        "   owner = EXCLUDED.owner"
+        "   allowed = EXCLUDED.allowed"
     ).bindparams(bindparam("allowed", type_=ARRAY(Text())))
     await session.execute(
         stmt,
@@ -136,7 +134,6 @@ async def seed_metagen_boundary(
             "urn": dataset_urn,
             "is_enabled": is_enabled,
             "allowed": allowed_arr,
-            "owner": owner,
         },
     )
     await session.commit()

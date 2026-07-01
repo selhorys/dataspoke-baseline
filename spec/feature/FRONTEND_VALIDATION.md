@@ -37,8 +37,8 @@ checks per dataset use DataHub's native assertion APIs directly. See
 for the service surface.
 
 The list page shows one row per dataset — columns: dataset, description, declared
-variable count, latest `data_time`, latest `score` (UI header "Quality Score"; "—"
-until the first result row arrives). It reads `GET /spoke/validation`. A pair of
+variable count, **latest check** (the most recent result's `data_time`), latest
+`score` (UI header "Quality Score"; "—" until the first result row arrives). It reads `GET /spoke/validation`. A pair of
 checkboxes — **covered** (default checked) and **uncovered** (default unchecked) —
 filters the row set by mapping to the `coverage` query param: covered-only →
 `coverage=covered` (the default current view), both checked → `coverage=both`,

@@ -319,7 +319,6 @@ class MetagenBoundary(Base):
     dataset_urn: Mapped[str] = mapped_column(Text, primary_key=True)
     is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     allowed: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False)
-    owner: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
     )

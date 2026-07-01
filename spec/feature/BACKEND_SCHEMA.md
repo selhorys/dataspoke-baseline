@@ -230,7 +230,6 @@ any conf may write on this dataset.
 | `dataset_urn` | `TEXT` PK | Target dataset URN |
 | `is_enabled` | `BOOLEAN` | When true, this dataset participates in global metagen |
 | `allowed` | `TEXT[]` | Element kinds the global generator may write — subset of `{"dataset.description", "column.description"}` |
-| `owner` | `TEXT` NULL | Owner user ID |
 | `created_at` | `TIMESTAMPTZ` | |
 | `updated_at` | `TIMESTAMPTZ` | |
 

@@ -39,6 +39,8 @@ function makeConf(overrides: Partial<MetagenConf> = {}): MetagenConf {
     dataset_filter: { tags: ["pii"] },
     result_limit: 5,
     overwrite_pending: true,
+    dataset_affected_count: 0,
+    last_run_at: null,
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-02T00:00:00Z",
     ...overrides,
