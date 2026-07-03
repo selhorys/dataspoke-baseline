@@ -50,7 +50,7 @@ DataSpoke ships as an umbrella Helm chart at `helm-charts/dataspoke/`. The produ
 ### Prerequisites
 
 - **kubectl** + **Helm v3** installed and configured
-- A Kubernetes cluster (GKE Autopilot recommended; Docker Desktop, minikube, or kind also work) with **8+ CPUs / 24 GB RAM / 150 GB storage**
+- A Kubernetes cluster with **8+ CPUs / 24 GB RAM / 150 GB storage** — either one where DataSpoke installs and owns its nginx-ingress controller (GKE Autopilot, minikube, Docker Desktop, kind; `managed` ingress mode, the default) or one with a pre-existing ingress controller to reuse (e.g. AWS/EKS; `shared` ingress mode)
 - **Python 3.13** and [`uv`](https://github.com/astral-sh/uv)
 - **Node.js 22+** and [`pnpm`](https://pnpm.io/) — for host frontend development (`--frontend local`)
 
@@ -71,7 +71,12 @@ After install, verify all services are reachable:
 ./helm-charts/bin/health-check.sh                   # Verify all services respond via nginx-ingress
 ```
 
-Services are accessed via nginx-ingress endpoints — HTTP services use virtual-host routing (`http://<service>.<INGRESS_IP>.nip.io/`) and TCP services use dedicated ports on the ingress IP. See [`helm-charts/README.md`](helm-charts/README.md) for the full endpoint table, credentials, lock service, namespace architecture, resource budgets, and troubleshooting.
+Services are accessed via nginx-ingress endpoints — HTTP services use virtual-host routing (`http://<service>.<INGRESS_DOMAIN>/`). How the controller and domain are provided depends on `DATASPOKE_KUBE_INGRESS_MODE` in `helm-charts/.env.dev`:
+
+- **`managed`** (default) — the install owns an nginx-ingress controller; the domain auto-derives to `<LoadBalancer-IP>.nip.io` (wildcard DNS, no `/etc/hosts` entries) and TCP services (databases, brokers) use dedicated ports on that IP.
+- **`shared`** — the install reuses the cluster's pre-existing ingress controller (e.g. AWS/EKS); the operator pre-sets `DATASPOKE_KUBE_INGRESS_DOMAIN`, and TCP services are reached on `127.0.0.1` via `./helm-charts/bin/port-forward.sh`.
+
+See [`helm-charts/README.md`](helm-charts/README.md) for the full endpoint table, credentials, lock service, namespace architecture, resource budgets, and troubleshooting.
 
 #### Uninstall
 
@@ -86,7 +91,7 @@ uv sync                                                                # Install
 ./helm-charts/bin/install.sh --profile dev --components api            # Rebuild + redeploy the API
 ```
 
-The API is accessible via nginx-ingress at `http://api.<INGRESS_IP>.nip.io/api/v1/`. See [`spec/TESTING.md`](spec/TESTING.md) for testing modes.
+The API is accessible via nginx-ingress at `http://api.<INGRESS_DOMAIN>/api/v1/`. See [`spec/TESTING.md`](spec/TESTING.md) for testing modes.
 
 For the frontend, either iterate on the host against the in-cluster API or rebuild the containerised UI:
 
@@ -106,18 +111,22 @@ pnpm -C src/frontend install && pnpm -C src/frontend dev              # Host dev
 | Database migrations | Done | `migrations/` |
 | Docker image (API) | Done | `docker-images/api/` |
 | Helm charts | Done | `helm-charts/dataspoke/` |
-| Tests (unit + integration) | Done | `tests/` |
+| Tests (unit + integration + E2E) | Done | `tests/` |
 | Frontend (Next.js) | Done | `src/frontend/` |
 
 ### Testing
 
 ```bash
 uv run pytest tests/unit/                      # Unit tests (no infra needed)
-uv run pytest tests/integration/               # Integration tests (requires dev environment with ingress)
+set -a && source helm-charts/.env.dev && set +a \
+  && uv run pytest tests/integration/spot/ \
+  && uv run pytest tests/integration/api_wired/  # Integration tests (requires dev environment; run groups separately)
+pnpm -C src/frontend test                      # Frontend unit tests (Vitest, mocked)
+pnpm -C tests/e2e test                         # Browser E2E (Playwright; requires --frontend cluster)
 uv run python -m tests.integration.util --reset-seed  # Seed dummy data (Imazon use-case)
 ```
 
-See [`spec/TESTING.md`](spec/TESTING.md) for conventions, three-group execution sequence, and the integration test lock protocol.
+See [`spec/TESTING.md`](spec/TESTING.md) for conventions, group execution sequence, and the integration test lock protocol.
 
 ### Implementation Workflow
 

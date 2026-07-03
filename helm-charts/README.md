@@ -61,25 +61,36 @@ The `--frontend` flag controls how the Next.js UI is handled:
 
 ## Ingress Endpoints
 
-All HTTP services are accessed via virtual-host routing on the nginx-ingress
-LoadBalancer IP (`DATASPOKE_KUBE_INGRESS_IP`). TCP services (databases, brokers)
-are exposed on dedicated ports.
+All HTTP services are accessed via virtual-host routing on the ingress
+controller (`http://<service>.<INGRESS_DOMAIN>/`); TCP services (databases,
+brokers) are exposed on dedicated ports. How the controller, `<INGRESS_DOMAIN>`,
+and `<TCP_HOST>` are provided depends on `DATASPOKE_KUBE_INGRESS_MODE` in
+`helm-charts/.env.dev`:
+
+- **`managed`** (default) — the install owns an nginx-ingress controller.
+  `<INGRESS_DOMAIN>` auto-derives to `<LoadBalancer-IP>.nip.io` (wildcard DNS,
+  no `/etc/hosts` entries) and `<TCP_HOST>` is that LoadBalancer IP (TCP
+  passthrough on the controller).
+- **`shared`** — the install reuses the cluster's pre-existing ingress
+  controller (e.g. AWS/EKS). The operator pre-sets
+  `DATASPOKE_KUBE_INGRESS_DOMAIN`, and `<TCP_HOST>` is `127.0.0.1` — TCP
+  services are forwarded to the same ports via `./helm-charts/bin/port-forward.sh`.
 
 | Service | Address | Credentials |
 |---------|---------|-------------|
-| DataHub UI | `http://datahub.<INGRESS_IP>.nip.io/` | `datahub` / `datahub` |
-| DataHub GMS | `http://datahub.<INGRESS_IP>.nip.io/gms/` | -- |
-| DataSpoke Web UI (dev `--frontend cluster`) | `http://app.<INGRESS_IP>.nip.io/` | `dataspoke` / `dataspoke` — rotate via `PATCH /auth/me` before production |
+| DataHub UI | `http://datahub.<INGRESS_DOMAIN>/` | `datahub` / `datahub` |
+| DataHub GMS | `http://datahub.<INGRESS_DOMAIN>/gms/` | -- |
+| DataSpoke Web UI (dev `--frontend cluster`) | `http://app.<INGRESS_DOMAIN>/` | `dataspoke` / `dataspoke` — rotate via `PATCH /auth/me` before production |
 | DataSpoke Web UI (dev `--frontend local`) | `http://localhost:3000` | same as above |
-| DataSpoke API | `http://api.<INGRESS_IP>.nip.io/api/v1/` | per `.env` JWT |
-| Airflow UI | `http://airflow.<INGRESS_IP>.nip.io/` | `admin` / `admin` (see `.env`) |
-| Langfuse UI | `http://langfuse.<INGRESS_IP>.nip.io/` | `DATASPOKE_DEV_LANGFUSE_INIT_USER_{EMAIL,PASSWORD}` in `helm-charts/.env.dev` (auto-generated on first install) |
-| DataSpoke PostgreSQL | `<INGRESS_IP>:9201` | per `.env` |
-| Redis | `<INGRESS_IP>:9202` | per `.env` |
-| DataHub Kafka | `<INGRESS_IP>:9005` | -- |
-| Example PostgreSQL | `<INGRESS_IP>:9102` | `postgres` / `ExampleDev2024!` |
-| Example Kafka | `<INGRESS_IP>:9104` | -- |
-| Lock API | `<INGRESS_IP>:9221` | -- |
+| DataSpoke API | `http://api.<INGRESS_DOMAIN>/api/v1/` | per `.env` JWT |
+| Airflow UI | `http://airflow.<INGRESS_DOMAIN>/` | `admin` / `admin` (see `.env`) |
+| Langfuse UI | `http://langfuse.<INGRESS_DOMAIN>/` | `DATASPOKE_DEV_LANGFUSE_INIT_USER_{EMAIL,PASSWORD}` in `helm-charts/.env.dev` (auto-generated on first install) |
+| DataSpoke PostgreSQL | `<TCP_HOST>:9201` | per `.env` |
+| Redis | `<TCP_HOST>:9202` | per `.env` |
+| DataHub Kafka | `<TCP_HOST>:9005` | -- |
+| Example PostgreSQL | `<TCP_HOST>:9102` | `postgres` / `ExampleDev2024!` |
+| Example Kafka | `<TCP_HOST>:9104` | -- |
+| Lock API | `<TCP_HOST>:9221` | -- |
 
 The dev default (`--frontend none`) does not deploy the frontend pod. To run the UI on the host:
 
@@ -96,14 +107,10 @@ To deploy the containerised frontend in-cluster instead:
 
 ```bash
 ./helm-charts/bin/install.sh --profile dev --frontend cluster
-# Open http://app.<INGRESS_IP>.nip.io/  —  login: dataspoke@dataspoke.local / dataspoke
+# Open http://app.<INGRESS_DOMAIN>/  —  login: dataspoke@dataspoke.local / dataspoke
 ```
 
 The `--components frontend` fast path (rebuild + redeploy only the frontend pod) remains available as a code-iteration shortcut.
-
-Replace `<INGRESS_IP>` with the value of `DATASPOKE_KUBE_INGRESS_IP` from
-`helm-charts/.env.dev`. The `nip.io` suffix provides automatic wildcard DNS
-resolution — no `/etc/hosts` entries needed.
 
 ---
 
