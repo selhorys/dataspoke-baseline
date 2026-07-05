@@ -13,6 +13,8 @@ This repository delivers two artifacts:
 
 Fork or copy this repository to create a data catalog for your organization.
 
+📊 [Introduction slides (Korean)](https://docs.google.com/presentation/d/1wQRUagHEkEYmGirdPRGdlYlJHiN00tC880d8rGcoGjw)
+
 ## Demo
 
 A walkthrough of DataSpoke — the five baseline features and the AI-driven build workflow — running against the Imazon test estate.
