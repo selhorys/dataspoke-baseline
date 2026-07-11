@@ -19,6 +19,10 @@ Concerns covered (one per test):
 9. Populated reverse-lookup: after real run in #8, GET /data/{catalog_title_urn}/attr/ingestion
    returns source_id, mode=ACTIVE_CUSTOM_MANAGED, latest_run.status=success. Complements
    test 6 (null case).
+10. Passive-observation dedup: a PASSIVE kafka source synced twice maps each imazon.* topic to
+    exactly ONE ingestion_source_dataset row (dedup by the (source_id, dataset_urn) natural key,
+    not per-sweep row growth). UC1 Case 3 passive path is best-effort; repeated observation must
+    not duplicate mapping rows.
 
 Spec: spec/USE_CASE_en.md §UC1
 Spec: spec/API.md §Ingestion
@@ -683,6 +687,118 @@ async def test_real_run_emits_catalog_datasets_with_derivation_emitted(
                 f"Dataset {row.get('dataset_urn')!r} must have derivation='emitted' after "
                 f"a real run; got {row.get('derivation')!r}. "
                 "spec: feature/BACKEND.md §Active-custom run pipeline — derivation=emitted."
+            )
+
+    finally:
+        if source_id is not None:
+            await api_client.delete(f"{_SOURCES_BASE}/{source_id}", headers=admin_headers)
+        await dataspoke_db.reset_ingestion_sources()
+
+
+# ── Test 10: Passive-observation dedup — repeated sync maps each topic once ─────────
+
+
+@pytest.mark.asyncio
+async def test_passive_repeated_sync_dedups_topic_mapping(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    internal_headers: dict[str, str],
+) -> None:
+    """A PASSIVE kafka source synced twice maps each imazon.* topic to exactly ONE
+    ingestion_source_dataset row — dedup by the (source_id, dataset_urn) natural key.
+
+    UC1 Case 3 passive observation is best-effort: the hourly sync sweep may re-observe
+    the same source/topic on every pass, but the mapping is *rebuilt* against the composite
+    PK (source_id, dataset_urn), so a repeated observation of the same topic must NOT create
+    a duplicate registry entry. This is proven by identity (count occurrences of each specific
+    topic URN in the source's mapping), not by a count-delta over a paginated window.
+
+    spec: USE_CASE_en.md §UC1 Case 3 — PASSIVE source declares allow/deny scope; sync maps topics.
+    spec: feature/BACKEND.md §Ingestion Service — Sync + mapping sweep, step 2 (Mapping):
+          'list the DataHub dataset set once and rebuild ingestion_source_dataset'.
+    spec: feature/BACKEND_SCHEMA.md §ingestion_source_dataset — PK: (source_id, dataset_urn).
+    spec: API.md §Data Resource — 'ingestion_source_dataset is keyed (source_id, dataset_urn)'.
+    spec: feedback_passive_ingestion_spec_minimal — passive observation is best-effort.
+    """
+    # Clean slate: remove any leftover ingestion_source rows.
+    # spec: TESTING.md §spot independence — each test resets/cleans its own state.
+    await dataspoke_db.reset_ingestion_sources()
+
+    source_id: str | None = None
+    try:
+        # Create the PASSIVE kafka source (UC1 Case 3 recipe: allow imazon.*).
+        # spec: USE_CASE_en.md §UC1 Case 3 — topic_patterns.allow: ["^imazon\\..*$"]
+        create_resp = await api_client.post(
+            _SOURCES_BASE,
+            headers=admin_headers,
+            json={
+                "mode": "PASSIVE",
+                "name": f"imazon kafka passive dedup {uuid.uuid4().hex[:6]}",
+                "schedule": None,
+                "recipe": {
+                    "source": {
+                        "type": "kafka",
+                        "config": {
+                            "topic_patterns": {"allow": ["^imazon\\..*$"]}
+                        },
+                    }
+                },
+            },
+        )
+        assert create_resp.status_code == 201, (
+            f"Expected 201 for PASSIVE kafka source create; "
+            f"got {create_resp.status_code}: {create_resp.text}"
+        )
+        source_id = create_resp.json()["id"]
+
+        # Run the sync sweep TWICE — the second sweep re-observes the same source/topics.
+        # spec: feature/BACKEND.md §Ingestion Service — sync() reconciles all modes each pass.
+        for sweep in (1, 2):
+            sync_resp = await api_client.post(
+                "/internal/activities/ingestion/sync",
+                headers=internal_headers,
+            )
+            assert sync_resp.status_code == 200, (
+                f"Sync sweep {sweep} expected 200; "
+                f"got {sync_resp.status_code}: {sync_resp.text}"
+            )
+
+        # GET the mapping and count occurrences of each specific topic URN.
+        # spec: API.md §Ingestion — GET /sources/{id}/datasets returns the mapping.
+        datasets_resp = await api_client.get(
+            f"{_SOURCES_BASE}/{source_id}/datasets",
+            headers=admin_headers,
+        )
+        assert datasets_resp.status_code == 200, (
+            f"GET /sources/{source_id}/datasets expected 200; "
+            f"got {datasets_resp.status_code}: {datasets_resp.text}"
+        )
+        mapped = datasets_resp.json().get("datasets", [])
+        mapped_urns = [d["dataset_urn"] for d in mapped]
+
+        # Backstop: the topics must actually be mapped (else the dedup assertion below is
+        # vacuously true over an empty set). spec: Assertion Discipline — absence needs injection.
+        assert _KAFKA_ORDERS_URN in mapped_urns, (
+            f"imazon.orders.events must be mapped after sync; mapped: {sorted(set(mapped_urns))}. "
+            "spec: USE_CASE_en.md §UC1 Case 3 — declared allow scope maps topics."
+        )
+        assert _KAFKA_SHIPPING_URN in mapped_urns, (
+            f"imazon.shipping.updates must be mapped after sync; "
+            f"mapped: {sorted(set(mapped_urns))}. "
+            "spec: USE_CASE_en.md §UC1 Case 3 — declared allow scope maps topics."
+        )
+
+        # Dedup contract: after two sweeps, each specific topic URN appears EXACTLY ONCE
+        # for this source — the composite PK (source_id, dataset_urn) collapses re-observation.
+        # spec: feature/BACKEND_SCHEMA.md §ingestion_source_dataset — PK (source_id, dataset_urn).
+        for topic_urn in (_KAFKA_ORDERS_URN, _KAFKA_SHIPPING_URN):
+            occurrences = mapped_urns.count(topic_urn)
+            assert occurrences == 1, (
+                f"Topic {topic_urn!r} must map to exactly ONE ingestion_source_dataset row "
+                f"after repeated sync; got {occurrences}. Repeated passive observation must "
+                "dedup by the (source_id, dataset_urn) natural key. "
+                "spec: feature/BACKEND_SCHEMA.md §ingestion_source_dataset — PK (source_id, "
+                "dataset_urn)."
             )
 
     finally:

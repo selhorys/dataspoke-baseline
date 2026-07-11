@@ -26,6 +26,8 @@ Concerns covered (each test targets one spec contract):
 - POST method/run dry_run=false → values is dict[str, float]
 - POST method/run concurrent → 409 METRIC_RUNNING
 - breakdown.datasets[] has no 'category' field
+- breakdown counts derive from seeded state and reconcile with the RUN_COMPLETE event's
+  breakdown_summary (bound by run_id): dataset_count == values.total, affected_count == failed count
 - metric_id kebab regex acceptance and rejection
 
 Spot is the right layer for the window-math tests (ingestion-freshness and
@@ -1215,6 +1217,234 @@ async def test_metric_run_unresolved_urns_in_event(
     finally:
         del_resp = await api_client.delete(base_conf, headers=admin_headers)
         assert del_resp.status_code in (204, 404)
+
+
+# ── Breakdown ↔ RUN_COMPLETE event reconciliation ─────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_breakdown_counts_reconcile_with_run_event(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """Breakdown counts derive from seeded state and reconcile with the RUN_COMPLETE event.
+
+    Seeds an ACTIVE_CUSTOM_MANAGED daily source mapping two datasets, then runs the metric:
+      - urn_stale: INGESTION.COMPLETE 200000s ago (> 172800s window) → FAILED (in breakdown)
+      - urn_fresh: INGESTION.COMPLETE 130000s ago (< 172800s window) → in-time (NOT in breakdown)
+
+    Both sides are seeded (a failed dataset AND an in-time one), so the failed-listing is proven,
+    not assumed. The test then reconciles the two governance views:
+      - the persisted result breakdown (the "breakdown view" on attr/result), and
+      - the RUN_COMPLETE event's breakdown_summary, selected by run_id (identity, not window).
+
+    Asserted invariants (all counts derive from the seeded two-dataset state):
+      - values.total == 2 (both scanned); values.ingested_in_time == 1 (only urn_fresh)
+      - breakdown.dataset_count == values.total (scanned count == total)
+      - breakdown.datasets lists urn_stale, excludes urn_fresh
+      - len(breakdown.datasets) == values.total - values.ingested_in_time (failed == total-passed)
+      - event.breakdown_summary.dataset_count == breakdown.dataset_count
+      - event.breakdown_summary.affected_count == len(breakdown.datasets)
+
+    Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format — dataset_count is the total
+          scanned; 'len(datasets) == failed count' is implied; datasets[] lists only failed entries.
+    Spec: spec/feature/BACKEND.md §Event Catalogue — METRIC.RUN_COMPLETE detail keys include run_id
+          and breakdown_summary {dataset_count, affected_count}.
+    Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — ingestion-freshness
+          ACTIVE_CUSTOM_MANAGED daily window = 86400 × 2 = 172800s.
+    Spec: spec/TESTING.md §Integration Lifecycle & Isolation — bind event assertions by run_id.
+    """
+    _METRIC_ID = "spot-breakdown-reconcile"
+    base_conf = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/attr/conf"
+    base_run = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/method/run"
+    base_results = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/attr/result"
+    base_events = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/event"
+
+    urn_fresh = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
+    urn_stale = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.editions,DEV)"
+
+    # Ensure clean state
+    await api_client.delete(base_conf, headers=admin_headers)
+
+    conn = await _get_ds_conn()
+    now = datetime.now(tz=UTC)
+    # Deterministic valid UUID v4 source id so cleanup is reliable even on partial failure.
+    # spec: BACKEND_SCHEMA.md §ingestion_source — id column is UUID.
+    source_id = str(uuid.UUID("00000000-0000-4000-8000-0000000000d2"))
+    try:
+        # Seed ingestion_source (ACTIVE_CUSTOM_MANAGED, daily) + mapping rows for both datasets.
+        # spec: BACKEND_SCHEMA.md §ingestion_source / §ingestion_source_dataset.
+        await conn.execute(
+            "INSERT INTO dataspoke.ingestion_source "
+            "(id, mode, name, platform, recipe, schedule, schedule_tier, status) "
+            "VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8) "
+            "ON CONFLICT (id) DO UPDATE SET mode=$2, schedule_tier=$7",
+            source_id,
+            "ACTIVE_CUSTOM_MANAGED",
+            "spot-breakdown-reconcile-test",
+            "postgres",
+            json.dumps({"source": {"type": "postgres", "config": {}}}),
+            "0 0 * * *",
+            "daily",
+            "OK",
+        )
+        for urn in (urn_fresh, urn_stale):
+            await conn.execute(
+                "INSERT INTO dataspoke.ingestion_source_dataset "
+                "(source_id, dataset_urn, derivation) "
+                "VALUES ($1, $2, $3) "
+                "ON CONFLICT (source_id, dataset_urn) DO UPDATE SET derivation=$3",
+                source_id, urn, "emitted",
+            )
+
+        # Reset then seed controlled INGESTION.COMPLETE timestamps for each dataset.
+        _del_ingestion = (
+            "DELETE FROM dataspoke.events"
+            " WHERE entity_id = $1 AND event_type = 'INGESTION.COMPLETE'"
+        )
+        for urn in (urn_fresh, urn_stale):
+            await conn.execute(_del_ingestion, urn)
+        await conn.execute(
+            "INSERT INTO dataspoke.events "
+            "(id, entity_type, entity_id, event_type, status, detail, occurred_at) "
+            "VALUES (gen_random_uuid(), $1, $2, $3, $4, $5::jsonb, $6)",
+            "dataset", urn_fresh, "INGESTION.COMPLETE", "success",
+            json.dumps({}),
+            now - timedelta(seconds=130000),  # within 172800s window → in-time
+        )
+        await conn.execute(
+            "INSERT INTO dataspoke.events "
+            "(id, entity_type, entity_id, event_type, status, detail, occurred_at) "
+            "VALUES (gen_random_uuid(), $1, $2, $3, $4, $5::jsonb, $6)",
+            "dataset", urn_stale, "INGESTION.COMPLETE", "success",
+            json.dumps({}),
+            now - timedelta(seconds=200000),  # outside 172800s window → stale/failed
+        )
+
+        # Create + enable the metric scoped to exactly the two seeded datasets.
+        create_resp = await api_client.post(
+            "/api/v1/spoke/governance/metric",
+            headers=admin_headers,
+            json={
+                "metric_id": _METRIC_ID,
+                "mode": "active",
+                "is_enabled": True,
+                "metric_type": "ingestion-freshness",
+                "title": "Breakdown Reconcile Spot Test",
+                "description": "Reconciles result breakdown counts with the RUN_COMPLETE event.",
+                "metrics": ["total", "ingested_in_time"],
+                "metric_conf": {"time_window_sec": 3600},  # fallback — must NOT be used
+                "schedule_tier": None,
+                "dataset_filter": {"dataset_urns": [urn_fresh, urn_stale]},
+            },
+        )
+        assert create_resp.status_code == 201, create_resp.text
+
+        run_resp = await api_client.post(base_run, headers=admin_headers)
+        assert run_resp.status_code == 200, run_resp.text
+        # Bind the event to this exact run — identity, not a count-delta window.
+        # spec: spec/TESTING.md §Integration Lifecycle & Isolation — bind by run_id.
+        target_run_id = run_resp.json()["run_id"]
+
+        # ── Breakdown view (persisted result) ─────────────────────────────────
+        results_resp = await api_client.get(f"{base_results}?limit=5", headers=admin_headers)
+        assert results_resp.status_code == 200, results_resp.text
+        results = results_resp.json().get("results", [])
+        # Backstop: this fresh metric ran exactly once, so its sole result unambiguously
+        # corresponds to target_run_id.
+        assert len(results) == 1, (
+            "Fresh metric must have exactly one persisted result after one run; "
+            f"got {len(results)}."
+        )
+        row = results[0]
+        values = row["values"]
+        assert values["total"] == 2.0, (
+            f"total must be 2 (both seeded datasets); got {values['total']}. "
+            "Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types."
+        )
+        assert values["ingested_in_time"] == 1.0, (
+            f"ingested_in_time must be 1 (only urn_fresh); got {values['ingested_in_time']}. "
+            "Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types."
+        )
+
+        breakdown = row.get("breakdown", {})
+        # dataset_count == total scanned == values.total.
+        # spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format — dataset_count is the
+        # total scanned (matching dataset_filter).
+        assert breakdown.get("dataset_count") == values["total"], (
+            f"breakdown.dataset_count ({breakdown.get('dataset_count')}) must equal values.total "
+            f"({values['total']}). "
+            "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
+        )
+        breakdown_urns = [e["urn"] for e in breakdown.get("datasets", [])]
+        # Both sides seeded: failed (urn_stale) listed, in-time (urn_fresh) excluded.
+        assert urn_stale in breakdown_urns, (
+            "urn_stale (failed) must appear in breakdown.datasets. "
+            "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format — only failed."
+        )
+        assert urn_fresh not in breakdown_urns, (
+            "urn_fresh (in-time) must NOT appear in breakdown.datasets. "
+            "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format — only failed."
+        )
+        # len(datasets) == failed count == total - passed.
+        # spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format — 'len(datasets) ==
+        # failed count' is implied.
+        failed_count = len(breakdown.get("datasets", []))
+        assert failed_count == values["total"] - values["ingested_in_time"], (
+            f"len(breakdown.datasets) ({failed_count}) must equal total - ingested_in_time "
+            f"({values['total'] - values['ingested_in_time']}). "
+            "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
+        )
+
+        # ── RUN_COMPLETE event — selected by run_id ────────────────────────────
+        events_resp = await api_client.get(f"{base_events}?limit=20", headers=admin_headers)
+        assert events_resp.status_code == 200, events_resp.text
+        event = next(
+            (
+                e for e in events_resp.json().get("events", [])
+                if e.get("event_type") == "METRIC.RUN_COMPLETE"
+                and e.get("detail", {}).get("run_id") == target_run_id
+            ),
+            None,
+        )
+        assert event is not None, (
+            f"No METRIC.RUN_COMPLETE event for run_id={target_run_id}. "
+            "Spec: spec/feature/BACKEND.md §Event Catalogue — METRIC.RUN_COMPLETE detail.run_id."
+        )
+        bs = event["detail"]["breakdown_summary"]
+        # The event summary must reconcile with the persisted result breakdown.
+        # spec: spec/feature/BACKEND.md §Event Catalogue — breakdown_summary {dataset_count,
+        # affected_count}.
+        assert bs["dataset_count"] == breakdown["dataset_count"], (
+            f"event breakdown_summary.dataset_count ({bs['dataset_count']}) must equal the result "
+            f"breakdown.dataset_count ({breakdown['dataset_count']}). "
+            "Spec: spec/feature/BACKEND.md §Event Catalogue — METRIC.RUN_COMPLETE."
+        )
+        assert bs["affected_count"] == failed_count, (
+            f"event breakdown_summary.affected_count ({bs['affected_count']}) must equal the "
+            f"number of failed datasets in the result breakdown ({failed_count}). "
+            "Spec: spec/feature/BACKEND.md §Event Catalogue — METRIC.RUN_COMPLETE."
+        )
+
+    finally:
+        with suppress(Exception):
+            await conn.execute(
+                "DELETE FROM dataspoke.ingestion_source_dataset WHERE source_id = $1", source_id
+            )
+        with suppress(Exception):
+            await conn.execute(
+                "DELETE FROM dataspoke.ingestion_source WHERE id = $1", source_id
+            )
+        _del_ev = (
+            "DELETE FROM dataspoke.events"
+            " WHERE entity_id = $1 AND event_type = 'INGESTION.COMPLETE'"
+        )
+        for urn in (urn_fresh, urn_stale):
+            with suppress(Exception):
+                await conn.execute(_del_ev, urn)
+        await conn.close()
+        with suppress(Exception):
+            await api_client.delete(base_conf, headers=admin_headers)
 
 
 # ── metric_id kebab regex ─────────────────────────────────────────────────────
