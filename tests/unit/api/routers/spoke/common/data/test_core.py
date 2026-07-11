@@ -43,33 +43,23 @@ def override_service(mock_svc: AsyncMock):
 
 
 @pytest.mark.asyncio
-async def test_get_data_without_token_returns_401(client) -> None:
-    """GET /data/{urn} without JWT returns 401.
+@pytest.mark.parametrize(
+    "url",
+    [
+        f"{_BASE}/{_VALID_URN_ENC}",
+        f"{_BASE}/{_VALID_URN_ENC}/attr",
+        f"{_BASE}/{_VALID_URN_ENC}/event",
+    ],
+)
+async def test_get_route_without_token_returns_401(client, url) -> None:
+    """Every core data route rejects an unauthenticated GET.
 
     spec: API.md §Authentication — spoke/common routes require a valid token.
     """
-    resp = await client.get(f"{_BASE}/{_VALID_URN_ENC}")
-    assert resp.status_code == 401
-
-
-@pytest.mark.asyncio
-async def test_get_data_attr_without_token_returns_401(client) -> None:
-    """GET /data/{urn}/attr without JWT returns 401.
-
-    spec: API.md §Authentication — spoke/common routes require a valid token.
-    """
-    resp = await client.get(f"{_BASE}/{_VALID_URN_ENC}/attr")
-    assert resp.status_code == 401
-
-
-@pytest.mark.asyncio
-async def test_get_data_events_without_token_returns_401(client) -> None:
-    """GET /data/{urn}/event without JWT returns 401.
-
-    spec: API.md §Authentication — spoke/common routes require a valid token.
-    """
-    resp = await client.get(f"{_BASE}/{_VALID_URN_ENC}/event")
-    assert resp.status_code == 401
+    resp = await client.get(url)
+    assert resp.status_code == 401, (
+        f"GET {url} without a token must return 401, got {resp.status_code}"
+    )
 
 
 # ── Happy paths ───────────────────────────────────────────────────────────────

@@ -12,16 +12,14 @@ Spec: API.md §Data Resource (ingestion rows) — auth gate + HTTP status codes.
 Spec: feature/BACKEND.md §Ingestion Service.
 """
 
-from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from src.api.dependencies import get_ingestion_service
 from src.api.main import app
-from src.shared.exceptions import EntityNotFoundError
-
 from tests.unit.api.conftest import auth_headers
 
 _BASE = "/api/v1/spoke/common/data"
@@ -50,23 +48,16 @@ def override_service(mock_svc: AsyncMock):
 
 
 @pytest.mark.asyncio
-async def test_get_ingestion_reverse_lookup_without_token_returns_401(client) -> None:
-    """GET /attr/ingestion without token returns 401.
+@pytest.mark.parametrize("url", [_REVERSE_LOOKUP_URL, _EVENTS_URL])
+async def test_get_route_without_token_returns_401(client, url) -> None:
+    """Every ingestion data route rejects an unauthenticated GET.
 
     Spec: API.md §Authentication — spoke/common routes require valid JWT.
     """
-    resp = await client.get(_REVERSE_LOOKUP_URL)
-    assert resp.status_code == 401
-
-
-@pytest.mark.asyncio
-async def test_get_ingestion_events_without_token_returns_401(client) -> None:
-    """GET /event/ingestion without token returns 401.
-
-    Spec: API.md §Authentication — all routes require valid JWT.
-    """
-    resp = await client.get(_EVENTS_URL)
-    assert resp.status_code == 401
+    resp = await client.get(url)
+    assert resp.status_code == 401, (
+        f"GET {url} without a token must return 401, got {resp.status_code}"
+    )
 
 
 # ── Reverse-lookup: unmapped dataset returns nulls ────────────────────────────

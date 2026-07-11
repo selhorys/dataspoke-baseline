@@ -118,33 +118,26 @@ def override_service(mock_svc: AsyncMock):
 
 
 @pytest.mark.asyncio
-async def test_get_confs_without_token_returns_401(client) -> None:
-    """GET /metagen/conf without token returns 401.
+@pytest.mark.parametrize(
+    ("method", "url"),
+    [
+        ("GET", f"{_BASE}/conf"),
+        ("POST", f"{_BASE}/conf"),
+        ("POST", f"{_BASE}/conf/{_CONF_ID}/method/run"),
+    ],
+)
+async def test_route_without_token_returns_401(client, method, url) -> None:
+    """Every /metagen route rejects an unauthenticated request.
+
+    The auth dependency runs before body validation, so a bodyless write is
+    still rejected with 401 (not 422).
 
     Spec: API.md §Authentication — all /spoke routes require valid JWT.
     """
-    resp = await client.get(f"{_BASE}/conf")
-    assert resp.status_code == 401
-
-
-@pytest.mark.asyncio
-async def test_post_conf_without_token_returns_401(client) -> None:
-    """POST /metagen/conf without token returns 401.
-
-    Spec: API.md §Authentication — write routes require valid JWT.
-    """
-    resp = await client.post(f"{_BASE}/conf", json={"name": "c"})
-    assert resp.status_code == 401
-
-
-@pytest.mark.asyncio
-async def test_post_run_without_token_returns_401(client) -> None:
-    """POST /metagen/conf/{id}/method/run without token returns 401.
-
-    Spec: API.md §Authentication — write routes require valid JWT.
-    """
-    resp = await client.post(f"{_BASE}/conf/{_CONF_ID}/method/run", json={})
-    assert resp.status_code == 401
+    resp = await client.request(method, url)
+    assert resp.status_code == 401, (
+        f"{method} {url} without a token must return 401, got {resp.status_code}"
+    )
 
 
 # ── GET /conf (list) ──────────────────────────────────────────────────────────

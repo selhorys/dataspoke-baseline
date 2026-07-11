@@ -5,10 +5,7 @@ DataHub dataset registration, and Airflow DAG run cleanup
 used in the Imazon test baseline.
 """
 
-from tests.integration.util.airflow import (
-    ALL_DAG_IDS,
-    kill_running_dag_runs,
-)
+from tests.integration.util.airflow import ALL_DAG_IDS
 from tests.integration.util.datahub import (
     ingest_kafka_datasets,
     ingest_pg_datasets,
@@ -38,5 +35,4 @@ __all__ = [
     "reset_only",
     "seed",
     "ALL_DAG_IDS",
-    "kill_running_dag_runs",
 ]

@@ -57,65 +57,30 @@ def override_service(mock_svc: AsyncMock):
 
 
 @pytest.mark.asyncio
-async def test_get_validation_conf_without_token_returns_401(client) -> None:
-    """spec: API.md §Authentication — spoke/common routes require valid JWT."""
-    resp = await client.get(_CONF_URL)
-    assert resp.status_code == 401
+@pytest.mark.parametrize(
+    ("method", "url"),
+    [
+        ("GET", _CONF_URL),
+        ("PUT", _CONF_URL),
+        ("PATCH", _CONF_URL),
+        ("DELETE", _CONF_URL),
+        ("POST", _RESULT_URL),
+        ("GET", _RESULT_URL),
+        ("GET", _EVENTS_URL),
+    ],
+)
+async def test_route_without_token_returns_401(client, method, url) -> None:
+    """Every validation data-sub-route rejects an unauthenticated request.
 
+    The auth dependency runs before body validation, so a bodyless write is
+    still rejected with 401 (not 422).
 
-@pytest.mark.asyncio
-async def test_put_validation_conf_without_token_returns_401(client) -> None:
-    """spec: API.md §Authentication — all write routes require valid JWT."""
-    resp = await client.put(
-        _CONF_URL,
-        json={
-            "description": "null rate check",
-            "variables": [_var("null_rate_rating_score")],
-        },
+    spec: API.md §Authentication — all spoke/common routes require valid JWT.
+    """
+    resp = await client.request(method, url)
+    assert resp.status_code == 401, (
+        f"{method} {url} without a token must return 401, got {resp.status_code}"
     )
-    assert resp.status_code == 401
-
-
-@pytest.mark.asyncio
-async def test_patch_validation_conf_without_token_returns_401(client) -> None:
-    """spec: API.md §Authentication — all write routes require valid JWT."""
-    resp = await client.patch(_CONF_URL, json={"description": "updated"})
-    assert resp.status_code == 401
-
-
-@pytest.mark.asyncio
-async def test_delete_validation_conf_without_token_returns_401(client) -> None:
-    """spec: API.md §Authentication — all write routes require valid JWT."""
-    resp = await client.delete(_CONF_URL)
-    assert resp.status_code == 401
-
-
-@pytest.mark.asyncio
-async def test_post_validation_result_without_token_returns_401(client) -> None:
-    """spec: API.md §Authentication — all write routes require valid JWT."""
-    resp = await client.post(
-        _RESULT_URL,
-        json={
-            "data_time": "2026-05-01T00:00:00Z",
-            "score": 0.7,
-            "variables": {"null_rate_rating_score": 0.3},
-        },
-    )
-    assert resp.status_code == 401
-
-
-@pytest.mark.asyncio
-async def test_get_validation_result_without_token_returns_401(client) -> None:
-    """spec: API.md §Authentication — spoke/common routes require valid JWT."""
-    resp = await client.get(_RESULT_URL)
-    assert resp.status_code == 401
-
-
-@pytest.mark.asyncio
-async def test_get_validation_events_without_token_returns_401(client) -> None:
-    """spec: API.md §Authentication — spoke/common routes require valid JWT."""
-    resp = await client.get(_EVENTS_URL)
-    assert resp.status_code == 401
 
 
 # ── Happy paths ───────────────────────────────────────────────────────────────

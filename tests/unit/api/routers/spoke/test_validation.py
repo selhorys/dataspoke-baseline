@@ -94,37 +94,26 @@ def override_service(mock_svc: AsyncMock):
 
 
 @pytest.mark.asyncio
-async def test_get_conf_without_token_returns_401(client) -> None:
-    """GET /attr/validation/conf without token returns 401.
+@pytest.mark.parametrize(
+    ("method", "url"),
+    [
+        ("GET", _CONF_URL),
+        ("PUT", _CONF_URL),
+        ("POST", _RESULT_URL),
+    ],
+)
+async def test_route_without_token_returns_401(client, method, url) -> None:
+    """Every validation /spoke route rejects an unauthenticated request.
+
+    The auth dependency runs before body validation, so a bodyless write is
+    still rejected with 401 (not 422).
 
     spec: API.md §Authentication — all spoke/common routes require valid JWT.
     """
-    resp = await client.get(_CONF_URL)
-    assert resp.status_code == 401
-
-
-@pytest.mark.asyncio
-async def test_put_conf_without_token_returns_401(client) -> None:
-    """PUT /attr/validation/conf without token returns 401."""
-    resp = await client.put(
-        _CONF_URL,
-        json={"description": "check", "variables": [_var("row_cnt")]},
+    resp = await client.request(method, url)
+    assert resp.status_code == 401, (
+        f"{method} {url} without a token must return 401, got {resp.status_code}"
     )
-    assert resp.status_code == 401
-
-
-@pytest.mark.asyncio
-async def test_post_result_without_token_returns_401(client) -> None:
-    """POST /attr/validation/result without token returns 401."""
-    resp = await client.post(
-        _RESULT_URL,
-        json={
-            "data_time": "2026-05-01T00:00:00Z",
-            "score": 1.0,
-            "variables": {"row_cnt": 50.0},
-        },
-    )
-    assert resp.status_code == 401
 
 
 # ── GET /attr/validation/conf ─────────────────────────────────────────────────

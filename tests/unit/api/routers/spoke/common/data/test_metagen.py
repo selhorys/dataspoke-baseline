@@ -143,78 +143,34 @@ def override_service(mock_svc: AsyncMock):
 # ── Auth gates: 401 without token ──────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
-async def test_get_boundary_without_token_returns_401(client) -> None:
-    """GET /attr/metagen/boundary requires a valid JWT.
-
-    spec: API.md §Authentication — all spoke/common routes require a valid token.
-    """
-    resp = await client.get(_BOUNDARY_URL)
-    assert resp.status_code == 401
+_REVIEW_URL = _candidate_review_url("dataset.description", str(uuid.uuid4()))
 
 
 @pytest.mark.asyncio
-async def test_put_boundary_without_token_returns_401(client) -> None:
-    """PUT /attr/metagen/boundary requires a valid JWT.
+@pytest.mark.parametrize(
+    ("method", "url"),
+    [
+        ("GET", _BOUNDARY_URL),
+        ("PUT", _BOUNDARY_URL),
+        ("PATCH", _BOUNDARY_URL),
+        ("DELETE", _BOUNDARY_URL),
+        ("GET", _ITEM_LIST_URL),
+        ("POST", _REVIEW_URL),
+        ("GET", _EVENTS_URL),
+    ],
+)
+async def test_route_without_token_returns_401(client, method, url) -> None:
+    """Every metagen data-sub-route rejects an unauthenticated request.
 
-    spec: API.md §Authentication — all write routes require valid JWT.
+    The auth dependency runs before body validation, so a bodyless write is
+    still rejected with 401 (not 422).
+
+    spec: API.md §Authentication — all spoke/common routes require valid JWT.
     """
-    resp = await client.put(
-        _BOUNDARY_URL,
-        json={"is_enabled": True, "allowed": ["dataset.description"]},
+    resp = await client.request(method, url)
+    assert resp.status_code == 401, (
+        f"{method} {url} without a token must return 401, got {resp.status_code}"
     )
-    assert resp.status_code == 401
-
-
-@pytest.mark.asyncio
-async def test_patch_boundary_without_token_returns_401(client) -> None:
-    """PATCH /attr/metagen/boundary requires a valid JWT.
-
-    spec: API.md §Authentication — all write routes require valid JWT.
-    """
-    resp = await client.patch(_BOUNDARY_URL, json={"is_enabled": False})
-    assert resp.status_code == 401
-
-
-@pytest.mark.asyncio
-async def test_delete_boundary_without_token_returns_401(client) -> None:
-    """DELETE /attr/metagen/boundary requires a valid JWT.
-
-    spec: API.md §Authentication — all write routes require valid JWT.
-    """
-    resp = await client.delete(_BOUNDARY_URL)
-    assert resp.status_code == 401
-
-
-@pytest.mark.asyncio
-async def test_get_item_list_without_token_returns_401(client) -> None:
-    """GET /attr/metagen/item requires a valid JWT.
-
-    spec: API.md §Authentication — all spoke/common routes require a valid token.
-    """
-    resp = await client.get(_ITEM_LIST_URL)
-    assert resp.status_code == 401
-
-
-@pytest.mark.asyncio
-async def test_candidate_review_without_token_returns_401(client) -> None:
-    """POST .../candidate/{id}/method/review requires a valid JWT.
-
-    spec: API.md §Authentication — all write routes require valid JWT.
-    """
-    url = _candidate_review_url("dataset.description", str(uuid.uuid4()))
-    resp = await client.post(url, json={"verdict": "approve"})
-    assert resp.status_code == 401
-
-
-@pytest.mark.asyncio
-async def test_get_events_without_token_returns_401(client) -> None:
-    """GET /event/metagen requires a valid JWT.
-
-    spec: API.md §Authentication — all spoke/common routes require a valid token.
-    """
-    resp = await client.get(_EVENTS_URL)
-    assert resp.status_code == 401
 
 
 # ── Boundary CRUD ─────────────────────────────────────────────────────────────
