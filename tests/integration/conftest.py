@@ -220,16 +220,65 @@ def require_server(runtime_conf) -> None:  # noqa: ARG001 — runtime_conf perfo
     yield  # type: ignore[misc]
 
 
-@pytest.fixture(scope="session")
+# ── Expiry-aware admin token ──────────────────────────────────────────────────
+#
+# The admin JWT expires in jwt_access_token_expire_minutes (15 min, see
+# src/shared/settings.py). A session-scoped token minted once would 401 mid-run on
+# any suite that runs longer than 15 minutes. Instead we cache the token and re-mint
+# when it is within a safety margin of its own `exp` claim, so every request carries
+# a non-expired token without hitting /auth/token on every test.
+
+_ADMIN_TOKEN_CACHE: dict[str, float | str | None] = {"token": None, "exp": 0.0}
+_ADMIN_TOKEN_REFRESH_MARGIN_S = 120.0  # re-mint this many seconds before exp
+
+
+def _jwt_exp_epoch(token: str) -> float:
+    """Return the ``exp`` claim (epoch seconds) from a JWT, without verifying it.
+
+    Reads the real expiry from the token rather than hardcoding the configured
+    lifetime, so the refresh margin stays correct if settings change.
+    """
+    import base64
+
+    payload_b64 = token.split(".")[1]
+    payload_b64 += "=" * (-len(payload_b64) % 4)
+    payload = json.loads(base64.urlsafe_b64decode(payload_b64.encode("ascii")))
+    return float(payload["exp"])
+
+
+def _current_admin_token() -> str:
+    """Return a non-expired admin JWT, re-minting when within the refresh margin.
+
+    Shared by the ``admin_headers`` and ``admin_token`` fixtures so both always
+    surface the same cached, valid token.
+    """
+    import time
+
+    now = time.time()
+    cached = _ADMIN_TOKEN_CACHE["token"]
+    if cached is None or now >= float(_ADMIN_TOKEN_CACHE["exp"]) - _ADMIN_TOKEN_REFRESH_MARGIN_S:
+        headers = login_headers(_shared_ingress_url(), "dataspoke@dataspoke.local", "dataspoke")
+        token = headers["Authorization"].removeprefix("Bearer ")
+        _ADMIN_TOKEN_CACHE["token"] = token
+        _ADMIN_TOKEN_CACHE["exp"] = _jwt_exp_epoch(token)
+        return token
+    return str(cached)
+
+
+@pytest.fixture
 def admin_headers(require_server) -> dict[str, str]:  # noqa: ARG001 — gates on server readiness
-    """Session-scoped Authorization header dict for the bootstrap admin user."""
-    return login_headers(_shared_ingress_url(), "dataspoke@dataspoke.local", "dataspoke")
+    """Authorization header dict for the bootstrap admin user, minted per test.
+
+    Function-scoped and backed by ``_current_admin_token`` so every test starts
+    with a non-expired token even in suites that run past the 15-min JWT lifetime.
+    """
+    return {"Authorization": f"Bearer {_current_admin_token()}"}
 
 
-@pytest.fixture(scope="session")
-def admin_token(admin_headers: dict[str, str]) -> str:
-    """Session-scoped admin JWT access token (bare token, no ``Bearer `` prefix)."""
-    return admin_headers["Authorization"].removeprefix("Bearer ")
+@pytest.fixture
+def admin_token(require_server) -> str:  # noqa: ARG001 — gates on server readiness
+    """Admin JWT access token (bare token, no ``Bearer `` prefix), minted per test."""
+    return _current_admin_token()
 
 
 @pytest.fixture(scope="session")
@@ -370,13 +419,20 @@ def acquire_lock() -> None:
     yield  # type: ignore[misc]
 
     try:
-        httpx.post(
+        release_resp = httpx.post(
             f"{lock_url}/lock/release",
             json={"owner": _lock_owner},
             timeout=5.0,
         )
     except httpx.ConnectError:
         pass
+    else:
+        # A failed release strands the lock for the next tester — surface it loudly
+        # rather than silently ignoring the response.
+        assert release_resp.status_code == 200, (
+            f"Dev-env lock release failed: POST {lock_url}/lock/release returned "
+            f"{release_resp.status_code}: {release_resp.text}"
+        )
 
 
 def _reset_all_dummy_data() -> None:

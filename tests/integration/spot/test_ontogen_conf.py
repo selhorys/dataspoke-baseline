@@ -121,26 +121,37 @@ async def test_ontogen_conf_patch(
     admin_headers: dict[str, str],
 ) -> None:
     """PATCH /spoke/ontogen/attr/conf partially updates the singleton conf."""
-    # Ensure a conf exists
-    await api_client.put(
-        "/api/v1/spoke/ontogen/attr/conf",
-        headers=admin_headers,
-        json={
-            "is_enabled": False,
-            "schedule_tier": "daily",
-            "dataset_filter": {},
-        },
-    )
+    conf_url = "/api/v1/spoke/ontogen/attr/conf"
+    try:
+        # Ensure a conf exists
+        await api_client.put(
+            conf_url,
+            headers=admin_headers,
+            json={
+                "is_enabled": False,
+                "schedule_tier": "daily",
+                "dataset_filter": {},
+            },
+        )
 
-    patch_resp = await api_client.patch(
-        "/api/v1/spoke/ontogen/attr/conf",
-        headers=admin_headers,
-        json={"schedule_tier": "weekly"},
-    )
+        patch_resp = await api_client.patch(
+            conf_url,
+            headers=admin_headers,
+            json={"schedule_tier": "weekly"},
+        )
 
-    assert patch_resp.status_code == 200
-    body = patch_resp.json()
-    assert body["schedule_tier"] == "weekly"
+        assert patch_resp.status_code == 200
+        body = patch_resp.json()
+        assert body["schedule_tier"] == "weekly"
+    finally:
+        # Restore the singleton to a clean disabled/daily baseline so a mid-test
+        # failure can't leave schedule_tier="weekly" resident for later tests.
+        with suppress(Exception):
+            await api_client.patch(
+                conf_url,
+                headers=admin_headers,
+                json={"is_enabled": False, "schedule_tier": "daily", "dataset_filter": {}},
+            )
 
 
 @pytest.mark.asyncio
@@ -149,22 +160,26 @@ async def test_ontogen_conf_delete_resets(
     admin_headers: dict[str, str],
 ) -> None:
     """DELETE /spoke/ontogen/attr/conf removes/resets the singleton conf (204)."""
-    # Ensure conf exists first
-    await api_client.put(
-        "/api/v1/spoke/ontogen/attr/conf",
-        headers=admin_headers,
-        json={
-            "is_enabled": False,
-            "schedule_tier": "daily",
-            "dataset_filter": {},
-        },
-    )
+    conf_url = "/api/v1/spoke/ontogen/attr/conf"
+    try:
+        # Ensure conf exists first
+        await api_client.put(
+            conf_url,
+            headers=admin_headers,
+            json={
+                "is_enabled": False,
+                "schedule_tier": "daily",
+                "dataset_filter": {},
+            },
+        )
 
-    del_resp = await api_client.delete(
-        "/api/v1/spoke/ontogen/attr/conf",
-        headers=admin_headers,
-    )
-    assert del_resp.status_code == 204
+        del_resp = await api_client.delete(conf_url, headers=admin_headers)
+        assert del_resp.status_code == 204
+    finally:
+        # DELETE resets the singleton to defaults; ensure that baseline holds even
+        # if the PUT or the assertion above raised mid-test.
+        with suppress(Exception):
+            await api_client.delete(conf_url, headers=admin_headers)
 
 
 @pytest.mark.asyncio
@@ -191,68 +206,80 @@ async def test_ontogen_seed_create_list_get_patch_enable_delete(
     assert create_resp.status_code == 201, create_resp.text
     seed_id = create_resp.json()["seed_id"]
 
-    # List — seed_id must appear with is_enabled=false (ships disabled).
-    list_resp = await api_client.get(base_seed, headers=admin_headers)
-    assert list_resp.status_code == 200
-    list_body = list_resp.json()
-    assert "seeds" in list_body
-    by_id = {s["seed_id"]: s for s in list_body["seeds"]}
-    assert seed_id in by_id
-    assert by_id[seed_id]["is_enabled"] is False, (
-        "a new seed must be created disabled. spec: USE_CASE_en.md §UC3"
-    )
+    try:
+        # List — seed_id must appear with is_enabled=false (ships disabled).
+        list_resp = await api_client.get(base_seed, headers=admin_headers)
+        assert list_resp.status_code == 200
+        list_body = list_resp.json()
+        assert "seeds" in list_body
+        by_id = {s["seed_id"]: s for s in list_body["seeds"]}
+        assert seed_id in by_id
+        assert by_id[seed_id]["is_enabled"] is False, (
+            "a new seed must be created disabled. spec: USE_CASE_en.md §UC3"
+        )
 
-    # Get body
-    get_resp = await api_client.get(f"{base_seed}/{seed_id}", headers=admin_headers)
-    assert get_resp.status_code == 200
-    assert "Imazon" in get_resp.text
+        # Get body
+        get_resp = await api_client.get(f"{base_seed}/{seed_id}", headers=admin_headers)
+        assert get_resp.status_code == 200
+        assert "Imazon" in get_resp.text
 
-    # Patch (replace body)
-    new_md = "# Updated Seed\n\nUpdated body for spot test."
-    patch_resp = await api_client.patch(
-        f"{base_seed}/{seed_id}",
-        headers={**admin_headers, "content-type": "text/markdown"},
-        content=new_md.encode(),
-    )
-    assert patch_resp.status_code == 200
+        # Patch (replace body)
+        new_md = "# Updated Seed\n\nUpdated body for spot test."
+        patch_resp = await api_client.patch(
+            f"{base_seed}/{seed_id}",
+            headers={**admin_headers, "content-type": "text/markdown"},
+            content=new_md.encode(),
+        )
+        assert patch_resp.status_code == 200
 
-    # Enable — flips is_enabled true; reversible.
-    # spec: API.md §PATCH attr/seed/{seed_id}/attr/enabled — JSON {is_enabled: bool}.
-    enable_resp = await api_client.patch(
-        f"{base_seed}/{seed_id}/attr/enabled",
-        headers=admin_headers,
-        json={"is_enabled": True},
-    )
-    assert enable_resp.status_code == 200, enable_resp.text
-    assert enable_resp.json()["is_enabled"] is True
+        # Enable — flips is_enabled true; reversible.
+        # spec: API.md §PATCH attr/seed/{seed_id}/attr/enabled — JSON {is_enabled: bool}.
+        enable_resp = await api_client.patch(
+            f"{base_seed}/{seed_id}/attr/enabled",
+            headers=admin_headers,
+            json={"is_enabled": True},
+        )
+        assert enable_resp.status_code == 200, enable_resp.text
+        assert enable_resp.json()["is_enabled"] is True
 
-    # A disabled seed stays visible in the list (enabled AND disabled are returned).
-    disable_resp = await api_client.patch(
-        f"{base_seed}/{seed_id}/attr/enabled",
-        headers=admin_headers,
-        json={"is_enabled": False},
-    )
-    assert disable_resp.status_code == 200
-    assert disable_resp.json()["is_enabled"] is False
-    list_disabled = await api_client.get(base_seed, headers=admin_headers)
-    assert seed_id in {s["seed_id"] for s in list_disabled.json()["seeds"]}, (
-        "a disabled seed must stay visible in the list so it can be re-enabled"
-    )
+        # A disabled seed stays visible in the list (enabled AND disabled are returned).
+        disable_resp = await api_client.patch(
+            f"{base_seed}/{seed_id}/attr/enabled",
+            headers=admin_headers,
+            json={"is_enabled": False},
+        )
+        assert disable_resp.status_code == 200
+        assert disable_resp.json()["is_enabled"] is False
+        list_disabled = await api_client.get(base_seed, headers=admin_headers)
+        assert seed_id in {s["seed_id"] for s in list_disabled.json()["seeds"]}, (
+            "a disabled seed must stay visible in the list so it can be re-enabled"
+        )
 
-    # Delete is a hard delete — DELETE returns 204; the seed is gone from the list.
-    del_resp = await api_client.delete(f"{base_seed}/{seed_id}", headers=admin_headers)
-    assert del_resp.status_code == 204
+        # Delete is a hard delete — DELETE returns 204; the seed is gone from the list.
+        del_resp = await api_client.delete(f"{base_seed}/{seed_id}", headers=admin_headers)
+        assert del_resp.status_code == 204
+        seed_id = None  # deleted — the finally block must not re-delete.
 
-    list_after = await api_client.get(base_seed, headers=admin_headers)
-    assert list_after.status_code == 200
-    ids_after = {s["seed_id"] for s in list_after.json()["seeds"]}
-    assert seed_id not in ids_after, "hard-deleted seed must be gone from the list"
+        list_after = await api_client.get(base_seed, headers=admin_headers)
+        assert list_after.status_code == 200
+        ids_after = {s["seed_id"] for s in list_after.json()["seeds"]}
+        assert create_resp.json()["seed_id"] not in ids_after, (
+            "hard-deleted seed must be gone from the list"
+        )
 
-    # GET on the deleted seed returns 404 (the row is removed outright).
-    get_after = await api_client.get(f"{base_seed}/{seed_id}", headers=admin_headers)
-    assert get_after.status_code == 404, (
-        f"GET on a hard-deleted seed must 404; got {get_after.status_code}"
-    )
+        # GET on the deleted seed returns 404 (the row is removed outright).
+        get_after = await api_client.get(
+            f"{base_seed}/{create_resp.json()['seed_id']}", headers=admin_headers
+        )
+        assert get_after.status_code == 404, (
+            f"GET on a hard-deleted seed must 404; got {get_after.status_code}"
+        )
+    finally:
+        # If any assertion above raised before the in-test delete, hard-delete the
+        # seed so it does not leak into later tests.
+        if seed_id is not None:
+            with suppress(Exception):
+                await api_client.delete(f"{base_seed}/{seed_id}", headers=admin_headers)
 
 
 # ── Payload cap and schedule_tier boundary tests ──────────────────────────────

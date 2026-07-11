@@ -804,72 +804,91 @@ async def test_dry_run_does_not_persist_result_or_event(
     base_results = "/api/v1/spoke/governance/metric/ingestion-freshness/attr/result"
     base_events = "/api/v1/spoke/governance/metric/ingestion-freshness/event"
 
-    # Enable the seeded metric and scope to bounded URN
-    patch_resp = await api_client.patch(
-        base_conf,
-        headers=admin_headers,
-        json={
-            "is_enabled": True,
-            "dataset_filter": {"dataset_urns": [_BOUNDED_URN]},
-        },
-    )
-    assert patch_resp.status_code == 200, patch_resp.text
+    try:
+        # Enable the seeded metric and scope to bounded URN
+        patch_resp = await api_client.patch(
+            base_conf,
+            headers=admin_headers,
+            json={
+                "is_enabled": True,
+                "dataset_filter": {"dataset_urns": [_BOUNDED_URN]},
+            },
+        )
+        assert patch_resp.status_code == 200, patch_resp.text
 
-    # Snapshot counts before dry-run
-    pre_results = await api_client.get(f"{base_results}?limit=100", headers=admin_headers)
-    pre_count = pre_results.json().get("total_count", 0)
+        # Bind the persistence check by an after-timestamp captured before the run,
+        # not a count-delta over a limit window that concurrent runs of the same
+        # metric on the shared cluster would invalidate. A small look-back margin
+        # absorbs host↔DB clock skew.
+        # spec: TESTING.md §Integration Lifecycle & Isolation — bind by identity/after=.
+        before_ts = datetime.now(UTC) - timedelta(seconds=5)
 
-    pre_events = await api_client.get(f"{base_events}?limit=100", headers=admin_headers)
-    pre_event_count = len([
-        e for e in pre_events.json().get("events", [])
-        if e.get("event_type") == "METRIC.RUN_COMPLETE"
-    ])
+        # Dry-run
+        run_resp = await api_client.post(
+            f"{base_run}?dry_run=true",
+            headers=admin_headers,
+        )
+        assert run_resp.status_code == 200, run_resp.text
+        run_body = run_resp.json()
 
-    # Dry-run
-    run_resp = await api_client.post(
-        f"{base_run}?dry_run=true",
-        headers=admin_headers,
-    )
-    assert run_resp.status_code == 200, run_resp.text
-    run_body = run_resp.json()
+        # Response must carry run_id, status, and detail with values dict
+        assert "run_id" in run_body, (
+            "dry-run response must carry run_id. Spec: spec/API.md §Metric."
+        )
+        assert "status" in run_body, (
+            "dry-run response must carry status. Spec: spec/API.md §Metric."
+        )
+        run_id = run_body["run_id"]
+        detail = run_body.get("detail", {})
+        if "values" in detail:
+            assert isinstance(detail["values"], dict), (
+                "detail.values must be a dict when present. "
+                "Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types."
+            )
 
-    # Response must carry run_id, status, and detail with values dict
-    assert "run_id" in run_body, "dry-run response must carry run_id. Spec: spec/API.md §Metric."
-    assert "status" in run_body, "dry-run response must carry status. Spec: spec/API.md §Metric."
-    detail = run_body.get("detail", {})
-    if "values" in detail:
-        assert isinstance(detail["values"], dict), (
-            "detail.values must be a dict when present. "
-            "Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types."
+        # (a) No result row is persisted at/after the pre-run timestamp. Result rows
+        # carry measured_at (not run_id), so bind the persistence check by that
+        # after-timestamp rather than a count-delta over a limit window.
+        post_results = await api_client.get(f"{base_results}?limit=100", headers=admin_headers)
+        results_since = [
+            r for r in post_results.json().get("results", [])
+            if datetime.fromisoformat(r["measured_at"]) >= before_ts
+        ]
+        assert results_since == [], (
+            f"dry_run must not persist a result row; found {len(results_since)} "
+            "measured at/after the pre-run timestamp. "
+            "Spec: spec/USE_CASE_en.md §UC5 — dry_run=true does not persist."
         )
 
-    # (a) No new result row persisted
-    post_results = await api_client.get(f"{base_results}?limit=100", headers=admin_headers)
-    post_count = post_results.json().get("total_count", 0)
-    assert post_count == pre_count, (
-        f"dry_run persisted a result: result count went from {pre_count} to {post_count}. "
-        "Spec: spec/USE_CASE_en.md §UC5 — dry_run=true does not persist."
-    )
-
-    # (b) No new METRIC.RUN_COMPLETE event (or if emitted it has dry_run=True in detail)
-    post_events = await api_client.get(f"{base_events}?limit=100", headers=admin_headers)
-    post_complete = [
-        e for e in post_events.json().get("events", [])
-        if e.get("event_type") == "METRIC.RUN_COMPLETE"
-    ]
-    new_complete = post_complete[pre_event_count:]
-    for ev in new_complete:
-        assert ev.get("detail", {}).get("dry_run") is True, (
-            "Any METRIC.RUN_COMPLETE emitted by dry_run must have detail.dry_run=True. "
-            "Spec: spec/USE_CASE_en.md §UC5."
+        # (b) No METRIC.RUN_COMPLETE event is persisted for this run_id. Unlike the
+        # METAGEN and ONTOGEN.RUN_COMPLETE rows, the METRIC.RUN_COMPLETE row in
+        # BACKEND.md §Event Catalogue is NOT marked "recorded for both dry-run and
+        # non-dry-run", and dry-run semantics are evaluate-without-persist — so a
+        # metrics dry-run emits nothing. The absence assertion, bound by run_id, is the
+        # load-bearing check: a regression that persisted a dry-run event would carry
+        # this run_id and fail here. (Mechanism: _run_inner returns at `if dry_run:`
+        # before _record_event.)
+        # spec: BACKEND.md §Event Catalogue (METRIC row) + USE_CASE_en.md §UC5.
+        post_events = await api_client.get(f"{base_events}?limit=100", headers=admin_headers)
+        complete_for_run = [
+            e for e in post_events.json().get("events", [])
+            if e.get("event_type") == "METRIC.RUN_COMPLETE"
+            and e.get("detail", {}).get("run_id") == run_id
+        ]
+        assert complete_for_run == [], (
+            "metrics dry-run must persist no METRIC.RUN_COMPLETE event for this run_id; "
+            f"found {len(complete_for_run)}. Spec: spec/USE_CASE_en.md §UC5 — dry_run "
+            "evaluates without persisting."
         )
-
-    # Restore factory default state
-    await api_client.patch(
-        base_conf,
-        headers=admin_headers,
-        json={"is_enabled": False, "dataset_filter": {}},
-    )
+    finally:
+        # Restore factory-default (disabled, unscoped) state unconditionally so a
+        # mid-test failure can't leave the metric enabled for later tests.
+        with suppress(Exception):
+            await api_client.patch(
+                base_conf,
+                headers=admin_headers,
+                json={"is_enabled": False, "dataset_filter": {}},
+            )
 
 
 @pytest.mark.asyncio

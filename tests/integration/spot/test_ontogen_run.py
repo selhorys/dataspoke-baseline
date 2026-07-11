@@ -18,14 +18,15 @@ DAG and on-demand inference runs as the ONLY sync triggers — the review endpoi
 not a trigger.
 
 NOTE: AGE graph materialisation is verified at the run-level integration test.
-spec/feature/BACKEND.md §Ontology Generation Service §Inference Pipeline mandates AGE persistence as part of the inference
-pipeline (step 9); the triple-approve REST endpoint best-effort materialises, which is
-not spec-mandated per BACKEND.md §Ontology Generation Service §Approval flow.
+spec/feature/BACKEND.md §Ontology Generation Service §Inference Pipeline mandates AGE
+persistence as part of the inference pipeline (step 9); the triple-approve REST endpoint
+best-effort materialises, which is not spec-mandated per BACKEND.md §Approval flow.
 
 Spec traceability:
 - spec/feature/BACKEND.md §Ontology Generation Service §Inference Pipeline
 - spec/feature/BACKEND.md §Event Catalogue — RUN_COMPLETE emitted for dry-run and non-dry-run
-- spec/feature/BACKEND.md §Ontology Generation Service §Disabled-config rejection — ONTOGEN_DISABLED on non-dry run with is_enabled=False
+- spec/feature/BACKEND.md §Ontology Generation Service §Disabled-config rejection
+  — ONTOGEN_DISABLED on non-dry run with is_enabled=False
 - spec/USE_CASE_en.md §UC3 §Inputs — document evidence read path
 - spec/DATAHUB_INTEGRATION.md §Document Aspects — relatedAssets discovery filter
 """
@@ -64,14 +65,17 @@ async def test_ontogen_run_dry_run(
     """
     event_url = "/api/v1/spoke/ontogen/event"
 
-    # Snapshot count of existing ONTOGEN.RUN_COMPLETE events before the POST
-    pre_resp = await api_client.get(
-        f"{event_url}?limit=100",
-        headers=admin_headers,
-    )
+    # Bind the event assertion by event identity: snapshot the existing
+    # ONTOGEN.RUN_COMPLETE event ids, run, then assert on the ids that are new. Identity
+    # binding is immune to prior tests' events and host↔DB clock skew, and is not a
+    # count-delta over a limit window (which concurrent runs would invalidate).
+    # spec: TESTING.md §Integration Lifecycle & Isolation — bind event assertions by
+    # identity, never by count.
+    pre_resp = await api_client.get(event_url, params={"limit": 100}, headers=admin_headers)
     assert pre_resp.status_code == 200, pre_resp.text
-    pre_events = pre_resp.json()["events"]
-    pre_count = sum(1 for e in pre_events if e["event_type"] == "ONTOGEN.RUN_COMPLETE")
+    pre_ids = {
+        e["id"] for e in pre_resp.json()["events"] if e["event_type"] == "ONTOGEN.RUN_COMPLETE"
+    }
 
     resp = await api_client.post(
         "/api/v1/spoke/ontogen/method/run?dry_run=true",
@@ -87,25 +91,23 @@ async def test_ontogen_run_dry_run(
     assert "counts" in body and isinstance(body["counts"], dict)
     assert body["dry_run"] is True
 
-    # Assert exactly one new ONTOGEN.RUN_COMPLETE event was emitted
+    # Exactly one NEW ONTOGEN.RUN_COMPLETE event (id not previously seen) must appear.
     # spec: BACKEND.md §Event Catalogue — RUN_COMPLETE recorded for dry-run; dry_run flag in detail
-    post_resp = await api_client.get(
-        f"{event_url}?limit=100",
-        headers=admin_headers,
-    )
+    post_resp = await api_client.get(event_url, params={"limit": 100}, headers=admin_headers)
     assert post_resp.status_code == 200, post_resp.text
-    post_events = post_resp.json()["events"]
-    run_complete_events = [e for e in post_events if e["event_type"] == "ONTOGEN.RUN_COMPLETE"]
-    post_count = len(run_complete_events)
+    new_run_complete = [
+        e
+        for e in post_resp.json()["events"]
+        if e["event_type"] == "ONTOGEN.RUN_COMPLETE" and e["id"] not in pre_ids
+    ]
 
-    assert post_count == pre_count + 1, (
-        f"Expected exactly one new ONTOGEN.RUN_COMPLETE event after dry-run; "
-        f"pre_count={pre_count}, post_count={post_count}. "
+    assert len(new_run_complete) == 1, (
+        f"Expected exactly one new ONTOGEN.RUN_COMPLETE event; "
+        f"got {len(new_run_complete)}. "
         "spec: BACKEND.md §Event Catalogue — dry-run must emit RUN_COMPLETE"
     )
 
-    # The newest event is first (ordered by occurred_at desc)
-    new_event = run_complete_events[0]
+    new_event = new_run_complete[0]
     assert new_event["detail"].get("dry_run") is True, (
         f"ONTOGEN.RUN_COMPLETE event detail must carry dry_run=true; "
         f"got detail={new_event['detail']!r}. "
@@ -288,9 +290,9 @@ async def test_ontogen_run_is_enabled_false_non_dry_run_returns_409_ONTOGEN_DISA
     """POST /method/run (no dry_run) with is_enabled=False returns 409 ONTOGEN_DISABLED;
     dry-run with the same conf returns 200; no ONTOGEN.RUN_COMPLETE event on rejected run.
 
-    spec: BACKEND.md §Ontology Generation Service §Disabled-config rejection — 'When is_enabled=false, non-dry-run calls to
-    method/run return 409 ONTOGEN_DISABLED. Dry-run (?dry_run=true) is always
-    permitted regardless of is_enabled.'
+    spec: BACKEND.md §Ontology Generation Service §Disabled-config rejection — 'When
+    is_enabled=false, non-dry-run calls to method/run return 409 ONTOGEN_DISABLED.
+    Dry-run (?dry_run=true) is always permitted regardless of is_enabled.'
     spec: BACKEND.md §Event Catalogue — RUN_COMPLETE is emitted only when the run completes;
     a rejected (409) call must not emit it.
     """
@@ -311,13 +313,19 @@ async def test_ontogen_run_is_enabled_false_non_dry_run_returns_409_ONTOGEN_DISA
             f"PUT ontogen conf failed: {put_resp.status_code} {put_resp.text}"
         )
 
-        # Snapshot ONTOGEN.RUN_COMPLETE count before the rejected call
-        pre_resp = await api_client.get(f"{event_url}?limit=100", headers=admin_headers)
+        # Bind the negative-parity check by event identity: snapshot the existing
+        # ONTOGEN.RUN_COMPLETE ids before the rejected call, then assert no NEW id
+        # appears. Identity binding excludes prior tests' events (which a backward
+        # time look-back would wrongly capture) and is not a count-delta.
+        # spec: TESTING.md §Integration Lifecycle & Isolation — bind event assertions
+        # by identity, never by count.
+        pre_resp = await api_client.get(event_url, params={"limit": 100}, headers=admin_headers)
         assert pre_resp.status_code == 200, pre_resp.text
-        pre_run_complete_count = sum(
-            1 for e in pre_resp.json()["events"]
+        pre_ids = {
+            e["id"]
+            for e in pre_resp.json()["events"]
             if e["event_type"] == "ONTOGEN.RUN_COMPLETE"
-        )
+        }
 
         run_resp = await api_client.post(
             "/api/v1/spoke/ontogen/method/run",
@@ -334,22 +342,25 @@ async def test_ontogen_run_is_enabled_false_non_dry_run_returns_409_ONTOGEN_DISA
             "spec: BACKEND.md §Ontology Generation Service §Disabled-config rejection"
         )
 
-        # Negative-parity: no ONTOGEN.RUN_COMPLETE event must have been emitted
-        # spec: BACKEND.md §Event Catalogue — event is for completed runs only; rejected calls are not runs
-        post_resp = await api_client.get(f"{event_url}?limit=100", headers=admin_headers)
+        # Negative-parity: no NEW ONTOGEN.RUN_COMPLETE event (id not previously seen).
+        # spec: BACKEND.md §Event Catalogue — event is for completed runs only; a
+        # rejected (409) call is not a run.
+        post_resp = await api_client.get(event_url, params={"limit": 100}, headers=admin_headers)
         assert post_resp.status_code == 200, post_resp.text
-        post_run_complete_count = sum(
-            1 for e in post_resp.json()["events"]
-            if e["event_type"] == "ONTOGEN.RUN_COMPLETE"
-        )
-        assert post_run_complete_count == pre_run_complete_count, (
-            f"No new ONTOGEN.RUN_COMPLETE event must be emitted after a 409-rejected run; "
-            f"pre={pre_run_complete_count}, post={post_run_complete_count}. "
+        new_run_complete = [
+            e
+            for e in post_resp.json()["events"]
+            if e["event_type"] == "ONTOGEN.RUN_COMPLETE" and e["id"] not in pre_ids
+        ]
+        assert new_run_complete == [], (
+            f"No ONTOGEN.RUN_COMPLETE event must be emitted by a 409-rejected run; "
+            f"found {len(new_run_complete)} new. "
             "spec: BACKEND.md §Event Catalogue"
         )
 
-        # Dry-run must still succeed when is_enabled=False — disabled gate is
-        # scoped to non-dry-run only. spec: BACKEND.md §Ontology Generation Service §Disabled-config rejection
+        # Dry-run must still succeed when is_enabled=False — disabled gate is scoped
+        # to non-dry-run only.
+        # spec: BACKEND.md §Ontology Generation Service §Disabled-config rejection
         dry_resp = await api_client.post(
             "/api/v1/spoke/ontogen/method/run?dry_run=true",
             headers=admin_headers,

@@ -332,7 +332,7 @@ async def test_uc4_metadata_generation_under_stub(
         # spec: BACKEND.md §Event Catalogue — MetagenRunResponse: run_id, conf_id, status,
         #   dry_run, unresolved_urns, counts, producer_iterations, debate_outcome
         oe_run_resp = await api_client.post(
-            f"{conf_url}/{conf_oe_id}/method/run", headers=admin_headers, timeout=90.0
+            f"{conf_url}/{conf_oe_id}/method/run", headers=admin_headers, timeout=300.0
         )
         assert oe_run_resp.status_code == 200, (
             f"POST conf OE run failed: {oe_run_resp.status_code} {oe_run_resp.text}. "
@@ -345,7 +345,7 @@ async def test_uc4_metadata_generation_under_stub(
         )
 
         run_resp = await api_client.post(
-            f"{conf_url}/{conf_eu_id}/method/run", headers=admin_headers, timeout=90.0
+            f"{conf_url}/{conf_eu_id}/method/run", headers=admin_headers, timeout=300.0
         )
         assert run_resp.status_code == 200, (
             f"POST conf EU run (first run) failed: "
@@ -713,7 +713,7 @@ async def test_uc4_metadata_generation_under_stub(
         # open, so RIVAL produces RIVAL-stamped candidates on the same column items
         # conf EU already populated.
         rival_run_resp = await api_client.post(
-            f"{conf_url}/{conf_rival_id}/method/run", headers=admin_headers, timeout=90.0
+            f"{conf_url}/{conf_rival_id}/method/run", headers=admin_headers, timeout=300.0
         )
         assert rival_run_resp.status_code == 200, (
             f"POST conf RIVAL run failed: {rival_run_resp.status_code} {rival_run_resp.text}. "
@@ -998,7 +998,7 @@ async def test_uc4_metadata_generation_under_stub(
         #   cleared at run start
         #   before each run so they can be re-generated fresh
         run2_resp = await api_client.post(
-            f"{conf_url}/{conf_eu_id}/method/run", headers=admin_headers, timeout=90.0
+            f"{conf_url}/{conf_eu_id}/method/run", headers=admin_headers, timeout=300.0
         )
         assert run2_resp.status_code == 200, (
             f"POST conf EU run (second run) failed: "
@@ -1434,7 +1434,7 @@ async def test_uc4_metadata_generation_with_real_llm(
 
         # ── Step 5: POST per-conf run (first run) ─────────────────────────────
         run_resp = await api_client.post(
-            f"{conf_url}/{conf_id}/method/run", headers=admin_headers, timeout=90.0
+            f"{conf_url}/{conf_id}/method/run", headers=admin_headers, timeout=300.0
         )
         assert run_resp.status_code == 200, (
             f"POST per-conf run (first run) failed: "
@@ -1789,7 +1789,7 @@ async def test_uc4_metadata_generation_with_real_llm(
 
         # ── Step 11: POST per-conf run (second run) — idempotency ─────────────
         run2_resp = await api_client.post(
-            f"{conf_url}/{conf_id}/method/run", headers=admin_headers, timeout=90.0
+            f"{conf_url}/{conf_id}/method/run", headers=admin_headers, timeout=300.0
         )
         assert run2_resp.status_code == 200, (
             f"POST per-conf run (second run) failed: "

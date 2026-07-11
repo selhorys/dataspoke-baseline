@@ -42,7 +42,8 @@ async def test_get_smtp_peripheral_returns_shape(
     # Password is masked: "" when unset, "********" when set
     # (never the raw value per spec/API.md §Admin /admin/peripherals/smtp)
     assert "password" in body, (
-        "SMTP response must include 'password' field (masked) per spec/API.md §Admin /admin/peripherals/smtp"
+        "SMTP response must include 'password' field (masked) "
+        "per spec/API.md §Admin /admin/peripherals/smtp"
     )
     assert body["password"] in ("", "********"), (
         "SMTP password must be masked as '' (unset) or '********' (set), "
@@ -61,24 +62,80 @@ async def test_patch_smtp_host_flips_is_configured(
     is_configured may change if the required fields are present.
     Note: is_configured requires host, from_address, AND password_set to all be true.
     This test verifies that the config fields are accepted and stored.
-    """
-    resp = await api_client.patch(
-        "/api/v1/admin/peripherals/smtp",
-        json={
-            "host": "smtp.test.example.com",
-            "port": 587,
-            "username": "smtp-user",
-            "from_address": "noreply@test.example.com",
-            "use_tls": True,
-        },
-        headers=admin_headers,
-    )
-    assert resp.status_code == 200, f"PATCH /admin/peripherals/smtp must return 200: {resp.text}"
 
-    body = resp.json()
-    assert body["host"] == "smtp.test.example.com", "Patched host must be returned"
-    assert body["from_address"] == "noreply@test.example.com"
-    assert body["port"] == 587
+    The SMTP peripheral is a shared singleton, so this snapshots the current
+    non-secret config, mutates, then restores it in ``finally`` and asserts the
+    restore held (a PATCH refreshes the process cache, so the read-back is
+    observable). There is no SMTP reset endpoint and PATCH cannot write port=0
+    (ge=1) or null a DB field, so when the peripheral started unconfigured the
+    restore clears the identity fields (host/from_address/username) back to their
+    empty snapshot values — which returns is_configured to its prior state — and
+    drops the invalid port from the restore body.
+    spec: TESTING.md §Integration Lifecycle & Isolation — snapshot → mutate →
+    verified restore for shared singletons.
+    """
+    smtp_url = "/api/v1/admin/peripherals/smtp"
+
+    snap_resp = await api_client.get(smtp_url, headers=admin_headers)
+    assert snap_resp.status_code == 200, snap_resp.text
+    snap = snap_resp.json()
+
+    try:
+        resp = await api_client.patch(
+            smtp_url,
+            json={
+                "host": "smtp.test.example.com",
+                "port": 587,
+                "username": "smtp-user",
+                "from_address": "noreply@test.example.com",
+                "use_tls": True,
+            },
+            headers=admin_headers,
+        )
+        assert resp.status_code == 200, (
+            f"PATCH /admin/peripherals/smtp must return 200: {resp.text}"
+        )
+
+        body = resp.json()
+        assert body["host"] == "smtp.test.example.com", "Patched host must be returned"
+        assert body["from_address"] == "noreply@test.example.com"
+        assert body["port"] == 587
+    finally:
+        # Build a PATCH-valid restore body from the snapshot. Empty strings ARE
+        # applied (only None is dropped by the handler), so clearing host/username/
+        # from_address returns the peripheral to its prior unconfigured markers.
+        # port ge=1 cannot be written back when the snapshot was unconfigured
+        # (port=0), so it is only included when valid.
+        restore = {
+            "host": snap["host"],
+            "username": snap["username"],
+            "from_address": snap["from_address"],
+            "use_tls": snap["use_tls"],
+        }
+        if snap["port"] >= 1:
+            restore["port"] = snap["port"]
+        restore_resp = await api_client.patch(smtp_url, json=restore, headers=admin_headers)
+        assert restore_resp.status_code == 200, (
+            f"SMTP config restore PATCH must return 200: {restore_resp.text}"
+        )
+        # Verified restore: the read-back must match the prior state's identity
+        # fields and its is_configured flag (the port cannot round-trip through
+        # PATCH when it started at 0, so it is not asserted in that case).
+        readback = (await api_client.get(smtp_url, headers=admin_headers)).json()
+        assert readback["host"] == snap["host"], (
+            f"SMTP host not restored: expected {snap['host']!r}, got {readback['host']!r}. "
+            "spec: TESTING.md §Integration Lifecycle & Isolation — verified restore."
+        )
+        assert readback["from_address"] == snap["from_address"], (
+            "SMTP from_address not restored to the pre-test snapshot."
+        )
+        assert readback["username"] == snap["username"], (
+            "SMTP username not restored to the pre-test snapshot."
+        )
+        assert readback["is_configured"] == snap["is_configured"], (
+            "SMTP is_configured not restored to its prior state; "
+            f"expected {snap['is_configured']!r}, got {readback['is_configured']!r}."
+        )
 
 
 @pytest.mark.asyncio

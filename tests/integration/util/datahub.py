@@ -100,15 +100,6 @@ _KAFKA_TOPIC_AREA_TAGS: dict[str, str] = {
     "imazon.shipping.updates": TAG_AREA_FULFILLMENT,
 }
 
-# Dataspoke operational DB — used to reconcile dataset_registry rows whose
-# datahub_registered cache was frozen False before this ingest.
-_DATASPOKE_PG_HOST = os.environ.get("DATASPOKE_TEST_POSTGRES_HOST", "localhost")
-_DATASPOKE_PG_PORT = int(os.environ.get("DATASPOKE_TEST_POSTGRES_PORT", "9201"))
-_DATASPOKE_PG_USER = os.environ.get("DATASPOKE_TEST_POSTGRES_USER", "dataspoke")
-_DATASPOKE_PG_PASSWORD = os.environ.get("DATASPOKE_TEST_POSTGRES_PASSWORD", "")
-_DATASPOKE_PG_DB = os.environ.get("DATASPOKE_TEST_POSTGRES_DB", "dataspoke")
-
-
 async def _mark_registry_registered(urns: list[str]) -> None:
     """Flip dataset_registry.datahub_registered=true for any existing rows in `urns`.
 
@@ -197,16 +188,42 @@ def _load_dotenv() -> None:
 
 _load_dotenv()
 
+
+def _require_env(name: str) -> str:
+    """Return a required credential/env value, failing loud when unset.
+
+    Per spec/TESTING.md §Integration Lifecycle & Isolation: reset helpers carry no
+    baked-in credentials — every credential is read from the environment (the
+    DATASPOKE_TEST_* / DATASPOKE_DEV_* block in helm-charts/.env.dev). A missing
+    value must abort with a clear message, never fall back to a hardcoded default.
+    """
+    value = os.environ.get(name)
+    if not value:
+        raise RuntimeError(
+            f"{name} is required for integration dummy-data reset but is unset. "
+            "Source it first: set -a && source helm-charts/.env.dev && set +a"
+        )
+    return value
+
+
 _gms_url = os.environ.get("DATASPOKE_TEST_DATAHUB_GMS_URL", "http://localhost:9004")
 _token_env = os.environ.get("DATASPOKE_TEST_DATAHUB_TOKEN", "")
 
 _pg_host = os.environ.get("DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST", "localhost")
 _pg_port = int(os.environ.get("DATASPOKE_TEST_DUMMY_DATA_POSTGRES_PORT", "9102"))
 _pg_user = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_USER", "postgres")
-_pg_password = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD", "ExampleDev2024!")
+_pg_password = _require_env("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD")
 _pg_db = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_DB", "example_db")
 
 _kafka_instance = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_KAFKA_INSTANCE", "example_kafka")
+
+# Dataspoke operational DB — used to reconcile dataset_registry rows whose
+# datahub_registered cache was frozen False before this ingest.
+_DATASPOKE_PG_HOST = os.environ.get("DATASPOKE_TEST_POSTGRES_HOST", "localhost")
+_DATASPOKE_PG_PORT = int(os.environ.get("DATASPOKE_TEST_POSTGRES_PORT", "9201"))
+_DATASPOKE_PG_USER = os.environ.get("DATASPOKE_TEST_POSTGRES_USER", "dataspoke")
+_DATASPOKE_PG_PASSWORD = _require_env("DATASPOKE_TEST_POSTGRES_PASSWORD")
+_DATASPOKE_PG_DB = os.environ.get("DATASPOKE_TEST_POSTGRES_DB", "dataspoke")
 
 # ---------------------------------------------------------------------------
 # Lazy token resolution — never called at module import time

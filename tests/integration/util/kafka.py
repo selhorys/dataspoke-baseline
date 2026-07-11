@@ -11,7 +11,7 @@ import os
 import time
 from pathlib import Path
 
-from confluent_kafka import Producer
+from confluent_kafka import KafkaError, KafkaException, Producer
 from confluent_kafka.admin import AdminClient, NewTopic
 
 # ---------------------------------------------------------------------------
@@ -76,25 +76,37 @@ def _get_producer() -> Producer:
 
 
 def _delete_topics(admin: AdminClient, topics: list[str]) -> None:
-    """Delete the given topics and wait for each future to resolve."""
+    """Delete the given topics and wait for each future to resolve.
+
+    Fail-loud: raises on any delete failure so a reset never proceeds against a
+    dirty baseline. Deleting a topic that does not exist is the one benign case
+    (the deletion goal is already satisfied) and is tolerated.
+    """
     futures = admin.delete_topics(topics, operation_timeout=10)
     for topic, future in futures.items():
         try:
             future.result()
-        except Exception as exc:
-            # Topic may not exist yet — treat as non-fatal.
-            print(f"  [WARN] delete_topics({topic}): {exc}")
+        except KafkaException as exc:
+            err = exc.args[0]
+            if isinstance(err, KafkaError) and err.code() == KafkaError.UNKNOWN_TOPIC_OR_PART:
+                continue  # Absent topic — deletion already satisfied.
+            raise RuntimeError(f"Kafka reset: delete_topics({topic}) failed: {exc}") from exc
 
 
 def _create_topics(admin: AdminClient, topics: list[str]) -> None:
-    """Create the given topics with 1 partition and replication_factor=1."""
+    """Create the given topics with 1 partition and replication_factor=1.
+
+    Fail-loud: raises on any create failure. TOPIC_ALREADY_EXISTS is a failure
+    here — it means the prior delete did not clear the topic, so producing seed
+    messages would append to stale data (a dirty baseline).
+    """
     new_topics = [NewTopic(t, num_partitions=1, replication_factor=1) for t in topics]
     futures = admin.create_topics(new_topics, operation_timeout=10)
     for topic, future in futures.items():
         try:
             future.result()
         except Exception as exc:
-            print(f"  [WARN] create_topics({topic}): {exc}")
+            raise RuntimeError(f"Kafka reset: create_topics({topic}) failed: {exc}") from exc
 
 
 def _produce_messages(producer: Producer, topic: str, jsonl_file: str) -> int:

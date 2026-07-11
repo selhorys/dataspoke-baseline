@@ -47,8 +47,10 @@ async def reader_token(integration_db_url: str) -> str:
     Seeds via google_sub (password_hash=NULL) — these tests never call POST /auth/token,
     so no password hash is needed.
     """
-    from sqlalchemy import pool as sa_pool, text
+    from sqlalchemy import pool as sa_pool
+    from sqlalchemy import text
     from sqlalchemy.ext.asyncio import create_async_engine
+
     from src.backend.auth.tokens import issue_access_token
 
     email = _unique_email("reader-mod")
@@ -63,7 +65,12 @@ async def reader_token(integration_db_url: str) -> str:
                     "INSERT INTO dataspoke.users (id, email, name, google_sub, role)"
                     " VALUES (:id, :email, :name, :google_sub, 'Reader')"
                 ),
-                {"id": str(user_id), "email": email, "name": "Module Reader", "google_sub": google_sub},
+                {
+                    "id": str(user_id),
+                    "email": email,
+                    "name": "Module Reader",
+                    "google_sub": google_sub,
+                },
             )
     finally:
         await engine.dispose()
@@ -85,17 +92,20 @@ async def reader_token(integration_db_url: str) -> str:
 
 
 @pytest_asyncio.fixture(scope="module")
-async def editor_token(integration_db_url: str, admin_headers: dict[str, str]) -> str:
+async def editor_token(integration_db_url: str) -> str:
     """Seed an Editor user directly in the DB and return a JWT token.
 
     Uses DB seeding instead of /auth/register to avoid rate-limit exhaustion.
-    Role is set to Editor directly in the INSERT (no admin PATCH needed).
+    Role is set to Editor directly in the INSERT (no admin PATCH needed), so no
+    admin auth is required to build this fixture.
 
     Seeds via google_sub (password_hash=NULL) — these tests never call POST /auth/token,
     so no password hash is needed.
     """
-    from sqlalchemy import pool as sa_pool, text
+    from sqlalchemy import pool as sa_pool
+    from sqlalchemy import text
     from sqlalchemy.ext.asyncio import create_async_engine
+
     from src.backend.auth.tokens import issue_access_token
 
     email = _unique_email("editor-mod")
@@ -110,7 +120,12 @@ async def editor_token(integration_db_url: str, admin_headers: dict[str, str]) -
                     "INSERT INTO dataspoke.users (id, email, name, google_sub, role)"
                     " VALUES (:id, :email, :name, :google_sub, 'Editor')"
                 ),
-                {"id": str(user_id), "email": email, "name": "Module Editor", "google_sub": google_sub},
+                {
+                    "id": str(user_id),
+                    "email": email,
+                    "name": "Module Editor",
+                    "google_sub": google_sub,
+                },
             )
     finally:
         await engine.dispose()
