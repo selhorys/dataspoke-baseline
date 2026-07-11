@@ -100,6 +100,19 @@ The prompt includes specific findings from the reviewer agent. Write targeted te
 - If the test fails, the finding is confirmed — note it in your completion report
 - If the test passes, the finding may be a false positive — note the evidence
 
+## Test-quality checklist
+
+Apply `spec/TESTING.md §Unit Testing` (mocking rules), `§Assertion Discipline`, and
+`§Integration Testing → Integration Lifecycle & Isolation`. Before emitting your completion report,
+confirm all four:
+
+1. No positional `db.execute` `side_effect=[...]` sequence lists — multi-query logic uses the
+   query-routing fake session (`tests/unit/backend/ingestion/test_service.py`) or a SQLite session.
+2. Every guarded assert has a backstop proving the guarded path ran (no vacuous passes).
+3. Every singleton/global mutation (peripheral/SMTP/RuntimeConfig/ontogen conf) is restored — and the
+   restore asserted — in `finally`.
+4. Every `spec:` citation references text that actually exists in the cited document and section.
+
 ## After completing a task
 
 Run the tests you wrote to verify they pass. Fix any failures before reporting completion.

@@ -26,6 +26,21 @@ Same skeptical-by-default stance as the code reviewer — see `.claude/agents/re
 5. You may read the implementation under test for context, but **assertion correctness is judged against the spec, not against the impl.**
 6. Verify the test agent's traceability claims by reading the cited spec lines. Do not trust the citations at face value — confirm the cited line actually specifies the asserted behavior.
 
+## Test-quality audit checklist
+
+Beyond T1–T5, audit each reviewed file against the reinforced rules in `spec/TESTING.md §Unit Testing`
+(mocking rules), `§Assertion Discipline`, and `§Integration Testing → Integration Lifecycle & Isolation`.
+Flag any occurrence of:
+
+1. Positional `db.execute` `side_effect=[...]` sequence lists on multi-query logic (should use the
+   query-routing fake session or a SQLite session); missing `spec=` on shared mocks.
+2. A guarded assert (`if x is not None: ...`) with no backstop proving the guarded path ran; a
+   filter/mutation test that seeds only one side or asserts a bare 2xx; a dead `assert_*(), ("msg")` tuple.
+3. A singleton/global mutation not snapshot-and-restored in `finally`, or an event assertion bound by a
+   count-delta over a `limit=` window rather than `run_id`/`after=`.
+4. A `spec:` citation whose cited section does not contain the rule it claims — reinforces T1's
+   citation-existence check (verify against the cited lines; do not re-state T1 here).
+
 ## Reviewing Playwright E2E tests
 
 When the reviewed tests are Playwright/TypeScript under `tests/e2e/` (use-case or ground groups,

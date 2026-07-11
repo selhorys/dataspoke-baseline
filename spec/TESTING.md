@@ -17,12 +17,13 @@
 2. [Repository Layout](#repository-layout)
 3. [Python Environment Setup](#python-environment-setup)
 4. [Unit Testing](#unit-testing)
-5. [Integration Testing](#integration-testing)
-6. [Spot vs Api-Wired Integration Tests](#spot-vs-api-wired-integration-tests)
-7. [Manual REST API Testing](#manual-rest-api-testing)
-8. [End-to-End (E2E) Testing](#end-to-end-e2e-testing)
-9. [Test Data Design](#test-data-design)
-10. [CI Behavior](#ci-behavior)
+5. [Assertion Discipline](#assertion-discipline)
+6. [Integration Testing](#integration-testing)
+7. [Spot vs Api-Wired Integration Tests](#spot-vs-api-wired-integration-tests)
+8. [Manual REST API Testing](#manual-rest-api-testing)
+9. [End-to-End (E2E) Testing](#end-to-end-e2e-testing)
+10. [Test Data Design](#test-data-design)
+11. [CI Behavior](#ci-behavior)
 
 ---
 
@@ -106,6 +107,14 @@ environment.
 - Mock DataHub SDK calls -- never reach a real GMS
 - Mock all LLM calls -- inject deterministic fixture responses
 - Use in-memory or SQLite-backed fixtures for PostgreSQL-dependent logic when possible
+- **Do not** drive a mocked `db.execute(...)` with a positional `side_effect=[...]` list ordered by
+  call sequence. Sequence-ordered result lists are brittle: any reorder, added query, or short-circuit
+  in the code under test silently shifts every downstream result and the test asserts against the wrong
+  row. For logic that issues more than one query, use a **query-routing fake session** that returns
+  results by inspecting the SQL/statement it receives, or a **SQLite-backed session**. See
+  `tests/unit/backend/ingestion/test_service.py` for the copyable query-routing fake session.
+- Give every shared mock fixture a `spec=` (e.g. `MagicMock(spec=AsyncSession)`) so attribute typos and
+  renamed methods fail loud instead of silently returning a new auto-mock.
 
 **Static gates** (must pass before committing): `uv run mypy src/` and
 `uv run ruff check src/ tests/`
@@ -118,6 +127,42 @@ environment.
 rendering; assert on accessible roles, not DOM internals.
 
 **Static gates**: `npx tsc --noEmit` and `npx eslint src/` (from `src/frontend/`)
+
+---
+
+## Assertion Discipline
+
+These rules apply to **every** test layer — Python unit, frontend Vitest, spot integration, api-wired
+integration, and Playwright E2E. A test that passes without proving anything is worse than no test: it
+certifies broken behavior and blocks the next author from noticing. Author assertions so that a passing
+result is only reachable when the spec'd behavior actually occurred. The four core anti-vacuity rules
+apply to all layers; the dead-assertion-tuple rule is Python/mock-specific (noted inline). The related
+`db.execute` mock rule lives in [Unit Testing](#unit-testing) → Mocking rules.
+
+- **Guarded asserts need a backstop.** A conditional assertion (`if x is not None: assert x == ...` and
+  similar) passes vacuously whenever the guard is false — the interesting branch never runs. Any guarded
+  assert must be paired with a backstop that proves the guarded path executed (e.g. assert the value is
+  present first, or assert a counter of executed branches), so the test fails when the value is absent
+  instead of skipping silently.
+- **Absence assertions require injection.** A negative or absence assertion (`assert x not in result`,
+  `assert field is None`) is meaningful only when the test injected the thing whose absence it checks. If
+  nothing was injected, the assertion is trivially true and proves nothing. Seed the value, then assert it
+  was filtered/removed/absent.
+- **Filter/query/matching tests seed both sides.** A test of a filter, query predicate, or matching rule
+  must seed **both** rows that match and rows that do not, then assert the matching rows appear and the
+  non-matching rows are excluded. Seeding only matching rows cannot catch an over-broad predicate.
+- **Mutation tests verify a concrete side effect.** A test of a mutating operation must read back and
+  assert the concrete side effect (the DB row, the emitted event, the DataHub aspect, the changed field),
+  not merely a 2xx status. A handler that returns 200 and does nothing must fail the test.
+- **No dead assertion-message tuples** *(Python/mock)*. The `mock.assert_called_*` / `assert_*` family takes no message
+  argument. Writing `mock.assert_called_once(), ("msg")` evaluates the assertion, discards its result, and
+  builds a dead tuple — the message silences nothing and hides that no real check ran. Never attach a
+  trailing tuple to a mock `assert_*` call; if a failure message is wanted, use a plain `assert`
+  expression.
+- **Citations must exist at the cited location.** A `spec:` citation attached to a test must reference
+  text that actually exists at the cited document and section. A citation to a rule that is not present in
+  the cited section is forbidden: it launders the very violation it purports to excuse. Reviewers verify
+  each citation against the cited lines.
 
 ---
 
@@ -228,13 +273,35 @@ Four boolean fields on the singleton `RuntimeConfig` row gate real-vs-stub clien
 
 Defaults are all `false` (real clients — prod-safe). The dev profile's `helm-charts/bin/post-install/seed-runtime-config.sh` PATCHes all four to `true` so the dev API runs fully stubbed by default; integration suites depend on this. `make_datahub()` always returns the real DataHub client (no stub toggle). Stub classes are defined in `src/workflows/_stubs.py`.
 
+### Integration Lifecycle & Isolation
+
+Integration tests share a single dev cluster with singleton state (peripheral config, SMTP config,
+RuntimeConfig stub toggles, ontogen conf) and concurrent runs. Tests that mutate shared state or assert
+on shared logs must isolate themselves so they neither leak into nor flake against other runs.
+
+- **Snapshot → mutate → verified restore.** A test that mutates any singleton or global (peripheral
+  config, SMTP config, RuntimeConfig stub toggles, ontogen conf, etc.) reads the current value first,
+  mutates, and restores the snapshot in a `finally`. The restore is **asserted**, not assumed — read the
+  value back after restoring and assert it matches the snapshot, so a failed restore fails the test that
+  caused it rather than silently corrupting later tests.
+- **Bind event assertions by identity, never by count.** Assert on events by `run_id` or an `after=`
+  timestamp captured before the action. Never assert a count-delta over a `limit=` window (e.g. "event
+  count went from 3 to 4"): concurrent runs on the shared cluster invalidate the window and the assertion
+  flakes.
+- **All cleanup runs in `try/finally`.** Data seeded, locks taken, or state mutated by a test must be
+  torn down in a `finally` block so a mid-test failure still restores the baseline.
+- **Reset helpers fail loud and carry no baked-in credentials.** Utility reset helpers raise on any reset
+  failure — never swallow the error and continue against a dirty baseline. They read all credentials from
+  the environment (the `DATASPOKE_TEST_*` block in `helm-charts/.env.dev`); no credential is hardcoded in
+  a helper.
+
 ---
 
 ## Spot vs Api-Wired Integration Tests
 
 Integration tests split into two complementary sets. Together they describe what "covered" means
 for the integration layer; each set is run as its own pytest group (see
-[Test Execution Groups](#test-execution-groups)).
+[Python (pytest) Execution Groups](#python-pytest-execution-groups)).
 
 ### Spot integration tests (`tests/integration/spot/`)
 
@@ -521,6 +588,9 @@ descriptions.
 
 ### Assertion Principles
 
+These test-data-specific rules complement the layer-wide anti-vacuity rules in
+[Assertion Discipline](#assertion-discipline).
+
 - **Never hardcode row counts** -- query actual counts within the test
 - **Never hardcode surrogate IDs** -- look up by stable natural key (ISBN, URN, email)
 - **Never assert on wall-clock timestamps** -- assert on relative ordering or freshness windows
@@ -529,10 +599,22 @@ descriptions.
 
 ## CI Behavior
 
-| Test Type | Runs in CI | Requires Dev Env |
-|-----------|-----------|-----------------|
-| Unit tests | Yes -- on every push | No |
+A hosted CI pipeline is **future work, not yet built** by decision — there is no `.github/workflows/`
+and no service runs the gates automatically. Until a pipeline exists, the static gates below are a
+**manual pre-commit obligation on the author**: run them locally and keep them green before committing.
+
+Author-run pre-commit gates:
+
+- `uv run ruff check src/ tests/`
+- `uv run mypy src/`
+- Frontend (from `src/frontend/`): `npx tsc --noEmit` and `npx eslint src/`
+- E2E: `pnpm -C tests/e2e typecheck` (`tsc --noEmit`)
+
+The table below is the **intended target state** for a future pipeline — which layers a CI would run
+automatically once built, not a description of anything running today:
+
+| Test Type | Target: runs in CI | Requires Dev Env |
+|-----------|--------------------|-----------------|
+| Unit tests + static gates | Yes -- on every push/PR | No |
 | Integration tests | No (unless CI-specific dev-env provisioned) | Yes |
 | E2E tests | No (unless CI-specific dev-env provisioned) | Yes (full stack) |
-
-CI pipeline (GitHub Actions) runs unit tests and static gates on every push/PR.
