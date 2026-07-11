@@ -88,10 +88,9 @@ async def test_require_authenticated_dsk_token_uses_api_token_path() -> None:
             credentials=mock_credentials,
         )
 
-    mock_lookup.assert_called_once(), (
-        "dsk_-prefixed token must route to api_tokens.lookup_and_validate "
-        "per spec/feature/AUTH.md §API Tokens §Token carriage"
-    )
+    # dsk_-prefixed token must route to api_tokens.lookup_and_validate
+    # per spec/feature/AUTH.md §API Tokens §Token carriage
+    mock_lookup.assert_called_once()
     assert ctx.effective_role == "Editor"
     assert ctx.user is mock_user
 

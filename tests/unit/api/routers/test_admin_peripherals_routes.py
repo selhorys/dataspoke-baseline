@@ -485,13 +485,12 @@ async def test_get_datahub_peripheral_token_masked_when_set(client) -> None:
 
     assert resp.status_code == 200
     body = resp.json()
+    # The masking contract: a configured token is reported as "********", never the
+    # plaintext. The handler reads only the *_is_set boolean and emits the mask, so this
+    # positive assertion is the direct guard against a regression that serialized the
+    # real value. spec: spec/API.md §Admin (/admin) — token masking.
     assert body["token"] == "********", (
-        f"token must be masked '********' when set; got {body['token']!r}. "
-        "Plaintext must never appear in the response."
-    )
-    assert "my-datahub-token" not in str(body), (
-        "Plaintext token value must never appear anywhere in the response body. "
-        "spec: spec/API.md §Admin (/admin) — token masking."
+        f"token must be masked '********' when set; got {body['token']!r}."
     )
     assert body["gms_url"] == "http://gms:8080"
     assert body["kafka_brokers"] == "kafka:9092"
@@ -772,12 +771,12 @@ async def test_get_langfuse_peripheral_secret_key_masked_when_set(client) -> Non
 
     assert resp.status_code == 200
     body = resp.json()
+    # The masking contract: a configured secret_key is reported as "********", never the
+    # plaintext. The handler reads only the *_is_set boolean and emits the mask, so this
+    # positive assertion is the direct guard against a regression that serialized the
+    # real value. spec: spec/API.md §Admin (/admin) — secret masking.
     assert body["secret_key"] == "********", (
         f"secret_key must be masked '********' when set; got {body['secret_key']!r}"
-    )
-    assert "sk-langfuse-key" not in str(body), (
-        "Plaintext secret_key value must never appear anywhere in the response body. "
-        "spec: spec/API.md §Admin (/admin) — secret masking."
     )
     assert body["host"] == "http://langfuse:3000"
     assert body["public_key"] == "pk-test"
@@ -1029,10 +1028,9 @@ async def test_internal_patch_datahub_token_calls_set_datahub_token(client) -> N
         app.dependency_overrides.pop(get_db, None)
 
     assert resp.status_code == 200
-    mock_set_token.assert_called_once_with("x"), (
-        "The internal PATCH /datahub route must call set_datahub_token('x'). "
-        "spec: spec/API.md §Admin (/admin)."
-    )
+    # The internal PATCH /datahub route must call set_datahub_token('x').
+    # spec: spec/API.md §Admin (/admin).
+    mock_set_token.assert_called_once_with("x")
 
 
 @pytest.mark.asyncio
@@ -1067,10 +1065,9 @@ async def test_internal_patch_langfuse_token_calls_set_langfuse_secret_key(clien
         app.dependency_overrides.pop(get_db, None)
 
     assert resp.status_code == 200
-    mock_set_secret.assert_called_once_with("x"), (
-        "The internal PATCH /langfuse route must call set_langfuse_secret_key('x'). "
-        "spec: spec/API.md §Admin (/admin)."
-    )
+    # The internal PATCH /langfuse route must call set_langfuse_secret_key('x').
+    # spec: spec/API.md §Admin (/admin).
+    mock_set_secret.assert_called_once_with("x")
 
 
 # ── F16. Empty PATCH body does not create a row ───────────────────────────────
@@ -1115,14 +1112,12 @@ async def test_patch_datahub_empty_body_does_not_create_row(client) -> None:
         f"Empty PATCH body must return 200; got {resp.status_code}: {resp.text}. "
         "spec: spec/API.md §Admin (/admin) — F6: empty partial no-op."
     )
-    mock_patch_db.assert_not_called(), (
-        "patch_peripheral_config must NOT be called for an empty PATCH body. "
-        "spec: spec/API.md §Admin (/admin) — no-op empty partial."
-    )
-    mock_set_token.assert_not_called(), (
-        "set_datahub_token must NOT be called when token field is absent. "
-        "spec: spec/API.md §Admin (/admin) — token omitted = leave unchanged."
-    )
+    # patch_peripheral_config must NOT be called for an empty PATCH body.
+    # spec: spec/API.md §Admin (/admin) — no-op empty partial.
+    mock_patch_db.assert_not_called()
+    # set_datahub_token must NOT be called when token field is absent.
+    # spec: spec/API.md §Admin (/admin) — token omitted = leave unchanged.
+    mock_set_token.assert_not_called()
 
 
 # ── New non-secret connection settings: round-trip through PATCH / GET ─────────

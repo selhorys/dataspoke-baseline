@@ -104,6 +104,21 @@ def _mock_list_metrics_query(
     db.execute = AsyncMock(side_effect=[count_result, rows_result, lr_result])
 
 
+def _emitted_query(db: MagicMock, call_index: int) -> tuple[str, set]:
+    """Compile the SQLAlchemy statement passed to the ``call_index``-th db.execute call.
+
+    Returns ``(sql_text, bound_param_values)``. A mocked ``db.execute`` returns a
+    canned row list regardless of the query, so seeding both matching and
+    non-matching rows cannot exercise a WHERE at the unit layer. Instead, filter
+    tests assert the filter predicate reached the query the service *built* (column
+    name in the SQL text, filter value among the bound params) — a regression that
+    drops the ``.where(...)`` is then caught.
+    """
+    stmt = db.execute.call_args_list[call_index].args[0]
+    compiled = stmt.compile()
+    return str(compiled), set(compiled.params.values())
+
+
 @pytest.fixture
 def service(datahub, db, cache):
     return MetricsService(datahub=datahub, db=db, cache=cache)
@@ -356,6 +371,14 @@ async def test_list_metrics_filter_by_metric_type(service, db):
     assert total == 1
     assert len(metrics) == 1
     assert metrics[0].metric_type == "doc-health"
+    # Backstop: the mock returns the row regardless of the WHERE, so also assert the
+    # service actually applied a metric_type predicate to the emitted page query.
+    sql, bound = _emitted_query(db, 1)
+    assert "metric_type" in sql and "doc-health" in bound, (
+        "list_metrics(metric_type_filter=...) must add a WHERE metric_type = filter "
+        f"predicate; emitted SQL={sql!r} bound={bound!r}. "
+        "spec: spec/API.md §Metric — GET /spoke/governance/metric filterable by metric_type"
+    )
 
 
 async def test_list_metrics_filter_by_mode(service, db):
@@ -369,6 +392,14 @@ async def test_list_metrics_filter_by_mode(service, db):
     metrics, total = await service.list_metrics(mode_filter="active")
     assert total == 1
     assert metrics[0].mode == "active"
+    # Backstop: the mock ignores the WHERE, so assert the service applied a mode
+    # predicate to the emitted page query.
+    sql, bound = _emitted_query(db, 1)
+    assert "mode" in sql and "active" in bound, (
+        "list_metrics(mode_filter=...) must add a WHERE mode = filter predicate; "
+        f"emitted SQL={sql!r} bound={bound!r}. "
+        "spec: spec/API.md §Metric — GET /spoke/governance/metric filterable by mode"
+    )
 
 
 async def test_list_metrics_filter_by_is_enabled(service, db):
@@ -382,6 +413,15 @@ async def test_list_metrics_filter_by_is_enabled(service, db):
     metrics, total = await service.list_metrics(is_enabled_filter=True)
     assert total == 1
     assert metrics[0].is_enabled is True
+    # Backstop: the mock ignores the WHERE, so assert the service applied an
+    # is_enabled predicate to the emitted page query. A boolean comparison renders
+    # inline (is_enabled = true), so match the SQL text rather than a bound param.
+    sql, _bound = _emitted_query(db, 1)
+    assert "is_enabled = true" in sql.lower(), (
+        "list_metrics(is_enabled_filter=True) must add a WHERE is_enabled = true filter "
+        f"predicate; emitted SQL={sql!r}. "
+        "spec: spec/API.md §Metric — GET /spoke/governance/metric filterable by is_enabled"
+    )
 
 
 async def test_list_metrics_pagination_returns_tuple(service, db):
@@ -608,6 +648,20 @@ async def test_list_active_for_tier_filters_enabled_and_tier(service, db):
     assert active[0].id == "m1"
     assert active[0].is_enabled is True
     assert active[0].schedule_tier == "daily"
+    # Backstop: the mock returns the row regardless of the WHERE, so assert the
+    # service constrained the query to BOTH is_enabled=True AND the requested tier —
+    # otherwise a dropped predicate would run disabled or wrong-tier metrics.
+    sql, bound = _emitted_query(db, 0)
+    assert "is_enabled" in sql and "schedule_tier" in sql, (
+        "list_active_for_tier must filter on both is_enabled and schedule_tier; "
+        f"emitted SQL={sql!r}. "
+        "spec: spec/feature/BACKEND.md §Metrics Service — tier DAGs enumerate enabled "
+        "metrics for a tier"
+    )
+    assert "daily" in bound, (
+        "list_active_for_tier('daily') must bind the requested tier into the WHERE; "
+        f"bound={bound!r}. spec: spec/feature/BACKEND.md §Metrics Service"
+    )
 
 
 # ── disabled-config rejection ─────────────────────────────────────────────────

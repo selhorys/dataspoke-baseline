@@ -1,6 +1,6 @@
 """Spot tests for Metadata Generation — item list endpoints and candidate review.
 
-Concerns covered (10 test functions across 2 groups):
+Concerns covered (11 test functions across 2 groups):
 
 Item endpoints (Group 4, raw-SQL seeded):
   test_metagen_items_list_global_paginated_envelope
@@ -12,6 +12,7 @@ Candidate review (Group 5, raw-SQL seeded):
   test_metagen_candidate_approve_demotes_prior_approved_sibling
   test_metagen_candidate_reject_emits_event
   test_metagen_candidate_reject_approved_clears_datahub_description
+  test_metagen_candidate_reject_llm_approved_does_not_touch_datahub
   test_metagen_item_status_pending_when_only_rejected_candidates
   test_metagen_candidate_approve_demotes_cross_conf_sibling
   test_metagen_candidate_review_without_enabled_boundary_returns_422_METAGEN_DATASET_NOT_IN_BOUNDARY
@@ -848,6 +849,146 @@ async def test_metagen_candidate_reject_approved_clears_datahub_description(
                     MetadataChangeProposalWrapper(
                         entityUrn=_TEST_URN,
                         aspect=EditableDatasetPropertiesClass(description=None),
+                    )
+                )
+
+
+@pytest.mark.asyncio
+async def test_metagen_candidate_reject_llm_approved_does_not_touch_datahub(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    async_session: AsyncSession,
+) -> None:
+    """Rejecting an llm_approved (never-approved) candidate flips it to rejected and
+    writes NOTHING to DataHub — a pre-existing editable column aspect survives untouched.
+
+    Reject runs the aspect-clear path only for an *approved* candidate (which had
+    written an editable aspect). For an llm_approved candidate nothing was ever emitted,
+    so rejecting it must not clear or overwrite any editable aspect. We pre-write a
+    sentinel EditableSchemaMetadata description for the column field, seed + reject an
+    llm_approved column candidate over REST, and read the sentinel back from GMS: it
+    must be unchanged. `make_datahub()` always returns the real client, so a spurious
+    clear would be observable even under stub mode.
+
+    spec: API.md §Metadata Generation — reject of llm_approved candidate writes nothing to DataHub
+    spec: feature/BACKEND.md §Approval flow — rejecting an llm_approved candidate flips it
+      to rejected without emitting to DataHub (only approved candidates run the
+      aspect-clear path)
+    """
+    from datahub.emitter.mcp import MetadataChangeProposalWrapper
+    from datahub.ingestion.graph.client import DatahubClientConfig, DataHubGraph
+    from datahub.metadata.schema_classes import (
+        EditableSchemaFieldInfoClass,
+        EditableSchemaMetadataClass,
+    )
+
+    from tests.integration.util.datahub import _gms_url, get_datahub_token
+
+    field_path = "isbn"
+    item_id = "column.isbn.description"
+    sentinel_value = "spot sentinel — llm_approved reject must not touch DataHub"
+    unique_reason = f"spot reject llm_approved {uuid.uuid4()}"
+    boundary_url = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/boundary"
+    review_url = (
+        f"/api/v1/spoke/common/data/{_ENCODED_URN}"
+        f"/attr/metagen/item/{item_id}/candidate"
+    )
+    graph: DataHubGraph | None = None
+
+    try:
+        dh_token = get_datahub_token()
+        graph = DataHubGraph(DatahubClientConfig(server=_gms_url, token=dh_token))
+
+        # Enabled boundary so the review passes the boundary guard.
+        await api_client.put(
+            boundary_url,
+            headers=admin_headers,
+            json={"is_enabled": True, "allowed": ["column.description"]},
+        )
+
+        # Pre-write a sentinel editable column aspect that must survive the reject.
+        graph.emit_mcp(
+            MetadataChangeProposalWrapper(
+                entityUrn=_TEST_URN,
+                aspect=EditableSchemaMetadataClass(
+                    editableSchemaFieldInfo=[
+                        EditableSchemaFieldInfoClass(
+                            fieldPath=field_path, description=sentinel_value
+                        )
+                    ]
+                ),
+            )
+        )
+
+        # Seed an llm_approved column candidate (never approved → nothing emitted).
+        await seed_metagen_item(
+            async_session,
+            dataset_urn=_TEST_URN,
+            item_id=item_id,
+            kind="column.description",
+            field_path=field_path,
+        )
+        cid = await seed_metagen_candidate(
+            async_session,
+            dataset_urn=_TEST_URN,
+            item_id=item_id,
+            value="never-emitted column description",
+            status="llm_approved",
+            item_kind="column.description",
+        )
+
+        # Reject the llm_approved candidate over REST → must flip to rejected.
+        reject_resp = await api_client.post(
+            f"{review_url}/{cid}/method/review",
+            headers=admin_headers,
+            json={"verdict": "reject", "reason": unique_reason},
+        )
+        assert reject_resp.status_code == 200, (
+            f"Reject of llm_approved candidate must succeed (200); "
+            f"got {reject_resp.status_code} {reject_resp.text}. "
+            "spec: API.md §Metadata Generation — reject valid on llm_approved candidate"
+        )
+        assert reject_resp.json().get("status") == "rejected", (
+            f"llm_approved candidate must flip to 'rejected'; "
+            f"got {reject_resp.json().get('status')!r}. "
+            "spec: feature/BACKEND.md §Approval flow — reject flips to rejected"
+        )
+
+        # GMS read-back: the sentinel editable column description is untouched.
+        editable = graph.get_aspect(
+            entity_urn=_TEST_URN, aspect_type=EditableSchemaMetadataClass
+        )
+        field_info = (
+            next(
+                (
+                    fi
+                    for fi in (editable.editableSchemaFieldInfo or [])
+                    if fi.fieldPath == field_path
+                ),
+                None,
+            )
+            if editable is not None
+            else None
+        )
+        assert field_info is not None and field_info.description == sentinel_value, (
+            "Rejecting an llm_approved candidate must NOT alter DataHub: the sentinel "
+            f"editable column description must survive; got "
+            f"{field_info.description if field_info else 'missing'!r}. "
+            "spec: feature/BACKEND.md §Approval flow — llm_approved reject writes nothing "
+            "to DataHub"
+        )
+
+    finally:
+        await delete_metagen_state_for_urn(async_session, _TEST_URN)
+        with suppress(Exception):
+            await api_client.delete(boundary_url, headers=admin_headers)
+        # Clear the sentinel editable schema aspect written during the test.
+        if graph is not None:
+            with suppress(Exception):
+                graph.emit_mcp(
+                    MetadataChangeProposalWrapper(
+                        entityUrn=_TEST_URN,
+                        aspect=EditableSchemaMetadataClass(editableSchemaFieldInfo=[]),
                     )
                 )
 

@@ -143,10 +143,9 @@ async def test_resolve_known_google_sub_same_name_no_update() -> None:
         )
 
     assert result is existing_user
-    mock_update_name.assert_not_called(), (
-        "update_name must NOT be called when the name is unchanged "
-        "per spec/feature/AUTH.md §Lifecycle §Google OAuth registration & login"
-    )
+    # update_name must NOT be called when the name is unchanged
+    # per spec/feature/AUTH.md §Lifecycle §Google OAuth registration & login
+    mock_update_name.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -185,14 +184,12 @@ async def test_resolve_known_google_sub_different_name_updates_and_propagates() 
         )
 
     assert result is updated_user
-    mock_update_name.assert_called_once(), (
-        "update_name must be called when name changed "
-        "per spec/feature/AUTH.md §Lifecycle §Google OAuth registration & login"
-    )
-    mock_dh.assert_called_once(), (
-        "ensure_corpuser_exists must be called to propagate name to DataHub "
-        "per spec/feature/AUTH.md §Lifecycle §Google OAuth registration & login"
-    )
+    # update_name must be called when name changed
+    # per spec/feature/AUTH.md §Lifecycle §Google OAuth registration & login
+    mock_update_name.assert_called_once()
+    # ensure_corpuser_exists must be called to propagate name to DataHub
+    # per spec/feature/AUTH.md §Lifecycle §Google OAuth registration & login
+    mock_dh.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -274,10 +271,9 @@ async def test_resolve_no_google_sub_known_email_links_sub() -> None:
         )
 
     assert result is linked_user
-    mock_link.assert_called_once(), (
-        "link_google_sub must be called when email matches but no google_sub "
-        "per spec/feature/AUTH.md §Lifecycle §Google OAuth registration & login (Row 2)"
-    )
+    # link_google_sub must be called when email matches but no google_sub
+    # per spec/feature/AUTH.md §Lifecycle §Google OAuth registration & login (Row 2)
+    mock_link.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -319,10 +315,9 @@ async def test_resolve_new_user_mirror_success() -> None:
         )
 
     assert result is new_user
-    mock_create.assert_called_once(), (
-        "create_user must be called for a completely unknown email "
-        "per spec/feature/AUTH.md §Lifecycle §Google OAuth registration & login (Row 3)"
-    )
+    # create_user must be called for a completely unknown email
+    # per spec/feature/AUTH.md §Lifecycle §Google OAuth registration & login (Row 3)
+    mock_create.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -365,10 +360,9 @@ async def test_resolve_new_user_mirror_failure_raises_datahub_sync_error() -> No
             )
 
     # Session must be rolled back on failure
-    mock_db.rollback.assert_called_once(), (
-        "Session must be rolled back after mirror failure "
-        "per spec/feature/AUTH.md §Failure Modes (compensating hard-delete)"
-    )
+    # Session must be rolled back after mirror failure
+    # per spec/feature/AUTH.md §Failure Modes (compensating hard-delete)
+    mock_db.rollback.assert_called_once()
 
 
 # ── OAuth callback: state mismatch (F8) ──────────────────────────────────────

@@ -358,7 +358,6 @@ async def test_hard_delete_corpuser_calls_hard_delete_entity() -> None:
     corpuser_urn_str = "urn:li:corpuser:eve@example.com"
     await hard_delete_corpuser(mock_client, corpuser_urn_str)
 
-    mock_client.hard_delete_entity.assert_called_once_with(corpuser_urn_str), (
-        "hard_delete_corpuser must call client.hard_delete_entity with the exact corpuser URN "
-        "per spec/feature/AUTH.md §DataHub Mirror Semantics §Mirror delete sequence"
-    )
+    # hard_delete_corpuser must call client.hard_delete_entity with the exact corpuser URN
+    # per spec/feature/AUTH.md §DataHub Mirror Semantics §Mirror delete sequence
+    mock_client.hard_delete_entity.assert_called_once_with(corpuser_urn_str)

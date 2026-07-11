@@ -53,10 +53,9 @@ async def test_issue_reset_token_unknown_email_returns_silently() -> None:
     # Must not raise, must not call notification service
     await issue_reset_token(mock_db, mock_notification, "unknown@example.com")
 
-    mock_notification.send_email.assert_not_called(), (
-        "Notification must not be sent for unknown email "
-        "per spec/feature/AUTH.md §Lifecycle §Password reset (no enumeration leak)"
-    )
+    # Notification must not be sent for unknown email
+    # per spec/feature/AUTH.md §Lifecycle §Password reset (no enumeration leak)
+    mock_notification.send_email.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -100,14 +99,12 @@ async def test_issue_reset_token_peripheral_not_configured_reraises_no_db_write(
     )
 
     # No DB write must have occurred
-    mock_db.add.assert_not_called(), (
-        "db.add must NOT be called when SMTP is not configured "
-        "per spec/feature/AUTH.md §Failure Modes (zero rows in password_reset_tokens)"
-    )
-    mock_db.flush.assert_not_called(), (
-        "db.flush must NOT be called when SMTP is not configured "
-        "per spec/feature/AUTH.md §Failure Modes"
-    )
+    # db.add must NOT be called when SMTP is not configured
+    # per spec/feature/AUTH.md §Failure Modes (zero rows in password_reset_tokens)
+    mock_db.add.assert_not_called()
+    # db.flush must NOT be called when SMTP is not configured
+    # per spec/feature/AUTH.md §Failure Modes
+    mock_db.flush.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -145,14 +142,12 @@ async def test_issue_reset_token_notification_error_raises_storage_unavailable_n
         await issue_reset_token(mock_db, mock_notification, "exists@example.com")
 
     # No DB write must have occurred
-    mock_db.add.assert_not_called(), (
-        "db.add must NOT be called when email delivery fails "
-        "per spec/feature/AUTH.md §Failure Modes (zero rows in password_reset_tokens)"
-    )
-    mock_db.flush.assert_not_called(), (
-        "db.flush must NOT be called when email delivery fails "
-        "per spec/feature/AUTH.md §Failure Modes"
-    )
+    # db.add must NOT be called when email delivery fails
+    # per spec/feature/AUTH.md §Failure Modes (zero rows in password_reset_tokens)
+    mock_db.add.assert_not_called()
+    # db.flush must NOT be called when email delivery fails
+    # per spec/feature/AUTH.md §Failure Modes
+    mock_db.flush.assert_not_called()
 
 
 @pytest.mark.asyncio
