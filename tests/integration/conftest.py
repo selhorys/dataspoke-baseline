@@ -306,21 +306,31 @@ async def redis_client():
     await client.close()
 
 
-@pytest.fixture(autouse=True)
-def _flush_rate_limit_keys() -> None:
-    """Drop slowapi `LIMITER/*` keys before each test so the per-IP 5/min limit
-    on `/auth/register` and `/auth/token` does not bleed across tests in the
-    same minute window."""
+@pytest.fixture(scope="session")
+def _rate_limit_redis():
+    """Session-scoped sync Redis connection backing the per-test rate-limit flush.
+
+    The flush stays per-test (auth register/token tests need a fresh 5/min window
+    each), but the TCP connection is opened once per session rather than once per
+    test — removing a connect/close round-trip from every integration test.
+    """
     import redis as _redis_sync
 
     client = _redis_sync.Redis(host=_redis_host, port=_redis_port, password=_redis_password or None)
+    yield client
+    client.close()
+
+
+@pytest.fixture(autouse=True)
+def _flush_rate_limit_keys(_rate_limit_redis) -> None:
+    """Drop slowapi `LIMITER/*` keys before each test so the per-IP 5/min limit
+    on `/auth/register` and `/auth/token` does not bleed across tests in the
+    same minute window. Per-test (isolation required); reuses the session client."""
     try:
-        for key in client.scan_iter("LIMITS:LIMITER/*"):
-            client.delete(key)
+        for key in _rate_limit_redis.scan_iter("LIMITS:LIMITER/*"):
+            _rate_limit_redis.delete(key)
     except Exception:
         pass
-    finally:
-        client.close()
 
 
 async def _bootstrap_schema(db_url: str) -> None:
@@ -462,6 +472,17 @@ def dummy_data_reset(acquire_lock) -> None:  # noqa: ARG001 — depends on lock
     yield  # type: ignore[misc]
 
 
+# Record of the dummy-data baseline the most recently-provisioned module left
+# standing (its resolved (schemas, topics, datahub_schemas, datahub_topics)
+# 4-tuple). When the next module declares an identical requirement, the standing
+# baseline already satisfies it and the re-provision is skipped: no test body
+# mutates the source example-postgres/Kafka, hard-deletes the example DataHub
+# datasets, or perturbs their core aspects, so the seeded baseline is stable
+# across a run once provisioned. Process-global, so the spot and api-wired groups
+# (separate pytest invocations, per TESTING.md §Execution Groups) each start cold.
+_PROVISIONED_BASELINE: tuple | None = None
+
+
 @pytest.fixture(scope="module", autouse=True)
 def module_dummy_data(request) -> None:
     """Autouse module-scoped fixture for selective dummy-data reset.
@@ -478,7 +499,17 @@ def module_dummy_data(request) -> None:
     (DataHub Kafka registration requires the topics to exist in Kafka).
 
     Modules that declare no constants are no-ops.
+
+    Setup only (no teardown reset): the next module that needs a clean baseline
+    resets at its own setup, and modules with no dummy-data needs are unaffected —
+    so a symmetric teardown reset would only re-do work the next setup redoes.
+    Setup is itself skipped when the standing baseline already equals this module's
+    requirement (see _PROVISIONED_BASELINE). Independent legs run concurrently:
+    the PG-source reset and Kafka-source reset are independent of each other; the
+    DataHub ingest reads the freshly-reset PG rows, so it follows the reset.
     """
+
+    global _PROVISIONED_BASELINE
 
     from tests.integration.util import kafka, postgres
 
@@ -495,31 +526,48 @@ def module_dummy_data(request) -> None:
     if datahub_topics:
         topics = (topics or frozenset()) | datahub_topics
 
-    has_pg_kafka = bool(schemas or topics)
+    schemas = frozenset(schemas or ())
+    topics = frozenset(topics or ())
+    datahub_schemas = frozenset(datahub_schemas or ())
+    datahub_topics = frozenset(datahub_topics or ())
 
-    def _reset_pg_kafka():
-        if schemas:
-            asyncio.run(postgres.reset_schemas(schemas))
-        if topics:
-            kafka.reset_topics(topics)
+    requirement = (schemas, topics, datahub_schemas, datahub_topics)
+    needs_provision = bool(schemas or topics or datahub_schemas or datahub_topics)
 
-    def _ingest_datahub():
+    # Skip guard: the previously-provisioned module already left this exact
+    # baseline standing, and nothing between then and now could have dirtied it.
+    if not needs_provision or requirement == _PROVISIONED_BASELINE:
+        yield  # type: ignore[misc]
+        return
+
+    async def _provision() -> None:
         from tests.integration.util import datahub
 
-        if datahub_schemas:
-            asyncio.run(datahub.ingest_pg_datasets(schemas=datahub_schemas))
-        if datahub_topics:
-            asyncio.run(datahub.ingest_kafka_datasets(topics=datahub_topics))
+        # Reset legs: PG source (async) + Kafka source (sync, off-thread) are
+        # mutually independent → run concurrently.
+        reset_coros = []
+        if schemas:
+            reset_coros.append(postgres.reset_schemas(schemas))
+        if topics:
+            reset_coros.append(asyncio.to_thread(kafka.reset_topics, topics))
+        if reset_coros:
+            await asyncio.gather(*reset_coros)
 
-    if has_pg_kafka:
-        _reset_pg_kafka()
-    if datahub_schemas or datahub_topics:
-        _ingest_datahub()
+        # DataHub ingest legs: PG-dataset ingest reads the freshly-reset PG rows,
+        # so it MUST follow the reset above; the two ingests are independent of
+        # each other → run concurrently.
+        ingest_coros = []
+        if datahub_schemas:
+            ingest_coros.append(datahub.ingest_pg_datasets(schemas=datahub_schemas))
+        if datahub_topics:
+            ingest_coros.append(datahub.ingest_kafka_datasets(topics=datahub_topics))
+        if ingest_coros:
+            await asyncio.gather(*ingest_coros)
+
+    asyncio.run(_provision())
+    _PROVISIONED_BASELINE = requirement
 
     yield  # type: ignore[misc]
-
-    if has_pg_kafka:
-        _reset_pg_kafka()
 
 
 # ── DataHub actions pod guard ─────────────────────────────────────────────────

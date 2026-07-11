@@ -52,10 +52,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.backend.ingestion.service import IngestionService
 from tests.integration.util import dataspoke_db
 
-# catalog schema triggers PG reset + DataHub ingest (so enumerate_datasets has
-# something real to return when needed); these tests don't depend on it.
-# spec: TESTING.md §Per-Module Dummy-Data Reset
-DUMMY_DATA_DATAHUB_SCHEMAS: frozenset[str] = frozenset({"catalog"})
+# No dummy-data constants: the sync-linkage test drives IngestionService.sync()
+# with a stubbed DataHub client (_StubDataHubForSync) and the list test seeds rows
+# directly in the DB, so no real DataHub example datasets are consulted.
+# spec: TESTING.md §Per-Module Dummy-Data Reset — modules with no constants are no-ops.
 
 _SOURCES_BASE = "/api/v1/spoke/ingestion/sources"
 

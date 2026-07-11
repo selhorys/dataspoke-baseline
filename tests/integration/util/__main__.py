@@ -83,28 +83,46 @@ def main() -> None:
         )
         sys.exit(1)
 
+    async def _reset_all_async() -> None:
+        # Empty baseline has no ingest step, so every leg is independent → run
+        # them concurrently. Sync legs (kafka, datahub reset_only) go off-thread.
+        await asyncio.gather(
+            postgres.reset_all_empty(),
+            asyncio.to_thread(kafka.reset_all_empty),
+            asyncio.to_thread(datahub.reset_only),
+            dataspoke_db.reset_all(),
+            langfuse.reset_project(),
+        )
+
     def _reset_all() -> None:
         print("[INFO] Resetting to empty state (PG + Kafka + DataHub + DataSpoke DB + Langfuse)...")
-        asyncio.run(postgres.reset_all_empty())
-        kafka.reset_all_empty()
-        datahub.reset_only()
-        asyncio.run(dataspoke_db.reset_all())
-        asyncio.run(langfuse.reset_project())
+        asyncio.run(_reset_all_async())
+
+    async def _reset_seed_async() -> None:
+        # Phase 1 — mutually independent source/operational resets run concurrently.
+        # Sync legs (kafka) go off-thread. datahub.seed() is NOT here: its PG-dataset
+        # ingest reads the freshly-reset example-postgres, so it must follow Phase 1.
+        await asyncio.gather(
+            postgres.reset_all(),
+            asyncio.to_thread(kafka.reset_all),
+            dataspoke_db.reset_all(),
+            langfuse.reset_project(),
+        )
+        # Phase 2 — DataHub reset+ingest, reading the Phase-1 PG rows.
+        await datahub.seed()
+        # Phase 3 — dataspoke_db.reset_all() (Phase 1) TRUNCATEs dataset_registry;
+        # nothing else repopulates it. Run the real ingestion datahub-sync so the
+        # registry mirrors the freshly-ingested DataHub estate — exactly what the
+        # hourly datahub-sync-hourly DAG does in a deployment. It reads DataHub
+        # (needs Phase 2) and writes the registry (needs Phase 1), so it runs last.
+        # Without it, features that read the registry (UC4 metagen `uncovered`,
+        # UC1 ingestion `unmanaged`) see an empty precondition under the seeded
+        # baseline.
+        await _datahub_sync()
 
     def _reset_seed() -> None:
         print("[INFO] Resetting and seeding (PG + Kafka + DataHub + DataSpoke DB + Langfuse)...")
-        asyncio.run(postgres.reset_all())
-        kafka.reset_all()
-        asyncio.run(datahub.seed())
-        asyncio.run(dataspoke_db.reset_all())
-        asyncio.run(langfuse.reset_project())
-        # dataspoke_db.reset_all() TRUNCATEs dataset_registry; nothing else
-        # repopulates it. Run the real ingestion datahub-sync so the registry
-        # mirrors the freshly-ingested DataHub estate — exactly what the hourly
-        # datahub-sync-hourly DAG does in a deployment. Without this, features
-        # that read the registry (UC4 metagen `uncovered`, UC1 ingestion
-        # `unmanaged`) see an empty precondition under the seeded baseline.
-        asyncio.run(_datahub_sync())
+        asyncio.run(_reset_seed_async())
 
     # Baseline reset/seed runs BEFORE UC4 staging. --uc4-seed masks the
     # customers/orders datasets that --reset-seed ingests into DataHub, so the

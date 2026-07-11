@@ -1367,9 +1367,15 @@ async def seed(
     Returns:
         Total number of deleted + ingested entities.
     """
+    # reset_only() (hard-delete) must precede ingest so re-emit lands on a clean
+    # slate. The two ingest legs touch disjoint URN sets (PG datasets vs Kafka
+    # topics) and read independent sources (live PG vs JSONL fixtures), so they
+    # run concurrently.
     deleted = reset_only()
-    ingested_pg = await ingest_pg_datasets(schemas=schemas)
-    ingested_kafka = await ingest_kafka_datasets()
+    ingested_pg, ingested_kafka = await asyncio.gather(
+        ingest_pg_datasets(schemas=schemas),
+        ingest_kafka_datasets(),
+    )
     return deleted + ingested_pg + ingested_kafka
 
 

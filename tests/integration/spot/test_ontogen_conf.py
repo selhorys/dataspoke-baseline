@@ -32,10 +32,10 @@ from contextlib import suppress
 import httpx
 import pytest
 
-# Declare DataHub fixture dependency so module_dummy_data ingests catalog.title_master
-# into DataHub before tests that seed NATIVE documents (evidence path tests).
-# spec: TESTING.md §Per-Module Dummy-Data Reset
-DUMMY_DATA_DATAHUB_SCHEMAS: frozenset[str] = frozenset({"catalog"})
+# No dummy-data constants: these tests are pure REST conf/seed CRUD and resolve no
+# example dataset URN, so no PG reset or DataHub ingest is needed (see module
+# docstring). spec: TESTING.md §Per-Module Dummy-Data Reset — modules with no
+# constants are no-ops.
 
 
 @pytest.mark.asyncio

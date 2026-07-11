@@ -93,6 +93,39 @@ def _delete_topics(admin: AdminClient, topics: list[str]) -> None:
             raise RuntimeError(f"Kafka reset: delete_topics({topic}) failed: {exc}") from exc
 
 
+def _wait_topics_absent(
+    admin: AdminClient,
+    topics: list[str],
+    timeout: float = 20.0,
+    interval: float = 0.5,
+) -> None:
+    """Block until none of ``topics`` are present in cluster metadata.
+
+    Replaces a fixed post-delete sleep: the broker propagates a topic deletion
+    asynchronously, so recreating immediately can hit TOPIC_ALREADY_EXISTS (which
+    ``_create_topics`` treats as a dirty-baseline failure). Polling metadata exits
+    as soon as the deletion has propagated (normally well under a second) instead
+    of always paying a worst-case fixed wait.
+
+    ``timeout`` is only an upper bound before declaring a genuine broker failure —
+    on timeout this raises so a stuck deletion is loud, not silently reseeded onto
+    stale data.
+    """
+    deadline = time.time() + timeout
+    remaining = set(topics)
+    while True:
+        present = remaining & set(admin.list_topics(timeout=10).topics.keys())
+        if not present:
+            return
+        if time.time() >= deadline:
+            raise RuntimeError(
+                f"Kafka reset: topics {sorted(present)} still present {timeout:.0f}s after "
+                "delete_topics — broker never propagated the deletion. Recreating now would "
+                "append seed messages onto stale data (a dirty baseline)."
+            )
+        time.sleep(interval)
+
+
 def _create_topics(admin: AdminClient, topics: list[str]) -> None:
     """Create the given topics with 1 partition and replication_factor=1.
 
@@ -158,7 +191,7 @@ def reset_all_empty() -> None:
     topic_list = list(ALL_TOPICS.keys())
     admin = _get_admin_client()
     _delete_topics(admin, topic_list)
-    time.sleep(2)
+    _wait_topics_absent(admin, topic_list)
     _create_topics(admin, topic_list)
 
 
@@ -170,8 +203,9 @@ def reset_all() -> None:
 def reset_topics(topics: set[str]) -> None:
     """Delete and recreate specific topics, then produce their seed messages.
 
-    A 2-second sleep is inserted between delete and create to allow the broker
-    to propagate the deletion before recreation.
+    Between delete and create the broker's deletion is confirmed by polling
+    cluster metadata (``_wait_topics_absent``) rather than a fixed sleep, so
+    recreation starts as soon as the deletion has propagated.
     """
     topic_list = [t for t in topics if t in ALL_TOPICS]
     if not topic_list:
@@ -181,7 +215,7 @@ def reset_topics(topics: set[str]) -> None:
     producer = _get_producer()
 
     _delete_topics(admin, topic_list)
-    time.sleep(2)
+    _wait_topics_absent(admin, topic_list)
     _create_topics(admin, topic_list)
 
     for topic in topic_list:

@@ -34,10 +34,10 @@ import httpx
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-# Declare DataHub fixture dependency so module_dummy_data resets a clean DataHub
-# baseline (catalog.title_master) around these review/dep-gate tests.
-# spec: TESTING.md §Per-Module Dummy-Data Reset
-DUMMY_DATA_DATAHUB_SCHEMAS: frozenset[str] = frozenset({"catalog"})
+# No dummy-data constants: review/dep-gate tests seed pending ontogen rows directly
+# into the DataSpoke operational DB and act on them by id over REST — no example
+# dataset URN is resolved and the review handlers emit nothing to DataHub (UC3 is
+# read-only). spec: TESTING.md §Per-Module Dummy-Data Reset — no-op module.
 
 
 # ── Raw-SQL seed helpers ───────────────────────────────────────────────────────

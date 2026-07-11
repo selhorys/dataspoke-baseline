@@ -123,13 +123,24 @@ class _ManagedSource:
     secret_urn: str
 
 
-@pytest_asyncio.fixture
+@pytest_asyncio.fixture(scope="module")
 async def _managed_source_setup(
-    api_client: httpx.AsyncClient,
-    admin_headers: dict[str, str],
     internal_headers: dict[str, str],
 ) -> AsyncGenerator[_ManagedSource]:
     """Provision a DataHub Secret + one IngestionSource, run sync, yield the DataSpoke id.
+
+    Module-scoped: the provisioning (create secret + source, then poll the sync sweep
+    for up to 180s until DataHub indexes the new source) runs once and is shared by
+    both UC1-Case-1 tests. Neither test deletes or mutates the provisioned source's
+    identity — the sync-and-readonly test only proves mutations are rejected (409),
+    and the execute-and-reflect test runs the source (additive) — so a single shared
+    provision is correct and halves the module's ~180s indexing wait.
+
+    Because it is module-scoped, this fixture cannot depend on the function-scoped
+    ``api_client`` / ``admin_headers`` fixtures; it opens its own module-lifetime
+    async client and mints its own admin headers. Session-scoped ``internal_headers``
+    is compatible and reused. The yielded ``_ManagedSource`` is an inert dataclass,
+    safe to hand to the function-scoped async tests.
 
     The source recipe uses password = "${UC1_POSTGRES_PASSWORD}" — the DataHub-recommended
     best practice of referencing a pre-created DataHub Secret rather than embedding a
@@ -312,6 +323,17 @@ async def _managed_source_setup(
     urn = gql_data.get("data", {}).get("createIngestionSource")
     assert urn, f"createIngestionSource returned no URN: {gql_data}"
 
+    # Module-lifetime API client + admin headers. Created here, past the early
+    # skip/assert guards above (so no client leaks on a skipped provision), and
+    # closed at the end of the teardown finally below. Minted directly (not via the
+    # function-scoped api_client/admin_headers fixtures) so this fixture can be
+    # module-scoped. spec: TESTING.md §Api-Wired Integration Tests.
+    from tests.integration.util.auth import login_headers
+
+    api_base_url = f"http://api.{os.environ['DATASPOKE_KUBE_INGRESS_DOMAIN']}"
+    admin_headers = login_headers(api_base_url, "dataspoke@dataspoke.local", "dataspoke")
+    api_client = httpx.AsyncClient(base_url=api_base_url, timeout=30.0)
+
     # ── Step 2: Poll sync sweep until the source URN appears in DataSpoke ─────
     # DataHub eventual consistency: listIngestionSources may not return brand-new
     # sources immediately; subsequent sync calls pick them up once DataHub indexes.
@@ -409,6 +431,9 @@ async def _managed_source_setup(
             )
         except Exception:
             pass
+
+        # Close the module-lifetime client opened for the provisioning + teardown.
+        await api_client.aclose()
 
 
 @pytest.mark.asyncio
