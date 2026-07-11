@@ -25,6 +25,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.backend.metrics.measurers import ingestion_freshness  # noqa: F401 — triggers registration
+from tests.unit.conftest import route_db_execute
 
 
 def _get_measurer():
@@ -466,7 +467,11 @@ def _make_two_query_db(config_rows: list, event_rows: list) -> AsyncMock:
     event_result.all.return_value = event_rows
 
     db = AsyncMock()
-    db.execute = AsyncMock(side_effect=[config_result, event_result])
+    # Route by SQL: the mapping query hits ingestion_source_dataset; the freshness
+    # query is the row_number() select over events (the default).
+    route_db_execute(
+        db, [("ingestion_source_dataset", config_result)], default=event_result
+    )
     return db
 
 
@@ -552,7 +557,8 @@ async def test_active_custom_daily_stale_outside_window() -> None:
 
     detail = entry["detail"]
     # Spec literal: active-custom daily → 86400 × 2 = 172800s
-    # spec/USE_CASE_en.md §UC5 §Built-in active metric types — active-custom: window = SCHEDULE_TIER_SECONDS[tier] × 2.
+    # spec/USE_CASE_en.md §UC5 §Built-in active metric types — active-custom:
+    # window = SCHEDULE_TIER_SECONDS[tier] × 2.
     assert detail["time_window_sec"] == 172800, (
         "detail.time_window_sec must be 172800 (active-custom:daily = 86400 × 2). "
         "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows."

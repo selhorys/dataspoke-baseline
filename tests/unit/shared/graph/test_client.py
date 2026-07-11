@@ -5,13 +5,13 @@ and spec/feature/BACKEND_SCHEMA.md §Graph: parameterized bind params prevent SQ
 injection, SET LOCAL search_path is scoped to the transaction, AGE errors are wrapped as
 DataSpokeError to prevent information leakage, and traverse() enforces max_hops bounds."""
 
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from src.shared.exceptions import DataSpokeError
 from src.shared.graph.client import AgeGraph, _assert_slug
-
+from tests.unit.conftest import route_db_execute
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -132,7 +132,10 @@ async def test_age_failures_wrapped_as_dataspoke_error() -> None:
 
     cm.__aexit__ = AsyncMock(side_effect=_aexit_raise)
     session.begin = MagicMock(return_value=cm)
-    session.execute = AsyncMock(side_effect=[MagicMock(), MagicMock(), raw_err])
+    # LOAD age + SET LOCAL search_path fall to the default MagicMock; the cypher
+    # statement (the only one containing ``cypher``) raises — routed by statement
+    # identity, not call position.
+    route_db_execute(session, [("cypher", raw_err)], default=MagicMock())
     factory = _make_session_factory(session)
 
     age = AgeGraph(session_factory=factory)
@@ -224,8 +227,11 @@ async def test_traverse_returns_tuples() -> None:
     result_mock = MagicMock()
     result_mock.fetchall.return_value = [fake_row1, fake_row2]
 
-    # execute: LOAD 'age', SET LOCAL search_path, cypher SELECT
-    session.execute = AsyncMock(side_effect=[MagicMock(), MagicMock(), result_mock])
+    # execute: LOAD 'age', SET LOCAL search_path, cypher SELECT — route the cypher
+    # query to the row-bearing result; the LOAD/SET setup statements get throwaways.
+    route_db_execute(
+        session, [("cypher", result_mock)], default=MagicMock()
+    )
     factory = _make_session_factory(session)
 
     age = AgeGraph(session_factory=factory)

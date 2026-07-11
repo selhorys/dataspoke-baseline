@@ -8,9 +8,11 @@ AND is_enabled=True.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, call
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
+from tests.unit.conftest import route_db_execute
 
 # ── Named constants ────────────────────────────────────────────────────────────
 
@@ -115,7 +117,12 @@ async def test_get_metrics_for_tier_sql_references_tier_and_is_enabled():
     result_mock_empty.all.return_value = []
 
     db = AsyncMock()
-    db.execute = AsyncMock(side_effect=[result_mock_matching, result_mock_empty])
+    # Both invocations issue the same metric_definitions query (only the bound tier
+    # differs); the two results are a per-query queue — first call matches, second is
+    # empty — scoped to that one query signature, not the global call order.
+    route_db_execute(
+        db, [("metric_definitions", [result_mock_matching, result_mock_empty])]
+    )
 
     # First call: matching tier → returns the matching metric
     result = await get_metrics_for_tier(db, _TIER_DAILY)

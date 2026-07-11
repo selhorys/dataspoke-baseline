@@ -8,16 +8,19 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
+from tests.unit.conftest import route_db_execute
+
 # ── DB query mock helpers ────────────────────────────────────────────────────
 
 
 def mock_paginated_query(db: AsyncMock, rows: list, total_count: int) -> None:
-    """Set up db.execute to return count then rows for paginated queries."""
+    """Route db.execute so the COUNT query returns total_count and the page-rows
+    query returns rows — dispatched by SQL, not call order."""
     count_result = MagicMock()
     count_result.scalar.return_value = total_count
     rows_result = MagicMock()
     rows_result.scalars.return_value.all.return_value = rows
-    db.execute = AsyncMock(side_effect=[count_result, rows_result])
+    route_db_execute(db, [("count(", count_result)], default=rows_result)
 
 
 def mock_scalar_query(db: AsyncMock, row: object | None) -> None:
@@ -251,7 +254,8 @@ def make_metric_breakdown_row(
 ) -> MagicMock:
     """Create a mock MetricResult row with unified breakdown shape.
 
-    breakdown shape: {"dataset_count": <int>, "datasets": [{"urn": ..., "category": ..., "detail": ...}]}
+    breakdown shape:
+    {"dataset_count": <int>, "datasets": [{"urn": ..., "category": ..., "detail": ...}]}
     """
     row = MagicMock()
     row.id = uuid.uuid4()
@@ -260,8 +264,16 @@ def make_metric_breakdown_row(
     row.breakdown = breakdown or {
         "dataset_count": 2,
         "datasets": [
-            {"urn": "urn:li:dataset:(urn:li:dataPlatform:postgres,db.t1,PROD)", "category": "fresh", "detail": {"last_event_at": "2025-01-01T00:00:00+00:00"}},
-            {"urn": "urn:li:dataset:(urn:li:dataPlatform:postgres,db.t2,PROD)", "category": "stale", "detail": {"last_event_at": "2024-01-01T00:00:00+00:00"}},
+            {
+                "urn": "urn:li:dataset:(urn:li:dataPlatform:postgres,db.t1,PROD)",
+                "category": "fresh",
+                "detail": {"last_event_at": "2025-01-01T00:00:00+00:00"},
+            },
+            {
+                "urn": "urn:li:dataset:(urn:li:dataPlatform:postgres,db.t2,PROD)",
+                "category": "stale",
+                "detail": {"last_event_at": "2024-01-01T00:00:00+00:00"},
+            },
         ],
     }
     row.measured_at = datetime.now(tz=UTC)

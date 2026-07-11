@@ -33,6 +33,7 @@ from tests.unit.backend.validation.conftest import (
     _scalar_result,
     _var,
 )
+from tests.unit.conftest import route_db_execute
 
 _REGISTER = "src.backend.validation.service.register_assertion"
 _BUILD_INFO = "src.backend.validation.service.build_assertion_info"
@@ -118,7 +119,7 @@ async def test_upsert_config_first_put_creates_row(
     registry_result = _scalar_result(registry_row)
     config_miss = _scalar_result(None)
 
-    db.execute = AsyncMock(side_effect=[registry_result, config_miss])
+    route_db_execute(db, [("dataset_registry", registry_result)], default=config_miss)
     db.commit = AsyncMock()
 
     with (
@@ -157,7 +158,7 @@ async def test_upsert_config_second_put_updates_row(
     existing_config = _make_config_row()
     config_result = _scalar_result(existing_config)
 
-    db.execute = AsyncMock(side_effect=[registry_result, config_result])
+    route_db_execute(db, [("dataset_registry", registry_result)], default=config_result)
     db.commit = AsyncMock()
 
     with (
@@ -192,7 +193,7 @@ async def test_upsert_config_recreates_after_delete(
     # The prior conf was hard-deleted, so the slot select returns nothing.
     config_miss = _scalar_result(None)
 
-    db.execute = AsyncMock(side_effect=[registry_result, config_miss])
+    route_db_execute(db, [("dataset_registry", registry_result)], default=config_miss)
     db.commit = AsyncMock()
 
     with (
@@ -348,8 +349,15 @@ async def test_delete_config_cascades_results_and_validation_events(
     select_result = _scalar_result(existing)
     delete_results_stmt = MagicMock()
     delete_events_stmt = MagicMock()
-    db.execute = AsyncMock(
-        side_effect=[select_result, delete_results_stmt, delete_events_stmt]
+    # Route by statement: the results-cascade DELETE, the events-cascade DELETE, and
+    # the initial conf SELECT are dispatched by SQL rather than call order.
+    route_db_execute(
+        db,
+        [
+            (lambda s: "delete" in s and "validation_results" in s, delete_results_stmt),
+            (lambda s: "delete" in s and "events" in s, delete_events_stmt),
+        ],
+        default=select_result,
     )
     db.commit = AsyncMock()
     db.delete = AsyncMock()
@@ -463,7 +471,11 @@ async def test_list_configs_variable_count_is_len_of_array(
     latest_mock = MagicMock()
     latest_mock.all.return_value = []
 
-    db.execute = AsyncMock(side_effect=[count_mock, rows_mock, latest_mock])
+    route_db_execute(
+        db,
+        [("count(", count_mock), ("validation_results", latest_mock)],
+        default=rows_mock,
+    )
 
     items, _total = await svc.list_configs()
     assert items[0].variable_count == 3
@@ -491,7 +503,11 @@ async def test_list_configs_aggregates_latest_result_per_dataset(
     latest_mock = MagicMock()
     latest_mock.all.return_value = [latest_result_row]
 
-    db.execute = AsyncMock(side_effect=[count_mock, rows_mock, latest_mock])
+    route_db_execute(
+        db,
+        [("count(", count_mock), ("validation_results", latest_mock)],
+        default=rows_mock,
+    )
 
     items, total_count = await svc.list_configs()
     assert len(items) == 1
@@ -543,7 +559,11 @@ async def test_list_configs_aggregates_correct_latest_per_dataset_across_multipl
     latest_mock = MagicMock()
     latest_mock.all.return_value = [latest_a, latest_b]
 
-    db.execute = AsyncMock(side_effect=[count_mock, rows_mock, latest_mock])
+    route_db_execute(
+        db,
+        [("count(", count_mock), ("validation_results", latest_mock)],
+        default=rows_mock,
+    )
 
     items, total_count = await svc.list_configs()
 
@@ -597,7 +617,7 @@ async def test_get_events_returns_only_validation_events(
     rows_mock = MagicMock()
     rows_mock.scalars.return_value.all.return_value = [event_row]
 
-    db.execute = AsyncMock(side_effect=[count_mock, rows_mock])
+    route_db_execute(db, [("count(", count_mock)], default=rows_mock)
 
     events, total_count = await svc.get_events(dataset_urn=_DATASET_URN)
 

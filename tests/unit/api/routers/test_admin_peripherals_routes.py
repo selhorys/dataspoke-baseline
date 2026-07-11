@@ -61,6 +61,7 @@ from src.backend.admin.peripheral_service import DatahubConfigDTO, LangfuseConfi
 from src.shared.db.models import PeripheralConfig
 from src.shared.secrets import SecretResolverUnavailable
 from tests.unit.api.conftest import _make_mock_user, auth_headers
+from tests.unit.conftest import route_db_execute
 
 _PERIPHERALS = "/api/v1/admin/peripherals"
 _PERIPHERALS_DH = "/api/v1/admin/peripherals/datahub"
@@ -114,7 +115,9 @@ def _fake_db(dto_for_get=None, updated_at=None) -> tuple:
     row_result = MagicMock()
     row_result.scalar_one_or_none.return_value = row_mock
 
-    db.execute = AsyncMock(side_effect=[auth_result, row_result, row_result, row_result])
+    # The auth user-lookup hits the users table; the PeripheralConfig reads are routed
+    # by their own table, so an added/reordered config query keeps its correct result.
+    route_db_execute(db, [("users", auth_result)], default=row_result)
     db.commit = AsyncMock()
     db.add = MagicMock()
     db.flush = AsyncMock()

@@ -29,6 +29,7 @@ from tests.unit.backend.validation.conftest import (
     _scalar_result,
     _var,
 )
+from tests.unit.conftest import route_db_execute
 
 _REPORT = "src.backend.validation.service.report_result"
 _BUILD_EVENT = "src.backend.validation.service.build_run_event"
@@ -286,7 +287,7 @@ async def test_get_results_from_until_filter_inclusivity(
     rows_mock = MagicMock()
     rows_mock.all.return_value = []
 
-    db.execute = AsyncMock(side_effect=[count_mock, rows_mock])
+    route_db_execute(db, [("count(", count_mock)], default=rows_mock)
 
     from_dt = datetime(2026, 5, 1, tzinfo=UTC)
     until_dt = datetime(2026, 5, 8, tzinfo=UTC)
@@ -313,7 +314,7 @@ async def test_get_results_limit_default_is_1000(
     count_mock = _scalar_count(0)
     rows_mock = MagicMock()
     rows_mock.all.return_value = []
-    db.execute = AsyncMock(side_effect=[count_mock, rows_mock])
+    route_db_execute(db, [("count(", count_mock)], default=rows_mock)
 
     await svc.get_results(dataset_urn=_DATASET_URN)
     assert db.execute.call_count == 2
@@ -343,7 +344,7 @@ async def test_get_results_limit_20000_clamped_to_10000(
     count_mock = _scalar_count(0)
     rows_mock = MagicMock()
     rows_mock.all.return_value = []
-    db.execute = AsyncMock(side_effect=[count_mock, rows_mock])
+    route_db_execute(db, [("count(", count_mock)], default=rows_mock)
 
     await svc.get_results(dataset_urn=_DATASET_URN, limit=20000)
 
@@ -392,7 +393,7 @@ async def test_get_results_returns_rows_and_total_count(
             variables={"row_cnt": 10.0},
         ),
     ]
-    db.execute = AsyncMock(side_effect=[count_mock, rows_mock])
+    route_db_execute(db, [("count(", count_mock)], default=rows_mock)
 
     rows, total_count = await svc.get_results(dataset_urn=_DATASET_URN)
 
@@ -413,7 +414,7 @@ async def test_get_results_total_count_uses_count_distinct_data_time(
     count_mock = _scalar_count(0)
     rows_mock = MagicMock()
     rows_mock.all.return_value = []
-    db.execute = AsyncMock(side_effect=[count_mock, rows_mock])
+    route_db_execute(db, [("count(", count_mock)], default=rows_mock)
 
     await svc.get_results(dataset_urn=_DATASET_URN)
 
@@ -449,7 +450,7 @@ async def test_get_results_returned_in_descending_data_time_order(
         MagicMock(data_time=dt_mid, score=0.7, variables={"row_cnt": 42.0}),
         MagicMock(data_time=dt_oldest, score=1.0, variables={"row_cnt": 50.0}),
     ]
-    db.execute = AsyncMock(side_effect=[count_mock, rows_mock])
+    route_db_execute(db, [("count(", count_mock)], default=rows_mock)
 
     results, total_count = await svc.get_results(dataset_urn=_DATASET_URN)
 

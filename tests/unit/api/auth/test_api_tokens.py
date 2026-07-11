@@ -23,6 +23,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests.unit.conftest import route_db_execute
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -59,7 +60,7 @@ async def test_mint_returns_dsk_prefix() -> None:
     mock_token_row.role_snapshot = "Reader"
 
     mock_db = AsyncMock()
-    mock_db.execute = AsyncMock(side_effect=[user_result, count_result])
+    route_db_execute(mock_db, [("count(", count_result)], default=user_result)
     mock_db.add = MagicMock()
     mock_db.flush = AsyncMock()
     mock_db.refresh = AsyncMock(side_effect=lambda obj: None)
@@ -104,7 +105,7 @@ async def test_mint_stores_sha256_hash_not_raw() -> None:
         captured_token_rows.append(obj)
 
     mock_db = AsyncMock()
-    mock_db.execute = AsyncMock(side_effect=[user_result, count_result])
+    route_db_execute(mock_db, [("count(", count_result)], default=user_result)
     mock_db.add = MagicMock(side_effect=_capture_add)
     mock_db.flush = AsyncMock()
     mock_db.refresh = AsyncMock()
@@ -154,7 +155,7 @@ async def test_mint_enforces_10_token_cap() -> None:
     count_result.scalar_one.return_value = 10  # exactly at cap
 
     mock_db = AsyncMock()
-    mock_db.execute = AsyncMock(side_effect=[user_result, count_result])
+    route_db_execute(mock_db, [("count(", count_result)], default=user_result)
 
     with pytest.raises(ConflictError) as exc_info:
         await mint(mock_db, user_id, "overflow-token")
@@ -202,7 +203,9 @@ async def test_intersection_snapshot_admin_current_reader_returns_reader() -> No
 
     with patch("src.backend.auth.api_tokens.SessionLocal") as mock_session_cls:
         mock_session_cls.return_value = mock_throttle_session
-        user, effective_role = await lookup_and_validate(mock_db, "dsk_admin_snapshot_reader_current")
+        user, effective_role = await lookup_and_validate(
+            mock_db, "dsk_admin_snapshot_reader_current"
+        )
 
     assert effective_role == "Reader", (
         "min(Admin, Reader) must be Reader — demoting a user immediately downgrades all "
@@ -246,7 +249,9 @@ async def test_intersection_snapshot_reader_current_admin_returns_reader() -> No
 
     with patch("src.backend.auth.api_tokens.SessionLocal") as mock_session_cls:
         mock_session_cls.return_value = mock_throttle_session
-        user, effective_role = await lookup_and_validate(mock_db, "dsk_reader_snapshot_admin_current")
+        user, effective_role = await lookup_and_validate(
+            mock_db, "dsk_reader_snapshot_admin_current"
+        )
 
     assert effective_role == "Reader", (
         "min(Reader, Admin) must be Reader — promoting a user does not auto-elevate "
@@ -289,7 +294,9 @@ async def test_intersection_equal_roles_preserved() -> None:
 
     with patch("src.backend.auth.api_tokens.SessionLocal") as mock_session_cls:
         mock_session_cls.return_value = mock_throttle_session
-        user, effective_role = await lookup_and_validate(mock_db, "dsk_editor_snapshot_editor_current")
+        user, effective_role = await lookup_and_validate(
+            mock_db, "dsk_editor_snapshot_editor_current"
+        )
 
     assert effective_role == "Editor", (
         "min(Editor, Editor) must be Editor per spec/feature/AUTH.md "
@@ -402,7 +409,8 @@ async def test_lookup_and_validate_updates_last_used_at_when_stale() -> None:
     """lookup_and_validate triggers the throttled UPDATE when last_used_at is None (stale).
 
     spec: spec/feature/AUTH.md §API Tokens §Audit and last_used_at —
-    every successful authentication updates last_used_at; update throttled to per-minute granularity.
+    every successful authentication updates last_used_at; update throttled to
+    per-minute granularity.
     """
     from src.backend.auth.api_tokens import lookup_and_validate
 

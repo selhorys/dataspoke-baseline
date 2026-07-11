@@ -28,6 +28,7 @@ from tests.unit.backend.conftest import (
     mock_paginated_query,
     mock_scalar_query,
 )
+from tests.unit.conftest import route_db_execute
 
 # ── Row factories ─────────────────────────────────────────────────────────────
 
@@ -101,7 +102,13 @@ def _mock_list_metrics_query(
     rows_result.scalars.return_value.all.return_value = rows
     lr_result = MagicMock()
     lr_result.all.return_value = list((last_run_by_id or {}).items())
-    db.execute = AsyncMock(side_effect=[count_result, rows_result, lr_result])
+    # Route by SQL: the count query carries count(); the page-bounded last-run batch
+    # is the grouped max(occurred_at) over events; the page rows are the default.
+    route_db_execute(
+        db,
+        [("count(", count_result), ("max(", lr_result)],
+        default=rows_result,
+    )
 
 
 def _emitted_query(db: MagicMock, call_index: int) -> tuple[str, set]:
@@ -489,7 +496,7 @@ async def test_get_metric_attr_returns_latest_values_dict(service, db):
     latest_result = MagicMock()
     latest_result.scalar_one_or_none.return_value = result_row
 
-    db.execute = AsyncMock(side_effect=[def_result, latest_result])
+    route_db_execute(db, [("metric_results", latest_result)], default=def_result)
 
     attr = await service.get_metric_attr(def_row.id)
 
@@ -508,7 +515,7 @@ async def test_get_metric_attr_no_results_returns_none_values(service, db):
     def_result.scalar_one_or_none.return_value = def_row
     latest_result = MagicMock()
     latest_result.scalar_one_or_none.return_value = None
-    db.execute = AsyncMock(side_effect=[def_result, latest_result])
+    route_db_execute(db, [("metric_results", latest_result)], default=def_result)
 
     attr = await service.get_metric_attr(def_row.id)
     assert attr["latest_values"] is None

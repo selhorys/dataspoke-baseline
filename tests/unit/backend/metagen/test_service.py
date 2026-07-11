@@ -40,6 +40,7 @@ from src.shared.exceptions import (
     PreconditionFailedError,
 )
 from tests.unit.backend.conftest import mock_db_refresh
+from tests.unit.conftest import route_db_execute
 
 _VALID_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
 _VALID_URN2 = (
@@ -203,8 +204,17 @@ async def test_list_confs_returns_dtos_and_total(svc, db) -> None:
     last_run_ts = datetime.now(tz=UTC)
     affected_result = _make_result([(id_a, 5)])
     last_run_result = _make_result([(str(id_b), last_run_ts)])
-    db.execute = AsyncMock(
-        side_effect=[count_result, rows_result, affected_result, last_run_result]
+    # Route by SQL: the dataset_affected rollup groups over metagen_candidates; the
+    # last_run rollup is the grouped max() over events; the pagination count carries
+    # count(); the page rows are the default metagen_config select.
+    route_db_execute(
+        db,
+        [
+            ("metagen_candidates", affected_result),
+            ("max(", last_run_result),
+            ("count(", count_result),
+        ],
+        default=rows_result,
     )
 
     confs, total = await svc.list_confs(offset=0, limit=20)
@@ -342,9 +352,12 @@ async def test_put_conf_name_collision_raises_conflict(svc, db) -> None:
     Spec: API.md §Metadata Generation — name unique (409 METAGEN_CONF_EXISTS).
     """
     existing = _make_conf_row(name="old-name")
-    # load_conf_row → existing; then collision-check finds another row's id
-    db.execute = AsyncMock(
-        side_effect=[_make_result(scalar=existing), _make_result(scalar=uuid.uuid4())]
+    # Route by SQL: the name-collision check queries by the new name ('new-name');
+    # the load_conf_row lookup (by id) is the default.
+    route_db_execute(
+        db,
+        [(lambda s: "new-name" in s, _make_result(scalar=uuid.uuid4()))],
+        default=_make_result(scalar=existing),
     )
 
     with pytest.raises(ConflictError) as exc_info:
@@ -630,7 +643,9 @@ async def test_list_items_returns_empty_list_when_no_rows(svc, db) -> None:
 
     Spec: API.md §Metadata Generation — GET /metagen/item returns paginated items.
     """
-    db.execute = AsyncMock(side_effect=[_make_result(scalar=0), _make_result([])])
+    route_db_execute(
+        db, [("count(", _make_result(scalar=0))], default=_make_result([])
+    )
 
     items, total = await svc.list_items(offset=0, limit=20)
 
@@ -651,8 +666,15 @@ async def test_list_items_summary_has_candidate_and_non_rejected_counts(svc, db)
 
     rows_m = MagicMock()
     rows_m.scalars.return_value.all.return_value = [item]
-    db.execute = AsyncMock(
-        side_effect=[_make_result(scalar=1), rows_m, _make_result([cand1, cand2])]
+    # Route by SQL: the per-item candidate batch over metagen_candidates, the count(),
+    # and the page rows (metagen_items select) as the default.
+    route_db_execute(
+        db,
+        [
+            ("metagen_candidates", _make_result([cand1, cand2])),
+            ("count(", _make_result(scalar=1)),
+        ],
+        default=rows_m,
     )
 
     items, total = await svc.list_items(offset=0, limit=20)
@@ -671,7 +693,9 @@ async def test_list_items_with_conf_filter_resolves_uuid(svc, db) -> None:
 
     Spec: API.md §Metadata Generation — item list filterable by conf_id.
     """
-    db.execute = AsyncMock(side_effect=[_make_result(scalar=0), _make_result([])])
+    route_db_execute(
+        db, [("count(", _make_result(scalar=0))], default=_make_result([])
+    )
 
     items, total = await svc.list_items(conf_id=str(_CONF_UUID), offset=0, limit=20)
 
@@ -719,8 +743,15 @@ async def test_get_item_returns_detail_with_candidate_conf_name(svc, db) -> None
     name_map_result = MagicMock()
     name_map_result.all.return_value = [name_row]
 
-    db.execute = AsyncMock(
-        side_effect=[_make_result(scalar=item), cands_result, name_map_result]
+    # Route by table: candidates (metagen_candidates), conf-name map (metagen_config),
+    # and the item lookup (metagen_items) as the default.
+    route_db_execute(
+        db,
+        [
+            ("metagen_candidates", cands_result),
+            ("metagen_config", name_map_result),
+        ],
+        default=_make_result(scalar=item),
     )
 
     detail = await svc.get_item(_VALID_URN, "dataset.description")
@@ -837,7 +868,10 @@ async def test_apply_per_item_budget_adds_when_under_limit(svc, db) -> None:
     conf = _make_conf_dto(result_limit=3, overwrite_pending=True)
     item_row = _make_item_row()
 
-    db.execute = AsyncMock(side_effect=[_make_result(scalar=item_row), _make_result(scalar=1)])
+    # Route the budget count() over metagen_candidates; the item lookup is the default.
+    route_db_execute(
+        db, [("count(", _make_result(scalar=1))], default=_make_result(scalar=item_row)
+    )
     mock_db_refresh(db)
     svc._refresh_candidate_embedding = AsyncMock()
 
@@ -868,12 +902,15 @@ async def test_apply_per_item_budget_evicts_oldest_when_overwrite_pending_true(s
     item_row = _make_item_row()
     oldest_llm = _make_candidate_row(status="llm_approved", conf_id=_CONF_UUID)
 
-    db.execute = AsyncMock(
-        side_effect=[
-            _make_result(scalar=item_row),
-            _make_result(scalar=2),  # budget full
-            _make_result(scalar=oldest_llm),
-        ]
+    # Route by SQL: the budget count() over metagen_candidates, the oldest-llm_approved
+    # select (metagen_candidates, no count), and the item lookup (metagen_items) default.
+    route_db_execute(
+        db,
+        [
+            ("count(", _make_result(scalar=2)),  # budget full
+            ("metagen_candidates", _make_result(scalar=oldest_llm)),
+        ],
+        default=_make_result(scalar=item_row),
     )
     mock_db_refresh(db)
     svc._refresh_candidate_embedding = AsyncMock()
@@ -904,7 +941,10 @@ async def test_apply_per_item_budget_skips_when_overwrite_pending_false(svc, db)
     conf = _make_conf_dto(result_limit=2, overwrite_pending=False)
     item_row = _make_item_row()
 
-    db.execute = AsyncMock(side_effect=[_make_result(scalar=item_row), _make_result(scalar=2)])
+    # Route the budget count() over metagen_candidates; the item lookup is the default.
+    route_db_execute(
+        db, [("count(", _make_result(scalar=2))], default=_make_result(scalar=item_row)
+    )
 
     added, evicted = await svc._apply_per_item_budget(
         urn=_VALID_URN,
@@ -931,12 +971,15 @@ async def test_apply_per_item_budget_skips_when_only_approved_and_budget_full(sv
     conf = _make_conf_dto(result_limit=1, overwrite_pending=True)
     item_row = _make_item_row()
 
-    db.execute = AsyncMock(
-        side_effect=[
-            _make_result(scalar=item_row),
-            _make_result(scalar=1),  # budget full
-            _make_result(scalar=None),  # no llm_approved available
-        ]
+    # Route by SQL: the budget count() over metagen_candidates, the oldest-llm_approved
+    # select (metagen_candidates, none available), and the item lookup default.
+    route_db_execute(
+        db,
+        [
+            ("count(", _make_result(scalar=1)),  # budget full
+            ("metagen_candidates", _make_result(scalar=None)),  # no llm_approved
+        ],
+        default=_make_result(scalar=item_row),
     )
 
     added, evicted = await svc._apply_per_item_budget(
@@ -1210,13 +1253,19 @@ async def test_review_candidate_approve_flips_status_to_approved(svc, db) -> Non
     name_map_result = MagicMock()
     name_map_result.all.return_value = [name_row]
 
-    db.execute = AsyncMock(
-        side_effect=[
-            _make_result(scalar=bnd),
-            _make_result(scalar=cand),
-            _make_result(scalar=None),  # no sibling approved
-            name_map_result,  # conf-name resolution
-        ]
+    # Route by SQL: boundary, the sibling-demotion select (no approved sibling here),
+    # the conf-name map, and the target candidate lookup as the default.
+    route_db_execute(
+        db,
+        [
+            ("metagen_boundary", _make_result(scalar=bnd)),
+            (
+                lambda s: "metagen_candidates" in s and "'approved'" in s,
+                _make_result(scalar=None),
+            ),
+            ("metagen_config", name_map_result),
+        ],
+        default=_make_result(scalar=cand),
     )
     mock_db_refresh(db)
 
@@ -1263,13 +1312,20 @@ async def test_review_candidate_approve_demotes_cross_conf_approved_sibling(svc,
     name_map_result = MagicMock()
     name_map_result.all.return_value = [name_row]
 
-    db.execute = AsyncMock(
-        side_effect=[
-            _make_result(scalar=bnd),
-            _make_result(scalar=cand),
-            _make_result(scalar=sibling),  # cross-conf approved sibling
-            name_map_result,
-        ]
+    # Route by SQL: boundary, the sibling-demotion select (metagen_candidates WHERE
+    # status='approved') returns the cross-conf approved sibling, the conf-name map,
+    # and the target candidate lookup as the default.
+    route_db_execute(
+        db,
+        [
+            ("metagen_boundary", _make_result(scalar=bnd)),
+            (
+                lambda s: "metagen_candidates" in s and "'approved'" in s,
+                _make_result(scalar=sibling),
+            ),
+            ("metagen_config", name_map_result),
+        ],
+        default=_make_result(scalar=cand),
     )
     mock_db_refresh(db)
 
@@ -1319,13 +1375,20 @@ async def test_review_candidate_approve_emits_dataset_description_to_editable_as
     name_map_result = MagicMock()
     name_map_result.all.return_value = []
 
-    db.execute = AsyncMock(
-        side_effect=[
-            _make_result(scalar=bnd),
-            _make_result(scalar=cand),
-            _make_result(scalar=None),
-            name_map_result,
-        ]
+    # Route by SQL: boundary (metagen_boundary), the sibling-demotion select
+    # (metagen_candidates WHERE status='approved'), the conf-name map (metagen_config),
+    # and the target candidate lookup (metagen_candidates by candidate_id) as the default.
+    route_db_execute(
+        db,
+        [
+            ("metagen_boundary", _make_result(scalar=bnd)),
+            (
+                lambda s: "metagen_candidates" in s and "'approved'" in s,
+                _make_result(scalar=None),
+            ),
+            ("metagen_config", name_map_result),
+        ],
+        default=_make_result(scalar=cand),
     )
     mock_db_refresh(db)
 
@@ -1376,13 +1439,20 @@ async def test_review_candidate_approve_column_emits_to_editable_schema_metadata
     name_map_result = MagicMock()
     name_map_result.all.return_value = []
 
-    db.execute = AsyncMock(
-        side_effect=[
-            _make_result(scalar=bnd),
-            _make_result(scalar=cand),
-            _make_result(scalar=None),
-            name_map_result,
-        ]
+    # Route by SQL: boundary (metagen_boundary), the sibling-demotion select
+    # (metagen_candidates WHERE status='approved'), the conf-name map (metagen_config),
+    # and the target candidate lookup (metagen_candidates by candidate_id) as the default.
+    route_db_execute(
+        db,
+        [
+            ("metagen_boundary", _make_result(scalar=bnd)),
+            (
+                lambda s: "metagen_candidates" in s and "'approved'" in s,
+                _make_result(scalar=None),
+            ),
+            ("metagen_config", name_map_result),
+        ],
+        default=_make_result(scalar=cand),
     )
     mock_db_refresh(db)
 
@@ -1426,12 +1496,16 @@ async def test_review_candidate_reject_llm_approved_flips_to_rejected(svc, db) -
     name_map_result = MagicMock()
     name_map_result.all.return_value = []
 
-    db.execute = AsyncMock(
-        side_effect=[
-            _make_result(scalar=bnd),
-            _make_result(scalar=cand),
-            name_map_result,
-        ]
+    # Route by table: boundary (metagen_boundary), conf-name map (metagen_config), and
+    # the target candidate lookup (metagen_candidates) as the default. The reject path
+    # issues no sibling-demotion query.
+    route_db_execute(
+        db,
+        [
+            ("metagen_boundary", _make_result(scalar=bnd)),
+            ("metagen_config", name_map_result),
+        ],
+        default=_make_result(scalar=cand),
     )
     mock_db_refresh(db)
 
@@ -1480,12 +1554,16 @@ async def test_review_candidate_reject_approved_dataset_desc_clears_datahub(svc,
     name_map_result = MagicMock()
     name_map_result.all.return_value = []
 
-    db.execute = AsyncMock(
-        side_effect=[
-            _make_result(scalar=bnd),
-            _make_result(scalar=cand),
-            name_map_result,
-        ]
+    # Route by table: boundary (metagen_boundary), conf-name map (metagen_config), and
+    # the target candidate lookup (metagen_candidates) as the default. The reject path
+    # issues no sibling-demotion query.
+    route_db_execute(
+        db,
+        [
+            ("metagen_boundary", _make_result(scalar=bnd)),
+            ("metagen_config", name_map_result),
+        ],
+        default=_make_result(scalar=cand),
     )
     mock_db_refresh(db)
 
@@ -1552,12 +1630,16 @@ async def test_review_candidate_reject_approved_column_desc_clears_field_entry(s
     name_map_result = MagicMock()
     name_map_result.all.return_value = []
 
-    db.execute = AsyncMock(
-        side_effect=[
-            _make_result(scalar=bnd),
-            _make_result(scalar=cand),
-            name_map_result,
-        ]
+    # Route by table: boundary (metagen_boundary), conf-name map (metagen_config), and
+    # the target candidate lookup (metagen_candidates) as the default. The reject path
+    # issues no sibling-demotion query.
+    route_db_execute(
+        db,
+        [
+            ("metagen_boundary", _make_result(scalar=bnd)),
+            ("metagen_config", name_map_result),
+        ],
+        default=_make_result(scalar=cand),
     )
     mock_db_refresh(db)
 
@@ -1635,13 +1717,20 @@ async def test_review_candidate_approve_upserts_embedding(svc, db) -> None:
     name_map_result = MagicMock()
     name_map_result.all.return_value = []
 
-    db.execute = AsyncMock(
-        side_effect=[
-            _make_result(scalar=bnd),
-            _make_result(scalar=cand),
-            _make_result(scalar=None),
-            name_map_result,
-        ]
+    # Route by SQL: boundary (metagen_boundary), the sibling-demotion select
+    # (metagen_candidates WHERE status='approved'), the conf-name map (metagen_config),
+    # and the target candidate lookup (metagen_candidates by candidate_id) as the default.
+    route_db_execute(
+        db,
+        [
+            ("metagen_boundary", _make_result(scalar=bnd)),
+            (
+                lambda s: "metagen_candidates" in s and "'approved'" in s,
+                _make_result(scalar=None),
+            ),
+            ("metagen_config", name_map_result),
+        ],
+        default=_make_result(scalar=cand),
     )
     mock_db_refresh(db)
 
@@ -1908,7 +1997,16 @@ async def test_list_uncovered_reports_no_conf_match_for_unmatched_registered_dat
     confs_result = _make_result([])
     # writable boundary set (empty)
     bnd_result = _make_result([])
-    db.execute = AsyncMock(side_effect=[reg_result, confs_result, bnd_result])
+    # Route by table: registered datasets (dataset_registry), enabled confs
+    # (metagen_config), writable boundary set (metagen_boundary).
+    route_db_execute(
+        db,
+        [
+            ("dataset_registry", reg_result),
+            ("metagen_config", confs_result),
+            ("metagen_boundary", bnd_result),
+        ],
+    )
 
     rows, total = await svc.list_uncovered(include_disallowed=False)
 

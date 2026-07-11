@@ -23,6 +23,7 @@ from src.backend.ontogen.service import OntogenRunSummary, OntogenService
 from src.shared.db.models import Event
 from src.shared.events import ONTOGEN_RUN_COMPLETE, ONTOGEN_RUN_FAILED
 from src.shared.llm.loop_trace import LoopResult, LoopTrace
+from tests.unit.conftest import route_db_execute
 
 # UUID4 pattern (version=4, variant bits 8-b)
 _UUID4_RE = re.compile(
@@ -88,14 +89,10 @@ def _debate_stub() -> DebateResult:
 def _setup_db_for_dry_run(db: AsyncMock, conf: MagicMock) -> None:
     conf_result = MagicMock()
     conf_result.scalar_one_or_none.return_value = conf
-    db.execute = AsyncMock(
-        side_effect=[
-            conf_result,
-            _make_result(scalars_val=[]),  # OntogenSeed query
-            _make_result(scalars_val=[]),  # eligible nodes
-            _make_result(scalars_val=[]),  # eligible edges
-            _make_result(scalars_val=[]),  # approved triples
-        ]
+    # Route get_conf (ontogen_config); the seed + eligible node/edge/triple list queries
+    # all return the same empty result via the default.
+    route_db_execute(
+        db, [("ontogen_config", conf_result)], default=_make_result(scalars_val=[])
     )
 
 
@@ -186,17 +183,13 @@ async def test_run_failed_event_detail_contains_uuid4_run_id(
     _setup_db_for_dry_run(db, conf)
     svc._datahub.enumerate_datasets = AsyncMock(return_value=[])
 
-    # After the failure event is emitted, a second set of DB calls for the event record
-    # re-uses the same mock so we need to allow any number of executes
-    db.execute = AsyncMock(side_effect=[
-        MagicMock(**{"scalar_one_or_none.return_value": conf}),  # get_conf
-        _make_result(scalars_val=[]),   # OntogenSeed
-        _make_result(scalars_val=[]),   # eligible nodes
-        _make_result(scalars_val=[]),   # eligible edges
-        _make_result(scalars_val=[]),   # approved triples
-        # After failure, _record_ontogen_event also calls execute for the event
-        _make_result(),
-    ])
+    # Route get_conf (ontogen_config); the seed + eligible list queries and the
+    # post-failure _record_ontogen_event query all return the empty default.
+    route_db_execute(
+        db,
+        [("ontogen_config", MagicMock(**{"scalar_one_or_none.return_value": conf}))],
+        default=_make_result(scalars_val=[]),
+    )
 
     with (
         patch("src.backend.ontogen.service.build_run_prompt", return_value="prompt"),
@@ -280,7 +273,9 @@ async def test_run_debate_passes_run_id_as_session_id_to_llm() -> None:
     """
     producer_result = LoopResult(
         payload={
-            "nodes": [{"name": "Book", "id": "book", "confidence_score": 0.9, "dataset_urns": ["urn:x"]}],
+            "nodes": [
+                {"name": "Book", "id": "book", "confidence_score": 0.9, "dataset_urns": ["urn:x"]}
+            ],
             "edges": [],
             "triples": [],
         },
@@ -305,7 +300,10 @@ async def test_run_debate_passes_run_id_as_session_id_to_llm() -> None:
     with (
         patch("src.backend.ontogen.debate._search_node_embeddings", new=AsyncMock(return_value=[])),
         patch("src.backend.ontogen.debate._search_edge_embeddings", new=AsyncMock(return_value=[])),
-        patch("src.backend.ontogen.debate._search_triple_embeddings", new=AsyncMock(return_value=[])),
+        patch(
+            "src.backend.ontogen.debate._search_triple_embeddings",
+            new=AsyncMock(return_value=[]),
+        ),
         patch(
             "src.backend.ontogen.debate.make_llm_client",
             return_value=spy,

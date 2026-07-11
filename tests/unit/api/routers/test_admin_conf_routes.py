@@ -54,6 +54,7 @@ from src.backend.admin.config_service import RUNTIME_CONFIG_DEFAULTS, RuntimeCon
 from src.shared.db.models import RuntimeConfig
 from src.shared.secrets import SecretResolverUnavailable
 from tests.unit.api.conftest import _make_mock_user, auth_headers
+from tests.unit.conftest import route_db_execute
 
 _ADMIN_CONF = "/api/v1/admin/conf"
 _INTERNAL_CONF = "/internal/admin/conf"
@@ -120,7 +121,9 @@ def _fake_db_with_row(row) -> tuple:
     row_result = MagicMock()
     row_result.scalar_one_or_none.return_value = row
 
-    db.execute = AsyncMock(side_effect=[auth_result, row_result, row_result, row_result])
+    # The auth user-lookup hits the users table; the RuntimeConfig reads are routed by
+    # their own table, so an added/reordered config query cannot borrow the auth result.
+    route_db_execute(db, [("users", auth_result)], default=row_result)
     db.commit = AsyncMock()
     db.add = MagicMock()
     db.refresh = AsyncMock()

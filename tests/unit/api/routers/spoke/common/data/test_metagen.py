@@ -26,6 +26,7 @@ from src.api.dependencies import get_metagen_service
 from src.api.main import app
 from src.shared.exceptions import EntityNotFoundError, PreconditionFailedError
 from tests.unit.api.conftest import auth_headers
+from tests.unit.conftest import route_db_execute
 
 _BASE = "/api/v1/spoke/common/data"
 _VALID_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.reviews.user_ratings,DEV)"
@@ -893,7 +894,12 @@ async def test_get_events_returns_200_with_events_envelope(
     auth_result = _MagicMock()
     auth_result.scalar_one_or_none.return_value = _make_mock_user()
 
-    mock_db.execute = AsyncMock(side_effect=[auth_result, count_result, rows_result])
+    # Route by SQL: auth user-lookup (users), the events count(), then the events rows.
+    route_db_execute(
+        mock_db,
+        [("users", auth_result), ("count(", count_result)],
+        default=rows_result,
+    )
 
     app.dependency_overrides[get_db] = lambda: mock_db
 

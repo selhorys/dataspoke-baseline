@@ -38,6 +38,7 @@ from src.backend.admin.peripheral_service import (
     patch_peripheral_config,
 )
 from src.shared.db.models import PeripheralConfig
+from tests.unit.conftest import route_db_execute
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -449,7 +450,11 @@ async def test_patch_recovers_from_integrity_error_on_concurrent_insert() -> Non
     result_with_row = MagicMock()
     result_with_row.scalar_one.return_value = existing_row
 
-    db.execute = AsyncMock(side_effect=[result_empty, result_with_row])
+    # Both executes are the same peripheral_config select (pre-insert miss, then the
+    # post-rollback re-select) — a per-query queue scoped to that one signature.
+    route_db_execute(
+        db, [("peripheral_config", [result_empty, result_with_row])]
+    )
     db.add = MagicMock()
     db.flush = AsyncMock(side_effect=IntegrityError(None, None, Exception("unique violation")))
     db.rollback = AsyncMock()

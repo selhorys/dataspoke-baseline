@@ -36,6 +36,7 @@ from src.backend.metagen.service import (
 )
 from src.shared.exceptions import ConflictError, EntityNotFoundError
 from tests.unit.api.conftest import auth_headers
+from tests.unit.conftest import route_db_execute
 
 _BASE = "/api/v1/spoke/metagen"
 
@@ -726,7 +727,12 @@ async def _run_event_route(client, url: str) -> tuple[int, dict]:
     auth_m.scalar_one_or_none.return_value = _make_mock_user()
 
     mock_db_session = AsyncMock()
-    mock_db_session.execute = AsyncMock(side_effect=[auth_m, count_m, rows_m])
+    # Route by SQL: auth user-lookup (users), the events count(), then the events rows.
+    route_db_execute(
+        mock_db_session,
+        [("users", auth_m), ("count(", count_m)],
+        default=rows_m,
+    )
 
     app.dependency_overrides[get_db] = lambda: mock_db_session
     try:

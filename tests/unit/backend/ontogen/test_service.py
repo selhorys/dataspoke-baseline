@@ -25,6 +25,7 @@ from tests.unit.backend.conftest import (
     mock_db_refresh,
     mock_scalar_query,
 )
+from tests.unit.conftest import route_db_execute
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -57,8 +58,16 @@ async def test_get_conf_returns_default_when_absent(svc: OntogenService, db: Asy
     persisted_row = MagicMock(id=1, is_enabled=False, dataset_filter={})
     persisted = MagicMock()
     persisted.scalar_one.return_value = persisted_row
-    # SELECT (absent) → conflict-safe INSERT → re-SELECT (persisted default)
-    db.execute = AsyncMock(side_effect=[absent, MagicMock(), persisted])
+    # Route by statement: the conflict-safe INSERT is a throwaway; the two
+    # ontogen_config SELECTs are a per-query queue — first misses (absent), the
+    # re-SELECT after the insert returns the persisted default.
+    route_db_execute(
+        db,
+        [
+            (lambda s: s.lstrip().startswith("insert"), MagicMock()),
+            ("ontogen_config", [absent, persisted]),
+        ],
+    )
 
     row = await svc.get_conf()
     assert row.is_enabled is False
@@ -306,7 +315,7 @@ async def test_list_seeds_returns_all_with_enabled_state(
     count_mock.scalar.return_value = 2
     rows_mock = MagicMock()
     rows_mock.scalars.return_value.all.return_value = [enabled_row, disabled_row]
-    db.execute = AsyncMock(side_effect=[count_mock, rows_mock])
+    route_db_execute(db, [("count(", count_mock)], default=rows_mock)
 
     previews, total = await svc.list_seeds()
 
@@ -381,20 +390,22 @@ async def test_review_triple_dependency_gate_raises_when_nodes_not_approved(
     edge_row = make_ontogen_edge_row(id="has_edition", status="approved")
     obj_node = make_ontogen_node_row(id="edition", status="approved")
 
-    # Execute will be called multiple times: get_triple, then subj, edge, obj
-    def execute_side_effect(*args, **kwargs):
-        mock = MagicMock()
-        # Return triple on first call, then subj_node, edge_row, obj_node
-        return mock
-
-    calls = [triple, subj_node, edge_row, obj_node]
-
     def make_result(row):
         m = MagicMock()
         m.scalar_one_or_none.return_value = row
         return m
 
-    db.execute = AsyncMock(side_effect=[make_result(r) for r in calls])
+    # Route by table + node id: get_triple (ontogen_triples), edge (ontogen_edges),
+    # and the two ontogen_nodes lookups keyed on their own id ('book' vs 'edition').
+    route_db_execute(
+        db,
+        [
+            ("ontogen_triples", make_result(triple)),
+            ("ontogen_edges", make_result(edge_row)),
+            (lambda s: "ontogen_nodes" in s and "'book'" in s, make_result(subj_node)),
+            (lambda s: "ontogen_nodes" in s and "'edition'" in s, make_result(obj_node)),
+        ],
+    )
 
     # Also mock cache for get_node
     svc._cache.get = AsyncMock(return_value=None)
@@ -477,13 +488,11 @@ async def test_run_allows_dry_run_when_disabled(
     conf_result = MagicMock()
     conf_result.scalar_one_or_none.return_value = conf
 
-    db.execute = AsyncMock(side_effect=[
-        conf_result,
-        make_result(scalars_val=[]),
-        make_result(scalars_val=[]),
-        make_result(scalars_val=[]),
-        make_result(scalars_val=[]),
-    ])
+    # Route the get_conf query (ontogen_config); the seed + approved node/edge/triple
+    # list queries all return the same empty result via the default.
+    route_db_execute(
+        db, [("ontogen_config", conf_result)], default=make_result(scalars_val=[])
+    )
 
     svc._datahub.enumerate_datasets = AsyncMock(return_value=[])
 
@@ -537,13 +546,11 @@ async def test_run_dry_run_returns_summary_no_db_writes(
     conf_result = MagicMock()
     conf_result.scalar_one_or_none.return_value = conf
 
-    db.execute = AsyncMock(side_effect=[
-        conf_result,  # get_conf
-        make_result(scalars_val=[]),  # OntogenSeed query
-        make_result(scalars_val=[]),  # approved nodes
-        make_result(scalars_val=[]),  # approved edges
-        make_result(scalars_val=[]),  # approved triples
-    ])
+    # Route the get_conf query (ontogen_config); the seed + approved node/edge/triple
+    # list queries all return the same empty result via the default.
+    route_db_execute(
+        db, [("ontogen_config", conf_result)], default=make_result(scalars_val=[])
+    )
 
     # DataHub enumerate_datasets
     svc._datahub.enumerate_datasets = AsyncMock(return_value=[])
@@ -622,13 +629,11 @@ async def test_run_real_run_emits_complete_event_with_dry_run_false(
     conf_result = MagicMock()
     conf_result.scalar_one_or_none.return_value = conf
 
-    db.execute = AsyncMock(side_effect=[
-        conf_result,              # get_conf
-        make_result(scalars_val=[]),  # OntogenSeed query
-        make_result(scalars_val=[]),  # approved nodes
-        make_result(scalars_val=[]),  # approved edges
-        make_result(scalars_val=[]),  # approved triples
-    ])
+    # Route the get_conf query (ontogen_config); the seed + approved node/edge/triple
+    # list queries all return the same empty result via the default.
+    route_db_execute(
+        db, [("ontogen_config", conf_result)], default=make_result(scalars_val=[])
+    )
 
     # Empty dataset enumeration → empty dataset_urns and empty unresolved_urns
     svc._datahub.enumerate_datasets = AsyncMock(return_value=[])
@@ -968,13 +973,11 @@ async def test_run_validation_telemetry_surfaces_in_run_complete_event(
     conf_result = MagicMock()
     conf_result.scalar_one_or_none.return_value = conf
 
-    db.execute = AsyncMock(side_effect=[
-        conf_result,              # get_conf
-        make_result(scalars_val=[]),  # OntogenSeed query
-        make_result(scalars_val=[]),  # approved nodes
-        make_result(scalars_val=[]),  # approved edges
-        make_result(scalars_val=[]),  # approved triples
-    ])
+    # Route the get_conf query (ontogen_config); the seed + approved node/edge/triple
+    # list queries all return the same empty result via the default.
+    route_db_execute(
+        db, [("ontogen_config", conf_result)], default=make_result(scalars_val=[])
+    )
 
     svc._datahub.enumerate_datasets = AsyncMock(return_value=[])
 
@@ -1115,7 +1118,9 @@ async def test_turns_exhausted_persists_rows_as_llm_pending(
         m.scalar.return_value = 0
         return m
 
-    db.execute = AsyncMock(side_effect=[conf_result] + [_any_result() for _ in range(20)])
+    # Route the get_conf query (ontogen_config); every other query in the persistence
+    # sweep (seeds, existing/new node/edge/triple lookups) gets the generic empty result.
+    route_db_execute(db, [("ontogen_config", conf_result)], default=_any_result())
     svc._datahub.enumerate_datasets = AsyncMock(return_value=[])
 
     # turns_exhausted with high-confidence payload — status must still be llm_pending
@@ -1233,7 +1238,9 @@ async def test_cycle_detected_persists_rows_as_llm_pending(
     conf_result = MagicMock()
     conf_result.scalar_one_or_none.return_value = conf
 
-    db.execute = AsyncMock(side_effect=[conf_result] + [_any_result() for _ in range(20)])
+    # Route the get_conf query (ontogen_config); every other query in the persistence
+    # sweep (seeds, existing/new node/edge/triple lookups) gets the generic empty result.
+    route_db_execute(db, [("ontogen_config", conf_result)], default=_any_result())
     svc._datahub.enumerate_datasets = AsyncMock(return_value=[])
 
     high_score = ONTOLOGY_CONFIDENCE_THRESHOLD + 0.1

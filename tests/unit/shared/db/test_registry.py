@@ -14,7 +14,13 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
-from src.shared.db.registry import mark_registered, mark_unregistered, reconcile_registry, sync_with_datahub
+from src.shared.db.registry import (
+    mark_registered,
+    mark_unregistered,
+    reconcile_registry,
+    sync_with_datahub,
+)
+from tests.unit.conftest import route_db_execute
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -51,7 +57,9 @@ def _scalars_result(rows: list) -> MagicMock:
 
 async def test_mark_registered_flips_false_to_true(db: AsyncMock):
     """Row with datahub_registered=False is updated to True; updated_at is bumped."""
-    row = _make_registry_row(urn="urn:li:dataset:(urn:li:dataPlatform:postgres,db.t,PROD)", registered=False)
+    row = _make_registry_row(
+        urn="urn:li:dataset:(urn:li:dataPlatform:postgres,db.t,PROD)", registered=False
+    )
     before_updated_at = row.updated_at
 
     db.execute = AsyncMock(return_value=_scalar_result(row))
@@ -65,7 +73,9 @@ async def test_mark_registered_flips_false_to_true(db: AsyncMock):
 
 async def test_mark_registered_noop_when_already_true(db: AsyncMock):
     """Row already True → no attribute mutation, no db.add call."""
-    row = _make_registry_row(urn="urn:li:dataset:(urn:li:dataPlatform:postgres,db.t,PROD)", registered=True)
+    row = _make_registry_row(
+        urn="urn:li:dataset:(urn:li:dataPlatform:postgres,db.t,PROD)", registered=True
+    )
     original_updated_at = row.updated_at
 
     db.execute = AsyncMock(return_value=_scalar_result(row))
@@ -96,7 +106,9 @@ async def test_mark_registered_missing_row_warns_and_returns(db: AsyncMock, capl
 
 async def test_mark_unregistered_flips_true_to_false(db: AsyncMock):
     """Row with datahub_registered=True is updated to False; updated_at is bumped."""
-    row = _make_registry_row(urn="urn:li:dataset:(urn:li:dataPlatform:postgres,db.t,PROD)", registered=True)
+    row = _make_registry_row(
+        urn="urn:li:dataset:(urn:li:dataPlatform:postgres,db.t,PROD)", registered=True
+    )
     before_updated_at = row.updated_at
 
     db.execute = AsyncMock(return_value=_scalar_result(row))
@@ -110,7 +122,9 @@ async def test_mark_unregistered_flips_true_to_false(db: AsyncMock):
 
 async def test_mark_unregistered_noop_when_already_false(db: AsyncMock):
     """Row already False → no attribute mutation, no db.add call."""
-    row = _make_registry_row(urn="urn:li:dataset:(urn:li:dataPlatform:postgres,db.t,PROD)", registered=False)
+    row = _make_registry_row(
+        urn="urn:li:dataset:(urn:li:dataPlatform:postgres,db.t,PROD)", registered=False
+    )
     original_updated_at = row.updated_at
 
     db.execute = AsyncMock(return_value=_scalar_result(row))
@@ -160,15 +174,17 @@ async def test_sync_full_sweep_correct_final_states(db: AsyncMock):
     datahub = AsyncMock()
     datahub.enumerate_datasets = AsyncMock(return_value=[_URN_A, _URN_B])
 
-    # db.execute call sequence:
-    #   0: full SELECT (scalars().all())
-    #   1: mark_registered(db, A) → scalar_one_or_none → row_a
-    #   2: mark_unregistered(db, D) → scalar_one_or_none → row_d
-    db.execute = AsyncMock(side_effect=[
-        _scalars_result([row_a, row_b, row_c, row_d]),  # full SELECT
-        _scalar_result(row_a),  # mark_registered lookup for A
-        _scalar_result(row_d),  # mark_unregistered lookup for D
-    ])
+    # Route by statement: the sweep SELECT (no per-urn equality) is the default; each
+    # mark_* single-row lookup is keyed on its own dataset_urn equality, so the A and D
+    # lookups return their own rows regardless of the order the sweep visits them in.
+    route_db_execute(
+        db,
+        [
+            (lambda s: "dataset_urn = " in s and _URN_A.lower() in s, _scalar_result(row_a)),
+            (lambda s: "dataset_urn = " in s and _URN_D.lower() in s, _scalar_result(row_d)),
+        ],
+        default=_scalars_result([row_a, row_b, row_c, row_d]),
+    )
 
     result = await sync_with_datahub(db, datahub, dataset_urns=None)
 
@@ -192,10 +208,11 @@ async def test_sync_full_sweep_no_commit(db: AsyncMock):
     datahub = AsyncMock()
     datahub.enumerate_datasets = AsyncMock(return_value=[_URN_A])
 
-    db.execute = AsyncMock(side_effect=[
-        _scalars_result([row_a]),
-        _scalar_result(row_a),
-    ])
+    route_db_execute(
+        db,
+        [(lambda s: "dataset_urn = " in s and _URN_A.lower() in s, _scalar_result(row_a))],
+        default=_scalars_result([row_a]),
+    )
 
     await sync_with_datahub(db, datahub, dataset_urns=None)
 
@@ -217,11 +234,14 @@ async def test_sync_scoped_only_touches_listed_urns(db: AsyncMock):
 
     # Scoped SELECT returns only rows for A and D
     # mark_registered(A), mark_unregistered(D)
-    db.execute = AsyncMock(side_effect=[
-        _scalars_result([row_a, row_d]),  # WHERE IN (A, D)
-        _scalar_result(row_a),            # mark_registered A
-        _scalar_result(row_d),            # mark_unregistered D
-    ])
+    route_db_execute(
+        db,
+        [
+            (lambda s: "dataset_urn = " in s and _URN_A.lower() in s, _scalar_result(row_a)),
+            (lambda s: "dataset_urn = " in s and _URN_D.lower() in s, _scalar_result(row_d)),
+        ],
+        default=_scalars_result([row_a, row_d]),  # scoped WHERE IN (A, D)
+    )
 
     result = await sync_with_datahub(db, datahub, dataset_urns=[_URN_A, _URN_D])
 
