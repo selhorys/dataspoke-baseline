@@ -12,3 +12,4 @@
 - [admin/dags spot drives real Airflow](project_admin_dags_spot_real_airflow.md) — schedule-control spot legitimately hits real Airflow (no stub dim, no UC pipeline); 503 covered by unit fake; do not flag
 - [Data hub action-button scoping](project_data_hub_action_button_scoping.md) — /data/[urn] Validation+MetaGen share Create/Edit/Save/Delete; unscoped .first() hits wrong panel
 - [Peripherals GET mask has no plaintext path](project_peripherals_get_mask_no_plaintext_path.md) — GET masks via *_is_set boolean + hardcoded ********; plaintext-injection patches are inert, real guard is positive == "********" + is_configured
+- [Metrics Redis lock undocumented](project_metrics_redis_lock_undocumented.md) — MetricsService.run has a metrics:running:{metric_id} SET NX lock absent from BACKEND.md §Concurrency Guards SET NX table; 409 METRIC_RUNNING is spec, key is impl
