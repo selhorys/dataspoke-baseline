@@ -249,6 +249,72 @@ async def test_trigger_and_wait_combined(client: AirflowClient):
     client._client.get.assert_called_once()
 
 
+# ── 401 refresh-and-retry ─────────────────────────────────────────────────────
+#
+# Contract: AirflowClient logs in lazily via POST /auth/token (Airflow 3 replaced
+# HTTP Basic with a short-lived JWT) and re-logs-in exactly ONCE on a 401, then
+# retries the original call once. A second consecutive 401 surfaces the error
+# (no infinite retry). Source: src/workflows/airflow/client.py docstring (lines
+# 6-7) and AirflowClient._authed_call (line ~119). This is the client's own
+# contract, not a DataSpoke spec document.
+
+
+async def test_authed_call_refreshes_and_retries_once_on_401(client: AirflowClient):
+    """A 401 triggers exactly one re-login (POST /auth/token) then a single retry.
+
+    First GET returns 401 → client invalidates its JWT, re-logs-in via
+    POST /auth/token, and retries the GET once, which succeeds.
+    """
+    ok = _mock_response(_make_dag_run("success"))
+    unauthorized = _mock_response({}, status_code=401)
+    client._client.get = AsyncMock(side_effect=[unauthorized, ok])
+    # Re-login round-trip: POST /auth/token returns a fresh JWT.
+    client._client.post = AsyncMock(
+        return_value=_mock_response({"access_token": "refreshed-jwt"})
+    )
+
+    result = await client.get_dag_run("ingestion", "run-1")
+
+    assert result.state == DagRunState.success
+    # Re-login happened exactly once (single refresh, not per-call).
+    assert client._client.post.call_count == 1, (
+        "client must re-log-in exactly once on a 401"
+    )
+    # Original call was retried exactly once after the refresh (2 GETs total).
+    assert client._client.get.call_count == 2
+    # The refreshed token is stamped on the shared client headers.
+    assert client._client.headers["Authorization"] == "Bearer refreshed-jwt"
+
+
+async def test_authed_call_second_consecutive_401_surfaces_error_no_infinite_retry(
+    client: AirflowClient,
+):
+    """A second consecutive 401 (after one refresh) surfaces the error, no retry loop.
+
+    Both GETs return 401; the client refreshes once, retries once, and the
+    still-401 response is raised via raise_for_status — it does not loop.
+    """
+    from httpx import HTTPStatusError
+
+    unauthorized = _mock_response({}, status_code=401)
+    client._client.get = AsyncMock(side_effect=[unauthorized, unauthorized])
+    client._client.post = AsyncMock(
+        return_value=_mock_response({"access_token": "refreshed-jwt"})
+    )
+
+    with pytest.raises(HTTPStatusError):
+        await client.get_dag_run("ingestion", "run-1")
+
+    # Exactly one refresh attempt — no infinite re-login loop.
+    assert client._client.post.call_count == 1, (
+        "a second 401 must not trigger a second refresh"
+    )
+    # Exactly one retry: the original call plus one retry = 2 GETs.
+    assert client._client.get.call_count == 2, (
+        "the client retries at most once on 401"
+    )
+
+
 # ── find_running_dag_runs ─────────────────────────────────────────────────────
 
 

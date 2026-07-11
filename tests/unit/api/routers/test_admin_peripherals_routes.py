@@ -57,7 +57,11 @@ import pytest
 
 from src.api.dependencies import get_db
 from src.api.main import app
-from src.backend.admin.peripheral_service import DatahubConfigDTO, LangfuseConfigDTO
+from src.backend.admin.peripheral_service import (
+    DatahubConfigDTO,
+    LangfuseConfigDTO,
+    SmtpConfigDTO,
+)
 from src.shared.db.models import PeripheralConfig
 from src.shared.secrets import SecretResolverUnavailable
 from tests.unit.api.conftest import _make_mock_user, auth_headers
@@ -66,12 +70,24 @@ from tests.unit.conftest import route_db_execute
 _PERIPHERALS = "/api/v1/admin/peripherals"
 _PERIPHERALS_DH = "/api/v1/admin/peripherals/datahub"
 _PERIPHERALS_LF = "/api/v1/admin/peripherals/langfuse"
+_PERIPHERALS_SMTP = "/api/v1/admin/peripherals/smtp"
 _INTERNAL_DH = "/internal/admin/peripherals/datahub"
 _INTERNAL_LF = "/internal/admin/peripherals/langfuse"
+_INTERNAL_SMTP = "/internal/admin/peripherals/smtp"
 _INTERNAL_TOKEN = "test-internal-secret"
 
 _FAKE_DH_DTO = DatahubConfigDTO(gms_url="http://gms:8080", kafka_brokers="kafka:9092")
 _FAKE_LF_DTO = LangfuseConfigDTO(host="http://langfuse:3000", public_key="pk-test")
+
+# SMTP DTO with the non-secret connection settings that make a peripheral configurable:
+# host AND from_address must both be non-empty for is_configured (with the password set).
+_FAKE_SMTP_DTO = SmtpConfigDTO(
+    host="smtp.example.com",
+    port=587,
+    username="mailer@example.com",
+    from_address="noreply@example.com",
+    use_tls=True,
+)
 
 # DTOs with the non-secret connection settings populated.
 _FAKE_DH_DTO_FULL = DatahubConfigDTO(
@@ -1411,3 +1427,583 @@ async def test_patch_datahub_accepts_empty_strings_to_clear_new_fields(client) -
         app.dependency_overrides.pop(get_db, None)
 
     assert resp.status_code == 200
+
+
+# ── SMTP peripheral ───────────────────────────────────────────────────────────
+#
+# spec: spec/API.md §Admin (/admin) — GET /admin/peripherals/smtp returns
+#   {host, port, username, from_address, use_tls, password, is_configured,
+#   updated_at}; `password` is masked ("" unset, "********" set).
+# spec: spec/API.md §Admin (/admin) — `is_configured` is a logical AND (config
+#   row present AND the associated K8s Secret set); PATCH routes the secret field
+#   (password) to the K8s Secret first, skipping the DB write on failure (503).
+# spec: spec/feature/BACKEND.md §Notifications / §SMTP Peripheral — SMTP is
+#   unconfigured when there is no row, host/from_address empty, or password unset.
+
+
+# ── SMTP auth gates ───────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_get_smtp_without_token_returns_401(client) -> None:
+    """GET /admin/peripherals/smtp without JWT returns 401.
+
+    spec: API.md §Authentication — admin routes require valid JWT.
+    """
+    resp = await client.get(_PERIPHERALS_SMTP)
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_get_smtp_non_admin_returns_403(client) -> None:
+    """GET /admin/peripherals/smtp with non-Admin role returns 403.
+
+    spec: API.md §Admin routes — Admin role required.
+    """
+    from src.api.auth.dependencies import require_authenticated
+    from src.backend.auth.privilege import AuthContext
+
+    reader_ctx = AuthContext(user=_make_mock_user(role="Reader"), effective_role="Reader")
+    app.dependency_overrides[require_authenticated] = lambda: reader_ctx
+    try:
+        resp = await client.get(_PERIPHERALS_SMTP, headers=auth_headers())
+        assert resp.status_code == 403
+    finally:
+        app.dependency_overrides.pop(require_authenticated, None)
+
+
+@pytest.mark.asyncio
+async def test_patch_smtp_without_token_returns_401(client) -> None:
+    """PATCH /admin/peripherals/smtp without JWT returns 401.
+
+    spec: API.md §Authentication — admin routes require valid JWT.
+    """
+    resp = await client.patch(_PERIPHERALS_SMTP, json={"host": "smtp.example.com"})
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_patch_smtp_non_admin_returns_403(client) -> None:
+    """PATCH /admin/peripherals/smtp with non-Admin role returns 403.
+
+    spec: API.md §Admin routes — Admin role required.
+    """
+    from src.api.auth.dependencies import require_authenticated
+    from src.backend.auth.privilege import AuthContext
+
+    reader_ctx = AuthContext(user=_make_mock_user(role="Reader"), effective_role="Reader")
+    app.dependency_overrides[require_authenticated] = lambda: reader_ctx
+    try:
+        resp = await client.patch(
+            _PERIPHERALS_SMTP,
+            json={"host": "smtp.example.com"},
+            headers=auth_headers(),
+        )
+        assert resp.status_code == 403
+    finally:
+        app.dependency_overrides.pop(require_authenticated, None)
+
+
+# ── SMTP GET — password masking ────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_get_smtp_password_masked_when_set(client) -> None:
+    """GET /admin/peripherals/smtp returns password="********" when set (never plaintext).
+
+    The handler reads only smtp_password_is_set() and emits the mask, so the
+    positive == "********" assertion is the direct guard against a regression that
+    serialized the real password.
+
+    spec: spec/API.md §Admin (/admin) — GET /admin/peripherals/smtp `password` is
+        masked ("" unset, "********" set).
+    """
+    _, db_gen = _fake_db()
+    app.dependency_overrides[get_db] = db_gen
+    try:
+        with (
+            patch(
+                "src.api.routers.admin.get_peripheral_config",
+                AsyncMock(return_value=_FAKE_SMTP_DTO),
+            ),
+            patch("src.api.routers.admin.smtp_password_is_set", return_value=True),
+        ):
+            resp = await client.get(_PERIPHERALS_SMTP, headers=auth_headers())
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["password"] == "********", (
+        f"password must be masked '********' when set; got {body['password']!r}."
+    )
+    # Non-secret connection settings are returned plain.
+    assert body["host"] == "smtp.example.com"
+    assert body["port"] == 587
+    assert body["username"] == "mailer@example.com"
+    assert body["from_address"] == "noreply@example.com"
+    assert body["use_tls"] is True
+
+
+@pytest.mark.asyncio
+async def test_get_smtp_password_empty_when_unset(client) -> None:
+    """GET /admin/peripherals/smtp returns password="" when the Secret is unset.
+
+    spec: spec/API.md §Admin (/admin) — `password` is "" when unset.
+    """
+    _, db_gen = _fake_db()
+    app.dependency_overrides[get_db] = db_gen
+    try:
+        with (
+            patch(
+                "src.api.routers.admin.get_peripheral_config",
+                AsyncMock(return_value=_FAKE_SMTP_DTO),
+            ),
+            patch("src.api.routers.admin.smtp_password_is_set", return_value=False),
+        ):
+            resp = await client.get(_PERIPHERALS_SMTP, headers=auth_headers())
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["password"] == "", (
+        f"password must be '' when unset; got {body['password']!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_smtp_empty_fields_when_unconfigured(client) -> None:
+    """GET /admin/peripherals/smtp returns empty/default fields when dto is None.
+
+    spec: src/api/routers/admin.py _smtp_dto_to_response — None dto → empty fields,
+        is_configured False.
+    """
+    _, db_gen = _fake_db()
+    app.dependency_overrides[get_db] = db_gen
+    try:
+        with (
+            patch(
+                "src.api.routers.admin.get_peripheral_config",
+                AsyncMock(return_value=None),
+            ),
+            patch("src.api.routers.admin.smtp_password_is_set", return_value=False),
+        ):
+            resp = await client.get(_PERIPHERALS_SMTP, headers=auth_headers())
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["host"] == ""
+    assert body["from_address"] == ""
+    assert body["password"] == ""
+    assert body["is_configured"] is False
+
+
+# ── SMTP is_configured predicate: host AND from_address AND password set ───────
+
+
+@pytest.mark.asyncio
+async def test_get_smtp_is_configured_true_when_host_from_and_password_all_set(client) -> None:
+    """is_configured=True only when host AND from_address AND password are all set.
+
+    spec: spec/feature/BACKEND.md §Notifications — SMTP is unconfigured when there
+        is no row, host/from_address empty, or password unset; the configured state
+        is the conjunction of all three.
+    """
+    _, db_gen = _fake_db()
+    app.dependency_overrides[get_db] = db_gen
+    try:
+        with (
+            patch(
+                "src.api.routers.admin.get_peripheral_config",
+                AsyncMock(return_value=_FAKE_SMTP_DTO),
+            ),
+            patch("src.api.routers.admin.smtp_password_is_set", return_value=True),
+        ):
+            resp = await client.get(_PERIPHERALS_SMTP, headers=auth_headers())
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["is_configured"] is True, (
+        "is_configured must be True when host, from_address, and password are all set. "
+        "spec: spec/feature/BACKEND.md §Notifications."
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_smtp_is_configured_false_when_password_unset(client) -> None:
+    """is_configured=False when host+from_address are set but the password is unset.
+
+    spec: spec/feature/BACKEND.md §Notifications — password unset ⇒ SMTP unconfigured.
+    spec: spec/API.md §Admin (/admin) — is_configured is an AND over the Secret.
+    """
+    _, db_gen = _fake_db()
+    app.dependency_overrides[get_db] = db_gen
+    try:
+        with (
+            patch(
+                "src.api.routers.admin.get_peripheral_config",
+                AsyncMock(return_value=_FAKE_SMTP_DTO),
+            ),
+            patch("src.api.routers.admin.smtp_password_is_set", return_value=False),
+        ):
+            resp = await client.get(_PERIPHERALS_SMTP, headers=auth_headers())
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["is_configured"] is False, (
+        "is_configured must be False when the password Secret is unset even though "
+        "host and from_address are present. spec: spec/feature/BACKEND.md §Notifications."
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_smtp_is_configured_false_when_from_address_empty(client) -> None:
+    """is_configured=False when from_address is empty even though host+password are set.
+
+    Isolates the from_address conjunct: with the password set and host present, an
+    empty from_address alone must still read back unconfigured.
+
+    spec: spec/feature/BACKEND.md §Notifications — host/from_address empty ⇒
+        SMTP unconfigured.
+    """
+    dto_no_from = SmtpConfigDTO(
+        host="smtp.example.com",
+        port=587,
+        username="mailer@example.com",
+        from_address="",
+        use_tls=True,
+    )
+    _, db_gen = _fake_db()
+    app.dependency_overrides[get_db] = db_gen
+    try:
+        with (
+            patch(
+                "src.api.routers.admin.get_peripheral_config",
+                AsyncMock(return_value=dto_no_from),
+            ),
+            # password IS set — isolates the from_address conjunct as the sole cause.
+            patch("src.api.routers.admin.smtp_password_is_set", return_value=True),
+        ):
+            resp = await client.get(_PERIPHERALS_SMTP, headers=auth_headers())
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["is_configured"] is False, (
+        "is_configured must be False when from_address is empty, even with host and "
+        "password set. spec: spec/feature/BACKEND.md §Notifications."
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_smtp_is_configured_false_when_host_empty(client) -> None:
+    """is_configured=False when host is empty even though from_address+password are set.
+
+    Isolates the host conjunct: with the password set and from_address present, an
+    empty host alone must still read back unconfigured. Without this case, dropping
+    the host term from the impl predicate would pass the other conjunct tests.
+
+    spec: spec/feature/BACKEND.md §Notifications — host/from_address empty ⇒
+        SMTP unconfigured.
+    """
+    dto_no_host = SmtpConfigDTO(
+        host="",
+        port=587,
+        username="mailer@example.com",
+        from_address="noreply@example.com",
+        use_tls=True,
+    )
+    _, db_gen = _fake_db()
+    app.dependency_overrides[get_db] = db_gen
+    try:
+        with (
+            patch(
+                "src.api.routers.admin.get_peripheral_config",
+                AsyncMock(return_value=dto_no_host),
+            ),
+            # password IS set — isolates the host conjunct as the sole cause.
+            patch("src.api.routers.admin.smtp_password_is_set", return_value=True),
+        ):
+            resp = await client.get(_PERIPHERALS_SMTP, headers=auth_headers())
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["is_configured"] is False, (
+        "is_configured must be False when host is empty, even with from_address and "
+        "password set. spec: spec/feature/BACKEND.md §Notifications."
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_peripherals_status_smtp_is_configured(client) -> None:
+    """GET /admin/peripherals reports smtp.is_configured with the same AND predicate.
+
+    The status-overview endpoint must fold host + from_address + password_set into
+    the smtp is_configured flag, matching the per-peripheral GET.
+
+    spec: spec/API.md §Admin (/admin) — GET /admin/peripherals returns
+        {..., smtp: {is_configured}}.
+    spec: spec/feature/BACKEND.md §Notifications — SMTP configured = host AND
+        from_address AND password set.
+    """
+    _, db_gen = _fake_db()
+    app.dependency_overrides[get_db] = db_gen
+    try:
+        with (
+            patch(
+                "src.api.routers.admin.get_peripheral_config",
+                AsyncMock(side_effect=[_FAKE_DH_DTO, _FAKE_LF_DTO, _FAKE_SMTP_DTO]),
+            ),
+            patch("src.api.routers.admin.datahub_token_is_set", return_value=True),
+            patch("src.api.routers.admin.langfuse_secret_key_is_set", return_value=True),
+            patch("src.api.routers.admin.smtp_password_is_set", return_value=True),
+        ):
+            resp = await client.get(_PERIPHERALS, headers=auth_headers())
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["smtp"]["is_configured"] is True, (
+        "smtp.is_configured must be True when host, from_address, and password are set. "
+        "spec: spec/feature/BACKEND.md §Notifications."
+    )
+
+
+# ── SMTP PATCH — password routed to Secret, never to DB ────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_patch_smtp_password_routes_to_secret_not_db(client) -> None:
+    """PATCH /admin/peripherals/smtp with only password calls set_smtp_password, NOT the DB.
+
+    When only password is sent, db_updates is empty so the router calls
+    invalidate_smtp_password_cache + get_peripheral_config (not patch_peripheral_config).
+    The plaintext password must never reach patch_peripheral_config.
+
+    spec: spec/API.md §Admin (/admin) — PATCH routes the secret field (password) to
+        the K8s Secret, never to the DB.
+    """
+    _, db_gen = _fake_db()
+    app.dependency_overrides[get_db] = db_gen
+    mock_set_pw = MagicMock()
+    mock_patch_db = AsyncMock(return_value=_FAKE_SMTP_DTO)
+    mock_invalidate = MagicMock()
+    try:
+        with (
+            patch("src.api.routers.admin.set_smtp_password", mock_set_pw),
+            patch("src.api.routers.admin.patch_peripheral_config", mock_patch_db),
+            patch("src.api.routers.admin.invalidate_smtp_password_cache", mock_invalidate),
+            patch(
+                "src.api.routers.admin.get_peripheral_config",
+                AsyncMock(return_value=_FAKE_SMTP_DTO),
+            ),
+            patch("src.api.routers.admin.smtp_password_is_set", return_value=True),
+        ):
+            resp = await client.patch(
+                _PERIPHERALS_SMTP,
+                json={"password": "smtp-pw-value"},
+                headers=auth_headers(),
+            )
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    mock_set_pw.assert_called_once_with("smtp-pw-value")
+    mock_patch_db.assert_not_called()
+    mock_invalidate.assert_called_once()
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["password"] == "********"
+    assert "smtp-pw-value" not in str(body), "Plaintext password must never appear in response."
+
+
+@pytest.mark.asyncio
+async def test_patch_smtp_secret_write_failure_returns_503_and_skips_db(client) -> None:
+    """PATCH /admin/peripherals/smtp when Secret write fails → 503; DB NOT updated.
+
+    spec: spec/API.md §Admin (/admin) — the DB write is skipped if the Secret write
+        fails (503).
+    spec: src/api/routers/admin.py _apply_smtp_patch_and_respond —
+        SecretResolverUnavailable → StorageUnavailableError → 503.
+    """
+    _, db_gen = _fake_db()
+    app.dependency_overrides[get_db] = db_gen
+    try:
+        with (
+            patch(
+                "src.api.routers.admin.set_smtp_password",
+                side_effect=SecretResolverUnavailable("out of cluster"),
+            ),
+            patch(
+                "src.api.routers.admin.patch_peripheral_config",
+                AsyncMock(),
+            ) as mock_patch_db,
+        ):
+            resp = await client.patch(
+                _PERIPHERALS_SMTP,
+                json={"password": "pw", "host": "smtp.example.com"},
+                headers=auth_headers(),
+            )
+            mock_patch_db.assert_not_called()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert resp.status_code == 503, (
+        f"SecretResolverUnavailable must map to 503; got {resp.status_code}: {resp.text}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_patch_smtp_empty_password_clears_secret(client) -> None:
+    """PATCH /admin/peripherals/smtp with password="" calls set_smtp_password("") to clear.
+
+    spec: spec/API.md §Admin (/admin) — an empty-string secret clears it.
+    """
+    _, db_gen = _fake_db()
+    app.dependency_overrides[get_db] = db_gen
+    mock_set_pw = MagicMock()
+    try:
+        with (
+            patch("src.api.routers.admin.set_smtp_password", mock_set_pw),
+            patch(
+                "src.api.routers.admin.get_peripheral_config",
+                AsyncMock(return_value=_FAKE_SMTP_DTO),
+            ),
+            patch("src.api.routers.admin.smtp_password_is_set", return_value=False),
+            patch("src.api.routers.admin.invalidate_smtp_password_cache", MagicMock()),
+        ):
+            resp = await client.patch(
+                _PERIPHERALS_SMTP,
+                json={"password": ""},
+                headers=auth_headers(),
+            )
+            mock_set_pw.assert_called_once_with("")
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["password"] == ""
+
+
+@pytest.mark.asyncio
+async def test_patch_smtp_omitting_password_does_not_touch_secret(client) -> None:
+    """PATCH /admin/peripherals/smtp without password field does not call set_smtp_password.
+
+    Omitting password means "leave unchanged" — the Secret write must be skipped.
+
+    spec: spec/API.md §Admin (/admin) — a secret field omitted from the body leaves
+        the Secret unchanged.
+    """
+    _, db_gen = _fake_db()
+    app.dependency_overrides[get_db] = db_gen
+    mock_set_pw = MagicMock()
+    try:
+        with (
+            patch("src.api.routers.admin.set_smtp_password", mock_set_pw),
+            patch(
+                "src.api.routers.admin.patch_peripheral_config",
+                AsyncMock(return_value=_FAKE_SMTP_DTO),
+            ),
+            patch("src.api.routers.admin.smtp_password_is_set", return_value=True),
+        ):
+            resp = await client.patch(
+                _PERIPHERALS_SMTP,
+                json={"host": "smtp-new.example.com"},
+                headers=auth_headers(),
+            )
+            mock_set_pw.assert_not_called()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_patch_smtp_non_secret_fields_written_to_db(client) -> None:
+    """PATCH /admin/peripherals/smtp with non-secret fields calls the DB patch.
+
+    Non-secret fields (host, from_address, port, ...) are written to the DB via
+    patch_peripheral_config keyed on "smtp".
+
+    spec: spec/feature/BACKEND.md §SMTP Peripheral — non-secret fields live in the
+        peripheral_config DB row under key smtp.
+    """
+    _, db_gen = _fake_db()
+    app.dependency_overrides[get_db] = db_gen
+    try:
+        with (
+            patch(
+                "src.api.routers.admin.patch_peripheral_config",
+                AsyncMock(return_value=_FAKE_SMTP_DTO),
+            ) as mock_patch_db,
+            patch("src.api.routers.admin.smtp_password_is_set", return_value=True),
+        ):
+            resp = await client.patch(
+                _PERIPHERALS_SMTP,
+                json={"host": "smtp-new.example.com", "from_address": "no-reply@example.com"},
+                headers=auth_headers(),
+            )
+            mock_patch_db.assert_called_once()
+            call_args = mock_patch_db.call_args
+            assert len(call_args.args) >= 2 and call_args.args[1] == "smtp", (
+                f"patch_peripheral_config must be called with 'smtp' as second arg; "
+                f"got args={call_args.args!r}, kwargs={call_args.kwargs!r}."
+            )
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_internal_patch_smtp_valid_token_returns_200(client) -> None:
+    """PATCH /internal/admin/peripherals/smtp with correct X-Internal-Token → 200.
+
+    spec: API.md §Internal Admin (/internal/admin) — valid token grants access;
+        `/internal/admin/peripherals/smtp` mirrors the admin PATCH.
+    """
+    _, db_gen = _fake_db()
+    app.dependency_overrides[get_db] = db_gen
+    try:
+        with (
+            patch("src.shared.settings.settings.internal_token", _INTERNAL_TOKEN),
+            patch(
+                "src.api.routers.admin.patch_peripheral_config",
+                AsyncMock(return_value=_FAKE_SMTP_DTO),
+            ),
+            patch("src.api.routers.admin.smtp_password_is_set", return_value=True),
+        ):
+            resp = await client.patch(
+                _INTERNAL_SMTP,
+                json={"host": "smtp.example.com"},
+                headers={"X-Internal-Token": _INTERNAL_TOKEN},
+            )
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["host"] == "smtp.example.com"
+
+
+@pytest.mark.asyncio
+async def test_internal_patch_smtp_without_token_returns_401(client) -> None:
+    """PATCH /internal/admin/peripherals/smtp without X-Internal-Token → 401.
+
+    spec: API.md §Internal Admin (/internal/admin) — X-Internal-Token required.
+    """
+    with patch("src.shared.settings.settings.internal_token", _INTERNAL_TOKEN):
+        resp = await client.patch(_INTERNAL_SMTP, json={"host": "smtp.example.com"})
+    assert resp.status_code == 401

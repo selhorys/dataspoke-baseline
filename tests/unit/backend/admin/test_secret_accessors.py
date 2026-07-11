@@ -36,6 +36,7 @@ from kubernetes.client.exceptions import ApiException
 import src.backend.admin.datahub_secret as _datahub_mod
 import src.backend.admin.langfuse_secret as _langfuse_mod
 import src.backend.admin.llm_secret as _llm_mod
+import src.backend.admin.smtp_secret as _smtp_mod
 from src.shared.secrets import SecretResolverUnavailable
 
 _NAMESPACE = "dataspoke"
@@ -97,7 +98,18 @@ SECRET_MODULES: list[SecretModule] = [
         secret_key="secret_key",
         logger_name="src.backend.admin.langfuse_secret",
     ),
-    # G4: append the smtp_secret row here — no other change is needed.
+    SecretModule(
+        id="smtp",
+        module=_smtp_mod,
+        get=_smtp_mod.get_smtp_password,
+        set=_smtp_mod.set_smtp_password,
+        is_set=_smtp_mod.smtp_password_is_set,
+        invalidate=_smtp_mod.invalidate_smtp_password_cache,
+        require_client_target="src.backend.admin.smtp_secret.require_k8s_client",
+        secret_name="dataspoke-smtp-secret",
+        secret_key="password",
+        logger_name="src.backend.admin.smtp_secret",
+    ),
 ]
 
 _over_modules = pytest.mark.parametrize(
