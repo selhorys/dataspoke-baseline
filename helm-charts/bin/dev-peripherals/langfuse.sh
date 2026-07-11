@@ -166,7 +166,7 @@ info "dataspoke-langfuse-secret applied in ${LANGFUSE_NS}."
 # Helm install/upgrade
 # ---------------------------------------------------------------------------
 INGRESS_DOMAIN="${DATASPOKE_KUBE_INGRESS_DOMAIN}"
-LANGFUSE_HOST="http://langfuse.${INGRESS_DOMAIN}"
+LANGFUSE_HOST="$(ingress_scheme)://langfuse.${INGRESS_DOMAIN}"
 
 info "Installing/upgrading langfuse Helm release in namespace ${LANGFUSE_NS}..."
 helm upgrade --install langfuse "$CHART_DIR" \

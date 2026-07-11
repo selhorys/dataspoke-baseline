@@ -59,9 +59,12 @@ INGRESS_MODE="$(ingress_mode)"
 INGRESS_IP="${DATASPOKE_KUBE_INGRESS_IP:-}"
 DOMAIN="${DATASPOKE_KUBE_INGRESS_DOMAIN:-}"
 
+SCHEME="$(ingress_scheme)"
+
 if [[ "$INGRESS_MODE" == "shared" ]]; then
-  # Shared mode: HTTP rides the pre-set domain; TCP services are reached on
-  # 127.0.0.1 via `kubectl port-forward` (bin/port-forward.sh). No ingress IP.
+  # Shared mode: virtual hosts ride the pre-set domain over $SCHEME; TCP
+  # services are reached on 127.0.0.1 via `kubectl port-forward`
+  # (bin/port-forward.sh). No ingress IP.
   if [[ -z "$DOMAIN" ]]; then
     echo -e "\033[0;31m[ERROR]\033[0m DATASPOKE_KUBE_INGRESS_DOMAIN must be set in .env (shared ingress mode)." >&2
     exit 1
@@ -79,10 +82,10 @@ fi
 # ---------------------------------------------------------------------------
 # Tier A: HTTP services via ingress hostname
 # ---------------------------------------------------------------------------
-DS_API_URL="http://api.${DOMAIN}"
-DH_GMS_URL="http://datahub.${DOMAIN}/gms"
-DH_UI_URL="http://datahub.${DOMAIN}"
-AIRFLOW_URL="http://airflow.${DOMAIN}"
+DS_API_URL="${SCHEME}://api.${DOMAIN}"
+DH_GMS_URL="${SCHEME}://datahub.${DOMAIN}/gms"
+DH_UI_URL="${SCHEME}://datahub.${DOMAIN}"
+AIRFLOW_URL="${SCHEME}://airflow.${DOMAIN}"
 DS_AIRFLOW_USER="${DATASPOKE_TEST_AIRFLOW_USER:-admin}"
 DS_AIRFLOW_PASSWORD="${DATASPOKE_TEST_AIRFLOW_PASSWORD:-admin}"
 
@@ -303,7 +306,7 @@ check_dataspoke_api() {
 }
 
 check_dataspoke_frontend() {
-  local fe_url="http://app.${DOMAIN}"
+  local fe_url="${SCHEME}://app.${DOMAIN}"
   local label="dataspoke-frontend (${fe_url})"
   if ! _ingress_port_open; then
     _fail "$label — ingress not reachable"
@@ -320,7 +323,7 @@ check_dataspoke_frontend() {
 }
 
 check_dataspoke_langfuse() {
-  local lf_url="http://langfuse.${DOMAIN}"
+  local lf_url="${SCHEME}://langfuse.${DOMAIN}"
   local label="langfuse-web (${lf_url})"
   if ! _ingress_port_open; then
     _fail "$label — ingress not reachable"

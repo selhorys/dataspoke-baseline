@@ -3,7 +3,8 @@
 # admin API. Source values: DATASPOKE_DEV_LLM_{PROVIDER,MODEL} from .env.
 #
 # Auth: retrieves DATASPOKE_INTERNAL_TOKEN from the running API pod.
-# Endpoint: http://api.<DOMAIN>/internal/admin/conf
+# Endpoint: <scheme>://api.<DOMAIN>/internal/admin/conf (scheme per
+# DATASPOKE_KUBE_INGRESS_SCHEME, default http)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -30,6 +31,7 @@ DOMAIN="${DATASPOKE_KUBE_INGRESS_DOMAIN:-}"
 if [[ -z "$DOMAIN" ]]; then
   error "DATASPOKE_KUBE_INGRESS_DOMAIN not set in .env — cannot reach the admin API."
 fi
+SCHEME="$(ingress_scheme)"
 
 # ---------------------------------------------------------------------------
 # Retrieve internal token from the running API pod
@@ -49,7 +51,7 @@ info "Internal token retrieved."
 if [[ -n "${DATASPOKE_DEV_LLM_PROVIDER:-}" && -n "${DATASPOKE_DEV_LLM_MODEL:-}" ]]; then
   info "Seeding dev LLM provider/model into runtime config via /internal/admin/conf..."
   HTTP_CODE=$(curl -fsS -o /tmp/seed-resp.json -w "%{http_code}" -X PATCH \
-    "http://api.${DOMAIN}/internal/admin/conf" \
+    "${SCHEME}://api.${DOMAIN}/internal/admin/conf" \
     -H "X-Internal-Token: ${INTERNAL_TOKEN}" \
     -H "Content-Type: application/json" \
     -d "{\"llm_provider\": \"${DATASPOKE_DEV_LLM_PROVIDER}\", \"llm_model\": \"${DATASPOKE_DEV_LLM_MODEL}\"}" \
@@ -59,7 +61,7 @@ if [[ -n "${DATASPOKE_DEV_LLM_PROVIDER:-}" && -n "${DATASPOKE_DEV_LLM_MODEL:-}" 
       info "OK (HTTP ${HTTP_CODE}): Runtime config seeded (provider=${DATASPOKE_DEV_LLM_PROVIDER} model=${DATASPOKE_DEV_LLM_MODEL})."
       ;;
     *)
-      error "PATCH failed (HTTP ${HTTP_CODE}): http://api.${DOMAIN}/internal/admin/conf — see /tmp/seed-resp.json"
+      error "PATCH failed (HTTP ${HTTP_CODE}): ${SCHEME}://api.${DOMAIN}/internal/admin/conf — see /tmp/seed-resp.json"
       ;;
   esac
 else
@@ -71,7 +73,7 @@ fi
 # ---------------------------------------------------------------------------
 info "Seeding stub service flags into runtime config via /internal/admin/conf..."
 HTTP_CODE=$(curl -fsS -o /tmp/seed-stub-resp.json -w "%{http_code}" -X PATCH \
-  "http://api.${DOMAIN}/internal/admin/conf" \
+  "${SCHEME}://api.${DOMAIN}/internal/admin/conf" \
   -H "X-Internal-Token: ${INTERNAL_TOKEN}" \
   -H "Content-Type: application/json" \
   -d '{"stub_redis_client": true, "stub_llm_client": true, "stub_pgvector_manager": true, "stub_notification_service": true}' \
@@ -81,6 +83,6 @@ case "$HTTP_CODE" in
     info "OK (HTTP ${HTTP_CODE}): Stub service flags seeded."
     ;;
   *)
-    error "PATCH failed (HTTP ${HTTP_CODE}): http://api.${DOMAIN}/internal/admin/conf — see /tmp/seed-stub-resp.json"
+    error "PATCH failed (HTTP ${HTTP_CODE}): ${SCHEME}://api.${DOMAIN}/internal/admin/conf — see /tmp/seed-stub-resp.json"
     ;;
 esac

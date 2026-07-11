@@ -289,7 +289,7 @@ directly from chart values, never sourced from `.env`:
 
 | Env var | Chart value | Role |
 |---|---|---|
-| `DATASPOKE_CORS_ORIGINS` | `config.corsOrigins` | Comma-separated CORS origins the API accepts (the browser UI origin). |
+| `DATASPOKE_CORS_ORIGINS` | `config.corsOrigins` | Comma-separated CORS origins the API accepts (the browser UI origin). Dev always lists `http://localhost:3000` plus both `http://app.<domain>` and `https://app.<domain>`, so a UI page served over either scheme passes CORS regardless of `DATASPOKE_KUBE_INGRESS_SCHEME`. |
 | `DATASPOKE_COOKIE_SECURE` | `auth.cookieSecure` | `Secure` flag on auth cookies — `true` in `values.yaml`, `false` in `values-dev.yaml` for HTTP laptop browsers. |
 | `DATASPOKE_GOOGLE_OAUTH_CLIENT_ID` | `auth.googleClientId` | Google OAuth public client id; absence disables Google login. |
 | `DATASPOKE_OAUTH_POST_LOGIN_REDIRECT` | `config.oauthPostLoginRedirect` | URL the Google/OIDC callback 302-redirects to after login (the frontend origin). `install.sh` sets it per `--frontend` mode (`local`→`localhost:3000`, `cluster`→`app.<domain>`); default `"/"` only works when UI and API share a host. |
@@ -341,6 +341,24 @@ Same convention in both profiles; values differ.
   operator-pre-set to a real cluster-published hostname (e.g.
   `dataspoke-dev.your-host.com`, DNS published by the cluster's external-dns);
   prod: operator-supplied.
+- `DATASPOKE_KUBE_INGRESS_SCHEME` — `http` (default, both modes) or `https`.
+  Selects the URL scheme for every ingress-domain-based URL the dev install
+  path builds (frontend config values, `src/frontend/.env.local`
+  `NEXT_PUBLIC_*`, the post-login redirect, the DataHub OIDC base, post-install
+  seed endpoints, `health-check.sh` probes, the host-bearing `DATASPOKE_TEST_*`
+  URLs, and printed access URLs). Set `https` when the shared controller
+  terminates TLS in front of the virtual hosts (it emits HSTS, so HTTP pages
+  break under mixed-content/auto-upgrade). Validated by the `ingress_scheme()`
+  helper in `bin/lib/helpers.sh`; any other value errors. IP:port TCP endpoints
+  (dev-lock, Kafka, Postgres) bypass the ingress and never take the scheme.
+  Changing the scheme changes the Google OAuth redirect URI the dev DataHub
+  OIDC login registers — the operator must register the matching URI.
+- `DATASPOKE_KUBE_INGRESS_TLS_SECRET` — optional, default empty. When set, the
+  dev install emits `tls:` blocks referencing this Kubernetes TLS Secret on the
+  three dev ingresses DataSpoke owns (API, frontend subchart, Airflow
+  chart-native). Leave empty when the shared controller terminates TLS with a
+  controller-level or wildcard cert (e.g. behind an ALB) and per-Ingress TLS
+  config is unnecessary. See §Ingress.
 
 ### Tier 3 — Dev-only inputs (`DATASPOKE_DEV_*`)
 
@@ -654,9 +672,10 @@ script installs nothing. It verifies the `DATASPOKE_KUBE_INGRESS_CLASS`
 IngressClass (default `nginx`) exists and that the operator has pre-set
 `DATASPOKE_KUBE_INGRESS_DOMAIN`, then early-exits — leaving the controller
 untouched (`uninstall.sh` likewise leaves it alone). The shared controller
-serves HTTP virtual hosts only; the TCP datastores are not published on it and
-are reached on `127.0.0.1` via `bin/port-forward.sh`. No `INGRESS_IP` is
-written (it stays blank).
+serves the virtual hosts over the scheme set by `DATASPOKE_KUBE_INGRESS_SCHEME`
+(`http` or `https`); the TCP datastores are not published on it, independent of
+the scheme, and are reached on `127.0.0.1` via `bin/port-forward.sh`. No
+`INGRESS_IP` is written (it stays blank).
 
 ### DataHub
 
@@ -890,7 +909,8 @@ DataSpoke supports two dev ingress modes, selected by
 | Target cluster | GKE Autopilot, minikube | AWS/EKS, or any cluster with a pre-existing controller |
 | Controller | DataSpoke installs & owns nginx-ingress + a LoadBalancer | reuses the operator's controller; installs nothing |
 | Domain | derived `<IP>.nip.io` from the LoadBalancer IP | operator-pre-set real hostname (DNS published by the cluster, e.g. external-dns) |
-| HTTP virtual hosts | ✓ (app/api/datahub/airflow/langfuse) | ✓ (same hosts, on the operator's controller) |
+| Virtual-host scheme | `http` (typical) | `http` or `https` per `DATASPOKE_KUBE_INGRESS_SCHEME`; `https` when the controller terminates TLS + HSTS |
+| Virtual hosts | ✓ (app/api/datahub/airflow/langfuse) | ✓ (same hosts, on the operator's controller) |
 | TCP datastores | exposed via LoadBalancer TCP passthrough on the IP | not exposed — reached on `127.0.0.1` via `bin/port-forward.sh` |
 | Kafka EXTERNAL listener advertises | `<INGRESS_IP>:<port>` | `127.0.0.1:<port>` |
 | Teardown | `uninstall.sh` removes the controller | controller left untouched |
@@ -903,6 +923,18 @@ the same reuse posture: the operator's controller serves the hosts, with
 Frontend, API, and Airflow each have an `ingress` block in their values
 supporting `className` (nginx, alb, traefik, etc.), TLS via cert-manager
 annotations, and customizable host/path rules.
+
+For the dev install path, `DATASPOKE_KUBE_INGRESS_TLS_SECRET` (optional, default
+empty) controls per-Ingress TLS on the three dev ingresses DataSpoke owns. When
+set, the install emits a `tls:` block referencing that Kubernetes TLS Secret on
+the API ingress (`api.ingress.tls`), the frontend subchart ingress
+(`frontend.ingress.tls`), and the Airflow chart-native ingress
+(`ingress.apiServer.hosts[].tls`). When empty there are no per-Ingress TLS
+blocks — the case where the shared controller terminates TLS with a
+controller-level or wildcard cert (e.g. behind an ALB), so per-Ingress config is
+unnecessary. This is orthogonal to `DATASPOKE_KUBE_INGRESS_SCHEME`: the scheme
+governs the URLs the install builds, the TLS Secret governs whether the
+Ingresses themselves carry TLS.
 
 | Resource | Location | Routes |
 |---|---|---|
@@ -923,13 +955,16 @@ segments carry `__*_NS__` placeholders rendered from `.env` at install (see
 Kafka services advertise `<INGRESS_IP>:<port>` as their EXTERNAL listener so
 host-side producers/consumers reach them through the controller.
 
-In **shared** mode the operator's controller serves only HTTP, so the TCP
-datastores are not on the ingress. `bin/port-forward.sh` runs in the
-foreground and `kubectl port-forward`s the same six services to their canonical
-ports on `127.0.0.1`; Kafka EXTERNAL listeners advertise `127.0.0.1:<port>`.
-Integration tests, `health-check.sh`, and `helm-charts/.env.dev`'s
-`DATASPOKE_TEST_*` host values all resolve to `127.0.0.1` while the
-port-forward holds.
+In **shared** mode the operator's controller serves the virtual hosts over
+`http` or `https` per `DATASPOKE_KUBE_INGRESS_SCHEME` — a TLS-terminating
+controller (emitting HSTS) requires `https` so browser login is not broken by
+mixed-content or auto-upgrade. The TCP datastores are independent of the scheme:
+they are never on the ingress. `bin/port-forward.sh` runs in the foreground and
+`kubectl port-forward`s the same six services to their canonical ports on
+`127.0.0.1`; Kafka EXTERNAL listeners advertise `127.0.0.1:<port>`. Integration
+tests, `health-check.sh`, and `helm-charts/.env.dev`'s TCP `DATASPOKE_TEST_*`
+host values all resolve to `127.0.0.1` while the port-forward holds, regardless
+of the virtual-host scheme.
 
 ### Network Policy
 

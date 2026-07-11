@@ -5,7 +5,8 @@
 # exits cleanly.
 #
 # Auth: retrieves DATASPOKE_INTERNAL_TOKEN from the running API pod.
-# Endpoint: http://api.<DOMAIN>/internal/admin/bootstrap
+# Endpoint: <scheme>://api.<DOMAIN>/internal/admin/bootstrap (scheme per
+# DATASPOKE_KUBE_INGRESS_SCHEME, default http)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -32,6 +33,7 @@ DOMAIN="${DATASPOKE_KUBE_INGRESS_DOMAIN:-}"
 if [[ -z "$DOMAIN" ]]; then
   error "DATASPOKE_KUBE_INGRESS_DOMAIN not set in .env — cannot reach the admin API."
 fi
+SCHEME="$(ingress_scheme)"
 
 # ---------------------------------------------------------------------------
 # Retrieve internal token from the running API pod
@@ -50,7 +52,7 @@ info "Internal token retrieved."
 # ---------------------------------------------------------------------------
 info "Calling POST /internal/admin/bootstrap to seed default admin user..."
 HTTP_CODE=$(curl -sS -o /tmp/seed-admin-resp.json -w "%{http_code}" -X POST \
-  "http://api.${DOMAIN}/internal/admin/bootstrap" \
+  "${SCHEME}://api.${DOMAIN}/internal/admin/bootstrap" \
   -H "X-Internal-Token: ${INTERNAL_TOKEN}" \
   -H "Content-Type: application/json" \
   -d '{}' \
@@ -83,7 +85,7 @@ case "$HTTP_CODE" in
         exit 0
         ;;
       *)
-        error "POST failed (HTTP 503, error_code=${ERROR_CODE:-unknown}): http://api.${DOMAIN}/internal/admin/bootstrap — see /tmp/seed-admin-resp.json"
+        error "POST failed (HTTP 503, error_code=${ERROR_CODE:-unknown}): ${SCHEME}://api.${DOMAIN}/internal/admin/bootstrap — see /tmp/seed-admin-resp.json"
         ;;
     esac
     ;;
@@ -91,9 +93,9 @@ case "$HTTP_CODE" in
     error "Bootstrap rejected with HTTP ${HTTP_CODE} — X-Internal-Token mismatch. Re-check dataspoke-secrets and the API pod env."
     ;;
   000)
-    error "Could not reach http://api.${DOMAIN}/internal/admin/bootstrap — check ingress, DNS, and that the dataspoke-api pod is Ready."
+    error "Could not reach ${SCHEME}://api.${DOMAIN}/internal/admin/bootstrap — check ingress, DNS, and that the dataspoke-api pod is Ready."
     ;;
   *)
-    error "POST failed (HTTP ${HTTP_CODE}): http://api.${DOMAIN}/internal/admin/bootstrap — see /tmp/seed-admin-resp.json"
+    error "POST failed (HTTP ${HTTP_CODE}): ${SCHEME}://api.${DOMAIN}/internal/admin/bootstrap — see /tmp/seed-admin-resp.json"
     ;;
 esac

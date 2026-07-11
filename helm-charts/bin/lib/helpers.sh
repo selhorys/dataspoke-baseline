@@ -46,11 +46,40 @@ use_context() {
 #             LoadBalancer that assigns an external IP, and derives the
 #             <IP>.nip.io domain (GKE Autopilot / minikube default).
 #   shared  — reuse a pre-existing cluster ingress controller. No controller
-#             install and no LoadBalancer IP; HTTP rides a pre-set domain
-#             (DATASPOKE_KUBE_INGRESS_DOMAIN) and TCP services are reached via
+#             install and no LoadBalancer IP; virtual hosts ride a pre-set
+#             domain (DATASPOKE_KUBE_INGRESS_DOMAIN) over http or https per
+#             DATASPOKE_KUBE_INGRESS_SCHEME, and TCP services are reached via
 #             `kubectl port-forward` (bin/port-forward.sh), not the ingress.
 # Default: managed (preserves existing behavior when the var is unset).
 ingress_mode() { echo "${DATASPOKE_KUBE_INGRESS_MODE:-managed}"; }
+
+# ingress_scheme
+# Echo the URL scheme for ingress-domain-based URLs from
+# DATASPOKE_KUBE_INGRESS_SCHEME: `http` (default, both modes) or `https` (set
+# when a shared controller terminates TLS + HSTS in front of the virtual
+# hosts). Errors out on any other value. IP:port TCP endpoints (dev-lock,
+# Kafka, Postgres) bypass the ingress and never take this scheme.
+ingress_scheme() {
+  local scheme="${DATASPOKE_KUBE_INGRESS_SCHEME:-http}"
+  if [[ "$scheme" != "http" && "$scheme" != "https" ]]; then
+    error "Invalid DATASPOKE_KUBE_INGRESS_SCHEME '${scheme}'. Must be 'http' or 'https'."
+  fi
+  echo "$scheme"
+}
+
+# ingress_tls_secret
+# Echo the validated TLS Secret name from DATASPOKE_KUBE_INGRESS_TLS_SECRET,
+# or an empty string when unset (no per-Ingress TLS). Errors out if the value
+# is non-empty and not a valid DNS-1123 subdomain (Kubernetes object-name
+# rules) — it is interpolated into `helm --set` tokens, so an unvalidated
+# value could inject extra flags via a comma or newline.
+ingress_tls_secret() {
+  local secret="${DATASPOKE_KUBE_INGRESS_TLS_SECRET:-}"
+  if [[ -n "$secret" && ! "$secret" =~ ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$ ]]; then
+    error "Invalid DATASPOKE_KUBE_INGRESS_TLS_SECRET '${secret}'. Must be a valid DNS-1123 subdomain (lowercase alphanumeric, '-', '.')."
+  fi
+  echo "$secret"
+}
 
 # tcp_access_host
 # Echo the host that laptop/test clients use to reach TCP services (Postgres,

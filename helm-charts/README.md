@@ -62,29 +62,36 @@ The `--frontend` flag controls how the Next.js UI is handled:
 ## Ingress Endpoints
 
 All HTTP services are accessed via virtual-host routing on the ingress
-controller (`http://<service>.<INGRESS_DOMAIN>/`); TCP services (databases,
-brokers) are exposed on dedicated ports. How the controller, `<INGRESS_DOMAIN>`,
-and `<TCP_HOST>` are provided depends on `DATASPOKE_KUBE_INGRESS_MODE` in
-`helm-charts/.env.dev`:
+controller (`<SCHEME>://<service>.<INGRESS_DOMAIN>/`); TCP services (databases,
+brokers) are exposed on dedicated ports and never take the scheme. How the
+controller, `<INGRESS_DOMAIN>`, `<SCHEME>`, and `<TCP_HOST>` are provided
+depends on `DATASPOKE_KUBE_INGRESS_MODE` in `helm-charts/.env.dev`:
 
 - **`managed`** (default) — the install owns an nginx-ingress controller.
   `<INGRESS_DOMAIN>` auto-derives to `<LoadBalancer-IP>.nip.io` (wildcard DNS,
   no `/etc/hosts` entries) and `<TCP_HOST>` is that LoadBalancer IP (TCP
-  passthrough on the controller).
+  passthrough on the controller). `<SCHEME>` is `http` (typical).
 - **`shared`** — the install reuses the cluster's pre-existing ingress
   controller (e.g. AWS/EKS). The operator pre-sets
   `DATASPOKE_KUBE_INGRESS_DOMAIN`, and `<TCP_HOST>` is `127.0.0.1` — TCP
   services are forwarded to the same ports via `./helm-charts/bin/port-forward.sh`.
+  `<SCHEME>` is `http` or `https` per `DATASPOKE_KUBE_INGRESS_SCHEME` — set
+  `https` when the shared controller terminates TLS + HSTS in front of the
+  virtual hosts, since an `http` page would break under browser
+  mixed-content/auto-upgrade. `DATASPOKE_KUBE_INGRESS_TLS_SECRET` (optional)
+  additionally puts a `tls:` block on the three dev ingresses DataSpoke owns
+  (API, frontend, Airflow) — leave it empty when the controller terminates TLS
+  with a controller-level or wildcard cert.
 
 | Service | Address | Credentials |
 |---------|---------|-------------|
-| DataHub UI | `http://datahub.<INGRESS_DOMAIN>/` | `datahub` / `datahub` |
-| DataHub GMS | `http://datahub.<INGRESS_DOMAIN>/gms/` | -- |
-| DataSpoke Web UI (dev `--frontend cluster`) | `http://app.<INGRESS_DOMAIN>/` | `dataspoke` / `dataspoke` — rotate via `PATCH /auth/me` before production |
+| DataHub UI | `<SCHEME>://datahub.<INGRESS_DOMAIN>/` | `datahub` / `datahub` |
+| DataHub GMS | `<SCHEME>://datahub.<INGRESS_DOMAIN>/gms/` | -- |
+| DataSpoke Web UI (dev `--frontend cluster`) | `<SCHEME>://app.<INGRESS_DOMAIN>/` | `dataspoke` / `dataspoke` — rotate via `PATCH /auth/me` before production |
 | DataSpoke Web UI (dev `--frontend local`) | `http://localhost:3000` | same as above |
-| DataSpoke API | `http://api.<INGRESS_DOMAIN>/api/v1/` | per `.env` JWT |
-| Airflow UI | `http://airflow.<INGRESS_DOMAIN>/` | `admin` / `admin` (see `.env`) |
-| Langfuse UI | `http://langfuse.<INGRESS_DOMAIN>/` | `DATASPOKE_DEV_LANGFUSE_INIT_USER_{EMAIL,PASSWORD}` in `helm-charts/.env.dev` (auto-generated on first install) |
+| DataSpoke API | `<SCHEME>://api.<INGRESS_DOMAIN>/api/v1/` | per `.env` JWT |
+| Airflow UI | `<SCHEME>://airflow.<INGRESS_DOMAIN>/` | `admin` / `admin` (see `.env`) |
+| Langfuse UI | `<SCHEME>://langfuse.<INGRESS_DOMAIN>/` | `DATASPOKE_DEV_LANGFUSE_INIT_USER_{EMAIL,PASSWORD}` in `helm-charts/.env.dev` (auto-generated on first install) |
 | DataSpoke PostgreSQL | `<TCP_HOST>:9201` | per `.env` |
 | Redis | `<TCP_HOST>:9202` | per `.env` |
 | DataHub Kafka | `<TCP_HOST>:9005` | -- |
@@ -107,7 +114,7 @@ To deploy the containerised frontend in-cluster instead:
 
 ```bash
 ./helm-charts/bin/install.sh --profile dev --frontend cluster
-# Open http://app.<INGRESS_DOMAIN>/  —  login: dataspoke@dataspoke.local / dataspoke
+# Open <SCHEME>://app.<INGRESS_DOMAIN>/  —  login: dataspoke@dataspoke.local / dataspoke
 ```
 
 The `--components frontend` fast path (rebuild + redeploy only the frontend pod) remains available as a code-iteration shortcut.

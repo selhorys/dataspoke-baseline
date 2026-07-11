@@ -31,6 +31,7 @@ if [[ "$(ingress_mode)" != "shared" ]]; then
   : "${DATASPOKE_KUBE_INGRESS_IP:?required in managed mode — run bin/dev-peripherals/nginx-ingress.sh first to populate this in .env}"
 fi
 KAFKA_EXTERNAL_HOST="$(tcp_access_host)"
+SCHEME="$(ingress_scheme)"
 
 NS="${DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE}"
 
@@ -119,9 +120,12 @@ if [[ -n "${DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_ID:-}" && -n "${DATASPOKE_DEV_GOOG
   # = "(.*)" keeps the full email as the corpuser id (default "([^@]+)" strips the
   # domain), so it matches DataSpoke-mirrored corpusers (urn:li:corpuser:<email>).
   # The chart derives an https AUTH_OIDC_BASE_URL from the ingress host; dev serves
-  # DataHub over plain HTTP, so set oidcBaseUrl to override it (one env value — an
-  # extraEnvs duplicate would break the strategic-merge patch on helm upgrade) so the
-  # OAuth redirect_uri matches the registered http://datahub.../callback/oidc.
+  # DataHub over the scheme set by DATASPOKE_KUBE_INGRESS_SCHEME (http by default),
+  # so set oidcBaseUrl to override it (one env value — an extraEnvs duplicate would
+  # break the strategic-merge patch on helm upgrade) so the OAuth redirect_uri
+  # matches the registered <scheme>://datahub.../callback/oidc. The registered
+  # Google OAuth redirect URI must match this scheme — changing
+  # DATASPOKE_KUBE_INGRESS_SCHEME requires updating it in the Google Cloud Console.
   # provider=google makes the chart set the OIDC discoveryUri automatically.
 
   # Store the OIDC client secret in a K8s Secret so it never appears in helm
@@ -135,7 +139,7 @@ if [[ -n "${DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_ID:-}" && -n "${DATASPOKE_DEV_GOOG
     --from-literal=client-secret="${DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_SECRET}" \
     --dry-run=client -o yaml | kubectl apply -f -
 
-  oidc_base="http://datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN:-dev.dataspoke.example.com}"
+  oidc_base="${SCHEME}://datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN:-dev.dataspoke.example.com}"
   oidc_args+=(
     --set "datahub-frontend.oidcAuthentication.enabled=true"
     --set-string "datahub-frontend.oidcAuthentication.provider=google"
@@ -226,7 +230,7 @@ if [[ -n "${DATASPOKE_KUBE_INGRESS_DOMAIN:-}" ]]; then
   DATAHUB_HOST="datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN}"
   sed "s/__DATAHUB_INGRESS_HOST__/${DATAHUB_HOST}/g" \
     "$PERIPHERALS_DIR/datahub/gms-ingress.yaml" | kubectl apply -n "${NS}" -f -
-  info "GMS ingress applied: http://${DATAHUB_HOST}/gms/"
+  info "GMS ingress applied: ${SCHEME}://${DATAHUB_HOST}/gms/"
 
   # Reconcile datahub-frontend ingress host to avoid stale defaults.
   LIVE_FE_HOST=$(kubectl get ingress datahub-datahub-frontend -n "${NS}" \
@@ -251,7 +255,7 @@ fi
 # ---------------------------------------------------------------------------
 if [[ -n "${DATASPOKE_KUBE_INGRESS_DOMAIN:-}" ]]; then
   upsert_env_var DATASPOKE_TEST_DATAHUB_GMS_URL \
-    "http://datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN}/gms" \
+    "${SCHEME}://datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN}/gms" \
     "$ENV_FILE"
   upsert_env_var DATASPOKE_TEST_DATAHUB_KAFKA_BROKERS \
     "${KAFKA_EXTERNAL_HOST}:9005" \
@@ -265,7 +269,7 @@ fi
 # Generate Personal Access Token (PAT) for SDK/CLI access
 # ---------------------------------------------------------------------------
 if [[ -n "${DATASPOKE_KUBE_INGRESS_DOMAIN:-}" ]]; then
-  GMS_URL="http://datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN}/gms"
+  GMS_URL="${SCHEME}://datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN}/gms"
 
   # Re-read .env to pick up any existing token
   source "$ENV_FILE"
@@ -388,8 +392,8 @@ info "DataHub installation complete."
 kubectl get pods -n "${NS}"
 echo ""
 if [[ -n "${DATASPOKE_KUBE_INGRESS_DOMAIN:-}" ]]; then
-  echo "  DataHub UI:  http://datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN}/"
-  echo "  DataHub GMS: http://datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN}/gms/"
+  echo "  DataHub UI:  ${SCHEME}://datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN}/"
+  echo "  DataHub GMS: ${SCHEME}://datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN}/gms/"
 fi
 echo "  Credentials: datahub / datahub"
 echo ""

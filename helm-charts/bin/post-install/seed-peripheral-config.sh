@@ -5,7 +5,8 @@
 # already in K8s Secrets placed by install.sh.
 #
 # Auth: retrieves DATASPOKE_INTERNAL_TOKEN from the running API pod.
-# Endpoint: http://api.<DOMAIN>/internal/admin/peripherals/{datahub,langfuse}
+# Endpoint: <scheme>://api.<DOMAIN>/internal/admin/peripherals/{datahub,langfuse}
+# (scheme per DATASPOKE_KUBE_INGRESS_SCHEME, default http)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -33,6 +34,7 @@ DOMAIN="${DATASPOKE_KUBE_INGRESS_DOMAIN:-}"
 if [[ -z "$DOMAIN" ]]; then
   error "DATASPOKE_KUBE_INGRESS_DOMAIN not set in .env — cannot reach the admin API."
 fi
+SCHEME="$(ingress_scheme)"
 
 # The API runs in-cluster, so its peripheral_config must hold the
 # in-cluster service DNS (not the ingress URL that .env now stores for
@@ -52,7 +54,7 @@ if [[ -z "$INTERNAL_TOKEN" ]]; then
 fi
 info "Internal token retrieved."
 
-BASE_URL="http://api.${DOMAIN}/internal/admin/peripherals"
+BASE_URL="${SCHEME}://api.${DOMAIN}/internal/admin/peripherals"
 
 # ---------------------------------------------------------------------------
 # Seed DataHub peripheral config (required fields + optional operator metadata)
