@@ -34,8 +34,10 @@ async def api_token_user_access_token(integration_db_url: str) -> str:
     Seeds via google_sub (password_hash=NULL) — API token tests never call
     POST /auth/token, so no password hash is needed.
     """
-    from sqlalchemy import pool as sa_pool, text
+    from sqlalchemy import pool as sa_pool
+    from sqlalchemy import text
     from sqlalchemy.ext.asyncio import create_async_engine
+
     from src.backend.auth.tokens import issue_access_token
 
     email = _unique_email("token-mod")
@@ -50,7 +52,12 @@ async def api_token_user_access_token(integration_db_url: str) -> str:
                     "INSERT INTO dataspoke.users (id, email, name, google_sub, role)"
                     " VALUES (:id, :email, :name, :google_sub, 'Reader')"
                 ),
-                {"id": str(user_id), "email": email, "name": "API Token Test User", "google_sub": google_sub},
+                {
+                    "id": str(user_id),
+                    "email": email,
+                    "name": "API Token Test User",
+                    "google_sub": google_sub,
+                },
             )
     finally:
         await engine.dispose()
@@ -86,7 +93,9 @@ async def test_mint_token_returns_dsk_prefix(
         json={"name": "ci-token"},
         headers={"Authorization": f"Bearer {api_token_user_access_token}"},
     )
-    assert resp.status_code == 201, f"POST /auth/api-tokens must return 201, got {resp.status_code}: {resp.text}"
+    assert resp.status_code == 201, (
+        f"POST /auth/api-tokens must return 201, got {resp.status_code}: {resp.text}"
+    )
 
     body = resp.json()
     assert "token" in body, "Mint response must include 'token' field"
@@ -207,8 +216,10 @@ async def test_10_token_cap(
     DB seeding avoids the /auth/register rate limit (5/min per IP).
     Seeds via google_sub (password_hash=NULL) — this test never calls POST /auth/token.
     """
-    from sqlalchemy import pool as sa_pool, text
+    from sqlalchemy import pool as sa_pool
+    from sqlalchemy import text
     from sqlalchemy.ext.asyncio import create_async_engine
+
     from src.backend.auth.tokens import issue_access_token
 
     email = _unique_email("cap-test")
@@ -223,7 +234,12 @@ async def test_10_token_cap(
                     "INSERT INTO dataspoke.users (id, email, name, google_sub, role)"
                     " VALUES (:id, :email, :name, :google_sub, 'Reader')"
                 ),
-                {"id": str(user_id), "email": email, "name": "Token Cap User", "google_sub": google_sub},
+                {
+                    "id": str(user_id),
+                    "email": email,
+                    "name": "Token Cap User",
+                    "google_sub": google_sub,
+                },
             )
     finally:
         await engine.dispose()
@@ -238,7 +254,9 @@ async def test_10_token_cap(
                 json={"name": f"cap-token-{i}"},
                 headers={"Authorization": f"Bearer {access_token}"},
             )
-            assert resp.status_code == 201, f"Mint #{i+1} must succeed, got {resp.status_code}: {resp.text}"
+            assert resp.status_code == 201, (
+                f"Mint #{i+1} must succeed, got {resp.status_code}: {resp.text}"
+            )
 
         # 11th mint must fail
         eleventh = await api_client.post(
@@ -283,8 +301,10 @@ async def test_api_token_hash_stored_as_sha256(
     """
     import hashlib
 
-    from sqlalchemy import pool as sa_pool, text as _text
+    from sqlalchemy import pool as sa_pool
+    from sqlalchemy import text as _text
     from sqlalchemy.ext.asyncio import create_async_engine
+
     from src.backend.auth.tokens import issue_access_token
 
     email = _unique_email("hash-verify")
@@ -299,7 +319,12 @@ async def test_api_token_hash_stored_as_sha256(
                     "INSERT INTO dataspoke.users (id, email, name, google_sub, role)"
                     " VALUES (:id, :email, :name, :google_sub, 'Reader')"
                 ),
-                {"id": str(user_id), "email": email, "name": "Hash Verify User", "google_sub": google_sub},
+                {
+                    "id": str(user_id),
+                    "email": email,
+                    "name": "Hash Verify User",
+                    "google_sub": google_sub,
+                },
             )
     finally:
         await engine.dispose()

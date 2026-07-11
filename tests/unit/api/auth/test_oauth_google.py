@@ -22,7 +22,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-
 # ── is_configured ─────────────────────────────────────────────────────────────
 
 
@@ -157,8 +156,8 @@ async def test_resolve_known_google_sub_different_name_updates_and_propagates() 
     Name change → update DataSpoke + propagate to DataHub (best-effort).
     """
     from src.backend.auth import users as _users
-    from src.backend.datahub import users as dh_users
     from src.backend.auth.oauth_google import resolve_or_create_user
+    from src.backend.datahub import users as dh_users
 
     existing_user = _make_user(google_sub="google-sub-456", name="Old Name")
     updated_user = _make_user(google_sub="google-sub-456", name="New Name")
@@ -200,8 +199,8 @@ async def test_resolve_known_google_sub_different_name_swallows_datahub_error() 
     best-effort; DataHub failure must not block login.
     """
     from src.backend.auth import users as _users
-    from src.backend.datahub import users as dh_users
     from src.backend.auth.oauth_google import resolve_or_create_user
+    from src.backend.datahub import users as dh_users
     from src.shared.exceptions import DataHubUnavailableError
 
     existing_user = _make_user(google_sub="google-sub-789", name="Old Name")
@@ -284,8 +283,8 @@ async def test_resolve_new_user_mirror_success() -> None:
     Row 3: google_sub unknown, email unknown → create fresh user, run mirror sequence.
     """
     from src.backend.auth import users as _users
-    from src.backend.datahub import users as dh_users
     from src.backend.auth.oauth_google import resolve_or_create_user
+    from src.backend.datahub import users as dh_users
 
     new_user = _make_user(google_sub="brand-new-sub", name="Carol Jones")
 
@@ -328,8 +327,8 @@ async def test_resolve_new_user_mirror_failure_raises_datahub_sync_error() -> No
     compensating hard-delete of the DataSpoke users row; 503 DATAHUB_SYNC_FAILED.
     """
     from src.backend.auth import users as _users
-    from src.backend.datahub import users as dh_users
     from src.backend.auth.oauth_google import resolve_or_create_user
+    from src.backend.datahub import users as dh_users
     from src.shared.exceptions import DataHubSyncError
 
     new_user = _make_user(google_sub="mirror-fail-sub", name="Dave Error")
@@ -404,7 +403,10 @@ async def test_google_callback_state_mismatch_raises_bad_request() -> None:
 
     with (
         patch("src.api.routers.auth.oauth_google.is_configured", return_value=True),
-        patch("src.api.routers.auth.oauth_google.build_oauth_client", return_value=mock_oauth_client),
+        patch(
+            "src.api.routers.auth.oauth_google.build_oauth_client",
+            return_value=mock_oauth_client,
+        ),
     ):
         with pytest.raises(BadRequestError) as exc_info:
             await auth_router.get_google_callback(
@@ -463,7 +465,10 @@ async def test_google_callback_email_not_verified_raises_bad_request() -> None:
 
     with (
         patch("src.api.routers.auth.oauth_google.is_configured", return_value=True),
-        patch("src.api.routers.auth.oauth_google.build_oauth_client", return_value=mock_oauth_client),
+        patch(
+            "src.api.routers.auth.oauth_google.build_oauth_client",
+            return_value=mock_oauth_client,
+        ),
     ):
         with pytest.raises(BadRequestError) as exc_info:
             await auth_router.get_google_callback(

@@ -29,7 +29,7 @@ from src.shared.exceptions import DataHubUnavailableError, EventProcessingError
 def _make_event(
     *,
     entity_type: str = "dataset",
-    entity_urn: str = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)",
+    entity_urn: str = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)",  # noqa: E501 URN literal
     aspect_name: str = "datasetProperties",
     change_type: str = "UPSERT",
 ) -> MetadataChangeLogEvent:
@@ -44,7 +44,7 @@ def _make_event(
 def _make_raw_mcl(**overrides: object) -> bytes:
     data = {
         "entityType": "dataset",
-        "entityUrn": "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)",
+        "entityUrn": "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)",  # noqa: E501 URN literal
         "aspectName": "datasetProperties",
         "changeType": "UPSERT",
         "aspect": {"value": "test"},
@@ -71,7 +71,7 @@ class TestDeserializeMcl:
         raw = json.dumps(
             {
                 "entityType": "dataset",
-                "entityUrn": "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.reviews.user_ratings,DEV)",
+                "entityUrn": "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.reviews.user_ratings,DEV)",  # noqa: E501 URN literal
                 "aspectName": "ownership",
                 "changeType": "UPSERT",
             }

@@ -19,8 +19,8 @@ Groups:
   L – Field-level bounds (security hardening)
 """
 
-import pytest
 import pydantic
+import pytest
 
 from src.backend.ontogen.models import (
     OntogenLLMEdge,
@@ -35,7 +35,6 @@ from src.backend.ontogen.validator import (
     partition_clean_rows,
     validate_ontogen_output,
 )
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers — inline payloads per feedback_test_readability.md
@@ -540,7 +539,9 @@ def test_valid_confidence_in_range_passes() -> None:
                     "name": "Order",
                     "id": "order",
                     "confidence_score": score,
-                    "dataset_urns": ["urn:li:dataset:(urn:li:dataPlatform:postgres,db.orders,PROD)"],
+                    "dataset_urns": [
+                        "urn:li:dataset:(urn:li:dataPlatform:postgres,db.orders,PROD)"
+                    ],
                 }
             ],
             "edges": [],
@@ -548,7 +549,9 @@ def test_valid_confidence_in_range_passes() -> None:
         }
         errors = validate_ontogen_output(payload, _SCOPE)
         conf_errors = [e for e in errors if e.code == "CONF_OUT_OF_RANGE"]
-        assert conf_errors == [], f"score={score} must not produce CONF_OUT_OF_RANGE; got {conf_errors}"
+        assert conf_errors == [], (
+            f"score={score} must not produce CONF_OUT_OF_RANGE; got {conf_errors}"
+        )
 
 
 def test_confidence_at_boundary_passes() -> None:
@@ -563,7 +566,9 @@ def test_confidence_at_boundary_passes() -> None:
                     "name": "Order",
                     "id": "order",
                     "confidence_score": score,
-                    "dataset_urns": ["urn:li:dataset:(urn:li:dataPlatform:postgres,db.orders,PROD)"],
+                    "dataset_urns": [
+                        "urn:li:dataset:(urn:li:dataPlatform:postgres,db.orders,PROD)"
+                    ],
                 }
             ],
             "edges": [],
@@ -728,8 +733,10 @@ def test_mixed_in_scope_and_out_of_scope_urns_one_error() -> None:
                 "id": "order",
                 "confidence_score": 0.9,
                 "dataset_urns": [
-                    "urn:li:dataset:(urn:li:dataPlatform:postgres,db.orders,PROD)",    # in-scope [0]
-                    "urn:li:dataset:(urn:li:dataPlatform:postgres,db.OTHER,PROD)",     # out-of-scope [1]
+                    # in-scope [0]
+                    "urn:li:dataset:(urn:li:dataPlatform:postgres,db.orders,PROD)",
+                    # out-of-scope [1]
+                    "urn:li:dataset:(urn:li:dataPlatform:postgres,db.OTHER,PROD)",
                 ],
             }
         ],
@@ -868,7 +875,9 @@ async def test_tool_returns_ok_true_on_valid_payload() -> None:
                     "name": "Order",
                     "id": "order",
                     "confidence_score": 0.9,
-                    "dataset_urns": ["urn:li:dataset:(urn:li:dataPlatform:postgres,db.orders,PROD)"],
+                    "dataset_urns": [
+                        "urn:li:dataset:(urn:li:dataPlatform:postgres,db.orders,PROD)"
+                    ],
                 }
             ],
             "edges": [],
@@ -898,7 +907,9 @@ async def test_tool_returns_ok_false_with_errors_on_invalid() -> None:
                     "name": "Order",
                     "id": oversized_id,
                     "confidence_score": 0.9,
-                    "dataset_urns": ["urn:li:dataset:(urn:li:dataPlatform:postgres,db.orders,PROD)"],
+                    "dataset_urns": [
+                        "urn:li:dataset:(urn:li:dataPlatform:postgres,db.orders,PROD)"
+                    ],
                 }
             ],
             "edges": [],
@@ -1089,7 +1100,9 @@ def test_partition_cascade_drops_triple_referencing_bad_edge() -> None:
         ],
     )
     errors = [
-        ValidationError(path="edges[0].id", code="DOUBLE_UNDERSCORE", message="double underscore in edge id")
+        ValidationError(
+            path="edges[0].id", code="DOUBLE_UNDERSCORE", message="double underscore in edge id"
+        )
     ]
     cleaned, dropped = partition_clean_rows(output, errors)
     assert dropped == 2
@@ -1246,7 +1259,8 @@ def test_model_validator_normalizes_node_id() -> None:
     """Spec: BACKEND.md §Ontology Generation Service §Inference Pipeline — model_validator.
     OntogenLLMOutput.model_validate normalises node id='Order Line' (spaced, mixed case)
     to snake_case 'order_line' before any field validators run.
-    spec: BACKEND_LLM §Ontogen Validator / impl src/backend/ontogen (slug normalisation) — server-side normalisation at schema boundary via @model_validator(mode='before')
+    spec: BACKEND_LLM §Ontogen Validator / impl src/backend/ontogen (slug normalisation) —
+    server-side normalisation at schema boundary via @model_validator(mode='before')
     """
     result = OntogenLLMOutput.model_validate({
         "nodes": [
@@ -1263,7 +1277,8 @@ def test_model_validator_normalizes_node_id() -> None:
     assert result.nodes[0].id == "order_line", (
         f"model_validator must normalise 'Order Line' → 'order_line'; "
         f"got {result.nodes[0].id!r}. "
-        "spec: BACKEND_LLM §Ontogen Validator / impl src/backend/ontogen (slug normalisation) — server-side slug normalisation"
+        "spec: BACKEND_LLM §Ontogen Validator / impl src/backend/ontogen (slug normalisation) — "
+        "server-side slug normalisation"
     )
 
 
@@ -1271,7 +1286,8 @@ def test_model_validator_normalizes_edge_id() -> None:
     """Spec: BACKEND.md §Ontology Generation Service §Inference Pipeline — model_validator.
     OntogenLLMOutput.model_validate normalises edge id='Has Edition' (spaced, mixed case)
     to snake_case 'has_edition'.
-    spec: BACKEND_LLM §Ontogen Validator / impl src/backend/ontogen (slug normalisation) — model_validator normalises both node and edge id fields
+    spec: BACKEND_LLM §Ontogen Validator / impl src/backend/ontogen (slug normalisation) —
+    model_validator normalises both node and edge id fields
     """
     result = OntogenLLMOutput.model_validate({
         "nodes": [],
@@ -1287,7 +1303,8 @@ def test_model_validator_normalizes_edge_id() -> None:
     assert result.edges[0].id == "has_edition", (
         f"model_validator must normalise 'Has Edition' → 'has_edition'; "
         f"got {result.edges[0].id!r}. "
-        "spec: BACKEND_LLM §Ontogen Validator / impl src/backend/ontogen (slug normalisation) — server-side slug normalisation for edge ids"
+        "spec: BACKEND_LLM §Ontogen Validator / impl src/backend/ontogen (slug normalisation) — "
+        "server-side slug normalisation for edge ids"
     )
 
 
@@ -1296,7 +1313,8 @@ def test_model_validator_remaps_triples() -> None:
     When node id='Order Line' normalises to 'order_line' and edge id='Has Edition' normalises
     to 'has_edition', any triple referencing the original pre-normalisation ids must be
     rewritten to the post-normalisation ids.
-    spec: BACKEND_LLM §Ontogen Validator / impl src/backend/ontogen (slug normalisation) — triple subject/edge/object refs rewritten via id_remap dict
+    spec: BACKEND_LLM §Ontogen Validator / impl src/backend/ontogen (slug normalisation) — triple
+    subject/edge/object refs rewritten via id_remap dict
     """
     result = OntogenLLMOutput.model_validate({
         "nodes": [
@@ -1328,15 +1346,18 @@ def test_model_validator_remaps_triples() -> None:
     triple = result.triples[0]
     assert triple.subject_node_id == "order_line", (
         f"triple.subject_node_id must be remapped to 'order_line'; got {triple.subject_node_id!r}. "
-        "spec: BACKEND_LLM §Ontogen Validator / impl src/backend/ontogen (slug normalisation) — triple refs rewritten through id_remap"
+        "spec: BACKEND_LLM §Ontogen Validator / impl src/backend/ontogen (slug normalisation) — "
+        "triple refs rewritten through id_remap"
     )
     assert triple.edge_id == "has_edition", (
         f"triple.edge_id must be remapped to 'has_edition'; got {triple.edge_id!r}. "
-        "spec: BACKEND_LLM §Ontogen Validator / impl src/backend/ontogen (slug normalisation) — triple refs rewritten through edge_id_remap"
+        "spec: BACKEND_LLM §Ontogen Validator / impl src/backend/ontogen (slug normalisation) — "
+        "triple refs rewritten through edge_id_remap"
     )
     assert triple.object_node_id == "order_line", (
         f"triple.object_node_id must be remapped to 'order_line'; got {triple.object_node_id!r}. "
-        "spec: BACKEND_LLM §Ontogen Validator / impl src/backend/ontogen (slug normalisation) — triple refs rewritten through id_remap"
+        "spec: BACKEND_LLM §Ontogen Validator / impl src/backend/ontogen (slug normalisation) — "
+        "triple refs rewritten through id_remap"
     )
 
 
@@ -1345,7 +1366,8 @@ def test_model_validator_absent_id_left_as_none() -> None:
     A node submitted without an 'id' key (absent, not null) must have id=None after validate.
     The service derives the final id via make_snake_id(name) later; absent id is a valid
     LLM omission and must not be overwritten with a placeholder.
-    spec: BACKEND_LLM §Ontogen Validator / impl src/backend/ontogen (slug normalisation) — 'Absent id fields stay None — service.py derives them via make_snake_id later'
+    spec: BACKEND_LLM §Ontogen Validator / impl src/backend/ontogen (slug normalisation) — 'Absent
+    id fields stay None — service.py derives them via make_snake_id later'
     """
     result = OntogenLLMOutput.model_validate({
         "nodes": [
@@ -1362,7 +1384,8 @@ def test_model_validator_absent_id_left_as_none() -> None:
     assert result.nodes[0].id is None, (
         f"node with absent 'id' key must have id=None after model_validate; "
         f"got {result.nodes[0].id!r}. "
-        "spec: BACKEND_LLM §Ontogen Validator / impl src/backend/ontogen (slug normalisation) — absent id stays None for service.py to derive"
+        "spec: BACKEND_LLM §Ontogen Validator / impl src/backend/ontogen (slug normalisation) — "
+        "absent id stays None for service.py to derive"
     )
 
 
@@ -1373,7 +1396,8 @@ def test_model_validator_passes_through_unmodified_when_already_normalized() -> 
       (b) Idempotency: an already-snake_case id 'line_item' is unchanged.
       (c) Triple refs referencing the pre-normalisation id are rewritten; already-snake_case
           triple ref is kept verbatim.
-    spec: BACKEND_LLM §Ontogen Validator / impl src/backend/ontogen (slug normalisation) — server-side normalisation at schema boundary; to_snake is idempotent
+    spec: BACKEND_LLM §Ontogen Validator / impl src/backend/ontogen (slug normalisation) —
+    server-side normalisation at schema boundary; to_snake is idempotent
     """
     result = OntogenLLMOutput.model_validate({
         "nodes": [
@@ -1409,23 +1433,27 @@ def test_model_validator_passes_through_unmodified_when_already_normalized() -> 
     # (a) validator ran and normalised the non-snake_case id
     assert result.nodes[0].id == "order_line", (
         f"'Order Line' must normalise to 'order_line'; got {result.nodes[0].id!r}. "
-        "spec: BACKEND_LLM §Ontogen Validator / impl src/backend/ontogen (slug normalisation) — server-side slug normalisation"
+        "spec: BACKEND_LLM §Ontogen Validator / impl src/backend/ontogen (slug normalisation) — "
+        "server-side slug normalisation"
     )
     # (b) already-snake_case id is unchanged (idempotency)
     assert result.nodes[1].id == "line_item", (
         f"Already-snake_case 'line_item' must be unchanged; got {result.nodes[1].id!r}. "
-        "spec: BACKEND_LLM §Ontogen Validator / impl src/backend/ontogen (slug normalisation) — to_snake is idempotent on valid snake_case slugs"
+        "spec: BACKEND_LLM §Ontogen Validator / impl src/backend/ontogen (slug normalisation) — "
+        "to_snake is idempotent on valid snake_case slugs"
     )
     triple = result.triples[0]
     # (c) triple subject ref was pre-normalisation id → must be rewritten
     assert triple.subject_node_id == "order_line", (
         f"triple.subject_node_id must be rewritten from 'Order Line' to 'order_line'; "
-        f"got {triple.subject_node_id!r}. spec: BACKEND_LLM §Ontogen Validator / impl src/backend/ontogen (slug normalisation) — triple refs rewritten through id_remap"
+        f"got {triple.subject_node_id!r}. spec: BACKEND_LLM §Ontogen Validator / impl "
+        f"src/backend/ontogen (slug normalisation) — triple refs rewritten through id_remap"
     )
     # (c) triple object ref was already snake_case → stays
     assert triple.object_node_id == "line_item", (
         f"triple.object_node_id 'line_item' must be unchanged; "
-        f"got {triple.object_node_id!r}. spec: BACKEND_LLM §Ontogen Validator / impl src/backend/ontogen (slug normalisation) — id_remap defaults to identity"
+        f"got {triple.object_node_id!r}. spec: BACKEND_LLM §Ontogen Validator / impl "
+        f"src/backend/ontogen (slug normalisation) — id_remap defaults to identity"
     )
 
 

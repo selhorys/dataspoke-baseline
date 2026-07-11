@@ -21,7 +21,6 @@ import pytest
 from src.backend.auth.users import verify_password
 from src.shared.exceptions import ConflictError, PreconditionFailedError
 
-
 # ── Password helpers ──────────────────────────────────────────────────────────
 
 
@@ -91,7 +90,9 @@ def test_hash_then_verify_wrong_password_returns_false() -> None:
             capture.append(obj)
 
         mock_db.add = _add
-        await user_service.create_user(mock_db, "test2@example.com", "Test", password="correct-password-here!")
+        await user_service.create_user(
+            mock_db, "test2@example.com", "Test", password="correct-password-here!"
+        )
 
     asyncio.run(_run())
 
@@ -204,7 +205,8 @@ async def test_update_role_invalid_value_raises_precondition() -> None:
 
 @pytest.mark.asyncio
 async def test_link_google_sub_duplicate_raises_conflict() -> None:
-    """link_google_sub raises ConflictError('GOOGLE_ACCOUNT_LINKED_ELSEWHERE') on constraint violation.
+    """link_google_sub raises ConflictError('GOOGLE_ACCOUNT_LINKED_ELSEWHERE') on constraint
+    violation.
 
     spec: spec/feature/AUTH.md §Lifecycle §Google OAuth registration & login —
     linking preserves password access; a google_sub already linked to another user

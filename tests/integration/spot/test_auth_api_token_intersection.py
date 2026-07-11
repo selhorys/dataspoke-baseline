@@ -20,7 +20,6 @@ import uuid
 
 import httpx
 import pytest
-import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -87,7 +86,8 @@ async def test_api_token_intersection_demote_blocks_write(
             headers={"Authorization": f"Bearer {jwt_access_token}"},
         )
         assert mint_resp.status_code == 201, (
-            f"Minting token for Admin user must succeed, got {mint_resp.status_code}: {mint_resp.text}"
+            f"Minting token for Admin user must succeed, got {mint_resp.status_code}: "
+            f"{mint_resp.text}"
         )
         raw_token = mint_resp.json()["token"]
         role_snapshot = mint_resp.json()["role_snapshot"]
@@ -136,7 +136,8 @@ async def test_api_token_intersection_demote_blocks_write(
             headers={"Authorization": f"Bearer {raw_token}"},
         )
         assert read_after.status_code == 200, (
-            f"min(Admin, Reader)=Reader must still allow GETs per spec/feature/AUTH.md §Privilege Model, "
+            f"min(Admin, Reader)=Reader must still allow GETs per spec/feature/AUTH.md §Privilege "
+            f"Model, "
             f"got {read_after.status_code}: {read_after.text}"
         )
 

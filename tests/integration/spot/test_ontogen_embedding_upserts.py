@@ -48,7 +48,7 @@ def _dsn() -> str:
 
 
 @pytest_asyncio.fixture
-async def vector() -> AsyncGenerator[PgVectorManager, None]:
+async def vector() -> AsyncGenerator[PgVectorManager]:
     engine = create_async_engine(_dsn(), pool_pre_ping=True)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     yield PgVectorManager(session_factory=factory)

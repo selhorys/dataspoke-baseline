@@ -12,7 +12,6 @@ spec: feature/BACKEND.md §DAG Catalogue — 15 DAGs total:
   1 sync (auth-role-sync-daily)
 """
 
-import pytest
 
 from src.workflows.registry import (
     ALL_DAG_IDS,

@@ -251,7 +251,8 @@ async def test_reset_full_flow_via_db_token(
             json={"email": email, "password": "newpassword5678"},
         )
         assert new_login.status_code == 200, (
-            f"New password must work after reset per spec/feature/AUTH.md §Lifecycle §Password reset, "
+            f"New password must work after reset per spec/feature/AUTH.md §Lifecycle §Password "
+            f"reset, "
             f"got {new_login.status_code}"
         )
 
@@ -296,9 +297,8 @@ async def test_reset_request_smtp_not_configured_returns_503(
           503 PERIPHERAL_NOT_CONFIGURED with detail.peripheral="smtp",
           zero rows in password_reset_tokens.
     """
-    from tests.integration.conftest import override_app
-
     from src.shared.exceptions import PeripheralNotConfiguredError
+    from tests.integration.conftest import override_app
 
     email = _unique_email("smtp-not-cfg")
     user_id = await _seed_user(async_session, email)
@@ -371,9 +371,8 @@ async def test_reset_request_smtp_delivery_failure_returns_503(
     (transport error, auth rejection, queue full) during password-reset request →
     503 STORAGE_UNAVAILABLE; no DB write.
     """
-    from tests.integration.conftest import override_app
-
     from src.shared.exceptions import NotificationError
+    from tests.integration.conftest import override_app
 
     email = _unique_email("smtp-fail")
     user_id = await _seed_user(async_session, email)

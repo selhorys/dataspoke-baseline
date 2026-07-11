@@ -13,7 +13,6 @@ spec: feature/BACKEND.md §Ontology Generation Service §Inference Pipeline
 
 from src.backend.ontogen.prompts import build_run_prompt
 
-
 _DATASET_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.catalog.title_master,DEV)"
 _NONCE = "abc12345"
 

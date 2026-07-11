@@ -15,10 +15,9 @@ spec: spec/API.md §Authentication & Authorization §Token Strategy
 from __future__ import annotations
 
 import uuid
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
-
 
 # ── issue_access_token — payload shape ────────────────────────────────────────
 
@@ -175,12 +174,6 @@ async def test_is_refresh_revoked_returns_true_for_revoked_token() -> None:
     from src.backend.auth.tokens import is_refresh_revoked, issue_refresh_token
 
     token = issue_refresh_token(uuid.uuid4())
-
-    # Compute what key would be stored
-    import hashlib
-
-    key_prefix = "revoked_refresh:"
-    key = f"{key_prefix}{hashlib.sha256(token.encode()).hexdigest()[:16]}"
 
     present_redis = AsyncMock()
     present_redis.get = AsyncMock(return_value="1")

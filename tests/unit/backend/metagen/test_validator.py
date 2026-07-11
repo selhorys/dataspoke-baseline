@@ -17,12 +17,11 @@ Each test exercises one rule from the spec table (lines 93–101):
 Happy path: valid payload returns empty error list.
 """
 
-import pytest
 
 from src.backend.metagen.validator import validate_metagen_output
 
 _URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
-_URN2 = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.orders.daily_fulfillment_summary,DEV)"
+_URN2 = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.orders.daily_fulfillment_summary,DEV)"  # noqa: E501 URN literal
 
 _IN_SCOPE = frozenset([_URN])
 _BOUNDARY_ALLOWED = {_URN: ["dataset.description", "column.description"]}
@@ -137,7 +136,11 @@ def test_validate_schema_error_on_missing_required_candidate_field() -> None:
     Spec: BACKEND_LLM.md §Metagen Validator — SCHEMA rule checks MetagenLLMOutput shape.
     """
     errors = validate_metagen_output(
-        {"candidates": [{"dataset_urn": _URN, "item_id": "dataset.description", "confidence_score": 0.9}]},
+        {
+            "candidates": [
+                {"dataset_urn": _URN, "item_id": "dataset.description", "confidence_score": 0.9}
+            ]
+        },
         _IN_SCOPE,
         _BOUNDARY_ALLOWED,
         _SCHEMA_FIELD_PATHS,
@@ -285,7 +288,8 @@ def test_validate_unknown_field_path() -> None:
 def test_validate_unknown_field_path_skipped_when_schema_empty() -> None:
     """UNKNOWN_FIELD_PATH is not raised when schema_field_paths is empty (schema not fetched).
 
-    Spec: BACKEND_LLM.md §Metagen Validator — UNKNOWN_FIELD_PATH only checked when known_paths non-empty.
+    Spec: BACKEND_LLM.md §Metagen Validator — UNKNOWN_FIELD_PATH only checked when known_paths
+    non-empty.
     """
     payload = {
         "candidates": [{
@@ -327,7 +331,8 @@ def test_validate_kind_not_allowed() -> None:
         payload, _IN_SCOPE, restricted, _SCHEMA_FIELD_PATHS, _APPROVED_ITEM_IDS
     )
     assert any(e.code == "KIND_NOT_ALLOWED" for e in errors), (
-        "dataset.description when only column.description is allowed must produce KIND_NOT_ALLOWED. "
+        "dataset.description when only column.description is allowed must produce "
+        "KIND_NOT_ALLOWED. "
         "spec: BACKEND_LLM.md §Metagen Validator — KIND_NOT_ALLOWED rule"
     )
 

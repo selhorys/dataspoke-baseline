@@ -177,7 +177,8 @@ async def test_ontogen_triple_review_dependency_order(
     422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING.  Once each dep is human-approved via REST, the gate
     passes and the triple transitions to 'approved'.
 
-    Spec: BACKEND.md §Ontology Generation Service (Approval flow) — strict dep-gate: human approval of a triple requires human-approved deps.
+    Spec: BACKEND.md §Ontology Generation Service (Approval flow) — strict dep-gate: human approval
+    of a triple requires human-approved deps.
     Spec: USE_CASE_en.md §UC3 L350-L356 — triple cannot be approved unless its subject node,
     edge, and object node are all approved.
     """
@@ -219,7 +220,8 @@ async def test_ontogen_triple_review_dependency_order(
 
     try:
         # Step 1: triple approve must fail because deps are only llm_approved (not human-approved)
-        # spec: BACKEND.md §Ontology Generation Service (Approval flow) — strict gate: status='approved' only passes; llm_approved blocks
+        # spec: BACKEND.md §Ontology Generation Service (Approval flow) — strict gate:
+        # status='approved' only passes; llm_approved blocks
         deny_resp = await api_client.post(
             f"/api/v1/spoke/ontogen/result/triple/{triple_id}/method/review",
             headers=admin_headers,
@@ -228,7 +230,8 @@ async def test_ontogen_triple_review_dependency_order(
         assert deny_resp.status_code == 422, (
             f"Expected 422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING when deps are llm_approved; "
             f"got {deny_resp.status_code}: {deny_resp.text}. "
-            "Spec: BACKEND.md §Ontology Generation Service (Approval flow) — strict gate blocks llm_approved deps"
+            "Spec: BACKEND.md §Ontology Generation Service (Approval flow) — strict gate blocks "
+            "llm_approved deps"
         )
         assert deny_resp.json().get("error_code") == "ONTOGEN_TRIPLE_DEPENDENCY_PENDING", (
             f"Expected error_code ONTOGEN_TRIPLE_DEPENDENCY_PENDING; got {deny_resp.json()!r}"
@@ -255,7 +258,8 @@ async def test_ontogen_triple_review_dependency_order(
         assert r.json()["status"] == "approved"
 
         # Step 3: triple approve now succeeds because all deps are human-approved
-        # spec: BACKEND.md §Ontology Generation Service (Approval flow) — gate passes when status='approved' for all deps
+        # spec: BACKEND.md §Ontology Generation Service (Approval flow) — gate passes when
+        # status='approved' for all deps
         ok_resp = await api_client.post(
             f"/api/v1/spoke/ontogen/result/triple/{triple_id}/method/review",
             headers=admin_headers,
@@ -360,8 +364,10 @@ async def test_triple_dep_gate_blocks_when_deps_not_human_approved(
     states must be blocked by the strict dep-gate.  This catches regressions where
     the gate is accidentally relaxed to 'status != rejected' instead of 'status = approved'.
 
-    Spec: BACKEND.md §Ontology Generation Service (Approval flow) — test_triple_dep_gate_blocks_when_deps_not_human_approved.
-    Spec: BACKEND.md §Ontology Generation Service (Approval flow) (strict dep-gate) — 'status=approved only; human approval of a triple
+    Spec: BACKEND.md §Ontology Generation Service (Approval flow) —
+    test_triple_dep_gate_blocks_when_deps_not_human_approved.
+    Spec: BACKEND.md §Ontology Generation Service (Approval flow) (strict dep-gate) —
+    'status=approved only; human approval of a triple
     requires human-approved dependencies.'
     """
     from src.shared.db.models import OntogenEdge, OntogenNode, OntogenTriple
@@ -417,11 +423,13 @@ async def test_triple_dep_gate_blocks_when_deps_not_human_approved(
         assert resp.status_code == 422, (
             f"Expected 422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING when all deps are {dep_status!r}; "
             f"got {resp.status_code}: {resp.text}. "
-            "Spec: BACKEND.md §Ontology Generation Service (Approval flow) — neither llm_pending nor llm_approved passes the strict dep-gate."
+            "Spec: BACKEND.md §Ontology Generation Service (Approval flow) — neither llm_pending "
+            "nor llm_approved passes the strict dep-gate."
         )
         assert resp.json().get("error_code") == "ONTOGEN_TRIPLE_DEPENDENCY_PENDING", (
             f"Expected error_code ONTOGEN_TRIPLE_DEPENDENCY_PENDING; got {resp.json()!r}. "
-            "Spec: BACKEND.md §Ontology Generation Service (Approval flow) — strict dep-gate: human 'approved' required, not {dep_status!r}."
+            "Spec: BACKEND.md §Ontology Generation Service (Approval flow) — strict dep-gate: "
+            "human 'approved' required, not {dep_status!r}."
         )
     finally:
         await _delete_row(async_session, OntogenTriple, triple_id)
@@ -441,8 +449,10 @@ async def test_triple_dep_gate_passes_when_deps_are_human_approved(
     Regression test: seeding deps directly as 'approved' (simulating a prior human approval)
     must allow the triple's dep-gate to pass immediately.
 
-    Spec: BACKEND.md §Ontology Generation Service (Approval flow) — test_triple_dep_gate_passes_when_deps_are_human_approved.
-    Spec: BACKEND.md §Ontology Generation Service (Approval flow) (strict dep-gate) — 'status=approved' passes the gate.
+    Spec: BACKEND.md §Ontology Generation Service (Approval flow) —
+    test_triple_dep_gate_passes_when_deps_are_human_approved.
+    Spec: BACKEND.md §Ontology Generation Service (Approval flow) (strict dep-gate) —
+    'status=approved' passes the gate.
     """
     from src.shared.db.models import OntogenEdge, OntogenNode, OntogenTriple
 
@@ -496,12 +506,14 @@ async def test_triple_dep_gate_passes_when_deps_are_human_approved(
         assert resp.status_code == 200, (
             f"Expected 200 when all deps are human-approved; "
             f"got {resp.status_code}: {resp.text}. "
-            "Spec: BACKEND.md §Ontology Generation Service (Approval flow) — gate passes when all deps have status='approved'."
+            "Spec: BACKEND.md §Ontology Generation Service (Approval flow) — gate passes when all "
+            "deps have status='approved'."
         )
         assert resp.json().get("status") == "approved", (
             f"Triple status must be 'approved' after human review; "
             f"got {resp.json().get('status')!r}. "
-            "Spec: BACKEND.md §Ontology Generation Service (Approval flow) — human review endpoint writes 'approved' unconditionally."
+            "Spec: BACKEND.md §Ontology Generation Service (Approval flow) — human review endpoint "
+            "writes 'approved' unconditionally."
         )
 
         # F5: DB-level confirmation that the persisted status is 'approved'.
@@ -524,7 +536,8 @@ async def test_triple_dep_gate_passes_when_deps_are_human_approved(
         assert db_triple.status == "approved", (
             f"Persisted triple status must be 'approved' after human review; "
             f"got {db_triple.status!r}. "
-            "Spec: BACKEND.md §Ontology Generation Service (Approval flow) — review endpoint persists 'approved' to DB."
+            "Spec: BACKEND.md §Ontology Generation Service (Approval flow) — review endpoint "
+            "persists 'approved' to DB."
         )
     finally:
         await _delete_row(async_session, OntogenTriple, triple_id)

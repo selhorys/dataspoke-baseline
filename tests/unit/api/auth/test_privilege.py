@@ -18,8 +18,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tests.unit.api.conftest import client  # noqa: F401 — used as fixture
-
+# The `client` fixture is provided by tests/unit/api/conftest.py, which pytest
+# auto-discovers for this subdirectory — no explicit import needed.
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -66,8 +66,8 @@ async def test_require_authenticated_dsk_token_uses_api_token_path() -> None:
     middleware fast-path: tokens starting with dsk_ skip JWT decode.
     spec: spec/API.md §Authentication Mechanisms — dsk_<...> → API token lookup.
     """
-    from src.backend.auth.privilege import require_authenticated, AuthContext
     from src.backend.auth import api_tokens as _api_tokens
+    from src.backend.auth.privilege import require_authenticated
 
     mock_user = MagicMock()
     mock_user.role = "Editor"
@@ -101,7 +101,6 @@ async def test_require_authenticated_jwt_token_uses_jwt_path() -> None:
 
     spec: spec/API.md §Authentication Mechanisms — JWT path for user tokens.
     """
-    from src.backend.auth import tokens as _tokens
     from src.backend.auth import users as _users
     from src.backend.auth.privilege import require_authenticated
     from src.backend.auth.tokens import issue_access_token
@@ -149,7 +148,7 @@ async def test_require_writer_reader_on_post_raises_forbidden() -> None:
     POST/PUT/PATCH/DELETE → 403 READ_ONLY_ROLE.
     spec: spec/API.md §Access Control §Method × role gate.
     """
-    from src.backend.auth.privilege import require_writer, AuthContext
+    from src.backend.auth.privilege import require_writer
     from src.shared.exceptions import ForbiddenError
 
     ctx = await _make_auth_context("Reader")

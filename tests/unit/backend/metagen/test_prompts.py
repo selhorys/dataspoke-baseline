@@ -16,7 +16,7 @@ impl: src/backend/metagen/prompts.py — build_run_prompt
 No DB, no LLM, no mocking — pure build_run_prompt() calls.
 """
 
-from src.backend.metagen.prompts import _TRUNCATION_MARKER, _MAX_UNTRUSTED_BYTES, build_run_prompt
+from src.backend.metagen.prompts import _MAX_UNTRUSTED_BYTES, _TRUNCATION_MARKER, build_run_prompt
 
 _DATASET_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
 _NONCE = "deadbeef"
@@ -125,7 +125,8 @@ def test_related_document_body_truncated_when_too_long() -> None:
     prompt = _build({"related_documents": [{"title": "BigDoc", "body": long_body}]})
 
     assert _TRUNCATION_MARKER in prompt, (
-        f"Prompt must contain {_TRUNCATION_MARKER!r} when body exceeds {_MAX_UNTRUSTED_BYTES} bytes. "
+        f"Prompt must contain {_TRUNCATION_MARKER!r} when body exceeds {_MAX_UNTRUSTED_BYTES} "
+        f"bytes. "
         "spec: BACKEND.md §Generation Pipeline — untrusted data cap"
     )
 
@@ -142,7 +143,9 @@ def test_ontology_rag_nodes_appear_in_prompt() -> None:
     prompt = _build(
         {
             "ontology_rag": {
-                "nodes": [{"id": "n1", "name": "Order", "description": "A customer order", "score": 0.9}],
+                "nodes": [
+                    {"id": "n1", "name": "Order", "description": "A customer order", "score": 0.9}
+                ],
                 "edges": [],
                 "triples": [],
             }
@@ -284,7 +287,9 @@ def test_untrusted_data_markers_wrap_ontology_rag_node() -> None:
     prompt = _build(
         {
             "ontology_rag": {
-                "nodes": [{"id": "distinctive_node_id_xyz", "name": "X", "description": "D", "score": 0.5}],
+                "nodes": [
+                    {"id": "distinctive_node_id_xyz", "name": "X", "description": "D", "score": 0.5}
+                ],
                 "edges": [],
                 "triples": [],
             }

@@ -58,7 +58,8 @@ async def test_uc5_governance_imazon_example(
             "metric_id": "ingestion-freshness-dev",
             "type": "ingestion-freshness",
             "title": "Ingestion Freshness (DEV)",
-            "description": "Daily count of datasets ingested within the configured time window across DEV",
+            "description": "Daily count of datasets ingested within the configured time window "
+            "across DEV",
             "metrics": ["total", "ingested_in_time"],
             "metric_conf": {"time_window_sec": 172800},
         },
@@ -66,7 +67,8 @@ async def test_uc5_governance_imazon_example(
             "metric_id": "validation-score-dev",
             "type": "validation-score",
             "title": "Validation Score (DEV)",
-            "description": "Daily sum of dataset validation scores within the configured time window across DEV",
+            "description": "Daily sum of dataset validation scores within the configured time "
+            "window across DEV",
             "metrics": ["total", "validation_score_sum"],
             "metric_conf": {"time_window_sec": 172800},
         },
@@ -91,7 +93,8 @@ async def test_uc5_governance_imazon_example(
         # Mirrored across all three built-in active types.
         # spec: USE_CASE_en.md §UC5 §Imazon Example — POST /spoke/governance/metric,
         #       metric_id supplied in body, returns 201.
-        # spec: API.md §Metric — POST /spoke/governance/metric creates; 409 METRIC_EXISTS on collision.
+        # spec: API.md §Metric — POST /spoke/governance/metric creates; 409 METRIC_EXISTS on
+        # collision.
         for cfg in metrics_to_create:
             post_resp = await api_client.post(
                 "/api/v1/spoke/governance/metric",
@@ -174,7 +177,9 @@ async def test_uc5_governance_imazon_example(
         )
         get_after_replace = await api_client.get(replace_url, headers=admin_headers)
         assert get_after_replace.status_code == 200
-        assert get_after_replace.json()["description"] == "Updated description for replace-only test", (
+        assert (
+            get_after_replace.json()["description"] == "Updated description for replace-only test"
+        ), (
             "PUT change to 'description' must be reflected on GET. "
             "spec: API.md §Metric."
         )
@@ -240,7 +245,8 @@ async def test_uc5_governance_imazon_example(
         # spec: TESTING.md §Spot vs Api-Wired Integration Tests.
         now = datetime.now(tz=UTC)
         from_ts = (now - timedelta(days=7)).isoformat()
-        to_ts = (now + timedelta(days=1)).isoformat()  # +1 day padding to include the run just triggered
+        # +1 day padding to include the run just triggered
+        to_ts = (now + timedelta(days=1)).isoformat()
         for cfg in metrics_to_create:
             results_resp = await api_client.get(
                 f"/api/v1/spoke/governance/metric/{cfg['metric_id']}/attr/result",
@@ -253,7 +259,8 @@ async def test_uc5_governance_imazon_example(
             )
             results = results_resp.json().get("results", [])
             assert results, (
-                f"Expected at least one result row for '{cfg['metric_id']}' after a successful run. "
+                f"Expected at least one result row for '{cfg['metric_id']}' after a successful "
+                f"run. "
                 "spec: USE_CASE_en.md §UC5."
             )
             assert isinstance(results[0]["values"], dict), (

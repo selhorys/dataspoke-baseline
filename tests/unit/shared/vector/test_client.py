@@ -11,7 +11,7 @@ spec: feature/BACKEND.md §Shared Services (Vector row) — PgVectorManager wrap
       collection name must match EMBEDDING_COLLECTION (whitelist guard).
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 

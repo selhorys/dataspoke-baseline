@@ -12,8 +12,6 @@ Spec: USE_CASE_en.md §UC1
 
 from __future__ import annotations
 
-import pytest
-
 from src.workflows.ingestion import IngestionSyncParams
 
 

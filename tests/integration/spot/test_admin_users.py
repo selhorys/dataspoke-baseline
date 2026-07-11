@@ -68,7 +68,9 @@ async def test_list_users_returns_pagination_shape(
 
     body = resp.json()
     assert "users" in body, "Response must include 'users' list"
-    assert "total_count" in body, "Response must include 'total_count' (standard pagination envelope)"
+    assert "total_count" in body, (
+        "Response must include 'total_count' (standard pagination envelope)"
+    )
 
     for user in body["users"]:
         assert "role" in user, (

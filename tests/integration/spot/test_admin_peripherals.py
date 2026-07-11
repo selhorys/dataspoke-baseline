@@ -749,7 +749,8 @@ async def test_patch_datahub_token_only_does_not_create_db_row(
         assert row_count == 0, (
             f"peripheral_config must have 0 rows for 'datahub' after token-only PATCH; "
             f"got {row_count}. "
-            "spec: src/backend/admin/peripheral_service.py patch_peripheral_config — F6: empty partial no-op. "
+            "spec: src/backend/admin/peripheral_service.py patch_peripheral_config — F6: empty "
+            "partial no-op. "
             "Token-only PATCH must not create a DB row."
         )
 
@@ -997,7 +998,8 @@ async def test_internal_patch_datahub_missing_token_returns_401_or_503(
     assert resp.status_code in (401, 503), (
         f"Missing X-Internal-Token must return 401 or 503; "
         f"got {resp.status_code}: {resp.text}. "
-        "spec: API.md §Internal Admin (/internal/admin) / §Application Error Codes (INTERNAL_AUTH_NOT_CONFIGURED)."
+        "spec: API.md §Internal Admin (/internal/admin) / §Application Error Codes "
+        "(INTERNAL_AUTH_NOT_CONFIGURED)."
     )
 
 

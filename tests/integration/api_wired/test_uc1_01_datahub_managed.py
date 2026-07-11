@@ -28,7 +28,8 @@ Steps mirror USE_CASE_en.md §UC1 Case 1:
        PRIMARY:   GET /sources/{id}/event (the parent) has INGESTION.COMPLETE with
                   wrapper=true and status='success'
                   (detail.execution_request_urn is the spec'd identity key for sync-mirrored
-                   DATAHUB_MANAGED events — BACKEND.md §Event Catalogue — used here to locate the row).
+                   DATAHUB_MANAGED events — BACKEND.md §Event Catalogue — used here to locate the
+                   row).
        The wrapper source is ABSENT from GET /sources?mode=DATAHUB_MANAGED.
        SECONDARY: GET /sources/{id}/datasets has ≥1 row with derivation='pipeline_name'
                   and authority='high'; attr/ingestion latest_run reflects the run.

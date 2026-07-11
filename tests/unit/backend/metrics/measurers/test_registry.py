@@ -19,10 +19,10 @@ import pytest
 
 from src.backend.metrics.measurers.registry import (
     _MEASURERS,
+    MeasurerFn,
     get_measurer,
     list_measurers,
     register_measurer,
-    MeasurerFn,
 )
 
 
@@ -128,9 +128,9 @@ def test_list_measurers_includes_built_in_types() -> None:
     Spec: spec/feature/BACKEND.md §Metrics Service §Measurers — all three are registered
           at module import time.
     """
+    import src.backend.metrics.measurers.doc_health  # noqa: F401
     import src.backend.metrics.measurers.ingestion_freshness  # noqa: F401
     import src.backend.metrics.measurers.validation_score  # noqa: F401
-    import src.backend.metrics.measurers.doc_health  # noqa: F401
 
     names = list_measurers()
     assert "ingestion-freshness" in names, (

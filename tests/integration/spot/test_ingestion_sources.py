@@ -485,7 +485,8 @@ async def test_sync_sweep_passive_kafka_matcher_maps_topics(
     surface even when api-wired tests are skipped.
 
     spec: USE_CASE_en.md §UC1 Case 3 — PASSIVE source declares allow/deny scope; sync maps topics.
-    spec: feature/BACKEND.md §Ingestion Service — Sync + mapping sweep, step 2 (Mapping) — derivation=matched.
+    spec: feature/BACKEND.md §Ingestion Service — Sync + mapping sweep, step 2 (Mapping) —
+    derivation=matched.
     spec: TESTING.md §Coverage rule — spot set must catch backend regressions independently.
     """
     # Clean slate: remove any leftover ingestion_source rows.
@@ -522,7 +523,8 @@ async def test_sync_sweep_passive_kafka_matcher_maps_topics(
         source_id = create_resp.json()["id"]
 
         # Step 2: Trigger the sync sweep (activity endpoint used by the hourly DAG).
-        # spec: feature/BACKEND.md §Ingestion Service — Sync + mapping sweep, sync() reconciles all modes.
+        # spec: feature/BACKEND.md §Ingestion Service — Sync + mapping sweep, sync() reconciles all
+        # modes.
         sync_resp = await api_client.post(
             "/internal/activities/ingestion/sync",
             headers=internal_headers,
@@ -560,13 +562,15 @@ async def test_sync_sweep_passive_kafka_matcher_maps_topics(
         )
 
         # All mapped rows must have derivation='matched' (PASSIVE sync path).
-        # spec: feature/BACKEND.md §Ingestion Service — Sync + mapping sweep, step 2 (Mapping) — PASSIVE: derivation=matched.
+        # spec: feature/BACKEND.md §Ingestion Service — Sync + mapping sweep, step 2 (Mapping) —
+        # PASSIVE: derivation=matched.
         for d in datasets_body["datasets"]:
             if d["dataset_urn"] in (_KAFKA_ORDERS_URN, _KAFKA_SHIPPING_URN):
                 assert d["derivation"] == "matched", (
                     f"PASSIVE source dataset {d['dataset_urn']!r} must have "
                     f"derivation='matched'; got {d['derivation']!r}. "
-                    "spec: feature/BACKEND.md §Ingestion Service — Sync + mapping sweep, step 2 (Mapping) — PASSIVE uses matched derivation."
+                    "spec: feature/BACKEND.md §Ingestion Service — Sync + mapping sweep, step 2 "
+                    "(Mapping) — PASSIVE uses matched derivation."
                 )
 
     finally:

@@ -29,11 +29,14 @@ parent-stamped pipelineName state. Setup is ORM/SQL-seeded
 (feedback_spot_vs_api_wired_principle) and the DataHub client is stubbed
 (feedback_spot_is_stub_only).
 
-Spec: spec/feature/BACKEND.md §Ingestion Service (Sync + mapping sweep) step 1 — wrapper linked via parent_source_id
+Spec: spec/feature/BACKEND.md §Ingestion Service (Sync + mapping sweep) step 1 — wrapper linked via
+parent_source_id
     (resolved from recipe.pipeline_name); orphan not stored.
-Spec: spec/feature/BACKEND.md §Ingestion Service (Sync + mapping sweep) step 3 — pipelineName awards pipeline_name to
+Spec: spec/feature/BACKEND.md §Ingestion Service (Sync + mapping sweep) step 3 — pipelineName awards
+pipeline_name to
     the registered parent AND the wrapper that inherits via parent_source_id.
-Spec: spec/feature/BACKEND.md §Ingestion Service (Sync + mapping sweep) step 4 — the regular source aggregates events
+Spec: spec/feature/BACKEND.md §Ingestion Service (Sync + mapping sweep) step 4 — the regular source
+aggregates events
     across itself and its linked wrappers (derived wrapper flag).
 Spec: spec/DATAHUB_INTEGRATION.md §Ingestion Source Sync — wrapper→parent linkage via
     recipe.pipeline_name; orphan wrapper = stale (not stored).
@@ -194,7 +197,8 @@ async def test_wrapper_inherits_pipeline_name_from_registered_parent(
     (authority 'high') for the registered parent AND for the wrapper — the wrapper
     inherits through its stored parent link.
 
-    Spec: feature/BACKEND.md §Ingestion Service (Sync + mapping sweep) step 3 — a dataset's pipelineName awards
+    Spec: feature/BACKEND.md §Ingestion Service (Sync + mapping sweep) step 3 — a dataset's
+    pipelineName awards
         pipeline_name/high to the registered parent AND the wrapper that inherits via
         parent_source_id (no re-parsing of the wrapper name).
     Spec: DATAHUB_INTEGRATION.md §Ingestion Source Sync — wrapper recipe.pipeline_name =
@@ -239,12 +243,14 @@ async def test_wrapper_inherits_pipeline_name_from_registered_parent(
                 rec = ds_map.get(urn)
                 assert rec is not None, (
                     f"{label} source must have a mapping row for {urn!r}; got "
-                    f"{sorted(ds_map)}. spec: feature/BACKEND.md §Ingestion Service (Sync + mapping sweep) step 3."
+                    f"{sorted(ds_map)}. spec: feature/BACKEND.md §Ingestion Service (Sync + "
+                    f"mapping sweep) step 3."
                 )
                 assert rec.derivation == "pipeline_name", (
                     f"{label} source's mapping for {urn!r} must be promoted to "
                     f"derivation='pipeline_name'; got {rec.derivation!r}. spec: "
-                    "feature/BACKEND.md §Ingestion Service (Sync + mapping sweep) step 3 — pipelineName awards "
+                    "feature/BACKEND.md §Ingestion Service (Sync + mapping sweep) step 3 — "
+                    "pipelineName awards "
                     "pipeline_name to the registered parent AND its linked wrapper."
                 )
                 assert rec.authority == "high", (
@@ -268,7 +274,8 @@ async def test_orphan_wrapper_no_matching_parent_is_not_stored(
     DATAHUB_MANAGED row. There is no parent to link, so step 1 Pass B treats the
     wrapper as stale and does not store it — it owns no mapping rows.
 
-    Spec: feature/BACKEND.md §Ingestion Service (Sync + mapping sweep) step 1 — orphan wrappers (recipe.pipeline_name
+    Spec: feature/BACKEND.md §Ingestion Service (Sync + mapping sweep) step 1 — orphan wrappers
+    (recipe.pipeline_name
         matches no stored regular parent) are not stored.
     Spec: DATAHUB_INTEGRATION.md §Ingestion Source Sync — orphan wrapper = stale.
     """
@@ -304,7 +311,8 @@ async def test_orphan_wrapper_no_matching_parent_is_not_stored(
         )
         assert result.scalar_one_or_none() is None, (
             f"Orphan wrapper {wrapper_urn!r} (recipe.pipeline_name matches no stored "
-            "regular parent) must NOT be stored. spec: feature/BACKEND.md §Ingestion Service (Sync + mapping sweep) "
+            "regular parent) must NOT be stored. spec: feature/BACKEND.md §Ingestion Service (Sync "
+            "+ mapping sweep) "
             "step 1 — orphan wrappers are stale and not stored. "
             "spec: DATAHUB_INTEGRATION.md §Ingestion Source Sync — orphan = stale."
         )
@@ -325,9 +333,11 @@ async def test_wrapper_without_pipeline_name_is_not_stored(
     pipeline_name to match), so step 1 does not store it; the registered parent is
     still promoted (sanity anchor for the same sweep).
 
-    Spec: feature/BACKEND.md §Ingestion Service (Sync + mapping sweep) step 1 — a wrapper whose recipe carries no
+    Spec: feature/BACKEND.md §Ingestion Service (Sync + mapping sweep) step 1 — a wrapper whose
+    recipe carries no
         pipeline_name is an orphan and not stored.
-    Spec: feature/BACKEND.md §Ingestion Service (Sync + mapping sweep) step 3 — the registered parent is still
+    Spec: feature/BACKEND.md §Ingestion Service (Sync + mapping sweep) step 3 — the registered
+    parent is still
         promoted on the sweep.
     """
     await dataspoke_db.reset_ingestion_sources()
@@ -377,7 +387,8 @@ async def test_wrapper_without_pipeline_name_is_not_stored(
         )
         assert result.scalar_one_or_none() is None, (
             f"Wrapper {sys_wrapper_urn!r} whose recipe carries no pipeline_name must "
-            "NOT be stored (no resolvable parent). spec: feature/BACKEND.md §Ingestion Service (Sync + mapping sweep) "
+            "NOT be stored (no resolvable parent). spec: feature/BACKEND.md §Ingestion Service "
+            "(Sync + mapping sweep) "
             "step 1 — no recipe.pipeline_name → orphan → not stored."
         )
     finally:
@@ -403,7 +414,8 @@ async def test_regular_source_aggregates_wrapper_run_events(
     the right row; per BACKEND.md §Event Catalogue it is the spec'd identity key for
     sync-mirrored ingestion events.)
 
-    Spec: feature/BACKEND.md §Ingestion Service (Sync + mapping sweep) step 4 — the regular source aggregates events
+    Spec: feature/BACKEND.md §Ingestion Service (Sync + mapping sweep) step 4 — the regular source
+    aggregates events
         across itself and its linked wrappers (each row carries the derived wrapper flag);
         SUCCESS → INGESTION.COMPLETE → status='success'.
     Spec: API.md §Ingestion — GET /sources/{id}/event includes linked-wrapper events
@@ -462,7 +474,8 @@ async def test_regular_source_aggregates_wrapper_run_events(
         assert complete, (
             "Regular parent's event list must include the wrapper's INGESTION.COMPLETE "
             f"run; got events: {events}. "
-            "spec: feature/BACKEND.md §Ingestion Service (Sync + mapping sweep) step 4 — parent aggregates wrapper events."
+            "spec: feature/BACKEND.md §Ingestion Service (Sync + mapping sweep) step 4 — parent "
+            "aggregates wrapper events."
         )
         # Discriminator: execution_request_urn is the spec'd identity key for
         # sync-mirrored ingestion events (BACKEND.md §Event Catalogue), used here to
@@ -490,7 +503,8 @@ async def test_regular_source_aggregates_wrapper_run_events(
         #   SUCCESS/SUCCEEDED → INGESTION.COMPLETE → status='success'.
         assert wrapper_evt["status"] == "success", (
             f"A SUCCESS run mirrors as status='success'; got {wrapper_evt['status']!r}. "
-            "spec: feature/BACKEND.md §Ingestion Service (Sync + mapping sweep) step 4 — SUCCESS→status='success'."
+            "spec: feature/BACKEND.md §Ingestion Service (Sync + mapping sweep) step 4 — "
+            "SUCCESS→status='success'."
         )
         assert total >= 1
     finally:

@@ -18,7 +18,6 @@ from src.api.schemas._dataset_filter import (
 )
 from src.shared.exceptions import InvalidDatasetUrnError
 
-
 # ── DATASET_FILTER_LIST_CAP constant ──────────────────────────────────────────
 
 
@@ -39,7 +38,9 @@ class TestCheckDatasetFilterBounds:
 
         Spec: spec/API.md §Payload caps — 1,000 entries is the inclusive maximum.
         """
-        at_cap_urns = [f"urn:li:dataset:(urn:li:dataPlatform:postgres,db.t{i},DEV)" for i in range(1000)]
+        at_cap_urns = [
+            f"urn:li:dataset:(urn:li:dataPlatform:postgres,db.t{i},DEV)" for i in range(1000)
+        ]
         at_cap_tags = [f"urn:li:tag:t{i}" for i in range(1000)]
         at_cap_terms = [f"urn:li:glossaryTerm:t{i}" for i in range(1000)]
         check_dataset_filter_bounds({"dataset_urns": at_cap_urns})
@@ -51,7 +52,9 @@ class TestCheckDatasetFilterBounds:
 
         Spec: spec/API.md §Payload caps — 1,001 entries exceeds cap; ValueError propagates to 422.
         """
-        over_cap = [f"urn:li:dataset:(urn:li:dataPlatform:postgres,db.t{i},DEV)" for i in range(1001)]
+        over_cap = [
+            f"urn:li:dataset:(urn:li:dataPlatform:postgres,db.t{i},DEV)" for i in range(1001)
+        ]
         with pytest.raises(ValueError, match="dataset_urns"):
             check_dataset_filter_bounds({"dataset_urns": over_cap})
 

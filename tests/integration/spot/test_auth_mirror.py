@@ -20,7 +20,10 @@ def _unique_email(prefix: str = "mirror") -> str:
     return f"{prefix}-{str(uuid.uuid4())[:8]}@test.dataspoke.example.com"
 
 
-async def _poll_graphql(datahub_client, query: str, variables: dict, predicate, *, timeout: int = 60, interval: float = 3.0):
+async def _poll_graphql(
+    datahub_client, query: str, variables: dict, predicate, *, timeout: int = 60,
+    interval: float = 3.0,
+):
     """Poll a DataHub GraphQL query until predicate(result) is True or timeout.
 
     DataHub GraphQL relationship queries depend on ES indexing which can lag
@@ -154,7 +157,8 @@ async def test_register_assigns_reader_role_in_datahub(
     query = """
     query($u: String!) {
       corpUser(urn: $u) {
-        relationships(input: {types: ["IsMemberOfRole"], direction: OUTGOING, start: 0, count: 10}) {
+        relationships(input: {types: ["IsMemberOfRole"], direction: OUTGOING, start: 0, count: 10})
+        {
           relationships { entity { ... on DataHubRole { urn name } } }
         }
       }
@@ -166,7 +170,9 @@ async def test_register_assigns_reader_role_in_datahub(
         rels = (corp_user.get("relationships") or {}).get("relationships") or []
         return "Reader" in [(rel.get("entity") or {}).get("name", "") for rel in rels]
 
-    result = await _poll_graphql(datahub_client, query, {"u": corpuser_urn}, _has_reader, timeout=60)
+    result = await _poll_graphql(
+        datahub_client, query, {"u": corpuser_urn}, _has_reader, timeout=60
+    )
 
     corp_user = (result or {}).get("corpUser") or {}
     relationships = (corp_user.get("relationships") or {}).get("relationships") or []

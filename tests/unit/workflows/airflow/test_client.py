@@ -32,7 +32,9 @@ def client():
     return c
 
 
-def _make_dag_run(state: str = "success", dag_run_id: str = "run-1", dag_id: str = "ingestion") -> dict:
+def _make_dag_run(
+    state: str = "success", dag_run_id: str = "run-1", dag_id: str = "ingestion"
+) -> dict:
     return {
         "dag_run_id": dag_run_id,
         "dag_id": dag_id,
@@ -108,7 +110,8 @@ async def test_trigger_dag_run_posts_to_correct_url(client: AirflowClient):
 
     client._client.post.assert_called_once()
     call_args = client._client.post.call_args
-    assert call_args[0][0] == "/api/v2/dags/ingestion/dagRuns"  # Airflow 3 REST API; impl-pinned, Airflow 3 REST API contract — upstream-pinned
+    # Airflow 3 REST API; impl-pinned, Airflow 3 REST API contract — upstream-pinned
+    assert call_args[0][0] == "/api/v2/dags/ingestion/dagRuns"
     # Airflow 3.x requires logical_date; verify conf without pinning the
     # always-changing timestamp.
     body = call_args[1]["json"]
@@ -155,7 +158,8 @@ async def test_get_dag_run_calls_correct_url(client: AirflowClient):
 
     await client.get_dag_run("metrics", "run-abc")
     call_args = client._client.get.call_args
-    assert call_args[0][0] == "/api/v2/dags/metrics/dagRuns/run-abc"  # Airflow 3 REST API; impl-pinned, Airflow 3 REST API contract — upstream-pinned
+    # Airflow 3 REST API; impl-pinned, Airflow 3 REST API contract — upstream-pinned
+    assert call_args[0][0] == "/api/v2/dags/metrics/dagRuns/run-abc"
 
 
 # ── wait_for_dag_run ─────────────────────────────────────────────────────────
@@ -328,8 +332,10 @@ async def test_kill_dag_run_success(client: AirflowClient):
     await client.kill_dag_run("ingestion", "run-1")
     client._client.patch.assert_called_once()
     call_args = client._client.patch.call_args
-    assert "/api/v2/dags/ingestion/dagRuns/run-1" in call_args[0][0]  # Airflow 3 REST API; impl-pinned, Airflow 3 REST API contract — upstream-pinned
-    assert call_args[1]["json"] == {"state": "failed"}  # Airflow 3 REST API; impl-pinned, Airflow 3 REST API contract — upstream-pinned
+    # Airflow 3 REST API; impl-pinned, Airflow 3 REST API contract — upstream-pinned
+    assert "/api/v2/dags/ingestion/dagRuns/run-1" in call_args[0][0]
+    # Airflow 3 REST API; impl-pinned, Airflow 3 REST API contract — upstream-pinned
+    assert call_args[1]["json"] == {"state": "failed"}
 
 
 async def test_kill_dag_run_not_found_no_raise(client: AirflowClient):

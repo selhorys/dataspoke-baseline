@@ -13,17 +13,15 @@ import inspect
 
 import pytest
 
+from src.shared.cache.client import RedisClient
+from src.shared.llm.client import LLMClient
+from src.shared.vector.client import PgVectorManager
 from src.workflows._stubs import (
     StubLLMClient,
     StubNotificationService,
     StubPgVectorManager,
     StubRedisClient,
 )
-from src.shared.cache.client import RedisClient
-from src.shared.llm.client import LLMClient
-from src.shared.vector.client import PgVectorManager
-from src.shared.notifications.service import NotificationService
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 

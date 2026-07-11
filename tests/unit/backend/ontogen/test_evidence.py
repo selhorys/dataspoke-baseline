@@ -19,8 +19,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.shared.datahub.documents import DOCUMENT_EVIDENCE_CAP_PER_DATASET
 from src.backend.ontogen.evidence import gather_evidence
+from src.shared.datahub.documents import DOCUMENT_EVIDENCE_CAP_PER_DATASET
 
 _DATASET_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,catalog.books,PROD)"
 
@@ -358,7 +358,7 @@ async def test_evidence_includes_unified_aspect_set() -> None:
     Spec anchor: BACKEND.md §Inference Pipeline (step 3 evidence); spec/feature/BACKEND.md
     §Ontology Generation Service §Inference Pipeline (step 3: Fetch DataHub evidence).
     """
-    from unittest.mock import MagicMock, AsyncMock
+    from unittest.mock import AsyncMock, MagicMock
 
     # Build mocks for each of the six aspects
     props_mock = MagicMock()
@@ -426,7 +426,8 @@ async def test_evidence_includes_unified_aspect_set() -> None:
         "datasetProperties evidence keys 'dataset_name' and 'description' must both be present"
     )
     assert "schema_fields" in evidence, "schemaMetadata evidence key missing"
-    # editableDatasetProperties → editable_description; editableSchemaMetadata → editable_field_descriptions
+    # editableDatasetProperties → editable_description; editableSchemaMetadata →
+    # editable_field_descriptions
     # Both are seeded above and must both appear.
     assert "editable_description" in evidence and "editable_field_descriptions" in evidence, (
         "Both 'editable_description' (from editableDatasetProperties) and "

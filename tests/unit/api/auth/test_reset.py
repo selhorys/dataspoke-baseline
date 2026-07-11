@@ -108,7 +108,9 @@ async def test_issue_reset_token_peripheral_not_configured_reraises_no_db_write(
 
 
 @pytest.mark.asyncio
-async def test_issue_reset_token_notification_error_raises_storage_unavailable_no_db_write() -> None:
+async def test_issue_reset_token_notification_error_raises_storage_unavailable_no_db_write() -> (
+    None
+):
     """NotificationError from send_email is wrapped as StorageUnavailableError; no DB row written.
 
     The global exception handler maps StorageUnavailableError to 503 STORAGE_UNAVAILABLE.
@@ -191,7 +193,8 @@ async def test_issue_reset_token_known_email_writes_row_with_sha256_hash() -> No
     await issue_reset_token(mock_db, mock_notification, "known@example.com")
 
     assert len(captured_rows) == 1, (
-        "One PasswordResetToken row must be written per spec/feature/AUTH.md §Lifecycle §Password reset"
+        "One PasswordResetToken row must be written per spec/feature/AUTH.md §Lifecycle §Password "
+        "reset"
     )
     row = captured_rows[0]
 
@@ -341,7 +344,8 @@ async def test_confirm_reset_valid_token_writes_new_hash_and_marks_used() -> Non
 
     # Password hash must have been updated
     assert len(new_hash_captured) == 1, (
-        "update_password must be called exactly once per spec/feature/AUTH.md §Lifecycle §Password reset"
+        "update_password must be called exactly once per spec/feature/AUTH.md §Lifecycle §Password "
+        "reset"
     )
 
     # used_at must be set (token marked as used)

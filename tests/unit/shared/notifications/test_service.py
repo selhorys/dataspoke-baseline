@@ -11,7 +11,7 @@ SMTP dispatch is tested by mocking the peripheral lookup and aiosmtplib.SMTP.
 
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 

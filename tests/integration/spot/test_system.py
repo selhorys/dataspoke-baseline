@@ -5,8 +5,8 @@ Concerns covered:
 - GET /ready returns 200 with datahub, postgres, redis subsystem checks per spec
 """
 
-import pytest
 import httpx
+import pytest
 
 
 @pytest.mark.asyncio

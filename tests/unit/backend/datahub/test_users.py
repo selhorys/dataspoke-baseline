@@ -6,7 +6,8 @@ Concerns covered:
 - ensure_marker_group_exists always emits Status + CorpGroupInfo (unconditional, idempotent)
 - add_user_to_marker_group issues the GraphQL addGroupMembers mutation with the right variables
 - propagate_role issues batchAssignRole with the right roleUrn
-- read_role parses the RoleMembership aspect; returns None when missing, empty, or for non-baseline role URNs
+- read_role parses the RoleMembership aspect; returns None when missing, empty, or for non-baseline
+role URNs
 - hard_delete_corpuser calls client.hard_delete_entity with the URN
 
 spec: spec/feature/AUTH.md §DataHub Mirror Semantics
@@ -16,10 +17,9 @@ spec: spec/feature/AUTH.md §Role Drift Reconciliation
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, call
+from unittest.mock import AsyncMock
 
 import pytest
-
 
 # ── URN helpers ────────────────────────────────────────────────────────────────
 
@@ -201,7 +201,11 @@ async def test_add_user_to_marker_group_issues_correct_mutation() -> None:
     call_args = mock_client.execute_graphql.call_args[0]  # positional
 
     # Variables must include groupUrn and userUrns
-    variables = call_args[1] if len(call_args) > 1 else mock_client.execute_graphql.call_args[1].get("variables")
+    variables = (
+        call_args[1]
+        if len(call_args) > 1
+        else mock_client.execute_graphql.call_args[1].get("variables")
+    )
     if variables is None:
         variables = call_args[1]
 
@@ -209,7 +213,8 @@ async def test_add_user_to_marker_group_issues_correct_mutation() -> None:
         "addGroupMembers must pass groupUrn per spec/feature/AUTH.md §DataHub Mirror Semantics"
     )
     assert user_urn in variables["u"], (
-        "addGroupMembers must include the corpuser URN per spec/feature/AUTH.md §DataHub Mirror Semantics"
+        "addGroupMembers must include the corpuser URN per spec/feature/AUTH.md §DataHub Mirror "
+        "Semantics"
     )
 
 

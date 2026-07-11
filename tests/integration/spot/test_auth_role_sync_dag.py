@@ -17,7 +17,6 @@ import uuid
 
 import httpx
 import pytest
-import pytest_asyncio
 from datahub.metadata.schema_classes import RoleMembershipClass
 from sqlalchemy import text
 

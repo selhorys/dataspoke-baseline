@@ -33,7 +33,6 @@ from pydantic import ValidationError
 
 from src.api.schemas.admin import RuntimeConfPatchRequest
 
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 

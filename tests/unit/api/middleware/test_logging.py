@@ -17,7 +17,6 @@ import pytest
 
 from src.api.middleware.logging import RequestLoggingMiddleware
 
-
 # ── Unit tests: dispatch method in isolation ──────────────────────────────────
 
 class _CaseInsensitiveDict(dict):

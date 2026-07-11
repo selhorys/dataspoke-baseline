@@ -49,7 +49,9 @@ async def test_handle_datahub_returns_502(datahub_err_client: AsyncClient) -> No
     assert resp.status_code == 502
 
 
-async def test_handle_datahub_body_error_code_is_datahub_unavailable(datahub_err_client: AsyncClient) -> None:
+async def test_handle_datahub_body_error_code_is_datahub_unavailable(
+    datahub_err_client: AsyncClient,
+) -> None:
     """DATAHUB_INTEGRATION.md §Error Handling: error_code must be DATAHUB_UNAVAILABLE."""
     resp = await datahub_err_client.get("/test/datahub-error")
     body = resp.json()
@@ -57,7 +59,8 @@ async def test_handle_datahub_body_error_code_is_datahub_unavailable(datahub_err
 
 
 async def test_handle_datahub_body_message_is_generic(datahub_err_client: AsyncClient) -> None:
-    """BACKEND.md _handle_datahub: message must be a non-empty generic string (not internal GMS URL)."""
+    """BACKEND.md _handle_datahub: message must be a non-empty generic string
+    (not internal GMS URL)."""
     resp = await datahub_err_client.get("/test/datahub-error")
     body = resp.json()
     # Spec: generic message, server-side log only for the inner detail.
@@ -66,7 +69,9 @@ async def test_handle_datahub_body_message_is_generic(datahub_err_client: AsyncC
     assert isinstance(message, str) and message  # non-empty
 
 
-async def test_handle_datahub_body_does_not_leak_internal_url(datahub_err_client: AsyncClient) -> None:
+async def test_handle_datahub_body_does_not_leak_internal_url(
+    datahub_err_client: AsyncClient,
+) -> None:
     """Security: 502 body must NOT contain the GMS URL or any internal URL."""
     resp = await datahub_err_client.get("/test/datahub-error")
     body_text = resp.text

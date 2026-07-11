@@ -11,10 +11,8 @@ spec: API.md §Middleware — rate limiting uses per-user key (JWT sub or IP fal
       Redis outage must not block requests (in_memory_fallback_enabled=True).
 """
 
-import pytest
 
-from src.api.middleware.rate_limit import limiter, _get_user_key
-
+from src.api.middleware.rate_limit import _get_user_key, limiter
 
 # ── Configuration assertions ──────────────────────────────────────────────────
 

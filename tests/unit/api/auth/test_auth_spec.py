@@ -17,7 +17,6 @@ from pydantic import ValidationError
 from src.api.schemas.auth import (
     RegisterRequest,
     TokenRequest,
-    TokenResponse,
 )
 
 

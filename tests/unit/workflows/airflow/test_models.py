@@ -16,7 +16,6 @@ from pydantic import ValidationError
 
 from src.workflows.airflow.models import DagRunResponse, DagRunState
 
-
 # ── DagRunState enum ──────────────────────────────────────────────────────────
 
 
@@ -38,7 +37,8 @@ def test_dag_run_state_values() -> None:
 def test_dag_run_response_requires_dag_run_id_dag_id_state() -> None:
     """DagRunResponse must require dag_run_id, dag_id, state.
 
-    impl interface contract (Airflow REST API + impl conventions) — required fields from Airflow REST API.
+    impl interface contract (Airflow REST API + impl conventions) — required fields from Airflow
+    REST API.
     """
     with pytest.raises(ValidationError):
         DagRunResponse()  # type: ignore[call-arg]  # missing required fields
@@ -65,7 +65,8 @@ def test_dag_run_response_valid_construction() -> None:
 def test_dag_run_response_optional_fields_default_correctly() -> None:
     """DagRunResponse optional fields default: conf={}, logical/start/end_date=None.
 
-    impl interface contract (Airflow REST API + impl conventions) — optional fields from Airflow response.
+    impl interface contract (Airflow REST API + impl conventions) — optional fields from Airflow
+    response.
     """
     resp = DagRunResponse(
         dag_run_id="run-1",
@@ -84,7 +85,8 @@ def test_dag_run_response_optional_fields_default_correctly() -> None:
 def test_is_terminal_true_for_success() -> None:
     """DagRunResponse.is_terminal is True when state is success.
 
-    impl interface contract (Airflow REST API + impl conventions) — terminal states: success, failed.
+    impl interface contract (Airflow REST API + impl conventions) — terminal states: success,
+    failed.
     """
     resp = DagRunResponse(
         dag_run_id="run-1", dag_id="metagen-daily", state=DagRunState.success
@@ -95,7 +97,8 @@ def test_is_terminal_true_for_success() -> None:
 def test_is_terminal_true_for_failed() -> None:
     """DagRunResponse.is_terminal is True when state is failed.
 
-    impl interface contract (Airflow REST API + impl conventions) — terminal states: success, failed.
+    impl interface contract (Airflow REST API + impl conventions) — terminal states: success,
+    failed.
     """
     resp = DagRunResponse(
         dag_run_id="run-1", dag_id="ontogen-weekly", state=DagRunState.failed
@@ -131,7 +134,8 @@ def test_is_terminal_false_for_running() -> None:
 def test_status_alias_equals_state() -> None:
     """DagRunResponse.status must equal DagRunResponse.state.
 
-    impl interface contract (Airflow REST API + impl conventions) — .status is a backward-compat alias for .state.
+    impl interface contract (Airflow REST API + impl conventions) — .status is a backward-compat
+    alias for .state.
     """
     resp = DagRunResponse(
         dag_run_id="run-1", dag_id="datahub-sync-hourly", state=DagRunState.success
@@ -145,7 +149,8 @@ def test_status_alias_equals_state() -> None:
 def test_dag_run_response_round_trip() -> None:
     """DagRunResponse serializes and deserializes correctly.
 
-    impl interface contract (Airflow REST API + impl conventions) — model used for API response parsing.
+    impl interface contract (Airflow REST API + impl conventions) — model used for API response
+    parsing.
     """
     resp = DagRunResponse(
         dag_run_id="manual__2026-05-01T00:00:00+00:00",

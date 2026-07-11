@@ -23,7 +23,6 @@ from src.shared.datahub.events import (
     deserialize_mcl,
 )
 
-
 # ── MetadataChangeLogEvent model ──────────────────────────────────────────────
 
 

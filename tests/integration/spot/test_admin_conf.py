@@ -32,7 +32,8 @@ warmed with the restored values by that cleanup PATCH.
 
 Spec traceability:
 - API.md §Admin (/admin) — all concerns listed above.
-- src/api/schemas/admin.py RuntimeConfResponse / config_service.py RUNTIME_CONFIG_DEFAULTS — factory defaults, 15 fields, auth rules,
+- src/api/schemas/admin.py RuntimeConfResponse / config_service.py RUNTIME_CONFIG_DEFAULTS — factory
+defaults, 15 fields, auth rules,
   no-secret-in-response, updated_at, resp_time invariants.
 - spec/API.md §Access Control — Admin role required for /admin/*
 - spec/API.md §Internal Admin (/internal/admin) — X-Internal-Token for /internal/…
@@ -123,7 +124,8 @@ async def test_get_conf_returns_factory_defaults(
 
     spec: API.md §Admin (/admin) — 'GET on a fresh DB returns all 15 fields at
     factory defaults, includes resp_time, contains NO llm_api_key / no secret key.'
-    spec: src/api/schemas/admin.py RuntimeConfResponse / config_service.py RUNTIME_CONFIG_DEFAULTS — factory defaults section.
+    spec: src/api/schemas/admin.py RuntimeConfResponse / config_service.py RUNTIME_CONFIG_DEFAULTS —
+    factory defaults section.
     """
     # Drive to known state via PATCH (cache-safe).
     await _reset_to_defaults(api_client, admin_headers)
@@ -137,7 +139,8 @@ async def test_get_conf_returns_factory_defaults(
         assert field in body, f"Field '{field}' missing from response"
         assert body[field] == expected, (
             f"Field '{field}': expected {expected!r}, got {body[field]!r}. "
-            f"spec: src/api/schemas/admin.py RuntimeConfResponse / config_service.py RUNTIME_CONFIG_DEFAULTS — factory default for {field}."
+            f"spec: src/api/schemas/admin.py RuntimeConfResponse / config_service.py "
+            f"RUNTIME_CONFIG_DEFAULTS — factory default for {field}."
         )
 
 
@@ -149,7 +152,8 @@ async def test_get_conf_includes_resp_time_and_updated_at(
     """GET /admin/conf includes resp_time and updated_at in the response.
 
     spec: API.md §Admin (/admin) — 'includes resp_time'.
-    spec: src/api/schemas/admin.py RuntimeConfResponse / config_service.py RUNTIME_CONFIG_DEFAULTS — 'RuntimeConfResponse: 15 fields +
+    spec: src/api/schemas/admin.py RuntimeConfResponse / config_service.py RUNTIME_CONFIG_DEFAULTS —
+    'RuntimeConfResponse: 15 fields +
     updated_at + resp_time'.
     spec: API.md §Standard Response Envelope — resp_time on every response.
     """
@@ -157,8 +161,13 @@ async def test_get_conf_includes_resp_time_and_updated_at(
     assert resp.status_code == 200
     body = resp.json()
 
-    assert "resp_time" in body, "resp_time must be present (spec: API.md §Standard Response Envelope)"
-    assert "updated_at" in body, "updated_at must be present (spec: src/api/schemas/admin.py RuntimeConfResponse / config_service.py RUNTIME_CONFIG_DEFAULTS)"
+    assert "resp_time" in body, (
+        "resp_time must be present (spec: API.md §Standard Response Envelope)"
+    )
+    assert "updated_at" in body, (
+        "updated_at must be present (spec: src/api/schemas/admin.py RuntimeConfResponse "
+        "/ config_service.py RUNTIME_CONFIG_DEFAULTS)"
+    )
 
 
 @pytest.mark.asyncio
@@ -414,7 +423,8 @@ async def test_patch_conf_only_updates_supplied_fields(
 ) -> None:
     """PATCH /admin/conf updates only the supplied fields; others are unchanged.
 
-    spec: src/api/schemas/admin.py RuntimeConfPatchRequest — 'patch_runtime_config applies only provided fields,
+    spec: src/api/schemas/admin.py RuntimeConfPatchRequest — 'patch_runtime_config applies only
+    provided fields,
     leaves others at prior values.'
     """
     try:
@@ -439,7 +449,8 @@ async def test_patch_conf_only_updates_supplied_fields(
                 continue
             assert body[field] == expected, (
                 f"Field '{field}' must remain at factory default {expected!r} after partial "
-                f"patch; got {body[field]!r}. spec: src/api/schemas/admin.py RuntimeConfPatchRequest — partial patch."
+                f"patch; got {body[field]!r}. spec: src/api/schemas/admin.py "
+                f"RuntimeConfPatchRequest — partial patch."
             )
 
     finally:
@@ -502,7 +513,8 @@ async def test_patch_conf_confidence_threshold_too_high_returns_422(
 ) -> None:
     """PATCH /admin/conf with metagen_confidence_threshold=1.5 returns 422.
 
-    spec: src/api/schemas/admin.py RuntimeConfPatchRequest — 'metagen_confidence_threshold=1.5 rejected'.
+    spec: src/api/schemas/admin.py RuntimeConfPatchRequest — 'metagen_confidence_threshold=1.5
+    rejected'.
     spec: src/api/schemas/admin.py RuntimeConfPatchRequest — le=1.0.
     """
     resp = await api_client.patch(
@@ -523,7 +535,8 @@ async def test_patch_conf_validation_intervals_zero_returns_422(
 ) -> None:
     """PATCH /admin/conf with validation_score_n_intervals=0 returns 422.
 
-    spec: src/api/schemas/admin.py RuntimeConfPatchRequest — 'validation_score_n_intervals=0 rejected'.
+    spec: src/api/schemas/admin.py RuntimeConfPatchRequest — 'validation_score_n_intervals=0
+    rejected'.
     spec: src/api/schemas/admin.py RuntimeConfPatchRequest — ge=1.
     """
     resp = await api_client.patch(
@@ -612,7 +625,8 @@ async def test_internal_patch_conf_missing_token_returns_401_or_503(
     # 401 when token is set server-side but omitted here; 503 when token unset.
     assert resp.status_code in (401, 503), (
         f"Missing X-Internal-Token must return 401 or 503; got {resp.status_code}: {resp.text}. "
-        "spec: API.md §Internal Admin (/internal/admin) / §Application Error Codes (INTERNAL_AUTH_NOT_CONFIGURED)."
+        "spec: API.md §Internal Admin (/internal/admin) / §Application Error Codes "
+        "(INTERNAL_AUTH_NOT_CONFIGURED)."
     )
 
 

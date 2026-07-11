@@ -20,14 +20,11 @@ spec traceability:
 - spec/DATAHUB_INTEGRATION.md §Event Subscription — peripheral-config-backed broker address.
 """
 
-import asyncio
-from threading import Event
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from src.shared.datahub.consumer import _read_kafka_brokers
-
 
 # ── _read_kafka_brokers ───────────────────────────────────────────────────────
 
@@ -206,7 +203,7 @@ async def test_run_inner_loop_returns_when_broker_changes() -> None:
     consumer rebuilt when kafka_brokers changes.
     spec: src/shared/datahub/consumer.py _run_inner_loop — returns on broker change.
     """
-    from src.shared.datahub.consumer import _RECONFIG_CHECK_INTERVAL, _run_inner_loop
+    from src.shared.datahub.consumer import _run_inner_loop
 
     mock_consumer = MagicMock()
     mock_consumer.poll = MagicMock(return_value=None)  # no messages

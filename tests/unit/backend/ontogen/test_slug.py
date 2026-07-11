@@ -10,13 +10,11 @@ unless the test is naturally table-driven (avoid over-abstracting single asserti
 import pytest
 
 from src.backend.ontogen.slug import (
-    SLUG_ID_RE,
     assert_edge_id,
     assert_node_id,
     make_snake_id,
     to_snake,
 )
-
 
 # ── to_snake ──────────────────────────────────────────────────────────────────
 

@@ -1,11 +1,8 @@
 """Unit tests for ontogen workflow params and DAG registry."""
 
-import importlib.util
-import os
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
 
 from src.workflows.ontogen import OntogenRunParams
 from src.workflows.registry import ALL_DAG_IDS

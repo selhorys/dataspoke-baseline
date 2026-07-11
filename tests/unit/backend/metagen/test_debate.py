@@ -578,12 +578,26 @@ async def test_run_debate_key_order_invariance_does_not_prevent_cycle_detection(
     # Same logical content, Python dicts preserve insertion order so we create
     # two dicts with different key order but equivalent JSON (sort_keys=True collapses them)
     payload_a = {
-        "candidates": [{"dataset_urn": "urn:x", "item_id": "dataset.description", "value": "v1", "confidence_score": 0.9}],
+        "candidates": [
+            {
+                "dataset_urn": "urn:x",
+                "item_id": "dataset.description",
+                "value": "v1",
+                "confidence_score": 0.9,
+            }
+        ],
         "extra": 1,
     }
     payload_b = {
         "extra": 1,
-        "candidates": [{"confidence_score": 0.9, "value": "v1", "item_id": "dataset.description", "dataset_urn": "urn:x"}],
+        "candidates": [
+            {
+                "confidence_score": 0.9,
+                "value": "v1",
+                "item_id": "dataset.description",
+                "dataset_urn": "urn:x",
+            }
+        ],
     }
 
     llm = FakeLLM([

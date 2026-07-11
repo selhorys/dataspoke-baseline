@@ -22,8 +22,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.backend.metrics.bootstrap import _FACTORY_DEFAULTS, seed_factory_defaults
-from src.shared.db.models import MetricDefinition
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -45,8 +43,6 @@ def _make_db_with_existing_row(existing_id: str):
     and returns the existing row only for the matching ID, so the guard fires
     regardless of the iteration order over _FACTORY_DEFAULTS.
     """
-    from sqlalchemy import select as _select
-    from src.shared.db.models import MetricDefinition as _MD
 
     db = AsyncMock()
     db.add = MagicMock()  # AsyncSession.add is synchronous

@@ -23,13 +23,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pydantic
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import BaseModel
 
 from src.shared.llm.client import LLMClient
-from src.shared.llm.loop_trace import LoopResult, LoopTrace
+from src.shared.llm.loop_trace import LoopResult
 from src.workflows._stubs import StubLLMClient
-
 
 # ── Shared fixture schema ────────────────────────────────────────────────────
 
@@ -162,7 +161,9 @@ async def test_a3_payload_extraction_flat(mock_create: MagicMock, mock_embed: Ma
 
 @patch("src.shared.llm.client._create_embeddings_model")
 @patch("src.shared.llm.client._create_chat_model")
-async def test_b1_two_iteration_success_trace(mock_create: MagicMock, mock_embed: MagicMock) -> None:
+async def test_b1_two_iteration_success_trace(
+    mock_create: MagicMock, mock_embed: MagicMock
+) -> None:
     """Spec: BACKEND.md §LLM Inference Loop — 'On errors the model receives the
     consolidated error list as a ToolMessage and revises.'
     After iter-1 validator returns errors, iter-2 returns ok:true.

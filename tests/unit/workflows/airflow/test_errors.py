@@ -11,11 +11,9 @@ scenarios; exception class hierarchy and attributes are impl conventions. No ded
 spec section exists in the baseline contract beyond DataSpokeError hierarchy.
 """
 
-import pytest
 
-from src.workflows.airflow.errors import AirflowExecutionFailedError, AirflowTimeoutError
 from src.shared.exceptions import DataSpokeError
-
+from src.workflows.airflow.errors import AirflowExecutionFailedError, AirflowTimeoutError
 
 # ── AirflowExecutionFailedError ───────────────────────────────────────────────
 
@@ -23,7 +21,8 @@ from src.shared.exceptions import DataSpokeError
 def test_airflow_execution_failed_is_dataspoke_error() -> None:
     """AirflowExecutionFailedError must be a subclass of DataSpokeError.
 
-    impl interface contract (Airflow REST API + impl conventions) — Airflow errors extend DataSpokeError.
+    impl interface contract (Airflow REST API + impl conventions) — Airflow errors extend
+    DataSpokeError.
     """
     exc = AirflowExecutionFailedError(
         dag_id="metagen-daily", dag_run_id="run-123"
@@ -37,7 +36,8 @@ def test_airflow_execution_failed_is_dataspoke_error() -> None:
 def test_airflow_execution_failed_carries_dag_id() -> None:
     """AirflowExecutionFailedError.dag_id must equal the constructor argument.
 
-    impl interface contract (Airflow REST API + impl conventions) — dag_id identifies the failed DAG.
+    impl interface contract (Airflow REST API + impl conventions) — dag_id identifies the failed
+    DAG.
     """
     exc = AirflowExecutionFailedError(dag_id="ingestion-active-daily", dag_run_id="run-456")
     assert exc.dag_id == "ingestion-active-daily"
@@ -46,7 +46,8 @@ def test_airflow_execution_failed_carries_dag_id() -> None:
 def test_airflow_execution_failed_carries_dag_run_id() -> None:
     """AirflowExecutionFailedError.dag_run_id must equal the constructor argument.
 
-    impl interface contract (Airflow REST API + impl conventions) — dag_run_id identifies the specific run.
+    impl interface contract (Airflow REST API + impl conventions) — dag_run_id identifies the
+    specific run.
     """
     exc = AirflowExecutionFailedError(dag_id="metrics-hourly", dag_run_id="run-789")
     assert exc.dag_run_id == "run-789"
@@ -92,7 +93,8 @@ def test_airflow_execution_failed_detail_included_when_provided() -> None:
 def test_airflow_timeout_is_dataspoke_error() -> None:
     """AirflowTimeoutError must be a subclass of DataSpokeError.
 
-    impl interface contract (Airflow REST API + impl conventions) — Airflow errors extend DataSpokeError.
+    impl interface contract (Airflow REST API + impl conventions) — Airflow errors extend
+    DataSpokeError.
     """
     exc = AirflowTimeoutError(dag_id="metagen", dag_run_id="run-1", timeout_seconds=30.0)
     assert isinstance(exc, DataSpokeError)
@@ -101,7 +103,8 @@ def test_airflow_timeout_is_dataspoke_error() -> None:
 def test_airflow_timeout_carries_dag_id() -> None:
     """AirflowTimeoutError.dag_id must equal the constructor argument.
 
-    impl interface contract (Airflow REST API + impl conventions) — dag_id identifies the DAG that timed out.
+    impl interface contract (Airflow REST API + impl conventions) — dag_id identifies the DAG that
+    timed out.
     """
     exc = AirflowTimeoutError(dag_id="metrics-daily", dag_run_id="run-t", timeout_seconds=25.0)
     assert exc.dag_id == "metrics-daily"
@@ -110,9 +113,12 @@ def test_airflow_timeout_carries_dag_id() -> None:
 def test_airflow_timeout_carries_dag_run_id() -> None:
     """AirflowTimeoutError.dag_run_id must equal the constructor argument.
 
-    impl interface contract (Airflow REST API + impl conventions) — run_id identifies the timed-out run.
+    impl interface contract (Airflow REST API + impl conventions) — run_id identifies the timed-out
+    run.
     """
-    exc = AirflowTimeoutError(dag_id="metagen-hourly", dag_run_id="run-timeout", timeout_seconds=30.0)
+    exc = AirflowTimeoutError(
+        dag_id="metagen-hourly", dag_run_id="run-timeout", timeout_seconds=30.0
+    )
     assert exc.dag_run_id == "run-timeout"
 
 
