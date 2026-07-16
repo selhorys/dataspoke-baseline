@@ -1,6 +1,6 @@
 ---
 name: run-id-filter-then-assert-tautology
-description: UC3 ontogen run_id tests — the filter-then-assert looks tautological but the scoping is INTENTIONAL (result tables hold multiple runs' rows); discriminate via any_rows_found + run_id field-presence, NOT by asserting every row==this run_id
+description: UC3 ontogen run_id tests — filter-then-assert scoping is INTENTIONAL (discriminate via any_rows_found + run_id field-presence, not every-row equality); plus the verified spec anchors for any_rows_found / RUN_COMPLETE and the stale BACKEND_LLM §Test Mode skipif line
 metadata:
   type: project
 ---
@@ -34,3 +34,25 @@ real-LLM tests pass a per-call `timeout=300.0` (api-wired) / `waitForResponse({t
 filter-then-assert as a defect to "tighten" into all-rows-equal — that scoping is correct. Confirm
 the discriminating check is run_id field-presence + any_rows_found, that only one real-LLM
 method/run fires per test, and that the run POST carries a minutes-scale timeout.
+
+## Spec anchors for `any_rows_found` (verified 2026-07-17)
+
+`any_rows_found` has **no product-spec basis** — do not let a test cite
+`BACKEND_LLM.md §Test Mode` for it. §Test Mode (L337-360) describes *stub* behaviour only
+("stub Producer returns one schema-valid empty payload", L349 — that half IS citable); it states
+nothing about a real LLM being required to persist ≥1 row. The honest anchors:
+
+- the ≥1-row rule → `TESTING.md §Assertion Discipline` (anti-vacuity backstop, a test-suite rule)
+- the run_id-stamping half → `BACKEND_LLM.md §Termination` L236 ("persist each row tagged with
+  the `run_id`")
+
+Also verified wrong at their cited location: `BACKEND_LLM.md §Wiring` (L286-294) never mentions
+`ONTOGEN.RUN_COMPLETE` — the RUN_COMPLETE detail contract lives in `§Evidence` L282-284. Any test
+citing "§Wiring — RUN_COMPLETE must follow run_debate" is mis-anchored.
+
+`BACKEND_LLM.md §Test Mode` L358 is stale: it prescribes
+`@pytest.mark.skipif(runtime_conf.get("stub_llm_client"), ...)` for "UC3 / UC4 `_with_real_llm`
+variants". That is not implementable (a fixture is not available at decoration time), contradicts
+`TESTING.md §Running` (inline guard, first statement of the body — and TESTING.md P3 outranks
+BACKEND_LLM.md P5), and names a UC3 variant that no longer exists since UC3 became one test
+parametrized over `llm_mode` in `["stub","real"]`.

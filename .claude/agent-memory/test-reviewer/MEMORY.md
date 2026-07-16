@@ -13,3 +13,4 @@
 - [Data hub action-button scoping](project_data_hub_action_button_scoping.md) — /data/[urn] Validation+MetaGen share Create/Edit/Save/Delete; unscoped .first() hits wrong panel
 - [Peripherals GET mask has no plaintext path](project_peripherals_get_mask_no_plaintext_path.md) — GET masks via *_is_set boolean + hardcoded ********; plaintext-injection patches are inert, real guard is positive == "********" + is_configured
 - [Metrics Redis lock undocumented](project_metrics_redis_lock_undocumented.md) — MetricsService.run has a metrics:running:{metric_id} SET NX lock absent from BACKEND.md §Concurrency Guards SET NX table; 409 METRIC_RUNNING is spec, key is impl
+- [Ontogen score vs confidence_score](project_ontogen_score_vs_confidence_score.md) — rows carry `confidence_score`; USE_CASE_en.md L391/395/399 `score` is shorthand contradicting API.md + impl; flag tests asserting bare `score`
