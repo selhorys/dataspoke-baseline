@@ -119,6 +119,10 @@ environment.
 **Static gates** (must pass before committing): `uv run mypy src/` and
 `uv run ruff check src/ tests/`
 
+The asymmetry is deliberate: `tests/` is ruff-gated but not type-checked, and mypy stays
+`src/`-only. Mock-heavy test code fights strict typing for no gain in defect detection, so the
+ruff gate is the enforced quality bar for tests.
+
 ### TypeScript (Frontend)
 
 **Running** (from project root): `pnpm -C src/frontend test`
@@ -246,6 +250,22 @@ anywhere) — useful for testing UC1 ingestion against a blank slate. `--reset-s
 the seeded baseline used by UC2/3/4/5 — full Imazon datasets present in PostgreSQL, Kafka,
 and DataHub with descriptions and typed columns.
 
+#### Event Log Purge Policy
+
+Events are purged at two scopes, and only these two:
+
+- **Wholesale, per run.** `reset_all()` (`tests/integration/util/dataspoke_db.py`) TRUNCATEs every
+  table in the `dataspoke` schema, `dataspoke.events` included, under **both** `--reset-seed` and
+  `--reset-all`.
+- **URN-scoped, per test.** Api-wired's autouse `purge_urns` fixture (`api_wired/conftest.py`) reads
+  the module-level `URNS_TO_PURGE` list and hard-deletes each URN's operational rows — including its
+  `dataspoke.events` rows — before and after every test.
+
+No **wholesale per-module** events purge exists, and none is wanted: a TRUNCATE sweep per module
+reintroduces reset overhead the per-run purge already covers, while the URN-scoped fixture gives
+api-wired its per-test slot at negligible cost. Beyond these purges, event isolation rests on
+identity-bound assertions (see [Integration Lifecycle & Isolation](#integration-lifecycle--isolation)).
+
 ### Airflow Integration Test Pitfalls
 
 - **Connection**: Airflow is accessed via nginx-ingress at `http://airflow.<INGRESS_IP>.nip.io`
@@ -254,7 +274,12 @@ and DataHub with descriptions and typed columns.
 - **Direct activity testing**: Preferred approach -- call `/internal/activities/{domain}/*` via
   `httpx.AsyncClient` (ASGI transport) without Airflow orchestration.
 - **Full DAG testing**: Requires running Airflow + deployed DAG files. Use `AirflowClient` to
-  trigger and poll. Keep timeouts short (30s max).
+  trigger and poll. Keep timeouts short — 30s is the default cap. The exemption is a whole-run
+  `trigger_and_wait` budget on a scheduler-triggered DAG: that budget spans trigger→terminal as one
+  window, and the scheduler's pickup latency inside it is unbounded and not something the test can
+  shorten. Exempt call sites are enumerated here, currently exactly one —
+  `tests/integration/spot/test_auth_role_sync_dag.py:135` (`auth-role-sync-daily`, 180s). Extending
+  the exemption to another call site requires editing this list.
 - **Stale DAG runs**: Cancel via Airflow REST API or UI (`http://airflow.<INGRESS_IP>.nip.io`)
   before starting new ones.
 - **Airflow utilities** (`tests/integration/util/airflow.py`): kill/cleanup stale DAG runs,
@@ -342,6 +367,23 @@ the user story has independent scenarios (e.g., `test_uc1_01_datahub_managed.py`
 - **Why this split**: the spot set proves the parts; api-wired proves the parts compose into
   the user-visible journey. Both must pass for an integration release.
 
+### Tier placement rationales
+
+Two concerns sit at spot for reasons that are not visible from the test file alone. They belong at
+spot; lifting them into api-wired would violate the rules above.
+
+- **Validation `assertionRunEvent` DataHub read-back**
+  (`spot/test_validation_passive_store.py::test_post_result_emits_assertion_run_event`). Proving the
+  aspect landed requires the DataHubGraph SDK plus `build_assertion_urn` from `src/backend` — both
+  barred from api-wired test bodies by the REST-only rule above.
+- **Ontogen candidate review** (`spot/test_ontogen_review.py`, covering
+  `POST /spoke/ontogen/result/{node,edge,triple}/{id}/method/review`). Under stub mode the Producer
+  returns an empty payload, so no candidate rows persist and an api-wired arc has nothing to review.
+  Reaching a reviewable candidate means seeding `llm_pending` rows through the ORM, which the
+  REST-only rule bars from api-wired test bodies. The UC3 api-wired arc does cover seed
+  create-then-enable (`PATCH .../attr/seed/{id}/attr/enabled`); only candidate review is delegated
+  to spot.
+
 ### Running
 
 Export `helm-charts/.env.dev` into the shell before invoking pytest — `conftest.py` and `util/*.py` consume the `DATASPOKE_TEST_*` block it contains: `set -a && source helm-charts/.env.dev && set +a`.
@@ -361,7 +403,7 @@ set -a && source helm-charts/.env.dev && set +a && uv run pytest tests/integrati
 kubectl scale deployment/dataspoke-api --replicas=0 -n "${DATASPOKE_KUBE_DATASPOKE_NAMESPACE}"
 ```
 
-The session-scoped `runtime_conf` fixture (in `tests/integration/conftest.py`) GETs `/api/v1/admin/conf` once and asserts the three infra stubs (`stub_redis_client`, `stub_pgvector_manager`, `stub_notification_service`) are true. `stub_llm_client` is intentionally unchecked so real-LLM tests (UC3/UC4 `_with_real_llm` variants) can run with it false; per-test skip decorators consult `runtime_conf.stub_llm_client` and skip when stubbed. The `require_server` fixture additionally verifies `/health` returns 200 and Airflow DAGs are registered via `/admin/dags/verify`. Spot tests opt in by depending on the fixture; api-wired tests always depend on it.
+The session-scoped `runtime_conf` fixture (in `tests/integration/conftest.py`) GETs `/api/v1/admin/conf` once and asserts the three infra stubs (`stub_redis_client`, `stub_pgvector_manager`, `stub_notification_service`) are true. `stub_llm_client` is intentionally unchecked so real-LLM tests can run with it false; each such test guards inline as the first statement of its body (`if runtime_conf.get("stub_llm_client"): pytest.skip(...)`), not via a decorator. The two UCs carry different shapes: UC3 is a single test parametrized over `llm_mode` in `["stub", "real"]` (node ids `test_uc3_ontology_generation[stub]` / `[real]`), while UC4 keeps two distinct tests (`_under_stub` and `_with_real_llm`) because they assert genuinely different contracts rather than duplicating one arc. UC3's guard is **symmetric** — `real` skips when `stub_llm_client` is true, `stub` skips when it is false — so exactly one case runs per dev-env configuration and each runs against the LLM its node id names. The `require_server` fixture additionally verifies `/health` returns 200 and Airflow DAGs are registered via `/admin/dags/verify`. Spot tests opt in by depending on the fixture; api-wired tests always depend on it.
 
 ### Python (pytest) Execution Groups
 
@@ -486,8 +528,10 @@ index so files sort in user-story order (UC1 has three —
   card, conf editor Save, delete behind ConfirmDialog).
 - **Readability over DRY**: inline the gesture sequence and expected values per step; do not hide
   flows behind helpers. Shared setup (auth, env, URN constants) lives in `fixtures/`.
-- **LLM mode**: UC3/UC4 carry a stub-mode variant and a gated real-LLM variant, mirroring
-  api-wired — the real-LLM variant `test.skip`s unless `stub_llm_client` is false in `/admin/conf`.
+- **LLM mode**: UC3/UC4 each carry a stub-mode variant and a gated real-LLM variant — the real-LLM
+  variant `test.skip`s unless `stub_llm_client` is false in `/admin/conf`. The gating concept is
+  shared with api-wired; the test shape is not — api-wired expresses the same split via
+  parametrization (UC3) or separate tests (UC4), while E2E keeps two variants throughout.
 
 #### Ground group (`tests/e2e/ground/<feature>/`)
 

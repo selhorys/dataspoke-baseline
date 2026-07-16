@@ -290,8 +290,8 @@ unconditionally — there is no toggle to skip the Reviewer. `run_debate`
 owns the Producer/Reviewer loop, RAG sampling, hash-cycle detection, and
 transcript assembly; it lives in `src/backend/ontogen/debate.py`. The rest
 of `_run_inner` (enumeration, evidence gathering, persistence) is
-unchanged. The debate's per-turn LLM stubbing is governed by the test-mode
-env vars in §Test Mode below.
+unchanged. The debate's per-turn LLM stubbing is governed by the
+`stub_llm_client` toggle in §Test Mode below.
 
 ### Metagen Adversarial Debate
 
@@ -355,7 +355,7 @@ LLM stubbing is gated by the `stub_llm_client` boolean on the singleton `Runtime
 
 - Assertions on response *shape* (e.g. `OntogenRunSummary.counts` is a dict of non-negative ints) hold under both.
 - Assertions on response *content* (specific node names, triple counts) are guarded by `if runtime_conf.get("stub_llm_client"):` against the session-scoped `runtime_conf` fixture.
-- Real-LLM-only tests carry `@pytest.mark.skipif(runtime_conf.get("stub_llm_client"), ...)` (UC3 / UC4 `_with_real_llm` variants).
+- Mode-specific tests guard inline on `runtime_conf` as the first statement of the test body — `runtime_conf` is a fixture, so it is unavailable to a `skipif` decorator. UC3 is one test parametrized over `llm_mode` (`["stub", "real"]`), each case skipping when the dev-env conf does not match it; UC4 keeps separate `_under_stub` / `_with_real_llm` tests. `spec/TESTING.md §Running` owns this rule.
 
 The stub toggle is consulted by `make_llm_client()` regardless of consumer service (ontogen, metagen, or future LLM-backed flows). Companion stub toggles (`stub_redis_client`, `stub_pgvector_manager`, `stub_notification_service`) follow the same pattern — see `spec/TESTING.md §Stub Toggles`.
 
