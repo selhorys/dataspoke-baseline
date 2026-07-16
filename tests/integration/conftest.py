@@ -760,8 +760,8 @@ def runtime_conf(acquire_lock) -> dict:  # noqa: ARG001 — depends on lock
 
     stub_llm_client is intentionally NOT checked here — it is the per-test branch
     knob.  Stub-mode tests require it true; real-LLM tests require it false.
-    The per-test ``pytest.skip`` decorators that read
-    ``runtime_conf["stub_llm_client"]`` are the correct gate.
+    The per-test ``pytest.skip`` guards — the first statement of each test body —
+    that read ``runtime_conf["stub_llm_client"]`` are the correct gate.
 
     spec: src/workflows/_common.py — factory stub= contract; infra stubs must be on.
     spec: TESTING.md §Integration Testing — integration tests run with stubs for infra.
@@ -808,8 +808,9 @@ def runtime_conf(acquire_lock) -> dict:  # noqa: ARG001 — depends on lock
 
     # These three infra stubs must always be true — every integration test relies on them.
     # stub_llm_client is intentionally excluded: stub-mode tests (the default) need it true,
-    # but real-LLM tests (test_uc3/4_*_with_real_llm) need it false.  The per-test
-    # pytest.skip decorators that read runtime_conf["stub_llm_client"] are the right gate.
+    # but real-LLM tests (test_uc3_ontology_generation[real], test_uc4_*_with_real_llm)
+    # need it false.  The per-test pytest.skip guards — the first statement of each test
+    # body — that read runtime_conf["stub_llm_client"] are the right gate.
     infra_stub_fields = ("stub_redis_client", "stub_pgvector_manager", "stub_notification_service")
     not_stubbed = [f for f in infra_stub_fields if not conf.get(f)]
     if not_stubbed:
