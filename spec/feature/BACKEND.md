@@ -1266,9 +1266,10 @@ smoke check by `dataspoke-test-mode.sh` and by the test fixture
 
 | Flow | Redis Key | TTL |
 |------|-----------|-----|
-| `ingestion` | `ingestion:running:{dataset_urn}` | 1 hour |
+| `ingestion` | `ingestion:running:{source_id}` | 1 hour |
 | `ontogen` | `ontogen:running:singleton` | 1 hour |
 | `metagen` | `metagen:running:{conf_id}` | 1 hour |
+| `metrics` | `metrics:running:{metric_id}` | 1 hour |
 
 **Airflow DAG run conf-based dedup** (for Airflow-orchestrated DAGs):
 
