@@ -200,10 +200,13 @@ Route guards layer two checks:
 | Update name and/or password | `PATCH /auth/me` with `{name?, password?}` |
 
 Access token lives in memory (15 min lifetime). Refresh token is set as an
-HttpOnly cookie by the API; the frontend never reads it. Logout clears the
-in-memory access token and calls revoke. The Google flow is a full-page
-browser navigation — the SPA reloads itself at the callback URL with tokens
-already attached.
+HttpOnly cookie by the API; the frontend never reads it. Logout calls
+`POST /auth/token/revoke`; only on success does it clear the in-memory access
+token and navigate to `/login` — a failed revoke leaves the session live, so
+the UI surfaces the error and keeps the user signed in rather than showing a
+signed-out shell over a refresh cookie only the API can clear. The Google flow
+is a full-page browser navigation — the SPA reloads itself at the callback URL
+with tokens already attached.
 
 Full lifecycle (link rules, partial-failure semantics, OAuth state cookie
 contract) lives in [AUTH](AUTH.md).

@@ -142,6 +142,19 @@ revocation list, and issues a fresh access token with the same identity claims.
 `POST /auth/token/revoke` records the refresh token's hash in Redis under
 `revoked_refresh:{sha256[:16]}` with TTL equal to the token's remaining lifetime;
 both flows fail-closed on Redis unreachability (`503 STORAGE_UNAVAILABLE`).
+On that 503 path revoke **retains the refresh cookie**: the token is still live
+server-side, and clearing the cookie would signal a revocation that did not
+occur — a fail-open dressed as an error.
+
+Neither route takes a bearer credential; the refresh cookie is the credential.
+They differ on a missing or unusable one. Refresh requires a live refresh token
+and returns `401 UNAUTHORIZED` without one. Revoke is credential-optional and
+idempotent — a missing, undecodable, wrong-signature, expired, or
+non-`type=refresh` cookie is a no-op on the revocation store: the cookie is
+cleared and the call returns `204`. There is no live token to revoke, and per
+RFC 7009 §2.2 revocation reports success whether the token was revoked or was
+already invalid. Logout therefore never fails on account of the cookie it was
+handed, only on the store being unreachable.
 
 ### Same-site requirement for cookie-based session
 

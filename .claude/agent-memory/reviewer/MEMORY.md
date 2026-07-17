@@ -10,3 +10,5 @@
 - [Runtime env-file rename blast radius](project_runtime_envfile_rename_blast_radius.md) — renaming helm-charts/.env→.env.dev breaks ~17 hardcoded loaders/skills + a gitignore secret-leak gotcha
 - ["No references remain" brace grep](feedback_no_references_remain_brace_grep.md) — `/hub` grep stays clean while `{auth,spoke,hub}` brace-list survives; grep token-level minus homographs
 - [Recharts var() in SVG attr](project_recharts_css_var_svg_attr.md) — var() DOES resolve in SVG presentation attrs (Chromium-verified); Recharts hsl(var(--token)) stroke is fine, not a regression
+- [FastAPI injected Response on error path](project_fastapi_injected_response_error_path.md) — endpoint raise ⇒ sub-response headers dropped; no Set-Cookie on error paths; MRO picks specific handler
+- [Verify branch-reachability rationales](feedback_verify_branch_reachability_rationales.md) — auth is route-level Depends, so unauthenticated routes never 401; prove "unreachable" claims, watch float-vs-floor races

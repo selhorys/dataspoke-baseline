@@ -148,7 +148,7 @@ callers. The DB lookup is in the same request transaction as other route work
 
 | URI prefix | Gate | Notes |
 |------------|------|-------|
-| `/auth/…` | none (public) | login, register, password reset, OAuth callback are public; `/auth/me`, `/auth/api-tokens`, `/auth/token/refresh`, `/auth/token/revoke` require an authenticated caller |
+| `/auth/…` | none (public) | login, register, password reset, OAuth callback are public; `/auth/me` and `/auth/api-tokens` require a bearer-authenticated caller; `/auth/token/refresh` and `/auth/token/revoke` take the HttpOnly refresh cookie rather than a bearer token — per-route semantics in [AUTH §Refresh & revoke](feature/AUTH.md#refresh--revoke) |
 | `/spoke/…` | authenticated; method × role gate applies (see below) | all authenticated users, with method-based restriction by role |
 | `/admin/…` | `users.role = 'Admin'` | Admin only |
 
@@ -192,8 +192,9 @@ All routes are prefixed with `/api/v1`.
 
 ### Auth
 
-All `/auth/*` routes are public (no JWT required). Full lifecycle semantics
-in [feature/AUTH.md](feature/AUTH.md).
+`/auth/*` carries no prefix gate; per-route auth requirements are in
+[§Access Control](#access-control). Full lifecycle semantics in
+[feature/AUTH.md](feature/AUTH.md).
 
 | Method | Path | Purpose |
 |--------|------|---------|
@@ -931,7 +932,7 @@ Clients should treat `detail` as optional; absent for errors that don't need it.
 | `PERIPHERAL_NOT_CONFIGURED` | 503 | A required peripheral is not configured. `detail.peripheral` identifies which one (`"smtp"` for `/auth/password/reset/request`; `"datahub"` for any DataHub-requiring endpoint when DataHub is unconfigured). Distinct from `DATAHUB_UNAVAILABLE` (502), which is the configured-but-unreachable case. The `/ready` health endpoint is the exception that reports an unconfigured peripheral as `degraded` rather than returning this code |
 | `DATAHUB_UNAVAILABLE` | 502 | DataHub GMS is configured but did not respond or returned an error |
 | `AIRFLOW_UNAVAILABLE` | 503 | The in-cluster Airflow REST API did not respond or returned an error while reading or setting DAG paused state (`GET`/`PATCH /admin/dags`) |
-| `STORAGE_UNAVAILABLE` | 503 | PostgreSQL or Redis connection failed (including auth refresh fail-closed when the revocation store is unreachable) |
+| `STORAGE_UNAVAILABLE` | 503 | PostgreSQL or Redis connection failed (including auth refresh or revoke fail-closed when the revocation store is unreachable) |
 | `INTERNAL_AUTH_NOT_CONFIGURED` | 503 | `X-Internal-Token` shared-secret header is required for `/internal/*` routes but the server-side secret is unset |
 | `RATE_LIMIT_EXCEEDED` | 429 | Too many requests; back off and retry |
 | `INTERNAL_ERROR` | 500 | Unhandled `DataSpokeError` with no specific status mapping (fallback) |

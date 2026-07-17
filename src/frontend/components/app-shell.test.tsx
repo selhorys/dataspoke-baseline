@@ -9,9 +9,12 @@
  *     {label:"Configurations",href:"/admin/conf"}, {label:"Peripherals",href:"/admin/peripherals"}]
  *   - spec/feature/FRONTEND_BASIC.md §Routing: the UI hides the admin-menu entry when
  *     the role is not Admin; write actions rendered only when role ∈ {Editor, Admin}
+ *   - spec/feature/AUTH.md §Refresh & revoke: revoke fails closed on Redis
+ *     unreachability (503 STORAGE_UNAVAILABLE) — the refresh token stays live, so the
+ *     UI must not present a failed logout as a completed one
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import React from "react";
 import { AppShell } from "./app-shell";
 import type { Me } from "@/lib/api/types";
@@ -19,8 +22,17 @@ import type { Me } from "@/lib/api/types";
 // ---------------------------------------------------------------------------
 // Mock heavy dependencies that AppShell pulls in
 // ---------------------------------------------------------------------------
+// Stable spies shared with the hoisted vi.mock factories below, so the logout
+// tests can assert on redirect / auth-clear / toast side effects.
+const { mockReplace, mockClear, mockToast, mockApiFetch } = vi.hoisted(() => ({
+  mockReplace: vi.fn(),
+  mockClear: vi.fn(),
+  mockToast: vi.fn(),
+  mockApiFetch: vi.fn(),
+}));
+
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({ replace: vi.fn(), push: vi.fn() }),
+  useRouter: () => ({ replace: mockReplace, push: vi.fn() }),
   usePathname: () => "/validation",
 }));
 
@@ -29,8 +41,30 @@ vi.mock("next/link", () => ({
     React.createElement("a", { href, ...rest }, children),
 }));
 
-vi.mock("@/lib/api/client", () => ({
-  apiFetch: vi.fn().mockResolvedValue(undefined),
+// ApiError — mirror the real constructor signature (payload: ApiErrorPayload, status: number).
+// toastApiError is NOT mocked: it imports ApiError from this same mocked module, so its
+// instanceof checks stay consistent and the real toast pipeline is exercised.
+vi.mock("@/lib/api/client", () => {
+  class ApiError extends Error {
+    error_code: string;
+    trace_id: string;
+    status: number;
+    constructor(
+      payload: { error_code: string; message: string; trace_id: string; resp_time: string },
+      status: number,
+    ) {
+      super(payload.message);
+      this.name = "ApiError";
+      this.error_code = payload.error_code;
+      this.trace_id = payload.trace_id;
+      this.status = status;
+    }
+  }
+  return { ApiError, apiFetch: mockApiFetch };
+});
+
+vi.mock("@/components/ui/use-toast", () => ({
+  toast: (...args: unknown[]) => mockToast(...args),
 }));
 
 // Mock useMe so we can control isAdmin without a real query
@@ -42,7 +76,7 @@ vi.mock("@/lib/auth/use-me", () => ({
 // Provide a minimal stub for useAuthStore
 vi.mock("@/lib/auth/store", () => ({
   useAuthStore: (selector: (s: { clear: () => void }) => unknown) =>
-    selector({ clear: vi.fn() }),
+    selector({ clear: mockClear }),
 }));
 
 // ThemeToggle uses next-themes internals — stub it out
@@ -78,6 +112,11 @@ function makeMe(role: Me["role"]): Me {
 
 beforeEach(() => {
   mockUseMe.mockReset();
+  mockReplace.mockReset();
+  mockClear.mockReset();
+  mockToast.mockReset();
+  mockApiFetch.mockReset();
+  mockApiFetch.mockResolvedValue(undefined);
   // Default: no infra URLs configured
   mockGetRuntimeConfig.mockReturnValue({ datahubUrl: "", langfuseUrl: "", airflowUrl: "", apiBaseUrl: "" });
 });
@@ -503,5 +542,123 @@ describe("AppShell — infra icon links", () => {
     expect(screen.queryByRole("link", { name: /open langfuse/i })).toBeNull();
     expect(screen.queryByRole("link", { name: /open airflow/i })).toBeNull();
     expect(screen.queryByRole("link", { name: /open api docs/i })).toBeNull();
+  });
+});
+
+describe("AppShell — logout", () => {
+  // spec/feature/AUTH.md §Refresh & revoke — POST /auth/token/revoke revokes the
+  // refresh token; the flow fails closed on Redis unreachability (503
+  // STORAGE_UNAVAILABLE). The refresh token is an HttpOnly cookie, so only the
+  // backend can end the session: when revoke fails the session is still live and
+  // the UI must not render a logged-out state over it.
+  beforeEach(() => {
+    mockUseMe.mockReturnValue({
+      me: makeMe("Reader"),
+      isAdmin: false,
+      isEditor: false,
+      canWrite: false,
+      isLoading: false,
+    });
+  });
+
+  /** Open the account dropdown and click Logout. */
+  async function clickLogout() {
+    render(
+      <AppShell>
+        <div />
+      </AppShell>,
+    );
+    fireEvent.pointerDown(
+      screen.getByRole("button", { name: /test user/i }),
+      new MouseEvent("pointerdown", { bubbles: true }),
+    );
+    const logout = await screen.findByText(/^logout$/i);
+    fireEvent.click(logout);
+  }
+
+  it("clears auth state and redirects to /login when revoke succeeds", async () => {
+    // spec/feature/AUTH.md §Refresh & revoke — a successful revoke ends the session
+    // server-side, so the local state may be dropped and the user sent to /login.
+    mockApiFetch.mockResolvedValue(undefined);
+
+    await clickLogout();
+
+    // Backstop: the revoke call must actually have been made, otherwise the
+    // assertions below would pass on a component that never attempted logout.
+    await waitFor(() =>
+      expect(mockApiFetch).toHaveBeenCalledWith("/auth/token/revoke", { method: "POST" }),
+    );
+    await waitFor(() => expect(mockClear).toHaveBeenCalled());
+    expect(mockReplace).toHaveBeenCalledWith("/login");
+  });
+
+  it("keeps the user signed in and shows one toast when revoke fails with 503 STORAGE_UNAVAILABLE", async () => {
+    // spec/feature/AUTH.md §Refresh & revoke — Redis unreachable during revoke →
+    // 503 STORAGE_UNAVAILABLE, and revoke retains the refresh cookie because the
+    // token is still live server-side.
+    // spec/feature/FRONTEND_BASIC.md §Auth — "only on success does it clear the
+    // in-memory access token and navigate to /login — a failed revoke leaves the
+    // session live, so the UI surfaces the error and keeps the user signed in
+    // rather than showing a signed-out shell over a refresh cookie only the API
+    // can clear."
+    const { ApiError } = await import("@/lib/api/client");
+    mockApiFetch.mockRejectedValue(
+      new ApiError(
+        {
+          error_code: "STORAGE_UNAVAILABLE",
+          message: "Token revocation store unavailable; revoke denied.",
+          trace_id: "abcdef1234567890",
+          resp_time: "2026-07-17T00:00:00Z",
+        },
+        503,
+      ),
+    );
+
+    await clickLogout();
+
+    // Backstop proving the failing revoke branch ran.
+    await waitFor(() => expect(mockToast).toHaveBeenCalled());
+    expect(mockClear).not.toHaveBeenCalled();
+    expect(mockReplace).not.toHaveBeenCalled();
+
+    // Exactly one toast: a failed logout is a single security-relevant message.
+    // Stacking a generic error toast on top of the explanatory one buries the
+    // "you are still signed in" fact the user must act on.
+    expect(mockToast).toHaveBeenCalledTimes(1);
+    const failureToast = mockToast.mock.calls[0][0] as {
+      title?: string;
+      description?: string;
+      variant?: string;
+    };
+    expect(failureToast.title).toBe("Logout failed");
+    expect(failureToast.variant).toBe("destructive");
+    // The description states the security fact in plain language and carries the
+    // trace id for operator correlation.
+    expect(failureToast.description).toMatch(/still signed in/i);
+    expect(failureToast.description).toContain("(trace: abcdef12)");
+  });
+
+  it("keeps the user signed in when revoke fails with a network error", async () => {
+    // Revoke takes no bearer credential (spec/API.md §Authorization — the refresh
+    // cookie is the credential), so there is no 401 branch to distinguish: every
+    // failure means the revocation is unconfirmed and the session may still be
+    // live. spec/feature/FRONTEND_BASIC.md §Auth — only success clears and
+    // navigates. A non-ApiError throwable must take the same fail-closed path.
+    mockApiFetch.mockRejectedValue(new TypeError("Failed to fetch"));
+
+    await clickLogout();
+
+    await waitFor(() => expect(mockToast).toHaveBeenCalledTimes(1));
+    expect(mockClear).not.toHaveBeenCalled();
+    expect(mockReplace).not.toHaveBeenCalled();
+
+    const failureToast = mockToast.mock.calls[0][0] as {
+      title?: string;
+      description?: string;
+    };
+    expect(failureToast.title).toBe("Logout failed");
+    // No ApiError → no trace id to append; the security fact still stands alone.
+    expect(failureToast.description).toMatch(/still signed in/i);
+    expect(failureToast.description).not.toMatch(/trace:/);
   });
 });

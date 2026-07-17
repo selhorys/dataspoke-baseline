@@ -1,2 +1,5 @@
 - [Frontend dep pin convention](project_frontend_dep_pin_convention.md) — runtime deps use ^major.minor.patch; flag major-only floors (low)
 - [Ingestion secret-ref model](project_ingestion_secret_ref_model.md) — ${name__key} are references not plaintext; API never returns secret values
+- [Auth fail-closed spans layers](project_auth_fail_closed_spans_layers.md) — a backend 503 is undone if the UI swallows it; review the frontend consumer too
+- [Revoke/refresh asymmetry](project_auth_revoke_refresh_asymmetry.md) — revoke's JWT-before-Redis fixed; refresh still hits Redis before decoding, unrate-limited
+- [Frontend 401/refresh conflation](project_frontend_401_refresh_conflation.md) — apiFetch: refreshed===false also means 503; "401 ⇒ no live session" carve-outs are unsound

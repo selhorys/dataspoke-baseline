@@ -24,7 +24,8 @@ import {
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/lib/auth/store";
 import { useMe } from "@/lib/auth/use-me";
-import { apiFetch } from "@/lib/api/client";
+import { ApiError, apiFetch } from "@/lib/api/client";
+import { toast } from "@/components/ui/use-toast";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -190,15 +191,30 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const { me, isAdmin } = useMe();
   const clear = useAuthStore((s) => s.clear);
 
+  /**
+   * Fails closed: local state is cleared only once the server confirms the
+   * refresh token is revoked. The refresh cookie is httpOnly, so a failed
+   * revoke leaves a live server-side session that only the backend can end —
+   * clearing and redirecting anyway would show "logged out" over a session
+   * that can still be resumed via /auth/token/refresh.
+   */
   async function handleLogout() {
     try {
       await apiFetch("/auth/token/revoke", { method: "POST" });
-    } catch {
-      // clear the local state regardless of the API call outcome
-    } finally {
-      clear();
-      router.replace("/login");
+    } catch (err) {
+      const trace =
+        err instanceof ApiError && err.trace_id ? ` (trace: ${err.trace_id.slice(0, 8)})` : "";
+      toast({
+        title: "Logout failed",
+        description:
+          "You are still signed in and your session is still active. Please try again, and " +
+          `do not leave this device unattended until logout succeeds.${trace}`,
+        variant: "destructive",
+      });
+      return;
     }
+    clear();
+    router.replace("/login");
   }
 
   const displayName = me?.name ?? me?.email ?? "Account";

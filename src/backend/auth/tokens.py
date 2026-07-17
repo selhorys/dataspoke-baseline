@@ -146,6 +146,18 @@ async def is_refresh_revoked(redis: Any, token: str) -> bool:
 async def mark_refresh_revoked(redis: Any, token: str) -> None:
     """Record *token* as revoked in Redis with TTL = remaining lifetime.
 
+    Accepts untrusted input. The revocation key is written only for a token
+    that is signature-valid, carries ``type == 'refresh'``, and has remaining
+    lifetime; every other token is a no-op. A no-op leaves nothing revocable
+    behind: a token failing the signature or type check is not a usable refresh
+    token, and ``ttl <= 0`` implies ``exp <= now``, so ``decode_refresh_token``
+    rejects it on any later use.
+
+    ``verify_exp`` is disabled so the remaining lifetime can be read directly
+    from the ``exp`` claim. This TTL floors with ``int()`` while PyJWT compares
+    ``exp`` against a float clock, so a token in its final second can decode as
+    live yet reach the zero-TTL no-op here.
+
     Raises:
         StorageUnavailableError  — fail-closed on any RedisError.
     """
@@ -156,9 +168,18 @@ async def mark_refresh_revoked(redis: Any, token: str) -> None:
             algorithms=[settings.jwt_algorithm],
             options={"verify_exp": False},
         )
-        ttl = max(0, int(payload.get("exp", 0)) - int(time.time()))
-        if ttl > 0:
-            await redis.set_nx(_revocation_key(token), "1", ttl)
+    except jwt.PyJWTError:
+        return
+
+    if payload.get("type") != "refresh":
+        return
+
+    ttl = max(0, int(payload.get("exp", 0)) - int(time.time()))
+    if ttl <= 0:
+        return
+
+    try:
+        await redis.set_nx(_revocation_key(token), "1", ttl)
     except _redis_exceptions.RedisError as exc:
         raise StorageUnavailableError(
             "Token revocation store unavailable; revoke denied."

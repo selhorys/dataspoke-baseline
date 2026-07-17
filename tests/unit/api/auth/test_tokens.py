@@ -6,8 +6,11 @@ Concerns covered:
   AuthenticationError("INVALID_REFRESH_TOKEN")
 - decode_access_token rejects refresh tokens (security: refresh token cannot be used for auth)
 - is_refresh_revoked raises StorageUnavailableError when Redis is unreachable (fail-closed)
+- mark_refresh_revoked writes the revocation key only for a live refresh token, and
+  fails closed (StorageUnavailableError) when the Redis write errors
 
 spec: spec/feature/AUTH.md §Lifecycle §Login
+spec: spec/feature/AUTH.md §Refresh & revoke
 spec: spec/API.md §JWT Claims
 spec: spec/API.md §Authentication & Authorization §Token Strategy
 """
@@ -198,3 +201,188 @@ async def test_is_refresh_revoked_returns_false_for_non_revoked_token() -> None:
 
     result = await is_refresh_revoked(not_revoked_redis, "a_valid_token")
     assert result is False
+
+
+# ── mark_refresh_revoked — revocation write ───────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_mark_refresh_revoked_writes_key_for_live_refresh_token() -> None:
+    """A live refresh token is recorded in Redis with TTL = its remaining lifetime.
+
+    Regression guard for the fail-closed rotation performed by /auth/token/refresh:
+    the no-op branches for unrevocable tokens must not stop a genuine refresh token
+    from being revoked.
+
+    spec: spec/feature/AUTH.md §Refresh & revoke — the refresh token's hash is
+    recorded under revoked_refresh:{sha256[:16]} with TTL equal to the token's
+    remaining lifetime.
+    spec: spec/feature/AUTH.md §Login — the refresh JWT has a 7-day lifetime.
+    """
+    from src.backend.auth.tokens import issue_refresh_token, mark_refresh_revoked
+
+    token = issue_refresh_token(uuid.uuid4())
+    redis = AsyncMock()
+
+    await mark_refresh_revoked(redis, token)
+
+    redis.set_nx.assert_awaited_once()
+    key, value, ttl = redis.set_nx.await_args.args
+    assert key.startswith("revoked_refresh:"), (
+        "the revocation key must use the revoked_refresh: prefix per "
+        f"spec/feature/AUTH.md §Refresh & revoke; got {key!r}"
+    )
+    # sha256[:16] of the token — the key must not embed the token itself.
+    assert len(key) == len("revoked_refresh:") + 16, (
+        f"the key suffix must be sha256[:16] of the token; got {key!r}"
+    )
+    assert token not in key, "the revocation key must not leak the raw token"
+    assert value == "1"
+    # 7-day lifetime, minus the sub-second age of the token just issued.
+    assert 7 * 24 * 3600 - 5 <= ttl <= 7 * 24 * 3600, (
+        f"TTL must equal the refresh token's remaining lifetime (~604800s); got {ttl}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_mark_refresh_revoked_fails_closed_on_redis_error() -> None:
+    """mark_refresh_revoked raises StorageUnavailableError when the Redis write errors.
+
+    spec: spec/feature/AUTH.md §Refresh & revoke — both refresh and revoke fail
+    closed on Redis unreachability.
+    spec: spec/feature/AUTH.md §Failure Modes — "Redis unreachable during refresh
+    or revoke" → 503 STORAGE_UNAVAILABLE.
+    """
+    import redis.exceptions
+
+    from src.backend.auth.tokens import issue_refresh_token, mark_refresh_revoked
+    from src.shared.exceptions import StorageUnavailableError
+
+    failing_redis = AsyncMock()
+    failing_redis.set_nx = AsyncMock(
+        side_effect=redis.exceptions.RedisError("connection refused")
+    )
+
+    with pytest.raises(StorageUnavailableError):
+        await mark_refresh_revoked(failing_redis, issue_refresh_token(uuid.uuid4()))
+
+
+@pytest.mark.asyncio
+async def test_mark_refresh_revoked_is_noop_for_undecodable_token() -> None:
+    """An undecodable token names no live refresh token — no Redis write, no raise.
+
+    mark_refresh_revoked is reached from the unauthenticated /auth/token/revoke
+    route with an untrusted cookie value, so a garbage value must not propagate a
+    decode error.
+
+    spec: spec/feature/AUTH.md §Refresh & revoke — the revocation record is the
+    refresh token's hash with TTL = its remaining lifetime; a value that is not a
+    refresh token has neither.
+    """
+    from src.backend.auth.tokens import mark_refresh_revoked
+
+    redis = AsyncMock()
+
+    await mark_refresh_revoked(redis, "not-a-jwt")
+
+    redis.set_nx.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_mark_refresh_revoked_is_noop_for_empty_token() -> None:
+    """The empty string — the value delete_cookie emits — is a no-op.
+
+    A browser holding a cleared refresh cookie can send ``refresh_token=`` back,
+    so the empty string is a reachable input, not a theoretical one.
+
+    spec: spec/feature/AUTH.md §Refresh & revoke.
+    """
+    from src.backend.auth.tokens import mark_refresh_revoked
+
+    redis = AsyncMock()
+
+    await mark_refresh_revoked(redis, "")
+
+    redis.set_nx.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_mark_refresh_revoked_is_noop_for_wrong_signature_token() -> None:
+    """A refresh-shaped token signed with the wrong key is a no-op.
+
+    Honouring it would let an unauthenticated caller write arbitrary revocation
+    keys, since the key is derived from the presented token's hash alone.
+
+    spec: spec/feature/AUTH.md §Refresh & revoke — only a real refresh token
+    (issued and signed by this service) has a revocation record to write.
+    """
+    import time
+
+    import jwt
+
+    from src.backend.auth.tokens import mark_refresh_revoked
+
+    forged = jwt.encode(
+        {
+            "sub": str(uuid.uuid4()),
+            "type": "refresh",
+            "exp": int(time.time()) + 3600,
+        },
+        "an-attacker-chosen-key",
+        algorithm="HS256",
+    )
+    redis = AsyncMock()
+
+    await mark_refresh_revoked(redis, forged)
+
+    redis.set_nx.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_mark_refresh_revoked_is_noop_for_access_token() -> None:
+    """A valid ACCESS token is a no-op — the revocation set holds refresh tokens only.
+
+    spec: spec/feature/AUTH.md §Refresh & revoke — the record is keyed on the
+    *refresh* token's hash (revoked_refresh:{sha256[:16]}).
+    spec: spec/feature/AUTH.md §Security Considerations — token types are not
+    interchangeable.
+    """
+    from src.backend.auth.tokens import issue_access_token, mark_refresh_revoked
+
+    access_token, _ = issue_access_token(uuid.uuid4(), "access@example.com")
+    redis = AsyncMock()
+
+    await mark_refresh_revoked(redis, access_token)
+
+    redis.set_nx.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_mark_refresh_revoked_is_noop_for_expired_refresh_token() -> None:
+    """An expired refresh token is a no-op — it has no remaining lifetime to cover.
+
+    spec: spec/feature/AUTH.md §Refresh & revoke — the revocation key's TTL equals
+    the token's remaining lifetime; an expired token is already unusable.
+    """
+    import time
+
+    import jwt
+
+    from src.backend.auth.tokens import mark_refresh_revoked
+    from src.shared.settings import settings
+
+    expired = jwt.encode(
+        {
+            "sub": str(uuid.uuid4()),
+            "type": "refresh",
+            "exp": int(time.time()) - 60,
+            "iat": int(time.time()) - 3660,
+        },
+        settings.jwt_secret_key,
+        algorithm=settings.jwt_algorithm,
+    )
+    redis = AsyncMock()
+
+    await mark_refresh_revoked(redis, expired)
+
+    redis.set_nx.assert_not_awaited()

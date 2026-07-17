@@ -49,7 +49,6 @@ from src.shared.exceptions import (
     BadRequestError,
     DataHubSyncError,
     OAuthNotConfiguredError,
-    StorageUnavailableError,
 )
 
 # Pre-computed dummy hash to ensure constant-time password verification even
@@ -226,13 +225,20 @@ async def post_token_revoke(
     refresh_token_cookie: str | None = Cookie(default=None, alias=_REFRESH_COOKIE),
     redis=Depends(get_redis),
 ) -> None:
-    """Revoke the refresh token (logout). Clears the HttpOnly cookie."""
+    """Revoke the refresh token (logout). Clears the HttpOnly cookie.
+
+    Fails closed: if the Redis revocation write is unavailable, the request
+    fails with ``503 STORAGE_UNAVAILABLE`` and the cookie is retained, so the
+    caller learns the token is still valid rather than believing it revoked.
+
+    Logout is idempotent. A missing cookie, or one that names no live refresh
+    token (undecodable, wrong signature, non-refresh, or expired), clears the
+    cookie and returns 204 — there is nothing to revoke and nothing to report.
+
+    Spec: spec/feature/AUTH.md §Refresh & revoke.
+    """
     if refresh_token_cookie is not None:
-        try:
-            await _tokens.mark_refresh_revoked(redis, refresh_token_cookie)
-        except StorageUnavailableError:
-            # Redis is down — best-effort; the cookie is cleared below regardless.
-            logger.warning("revocation_write_failed_on_revoke", exc_info=True)
+        await _tokens.mark_refresh_revoked(redis, refresh_token_cookie)
 
     response.delete_cookie(key=_REFRESH_COOKIE, path=_REFRESH_COOKIE_PATH)
 

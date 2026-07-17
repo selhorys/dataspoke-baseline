@@ -14,3 +14,5 @@
 - [Peripherals GET mask has no plaintext path](project_peripherals_get_mask_no_plaintext_path.md) — GET masks via *_is_set boolean + hardcoded ********; plaintext-injection patches are inert, real guard is positive == "********" + is_configured
 - [Metrics Redis lock undocumented](project_metrics_redis_lock_undocumented.md) — MetricsService.run has a metrics:running:{metric_id} SET NX lock absent from BACKEND.md §Concurrency Guards SET NX table; 409 METRIC_RUNNING is spec, key is impl
 - [Ontogen score vs confidence_score](project_ontogen_score_vs_confidence_score.md) — rows carry `confidence_score`; USE_CASE_en.md L391/395/399 `score` is shorthand contradicting API.md + impl; flag tests asserting bare `score`
+- [Revoke 204-vs-401 unspecced](project_auth_revoke_204_vs_401_unspecced.md) — revoke has no auth dep; API.md L151 says it needs one; 204-for-garbage-cookie is impl choice argued from spec silence
+- [Revoke-503 cookie retention is framework-guaranteed](project_auth_revoke_503_cookie_retention_framework_guaranteed.md) — FastAPI drops injected-Response cookies when raising; the assertion can't fail, a fail-open impl passes too
