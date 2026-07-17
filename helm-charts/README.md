@@ -139,7 +139,7 @@ kubectl scale deployment/dataspoke-api --replicas=0 \
   -n "${DATASPOKE_KUBE_DATASPOKE_NAMESPACE}"
 ```
 
-To rebuild and redeploy (replaces the former `dataspoke-test-mode.sh`):
+To rebuild and redeploy:
 
 ```bash
 ./helm-charts/bin/install.sh --profile dev --components api

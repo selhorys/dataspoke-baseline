@@ -52,7 +52,7 @@ DataSpoke ships as an umbrella Helm chart at `helm-charts/dataspoke/`. The produ
 ### Prerequisites
 
 - **kubectl** + **Helm v3** installed and configured
-- A Kubernetes cluster with **8+ CPUs / 24 GB RAM / 150 GB storage** — either one where DataSpoke installs and owns its nginx-ingress controller (GKE Autopilot, minikube, Docker Desktop, kind; `managed` ingress mode, the default) or one with a pre-existing ingress controller to reuse (e.g. AWS/EKS; `shared` ingress mode)
+- A Kubernetes cluster with **8+ CPUs / 24 GB RAM** and disk sized per `spec/feature/HELM_CHART.md` §Dev minimums (the umbrella chart alone requests ~218 Gi of PVCs, before peripherals) — either one where DataSpoke installs and owns its nginx-ingress controller (GKE Autopilot, minikube, Docker Desktop, kind; `managed` ingress mode, the default) or one with a pre-existing ingress controller to reuse (e.g. AWS/EKS; `shared` ingress mode)
 - **Python 3.13** and [`uv`](https://github.com/astral-sh/uv)
 - **Node.js 22+** and [`pnpm`](https://pnpm.io/) — for host frontend development (`--frontend local`)
 

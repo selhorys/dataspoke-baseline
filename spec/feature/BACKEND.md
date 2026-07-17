@@ -1248,8 +1248,7 @@ so a transient zero-result search cannot mass-deregister the registry.
 `POST /internal/admin/dags/verify` checks that every DAG ID in `ALL_DAG_IDS`
 (see [DAG Catalogue](#dag-catalogue)) is registered with the in-cluster Airflow
 deployment. Returns `{found, missing, total_expected}`. Used as a post-deploy
-smoke check by `dataspoke-test-mode.sh` and by the test fixture
-`tests/integration/conftest.py::airflow_client`.
+smoke check by the test fixture `tests/integration/conftest.py::airflow_client`.
 
 ### Workflow Design Conventions
 

@@ -89,7 +89,7 @@ helm-charts/
 │   ├── Chart.yaml
 │   ├── values.yaml                      # prod defaults
 │   ├── values-dev.yaml                  # dev overlay
-│   ├── templates/                       # api-deployment/service/ingress, configmap, secrets, RBAC, networkpolicy
+│   ├── templates/                       # api-deployment/service/ingress/pdb, configmap, secrets, RBAC, networkpolicy
 │   ├── subcharts/{frontend,event-consumer}/
 │   └── charts/                          # bitnami pg/redis, apache-airflow (resolved deps)
 └── dev-peripherals/                     # dev-only values + manifests + charts
@@ -186,10 +186,9 @@ but is out of baseline scope.
 | `dev-lock` | dev | `dev-peripherals/dev-lock.sh` |
 | `seed` | dev | `post-install/*` |
 
-`--components api` replaces the previous standalone `dataspoke-test-mode.sh` —
-it rebuilds the API image, runs `helm upgrade` against the umbrella chart, and
-rolls the API deployment. `--components frontend` is the analogous code-iteration
-path for the UI pod.
+`--components api` rebuilds the API image, runs `helm upgrade` against the
+umbrella chart, and rolls the API deployment. `--components frontend` is the
+analogous code-iteration path for the UI pod.
 
 For a full install, `--frontend` governs the UI: `none` deploys nothing; `local`
 (dev-only) writes `src/frontend/.env.local` after seeding so host `pnpm dev`
@@ -246,6 +245,16 @@ respecting the `api.*` values block.
 The API is configured under the `api.*` values block (not a subchart) and gated
 by `api.enabled` against the umbrella's own templates.
 
+**Bitnami image sourcing**: Bitnami moved unversioned tags behind a paywall in
+August 2025, so the redis subchart is pinned to `bitnamilegacy/redis:8.2.1-debian-12-r0`
+— the `bitnamilegacy/*` namespace keeps a free, chart-compatible image available.
+Because that image sits outside the repository the subchart expects, the chart
+also sets `global.security.allowInsecureImages: true` to opt out of Bitnami's
+image-origin check. The custom PostgreSQL image layering pgvector + AGE on a
+`bitnamilegacy` base is the related case behind the same flag. Both image pins
+are supply-chain-relevant: prod operators are expected to repoint these at their
+own registry mirror.
+
 ### Component matrix
 
 | Component | Type | Prod | Dev | Stateful |
@@ -254,10 +263,33 @@ by `api.enabled` against the umbrella's own templates.
 | api | Deployment | ✓ | ✓ (in-cluster; stub-mode flags seeded in RuntimeConfig) | no |
 | event-consumer | Deployment | ✗ (opt-in) | ✗ | no |
 | postgresql | StatefulSet | ✓ | ✓ | yes (PV) |
-| redis | Deployment | ✓ | ✓ | no |
-| airflow (api-server + scheduler + triggerer + dag-processor) | Deployment + StatefulSets | ✓ | ✓ | no (metadata in PG) |
+| redis | StatefulSet | ✓ | ✓ | yes (PV, 8Gi) |
+| airflow (api-server + scheduler + triggerer + dag-processor) | Deployment + StatefulSets | ✓ | ✓ | yes (scheduler/triggerer logs PVCs; metadata in PG) |
 
 Each component has a `<component>.enabled` toggle.
+
+### Eviction resilience
+
+Every component ships a PodDisruptionBudget paired with a
+`cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` pod annotation:
+`templates/api-pdb.yaml`, `subcharts/{frontend,event-consumer}/templates/pdb.yaml`,
+and the subchart-native keys for the dependencies (bitnami redis `master.pdb` /
+`replica.pdb`, bitnami postgresql `primary.pdb`, Airflow
+`podDisruptionBudget.config`). This is a deliberate availability guard against
+Autopilot / cluster-autoscaler evicting a pod during scale-in. The annotation
+alone is advisory, so the PDB is what actually blocks the disruption. On the
+Airflow scheduler, triggerer, and dag-processor `safeToEvict: false` suppresses
+the chart's default `safe-to-evict="true"` annotation so `podAnnotations` can set
+`"false"` without rendering a conflicting duplicate key.
+
+**Every single-replica component permits zero voluntary disruption** — expressed
+as `maxUnavailable: 0` in the Airflow chart and `minAvailable: 1` in the Bitnami
+charts (semantically identical at one replica). This covers the Airflow
+api-server, scheduler, triggerer, and dag-processor, the postgresql primary, the
+redis master, and the dev API (`values-dev.yaml` sets `replicaCount: 1` while
+inheriting `api.podDisruptionBudget.minAvailable: 1`). The operational
+consequence is that node drains and cluster upgrades **block until an operator
+intervenes** — the guard trades drain automation for uptime.
 
 ---
 
@@ -284,8 +316,9 @@ Same names in dev and prod, different values. Injected into pods via ConfigMap
 - `DATASPOKE_OAUTH_STATE_SECRET` — HMAC key for the Google-OAuth state cookie
 - `DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET` — Google OAuth client secret (paired with the public client_id; see chart-values-only callout below)
 
-**Chart-values-only env vars (not in `.env`)** — rendered onto the API container
-directly from chart values, never sourced from `.env`:
+**Chart-values-only env vars (not in `.env`)** — sourced from chart values,
+rendered into the app ConfigMap, and reaching the API container via `envFrom`;
+never sourced from `.env`:
 
 | Env var | Chart value | Role |
 |---|---|---|
@@ -385,7 +418,7 @@ read these.
   `dataspoke-llm-secret` Secret and PATCHed into `/admin/conf`
 - Google OAuth credentials: `_GOOGLE_OAUTH_CLIENT_ID`,
   `_GOOGLE_OAUTH_CLIENT_SECRET` — passed to the DataHub peripheral install
-  for DataHub-side OIDC (see §DataHub above) and seeded into
+  for DataHub-side OIDC (see §DataHub) and seeded into
   `dataspoke-secrets` (`DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET`) and the API
   chart values (`auth.googleClientId`). Absence leaves OAuth disabled on
   both DataSpoke and DataHub.
@@ -526,7 +559,7 @@ TCP host for the active ingress mode).
               │    airflow metadata DB wired via dataspoke-airflow-metadata-db Secret
               │       │
               │       ▼
-              │  ConfigMap (dataspoke-config) + Secret (dataspoke-secrets)
+              │  ConfigMap (dataspoke-app-config) + Secret (dataspoke-secrets)
               │       │
               │       ▼
               │  Deployment envFrom → container env vars (DATASPOKE_* names)
@@ -559,7 +592,10 @@ TCP host for the active ingress mode).
 
 `DATASPOKE_POSTGRES_{HOST,PORT,DB}`,
 `DATASPOKE_REDIS_{HOST,PORT}`, `DATASPOKE_AIRFLOW_{URL,CALLBACK_BASE_URL}`,
-plus `DATASPOKE_CORS_ORIGINS` (sourced from chart values, not `.env`).
+plus the four chart-values-only keys — `DATASPOKE_CORS_ORIGINS`,
+`DATASPOKE_COOKIE_SECURE`, `DATASPOKE_GOOGLE_OAUTH_CLIENT_ID`,
+`DATASPOKE_OAUTH_POST_LOGIN_REDIRECT` — which come from chart values, not `.env`
+(their source values and roles are in §Configuration — Four-Tier Env Vars).
 `DATASPOKE_AIRFLOW_CALLBACK_BASE_URL` is hardcoded in the chart (`http://dataspoke-api:8002`);
 it is not derived from `.env`.
 
@@ -580,13 +616,6 @@ JWT signing key are random; the Google client secret is sourced from
 which causes the OAuth callback to fail until the operator supplies a real
 value). In prod, the operator pre-creates the whole Secret and points the
 chart at it via `secrets.existingSecret: <name>`.
-
-### Container env rendered from chart values (not `.env`)
-
-- `DATASPOKE_CORS_ORIGINS` (from `config.corsOrigins`)
-- `DATASPOKE_COOKIE_SECURE` (from `auth.cookieSecure`)
-- `DATASPOKE_GOOGLE_OAUTH_CLIENT_ID` (from `auth.googleClientId`)
-- `DATASPOKE_OAUTH_POST_LOGIN_REDIRECT` (from `config.oauthPostLoginRedirect`)
 
 ### DB-backed (no env var)
 
@@ -618,7 +647,8 @@ rotations.
 
 Dockerfiles live under `docker-images/{api,airflow,postgres}/Dockerfile`.
 The Airflow image bakes DAGs in via `COPY src/workflows/dags/`; the
-PostgreSQL image layers `pgvector` + Apache AGE on the Bitnami PG 17 runtime.
+PostgreSQL image layers `pgvector` + Apache AGE on the `bitnamilegacy/postgresql`
+PG 17 runtime (see §Dependencies for why the base is `bitnamilegacy`).
 
 `bin/build-image.sh <name> [<tag>]` (`<name>` ∈ {api, airflow, postgres,
 frontend}) is the unified entrypoint. It dispatches on
@@ -763,7 +793,12 @@ Plain Kubernetes manifests under `dev-peripherals/dummy-data/manifests/` in the
 | Component | Image | Mem Limit | Storage | Service |
 |---|---|---|---|---|
 | PostgreSQL | `postgres:15` | 512 Mi | 5 Gi PVC | `example-postgres:5432` |
-| Kafka | `apache/kafka:3.9.0` (KRaft) | 512 Mi | 4 Gi PVC | `example-kafka:9092` (internal), `:9094` (EXTERNAL) |
+| Kafka | `apache/kafka:3.9.0` (KRaft) | 1 Gi | 4 Gi PVC | `example-kafka:9092` (internal), `:9094` (EXTERNAL) |
+
+An `example-kafka-topic-init` Job waits for the broker and creates a single
+`example_topic` — a bring-up smoke check that proves the broker accepts topic
+creation. No test or DAG consumes it; it is distinct from the two Imazon seed
+topics below.
 
 Separate from DataHub's prerequisites Kafka. Simulates an external data
 source for ingestion testing. The Kafka EXTERNAL listener advertises the
@@ -824,19 +859,34 @@ out of project scope.
 | api | 2 | 500m / 1000m | 512 Mi / 1024 Mi | — |
 | event-consumer† | 1 | 250m / 500m | 512 Mi / 1024 Mi | — |
 | postgresql | 1 | 1000m / 2000m | 2048 Mi / 6144 Mi | 50 Gi (custom image with `pgvector` + Apache AGE) |
-| redis | 1 + 1 | 250m / 500m | 256 Mi / 512 Mi | — |
-| airflow (api-server + scheduler + triggerer + dag-processor) | 1+1+1+1 | 250m / 500m each | 512 Mi / 1024 Mi each | DAGs baked into custom image |
-| **Total** (excludes event-consumer) | | **~5000m / ~10000m** | **~9.5 Gi / ~22 Gi** | **50 Gi** |
+| redis | 1 + 1 | master 250m / 500m; replica 100m / 150m | master 256 Mi / 512 Mi; replica 128 Mi / 192 Mi | 8 Gi per pod (master + replica) = 16 Gi |
+| airflow (api-server + scheduler + triggerer + dag-processor) | 1+1+1+1 | per-component; see `values.yaml` | per-component; see `values.yaml` | 100 Gi each for scheduler + triggerer logs (chart default); DAGs baked into the custom image, no DAG PVC |
+| **Total** (excludes event-consumer) | | **4075m / 8200m** | **6.5 Gi / 15.7 Gi** | **266 Gi** (postgresql 50 + redis 2×8 + airflow logs 2×100) |
 
 † event-consumer disabled by default — add ~250m / 500m CPU + ~512 Mi / 1024 Mi
 memory when enabled.
 
+The Total row sums the rendered pod specs (`helm template` against `values.yaml`)
+rather than the per-pod cells above, so it also carries the Airflow logGroomer
+sidecars that the component rows do not break out. Per-component Airflow
+requests/limits differ across api-server, scheduler, triggerer, and
+dag-processor; the concrete values live in `values.yaml`.
+
 ### Dev minimums
 
-Cluster capacity: **8 CPU / 24 GB RAM / 150 GB storage**. Sum of memory
-*limits* ≈ 25 GiB (above 24 GB); sum of *requests* ≈ 13 GiB. Pods rarely hit
-limits simultaneously, so limits are generous to absorb transient spikes
-(OpenSearch off-heap, `mysql_upgrade`, JVM GC).
+Cluster capacity: **8 CPU / 24 GB RAM**. Sum of memory *limits* ≈ 25 GiB (above
+24 GB); sum of *requests* ≈ 13 GiB. Pods rarely hit limits simultaneously, so
+limits are generous to absorb transient spikes (OpenSearch off-heap,
+`mysql_upgrade`, JVM GC).
+
+Storage behaves differently from memory: PVC requests are provisioned in full,
+so the storage line is a **floor, not an estimate**. The umbrella chart alone
+requests ~218 Gi in dev — airflow's scheduler and triggerer log volumes (100 Gi
+each, the chart default) dominate, ahead of postgresql (10 Gi) and the redis
+master (8 Gi). Dummy data adds 9 Gi (example-postgres 5 Gi + example-kafka
+4 Gi); DataHub and Langfuse add more on top (Langfuse ~26 Gi, DataHub
+prerequisites MySQL 10 Gi, plus OpenSearch/Kafka chart defaults). Size the dev
+disk from the umbrella floor upward rather than from a single headline number.
 
 | Component | Namespace | Mem Limit | Notes |
 |---|---|---|---|
@@ -868,10 +918,12 @@ container whenever the spec omits ephemeral-storage. The webhook **forces
 `requests == limits`** at admission — Helm values with a higher `limits.ephemeral-storage`
 than `requests.ephemeral-storage` are silently normalized to the request value.
 
-Chatty containers (sustained stdout, emptyDir writes including Airflow's
-default `/opt/airflow/logs` emptyDir, projected-volume mounts) exhaust the
-default within minutes and trigger eviction with `Pod ephemeral local storage
-usage exceeds the total limit of containers`. Explicit ephemeral-storage
+Chatty containers (sustained stdout, emptyDir writes, projected-volume mounts)
+exhaust the default within minutes and trigger eviction with `Pod ephemeral
+local storage usage exceeds the total limit of containers`. `/opt/airflow/logs`
+counts against the ephemeral budget on the Airflow api-server and dag-processor,
+which hold it on an emptyDir; the scheduler and triggerer carry it on their log
+PVCs, so only their stdout draws on ephemeral storage. Explicit ephemeral-storage
 limits in the table below prevent that class of eviction. Low-log containers
 (dev-lock, redis, frontend, Airflow logGroomer sidecars) keep the Autopilot
 default.
@@ -887,8 +939,8 @@ default.
 | OpenSearch | datahub-01 | 4 Gi | Medium-log: JVM GC + index recovery |
 | MySQL | datahub-01 | 4 Gi | Medium-log: slow-query and binlog refs |
 | airflow-api-server | dataspoke-01 | 8 Gi | High-log: uvicorn access log per request |
-| airflow-scheduler | dataspoke-01 | 8 Gi | High-log: heartbeat + task scheduling |
-| airflow-triggerer | dataspoke-01 | 8 Gi | High-log: event-loop |
+| airflow-scheduler | dataspoke-01 | 8 Gi | High stdout: heartbeat + task scheduling (task logs on PVC) |
+| airflow-triggerer | dataspoke-01 | 8 Gi | High stdout: event-loop (task logs on PVC) |
 | airflow-dag-processor | dataspoke-01 | 8 Gi | High-log: parse cycle per DAG per interval |
 | dataspoke-api | dataspoke-01 | 4 Gi | Medium-log: uvicorn access log |
 | postgresql (dataspoke) | dataspoke-01 | 4 Gi | Medium-log: WAL + autovacuum |
@@ -981,6 +1033,7 @@ with default-deny.
 |---|---|---|
 | **`dataspoke-secrets`** | `install.sh` (dev auto-generate) or operator (prod pre-create) | DataSpoke's own runtime credentials — Postgres user/password/db, Redis password, Airflow user/password/webserver-secret/jwt-secret, internal-auth token, JWT signing key, OAuth state secret, Google OAuth client secret. Twelve keys; mounted `envFrom` on the API Deployment and alembic-migrate init container. |
 | **`dataspoke-airflow-metadata-db`** | `install.sh` `_derive_airflow_metadata_secret` (both profiles) | Single key `connection` = full PostgreSQL URI for Airflow's metadata DB. Wired via `airflow.data.metadataSecretName`. |
+| **`dataspoke-airflow-api-secret-key`**, **`dataspoke-airflow-jwt-secret`** | `install.sh` `_ensure_airflow_key_secrets` (both profiles) | Projections of the `DATASPOKE_AIRFLOW_WEBSERVER_SECRET_KEY` / `DATASPOKE_AIRFLOW_JWT_SECRET` keys into the single-key shape (`api-secret-key`, `jwt-secret`) the Airflow chart expects. Wired via `airflow.apiSecretKeySecretName` / `airflow.jwtSecretName`. |
 | **Out-of-band Secrets** (`dataspoke-llm-secret`, `dataspoke-datahub-secret`, `dataspoke-langfuse-secret`, `dataspoke-smtp-secret`) | Operator (`kubectl` / ESO) or the app on first PATCH | Tokens/keys that rotate online via `/api/v1/admin/conf` and `/api/v1/admin/peripherals/*`. Not Helm-managed — `helm upgrade` would clobber rotations. The app tolerates their absence (reads as unset). `dataspoke-smtp-secret` (key `password`) backs `/auth/password/reset/request` (see [feature/AUTH.md](AUTH.md)). Note: a Secret of the same name `dataspoke-langfuse-secret` also exists in the Langfuse namespace (`langfuse-01`) carrying the full set of Langfuse pod credentials (NextAuth, salt, ClickHouse, MinIO, Postgres, Redis, init-user); the DataSpoke-side copy holds only the project `secret_key` consumed by the API via RBAC. |
 | **User-supplied source credentials** (`dataspoke-source-cred-*`) | Caller (vault path) or operator (reference path) | Credentials for *external sources* registered via ingestion confs. Documented in [SECRET_RESOLUTION.md](SECRET_RESOLUTION.md). The `dataspoke-source-cred-` name prefix is enforced as a security boundary so callers cannot overwrite the above Secrets. |
 

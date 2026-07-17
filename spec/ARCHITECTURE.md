@@ -406,9 +406,9 @@ DataHub runs in a separate namespace or cluster. DataSpoke deploys into its own 
 `dataspoke-event-consumer` (optional Kafka consumer Deployment — opt-in for organisations
 adding event-driven extensions; not deployed in the baseline),
 `dataspoke-airflow-api-server` + `dataspoke-airflow-scheduler` +
-`dataspoke-airflow-triggerer` (Airflow 3.1 LocalExecutor; api-server replaces the former Flask
-webserver), `postgresql` (StatefulSet with PV — custom image layering pgvector + Apache AGE on
-PG 17), and `redis` (Deployment). External dependencies are `datahub-gms:8080` (GraphQL/REST)
+`dataspoke-airflow-triggerer` (Airflow 3.1 LocalExecutor), `postgresql`
+(StatefulSet with PV — custom image layering pgvector + Apache AGE on
+PG 17), and `redis` (StatefulSet with PV). External dependencies are `datahub-gms:8080` (GraphQL/REST)
 and `datahub-kafka:9092` (event streaming).
 
 `dataspoke-event-consumer` is **disabled by default** — baseline UC1–UC5 are schedule-driven

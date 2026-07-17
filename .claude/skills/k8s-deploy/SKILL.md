@@ -53,7 +53,7 @@ are specified, operate on **all-for-profile**.
    - **App runtime** (`DATASPOKE_*`): not in `.env` — injected into pods from the `dataspoke-secrets` K8s Secret via `envFrom`. In dev, `install.sh` auto-generates the Secret; in prod, the operator pre-creates it. `DATASPOKE_CORS_ORIGINS` is rendered from chart values (`config.corsOrigins`).
    - **Dev only** (dev profile): `DATASPOKE_DEV_KUBE_{DATAHUB,LANGFUSE,DUMMY_DATA}_NAMESPACE`, `DATASPOKE_DEV_KUBE_DATAHUB_{,PREREQUISITES_}CHART_VERSION`, `DATASPOKE_DEV_DATAHUB_MYSQL_{ROOT_,}PASSWORD`, `DATASPOKE_DEV_DUMMY_DATA_{KAFKA_INSTANCE,POSTGRES_USER,POSTGRES_PASSWORD,POSTGRES_DB}`, `DATASPOKE_DEV_LLM_{PROVIDER,API_KEY,MODEL}`. The Langfuse internals and peripheral connection outputs are auto-populated by the peripheral install scripts.
    - **Test access** (`DATASPOKE_TEST_*`): auto-populated by `install.sh` post-install via `_sync_env_from_secret`; never manually edited. Read by `tests/integration/` for laptop-side cluster access.
-3. **Do NOT** add `DATASPOKE_ENABLE_STUB_AUTH` to `.env.dev` — it's a chart value only (`api.enableStubAuth`). Stub-mode toggles for the four dependency factories live in the `runtime_config` DB row (`stub_redis_client`, `stub_llm_client`, `stub_pgvector_manager`, `stub_notification_service`) — flippable via `PATCH /api/v1/admin/conf`, not in the env file.
+3. **Do NOT** add stub-mode toggles to `.env.dev`. The four dependency factories are toggled via the `runtime_config` DB row (`stub_redis_client`, `stub_llm_client`, `stub_pgvector_manager`, `stub_notification_service`) — flippable via `PATCH /api/v1/admin/conf`, not in the env file.
 4. Generate secure passwords (16+ chars, mixed case, at least one special character) for any missing password variables.
 5. **Show the final env file content to the user and ask for confirmation before writing.** Do not proceed until the user approves. (Skip confirmation if the env file already has all required variables.)
 
@@ -88,7 +88,7 @@ Run `configure` first if the profile env file (`helm-charts/.env.dev` or `helm-c
 
 1. **Resuming an interrupted full install** (starting component plus every component after it in dependency order): prefer `./helm-charts/bin/install.sh --profile dev --from-component <name>` — it inherits the orchestrator's step markers, error handling, and final summary.
 2. **Installing one or a few specific components**: `./helm-charts/bin/install.sh --profile dev --components <csv>`. Honors phase ordering automatically.
-3. **Rebuild and redeploy the API only** (code-iteration path): `./helm-charts/bin/install.sh --profile dev --components api`. This rebuilds the API image, runs helm upgrade, and rolls the deployment — replaces the previous standalone `dataspoke-test-mode.sh` workflow.
+3. **Rebuild and redeploy the API only** (code-iteration path): `./helm-charts/bin/install.sh --profile dev --components api`. This rebuilds the API image, runs helm upgrade, and rolls the deployment.
 4. **Rebuild and redeploy the frontend only** (code-iteration path): `./helm-charts/bin/install.sh --profile dev --components frontend`. The dev umbrella keeps `frontend.enabled=false` (developers run host `pnpm dev` at `src/frontend`); this fast path builds the frontend image and helm-upgrades with `frontend.enabled=true` to deploy the containerised UI in-cluster (verification / prod-parity). Stop it with `kubectl scale deployment/dataspoke-frontend --replicas=0 -n "${DATASPOKE_KUBE_DATASPOKE_NAMESPACE}"`.
 5. Monitor with `/k8s-work` after each component completes.
 
