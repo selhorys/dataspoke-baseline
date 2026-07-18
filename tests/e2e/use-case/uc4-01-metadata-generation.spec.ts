@@ -930,7 +930,19 @@ test("UC4 step 7 — approve eu_profiles dataset.description candidate (conf_nam
   // item-kind-table.tsx: <tr data-testid="metagen-candidate-row"
   //   data-conf-name={conf_name} data-candidate-status={status}> with a per-row
   //   Approve button + producing-conf badge + status badge.
-  const euDescRow = page
+  // Scope the lookup to the dataset.description CollapsiblePanel: the conf EU run
+  // also emits column.description llm_approved rows carrying identical
+  // data-conf-name/data-candidate-status attributes, so a page-wide .first() can
+  // act on a column row instead of the tracked dataset.description candidate
+  // (the observed step-7 flake). metagen-data-panel.tsx wraps each kind's table in
+  // a <section> whose header holds the exact kind text; .last() selects the
+  // innermost match even when nested inside an outer feature CollapsiblePanel.
+  const dsDescPanel = page
+    .locator("section", {
+      has: page.getByText("dataset.description", { exact: true }),
+    })
+    .last();
+  const euDescRow = dsDescPanel
     .locator(
       `[data-testid="metagen-candidate-row"][data-conf-name="${CONF_EU_NAME}"]` +
         `[data-candidate-status="llm_approved"]`,
