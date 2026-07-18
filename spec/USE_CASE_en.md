@@ -388,15 +388,15 @@ The producer / reviewer adversarial-debate inference loop is in
 | `PATCH /spoke/ontogen/attr/seed/{seed_id}/attr/enabled` | Enable or disable a seed — JSON `{is_enabled: bool}`. A disabled seed stays visible but is excluded from the inference pipeline; reversible both ways |
 | `POST /spoke/ontogen/method/run` | Trigger a manual re-inference. Optional `Content-Type: text/markdown` body acts as a one-shot prompt for this run; `?dry_run=true` evaluates without persisting. Concurrent runs return `409 ONTOGEN_RUNNING` |
 | `GET /spoke/ontogen/event` | Global inference-run history (`ONTOGEN.RUN_COMPLETE`, `ONTOGEN.RUN_FAILED`) |
-| `GET /spoke/ontogen/result/node` | List nodes (subjects / objects) — each row carries `score`, `status`, and the `run_id` that produced it (Langfuse session for the debate behind the row) |
+| `GET /spoke/ontogen/result/node` | List nodes (subjects / objects) — each row carries `confidence_score`, `status`, and the `run_id` that produced it (Langfuse session for the debate behind the row) |
 | `GET /spoke/ontogen/result/node/{node_id}` | Node detail incl. member datasets |
 | `GET /spoke/ontogen/result/node/{node_id}/event` | Node-level change history (proposed → approved / rejected, member additions) |
 | `POST /spoke/ontogen/result/node/{node_id}/method/review` | Approve or reject a pending node |
-| `GET /spoke/ontogen/result/edge` | List edges (predicates) — each row carries `score`, `status`, and `run_id` |
+| `GET /spoke/ontogen/result/edge` | List edges (predicates) — each row carries `confidence_score`, `status`, and `run_id` |
 | `GET /spoke/ontogen/result/edge/{edge_id}` | Edge detail |
 | `GET /spoke/ontogen/result/edge/{edge_id}/event` | Edge-level change history |
 | `POST /spoke/ontogen/result/edge/{edge_id}/method/review` | Approve or reject a pending edge |
-| `GET /spoke/ontogen/result/triple` | List triples — `(subject_node_id, edge_id, object_node_id)` facts — each row carries `score`, `status`, and `run_id` |
+| `GET /spoke/ontogen/result/triple` | List triples — `(subject_node_id, edge_id, object_node_id)` facts — each row carries `confidence_score`, `status`, and `run_id` |
 | `GET /spoke/ontogen/result/triple/{triple_id}` | Triple detail (resolved subject node, edge, object node) |
 | `GET /spoke/ontogen/result/triple/{triple_id}/event` | Triple-level change history |
 | `POST /spoke/ontogen/result/triple/{triple_id}/method/review` | Approve or reject a pending triple — returns `422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING` if any of subject node, edge, or object node is not yet approved |

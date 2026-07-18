@@ -392,15 +392,15 @@ conf 필드 의미, seed 라이프사이클, 추론 파이프라인과 증분 �
 | `PATCH /spoke/ontogen/attr/seed/{seed_id}/attr/enabled` | seed 활성화/비활성화 — JSON `{is_enabled: bool}`. 비활성 seed는 계속 보이지만 추론 파이프라인에서 제외되며, 양방향 전환 가능 |
 | `POST /spoke/ontogen/method/run` | 수동 재추론 트리거. 선택적 `Content-Type: text/markdown` 본문은 해당 실행에만 적용되는 일회성 프롬프트로 작동; `?dry_run=true`는 기록 없이 평가만. 동시 실행은 `409 ONTOGEN_RUNNING` |
 | `GET /spoke/ontogen/event` | 글로벌 추론 실행 이력(`ONTOGEN.RUN_COMPLETE`, `ONTOGEN.RUN_FAILED`) |
-| `GET /spoke/ontogen/result/node` | 노드(주어 / 목적어) 리스트 — 각 행은 `score`·`status`·`run_id`(해당 행을 만든 실행, 그 실행의 Langfuse 세션이 디베이트 기록을 보유)를 가짐 |
+| `GET /spoke/ontogen/result/node` | 노드(주어 / 목적어) 리스트 — 각 행은 `confidence_score`·`status`·`run_id`(해당 행을 만든 실행, 그 실행의 Langfuse 세션이 디베이트 기록을 보유)를 가짐 |
 | `GET /spoke/ontogen/result/node/{node_id}` | 멤버 데이터셋 포함 노드 상세 |
 | `GET /spoke/ontogen/result/node/{node_id}/event` | 노드 변경 이력(제안 → 승인/거부, 멤버 추가) |
 | `POST /spoke/ontogen/result/node/{node_id}/method/review` | 대기 중 노드 제안의 승인·거부 |
-| `GET /spoke/ontogen/result/edge` | 엣지(술어) 리스트 — 각 행은 `score`·`status`·`run_id`를 가짐 |
+| `GET /spoke/ontogen/result/edge` | 엣지(술어) 리스트 — 각 행은 `confidence_score`·`status`·`run_id`를 가짐 |
 | `GET /spoke/ontogen/result/edge/{edge_id}` | 엣지 상세 |
 | `GET /spoke/ontogen/result/edge/{edge_id}/event` | 엣지 변경 이력 |
 | `POST /spoke/ontogen/result/edge/{edge_id}/method/review` | 대기 중 엣지 제안의 승인·거부 |
-| `GET /spoke/ontogen/result/triple` | 트리플 — `(subject_node_id, edge_id, object_node_id)` 사실 — 리스트, 각 행은 `score`·`status`·`run_id`를 가짐 |
+| `GET /spoke/ontogen/result/triple` | 트리플 — `(subject_node_id, edge_id, object_node_id)` 사실 — 리스트, 각 행은 `confidence_score`·`status`·`run_id`를 가짐 |
 | `GET /spoke/ontogen/result/triple/{triple_id}` | 해석된 주어 노드·엣지·목적어 노드 포함 트리플 상세 |
 | `GET /spoke/ontogen/result/triple/{triple_id}/event` | 트리플 변경 이력 |
 | `POST /spoke/ontogen/result/triple/{triple_id}/method/review` | 대기 중 트리플 승인·거부 — 주어 노드·엣지·목적어 노드 중 하나라도 미승인이면 `422 ONTOGEN_TRIPLE_DEPENDENCY_PENDING` |
