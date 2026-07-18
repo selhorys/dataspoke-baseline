@@ -406,7 +406,7 @@ nest under the same database → schema hierarchy as DataHub's managed-PG source
 | `globalTags` | W | — | — | — *(future scope)* | R *(dataset_filter.tags)* |
 | `glossaryTerms` | — | — | R | R | R *(dataset_filter.glossary_terms)* |
 | `upstreamLineage` | W | R | — | — | — |
-| `status` | W | — (conf DELETE hard-deletes the assertion entity, no `status` write) | — | — | — |
+| `status` | W | W *(`removed=false` on register; conf DELETE hard-deletes the entity rather than tombstoning)* | — | — | — |
 | `deprecation` | — | — | — | — | — |
 | `datasetProfile` | — | — | — | — | — |
 | `operation` | — | — | — | — | — |

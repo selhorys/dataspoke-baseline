@@ -212,10 +212,10 @@ result-store contract.
 
 ## DataHub Aspect Mapping
 
-DataSpoke writes two native DataHub aspects on the assertion entity:
-`assertionInfo` (versioned, on PUT/PATCH) and `assertionRunEvent` (timeseries, per
-result POST). `DELETE` hard-deletes the whole assertion entity. No metadata-model
-extensions.
+DataSpoke writes three native DataHub aspects on the assertion entity:
+`assertionInfo` (versioned, on PUT/PATCH), `status` (versioned, alongside
+`assertionInfo`) and `assertionRunEvent` (timeseries, per result POST). `DELETE`
+hard-deletes the whole assertion entity. No metadata-model extensions.
 
 ### Assertion URN
 
@@ -262,6 +262,18 @@ assertionInfo:
   later is possible if discovery use cases (search by variable name across datasets, or
   per-variable type / description metadata) become load-bearing.
 
+### `status` (versioned aspect)
+
+Emitted as `status.removed = false` alongside `assertionInfo` on every register.
+
+DataHub does not require the aspect for visibility — search excludes soft-deleted
+entities with `mustNot(removed = true)`, which does not match an entity carrying no
+`status` at all, and `Status.pdl` defaults `removed` to `false`. The emission is
+instead an idempotent un-remove: if an operator soft-deletes the assertion from the
+DataHub UI, the next `PUT` restores it to the Quality tab rather than writing
+`assertionInfo` onto an entity that stays hidden. This mirrors how DataSpoke's
+ingestion extractors and corp-group sync emit the same aspect.
+
 ### `assertionRunEvent` (timeseries aspect)
 
 Emitted on every result POST.
@@ -301,9 +313,8 @@ Key choices, with rationale:
 `DELETE /attr/validation/conf` hard-deletes the assertion entity from DataHub — it does
 **not** leave a `status.removed = true` tombstone. The assertion URN is derived
 deterministically from the dataset URN, so a subsequent `PUT` re-creates a fresh
-assertion under the same URN. DataSpoke therefore emits no `status` aspect; it is
-authoritative for the assertion lifecycle and the entity simply ceases to exist on
-delete.
+assertion under the same URN. DataSpoke is authoritative for the assertion lifecycle,
+and the entity simply ceases to exist on delete.
 
 ### What does NOT need to be emitted
 
