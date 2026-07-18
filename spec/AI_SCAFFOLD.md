@@ -194,7 +194,7 @@ Prauto is the autonomous PR worker -- a cron-driven system that picks up GitHub 
 `prauto:ready`, produces implementation PRs via Claude Code CLI, and manages the full
 issue-to-PR lifecycle. It lives in `.prauto/` (config, shell libraries, prompt templates,
 runtime state). See `spec/AI_PRAUTO.md` for the full specification (lifecycle labels, heartbeat
-cycle, phase state machine, code review, squash-finalize).
+cycle, phase state machine, per-stage review, dev cluster and deploys, squash-finalize).
 
 ---
 

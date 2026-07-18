@@ -1,28 +1,47 @@
-Implement changes for GitHub issue #{number} on branch `{branch}`.
+Implement changes for GitHub issue #{number} on branch `{branch}` by driving the CLAUDE.md implementation workflow.
 
-## Check for existing work
+## Your role
 
-Before starting, check if prior work exists on this branch:
+You are the orchestrator for `CLAUDE.md §Implementation Workflow` steps 4–9. You do NOT write the implementation yourself. You run `.claude/workflows/wf-minimal.js` via the `Workflow` tool, which executes each generator stage paired with an adversarial reviewer (generator ≠ reviewer) and does one fix pass on a REVISE. Do not reimplement or shortcut that loop — wf-minimal owns it.
 
-```bash
-git log --oneline origin/{base_branch}..HEAD
-```
+## Steps
 
-If commits exist, continue from where they left off — do NOT redo completed work. Read the existing commits and code to understand what has been done, then pick up the remaining tasks from the plan.
+1. Read the approved plan below. It ends with a `## PRauto Execution Metadata` block naming the generator `Stages` (in execution order, inner arrays for concurrency) and the `Security` subset. Extract those two JSON arrays verbatim.
 
-## Instructions
+2. Invoke the `Workflow` tool for `wf-minimal` with these args:
 
-1. Follow the implementation plan from the analysis phase (provided below).
-2. Read relevant specs before writing code.
-3. Follow existing code patterns.
-4. Write tests for your changes.
-5. If you added or changed Python dependencies in `pyproject.toml`, run `uv sync` to update `.venv`.
-6. Run tests to verify (`uv run pytest` for Python, `npx tsc` for TypeScript).
-7. Run formatters (`uv run ruff` for Python, `npx prettier` for TypeScript).
-8. Stage and commit with conventional commit messages.
-   Use: git commit --author="{author_name} <{author_email}>"
-9. Do NOT push. The orchestrator handles pushing.
+   ```
+   args = {
+     "plan":     <the full approved plan text below, verbatim>,
+     "stages":   <the Stages array from the metadata block>,
+     "security": <the Security array from the metadata block>
+   }
+   ```
 
-## Analysis Output
+   Prior committed work may exist on the branch from an earlier heartbeat; a fresh workflow run is expected (wf-minimal restarts rather than resuming).
+
+3. When the workflow returns, read its `outcome` field:
+
+   - **ESCALATED** (the returned `outcome` says it escalated in a stage group — a reviewer's findings persisted after the fix pass): do NOT commit, stage, or push anything. In your final message, report the escalating stage group and the reviewer findings from the returned `stages[]`. Then end your message with exactly this line, and nothing after it:
+
+     ```
+     PRAUTO_WORKFLOW_OUTCOME: ESCALATED
+     ```
+
+   - **COMPLETE**: the workflow leaves every change unstaged (its NO_COMMIT contract). Stage and commit the working tree now with a conventional-commit message (`<type>: <subject>`), based on the actual `git diff`:
+
+     ```
+     git commit --author="{author_name} <{author_email}>"
+     ```
+
+     Do NOT push — the orchestrator pushes. Then end your message with exactly this line:
+
+     ```
+     PRAUTO_WORKFLOW_OUTCOME: COMPLETE
+     ```
+
+The sentinel line is the only signal the orchestrator reads — emit it exactly, on its own line, as the last line of your message.
+
+## Approved plan
 
 {analysis_output}

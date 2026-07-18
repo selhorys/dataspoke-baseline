@@ -185,6 +185,45 @@ extract_change_size() {
   esac
 }
 
+# Whether the analysis phase confirmed its plan meets CLAUDE.md's skip-plan criteria.
+# The analysis prompt emits a "Skip-plan eligible: yes|no" line in the plan metadata
+# block after evaluating the concrete criteria (< 3 files, < 60 lines, no new
+# endpoint/table/pgvector/DAG, no cross-layer coordination) against its own plan.
+# Conservative: only an explicit "yes" confirms; anything else (including a missing or
+# unparseable line) requires approval.
+# Usage: analysis_confirms_skip_plan <analysis_output>
+# Returns: 0 when the plan confirms skip-plan eligibility, 1 otherwise.
+analysis_confirms_skip_plan() {
+  local analysis_output="$1"
+  local line
+  line=$(echo "$analysis_output" | grep -iE 'Skip-plan eligible' | head -1 || true)
+  [[ -n "$line" ]] || return 1
+  echo "$line" | grep -qiE ':[[:space:]]*[*`> ]*yes\b'
+}
+
+# Resolve the effective change size, folding the author's issue-body hint together with
+# the analysis phase's skip-plan confirmation (the evidence-based plan gate). A minor
+# result is the only one that skips plan-approval, and it requires BOTH the author's
+# `### Change Size: minor` hint AND the analysis confirming its own plan is skip-eligible.
+# A minor hint the plan's evidence does not support is overridden up to medium; the hint
+# can never buy a skip on its own.
+# Usage: resolve_change_size <issue_body> <analysis_output>
+# Prints: "minor" | "medium" | "major"
+resolve_change_size() {
+  local issue_body="$1" analysis_output="$2"
+  local hint
+  hint=$(extract_change_size "$issue_body")
+  if [[ "$hint" == "minor" ]]; then
+    if analysis_confirms_skip_plan "$analysis_output"; then
+      echo "minor"
+    else
+      echo "medium"
+    fi
+  else
+    echo "$hint"
+  fi
+}
+
 # Post the analysis plan as an issue comment.
 # Usage: post_plan_comment <issue_number> <analysis_output> <change_size> [revision]
 # revision defaults to 1. Each revision uses a unique keyword for idempotency.

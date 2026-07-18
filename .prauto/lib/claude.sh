@@ -5,9 +5,11 @@
 # Tool whitelists and denylists per spec.
 ANALYSIS_ALLOWED_TOOLS='Read,Write,Glob,Grep,Bash(git log *),Bash(git diff *),Bash(git status *),Bash(git branch *)'
 
-IMPLEMENTATION_ALLOWED_TOOLS='Read,Write,Edit,Glob,Grep,Bash(git log *),Bash(git diff *),Bash(git status *),Bash(git branch *),Bash(git add *),Bash(git commit *),Bash(uv run pytest *),Bash(uv run python3 *),Bash(uv run ruff *),Bash(uv run mypy *),Bash(uv sync *),Bash(npm run *),Bash(npx prettier *),Bash(npx tsc *)'
-
-REVIEW_ALLOWED_TOOLS='Read,Glob,Grep,Bash(git log *),Bash(git diff *),Bash(git status *),Bash(git branch *),Bash(uv run pytest *)'
+# The implementation phase drives .claude/workflows/wf-minimal.js, so it needs `Agent`
+# and `Workflow` on top of the direct-edit tools. Granting these voids DENY_TOOLS for
+# delegated work (subagent frontmatter, not the parent whitelist, governs subagent
+# tools) — an accepted, documented consequence per spec/AI_PRAUTO.md §Security Model.
+IMPLEMENTATION_ALLOWED_TOOLS='Read,Write,Edit,Glob,Grep,Agent,Workflow,Bash(git log *),Bash(git diff *),Bash(git status *),Bash(git branch *),Bash(git add *),Bash(git commit *),Bash(uv run pytest *),Bash(uv run python3 *),Bash(uv run ruff *),Bash(uv run mypy *),Bash(uv sync *),Bash(npm run *),Bash(npx prettier *),Bash(npx tsc *),Bash(npx eslint *),Bash(pnpm *)'
 
 DENY_TOOLS='Bash(git push *),Bash(rm -rf *),Bash(sudo *),Bash(kubectl *),Bash(helm *),Bash(curl *),Bash(wget *),Bash(gh *),Read(.prauto/config.local.env),Read(.prauto/state/*),WebFetch,WebSearch'
 
@@ -188,10 +190,12 @@ ${counter_proposal}"
   fi
 }
 
-# Phase 2: Implementation (read + write).
-# Always starts a fresh session. Claude checks the branch for existing work.
+# Phase 2: Implementation — drive wf-minimal via the Workflow tool.
+# Always starts a fresh session; the workflow does not resume mid-run, so a prior
+# heartbeat's committed work is the only continuity (branch-based).
 # Usage: run_implementation <issue_number> <branch> <analysis_output>
-# Sets: IMPL_SESSION_ID
+# Sets: IMPL_SESSION_ID, IMPL_OUTPUT (the session's final text — carries the
+#       PRAUTO_WORKFLOW_OUTCOME sentinel the caller reads)
 run_implementation() {
   local issue_number="$1"
   local branch="$2"
@@ -211,118 +215,13 @@ run_implementation() {
   invoke_claude "$prompt" "$IMPLEMENTATION_ALLOWED_TOOLS" "$PRAUTO_CLAUDE_MAX_TURNS_IMPLEMENTATION" "$budget"
 
   IMPL_SESSION_ID="$CLAUDE_SESSION_ID"
+  IMPL_OUTPUT="$CLAUDE_OUTPUT"
 
   # Save session output to session dir
   if [[ -n "$CLAUDE_SESSION_ID" ]]; then
     local session_out_dir="${CUR_SESSION_DIR:-${SESSIONS_DIR}}"
     echo "$CLAUDE_OUTPUT" > "${session_out_dir}/implementation.json"
     info "Implementation claude session saved: ${CLAUDE_SESSION_ID}"
-  fi
-}
-
-# Phase 2a: Code review (generator-evaluator separation).
-# A fresh Claude context critically reviews the implementation against spec and plan.
-# Usage: run_code_review <issue_number> <branch> <plan>
-# Sets: REVIEW_OUTPUT, REVIEW_VERDICT, REVIEW_SESSION_ID
-run_code_review() {
-  local issue_number="$1"
-  local branch="$2"
-  local plan="$3"
-
-  # Skip if disabled
-  if [[ "${PRAUTO_CODE_REVIEW_ENABLED:-true}" != "true" ]]; then
-    info "Code review phase disabled. Skipping."
-    REVIEW_VERDICT="APPROVE"
-    REVIEW_OUTPUT=""
-    return 0
-  fi
-
-  # Collect diff for the reviewer
-  local diff_stat
-  diff_stat=$(git diff --stat "origin/${PRAUTO_BASE_BRANCH}..HEAD" 2>/dev/null || echo "(no diff available)")
-
-  local session_out_dir="${CUR_SESSION_DIR:-${SESSIONS_DIR}}"
-  local review_file="${session_out_dir}/code-review.md"
-
-  local prompt
-  prompt=$(render_prompt "${PRAUTO_DIR}/prompts/code-review.md" \
-    "number=${issue_number}" \
-    "branch=${branch}" \
-    "base_branch=${PRAUTO_BASE_BRANCH}" \
-    "plan=${plan}" \
-    "diff_stat=${diff_stat}" \
-    "review_file=${review_file}")
-
-  local max_turns="${PRAUTO_CLAUDE_MAX_TURNS_CODE_REVIEW:-30}"
-  local budget="${PRAUTO_CLAUDE_MAX_BUDGET_CODE_REVIEW:-}"
-
-  info "Running code review (max_turns=${max_turns})..."
-  if ! invoke_claude "$prompt" "$REVIEW_ALLOWED_TOOLS" "$max_turns" "$budget"; then
-    warn "Code review produced no usable output for issue #${issue_number}. Defaulting to APPROVE."
-    REVIEW_VERDICT="APPROVE"
-    REVIEW_OUTPUT=""
-    REVIEW_SESSION_ID="$CLAUDE_SESSION_ID"
-    return 0
-  fi
-
-  REVIEW_SESSION_ID="$CLAUDE_SESSION_ID"
-
-  # Prefer the review file written by Claude via Write tool over .result
-  if [[ -f "$review_file" ]] && [[ -s "$review_file" ]]; then
-    REVIEW_OUTPUT=$(cat "$review_file")
-    info "Code review captured from file ($(wc -c < "$review_file") bytes)."
-  else
-    warn "Review file not found at ${review_file}. Falling back to .result output."
-    REVIEW_OUTPUT="$CLAUDE_OUTPUT"
-  fi
-
-  # Parse verdict from last VERDICT: line (fail-open: default to APPROVE)
-  REVIEW_VERDICT=$(echo "$REVIEW_OUTPUT" | grep -oP '^VERDICT:\s*\K\S+' | tail -1)
-  if [[ -z "$REVIEW_VERDICT" ]]; then
-    warn "Could not parse verdict from review output. Defaulting to APPROVE."
-    REVIEW_VERDICT="APPROVE"
-  fi
-
-  info "Code review verdict: ${REVIEW_VERDICT}"
-
-  # Save to session dir
-  echo "$REVIEW_OUTPUT" > "${session_out_dir}/code-review.txt"
-  if [[ -n "$REVIEW_SESSION_ID" ]]; then
-    info "Code review claude session saved: ${REVIEW_SESSION_ID}"
-  fi
-}
-
-# Phase 2a-fix: Address code review findings.
-# Only invoked when review verdict is REVISE.
-# Usage: run_review_fix <issue_number> <branch> <plan> <review_output>
-# Sets: REVIEW_FIX_SESSION_ID
-run_review_fix() {
-  local issue_number="$1"
-  local branch="$2"
-  local plan="$3"
-  local review_output="$4"
-
-  local prompt
-  prompt=$(render_prompt "${PRAUTO_DIR}/prompts/review-fix.md" \
-    "number=${issue_number}" \
-    "branch=${branch}" \
-    "plan=${plan}" \
-    "review_output=${review_output}" \
-    "author_name=${PRAUTO_GIT_AUTHOR_NAME}" \
-    "author_email=${PRAUTO_GIT_AUTHOR_EMAIL}")
-
-  local max_turns="${PRAUTO_CLAUDE_MAX_TURNS_REVIEW_FIX:-${PRAUTO_CLAUDE_MAX_TURNS_IMPLEMENTATION:-100}}"
-  local budget="${PRAUTO_CLAUDE_MAX_BUDGET_REVIEW_FIX:-${PRAUTO_CLAUDE_MAX_BUDGET_IMPLEMENTATION:-}}"
-
-  info "Running review fix pass (max_turns=${max_turns})..."
-  invoke_claude "$prompt" "$IMPLEMENTATION_ALLOWED_TOOLS" "$max_turns" "$budget"
-
-  REVIEW_FIX_SESSION_ID="$CLAUDE_SESSION_ID"
-
-  if [[ -n "$CLAUDE_SESSION_ID" ]]; then
-    local session_out_dir="${CUR_SESSION_DIR:-${SESSIONS_DIR}}"
-    echo "$CLAUDE_OUTPUT" > "${session_out_dir}/review-fix.json"
-    info "Review fix claude session saved: ${CLAUDE_SESSION_ID}"
   fi
 }
 
@@ -361,6 +260,45 @@ run_integration_fix_session() {
     local session_out_dir="${CUR_SESSION_DIR:-${SESSIONS_DIR}}"
     echo "$CLAUDE_OUTPUT" > "${session_out_dir}/integration-fix.json"
     info "Integration fix claude session saved: ${CLAUDE_SESSION_ID}"
+  fi
+}
+
+# Phase 2c: Fix E2E (Playwright) test failures.
+# Invokes Claude with the failing suite output to diagnose and fix. The session
+# cannot deploy or reach the cluster; the orchestrator redeploys and re-runs.
+# Usage: run_e2e_fix_session <issue_number> <branch> <test_output>
+# Sets: E2E_FIX_SESSION_ID
+run_e2e_fix_session() {
+  local issue_number="$1"
+  local branch="$2"
+  local test_output="$3"
+
+  # Truncate test output if too long to fit in prompt
+  local truncated_output="$test_output"
+  if [[ ${#test_output} -gt 30000 ]]; then
+    truncated_output="${test_output:0:30000}
+... (truncated)"
+  fi
+
+  local prompt
+  prompt=$(render_prompt "${PRAUTO_DIR}/prompts/e2e-fix.md" \
+    "number=${issue_number}" \
+    "branch=${branch}" \
+    "test_output=${truncated_output}" \
+    "author_name=${PRAUTO_GIT_AUTHOR_NAME}" \
+    "author_email=${PRAUTO_GIT_AUTHOR_EMAIL}")
+
+  local budget="${PRAUTO_CLAUDE_MAX_BUDGET_E2E_FIX:-${PRAUTO_CLAUDE_MAX_BUDGET_IMPLEMENTATION:-}}"
+  local max_turns="${PRAUTO_CLAUDE_MAX_TURNS_E2E_FIX:-${PRAUTO_CLAUDE_MAX_TURNS_INTEGRATION_FIX:-50}}"
+
+  invoke_claude "$prompt" "$IMPLEMENTATION_ALLOWED_TOOLS" "$max_turns" "$budget"
+
+  E2E_FIX_SESSION_ID="$CLAUDE_SESSION_ID"
+
+  if [[ -n "$CLAUDE_SESSION_ID" ]]; then
+    local session_out_dir="${CUR_SESSION_DIR:-${SESSIONS_DIR}}"
+    echo "$CLAUDE_OUTPUT" > "${session_out_dir}/e2e-fix.json"
+    info "E2E fix claude session saved: ${CLAUDE_SESSION_ID}"
   fi
 }
 

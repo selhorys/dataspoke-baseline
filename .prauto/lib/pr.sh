@@ -362,6 +362,25 @@ get_pr_number_for_branch() {
     --head "$branch" --json number --jq '.[0].number // empty' 2>/dev/null) || BRANCH_PR_NUMBER=""
 }
 
+# Redact credentials before test output reaches a public-ish PR comment.
+# The E2E and api-wired suites exercise auth flows with DATASPOKE_TEST_* credentials, so a
+# failing Playwright/pytest assertion can echo a token or a postgresql://user:PASS@host URL
+# verbatim. Redact, replacing the secret with ***REDACTED***:
+#   - DATASPOKE_*= env assignments (the value, keeping the key for context)
+#   - JWTs (three base64url segments)
+#   - dsk_-prefixed API tokens
+#   - user:password@ credentials embedded in URLs
+# sed -E / [:class:] / + are portable across the BSD and GNU seds prauto may run on.
+# Usage: scrub_secrets <text>   (prints the scrubbed text)
+scrub_secrets() {
+  local text="$1"
+  printf '%s' "$text" | sed -E \
+    -e 's/(DATASPOKE_[A-Z0-9_]*=)[^[:space:]]*/\1***REDACTED***/g' \
+    -e 's/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/***REDACTED***/g' \
+    -e 's/dsk_[A-Za-z0-9_-]+/***REDACTED***/g' \
+    -e 's#://[^:@/[:space:]]+:[^@/[:space:]]+@#://***REDACTED***@#g'
+}
+
 # Post test results as a PR comment.
 # Uses a collapsible <details> section to keep the PR clean.
 # Usage: post_test_results_comment <pr_number> <test_type> <exit_code> <output>
@@ -370,6 +389,10 @@ post_test_results_comment() {
   local test_type="$2"
   local exit_code="$3"
   local output="$4"
+
+  # Scrub credentials before the output enters a public PR comment. Centralized here so
+  # every caller (unit, integration spot/api-wired, E2E) is covered by construction.
+  output=$(scrub_secrets "$output")
 
   local status_label
   if [[ "$exit_code" -eq 0 ]]; then
