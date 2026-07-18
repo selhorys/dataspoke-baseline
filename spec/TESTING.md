@@ -98,7 +98,7 @@ environment.
 
 ### Python (Backend / API)
 
-**Naming**: `test_<module>.py` (e.g., `tests/unit/backend/test_quality_score.py`)
+**Naming**: `test_<module>.py` (e.g., `tests/unit/backend/metrics/test_service.py`)
 
 **Running**: `uv run pytest tests/unit/`
 

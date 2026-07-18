@@ -383,7 +383,7 @@ logic, and convenience methods. Patterns defined in
 | Linting | ruff (Python), ESLint (TypeScript) |
 | Formatting | ruff format (Python), Prettier (TypeScript) |
 | Type Checking | mypy (Python), TypeScript compiler |
-| CI/CD | GitHub Actions |
+| CI/CD | none yet — manual pre-commit gates (see TESTING.md §CI Behavior); GitHub Actions planned |
 | Container Runtime | Docker |
 | Orchestrator | Kubernetes + Helm |
 
