@@ -264,7 +264,7 @@ own registry mirror.
 | event-consumer | Deployment | ✗ (opt-in) | ✗ | no |
 | postgresql | StatefulSet | ✓ | ✓ | yes (PV) |
 | redis | StatefulSet | ✓ | ✓ | yes (PV, 8Gi) |
-| airflow (api-server + scheduler + triggerer + dag-processor) | Deployment + StatefulSets | ✓ | ✓ | yes (scheduler/triggerer logs PVCs; metadata in PG) |
+| airflow (api-server + scheduler + triggerer + dag-processor) | Deployments | ✓ | ✓ | no (task logs in emptyDir; metadata in PG) |
 
 Each component has a `<component>.enabled` toggle.
 
@@ -860,8 +860,8 @@ out of project scope.
 | event-consumer† | 1 | 250m / 500m | 512 Mi / 1024 Mi | — |
 | postgresql | 1 | 1000m / 2000m | 2048 Mi / 6144 Mi | 50 Gi (custom image with `pgvector` + Apache AGE) |
 | redis | 1 + 1 | master 250m / 500m; replica 100m / 150m | master 256 Mi / 512 Mi; replica 128 Mi / 192 Mi | 8 Gi per pod (master + replica) = 16 Gi |
-| airflow (api-server + scheduler + triggerer + dag-processor) | 1+1+1+1 | per-component; see `values.yaml` | per-component; see `values.yaml` | 100 Gi each for scheduler + triggerer logs (chart default); DAGs baked into the custom image, no DAG PVC |
-| **Total** (excludes event-consumer) | | **4075m / 8200m** | **6.5 Gi / 15.7 Gi** | **266 Gi** (postgresql 50 + redis 2×8 + airflow logs 2×100) |
+| airflow (api-server + scheduler + triggerer + dag-processor) | 1+1+1+1 | per-component; see `values.yaml` | per-component; see `values.yaml` | none — task logs in emptyDir (2 Gi cap), DAGs baked into the custom image |
+| **Total** (excludes event-consumer) | | **4075m / 8200m** | **6.5 Gi / 15.7 Gi** | **66 Gi** (postgresql 50 + redis 2×8) |
 
 † event-consumer disabled by default — add ~250m / 500m CPU + ~512 Mi / 1024 Mi
 memory when enabled.
@@ -881,12 +881,19 @@ limits are generous to absorb transient spikes (OpenSearch off-heap,
 
 Storage behaves differently from memory: PVC requests are provisioned in full,
 so the storage line is a **floor, not an estimate**. The umbrella chart alone
-requests ~218 Gi in dev — airflow's scheduler and triggerer log volumes (100 Gi
-each, the chart default) dominate, ahead of postgresql (10 Gi) and the redis
-master (8 Gi). Dummy data adds 9 Gi (example-postgres 5 Gi + example-kafka
-4 Gi); DataHub and Langfuse add more on top (Langfuse ~26 Gi, DataHub
-prerequisites MySQL 10 Gi, plus OpenSearch/Kafka chart defaults). Size the dev
-disk from the umbrella floor upward rather than from a single headline number.
+requests ~18 Gi in dev — postgresql (10 Gi) and the redis master (8 Gi). Dummy
+data adds 9 Gi (example-postgres 5 Gi + example-kafka 4 Gi); DataHub and
+Langfuse add more on top (Langfuse ~26 Gi, DataHub prerequisites MySQL 10 Gi,
+plus OpenSearch/Kafka chart defaults). Size the dev disk from the umbrella
+floor upward rather than from a single headline number.
+
+Airflow contributes no storage: `workers.celery.persistence` and
+`triggerer.persistence` are pinned off, so task logs use emptyDir bounded by
+`logs.emptyDirConfig.sizeLimit` (2 Gi) and the log-groomer sidecars' 15-day
+retention. Left at chart defaults these two knobs render 100 Gi log PVCs each.
+Disabling them also makes the scheduler and triggerer render as Deployments
+rather than StatefulSets, since the chart keys workload kind off the same
+`$stateful` condition.
 
 | Component | Namespace | Mem Limit | Notes |
 |---|---|---|---|

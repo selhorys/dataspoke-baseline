@@ -338,6 +338,25 @@ airflow:
     gitSync:
       enabled: false
 
+  # Task logs live in emptyDir, not PVCs. Under LocalExecutor the scheduler
+  # assumes the worker role, so scheduler-deployment.yaml reads
+  # `workers.celery.persistence.enabled` (falling back to the deprecated
+  # `workers.persistence.enabled: true`) to decide whether to render a 100Gi
+  # `logs` volumeClaimTemplate; the triggerer has its own. Left at chart
+  # defaults that is 200Gi of RWO storage per install. `logs.persistence` is
+  # already false upstream and is not the knob that provisions these.
+  # The logGroomerSidecar (enabled by default, retentionDays: 15) bounds
+  # growth; sizeLimit keeps it under the pods' 4Gi ephemeral-storage request.
+  # Trade-off: logs do not survive pod restart — operators wanting post-mortem
+  # retention re-enable persistence in their overlay.
+  workers:
+    celery:
+      persistence:
+        enabled: false
+  logs:
+    emptyDirConfig:
+      sizeLimit: 2Gi
+
   # SimpleAuthManager replaces FAB; the chart's createUserJob runs
   # `airflow users create` which was removed from core in 3.x (FAB-only).
   # With all_admins=True the login endpoint accepts any user, so we skip
@@ -404,6 +423,10 @@ airflow:
     # podAnnotations then sets it to "false" — one annotation, no duplicate key. The
     # maxUnavailable:0 PDB is the primary eviction guard for this single-replica component.
     safeToEvict: false
+    # Logs to emptyDir rather than the chart's default 100Gi PVC — see the
+    # `workers.celery.persistence` note above.
+    persistence:
+      enabled: false
     podAnnotations:
       cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
     podDisruptionBudget:
