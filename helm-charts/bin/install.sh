@@ -311,12 +311,20 @@ data:
 EOF
 }
 
+# Set by _ensure_airflow_key_secrets when a derived Airflow key Secret was
+# *updated* (source key rotated), as opposed to created on a fresh install.
+# Read after the umbrella helm upgrade to decide whether to roll the pods that
+# hold the old key in memory.
+AIRFLOW_KEYS_ROTATED=false
+
 # _ensure_airflow_key_secrets <namespace> <secret_name>
 # Derives Airflow webserver/jwt secrets from the consolidated Secret and
 # creates the two Airflow-chart-compatible Secrets. Idempotent.
 _ensure_airflow_key_secrets() {
   local ns="$1"
   local secret_name="$2"
+
+  AIRFLOW_KEYS_ROTATED=false
 
   local webserver_key jwt_key
   webserver_key="$(kubectl get secret "${secret_name}" -n "${ns}" \
@@ -334,6 +342,9 @@ _ensure_airflow_key_secrets() {
       -o jsonpath='{.data.api-secret-key}' | base64 --decode)"
   fi
   if [[ "${existing_api_secret_key}" != "${webserver_key}" ]]; then
+    if [[ -n "${existing_api_secret_key}" ]]; then
+      AIRFLOW_KEYS_ROTATED=true
+    fi
     info "Creating/updating dataspoke-airflow-api-secret-key..."
     cat <<EOF | kubectl apply -f -
 apiVersion: v1
@@ -355,6 +366,9 @@ EOF
       -o jsonpath='{.data.jwt-secret}' | base64 --decode)"
   fi
   if [[ "${existing_jwt_secret}" != "${jwt_key}" ]]; then
+    if [[ -n "${existing_jwt_secret}" ]]; then
+      AIRFLOW_KEYS_ROTATED=true
+    fi
     info "Creating/updating dataspoke-airflow-jwt-secret..."
     cat <<EOF | kubectl apply -f -
 apiVersion: v1
@@ -369,6 +383,46 @@ EOF
   else
     info "  dataspoke-airflow-jwt-secret already up to date — skipping."
   fi
+
+  if [[ "${AIRFLOW_KEYS_ROTATED}" == "true" ]]; then
+    warn "Airflow signing key rotated — the consuming pods will be restarted after the upgrade."
+  fi
+}
+
+# _rollout_restart_workload <namespace> <name>
+# Restarts a workload without hardcoding its kind: the Airflow chart renders
+# scheduler and triggerer as either a Deployment or a StatefulSet depending on
+# log/triggerer persistence.
+_rollout_restart_workload() {
+  local ns="$1"
+  local name="$2"
+
+  local kind
+  for kind in deployment statefulset; do
+    if kubectl get "${kind}/${name}" -n "${ns}" >/dev/null 2>&1; then
+      kubectl rollout restart "${kind}/${name}" -n "${ns}"
+      return 0
+    fi
+  done
+
+  info "  ${name} not found in ${ns} — skipping restart."
+}
+
+# _restart_airflow_key_consumers <namespace>
+# Rolls every Airflow component that holds a signing key in memory. A Secret
+# content update does not roll pods that reference it via secretKeyRef, and the
+# chart's own checksum/jwt-secret annotation is suppressed when jwtSecretName is
+# set (which install.sh always sets), so the restart must be explicit.
+# AIRFLOW__API__SECRET_KEY reaches all four components; the JWT secret reaches
+# api-server and scheduler only.
+_restart_airflow_key_consumers() {
+  local ns="$1"
+
+  info "Restarting Airflow components to pick up the rotated signing keys..."
+  local component
+  for component in api-server scheduler dag-processor triggerer; do
+    _rollout_restart_workload "${ns}" "dataspoke-airflow-${component}"
+  done
 }
 
 # _sync_env_from_secret <namespace> <secret_key> <env_var_name> [<secret_name>]
@@ -970,6 +1024,11 @@ if [[ "$PROFILE" == "dev" ]]; then
     info "Installing DataSpoke umbrella chart..."
     _helm_upgrade_dataspoke_dev "${NS}"
 
+    # Roll the Airflow pods still holding a superseded signing key
+    if [[ "${AIRFLOW_KEYS_ROTATED}" == "true" ]]; then
+      _restart_airflow_key_consumers "${NS}"
+    fi
+
     # Ensure pgvector + AGE extensions
     info "Ensuring pgvector + age extensions in the dataspoke database..."
 
@@ -1287,6 +1346,13 @@ elif [[ "$PROFILE" == "prod" ]]; then
     --set "postgresql.auth.existingSecret=${SECRET_TO_CHECK}" \
     --set "redis.auth.existingSecret=${SECRET_TO_CHECK}" \
     --timeout 15m
+
+  # -----------------------------------------------------------------------
+  # Roll the Airflow pods still holding a superseded signing key
+  # -----------------------------------------------------------------------
+  if [[ "${AIRFLOW_KEYS_ROTATED}" == "true" ]]; then
+    _restart_airflow_key_consumers "${NS}"
+  fi
 
   # -----------------------------------------------------------------------
   # Seed default admin user (idempotent)
