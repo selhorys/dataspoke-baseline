@@ -123,7 +123,7 @@ class DataHubClient:
         a legitimate "no aspect" observation.
         """
         try:
-            return await self._with_retry(self._graph.get_aspect, urn, aspect_class)
+            return await self._with_retry(self._graph.get_aspect, urn, aspect_class)  # type: ignore[no-any-return]  # DataHub SDK get_aspect returns Any.
         except DataHubUnavailableError:
             raise
         except Exception as exc:
@@ -311,13 +311,13 @@ class DataHubClient:
         with each OR clause. When ``origin`` is provided and there are no other
         OR-clause dimensions, a single AND clause with just origin is emitted.
         """
-        origin_clause: dict | None = (
+        origin_clause: dict[str, Any] | None = (
             {"field": "origin", "values": [origin]} if origin else None
         )
 
-        or_groups: list[dict] = []
+        or_groups: list[dict[str, Any]] = []
         if platform:
-            and_clauses: list[dict] = [
+            and_clauses: list[dict[str, Any]] = [
                 {"field": "platform", "values": [f"urn:li:dataPlatform:{platform}"]}
             ]
             if origin_clause:
@@ -342,11 +342,11 @@ class DataHubClient:
         def _fetch() -> list[str]:
             result = self._graph.get_urns_by_filter(
                 entity_types=["dataset"],
-                extra_or_filters=or_groups if or_groups else None,
+                extra_or_filters=or_groups if or_groups else None,  # type: ignore[arg-type]  # SDK over-narrows the filter dict to Literal keys.
             )
             return list(result) if result else []
 
-        return await self._with_retry(_fetch)
+        return await self._with_retry(_fetch)  # type: ignore[no-any-return]  # DataHub SDK returns Any.
 
     def origin_from_dataset_urn(self, urn: str) -> str | None:
         """Parse the origin (third segment) from a dataset URN.
@@ -407,9 +407,11 @@ class DataHubClient:
         """Emit a single MCP through the REST emitter with retry."""
         await self._with_retry(self._emitter.emit_mcp, mcp)
 
-    async def execute_graphql(self, query: str, variables: dict | None = None) -> dict:
+    async def execute_graphql(
+        self, query: str, variables: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         """Execute a GraphQL query/mutation with retry."""
-        return await self._with_retry(
+        return await self._with_retry(  # type: ignore[no-any-return]  # GraphQL response is untyped JSON.
             self._graph.execute_graphql, query, variables=variables or {}
         )
 
@@ -483,7 +485,7 @@ class DataHubClient:
                 },
             )
             outer = (raw or {}).get("listIngestionSources") or {}
-            sources_page: list[dict] = outer.get("ingestionSources") or []
+            sources_page: list[dict[str, Any]] = outer.get("ingestionSources") or []
             for s in sources_page:
                 if s.get("type") in _SYSTEM_SOURCE_TYPES:
                     continue
@@ -573,7 +575,7 @@ class DataHubClient:
             )
             source_node = (raw or {}).get("ingestionSource") or {}
             executions = source_node.get("executions") or {}
-            requests_page: list[dict] = executions.get("executionRequests") or []
+            requests_page: list[dict[str, Any]] = executions.get("executionRequests") or []
             total: int = executions.get("total") or 0
 
             for req in requests_page:

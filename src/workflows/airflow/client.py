@@ -8,6 +8,7 @@ shared httpx client's headers, and re-logs-in once on 401.
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -61,7 +62,11 @@ class AirflowClient:
             # Re-apply token header if we already have one.
             if self._token:
                 self._client.headers["Authorization"] = f"Bearer {self._token}"
-        return self._client
+        client = self._client
+        # should_recreate is True whenever self._client is None, so the
+        # branch above has always populated it by this point.
+        assert client is not None
+        return client
 
     async def close(self) -> None:
         if self._client is not None:
@@ -116,7 +121,9 @@ class AirflowClient:
             if self._client is not None:
                 self._client.headers.pop("Authorization", None)
 
-    async def _authed_call(self, call):
+    async def _authed_call(
+        self, call: Callable[[], Awaitable[httpx.Response]]
+    ) -> httpx.Response:
         """Run an async httpx call with JWT; refresh and retry once on 401."""
         await self._ensure_token()
         resp = await call()
@@ -129,7 +136,7 @@ class AirflowClient:
     # ── DAG run management ───────────────────────────────────────────────
 
     async def trigger_dag_run(
-        self, dag_id: str, conf: dict | None = None
+        self, dag_id: str, conf: dict[str, Any] | None = None
     ) -> DagRunResponse:
         """Trigger a new DAG run.
 
@@ -178,7 +185,7 @@ class AirflowClient:
     async def trigger_and_wait(
         self,
         dag_id: str,
-        conf: dict | None = None,
+        conf: dict[str, Any] | None = None,
         timeout_seconds: float = 300,
     ) -> DagRunResponse:
         """Trigger a DAG run and wait for it to complete."""
@@ -220,12 +227,13 @@ class AirflowClient:
         """Find all active DAG runs (running or queued) for the given dag_id."""
         active: list[DagRunResponse] = []
         for state in ("running", "queued"):
-            resp = await self._authed_call(
-                lambda s=state: self._get_client().get(
+            def _call(s: str = state) -> Awaitable[httpx.Response]:
+                return self._get_client().get(
                     f"/api/v2/dags/{dag_id}/dagRuns",
                     params={"state": s, "limit": 25},
                 )
-            )
+
+            resp = await self._authed_call(_call)
             if resp.status_code == 404:
                 continue
             resp.raise_for_status()
@@ -281,12 +289,12 @@ class AirflowClient:
         entry = XcomEntry(**resp.json())
         return entry.parsed_value
 
-    async def list_dags(self, prefix: str | None = None) -> list[dict]:
+    async def list_dags(self, prefix: str | None = None) -> list[dict[str, Any]]:
         """List DAGs, optionally filtered by ID pattern prefix.
 
         Uses GET /api/v2/dags with optional dag_id_pattern param.
         """
-        params: dict = {"limit": 100}
+        params: dict[str, Any] = {"limit": 100}
         if prefix:
             params["dag_id_pattern"] = prefix
         resp = await self._authed_call(
@@ -299,7 +307,7 @@ class AirflowClient:
         dags = body.get("dags", [])
         if prefix:
             dags = [d for d in dags if d.get("dag_id", "").startswith(prefix)]
-        return dags
+        return dags  # type: ignore[no-any-return]  # Airflow REST payload is untyped JSON.
 
     async def get_dag_paused_states(self) -> dict[str, bool]:
         """Return a ``{dag_id: is_paused}`` map for every loaded DAG in one call.

@@ -67,7 +67,12 @@ async def run_debate(
     # Langfuse tracing is not wired to the reviewer; it uses the same provider/key
     # as the producer but with a different model.
     reviewer_llm: LLMClient = (
-        make_llm_client(stub=stub_llm_client, provider=llm_provider, model=llm_base_model, model_override=reviewer_model)
+        make_llm_client(
+            stub=stub_llm_client,
+            provider=llm_provider,
+            model=llm_base_model,
+            model_override=reviewer_model,
+        )
         if reviewer_model
         else llm
     )

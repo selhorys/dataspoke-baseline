@@ -40,13 +40,15 @@ async def search_candidate_embeddings(
                         mc.value,
                         mc.dataset_urn,
                         mc.item_id,
-                        GREATEST(0.0, 1.0 - (mce.embedding <=> CAST(:query_vector AS vector))) AS score
+                        GREATEST(0.0,
+                            1.0 - (mce.embedding <=> CAST(:query_vector AS vector))) AS score
                     FROM dataspoke.metagen_candidate_embeddings mce
                     JOIN dataspoke.metagen_candidates mc
                       ON mc.candidate_id = mce.candidate_id
                     WHERE mc.status = 'approved'
                       AND mce.kind = :kind
-                      AND GREATEST(0.0, 1.0 - (mce.embedding <=> CAST(:query_vector AS vector))) >= :threshold
+                      AND GREATEST(0.0,
+                            1.0 - (mce.embedding <=> CAST(:query_vector AS vector))) >= :threshold
                     ORDER BY score DESC
                     LIMIT :limit
                     """
@@ -68,7 +70,8 @@ async def search_candidate_embeddings(
                         mc.value,
                         mc.dataset_urn,
                         mc.item_id,
-                        GREATEST(0.0, 1.0 - (mce.embedding <=> CAST(:query_vector AS vector))) AS score
+                        GREATEST(0.0,
+                            1.0 - (mce.embedding <=> CAST(:query_vector AS vector))) AS score
                     FROM dataspoke.metagen_candidate_embeddings mce
                     JOIN dataspoke.metagen_candidates mc
                       ON mc.candidate_id = mce.candidate_id

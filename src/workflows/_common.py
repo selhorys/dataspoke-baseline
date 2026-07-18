@@ -74,12 +74,12 @@ async def make_datahub(db: "AsyncSession") -> DataHubClient:
     Raises PeripheralNotConfiguredError when the DataHub peripheral is unconfigured.
     """
     from src.backend.admin.datahub_secret import get_datahub_token
-    from src.backend.admin.peripheral_service import get_peripheral_config
+    from src.backend.admin.peripheral_service import DatahubConfigDTO, get_peripheral_config
     from src.shared.exceptions import PeripheralNotConfiguredError
 
     dto = await get_peripheral_config(db, "datahub")
     token = get_datahub_token()
-    if dto is None or not token:
+    if dto is None or not isinstance(dto, DatahubConfigDTO) or not token:
         raise PeripheralNotConfiguredError("datahub")
     return DataHubClient(dto.gms_url, token)
 
@@ -216,7 +216,7 @@ def make_pgvector_manager(*, stub: bool = False) -> PgVectorManager:
     return PgVectorManager(session_factory=SessionLocal)
 
 
-def make_db_session():  # type: ignore[no-untyped-def]
+def make_db_session() -> "AsyncSession":
     """Create a fresh AsyncSession for activity use.
 
     Returns an AsyncSession usable as ``async with make_db_session() as db:``.

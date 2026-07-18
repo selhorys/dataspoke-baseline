@@ -1,13 +1,13 @@
 """Pydantic models for Airflow Stable REST API responses."""
 
 import json
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel
 
 
-class DagRunState(str, Enum):
+class DagRunState(StrEnum):
     queued = "queued"
     running = "running"
     success = "success"
@@ -18,7 +18,7 @@ class DagRunResponse(BaseModel):
     dag_run_id: str
     dag_id: str
     state: DagRunState
-    conf: dict = {}
+    conf: dict[str, Any] = {}
     logical_date: str | None = None
     start_date: str | None = None
     end_date: str | None = None

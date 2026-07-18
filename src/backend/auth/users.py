@@ -24,6 +24,18 @@ from src.shared.exceptions import ConflictError, EntityNotFoundError, Preconditi
 _BCRYPT_ROUNDS = 12
 
 
+def _constraint_name_of(obj: object) -> str | None:
+    """Read a ``constraint_name`` off a raw driver error, if it carries one.
+
+    The driver exception types are untyped, so the attribute is read defensively
+    and only accepted when it is actually a string.
+    """
+    if obj is None:
+        return None
+    name = getattr(obj, "constraint_name", None)
+    return name if isinstance(name, str) else None
+
+
 def _violated_constraint(exc: IntegrityError) -> str | None:
     """Extract the violated constraint name from an IntegrityError.
 
@@ -40,21 +52,17 @@ def _violated_constraint(exc: IntegrityError) -> str | None:
     if orig is None:
         return None
     # Direct attribute (some drivers surface it here)
-    name = getattr(orig, "constraint_name", None)
+    name = _constraint_name_of(orig)
     if name:
         return name
     # asyncpg via SQLAlchemy asyncpg dialect: raw asyncpg error is __cause__
-    cause = getattr(orig, "__cause__", None)
-    if cause is not None:
-        name = getattr(cause, "constraint_name", None)
-        if name:
-            return name
+    name = _constraint_name_of(getattr(orig, "__cause__", None))
+    if name:
+        return name
     # psycopg
-    diag = getattr(orig, "diag", None)
-    if diag is not None:
-        name = getattr(diag, "constraint_name", None)
-        if name:
-            return name
+    name = _constraint_name_of(getattr(orig, "diag", None))
+    if name:
+        return name
     return None
 
 

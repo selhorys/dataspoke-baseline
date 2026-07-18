@@ -14,6 +14,7 @@ Usage:
 """
 
 import asyncio
+from typing import TYPE_CHECKING
 
 import structlog
 from confluent_kafka import Consumer, KafkaError
@@ -22,6 +23,9 @@ from src.shared.config import CONSUMER_POLL_TIMEOUT_S
 from src.shared.datahub.events import build_router, deserialize_mcl
 from src.shared.exceptions import EventProcessingError
 from src.shared.settings import settings
+
+if TYPE_CHECKING:
+    from src.workflows.airflow.client import AirflowClient
 
 logger = structlog.get_logger(__name__)
 
@@ -34,7 +38,7 @@ _RECONFIG_CHECK_INTERVAL = 5  # poll iterations between broker-change checks
 _UNCONFIGURED_SLEEP_S = 10.0
 
 
-def _create_airflow_client():
+def _create_airflow_client() -> "AirflowClient | None":
     """Create an Airflow client; return None if configuration is missing."""
     try:
         from src.workflows.airflow.client import AirflowClient
@@ -89,13 +93,13 @@ async def _run_inner_loop(consumer: Consumer, router: object, current_brokers: s
         if msg is None:
             pass
         elif msg.error():
-            if msg.error().code() == KafkaError._PARTITION_EOF:
+            if msg.error().code() == KafkaError._PARTITION_EOF:  # type: ignore[union-attr]  # guarded by msg.error() check above.
                 pass
             else:
                 logger.warning("consumer_error", error=str(msg.error()))
         else:
             try:
-                event = deserialize_mcl(msg.value())
+                event = deserialize_mcl(msg.value())  # type: ignore[arg-type]  # non-None on this path (error checked above).
                 await router.dispatch(event)  # type: ignore[attr-defined]
                 consumer.commit(message=msg)
             except EventProcessingError:

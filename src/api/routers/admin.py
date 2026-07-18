@@ -7,6 +7,8 @@ Also mounted as ``/internal/admin/…`` for scripts and automation (requires the
 
 import logging
 import uuid
+from datetime import datetime
+from typing import Any
 
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -82,7 +84,7 @@ internal_router = APIRouter(
 )
 
 
-async def _verify_dags(airflow: AirflowClient) -> dict:
+async def _verify_dags(airflow: AirflowClient) -> dict[str, Any]:
     dags = await airflow.list_dags()
     loaded_ids = {d.get("dag_id") for d in dags}
     missing = sorted(_EXPECTED_DAGS - loaded_ids)
@@ -103,7 +105,7 @@ async def _verify_dags(airflow: AirflowClient) -> dict:
 @router.post("/dags/verify")
 async def verify_dags(
     airflow: AirflowClient = Depends(get_airflow_client),
-) -> dict:
+) -> dict[str, Any]:
     """Verify that all expected Airflow DAGs are loaded and visible."""
     return await _verify_dags(airflow)
 
@@ -111,7 +113,7 @@ async def verify_dags(
 @internal_router.post("/dags/verify")
 async def internal_verify_dags(
     airflow: AirflowClient = Depends(get_airflow_client),
-) -> dict:
+) -> dict[str, Any]:
     """Verify that all expected Airflow DAGs are loaded (internal — requires X-Internal-Token)."""
     return await _verify_dags(airflow)
 
@@ -154,7 +156,7 @@ async def internal_datahub_sync(
     body: DatahubSyncRequest | None = None,
     db: AsyncSession = Depends(get_db),
     datahub: DataHubClient = Depends(get_datahub),
-) -> dict:
+) -> dict[str, Any]:
     """Reconcile dataset_registry.datahub_registered against DataHub.
 
     Internal-only — requires ``X-Internal-Token`` header.
@@ -179,7 +181,7 @@ async def internal_datahub_sync(
 # ── Runtime configuration ──────────────────────────────────────────────────────
 
 
-def _dto_to_response(dto: object, updated_at: object) -> RuntimeConfResponse:
+def _dto_to_response(dto: object, updated_at: datetime | None) -> RuntimeConfResponse:
     """Convert a RuntimeConfigDTO to the API response schema.
 
     ``llm_api_key`` is always masked: ``"********"`` when set, ``""`` when unset.
@@ -304,7 +306,7 @@ _DEFAULT_INGESTION_ENV = "DEV"
 
 def _datahub_dto_to_response(
     dto: object | None,
-    updated_at: object,
+    updated_at: datetime | None,
 ) -> DatahubPeripheralResponse:
     from src.backend.admin.peripheral_service import DatahubConfigDTO
 
@@ -316,7 +318,7 @@ def _datahub_dto_to_response(
             service_corpuser_urn=_DEFAULT_SERVICE_CORPUSER_URN,
             default_env=_DEFAULT_INGESTION_ENV,
             is_configured=False,
-            updated_at=updated_at,  # type: ignore[arg-type]
+            updated_at=updated_at,
         )
     token_set = datahub_token_is_set()
     return DatahubPeripheralResponse(
@@ -326,13 +328,13 @@ def _datahub_dto_to_response(
         service_corpuser_urn=dto.service_corpuser_urn or _DEFAULT_SERVICE_CORPUSER_URN,
         default_env=dto.default_env or _DEFAULT_INGESTION_ENV,
         is_configured=token_set,
-        updated_at=updated_at,  # type: ignore[arg-type]
+        updated_at=updated_at,
     )
 
 
 def _langfuse_dto_to_response(
     dto: object | None,
-    updated_at: object,
+    updated_at: datetime | None,
 ) -> LangfusePeripheralResponse:
     from src.backend.admin.peripheral_service import LangfuseConfigDTO
 
@@ -344,7 +346,7 @@ def _langfuse_dto_to_response(
             project_id="",
             environment_tag="",
             is_configured=False,
-            updated_at=updated_at,  # type: ignore[arg-type]
+            updated_at=updated_at,
         )
     secret_set = langfuse_secret_key_is_set()
     return LangfusePeripheralResponse(
@@ -354,11 +356,11 @@ def _langfuse_dto_to_response(
         project_id=dto.project_id,
         environment_tag=dto.environment_tag,
         is_configured=secret_set,
-        updated_at=updated_at,  # type: ignore[arg-type]
+        updated_at=updated_at,
     )
 
 
-async def _get_peripheral_updated_at(db: AsyncSession, name: str) -> object:
+async def _get_peripheral_updated_at(db: AsyncSession, name: str) -> datetime | None:
     from sqlalchemy import select
 
     from src.shared.db.models import PeripheralConfig
@@ -530,7 +532,7 @@ async def internal_patch_langfuse_peripheral(
 
 def _smtp_dto_to_response(
     dto: object | None,
-    updated_at: object,
+    updated_at: datetime | None,
 ) -> SmtpPeripheralResponse:
     from src.backend.admin.peripheral_service import SmtpConfigDTO
 
@@ -544,7 +546,7 @@ def _smtp_dto_to_response(
             use_tls=False,
             password="" if not password_set else "********",
             is_configured=False,
-            updated_at=updated_at,  # type: ignore[arg-type]
+            updated_at=updated_at,
         )
     is_configured = bool(dto.host and dto.from_address and password_set)
     return SmtpPeripheralResponse(
@@ -555,7 +557,7 @@ def _smtp_dto_to_response(
         use_tls=dto.use_tls,
         password="********" if password_set else "",
         is_configured=is_configured,
-        updated_at=updated_at,  # type: ignore[arg-type]
+        updated_at=updated_at,
     )
 
 
@@ -711,7 +713,7 @@ async def patch_user_role(
     body: UserRolePatchRequest,
     db: AsyncSession = Depends(get_db),
     datahub: DataHubClient = Depends(get_datahub),
-) -> dict:
+) -> dict[str, Any]:
     """Update a user's role and propagate to DataHub."""
     user = await users.update_role(db, user_id, body.role)
     # Propagate role to DataHub (non-fatal on failure — nightly DAG reconciles).

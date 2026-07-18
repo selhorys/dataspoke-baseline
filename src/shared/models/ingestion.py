@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from src.shared.secrets.grammar import SECRET_REF_RE
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 # ── Platform enum ─────────────────────────────────────────────────────────────
 
 
-class Platform(str, Enum):
+class Platform(StrEnum):
     POSTGRESQL = "postgres"
     MYSQL = "mysql"
     ORACLE = "oracle"
@@ -30,7 +30,7 @@ class Platform(str, Enum):
 # ── Mode enum ─────────────────────────────────────────────────────────────────
 
 
-class Mode(str, Enum):
+class Mode(StrEnum):
     DATAHUB_MANAGED = "DATAHUB_MANAGED"
     ACTIVE_CUSTOM_MANAGED = "ACTIVE_CUSTOM_MANAGED"
     PASSIVE = "PASSIVE"
@@ -238,7 +238,12 @@ def build_matcher(recipe: dict[str, Any]) -> Callable[[str], bool]:
         """Wrap ``pred`` with the database-prefix guard when the gate is active."""
         if not db_gated:
             return pred
-        return lambda name, _p=pred, _pfx=db_prefix: name.startswith(_pfx) and _p(name)
+        def _gated(
+            name: str, _p: Callable[[str], bool] = pred, _pfx: str = db_prefix
+        ) -> bool:
+            return name.startswith(_pfx) and _p(name)
+
+        return _gated
 
     try:
         from datahub.configuration.common import AllowDenyPattern

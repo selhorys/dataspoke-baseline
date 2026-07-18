@@ -15,14 +15,14 @@ import logging
 
 import httpx
 
-from src.api.schemas.admin import DagDetail, DagGroupStatus
+from src.api.schemas.admin import DagDetail, DagGroup, DagGroupStatus
 from src.shared.exceptions import AirflowUnavailableError, EntityNotFoundError
 from src.workflows.airflow.client import AirflowClient
 
 logger = logging.getLogger(__name__)
 
 # The controllable groups and their member DAGs — single source of truth.
-GROUP_TO_DAG_IDS: dict[str, tuple[str, ...]] = {
+GROUP_TO_DAG_IDS: dict[DagGroup, tuple[str, ...]] = {
     "datahub_sync": ("datahub-sync-hourly",),
     "auth_role_sync": ("auth-role-sync-daily",),
     "ingestion_active": (
@@ -36,7 +36,7 @@ GROUP_TO_DAG_IDS: dict[str, tuple[str, ...]] = {
 }
 
 
-def _fold_group(group: str, paused_states: dict[str, bool]) -> DagGroupStatus:
+def _fold_group(group: DagGroup, paused_states: dict[str, bool]) -> DagGroupStatus:
     """Fold per-DAG paused state into a single group status.
 
     A DAG missing from ``paused_states`` (not yet loaded by Airflow) is treated

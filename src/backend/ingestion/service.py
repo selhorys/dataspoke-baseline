@@ -15,7 +15,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from datahub.metadata.schema_classes import (  # type: ignore
+from datahub.metadata.schema_classes import (
     AuditStampClass,
     DataProcessInstanceOutputClass,
     DataProcessInstancePropertiesClass,
@@ -1086,7 +1086,7 @@ class IngestionService:
         if not rows:
             return None
 
-        _best_mapping, best_source = sorted(rows, key=_reverse_lookup_key)[0]
+        _best_mapping, best_source = sorted(rows, key=_reverse_lookup_key)[0]  # type: ignore[arg-type]  # SQLAlchemy Row key-func typing is imprecise.
 
         # Wrappers are internal plumbing and must never be surfaced as the owning
         # source. If a wrapper wins (e.g. it claims a dataset its parent does not),
@@ -1506,7 +1506,7 @@ class IngestionService:
                 insert_result = await self._db.execute(stmt)
                 # rowcount == 1 on INSERT, 1 on UPDATE, 0 when the WHERE filtered
                 # out the conflict update (higher-precedence row untouched).
-                if insert_result.rowcount == 1 and urn not in existing_matcher_rows:
+                if insert_result.rowcount == 1 and urn not in existing_matcher_rows:  # type: ignore[attr-defined]  # Result.rowcount exists at runtime.
                     summary["datasets_mapped"] += 1
 
             # Prune stale matched rows (derivation='matched') that no longer match.
@@ -1605,7 +1605,7 @@ class IngestionService:
                     # rowcount == 1 on INSERT, 1 on UPDATE, 0 when the WHERE guard
                     # filtered out the conflict update (an emitted row shadows the
                     # slot). Count only rows actually written, not upsert attempts.
-                    if insert_result.rowcount == 1:
+                    if insert_result.rowcount == 1:  # type: ignore[attr-defined]  # Result.rowcount exists at runtime.
                         summary["pipeline_links"] += 1
 
             await self._db.commit()
@@ -1718,7 +1718,7 @@ class IngestionService:
 
         Returns the count of newly inserted events.
         """
-        from datahub.metadata.schema_classes import OperationClass  # type: ignore
+        from datahub.metadata.schema_classes import OperationClass
 
         _INGESTION_OP_TYPES = {"INSERT", "UPDATE", "CREATE", "ALTER"}
 

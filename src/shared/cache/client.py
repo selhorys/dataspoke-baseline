@@ -1,6 +1,7 @@
 """Async Redis client wrapper for DataSpoke caching and pub/sub."""
 
 from collections.abc import AsyncIterator
+from typing import cast
 
 import redis.asyncio as aioredis
 from redis.asyncio.retry import Retry
@@ -34,7 +35,8 @@ class RedisClient:
         )
 
     async def get(self, key: str) -> str | None:
-        return await self._redis.get(key)
+        # decode_responses=True (see __init__) guarantees str, never bytes.
+        return cast("str | None", await self._redis.get(key))
 
     async def set(self, key: str, value: str, *, ttl_seconds: int) -> None:
         await self._redis.set(key, value, ex=ttl_seconds)
@@ -76,7 +78,7 @@ class RedisClient:
                     yield raw_message["data"]
         finally:
             await pubsub.unsubscribe(channel)
-            await pubsub.aclose()
+            await pubsub.aclose()  # type: ignore[no-untyped-call]
 
     async def close(self) -> None:
         await self._redis.aclose()

@@ -15,7 +15,6 @@ import uuid
 from datetime import timedelta
 
 import bcrypt as _bcrypt
-
 from fastapi import APIRouter, Cookie, Depends, Query, Request, Response, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -43,6 +42,7 @@ from src.backend.auth import api_tokens, oauth_google, reset, users
 from src.backend.auth import tokens as _tokens
 from src.backend.auth.users import _prehash
 from src.backend.datahub import users as dh_users
+from src.shared.cache.client import RedisClient
 from src.shared.datahub.client import DataHubClient
 from src.shared.exceptions import (
     AuthenticationError,
@@ -50,6 +50,7 @@ from src.shared.exceptions import (
     DataHubSyncError,
     OAuthNotConfiguredError,
 )
+from src.shared.notifications.service import NotificationService
 
 # Pre-computed dummy hash to ensure constant-time password verification even
 # when the email is unknown (prevents timing-based email enumeration attacks).
@@ -185,7 +186,7 @@ async def post_token_refresh(
     _body: RefreshRequest = RefreshRequest(),
     refresh_token_cookie: str | None = Cookie(default=None, alias=_REFRESH_COOKIE),
     db: AsyncSession = Depends(get_db),
-    redis=Depends(get_redis),
+    redis: RedisClient = Depends(get_redis),
 ) -> TokenResponse:
     """Issue a new access token using the HttpOnly refresh token cookie."""
     if refresh_token_cookie is None:
@@ -223,7 +224,7 @@ async def post_token_revoke(
     response: Response,
     _body: RevokeRequest = RevokeRequest(),
     refresh_token_cookie: str | None = Cookie(default=None, alias=_REFRESH_COOKIE),
-    redis=Depends(get_redis),
+    redis: RedisClient = Depends(get_redis),
 ) -> None:
     """Revoke the refresh token (logout). Clears the HttpOnly cookie.
 
@@ -289,7 +290,7 @@ async def post_password_reset_request(
     request: Request,
     body: PasswordResetRequest,
     db: AsyncSession = Depends(get_db),
-    notification_service=Depends(get_notification),
+    notification_service: NotificationService = Depends(get_notification),
 ) -> None:
     """Send a password-reset email. Always returns 204 (no enumeration leak)."""
     await reset.issue_reset_token(db, notification_service, body.email)
@@ -329,7 +330,7 @@ async def get_google_login(request: Request) -> Response:
 
     client = oauth_google.build_oauth_client(settings)
     redirect_uri = str(request.url_for("get_google_callback"))
-    return await client.google.authorize_redirect(request, redirect_uri)
+    return await client.google.authorize_redirect(request, redirect_uri)  # type: ignore[no-any-return]  # authlib authorize_redirect is untyped.
 
 
 @router.get("/google/callback")

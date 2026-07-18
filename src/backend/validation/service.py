@@ -391,7 +391,7 @@ class ValidationService:
         if until_dt is not None:
             sub = sub.where(ValidationResult.data_time < until_dt)
 
-        sub = sub.subquery()
+        sub = sub.subquery()  # type: ignore[assignment]  # SQLAlchemy Select -> Subquery rebind.
 
         rows_q = (
             select(sub.c.data_time, sub.c.score, sub.c.variables)

@@ -137,7 +137,7 @@ def validate_metagen_output(
                 ValidationError(
                     path=f"{prefix}.value",
                     code="VALUE_TOO_LARGE",
-                    message=f"value exceeds 16 KiB limit",
+                    message="value exceeds 16 KiB limit",
                 )
             )
 

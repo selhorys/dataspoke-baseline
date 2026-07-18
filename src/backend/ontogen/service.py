@@ -1678,7 +1678,8 @@ async def _upsert_node_embedding(
     sql = text(
         """
         INSERT INTO dataspoke.node_embeddings (node_id, embedding, name, status, updated_at)
-        VALUES (:node_id, CAST(:embedding AS vector), :name, :status, CAST(:updated_at AS timestamptz))
+        VALUES (:node_id, CAST(:embedding AS vector), :name, :status,
+                CAST(:updated_at AS timestamptz))
         ON CONFLICT (node_id) DO UPDATE SET
             embedding  = EXCLUDED.embedding,
             name       = EXCLUDED.name,
@@ -1719,7 +1720,8 @@ async def _upsert_edge_embedding(
     sql = text(
         """
         INSERT INTO dataspoke.edge_embeddings (edge_id, embedding, label, status, updated_at)
-        VALUES (:edge_id, CAST(:embedding AS vector), :label, :status, CAST(:updated_at AS timestamptz))
+        VALUES (:edge_id, CAST(:embedding AS vector), :label, :status,
+                CAST(:updated_at AS timestamptz))
         ON CONFLICT (edge_id) DO UPDATE SET
             embedding  = EXCLUDED.embedding,
             label      = EXCLUDED.label,

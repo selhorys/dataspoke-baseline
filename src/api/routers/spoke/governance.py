@@ -6,7 +6,7 @@ Spec: API.md §Metric (/spoke/governance/metric).
 """
 
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Literal, cast
 
 import httpx
 from fastapi import APIRouter, Depends, Path, Query, Response, status
@@ -36,6 +36,10 @@ from src.workflows.airflow.client import AirflowClient
 _METRIC_ID_PATTERN = r"^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$|^[a-z0-9]$"
 MetricIdParam = Annotated[str, Path(pattern=_METRIC_ID_PATTERN)]
 
+# Response models narrow schedule_tier to this union; the DB column is plain str.
+_ScheduleTier = Literal["hourly", "daily", "weekly"]
+
+
 router = APIRouter(
     prefix="/metric",
     tags=["governance/metric"],
@@ -53,7 +57,7 @@ def _definition_response(m: "MetricDefinitionRecord") -> MetricDefinitionRespons
         description=m.description,
         metrics=m.metrics,
         metric_conf=m.metric_conf,
-        schedule_tier=m.schedule_tier,
+        schedule_tier=cast(_ScheduleTier | None, m.schedule_tier),
         dataset_filter=m.dataset_filter,
         created_at=m.created_at,
         updated_at=m.updated_at,
@@ -71,7 +75,7 @@ def _definition_list_item(m: "MetricDefinitionRecord") -> MetricDefinitionListIt
         description=m.description,
         metrics=m.metrics,
         metric_conf=m.metric_conf,
-        schedule_tier=m.schedule_tier,
+        schedule_tier=cast(_ScheduleTier | None, m.schedule_tier),
         dataset_filter=m.dataset_filter,
         created_at=m.created_at,
         updated_at=m.updated_at,

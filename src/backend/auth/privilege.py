@@ -59,6 +59,8 @@ async def require_authenticated(
 
     token_str = credentials.credentials
 
+    user: User | None = None
+
     if token_str.startswith("dsk_"):
         # Opaque PAT fast-path
         user, effective_role = await _api_tokens.lookup_and_validate(db, token_str)

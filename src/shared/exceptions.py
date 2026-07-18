@@ -23,6 +23,7 @@ the error_code is derived as entity_type.upper() + "_NOT_FOUND".
 """
 
 import re
+from typing import Any
 
 # Strip ASCII control characters (0x00–0x1f, 0x7f) from user-supplied values
 # before embedding them in exception messages to prevent log injection.
@@ -101,7 +102,9 @@ class PreconditionFailedError(DataSpokeError):
                                           is_enabled=true metagen boundary
     """
 
-    def __init__(self, error_code: str, message: str = "", detail: dict | None = None) -> None:
+    def __init__(
+        self, error_code: str, message: str = "", detail: dict[str, Any] | None = None
+    ) -> None:
         self.error_code = error_code
         self.detail = detail or {}
         super().__init__(message)

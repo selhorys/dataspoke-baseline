@@ -16,7 +16,9 @@ class HealthResponse(BaseModel):
 
 class ReadyResponse(BaseModel):
     status: str = Field(description="Overall readiness: 'ok' or 'degraded'")
-    checks: dict[str, bool] = Field(default={}, description="Per-dependency reachability: datahub, postgres, redis")
+    checks: dict[str, bool] = Field(
+        default={}, description="Per-dependency reachability: datahub, postgres, redis"
+    )
 
 
 @router.get("/health", response_model=HealthResponse)

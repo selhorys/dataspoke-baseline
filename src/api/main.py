@@ -1,8 +1,10 @@
 """DataSpoke API — FastAPI application factory."""
 
 import logging
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
@@ -55,7 +57,7 @@ SPOKE_COMMON = f"{SPOKE}/common"
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Application lifespan — construct and close shared infrastructure clients."""
     from src.shared.cache.client import RedisClient
     from src.shared.db.session import SessionLocal
@@ -258,7 +260,7 @@ async def _handle_dataspoke_generic(request: Request, exc: DataSpokeError) -> JS
 
 
 def create_app() -> FastAPI:
-    openapi_tags = [
+    openapi_tags: list[dict[str, Any]] = [
         {
             "name": "ingestion",
             "description": (

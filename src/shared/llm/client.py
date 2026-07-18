@@ -83,7 +83,7 @@ class LLMClient:
 
     async def embed(self, text: str) -> list[float]:
         """Generate a vector embedding for the given text."""
-        result = await self._embeddings.aembed_query(text)
+        result: list[float] = await self._embeddings.aembed_query(text)
         return result
 
     async def complete(
@@ -132,7 +132,7 @@ class LLMClient:
                 result = await structured.ainvoke(messages, **invoke_kwargs)
                 if isinstance(result, BaseModel):
                     return result.model_dump()
-                return dict(result)  # type: ignore[arg-type]
+                return dict(result)
             except (NotImplementedError, AttributeError):
                 pass
 
@@ -146,13 +146,14 @@ class LLMClient:
         if schema is not None:
             validated = schema.model_validate(parsed)
             return validated.model_dump()
-        return parsed  # type: ignore[return-value]
+        # json.loads returns Any.
+        return parsed  # type: ignore[no-any-return]
 
     async def complete_with_tools(
         self,
         prompt: str,
         *,
-        tools: list,
+        tools: list[Any],
         success_tool_name: str,
         schema: type[BaseModel],
         system: str = "",
@@ -363,11 +364,11 @@ def _create_chat_model(provider: str, api_key: str, model: str):  # type: ignore
     elif provider_lower in ("google", "gemini"):
         from langchain_google_genai import ChatGoogleGenerativeAI
 
-        return ChatGoogleGenerativeAI(model=model, google_api_key=api_key)  # type: ignore[arg-type]
+        return ChatGoogleGenerativeAI(model=model, google_api_key=api_key)
     elif provider_lower == "anthropic":
         from langchain_anthropic import ChatAnthropic
 
-        return ChatAnthropic(model=model, api_key=api_key)  # type: ignore[arg-type]
+        return ChatAnthropic(model=model, api_key=api_key)  # type: ignore[arg-type,call-arg]
     else:
         raise ValueError(f"Unknown LLM provider: {provider}")
 
@@ -388,9 +389,9 @@ def _create_embeddings_model(provider: str, api_key: str):  # type: ignore[no-un
 
         # gemini-embedding-001 emits 3072-dim by default; truncate via MRL to match
         # the pgvector column (EMBEDDING_DIMENSION).
-        return GoogleGenerativeAIEmbeddings(
+        return GoogleGenerativeAIEmbeddings(  # type: ignore[call-arg]
             model=EMBEDDING_MODEL_GOOGLE,
-            google_api_key=api_key,  # type: ignore[arg-type]
+            google_api_key=api_key,
             output_dimensionality=EMBEDDING_DIMENSION,
         )
     elif provider == "anthropic":

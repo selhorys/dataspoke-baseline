@@ -17,9 +17,9 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-import asyncpg  # type: ignore[import-untyped]
-from datahub.emitter.mcp_builder import DatabaseKey, SchemaKey, gen_containers  # type: ignore
-from datahub.metadata.schema_classes import (  # type: ignore
+import asyncpg
+from datahub.emitter.mcp_builder import DatabaseKey, SchemaKey, gen_containers
+from datahub.metadata.schema_classes import (
     ArrayTypeClass,
     BooleanTypeClass,
     BrowsePathEntryClass,
@@ -92,12 +92,13 @@ def _parse_env_from_config(config: dict[str, Any], default_env: str = "DEV") -> 
     Falls back to ``default_env`` (the configured DataHub fabric/env) when the
     recipe omits ``env``.
     """
-    return config.get("env", default_env)
+    env = config.get("env", default_env)
+    return env if isinstance(env, str) else default_env
 
 
 def _make_dataset_urn(platform: str, name: str, env: str) -> str:
     """Build a dataset URN using the SDK builder for correctness."""
-    from datahub.emitter.mce_builder import make_dataset_urn  # type: ignore
+    from datahub.emitter.mce_builder import make_dataset_urn
     return make_dataset_urn(platform=platform, name=name, env=env)
 
 
@@ -160,10 +161,10 @@ async def _extract_postgres(
 
     # Use AllowDenyPattern for schema filtering.
     try:
-        from datahub.configuration.common import AllowDenyPattern  # type: ignore
+        from datahub.configuration.common import AllowDenyPattern
         schema_filter = AllowDenyPattern(allow=schema_allow, deny=schema_deny)
     except ImportError:
-        schema_filter = None  # type: ignore[assignment]
+        schema_filter = None
 
     # Connect to PostgreSQL.
     try:
@@ -308,7 +309,7 @@ async def _extract_postgres(
                 fieldPath=col["column_name"],
                 nativeDataType=col["data_type"],
                 type=SchemaFieldDataTypeClass(
-                    type=_PG_TO_DATAHUB_TYPE.get(col["data_type"], StringTypeClass()),
+                    type=_PG_TO_DATAHUB_TYPE.get(col["data_type"], StringTypeClass()),  # type: ignore[arg-type]  # untyped DataHub type classes degrade to object.
                 ),
                 nullable=col["is_nullable"] == "YES",
                 description=col.get("column_comment"),
@@ -445,4 +446,4 @@ async def run_extractor(
             "run_id": run_id,
         },
     )
-    return await extractor(datahub, source_id, recipe, dry_run, run_id, default_env)
+    return await extractor(datahub, source_id, recipe, dry_run, run_id, default_env)  # type: ignore[no-any-return]  # DataHub SDK returns Any.

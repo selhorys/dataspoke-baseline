@@ -202,9 +202,9 @@ async def lookup_and_validate(db: AsyncSession, raw_token: str) -> tuple[User, s
                 | (
                     ApiToken.last_used_at
                     < func.now()
-                    - text(
-                        "INTERVAL '60 seconds'"
-                    )  # Safe: hardcoded constant. If this becomes config-driven, switch to bound parameters.
+                    # Safe: hardcoded constant. If this becomes config-driven,
+                    # switch to bound parameters.
+                    - text("INTERVAL '60 seconds'")
                 ),
             )
             .values(last_used_at=func.now())

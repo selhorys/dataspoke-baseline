@@ -1,7 +1,8 @@
-from starlette.requests import Request
+from typing import cast
 
 from slowapi import Limiter
 from slowapi.util import get_remote_address
+from starlette.requests import Request
 
 from src.shared.settings import settings
 
@@ -14,7 +15,7 @@ def _get_user_key(request: Request) -> str:
             from src.backend.auth.tokens import decode_access_token
 
             payload = decode_access_token(auth.removeprefix("Bearer "))
-            return payload.get("sub", get_remote_address(request))
+            return cast(str, payload.get("sub", get_remote_address(request)))
         except Exception:
             pass
     return get_remote_address(request)

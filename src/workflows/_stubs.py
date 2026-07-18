@@ -65,7 +65,7 @@ class StubLLMClient:
         *,
         session_id: str | None = None,
         metadata: dict[str, Any] | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         if schema is None:
             return {}
         return _minimal_dict_for_schema(schema)
@@ -74,7 +74,7 @@ class StubLLMClient:
         self,
         prompt: str,
         *,
-        tools: list,
+        tools: list[Any],
         success_tool_name: str,
         schema: type[BaseModel],
         system: str = "",
@@ -192,16 +192,22 @@ def _default_for_annotation(annotation: Any) -> Any:  # noqa: PLR0911
 class StubPgVectorManager:
     """Drop-in replacement for ``PgVectorManager`` — searches return nothing."""
 
-    async def ensure_collection(self, name: str = "", vector_size: int = EMBEDDING_DIMENSION) -> None:
+    async def ensure_collection(
+        self, name: str = "", vector_size: int = EMBEDDING_DIMENSION
+    ) -> None:
         pass
 
-    async def upsert(self, collection: str, hits: list) -> None:
+    async def upsert(self, collection: str, hits: list[Any]) -> None:
         pass
 
-    async def search(self, collection: str = "", vector: list | None = None, **kwargs: Any) -> list:
+    async def search(
+        self, collection: str = "", vector: list[Any] | None = None, **kwargs: Any
+    ) -> list[Any]:
         return []
 
-    async def delete(self, collection: str = "", ids: list | None = None, **kwargs: Any) -> None:
+    async def delete(
+        self, collection: str = "", ids: list[Any] | None = None, **kwargs: Any
+    ) -> None:
         pass
 
     async def check_connectivity(self) -> bool:

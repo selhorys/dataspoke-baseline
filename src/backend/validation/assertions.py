@@ -5,7 +5,8 @@ import time
 import uuid
 from datetime import datetime
 
-from datahub.emitter.mcp_builder import datahub_guid
+# datahub_guid is public but absent from the module's __all__.
+from datahub.emitter.mcp_builder import datahub_guid  # type: ignore[attr-defined]
 from datahub.metadata.schema_classes import (
     AssertionInfoClass,
     AssertionResultClass,

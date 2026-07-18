@@ -14,3 +14,4 @@
 - [Verify branch-reachability rationales](feedback_verify_branch_reachability_rationales.md) — auth is route-level Depends, so unauthenticated routes never 401; prove "unreachable" claims, watch float-vs-floor races
 - [health-check.sh unattended lock prompt](project_healthcheck_unattended_lock_prompt.md) — no --keep-lock ⇒ interactive read aborts under set -e; exit 1 misread as "cluster red"
 - [token_urlsafe scrub charset](project_token_urlsafe_scrub_charset.md) — dsk_/token_urlsafe are base64url; scrub regex needs [A-Za-z0-9_-]+ or ~74% of PATs leak a tail
+- [mypy override audit](feedback_mypy_override_audit.md) — --warn-unused-configs misses over-granted codes; re-run mypy with overrides stripped to get the true suppressed set

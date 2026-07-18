@@ -54,7 +54,7 @@ _client_state: dict[str, Any] = {
 
 
 def _init() -> None:
-    from kubernetes import client, config  # type: ignore[import-untyped]
+    from kubernetes import client, config
 
     with _init_lock:
         if _client_state["available"] is not None:
@@ -124,7 +124,7 @@ class KubernetesSecretBackend:
             SecretRefNotFound: Secret or key absent, RBAC 403, or non-UTF-8 value.
             SecretResolverUnavailable: In-cluster config not loadable, or k8s API error.
         """
-        from kubernetes.client.exceptions import ApiException  # type: ignore[import-untyped]
+        from kubernetes.client.exceptions import ApiException
 
         full_name = self._secret_name(name)
         core, namespace = require_k8s_client()
@@ -170,7 +170,7 @@ class KubernetesSecretBackend:
             SecretRefNotFound: Secret or key absent, or RBAC 403.
             SecretResolverUnavailable: In-cluster config not loadable, or k8s API error.
         """
-        from kubernetes.client.exceptions import ApiException  # type: ignore[import-untyped]
+        from kubernetes.client.exceptions import ApiException
 
         full_name = self._secret_name(name)
         core, namespace = require_k8s_client()
@@ -215,7 +215,7 @@ class KubernetesSecretBackend:
         Raises:
             SecretResolverUnavailable: In-cluster config not loadable, or k8s API error.
         """
-        from kubernetes.client.exceptions import ApiException  # type: ignore[import-untyped]
+        from kubernetes.client.exceptions import ApiException
 
         core, namespace = require_k8s_client()
 

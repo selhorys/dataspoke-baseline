@@ -15,7 +15,7 @@ applies on all paths (including manual metagen/ontogen API runs).
 """
 
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -54,12 +54,12 @@ async def get_datahub(db: AsyncSession = Depends(get_db)) -> DataHubClient:
     DataHub peripheral is not configured or the token is absent.
     """
     from src.backend.admin.datahub_secret import get_datahub_token
-    from src.backend.admin.peripheral_service import get_peripheral_config
+    from src.backend.admin.peripheral_service import DatahubConfigDTO, get_peripheral_config
     from src.shared.exceptions import PeripheralNotConfiguredError
 
     dto = await get_peripheral_config(db, "datahub")
     token = get_datahub_token()
-    if dto is None or not token:
+    if dto is None or not isinstance(dto, DatahubConfigDTO) or not token:
         raise PeripheralNotConfiguredError("datahub")
     return DataHubClient(dto.gms_url, token)
 
@@ -75,7 +75,7 @@ async def get_redis(
         from src.workflows._stubs import StubRedisClient
 
         return StubRedisClient()  # type: ignore[return-value]
-    return request.app.state.redis
+    return cast(RedisClient, request.app.state.redis)
 
 
 async def get_vector(
@@ -89,7 +89,7 @@ async def get_vector(
         from src.workflows._stubs import StubPgVectorManager
 
         return StubPgVectorManager()  # type: ignore[return-value]
-    return request.app.state.vector
+    return cast(PgVectorManager, request.app.state.vector)
 
 
 async def get_notification(
@@ -108,7 +108,7 @@ async def get_notification(
 
 def get_airflow_client(request: Request) -> AirflowClient:
     """Return the shared Airflow client from app state."""
-    return request.app.state.airflow
+    return cast(AirflowClient, request.app.state.airflow)
 
 
 # ── Service providers ──────────────────────────────────────────────

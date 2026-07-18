@@ -22,7 +22,10 @@ _DAG_ID = "auth-role-sync-daily"
 
 with DAG(
     dag_id=_DAG_ID,
-    description="Daily reconciliation of DataHub-side role assignments against DataSpoke users.role",
+    description=(
+        "Daily reconciliation of DataHub-side role assignments against "
+        "DataSpoke users.role"
+    ),
     schedule="@daily",
     start_date=datetime(2025, 1, 1),
     catchup=False,

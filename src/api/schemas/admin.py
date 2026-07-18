@@ -6,7 +6,7 @@ consistent validation (URN pattern + list-length cap) on DataHub sync requests.
 
 import uuid
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -200,9 +200,9 @@ class LangfusePeripheralPatchRequest(BaseModel):
 class PeripheralsStatusResponse(SingleResponse):
     """Summary response for GET /admin/peripherals."""
 
-    datahub: dict
-    langfuse: dict
-    smtp: dict = Field(default_factory=dict)
+    datahub: dict[str, Any]
+    langfuse: dict[str, Any]
+    smtp: dict[str, Any] = Field(default_factory=dict)
 
 
 class RuntimeConfPatchRequest(BaseModel):

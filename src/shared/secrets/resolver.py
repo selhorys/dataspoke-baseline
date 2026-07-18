@@ -155,7 +155,8 @@ def resolve_recipe_secrets(recipe: dict[str, Any]) -> dict[str, Any]:
             propagated from ``resolve_secret_ref`` for any failing reference.
     """
     resolved = copy.deepcopy(recipe)
-    return _substitute_refs(resolved)  # type: ignore[return-value]
+    # _substitute_refs walks untyped recipe data and returns Any.
+    return _substitute_refs(resolved)  # type: ignore[no-any-return]
 
 
 def verify_secret_ref(ref: str) -> None:

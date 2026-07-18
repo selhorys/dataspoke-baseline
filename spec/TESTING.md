@@ -123,6 +123,16 @@ The asymmetry is deliberate: `tests/` is ruff-gated but not type-checked, and my
 `src/`-only. Mock-heavy test code fights strict typing for no gain in defect detection, so the
 ruff gate is the enforced quality bar for tests.
 
+Ruff has no lenient tier: both trees must be clean under the configured rule set. The only relief is
+a narrow per-file exemption declared in `[tool.ruff.lint.per-file-ignores]`, and the sole sanctioned
+category is LLM prompt modules, where prompt text is data and must not be governed by line length.
+
+Mypy runs `strict = true` as the default, so every new `src/` module is held to the strict bar. A
+module may relax specific checks through a `[[tool.mypy.overrides]]` entry naming individual codes
+in `disable_error_code`; a blanket `strict = false` is never permitted. The root `pyproject.toml` is
+the single source of truth for which modules carry relaxed codes, and an override is removed once
+its module satisfies the strict bar.
+
 ### TypeScript (Frontend)
 
 **Running** (from project root): `pnpm -C src/frontend test`
@@ -653,6 +663,9 @@ Author-run pre-commit gates:
 - `uv run mypy src/`
 - Frontend (from `src/frontend/`): `npx tsc --noEmit` and `npx eslint src/`
 - E2E: `pnpm -C tests/e2e typecheck` (`tsc --noEmit`)
+
+All four gates must be green. The ruff per-file exemptions and mypy per-module overrides that shape
+the Python gates are described in [Python (Backend / API)](#python-backend--api).
 
 The table below is the **intended target state** for a future pipeline — which layers a CI would run
 automatically once built, not a description of anything running today:

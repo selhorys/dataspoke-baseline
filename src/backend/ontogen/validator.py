@@ -66,7 +66,10 @@ def validate_ontogen_output(
                 ValidationError(
                     path=f"nodes[{i}].id",
                     code="DUP_ID",
-                    message=f"duplicate node id {node.id!r} (first at index {seen_node_ids[node.id]})",
+                    message=(
+                        f"duplicate node id {node.id!r} "
+                        f"(first at index {seen_node_ids[node.id]})"
+                    ),
                 )
             )
         else:
@@ -81,7 +84,10 @@ def validate_ontogen_output(
                 ValidationError(
                     path=f"edges[{i}].id",
                     code="DUP_ID",
-                    message=f"duplicate edge id {edge.id!r} (first at index {seen_edge_ids[edge.id]})",
+                    message=(
+                        f"duplicate edge id {edge.id!r} "
+                        f"(first at index {seen_edge_ids[edge.id]})"
+                    ),
                 )
             )
         else:

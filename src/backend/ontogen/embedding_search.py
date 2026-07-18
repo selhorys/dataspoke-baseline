@@ -43,10 +43,12 @@ async def search_node_embeddings(
                     SELECT
                         node_id,
                         name,
-                        GREATEST(0.0, 1.0 - (embedding <=> CAST(:query_vector AS vector))) AS score
+                        GREATEST(0.0,
+                            1.0 - (embedding <=> CAST(:query_vector AS vector))) AS score
                     FROM dataspoke.node_embeddings
                     WHERE status IN ('approved', 'llm_approved')
-                      AND GREATEST(0.0, 1.0 - (embedding <=> CAST(:query_vector AS vector))) >= :threshold
+                      AND GREATEST(0.0,
+                            1.0 - (embedding <=> CAST(:query_vector AS vector))) >= :threshold
                     ORDER BY score DESC
                     LIMIT :limit
                     """
@@ -65,7 +67,8 @@ async def search_node_embeddings(
                     SELECT
                         node_id,
                         name,
-                        GREATEST(0.0, 1.0 - (embedding <=> CAST(:query_vector AS vector))) AS score
+                        GREATEST(0.0,
+                            1.0 - (embedding <=> CAST(:query_vector AS vector))) AS score
                     FROM dataspoke.node_embeddings
                     WHERE status IN ('approved', 'llm_approved')
                     ORDER BY score DESC
@@ -134,7 +137,8 @@ async def search_edge_embeddings(
                     """
                     SELECT
                         ee.edge_id,
-                        GREATEST(0.0, 1.0 - (ee.embedding <=> CAST(:query_vector AS vector))) AS score
+                        GREATEST(0.0,
+                            1.0 - (ee.embedding <=> CAST(:query_vector AS vector))) AS score
                     FROM dataspoke.edge_embeddings ee
                     JOIN dataspoke.ontogen_edges oe ON oe.id = ee.edge_id
                     WHERE oe.status IN ('approved', 'llm_approved')
@@ -196,7 +200,8 @@ async def search_triple_embeddings(
                     """
                     SELECT
                         te.triple_id,
-                        GREATEST(0.0, 1.0 - (te.embedding <=> CAST(:query_vector AS vector))) AS score
+                        GREATEST(0.0,
+                            1.0 - (te.embedding <=> CAST(:query_vector AS vector))) AS score
                     FROM dataspoke.triple_embeddings te
                     JOIN dataspoke.ontogen_triples ot ON ot.id = te.triple_id
                     WHERE ot.status IN ('approved', 'llm_approved')

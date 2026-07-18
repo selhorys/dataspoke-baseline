@@ -1,6 +1,7 @@
 """Dataset-level handlers: summary, attributes, and dataset-level events."""
 
 from datetime import datetime
+from typing import cast
 
 from fastapi import APIRouter, Depends, Query
 
@@ -18,6 +19,7 @@ from src.api.schemas.events import EventListResponse, EventResponse
 from src.backend.dataset.service import DatasetService
 from src.shared.db.models import DatasetRegistry, Event
 from src.shared.events import INGESTION_PREFIX, METAGEN_PREFIX, VALIDATION_PREFIX
+from src.shared.models.enums import EventStatus
 
 sub_router = APIRouter()
 
@@ -140,7 +142,7 @@ async def get_data_events(
                 entity_type=e.entity_type,
                 entity_id=e.entity_id,
                 event_type=e.event_type,
-                status=e.status,
+                status=cast(EventStatus, e.status),
                 detail=e.detail,
                 occurred_at=e.occurred_at,
                 wrapper=e.wrapper,

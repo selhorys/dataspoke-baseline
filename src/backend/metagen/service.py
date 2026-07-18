@@ -1523,25 +1523,27 @@ class MetagenService:
                 f"{props.get('description', '')} "
                 f"{' '.join(f.get('fieldPath', '') for f in schema_fields)}"
             )
-            query_vec = await self._llm.embed(query_text)
+            # _llm/_vector are optional on this service (a composing service may
+            # build it without them); the LLM paths below only run when set.
+            query_vec = await self._llm.embed(query_text)  # type: ignore[union-attr]
 
             node_k = rc.metagen_ontology_rag_node_k
             edge_k = rc.metagen_ontology_rag_edge_k
             triple_k = rc.metagen_ontology_rag_triple_k
 
             node_hits = (
-                await search_node_embeddings(self._vector, query_vec, top_k=node_k, threshold=None)
+                await search_node_embeddings(self._vector, query_vec, top_k=node_k, threshold=None)  # type: ignore[arg-type]
                 if node_k > 0
                 else []
             )
             edge_hits = (
-                await search_edge_embeddings(self._vector, query_vec, top_k=edge_k, threshold=None)
+                await search_edge_embeddings(self._vector, query_vec, top_k=edge_k, threshold=None)  # type: ignore[arg-type]
                 if edge_k > 0
                 else []
             )
             triple_hits = (
                 await search_triple_embeddings(
-                    self._vector, query_vec, top_k=triple_k, threshold=None
+                    self._vector, query_vec, top_k=triple_k, threshold=None  # type: ignore[arg-type]
                 )
                 if triple_k > 0
                 else []
@@ -1795,9 +1797,11 @@ class MetagenService:
                 )
 
                 # Fetch existing to merge (preserve other field edits)
-                existing = await self._datahub.get_aspect(urn, EditableSchemaMetadataClass)
-                if existing and hasattr(existing, "editableSchemaFieldInfo"):
-                    field_infos = list(existing.editableSchemaFieldInfo)
+                existing_schema = await self._datahub.get_aspect(
+                    urn, EditableSchemaMetadataClass
+                )
+                if existing_schema and hasattr(existing_schema, "editableSchemaFieldInfo"):
+                    field_infos = list(existing_schema.editableSchemaFieldInfo)
                     for fi in field_infos:
                         if getattr(fi, "fieldPath", None) == field_path:
                             fi.description = value
@@ -1846,9 +1850,11 @@ class MetagenService:
                 field_path = item_id[len("column.") : -len(".description")]
                 from datahub.metadata.schema_classes import EditableSchemaMetadataClass
 
-                existing = await self._datahub.get_aspect(urn, EditableSchemaMetadataClass)
-                if existing and hasattr(existing, "editableSchemaFieldInfo"):
-                    field_infos = list(existing.editableSchemaFieldInfo)
+                existing_schema = await self._datahub.get_aspect(
+                    urn, EditableSchemaMetadataClass
+                )
+                if existing_schema and hasattr(existing_schema, "editableSchemaFieldInfo"):
+                    field_infos = list(existing_schema.editableSchemaFieldInfo)
                     for fi in field_infos:
                         if getattr(fi, "fieldPath", None) == field_path:
                             fi.description = None
@@ -1873,8 +1879,8 @@ class MetagenService:
                 if cand.item_id == "dataset.description"
                 else "column.description"
             )
-            vec = await self._llm.embed(cand.value)
-            await _upsert_candidate_embedding(self._vector, str(cand.candidate_id), kind, vec)
+            vec = await self._llm.embed(cand.value)  # type: ignore[union-attr]
+            await _upsert_candidate_embedding(self._vector, str(cand.candidate_id), kind, vec)  # type: ignore[arg-type]
         except Exception:
             logger.warning(
                 "metagen_candidate_embedding_upsert_failed",

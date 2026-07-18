@@ -39,11 +39,15 @@ class TestModeEnum:
     def test_mode_is_str_enum(self) -> None:
         """Mode values are strings (str-compatible enum), not raw enum objects.
 
-        Use .value for comparison — str(Mode.X) includes the class name in Python 3.11+.
+        Mode is a StrEnum, so str(Mode.X), f"{Mode.X}" and Mode.X.value all agree.
         """
         assert Mode.ACTIVE_CUSTOM_MANAGED.value == "ACTIVE_CUSTOM_MANAGED"
         # Mode(str) — value-equality with literal strings
         assert Mode.ACTIVE_CUSTOM_MANAGED == "ACTIVE_CUSTOM_MANAGED"
+        # StrEnum coercion carries no class-name prefix, so interpolated values
+        # stay wire-safe wherever a Mode reaches a URN, log line, or payload.
+        assert str(Mode.ACTIVE_CUSTOM_MANAGED) == "ACTIVE_CUSTOM_MANAGED"
+        assert f"{Mode.ACTIVE_CUSTOM_MANAGED}" == "ACTIVE_CUSTOM_MANAGED"
 
 
 # ── parse_recipe ──────────────────────────────────────────────────────────────

@@ -1,10 +1,9 @@
 """Measurer registry — maps metric-type names to async measurer functions."""
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Protocol
 
 from src.shared.datahub.client import DataHubClient
 
@@ -25,7 +24,7 @@ class MeasurerFn(Protocol):
 _MEASURERS: dict[str, MeasurerFn] = {}
 
 
-def register_measurer(name: str) -> Callable:
+def register_measurer(name: str) -> Callable[[MeasurerFn], MeasurerFn]:
     """Decorator: register an async measurer function under *name*."""
 
     def decorator(fn: MeasurerFn) -> MeasurerFn:

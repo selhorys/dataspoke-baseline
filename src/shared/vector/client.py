@@ -210,7 +210,8 @@ class PgVectorManager:
 
         if score_threshold is not None:
             where_clauses.append(
-                "GREATEST(0.0, 1.0 - (embedding <=> CAST(:query_vector AS vector))) >= :score_threshold"
+                "GREATEST(0.0, 1.0 - (embedding <=> CAST(:query_vector AS vector)))"
+                " >= :score_threshold"
             )
             params["score_threshold"] = score_threshold
 
@@ -226,7 +227,8 @@ class PgVectorManager:
                 quality_score,
                 has_pii,
                 updated_at,
-                GREATEST(0.0, 1.0 - (embedding <=> CAST(:query_vector AS vector))) AS score
+                GREATEST(0.0,
+                    1.0 - (embedding <=> CAST(:query_vector AS vector))) AS score
             FROM dataspoke.{collection}
             {where_sql}
             ORDER BY score DESC

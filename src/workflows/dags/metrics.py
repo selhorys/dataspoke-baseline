@@ -55,7 +55,9 @@ Triggered by the DataSpoke API for a specific metric ID.
         headers=internal_headers(),
         data=(
             '{"metric_id": "{{ dag_run.conf.get(\'metric_id\', \'\') }}",'
-            ' "dry_run": {{ \'true\' if dag_run.conf.get(\'dry_run\', \'false\') in [\'true\', True] else \'false\' }}}'
+            ' "dry_run": '
+            '{{ \'true\' if dag_run.conf.get(\'dry_run\', \'false\') '
+            'in [\'true\', True] else \'false\' }}}'
         ),
         response_filter=lambda r: r.json(),
         log_response=True,
