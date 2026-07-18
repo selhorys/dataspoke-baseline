@@ -12,3 +12,5 @@
 - [Recharts var() in SVG attr](project_recharts_css_var_svg_attr.md) — var() DOES resolve in SVG presentation attrs (Chromium-verified); Recharts hsl(var(--token)) stroke is fine, not a regression
 - [FastAPI injected Response on error path](project_fastapi_injected_response_error_path.md) — endpoint raise ⇒ sub-response headers dropped; no Set-Cookie on error paths; MRO picks specific handler
 - [Verify branch-reachability rationales](feedback_verify_branch_reachability_rationales.md) — auth is route-level Depends, so unauthenticated routes never 401; prove "unreachable" claims, watch float-vs-floor races
+- [health-check.sh unattended lock prompt](project_healthcheck_unattended_lock_prompt.md) — no --keep-lock ⇒ interactive read aborts under set -e; exit 1 misread as "cluster red"
+- [token_urlsafe scrub charset](project_token_urlsafe_scrub_charset.md) — dsk_/token_urlsafe are base64url; scrub regex needs [A-Za-z0-9_-]+ or ~74% of PATs leak a tail
