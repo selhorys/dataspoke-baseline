@@ -13,10 +13,22 @@ spec:
     metadata:
       labels:
         {{- include "event-consumer.selectorLabels" . | nindent 8 }}
-      {{- with .Values.podAnnotations }}
+      {{/*
+        envFrom env vars are evaluated only at container start; a ConfigMap or
+        Secret content change does not restart consumers. This subchart has no
+        ConfigMap/Secret template of its own — it consumes the umbrella
+        chart's parent-owned `dataspoke-app-config` ConfigMap and
+        `dataspoke-secrets` Secret, which it cannot `include`. These
+        `lookup`-based checksums force a rolling restart whenever the live
+        ConfigMap/Secret content changes. `lookup` returns empty during
+        `helm template` / dry-run (no cluster), which is safe.
+      */}}
       annotations:
+        checksum/config: {{ (lookup "v1" "ConfigMap" .Release.Namespace "dataspoke-app-config").data | default dict | toJson | sha256sum }}
+        checksum/secret: {{ (lookup "v1" "Secret" .Release.Namespace "dataspoke-secrets").data | default dict | toJson | sha256sum }}
+        {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
     spec:
       {{- if .Values.waitForDeps.enabled }}
       initContainers:

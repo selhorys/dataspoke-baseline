@@ -13,10 +13,16 @@ spec:
     metadata:
       labels:
         {{- include "frontend.selectorLabels" . | nindent 8 }}
-      {{- with .Values.podAnnotations }}
+      {{/*
+        envFrom env vars are evaluated only at container start; a ConfigMap
+        content change does not restart consumers. This checksum annotation
+        forces a rolling restart whenever the rendered ConfigMap changes.
+      */}}
       annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
     spec:
       containers:
         - name: frontend

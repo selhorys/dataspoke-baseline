@@ -230,6 +230,13 @@ postgresql:
           -- Allow the dataspoke application role to call AGE graph functions.
           GRANT USAGE ON SCHEMA ag_catalog TO dataspoke;
           GRANT SELECT ON ALL TABLES IN SCHEMA ag_catalog TO dataspoke;
+        create-airflow-db.sql: |
+          -- Airflow connects as the 'dataspoke' role; make it the DB owner so its
+          -- metadata migrations can CREATE TABLE. PostgreSQL 15+ no longer grants
+          -- CREATE on the public schema to non-owner roles, so a postgres-owned
+          -- airflow DB fails the migration with "permission denied for schema
+          -- public". The script runs as the postgres superuser (primary.initdb.user).
+          CREATE DATABASE airflow OWNER dataspoke;
 
 redis:
   enabled: true
@@ -446,6 +453,7 @@ airflow:
   ingress:
     apiServer:
       enabled: true
+      ingressClassName: "nginx"
       annotations:
         nginx.ingress.kubernetes.io/ssl-redirect: "false"
         cert-manager.io/cluster-issuer: "letsencrypt-prod"

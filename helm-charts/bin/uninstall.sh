@@ -179,6 +179,8 @@ if [[ "$PROFILE" == "dev" ]]; then
     --force --grace-period=0 2>/dev/null || true
   for SECRET in dataspoke-secrets \
                 dataspoke-airflow-metadata-db \
+                dataspoke-airflow-api-secret-key \
+                dataspoke-airflow-jwt-secret \
                 dataspoke-llm-secret \
                 dataspoke-datahub-secret \
                 dataspoke-langfuse-secret; do
@@ -292,8 +294,10 @@ elif [[ "$PROFILE" == "prod" ]]; then
     warn "Helm release 'dataspoke' not found in namespace '${NS}' — skipping."
   fi
 
-  # Delete only the chart-derived Secret; operator-owned dataspoke-secrets is preserved.
-  for SECRET in dataspoke-airflow-metadata-db; do
+  # Delete only the chart-derived Secrets; operator-owned dataspoke-secrets is preserved.
+  for SECRET in dataspoke-airflow-metadata-db \
+                dataspoke-airflow-api-secret-key \
+                dataspoke-airflow-jwt-secret; do
     if kubectl get secret "${SECRET}" -n "${NS}" >/dev/null 2>&1; then
       info "Deleting chart-derived Secret '${SECRET}'..."
       kubectl delete secret "${SECRET}" -n "${NS}"

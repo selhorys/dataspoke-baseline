@@ -55,6 +55,7 @@ SKIP_BUILD=false
 SKIP_SEED=false
 EXTRA_VALUES=""
 IMAGE_TAG="dev"
+IMAGE_TAG_EXPLICIT=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -66,7 +67,7 @@ while [[ $# -gt 0 ]]; do
     --skip-build)      SKIP_BUILD=true; shift ;;
     --skip-seed)       SKIP_SEED=true; shift ;;
     --values)          EXTRA_VALUES="${2:-}"; shift 2 ;;
-    --image-tag)       IMAGE_TAG="${2:-dev}"; shift 2 ;;
+    --image-tag)       IMAGE_TAG="${2:-dev}"; IMAGE_TAG_EXPLICIT=true; shift 2 ;;
     --help|-h) print_usage; exit 0 ;;
     *) error "Unknown option: $1 (use --help)" ;;
   esac
@@ -327,8 +328,13 @@ _ensure_airflow_key_secrets() {
     error "Secret '${secret_name}' is missing DATASPOKE_AIRFLOW_WEBSERVER_SECRET_KEY or DATASPOKE_AIRFLOW_JWT_SECRET."
   fi
 
-  if ! kubectl get secret dataspoke-airflow-api-secret-key -n "${ns}" >/dev/null 2>&1; then
-    info "Creating dataspoke-airflow-api-secret-key..."
+  local existing_api_secret_key=""
+  if kubectl get secret dataspoke-airflow-api-secret-key -n "${ns}" >/dev/null 2>&1; then
+    existing_api_secret_key="$(kubectl get secret dataspoke-airflow-api-secret-key -n "${ns}" \
+      -o jsonpath='{.data.api-secret-key}' | base64 --decode)"
+  fi
+  if [[ "${existing_api_secret_key}" != "${webserver_key}" ]]; then
+    info "Creating/updating dataspoke-airflow-api-secret-key..."
     cat <<EOF | kubectl apply -f -
 apiVersion: v1
 kind: Secret
@@ -340,11 +346,16 @@ data:
   api-secret-key: $(printf '%s' "${webserver_key}" | base64 | tr -d '\n')
 EOF
   else
-    info "  dataspoke-airflow-api-secret-key already exists — skipping."
+    info "  dataspoke-airflow-api-secret-key already up to date — skipping."
   fi
 
-  if ! kubectl get secret dataspoke-airflow-jwt-secret -n "${ns}" >/dev/null 2>&1; then
-    info "Creating dataspoke-airflow-jwt-secret..."
+  local existing_jwt_secret=""
+  if kubectl get secret dataspoke-airflow-jwt-secret -n "${ns}" >/dev/null 2>&1; then
+    existing_jwt_secret="$(kubectl get secret dataspoke-airflow-jwt-secret -n "${ns}" \
+      -o jsonpath='{.data.jwt-secret}' | base64 --decode)"
+  fi
+  if [[ "${existing_jwt_secret}" != "${jwt_key}" ]]; then
+    info "Creating/updating dataspoke-airflow-jwt-secret..."
     cat <<EOF | kubectl apply -f -
 apiVersion: v1
 kind: Secret
@@ -356,7 +367,7 @@ data:
   jwt-secret: $(printf '%s' "${jwt_key}" | base64 | tr -d '\n')
 EOF
   else
-    info "  dataspoke-airflow-jwt-secret already exists — skipping."
+    info "  dataspoke-airflow-jwt-secret already up to date — skipping."
   fi
 }
 
@@ -1163,6 +1174,10 @@ if [[ "$PROFILE" == "dev" ]]; then
 # ---------------------------------------------------------------------------
 elif [[ "$PROFILE" == "prod" ]]; then
 
+  if [[ "${IMAGE_TAG_EXPLICIT}" != true ]]; then
+    error "--profile prod requires an explicit --image-tag <tag> to avoid deploying the mutable ':dev' tag onto a shared registry."
+  fi
+
   NS="${DATASPOKE_KUBE_DATASPOKE_NAMESPACE}"
 
   # -----------------------------------------------------------------------
@@ -1171,6 +1186,13 @@ elif [[ "$PROFILE" == "prod" ]]; then
   step 1 3 "pre-flight"
   use_context "${DATASPOKE_KUBE_CLUSTER}"
   ensure_namespace "${NS}"
+
+  # Verify the operator's shared ingress controller is installed (fail fast).
+  INGRESS_CLASS="${DATASPOKE_KUBE_INGRESS_CLASS:-nginx}"
+  if ! kubectl get ingressclass "${INGRESS_CLASS}" >/dev/null 2>&1; then
+    error "IngressClass '${INGRESS_CLASS}' not found in the cluster. Install a controller or set DATASPOKE_KUBE_INGRESS_CLASS."
+  fi
+  info "IngressClass '${INGRESS_CLASS}' is present."
 
   # Determine which Secret name is in play (default or BYO overlay)
   EXISTING_SECRET_NAME=""
@@ -1249,6 +1271,7 @@ elif [[ "$PROFILE" == "prod" ]]; then
     -n "${NS}" \
     --set "api.image.repository=${DATASPOKE_KUBE_IMAGE_REGISTRY}/api" \
     --set "api.image.tag=${IMAGE_TAG}" \
+    --set-string postgresql.image.registry="" \
     --set-string "postgresql.image.repository=${DATASPOKE_KUBE_IMAGE_REGISTRY}/postgres" \
     --set-string "postgresql.image.tag=${IMAGE_TAG}" \
     --set-string "airflow.images.airflow.repository=${DATASPOKE_KUBE_IMAGE_REGISTRY}/airflow" \
