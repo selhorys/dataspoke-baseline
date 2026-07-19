@@ -34,7 +34,6 @@ from src.shared.exceptions import (
     AuthenticationError,
     BadRequestError,
     ConflictError,
-    DataHubSyncError,
     DataHubUnavailableError,
     DataSpokeError,
     EntityNotFoundError,
@@ -247,14 +246,6 @@ async def _handle_peripheral_not_configured(
     )
 
 
-async def _handle_datahub_sync(request: Request, exc: DataHubSyncError) -> JSONResponse:
-    logger.warning(
-        "datahub_sync_failed",
-        extra={"detail": str(exc), "path": request.url.path},
-    )
-    return _error_json(request, 503, exc.error_code, str(exc))
-
-
 async def _handle_dataspoke_generic(request: Request, exc: DataSpokeError) -> JSONResponse:
     return _error_json(request, 500, exc.error_code, str(exc))
 
@@ -363,7 +354,6 @@ def create_app() -> FastAPI:
     app.add_exception_handler(ForbiddenError, _handle_forbidden)  # type: ignore[arg-type]
     app.add_exception_handler(AuthenticationError, _handle_authentication)  # type: ignore[arg-type]
     app.add_exception_handler(PeripheralNotConfiguredError, _handle_peripheral_not_configured)  # type: ignore[arg-type]
-    app.add_exception_handler(DataHubSyncError, _handle_datahub_sync)  # type: ignore[arg-type]
     app.add_exception_handler(PydanticValidationError, _handle_validation)  # type: ignore[arg-type]
     app.add_exception_handler(RequestValidationError, _handle_request_validation)  # type: ignore[arg-type]
     app.add_exception_handler(DataHubUnavailableError, _handle_datahub)  # type: ignore[arg-type]

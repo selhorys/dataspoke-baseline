@@ -5,13 +5,12 @@ Concerns covered:
   are non-empty
 - resolve_or_create_user resolver table:
   - known google_sub + same name → returns user, no name update (verify update_name not called)
-  - known google_sub + different name → updates name AND calls dh_users.ensure_corpuser_exists
-    (best-effort) AND swallows DataHubUnavailableError
+  - known google_sub + different name → updates the DataSpoke row only (no DataHub call)
   - no google_sub + known email → links the sub onto the existing row
-  - no google_sub + unknown email → creates user + runs DataHub mirror;
-    on mirror failure rolls back session and raises DataHubSyncError
+  - no google_sub + unknown email → creates the local row; succeeds with DataHub unreachable
 
 spec: spec/feature/AUTH.md §Lifecycle §Google OAuth registration & login
+spec: spec/feature/AUTH.md §Projection contract
 spec: spec/feature/AUTH.md §Failure Modes
 """
 
@@ -94,12 +93,6 @@ def test_is_configured_missing_state_secret_returns_false() -> None:
 # ── resolve_or_create_user resolver table ────────────────────────────────────
 
 
-def _make_runtime_config(group_name: str = "dataspoke-users"):
-    rc = MagicMock()
-    rc.auth_datahub_corp_group = group_name
-    return rc
-
-
 def _make_user(google_sub: str | None = None, name: str = "Test User"):
     user = MagicMock()
     user.id = uuid.uuid4()
@@ -124,7 +117,6 @@ async def test_resolve_known_google_sub_same_name_no_update() -> None:
     existing_user = _make_user(google_sub="google-sub-123", name="Alice Smith")
 
     mock_db = AsyncMock()
-    mock_datahub = AsyncMock()
 
     with (
         patch.object(_users, "get_by_google_sub", new_callable=AsyncMock) as mock_get_sub,
@@ -134,11 +126,9 @@ async def test_resolve_known_google_sub_same_name_no_update() -> None:
 
         result = await resolve_or_create_user(
             mock_db,
-            mock_datahub,
             google_sub="google-sub-123",
             email="alice@example.com",
             name="Alice Smith",  # same name — no update needed
-            runtime_config=_make_runtime_config(),
         )
 
     assert result is existing_user
@@ -148,12 +138,14 @@ async def test_resolve_known_google_sub_same_name_no_update() -> None:
 
 
 @pytest.mark.asyncio
-async def test_resolve_known_google_sub_different_name_updates_and_propagates() -> None:
-    """Known google_sub + different name → updates name and propagates to DataHub best-effort.
+async def test_resolve_known_google_sub_different_name_updates_locally_only() -> None:
+    """Known google_sub + different name → updates the DataSpoke row and calls no DataHub op.
 
     spec: spec/feature/AUTH.md §Lifecycle §Google OAuth registration & login —
-    Row 1: google_sub known → log in; refresh display name from Google profile.
-    Name change → update DataSpoke + propagate to DataHub (best-effort).
+    Row 1: google_sub known → "Log in. Refresh display name from the Google profile
+    onto the DataSpoke row."
+    spec: spec/feature/AUTH.md §Identity Model — "DataHub corpuser entity + profile |
+    DataHub | ... DataSpoke writes no corpuser aspect." Display name is not projected.
     """
     from src.backend.auth import users as _users
     from src.backend.auth.oauth_google import resolve_or_create_user
@@ -163,75 +155,40 @@ async def test_resolve_known_google_sub_different_name_updates_and_propagates() 
     updated_user = _make_user(google_sub="google-sub-456", name="New Name")
 
     mock_db = AsyncMock()
-    mock_datahub = AsyncMock()
 
     with (
         patch.object(_users, "get_by_google_sub", new_callable=AsyncMock) as mock_get_sub,
         patch.object(_users, "update_name", new_callable=AsyncMock) as mock_update_name,
-        patch.object(dh_users, "ensure_corpuser_exists", new_callable=AsyncMock) as mock_dh,
+        patch.object(dh_users, "propagate_role", new_callable=AsyncMock) as mock_role,
+        patch.object(dh_users, "add_user_to_marker_group", new_callable=AsyncMock) as mock_group,
+        patch.object(
+            dh_users, "ensure_marker_group_exists", new_callable=AsyncMock
+        ) as mock_ensure_group,
     ):
         mock_get_sub.return_value = existing_user
         mock_update_name.return_value = updated_user
 
         result = await resolve_or_create_user(
             mock_db,
-            mock_datahub,
             google_sub="google-sub-456",
             email="existing@example.com",
             name="New Name",  # name changed
-            runtime_config=_make_runtime_config(),
         )
 
     assert result is updated_user
-    # update_name must be called when name changed
-    # per spec/feature/AUTH.md §Lifecycle §Google OAuth registration & login
+    # Backstop: the name-change branch really ran, so the no-DataHub-call asserts
+    # below are not vacuously true.
     mock_update_name.assert_called_once()
-    # ensure_corpuser_exists must be called to propagate name to DataHub
-    # per spec/feature/AUTH.md §Lifecycle §Google OAuth registration & login
-    mock_dh.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_resolve_known_google_sub_different_name_swallows_datahub_error() -> None:
-    """DataHubUnavailableError during name propagation is swallowed (best-effort).
-
-    spec: spec/feature/AUTH.md §Lifecycle §Google OAuth registration & login — name propagation is
-    best-effort; DataHub failure must not block login.
-    """
-    from src.backend.auth import users as _users
-    from src.backend.auth.oauth_google import resolve_or_create_user
-    from src.backend.datahub import users as dh_users
-    from src.shared.exceptions import DataHubUnavailableError
-
-    existing_user = _make_user(google_sub="google-sub-789", name="Old Name")
-    updated_user = _make_user(google_sub="google-sub-789", name="New Name")
-
-    mock_db = AsyncMock()
-    mock_datahub = AsyncMock()
-
-    with (
-        patch.object(_users, "get_by_google_sub", new_callable=AsyncMock) as mock_get_sub,
-        patch.object(_users, "update_name", new_callable=AsyncMock) as mock_update_name,
-        patch.object(dh_users, "ensure_corpuser_exists", new_callable=AsyncMock) as mock_dh,
+    for mock_op, op_name in (
+        (mock_role, "propagate_role"),
+        (mock_group, "add_user_to_marker_group"),
+        (mock_ensure_group, "ensure_marker_group_exists"),
     ):
-        mock_get_sub.return_value = existing_user
-        mock_update_name.return_value = updated_user
-        mock_dh.side_effect = DataHubUnavailableError("DataHub down")
-
-        # Must NOT raise — DataHub error is swallowed
-        result = await resolve_or_create_user(
-            mock_db,
-            mock_datahub,
-            google_sub="google-sub-789",
-            email="propagate@example.com",
-            name="New Name",
-            runtime_config=_make_runtime_config(),
+        assert not mock_op.called, (
+            f"A display-name refresh must not call {op_name} — display name is not "
+            "projected and login makes no DataHub call per spec/feature/AUTH.md "
+            "§Identity Model"
         )
-
-    assert result is updated_user, (
-        "DataHubUnavailableError during name propagation must be swallowed (best-effort) "
-        "per spec/feature/AUTH.md §Lifecycle §Google OAuth registration & login"
-    )
 
 
 @pytest.mark.asyncio
@@ -249,7 +206,6 @@ async def test_resolve_no_google_sub_known_email_links_sub() -> None:
     linked_user = _make_user(google_sub="new-google-sub-000", name="Bob Smith")
 
     mock_db = AsyncMock()
-    mock_datahub = AsyncMock()
 
     with (
         patch.object(_users, "get_by_google_sub", new_callable=AsyncMock) as mock_get_sub,
@@ -262,11 +218,9 @@ async def test_resolve_no_google_sub_known_email_links_sub() -> None:
 
         result = await resolve_or_create_user(
             mock_db,
-            mock_datahub,
             google_sub="new-google-sub-000",
             email="bob@example.com",
             name="Bob Smith",
-            runtime_config=_make_runtime_config(),
         )
 
     assert result is linked_user
@@ -276,11 +230,14 @@ async def test_resolve_no_google_sub_known_email_links_sub() -> None:
 
 
 @pytest.mark.asyncio
-async def test_resolve_new_user_mirror_success() -> None:
-    """No google_sub + unknown email → creates new user + runs DataHub mirror.
+async def test_resolve_new_user_creates_local_row_only() -> None:
+    """No google_sub + unknown email → creates the local row and makes no DataHub call.
 
     spec: spec/feature/AUTH.md §Lifecycle §Google OAuth registration & login —
-    Row 3: google_sub unknown, email unknown → create fresh user, run mirror sequence.
+    Row 3: "Create a fresh users row with password_hash=null and role = 'Reader'."
+    spec: spec/feature/AUTH.md §Projection contract — "User creation is local-only.
+    Neither POST /auth/register, nor the Google-OAuth new-user branch, nor
+    POST /internal/admin/bootstrap makes a DataHub call".
     """
     from src.backend.auth import users as _users
     from src.backend.auth.oauth_google import resolve_or_create_user
@@ -289,16 +246,16 @@ async def test_resolve_new_user_mirror_success() -> None:
     new_user = _make_user(google_sub="brand-new-sub", name="Carol Jones")
 
     mock_db = AsyncMock()
-    mock_datahub = AsyncMock()
 
     with (
         patch.object(_users, "get_by_google_sub", new_callable=AsyncMock) as mock_get_sub,
         patch.object(_users, "get_by_email", new_callable=AsyncMock) as mock_get_email,
         patch.object(_users, "create_user", new_callable=AsyncMock) as mock_create,
-        patch.object(dh_users, "ensure_corpuser_exists", new_callable=AsyncMock),
-        patch.object(dh_users, "ensure_marker_group_exists", new_callable=AsyncMock),
-        patch.object(dh_users, "add_user_to_marker_group", new_callable=AsyncMock),
-        patch.object(dh_users, "propagate_role", new_callable=AsyncMock),
+        patch.object(
+            dh_users, "ensure_marker_group_exists", new_callable=AsyncMock
+        ) as mock_ensure_group,
+        patch.object(dh_users, "add_user_to_marker_group", new_callable=AsyncMock) as mock_group,
+        patch.object(dh_users, "propagate_role", new_callable=AsyncMock) as mock_role,
     ):
         mock_get_sub.return_value = None
         mock_get_email.return_value = None
@@ -306,62 +263,103 @@ async def test_resolve_new_user_mirror_success() -> None:
 
         result = await resolve_or_create_user(
             mock_db,
-            mock_datahub,
             google_sub="brand-new-sub",
             email="carol@example.com",
             name="Carol Jones",
-            runtime_config=_make_runtime_config(),
         )
 
     assert result is new_user
-    # create_user must be called for a completely unknown email
-    # per spec/feature/AUTH.md §Lifecycle §Google OAuth registration & login (Row 3)
+    # Backstop: the create branch really ran.
     mock_create.assert_called_once()
+    assert mock_create.call_args.kwargs["role"] == "Reader", (
+        "A Google-OAuth new user is created with role='Reader' per "
+        "spec/feature/AUTH.md §Lifecycle §Google OAuth registration & login (Row 3)"
+    )
+    assert mock_create.call_args.kwargs["password"] is None, (
+        "A Google-OAuth new user is created with password_hash=null per "
+        "spec/feature/AUTH.md §Lifecycle §Google OAuth registration & login (Row 3)"
+    )
+    for mock_op, op_name in (
+        (mock_ensure_group, "ensure_marker_group_exists"),
+        (mock_group, "add_user_to_marker_group"),
+        (mock_role, "propagate_role"),
+    ):
+        assert not mock_op.called, (
+            f"New-user creation must not call {op_name} — creation is local-only "
+            "per spec/feature/AUTH.md §Projection contract"
+        )
 
 
 @pytest.mark.asyncio
-async def test_resolve_new_user_mirror_failure_raises_datahub_sync_error() -> None:
-    """Mirror failure during new-user creation rolls back session and raises DataHubSyncError.
+async def test_resolve_new_user_succeeds_when_datahub_unreachable() -> None:
+    """OAuth new-user creation succeeds even when DataHub is unreachable.
 
-    spec: spec/feature/AUTH.md §Failure Modes — DataHub unreachable during register →
-    compensating hard-delete of the DataSpoke users row; 503 DATAHUB_SYNC_FAILED.
+    Every DataHub projection primitive is made to raise; the resolver must still
+    return the created user and must not roll back the session.
+
+    spec: spec/feature/AUTH.md §Failure Modes — "DataHub unreachable or unconfigured
+    during any user-creation path (POST /auth/register, Google-OAuth new user,
+    POST /internal/admin/bootstrap) | No DataHub call is attempted; the transaction
+    is purely local. | Creation succeeds and the user is logged in."
+    spec: spec/feature/AUTH.md §Projection contract — "There is no compensating
+    delete anywhere on the creation paths, and no user-facing error code for a
+    failed projection."
     """
     from src.backend.auth import users as _users
     from src.backend.auth.oauth_google import resolve_or_create_user
     from src.backend.datahub import users as dh_users
-    from src.shared.exceptions import DataHubSyncError
+    from src.shared.exceptions import DataHubUnavailableError
 
-    new_user = _make_user(google_sub="mirror-fail-sub", name="Dave Error")
+    new_user = _make_user(google_sub="offline-datahub-sub", name="Dave Offline")
 
     mock_db = AsyncMock()
-    mock_datahub = AsyncMock()
+
+    unreachable = DataHubUnavailableError("DataHub unreachable")
 
     with (
         patch.object(_users, "get_by_google_sub", new_callable=AsyncMock) as mock_get_sub,
         patch.object(_users, "get_by_email", new_callable=AsyncMock) as mock_get_email,
         patch.object(_users, "create_user", new_callable=AsyncMock) as mock_create,
-        patch.object(dh_users, "ensure_corpuser_exists", new_callable=AsyncMock) as mock_dh,
+        patch.object(
+            dh_users, "corpuser_exists", new_callable=AsyncMock, side_effect=unreachable
+        ),
+        patch.object(
+            dh_users,
+            "ensure_marker_group_exists",
+            new_callable=AsyncMock,
+            side_effect=unreachable,
+        ),
+        patch.object(
+            dh_users,
+            "add_user_to_marker_group",
+            new_callable=AsyncMock,
+            side_effect=unreachable,
+        ),
+        patch.object(
+            dh_users, "propagate_role", new_callable=AsyncMock, side_effect=unreachable
+        ),
     ):
         mock_get_sub.return_value = None
         mock_get_email.return_value = None
         mock_create.return_value = new_user
-        mock_dh.side_effect = Exception("DataHub transport error")
 
-        # spec: spec/feature/AUTH.md §Failure Modes — mirror failure → DataHubSyncError
-        with pytest.raises(DataHubSyncError):
-            await resolve_or_create_user(
-                mock_db,
-                mock_datahub,
-                google_sub="mirror-fail-sub",
-                email="dave@example.com",
-                name="Dave Error",
-                runtime_config=_make_runtime_config(),
-            )
+        result = await resolve_or_create_user(
+            mock_db,
+            google_sub="offline-datahub-sub",
+            email="dave@example.com",
+            name="Dave Offline",
+        )
 
-    # Session must be rolled back on failure
-    # Session must be rolled back after mirror failure
-    # per spec/feature/AUTH.md §Failure Modes (compensating hard-delete)
-    mock_db.rollback.assert_called_once()
+    assert result is new_user, (
+        "Google-OAuth new-user creation must succeed with DataHub unreachable "
+        "per spec/feature/AUTH.md §Failure Modes"
+    )
+    # Backstop: the create branch really ran, so the no-rollback assert is meaningful.
+    mock_create.assert_called_once()
+    assert not mock_db.rollback.called, (
+        "There is no compensating delete on the creation paths — a DataHub failure "
+        "must not roll back the local row per spec/feature/AUTH.md §Projection contract"
+    )
 
 
 # ── OAuth callback: state mismatch (F8) ──────────────────────────────────────
@@ -391,7 +389,6 @@ async def test_google_callback_state_mismatch_raises_bad_request() -> None:
 
     mock_request = MagicMock()
     mock_db = AsyncMock()
-    mock_datahub = AsyncMock()
 
     # Build a fake OAuth client whose authorize_access_token always raises
     mock_google_client = AsyncMock()
@@ -412,7 +409,6 @@ async def test_google_callback_state_mismatch_raises_bad_request() -> None:
             await auth_router.get_google_callback(
                 request=mock_request,
                 db=mock_db,
-                datahub=mock_datahub,
             )
 
     assert exc_info.value.error_code == "OAUTH_STATE_MISMATCH", (
@@ -446,7 +442,6 @@ async def test_google_callback_email_not_verified_raises_bad_request() -> None:
 
     mock_request = MagicMock()
     mock_db = AsyncMock()
-    mock_datahub = AsyncMock()
 
     # Token response with email_verified=False
     mock_token_response = {
@@ -474,7 +469,6 @@ async def test_google_callback_email_not_verified_raises_bad_request() -> None:
             await auth_router.get_google_callback(
                 request=mock_request,
                 db=mock_db,
-                datahub=mock_datahub,
             )
 
     assert exc_info.value.error_code == "OAUTH_EMAIL_NOT_VERIFIED", (

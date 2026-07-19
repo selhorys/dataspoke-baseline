@@ -216,19 +216,6 @@ class PeripheralNotConfiguredError(DataSpokeError):
         super().__init__(f"Peripheral '{peripheral}' is not configured")
 
 
-class DataHubSyncError(DataSpokeError):
-    """Raised when the DataHub mirror write fails during user registration and the
-    compensating local-row delete is triggered. Maps to HTTP 503.
-
-    Distinct from DataHubUnavailableError because this code is specific to the
-    register-time compensating-delete path, allowing callers to distinguish a
-    transient transport failure (502) from a sync failure that left the system
-    in a clean state after rollback (503).
-    """
-
-    error_code: str = "DATAHUB_SYNC_FAILED"
-
-
 class NotificationError(DataSpokeError):
     """Raised when a notification (e.g. email) fails to send."""
 

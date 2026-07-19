@@ -160,8 +160,8 @@ aspect in the [Aspect Usage by Feature](#aspect-usage-by-feature) write
 column.
 
 This service token is the **only** credential used for upstream calls —
-every code path (request handler, Airflow DAG, Kafka consumer, the new
-user-mirror writes from [feature/AUTH.md](feature/AUTH.md)) reads it via
+every code path (request handler, Airflow DAG, Kafka consumer, the role and
+marker-group projection writes from [feature/AUTH.md](feature/AUTH.md)) reads it via
 RBAC and reuses it. DataSpoke user identity does **not** propagate to the
 upstream call. Implications:
 
@@ -417,13 +417,18 @@ nest under the same database → schema hierarchy as DataHub's managed-PG source
 
 ## User & Role Management
 
-DataSpoke mirrors its own user accounts into DataHub as `corpuser` entities so
-DataHub can attach metadata (ownership, group membership, role) to them.
+DataHub creates `corpuser` entities for DataSpoke users through its own OIDC
+just-in-time provisioning (see [Corpuser provenance](#corpuser-provenance)).
+DataSpoke creates none; it **projects** two facets onto corpusers that already
+exist — the user's role and membership of the marker corpGroup — and only for
+users whose DataSpoke row carries a `google_sub`, the provider-verified binding
+between the DataSpoke identity and the email the URN addresses (see
+[feature/AUTH.md §Identity-binding requirement](feature/AUTH.md#identity-binding-requirement)).
 **DataSpoke is the SSOT for role**; the DataHub-side role assignment is a
-one-way mirror used by the DataHub UI for its own authorisation decisions.
+one-way projection used by the DataHub UI for its own authorisation decisions.
 Roles (`Admin` / `Editor` / `Reader`) propagate DataSpoke→DataHub via the
 `batchAssignRole` GraphQL mutation; a nightly reconciliation DAG corrects
-drift — see [Nightly Role Reconciliation](#nightly-role-reconciliation).
+drift on both facets — see [Nightly Role Reconciliation](#nightly-role-reconciliation).
 The full feature spec — lifecycle, OAuth, password reset, admin surface,
 failure modes — lives in [feature/AUTH.md](feature/AUTH.md). This section
 catalogues the DataHub-side primitives that AUTH consumes.
@@ -432,7 +437,7 @@ catalogues the DataHub-side primitives that AUTH consumes.
 
 | Entity | URN | Notes |
 |--------|-----|-------|
-| User | `urn:li:corpuser:<email>` | Email-as-id form. Aligns with DataHub `AUTH_OIDC_USER_ID_CLAIM=email` so OIDC login resolves to the same URN DataSpoke wrote. |
+| User | `urn:li:corpuser:<email>` | Email-as-id form, provisioned by DataHub's OIDC JIT under `user_name_claim=email` + `user_name_claim_regex=(.*)` (see [Corpuser provenance](#corpuser-provenance)). DataSpoke derives the same URN from the **lowercased** `users.email` — the column is `CITEXT` (case-preserving) while the URN is case-sensitive — and so addresses the corpuser without a lookup. |
 | Group | `urn:li:corpGroup:<name>` | The marker-group name comes from `/admin/conf.auth_datahub_corp_group` (default `dataspoke-users`). |
 | Role | `urn:li:dataHubRole:<Admin\|Editor\|Reader>` | Built-in DataHub role URNs. DataSpoke does not define custom roles. |
 
@@ -440,34 +445,49 @@ catalogues the DataHub-side primitives that AUTH consumes.
 
 | Entity | Aspect | When |
 |--------|--------|------|
-| corpuser | `corpUserInfo` | On user create; on display-name change. |
-| corpGroup | `corpGroupInfo` | On marker-group lazy-create (first user registration if missing). |
+| corpGroup | `corpGroupInfo` + `Status(removed=false)` | Asserted once per reconciliation pass, unconditionally, before the per-user loop. |
 
-DataSpoke **never** writes the `corpUserCredentials` aspect. DataHub native
-password login is deliberately unused — DataHub UI access uses Google OIDC
-SSO configured with the same Google client as DataSpoke (see
-[feature/HELM_CHART.md §DataHub OIDC](feature/HELM_CHART.md)).
+DataSpoke writes **no corpuser aspect at all**. `corpUserInfo` belongs to
+DataHub's JIT provisioning, and `corpUserCredentials` is deliberately unused —
+DataHub UI access uses Google OIDC SSO configured with the same Google client
+as DataSpoke (see [feature/HELM_CHART.md §DataHub OIDC](feature/HELM_CHART.md)).
+The two projected facets are written through GraphQL mutations, not aspect
+emission: role via `batchAssignRole`, membership via `addGroupMembers`.
 
 ### Operations
 
-#### Create corpuser
+#### Corpuser provenance
 
-```python
-from datahub.emitter.mcp import MetadataChangeProposalWrapper
-from datahub.metadata.schema_classes import CorpUserInfoClass
+Corpusers for DataSpoke users originate from DataHub's OIDC just-in-time
+provisioning on the person's first DataHub login: DataHub creates the entity
+from the Google ID-token claims and refreshes the profile on each subsequent
+login. Reference: [DataHub OIDC authentication](https://docs.datahub.com/docs/authentication/guides/sso/configure-oidc-react).
+DataSpoke has no create-corpuser operation; lifecycle and lag semantics are in
+[feature/AUTH.md §DataHub Projection Semantics](feature/AUTH.md#datahub-projection-semantics).
 
-emitter.emit_mcp(MetadataChangeProposalWrapper(
-    entityUrn=f"urn:li:corpuser:{email}",
-    aspect=CorpUserInfoClass(active=True, email=email, displayName=name),
-))
-```
+The corpuser id is governed by `user_name_claim` and `user_name_claim_regex`.
+DataSpoke requires `user_name_claim=email` **and**
+`user_name_claim_regex=(.*)`; DataHub's default regex `([^@]+)` strips the
+domain, yielding `urn:li:corpuser:bob` where DataSpoke derives
+`urn:li:corpuser:bob@example.com`. Without the override the two never agree
+and no projection ever lands.
 
-Idempotent — re-emit with the same data overwrites in place. The marker
-corpGroup is re-asserted on every user registration by emitting both
-`StatusClass(removed=False)` and `CorpGroupInfoClass(displayName=name,
-members=[], admins=[], groups=[])`. Both aspects are required: a previous
-partial bootstrap that committed only `Status` would leave the group
-unresolvable to `addGroupMembers`, so DataSpoke always re-emits the pair.
+Because a projection targeting a non-existent corpuser can be silently dropped
+(`RoleService` returns early while the mutation still reports success), any
+reconciliation pass **probes for corpuser existence before mutating** rather
+than trusting the mutation result. The probe reads the entity key together with
+`Status`, treating a soft-deleted corpuser as absent. That is deliberately
+narrower than `RoleService`'s own `exists()`, which admits soft-deleted
+entities: DataSpoke does not project privileges onto a deactivated account, and
+erring narrow means a pass skips rather than records a repair DataHub dropped.
+
+#### Marker corpGroup lazy-create
+
+The marker corpGroup is asserted by emitting both `StatusClass(removed=False)`
+and `CorpGroupInfoClass(displayName=name, members=[], admins=[], groups=[])`.
+Both aspects are required: a group with only `Status` committed is unresolvable
+to `addGroupMembers`, so DataSpoke always emits the pair. The assertion must
+precede any `addGroupMembers` call in the same pass.
 
 #### Group membership
 
@@ -481,7 +501,10 @@ graph.execute_graphql(
 )
 ```
 
-Membership writes are idempotent.
+Membership writes are idempotent. Current membership is *read* from the
+corpuser's `NativeGroupMembership` aspect (`graph.get_aspect(corpuser_urn,
+NativeGroupMembershipClass)`) — the authoritative per-user record, unaffected by
+the marker group's own `members` field being reset on each group assertion.
 
 #### Role assignment
 
@@ -492,9 +515,11 @@ graph.execute_graphql(
 )
 ```
 
-Default role on user creation is `Reader`. Admin role changes via
-`PATCH /admin/users/{id}/role` use the same mutation with the requested role
-URN.
+Called on two paths, both gated on the caller's row having a `google_sub`:
+`PATCH /admin/users/{id}/role` (write-through, with the requested role URN) and
+the nightly reconciliation pass (re-asserting `users.role`). The DataSpoke-side
+default of `Reader` at registration is not propagated at creation time — the
+reconciliation pass projects it once the row is bound and the corpuser exists.
 
 #### Role read
 
@@ -532,21 +557,40 @@ retire a managed group.
 
 ### Nightly Role Reconciliation
 
-DataSpoke is the SSOT for role. The DataHub-side mirror can drift if an
-operator changes a corpuser's role directly in the DataHub UI rather than
-via `PATCH /admin/users/{id}/role`. The Airflow DAG `auth-role-sync-daily`
-detects and corrects this:
+The Airflow DAG `auth-role-sync-daily` is the self-healing pass for both
+projected facets. It asserts the marker corpGroup once, unconditionally, before
+the per-user loop — the group must resolve before any `addGroupMembers` call —
+then for each row in `users` (managed identities):
 
-1. For each row in `users` (managed identities), read the corresponding
-   corpuser's `RoleMembership` aspect directly (atomic single-role per
-   DataHub `RoleService`). The `IsMemberOfRole` GraphQL relationship index
-   is not used — it lags MCL→ES indexing and transiently shows roles that
-   were already overwritten in the aspect.
-2. If the observed role differs from DataSpoke `users.role`, re-assert
-   `users.role` to DataHub via `batchAssignRole` (DataSpoke wins).
-3. Emit an `AUTH.ROLE_SYNC_FIXED` event recording the divergence and the
-   correction (event_type, user_id, datahub_role_observed,
-   dataspoke_role_authoritative, occurred_at).
+1. **Binding gate** — skip rows with `google_sub IS NULL`, counting them
+   `skipped_unbound`. Only a provider-verified identity binding authorises a
+   write against `urn:li:corpuser:<email>`; see
+   [feature/AUTH.md §Identity-binding requirement](feature/AUTH.md#identity-binding-requirement).
+2. **Existence probe** — resolve whether the corpuser exists: entity key plus
+   `Status`, with a soft-deleted corpuser counting as absent. If it does not
+   resolve, count the user
+   `skipped_unprovisioned` and mutate nothing. Probing first is required: a
+   `batchAssignRole` against a non-existent actor returns success while
+   `RoleService` skips the write.
+3. **Role facet** — read the corpuser's `RoleMembership` aspect directly
+   (atomic single-role per DataHub `RoleService`). The `IsMemberOfRole`
+   GraphQL relationship index is not used — it lags MCL→ES indexing and
+   transiently shows roles that were already overwritten in the aspect. If
+   the observed role differs from DataSpoke `users.role`, re-assert via
+   `batchAssignRole` (DataSpoke wins).
+4. **Group facet** — read `NativeGroupMembership`; if the marker group URN is
+   absent, add it via `addGroupMembers`.
+5. Emit one `AUTH.ROLE_SYNC_FIXED` event per repaired user, its `detail`
+   naming the repaired facet(s) and, for the role facet, the observed and
+   authoritative roles.
+
+The pass returns
+`{checked, fixed, skipped_unbound, skipped_unprovisioned, errors}`, all
+per-user. Because the two facets are reconciled independently, a user whose
+role was repaired while the group write failed counts in **both** `fixed` and
+`errors` — the buckets are not a partition and need not sum to `checked`.
+Counter definitions are in
+[feature/AUTH.md §Role Drift Reconciliation](feature/AUTH.md#role-drift-reconciliation).
 
 The auto-fix is intentional: any DataHub-side drift is by definition a
 mistake to be corrected. The DAG iterates only rows in DataSpoke's
@@ -554,18 +598,20 @@ mistake to be corrected. The DAG iterates only rows in DataSpoke's
 by DataSpoke) are out of scope. Operators who need a DataHub-only role
 assignment keep that corpuser out of the DataSpoke `users` table.
 
-For large deployments, the per-user GraphQL fan-out is bounded (one query
-per managed corpuser per day). A batched variant via `scrollAcrossEntities`
-is an organisation-specific optimisation.
+For large deployments, the per-user fan-out is bounded (a small constant
+number of round trips per managed corpuser per day). A batched variant via
+`scrollAcrossEntities` is an organisation-specific optimisation.
 
 ### Failure Handling
 
 | Failure | DataSpoke behaviour |
 |---------|---------------------|
-| `emit_mcp` (corpuser create) | Compensating hard-delete of the DataSpoke `users` row; `503 DATAHUB_SYNC_FAILED` returned to the caller. |
-| `batchAssignRole` during user create / role change | DataSpoke `users.role` write succeeds first; if the DataHub propagation fails, the DataSpoke side stays correct and the nightly DAG re-asserts. The admin caller is informed via a warning log; the API call returns `200` because DataSpoke-side state is intact. |
+| Any DataHub call during user creation | None occurs — creation paths are DataSpoke-local, so DataHub being unreachable or unconfigured cannot fail a registration or bootstrap. |
+| `batchAssignRole` during a role change | DataSpoke `users.role` write succeeds first; if the DataHub propagation fails, the DataSpoke side stays correct and the nightly DAG re-asserts. The admin caller is informed via a warning log; the API call returns `200` because DataSpoke-side state is intact. |
 | `hard_delete_entity` (post-DataSpoke-row deletion) | DataSpoke row is already gone; orphan corpuser remains in DataHub for operator cleanup. Admin call returns `200`. |
-| GraphQL role read during the reconciliation DAG | Skip-and-log the affected user; next nightly run retries. No user-facing impact (DataSpoke `users.role` is authoritative). |
+| Aspect read or GraphQL write during the reconciliation pass | Skip-and-log the affected user and count them in `errors`; next nightly run retries. A user whose other facet succeeded also counts in `fixed`. No user-facing impact (DataSpoke `users.role` is authoritative). |
+| DataHub peripheral unconfigured when the reconciliation pass runs | The pass returns a no-op result rather than failing — running before DataHub is wired is a supported steady state. |
+| `users` row with `google_sub IS NULL` | No projection is attempted on either path; the reconciliation pass counts it `skipped_unbound`. |
 
 ## Ingestion Source Sync {#ingestion-source-sync}
 

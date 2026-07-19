@@ -116,9 +116,14 @@ DATAHUB_VERSION="${DATASPOKE_DEV_KUBE_DATAHUB_CHART_VERSION:-1.0.1}"
 oidc_args=()
 if [[ -n "${DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_ID:-}" && -n "${DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_SECRET:-}" ]]; then
   # SSO is configured on the datahub-frontend subchart's oidcAuthentication block,
-  # which renders the AUTH_OIDC_* env the Play frontend reads. user_name_claim_regex
-  # = "(.*)" keeps the full email as the corpuser id (default "([^@]+)" strips the
-  # domain), so it matches DataSpoke-mirrored corpusers (urn:li:corpuser:<email>).
+  # which renders the AUTH_OIDC_* env the Play frontend reads. On first login DataHub
+  # JIT-provisions the corpuser from the OIDC claims, minting its URN from
+  # user_name_claim (email) filtered through user_name_claim_regex. These two
+  # settings are a hard prerequisite: DataHub's default regex "([^@]+)" strips the
+  # domain and mints urn:li:corpuser:bob instead of urn:li:corpuser:bob@example.com,
+  # so DataSpoke's email-keyed projection (role + marker-group sync) never matches
+  # the JIT-provisioned URN and every user reports as unprovisioned forever.
+  # user_name_claim_regex = "(.*)" keeps the full email as the corpuser id.
   # The chart derives an https AUTH_OIDC_BASE_URL from the ingress host; dev serves
   # DataHub over the scheme set by DATASPOKE_KUBE_INGRESS_SCHEME (http by default),
   # so set oidcBaseUrl to override it (one env value — an extraEnvs duplicate would

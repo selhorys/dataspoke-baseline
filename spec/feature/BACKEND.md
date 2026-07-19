@@ -1405,7 +1405,7 @@ Resilience and tuning constants defined in `src/shared/config.py`:
 
 ## Authentication & User Account Management
 
-The identity, lifecycle, and DataHub-mirror doctrine live in
+The identity, lifecycle, and DataHub-projection doctrine live in
 [AUTH](AUTH.md). The route catalogue and JWT claim shape live in
 [API §Authentication & Authorization](../API.md#authentication--authorization).
 DataHub-side primitives (corpuser/corpGroup/role aspects, GraphQL mutations,
@@ -1424,40 +1424,39 @@ This section captures the service-layer composition only.
 | `reset.py` | Password-reset token issuance (256-bit `secrets.token_urlsafe`, SHA-256 hashed into `password_reset_tokens`) and confirm. Email transport via `aiosmtplib` driven by the SMTP peripheral (below). |
 | `privilege.py` | The `require_role(...)` FastAPI dependency family. Reads caller's role from `users.role` (or `min(role_snapshot, users.role)` for API tokens). Method × tier matrix enforcement per [AUTH §Privilege Model](AUTH.md#privilege-model). |
 
-### DataHub Mirror (`src/backend/datahub/users.py`)
+### DataHub Projection (`src/backend/datahub/users.py`)
 
 Single module wrapping the SDK + GraphQL primitives catalogued in
-[DATAHUB_INTEGRATION §User & Role Management](../DATAHUB_INTEGRATION.md#user--role-management):
+[DATAHUB_INTEGRATION §User & Role Management](../DATAHUB_INTEGRATION.md#user--role-management).
+It has no corpuser-create primitive — corpusers come from DataHub's OIDC JIT
+provisioning ([AUTH §DataHub Projection Semantics](AUTH.md#datahub-projection-semantics)):
 
-- `ensure_corpuser_exists(email, name)` — idempotent `emit_mcp(corpUserInfo)`.
-- `ensure_marker_group_exists()` — idempotent `emit_mcp(corpGroupInfo)` using the group name read from `runtime_config.auth_datahub_corp_group`.
+- `corpuser_exists(corpuser_urn)` — existence probe matching DataHub `RoleService`'s `exists()` predicate (entity key plus `Status`; soft-deleted counts as absent). Guards the reconciliation loop's projection writes only; the role write-through on `PATCH /admin/users/{id}/role` calls `propagate_role` unguarded and best-effort. See the silent-skip rationale in [DATAHUB_INTEGRATION §Corpuser provenance](../DATAHUB_INTEGRATION.md#corpuser-provenance).
+- `corpuser_urn(email)` — derives `urn:li:corpuser:<email>` from the **lowercased** email; `users.email` is `CITEXT` (case-preserving) while the URN is case-sensitive.
+- `read_native_group_membership(corpuser_urn)` — SDK `get_aspect(corpuser_urn, NativeGroupMembershipClass)`, returning the user's current group URNs.
+- `ensure_marker_group_exists()` — idempotent `emit_mcp(corpGroupInfo + Status)` using the group name read from `runtime_config.auth_datahub_corp_group`. Called once per reconciliation pass, before the per-user loop.
 - `add_user_to_marker_group(corpuser_urn)` — GraphQL `addGroupMembers`.
-- `propagate_role(corpuser_urn, role)` — GraphQL `batchAssignRole`. Called after every DataSpoke-side role write (registration default `Reader`, admin role change). DataHub-side is a mirror; DataSpoke `users.role` is the SSOT.
+- `propagate_role(corpuser_urn, role)` — GraphQL `batchAssignRole`. Called on the admin role-change write-through and by the reconciliation pass, both gated on the user's row carrying a `google_sub` ([AUTH §Identity-binding requirement](AUTH.md#identity-binding-requirement)). DataHub-side is a projection; DataSpoke `users.role` is the SSOT.
 - `read_role(corpuser_urn)` — SDK `get_aspect(corpuser_urn, RoleMembershipClass)` (atomic single-role per DataHub `RoleService`); the `IsMemberOfRole` GraphQL relationship index is **not** used because it lags MCL→ES indexing. **Used only by the nightly reconciliation DAG**, not on the request hot path.
 - `hard_delete_corpuser(corpuser_urn)` — SDK `hard_delete_entity`.
 
-The module never writes `corpUserCredentials`.
+The module never writes `corpUserInfo` or `corpUserCredentials`.
 
 ### Registration Composition
 
-`POST /auth/register` orchestrates the mirror create sequence
-([AUTH §Mirror create sequence](AUTH.md#mirror-create-sequence)). Each step is
-idempotent in isolation, so re-running after a DataHub-side failure resumes
-correctly:
+`POST /auth/register` is a DataSpoke-local transaction with no DataHub step:
 
 1. `users.create()` (DataSpoke DB) with `role = 'Reader'`.
-2. `datahub.users.ensure_corpuser_exists()`.
-3. `datahub.users.ensure_marker_group_exists()` → `add_user_to_marker_group()`.
-4. `datahub.users.propagate_role(urn, "Reader")`.
-5. `tokens.issue()` → 200 with access JWT + refresh cookie.
+2. `tokens.issue()` → 200 with access JWT + refresh cookie.
 
-Any DataHub-side failure (steps 2–4) triggers compensating hard-delete of the
-DataSpoke `users` row and returns `503 DATAHUB_SYNC_FAILED`. Subsequent
-registration with the same email is fresh on the DataSpoke side and resumes the
-DataHub-side writes idempotently.
+Registration therefore succeeds regardless of DataHub availability or
+configuration. Role and marker-group membership reach DataHub through the
+nightly reconciliation pass once the user's corpuser exists
+([AUTH §Projection contract](AUTH.md#projection-contract)).
 
-The Google OAuth callback uses the same composition when the resolved user is
-new (no matching `google_sub`, no matching email).
+The Google OAuth callback and `POST /internal/admin/bootstrap` use the same
+composition — local row plus token issuance — differing only in the role
+assigned and in how the identity is resolved.
 
 ### Role-Change Composition
 
@@ -1465,7 +1464,7 @@ new (no matching `google_sub`, no matching email).
 is SSOT:
 
 1. `users.update_role(user_id, new_role)` — DataSpoke `users.role` updated.
-2. `datahub.users.propagate_role(corpuser_urn, new_role)` — DataHub mirror.
+2. `datahub.users.propagate_role(corpuser_urn, new_role)` — DataHub projection, **skipped entirely when the row has no `google_sub`**. Effectively a no-op when the user is bound but has no corpuser yet; the nightly pass projects the role once one exists.
 
 If step 2 fails, the API returns `200` to the admin caller (DataSpoke-side
 state is correct), logs a warning, and relies on the nightly
@@ -1505,7 +1504,8 @@ with UPDATEs.
 
 ### Deletion Composition
 
-`DELETE /admin/users/{id}` runs the mirror delete sequence:
+`DELETE /admin/users/{id}` runs the
+[projection retraction sequence](AUTH.md#projection-retraction-sequence):
 
 1. Hard-delete the DataSpoke `users` row (cascade deletes
    `password_reset_tokens`).

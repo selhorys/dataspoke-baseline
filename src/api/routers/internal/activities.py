@@ -370,94 +370,211 @@ async def ontogen_run(body: OntogenRunRequest) -> dict[str, object]:
 
 @router.post("/auth/role-sync")
 async def auth_role_sync() -> dict[str, object]:
-    """Reconcile DataHub-side role assignments against DataSpoke users.role (SSOT).
+    """Reconcile the DataHub-side projection against DataSpoke users (SSOT).
 
     Called daily by the auth-role-sync-daily DAG.
 
+    Two facets are projected onto each corpuser: its role and its membership in
+    the marker corpGroup. DataSpoke owns both, so any DataHub-side divergence is
+    corrected here — DataSpoke wins.
+
     Algorithm:
-      1. SELECT all rows from users ordered by id.
+      1. Ensure the marker corpGroup exists — ONCE, before the loop.
+         ``ensure_marker_group_exists`` resets CorpGroupInfo.members=[] on every
+         call, and addGroupMembers rejects an unresolvable group, so the group
+         must be ensured exactly once and before any membership write.
+      2. SELECT all rows from users ordered by id.
          (Baseline uses a simple full-scan; for large deployments the optimisation
          path is scrollAcrossEntities on the marker corpGroup instead.)
-      2. For each user, read the DataHub-side role via the RoleMembership aspect
-         (atomic single-role per DataHub RoleService).
-      3. On divergence (DataHub role differs from users.role, or no role assigned),
-         re-assert users.role to DataHub via batchAssignRole. DataSpoke wins.
-      4. Emit an AUTH.ROLE_SYNC_FIXED event row per fixed user.
-      5. Per-user DataHubUnavailableError is logged and counted — the batch
-         continues; the whole transaction commits at the end.
+      3. Skip rows with no verified Google identity (google_sub IS NULL). The
+         corpuser URN is derived from users.email, and a password-registered
+         email is unverified — projecting for an unbound row would let someone
+         who registered another person's address steer that person's DataHub
+         role. Counted as skipped_unbound.
+      4. Probe each user's corpuser for existence BEFORE any mutation. DataHub's
+         RoleService returns early when the actor does not exist while the
+         GraphQL mutation still reports success, so an unguarded pass would count
+         repairs it never made. Users whose corpuser DataHub has not yet
+         JIT-provisioned (nobody has signed into DataHub as them) are counted as
+         skipped_unprovisioned and left alone.
+      5. Role facet — read the RoleMembership aspect (atomic single-role per
+         DataHub RoleService); on divergence from users.role, re-assert via
+         batchAssignRole.
+      6. Group facet — read the nativeGroupMembership aspect; when the marker
+         group URN is absent, add it via addGroupMembers. Attempted independently
+         of the role facet: the two are unrelated, so a role-facet failure must
+         not suppress a group repair.
+      7. Emit one AUTH.ROLE_SYNC_FIXED event per repaired user, whose detail
+         names the repaired facet(s).
 
-    Note: every row in users is in-scope because DataSpoke is the SSOT for
-    which corpusers are managed. The marker-group filter is implicit — every
-    row in users was mirrored into the marker group at registration time.
+    Only rows in the DataSpoke users table are in scope — DataHub-only corpusers
+    are out of scope, and deleted users are invisible to this pass (retraction is
+    handled at delete time by DELETE /admin/users/{id}).
 
-    Returns {checked, fixed, errors}.
+    Counter semantics — the buckets are NOT a partition of ``checked``:
+      - ``checked``  — users examined.
+      - ``fixed``    — users with at least one facet repaired (at most one per
+        user, never per facet). The per-facet breakdown is in the event detail.
+      - ``skipped_unbound`` / ``skipped_unprovisioned`` — mutually exclusive,
+        and disjoint from the rest; neither is probed or mutated further.
+      - ``errors``   — users for whom at least one facet could not be
+        reconciled. This **may overlap with ``fixed``**: when the role facet is
+        repaired and the group facet then fails, the user counts in both.
+
+    Failure handling: a per-facet failure is logged, counted in ``errors``, and
+    the pass continues to the next facet or user. All exception types are caught,
+    not just DataHubUnavailableError — the SDK raises GraphError for an HTTP 200
+    body carrying an ``errors`` array (and on a 401/403 from a rotated PAT),
+    which is neither a DataSpokeError nor a transport error.
+
+    Accumulated event rows are committed even when the pass aborts partway. The
+    DataHub mutations behind them have already landed and a retry sees no drift,
+    so dropping the rows would erase the audit trail permanently.
+
+    A failure of the one-time step 1 aborts the pass rather than degrading it:
+    without a resolvable marker group the group facet cannot be repaired for
+    anyone, and a pass that continued would silently under-report drift. The
+    outer handler returns a retryable response so Airflow retries the run.
+
+    An unconfigured DataHub peripheral returns a zero-count no-op rather than an
+    error: running before DataHub is wired is a supported steady state.
+
+    Returns {checked, fixed, skipped_unprovisioned, skipped_unbound, errors}.
 
     Spec: spec/feature/AUTH.md §Role Drift Reconciliation,
           spec/DATAHUB_INTEGRATION.md §Nightly Role Reconciliation.
     """
     from sqlalchemy import select
 
+    from src.backend.admin.config_service import get_runtime_config
     from src.backend.datahub import users as dh_users
     from src.shared.db.models import Event, User
-    from src.shared.exceptions import DataHubUnavailableError
+    from src.shared.exceptions import PeripheralNotConfiguredError
 
     checked = 0
     fixed = 0
+    skipped_unprovisioned = 0
+    skipped_unbound = 0
     errors = 0
     event_rows: list[Event] = []
 
+    def _result() -> dict[str, object]:
+        return {
+            "checked": checked,
+            "fixed": fixed,
+            "skipped_unprovisioned": skipped_unprovisioned,
+            "skipped_unbound": skipped_unbound,
+            "errors": errors,
+        }
+
     try:
         async with make_db_session() as db:
-            datahub = await make_datahub(db)
+            try:
+                datahub = await make_datahub(db)
+            except PeripheralNotConfiguredError:
+                logger.info("auth_role_sync: DataHub peripheral unconfigured; nothing to project")
+                return _result()
 
-            result = await db.execute(select(User).order_by(User.id))
-            users = result.scalars().all()
+            runtime_config = await get_runtime_config(db)
+            group_name = runtime_config.auth_datahub_corp_group
+            group_urn = dh_users.corpgroup_urn(group_name)
 
-            for user in users:
-                checked += 1
-                urn = f"urn:li:corpuser:{user.email}"
+            try:
+                await dh_users.ensure_marker_group_exists(datahub, group_name)
 
-                try:
-                    observed_role = await dh_users.read_role(datahub, urn)
-                except DataHubUnavailableError:
-                    logger.warning(
-                        "auth_role_sync: DataHub unavailable for user",
-                        extra={"user_id": str(user.id), "corpuser_urn": urn},
-                    )
-                    errors += 1
-                    continue
+                result = await db.execute(select(User).order_by(User.id))
+                users = result.scalars().all()
 
-                if observed_role != user.role:
+                for user in users:
+                    checked += 1
+
+                    if user.google_sub is None:
+                        skipped_unbound += 1
+                        continue
+
+                    urn = dh_users.corpuser_urn(user.email)
+                    log_extra = {"user_id": str(user.id), "corpuser_urn": urn}
+
                     try:
-                        await dh_users.propagate_role(datahub, urn, user.role)
-                    except DataHubUnavailableError:
+                        if not await dh_users.corpuser_exists(datahub, urn):
+                            skipped_unprovisioned += 1
+                            continue
+                    except Exception:
                         logger.warning(
-                            "auth_role_sync: DataHub unavailable propagating role for user",
-                            extra={"user_id": str(user.id), "corpuser_urn": urn},
+                            "auth_role_sync: probe failed for corpuser",
+                            extra=log_extra,
+                            exc_info=True,
                         )
                         errors += 1
                         continue
 
-                    fixed += 1
-                    event_rows.append(
-                        Event(
-                            entity_type="user",
-                            entity_id=str(user.id),
-                            event_type=AUTH_ROLE_SYNC_FIXED,
-                            status="OK",
-                            detail={
-                                "dataspoke_role_authoritative": user.role,
-                                "datahub_role_observed": observed_role,
-                            },
-                        )
-                    )
+                    repaired_facets: list[str] = []
+                    detail: dict[str, object] = {}
+                    facet_failed = False
 
-            # Batch all event inserts in a single transaction commit.
-            if event_rows:
-                db.add_all(event_rows)
-            await db.commit()
+                    # ── Role facet ────────────────────────────────────────────
+                    try:
+                        observed_role = await dh_users.read_role(datahub, urn)
+                        if observed_role != user.role:
+                            await dh_users.propagate_role(datahub, urn, user.role)
+                            repaired_facets.append("role")
+                            detail["dataspoke_role_authoritative"] = user.role
+                            detail["datahub_role_observed"] = observed_role
+                    except Exception:
+                        logger.warning(
+                            "auth_role_sync: role facet failed",
+                            extra=log_extra,
+                            exc_info=True,
+                        )
+                        facet_failed = True
+
+                    # ── Marker-group facet ────────────────────────────────────
+                    # Attempted regardless of the role facet's outcome — the two
+                    # facets are independent.
+                    try:
+                        membership = await dh_users.read_native_group_membership(datahub, urn)
+                        if group_urn not in membership:
+                            await dh_users.add_user_to_marker_group(datahub, group_urn, urn)
+                            repaired_facets.append("group")
+                            detail["marker_group_urn"] = group_urn
+                    except Exception:
+                        logger.warning(
+                            "auth_role_sync: group facet failed",
+                            extra=log_extra,
+                            exc_info=True,
+                        )
+                        facet_failed = True
+
+                    if facet_failed:
+                        errors += 1
+
+                    if repaired_facets:
+                        fixed += 1
+                        detail["repaired_facets"] = repaired_facets
+                        event_rows.append(
+                            Event(
+                                entity_type="user",
+                                entity_id=str(user.id),
+                                event_type=AUTH_ROLE_SYNC_FIXED,
+                                status="OK",
+                                detail=detail,
+                            )
+                        )
+            finally:
+                # Persist the audit rows for repairs that already landed in
+                # DataHub, even when the pass aborts partway. A retry observes no
+                # drift and would emit nothing, so these rows are unrecoverable.
+                if event_rows:
+                    db.add_all(event_rows)
+                await db.commit()
 
     except DataSpokeError as exc:
         return _error_response(exc, non_retryable=False)  # type: ignore[return-value]
+    except Exception as exc:
+        # The SDK raises GraphError (not a DataSpokeError) for an HTTP 200 body
+        # carrying an errors array, and on a 401/403 from a rotated PAT. Retryable
+        # so Airflow re-runs; the accumulated event rows were committed above.
+        logger.warning("auth_role_sync: pass aborted", exc_info=True)
+        return _error_response(exc, non_retryable=False)  # type: ignore[return-value]
 
-    return {"checked": checked, "fixed": fixed, "errors": errors}
+    return _result()

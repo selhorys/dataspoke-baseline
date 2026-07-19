@@ -15,20 +15,13 @@ with ``oauth_state_secret``.
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING, Any
-
-from src.shared.exceptions import DataHubSyncError
 
 if TYPE_CHECKING:
     from authlib.integrations.starlette_client import OAuth
     from sqlalchemy.ext.asyncio import AsyncSession
 
-    from src.backend.admin.config_service import RuntimeConfigDTO
-    from src.shared.datahub.client import DataHubClient
     from src.shared.db.models import User
-
-logger = logging.getLogger(__name__)
 
 # ── Configuration check ───────────────────────────────────────────────────────
 
@@ -90,46 +83,35 @@ def invalidate_oauth_client() -> None:
 
 async def resolve_or_create_user(
     db: AsyncSession,
-    datahub: DataHubClient,
     *,
     google_sub: str,
     email: str,
     name: str,
-    runtime_config: RuntimeConfigDTO,
 ) -> User:
     """Resolve an existing user or create a new one from Google ID-token claims.
 
     Resolution order per spec/feature/AUTH.md §Google OAuth registration & login:
 
-    1. ``users.get_by_google_sub`` → if found, refresh display name when changed,
-       and propagate the updated name to DataHub (best-effort).
+    1. ``users.get_by_google_sub`` → if found, refresh display name when changed.
     2. ``users.get_by_email`` → if found, link ``google_sub`` onto existing row.
-    3. Otherwise create a fresh user with ``password_hash=None`` and run the
-       DataHub mirror create sequence. On mirror failure, the session is rolled
-       back and ``DataHubSyncError`` is raised — callers must not have other
-       pending writes in the session.
+    3. Otherwise create a fresh user with ``password_hash=None``.
+
+    Every branch is DataSpoke-local: no DataHub call is made, so the flow
+    succeeds whether or not the DataHub peripheral is configured or reachable.
+    The corpuser is provisioned by DataHub's OIDC JIT on first DataHub login,
+    and the nightly reconciliation pass projects role and marker-group
+    membership onto it from there.
 
     The caller is responsible for committing the session after this function
-    returns successfully.
+    returns.
     """
     from src.backend.auth import users
-    from src.backend.datahub import users as dh_users
-    from src.shared.exceptions import DataHubUnavailableError
 
     # 1. Known google_sub — log in; refresh display name if changed.
     existing = await users.get_by_google_sub(db, google_sub)
     if existing is not None:
         if existing.name != name:
             existing = await users.update_name(db, existing.id, name)
-            # Propagate updated name to DataHub (best-effort).
-            try:
-                await dh_users.ensure_corpuser_exists(datahub, existing.email, name)
-            except DataHubUnavailableError:
-                logger.warning(
-                    "oauth_google_datahub_name_propagation_failed",
-                    extra={"email": existing.email},
-                    exc_info=True,
-                )
         return existing
 
     # 2. Known email — link google_sub.
@@ -138,8 +120,8 @@ async def resolve_or_create_user(
         linked = await users.link_google_sub(db, by_email.id, google_sub)
         return linked
 
-    # 3. New user — create local row then run DataHub mirror sequence.
-    new_user = await users.create_user(
+    # 3. New user.
+    return await users.create_user(
         db,
         email,
         name,
@@ -147,31 +129,3 @@ async def resolve_or_create_user(
         password=None,
         role="Reader",
     )
-    try:
-        await dh_users.ensure_corpuser_exists(datahub, new_user.email, new_user.name)
-        await dh_users.ensure_marker_group_exists(
-            datahub, runtime_config.auth_datahub_corp_group
-        )
-        await dh_users.add_user_to_marker_group(
-            datahub,
-            dh_users.corpgroup_urn(runtime_config.auth_datahub_corp_group),
-            dh_users.corpuser_urn(new_user.email),
-        )
-        await dh_users.propagate_role(datahub, dh_users.corpuser_urn(new_user.email), "Reader")
-    except Exception as exc:
-        # Compensating cleanup. create_user only flushed the new row (the caller
-        # commits on success), so it is still uncommitted here — rollback removes
-        # it cleanly and no explicit hard_delete is needed. This is the same intent
-        # as the bootstrap path's hard_delete()+commit(), which diverges only
-        # because that flow owns its own commit boundary.
-        await db.rollback()
-        logger.warning(
-            "oauth_google_mirror_failed_compensating_delete",
-            extra={"email": email},
-            exc_info=True,
-        )
-        raise DataHubSyncError(
-            "DataHub mirror failed during OAuth user creation; registration rolled back."
-        ) from exc
-
-    return new_user

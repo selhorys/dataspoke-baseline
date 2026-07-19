@@ -1,8 +1,9 @@
 """Unit tests for src/backend/datahub/users.py.
 
 Concerns covered:
-- URN helpers produce the right strings
-- ensure_corpuser_exists emits the correct MCP (corpUserInfo aspect)
+- URN helpers produce the right strings (corpuser URN lowercases the email)
+- corpuser_exists probes the key aspect; soft-deleted corpusers read as absent
+- read_native_group_membership returns nativeGroups, [] when the aspect is absent
 - ensure_marker_group_exists always emits Status + CorpGroupInfo (unconditional, idempotent)
 - add_user_to_marker_group issues the GraphQL addGroupMembers mutation with the right variables
 - propagate_role issues batchAssignRole with the right roleUrn
@@ -10,9 +11,10 @@ Concerns covered:
 role URNs
 - hard_delete_corpuser calls client.hard_delete_entity with the URN
 
-spec: spec/feature/AUTH.md §DataHub Mirror Semantics
+spec: spec/feature/AUTH.md §DataHub Projection Semantics
 spec: spec/feature/AUTH.md §Marker corpGroup
 spec: spec/feature/AUTH.md §Role Drift Reconciliation
+spec: spec/DATAHUB_INTEGRATION.md §User & Role Management
 """
 
 from __future__ import annotations
@@ -50,11 +52,28 @@ def test_corpgroup_urn_format() -> None:
     )
 
 
+def test_corpuser_urn_lowercases_email() -> None:
+    """corpuser_urn lowercases the email before deriving the URN.
+
+    spec: spec/feature/AUTH.md §DataHub Projection Semantics §URN conventions —
+    "The email is lowercased before URN derivation. ... a row stored as
+    `Bob@example.com` must still derive `urn:li:corpuser:bob@example.com` to meet
+    the URN DataHub provisions."
+    """
+    from src.backend.datahub.users import corpuser_urn
+
+    assert corpuser_urn("Bob@Example.COM") == "urn:li:corpuser:bob@example.com", (
+        "corpuser_urn must lowercase the email — users.email is CITEXT "
+        "(case-preserving) while the DataHub corpuser URN is case-sensitive, "
+        "per spec/feature/AUTH.md §URN conventions"
+    )
+
+
 def test_role_urn_format() -> None:
     """role_urn returns urn:li:dataHubRole:<role>.
 
-    spec: spec/feature/AUTH.md §DataHub Mirror Semantics §Aspects DataSpoke writes —
-    role propagation uses batchAssignRole with urn:li:dataHubRole:<role>.
+    spec: spec/DATAHUB_INTEGRATION.md §URN Conventions —
+    Role | urn:li:dataHubRole:<Admin|Editor|Reader>.
     """
     from src.backend.datahub.users import role_urn
 
@@ -63,38 +82,221 @@ def test_role_urn_format() -> None:
     assert role_urn("Admin") == "urn:li:dataHubRole:Admin"
 
 
-# ── ensure_corpuser_exists ────────────────────────────────────────────────────
+# ── DataSpoke writes no corpuser aspect ───────────────────────────────────────
+
+
+def test_module_exposes_no_corpuser_create_operation() -> None:
+    """The module offers no way to create a corpuser.
+
+    spec: spec/DATAHUB_INTEGRATION.md §Corpuser provenance — "DataSpoke has no
+    create-corpuser operation"; §Aspects DataSpoke Writes — "DataSpoke writes
+    **no corpuser aspect at all**." The corpGroup row is the only aspect write.
+    """
+    import ast
+    import inspect
+
+    from src.backend.datahub import users as dh_users
+
+    # The spec bans a corpuser *write*, not a mention — reading corpuser aspects is
+    # expected (the existence probe does exactly that). So look for emit calls whose
+    # target URN is a corpuser rather than grepping for a class name.
+    tree = ast.parse(inspect.getsource(dh_users))
+    emitters = {
+        fn.name
+        for fn in ast.walk(tree)
+        if isinstance(fn, ast.AsyncFunctionDef | ast.FunctionDef)
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in {"emit_aspect", "emit_mcp"}
+    }
+    assert emitters == {"ensure_marker_group_exists"}, (
+        "The marker corpGroup row is the only aspect write in this module — no "
+        "corpuser aspect may be emitted, since corpuser creation belongs to "
+        "DataHub's OIDC JIT provisioning per spec/DATAHUB_INTEGRATION.md "
+        f"§Aspects DataSpoke Writes. Functions that emit: {sorted(emitters)}"
+    )
+    assert not hasattr(dh_users, "ensure_corpuser_exists"), (
+        "No create-corpuser operation may exist per spec/DATAHUB_INTEGRATION.md "
+        "§Corpuser provenance"
+    )
+
+
+# ── corpuser_exists ───────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_ensure_corpuser_exists_emits_correct_mcp() -> None:
-    """ensure_corpuser_exists emits a CorpUserInfo MCP with active=True, email, displayName.
+async def test_corpuser_exists_true_when_key_aspect_present_and_not_removed() -> None:
+    """corpuser_exists returns True when the key aspect resolves and Status is absent.
 
-    spec: spec/feature/AUTH.md §DataHub Mirror Semantics §Aspects DataSpoke writes —
-    corpuser | corpUserInfo | On create; on name change.
+    spec: spec/DATAHUB_INTEGRATION.md §Nightly Role Reconciliation step 2 —
+    "Existence probe — resolve whether the corpuser exists: entity key plus
+    `Status`, with a soft-deleted corpuser counting as absent."
     """
-    from src.backend.datahub.users import ensure_corpuser_exists
+    from datahub.metadata.schema_classes import CorpUserKeyClass, StatusClass
+
+    from src.backend.datahub.users import corpuser_exists
+
+    async def _get_aspect(_urn, aspect_cls, **_kwargs):
+        if aspect_cls is CorpUserKeyClass:
+            return CorpUserKeyClass(username="alice@example.com")
+        if aspect_cls is StatusClass:
+            return None
+        raise AssertionError(f"unexpected aspect read: {aspect_cls}")
 
     mock_client = AsyncMock()
-    mock_client.emit_mcp = AsyncMock()
+    mock_client.get_aspect = AsyncMock(side_effect=_get_aspect)
 
-    await ensure_corpuser_exists(mock_client, "bob@example.com", "Bob Smith")
+    result = await corpuser_exists(mock_client, "urn:li:corpuser:alice@example.com")
 
-    assert mock_client.emit_mcp.called, (
-        "ensure_corpuser_exists must call client.emit_mcp "
-        "per spec/feature/AUTH.md §DataHub Mirror Semantics"
+    assert result is True, (
+        "A corpuser whose key aspect resolves and which is not soft-deleted must "
+        "read as existing per spec/DATAHUB_INTEGRATION.md §Nightly Role Reconciliation step 2"
+    )
+    # Backstop: the probe must actually read the key aspect, not short-circuit.
+    read_aspects = [call.args[1] for call in mock_client.get_aspect.call_args_list]
+    assert CorpUserKeyClass in read_aspects, (
+        "The probe must read the corpUserKey aspect — it is materialised for every "
+        "existing entity, unlike corpUserInfo"
     )
 
-    # Inspect the MCP that was passed
-    mcp = mock_client.emit_mcp.call_args[0][0]
-    assert mcp.entityUrn == "urn:li:corpuser:bob@example.com", (
-        "MCP entityUrn must be urn:li:corpuser:<email> per DATAHUB_INTEGRATION.md §URN Conventions"
+
+@pytest.mark.asyncio
+async def test_corpuser_exists_false_when_key_aspect_absent() -> None:
+    """corpuser_exists returns False when no key aspect resolves (never JIT-provisioned).
+
+    spec: spec/feature/AUTH.md §Failure Modes — "A DataSpoke user has never logged
+    into DataHub, so no corpuser exists | The reconciliation pass's existence probe
+    skips them without mutating".
+    """
+    from src.backend.datahub.users import corpuser_exists
+
+    mock_client = AsyncMock()
+    mock_client.get_aspect = AsyncMock(return_value=None)
+
+    result = await corpuser_exists(mock_client, "urn:li:corpuser:nobody@example.com")
+
+    assert result is False, (
+        "A corpuser DataHub has not provisioned must read as absent so the pass "
+        "counts the user skipped_unprovisioned per spec/feature/AUTH.md §Failure Modes"
     )
-    # The aspect should have the right fields
-    aspect = mcp.aspect
-    assert aspect.active is True, "CorpUserInfo active must be True"
-    assert aspect.email == "bob@example.com", "CorpUserInfo email must match"
-    assert aspect.displayName == "Bob Smith", "CorpUserInfo displayName must match name"
+
+
+@pytest.mark.asyncio
+async def test_corpuser_exists_false_when_soft_deleted() -> None:
+    """A soft-deleted corpuser (Status.removed=True) reads as absent.
+
+    spec: spec/DATAHUB_INTEGRATION.md §Nightly Role Reconciliation step 2 —
+    "(entity key plus Status, soft-deleted counting as absent)".
+    """
+    from datahub.metadata.schema_classes import CorpUserKeyClass, StatusClass
+
+    from src.backend.datahub.users import corpuser_exists
+
+    async def _get_aspect(_urn, aspect_cls, **_kwargs):
+        if aspect_cls is CorpUserKeyClass:
+            return CorpUserKeyClass(username="ghost@example.com")
+        if aspect_cls is StatusClass:
+            return StatusClass(removed=True)
+        raise AssertionError(f"unexpected aspect read: {aspect_cls}")
+
+    mock_client = AsyncMock()
+    mock_client.get_aspect = AsyncMock(side_effect=_get_aspect)
+
+    result = await corpuser_exists(mock_client, "urn:li:corpuser:ghost@example.com")
+
+    assert result is False, (
+        "A soft-deleted corpuser must read as absent per "
+        "spec/DATAHUB_INTEGRATION.md §Nightly Role Reconciliation step 2"
+    )
+    # Backstop: the key aspect DID resolve, so the False came from the Status read,
+    # not from a missing entity.
+    read_aspects = [call.args[1] for call in mock_client.get_aspect.call_args_list]
+    assert StatusClass in read_aspects, (
+        "The soft-delete verdict must come from reading Status, not from the key "
+        "aspect being absent"
+    )
+
+
+@pytest.mark.asyncio
+async def test_corpuser_exists_propagates_datahub_unavailable() -> None:
+    """A transport failure surfaces rather than being mis-read as 'no corpuser'.
+
+    spec: spec/feature/AUTH.md §Role Drift Reconciliation — "errors | Users for whom
+    at least one facet could not be reconciled. The next nightly run retries."
+    Silently returning False would instead count the user skipped_unprovisioned and
+    never retry the repair.
+    """
+    from src.backend.datahub.users import corpuser_exists
+    from src.shared.exceptions import DataHubUnavailableError
+
+    mock_client = AsyncMock()
+    mock_client.get_aspect = AsyncMock(side_effect=DataHubUnavailableError("probe failed"))
+
+    with pytest.raises(DataHubUnavailableError):
+        await corpuser_exists(mock_client, "urn:li:corpuser:transient@example.com")
+
+
+# ── read_native_group_membership ──────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_read_native_group_membership_returns_native_groups() -> None:
+    """read_native_group_membership returns the nativeGroups list from the aspect.
+
+    spec: spec/feature/AUTH.md §Role Drift Reconciliation step 4 — "Group facet —
+    read the corpuser's nativeGroupMembership aspect. If the marker group URN is
+    absent, add it via addGroupMembers."
+    """
+    from datahub.metadata.schema_classes import NativeGroupMembershipClass
+
+    from src.backend.datahub.users import read_native_group_membership
+
+    mock_client = AsyncMock()
+    mock_client.get_aspect = AsyncMock(
+        return_value=NativeGroupMembershipClass(
+            nativeGroups=[
+                "urn:li:corpGroup:dataspoke-users",
+                "urn:li:corpGroup:other",
+            ]
+        )
+    )
+
+    result = await read_native_group_membership(
+        mock_client, "urn:li:corpuser:grouped@example.com"
+    )
+
+    assert result == [
+        "urn:li:corpGroup:dataspoke-users",
+        "urn:li:corpGroup:other",
+    ], (
+        "read_native_group_membership must return the aspect's nativeGroups so the "
+        "pass can test for the marker group URN per spec/feature/AUTH.md "
+        "§Role Drift Reconciliation step 4"
+    )
+
+
+@pytest.mark.asyncio
+async def test_read_native_group_membership_returns_empty_when_aspect_absent() -> None:
+    """An absent nativeGroupMembership aspect reads as membership of no group.
+
+    spec: spec/feature/AUTH.md §Role Drift Reconciliation step 4 — the marker group
+    URN being absent is what triggers the addGroupMembers repair; a corpuser with no
+    aspect at all is the base case of that.
+    """
+    from src.backend.datahub.users import read_native_group_membership
+
+    mock_client = AsyncMock()
+    mock_client.get_aspect = AsyncMock(return_value=None)
+
+    result = await read_native_group_membership(
+        mock_client, "urn:li:corpuser:nogroups@example.com"
+    )
+
+    assert result == [], (
+        "A corpuser with no nativeGroupMembership aspect belongs to no native group "
+        "per spec/feature/AUTH.md §Role Drift Reconciliation step 4"
+    )
 
 
 # ── ensure_marker_group_exists ────────────────────────────────────────────────
@@ -139,8 +341,8 @@ async def test_ensure_marker_group_exists_always_emits_both_aspects() -> None:
 async def test_ensure_marker_group_exists_emits_correct_aspect_content() -> None:
     """ensure_marker_group_exists emits Status + CorpGroupInfo with the right URN and field values.
 
-    spec: spec/feature/AUTH.md §Marker corpGroup — auto-created by DataSpoke on first user
-    registration if missing.
+    spec: spec/feature/AUTH.md §Marker corpGroup — "every reconciliation pass asserts
+    the group once, unconditionally, before its per-user loop".
 
     Two MCPs are emitted in order:
     1. StatusClass(removed=False) — activates the entity so addGroupMembers can find it
@@ -179,8 +381,8 @@ async def test_ensure_marker_group_exists_emits_correct_aspect_content() -> None
 async def test_add_user_to_marker_group_issues_correct_mutation() -> None:
     """add_user_to_marker_group issues GraphQL addGroupMembers with the right variables.
 
-    spec: spec/feature/AUTH.md §DataHub Mirror Semantics §Aspects DataSpoke writes —
-    group membership writes use addGroupMembers.
+    spec: spec/feature/AUTH.md §DataHub Projection Semantics — "Group membership writes
+    use addGroupMembers / removeGroupMembers."
     """
     from src.backend.datahub.users import add_user_to_marker_group
 
@@ -194,7 +396,7 @@ async def test_add_user_to_marker_group_issues_correct_mutation() -> None:
 
     assert mock_client.execute_graphql.called, (
         "add_user_to_marker_group must call execute_graphql "
-        "per spec/feature/AUTH.md §DataHub Mirror Semantics"
+        "per spec/feature/AUTH.md §DataHub Projection Semantics"
     )
 
     _, kwargs = mock_client.execute_graphql.call_args
@@ -210,11 +412,12 @@ async def test_add_user_to_marker_group_issues_correct_mutation() -> None:
         variables = call_args[1]
 
     assert variables["g"] == group_urn, (
-        "addGroupMembers must pass groupUrn per spec/feature/AUTH.md §DataHub Mirror Semantics"
+        "addGroupMembers must pass groupUrn per spec/feature/AUTH.md "
+        "§DataHub Projection Semantics"
     )
     assert user_urn in variables["u"], (
-        "addGroupMembers must include the corpuser URN per spec/feature/AUTH.md §DataHub Mirror "
-        "Semantics"
+        "addGroupMembers must include the corpuser URN per spec/feature/AUTH.md "
+        "§DataHub Projection Semantics"
     )
 
 
@@ -225,8 +428,8 @@ async def test_add_user_to_marker_group_issues_correct_mutation() -> None:
 async def test_propagate_role_issues_batch_assign_role_mutation() -> None:
     """propagate_role issues batchAssignRole with the correct roleUrn.
 
-    spec: spec/feature/AUTH.md §DataHub Mirror Semantics — role propagation uses
-    batchAssignRole with urn:li:dataHubRole:<role>.
+    spec: spec/feature/AUTH.md §DataHub Projection Semantics — "Role propagation uses the
+    GraphQL batchAssignRole mutation"; role URN per §URN Conventions.
     """
     from src.backend.datahub.users import propagate_role
 
@@ -350,7 +553,7 @@ async def test_read_role_returns_none_for_unrecognised_role_urn() -> None:
 async def test_hard_delete_corpuser_calls_hard_delete_entity() -> None:
     """hard_delete_corpuser calls client.hard_delete_entity with the corpuser URN.
 
-    spec: spec/feature/AUTH.md §DataHub Mirror Semantics §Mirror delete sequence —
+    spec: spec/feature/AUTH.md §Projection retraction sequence —
     step 2: hard-delete the DataHub corpuser via hard_delete_entity.
     spec: spec/feature/AUTH.md §Lifecycle §Deletion — hard_delete_entity removes
     the entity and all its incoming/outgoing references.
@@ -364,5 +567,5 @@ async def test_hard_delete_corpuser_calls_hard_delete_entity() -> None:
     await hard_delete_corpuser(mock_client, corpuser_urn_str)
 
     # hard_delete_corpuser must call client.hard_delete_entity with the exact corpuser URN
-    # per spec/feature/AUTH.md §DataHub Mirror Semantics §Mirror delete sequence
+    # per spec/feature/AUTH.md §Projection retraction sequence
     mock_client.hard_delete_entity.assert_called_once_with(corpuser_urn_str)

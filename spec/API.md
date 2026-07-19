@@ -198,7 +198,7 @@ All routes are prefixed with `/api/v1`.
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| `POST` | `/auth/register` | Create a new user account (open self-service; body `{email, name, password}`; password ≥ 10 chars). Mirrors the user into DataHub as a corpuser with Reader role. |
+| `POST` | `/auth/register` | Create a new user account (open self-service; body `{email, name, password}`; password ≥ 10 chars). Creates the DataSpoke `users` row with role `Reader`; makes no DataHub call. |
 | `POST` | `/auth/token` | Issue tokens (body `{email, password}`). Returns `{access_token, token_type: "bearer", expires_in}` and sets the refresh token as an HttpOnly cookie scoped to path `/api/v1/auth/token` |
 | `POST` | `/auth/token/refresh` | Refresh access token from the HttpOnly refresh cookie |
 | `POST` | `/auth/token/revoke` | Revoke refresh token (logout) |
@@ -603,14 +603,17 @@ The conf surface also carries `llm_api_key` for **online** key rotation, but it 
 Secret and an empty string clears it; `GET` returns it masked (`""` unset / `"********"` set) and
 **never** returns the plaintext. See [`spec/feature/BACKEND_LLM.md` §LLM API key](feature/BACKEND_LLM.md).
 
-`/admin/users/{id}` accepts display-name changes only; email is immutable
-because the DataHub corpuser URN is immutable. `/admin/users/{id}/role`
+`/admin/users/{id}` accepts display-name changes only (DataSpoke-local; the
+DataHub-side profile is DataHub's own); email is immutable because the DataHub
+corpuser URN derives from it. `/admin/users/{id}/role`
 writes `users.role` first, then propagates to DataHub via the
 `batchAssignRole` GraphQL mutation — DataSpoke is the SSOT for role, and
-the DataHub-side assignment is a one-way mirror reconciled nightly by the
+the DataHub-side assignment is a one-way projection reconciled nightly by the
 `auth-role-sync-daily` DAG (see [AUTH §Role Drift Reconciliation](feature/AUTH.md#role-drift-reconciliation)).
-`DELETE /admin/users/{id}` hard-deletes the DataSpoke row and the DataHub
-corpuser (via `hard_delete_entity`), which also removes the corpuser's
+Propagation is best-effort: a DataHub failure is logged, the DataSpoke write
+stands, and the DAG converges the projection.
+`DELETE /admin/users/{id}` hard-deletes the DataSpoke row and any DataHub
+corpuser at the user's URN (via `hard_delete_entity`), which also removes the corpuser's
 group memberships, role assignments, and ownership references in the
 DataHub graph; `ON DELETE CASCADE` on `api_tokens.user_id` removes the
 user's tokens at the DB level.
@@ -672,7 +675,9 @@ Airflow DAGs, and automation.
 
 `POST /internal/admin/bootstrap` seeds the built-in `dataspoke@dataspoke.local / dataspoke` admin user when no
 Admin row exists in the `users` table. The endpoint is idempotent: if any Admin already exists
-it returns `{created: false}` without touching anything. The `helm-charts/bin/post-install/seed-admin-user.sh`
+it returns `{created: false}` without touching anything. It writes only the DataSpoke `users`
+row and makes no DataHub call, so it requires no peripheral configuration and succeeds on a
+fresh install before DataHub is wired. The `helm-charts/bin/post-install/seed-admin-user.sh`
 post-install script invokes it during both dev and prod installs. Operators must rotate the
 default password via `PATCH /auth/me` before going to production.
 
@@ -928,7 +933,6 @@ Clients should treat `detail` as optional; absent for errors that don't need it.
 | `TOKEN_EXPIRED` | 401 | API token row exists but `expires_at` is in the past |
 | `TOKEN_NOT_FOUND` | 404 | `DELETE /auth/api-tokens/{id}` or `DELETE /admin/users/{id}/api-tokens/{token_id}` references a non-existent token |
 | `TOKEN_LIMIT_EXCEEDED` | 409 | `POST /auth/api-tokens` attempted while user already has 10 active (non-revoked) tokens |
-| `DATAHUB_SYNC_FAILED` | 503 | DataHub-side user mirror operation failed (create / role change / role propagation). For user creation this triggers a compensating hard-delete of the partial DataSpoke `users` row; for role propagation the DataSpoke write is preserved and the nightly DAG reconciles |
 | `PERIPHERAL_NOT_CONFIGURED` | 503 | A required peripheral is not configured. `detail.peripheral` identifies which one (`"smtp"` for `/auth/password/reset/request`; `"datahub"` for any DataHub-requiring endpoint when DataHub is unconfigured). Distinct from `DATAHUB_UNAVAILABLE` (502), which is the configured-but-unreachable case. The `/ready` health endpoint is the exception that reports an unconfigured peripheral as `degraded` rather than returning this code |
 | `DATAHUB_UNAVAILABLE` | 502 | DataHub GMS is configured but did not respond or returned an error |
 | `AIRFLOW_UNAVAILABLE` | 503 | The in-cluster Airflow REST API did not respond or returned an error while reading or setting DAG paused state (`GET`/`PATCH /admin/dags`) |

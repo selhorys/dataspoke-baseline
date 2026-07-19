@@ -16,3 +16,5 @@
 - [Ontogen score vs confidence_score](project_ontogen_score_vs_confidence_score.md) — rows carry `confidence_score`; USE_CASE_en.md L391/395/399 `score` is shorthand contradicting API.md + impl; flag tests asserting bare `score`
 - [Revoke 204-vs-401 unspecced](project_auth_revoke_204_vs_401_unspecced.md) — revoke has no auth dep; API.md L151 says it needs one; 204-for-garbage-cookie is impl choice argued from spec silence
 - [Revoke-503 cookie retention is framework-guaranteed](project_auth_revoke_503_cookie_retention_framework_guaranteed.md) — FastAPI drops injected-Response cookies when raising; the assertion can't fail, a fail-open impl passes too
+- [Dead assert-tuple: ruff is blind](project_dead_assert_tuple_ruff_blind.md) — TESTING.md bans trailing msg tuples on mock assert_*; ruff (E,F,I,UP) misses them, AST-scan instead
+- [AUTH email case normalised twice](project_auth_email_storage_case_divergence.md) — create_user lowercases on write, corpuser_urn on derivation; AUTH.md specifies both, so neither is impl-pinning

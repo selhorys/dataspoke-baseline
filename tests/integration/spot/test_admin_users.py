@@ -164,7 +164,7 @@ async def test_delete_user_removes_row(
 
     spec: spec/feature/AUTH.md §Lifecycle §Deletion — hard delete; deleted subject is an
     authentication failure (401 UNAUTHORIZED), not an authorization failure.
-    spec: spec/feature/AUTH.md §DataHub Mirror Semantics §Mirror delete sequence.
+    spec: spec/feature/AUTH.md §Projection retraction sequence.
     """
     email = _unique_email("delete-user")
     user = await _seed_user(async_session, email)

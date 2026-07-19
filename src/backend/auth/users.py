@@ -130,12 +130,19 @@ async def create_user(
     At least one of *password* or *google_sub* must be provided (enforced by
     the DB CHECK constraint, but validated here first for a cleaner error).
 
+    *email* is stored lowercased. ``users.email`` is CITEXT, so comparison is
+    already case-insensitive, but storage is case-preserving and the DataHub
+    corpuser URN derived from it (``urn:li:corpuser:<email>``) is case-
+    sensitive. DataHub's OIDC JIT mints that URN from the Google email claim
+    independently, so normalising on write keeps the two sides addressing the
+    same corpuser.
+
     Raises:
         ConflictError('EMAIL_ALREADY_REGISTERED')  — UNIQUE(email) violation.
     """
     password_hash = _hash_password(password) if password else None
     user = User(
-        email=email,
+        email=email.lower(),
         name=name,
         password_hash=password_hash,
         google_sub=google_sub,

@@ -35,8 +35,10 @@ preloaded), and `citext` (case-insensitive text — used by `users.email`).
 
 #### `users`
 
-DataSpoke-managed user identities. Every row is mirrored as a DataHub corpuser
-at `urn:li:corpuser:<email>` — see [AUTH §DataHub Mirror Semantics](AUTH.md#datahub-mirror-semantics).
+DataSpoke-managed user identities. Rows are local; the DataHub corpuser at
+`urn:li:corpuser:<email>` is provisioned by DataHub's OIDC JIT on the person's
+first DataHub login, and DataSpoke projects role and marker-group membership
+onto it — see [AUTH §DataHub Projection Semantics](AUTH.md#datahub-projection-semantics).
 
 | Column | Type | Description |
 |--------|------|-------------|

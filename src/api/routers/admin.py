@@ -63,7 +63,7 @@ from src.backend.auth import api_tokens, users
 from src.backend.datahub import users as dh_users
 from src.shared.datahub.client import DataHubClient
 from src.shared.db.registry import sync_with_datahub
-from src.shared.exceptions import ConflictError, DataHubSyncError, StorageUnavailableError
+from src.shared.exceptions import ConflictError, StorageUnavailableError
 from src.shared.secrets import SecretResolverUnavailable
 from src.workflows.airflow.client import AirflowClient
 from src.workflows.registry import ALL_DAG_IDS as _EXPECTED_DAGS
@@ -690,19 +690,14 @@ async def patch_user(
     user_id: uuid.UUID,
     body: UserPatchRequest,
     db: AsyncSession = Depends(get_db),
-    datahub: DataHubClient = Depends(get_datahub),
 ) -> UserResponse:
-    """Update a user's display name."""
+    """Update a user's display name.
+
+    The display name is DataSpoke-local; the DataHub-side profile is owned by
+    DataHub's OIDC JIT provisioning, which refreshes it from the Google claims
+    on each DataHub login.
+    """
     user = await users.update_name(db, user_id, body.name)
-    # Propagate name change to DataHub (idempotent).
-    try:
-        await dh_users.ensure_corpuser_exists(datahub, user.email, body.name)
-    except Exception:
-        logger.warning(
-            "datahub_name_propagation_failed",
-            extra={"user_id": str(user_id)},
-            exc_info=True,
-        )
     await db.commit()
     return _user_to_response(user)
 
@@ -714,17 +709,27 @@ async def patch_user_role(
     db: AsyncSession = Depends(get_db),
     datahub: DataHubClient = Depends(get_datahub),
 ) -> dict[str, Any]:
-    """Update a user's role and propagate to DataHub."""
+    """Update a user's role and project it onto DataHub.
+
+    The projection is gated on the user having a verified Google identity
+    (``google_sub``). ``corpuser_urn`` addresses whoever DataHub's OIDC JIT
+    provisioned at that email, and a password-registered row's email is
+    unverified — so projecting for an unbound row would let someone who
+    registered another person's address steer that person's DataHub role.
+    A password-only account simply carries no DataHub projection; the user
+    establishes the binding by signing into DataSpoke with Google once.
+    """
     user = await users.update_role(db, user_id, body.role)
-    # Propagate role to DataHub (non-fatal on failure — nightly DAG reconciles).
-    try:
-        await dh_users.propagate_role(datahub, dh_users.corpuser_urn(user.email), body.role)
-    except Exception:
-        logger.warning(
-            "datahub_role_propagation_failed",
-            extra={"user_id": str(user_id), "role": body.role},
-            exc_info=True,
-        )
+    if user.google_sub is not None:
+        # Projection is non-fatal on failure — the nightly DAG reconciles.
+        try:
+            await dh_users.propagate_role(datahub, dh_users.corpuser_urn(user.email), body.role)
+        except Exception:
+            logger.warning(
+                "datahub_role_propagation_failed",
+                extra={"user_id": str(user_id), "role": body.role},
+                exc_info=True,
+            )
     await db.commit()
     return {"role": user.role}
 
@@ -796,12 +801,17 @@ async def delete_user_api_token(
 @internal_router.post("/bootstrap")
 async def internal_bootstrap(
     db: AsyncSession = Depends(get_db),
-    datahub: DataHubClient = Depends(get_datahub),
 ) -> BootstrapResponse:
     """Seed the built-in dataspoke@dataspoke.local/dataspoke admin if no Admin user exists.
 
     Idempotent: if any Admin user already exists, returns created=False without
     touching anything.
+
+    Writes only the local users row, so it requires no peripheral configuration
+    and succeeds on a fresh install before DataHub is wired. The bootstrap
+    address has no Google identity behind it, so the row carries no google_sub
+    and reconciliation reports it as skipped_unbound — the binding gate runs
+    ahead of the existence probe.
 
     Protected by X-Internal-Token — only Helm post-install scripts should call this.
     """
@@ -816,7 +826,6 @@ async def internal_bootstrap(
         return BootstrapResponse(created=False, user_id=None, email=None)
 
     # Create the bootstrap admin.
-    runtime_config = await get_runtime_config(db)
     try:
         user = await users.create_user(
             db,
@@ -832,24 +841,6 @@ async def internal_bootstrap(
             if result2.scalar_one_or_none() is not None:
                 return BootstrapResponse(created=False, user_id=None, email=None)
         raise
-
-    # Run the DataHub mirror create sequence with Admin role.
-    try:
-        await dh_users.ensure_corpuser_exists(datahub, user.email, user.name)
-        await dh_users.ensure_marker_group_exists(datahub, runtime_config.auth_datahub_corp_group)
-        await dh_users.add_user_to_marker_group(
-            datahub,
-            dh_users.corpgroup_urn(runtime_config.auth_datahub_corp_group),
-            dh_users.corpuser_urn(user.email),
-        )
-        await dh_users.propagate_role(datahub, dh_users.corpuser_urn(user.email), "Admin")
-    except Exception as exc:
-        # Bootstrap owns its own commit boundary (it commits below), so unlike the
-        # register flow's rollback() this path compensates with an explicit
-        # hard_delete() + commit() to remove the orphaned row.
-        await users.hard_delete(db, user.id)
-        await db.commit()
-        raise DataHubSyncError("DataHub mirror failed during bootstrap; rolled back.") from exc
 
     await db.commit()
     logger.info("bootstrap_admin_created", extra={"user_id": str(user.id)})

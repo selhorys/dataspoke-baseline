@@ -746,9 +746,16 @@ Writes to .env.dev: `DATASPOKE_TEST_DATAHUB_GMS_URL`, `DATASPOKE_TEST_DATAHUB_TO
 (generated PAT), `DATASPOKE_TEST_DATAHUB_KAFKA_BROKERS`.
 
 **Google OIDC SSO**: `helm-charts/dev-peripherals/datahub.sh` configures DataHub's
-frontend to authenticate users via the same Google OAuth client as DataSpoke,
-so a user logging into DataHub natively resolves to the same corpuser URN
-(`urn:li:corpuser:<email>`) that DataSpoke wrote. The peripheral install
+frontend to authenticate users via the same Google OAuth client as DataSpoke.
+On a user's first DataHub login, DataHub just-in-time provisions their corpuser,
+yielding `urn:li:corpuser:<email>` — the URN DataSpoke addresses from its own
+`users.email` when projecting role and marker-group membership (see
+[feature/AUTH.md §DataHub OIDC JIT provisioning](AUTH.md#datahub-oidc-jit-provisioning)).
+Two `oidcAuthentication` values are **required** for that URN agreement:
+`user_name_claim=email` and `user_name_claim_regex=(.*)`. DataHub's default
+regex `([^@]+)` strips the domain and produces `urn:li:corpuser:bob`, which no
+DataSpoke row addresses — prod operators wiring their own DataHub must set both.
+The peripheral install
 passes the following values into the `datahub/datahub` chart when both
 `DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_ID` and
 `DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_SECRET` are set:
@@ -835,7 +842,7 @@ Dev only. Runs after the umbrella chart's API deployment is Ready.
 |---|---|
 | `bin/post-install/seed-peripheral-config.sh` | PATCH `/internal/admin/peripherals/datahub` with `{gms_url, kafka_brokers}` and `/internal/admin/peripherals/langfuse` with `{host, public_key}`. When set in `.env.dev`, the script also forwards optional operator-supplied non-secret fields from `DATASPOKE_DEV_*` env vars: DataHub `service_corpuser_urn` and `default_env`; Langfuse `project_id` (from `DATASPOKE_DEV_LANGFUSE_INIT_PROJECT_ID`) and `environment_tag`. The secret fields — DataHub PAT `token` and Langfuse `secret_key` — are placed into K8s Secrets out-of-band by the install script before the API pod starts (the API reads them via RBAC); the seed script does not send them through the admin API — only non-secret fields go through it. |
 | `bin/post-install/seed-runtime-config.sh` | PATCH `/internal/admin/conf` with `{llm_provider, llm_model}` from `DATASPOKE_DEV_LLM_{PROVIDER,MODEL}`, then a second PATCH setting the four `stub_*` dependency flags (`stub_redis_client`, `stub_llm_client`, `stub_pgvector_manager`, `stub_notification_service`) to `true` for the dev profile. |
-| `bin/post-install/seed-admin-user.sh` | POST `/internal/admin/bootstrap` to idempotently seed the built-in `dataspoke@dataspoke.local / dataspoke` Admin user (returns `{created: false}` when any Admin already exists). Tolerates `503 DATAHUB_SYNC_FAILED` retries while DataHub finishes indexing corpuser/corpGroup aspects on a fresh install. See [feature/AUTH.md §Built-in Bootstrap Admin](AUTH.md#built-in-bootstrap-admin). |
+| `bin/post-install/seed-admin-user.sh` | POST `/internal/admin/bootstrap` to idempotently seed the built-in `dataspoke@dataspoke.local / dataspoke` Admin user (returns `{created: false}` when any Admin already exists). The endpoint makes no DataHub call, so this step has no ordering dependency on peripheral seeding and succeeds on a fresh install before DataHub is wired. See [feature/AUTH.md §Built-in Bootstrap Admin](AUTH.md#built-in-bootstrap-admin). |
 
 Auth: both use the `DATASPOKE_INTERNAL_TOKEN` read from the `dataspoke-secrets` Secret
 (mounted on the API pod via `envFrom`).

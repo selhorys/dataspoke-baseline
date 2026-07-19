@@ -158,6 +158,43 @@ async def test_create_user_duplicate_email_raises_conflict() -> None:
     )
 
 
+# ── create_user — email normalisation ─────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_create_user_lowercases_stored_email_and_derived_corpuser_urn() -> None:
+    """create_user stores the email lowercased so the derived corpuser URN matches DataHub's.
+
+    spec: spec/feature/AUTH.md §DataHub Projection Semantics §URN conventions —
+    "The email is lowercased before URN derivation. DataSpoke users.email is CITEXT
+    — case-insensitive on compare, but case-preserving on storage — while the
+    corpuser URN is case-sensitive, so a row stored as `Bob@example.com` must still
+    derive `urn:li:corpuser:bob@example.com` to meet the URN DataHub provisions."
+    """
+    from src.backend.auth.users import create_user
+    from src.backend.datahub.users import corpuser_urn
+
+    captured: list = []
+
+    mock_db = AsyncMock()
+    mock_db.add = captured.append
+    mock_db.flush = AsyncMock()
+    mock_db.refresh = AsyncMock()
+
+    await create_user(mock_db, "Bob@example.com", "Bob Smith", password="password1234")
+
+    assert captured, "create_user must call db.add(user)"
+    stored_email = captured[0].email
+    assert stored_email == "bob@example.com", (
+        "create_user must store the email lowercased per spec/feature/AUTH.md "
+        f"§URN conventions; got {stored_email!r}"
+    )
+    assert corpuser_urn(stored_email) == "urn:li:corpuser:bob@example.com", (
+        "The corpuser URN derived from the stored email must be the URN DataHub's "
+        "OIDC JIT provisions per spec/feature/AUTH.md §URN conventions"
+    )
+
+
 # ── update_role — invalid role ────────────────────────────────────────────────
 
 

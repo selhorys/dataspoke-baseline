@@ -72,22 +72,7 @@ case "$HTTP_CODE" in
     fi
     ;;
   503)
-    case "$ERROR_CODE" in
-      DATAHUB_SYNC_FAILED)
-        warn "Bootstrap got 503 DATAHUB_SYNC_FAILED — DataHub is still indexing the just-emitted corpuser/corpGroup aspects."
-        warn "This is normal ~2-3 min after a fresh DataHub install. Re-run:"
-        warn "  bash $0"
-        exit 0
-        ;;
-      PERIPHERAL_NOT_CONFIGURED|STORAGE_UNAVAILABLE)
-        warn "Bootstrap got 503 ${ERROR_CODE}: peripheral dependencies not yet configured."
-        warn "Configure /admin/peripherals/datahub then re-run this script to seed the admin user."
-        exit 0
-        ;;
-      *)
-        error "POST failed (HTTP 503, error_code=${ERROR_CODE:-unknown}): ${SCHEME}://api.${DOMAIN}/internal/admin/bootstrap — see /tmp/seed-admin-resp.json"
-        ;;
-    esac
+    error "Bootstrap got HTTP 503 (error_code=${ERROR_CODE:-unknown}): ${SCHEME}://api.${DOMAIN}/internal/admin/bootstrap — see /tmp/seed-admin-resp.json. The bootstrap endpoint makes no external call, so a 503 here means the API's own storage (Postgres) is unavailable; fix that and re-run."
     ;;
   401|403)
     error "Bootstrap rejected with HTTP ${HTTP_CODE} — X-Internal-Token mismatch. Re-check dataspoke-secrets and the API pod env."

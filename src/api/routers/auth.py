@@ -10,7 +10,6 @@ Spec: spec/API.md §Auth, spec/feature/AUTH.md.
 
 from __future__ import annotations
 
-import logging
 import uuid
 from datetime import timedelta
 
@@ -20,7 +19,7 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.auth.dependencies import AuthContext, require_authenticated
-from src.api.dependencies import get_datahub, get_db, get_notification, get_redis
+from src.api.dependencies import get_db, get_notification, get_redis
 from src.api.middleware.rate_limit import limiter
 from src.api.schemas.auth import (
     ApiTokenItem,
@@ -37,17 +36,13 @@ from src.api.schemas.auth import (
     TokenRequest,
     TokenResponse,
 )
-from src.backend.admin.config_service import get_runtime_config
 from src.backend.auth import api_tokens, oauth_google, reset, users
 from src.backend.auth import tokens as _tokens
 from src.backend.auth.users import _prehash
-from src.backend.datahub import users as dh_users
 from src.shared.cache.client import RedisClient
-from src.shared.datahub.client import DataHubClient
 from src.shared.exceptions import (
     AuthenticationError,
     BadRequestError,
-    DataHubSyncError,
     OAuthNotConfiguredError,
 )
 from src.shared.notifications.service import NotificationService
@@ -55,8 +50,6 @@ from src.shared.notifications.service import NotificationService
 # Pre-computed dummy hash to ensure constant-time password verification even
 # when the email is unknown (prevents timing-based email enumeration attacks).
 _DUMMY_HASH: str = users._hash_password("__dummy_password_for_timing__")  # noqa: SLF001
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -113,35 +106,16 @@ async def post_register(
     body: RegisterRequest,
     response: Response,
     db: AsyncSession = Depends(get_db),
-    datahub: DataHubClient = Depends(get_datahub),
 ) -> TokenResponse:
     """Create a new user account (open self-service).
 
-    Password must be at least 10 characters. Mirrors the user into DataHub
-    as a corpuser with Reader role. Returns tokens so the user is immediately
+    Password must be at least 10 characters. Registration is local-only — the
+    DataHub corpuser is provisioned by DataHub's OIDC JIT on first DataHub
+    login, and the nightly reconciliation pass projects role and marker-group
+    membership onto it from there. Returns tokens so the user is immediately
     logged in.
     """
-    runtime_config = await get_runtime_config(db)
-
-    # Create local user row first (flush-only — no commit yet).
     user = await users.create_user(db, body.email, body.name, password=body.password, role="Reader")
-
-    # Run the DataHub mirror create sequence.
-    try:
-        await dh_users.ensure_corpuser_exists(datahub, user.email, user.name)
-        await dh_users.ensure_marker_group_exists(datahub, runtime_config.auth_datahub_corp_group)
-        await dh_users.add_user_to_marker_group(
-            datahub,
-            dh_users.corpgroup_urn(runtime_config.auth_datahub_corp_group),
-            dh_users.corpuser_urn(user.email),
-        )
-        await dh_users.propagate_role(datahub, dh_users.corpuser_urn(user.email), "Reader")
-    except Exception as exc:
-        # Roll back the unflushed user row — the insert was flushed but not
-        # committed, so rollback() leaves the DB in its pre-request state.
-        await db.rollback()
-        raise DataHubSyncError("DataHub mirror failed; registration rolled back.") from exc
-
     await db.commit()
 
     access_token, expires_in = _tokens.issue_access_token(user.id, user.email)
@@ -260,21 +234,16 @@ async def patch_me(
     body: MePatchRequest,
     ctx: AuthContext = Depends(require_authenticated),
     db: AsyncSession = Depends(get_db),
-    datahub: DataHubClient = Depends(get_datahub),
 ) -> MeResponse:
-    """Update own display name and/or password."""
+    """Update own display name and/or password.
+
+    The display name is DataSpoke-local; the DataHub-side profile is owned by
+    DataHub's OIDC JIT provisioning, which refreshes it from the Google claims
+    on each DataHub login.
+    """
     user = ctx.user
     if body.name is not None:
         user = await users.update_name(db, user.id, body.name)
-        # Propagate name change to DataHub (idempotent).
-        try:
-            await dh_users.ensure_corpuser_exists(datahub, user.email, body.name)
-        except Exception:
-            logger.warning(
-                "datahub_name_propagation_failed",
-                extra={"user_id": str(user.id)},
-                exc_info=True,
-            )
     if body.password is not None:
         user = await users.update_password(db, user.id, body.password)
     await db.commit()
@@ -337,7 +306,6 @@ async def get_google_login(request: Request) -> Response:
 async def get_google_callback(
     request: Request,
     db: AsyncSession = Depends(get_db),
-    datahub: DataHubClient = Depends(get_datahub),
 ) -> Response:
     """Complete the Google OAuth flow and set the refresh-token cookie.
 
@@ -392,14 +360,11 @@ async def get_google_callback(
         )
 
     # ── User resolution ───────────────────────────────────────────────────
-    runtime_config = await get_runtime_config(db)
     user = await oauth_google.resolve_or_create_user(
         db,
-        datahub,
         google_sub=google_sub,
         email=email,
         name=name,
-        runtime_config=runtime_config,
     )
     await db.commit()
 
