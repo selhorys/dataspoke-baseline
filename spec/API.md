@@ -179,12 +179,13 @@ re-read `users.role` on every call via the intersection check). See
 
 All routes are prefixed with `/api/v1`.
 
-> **Routing principle**: The URI structure has two axes. Per-dataset, cross-feature
-> operations use the canonical `/spoke/common/data/{dataset_urn}/…` surface for
-> state (`attr/<feat>/`), actions (`method/<feat>/`), and events (`event/<feat>`
-> or `event` for the unified per-dataset timeline); `/spoke/common` also carries
-> dataset-independent shell reads as siblings of `data`. Cross-dataset list views and
-> global features live under one namespace per MANIFESTO §2.1 feature:
+> **Routing principle**: The URI structure has two axes. The cross-feature common
+> surface is `/spoke/common/`; its principal resource is `data`, addressed per-dataset
+> at `/spoke/common/data/{dataset_urn}/…` for state (`attr/<feat>/`), actions
+> (`method/<feat>/`), and events (`event/<feat>` or `event` for the unified
+> per-dataset timeline), and reads that are cross-feature but belong to no dataset sit
+> beside it as siblings. Cross-dataset list views and global features live under one
+> namespace per MANIFESTO §2.1 feature:
 > `/spoke/ingestion` and `/spoke/validation` are list-view aggregators over the
 > per-dataset `attr/<feat>/*` data; `/spoke/ontogen` is a full singleton-conf
 > surface — one global conf, a manual run trigger, an event log, and result
