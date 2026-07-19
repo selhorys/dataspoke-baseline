@@ -89,10 +89,17 @@ vi.mock("@/components/notification-center", () => ({
   NotificationCenter: () => React.createElement("div", { "data-testid": "notification-center" }),
 }));
 
-// getRuntimeConfig — controllable per test via mockGetRuntimeConfig
+// getRuntimeConfig — supplies the deployment-local links (Airflow, ReDoc).
 const mockGetRuntimeConfig = vi.fn();
 vi.mock("@/lib/runtime-config", () => ({
   getRuntimeConfig: () => mockGetRuntimeConfig(),
+}));
+
+// useDisplayLinks — supplies the peripheral-sourced links (DataHub, Langfuse),
+// resolved env-first then from GET /spoke/common/peripheral-links.
+const mockUseDisplayLinks = vi.fn();
+vi.mock("@/lib/api/peripheral-links", () => ({
+  useDisplayLinks: () => mockUseDisplayLinks(),
 }));
 
 // ---------------------------------------------------------------------------
@@ -110,15 +117,39 @@ function makeMe(role: Me["role"]): Me {
   };
 }
 
+/**
+ * Sets both resolution planes at once. The shell reads the peripheral-sourced
+ * links (DataHub, Langfuse) from useDisplayLinks and the deployment-local ones
+ * (Airflow, ReDoc) from getRuntimeConfig — deliberately distinct sources.
+ */
+function setInfraLinks(urls: {
+  datahubUrl: string;
+  langfuseUrl: string;
+  langfuseProjectId?: string;
+  airflowUrl: string;
+  apiBaseUrl: string;
+}): void {
+  mockUseDisplayLinks.mockReturnValue({
+    datahubUrl: urls.datahubUrl,
+    langfuseUrl: urls.langfuseUrl,
+    langfuseProjectId: urls.langfuseProjectId ?? "",
+  });
+  mockGetRuntimeConfig.mockReturnValue({
+    airflowUrl: urls.airflowUrl,
+    apiBaseUrl: urls.apiBaseUrl,
+  });
+}
+
 beforeEach(() => {
   mockUseMe.mockReset();
+  mockUseDisplayLinks.mockReset();
   mockReplace.mockReset();
   mockClear.mockReset();
   mockToast.mockReset();
   mockApiFetch.mockReset();
   mockApiFetch.mockResolvedValue(undefined);
   // Default: no infra URLs configured
-  mockGetRuntimeConfig.mockReturnValue({ datahubUrl: "", langfuseUrl: "", airflowUrl: "", apiBaseUrl: "" });
+  setInfraLinks({ datahubUrl: "", langfuseUrl: "", airflowUrl: "", apiBaseUrl: "" });
 });
 
 // ---------------------------------------------------------------------------
@@ -475,7 +506,7 @@ describe("AppShell — infra icon links", () => {
   });
 
   it("renders all four infra links when all URLs are configured", () => {
-    mockGetRuntimeConfig.mockReturnValue({
+    setInfraLinks({
       datahubUrl: "http://datahub.example.com",
       langfuseUrl: "http://langfuse.example.com",
       airflowUrl: "http://airflow.example.com",
@@ -510,7 +541,7 @@ describe("AppShell — infra icon links", () => {
   });
 
   it("omits a link when its URL is empty", () => {
-    mockGetRuntimeConfig.mockReturnValue({
+    setInfraLinks({
       datahubUrl: "http://datahub.example.com",
       langfuseUrl: "",
       airflowUrl: "",
@@ -530,7 +561,7 @@ describe("AppShell — infra icon links", () => {
   });
 
   it("renders no infra links when all URLs are empty", () => {
-    mockGetRuntimeConfig.mockReturnValue({ datahubUrl: "", langfuseUrl: "", airflowUrl: "", apiBaseUrl: "" });
+    setInfraLinks({ datahubUrl: "", langfuseUrl: "", airflowUrl: "", apiBaseUrl: "" });
 
     render(
       <AppShell>

@@ -16,6 +16,13 @@ import type {
   MetagenItemSummary,
 } from "@/types/metagen";
 
+// Shared link components query peripheral-links; this suite mounts no
+// QueryClientProvider. See lib/api/peripheral-links.mock.ts.
+vi.mock("@/lib/api/peripheral-links", async () =>
+  (await import("@/lib/api/peripheral-links.mock")).envOnlyPeripheralLinksModule(),
+);
+
+
 const mockToast = vi.fn();
 vi.mock("@/components/ui/use-toast", () => ({ useToast: () => ({ toast: mockToast }) }));
 

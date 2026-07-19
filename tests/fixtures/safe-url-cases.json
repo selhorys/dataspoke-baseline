@@ -1,0 +1,446 @@
+{
+  "_readme": [
+    "Shared cross-language corpus for the display-link safety rule.",
+    "",
+    "SPEC ANCHOR: spec/API.md \u00a7Data Resource -> 'Display-link safety'. That block's",
+    "rule-class table is the source of every case here; each case carries a `rule` key",
+    "naming the row it derives from (Scheme / Authority / Characters / Shape / Length).",
+    "A case that cannot cite a row does not belong in this file.",
+    "",
+    "The rule is hand-maintained in three places, and nothing but this corpus makes a",
+    "one-sided edit fail:",
+    "  1. src/api/schemas/common.py SAFE_DISPLAY_URL_PATTERN / SAFE_PROJECT_ID_PATTERN,",
+    "     compiled by Python `re` and used by sanitize_display_url / sanitize_project_id",
+    "     at the READ boundary (spec: 'On read, GET /spoke/common/peripheral-links",
+    "     coerces one to \"\"').",
+    "  2. The same constants handed to pydantic Field(pattern=...) at the WRITE boundary",
+    "     (spec: 'On write, PATCH /admin/peripherals/{datahub,langfuse} rejects a",
+    "     violating value with 422'), compiled by pydantic's Rust regex engine, NOT by",
+    "     Python `re`.",
+    "  3. src/frontend/lib/safe-url.ts, compiled by the JavaScript engine (spec:",
+    "     FRONTEND_BASIC.md \u00a7Shell -- 'Both peripheral values are re-checked in the",
+    "     client against the display-link safety rule ... The client check is not",
+    "     redundant with the API's: it also covers the env-sourced values').",
+    "",
+    "Asserted by BOTH:",
+    "  - tests/unit/api/schemas/test_safe_url_corpus.py  (engines 1 and 2)",
+    "  - src/frontend/lib/safe-url.test.ts               (engine 3)",
+    "",
+    "Add a case here, not to one language's test file. `accept` and `reject` must hold",
+    "identically in every engine.",
+    "",
+    "SHAPE IS NOT AN ANTI-SPOOFING RULE. The spec says so outright: a path, query, or",
+    "fragment must be introduced by `/`, and 'This is a grammar constraint, not an",
+    "anti-spoofing rule.' The corpus shows both sides -- `https://evil.com?x=1` is",
+    "rejected and `https://evil.com/?x=1` is accepted, and the effective host is",
+    "`evil.com` either way. Do not relabel these as spoofing defences; the guard does",
+    "not have that property and only Authority (userinfo) and Characters (bidi) do.",
+    "",
+    "`engine_divergence` is intentionally empty: every case here is answered the same",
+    "way by all three engines. The bucket is kept as a documented home for a future",
+    "disagreement -- record it with each side's answer, a `why`, and a `remediation`,",
+    "rather than deleting the case or silently pinning one side. Both suites assert the",
+    "bucket is empty, so adding an entry is a deliberate, visible act.",
+    "",
+    "U+FEFF and U+0085 are Characters cases needing both classes to name them",
+    "explicitly: Python `\\s` follows the Unicode White_Space property (includes NEL,",
+    "excludes ZWNBSP) and ECMAScript `\\s` follows the WhiteSpace production (the exact",
+    "inverse). The spec's 'No whitespace' is only satisfied under the union of the two",
+    "definitions, which is what both classes now encode.",
+    "",
+    "Invisible characters are stored as \\uXXXX escapes on purpose: a literal one would",
+    "be unreviewable in a diff."
+  ],
+  "_rule_classes": {
+    "Scheme": "Lowercase http:// or https://, or \"\" meaning unset. Lowercasing is a strictness choice for an operator-entered config field, not a safety property; the host itself stays case-insensitive.",
+    "Authority": "A host plus an optional numeric port and nothing else. Userinfo is rejected.",
+    "Characters": "No whitespace, no C0 control characters, and no unicode bidi-override characters anywhere in the value.",
+    "Shape": "A path, query, or fragment must be introduced by `/`. A grammar constraint, NOT an anti-spoofing rule.",
+    "Length": "Bounded -- 512 for a URL, 256 for project_id, which is further restricted to an alphanumeric slug.",
+    "Slug": "The project_id sub-rule of the Length row: an alphanumeric slug. Split out from Length so that the length BOUND (512 / 256) is exercised by its own boundary cases rather than being reported as covered by slug-grammar cases."
+  },
+  "display_url": {
+    "accept": [
+      {
+        "rule": "Scheme",
+        "label": "empty means unset (render no link)",
+        "value": ""
+      },
+      {
+        "rule": "Scheme",
+        "label": "plain http host",
+        "value": "http://datahub.example.com"
+      },
+      {
+        "rule": "Scheme",
+        "label": "plain https host",
+        "value": "https://datahub.example.com"
+      },
+      {
+        "rule": "Scheme",
+        "label": "uppercase host label (host is case-insensitive)",
+        "value": "https://DataHub.Example.COM"
+      },
+      {
+        "rule": "Authority",
+        "label": "single-label internal host",
+        "value": "http://datahub"
+      },
+      {
+        "rule": "Authority",
+        "label": "explicit numeric port",
+        "value": "http://datahub-gms.internal:8080"
+      },
+      {
+        "rule": "Authority",
+        "label": "nip.io dev host",
+        "value": "http://10.1.2.3.nip.io"
+      },
+      {
+        "rule": "Shape",
+        "label": "trailing slash",
+        "value": "https://datahub.example.com/"
+      },
+      {
+        "rule": "Shape",
+        "label": "port plus path",
+        "value": "https://datahub.example.com:8443/ui/path"
+      },
+      {
+        "rule": "Shape",
+        "label": "percent-encoded urn in the path",
+        "value": "https://datahub.example.com/dataset/urn%3Ali%3Adataset"
+      },
+      {
+        "rule": "Shape",
+        "label": "query introduced by a slash",
+        "value": "https://datahub.example.com/search?q=imazon"
+      },
+      {
+        "rule": "Shape",
+        "label": "slash-introduced query, host still evil.com (grammar, not anti-spoofing)",
+        "value": "https://evil.com/?next=trusted.com"
+      },
+      {
+        "rule": "Shape",
+        "label": "slash-introduced fragment, host still evil.com (grammar, not anti-spoofing)",
+        "value": "https://evil.com/#@trusted.com"
+      }
+    ],
+    "reject": [
+      {
+        "rule": "Scheme",
+        "label": "javascript scheme",
+        "value": "javascript:alert(1)"
+      },
+      {
+        "rule": "Scheme",
+        "label": "data scheme",
+        "value": "data:text/html,<script>alert(1)</script>"
+      },
+      {
+        "rule": "Scheme",
+        "label": "vbscript scheme",
+        "value": "vbscript:msgbox(1)"
+      },
+      {
+        "rule": "Scheme",
+        "label": "file scheme",
+        "value": "file:///etc/passwd"
+      },
+      {
+        "rule": "Scheme",
+        "label": "ftp scheme",
+        "value": "ftp://files.example.com"
+      },
+      {
+        "rule": "Scheme",
+        "label": "uppercase scheme (strictness choice, not a safety property)",
+        "value": "HTTPS://datahub.example.com"
+      },
+      {
+        "rule": "Scheme",
+        "label": "protocol-relative, no scheme",
+        "value": "//evil.example.com"
+      },
+      {
+        "rule": "Scheme",
+        "label": "bare host, no scheme",
+        "value": "datahub.example.com"
+      },
+      {
+        "rule": "Authority",
+        "label": "empty authority",
+        "value": "https://"
+      },
+      {
+        "rule": "Authority",
+        "label": "empty host with a path",
+        "value": "http:///dataset"
+      },
+      {
+        "rule": "Authority",
+        "label": "userinfo disguising the effective host",
+        "value": "https://trusted.example.com@evil.com"
+      },
+      {
+        "rule": "Authority",
+        "label": "userinfo with password",
+        "value": "https://user:pw@evil.com"
+      },
+      {
+        "rule": "Authority",
+        "label": "non-numeric port",
+        "value": "https://evil.example.com:notaport"
+      },
+      {
+        "rule": "Authority",
+        "label": "empty port",
+        "value": "https://evil.example.com:"
+      },
+      {
+        "rule": "Shape",
+        "label": "fragment not introduced by a slash (grammar)",
+        "value": "https://evil.com#@trusted.com"
+      },
+      {
+        "rule": "Shape",
+        "label": "query not introduced by a slash (grammar)",
+        "value": "https://evil.com?next=trusted.com"
+      },
+      {
+        "rule": "Characters",
+        "label": "leading space",
+        "value": " https://datahub.example.com"
+      },
+      {
+        "rule": "Characters",
+        "label": "trailing space",
+        "value": "https://datahub.example.com "
+      },
+      {
+        "rule": "Characters",
+        "label": "space inside the host",
+        "value": "https://evil .example.com"
+      },
+      {
+        "rule": "Characters",
+        "label": "NUL in the host",
+        "value": "https://evil\u0000.example.com"
+      },
+      {
+        "rule": "Characters",
+        "label": "TAB in the host",
+        "value": "https://evil\t.example.com"
+      },
+      {
+        "rule": "Characters",
+        "label": "LF in the host (header splitting)",
+        "value": "https://evil\n.example.com"
+      },
+      {
+        "rule": "Characters",
+        "label": "VT in the host",
+        "value": "https://evil\u000b.example.com"
+      },
+      {
+        "rule": "Characters",
+        "label": "FF in the host",
+        "value": "https://evil\f.example.com"
+      },
+      {
+        "rule": "Characters",
+        "label": "CR in the host (header splitting)",
+        "value": "https://evil\r.example.com"
+      },
+      {
+        "rule": "Characters",
+        "label": "trailing LF after an otherwise valid URL",
+        "value": "https://datahub.example.com\n"
+      },
+      {
+        "rule": "Characters",
+        "label": "NBSP in the host",
+        "value": "https://evil\u00a0.example.com"
+      },
+      {
+        "rule": "Characters",
+        "label": "OGHAM SPACE MARK in the host",
+        "value": "https://evil\u1680.example.com"
+      },
+      {
+        "rule": "Characters",
+        "label": "IDEOGRAPHIC SPACE in the host",
+        "value": "https://evil\u3000.example.com"
+      },
+      {
+        "rule": "Characters",
+        "label": "LINE SEPARATOR in the host",
+        "value": "https://evil\u2028.example.com"
+      },
+      {
+        "rule": "Characters",
+        "label": "PARAGRAPH SEPARATOR in the host",
+        "value": "https://evil\u2029.example.com"
+      },
+      {
+        "rule": "Characters",
+        "label": "ZERO WIDTH NO-BREAK SPACE (BOM) in the host",
+        "value": "https://evil\ufeff.example.com"
+      },
+      {
+        "rule": "Characters",
+        "label": "NEXT LINE (NEL) in the host",
+        "value": "https://evil\u0085.example.com"
+      },
+      {
+        "rule": "Characters",
+        "label": "LRM disguising the host",
+        "value": "https://evil\u200ecom.example"
+      },
+      {
+        "rule": "Characters",
+        "label": "RLM disguising the host",
+        "value": "https://evil\u200fcom.example"
+      },
+      {
+        "rule": "Characters",
+        "label": "LRE disguising the host",
+        "value": "https://evil\u202acom.example"
+      },
+      {
+        "rule": "Characters",
+        "label": "RLO disguising the host",
+        "value": "https://evil\u202ecom.example"
+      },
+      {
+        "rule": "Characters",
+        "label": "LRI disguising the host",
+        "value": "https://evil\u2066com.example"
+      },
+      {
+        "rule": "Characters",
+        "label": "PDI disguising the host",
+        "value": "https://evil\u2069com.example"
+      },
+      {
+        "rule": "Characters",
+        "label": "CR in the path",
+        "value": "https://datahub.example.com/a\rb"
+      },
+      {
+        "rule": "Characters",
+        "label": "RLO in the path",
+        "value": "https://datahub.example.com/a\u202eb"
+      }
+    ],
+    "engine_divergence": []
+  },
+  "project_id": {
+    "accept": [
+      {
+        "rule": "Slug",
+        "label": "empty means unset",
+        "value": ""
+      },
+      {
+        "rule": "Slug",
+        "label": "plain slug",
+        "value": "proj"
+      },
+      {
+        "rule": "Slug",
+        "label": "hyphenated slug",
+        "value": "proj-1"
+      },
+      {
+        "rule": "Slug",
+        "label": "underscored slug",
+        "value": "proj_1"
+      },
+      {
+        "rule": "Slug",
+        "label": "leading digit",
+        "value": "0abc"
+      },
+      {
+        "rule": "Slug",
+        "label": "mixed case with both separators",
+        "value": "A-b_C9"
+      },
+      {
+        "rule": "Slug",
+        "label": "imazon dev project",
+        "value": "imazon-metadata"
+      }
+    ],
+    "reject": [
+      {
+        "rule": "Slug",
+        "label": "path traversal",
+        "value": "../../etc/passwd"
+      },
+      {
+        "rule": "Slug",
+        "label": "slash",
+        "value": "proj/evil"
+      },
+      {
+        "rule": "Slug",
+        "label": "backslash",
+        "value": "proj\\evil"
+      },
+      {
+        "rule": "Slug",
+        "label": "leading dash",
+        "value": "-proj"
+      },
+      {
+        "rule": "Slug",
+        "label": "leading underscore",
+        "value": "_proj"
+      },
+      {
+        "rule": "Slug",
+        "label": "space",
+        "value": "proj 1"
+      },
+      {
+        "rule": "Slug",
+        "label": "dot",
+        "value": "proj.evil"
+      },
+      {
+        "rule": "Slug",
+        "label": "query injection",
+        "value": "proj?x=1"
+      },
+      {
+        "rule": "Slug",
+        "label": "fragment",
+        "value": "proj#frag"
+      },
+      {
+        "rule": "Slug",
+        "label": "percent encoding",
+        "value": "proj%2fevil"
+      },
+      {
+        "rule": "Slug",
+        "label": "colon",
+        "value": "proj:evil"
+      },
+      {
+        "rule": "Slug",
+        "label": "trailing LF",
+        "value": "proj\n"
+      },
+      {
+        "rule": "Slug",
+        "label": "leading LF",
+        "value": "\nproj"
+      }
+    ],
+    "engine_divergence": []
+  }
+}

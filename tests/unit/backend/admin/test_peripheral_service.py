@@ -5,6 +5,10 @@ Concerns covered:
 1.  get — absent row returns None (unconfigured state).
 2.  get — present datahub row returns DatahubConfigDTO with correct fields.
 3.  get — present langfuse row returns LangfuseConfigDTO with correct fields.
+3b. get/patch — the non-secret settings JSONB keys round-trip into the DTOs, and
+    an absent key yields "". Includes DataHub's ``frontend_url`` (the
+    browser-facing UI URL, distinct from ``gms_url``) and its shallow-merge
+    behaviour when added to an already-wired row.
 4.  get — cache hit within TTL: second call does not re-query the DB.
 5.  get — cache expiry forces a fresh DB read.
 6.  invalidate — by name evicts one entry; other entries remain.
@@ -199,6 +203,105 @@ async def test_get_datahub_dto_new_fields_default_to_empty_when_absent() -> None
         "Absent service_corpuser_urn key must yield '' at the service layer."
     )
     assert result.default_env == "", "Absent default_env key must yield '' at the service layer."
+
+
+@pytest.mark.asyncio
+async def test_get_datahub_dto_carries_frontend_url_distinct_from_gms_url() -> None:
+    """A datahub row's ``frontend_url`` round-trips into the DTO, unmixed with ``gms_url``.
+
+    The two are seeded to differ in host, port, AND scheme — the reported
+    deployment's shape, where GMS is an internal plain-HTTP ELB and the UI is a
+    public TLS hostname — so a ``_row_to_dto`` that read the wrong settings key
+    cannot coincidentally produce the expected value.
+
+    spec: spec/API.md §Data Resource — ``datahub_url`` ⟵ ``datahub.frontend_url``
+        "(the browser-facing UI URL — **never** ``gms_url``, which addresses the
+        GMS service and routinely differs in host, port, and scheme)".
+    spec: spec/feature/BACKEND_SCHEMA.md §peripheral_config — ``frontend_url`` is a
+        non-secret DataHub field in the ``settings`` JSONB.
+    """
+    row = _make_row(
+        "datahub",
+        {
+            "gms_url": "http://datahub-gms.internal:8080",
+            "kafka_brokers": "kafka:9092",
+            "frontend_url": "https://datahub.imazon.example.com",
+        },
+    )
+    db = _db_with_row(row)
+
+    result = await get_peripheral_config(db, "datahub")
+
+    assert isinstance(result, DatahubConfigDTO)
+    assert result.frontend_url == "https://datahub.imazon.example.com", (
+        "DatahubConfigDTO must surface frontend_url from settings JSONB. "
+        "spec: spec/feature/BACKEND_SCHEMA.md §peripheral_config."
+    )
+    assert result.gms_url == "http://datahub-gms.internal:8080", (
+        "gms_url must keep its own value — the two keys must not be conflated."
+    )
+    assert result.frontend_url != result.gms_url
+
+
+@pytest.mark.asyncio
+async def test_get_datahub_dto_frontend_url_defaults_to_empty_when_absent() -> None:
+    """A datahub row wired for the backend only yields ``frontend_url == ""``.
+
+    This is the state the peripheral-links regression was filed on: GMS fully
+    configured, no browser-facing URL anywhere in the model. The service must
+    report "" rather than falling back to ``gms_url``.
+
+    spec: spec/API.md §Data Resource — "An unconfigured peripheral yields ``""``,
+        which clients read as 'render no link'".
+    """
+    row = _make_row(
+        "datahub",
+        {"gms_url": "http://datahub-gms.internal:8080", "kafka_brokers": "kafka:9092"},
+    )
+    db = _db_with_row(row)
+
+    result = await get_peripheral_config(db, "datahub")
+
+    assert isinstance(result, DatahubConfigDTO)
+    assert result.frontend_url == "", (
+        "An absent frontend_url key must yield '' at the service layer, never a "
+        "value derived from gms_url."
+    )
+    # Backstop: prove the row really was populated, so the "" above is the
+    # absent-key default rather than an empty settings dict.
+    assert result.gms_url == "http://datahub-gms.internal:8080"
+
+
+@pytest.mark.asyncio
+async def test_patch_datahub_frontend_url_preserves_existing_settings() -> None:
+    """Adding ``frontend_url`` to an already-wired DataHub row keeps the other keys.
+
+    ``frontend_url`` is a new key in an untyped JSONB column, so the operator
+    adding it post-install must not lose the backend wiring already stored there.
+
+    spec: spec/feature/BACKEND_SCHEMA.md §peripheral_config — ``settings`` is JSONB
+        merged shallowly; ``frontend_url`` is one of its non-secret DataHub fields.
+    """
+    existing_settings = {
+        "gms_url": "http://datahub-gms.internal:8080",
+        "kafka_brokers": "kafka:9092",
+        "service_corpuser_urn": "urn:li:corpuser:imazon-svc",
+    }
+    row = _make_row("datahub", existing_settings)
+    db = _db_with_row(row)
+    db.refresh = AsyncMock(side_effect=lambda obj: None)
+
+    result = await patch_peripheral_config(
+        db, "datahub", frontend_url="https://datahub.imazon.example.com"
+    )
+
+    assert isinstance(result, DatahubConfigDTO)
+    assert result.frontend_url == "https://datahub.imazon.example.com"
+    assert row.settings["gms_url"] == "http://datahub-gms.internal:8080", (
+        "Adding frontend_url must not clobber the existing gms_url"
+    )
+    assert row.settings["kafka_brokers"] == "kafka:9092"
+    assert row.settings["service_corpuser_urn"] == "urn:li:corpuser:imazon-svc"
 
 
 @pytest.mark.asyncio

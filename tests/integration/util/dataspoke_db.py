@@ -132,11 +132,19 @@ async def reset_all() -> None:
 
         datahub_gms = os.environ.get("DATASPOKE_TEST_DATAHUB_GMS_URL", "")
         datahub_kafka = os.environ.get("DATASPOKE_TEST_DATAHUB_KAFKA_BROKERS", "")
+        # The browser-facing UI URL is carried in its own variable rather than
+        # derived from gms_url: the two differ in host, port, and scheme in a
+        # real deployment. Restoring it here keeps the dev UI's DataHub link
+        # working after a reset, which would otherwise drop the field.
+        datahub_frontend = os.environ.get("DATASPOKE_TEST_DATAHUB_FRONTEND_URL", "")
         if datahub_gms and datahub_kafka:
+            datahub_settings = {"gms_url": datahub_gms, "kafka_brokers": datahub_kafka}
+            if datahub_frontend:
+                datahub_settings["frontend_url"] = datahub_frontend
             await conn.execute(
                 f"INSERT INTO {_SCHEMA}.peripheral_config (name, settings) VALUES ($1, $2::jsonb)",
                 "datahub",
-                json.dumps({"gms_url": datahub_gms, "kafka_brokers": datahub_kafka}),
+                json.dumps(datahub_settings),
             )
         langfuse_host = os.environ.get("DATASPOKE_TEST_LANGFUSE_HOST", "")
         langfuse_pk = os.environ.get("DATASPOKE_TEST_LANGFUSE_PUBLIC_KEY", "")

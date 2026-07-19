@@ -95,6 +95,9 @@ _FAKE_DH_DTO_FULL = DatahubConfigDTO(
     kafka_brokers="kafka:9092",
     service_corpuser_urn="urn:li:corpuser:imazon-svc",
     default_env="PROD",
+    # Differs from gms_url in host, port, AND scheme — the browser-facing UI URL
+    # cannot be derived from the GMS service endpoint.
+    frontend_url="https://datahub.imazon.example.com",
 )
 _FAKE_LF_DTO_FULL = LangfuseConfigDTO(
     host="http://langfuse:3000",
@@ -1141,18 +1144,20 @@ async def test_patch_datahub_empty_body_does_not_create_row(client) -> None:
 
 # ── New non-secret connection settings: round-trip through PATCH / GET ─────────
 #
-# spec: spec/API.md §/admin/peripherals/datahub + /langfuse — service_corpuser_urn,
-#   default_env, project_id, environment_tag are non-secret and returned plain
-#   (never masked); unset rows read back factory defaults.
+# spec: spec/API.md §/admin/peripherals/datahub + /langfuse — frontend_url,
+#   service_corpuser_urn, default_env, project_id, environment_tag are non-secret
+#   and returned plain (never masked); unset rows read back factory defaults.
 # spec: src/api/schemas/admin.py Datahub/LangfusePeripheral{Response,PatchRequest}.
 
 
 @pytest.mark.asyncio
-async def test_get_datahub_returns_service_corpuser_urn_and_default_env_plain(client) -> None:
-    """GET /admin/peripherals/datahub returns service_corpuser_urn + default_env plain (not masked).
+async def test_get_datahub_returns_non_secret_fields_plain(client) -> None:
+    """GET returns frontend_url, service_corpuser_urn, and default_env plain (not masked).
 
-    spec: spec/API.md §/admin/peripherals/datahub — non-secret connection settings
-        returned plain alongside the masked token.
+    spec: spec/API.md §Admin — GET /admin/peripherals/datahub: "`frontend_url`
+        (the browser-facing DataHub UI URL, distinct from the `gms_url` service
+        endpoint), `service_corpuser_urn`, and `default_env` are non-secret and
+        returned plain".
     """
     _, db_gen = _fake_db()
     app.dependency_overrides[get_db] = db_gen
@@ -1177,7 +1182,21 @@ async def test_get_datahub_returns_service_corpuser_urn_and_default_env_plain(cl
     assert body["default_env"] == "PROD", (
         "default_env must be returned plain. spec: spec/API.md §/admin/peripherals/datahub."
     )
-    # Plain (non-secret) — never masked.
+    assert body["frontend_url"] == "https://datahub.imazon.example.com", (
+        "frontend_url must be returned plain. spec: spec/API.md §Admin — "
+        "GET /admin/peripherals/datahub returns frontend_url non-secret and plain."
+    )
+    assert body["frontend_url"] != body["gms_url"], (
+        "frontend_url is the browser-facing UI URL and must not be conflated with "
+        "the gms_url service endpoint."
+    )
+    # Plain (non-secret) — never masked. The frontend_url check is load-bearing
+    # beyond documentation: a mapper regression that masked it would otherwise be
+    # invisible here AND would make the spot test's snapshot/restore round-trip
+    # write "********" into peripheral_config while still comparing equal.
+    assert body["frontend_url"] != "********", (
+        "frontend_url must never be masked — it is non-secret."
+    )
     assert body["service_corpuser_urn"] != "********"
     assert body["default_env"] != "********"
 
@@ -1212,6 +1231,11 @@ async def test_get_datahub_unconfigured_reads_back_factory_defaults(client) -> N
     assert body["default_env"] == "DEV", (
         "Unset default_env must read back the factory default 'DEV'. "
         "spec: spec/API.md §/admin/peripherals/datahub."
+    )
+    assert body["frontend_url"] == "", (
+        "An unconfigured DataHub peripheral has no browser-facing URL and none is "
+        "derivable from gms_url, so frontend_url must read back ''. "
+        "spec: spec/API.md §Data Resource — an unconfigured peripheral yields ''."
     )
 
 

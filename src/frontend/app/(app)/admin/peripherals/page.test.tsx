@@ -26,6 +26,9 @@ function makeDatahub(overrides: Partial<DatahubPeripheral> = {}): DatahubPeriphe
   return {
     resp_time: "2026-06-26T00:00:00Z",
     gms_url: "http://datahub-gms:8080",
+    // Browser-facing UI URL — deliberately differs from gms_url in host, port,
+    // and scheme, mirroring the deployment shape the endpoint exists to serve.
+    frontend_url: "https://datahub.example.com",
     kafka_brokers: "kafka:9092",
     token: "********",
     service_corpuser_urn: "urn:li:corpuser:dataspoke",
@@ -118,6 +121,7 @@ import {
   datahubSchema,
   datahubToFormDefaults,
   datahubBuildPatch,
+  langfuseSchema,
   langfuseToFormDefaults,
   langfuseBuildPatch,
 } from "./peripherals-form.schema";
@@ -255,6 +259,74 @@ describe("peripherals-form.schema — toFormDefaults blanks secrets, buildPatch 
 
   it("datahubSchema accepts the form-default shape (all string fields)", () => {
     expect(datahubSchema.safeParse(datahubToFormDefaults(makeDatahub())).success).toBe(true);
+  });
+
+  it("datahubBuildPatch sends frontend_url when the browser-facing URL changes", () => {
+    const loaded = makeDatahub();
+    const values = {
+      ...datahubToFormDefaults(loaded),
+      frontend_url: "https://datahub.corp.example.com",
+    };
+    // Only the changed key — gms_url is untouched even though both are URLs.
+    expect(datahubBuildPatch(values, loaded)).toEqual({
+      frontend_url: "https://datahub.corp.example.com",
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 2b. Client-side URL/slug validation mirrors the backend constraints, so an
+//     operator gets an inline field error instead of a raw 422 toast.
+//     Mirrors SAFE_DISPLAY_URL_PATTERN / SAFE_PROJECT_ID_PATTERN in
+//     src/api/schemas/common.py.
+// ---------------------------------------------------------------------------
+describe("peripherals schemas — operator-supplied URL validation", () => {
+  const HOSTILE = [
+    "javascript:alert(1)",
+    "data:text/html,<script>alert(1)</script>",
+    "https://trusted.example.com@evil.com",
+    "//protocol-relative.example.com",
+    "datahub.example.com",
+  ];
+
+  it.each(HOSTILE)("datahubSchema rejects frontend_url %s", (url) => {
+    const values = { ...datahubToFormDefaults(makeDatahub()), frontend_url: url };
+    const parsed = datahubSchema.safeParse(values);
+    expect(parsed.success).toBe(false);
+    // The operator sees a usable message, not a bare "Invalid input".
+    expect(parsed.error?.issues[0].message).toMatch(/http:\/\/ or https:\/\//);
+  });
+
+  it.each(HOSTILE)("langfuseSchema rejects host %s (same constraint as DataHub)", (url) => {
+    const values = { ...langfuseToFormDefaults(makeLangfuse()), host: url };
+    expect(langfuseSchema.safeParse(values).success).toBe(false);
+  });
+
+  it("both schemas accept a blank URL as 'unset'", () => {
+    expect(
+      datahubSchema.safeParse({ ...datahubToFormDefaults(makeDatahub()), frontend_url: "" })
+        .success,
+    ).toBe(true);
+    expect(
+      langfuseSchema.safeParse({ ...langfuseToFormDefaults(makeLangfuse()), host: "" }).success,
+    ).toBe(true);
+  });
+
+  it.each(["../../etc/passwd", "proj/evil", "-leading-dash", "proj 1"])(
+    "langfuseSchema rejects project_id %s",
+    (id) => {
+      const values = { ...langfuseToFormDefaults(makeLangfuse()), project_id: id };
+      expect(langfuseSchema.safeParse(values).success).toBe(false);
+    },
+  );
+
+  it("langfuseSchema accepts an ordinary host and project slug", () => {
+    const values = {
+      ...langfuseToFormDefaults(makeLangfuse()),
+      host: "https://langfuse.example.com:3000",
+      project_id: "dataspoke-project_1",
+    };
+    expect(langfuseSchema.safeParse(values).success).toBe(true);
   });
 });
 

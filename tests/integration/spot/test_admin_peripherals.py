@@ -439,15 +439,22 @@ async def test_patch_datahub_new_fields_round_trip(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """PATCH service_corpuser_urn + default_env → GET reflects them plain (not masked).
+    """PATCH frontend_url + service_corpuser_urn + default_env → GET reflects them plain.
 
-    The two non-secret DataHub connection settings must persist to the
+    The non-secret DataHub connection settings must persist to the
     peripheral_config settings JSONB and read back verbatim (never masked).
 
-    spec: spec/API.md §/admin/peripherals/datahub — service_corpuser_urn /
-        default_env are non-secret and returned plain.
+    `frontend_url` is set to differ from `gms_url` in host, port, AND scheme so the
+    round-trip cannot pass by conflating the two. Its `!= "********"` assertion is
+    load-bearing beyond documentation: a mapper regression that masked it would make
+    the snapshot/restore round-trip in tests/integration/spot/test_peripheral_links.py
+    write "********" into peripheral_config and still compare equal.
+
+    spec: spec/API.md §Admin — GET /admin/peripherals/datahub: "`frontend_url` (the
+        browser-facing DataHub UI URL, distinct from the `gms_url` service endpoint),
+        `service_corpuser_urn`, and `default_env` are non-secret and returned plain".
     spec: spec/feature/BACKEND_SCHEMA.md §peripheral_config — settings JSONB carries
-        the new keys.
+        the non-secret keys.
     """
     _reset_peripheral_state()
     try:
@@ -456,6 +463,7 @@ async def test_patch_datahub_new_fields_round_trip(
             headers=admin_headers,
             json={
                 "gms_url": "http://datahub-gms:8080",
+                "frontend_url": "https://datahub.imazon.example.com:8443",
                 "kafka_brokers": "kafka:9092",
                 "token": "round-trip-token",
                 "service_corpuser_urn": "urn:li:corpuser:imazon-svc",
@@ -466,6 +474,10 @@ async def test_patch_datahub_new_fields_round_trip(
             f"PATCH new datahub fields returned {patch_resp.status_code}: {patch_resp.text}"
         )
         patch_body = patch_resp.json()
+        assert patch_body["frontend_url"] == "https://datahub.imazon.example.com:8443", (
+            "PATCH response must echo frontend_url plain. "
+            "spec: spec/API.md §Admin — frontend_url is non-secret and returned plain."
+        )
         assert patch_body["service_corpuser_urn"] == "urn:li:corpuser:imazon-svc", (
             "PATCH response must echo service_corpuser_urn plain. "
             "spec: spec/API.md §/admin/peripherals/datahub."
@@ -478,6 +490,13 @@ async def test_patch_datahub_new_fields_round_trip(
         get_resp = await api_client.get(_ADMIN_PERIPHERALS_DH, headers=admin_headers)
         assert get_resp.status_code == 200
         get_body = get_resp.json()
+        assert get_body["frontend_url"] == "https://datahub.imazon.example.com:8443", (
+            f"GET after PATCH must reflect frontend_url; got {get_body['frontend_url']!r}."
+        )
+        assert get_body["frontend_url"] != get_body["gms_url"], (
+            "frontend_url is the browser-facing UI URL and must not be conflated with "
+            "the gms_url service endpoint — they differ in host, port, and scheme here."
+        )
         assert get_body["service_corpuser_urn"] == "urn:li:corpuser:imazon-svc", (
             f"GET after PATCH must reflect service_corpuser_urn; "
             f"got {get_body['service_corpuser_urn']!r}."
@@ -486,6 +505,10 @@ async def test_patch_datahub_new_fields_round_trip(
             f"GET after PATCH must reflect default_env; got {get_body['default_env']!r}."
         )
         # Non-secret — must never be masked.
+        assert get_body["frontend_url"] != "********", (
+            "frontend_url must never be masked — it is non-secret. "
+            "spec: spec/API.md §Admin — returned plain."
+        )
         assert get_body["service_corpuser_urn"] != "********"
         assert get_body["default_env"] != "********"
     finally:

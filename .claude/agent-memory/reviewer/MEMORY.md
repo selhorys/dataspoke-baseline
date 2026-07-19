@@ -15,3 +15,4 @@
 - [health-check.sh unattended lock prompt](project_healthcheck_unattended_lock_prompt.md) — no --keep-lock ⇒ interactive read aborts under set -e; exit 1 misread as "cluster red"
 - [token_urlsafe scrub charset](project_token_urlsafe_scrub_charset.md) — dsk_/token_urlsafe are base64url; scrub regex needs [A-Za-z0-9_-]+ or ~74% of PATs leak a tail
 - [mypy override audit](feedback_mypy_override_audit.md) — --warn-unused-configs misses over-granted codes; re-run mypy with overrides stripped to get the true suppressed set
+- [Display-URL guard x3](project_display_url_guard_three_copies.md) — one safety regex hand-copied into pydantic + Python sanitizer + lib/safe-url.ts; diff-verify recipe

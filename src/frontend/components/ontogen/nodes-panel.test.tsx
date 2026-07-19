@@ -23,6 +23,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, within } from "@testing-library/react";
 import React from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { OntogenNode } from "@/types/ontogen";
 
 // ── hoisted spies ──────────────────────────────────────────────────────────
@@ -128,6 +129,35 @@ vi.mock("@/components/ui/use-toast", () => ({ useToast: () => ({ toast: vi.fn() 
 
 import { NodesPanel } from "./nodes-panel";
 
+// This suite asserts the Evidence href, so it runs the REAL useDisplayLinks
+// rather than a stub: that covers the WIRING — the component reads the hook, the
+// hook reads the endpoint, and a resolved URL reaches the href.
+//
+// It does NOT cover merge precedence. The mocked endpoint below reports no links,
+// so `env || api` and `api || env` both resolve to the env plane and an inverted
+// merge passes here unchanged. Precedence is guarded in
+// lib/api/peripheral-links.test.tsx, where both planes carry competing values and
+// the assertion is gated on the query settling.
+vi.mock("@/lib/api/client", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/api/client")>()),
+  apiFetch: vi.fn().mockResolvedValue({
+    resp_time: "2026-07-19T00:00:00.000Z",
+    datahub_url: "",
+    langfuse_url: "",
+    langfuse_project_id: "",
+  }),
+}));
+
+/** Mounts a QueryClientProvider so the real peripheral-links query can run. */
+function renderPanel(ui: React.ReactElement) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(ui, {
+    wrapper: ({ children }: { children: React.ReactNode }) =>
+      React.createElement(QueryClientProvider, { client }, children),
+  });
+}
+
+
 // ── fixtures ────────────────────────────────────────────────────────────────
 function makeNode(overrides: Partial<OntogenNode> = {}): OntogenNode {
   return {
@@ -170,7 +200,7 @@ afterEach(() => {
 describe("NodesPanel — 7-column compact layout", () => {
   it("renders the seven standard column headers", () => {
     mockNodesResult([makeNode()]);
-    render(<NodesPanel canWrite={false} />);
+    renderPanel(<NodesPanel canWrite={false} />);
     for (const header of [
       "Title",
       "Description",
@@ -187,7 +217,7 @@ describe("NodesPanel — 7-column compact layout", () => {
 
   it("renders the node name, description, and 2-dp confidence", () => {
     mockNodesResult([makeNode({ name: "Edition", description: "A format", confidence_score: 0.5 })]);
-    render(<NodesPanel canWrite={false} />);
+    renderPanel(<NodesPanel canWrite={false} />);
     expect(screen.getByText("Edition")).toBeTruthy();
     expect(screen.getByText("A format")).toBeTruthy();
     expect(screen.getByText("0.50")).toBeTruthy();
@@ -202,7 +232,7 @@ describe("NodesPanel — evidence Langfuse-session link", () => {
     mockNodesResult([
       makeNode({ id: "n-ev", run_id: "22222222-2222-2222-2222-222222222222" }),
     ]);
-    render(<NodesPanel canWrite={false} />);
+    renderPanel(<NodesPanel canWrite={false} />);
 
     const link = screen.getByRole("link", { name: /link/i });
     expect(link.getAttribute("href")).toBe(
@@ -214,7 +244,7 @@ describe("NodesPanel — evidence Langfuse-session link", () => {
 
   it("renders — (no link) when the row has no run_id", () => {
     mockNodesResult([makeNode({ id: "n-seeded", run_id: null })]);
-    render(<NodesPanel canWrite={false} />);
+    renderPanel(<NodesPanel canWrite={false} />);
 
     expect(screen.queryByRole("link", { name: /link/i })).toBeNull();
     expect(screen.getAllByText("—").length).toBeGreaterThan(0);
@@ -223,7 +253,7 @@ describe("NodesPanel — evidence Langfuse-session link", () => {
   it("renders — (no link) when the Langfuse runtime config is unset", () => {
     delete window.__DATASPOKE_RUNTIME_CONFIG__;
     mockNodesResult([makeNode({ id: "n-unconfigured" })]);
-    render(<NodesPanel canWrite={false} />);
+    renderPanel(<NodesPanel canWrite={false} />);
 
     expect(screen.queryByRole("link", { name: /link/i })).toBeNull();
   });
@@ -235,14 +265,14 @@ describe("NodesPanel — evidence Langfuse-session link", () => {
 describe("NodesPanel — reason-confirm review", () => {
   it("has no inline reason input before the confirm dialog opens", () => {
     mockNodesResult([makeNode()]);
-    render(<NodesPanel canWrite={true} />);
+    renderPanel(<NodesPanel canWrite={true} />);
     // No textarea is rendered until Approve/Reject opens the confirm popup.
     expect(screen.queryByPlaceholderText(/reason/i)).toBeNull();
   });
 
   it("opens the confirm popup on Approve and submits { verdict, reason }", () => {
     mockNodesResult([makeNode({ id: "n-approve" })]);
-    render(<NodesPanel canWrite={true} />);
+    renderPanel(<NodesPanel canWrite={true} />);
 
     fireEvent.click(screen.getByRole("button", { name: /^approve$/i }));
     const dialog = screen.getByRole("dialog");
@@ -266,7 +296,7 @@ describe("NodesPanel — reason-confirm review", () => {
     // FRONTEND_ONTOGEN.md L69 — the reason field is free-text/optional; an empty
     // reason must be coerced to undefined (omitted), not sent as an empty string.
     mockNodesResult([makeNode({ id: "n-approve-blank" })]);
-    render(<NodesPanel canWrite={true} />);
+    renderPanel(<NodesPanel canWrite={true} />);
 
     fireEvent.click(screen.getByRole("button", { name: /^approve$/i }));
     const dialog = screen.getByRole("dialog");
@@ -291,7 +321,7 @@ describe("NodesPanel — reason-confirm review", () => {
 describe("NodesPanel — sort & pagination query params", () => {
   it("defaults the list query to created_at_desc, offset 0, default limit", () => {
     mockNodesResult([makeNode()]);
-    render(<NodesPanel canWrite={false} />);
+    renderPanel(<NodesPanel canWrite={false} />);
     const params = useNodesSpy.mock.calls[0][0] as { offset: number; limit: number; sort: string };
     expect(params.sort).toBe("created_at_desc");
     expect(params.offset).toBe(0);
@@ -300,7 +330,7 @@ describe("NodesPanel — sort & pagination query params", () => {
 
   it("re-queries with sort=created_at_asc when the sort control changes", () => {
     mockNodesResult([makeNode()]);
-    render(<NodesPanel canWrite={false} />);
+    renderPanel(<NodesPanel canWrite={false} />);
 
     fireEvent.click(screen.getByTestId("opt-created_at_asc"));
 

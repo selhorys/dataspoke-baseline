@@ -29,7 +29,7 @@ The orchestrator invokes you **only when a generator's diff touches a sensitive 
 ### Sensitive path globs (authoritative list)
 
 - `src/api/auth/**` — JWT/auth (`dependencies.py`, `internal.py`)
-- `src/api/routers/**` — when the diff touches `Depends(require_authenticated)`, other `require_*` guards, or `require_internal_token`
+- `src/api/routers/**` — any **new route file**, regardless of its contents, plus any diff touching `Depends(require_authenticated)`, other `require_*` guards, or `require_internal_token`. The new-file clause is load-bearing: a generator that adds a route and *forgets* the guard produces a diff matching none of the guard strings, so the case most needing review would otherwise be the one that never triggers it.
 - `src/shared/settings.py` — secret env vars (JWT, DataHub token, Postgres, LLM, Airflow, internal-token)
 - `src/shared/datahub/**` — DataHub client and emission (`client.py`, `consumer.py`, `events.py`)
 - `src/backend/ingestion/**`, `src/backend/metagen/**`, `src/backend/ontogen/**`, `src/api/routers/internal/activities.py` — DataHub write paths

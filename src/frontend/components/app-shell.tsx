@@ -39,6 +39,7 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { NotificationCenter } from "@/components/notification-center";
 import { DataHubIcon, AirflowIcon, LangfuseIcon, RedocIcon } from "@/components/brand-icons";
 import { getRuntimeConfig } from "@/lib/runtime-config";
+import { useDisplayLinks } from "@/lib/api/peripheral-links";
 
 interface NavItem {
   label: string;
@@ -219,7 +220,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   const displayName = me?.name ?? me?.email ?? "Account";
 
-  const { datahubUrl, langfuseUrl, airflowUrl, apiBaseUrl } = getRuntimeConfig();
+  // DataHub and Langfuse are externally-wired peripherals: env-first, then
+  // GET /spoke/common/peripheral-links. Airflow and ReDoc are deployment-local
+  // (Airflow ships in the umbrella chart, ReDoc is the API itself), so they are
+  // absent from that endpoint and stay on the runtime config alone.
+  const { datahubUrl, langfuseUrl } = useDisplayLinks();
+  const { airflowUrl, apiBaseUrl } = getRuntimeConfig();
   const infraLinks = [
     // Link to /login (not the root): the React login page offers both the
     // username/password form and a "Sign in with SSO" button. The root would

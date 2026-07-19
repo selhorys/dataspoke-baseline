@@ -11,6 +11,13 @@ import { render, screen } from "@testing-library/react";
 import React from "react";
 import { UnmanagedDatasetTable } from "./unmanaged-dataset-table";
 
+// Shared link components query peripheral-links; this suite mounts no
+// QueryClientProvider. See lib/api/peripheral-links.mock.ts.
+vi.mock("@/lib/api/peripheral-links", async () =>
+  (await import("@/lib/api/peripheral-links.mock")).envOnlyPeripheralLinksModule(),
+);
+
+
 vi.mock("next/link", () => ({
   default: ({ href, children, ...rest }: { href: string; children: React.ReactNode }) =>
     React.createElement("a", { href, ...rest }, children),

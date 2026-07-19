@@ -37,7 +37,7 @@ import {
 } from "@/lib/ingestion-mode-variant";
 import { ScheduleTierLink, scheduleDagId } from "@/components/schedule-tier-link";
 import { eventStatusVariant } from "@/lib/event-status-variant";
-import { getRuntimeConfig } from "@/lib/runtime-config";
+import { useDisplayLinks } from "@/lib/api/peripheral-links";
 import { useDisplayTz } from "@/lib/preferences/timezone";
 import { Pagination, DEFAULT_PAGE_SIZE } from "@/components/pagination";
 import { toast } from "@/components/ui/use-toast";
@@ -63,7 +63,8 @@ export default function IngestionSourceDetailPage({
   // Persisted selection; resolving via useMemo keeps the events query key
   // stable until the selection changes.
   const tz = useDisplayTz();
-  const { datahubUrl } = getRuntimeConfig();
+  // Env-first, then GET /spoke/common/peripheral-links; safety-checked there.
+  const { datahubUrl } = useDisplayLinks();
   const { selection: sel, setSelection: setSel } = usePersistedRangeState(
     RANGE_KEYS.ingestionSourceEvents,
   );

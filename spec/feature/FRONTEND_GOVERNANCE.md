@@ -79,7 +79,7 @@ Columns:
 | Column | Source | Renders |
 |---|---|---|
 | `dataset_urn` | row `dataset_urn` | the URN, linked to `/data/[urn]` |
-| `datahub` | row `dataset_urn` | the shared [DataHub dataset deep-link](FRONTEND_BASIC.md#shared-component-notes) (`<datahubUrl>/dataset/{urn}`); omitted when `datahubUrl` is unset |
+| `datahub` | row `dataset_urn` | the shared [DataHub dataset deep-link](FRONTEND_BASIC.md#shared-component-notes) (`<datahub_url>/dataset/{urn}`); omitted when the DataHub URL resolves empty |
 | `ingestion` | row `ingestion[]` | one label per covering source (a dataset may be covered by several). Each label's text is the source `platform` (its ingestion type), links to `/ingestion/sources/[source_id]`, and carries the source `mode` badge alongside; `—` when the list is empty (unmanaged) |
 | `validation` | row `validation.covered` | a `Covered` / `Uncovered` badge from the boolean |
 | `metagen` | row `metagen` | each matching conf `name`, linked to `/metagen/conf/[conf_id]`; `—` when the list is empty |

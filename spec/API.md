@@ -29,14 +29,17 @@ The DataSpoke API is a FastAPI (Python 3.13) service that acts as the single ing
 all DataSpoke clients — the portal UI and external AI agents. The URI structure has two
 axes:
 
-- **Per-dataset, cross-feature** routes live under `/spoke/common/data/{dataset_urn}/…`
-  — the dataset resource — with sub-resources for ingestion, validation, and metagen.
+- **Cross-feature common surface** lives under `/spoke/common/`. Its principal resource is
+  `data` — the dataset, addressed per-dataset at `/spoke/common/data/{dataset_urn}/…` with
+  sub-resources for ingestion, validation, and metagen. Feature-independent shell reads
+  (`peripheral-links`) are siblings of `data` under the same namespace.
 - **Cross-dataset list views and global features** live under one namespace per
   MANIFESTO §2.1 feature.
 
 ```
 /api/v1/spoke/common/data                  — Dataset catalog (collection root — all registered datasets)
 /api/v1/spoke/common/data/{dataset_urn}/…  — Dataset resource (per-dataset, cross-feature)
+/api/v1/spoke/common/peripheral-links      — Peripheral display links for the app shell
 /api/v1/spoke/ingestion                    — Ingestion Control cross-dataset list
 /api/v1/spoke/validation                   — Validation cross-dataset list
 /api/v1/spoke/ontogen/…                    — Ontology Generation (global singleton)
@@ -179,7 +182,8 @@ All routes are prefixed with `/api/v1`.
 > **Routing principle**: The URI structure has two axes. Per-dataset, cross-feature
 > operations use the canonical `/spoke/common/data/{dataset_urn}/…` surface for
 > state (`attr/<feat>/`), actions (`method/<feat>/`), and events (`event/<feat>`
-> or `event` for the unified per-dataset timeline). Cross-dataset list views and
+> or `event` for the unified per-dataset timeline); `/spoke/common` also carries
+> dataset-independent shell reads as siblings of `data`. Cross-dataset list views and
 > global features live under one namespace per MANIFESTO §2.1 feature:
 > `/spoke/ingestion` and `/spoke/validation` are list-view aggregators over the
 > per-dataset `attr/<feat>/*` data; `/spoke/ontogen` is a full singleton-conf
@@ -227,6 +231,10 @@ live under `attr/<feature>/` (`conf`, plus `result` for validation timeseries an
 can register and manage its ingestion, validation, and metagen opt-in through
 this single per-dataset path.
 
+The table's last row is `/spoke/common/peripheral-links` — the other, dataset-independent
+resource under `/spoke/common`, carrying the display links the app shell needs for its
+peripheral shortcuts.
+
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|
 | `GET` | `/spoke/common/data` | Paginated catalog of every registered dataset (`dataset_registry`, the same base set as `/ingestion/unmanaged` and `/metagen/uncovered`). Each row carries `dataset_urn`; `ingestion` (a list of `{source_id, name, mode, platform}` for **every** source that covers the dataset — empty when none, since `ingestion_source_dataset` is keyed `(source_id, dataset_urn)` and a dataset may be covered by several sources); `validation` (`{covered}`, `true` when a validation conf exists for the dataset); and `metagen` (a list of `{conf_id, name}` for enabled metagen confs whose `dataset_filter` matches the dataset — possibly empty). Composes the per-dataset ingestion reverse-lookup (all sources), the validation-coverage set, and the metagen filter-match views over one registry page. Paginated (`offset`/`limit`/`total_count`), sortable by `dataset_urn` (`dataset_urn`/`dataset_urn_desc`, default `dataset_urn_asc`) | Data Resource | — |
@@ -250,6 +258,26 @@ this single per-dataset path.
 | `POST` | `/spoke/common/data/{dataset_urn}/attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review` | Review a candidate — body `{"verdict": "approve"\|"reject", "reason": "…"}`. Approve writes the candidate `value` to the corresponding editable DataHub aspect; if a sibling on the same item was previously `approved`, it is atomically demoted to `llm_approved` so the new approval supersedes it. Reject is valid on both `llm_approved` and `approved` candidates: rejecting an `llm_approved` candidate flips it to `rejected` with no DataHub write; rejecting an `approved` candidate flips it to `rejected` **and removes the editable DataHub description it had written**. Returns `422 METAGEN_DATASET_NOT_IN_BOUNDARY` if the dataset has no `is_enabled=true` boundary | Metadata Generation | UC4 |
 | `GET` | `/spoke/common/data/{dataset_urn}/event/metagen` | Per-dataset metagen events (`METAGEN.CANDIDATE_APPROVE`, `METAGEN.CANDIDATE_REJECT`) | Metadata Generation | UC4 |
 | `GET` | `/spoke/common/data/{dataset_urn}/event` | The **complete per-dataset timeline** — a single newest-first feed that unions the covering source's ingestion runs (resolved by reverse-lookup, incl. its internal-wrapper runs) with this dataset's validation and metagen events. Each row carries a derived `wrapper: bool` (`true` for an ingestion event originating on a linked wrapper). Repeatable `event_major_type` filter (`INGESTION`/`VALIDATION`/`METAGEN`; omitted = all). Paginated (`offset`/`limit`), `from`/`to` time-range, default `occurred_at_desc` | Data Resource | UC1, UC2, UC4 |
+| `GET` | `/spoke/common/peripheral-links` | Peripheral display links for the app shell — `{datahub_url, langfuse_url, langfuse_project_id}`, read from `peripheral_config`: `datahub_url` ⟵ `datahub.frontend_url` (the browser-facing UI URL — **never** `gms_url`, which addresses the GMS service and routinely differs in host, port, and scheme), `langfuse_url` ⟵ `langfuse.host` (the Langfuse peripheral contract names this field `host`), `langfuse_project_id` ⟵ `langfuse.project_id`. An unconfigured peripheral yields `""`, which clients read as "render no link". Readable by **any authenticated role** (the `/admin/*` surface is Admin-only, so it cannot serve Readers and Editors). Returns only these three display fields — no `gms_url`, `kafka_brokers`, or corpuser URN, so this non-Admin surface discloses no infrastructure topology | Data Resource | — |
+
+**Display-link safety.** The operator-supplied peripheral values that clients interpolate
+into a browser `href` — DataHub `frontend_url`, Langfuse `host`, and Langfuse `project_id`
+(which lands in a path segment) — are constrained so that none of them can escape the anchor
+it is rendered into:
+
+| Rule class | Constraint |
+|---|---|
+| Scheme | Lowercase `http://` or `https://`, or `""` meaning unset — so `javascript:`, `data:`, and `vbscript:` cannot reach an anchor. Lowercasing is a strictness choice for an operator-entered config field, not a safety property; the host itself stays case-insensitive |
+| Authority | A host plus an optional numeric port and nothing else. Userinfo is rejected, so a credential-shaped prefix cannot disguise the effective host (`https://trusted.example.com@evil.com`) |
+| Characters | No whitespace, no C0 control characters (CR/LF header splitting), and no unicode bidi control characters — marks, embeddings, overrides, and isolates — anywhere in the value |
+| Shape | A path, query, or fragment must be introduced by `/`. This is a grammar constraint, not an anti-spoofing rule |
+| Length | Bounded — 512 characters for a URL, 256 for `project_id`, which is further restricted to an alphanumeric slug |
+
+The rule is enforced at **both** boundaries. On write, `PATCH /admin/peripherals/{datahub,langfuse}`
+rejects a violating value with `422`. On read, `GET /spoke/common/peripheral-links` coerces one to
+`""`: `peripheral_config.settings` is JSONB, so a row written by direct SQL or by dev seeding can
+bypass the request schema. Degrading to `""` reuses the documented "render no link" state rather
+than failing the whole response.
 
 > **Event endpoints share one envelope.** Every `event/<feature>` feed and the
 > unified `event` timeline return standard `EventResponse` rows and support
@@ -553,12 +581,17 @@ instead of a JWT.
 | `DELETE` | `/admin/users/{id}` | — | `204` | JWT + Admin role |
 | `GET` | `/admin/users/{id}/api-tokens` | — | a user's API tokens (same shape as `GET /auth/api-tokens`, sans raw token; paginated with the standard `offset`/`limit`/`total_count` envelope, sortable by `created_at`, default `created_at_desc`) | JWT + Admin role |
 | `DELETE` | `/admin/users/{id}/api-tokens/{token_id}` | — | `204` — revokes a user's token (incident response) | JWT + Admin role |
-| `GET` | `/admin/peripherals/datahub` | — | current DataHub config: `{gms_url, kafka_brokers, token, service_corpuser_urn, default_env, is_configured, updated_at}`. `token` is masked (`""` unset, `"********"` set); `service_corpuser_urn` and `default_env` are non-secret and returned plain | JWT + Admin role |
+| `GET` | `/admin/peripherals/datahub` | — | current DataHub config: `{gms_url, frontend_url, kafka_brokers, token, service_corpuser_urn, default_env, is_configured, updated_at}`. `token` is masked (`""` unset, `"********"` set); `frontend_url` (the browser-facing DataHub UI URL, distinct from the `gms_url` service endpoint), `service_corpuser_urn`, and `default_env` are non-secret and returned plain | JWT + Admin role |
 | `PATCH` | `/admin/peripherals/datahub` | partial DataHub fields | updated DataHub config (with `token` masked) | JWT + Admin role |
 | `GET` | `/admin/peripherals/langfuse` | — | current Langfuse config: `{host, public_key, secret_key, project_id, environment_tag, is_configured, updated_at}`. `secret_key` is masked (`""` unset, `"********"` set); `project_id` and `environment_tag` are non-secret and returned plain | JWT + Admin role |
 | `PATCH` | `/admin/peripherals/langfuse` | partial Langfuse fields | updated Langfuse config (with `secret_key` masked) | JWT + Admin role |
 | `GET` | `/admin/peripherals/smtp` | — | current SMTP config: `{host, port, username, from_address, use_tls, password, is_configured, updated_at}`. `password` is masked (`""` unset, `"********"` set) | JWT + Admin role |
 | `PATCH` | `/admin/peripherals/smtp` | partial SMTP fields | updated SMTP config (with `password` masked) | JWT + Admin role |
+
+The DataHub `frontend_url` and the Langfuse `host` and `project_id` are served onward to any
+authenticated role by `/spoke/common/peripheral-links`, so a `PATCH` carrying a value that
+violates the display-link safety rule (§[Data Resource](#data-resource-spokecommondata)) is
+rejected with `422`.
 
 `/admin/dags` is **operational schedule control**: it pauses and unpauses the periodic
 DAGs that Airflow runs, and Airflow is the SSOT for paused state (DataSpoke keeps no copy).

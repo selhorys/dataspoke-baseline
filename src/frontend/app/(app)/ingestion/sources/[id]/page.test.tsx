@@ -43,6 +43,13 @@ vi.mock("@/lib/api/ingestion", () => ({
 
 vi.mock("@/components/ui/use-toast", () => ({ toast: vi.fn() }));
 
+// The page resolves the DataHub UI URL via useDisplayLinks; default to unset so
+// the link-gating tests below opt in explicitly.
+const mockUseDisplayLinks = vi.fn();
+vi.mock("@/lib/api/peripheral-links", () => ({
+  useDisplayLinks: () => mockUseDisplayLinks(),
+}));
+
 function makeSource(mode: IngestionSource["mode"]): IngestionSource {
   return {
     id: "src-1",
@@ -74,6 +81,12 @@ async function renderPage() {
 beforeEach(() => {
   mockUseMe.mockReset();
   mockSource.mockReset();
+  mockUseDisplayLinks.mockReset();
+  mockUseDisplayLinks.mockReturnValue({
+    datahubUrl: "",
+    langfuseUrl: "",
+    langfuseProjectId: "",
+  });
 });
 
 // The page uses `use(params)` which suspends; React Testing Library resolves
@@ -174,46 +187,38 @@ describe("ingestion source detail — write gating", () => {
 // spec: spec/feature/FRONTEND_INGESTION.md §Source Detail — the datahub_source_urn
 // links to {datahubUrl}/ingestion/sources?hideSystem=true (new tab) when datahubUrl
 // is configured; otherwise it renders as plain text.
+// The page resolves datahubUrl through useDisplayLinks (env-first, then
+// GET /spoke/common/peripheral-links); that precedence is covered in
+// lib/api/peripheral-links.test.tsx, so here the resolved value is injected.
 describe("ingestion source detail — datahub_source_urn link", () => {
   const DATAHUB_URN = "urn:li:dataHubIngestionSource:x";
 
-  function setRuntimeConfig(datahubUrl: string): void {
-    (
-      window as unknown as { __DATASPOKE_RUNTIME_CONFIG__?: { datahubUrl: string } }
-    ).__DATASPOKE_RUNTIME_CONFIG__ = { datahubUrl };
-  }
-
-  function clearRuntimeConfig(): void {
-    delete (window as unknown as { __DATASPOKE_RUNTIME_CONFIG__?: unknown })
-      .__DATASPOKE_RUNTIME_CONFIG__;
-  }
-
   it("links the urn to the DataHub sources list (new tab) when datahubUrl is set", async () => {
-    setRuntimeConfig("http://datahub.example.com");
-    try {
-      mockUseMe.mockReturnValue({ canWrite: true, isAdmin: false, isEditor: true });
-      mockSource.mockReturnValue({
-        data: makeSource("DATAHUB_MANAGED"),
-        isLoading: false,
-        error: null,
-      });
-      await renderPage();
+    mockUseDisplayLinks.mockReturnValue({
+      datahubUrl: "http://datahub.example.com",
+      langfuseUrl: "",
+      langfuseProjectId: "",
+    });
+    mockUseMe.mockReturnValue({ canWrite: true, isAdmin: false, isEditor: true });
+    mockSource.mockReturnValue({
+      data: makeSource("DATAHUB_MANAGED"),
+      isLoading: false,
+      error: null,
+    });
+    await renderPage();
 
-      const link = (await screen.findByRole("link", {
-        name: DATAHUB_URN,
-      })) as HTMLAnchorElement;
-      expect(link.getAttribute("href")).toBe(
-        "http://datahub.example.com/ingestion/sources?hideSystem=true",
-      );
-      expect(link.getAttribute("target")).toBe("_blank");
-      expect(link.getAttribute("rel")).toContain("noopener");
-    } finally {
-      clearRuntimeConfig();
-    }
+    const link = (await screen.findByRole("link", {
+      name: DATAHUB_URN,
+    })) as HTMLAnchorElement;
+    expect(link.getAttribute("href")).toBe(
+      "http://datahub.example.com/ingestion/sources?hideSystem=true",
+    );
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(link.getAttribute("rel")).toContain("noopener");
   });
 
   it("renders the urn as plain text (no link) when datahubUrl is empty", async () => {
-    clearRuntimeConfig(); // no window config + no NEXT_PUBLIC → datahubUrl === ""
+    // Neither plane supplies a DataHub URL → no link, per the shell gating rule.
     mockUseMe.mockReturnValue({ canWrite: true, isAdmin: false, isEditor: true });
     mockSource.mockReturnValue({
       data: makeSource("DATAHUB_MANAGED"),

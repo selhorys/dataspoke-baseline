@@ -42,6 +42,12 @@ SCHEME="$(ingress_scheme)"
 DATAHUB_GMS_INCLUSTER="http://datahub-datahub-gms.${DATAHUB_NS}.svc.cluster.local:8080"
 DATAHUB_KAFKA_INCLUSTER="datahub-prerequisites-kafka.${DATAHUB_NS}.svc.cluster.local:9092"
 
+# The browser-facing DataHub UI URL cannot be derived from the in-cluster GMS
+# address above (different host/port/scheme in real deployments), so it is
+# seeded separately from the same ingress scheme+domain install.sh already
+# uses for frontend.config.datahubUrl (bin/install.sh:608).
+DATAHUB_FRONTEND_URL="${SCHEME}://datahub.${DOMAIN}"
+
 # ---------------------------------------------------------------------------
 # Retrieve internal token from the running API pod
 # ---------------------------------------------------------------------------
@@ -60,7 +66,7 @@ BASE_URL="${SCHEME}://api.${DOMAIN}/internal/admin/peripherals"
 # Seed DataHub peripheral config (required fields + optional operator metadata)
 # ---------------------------------------------------------------------------
 info "Seeding DataHub connection into peripheral config via ${BASE_URL}/datahub..."
-datahub_payload="{\"gms_url\": \"${DATAHUB_GMS_INCLUSTER}\", \"kafka_brokers\": \"${DATAHUB_KAFKA_INCLUSTER}\""
+datahub_payload="{\"gms_url\": \"${DATAHUB_GMS_INCLUSTER}\", \"kafka_brokers\": \"${DATAHUB_KAFKA_INCLUSTER}\", \"frontend_url\": \"${DATAHUB_FRONTEND_URL}\""
 [[ -n "${DATASPOKE_DEV_DATAHUB_SERVICE_CORPUSER_URN:-}" ]] && datahub_payload+=", \"service_corpuser_urn\": \"${DATASPOKE_DEV_DATAHUB_SERVICE_CORPUSER_URN}\""
 [[ -n "${DATASPOKE_DEV_DATAHUB_DEFAULT_ENV:-}" ]]          && datahub_payload+=", \"default_env\": \"${DATASPOKE_DEV_DATAHUB_DEFAULT_ENV}\""
 datahub_payload+="}"

@@ -10,7 +10,14 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
 
-from src.api.schemas.common import PaginatedResponse, SingleResponse
+from src.api.schemas.common import (
+    SAFE_DISPLAY_URL_MAX_LENGTH,
+    SAFE_DISPLAY_URL_PATTERN,
+    SAFE_PROJECT_ID_MAX_LENGTH,
+    SAFE_PROJECT_ID_PATTERN,
+    PaginatedResponse,
+    SingleResponse,
+)
 
 # A single DataHub dataset URN with format and length constraints.
 DatasetUrn = Annotated[
@@ -127,6 +134,7 @@ class DatahubPeripheralResponse(SingleResponse):
     """
 
     gms_url: str
+    frontend_url: str
     kafka_brokers: str
     token: str
     service_corpuser_urn: str
@@ -146,9 +154,22 @@ class DatahubPeripheralPatchRequest(BaseModel):
     ``service_corpuser_urn`` and ``default_env`` are non-secret connection
     settings stored in the DB; they drive the emitted DataHub actor URN and the
     ingestion fabric/env default respectively.
+
+    ``frontend_url`` is the browser-facing DataHub UI URL — distinct from
+    ``gms_url``, which addresses the GMS service.  It is served to any
+    authenticated role via ``/spoke/common/peripheral-links`` and interpolated
+    into an anchor ``href``, so it is constrained to a safe http(s) form.
     """
 
     gms_url: Annotated[str | None, Field(default=None, max_length=512)] = None
+    frontend_url: Annotated[
+        str | None,
+        Field(
+            default=None,
+            max_length=SAFE_DISPLAY_URL_MAX_LENGTH,
+            pattern=SAFE_DISPLAY_URL_PATTERN,
+        ),
+    ] = None
     kafka_brokers: Annotated[str | None, Field(default=None, max_length=512)] = None
     token: Annotated[str | None, Field(default=None, max_length=8192)] = None
     service_corpuser_urn: Annotated[
@@ -188,12 +209,31 @@ class LangfusePeripheralPatchRequest(BaseModel):
     ``project_id`` and ``environment_tag`` are non-secret connection settings
     stored in the DB; ``environment_tag`` drives the Langfuse trace environment
     and ``project_id`` is surfaced as trace metadata.
+
+    ``host`` and ``project_id`` are served to any authenticated role via
+    ``/spoke/common/peripheral-links``, where the host becomes an anchor
+    ``href`` and the project id is interpolated into a deep-link path, so both
+    are constrained rather than length-capped alone.
     """
 
-    host: Annotated[str | None, Field(default=None, max_length=512)] = None
+    host: Annotated[
+        str | None,
+        Field(
+            default=None,
+            max_length=SAFE_DISPLAY_URL_MAX_LENGTH,
+            pattern=SAFE_DISPLAY_URL_PATTERN,
+        ),
+    ] = None
     public_key: Annotated[str | None, Field(default=None, max_length=512)] = None
     secret_key: Annotated[str | None, Field(default=None, max_length=8192)] = None
-    project_id: Annotated[str | None, Field(default=None, max_length=256)] = None
+    project_id: Annotated[
+        str | None,
+        Field(
+            default=None,
+            max_length=SAFE_PROJECT_ID_MAX_LENGTH,
+            pattern=SAFE_PROJECT_ID_PATTERN,
+        ),
+    ] = None
     environment_tag: Annotated[str | None, Field(default=None, max_length=64)] = None
 
 

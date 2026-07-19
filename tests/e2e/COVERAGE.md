@@ -111,6 +111,10 @@ uncovered view.
 | `/settings` | — | `ground/account/settings.spec.ts` (Theme Dark → `html.dark`; locale Select → localStorage) |
 | `/` | `_smoke.spec.ts` (post-login landing) | `ground/shell/root-redirect.spec.ts` (`/` → `/governance/dashboard`) |
 
+The app shell itself (rendered on every authenticated route) additionally carries
+the peripheral infra-icon behavior covered in [App-shell peripheral links](#app-shell-peripheral-links);
+the `/data/[urn]` DataHub deep-link case there complements the `ground/data/hub.spec.ts` row above.
+
 ---
 
 ## App-shell role-gating
@@ -124,3 +128,19 @@ provisioned sessions, not mocked `useMe`). Covered by `tests/e2e/ground/shell/`:
 | Admin nav section absent; Account section visible; direct `/admin/users` nav → permission-denied | `admin-nav-hidden.reader.spec.ts` | reader |
 | Admin nav section absent; Account section visible | `admin-nav-hidden.editor.spec.ts` | editor |
 | Reader write control ("Create source") suppressed on `/ingestion/conf`; read-only content + sidebar "unmanaged" nav still render | `reader-write-suppressed.reader.spec.ts` | reader |
+
+---
+
+## App-shell peripheral links
+
+The header infra icons and the per-dataset DataHub deep-link resolve their base
+URL from two planes: the chart-injected runtime config (env) and the
+`peripheral_config` DB plane served by `GET /spoke/common/peripheral-links`.
+Env wins; the API fills in when env is unset. Covered by
+`tests/e2e/ground/shell/peripheral-links.spec.ts` (admin project):
+
+| Concern | Test |
+|---|---|
+| Header DataHub icon resolves from `peripheral_config.frontend_url` alone, after a DB-plane-only PATCH with no chart op or rollout (env value blanked via an init script to reproduce an install without `DATASPOKE_DATAHUB_URL`) | `header DataHub icon resolves from peripheral_config when no env URL is set` |
+| Per-dataset DataHub deep-link on `/data/[urn]` resolves from the same source | `dataset DataHub deep-link resolves from peripheral_config when no env URL is set` |
+| An explicit env DataHub URL takes precedence over a differing `peripheral_config` value (existing chart installs behaviourally unchanged); skipped when the cluster frontend has no `DATASPOKE_DATAHUB_URL` | `an explicit env DataHub URL wins over the peripheral_config value` |

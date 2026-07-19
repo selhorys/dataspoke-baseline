@@ -335,7 +335,7 @@ lives in the `runtime_config` DB row (`stub_redis_client`, `stub_llm_client`,
 
 > DataHub, Langfuse, and LLM provider/model/key are **not** app-runtime env
 > vars. Their **non-secret** settings (DataHub
-> `gms_url`/`kafka_brokers`/`service_corpuser_urn`/`default_env`, Langfuse
+> `gms_url`/`frontend_url`/`kafka_brokers`/`service_corpuser_urn`/`default_env`, Langfuse
 > `host`/`public_key`/`project_id`/`environment_tag`, LLM provider/model +
 > generation knobs) live in
 > the DB `peripheral_config` and `runtime_config` tables, updated via
@@ -446,7 +446,10 @@ only the host-bearing values (`_HOST`, `_HOST_PORT`, `_KAFKA_BROKERS`,
   `DATASPOKE_TEST_INTERNAL_TOKEN`,
   `DATASPOKE_TEST_JWT_SECRET_KEY` (conftest promotes it to `DATASPOKE_JWT_SECRET_KEY`
   so locally-minted JWTs verify against the API pod)
-- DataHub access: `DATASPOKE_TEST_DATAHUB_{GMS_URL,TOKEN,KAFKA_BROKERS}`
+- DataHub access: `DATASPOKE_TEST_DATAHUB_{GMS_URL,TOKEN,KAFKA_BROKERS,FRONTEND_URL}` —
+  `FRONTEND_URL` is the browser-facing UI URL, carried separately because it is not
+  derivable from `GMS_URL`; the integration reset helpers restore it into
+  `peripheral_config` so a reset leaves the dev UI with a working DataHub link
 - Langfuse access: `DATASPOKE_TEST_LANGFUSE_{HOST,PUBLIC_KEY,SECRET_KEY}`
 - Dev-lock access: `DATASPOKE_TEST_LOCK_URL` — full base URL of the dev-env lock
   service (`http://<host>:9221`, host per the laptop-side rule above). The
@@ -620,7 +623,7 @@ chart at it via `secrets.existingSecret: <name>`.
 ### DB-backed (no env var)
 
 - `peripheral_config` table — non-secret connection fields for DataHub
-  (`gms_url`, `kafka_brokers`, `service_corpuser_urn`, `default_env`), Langfuse
+  (`gms_url`, `frontend_url`, `kafka_brokers`, `service_corpuser_urn`, `default_env`), Langfuse
   (`host`, `public_key`, `project_id`, `environment_tag`), and SMTP
   (`host`, `port`, `username`, `from_address`, `use_tls`) — updated via
   `/api/v1/admin/peripherals/{datahub,langfuse,smtp}`. Per-peripheral secret
@@ -743,7 +746,8 @@ release (MySQL, Kafka controller); `opensearch-cluster-master` for the
 OpenSearch subchart's own release.
 
 Writes to .env.dev: `DATASPOKE_TEST_DATAHUB_GMS_URL`, `DATASPOKE_TEST_DATAHUB_TOKEN`
-(generated PAT), `DATASPOKE_TEST_DATAHUB_KAFKA_BROKERS`.
+(generated PAT), `DATASPOKE_TEST_DATAHUB_KAFKA_BROKERS`,
+`DATASPOKE_TEST_DATAHUB_FRONTEND_URL` (browser-facing UI URL).
 
 **Google OIDC SSO**: `helm-charts/dev-peripherals/datahub.sh` configures DataHub's
 frontend to authenticate users via the same Google OAuth client as DataSpoke.
@@ -840,7 +844,7 @@ Dev only. Runs after the umbrella chart's API deployment is Ready.
 
 | Script | Effect |
 |---|---|
-| `bin/post-install/seed-peripheral-config.sh` | PATCH `/internal/admin/peripherals/datahub` with `{gms_url, kafka_brokers}` and `/internal/admin/peripherals/langfuse` with `{host, public_key}`. When set in `.env.dev`, the script also forwards optional operator-supplied non-secret fields from `DATASPOKE_DEV_*` env vars: DataHub `service_corpuser_urn` and `default_env`; Langfuse `project_id` (from `DATASPOKE_DEV_LANGFUSE_INIT_PROJECT_ID`) and `environment_tag`. The secret fields — DataHub PAT `token` and Langfuse `secret_key` — are placed into K8s Secrets out-of-band by the install script before the API pod starts (the API reads them via RBAC); the seed script does not send them through the admin API — only non-secret fields go through it. |
+| `bin/post-install/seed-peripheral-config.sh` | PATCH `/internal/admin/peripherals/datahub` with `{gms_url, frontend_url, kafka_brokers}` and `/internal/admin/peripherals/langfuse` with `{host, public_key}`. When set in `.env.dev`, the script also forwards optional operator-supplied non-secret fields from `DATASPOKE_DEV_*` env vars: DataHub `service_corpuser_urn` and `default_env`; Langfuse `project_id` (from `DATASPOKE_DEV_LANGFUSE_INIT_PROJECT_ID`) and `environment_tag`. The secret fields — DataHub PAT `token` and Langfuse `secret_key` — are placed into K8s Secrets out-of-band by the install script before the API pod starts (the API reads them via RBAC); the seed script does not send them through the admin API — only non-secret fields go through it. |
 | `bin/post-install/seed-runtime-config.sh` | PATCH `/internal/admin/conf` with `{llm_provider, llm_model}` from `DATASPOKE_DEV_LLM_{PROVIDER,MODEL}`, then a second PATCH setting the four `stub_*` dependency flags (`stub_redis_client`, `stub_llm_client`, `stub_pgvector_manager`, `stub_notification_service`) to `true` for the dev profile. |
 | `bin/post-install/seed-admin-user.sh` | POST `/internal/admin/bootstrap` to idempotently seed the built-in `dataspoke@dataspoke.local / dataspoke` Admin user (returns `{created: false}` when any Admin already exists). The endpoint makes no DataHub call, so this step has no ordering dependency on peripheral seeding and succeeds on a fresh install before DataHub is wired. See [feature/AUTH.md §Built-in Bootstrap Admin](AUTH.md#built-in-bootstrap-admin). |
 

@@ -313,6 +313,7 @@ def _datahub_dto_to_response(
     if dto is None or not isinstance(dto, DatahubConfigDTO):
         return DatahubPeripheralResponse(
             gms_url="",
+            frontend_url="",
             kafka_brokers="",
             token="",
             service_corpuser_urn=_DEFAULT_SERVICE_CORPUSER_URN,
@@ -323,6 +324,7 @@ def _datahub_dto_to_response(
     token_set = datahub_token_is_set()
     return DatahubPeripheralResponse(
         gms_url=dto.gms_url,
+        frontend_url=dto.frontend_url,
         kafka_brokers=dto.kafka_brokers,
         token="********" if token_set else "",
         service_corpuser_urn=dto.service_corpuser_urn or _DEFAULT_SERVICE_CORPUSER_URN,

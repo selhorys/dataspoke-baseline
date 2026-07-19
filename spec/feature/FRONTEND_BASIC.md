@@ -90,17 +90,35 @@ renders for everyone. The page area on the right renders the active route.
 
 The header right cluster also carries infra shortcut icons (new-tab links) to
 the surrounding systems: DataHub, Langfuse, Airflow, and the DataSpoke ReDoc API
-docs. Each icon renders only when its URL is configured — DataHub/Langfuse/Airflow
-from runtime config `datahubUrl`/`langfuseUrl`/`airflowUrl` (the
-`DATASPOKE_{DATAHUB,LANGFUSE,AIRFLOW}_URL` env vars, `NEXT_PUBLIC_*` in host dev);
-ReDoc from `apiBaseUrl` + `/redoc`. The DataHub icon links to `<datahubUrl>/login`
-(the `/login` suffix is DataHub-specific); Langfuse and Airflow use the bare URL.
-The same runtime config also carries `langfuseProjectId` (`DATASPOKE_LANGFUSE_PROJECT_ID`,
-`NEXT_PUBLIC_*` in host dev), used to deep-link evidence references into their Langfuse
-trace sessions.
-Operators control visibility by setting or
-omitting the URLs, so deployments that should not expose an infra UI simply leave
-its URL unset.
+docs. Each icon renders only when its URL resolves non-empty. The DataHub icon
+links to `<datahub_url>/login` (the `/login` suffix is DataHub-specific);
+Langfuse and Airflow use the bare URL; ReDoc is `apiBaseUrl` + `/redoc`.
+
+Two resolution sources back these links, split by whether the system is an
+externally-wired peripheral:
+
+| Link | Source | Resolution |
+|---|---|---|
+| DataHub, Langfuse (URL + `langfuse_project_id`) | Peripheral | Runtime config (`datahubUrl`/`langfuseUrl`/`langfuseProjectId`, from the `DATASPOKE_{DATAHUB,LANGFUSE}_URL` and `DATASPOKE_LANGFUSE_PROJECT_ID` env vars, `NEXT_PUBLIC_*` in host dev) **first**, then [`GET /spoke/common/peripheral-links`](../API.md) |
+| Airflow, ReDoc | Deployment-local | Runtime config only (`airflowUrl`, `apiBaseUrl`) |
+
+Peripheral links resolve **env-first**: an explicitly-set env value wins, and the
+API supplies the value when the env var is unset. Peripheral wiring done purely
+in the DB plane (`PATCH /admin/peripherals/{datahub,langfuse}`) therefore reaches
+the UI with no chart operation and no pod restart. Airflow and ReDoc stay env-only
+because they are not externally wired: Airflow ships in the umbrella chart and
+ReDoc is the API itself, so neither appears in `peripheral_config`.
+
+Operators control visibility by setting or omitting the URLs in either plane, so
+deployments that should not expose an infra UI simply leave both unset.
+
+Both peripheral values are re-checked in the client against the display-link safety
+rule ([`API.md` §Data Resource](../API.md#data-resource-spokecommondata)) before they reach an anchor `href`, and a
+failing value resolves to `""` — the same "render no link" state as an unset one. The
+client check is not redundant with the API's: it also covers the env-sourced values,
+which win over the API and never pass a backend boundary.
+`langfuse_project_id` follows the same resolution and deep-links evidence
+references into their Langfuse trace sessions.
 
 ```
 ┌────────────────────────────────────────────────────────┐
@@ -361,6 +379,7 @@ fields.
 ├──────────────────────────────────────────────────────────────┤
 │  DataHub                                                     │
 │    GMS URL        [ http://datahub-gms…              ]       │
+│    Frontend URL   [ https://datahub.example.com      ]       │
 │    Kafka brokers  [ broker:9092                      ]       │
 │    Token          [ •••••• leave blank to keep current ]    │
 │    Service corpuser URN [ urn:li:corpuser:dataspoke  ]       │
@@ -381,6 +400,7 @@ fields.
 | Card | Field | API field | Notes |
 |---|---|---|---|
 | DataHub | GMS URL | `gms_url` | Plain text |
+| DataHub | Frontend URL | `frontend_url` | Plain text; the **browser-facing DataHub UI URL, not GMS** — labelled to keep the two apart, since they differ in host, port, and scheme in most deployments. Feeds the shell's DataHub links |
 | DataHub | Kafka brokers | `kafka_brokers` | Plain text |
 | DataHub | Token | `token` | Masked write-only secret (see below) |
 | DataHub | Service corpuser URN | `service_corpuser_urn` | Non-secret, returned plain; default `urn:li:corpuser:dataspoke` |
@@ -472,8 +492,8 @@ Layout, top to bottom:
 ```
 
 - **Header row** — the dataset URN title, followed by the shared
-  [DataHub dataset deep-link](#shared-component-notes) (`<datahubUrl>/dataset/{urn}`,
-  rendered only when `datahubUrl` is configured).
+  [DataHub dataset deep-link](#shared-component-notes) (`<datahub_url>/dataset/{urn}`,
+  rendered only when the DataHub URL resolves non-empty).
 
 - **Summary cards** — three horizontal cards giving an at-a-glance status:
   - *Ingestion* — owning source / ingestor, mode, and the latest-run **time** and status,
@@ -579,12 +599,12 @@ These component IDs are referenced from per-function specs.
   [API.md](../API.md), `attr/validation/result`) — receives `until = to`. It has
   no API of its own; it only shapes the query strings of the reads it drives.
 - **DatahubDatasetLink** — a shared external deep-link to a dataset's DataHub page,
-  `<datahubUrl>/dataset/{urn}` (URN URL-encoded), from runtime config `datahubUrl`.
-  It renders a labelled new-tab link (`_blank rel=noopener`) only when `datahubUrl` is
-  set, mirroring the header infra-link gating; otherwise nothing. Reused across the
+  `<datahub_url>/dataset/{urn}` (URN URL-encoded). It resolves the DataHub URL by the
+  same env-first, then `GET /spoke/common/peripheral-links` rule as the header icon
+  (see [Shell](#shell)), and renders a labelled new-tab link (`_blank rel=noopener`)
+  only when that URL is non-empty; otherwise nothing. Reused across the
   dataset tables (the Governance dataset catalog, the Ingestion unmanaged + source
-  Datasets tables, the MetaGen uncovered table) and the per-dataset page header. It has
-  no API of its own.
+  Datasets tables, the MetaGen uncovered table) and the per-dataset page header.
 - **CollapsiblePanel** — a titled, foldable section used to compose the
   [per-dataset page](#per-dataset-page-dataurn)'s foldable panels. Header row with a
   fold/unfold chevron over a body that mounts its feature panel; follows the existing

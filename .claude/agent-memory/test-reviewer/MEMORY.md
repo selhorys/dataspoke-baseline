@@ -18,3 +18,5 @@
 - [Revoke-503 cookie retention is framework-guaranteed](project_auth_revoke_503_cookie_retention_framework_guaranteed.md) — FastAPI drops injected-Response cookies when raising; the assertion can't fail, a fail-open impl passes too
 - [Dead assert-tuple: ruff is blind](project_dead_assert_tuple_ruff_blind.md) — TESTING.md bans trailing msg tuples on mock assert_*; ruff (E,F,I,UP) misses them, AST-scan instead
 - [AUTH email case normalised twice](project_auth_email_storage_case_divergence.md) — create_user lowercases on write, corpuser_urn on derivation; AUTH.md specifies both, so neither is impl-pinning
+- [Display-link safety spec landed](project_display_link_safety_spec_landed.md) — guard IS specced now (API.md 5-row table); residual gap is Length row unexercised in Python
+- [waitFor pre-settlement race](project_waitfor_presettlement_race.md) — react-query hooks with a fallback make waitFor assertions pass before settlement, hiding precedence regressions

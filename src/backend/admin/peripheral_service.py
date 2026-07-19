@@ -32,6 +32,9 @@ class DatahubConfigDTO:
     kafka_brokers: str
     service_corpuser_urn: str = ""
     default_env: str = ""
+    # Browser-facing DataHub UI URL. Distinct from ``gms_url``, which addresses
+    # the GMS service and routinely differs in host, port, and scheme.
+    frontend_url: str = ""
 
 
 @dataclass(frozen=True)
@@ -78,6 +81,7 @@ def _row_to_dto(row: PeripheralConfig) -> _DTO_TYPE:
             kafka_brokers=s.get("kafka_brokers", ""),
             service_corpuser_urn=s.get("service_corpuser_urn", ""),
             default_env=s.get("default_env", ""),
+            frontend_url=s.get("frontend_url", ""),
         )
     if row.name == "smtp":
         return SmtpConfigDTO(

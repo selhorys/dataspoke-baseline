@@ -959,7 +959,9 @@ tooling reads everything from `DATASPOKE_TEST_DATAHUB_*` env vars in `helm-chart
 Updated via `PATCH /api/v1/admin/peripherals/datahub` (and the unattended mirror
 `/internal/admin/peripherals/datahub`, used by the install script's
 `helm-charts/bin/post-install/seed-peripheral-config.sh`). Non-secret fields `gms_url`,
-`kafka_brokers`, `service_corpuser_urn`, and `default_env` live in the DB; the `token` is
+`frontend_url` (the browser-facing DataHub UI URL — independent of `gms_url`, which addresses
+the GMS service and may differ in host, port, and scheme), `kafka_brokers`,
+`service_corpuser_urn`, and `default_env` live in the DB; the `token` is
 routed to the `dataspoke-datahub-secret` K8s
 Secret on `PATCH`, never to the DB. The pod reads both at request time (DB row + Secret via
 RBAC) — no Helm-managed env var.

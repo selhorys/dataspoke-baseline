@@ -32,10 +32,11 @@ vi.mock("@/lib/api/datasets", () => ({
     mockUseDatasetList(params),
 }));
 
-// DatahubDatasetLink reads getRuntimeConfig().datahubUrl; control it per describe.
-const mockGetRuntimeConfig = vi.fn();
-vi.mock("@/lib/runtime-config", () => ({
-  getRuntimeConfig: () => mockGetRuntimeConfig(),
+// DatahubDatasetLink resolves datahubUrl via useDisplayLinks (env-first, then
+// GET /spoke/common/peripheral-links); control the resolved value per describe.
+const mockUseDisplayLinks = vi.fn();
+vi.mock("@/lib/api/peripheral-links", () => ({
+  useDisplayLinks: () => mockUseDisplayLinks(),
 }));
 
 const COVERED_ROW: DatasetListItem = {
@@ -72,8 +73,8 @@ async function renderPage(): Promise<void> {
 
 beforeEach(() => {
   mockUseDatasetList.mockReset();
-  mockGetRuntimeConfig.mockReset();
-  mockGetRuntimeConfig.mockReturnValue({ datahubUrl: "http://datahub.example.com" });
+  mockUseDisplayLinks.mockReset();
+  mockUseDisplayLinks.mockReturnValue({ datahubUrl: "http://datahub.example.com" });
   setData([COVERED_ROW, UNMANAGED_ROW]);
 });
 
@@ -150,7 +151,7 @@ describe("GovernanceDatasetsPage — null/empty coverage", () => {
   });
 
   it("falls back to an em-dash in the datahub column when datahubUrl is unset", async () => {
-    mockGetRuntimeConfig.mockReturnValue({ datahubUrl: "" });
+    mockUseDisplayLinks.mockReturnValue({ datahubUrl: "" });
     setData([COVERED_ROW]);
     await renderPage();
     expect(screen.queryByRole("link", { name: /datahub/i })).toBeNull();

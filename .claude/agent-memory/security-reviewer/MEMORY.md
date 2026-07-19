@@ -3,3 +3,5 @@
 - [Auth fail-closed spans layers](project_auth_fail_closed_spans_layers.md) — a backend 503 is undone if the UI swallows it; review the frontend consumer too
 - [Revoke/refresh asymmetry](project_auth_revoke_refresh_asymmetry.md) — revoke's JWT-before-Redis fixed; refresh still hits Redis before decoding, unrate-limited
 - [Frontend 401/refresh conflation](project_frontend_401_refresh_conflation.md) — apiFetch: refreshed===false also means 503; "401 ⇒ no live session" carve-outs are unsound
+- [peripheral_config → href trust chain](project_peripheral_config_to_href_trust_chain.md) — DB peripheral URLs now render as browser hrefs; validate write AND read boundary
+- [Pydantic v2 pattern anchoring](project_pydantic_v2_pattern_anchoring.md) — rust-regex, ^ is start-of-haystack; ^scheme:// guards hold, but no trailing $ still allows creds/CRLF/unicode

@@ -55,8 +55,9 @@ client-derived via a per-source fan-out (`datasets?limit=1` and `event?limit=1`)
 A header surfaces read-only management fields as badges/text outside the recipe YAML section:
 `platform`, `status`, `datahub_source_urn`, the `mode` badge (the shared neutral style), and
 the schedule. `datahub_source_urn` renders as a link (new tab) to the DataHub ingestion-sources
-list `<datahubUrl>/ingestion/sources?hideSystem=true` — a list deep-link, not a per-source page —
-falling back to plain text when `datahubUrl` is unset. The schedule links its tier (hourly /
+list `<datahub_url>/ingestion/sources?hideSystem=true` — a list deep-link, not a per-source page —
+falling back to plain text when the DataHub URL resolves empty (resolution per
+[FRONTEND_BASIC §Shell](FRONTEND_BASIC.md#shell)). The schedule links its tier (hourly /
 daily / weekly) to the backing Airflow DAG
 (`ingestion-active-<tier>`) **only for `ACTIVE_CUSTOM_MANAGED`**; for `DATAHUB_MANAGED` and
 `PASSIVE` it renders plain text `delegated`. Below it, four sections, each bound to a route:
@@ -75,8 +76,8 @@ daily / weekly) to the backing Airflow DAG
    returns `409 INGESTION_SOURCE_READONLY`).
 2. **Datasets** — the source→dataset mapping table (`GET /spoke/ingestion/sources/{id}/datasets`).
    Its second column is `datahub` — the shared
-   [DataHub dataset deep-link](FRONTEND_BASIC.md#shared-component-notes) (`<datahubUrl>/dataset/{urn}`,
-   rendered only when `datahubUrl` is set). The table also carries a single `authority` column whose
+   [DataHub dataset deep-link](FRONTEND_BASIC.md#shared-component-notes) (`<datahub_url>/dataset/{urn}`,
+   rendered only when the DataHub URL resolves non-empty). The table also carries a single `authority` column whose
    cell fuses both server fields, rendered as e.g. `high (emitted)`: the dataset URN, its `authority`
    (`high` / `medium`) and `derivation` (`emitted` / `pipeline_name` / `matched`). `authority` is
    derived from `derivation` — `emitted` / `pipeline_name` ⇒ `high`, `matched` ⇒ `medium`.
@@ -127,7 +128,7 @@ A plain paginated table of DataHub datasets covered by no source
 (`GET /spoke/ingestion/unmanaged`). This is the "what's being ingested in an unmanaged way?"
 answer; each row links to its dataset page, and its second column is `datahub` — the shared
 [DataHub dataset deep-link](FRONTEND_BASIC.md#shared-component-notes) (rendered only when
-`datahubUrl` is set). Reached via the sidebar `unmanaged` submenu.
+the DataHub URL resolves non-empty). Reached via the sidebar `unmanaged` submenu.
 
 ## Per-dataset reverse-lookup (unified `/data/[urn]`)
 

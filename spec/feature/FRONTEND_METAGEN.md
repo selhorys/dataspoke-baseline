@@ -132,7 +132,7 @@ rows; on additionally shows `boundary_blocked` rows. This is the metagen
 analogue of the ingestion `/ingestion/unmanaged` view. Each row links to its
 dataset page, and its second column is `datahub` — the shared
 [DataHub dataset deep-link](FRONTEND_BASIC.md#shared-component-notes) (rendered only when
-`datahubUrl` is set). Read-only.
+the DataHub URL resolves non-empty). Read-only.
 
 ## Per-dataset (`/data/[urn]` MetaGen panel)
 
@@ -147,7 +147,7 @@ single **table whose rows are candidates** (fetched per item via
 | Column | Source |
 |---|---|
 | generated value | `candidate.value`, rendered multi-line (`<pre>`) |
-| run info | producing `conf_name` (muted "no conf" when null because the conf was deleted) · `confidence_score` · an **Evidence** link to the Langfuse trace built from `run_id` |
+| run info | producing `conf_name` (muted "no conf" when null because the conf was deleted) · `confidence_score` · the shared **Evidence** link to the Langfuse trace built from `run_id` (the same component the ontogen review table uses — see [FRONTEND_ONTOGEN.md](FRONTEND_ONTOGEN.md) — so its Langfuse URL and project id resolve by the shared peripheral rule in [FRONTEND_BASIC §Shell](FRONTEND_BASIC.md#shell)) |
 | status | `candidate.status` badge (`llm_approved` / `approved` / `rejected`) |
 | action | `Approve` / `Reject` keyed to that row's `(dataset_urn, item_id, candidate_id)` |
 

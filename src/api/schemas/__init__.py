@@ -77,6 +77,7 @@ from src.api.schemas.ontogen import (
     TripleListResponse,
     TripleResponse,
 )
+from src.api.schemas.peripheral_links import PeripheralLinksResponse
 from src.api.schemas.validation import (
     PatchValidationConfRequest,
     PostValidationResultRequest,
@@ -162,6 +163,8 @@ __all__ = [
     "SeedListResponse",
     "TripleListResponse",
     "TripleResponse",
+    # peripheral-links
+    "PeripheralLinksResponse",
     # validation
     "PatchValidationConfRequest",
     "PostValidationResultRequest",

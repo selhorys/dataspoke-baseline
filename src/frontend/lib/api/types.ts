@@ -105,6 +105,8 @@ export interface RuntimeConf {
 export interface DatahubPeripheral {
   resp_time: string;
   gms_url: string;
+  /** Browser-facing DataHub UI base URL — never the GMS endpoint. */
+  frontend_url: string;
   kafka_brokers: string;
   /** Masked indicator only: "" when unset, "********" when set. */
   token: string;
@@ -116,11 +118,29 @@ export interface DatahubPeripheral {
 
 export interface DatahubPeripheralPatch {
   gms_url?: string;
+  /** Browser-facing DataHub UI base URL; constrained to a safe http(s) form. */
+  frontend_url?: string;
   kafka_brokers?: string;
   /** Plaintext token; omit to keep current, "" to clear. */
   token?: string;
   service_corpuser_urn?: string;
   default_env?: string;
+}
+
+/**
+ * Peripheral display links for the app shell — GET /spoke/common/peripheral-links.
+ *
+ * Each field is `""` when its peripheral is unconfigured, which clients read as
+ * "render no link". Carries only display links: no `gms_url`, `kafka_brokers`,
+ * or corpuser URN, since this is a non-Admin surface.
+ */
+export interface PeripheralLinks {
+  resp_time: string;
+  /** From the DataHub peripheral's `frontend_url`, not `gms_url`. */
+  datahub_url: string;
+  /** From the Langfuse peripheral's `host`. */
+  langfuse_url: string;
+  langfuse_project_id: string;
 }
 
 export interface LangfusePeripheral {

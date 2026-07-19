@@ -1,7 +1,71 @@
+import re
 from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import BaseModel, Field, field_serializer
+
+# Characters barred from a display URL anywhere: whitespace, C0 controls (CR/LF
+# header splitting), and the unicode bidi-override set, which can visually
+# disguise a hostname.
+#
+# U+FEFF is listed explicitly because Python's ``\s`` follows the Unicode
+# White_Space property, which excludes it, while ECMAScript's ``\s`` includes it
+# (``WhiteSpace`` admits ZWNBSP).  The frontend guard in
+# ``src/frontend/lib/safe-url.ts`` mirrors this class and bars U+0085 explicitly
+# for the converse reason.  Both sides must bar both characters or the two
+# engines disagree on the same value; ``tests/fixtures/safe-url-cases.json``
+# pins the agreement.
+_URL_BARRED_CHARS = "\\s\\x00-\\x1f\\ufeff‎‏‪-‮⁦-⁩"
+
+# Full-match pattern for operator-supplied URLs that clients interpolate into a
+# browser ``href``.  Admits only ``http``/``https`` (so ``javascript:``,
+# ``data:``, and ``vbscript:`` cannot reach an anchor) or ``""`` meaning unset.
+# Userinfo is rejected outright — the authority admits a host plus an optional
+# numeric port and nothing else — so a credential-shaped prefix cannot disguise
+# the effective host (``https://trusted.example.com@evil.com``).
+SAFE_DISPLAY_URL_PATTERN = (
+    f"^$|^https?://[^{_URL_BARRED_CHARS}:/?#@]+(?::[0-9]+)?(?:/[^{_URL_BARRED_CHARS}]*)?$"
+)
+
+SAFE_DISPLAY_URL_MAX_LENGTH = 512
+
+# Langfuse project ids are opaque slugs; constrain them because they are
+# interpolated into a deep-link path segment.
+SAFE_PROJECT_ID_PATTERN = r"^$|^[A-Za-z0-9][A-Za-z0-9_-]*$"
+
+SAFE_PROJECT_ID_MAX_LENGTH = 256
+
+# ``re.fullmatch`` rather than ``re.match``: Python's ``$`` also matches just
+# before a trailing newline, which would admit a value the pydantic write
+# boundary (rust-regex, end-of-haystack ``$``) rejects.  fullmatch keeps the
+# read-side check exactly as strict as the write-side one.
+_SAFE_DISPLAY_URL_RE = re.compile(SAFE_DISPLAY_URL_PATTERN)
+_SAFE_PROJECT_ID_RE = re.compile(SAFE_PROJECT_ID_PATTERN)
+
+
+def sanitize_display_url(value: str | None) -> str:
+    """Return *value* when it is a safe display URL, else ``""``.
+
+    ``peripheral_config.settings`` is untyped JSONB written through a kwargs
+    sink, so a row seeded by direct SQL or by a caller that bypasses the admin
+    request schema can hold anything.  Values reaching a browser ``href`` are
+    therefore re-checked on read and degraded to ``""`` — which clients already
+    treat as "render no link" — rather than forwarded verbatim.
+    """
+    if not value:
+        return ""
+    if len(value) > SAFE_DISPLAY_URL_MAX_LENGTH:
+        return ""
+    return value if _SAFE_DISPLAY_URL_RE.fullmatch(value) else ""
+
+
+def sanitize_project_id(value: str | None) -> str:
+    """Return *value* when it is a safe project-id slug, else ``""``."""
+    if not value:
+        return ""
+    if len(value) > SAFE_PROJECT_ID_MAX_LENGTH:
+        return ""
+    return value if _SAFE_PROJECT_ID_RE.fullmatch(value) else ""
 
 
 def _now_utc() -> datetime:
@@ -68,8 +132,7 @@ class PaginationParams(BaseModel):
     sort: str | None = Field(
         default=None,
         description=(
-            "Sort expression in the form '<field>_asc' or '<field>_desc',"
-            " e.g. 'created_at_desc'"
+            "Sort expression in the form '<field>_asc' or '<field>_desc', e.g. 'created_at_desc'"
         ),
     )
 

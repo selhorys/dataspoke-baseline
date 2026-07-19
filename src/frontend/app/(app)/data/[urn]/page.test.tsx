@@ -20,6 +20,13 @@ import { render, screen, act, within } from "@testing-library/react";
 import React from "react";
 import DatasetHubPage from "./page";
 
+// Shared link components query peripheral-links; this suite mounts no
+// QueryClientProvider. See lib/api/peripheral-links.mock.ts.
+vi.mock("@/lib/api/peripheral-links", async () =>
+  (await import("@/lib/api/peripheral-links.mock")).envOnlyPeripheralLinksModule(),
+);
+
+
 // ── Mocks ──────────────────────────────────────────────────────────────────────
 vi.mock("next/link", () => ({
   default: ({ href, children, ...rest }: { href: string; children: React.ReactNode }) =>

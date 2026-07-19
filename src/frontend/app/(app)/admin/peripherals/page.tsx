@@ -99,6 +99,18 @@ function DatahubCard({ peripheral }: { peripheral: DatahubPeripheral }) {
               <Input id="datahub_gms_url" {...register("gms_url")} />
             </Field>
             <Field
+              label="Frontend URL (DataHub UI)"
+              htmlFor="datahub_frontend_url"
+              description="Browser-facing DataHub UI base URL — where users land, not the GMS URL above. These routinely differ in host, port, and scheme (e.g. GMS on an internal http://…:8080 endpoint, the UI on a public https:// hostname). Serves the header DataHub icon and dataset deep-links; leave blank to hide them."
+              error={errors.frontend_url?.message}
+            >
+              <Input
+                id="datahub_frontend_url"
+                placeholder="https://datahub.example.com"
+                {...register("frontend_url")}
+              />
+            </Field>
+            <Field
               label="Kafka brokers"
               htmlFor="datahub_kafka_brokers"
               description="Bootstrap servers for the DataHub MCP/MCE Kafka topics (host:port, comma-separated)."

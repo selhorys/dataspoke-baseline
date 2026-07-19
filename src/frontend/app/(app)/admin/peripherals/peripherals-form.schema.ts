@@ -14,6 +14,12 @@
  */
 
 import { z } from "zod";
+import {
+  SAFE_DISPLAY_URL_MAX_LENGTH,
+  SAFE_DISPLAY_URL_RE,
+  SAFE_PROJECT_ID_MAX_LENGTH,
+  SAFE_PROJECT_ID_RE,
+} from "@/lib/safe-url";
 import type {
   DatahubPeripheral,
   DatahubPeripheralPatch,
@@ -23,8 +29,40 @@ import type {
 
 // ── DataHub ─────────────────────────────────────────────────────────────────────
 
+/**
+ * Mirrors `SAFE_DISPLAY_URL_PATTERN` (defined in src/api/schemas/common.py and
+ * imported by src/api/schemas/admin.py) so a malformed URL surfaces as an inline
+ * field error instead of a raw 422 toast.
+ *
+ * Applied to every operator-supplied URL the backend constrains this way: the
+ * DataHub `frontend_url` and the Langfuse `host`.
+ */
+export const safeDisplayUrlField = z
+  .string()
+  .max(SAFE_DISPLAY_URL_MAX_LENGTH, `Must be at most ${SAFE_DISPLAY_URL_MAX_LENGTH} characters.`)
+  .refine((v) => SAFE_DISPLAY_URL_RE.test(v), {
+    message:
+      "Must be an http:// or https:// URL with no credentials, spaces, or control " +
+      "characters (e.g. https://datahub.example.com). Leave blank to unset.",
+  });
+
+/**
+ * Mirrors `SAFE_PROJECT_ID_PATTERN` in src/api/schemas/common.py. The project id
+ * is interpolated into a Langfuse deep-link path segment, so it is constrained
+ * to an opaque slug.
+ */
+export const safeProjectIdField = z
+  .string()
+  .max(SAFE_PROJECT_ID_MAX_LENGTH, `Must be at most ${SAFE_PROJECT_ID_MAX_LENGTH} characters.`)
+  .refine((v) => SAFE_PROJECT_ID_RE.test(v), {
+    message:
+      "Must start with a letter or digit and contain only letters, digits, " +
+      "hyphens, and underscores. Leave blank to unset.",
+  });
+
 export const datahubSchema = z.object({
   gms_url: z.string(),
+  frontend_url: safeDisplayUrlField,
   kafka_brokers: z.string(),
   token: z.string(),
   service_corpuser_urn: z.string(),
@@ -37,6 +75,7 @@ export type DatahubFormValues = z.infer<typeof datahubSchema>;
 export function datahubToFormDefaults(p: DatahubPeripheral): DatahubFormValues {
   return {
     gms_url: p.gms_url,
+    frontend_url: p.frontend_url,
     kafka_brokers: p.kafka_brokers,
     // Never echo the masked indicator back as an editable value.
     token: "",
@@ -54,6 +93,9 @@ export function datahubBuildPatch(
 
   if (values.gms_url !== loaded.gms_url) {
     patch.gms_url = values.gms_url;
+  }
+  if (values.frontend_url !== loaded.frontend_url) {
+    patch.frontend_url = values.frontend_url;
   }
   if (values.kafka_brokers !== loaded.kafka_brokers) {
     patch.kafka_brokers = values.kafka_brokers;
@@ -75,10 +117,10 @@ export function datahubBuildPatch(
 // ── Langfuse ────────────────────────────────────────────────────────────────────
 
 export const langfuseSchema = z.object({
-  host: z.string(),
+  host: safeDisplayUrlField,
   public_key: z.string(),
   secret_key: z.string(),
-  project_id: z.string(),
+  project_id: safeProjectIdField,
   environment_tag: z.string(),
 });
 

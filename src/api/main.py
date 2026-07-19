@@ -29,6 +29,7 @@ from src.api.routers.spoke import metagen as spoke_metagen
 from src.api.routers.spoke import ontogen as spoke_ontogen
 from src.api.routers.spoke import validation as spoke_validation
 from src.api.routers.spoke.common import data as common_data
+from src.api.routers.spoke.common import peripheral_links as common_peripheral_links
 from src.shared.exceptions import (
     AirflowUnavailableError,
     AuthenticationError,
@@ -303,6 +304,18 @@ def create_app() -> FastAPI:
             ),
         },
         {
+            "name": "common/peripheral-links",
+            "description": (
+                "Browser-facing peripheral display links for the app shell, read from "
+                "the peripheral_config DB plane. Readable by any authenticated role, "
+                "unlike the Admin-only /admin/peripherals surface. `datahub_url` is the "
+                "DataHub UI URL (`frontend_url`), never the GMS service endpoint "
+                "(`gms_url`), which routinely differs in host, port, and scheme. "
+                "An unconfigured peripheral yields an empty string, which clients read "
+                "as 'render no link'."
+            ),
+        },
+        {
             "name": "ontogen",
             "description": (
                 "Ontology generation config, seed management, run, and node/edge/triple "
@@ -403,6 +416,7 @@ def create_app() -> FastAPI:
 
     # ── Spoke routes ───────────────────────────────────────────────────────────
     app.include_router(common_data.router,       prefix=SPOKE_COMMON)
+    app.include_router(common_peripheral_links.router, prefix=SPOKE_COMMON)
     app.include_router(spoke_ontogen.router,     prefix=SPOKE)
     app.include_router(spoke_metagen.router,     prefix=SPOKE)
     app.include_router(spoke_ingestion.router,   prefix=SPOKE)
