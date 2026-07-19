@@ -639,12 +639,13 @@ nothing.
 | Role | `Admin` |
 | DataHub interaction | None. Bootstrap writes only the local `users` row, so it requires no peripheral configuration and succeeds on a fresh install before DataHub is wired. |
 
-The dev install runs `helm-charts/bin/post-install/seed-admin-user.sh`
-after the API pod is Ready; prod operators run the same script (or call
-`/internal/admin/bootstrap` directly) once after pre-creating
-`dataspoke-secrets`. Both paths must rotate the default password via
-`PATCH /auth/me` before going to production — the install script logs a
-warning that explicitly says so. The bootstrap admin is otherwise a
+Both profiles run `helm-charts/bin/post-install/seed-admin-user.sh` after
+the API pod is Ready, so the default admin exists as soon as the install
+completes; `--skip-seed` suppresses it, leaving the operator to run the
+script (or call `/internal/admin/bootstrap` directly) themselves. Because
+the default credentials are published in this repository, rotating the
+password via `PATCH /auth/me` is a required post-install step — the
+install script logs a warning that explicitly says so. The bootstrap admin is otherwise a
 normal Admin user: it can be hard-deleted via `DELETE /admin/users/{id}`
 once another Admin exists, and the bootstrap endpoint will recreate it
 on the next install only if zero Admin rows remain.

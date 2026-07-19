@@ -16,3 +16,5 @@
 - [token_urlsafe scrub charset](project_token_urlsafe_scrub_charset.md) — dsk_/token_urlsafe are base64url; scrub regex needs [A-Za-z0-9_-]+ or ~74% of PATs leak a tail
 - [mypy override audit](feedback_mypy_override_audit.md) — --warn-unused-configs misses over-granted codes; re-run mypy with overrides stripped to get the true suppressed set
 - [Display-URL guard x3](project_display_url_guard_three_copies.md) — one safety regex hand-copied into pydantic + Python sanitizer + lib/safe-url.ts; diff-verify recipe
+- [Helm null + redis-replicas gotchas](project_helm_null_and_replicas_gotchas.md) — redis replica STS is plural; `key: null` removes/keeps-empty/errors depending on parent vs subchart vs schema chart
+- [Verify install.sh prod-branch claims](feedback_verify_install_branch_claims.md) — read the whole prod elif past the last step banner; dev's `_has_component` gating doesn't apply

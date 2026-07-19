@@ -1,0 +1,266 @@
+# ==============================================================================
+# DataSpoke — Prod Operator Values Overlay (EXAMPLE)
+# ==============================================================================
+# Copy this file, edit the placeholders, and pass it to install.sh:
+#
+#   ./helm-charts/bin/install.sh --profile prod \
+#     --values /path/to/your-overlay.yaml \
+#     --image-tag 1.2.3
+#
+# This is an OVERLAY on top of helm-charts/dataspoke/values.yaml (the umbrella
+# chart's prod defaults) — you only need to set the keys that differ for your
+# environment. Everything not repeated here inherits the base default.
+#
+# ------------------------------------------------------------------------------
+# MERGE SEMANTICS FOOTGUN — read this before writing your overlay
+# ------------------------------------------------------------------------------
+# Helm merges an extra -f file onto the chart's values.yaml with plain YAML
+# semantics: maps MERGE key-by-key (a key you don't repeat here survives
+# untouched from values.yaml); lists REPLACE wholesale (this is why the
+# ingress blocks below always show the complete hosts/tls list, not a diff).
+#
+# Consequence: values.yaml sets `cert-manager.io/cluster-issuer:
+# letsencrypt-prod` on all three ingresses below. If your cluster does NOT run
+# cert-manager, that annotation survives an overlay that only sets other
+# annotation keys, because the map merges rather than replaces. The fix
+# differs per ingress (each verified with `helm template` against this file):
+#   - api: setting the key to `null` here deletes it — the rendered manifest
+#     carries no `cert-manager.io/cluster-issuer` annotation at all.
+#   - frontend: setting the key to `null` here does NOT delete it — it
+#     renders as a literal `cert-manager.io/cluster-issuer: null`, which
+#     Kubernetes coerces to an empty string at apply time (harmless with no
+#     cert-manager installed, but a drift-detector that flags any
+#     `cert-manager.io/*` key presence will still fire).
+#   - airflow: setting the key to `null` here FAILS `helm template` outright —
+#     the Apache Airflow chart's `values.schema.json` requires a string for
+#     this annotation. Use an empty string `""` instead, or leave the
+#     annotation as `letsencrypt-prod` if an inert cert-manager key is fine.
+#
+#   api:
+#     ingress:
+#       annotations:
+#         cert-manager.io/cluster-issuer: null   # deletes the key — see above
+#   frontend:
+#     ingress:
+#       annotations:
+#         cert-manager.io/cluster-issuer: null   # renders as "" — see above
+#   airflow:
+#     ingress:
+#       apiServer:
+#         annotations:
+#           cert-manager.io/cluster-issuer: ""   # null FAILS helm template here — see above
+#
+# ------------------------------------------------------------------------------
+# NO CREDENTIALS IN THIS FILE
+# ------------------------------------------------------------------------------
+# Nothing secret belongs in this overlay — no passwords, tokens, API keys, or
+# OAuth client secrets. Every credential the umbrella chart consumes at runtime
+# is read from a Kubernetes Secret you pre-create out-of-band. For a real
+# deployment, deliver it via ExternalSecrets, Vault, or SealedSecrets; a plain
+# `kubectl create secret generic` is only the floor for a one-off bootstrap
+# (see helm-charts/README.md §2 for the safe form of that command — plain
+# `--from-literal=` leaks every value into shell history and process argv).
+# Name whichever mechanism you use via secrets.existingSecret below. See
+# helm-charts/README.md §Prod profile for the full list of required Secret
+# keys and the install.sh preflight checks that validate them before anything
+# gets deployed.
+# ==============================================================================
+
+
+# ------------------------------------------------------------------------------
+# Frontend — Ingress + runtime config
+# ------------------------------------------------------------------------------
+frontend:
+  ingress:
+    enabled: true
+    className: "nginx"          # match your cluster's IngressClass name
+    annotations:
+      cert-manager.io/cluster-issuer: "letsencrypt-prod"   # no cert-manager? set to null — renders as "" (see header)
+    hosts:
+      - host: app.dataspoke.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+    tls:
+      - secretName: dataspoke-frontend-tls
+        hosts:
+          - app.dataspoke.example.com
+  # Runtime config injected server-side into the Next.js container (not baked
+  # at build time) — safe to change per environment without rebuilding the image.
+  config:
+    apiBaseUrl: "https://api.dataspoke.example.com"
+    datahubUrl: "https://datahub.dataspoke.example.com"
+
+
+# ------------------------------------------------------------------------------
+# API — image pull secret + Ingress
+# ------------------------------------------------------------------------------
+api:
+  # Only needed when your registry requires auth to pull (private ECR/Artifact
+  # Registry/Docker Hub repo). Create the Secret first:
+  #   kubectl create secret docker-registry my-registry-pull-secret \
+  #     --docker-server=<registry> --docker-username=<u> --docker-password=<p> \
+  #     -n <DATASPOKE_KUBE_DATASPOKE_NAMESPACE>
+  #
+  # SCOPE: today only the API Deployment threads a pull secret (this key —
+  # dataspoke/templates/api-deployment.yaml). Postgres and Airflow pull images
+  # from the same private registry and need their own subchart-native keys if
+  # your registry requires auth — set them alongside this one:
+  #   postgresql:
+  #     global:
+  #       imagePullSecrets:
+  #         - my-registry-pull-secret
+  #   airflow:
+  #     imagePullSecrets:
+  #       - name: my-registry-pull-secret
+  # The frontend subchart does not support imagePullSecrets at all yet — a
+  # private-registry operator running `--frontend cluster` will see
+  # ImagePullBackOff on that workload regardless of what you set here.
+  imagePullSecrets:
+    - name: my-registry-pull-secret
+  ingress:
+    enabled: true
+    className: "nginx"
+    annotations:
+      nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+      cert-manager.io/cluster-issuer: "letsencrypt-prod"   # no cert-manager? set to null — this deletes the key (see header)
+    hosts:
+      # MUST be api.<the same domain you use everywhere else in this overlay> —
+      # helm-charts/bin/post-install/seed-admin-user.sh hardcodes
+      # <scheme>://api.<DATASPOKE_KUBE_INGRESS_DOMAIN>/internal/admin/bootstrap,
+      # so a mismatched host here breaks the manual admin seed step.
+      - host: api.dataspoke.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+    tls:
+      - secretName: dataspoke-api-tls
+        hosts:
+          - api.dataspoke.example.com
+
+
+# ------------------------------------------------------------------------------
+# Airflow — chart-native Ingress (api-server UI)
+# ------------------------------------------------------------------------------
+airflow:
+  ingress:
+    apiServer:
+      enabled: true
+      ingressClassName: "nginx"
+      annotations:
+        nginx.ingress.kubernetes.io/ssl-redirect: "false"
+        cert-manager.io/cluster-issuer: "letsencrypt-prod"   # no cert-manager? set to "" — `null` FAILS helm template here (see header)
+      hosts:
+        # Apache Airflow chart per-host shape: one host entry, tls nested under it
+        # (not a sibling `tls:` list like frontend/api above).
+        - name: airflow.dataspoke.example.com
+          tls:
+            enabled: true
+            secretName: dataspoke-airflow-tls
+
+
+# ------------------------------------------------------------------------------
+# Shared application config (CORS + OAuth redirect)
+# ------------------------------------------------------------------------------
+config:
+  # Origins allowed to call the API cross-origin — must include every host
+  # that serves the frontend (comma-separated, no spaces).
+  corsOrigins: "https://app.dataspoke.example.com"
+  # Where the Google/OIDC callback 302-redirects after login. Must point at
+  # the frontend origin above; the default "/" only works when UI and API
+  # share a host, which is not the case once you split app./api. subdomains.
+  oauthPostLoginRedirect: "https://app.dataspoke.example.com/"
+
+
+# ------------------------------------------------------------------------------
+# Auth — Google OAuth client ID + cookie policy
+# ------------------------------------------------------------------------------
+auth:
+  # Public client ID only — the paired client secret is NOT set here; it lives
+  # in the pre-created Secret as DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET (see
+  # secrets.existingSecret below and helm-charts/README.md §Prod profile).
+  googleClientId: "<your-client-id>.apps.googleusercontent.com"
+  # Chart default is already true — this line is a reminder, not an override.
+  # Leave it true unless your ingress serves plain HTTP with no TLS anywhere
+  # in front of the browser (rare, and generally not recommended for prod):
+  # a `Secure` cookie is simply dropped by the browser over HTTP, which breaks
+  # login rather than merely weakening it.
+  cookieSecure: true
+
+
+# ------------------------------------------------------------------------------
+# Secrets — name of your pre-created credential Secret
+# ------------------------------------------------------------------------------
+secrets:
+  # Name of the Kubernetes Secret you created before running install.sh. Must
+  # contain all 12 required keys — see helm-charts/README.md §Prod profile.
+  existingSecret: "dataspoke-secrets-prod"
+
+
+# ------------------------------------------------------------------------------
+# PostgreSQL image registry — NOT settable via this overlay
+# ------------------------------------------------------------------------------
+# `install.sh` unconditionally passes
+#   --set-string postgresql.image.registry=""
+#   --set-string postgresql.image.repository=<DATASPOKE_KUBE_IMAGE_REGISTRY>/postgres
+#   --set-string postgresql.image.tag=<--image-tag>
+# on every prod install, and `--set`/`--set-string` outrank `-f` values files —
+# any `postgresql.image.*` you set here is silently discarded (verified with
+# `helm template`). There is no per-service registry override today: routing
+# Postgres through a different registry than the rest of your images requires
+# changing `install.sh`, not this overlay. `DATASPOKE_KUBE_IMAGE_REGISTRY`
+# applies to all four built images (api/airflow/postgres/frontend) uniformly.
+
+
+# ------------------------------------------------------------------------------
+# pullPolicy
+# ------------------------------------------------------------------------------
+# Every image.pullPolicy in values.yaml defaults to IfNotPresent, which assumes
+# immutable tags (each build gets its own git-sha or semver tag, e.g. via
+# --image-tag) — the recommended pattern for prod, since kubelet can safely
+# cache layers and skip a re-pull on rollout.
+#
+# If your build pipeline instead reuses a mutable tag (e.g. always deploying
+# `:prod`), switch the relevant pullPolicy fields to Always so kubelet re-pulls
+# on every rollout — otherwise a redeploy with an unchanged tag can silently
+# keep running the previous image:
+#
+# frontend:
+#   image:
+#     pullPolicy: Always
+# api:
+#   image:
+#     pullPolicy: Always
+# event-consumer:
+#   image:
+#     pullPolicy: Always
+# postgresql:
+#   image:
+#     pullPolicy: Always
+# airflow:
+#   images:
+#     airflow:
+#       pullPolicy: Always
+
+
+# ------------------------------------------------------------------------------
+# Airflow log persistence (disabled by default)
+# ------------------------------------------------------------------------------
+# The shipped default runs Airflow task logs to emptyDir — logs do not survive
+# a pod restart (see values.yaml airflow.workers.celery.persistence and
+# airflow.triggerer.persistence). Uncomment the block below only if you want
+# post-mortem log retention across restarts; it provisions a PVC per
+# scheduler/triggerer replica (RWO, sized per your storage class). See
+# helm-charts/README.md §Prod: what survives an uninstall for what a
+# subsequent teardown then leaves behind.
+#
+# airflow:
+#   workers:
+#     celery:
+#       persistence:
+#         enabled: true
+#         size: 20Gi
+#   triggerer:
+#     persistence:
+#       enabled: true
+#       size: 20Gi

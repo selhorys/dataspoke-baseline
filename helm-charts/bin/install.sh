@@ -480,7 +480,7 @@ _write_env_var() {
 }
 
 # _check_airflow_credentials_prod <namespace> <secret_name>
-# Validates ALL 8 required keys are present, non-empty, and not equal to known
+# Validates ALL 12 required keys are present, non-empty, and not equal to known
 # insecure defaults. Prod profile only.
 _check_airflow_credentials_prod() {
   local ns="$1"

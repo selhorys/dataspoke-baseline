@@ -5,3 +5,4 @@
 - [Frontend 401/refresh conflation](project_frontend_401_refresh_conflation.md) — apiFetch: refreshed===false also means 503; "401 ⇒ no live session" carve-outs are unsound
 - [peripheral_config → href trust chain](project_peripheral_config_to_href_trust_chain.md) — DB peripheral URLs now render as browser hrefs; validate write AND read boundary
 - [Pydantic v2 pattern anchoring](project_pydantic_v2_pattern_anchoring.md) — rust-regex, ^ is start-of-haystack; ^scheme:// guards hold, but no trailing $ still allows creds/CRLF/unicode
+- [Operator runbook is a credential surface](project_operator_runbook_is_credential_surface.md) — helm-charts/README.md prod runbook: verify doc claims against install.sh, not against other docs

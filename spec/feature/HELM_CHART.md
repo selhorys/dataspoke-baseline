@@ -68,6 +68,7 @@ helm-charts/
 ├── README.md                           # operational guide for bin/ scripts
 ├── .env.dev.example                     # dev canonical env-var listing (3 sections)
 ├── .env.prod.example                    # prod operator template (deployment shape only)
+├── values-prod.example.yaml             # prod values-overlay template (--values starting point)
 ├── bin/
 │   ├── install.sh                       # main installer
 │   ├── uninstall.sh                     # main uninstaller
@@ -81,7 +82,7 @@ helm-charts/
 │   │   ├── langfuse.sh
 │   │   ├── dummy-data.sh
 │   │   └── dev-lock.sh
-│   └── post-install/                    # dev-only admin-API seeding
+│   └── post-install/                    # admin-API seeding (admin user: both profiles)
 │       ├── seed-peripheral-config.sh
 │       ├── seed-runtime-config.sh
 │       └── seed-admin-user.sh
@@ -121,6 +122,7 @@ helm-charts/
 | Dummy data | ✓ | ✗ |
 | Dev-lock | ✓ | ✗ |
 | Post-install peripheral seeding | ✓ | ✗ (operator uses admin API / UI) |
+| Post-install admin-user seed | ✓ | ✓ (both skippable with `--skip-seed`) |
 | Online LLM key rotation | ✓ | ✓ |
 
 **Why prod skips peripherals**: production DataHub and Langfuse installations
@@ -166,11 +168,15 @@ wires them via the runtime admin API (`/api/v1/admin/peripherals/{datahub,langfu
 | 1 | Pre-flight | tool check, context switch, namespace ensure | No nginx-ingress install — operator's controller. |
 | 2 | Image build | `build-image.sh api` ‖ `build-image.sh airflow` ‖ `build-image.sh postgres` | Skipped by `--skip-build` when CI built and pushed the images. `build-image.sh frontend` runs under the default `--frontend cluster`; skipped under `--frontend none`. |
 | 3 | Umbrella chart | `helm upgrade --install dataspoke ./helm-charts/dataspoke -f values.yaml -f <operator-overlay>` | Operator supplies values overlay with their own ingress hosts, TLS, registry, replica counts, source-credential references. `frontend.enabled` is set from `--frontend` (`cluster`→true, `none`→false; default `cluster`). |
+| — | Admin seed | `post-install/seed-admin-user.sh` | Runs after the chart phase unless `--skip-seed` is passed. Idempotent; seeds the default `dataspoke@dataspoke.local / dataspoke` Admin only when no Admin exists. Carries no `step` marker of its own. |
 
 Peripheral wiring (DataHub URL/token, Langfuse host/keys, LLM provider/model/key)
 is the operator's responsibility post-install, via `/api/v1/admin/peripherals/*`
 and `/api/v1/admin/conf`. An AI scaffold may automate this for an organization
-but is out of baseline scope.
+but is out of baseline scope. The phases above cover the install itself — for the
+surrounding lifecycle (Secret pre-creation, the mandatory credential rotation
+that follows the automatic seed, peripheral registration) see §Prod operator
+workflow.
 
 ### Component names
 
@@ -212,10 +218,41 @@ service — stop it with `kubectl scale --replicas=0`). Without `--components`, 
 full profile is torn down.
 
 Reverse order of install. Both profiles tear down the umbrella Helm release.
-The dev profile additionally removes peripherals and dev-lock. PVCs and
-namespaces are preserved by default — pass `--delete-pvcs` / `--delete-namespaces`
-(or `--delete-all`) to drop them. `--no-question` suppresses every interactive
-prompt (gate, PVC, namespace).
+The dev profile additionally removes peripherals and dev-lock. `--no-question`
+suppresses every interactive prompt (gate, PVC, namespace).
+
+### What a prod uninstall leaves behind
+
+Teardown is deliberately non-destructive to state: it removes the Helm release
+and the chart-derived Airflow Secrets, and nothing else.
+
+| Retained | Detail |
+|---|---|
+| `data-dataspoke-postgresql-0` | 50 Gi — operational DB (relational + pgvector) and Airflow metadata |
+| `redis-data-dataspoke-redis-master-0` | 8 Gi |
+| `redis-data-dataspoke-redis-replicas-0` | 8 Gi — note the plural `replicas`, matching the StatefulSet name; the master claim is singular |
+| `dataspoke-secrets` (or the `secrets.existingSecret` name) | Operator-owned; never deleted |
+| `dataspoke-airflow-fernet-key` | Airflow chart Secret carrying `helm.sh/resource-policy: keep` |
+| `dataspoke-llm-secret`, `dataspoke-datahub-secret`, `dataspoke-langfuse-secret`, `dataspoke-smtp-secret` | Out-of-band, not Helm-managed (see §Secrets Management) |
+
+Three PVCs, **66 Gi** total, keep consuming storage after teardown. The uninstall
+output names exactly three Secrets as deleted —
+`dataspoke-airflow-metadata-db`, `dataspoke-airflow-api-secret-key`,
+`dataspoke-airflow-jwt-secret` — and separately logs `dataspoke-secrets` as
+retained. `dataspoke-airflow-fernet-key` and the out-of-band Secrets survive
+silently, named in neither line, so an operator auditing residue must look for
+them explicitly.
+
+**Fernet key ↔ Postgres PVC coupling.** Airflow encrypts connection secrets in
+its metadata DB with the fernet key held in `dataspoke-airflow-fernet-key`.
+Because that metadata lives in the retained Postgres PVC, the two must be kept
+or dropped together: deleting the fernet-key Secret while keeping the PVC leaves
+every stored Airflow connection permanently undecryptable on reinstall.
+
+**Full wipe.** `--delete-pvcs` is a dev-only flag. In prod the sanctioned full
+wipe is `--delete-namespaces` (or `--delete-all`), which removes the namespace
+and with it the PVCs and every Secret above — including the keep-annotated and
+out-of-band ones. Recreate the operator Secret before the next install.
 
 ---
 
@@ -584,12 +621,65 @@ TCP host for the active ingress mode).
 
 ### Prod operator workflow
 
-1. Pre-create the `dataspoke-secrets` K8s Secret with all required keys (see §Secret keys
-   below). Any secrets manager (ExternalSecrets Operator, Vault Agent, SealedSecrets) or a
-   plain `kubectl create secret generic` works.
-2. Write a values overlay with `secrets.existingSecret: <name>` pointing at that Secret.
-3. Run `./helm-charts/bin/install.sh --profile prod --values <overlay.yaml>`. The install
-   fails fast with a clear message if the named Secret is missing from the cluster.
+The prod install covers the chart and the admin-user seed. Peripheral wiring is
+the operator's, performed against the running deployment.
+
+| # | Step | Interface |
+|---|---|---|
+| 1 | Pre-create the credentials Secret with all twelve keys (see §Secret keys below) | Any secrets manager (ExternalSecrets Operator, Vault Agent, SealedSecrets) or `kubectl create secret generic` |
+| 2 | Write the values overlay: `secrets.existingSecret`, ingress hosts, TLS, registry, replica counts | Start from `helm-charts/values-prod.example.yaml` |
+| 3 | Install — the chart, then the automatic admin seed | `bin/install.sh --profile prod --image-tag <tag> --values <overlay.yaml>` |
+| 4 | **Rotate the default admin credential — required** | `PATCH /api/v1/auth/me` |
+| 5 | Register peripherals | `/api/v1/admin/peripherals/{datahub,langfuse,smtp}` and `/api/v1/admin/conf` (LLM provider/model/key) |
+
+The literal copy-paste command sequence, including Secret-creation examples and
+verification probes, lives in [`helm-charts/README.md`](../../helm-charts/README.md).
+
+**Pre-flight is a hard gate.** Before touching the chart the prod install fails
+fast on: a missing `DATASPOKE_KUBE_INGRESS_CLASS` IngressClass; a missing
+credentials Secret; any of the twelve required keys absent or empty;
+`DATASPOKE_JWT_SECRET_KEY` still set to the dev default;
+`DATASPOKE_AIRFLOW_USER` equal to `admin`; `DATASPOKE_AIRFLOW_PASSWORD` empty or
+`admin`; `DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET` still the dev placeholder. An
+explicit `--image-tag` is also required, so a shared registry never receives the
+mutable `:dev` tag.
+
+**The admin seed runs automatically.** After the chart phase, the prod install
+invokes `seed-admin-user.sh` unless `--skip-seed` is passed. It POSTs
+`/internal/admin/bootstrap`, which is idempotent — it returns `created: false`
+when any Admin already exists, so re-running an install is safe. The endpoint
+makes no external call, so a 503 from it means the API's own Postgres is
+unreachable, not a peripheral problem.
+
+**Rotation is required, not advisory.** A first install therefore returns with
+an active Admin account whose credentials — `dataspoke@dataspoke.local /
+dataspoke` — are published in this repository. The deployment is not
+production-ready until step 4 rotates it. Who can reach that account depends on
+the operator's ingress controller and network posture, which the prod profile
+does not own or configure; the chart adds no source-range restriction or
+inbound policy of its own. Operators who want no default credential to exist at
+all install with `--skip-seed` and seed deliberately later (see below).
+
+**`api.ingress` host is load-bearing.** `seed-admin-user.sh` addresses the admin
+API at `api.<DATASPOKE_KUBE_INGRESS_DOMAIN>`, so the overlay's `api.ingress` host
+must be exactly that name or the seed step cannot reach the API and the install
+reports a failure at the last phase.
+
+**Seeding by hand.** Under `--skip-seed`, or to re-run the seed after fixing a
+failure, invoke the script directly:
+
+```
+ENV_FILE=helm-charts/.env.prod bash helm-charts/bin/post-install/seed-admin-user.sh
+```
+
+The `ENV_FILE=` prefix is required — the script defaults it to `.env.dev`.
+The install's own invocation needs no prefix because `install.sh` exports the
+resolved env file for child scripts.
+
+**Step 5 is the operator's, not the installer's.** DataHub URL/token, Langfuse
+host/keys, and LLM provider/model/key are all registered at runtime through the
+admin API (see §Configuration Flow and §Profiles). Until then the dependent
+features stay inert rather than failing the install.
 
 ### ConfigMap keys (non-sensitive)
 
@@ -840,7 +930,10 @@ DELETE force-release) in `helm-charts/README.md`.
 
 ## Post-Install Seeding
 
-Dev only. Runs after the umbrella chart's API deployment is Ready.
+Runs after the umbrella chart's API deployment is Ready. The dev profile runs
+all three scripts; the prod profile runs `seed-admin-user.sh` only — peripheral
+and runtime config are the operator's, per §Prod operator workflow. Each script
+is standalone and env-file-driven, so any of them can also be invoked by hand.
 
 | Script | Effect |
 |---|---|
@@ -854,9 +947,10 @@ Auth: both use the `DATASPOKE_INTERNAL_TOKEN` read from the `dataspoke-secrets` 
 Skip with `--skip-seed`; useful when a previous install already seeded
 peripheral config and the operator wants to preserve their PATCHes.
 
-In prod, an operator (or an organization-specific AI scaffold) performs the
-equivalent through `/api/v1/admin/peripherals/*` and `/api/v1/admin/conf` —
-out of project scope.
+In prod the admin seed is automatic and the other two scripts do not run: the
+operator performs their equivalents through `/api/v1/admin/peripherals/*` and
+`/api/v1/admin/conf` against the running deployment. Rotating the seeded default
+credential is a required follow-up — see §Prod operator workflow.
 
 ---
 
@@ -939,14 +1033,20 @@ than `requests.ephemeral-storage` are silently normalized to the request value.
 Chatty containers (sustained stdout, emptyDir writes, projected-volume mounts)
 exhaust the default within minutes and trigger eviction with `Pod ephemeral
 local storage usage exceeds the total limit of containers`. `/opt/airflow/logs`
-counts against the ephemeral budget on the Airflow api-server and dag-processor,
-which hold it on an emptyDir; the scheduler and triggerer carry it on their log
-PVCs, so only their stdout draws on ephemeral storage. Explicit ephemeral-storage
+is an emptyDir on every Airflow component, so it counts against the ephemeral
+budget alongside stdout. Explicit ephemeral-storage
 limits in the table below prevent that class of eviction. Low-log containers
 (dev-lock, redis, frontend, Airflow logGroomer sidecars) keep the Autopilot
 default.
 
-| Component | Namespace | Limit | Why |
+The table lists the **configured `limits.ephemeral-storage`**. On Autopilot the
+effective ceiling is the paired `requests.ephemeral-storage`, which the umbrella
+chart sets to half the limit — 4 Gi for the four Airflow components, 2 Gi for
+`dataspoke-api` and `postgresql`. Size against the request, not the limit; the
+Airflow `logs.emptyDirConfig.sizeLimit` of 2 Gi is chosen to stay under the 4 Gi
+Airflow request for that reason.
+
+| Component | Namespace | Configured limit | Why |
 |---|---|---|---|
 | datahub-gms | datahub-01 | 8 Gi | High-log: continuous Kafka-listener traces |
 | datahub-frontend | datahub-01 | 8 Gi | High-log: Play framework access log per request |
@@ -957,8 +1057,8 @@ default.
 | OpenSearch | datahub-01 | 4 Gi | Medium-log: JVM GC + index recovery |
 | MySQL | datahub-01 | 4 Gi | Medium-log: slow-query and binlog refs |
 | airflow-api-server | dataspoke-01 | 8 Gi | High-log: uvicorn access log per request |
-| airflow-scheduler | dataspoke-01 | 8 Gi | High stdout: heartbeat + task scheduling (task logs on PVC) |
-| airflow-triggerer | dataspoke-01 | 8 Gi | High stdout: event-loop (task logs on PVC) |
+| airflow-scheduler | dataspoke-01 | 8 Gi | High stdout: heartbeat + task scheduling |
+| airflow-triggerer | dataspoke-01 | 8 Gi | High stdout: event-loop |
 | airflow-dag-processor | dataspoke-01 | 8 Gi | High-log: parse cycle per DAG per interval |
 | dataspoke-api | dataspoke-01 | 4 Gi | Medium-log: uvicorn access log |
 | postgresql (dataspoke) | dataspoke-01 | 4 Gi | Medium-log: WAL + autovacuum |
@@ -1129,7 +1229,8 @@ affected subsystem via `bin/install.sh --profile dev --components <name>`.
 
 GKE Autopilot's 1 GiB ephemeral-storage default per container is exhausted by
 chatty containers within minutes. Ensure the affected container has explicit
-`ephemeral-storage` entries per §Resource Sizing §Ephemeral storage. If the
+`ephemeral-storage` entries per §Resource Sizing → Ephemeral storage budget
+(Autopilot). If the
 evicted container is not in the table, verify it is not writing unexpectedly
 large logs.
 

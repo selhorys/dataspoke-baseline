@@ -305,6 +305,13 @@ elif [[ "$PROFILE" == "prod" ]]; then
   done
   info "Operator-owned Secret 'dataspoke-secrets' (or secrets.existingSecret) retained."
 
+  # ---------------------------------------------------------------------------
+  # Delete namespace? Ask BEFORE printing the retained-resources summary below —
+  # printing a "here's what survives" list and then immediately asking "delete
+  # the namespace?" invites a 'y' that destroys everything just listed. If the
+  # namespace ends up deleted, the summary is moot (it takes the PVCs/Secrets
+  # below with it) and is skipped entirely.
+  # ---------------------------------------------------------------------------
   echo ""
   if [[ "${DELETE_NAMESPACES}" != true && "${NO_QUESTION}" != true ]]; then
     read -r -p "Delete namespace '${NS}'? [y/N] " CONFIRM_NS
@@ -317,6 +324,78 @@ elif [[ "$PROFILE" == "prod" ]]; then
     fi
   else
     info "Namespace '${NS}' retained."
+
+    # -------------------------------------------------------------------------
+    # Retained-resources summary (echo/info only — this uninstaller never
+    # deletes PVCs in prod; --delete-pvcs is dev-only).
+    # -------------------------------------------------------------------------
+    echo ""
+    info "Resources retained in '${NS}' after this uninstall:"
+    info "  PVCs:"
+    CORE_PVCS_FOUND=()
+    for pvc in data-dataspoke-postgresql-0 \
+               redis-data-dataspoke-redis-master-0 \
+               redis-data-dataspoke-redis-replicas-0; do
+      if kubectl get pvc "${pvc}" -n "${NS}" >/dev/null 2>&1; then
+        CORE_PVCS_FOUND+=("${pvc}")
+        SIZE="$(kubectl get pvc "${pvc}" -n "${NS}" -o jsonpath='{.spec.resources.requests.storage}' 2>/dev/null || echo '?')"
+        info "    ${pvc}   ${SIZE}"
+      else
+        warn "    ${pvc} not found — expected to exist alongside a running install; check for a naming drift."
+      fi
+    done
+
+    # Airflow log PVCs only exist when your overlay enables Airflow log
+    # persistence (disabled in the shipped chart default — see
+    # values-prod.example.yaml §Airflow log persistence) — probe first so the
+    # common case (persistence off) prints nothing.
+    LOG_PVCS=()
+    for pvc in logs-dataspoke-airflow-scheduler-0 logs-dataspoke-airflow-triggerer-0; do
+      if kubectl get pvc "${pvc}" -n "${NS}" >/dev/null 2>&1; then
+        LOG_PVCS+=("${pvc}")
+      fi
+    done
+    if [[ "${#LOG_PVCS[@]}" -gt 0 ]]; then
+      info "  Also found Airflow log PVCs (present because your overlay enables Airflow log"
+      info "  persistence — disabled in the shipped chart default):"
+      for pvc in "${LOG_PVCS[@]}"; do
+        SIZE="$(kubectl get pvc "${pvc}" -n "${NS}" -o jsonpath='{.spec.resources.requests.storage}' 2>/dev/null || echo '?')"
+        info "    ${pvc}   ${SIZE}"
+      done
+      warn "  These hold retained task logs by design — delete only if you no longer need that"
+      warn "  post-mortem history."
+    fi
+
+    info "  Secrets:"
+    info "    dataspoke-secrets (or your secrets.existingSecret name) — operator-owned"
+    if kubectl get secret dataspoke-airflow-fernet-key -n "${NS}" >/dev/null 2>&1; then
+      info "    dataspoke-airflow-fernet-key — keep-annotated by the Airflow chart"
+      warn "      Coupled to the Postgres PVC above: keeping one without the other breaks Airflow —"
+      warn "      if the Postgres PVC survives, existing encrypted Airflow connections are only"
+      warn "      decryptable with this same fernet key."
+    fi
+    for oob_secret in dataspoke-llm-secret dataspoke-datahub-secret \
+                      dataspoke-langfuse-secret dataspoke-smtp-secret; do
+      if kubectl get secret "${oob_secret}" -n "${NS}" >/dev/null 2>&1; then
+        info "    ${oob_secret} — out-of-band, not managed by this script"
+      fi
+    done
+
+    info "  To delete manually:"
+    if [[ "${#CORE_PVCS_FOUND[@]}" -gt 0 ]]; then
+      info "    kubectl delete pvc ${CORE_PVCS_FOUND[*]} -n '${NS}'"
+    fi
+    if [[ "${#LOG_PVCS[@]}" -gt 0 ]]; then
+      info "    kubectl delete pvc ${LOG_PVCS[*]} -n '${NS}'"
+    fi
+    info "    kubectl delete secret dataspoke-secrets dataspoke-airflow-fernet-key -n '${NS}'"
+    warn "  Deleting 'dataspoke-secrets' (or your secrets.existingSecret) destroys the only copy"
+    warn "  of all 12 credentials unless they also live in an external secrets manager, AND"
+    warn "  strands the Postgres PVC above if you keep it (the running cluster still expects the"
+    warn "  old DATASPOKE_POSTGRES_PASSWORD). Delete the Secret only together with the PVCs above,"
+    warn "  or not at all."
+    info "  Or delete the namespace '${NS}' for a full wipe — the only sanctioned full teardown in prod."
+    echo ""
   fi
 fi
 
