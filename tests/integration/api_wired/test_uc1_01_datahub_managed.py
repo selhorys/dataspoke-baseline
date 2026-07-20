@@ -59,7 +59,10 @@ import pytest_asyncio
 from tests.integration.util import dataspoke_db
 from tests.integration.util.datahub import (
     PG_INSTANCE,
+    PG_PLATFORM,
     TARGET_SCHEMAS,
+    ingest_pg_datasets,
+    reset_datasets,
 )
 
 # In-cluster cluster-DNS address of the dummy-data postgres; mode-independent
@@ -165,6 +168,24 @@ async def _managed_source_setup(
 
     # Clean slate before test — spec: TESTING.md §Integration Testing §Per-Module reset
     await dataspoke_db.reset_ingestion_sources()
+
+    # Idempotency: refresh the covered postgres datasets to a clean baseline so no
+    # stale systemMetadata.pipelineName from a prior managed run survives into this
+    # one. This module is the only api-wired module that WRITES durable DataHub
+    # dataset state — the execute-and-reflect test runs the managed source, and
+    # DataHub stamps the source URN onto the run-refreshed aspects (in practice only
+    # `subTypes`, since the seed pre-populates datasetProperties/schemaMetadata with
+    # no pipelineName). DataHub dedups an unchanged aspect on the next run, so a
+    # second run of a fresh source URN would re-emit `subTypes="Table"` as a no-op
+    # and keep the deleted prior source's pipelineName — the matched→pipeline_name
+    # upgrade would then never fire (issue #77). Hard-deleting + re-ingesting the pg
+    # datasets clears that pipelineName, restoring the exact post-reset-seed state
+    # (Kafka datasets untouched) and making the module re-runnable without an
+    # intervening --reset-seed.
+    # spec: BACKEND.md §Sync sweep step 3 — pipeline_name derivation reads
+    #   systemMetadata.pipelineName; spec: project_es_indexing_lag_after_reset_seed.
+    reset_datasets(platform=PG_PLATFORM)
+    await ingest_pg_datasets(DUMMY_DATA_DATAHUB_SCHEMAS)
 
     # Idempotency: drop any leftover DataHub Secret from a prior interrupted run.
     # DataHub Secrets are name-keyed (urn:li:dataHubSecret:<name>) and survive a DataSpoke

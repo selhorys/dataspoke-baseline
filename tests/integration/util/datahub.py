@@ -432,8 +432,8 @@ async def discover_tables(
 # ---------------------------------------------------------------------------
 
 
-def reset_datasets() -> int:
-    """Hard-delete all example_db and example_kafka datasets from DataHub.
+def reset_datasets(platform: str | None = None) -> int:
+    """Hard-delete example_db and example_kafka datasets from DataHub.
 
     Also hard-deletes any DataProcessInstance entities that produced one of
     those datasets (UC1 ingestion runs), since DPIs are useless once the
@@ -442,7 +442,15 @@ def reset_datasets() -> int:
     Hard-delete (vs. the prior soft-delete) wipes both versioned aspects
     (datasetProperties, schemaMetadata, status, etc.) and timeseries aspects
     (datasetProfile, datasetUsageStatistics, run events) in one pass — leaving
-    no stale history for the next test run to trip over.
+    no stale history for the next test run to trip over. In particular it clears
+    the ``systemMetadata.pipelineName`` a managed ingestion run stamps on the
+    ``subTypes`` aspect: DataHub dedups an unchanged aspect on re-ingest, so
+    without a hard-delete a later run keeps a prior (deleted) source's
+    pipelineName and the matched→pipeline_name upgrade never fires.
+
+    ``platform`` scopes the sweep: ``None`` (default) deletes both platforms;
+    ``PG_PLATFORM`` / ``KAFKA_PLATFORM`` restricts it to one, so a caller can
+    refresh its own datasets without wiping the other platform's shared seed.
 
     Returns total count deleted (datasets + DPIs).
     """
@@ -452,16 +460,18 @@ def reset_datasets() -> int:
     dataset_urns: list[str] = []
 
     # PostgreSQL datasets
-    pg_prefix = f"urn:li:dataset:(urn:li:dataPlatform:{PG_PLATFORM},{PG_INSTANCE}."
-    for u in graph.get_urns_by_filter(entity_types=["dataset"], platform=PG_PLATFORM):
-        if u.startswith(pg_prefix):
-            dataset_urns.append(u)
+    if platform in (None, PG_PLATFORM):
+        pg_prefix = f"urn:li:dataset:(urn:li:dataPlatform:{PG_PLATFORM},{PG_INSTANCE}."
+        for u in graph.get_urns_by_filter(entity_types=["dataset"], platform=PG_PLATFORM):
+            if u.startswith(pg_prefix):
+                dataset_urns.append(u)
 
     # Kafka datasets
-    kafka_prefix = f"urn:li:dataset:(urn:li:dataPlatform:{KAFKA_PLATFORM},{_kafka_instance}."
-    for u in graph.get_urns_by_filter(entity_types=["dataset"], platform=KAFKA_PLATFORM):
-        if u.startswith(kafka_prefix):
-            dataset_urns.append(u)
+    if platform in (None, KAFKA_PLATFORM):
+        kafka_prefix = f"urn:li:dataset:(urn:li:dataPlatform:{KAFKA_PLATFORM},{_kafka_instance}."
+        for u in graph.get_urns_by_filter(entity_types=["dataset"], platform=KAFKA_PLATFORM):
+            if u.startswith(kafka_prefix):
+                dataset_urns.append(u)
 
     if not dataset_urns:
         print("  No existing dummy-data datasets to delete.")
