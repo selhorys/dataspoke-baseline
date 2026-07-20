@@ -377,10 +377,14 @@ fields.
 ┌──────────────────────────────────────────────────────────────┐
 │  Admin — Peripherals                                         │
 ├──────────────────────────────────────────────────────────────┤
-│  DataHub                                                     │
+│  DataHub                              ● Consumer OK 14:30    │
 │    GMS URL        [ http://datahub-gms…              ]       │
 │    Frontend URL   [ https://datahub.example.com      ]       │
 │    Kafka brokers  [ broker:9092                      ]       │
+│    Security protocol [ SASL_SSL ▾ ]                          │
+│    SASL mechanism    [ SCRAM-SHA-512 ▾ ]                     │
+│    SASL username  [ dataspoke                        ]       │
+│    SASL password  [ •••••• leave blank to keep current ]    │
 │    Token          [ •••••• leave blank to keep current ]    │
 │    Service corpuser URN [ urn:li:corpuser:dataspoke  ]       │
 │    Default env    [ DEV                              ]       │
@@ -401,7 +405,13 @@ fields.
 |---|---|---|---|
 | DataHub | GMS URL | `gms_url` | Plain text |
 | DataHub | Frontend URL | `frontend_url` | Plain text; the **browser-facing DataHub UI URL, not GMS** — labelled to keep the two apart, since they differ in host, port, and scheme in most deployments. Feeds the shell's DataHub links |
-| DataHub | Kafka brokers | `kafka_brokers` | Plain text |
+| DataHub | Kafka brokers | `kafka_brokers` | Plain text; under `AWS_MSK_IAM` every host must be an MSK broker host (`kafka.<region>.amazonaws.com` or `kafka-serverless.<region>.amazonaws.com`), so the field carries that hint and the API rejects anything else |
+| DataHub | Security protocol | `kafka_security_protocol` | Select — `PLAINTEXT` (default) / `SSL` / `SASL_PLAINTEXT` / `SASL_SSL` |
+| DataHub | SASL mechanism | `kafka_sasl_mechanism` | Select — rendered only when the protocol is `SASL_*`. Under `SASL_SSL` the options are `PLAIN` / `SCRAM-SHA-256` / `SCRAM-SHA-512` / `AWS_MSK_IAM`; under `SASL_PLAINTEXT` the credential mechanisms only, since `AWS_MSK_IAM` requires `SASL_SSL` |
+| DataHub | SASL username | `kafka_sasl_username` | Plain text; rendered only for `PLAIN` and `SCRAM-*` |
+| DataHub | SASL password | `kafka_sasl_password` | Masked write-only secret (see below); rendered only for `PLAIN` and `SCRAM-*` |
+| DataHub | AWS region | `kafka_aws_region` | Plain text, optional; rendered only for `AWS_MSK_IAM`. Blank means "derive from the broker hostname" |
+| DataHub | Consumer health | `health` | Read-only badge in the card header (see below) |
 | DataHub | Token | `token` | Masked write-only secret (see below) |
 | DataHub | Service corpuser URN | `service_corpuser_urn` | Non-secret, returned plain; default `urn:li:corpuser:dataspoke` |
 | DataHub | Default env | `default_env` | Non-secret, returned plain; fabric/env, default `DEV` |
@@ -411,14 +421,38 @@ fields.
 | Langfuse | Project ID | `project_id` | Non-secret, returned plain |
 | Langfuse | Environment tag | `environment_tag` | Non-secret, returned plain |
 
-- **Masked secrets** (`token`, `secret_key`) use `PasswordInput` and behave like
+- **The Kafka security fields are progressively disclosed.** The mechanism select
+  appears only once the protocol is `SASL_*`, and the credential inputs only once
+  the mechanism is a credential-based one. `PLAINTEXT` — the default — therefore
+  shows nothing beyond the brokers, so an unsecured cluster is unchanged by this
+  surface. The disclosure rules mirror the validation rules in
+  [API.md §DataHub Kafka security](../API.md#datahub-kafka-security), which owns
+  them — the form never offers a combination the API rejects with
+  `422 INVALID_PARAMETER`, so a well-behaved form cannot produce one.
+- **`AWS_MSK_IAM` shows no credential inputs at all**, and in their place an
+  informational note: authentication uses the consumer pod's IAM role, which is
+  attached at deploy time via the chart values `event-consumer.serviceAccount`
+  (see [`spec/feature/HELM_CHART.md`](HELM_CHART.md#event-consumer-identity-and-rbac)).
+  This restates the API rule that `kafka_sasl_username` and `kafka_sasl_password`
+  are *rejected* under this mechanism, not merely unused. It is a real limit of
+  the page, not an omission — the credential is a pod identity, so selecting the
+  mechanism is the only part the UI can own.
+- **Consumer health** renders the read-only `health` object from
+  `GET /admin/peripherals/datahub` as a badge in the DataHub card header:
+  `ok` with `last_ok_at`, `error` with `last_error` as its detail, and `unknown`
+  when no consumer has ever reported — which is the normal state of a deployment
+  running no event consumer, so it reads as a neutral badge rather than a fault.
+  Saving does not refresh it; it moves when the consumer next reports.
+- **Masked secrets** (`token`, `kafka_sasl_password`, `secret_key`) use `PasswordInput` and behave like
   `llm_api_key` on `/admin/conf`: `GET` returns `""` (unset) or `"********"`
   (set); the field shows "leave blank to keep current"; an empty submission omits
   the field (unchanged), and the `"********"` sentinel is never echoed back as a
   written value. Secrets are routed to Kubernetes Secrets, not the DB.
-- **Non-secret fields** (`service_corpuser_urn`, `default_env`, `project_id`,
-  `environment_tag`) are plain inputs prefilled from the `GET` response and sent
-  verbatim on `PATCH`.
+- **Non-secret fields** (`service_corpuser_urn`, `default_env`, the visible
+  `kafka_*` settings, `project_id`, `environment_tag`) are plain inputs or selects
+  prefilled from the `GET` response and sent verbatim on `PATCH`.
+  `kafka_sasl_password_version` is bookkeeping the API maintains — the page neither
+  renders nor sends it.
 - Each card's Save submits only the fields that changed within that card; the two
   cards never share a submit. A "Saved · updated <timestamp>" indicator appears in
   the saved card's footer (in-session only).

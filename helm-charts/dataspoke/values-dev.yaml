@@ -1,5 +1,6 @@
 # DataSpoke Umbrella Chart — Dev Overlay
-# Infrastructure only. Application subcharts disabled (run on the host).
+# Infrastructure plus the in-cluster API and event-consumer; the frontend runs
+# on the host (see --frontend local).
 # Used by: helm-charts/bin/install.sh --profile dev
 
 # ---------------------------------------------------------------------------
@@ -10,9 +11,9 @@ global:
     allowInsecureImages: true
 
 # ---------------------------------------------------------------------------
-# Application components: frontend runs on the host; event-consumer is disabled
-# in dev (baseline UC1–UC5 are schedule-driven, not event-driven). API runs
-# in-cluster so Airflow can reach it via http://dataspoke-api:8002.
+# Application components: frontend runs on the host; the event-consumer runs
+# in-cluster so the DataHub event path is exercised in dev. API runs in-cluster
+# so Airflow can reach it via http://dataspoke-api:8002.
 # ---------------------------------------------------------------------------
 frontend:
   enabled: false
@@ -42,8 +43,24 @@ api:
       cpu: "1"
       memory: 1024Mi
       ephemeral-storage: 4Gi
+# The consumer runs in dev against DataHub's in-cluster plaintext Kafka, so the
+# DataHub Kafka security tuple stays at its PLAINTEXT default and the event path
+# is exercised on every dev install. It runs the API image (repository + tag
+# passed via --set from DATASPOKE_KUBE_IMAGE_REGISTRY, same as api.image.*).
 event-consumer:
-  enabled: false
+  enabled: true
+  replicaCount: 1
+  image:
+    pullPolicy: Always
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+      ephemeral-storage: 1Gi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+      ephemeral-storage: 2Gi
 
 # ---------------------------------------------------------------------------
 # Auth — override prod defaults for dev (HTTP)

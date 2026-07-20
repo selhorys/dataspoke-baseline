@@ -30,6 +30,7 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
+      serviceAccountName: {{ include "event-consumer.serviceAccountName" . }}
       {{- if .Values.waitForDeps.enabled }}
       initContainers:
         - name: wait-for-postgres
@@ -62,6 +63,15 @@ spec:
         - name: event-consumer
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{/*
+            The image is the API image (docker-images/api/Dockerfile), which
+            ends in a CMD rather than an ENTRYPOINT, so this command replaces
+            the uvicorn server outright and the same artifact serves both
+            workloads. Kafka brokers and security settings are not passed here —
+            the consumer reads them from peripheral_config and re-reads them
+            while polling, so a connection change needs no redeploy.
+          */}}
+          command: ["python", "-m", "src.shared.datahub.consumer"]
           envFrom:
             - configMapRef:
                 name: dataspoke-app-config

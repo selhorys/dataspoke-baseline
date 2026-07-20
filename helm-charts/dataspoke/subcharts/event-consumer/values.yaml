@@ -1,18 +1,41 @@
 replicaCount: 1
 
+# The consumer runs the API image under a `command:` override — it ships no
+# image of its own (see spec/feature/HELM_CHART.md §Umbrella structure). These
+# coordinates therefore mirror the umbrella chart's `api.image.*`; install.sh
+# passes the same registry/tag to both so the two workloads always run the same
+# revision of src/.
 image:
-  repository: dataspoke/event-consumer
+  repository: dataspoke/api
   tag: latest
   pullPolicy: IfNotPresent
+
+# ServiceAccount for the consumer pod.
+#   create      — render the SA plus its secret-reader Role/RoleBinding. Set to
+#                 false to attach an operator-managed SA, in which case the
+#                 operator also owns the RBAC granting it `get` on
+#                 dataspoke-datahub-secret.
+#   name        — SA name; defaults to the release-derived fullname.
+#   annotations — attachment point for cloud workload identity. AWS_MSK_IAM
+#                 authenticates as the pod's IAM role, bound here via
+#                 eks.amazonaws.com/role-arn: arn:aws:iam::<acct>:role/<role>.
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
 
 # Annotations merged onto every pod template.
 podAnnotations:
   cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
 
-# PodDisruptionBudget keeps at least one replica live during voluntary disruptions.
+# PodDisruptionBudget. The consumer runs a single replica, so this is
+# maxUnavailable rather than minAvailable: minAvailable: 1 on one replica
+# forbids every voluntary eviction, stalling node drains and autoscaler
+# consolidation forever. A consumer group tolerates the brief rebalance an
+# eviction causes, so blocking the drain buys no availability.
 podDisruptionBudget:
   enabled: true
-  minAvailable: 1
+  maxUnavailable: 1
 
 # Init container that waits for PostgreSQL to be reachable before the
 # event-consumer process starts — prevents crash-loops on cold deploy.

@@ -575,6 +575,40 @@ class PeripheralConfig(Base):
     )
 
 
+# ── peripheral_health ─────────────────────────────────────────────────────────
+
+
+class PeripheralHealth(Base):
+    """Last observed liveness of a peripheral, written by long-running connection holders.
+
+    Keyed on the same names as ``peripheral_config`` but with **no foreign key**
+    to it: a missing config row is exactly the condition this table exists to
+    report, so a constraint would fail the upsert precisely when the signal
+    matters most.
+    """
+
+    __tablename__ = "peripheral_health"
+    __table_args__ = (
+        CheckConstraint(
+            "name IN ('datahub', 'langfuse', 'smtp')", name="ck_peripheral_health_name"
+        ),
+        CheckConstraint(
+            "status IN ('unknown', 'ok', 'error')", name="ck_peripheral_health_status"
+        ),
+        {"schema": SCHEMA},
+    )
+
+    name: Mapped[str] = mapped_column(String(32), primary_key=True)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="unknown", server_default="unknown"
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_ok_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
 # ── ontogen_seeds ─────────────────────────────────────────────────────────────
 
 

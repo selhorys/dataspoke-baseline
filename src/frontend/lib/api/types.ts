@@ -102,17 +102,47 @@ export interface RuntimeConf {
 
 // ── Peripheral Configuration ──────────────────────────────────────────────────
 
+/** `security.protocol` the event consumer uses to reach Kafka. */
+export type KafkaSecurityProtocol = "PLAINTEXT" | "SSL" | "SASL_PLAINTEXT" | "SASL_SSL";
+
+/** `sasl.mechanism`; `""` means "no SASL", which is the only valid value under a non-SASL protocol. */
+export type KafkaSaslMechanism = "PLAIN" | "SCRAM-SHA-256" | "SCRAM-SHA-512" | "AWS_MSK_IAM";
+
+/**
+ * A peripheral's last self-reported connection state.
+ *
+ * `unknown` covers both "never reported" and "no reporter deployed" — the API
+ * does not distinguish them.
+ */
+export interface PeripheralHealth {
+  status: "unknown" | "ok" | "error";
+  last_error: string | null;
+  last_ok_at: string | null;
+  updated_at: string | null;
+}
+
 export interface DatahubPeripheral {
   resp_time: string;
   gms_url: string;
   /** Browser-facing DataHub UI base URL — never the GMS endpoint. */
   frontend_url: string;
   kafka_brokers: string;
+  kafka_security_protocol: KafkaSecurityProtocol;
+  kafka_sasl_mechanism: KafkaSaslMechanism | "";
+  kafka_sasl_username: string;
+  /** Masked indicator only: "" when unset, "********" when set. */
+  kafka_sasl_password: string;
+  /** API-owned bookkeeping, incremented on every password write. Never rendered, never sent. */
+  kafka_sasl_password_version: number;
+  kafka_aws_region: string;
   /** Masked indicator only: "" when unset, "********" when set. */
   token: string;
   service_corpuser_urn: string;
   default_env: string;
+  /** Keys on `token` alone — the Kafka credential is optional and never participates. */
   is_configured: boolean;
+  /** Read-only: whether the configuration actually works, as opposed to merely being present. */
+  health: PeripheralHealth;
   updated_at: string | null;
 }
 
@@ -121,6 +151,13 @@ export interface DatahubPeripheralPatch {
   /** Browser-facing DataHub UI base URL; constrained to a safe http(s) form. */
   frontend_url?: string;
   kafka_brokers?: string;
+  kafka_security_protocol?: KafkaSecurityProtocol;
+  /** `""` clears the mechanism, which is what a non-SASL protocol requires. */
+  kafka_sasl_mechanism?: KafkaSaslMechanism | "";
+  kafka_sasl_username?: string;
+  /** Plaintext Kafka SASL password; omit to keep current, "" to clear. */
+  kafka_sasl_password?: string;
+  kafka_aws_region?: string;
   /** Plaintext token; omit to keep current, "" to clear. */
   token?: string;
   service_corpuser_urn?: string;

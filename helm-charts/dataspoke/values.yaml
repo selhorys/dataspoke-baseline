@@ -144,16 +144,32 @@ event-consumer:
   replicaCount: 1
   podAnnotations:
     cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+  # maxUnavailable, not minAvailable — with one replica, minAvailable: 1 blocks
+  # every voluntary eviction and stalls node drains indefinitely. A consumer
+  # group rebalances quickly, so there is no availability to protect. Raise
+  # replicaCount past the topic's partition count and the extra pods idle.
   podDisruptionBudget:
     enabled: true
-    minAvailable: 1
+    maxUnavailable: 1
   waitForDeps:
     enabled: true
     image: "busybox:1.37"
+  # The consumer runs the API image under a `command:` override — no separate
+  # image is built for it, and build-image.sh has no event-consumer target.
+  # install.sh passes the same registry/tag it passes to api.image.*, so both
+  # workloads always run the same revision of src/.
   image:
-    repository: dataspoke/event-consumer
+    repository: dataspoke/api
     tag: latest
     pullPolicy: IfNotPresent
+  # ServiceAccount + secret-reader RBAC for the consumer. annotations is the
+  # attachment point for cloud workload identity — required for
+  # kafka_sasl_mechanism = AWS_MSK_IAM, which authenticates as an IAM role
+  # instead of a typed credential. See values-prod.example.yaml.
+  serviceAccount:
+    create: true
+    name: ""
+    annotations: {}
   resources:
     requests:
       cpu: 250m

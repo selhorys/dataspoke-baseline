@@ -6,7 +6,7 @@ accessed via ``datahub_secret`` / ``langfuse_secret`` / ``smtp_secret``.
 
 Public surface:
     get_peripheral_config(db, name) -> DatahubConfigDTO | LangfuseConfigDTO | SmtpConfigDTO | None
-    patch_peripheral_config(db, name, **partial)
+    patch_peripheral_config(db, name, bump_kafka_sasl_password_version=False, **partial)
         -> DatahubConfigDTO | LangfuseConfigDTO | SmtpConfigDTO
     invalidate_peripheral_config_cache(name=None)
 """
@@ -35,6 +35,17 @@ class DatahubConfigDTO:
     # Browser-facing DataHub UI URL. Distinct from ``gms_url``, which addresses
     # the GMS service and routinely differs in host, port, and scheme.
     frontend_url: str = ""
+    # Kafka security tuple consumed by the DataHub event consumer.  Every field
+    # defaults, so a DataHub row without these keys resolves to an unsecured
+    # PLAINTEXT connection.  The matching credential
+    # (``kafka_sasl_password``) lives in the K8s Secret, never here;
+    # ``kafka_sasl_password_version`` is the counter that makes a Secret-only
+    # rotation visible as a DB-plane change.
+    kafka_security_protocol: str = "PLAINTEXT"
+    kafka_sasl_mechanism: str = ""
+    kafka_sasl_username: str = ""
+    kafka_aws_region: str = ""
+    kafka_sasl_password_version: int = 0
 
 
 @dataclass(frozen=True)
@@ -82,6 +93,11 @@ def _row_to_dto(row: PeripheralConfig) -> _DTO_TYPE:
             service_corpuser_urn=s.get("service_corpuser_urn", ""),
             default_env=s.get("default_env", ""),
             frontend_url=s.get("frontend_url", ""),
+            kafka_security_protocol=s.get("kafka_security_protocol", "PLAINTEXT"),
+            kafka_sasl_mechanism=s.get("kafka_sasl_mechanism", ""),
+            kafka_sasl_username=s.get("kafka_sasl_username", ""),
+            kafka_aws_region=s.get("kafka_aws_region", ""),
+            kafka_sasl_password_version=int(s.get("kafka_sasl_password_version", 0)),
         )
     if row.name == "smtp":
         return SmtpConfigDTO(
@@ -127,50 +143,66 @@ async def get_peripheral_config(
 
 
 async def patch_peripheral_config(
-    db: AsyncSession, name: str, **partial: Any
+    db: AsyncSession,
+    name: str,
+    *,
+    bump_kafka_sasl_password_version: bool = False,
+    **partial: Any,
 ) -> DatahubConfigDTO | LangfuseConfigDTO | SmtpConfigDTO | None:
     """Upsert the peripheral config row for *name* with the supplied fields.
 
-    No-op when *partial* is empty — returns the current config (or None when
-    unconfigured) without creating a spurious empty row.  This prevents a
-    token-only PATCH (which routes the secret out-of-band before the DB write)
-    from creating a row with empty settings.
+    No-op when *partial* is empty and no counter bump is requested — returns the
+    current config (or None when unconfigured) without creating a spurious empty
+    row.  This prevents a token-only PATCH (which routes the secret out-of-band
+    before the DB write) from creating a row with empty settings.
 
     Creates the row lazily on the first non-empty call.  Only keys present in
     *partial* are written; the existing ``settings`` JSONB is merged (shallow
     update).  Commits the session and refreshes the process-level cache.
+
+    ``bump_kafka_sasl_password_version`` increments the DataHub rotation counter
+    as a read-modify-write **inside this transaction**, over a row locked with
+    ``FOR UPDATE``.  The caller cannot compute the new value itself: the API runs
+    multiple replicas, each with its own 30-second config cache, so two
+    concurrent rotations reading a stale ``1`` would both write ``2`` and the
+    consumer would never observe a change — defeating the counter's only purpose.
     """
-    if not partial:
+    if not partial and not bump_kafka_sasl_password_version:
         return await get_peripheral_config(db, name)
 
-    result = await db.execute(
-        select(PeripheralConfig).where(PeripheralConfig.name == name)
-    )
+    stmt = select(PeripheralConfig).where(PeripheralConfig.name == name)
+    if bump_kafka_sasl_password_version:
+        # Serialize concurrent rotations of the same peripheral across replicas.
+        stmt = stmt.with_for_update()
+    result = await db.execute(stmt)
     row = result.scalar_one_or_none()
 
+    def _merge(base: dict[str, Any]) -> dict[str, Any]:
+        merged = dict(base)
+        for k, v in partial.items():
+            if v is not None:
+                merged[k] = v
+        if bump_kafka_sasl_password_version:
+            merged["kafka_sasl_password_version"] = (
+                int(base.get("kafka_sasl_password_version", 0) or 0) + 1
+            )
+        return merged
+
     if row is None:
-        new_settings: dict[str, Any] = {k: v for k, v in partial.items() if v is not None}
         try:
-            row = PeripheralConfig(name=name, settings=new_settings)
+            row = PeripheralConfig(name=name, settings=_merge({}))
             db.add(row)
             await db.flush()
         except IntegrityError:
             await db.rollback()
-            result = await db.execute(
-                select(PeripheralConfig).where(PeripheralConfig.name == name)
-            )
+            stmt = select(PeripheralConfig).where(PeripheralConfig.name == name)
+            if bump_kafka_sasl_password_version:
+                stmt = stmt.with_for_update()
+            result = await db.execute(stmt)
             row = result.scalar_one()
-            merged = dict(row.settings or {})
-            for k, v in partial.items():
-                if v is not None:
-                    merged[k] = v
-            row.settings = merged
+            row.settings = _merge(dict(row.settings or {}))
     else:
-        merged = dict(row.settings or {})
-        for k, v in partial.items():
-            if v is not None:
-                merged[k] = v
-        row.settings = merged
+        row.settings = _merge(dict(row.settings or {}))
 
     await db.commit()
     await db.refresh(row)

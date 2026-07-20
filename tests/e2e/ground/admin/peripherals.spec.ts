@@ -7,9 +7,16 @@
  * round-trip on ONE benign non-secret field (DataHub `default_env`). The field is
  * edited → Save DataHub → persisted value confirmed via adminApi GET → reverted.
  *
- * CRITICAL: do NOT touch the secret inputs (token, secret_key) — they route to the
- * K8s Secret and clearing them would break the dev cluster's DataHub/Langfuse
- * connectivity. The non-secret field edited here is reverted before the test ends.
+ * Also covered: the DataHub Kafka security sub-form's progressive disclosure and
+ * option scoping, and the read-only consumer-health badge.
+ *
+ * CRITICAL: do NOT touch the secret inputs (token, secret_key, kafka_sasl_password) —
+ * they route to the K8s Secret and clearing them would break the dev cluster's
+ * DataHub/Langfuse connectivity. The non-secret field edited here is reverted before the
+ * test ends. The Kafka tests below are deliberately SAVE-FREE: every gesture is
+ * form-local (a Select change re-renders the sub-form without issuing a PATCH), so the
+ * live consumer configuration is never written and there is nothing to revert. A page
+ * reload discards the unsaved state.
  *
  * spec: spec/feature/FRONTEND_BASIC.md §Peripherals (/admin/peripherals)
  * spec: spec/API.md §/admin/peripherals/datahub — GET returns non-secret
@@ -21,13 +28,27 @@ import { test, expect } from "../../fixtures/index";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
+interface PeripheralHealth {
+  status: "unknown" | "ok" | "error";
+  last_error: string | null;
+  last_ok_at: string | null;
+  updated_at: string | null;
+}
+
 interface DatahubPeripheral {
   gms_url: string;
   kafka_brokers: string;
+  kafka_security_protocol: string;
+  kafka_sasl_mechanism: string;
+  kafka_sasl_username: string;
+  kafka_sasl_password: string;
+  kafka_sasl_password_version: number;
+  kafka_aws_region: string;
   token: string;
   service_corpuser_urn: string;
   default_env: string;
   is_configured: boolean;
+  health: PeripheralHealth;
   updated_at: string | null;
 }
 
@@ -196,4 +217,196 @@ test("/admin/peripherals — edit DataHub default_env → Save → persisted →
   expect(reverted.default_env).toBe(originalDefaultEnv);
   // Clear the afterAll guard since we've already reverted.
   originalDefaultEnv = null;
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test 3 — Kafka security sub-form: progressive disclosure by protocol
+// spec: FRONTEND_BASIC.md §Peripherals — the DataHub card's Kafka security fields
+// spec: API.md §DataHub Kafka security rule 1 — a mechanism is required with
+//   SASL_PLAINTEXT / SASL_SSL and rejected with PLAINTEXT / SSL
+// SAVE-FREE: only Select gestures; no PATCH is issued.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test("/admin/peripherals — Kafka fields appear only for the protocols that accept them", async ({
+  page,
+}) => {
+  await page.goto("/admin/peripherals");
+  await expect(page).not.toHaveURL(/\/login/);
+  await expect(
+    page.getByRole("heading", { name: "Admin — Peripherals", exact: true }),
+  ).toBeVisible({ timeout: 15_000 });
+
+  const protocolSelect = page.locator("#datahub_kafka_security_protocol");
+  await expect(protocolSelect).toBeVisible({ timeout: 15_000 });
+
+  // -- PLAINTEXT: no SASL surface at all.
+  // spec: API.md §DataHub Kafka security — "PLAINTEXT (default)"; rule 1 rejects a
+  //   mechanism under it, so offering one would invite a 422.
+  await protocolSelect.click();
+  await page.getByRole("option", { name: "PLAINTEXT", exact: true }).click();
+  await expect(page.locator("#datahub_kafka_sasl_mechanism")).toHaveCount(0);
+  await expect(page.locator("#datahub_kafka_sasl_username")).toHaveCount(0);
+  await expect(page.locator("#datahub_kafka_sasl_password")).toHaveCount(0);
+  await expect(page.locator("#datahub_kafka_aws_region")).toHaveCount(0);
+
+  // -- SSL: transport security, still no SASL surface.
+  await protocolSelect.click();
+  await page.getByRole("option", { name: "SSL", exact: true }).click();
+  await expect(page.locator("#datahub_kafka_sasl_mechanism")).toHaveCount(0);
+  await expect(page.locator("#datahub_kafka_sasl_username")).toHaveCount(0);
+
+  // -- SASL_SSL: the mechanism select appears.
+  // spec: API.md §DataHub Kafka security rule 1 — "kafka_sasl_mechanism is required
+  //   when kafka_security_protocol is SASL_PLAINTEXT or SASL_SSL".
+  await protocolSelect.click();
+  await page.getByRole("option", { name: "SASL_SSL", exact: true }).click();
+  await expect(page.locator("#datahub_kafka_sasl_mechanism")).toBeVisible({ timeout: 10_000 });
+
+  // -- Back to PLAINTEXT: the sub-form collapses again (the disclosure is reversible).
+  await protocolSelect.click();
+  await page.getByRole("option", { name: "PLAINTEXT", exact: true }).click();
+  await expect(page.locator("#datahub_kafka_sasl_mechanism")).toHaveCount(0);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test 4 — AWS_MSK_IAM is offered only under SASL_SSL (option scoping)
+// spec: API.md §DataHub Kafka security rule 4 — "kafka_sasl_mechanism = AWS_MSK_IAM
+//   requires kafka_security_protocol = SASL_SSL; any other protocol is rejected"
+// SAVE-FREE.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test("/admin/peripherals — AWS_MSK_IAM is offered under SASL_SSL only", async ({ page }) => {
+  await page.goto("/admin/peripherals");
+  await expect(
+    page.getByRole("heading", { name: "Admin — Peripherals", exact: true }),
+  ).toBeVisible({ timeout: 15_000 });
+
+  const protocolSelect = page.locator("#datahub_kafka_security_protocol");
+  await expect(protocolSelect).toBeVisible({ timeout: 15_000 });
+
+  // -- SASL_PLAINTEXT: only the three credential mechanisms are offered.
+  // Rule 4 rejects AWS_MSK_IAM here, and the form declines to offer a choice the API
+  // would refuse rather than letting the operator discover it through a 422.
+  await protocolSelect.click();
+  await page.getByRole("option", { name: "SASL_PLAINTEXT", exact: true }).click();
+  const mechanismSelect = page.locator("#datahub_kafka_sasl_mechanism");
+  await expect(mechanismSelect).toBeVisible({ timeout: 10_000 });
+
+  await mechanismSelect.click();
+  await expect(page.getByRole("option", { name: "PLAIN", exact: true })).toBeVisible();
+  await expect(page.getByRole("option", { name: "SCRAM-SHA-256", exact: true })).toBeVisible();
+  await expect(page.getByRole("option", { name: "SCRAM-SHA-512", exact: true })).toBeVisible();
+  await expect(page.getByRole("option", { name: "AWS_MSK_IAM", exact: true })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+
+  // -- SASL_SSL: AWS_MSK_IAM joins the list.
+  await protocolSelect.click();
+  await page.getByRole("option", { name: "SASL_SSL", exact: true }).click();
+  await expect(mechanismSelect).toBeVisible({ timeout: 10_000 });
+  await mechanismSelect.click();
+  await expect(page.getByRole("option", { name: "AWS_MSK_IAM", exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+
+  // Leave the form on the unsecured default; nothing was saved.
+  await protocolSelect.click();
+  await page.getByRole("option", { name: "PLAINTEXT", exact: true }).click();
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test 5 — AWS_MSK_IAM hides the credential inputs and explains why
+// spec: API.md §DataHub Kafka security rule 3 — "kafka_sasl_username and
+//   kafka_sasl_password are rejected when kafka_sasl_mechanism is AWS_MSK_IAM";
+//   "AWS_MSK_IAM is not a typable credential — it authenticates with the consumer
+//   pod's IAM identity, attached at deploy time by the chart plane"
+// spec: API.md §DataHub Kafka security — kafka_aws_region is "AWS_MSK_IAM only.
+//   Optional — falls back to derivation from the broker hostname"
+// SAVE-FREE.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test("/admin/peripherals — AWS_MSK_IAM swaps credentials for the region field + IAM note", async ({
+  page,
+}) => {
+  await page.goto("/admin/peripherals");
+  await expect(
+    page.getByRole("heading", { name: "Admin — Peripherals", exact: true }),
+  ).toBeVisible({ timeout: 15_000 });
+
+  const protocolSelect = page.locator("#datahub_kafka_security_protocol");
+  await expect(protocolSelect).toBeVisible({ timeout: 15_000 });
+  await protocolSelect.click();
+  await page.getByRole("option", { name: "SASL_SSL", exact: true }).click();
+
+  const mechanismSelect = page.locator("#datahub_kafka_sasl_mechanism");
+  await expect(mechanismSelect).toBeVisible({ timeout: 10_000 });
+
+  // -- A credential mechanism shows username + password, and no region/IAM note.
+  // spec: API.md §DataHub Kafka security rule 2 — a username is required for SCRAM.
+  await mechanismSelect.click();
+  await page.getByRole("option", { name: "SCRAM-SHA-512", exact: true }).click();
+  await expect(page.locator("#datahub_kafka_sasl_username")).toBeVisible({ timeout: 10_000 });
+  await expect(page.locator("#datahub_kafka_sasl_password")).toBeVisible();
+  await expect(page.locator("#datahub_kafka_aws_region")).toHaveCount(0);
+  await expect(page.locator("#datahub_kafka_aws_msk_iam_note")).toHaveCount(0);
+
+  // -- AWS_MSK_IAM removes both credential inputs, adds the region field and the note.
+  await mechanismSelect.click();
+  await page.getByRole("option", { name: "AWS_MSK_IAM", exact: true }).click();
+  await expect(page.locator("#datahub_kafka_sasl_username")).toHaveCount(0);
+  await expect(page.locator("#datahub_kafka_sasl_password")).toHaveCount(0);
+  await expect(page.locator("#datahub_kafka_aws_region")).toBeVisible({ timeout: 10_000 });
+  await expect(page.locator("#datahub_kafka_aws_msk_iam_note")).toBeVisible();
+
+  // The note must say the identity is a deploy-time grant, not something this form sets.
+  // spec: API.md §DataHub Kafka security — the IAM role is "attached at deploy time by
+  //   the chart plane"; feature/BACKEND.md §Kafka connection — "a deployment whose
+  //   ServiceAccount carries no IAM role cannot be fixed from the admin API".
+  await expect(page.locator("#datahub_kafka_aws_msk_iam_note")).toContainText("IAM role");
+
+  // Leave the form on the unsecured default; nothing was saved.
+  await protocolSelect.click();
+  await page.getByRole("option", { name: "PLAINTEXT", exact: true }).click();
+  await expect(page.locator("#datahub_kafka_aws_msk_iam_note")).toHaveCount(0);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test 6 — the consumer-health badge mirrors GET health (dual confirmation)
+// spec: API.md §DataHub Kafka security — "The health object on GET reports whether
+//   that configuration actually works … status is unknown when the consumer has
+//   never reported — including every deployment that runs no consumer at all"
+// spec: FRONTEND_BASIC.md §Peripherals — the DataHub card renders consumer health
+// SAVE-FREE (read-only).
+// ─────────────────────────────────────────────────────────────────────────────
+
+test("/admin/peripherals — consumer health badge matches GET /admin/peripherals/datahub", async ({
+  page,
+  adminApi,
+}) => {
+  // Backend probe first: the badge must mirror whatever the API reports, not a
+  // hard-coded expectation — the dev cluster ships the consumer disabled, so the
+  // normal value is "unknown", but the assertion holds for any of the three states.
+  const resp = await adminApi.get("/api/v1/admin/peripherals/datahub");
+  expect(resp.status()).toBe(200);
+  const dh = (await resp.json()) as DatahubPeripheral;
+  expect(["unknown", "ok", "error"]).toContain(dh.health.status);
+
+  await page.goto("/admin/peripherals");
+  await expect(
+    page.getByRole("heading", { name: "Admin — Peripherals", exact: true }),
+  ).toBeVisible({ timeout: 15_000 });
+
+  const badge = page.locator("#datahub_health_status");
+  await expect(badge).toBeVisible({ timeout: 15_000 });
+  await expect(badge).toHaveAttribute("data-status", dh.health.status);
+
+  if (dh.health.status === "error") {
+    // The failure message is the actionable part; is_configured cannot express it.
+    await expect(page.locator("#datahub_health_error")).toContainText(dh.health.last_error ?? "");
+  } else {
+    await expect(page.locator("#datahub_health_error")).toHaveCount(0);
+  }
+
+  // Health is a report about the connection, never an input to is_configured.
+  // spec: API.md §DataHub Kafka security — "is_configured only states that values are
+  //   present"; the Kafka credential "never affects the flag".
+  expect(typeof dh.is_configured).toBe("boolean");
 });

@@ -34,6 +34,8 @@ dependencies = [
     # Ingestion extractors
     "kubernetes>=31,<32",
     "confluent-kafka>=2.14",
+    # SigV4 token signer for the AWS_MSK_IAM Kafka SASL mechanism
+    "aws-msk-iam-sasl-signer-python>=1.0",
     "httpx>=0.28",
     "sqlparse>=0.5",
     "openpyxl>=3.1",

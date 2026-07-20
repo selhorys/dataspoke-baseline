@@ -586,3 +586,197 @@ async def test_patch_recovers_from_integrity_error_on_concurrent_insert() -> Non
         "Returned DTO must reflect the merged gms_url value. "
         "spec: API.md §Admin (/admin/peripherals) — DTO returned after race recovery."
     )
+
+
+# ── 13. patch — Kafka security tuple round-trip ──────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_get_datahub_dto_carries_the_kafka_security_tuple() -> None:
+    """The stored Kafka settings round-trip into the DTO.
+
+    spec: BACKEND_SCHEMA.md §peripheral_config — ``settings`` holds DataHub
+    ``kafka_security_protocol`` / ``kafka_sasl_mechanism`` / ``kafka_sasl_username`` /
+    ``kafka_aws_region`` / ``kafka_sasl_password_version``; spec/API.md §DataHub Kafka
+    security — the field set.
+    """
+    row = _make_row(
+        "datahub",
+        {
+            "gms_url": "http://gms:8080",
+            "kafka_brokers": "b-1.imazon.abc.c2.kafka.us-east-1.amazonaws.com:9098",
+            "kafka_security_protocol": "SASL_SSL",
+            "kafka_sasl_mechanism": "AWS_MSK_IAM",
+            "kafka_sasl_username": "",
+            "kafka_aws_region": "us-east-1",
+            "kafka_sasl_password_version": 7,
+        },
+    )
+    dto = await get_peripheral_config(_db_with_row(row), "datahub")
+
+    assert isinstance(dto, DatahubConfigDTO)
+    assert dto.kafka_security_protocol == "SASL_SSL"
+    assert dto.kafka_sasl_mechanism == "AWS_MSK_IAM"
+    assert dto.kafka_sasl_username == ""
+    assert dto.kafka_aws_region == "us-east-1"
+    assert dto.kafka_sasl_password_version == 7
+
+
+@pytest.mark.asyncio
+async def test_get_datahub_dto_defaults_kafka_fields_when_absent() -> None:
+    """A row written before the Kafka tuple existed reads as an unsecured connection.
+
+    spec: API.md §DataHub Kafka security — ``PLAINTEXT`` (default),
+    ``kafka_sasl_password_version`` "int, default ``0``"; "All of it is optional".
+    """
+    row = _make_row("datahub", {"gms_url": "http://gms:8080", "kafka_brokers": "kafka:9092"})
+    dto = await get_peripheral_config(_db_with_row(row), "datahub")
+
+    assert isinstance(dto, DatahubConfigDTO)
+    assert dto.kafka_security_protocol == "PLAINTEXT"
+    assert dto.kafka_sasl_mechanism == ""
+    assert dto.kafka_sasl_username == ""
+    assert dto.kafka_aws_region == ""
+    assert dto.kafka_sasl_password_version == 0
+
+
+@pytest.mark.asyncio
+async def test_patch_bump_increments_the_password_version_from_the_stored_value() -> None:
+    """The rotation counter is a read-modify-write inside the patch transaction.
+
+    The caller cannot compute the new value: the API runs multiple replicas with their
+    own config caches, so two concurrent rotations reading a stale value would both
+    write the same number and the consumer would never observe a change.
+
+    spec: API.md §DataHub Kafka security — ``kafka_sasl_password_version`` is
+    "Incremented by ``PATCH`` whenever the password Secret is written, so a long-running
+    consumer sees a rotation as a DB-plane change".
+    """
+    row = _make_row(
+        "datahub", {"gms_url": "http://gms:8080", "kafka_sasl_password_version": 4}
+    )
+    db = _db_with_row(row)
+
+    dto = await patch_peripheral_config(
+        db, "datahub", bump_kafka_sasl_password_version=True
+    )
+
+    assert row.settings["kafka_sasl_password_version"] == 5
+    assert isinstance(dto, DatahubConfigDTO)
+    assert dto.kafka_sasl_password_version == 5
+
+
+@pytest.mark.asyncio
+async def test_patch_bump_alone_is_not_a_no_op() -> None:
+    """A password-only rotation carries no DB field, yet must still move the counter.
+
+    The Secret write is out-of-band, so without this the rotation would be invisible in
+    the DB row and the consumer would keep the old credential.
+
+    spec: feature/BACKEND.md §Kafka connection — the counter "turns a rotation into an
+    ordinary DB-plane change the poll loop already detects".
+    """
+    row = _make_row("datahub", {"gms_url": "http://gms:8080"})
+    db = _db_with_row(row)
+
+    await patch_peripheral_config(db, "datahub", bump_kafka_sasl_password_version=True)
+
+    assert row.settings["kafka_sasl_password_version"] == 1, (
+        "an absent counter starts at 0 and a bump makes it 1"
+    )
+    db.commit.assert_awaited()  # the bump must be committed, not left pending
+
+
+@pytest.mark.asyncio
+async def test_patch_bump_preserves_the_other_settings_keys() -> None:
+    """Bumping the counter is a shallow merge like any other patch field.
+
+    spec: BACKEND_SCHEMA.md §peripheral_config — ``settings`` is merged shallowly.
+    """
+    row = _make_row(
+        "datahub",
+        {
+            "gms_url": "http://gms:8080",
+            "kafka_brokers": "kafka:9092",
+            "kafka_sasl_username": "dataspoke",
+        },
+    )
+    db = _db_with_row(row)
+
+    await patch_peripheral_config(
+        db,
+        "datahub",
+        bump_kafka_sasl_password_version=True,
+        kafka_security_protocol="SASL_SSL",
+    )
+
+    assert row.settings["kafka_sasl_password_version"] == 1
+    assert row.settings["kafka_security_protocol"] == "SASL_SSL"
+    assert row.settings["gms_url"] == "http://gms:8080"
+    assert row.settings["kafka_brokers"] == "kafka:9092"
+    assert row.settings["kafka_sasl_username"] == "dataspoke"
+
+
+@pytest.mark.asyncio
+async def test_patch_without_bump_leaves_the_password_version_untouched() -> None:
+    """An ordinary field PATCH does not move the rotation counter.
+
+    A counter that advanced on unrelated edits would make the consumer rebuild its
+    client for no reason.
+
+    spec: API.md §DataHub Kafka security — the counter is "Incremented by ``PATCH``
+    whenever the password Secret is written" — and only then.
+    """
+    row = _make_row(
+        "datahub", {"gms_url": "http://gms:8080", "kafka_sasl_password_version": 4}
+    )
+    db = _db_with_row(row)
+
+    await patch_peripheral_config(db, "datahub", kafka_brokers="kafka:9092")
+
+    assert row.settings["kafka_sasl_password_version"] == 4
+
+
+@pytest.mark.asyncio
+async def test_patch_bump_locks_the_row_for_update() -> None:
+    """The read-modify-write serializes concurrent rotations across API replicas.
+
+    Without ``FOR UPDATE`` two replicas reading ``1`` would both write ``2`` and one
+    rotation would be lost — the counter's only purpose is to differ after a write.
+
+    Pins a SQL detail deliberately: the locking is the mechanism the correctness of the
+    increment rests on, and it is not observable from the returned DTO.
+
+    spec: API.md §DataHub Kafka security — the counter must change on every password
+    write so "a long-running consumer sees a rotation as a DB-plane change".
+    """
+    from tests.unit.conftest import compiled_sql
+
+    row = _make_row("datahub", {"kafka_sasl_password_version": 1})
+    db = _db_with_row(row)
+
+    await patch_peripheral_config(db, "datahub", bump_kafka_sasl_password_version=True)
+
+    statements = [compiled_sql(c.args[0]) for c in db.execute.await_args_list]
+    assert any("for update" in s.lower() for s in statements), (
+        f"the bump must select the row FOR UPDATE; statements were {statements!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_patch_without_bump_does_not_lock_the_row() -> None:
+    """Ordinary patches take no row lock — the backstop for the test above.
+
+    spec: as above; the lock exists for the counter, not for every settings write.
+    """
+    from tests.unit.conftest import compiled_sql
+
+    row = _make_row("datahub", {"gms_url": "http://gms:8080"})
+    db = _db_with_row(row)
+
+    await patch_peripheral_config(db, "datahub", kafka_brokers="kafka:9092")
+
+    statements = [compiled_sql(c.args[0]) for c in db.execute.await_args_list]
+    assert not any("for update" in s.lower() for s in statements), (
+        f"an ordinary patch must not lock the row; statements were {statements!r}"
+    )

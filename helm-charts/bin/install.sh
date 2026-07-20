@@ -572,6 +572,26 @@ print((data.get("secrets") or {}).get("existingSecret", ""))
 PYEOF
 }
 
+# _api_image_helm_set_args
+# Prints the --set flags pinning every workload that runs the API image: the API
+# itself, and the event-consumer, which runs the same image under a `command:`
+# override and builds nothing of its own. They are emitted from one place so a
+# new call site cannot pin one and forget the other — a consumer left on the
+# chart default resolves to `dataspoke/api:latest`, which no build produces.
+# Output is one token per line; callers read into an array via a while-read loop.
+_api_image_helm_set_args() {
+  cat <<EOF
+--set
+api.image.repository=${DATASPOKE_KUBE_IMAGE_REGISTRY}/api
+--set
+api.image.tag=${IMAGE_TAG}
+--set
+event-consumer.image.repository=${DATASPOKE_KUBE_IMAGE_REGISTRY}/api
+--set
+event-consumer.image.tag=${IMAGE_TAG}
+EOF
+}
+
 # _frontend_helm_set_args <domain>
 # Prints the --set flags required to enable and wire the frontend subchart.
 # Output is one token per line; callers read into an array via a while-read loop.
@@ -690,8 +710,6 @@ _helm_upgrade_dataspoke_dev() {
     --set-string postgresql.image.registry=""
     --set-string "postgresql.image.repository=${DATASPOKE_KUBE_IMAGE_REGISTRY}/postgres"
     --set-string "postgresql.image.tag=${IMAGE_TAG}"
-    --set "api.image.repository=${DATASPOKE_KUBE_IMAGE_REGISTRY}/api"
-    --set "api.image.tag=${IMAGE_TAG}"
     --set-string "airflow.images.airflow.repository=${DATASPOKE_KUBE_IMAGE_REGISTRY}/airflow"
     --set-string "airflow.images.airflow.tag=${IMAGE_TAG}"
     --set airflow.images.airflow.pullPolicy=Always
@@ -708,6 +726,10 @@ _helm_upgrade_dataspoke_dev() {
     --set-string "auth.googleClientId=${DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_ID:-}"
     --timeout 10m
   )
+
+  while IFS= read -r _iarg; do
+    args+=("${_iarg}")
+  done < <(_api_image_helm_set_args)
 
   if [[ "${FRONTEND_MODE:-none}" == "cluster" ]]; then
     while IFS= read -r _farg; do
@@ -780,6 +802,13 @@ if [[ "$PROFILE" == "dev" ]]; then
 
     info "Running helm upgrade for dataspoke umbrella chart..."
     use_context "${DATASPOKE_KUBE_CLUSTER}"
+
+    # Re-package local subcharts so event-consumer template edits ship instead
+    # of the stale packaged subchart in charts/. This upgrade is a full-release
+    # one, so it deploys the event-consumer too — and the consumer runs this
+    # same API image.
+    _build_chart_deps "$CHART_DIR"
+
     _helm_upgrade_dataspoke_dev "${NS}"
 
     info "Restarting dataspoke-api deployment to pick up new image..."
@@ -787,6 +816,11 @@ if [[ "$PROFILE" == "dev" ]]; then
     kubectl rollout status deployment/dataspoke-api -n "${NS}" --timeout=5m \
       && info "dataspoke-api is ready." \
       || error "dataspoke-api did not become ready in time — check pod logs."
+
+    # The event-consumer runs the same image, so a rebuilt API image leaves it
+    # holding stale code. The tag is unchanged, so helm alone rolls nothing.
+    info "Restarting dataspoke-event-consumer (shares the API image)..."
+    _rollout_restart_workload "${NS}" "dataspoke-event-consumer"
 
     # Verify Airflow DAGs
     DOMAIN="${DATASPOKE_KUBE_INGRESS_DOMAIN:-}"
@@ -857,6 +891,10 @@ if [[ "$PROFILE" == "dev" ]]; then
     while IFS= read -r _tlsarg; do
       tls_fast_args+=("${_tlsarg}")
     done < <(_api_airflow_tls_helm_set_args "${DOMAIN}")
+    api_image_fast_args=()
+    while IFS= read -r _iarg; do
+      api_image_fast_args+=("${_iarg}")
+    done < <(_api_image_helm_set_args)
     helm upgrade --install dataspoke "$CHART_DIR" \
       -f "$CHART_DIR/values-dev.yaml" \
       -n "${NS}" \
@@ -864,8 +902,7 @@ if [[ "$PROFILE" == "dev" ]]; then
       --set-string postgresql.image.registry="" \
       --set-string "postgresql.image.repository=${DATASPOKE_KUBE_IMAGE_REGISTRY}/postgres" \
       --set-string postgresql.image.tag="${IMAGE_TAG}" \
-      --set "api.image.repository=${DATASPOKE_KUBE_IMAGE_REGISTRY}/api" \
-      --set "api.image.tag=${IMAGE_TAG}" \
+      "${api_image_fast_args[@]}" \
       --set-string "airflow.images.airflow.repository=${DATASPOKE_KUBE_IMAGE_REGISTRY}/airflow" \
       --set-string "airflow.images.airflow.tag=${IMAGE_TAG}" \
       --set airflow.images.airflow.pullPolicy=Always \
@@ -1068,6 +1105,15 @@ if [[ "$PROFILE" == "dev" ]]; then
     kubectl rollout status deployment/dataspoke-api -n "${NS}" --timeout=5m \
       && info "DataSpoke API is ready." \
       || warn "DataSpoke API did not become ready in time."
+
+    # Wait for the event-consumer. Warn rather than error: the consumer is not
+    # on the path of any UC1–UC5 flow, so a failure here should not abort an
+    # otherwise-good install — but it must be visible, since nothing else in
+    # the dev loop looks at this pod.
+    info "Waiting for DataSpoke event-consumer to become ready..."
+    kubectl rollout status deployment/dataspoke-event-consumer -n "${NS}" --timeout=5m \
+      && info "DataSpoke event-consumer is ready." \
+      || warn "DataSpoke event-consumer did not become ready in time — check pod logs."
 
     # Wait for frontend (only when deployed in-cluster)
     if [[ "$FRONTEND_MODE" == "cluster" ]]; then
@@ -1325,11 +1371,15 @@ elif [[ "$PROFILE" == "prod" ]]; then
   else
     _prod_frontend_enabled="false"
   fi
+  api_image_prod_args=()
+  while IFS= read -r _iarg; do
+    api_image_prod_args+=("${_iarg}")
+  done < <(_api_image_helm_set_args)
+
   helm upgrade --install dataspoke "$CHART_DIR" \
     "${VALUES_ARGS[@]}" \
     -n "${NS}" \
-    --set "api.image.repository=${DATASPOKE_KUBE_IMAGE_REGISTRY}/api" \
-    --set "api.image.tag=${IMAGE_TAG}" \
+    "${api_image_prod_args[@]}" \
     --set-string postgresql.image.registry="" \
     --set-string "postgresql.image.repository=${DATASPOKE_KUBE_IMAGE_REGISTRY}/postgres" \
     --set-string "postgresql.image.tag=${IMAGE_TAG}" \

@@ -11,7 +11,7 @@
 7. [Custom Extractor Guide](#custom-extractor-guide)
 8. [SDK Patterns](#sdk-patterns)
 9. [GraphQL Patterns](#graphql-patterns)
-10. [Event Subscription](#event-subscription)
+10. [Event Subscription](#event-subscription-not-used-by-baseline)
 11. [Error Handling & Resilience](#error-handling--resilience)
 12. [Configuration](#configuration)
 13. [Open Questions](#open-questions)
@@ -898,7 +898,16 @@ The baseline UC1–UC5 flows are schedule-driven via Airflow tier DAGs and do no
 to DataHub's Kafka topics (`MetadataChangeLog_Versioned_v1`,
 `MetadataChangeLog_Timeseries_v1`). Organisations adding event-driven extensions can
 consume those topics via `confluent_kafka.Consumer` and route by `event.aspectName`; no
-spec is provided for this in the baseline contract.
+handler set is prescribed by the baseline contract.
+
+The connection itself *is* specified, because a secured Kafka cannot be reached by
+convention alone. The consumer builds its client from `peripheral_config.datahub`:
+the brokers plus a security tuple (`kafka_security_protocol`, `kafka_sasl_mechanism`,
+`kafka_sasl_username`, `kafka_aws_region`) whose credential lives in the
+`dataspoke-datahub-secret` K8s Secret. `PLAINTEXT` is the default, so an unsecured
+cluster needs no configuration beyond the brokers. See
+[`spec/feature/BACKEND.md` §Kafka Consumers](feature/BACKEND.md#kafka-consumers-optional-not-enabled-in-baseline) for the
+mapping onto `confluent-kafka` properties and the AWS MSK IAM token exchange.
 
 ## Error Handling & Resilience
 
@@ -920,15 +929,22 @@ spec is provided for this in the baseline contract.
 4. **Bulk operations must be batched** — when scanning all datasets (Governance), process in
    batches of 100 with 100ms delays to avoid overwhelming GMS
 5. **Kafka consumer must commit offsets after processing** *(only if event-driven extensions
-   are enabled — see [Event Subscription](#event-subscription-optional-not-used-by-baseline))* —
+   are enabled — see [Event Subscription](#event-subscription-not-used-by-baseline))* —
    use `enable.auto.commit=false` and commit after successful handling
-6. **Error responses for DataHub-availability faults must carry a generic message.**
+6. **Kafka connection faults are reported, not just logged.** Broker, TLS, and SASL
+   failures are terminal for the consumer's usefulness but invisible to every HTTP
+   surface, so the consumer records them on the `datahub` `peripheral_health` row
+   (`status='error'` plus the message) and records `ok` once it is connected and
+   polling. The row is what `GET /admin/peripherals/datahub` returns as `health`.
+   The consumer keeps retrying with backoff rather than exiting — a misconfiguration
+   is expected to be corrected through the admin API while it runs
+7. **Error responses for DataHub-availability faults must carry a generic message.**
    When `DataHubUnavailableError` propagates to a 502/503 response, the body must NOT
    include the inner exception text (GMS URLs, hostnames, endpoint paths, stack
    traces) — these are logged server-side only. The user-facing `message` is a
    stable, generic string; the underlying detail is correlated via the trace_id in
    server logs.
-7. **DataHub fails closed with a two-state distinction.** A DataHub-requiring endpoint or
+8. **DataHub fails closed with a two-state distinction.** A DataHub-requiring endpoint or
    DAG returns `503 PERIPHERAL_NOT_CONFIGURED` (`detail.peripheral = "datahub"`) when DataHub
    is unconfigured, and `502 DATAHUB_UNAVAILABLE` when it is configured but unreachable —
    never a silent or partial success. See
@@ -950,7 +966,7 @@ If 5 consecutive DataHub API calls fail:
 ## Configuration
 
 DataHub connection settings are split on the app pod side: non-secret parameters in the DB
-`peripheral_config` table, the `token` in the `dataspoke-datahub-secret` K8s Secret. Test/dev
+`peripheral_config` table, the credentials in the `dataspoke-datahub-secret` K8s Secret. Test/dev
 tooling reads everything from `DATASPOKE_TEST_DATAHUB_*` env vars in `helm-charts/.env.dev`
 (integration tests run only against dev clusters).
 
@@ -960,11 +976,20 @@ Updated via `PATCH /api/v1/admin/peripherals/datahub` (and the unattended mirror
 `/internal/admin/peripherals/datahub`, used by the install script's
 `helm-charts/bin/post-install/seed-peripheral-config.sh`). Non-secret fields `gms_url`,
 `frontend_url` (the browser-facing DataHub UI URL — independent of `gms_url`, which addresses
-the GMS service and may differ in host, port, and scheme), `kafka_brokers`,
-`service_corpuser_urn`, and `default_env` live in the DB; the `token` is
-routed to the `dataspoke-datahub-secret` K8s
-Secret on `PATCH`, never to the DB. The pod reads both at request time (DB row + Secret via
-RBAC) — no Helm-managed env var.
+the GMS service and may differ in host, port, and scheme), `kafka_brokers`, the Kafka
+security tuple (`kafka_security_protocol`, `kafka_sasl_mechanism`, `kafka_sasl_username`,
+`kafka_aws_region`, `kafka_sasl_password_version`), `service_corpuser_urn`, and
+`default_env` live in the DB; the two credentials — `token` and `kafka_sasl_password` —
+are routed to the `dataspoke-datahub-secret` K8s Secret on `PATCH`, never to the DB. The
+pod reads both at request time (DB row + Secret via RBAC) — no Helm-managed env var.
+
+This split is deliberate and is what makes the Kafka security settings operable from the
+UI at all. Everything a credential-based mechanism needs lives in the DB plane, so an
+operator changes protocol, mechanism, user, or password through
+`PATCH /api/v1/admin/peripherals/datahub` and the running consumer picks it up without a
+redeploy. `AWS_MSK_IAM` is the exception, and the reason the two planes must be named
+separately: the identity is the pod's, granted at install time by the chart, so the UI can
+only *select* the mechanism — it cannot supply the credential.
 
 ### Test / dev tooling — `helm-charts/.env.dev`
 

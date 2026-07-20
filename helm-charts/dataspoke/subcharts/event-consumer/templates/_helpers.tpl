@@ -32,3 +32,26 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 app.kubernetes.io/name: {{ include "event-consumer.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
+
+{{/*
+  ServiceAccount the consumer pod runs as. With create=false the operator
+  supplies the SA (and its RBAC); an empty name then falls back to the
+  namespace default SA, which cannot read Secrets.
+*/}}
+{{- define "event-consumer.serviceAccountName" -}}
+{{- if .Values.serviceAccount.create }}
+{{- default (include "event-consumer.fullname" .) .Values.serviceAccount.name }}
+{{- else }}
+{{- default "default" .Values.serviceAccount.name }}
+{{- end }}
+{{- end }}
+
+{{/*
+  K8s Secret holding the DataHub credentials. The name is a constant shared with
+  the API's accessor (src/backend/admin/datahub_secret.py) — the consumer looks
+  it up by that literal name, so exposing it as a value would let the chart
+  claim a name the application never reads.
+*/}}
+{{- define "event-consumer.datahubSecretName" -}}
+dataspoke-datahub-secret
+{{- end }}

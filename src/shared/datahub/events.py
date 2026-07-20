@@ -46,10 +46,24 @@ class MetadataChangeLogEvent(BaseModel):
 
 
 def deserialize_mcl(raw: bytes) -> MetadataChangeLogEvent:
-    """Parse raw Kafka message value into a MetadataChangeLogEvent."""
+    """Parse raw Kafka message value into a MetadataChangeLogEvent.
+
+    Every payload this function cannot parse raises ``EventProcessingError``,
+    which is the caller's signal to log the message and commit its offset rather
+    than leave it for redelivery.  That distinction is the whole contract: a
+    handler failure is worth retrying, an unparseable payload is not, because
+    redelivering the same bytes cannot make them parseable.  Anything narrower
+    here turns one bad message into an endless redelivery loop.
+
+    ``json.loads`` reports an unparseable payload as a ``ValueError`` subclass —
+    ``JSONDecodeError`` for malformed JSON, ``UnicodeDecodeError`` for bytes that
+    are not text in any encoding it will guess — so the base class is caught
+    rather than an enumeration of subclasses that a new failure mode could slip
+    past.
+    """
     try:
         data = json.loads(raw)
-    except (json.JSONDecodeError, TypeError) as exc:
+    except (ValueError, TypeError) as exc:
         raise EventProcessingError(f"invalid MCL JSON: {exc}") from exc
 
     # DataHub MCL fields use camelCase; map to snake_case

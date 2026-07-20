@@ -1325,13 +1325,83 @@ If enabled, DataSpoke runs a single consumer group (`dataspoke-consumers`) that 
 events by aspect name. Reference implementation: `src/shared/datahub/events.py`
 (EventRouter) and `src/shared/datahub/consumer.py`. The reference handler set is
 documented in
-[DATAHUB_INTEGRATION §Event Subscription](../DATAHUB_INTEGRATION.md#event-subscription-optional-not-used-by-baseline)
+[DATAHUB_INTEGRATION §Event Subscription](../DATAHUB_INTEGRATION.md#event-subscription-not-used-by-baseline)
 — extensions can register their own handlers without modifying baseline code.
 
 The consumer runs as `python -m src.shared.datahub.consumer` in a separate Deployment
 (`dataspoke-event-consumer`) when enabled. Uses `confluent-kafka` with manual offset
 commit; deserialization failures are logged and skipped, handler failures leave the offset
 uncommitted for redelivery.
+
+**Execution model.** The consumer ships no image of its own — the Deployment runs the
+**API image** with a `command:` override naming the module. The API image already carries
+`src/` and the resolved virtualenv, and its Dockerfile uses `CMD` rather than `ENTRYPOINT`,
+so the override is a clean substitution. One image is therefore built, tagged, scanned, and
+promoted for both workloads, and the consumer can never drift to a different revision of
+the shared code than the API it shares a database with.
+
+### Kafka connection
+
+The consumer reads its whole connection from `peripheral_config.datahub` — brokers plus the
+security tuple defined in [API.md](../API.md#datahub-kafka-security) — and re-reads it every
+few seconds while polling. A change to any element ends the inner poll loop, closes the
+client, and rebuilds it; an unconfigured peripheral parks the process in a retry sleep rather
+than crash-looping. Consequently the entire credential-based configuration surface is live
+and UI-driven — protocol, mechanism, username, and password all take effect without a
+redeploy. `AWS_MSK_IAM` is the one exception: selecting it is a DB-plane change like any
+other, but it authenticates with an identity the chart attaches at install time, so a
+deployment whose ServiceAccount carries no IAM role cannot be fixed from the admin API
+(see [HELM_CHART §Event-consumer identity and RBAC](HELM_CHART.md#event-consumer-identity-and-rbac)).
+
+The tuple maps onto `confluent-kafka` client properties
+([librdkafka configuration](https://github.com/confluentinc/librdkafka/blob/master/CONFIGURATION.md)):
+
+| Peripheral field | Client property |
+|---|---|
+| `kafka_brokers` | `bootstrap.servers` |
+| `kafka_security_protocol` | `security.protocol` |
+| `kafka_sasl_mechanism` (`PLAIN`, `SCRAM-SHA-*`) | `sasl.mechanism` |
+| `kafka_sasl_username` / the `kafka_sasl_password` Secret key | `sasl.username` / `sasl.password` |
+| `kafka_sasl_mechanism = AWS_MSK_IAM` | `sasl.mechanism=OAUTHBEARER` plus a token-refresh callback; `security.protocol` passes through as the stored `SASL_SSL` |
+
+`AWS_MSK_IAM` is not a librdkafka mechanism. AWS implements it as OAUTHBEARER whose token is
+an SigV4-signed payload minted by
+[`aws-msk-iam-sasl-signer-python`](https://github.com/aws/aws-msk-iam-sasl-signer-python)
+from whatever credentials the process resolves — on EKS, the pod's IRSA-projected role. The
+library is baked into the API image because it must be present before any DB-plane
+configuration can select the mechanism; it is the one part of Kafka security that belongs to
+the build plane rather than the DB plane.
+
+The signer requires a region. It comes from `kafka_aws_region` when set, otherwise from the
+broker hostname, which for MSK encodes it (`…kafka.<region>.amazonaws.com`, and the
+`kafka-serverless` form likewise). The
+derivation **anchors to the end of the host**, so a suffix-extended lookalike does not match.
+When neither source resolves, the consumer fails loudly and reports the reason rather than
+guessing a region and producing an opaque authentication failure.
+
+**The consumer re-validates the protocol/mechanism combination when it builds a client**,
+instead of trusting the stored row to satisfy the API's rules. `peripheral_config` is a
+plain table that direct SQL or dev seeding can write behind the API, and the same
+re-check-on-read convention already guards the display-link fields this table serves to
+`/spoke/common/peripheral-links`. A row that fails re-validation is treated as a
+configuration error and reported through `peripheral_health` — the consumer does not
+attempt the connection. This matters most for `AWS_MSK_IAM`, where the broker-host and
+protocol constraints in [API.md](../API.md#datahub-kafka-security) are what keep the pod's
+IAM identity from being pointed somewhere it was never granted for.
+
+`kafka_sasl_password_version` exists because a rotated password is invisible in the DB row —
+the value lives in the Secret. The API increments the counter whenever it writes the Secret,
+which turns a rotation into an ordinary DB-plane change the poll loop already detects.
+
+### Health reporting
+
+Kafka connection state is otherwise unobservable from any HTTP surface: a bad mechanism or an
+unauthorized IAM role leaves a peripheral that reads `is_configured: true` and a consumer that
+logs warnings nobody reads. The consumer therefore upserts the `datahub` row of
+`peripheral_health` — `ok` once subscribed and polling, `error` with the message on a
+connection or authentication failure — and `GET /admin/peripherals/datahub` returns it as
+`health`. `unknown` covers both "never reported" and "no consumer deployed"; the API does not
+distinguish them, because a deployment without a consumer has no Kafka health to report.
 
 ---
 

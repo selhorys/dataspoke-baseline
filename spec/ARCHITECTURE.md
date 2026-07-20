@@ -418,6 +418,11 @@ and `datahub-kafka:9092` (event streaming).
 `dataspoke-event-consumer` is **disabled by default** — baseline UC1–UC5 are schedule-driven
 via Airflow tier DAGs and do not subscribe to DataHub MCL events. Enable the separate pod
 when an organisation adds event-driven extensions; Kafka consumers scale by partition count.
+When enabled it runs the API image under a `command:` override and takes its whole Kafka
+connection — brokers and security settings alike — from `peripheral_config`, so a secured
+broker (TLS, SASL, or AWS MSK IAM) is configured through the admin API rather than the chart.
+The one exception is cloud identity for MSK IAM, which the chart attaches to the consumer's
+ServiceAccount at install time.
 
 Langfuse is a **dev-only peripheral** in its own namespace (e.g. `langfuse-01`) — web,
 worker, and bundled Postgres / Redis / ClickHouse / MinIO — installed from

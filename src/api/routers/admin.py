@@ -26,6 +26,7 @@ from src.api.schemas.admin import (
     DatahubSyncRequest,
     LangfusePeripheralPatchRequest,
     LangfusePeripheralResponse,
+    PeripheralHealthModel,
     PeripheralsStatusResponse,
     RuntimeConfPatchRequest,
     RuntimeConfResponse,
@@ -35,13 +36,17 @@ from src.api.schemas.admin import (
     UserResponse,
     UserRolePatchRequest,
     UsersListResponse,
+    validate_datahub_kafka_security,
 )
 from src.api.schemas.auth import ApiTokenItem, ApiTokenListResponse
 from src.api.schemas.common import parse_sort
 from src.backend.admin.config_service import get_runtime_config, patch_runtime_config
 from src.backend.admin.dag_control_service import get_dag_groups, set_group_paused
 from src.backend.admin.datahub_secret import (
+    datahub_kafka_sasl_password_is_set,
     datahub_token_is_set,
+    invalidate_datahub_kafka_sasl_password_cache,
+    set_datahub_kafka_sasl_password,
     set_datahub_token,
 )
 from src.backend.admin.langfuse_secret import (
@@ -49,6 +54,10 @@ from src.backend.admin.langfuse_secret import (
     set_langfuse_secret_key,
 )
 from src.backend.admin.llm_secret import llm_api_key_is_set, set_llm_api_key
+from src.backend.admin.peripheral_health import (
+    PeripheralHealthDTO,
+    get_peripheral_health,
+)
 from src.backend.admin.peripheral_service import (
     get_peripheral_config,
     invalidate_peripheral_config_cache,
@@ -304,9 +313,19 @@ _DEFAULT_SERVICE_CORPUSER_URN = "urn:li:corpuser:dataspoke"
 _DEFAULT_INGESTION_ENV = "DEV"
 
 
+def _health_to_model(health: "PeripheralHealthDTO") -> PeripheralHealthModel:
+    return PeripheralHealthModel(
+        status=health.status,  # type: ignore[arg-type]  # constrained by HEALTH_STATUSES at the service.
+        last_error=health.last_error,
+        last_ok_at=health.last_ok_at,
+        updated_at=health.updated_at,
+    )
+
+
 def _datahub_dto_to_response(
     dto: object | None,
     updated_at: datetime | None,
+    health: "PeripheralHealthDTO",
 ) -> DatahubPeripheralResponse:
     from src.backend.admin.peripheral_service import DatahubConfigDTO
 
@@ -315,10 +334,17 @@ def _datahub_dto_to_response(
             gms_url="",
             frontend_url="",
             kafka_brokers="",
+            kafka_security_protocol="PLAINTEXT",
+            kafka_sasl_mechanism="",
+            kafka_sasl_username="",
+            kafka_sasl_password="",
+            kafka_sasl_password_version=0,
+            kafka_aws_region="",
             token="",
             service_corpuser_urn=_DEFAULT_SERVICE_CORPUSER_URN,
             default_env=_DEFAULT_INGESTION_ENV,
             is_configured=False,
+            health=_health_to_model(health),
             updated_at=updated_at,
         )
     token_set = datahub_token_is_set()
@@ -326,10 +352,18 @@ def _datahub_dto_to_response(
         gms_url=dto.gms_url,
         frontend_url=dto.frontend_url,
         kafka_brokers=dto.kafka_brokers,
+        kafka_security_protocol=dto.kafka_security_protocol or "PLAINTEXT",
+        kafka_sasl_mechanism=dto.kafka_sasl_mechanism,
+        kafka_sasl_username=dto.kafka_sasl_username,
+        kafka_sasl_password="********" if datahub_kafka_sasl_password_is_set() else "",
+        kafka_sasl_password_version=dto.kafka_sasl_password_version,
+        kafka_aws_region=dto.kafka_aws_region,
         token="********" if token_set else "",
         service_corpuser_urn=dto.service_corpuser_urn or _DEFAULT_SERVICE_CORPUSER_URN,
         default_env=dto.default_env or _DEFAULT_INGESTION_ENV,
+        # The Kafka credential is optional and never participates in is_configured.
         is_configured=token_set,
+        health=_health_to_model(health),
         updated_at=updated_at,
     )
 
@@ -400,7 +434,33 @@ async def get_datahub_peripheral(
     """Return the current DataHub peripheral configuration."""
     dto = await get_peripheral_config(db, "datahub")
     updated_at = await _get_peripheral_updated_at(db, "datahub")
-    return _datahub_dto_to_response(dto, updated_at)
+    health = await get_peripheral_health(db, "datahub")
+    return _datahub_dto_to_response(dto, updated_at, health)
+
+
+def _kafka_password_is_set_uncached() -> bool:
+    """Read the Kafka SASL password's presence past the process cache.
+
+    ``set_datahub_kafka_sasl_password`` invalidates only the writing process's
+    cache, so on a multi-replica API a password stored on one replica is invisible
+    to another for up to the 60-second TTL.  Deciding whether to clear a stored
+    credential on that stale view would skip the clear and leave a live password
+    in the Secret that nothing reads.
+    """
+    invalidate_datahub_kafka_sasl_password_cache()
+    return datahub_kafka_sasl_password_is_set()
+
+
+def _effective_kafka_field(
+    updates: dict[str, Any],
+    current: object | None,
+    key: str,
+    default: str = "",
+) -> str:
+    """Return the value *key* takes once the patch body lands on the stored config."""
+    if key in updates and updates[key] is not None:
+        return str(updates[key])
+    return str(getattr(current, key, default) or default)
 
 
 async def _apply_datahub_patch_and_respond(
@@ -409,13 +469,35 @@ async def _apply_datahub_patch_and_respond(
 ) -> DatahubPeripheralResponse:
     """Shared handler for admin and internal PATCH /peripherals/datahub endpoints.
 
-    ``token`` is routed to the Kubernetes Secret, never to the DB.
-    The Secret write happens first; if it fails (SecretResolverUnavailable →
-    StorageUnavailableError → 503) the DB patch is skipped.
+    ``token`` and ``kafka_sasl_password`` are routed to the Kubernetes Secret,
+    never to the DB.  Secret writes happen first; if one fails
+    (SecretResolverUnavailable → StorageUnavailableError → 503) the DB patch is
+    skipped.  Any write of the Kafka password — setting it, clearing it, or
+    dropping it because the mechanism no longer reads it — bumps
+    ``kafka_sasl_password_version``, which is what makes a Secret-only rotation
+    visible to the consumer's DB-plane poll loop.  The increment itself is
+    performed inside the DB transaction by ``patch_peripheral_config``.
     """
     from src.shared.exceptions import StorageUnavailableError
 
     all_updates = body.model_dump(exclude_unset=True)
+
+    # Validate the Kafka tuple the patch produces, before anything is written.
+    # The read must bypass the process cache: a stale entry on this replica would
+    # judge the patch against a configuration another replica has already changed.
+    invalidate_peripheral_config_cache("datahub")
+    current = await get_peripheral_config(db, "datahub")
+    effective_mechanism = _effective_kafka_field(all_updates, current, "kafka_sasl_mechanism")
+    validate_datahub_kafka_security(
+        security_protocol=_effective_kafka_field(
+            all_updates, current, "kafka_security_protocol", "PLAINTEXT"
+        ),
+        sasl_mechanism=effective_mechanism,
+        sasl_username=_effective_kafka_field(all_updates, current, "kafka_sasl_username"),
+        aws_region=_effective_kafka_field(all_updates, current, "kafka_aws_region"),
+        brokers=_effective_kafka_field(all_updates, current, "kafka_brokers"),
+        submitted_sasl_password=all_updates.get("kafka_sasl_password"),
+    )
 
     if "token" in all_updates:
         token_value: str | None = all_updates.pop("token")
@@ -428,15 +510,61 @@ async def _apply_datahub_patch_and_respond(
                 "Kubernetes Secret unavailable; DataHub token could not be stored"
             ) from exc
 
-    db_updates = {k: v for k, v in all_updates.items() if v is not None}
-    if db_updates:
-        dto = await patch_peripheral_config(db, "datahub", **db_updates)
+    password_written = False
+    password_value: str | None = None
+    if "kafka_sasl_password" in all_updates:
+        password_value = all_updates.pop("kafka_sasl_password") or ""
+    elif effective_mechanism == "AWS_MSK_IAM" and _kafka_password_is_set_uncached():
+        # A stored password under AWS_MSK_IAM is state that has lost its purpose:
+        # the mechanism authenticates with the pod's IAM identity and never reads
+        # it. Submitting one is rejected; leaving one behind would keep a live
+        # credential in the Secret that nothing uses and that GET would keep
+        # reporting as "********". Clear it instead.
+        password_value = ""
+
+    if password_value is not None:
+        try:
+            set_datahub_kafka_sasl_password(password_value)
+        except SecretResolverUnavailable as exc:
+            raise StorageUnavailableError(
+                "Kubernetes Secret unavailable; DataHub Kafka SASL password could not be stored"
+            ) from exc
+        password_written = True
+
+    db_updates: dict[str, Any] = {k: v for k, v in all_updates.items() if v is not None}
+
+    if db_updates or password_written:
+        try:
+            dto = await patch_peripheral_config(
+                db,
+                "datahub",
+                bump_kafka_sasl_password_version=password_written,
+                **db_updates,
+            )
+        except Exception:
+            if password_written:
+                # The Secret holds the new credential but the counter did not move,
+                # so the consumer will not notice the rotation. Name it explicitly:
+                # the operator otherwise sees a failed request and assumes nothing
+                # changed.
+                logger.warning(
+                    "datahub_kafka_password_rotation_half_applied",
+                    extra={
+                        "detail": (
+                            "kafka_sasl_password was written to dataspoke-datahub-secret "
+                            "but kafka_sasl_password_version was not incremented; "
+                            "re-issue the PATCH so the event consumer picks up the rotation"
+                        )
+                    },
+                )
+            raise
     else:
         invalidate_peripheral_config_cache("datahub")
         dto = await get_peripheral_config(db, "datahub")
 
     updated_at = await _get_peripheral_updated_at(db, "datahub")
-    return _datahub_dto_to_response(dto, updated_at)
+    health = await get_peripheral_health(db, "datahub")
+    return _datahub_dto_to_response(dto, updated_at, health)
 
 
 @router.patch("/peripherals/datahub")

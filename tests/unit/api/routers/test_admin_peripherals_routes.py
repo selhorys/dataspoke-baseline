@@ -51,7 +51,7 @@ Spec traceability:
 """
 
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -117,12 +117,19 @@ def _make_peripheral_row(name: str) -> MagicMock:
     return row
 
 
-def _fake_db(dto_for_get=None, updated_at=None) -> tuple:
+def _fake_db(dto_for_get=None, updated_at=None, health_row=None) -> tuple:
     """Return (db_mock, override_fn) with scalar_one_or_none returning a mock row.
 
     The first execute() call satisfies require_authenticated's user lookup
     (returns an Admin User mock).  Subsequent calls return a PeripheralConfig
     row so that service/route logic sees expected data.
+
+    The ``peripheral_health`` SELECT is routed separately and yields ``None`` by
+    default: an absent row is the spec's "nothing has reported yet" state, which
+    the route must render as ``status: "unknown"``
+    (spec/feature/BACKEND_SCHEMA.md §peripheral_health — "Absence of a row and
+    ``status='unknown'`` mean the same thing to readers").  Pass ``health_row`` to
+    exercise a reported status instead.
     """
     db = AsyncMock()
     row_mock = MagicMock()
@@ -134,9 +141,17 @@ def _fake_db(dto_for_get=None, updated_at=None) -> tuple:
     row_result = MagicMock()
     row_result.scalar_one_or_none.return_value = row_mock
 
+    health_result = MagicMock()
+    health_result.scalar_one_or_none.return_value = health_row
+    health_result.scalar_one.return_value = health_row
+
     # The auth user-lookup hits the users table; the PeripheralConfig reads are routed
     # by their own table, so an added/reordered config query keeps its correct result.
-    route_db_execute(db, [("users", auth_result)], default=row_result)
+    route_db_execute(
+        db,
+        [("users", auth_result), ("peripheral_health", health_result)],
+        default=row_result,
+    )
     db.commit = AsyncMock()
     db.add = MagicMock()
     db.flush = AsyncMock()
@@ -147,6 +162,25 @@ def _fake_db(dto_for_get=None, updated_at=None) -> tuple:
         yield db
 
     return db, _gen
+
+
+@pytest.fixture(autouse=True)
+def _kafka_password_unset():
+    """Report the Kafka SASL password as unset unless a test says otherwise.
+
+    ``datahub_kafka_sasl_password_is_set`` reads a Kubernetes Secret, which is
+    unreachable out of cluster; every DataHub GET and PATCH consults it (GET to
+    mask the field, PATCH to decide whether a stored password must be cleared).
+    Defaulting it to ``False`` keeps the unrelated tests in this module cluster-free.
+    Tests about the Kafka credential patch it explicitly, which shadows this.
+
+    spec: spec/API.md §DataHub Kafka security — ``kafka_sasl_password`` is
+    "Write-only, same ``""`` unset / ``"********"`` set convention as ``token``".
+    """
+    with patch(
+        "src.api.routers.admin.datahub_kafka_sasl_password_is_set", return_value=False
+    ) as mock_is_set:
+        yield mock_is_set
 
 
 # ── 1a. Auth: GET /admin/peripherals ─────────────────────────────────────────
@@ -620,7 +654,14 @@ async def test_patch_datahub_token_routes_to_secret_not_db(client) -> None:
     # when only token is provided (token is not a DB column).
     mock_patch_db.assert_not_called()
     # invalidate must be called so the next read reflects the new secret state.
-    mock_invalidate.assert_called_once_with("datahub")
+    # Not once-only: the handler also bypasses the cache before reading the stored
+    # config to build the effective Kafka tuple it validates the body against
+    # (spec/API.md §DataHub Kafka security — "Every rule below is evaluated against
+    # the effective tuple"). What matters is that no cached read survives the PATCH.
+    assert mock_invalidate.call_args_list, "the datahub config cache must be invalidated"
+    assert all(c == call("datahub") for c in mock_invalidate.call_args_list), (
+        f"only the datahub peripheral may be invalidated; got {mock_invalidate.call_args_list!r}"
+    )
 
     assert resp.status_code == 200
     body = resp.json()
@@ -2031,3 +2072,559 @@ async def test_internal_patch_smtp_without_token_returns_401(client) -> None:
     with patch("src.shared.settings.settings.internal_token", _INTERNAL_TOKEN):
         resp = await client.patch(_INTERNAL_SMTP, json={"host": "smtp.example.com"})
     assert resp.status_code == 401
+
+
+# ── Kafka security tuple on GET/PATCH /admin/peripherals/datahub ─────────────
+#
+# spec: spec/API.md §DataHub Kafka security — the field table, the seven validation
+# rules evaluated against the effective tuple, the masking convention, and the
+# stored-password clearing on a switch to AWS_MSK_IAM.
+
+_FAKE_DH_DTO_SCRAM = DatahubConfigDTO(
+    gms_url="http://gms:8080",
+    kafka_brokers="kafka:9093",
+    kafka_security_protocol="SASL_SSL",
+    kafka_sasl_mechanism="SCRAM-SHA-512",
+    kafka_sasl_username="dataspoke",
+    kafka_aws_region="",
+    kafka_sasl_password_version=2,
+)
+
+_MSK_BROKERS = "b-1.imazon.abc.c2.kafka.us-east-1.amazonaws.com:9098"
+
+
+@pytest.mark.asyncio
+async def test_get_datahub_returns_the_kafka_tuple_with_a_masked_password(client) -> None:
+    """GET reports every stored Kafka field and masks the password as "********".
+
+    spec: API.md §DataHub Kafka security — the field table; ``kafka_sasl_password`` is
+    "Write-only, same ``""`` unset / ``"********"`` set convention as ``token``".
+    """
+    _, db_gen = _fake_db()
+    app.dependency_overrides[get_db] = db_gen
+    try:
+        with (
+            patch(
+                "src.api.routers.admin.get_peripheral_config",
+                AsyncMock(return_value=_FAKE_DH_DTO_SCRAM),
+            ),
+            patch("src.api.routers.admin.datahub_token_is_set", return_value=True),
+            patch(
+                "src.api.routers.admin.datahub_kafka_sasl_password_is_set",
+                return_value=True,
+            ),
+        ):
+            resp = await client.get(_PERIPHERALS_DH, headers=auth_headers())
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["kafka_security_protocol"] == "SASL_SSL"
+    assert body["kafka_sasl_mechanism"] == "SCRAM-SHA-512"
+    assert body["kafka_sasl_username"] == "dataspoke"
+    assert body["kafka_aws_region"] == ""
+    assert body["kafka_sasl_password_version"] == 2
+    assert body["kafka_sasl_password"] == "********"
+
+
+@pytest.mark.asyncio
+async def test_get_datahub_reports_an_unset_kafka_password_as_empty(client) -> None:
+    """An unset Kafka credential reads back as ``""``.
+
+    spec: API.md §DataHub Kafka security — the ``""`` unset / ``"********"`` set
+    convention.
+    """
+    _, db_gen = _fake_db()
+    app.dependency_overrides[get_db] = db_gen
+    try:
+        with (
+            patch(
+                "src.api.routers.admin.get_peripheral_config",
+                AsyncMock(return_value=_FAKE_DH_DTO_SCRAM),
+            ),
+            patch("src.api.routers.admin.datahub_token_is_set", return_value=True),
+            patch(
+                "src.api.routers.admin.datahub_kafka_sasl_password_is_set",
+                return_value=False,
+            ),
+        ):
+            resp = await client.get(_PERIPHERALS_DH, headers=auth_headers())
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert resp.json()["kafka_sasl_password"] == ""
+
+
+@pytest.mark.asyncio
+async def test_is_configured_ignores_the_kafka_password(client) -> None:
+    """A DataHub peripheral is configured on the GMS token alone.
+
+    The Kafka credential is optional; a REST-only deployment must not be reported as
+    unconfigured for lacking one, and setting one must not make an unwired peripheral
+    look configured.
+
+    spec: API.md §DataHub Kafka security — the Kafka fields "do not participate in
+    ``is_configured``, and a DataHub peripheral without them is fully configured for
+    every REST-based flow"; §Admin — "For DataHub the participating secret is ``token``
+    alone — ``kafka_sasl_password`` is optional and never affects the flag."
+    """
+    for token_set, kafka_set, expected in [
+        (True, False, True),
+        (True, True, True),
+        (False, True, False),
+        (False, False, False),
+    ]:
+        _, db_gen = _fake_db()
+        app.dependency_overrides[get_db] = db_gen
+        try:
+            with (
+                patch(
+                    "src.api.routers.admin.get_peripheral_config",
+                    AsyncMock(return_value=_FAKE_DH_DTO_SCRAM),
+                ),
+                patch("src.api.routers.admin.datahub_token_is_set", return_value=token_set),
+                patch(
+                    "src.api.routers.admin.datahub_kafka_sasl_password_is_set",
+                    return_value=kafka_set,
+                ),
+            ):
+                resp = await client.get(_PERIPHERALS_DH, headers=auth_headers())
+        finally:
+            app.dependency_overrides.pop(get_db, None)
+
+        assert resp.json()["is_configured"] is expected, (
+            f"token_set={token_set}, kafka_password_set={kafka_set} "
+            f"must yield is_configured={expected}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_get_datahub_reports_unknown_health_when_nothing_has_reported(client) -> None:
+    """With no ``peripheral_health`` row the response carries ``status: "unknown"``.
+
+    spec: API.md §DataHub Kafka security — "``status`` is ``unknown`` when the consumer
+    has never reported — including every deployment that runs no consumer at all."
+    """
+    _, db_gen = _fake_db(health_row=None)
+    app.dependency_overrides[get_db] = db_gen
+    try:
+        with (
+            patch(
+                "src.api.routers.admin.get_peripheral_config",
+                AsyncMock(return_value=_FAKE_DH_DTO_SCRAM),
+            ),
+            patch("src.api.routers.admin.datahub_token_is_set", return_value=True),
+        ):
+            resp = await client.get(_PERIPHERALS_DH, headers=auth_headers())
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    health = resp.json()["health"]
+    assert health["status"] == "unknown"
+    assert health["last_error"] is None
+    assert health["last_ok_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_get_datahub_surfaces_a_reported_connection_failure(client) -> None:
+    """A consumer-reported failure reaches the admin response as ``error`` + message.
+
+    ``is_configured`` alone cannot distinguish a working setup from a wrong mechanism or
+    an unauthorized IAM role; this is the field that can.
+
+    spec: API.md §DataHub Kafka security — "The ``health`` object on ``GET`` reports
+    whether that configuration actually works"; feature/BACKEND.md §Health reporting.
+    """
+    reported_at = datetime.now(tz=UTC)
+    health_row = MagicMock()
+    health_row.status = "error"
+    health_row.last_error = "SASL authentication error: Authentication failed"
+    health_row.last_ok_at = None
+    health_row.updated_at = reported_at
+
+    _, db_gen = _fake_db(health_row=health_row)
+    app.dependency_overrides[get_db] = db_gen
+    try:
+        with (
+            patch(
+                "src.api.routers.admin.get_peripheral_config",
+                AsyncMock(return_value=_FAKE_DH_DTO_SCRAM),
+            ),
+            patch("src.api.routers.admin.datahub_token_is_set", return_value=True),
+        ):
+            resp = await client.get(_PERIPHERALS_DH, headers=auth_headers())
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    body = resp.json()
+    assert body["health"]["status"] == "error"
+    assert body["health"]["last_error"] == "SASL authentication error: Authentication failed"
+    # is_configured is unaffected: the values are present, they just do not work.
+    assert body["is_configured"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stored", "body", "field", "rule"),
+    [
+        pytest.param(
+            DatahubConfigDTO(gms_url="http://gms:8080", kafka_brokers="kafka:9093"),
+            {"kafka_security_protocol": "SASL_SSL"},
+            "kafka_sasl_mechanism",
+            "rule 1 — a mechanism is required with a SASL protocol",
+            id="rule1-sasl-protocol-without-mechanism",
+        ),
+        pytest.param(
+            DatahubConfigDTO(gms_url="http://gms:8080", kafka_brokers="kafka:9093"),
+            {"kafka_sasl_mechanism": "PLAIN"},
+            "kafka_sasl_mechanism",
+            "rule 1 — a mechanism is rejected with PLAINTEXT",
+            id="rule1-mechanism-without-sasl-protocol",
+        ),
+        pytest.param(
+            DatahubConfigDTO(gms_url="http://gms:8080", kafka_brokers="kafka:9093"),
+            {"kafka_security_protocol": "SASL_SSL", "kafka_sasl_mechanism": "SCRAM-SHA-512"},
+            "kafka_sasl_username",
+            "rule 2 — a credential mechanism needs a username",
+            id="rule2-scram-without-username",
+        ),
+        pytest.param(
+            _FAKE_DH_DTO_SCRAM,
+            {"kafka_sasl_mechanism": "AWS_MSK_IAM", "kafka_brokers": _MSK_BROKERS},
+            "kafka_sasl_username",
+            "rule 3 — a STORED username blocks the switch to AWS_MSK_IAM",
+            id="rule3-effective-tuple-carries-the-stored-username",
+        ),
+        pytest.param(
+            DatahubConfigDTO(gms_url="http://gms:8080", kafka_brokers=_MSK_BROKERS),
+            {
+                "kafka_security_protocol": "SASL_SSL",
+                "kafka_sasl_mechanism": "AWS_MSK_IAM",
+                "kafka_sasl_password": "typed-credential",
+            },
+            "kafka_sasl_password",
+            "rule 3 — a submitted password is rejected under AWS_MSK_IAM",
+            id="rule3-submitted-password-under-msk-iam",
+        ),
+        pytest.param(
+            DatahubConfigDTO(gms_url="http://gms:8080", kafka_brokers=_MSK_BROKERS),
+            {"kafka_security_protocol": "SASL_PLAINTEXT", "kafka_sasl_mechanism": "AWS_MSK_IAM"},
+            "kafka_security_protocol",
+            "rule 4 — AWS_MSK_IAM requires SASL_SSL, never a silent upgrade",
+            id="rule4-msk-iam-on-an-unencrypted-wire",
+        ),
+        pytest.param(
+            DatahubConfigDTO(gms_url="http://gms:8080", kafka_brokers="kafka:9093"),
+            {"kafka_aws_region": "us-east-1"},
+            "kafka_aws_region",
+            "rule 5 — a region is accepted only with AWS_MSK_IAM",
+            id="rule5-region-without-msk-iam",
+        ),
+        pytest.param(
+            DatahubConfigDTO(gms_url="http://gms:8080", kafka_brokers="kafka.evil.tld:9098"),
+            {"kafka_security_protocol": "SASL_SSL", "kafka_sasl_mechanism": "AWS_MSK_IAM"},
+            "kafka_brokers",
+            "rule 6 — every broker host must have the MSK broker shape under AWS_MSK_IAM",
+            id="rule6-msk-iam-pointed-at-a-foreign-host",
+        ),
+        pytest.param(
+            DatahubConfigDTO(gms_url="http://gms:8080", kafka_brokers=_MSK_BROKERS),
+            {
+                "kafka_security_protocol": "SASL_SSL",
+                "kafka_sasl_mechanism": "AWS_MSK_IAM",
+                "kafka_brokers": "ec2-203-0-113-25.compute-1.amazonaws.com:9098",
+            },
+            "kafka_brokers",
+            "rule 6 — an AWS host that is not an MSK broker is still refused",
+            id="SECURITY-rule6-aws-host-that-is-not-an-msk-broker",
+        ),
+        pytest.param(
+            DatahubConfigDTO(gms_url="http://gms:8080", kafka_brokers=_MSK_BROKERS),
+            {
+                "kafka_security_protocol": "SASL_SSL",
+                "kafka_sasl_mechanism": "AWS_MSK_IAM",
+                "kafka_aws_region": "eu-west-1",
+            },
+            "kafka_aws_region",
+            "rule 7 — an explicit region contradicting the stored broker hosts",
+            id="SECURITY-rule7-region-contradicting-the-hosts",
+        ),
+        pytest.param(
+            DatahubConfigDTO(gms_url="http://gms:8080", kafka_brokers=_MSK_BROKERS),
+            {
+                "kafka_security_protocol": "SASL_SSL",
+                "kafka_sasl_mechanism": "AWS_MSK_IAM",
+                "kafka_brokers": (
+                    "b-1.imazon.abc.c2.kafka.us-east-1.amazonaws.com:9098,"
+                    "b-2.imazon.abc.c2.kafka.eu-west-1.amazonaws.com:9098"
+                ),
+            },
+            "kafka_brokers",
+            "rule 7 — a mixed-region broker list",
+            id="SECURITY-rule7-mixed-region-broker-list",
+        ),
+    ],
+)
+async def test_patch_datahub_rejects_a_rule_violation_with_422(
+    client, stored, body, field, rule
+) -> None:
+    """Each of the seven rules rejects with ``422 INVALID_PARAMETER`` naming the field.
+
+    Every case is judged against the **effective** tuple — the stored settings with the
+    body merged over them — which is why the rule-3 case supplies only a mechanism and is
+    still rejected for the username already in storage.
+
+    spec: API.md §DataHub Kafka security — the seven-rule table; "**Validation is
+    normative and every violation is ``422 INVALID_PARAMETER``** — the existing generic
+    code, with the offending field named in ``detail``"; "Every rule below is evaluated
+    against the **effective tuple** — the stored settings with the ``PATCH`` body merged
+    over them".
+    """
+    _, db_gen = _fake_db()
+    app.dependency_overrides[get_db] = db_gen
+    mock_patch_db = AsyncMock(return_value=stored)
+    mock_set_password = MagicMock()
+    try:
+        with (
+            patch("src.api.routers.admin.get_peripheral_config", AsyncMock(return_value=stored)),
+            patch("src.api.routers.admin.patch_peripheral_config", mock_patch_db),
+            patch("src.api.routers.admin.set_datahub_kafka_sasl_password", mock_set_password),
+            patch("src.api.routers.admin.datahub_token_is_set", return_value=True),
+        ):
+            resp = await client.patch(_PERIPHERALS_DH, json=body, headers=auth_headers())
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert resp.status_code == 422, f"{rule}: expected 422, got {resp.status_code} {resp.text}"
+    payload = resp.json()
+    assert payload["error_code"] == "INVALID_PARAMETER", payload
+    assert payload["detail"]["field"] == field, (
+        f"{rule}: the offending field must be named in detail; got {payload.get('detail')}"
+    )
+    # Nothing may be written when the request is refused.
+    mock_patch_db.assert_not_called()
+    mock_set_password.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_patch_datahub_accepts_a_valid_msk_iam_switch(client) -> None:
+    """Clearing the stored username in the same PATCH makes the AWS_MSK_IAM switch valid.
+
+    The backstop for the rule-3 rejection above: the request is refused for the leftover
+    credential, not for selecting IAM.
+
+    spec: API.md §DataHub Kafka security — "the operator clears it in the same ``PATCH``
+    with an explicit ``""``".
+    """
+    _, db_gen = _fake_db()
+    app.dependency_overrides[get_db] = db_gen
+    mock_patch_db = AsyncMock(return_value=_FAKE_DH_DTO_SCRAM)
+    try:
+        with (
+            patch(
+                "src.api.routers.admin.get_peripheral_config",
+                AsyncMock(return_value=_FAKE_DH_DTO_SCRAM),
+            ),
+            patch("src.api.routers.admin.patch_peripheral_config", mock_patch_db),
+            patch("src.api.routers.admin.set_datahub_kafka_sasl_password", MagicMock()),
+            patch("src.api.routers.admin.datahub_token_is_set", return_value=True),
+            patch(
+                "src.api.routers.admin.datahub_kafka_sasl_password_is_set", return_value=False
+            ),
+        ):
+            resp = await client.patch(
+                _PERIPHERALS_DH,
+                json={
+                    "kafka_brokers": _MSK_BROKERS,
+                    "kafka_security_protocol": "SASL_SSL",
+                    "kafka_sasl_mechanism": "AWS_MSK_IAM",
+                    "kafka_sasl_username": "",
+                },
+                headers=auth_headers(),
+            )
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert resp.status_code == 200, resp.text
+    mock_patch_db.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_patch_datahub_kafka_password_routes_to_secret_and_bumps_the_version(
+    client,
+) -> None:
+    """The Kafka password goes to the K8s Secret, never the DB, and moves the counter.
+
+    The counter is what turns a Secret-only rotation into a DB-plane change the running
+    consumer detects.
+
+    spec: API.md §DataHub Kafka security — "Routed to ``dataspoke-datahub-secret`` key
+    ``kafka_sasl_password``, never the DB"; ``kafka_sasl_password_version`` "Incremented
+    by ``PATCH`` whenever the password Secret is written".
+    """
+    _, db_gen = _fake_db()
+    app.dependency_overrides[get_db] = db_gen
+    mock_set_password = MagicMock()
+    mock_patch_db = AsyncMock(return_value=_FAKE_DH_DTO_SCRAM)
+    try:
+        with (
+            patch(
+                "src.api.routers.admin.get_peripheral_config",
+                AsyncMock(return_value=_FAKE_DH_DTO_SCRAM),
+            ),
+            patch("src.api.routers.admin.patch_peripheral_config", mock_patch_db),
+            patch("src.api.routers.admin.set_datahub_kafka_sasl_password", mock_set_password),
+            patch("src.api.routers.admin.datahub_token_is_set", return_value=True),
+            patch(
+                "src.api.routers.admin.datahub_kafka_sasl_password_is_set", return_value=True
+            ),
+        ):
+            resp = await client.patch(
+                _PERIPHERALS_DH,
+                json={"kafka_sasl_password": "rotated-secret"},
+                headers=auth_headers(),
+            )
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert resp.status_code == 200, resp.text
+    mock_set_password.assert_called_once_with("rotated-secret")
+
+    _, kwargs = mock_patch_db.call_args
+    assert kwargs.get("bump_kafka_sasl_password_version") is True, (
+        f"the password write must bump the version counter; call was {mock_patch_db.call_args!r}"
+    )
+    assert "kafka_sasl_password" not in kwargs, (
+        "the plaintext password must never be handed to the DB writer"
+    )
+    assert "rotated-secret" not in resp.text, "the plaintext must never appear in the response"
+
+
+@pytest.mark.asyncio
+async def test_patch_datahub_clears_a_stored_password_when_switching_to_msk_iam(
+    client,
+) -> None:
+    """A stored password is cleared once the effective mechanism becomes ``AWS_MSK_IAM``.
+
+    Leaving it would keep a live credential in the Secret that nothing reads and that GET
+    would keep reporting as ``"********"``.
+
+    spec: API.md §DataHub Kafka security — "The **stored password is handled differently:
+    it is cleared** whenever the effective mechanism becomes ``AWS_MSK_IAM``, and ``GET``
+    reports ``kafka_sasl_password: ""`` from then on."
+    """
+    _, db_gen = _fake_db()
+    app.dependency_overrides[get_db] = db_gen
+    mock_set_password = MagicMock()
+    mock_patch_db = AsyncMock(return_value=_FAKE_DH_DTO_SCRAM)
+    stored = DatahubConfigDTO(gms_url="http://gms:8080", kafka_brokers=_MSK_BROKERS)
+    try:
+        with (
+            patch("src.api.routers.admin.get_peripheral_config", AsyncMock(return_value=stored)),
+            patch("src.api.routers.admin.patch_peripheral_config", mock_patch_db),
+            patch("src.api.routers.admin.set_datahub_kafka_sasl_password", mock_set_password),
+            patch("src.api.routers.admin.datahub_token_is_set", return_value=True),
+            patch(
+                "src.api.routers.admin.datahub_kafka_sasl_password_is_set", return_value=True
+            ),
+        ):
+            resp = await client.patch(
+                _PERIPHERALS_DH,
+                json={
+                    "kafka_security_protocol": "SASL_SSL",
+                    "kafka_sasl_mechanism": "AWS_MSK_IAM",
+                },
+                headers=auth_headers(),
+            )
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert resp.status_code == 200, resp.text
+    mock_set_password.assert_called_once_with(""), (
+        "the stored credential must be cleared, not left in the Secret"
+    )
+    _, kwargs = mock_patch_db.call_args
+    assert kwargs.get("bump_kafka_sasl_password_version") is True, (
+        "clearing the password is a Secret write, so the counter must move too"
+    )
+
+
+@pytest.mark.asyncio
+async def test_patch_datahub_leaves_the_kafka_password_alone_when_not_supplied(client) -> None:
+    """Omitting the field leaves the Secret untouched — the backstop for the clearing test.
+
+    Without this, the clearing assertion above could pass for a handler that rewrites the
+    Secret on every PATCH.
+
+    spec: API.md §Admin — "A secret field omitted from the body leaves the Secret
+    unchanged".
+    """
+    _, db_gen = _fake_db()
+    app.dependency_overrides[get_db] = db_gen
+    mock_set_password = MagicMock()
+    try:
+        with (
+            patch(
+                "src.api.routers.admin.get_peripheral_config",
+                AsyncMock(return_value=_FAKE_DH_DTO_SCRAM),
+            ),
+            patch(
+                "src.api.routers.admin.patch_peripheral_config",
+                AsyncMock(return_value=_FAKE_DH_DTO_SCRAM),
+            ),
+            patch("src.api.routers.admin.set_datahub_kafka_sasl_password", mock_set_password),
+            patch("src.api.routers.admin.datahub_token_is_set", return_value=True),
+            patch(
+                "src.api.routers.admin.datahub_kafka_sasl_password_is_set", return_value=True
+            ),
+        ):
+            resp = await client.patch(
+                _PERIPHERALS_DH,
+                json={"kafka_brokers": "kafka-new:9093"},
+                headers=auth_headers(),
+            )
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert resp.status_code == 200, resp.text
+    mock_set_password.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_patch_datahub_rejects_a_client_supplied_password_version(client) -> None:
+    """``kafka_sasl_password_version`` is API-owned and not accepted on PATCH.
+
+    An operator who could set the counter could make a rotation invisible to the consumer.
+
+    spec: API.md §DataHub Kafka security — the counter is "Incremented by ``PATCH``
+    whenever the password Secret is written"; src/api/schemas/admin.py
+    DatahubPeripheralPatchRequest — "``kafka_sasl_password_version`` is not accepted —
+    the API owns the counter".
+    """
+    _, db_gen = _fake_db()
+    app.dependency_overrides[get_db] = db_gen
+    mock_patch_db = AsyncMock(return_value=_FAKE_DH_DTO_SCRAM)
+    try:
+        with (
+            patch(
+                "src.api.routers.admin.get_peripheral_config",
+                AsyncMock(return_value=_FAKE_DH_DTO_SCRAM),
+            ),
+            patch("src.api.routers.admin.patch_peripheral_config", mock_patch_db),
+            patch("src.api.routers.admin.datahub_token_is_set", return_value=True),
+        ):
+            resp = await client.patch(
+                _PERIPHERALS_DH,
+                json={"kafka_brokers": "kafka:9093", "kafka_sasl_password_version": 99},
+                headers=auth_headers(),
+            )
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert resp.status_code == 200, resp.text
+    _, kwargs = mock_patch_db.call_args
+    assert "kafka_sasl_password_version" not in kwargs, (
+        "a client-supplied counter must never reach the DB writer; "
+        f"call was {mock_patch_db.call_args!r}"
+    )

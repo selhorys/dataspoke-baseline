@@ -269,6 +269,12 @@ Ingress live in `templates/api-*.yaml` so the API binds to the
 `dataspoke-api` cluster DNS name that Airflow callbacks expect, while still
 respecting the `api.*` values block.
 
+The event-consumer subchart builds **no image of its own** — its Deployment runs
+the API image with a `command:` override, so `--image-tag` selects one artifact
+for both workloads and the two can never run different revisions of `src/`. Its
+`image.*` values therefore default to the API's coordinates. See
+[BACKEND §Kafka Consumers](BACKEND.md#kafka-consumers-optional-not-enabled-in-baseline).
+
 ### Dependencies
 
 | Subchart | Source | Version | Condition |
@@ -370,17 +376,13 @@ lives in the `runtime_config` DB row (`stub_redis_client`, `stub_llm_client`,
 `stub_pgvector_manager`, `stub_notification_service`) — see
 `BACKEND_LLM.md §Test Mode` and `TESTING.md §Stub Toggles`.
 
-> DataHub, Langfuse, and LLM provider/model/key are **not** app-runtime env
-> vars. Their **non-secret** settings (DataHub
-> `gms_url`/`frontend_url`/`kafka_brokers`/`service_corpuser_urn`/`default_env`, Langfuse
-> `host`/`public_key`/`project_id`/`environment_tag`, LLM provider/model +
-> generation knobs) live in
-> the DB `peripheral_config` and `runtime_config` tables, updated via
-> `/api/v1/admin/peripherals/{datahub,langfuse}` and `/api/v1/admin/conf`. Their
-> **secret** fields (DataHub token, Langfuse `secret_key`, LLM API key) never
-> touch the DB — they live in K8s Secrets (`dataspoke-datahub-secret`,
-> `dataspoke-langfuse-secret`, `dataspoke-llm-secret`), read at runtime via the
-> API's RBAC. See §Secrets Management and `BACKEND_LLM.md §LLM API key`.
+> DataHub, Langfuse, SMTP, and LLM provider/model/key are **not** app-runtime env
+> vars. Their non-secret settings live in the DB `peripheral_config` and
+> `runtime_config` tables; their secret fields live in dedicated K8s Secrets read
+> at runtime via the API's RBAC. The field-by-field breakdown is in
+> §[DB-backed (no env var)](#db-backed-no-env-var) — the single enumeration of the
+> peripheral contract in this document. See also §Secrets Management and
+> `BACKEND_LLM.md §LLM API key`.
 
 ### Tier 2 — Kube deployment (`DATASPOKE_KUBE_*`)
 
@@ -713,13 +715,20 @@ chart at it via `secrets.existingSecret: <name>`.
 ### DB-backed (no env var)
 
 - `peripheral_config` table — non-secret connection fields for DataHub
-  (`gms_url`, `frontend_url`, `kafka_brokers`, `service_corpuser_urn`, `default_env`), Langfuse
+  (`gms_url`, `frontend_url`, `kafka_brokers`, `kafka_security_protocol`,
+  `kafka_sasl_mechanism`, `kafka_sasl_username`, `kafka_aws_region`,
+  `kafka_sasl_password_version`, `service_corpuser_urn`, `default_env`), Langfuse
   (`host`, `public_key`, `project_id`, `environment_tag`), and SMTP
   (`host`, `port`, `username`, `from_address`, `use_tls`) — updated via
   `/api/v1/admin/peripherals/{datahub,langfuse,smtp}`. Per-peripheral secret
-  fields (`datahub.token`, `langfuse.secret_key`, `smtp.password`) are
+  fields (`datahub.token`, `datahub.kafka_sasl_password`,
+  `langfuse.secret_key`, `smtp.password`) are
   routed by the PATCH handler to dedicated K8s Secrets, never to the DB —
-  see Out-of-band Secrets below.
+  see Out-of-band Secrets below. [API.md](../API.md) §`/admin/peripherals` is the
+  contract; this list mirrors it.
+- `peripheral_health` table — last observed liveness per peripheral, written by
+  the event consumer and read back on `GET /api/v1/admin/peripherals/datahub`.
+  Not operator-configurable and not env-driven.
 - `runtime_config` table — LLM provider/model, debate/RAG/iteration tunables,
   and `auth_datahub_corp_group` (string, default `dataspoke-users` — names
   the DataHub corpGroup that marks DataSpoke-managed users) — updated via
@@ -937,7 +946,7 @@ is standalone and env-file-driven, so any of them can also be invoked by hand.
 
 | Script | Effect |
 |---|---|
-| `bin/post-install/seed-peripheral-config.sh` | PATCH `/internal/admin/peripherals/datahub` with `{gms_url, frontend_url, kafka_brokers}` and `/internal/admin/peripherals/langfuse` with `{host, public_key}`. When set in `.env.dev`, the script also forwards optional operator-supplied non-secret fields from `DATASPOKE_DEV_*` env vars: DataHub `service_corpuser_urn` and `default_env`; Langfuse `project_id` (from `DATASPOKE_DEV_LANGFUSE_INIT_PROJECT_ID`) and `environment_tag`. The secret fields — DataHub PAT `token` and Langfuse `secret_key` — are placed into K8s Secrets out-of-band by the install script before the API pod starts (the API reads them via RBAC); the seed script does not send them through the admin API — only non-secret fields go through it. |
+| `bin/post-install/seed-peripheral-config.sh` | PATCH `/internal/admin/peripherals/datahub` with `{gms_url, frontend_url, kafka_brokers}` and `/internal/admin/peripherals/langfuse` with `{host, public_key}`. When set in `.env.dev`, the script also forwards optional operator-supplied non-secret fields from `DATASPOKE_DEV_*` env vars: DataHub `service_corpuser_urn` and `default_env`; Langfuse `project_id` (from `DATASPOKE_DEV_LANGFUSE_INIT_PROJECT_ID`) and `environment_tag`. The DataHub Kafka security tuple is not seeded — the dev broker is plaintext, which is the field's default — so a secured broker is configured by the operator afterwards via the admin API. The secret fields the script would otherwise carry — DataHub PAT `token` and Langfuse `secret_key` — are placed into K8s Secrets out-of-band by the install script before the API pod starts (the API reads them via RBAC); the seed script does not send them through the admin API — only non-secret fields go through it. |
 | `bin/post-install/seed-runtime-config.sh` | PATCH `/internal/admin/conf` with `{llm_provider, llm_model}` from `DATASPOKE_DEV_LLM_{PROVIDER,MODEL}`, then a second PATCH setting the four `stub_*` dependency flags (`stub_redis_client`, `stub_llm_client`, `stub_pgvector_manager`, `stub_notification_service`) to `true` for the dev profile. |
 | `bin/post-install/seed-admin-user.sh` | POST `/internal/admin/bootstrap` to idempotently seed the built-in `dataspoke@dataspoke.local / dataspoke` Admin user (returns `{created: false}` when any Admin already exists). The endpoint makes no DataHub call, so this step has no ordering dependency on peripheral seeding and succeeds on a fresh install before DataHub is wired. See [feature/AUTH.md §Built-in Bootstrap Admin](AUTH.md#built-in-bootstrap-admin). |
 
@@ -1152,7 +1161,7 @@ with default-deny.
 | **`dataspoke-secrets`** | `install.sh` (dev auto-generate) or operator (prod pre-create) | DataSpoke's own runtime credentials — Postgres user/password/db, Redis password, Airflow user/password/webserver-secret/jwt-secret, internal-auth token, JWT signing key, OAuth state secret, Google OAuth client secret. Twelve keys; mounted `envFrom` on the API Deployment and alembic-migrate init container. |
 | **`dataspoke-airflow-metadata-db`** | `install.sh` `_derive_airflow_metadata_secret` (both profiles) | Single key `connection` = full PostgreSQL URI for Airflow's metadata DB. Wired via `airflow.data.metadataSecretName`. |
 | **`dataspoke-airflow-api-secret-key`**, **`dataspoke-airflow-jwt-secret`** | `install.sh` `_ensure_airflow_key_secrets` (both profiles) | Projections of the `DATASPOKE_AIRFLOW_WEBSERVER_SECRET_KEY` / `DATASPOKE_AIRFLOW_JWT_SECRET` keys into the single-key shape (`api-secret-key`, `jwt-secret`) the Airflow chart expects. Wired via `airflow.apiSecretKeySecretName` / `airflow.jwtSecretName`. |
-| **Out-of-band Secrets** (`dataspoke-llm-secret`, `dataspoke-datahub-secret`, `dataspoke-langfuse-secret`, `dataspoke-smtp-secret`) | Operator (`kubectl` / ESO) or the app on first PATCH | Tokens/keys that rotate online via `/api/v1/admin/conf` and `/api/v1/admin/peripherals/*`. Not Helm-managed — `helm upgrade` would clobber rotations. The app tolerates their absence (reads as unset). `dataspoke-smtp-secret` (key `password`) backs `/auth/password/reset/request` (see [feature/AUTH.md](AUTH.md)). Note: a Secret of the same name `dataspoke-langfuse-secret` also exists in the Langfuse namespace (`langfuse-01`) carrying the full set of Langfuse pod credentials (NextAuth, salt, ClickHouse, MinIO, Postgres, Redis, init-user); the DataSpoke-side copy holds only the project `secret_key` consumed by the API via RBAC. |
+| **Out-of-band Secrets** (`dataspoke-llm-secret`, `dataspoke-datahub-secret`, `dataspoke-langfuse-secret`, `dataspoke-smtp-secret`) | Operator (`kubectl` / ESO) or the app on first PATCH | Tokens/keys that rotate online via `/api/v1/admin/conf` and `/api/v1/admin/peripherals/*`. Not Helm-managed — `helm upgrade` would clobber rotations. The app tolerates their absence (reads as unset). `dataspoke-datahub-secret` carries two keys — `token` for GMS and `kafka_sasl_password` for the event consumer's Kafka credential — and is the only one of these Secrets read by a workload other than the API. `dataspoke-smtp-secret` (key `password`) backs `/auth/password/reset/request` (see [feature/AUTH.md](AUTH.md)). Note: a Secret of the same name `dataspoke-langfuse-secret` also exists in the Langfuse namespace (`langfuse-01`) carrying the full set of Langfuse pod credentials (NextAuth, salt, ClickHouse, MinIO, Postgres, Redis, init-user); the DataSpoke-side copy holds only the project `secret_key` consumed by the API via RBAC. |
 | **User-supplied source credentials** (`dataspoke-source-cred-*`) | Caller (vault path) or operator (reference path) | Credentials for *external sources* registered via ingestion confs. Documented in [SECRET_RESOLUTION.md](SECRET_RESOLUTION.md). The `dataspoke-source-cred-` name prefix is enforced as a security boundary so callers cannot overwrite the above Secrets. |
 
 ### Dev — install-time provisioning
@@ -1201,6 +1210,44 @@ Single-namespace policy: no cross-namespace Roles or RoleBindings. Disable
 to opt out entirely; the Deployment then falls back to the default
 ServiceAccount and the resolver raises `SecretResolverUnavailable` on every
 PUT/PATCH that touches `secret_ref`.
+
+### Event-consumer identity and RBAC
+
+The event-consumer subchart renders its own ServiceAccount, Role, and
+RoleBinding, governed by `event-consumer.serviceAccount.{create,name,annotations}`.
+Two distinct things depend on it.
+
+**Secret access.** The consumer resolves the Kafka SASL credential from
+`dataspoke-datahub-secret` at connect time. Its Role is modelled on the API's
+but is deliberately much narrower: `get` only, restricted by
+`resourceNames: [dataspoke-datahub-secret]`. The API's Role must stay broad
+because the source-credential resolver enumerates a whole prefix of Secrets it
+cannot name in advance; the consumer has exactly one Secret and never lists.
+Same single-namespace policy — no cross-namespace Role or RoleBinding.
+
+**Cloud identity.** `serviceAccount.annotations` is the attachment point for
+workload identity. For `kafka_sasl_mechanism = AWS_MSK_IAM` the operator sets
+`eks.amazonaws.com/role-arn` there; the MSK signer in the API image then
+resolves the projected role at runtime. This is the reason MSK IAM is a
+two-plane feature: selecting the mechanism is a DB-plane click, but the identity
+it authenticates with can only be granted here, at install time.
+
+An overlay enabling the consumer against MSK therefore sets
+`event-consumer.enabled: true` plus the ServiceAccount block, and the operator
+must have provisioned two things outside the chart:
+
+| Prerequisite | Requirement |
+|---|---|
+| IAM role | Trusted by the cluster's OIDC provider, granting `kafka-cluster:Connect`, `DescribeTopic`, `ReadData`, `DescribeGroup`, and `JoinGroup` on the cluster, topic, and consumer-group ARNs |
+| Network | MSK security-group ingress from the EKS pod network on the IAM listener port (`9098`) |
+
+Neither is chart-installable — both live in the operator's cloud account. When
+either is missing the consumer starts, fails to authenticate, and reports
+`status: error` on the DataHub peripheral's `health` field, which is the
+intended diagnostic path (see
+[BACKEND §Health reporting](BACKEND.md#health-reporting)). See AWS's
+[MSK IAM access control](https://docs.aws.amazon.com/msk/latest/developerguide/iam-access-control.html)
+for the policy and ARN forms.
 
 ---
 

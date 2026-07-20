@@ -35,6 +35,7 @@ from src.shared.db.models import (
     OntogenTriple,
     PasswordResetToken,
     PeripheralConfig,
+    PeripheralHealth,
     RuntimeConfig,
     TripleEmbedding,
     User,
@@ -62,6 +63,7 @@ ALL_MODELS = [
     OntogenConfig,
     RuntimeConfig,
     PeripheralConfig,
+    PeripheralHealth,
     OntogenSeed,
     OntogenNode,
     OntogenEdge,
@@ -92,6 +94,7 @@ EXPECTED_TABLES = {
     "ontogen_config",
     "runtime_config",
     "peripheral_config",
+    "peripheral_health",
     "ontogen_seeds",
     "ontogen_nodes",
     "ontogen_edges",
@@ -542,3 +545,85 @@ def test_department_mapping_table_absent() -> None:
     assert "department_mapping" not in all_table_names, (
         "department_mapping table should be removed from the schema"
     )
+
+
+# ── peripheral_health ────────────────────────────────────────────────────────
+
+
+def test_peripheral_health_columns_and_types() -> None:
+    """peripheral_health carries name/status/last_error/last_ok_at/updated_at.
+
+    spec: BACKEND_SCHEMA.md §peripheral_health — the five-column table written by
+    long-running connection holders and read back by GET /admin/peripherals/datahub.
+    """
+    cols = PeripheralHealth.__table__.columns
+    assert {c.name for c in cols} == {
+        "name",
+        "status",
+        "last_error",
+        "last_ok_at",
+        "updated_at",
+    }
+    assert str(cols["name"].type) == "VARCHAR(32)"
+    assert str(cols["status"].type) == "VARCHAR(16)"
+    assert str(cols["last_error"].type) == "TEXT"
+    assert cols["last_error"].nullable, "last_error is NULL when the peripheral never failed"
+    assert cols["last_ok_at"].nullable, "last_ok_at is NULL when it never succeeded"
+
+
+def test_peripheral_health_name_is_the_primary_key() -> None:
+    """One row per peripheral — reports upsert rather than accumulate.
+
+    spec: BACKEND_SCHEMA.md §peripheral_health — "A row is upserted on report, so
+    the table never grows past the peripheral set and carries no history."
+    """
+    pk_cols = inspect(PeripheralHealth).primary_key
+    assert len(pk_cols) == 1
+    assert pk_cols[0].name == "name"
+
+
+def test_peripheral_health_has_no_foreign_key_to_peripheral_config() -> None:
+    """The two tables are independent — a missing config row must not block a report.
+
+    spec: BACKEND_SCHEMA.md §peripheral_health — "no foreign key" to
+    ``peripheral_config``; a constraint "would make the health upsert fail precisely
+    when the peripheral_config row is missing", suppressing the signal the table exists
+    to carry.
+    """
+    assert PeripheralHealth.__table__.foreign_keys == set(), (
+        "peripheral_health must declare no foreign keys; found "
+        f"{PeripheralHealth.__table__.foreign_keys!r}"
+    )
+
+
+def test_peripheral_health_check_constraints_pin_both_domains() -> None:
+    """CHECKs restrict ``name`` to the peripheral set and ``status`` to the three states.
+
+    spec: BACKEND_SCHEMA.md §peripheral_health — ``name`` CHECK ∈ datahub, langfuse,
+    smtp (the same domain as peripheral_config); ``status`` CHECK ∈ unknown, ok, error.
+    """
+    from sqlalchemy import CheckConstraint
+
+    checks = {
+        str(c.sqltext)
+        for c in PeripheralHealth.__table__.constraints
+        if isinstance(c, CheckConstraint)
+    }
+    joined = " ".join(checks)
+    for value in ("datahub", "langfuse", "smtp"):
+        assert value in joined, f"name CHECK must admit {value!r}; constraints: {checks!r}"
+    for value in ("unknown", "ok", "error"):
+        assert value in joined, f"status CHECK must admit {value!r}; constraints: {checks!r}"
+
+
+def test_peripheral_health_status_defaults_to_unknown() -> None:
+    """A freshly inserted row reads ``unknown`` until a reporter writes.
+
+    spec: BACKEND_SCHEMA.md §peripheral_health — "``unknown`` until a reporter writes";
+    "Absence of a row and status='unknown' mean the same thing to readers".
+    """
+    status_col = PeripheralHealth.__table__.columns["status"]
+    assert status_col.server_default is not None, (
+        "status needs a server-side default so a direct-SQL insert still reads 'unknown'"
+    )
+    assert "unknown" in str(status_col.server_default.arg)

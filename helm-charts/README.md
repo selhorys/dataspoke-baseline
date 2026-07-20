@@ -428,7 +428,7 @@ Install (or reinstall) a subset of components:
 # Reinstall DataHub only
 ./helm-charts/bin/install.sh --profile dev --components datahub
 
-# Reinstall DataSpoke infra (Postgres, Redis, Airflow, API)
+# Reinstall DataSpoke infra (Postgres, Redis, Airflow, API, event-consumer)
 ./helm-charts/bin/install.sh --profile dev --components dataspoke-infra
 
 # Resume an interrupted full install starting at a specific component

@@ -305,6 +305,35 @@ check_dataspoke_api() {
   fi
 }
 
+# The event-consumer serves no HTTP surface, so readiness is read from the
+# Deployment rather than probed over the ingress — same approach as the
+# langfuse-worker check below. A pod stuck in CrashLoopBackOff is otherwise
+# invisible to this pre-flight, which gates integration-test runs.
+check_dataspoke_event_consumer() {
+  local ns="${DATASPOKE_KUBE_DATASPOKE_NAMESPACE:-}"
+  local label="dataspoke-event-consumer"
+  if [[ -z "$ns" ]]; then
+    _skip "$label — DATASPOKE_KUBE_DATASPOKE_NAMESPACE unset in ${ENV_FILE}"
+    return
+  fi
+  if $QUICK; then _skip "$label (deep check skipped)"; return; fi
+
+  if kubectl get deployment/dataspoke-event-consumer -n "$ns" >/dev/null 2>&1; then
+    local ready
+    ready=$(kubectl get deployment/dataspoke-event-consumer -n "$ns" \
+      -o jsonpath='{.status.readyReplicas}' 2>/dev/null) || ready="0"
+    if [[ "${ready:-0}" -ge 1 ]]; then
+      _pass "$label (${ready} replica(s) ready)"
+    else
+      _fail "$label — 0 replicas ready"
+      ((FAILURES++))
+    fi
+  else
+    # Disabled by default outside dev; absence is a configuration choice.
+    _skip "$label — not deployed (event-consumer.enabled=false)"
+  fi
+}
+
 check_dataspoke_frontend() {
   local fe_url="${SCHEME}://app.${DOMAIN}"
   local label="dataspoke-frontend (${fe_url})"
@@ -479,6 +508,7 @@ check_dataspoke_postgresql
 check_dataspoke_redis
 check_dataspoke_airflow
 check_dataspoke_api
+check_dataspoke_event_consumer
 check_dataspoke_frontend
 check_dataspoke_langfuse
 

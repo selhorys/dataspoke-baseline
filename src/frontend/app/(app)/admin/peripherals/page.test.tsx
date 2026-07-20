@@ -30,13 +30,32 @@ function makeDatahub(overrides: Partial<DatahubPeripheral> = {}): DatahubPeriphe
     // and scheme, mirroring the deployment shape the endpoint exists to serve.
     frontend_url: "https://datahub.example.com",
     kafka_brokers: "kafka:9092",
+    kafka_security_protocol: "PLAINTEXT",
+    kafka_sasl_mechanism: "",
+    kafka_sasl_username: "",
+    kafka_sasl_password: "",
+    kafka_sasl_password_version: 0,
+    kafka_aws_region: "",
     token: "********",
     service_corpuser_urn: "urn:li:corpuser:dataspoke",
     default_env: "DEV",
     is_configured: true,
+    health: { status: "unknown", last_error: null, last_ok_at: null, updated_at: null },
     updated_at: "2026-06-26T10:00:00Z",
     ...overrides,
   };
+}
+
+/** A DataHub peripheral already secured with a SCRAM credential. */
+function makeScramDatahub(overrides: Partial<DatahubPeripheral> = {}): DatahubPeripheral {
+  return makeDatahub({
+    kafka_security_protocol: "SASL_SSL",
+    kafka_sasl_mechanism: "SCRAM-SHA-512",
+    kafka_sasl_username: "dataspoke",
+    kafka_sasl_password: "********",
+    kafka_sasl_password_version: 3,
+    ...overrides,
+  });
 }
 
 function makeLangfuse(overrides: Partial<LangfusePeripheral> = {}): LangfusePeripheral {
@@ -62,6 +81,16 @@ if (typeof global.ResizeObserver === "undefined") {
     unobserve() {}
     disconnect() {}
   };
+}
+// jsdom implements neither pointer capture nor scrollIntoView, both of which the
+// Radix Select trigger calls when it opens its listbox.
+if (!Element.prototype.hasPointerCapture) {
+  Element.prototype.hasPointerCapture = () => false;
+  Element.prototype.setPointerCapture = () => {};
+  Element.prototype.releasePointerCapture = () => {};
+}
+if (!Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = () => {};
 }
 
 // ---------------------------------------------------------------------------
@@ -121,6 +150,9 @@ import {
   datahubSchema,
   datahubToFormDefaults,
   datahubBuildPatch,
+  mechanismOptionsFor,
+  nonMskBrokerHosts,
+  deriveMskRegion,
   langfuseSchema,
   langfuseToFormDefaults,
   langfuseBuildPatch,
@@ -202,6 +234,19 @@ describe("AdminPeripheralsPage — populate from GET (FRONTEND_BASIC.md §Admin 
     expect(token.value).toBe("");
     expect(secretKey.value).toBe("");
   });
+
+  it("the Kafka SASL password renders blank too — same masking rule as the token", async () => {
+    mockUseDatahub.mockReturnValue({ data: makeScramDatahub(), isLoading: false });
+    render(<AdminPeripheralsPage />);
+    await waitFor(() => {
+      expect(document.getElementById("datahub_kafka_sasl_password")).toBeTruthy();
+    });
+    const pw = document.getElementById("datahub_kafka_sasl_password") as HTMLInputElement;
+    expect(pw.value).toBe("");
+    // ...while the non-secret credential field IS prefilled.
+    const user = document.getElementById("datahub_kafka_sasl_username") as HTMLInputElement;
+    expect(user.value).toBe("dataspoke");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -213,6 +258,16 @@ describe("peripherals-form.schema — toFormDefaults blanks secrets, buildPatch 
     expect(defaults.token).toBe("");
     expect(defaults.service_corpuser_urn).toBe("urn:li:corpuser:dataspoke");
     expect(defaults.default_env).toBe("DEV");
+  });
+
+  it("datahubToFormDefaults drops the masked kafka_sasl_password, keeps the Kafka settings", () => {
+    const defaults = datahubToFormDefaults(makeScramDatahub());
+    expect(defaults.kafka_sasl_password).toBe("");
+    expect(defaults.kafka_security_protocol).toBe("SASL_SSL");
+    expect(defaults.kafka_sasl_mechanism).toBe("SCRAM-SHA-512");
+    expect(defaults.kafka_sasl_username).toBe("dataspoke");
+    // API-owned bookkeeping is not part of the form at all.
+    expect(defaults).not.toHaveProperty("kafka_sasl_password_version");
   });
 
   it("langfuseToFormDefaults drops the masked secret_key, keeps non-secret fields", () => {
@@ -259,6 +314,44 @@ describe("peripherals-form.schema — toFormDefaults blanks secrets, buildPatch 
 
   it("datahubSchema accepts the form-default shape (all string fields)", () => {
     expect(datahubSchema.safeParse(datahubToFormDefaults(makeDatahub())).success).toBe(true);
+    // ...and the secured shape, which carries the full Kafka tuple.
+    expect(datahubSchema.safeParse(datahubToFormDefaults(makeScramDatahub())).success).toBe(true);
+  });
+
+  it("datahubBuildPatch includes kafka_sasl_password ONLY when the user typed a value", () => {
+    const loaded = makeScramDatahub();
+    const untouched = datahubToFormDefaults(loaded);
+    expect(datahubBuildPatch(untouched, loaded)).toEqual({});
+
+    const typed = { ...untouched, kafka_sasl_password: "rotated-secret" };
+    expect(datahubBuildPatch(typed, loaded)).toEqual({ kafka_sasl_password: "rotated-secret" });
+  });
+
+  it("datahubBuildPatch NEVER sends kafka_sasl_password_version (API-owned bookkeeping)", () => {
+    const loaded = makeScramDatahub();
+    const values = {
+      ...datahubToFormDefaults(loaded),
+      kafka_sasl_username: "rotated-user",
+      kafka_sasl_password: "rotated-secret",
+    };
+    const patch = datahubBuildPatch(values, loaded);
+    expect(patch).not.toHaveProperty("kafka_sasl_password_version");
+    expect(Object.keys(patch).sort()).toEqual(["kafka_sasl_password", "kafka_sasl_username"]);
+  });
+
+  it("datahubBuildPatch sends the cleared credential as '' when moving to AWS_MSK_IAM", () => {
+    // The API rejects a username under AWS_MSK_IAM, so the move has to clear it
+    // explicitly — omitting the field would leave the stored value in force.
+    const loaded = makeScramDatahub();
+    const values = {
+      ...datahubToFormDefaults(loaded),
+      kafka_sasl_mechanism: "AWS_MSK_IAM" as const,
+      kafka_sasl_username: "",
+    };
+    expect(datahubBuildPatch(values, loaded)).toEqual({
+      kafka_sasl_mechanism: "AWS_MSK_IAM",
+      kafka_sasl_username: "",
+    });
   });
 
   it("datahubBuildPatch sends frontend_url when the browser-facing URL changes", () => {
@@ -327,6 +420,493 @@ describe("peripherals schemas — operator-supplied URL validation", () => {
       project_id: "dataspoke-project_1",
     };
     expect(langfuseSchema.safeParse(values).success).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 2c. Kafka security vocabulary + the five validation rules of
+//     spec/API.md §DataHub Kafka security, mirrored client-side.
+// ---------------------------------------------------------------------------
+describe("datahubSchema — Kafka security rules (API.md §DataHub Kafka security)", () => {
+  type KafkaOverrides = Partial<ReturnType<typeof datahubToFormDefaults>>;
+
+  function kafkaValues(over: KafkaOverrides) {
+    return { ...datahubToFormDefaults(makeDatahub()), ...over };
+  }
+
+  /** Parse an otherwise-valid AWS_MSK_IAM tuple with `over` applied. */
+  function iamParse(over: KafkaOverrides) {
+    return datahubSchema.safeParse(
+      kafkaValues({
+        kafka_security_protocol: "SASL_SSL",
+        kafka_sasl_mechanism: "AWS_MSK_IAM",
+        ...over,
+      }),
+    );
+  }
+
+  /**
+   * Assert the parse failed on `field` and on nothing else, so the case cannot
+   * pass for another rule's reason, and return the issue for message assertions.
+   */
+  function expectIssueAt(parsed: ReturnType<typeof datahubSchema.safeParse>, field: string) {
+    expect(parsed.success).toBe(false);
+    const issues = parsed.error?.issues ?? [];
+    expect(issues.map((i) => i.path[0])).toEqual([field]);
+    return issues[0];
+  }
+
+  it("mechanismOptionsFor offers AWS_MSK_IAM under SASL_SSL only", () => {
+    expect(mechanismOptionsFor("PLAINTEXT")).toEqual([]);
+    expect(mechanismOptionsFor("SSL")).toEqual([]);
+    expect(mechanismOptionsFor("SASL_PLAINTEXT")).toEqual([
+      "PLAIN",
+      "SCRAM-SHA-256",
+      "SCRAM-SHA-512",
+    ]);
+    expect(mechanismOptionsFor("SASL_SSL")).toContain("AWS_MSK_IAM");
+  });
+
+  it("rule 1 — a SASL protocol requires a mechanism, a non-SASL protocol rejects one", () => {
+    const missing = datahubSchema.safeParse(
+      kafkaValues({ kafka_security_protocol: "SASL_SSL", kafka_sasl_mechanism: "" }),
+    );
+    expect(missing.success).toBe(false);
+    expect(missing.error?.issues[0].path).toEqual(["kafka_sasl_mechanism"]);
+
+    const stray = datahubSchema.safeParse(
+      kafkaValues({ kafka_security_protocol: "SSL", kafka_sasl_mechanism: "PLAIN" }),
+    );
+    expect(stray.success).toBe(false);
+  });
+
+  it("rule 2 — a credential mechanism requires a username", () => {
+    const parsed = datahubSchema.safeParse(
+      kafkaValues({
+        kafka_security_protocol: "SASL_SSL",
+        kafka_sasl_mechanism: "SCRAM-SHA-256",
+        kafka_sasl_username: "",
+      }),
+    );
+    expect(parsed.success).toBe(false);
+    expect(parsed.error?.issues[0].path).toEqual(["kafka_sasl_username"]);
+  });
+
+  it("rule 3 — AWS_MSK_IAM rejects a username or a password", () => {
+    // MSK brokers throughout, so each rejection is attributable to rule 3 alone.
+    const iam = {
+      kafka_security_protocol: "SASL_SSL" as const,
+      kafka_sasl_mechanism: "AWS_MSK_IAM" as const,
+      kafka_brokers: "b-1.mycluster.abc123.c2.kafka.us-east-1.amazonaws.com:9098",
+    };
+
+    const withUser = datahubSchema.safeParse(
+      kafkaValues({ ...iam, kafka_sasl_username: "dataspoke" }),
+    );
+    expect(withUser.success).toBe(false);
+    expect(withUser.error?.issues[0].path).toEqual(["kafka_sasl_username"]);
+
+    const withPassword = datahubSchema.safeParse(
+      kafkaValues({ ...iam, kafka_sasl_password: "typed" }),
+    );
+    expect(withPassword.success).toBe(false);
+    expect(withPassword.error?.issues[0].path).toEqual(["kafka_sasl_password"]);
+
+    // The same tuple with neither credential is valid.
+    expect(datahubSchema.safeParse(kafkaValues(iam)).success).toBe(true);
+  });
+
+  it("rule 4 — AWS_MSK_IAM requires SASL_SSL, not SASL_PLAINTEXT", () => {
+    const parsed = datahubSchema.safeParse(
+      kafkaValues({
+        kafka_security_protocol: "SASL_PLAINTEXT",
+        kafka_sasl_mechanism: "AWS_MSK_IAM",
+      }),
+    );
+    expect(parsed.success).toBe(false);
+    expect(parsed.error?.issues.some((i) => i.path[0] === "kafka_security_protocol")).toBe(true);
+  });
+
+  it("rule 5 — an AWS region is accepted only with AWS_MSK_IAM", () => {
+    expect(
+      datahubSchema.safeParse(
+        kafkaValues({
+          kafka_security_protocol: "SASL_SSL",
+          kafka_sasl_mechanism: "SCRAM-SHA-512",
+          kafka_sasl_username: "dataspoke",
+          kafka_aws_region: "ap-northeast-2",
+        }),
+      ).success,
+    ).toBe(false);
+
+    expect(
+      datahubSchema.safeParse(
+        kafkaValues({
+          kafka_security_protocol: "SASL_SSL",
+          kafka_sasl_mechanism: "AWS_MSK_IAM",
+          kafka_aws_region: "ap-northeast-2",
+          // Rule 6 applies to every AWS_MSK_IAM tuple, so a valid one needs MSK brokers.
+          kafka_brokers: "b-1.mycluster.abc123.c2.kafka.ap-northeast-2.amazonaws.com:9098",
+        }),
+      ).success,
+    ).toBe(true);
+  });
+
+  it("rule 6 — AWS_MSK_IAM accepts only MSK broker hosts", () => {
+    expect(
+      iamParse({
+        kafka_brokers:
+          "b-1.mycluster.abc123.c2.kafka.us-east-1.amazonaws.com:9098," +
+          "b-2.mycluster.abc123.c2.kafka.us-east-1.amazonaws.com:9098",
+      }).success,
+    ).toBe(true);
+
+    // Serverless brokers carry the same guarantee under a different label.
+    expect(
+      iamParse({
+        kafka_brokers: "boot-abc123.c2.kafka-serverless.us-east-1.amazonaws.com:9098",
+      }).success,
+    ).toBe(true);
+
+    expectIssueAt(iamParse({ kafka_brokers: "kafka:9092" }), "kafka_brokers");
+  });
+
+  it("rule 6 — an AWS host that is NOT an MSK broker is rejected", () => {
+    // The suffix alone is insufficient: an EC2 host is routinely under a tenant's
+    // own control, with a publicly-trusted cert obtainable for it, so accepting
+    // it would leave the escalation intact one step removed. Both shapes satisfy
+    // a bare *.amazonaws.com check.
+    expectIssueAt(
+      iamParse({ kafka_brokers: "ec2-203-0-113-25.compute-1.amazonaws.com:9098" }),
+      "kafka_brokers",
+    );
+    expectIssueAt(iamParse({ kafka_brokers: "my-bucket.s3.amazonaws.com:9098" }), "kafka_brokers");
+  });
+
+  it("rule 6 — an *.amazonaws.com SUFFIX is not enough; the host must end there", () => {
+    // This exact shape defeated a suffix-only check: the pod's IAM identity would
+    // sign a token addressed to a host the attacker controls, ready to replay.
+    expectIssueAt(
+      iamParse({ kafka_brokers: "b-1.mycluster.kafka.us-east-1.amazonaws.com.evil.tld:9098" }),
+      "kafka_brokers",
+    );
+  });
+
+  it("rule 6 — one bad host among good ones still rejects, and is named in the message", () => {
+    const parsed = iamParse({
+      kafka_brokers:
+        "b-1.mycluster.abc123.c2.kafka.us-east-1.amazonaws.com:9098, attacker.example.com:9098",
+    });
+    const issue = expectIssueAt(parsed, "kafka_brokers");
+    expect(issue.message).toMatch(/attacker\.example\.com:9098/);
+  });
+
+  it("rule 6 — an empty broker list is rejected under AWS_MSK_IAM", () => {
+    expectIssueAt(iamParse({ kafka_brokers: "   " }), "kafka_brokers");
+  });
+
+  it("rule 6 constrains AWS_MSK_IAM only — a SCRAM setup keeps any broker host", () => {
+    expect(
+      datahubSchema.safeParse(
+        kafkaValues({
+          kafka_security_protocol: "SASL_SSL",
+          kafka_sasl_mechanism: "SCRAM-SHA-512",
+          kafka_sasl_username: "dataspoke",
+          kafka_brokers: "kafka.internal:9093",
+        }),
+      ).success,
+    ).toBe(true);
+  });
+
+  it("rule 7 — an explicit region contradicting the brokers is rejected, on the region field", () => {
+    const parsed = iamParse({
+      kafka_brokers: "b-1.mycluster.abc123.c2.kafka.us-east-1.amazonaws.com:9098",
+      kafka_aws_region: "ap-northeast-2",
+    });
+    const issue = expectIssueAt(parsed, "kafka_aws_region");
+    expect(issue.message).toMatch(/us-east-1/);
+
+    // The agreeing region is accepted.
+    expect(
+      iamParse({
+        kafka_brokers: "b-1.mycluster.abc123.c2.kafka.us-east-1.amazonaws.com:9098",
+        kafka_aws_region: "us-east-1",
+      }).success,
+    ).toBe(true);
+  });
+
+  it("rule 7 — a mixed-region broker list is rejected, on the brokers field", () => {
+    // Underivable rather than resolved to one of them: signing for whichever
+    // sorted first would silently pick an endpoint the operator did not choose.
+    expectIssueAt(
+      iamParse({
+        kafka_brokers:
+          "b-1.mycluster.abc123.c2.kafka.us-east-1.amazonaws.com:9098," +
+          "b-2.mycluster.abc123.c2.kafka.eu-west-1.amazonaws.com:9098",
+      }),
+      "kafka_brokers",
+    );
+  });
+
+  it("nonMskBrokerHosts anchors the host, tolerating whitespace and ports", () => {
+    expect(nonMskBrokerHosts("b-1.kafka.us-east-1.amazonaws.com:9098")).toEqual([]);
+    expect(
+      nonMskBrokerHosts(" b-1.kafka.us-east-1.amazonaws.com , b-2.kafka.us-east-1.amazonaws.com "),
+    ).toEqual([]);
+    expect(nonMskBrokerHosts("evil-amazonaws.com")).toEqual(["evil-amazonaws.com"]);
+    expect(nonMskBrokerHosts("b-1.amazonaws.com.evil.tld")).toEqual(["b-1.amazonaws.com.evil.tld"]);
+    // AWS-hosted, but not a broker.
+    expect(nonMskBrokerHosts("ec2-203-0-113-25.compute-1.amazonaws.com:9098")).toEqual([
+      "ec2-203-0-113-25.compute-1.amazonaws.com:9098",
+    ]);
+  });
+
+  it("deriveMskRegion reads the region only from a well-formed, agreeing list", () => {
+    expect(deriveMskRegion("b-1.mycluster.abc.c2.kafka.us-east-1.amazonaws.com:9098")).toBe(
+      "us-east-1",
+    );
+    expect(deriveMskRegion("boot-abc.c2.kafka-serverless.ap-northeast-2.amazonaws.com")).toBe(
+      "ap-northeast-2",
+    );
+    // Disagreeing regions, a non-broker host, and the suffix attack are all
+    // underivable rather than resolved to a plausible-looking region.
+    expect(
+      deriveMskRegion(
+        "b-1.c.x.c2.kafka.us-east-1.amazonaws.com,b-2.c.x.c2.kafka.eu-west-1.amazonaws.com",
+      ),
+    ).toBeNull();
+    expect(deriveMskRegion("kafka:9092")).toBeNull();
+    expect(deriveMskRegion("b-1.c.x.c2.kafka.us-east-1.amazonaws.com.evil.tld")).toBeNull();
+  });
+
+  it("rejects a malformed AWS region slug", () => {
+    const parsed = datahubSchema.safeParse(
+      kafkaValues({
+        kafka_security_protocol: "SASL_SSL",
+        kafka_sasl_mechanism: "AWS_MSK_IAM",
+        kafka_aws_region: "AP North East",
+        kafka_brokers: "b-1.mycluster.abc123.c2.kafka.us-east-1.amazonaws.com:9098",
+      }),
+    );
+    expect(parsed.success).toBe(false);
+    expect(parsed.error?.issues.some((i) => i.path[0] === "kafka_aws_region")).toBe(true);
+  });
+
+  it("the PLAINTEXT default is valid with the whole Kafka tuple empty", () => {
+    expect(datahubSchema.safeParse(datahubToFormDefaults(makeDatahub())).success).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 2d. Progressive disclosure of the Kafka fields (FRONTEND_BASIC.md §Peripherals)
+// ---------------------------------------------------------------------------
+describe("DatahubCard — Kafka progressive disclosure (FRONTEND_BASIC.md §Peripherals)", () => {
+  const AWS_NOTE = /pod IAM role/i;
+
+  async function openSelect(user: ReturnType<typeof userEvent.setup>, id: string) {
+    await user.click(document.getElementById(id)!);
+    return await screen.findAllByRole("option");
+  }
+
+  it("PLAINTEXT shows nothing beyond the brokers — no mechanism, credentials, region, or note", async () => {
+    render(<AdminPeripheralsPage />);
+    await waitFor(() => {
+      expect(document.getElementById("datahub_kafka_security_protocol")).toBeTruthy();
+    });
+    expect(document.getElementById("datahub_kafka_sasl_mechanism")).toBeNull();
+    expect(document.getElementById("datahub_kafka_sasl_username")).toBeNull();
+    expect(document.getElementById("datahub_kafka_sasl_password")).toBeNull();
+    expect(document.getElementById("datahub_kafka_aws_region")).toBeNull();
+    expect(screen.queryByText(AWS_NOTE)).toBeNull();
+  });
+
+  it("a SCRAM peripheral shows the mechanism + credential fields, but no region or note", async () => {
+    mockUseDatahub.mockReturnValue({ data: makeScramDatahub(), isLoading: false });
+    render(<AdminPeripheralsPage />);
+    await waitFor(() => {
+      expect(document.getElementById("datahub_kafka_sasl_mechanism")).toBeTruthy();
+    });
+    expect(document.getElementById("datahub_kafka_sasl_username")).toBeTruthy();
+    expect(document.getElementById("datahub_kafka_sasl_password")).toBeTruthy();
+    expect(document.getElementById("datahub_kafka_aws_region")).toBeNull();
+    expect(screen.queryByText(AWS_NOTE)).toBeNull();
+  });
+
+  it("AWS_MSK_IAM shows the region + the IRSA note, and NO credential inputs", async () => {
+    mockUseDatahub.mockReturnValue({
+      data: makeDatahub({
+        kafka_security_protocol: "SASL_SSL",
+        kafka_sasl_mechanism: "AWS_MSK_IAM",
+        kafka_aws_region: "ap-northeast-2",
+      }),
+      isLoading: false,
+    });
+    render(<AdminPeripheralsPage />);
+    await waitFor(() => {
+      expect(document.getElementById("datahub_kafka_aws_region")).toBeTruthy();
+    });
+    expect(document.getElementById("datahub_kafka_sasl_username")).toBeNull();
+    expect(document.getElementById("datahub_kafka_sasl_password")).toBeNull();
+    // The form alone is not sufficient — the note says so explicitly.
+    const note = document.getElementById("datahub_kafka_aws_msk_iam_note");
+    expect(note?.textContent).toMatch(AWS_NOTE);
+    expect(note?.textContent).toMatch(/event-consumer\.serviceAccount/);
+  });
+
+  it("SASL_PLAINTEXT does NOT offer AWS_MSK_IAM — the API rejects that pairing", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    render(<AdminPeripheralsPage />);
+    await waitFor(() => {
+      expect(document.getElementById("datahub_kafka_security_protocol")).toBeTruthy();
+    });
+
+    const protocols = await openSelect(user, "datahub_kafka_security_protocol");
+    await user.click(protocols.find((o) => o.textContent === "SASL_PLAINTEXT")!);
+
+    const mechanisms = await openSelect(user, "datahub_kafka_sasl_mechanism");
+    const labels = mechanisms.map((o) => o.textContent);
+    expect(labels).toEqual(["PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512"]);
+    expect(labels).not.toContain("AWS_MSK_IAM");
+  });
+
+  it("switching away from a credential mechanism does not carry the typed password back", async () => {
+    // Guards against React reusing a conditionally-rendered input's node across a
+    // mechanism switch, which would smuggle a credential into a field the API rejects.
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    mockUseDatahub.mockReturnValue({ data: makeScramDatahub(), isLoading: false });
+    render(<AdminPeripheralsPage />);
+
+    await waitFor(() => {
+      expect(document.getElementById("datahub_kafka_sasl_password")).toBeTruthy();
+    });
+    await user.type(document.getElementById("datahub_kafka_sasl_password")!, "typed-secret");
+
+    const toIam = await openSelect(user, "datahub_kafka_sasl_mechanism");
+    await user.click(toIam.find((o) => o.textContent === "AWS_MSK_IAM")!);
+    await waitFor(() => {
+      expect(document.getElementById("datahub_kafka_sasl_password")).toBeNull();
+    });
+
+    const back = await openSelect(user, "datahub_kafka_sasl_mechanism");
+    await user.click(back.find((o) => o.textContent === "SCRAM-SHA-256")!);
+    await waitFor(() => {
+      expect(document.getElementById("datahub_kafka_sasl_password")).toBeTruthy();
+    });
+    const pw = document.getElementById("datahub_kafka_sasl_password") as HTMLInputElement;
+    expect(pw.value).toBe("");
+    const username = document.getElementById("datahub_kafka_sasl_username") as HTMLInputElement;
+    expect(username.value).toBe("");
+  });
+
+  it("never renders the masked indicator for a stored Kafka password", async () => {
+    mockUseDatahub.mockReturnValue({ data: makeScramDatahub(), isLoading: false });
+    render(<AdminPeripheralsPage />);
+    await waitFor(() => {
+      expect(document.getElementById("datahub_kafka_sasl_password")).toBeTruthy();
+    });
+    expect(document.body.textContent).not.toContain("********");
+  });
+
+  it("switching to AWS_MSK_IAM saves a cleared credential and shows no password afterwards", async () => {
+    // The API clears the stored password once the effective mechanism is
+    // AWS_MSK_IAM, so the card must not keep implying one is in force.
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const loaded = makeScramDatahub();
+    mockUseDatahub.mockReturnValue({ data: loaded, isLoading: false });
+    mockUpdateDatahub.mockResolvedValue(
+      makeDatahub({
+        kafka_security_protocol: "SASL_SSL",
+        kafka_sasl_mechanism: "AWS_MSK_IAM",
+        kafka_sasl_username: "",
+        kafka_sasl_password: "",
+        kafka_sasl_password_version: 4,
+        kafka_brokers: "b-1.mycluster.abc123.c2.kafka.us-east-1.amazonaws.com:9098",
+        updated_at: "2026-06-26T12:00:00Z",
+      }),
+    );
+    render(<AdminPeripheralsPage />);
+
+    const brokers = (await waitFor(
+      () => document.getElementById("datahub_kafka_brokers")!,
+    )) as HTMLInputElement;
+    await user.clear(brokers);
+    await user.type(brokers, "b-1.mycluster.abc123.c2.kafka.us-east-1.amazonaws.com:9098");
+
+    await user.click(document.getElementById("datahub_kafka_sasl_mechanism")!);
+    const options = await screen.findAllByRole("option");
+    await user.click(options.find((o) => o.textContent === "AWS_MSK_IAM")!);
+
+    await user.click(screen.getByRole("button", { name: /save datahub/i }));
+
+    await waitFor(() => {
+      expect(mockUpdateDatahub).toHaveBeenCalled();
+    });
+    const patch = mockUpdateDatahub.mock.calls[0][0] as Record<string, unknown>;
+    // The username is cleared explicitly — omitting it would leave it in force.
+    expect(patch).toHaveProperty("kafka_sasl_username", "");
+    expect(patch).toHaveProperty("kafka_sasl_mechanism", "AWS_MSK_IAM");
+    // A blank password is still omitted; the API owns the clearing.
+    expect(patch).not.toHaveProperty("kafka_sasl_password");
+    expect(patch).not.toHaveProperty("kafka_sasl_password_version");
+
+    await waitFor(() => {
+      expect(document.getElementById("datahub_kafka_sasl_password")).toBeNull();
+    });
+    expect(document.body.textContent).not.toContain("********");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 2e. Read-only consumer health (FRONTEND_BASIC.md §Peripherals)
+// ---------------------------------------------------------------------------
+describe("DatahubCard — consumer health badge (FRONTEND_BASIC.md §Peripherals)", () => {
+  it("renders 'unknown' as a neutral badge — the normal state with no consumer deployed", async () => {
+    render(<AdminPeripheralsPage />);
+    const badge = await waitFor(() => {
+      const el = document.getElementById("datahub_health_status");
+      expect(el).toBeTruthy();
+      return el!;
+    });
+    expect(badge.dataset.status).toBe("unknown");
+    expect(badge.textContent).toMatch(/unknown/i);
+  });
+
+  it("renders 'ok' with the last-OK timestamp", async () => {
+    mockUseDatahub.mockReturnValue({
+      data: makeDatahub({
+        health: {
+          status: "ok",
+          last_error: null,
+          last_ok_at: "2026-06-26T14:30:00Z",
+          updated_at: "2026-06-26T14:30:00Z",
+        },
+      }),
+      isLoading: false,
+    });
+    render(<AdminPeripheralsPage />);
+    const badge = await waitFor(() => document.getElementById("datahub_health_status")!);
+    expect(badge.dataset.status).toBe("ok");
+    expect(screen.getByText(/Last OK/)).toBeTruthy();
+  });
+
+  it("renders 'error' with the last error visible — a SASL failure must not stay in pod logs", async () => {
+    mockUseDatahub.mockReturnValue({
+      data: makeScramDatahub({
+        health: {
+          status: "error",
+          last_error: "SASL authentication failed: Invalid username or password",
+          last_ok_at: null,
+          updated_at: "2026-06-26T14:35:00Z",
+        },
+      }),
+      isLoading: false,
+    });
+    render(<AdminPeripheralsPage />);
+    const badge = await waitFor(() => document.getElementById("datahub_health_status")!);
+    expect(badge.dataset.status).toBe("error");
+    expect(document.getElementById("datahub_health_error")?.textContent).toMatch(
+      /SASL authentication failed/,
+    );
   });
 });
 

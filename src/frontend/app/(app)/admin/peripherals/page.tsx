@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
+import { AlertTriangle, Info } from "lucide-react";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMe } from "@/lib/auth/use-me";
 import {
@@ -14,18 +15,36 @@ import { ApiError } from "@/lib/api/client";
 import { toast } from "@/components/ui/use-toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { FormGrid } from "@/components/ui/form-grid";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Field } from "@/components/forms/field";
 import { PasswordInput } from "@/components/forms/password-input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatDateTime } from "@/lib/format-time";
 import { useDisplayTz } from "@/lib/preferences/timezone";
-import type { DatahubPeripheral, LangfusePeripheral } from "@/lib/api/types";
+import type {
+  DatahubPeripheral,
+  KafkaSaslMechanism,
+  KafkaSecurityProtocol,
+  LangfusePeripheral,
+  PeripheralHealth,
+} from "@/lib/api/types";
 import {
   datahubSchema,
   datahubToFormDefaults,
   datahubBuildPatch,
+  isCredentialMechanism,
+  isSaslProtocol,
+  mechanismOptionsFor,
+  KAFKA_SECURITY_PROTOCOLS,
   langfuseSchema,
   langfuseToFormDefaults,
   langfuseBuildPatch,
@@ -42,6 +61,60 @@ function describeError(err: unknown): string {
 
 // ── DataHub card ────────────────────────────────────────────────────────────────
 
+/**
+ * Read-only consumer health, rendered in the DataHub card header.
+ *
+ * `is_configured` reports presence, not correctness: a wrong mechanism or an
+ * expired credential is indistinguishable from a working setup until the event
+ * consumer tries to connect. `unknown` is the normal state of a deployment
+ * running no consumer, so it reads as neutral rather than as a fault.
+ */
+function ConsumerHealth({ health }: { health: PeripheralHealth }) {
+  const tz = useDisplayTz();
+
+  if (health.status === "ok") {
+    return (
+      <div className="text-right">
+        <Badge id="datahub_health_status" data-status="ok" variant="success">
+          Consumer OK
+        </Badge>
+        {health.last_ok_at && (
+          <p className="mt-1 text-xs text-muted-foreground">
+            Last OK {formatDateTime(health.last_ok_at, tz)}
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  if (health.status === "error") {
+    return (
+      <div className="max-w-md text-right">
+        <Badge id="datahub_health_status" data-status="error" variant="destructive">
+          <AlertTriangle className="mr-1 h-3 w-3" aria-hidden="true" />
+          Consumer error
+        </Badge>
+        {health.last_error && (
+          <p id="datahub_health_error" className="mt-1 break-words text-xs text-destructive">
+            {health.last_error}
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="text-right">
+      <Badge id="datahub_health_status" data-status="unknown" variant="outline">
+        Consumer status unknown
+      </Badge>
+      <p className="mt-1 text-xs text-muted-foreground">
+        No event consumer has reported yet.
+      </p>
+    </div>
+  );
+}
+
 function DatahubCard({ peripheral }: { peripheral: DatahubPeripheral }) {
   const { mutateAsync: updateDatahub, isPending } = useUpdateDatahubPeripheral();
   const [savedAt, setSavedAt] = useState<string | null>(null);
@@ -51,11 +124,44 @@ function DatahubCard({ peripheral }: { peripheral: DatahubPeripheral }) {
     register,
     handleSubmit,
     reset,
+    watch,
+    setValue,
     formState: { errors },
   } = useForm<DatahubFormValues>({
     resolver: zodResolver(datahubSchema),
     defaultValues: datahubToFormDefaults(peripheral),
   });
+
+  const protocol = watch("kafka_security_protocol");
+  const mechanism = watch("kafka_sasl_mechanism");
+  const showMechanism = isSaslProtocol(protocol);
+  const showCredentials = showMechanism && isCredentialMechanism(mechanism);
+  const showAwsIam = showMechanism && mechanism === "AWS_MSK_IAM";
+
+  /**
+   * Clear the fields the new mechanism does not accept.
+   *
+   * The API rejects — rather than ignores — a credential under `AWS_MSK_IAM` and
+   * a region under any other mechanism, so a value left behind by an earlier
+   * selection would be submitted and rejected.
+   */
+  function applyMechanism(next: KafkaSaslMechanism | "") {
+    setValue("kafka_sasl_mechanism", next, { shouldDirty: true, shouldValidate: true });
+    if (!isCredentialMechanism(next)) {
+      setValue("kafka_sasl_username", "", { shouldDirty: true });
+      setValue("kafka_sasl_password", "", { shouldDirty: true });
+    }
+    if (next !== "AWS_MSK_IAM") {
+      setValue("kafka_aws_region", "", { shouldDirty: true });
+    }
+  }
+
+  function handleProtocolChange(next: KafkaSecurityProtocol) {
+    setValue("kafka_security_protocol", next, { shouldDirty: true, shouldValidate: true });
+    const offered = mechanismOptionsFor(next);
+    const kept = offered.includes(mechanism as KafkaSaslMechanism) ? mechanism : "";
+    applyMechanism(kept);
+  }
 
   useEffect(() => {
     reset(datahubToFormDefaults(peripheral));
@@ -81,11 +187,14 @@ function DatahubCard({ peripheral }: { peripheral: DatahubPeripheral }) {
     <Card>
       <CardHeader className="flex flex-row items-start justify-between gap-4 space-y-0">
         <CardTitle className="text-base">DataHub</CardTitle>
-        {savedAt && (
-          <p className="text-xs text-muted-foreground">
-            Saved · updated {formatDateTime(savedAt, tz)}
-          </p>
-        )}
+        <div className="flex flex-col items-end gap-1">
+          <ConsumerHealth health={peripheral.health} />
+          {savedAt && (
+            <p className="text-xs text-muted-foreground">
+              Saved · updated {formatDateTime(savedAt, tz)}
+            </p>
+          )}
+        </div>
       </CardHeader>
       <CardContent>
         <form id={DATAHUB_FORM_ID} onSubmit={handleSubmit(onSubmit)}>
@@ -113,11 +222,121 @@ function DatahubCard({ peripheral }: { peripheral: DatahubPeripheral }) {
             <Field
               label="Kafka brokers"
               htmlFor="datahub_kafka_brokers"
-              description="Bootstrap servers for the DataHub MCP/MCE Kafka topics (host:port, comma-separated)."
+              description={
+                showAwsIam
+                  ? "Bootstrap servers for the DataHub MCP/MCE Kafka topics (host:port, comma-separated). Under AWS_MSK_IAM every host must be an MSK broker (<broker>.kafka[-serverless].<region>.amazonaws.com) and all must share one region — the pod's IAM identity must not be redirected to any other host."
+                  : "Bootstrap servers for the DataHub MCP/MCE Kafka topics (host:port, comma-separated)."
+              }
               error={errors.kafka_brokers?.message}
             >
               <Input id="datahub_kafka_brokers" {...register("kafka_brokers")} />
             </Field>
+            <Field
+              label="Security protocol"
+              htmlFor="datahub_kafka_security_protocol"
+              description="How the event consumer connects to the brokers. PLAINTEXT — the default — needs nothing further."
+              error={errors.kafka_security_protocol?.message}
+            >
+              <Select
+                value={protocol}
+                onValueChange={(v) => handleProtocolChange(v as KafkaSecurityProtocol)}
+              >
+                <SelectTrigger id="datahub_kafka_security_protocol">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {KAFKA_SECURITY_PROTOCOLS.map((p) => (
+                    <SelectItem key={p} value={p}>
+                      {p}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+            {showMechanism && (
+              // Keyed by protocol so switching protocols mounts a fresh select
+              // instead of reusing the previous one's node.
+              <Field
+                key={`sasl-mechanism-${protocol}`}
+                label="SASL mechanism"
+                htmlFor="datahub_kafka_sasl_mechanism"
+                description="AWS_MSK_IAM is offered only under SASL_SSL, the sole protocol it is accepted with."
+                error={errors.kafka_sasl_mechanism?.message}
+              >
+                <Select
+                  value={mechanism}
+                  onValueChange={(v) => applyMechanism(v as KafkaSaslMechanism)}
+                >
+                  <SelectTrigger id="datahub_kafka_sasl_mechanism">
+                    <SelectValue placeholder="Select a mechanism" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {mechanismOptionsFor(protocol).map((m) => (
+                      <SelectItem key={m} value={m}>
+                        {m}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+            )}
+            {showCredentials && (
+              // Keyed by mechanism so a typed credential cannot be carried into a
+              // different mechanism's field by node reuse.
+              <Field
+                key={`sasl-username-${mechanism}`}
+                label="SASL username"
+                htmlFor="datahub_kafka_sasl_username"
+                description={`Kafka user the consumer authenticates as with ${mechanism}.`}
+                error={errors.kafka_sasl_username?.message}
+              >
+                <Input id="datahub_kafka_sasl_username" {...register("kafka_sasl_username")} />
+              </Field>
+            )}
+            {showCredentials && (
+              <Field
+                key={`sasl-password-${mechanism}`}
+                label="SASL password"
+                htmlFor="datahub_kafka_sasl_password"
+                description="Written to separated secure storage (currently a K8s Secret), never stored in the database. Leave blank to keep current."
+                error={errors.kafka_sasl_password?.message}
+              >
+                <PasswordInput
+                  id="datahub_kafka_sasl_password"
+                  autoComplete="off"
+                  {...register("kafka_sasl_password")}
+                />
+              </Field>
+            )}
+            {showAwsIam && (
+              <Field
+                key="sasl-aws-region"
+                label="AWS region"
+                htmlFor="datahub_kafka_aws_region"
+                description="Region used to sign the MSK IAM token. Must match the region encoded in the broker hostnames. Leave blank to derive it from them."
+                error={errors.kafka_aws_region?.message}
+              >
+                <Input
+                  id="datahub_kafka_aws_region"
+                  placeholder="ap-northeast-2"
+                  {...register("kafka_aws_region")}
+                />
+              </Field>
+            )}
+            {showAwsIam && (
+              <p
+                id="datahub_kafka_aws_msk_iam_note"
+                className="flex gap-2 rounded-md border border-info/40 bg-info/10 p-3 text-xs text-foreground sm:col-span-2"
+              >
+                <Info className="mt-0.5 h-4 w-4 shrink-0 text-info" aria-hidden="true" />
+                <span>
+                  AWS_MSK_IAM takes no username or password — the consumer authenticates with
+                  its pod IAM role, and any stored SASL password is cleared on save. This form
+                  alone is not sufficient: the role must be attached at deploy time via IRSA
+                  (chart values <code>event-consumer.serviceAccount</code>).
+                </span>
+              </p>
+            )}
             <Field
               label="Token"
               htmlFor="datahub_token"

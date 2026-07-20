@@ -228,6 +228,17 @@ class EventProcessingError(DataSpokeError):
     error_code: str = "EVENT_PROCESSING_FAILED"
 
 
+class KafkaConfigurationError(Exception):
+    """Raised when the stored Kafka security settings cannot produce a usable client.
+
+    Deliberately *not* a ``DataSpokeError``: it is raised only inside the event
+    consumer process and reaches operators through the ``datahub``
+    ``peripheral_health`` row, never through an HTTP response, so it registers no
+    error code.  The Kafka security tuple's own violations surface on the admin
+    surface as the generic ``INVALID_PARAMETER``.
+    """
+
+
 class InvalidDatasetUrnError(DataSpokeError):
     """Raised when a dataset URN fails format validation (HTTP 422).
 

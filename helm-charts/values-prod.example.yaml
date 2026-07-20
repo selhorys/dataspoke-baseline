@@ -189,6 +189,51 @@ auth:
 
 
 # ------------------------------------------------------------------------------
+# Event consumer — DataHub Kafka subscriber (disabled by default)
+# ------------------------------------------------------------------------------
+# Baseline UC1-UC5 are schedule-driven via Airflow and need no Kafka consumer,
+# so values.yaml ships `enabled: false`. Enable it only for event-driven
+# extensions. It builds no image of its own — it runs the API image under a
+# command: override, so `--image-tag` covers both and there is nothing extra to
+# push. Kafka brokers and the security tuple (protocol, SASL mechanism,
+# username, password) are NOT set here: they live in the DB `peripheral_config`
+# row and are configured after install via
+# PATCH /api/v1/admin/peripherals/datahub, taking effect without a redeploy.
+#
+# The one Kafka setting that cannot be configured from the admin API is cloud
+# identity. With kafka_sasl_mechanism = AWS_MSK_IAM the consumer authenticates
+# as an IAM role rather than a typed credential, so the role is bound to the
+# pod's ServiceAccount here, at install time:
+#
+# event-consumer:
+#   enabled: true
+#   serviceAccount:
+#     create: true
+#     annotations:
+#       eks.amazonaws.com/role-arn: "arn:aws:iam::<account-id>:role/<msk-consumer-role>"
+#
+# Two prerequisites live in your cloud account, not in this chart:
+#   - an IAM role trusted by the cluster's OIDC provider, granting
+#     kafka-cluster:Connect, DescribeTopic, ReadData, DescribeGroup, and
+#     JoinGroup on the cluster / topic / consumer-group ARNs;
+#   - MSK security-group ingress from the EKS pod network on the IAM listener
+#     port (9098).
+# When either is missing the consumer starts, fails to authenticate, and
+# reports status: error on the `health` field of
+# GET /api/v1/admin/peripherals/datahub — the intended diagnostic path.
+#
+# Setting `serviceAccount.create: false` hands both the ServiceAccount and the
+# Role granting it `get` on dataspoke-datahub-secret to you; the chart then
+# renders neither. If you supply the ServiceAccount but forget the Role, a
+# typed SASL mechanism (PLAIN / SCRAM-*) fails in a way that reads like a wrong
+# password: the Secret read is denied, the password resolves empty, and the
+# broker rejects the credential. Confirm it by looking for the
+# `datahub_secret_rbac_denied` line in the consumer's pod log before rotating
+# the password. See spec/feature/HELM_CHART.md
+# §Event-consumer identity and RBAC.
+
+
+# ------------------------------------------------------------------------------
 # Secrets — name of your pre-created credential Secret
 # ------------------------------------------------------------------------------
 secrets:

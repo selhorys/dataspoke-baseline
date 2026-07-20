@@ -6,7 +6,7 @@
 - [asyncpg str→UUID column](project_asyncpg_str_uuid_column.md) — str(uuid4) binds fine to UUID(as_uuid=True) col via asyncpg pgproto; unit mocks won't catch real mismatch
 - [Metagen conf Save button morph](project_metagen_conf_save_button_morph.md) — metagen conf moved Save into header slot; re-introduces submit-on-Edit hazard, needs keys + browser E2E
 - [EXISTS subquery auto-correlate](feedback_exists_subquery_autocorrelate.md) — EXISTS over a table already in outer FROM raises InvalidRequestError at build; compile real SQL, mocks miss it
-- [Helm stale local subchart tgz](project_helm_stale_local_subchart_tgz.md) — umbrella renders stale charts/*.tgz not subcharts/ source; verify via standalone render
+- [Helm stale local subchart tgz](project_helm_stale_local_subchart_tgz.md) — umbrella renders stale charts/*.tgz not subcharts/ source; `--components api` never rebuilds deps
 - [Runtime env-file rename blast radius](project_runtime_envfile_rename_blast_radius.md) — renaming helm-charts/.env→.env.dev breaks ~17 hardcoded loaders/skills + a gitignore secret-leak gotcha
 - ["No references remain" brace grep](feedback_no_references_remain_brace_grep.md) — `/hub` grep stays clean while `{auth,spoke,hub}` brace-list survives; grep token-level minus homographs
 - [Recharts var() in SVG attr](project_recharts_css_var_svg_attr.md) — var() DOES resolve in SVG presentation attrs (Chromium-verified); Recharts hsl(var(--token)) stroke is fine, not a regression
@@ -18,3 +18,4 @@
 - [Display-URL guard x3](project_display_url_guard_three_copies.md) — one safety regex hand-copied into pydantic + Python sanitizer + lib/safe-url.ts; diff-verify recipe
 - [Helm null + redis-replicas gotchas](project_helm_null_and_replicas_gotchas.md) — redis replica STS is plural; `key: null` removes/keeps-empty/errors depending on parent vs subchart vs schema chart
 - [Verify install.sh prod-branch claims](feedback_verify_install_branch_claims.md) — read the whole prod elif past the last step banner; dev's `_has_component` gating doesn't apply
+- [peripheral_config cache x 2 replicas](project_peripheral_cache_multireplica.md) — 30s process cache + replicaCount 2 makes read-modify-write counters silently no-op

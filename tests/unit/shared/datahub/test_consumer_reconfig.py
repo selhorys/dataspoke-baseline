@@ -1,412 +1,436 @@
-"""Unit tests for the DataHub consumer reconfig behavior.
+"""Unit tests for the DataHub event consumer's DB-plane connection handling.
 
-Tests the peripheral-config-aware consumer restart logic in consumer.py:
+The consumer reads its whole Kafka connection — brokers plus the security tuple —
+from ``peripheral_config`` and re-reads it every few poll iterations. Any change to
+that tuple ends the inner loop so the outer loop can close the client and rebuild it.
 
-1. _read_kafka_brokers():
-   - Returns kafka_brokers string when peripheral is configured.
-   - Returns None when peripheral row is absent (dto is None).
-   - Returns None when dto.kafka_brokers is empty string.
-   - Calls invalidate_peripheral_config_cache("datahub") before reading,
-     so broker changes bypass the 30-second process-level cache.
+Concerns covered here:
 
-2. _run_inner_loop():
-   - Returns when broker address changes (triggering outer loop rebuild).
-   - Does not return when broker address stays the same.
+1. ``read_kafka_connection()`` — maps the DataHub peripheral DTO onto a
+   ``KafkaConnection``; returns ``None`` when unconfigured; bypasses the process
+   cache before reading.
+2. Change detection — the WHOLE tuple is compared, not just the brokers. Each of the
+   six fields independently triggers a rebuild, including the password-version counter
+   that stands in for a Secret-only rotation.
+3. ``_run_inner_loop()`` — returns on a changed tuple, keeps polling on an unchanged
+   one.
+4. ``run_consumer()`` outer loop — closes the old client before constructing the new one.
 
-spec traceability:
-- DATAHUB §Event Subscription (impl: consumer.py) — _read_kafka_brokers
-  invalidates cache; outer loop rebuilds consumer on broker change.
-- src/shared/datahub/consumer.py — _read_kafka_brokers, _run_inner_loop.
-- spec/DATAHUB_INTEGRATION.md §Event Subscription — peripheral-config-backed broker address.
+No Kafka broker, database, or Kubernetes API is contacted.
+
+Spec traceability:
+- spec/feature/BACKEND.md §Kafka connection — "The consumer reads its whole connection
+  from ``peripheral_config.datahub`` — brokers plus the security tuple … and re-reads
+  it every few seconds while polling. A change to any element ends the inner poll loop,
+  closes the client, and rebuilds it; an unconfigured peripheral parks the process in a
+  retry sleep rather than crash-looping."
+- spec/feature/BACKEND.md §Kafka connection — "``kafka_sasl_password_version`` exists
+  because a rotated password is invisible in the DB row … which turns a rotation into
+  an ordinary DB-plane change the poll loop already detects."
+- spec/API.md §DataHub Kafka security — the stored tuple's field set.
 """
 
+from __future__ import annotations
+
+import dataclasses
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.shared.datahub.consumer import _read_kafka_brokers
+from src.backend.admin.peripheral_service import DatahubConfigDTO
+from src.shared.datahub.consumer import KafkaConnection, read_kafka_connection
 
-# ── _read_kafka_brokers ───────────────────────────────────────────────────────
+# ── Helpers ──────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
-async def test_read_kafka_brokers_returns_configured_value(monkeypatch) -> None:
-    """_read_kafka_brokers returns the kafka_brokers string when peripheral is configured.
+def _session_ctx(db: object) -> AsyncMock:
+    """An async context manager yielding *db*, standing in for ``SessionLocal()``."""
+    ctx = AsyncMock()
+    ctx.__aenter__ = AsyncMock(return_value=db)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+    return ctx
 
-    spec: DATAHUB §Event Subscription (impl: consumer.py).
-    """
-    from src.backend.admin.peripheral_service import DatahubConfigDTO
 
-    _fake_dto = DatahubConfigDTO(gms_url="http://gms:8080", kafka_brokers="kafka-host:9092")
-
-    mock_db = AsyncMock()
-    mock_session_ctx = AsyncMock()
-    mock_session_ctx.__aenter__ = AsyncMock(return_value=mock_db)
-    mock_session_ctx.__aexit__ = AsyncMock(return_value=False)
-
-    # SessionLocal is imported lazily inside _read_kafka_brokers — patch at the source module.
-    with (
-        patch(
-            "src.shared.db.session.SessionLocal",
-            return_value=mock_session_ctx,
-        ),
+def _patch_config_read(dto: object | None, invalidate=None):
+    """Patch the lazily imported peripheral-config surface used by read_kafka_connection."""
+    return (
+        patch("src.shared.db.session.SessionLocal", return_value=_session_ctx(AsyncMock())),
         patch(
             "src.backend.admin.peripheral_service.get_peripheral_config",
-            AsyncMock(return_value=_fake_dto),
-        ),
-        patch(
-            "src.backend.admin.peripheral_service.invalidate_peripheral_config_cache"
-        ) as mock_invalidate,
-    ):
-        result = await _read_kafka_brokers()
-
-    assert result == "kafka-host:9092", (
-        f"Expected 'kafka-host:9092' from peripheral config, got {result!r}. "
-        "spec: DATAHUB §Event Subscription (impl: consumer.py)."
-    )
-    mock_invalidate.assert_called_once_with("datahub")
-
-
-@pytest.mark.asyncio
-async def test_read_kafka_brokers_returns_none_when_dto_is_none(monkeypatch) -> None:
-    """_read_kafka_brokers returns None when peripheral row is absent.
-
-    When the peripheral is unconfigured, the consumer outer loop should
-    sleep and retry rather than attempt to connect to Kafka.
-
-    spec: DATAHUB §Event Subscription (impl: consumer.py) —
-    outer loop sleeps when peripheral unconfigured.
-    """
-    mock_db = AsyncMock()
-    mock_session_ctx = AsyncMock()
-    mock_session_ctx.__aenter__ = AsyncMock(return_value=mock_db)
-    mock_session_ctx.__aexit__ = AsyncMock(return_value=False)
-
-    with (
-        patch(
-            "src.shared.db.session.SessionLocal",
-            return_value=mock_session_ctx,
-        ),
-        patch(
-            "src.backend.admin.peripheral_service.get_peripheral_config",
-            AsyncMock(return_value=None),
-        ),
-        patch("src.backend.admin.peripheral_service.invalidate_peripheral_config_cache"),
-    ):
-        result = await _read_kafka_brokers()
-
-    assert result is None, (
-        f"Expected None when peripheral is unconfigured, got {result!r}. "
-        "spec: DATAHUB §Event Subscription (impl: consumer.py)."
-    )
-
-
-@pytest.mark.asyncio
-async def test_read_kafka_brokers_returns_none_when_kafka_brokers_empty(monkeypatch) -> None:
-    """_read_kafka_brokers returns None when dto.kafka_brokers is empty string.
-
-    An empty string kafka_brokers means the row exists but has not been configured
-    with a broker address — treated the same as unconfigured.
-
-    spec: src/shared/datahub/consumer.py _read_kafka_brokers —
-    return dto.kafka_brokers or None.
-    """
-    from src.backend.admin.peripheral_service import DatahubConfigDTO
-
-    _dto_empty_brokers = DatahubConfigDTO(gms_url="http://gms:8080", kafka_brokers="")
-
-    mock_db = AsyncMock()
-    mock_session_ctx = AsyncMock()
-    mock_session_ctx.__aenter__ = AsyncMock(return_value=mock_db)
-    mock_session_ctx.__aexit__ = AsyncMock(return_value=False)
-
-    with (
-        patch(
-            "src.shared.db.session.SessionLocal",
-            return_value=mock_session_ctx,
-        ),
-        patch(
-            "src.backend.admin.peripheral_service.get_peripheral_config",
-            AsyncMock(return_value=_dto_empty_brokers),
-        ),
-        patch("src.backend.admin.peripheral_service.invalidate_peripheral_config_cache"),
-    ):
-        result = await _read_kafka_brokers()
-
-    assert result is None, (
-        f"Empty kafka_brokers should yield None from _read_kafka_brokers; got {result!r}."
-    )
-
-
-@pytest.mark.asyncio
-async def test_read_kafka_brokers_invalidates_cache_before_reading(monkeypatch) -> None:
-    """_read_kafka_brokers calls invalidate_peripheral_config_cache('datahub') first.
-
-    The cache is invalidated BEFORE the DB read so that broker changes are visible
-    within the 5-second reconfig check interval (not masked by the 30-second TTL).
-
-    spec: DATAHUB §Event Subscription (impl: consumer.py) —
-    invalidate cache before read so broker changes are visible promptly.
-    spec: src/shared/datahub/consumer.py _read_kafka_brokers — invalidate then read.
-    """
-    from src.backend.admin.peripheral_service import DatahubConfigDTO
-
-    _fake_dto = DatahubConfigDTO(gms_url="http://gms:8080", kafka_brokers="kafka:9092")
-    call_order: list[str] = []
-
-    mock_db = AsyncMock()
-    mock_session_ctx = AsyncMock()
-    mock_session_ctx.__aenter__ = AsyncMock(return_value=mock_db)
-    mock_session_ctx.__aexit__ = AsyncMock(return_value=False)
-
-    def _track_invalidate(name):
-        call_order.append("invalidate")
-
-    async def _track_get_config(db, name):
-        call_order.append("get_config")
-        return _fake_dto
-
-    with (
-        patch(
-            "src.shared.db.session.SessionLocal",
-            return_value=mock_session_ctx,
-        ),
-        patch(
-            "src.backend.admin.peripheral_service.get_peripheral_config",
-            side_effect=_track_get_config,
+            AsyncMock(return_value=dto),
         ),
         patch(
             "src.backend.admin.peripheral_service.invalidate_peripheral_config_cache",
-            side_effect=_track_invalidate,
+            invalidate if invalidate is not None else MagicMock(),
         ),
-    ):
-        await _read_kafka_brokers()
-
-    assert call_order[0] == "invalidate", (
-        "invalidate_peripheral_config_cache must be called before get_peripheral_config. "
-        f"Got call order: {call_order}"
     )
-    assert "get_config" in call_order
 
 
-# ── _run_inner_loop broker-change detection ───────────────────────────────────
+_SCRAM_DTO = DatahubConfigDTO(
+    gms_url="http://gms:8080",
+    kafka_brokers="kafka-host:9092",
+    kafka_security_protocol="SASL_SSL",
+    kafka_sasl_mechanism="SCRAM-SHA-512",
+    kafka_sasl_username="dataspoke",
+    kafka_aws_region="",
+    kafka_sasl_password_version=3,
+)
 
 
-@pytest.mark.asyncio
-async def test_run_inner_loop_returns_when_broker_changes() -> None:
-    """_run_inner_loop returns when _read_kafka_brokers detects a broker address change.
-
-    When the new broker address differs from current_brokers, _run_inner_loop
-    returns so the outer loop can rebuild the consumer.
-
-    spec: DATAHUB §Event Subscription (impl: consumer.py) —
-    consumer rebuilt when kafka_brokers changes.
-    spec: src/shared/datahub/consumer.py _run_inner_loop — returns on broker change.
-    """
-    from src.shared.datahub.consumer import _run_inner_loop
-
-    mock_consumer = MagicMock()
-    mock_consumer.poll = MagicMock(return_value=None)  # no messages
-    mock_router = MagicMock()
-
-    call_count = 0
-
-    async def _read_brokers_changed():
-        nonlocal call_count
-        call_count += 1
-        # Return different broker on first reconfig check
-        return "kafka-new:9092"
-
-    with patch(
-        "src.shared.datahub.consumer._read_kafka_brokers",
-        side_effect=_read_brokers_changed,
-    ):
-        await _run_inner_loop(mock_consumer, mock_router, current_brokers="kafka-old:9092")
-
-    # If we get here, _run_inner_loop returned (which is the desired behavior).
-    assert call_count >= 1, "_read_kafka_brokers must be called during the inner loop."
+# ── 1. read_kafka_connection ─────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_run_inner_loop_does_not_return_when_broker_unchanged() -> None:
-    """_run_inner_loop does not return prematurely when broker address stays the same.
+async def test_read_kafka_connection_maps_the_whole_security_tuple() -> None:
+    """Every stored Kafka field lands on the returned ``KafkaConnection``.
 
-    When _read_kafka_brokers returns the same broker address, the inner loop
-    must continue polling — not return on the first reconfig check.
+    The consumer's connection is the whole tuple, not just the broker list.
 
-    We verify this by running the inner loop for exactly _RECONFIG_CHECK_INTERVAL + 1
-    polls with unchanged brokers, then changing the broker to cause a clean exit.
-    The reconfig check must have run at least once (after _RECONFIG_CHECK_INTERVAL polls)
-    and must NOT have caused an early return.
-
-    spec: src/shared/datahub/consumer.py _run_inner_loop —
-    only returns on broker change.
+    spec: feature/BACKEND.md §Kafka connection — "The consumer reads its whole
+    connection from ``peripheral_config.datahub`` — brokers plus the security tuple";
+    spec/API.md §DataHub Kafka security — the field set.
     """
-    from src.shared.datahub.consumer import _RECONFIG_CHECK_INTERVAL, _run_inner_loop
+    session, get_config, invalidate = _patch_config_read(_SCRAM_DTO)
+    with session, get_config, invalidate:
+        conn = await read_kafka_connection()
 
-    same_brokers = "kafka:9092"
-    new_brokers = "kafka-new:9092"
+    assert conn == KafkaConnection(
+        brokers="kafka-host:9092",
+        security_protocol="SASL_SSL",
+        sasl_mechanism="SCRAM-SHA-512",
+        sasl_username="dataspoke",
+        aws_region="",
+        sasl_password_version=3,
+    )
 
-    # Track poll calls and reconfig calls.
-    poll_calls = 0
-    reconfig_calls = 0
 
-    mock_consumer = MagicMock()
-    mock_router = MagicMock()
+@pytest.mark.asyncio
+async def test_read_kafka_connection_defaults_an_absent_protocol_to_plaintext() -> None:
+    """A row with no ``kafka_security_protocol`` resolves to an unsecured connection.
 
-    async def _fake_to_thread(fn, *args):
-        nonlocal poll_calls
-        poll_calls += 1
-        return fn(*args)  # call poll() directly
+    This is what keeps a DataHub row written before the Kafka tuple existed working.
 
-    mock_consumer.poll = MagicMock(return_value=None)  # always no messages
+    spec: API.md §DataHub Kafka security — ``PLAINTEXT`` (default); "All of it is
+    optional".
+    """
+    dto = DatahubConfigDTO(
+        gms_url="http://gms:8080", kafka_brokers="kafka:9092", kafka_security_protocol=""
+    )
+    session, get_config, invalidate = _patch_config_read(dto)
+    with session, get_config, invalidate:
+        conn = await read_kafka_connection()
 
-    async def _read_brokers():
-        nonlocal reconfig_calls
-        reconfig_calls += 1
-        # Return same brokers for first check, then changed brokers to exit
-        if reconfig_calls <= 1:
-            return same_brokers
-        return new_brokers  # trigger exit on 2nd reconfig check
+    assert conn is not None
+    assert conn.security_protocol == "PLAINTEXT"
+    assert conn.sasl_mechanism == ""
+
+
+@pytest.mark.asyncio
+async def test_read_kafka_connection_returns_none_when_peripheral_row_absent() -> None:
+    """No DataHub peripheral row → ``None``, so the outer loop sleeps and retries.
+
+    spec: feature/BACKEND.md §Kafka connection — "an unconfigured peripheral parks the
+    process in a retry sleep rather than crash-looping".
+    """
+    session, get_config, invalidate = _patch_config_read(None)
+    with session, get_config, invalidate:
+        assert await read_kafka_connection() is None
+
+
+@pytest.mark.asyncio
+async def test_read_kafka_connection_returns_none_when_brokers_empty() -> None:
+    """A row with no broker address is as unusable as no row at all.
+
+    spec: feature/BACKEND.md §Kafka connection — the connection is read from the
+    peripheral row; without ``bootstrap.servers`` there is nothing to dial.
+    """
+    dto = DatahubConfigDTO(gms_url="http://gms:8080", kafka_brokers="")
+    session, get_config, invalidate = _patch_config_read(dto)
+    with session, get_config, invalidate:
+        assert await read_kafka_connection() is None
+
+
+@pytest.mark.asyncio
+async def test_read_kafka_connection_invalidates_the_cache_before_reading() -> None:
+    """The process config cache is bypassed so a change is seen within the check interval.
+
+    The 30-second peripheral-config cache would otherwise mask a change the 5-second
+    reconfig check is supposed to catch.
+
+    spec: feature/BACKEND.md §Kafka connection — the consumer "re-reads it every few
+    seconds while polling"; src/shared/datahub/consumer.py read_kafka_connection.
+    """
+    call_order: list[str] = []
+
+    def _invalidate(name: str) -> None:
+        call_order.append(f"invalidate:{name}")
+
+    async def _get_config(db, name):
+        call_order.append("read")
+        return _SCRAM_DTO
 
     with (
-        patch("src.shared.datahub.consumer._read_kafka_brokers", side_effect=_read_brokers),
-        patch("asyncio.to_thread", side_effect=_fake_to_thread),
+        patch("src.shared.db.session.SessionLocal", return_value=_session_ctx(AsyncMock())),
+        patch(
+            "src.backend.admin.peripheral_service.get_peripheral_config",
+            side_effect=_get_config,
+        ),
+        patch(
+            "src.backend.admin.peripheral_service.invalidate_peripheral_config_cache",
+            side_effect=_invalidate,
+        ),
     ):
-        # Run the inner loop; it must exit after the 2nd reconfig check detects broker change.
-        await _run_inner_loop(mock_consumer, mock_router, current_brokers=same_brokers)
+        await read_kafka_connection()
 
-    # The inner loop ran _RECONFIG_CHECK_INTERVAL polls before the 1st reconfig check,
-    # then continued because brokers were unchanged, then exited on the 2nd check.
-    assert reconfig_calls >= 2, (
-        f"Inner loop must not exit immediately when broker unchanged; "
-        f"got {reconfig_calls} reconfig check(s). "
-        "The loop should have continued past the first 'same broker' check."
-    )
-    # With 2 reconfig checks, at least 2 * _RECONFIG_CHECK_INTERVAL polls ran.
-    assert poll_calls >= _RECONFIG_CHECK_INTERVAL, (
-        f"Expected at least {_RECONFIG_CHECK_INTERVAL} polls; got {poll_calls}."
+    assert call_order == ["invalidate:datahub", "read"], (
+        f"the cache must be evicted for 'datahub' before the read; got {call_order}"
     )
 
 
-# ── F3: run_consumer outer loop — rebuild ordering ────────────────────────────
+# ── 2. Change detection spans the whole tuple ────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("field", "new_value"),
+    [
+        ("brokers", "kafka-new:9092"),
+        ("security_protocol", "SASL_PLAINTEXT"),
+        ("sasl_mechanism", "SCRAM-SHA-256"),
+        ("sasl_username", "rotated-user"),
+        ("aws_region", "us-east-1"),
+        ("sasl_password_version", 4),
+    ],
+)
+def test_every_tuple_field_participates_in_change_detection(field: str, new_value) -> None:
+    """A change to ANY element of the connection makes the tuple unequal.
+
+    Equality of ``KafkaConnection`` is the poll loop's rebuild predicate, so a field
+    excluded from it would be a setting the consumer silently never adopts. The
+    password-version counter is included precisely because a Secret-only rotation is
+    otherwise invisible in the DB row.
+
+    spec: feature/BACKEND.md §Kafka connection — "A change to any element ends the inner
+    poll loop, closes the client, and rebuilds it"; "``kafka_sasl_password_version``
+    exists because a rotated password is invisible in the DB row … which turns a
+    rotation into an ordinary DB-plane change the poll loop already detects".
+    """
+    base = KafkaConnection(
+        brokers="kafka:9092",
+        security_protocol="SASL_SSL",
+        sasl_mechanism="SCRAM-SHA-512",
+        sasl_username="dataspoke",
+        aws_region="",
+        sasl_password_version=3,
+    )
+    changed = dataclasses.replace(base, **{field: new_value})
+
+    assert changed != base, f"a change to {field!r} must be detected as a connection change"
+    # Backstop: an identical copy compares equal, so the inequality above is the field
+    # and not an identity comparison.
+    assert dataclasses.replace(base) == base
+
+
+# ── 3. _run_inner_loop ───────────────────────────────────────────────────────
+
+
+def _quiet_health() -> MagicMock:
+    """A HealthReporter stand-in whose ``report`` is an awaitable no-op (no DB)."""
+    health = MagicMock()
+    health.report = AsyncMock()
+    return health
 
 
 @pytest.mark.asyncio
-async def test_run_consumer_outer_loop_closes_old_consumer_before_building_new(
+async def test_inner_loop_returns_when_the_connection_tuple_changes() -> None:
+    """A changed tuple ends the inner loop so the outer loop can rebuild.
+
+    Only the SASL mechanism differs here — a broker-only comparison would miss it.
+
+    spec: feature/BACKEND.md §Kafka connection — "A change to any element ends the inner
+    poll loop".
+    """
+    from src.shared.datahub.consumer import KafkaFaultState, _run_inner_loop
+
+    current = KafkaConnection(brokers="kafka:9092", security_protocol="PLAINTEXT")
+    rotated = KafkaConnection(
+        brokers="kafka:9092", security_protocol="SASL_SSL", sasl_mechanism="PLAIN",
+        sasl_username="svc",
+    )
+
+    consumer = MagicMock()
+    consumer.poll = MagicMock(return_value=None)
+    reads = 0
+
+    async def _read():
+        nonlocal reads
+        reads += 1
+        return rotated
+
+    with patch("src.shared.datahub.consumer.read_kafka_connection", side_effect=_read):
+        await _run_inner_loop(
+            consumer, MagicMock(), current, KafkaFaultState(), _quiet_health()
+        )
+
+    assert reads >= 1, "the inner loop must re-read the connection before returning"
+
+
+@pytest.mark.asyncio
+async def test_inner_loop_keeps_polling_while_the_tuple_is_unchanged() -> None:
+    """An unchanged tuple does not end the loop — the client is not rebuilt needlessly.
+
+    Two reconfig checks are forced: the first returns the identical tuple (loop must
+    continue), the second a different one (loop must exit).
+
+    spec: feature/BACKEND.md §Kafka connection — the rebuild is triggered by a *change*.
+    """
+    from src.shared.datahub.consumer import (
+        _RECONFIG_CHECK_INTERVAL,
+        KafkaFaultState,
+        _run_inner_loop,
+    )
+
+    current = KafkaConnection(brokers="kafka:9092", security_protocol="PLAINTEXT")
+    changed = KafkaConnection(brokers="kafka-new:9092", security_protocol="PLAINTEXT")
+
+    polls = 0
+    reads = 0
+
+    consumer = MagicMock()
+    consumer.poll = MagicMock(return_value=None)
+
+    async def _to_thread(fn, *args):
+        nonlocal polls
+        polls += 1
+        return fn(*args)
+
+    async def _read():
+        nonlocal reads
+        reads += 1
+        # An equal-but-distinct instance: equality, not identity, is the predicate.
+        return dataclasses.replace(current) if reads <= 1 else changed
+
+    with (
+        patch("src.shared.datahub.consumer.read_kafka_connection", side_effect=_read),
+        patch("asyncio.to_thread", side_effect=_to_thread),
+    ):
+        await _run_inner_loop(
+            consumer, MagicMock(), current, KafkaFaultState(), _quiet_health()
+        )
+
+    assert reads == 2, (
+        f"the loop must survive the first unchanged check and exit on the second; "
+        f"got {reads} read(s)"
+    )
+    assert polls >= 2 * _RECONFIG_CHECK_INTERVAL, (
+        f"two reconfig checks imply at least {2 * _RECONFIG_CHECK_INTERVAL} polls; got {polls}"
+    )
+
+
+# ── 4. run_consumer outer loop — rebuild ordering ────────────────────────────
+
+
+class _StopOuterLoop(BaseException):
+    """Sentinel that escapes ``run_consumer``'s ``except Exception`` handlers."""
+
+
+@pytest.mark.asyncio
+async def test_outer_loop_closes_the_old_client_before_building_the_new_one(
     monkeypatch,
 ) -> None:
-    """run_consumer outer loop: closes old Consumer before constructing the new one.
+    """On a connection change the old Consumer is closed before the new one is built.
 
-    Verified ordering:
-    1. Consumer({"bootstrap.servers": "kafka-old:9092", ...}) constructed.
-    2. _run_inner_loop enters.
-    3. old_consumer.close() called.
-    4. Consumer({"bootstrap.servers": "kafka-new:9092", ...}) constructed.
+    Overlapping clients would double-join the ``dataspoke-consumers`` group and trigger
+    a rebalance against a connection that is being torn down anyway.
 
-    Technique: a shared ``call_log`` list that every mock appends to on call.
-    After the second Consumer ctor, a sentinel StopIteration exits the outer loop.
-
-    monkeypatching _UNCONFIGURED_SLEEP_S=0.001 keeps the test fast in case
-    run_consumer ever sleeps.
-
-    spec: DATAHUB §Event Subscription (impl: consumer.py) —
-    consumer rebuilt when kafka_brokers changes; old consumer closed first.
-    spec: src/shared/datahub/consumer.py run_consumer — outer loop rebuilds on
-    broker change; consumer.close() in finally block.
+    spec: feature/BACKEND.md §Kafka connection — "A change to any element ends the inner
+    poll loop, closes the client, and rebuilds it."
     """
-    import src.shared.datahub.consumer as _consumer_mod
+    import src.shared.datahub.consumer as consumer_mod
 
-    monkeypatch.setattr(_consumer_mod, "_UNCONFIGURED_SLEEP_S", 0.001)
+    monkeypatch.setattr(consumer_mod, "_UNCONFIGURED_SLEEP_S", 0.001)
+    monkeypatch.setattr(consumer_mod, "_FAULT_RETRY_SLEEP_S", 0.001)
 
     call_log: list[str] = []
-
-    # Track Consumer() ctor calls; raise on the 3rd call to stop the outer loop.
-    consumer_ctor_count = 0
-    sentinel_exc = RuntimeError("_STOP_LOOP_SENTINEL_")
+    ctor_count = 0
 
     class _FakeConsumer:
         def __init__(self, config: dict) -> None:
-            nonlocal consumer_ctor_count
-            consumer_ctor_count += 1
-            broker = config.get("bootstrap.servers", "")
-            call_log.append(f"Consumer({broker})")
-            if consumer_ctor_count >= 2:
-                # After second construction, raise to stop the outer loop cleanly.
-                raise sentinel_exc
+            nonlocal ctor_count
+            ctor_count += 1
+            call_log.append(f"Consumer({config['bootstrap.servers']})")
+            if ctor_count >= 2:
+                raise _StopOuterLoop
 
-        def subscribe(self, topics):
+        def subscribe(self, topics, on_assign=None):
             pass
 
         def close(self):
             call_log.append("close")
 
-    # _read_kafka_brokers: first call returns "kafka-old:9092"; subsequent return "kafka-new:9092".
-    read_call_count = 0
+    old = KafkaConnection(brokers="kafka-old:9092", security_protocol="PLAINTEXT")
+    new = KafkaConnection(brokers="kafka-new:9092", security_protocol="PLAINTEXT")
+    reads = 0
 
-    async def _fake_read_kafka_brokers() -> str | None:
-        nonlocal read_call_count
-        read_call_count += 1
-        if read_call_count == 1:
-            return "kafka-old:9092"
-        return "kafka-new:9092"
+    async def _read():
+        nonlocal reads
+        reads += 1
+        return old if reads == 1 else new
 
-    # _run_inner_loop: first call records "inner_loop" then returns (simulating broker change).
-    inner_loop_call_count = 0
-
-    async def _fake_run_inner_loop(consumer, router, current_brokers: str) -> None:
-        nonlocal inner_loop_call_count
-        inner_loop_call_count += 1
-        call_log.append(f"inner_loop({current_brokers})")
-        # Return immediately (simulates broker-change detection).
+    async def _inner(consumer, router, current_conn, faults, health):
+        call_log.append(f"inner_loop({current_conn.brokers})")
 
     with (
-        patch.object(_consumer_mod, "_read_kafka_brokers", side_effect=_fake_read_kafka_brokers),
-        patch.object(_consumer_mod, "_run_inner_loop", side_effect=_fake_run_inner_loop),
-        patch.object(_consumer_mod, "Consumer", side_effect=_FakeConsumer),
-        patch.object(_consumer_mod, "build_router", return_value=MagicMock()),
+        patch.object(consumer_mod, "read_kafka_connection", side_effect=_read),
+        patch.object(consumer_mod, "_run_inner_loop", side_effect=_inner),
+        patch.object(consumer_mod, "Consumer", side_effect=_FakeConsumer),
+        patch.object(consumer_mod, "build_router", return_value=MagicMock()),
+        patch.object(consumer_mod, "_create_airflow_client", return_value=None),
+        patch.object(consumer_mod.HealthReporter, "report", AsyncMock()),
     ):
-        with pytest.raises(RuntimeError, match="_STOP_LOOP_SENTINEL_"):
-            await _consumer_mod.run_consumer()
+        with pytest.raises(_StopOuterLoop):
+            await consumer_mod.run_consumer()
 
-    # Verify the required ordering:
-    # 1. First Consumer ctor with old brokers.
-    # 2. inner_loop entered.
-    # 3. close() called.
-    # 4. Second Consumer ctor with new brokers (raises sentinel).
+    assert call_log == [
+        "Consumer(kafka-old:9092)",
+        "inner_loop(kafka-old:9092)",
+        "close",
+        "Consumer(kafka-new:9092)",
+    ], f"unexpected rebuild ordering: {call_log!r}"
 
-    assert "Consumer(kafka-old:9092)" in call_log, (
-        f"First Consumer must be constructed with 'kafka-old:9092'. call_log={call_log!r}"
-    )
-    assert "inner_loop(kafka-old:9092)" in call_log, (
-        f"_run_inner_loop must be entered with old brokers. call_log={call_log!r}"
-    )
-    assert "close" in call_log, (
-        f"old_consumer.close() must be called after inner loop exits. call_log={call_log!r}"
-    )
-    assert "Consumer(kafka-new:9092)" in call_log, (
-        f"Second Consumer must be constructed with 'kafka-new:9092'. call_log={call_log!r}"
-    )
 
-    # Strict ordering assertions using index positions.
-    idx_old = call_log.index("Consumer(kafka-old:9092)")
-    idx_inner = call_log.index("inner_loop(kafka-old:9092)")
-    idx_close = call_log.index("close")
-    idx_new = call_log.index("Consumer(kafka-new:9092)")
+@pytest.mark.asyncio
+async def test_outer_loop_sleeps_instead_of_exiting_when_unconfigured(monkeypatch) -> None:
+    """An unconfigured peripheral parks the process rather than crash-looping.
 
-    assert idx_old < idx_inner, (
-        f"Consumer(old) must be constructed before inner_loop enters. "
-        f"Positions: Consumer(old)={idx_old}, inner_loop={idx_inner}. "
-        "spec: DATAHUB §Event Subscription (impl: consumer.py)."
-    )
-    assert idx_inner < idx_close, (
-        f"inner_loop must run before close(). "
-        f"Positions: inner_loop={idx_inner}, close={idx_close}. "
-        "spec: src/shared/datahub/consumer.py run_consumer — close in finally."
-    )
-    assert idx_close < idx_new, (
-        f"close() must be called before the new Consumer is constructed. "
-        f"Positions: close={idx_close}, Consumer(new)={idx_new}. "
-        "spec: DATAHUB §Event Subscription (impl: consumer.py) — "
-        "old consumer closed before new one is built."
-    )
+    No Consumer is constructed while the connection reads ``None``.
+
+    spec: feature/BACKEND.md §Kafka connection — "an unconfigured peripheral parks the
+    process in a retry sleep rather than crash-looping".
+    """
+    import src.shared.datahub.consumer as consumer_mod
+
+    monkeypatch.setattr(consumer_mod, "_UNCONFIGURED_SLEEP_S", 0.0)
+
+    reads = 0
+
+    async def _read():
+        nonlocal reads
+        reads += 1
+        if reads >= 3:
+            raise _StopOuterLoop
+        return None
+
+    ctor = MagicMock(side_effect=AssertionError("no client may be built while unconfigured"))
+
+    with (
+        patch.object(consumer_mod, "read_kafka_connection", side_effect=_read),
+        patch.object(consumer_mod, "Consumer", ctor),
+        patch.object(consumer_mod, "build_router", return_value=MagicMock()),
+        patch.object(consumer_mod, "_create_airflow_client", return_value=None),
+    ):
+        with pytest.raises(_StopOuterLoop):
+            await consumer_mod.run_consumer()
+
+    # Backstop: the loop actually iterated (rather than exiting on the first read).
+    assert reads == 3
+    ctor.assert_not_called()

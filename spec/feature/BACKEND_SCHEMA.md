@@ -506,8 +506,37 @@ a row disables the corresponding integration.
 | Column | Type | Description |
 |--------|------|-------------|
 | `name` | `VARCHAR(32)` PK | Peripheral name; `CHECK` ∈ `datahub`, `langfuse`, `smtp` |
-| `settings` | `JSONB` | Peripheral-specific **non-secret** connection settings (DataHub `gms_url`/`frontend_url`/`kafka_brokers`/`service_corpuser_urn`/`default_env`, Langfuse `host`/`public_key`/`project_id`/`environment_tag`, SMTP host/port/username). Secret fields (DataHub token, Langfuse `secret_key`, SMTP password) are never stored here — they live in K8s Secrets, resolved at runtime via the API's RBAC. |
+| `settings` | `JSONB` | Peripheral-specific **non-secret** connection settings (DataHub `gms_url`/`frontend_url`/`kafka_brokers`/`kafka_security_protocol`/`kafka_sasl_mechanism`/`kafka_sasl_username`/`kafka_aws_region`/`kafka_sasl_password_version`/`service_corpuser_urn`/`default_env`, Langfuse `host`/`public_key`/`project_id`/`environment_tag`, SMTP host/port/username). Secret fields (DataHub `token` and `kafka_sasl_password`, Langfuse `secret_key`, SMTP password) are never stored here — they live in K8s Secrets, resolved at runtime via the API's RBAC. `kafka_sasl_password_version` is an integer counter, not a credential: it changes whenever the password Secret is written, so a running consumer detects a rotation from the DB row alone. |
 | `updated_at` | `TIMESTAMPTZ` | |
+
+#### `peripheral_health`
+
+Last observed liveness of a peripheral, keyed on the same names as
+`peripheral_config`. Written by the long-running processes that hold a
+connection — presently the DataHub event consumer — and read back by
+`GET /api/v1/admin/peripherals/datahub`. The table exists because
+`is_configured` reports only that settings are present; a wrong SASL mechanism
+or an unauthorized IAM role produces a fully "configured" row that never
+connects.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `name` | `VARCHAR(32)` PK | Peripheral name; `CHECK` ∈ `datahub`, `langfuse`, `smtp` — the same domain as `peripheral_config`, but **no foreign key** to it |
+| `status` | `VARCHAR(16)` | `CHECK` ∈ `unknown`, `ok`, `error`; `unknown` until a reporter writes |
+| `last_error` | `TEXT` | Most recent failure message; `NULL` when never failed |
+| `last_ok_at` | `TIMESTAMPTZ` | Last successful connection; `NULL` when never succeeded |
+| `updated_at` | `TIMESTAMPTZ` | Last report of any status |
+
+A row is upserted on report, so the table never grows past the peripheral set
+and carries no history. Absence of a row and `status='unknown'` mean the same
+thing to readers: nothing has reported yet.
+
+The two tables are deliberately **independent**. A foreign key on `name` would
+make the health upsert fail precisely when the `peripheral_config` row is
+missing — a deleted or never-created peripheral is exactly the condition the
+health table exists to report, so the constraint would suppress the signal it
+is meant to carry. The shared `CHECK` domain keeps the key spaces aligned
+without coupling the writes.
 
 ### Indexes
 
@@ -562,7 +591,7 @@ endpoint.
 - On-demand: rebuilt by a manual `POST /spoke/ontogen/method/run` (synchronous, in-process)
 - Optional event-driven extension (not enabled in baseline): Kafka MCL events for
   `datasetProperties` / `schemaMetadata` / `globalTags` changes — see
-  [DATAHUB_INTEGRATION §Event Subscription](../DATAHUB_INTEGRATION.md#event-subscription-optional-not-used-by-baseline)
+  [DATAHUB_INTEGRATION §Event Subscription](../DATAHUB_INTEGRATION.md#event-subscription-not-used-by-baseline)
 
 **Access wrapper**: `src/shared/vector/client.py` exposes `PgVectorManager`
 (session-factory backed) returning `VectorHit` dataclasses. Collection name is

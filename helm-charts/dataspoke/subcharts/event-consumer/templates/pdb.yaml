@@ -6,7 +6,19 @@ metadata:
   labels:
     {{- include "event-consumer.labels" . | nindent 4 }}
 spec:
+  {{/*
+    maxUnavailable and minAvailable are mutually exclusive in a PDB; maxUnavailable
+    wins when both are set. A single-replica workload needs maxUnavailable, since
+    minAvailable: 1 there forbids every voluntary eviction and stalls node drains
+    and autoscaler consolidation indefinitely.
+  */}}
+  {{- if .Values.podDisruptionBudget.maxUnavailable }}
+  maxUnavailable: {{ .Values.podDisruptionBudget.maxUnavailable }}
+  {{- else if .Values.podDisruptionBudget.minAvailable }}
   minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  {{- else }}
+  maxUnavailable: 1
+  {{- end }}
   selector:
     matchLabels:
       {{- include "event-consumer.selectorLabels" . | nindent 6 }}

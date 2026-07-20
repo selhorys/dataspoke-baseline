@@ -18,6 +18,7 @@ from src.api.schemas.common import (
     PaginatedResponse,
     SingleResponse,
 )
+from src.shared.datahub.kafka_security import check_kafka_security
 
 # A single DataHub dataset URN with format and length constraints.
 DatasetUrn = Annotated[
@@ -126,20 +127,45 @@ class RuntimeConfResponse(SingleResponse):
 # ── Peripheral configuration ───────────────────────────────────────────────────
 
 
+class PeripheralHealthModel(BaseModel):
+    """A peripheral's last self-reported connection state.
+
+    ``unknown`` covers both "never reported" and "no reporter deployed"; the API
+    does not distinguish them.
+    """
+
+    status: Literal["unknown", "ok", "error"]
+    last_error: str | None = None
+    last_ok_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
 class DatahubPeripheralResponse(SingleResponse):
     """Response envelope for the DataHub peripheral configuration.
 
-    ``token`` is a masked indicator only: ``""`` when unset, ``"********"``
-    when set.  The plaintext token is never returned.
+    ``token`` and ``kafka_sasl_password`` are masked indicators only: ``""``
+    when unset, ``"********"`` when set.  The plaintext values are never
+    returned.  ``is_configured`` keys on ``token`` alone — the Kafka credential
+    is optional and never participates in it.
+
+    ``kafka_sasl_password_version`` is API-owned bookkeeping incremented on every
+    password write; it is read-only and not accepted on PATCH.
     """
 
     gms_url: str
     frontend_url: str
     kafka_brokers: str
+    kafka_security_protocol: str
+    kafka_sasl_mechanism: str
+    kafka_sasl_username: str
+    kafka_sasl_password: str
+    kafka_sasl_password_version: int
+    kafka_aws_region: str
     token: str
     service_corpuser_urn: str
     default_env: str
     is_configured: bool
+    health: PeripheralHealthModel
     updated_at: datetime | None = None
 
 
@@ -147,9 +173,9 @@ class DatahubPeripheralPatchRequest(BaseModel):
     """Partial update for the DataHub peripheral configuration.
 
     All fields are optional — only supplied (non-null) fields are applied.
-    ``token`` is routed to the Kubernetes Secret rather than the DB.
-    An explicitly provided ``""`` clears the token; ``None`` (or omitting
-    the field) means "leave the token unchanged".
+    ``token`` and ``kafka_sasl_password`` are routed to the Kubernetes Secret
+    rather than the DB.  An explicitly provided ``""`` clears a secret; ``None``
+    (or omitting the field) means "leave it unchanged".
 
     ``service_corpuser_urn`` and ``default_env`` are non-secret connection
     settings stored in the DB; they drive the emitted DataHub actor URN and the
@@ -159,6 +185,12 @@ class DatahubPeripheralPatchRequest(BaseModel):
     ``gms_url``, which addresses the GMS service.  It is served to any
     authenticated role via ``/spoke/common/peripheral-links`` and interpolated
     into an anchor ``href``, so it is constrained to a safe http(s) form.
+
+    The ``kafka_*`` fields configure the event consumer's connection to a secured
+    Kafka.  They are cross-validated against the *merged* stored configuration by
+    ``validate_datahub_kafka_security`` at the router, not field-by-field here,
+    because a partial PATCH is only meaningful against the settings it lands on.
+    ``kafka_sasl_password_version`` is not accepted — the API owns the counter.
     """
 
     gms_url: Annotated[str | None, Field(default=None, max_length=512)] = None
@@ -171,6 +203,14 @@ class DatahubPeripheralPatchRequest(BaseModel):
         ),
     ] = None
     kafka_brokers: Annotated[str | None, Field(default=None, max_length=512)] = None
+    kafka_security_protocol: Annotated[str | None, Field(default=None, max_length=32)] = None
+    kafka_sasl_mechanism: Annotated[str | None, Field(default=None, max_length=32)] = None
+    kafka_sasl_username: Annotated[str | None, Field(default=None, max_length=256)] = None
+    kafka_sasl_password: Annotated[str | None, Field(default=None, max_length=8192)] = None
+    kafka_aws_region: Annotated[
+        str | None,
+        Field(default=None, max_length=64, pattern=r"^$|^[a-z0-9-]+$"),
+    ] = None
     token: Annotated[str | None, Field(default=None, max_length=8192)] = None
     service_corpuser_urn: Annotated[
         str | None,
@@ -180,6 +220,47 @@ class DatahubPeripheralPatchRequest(BaseModel):
         str | None,
         Field(default=None, max_length=64, pattern=r"^$|^[A-Za-z][A-Za-z0-9_]*$"),
     ] = None
+
+
+def validate_datahub_kafka_security(
+    *,
+    security_protocol: str,
+    sasl_mechanism: str,
+    sasl_username: str,
+    aws_region: str,
+    brokers: str,
+    submitted_sasl_password: str | None,
+) -> None:
+    """Enforce the Kafka security rules of spec/API.md §DataHub Kafka security.
+
+    A thin HTTP wrapper over ``check_kafka_security``: the rules themselves live
+    in ``src/shared/datahub/kafka_security.py`` so the event consumer re-asserts
+    exactly the same predicate against the stored row before building a client.
+
+    Arguments describe the **effective** tuple — stored settings with the PATCH
+    body merged over them — so a partial update is judged by the configuration it
+    produces.  ``submitted_sasl_password`` is the body's value (``None`` when
+    absent).
+
+    Raises:
+        PreconditionFailedError: ``422 INVALID_PARAMETER`` naming the offending
+            field in ``detail.field``.
+    """
+    from src.shared.exceptions import PreconditionFailedError
+
+    violation = check_kafka_security(
+        security_protocol=security_protocol,
+        sasl_mechanism=sasl_mechanism,
+        sasl_username=sasl_username,
+        aws_region=aws_region,
+        brokers=brokers,
+        submitted_sasl_password=submitted_sasl_password,
+    )
+    if violation is not None:
+        raise PreconditionFailedError(
+            "INVALID_PARAMETER", violation.message, detail={"field": violation.field}
+        )
+
 
 
 class LangfusePeripheralResponse(SingleResponse):

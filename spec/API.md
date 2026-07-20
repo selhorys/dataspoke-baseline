@@ -259,7 +259,7 @@ peripheral shortcuts.
 | `POST` | `/spoke/common/data/{dataset_urn}/attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review` | Review a candidate — body `{"verdict": "approve"\|"reject", "reason": "…"}`. Approve writes the candidate `value` to the corresponding editable DataHub aspect; if a sibling on the same item was previously `approved`, it is atomically demoted to `llm_approved` so the new approval supersedes it. Reject is valid on both `llm_approved` and `approved` candidates: rejecting an `llm_approved` candidate flips it to `rejected` with no DataHub write; rejecting an `approved` candidate flips it to `rejected` **and removes the editable DataHub description it had written**. Returns `422 METAGEN_DATASET_NOT_IN_BOUNDARY` if the dataset has no `is_enabled=true` boundary | Metadata Generation | UC4 |
 | `GET` | `/spoke/common/data/{dataset_urn}/event/metagen` | Per-dataset metagen events (`METAGEN.CANDIDATE_APPROVE`, `METAGEN.CANDIDATE_REJECT`) | Metadata Generation | UC4 |
 | `GET` | `/spoke/common/data/{dataset_urn}/event` | The **complete per-dataset timeline** — a single newest-first feed that unions the covering source's ingestion runs (resolved by reverse-lookup, incl. its internal-wrapper runs) with this dataset's validation and metagen events. Each row carries a derived `wrapper: bool` (`true` for an ingestion event originating on a linked wrapper). Repeatable `event_major_type` filter (`INGESTION`/`VALIDATION`/`METAGEN`; omitted = all). Paginated (`offset`/`limit`), `from`/`to` time-range, default `occurred_at_desc` | Data Resource | UC1, UC2, UC4 |
-| `GET` | `/spoke/common/peripheral-links` | Peripheral display links for the app shell — `{datahub_url, langfuse_url, langfuse_project_id}`, read from `peripheral_config`: `datahub_url` ⟵ `datahub.frontend_url` (the browser-facing UI URL — **never** `gms_url`, which addresses the GMS service and routinely differs in host, port, and scheme), `langfuse_url` ⟵ `langfuse.host` (the Langfuse peripheral contract names this field `host`), `langfuse_project_id` ⟵ `langfuse.project_id`. An unconfigured peripheral yields `""`, which clients read as "render no link". Readable by **any authenticated role** (the `/admin/*` surface is Admin-only, so it cannot serve Readers and Editors). Returns only these three display fields — no `gms_url`, `kafka_brokers`, or corpuser URN, so this non-Admin surface discloses no infrastructure topology | Data Resource | — |
+| `GET` | `/spoke/common/peripheral-links` | Peripheral display links for the app shell — `{datahub_url, langfuse_url, langfuse_project_id}`, read from `peripheral_config`: `datahub_url` ⟵ `datahub.frontend_url` (the browser-facing UI URL — **never** `gms_url`, which addresses the GMS service and routinely differs in host, port, and scheme), `langfuse_url` ⟵ `langfuse.host` (the Langfuse peripheral contract names this field `host`), `langfuse_project_id` ⟵ `langfuse.project_id`. An unconfigured peripheral yields `""`, which clients read as "render no link". Readable by **any authenticated role** (the `/admin/*` surface is Admin-only, so it cannot serve Readers and Editors). Returns only these three display fields — no `gms_url`, no Kafka broker or Kafka security settings, and no corpuser URN, so this non-Admin surface discloses no infrastructure topology | Data Resource | — |
 
 **Display-link safety.** The operator-supplied peripheral values that clients interpolate
 into a browser `href` — DataHub `frontend_url`, Langfuse `host`, and Langfuse `project_id`
@@ -582,8 +582,8 @@ instead of a JWT.
 | `DELETE` | `/admin/users/{id}` | — | `204` | JWT + Admin role |
 | `GET` | `/admin/users/{id}/api-tokens` | — | a user's API tokens (same shape as `GET /auth/api-tokens`, sans raw token; paginated with the standard `offset`/`limit`/`total_count` envelope, sortable by `created_at`, default `created_at_desc`) | JWT + Admin role |
 | `DELETE` | `/admin/users/{id}/api-tokens/{token_id}` | — | `204` — revokes a user's token (incident response) | JWT + Admin role |
-| `GET` | `/admin/peripherals/datahub` | — | current DataHub config: `{gms_url, frontend_url, kafka_brokers, token, service_corpuser_urn, default_env, is_configured, updated_at}`. `token` is masked (`""` unset, `"********"` set); `frontend_url` (the browser-facing DataHub UI URL, distinct from the `gms_url` service endpoint), `service_corpuser_urn`, and `default_env` are non-secret and returned plain | JWT + Admin role |
-| `PATCH` | `/admin/peripherals/datahub` | partial DataHub fields | updated DataHub config (with `token` masked) | JWT + Admin role |
+| `GET` | `/admin/peripherals/datahub` | — | current DataHub config: `{gms_url, frontend_url, kafka_brokers, kafka_security_protocol, kafka_sasl_mechanism, kafka_sasl_username, kafka_sasl_password, kafka_sasl_password_version, kafka_aws_region, token, service_corpuser_urn, default_env, is_configured, health, updated_at}`. `token` and `kafka_sasl_password` are masked (`""` unset, `"********"` set); `frontend_url` (the browser-facing DataHub UI URL, distinct from the `gms_url` service endpoint), `service_corpuser_urn`, `default_env`, and every non-secret `kafka_*` field are returned plain. `health` is the event-consumer's last self-report `{status, last_error, last_ok_at, updated_at}` with `status` ∈ `unknown`/`ok`/`error` | JWT + Admin role |
+| `PATCH` | `/admin/peripherals/datahub` | partial DataHub fields | updated DataHub config (with `token` and `kafka_sasl_password` masked) | JWT + Admin role |
 | `GET` | `/admin/peripherals/langfuse` | — | current Langfuse config: `{host, public_key, secret_key, project_id, environment_tag, is_configured, updated_at}`. `secret_key` is masked (`""` unset, `"********"` set); `project_id` and `environment_tag` are non-secret and returned plain | JWT + Admin role |
 | `PATCH` | `/admin/peripherals/langfuse` | partial Langfuse fields | updated Langfuse config (with `secret_key` masked) | JWT + Admin role |
 | `GET` | `/admin/peripherals/smtp` | — | current SMTP config: `{host, port, username, from_address, use_tls, password, is_configured, updated_at}`. `password` is masked (`""` unset, `"********"` set) | JWT + Admin role |
@@ -664,7 +664,9 @@ Non-secret fields (`host`, `port`, `username`, `from_address`, `use_tls`)
 are persisted in the `peripheral_config` DB table; the `password` field
 is routed to a dedicated K8s Secret `dataspoke-smtp-secret` (data key
 `password`) on `PATCH`, never to the DB — same pattern as
-`dataspoke-datahub-secret.token` and `dataspoke-langfuse-secret.secret_key`.
+`dataspoke-langfuse-secret.secret_key` and the two keys of
+`dataspoke-datahub-secret` (`token` for GMS, `kafka_sasl_password` for the
+Kafka SASL credential).
 `PATCH` is partial; `password=""` clears the secret. Missing SMTP config
 fails `POST /auth/password/reset/request` with
 `503 PERIPHERAL_NOT_CONFIGURED` (`detail.peripheral = "smtp"`); all other
@@ -684,12 +686,104 @@ rows read back factory defaults (`service_corpuser_urn` →
 [`spec/feature/BACKEND.md`](feature/BACKEND.md) and
 [`spec/feature/BACKEND_LLM.md`](feature/BACKEND_LLM.md).
 
+#### DataHub Kafka security
+
+`kafka_brokers` is accompanied by a security tuple that lets the event consumer
+reach a secured Kafka. All of it is optional — the fields do not participate in
+`is_configured`, and a DataHub peripheral without them is fully configured for
+every REST-based flow.
+
+| Field | Values | Notes |
+|---|---|---|
+| `kafka_security_protocol` | `PLAINTEXT` (default) \| `SSL` \| `SASL_PLAINTEXT` \| `SASL_SSL` | Names the `confluent-kafka` `security.protocol` property |
+| `kafka_sasl_mechanism` | `PLAIN` \| `SCRAM-SHA-256` \| `SCRAM-SHA-512` \| `AWS_MSK_IAM` | Required when the protocol is `SASL_*`; rejected when it is not |
+| `kafka_sasl_username` | string | Required for `PLAIN` and the `SCRAM-*` mechanisms |
+| `kafka_sasl_password` | masked secret | Write-only, same `""` unset / `"********"` set convention as `token`. Routed to `dataspoke-datahub-secret` key `kafka_sasl_password`, never the DB |
+| `kafka_sasl_password_version` | int, default `0` | Incremented by `PATCH` whenever the password Secret is written, so a long-running consumer sees a rotation as a DB-plane change |
+| `kafka_aws_region` | string | `AWS_MSK_IAM` only. Optional — falls back to derivation from the broker hostname |
+
+**Validation is normative and every violation is `422 INVALID_PARAMETER`** — the
+existing generic code, with the offending field named in `detail`. The Kafka
+tuple registers no error code of its own.
+
+Every rule below is evaluated against the **effective tuple** — the stored
+settings with the `PATCH` body merged over them — not against the request body
+alone. `PATCH` is partial, so a body that changes one field can only be judged
+against the configuration it produces. A request that moves the effective tuple
+into an invalid combination is rejected even when every field it carries would
+be individually acceptable.
+
+| # | Rule |
+|---|---|
+| 1 | `kafka_sasl_mechanism` is required when `kafka_security_protocol` is `SASL_PLAINTEXT` or `SASL_SSL`, and rejected when it is `PLAINTEXT` or `SSL` |
+| 2 | `kafka_sasl_username` is required for `PLAIN`, `SCRAM-SHA-256`, and `SCRAM-SHA-512` |
+| 3 | `kafka_sasl_username` and `kafka_sasl_password` are **rejected** when `kafka_sasl_mechanism` is `AWS_MSK_IAM` |
+| 4 | `kafka_sasl_mechanism = AWS_MSK_IAM` **requires** `kafka_security_protocol = SASL_SSL`; any other protocol is rejected |
+| 5 | `kafka_aws_region` is accepted only with `AWS_MSK_IAM` |
+| 6 | Under `AWS_MSK_IAM`, `kafka_brokers` must be non-empty and **every** host in it must have the MSK broker shape — a host under `kafka.<region>.amazonaws.com` or `kafka-serverless.<region>.amazonaws.com`. Evaluated per host, not against the whole string |
+| 7 | When `kafka_aws_region` is set and the broker hosts encode a region, the two must agree |
+
+Rules 3 and 4 reject rather than ignore or auto-correct, and the distinction is
+load-bearing. `AWS_MSK_IAM` is not a typable credential — it authenticates with
+the consumer pod's IAM identity, attached at deploy time by the chart plane (see
+[`spec/feature/HELM_CHART.md` §Event-consumer identity and RBAC](feature/HELM_CHART.md#event-consumer-identity-and-rbac)).
+Silently dropping a submitted username would leave an operator believing a
+credential is in force when none is. Silently upgrading the protocol to
+`SASL_SSL` would make the stored `kafka_security_protocol` a value the consumer
+does not actually use, so a `GET` would misreport the live connection. **The
+stored protocol is always the protocol the consumer uses; nothing overrides it
+behind the operator's back.**
+
+Because rule 3 reads the effective tuple, switching a working SCRAM
+configuration to `AWS_MSK_IAM` while a `kafka_sasl_username` is still stored is
+itself a rejected request — the operator clears it in the same `PATCH` with an
+explicit `""`. The **stored password is handled differently: it is cleared**
+whenever the effective mechanism becomes `AWS_MSK_IAM`, and `GET` reports
+`kafka_sasl_password: ""` from then on. The two clauses are complementary rather
+than inconsistent. Rejecting a *submitted* credential refuses an assertion the
+operator is making about a mechanism that cannot honour it; clearing a *stored*
+one removes a credential that has lost its purpose, rather than leaving a live
+password in `dataspoke-datahub-secret` that nothing reads and that `GET` would
+keep reporting as `"********"`.
+
+Rules 6 and 7 exist because the pod's IAM identity is a deploy-time grant that an
+application Admin is not meant to be able to redirect. Without them, an Admin can
+point `kafka_brokers` at a host they control and the consumer will mint a
+SigV4-signed token from the pod's role and present it there, where it can be
+replayed against the real cluster; `SASL_SSL` is no defence, since TLS
+terminates at a host whose certificate the attacker legitimately holds.
+
+The rule matches the **broker host shape** rather than the `amazonaws.com`
+suffix because an `amazonaws.com` subdomain is not necessarily a broker and can
+be attacker-provisioned: `ec2-203-0-113-25.compute-1.amazonaws.com` and
+`my-bucket.s3.amazonaws.com` both carry the suffix, and an EC2 host is
+routinely under a tenant's own control with a publicly-trusted certificate
+obtainable for it. A suffix check therefore leaves the escalation intact, one
+step removed. Rule 7 closes the matching edge on the other input — an operator
+who supplies `kafka_aws_region` explicitly must not be able to use it to reach a
+host the region in the name contradicts. For the same reason, region derivation
+from the broker hostname **anchors to the end of the host**: an unanchored match
+accepts `b-1.c.x.c2.kafka.us-east-1.amazonaws.com.evil.tld` as `us-east-1`.
+
+Wire-level mapping and the region fallback are in
+[`spec/feature/BACKEND.md` §Kafka Consumers](feature/BACKEND.md#kafka-consumers-optional-not-enabled-in-baseline).
+
+The `health` object on `GET` reports whether that configuration actually works.
+`is_configured` only states that values are present; a wrong mechanism, an
+expired credential, or a missing IAM permission is indistinguishable from a
+working setup until the consumer tries to connect. The consumer writes its
+outcome to the `peripheral_health` row keyed `datahub` (see
+[`spec/feature/BACKEND_SCHEMA.md`](feature/BACKEND_SCHEMA.md)) and this route
+reads it back. `status` is `unknown` when the consumer has never reported —
+including every deployment that runs no consumer at all.
+
 Across all peripherals, `is_configured` is a logical AND: it is `true` only when both the
 config row is present **and** the associated K8s Secret is set. A DB row without its secret, or
-a secret without its row, reads back `false`. On `PATCH`, a request carrying the secret field
-(`token` / `secret_key` / `password`) writes that value to the K8s Secret **first**; the DB write
-is skipped if the Secret write fails (`503`). A secret field omitted from the body leaves the
-Secret unchanged; an empty-string secret clears it. An empty `PATCH` body is a no-op (neither
+a secret without its row, reads back `false`. For DataHub the participating secret is `token`
+alone — `kafka_sasl_password` is optional and never affects the flag. On `PATCH`, a request
+carrying a secret field (`token` / `kafka_sasl_password` / `secret_key` / `password`) writes that
+value to the K8s Secret **first**; the DB write is skipped if the Secret write fails (`503`). A
+secret field omitted from the body leaves the Secret unchanged; an empty-string secret clears it. An empty `PATCH` body is a no-op (neither
 Secret nor DB is written).
 
 ### Internal Admin (`/internal/admin`)
@@ -703,7 +797,7 @@ Airflow DAGs, and automation.
 | `POST` | `/internal/admin/dags/verify` | — | `{found, missing, total_expected}` | `X-Internal-Token` |
 | `POST` | `/internal/admin/datahub/sync` | `{"dataset_urns": list[str] \| null}` | `{checked, flipped_true, flipped_false, unchanged, not_found}` | `X-Internal-Token` |
 | `PATCH` | `/internal/admin/conf` | partial conf fields | updated runtime config | `X-Internal-Token` |
-| `PATCH` | `/internal/admin/peripherals/datahub` | partial DataHub fields | updated DataHub config (with `token` masked) | `X-Internal-Token` |
+| `PATCH` | `/internal/admin/peripherals/datahub` | partial DataHub fields | updated DataHub config (with `token` and `kafka_sasl_password` masked) | `X-Internal-Token` |
 | `PATCH` | `/internal/admin/peripherals/langfuse` | partial Langfuse fields | updated Langfuse config (with `secret_key` masked) | `X-Internal-Token` |
 | `PATCH` | `/internal/admin/peripherals/smtp` | partial SMTP fields | updated SMTP config (with `password` masked) | `X-Internal-Token` |
 
