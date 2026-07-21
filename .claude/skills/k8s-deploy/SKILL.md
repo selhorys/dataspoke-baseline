@@ -47,6 +47,16 @@ are specified, operate on **all-for-profile**.
 
 ## Action: configure
 
+**Prod splits configuration across three planes.** Put each input in the plane that owns it and never mix them:
+
+| Plane | Holds | Source |
+|---|---|---|
+| env file (`helm-charts/.env.prod`) | deployment shape only — `DATASPOKE_KUBE_*` | `.env.prod.example`; `--env-file <path>` overrides the default |
+| `dataspoke-secrets` K8s Secret | the 12 credential keys | operator pre-creates before install — `helm-charts/README.md §2` |
+| operator overlay (`--values`) | ingress hosts, TLS secret names, CORS origins, OAuth redirect + client ID, `secrets.existingSecret` | copy of `values-prod.example.yaml` — `README.md §3` |
+
+Steps 1–3 and 5 below apply to both profiles; step 4 is dev-only.
+
 1. Read `helm-charts/.env.dev` (dev profile) or `helm-charts/.env.prod` (prod profile). If it does not exist, create it from `helm-charts/.env.dev.example` (dev) or `helm-charts/.env.prod.example` (prod).
 2. If it already exists, verify the canonical variables are present per spec `spec/feature/HELM_CHART.md §Configuration — Four-Tier Env Vars`:
    - **Kube deployment** (both profiles): `DATASPOKE_KUBE_CLUSTER`, `DATASPOKE_KUBE_DATASPOKE_NAMESPACE`, `DATASPOKE_KUBE_IMAGE_REGISTRY`, `DATASPOKE_KUBE_CLOUD_VENDOR` (`GCP` → Cloud Build; `AWS` → ECR via `DATASPOKE_AWS_PROFILE`, optional `DATASPOKE_DOCKER_SUDO`; empty → local Docker), `DATASPOKE_KUBE_INGRESS_MODE` (`managed` default — install & own nginx-ingress; `shared` — reuse a pre-existing controller), `DATASPOKE_KUBE_INGRESS_CLASS` (shared mode), `DATASPOKE_KUBE_INGRESS_IP` (managed: auto-populated in dev; shared: blank), `DATASPOKE_KUBE_INGRESS_DOMAIN` (managed: auto-populated `<IP>.nip.io`; shared: operator pre-set), `DATASPOKE_KUBE_INGRESS_SCHEME` (`http` default / `https` — scheme for every ingress-domain URL the dev install builds; set `https` when a shared controller terminates TLS), `DATASPOKE_KUBE_INGRESS_TLS_SECRET` (optional, default empty — when set, emits per-Ingress `tls:` blocks referencing this K8s TLS Secret).
@@ -54,7 +64,7 @@ are specified, operate on **all-for-profile**.
    - **Dev only** (dev profile): `DATASPOKE_DEV_KUBE_{DATAHUB,LANGFUSE,DUMMY_DATA}_NAMESPACE`, `DATASPOKE_DEV_KUBE_DATAHUB_{,PREREQUISITES_}CHART_VERSION`, `DATASPOKE_DEV_DATAHUB_MYSQL_{ROOT_,}PASSWORD`, `DATASPOKE_DEV_DUMMY_DATA_{KAFKA_INSTANCE,POSTGRES_USER,POSTGRES_PASSWORD,POSTGRES_DB}`, `DATASPOKE_DEV_LLM_{PROVIDER,API_KEY,MODEL}`. The Langfuse internals and peripheral connection outputs are auto-populated by the peripheral install scripts.
    - **Test access** (`DATASPOKE_TEST_*`): auto-populated by `install.sh` post-install via `_sync_env_from_secret`; never manually edited. Read by `tests/integration/` for laptop-side cluster access.
 3. **Do NOT** add stub-mode toggles to `.env.dev`. The four dependency factories are toggled via the `runtime_config` DB row (`stub_redis_client`, `stub_llm_client`, `stub_pgvector_manager`, `stub_notification_service`) — flippable via `PATCH /api/v1/admin/conf`, not in the env file.
-4. Generate secure passwords (16+ chars, mixed case, at least one special character) for any missing password variables.
+4. **Dev only** — generate secure passwords (16+ chars, mixed case, at least one special character) for any missing password variables. Never generate credentials into a prod env file: prod credentials live only in the pre-created K8s Secret.
 5. **Show the final env file content to the user and ask for confirmation before writing.** Do not proceed until the user approves. (Skip confirmation if the env file already has all required variables.)
 
 ---
@@ -67,14 +77,22 @@ Run `configure` first if the profile env file (`helm-charts/.env.dev` or `helm-c
 
 1. Verify `kubectl` and `helm` are installed.
 2. Verify the Kubernetes cluster specified in `DATASPOKE_KUBE_CLUSTER` is reachable (`kubectl cluster-info`).
-3. Report cluster node resources (`kubectl get nodes`) so the user can confirm the cluster meets the minimum requirements from `spec/feature/HELM_CHART.md §Resource Sizing` (8+ CPU / 24 GB RAM for the full dev profile).
-4. If any check fails, report clearly and stop.
+3. Report cluster node resources (`kubectl get nodes`) so the user can confirm the cluster meets the budget for the profile: `spec/feature/HELM_CHART.md §Resource Sizing` (8+ CPU / 24 GB RAM for the full dev profile), or for prod the operator-sized budget in `helm-charts/README.md §1` (2 API + 2 frontend replicas, Postgres 1–2 CPU / 2–6Gi, Airflow's five components, Redis primary + replica).
+4. **Prod only** — `install.sh` fails fast on all of the following *before* creating any resource. Check them here and stop with the remedy rather than letting the script abort mid-run (authoritative table: `README.md §2`):
+   - `--image-tag <tag>` is passed explicitly — prod refuses the mutable `:dev` tag.
+   - The `DATASPOKE_KUBE_INGRESS_CLASS` IngressClass (default `nginx`) exists: `kubectl get ingressclass <class>`.
+   - The credential Secret exists in the target namespace — `dataspoke-secrets`, or whatever the overlay's `secrets.existingSecret` names.
+   - All 12 keys are present in it: `DATASPOKE_POSTGRES_{USER,PASSWORD,DB}`, `DATASPOKE_REDIS_PASSWORD`, `DATASPOKE_AIRFLOW_{USER,PASSWORD}`, `DATASPOKE_AIRFLOW_{WEBSERVER_SECRET_KEY,JWT_SECRET}`, `DATASPOKE_INTERNAL_TOKEN`, `DATASPOKE_JWT_SECRET_KEY`, `DATASPOKE_OAUTH_STATE_SECRET`, `DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET`.
+   - None holds a known-bad literal: `DATASPOKE_JWT_SECRET_KEY` equal to the dev default, `DATASPOKE_AIRFLOW_USER` equal to `admin`, `DATASPOKE_AIRFLOW_PASSWORD` empty or `admin`, `DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET` starting with `placeholder-`.
+
+   If the Secret is missing, point the user at `README.md §2` — deliver the keys via ExternalSecrets, Vault, or SealedSecrets; the `kubectl create secret --from-env-file` form is the one-off bootstrap floor, never `--from-literal` (leaks into shell history and `ps auxww`). Do not create the Secret for the user, and do not put its values in the env file.
+5. If any check fails, report clearly and stop.
 
 ### Full install (all components for the profile)
 
 1. Execute the top-level install script **in the background**:
    - dev: `./helm-charts/bin/install.sh --profile dev`
-   - prod: `./helm-charts/bin/install.sh --profile prod --values <operator-overlay>` (ask the user for the overlay path)
+   - prod: `./helm-charts/bin/install.sh --profile prod --values <operator-overlay> --image-tag <tag>` — ask the user for both the overlay path and the tag; never `dev`. `--env-file <path>` is optional (defaults to `helm-charts/.env.prod`); `README.md §"Prod: committing an operator env file"` describes the credential-free committable variant a deployment fork may adopt.
    - **Frontend** (`--frontend none|local|cluster`, default `none` in dev / `cluster` in prod): pass `--frontend local` for the host-`pnpm dev` workflow (writes `src/frontend/.env.local`), `--frontend cluster` to deploy the containerised UI in-cluster, or `--frontend none` for API-only. `local` is dev-only. The install summary prints the resulting Web UI URL + default `dataspoke@dataspoke.local / dataspoke` login. If the user hasn't said, ask which frontend mode they want (or default per profile).
    - Note the background task ID and output file path.
 2. While the script runs, **alternate between two monitoring sources every ~30 seconds**:
@@ -92,7 +110,7 @@ Run `configure` first if the profile env file (`helm-charts/.env.dev` or `helm-c
 4. **Rebuild and redeploy the frontend only** (code-iteration path): `./helm-charts/bin/install.sh --profile dev --components frontend`. The dev umbrella keeps `frontend.enabled=false` (developers run host `pnpm dev` at `src/frontend`); this fast path builds the frontend image and helm-upgrades with `frontend.enabled=true` to deploy the containerised UI in-cluster (verification / prod-parity). Stop it with `kubectl scale deployment/dataspoke-frontend --replicas=0 -n "${DATASPOKE_KUBE_DATASPOKE_NAMESPACE}"`.
 5. Monitor with `/k8s-work` after each component completes.
 
-### Post-install
+### Post-install (dev)
 
 1. Confirm all expected components are running.
 2. Seed dummy data and register datasets in DataHub:
@@ -102,6 +120,15 @@ Run `configure` first if the profile env file (`helm-charts/.env.dev` or `helm-c
 3. Show access information (ingress endpoints table is in `helm-charts/README.md §Ingress Endpoints`; substitute `DATASPOKE_KUBE_INGRESS_IP` / `DATASPOKE_KUBE_INGRESS_DOMAIN` from `helm-charts/.env.dev`). In **shared** ingress mode `INGRESS_IP` is blank — HTTP services ride the operator-set `DATASPOKE_KUBE_INGRESS_DOMAIN`, and TCP services (Postgres/Redis/Kafka/lock) are reached on `127.0.0.1` by running `./helm-charts/bin/port-forward.sh` in a separate shell held open for the session.
 4. Inform the user that `helm-charts/.env.dev` has been populated with runtime variables (hosts, URLs, ports — including `DATASPOKE_TEST_LOCK_URL` and `DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST_PORT`) by `install.sh` (managed mode also derives ingress IP/domain in `dev-peripherals/nginx-ingress.sh`), and that they should run `source helm-charts/.env.dev` to load them into their shell.
 5. The post-install seeding step (dev profile) has already wired DataHub + Langfuse + LLM provider/model into the API's runtime config via `/internal/admin/peripherals/*` and `/internal/admin/conf` — no manual admin-API calls needed unless `--skip-seed` was set.
+
+### Post-install (prod)
+
+None of the dev steps above apply — prod installs no peripherals, seeds no dummy data, and auto-wires no runtime config. Authoritative sequence: `helm-charts/README.md §5–§7`.
+
+1. **Rotate the auto-seeded admin — REQUIRED, and it is already live.** Unless `--skip-seed` was passed, the install seeded `dataspoke@dataspoke.local` / `dataspoke` (`SKIP_SEED` defaults to `false`, so this runs on every prod install). That credential is published in this repository and authenticates against the API the moment install returns, for anyone who can reach it — how reachable depends on the operator's ingress controller and network posture, since the chart applies no source-range or auth gating on the API ingress. Walk the user through the `PATCH /api/v1/auth/me` recipe in `README.md §5`, which keeps the new password out of shell history and argv (`read -s` plus a heredoc into `-d @-`). Treat it as urgent if the controller is shared or internet-reachable. Do not report the install as complete until this is done or the user explicitly declines.
+2. If the install used `--skip-seed`, seed manually when ready: `ENV_FILE=helm-charts/.env.prod bash helm-charts/bin/post-install/seed-admin-user.sh`. The `ENV_FILE=` prefix is required (the script defaults to `.env.dev`), and the overlay's API ingress host must equal `api.<DATASPOKE_KUBE_INGRESS_DOMAIN>` (`README.md §6`). Then rotate per step 1.
+3. **Register peripherals and runtime config manually** — `PATCH /api/v1/admin/peripherals/{datahub,langfuse,smtp}` and `PATCH /api/v1/admin/conf` (`README.md §7`; request/response contracts in `spec/API.md`).
+4. Confirm all expected components are running, and report access URLs from the overlay's ingress hosts (`app.`, `api.`, `airflow.`).
 
 ---
 
@@ -120,11 +147,14 @@ Run `configure` first if the profile env file (`helm-charts/.env.dev` or `helm-c
 1. **Ask the user** whether to also delete PVCs and namespaces (both default to preserved).
 2. Execute the uninstall script with flags:
    - Always pass `--no-question` (user already confirmed).
-   - For full wipe (PVCs + namespaces):
+   - dev — full wipe (PVCs + namespaces):
      `./helm-charts/bin/uninstall.sh --profile dev --no-question --delete-all`
-   - Release-only (preserve PVCs and namespaces):
+   - dev — release-only (preserve PVCs and namespaces):
      `./helm-charts/bin/uninstall.sh --profile dev --no-question`
-   - Mix-and-match with `--delete-pvcs` and/or `--delete-namespaces` for partial wipes.
+   - dev — mix-and-match with `--delete-pvcs` and/or `--delete-namespaces` for partial wipes.
+   - **prod** — `--delete-pvcs` is dev-only and does not apply. Namespace deletion is prod's only full wipe:
+     `./helm-charts/bin/uninstall.sh --profile prod --no-question --delete-namespaces`
+     The flagless form uninstalls the release and chart-derived Secrets only. The operator-owned credential Secret is never deleted by the script. Before removing anything by hand, read `README.md §"Prod: what survives an uninstall"` — deleting `dataspoke-secrets` destroys the only copy of the 12 credentials and strands a retained Postgres PVC, and `dataspoke-airflow-fernet-key` must be kept or deleted together with that PVC or Airflow breaks on the next install.
 3. Clean up any orphaned PersistentVolumes in `Released` state.
 
 ### Partial uninstall (specific components)
