@@ -73,7 +73,10 @@ runbook in order.
 
 - An IngressClass already installed in the cluster (default expected name
   `nginx`; override with `DATASPOKE_KUBE_INGRESS_CLASS`) — the preflight checks
-  for it and fails fast if absent.
+  for it and fails fast if absent, and every Ingress the install creates (API,
+  frontend, Airflow) binds to it. The install passes it by `--set`, which
+  outranks the `className` in a `--values` overlay, so the env var is the one
+  place to change it.
 - DNS (or your own resolution mechanism) pointing the `app.`, `api.`, and
   `airflow.` subdomains of your chosen domain at that ingress controller.
 - Registry auth for pulling the built images — either a public registry or an
@@ -343,7 +346,9 @@ depends on `DATASPOKE_KUBE_INGRESS_MODE` in `helm-charts/.env.dev`:
   passthrough on the controller). `<SCHEME>` is `http` (typical).
 - **`shared`** — the install reuses the cluster's pre-existing ingress
   controller (e.g. AWS/EKS). The operator pre-sets
-  `DATASPOKE_KUBE_INGRESS_DOMAIN`, and `<TCP_HOST>` is `127.0.0.1` — TCP
+  `DATASPOKE_KUBE_INGRESS_DOMAIN` — wildcard DNS, or a record for each
+  `<service>.` host in the table below (`app.`, `api.`, `airflow.`, `datahub.`,
+  `datahub-gms.`, `langfuse.`) — and `<TCP_HOST>` is `127.0.0.1` — TCP
   services are forwarded to the same ports via `./helm-charts/bin/port-forward.sh`.
   `<SCHEME>` is `http` or `https` per `DATASPOKE_KUBE_INGRESS_SCHEME` — set
   `https` when the shared controller terminates TLS + HSTS in front of the
@@ -356,7 +361,7 @@ depends on `DATASPOKE_KUBE_INGRESS_MODE` in `helm-charts/.env.dev`:
 | Service | Address | Credentials |
 |---------|---------|-------------|
 | DataHub UI | `<SCHEME>://datahub.<INGRESS_DOMAIN>/` | `datahub` / `datahub` |
-| DataHub GMS | `<SCHEME>://datahub.<INGRESS_DOMAIN>/gms/` | -- |
+| DataHub GMS | `<SCHEME>://datahub-gms.<INGRESS_DOMAIN>/` | -- |
 | DataSpoke Web UI (dev `--frontend cluster`) | `<SCHEME>://app.<INGRESS_DOMAIN>/` | `dataspoke` / `dataspoke` — rotate via `PATCH /api/v1/auth/me` before production (see §Prod profile §5) |
 | DataSpoke Web UI (dev `--frontend local`) | `http://localhost:3000` | same as above |
 | DataSpoke API | `<SCHEME>://api.<INGRESS_DOMAIN>/api/v1/` | per `.env` JWT |
@@ -368,6 +373,24 @@ depends on `DATASPOKE_KUBE_INGRESS_MODE` in `helm-charts/.env.dev`:
 | Example PostgreSQL | `<TCP_HOST>:9102` | `postgres` / `ExampleDev2024!` |
 | Example Kafka | `<TCP_HOST>:9104` | -- |
 | Lock API | `<TCP_HOST>:9221` | -- |
+
+`datahub-gms.<INGRESS_DOMAIN>` is a credential-bearing origin: every call to it
+carries the DataHub personal access token in an `Authorization: Bearer` header.
+Give it the same treatment as the DataHub frontend host, not just a DNS record —
+certificate SAN coverage (a wildcard cert covers it; an explicit-SAN cert must
+list it) and whatever WAF or source-range allow-list your other DataSpoke hosts
+sit behind. With `DATASPOKE_KUBE_INGRESS_SCHEME=https` the GMS Ingress refuses
+the plaintext hop (`ssl-redirect: "true"`), so a missing SAN surfaces as a TLS
+error rather than a silent downgrade.
+
+Upgrading an existing dev environment: `DATASPOKE_TEST_DATAHUB_GMS_URL` in
+`helm-charts/.env.dev` is only rewritten by the DataHub install step. Until you
+re-run it, that variable still names the old origin and tooling keeps sending
+the PAT there:
+
+```bash
+./helm-charts/bin/install.sh --profile dev --components datahub
+```
 
 The dev default (`--frontend none`) does not deploy the frontend pod. To run the UI on the host:
 

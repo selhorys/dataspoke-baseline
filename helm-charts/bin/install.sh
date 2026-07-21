@@ -601,6 +601,11 @@ _frontend_helm_set_args() {
   local domain="$1"
   local scheme
   scheme="$(ingress_scheme)"
+  # Assigned, not inlined into the heredoc: a validation failure inside a
+  # command substitution that only produces heredoc text does not trip `set -e`,
+  # so an invalid class would be emitted as an empty token instead of aborting.
+  local ingress_cls
+  ingress_cls="$(ingress_class)"
   cat <<EOF
 --set
 frontend.enabled=true
@@ -613,7 +618,7 @@ frontend.image.pullPolicy=Always
 --set
 frontend.ingress.enabled=true
 --set
-frontend.ingress.className=nginx
+frontend.ingress.className=${ingress_cls}
 --set-string
 frontend.ingress.annotations.nginx\.ingress\.kubernetes\.io/ssl-redirect=false
 --set
@@ -701,6 +706,12 @@ _helm_upgrade_dataspoke_dev() {
   # (host pnpm dev on localhost vs in-cluster app.<domain>).
   local oauth_redirect="${scheme}://app.${dev_domain}/"
   [[ "$FRONTEND_MODE" == "local" ]] && oauth_redirect="http://localhost:3000/"
+  # One class for every Ingress this release renders. Note the key names differ:
+  # the API and frontend templates read `ingress.className`, the Airflow chart
+  # reads `ingress.apiServer.ingressClassName` — the wrong spelling is silently
+  # dropped and GKE falls back to provisioning a GCE LoadBalancer.
+  local ingress_cls
+  ingress_cls="$(ingress_class)"
 
   local args=(
     upgrade --install dataspoke "$CHART_DIR"
@@ -714,11 +725,13 @@ _helm_upgrade_dataspoke_dev() {
     --set-string "airflow.images.airflow.tag=${IMAGE_TAG}"
     --set airflow.images.airflow.pullPolicy=Always
     --set-string "config.airflow.callbackBaseUrl=http://dataspoke-api:8002"
+    --set "api.ingress.className=${ingress_cls}"
     --set "api.ingress.hosts[0].host=api.${dev_domain}"
     --set "api.ingress.hosts[0].paths[0].path=/"
     --set "api.ingress.hosts[0].paths[0].pathType=Prefix"
     --set-string "config.corsOrigins=http://localhost:3000\,http://app.${dev_domain}\,https://app.${dev_domain}"
     --set-string "config.oauthPostLoginRedirect=${oauth_redirect}"
+    --set "airflow.ingress.apiServer.ingressClassName=${ingress_cls}"
     --set "airflow.ingress.apiServer.hosts[0].name=airflow.${dev_domain}"
     --set-file "airflow.extraEnv=${extra_env_file}"
     --set "airflow.apiSecretKeySecretName=dataspoke-airflow-api-secret-key"
@@ -882,6 +895,11 @@ if [[ "$PROFILE" == "dev" ]]; then
     _build_chart_deps "$CHART_DIR"
 
     SCHEME="$(ingress_scheme)"
+    # One class for every Ingress this release renders. The API and frontend
+    # templates read `ingress.className`, the Airflow chart reads
+    # `ingress.apiServer.ingressClassName` — the wrong spelling is silently
+    # dropped and GKE falls back to provisioning a GCE LoadBalancer.
+    INGRESS_CLS="$(ingress_class)"
     local_extra_env_file="$(_build_airflow_extra_env_file "dataspoke-secrets")"
     frontend_fast_args=()
     while IFS= read -r _farg; do
@@ -907,11 +925,13 @@ if [[ "$PROFILE" == "dev" ]]; then
       --set-string "airflow.images.airflow.tag=${IMAGE_TAG}" \
       --set airflow.images.airflow.pullPolicy=Always \
       --set-string "config.airflow.callbackBaseUrl=http://dataspoke-api:8002" \
+      --set "api.ingress.className=${INGRESS_CLS}" \
       --set "api.ingress.hosts[0].host=api.${DOMAIN}" \
       --set "api.ingress.hosts[0].paths[0].path=/" \
       --set "api.ingress.hosts[0].paths[0].pathType=Prefix" \
       --set-string "config.corsOrigins=http://localhost:3000\,http://app.${DOMAIN}\,https://app.${DOMAIN}" \
       --set-string "config.oauthPostLoginRedirect=${SCHEME}://app.${DOMAIN}/" \
+      --set "airflow.ingress.apiServer.ingressClassName=${INGRESS_CLS}" \
       --set "airflow.ingress.apiServer.hosts[0].name=airflow.${DOMAIN}" \
       --set-file "airflow.extraEnv=${local_extra_env_file}" \
       --set "airflow.apiSecretKeySecretName=dataspoke-airflow-api-secret-key" \
@@ -1214,7 +1234,7 @@ if [[ "$PROFILE" == "dev" ]]; then
   fi
   echo ""
   echo "  DataHub UI:    ${SCHEME}://datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN:-<not set>}/"
-  echo "  DataHub GMS:   ${SCHEME}://datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN:-<not set>}/gms/"
+  echo "  DataHub GMS:   ${SCHEME}://datahub-gms.${DATASPOKE_KUBE_INGRESS_DOMAIN:-<not set>}/"
   echo "  DataSpoke API: ${SCHEME}://api.${DATASPOKE_KUBE_INGRESS_DOMAIN:-<not set>}/api/v1/"
   echo "  Airflow UI:    ${SCHEME}://airflow.${DATASPOKE_KUBE_INGRESS_DOMAIN:-<not set>}/"
   echo "  Langfuse UI:   ${DATASPOKE_TEST_LANGFUSE_HOST:-${SCHEME}://langfuse.<not set>}/"
@@ -1293,7 +1313,15 @@ elif [[ "$PROFILE" == "prod" ]]; then
   ensure_namespace "${NS}"
 
   # Verify the operator's shared ingress controller is installed (fail fast).
-  INGRESS_CLASS="${DATASPOKE_KUBE_INGRESS_CLASS:-nginx}"
+  #
+  # Required explicitly in prod — no `nginx` default. The --set below overrides
+  # whatever class the operator's --values overlay pins, so defaulting would
+  # silently republish the API, frontend, and Airflow UI on any IngressClass
+  # that happens to be named `nginx` (often another team's internet-facing
+  # controller). The existence check that follows proves the class is real, not
+  # that it is the one the operator meant.
+  : "${DATASPOKE_KUBE_INGRESS_CLASS:?must be set explicitly in the prod .env — install.sh --sets this class onto every DataSpoke Ingress, overriding the className in your --values overlay}"
+  INGRESS_CLASS="$(ingress_class)"
   if ! kubectl get ingressclass "${INGRESS_CLASS}" >/dev/null 2>&1; then
     error "IngressClass '${INGRESS_CLASS}' not found in the cluster. Install a controller or set DATASPOKE_KUBE_INGRESS_CLASS."
   fi
@@ -1376,9 +1404,22 @@ elif [[ "$PROFILE" == "prod" ]]; then
     api_image_prod_args+=("${_iarg}")
   done < <(_api_image_helm_set_args)
 
+  # One class for every Ingress this release renders, taken from
+  # DATASPOKE_KUBE_INGRESS_CLASS (required and verified against the cluster in
+  # pre-flight above). These --set flags outrank a class written into the
+  # operator's --values overlay: the env var is the single place an operator on
+  # `alb` or `traefik` changes it. The API and frontend templates read
+  # `ingress.className`, the Airflow chart reads
+  # `ingress.apiServer.ingressClassName` — the wrong spelling is silently
+  # dropped and GKE falls back to provisioning a GCE LoadBalancer.
+  INGRESS_CLS="$(ingress_class)"
+
   helm upgrade --install dataspoke "$CHART_DIR" \
     "${VALUES_ARGS[@]}" \
     -n "${NS}" \
+    --set "api.ingress.className=${INGRESS_CLS}" \
+    --set "frontend.ingress.className=${INGRESS_CLS}" \
+    --set "airflow.ingress.apiServer.ingressClassName=${INGRESS_CLS}" \
     "${api_image_prod_args[@]}" \
     --set-string postgresql.image.registry="" \
     --set-string "postgresql.image.repository=${DATASPOKE_KUBE_IMAGE_REGISTRY}/postgres" \

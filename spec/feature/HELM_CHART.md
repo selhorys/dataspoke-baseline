@@ -399,13 +399,9 @@ Same convention in both profiles; values differ.
   DataSpoke installs and owns an nginx-ingress controller + LoadBalancer
   (GKE Autopilot / minikube). `shared`: DataSpoke reuses a pre-existing
   cluster ingress controller and installs nothing (AWS/EKS). See §Ingress.
-- `DATASPOKE_KUBE_INGRESS_CLASS` — IngressClass name. Currently the only
-  supported value is `nginx`: DataSpoke's Ingress resources hardcode this class
-  (`values{,-dev}.yaml`, `install.sh`) and carry nginx-specific annotations, so
-  the variable is consulted only in shared mode, where the install verifies the
-  class exists. In managed mode the installed controller registers the fixed
-  `nginx` class from `values-dev.yaml`. Non-`nginx` classes are future work
-  (see §Ingress).
+- `DATASPOKE_KUBE_INGRESS_CLASS` — IngressClass name, default `nginx`, resolved
+  by the `ingress_class()` helper in `bin/lib/helpers.sh`. In shared mode the
+  install verifies the class already exists. See §Ingress.
 - `DATASPOKE_KUBE_INGRESS_IP` — managed: populated by the nginx-ingress
   install from the LoadBalancer external IP; shared: blank (no owned
   LoadBalancer); prod: operator-supplied as needed.
@@ -539,8 +535,9 @@ namespace must appear inside a static manifest — the nginx-ingress `tcp:`
 service map in `dev-peripherals/nginx-ingress/values.yaml`, which names the
 backend Services by `<namespace>/<service>` — carries `__*_NS__` placeholders
 (`__DATASPOKE_NS__`, `__DATAHUB_NS__`, `__DUMMY_DATA_NS__`) that the install
-substitutes from `.env` via `sed`, mirroring the existing
-`__DATAHUB_INGRESS_HOST__` rendering in `bin/dev-peripherals/datahub.sh`.
+substitutes from `.env` via `sed`, mirroring the GMS ingress rendering in
+`bin/dev-peripherals/datahub.sh` (`__DATAHUB_GMS_INGRESS_HOST__`,
+`__DATAHUB_INGRESS_CLASS__`, `__DATAHUB_SSL_REDIRECT__`).
 
 **Kafka `advertisedListeners`** is not embedded statically either:
 `datahub.sh` injects it with `--set-string` from the datahub namespace plus the
@@ -629,7 +626,7 @@ the operator's, performed against the running deployment.
 | # | Step | Interface |
 |---|---|---|
 | 1 | Pre-create the credentials Secret with all twelve keys (see §Secret keys below) | Any secrets manager (ExternalSecrets Operator, Vault Agent, SealedSecrets) or `kubectl create secret generic` |
-| 2 | Write the values overlay: `secrets.existingSecret`, ingress hosts, TLS, registry, replica counts | Start from `helm-charts/values-prod.example.yaml` |
+| 2 | Write the values overlay: `secrets.existingSecret`, ingress hosts, TLS, registry, replica counts. The IngressClass is *not* an overlay field — it comes from `DATASPOKE_KUBE_INGRESS_CLASS` in `.env.prod` (see §Ingress) | Start from `helm-charts/values-prod.example.yaml` |
 | 3 | Install — the chart, then the automatic admin seed | `bin/install.sh --profile prod --image-tag <tag> --values <overlay.yaml>` |
 | 4 | **Rotate the default admin credential — required** | `PATCH /api/v1/auth/me` |
 | 5 | Register peripherals | `/api/v1/admin/peripherals/{datahub,langfuse,smtp}` and `/api/v1/admin/conf` (LLM provider/model/key) |
@@ -830,21 +827,37 @@ Dev decisions:
   5–10 min; the script uses custom poll-based readiness instead.
 - **Relaxed liveness probes** on GMS and frontend to tolerate transient
   OpenSearch restarts.
-- **Frontend ingress uses `className: "nginx"`** — the subchart (0.3.4) uses
-  `className`, not `ingressClassName`; the wrong key is silently dropped and
-  GKE falls back to provisioning a GCE LoadBalancer.
+- **Frontend ingress takes the class through `className`** — the subchart
+  (0.3.4) uses `className`, not `ingressClassName`; the wrong key is silently
+  dropped and GKE falls back to provisioning a GCE LoadBalancer. The value is
+  the resolved `ingress_class()`.
 - **`datahub-gms` and `datahub-frontend` Services are `ClusterIP`** — the chart
   defaults both to `LoadBalancer`, which on AWS/EKS provisions redundant NLBs
   beside the nginx Ingress and exposes the GMS metadata API plus jmx/prometheus
   ports. DataSpoke overrides both to `ClusterIP`; external access is solely
-  through the nginx Ingress (GMS at `datahub.<domain>/gms`, frontend at
+  through the Ingress (GMS at `datahub-gms.<domain>/`, frontend at
   `datahub.<domain>/`).
+- **GMS has its own hostname, not a path on the frontend host** — a plain
+  host-root route (`datahub-gms.<domain>`, path `/`, `pathType: Prefix`) needs
+  no regex path match and no rewrite annotation, so it behaves identically on
+  community ingress-nginx (`k8s.io/ingress-nginx`) and NGINX Inc
+  (`nginx.org/ingress-controller`), and leaves no route-level obstacle for other
+  controllers, which supply their own class-specific annotations (an ALB class,
+  for instance, needs `target-type: ip` for the `ClusterIP` backend). Sharing
+  the frontend's host would require a second Ingress on an already-claimed host
+  plus rewrite annotations — a combination only the community controller honors.
+  The hostname derivation is centralized in the `datahub_gms_host()` helper in
+  `bin/lib/helpers.sh`. The split is for laptop-side
+  test, tooling, and install access only: in-cluster callers reach GMS over
+  cluster DNS (`datahub-datahub-gms.<ns>.svc.cluster.local:8080`) and are
+  unaffected by the ingress topology.
 
 Service name prefixes: `datahub-prerequisites-*` for the prerequisites
 release (MySQL, Kafka controller); `opensearch-cluster-master` for the
 OpenSearch subchart's own release.
 
-Writes to .env.dev: `DATASPOKE_TEST_DATAHUB_GMS_URL`, `DATASPOKE_TEST_DATAHUB_TOKEN`
+Writes to .env.dev: `DATASPOKE_TEST_DATAHUB_GMS_URL`
+(`<SCHEME>://datahub-gms.<INGRESS_DOMAIN>`), `DATASPOKE_TEST_DATAHUB_TOKEN`
 (generated PAT), `DATASPOKE_TEST_DATAHUB_KAFKA_BROKERS`,
 `DATASPOKE_TEST_DATAHUB_FRONTEND_URL` (browser-facing UI URL).
 
@@ -1089,7 +1102,7 @@ DataSpoke supports two dev ingress modes, selected by
 | Controller | DataSpoke installs & owns nginx-ingress + a LoadBalancer | reuses the operator's controller; installs nothing |
 | Domain | derived `<IP>.nip.io` from the LoadBalancer IP | operator-pre-set real hostname (DNS published by the cluster, e.g. external-dns) |
 | Virtual-host scheme | `http` (typical) | `http` or `https` per `DATASPOKE_KUBE_INGRESS_SCHEME`; `https` when the controller terminates TLS + HSTS |
-| Virtual hosts | ✓ (app/api/datahub/airflow/langfuse) | ✓ (same hosts, on the operator's controller) |
+| Virtual hosts | ✓ (app/api/datahub/datahub-gms/airflow/langfuse) | ✓ (same hosts, on the operator's controller) |
 | TCP datastores | exposed via LoadBalancer TCP passthrough on the IP | not exposed — reached on `127.0.0.1` via `bin/port-forward.sh` |
 | Kafka EXTERNAL listener advertises | `<INGRESS_IP>:<port>` | `127.0.0.1:<port>` |
 | Teardown | `uninstall.sh` removes the controller | controller left untouched |
@@ -1099,9 +1112,43 @@ controller and DNS, so DataSpoke must not install or modify them. Prod follows
 the same reuse posture: the operator's controller serves the hosts, with
 `values.yaml` ingress hosts and TLS secrets operator-supplied.
 
-Frontend, API, and Airflow each have an `ingress` block in their values
-supporting `className` (nginx, alb, traefik, etc.), TLS via cert-manager
-annotations, and customizable host/path rules.
+Frontend, API, and Airflow each have an `ingress` block in their values owning
+the host, path, and TLS (cert-manager annotations, `tls:` blocks) of their rule.
+The class key in those blocks — `api`/`frontend.ingress.className`,
+`airflow.ingress.apiServer.ingressClassName` — holds a chart default; the
+effective class is supplied by the install.
+
+**One class, one source.** Every Ingress in the table below binds to the class
+resolved by `ingress_class()` (`DATASPOKE_KUBE_INGRESS_CLASS`, default `nginx`):
+`install.sh` supplies it to the umbrella chart's API, frontend, and Airflow
+ingresses; each `bin/dev-peripherals/*.sh` supplies it to its own chart (DataHub
+frontend, Langfuse); and it is substituted into the GMS kubectl manifest. All
+three paths set it by `--set`/substitution, which outranks any values file, so a
+class written into a values overlay has no effect — an operator on `alb` or
+`traefik` changes the env var. In managed mode the same value is the name the
+owned controller registers as its own `ingressClassResource`, so a mismatch
+between controller and resource is not representable.
+
+**Route correctness depends on no annotation.** Every rule is a host-root path
+(`/`) with no regex match and no rewrite annotation, because path-splitting and
+rewriting are honored only by specific controllers. The host-root path also
+makes the rendered `pathType` immaterial — whichever value a chart defaults to
+matches everything. The annotations DataSpoke does carry are community
+ingress-nginx spellings; a foreign controller ignores them and falls back to its
+own default for that knob, which never changes where a request is routed. The
+GMS manifest is the exception that states its own reason: as the metadata-push
+path it must accept large payloads, so it carries the body-size limit in both
+the `nginx.ingress.kubernetes.io/` and `nginx.org/` spellings and each
+controller ignores the other's. No other manifest does this.
+
+**The GMS host is public and relies on GMS's own token auth.** No Ingress
+DataSpoke creates carries an allow-list, source-range restriction, or auth
+annotation; `datahub-gms.<domain>` is reachable by anyone who resolves it, and
+authentication is enforced inside GMS on every path except its fixed unauthenticated
+allow-list (`/health`, `/config`, `/schema-registry/*`, `/actuator/prometheus`).
+Because it accepts a long-lived personal access token, an operator publishing it
+on a shared controller gives it the same certificate-SAN and WAF treatment as the
+API host, not just a DNS record.
 
 For the dev install path, `DATASPOKE_KUBE_INGRESS_TLS_SECRET` (optional, default
 empty) controls per-Ingress TLS on the three dev ingresses DataSpoke owns. When
@@ -1120,7 +1167,7 @@ Ingresses themselves carry TLS.
 | `templates/api-ingress.yaml` | umbrella chart | `api.<INGRESS_IP>.nip.io/` → `dataspoke-api:8002` |
 | `subcharts/frontend/templates/ingress.yaml` | frontend subchart | `app.<INGRESS_IP>.nip.io/` → `dataspoke-frontend:3000` |
 | `airflow.ingress` values | airflow chart (native) | `airflow.<INGRESS_IP>.nip.io/` → `dataspoke-airflow-api-server:8080` |
-| `dev-peripherals/datahub/gms-ingress.yaml` | kubectl manifest | `datahub.<INGRESS_IP>.nip.io/gms` → `datahub-datahub-gms:8080` |
+| `dev-peripherals/datahub/gms-ingress.yaml` | kubectl manifest | `datahub-gms.<INGRESS_IP>.nip.io/` → `datahub-datahub-gms:8080` |
 | `datahub-frontend.ingress` values | DataHub chart (native) | `datahub.<INGRESS_IP>.nip.io/` → `datahub-frontend:9002` |
 | `langfuse.ingress` values | Langfuse chart (native) | `langfuse.<INGRESS_IP>.nip.io/` → langfuse web:3000 |
 

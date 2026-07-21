@@ -68,9 +68,9 @@ Run these checks before executing any code:
 python3 -c "import datahub; print('acryl-datahub', datahub.__version__)" 2>/dev/null \
   || pip3 install acryl-datahub --quiet
 
-# 2. Derive GMS URL from .env.dev (ingress-based)
+# 2. Read the GMS URL from .env.dev (GMS has its own ingress host)
 source helm-charts/.env.dev 2>/dev/null || true
-DATAHUB_GMS_URL="http://datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN}/gms"
+DATAHUB_GMS_URL="${DATASPOKE_TEST_DATAHUB_GMS_URL:-http://datahub-gms.${DATASPOKE_KUBE_INGRESS_DOMAIN}}"
 
 # 3. Check GMS is reachable via ingress
 curl -s "${DATAHUB_GMS_URL}/config" \
@@ -92,7 +92,7 @@ If any prerequisite fails, stop and inform the user with the fix instructions.
 Only use this if the static `ref/` files don't answer the question.
 
 Derive the base URLs from `helm-charts/.env.dev`: `source helm-charts/.env.dev`, then:
-- GMS base: `http://datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN}/gms`
+- GMS base: `${DATASPOKE_TEST_DATAHUB_GMS_URL}` (i.e. `http://datahub-gms.${DATASPOKE_KUBE_INGRESS_DOMAIN}`)
 - DataHub UI: `http://datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN}`
 
 | Resource | URL pattern | Notes |
@@ -113,7 +113,7 @@ Read the GMS URL from the environment (set by `source helm-charts/.env.dev`):
 from datahub.ingestion.graph.client import DataHubGraph, DatahubClientConfig
 import os
 
-# GMS is accessible via ingress: http://datahub.<INGRESS_DOMAIN>/gms
+# GMS is accessible via its own ingress host: http://datahub-gms.<INGRESS_DOMAIN>
 gms_url = os.environ["DATASPOKE_TEST_DATAHUB_GMS_URL"]  # set in helm-charts/.env
 
 graph = DataHubGraph(DatahubClientConfig(
@@ -178,7 +178,7 @@ from datahub.emitter.mce_builder import (
 ## Constraints
 
 1. **Never use `kubectl exec`** to interact with DataHub — it bypasses the API surface and doesn't reflect production behavior.
-2. **Never run ad-hoc `kubectl port-forward`** — DataHub GMS is accessible via ingress at `http://datahub.<INGRESS_DOMAIN>/gms`. If the ingress is unreachable, run `./helm-charts/bin/health-check.sh` to diagnose.
+2. **Never run ad-hoc `kubectl port-forward`** — DataHub GMS is accessible via ingress at `http://datahub-gms.<INGRESS_DOMAIN>` (`$DATASPOKE_TEST_DATAHUB_GMS_URL`). If the ingress is unreachable, run `./helm-charts/bin/health-check.sh` to diagnose.
 3. **Always read the matching tutorial/example first** before writing API code.
 4. **Prefer static `ref/` lookup over live API exploration** for speed — only fall back to Swagger/GraphiQL when the static ref is ambiguous.
 

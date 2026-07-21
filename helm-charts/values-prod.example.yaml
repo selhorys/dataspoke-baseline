@@ -73,7 +73,7 @@
 frontend:
   ingress:
     enabled: true
-    className: "nginx"          # match your cluster's IngressClass name
+    className: "nginx"          # ignored — install.sh --sets it from DATASPOKE_KUBE_INGRESS_CLASS
     annotations:
       cert-manager.io/cluster-issuer: "letsencrypt-prod"   # no cert-manager? set to null — renders as "" (see header)
     hosts:
@@ -120,7 +120,7 @@ api:
     - name: my-registry-pull-secret
   ingress:
     enabled: true
-    className: "nginx"
+    className: "nginx"          # ignored — install.sh --sets it from DATASPOKE_KUBE_INGRESS_CLASS
     annotations:
       nginx.ingress.kubernetes.io/proxy-body-size: "50m"
       cert-manager.io/cluster-issuer: "letsencrypt-prod"   # no cert-manager? set to null — this deletes the key (see header)
@@ -146,7 +146,7 @@ airflow:
   ingress:
     apiServer:
       enabled: true
-      ingressClassName: "nginx"
+      ingressClassName: "nginx"   # ignored — install.sh --sets it from DATASPOKE_KUBE_INGRESS_CLASS
       annotations:
         nginx.ingress.kubernetes.io/ssl-redirect: "false"
         cert-manager.io/cluster-issuer: "letsencrypt-prod"   # no cert-manager? set to "" — `null` FAILS helm template here (see header)

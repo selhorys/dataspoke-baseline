@@ -52,18 +52,20 @@ if [[ "$(ingress_mode)" == "shared" ]]; then
 
   : "${DATASPOKE_KUBE_INGRESS_DOMAIN:?DATASPOKE_KUBE_INGRESS_DOMAIN must be pre-set in .env for shared ingress mode (e.g. dataspoke-dev.your-host.com)}"
 
-  INGRESS_CLASS="${DATASPOKE_KUBE_INGRESS_CLASS:-nginx}"
+  INGRESS_CLASS="$(ingress_class)"
   if ! kubectl get ingressclass "${INGRESS_CLASS}" >/dev/null 2>&1; then
     error "IngressClass '${INGRESS_CLASS}' not found in the cluster. Set DATASPOKE_KUBE_INGRESS_CLASS to the shared controller's class, or install a controller."
   fi
   info "IngressClass '${INGRESS_CLASS}' is present."
 
   SCHEME="$(ingress_scheme)"
+  GMS_HOST="$(datahub_gms_host)"
   echo ""
   info "Shared ingress verified. DataSpoke virtual hosts will be published (${SCHEME}) under:"
   echo "  DataSpoke UI:  ${SCHEME}://app.${DATASPOKE_KUBE_INGRESS_DOMAIN}/"
   echo "  DataSpoke API: ${SCHEME}://api.${DATASPOKE_KUBE_INGRESS_DOMAIN}/api/v1/..."
   echo "  DataHub UI:    ${SCHEME}://datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN}/"
+  echo "  DataHub GMS:   ${SCHEME}://${GMS_HOST}/"
   echo "  Airflow UI:    ${SCHEME}://airflow.${DATASPOKE_KUBE_INGRESS_DOMAIN}/"
   echo "  Langfuse UI:   ${SCHEME}://langfuse.${DATASPOKE_KUBE_INGRESS_DOMAIN}/"
   echo ""
@@ -98,7 +100,7 @@ PERIPHERALS_DIR="$(cd "$BIN_DIR/../dev-peripherals" && pwd)"
 
 # ---------------------------------------------------------------------------
 # Render namespace placeholders in values.yaml before passing to Helm.
-# This mirrors the __DATAHUB_INGRESS_HOST__ sed pattern in bin/dev-peripherals/datahub.sh.
+# This mirrors the __DATAHUB_GMS_INGRESS_HOST__ sed pattern in bin/dev-peripherals/datahub.sh.
 # The tcp: map carries __*_NS__ tokens that must resolve to actual namespace names.
 # ---------------------------------------------------------------------------
 : "${DATASPOKE_KUBE_DATASPOKE_NAMESPACE:?required in .env for nginx-ingress tcp services}"
@@ -113,10 +115,15 @@ sed \
   -e "s|__DUMMY_DATA_NS__|${DATASPOKE_DEV_KUBE_DUMMY_DATA_NAMESPACE}|g" \
   "$PERIPHERALS_DIR/nginx-ingress/values.yaml" > "$RENDERED_VALUES"
 
-info "Installing ingress-nginx controller..."
+# The controller registers its IngressClass under the same name every DataSpoke
+# Ingress binds to (ingress_class()), so controller and resources cannot drift.
+INGRESS_CLASS="$(ingress_class)"
+
+info "Installing ingress-nginx controller (IngressClass '${INGRESS_CLASS}')..."
 helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
   --namespace "${NS}" \
   --values "$RENDERED_VALUES" \
+  --set "controller.ingressClassResource.name=${INGRESS_CLASS}" \
   --timeout 5m
 
 # ---------------------------------------------------------------------------
@@ -208,7 +215,7 @@ echo "HTTP endpoints (Tier A):"
 echo "  DataSpoke UI:  ${SCHEME}://app.${INGRESS_DOMAIN}/"
 echo "  DataSpoke API: ${SCHEME}://api.${INGRESS_DOMAIN}/api/v1/..."
 echo "  DataHub UI:    ${SCHEME}://datahub.${INGRESS_DOMAIN}/"
-echo "  DataHub GMS:   ${SCHEME}://datahub.${INGRESS_DOMAIN}/gms/..."
+echo "  DataHub GMS:   ${SCHEME}://datahub-gms.${INGRESS_DOMAIN}/"
 echo "  Airflow UI:    ${SCHEME}://airflow.${INGRESS_DOMAIN}/"
 echo ""
 echo "TCP endpoints (Tier B):"

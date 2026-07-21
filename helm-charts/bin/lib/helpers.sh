@@ -67,6 +67,44 @@ ingress_scheme() {
   echo "$scheme"
 }
 
+# ingress_class
+# Echo the validated IngressClass name every DataSpoke Ingress binds to, from
+# DATASPOKE_KUBE_INGRESS_CLASS (default `nginx`). One source for all three
+# paths that create Ingresses — the umbrella chart's API/frontend/Airflow
+# ingresses, the peripheral charts (DataHub frontend, Langfuse), and the GMS
+# kubectl manifest — each supplying it by `--set` or substitution so it
+# outranks any values file. In managed mode it is also the class name the
+# owned nginx-ingress controller registers as its ingressClassResource.
+# Errors out if the value is not a valid DNS-1123 subdomain (Kubernetes
+# object-name rules) — it is interpolated into `helm --set` tokens, where a
+# comma starts the next assignment and a newline becomes a standalone helm
+# flag, and into a `sed` substitution whose output is piped to `kubectl apply`.
+ingress_class() {
+  local class="${DATASPOKE_KUBE_INGRESS_CLASS:-nginx}"
+  if [[ ! "$class" =~ ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$ ]]; then
+    error "Invalid DATASPOKE_KUBE_INGRESS_CLASS '${class}'. Must be a valid DNS-1123 subdomain (lowercase alphanumeric, '-', '.')."
+  fi
+  echo "$class"
+}
+
+# datahub_gms_host
+# Echo the validated virtual host serving DataHub GMS to laptop-side callers
+# (tests, tooling, the install's own PAT mint). GMS gets its own hostname
+# rather than a path on the DataHub frontend host so its rule is a plain
+# host-root route that needs no rewrite annotation and no second Ingress on a
+# claimed host. In-cluster callers use cluster DNS and are unaffected.
+# Errors out if DATASPOKE_KUBE_INGRESS_DOMAIN is unset or the derived host is
+# not a valid DNS-1123 subdomain — the host reaches the same `helm --set` and
+# `sed`-into-`kubectl apply` sinks as ingress_class(), and additionally becomes
+# the origin that tooling sends the DataHub PAT to.
+datahub_gms_host() {
+  local host="datahub-gms.${DATASPOKE_KUBE_INGRESS_DOMAIN:-}"
+  if [[ ! "$host" =~ ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$ ]]; then
+    error "Invalid DATASPOKE_KUBE_INGRESS_DOMAIN '${DATASPOKE_KUBE_INGRESS_DOMAIN:-}'. The derived GMS host '${host}' must be a valid DNS-1123 subdomain (lowercase alphanumeric, '-', '.')."
+  fi
+  echo "$host"
+}
+
 # ingress_tls_secret
 # Echo the validated TLS Secret name from DATASPOKE_KUBE_INGRESS_TLS_SECRET,
 # or an empty string when unset (no per-Ingress TLS). Errors out if the value

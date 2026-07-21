@@ -39,8 +39,8 @@ global:
 datahub-gms:
   # The chart defaults the GMS service to LoadBalancer, which provisions a
   # redundant NLB beside the nginx Ingress and exposes the metadata API plus
-  # jmx/prometheus ports. Access is via the nginx Ingress (datahub-gms Ingress
-  # at datahub.<domain>/gms), so keep GMS as in-cluster ClusterIP.
+  # jmx/prometheus ports. Access is via the Ingress (the datahub-gms Ingress at
+  # datahub-gms.<domain>/), so keep GMS as in-cluster ClusterIP.
   service:
     type: ClusterIP
   # Annotation-only eviction guard — datahub-gms subchart has no PDB template.
@@ -100,6 +100,8 @@ datahub-frontend:
     failureThreshold: 6
   ingress:
     enabled: true
+    # Chart default only — bin/dev-peripherals/datahub.sh --sets the class from
+    # ingress_class() (DATASPOKE_KUBE_INGRESS_CLASS).
     className: "nginx"
     annotations:
       nginx.ingress.kubernetes.io/ssl-redirect: "false"

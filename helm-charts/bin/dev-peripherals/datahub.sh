@@ -32,6 +32,15 @@ if [[ "$(ingress_mode)" != "shared" ]]; then
 fi
 KAFKA_EXTERNAL_HOST="$(tcp_access_host)"
 SCHEME="$(ingress_scheme)"
+# Resolved once, by assignment, so the helpers' DNS-1123 validation aborts the
+# install here: a failure inside a command substitution used only as an
+# argument does not trip `set -e`, and would pass an empty class or a bare
+# "${SCHEME}://" origin downstream to helm, sed, and the .env write.
+INGRESS_CLASS="$(ingress_class)"
+GMS_HOST=""
+if [[ -n "${DATASPOKE_KUBE_INGRESS_DOMAIN:-}" ]]; then
+  GMS_HOST="$(datahub_gms_host)"
+fi
 
 NS="${DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE}"
 
@@ -168,6 +177,7 @@ helm upgrade --install datahub datahub/datahub \
   --namespace "${NS}" \
   --values "$PERIPHERALS_DIR/datahub/values.yaml" \
   --set "datahub-frontend.ingress.hosts[0].host=datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN:-dev.dataspoke.example.com}" \
+  --set "datahub-frontend.ingress.className=${INGRESS_CLASS}" \
   ${oidc_args[@]+"${oidc_args[@]}"} \
   --timeout 15m
 
@@ -233,9 +243,18 @@ fi
 if [[ -n "${DATASPOKE_KUBE_INGRESS_DOMAIN:-}" ]]; then
   info "Applying DataHub GMS ingress..."
   DATAHUB_HOST="datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN}"
-  sed "s/__DATAHUB_INGRESS_HOST__/${DATAHUB_HOST}/g" \
+  # This host carries the PAT on every call, so an https deployment refuses the
+  # plaintext hop; http (the managed nip.io default) has no https listener to
+  # redirect to. Both operands are DNS-1123-validated by their helpers, and the
+  # '|' delimiter matches the substitution style in nginx-ingress.sh.
+  GMS_SSL_REDIRECT="false"
+  [[ "$SCHEME" == "https" ]] && GMS_SSL_REDIRECT="true"
+  sed \
+    -e "s|__DATAHUB_GMS_INGRESS_HOST__|${GMS_HOST}|g" \
+    -e "s|__DATAHUB_INGRESS_CLASS__|${INGRESS_CLASS}|g" \
+    -e "s|__DATAHUB_SSL_REDIRECT__|${GMS_SSL_REDIRECT}|g" \
     "$PERIPHERALS_DIR/datahub/gms-ingress.yaml" | kubectl apply -n "${NS}" -f -
-  info "GMS ingress applied: ${SCHEME}://${DATAHUB_HOST}/gms/"
+  info "GMS ingress applied: ${SCHEME}://${GMS_HOST}/ (class ${INGRESS_CLASS}, ssl-redirect ${GMS_SSL_REDIRECT})"
 
   # Reconcile datahub-frontend ingress host to avoid stale defaults.
   LIVE_FE_HOST=$(kubectl get ingress datahub-datahub-frontend -n "${NS}" \
@@ -260,7 +279,7 @@ fi
 # ---------------------------------------------------------------------------
 if [[ -n "${DATASPOKE_KUBE_INGRESS_DOMAIN:-}" ]]; then
   upsert_env_var DATASPOKE_TEST_DATAHUB_GMS_URL \
-    "${SCHEME}://datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN}/gms" \
+    "${SCHEME}://${GMS_HOST}" \
     "$ENV_FILE"
   upsert_env_var DATASPOKE_TEST_DATAHUB_KAFKA_BROKERS \
     "${KAFKA_EXTERNAL_HOST}:9005" \
@@ -281,7 +300,7 @@ fi
 # Generate Personal Access Token (PAT) for SDK/CLI access
 # ---------------------------------------------------------------------------
 if [[ -n "${DATASPOKE_KUBE_INGRESS_DOMAIN:-}" ]]; then
-  GMS_URL="${SCHEME}://datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN}/gms"
+  GMS_URL="${SCHEME}://${GMS_HOST}"
 
   # Re-read .env to pick up any existing token
   source "$ENV_FILE"
@@ -405,7 +424,7 @@ kubectl get pods -n "${NS}"
 echo ""
 if [[ -n "${DATASPOKE_KUBE_INGRESS_DOMAIN:-}" ]]; then
   echo "  DataHub UI:  ${SCHEME}://datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN}/"
-  echo "  DataHub GMS: ${SCHEME}://datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN}/gms/"
+  echo "  DataHub GMS: ${SCHEME}://${GMS_HOST}/"
 fi
 echo "  Credentials: datahub / datahub"
 echo ""

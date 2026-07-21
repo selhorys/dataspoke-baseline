@@ -25,7 +25,7 @@ api:
     pullPolicy: Always
   ingress:
     enabled: true
-    className: "nginx"
+    className: "nginx"  # chart default; install.sh --sets it from DATASPOKE_KUBE_INGRESS_CLASS
     annotations:
       nginx.ingress.kubernetes.io/proxy-body-size: "50m"
       nginx.ingress.kubernetes.io/ssl-redirect: "false"
@@ -281,7 +281,7 @@ airflow:
   ingress:
     apiServer:
       enabled: true
-      ingressClassName: "nginx"
+      ingressClassName: "nginx"  # chart default; install.sh --sets it from DATASPOKE_KUBE_INGRESS_CLASS
       annotations:
         nginx.ingress.kubernetes.io/ssl-redirect: "false"
       hosts:

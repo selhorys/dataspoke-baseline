@@ -70,7 +70,7 @@ langfuse:
     # ---- Ingress: no TLS in dev ----
     ingress:
       enabled: true
-      className: "nginx"
+      className: "nginx"  # chart default; langfuse.sh --sets it from DATASPOKE_KUBE_INGRESS_CLASS
       annotations:
         nginx.ingress.kubernetes.io/ssl-redirect: "false"
         nginx.ingress.kubernetes.io/proxy-body-size: "50m"

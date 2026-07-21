@@ -19,7 +19,9 @@ export const meta = {
 //                                       "test", "frontend", "k8s-helm"]). The `spec` stage, when
 //                                       present, leads so later stages read the updated spec.
 //   security: string[]                — stages whose diff touches the sensitive paths listed in
-//                                       .claude/agents/security-reviewer.md (decided at plan time)
+//                                       .claude/agents/security-reviewer.md (decided at plan time).
+//                                       Applies to NO_REVIEW stages too — `k8s-helm` writes
+//                                       values*.yaml and dev-peripherals scripts, both sensitive.
 // The harness may deliver args JSON-stringified; normalize before validating.
 const ARGS = typeof args === 'string' ? JSON.parse(args) : args
 if (!ARGS || typeof ARGS.plan !== 'string' || !Array.isArray(ARGS.stages)) {
@@ -27,7 +29,7 @@ if (!ARGS || typeof ARGS.plan !== 'string' || !Array.isArray(ARGS.stages)) {
 }
 
 const REVIEWER_FOR = { test: 'test-reviewer', spec: 'spec-reviewer' } // every other reviewed stage uses `reviewer`
-const NO_REVIEW = ['k8s-helm'] // no review loop, per CLAUDE.md step 9
+const NO_REVIEW = ['k8s-helm'] // no spec-compliance review loop, per CLAUDE.md step 9
 const RANK = { APPROVE: 0, REVISE: 1, ESCALATE: 2 }
 
 const REVIEW_SCHEMA = {
@@ -81,11 +83,20 @@ ${report}
 Read every changed file yourself — do not trust the report's claims. Return verdict, findings, and a one-paragraph summary via structured output.`
 }
 
-// One review pass: `reviewer` (or `test-reviewer`), plus `security-reviewer` in
-// parallel for security-flagged stages. Verdicts merge worst-of; findings concatenate.
-async function reviewPass(stage, report, pass) {
-  const reviewers = [REVIEWER_FOR[stage] || 'reviewer']
+// Reviewers for a stage: `reviewer` (or `test-reviewer` / `spec-reviewer`), plus
+// `security-reviewer` for security-flagged stages. A NO_REVIEW stage skips only the
+// spec-compliance reviewer — CLAUDE.md's sensitive-path rule is stage-independent, so a
+// stage named in `args.security` still gets its security pass.
+function reviewersFor(stage) {
+  const reviewers = NO_REVIEW.includes(stage) ? [] : [REVIEWER_FOR[stage] || 'reviewer']
   if ((ARGS.security || []).includes(stage)) reviewers.push('security-reviewer')
+  return reviewers
+}
+
+// One review pass: the stage's reviewers run in parallel. Verdicts merge worst-of;
+// findings concatenate.
+async function reviewPass(stage, report, pass) {
+  const reviewers = reviewersFor(stage)
   const results = (await parallel(reviewers.map(type => () =>
     agent(reviewPrompt(stage, report), {
       agentType: type,
@@ -111,7 +122,7 @@ async function runStage(stage) {
     agentType: stage, phase: stage, label: `${stage}:generate`,
   })
   if (report == null) return { stage, outcome: 'ESCALATE', summary: 'generator failed or was skipped' }
-  if (NO_REVIEW.includes(stage)) return { stage, outcome: 'DONE', report }
+  if (reviewersFor(stage).length === 0) return { stage, outcome: 'DONE', report }
 
   let review = await reviewPass(stage, report, 'review-1')
   if (review.verdict === 'REVISE') {

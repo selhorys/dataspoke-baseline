@@ -995,7 +995,7 @@ only *select* the mechanism — it cannot supply the credential.
 
 | Variable | Purpose | Dev Source |
 |----------|---------|------------|
-| `DATASPOKE_TEST_DATAHUB_GMS_URL` | GMS endpoint read by integration tests, `tests/integration/util/datahub.py`, and the `datahub-api` skill | Written by `helm-charts/bin/dev-peripherals/datahub.sh` (`http://datahub.<INGRESS_DOMAIN>/gms`) |
+| `DATASPOKE_TEST_DATAHUB_GMS_URL` | GMS endpoint read by integration tests, `tests/integration/util/datahub.py`, and the `datahub-api` skill | Written by `helm-charts/bin/dev-peripherals/datahub.sh` (`<SCHEME>://datahub-gms.<INGRESS_DOMAIN>` — GMS has its own ingress host, so no path prefix) |
 | `DATASPOKE_TEST_DATAHUB_TOKEN` | Personal access token; required because dev GMS runs with `METADATA_SERVICE_AUTH_ENABLED=true`. Minted by `helm-charts/bin/dev-peripherals/datahub.sh` directly against the GMS metadata service (see [Dev PAT minting](#dev-pat-minting)) and written back to `.env.dev`. | generated PAT |
 | `DATASPOKE_TEST_DATAHUB_KAFKA_BROKERS` | Kafka brokers for MCE/MAE events. **Optional** — only required when an organisation enables event-driven extensions; the baseline UC1–UC5 flows are schedule-driven via Airflow and do not subscribe to Kafka. | `<INGRESS_IP>:9005` |
 

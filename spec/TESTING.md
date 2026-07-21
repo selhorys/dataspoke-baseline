@@ -482,7 +482,7 @@ Route namespaces: `/api/v1/spoke/{governance,ingestion,validation,ontogen,metage
 | Event logged | `GET /api/v1/spoke/<feature>/data/{urn}/event` (one of `ingestion`, `validation`, `metagen`) |
 | Airflow DAG | `curl http://airflow.<INGRESS_IP>.nip.io/api/v2/dags/{dag_id}` |
 | DB row | `psql -h $DATASPOKE_TEST_POSTGRES_HOST -p $DATASPOKE_TEST_POSTGRES_PORT -U $DATASPOKE_TEST_POSTGRES_USER -d $DATASPOKE_TEST_POSTGRES_DB` |
-| DataHub aspect | `curl http://datahub.<INGRESS_IP>.nip.io/gms/aspects?urn={urn}&aspect={aspect}` |
+| DataHub aspect | `curl $DATASPOKE_TEST_DATAHUB_GMS_URL/aspects?urn={urn}&aspect={aspect}` (`http://datahub-gms.<INGRESS_IP>.nip.io`) |
 
 ### References
 

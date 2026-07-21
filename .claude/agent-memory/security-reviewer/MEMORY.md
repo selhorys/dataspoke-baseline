@@ -7,3 +7,5 @@
 - [Pydantic v2 pattern anchoring](project_pydantic_v2_pattern_anchoring.md) — rust-regex, ^ is start-of-haystack; ^scheme:// guards hold, but no trailing $ still allows creds/CRLF/unicode
 - [Operator runbook is a credential surface](project_operator_runbook_is_credential_surface.md) — helm-charts/README.md prod runbook: verify doc claims against install.sh, not against other docs
 - [Consumer DB-plane → wire boundary](project_consumer_db_plane_to_wire_boundary.md) — peripheral_config JSONB must be re-validated on READ; consumer skips it, unlike peripheral_links
+- [.env → sed/helm interpolation boundary](project_env_to_sed_helm_interpolation_boundary.md) — ingress_tls_secret validates, ingress_class/domain do not; sed→kubectl apply is a sink
+- [DataHub GMS public virtual host](project_datahub_gms_public_virtual_host.md) — GMS at datahub-gms.<domain>/ root; auth-excluded paths + no TLS block; exposure set unchanged vs old /gms route

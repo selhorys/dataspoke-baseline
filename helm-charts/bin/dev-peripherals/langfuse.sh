@@ -167,12 +167,17 @@ info "dataspoke-langfuse-secret applied in ${LANGFUSE_NS}."
 # ---------------------------------------------------------------------------
 INGRESS_DOMAIN="${DATASPOKE_KUBE_INGRESS_DOMAIN}"
 LANGFUSE_HOST="$(ingress_scheme)://langfuse.${INGRESS_DOMAIN}"
+# Assigned, not inlined into the helm command: a validation failure inside a
+# command substitution that is merely an argument does not trip `set -e`, so an
+# invalid class would reach helm as an empty value instead of aborting.
+INGRESS_CLASS="$(ingress_class)"
 
 info "Installing/upgrading langfuse Helm release in namespace ${LANGFUSE_NS}..."
 helm upgrade --install langfuse "$CHART_DIR" \
   -f "$CHART_DIR/values.yaml" \
   -n "${LANGFUSE_NS}" \
   --set-string "langfuse.langfuse.nextauth.url=${LANGFUSE_HOST}" \
+  --set-string "langfuse.langfuse.ingress.className=${INGRESS_CLASS}" \
   --set-string "langfuse.langfuse.ingress.hosts[0].host=langfuse.${INGRESS_DOMAIN}" \
   --set-string "langfuse.langfuse.ingress.hosts[0].paths[0].path=/" \
   --set-string "langfuse.langfuse.ingress.hosts[0].paths[0].pathType=Prefix" \

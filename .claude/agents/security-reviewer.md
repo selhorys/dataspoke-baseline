@@ -40,6 +40,8 @@ The orchestrator invokes you **only when a generator's diff touches a sensitive 
 - `.prauto/**` — autonomous worker (unsupervised, higher blast radius)
 - `helm-charts/dev-peripherals/langfuse/templates/**`, `helm-charts/dev-peripherals/langfuse/values*.yaml`, `helm-charts/bin/dev-peripherals/langfuse.sh` — Langfuse credentials and config (LLM trace store)
 - `helm-charts/bin/post-install/**`, `helm-charts/bin/dev-peripherals/**` — install-time orchestration that mutates Kubernetes Secrets and PATCHes admin API endpoints
+- `helm-charts/bin/lib/helpers.sh` — shared derivation of ingress class, scheme, TLS secret name, and service hostnames; its values are interpolated into `helm --set` tokens, `sed` replacements, and `kubectl apply` input by every install script
+- `helm-charts/dev-peripherals/**/*.yaml` — static manifests rendered by `sed` and applied with `kubectl`, plus peripheral chart values
 - `plugin/bin/**`, `plugin/skills/dataspoke-access/**` — end-user plugin credential model: mints/stores/transmits the `dsk_` API token and handles a login password
 
 Keep this list in sync with reality — if you see a new sensitive surface that is not listed, flag it in your findings and the orchestrator will update.

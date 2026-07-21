@@ -13,6 +13,9 @@
 
 controller:
   ingressClassResource:
+    # Chart default only — bin/dev-peripherals/nginx-ingress.sh --sets the name
+    # from ingress_class() (DATASPOKE_KUBE_INGRESS_CLASS), the same class every
+    # DataSpoke Ingress binds to.
     name: nginx
     default: true
   service:

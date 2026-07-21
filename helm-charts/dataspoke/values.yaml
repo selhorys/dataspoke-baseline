@@ -35,7 +35,7 @@ frontend:
     port: 3000
   ingress:
     enabled: true
-    className: "nginx"
+    className: "nginx"  # chart default; install.sh --sets it from DATASPOKE_KUBE_INGRESS_CLASS
     annotations:
       cert-manager.io/cluster-issuer: "letsencrypt-prod"
     hosts:
@@ -87,7 +87,7 @@ api:
     port: 8002
   ingress:
     enabled: true
-    className: "nginx"
+    className: "nginx"  # chart default; install.sh --sets it from DATASPOKE_KUBE_INGRESS_CLASS
     annotations:
       nginx.ingress.kubernetes.io/proxy-body-size: "50m"
       cert-manager.io/cluster-issuer: "letsencrypt-prod"
@@ -492,7 +492,7 @@ airflow:
   ingress:
     apiServer:
       enabled: true
-      ingressClassName: "nginx"
+      ingressClassName: "nginx"  # chart default; install.sh --sets it from DATASPOKE_KUBE_INGRESS_CLASS
       annotations:
         nginx.ingress.kubernetes.io/ssl-redirect: "false"
         cert-manager.io/cluster-issuer: "letsencrypt-prod"

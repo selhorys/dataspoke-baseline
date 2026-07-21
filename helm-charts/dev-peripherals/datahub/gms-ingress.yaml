@@ -2,11 +2,25 @@
 # The DataHub Helm chart does not provide a native GMS ingress resource,
 # so this manifest is applied separately by helm-charts/bin/dev-peripherals/datahub.sh.
 #
-# The install script replaces __DATAHUB_INGRESS_HOST__ with the actual
-# nip.io hostname (e.g. datahub.<INGRESS_IP>.nip.io) before applying.
+# The install script substitutes three placeholders before applying:
+#   __DATAHUB_GMS_INGRESS_HOST__  → datahub-gms.<INGRESS_DOMAIN> (datahub_gms_host())
+#   __DATAHUB_INGRESS_CLASS__     → the IngressClass name (ingress_class())
+#   __DATAHUB_SSL_REDIRECT__      → "true" when ingress_scheme() is https, else "false"
 #
-# Path rewrite: /gms/<path> → /<path>
-# GMS expects plain paths (/health, /api/graphql), not the /gms prefix.
+# GMS owns its own hostname and is served at the host root, so the rule needs
+# no regex path match and no rewrite annotation: every controller routes it the
+# same way, and GMS receives the plain paths it expects (/health, /api/graphql).
+#
+# This host carries the DataHub PAT and the system-client credential on every
+# request, so the http→https redirect follows the deployment scheme rather than
+# being pinned off: an https deployment refuses to answer the same request over
+# plaintext. The host needs certificate SAN coverage and the same WAF/allow-list
+# treatment as the DataHub frontend host — see helm-charts/README.md §Access.
+#
+# GMS is the metadata-push path and must accept large payloads, so the
+# body-size limit is carried in both the community ingress-nginx and the NGINX
+# Inc annotation spellings; each controller ignores the other's. This is the
+# only DataSpoke manifest that does so.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -15,17 +29,17 @@ metadata:
     app.kubernetes.io/name: datahub-gms
     app.kubernetes.io/component: gms
   annotations:
-    nginx.ingress.kubernetes.io/rewrite-target: "/$1"
     nginx.ingress.kubernetes.io/proxy-body-size: "50m"
-    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/ssl-redirect: "__DATAHUB_SSL_REDIRECT__"
+    nginx.org/proxy-body-size: "50m"
 spec:
-  ingressClassName: nginx
+  ingressClassName: "__DATAHUB_INGRESS_CLASS__"
   rules:
-    - host: "__DATAHUB_INGRESS_HOST__"
+    - host: "__DATAHUB_GMS_INGRESS_HOST__"
       http:
         paths:
-          - path: /gms/(.*)
-            pathType: ImplementationSpecific
+          - path: /
+            pathType: Prefix
             backend:
               service:
                 name: datahub-datahub-gms
