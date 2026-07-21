@@ -6,8 +6,8 @@
  *     Langfuse session id; the Evidence cell links to
  *     {langfuseUrl}/project/{projectId}/sessions/{run_id} in a new tab, and
  *     renders an em dash when the run or the Langfuse wiring is absent.
- *   - spec/feature/FRONTEND_BASIC.md §Shell: langfuseUrl / langfuseProjectId
- *     resolve env-first, then GET /spoke/common/peripheral-links — supplied here
+ *   - spec/feature/FRONTEND_BASIC.md §Shell: langfuse_url / langfuse_project_id
+ *     resolve from GET /spoke/common/peripheral-links only — supplied here
  *     through useDisplayLinks.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -79,7 +79,7 @@ describe("EvidenceLink — unconfigured", () => {
     expect(screen.getByText("—")).toBeTruthy();
   });
 
-  it("renders an em dash when neither plane supplies a Langfuse URL", () => {
+  it("renders an em dash when Langfuse is not wired as a peripheral", () => {
     setLinks("", "proj-1");
     render(<EvidenceLink runId={RUN_ID} />);
     expect(screen.queryByRole("link")).toBeNull();

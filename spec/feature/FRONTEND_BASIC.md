@@ -94,29 +94,34 @@ docs. Each icon renders only when its URL resolves non-empty. The DataHub icon
 links to `<datahub_url>/login` (the `/login` suffix is DataHub-specific);
 Langfuse and Airflow use the bare URL; ReDoc is `apiBaseUrl` + `/redoc`.
 
-Two resolution sources back these links, split by whether the system is an
-externally-wired peripheral:
+Each link resolves from exactly one source; which one depends on whether the
+system is an externally-wired peripheral:
 
 | Link | Source | Resolution |
 |---|---|---|
-| DataHub, Langfuse (URL + `langfuse_project_id`) | Peripheral | Runtime config (`datahubUrl`/`langfuseUrl`/`langfuseProjectId`, from the `DATASPOKE_{DATAHUB,LANGFUSE}_URL` and `DATASPOKE_LANGFUSE_PROJECT_ID` env vars, `NEXT_PUBLIC_*` in host dev) **first**, then [`GET /spoke/common/peripheral-links`](../API.md) |
+| DataHub, Langfuse (URL + `langfuse_project_id`) | Peripheral | [`GET /spoke/common/peripheral-links`](../API.md#data-resource-spokecommondata) only |
 | Airflow, ReDoc | Deployment-local | Runtime config only (`airflowUrl`, `apiBaseUrl`) |
 
-Peripheral links resolve **env-first**: an explicitly-set env value wins, and the
-API supplies the value when the env var is unset. Peripheral wiring done purely
-in the DB plane (`PATCH /admin/peripherals/{datahub,langfuse}`) therefore reaches
-the UI with no chart operation and no pod restart. Airflow and ReDoc stay env-only
-because they are not externally wired: Airflow ships in the umbrella chart and
-ReDoc is the API itself, so neither appears in `peripheral_config`.
+`GET /spoke/common/peripheral-links` serves the `peripheral_config` DB plane, the
+**sole** source of `datahub_url`, `langfuse_url`, and `langfuse_project_id` — the
+client carries no alternative for these three values, so nothing can mask what the
+DB holds. Peripheral wiring done in that plane
+(`PATCH /admin/peripherals/{datahub,langfuse}`) therefore reaches the UI with no
+chart operation and no pod restart. A resolved link is retained while the read
+refreshes and across a failed refresh, so a wired icon never flashes away and back;
+only a read that has never succeeded leaves the value unresolved. Airflow and ReDoc
+instead come from runtime config because they are not externally wired: Airflow
+ships in the umbrella chart and ReDoc is the API itself, so neither appears in
+`peripheral_config`.
 
-Operators control visibility by setting or omitting the URLs in either plane, so
-deployments that should not expose an infra UI simply leave both unset.
+Operators control visibility by setting or omitting the URLs in `peripheral_config`,
+so deployments that should not expose an infra UI simply leave them unset.
 
 Both peripheral values are re-checked in the client against the display-link safety
 rule ([`API.md` §Data Resource](../API.md#data-resource-spokecommondata)) before they reach an anchor `href`, and a
 failing value resolves to `""` — the same "render no link" state as an unset one. The
-client check is not redundant with the API's: it also covers the env-sourced values,
-which win over the API and never pass a backend boundary.
+client check backstops the API's coercion at the point of interpolation, so the value
+is validated where it actually becomes an `href`.
 `langfuse_project_id` follows the same resolution and deep-links evidence
 references into their Langfuse trace sessions.
 
@@ -633,8 +638,8 @@ These component IDs are referenced from per-function specs.
   [API.md](../API.md), `attr/validation/result`) — receives `until = to`. It has
   no API of its own; it only shapes the query strings of the reads it drives.
 - **DatahubDatasetLink** — a shared external deep-link to a dataset's DataHub page,
-  `<datahub_url>/dataset/{urn}` (URN URL-encoded). It resolves the DataHub URL by the
-  same env-first, then `GET /spoke/common/peripheral-links` rule as the header icon
+  `<datahub_url>/dataset/{urn}` (URN URL-encoded). It resolves the DataHub URL from
+  `GET /spoke/common/peripheral-links` by the same rule as the header icon
   (see [Shell](#shell)), and renders a labelled new-tab link (`_blank rel=noopener`)
   only when that URL is non-empty; otherwise nothing. Reused across the
   dataset tables (the Governance dataset catalog, the Ingestion unmanaged + source

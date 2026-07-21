@@ -967,6 +967,17 @@ test("UC3 real-LLM step 4 — result envelopes valid; ≥1 row persisted; rows c
   test.skip(stubLlm, "stub_llm_client=true; set false via PATCH /admin/conf to run real-LLM tests");
   if (!realConfCreated) test.skip(true, "real-LLM step 1 did not complete");
 
+  // Arm the Evidence-cell settle signal before navigating: the page's own
+  // peripheral-links read is what turns an Evidence cell from its link-free first
+  // paint into its final state. The rejection is folded into a null so the Link
+  // branch, which does not await it, cannot trip an unhandled rejection.
+  const pageLinksSettled = page
+    .waitForResponse(
+      (resp) => resp.url().includes("/spoke/common/peripheral-links") && resp.status() === 200,
+      { timeout: 20_000 }
+    )
+    .catch(() => null);
+
   // /ontogen redirects to /ontogen/result (FRONTEND_ONTOGEN.md §Navigation).
   await page.goto("/ontogen");
   await expect(page).not.toHaveURL(/\/login/);
@@ -1056,7 +1067,7 @@ test("UC3 real-LLM step 4 — result envelopes valid; ≥1 row persisted; rows c
   expect(anyRowsFound, "Real LLM run produced zero rows carrying this run's run_id").toBe(true);
 
   // -- UI assertion: the Nodes table exposes the Evidence column with a Langfuse Link --
-  // spec: FRONTEND_ONTOGEN.md §Result table — Evidence column (after Created At) renders a
+  // spec: FRONTEND_ONTOGEN.md §Page contracts — Evidence column (after Created At) renders a
   //   Link opening the run's Langfuse session in a new tab; the Confidence cell is score-only.
   // evidence-link.tsx renders <a target="_blank" rel="noopener noreferrer">Link</a>.
   await page.getByRole("tab", { name: "Nodes" }).click();
@@ -1066,17 +1077,74 @@ test("UC3 real-LLM step 4 — result envelopes valid; ≥1 row persisted; rows c
   ).toBeVisible({ timeout: 10_000 });
   // The Confidence cell no longer hosts an Evidence button.
   await expect(nodesPanel.getByRole("button", { name: /evidence/i })).toHaveCount(0);
-  // When the langfuse host + slug are configured for the browser, the row's Evidence cell
-  // is an external Link to .../sessions/{run_id}; otherwise it is an em dash. Assert whichever
-  // the configured deployment renders, and that any Link opens a new tab.
+  // Which branch applies is decided from backend state, not from the DOM: the host and
+  // slug arrive with the peripheral-links query, so a cold load renders the row before
+  // any Link exists and a DOM-derived branch would silently take the em-dash path.
+  // spec: FRONTEND_ONTOGEN.md §Page contracts (Evidence cell) — both the host and the
+  //   project slug resolve from GET /spoke/common/peripheral-links; the Link "renders
+  //   only when all three values are present; otherwise the cell shows `—`".
+  const linksResp = await adminApi.get("/api/v1/spoke/common/peripheral-links");
+  expect(linksResp.status()).toBe(200);
+  const peripheralLinks = (await linksResp.json()) as {
+    langfuse_url: string;
+    langfuse_project_id: string;
+  };
+
+  // The table's first row under the default created_at_desc sort — read from the
+  // backend so the third value (the row's own run_id) is known too.
+  const topNodeResp = await adminApi.get(
+    "/api/v1/spoke/ontogen/result/node?offset=0&limit=20&sort=created_at_desc"
+  );
+  expect(topNodeResp.status()).toBe(200);
+  const topNode = ((await topNodeResp.json()) as { nodes: Array<{ run_id: string | null }> })
+    .nodes[0];
+  expect(topNode, "real-LLM run persisted no ontology node to review").toBeDefined();
+
   const firstNodeRow = nodesPanel.getByRole("row").nth(1);
-  const evidenceLink = firstNodeRow.getByRole("link", { name: "Link", exact: true });
-  if (await evidenceLink.count()) {
+  // Evidence is the seventh (last) column, so scope both branches to that cell —
+  // a row-wide em-dash locator would also match an empty Description.
+  const evidenceCell = firstNodeRow.getByRole("cell").nth(6);
+  const evidenceLink = evidenceCell.getByRole("link", { name: "Link", exact: true });
+  if (topNode.run_id && peripheralLinks.langfuse_url && peripheralLinks.langfuse_project_id) {
+    // All three values are present, so the Link must appear and target that run's
+    // own session — the run_id is in hand here, so pin it rather than accepting any
+    // session path.
+    await expect(evidenceLink.first()).toHaveAttribute(
+      "href",
+      new RegExp(
+        `/project/${escapeRe(encodeURIComponent(peripheralLinks.langfuse_project_id))}` +
+          `/sessions/${escapeRe(encodeURIComponent(topNode.run_id))}$`
+      ),
+      { timeout: 10_000 }
+    );
+    // The host half of the spec's `{langfuse_url}/project/{id}/sessions/{run_id}`
+    // shape: built on the configured Langfuse host, invariant under a stored
+    // trailing slash (the spec states no normalisation rule).
+    const href = await evidenceLink.first().getAttribute("href");
+    expect(href, "the Evidence href must be built on the configured Langfuse host").toContain(
+      new URL(peripheralLinks.langfuse_url).origin
+    );
     await expect(evidenceLink.first()).toHaveAttribute("target", "_blank");
     await expect(evidenceLink.first()).toHaveAttribute("rel", /noopener/);
-    await expect(evidenceLink.first()).toHaveAttribute("href", /\/sessions\//);
+  } else {
+    // At least one of the three is absent: the cell settles on the em dash and no
+    // Link is ever rendered. Wait for the page's peripheral-links read first, so
+    // the absence check runs on the resolved cell rather than the first paint.
+    expect(
+      await pageLinksSettled,
+      "the page must issue GET /spoke/common/peripheral-links before the Evidence cell can settle"
+    ).not.toBeNull();
+    await expect(evidenceCell.getByText("—", { exact: true })).toBeVisible({
+      timeout: 10_000,
+    });
+    await expect(evidenceLink).toHaveCount(0);
   }
 });
+
+/** Escapes a value for literal use inside a RegExp. */
+function escapeRe(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Real-LLM step 5 — cleanup: DELETE seed; PATCH conf disabled

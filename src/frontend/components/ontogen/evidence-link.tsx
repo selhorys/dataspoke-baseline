@@ -9,7 +9,7 @@
  * in a new tab. Otherwise (seeded rows with no run, or tracing disabled), it
  * renders an em dash.
  *
- * The Langfuse host and project slug resolve env-first, then
+ * The Langfuse host and project slug resolve from
  * `GET /spoke/common/peripheral-links` (see useDisplayLinks). This component
  * renders once per result row, and that hook shares one stable query key across
  * every instance, so a table of N rows still issues a single request.

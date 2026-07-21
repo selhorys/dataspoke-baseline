@@ -5,11 +5,13 @@
  * a rebuild. Falls back to NEXT_PUBLIC_* env vars for local dev (`pnpm dev`).
  */
 
+/**
+ * Deployment-local wiring only. The DataHub and Langfuse links are externally
+ * wired peripherals and resolve solely from `GET /spoke/common/peripheral-links`
+ * (see `lib/api/peripheral-links.ts`), so they have no representation here.
+ */
 export interface RuntimeConfig {
   apiBaseUrl: string;
-  datahubUrl: string;
-  langfuseUrl: string;
-  langfuseProjectId: string;
   airflowUrl: string;
 }
 
@@ -24,12 +26,10 @@ declare global {
  *
  * Resolution order (highest priority first):
  *   1. window.__DATASPOKE_RUNTIME_CONFIG__ — set by the server layout at
- *      request time from DATASPOKE_API_BASE_URL / DATASPOKE_DATAHUB_URL /
- *      DATASPOKE_LANGFUSE_URL / DATASPOKE_LANGFUSE_PROJECT_ID / DATASPOKE_AIRFLOW_URL
- *   2. NEXT_PUBLIC_API_BASE_URL / NEXT_PUBLIC_DATAHUB_URL /
- *      NEXT_PUBLIC_LANGFUSE_URL / NEXT_PUBLIC_LANGFUSE_PROJECT_ID /
- *      NEXT_PUBLIC_AIRFLOW_URL — build-time env vars, useful in `pnpm dev` via .env.local
- *   3. Empty strings (same-origin API, no DataHub link)
+ *      request time from DATASPOKE_API_BASE_URL / DATASPOKE_AIRFLOW_URL
+ *   2. NEXT_PUBLIC_API_BASE_URL / NEXT_PUBLIC_AIRFLOW_URL — build-time env
+ *      vars, useful in `pnpm dev` via .env.local
+ *   3. Empty strings (same-origin API, no Airflow link)
  *
  * SSR-safe: the window branch is guarded by typeof window !== "undefined".
  */
@@ -41,18 +41,11 @@ export function getRuntimeConfig(): RuntimeConfig {
       // running without DATASPOKE_API_BASE_URL set, as in host `pnpm dev`)
       // falls back to the NEXT_PUBLIC build-time value.
       apiBaseUrl: w.apiBaseUrl || process.env.NEXT_PUBLIC_API_BASE_URL || "",
-      datahubUrl: w.datahubUrl || process.env.NEXT_PUBLIC_DATAHUB_URL || "",
-      langfuseUrl: w.langfuseUrl || process.env.NEXT_PUBLIC_LANGFUSE_URL || "",
-      langfuseProjectId:
-        w.langfuseProjectId || process.env.NEXT_PUBLIC_LANGFUSE_PROJECT_ID || "",
       airflowUrl: w.airflowUrl || process.env.NEXT_PUBLIC_AIRFLOW_URL || "",
     };
   }
   return {
     apiBaseUrl: process.env.NEXT_PUBLIC_API_BASE_URL ?? "",
-    datahubUrl: process.env.NEXT_PUBLIC_DATAHUB_URL ?? "",
-    langfuseUrl: process.env.NEXT_PUBLIC_LANGFUSE_URL ?? "",
-    langfuseProjectId: process.env.NEXT_PUBLIC_LANGFUSE_PROJECT_ID ?? "",
     airflowUrl: process.env.NEXT_PUBLIC_AIRFLOW_URL ?? "",
   };
 }

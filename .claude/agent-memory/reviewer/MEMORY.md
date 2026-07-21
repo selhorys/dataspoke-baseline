@@ -19,3 +19,4 @@
 - [Helm null + redis-replicas gotchas](project_helm_null_and_replicas_gotchas.md) — redis replica STS is plural; `key: null` removes/keeps-empty/errors depending on parent vs subchart vs schema chart
 - [Verify install.sh prod-branch claims](feedback_verify_install_branch_claims.md) — read the whole prod elif past the last step banner; dev's `_has_component` gating doesn't apply
 - [peripheral_config cache x 2 replicas](project_peripheral_cache_multireplica.md) — 30s process cache + replicaCount 2 makes read-modify-write counters silently no-op
+- [Grep old-rule prose in consumers](feedback_grep_old_rule_prose_in_consumers.md) — deleting a precedence rule? grep its prose across consumers; identifier-only greps miss stale doc comments

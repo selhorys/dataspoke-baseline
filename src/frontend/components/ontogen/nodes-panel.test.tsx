@@ -3,27 +3,35 @@
  * Node / Edge / Triple result tables).
  *
  * Spec traces:
- *   - spec/feature/FRONTEND_ONTOGEN.md §Result table (7-column compact layout):
+ *   - spec/feature/FRONTEND_ONTOGEN.md §Page contracts (7-column compact layout):
  *     Title, Description, Status, Confidence (score only), Actions
  *     (Approve/Reject → reason confirm), Created At, Evidence (Langfuse session
  *     Link, new tab).
  *   - spec/API.md §UC3 result rows: ?sort=created_at_asc|_desc (default desc),
  *     offset/limit pagination via the shared <Pagination> control.
- *   - Plan: each row's run_id doubles as its Langfuse session id; the Evidence
- *     cell renders an external Link to {langfuseUrl}/project/{projectId}/sessions/
- *     {run_id} (or — when run_id / Langfuse config is missing); review submits
- *     { verdict, reason }; sort + pagination change query params.
+ *   - spec/feature/FRONTEND_ONTOGEN.md §Page contracts (Evidence cell): the URL is
+ *     built client-side as {langfuse_url}/project/{langfuse_project_id}/sessions/
+ *     {run_id}, opens in a new tab, and "renders only when all three values are
+ *     present; otherwise the cell shows `—`". Both the host and the project slug
+ *     resolve from GET /spoke/common/peripheral-links.
+ *   - spec/feature/FRONTEND_ONTOGEN.md §Page contracts (review): choosing an action
+ *     opens a confirmation dialog carrying a free-text reason field; confirming
+ *     posts method/review with {verdict, reason}.
  *
  * Strategy: mock @/lib/api/ontogen (data + review hooks), and stub the Radix
  * Dialog/Select with simple open-aware renderers so assertions stay on behavior
  * rather than jsdom portal/focus-trap mechanics. The data hook is a spy so we can
  * read the {offset, limit, sort} params the panel threads on each render. The
- * Langfuse runtime config is injected via window.__DATASPOKE_RUNTIME_CONFIG__.
+ * Langfuse host and project slug are supplied through a mocked useDisplayLinks,
+ * the same way components/ontogen/evidence-link.test.tsx supplies them — this
+ * suite is about the table, and the hook's own resolution from
+ * GET /spoke/common/peripheral-links is covered in lib/api/peripheral-links.test.tsx.
+ * One Evidence case keeps the real hook and seeds only the endpoint response, so
+ * the wiring from the endpoint through the row to the href stays pinned here.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, within } from "@testing-library/react";
+import { render, screen, fireEvent, within, waitFor } from "@testing-library/react";
 import React from "react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { OntogenNode } from "@/types/ontogen";
 
 // ── hoisted spies ──────────────────────────────────────────────────────────
@@ -127,35 +135,35 @@ vi.mock("@/components/ui/select", () => ({
 vi.mock("@/lib/preferences/timezone", () => ({ useDisplayTz: () => "utc" }));
 vi.mock("@/components/ui/use-toast", () => ({ useToast: () => ({ toast: vi.fn() }) }));
 
-import { NodesPanel } from "./nodes-panel";
-
-// This suite asserts the Evidence href, so it runs the REAL useDisplayLinks
-// rather than a stub: that covers the WIRING — the component reads the hook, the
-// hook reads the endpoint, and a resolved URL reaches the href.
-//
-// It does NOT cover merge precedence. The mocked endpoint below reports no links,
-// so `env || api` and `api || env` both resolve to the env plane and an inverted
-// merge passes here unchanged. Precedence is guarded in
-// lib/api/peripheral-links.test.tsx, where both planes carry competing values and
-// the assertion is gated on the query settling.
-vi.mock("@/lib/api/client", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/lib/api/client")>()),
-  apiFetch: vi.fn().mockResolvedValue({
-    resp_time: "2026-07-19T00:00:00.000Z",
-    datahub_url: "",
-    langfuse_url: "",
-    langfuse_project_id: "",
-  }),
+// The peripheral display links reach the row through useDisplayLinks. Most cases
+// here drive that hook directly so the Evidence assertions describe the table, not
+// the hook's own read (its resolution from GET /spoke/common/peripheral-links lives
+// in lib/api/peripheral-links.test.tsx). One case flips `useRealDisplayLinks` and
+// runs the panel over the genuine hook, so a row that stopped calling it — and read
+// some other plane instead — fails here rather than only in E2E. The flag is set
+// before a render and never toggled during a mount, so each mounted tree sees one
+// consistent implementation.
+const { mockUseDisplayLinks, useRealDisplayLinks, mockApiFetch } = vi.hoisted(() => ({
+  mockUseDisplayLinks: vi.fn(),
+  useRealDisplayLinks: { value: false },
+  mockApiFetch: vi.fn(),
 }));
 
-/** Mounts a QueryClientProvider so the real peripheral-links query can run. */
-function renderPanel(ui: React.ReactElement) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(ui, {
-    wrapper: ({ children }: { children: React.ReactNode }) =>
-      React.createElement(QueryClientProvider, { client }, children),
-  });
-}
+vi.mock("@/lib/api/client", () => ({
+  apiFetch: (path: string) => mockApiFetch(path),
+}));
+
+vi.mock("@/lib/api/peripheral-links", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api/peripheral-links")>();
+  return {
+    ...actual,
+    useDisplayLinks: () =>
+      useRealDisplayLinks.value ? actual.useDisplayLinks() : mockUseDisplayLinks(),
+  };
+});
+
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { NodesPanel } from "./nodes-panel";
 
 
 // ── fixtures ────────────────────────────────────────────────────────────────
@@ -181,17 +189,25 @@ function mockNodesResult(nodes: OntogenNode[], total = nodes.length) {
   });
 }
 
+/** Drives the mocked useDisplayLinks, mirroring evidence-link.test.tsx. */
+function setLinks(langfuseUrl: string, langfuseProjectId: string): void {
+  mockUseDisplayLinks.mockReturnValue({
+    datahubUrl: "",
+    langfuseUrl,
+    langfuseProjectId,
+  });
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
-  // Default Langfuse runtime config so the Evidence link can be built.
-  window.__DATASPOKE_RUNTIME_CONFIG__ = {
-    langfuseUrl: "http://langfuse.example.com",
-    langfuseProjectId: "dataspoke-project",
-  };
+  useRealDisplayLinks.value = false;
+  // A wired Langfuse peripheral, so the Evidence link can be built by default.
+  setLinks("http://langfuse.example.com", "dataspoke-project");
 });
 
 afterEach(() => {
-  delete window.__DATASPOKE_RUNTIME_CONFIG__;
+  // Restore the stubbed hook for every subsequent case, whatever this one set.
+  useRealDisplayLinks.value = false;
 });
 
 // ---------------------------------------------------------------------------
@@ -200,7 +216,7 @@ afterEach(() => {
 describe("NodesPanel — 7-column compact layout", () => {
   it("renders the seven standard column headers", () => {
     mockNodesResult([makeNode()]);
-    renderPanel(<NodesPanel canWrite={false} />);
+    render(<NodesPanel canWrite={false} />);
     for (const header of [
       "Title",
       "Description",
@@ -217,7 +233,7 @@ describe("NodesPanel — 7-column compact layout", () => {
 
   it("renders the node name, description, and 2-dp confidence", () => {
     mockNodesResult([makeNode({ name: "Edition", description: "A format", confidence_score: 0.5 })]);
-    renderPanel(<NodesPanel canWrite={false} />);
+    render(<NodesPanel canWrite={false} />);
     expect(screen.getByText("Edition")).toBeTruthy();
     expect(screen.getByText("A format")).toBeTruthy();
     expect(screen.getByText("0.50")).toBeTruthy();
@@ -232,7 +248,7 @@ describe("NodesPanel — evidence Langfuse-session link", () => {
     mockNodesResult([
       makeNode({ id: "n-ev", run_id: "22222222-2222-2222-2222-222222222222" }),
     ]);
-    renderPanel(<NodesPanel canWrite={false} />);
+    render(<NodesPanel canWrite={false} />);
 
     const link = screen.getByRole("link", { name: /link/i });
     expect(link.getAttribute("href")).toBe(
@@ -244,18 +260,69 @@ describe("NodesPanel — evidence Langfuse-session link", () => {
 
   it("renders — (no link) when the row has no run_id", () => {
     mockNodesResult([makeNode({ id: "n-seeded", run_id: null })]);
-    renderPanel(<NodesPanel canWrite={false} />);
+    render(<NodesPanel canWrite={false} />);
 
     expect(screen.queryByRole("link", { name: /link/i })).toBeNull();
     expect(screen.getAllByText("—").length).toBeGreaterThan(0);
   });
 
-  it("renders — (no link) when the Langfuse runtime config is unset", () => {
-    delete window.__DATASPOKE_RUNTIME_CONFIG__;
+  it("renders — (no link) when Langfuse is not wired as a peripheral", () => {
+    // spec: FRONTEND_ONTOGEN.md §Page contracts — the Evidence Link needs the
+    //   Langfuse host and project slug, both of which resolve from
+    //   GET /spoke/common/peripheral-links; an unwired peripheral yields "".
+    setLinks("", "");
     mockNodesResult([makeNode({ id: "n-unconfigured" })]);
-    renderPanel(<NodesPanel canWrite={false} />);
+    render(<NodesPanel canWrite={false} />);
 
     expect(screen.queryByRole("link", { name: /link/i })).toBeNull();
+    // Backstop: the row rendered at all, so the absent link is the unwired-state
+    // behavior rather than an empty table.
+    expect(screen.getByText("Book")).toBeTruthy();
+  });
+
+  it("builds the Evidence href from GET /spoke/common/peripheral-links over the real hook", async () => {
+    // spec: FRONTEND_ONTOGEN.md §Page contracts (Evidence cell) — "Both the host
+    //   and the project slug resolve by the shared peripheral rule — from
+    //   GET /spoke/common/peripheral-links".
+    // spec: FRONTEND_BASIC.md §Shell — that endpoint is the sole source of
+    //   langfuse_url / langfuse_project_id, "so nothing can mask what the DB
+    //   holds".
+    // The single case in this suite that runs the panel over the genuine
+    // useDisplayLinks: only the endpoint response is seeded, so a row that read
+    // any other plane cannot produce the href below.
+    useRealDisplayLinks.value = true;
+    mockApiFetch.mockResolvedValue({
+      resp_time: "2026-07-19T00:00:00.000Z",
+      datahub_url: "",
+      langfuse_url: "https://langfuse.imazon.example.com",
+      langfuse_project_id: "imazon-project",
+    });
+    mockNodesResult([
+      makeNode({ id: "n-real", run_id: "33333333-3333-3333-3333-333333333333" }),
+    ]);
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <NodesPanel canWrite={false} />
+      </QueryClientProvider>,
+    );
+
+    // Backstop: the panel really did read the endpoint — the href below is the
+    // response reaching the row, not a value the component carried.
+    await waitFor(() =>
+      expect(mockApiFetch).toHaveBeenCalledWith("/spoke/common/peripheral-links"),
+    );
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("link", { name: /link/i }).getAttribute("href"),
+      ).toBe(
+        "https://langfuse.imazon.example.com/project/imazon-project/sessions/33333333-3333-3333-3333-333333333333",
+      ),
+    );
+
+    queryClient.clear();
   });
 });
 
@@ -265,14 +332,14 @@ describe("NodesPanel — evidence Langfuse-session link", () => {
 describe("NodesPanel — reason-confirm review", () => {
   it("has no inline reason input before the confirm dialog opens", () => {
     mockNodesResult([makeNode()]);
-    renderPanel(<NodesPanel canWrite={true} />);
+    render(<NodesPanel canWrite={true} />);
     // No textarea is rendered until Approve/Reject opens the confirm popup.
     expect(screen.queryByPlaceholderText(/reason/i)).toBeNull();
   });
 
   it("opens the confirm popup on Approve and submits { verdict, reason }", () => {
     mockNodesResult([makeNode({ id: "n-approve" })]);
-    renderPanel(<NodesPanel canWrite={true} />);
+    render(<NodesPanel canWrite={true} />);
 
     fireEvent.click(screen.getByRole("button", { name: /^approve$/i }));
     const dialog = screen.getByRole("dialog");
@@ -296,7 +363,7 @@ describe("NodesPanel — reason-confirm review", () => {
     // FRONTEND_ONTOGEN.md L69 — the reason field is free-text/optional; an empty
     // reason must be coerced to undefined (omitted), not sent as an empty string.
     mockNodesResult([makeNode({ id: "n-approve-blank" })]);
-    renderPanel(<NodesPanel canWrite={true} />);
+    render(<NodesPanel canWrite={true} />);
 
     fireEvent.click(screen.getByRole("button", { name: /^approve$/i }));
     const dialog = screen.getByRole("dialog");
@@ -321,7 +388,7 @@ describe("NodesPanel — reason-confirm review", () => {
 describe("NodesPanel — sort & pagination query params", () => {
   it("defaults the list query to created_at_desc, offset 0, default limit", () => {
     mockNodesResult([makeNode()]);
-    renderPanel(<NodesPanel canWrite={false} />);
+    render(<NodesPanel canWrite={false} />);
     const params = useNodesSpy.mock.calls[0][0] as { offset: number; limit: number; sort: string };
     expect(params.sort).toBe("created_at_desc");
     expect(params.offset).toBe(0);
@@ -330,7 +397,7 @@ describe("NodesPanel — sort & pagination query params", () => {
 
   it("re-queries with sort=created_at_asc when the sort control changes", () => {
     mockNodesResult([makeNode()]);
-    renderPanel(<NodesPanel canWrite={false} />);
+    render(<NodesPanel canWrite={false} />);
 
     fireEvent.click(screen.getByTestId("opt-created_at_asc"));
 

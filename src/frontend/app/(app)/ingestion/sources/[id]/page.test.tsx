@@ -187,8 +187,8 @@ describe("ingestion source detail — write gating", () => {
 // spec: spec/feature/FRONTEND_INGESTION.md §Source Detail — the datahub_source_urn
 // links to {datahubUrl}/ingestion/sources?hideSystem=true (new tab) when datahubUrl
 // is configured; otherwise it renders as plain text.
-// The page resolves datahubUrl through useDisplayLinks (env-first, then
-// GET /spoke/common/peripheral-links); that precedence is covered in
+// The page resolves datahubUrl through useDisplayLinks, which reads
+// GET /spoke/common/peripheral-links; that resolution is covered in
 // lib/api/peripheral-links.test.tsx, so here the resolved value is injected.
 describe("ingestion source detail — datahub_source_urn link", () => {
   const DATAHUB_URN = "urn:li:dataHubIngestionSource:x";
@@ -218,7 +218,7 @@ describe("ingestion source detail — datahub_source_urn link", () => {
   });
 
   it("renders the urn as plain text (no link) when datahubUrl is empty", async () => {
-    // Neither plane supplies a DataHub URL → no link, per the shell gating rule.
+    // DataHub is unwired as a peripheral → no link, per the shell gating rule.
     mockUseMe.mockReturnValue({ canWrite: true, isAdmin: false, isEditor: true });
     mockSource.mockReturnValue({
       data: makeSource("DATAHUB_MANAGED"),

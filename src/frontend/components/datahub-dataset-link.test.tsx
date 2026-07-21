@@ -6,8 +6,8 @@
  *     dataset deep-link affordance (`<datahubUrl>/dataset/{urn}`) reused across
  *     dataset tables and the per-dataset header; rendered only when `datahubUrl`
  *     resolves non-empty (mirrors the app-shell infra-link gating).
- *   - spec/feature/FRONTEND_BASIC.md §Shell: the DataHub URL resolves env-first,
- *     then GET /spoke/common/peripheral-links — here supplied via useDisplayLinks.
+ *   - spec/feature/FRONTEND_BASIC.md §Shell: the DataHub URL resolves from
+ *     GET /spoke/common/peripheral-links only — here supplied via useDisplayLinks.
  *   - The URL is `${datahubUrl}/dataset/${encodeURIComponent(urn)}` — URNs carry
  *     `: ( ) ,` which must be percent-encoded.
  */
@@ -15,8 +15,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { DatahubDatasetLink, datahubDatasetUrl } from "./datahub-dataset-link";
 
-// The component resolves its base URL through useDisplayLinks (env-first, then
-// the peripheral-links endpoint); control the resolved value per test.
+// The component resolves its base URL through useDisplayLinks, which reads the
+// peripheral-links endpoint; control the resolved value per test.
 const mockUseDisplayLinks = vi.fn();
 vi.mock("@/lib/api/peripheral-links", () => ({
   useDisplayLinks: () => mockUseDisplayLinks(),

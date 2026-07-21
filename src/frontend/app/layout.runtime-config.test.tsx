@@ -2,11 +2,20 @@
  * Regression tests for the root layout's runtime-config injection.
  *
  * The layout injects window.__DATASPOKE_RUNTIME_CONFIG__ from server-only
- * DATASPOKE_* env vars read at request time. These tests guard two things:
+ * DATASPOKE_* env vars read at request time. These tests guard three things:
  *   - The route segment stays dynamically rendered (`dynamic === "force-dynamic"`),
  *     so the env reads resolve per request rather than freezing at build time.
- *   - The injected <script> reflects the current DATASPOKE_API_BASE_URL value,
- *     defaulting to an empty string when the var is unset.
+ *   - The injected <script> reflects the current DATASPOKE_API_BASE_URL and
+ *     DATASPOKE_AIRFLOW_URL values, defaulting to empty strings when unset.
+ *   - Operator-controlled values are escaped so they cannot terminate the inline
+ *     <script> element and execute attacker markup.
+ *
+ * Spec trace:
+ *   - spec/feature/FRONTEND_BASIC.md §Shell: "Airflow, ReDoc | Deployment-local |
+ *     Runtime config only (`airflowUrl`, `apiBaseUrl`)" — those two are the whole
+ *     of the injected config. The DataHub and Langfuse links resolve from
+ *     `GET /spoke/common/peripheral-links` "only", so they are not injected here
+ *     and are covered in lib/api/peripheral-links.test.tsx.
  */
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, cleanup } from "@testing-library/react";
@@ -39,6 +48,15 @@ vi.mock("./providers", () => ({
 import RootLayout, { dynamic } from "./layout";
 
 const ENV_KEY = "DATASPOKE_API_BASE_URL";
+const AIRFLOW_ENV_KEY = "DATASPOKE_AIRFLOW_URL";
+
+function setEnv(key: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[key];
+  } else {
+    process.env[key] = value;
+  }
+}
 
 // RootLayout returns <html><head><script .../></head>...; under jsdom React
 // hoists the <head> contents onto document.head, so the injected runtime-config
@@ -73,6 +91,7 @@ function renderLayoutBodyClassName(): string {
 
 describe("RootLayout runtime-config injection", () => {
   const original = process.env[ENV_KEY];
+  const originalAirflow = process.env[AIRFLOW_ENV_KEY];
 
   afterEach(() => {
     cleanup();
@@ -85,11 +104,8 @@ describe("RootLayout runtime-config injection", () => {
           s.remove();
         }
       });
-    if (original === undefined) {
-      delete process.env[ENV_KEY];
-    } else {
-      process.env[ENV_KEY] = original;
-    }
+    setEnv(ENV_KEY, original);
+    setEnv(AIRFLOW_ENV_KEY, originalAirflow);
   });
 
   it("is configured for dynamic per-request rendering", () => {
@@ -112,10 +128,9 @@ describe("RootLayout runtime-config injection", () => {
   });
 
   it("injects the request-time DATASPOKE_API_BASE_URL into the runtime config script", () => {
-    const testUrl = "http://api.test.example/";
-    process.env[ENV_KEY] = testUrl;
+    process.env[ENV_KEY] = "http://api.test.example/";
 
-    expect(renderLayoutScript()).toContain(testUrl);
+    expect(renderLayoutScript()).toContain('"apiBaseUrl":"http://api.test.example/"');
   });
 
   it("injects an empty apiBaseUrl when DATASPOKE_API_BASE_URL is unset", () => {
@@ -124,29 +139,56 @@ describe("RootLayout runtime-config injection", () => {
     expect(renderLayoutScript()).toContain('"apiBaseUrl":""');
   });
 
-  it("injects the request-time DATASPOKE_LANGFUSE_PROJECT_ID into the runtime config script", () => {
-    const originalProject = process.env.DATASPOKE_LANGFUSE_PROJECT_ID;
-    process.env.DATASPOKE_LANGFUSE_PROJECT_ID = "dataspoke-project";
-    try {
-      expect(renderLayoutScript()).toContain('"langfuseProjectId":"dataspoke-project"');
-    } finally {
-      if (originalProject === undefined) {
-        delete process.env.DATASPOKE_LANGFUSE_PROJECT_ID;
-      } else {
-        process.env.DATASPOKE_LANGFUSE_PROJECT_ID = originalProject;
-      }
-    }
+  it("injects the request-time DATASPOKE_AIRFLOW_URL into the runtime config script", () => {
+    // spec/feature/FRONTEND_BASIC.md §Shell — Airflow is deployment-local and
+    // resolves from "Runtime config only (`airflowUrl`, `apiBaseUrl`)".
+    process.env[AIRFLOW_ENV_KEY] = "http://airflow.test.example";
+
+    expect(renderLayoutScript()).toContain('"airflowUrl":"http://airflow.test.example"');
   });
 
-  it("injects an empty langfuseProjectId when DATASPOKE_LANGFUSE_PROJECT_ID is unset", () => {
-    const originalProject = process.env.DATASPOKE_LANGFUSE_PROJECT_ID;
-    delete process.env.DATASPOKE_LANGFUSE_PROJECT_ID;
-    try {
-      expect(renderLayoutScript()).toContain('"langfuseProjectId":""');
-    } finally {
-      if (originalProject !== undefined) {
-        process.env.DATASPOKE_LANGFUSE_PROJECT_ID = originalProject;
-      }
-    }
+  it("injects an empty airflowUrl when DATASPOKE_AIRFLOW_URL is unset", () => {
+    // spec/feature/FRONTEND_BASIC.md §Shell — "Each icon renders only when its
+    // URL resolves non-empty", so an unset var must reach the client as "".
+    delete process.env[AIRFLOW_ENV_KEY];
+
+    expect(renderLayoutScript()).toContain('"airflowUrl":""');
+  });
+
+  it("injects exactly the two deployment-local keys", () => {
+    // spec/feature/FRONTEND_BASIC.md §Shell resolution table — DataHub and
+    // Langfuse resolve from `GET /spoke/common/peripheral-links` "only", so the
+    // injected config carries no key for them; the client has no alternative
+    // plane that could mask what the DB holds. Parsing the payload (rather than
+    // asserting on substrings) is what makes an extra injected key fail here.
+    process.env[ENV_KEY] = "http://api.test.example";
+    process.env[AIRFLOW_ENV_KEY] = "http://airflow.test.example";
+
+    const script = renderLayoutScript();
+    const payload = script.slice(
+      script.indexOf("{"),
+      script.lastIndexOf("}") + 1,
+    );
+    const injected = JSON.parse(payload) as Record<string, string>;
+    expect(Object.keys(injected).sort()).toEqual(["airflowUrl", "apiBaseUrl"]);
+  });
+
+  it("escapes '<' so an operator-set URL cannot terminate the inline script", () => {
+    // The config is serialised into a dangerouslySetInnerHTML <script>. A value
+    // containing "</script>" would close the element and let the remainder parse
+    // as markup, so the emitted text must carry no literal "</script>" while the
+    // payload still parses back to the original characters. That pair states the
+    // invariant without pinning which escape sequence encodes it.
+    process.env[ENV_KEY] = "http://api.test.example/</script><img src=x onerror=alert(1)>";
+
+    const script = renderLayoutScript();
+
+    expect(script).not.toContain("</script>");
+    // Backstop: the escaping did not mangle the value — it round-trips intact.
+    const payload = script.slice(script.indexOf("{"), script.lastIndexOf("}") + 1);
+    const injected = JSON.parse(payload) as { apiBaseUrl: string };
+    expect(injected.apiBaseUrl).toBe(
+      "http://api.test.example/</script><img src=x onerror=alert(1)>",
+    );
   });
 });

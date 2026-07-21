@@ -85,8 +85,8 @@ not write to DataHub.
 The **Evidence** cell renders a **Link** that opens the row's Langfuse session
 in a new tab (`target="_blank" rel="noopener noreferrer"`). The URL is built
 client-side as `{langfuse_url}/project/{langfuse_project_id}/sessions/{run_id}`.
-Both the host and the project slug resolve by the shared peripheral rule — runtime
-config first, then `GET /spoke/common/peripheral-links`
+Both the host and the project slug resolve by the shared peripheral rule — from
+`GET /spoke/common/peripheral-links`
 ([FRONTEND_BASIC §Shell](FRONTEND_BASIC.md#shell)) — and both denote the
 browser-reachable host, not the in-cluster one; `run_id` is the row's creating
 inference run.

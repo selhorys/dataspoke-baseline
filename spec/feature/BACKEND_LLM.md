@@ -276,7 +276,7 @@ have no run and carry `run_id = NULL`.
 run reuses or updates an existing row, so a row always points at the session
 where its own debate happened. The UC3 review UI turns `run_id` into a link to
 the run's Langfuse session
-(`{langfuseUrl}/project/{langfuseProjectId}/sessions/{run_id}`); it renders no
+(`{langfuse_url}/project/{langfuse_project_id}/sessions/{run_id}`); it renders no
 link when `run_id` is `NULL` or Langfuse is not configured (tracing disabled).
 
 Per-run debate outcome remains queryable from the run's events — the

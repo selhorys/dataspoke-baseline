@@ -59,8 +59,6 @@ frontend:
   config:
     # DataSpoke API base URL — the Next.js server proxies API calls here.
     apiBaseUrl: "https://api.dataspoke.example.com"
-    # DataHub frontend URL — used for deep links from the DataSpoke UI.
-    datahubUrl: "https://datahub.dataspoke.example.com"
 
 api:
   enabled: true

@@ -11,7 +11,8 @@
  *      default open, and each folds/unfolds via its header. The ingestion
  *      reverse-lookup is a summary card, not a panel — there is NO Ingestion panel.
  *   3. The consolidated Ingestion summary card renders, and the per-dataset header
- *      exposes a DataHub deep-link (datahubUrl is configured in the dev cluster).
+ *      exposes a DataHub deep-link (the dev cluster seeds a DataHub frontend_url
+ *      into peripheral_config, the sole source of that URL).
  *   4. The Events panel's major-type filter exposes a checkbox per major type
  *      (INGESTION / VALIDATION / METAGEN), all checked by default; unchecking one
  *      narrows the timeline without emptying the table area.
@@ -115,7 +116,7 @@ test("data hub renders three foldable panels that each fold and unfold", async (
 // ── Test 3 — consolidated Ingestion card + header DataHub deep-link ─────────────
 // spec: FRONTEND_BASIC.md §Per-dataset page — the ingestion reverse-lookup folds
 //   into the Ingestion summary card; the header carries a shared DataHub deep-link
-//   (datahubUrl is configured in the dev cluster).
+//   (the dev cluster seeds a DataHub frontend_url into peripheral_config).
 
 test("data hub shows the consolidated Ingestion card and a header DataHub link", async ({
   page,

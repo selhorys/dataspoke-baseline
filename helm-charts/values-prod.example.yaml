@@ -89,7 +89,14 @@ frontend:
   # at build time) — safe to change per environment without rebuilding the image.
   config:
     apiBaseUrl: "https://api.dataspoke.example.com"
-    datahubUrl: "https://datahub.dataspoke.example.com"
+    airflowUrl: "https://airflow.dataspoke.example.com"
+  # DataHub and Langfuse deep links are not chart values — they come from the
+  # DB `peripheral_config` table, wired after install via
+  #   PATCH /api/v1/admin/peripherals/datahub   {"frontend_url": "..."}
+  #   PATCH /api/v1/admin/peripherals/langfuse  {"host": "...", "project_id": "..."}
+  # `frontend_url` is the browser-facing DataHub UI URL — not `gms_url`, which
+  # addresses the GMS service and routinely differs in host, port, and scheme.
+  # See helm-charts/README.md §Prod profile step 7.
 
 
 # ------------------------------------------------------------------------------

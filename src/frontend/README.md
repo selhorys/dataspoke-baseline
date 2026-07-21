@@ -9,16 +9,16 @@ pnpm install
 pnpm dev          # starts on http://localhost:3000
 ```
 
-The dev server proxies nothing. Configure the API base and DataHub URL in `.env.local`:
+The dev server proxies nothing. Configure the API base and the Airflow URL in `.env.local`:
 
 ```
 NEXT_PUBLIC_API_BASE_URL=http://api.<INGRESS_IP>.nip.io
-NEXT_PUBLIC_DATAHUB_URL=http://datahub.<INGRESS_IP>.nip.io
+NEXT_PUBLIC_AIRFLOW_URL=http://airflow.<INGRESS_IP>.nip.io
 ```
 
 When `NEXT_PUBLIC_API_BASE_URL` is empty (the default), all `/api/v1/...` calls go to the same origin, which works when Next.js is served behind the same nginx-ingress as the API.
 
-`NEXT_PUBLIC_DATAHUB_URL` enables the "Configure ingestion in DataHub" deep link on the passive-mode ingestion detail page. When unset, the link is suppressed but the page remains fully functional.
+The DataHub and Langfuse links — the header infra icons, the "Configure ingestion in DataHub" deep link on the passive-mode ingestion detail page, the per-dataset DataHub links, and the Langfuse evidence links — are not configured here. They come from the DataHub / Langfuse peripheral config served by `GET /spoke/common/peripheral-links` and wired via `PATCH /api/v1/admin/peripherals/{datahub,langfuse}`. When a peripheral is unwired the corresponding link is suppressed and the page remains fully functional.
 
 ## Production / runtime configuration
 
@@ -27,9 +27,11 @@ The production image is built once and configured at runtime via environment var
 | Variable | Purpose |
 |---|---|
 | `DATASPOKE_API_BASE_URL` | Base URL of the DataSpoke API, e.g. `https://api.dataspoke.example.com` |
-| `DATASPOKE_DATAHUB_URL` | Base URL of DataHub, e.g. `https://datahub.dataspoke.example.com` |
+| `DATASPOKE_AIRFLOW_URL` | Base URL of the Airflow UI, e.g. `https://airflow.dataspoke.example.com` |
 
 These are **non-public** server-side env vars (no `NEXT_PUBLIC_` prefix) so Next.js never inlines them at build time. The client reads them from `window.__DATASPOKE_RUNTIME_CONFIG__`, which is written by the inline script tag in `<head>`. The `NEXT_PUBLIC_*` vars remain supported as a dev-only fallback (`.env.local`) and are ignored in production when the runtime vars are set.
+
+Only deployment-local wiring travels this way: the API itself (which also backs the ReDoc link) and Airflow, both of which ship with the deployment. Externally-wired peripherals — DataHub and Langfuse — are configured through the API's peripheral endpoints instead, so re-wiring them needs no chart operation and no pod restart.
 
 ## Regenerating API types
 

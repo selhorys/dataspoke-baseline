@@ -8,9 +8,9 @@
  * Why a client-side copy exists at all, per `spec/feature/FRONTEND_BASIC.md`
  * §Shell: "Both peripheral values are re-checked in the client against the
  * display-link safety rule ... and a failing value resolves to `""` — the same
- * 'render no link' state as an unset one. The client check is not redundant with
- * the API's: it also covers the env-sourced values, which win over the API and
- * never pass a backend boundary."
+ * 'render no link' state as an unset one. The client check backstops the API's
+ * coercion at the point of interpolation, so the value is validated where it
+ * actually becomes an `href`."
  *
  * The pattern-level cases all come from the shared corpus at
  * `tests/fixtures/safe-url-cases.json`, which `tests/unit/api/schemas/

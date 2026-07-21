@@ -96,7 +96,7 @@ vi.mock("@/lib/runtime-config", () => ({
 }));
 
 // useDisplayLinks — supplies the peripheral-sourced links (DataHub, Langfuse),
-// resolved env-first then from GET /spoke/common/peripheral-links.
+// resolved from GET /spoke/common/peripheral-links.
 const mockUseDisplayLinks = vi.fn();
 vi.mock("@/lib/api/peripheral-links", () => ({
   useDisplayLinks: () => mockUseDisplayLinks(),
@@ -118,7 +118,7 @@ function makeMe(role: Me["role"]): Me {
 }
 
 /**
- * Sets both resolution planes at once. The shell reads the peripheral-sourced
+ * Sets both resolution sources at once. The shell reads the peripheral-sourced
  * links (DataHub, Langfuse) from useDisplayLinks and the deployment-local ones
  * (Airflow, ReDoc) from getRuntimeConfig — deliberately distinct sources.
  */

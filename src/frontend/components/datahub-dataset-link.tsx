@@ -8,7 +8,7 @@
  * non-empty. When it is unset the component renders `fallback` (nothing by
  * default, or an em-dash in table cells), mirroring the app-shell infra-link gating.
  *
- * The DataHub URL resolves env-first, then `GET /spoke/common/peripheral-links`
+ * The DataHub URL resolves from `GET /spoke/common/peripheral-links`
  * (see useDisplayLinks). This component renders once per table row, and that
  * hook shares one stable query key across every instance, so a table of N rows
  * still issues a single request.

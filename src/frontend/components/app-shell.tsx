@@ -220,8 +220,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   const displayName = me?.name ?? me?.email ?? "Account";
 
-  // DataHub and Langfuse are externally-wired peripherals: env-first, then
-  // GET /spoke/common/peripheral-links. Airflow and ReDoc are deployment-local
+  // DataHub and Langfuse are externally-wired peripherals, so their URLs come
+  // from GET /spoke/common/peripheral-links. Airflow and ReDoc are deployment-local
   // (Airflow ships in the umbrella chart, ReDoc is the API itself), so they are
   // absent from that endpoint and stay on the runtime config alone.
   const { datahubUrl, langfuseUrl } = useDisplayLinks();

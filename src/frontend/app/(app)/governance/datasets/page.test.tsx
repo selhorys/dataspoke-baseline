@@ -4,7 +4,8 @@
  * Spec: spec/feature/FRONTEND_GOVERNANCE.md §Datasets — a cross-feature list of
  *   every registered dataset, consuming GET /spoke/common/data. Columns:
  *     dataset_urn  → /data/[urn]
- *     datahub      → external DataHub deep-link (gated on runtime datahubUrl)
+ *     datahub      → external DataHub deep-link (gated on the datahub_url resolved
+ *                    from GET /spoke/common/peripheral-links)
  *     ingestion    → one label per covering source; label text = platform, linked to
  *                    /ingestion/sources/[id], with a mode badge; em-dash when none
  *     validation   → "Covered" / "Uncovered" badge from validation.covered
@@ -32,8 +33,8 @@ vi.mock("@/lib/api/datasets", () => ({
     mockUseDatasetList(params),
 }));
 
-// DatahubDatasetLink resolves datahubUrl via useDisplayLinks (env-first, then
-// GET /spoke/common/peripheral-links); control the resolved value per describe.
+// DatahubDatasetLink resolves datahubUrl via useDisplayLinks, which reads
+// GET /spoke/common/peripheral-links; control the resolved value per describe.
 const mockUseDisplayLinks = vi.fn();
 vi.mock("@/lib/api/peripheral-links", () => ({
   useDisplayLinks: () => mockUseDisplayLinks(),

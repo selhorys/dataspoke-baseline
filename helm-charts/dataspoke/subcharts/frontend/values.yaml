@@ -32,18 +32,14 @@ resources: {}
 # Runtime config injected into the Next.js server via the frontend ConfigMap.
 # Values are consumed server-side (no NEXT_PUBLIC_ prefix; not baked at build time).
 # Override via umbrella values.yaml (frontend.config.*) or --set at deploy time.
+# DataHub and Langfuse deep links are not configured here — the DataSpoke API
+# resolves them at request time from the DB `peripheral_config` table
+# (GET /spoke/common/peripheral-links), seeded via
+# PATCH /api/v1/admin/peripherals/{datahub,langfuse}.
 config:
   # URL of the DataSpoke API. The Next.js server uses this to call the API on
   # behalf of SSR requests. Set to the API ingress host for the target environment.
   apiBaseUrl: ""
-  # URL of the DataHub frontend. Used for deep links from the DataSpoke UI.
-  datahubUrl: ""
-  # URL of the Langfuse UI. Used for the header infra link (hidden when empty).
-  langfuseUrl: ""
-  # Langfuse project ID. Combined with langfuseUrl and a run_id to build deep
-  # links to Langfuse session traces. Injected server-side at request time (not
-  # baked at build time). Set to the project ID created by langfuse.sh.
-  langfuseProjectId: ""
   # URL of the Airflow UI. Used for the header infra link (hidden when empty).
   airflowUrl: ""
 

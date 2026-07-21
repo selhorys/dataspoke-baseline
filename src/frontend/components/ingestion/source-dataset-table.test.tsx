@@ -16,10 +16,12 @@ import type { IngestionSourceDatasetRow } from "@/types/ingestion";
 // Mock next/link to a simple anchor so href assertions work in jsdom.
 import { vi } from "vitest";
 
-// Shared link components query peripheral-links; this suite mounts no
-// QueryClientProvider. See lib/api/peripheral-links.mock.ts.
+// Shared link components read peripheral-links; this suite mounts no
+// QueryClientProvider, so it substitutes the all-unconfigured stub — every
+// DataHub / Langfuse link resolves to the "render no link" state.
+// See lib/api/peripheral-links.mock.ts.
 vi.mock("@/lib/api/peripheral-links", async () =>
-  (await import("@/lib/api/peripheral-links.mock")).envOnlyPeripheralLinksModule(),
+  (await import("@/lib/api/peripheral-links.mock")).unconfiguredPeripheralLinksModule(),
 );
 
 vi.mock("next/link", () => ({

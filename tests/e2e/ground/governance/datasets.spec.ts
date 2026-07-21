@@ -8,8 +8,9 @@
  *   1. Navigate from the Governance sidebar group → Datasets lands on
  *      /governance/datasets with the five column headers (incl. validation).
  *   2. The dataset_urn cell links to the per-dataset hub /data/[urn], and the
- *      datahub cell exposes an external DataHub deep-link (datahubUrl configured
- *      in the dev cluster). Dual-confirmed against GET /spoke/common/data.
+ *      datahub cell exposes an external DataHub deep-link (the dev cluster seeds a
+ *      DataHub frontend_url into peripheral_config, the sole source of that URL).
+ *      Dual-confirmed against GET /spoke/common/data.
  *
  * Data setup: global-setup runs --reset-seed (seeded Imazon baseline). The
  * dataset_registry starts EMPTY after the reset and is populated only by the

@@ -33,9 +33,6 @@ export const dynamic = "force-dynamic";
  */
 function buildRuntimeConfigScript(config: {
   apiBaseUrl: string;
-  datahubUrl: string;
-  langfuseUrl: string;
-  langfuseProjectId: string;
   airflowUrl: string;
 }): string {
   const safe = JSON.stringify(config).replace(/</g, "\\u003c");
@@ -49,19 +46,12 @@ export default function RootLayout({
 }>) {
   // With force-dynamic the layout renders per request, so these server-only
   // env vars are read at request time and never inlined into the client bundle.
+  // Only deployment-local wiring travels this way; the DataHub and Langfuse
+  // links come from the API's peripheral-links read instead.
   const apiBaseUrl = process.env.DATASPOKE_API_BASE_URL ?? "";
-  const datahubUrl = process.env.DATASPOKE_DATAHUB_URL ?? "";
-  const langfuseUrl = process.env.DATASPOKE_LANGFUSE_URL ?? "";
-  const langfuseProjectId = process.env.DATASPOKE_LANGFUSE_PROJECT_ID ?? "";
   const airflowUrl = process.env.DATASPOKE_AIRFLOW_URL ?? "";
 
-  const runtimeScript = buildRuntimeConfigScript({
-    apiBaseUrl,
-    datahubUrl,
-    langfuseUrl,
-    langfuseProjectId,
-    airflowUrl,
-  });
+  const runtimeScript = buildRuntimeConfigScript({ apiBaseUrl, airflowUrl });
 
   return (
     <html lang="en" suppressHydrationWarning>

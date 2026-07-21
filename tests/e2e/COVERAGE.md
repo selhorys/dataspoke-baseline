@@ -134,13 +134,13 @@ provisioned sessions, not mocked `useMe`). Covered by `tests/e2e/ground/shell/`:
 ## App-shell peripheral links
 
 The header infra icons and the per-dataset DataHub deep-link resolve their base
-URL from two planes: the chart-injected runtime config (env) and the
-`peripheral_config` DB plane served by `GET /spoke/common/peripheral-links`.
-Env wins; the API fills in when env is unset. Covered by
+URL from the `peripheral_config` DB plane served by
+`GET /spoke/common/peripheral-links`, which is its sole source — the client
+carries no alternative, so a sentinel written through `PATCH /admin/peripherals/datahub`
+is proof of provenance on its own. Covered by
 `tests/e2e/ground/shell/peripheral-links.spec.ts` (admin project):
 
 | Concern | Test |
 |---|---|
-| Header DataHub icon resolves from `peripheral_config.frontend_url` alone, after a DB-plane-only PATCH with no chart op or rollout (env value blanked via an init script to reproduce an install without `DATASPOKE_DATAHUB_URL`) | `header DataHub icon resolves from peripheral_config when no env URL is set` |
-| Per-dataset DataHub deep-link on `/data/[urn]` resolves from the same source | `dataset DataHub deep-link resolves from peripheral_config when no env URL is set` |
-| An explicit env DataHub URL takes precedence over a differing `peripheral_config` value (existing chart installs behaviourally unchanged); skipped when the cluster frontend has no `DATASPOKE_DATAHUB_URL` | `an explicit env DataHub URL wins over the peripheral_config value` |
+| Header DataHub icon resolves from `peripheral_config.frontend_url` after a DB-plane-only PATCH, with no chart operation and no pod rollout | `header DataHub icon resolves from the peripheral_config frontend_url` |
+| Per-dataset DataHub deep-link on `/data/[urn]` resolves from the same source, as a new-tab link | `dataset DataHub deep-link resolves from the peripheral_config frontend_url` |

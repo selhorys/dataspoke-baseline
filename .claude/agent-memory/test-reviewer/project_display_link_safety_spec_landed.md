@@ -9,8 +9,9 @@ metadata:
 table (Scheme / Authority / Characters / Shape / Length) plus a dual-boundary paragraph
 ("On write, `PATCH /admin/peripherals/{datahub,langfuse}` rejects … with `422`. On read,
 `GET /spoke/common/peripheral-links` coerces one to `""`"). `spec/feature/FRONTEND_BASIC.md`
-§Shell covers the client re-check of env-sourced values. This supersedes the earlier
-"guard is unspecced" finding — **the amendment landed**; do not repeat it.
+§Shell covers the client re-check — it "backstops the API's coercion at the point of
+interpolation", the API being the only plane since [[peripheral-links-db-sole-source]]. This
+supersedes the earlier "guard is unspecced" finding — **the amendment landed**; do not repeat it.
 
 Shape artifacts that used to look like impl-pinning are now spec-sanctioned and correctly
 labelled in `tests/fixtures/safe-url-cases.json`:
@@ -32,4 +33,4 @@ only by a pre-existing Langfuse-`host` test. The TS side does cover at/over boun
 anchor for these tests. If new corpus cases appear, check the Length row specifically —
 it is the one class whose citation is satisfied without exercising the constraint.
 
-Related: [[waitfor-presettlement-race]]
+Related: [[waitfor-presettlement-race]], [[peripheral-links-db-sole-source]]

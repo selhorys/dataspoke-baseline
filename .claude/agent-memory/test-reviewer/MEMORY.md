@@ -19,4 +19,5 @@
 - [Dead assert-tuple: ruff is blind](project_dead_assert_tuple_ruff_blind.md) — TESTING.md bans trailing msg tuples on mock assert_*; ruff (E,F,I,UP) misses them, AST-scan instead
 - [AUTH email case normalised twice](project_auth_email_storage_case_divergence.md) — create_user lowercases on write, corpuser_urn on derivation; AUTH.md specifies both, so neither is impl-pinning
 - [Display-link safety spec landed](project_display_link_safety_spec_landed.md) — guard IS specced now (API.md 5-row table); residual gap is Length row unexercised in Python
-- [waitFor pre-settlement race](project_waitfor_presettlement_race.md) — react-query hooks with a fallback make waitFor assertions pass before settlement, hiding precedence regressions
+- [waitFor pre-settlement race](project_waitfor_presettlement_race.md) — react-query hooks make waitFor assertions pass before settlement; all-"" expectations inject nothing
+- [Peripheral links: DB sole source](project_peripheral_links_db_sole_source.md) — datahub/langfuse URLs come only from /spoke/common/peripheral-links; runtime config keeps apiBaseUrl+airflowUrl

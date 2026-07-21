@@ -63,7 +63,7 @@ export default function IngestionSourceDetailPage({
   // Persisted selection; resolving via useMemo keeps the events query key
   // stable until the selection changes.
   const tz = useDisplayTz();
-  // Env-first, then GET /spoke/common/peripheral-links; safety-checked there.
+  // From GET /spoke/common/peripheral-links; safety-checked there.
   const { datahubUrl } = useDisplayLinks();
   const { selection: sel, setSelection: setSel } = usePersistedRangeState(
     RANGE_KEYS.ingestionSourceEvents,

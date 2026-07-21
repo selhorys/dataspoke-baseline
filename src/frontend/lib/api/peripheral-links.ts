@@ -3,15 +3,16 @@
 /**
  * Peripheral display links — `GET /spoke/common/peripheral-links`.
  *
- * The app shell's infra icons and the DataHub / Langfuse deep-links resolve
- * their base URLs from two planes: the chart-injected runtime config (env) and
- * the `peripheral_config` DB plane served by this endpoint. Wiring a peripheral
- * purely through `PATCH /admin/peripherals/{datahub,langfuse}` therefore reaches
- * the UI with no chart operation and no pod restart.
+ * This endpoint serves the `peripheral_config` DB plane, the sole source of the
+ * DataHub and Langfuse display links behind the app shell's infra icons and the
+ * DataHub / Langfuse deep-links. The client carries no alternative for these
+ * values, so wiring a peripheral through `PATCH /admin/peripherals/{datahub,langfuse}`
+ * reaches the UI with no chart operation and no pod restart, and nothing can mask
+ * what the DB holds.
  *
  * Airflow and ReDoc are deliberately absent: they are deployment-local (Airflow
  * ships in the umbrella chart, ReDoc is the API itself), not externally-wired
- * peripherals, so they stay on `getRuntimeConfig()` alone.
+ * peripherals, so they resolve from `getRuntimeConfig()` instead.
  *
  * Spec: spec/feature/FRONTEND_BASIC.md §Shell; spec/API.md §Data Resource.
  */
@@ -19,7 +20,6 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api/client";
-import { getRuntimeConfig } from "@/lib/runtime-config";
 import { sanitizeDisplayUrl, sanitizeProjectId } from "@/lib/safe-url";
 import type { PeripheralLinks } from "@/lib/api/types";
 
@@ -48,9 +48,10 @@ export function usePeripheralLinks() {
     queryFn: () => apiFetch<PeripheralLinks>("/spoke/common/peripheral-links"),
     staleTime: STALE_TIME_MS,
     refetchOnWindowFocus: false,
-    // This is a best-effort read that degrades to "render no link", so a
-    // failure must not cost four requests with backoff on every page load.
-    retry: false,
+    // This read gates every DataHub and Langfuse affordance in the app, so a
+    // transient failure is worth one retry — but not the four-with-backoff
+    // default, which would cost every page load a request storm.
+    retry: 1,
     // For the same reason it is not worth a global error toast on every page.
     meta: { handledInline: true },
   });
@@ -63,37 +64,31 @@ export interface DisplayLinks {
 }
 
 /**
- * Resolves the peripheral-sourced display links.
+ * Resolves the peripheral-sourced display links from the API response alone.
  *
- * Precedence — **env wins**: the runtime-config value is used whenever it is
- * non-empty, and the API value fills in only when it is unset. This keeps every
- * existing dev/prod chart install behaviourally unchanged while letting a
- * DB-plane-only deployment resolve its links from the API.
- *
- * While the query is in flight the env value is returned rather than an empty
- * string, so an already-known link never flashes away and back.
+ * Before the first successful response — and if that first read fails — every
+ * value is `""`, which callers render as "no link" rather than a broken one.
+ * Once a response has landed, TanStack Query holds `data` across refetches, so a
+ * known link never flashes away and back, and a later failing refetch keeps
+ * serving the last-known value.
  *
  * Every resolved value is re-checked with the shared safe-URL guard before it
  * reaches a caller that will make it an `href`; an unsafe value degrades to
  * `""`, the same state as "unconfigured".
  */
 export function useDisplayLinks(): DisplayLinks {
-  const env = getRuntimeConfig();
   const { data } = usePeripheralLinks();
 
-  const envDatahub = env.datahubUrl;
-  const envLangfuse = env.langfuseUrl;
-  const envProjectId = env.langfuseProjectId;
-  const apiDatahub = data?.datahub_url ?? "";
-  const apiLangfuse = data?.langfuse_url ?? "";
-  const apiProjectId = data?.langfuse_project_id ?? "";
+  const datahubUrl = data?.datahub_url ?? "";
+  const langfuseUrl = data?.langfuse_url ?? "";
+  const langfuseProjectId = data?.langfuse_project_id ?? "";
 
   return useMemo(
     () => ({
-      datahubUrl: sanitizeDisplayUrl(envDatahub || apiDatahub),
-      langfuseUrl: sanitizeDisplayUrl(envLangfuse || apiLangfuse),
-      langfuseProjectId: sanitizeProjectId(envProjectId || apiProjectId),
+      datahubUrl: sanitizeDisplayUrl(datahubUrl),
+      langfuseUrl: sanitizeDisplayUrl(langfuseUrl),
+      langfuseProjectId: sanitizeProjectId(langfuseProjectId),
     }),
-    [envDatahub, envLangfuse, envProjectId, apiDatahub, apiLangfuse, apiProjectId],
+    [datahubUrl, langfuseUrl, langfuseProjectId],
   );
 }
