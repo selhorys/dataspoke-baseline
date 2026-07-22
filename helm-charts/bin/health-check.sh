@@ -153,6 +153,17 @@ _http_alive() {
   [[ "$code" != "000" ]]
 }
 
+# Pass condition for services whose root redirects rather than returning 200.
+# Accepts 2xx/3xx only: an undeployed component reaches the ingress default
+# backend (404) and an unready pod returns 502/503, neither of which is healthy.
+_http_reachable() {
+  local url="$1"
+  shift
+  local code
+  code=$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 3 --max-time 5 "$@" "$url" 2>/dev/null) || true
+  [[ "$code" =~ ^[23] ]]
+}
+
 # Gate for HTTP-service checks. In managed mode a quick probe to the ingress
 # IP:80 confirms the LoadBalancer is up before the deep HTTP check. In shared
 # mode there is no single ingress IP to probe (it may be an internal LB behind
@@ -343,8 +354,8 @@ check_dataspoke_frontend() {
   fi
   if $QUICK; then _pass "$label (tcp)"; return; fi
 
-  # The UI root redirects (307 → /login), so treat any HTTP response as alive.
-  if _http_alive "${fe_url}/"; then
+  # The UI root redirects (307 → /login), so accept 3xx alongside 2xx.
+  if _http_reachable "${fe_url}/"; then
     _pass "$label"
   else
     _skip "$label — not responding (may not be deployed; run: install.sh --profile dev --components frontend)"
@@ -360,7 +371,7 @@ check_dataspoke_langfuse() {
   fi
   if $QUICK; then _pass "$label (tcp)"; return; fi
 
-  if _http_alive "${lf_url}/"; then
+  if _http_reachable "${lf_url}/"; then
     _pass "$label"
   else
     _skip "$label — not responding (may not be installed; run: install.sh --profile dev --components langfuse)"
