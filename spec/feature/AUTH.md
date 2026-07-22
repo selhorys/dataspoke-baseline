@@ -693,8 +693,13 @@ radius is bounded to DataSpoke:
   point it exists and belongs to them. The squatter's row still never
   addresses it, because the squatter cannot produce a Google identity for that
   address and therefore cannot bind their row to it.
-- `POST /auth/register` is rate-limited (per the API rate-limit middleware) to
-  raise the cost of mass registration.
+- `POST /auth/register` is rate-limited by the API rate-limit middleware. This
+  bounds *bulk automated* registration only. It is not a meaningful barrier to
+  the targeted squatting described above, which needs exactly one request per
+  address claimed. The limit is per client only in deployments that have named
+  their trusted proxies and preserve the real client IP; by default all
+  unauthenticated traffic shares one bucket (see
+  [Client-IP attribution for rate limiting](#client-ip-attribution-for-rate-limiting)).
 - Default role is Reader. A typosquatted account cannot edit metadata or
   manage policies without an admin explicitly promoting it.
 - Admin hard-delete removes the DataSpoke row and frees the email for
@@ -709,6 +714,63 @@ radius is bounded to DataSpoke:
 
 If an organisation needs strict email ownership verification, it adds a
 verification step in a fork (see [Out of Scope](#out-of-scope)).
+
+### Client-IP attribution for rate limiting
+
+The rate-limit middleware keys on the JWT `sub` claim when a request carries
+one and falls back to the client IP otherwise
+([API.md §Middleware Stack](../API.md#middleware-stack)). The key is derived
+from the `Authorization: Bearer` header alone, so every request without an
+access token — `/auth/register`, `/auth/token`, the password-reset pair, and
+the cookie- or OAuth-credentialed routes — is bucketed by whatever address the
+API observes as the client. That address is a security-relevant deployment
+property: if it collapses to a single value, all unauthenticated traffic shares
+one bucket. It is the only brute-force control on `POST /auth/token` — DataSpoke
+has no account lockout — so its fidelity matters beyond registration abuse.
+
+The observed address is the real client only if **every hop between client and
+API preserves it**. Two classes of hop matter:
+
+- **The API's own trust boundary, which is closed by default.** The API's
+  uvicorn server honours the forwarded headers only when the immediate peer is
+  in the trusted list supplied by the `config.trustedProxyIps` chart value, and
+  it then walks the `X-Forwarded-For` chain from right to left, taking the
+  first address *not* in that list as the client. Every entry is therefore a
+  party permitted to *name* the client address, not merely to relay it: a
+  caller whose own source address falls inside the list can forge the header,
+  rotate it per request, and mint a fresh bucket each time. The value names the
+  deployment's ingress controller and nothing wider — a private-range envelope
+  would admit every in-cluster pod and every VPN or peered-network caller able
+  to reach the API pod. It defaults to loopback only, trusting no proxy at all,
+  so per-client bucketing is opt-in and an unconfigured deployment buckets all
+  unauthenticated traffic together.
+  [HELM_CHART.md](HELM_CHART.md#tier-1--app-runtime-dataspoke_) owns the value
+  and its reasoning.
+- **Every hop in front of it**, whose requirement is topology-dependent. Where
+  an L4 LoadBalancer fronts the ingress controller (dev managed mode), the
+  controller Service needs `externalTrafficPolicy: Local` — under the default
+  `Cluster` policy kube-proxy masquerades the source address to a node IP, so
+  the API sees at most one address per node no matter which proxies it trusts.
+  Where an L7 load balancer (ALB or similar) fronts the controller, the client
+  address arrives in `X-Forwarded-For` and `externalTrafficPolicy` is
+  immaterial; the controller must instead be configured to trust and extend
+  that header rather than replace it with the peer it sees — ingress-nginx
+  discards it by default (`use-forwarded-headers: false`).
+
+DataSpoke asserts neither of these on the operator's ingress path; they are
+operator prerequisites. The dev managed-mode nginx-ingress Service leaves
+`externalTrafficPolicy` at its `Cluster` default, so dev rate-limit buckets are
+per node rather than per client.
+
+**The same trust gate governs `X-Forwarded-Proto`, which makes the value
+OAuth-affecting.** When the peer is trusted, the API takes its request scheme
+from that header. `GET /auth/google/login` derives the OAuth `redirect_uri`
+from the request URL, so the scheme the API believes it was reached over is the
+scheme it sends to Google. Trusting a TLS-terminating proxy therefore flips the
+generated `redirect_uri` from `http://` to `https://` — correct, but Google
+rejects the flow with `redirect_uri_mismatch` until the matching `https://`
+entry is registered as an authorised redirect URI on the OAuth client. Widening
+`config.trustedProxyIps` is not a rate-limiting-only change.
 
 ### OAuth flow hardening
 

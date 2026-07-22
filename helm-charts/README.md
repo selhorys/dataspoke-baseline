@@ -91,6 +91,21 @@ runbook in order.
 - Cluster capacity for the prod resource budget in `dataspoke/values.yaml` (2
   API + 2 frontend replicas, Postgres 1-2 CPU / 2-6Gi, Airflow's five
   components, Redis primary + replica) — size nodes accordingly.
+- `config.trustedProxyIps` (chart default: `"127.0.0.1"` — loopback only, no
+  proxy trusted). The auth rate limiter (`POST /auth/token` 10/min, `POST
+  /auth/register` 5/min — the only brute-force control, there is no account
+  lockout) keys on the request's client address; with the loopback-only
+  default every request arriving through your ingress controller shares one
+  bucket. To get real per-client limits, set it to your ingress controller's
+  pod CIDR in your `--values <overlay.yaml>`, e.g.
+  `trustedProxyIps: "127.0.0.1,10.4.0.0/14"` — see the comment on
+  `dataspoke/values.yaml`'s `config.trustedProxyIps` for why this must name
+  the controller's actual pod CIDR and never widen to `"*"` or the full
+  RFC1918 space. Widening it also flips `scope["scheme"]` from the trusted
+  hop's `X-Forwarded-Proto`, which changes the Google OAuth `redirect_uri`
+  your API generates from `http://` to `https://` — re-verify the redirect
+  URI registered in the Google Cloud Console still matches before rolling
+  this out.
 
 #### 2. Create the namespace and the 12-key credential Secret
 

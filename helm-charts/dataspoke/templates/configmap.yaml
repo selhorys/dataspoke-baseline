@@ -17,4 +17,15 @@ data:
   DATASPOKE_COOKIE_SECURE: {{ .Values.auth.cookieSecure | quote }}
   DATASPOKE_GOOGLE_OAUTH_CLIENT_ID: {{ .Values.auth.googleClientId | quote }}
   DATASPOKE_OAUTH_POST_LOGIN_REDIRECT: {{ .Values.config.oauthPostLoginRedirect | quote }}
+  # NOT a DATASPOKE_-prefixed app setting — this is uvicorn's own env var,
+  # read by uvicorn's own uvicorn/config.py (server layer), not by Pydantic
+  # Settings in src/shared/settings.py. Do not rename it to match the
+  # DATASPOKE_ convention; uvicorn only recognizes this exact name.
+  # See values.yaml's config.trustedProxyIps comment for why this exists,
+  # why the default is loopback-only, and why it must never be "*" or
+  # widened without naming the ingress controller's actual pod CIDR.
+  {{- if or (not .Values.config.trustedProxyIps) (eq .Values.config.trustedProxyIps "*") }}
+  {{- fail "config.trustedProxyIps must not be empty or \"*\" — both silently defeat the rate limiter's client-IP attribution (see values.yaml's config.trustedProxyIps comment). Set it to \"127.0.0.1\" (default, single global bucket) or to \"127.0.0.1,<ingress controller's pod CIDR>\" for per-client limits." }}
+  {{- end }}
+  FORWARDED_ALLOW_IPS: {{ .Values.config.trustedProxyIps | quote }}
 {{- end }}

@@ -350,6 +350,8 @@ intervenes** — the guard trades drain automation for uptime.
 Same names in dev and prod, different values. Injected into pods via ConfigMap
 (non-sensitive) or Secret (sensitive) from the `dataspoke-secrets` K8s Secret per
 §Configuration Flow. Not present in `helm-charts/.env.dev` / `helm-charts/.env.prod`.
+Third-party runtimes' own env names are carried in this tier unprefixed — the
+API's uvicorn server reads `FORWARDED_ALLOW_IPS` under that fixed name.
 
 - `DATASPOKE_POSTGRES_{HOST,PORT,USER,PASSWORD,DB}`
 - `DATASPOKE_REDIS_{HOST,PORT,PASSWORD}`
@@ -369,6 +371,37 @@ never sourced from `.env`:
 | `DATASPOKE_COOKIE_SECURE` | `auth.cookieSecure` | `Secure` flag on auth cookies — `true` in `values.yaml`, `false` in `values-dev.yaml` for HTTP laptop browsers. |
 | `DATASPOKE_GOOGLE_OAUTH_CLIENT_ID` | `auth.googleClientId` | Google OAuth public client id; absence disables Google login. |
 | `DATASPOKE_OAUTH_POST_LOGIN_REDIRECT` | `config.oauthPostLoginRedirect` | URL the Google/OIDC callback 302-redirects to after login (the frontend origin). `install.sh` sets it per `--frontend` mode (`local`→`localhost:3000`, `cluster`→`app.<domain>`); default `"/"` only works when UI and API share a host. |
+| `FORWARDED_ALLOW_IPS` | `config.trustedProxyIps` | Source addresses whose `X-Forwarded-For` and `X-Forwarded-Proto` the API's uvicorn server honours. uvicorn's own env-var name, so it carries no `DATASPOKE_` prefix. Default `"127.0.0.1"` — loopback only, i.e. no proxy trusted. Operators opt in by naming their ingress controller's pod CIDR, e.g. `"127.0.0.1,10.4.0.0/14"`. |
+
+**Trusting a proxy is opt-in, and the trust list applies to the whole forwarded
+chain.** uvicorn honours the forwarded headers only from a trusted peer, then
+walks `X-Forwarded-For` right to left and takes the first address *not* in the
+list as the client. Every entry is therefore a party permitted to *name* the
+client address, not merely to relay it. Since the client IP is the
+rate-limiter's bucket key for unauthenticated traffic
+([API.md §Middleware Stack](../API.md#middleware-stack)), and that limit is the
+only brute-force control on `POST /auth/token`, the list is what stands between
+an attacker and unbounded credential guessing:
+
+- **`*` is never correct.** It trusts every peer, so any caller forges a fresh
+  address per request and evades the limit entirely.
+- **A private-range envelope (`10.0.0.0/8` and friends) is not a safe
+  default** either. It admits every in-cluster pod, every VPC-CNI node, and any
+  VPN or peered-network caller that can reach the API pod — each of them free
+  to choose its own bucket.
+- **The shipped default trusts no proxy**, so unauthenticated traffic from
+  outside the pod lands in a single bucket keyed on the ingress controller's
+  pod IP. That is the documented cost of configuring nothing, not a silent
+  failure.
+
+Per-client bucketing therefore requires the operator to set the value to their
+ingress controller's pod CIDR and no wider. Trusting the hop is necessary but
+not sufficient: every hop in front of the API must also preserve the client
+address, which is topology-dependent and outside what DataSpoke configures. The
+value has a second effect — the same gate governs `X-Forwarded-Proto`, so
+widening it changes the scheme of the OAuth `redirect_uri` the API generates.
+Both are covered in
+[AUTH.md §Client-IP attribution for rate limiting](AUTH.md#client-ip-attribution-for-rate-limiting).
 
 Keeping these out of `.env` removes the prod footgun of a stray line silently
 disabling cookie hardening. Stub-mode wiring for the four dependency factories
@@ -684,9 +717,10 @@ features stay inert rather than failing the install.
 
 `DATASPOKE_POSTGRES_{HOST,PORT,DB}`,
 `DATASPOKE_REDIS_{HOST,PORT}`, `DATASPOKE_AIRFLOW_{URL,CALLBACK_BASE_URL}`,
-plus the four chart-values-only keys — `DATASPOKE_CORS_ORIGINS`,
+plus the five chart-values-only keys — `DATASPOKE_CORS_ORIGINS`,
 `DATASPOKE_COOKIE_SECURE`, `DATASPOKE_GOOGLE_OAUTH_CLIENT_ID`,
-`DATASPOKE_OAUTH_POST_LOGIN_REDIRECT` — which come from chart values, not `.env`
+`DATASPOKE_OAUTH_POST_LOGIN_REDIRECT`, `FORWARDED_ALLOW_IPS` — which come from
+chart values, not `.env`
 (their source values and roles are in §Configuration — Four-Tier Env Vars).
 `DATASPOKE_AIRFLOW_CALLBACK_BASE_URL` is hardcoded in the chart (`http://dataspoke-api:8002`);
 it is not derived from `.env`.

@@ -52,6 +52,9 @@ dev = [
     "httpx>=0.28",
     "mypy>=2.1",
     "ruff>=0.15",
+    # Chart-value assertions in tests/unit/api/middleware/test_rate_limit.py parse
+    # helm-charts/dataspoke/values.yaml directly.
+    "pyyaml>=6",
 ]
 
 [tool.pytest.ini_options]

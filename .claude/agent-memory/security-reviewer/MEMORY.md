@@ -9,3 +9,4 @@
 - [Consumer DB-plane → wire boundary](project_consumer_db_plane_to_wire_boundary.md) — peripheral_config JSONB must be re-validated on READ; consumer skips it, unlike peripheral_links
 - [.env → sed/helm interpolation boundary](project_env_to_sed_helm_interpolation_boundary.md) — ingress_tls_secret validates, ingress_class/domain do not; sed→kubectl apply is a sink
 - [DataHub GMS public virtual host](project_datahub_gms_public_virtual_host.md) — GMS at datahub-gms.<domain>/ root; auth-excluded paths + no TLS block; exposure set unchanged vs old /gms route
+- [FORWARDED_ALLOW_IPS trust radius](project_forwarded_allow_ips_trust_radius.md) — trust list = who may choose their own client IP; also governs XFP/OAuth redirect_uri scheme

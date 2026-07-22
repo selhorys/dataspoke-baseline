@@ -520,6 +520,46 @@ config:
   # origin). install.sh sets this per --frontend mode in dev; prod operators set
   # it in their overlay. Default "/" works only when UI and API share a host.
   oauthPostLoginRedirect: "/"
+  # Proxies uvicorn trusts to read X-Forwarded-For (see templates/configmap.yaml's
+  # FORWARDED_ALLOW_IPS comment). Default trusts NO proxy beyond loopback: with
+  # nothing set here, every request arriving through the ingress controller
+  # shares the ingress pod's own address as its rate-limit key — a single
+  # global bucket instead of one per client (issue #76), but visibly and
+  # documented rather than silently, and with no forgery surface.
+  #
+  # Getting real per-client limits is opt-in: name your ingress controller's
+  # actual pod CIDR, e.g. "127.0.0.1,10.4.0.0/14". Do NOT widen this to the
+  # full RFC1918 space or "*". uvicorn applies the trust list to *every* hop
+  # of X-Forwarded-For, not just the immediate peer
+  # (uvicorn/middleware/proxy_headers.py `_TrustedHosts.get_trusted_client_address`).
+  # Trust an over-broad range (all of RFC1918, or "*") and any caller that can
+  # reach the API pod from an address in that range — an in-cluster pod, an
+  # EKS VPC-CNI host, a VPN/peered-network client, or literally anyone for
+  # "*" — can forge X-Forwarded-For with a fresh IP per request and get a
+  # fresh rate-limit bucket every time. POST /auth/token is rate-limited
+  # 10/min and there is no account-lockout fallback, so the limiter is the
+  # only brute-force control; an over-broad trust list is strictly worse than
+  # the single-bucket bug it's meant to fix. The API Service type is
+  # configurable (api.service.type, ClusterIP by default) and reachable
+  # externally only through the ingress in that default configuration — an
+  # operator who changes it takes on a correspondingly larger trust surface.
+  #
+  # Trusting the hop is necessary but not sufficient for per-client bucketing:
+  # every hop in front of the API (LB, CDN, additional proxies) must also
+  # preserve the original client address in X-Forwarded-For rather than
+  # overwriting it. See spec/feature/AUTH.md §Client-IP attribution for rate
+  # limiting.
+  #
+  # Widening this also flips scope["scheme"] from the trusted hop's
+  # X-Forwarded-Proto (uvicorn applies the same trust gate to both headers),
+  # which changes the scheme in Google OAuth's generated redirect_uri
+  # (src/api/routers/auth.py get_google_login) from http:// to https://
+  # — re-verify the redirect URI registered in the Google Cloud Console
+  # matches before rolling out a widened value.
+  #
+  # Must never be empty or "*" — templates/configmap.yaml's FORWARDED_ALLOW_IPS
+  # render fails the install if either is set.
+  trustedProxyIps: "127.0.0.1"
 
 # ---------------------------------------------------------------------------
 # Shared secrets — pre-created by install.sh (dev) or operator (prod)

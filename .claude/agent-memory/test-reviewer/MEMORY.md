@@ -21,3 +21,4 @@
 - [Display-link safety spec landed](project_display_link_safety_spec_landed.md) — guard IS specced now (API.md 5-row table); residual gap is Length row unexercised in Python
 - [waitFor pre-settlement race](project_waitfor_presettlement_race.md) — react-query hooks make waitFor assertions pass before settlement; all-"" expectations inject nothing
 - [Peripheral links: DB sole source](project_peripheral_links_db_sole_source.md) — datahub/langfuse URLs come only from /spoke/common/peripheral-links; runtime config keeps apiBaseUrl+airflowUrl
+- [Rate-limit config-only fix needs chart-text tests](project_rate_limit_config_only_fix_no_test_seam.md) — behavioral tests can't see the chart wiring; how to judge chart-text assertions' altitude
