@@ -463,6 +463,29 @@ fields.
   the saved card's footer (in-session only).
 - The page is gated by the `useMe` admin check, like the other `/admin/*` pages.
 
+**This page is the entry point of a fresh deployment.** Every read that resolves
+through a feature service depends on the DataHub client, so until the DataHub
+card is filled in those reads answer `503 PERIPHERAL_NOT_CONFIGURED` with
+`detail.peripheral = "datahub"` ([API §Application Error Codes](../API.md#application-error-codes),
+which scopes the code to DataHub-requiring endpoints). That is most of the
+feature surface — notably including reads whose data lives only in DataSpoke's
+own store, so an unwired DataHub is felt well beyond the pages that display
+DataHub content. A few reads carry no such dependency and stay available:
+`GET /spoke/common/peripheral-links`, which must, since it feeds the shell that
+hosts the onboarding state and answers `""` for an unconfigured peripheral rather
+than failing (see [API §Data Resource](../API.md#data-resource-spokecommondata));
+`GET /spoke/ingestion/secrets`; and the MetaGen event feeds behind the
+NotificationCenter.
+
+This is the expected initial state of any deployment, not an error condition, and
+the UI treats it as such: the affected pages render the muted
+[QueryErrorState](#shared-component-notes) onboarding branch pointing back here,
+and none of them burns retry backoff on it (see
+[Query Error Policy](#query-error-policy)). Saving the DataHub card clears the
+condition across the whole app with no pod restart, by the same
+`peripheral_config` path the shell's links resolve through (see
+[Shell](#shell)); pages already open pick it up on their next poll.
+
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
 │  Profile · API tokens                            [ + New token ]        │
@@ -502,6 +525,59 @@ The baseline API exposes no WebSocket or SSE channels. Live freshness is
 polling-only via TanStack Query's `refetchInterval` against `event/...` and
 `attr/.../result` endpoints (default 15 s on visible pages, paused on tab
 blur). Frontend code MUST NOT introduce paths under `/spoke/.../stream/...`.
+
+---
+
+## Query Error Policy
+
+One retry policy is set globally on the query client and governs every read;
+per-hook overrides are the documented exception, not the norm. Failures split
+into two classes:
+
+- **Non-transient — no retry, fail immediately.** Any `4xx`, plus
+  `PERIPHERAL_NOT_CONFIGURED` regardless of its `503` status
+  ([API §Application Error Codes](../API.md#application-error-codes)). That code
+  reports a configuration state rather than a fault: the peripheral stays
+  unconfigured until an operator wires it, so a retry chain cannot change the
+  answer and only spends seconds of backoff on every query in the app before
+  arriving at the same result. `429` needs no separate rule — the `4xx` rule
+  already covers it, and appropriately so, since its `Retry-After` is an
+  instruction addressed to the caller and the query layer's blind backoff is the
+  wrong instrument to honour it with.
+- **Everything else — retried up to twice**, then surfaced to the render site.
+
+The `4xx` rule sits above the fetch layer's own `401` refresh-and-replay (see
+[Authentication](#authentication)): an expired access token is refreshed and the
+request replayed beneath this policy, so only a `401` that survives that replay
+reaches the query layer as a failure.
+
+Two hooks tighten this further, each for a reason the global rule cannot express:
+
+- The ingestion secret-resolver read (`GET /spoke/ingestion/secrets`) treats any
+  `503` as final. That read exists to report whether the resolver is reachable at
+  all, so an unavailable resolver is the answer rather than an obstacle to it
+  (see [SECRET_RESOLUTION §Error taxonomy](SECRET_RESOLUTION.md#error-taxonomy)).
+- The shell's peripheral-links read (`GET /spoke/common/peripheral-links`)
+  retries once rather than twice: a failed refresh is already absorbed by the
+  retain-last-resolved rule (see [Shell](#shell)), so further attempts change
+  nothing a user can observe.
+
+A page or panel that surfaces a failed read **inline** renders it through
+[QueryErrorState](#shared-component-notes). Reads whose failure degrades to a
+benign absence opt out and render nothing — peripheral-links and the links it
+feeds resolve to `""`, the same "render no link" state as an unset value (see
+[Shell](#shell)). A read that neither renders inline nor opts out falls back to
+the global error toast.
+
+Failing fast does not stop polling: a page on the standard 15 s
+`refetchInterval` (see [Live Updates](#live-updates)) keeps re-issuing the read,
+so it leaves an error or onboarding state on its own once the underlying
+condition clears — no reload, no manual retry control.
+
+Failed *mutations* keep the TanStack default of no retry and surface as toasts;
+`PERIPHERAL_NOT_CONFIGURED` toasts with neutral rather than destructive styling,
+since it names an unfinished setup step, but it is not suppressed — a write that
+did not happen must still be reported.
 
 ---
 
@@ -659,6 +735,22 @@ These component IDs are referenced from per-function specs.
   [Pagination](#shared-component-notes) (→ `offset`/`limit`/`total_count`), and renders each row's
   `event_type`, `occurred_at`, `status`, and a click-to-expand `detail` cell; ingestion rows whose
   derived `wrapper` flag is set carry a "wrapper" tag.
+- **QueryErrorState** — the render point for a page or panel that surfaces a
+  failed read inline, and the only one (see
+  [Query Error Policy](#query-error-policy), which also covers the reads that
+  opt out of inline rendering). It branches on the error:
+  - When the error is `PERIPHERAL_NOT_CONFIGURED`, it names the peripheral from
+    `detail.peripheral` and renders a **muted onboarding state** styled like the
+    empty state, not the destructive error state — an unwired peripheral is a setup
+    step the deployment has not reached, so presenting it in alarm styling misreads
+    a normal first-run condition as a fault. Admins are directed to
+    [`/admin/peripherals`](#peripherals-adminperipherals) and get a link there;
+    non-admins are told to ask an administrator, with **no link**, because that
+    route is Admin-gated and a link they cannot follow is worse than a sentence
+    naming who can. The role-specific line is held until the role resolves, so an
+    admin is never shown the non-admin wording.
+  - For every other error it renders the ordinary destructive error state with the
+    message from the API's error envelope.
 - **ConfirmDialog** — destructive-action gate (revoke token, delete config).
 - **Pagination** — the single pagination control for every paged table across all
   features. It exposes a **page-size selector** (20 / 50 / 100, default **20**), **Prev /

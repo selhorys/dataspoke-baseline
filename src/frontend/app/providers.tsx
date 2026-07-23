@@ -4,6 +4,7 @@ import { MutationCache, QueryCache, QueryClient, QueryClientProvider } from "@ta
 import { ThemeProvider } from "next-themes";
 import { useEffect, useState } from "react";
 import { Toaster } from "@/components/ui/toaster";
+import { defaultQueryRetry } from "@/lib/api/error-policy";
 import { toastApiError } from "@/lib/toast-api-error";
 import { TimezoneHydration } from "@/lib/preferences/timezone";
 
@@ -46,6 +47,9 @@ export function Providers({ children }: { children: React.ReactNode }) {
           queries: {
             staleTime: 30_000,
             refetchOnWindowFocus: false,
+            // One retry policy for every read; mutations keep TanStack's own
+            // no-retry default. See lib/api/error-policy.ts.
+            retry: defaultQueryRetry,
           },
         },
         /**

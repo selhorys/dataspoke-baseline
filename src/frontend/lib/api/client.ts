@@ -10,6 +10,8 @@ export class ApiError extends Error {
   readonly error_code: string;
   readonly trace_id: string;
   readonly status: number;
+  /** Error-code-specific context from the envelope, e.g. `{ peripheral: "datahub" }`. */
+  readonly detail?: Record<string, unknown>;
 
   constructor(payload: ApiErrorPayload, status: number) {
     super(payload.message);
@@ -17,6 +19,7 @@ export class ApiError extends Error {
     this.error_code = payload.error_code;
     this.trace_id = payload.trace_id;
     this.status = status;
+    this.detail = payload.detail;
   }
 }
 

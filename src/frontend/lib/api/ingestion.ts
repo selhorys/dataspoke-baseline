@@ -6,6 +6,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { apiFetch, ApiError } from "@/lib/api/client";
+import { defaultQueryRetry } from "@/lib/api/error-policy";
 import { usePoll } from "@/lib/hooks/use-poll";
 import type {
   IngestionSource,
@@ -95,10 +96,6 @@ export function useIngestionSource(id: string) {
       ),
     enabled: !!id,
     meta: { handledInline: true },
-    retry: (failureCount, error) => {
-      if (error instanceof ApiError && error.status === 404) return false;
-      return failureCount < 2;
-    },
   });
 }
 
@@ -274,7 +271,7 @@ export function useIngestionUnmanaged(params: PageParams = {}) {
 /**
  * GET /spoke/ingestion/secrets — Editor/Admin only.
  * `enabled` should be the caller's canWrite so Readers never fire it (the route
- * is 403 READ_ONLY_ROLE for Readers). Never retried on 403/503.
+ * is 403 READ_ONLY_ROLE for Readers).
  */
 export function useIngestionSecrets(enabled: boolean) {
   return usePoll<SecretRefListResponse>({
@@ -283,14 +280,12 @@ export function useIngestionSecrets(enabled: boolean) {
       apiFetch<SecretRefListResponse>("/spoke/ingestion/secrets"),
     enabled,
     meta: { handledInline: true },
+    // This read reports whether the secret resolver is reachable at all, so an
+    // unavailable resolver is the answer rather than an obstacle to it. Every
+    // other class defers to the global policy.
     retry: (failureCount, error) => {
-      if (
-        error instanceof ApiError &&
-        (error.status === 403 || error.status === 503)
-      ) {
-        return false;
-      }
-      return failureCount < 2;
+      if (error instanceof ApiError && error.status === 503) return false;
+      return defaultQueryRetry(failureCount, error);
     },
   });
 }

@@ -22,7 +22,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useGovernanceMetrics } from "@/lib/api/governance";
-import { ErrorState } from "@/components/ui/error-state";
+import { QueryErrorState } from "@/components/query-error-state";
 import { Pagination, DEFAULT_PAGE_SIZE } from "@/components/pagination";
 import { PageHeader } from "@/components/page-header";
 import { useMe } from "@/lib/auth/use-me";
@@ -121,7 +121,7 @@ export default function GovernanceMetricsPage() {
 
       {/* Error */}
       {error && (
-        <ErrorState message={`Failed to load metrics: ${error.message}`} />
+        <QueryErrorState error={error} context="Failed to load metrics" />
       )}
 
       {/* Table */}

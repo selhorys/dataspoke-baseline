@@ -18,6 +18,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Pagination, DEFAULT_PAGE_SIZE } from "@/components/pagination";
+import { QueryErrorState } from "@/components/query-error-state";
 import { ReviewRow } from "@/components/ontogen/review-row";
 import { EvidenceLink } from "@/components/ontogen/evidence-link";
 import { ApprovalFilter } from "@/components/ontogen/approval-filter";
@@ -69,7 +70,7 @@ export function NodesPanel({ canWrite }: NodesPanelProps) {
           ))}
         </div>
       ) : error ? (
-        <p className="text-sm text-destructive">Failed to load nodes: {error.message}</p>
+        <QueryErrorState error={error} context="Failed to load nodes" />
       ) : nodes.length === 0 ? (
         <p className="py-8 text-center text-sm text-muted-foreground">No ontology nodes.</p>
       ) : (

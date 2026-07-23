@@ -43,6 +43,8 @@ vi.mock("@/lib/api/client", () => ({
   },
 }));
 
+import { ApiError } from "@/lib/api/client";
+import { defaultQueryRetry } from "@/lib/api/error-policy";
 import {
   useIngestionSources,
   useIngestionSource,
@@ -421,6 +423,94 @@ describe("useIngestionSecrets — enabled guard", () => {
   it("does NOT call apiFetch when enabled=false", () => {
     renderHook(() => useIngestionSecrets(false), { wrapper: makeWrapper() });
     expect(mockApiFetch).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 7b. Secrets — documented per-hook retry exception
+// ---------------------------------------------------------------------------
+describe("useIngestionSecrets — a 503 is the answer, not an obstacle", () => {
+  // spec: spec/feature/FRONTEND_BASIC.md §Query Error Policy — "The ingestion
+  //   secret-resolver read (GET /spoke/ingestion/secrets) treats any 503 as final.
+  //   That read exists to report whether the resolver is reachable at all, so an
+  //   unavailable resolver is the answer rather than an obstacle to it."
+  // This is one of the two exceptions the spec grants to the global policy, which
+  // retries a 503 twice; deleting the override on the grounds that the global rule
+  // now covers this read would violate the spec silently.
+  //
+  // The wrapper below runs the app's own policy rather than `retry: false`: with
+  // retries switched off wholesale, a one-attempt result would prove nothing about
+  // the override.
+  function makePolicyWrapper() {
+    const qc = new QueryClient({
+      defaultOptions: {
+        queries: { retry: defaultQueryRetry, retryDelay: 0, gcTime: 0 },
+        mutations: { retry: false },
+      },
+    });
+    return function Wrapper({ children }: { children: React.ReactNode }) {
+      return React.createElement(QueryClientProvider, { client: qc }, children);
+    };
+  }
+
+  it("issues exactly one attempt on a 503", async () => {
+    mockApiFetch.mockRejectedValue(
+      new ApiError({
+        error_code: "STORAGE_UNAVAILABLE",
+        message: "resolver unreachable",
+        trace_id: "aaaaaaaa-0000-0000-0000-000000000000",
+        resp_time: "2026-07-01T00:00:00Z",
+      }, 503),
+    );
+
+    const { result } = renderHook(() => useIngestionSecrets(true), {
+      wrapper: makePolicyWrapper(),
+    });
+    await waitFor(() => expect(result.current.isError).toBe(true));
+
+    expect(mockApiFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("still defers to the global policy for every other class — a 500 is retried twice", async () => {
+    // Backstop for the assertion above: under the same wrapper a transient
+    // failure still costs three attempts, so the single attempt on a 503 comes
+    // from the override rather than from retries being off.
+    mockApiFetch.mockRejectedValue(
+      new ApiError({
+        error_code: "INTERNAL_ERROR",
+        message: "boom",
+        trace_id: "aaaaaaaa-0000-0000-0000-000000000000",
+        resp_time: "2026-07-01T00:00:00Z",
+      }, 500),
+    );
+
+    const { result } = renderHook(() => useIngestionSecrets(true), {
+      wrapper: makePolicyWrapper(),
+    });
+    await waitFor(() => expect(result.current.isError).toBe(true));
+
+    expect(mockApiFetch).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not retry a 403 either — Readers are not permitted this read", async () => {
+    // spec/API.md §Ingestion: the route answers 403 READ_ONLY_ROLE for Readers.
+    // The global 4xx rule covers this, which is why the hook's own override no
+    // longer names 403.
+    mockApiFetch.mockRejectedValue(
+      new ApiError({
+        error_code: "READ_ONLY_ROLE",
+        message: "read-only",
+        trace_id: "aaaaaaaa-0000-0000-0000-000000000000",
+        resp_time: "2026-07-01T00:00:00Z",
+      }, 403),
+    );
+
+    const { result } = renderHook(() => useIngestionSecrets(true), {
+      wrapper: makePolicyWrapper(),
+    });
+    await waitFor(() => expect(result.current.isError).toBe(true));
+
+    expect(mockApiFetch).toHaveBeenCalledTimes(1);
   });
 });
 

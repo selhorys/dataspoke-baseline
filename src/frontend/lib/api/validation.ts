@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiFetch, ApiError } from "@/lib/api/client";
+import { apiFetch } from "@/lib/api/client";
 import { usePoll } from "@/lib/hooks/use-poll";
 import type {
   ValidationCoverage,
@@ -53,13 +53,6 @@ export function useValidationConf(datasetUrn: string) {
       ),
     enabled: !!datasetUrn,
     meta: { handledInline: true },
-    retry: (failureCount, error) => {
-      // Do not retry on 404 — the config may not exist yet (create state).
-      if (error instanceof ApiError && error.status === 404) {
-        return false;
-      }
-      return failureCount < 2;
-    },
   });
 }
 

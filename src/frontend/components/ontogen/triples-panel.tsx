@@ -24,6 +24,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Pagination, DEFAULT_PAGE_SIZE } from "@/components/pagination";
+import { QueryErrorState } from "@/components/query-error-state";
 import { ReviewRow } from "@/components/ontogen/review-row";
 import { EvidenceLink } from "@/components/ontogen/evidence-link";
 import { ApprovalFilter } from "@/components/ontogen/approval-filter";
@@ -88,9 +89,7 @@ export function TriplesPanel({ canWrite }: TriplesPanelProps) {
           ))}
         </div>
       ) : triplesQuery.error ? (
-        <p className="text-sm text-destructive">
-          Failed to load triples: {triplesQuery.error.message}
-        </p>
+        <QueryErrorState error={triplesQuery.error} context="Failed to load triples" />
       ) : triples.length === 0 ? (
         <p className="py-8 text-center text-sm text-muted-foreground">No ontology triples.</p>
       ) : (

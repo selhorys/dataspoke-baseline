@@ -2,7 +2,7 @@
 
 import { useMemo } from "react";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ErrorState } from "@/components/ui/error-state";
+import { QueryErrorState } from "@/components/query-error-state";
 import { EmptyState } from "@/components/ui/empty-state";
 import { RangePicker } from "@/components/range-picker";
 import { PageHeader } from "@/components/page-header";
@@ -70,7 +70,7 @@ export default function GovernanceDashboardPage() {
       )}
 
       {error && (
-        <ErrorState message={`Failed to load metrics: ${error.message}`} />
+        <QueryErrorState error={error} context="Failed to load metrics" />
       )}
 
       {data && <DashboardContent metrics={data.metrics} range={range} />}

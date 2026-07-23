@@ -4,7 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { ErrorState } from "@/components/ui/error-state";
+import { QueryErrorState } from "@/components/query-error-state";
 import { IngestionSourceList } from "@/components/ingestion/ingestion-source-list";
 import { useIngestionSources } from "@/lib/api/ingestion";
 import { useMe } from "@/lib/auth/use-me";
@@ -44,7 +44,7 @@ export default function IngestionConfPage() {
       />
 
       {error && (
-        <ErrorState message={`Failed to load ingestion sources: ${error.message}`} />
+        <QueryErrorState error={error} context="Failed to load ingestion sources" />
       )}
 
       <IngestionSourceList

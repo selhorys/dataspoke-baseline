@@ -28,6 +28,8 @@ export interface ApiErrorPayload {
   message: string;
   trace_id: string;
   resp_time: string;
+  /** Error-code-specific context, e.g. `{ peripheral: "datahub" }`. */
+  detail?: Record<string, unknown>;
 }
 
 // ── API Tokens ────────────────────────────────────────────────────────────────

@@ -6,7 +6,7 @@ import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ErrorState } from "@/components/ui/error-state";
+import { QueryErrorState } from "@/components/query-error-state";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { MetagenConfForm } from "@/components/metagen/conf-form";
 import { MetagenConfView } from "@/components/metagen/conf-view";
@@ -109,7 +109,9 @@ export default function MetagenConfDetailPage({
   if (error || !conf) {
     return (
       <div className="space-y-2">
-        <ErrorState
+        <QueryErrorState
+          error={error}
+          context="Failed to load conf"
           message={
             is404
               ? "Conf not found."

@@ -17,7 +17,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ErrorState } from "@/components/ui/error-state";
+import { QueryErrorState } from "@/components/query-error-state";
 import { RangePicker } from "@/components/range-picker";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { ValidationConfForm } from "@/components/validation/validation-conf-form";
@@ -142,7 +142,7 @@ export function ValidationDataPanel({ datasetUrn }: ValidationDataPanelProps) {
   }
 
   if (confError && !is404) {
-    return <ErrorState message={`Failed to load validation config: ${confError.message}`} />;
+    return <QueryErrorState error={confError} context="Failed to load validation config" />;
   }
 
   // The timeseries render only in the has-conf read-only view; while editing

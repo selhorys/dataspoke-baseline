@@ -13,6 +13,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, act, within } from "@testing-library/react";
 import React from "react";
 import GovernanceMetricsPage from "./page";
+import { ApiError } from "@/lib/api/client";
+import { useAuthStore } from "@/lib/auth/store";
 import type { MetricDefinitionListItem } from "@/types/governance";
 
 // jsdom lacks ResizeObserver (used by Radix Select).
@@ -101,5 +103,82 @@ describe("GovernanceMetricsPage — Last Run column", () => {
     const cells = within(dataRow as HTMLElement).getAllByRole("cell");
     const lastRunCell = cells[cells.length - 1];
     expect(lastRunCell.textContent).toBe("—");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Failed read — the inline error render point
+// ---------------------------------------------------------------------------
+
+/**
+ * Spec: spec/feature/FRONTEND_BASIC.md §Query Error Policy — "A page or panel
+ * that surfaces a failed read inline renders it through QueryErrorState", and
+ * §Peripherals (/admin/peripherals) — on a deployment whose DataHub is unwired
+ * "the affected pages render the muted QueryErrorState onboarding state pointing
+ * back here".
+ *
+ * This is a call-site test, not a second copy of components/query-error-state.test.tsx.
+ * `QueryErrorStateProps.error` is typed `unknown`, so a page that hands over
+ * `error.message`, `String(error)`, or another query's error still typechecks and
+ * still renders — just always on the destructive branch, which reinstates on that
+ * page exactly the alarm state this policy removed. One representative page pins
+ * that the error object reaches the component intact.
+ */
+describe("GovernanceMetricsPage — a failed read renders through QueryErrorState", () => {
+  const PERIPHERAL_NOT_CONFIGURED_ERROR = new ApiError(
+    {
+      error_code: "PERIPHERAL_NOT_CONFIGURED",
+      message: "DataHub is not configured",
+      trace_id: "aaaaaaaa-0000-0000-0000-000000000000",
+      resp_time: "2026-07-01T00:00:00Z",
+      detail: { peripheral: "datahub" },
+    },
+    503,
+  );
+
+  function setError(error: unknown): void {
+    mockUseGovernanceMetrics.mockReturnValue({ data: undefined, isLoading: false, error });
+  }
+
+  beforeEach(() => {
+    useAuthStore.setState({
+      me: {
+        id: "u1",
+        email: "admin@example.com",
+        name: "Admin",
+        role: "Admin",
+        has_google: false,
+        created_at: "2026-01-01T00:00:00Z",
+        updated_at: "2026-01-01T00:00:00Z",
+      },
+    });
+  });
+
+  it("hands the error object through, so a 503 PERIPHERAL_NOT_CONFIGURED reaches the onboarding branch", async () => {
+    setError(PERIPHERAL_NOT_CONFIGURED_ERROR);
+    await renderPage();
+
+    // Names the peripheral and points an admin at the page that fixes it.
+    expect(document.body.textContent).toContain("DataHub");
+    expect(screen.getByRole("link", { name: /peripherals/i })).toHaveAttribute(
+      "href",
+      "/admin/peripherals",
+    );
+  });
+
+  it("does not render the destructive copy for that error", async () => {
+    setError(PERIPHERAL_NOT_CONFIGURED_ERROR);
+    await renderPage();
+
+    expect(screen.queryByText(/Failed to load metrics/)).not.toBeInTheDocument();
+  });
+
+  it("still renders the ordinary error state for every other failure", async () => {
+    // Backstop: the page has not simply been rewired to always show onboarding.
+    setError(new Error("Database connection failed"));
+    await renderPage();
+
+    expect(screen.getByText("Failed to load metrics: Database connection failed")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /peripherals/i })).not.toBeInTheDocument();
   });
 });

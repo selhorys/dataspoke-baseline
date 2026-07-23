@@ -271,6 +271,55 @@ describe("apiFetch — error envelope", () => {
     const result = await apiFetch("/auth/token/revoke", { method: "POST" });
     expect(result).toBeUndefined();
   });
+
+  // spec/API.md §Application Error Codes: PERIPHERAL_NOT_CONFIGURED carries
+  // `detail.peripheral` naming which peripheral is unconfigured. The error
+  // envelope's `detail` must reach the render site, which names the peripheral
+  // from it (spec/feature/FRONTEND_BASIC.md §Shared Component Notes).
+  it("carries the envelope's detail object onto the thrown ApiError", async () => {
+    const body = {
+      error_code: "PERIPHERAL_NOT_CONFIGURED",
+      message: "DataHub is not configured",
+      trace_id: "trace-002",
+      resp_time: "2026-07-01T00:00:00Z",
+      detail: { peripheral: "datahub" },
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(makeResponse(503, body)));
+
+    await expect(apiFetch("/spoke/governance/metrics")).rejects.toSatisfy((err: unknown) => {
+      expect(err).toBeInstanceOf(ApiError);
+      const apiErr = err as ApiError;
+      expect(apiErr.error_code).toBe("PERIPHERAL_NOT_CONFIGURED");
+      expect(apiErr.status).toBe(503);
+      expect(apiErr.detail).toEqual({ peripheral: "datahub" });
+      return true;
+    });
+  });
+
+  it("leaves detail undefined when the envelope omits it", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(makeResponse(500, errorBody())));
+
+    await expect(apiFetch("/spoke/governance/metrics")).rejects.toSatisfy((err: unknown) => {
+      expect((err as ApiError).detail).toBeUndefined();
+      return true;
+    });
+  });
+
+  it("leaves detail undefined when the body is not valid JSON", async () => {
+    const badResponse = {
+      status: 503,
+      ok: false,
+      statusText: "Service Unavailable",
+      json: () => Promise.reject(new SyntaxError("not json")),
+    } as unknown as Response;
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(badResponse));
+
+    await expect(apiFetch("/spoke/governance/metrics")).rejects.toSatisfy((err: unknown) => {
+      expect((err as ApiError).error_code).toBe("UNKNOWN_ERROR");
+      expect((err as ApiError).detail).toBeUndefined();
+      return true;
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

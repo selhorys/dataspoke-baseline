@@ -12,7 +12,7 @@ import { ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ErrorState } from "@/components/ui/error-state";
+import { QueryErrorState } from "@/components/query-error-state";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { RecipeYamlEditor } from "@/components/ingestion/recipe-yaml-editor";
 import { SecretRefAuthoringGuide } from "@/components/ingestion/secret-ref-authoring-guide";
@@ -113,7 +113,9 @@ export default function IngestionSourceDetailPage({
   if (error || !source) {
     return (
       <div className="space-y-2">
-        <ErrorState
+        <QueryErrorState
+          error={error}
+          context="Failed to load ingestion source"
           message={
             is404
               ? "Ingestion source not found."

@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ErrorState } from "@/components/ui/error-state";
+import { QueryErrorState } from "@/components/query-error-state";
 import { Pagination, DEFAULT_PAGE_SIZE } from "@/components/pagination";
 import { MetagenUncoveredTable } from "@/components/metagen/uncovered-table";
 import { PageHeader } from "@/components/page-header";
@@ -51,7 +51,7 @@ export default function MetagenUncoveredPage() {
       </div>
 
       {error && (
-        <ErrorState message={`Failed to load uncovered datasets: ${error.message}`} />
+        <QueryErrorState error={error} context="Failed to load uncovered datasets" />
       )}
 
       {isLoading && !data ? (

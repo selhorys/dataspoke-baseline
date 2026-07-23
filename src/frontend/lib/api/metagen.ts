@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiFetch, ApiError } from "@/lib/api/client";
+import { apiFetch } from "@/lib/api/client";
 import { usePoll } from "@/lib/hooks/use-poll";
 import type {
   MetagenBoundary,
@@ -57,10 +57,6 @@ export function useMetagenConf(confId: string) {
       ),
     enabled: !!confId,
     meta: { handledInline: true },
-    retry: (failureCount, error) => {
-      if (error instanceof ApiError && error.status === 404) return false;
-      return failureCount < 2;
-    },
   });
 }
 

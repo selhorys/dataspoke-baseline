@@ -42,7 +42,7 @@ import {
   useRunMetric,
 } from "@/lib/api/governance";
 import { useMe } from "@/lib/auth/use-me";
-import { ErrorState } from "@/components/ui/error-state";
+import { QueryErrorState } from "@/components/query-error-state";
 import { DEFAULT_PAGE_SIZE } from "@/components/pagination";
 import { useDisplayTz } from "@/lib/preferences/timezone";
 import type { MetricFormValues } from "@/types/governance";
@@ -166,7 +166,7 @@ export default function MetricDetailPage({
   if (confError) {
     return (
       <div className="space-y-2">
-        <ErrorState message={`Failed to load metric: ${confError.message}`} />
+        <QueryErrorState error={confError} context="Failed to load metric" />
         <Button variant="outline" size="sm" asChild>
           <Link href="/governance/metrics">Back to list</Link>
         </Button>

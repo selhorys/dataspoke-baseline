@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { ErrorState } from "@/components/ui/error-state";
+import { QueryErrorState } from "@/components/query-error-state";
 import { MetagenConfList } from "@/components/metagen/conf-list";
 import { RunDialog } from "@/components/metagen/run-dialog";
 import {
@@ -52,7 +52,7 @@ export default function MetagenConfListPage() {
   return (
     <div className="space-y-4">
       {error && (
-        <ErrorState message={`Failed to load confs: ${error.message}`} />
+        <QueryErrorState error={error} context="Failed to load confs" />
       )}
 
       <MetagenConfList

@@ -13,7 +13,7 @@ import {
 } from "@/lib/api/ontogen";
 import { useMe } from "@/lib/auth/use-me";
 import { useToast } from "@/components/ui/use-toast";
-import { ErrorState } from "@/components/ui/error-state";
+import { QueryErrorState } from "@/components/query-error-state";
 import { EmptyState } from "@/components/ui/empty-state";
 import type { DatasetFilter } from "@/types/governance";
 import type { OntogenConfPutBody } from "@/types/ontogen";
@@ -138,7 +138,7 @@ export default function OntogenConfPage() {
       )}
 
       {!isLoading && error && (
-        <ErrorState message={`Failed to load configuration: ${error.message}`} />
+        <QueryErrorState error={error} context="Failed to load configuration" />
       )}
 
       {!isLoading && !error && conf === undefined && (

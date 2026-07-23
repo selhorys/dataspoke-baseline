@@ -6,6 +6,7 @@ import { toast } from "@/components/ui/use-toast";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { QueryErrorState } from "@/components/query-error-state";
 import type { DagGroup, DagGroupStatus } from "@/lib/api/types";
 
 // Fixed group order + labels — verbatim from spec/API.md §/admin/dags. The page
@@ -63,9 +64,13 @@ export function WorkflowSchedulesCard() {
             <Skeleton className="h-5 w-48" />
           </div>
         ) : isError ? (
-          <p className="text-sm text-destructive">
-            {error instanceof ApiError ? error.message : "Failed to load workflow schedules."}
-          </p>
+          <QueryErrorState
+            error={error}
+            context="Failed to load workflow schedules"
+            message={
+              error instanceof ApiError ? error.message : "Failed to load workflow schedules."
+            }
+          />
         ) : (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             {GROUPS.map(({ group, label }) => {

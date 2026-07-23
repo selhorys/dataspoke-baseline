@@ -19,7 +19,7 @@ import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ErrorState } from "@/components/ui/error-state";
+import { QueryErrorState } from "@/components/query-error-state";
 import { Pagination } from "@/components/pagination";
 import {
   Table,
@@ -85,7 +85,7 @@ export function MetagenCoveredTable({
       </div>
 
       {error && (
-        <ErrorState message={`Failed to load covered datasets: ${error.message}`} />
+        <QueryErrorState error={error} context="Failed to load covered datasets" />
       )}
 
       {isLoading && rows.length === 0 ? (

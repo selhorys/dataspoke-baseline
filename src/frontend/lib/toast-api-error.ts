@@ -11,6 +11,7 @@
 
 import { toast } from "@/components/ui/use-toast";
 import { ApiError } from "@/lib/api/client";
+import { isPeripheralNotConfigured, peripheralDisplayName } from "@/lib/api/error-policy";
 
 export function toastApiError(err: unknown): void {
   if (!(err instanceof ApiError)) {
@@ -30,6 +31,18 @@ export function toastApiError(err: unknown): void {
 
   // 401: auth client already clears state and redirects; skip toast
   if (err.status === 401) return;
+
+  // An unconfigured peripheral names an unfinished setup step rather than a
+  // fault, so it toasts neutrally — but it still toasts, because the call it
+  // blocked did not happen.
+  if (isPeripheralNotConfigured(err)) {
+    toast({
+      title: `${peripheralDisplayName(err)} isn't connected yet`,
+      description: "Connect it in Admin → Peripherals, then try again.",
+      variant: "default",
+    });
+    return;
+  }
 
   toast({
     title: err.error_code,

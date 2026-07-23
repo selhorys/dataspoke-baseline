@@ -26,10 +26,12 @@ placeholder default, so admin-UI peripheral wiring never reached the link.
   `lib/api/peripheral-links.ts` — a hook reading `process.env.NEXT_PUBLIC_DATAHUB_URL`
   directly would pass every Vitest and E2E test, because the chart no longer sets the var.
 - Unspecced impl details that tests keep drifting onto: TanStack Query `data` retention across
-  a refetch ("no flash"), `retry: 1`, the module-level query key, and
-  `evidence-link.tsx`'s trailing-slash strip on `langfuse_url`.
+  a refetch ("no flash"), the module-level query key, and `evidence-link.tsx`'s trailing-slash
+  strip on `langfuse_url`. `retry: 1` is **no longer** in that list — it is a named exception in
+  `FRONTEND_BASIC.md §Query Error Policy` (see [[query-error-policy-test-anchors]]) and is
+  currently unasserted.
 - Dev cluster seeds `frontend_url` via `helm-charts/bin/post-install/seed-peripheral-config.sh`,
   so E2E DataHub-link assertions have a value; Langfuse seeding is gated on
   `DATASPOKE_TEST_LANGFUSE_HOST` + public key, so the Evidence-cell em-dash branch is reachable.
 
-Related: [[display-link-safety-spec-landed]], [[waitfor-presettlement-race]]
+Related: [[display-link-safety-spec-landed]], [[waitfor-presettlement-race]], [[query-error-policy-test-anchors]]

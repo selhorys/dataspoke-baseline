@@ -22,7 +22,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { ErrorState } from "@/components/ui/error-state";
+import { QueryErrorState } from "@/components/query-error-state";
 import { Pagination, DEFAULT_PAGE_SIZE } from "@/components/pagination";
 import { PageHeader } from "@/components/page-header";
 import { DatahubDatasetLink } from "@/components/datahub-dataset-link";
@@ -43,7 +43,7 @@ export default function GovernanceDatasetsPage() {
     <div className="space-y-4">
       <PageHeader title="Datasets" />
 
-      {error && <ErrorState message={`Failed to load datasets: ${error.message}`} />}
+      {error && <QueryErrorState error={error} context="Failed to load datasets" />}
 
       <div className="rounded-md border">
         <Table>

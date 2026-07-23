@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ErrorState } from "@/components/ui/error-state";
+import { QueryErrorState } from "@/components/query-error-state";
 import { Pagination, DEFAULT_PAGE_SIZE } from "@/components/pagination";
 import { UnmanagedDatasetTable } from "@/components/ingestion/unmanaged-dataset-table";
 import { PageHeader } from "@/components/page-header";
@@ -29,7 +29,7 @@ export default function UnmanagedDatasetsPage() {
       </p>
 
       {error && (
-        <ErrorState message={`Failed to load unmanaged datasets: ${error.message}`} />
+        <QueryErrorState error={error} context="Failed to load unmanaged datasets" />
       )}
 
       {isLoading ? (

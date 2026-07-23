@@ -112,6 +112,27 @@ describe("usePeripheralLinks — endpoint", () => {
   });
 });
 
+// ── Documented per-hook retry exception ─────────────────────────────────────────
+
+describe("usePeripheralLinks — retries once, not twice", () => {
+  // spec: spec/feature/FRONTEND_BASIC.md §Query Error Policy — "The shell's
+  //   peripheral-links read (GET /spoke/common/peripheral-links) retries once
+  //   rather than twice: a failed refresh is already absorbed by the
+  //   retain-last-resolved rule (see Shell), so further attempts change nothing a
+  //   user can observe."
+  // This is one of the two exceptions the spec grants to the global policy
+  // (which retries twice), so deleting the override on the grounds that the
+  // global rule covers it would violate the spec silently.
+  it("issues exactly two attempts for a failing read", async () => {
+    mockApiFetch.mockRejectedValue(new Error("peripheral-links unavailable"));
+
+    const { result } = renderHook(() => usePeripheralLinks(), { wrapper });
+    await waitFor(() => expect(result.current.isError).toBe(true));
+
+    expect(mockApiFetch).toHaveBeenCalledTimes(2);
+  });
+});
+
 // ── Resolution from the peripheral_config DB plane ──────────────────────────────
 
 describe("useDisplayLinks — resolves from GET /spoke/common/peripheral-links", () => {

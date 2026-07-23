@@ -16,10 +16,18 @@
  *     3. TypeError("Failed to fetch") or TypeError("NetworkError…") → "Network error" toast
  *     4. Other unknown Error → "Unexpected error" toast
  *     Network-vs-unexpected is the contractual distinction — the two titles MUST differ.
+ *   - spec/feature/FRONTEND_BASIC.md §Query Error Policy: "Failed mutations keep the
+ *     TanStack default of no retry and surface as toasts; PERIPHERAL_NOT_CONFIGURED
+ *     toasts with neutral rather than destructive styling, since it names an
+ *     unfinished setup step, but it is not suppressed — a write that did not happen
+ *     must still be reported."
+ *   - spec/API.md §Application Error Codes: PERIPHERAL_NOT_CONFIGURED | 503 |
+ *     `detail.peripheral` identifies which peripheral is unconfigured.
  */
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { ApiError } from "@/lib/api/client";
+import { PERIPHERAL_NOT_CONFIGURED } from "@/lib/api/error-policy";
 
 // ---------------------------------------------------------------------------
 // Mock the toast function before importing toastApiError.
@@ -373,5 +381,120 @@ describe("toastApiError — exhaustive classification table (all four branches)"
         expect(call.title).toContain((rest as { titleContains: string }).titleContains);
       }
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 7. PERIPHERAL_NOT_CONFIGURED → neutral toast, reported rather than suppressed
+// ---------------------------------------------------------------------------
+
+/** 503 PERIPHERAL_NOT_CONFIGURED carrying detail.peripheral, as the API sends it. */
+function makePeripheralError(peripheral = "datahub"): ApiError {
+  return new ApiError(
+    {
+      error_code: PERIPHERAL_NOT_CONFIGURED,
+      message: "DataHub is not configured",
+      trace_id: "bb22cc33-0000-0000-0000-000000000000",
+      resp_time: "2026-07-01T00:00:00Z",
+      detail: { peripheral },
+    },
+    503,
+  );
+}
+
+describe("toastApiError — PERIPHERAL_NOT_CONFIGURED → neutral toast, not suppressed", () => {
+  // spec/feature/FRONTEND_BASIC.md §Query Error Policy: "PERIPHERAL_NOT_CONFIGURED
+  // toasts with neutral rather than destructive styling, since it names an
+  // unfinished setup step, but it is not suppressed — a write that did not happen
+  // must still be reported."
+
+  it("toasts (it is NOT suppressed the way 401 is)", () => {
+    toastApiError(makePeripheralError());
+    expect(mockToast).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses neutral rather than destructive styling", () => {
+    toastApiError(makePeripheralError());
+    const call = mockToast.mock.calls[0][0] as { variant: string };
+    expect(call.variant).not.toBe("destructive");
+    expect(call.variant).toBe("default");
+  });
+
+  // The exact labels are pinned once, in lib/api/error-policy.test.ts; here the
+  // contract is only that the toast names the peripheral the envelope reports and
+  // points at the page that fixes it.
+  it("names the peripheral from detail.peripheral in the title", () => {
+    toastApiError(makePeripheralError("datahub"));
+    const call = mockToast.mock.calls[0][0] as { title: string };
+    expect(call.title).toContain("DataHub");
+  });
+
+  it("names smtp when that is the peripheral the envelope reports", () => {
+    toastApiError(makePeripheralError("smtp"));
+    const call = mockToast.mock.calls[0][0] as { title: string };
+    expect(call.title).toContain("SMTP");
+  });
+
+  it("points the user at Admin → Peripherals", () => {
+    toastApiError(makePeripheralError());
+    const call = mockToast.mock.calls[0][0] as { description: string };
+    expect(call.description).toMatch(/Peripherals/i);
+  });
+
+  it("does not fall through to the generic error_code toast", () => {
+    // Backstop: the peripheral branch must sit before the generic ApiError branch,
+    // so the raw code never becomes the title.
+    toastApiError(makePeripheralError());
+    const call = mockToast.mock.calls[0][0] as { title: string };
+    expect(call.title).not.toBe(PERIPHERAL_NOT_CONFIGURED);
+  });
+
+  it("still toasts when the envelope carries no detail (classification is by code)", () => {
+    const noDetail = new ApiError(
+      {
+        error_code: PERIPHERAL_NOT_CONFIGURED,
+        message: "A peripheral is not configured",
+        trace_id: "bb22cc33-0000-0000-0000-000000000000",
+        resp_time: "2026-07-01T00:00:00Z",
+      },
+      503,
+    );
+
+    toastApiError(noDetail);
+
+    expect(mockToast).toHaveBeenCalledTimes(1);
+    const call = mockToast.mock.calls[0][0] as { title: string; variant: string };
+    expect(call.title).not.toMatch(/undefined|null/);
+    expect(call.title).not.toBe(PERIPHERAL_NOT_CONFIGURED);
+    expect(call.variant).toBe("default");
+  });
+
+  it("a 401 carrying the peripheral code stays suppressed (401 rule wins)", () => {
+    // The peripheral carve-out must not reopen the 401 suppression: the auth
+    // client already clears state and redirects.
+    const err = new ApiError(
+      {
+        error_code: PERIPHERAL_NOT_CONFIGURED,
+        message: "unauthorized",
+        trace_id: "bb22cc33-0000-0000-0000-000000000000",
+        resp_time: "2026-07-01T00:00:00Z",
+        detail: { peripheral: "datahub" },
+      },
+      401,
+    );
+
+    toastApiError(err);
+
+    expect(mockToast).not.toHaveBeenCalled();
+  });
+
+  it("a 503 with a different code keeps the destructive generic toast", () => {
+    // Backstop pairing with the neutral-variant assertions above: only the
+    // peripheral code is carved out of the destructive path.
+    toastApiError(makeApiError(503, { error_code: "STORAGE_UNAVAILABLE" }));
+
+    const call = mockToast.mock.calls[0][0] as { title: string; variant: string };
+    expect(call.title).toBe("STORAGE_UNAVAILABLE");
+    expect(call.variant).toBe("destructive");
   });
 });

@@ -14,7 +14,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useValidationList } from "@/lib/api/validation";
-import { ErrorState } from "@/components/ui/error-state";
+import { QueryErrorState } from "@/components/query-error-state";
 import { Pagination, DEFAULT_PAGE_SIZE } from "@/components/pagination";
 import { PageHeader } from "@/components/page-header";
 import { formatDateTime } from "@/lib/format-time";
@@ -85,7 +85,7 @@ export default function ValidationListPage() {
         </div>
       </div>
 
-      {error && <ErrorState message={`Failed to load validation configs: ${error.message}`} />}
+      {error && <QueryErrorState error={error} context="Failed to load validation configs" />}
 
       <div className="rounded-md border">
         <Table>
