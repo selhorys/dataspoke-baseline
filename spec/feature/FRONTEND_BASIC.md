@@ -201,6 +201,15 @@ ingestion recipe YAML editor) remain one full-width field.
 | `/data/[urn]` | [Unified per-dataset page](#per-dataset-page-dataurn) — summary cards (incl. the Ingestion reverse-lookup) + Validation/MetaGen/Events panels | `/spoke/common/data/{urn}/...` (attr, event, validation, metagen) |
 | `/settings` | Theme, locale, and timezone (Local or UTC, **default Local**) toggles, persisted in `localStorage` only. The timezone preference is display-only — it governs how all dates and times are rendered across the app; stored and queried timestamps remain canonical UTC ISO per `API.md`. | — |
 
+The table above indexes the shell, auth, admin, and per-feature **entry** routes. Feature
+sub-routes — create and detail pages, and the per-feature `/{feature}/data/[urn]` deep-link
+redirects into `/data/[urn]` — are enumerated in each feature spec's own Routes table, which is
+authoritative for them: [Governance](FRONTEND_GOVERNANCE.md) (`/governance/metrics/new`,
+`/governance/metrics/[id]`), [Ingestion](FRONTEND_INGESTION.md) (`/ingestion/sources/new`,
+`/ingestion/sources/[id]`, `/ingestion/data/[urn]`), [MetaGen](FRONTEND_METAGEN.md)
+(`/metagen/conf/new`, `/metagen/conf/[id]`, `/metagen/data/[urn]`), and
+[Validation](FRONTEND_VALIDATION.md) (`/validation/data/[urn]`).
+
 Route guards layer two checks:
 
 - **JWT presence** — `/login`, `/register`, `/forgot-password`, `/reset-password`, and the OAuth callback URL are public; all other routes redirect to `/login?next=<path>` when no access token is available. The login page honors `next` on success (default fallback `/governance/dashboard`).
