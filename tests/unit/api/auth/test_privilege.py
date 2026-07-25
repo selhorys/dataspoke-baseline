@@ -79,8 +79,10 @@ async def test_require_authenticated_dsk_token_uses_api_token_path() -> None:
     mock_credentials = MagicMock()
     mock_credentials.credentials = "dsk_fake_token_value_for_unit_test_1234567890"
 
+    token_id = uuid.uuid4()
+
     with patch.object(_api_tokens, "lookup_and_validate", new_callable=AsyncMock) as mock_lookup:
-        mock_lookup.return_value = (mock_user, "Editor")
+        mock_lookup.return_value = (mock_user, "Editor", token_id)
         ctx = await require_authenticated(
             request=mock_request,
             db=AsyncMock(),
@@ -93,6 +95,13 @@ async def test_require_authenticated_dsk_token_uses_api_token_path() -> None:
     mock_lookup.assert_called_once()
     assert ctx.effective_role == "Editor"
     assert ctx.user is mock_user
+    # spec: spec/feature/AUTH.md §Serialization of credential-creating writes —
+    # a PAT-authorised caller "re-reads its own api_tokens row under the same
+    # users row lock", so the context must name the row that authorised it.
+    assert ctx.api_token_id == token_id, (
+        "The PAT path must carry the authenticating api_tokens row id on the "
+        "AuthContext per spec/feature/AUTH.md §Serialization of credential-creating writes"
+    )
 
 
 @pytest.mark.asyncio
@@ -106,12 +115,13 @@ async def test_require_authenticated_jwt_token_uses_jwt_path() -> None:
     from src.backend.auth.tokens import issue_access_token
 
     user_id = uuid.uuid4()
-    access_token, _ = issue_access_token(user_id, "jwttest@example.com")
+    access_token, _ = issue_access_token(user_id, "jwttest@example.com", 2)
 
     mock_user = MagicMock()
     mock_user.id = user_id
     mock_user.role = "Admin"
     mock_user.email = "jwttest@example.com"
+    mock_user.session_epoch = 2
 
     mock_request = MagicMock()
     mock_request.state = MagicMock()
@@ -135,6 +145,324 @@ async def test_require_authenticated_jwt_token_uses_jwt_path() -> None:
 
     assert ctx.effective_role == "Admin"
     assert ctx.user is mock_user
+    # spec: spec/feature/AUTH.md §Serialization of credential-creating writes —
+    # a JWT-authorised caller is "re-checked on its `ses` claim", so the context
+    # must carry the epoch the token was accepted under.
+    assert ctx.session_epoch == 2
+    assert ctx.api_token_id is None, (
+        "A JWT-authorised context names no api_tokens row — exactly one credential "
+        "identifies the caller per spec/feature/AUTH.md "
+        "§Serialization of credential-creating writes"
+    )
+
+
+# ── require_authenticated — session-epoch gate ────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_require_authenticated_rejects_jwt_from_a_superseded_epoch() -> None:
+    """A JWT whose ``ses`` predates a credential reset is rejected 401 UNAUTHORIZED.
+
+    The row's epoch has moved to 4 (a Google bind reset the credentials); the
+    token was minted under 3 and names a session that no longer exists.
+
+    spec: spec/feature/AUTH.md §Session epoch — "A JWT whose `ses` claim is
+    absent, or does not equal the owner's current `session_epoch`, is rejected
+    401 UNAUTHORIZED"; "Enforcement points. The bearer-JWT authentication path
+    and POST /auth/token/refresh."
+    spec: spec/feature/AUTH.md §Failure Modes — "A JWT presented after its
+    owner's session_epoch was incremented ... 401 UNAUTHORIZED".
+    """
+    from src.backend.auth import users as _users
+    from src.backend.auth.privilege import require_authenticated
+    from src.backend.auth.tokens import issue_access_token
+    from src.shared.exceptions import AuthenticationError
+
+    user_id = uuid.uuid4()
+    stale_token, _ = issue_access_token(user_id, "reset@example.com", 3)
+
+    mock_user = MagicMock()
+    mock_user.id = user_id
+    mock_user.role = "Admin"
+    mock_user.email = "reset@example.com"
+    mock_user.session_epoch = 4  # the bind's increment
+
+    mock_credentials = MagicMock()
+    mock_credentials.credentials = stale_token
+
+    with patch.object(_users, "get_by_id", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = mock_user
+        with pytest.raises(AuthenticationError) as exc_info:
+            await require_authenticated(
+                request=MagicMock(),
+                db=AsyncMock(),
+                redis=AsyncMock(),
+                credentials=mock_credentials,
+            )
+
+    assert exc_info.value.error_code == "UNAUTHORIZED", (
+        "A token issued under a superseded session epoch must be rejected "
+        "401 UNAUTHORIZED per spec/feature/AUTH.md §Session epoch"
+    )
+
+
+@pytest.mark.asyncio
+async def test_require_authenticated_rejects_jwt_with_no_ses_claim() -> None:
+    """A JWT carrying no ``ses`` claim at all is rejected, even against epoch 0.
+
+    The claim is injected out of the payload here rather than merely omitted from
+    a helper call, so the rejection is proved against a signature-valid token that
+    genuinely lacks the claim.
+
+    spec: spec/feature/AUTH.md §Session epoch — "A JWT whose `ses` claim is
+    absent ... is rejected 401 UNAUTHORIZED."
+    """
+    from datetime import UTC, datetime, timedelta
+
+    import jwt as _jwt
+
+    from src.backend.auth import users as _users
+    from src.backend.auth.privilege import require_authenticated
+    from src.shared.exceptions import AuthenticationError
+    from src.shared.settings import settings
+
+    user_id = uuid.uuid4()
+    now = datetime.now(tz=UTC)
+    epochless_token = _jwt.encode(
+        {
+            "sub": str(user_id),
+            "email": "epochless@example.com",
+            "iat": now,
+            "exp": now + timedelta(minutes=15),
+        },
+        settings.jwt_secret_key,
+        algorithm=settings.jwt_algorithm,
+    )
+
+    mock_user = MagicMock()
+    mock_user.id = user_id
+    mock_user.role = "Admin"
+    mock_user.email = "epochless@example.com"
+    mock_user.session_epoch = 0
+
+    mock_credentials = MagicMock()
+    mock_credentials.credentials = epochless_token
+
+    with patch.object(_users, "get_by_id", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = mock_user
+        with pytest.raises(AuthenticationError) as exc_info:
+            await require_authenticated(
+                request=MagicMock(),
+                db=AsyncMock(),
+                redis=AsyncMock(),
+                credentials=mock_credentials,
+            )
+
+    assert exc_info.value.error_code == "UNAUTHORIZED", (
+        "A token with no 'ses' claim must be rejected 401 UNAUTHORIZED "
+        "per spec/feature/AUTH.md §Session epoch"
+    )
+
+
+@pytest.mark.asyncio
+async def test_require_authenticated_runs_no_epoch_check_on_the_api_token_path() -> None:
+    """A PAT authenticates regardless of the owner's epoch — those rows are revoked outright.
+
+    The owner's row here carries an epoch far past anything a token could name;
+    the PAT still authenticates, because the API-token path has no epoch to
+    compare and relies on ``revoked_at`` instead.
+
+    spec: spec/feature/AUTH.md §Session epoch — "The API-token path needs no
+    check: those rows are revoked outright."
+    spec: spec/feature/AUTH.md §Admin unbind — "It does not revoke the row's API
+    tokens, and the PAT authentication path runs no epoch check, so tokens minted
+    before the unbind keep working."
+    """
+    from src.backend.auth import api_tokens as _api_tokens
+    from src.backend.auth import tokens as _tokens
+    from src.backend.auth.privilege import require_authenticated
+
+    mock_user = MagicMock()
+    mock_user.id = uuid.uuid4()
+    mock_user.role = "Editor"
+    mock_user.session_epoch = 99  # far past any epoch a token could name
+
+    mock_credentials = MagicMock()
+    mock_credentials.credentials = "dsk_pat_surviving_an_unbind_0123456789"
+
+    token_id = uuid.uuid4()
+
+    with (
+        patch.object(_api_tokens, "lookup_and_validate", new_callable=AsyncMock) as mock_lookup,
+        patch.object(
+            _tokens, "session_epoch_matches", wraps=_tokens.session_epoch_matches
+        ) as spy_epoch,
+    ):
+        mock_lookup.return_value = (mock_user, "Editor", token_id)
+        ctx = await require_authenticated(
+            request=MagicMock(),
+            db=AsyncMock(),
+            redis=AsyncMock(),
+            credentials=mock_credentials,
+        )
+
+    assert ctx.effective_role == "Editor", (
+        "A PAT must authenticate irrespective of the owner's session epoch "
+        "per spec/feature/AUTH.md §Session epoch"
+    )
+    spy_epoch.assert_not_called()
+    assert ctx.session_epoch is None, (
+        "The PAT path carries no session epoch — there is no epoch check on it "
+        "per spec/feature/AUTH.md §Session epoch"
+    )
+
+
+# ── revalidate_under_user_lock — the re-check under the row lock ──────────────
+
+
+@pytest.mark.asyncio
+async def test_revalidate_rejects_a_jwt_caller_whose_epoch_moved_under_the_lock() -> None:
+    """A JWT caller whose epoch was superseded before the lock is refused 401.
+
+    The context was authorised at epoch 3; the row read under the lock reads 4,
+    because a bind committed in between. The credential-creating write must not
+    proceed.
+
+    spec: spec/feature/AUTH.md §Serialization of credential-creating writes —
+    "PATCH /auth/me (password) | Re-compare the request's `ses` claim against the
+    freshly read `session_epoch`; mismatch → 401 UNAUTHORIZED."
+    """
+    from src.backend.auth import users as _users
+    from src.backend.auth.privilege import AuthContext, revalidate_under_user_lock
+    from src.shared.db.models import User
+    from src.shared.exceptions import AuthenticationError
+
+    caller = MagicMock(spec=User)
+    caller.id = uuid.uuid4()
+    caller.role = "Editor"
+
+    locked_row = MagicMock(spec=User)
+    locked_row.id = caller.id
+    locked_row.session_epoch = 4  # the bind's increment landed first
+
+    ctx = AuthContext(user=caller, effective_role="Editor", session_epoch=3)
+
+    with patch.object(_users, "lock_user", new_callable=AsyncMock) as mock_lock:
+        mock_lock.return_value = locked_row
+        with pytest.raises(AuthenticationError) as exc_info:
+            await revalidate_under_user_lock(AsyncMock(), ctx)
+
+    assert exc_info.value.error_code == "UNAUTHORIZED"
+    # The re-check must happen under the users row lock, not before it.
+    assert mock_lock.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_revalidate_rejects_a_pat_caller_whose_token_was_revoked_by_the_reset() -> None:
+    """A PAT caller whose token the bind revoked is refused 401 TOKEN_REVOKED.
+
+    spec: spec/feature/AUTH.md §Serialization of credential-creating writes —
+    such a request "instead re-reads its own `api_tokens` row under the same
+    `users` row lock and fails 401 TOKEN_REVOKED once the reset has revoked it."
+    """
+    from src.backend.auth import api_tokens as _api_tokens
+    from src.backend.auth import users as _users
+    from src.backend.auth.privilege import AuthContext, revalidate_under_user_lock
+    from src.shared.db.models import User
+    from src.shared.exceptions import AuthenticationError
+
+    caller = MagicMock(spec=User)
+    caller.id = uuid.uuid4()
+    caller.role = "Editor"
+
+    locked_row = MagicMock(spec=User)
+    locked_row.id = caller.id
+    locked_row.session_epoch = 4
+
+    ctx = AuthContext(user=caller, effective_role="Editor", api_token_id=uuid.uuid4())
+
+    with (
+        patch.object(_users, "lock_user", new_callable=AsyncMock) as mock_lock,
+        patch.object(_api_tokens, "is_active", new_callable=AsyncMock) as mock_active,
+    ):
+        mock_lock.return_value = locked_row
+        mock_active.return_value = False  # revoke_all_for_user got there first
+        with pytest.raises(AuthenticationError) as exc_info:
+            await revalidate_under_user_lock(AsyncMock(), ctx)
+
+    assert exc_info.value.error_code == "TOKEN_REVOKED", (
+        "A PAT revoked by the credential reset must fail 401 TOKEN_REVOKED under the "
+        "lock per spec/feature/AUTH.md §Serialization of credential-creating writes"
+    )
+    mock_active.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_revalidate_rejects_a_caller_whose_row_was_hard_deleted() -> None:
+    """A credential-creating write whose subject is gone fails closed with 401.
+
+    The lock read finds no row — the user was hard-deleted after the request
+    authenticated — so the write must not proceed against a missing owner.
+
+    spec: spec/feature/AUTH.md §Deletion — "A still-valid access token whose
+    subject was deleted fails with `401 UNAUTHORIZED`"; "User deletion is hard
+    delete".
+    spec: spec/feature/AUTH.md §Serialization of credential-creating writes — the
+    write re-checks "the state that authorised it" under the lock.
+    """
+    from src.backend.auth import users as _users
+    from src.backend.auth.privilege import AuthContext, revalidate_under_user_lock
+    from src.shared.db.models import User
+    from src.shared.exceptions import AuthenticationError
+
+    caller = MagicMock(spec=User)
+    caller.id = uuid.uuid4()
+    caller.role = "Editor"
+
+    ctx = AuthContext(user=caller, effective_role="Editor", session_epoch=3)
+
+    with patch.object(_users, "lock_user", new_callable=AsyncMock) as mock_lock:
+        mock_lock.return_value = None  # row hard-deleted
+        with pytest.raises(AuthenticationError) as exc_info:
+            await revalidate_under_user_lock(AsyncMock(), ctx)
+
+    assert exc_info.value.error_code == "UNAUTHORIZED", (
+        "a deleted subject is an authentication failure per spec/feature/AUTH.md §Deletion"
+    )
+
+
+@pytest.mark.asyncio
+async def test_revalidate_returns_the_locked_row_when_the_credential_still_holds() -> None:
+    """An unsuperseded caller gets the freshly locked row back, so the write proceeds.
+
+    The backstop for the two rejection cases above: without it they could pass by
+    rejecting everything.
+
+    spec: spec/feature/AUTH.md §Serialization of credential-creating writes —
+    "because each re-reads after acquiring it, none can commit a credential
+    authorised by state the bind superseded."
+    """
+    from src.backend.auth import users as _users
+    from src.backend.auth.privilege import AuthContext, revalidate_under_user_lock
+    from src.shared.db.models import User
+
+    caller = MagicMock(spec=User)
+    caller.id = uuid.uuid4()
+    caller.role = "Editor"
+
+    locked_row = MagicMock(spec=User)
+    locked_row.id = caller.id
+    locked_row.session_epoch = 3
+
+    ctx = AuthContext(user=caller, effective_role="Editor", session_epoch=3)
+
+    with patch.object(_users, "lock_user", new_callable=AsyncMock) as mock_lock:
+        mock_lock.return_value = locked_row
+        result = await revalidate_under_user_lock(AsyncMock(), ctx)
+
+    assert result is locked_row, (
+        "the caller must receive the row read under the lock, not its pre-lock copy"
+    )
 
 
 # ── require_writer ─────────────────────────────────────────────────────────────

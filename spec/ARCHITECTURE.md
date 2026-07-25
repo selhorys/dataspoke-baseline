@@ -97,9 +97,12 @@ existing DataHub installations; loose coupling enables independent deployment an
    authorisation, and only for users with a Google-linked identity, since that binding is what
    proves the row owns the email the corpuser URN addresses. A nightly `auth-role-sync-daily`
    DAG reconciles drift on both facets (DataSpoke wins). DataHub UI access uses
-   Google OIDC pointed at the same OAuth client as DataSpoke. JWT carries identity only
-   (`sub`, `email`, `exp`, `iat`); per-request DB role lookup gates `/admin/*` and applies the
-   method × role matrix on `/spoke/*` (Reader = GET only). Long-lived API tokens
+   Google OIDC pointed at the same OAuth client as DataSpoke. JWT carries identity plus the
+   session epoch (`sub`, `email`, `exp`, `iat`, `ses`) and no role; one per-request `users`
+   read resolves both — rejecting a token whose `ses` no longer matches `users.session_epoch`,
+   then gating `/admin/*` and applying the method × role matrix on `/spoke/*`
+   (Reader = GET only). Binding a Google identity onto an existing row invalidates every
+   credential that row already carried. Long-lived API tokens
    are opaque, self-service minted under `/auth/api-tokens`, with intersection privilege
    (`effective = min(role_snapshot, current users.role)`). See [feature/AUTH.md](feature/AUTH.md).
 

@@ -23,3 +23,5 @@
 - [Peripheral links: DB sole source](project_peripheral_links_db_sole_source.md) — datahub/langfuse URLs come only from /spoke/common/peripheral-links; runtime config keeps apiBaseUrl+airflowUrl
 - [Rate-limit config-only fix needs chart-text tests](project_rate_limit_config_only_fix_no_test_seam.md) — behavioral tests can't see the chart wiring; how to judge chart-text assertions' altitude
 - [Query Error Policy test anchors](project_query_error_policy_test_anchors.md) — 3-attempt observable, TanStack poll-on-error, the 3 spec'd per-hook exceptions, `error: unknown` type hole
+- [AUTH §Serialization row status](project_auth_serialization_untested_rows.md) — which of the 4 credential-write re-checks are really covered; patch lock_user, not the revalidate helper
+- [populate_existing alias trap in fakes](project_populate_existing_alias_fake_trap.md) — a FOR UPDATE fake returning a *new* object can't catch a dropped state snapshot; it must mutate in place

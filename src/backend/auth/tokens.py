@@ -38,10 +38,14 @@ def _revocation_key(token: str) -> str:
 # ── Token issuance ─────────────────────────────────────────────────────────────
 
 
-def issue_access_token(user_id: uuid.UUID, email: str) -> tuple[str, int]:
+def issue_access_token(user_id: uuid.UUID, email: str, session_epoch: int) -> tuple[str, int]:
     """Return ``(encoded_token, expires_in_seconds)``.
 
-    Payload: sub=str(user_id), email, exp, iat.
+    Payload: sub=str(user_id), email, exp, iat, ses.
+
+    *session_epoch* is the issuing user's ``users.session_epoch``; it rides on
+    the token as the ``ses`` claim and is compared against the row on every
+    authenticated request (see :func:`session_epoch_matches`).
     """
     expire_seconds = settings.jwt_access_token_expire_minutes * 60
     now = _utc_now()
@@ -50,21 +54,45 @@ def issue_access_token(user_id: uuid.UUID, email: str) -> tuple[str, int]:
         "email": email,
         "exp": now + timedelta(seconds=expire_seconds),
         "iat": now,
+        "ses": session_epoch,
     }
     token = jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
     return token, expire_seconds
 
 
-def issue_refresh_token(user_id: uuid.UUID) -> str:
-    """Return a signed refresh token for *user_id*."""
+def issue_refresh_token(user_id: uuid.UUID, session_epoch: int) -> str:
+    """Return a signed refresh token for *user_id* carrying its session epoch.
+
+    Payload: sub=str(user_id), type='refresh', exp, iat, ses.
+    """
     now = _utc_now()
     payload: dict[str, Any] = {
         "sub": str(user_id),
         "type": "refresh",
         "exp": now + timedelta(days=settings.jwt_refresh_token_expire_days),
         "iat": now,
+        "ses": session_epoch,
     }
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
+
+
+# ── Session epoch ─────────────────────────────────────────────────────────────
+
+
+def session_epoch_matches(claim: Any, current_epoch: int) -> bool:
+    """Return True when a JWT's ``ses`` *claim* matches the owner's *current_epoch*.
+
+    Pure comparison shared by the two enforcement points — the bearer-JWT
+    authentication path and ``POST /auth/token/refresh``. A claim that is
+    absent, not an integer, or unequal to the row's ``session_epoch`` does not
+    match, and the caller rejects the token ``401 UNAUTHORIZED``.
+
+    ``bool`` is excluded explicitly: it is an ``int`` subclass, so ``True``
+    would otherwise match epoch 1.
+    """
+    if isinstance(claim, bool) or not isinstance(claim, int):
+        return False
+    return claim == current_epoch
 
 
 # ── Token decode ──────────────────────────────────────────────────────────────
@@ -181,6 +209,4 @@ async def mark_refresh_revoked(redis: Any, token: str) -> None:
     try:
         await redis.set_nx(_revocation_key(token), "1", ttl)
     except _redis_exceptions.RedisError as exc:
-        raise StorageUnavailableError(
-            "Token revocation store unavailable; revoke denied."
-        ) from exc
+        raise StorageUnavailableError("Token revocation store unavailable; revoke denied.") from exc

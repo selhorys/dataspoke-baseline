@@ -141,7 +141,7 @@ import { formatDateTime } from "@/lib/format-time";
 // ---------------------------------------------------------------------------
 
 function adminMe() {
-  return { me: { id: "u1", email: "admin@example.com", name: "Admin", role: "Admin" as const, has_google: false, created_at: "", updated_at: "" }, isAdmin: true, isEditor: false, canWrite: true, isLoading: false };
+  return { me: { id: "u1", email: "admin@example.com", name: "Admin", role: "Admin" as const, has_password: true, has_google: false, created_at: "", updated_at: "" }, isAdmin: true, isEditor: false, canWrite: true, isLoading: false };
 }
 
 /**
@@ -890,7 +890,7 @@ describe("AdminConfPage — non-admin access (FRONTEND_BASIC.md §Routing)", () 
     // spec/feature/FRONTEND_BASIC.md §Routing: /admin/* is server-side gated by API role;
     // UI also suppresses the form when isAdmin is false.
     mockUseMeFn.mockReturnValue({
-      me: { id: "u2", email: "reader@example.com", name: "Reader", role: "Reader" as const, has_google: false, created_at: "", updated_at: "" },
+      me: { id: "u2", email: "reader@example.com", name: "Reader", role: "Reader" as const, has_password: true, has_google: false, created_at: "", updated_at: "" },
       isAdmin: false,
       isEditor: false,
       canWrite: false,

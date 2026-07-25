@@ -11,6 +11,7 @@ import {
   useUpdateUserName,
   useUpdateUserRole,
   useDeleteUser,
+  useUnlinkUserGoogle,
   useAdminUserTokens,
   useDeleteAdminUserToken,
 } from "@/lib/api/admin";
@@ -59,6 +60,22 @@ const renameSchema = z.object({
 });
 type RenameValues = z.infer<typeof renameSchema>;
 
+/**
+ * Reports a failed write on this page. A `401` is skipped, following the same
+ * rule as `lib/toast-api-error.ts`: the API client has already cleared the
+ * session and the guard is redirecting to `/login`, so a failure toast would
+ * land over the sign-in page. A superseded session epoch reaches this path as
+ * an ordinary mid-session `401`.
+ */
+function toastWriteFailure(title: string, err: unknown): void {
+  if (err instanceof ApiError) {
+    if (err.status === 401) return;
+    toast({ variant: "destructive", title, description: err.message });
+    return;
+  }
+  toast({ variant: "destructive", title, description: "An unexpected error occurred." });
+}
+
 // ── Inline role select ────────────────────────────────────────────────────────
 
 function RoleSelect({ user }: { user: AdminUser }) {
@@ -69,11 +86,7 @@ function RoleSelect({ user }: { user: AdminUser }) {
       await updateRole({ id: user.id, role });
       toast({ title: `Role updated to ${role}.` });
     } catch (err) {
-      if (err instanceof ApiError) {
-        toast({ variant: "destructive", title: "Role update failed", description: err.message });
-      } else {
-        toast({ variant: "destructive", title: "Role update failed", description: "An unexpected error occurred." });
-      }
+      toastWriteFailure("Role update failed", err);
     }
   }
 
@@ -109,11 +122,7 @@ function RenameDialog({ user, onClose }: { user: AdminUser; onClose: () => void 
       toast({ title: "Name updated." });
       onClose();
     } catch (err) {
-      if (err instanceof ApiError) {
-        toast({ variant: "destructive", title: "Update failed", description: err.message });
-      } else {
-        toast({ variant: "destructive", title: "Update failed", description: "An unexpected error occurred." });
-      }
+      toastWriteFailure("Update failed", err);
     }
   }
 
@@ -149,11 +158,7 @@ function UserTokensDialog({ user, onClose }: { user: AdminUser; onClose: () => v
       setConfirmTokenId(null);
       toast({ title: "Token revoked." });
     } catch (err) {
-      if (err instanceof ApiError) {
-        toast({ variant: "destructive", title: "Revoke failed", description: err.message });
-      } else {
-        toast({ variant: "destructive", title: "Revoke failed", description: "An unexpected error occurred." });
-      }
+      toastWriteFailure("Revoke failed", err);
     }
   }
 
@@ -215,12 +220,14 @@ type DialogState =
   | { kind: "rename"; user: AdminUser }
   | { kind: "tokens"; user: AdminUser }
   | { kind: "delete"; user: AdminUser }
+  | { kind: "unlink-google"; user: AdminUser }
   | null;
 
 export default function AdminUsersPage() {
   const { isAdmin, isLoading: meLoading } = useMe();
   const { data, isLoading } = useAdminUsers();
   const { mutateAsync: deleteUser, isPending: deleting } = useDeleteUser();
+  const { mutateAsync: unlinkGoogle, isPending: unlinking } = useUnlinkUserGoogle();
   const [dialog, setDialog] = useState<DialogState>(null);
   const [search, setSearch] = useState("");
   const tz = useDisplayTz();
@@ -231,11 +238,17 @@ export default function AdminUsersPage() {
       setDialog(null);
       toast({ title: `User ${user.email} deleted.` });
     } catch (err) {
-      if (err instanceof ApiError) {
-        toast({ variant: "destructive", title: "Delete failed", description: err.message });
-      } else {
-        toast({ variant: "destructive", title: "Delete failed", description: "An unexpected error occurred." });
-      }
+      toastWriteFailure("Delete failed", err);
+    }
+  }
+
+  async function onUnlinkGoogle(user: AdminUser) {
+    try {
+      await unlinkGoogle({ id: user.id });
+      setDialog(null);
+      toast({ title: `Google binding released for ${user.email}.` });
+    } catch (err) {
+      toastWriteFailure("Unlink failed", err);
     }
   }
 
@@ -320,6 +333,24 @@ export default function AdminUsersPage() {
                         >
                           Manage tokens
                         </DropdownMenuItem>
+                        {/* Releasing the only authentication method is refused
+                            409 GOOGLE_IS_ONLY_AUTH_METHOD, so a password-less
+                            row offers the item disabled rather than not at all.
+                            The handler is `onSelect` because that is the hook
+                            Radix gates on `disabled`. */}
+                        {user.has_google && (
+                          <DropdownMenuItem
+                            disabled={!user.has_password}
+                            title={
+                              user.has_password
+                                ? undefined
+                                : "This account has no password, so releasing the binding would leave it unauthenticatable. The address's holder completes a password reset first; the unlink then succeeds."
+                            }
+                            onSelect={() => setDialog({ kind: "unlink-google", user })}
+                          >
+                            Unlink Google
+                          </DropdownMenuItem>
+                        )}
                         <DropdownMenuItem
                           className="text-destructive focus:text-destructive"
                           onClick={() => setDialog({ kind: "delete", user })}
@@ -381,6 +412,21 @@ export default function AdminUsersPage() {
         confirmLabel="Delete"
         onConfirm={() => dialog?.kind === "delete" && onDeleteUser(dialog.user)}
         loading={deleting}
+      />
+
+      {/* Unlink Google confirm dialog */}
+      <ConfirmDialog
+        open={dialog?.kind === "unlink-google"}
+        onOpenChange={(open) => !open && setDialog(null)}
+        title="Unlink Google"
+        description={
+          dialog?.kind === "unlink-google"
+            ? `Release the Google binding for ${dialog.user.email}? They are signed out of every session and sign in again. The next Google sign-in at that address binds afresh.`
+            : "Release this user's Google binding?"
+        }
+        confirmLabel="Unlink"
+        onConfirm={() => dialog?.kind === "unlink-google" && onUnlinkGoogle(dialog.user)}
+        loading={unlinking}
       />
     </div>
   );

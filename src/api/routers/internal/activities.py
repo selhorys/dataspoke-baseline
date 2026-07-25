@@ -30,6 +30,7 @@ from pydantic import BaseModel, Field
 from src.api.auth.internal import require_internal_token
 from src.shared.events import AUTH_ROLE_SYNC_FIXED
 from src.shared.exceptions import ConflictError, DataSpokeError
+from src.shared.models.enums import EventStatus
 from src.workflows._common import (
     make_datahub,
     make_db_session,
@@ -556,7 +557,7 @@ async def auth_role_sync() -> dict[str, object]:
                                 entity_type="user",
                                 entity_id=str(user.id),
                                 event_type=AUTH_ROLE_SYNC_FIXED,
-                                status="OK",
+                                status=EventStatus.SUCCESS,
                                 detail=detail,
                             )
                         )

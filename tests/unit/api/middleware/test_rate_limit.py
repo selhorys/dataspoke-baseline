@@ -223,7 +223,7 @@ def test_get_user_key_extracts_sub_from_valid_jwt() -> None:
     from src.backend.auth.tokens import issue_access_token
 
     known_id = uuid.UUID("12345678-1234-5678-1234-567812345678")
-    token, _ = issue_access_token(known_id, "alice@example.com")
+    token, _ = issue_access_token(known_id, "alice@example.com", 0)
 
     from unittest.mock import MagicMock
 
@@ -298,8 +298,8 @@ def test_distinct_authenticated_users_from_one_address_get_distinct_keys() -> No
 
     alice_id = uuid.UUID("11111111-1111-4111-8111-111111111111")
     bob_id = uuid.UUID("22222222-2222-4222-8222-222222222222")
-    alice_token, _ = issue_access_token(alice_id, "alice@imazon.example")
-    bob_token, _ = issue_access_token(bob_id, "bob@imazon.example")
+    alice_token, _ = issue_access_token(alice_id, "alice@imazon.example", 0)
+    bob_token, _ = issue_access_token(bob_id, "bob@imazon.example", 0)
 
     shared_office_ip = "203.0.113.10"
     key_alice = _key_behind_proxy_headers(

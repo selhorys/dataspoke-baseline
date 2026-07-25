@@ -41,6 +41,9 @@ def _created_user(email: str, role: str) -> MagicMock:
     user.name = "Created User"
     user.role = role
     user.google_sub = None
+    # The row's epoch rides on the issued JWT as its ``ses`` claim
+    # (spec/feature/AUTH.md §Session epoch), so it must be a real int.
+    user.session_epoch = 0
     return user
 
 

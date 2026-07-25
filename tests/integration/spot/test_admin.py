@@ -107,7 +107,7 @@ async def test_admin_dags_verify_requires_admin_role(
     )
     await async_session.commit()
     try:
-        reader_token, _ = issue_access_token(reader_id, reader_email)
+        reader_token, _ = issue_access_token(reader_id, reader_email, session_epoch=0)
         non_admin_headers = {"Authorization": f"Bearer {reader_token}"}
 
         resp = await api_client.post(

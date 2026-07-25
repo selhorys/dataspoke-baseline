@@ -88,6 +88,7 @@ function editorMe() {
       email: "editor@example.com",
       name: "Editor",
       role: "Editor" as const,
+      has_password: true,
       has_google: false,
       created_at: "",
       updated_at: "",

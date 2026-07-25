@@ -169,6 +169,7 @@ function adminMe() {
       email: "admin@example.com",
       name: "Admin",
       role: "Admin" as const,
+      has_password: true,
       has_google: false,
       created_at: "",
       updated_at: "",

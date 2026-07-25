@@ -136,7 +136,7 @@ async def reader_headers(integration_db_url: str) -> AsyncGenerator[dict[str, st
     # issue_access_token signs with DATASPOKE_JWT_SECRET_KEY, which conftest promotes
     # from DATASPOKE_TEST_JWT_SECRET_KEY so it matches the in-cluster API pod.
     # spec: feedback_test_runtime_env_promotion — conftest must promote JWT secret.
-    token, _ = issue_access_token(user_id, email)
+    token, _ = issue_access_token(user_id, email, session_epoch=0)
 
     yield {"Authorization": f"Bearer {token}"}
 

@@ -1126,6 +1126,8 @@ delete event would be self-defeating. Domain-specific actions:
 | `ONTOGEN` (`ontogen`) | `SEED_CREATE` / `SEED_UPDATE` / `SEED_DELETE` | seed CRUD on `attr/seed/{seed_id}` |
 | `ONTOGEN` (`ontogen`) | `RUN_COMPLETE` / `RUN_FAILED` | re-inference run end; `RUN_COMPLETE` recorded for both dry-run and non-dry-run, `dry_run` flag in detail. Detail keys: `run_id` (uuid4), `unresolved_urns` (list, same shape as METRIC), `counts` (dict — `nodes_added/edges_added/triples_added` on real-run, `nodes_proposed/edges_proposed/triples_proposed` on dry-run), `dry_run`, `producer_iterations` (inference-loop turns the Producer took), `producer_errors_dropped` (validator-rejected row count), `debate_outcome` (`accept` / `turns_exhausted` / `cycle_detected`) |
 | `NODE` / `EDGE` / `TRIPLE` (`node` / `edge` / `triple`) | `APPROVE` / `REJECT` | `POST ontogen/result/{type}/{id}/method/review` |
+| `AUTH` (`user`, `entity_id=user_id`) | `GOOGLE_UNBOUND` | `DELETE /admin/users/{id}/google` releases a binding ([AUTH §Admin unbind](AUTH.md#admin-unbind)). The route ends every session and removes an authentication method, so the event is the record that it happened; the request log carries no authenticated principal. Detail keys: `session_epoch` (the new value). Same no-secrets shape as the bind event — no `sub`, no hash. An idempotent call on an already-unbound row writes nothing and emits nothing. |
+| `AUTH` (`user`, `entity_id=user_id`) | `GOOGLE_LINK_CREDENTIAL_RESET` | A Google identity binds onto an existing row matched by email, invalidating that row's credentials in the same transaction ([AUTH §Credential reset on link](AUTH.md#credential-reset-on-link)). Exactly one event per bind: the branch reaches only unbound rows, which `ck_users_auth_method` guarantees carry a password, so every bind clears at least that. Detail keys: `api_tokens_revoked` (int), `reset_tokens_deleted` (int), `session_epoch` (the new value). |
 
 ### Querying Events
 
@@ -1487,10 +1489,10 @@ This section captures the service-layer composition only.
 
 | Module | Responsibility |
 |--------|---------------|
-| `users.py` | DataSpoke user repository — create / read / update name / update password / hard delete; reads and writes `users.role`. bcrypt via the `bcrypt` library at cost factor 12. Google `sub` linking onto existing rows. UNIQUE(email) → `409 EMAIL_ALREADY_REGISTERED`. |
-| `tokens.py` | JWT issue / refresh / revoke. Refresh-token revocation list in Redis under `revoked_refresh:{sha256[:16]}`. The JWT carries identity only (`sub`, `email`, `exp`, `iat`); role is **not** in the JWT (read from `users.role` per request). |
+| `users.py` | DataSpoke user repository — create / read / update name / update password / hard delete; reads and writes `users.role`. bcrypt via the `bcrypt` library at cost factor 12. Binds a Google `sub` onto an existing row, and in the same transaction clears `password_hash`, revokes the user's active `api_tokens`, deletes their unused `password_reset_tokens`, and increments `session_epoch` ([AUTH §Credential reset on link](AUTH.md#credential-reset-on-link)). UNIQUE(email) → `409 EMAIL_ALREADY_REGISTERED`; UNIQUE(google_sub) → `409 GOOGLE_ACCOUNT_LINKED_ELSEWHERE`, rolling the whole reset back with it. Also the admin unbind — clears `google_sub` and increments `session_epoch`, refusing a row with no `password_hash` (`409 GOOGLE_IS_ONLY_AUTH_METHOD`) per [AUTH §Admin unbind](AUTH.md#admin-unbind). |
+| `tokens.py` | JWT issue / refresh / revoke. Refresh-token revocation list in Redis under `revoked_refresh:{sha256[:16]}`. Access-token claims are `sub`, `email`, `exp`, `iat`, `ses` (the issuing session epoch); role is **not** in the JWT (read from `users.role` per request, on the read that also resolves the epoch). |
 | `api_tokens.py` | Long-lived opaque API token CRUD. Mint generates `dsk_<token_urlsafe(32)>`, stores SHA-256 hash in `api_tokens.token_hash`, snapshots `users.role` into `role_snapshot`. Enforces 10-token-per-user cap (`409 TOKEN_LIMIT_EXCEEDED`). On lookup: computes `effective_role = min(role_snapshot, users.role)`; updates `last_used_at` throttled to per-minute granularity. Revoke sets `revoked_at = now()`. |
-| `oauth_google.py` | Google OAuth handler via `authlib.integrations.starlette_client`. State cookie (random opaque, HMAC-signed with `DATASPOKE_OAUTH_STATE_SECRET`) + ID-token `nonce` validation. On callback: resolve user by Google `sub`, then by email; create otherwise. |
+| `oauth_google.py` | Google OAuth handler via `authlib.integrations.starlette_client`. State cookie (random opaque, HMAC-signed with `DATASPOKE_OAUTH_STATE_SECRET`) + ID-token `nonce` validation. On callback: resolve by Google `sub`; else by email, which binds only onto an **unbound** row (`google_sub IS NULL`) and drives the [credential reset](AUTH.md#credential-reset-on-link) plus its `AUTH.GOOGLE_LINK_CREDENTIAL_RESET` event in the bind transaction, refreshing `name` from the Google claim, logs in without writing when the row under the lock already carries this same `sub` (a raced or retried callback), and refuses a row carrying a different `sub` with `409 EMAIL_BOUND_TO_ANOTHER_GOOGLE_ACCOUNT`; else create. |
 | `reset.py` | Password-reset token issuance (256-bit `secrets.token_urlsafe`, SHA-256 hashed into `password_reset_tokens`) and confirm. Email transport via `aiosmtplib` driven by the SMTP peripheral (below). |
 | `privilege.py` | The `require_role(...)` FastAPI dependency family. Reads caller's role from `users.role` (or `min(role_snapshot, users.role)` for API tokens). Method × tier matrix enforcement per [AUTH §Privilege Model](AUTH.md#privilege-model). |
 
@@ -1541,6 +1543,37 @@ state is correct), logs a warning, and relies on the nightly
 `auth-role-sync-daily` DAG to reassert the role on DataHub. No compensating
 action on the DataSpoke side — divergence is by definition DataSpoke-correct.
 
+### Credential-Reset Composition
+
+The Google-callback email branch binds and invalidates in **one** DataSpoke
+transaction, with no DataHub step
+([AUTH §Credential reset on link](AUTH.md#credential-reset-on-link)):
+
+1. `users.bind_google_sub(user_id, sub)` — sets `google_sub`, clears
+   `password_hash`, increments `session_epoch`.
+2. `api_tokens` revoke-all for the user (`revoked_at = now()` where
+   `revoked_at IS NULL`).
+3. Delete the user's unused `password_reset_tokens` rows.
+4. Record the `AUTH.GOOGLE_LINK_CREDENTIAL_RESET` event.
+
+All four commit together or not at all: a partial reset would leave a live
+re-entry path on a row that has already changed hands. Token issuance follows
+the commit, so the session the callback returns reads the new epoch.
+
+**Ordering against concurrent credential-creating writes.** Step 1 takes the
+`users` row lock, and the four self-service writes that mint a credential —
+the `password` field of `PATCH /auth/me`, `POST /auth/api-tokens`,
+`POST /auth/password/reset/confirm`, and `POST /auth/password/reset/request` —
+take that same lock before re-validating their own authorisation against the
+row they just read
+([AUTH §Serialization of credential-creating
+writes](AUTH.md#serialization-of-credential-creating-writes)). None of them can
+therefore commit ahead of the reset, and none can commit a credential
+authorised by state the reset superseded — the two JWT-authorised writes fail
+the `ses` re-comparison, the confirm path finds its reset-token row gone, and
+the request path observes the epoch move and returns `204` without writing a
+token row.
+
 ### Privilege Enforcement
 
 The `require_role` dependency family in `src/backend/auth/privilege.py`
@@ -1558,15 +1591,22 @@ GET / HEAD / OPTIONS on `/spoke/*` use `require_authenticated`
 only. `/auth/*` writes use `require_authenticated` only (the method gate is
 exempt — self-scoped writes).
 
-The `effective_role` is computed once per request:
+The `effective_role` is computed once per request, from a user read that also
+carries the session epoch:
 
-- JWT-authenticated request: `SELECT role FROM users WHERE id = sub` (one DB
-  round trip, shares the request's DB session).
+- JWT-authenticated request: `SELECT role, session_epoch FROM users WHERE id =
+  sub` (one DB round trip, shares the request's DB session). A token whose
+  `ses` claim is absent or unequal to `session_epoch` is rejected
+  `401 UNAUTHORIZED` before any role gate runs — the epoch check costs no
+  additional query because the role read already fetches the row
+  ([AUTH §Session epoch](AUTH.md#session-epoch)).
 - API-token-authenticated request: `SELECT t.role_snapshot, u.role FROM
   api_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = ?`,
   then `effective_role = min(t.role_snapshot, u.role)` with ordering
   `Admin > Editor > Reader`. Returns `401 INVALID_API_TOKEN` /
-  `401 TOKEN_REVOKED` / `401 TOKEN_EXPIRED` on the token state checks.
+  `401 TOKEN_REVOKED` / `401 TOKEN_EXPIRED` on the token state checks. This
+  branch runs no epoch check — an API token carries no `ses`, and a credential
+  reset revokes the rows themselves.
 
 The same query updates `last_used_at` when `now - last_used_at > 60s` (or
 NULL) — the throttle keeps a high-frequency client from flooding the row

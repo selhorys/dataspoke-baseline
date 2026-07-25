@@ -1,7 +1,8 @@
 """Unit tests for src/backend/auth/tokens.py.
 
 Concerns covered:
-- issue_access_token payload shape: sub, email, exp, iat (no groups claim)
+- issue_access_token payload shape: sub, email, exp, iat, ses (no groups claim)
+- session_epoch_matches: the shared comparison behind both epoch enforcement points
 - decode_refresh_token rejects access tokens (type != "refresh") with
   AuthenticationError("INVALID_REFRESH_TOKEN")
 - decode_access_token rejects refresh tokens (security: refresh token cannot be used for auth)
@@ -26,9 +27,10 @@ import pytest
 
 
 def test_issue_access_token_payload_shape() -> None:
-    """issue_access_token returns a token with sub, email, exp, iat and no groups claim.
+    """issue_access_token returns a token with sub, email, exp, iat, ses and no groups claim.
 
-    spec: spec/API.md §JWT Claims — access-token payload: sub (user uuid), email, exp, iat.
+    spec: spec/feature/AUTH.md §Login — "The access JWT's claims are sub, email,
+    exp, iat, and ses — the session epoch the token was issued under".
     The groups claim is absent; authorization is URI-prefix × HTTP method × users.role.
     """
     import jwt
@@ -38,7 +40,7 @@ def test_issue_access_token_payload_shape() -> None:
 
     user_id = uuid.uuid4()
     email = "test@example.com"
-    token, expires_in = issue_access_token(user_id, email)
+    token, expires_in = issue_access_token(user_id, email, 7)
 
     payload = jwt.decode(
         token,
@@ -66,6 +68,13 @@ def test_issue_access_token_payload_shape() -> None:
     assert "exp" in payload, "Access token must carry 'exp' claim per spec/API.md §JWT Claims"
     assert "iat" in payload, "Access token must carry 'iat' claim per spec/API.md §JWT Claims"
 
+    # spec: spec/feature/AUTH.md §Session epoch — "Both the access JWT and the
+    # refresh JWT carry a `ses` claim holding the epoch they were issued under."
+    assert payload["ses"] == 7, (
+        "Access token must carry the issuing user's session epoch as the 'ses' claim "
+        "per spec/feature/AUTH.md §Session epoch"
+    )
+
     # spec: spec/API.md §Token Strategy — access token lifetime is 15 minutes
     assert expires_in == 15 * 60, (
         "expires_in must be 900 seconds (15 min) per spec/API.md §Token Strategy"
@@ -84,12 +93,106 @@ def test_access_token_does_not_carry_role() -> None:
     from src.backend.auth.tokens import issue_access_token
     from src.shared.settings import settings
 
-    token, _ = issue_access_token(uuid.uuid4(), "norole@example.com")
+    token, _ = issue_access_token(uuid.uuid4(), "norole@example.com", 0)
     payload = jwt.decode(token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
 
     assert "role" not in payload, (
         "Access token must NOT carry a 'role' claim — role is DB-backed per-request "
         "per spec/API.md §JWT Claims and spec/feature/AUTH.md §Privilege Model"
+    )
+
+
+def test_issue_refresh_token_carries_the_session_epoch() -> None:
+    """The refresh JWT carries the issuing user's epoch as its ``ses`` claim.
+
+    spec: spec/feature/AUTH.md §Session epoch — "Both the access JWT and the
+    refresh JWT carry a `ses` claim holding the epoch they were issued under."
+    """
+    import jwt
+
+    from src.backend.auth.tokens import issue_refresh_token
+    from src.shared.settings import settings
+
+    token = issue_refresh_token(uuid.uuid4(), 3)
+    payload = jwt.decode(token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
+
+    assert payload["ses"] == 3, (
+        "Refresh token must carry the issuing user's session epoch as the 'ses' claim "
+        "per spec/feature/AUTH.md §Session epoch"
+    )
+    assert payload["type"] == "refresh"
+
+
+# ── session_epoch_matches — the shared epoch comparison ───────────────────────
+
+
+def test_session_epoch_matches_accepts_equal_ints() -> None:
+    """An int ``ses`` claim equal to the row's epoch matches; an unequal one does not.
+
+    spec: spec/feature/AUTH.md §Session epoch — "A JWT whose `ses` claim is
+    absent, or does not equal the owner's current `session_epoch`, is rejected
+    401 UNAUTHORIZED."
+    """
+    from src.backend.auth.tokens import session_epoch_matches
+
+    assert session_epoch_matches(0, 0) is True, (
+        "epoch 0 (a freshly registered row) must match a token issued under it "
+        "per spec/feature/AUTH.md §Session epoch"
+    )
+    assert session_epoch_matches(4, 4) is True
+    # A token issued under the epoch a credential reset superseded.
+    assert session_epoch_matches(3, 4) is False, (
+        "a claim that does not equal the owner's current session_epoch must be "
+        "rejected per spec/feature/AUTH.md §Session epoch"
+    )
+    # Defensive in the other direction — a claim ahead of the row is no match either.
+    assert session_epoch_matches(5, 4) is False
+
+
+def test_session_epoch_matches_rejects_absent_claim() -> None:
+    """A token minted before the epoch existed carries no ``ses`` — it must not match.
+
+    ``payload.get("ses")`` yields None at both enforcement points when the claim
+    is absent, which is exactly the token shape this rule evicts.
+
+    spec: spec/feature/AUTH.md §Session epoch — "A JWT whose `ses` claim is
+    absent ... is rejected 401 UNAUTHORIZED."
+    """
+    from src.backend.auth.tokens import session_epoch_matches
+
+    assert session_epoch_matches(None, 0) is False, (
+        "an absent 'ses' claim must be rejected even against epoch 0 "
+        "per spec/feature/AUTH.md §Session epoch"
+    )
+    assert session_epoch_matches(None, 4) is False
+
+
+@pytest.mark.parametrize(
+    ("claim", "current_epoch", "why"),
+    [
+        ("1", 1, "a string claim equal only after coercion"),
+        (1.0, 1, "a float claim equal only after coercion"),
+        (True, 1, "bool is an int subclass, so True would otherwise match epoch 1"),
+        (False, 0, "bool is an int subclass, so False would otherwise match epoch 0"),
+        ([1], 1, "a structured claim"),
+        ({"ses": 1}, 1, "an object claim"),
+    ],
+)
+def test_session_epoch_matches_rejects_non_int_claims(claim, current_epoch, why) -> None:
+    """A ``ses`` claim that is not an int does not match, whatever it coerces to.
+
+    The claim comes off a decoded JWT, so its type is attacker-influenced; only an
+    exact integer equality counts as the same session generation.
+
+    spec: spec/feature/AUTH.md §Session epoch — "A JWT whose `ses` claim is
+    absent, or does not equal the owner's current `session_epoch`, is rejected
+    401 UNAUTHORIZED." — and "no clock participates, so there is no granularity".
+    """
+    from src.backend.auth.tokens import session_epoch_matches
+
+    assert session_epoch_matches(claim, current_epoch) is False, (
+        f"{claim!r} must not match epoch {current_epoch} ({why}) "
+        "per spec/feature/AUTH.md §Session epoch"
     )
 
 
@@ -106,7 +209,7 @@ def test_decode_refresh_token_rejects_access_token() -> None:
     from src.shared.exceptions import AuthenticationError
 
     # Issue a real access token (no 'type' field or type != 'refresh')
-    access_token, _ = issue_access_token(uuid.uuid4(), "swap@example.com")
+    access_token, _ = issue_access_token(uuid.uuid4(), "swap@example.com", 0)
 
     with pytest.raises(AuthenticationError) as exc_info:
         decode_refresh_token(access_token)
@@ -131,7 +234,7 @@ def test_decode_access_token_rejects_refresh_token() -> None:
     from src.backend.auth.tokens import decode_access_token, issue_refresh_token
     from src.shared.exceptions import AuthenticationError
 
-    refresh_token = issue_refresh_token(uuid.uuid4())
+    refresh_token = issue_refresh_token(uuid.uuid4(), 0)
 
     with pytest.raises(AuthenticationError) as exc_info:
         decode_access_token(refresh_token)
@@ -176,7 +279,7 @@ async def test_is_refresh_revoked_returns_true_for_revoked_token() -> None:
     """
     from src.backend.auth.tokens import is_refresh_revoked, issue_refresh_token
 
-    token = issue_refresh_token(uuid.uuid4())
+    token = issue_refresh_token(uuid.uuid4(), 0)
 
     present_redis = AsyncMock()
     present_redis.get = AsyncMock(return_value="1")
@@ -221,7 +324,7 @@ async def test_mark_refresh_revoked_writes_key_for_live_refresh_token() -> None:
     """
     from src.backend.auth.tokens import issue_refresh_token, mark_refresh_revoked
 
-    token = issue_refresh_token(uuid.uuid4())
+    token = issue_refresh_token(uuid.uuid4(), 0)
     redis = AsyncMock()
 
     await mark_refresh_revoked(redis, token)
@@ -264,7 +367,7 @@ async def test_mark_refresh_revoked_fails_closed_on_redis_error() -> None:
     )
 
     with pytest.raises(StorageUnavailableError):
-        await mark_refresh_revoked(failing_redis, issue_refresh_token(uuid.uuid4()))
+        await mark_refresh_revoked(failing_redis, issue_refresh_token(uuid.uuid4(), 0))
 
 
 @pytest.mark.asyncio
@@ -349,7 +452,7 @@ async def test_mark_refresh_revoked_is_noop_for_access_token() -> None:
     """
     from src.backend.auth.tokens import issue_access_token, mark_refresh_revoked
 
-    access_token, _ = issue_access_token(uuid.uuid4(), "access@example.com")
+    access_token, _ = issue_access_token(uuid.uuid4(), "access@example.com", 0)
     redis = AsyncMock()
 
     await mark_refresh_revoked(redis, access_token)

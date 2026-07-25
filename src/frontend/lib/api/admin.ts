@@ -85,6 +85,20 @@ export function useDeleteUser() {
   });
 }
 
+// ── Unlink Google binding ──────────────────────────────────────────────────────
+
+export function useUnlinkUserGoogle() {
+  const qc = useQueryClient();
+  return useMutation<void, Error, { id: string }>({
+    mutationFn: ({ id }) =>
+      apiFetch<void>(`/admin/users/${id}/google`, { method: "DELETE" }),
+    meta: { handledInline: true },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["admin", "users"] });
+    },
+  });
+}
+
 // ── User API tokens (admin view) ───────────────────────────────────────────────
 
 export function useAdminUserTokens(userId: string) {

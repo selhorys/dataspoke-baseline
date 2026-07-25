@@ -78,4 +78,10 @@ TRIPLE_PREFIX = "TRIPLE."
 # ── Auth (entity_type = "user") ──────────────────────────────────────────────
 
 AUTH_ROLE_SYNC_FIXED = "AUTH.ROLE_SYNC_FIXED"
+# Emitted once per Google identity bind onto an existing row, recording the
+# credentials the bind cleared. entity_id = users.id.
+AUTH_GOOGLE_LINK_CREDENTIAL_RESET = "AUTH.GOOGLE_LINK_CREDENTIAL_RESET"
+# Emitted once per admin unbind that releases a binding — the record that an
+# authentication method was removed and every session ended. entity_id = users.id.
+AUTH_GOOGLE_UNBOUND = "AUTH.GOOGLE_UNBOUND"
 AUTH_PREFIX = "AUTH."

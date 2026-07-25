@@ -18,7 +18,11 @@ from fastapi import APIRouter, Cookie, Depends, Query, Request, Response, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.auth.dependencies import AuthContext, require_authenticated
+from src.api.auth.dependencies import (
+    AuthContext,
+    require_authenticated,
+    revalidate_under_user_lock,
+)
 from src.api.dependencies import get_db, get_notification, get_redis
 from src.api.middleware.rate_limit import limiter
 from src.api.schemas.auth import (
@@ -89,6 +93,7 @@ def _user_to_me(user: object) -> MeResponse:
         id=user.id,
         email=user.email,
         name=user.name,
+        has_password=user.password_hash is not None,
         has_google=user.google_sub is not None,
         role=user.role,
         created_at=user.created_at,
@@ -118,8 +123,8 @@ async def post_register(
     user = await users.create_user(db, body.email, body.name, password=body.password, role="Reader")
     await db.commit()
 
-    access_token, expires_in = _tokens.issue_access_token(user.id, user.email)
-    refresh_token = _tokens.issue_refresh_token(user.id)
+    access_token, expires_in = _tokens.issue_access_token(user.id, user.email, user.session_epoch)
+    refresh_token = _tokens.issue_refresh_token(user.id, user.session_epoch)
     _set_refresh_cookie(response, refresh_token)
     return TokenResponse(access_token=access_token, expires_in=expires_in)
 
@@ -145,8 +150,8 @@ async def post_token(
     if not await users.verify_password(user, body.password):
         raise AuthenticationError("Invalid credentials.")
 
-    access_token, expires_in = _tokens.issue_access_token(user.id, user.email)
-    refresh_token = _tokens.issue_refresh_token(user.id)
+    access_token, expires_in = _tokens.issue_access_token(user.id, user.email, user.session_epoch)
+    refresh_token = _tokens.issue_refresh_token(user.id, user.session_epoch)
     _set_refresh_cookie(response, refresh_token)
     return TokenResponse(access_token=access_token, expires_in=expires_in)
 
@@ -184,8 +189,13 @@ async def post_token_refresh(
     if user is None:
         raise AuthenticationError("User no longer exists.")
 
-    access_token, expires_in = _tokens.issue_access_token(user_id, user.email)
-    new_refresh = _tokens.issue_refresh_token(user_id)
+    # Session-epoch gate — a refresh token issued before a credential reset
+    # names a session that no longer exists.
+    if not _tokens.session_epoch_matches(payload.get("ses"), user.session_epoch):
+        raise AuthenticationError("Session is no longer valid.")
+
+    access_token, expires_in = _tokens.issue_access_token(user_id, user.email, user.session_epoch)
+    new_refresh = _tokens.issue_refresh_token(user_id, user.session_epoch)
     _set_refresh_cookie(response, new_refresh)
     return TokenResponse(access_token=access_token, expires_in=expires_in)
 
@@ -240,8 +250,15 @@ async def patch_me(
     The display name is DataSpoke-local; the DataHub-side profile is owned by
     DataHub's OIDC JIT provisioning, which refreshes it from the Google claims
     on each DataHub login.
+
+    Setting a password is a credential-creating write, so it runs under the
+    ``users`` row lock and re-validates the credential that authorised the
+    request once the lock is held (spec/feature/AUTH.md §Serialization of
+    credential-creating writes).
     """
     user = ctx.user
+    if body.password is not None:
+        user = await revalidate_under_user_lock(db, ctx)
     if body.name is not None:
         user = await users.update_name(db, user.id, body.name)
     if body.password is not None:
@@ -369,7 +386,9 @@ async def get_google_callback(
     await db.commit()
 
     # ── Issue refresh token + redirect ────────────────────────────────────
-    refresh_token = _tokens.issue_refresh_token(user.id)
+    # Issued after the commit, so a bind that reset this row's credentials has
+    # already landed and the token carries the new session epoch.
+    refresh_token = _tokens.issue_refresh_token(user.id, user.session_epoch)
 
     # Redirect to SPA root; the frontend calls POST /auth/token/refresh to
     # obtain an access token using the HttpOnly refresh cookie.
@@ -429,7 +448,16 @@ async def post_api_tokens(
     ctx: AuthContext = Depends(require_authenticated),
     db: AsyncSession = Depends(get_db),
 ) -> ApiTokenMintResponse:
-    """Mint a new API token. The raw token is returned only in this response."""
+    """Mint a new API token. The raw token is returned only in this response.
+
+    Minting is a credential-creating write, so it runs under the ``users`` row
+    lock and re-validates the credential that authorised the request once the
+    lock is held (spec/feature/AUTH.md §Serialization of credential-creating
+    writes). The re-check matters most here: the API-token authentication path
+    runs no epoch check, so a token minted on a superseded authorisation would
+    otherwise stay live past the credential reset that superseded it.
+    """
+    await revalidate_under_user_lock(db, ctx)
     raw_token, token = await api_tokens.mint(db, ctx.user.id, body.name, body.expires_at)
     await db.commit()
     return ApiTokenMintResponse(

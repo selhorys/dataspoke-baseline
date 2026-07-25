@@ -367,7 +367,7 @@ async def test_patch_dags_requires_admin_role(
     )
     await async_session.commit()
     try:
-        reader_token, _ = issue_access_token(reader_id, reader_email)
+        reader_token, _ = issue_access_token(reader_id, reader_email, session_epoch=0)
         resp = await api_client.patch(
             "/api/v1/admin/dags/datahub_sync",
             headers={"Authorization": f"Bearer {reader_token}"},

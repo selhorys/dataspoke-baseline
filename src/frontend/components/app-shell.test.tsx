@@ -111,6 +111,7 @@ function makeMe(role: Me["role"]): Me {
     email: "user@example.com",
     name: "Test User",
     role,
+    has_password: true,
     has_google: false,
     created_at: "2024-01-01T00:00:00Z",
     updated_at: "2024-01-01T00:00:00Z",

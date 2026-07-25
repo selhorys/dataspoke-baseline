@@ -197,7 +197,7 @@ def _non_admin_headers() -> tuple[dict[str, str], str]:
     email = f"reader-periph-{str(_uuid.uuid4())[:8]}@test.dataspoke.example.com"
     google_sub = f"test-sub-{_uuid.uuid4()}"
     _db_insert_reader_user(user_id, email, google_sub)
-    token, _ = _issue_access_token(_uuid.UUID(user_id), email)
+    token, _ = _issue_access_token(_uuid.UUID(user_id), email, session_epoch=0)
     return {"Authorization": f"Bearer {token}"}, user_id
 
 

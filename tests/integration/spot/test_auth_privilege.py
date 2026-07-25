@@ -75,7 +75,7 @@ async def reader_token(integration_db_url: str) -> str:
     finally:
         await engine.dispose()
 
-    token, _ = issue_access_token(user_id, email)
+    token, _ = issue_access_token(user_id, email, session_epoch=0)
 
     yield token
 
@@ -130,7 +130,7 @@ async def editor_token(integration_db_url: str) -> str:
     finally:
         await engine.dispose()
 
-    token, _ = issue_access_token(user_id, email)
+    token, _ = issue_access_token(user_id, email, session_epoch=0)
 
     yield token
 

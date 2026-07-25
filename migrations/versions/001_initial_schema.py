@@ -60,6 +60,7 @@ def upgrade() -> None:
         sa.Column("password_hash", sa.Text(), nullable=True),
         sa.Column("google_sub", sa.Text(), nullable=True),
         sa.Column("role", sa.Text(), nullable=False, server_default="Reader"),
+        sa.Column("session_epoch", sa.Integer(), nullable=False, server_default=sa.text("0")),
         sa.Column("created_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
         sa.Column("updated_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
         sa.UniqueConstraint("email", name="uq_users_email"),
