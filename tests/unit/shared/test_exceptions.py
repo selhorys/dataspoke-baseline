@@ -1,8 +1,11 @@
 """Tests for src/shared/exceptions.py — verifies the DataSpokeError hierarchy and
-error codes against spec/API.md §Application Error Codes (lines 572-578).
+error codes against spec/API.md §Application Error Codes.
 
-The EntityNotFoundError mapping (entity_type → error_code) is exhaustively tested
-against the spec table to ensure no code drifts from the API contract."""
+The EntityNotFoundError mapping (entity_type → error_code) is parsed from the
+declarative block in EntityNotFoundError's own docstring rather than hand-listed here,
+so the two cannot drift apart. That the parsed codes are catalogued in spec/API.md — and
+catalogued as 404 — is asserted in
+tests/unit/spec_conformance/test_error_catalogue.py::TestExceptionDocstringCodesAreCatalogued."""
 
 import pytest
 
@@ -15,6 +18,7 @@ from src.shared.exceptions import (
     PreconditionFailedError,
     StorageUnavailableError,
 )
+from tests.unit.spec_conformance._api_md import entity_not_found_map
 
 
 def test_dataspokerror_default_error_code() -> None:
@@ -52,37 +56,70 @@ def test_entity_not_found_various_types() -> None:
     assert EntityNotFoundError("config", "cfg").error_code == "CONFIG_NOT_FOUND"
 
 
-# Exhaustive spec-anchored mapping from spec/API.md §Application Error Codes.
-# Each tuple is (entity_type, expected_error_code).  The mapping is taken verbatim
-# from the spec table so any drift between impl and spec causes a test failure.
-_ENTITY_ERROR_CODE_MAP = [
-    ("dataset", "DATASET_NOT_FOUND"),
-    ("config", "CONFIG_NOT_FOUND"),
-    ("metric", "METRIC_NOT_FOUND"),
-    ("node", "NODE_NOT_FOUND"),
-    ("edge", "EDGE_NOT_FOUND"),
-    ("triple", "TRIPLE_NOT_FOUND"),
-]
+# Derived, never hand-listed: the (entity_type, expected_error_code) pairs are parsed
+# from the "Valid entity_type values" block of EntityNotFoundError's own docstring —
+# the only declarative enumeration of which entity types are valid. A hand-maintained
+# copy drifts silently the moment a type is added (this list previously omitted
+# INGESTION_SOURCE_NOT_FOUND and METAGEN_CONF_NOT_FOUND).
+# That every derived code is catalogued in spec/API.md §Application Error Codes with
+# HTTP 404 is asserted separately, in
+# tests/unit/spec_conformance/test_error_catalogue.py::TestExceptionDocstringCodesAreCatalogued.
+_ENTITY_ERROR_CODE_MAP = sorted(entity_not_found_map().items())
+
+# Backstop: the parametrization above is generated, so a degraded parse would turn every
+# derived case into a silent no-op — and a *partial* degradation is the dangerous one.
+# Narrowing the parser's entity-type pattern to a single word, for instance, drops
+# exactly `ingestion_source` and `metagen_conf`: the two types this change existed to
+# add. Equality (not containment) is therefore asserted, so shrinking OR widening the
+# parsed set fails here rather than quietly resizing the parametrization.
+#
+# Every entry is codified elsewhere too: each maps to a code that spec/API.md
+# §Application Error Codes lists at 404 (DATASET/CONFIG/INGESTION_SOURCE/METAGEN_CONF/
+# METRIC/NODE/EDGE/TRIPLE_NOT_FOUND), which
+# tests/unit/spec_conformance/test_error_catalogue.py asserts separately.
+_EXPECTED_ENTITY_TYPES = frozenset(
+    {
+        "dataset",
+        "config",
+        "ingestion_source",
+        "metagen_conf",
+        "metric",
+        "node",
+        "edge",
+        "triple",
+    }
+)
+
+
+def test_entity_error_code_map_is_parsed() -> None:
+    """The derived entity_type map must match the declared set exactly."""
+    parsed = dict(_ENTITY_ERROR_CODE_MAP)
+    assert set(parsed) == _EXPECTED_ENTITY_TYPES, (
+        f"entity types parsed from EntityNotFoundError's docstring were "
+        f"{sorted(parsed)}, expected {sorted(_EXPECTED_ENTITY_TYPES)}. Missing entries "
+        f"mean the parser degraded and the generated parametrization below is running "
+        f"on an incomplete list; extra entries mean the docstring gained a type that "
+        f"must also be catalogued in spec/API.md and added here."
+    )
 
 
 @pytest.mark.parametrize("entity_type,expected_code", _ENTITY_ERROR_CODE_MAP)
 def test_entity_not_found_error_code_matches_spec(entity_type: str, expected_code: str) -> None:
-    """EntityNotFoundError.error_code must match the spec/API.md §Application Error Codes table.
+    """EntityNotFoundError.error_code must match its declared entity_type mapping.
 
-    Exhaustively covers all six entity types defined in spec/API.md §Application Error Codes:
-    DATASET_NOT_FOUND, CONFIG_NOT_FOUND, METRIC_NOT_FOUND, NODE_NOT_FOUND,
-    EDGE_NOT_FOUND, TRIPLE_NOT_FOUND.  Tests both directions: every spec entry has a
-    test, and no extra codes are silently produced.
+    Covers every entity_type declared in src/shared/exceptions.py::EntityNotFoundError,
+    whose codes are cross-checked against spec/API.md §Application Error Codes by the
+    spec_conformance suite.
 
-    HTTP 404 mapping: spec/API.md §Application Error Codes mandates 404 for all six entity types.
-    EntityNotFoundError does not carry an http_status attribute — the 404 is applied
-    by the _handle_not_found exception handler in src/api/main.py. The handler
+    HTTP 404 mapping: spec/API.md §Application Error Codes assigns 404 to every entity
+    code. EntityNotFoundError does not carry an http_status attribute — the 404 is
+    applied by the _handle_not_found exception handler in src/api/main.py. The handler
     mapping is verified by test_entity_not_found_http_handler_maps_to_404 below.
     """
     exc = EntityNotFoundError(entity_type, f"test-{entity_type}-id")
     assert exc.error_code == expected_code, (
         f"EntityNotFoundError('{entity_type}', ...) produced error_code={exc.error_code!r}, "
-        f"but spec/API.md requires {expected_code!r}"
+        f"but its own docstring declares {expected_code!r}"
     )
     # EntityNotFoundError must NOT carry an http_status attribute —
     # the HTTP mapping belongs to the API handler layer, not the exception itself.
@@ -91,28 +128,39 @@ def test_entity_not_found_error_code_matches_spec(entity_type: str, expected_cod
     )
 
 
-def test_entity_not_found_http_handler_maps_to_404() -> None:
+async def test_entity_not_found_http_handler_maps_to_404() -> None:
     """The API exception handler for EntityNotFoundError must return HTTP 404.
 
-    spec/API.md §Application Error Codes mandates HTTP 404 for all six entity-not-found codes.
-    The mapping is implemented in src/api/main.py:_handle_not_found.
-    This test verifies the handler is registered and returns 404 by inspecting
-    the handler registration — no live server required.
+    spec/API.md §Application Error Codes assigns HTTP 404 to every entity-not-found
+    code, and §Error Catalogue fixes the envelope shape ({error_code, message,
+    trace_id, resp_time}). The mapping is implemented in src/api/main.py:_handle_not_found.
+
+    The handler is *invoked* rather than source-inspected: a handler carrying "404" in a
+    comment, or returning 404 on only one branch, would satisfy a substring check while
+    returning the wrong status. Building a Request from a bare ASGI scope keeps this
+    unit-tier — no server, no transport.
     """
-    import inspect
+    import json
+
+    from starlette.requests import Request
 
     from src.api.main import _handle_not_found
 
-    # _handle_not_found must be an async callable that accepts (request, exc)
-    assert callable(_handle_not_found)
-    assert inspect.iscoroutinefunction(_handle_not_found), (
-        "_handle_not_found must be an async function (FastAPI async exception handler)"
+    request = Request({"type": "http", "method": "GET", "path": "/probe", "headers": []})
+    response = await _handle_not_found(
+        request, EntityNotFoundError("dataset", "urn:li:dataset:probe")
     )
-    # Verify the function body returns a 404 JSONResponse by inspecting source
-    source = inspect.getsource(_handle_not_found)
-    assert "404" in source, (
-        "_handle_not_found must return HTTP 404 per spec/API.md §Application Error Codes"
+
+    assert response.status_code == 404, (
+        f"_handle_not_found returned {response.status_code}; spec/API.md §Application "
+        f"Error Codes requires 404 for entity-not-found codes"
     )
+    body = json.loads(bytes(response.body))
+    assert body["error_code"] == "DATASET_NOT_FOUND"
+    assert "urn:li:dataset:probe" in body["message"]
+    # spec/API.md §Error Catalogue: every error response carries trace_id and resp_time.
+    assert "trace_id" in body
+    assert "resp_time" in body
 
 
 def test_precondition_failed_error_code() -> None:

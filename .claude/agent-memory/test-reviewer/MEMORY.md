@@ -25,3 +25,4 @@
 - [Query Error Policy test anchors](project_query_error_policy_test_anchors.md) — 3-attempt observable, TanStack poll-on-error, the 3 spec'd per-hook exceptions, `error: unknown` type hole
 - [AUTH §Serialization row status](project_auth_serialization_untested_rows.md) — which of the 4 credential-write re-checks are really covered; patch lock_user, not the revalidate helper
 - [populate_existing alias trap in fakes](project_populate_existing_alias_fake_trap.md) — a FOR UPDATE fake returning a *new* object can't catch a dropped state snapshot; it must mutate in place
+- [Spec-conformance #86 anchors](project_spec_conformance_86_anchors.md) — verified 124/124 routes, 57 codes; TESTING.md has no allowlist rule; drift left unencoded

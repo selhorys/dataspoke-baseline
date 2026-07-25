@@ -8,9 +8,8 @@ Exception-to-HTTP mapping (per spec/feature/BACKEND.md §Error Handling):
   EntityNotFoundError   → 404  DATASET_NOT_FOUND | CONFIG_NOT_FOUND | METRIC_NOT_FOUND
                                  | NODE_NOT_FOUND | EDGE_NOT_FOUND | TRIPLE_NOT_FOUND
   ConflictError         → 409  DUPLICATE_CONFIG | INGESTION_RUNNING
-                                 | GENERATION_RUNNING | METRIC_RUNNING | ONTOGEN_RUNNING
-                                 | INGESTION_DISABLED | INGESTION_NOT_APPLICABLE
-                                 | GENERATION_DISABLED | METRIC_DISABLED | ONTOGEN_DISABLED
+                                 | METRIC_RUNNING | ONTOGEN_RUNNING
+                                 | INGESTION_DISABLED | METRIC_DISABLED | ONTOGEN_DISABLED
   DataHubUnavailableError → 502  DATAHUB_UNAVAILABLE
   StorageUnavailableError → 503  STORAGE_UNAVAILABLE
   ValidationError (Pydantic) → 422  INVALID_PARAMETER | INVALID_DATASET_URN
@@ -67,15 +66,12 @@ class ConflictError(DataSpokeError):
       INGESTION_RUNNING             — concurrent active ingestion run for the source
       INGESTION_SOURCE_READONLY     — create/update/delete attempted on DATAHUB_MANAGED row
       INGESTION_RUN_NOT_APPLICABLE  — run attempted on non-ACTIVE_CUSTOM_MANAGED source
-      GENERATION_RUNNING            — concurrent metadata-generation run for the dataset
       METRIC_RUNNING                — concurrent metric measurement
       METRIC_EXISTS                 — POST /spoke/governance/metric carries an existing metric_id
       ONTOGEN_RUNNING               — ontogen singleton inference already in progress
       METAGEN_RUNNING               — a run of this metagen conf is already in progress
       METAGEN_CONF_EXISTS           — POST /spoke/metagen/conf carries a name that already exists
       INGESTION_DISABLED            — ingestion conf has is_enabled=false; only dry-run permitted
-      INGESTION_NOT_APPLICABLE      — method/run called on a passive config; run externally
-      GENERATION_DISABLED           — metagen conf has is_enabled=false; only dry-run permitted
       METRIC_DISABLED               — metric definition has is_enabled=false; only dry-run permitted
       ONTOGEN_DISABLED              — ontogen conf has is_enabled=false; only dry-run permitted
       METAGEN_DISABLED              — metagen conf has is_enabled=false; only dry-run permitted
