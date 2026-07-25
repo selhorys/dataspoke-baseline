@@ -173,6 +173,11 @@ callers. The DB lookup is in the same request transaction as other route work
 | Editor | ✓ | ✓ |
 | Admin | ✓ | ✓ |
 
+`GET /spoke/ingestion/secrets` is the one route that restricts a read to Editor
+or Admin, since enumerating which credential references exist is author-only
+tooling — see its [route row](#ingestion-spokeingestion) and `READ_ONLY_ROLE`
+in the [Application Error Codes](#application-error-codes) table.
+
 `/auth/*` routes are exempt from the method gate (self-scoped writes — any
 role can change own name/password, mint own API tokens, refresh own session).
 
@@ -894,9 +899,10 @@ metadata:
 }
 ```
 
-The `datasets`-keyed example above is illustrative only — there is no live cross-dataset list
-endpoint. The `DatasetListResponse` schema in `src/api/schemas/dataset.py` is **dead** (bound to
-no route) and is flagged for deletion; do not treat it as a contract.
+The field set in the example above is illustrative; the authoritative content of each
+collection is its own route row in the [Route Catalogue](#route-catalogue). The
+cross-dataset collection root is `GET /spoke/common/data`, served by the
+`DatasetListResponse` schema in `src/api/schemas/dataset.py`.
 
 Single-resource responses return the object directly with `resp_time` at the top level:
 
