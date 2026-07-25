@@ -4,8 +4,8 @@ error codes against spec/API.md §Application Error Codes.
 The EntityNotFoundError mapping (entity_type → error_code) is parsed from the
 declarative block in EntityNotFoundError's own docstring rather than hand-listed here,
 so the two cannot drift apart. That the parsed codes are catalogued in spec/API.md — and
-catalogued as 404 — is asserted in
-tests/unit/spec_conformance/test_error_catalogue.py::TestExceptionDocstringCodesAreCatalogued."""
+catalogued as 404 — is asserted in tests/unit/spec_conformance/test_error_catalogue.py::
+TestExceptionDeclarationsAreCatalogued::test_entity_not_found_codes_are_404_in_api_md."""
 
 import pytest
 
@@ -59,34 +59,41 @@ def test_entity_not_found_various_types() -> None:
 # Derived, never hand-listed: the (entity_type, expected_error_code) pairs are parsed
 # from the "Valid entity_type values" block of EntityNotFoundError's own docstring —
 # the only declarative enumeration of which entity types are valid. A hand-maintained
-# copy drifts silently the moment a type is added (this list previously omitted
-# INGESTION_SOURCE_NOT_FOUND and METAGEN_CONF_NOT_FOUND).
+# copy drifts silently the moment a type is added.
 # That every derived code is catalogued in spec/API.md §Application Error Codes with
-# HTTP 404 is asserted separately, in
-# tests/unit/spec_conformance/test_error_catalogue.py::TestExceptionDocstringCodesAreCatalogued.
+# HTTP 404 is asserted separately, in tests/unit/spec_conformance/test_error_catalogue.py
+# ::TestExceptionDeclarationsAreCatalogued::test_entity_not_found_codes_are_404_in_api_md.
 _ENTITY_ERROR_CODE_MAP = sorted(entity_not_found_map().items())
 
 # Backstop: the parametrization above is generated, so a degraded parse would turn every
 # derived case into a silent no-op — and a *partial* degradation is the dangerous one.
-# Narrowing the parser's entity-type pattern to a single word, for instance, drops
-# exactly `ingestion_source` and `metagen_conf`: the two types this change existed to
-# add. Equality (not containment) is therefore asserted, so shrinking OR widening the
-# parsed set fails here rather than quietly resizing the parametrization.
+# Narrowing the parser's entity-type pattern to a single word, for instance, drops every
+# multi-segment type (`ingestion_source`, `metagen_boundary`, `dag_group`, …). Equality
+# (not containment) is therefore asserted, so shrinking OR widening the parsed set fails
+# here rather than quietly resizing the parametrization.
 #
 # Every entry is codified elsewhere too: each maps to a code that spec/API.md
-# §Application Error Codes lists at 404 (DATASET/CONFIG/INGESTION_SOURCE/METAGEN_CONF/
-# METRIC/NODE/EDGE/TRIPLE_NOT_FOUND), which
-# tests/unit/spec_conformance/test_error_catalogue.py asserts separately.
+# §Application Error Codes lists at 404 (e.g. DATASET_NOT_FOUND, SEED_NOT_FOUND,
+# USER_NOT_FOUND), which tests/unit/spec_conformance/test_error_catalogue.py asserts
+# separately — as it does that each declared type is passed at a real call site under
+# src/ and that no call site passes an undeclared one.
 _EXPECTED_ENTITY_TYPES = frozenset(
     {
-        "dataset",
         "config",
+        "dag_group",
+        "dataset",
+        "edge",
         "ingestion_source",
+        "metagen_boundary",
+        "metagen_candidate",
         "metagen_conf",
+        "metagen_item",
         "metric",
         "node",
-        "edge",
+        "seed",
+        "token",
         "triple",
+        "user",
     }
 )
 

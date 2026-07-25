@@ -22,3 +22,4 @@
 - [Grep old-rule prose in consumers](feedback_grep_old_rule_prose_in_consumers.md) — deleting a precedence rule? grep its prose across consumers; identifier-only greps miss stale doc comments
 - [XFF trust radius & rate-limit buckets](project_xff_trust_radius_rate_limit.md) — RFC1918 FORWARDED_ALLOW_IPS trusts XFF chain entries; dev SNAT ⇒ per-node buckets
 - [Shared response model unpopulated field](feedback_shared_response_model_unpopulated_field.md) — one model, two routes: the handler that omits a defaulted field ships a silent zero
+- [Isolate failures under concurrent edit](feedback_isolate_failures_concurrent_edit.md) — git archive HEAD into scratchpad, overlay one file; base scenario proves HEAD green

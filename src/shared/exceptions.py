@@ -3,22 +3,15 @@
 All backend services raise subclasses of DataSpokeError.
 The API layer catches these and maps them to HTTP responses.
 
-Exception-to-HTTP mapping (per spec/feature/BACKEND.md §Error Handling):
-
-  EntityNotFoundError   → 404  DATASET_NOT_FOUND | CONFIG_NOT_FOUND | METRIC_NOT_FOUND
-                                 | NODE_NOT_FOUND | EDGE_NOT_FOUND | TRIPLE_NOT_FOUND
-  ConflictError         → 409  DUPLICATE_CONFIG | INGESTION_RUNNING
-                                 | METRIC_RUNNING | ONTOGEN_RUNNING
-                                 | INGESTION_DISABLED | METRIC_DISABLED | ONTOGEN_DISABLED
-  DataHubUnavailableError → 502  DATAHUB_UNAVAILABLE
-  StorageUnavailableError → 503  STORAGE_UNAVAILABLE
-  ValidationError (Pydantic) → 422  INVALID_PARAMETER | INVALID_DATASET_URN
-  PreconditionFailedError → 422  DATASET_NOT_IN_DATAHUB | ONTOGEN_TRIPLE_DEPENDENCY_PENDING
-                                   | UNKNOWN_VARIABLE | INVALID_SCORE
+Every exception class below documents, in its own docstring, the complete set of
+error codes it may carry and the HTTP status it maps to. That is the
+authoritative catalogue. spec/feature/BACKEND.md §Exception-to-HTTP Mapping
+tabulates the same status mapping for the principal exceptions. This module
+docstring keeps no copy of either.
 
 Convention: entity_type strings passed to EntityNotFoundError must be lowercase
-singular nouns (e.g. "dataset", "config", "metric", "node", "edge", "triple") —
-the error_code is derived as entity_type.upper() + "_NOT_FOUND".
+singular nouns — the error_code is derived as entity_type.upper() +
+"_NOT_FOUND".
 """
 
 import re
@@ -42,14 +35,21 @@ class EntityNotFoundError(DataSpokeError):
     """Raised when a requested entity does not exist.
 
     Valid entity_type values (each maps to a 404 error code):
-      "dataset"          → DATASET_NOT_FOUND
-      "config"           → CONFIG_NOT_FOUND
-      "ingestion_source" → INGESTION_SOURCE_NOT_FOUND
-      "metagen_conf"     → METAGEN_CONF_NOT_FOUND
-      "metric"           → METRIC_NOT_FOUND
-      "node"             → NODE_NOT_FOUND
-      "edge"             → EDGE_NOT_FOUND
-      "triple"           → TRIPLE_NOT_FOUND
+      "config"            → CONFIG_NOT_FOUND
+      "dag_group"         → DAG_GROUP_NOT_FOUND
+      "dataset"           → DATASET_NOT_FOUND
+      "edge"              → EDGE_NOT_FOUND
+      "ingestion_source"  → INGESTION_SOURCE_NOT_FOUND
+      "metagen_boundary"  → METAGEN_BOUNDARY_NOT_FOUND
+      "metagen_candidate" → METAGEN_CANDIDATE_NOT_FOUND
+      "metagen_conf"      → METAGEN_CONF_NOT_FOUND
+      "metagen_item"      → METAGEN_ITEM_NOT_FOUND
+      "metric"            → METRIC_NOT_FOUND
+      "node"              → NODE_NOT_FOUND
+      "seed"              → SEED_NOT_FOUND
+      "token"             → TOKEN_NOT_FOUND
+      "triple"            → TRIPLE_NOT_FOUND
+      "user"              → USER_NOT_FOUND
     """
 
     def __init__(self, entity_type: str, entity_id: str) -> None:
@@ -71,7 +71,6 @@ class ConflictError(DataSpokeError):
       ONTOGEN_RUNNING               — ontogen singleton inference already in progress
       METAGEN_RUNNING               — a run of this metagen conf is already in progress
       METAGEN_CONF_EXISTS           — POST /spoke/metagen/conf carries a name that already exists
-      INGESTION_DISABLED            — ingestion conf has is_enabled=false; only dry-run permitted
       METRIC_DISABLED               — metric definition has is_enabled=false; only dry-run permitted
       ONTOGEN_DISABLED              — ontogen conf has is_enabled=false; only dry-run permitted
       METAGEN_DISABLED              — metagen conf has is_enabled=false; only dry-run permitted
@@ -221,13 +220,24 @@ class PeripheralNotConfiguredError(DataSpokeError):
 
 
 class NotificationError(DataSpokeError):
-    """Raised when a notification (e.g. email) fails to send."""
+    """Raised when a notification (e.g. email) fails to send.
+
+    Never reaches an HTTP response, so ``NOTIFICATION_FAILED`` is absent from
+    spec/API.md §Application Error Codes: the one request-path sender converts it
+    to ``StorageUnavailableError`` (503 ``STORAGE_UNAVAILABLE``), and the digest
+    and alert senders swallow and log it.
+    """
 
     error_code: str = "NOTIFICATION_FAILED"
 
 
 class EventProcessingError(DataSpokeError):
-    """Raised when a Kafka event handler fails to process an event."""
+    """Raised when a Kafka event handler fails to process an event.
+
+    Never reaches an HTTP response, so ``EVENT_PROCESSING_FAILED`` is absent from
+    spec/API.md §Application Error Codes: it is raised only during consumer-loop
+    deserialization, which catches it, logs, and commits the offset.
+    """
 
     error_code: str = "EVENT_PROCESSING_FAILED"
 

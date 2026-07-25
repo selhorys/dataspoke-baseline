@@ -1048,6 +1048,7 @@ Clients should treat `detail` as optional; absent for errors that don't need it.
 | `NODE_NOT_FOUND` | 404 | Ontology node ID not found |
 | `EDGE_NOT_FOUND` | 404 | Ontology edge ID not found |
 | `TRIPLE_NOT_FOUND` | 404 | Ontology triple ID not found |
+| `SEED_NOT_FOUND` | 404 | Ontogen seed ID does not exist, or is not a well-formed UUID (`/spoke/ontogen/attr/seed/{seed_id}`) |
 | `CONFIG_NOT_FOUND` | 404 | Validation or other per-dataset configuration not found (never created, or deleted) |
 | `INGESTION_SOURCE_NOT_FOUND` | 404 | Ingestion source id does not exist (`/spoke/ingestion/sources/{id}`) |
 | `SECRET_REF_MALFORMED` | 422 | A `${name__key}` reference in a recipe has no `__` separator or an empty name/key segment |
@@ -1064,6 +1065,9 @@ Clients should treat `detail` as optional; absent for errors that don't need it.
 | `METAGEN_DISABLED` | 409 | This metagen conf has `is_enabled=false`; non-dry-run rejected |
 | `METAGEN_CONF_EXISTS` | 409 | `POST /spoke/metagen/conf` body carries a `name` that already exists |
 | `METAGEN_CONF_NOT_FOUND` | 404 | Metagen `conf_id` does not exist (`/spoke/metagen/conf/{conf_id}`) |
+| `METAGEN_BOUNDARY_NOT_FOUND` | 404 | `PATCH`/`DELETE /spoke/common/data/{dataset_urn}/attr/metagen/boundary` on a dataset that has no boundary row (`GET` returns `200` with a `null` body instead) |
+| `METAGEN_CANDIDATE_NOT_FOUND` | 404 | `candidate_id` does not exist on this item, or is not a well-formed UUID (`.../attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review`) |
+| `METAGEN_ITEM_NOT_FOUND` | 404 | `item_id` does not exist on this dataset (`/spoke/common/data/{dataset_urn}/attr/metagen/item/{item_id}`, or its composite-id form `/spoke/metagen/item/{composite_id}`) |
 | `METAGEN_DATASET_NOT_IN_BOUNDARY` | 422 | Candidate review attempted on an item whose dataset has no `is_enabled=true` per-dataset metagen boundary |
 | `METRIC_RUNNING` | 409 | A metric measurement run is already in progress for this metric |
 | `METRIC_DISABLED` | 409 | Metric definition has `is_enabled=false`; non-dry-run rejected |
@@ -1089,10 +1093,12 @@ Clients should treat `detail` as optional; absent for errors that don't need it.
 | `TOKEN_EXPIRED` | 401 | API token row exists but `expires_at` is in the past |
 | `TOKEN_NOT_FOUND` | 404 | `DELETE /auth/api-tokens/{id}` or `DELETE /admin/users/{id}/api-tokens/{token_id}` references a non-existent token |
 | `TOKEN_LIMIT_EXCEEDED` | 409 | `POST /auth/api-tokens` attempted while user already has 10 active (non-revoked) tokens |
+| `USER_NOT_FOUND` | 404 | User id does not resolve to a `users` row (e.g. `/admin/users/{id}` and its `/role`, `/google`, `/api-tokens` sub-routes, or `PATCH /auth/me`) |
 | `PERIPHERAL_NOT_CONFIGURED` | 503 | A required peripheral is not configured. `detail.peripheral` identifies which one (`"smtp"` for `/auth/password/reset/request`; `"datahub"` for any DataHub-requiring endpoint when DataHub is unconfigured). Distinct from `DATAHUB_UNAVAILABLE` (502), which is the configured-but-unreachable case. The `/ready` health endpoint is the exception that reports an unconfigured peripheral as `degraded` rather than returning this code |
 | `DATAHUB_UNAVAILABLE` | 502 | DataHub GMS is configured but did not respond or returned an error |
 | `AIRFLOW_UNAVAILABLE` | 503 | The in-cluster Airflow REST API did not respond or returned an error while reading or setting DAG paused state (`GET`/`PATCH /admin/dags`) |
 | `STORAGE_UNAVAILABLE` | 503 | PostgreSQL or Redis connection failed (including auth refresh or revoke fail-closed when the revocation store is unreachable) |
 | `INTERNAL_AUTH_NOT_CONFIGURED` | 503 | `X-Internal-Token` shared-secret header is required for `/internal/*` routes but the server-side secret is unset |
 | `RATE_LIMIT_EXCEEDED` | 429 | Too many requests; back off and retry |
+| `BAD_REQUEST` | 400 | `BadRequestError` raised with no more specific code (fallback) |
 | `INTERNAL_ERROR` | 500 | Unhandled `DataSpokeError` with no specific status mapping (fallback) |

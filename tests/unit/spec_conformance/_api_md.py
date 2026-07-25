@@ -488,36 +488,49 @@ def _entity_not_found_literal_arg(node: ast.AST) -> str | None:
     return None
 
 
-_MODULE_MAP_ROW_RE = re.compile(r"^\s{2}(\w+)\s*(?:\([^)]*\))?\s*→\s*(\d{3})\s+(.*)$")
-_MODULE_MAP_CONT_RE = re.compile(r"^\s+\|\s*(.*)$")
+#: An exception class name: any identifier ending in ``Error`` or ``Exception``.
+_EXCEPTION_NAME_RE = re.compile(r"\b\w*(?:Error|Exception)\b")
+
+#: An error-code token: an ALL-CAPS identifier of two or more underscore-separated
+#: segments (``DATASET_NOT_FOUND``, ``METAGEN_CONF_EXISTS``). The leading ``\b`` is
+#: load-bearing — ``src/shared/exceptions.py``'s module docstring states the derivation
+#: rule by quoting the bare suffix ``"_NOT_FOUND"``, which is a fragment of a code rather
+#: than a code, and a leading-underscore match would misread it as one.
+_ERROR_CODE_TOKEN_RE = re.compile(r"\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b")
+
+#: An HTTP status such a mapping would assign to a class.
+_HTTP_STATUS_RE = re.compile(r"\b[1-5]\d{2}\b")
 
 
-def module_docstring_exception_mapping() -> dict[str, frozenset[str]]:
-    """``{ExceptionClass: {code, …}}`` from the mapping block in the module docstring.
+def module_docstring_mapping_blocks(doc: str | None = None) -> tuple[str, ...]:
+    """Blocks of a module docstring that pair an exception class with a code or status.
 
-    ``src/shared/exceptions.py``'s module docstring restates the exception-to-HTTP
-    mapping in a third format (``Exception → status  CODE | CODE``), duplicating both
-    ``spec/feature/BACKEND.md §Exception-to-HTTP Mapping`` and the per-class docstring
-    blocks. Parsed here so the duplicate can be checked rather than trusted.
+    ``src/shared/exceptions.py`` keeps its exception→code/status catalogue on the
+    per-class docstrings, with ``spec/feature/BACKEND.md §Exception-to-HTTP Mapping`` as
+    the spec-side statement of the same mapping. A third copy in the **module** docstring
+    is what this detects, so it can be asserted absent rather than parsed and tolerated.
+
+    A blank-line-separated block is reported when it names an exception class **and**
+    carries an error-code token or an HTTP status — the co-occurrence that makes a block
+    a mapping, whatever layout (``→``, a pipe table, aligned columns) it is written in.
+    Prose that names a class without pairing it to a code, or lists codes without naming
+    a class, is not a mapping and is not reported.
+
+    *doc* defaults to ``src/shared/exceptions.py``'s module docstring; passing a string
+    lets a test prove the detector fires on a synthetic block.
     """
-    tree = ast.parse(EXCEPTIONS_PY.read_text(encoding="utf-8"))
-    doc = ast.get_docstring(tree) or ""
-    mapping: dict[str, set[str]] = {}
-    current: str | None = None
-    for line in doc.splitlines():
-        row = _MODULE_MAP_ROW_RE.match(line)
-        if row is not None:
-            current = row.group(1)
-            codes = mapping.setdefault(current, set())
-            codes |= {c.strip() for c in row.group(3).split("|") if c.strip()}
+    if doc is None:
+        tree = ast.parse(EXCEPTIONS_PY.read_text(encoding="utf-8"))
+        doc = ast.get_docstring(tree) or ""
+    offenders: list[str] = []
+    for block in re.split(r"\n\s*\n", doc):
+        if not block.strip():
             continue
-        cont = _MODULE_MAP_CONT_RE.match(line)
-        if cont is not None and current is not None:
-            mapping[current] |= {c.strip() for c in cont.group(1).split("|") if c.strip()}
-            continue
-        if line.strip() and not line[:1].isspace():
-            current = None
-    return {name: frozenset(codes) for name, codes in mapping.items()}
+        if _EXCEPTION_NAME_RE.search(block) and (
+            _ERROR_CODE_TOKEN_RE.search(block) or _HTTP_STATUS_RE.search(block)
+        ):
+            offenders.append(block.strip())
+    return tuple(offenders)
 
 
 def assert_drift_allowlist(
