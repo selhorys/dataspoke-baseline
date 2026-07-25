@@ -22,6 +22,7 @@ helpers work regardless of the working directory pytest is invoked from.
 from __future__ import annotations
 
 import ast
+import pkgutil
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -179,17 +180,29 @@ def registered_routes(app: object) -> frozenset[RouteRef]:
     ``HEAD`` and ``OPTIONS`` are dropped — they are framework-supplied for ``GET``
     routes and are not catalogued in ``spec/API.md``.
     """
-    return frozenset(_walk_routes(getattr(app, "routes", []), ""))
+    return frozenset(method_path for method_path, _ in _walk_routes(getattr(app, "routes", []), ""))
 
 
-def _walk_routes(routes: Iterable[object], prefix: str) -> set[RouteRef]:
-    found: set[RouteRef] = set()
+def registered_route_response_models(app: object) -> tuple[tuple[RouteRef, object], ...]:
+    """``((method, path), response_model)`` for every registered route, walked recursively.
+
+    Same walk as :func:`registered_routes`, retaining each route's declared
+    ``response_model`` so a check can reason about which schema serves which route.
+    Returned as a tuple of pairs rather than a dict because two routes that differ only
+    in a path-parameter *name* normalise to the same :data:`RouteRef`, and a dict would
+    silently collapse them.
+    """
+    return _walk_routes(getattr(app, "routes", []), "")
+
+
+def _walk_routes(routes: Iterable[object], prefix: str) -> tuple[tuple[RouteRef, object], ...]:
+    found: list[tuple[RouteRef, object]] = []
     for route in routes:
         original = getattr(route, "original_router", None)
         if original is not None:
             context = getattr(route, "include_context", None)
             sub_prefix = getattr(context, "prefix", "") or ""
-            found |= _walk_routes(getattr(original, "routes", []), prefix + sub_prefix)
+            found.extend(_walk_routes(getattr(original, "routes", []), prefix + sub_prefix))
             continue
         path = getattr(route, "path", None)
         # ``is not None`` and never a truthiness check: collection-root endpoints are
@@ -201,8 +214,9 @@ def _walk_routes(routes: Iterable[object], prefix: str) -> set[RouteRef]:
         for method in getattr(route, "methods", None) or ():
             if method in ("HEAD", "OPTIONS"):
                 continue
-            found.add((method, normalise_path(prefix + path)))
-    return found
+            ref = (method, normalise_path(prefix + path))
+            found.append((ref, getattr(route, "response_model", None)))
+    return tuple(found)
 
 
 def api_md_error_codes() -> dict[str, int]:
@@ -363,6 +377,59 @@ def _iter_src_python_files() -> Iterable[Path]:
     return sorted(files)
 
 
+def api_schema_module_names() -> tuple[str, ...]:
+    """Importable dotted names of every module in the ``src.api.schemas`` package.
+
+    Walked with :func:`pkgutil.walk_packages`, matching
+    ``tests/unit/api/test_response_format.py``'s discovery: the walk is **recursive**, so
+    converting a schema module into a subpackage keeps its models in view instead of
+    silently dropping them from every assertion built on this list. Private
+    (``_``-prefixed) helper modules are included — nothing stops a response model from
+    living in one.
+
+    Walking the imported package (rather than globbing ``src/**/*.py``) also avoids
+    ``src/frontend``'s vendored ``node_modules``, the hazard documented on
+    :data:`SRC_PYTHON_PACKAGES`. ``test_response_envelope.py`` pins the walked package
+    path against :func:`src_python_roots` so the two discovery mechanisms cannot drift.
+    """
+    import src.api.schemas as schemas_pkg
+
+    return tuple(
+        name
+        for _, name, _ in pkgutil.walk_packages(
+            schemas_pkg.__path__, prefix=schemas_pkg.__name__ + "."
+        )
+    )
+
+
+def declared_paginated_subclass_defs(base_name: str) -> dict[str, tuple[str, ...]]:
+    """``{module path: (class name, …)}`` for classes that **directly** declare *base_name*.
+
+    An AST scan across **all** Python packages under ``src/`` — not just
+    ``src/api/schemas`` — so that a response model defined outside the schemas package
+    (in a router, say) is still visible. It is the counterpart to importing the schema
+    modules: the import side enumerates what a conformance check will actually inspect,
+    and this side proves nothing escaped that enumeration by living elsewhere.
+
+    The match is **syntactic and one level deep**: a class whose base is an intermediate
+    that itself extends *base_name* is not returned. Callers that rely on this as a
+    completeness backstop must pair it with a count equality against the imported set
+    (``test_response_envelope.py`` does), which is what breaks the moment such an
+    indirection appears.
+    """
+    found: dict[str, list[str]] = {}
+    for path in _iter_src_python_files():
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ClassDef):
+                continue
+            for base in node.bases:
+                name = base.id if isinstance(base, ast.Name) else getattr(base, "attr", None)
+                if name == base_name:
+                    found.setdefault(str(path.relative_to(REPO_ROOT)), []).append(node.name)
+    return {module: tuple(names) for module, names in sorted(found.items())}
+
+
 def entity_not_found_call_site_types() -> dict[str, tuple[str, ...]]:
     """``{entity_type: (call site, …)}`` for every ``EntityNotFoundError("…", …)`` in ``src/``.
 
@@ -470,6 +537,11 @@ def assert_drift_allowlist(
        instruction to delete it — the list is forced to shrink and cannot go on
        masking a regression that reintroduces the same mismatch later.
 
+    An allowlist entry records either a *scheduled* mismatch (delete it when the phase
+    that fixes it lands) or a *documented* exception (a spec/ citation justifies it
+    permanently). Branch 2 is meaningful for both: for the latter it asserts the
+    documented thing still exists, so removing it fails here rather than going unnoticed.
+
     The symmetry is a design choice of this package, not a rule quoted from a spec.
     It follows the intent of spec/TESTING.md §Assertion Discipline — "Author assertions
     so that a passing result is only reachable when the spec'd behavior actually
@@ -482,9 +554,9 @@ def assert_drift_allowlist(
     observed = set(actual)
     unexpected = sorted(observed - allowlist)
     assert not unexpected, (
-        f"Undeclared {what}: {unexpected}. Fix the mismatch, or — if it is known and "
-        f"scheduled — add each entry to {allowlist_name} with a comment naming the "
-        f"mismatch and the issue-#86 phase that resolves it."
+        f"Undeclared {what}: {unexpected}. Fix the mismatch, or add each entry to "
+        f"{allowlist_name} with a comment justifying it — a spec/ citation for a "
+        f"documented exception, or the issue-#86 phase that resolves a scheduled mismatch."
     )
     stale = sorted(allowlist - observed)
     assert not stale, (

@@ -68,14 +68,14 @@ async def test_metagen_items_list_global_paginated_envelope(
     admin_headers: dict[str, str],
     async_session: AsyncSession,
 ) -> None:
-    """GET /metagen/item returns MetagenItemListResponse envelope with pagination keys.
+    """GET /metagen/item returns MetagenItemIndexResponse envelope with pagination keys.
 
     Seeds two items across two datasets; verifies envelope structure and
     pagination parameters are echoed correctly.
 
     spec: USE_CASE_en.md §UC4 — item list endpoint
     spec: API.md §Standard Envelope — items, offset, limit, total_count
-    spec: API.md §Metadata Generation — MetagenItemListResponse envelope
+    spec: API.md §Metadata Generation — MetagenItemIndexResponse envelope
     """
     item_list_url = "/api/v1/spoke/metagen/item"
 
@@ -106,16 +106,16 @@ async def test_metagen_items_list_global_paginated_envelope(
 
         # Envelope keys
         assert "items" in body and isinstance(body["items"], list), (
-            "MetagenItemListResponse must have 'items' list. spec: API.md §Standard Envelope"
+            "MetagenItemIndexResponse must have 'items' list. spec: API.md §Standard Envelope"
         )
         assert "offset" in body, (
-            "MetagenItemListResponse must have 'offset'. spec: API.md §Standard Envelope"
+            "MetagenItemIndexResponse must have 'offset'. spec: API.md §Standard Envelope"
         )
         assert "limit" in body, (
-            "MetagenItemListResponse must have 'limit'. spec: API.md §Standard Envelope"
+            "MetagenItemIndexResponse must have 'limit'. spec: API.md §Standard Envelope"
         )
         assert "total_count" in body and isinstance(body["total_count"], int), (
-            "MetagenItemListResponse must have 'total_count' int. "
+            "MetagenItemIndexResponse must have 'total_count' int. "
             "spec: API.md §Standard Envelope"
         )
         assert body["offset"] == 0, (

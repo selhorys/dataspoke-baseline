@@ -145,8 +145,16 @@ class MetagenItemSummary(BaseModel):
 
 
 class MetagenItemListResponse(PaginatedResponse):
+    """Per-dataset item list (`/spoke/common/data/{urn}/attr/metagen/item`)."""
+
     items: list[MetagenItemSummary] = Field(default_factory=list)
     candidate_count: int = 0
+
+
+class MetagenItemIndexResponse(PaginatedResponse):
+    """Cross-dataset item index (`/spoke/metagen/item`)."""
+
+    items: list[MetagenItemSummary] = Field(default_factory=list)
 
 
 class MetagenCandidate(BaseModel):

@@ -76,15 +76,24 @@ def _make_run_dto(status: str = "success", dry_run: bool = False, **over) -> Run
 def _make_item_summary_dto(
     dataset_urn: str = _VALID_URN,
     item_id: str = "dataset.description",
+    kind: str = "dataset.description",
+    field_path: str | None = None,
+    candidate_count: int = 0,
+    non_rejected_count: int | None = None,
+    has_approved: bool = False,
 ) -> ItemSummaryDTO:
     return ItemSummaryDTO(
         dataset_urn=dataset_urn,
         item_id=item_id,
-        kind="dataset.description",
-        field_path=None,
-        candidate_count=0,
-        non_rejected_count=0,
-        has_approved=False,
+        kind=kind,
+        field_path=field_path,
+        candidate_count=candidate_count,
+        # Default: non_rejected_count tracks candidate_count unless the caller
+        # overrides (e.g. an item whose only candidates were rejected).
+        non_rejected_count=(
+            non_rejected_count if non_rejected_count is not None else candidate_count
+        ),
+        has_approved=has_approved,
         created_at=datetime.now(tz=UTC),
         updated_at=datetime.now(tz=UTC),
     )
@@ -597,6 +606,88 @@ async def test_get_items_returns_200_with_item_list_envelope(client, mock_svc: A
     body = resp.json()
     assert body["total_count"] == 1
     assert len(body["items"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_get_items_envelope_carries_no_dataset_level_candidate_count(
+    client, mock_svc: AsyncMock
+) -> None:
+    """The cross-dataset index envelope carries the content key + pagination only.
+
+    The dataset-level ``candidate_count`` aggregate belongs to the *per-dataset*
+    sibling route, which scopes it to one dataset. The cross-dataset index spans
+    many datasets, so no such aggregate is defined for it and none is returned.
+
+    The absence assertion is meaningful only because non-zero per-row counts are
+    injected first: both rows must still report their own ``candidate_count``
+    (proving the item path is live and the per-row field survived), while the
+    envelope exposes nothing beyond ``items`` + the pagination keys. Without the
+    injection the check would pass just as happily against an empty page or a
+    handler returning some unrelated shape.
+
+    Spec: API.md §Route Catalogue → Metadata Generation (`/spoke/metagen`),
+    `GET /spoke/metagen/item` — "Each row carries `dataset_urn`, `item_id`, `kind`,
+    `field_path`, `status`, `candidate_count`, `created_at`, `composite_id`"; the
+    row inventory names no envelope-level aggregate.
+    Spec: API.md §Route Catalogue → Data Resource (`/spoke/common/data`),
+    `GET /spoke/common/data/{dataset_urn}/attr/metagen/item` — "The response
+    envelope also carries a dataset-level `candidate_count` … distinct from
+    `total_count` (the item count)", documented for that route alone.
+    Spec: API.md §Standard Response Envelope — "All collection responses include a
+    content key named after the resource + pagination metadata".
+    Spec: TESTING.md §Assertion Discipline — "Absence assertions require injection."
+    """
+    mock_svc.list_items = AsyncMock(
+        return_value=(
+            [
+                _make_item_summary_dto(
+                    item_id="dataset.description",
+                    kind="dataset.description",
+                    candidate_count=4,
+                ),
+                _make_item_summary_dto(
+                    item_id="column.isbn.description",
+                    kind="column.description",
+                    field_path="isbn",
+                    candidate_count=7,
+                ),
+            ],
+            2,
+        )
+    )
+
+    resp = await client.get(f"{_BASE}/item", headers=auth_headers())
+
+    assert resp.status_code == 200
+    body = resp.json()
+    # Backstop for the absence assertion below: the injected per-row aggregates are
+    # non-zero and reach the response, so the envelope check is made about a live
+    # payload rather than an empty one.
+    assert [row["candidate_count"] for row in body["items"]] == [4, 7], (
+        f"Per-row candidate_count must survive on the cross-dataset index; got {body['items']}"
+    )
+    # The row inventory quoted above, asserted rather than merely cited — and it is what
+    # makes the injected kind / field_path load-bearing rather than dead setup.
+    assert set(body["items"][1]) == {
+        "dataset_urn",
+        "item_id",
+        "kind",
+        "field_path",
+        "status",
+        "candidate_count",
+        "created_at",
+        "composite_id",
+    }, f"Row must carry exactly the fields spec/API.md lists; got {sorted(body['items'][1])}"
+    assert body["items"][1]["kind"] == "column.description"
+    assert body["items"][1]["field_path"] == "isbn"
+    assert "candidate_count" not in body, (
+        "The cross-dataset item index must not carry an envelope-level candidate_count "
+        "— that dataset-scoped aggregate is defined only on the per-dataset item route, "
+        f"and a cross-dataset handler cannot populate it meaningfully; got {sorted(body)}"
+    )
+    assert set(body) == {"items", "offset", "limit", "total_count", "resp_time"}, (
+        f"Envelope must be the content key plus pagination metadata; got {sorted(body)}"
+    )
 
 
 @pytest.mark.asyncio

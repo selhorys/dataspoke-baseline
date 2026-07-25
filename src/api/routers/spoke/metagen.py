@@ -42,7 +42,7 @@ from src.api.schemas.metagen import (
     MetagenCoveredDatasetSummary,
     MetagenDatasetListResponse,
     MetagenItemDetailResponse,
-    MetagenItemListResponse,
+    MetagenItemIndexResponse,
     MetagenRunRequest,
     MetagenRunResponse,
     MetagenUncoveredResponse,
@@ -398,7 +398,7 @@ async def get_metagen_events(
 # ── Item list (cross-dataset, cross-conf) ───────────────────────────────────────
 
 
-@router.get("/item", response_model=MetagenItemListResponse)
+@router.get("/item", response_model=MetagenItemIndexResponse)
 async def get_metagen_items(
     dataset_urn: str | None = Query(default=None),
     kind: Literal["dataset.description", "column.description"] | None = Query(default=None),
@@ -410,7 +410,7 @@ async def get_metagen_items(
     limit: int = Query(default=20, ge=1, le=1000),
     sort: str | None = Query(default=None),
     service: MetagenService = Depends(get_metagen_service),
-) -> MetagenItemListResponse:
+) -> MetagenItemIndexResponse:
     """List metagen items (paginated; sortable by created_at, updated_at, dataset_urn)."""
     order_by = parse_sort(
         sort,
@@ -430,7 +430,7 @@ async def get_metagen_items(
         limit=limit,
         order_by=order_by,
     )
-    return MetagenItemListResponse(
+    return MetagenItemIndexResponse(
         items=[to_item_summary(d) for d in dtos],
         total_count=total,
         offset=offset,
