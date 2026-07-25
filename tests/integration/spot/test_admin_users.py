@@ -44,7 +44,7 @@ async def _seed_user(session: AsyncSession, email: str) -> dict:
         {"id": str(user_id), "email": email, "name": "Test User", "google_sub": google_sub},
     )
     await session.commit()
-    token, _ = issue_access_token(user_id, email)
+    token, _ = issue_access_token(user_id, email, session_epoch=0)
     return {"access_token": token, "id": str(user_id)}
 
 
@@ -53,13 +53,25 @@ async def test_list_users_returns_pagination_shape(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """GET /admin/users returns {users, total} with role per row.
+    """GET /admin/users returns {users, total} with role and the auth-method booleans per row.
+
+    The bootstrap admin is the positive `has_password` case: it is seeded with a
+    password and carries no Google identity, so an implementation that hardcoded
+    either boolean would fail here.
 
     spec: spec/feature/AUTH.md §Admin Surface — GET /admin/users: users.role returned per row.
-    spec: spec/API.md §Admin — paginated list; role from DB column (no GraphQL call).
+    spec: spec/API.md §Admin — "content key `users: [{id, email, name, has_password,
+    has_google, role, created_at, updated_at}]` — `role` from the DB column".
+    spec: spec/feature/AUTH.md §Built-in Bootstrap Admin — login identifier
+    `dataspoke@dataspoke.local`, initial password `dataspoke`, "The row carries no
+    `google_sub`".
     """
+    # Ascending by created_at: the bootstrap admin is seeded at install time, so it
+    # is the oldest row and stays on the first page however many users other spot
+    # modules have added since.
     resp = await api_client.get(
         "/api/v1/admin/users",
+        params={"sort": "created_at_asc"},
         headers=admin_headers,
     )
     assert resp.status_code == 200, (
@@ -79,7 +91,30 @@ async def test_list_users_returns_pagination_shape(
         assert "id" in user
         assert "email" in user
         assert "name" in user
+        assert "has_password" in user, (
+            "Each user row must include 'has_password' per spec/API.md §Admin"
+        )
+        assert "has_google" in user, (
+            "Each user row must include 'has_google' per spec/API.md §Admin"
+        )
         assert "password_hash" not in user, "password_hash must not appear in admin list"
+        assert "google_sub" not in user, (
+            "the sub is reduced to the has_google boolean per spec/API.md §Admin"
+        )
+
+    bootstrap = [u for u in body["users"] if u["email"] == "dataspoke@dataspoke.local"]
+    assert bootstrap, (
+        "the bootstrap admin must appear in the list — it is the row this test reads "
+        "the positive has_password case from per spec/feature/AUTH.md §Built-in Bootstrap Admin"
+    )
+    assert bootstrap[0]["has_password"] is True, (
+        "the bootstrap admin is seeded with a password per spec/feature/AUTH.md "
+        f"§Built-in Bootstrap Admin; got {bootstrap[0]!r}"
+    )
+    assert bootstrap[0]["has_google"] is False, (
+        "the bootstrap admin row carries no google_sub per spec/feature/AUTH.md "
+        f"§Built-in Bootstrap Admin; got {bootstrap[0]!r}"
+    )
 
 
 @pytest.mark.asyncio

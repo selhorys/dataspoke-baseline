@@ -32,6 +32,8 @@ from datahub.metadata.schema_classes import (
 )
 from sqlalchemy import text
 
+from src.shared.models.enums import EventStatus
+
 
 def _unique_email(prefix: str = "role-sync") -> str:
     return f"{prefix}-{str(uuid.uuid4())[:8]}@test.dataspoke.example.com"
@@ -217,7 +219,13 @@ async def test_dag_run_repairs_both_facets_and_leaves_unbound_row_alone(
             f"An AUTH.ROLE_SYNC_FIXED event must exist for entity_id={bound_id} per "
             "spec/feature/AUTH.md §Role Drift Reconciliation step 5"
         )
-        assert row.status == "OK", f"Event status must be OK, got: {row.status}"
+        # BACKEND_SCHEMA.md §events permits any of success/ok/failure/error/
+        # running/warning/info. `success` is the project's chosen value for a
+        # completed AUTH.* write rather than one the spec singles out.
+        assert row.status == EventStatus.SUCCESS.value, (
+            "A repaired-facet event records a successful reconciliation, so its status "
+            f"is {EventStatus.SUCCESS.value!r}. Got: {row.status}"
+        )
         detail = row.detail if isinstance(row.detail, dict) else {}
         assert set(detail.get("repaired_facets", [])) == {"role", "group"}, (
             "The event detail must name every repaired facet per "

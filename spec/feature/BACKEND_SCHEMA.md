@@ -48,11 +48,12 @@ onto it — see [AUTH §DataHub Projection Semantics](AUTH.md#datahub-projection
 | `password_hash` | `TEXT` NULL | bcrypt hash; null when the user authenticates exclusively via Google OAuth |
 | `google_sub` | `TEXT` UNIQUE NULL | Google account `sub` claim; null when the user has not linked a Google account |
 | `role` | `TEXT` NOT NULL DEFAULT `'Reader'` | Privilege level — one of `'Admin'`, `'Editor'`, `'Reader'`. DataSpoke is SSOT; propagated to DataHub via `batchAssignRole`. Gates routes per [AUTH §Privilege Model](AUTH.md#privilege-model). |
+| `session_epoch` | `INTEGER` NOT NULL DEFAULT `0` | Per-user JWT generation counter. Access and refresh JWTs carry it as the `ses` claim; a token whose `ses` is absent or unequal to this value is rejected `401`. Incremented by the two writes that change the row's Google binding: the credential reset when an identity binds onto the row, and the admin unbind when one is released — see [AUTH §Session epoch](AUTH.md#session-epoch). |
 | `created_at` | `TIMESTAMPTZ` | |
 | `updated_at` | `TIMESTAMPTZ` | |
 
 Constraints:
-- `CHECK (password_hash IS NOT NULL OR google_sub IS NOT NULL)` — at least one authentication method must always be set.
+- `ck_users_auth_method`: `CHECK (password_hash IS NOT NULL OR google_sub IS NOT NULL)` — at least one authentication method must always be set. Clearing `password_hash` on a Google bind satisfies it because `google_sub` is set in the same statement.
 - `CHECK (role IN ('Admin', 'Editor', 'Reader'))` — enum guard.
 
 Deletion is hard delete (no `deleted_at` column) — DataSpoke removes the row
@@ -73,7 +74,7 @@ clients (CI jobs, AI agents). See [AUTH §API Tokens](AUTH.md#api-tokens).
 | `created_at` | `TIMESTAMPTZ` | |
 | `last_used_at` | `TIMESTAMPTZ` NULL | Updated per use (throttled to per-minute granularity to avoid DB pressure). Null until first use. |
 | `expires_at` | `TIMESTAMPTZ` NULL | Optional expiry; null = no expiry |
-| `revoked_at` | `TIMESTAMPTZ` NULL | Set when the user or an admin revokes the token. Once non-null, the token authenticates no further requests. |
+| `revoked_at` | `TIMESTAMPTZ` NULL | Set when the user or an admin revokes the token, and set on every one of a user's active tokens by the credential reset that runs when a Google identity binds onto their row ([AUTH §Credential reset on link](AUTH.md#credential-reset-on-link)). Once non-null, the token authenticates no further requests. |
 
 A token is valid iff `revoked_at IS NULL AND (expires_at IS NULL OR
 expires_at > now())` and the raw token hashes to a matching row. Per-user
@@ -94,7 +95,11 @@ Single-use tokens for the `/auth/password/reset/*` flow.
 
 A token is valid iff `used_at IS NULL AND expires_at > now()` and the raw
 token hashes to a matching row. Expired and consumed rows are cleaned up by a
-periodic Airflow housekeeping DAG (no synchronous-delete invariant).
+periodic Airflow housekeeping DAG (no synchronous-delete invariant). The one
+synchronous deleter is the credential reset that runs when a Google identity
+binds onto a row: it deletes that user's unused rows inside the bind
+transaction, because a pending reset link is a live re-entry path
+([AUTH §Credential reset on link](AUTH.md#credential-reset-on-link)).
 
 #### `ingestion_source`
 
@@ -462,10 +467,10 @@ structure so clients can process them generically (see
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | `UUID` PK | Event identifier |
-| `entity_type` | `TEXT` | `dataset`, `ingestion_source` (ingestion runs, booked on the owning source), `metric`, `node`, `edge`, `triple`, `ontogen` (singleton conf + seeds), `metagen` (per-conf run events) — classifies the entity, not the feature domain |
-| `entity_id` | `TEXT` | URN or metric/node/edge/triple ID; for `entity_type='ingestion_source'` the `source_id`; for `entity_type='ontogen'` either the literal string `singleton` (conf) or a `seed:{seed_id}` form (seed events); for `entity_type='metagen'` the `conf_id` |
+| `entity_type` | `TEXT` | `dataset`, `ingestion_source` (ingestion runs, booked on the owning source), `metric`, `node`, `edge`, `triple`, `ontogen` (singleton conf + seeds), `metagen` (per-conf run events), `user` (auth-domain events) — classifies the entity, not the feature domain |
+| `entity_id` | `TEXT` | URN or metric/node/edge/triple ID; for `entity_type='ingestion_source'` the `source_id`; for `entity_type='ontogen'` either the literal string `singleton` (conf) or a `seed:{seed_id}` form (seed events); for `entity_type='metagen'` the `conf_id`; for `entity_type='user'` the `users.id` |
 | `event_type` | `TEXT` | Uppercase, dot-delimited `{DOMAIN}.{ACTION}` (e.g., `INGESTION.COMPLETE`, `METRIC.RUN_COMPLETE`, `NODE.APPROVE`, `TRIPLE.APPROVE`, `METAGEN.CANDIDATE_APPROVE`, `METAGEN.RUN_COMPLETE`, `ONTOGEN.RUN_COMPLETE`). Full catalogue in [BACKEND §Event Catalogue](BACKEND.md#event-catalogue). |
-| `status` | `TEXT` | `success`, `failure`, `warning` |
+| `status` | `TEXT` | One of `success`, `ok`, `failure`, `error`, `running`, `warning`, `info` |
 | `detail` | `JSONB` | Event-specific payload |
 | `occurred_at` | `TIMESTAMPTZ` | Event timestamp |
 

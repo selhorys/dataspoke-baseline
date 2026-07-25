@@ -62,7 +62,7 @@ async def api_token_user_access_token(integration_db_url: str) -> str:
     finally:
         await engine.dispose()
 
-    token, _ = issue_access_token(user_id, email)
+    token, _ = issue_access_token(user_id, email, session_epoch=0)
 
     yield token
 
@@ -244,7 +244,7 @@ async def test_10_token_cap(
     finally:
         await engine.dispose()
 
-    access_token, _ = issue_access_token(user_id, email)
+    access_token, _ = issue_access_token(user_id, email, session_epoch=0)
 
     try:
         # Mint 10 tokens
@@ -329,7 +329,7 @@ async def test_api_token_hash_stored_as_sha256(
     finally:
         await engine.dispose()
 
-    access_token, _ = issue_access_token(user_id, email)
+    access_token, _ = issue_access_token(user_id, email, session_epoch=0)
 
     try:
         # Mint a token

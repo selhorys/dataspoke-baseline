@@ -30,7 +30,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from src.backend.admin.peripheral_service import DatahubConfigDTO, LangfuseConfigDTO
-from tests.unit.api.conftest import auth_headers
+from tests.unit.api.conftest import TEST_SESSION_EPOCH, auth_headers
 
 _PERIPHERAL_LINKS = "/api/v1/spoke/common/peripheral-links"
 
@@ -120,6 +120,10 @@ async def test_any_authenticated_role_can_read_the_links(client, role: str) -> N
         email="unit-test@example.com",
         name="Unit Test User",
         role=role,
+        # The column default lands at flush time, so an unflushed instance carries
+        # None here and would fail the bearer path's epoch gate. Match the epoch
+        # the fixture's tokens are minted under.
+        session_epoch=TEST_SESSION_EPOCH,
         created_at=now,
         updated_at=now,
     )

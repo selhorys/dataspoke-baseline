@@ -1,8 +1,9 @@
 """Auth dependency re-exports for the API layer.
 
 All privilege logic lives in src.backend.auth.privilege.
-This module re-exports the three standard dependencies so routers can import
-from a single stable path.
+This module re-exports the standard dependencies, and the credential-write
+re-validation helper that rides on their context, so routers can import from a
+single stable path.
 """
 
 from src.backend.auth.privilege import (
@@ -11,6 +12,7 @@ from src.backend.auth.privilege import (
     require_authenticated,
     require_editor,
     require_writer,
+    revalidate_under_user_lock,
 )
 
 __all__ = [
@@ -19,4 +21,5 @@ __all__ = [
     "require_writer",
     "require_editor",
     "require_admin",
+    "revalidate_under_user_lock",
 ]

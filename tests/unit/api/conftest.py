@@ -17,6 +17,12 @@ _STATE_ATTRS = ("datahub", "redis", "vector", "airflow")
 # to the Admin context through require_authenticated.
 _TEST_USER_ID = uuid.UUID("aaaaaaaa-0000-0000-0000-000000000001")
 
+# Session epoch carried by both the mocked principal row and the JWTs minted by
+# make_token().  The bearer path compares the token's ``ses`` claim against
+# ``users.session_epoch`` and rejects a mismatch (spec/feature/AUTH.md §Session
+# epoch), so the two must agree for a fixture token to authenticate at all.
+TEST_SESSION_EPOCH = 0
+
 
 def _make_mock_user(role: str = "Admin") -> MagicMock:
     """Return a MagicMock shaped like a User ORM row."""
@@ -26,6 +32,7 @@ def _make_mock_user(role: str = "Admin") -> MagicMock:
     u.name = "Unit Test User"
     u.role = role
     u.google_sub = None
+    u.session_epoch = TEST_SESSION_EPOCH
     return u
 
 
@@ -103,7 +110,7 @@ async def client() -> AsyncClient:
                 delattr(app.state, attr)
 
 
-def make_token(subject: str | None = None) -> str:
+def make_token(subject: str | None = None, session_epoch: int = TEST_SESSION_EPOCH) -> str:
     """Create a real (signed) access token.
 
     ``subject`` must be a UUID string; a random UUID is generated when omitted.
@@ -112,9 +119,13 @@ def make_token(subject: str | None = None) -> str:
     ``src/backend/auth/privilege.py``). Tests that exercise role-gated endpoints
     set the role on the mocked ``User`` (or override ``require_authenticated`` /
     ``require_admin``) at their own call site.
+
+    ``session_epoch`` rides on the token as the ``ses`` claim and defaults to the
+    epoch the mocked principal row carries, so the bearer path's epoch gate
+    passes. Pass a different value to exercise a superseded session.
     """
     user_id = uuid.UUID(subject) if subject else uuid.uuid4()
-    token, _ = issue_access_token(user_id, f"{user_id}@test.example.com")
+    token, _ = issue_access_token(user_id, f"{user_id}@test.example.com", session_epoch)
     return token
 
 

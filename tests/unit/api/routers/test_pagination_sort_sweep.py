@@ -33,7 +33,7 @@ from src.api.dependencies import (
     get_validation_service,
 )
 from src.api.main import app
-from tests.unit.api.conftest import auth_headers
+from tests.unit.api.conftest import TEST_SESSION_EPOCH, auth_headers
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -53,6 +53,9 @@ def _make_unmanaged_user() -> MagicMock:
     u.name = "Unit Test User"
     u.role = "Admin"
     u.google_sub = None
+    # The bearer path compares the token's ``ses`` claim against this value
+    # (spec/feature/AUTH.md §Session epoch), so it must match make_token()'s.
+    u.session_epoch = TEST_SESSION_EPOCH
     return u
 
 

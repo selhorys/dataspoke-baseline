@@ -71,8 +71,11 @@ from src.backend.admin.smtp_secret import (
 from src.backend.auth import api_tokens, users
 from src.backend.datahub import users as dh_users
 from src.shared.datahub.client import DataHubClient
+from src.shared.db.models import Event
 from src.shared.db.registry import sync_with_datahub
+from src.shared.events import AUTH_GOOGLE_UNBOUND
 from src.shared.exceptions import ConflictError, StorageUnavailableError
+from src.shared.models.enums import EventStatus
 from src.shared.secrets import SecretResolverUnavailable
 from src.workflows.airflow.client import AirflowClient
 from src.workflows.registry import ALL_DAG_IDS as _EXPECTED_DAGS
@@ -766,6 +769,7 @@ def _user_to_response(user: object) -> UserResponse:
         id=user.id,
         email=user.email,
         name=user.name,
+        has_password=user.password_hash is not None,
         has_google=user.google_sub is not None,
         role=user.role,
         created_at=user.created_at,
@@ -886,6 +890,48 @@ async def delete_user(
             "datahub_corpuser_delete_failed",
             extra={"user_id": str(user_id), "email": email},
             exc_info=True,
+        )
+    await db.commit()
+
+
+@router.delete("/users/{user_id}/google", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_user_google_binding(
+    user_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Release a user's Google binding.
+
+    The non-destructive remedy for a binding that has gone stale — typically a
+    re-issued Workspace address whose new Google account carries a new ``sub``,
+    which leaves the address's rightful holder refused
+    ``EMAIL_BOUND_TO_ANOTHER_GOOGLE_ACCOUNT`` on every callback. The row returns
+    to the unbound state and the next Google sign-in binds afresh.
+
+    Sessions established under the released binding do not survive it: the
+    unbind increments ``session_epoch``. No DataHub call is made — an unbound
+    row is simply not projected, and the role already assigned on the corpuser
+    stays until the row is bound again (retraction is deletion-only).
+
+    A release emits one ``AUTH.GOOGLE_UNBOUND`` event: the route ends every
+    session and removes an authentication method, and the request log carries no
+    authenticated principal, so the event row is the record that it happened.
+    Idempotent — an already-unbound row is left untouched, writes no event, and
+    still answers 204.
+
+    Raises:
+        ConflictError('GOOGLE_IS_ONLY_AUTH_METHOD')  — the row has no password,
+            so releasing the binding would leave it unauthenticatable.
+    """
+    result = await users.unbind_google_identity(db, user_id)
+    if result.unbound:
+        db.add(
+            Event(
+                entity_type="user",
+                entity_id=str(result.user.id),
+                event_type=AUTH_GOOGLE_UNBOUND,
+                status=EventStatus.SUCCESS,
+                detail={"session_epoch": result.user.session_epoch},
+            )
         )
     await db.commit()
 

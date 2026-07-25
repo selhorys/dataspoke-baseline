@@ -122,7 +122,11 @@ on `/spoke/*` or `/admin/*` routes.
 
 ### Token Strategy
 
-DataSpoke uses **JWT (JSON Web Tokens)** for stateless authentication.
+DataSpoke uses **JWT (JSON Web Tokens)** for authentication. The tokens are
+self-contained but not self-sufficient: role and session validity are resolved
+from the `users` row on every request (see [§JWT Claims](#jwt-claims) and
+[§Middleware Stack](#middleware-stack)), so a session ends the moment the
+server-side state says it does rather than at token expiry.
 
 | Token type | Lifetime | Storage |
 |------------|----------|---------|
@@ -131,13 +135,19 @@ DataSpoke uses **JWT (JSON Web Tokens)** for stateless authentication.
 
 ### JWT Claims
 
-Access-token payload: `sub` (user uuid), `email`, `exp`, `iat`.
-Refresh-token payload: `sub` (user uuid), `exp`, `iat`, and `type` = `"refresh"`
-(the claim the refresh endpoint checks to reject access tokens — see
-`INVALID_REFRESH_TOKEN`).
+Access-token payload: `sub` (user uuid), `email`, `exp`, `iat`, `ses`.
+Refresh-token payload: `sub` (user uuid), `exp`, `iat`, `ses`, and
+`type` = `"refresh"` (the claim the refresh endpoint checks to reject access
+tokens — see `INVALID_REFRESH_TOKEN`).
 
-The JWT carries identity only — it does **not** encode role. Routes are gated
-by `users.role` read per-request from the DB — see
+`ses` is the session epoch the token was issued under. A token whose `ses` is
+absent or differs from the owner's current `users.session_epoch` is rejected
+`401 UNAUTHORIZED`, on the bearer path and at `POST /auth/token/refresh`. See
+[AUTH §Session epoch](feature/AUTH.md#session-epoch).
+
+The JWT carries identity and session epoch — it does **not** encode role. Routes
+are gated by `users.role` read per-request from the DB, on the same read that
+resolves the epoch — see
 [AUTH §Privilege Model](feature/AUTH.md#privilege-model).
 
 ### Access Control
@@ -207,12 +217,12 @@ All routes are prefixed with `/api/v1`.
 | `POST` | `/auth/token` | Issue tokens (body `{email, password}`). Returns `{access_token, token_type: "bearer", expires_in}` and sets the refresh token as an HttpOnly cookie scoped to path `/api/v1/auth/token` |
 | `POST` | `/auth/token/refresh` | Refresh access token from the HttpOnly refresh cookie |
 | `POST` | `/auth/token/revoke` | Revoke refresh token (logout) |
-| `GET` | `/auth/me` | Get the current user's profile — returns `{id, email, name, has_google, role, created_at, updated_at}` (all DataSpoke `users` columns; `password_hash` is never returned) |
+| `GET` | `/auth/me` | Get the current user's profile — returns `{id, email, name, has_password, has_google, role, created_at, updated_at}`. A projection of the `users` row, not a dump of it: credentials and session state are reduced to the `has_password` / `has_google` booleans, and `password_hash`, `google_sub`, and `session_epoch` are never returned |
 | `PATCH` | `/auth/me` | Update own display name and/or password (body `{name?, password?}`); returns the updated profile in the same shape as `GET /auth/me` |
 | `POST` | `/auth/password/reset/request` | Send password-reset email (body `{email}`). Silent for unknown emails (no account-enumeration leak). |
 | `POST` | `/auth/password/reset/confirm` | Confirm reset with token + new password (body `{token, new_password}`); returns `204` on success |
 | `GET` | `/auth/google/login` | Begin Google OAuth: establish state cookie and 302 to Google consent screen |
-| `GET` | `/auth/google/callback` | Google OAuth callback; on success either logs in an existing user, links Google to an existing email, or creates a fresh user with Reader role |
+| `GET` | `/auth/google/callback` | Google OAuth callback. On success it logs in the user whose row already carries the Google `sub`, binds the identity onto an unbound row matching the email, or creates a fresh user with Reader role. A bind invalidates every credential that existed on the row beforehand — password, API tokens, outstanding JWT sessions, unused reset tokens — in the same transaction ([AUTH §Credential reset on link](feature/AUTH.md#credential-reset-on-link)). A row already bound to a different Google `sub` is refused `409 EMAIL_BOUND_TO_ANOTHER_GOOGLE_ACCOUNT` |
 | `GET` | `/auth/api-tokens` | List own API tokens (content key `tokens: [{id, name, role_snapshot, created_at, last_used_at, expires_at}]` — never the raw token; paginated with the standard `offset`/`limit`/`total_count` envelope, sortable by `created_at`, default `created_at_desc`). Authenticated. |
 | `POST` | `/auth/api-tokens` | Mint a new API token (body `{name, expires_at?}`). Response includes the raw token in `{token: "dsk_...", id, name, role_snapshot, created_at, expires_at}` — **only time the raw token is returned plain**. `409 TOKEN_LIMIT_EXCEEDED` if user already has 10 active tokens. Authenticated. |
 | `DELETE` | `/auth/api-tokens/{id}` | Revoke own API token (sets `revoked_at = now()`). Authenticated. |
@@ -576,10 +586,11 @@ instead of a JWT.
 | `GET` | `/admin/conf` | — | runtime config (behavioral tunables + `updated_at`) | JWT + Admin role |
 | `PATCH` | `/admin/conf` | partial conf fields | updated runtime config | JWT + Admin role |
 | `GET` | `/admin/peripherals` | — | `{datahub: {is_configured}, langfuse: {is_configured}, smtp: {is_configured}}` — quick status overview consumed by the admin landing page. A fixed status object, **not** a record collection: no pagination or `sort` | JWT + Admin role |
-| `GET` | `/admin/users` | — | paginated list of DataSpoke users (standard `offset`/`limit`/`total_count` envelope; content key `users: [{id, email, name, has_google, role, created_at, updated_at}]` — `role` from the DB column). Sortable by `created_at`/`updated_at`/`email` (default `created_at_desc`) | JWT + Admin role |
+| `GET` | `/admin/users` | — | paginated list of DataSpoke users (standard `offset`/`limit`/`total_count` envelope; content key `users: [{id, email, name, has_password, has_google, role, created_at, updated_at}]` — `role` from the DB column). Sortable by `created_at`/`updated_at`/`email` (default `created_at_desc`) | JWT + Admin role |
 | `PATCH` | `/admin/users/{id}` | `{name}` | updated user | JWT + Admin role |
 | `PATCH` | `/admin/users/{id}/role` | `{role: "Admin"\|"Editor"\|"Reader"}` | `{role}` | JWT + Admin role |
 | `DELETE` | `/admin/users/{id}` | — | `204` | JWT + Admin role |
+| `DELETE` | `/admin/users/{id}/google` | — | `204` — releases the row's Google binding: clears `google_sub` and increments `session_epoch`, ending sessions established under it. The next Google sign-in at that address binds afresh. `409 GOOGLE_IS_ONLY_AUTH_METHOD` when the row has no password. See [AUTH §Admin unbind](feature/AUTH.md#admin-unbind) | JWT + Admin role |
 | `GET` | `/admin/users/{id}/api-tokens` | — | a user's API tokens (same shape as `GET /auth/api-tokens`, sans raw token; paginated with the standard `offset`/`limit`/`total_count` envelope, sortable by `created_at`, default `created_at_desc`) | JWT + Admin role |
 | `DELETE` | `/admin/users/{id}/api-tokens/{token_id}` | — | `204` — revokes a user's token (incident response) | JWT + Admin role |
 | `GET` | `/admin/peripherals/datahub` | — | current DataHub config: `{gms_url, frontend_url, kafka_brokers, kafka_security_protocol, kafka_sasl_mechanism, kafka_sasl_username, kafka_sasl_password, kafka_sasl_password_version, kafka_aws_region, token, service_corpuser_urn, default_env, is_configured, health, updated_at}`. `token` and `kafka_sasl_password` are masked (`""` unset, `"********"` set); `frontend_url` (the browser-facing DataHub UI URL, distinct from the `gms_url` service endpoint), `service_corpuser_urn`, `default_env`, and every non-secret `kafka_*` field are returned plain. `health` is the event-consumer's last self-report `{status, last_error, last_ok_at, updated_at}` with `status` ∈ `unknown`/`ok`/`error` | JWT + Admin role |
@@ -651,6 +662,11 @@ corpuser at the user's URN (via `hard_delete_entity`), which also removes the co
 group memberships, role assignments, and ownership references in the
 DataHub graph; `ON DELETE CASCADE` on `api_tokens.user_id` removes the
 user's tokens at the DB level.
+
+`DELETE /admin/users/{id}/google` is the non-destructive counterpart for a
+binding that has gone stale — a re-issued Workspace address whose new Google
+`sub` the callback refuses to bind onto the row still naming the old one. It
+touches DataSpoke state only; the corpuser is left in place.
 
 `GET /admin/users/{id}/api-tokens` and `DELETE /admin/users/{id}/api-tokens/{token_id}`
 exist for incident response — admins can see and revoke any user's tokens,
@@ -946,8 +962,12 @@ Requests pass through, in order: (1) **CORS** — allow configured origins, reje
 default 120 req/min). On 429 the response body matches the standard error envelope
 (`error_code: "RATE_LIMIT_EXCEEDED"`, `message`, `trace_id`, `resp_time`) and headers
 include `Retry-After` plus `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`;
-(4) **JWT validation** — verify signature/expiry and extract claims;
-(5) **role enforcement** — read `users.role`, apply the method × role gate on `/spoke/*` and the Admin-only gate on `/admin/*`;
+(4) **JWT validation** — verify signature/expiry and extract claims; this is the token-local
+half of JWT acceptance, completed at layer 5;
+(5) **role enforcement** — read the caller's `users` row, reject a JWT whose `ses` claim does not
+match `users.session_epoch` (the API-token path skips this check — those rows are revoked outright),
+then apply the method × role gate on `/spoke/*` and the Admin-only gate on `/admin/*`. The epoch
+comparison rides on the role read, adding no round trip;
 (6) **route handler** — FastAPI DI + business logic;
 (7) **response logging** — status, latency, trace ID.
 
@@ -1053,7 +1073,9 @@ Clients should treat `detail` as optional; absent for errors that don't need it.
 | `OAUTH_STATE_MISMATCH` | 400 | `GET /auth/google/callback` state cookie missing or does not match the value embedded in the OAuth state JWT |
 | `OAUTH_EMAIL_NOT_VERIFIED` | 400 | `GET /auth/google/callback` received an ID token where `email_verified=false`; unverified Google emails cannot resolve to a DataSpoke account |
 | `OAUTH_NOT_CONFIGURED` | 503 | `GET /auth/google/{login,callback}` invoked while Google OAuth credentials or the OAuth-state HMAC secret are not configured — operator must set `DATASPOKE_GOOGLE_OAUTH_CLIENT_{ID,SECRET}` and `DATASPOKE_OAUTH_STATE_SECRET` |
-| `GOOGLE_ACCOUNT_LINKED_ELSEWHERE` | 409 | `GET /auth/google/callback` resolved a Google `sub` that is already linked to a different DataSpoke user (one Google account per user) |
+| `GOOGLE_ACCOUNT_LINKED_ELSEWHERE` | 409 | `GET /auth/google/callback` lost a concurrent-bind race — a competing bind claimed the incoming Google `sub` for a different `users` row first, so this one violates `UNIQUE(google_sub)` and rolls back whole (one Google account per user). A retry resolves by `sub` and logs into the row that won |
+| `EMAIL_BOUND_TO_ANOTHER_GOOGLE_ACCOUNT` | 409 | `GET /auth/google/callback` matched an email whose `users` row already carries a **different** Google `sub`; a bound row is never silently rebound. An admin releases the binding with `DELETE /admin/users/{id}/google` |
+| `GOOGLE_IS_ONLY_AUTH_METHOD` | 409 | `DELETE /admin/users/{id}/google` on a row with no `password_hash` — releasing the binding would leave the row with no authentication method. This is the normal state of a bound row; the sequence that clears it is in [AUTH §Admin unbind](feature/AUTH.md#admin-unbind) |
 | `INVALID_REFRESH_TOKEN` | 401 | `POST /auth/token/refresh` received a structurally-valid JWT whose `type` claim is not `"refresh"` (e.g. an access token presented at the refresh endpoint) |
 | `READ_ONLY_ROLE` | 403 | Caller has `Reader` role (or an API token with effective `Reader` privilege); route requires `Editor` or `Admin` (any write method on `/spoke/*`, or the Editor+ read route `GET /spoke/ingestion/secrets`) |
 | `INVALID_API_TOKEN` | 401 | `Authorization: Bearer dsk_...` token does not match any `api_tokens` row, or the format is malformed |

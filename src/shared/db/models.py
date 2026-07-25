@@ -68,6 +68,11 @@ class User(Base):
     password_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
     google_sub: Mapped[str | None] = mapped_column(Text, nullable=True)
     role: Mapped[str] = mapped_column(Text, nullable=False, default="Reader")
+    # Per-user JWT generation counter. Access and refresh JWTs carry it as the
+    # ``ses`` claim; a token whose ``ses`` is absent or unequal is rejected 401.
+    session_epoch: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
     )

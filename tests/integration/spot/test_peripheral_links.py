@@ -119,7 +119,7 @@ def reader_headers() -> Iterator[dict[str, str]]:
         f"('{user_id}', '{email}', 'Peripheral Links Reader', "
         f"'test-sub-{_uuid.uuid4()}', 'Reader');"
     )
-    token, _ = _issue_access_token(user_id, email)
+    token, _ = _issue_access_token(user_id, email, session_epoch=0)
     try:
         yield {"Authorization": f"Bearer {token}"}
     finally:

@@ -58,7 +58,7 @@ async def me_user_token(integration_db_url: str) -> str:
     finally:
         await engine.dispose()
 
-    token, _ = issue_access_token(user_id, email)
+    token, _ = issue_access_token(user_id, email, session_epoch=0)
 
     yield token
 
@@ -81,9 +81,20 @@ async def test_get_me_bootstrap_admin_shape(
 ) -> None:
     """GET /auth/me returns correct shape for bootstrap admin.
 
+    The bootstrap admin is also the positive case for ``has_password``: it is
+    seeded with a password and carries no Google identity, so it is the mirror of
+    the bound row asserted in test_auth_google_credential_reset.py — without it,
+    an implementation hardcoding ``has_password: false`` would satisfy every other
+    assertion in the suite.
+
     spec: spec/API.md §Auth GET /auth/me — returns
-    {id, email, name, has_google, role, created_at, updated_at};
+    {id, email, name, has_password, has_google, role, created_at, updated_at};
     password_hash is never returned.
+    spec: spec/feature/AUTH.md §Profile read & update — `/auth/me` includes "the
+    booleans `has_password` and `has_google` — the presence of each authentication
+    method, never the hash or the `sub`".
+    spec: spec/feature/AUTH.md §Built-in Bootstrap Admin — "Initial password |
+    `dataspoke`"; the row "carries no `google_sub`".
     spec: spec/feature/AUTH.md §Identity Model — DataSpoke is the SSOT for user identity.
     """
     resp = await api_client.get(
@@ -97,13 +108,35 @@ async def test_get_me_bootstrap_admin_shape(
     me = resp.json()
 
     # spec: spec/API.md §Auth GET /auth/me — required fields
-    required_fields = {"id", "email", "name", "has_google", "role", "created_at", "updated_at"}
+    required_fields = {
+        "id",
+        "email",
+        "name",
+        "has_password",
+        "has_google",
+        "role",
+        "created_at",
+        "updated_at",
+    }
     for field in required_fields:
         assert field in me, f"GET /auth/me response must include '{field}' per spec/API.md §Auth"
 
     # spec: spec/API.md §Auth GET /auth/me — password_hash is never returned
     assert "password_hash" not in me, (
         "password_hash must NEVER appear in GET /auth/me response per spec/API.md §Auth"
+    )
+    assert "google_sub" not in me, (
+        "the `sub` is never returned either per spec/feature/AUTH.md §Profile read & update"
+    )
+
+    # The bootstrap admin is a password account with no Google identity.
+    assert me["has_password"] is True, (
+        "the bootstrap admin is seeded with a password, so has_password must be true "
+        f"per spec/feature/AUTH.md §Built-in Bootstrap Admin; got {me!r}"
+    )
+    assert me["has_google"] is False, (
+        "the bootstrap admin row carries no google_sub per spec/feature/AUTH.md "
+        f"§Built-in Bootstrap Admin; got {me!r}"
     )
 
     # Bootstrap admin has role=Admin

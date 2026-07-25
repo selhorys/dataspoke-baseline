@@ -371,6 +371,7 @@ class UserResponse(BaseModel):
     id: uuid.UUID
     email: str
     name: str
+    has_password: bool
     has_google: bool
     role: str
     created_at: datetime

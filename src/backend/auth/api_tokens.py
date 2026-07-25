@@ -105,6 +105,23 @@ async def list_active(db: AsyncSession, user_id: uuid.UUID) -> list[ApiToken]:
     return list(result.scalars().all())
 
 
+async def is_active(db: AsyncSession, token_id: uuid.UUID) -> bool:
+    """Return True when *token_id* names a row that exists and is not revoked.
+
+    Re-read of the credential that authorised a PAT-carried request, run under
+    the ``users`` row lock before a credential-creating write commits
+    (spec/feature/AUTH.md §Serialization of credential-creating writes).
+    ``populate_existing`` is required: authentication already loaded this row
+    into the session, and the identity map would otherwise answer with the
+    pre-lock state the caller is trying to re-validate against.
+    """
+    result = await db.execute(
+        select(ApiToken).where(ApiToken.id == token_id).execution_options(populate_existing=True)
+    )
+    token = result.scalar_one_or_none()
+    return token is not None and token.revoked_at is None
+
+
 async def list_all_for_user(db: AsyncSession, user_id: uuid.UUID) -> list[ApiToken]:
     """Return all tokens for *user_id* (includes revoked — for admin view)."""
     result = await db.execute(
@@ -157,11 +174,33 @@ async def revoke(
         await db.flush()
 
 
+async def revoke_all_for_user(db: AsyncSession, user_id: uuid.UUID) -> int:
+    """Set ``revoked_at = now()`` on every active token of *user_id*; return the count.
+
+    Part of the credential reset that runs when a Google identity binds onto the
+    row (spec/feature/AUTH.md §Credential reset on link): a long-lived PAT left
+    behind holds the account just as effectively as the password does, so the
+    whole set goes at once. Already-revoked rows are left untouched, so the
+    returned count is the number of tokens this call actually killed.
+
+    The caller commits.
+    """
+    result = await db.execute(
+        update(ApiToken)
+        .where(ApiToken.user_id == user_id, ApiToken.revoked_at.is_(None))
+        .values(revoked_at=datetime.now(tz=UTC))
+    )
+    return int(result.rowcount or 0)  # type: ignore[attr-defined]  # DML Result carries rowcount.
+
+
 # ── Lookup and validate ───────────────────────────────────────────────────────
 
 
-async def lookup_and_validate(db: AsyncSession, raw_token: str) -> tuple[User, str]:
-    """Authenticate *raw_token* and return ``(User, effective_role)``.
+async def lookup_and_validate(db: AsyncSession, raw_token: str) -> tuple[User, str, uuid.UUID]:
+    """Authenticate *raw_token* and return ``(User, effective_role, token_id)``.
+
+    ``token_id`` names the row that authorised the request; credential-creating
+    writes re-read it under the ``users`` row lock before committing.
 
     Raises:
         AuthenticationError('INVALID_API_TOKEN')  — token not found.
@@ -211,4 +250,4 @@ async def lookup_and_validate(db: AsyncSession, raw_token: str) -> tuple[User, s
         )
         await throttle_session.commit()
 
-    return user, effective_role
+    return user, effective_role, token.id

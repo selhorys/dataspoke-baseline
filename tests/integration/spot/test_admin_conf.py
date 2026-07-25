@@ -270,7 +270,7 @@ async def test_get_conf_non_admin_role_returns_403(
     )
     await async_session.commit()
     try:
-        non_admin_token, _ = issue_access_token(reader_id, reader_email)
+        non_admin_token, _ = issue_access_token(reader_id, reader_email, session_epoch=0)
         resp = await api_client.get(
             _ADMIN_CONF,
             headers={"Authorization": f"Bearer {non_admin_token}"},
@@ -342,7 +342,7 @@ async def test_patch_conf_non_admin_role_returns_403(
     )
     await async_session.commit()
     try:
-        non_admin_token, _ = issue_access_token(reader_id, reader_email)
+        non_admin_token, _ = issue_access_token(reader_id, reader_email, session_epoch=0)
         resp = await api_client.patch(
             _ADMIN_CONF,
             json={"llm_model": "gpt-4o-mini"},

@@ -79,6 +79,14 @@ class ConflictError(DataSpokeError):
       METRIC_DISABLED               — metric definition has is_enabled=false; only dry-run permitted
       ONTOGEN_DISABLED              — ontogen conf has is_enabled=false; only dry-run permitted
       METAGEN_DISABLED              — metagen conf has is_enabled=false; only dry-run permitted
+      EMAIL_ALREADY_REGISTERED      — registration for an address that already has a users row
+      TOKEN_LIMIT_EXCEEDED          — user already holds the maximum active API tokens
+      EMAIL_BOUND_TO_ANOTHER_GOOGLE_ACCOUNT — Google callback matched an email whose row
+                                      already carries a different google_sub
+      GOOGLE_ACCOUNT_LINKED_ELSEWHERE — the incoming Google sub is held by another users row
+      GOOGLE_IS_ONLY_AUTH_METHOD    — DELETE /admin/users/{id}/google on a row with no
+                                      password_hash; releasing the binding would leave it
+                                      with no authentication method
     """
 
     def __init__(self, error_code: str, message: str = "") -> None:

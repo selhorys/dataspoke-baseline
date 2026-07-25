@@ -93,8 +93,23 @@ async def resolve_or_create_user(
     Resolution order per spec/feature/AUTH.md §Google OAuth registration & login:
 
     1. ``users.get_by_google_sub`` → if found, refresh display name when changed.
-    2. ``users.get_by_email`` → if found, link ``google_sub`` onto existing row.
+    2. ``users.get_by_email`` → if found, bind ``google_sub`` onto that row and
+       reset its credentials.
     3. Otherwise create a fresh user with ``password_hash=None``.
+
+    A bind in branch 2 reaches only an unbound row, and ``ck_users_auth_method``
+    forces such a row to carry a password, so every bind clears at least that one
+    credential and emits exactly one ``AUTH.GOOGLE_LINK_CREDENTIAL_RESET``
+    event recording what went. A row already carrying a different ``google_sub``
+    is refused ``409 EMAIL_BOUND_TO_ANOTHER_GOOGLE_ACCOUNT`` by
+    :func:`users.bind_google_identity`, leaving the row untouched; a row already
+    carrying **this** ``sub`` — a raced or retried callback — is an ordinary
+    login that writes no binding and emits no event.
+
+    Both branches that resolve to an existing row refresh the display name from
+    the Google claim. On the bind branch the row has just changed hands, so the
+    name it presents must be the verified identity's rather than the previous
+    holder's.
 
     Every branch is DataSpoke-local: no DataHub call is made, so the flow
     succeeds whether or not the DataHub peripheral is configured or reachable.
@@ -103,9 +118,14 @@ async def resolve_or_create_user(
     membership onto it from there.
 
     The caller is responsible for committing the session after this function
-    returns.
+    returns — the bind, its credential reset, and the event row commit together
+    or not at all. Session tokens are issued only after that commit, so they
+    carry the post-reset session epoch.
     """
     from src.backend.auth import users
+    from src.shared.db.models import Event
+    from src.shared.events import AUTH_GOOGLE_LINK_CREDENTIAL_RESET
+    from src.shared.models.enums import EventStatus
 
     # 1. Known google_sub — log in; refresh display name if changed.
     existing = await users.get_by_google_sub(db, google_sub)
@@ -114,11 +134,28 @@ async def resolve_or_create_user(
             existing = await users.update_name(db, existing.id, name)
         return existing
 
-    # 2. Known email — link google_sub.
+    # 2. Known email — bind google_sub onto the row and reset its credentials.
     by_email = await users.get_by_email(db, email)
     if by_email is not None:
-        linked = await users.link_google_sub(db, by_email.id, google_sub)
-        return linked
+        bind = await users.bind_google_identity(db, by_email.id, google_sub)
+        user = bind.user
+        if user.name != name:
+            user = await users.update_name(db, user.id, name)
+        if bind.bound:
+            db.add(
+                Event(
+                    entity_type="user",
+                    entity_id=str(user.id),
+                    event_type=AUTH_GOOGLE_LINK_CREDENTIAL_RESET,
+                    status=EventStatus.SUCCESS,
+                    detail={
+                        "api_tokens_revoked": bind.api_tokens_revoked,
+                        "reset_tokens_deleted": bind.reset_tokens_deleted,
+                        "session_epoch": user.session_epoch,
+                    },
+                )
+            )
+        return user
 
     # 3. New user.
     return await users.create_user(

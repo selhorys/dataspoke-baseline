@@ -27,10 +27,19 @@ from src.shared.exceptions import AuthenticationError, ForbiddenError
 
 @dataclass(frozen=True)
 class AuthContext:
-    """Authenticated request context — passed downstream by dependencies."""
+    """Authenticated request context — passed downstream by dependencies.
+
+    ``session_epoch`` and ``api_token_id`` name the credential that authorised
+    the request — the JWT's ``ses`` claim for a bearer-JWT caller, the
+    ``api_tokens`` row id for a PAT caller. Exactly one is populated;
+    :func:`revalidate_under_user_lock` re-checks whichever it is before a
+    credential-creating write commits.
+    """
 
     user: User
     effective_role: str
+    session_epoch: int | None = None
+    api_token_id: _uuid.UUID | None = None
 
 
 _bearer = HTTPBearer(auto_error=False)
@@ -60,10 +69,12 @@ async def require_authenticated(
     token_str = credentials.credentials
 
     user: User | None = None
+    session_epoch: int | None = None
+    api_token_id: _uuid.UUID | None = None
 
     if token_str.startswith("dsk_"):
         # Opaque PAT fast-path
-        user, effective_role = await _api_tokens.lookup_and_validate(db, token_str)
+        user, effective_role, api_token_id = await _api_tokens.lookup_and_validate(db, token_str)
     else:
         # JWT path
         try:
@@ -95,11 +106,68 @@ async def require_authenticated(
                 error_code="UNAUTHORIZED",
                 message="User no longer exists.",
             )
+        # Session-epoch gate. The row is already in hand for the role read, so
+        # the comparison costs no extra round trip. A token issued under a
+        # superseded epoch — every token that predates a credential reset — is
+        # rejected here, before any role gate runs.
+        if not _tokens.session_epoch_matches(payload.get("ses"), user.session_epoch):
+            raise AuthenticationError(
+                error_code="UNAUTHORIZED",
+                message="Session is no longer valid.",
+            )
+        session_epoch = user.session_epoch
         effective_role = user.role
 
     request.state.user = user
     request.state.effective_role = effective_role
-    return AuthContext(user=user, effective_role=effective_role)
+    return AuthContext(
+        user=user,
+        effective_role=effective_role,
+        session_epoch=session_epoch,
+        api_token_id=api_token_id,
+    )
+
+
+async def revalidate_under_user_lock(db: AsyncSession, ctx: AuthContext) -> User:
+    """Take the ``users`` row lock, re-check the caller's credential, return the row.
+
+    Credential-creating self-service writes call this before minting anything
+    (spec/feature/AUTH.md §Serialization of credential-creating writes). Taking
+    the lock the Google-bind credential reset holds forces the ordering — the
+    write cannot commit alongside the reset; re-reading once the lock is held
+    catches an authorisation the reset superseded.
+
+    A JWT-authorised caller is re-checked on its ``ses`` claim against the
+    freshly read ``session_epoch``; a PAT-authorised caller on its own
+    ``api_tokens`` row, which the reset revokes.
+
+    Raises:
+        AuthenticationError('UNAUTHORIZED')   — the row is gone, or the JWT's
+            session epoch no longer matches.
+        AuthenticationError('TOKEN_REVOKED')  — the authorising API token has
+            been revoked.
+    """
+    user = await _users.lock_user(db, ctx.user.id)
+    if user is None:
+        raise AuthenticationError(
+            error_code="UNAUTHORIZED",
+            message="User no longer exists.",
+        )
+
+    if ctx.api_token_id is not None:
+        if await _api_tokens.is_active(db, ctx.api_token_id):
+            return user
+        raise AuthenticationError(
+            error_code="TOKEN_REVOKED",
+            message="API token has been revoked.",
+        )
+
+    if not _tokens.session_epoch_matches(ctx.session_epoch, user.session_epoch):
+        raise AuthenticationError(
+            error_code="UNAUTHORIZED",
+            message="Session is no longer valid.",
+        )
+    return user
 
 
 async def require_writer(
@@ -152,5 +220,3 @@ async def require_admin(
             message="Admin role required.",
         )
     return ctx
-
-

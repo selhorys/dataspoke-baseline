@@ -12,6 +12,7 @@ export interface Me {
   email: string;
   name: string;
   role: UserRole;
+  has_password: boolean;
   has_google: boolean;
   created_at: string;
   updated_at: string;
@@ -64,6 +65,7 @@ export interface AdminUser {
   email: string;
   name: string;
   role: UserRole;
+  has_password: boolean;
   has_google: boolean;
   created_at: string;
   updated_at: string;

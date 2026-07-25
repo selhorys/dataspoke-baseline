@@ -32,10 +32,14 @@ Spec traceability:
   JWTs; an access token presented there fails with 401.
 - spec/feature/AUTH.md §Profile read & update — GET /auth/me returns the caller's
   users row (without password_hash), including users.role.
+- spec/feature/AUTH.md §Session epoch — POST /auth/token/refresh is one of the two
+  epoch enforcement points; a refresh cookie whose `ses` claim is absent or unequal
+  to the owner's current session_epoch is rejected 401 UNAUTHORIZED.
 - spec/API.md §Authentication — authenticated routes require a valid JWT (else 401).
 """
 
 import time
+import uuid
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
@@ -47,7 +51,12 @@ from src.api.main import app
 from src.backend.auth.tokens import issue_refresh_token
 from src.shared.exceptions import StorageUnavailableError
 from src.shared.settings import settings
-from tests.unit.api.conftest import _TEST_USER_ID, _make_mock_user, auth_headers
+from tests.unit.api.conftest import (
+    _TEST_USER_ID,
+    TEST_SESSION_EPOCH,
+    _make_mock_user,
+    auth_headers,
+)
 
 _REFRESH = "/api/v1/auth/token/refresh"
 _REVOKE = "/api/v1/auth/token/revoke"
@@ -165,7 +174,7 @@ async def test_refresh_happy_path_rotates_cookie_and_issues_access_token(client)
     and rotates the refresh cookie; the old refresh token is revoked before minting.
     """
     # A real, correctly-signed REFRESH token whose sub is the resolvable test user.
-    refresh_token = issue_refresh_token(_TEST_USER_ID)
+    refresh_token = issue_refresh_token(_TEST_USER_ID, TEST_SESSION_EPOCH)
     client.cookies.set("refresh_token", refresh_token)
     mock_mark_revoked = AsyncMock()
     resolved_user = _make_mock_user(role="Reader")
@@ -186,6 +195,117 @@ async def test_refresh_happy_path_rotates_cookie_and_issues_access_token(client)
     set_cookie = resp.headers.get("set-cookie", "")
     assert "refresh_token=" in set_cookie, (
         f"a rotated refresh cookie must be set; got Set-Cookie={set_cookie!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_refresh_rejects_a_cookie_from_a_superseded_epoch(client) -> None:
+    """A refresh cookie issued before a credential reset is rejected 401.
+
+    The owner's row now reads epoch 1 — a Google bind incremented it — while the
+    cookie names epoch 0. Redis knows nothing of this token, so the only 401 source
+    left is the epoch comparison.
+
+    spec: spec/feature/AUTH.md §Session epoch — "Enforcement points. The
+    bearer-JWT authentication path and POST /auth/token/refresh."; "A JWT whose
+    `ses` claim is absent, or does not equal the owner's current `session_epoch`,
+    is rejected 401 UNAUTHORIZED."
+    """
+    client.cookies.set(
+        "refresh_token", issue_refresh_token(_TEST_USER_ID, TEST_SESSION_EPOCH)
+    )
+    reset_user = _make_mock_user(role="Reader")
+    reset_user.session_epoch = TEST_SESSION_EPOCH + 1  # the bind's increment
+
+    with (
+        patch("src.backend.auth.tokens.is_refresh_revoked", AsyncMock(return_value=False)),
+        patch("src.backend.auth.tokens.mark_refresh_revoked", AsyncMock()),
+        patch("src.backend.auth.users.get_by_id", AsyncMock(return_value=reset_user)),
+    ):
+        resp = await client.post(_REFRESH)
+
+    assert resp.status_code == 401, (
+        "a refresh cookie issued under a superseded session epoch must be rejected "
+        f"401 per spec/feature/AUTH.md §Session epoch; got {resp.status_code}: {resp.text}"
+    )
+    assert "access_token" not in resp.json(), (
+        "no access token may be minted for a session the epoch has evicted"
+    )
+
+
+@pytest.mark.asyncio
+async def test_refresh_rejects_a_cookie_with_no_ses_claim(client) -> None:
+    """A refresh cookie carrying no ``ses`` claim is rejected even against epoch 0.
+
+    The cookie is hand-built without the claim rather than merely issued with a
+    different value, so the absent-claim rule is proved on a signature-valid token.
+
+    spec: spec/feature/AUTH.md §Session epoch — "A JWT whose `ses` claim is
+    absent ... is rejected 401 UNAUTHORIZED."
+    """
+    from datetime import timedelta
+
+    now = datetime.now(tz=UTC)
+    epochless_refresh = jwt.encode(
+        {
+            "sub": str(_TEST_USER_ID),
+            "type": "refresh",
+            "iat": now,
+            "exp": now + timedelta(days=7),
+        },
+        settings.jwt_secret_key,
+        algorithm=settings.jwt_algorithm,
+    )
+    client.cookies.set("refresh_token", epochless_refresh)
+
+    with (
+        patch("src.backend.auth.tokens.is_refresh_revoked", AsyncMock(return_value=False)),
+        patch("src.backend.auth.tokens.mark_refresh_revoked", AsyncMock()),
+        patch(
+            "src.backend.auth.users.get_by_id",
+            AsyncMock(return_value=_make_mock_user(role="Reader")),
+        ),
+    ):
+        resp = await client.post(_REFRESH)
+
+    assert resp.status_code == 401, (
+        "a refresh cookie with no 'ses' claim must be rejected 401 per "
+        f"spec/feature/AUTH.md §Session epoch; got {resp.status_code}: {resp.text}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_refresh_issues_the_new_token_pair_under_the_current_epoch(client) -> None:
+    """The rotated pair carries the epoch read from the row, not the one on the cookie.
+
+    "The session token the OAuth callback mints afterwards reads the new epoch and
+    is valid" — the same rule governs rotation: a refresh accepted at epoch 2 must
+    mint tokens at epoch 2 so the next request survives its own gate.
+
+    spec: spec/feature/AUTH.md §Session epoch §Exactness.
+    spec: spec/feature/AUTH.md §Refresh & revoke — refresh "issues a fresh access
+    token with the same identity claims".
+    """
+    client.cookies.set("refresh_token", issue_refresh_token(_TEST_USER_ID, 2))
+    resolved_user = _make_mock_user(role="Reader")
+    resolved_user.session_epoch = 2
+
+    with (
+        patch("src.backend.auth.tokens.is_refresh_revoked", AsyncMock(return_value=False)),
+        patch("src.backend.auth.tokens.mark_refresh_revoked", AsyncMock()),
+        patch("src.backend.auth.users.get_by_id", AsyncMock(return_value=resolved_user)),
+    ):
+        resp = await client.post(_REFRESH)
+
+    assert resp.status_code == 200, resp.text
+    minted = jwt.decode(
+        resp.json()["access_token"],
+        settings.jwt_secret_key,
+        algorithms=[settings.jwt_algorithm],
+    )
+    assert minted["ses"] == 2, (
+        "the rotated access token must carry the epoch read from the users row "
+        "per spec/feature/AUTH.md §Session epoch §Exactness"
     )
 
 
@@ -229,7 +349,7 @@ async def test_revoke_redis_unreachable_fails_closed_503_storage_unavailable(cli
     # A realistic refresh cookie. The AsyncMock below ignores its arguments, so the
     # token's validity does not affect this test's outcome — it is here to keep the
     # request representative, not to reach a particular branch.
-    client.cookies.set("refresh_token", issue_refresh_token(_TEST_USER_ID))
+    client.cookies.set("refresh_token", issue_refresh_token(_TEST_USER_ID, TEST_SESSION_EPOCH))
     with patch(
         "src.backend.auth.tokens.mark_refresh_revoked",
         AsyncMock(side_effect=StorageUnavailableError("redis down")),
@@ -263,7 +383,7 @@ async def test_revoke_redis_unreachable_retains_refresh_cookie(client) -> None:
     clearing the cookie would signal a revocation that did not occur — a fail-open
     dressed as an error."
     """
-    client.cookies.set("refresh_token", issue_refresh_token(_TEST_USER_ID))
+    client.cookies.set("refresh_token", issue_refresh_token(_TEST_USER_ID, TEST_SESSION_EPOCH))
     with patch(
         "src.backend.auth.tokens.mark_refresh_revoked",
         AsyncMock(side_effect=StorageUnavailableError("redis down")),
@@ -300,7 +420,7 @@ async def test_revoke_real_redis_error_propagates_503_end_to_end(client) -> None
     # A real, correctly-signed REFRESH token is load-bearing here: mark_refresh_revoked
     # is NOT mocked, so anything else would return early at a no-op branch and never
     # reach set_nx — the test would pass as a 204 and prove nothing.
-    client.cookies.set("refresh_token", issue_refresh_token(_TEST_USER_ID))
+    client.cookies.set("refresh_token", issue_refresh_token(_TEST_USER_ID, TEST_SESSION_EPOCH))
     failing_redis = AsyncMock()
     failing_redis.set_nx = AsyncMock(
         side_effect=redis.exceptions.RedisError("connection refused")
@@ -331,7 +451,7 @@ async def test_revoke_success_returns_204_and_clears_refresh_cookie(client) -> N
     the refresh token's hash in Redis under revoked_refresh:{sha256[:16]}; the
     session cookie is cleared once the token is revoked.
     """
-    token = issue_refresh_token(_TEST_USER_ID)
+    token = issue_refresh_token(_TEST_USER_ID, TEST_SESSION_EPOCH)
     client.cookies.set("refresh_token", token)
     mock_mark_revoked = AsyncMock()
     with patch("src.backend.auth.tokens.mark_refresh_revoked", mock_mark_revoked):
@@ -520,3 +640,217 @@ async def test_get_me_returns_caller_profile(client) -> None:
     # The profile must never expose a password hash.
     assert "password_hash" not in body
     assert "password" not in body
+
+
+# ── Credential-creating writes re-check under the users row lock ───────────────
+#
+# These tests patch `users.lock_user` — one level below the helper — so the real
+# re-check runs inside the route. What is asserted is therefore the spec's own
+# consequence (mismatch → 401, nothing committed), not that a particular symbol
+# was called: a route that swallowed the AuthenticationError, or inlined the
+# helper under another name, still has to produce the 401.
+#
+# spec: spec/feature/AUTH.md §Serialization of credential-creating writes —
+# "Four writes create a credential: the `password` field of `PATCH /auth/me`,
+# `POST /auth/api-tokens`, `POST /auth/password/reset/confirm`, and
+# `POST /auth/password/reset/request`. Each takes the `users` row lock and
+# re-checks, under it, the state that authorised it".
+# (The two reset routes take the lock inside src/backend/auth/reset.py and are
+# covered in tests/unit/api/auth/test_reset.py.)
+#
+# The `client` fixture authenticates with a JWT carrying ses=TEST_SESSION_EPOCH,
+# so a locked row at that epoch is the unsuperseded case and one epoch ahead is
+# the row a Google bind has taken.
+
+
+def _me_row(**overrides):
+    """Return a real ``User`` row — ``_user_to_me`` asserts isinstance(user, User)."""
+    from src.shared.db.models import User
+
+    now = datetime.now(tz=UTC)
+    row = User(
+        id=_TEST_USER_ID,
+        email="unit-test@example.com",
+        name="Unit Test User",
+        password_hash="$2b$12$fake-bcrypt-hash",
+        google_sub=None,
+        role="Admin",
+        session_epoch=TEST_SESSION_EPOCH,
+        created_at=now,
+        updated_at=now,
+    )
+    for key, value in overrides.items():
+        setattr(row, key, value)
+    return row
+
+
+@pytest.mark.asyncio
+async def test_patch_me_password_writes_when_the_locked_row_still_matches(client) -> None:
+    """PATCH /auth/me with a password succeeds while the caller's epoch still holds.
+
+    The matching half of the pair below: without it, a route that rejected every
+    password change would satisfy the 401 test.
+
+    spec: spec/feature/AUTH.md §Serialization of credential-creating writes —
+    "`PATCH /auth/me` (`password`) | Re-compare the request's `ses` claim against
+    the freshly read `session_epoch`; mismatch → `401 UNAUTHORIZED`."
+    """
+    row = _me_row()
+
+    with (
+        patch(
+            "src.backend.auth.users.lock_user", AsyncMock(return_value=row)
+        ) as mock_lock_user,
+        patch(
+            "src.backend.auth.users.update_password", AsyncMock(return_value=row)
+        ) as mock_update_password,
+    ):
+        resp = await client.patch(
+            _ME,
+            json={"password": "new-secure-password-1"},
+            headers=auth_headers(),
+        )
+
+    assert resp.status_code == 200, resp.text
+    mock_update_password.assert_awaited_once()
+    # The write ran under the users row lock, not merely after a passing check.
+    mock_lock_user.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_patch_me_password_401s_when_a_bind_moved_the_epoch_under_the_lock(
+    client,
+) -> None:
+    """A password change authorised before a bind committed is refused under the lock.
+
+    The caller's JWT was accepted at the current epoch; the row read under the
+    lock is one epoch ahead, because a Google bind took the row in between. The
+    new password must not land on a row that has changed hands.
+
+    spec: spec/feature/AUTH.md §Serialization of credential-creating writes —
+    "mismatch → `401 UNAUTHORIZED`"; "none can commit a credential authorised by
+    state the bind superseded".
+    """
+    superseded = _me_row(session_epoch=TEST_SESSION_EPOCH + 1)
+
+    with (
+        patch("src.backend.auth.users.lock_user", AsyncMock(return_value=superseded)),
+        patch(
+            "src.backend.auth.users.update_password", AsyncMock(return_value=superseded)
+        ) as mock_update_password,
+    ):
+        resp = await client.patch(
+            _ME,
+            json={"password": "new-secure-password-1"},
+            headers=auth_headers(),
+        )
+
+    assert resp.status_code == 401, (
+        "a password change whose authorising epoch was superseded must be refused "
+        f"401 per spec/feature/AUTH.md §Serialization of credential-creating writes; "
+        f"got {resp.status_code}: {resp.text}"
+    )
+    assert resp.json()["error_code"] == "UNAUTHORIZED", f"got {resp.json()!r}"
+    mock_update_password.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_patch_me_name_only_takes_no_row_lock(client) -> None:
+    """A name-only PATCH /auth/me creates no credential, so it takes no row lock.
+
+    The negative half: without it, a route that locked unconditionally would
+    satisfy both tests above while imposing a row lock on every profile edit.
+
+    spec: spec/feature/AUTH.md §Serialization of credential-creating writes — the
+    lock belongs to the four writes that *create a credential*; a display name is
+    not one of them.
+    spec: spec/feature/AUTH.md §Profile read & update — "`PATCH /auth/me` accepts
+    `{name?, password?}`: both fields write to the DataSpoke `users` row only".
+    """
+    row = _me_row(name="Renamed User")
+
+    with (
+        patch(
+            "src.backend.auth.users.lock_user", AsyncMock(return_value=row)
+        ) as mock_lock_user,
+        patch(
+            "src.backend.auth.users.update_name", AsyncMock(return_value=row)
+        ) as mock_update_name,
+    ):
+        resp = await client.patch(_ME, json={"name": "Renamed User"}, headers=auth_headers())
+
+    assert resp.status_code == 200, resp.text
+    # Backstop: the request really performed its write, so the not-awaited
+    # assertion below is not passing because nothing happened.
+    mock_update_name.assert_awaited_once()
+    mock_lock_user.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_post_api_tokens_mints_when_the_locked_row_still_matches(client) -> None:
+    """Minting a PAT succeeds while the caller's epoch still holds.
+
+    spec: spec/feature/AUTH.md §Serialization of credential-creating writes —
+    "`POST /auth/api-tokens` | Same `ses` re-comparison."
+    """
+    from src.shared.db.models import ApiToken
+
+    minted = ApiToken(
+        id=uuid.uuid4(),
+        user_id=_TEST_USER_ID,
+        name="ci-token",
+        token_hash="0" * 64,
+        role_snapshot="Admin",
+        created_at=datetime.now(tz=UTC),
+        expires_at=None,
+    )
+
+    with (
+        patch(
+            "src.backend.auth.users.lock_user", AsyncMock(return_value=_me_row())
+        ) as mock_lock_user,
+        patch(
+            "src.backend.auth.api_tokens.mint",
+            AsyncMock(return_value=("dsk_unit_test_raw_token", minted)),
+        ) as mock_mint,
+    ):
+        resp = await client.post(
+            "/api/v1/auth/api-tokens", json={"name": "ci-token"}, headers=auth_headers()
+        )
+
+    assert resp.status_code == 201, resp.text
+    mock_mint.assert_awaited_once()
+    mock_lock_user.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_post_api_tokens_401s_when_a_bind_moved_the_epoch_under_the_lock(
+    client,
+) -> None:
+    """A PAT authorised before a bind committed is never minted.
+
+    This is the case the spec singles out: the API-token authentication path runs
+    no epoch check, so a token committed on a superseded authorisation would stay
+    live past the reset that superseded it — the epoch is checked here or nowhere.
+
+    spec: spec/feature/AUTH.md §Serialization of credential-creating writes —
+    "Needed here in particular because the API-token authentication path runs no
+    epoch check, so a token committed after the reset would otherwise stay live."
+    """
+    superseded = _me_row(session_epoch=TEST_SESSION_EPOCH + 1)
+
+    with (
+        patch("src.backend.auth.users.lock_user", AsyncMock(return_value=superseded)),
+        patch("src.backend.auth.api_tokens.mint", AsyncMock()) as mock_mint,
+    ):
+        resp = await client.post(
+            "/api/v1/auth/api-tokens", json={"name": "ci-token"}, headers=auth_headers()
+        )
+
+    assert resp.status_code == 401, (
+        "a mint whose authorising epoch was superseded must be refused 401 per "
+        "spec/feature/AUTH.md §Serialization of credential-creating writes; "
+        f"got {resp.status_code}: {resp.text}"
+    )
+    assert resp.json()["error_code"] == "UNAUTHORIZED", f"got {resp.json()!r}"
+    mock_mint.assert_not_awaited()

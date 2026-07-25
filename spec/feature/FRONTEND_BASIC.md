@@ -257,18 +257,28 @@ contract) lives in [AUTH](AUTH.md).
 ┌─────────────────────────────────┐
 │  Profile                        │
 ├─────────────────────────────────┤
-│  Email:  alice@imazon (locked)  │
-│  Name:   [ Alice               ]│
-│  Role:   Reader (DataHub)       │
-│  Google: linked / not linked    │
+│  Email:    alice@imazon (locked)│
+│  Name:     [ Alice             ]│
+│  Role:     Reader (read-only)   │
+│  Google:   linked / not linked  │
+│  Password: set / not set        │
 │                                 │
-│  ─── Change password ───        │
+│  ─── Change / Set a password ───│
 │  New password: [              ] │
 │                                 │
 │  [    Save changes    ]         │
 └─────────────────────────────────┘
              Profile (`/profile`)
 ```
+
+`Role`, `Google`, and `Password` are read-only, driven by `role`, `has_google`,
+and `has_password` from `GET /auth/me`. `role` is the DataSpoke `users.role`
+column — the SSOT that gates every DataSpoke route; only an Admin can change it,
+via `PATCH /admin/users/{id}/role`. The password section titles itself "Change password" when
+`has_password` is true and "Set a password" when it is false — the latter is the
+state a user lands in after signing in with Google bound onto a row that had one
+([AUTH §Credential reset on link](AUTH.md#credential-reset-on-link)). Both write
+through the same `PATCH /auth/me` `password` field.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -286,8 +296,13 @@ Inline role dropdown writes `PATCH /admin/users/{id}/role`. A pencil icon
 (aria-label "Edit name") opens a name-edit dialog writing
 `PATCH /admin/users/{id}`. The `⋯` menu carries
 hard delete (writes `DELETE /admin/users/{id}` behind a `ConfirmDialog`),
-and "manage tokens" — a drawer listing the user's `api_tokens` rows with
-per-token revoke buttons (`GET /admin/users/{id}/api-tokens`,
+"unlink Google" — `DELETE /admin/users/{id}/google` behind a `ConfirmDialog`
+that states the consequence (the user's sessions end and they sign in again),
+shown only for rows with `has_google` and disabled for rows without
+`has_password`, since the route refuses those with
+`409 GOOGLE_IS_ONLY_AUTH_METHOD` — and "manage tokens", a drawer listing the
+user's `api_tokens` rows with per-token revoke buttons
+(`GET /admin/users/{id}/api-tokens`,
 `DELETE /admin/users/{id}/api-tokens/{token_id}`).
 
 ### Configurations (`/admin/conf`)

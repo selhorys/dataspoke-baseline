@@ -6,10 +6,15 @@ Concerns covered:
   SHA-256 hash stored, 15-min TTL
 - Known email + SMTP unconfigured → PeripheralNotConfiguredError re-raised, no DB write
 - Known email + SMTP delivery failure → StorageUnavailableError raised, no DB write
+- Known email whose session_epoch moved under the row lock → the token row is NOT
+  written, and the call still returns normally (no enumeration oracle)
 - confirm_reset with invalid/expired/used token → BadRequestError("INVALID_RESET_TOKEN")
+- confirm_reset whose token row was deleted by a bind between the first read and the
+  post-lock re-read → BadRequestError("INVALID_RESET_TOKEN"), no password write
 - Successful confirm writes the new bcrypt hash AND marks used_at
 
 spec: spec/feature/AUTH.md §Lifecycle §Password reset
+spec: spec/feature/AUTH.md §Serialization of credential-creating writes
 spec: spec/feature/AUTH.md §Failure Modes
 spec: spec/API.md §Auth — POST /auth/password/reset/request, POST /auth/password/reset/confirm
 """
@@ -19,6 +24,7 @@ from __future__ import annotations
 import hashlib
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -28,6 +34,117 @@ from src.shared.exceptions import BadRequestError, StorageUnavailableError
 
 def _sha256(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+_UNSET = object()
+
+
+class _ResetRoutingSession:
+    """Query-routing fake AsyncSession for src/backend/auth/reset.py.
+
+    ``execute`` dispatches on the compiled statement rather than on call order
+    (spec/TESTING.md §Unit Testing → Mocking rules). Three statements reach it:
+
+    - ``SELECT … users … FOR UPDATE`` — the row lock taken by ``users.lock_user``
+    - ``SELECT … users`` — the plain email / id lookup
+    - ``SELECT … password_reset_tokens`` — the reset-token read
+
+    Routing by statement is what lets the lock read be modelled faithfully, and
+    the fidelity that matters is **object identity**. ``users.lock_user`` runs with
+    ``execution_options(populate_existing=True)``, so it returns the *same* ORM
+    instance the first read produced, refreshed in place — it does not hand back a
+    second object. That is precisely why ``reset.py`` snapshots ``epoch_at_read``
+    into a local int before taking the lock: without the snapshot,
+    ``locked.session_epoch != user.session_epoch`` compares an attribute against
+    itself and is False no matter what the lock read.
+
+    ``epoch_under_lock`` therefore mutates ``self.user`` in place when the
+    ``FOR UPDATE`` statement arrives and returns that same instance — the arrangement
+    a snapshot-less implementation cannot survive. A two-object model would let such
+    an implementation decline correctly and hide the defect.
+
+    ``locked_user`` covers the other lock outcome, where identity is not in play:
+    the row is gone and the lock read returns None.
+
+    ``token_reads`` holds successive answers to the *token* statement alone. It is
+    ordered on purpose: the code under test issues that one statement twice — once
+    to resolve the owner, once again under the lock — and a row that vanishes
+    between the two is exactly what the re-read exists to catch
+    (spec/feature/AUTH.md §Serialization of credential-creating writes). The last
+    entry repeats if more reads occur.
+    """
+
+    def __init__(
+        self,
+        *,
+        user: Any = None,
+        locked_user: Any = _UNSET,
+        epoch_under_lock: int | None = None,
+        token_reads: list[Any] | None = None,
+    ) -> None:
+        self.user = user
+        # Default: the lock reads the same state the first read saw — the ordinary,
+        # uncontended case.
+        self.locked_user = user if locked_user is _UNSET else locked_user
+        self.epoch_under_lock = epoch_under_lock
+        self.token_reads = list(token_reads) if token_reads else [None]
+        self._token_read_count = 0
+        self.statements: list[str] = []
+        self.added: list[Any] = []
+        self.flush_count = 0
+
+    async def execute(self, statement: Any) -> Any:
+        sql = str(statement)
+        self.statements.append(sql)
+        result = MagicMock()
+        if "password_reset_tokens" in sql:
+            index = min(self._token_read_count, len(self.token_reads) - 1)
+            self._token_read_count += 1
+            result.scalar_one_or_none.return_value = self.token_reads[index]
+            return result
+        if "users" in sql:
+            if "FOR UPDATE" in sql and self.epoch_under_lock is not None:
+                # The refresh a competing bind's commit makes visible: same
+                # instance, new epoch — exactly what populate_existing produces.
+                self.user.session_epoch = self.epoch_under_lock
+                result.scalar_one_or_none.return_value = self.user
+                return result
+            result.scalar_one_or_none.return_value = (
+                self.locked_user if "FOR UPDATE" in sql else self.user
+            )
+            return result
+        raise AssertionError(f"unrouted statement in fake session: {sql}")
+
+    def add(self, obj: Any) -> None:
+        self.added.append(obj)
+
+    async def flush(self) -> None:
+        self.flush_count += 1
+
+    async def refresh(self, obj: Any) -> None:
+        return None
+
+    def took_the_user_row_lock(self) -> bool:
+        return any("FOR UPDATE" in s for s in self.statements)
+
+    def token_read_count(self) -> int:
+        return self._token_read_count
+
+
+def _live_user(session_epoch: int = 0) -> MagicMock:
+    user = MagicMock()
+    user.id = uuid.uuid4()
+    user.email = "known@example.com"
+    user.session_epoch = session_epoch
+    return user
+
+
+def _live_token_row(user_id: uuid.UUID) -> MagicMock:
+    row = MagicMock()
+    row.used_at = None
+    row.expires_at = datetime.now(tz=UTC) + timedelta(minutes=10)
+    row.user_id = user_id
+    return row
 
 
 # ── issue_reset_token — unknown email ─────────────────────────────────────────
@@ -164,14 +281,13 @@ async def test_issue_reset_token_known_email_writes_row_with_sha256_hash() -> No
 
     from src.backend.auth.reset import issue_reset_token
 
-    mock_user = MagicMock()
-    mock_user.id = uuid.uuid4()
-    mock_user.email = "known@example.com"
+    mock_user = _live_user(session_epoch=4)
+    # The lock reads the same epoch the request was authorised against, so the
+    # re-check passes and the row is written. This is the matching half of the
+    # pair whose non-matching half is the epoch-moved test below
+    # (spec/TESTING.md §Assertion Discipline — filter tests seed both sides).
+    db = _ResetRoutingSession(user=mock_user)
 
-    mock_result = MagicMock()
-    mock_result.scalar_one_or_none.return_value = mock_user
-
-    captured_rows: list = []
     sent_raw_tokens: list[str] = []
 
     async def _capture_email(to, subject, body_html):
@@ -179,24 +295,20 @@ async def test_issue_reset_token_known_email_writes_row_with_sha256_hash() -> No
         if match:
             sent_raw_tokens.append(match.group(1))
 
-    def _capture_add(obj):
-        captured_rows.append(obj)
-
-    mock_db = AsyncMock()
-    mock_db.execute = AsyncMock(return_value=mock_result)
-    mock_db.add = MagicMock(side_effect=_capture_add)
-    mock_db.flush = AsyncMock()
-
     mock_notification = AsyncMock()
     mock_notification.send_email = AsyncMock(side_effect=_capture_email)
 
-    await issue_reset_token(mock_db, mock_notification, "known@example.com")
+    await issue_reset_token(db, mock_notification, "known@example.com")
 
-    assert len(captured_rows) == 1, (
+    assert len(db.added) == 1, (
         "One PasswordResetToken row must be written per spec/feature/AUTH.md §Lifecycle §Password "
         "reset"
     )
-    row = captured_rows[0]
+    assert db.took_the_user_row_lock(), (
+        "the token row is inserted under the users row lock per spec/feature/AUTH.md "
+        "§Serialization of credential-creating writes"
+    )
+    row = db.added[0]
 
     # Verify SHA-256 hash — not the raw token
     assert len(sent_raw_tokens) == 1, "Raw token must be sent in the email"
@@ -220,6 +332,86 @@ async def test_issue_reset_token_known_email_writes_row_with_sha256_hash() -> No
     )
 
 
+# ── issue_reset_token — the epoch re-check under the row lock ─────────────────
+
+
+@pytest.mark.asyncio
+async def test_issue_reset_token_declines_the_write_when_the_epoch_moved_under_the_lock() -> None:
+    """A bind that commits while the request is in flight stops the token row landing.
+
+    The reset token is a live 15-minute password-write capability that no epoch
+    governs, so locking around the INSERT alone would not contain it: the bind
+    holds the lock, releases it on commit, and the insert would then land *after*
+    the bind's delete of unused rows. The epoch comparison is what closes it.
+
+    The email has already gone out — the route sends before it writes — so the
+    recipient holds a link that matches no row, and the caller still gets the same
+    outcome every address gets.
+
+    spec: spec/feature/AUTH.md §Serialization of credential-creating writes —
+    "POST /auth/password/reset/request | Re-compare `session_epoch` against the
+    value read before the token row was prepared; if it has moved, complete
+    **without** writing the token row."
+    spec: spec/feature/AUTH.md §Failure Modes — "A Google bind commits while
+    POST /auth/password/reset/request is in flight | The request declines its
+    token INSERT on the epoch re-check ... but the email has already been sent".
+    """
+    from src.backend.auth.reset import issue_reset_token
+
+    user = _live_user(session_epoch=4)
+    # The lock refreshes the *same* instance in place — that is what
+    # populate_existing does — so only the local snapshot taken before the lock
+    # still holds the pre-bind value. An implementation that compared
+    # locked.session_epoch against user.session_epoch would compare 5 to 5 here
+    # and write the row, which is the defect this arrangement exists to catch.
+    db = _ResetRoutingSession(user=user, epoch_under_lock=5)
+
+    mock_notification = AsyncMock()
+
+    # Completes normally: the route reports the same outcome for every address and
+    # must not become an oracle for account state.
+    await issue_reset_token(db, mock_notification, "known@example.com")
+
+    # Backstop: the request really reached the write stage — the address resolved
+    # and the email went out — so the absent row below is the decline, not an
+    # earlier bail-out.
+    mock_notification.send_email.assert_awaited_once()
+    assert db.took_the_user_row_lock(), (
+        "the re-check happens under the users row lock per spec/feature/AUTH.md "
+        "§Serialization of credential-creating writes"
+    )
+
+    assert db.added == [], (
+        "a request whose read predates the bind must complete without writing the "
+        "token row per spec/feature/AUTH.md §Serialization of credential-creating writes"
+    )
+    assert db.flush_count == 0, "no INSERT is flushed on the declined path"
+
+
+@pytest.mark.asyncio
+async def test_issue_reset_token_declines_the_write_when_the_owner_row_is_gone() -> None:
+    """A row hard-deleted between the lookup and the lock gets no token row either.
+
+    spec: spec/feature/AUTH.md §Serialization of credential-creating writes — the
+    write re-reads "the state that authorised it" under the lock.
+    spec: spec/feature/AUTH.md §Deletion — "User deletion is hard delete".
+    """
+    from src.backend.auth.reset import issue_reset_token
+
+    db = _ResetRoutingSession(user=_live_user(session_epoch=0), locked_user=None)
+    mock_notification = AsyncMock()
+
+    await issue_reset_token(db, mock_notification, "known@example.com")
+
+    mock_notification.send_email.assert_awaited_once()
+    assert db.took_the_user_row_lock()
+    assert db.added == [], (
+        "no reset token may be minted against a row that no longer exists per "
+        "spec/feature/AUTH.md §Serialization of credential-creating writes"
+    )
+    assert db.flush_count == 0
+
+
 # ── confirm_reset ─────────────────────────────────────────────────────────────
 
 
@@ -233,15 +425,11 @@ async def test_confirm_reset_invalid_token_raises_bad_request() -> None:
     from src.backend.auth import users as _users
     from src.backend.auth.reset import confirm_reset
 
-    mock_result = MagicMock()
-    mock_result.scalar_one_or_none.return_value = None  # token not found
-
-    mock_db = AsyncMock()
-    mock_db.execute = AsyncMock(return_value=mock_result)
+    db = _ResetRoutingSession(token_reads=[None])  # token not found
 
     with patch.object(_users, "update_password") as mock_update_password:
         with pytest.raises(BadRequestError) as exc_info:
-            await confirm_reset(mock_db, "nonexistent-raw-token", "newpassword123")
+            await confirm_reset(db, "nonexistent-raw-token", "newpassword123")
 
     assert exc_info.value.error_code == "INVALID_RESET_TOKEN", (
         "Unknown reset token must raise BadRequestError('INVALID_RESET_TOKEN') "
@@ -259,19 +447,14 @@ async def test_confirm_reset_expired_token_raises_bad_request() -> None:
     from src.backend.auth import users as _users
     from src.backend.auth.reset import confirm_reset
 
-    mock_row = MagicMock()
-    mock_row.used_at = None
+    mock_row = _live_token_row(uuid.uuid4())
     mock_row.expires_at = datetime.now(tz=UTC) - timedelta(minutes=1)  # expired
 
-    mock_result = MagicMock()
-    mock_result.scalar_one_or_none.return_value = mock_row
-
-    mock_db = AsyncMock()
-    mock_db.execute = AsyncMock(return_value=mock_result)
+    db = _ResetRoutingSession(token_reads=[mock_row])
 
     with patch.object(_users, "update_password") as mock_update_password:
         with pytest.raises(BadRequestError) as exc_info:
-            await confirm_reset(mock_db, "expired-token", "newpassword123")
+            await confirm_reset(db, "expired-token", "newpassword123")
 
     assert exc_info.value.error_code == "INVALID_RESET_TOKEN"
     mock_update_password.assert_not_called()
@@ -286,19 +469,14 @@ async def test_confirm_reset_used_token_raises_bad_request() -> None:
     from src.backend.auth import users as _users
     from src.backend.auth.reset import confirm_reset
 
-    mock_row = MagicMock()
+    mock_row = _live_token_row(uuid.uuid4())
     mock_row.used_at = datetime.now(tz=UTC) - timedelta(minutes=5)  # already used
-    mock_row.expires_at = datetime.now(tz=UTC) + timedelta(minutes=10)  # not expired
 
-    mock_result = MagicMock()
-    mock_result.scalar_one_or_none.return_value = mock_row
-
-    mock_db = AsyncMock()
-    mock_db.execute = AsyncMock(return_value=mock_result)
+    db = _ResetRoutingSession(token_reads=[mock_row])
 
     with patch.object(_users, "update_password") as mock_update_password:
         with pytest.raises(BadRequestError) as exc_info:
-            await confirm_reset(mock_db, "already-used-token", "newpassword123")
+            await confirm_reset(db, "already-used-token", "newpassword123")
 
     assert exc_info.value.error_code == "INVALID_RESET_TOKEN"
     mock_update_password.assert_not_called()
@@ -314,33 +492,27 @@ async def test_confirm_reset_valid_token_writes_new_hash_and_marks_used() -> Non
     from src.backend.auth import users as _users
     from src.backend.auth.reset import confirm_reset
 
-    user_id = uuid.uuid4()
+    owner = _live_user()
+    mock_row = _live_token_row(owner.id)
 
-    mock_row = MagicMock()
-    mock_row.used_at = None  # not used
-    mock_row.expires_at = datetime.now(tz=UTC) + timedelta(minutes=10)  # not expired
-    mock_row.user_id = user_id
-
-    mock_result = MagicMock()
-    mock_result.scalar_one_or_none.return_value = mock_row
-
-    mock_db = AsyncMock()
-    mock_db.execute = AsyncMock(return_value=mock_result)
-    mock_db.flush = AsyncMock()
+    # The post-lock re-read finds the same live row — nothing superseded this
+    # request. The non-matching half of the pair is the deleted-under-the-lock
+    # test below (spec/TESTING.md §Assertion Discipline — seed both sides).
+    db = _ResetRoutingSession(user=owner, token_reads=[mock_row, mock_row])
 
     mock_user = MagicMock()
-    mock_user.id = user_id
+    mock_user.id = owner.id
     mock_user.password_hash = "old_hash"
 
     new_hash_captured: list[str] = []
 
-    async def _fake_update_password(db, uid, pw):
+    async def _fake_update_password(session, uid, pw):
         mock_user.password_hash = f"bcrypt_of_{pw}"
         new_hash_captured.append(mock_user.password_hash)
         return mock_user
 
     with patch.object(_users, "update_password", side_effect=_fake_update_password):
-        await confirm_reset(mock_db, "valid-raw-token", "new-secure-password123")
+        await confirm_reset(db, "valid-raw-token", "new-secure-password123")
 
     # Password hash must have been updated
     assert len(new_hash_captured) == 1, (
@@ -354,5 +526,60 @@ async def test_confirm_reset_valid_token_writes_new_hash_and_marks_used() -> Non
         "per spec/feature/AUTH.md §Lifecycle §Password reset"
     )
 
+    assert db.took_the_user_row_lock(), (
+        "the password write runs under the users row lock per spec/feature/AUTH.md "
+        "§Serialization of credential-creating writes"
+    )
+
     # flush must have been called to persist both the password update and the used_at mark
-    mock_db.flush.assert_awaited()
+    assert db.flush_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_confirm_reset_declines_when_the_bind_deleted_the_token_under_the_lock() -> None:
+    """A token the bind swept between the first read and the re-read writes no password.
+
+    The confirm was authorised before the bind committed; by the time it holds the
+    lock, the bind's delete of unused reset rows has already removed the row it
+    was authorised by. It must resolve as the route's ordinary invalid-token
+    failure rather than setting a password on a row that has changed hands.
+
+    spec: spec/feature/AUTH.md §Serialization of credential-creating writes —
+    "POST /auth/password/reset/confirm | Re-read the `password_reset_tokens` row,
+    which the bind's delete has already removed; missing or used → the route's
+    existing invalid-token failure."
+    """
+    from src.backend.auth import users as _users
+    from src.backend.auth.reset import confirm_reset
+
+    owner = _live_user()
+    live_row = _live_token_row(owner.id)
+    # First read: the row is live and valid. Second read (under the lock): gone.
+    db = _ResetRoutingSession(user=owner, token_reads=[live_row, None])
+
+    with patch.object(_users, "update_password") as mock_update_password:
+        with pytest.raises(BadRequestError) as exc_info:
+            await confirm_reset(db, "swept-by-the-bind", "new-secure-password123")
+
+    assert exc_info.value.error_code == "INVALID_RESET_TOKEN", (
+        "a token removed by the bind's delete must fail as an invalid token per "
+        "spec/feature/AUTH.md §Serialization of credential-creating writes"
+    )
+    # Backstop: the first read succeeded and the flow reached the lock, so the
+    # failure is the re-read rather than the ordinary first-read rejection.
+    assert db.took_the_user_row_lock(), (
+        "the re-read happens under the users row lock per spec/feature/AUTH.md "
+        "§Serialization of credential-creating writes"
+    )
+    # ``>=`` rather than ``==``: what matters is that the token was consulted again
+    # after the lock, not how many statements a given implementation spends doing
+    # it — a re-read folded into a single joined SELECT ... FOR UPDATE would still
+    # honour the contract.
+    assert db.token_read_count() >= 2, (
+        "the token row must be consulted again once the lock is held; "
+        f"got {db.token_read_count()} read(s)"
+    )
+    mock_update_password.assert_not_called()
+    assert live_row.used_at is None, (
+        "a declined confirm must not consume the token either"
+    )

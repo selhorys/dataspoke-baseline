@@ -86,8 +86,11 @@ DataSpoke stores:
 - **`users`** — one row per DataSpoke-managed identity. Columns:
   `id (uuid pk)`, `email (citext unique)`, `name`, `password_hash (nullable)`,
   `google_sub (nullable unique)`, `role (enum Admin | Editor | Reader)`,
-  `created_at`, `updated_at`. At least one of `password_hash` and `google_sub`
-  must be set. User deletion is hard delete — no `deleted_at` column.
+  `session_epoch`, `created_at`, `updated_at`. At least one of
+  `password_hash` and `google_sub` must be set (`ck_users_auth_method`).
+  `session_epoch` is the per-user JWT generation counter — see [§Session
+  epoch](#session-epoch). User deletion is hard delete — no `deleted_at`
+  column.
 - **`api_tokens`** — long-lived personal access tokens minted by users for
   non-interactive clients. Columns: `id (uuid pk)`, `user_id (fk)`, `name`,
   `token_hash (sha256, unique)`, `role_snapshot`, `created_at`,
@@ -96,9 +99,8 @@ DataSpoke stores:
   `token_hash (sha256, pk)`, `user_id (fk)`, `expires_at`, `used_at`.
 
 Full column types, indexes, and constraints in
-[BACKEND_SCHEMA](BACKEND_SCHEMA.md). Role is now a first-class column on
-`users` — see [Privilege Model](#privilege-model) for how it gates DataSpoke
-routes.
+[BACKEND_SCHEMA](BACKEND_SCHEMA.md). Role is a first-class column on `users` —
+see [Privilege Model](#privilege-model) for how it gates DataSpoke routes.
 
 ---
 
@@ -128,24 +130,82 @@ exchanges the authorisation code for an ID token, and resolves the user:
 | Google `sub` known? | Google `email` matches existing row? | Action |
 |---|---|---|
 | Yes | — | Log in. Refresh display name from the Google profile onto the DataSpoke row. |
-| No | Yes | Link `google_sub` onto the existing row. Log in. |
+| No | Yes, and that row has `google_sub IS NULL` | Bind `google_sub` onto the row, refresh display name from the Google profile, run the [credential reset](#credential-reset-on-link), and log in. |
+| No | Yes, and that row already carries **this** `sub` | Log in, exactly as the `sub`-known branch. No bind, no reset, no epoch bump, no event. |
+| No | Yes, and that row carries a **different** `google_sub` | Refuse — `409 EMAIL_BOUND_TO_ANOTHER_GOOGLE_ACCOUNT`. No row is modified and no session is issued. |
 | No | No | Create a fresh `users` row with `password_hash=null` and `role = 'Reader'`. Log in. |
 
-Linking preserves password access — a user who registered with email + password
-can later add Google without losing the ability to log in with the password.
+The bind branch refreshes `name` from the Google claim for the same reason the
+`sub`-known branch does: the row now belongs to the verified identity, and the
+display name it presents in `/auth/me`, `/admin/users`, and the app shell must
+be that identity's rather than the previous holder's.
+
+The row-already-carries-this-`sub` outcome is the resolution of a race, not a
+distinct user intent: two concurrent or retried callbacks can both miss the
+`sub` lookup, and the one that reaches the row lock second finds the first
+callback's bind already committed. It is the same request the `sub`-known branch
+serves, so it gets the same answer — a plain login. Re-running the reset there
+would kill the session the first callback just issued.
+
+The bind branch therefore applies only to an unbound row. One DataSpoke row
+carries at most one Google identity at a time, and one Google identity belongs
+to at most one row: a bind whose incoming `sub` is already held by a
+different row loses the `UNIQUE(google_sub)` race and fails
+`409 GOOGLE_ACCOUNT_LINKED_ELSEWHERE`. An operator can release a stale binding
+with [`DELETE /admin/users/{id}/google`](#admin-surface).
+
+#### Credential reset on link
+
+The Google identity is provider-verified; the row it binds onto may not be — the
+email on it was never verified (see [§Email verification omitted by
+design](#email-verification-omitted-by-design)). When the two meet, the verified
+identity wins the row, and every credential that existed on the row before the
+bind is invalidated in the **same transaction** as the bind:
+
+| Credential | Invalidation |
+|---|---|
+| Password | `password_hash` set to `NULL`. The row stays valid under `ck_users_auth_method` because `google_sub` is now set. |
+| API tokens | Every active token for the user is revoked (`revoked_at = now()`). |
+| JWT sessions | All outstanding access and refresh tokens are killed by incrementing `session_epoch` — see [§Session epoch](#session-epoch). |
+| Password-reset tokens | Unused `password_reset_tokens` rows for the user are deleted. |
+
+The reset covers the whole pre-bind credential surface, so a party who held the
+row beforehand keeps no way back into it — not the password, not a session, not
+a minted API token, not a pending reset link. Rationale and threat model in
+[§Account pre-hijacking on Google link](#account-pre-hijacking-on-google-link).
+
+Exactly one `AUTH.GOOGLE_LINK_CREDENTIAL_RESET` event (`entity_type = user`,
+`entity_id` = the user id) per bind that actually writes `google_sub`, recording
+what was cleared. Such a bind always clears at least a password: it reaches an
+existing row only by email match, that row is unbound (`google_sub IS NULL`),
+and `ck_users_auth_method` then forces `password_hash IS NOT NULL`. A reset that
+invalidates nothing is not a reachable state. A callback that finds the row
+already carrying its own `sub` writes nothing and emits nothing.
+
+Accepted trade-off, stated plainly: a legitimate password user who signs into
+DataSpoke with Google for the first time **loses password login and is signed out
+of every other session**. They re-establish a password via `PATCH /auth/me`,
+authenticated by the session the Google callback just issued. This is the
+deliberate price of making the link path safe against a pre-registered squatter —
+the bind path cannot distinguish the account's owner from someone who claimed the
+address first, so it treats both the same way.
 
 ### Login
 
 `POST /auth/token` with `{email, password}` issues an access JWT (15 min
 lifetime, in response body) and a refresh JWT (7 d lifetime, as `HttpOnly`
-cookie). The access JWT carries identity only — `sub`, `email`, `exp`, `iat`.
-The JWT does not encode role (see [Privilege Model](#privilege-model)); role
-is read per-request from `users.role`.
+cookie). The access JWT's claims are `sub`, `email`, `exp`, `iat`, and `ses` —
+the session epoch the token was issued under ([§Session
+epoch](#session-epoch)). The JWT does not encode role (see [Privilege
+Model](#privilege-model)); role is read per-request from `users.role`, on the
+same read that resolves `ses`.
 
 ### Refresh & revoke
 
-`POST /auth/token/refresh` validates the refresh-cookie JWT, checks the Redis
-revocation list, and issues a fresh access token with the same identity claims.
+`POST /auth/token/refresh` validates the refresh-cookie JWT, checks its `ses`
+claim against the owner's current [session epoch](#session-epoch), checks the
+Redis revocation list, and issues a fresh access token with the same identity
+claims.
 `POST /auth/token/revoke` records the refresh token's hash in Redis under
 `revoked_refresh:{sha256[:16]}` with TTL equal to the token's remaining lifetime;
 both flows fail-closed on Redis unreachability (`503 STORAGE_UNAVAILABLE`).
@@ -162,6 +222,84 @@ cleared and the call returns `204`. There is no live token to revoke, and per
 RFC 7009 §2.2 revocation reports success whether the token was revoked or was
 already invalid. Logout therefore never fails on account of the cookie it was
 handed, only on the store being unreachable.
+
+### Session epoch
+
+Refresh tokens are revocable only per token hash in Redis, so there is no way to
+evict a user's outstanding sessions from the revocation store alone — the server
+does not enumerate them. `users.session_epoch INTEGER NOT NULL DEFAULT 0`
+supplies the per-user generation counter that closes that gap.
+
+- **Rule.** Both the access JWT and the refresh JWT carry a `ses` claim holding
+  the epoch they were issued under. A JWT whose `ses` claim is absent, or does
+  not equal the owner's current `session_epoch`, is rejected
+  `401 UNAUTHORIZED`.
+- **Enforcement points.** The bearer-JWT authentication path and
+  `POST /auth/token/refresh`. Both already read the owner's `users` row for the
+  role check, so the epoch comparison rides on that existing read — no extra
+  round trip. The API-token path needs no check: those rows are revoked
+  outright.
+- **Exactness.** A credential reset increments `session_epoch` by one in the
+  same transaction as the other invalidations. Every token issued under the
+  previous epoch is dead the instant that transaction commits, and the session
+  token the OAuth callback mints afterwards reads the new epoch and is valid.
+  No clock participates, so there is no granularity, no skew assumption between
+  the DB clock and the token-issuing clock, and no window in which a token
+  outlives the reset that killed it.
+- **Who bumps it.** The two writes that change the row's Google binding: the
+  [credential reset on link](#credential-reset-on-link) when a binding is
+  established, and the [admin unbind](#admin-unbind) when one is released.
+  A password change via `PATCH /auth/me` and
+  `POST /auth/password/reset/confirm` deliberately leave it alone: both are
+  performed by a caller who already controls the account, so a global sign-out
+  would cost that user their other sessions to defend against nothing. A
+  binding change is different in kind — it is where the row's authoritative
+  identity moves, so the sessions issued under the old one do not carry over.
+
+#### Serialization of credential-creating writes
+
+The epoch evicts credentials that exist when the reset commits. A write already
+in flight would otherwise slip past it: an authorisation checked before the
+reset commits can produce a credential that lands after it, on a row that has
+already changed hands.
+
+**Credential-creating self-service writes therefore re-validate their
+authorisation inside their own write transaction, under the `users` row lock.**
+Four writes create a credential: the `password` field of `PATCH /auth/me`,
+`POST /auth/api-tokens`, `POST /auth/password/reset/confirm`, and
+`POST /auth/password/reset/request`. Each takes the `users` row lock and
+re-checks, under it, the state that authorised it:
+
+| Write | Re-check under the lock |
+|---|---|
+| `PATCH /auth/me` (`password`) | Re-compare the request's `ses` claim against the freshly read `session_epoch`; mismatch → `401 UNAUTHORIZED`. |
+| `POST /auth/api-tokens` | Same `ses` re-comparison. Needed here in particular because the API-token authentication path runs no epoch check, so a token committed after the reset would otherwise stay live. |
+| `POST /auth/password/reset/confirm` | Re-read the `password_reset_tokens` row, which the bind's delete has already removed; missing or used → the route's existing invalid-token failure. |
+| `POST /auth/password/reset/request` | Re-compare `session_epoch` against the value read before the token row was prepared; if it has moved, complete **without** writing the token row. |
+
+The request route's shape differs from the other three because a reset token it
+mints is a live 15-minute password-write capability that no epoch governs — it
+is not a JWT. Merely locking around the INSERT would not contain it: the bind
+holds the lock, releases it on commit, and the insert then lands *after* the
+bind's delete of unused rows, which sweeps only what is visible at that
+statement. The epoch comparison is what closes it — a request whose read
+predates the bind observes the increment and declines to write. It still
+returns `204`, unchanged, since the route reports the same outcome for known
+and unknown emails and must not become an oracle for account state.
+
+The re-check is against whatever credential authorised the request, so the two
+JWT rows above describe the JWT carrier only. `PATCH /auth/me` and
+`POST /auth/api-tokens` are equally reachable with an API token (see [§API
+Tokens](#api-tokens) — a PAT carries the same self-scoped `/auth/*`
+privileges), and such a request has no `ses` claim to compare; it instead
+re-reads its own `api_tokens` row under the same `users` row lock and fails
+`401 TOKEN_REVOKED` once the reset has revoked it.
+
+Because each takes the lock the bind transaction holds, none can commit before
+it; because each re-reads after acquiring it, none can commit a credential
+authorised by state the bind superseded. This is what makes the [credential
+reset on link](#credential-reset-on-link) claim — that a party who held the row
+beforehand keeps no way back into it — true rather than aspirational.
 
 ### Same-site requirement for cookie-based session
 
@@ -185,7 +323,11 @@ does not serve. Host `pnpm dev` should use password login.
 ### Profile read & update
 
 `GET /auth/me` returns the caller's `users` row (without `password_hash`),
-including `users.role`. `PATCH /auth/me` accepts `{name?, password?}`: both
+including `users.role` and the booleans `has_password` and `has_google` — the
+presence of each authentication method, never the hash or the `sub`.
+`has_password` is what tells a user whose password was cleared by a [credential
+reset](#credential-reset-on-link) that setting one is the way back to password
+login. `PATCH /auth/me` accepts `{name?, password?}`: both
 fields write to the DataSpoke `users` row only and make no DataHub call.
 Display name is not projected — the DataHub-side profile is DataHub's own,
 refreshed from Google claims at each OIDC login (see
@@ -347,10 +489,11 @@ writing anything.
 Accepted trade-off, stated plainly: a password-only DataSpoke account receives
 no DataHub projection even when that person does use DataHub under the same
 address. Their DataHub role stays whatever DataHub itself assigns. They
-establish the binding by signing into DataSpoke with Google once — linking
+establish the binding by signing into DataSpoke with Google once — binding
 `google_sub` onto the existing row (see [§Google OAuth registration &
-login](#google-oauth-registration--login)) — after which the next
-reconciliation pass projects both facets. The bootstrap admin
+login](#google-oauth-registration--login)), which also clears that row's
+password and tokens per the [credential reset](#credential-reset-on-link) —
+after which the next reconciliation pass projects both facets. The bootstrap admin
 (`dataspoke@dataspoke.local`) has no Google identity and is therefore never
 projected, which is consistent with its corpuser being unprovisionable in the
 first place.
@@ -615,10 +758,85 @@ surfaces relevant to user identity:
 | `PATCH /admin/users/{id}` | Update display name (email is immutable post-creation because the DataHub corpuser URN is immutable). |
 | `PATCH /admin/users/{id}/role` | Update `users.role` (Admin / Editor / Reader) and, when the row carries a `google_sub`, propagate to DataHub via `batchAssignRole`. DataSpoke is SSOT; the DataHub-side projection is one-way. |
 | `DELETE /admin/users/{id}` | Hard delete ([projection retraction sequence](#projection-retraction-sequence)). |
+| `DELETE /admin/users/{id}/google` | Release the row's Google binding — see [§Admin unbind](#admin-unbind). |
 | `PATCH /admin/conf` | Includes `auth_datahub_corp_group` (string, default `dataspoke-users`) — names the marker corpGroup; asserted once per reconciliation pass. |
 
 `/admin/*` routes require `users.role = 'Admin'` — checked per-request per
 [Privilege Model](#privilege-model). The JWT carries no admin claim.
+
+### Admin unbind
+
+A binding is permanent from the user's side: no self-service route releases it,
+and the callback refuses to rebind a bound row. That is the correct default —
+silent rebinding is the pre-hijacking hole — but it strands a row whose Google
+`sub` has ceased to exist. The common case is a re-issued Workspace address: the
+directory account is deleted and recreated, the new one carries a new `sub`, and
+the row still names the old one, so the address's rightful holder is refused
+`409 EMAIL_BOUND_TO_ANOTHER_GOOGLE_ACCOUNT` on every attempt.
+
+`DELETE /admin/users/{id}/google` is the non-destructive remedy. It clears
+`google_sub` and increments `session_epoch` — unbinding is a credential change,
+so sessions established under the released binding do not survive it — and emits
+one `AUTH.GOOGLE_UNBOUND` event (`entity_type = user`, `entity_id` = the user
+id) so the removal of an authentication method leaves a record of who was
+unbound and when. The row then resolves as unbound, and the next Google sign-in
+at that address binds the new `sub` through the ordinary bind branch, credential
+reset included.
+
+It does **not** revoke the row's API tokens, and the PAT authentication path
+runs no epoch check, so tokens minted before the unbind keep working. The
+asymmetry is deliberate: an unbind returns the row to its existing holder rather
+than handing it to someone new, so the tokens still belong to whoever minted
+them — and if the row does later change hands, the bind's [credential
+reset](#credential-reset-on-link) revokes them then. An admin who wants them
+gone regardless revokes them individually via
+`DELETE /admin/users/{id}/api-tokens/{token_id}`.
+
+The route is idempotent: an already-unbound row is left untouched and still
+answers `204`. There is no binding to release, so there is no credential change,
+and bumping the epoch there would sign the user out of every session for nothing
+— against the rule that only a row changing hands invalidates sessions
+([§Session epoch](#session-epoch)).
+
+The route refuses with `409 GOOGLE_IS_ONLY_AUTH_METHOD` when the row has no
+`password_hash`: clearing `google_sub` would violate `ck_users_auth_method` and
+leave a row nobody can authenticate as.
+
+**That refusal is the normal state of a bound row, not an edge case.** A row is
+password-less at the moment it becomes bound — the bind nulls `password_hash`,
+and a Google-native signup creates the row without one — and it regains a
+password only if someone later sets one through `PATCH /auth/me` or
+`POST /auth/password/reset/confirm`. Releasing a stale binding therefore takes a
+sequence rather than a single call:
+
+1. The address's new holder runs `POST /auth/password/reset/request` and
+   completes `POST /auth/password/reset/confirm`. The row now has a
+   `password_hash`.
+2. The admin calls `DELETE /admin/users/{id}/google`, which now succeeds.
+3. The new holder signs in with Google. The ordinary bind branch binds the new
+   `sub` and its credential reset nulls the password again, returning the row to
+   the standard bound shape.
+
+The step-1 prerequisite is deliberate rather than an obstacle to route around.
+The reset round-trip goes to the mailbox at that address, so completing it
+proves the new holder controls it — the same ownership proof the bind path
+relies on, obtained the only other way DataSpoke has. An admin who unbinds
+without it would be handing the row to whoever asked.
+
+Note what the sequence preserves: the row keeps its `role` across the handover.
+Reclaiming a row is not the same as issuing a fresh one, so an admin who does
+not intend the new holder to inherit the previous holder's privileges demotes
+the row via `PATCH /admin/users/{id}/role` first. An admin who wants none of
+this — no reclamation, no inherited state — removes the user with
+`DELETE /admin/users/{id}` instead, accepting that it also hard-deletes the
+DataHub corpuser at that URN.
+
+DataHub consequence: an unbound row is not projected
+([§Identity-binding requirement](#identity-binding-requirement)), so the nightly
+pass moves it to `skipped_unbound`. The role already assigned on the corpuser
+stays — retraction is deletion-only
+([§Projection retraction sequence](#projection-retraction-sequence)) — and is
+re-asserted once the row is bound again.
 
 ---
 
@@ -658,15 +876,22 @@ on the next install only if zero Admin rows remain.
 |---|---|---|---|
 | DataHub unreachable or unconfigured during any user-creation path (`POST /auth/register`, Google-OAuth new user, `POST /internal/admin/bootstrap`) | No DataHub call is attempted; the transaction is purely local. | Creation succeeds and the user is logged in. | None. |
 | A DataSpoke user has never logged into DataHub, so no corpuser exists | The reconciliation pass's existence probe skips them without mutating; counted `skipped_unprovisioned`. | None — the user's DataSpoke privileges are unaffected. | None; the projection lands on the first pass after their first DataHub login. |
-| A `users` row has no `google_sub` (password-only account, or the bootstrap admin) | Neither projection path writes anything for it; the reconciliation pass counts it `skipped_unbound`. | None on the DataSpoke side; the user's DataHub role is whatever DataHub itself assigns. | None. The user binds the identity by signing into DataSpoke with Google once, after which the next pass projects both facets. |
+| A `users` row has no `google_sub` (password-only account, or the bootstrap admin) | Neither projection path writes anything for it; the reconciliation pass counts it `skipped_unbound`. | None on the DataSpoke side; the user's DataHub role is whatever DataHub itself assigns. | None. The user binds the identity by signing into DataSpoke with Google once — at the cost of that row's password and API tokens ([credential reset](#credential-reset-on-link)) — after which the next pass projects both facets. |
 | DataHub peripheral unconfigured when the nightly pass runs | The pass returns a no-op result rather than failing — operating before DataHub is wired is a supported steady state. | None. | None; the pass reconciles once the peripheral is configured. |
 | Marker corpGroup missing on DataHub | The reconciliation pass creates it before projecting any membership. | None. | None. |
 | Marker corpGroup assert fails at the start of a reconciliation pass | The pass aborts before its per-user loop rather than degrading. `addGroupMembers` rejects an unresolvable group URN, so a pass that continued would fail every group facet while reporting a clean run over the role facet. | Retryable error response; no counter result is returned. | None — Airflow retries the run. |
+| `DELETE /admin/users/{id}/google` on a row with no `password_hash` | Refused before any write — clearing the only authentication method would leave a row nobody can authenticate as. | `409 GOOGLE_IS_ONLY_AUTH_METHOD`. | Remove the user with `DELETE /admin/users/{id}` if that is the intent. |
+| A Google bind commits while `POST /auth/password/reset/request` is in flight | The request declines its token INSERT on the epoch re-check ([§Serialization of credential-creating writes](#serialization-of-credential-creating-writes)), but the email has already been sent — the route sends before it writes. The recipient holds a link that matches no row. | `204` to the caller (unchanged — the route reports the same outcome for every address, so it cannot signal this either); the emailed link fails `400 INVALID_RESET_TOKEN` when used. | None. The user signs in with Google, which now owns the row, and requests a fresh reset if they still want a password. |
+| `POST /auth/password/reset/confirm` with a token whose `users` row has been hard-deleted | Resolves as the route's ordinary invalid-token outcome; no existence signal is emitted. | `400 INVALID_RESET_TOKEN` (not a `404`). | None — the intended contract; a reset link cannot report whether an account exists. |
 | SMTP peripheral missing during password-reset request | Request refuses; no DB write. | `503 PERIPHERAL_NOT_CONFIGURED`. | Admin configures `/admin/peripherals/smtp`. |
 | SMTP configured but delivery fails (transport error, auth rejection, queue full) during password-reset request | Request refuses; no DB write — the token row is written only after `send_email` returns successfully. | `503 STORAGE_UNAVAILABLE` with a static message; the underlying SMTP error is logged but not echoed to the client. | Inspect API logs for the upstream cause; fix the SMTP path and retry. |
 | Redis unreachable during refresh or revoke | Refresh/revoke fail-closed. | `503 STORAGE_UNAVAILABLE`. | Restore Redis. |
 | Google OAuth state mismatch on callback | Callback aborts before token issuance. | `400 OAUTH_STATE_MISMATCH`. | User retries the OAuth flow. |
 | Google OAuth callback receives ID token with `email_verified=false` | Callback rejects the token; no user is created or logged in. | `400 OAUTH_EMAIL_NOT_VERIFIED`. | User verifies their Google account email and retries. |
+| Google identity binds onto an unbound row matched by email | The bind and the [credential reset](#credential-reset-on-link) commit in one transaction; one `AUTH.GOOGLE_LINK_CREDENTIAL_RESET` event records what was cleared. | The user is logged in via Google. Password login and every previously minted API token stop working; `GET /auth/me` reports `has_password: false`. | None. The user sets a new password via `PATCH /auth/me` and re-mints any API tokens they still need. |
+| A JWT presented after its owner's `session_epoch` was incremented | The bearer path and `/auth/token/refresh` both reject on the `ses` comparison. | `401 UNAUTHORIZED`; the frontend clears the session and redirects to `/login`. | None — expected behaviour after a credential reset. |
+| Google callback whose email matches a row already bound to a **different** Google `sub` | Callback refuses before any write; no row is modified and no session is issued. | `409 EMAIL_BOUND_TO_ANOTHER_GOOGLE_ACCOUNT`. | Admin releases the stale binding with `DELETE /admin/users/{id}/google` ([§Admin unbind](#admin-unbind)); the next sign-in binds the current `sub`. |
+| Two callbacks race to bind the same Google `sub` onto different rows, or a bind commits between one callback's resolution and its write | The losing bind violates `UNIQUE(google_sub)`; its transaction rolls back whole, so that row keeps its password, tokens, and session epoch. | `409 GOOGLE_ACCOUNT_LINKED_ELSEWHERE`. | None — the winning bind stands and the user retries, which now resolves by `sub`. |
 | Role change via `/admin/users/{id}/role`: DataSpoke write succeeds, DataHub propagation fails | The new role takes effect immediately on the DataSpoke API; DataHub-side stays stale until the nightly reconciliation DAG re-asserts. | The admin call returns `200` (DataSpoke side succeeded); a warning log records the propagation failure. | None — DAG handles. Manual recovery: re-PATCH the role. |
 | Nightly reconciliation finds a divergence on either facet | The pass re-asserts `users.role` and/or marker-group membership to DataHub. | Operator visible via the `AUTH.ROLE_SYNC_FIXED` event row, whose `detail` names the repaired facet(s). | None unless the divergence was intentional (DataHub-only super-admin); in that case, keep that corpuser out of the DataSpoke `users` table. |
 | API token revoked while in use | Next request with the token fails. | `401 TOKEN_REVOKED`. | None — expected behaviour. |
@@ -702,6 +927,11 @@ radius is bounded to DataSpoke:
   [Client-IP attribution for rate limiting](#client-ip-attribution-for-rate-limiting)).
 - Default role is Reader. A typosquatted account cannot edit metadata or
   manage policies without an admin explicitly promoting it.
+- **The squatted row does not survive the owner's arrival.** When the genuine
+  owner of the address signs into DataSpoke with Google, their verified identity
+  binds onto that very row and takes it — see [§Account pre-hijacking on Google
+  link](#account-pre-hijacking-on-google-link). The squatter is left holding no
+  credential on it.
 - Admin hard-delete removes the DataSpoke row and frees the email for
   re-registration by the legitimate owner. **Use the delete path with care
   here:** it also hard-deletes any corpuser at that URN, and under JIT
@@ -714,6 +944,41 @@ radius is bounded to DataSpoke:
 
 If an organisation needs strict email ownership verification, it adds a
 verification step in a fork (see [Out of Scope](#out-of-scope)).
+
+### Account pre-hijacking on Google link
+
+Open self-registration plus a link-on-email-match OAuth path is the classic
+pre-hijacking shape: an attacker registers `cto@company.com` before its owner
+does, waits for the owner to sign in with Google, and rides the row the owner
+now believes is theirs. The two ingredients of the attack are an unverified
+claim to an address and a link step that leaves the claimant's credentials in
+place. DataSpoke keeps the first — registration is unverified by design — and
+removes the second.
+
+The [credential reset on link](#credential-reset-on-link) is the containment.
+Its coverage has to be total because each credential it clears is an
+independent re-entry path: a squatter left holding only a long-lived API token
+retains the owner's account just as effectively as one left holding the
+password.
+
+This complements, rather than duplicates, the containment described under
+[§Email verification omitted by design](#email-verification-omitted-by-design).
+That one is about the DataHub side, and rests on the [identity-binding
+requirement](#identity-binding-requirement): an unbound row never projects onto
+`urn:li:corpuser:<email>`, so a squatter's role cannot land on the real person's
+DataHub identity. It says nothing about what happens *when a binding appears* —
+and a binding is exactly what the owner's first Google sign-in creates. The
+credential reset governs that moment: the row becomes projectable and, in the
+same transaction, becomes exclusively the verified identity's.
+
+Residual exposure that the reset does not remove:
+
+- Anything the squatter did while holding the row before the owner arrived —
+  metadata they read, configs they wrote at whatever role they held — stands.
+  The reset invalidates credentials, not history. Default `Reader` bounds this
+  to reads unless an admin promoted the row.
+- An address the genuine owner never signs into DataSpoke with stays squatted
+  indefinitely; nothing triggers a reset that has no bind behind it.
 
 ### Client-IP attribution for rate limiting
 

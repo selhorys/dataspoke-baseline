@@ -79,6 +79,12 @@ export default function ProfilePage() {
     }
   }
 
+  // Single source for both the read-only field and the section wording, so an
+  // unresolved profile read cannot show the two disagreeing. Both branches write
+  // the same `PATCH /auth/me` password field; only the wording differs, so a
+  // user whose password was cleared knows why it is gone.
+  const hasPassword = me?.has_password ?? true;
+
   if (isLoading) {
     return (
       <div className="space-y-4">
@@ -112,6 +118,10 @@ export default function ProfilePage() {
             <Input value={me?.has_google ? "Linked" : "Not linked"} disabled />
           </Field>
 
+          <Field label="Password">
+            <Input value={hasPassword ? "Set" : "Not set"} disabled />
+          </Field>
+
           <Field label="Name" htmlFor="name" error={errors.name?.message} required>
             <Input
               id="name"
@@ -123,13 +133,17 @@ export default function ProfilePage() {
         </FormGrid>
 
         <div className="border-t pt-4">
-          <p className="mb-3 text-sm font-medium">Change password</p>
+          <p className="mb-3 text-sm font-medium">{hasPassword ? "Change password" : "Set a password"}</p>
           <FormGrid>
             <Field
               label="New password"
               htmlFor="password"
               error={errors.password?.message}
-              hint="Leave blank to keep your current password. Minimum 10 characters."
+              hint={
+                hasPassword
+                  ? "Leave blank to keep your current password. Minimum 10 characters."
+                  : "Your account has no password — signing in with Google clears one that was set, along with every API token it had. Set a password here to sign in with email again, and re-mint any tokens you still need under API Tokens. Minimum 10 characters."
+              }
             >
               <PasswordInput
                 id="password"

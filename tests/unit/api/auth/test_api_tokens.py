@@ -203,7 +203,7 @@ async def test_intersection_snapshot_admin_current_reader_returns_reader() -> No
 
     with patch("src.backend.auth.api_tokens.SessionLocal") as mock_session_cls:
         mock_session_cls.return_value = mock_throttle_session
-        user, effective_role = await lookup_and_validate(
+        user, effective_role, token_id = await lookup_and_validate(
             mock_db, "dsk_admin_snapshot_reader_current"
         )
 
@@ -213,6 +213,11 @@ async def test_intersection_snapshot_admin_current_reader_returns_reader() -> No
         "§API Tokens §Effective privilege — intersection"
     )
     assert user is mock_user
+    assert token_id == mock_token.id, (
+        "The authenticating api_tokens row id must be returned so a credential-creating "
+        "write can re-read it under the users row lock per spec/feature/AUTH.md "
+        "§Serialization of credential-creating writes"
+    )
 
 
 @pytest.mark.asyncio
@@ -249,7 +254,7 @@ async def test_intersection_snapshot_reader_current_admin_returns_reader() -> No
 
     with patch("src.backend.auth.api_tokens.SessionLocal") as mock_session_cls:
         mock_session_cls.return_value = mock_throttle_session
-        user, effective_role = await lookup_and_validate(
+        user, effective_role, token_id = await lookup_and_validate(
             mock_db, "dsk_reader_snapshot_admin_current"
         )
 
@@ -258,6 +263,7 @@ async def test_intersection_snapshot_reader_current_admin_returns_reader() -> No
         "existing tokens per spec/feature/AUTH.md §API Tokens §Effective privilege — intersection"
     )
     assert user is mock_user
+    assert token_id == mock_token.id
 
 
 @pytest.mark.asyncio
@@ -294,7 +300,7 @@ async def test_intersection_equal_roles_preserved() -> None:
 
     with patch("src.backend.auth.api_tokens.SessionLocal") as mock_session_cls:
         mock_session_cls.return_value = mock_throttle_session
-        user, effective_role = await lookup_and_validate(
+        user, effective_role, token_id = await lookup_and_validate(
             mock_db, "dsk_editor_snapshot_editor_current"
         )
 
@@ -303,6 +309,7 @@ async def test_intersection_equal_roles_preserved() -> None:
         "§API Tokens §Effective privilege — intersection"
     )
     assert user is mock_user
+    assert token_id == mock_token.id
 
 
 # ── lookup_and_validate — error cases ────────────────────────────────────────
@@ -446,7 +453,7 @@ async def test_lookup_and_validate_updates_last_used_at_when_stale() -> None:
 
     with patch("src.backend.auth.api_tokens.SessionLocal") as mock_session_cls:
         mock_session_cls.return_value = mock_throttle_session
-        user, role = await lookup_and_validate(mock_db, "dsk_test_token_stale")
+        user, role, token_id = await lookup_and_validate(mock_db, "dsk_test_token_stale")
 
     assert throttle_execute_called, (
         "The throttled UPDATE for last_used_at must be called when last_used_at is None "
@@ -454,3 +461,4 @@ async def test_lookup_and_validate_updates_last_used_at_when_stale() -> None:
     )
     assert user is mock_user
     assert role == "Reader"
+    assert token_id == mock_token.id
