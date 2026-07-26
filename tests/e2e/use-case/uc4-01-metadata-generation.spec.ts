@@ -71,17 +71,19 @@ import { test, expect, IMAZON_URNS } from "../fixtures/index";
 //   - mode: "serial"  → Playwright runs the steps in declaration order and, when a
 //     step fails, SKIPS the remaining steps instead of running them against now-
 //     inconsistent module state.
-//   - retries: 0      → overrides the project-level `retries: 1`. A mid-chain flake
-//     must fail LOUDLY in place rather than triggering an isolated single-step
-//     retry: a retry re-runs only the failed step (earlier steps do not re-run), so
-//     the shared module state would be stale on the retried tail (e.g. step 8 retry
-//     leaves step 7's approvedEuDescCandidateId set but step 9 then reads a chain
-//     that never re-derived). Fix #1's backend-readiness polling removes the flake's
-//     root cause (eventual-consistency render lag), so disabling retries here does
-//     not re-introduce the observed flakiness — it just refuses to paper over a real
-//     failure with a state-corrupting retry.
+//   - retries: 0      → overrides the project-level `retries: 1`. A retry of a serial
+//     group re-runs the WHOLE group from its first step — including beforeAll, and so
+//     runUc4Seed(). --uc4-seed has no idempotent "already seeded" path: its masking
+//     step fails loud on an estate whose descriptions this run already wiped, so the
+//     retry would abort in setup and bury the original failure. This arc therefore
+//     takes the spec's other option and fails loudly in place. Backend-readiness
+//     polling (waitForOpenCandidate) removes the flake's root cause (eventual-
+//     consistency render lag), so disabling retries does not re-introduce the
+//     observed flakiness.
 //
-// spec: TESTING.md §End-to-End (E2E) Testing — use-case group mirrors api-wired
+// spec: TESTING.md §E2E §Execution discipline — "Serial mode also states its retry
+//   stance: Playwright retries a failed serial group from the first step, so a file
+//   either makes every step re-runnable or sets `retries: 0` and fails loudly in place."
 test.describe.configure({ mode: "serial", retries: 0 });
 
 // ── URN constants (verbatim from api-wired) ───────────────────────────────────

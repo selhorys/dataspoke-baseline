@@ -31,14 +31,17 @@
  *         design (DataHub books the run on a hidden CLI wrapper).
  *      c. Re-run sync via /internal/activities/ingestion/sync.
  *      d. UI assertion: Events panel on the regular source shows an INGESTION.COMPLETE
- *         row tagged "wrapper"; Datasets panel shows ≥1 "high"/"pipeline_name" row.
+ *         row; Datasets panel shows ≥1 "high (pipeline_name)" authority cell.
  *      e. Backend probe (PRIMARY): GET /sources/{id}/event has INGESTION.COMPLETE with
  *         wrapper=true and status='success' (execution_request_urn used only to locate
  *         the row — an impl detail, not a spec'd event-detail key).
  *      f. Backend probe: the CLI wrapper is ABSENT from GET /sources?mode=DATAHUB_MANAGED.
  *      g. Backend probe (SECONDARY): GET /sources/{id}/datasets has ≥1 row with
  *         derivation='pipeline_name' and authority='high'.
- *      Tolerant: test.skip only for true executor unavailability.
+ *      Skip/fail split: the ONLY skip is the pre-trigger precondition probe — the
+ *      acryl-datahub-actions executor reporting no ready replica, i.e. nothing can run
+ *      the request. Every post-trigger outcome FAILS: a terminal non-success status
+ *      (the run completed and the ingestion broke) and an exhausted 180s wait alike.
  *
  * spec: USE_CASE_en.md §UC1 Case 1
  * spec: USE_CASE_en.md §UC1 Case 1 — execution beat: sync mirrors run as INGESTION.COMPLETE
@@ -50,6 +53,7 @@
  * spec: spec/TESTING.md §End-to-End (E2E) Testing — dual confirmation
  */
 
+import { spawnSync } from "child_process";
 import { test, expect } from "../fixtures/index";
 import { apiBaseUrl, loadDotenv, required } from "../fixtures/env";
 
@@ -102,6 +106,64 @@ const SECRET_DH_URN = `urn:li:dataHubSecret:${SECRET_NAME}`;
 let sourceUrn: string | null = null;
 let secretUrn: string | null = null;
 let sourceId: string | null = null;
+
+/**
+ * Pre-trigger precondition probe: is the DataHub ingestion executor schedulable?
+ *
+ * DataHub does not run ingestion in GMS — the `acryl-datahub-actions` deployment picks
+ * execution requests off Kafka and runs them. If that deployment has no ready replica,
+ * a triggered request simply never leaves PENDING: the precondition is absent and the
+ * step has nothing to judge. Probed here, BEFORE the trigger, so the post-trigger wait
+ * is free to treat an exhausted budget as the failure it is.
+ * spec: spec/TESTING.md §E2E §Execution discipline — "Skip only on an absent
+ *   precondition… an unconfigured dependency… and the reason names the precondition and
+ *   how to supply it"; "A step never skips on an outcome it exists to judge: … or a wait
+ *   that exhausts its budget is a failure, not a skip."
+ * spec: spec/TESTING.md §E2E §Execution discipline — "Cluster-side setup reuses the
+ *   existing tooling… shells out to `kubectl`… E2E adds no TypeScript Kubernetes client and
+ *   no reimplemented reset logic."
+ *
+ * Selected by the chart-canonical label `app.kubernetes.io/name=acryl-datahub-actions`
+ * rather than a release-derived deployment name, so a differently-named release still
+ * matches.
+ *
+ * Returns "unavailable" ONLY on positive evidence of zero ready replicas. Anything that
+ * makes the probe itself untrustworthy — kubectl missing, namespace unset, selector
+ * matching nothing — returns "unknown", and an "unknown" never skips: an unreliable
+ * probe must not become a new mask for a real product failure.
+ */
+function probeDatahubExecutor(): "ready" | "unavailable" | "unknown" {
+  const namespace = process.env["DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE"] ?? "";
+  if (!namespace) return "unknown";
+  const result = spawnSync(
+    "kubectl",
+    [
+      "get",
+      "deployment",
+      "-n",
+      namespace,
+      "-l",
+      "app.kubernetes.io/name=acryl-datahub-actions",
+      "-o",
+      // The NAME prefix is load-bearing: Kubernetes omits `readyReplicas` entirely when it
+      // is zero, so a value-only template renders a 0-ready deployment as a blank line —
+      // indistinguishable from "the selector matched nothing". With the name, a matched
+      // deployment always yields `<name>=` and only an unmatched selector yields no line.
+      "jsonpath={range .items[*]}{.metadata.name}={.status.readyReplicas}{\"\\n\"}{end}",
+    ],
+    { encoding: "utf-8", timeout: 20_000 }
+  );
+  if (result.status !== 0) return "unknown";
+  const lines = (result.stdout ?? "")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+  // No deployment matched the label — the executor may be deployed under a shape this
+  // probe does not recognise, so this is "unknown", not evidence of absence.
+  if (lines.length === 0) return "unknown";
+  // `<name>=<readyReplicas>`; the value is empty when Kubernetes omitted the field (zero).
+  return lines.some((l) => Number(l.slice(l.indexOf("=") + 1)) > 0) ? "ready" : "unavailable";
+}
 
 // Helper: GQL headers for DataHub GMS.
 function gqlHeaders(): Record<string, string> {
@@ -551,6 +613,26 @@ test("UC1 Case 1 step 6 — execute in DataHub; DataSpoke reflects the run", asy
   const base = apiBaseUrl();
   const token = process.env["DATASPOKE_TEST_INTERNAL_TOKEN"] ?? "";
 
+  // -- Precondition (pre-trigger): the DataHub executor can run the request at all --
+  // The ONLY skip in this step. Everything after the trigger is an outcome this step
+  // exists to judge and therefore fails rather than skips.
+  // spec: spec/TESTING.md §E2E §Execution discipline — "Skip only on an absent
+  //   precondition… the reason names the precondition and how to supply it."
+  const executorState = probeDatahubExecutor();
+  if (executorState === "unavailable") {
+    test.skip(
+      true,
+      "DataHub ingestion executor is not schedulable: the acryl-datahub-actions " +
+        `deployment in namespace ${process.env["DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE"]} ` +
+        "has 0 ready replicas, so a triggered execution request would never leave " +
+        "PENDING. Supply the precondition with: kubectl -n " +
+        `${process.env["DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE"]} scale deployment ` +
+        "-l app.kubernetes.io/name=acryl-datahub-actions --replicas=1 " +
+        "(or reinstall: ./helm-charts/bin/install.sh --profile dev --components datahub)."
+    );
+    return;
+  }
+
   // -- 6a: Trigger the execution in DataHub via GQL --
   // spec: ref/github/datahub/datahub-graphql-core/src/main/resources/ingestion.graphql
   //   createIngestionExecutionRequest(input: { ingestionSourceUrn: String! }) → String (exec URN)
@@ -589,7 +671,8 @@ test("UC1 Case 1 step 6 — execute in DataHub; DataSpoke reflects the run", asy
   //   _ensure_execution_request_present — confirmed query shape.
   //   result.status: String! — terminal when not null and not in
   //   {PENDING, RUNNING, SKIPPED, UP_FOR_RETRY}. SUCCESS/SUCCEEDED → proceed; any other
-  //   terminal → tolerant skip.
+  //   terminal status → FAIL (the run finished and the ingestion broke); no terminal
+  //   status inside the budget → FAIL (an exhausted wait is a failure, not a skip).
   const pollQuery = `
     query executionRequest($urn: String!) {
       executionRequest(urn: $urn) {
@@ -625,24 +708,42 @@ test("UC1 Case 1 step 6 — execute in DataHub; DataSpoke reflects the run", asy
     await new Promise((r) => setTimeout(r, 8_000));
   }
 
-  if (execStatus === null) {
-    test.skip(
-      true,
-      `Execution ${executionRequestUrn} did not reach terminal status within 180s. ` +
-        "DataHub executor may be slow or unavailable. " +
-        "spec: TESTING.md — tolerant skip when executor unavailable."
-    );
-    return;
-  }
-  if (!SUCCESS_STATUSES.has(execStatus)) {
-    test.skip(
-      true,
-      `Execution ${executionRequestUrn} completed with non-success status ${execStatus}. ` +
-        "Executor ran but source errored (likely dev-env connectivity). " +
-        "spec: TESTING.md — tolerant skip when executor completes with failure."
-    );
-    return;
-  }
+  // The wait exhausted its budget. The executor was confirmed schedulable before the
+  // trigger, so this is the run failing to complete — an outcome this step judges.
+  // spec: spec/TESTING.md §E2E §Execution discipline — "A step never skips on an outcome
+  //   it exists to judge: a failed run, an empty result, or a wait that exhausts its
+  //   budget is a failure, not a skip."
+  expect(
+    execStatus,
+    `Execution ${executionRequestUrn} did not reach a terminal status within 180s, ` +
+      "although the acryl-datahub-actions executor reported a ready replica before the " +
+      "trigger. The request is stuck non-terminal (PENDING/RUNNING/SKIPPED/UP_FOR_RETRY). " +
+      "Inspect the executor: kubectl -n " +
+      `${process.env["DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE"] ?? "<datahub-ns>"} logs ` +
+      "-l app.kubernetes.io/name=acryl-datahub-actions --tail=200, and the request's " +
+      "own status in DataHub (Ingestion → the source → its runs)."
+  ).not.toBeNull();
+  // The assertion above already failed the test when null; this only narrows the type
+  // for the checks below (Playwright's expect carries no TS assertion signature).
+  const terminalStatus = execStatus as string;
+
+  // A TERMINAL non-success status is the opposite case: the executor ran to completion
+  // and the ingestion FAILED. That is precisely the product failure UC1 Case 1 exists
+  // to detect, so it fails the test — skipping here would report a permanently broken
+  // DataHub-managed run as green.
+  // spec: USE_CASE_en.md §UC1 Case 1 — "When the source runs in DataHub … DataSpoke's
+  //   next sync mirrors that execution into `…/event` as an `INGESTION.COMPLETE` event";
+  //   `INGESTION.COMPLETE` is the success type, `INGESTION.FAIL` the failure one.
+  // spec: spec/TESTING.md §Assertion Discipline — a test that passes without proving
+  //   anything "certifies broken behavior".
+  expect(
+    SUCCESS_STATUSES.has(terminalStatus),
+    `Execution ${executionRequestUrn} reached TERMINAL status ${terminalStatus}, not ` +
+      `one of ${[...SUCCESS_STATUSES].join("/")}. The DataHub executor ran the ` +
+      "ingestion to completion and it failed — the run outcome UC1 Case 1 asserts. " +
+      "Inspect the execution request's logs in DataHub " +
+      "(Ingestion → the source → the failed run) before dismissing this as env noise."
+  ).toBe(true);
 
   // -- 6c: Re-run sync to mirror the completed execution --
   // spec: feature/BACKEND.md §Sync sweep step 4 — _mirror_execution_requests mirrors
@@ -656,7 +757,7 @@ test("UC1 Case 1 step 6 — execute in DataHub; DataSpoke reflects the run", asy
   // The run was booked on the hidden CLI wrapper; DataSpoke surfaces it ON the regular
   // parent the user looks at, tagged wrapper=true.
   // spec: USE_CASE_en.md §UC1 Case 1 — "DataSpoke's next sync mirrors that execution
-  //   into …/event as an INGESTION.COMPLETE event"
+  //   into `…/event` as an `INGESTION.COMPLETE` event"
   // spec: feature/BACKEND.md §Sync sweep step 4 — the regular source aggregates events
   //   across itself and its linked wrappers; each carries a derived wrapper flag.
   // spec: API.md §Ingestion — GET /sources/{id}/event includes linked-wrapper events
@@ -787,26 +888,30 @@ test("UC1 Case 1 step 6 — execute in DataHub; DataSpoke reflects the run", asy
     page.getByText("INGESTION.COMPLETE", { exact: false }).first()
   ).toBeVisible({ timeout: 15_000 });
 
-  // The "wrapper" tag renders only on the wrapper=true (CLI/schedule) path: when the run is
-  // booked on the hidden CLI wrapper, its event row carries a "wrapper" tag on the regular
-  // source's Events panel. The API-trigger path (createIngestionExecutionRequest) books
-  // directly on the source → wrapper=false → no tag. So gate the assertion on the event's
-  // actual wrapper value (already fetched as foundEvent!["wrapper"]).
-  // spec: FRONTEND_INGESTION.md §Source Detail §Events — wrapper-tagged event row.
-  // spec: API.md §Ingestion — derived wrapper flag rendered as a tag.
-  if (foundEvent!["wrapper"] === true) {
-    await expect(
-      page.getByText("wrapper", { exact: true }).first()
-    ).toBeVisible({ timeout: 15_000 });
-  } else {
-    await expect(page.getByText("wrapper", { exact: true })).toHaveCount(0);
-  }
+  // No assertion on the "wrapper" tag here. This test's trigger path
+  // (createIngestionExecutionRequest) always books the run on the source itself, so the
+  // event's derived flag is always false and the tag never renders — a presence check
+  // could not run and an absence check would assert the absence of something the test
+  // never injected. The two legs are covered where they can actually be exercised:
+  //   - the derived flag itself: asserted against the API above (6d, boolean contract);
+  //   - the tag's rendering for wrapper=true AND its absence for wrapper=false:
+  //     src/frontend/components/ingestion/ingestion-event-table.test.tsx §wrapper badge.
+  // spec: TESTING.md §Assertion Discipline — "Absence assertions require injection."
 
-  // -- 6g: UI assertion — Datasets panel shows ≥1 "high" authority row --
-  // spec: FRONTEND_INGESTION.md §Source Detail §Datasets — authority cell rendered per row
-  // The Datasets section must show at least one row where the authority badge reads "high".
-  // We look within the Datasets section context; the first "high" occurrence is sufficient.
+  // -- 6g: UI assertion — Datasets panel shows the fused "high (pipeline_name)" cell --
+  // The single `authority` column fuses both server fields into one cell — for a
+  // run-observed row that is exactly "high (pipeline_name)" (6e read those two fields
+  // back from the API). Asserted as the FULL cell text with exact: true, so a bare
+  // "high" substring cannot satisfy it. (`getByRole("cell")` is page-scoped; the
+  // Datasets table is the only table on this page rendering an authority cell, and the
+  // exact match is what carries the discrimination.)
+  // spec: FRONTEND_INGESTION.md §Source Detail §Datasets — "a single `authority` column
+  //   whose cell fuses both server fields, rendered as e.g. `high (emitted)`".
+  // spec: USE_CASE_en.md §UC1 Case 1 — execution upgrades datasets to pipeline_name/high.
+  await expect(page.getByRole("heading", { name: "Datasets" })).toBeVisible({
+    timeout: 15_000,
+  });
   await expect(
-    page.getByText("high", { exact: false }).first()
+    page.getByRole("cell", { name: "high (pipeline_name)", exact: true }).first()
   ).toBeVisible({ timeout: 15_000 });
 });

@@ -158,7 +158,9 @@ test.afterAll(async ({ adminApi }) => {
 // group is retried together — re-running every step in order and re-establishing
 // both module state and backend state. The create/mutate steps tolerate
 // "already exists" on a group-retry (PUT-conf and POST-result upsert → 200).
-// spec: spec/TESTING.md §E2E — dependent sequential steps use describe.serial.
+// spec: spec/TESTING.md §E2E §Execution discipline — "Ordered scenarios run serial…
+// Playwright retries a failed serial group from the first step, so a file either makes
+// every step re-runnable or sets `retries: 0`".
 test.describe.configure({ mode: "serial" });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -166,7 +168,9 @@ test.describe.configure({ mode: "serial" });
 // spec: USE_CASE_en.md §UC2 — "The caller registers validation slots for the
 //   fulfillment table and the upstream order-events topic."
 // spec: VALIDATION.md §Rule Configuration — description + variables required.
-// spec: TESTING.md §E2E — "[API-fired, no UI surface]" steps are probed via backend.
+// spec: TESTING.md §E2E §Execution discipline — a step whose api-wired counterpart has no
+// UI surface "carries an `[API-fired…]` label naming why (setup, no surface for a collision,
+// no distinct gesture) and is asserted on the backend alone".
 // ─────────────────────────────────────────────────────────────────────────────
 test("UC2 step 1 — PUT validation confs for postgres + kafka datasets", async ({
   adminApi,
@@ -222,7 +226,10 @@ test("UC2 step 2 — POST results; detail page renders score + variables charts"
   }
 
   // Poll via adminApi until all 3 postgres results are present.
-  // spec: TESTING.md §Assertion Principles — poll bounded deadline instead of fixed sleep.
+  // spec: TESTING.md §E2E §Execution discipline — "Never sleep for a fixed duration"; a
+  //   hand-rolled polling loop "declares its deadline and asserts the awaited condition
+  //   after the loop". §Execution discipline also requires gating a data-dependent UI
+  //   assertion on confirmed backend state.
   const from = daysAgoIso(5);
   const until = daysAgoIso(-1); // tomorrow — brackets the recent result dates
   const deadline = Date.now() + 30_000;
@@ -244,7 +251,8 @@ test("UC2 step 2 — POST results; detail page renders score + variables charts"
   // Wrap the goto + UI visibility checks in a retry block to absorb residual
   // client-side render lag after the backend results are confirmed present —
   // without it a render flake fails the test and triggers a serial group-retry.
-  // spec: TESTING.md §Assertion Principles — retry bounded deadline instead of fixed sleep.
+  // spec: TESTING.md §E2E §Execution discipline — "Never sleep for a fixed duration":
+  //   wait with a bounded construct such as `expect(async () => {…}).toPass({ timeout })`.
   await expect(async () => {
     await page.goto(PG_DETAIL_URL);
     await expect(page).not.toHaveURL(/\/login/);
@@ -305,7 +313,10 @@ test("UC2 step 3 — /validation list shows both datasets with score badges", as
   // Readiness poll: the cross-dataset list is sourced via DataHub ES, which lags
   // conf/result writes by ~2-3 min. Poll until BOTH dataset URNs are present in
   // the aggregated list before navigating + asserting the UI table.
-  // spec: TESTING.md §Assertion Principles — poll bounded deadline instead of fixed sleep.
+  // spec: TESTING.md §E2E §Execution discipline — "Never sleep for a fixed duration"; a
+  //   hand-rolled polling loop "declares its deadline and asserts the awaited condition
+  //   after the loop". §Execution discipline also requires gating a data-dependent UI
+  //   assertion on confirmed backend state.
   const deadline = Date.now() + 180_000;
   let listReady = false;
   while (Date.now() < deadline) {
@@ -452,14 +463,28 @@ test("UC2 step 4 — postgres detail page renders conf, charts, and validation e
   // Toggle the "Events" CollapsiblePanel open if collapsed, then assert a
   // VALIDATION.RESULT_RECORDED row appears (mirrors UC4 step 9's pattern).
   // spec: FRONTEND_BASIC.md §Per-dataset page (Events panel).
+  // Navigate-and-assert inside toPass: the events were written a step earlier and their
+  // presence is already confirmed against the API, so what remains is residual client-side
+  // render lag (query settle + re-render) after confirmed backend state. Re-mounting
+  // re-issues the panel's fetch and absorbs it.
+  // spec: TESTING.md §E2E §Execution discipline — "Never sleep for a fixed duration":
+  //   wait with a bounded construct — "`await expect(async () => { … }).toPass({ timeout })`
+  //   around a navigate-and-assert block".
   const eventsPanel = page.getByRole("button", { name: /events/i }).first();
-  await expect(eventsPanel).toBeVisible({ timeout: 10_000 });
-  if ((await eventsPanel.getAttribute("aria-expanded")) === "false") {
-    await eventsPanel.click();
-  }
-  await expect(
-    page.getByText("VALIDATION.RESULT_RECORDED", { exact: false }).first()
-  ).toBeVisible({ timeout: 20_000 });
+  let firstAttempt = true;
+  await expect(async () => {
+    // Re-navigate on every retry (not the first attempt, which reuses the page this
+    // step already loaded) so the panel RE-MOUNTS and recomputes its upper bound.
+    if (!firstAttempt) await page.goto(PG_DETAIL_URL);
+    firstAttempt = false;
+    await expect(eventsPanel).toBeVisible({ timeout: 10_000 });
+    if ((await eventsPanel.getAttribute("aria-expanded")) === "false") {
+      await eventsPanel.click();
+    }
+    await expect(
+      page.getByText("VALIDATION.RESULT_RECORDED", { exact: false }).first()
+    ).toBeVisible({ timeout: 5_000 });
+  }).toPass({ timeout: 60_000, intervals: [1_000, 2_000, 3_000, 5_000] });
 
   // -- UI assertion: Edit and Delete buttons visible (admin can write) --
   // spec: FRONTEND_VALIDATION.md §Page contracts — write actions rendered for Editor/Admin

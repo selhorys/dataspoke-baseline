@@ -122,11 +122,17 @@ beforeEach(() => {
     data: { dataset_urn: DATASET_URN, is_enabled: true },
     isLoading: false,
   });
+  // The three counts are deliberately all DIFFERENT so the MetaGen card's assertion
+  // can only pass by reading the dataset-level `candidate_count` aggregate — not
+  // `total_count` (the item count) and not `items.length`.
+  // spec: FRONTEND_BASIC.md §Per-dataset page — "The count reads the item-list
+  //   response's dataset-level `candidate_count` aggregate (total candidates of any
+  //   status), so it matches the number the result rollup reports for the same dataset."
   mockMetagenItems.mockReturnValue({
     data: {
-      items: [{ id: "i1" }, { id: "i2" }],
-      total_count: 2,
-      candidate_count: 2,
+      items: [{ id: "i1" }],
+      total_count: 1,
+      candidate_count: 7,
     },
   });
 });
@@ -149,7 +155,9 @@ describe("DatasetHubPage — /data/[urn]", () => {
     expect(screen.getByText("orders-source")).toBeTruthy(); // ingestion source name
     expect(screen.getByText(/last run success/i)).toBeTruthy(); // latest_run status
     expect(screen.getByText(/1 variable/i)).toBeTruthy(); // validation conf var count
-    expect(screen.getByText(/2 candidates/i)).toBeTruthy(); // metagen candidate count
+    // 7 = candidate_count (the dataset-level aggregate), distinct from total_count (1)
+    // and items.length (1), so a card reading either of those fails here.
+    expect(screen.getByText(/7 candidates/i)).toBeTruthy(); // metagen candidate count
   });
 
   it("Ingestion summary card links the source name to its detail and shows the last-run time", async () => {

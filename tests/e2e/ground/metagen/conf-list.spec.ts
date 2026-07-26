@@ -75,16 +75,47 @@ test("/metagen/conf — lists confs with a Create-conf link and per-row Run acti
   // -- schedule_tier "daily" links to its backing Airflow DAG (metagen-daily) --
   // conf-list.tsx: <ScheduleTierLink tier dagId={scheduleDagId("metagen", "daily")} />
   // The DAG-id prefix logic is unit-tested in Vitest; here we verify the deployed
-  // frontend renders the tier as an external DAG link against the real DAG id. When
-  // no airflowUrl is configured the component renders plain text (no link) instead.
+  // frontend renders the tier against the real DAG id.
+  //
+  // Which branch applies is decided by the deployment's runtime config, NOT by what
+  // happens to be in the DOM: schedule-tier-link.tsx falls back to plain text exactly
+  // when `getRuntimeConfig().airflowUrl` is empty. Read that value from the page's
+  // injected runtime config first, then require the corresponding branch — a
+  // DOM-derived branch choice would accept either outcome unconditionally.
+  // src/frontend/lib/runtime-config.ts — window.__DATASPOKE_RUNTIME_CONFIG__ is injected
+  //   by the root server layout; NEXT_PUBLIC_AIRFLOW_URL is the build-time fallback.
   // spec: FRONTEND_METAGEN.md §Conf list — schedule_tier cell links to metagen-<tier> when set
+  const runtimeConfig = await page.evaluate(() => {
+    // `globalThis` is the browser window inside evaluate(); referenced this way so the
+    // spec needs no DOM lib in the E2E tsconfig.
+    const g = globalThis as unknown as {
+      __DATASPOKE_RUNTIME_CONFIG__?: { airflowUrl?: string };
+    };
+    return g.__DATASPOKE_RUNTIME_CONFIG__ ?? null;
+  });
+  // Backstop: the server layout must have injected the runtime config at all. Without
+  // this, a missing injection would silently route the assertion into the plain-text
+  // branch and prove nothing about the link.
+  expect(
+    runtimeConfig,
+    "the root server layout must inject window.__DATASPOKE_RUNTIME_CONFIG__",
+  ).not.toBeNull();
+  // Mirror getRuntimeConfig()'s resolution EXACTLY: `w.airflowUrl || NEXT_PUBLIC_AIRFLOW_URL
+  // || ""`. Reading only the injected value would mis-decide the branch on a build whose
+  // NEXT_PUBLIC_AIRFLOW_URL is baked in while the ConfigMap value is empty.
+  // src/frontend/lib/runtime-config.ts — getRuntimeConfig().
+  const airflowUrl =
+    runtimeConfig!.airflowUrl || process.env["NEXT_PUBLIC_AIRFLOW_URL"] || "";
+
   const tierLink = page.getByRole("link", { name: "daily", exact: true });
-  if ((await tierLink.count()) > 0) {
+  if (airflowUrl) {
+    // Airflow is configured → the tier MUST be a link, built on that exact base URL.
     await expect(tierLink).toBeVisible();
-    await expect(tierLink).toHaveAttribute("href", /\/dags\/metagen-daily$/);
+    await expect(tierLink).toHaveAttribute("href", `${airflowUrl}/dags/metagen-daily`);
     await expect(tierLink).toHaveAttribute("target", "_blank");
   } else {
-    // No Airflow URL configured in this deployment — the tier renders as plain text.
+    // No Airflow URL in this deployment → the tier MUST render as plain text, no link.
+    await expect(tierLink).toHaveCount(0);
     await expect(page.getByText("daily", { exact: true })).toBeVisible();
   }
 });

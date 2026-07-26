@@ -77,7 +77,8 @@ const THROWAWAY_ID = "uc5-put-absent-test";
 // Runs under the admin project only — enforced by the filename convention in
 // playwright.config.ts (default *.spec.ts → admin), which supplies the admin
 // storageState. Do not override storageState here.
-// spec: spec/TESTING.md §E2E §Authentication
+// spec: spec/TESTING.md §E2E §Authentication — "Playwright projects are keyed on role
+// (admin / editor / reader); role-gated tests select the matching project."
 
 // ── Module-level state shared across serial step tests ─────────────────────────
 
@@ -100,7 +101,9 @@ test.afterAll(async ({ adminApi }) => {
 // idempotent across a group-retry: createMetricViaUI pre-deletes the metric_id
 // before the UI create, so the re-create lands cleanly with a 201. The negative
 // paths (1b 409 METRIC_EXISTS, 1c PUT-absent 404) remain exact.
-// spec: spec/TESTING.md §E2E — dependent sequential steps use describe.serial.
+// spec: spec/TESTING.md §E2E §Execution discipline — "Ordered scenarios run serial…
+// Playwright retries a failed serial group from the first step, so a file either makes
+// every step re-runnable or sets `retries: 0`".
 test.describe.configure({ mode: "serial" });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -120,7 +123,9 @@ async function createMetricViaUI(
   cfg: MetricCfg
 ): Promise<string> {
   // Pre-flight: idempotent delete so a leftover from a prior run does not collide.
-  // spec: spec/TESTING.md §Assertion Principles — idempotent setup.
+  // spec: spec/TESTING.md §E2E §Execution discipline — "Setup is idempotent and lives
+  //   in hooks": "each setup path pre-deletes by natural key and accepts the
+  //   upsert/absent status codes (200-or-201, 404-as-success)".
   await adminApi.delete(`/api/v1/spoke/governance/metric/${cfg.metric_id}/attr/conf`);
 
   // Navigate to the create page.
@@ -140,7 +145,8 @@ async function createMetricViaUI(
   // -- UI gesture: metric_type selector --
   // spec: metric-form.tsx — SelectTrigger id="metric-type"; Radix Select pattern
   // (click trigger, then pick option by role).
-  // spec: TESTING.md §E2E — Radix Select: click the #id trigger, then getByRole("option", {name}).click()
+  // spec: TESTING.md §E2E §Selectors — "Drive a Select by clicking its trigger — by `id`
+  //   when rows render several unnamed triggers — then clicking the option by role."
   await page.locator("#metric-type").click();
   await page.getByRole("option", { name: cfg.metric_type, exact: true }).click();
 
@@ -491,7 +497,9 @@ test("UC5 step 3a — dashboard shows combined metric cards (title, type badge, 
   adminApi,
 }) => {
   // Poll adminApi until ≥1 result row appears for ingestion-freshness (bellwether metric).
-  // spec: TESTING.md §E2E critical pitfall 3 — poll adminApi until present, THEN assert UI.
+  // spec: TESTING.md §E2E §Execution discipline — "Gate data-dependent UI assertions on
+  //   confirmed backend state": read (or poll) the same state through adminApi first,
+  //   then assert the UI against it.
   // Runs were triggered in step 2; results should appear within ~30s of the run completing.
   const now = new Date();
   const from = new Date(now.getTime() - 8 * 24 * 60 * 60 * 1000).toISOString(); // 8 days ago
@@ -516,7 +524,8 @@ test("UC5 step 3a — dashboard shows combined metric cards (title, type badge, 
   // absorb residual client-side render lag after the backend results are
   // confirmed present — without it a render flake fails the test and triggers a
   // serial group-retry.
-  // spec: TESTING.md §Assertion Principles — retry bounded deadline instead of fixed sleep.
+  // spec: TESTING.md §E2E §Execution discipline — "Never sleep for a fixed duration":
+  //   wait with a bounded construct such as `expect(async () => {…}).toPass({ timeout })`.
   await expect(async () => {
     await page.goto("/governance/dashboard");
     await expect(page).not.toHaveURL(/\/login/);

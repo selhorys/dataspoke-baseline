@@ -26,3 +26,5 @@
 - [AUTH §Serialization row status](project_auth_serialization_untested_rows.md) — which of the 4 credential-write re-checks are really covered; patch lock_user, not the revalidate helper
 - [populate_existing alias trap in fakes](project_populate_existing_alias_fake_trap.md) — a FOR UPDATE fake returning a *new* object can't catch a dropped state snapshot; it must mutate in place
 - [Spec-conformance #86 anchors](project_spec_conformance_86_anchors.md) — verified 124/124 routes, 57 codes; TESTING.md has no allowlist rule; drift left unencoded
+- [E2E TESTING.md citations RESOLVED](project_e2e_testing_md_fabricated_citations.md) — §Execution discipline/§Selectors landed; keeps the normalised-substring sweep that proves citations
+- [Events panel freezes its upper bound](project_e2e_events_panel_frozen_upper_bound.md) — `to = Date.now()` memoised at mount from the browser clock; why toPass wrappers ring event assertions

@@ -231,12 +231,17 @@ describe("NodesPanel — 7-column compact layout", () => {
     expect(screen.getAllByRole("columnheader")).toHaveLength(7);
   });
 
-  it("renders the node name, description, and 2-dp confidence", () => {
-    mockNodesResult([makeNode({ name: "Edition", description: "A format", confidence_score: 0.5 })]);
+  it("renders the node name, description, and confidence score", () => {
+    mockNodesResult([
+      makeNode({ name: "Edition", description: "A format", confidence_score: 0.87 }),
+    ]);
     render(<NodesPanel canWrite={false} />);
     expect(screen.getByText("Edition")).toBeTruthy();
     expect(screen.getByText("A format")).toBeTruthy();
-    expect(screen.getByText("0.50")).toBeTruthy();
+    // spec: FRONTEND_ONTOGEN.md §Page contracts (column table) — "| **Confidence** |
+    // LLM `score` |". The spec pins the value shown, not a decimal format, so match
+    // the score rather than a particular rendering of it.
+    expect(screen.getByText(/0\.87/)).toBeTruthy();
   });
 });
 

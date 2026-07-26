@@ -4,7 +4,9 @@
  * Spec: spec/feature/FRONTEND_METAGEN.md §Uncovered.
  *   - Read-only table of datasets reached by no conf, each carrying a reason.
  *   - The include_disallowed toggle drives the hook's includeDisallowed arg:
- *     off (default) → only no_conf_match; on → also boundary_blocked.
+ *     off by default, true once toggled. Which rows that arg widens the set to is
+ *     the server's contract (see tests/e2e/ground/metagen/uncovered.spec.ts); here
+ *     the page is held only to passing the right arg and rendering what it receives.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
@@ -30,42 +32,51 @@ vi.mock("@/lib/api/metagen", () => ({
   useMetagenUncovered: (includeDisallowed: boolean) => mockUncovered(includeDisallowed),
 }));
 
+// The mock returns the SAME payload for both arg values on purpose. Narrowing the
+// off-payload here would only re-test the fixture's own branch: the widening is the
+// server's job (include_disallowed is a query param), and the page's whole contract
+// is (a) which arg it passes and (b) rendering whatever comes back. The real
+// off ⊂ on widening is proven end-to-end in
+// tests/e2e/ground/metagen/uncovered.spec.ts against a seeded boundary_blocked row.
+const ROWS = [
+  { dataset_urn: "urn:li:dataset:a", reason: "no_conf_match" },
+  { dataset_urn: "urn:li:dataset:b", reason: "boundary_blocked" },
+];
+
 beforeEach(() => {
   mockUncovered.mockReset();
-  mockUncovered.mockImplementation((includeDisallowed: boolean) => ({
-    data: {
-      total_count: includeDisallowed ? 2 : 1,
-      datasets: includeDisallowed
-        ? [
-            { dataset_urn: "urn:li:dataset:a", reason: "no_conf_match" },
-            { dataset_urn: "urn:li:dataset:b", reason: "boundary_blocked" },
-          ]
-        : [{ dataset_urn: "urn:li:dataset:a", reason: "no_conf_match" }],
-    },
+  mockUncovered.mockImplementation(() => ({
+    data: { total_count: ROWS.length, datasets: ROWS },
     isLoading: false,
     error: null,
   }));
 });
 
 describe("metagen uncovered page", () => {
-  it("defaults to include_disallowed off and shows no_conf_match rows", () => {
+  it("defaults to include_disallowed off", () => {
     render(<MetagenUncoveredPage />);
 
     expect(mockUncovered).toHaveBeenCalledWith(false);
-    // The reason badge in the table — scoped to a table cell to avoid matching
-    // the literal in the page's descriptive copy.
-    expect(screen.getByRole("cell", { name: "no_conf_match" })).toBeTruthy();
-    expect(screen.queryByRole("cell", { name: "boundary_blocked" })).toBeNull();
+    expect(mockUncovered).not.toHaveBeenCalledWith(true);
   });
 
-  it("toggling include_disallowed switches the hook arg and reveals boundary_blocked rows", () => {
+  it("renders every row the hook returns, each with its reason", () => {
+    render(<MetagenUncoveredPage />);
+
+    // Reason badges scoped to table cells so the literals in the page's descriptive
+    // copy cannot satisfy the assertion. The page applies no reason filtering of its
+    // own — both classifications render whenever the server returns them.
+    expect(screen.getByRole("cell", { name: "no_conf_match" })).toBeTruthy();
+    expect(screen.getByRole("cell", { name: "boundary_blocked" })).toBeTruthy();
+  });
+
+  it("toggling include_disallowed switches the hook arg to true", () => {
     render(<MetagenUncoveredPage />);
 
     const toggle = screen.getByLabelText(/show boundary-blocked datasets/i);
     fireEvent.click(toggle);
 
     expect(mockUncovered).toHaveBeenCalledWith(true);
-    expect(screen.getByRole("cell", { name: "boundary_blocked" })).toBeTruthy();
   });
 
   it("renders each dataset_urn as a link to its per-dataset page", () => {

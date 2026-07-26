@@ -114,9 +114,8 @@ export const IMAZON_URNS = {
     "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.shipping.carrier_status,DEV)",
 } as const;
 
-/** Stub-mode toggle: set in global-setup/teardown via PATCH /api/v1/admin/conf */
-export type StubField =
-  | "stub_llm_client"
-  | "stub_redis_client"
-  | "stub_pgvector_manager"
-  | "stub_notification_service";
+// No `stub_*` field type lives here. The four toggles are dev-env-wide settings owned by
+// the profile seed and the operator; a test reads them straight off GET /admin/conf to
+// gate an LLM variant and never writes them, so no typed write-surface is offered.
+// spec: spec/TESTING.md §End-to-End (E2E) Testing §Execution discipline — "Never flip the
+//   stub toggles… but never sets them."

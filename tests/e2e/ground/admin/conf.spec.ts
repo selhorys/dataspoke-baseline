@@ -59,7 +59,8 @@ test("/admin/conf — form renders with current config values from GET /admin/co
   adminApi,
 }) => {
   // Backend probe: read current conf to know expected field values.
-  // spec: TESTING.md §E2E — poll adminApi until present, THEN assert UI.
+  // spec: TESTING.md §E2E §Execution discipline — "Gate data-dependent UI assertions on
+  //   confirmed backend state".
   const confResp = await adminApi.get("/api/v1/admin/conf");
   expect(confResp.status()).toBe(200);
   const conf = (await confResp.json()) as RuntimeConf;
@@ -162,7 +163,15 @@ test("/admin/conf — edit validation_score_n_intervals → Save → persisted �
   expect(after.validation_score_n_intervals).toBe(NEW_VALUE);
 
   // CRITICAL: stub_* fields must remain unchanged.
-  // spec: TESTING.md §Stub Toggles — stubs managed by global-setup; tests must not flip them.
+  // They are dev-env-wide settings owned by the profile seed
+  // (helm-charts/bin/post-install/seed-runtime-config.sh PATCHes all four for the dev
+  // profile) and by the operator — not by anything in the E2E run; global-setup never
+  // touches them.
+  // spec: TESTING.md §E2E §Execution discipline — "Never flip the stub toggles… A test
+  //   may read them to gate an LLM variant and must assert them unchanged after any
+  //   `/admin/conf` write, but never sets them."
+  // spec: TESTING.md §Stub Toggles (RuntimeConfig) — "The dev profile's
+  //   `helm-charts/bin/post-install/seed-runtime-config.sh` PATCHes all four to `true`".
   expect(after.stub_redis_client).toBe(pre.stub_redis_client);
   expect(after.stub_llm_client).toBe(pre.stub_llm_client);
   expect(after.stub_pgvector_manager).toBe(pre.stub_pgvector_manager);

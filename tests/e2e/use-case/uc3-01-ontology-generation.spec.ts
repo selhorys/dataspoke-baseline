@@ -506,10 +506,22 @@ test("UC3 step 4 (stub mode) — /ontogen/result tables + status filter + Graph 
   const statusFilter = page.getByLabel("Status filter");
   await expect(statusFilter.first()).toBeVisible({ timeout: 5_000 });
 
-  // Snapshot how many table rows the Nodes table shows under each filter mode. Under stub there
-  // are zero rows so all modes are empty (count 0); when rows exist (real-LLM / pre-seeded state)
-  // the Approved/Unapproved partition must be a subset of All. The binding invariant — switching
-  // the filter changes the visible set, never grows it beyond All — holds in both regimes.
+  // -- Backend probe FIRST: the node page the panel itself fetches (same limit + default
+  //    sort), with each row's status. Every count assertion below is pinned to this page,
+  //    so a filter that ignores its mode — or a panel that renders nothing — fails rather
+  //    than passing on a 0 ≤ 0 tautology. --
+  // spec: API.md §Ontology Generation — GET /spoke/ontogen/result/node rows carry `status`;
+  //   default ordering created_at_desc.
+  // spec: FRONTEND_ONTOGEN.md §Page contracts — the status filter is "applied client-side
+  //   over the fetched set", so the UI counts are a partition of exactly this page.
+  const nodePageResp = await adminApi.get(
+    "/api/v1/spoke/ontogen/result/node?offset=0&limit=20"
+  );
+  expect(nodePageResp.status()).toBe(200);
+  const nodePage = (await nodePageResp.json()) as { nodes: Array<{ status: string }> };
+  const expectedAll = nodePage.nodes.length;
+  const expectedApproved = nodePage.nodes.filter((n) => n.status === "approved").length;
+
   // A table body row is <tr> inside <tbody>; locate within the active Nodes panel.
   const nodesRows = page.getByRole("tabpanel").getByRole("row");
   async function bodyRowCount(): Promise<number> {
@@ -517,23 +529,81 @@ test("UC3 step 4 (stub mode) — /ontogen/result tables + status filter + Graph 
     // Subtract the header row (<tr> in <thead>) when a table is present; 0 when empty-state.
     return total > 0 ? Math.max(0, total - 1) : 0;
   }
+  // Every mode's count is read through expect.poll: locator.count() does NOT auto-wait,
+  // so a bare read immediately after the Radix option click can observe the pre-re-render
+  // DOM. The poll IS the assertion here (it fails on timeout); the plain expects below
+  // restate the settled values.
+  // spec: TESTING.md §E2E §Execution discipline — "Never sleep for a fixed duration":
+  //   wait with a bounded construct — "`expect.poll`" — "never a synchronous `isVisible()`
+  //   that races the component's fetch".
+  const expectedUnapproved = expectedAll - expectedApproved;
+
   // mode=all
   await statusFilter.first().click();
   await page.getByRole("option", { name: "All", exact: true }).click();
+  await expect
+    .poll(bodyRowCount, {
+      timeout: 15_000,
+      message: "the All view must render exactly the fetched node page",
+    })
+    .toBe(expectedAll);
   const allCount = await bodyRowCount();
   // mode=approved
   await statusFilter.first().click();
   await page.getByRole("option", { name: "Approved", exact: true }).click();
+  await expect
+    .poll(bodyRowCount, {
+      timeout: 15_000,
+      message: "Approved must render exactly the approved rows of the fetched page",
+    })
+    .toBe(expectedApproved);
   const approvedCount = await bodyRowCount();
   // mode=unapproved
   await statusFilter.first().click();
   await page.getByRole("option", { name: "Unapproved", exact: true }).click();
+  await expect
+    .poll(bodyRowCount, {
+      timeout: 15_000,
+      message: "Unapproved must render exactly the non-approved rows of the fetched page",
+    })
+    .toBe(expectedUnapproved);
   const unapprovedCount = await bodyRowCount();
-  // The filtered partitions never exceed the unfiltered set, and approved+unapproved = all
-  // (filterByApproval partitions the fetched page). Holds at 0/0/0 under stub.
-  expect(approvedCount).toBeLessThanOrEqual(allCount);
-  expect(unapprovedCount).toBeLessThanOrEqual(allCount);
-  expect(approvedCount + unapprovedCount).toBe(allCount);
+
+  // Backstop: the unfiltered table shows exactly the fetched page.
+  expect(allCount, "the All view must render exactly the fetched node page").toBe(expectedAll);
+
+  if (expectedAll === 0) {
+    // Stub default: the run persists zero nodes, so there is no partition to
+    // discriminate. Assert the DEFINITE empty state rather than a 0 ≤ 0 identity.
+    //
+    // Be explicit about what is NOT covered here: with zero rows this leg proves only
+    // that every mode renders the empty state. The E2E partition leg (the `else` branch
+    // below) runs ONLY when the dev env is configured with `stub_llm_client=false`
+    // (PATCH /api/v1/admin/conf {"stub_llm_client": false}) so a real inference run
+    // persists rows. No other E2E test covers it — ground/ontogen/result-table.spec.ts
+    // asserts columns and the Evidence link, not the partition.
+    // The partition logic itself is covered at the unit tier:
+    // src/frontend/lib/ontogen-filter.test.ts §filterByApproval — all / approved /
+    // unapproved, `llm_approved` counting as unapproved, and the empty list.
+    // spec: TESTING.md §Assertion Discipline — filter tests must not pass on an empty set.
+    expect(approvedCount).toBe(0);
+    expect(unapprovedCount).toBe(0);
+    await expect(
+      page.getByRole("tabpanel").getByText("No ontology nodes.", { exact: true })
+    ).toBeVisible({ timeout: 10_000 });
+  } else {
+    // Rows exist: each mode must show exactly its share of the fetched page.
+    // spec: FRONTEND_ONTOGEN.md §Page contracts — "*Approved* is `status === "approved"`;
+    //   *Unapproved* is every other status" — complementary, so together they must
+    //   reproduce the All view exactly.
+    expect(approvedCount, "Approved shows exactly the approved rows of the page").toBe(
+      expectedApproved
+    );
+    expect(unapprovedCount, "Unapproved shows exactly the non-approved rows").toBe(
+      expectedAll - expectedApproved
+    );
+    expect(approvedCount + unapprovedCount).toBe(allCount);
+  }
   // Reset to All for the remaining assertions.
   await statusFilter.first().click();
   await page.getByRole("option", { name: "All", exact: true }).click();
@@ -606,10 +676,11 @@ test("UC3 step 4 (stub mode) — /ontogen/result tables + status filter + Graph 
 //   row is revocable (offers Reject)." review-row.tsx surfaces Reject for status==="approved".
 // spec: FRONTEND_ONTOGEN.md §Page contracts — an approved row is revocable (offers Reject).
 //
-// Data-conditional: rows exist only after a real-LLM run (stub runs persist zero). When the result
-// set is empty (stub default) the revoke gesture has nothing to act on, so the round-trip is
-// skipped — mirroring how step 4 treats the stub no-op. When ≥1 node exists, we drive an approved
-// row into the rejected state through the UI and confirm via the backend read-back.
+// Gated on the `stub_llm_client` PRECONDITION, not on the observed row count: ontology rows exist
+// only after a real-LLM run (a stub run persists none), so under the stub the step skips with the
+// PATCH that supplies the precondition, while on a real-LLM env an empty result set FAILS. With
+// rows present, we drive an approved row into the rejected state through the UI and confirm via
+// the backend read-back.
 // ─────────────────────────────────────────────────────────────────────────────
 test("UC3 step 4b — revoke an approved node via the result table (Reject) round-trips to rejected", async ({
   page,
@@ -617,16 +688,32 @@ test("UC3 step 4b — revoke an approved node via the result table (Reject) roun
 }) => {
   if (!confCreated) test.skip(true, "step 1 did not create conf");
 
-  // Find a node to operate on. If none exist (stub mode), skip the revoke round-trip.
+  // -- Precondition gate: keyed on the stub toggle, not on the row count --
+  // Under the stub, nodes are an unestablishable precondition; on a real-LLM env an empty
+  // result set is a genuine failure and must not skip silently.
+  // spec: TESTING.md §E2E §Execution discipline — "Skip only on an absent precondition…
+  //   A step never skips on an outcome it exists to judge: … an empty result … is a
+  //   failure, not a skip."
+  const stubLlm = await readStubLlmClient(adminApi);
+  test.skip(
+    stubLlm,
+    "stub_llm_client=true: a stub inference run persists zero ontology rows, so there is " +
+      "no node to revoke. Supply the precondition with " +
+      'PATCH /api/v1/admin/conf {"stub_llm_client": false} (≤30s propagation), trigger an ' +
+      "ontogen run (POST /api/v1/spoke/ontogen/method/run), then re-run this spec."
+  );
+
   const NODE_LIST = "/api/v1/spoke/ontogen/result/node?offset=0&limit=10";
   const listResp = await adminApi.get(NODE_LIST);
   expect(listResp.status()).toBe(200);
   const listBody = (await listResp.json()) as {
     nodes: Array<{ id: string; name: string; status: string }>;
   };
-  if (listBody.nodes.length === 0) {
-    test.skip(true, "no ontology nodes (stub run persists zero rows); nothing to revoke");
-  }
+  expect(
+    listBody.nodes.length,
+    "stub_llm_client is false, so an inference run must have persisted ontology nodes; " +
+      "an empty result set is a real regression, not a skip condition"
+  ).toBeGreaterThan(0);
 
   // Drive the chosen node into the approved state via the API so the UI presents the revoke
   // (Reject) action. This setup mirrors a prior human approval; the test exercises the *revoke*.

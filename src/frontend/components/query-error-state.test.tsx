@@ -282,7 +282,11 @@ describe("QueryErrorState — every other error renders the ordinary error state
   // spec §Shared Component Notes: "For every other error it renders the ordinary
   // destructive error state with the message from the API's error envelope."
 
-  it("composes '<context>: <envelope message>' for an ApiError", () => {
+  // The spec pins WHAT must be surfaced — the API envelope's `message` — not the
+  // sentence it is composed into, so these assert the message is shown (alongside
+  // the caller's context) rather than pinning "<context>: <message>" verbatim.
+
+  it("shows the envelope message for an ApiError", () => {
     render(
       <QueryErrorState
         error={apiError(500, { error_code: "INTERNAL_ERROR", message: "Database connection failed" })}
@@ -290,19 +294,23 @@ describe("QueryErrorState — every other error renders the ordinary error state
       />,
     );
 
-    expect(screen.getByText("Failed to load metrics: Database connection failed")).toBeInTheDocument();
+    expect(screen.getByText(/Database connection failed/)).toBeInTheDocument();
+    expect(screen.getByText(/Failed to load metrics/)).toBeInTheDocument();
   });
 
-  it("composes the same copy for a plain Error", () => {
+  it("shows the thrown message for a plain Error", () => {
     render(<QueryErrorState error={new Error("boom")} context="Failed to load metrics" />);
 
-    expect(screen.getByText("Failed to load metrics: boom")).toBeInTheDocument();
+    expect(screen.getByText(/boom/)).toBeInTheDocument();
+    expect(screen.getByText(/Failed to load metrics/)).toBeInTheDocument();
   });
 
   it("falls back to 'unknown error' for a throwable that is not an Error", () => {
+    // No envelope and no Error message exist here, so the fallback wording is the
+    // component's own; assert only that it degrades to a stated unknown-error copy.
     render(<QueryErrorState error={"just a string"} context="Failed to load metrics" />);
 
-    expect(screen.getByText("Failed to load metrics: unknown error")).toBeInTheDocument();
+    expect(screen.getByText(/unknown error/i)).toBeInTheDocument();
   });
 
   it("an explicit message prop replaces the composed copy", () => {

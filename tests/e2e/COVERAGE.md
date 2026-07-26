@@ -43,18 +43,18 @@ retired per-feature `/{feature}/data/[urn]` routes are redirects to `/data/[urn]
 
 | Route | UC test | Ground test |
 |---|---|---|
-| `/data/[urn]` | `uc1-02-active-custom-postgres.spec.ts` step 6 (Ingestion panel reverse-lookup); `uc2-01-validation.spec.ts` steps 2, 4–7 (Validation panel: conf, charts, hard-delete via ConfirmDialog with cascade — afterwards reads as a never-created Create empty-state, no Undelete/Show-deleted toggle; recreate via the Create form; validation events in unified Events panel); `uc4-01-metadata-generation.spec.ts` steps 3, 7, 8, 9 (MetaGen panel boundary form, candidate review, metagen events in unified Events panel) | `ground/data/hub.spec.ts` (URN header + 3 summary cards; 3 foldable panels fold/unfold + NO Ingestion panel; consolidated Ingestion card + header DataHub deep-link; Events major-type filter all-checked default + uncheck narrows) |
+| `/data/[urn]` | `uc1-02-active-custom-postgres.spec.ts` step 6 (Ingestion panel reverse-lookup); `uc2-01-validation.spec.ts` steps 2, 4–7 (Validation panel: conf, charts, hard-delete via ConfirmDialog with cascade — afterwards reads as a never-created Create empty-state, no Undelete/Show-deleted toggle; recreate via the Create form; validation events in unified Events panel); `uc4-01-metadata-generation.spec.ts` steps 3, 7, 8, 9 (MetaGen panel boundary form, candidate review, metagen events in unified Events panel) | `ground/data/hub.spec.ts` (URN header + 3 summary cards; 3 foldable panels fold/unfold + NO Ingestion panel; consolidated Ingestion card + header DataHub deep-link; Events major-type filter all-checked default, then — over a seeded INGESTION event and a seeded VALIDATION event on the same dataset — unchecking a major drops exactly its rows and keeps the others) |
 
 #### Ingestion (UC1)
 
 | Route | UC test | Ground test |
 |---|---|---|
-| `/ingestion` (redirects to `/ingestion/conf`) | — | — |
+| `/ingestion` (redirects to `/ingestion/conf`) | — | `ground/ingestion/redirect.spec.ts` (bare `/ingestion` rests on `/ingestion/conf`; the source list renders there, dual-confirmed against `GET /spoke/ingestion/sources`) |
 | `/ingestion/conf` | `uc1-02-active-custom-postgres.spec.ts` step 7; `uc1-03-passive-kafka.spec.ts` step 7; `uc1-01-datahub-managed.spec.ts` step 3 (list view, DataHub-managed filter; wrappers hidden) | `ground/shell/reader-write-suppressed.reader.spec.ts` (Reader read-only: "Create source" absent) |
 | `/ingestion/sources/new` | `uc1-02-active-custom-postgres.spec.ts` step 1 (create ACTIVE_CUSTOM_MANAGED); `uc1-03-passive-kafka.spec.ts` step 1 (create PASSIVE) | — |
-| `/ingestion/sources/[id]` | `uc1-02-active-custom-postgres.spec.ts` steps 2–7; `uc1-03-passive-kafka.spec.ts` steps 2–3, 5–7 (detail, run, datasets, passive_observation INGESTION.COMPLETE event row, events, delete); `uc1-01-datahub-managed.spec.ts` steps 4–6 (detail, run, datasets, events, read-only, wrapper-tagged INGESTION.COMPLETE event row, pipeline_name/high authority cell after real execution) | `ground/ingestion/source-edit-no-submit.spec.ts` (read-mode renders the recipe as a highlighted `<pre>`, no textarea; clicking Edit swaps the recipe header to Save/Cancel + reveals the textarea and fires NO PUT — Edit/Save morph guard; header Save external-submit PUTs once + "Source updated" toast + REST read-back of the edited recipe) |
+| `/ingestion/sources/[id]` | `uc1-02-active-custom-postgres.spec.ts` steps 2–7; `uc1-03-passive-kafka.spec.ts` steps 2–3, 5–7 (detail, run, datasets, passive_observation INGESTION.COMPLETE event row, events, delete); `uc1-01-datahub-managed.spec.ts` steps 4–6 (detail, run, datasets, events, read-only, INGESTION.COMPLETE event row, `high (pipeline_name)` authority cell after real execution) | `ground/ingestion/source-edit-no-submit.spec.ts` (read-mode renders the recipe as a highlighted `<pre>`, no textarea; clicking Edit swaps the recipe header to Save/Cancel + reveals the textarea and fires NO PUT — Edit/Save morph guard; header Save external-submit PUTs once + "Source updated" toast + REST read-back of the edited recipe) |
 | `/ingestion/unmanaged` | `uc1-03-passive-kafka.spec.ts` steps 0, 4 (before/after source creation) | — |
-| `/ingestion/data/[urn]` (redirects to `/data/[urn]`) | covered via `/data/[urn]` (see Per-dataset hub) | — |
+| `/ingestion/data/[urn]` (redirects to `/data/[urn]`) | — | `ground/data/legacy-deep-link.spec.ts` (single-encoded deep link rests on `/data/<encoded urn>`, URN round-trips through the redirect, hub header intact) |
 
 #### Governance (UC5)
 
@@ -70,8 +70,8 @@ retired per-feature `/{feature}/data/[urn]` routes are redirects to `/data/[urn]
 
 | Route | UC test | Ground test |
 |---|---|---|
-| `/validation` | `uc2-01-validation.spec.ts` step 3 (cross-dataset list; URNs, score badges) | `ground/validation/coverage-filter.spec.ts` (covered/uncovered checkbox default state; none-checked → select-a-filter empty state; uncovered toggle surfaces a registered-no-conf row, dual-confirmed against GET /spoke/validation?coverage=uncovered) |
-| `/validation/data/[urn]` (redirects to `/data/[urn]`) | covered via `/data/[urn]` (see Per-dataset hub) | — |
+| `/validation` | `uc2-01-validation.spec.ts` step 3 (cross-dataset list; URNs, score badges) | `ground/validation/coverage-filter.spec.ts` (covered/uncovered checkbox default state; none-checked → select-a-filter empty state; over a seeded conf'd dataset + a seeded no-conf dataset, covered lists the first and excludes the second and uncovered does the reverse, dual-confirmed against GET /spoke/validation?coverage=covered\|uncovered) |
+| `/validation/data/[urn]` (redirects to `/data/[urn]`) | — | `ground/data/legacy-deep-link.spec.ts` (single-encoded deep link rests on `/data/<encoded urn>`, URN round-trips through the redirect, hub header intact) |
 
 #### Ontology Generation (UC3)
 
@@ -79,7 +79,7 @@ retired per-feature `/{feature}/data/[urn]` routes are redirects to `/data/[urn]
 |---|---|---|
 | `/ontogen` | `uc3-01-ontology-generation.spec.ts` step 4 (redirects to `/ontogen/result`) | — |
 | `/ontogen/result` | `uc3-01-ontology-generation.spec.ts` steps 4, 4b (browser: Nodes/Edges/Triples/Graph tabs as compact tables, All/Approved/Unapproved status filter, Evidence column → Langfuse session Link, Graph-tab force-directed canvas, revoke an approved row → reason-confirm dialog → rejected; result envelopes + per-row run_id) | `ground/ontogen/result-table.spec.ts` (Created-At SortControl drives `?sort=created_at_asc\|_desc` on the node fetch; shared standard Pagination control present — Rows-per-page selector default 20 + Prev/Next; data-conditional: 7 compact columns + Evidence column linking to `…/sessions/{run_id}` in a new tab when rows exist) |
-| `/ontogen/conf` | `uc3-01-ontology-generation.spec.ts` steps 1, 3 (Run + Edit conf, no Delete; Run dialog) | `ground/ontogen/conf-edit-no-submit.spec.ts` (read-mode renders a plain-text VIEW — is_enabled value dual-confirmed vs REST, no form control in DOM; clicking Edit swaps to the form and fires NO PUT /spoke/ontogen/attr/conf — real-browser guard for the morph-then-submit defect) |
+| `/ontogen/conf` | `uc3-01-ontology-generation.spec.ts` steps 1, 3 (Run + Edit conf, no Delete; Run dialog) | `ground/ontogen/conf-edit-no-submit.spec.ts` (read-mode renders a plain-text VIEW — is_enabled value dual-confirmed vs REST, no form control in DOM; clicking Edit swaps to the form and fires NO PUT/PATCH `.../attr/conf` — real-browser guard for the morph-then-submit defect; header Save external-submit writes exactly once + "Configuration saved" toast + REST read-back, with the singleton conf snapshotted and restored) |
 | `/ontogen/seed` | `uc3-01-ontology-generation.spec.ts` steps 2, 5 (create seed, delete via ConfirmDialog) | — |
 
 #### Metadata Generation (UC4)
@@ -92,12 +92,12 @@ uncovered view.
 | Route | UC test | Ground test |
 |---|---|---|
 | `/metagen` (redirects to `/metagen/conf`) | `uc4-01-metadata-generation.spec.ts` step 1 (302 redirect → conf list) | — |
-| `/metagen/conf` | `uc4-01-metadata-generation.spec.ts` steps 1, 2 (list heading, Create-conf link, both confs as rows) | `ground/metagen/conf-list.spec.ts` (list render, Create-conf link href, seeded-conf row + per-row Run; schedule_tier "daily" cell links to Airflow DAG `metagen-daily` when airflowUrl configured) |
+| `/metagen/conf` | `uc4-01-metadata-generation.spec.ts` steps 1, 2 (list heading, Create-conf link, both confs as rows) | `ground/metagen/conf-list.spec.ts` (list render, Create-conf link href, seeded-conf row + per-row Run; schedule_tier "daily" cell links to Airflow DAG `metagen-daily`, the branch chosen by the injected runtime config's `airflowUrl`) |
 | `/metagen/conf/new` | `uc4-01-metadata-generation.spec.ts` step 2 (create conf EU + conf OE → redirect) | `ground/metagen/conf-new.spec.ts` (fill form → POST → redirect → backend read-back of fields + dataset_filter) |
 | `/metagen/conf/[id]` | `uc4-01-metadata-generation.spec.ts` steps 4, 5 (Run via RunDialog, per-conf events isolation) | `ground/metagen/conf-edit-no-submit.spec.ts` (read-mode renders a plain-text VIEW — overwrite_pending "yes", no form control in DOM; header Edit/Run/Delete; clicking Edit swaps to the form + hides Run/Delete + fires NO PUT — Edit/Save morph guard; header Save external-submit PUTs once + "Conf saved" toast + REST read-back) |
 | `/metagen/result` | `uc4-01-metadata-generation.spec.ts` step 6 (result-rollup heading, per-dataset rollup + cross-conf events, both runs in union; GET /spoke/metagen/dataset row read-back) | `ground/metagen/result.spec.ts` (per-dataset rollup + events render; conf_id filter select narrows the GET /spoke/metagen/dataset request) |
-| `/metagen/uncovered` | `uc4-01-metadata-generation.spec.ts` step 10 (heading + include_disallowed toggle; off=no_conf_match, on⊇off) | `ground/metagen/uncovered.spec.ts` (include_disallowed toggle flips query param off→on; off⊆on reason-classification invariant) |
-| `/metagen/data/[urn]` (redirects to `/data/[urn]`) | covered via `/data/[urn]` (see Per-dataset hub) — steps 3, 7, 8, 8b, 9 (boundary form, per-kind ItemKindTable candidate rows w/ conf_name badge, column.description grouped by field_path, per-row Approve/Reject candidate, cross-conf demotion, metagen events in unified Events panel) | — |
+| `/metagen/uncovered` | `uc4-01-metadata-generation.spec.ts` step 10 (heading + include_disallowed toggle; off=no_conf_match, on⊇off) | `ground/metagen/uncovered.spec.ts` (include_disallowed toggle flips the query param off→on; over a seeded enabled conf scoping one boundary-less dataset, that URN is absent from the off set and present as `boundary_blocked` in the on set, in both the API and the rendered table) |
+| `/metagen/data/[urn]` (redirects to `/data/[urn]`) | the redirect **target** is exercised by `uc4-01-metadata-generation.spec.ts` steps 3, 7, 8, 8b, 9 (boundary form, per-kind ItemKindTable candidate rows w/ conf_name badge, column.description grouped by field_path, per-row Approve/Reject candidate, cross-conf demotion, metagen events in unified Events panel), which navigate to `/data/[urn]` directly | `ground/data/legacy-deep-link.spec.ts` (the redirect itself: single-encoded deep link rests on `/data/<encoded urn>`, URN round-trips through the redirect, hub header intact) |
 
 #### Admin / Account
 

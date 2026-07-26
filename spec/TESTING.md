@@ -533,6 +533,7 @@ index so files sort in user-story order (UC1 has three —
 - **Dual confirmation**: each step asserts the **UI** state (toast, row, badge, redirect) **and**
   independently verifies the **backend** state via Playwright's `APIRequestContext` — the same
   REST read-back the api-wired step asserts. A UI that renders stale or cached state must not pass.
+  See [Execution discipline](#execution-discipline) for API-fired steps with no UI surface.
 - **Gestures from FRONTEND specs**: map each REST mutation to its page + gesture per
   `spec/feature/FRONTEND_*.md` (create form + Submit, run panel `dry_run` toggle, Approve/Reject
   card, conf editor Save, delete behind ConfirmDialog).
@@ -564,6 +565,63 @@ the spot-tier analogue.
 Prefer Playwright's user-facing locators (`getByRole`, `getByLabel`, `getByText`). Add a
 `data-testid` to a component only where a semantic locator is insufficient (recharts widgets,
 dynamic table rows, status badges), per `spec/feature/FRONTEND_BASIC.md §Testability`.
+
+Radix/shadcn composites are not native form controls, so native helpers do not drive them: a Select
+renders a `combobox` trigger plus portalled `option` nodes (`selectOption` fails), and dialogs,
+dropdown menus, and toasts render in a portal outside the triggering subtree. Drive a Select by
+clicking its trigger — by `id` when rows render several unnamed triggers — then clicking the option
+by role. Locate portalled content from the page root, not from the trigger's container.
+
+### Execution discipline
+
+E2E-specific authoring rules. The layer-wide anti-vacuity rules in
+[Assertion Discipline](#assertion-discipline) apply here as well.
+
+- **Ordered scenarios run serial.** A use-case file's steps form one stateful chain — each step
+  depends on backend and module state the prior step established — so the file declares
+  `test.describe.configure({ mode: "serial" })`. Ground tests stay independent — each provable on its
+  own and in any order. Independence is about state, not concurrency: the whole run is single-worker
+  because it holds the shared dev-env lock. Serial mode also states its retry stance: Playwright
+  retries a failed serial group from the first step, so a file either makes every step re-runnable or
+  sets `retries: 0` and fails loudly in place.
+- **Setup is idempotent and lives in hooks.** State-mutating setup (creating a source, conf, user, or
+  Secret) belongs in `beforeAll` / `beforeEach` / fixtures, never inline in a step that also asserts.
+  Because a group retry replays setup over the leftovers of the failed attempt, each setup path
+  pre-deletes by natural key and accepts the upsert/absent status codes (200-or-201, 404-as-success).
+  `afterAll` cleanup is idempotent for the same reason.
+- **Setup fires through the API, not the browser.** Use the `adminApi` `APIRequestContext` for
+  setup and teardown and reserve gestures for the behavior under test; driving setup through the UI
+  makes a setup break read as a product break. A step whose api-wired counterpart has no UI surface
+  carries an `[API-fired…]` label naming why (setup, no surface for a collision, no distinct gesture)
+  and is asserted on the backend alone — the dual-confirmation rule binds only where a gesture exists.
+- **Never sleep for a fixed duration.** Wait with a bounded construct — `expect(locator).toBeVisible({
+  timeout })`, `expect.poll`, or `await expect(async () => { … }).toPass({ timeout })` around a
+  navigate-and-assert block — never a bare `setTimeout` and never a synchronous `isVisible()` that
+  races the component's fetch. A hand-rolled polling loop declares its deadline and asserts the
+  awaited condition after the loop, so exhausting the budget fails rather than falling through. The
+  sole carve-out is a short bounded settle window before an **absence** assertion — that no request
+  fired, or that no second request followed — where there is by construction no positive signal to
+  await, and only where a positive leg in the same file proves the same predicate can fire (the
+  backstop [Assertion Discipline](#assertion-discipline) requires). Everywhere else the prohibition
+  is absolute.
+- **Gate data-dependent UI assertions on confirmed backend state.** Read (or poll) the same state
+  through `adminApi` first, then assert the UI against it. This separates "the API never produced it"
+  from "the UI did not render it", and it absorbs eventual consistency — DataHub's search index lags
+  writes by minutes — at the layer that can observe it directly.
+- **Never flip the stub toggles.** The four `stub_*` fields
+  ([Stub Toggles](#stub-toggles-runtimeconfig)) are dev-env-wide settings owned by the profile seed
+  and the operator. A test may read them to gate an LLM variant and must assert them unchanged after
+  any `/admin/conf` write, but never sets them. Every other shared singleton a test mutates (a conf
+  field, peripheral config) follows the snapshot → mutate → verified restore rule in
+  [Integration Lifecycle & Isolation](#integration-lifecycle--isolation).
+- **Cluster-side setup reuses the existing tooling.** Setup with no REST route — provisioning a
+  source-credential Secret, resetting data, taking the dev-env lock — shells out to `kubectl` or to
+  `tests/integration/util`. E2E adds no TypeScript Kubernetes client and no reimplemented reset
+  logic.
+- **Skip only on an absent precondition.** A step skips when a precondition it cannot establish is
+  missing — an unset credential or env var, an unconfigured dependency, a gated LLM variant — and the
+  reason names the precondition and how to supply it. A step never skips on an outcome it exists to
+  judge: a failed run, an empty result, or a wait that exhausts its budget is a failure, not a skip.
 
 ### Authentication
 
@@ -620,7 +678,9 @@ Validation, UC3 Ontology Generation, UC4 Metadata Generation, UC5 Governance.
 | `orders.daily_fulfillment_summary` | 30 | UC2 | 1 anomalous day (Jan 15, warehouse outage) — detectable via historical-baseline GET |
 | `shipping.carrier_status` | 30 | UC3 | Carrier scan events; `order_id` joins to both Kafka topics |
 
-Kafka topics: `imazon.orders.events` (20 msgs), `imazon.shipping.updates` (15 msgs).
+Kafka topics: `imazon.orders.events` (20 msgs), `imazon.shipping.updates` (15 msgs), carried under
+the `example_kafka` instance (the postgres tables sit under `example_db`), so a topic's dataset URN
+reads `…dataPlatform:kafka,example_kafka.imazon.orders.events,DEV`.
 
 DataHub datasets: All 6 tables registered as DataHub entities (platform `postgres`, env `DEV`)
 via `tests/integration/util/datahub.py`, with `DatasetProperties` and `SchemaMetadata` aspects

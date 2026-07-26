@@ -89,7 +89,8 @@ test("/admin/peripherals — cards render with values from GET; secrets blank", 
   adminApi,
 }) => {
   // Backend probe: read current peripheral config to know expected field values.
-  // spec: TESTING.md §E2E — poll adminApi until present, THEN assert UI.
+  // spec: TESTING.md §E2E §Execution discipline — "Gate data-dependent UI assertions on
+  //   confirmed backend state".
   const dhResp = await adminApi.get("/api/v1/admin/peripherals/datahub");
   expect(dhResp.status()).toBe(200);
   const dh = (await dhResp.json()) as DatahubPeripheral;

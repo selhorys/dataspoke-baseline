@@ -13,9 +13,11 @@
  *     the Evidence cell carries a Langfuse session Link (or an em dash when the
  *     row has no run / tracing is unconfigured).
  *
- * Data-conditional parts (7 columns, Evidence Link) act on whatever rows the
- * current result set holds — under the stub default the set is empty (stub runs
- * persist zero rows), so those steps self-skip, mirroring UC3 step 4/4b.
+ * The row-dependent part (7 columns, Evidence Link) is gated on the `stub_llm_client`
+ * PRECONDITION rather than on the observed row count: under the stub, ontology rows
+ * cannot exist (the stub run persists none) and the step skips with the PATCH that
+ * supplies the precondition; with a real LLM configured, an empty result set is a
+ * genuine regression and fails.
  *
  * Runs under the admin (writer) storageState (`*.spec.ts` → admin project) so the
  * Actions column and review controls render.
@@ -27,12 +29,33 @@
  *   (default created_at_desc); offset/limit pagination envelope.
  * spec: spec/feature/FRONTEND_BASIC.md §Shared Component Notes — shared control (size selector
  *   20/50/100 default 20, Prev/Next, numbered pages).
- * spec: spec/TESTING.md §E2E — ground group, real-session role, single concern.
+ * spec: spec/TESTING.md §End-to-End (E2E) Testing §Ground group — "**One concern per test**,
+ *   independent (reset fixtures handle data lifecycle), minimum setup".
+ * spec: spec/TESTING.md §End-to-End (E2E) Testing §Authentication — "Playwright projects
+ *   are keyed on role (admin / editor / reader); role-gated tests select the matching
+ *   project" (this file runs under the admin/writer session).
  */
 
 import { test, expect } from "../../fixtures/index";
 
 const NODE_RESULT_API = "/api/v1/spoke/ontogen/result/node";
+
+/**
+ * Reads the dev env's `stub_llm_client` toggle. Read-only — a test may read the stub
+ * toggles to gate a variant but never sets them.
+ * spec: TESTING.md §E2E §Execution discipline — "Never flip the stub toggles… A test may
+ *   read them to gate an LLM variant… but never sets them."
+ * Mirrors tests/e2e/use-case/uc3-01-ontology-generation.spec.ts readStubLlmClient.
+ */
+async function readStubLlmClient(
+  adminApi: import("@playwright/test").APIRequestContext
+): Promise<boolean> {
+  const resp = await adminApi.get("/api/v1/admin/conf");
+  if (!resp.ok()) return true; // fail-safe: treat as stubbed
+  const body = (await resp.json()) as { stub_llm_client: boolean };
+  return body.stub_llm_client;
+}
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Sort control writes ?sort= onto the node result request (server-side sort).
@@ -120,21 +143,41 @@ test("/ontogen/result — Nodes panel renders the shared Pagination control", as
 
 // ─────────────────────────────────────────────────────────────────────────────
 // When rows exist: uniform 7 compact columns + Evidence column → Langfuse Link.
-// Data-conditional — self-skips under the stub default (zero persisted rows).
+// Gated on the stub toggle (the precondition), NOT on the row count (the outcome).
 // ─────────────────────────────────────────────────────────────────────────────
 test("/ontogen/result — node rows render 7 columns; Evidence cell links to the run's Langfuse session", async ({
   page,
   adminApi,
 }) => {
-  // Probe the backend for at least one node; skip the row-dependent assertions otherwise.
+  // -- Precondition gate: rows can only exist when the LLM client is real --
+  // Keyed on `stub_llm_client`, not on "did any row turn up": under the stub the rows are
+  // an unestablishable precondition, but on a REAL-LLM env an empty result set is a genuine
+  // failure and must not skip silently.
+  // spec: TESTING.md §E2E §Execution discipline — "Skip only on an absent precondition…
+  //   the reason names the precondition and how to supply it. A step never skips on an
+  //   outcome it exists to judge: a failed run, an empty result, … is a failure, not a skip."
+  // spec: TESTING.md §Stub Toggles (RuntimeConfig) — flippable online via PATCH /admin/conf;
+  //   "changes propagate in ≤30s".
+  const stubLlm = await readStubLlmClient(adminApi);
+  test.skip(
+    stubLlm,
+    "stub_llm_client=true: a stub inference run persists zero ontology rows, so the rows " +
+      "this step renders cannot exist. Supply the precondition with " +
+      'PATCH /api/v1/admin/conf {"stub_llm_client": false} (≤30s propagation), trigger an ' +
+      "ontogen run (POST /api/v1/spoke/ontogen/method/run), then re-run this spec."
+  );
+
   const listResp = await adminApi.get(`${NODE_RESULT_API}?offset=0&limit=10`);
   expect(listResp.status()).toBe(200);
   const listBody = (await listResp.json()) as {
     nodes: Array<{ id: string; name: string; run_id: string | null }>;
   };
-  if (listBody.nodes.length === 0) {
-    test.skip(true, "no ontology nodes (stub run persists zero rows); nothing to render");
-  }
+  // Real-LLM env: an empty node set is an outcome this step judges, so it FAILS here.
+  expect(
+    listBody.nodes.length,
+    "stub_llm_client is false, so an inference run must have persisted ontology nodes; " +
+      "an empty result set is a real regression, not a skip condition"
+  ).toBeGreaterThan(0);
 
   // Read the browser-reachable Langfuse host + project slug the page itself will
   // resolve, so the branch below is decided by backend state rather than by

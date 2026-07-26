@@ -9,15 +9,21 @@
  *   - adminApi: APIRequestContext with a fresh admin bearer token. Used for
  *     dual-confirmation backend probes in use-case specs (mirroring the api-wired
  *     httpx.AsyncClient pattern).
- *   - toggleStub: helper to PATCH /api/v1/admin/conf stub fields and read them back.
  *
- * spec: spec/TESTING.md §E2E — dual confirmation, stub toggle, Imazon URNs.
+ * No stub-toggle helper is provided, by design: the four `stub_*` fields are dev-env-wide
+ * settings owned by the profile seed and the operator, and a test may read them to gate an
+ * LLM variant but never sets them.
+ * spec: spec/TESTING.md §End-to-End (E2E) Testing §Execution discipline — "Never flip the
+ *   stub toggles… A test may read them to gate an LLM variant and must assert them
+ *   unchanged after any `/admin/conf` write, but never sets them."
+ * spec: spec/TESTING.md §End-to-End (E2E) Testing — dual confirmation via an independent
+ *   APIRequestContext probe; §Test Data Design — Imazon is the canonical company context.
  */
 
 import * as fs from "fs";
 import * as path from "path";
 import { test as base, type APIRequestContext, expect } from "@playwright/test";
-import { apiBaseUrl, type StubField, IMAZON_URNS } from "./env";
+import { apiBaseUrl, IMAZON_URNS } from "./env";
 
 export { IMAZON_URNS };
 
@@ -35,19 +41,17 @@ export const STORAGE_STATE: Record<string, string> = {
 
 // ── Extended fixture types ────────────────────────────────────────────────────
 
+/** No test-scoped fixtures — everything this project adds is worker-scoped. */
+type E2ETestFixtures = Record<never, never>;
+
 type E2EWorkerFixtures = {
   /** APIRequestContext carrying a long-lived admin API token (worker-scoped). */
   adminApi: APIRequestContext;
 };
 
-type E2EFixtures = {
-  /** Toggle a stub_* field via PATCH /api/v1/admin/conf; read it back via GET. */
-  toggleStub: (field: StubField, value: boolean) => Promise<Record<string, unknown>>;
-};
-
 // ── Fixture implementations ───────────────────────────────────────────────────
 
-export const test = base.extend<E2EFixtures, E2EWorkerFixtures>({
+export const test = base.extend<E2ETestFixtures, E2EWorkerFixtures>({
   /**
    * Worker-scoped admin probe context for dual-confirmation backend checks.
    *
@@ -84,30 +88,6 @@ export const test = base.extend<E2EFixtures, E2EWorkerFixtures>({
     },
     { scope: "worker" },
   ],
-
-  /**
-   * Toggle a stub_* field via PATCH /api/v1/admin/conf and return the updated conf.
-   * Tests that rely on stub_llm_client state use this to gate real-LLM branches
-   * — mirrors the api-wired pattern (PATCH /admin/conf, then pytest.skip when stubbed).
-   *
-   * Source: spec/TESTING.md §Stub Toggles — PATCH /api/v1/admin/conf; ≤30s propagation.
-   */
-  toggleStub: async ({ adminApi }, use) => {
-    const toggle = async (field: StubField, value: boolean): Promise<Record<string, unknown>> => {
-      const patchResp = await adminApi.patch("/api/v1/admin/conf", {
-        data: { [field]: value },
-      });
-      expect(
-        patchResp.ok(),
-        `PATCH /admin/conf {${field}: ${value}} failed: ${await patchResp.text()}`
-      ).toBeTruthy();
-
-      const getResp = await adminApi.get("/api/v1/admin/conf");
-      expect(getResp.ok(), `GET /admin/conf failed: ${await getResp.text()}`).toBeTruthy();
-      return (await getResp.json()) as Record<string, unknown>;
-    };
-    await use(toggle);
-  },
 });
 
 export { expect } from "@playwright/test";

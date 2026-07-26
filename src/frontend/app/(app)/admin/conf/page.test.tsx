@@ -912,8 +912,9 @@ describe("AdminConfPage — non-admin access (FRONTEND_BASIC.md §Routing)", () 
 // ---------------------------------------------------------------------------
 describe("AdminConfPage — no PATCH when no fields changed", () => {
   it("shows a toast without calling mutateAsync when no fields are changed", async () => {
-    // spec/FRONTEND_BASIC.md §Configurations: PATCH only changed keys — if no changes,
-    // no network call should be made.
+    // spec: spec/feature/FRONTEND_BASIC.md §Configurations (`/admin/conf`) — the form
+    // "saves edits with a partial `PATCH /admin/conf` (only changed fields)", so with
+    // no changed fields there is nothing to send and no network call should be made.
     const user = userEvent.setup();
     render(<AdminConfPage />);
 

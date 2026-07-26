@@ -232,10 +232,13 @@ describe("OntogenSeedPage — + New Seed creates a disabled seed (POST .../attr/
     expect(arg).toContain("# A fresh seed");
   });
 
-  it("the page advertises that new seeds ship disabled", () => {
+  it("the page surfaces that a newly created seed starts disabled", () => {
     mockUseOntogenSeeds.mockReturnValue({ data: { seeds: [] }, isLoading: false });
     render(<OntogenSeedPage />);
-    // Copy contract from FRONTEND_ONTOGEN.md §Seed library — create-disabled is surfaced.
-    expect(screen.getByText(/new seeds ship disabled/i)).toBeInTheDocument();
+    // spec: FRONTEND_ONTOGEN.md §Page contracts (Seed library) — "`+ New Seed` (`POST .../attr/seed`)
+    // creates the seed **disabled** — the steward enables it once the body is
+    // reviewed." The spec mandates the behaviour, not a wording, so match on the
+    // create-disabled fact rather than on the current sentence verbatim.
+    expect(screen.getByText(/new seed.*disabled/i)).toBeInTheDocument();
   });
 });

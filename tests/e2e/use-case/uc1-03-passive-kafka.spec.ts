@@ -96,7 +96,10 @@ test("UC1 Case 3 step 0 — imazon Kafka topics appear in /unmanaged before sour
   // Trigger the sync sweep via the internal API to populate the dataset registry.
   // spec: test_uc1_03_passive_kafka.py step 0 — re-trigger sync each iteration so newly-ES-indexed URNs surface.
   // This step has no UI surface — fired via adminApi with the internal token.
-  // spec: TESTING.md §E2E — "[API-fired, no UI surface]" steps are probed via backend, not gestures.
+  // spec: TESTING.md §E2E §Execution discipline — a step whose api-wired counterpart has no
+  //   UI surface "carries an `[API-fired…]` label naming why (setup, no surface for a collision,
+  //   no distinct gesture) and is asserted on the backend alone — the dual-confirmation rule
+  //   binds only where a gesture exists."
   const base = apiBaseUrl();
   const token = process.env["DATASPOKE_TEST_INTERNAL_TOKEN"] ?? "";
 
@@ -152,7 +155,8 @@ test("UC1 Case 3 step 0 — imazon Kafka topics appear in /unmanaged before sour
   const ordersLocator = page.getByText(ORDERS_URN, { exact: false });
   const shippingLocator = page.getByText(SHIPPING_URN, { exact: false });
   // Wait up to 30s for the table to render (covers API fetch + React render).
-  // spec: TESTING.md §E2E — bounded expect.poll / toBeVisible rather than fixed sleeps.
+  // spec: TESTING.md §E2E §Execution discipline — "Never sleep for a fixed duration": wait
+  //   with a bounded construct — expect(locator).toBeVisible({ timeout }), expect.poll, or toPass.
   await expect(ordersLocator.or(shippingLocator).first()).toBeVisible({ timeout: 30_000 });
 });
 

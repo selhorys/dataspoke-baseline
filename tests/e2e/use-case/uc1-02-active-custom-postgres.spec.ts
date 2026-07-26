@@ -72,7 +72,8 @@ const RECIPE_YAML = `source:
 // Write flows require Editor/Admin. Runs under the admin project only —
 // enforced by the filename convention in playwright.config.ts (default
 // *.spec.ts → admin), which supplies the admin storageState. Do not override
-// storageState here. spec: spec/TESTING.md §E2E
+// storageState here. spec: spec/TESTING.md §E2E §Authentication — "Playwright projects are
+// keyed on role (admin / editor / reader); role-gated tests select the matching project."
 
 // ── Per-test state ────────────────────────────────────────────────────────
 
@@ -80,7 +81,9 @@ let sourceId: string | null = null;
 
 // ── Secret provisioning: create-if-absent before any test step ────────────
 // spec: feature/SECRET_RESOLUTION.md §Reference-only model — out-of-band authoring
-// spec: spec/TESTING.md §E2E — secret-mutating setup in beforeAll, not test body
+// spec: spec/TESTING.md §E2E §Execution discipline — "Setup is idempotent and lives in hooks":
+// state-mutating setup "belongs in `beforeAll` / `beforeEach` / fixtures, never inline in a
+// step that also asserts".
 //
 // Provisions dataspoke-source-cred-dummy-data-pg idempotently via kubectl
 // (--dry-run=client -o yaml | apply -f - is idempotent on repeated runs).
@@ -108,7 +111,9 @@ test.beforeAll(async () => {
   // error path. spawnSync with ["sh", "-c", ...] avoids the boolean shell: option
   // that causes TS overload resolution to fail with execSync.
   // spec: spec/feature/SECRET_RESOLUTION.md §Admin authoring guide.
-  // spec: spec/TESTING.md §E2E — reuse kubectl; no TS k8s client.
+  // spec: spec/TESTING.md §E2E §Execution discipline — "Cluster-side setup reuses the existing
+  //   tooling": provisioning a source-credential Secret "shells out to `kubectl`"; "E2E adds no
+  //   TypeScript Kubernetes client".
   const cmd =
     `kubectl create secret generic dataspoke-source-cred-dummy-data-pg` +
     ` --from-literal=password=${password}` +
@@ -178,7 +183,9 @@ test.afterAll(async ({ adminApi }) => {
 // both module state and backend state. The create step is idempotent across a
 // group-retry: beforeEach re-derives sourceId and pre-deletes any leftover source
 // by name, so the UI create lands cleanly on retry.
-// spec: spec/TESTING.md §E2E — dependent sequential steps use describe.serial.
+// spec: spec/TESTING.md §E2E §Execution discipline — "Ordered scenarios run serial…
+// Playwright retries a failed serial group from the first step, so a file either makes
+// every step re-runnable or sets `retries: 0`".
 test.describe.configure({ mode: "serial" });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -301,7 +308,9 @@ test("UC1 Case 2 step 2 — dry_run emits nothing", async ({ page, adminApi }) =
   // The run panel renders a badge with status text and a "run_id" mono span.
   // We use a testid here because the status badge variant and run_id span have no unique
   // semantic anchors -- the badge text is the status value itself (e.g. "success").
-  // spec: TESTING.md §E2E — semantic-first; data-testid requested where insufficient.
+  // spec: TESTING.md §E2E §Selectors — prefer user-facing locators; add "a `data-testid` to a
+  //   component only where a semantic locator is insufficient (recharts widgets, dynamic table
+  //   rows, status badges)".
   // REQUIRED data-testid: ingestion-run-panel (component: IngestionRunPanel, element: result container)
   // For now we wait for the run_id span text "run_id" to appear as a proxy for the result panel.
   await expect(page.getByText(/^run_id\s/)).toBeVisible({ timeout: 60_000 });
@@ -401,7 +410,10 @@ test("UC1 Case 2 step 4 — datasets panel shows catalog rows with emitted deriv
   // Readiness poll: datasets here are derived from DataHub ES, which lags the
   // real run by ~2-3 min. Poll the backend until the catalog dataset URN is
   // present before navigating + asserting the UI table.
-  // spec: TESTING.md §Assertion Principles — poll bounded deadline instead of fixed sleep.
+  // spec: TESTING.md §E2E §Execution discipline — "Never sleep for a fixed duration"; a
+  //   hand-rolled polling loop "declares its deadline and asserts the awaited condition
+  //   after the loop". §Execution discipline also requires gating a data-dependent UI
+  //   assertion on confirmed backend state.
   const deadline = Date.now() + 180_000;
   let datasetsReady = false;
   while (Date.now() < deadline) {
@@ -479,7 +491,16 @@ test("UC1 Case 2 step 5 — events panel shows INGESTION.COMPLETE for the real r
   // -- UI assertion: INGESTION.COMPLETE event visible in the event table --
   // spec: FRONTEND_INGESTION.md §Source Detail §Events — event_type rendered as text
   // Multiple runs (dry + real) log events; assert at least one is present.
-  await expect(page.getByText("INGESTION.COMPLETE").first()).toBeVisible({ timeout: 30_000 });
+  // Navigate-and-assert inside toPass: the run completed a step earlier behind a bounded
+  // readiness poll, so its event is already confirmed present in the backend; what remains
+  // is residual client-side render lag. Re-mounting re-issues the panel's fetch.
+  // spec: TESTING.md §E2E §Execution discipline — "Never sleep for a fixed duration":
+  //   wait with a bounded construct — "`await expect(async () => { … }).toPass({ timeout })`
+  //   around a navigate-and-assert block".
+  await expect(async () => {
+    await page.goto(`/ingestion/sources/${encodeURIComponent(sourceId!)}`);
+    await expect(page.getByText("INGESTION.COMPLETE").first()).toBeVisible({ timeout: 5_000 });
+  }).toPass({ timeout: 60_000, intervals: [1_000, 2_000, 3_000, 5_000] });
 
   // -- Backend probe: GET /sources/{id}/event → INGESTION.COMPLETE with status='success' --
   // spec: USE_CASE_en.md §UC1 Case 2 step 6 — INGESTION.COMPLETE carries status='success'
@@ -507,7 +528,10 @@ test("UC1 Case 2 step 6 — per-dataset reverse-lookup shows owning source", asy
   // Readiness poll: the reverse-lookup attr/ingestion is keyed off the emitted
   // dataset in DataHub ES (~2-3 min lag). Poll until source_id is resolved (and
   // matches this source) before navigating + asserting the Ingestion panel.
-  // spec: TESTING.md §Assertion Principles — poll bounded deadline instead of fixed sleep.
+  // spec: TESTING.md §E2E §Execution discipline — "Never sleep for a fixed duration"; a
+  //   hand-rolled polling loop "declares its deadline and asserts the awaited condition
+  //   after the loop". §Execution discipline also requires gating a data-dependent UI
+  //   assertion on confirmed backend state.
   const deadline = Date.now() + 180_000;
   let reverseReady = false;
   while (Date.now() < deadline) {

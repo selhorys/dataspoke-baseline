@@ -57,7 +57,8 @@ test("/admin/users — user list renders with bootstrap admin and E2E users", as
   adminApi,
 }) => {
   // Backend probe pre-flight: ensure the list endpoint returns all expected users.
-  // spec: TESTING.md §E2E — poll adminApi until present, THEN assert UI.
+  // spec: TESTING.md §E2E §Execution discipline — "Gate data-dependent UI assertions on
+  //   confirmed backend state".
   const listResp = await adminApi.get("/api/v1/admin/users?limit=100");
   expect(listResp.status()).toBe(200);
   const listBody = (await listResp.json()) as {
@@ -102,7 +103,8 @@ test("/admin/users — user list renders with bootstrap admin and E2E users", as
 // spec: FRONTEND_BASIC.md §Authentication (Admin user list) — inline role dropdown writes
 //   PATCH /admin/users/{id}/role; ⋯ menu → Delete user → ConfirmDialog →
 //   DELETE /admin/users/{id}.
-// spec: TESTING.md §E2E — Radix Select: click the trigger, then getByRole("option").
+// spec: TESTING.md §E2E §Selectors — a Radix Select "renders a `combobox` trigger plus
+//   portalled `option` nodes (`selectOption` fails)"; click the trigger, then the option by role.
 // ─────────────────────────────────────────────────────────────────────────────
 
 test("/admin/users — role change via inline select + delete via ConfirmDialog", async ({
@@ -152,12 +154,15 @@ test("/admin/users — role change via inline select + delete via ConfirmDialog"
   ).toBeVisible({ timeout: 15_000 });
 
   // Wait for the throwaway user's email to appear in the table (TanStack Query).
-  // spec: TESTING.md §E2E critical pitfall — async panels → await expect toBeVisible.
+  // spec: TESTING.md §E2E §Execution discipline — "Never sleep for a fixed duration":
+  //   wait with a bounded construct such as `expect(locator).toBeVisible({ timeout })`,
+  //   "never a synchronous `isVisible()` that races the component's fetch".
   await expect(page.getByText(THROWAWAY_EMAIL, { exact: true })).toBeVisible({ timeout: 20_000 });
 
   // -- UI gesture: click the role Radix SelectTrigger in the throwaway user's row --
   // spec: admin/users/page.tsx — RoleSelect: Select value={user.role}; SelectTrigger h-8 w-28
-  // spec: TESTING.md §E2E — Radix Select: click the trigger, then getByRole("option", {name}).
+  // spec: TESTING.md §E2E §Selectors — "Drive a Select by clicking its trigger — by `id`
+  //   when rows render several unnamed triggers — then clicking the option by role."
   // The inline role selects have no unique accessible name (no aria-label on SelectTrigger
   // for each row). Strategy: locate the throwaway row's cell, then find the combobox within it.
   // RISK FLAG: if multiple rows render a trigger with the same value text, a rowscoped
