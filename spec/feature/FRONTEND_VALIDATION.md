@@ -65,9 +65,10 @@ Saving issues `PUT .../attr/validation/conf`.
 The shared [RangePicker](FRONTEND_BASIC.md#shared-component-notes) (presets Last
 1 day / 7 days / 2 weeks (default) / 4 weeks / 12 weeks, plus a custom calendar
 range) drives the `Quality Score` and `Variables` sections, both reading
-`attr/validation/result`. In `date` granularity the RangePicker's inclusive `{from, to}`
-maps to `?from=&until=&limit=` — `until` is the endpoint's end-bound param
-(`until = to`). The `Quality Score` section renders a `score` line chart; the `Variables`
+`attr/validation/result`. In `date` granularity the RangePicker drives
+`?from=&until=&limit=` — this endpoint names its end-bound param `until` rather
+than `to` (see [RangePicker](FRONTEND_BASIC.md#shared-component-notes)).
+The `Quality Score` section renders a `score` line chart; the `Variables`
 section renders **small multiples** — one auto-scaled, full-width line chart per declared
 variable stacked in a single column (one chart per row), each captioned with the variable's
 name and description so differing value scales do not flatten each other. Both draw straight

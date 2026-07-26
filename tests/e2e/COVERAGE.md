@@ -117,6 +117,14 @@ the `/data/[urn]` DataHub deep-link case there complements the `ground/data/hub.
 
 ---
 
+## Known gaps (tracked, not covered)
+
+| Gap | Spec | Why open |
+|---|---|---|
+| A record written **after** page load surfaces in a polled panel with **no navigation**. `spec/feature/FRONTEND_BASIC.md §shared-component-notes` says a preset's open-ended window "is what lets a 15 s-polled panel (see Live Updates) surface records written after page load" — the *outcome*, not just the emitted params. The three retry blocks that previously worked around the frozen upper bound (`ground/data/hub.spec.ts`, `uc2-01-validation.spec.ts`, `uc1-02-active-custom-postgres.spec.ts`) all seed **before** navigating, so their rows are already in the first fetch and the open window is only incidentally involved. `src/frontend/components/events-panel.test.tsx` and `src/frontend/lib/api/data.test.ts` prove the params stay open and the query key stays stable, but stop at the params boundary. | `spec/feature/FRONTEND_BASIC.md §shared-component-notes`, `§Live Updates` | Needs a live cluster; deferred out of the change that introduced the open window. Planned shape: a `ground/data/` test that navigates to `/data/[urn]`, expands the Events panel, POSTs a validation result through `adminApi`, then asserts the new row becomes visible with **no navigation** under a bounded `toBeVisible({ timeout: ≥ 30_000 })` (one 15 s poll tick plus slack). |
+
+---
+
 ## App-shell role-gating
 
 Real-session role behavior (the editor/reader/admin Playwright projects use real

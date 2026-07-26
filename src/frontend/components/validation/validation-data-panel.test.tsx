@@ -12,12 +12,26 @@
  *   - An existing slot (200) is read-only with Edit/Delete + charts; Delete is a
  *     hard delete. There is no Undelete and no deleted/frozen state to surface.
  *   - Reader (canWrite=false) sees no write affordances in either state.
+ *
+ * Spec: spec/feature/FRONTEND_BASIC.md §shared-component-notes (RangePicker):
+ *   "**A preset resolves to an open-ended window** — the lower bound only, with
+ *   `to`/`until` omitted — so the read always reaches the present" and "the
+ *   validation `attr/validation/result` endpoint — which names its end-bound
+ *   `until` rather than `to` … — takes the upper bound in that slot instead."
+ *   This panel is the ONLY surface where the end-bound param is renamed, and the
+ *   spec calls out a behavior change here (future-dated `data_time` rows become
+ *   visible), so the resolved window it hands the results query is asserted
+ *   directly rather than only through the source scan in
+ *   lib/range.import-boundary.test.ts.
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, act, fireEvent } from "@testing-library/react";
 import React from "react";
 import { ValidationDataPanel } from "./validation-data-panel";
 import { ApiError } from "@/lib/api/client";
+import { RANGE_KEYS } from "@/lib/hooks/use-range-selection";
+import { useTimezoneStore } from "@/lib/preferences/timezone";
+import { DEFAULT_PRESET_DAYS, presetRange } from "@/lib/range";
 import type { ValidationConfResponse } from "@/types/validation";
 
 // ── Mocks ──────────────────────────────────────────────────────────────────────
@@ -41,7 +55,9 @@ vi.mock("@/lib/api/validation", () => ({
   useValidationConf: () => mockConf(),
   useUpsertValidationConf: () => mockUpsert(),
   useDeleteValidationConf: () => ({ mutate: vi.fn(), isPending: false, error: null }),
-  useValidationResults: () => mockResults(),
+  // Args are forwarded (not swallowed) so the resolved window the panel hands
+  // the results query is observable — see the "resolved result window" block.
+  useValidationResults: (...args: unknown[]) => mockResults(...args),
 }));
 
 // RangePicker / charts pull in calendar + recharts internals (ResizeObserver,
@@ -104,7 +120,19 @@ async function renderPanel() {
   });
 }
 
+/** Params the panel last handed to useValidationResults. */
+function lastResultsParams(): {
+  from?: string;
+  until?: string;
+  limit?: number;
+} {
+  return mockResults.mock.calls.at(-1)?.[1];
+}
+
 beforeEach(() => {
+  // The range selection is persisted in localStorage; clear it so each test
+  // starts from the DEFAULT_PRESET_DAYS preset unless it seeds one explicitly.
+  localStorage.clear();
   mockUseMe.mockReset();
   mockConf.mockReset();
   mockResults.mockReset();
@@ -290,5 +318,113 @@ describe("ValidationDataPanel — existing conf", () => {
     expect(screen.getByRole("button", { name: /^save$/i })).toBeTruthy();
     expect(screen.queryByTestId("score-chart")).toBeNull();
     expect(screen.queryByTestId("variables-chart")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Resolved result window — the `until` slot.
+//
+// spec/feature/FRONTEND_BASIC.md §shared-component-notes (RangePicker):
+//   "**A preset resolves to an open-ended window** — the lower bound only, with
+//   `to`/`until` omitted — so the read always reaches the present" … "the
+//   validation `attr/validation/result` endpoint — which names its end-bound
+//   `until` rather than `to` … — takes the upper bound in that slot instead."
+//
+// spec/feature/FRONTEND_VALIDATION.md §Page contracts: "In `date` granularity
+// the RangePicker drives `?from=&until=&limit=` — this endpoint names its
+// end-bound param `until` rather than `to`".
+//
+// spec/feature/FRONTEND_BASIC.md §shared-component-notes, on why the open upper
+// bound matters *here* specifically: "validation results carry a
+// caller-supplied `data_time`, so an open upper bound surfaces future-dated
+// rows; a row dated ahead of the present is an anomaly worth surfacing, not
+// hiding."
+//
+// lib/range is deliberately NOT mocked here: the point is that the panel feeds
+// the REAL resolver's output into the `until` slot. Determinism comes from a
+// frozen clock plus the real display-timezone store read back in the test, so
+// no host-offset assumption is baked in.
+// ---------------------------------------------------------------------------
+describe("ValidationDataPanel — resolved result window", () => {
+  // 2024-03-15T08:30Z, matching lib/range.test.ts.
+  const NOW = new Date("2024-03-15T08:30:00.000Z");
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    mockUseMe.mockReturnValue({ canWrite: true, isAdmin: false, isEditor: true });
+    mockConf.mockReturnValue({ data: makeConf(), isLoading: false, error: null });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("sends an OPEN window for a preset selection (from + limit, no `until`)", async () => {
+    await renderPanel();
+
+    const params = lastResultsParams();
+    expect(mockResults.mock.calls.at(-1)?.[0]).toBe(DATASET_URN);
+    // The lower bound is the real resolver's, in the app's active display tz.
+    const tz = useTimezoneStore.getState().tz;
+    expect(params.from).toBe(presetRange(DEFAULT_PRESET_DAYS, "date", tz).from);
+    // The behavior change this issue is about: the upper bound is not sent, so
+    // the read reaches the present — including rows whose `data_time` is ahead
+    // of the clock, which a pinned end-of-today `until` used to hide.
+    expect(params.until).toBeUndefined();
+    expect(params.limit).toBe(1000);
+  });
+
+  it("sends the CLOSED pair for a custom selection (upper bound kept in `until`)", async () => {
+    // Backstop for the absence assertion above: the panel is not "always drop
+    // the upper bound", it forwards whatever the resolver produced. A stored
+    // custom selection keeps both bounds, so a regression that unconditionally
+    // stripped `until` — or one that never populated it — fails here.
+    localStorage.setItem(
+      RANGE_KEYS.validationResults,
+      JSON.stringify({
+        kind: "custom",
+        from: "2024-02-01T00:00:00.000Z",
+        to: "2024-02-10T23:59:59.999Z",
+      }),
+    );
+
+    await renderPanel();
+
+    const params = lastResultsParams();
+    expect(params.from).toBe("2024-02-01T00:00:00.000Z");
+    expect(params.until).toBe("2024-02-10T23:59:59.999Z");
+  });
+
+  it("holds the lower bound stable across renders as the clock advances", () => {
+    // The upper bound stays absent so the polled read keeps reaching new rows;
+    // the lower bound must NOT be re-derived per render, because it participates
+    // in the query key. spec/feature/FRONTEND_BASIC.md §shared-component-notes:
+    // "a preset's *lower* bound is a function of the selection and the display
+    // timezone alone — never of the render or the poll tick … re-resolving it
+    // per render would mint a new key every render and spin an unbounded
+    // refetch loop."
+    //
+    // Granularity here is `date`, so the clock is advanced by a full UTC day —
+    // a smaller step would not change what a fresh resolution yields and the
+    // test would pass vacuously.
+    const { rerender } = render(<ValidationDataPanel datasetUrn={DATASET_URN} />);
+    const first = lastResultsParams();
+    expect(first.until).toBeUndefined();
+
+    const tz = useTimezoneStore.getState().tz;
+    vi.setSystemTime(new Date(NOW.getTime() + 24 * 60 * 60 * 1000));
+
+    // Backstop: prove the advanced clock really does change what a fresh
+    // resolution would yield, so an unchanged `from` below means "the memo
+    // held", not "the clock never moved".
+    expect(presetRange(DEFAULT_PRESET_DAYS, "date", tz).from).not.toBe(
+      first.from,
+    );
+
+    rerender(<ValidationDataPanel datasetUrn={DATASET_URN} />);
+    const second = lastResultsParams();
+    expect(second.from).toBe(first.from);
+    expect(second.until).toBeUndefined();
   });
 });

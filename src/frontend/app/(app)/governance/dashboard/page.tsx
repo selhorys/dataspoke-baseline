@@ -46,6 +46,8 @@ export default function GovernanceDashboardPage() {
   const { data, isLoading, error } = useEnabledMetrics();
   // One shared, persisted range for every chart on the page; resolving via
   // useMemo keeps the per-card query keys stable until the selection changes.
+  // Still required even though a preset now resolves open above — resolveRange
+  // reads the clock for `from`.
   const tz = useDisplayTz();
   const { selection: sel, setSelection: setSel } = usePersistedRangeState(
     RANGE_KEYS.governanceDashboard,

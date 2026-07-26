@@ -66,6 +66,8 @@ export default function MetricDetailPage({
   const [eventLimit, setEventLimit] = useState(DEFAULT_PAGE_SIZE);
   // Range selections are persisted per surface; resolving via useMemo keeps the
   // derived bounds (and thus query keys) stable until the selection changes.
+  // Still required even though a preset now resolves open above — resolveRange
+  // reads the clock for `from`.
   // Results chart and event log keep independent ranges.
   const tz = useDisplayTz();
   const { selection: resultSel, setSelection: setResultSel } =

@@ -2,13 +2,22 @@
  * Tests for lib/api/validation.ts — URL construction and query-param mapping.
  *
  * Spec traces:
- *   - spec/API.md §Validation, GET /spoke/common/data/{urn}/attr/validation/result:
- *     "this endpoint names its end-bound param `until` rather than the
- *     convention table's `to`" — `?from=…&until=…&limit=…`.
+ *   - spec/API.md §Route Catalogue → Data Resource (`/spoke/common/data`), row
+ *     `GET /spoke/common/data/{dataset_urn}/attr/validation/result`: "this
+ *     endpoint names its end-bound param `until` rather than the convention
+ *     table's `to`" — `?from=…&until=…&limit=…`.
  *   - spec/feature/FRONTEND_BASIC.md §shared-component-notes (RangePicker):
- *     the validation result endpoint "receives `until = to`" while all other
- *     time-windowed endpoints use `to`. This file pins the invariant that the
- *     validation results URL emits `until=` (and `from=`), never `to=`.
+ *     "the validation `attr/validation/result` endpoint — which names its
+ *     end-bound `until` rather than `to` … — takes the upper bound in that slot
+ *     instead". This file pins the invariant that the validation results URL
+ *     emits `until=` (and `from=`), never `to=`.
+ *   - same section: "**A preset resolves to an open-ended window** — the lower
+ *     bound only, with `to`/`until` omitted — so the read always reaches the
+ *     present". `until` is the one end-bound slot that is *not* named `to`, so
+ *     the open-window case is pinned here as well as in lib/api/data.test.ts.
+ *   - spec/feature/FRONTEND_VALIDATION.md §Page contracts: "In `date`
+ *     granularity the RangePicker drives `?from=&until=&limit=` — this endpoint
+ *     names its end-bound param `until` rather than `to`".
  *
  * Strategy mirrors lib/api/ingestion.test.ts: mock @/lib/api/client so apiFetch
  * is a spy recording the URL, drive the hook via renderHook in a QueryClient
@@ -84,6 +93,32 @@ describe("useValidationResults — until=to param mapping invariant", () => {
     expect(url).toContain(
       `/spoke/common/data/${encodeURIComponent(sampleUrn)}/attr/validation/result`,
     );
+  });
+
+  it("emits from= and limit= and NO until= for an open window (preset)", async () => {
+    // The shape a preset actually produces at this call site:
+    // validation-data-panel.tsx maps `until: resultRange.to`, and a preset
+    // resolves with `to` absent. spec/feature/FRONTEND_BASIC.md
+    // §shared-component-notes: "A preset resolves to an open-ended window — the
+    // lower bound only, with `to`/`until` omitted".
+    //
+    // The both-bounds test above is the backstop this absence assertion needs:
+    // it proves the builder does emit `until=` when one is supplied, so a
+    // missing `until=` here means the caller omitted it — not that the builder
+    // can never produce it.
+    const from = "2024-03-01T00:00:00.000Z";
+    const { result } = renderHook(
+      () => useValidationResults(sampleUrn, { from, limit: 1000 }),
+      { wrapper: makeWrapper() },
+    );
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    const url = lastUrl();
+    expect(url).toContain(`from=${encodeURIComponent(from)}`);
+    expect(url).toContain("limit=1000");
+    expect(url).not.toContain("until=");
+    // …and it does not silently fall back to the convention-table `to` name.
+    expect(url).not.toContain("to=");
   });
 
   it("omits both bounds when neither from nor until is provided", async () => {

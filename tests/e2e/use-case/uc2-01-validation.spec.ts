@@ -463,28 +463,25 @@ test("UC2 step 4 — postgres detail page renders conf, charts, and validation e
   // Toggle the "Events" CollapsiblePanel open if collapsed, then assert a
   // VALIDATION.RESULT_RECORDED row appears (mirrors UC4 step 9's pattern).
   // spec: FRONTEND_BASIC.md §Per-dataset page (Events panel).
-  // Navigate-and-assert inside toPass: the events were written a step earlier and their
-  // presence is already confirmed against the API, so what remains is residual client-side
-  // render lag (query settle + re-render) after confirmed backend state. Re-mounting
-  // re-issues the panel's fetch and absorbs it.
+  // No re-mount loop: the panel's preset window is open above (`from` only, `to`
+  // omitted), so an event written a step earlier is inside the window regardless of
+  // when the page mounted. Its presence is already confirmed against the API, so what
+  // remains is the panel's own 15 s poll tick — waited out in place with a budget that
+  // spans more than one tick.
+  // spec: FRONTEND_BASIC.md §shared-component-notes (RangePicker) — "A preset resolves
+  //   to an open-ended window — the lower bound only, with `to`/`until` omitted — so the
+  //   read always reaches the present, which is what lets a 15 s-polled panel (see Live
+  //   Updates) surface records written after page load."
   // spec: TESTING.md §E2E §Execution discipline — "Never sleep for a fixed duration":
-  //   wait with a bounded construct — "`await expect(async () => { … }).toPass({ timeout })`
-  //   around a navigate-and-assert block".
+  //   wait with a bounded construct — "expect(locator).toBeVisible({ timeout })".
   const eventsPanel = page.getByRole("button", { name: /events/i }).first();
-  let firstAttempt = true;
-  await expect(async () => {
-    // Re-navigate on every retry (not the first attempt, which reuses the page this
-    // step already loaded) so the panel RE-MOUNTS and recomputes its upper bound.
-    if (!firstAttempt) await page.goto(PG_DETAIL_URL);
-    firstAttempt = false;
-    await expect(eventsPanel).toBeVisible({ timeout: 10_000 });
-    if ((await eventsPanel.getAttribute("aria-expanded")) === "false") {
-      await eventsPanel.click();
-    }
-    await expect(
-      page.getByText("VALIDATION.RESULT_RECORDED", { exact: false }).first()
-    ).toBeVisible({ timeout: 5_000 });
-  }).toPass({ timeout: 60_000, intervals: [1_000, 2_000, 3_000, 5_000] });
+  await expect(eventsPanel).toBeVisible({ timeout: 10_000 });
+  if ((await eventsPanel.getAttribute("aria-expanded")) === "false") {
+    await eventsPanel.click();
+  }
+  await expect(
+    page.getByText("VALIDATION.RESULT_RECORDED", { exact: false }).first()
+  ).toBeVisible({ timeout: 30_000 });
 
   // -- UI assertion: Edit and Delete buttons visible (admin can write) --
   // spec: FRONTEND_VALIDATION.md §Page contracts — write actions rendered for Editor/Admin

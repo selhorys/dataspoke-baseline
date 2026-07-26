@@ -43,6 +43,10 @@ export function EventsPanel({ datasetUrn }: EventsPanelProps) {
   const { selection, setSelection } = usePersistedRangeState(
     RANGE_KEYS.dataEvents,
   );
+  // A preset resolves open above (no `to`), so this 15 s-polled query keeps
+  // reaching new events. The useMemo is still required — resolveRange reads the
+  // clock for `from`, and an unmemoized call would mint a new query key every
+  // render (cache miss → refetch → render → …).
   const range = useMemo(
     () => resolveRange(selection, "datetime", tz),
     [selection, tz],

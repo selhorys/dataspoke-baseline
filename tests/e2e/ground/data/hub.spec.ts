@@ -378,30 +378,28 @@ test.describe("Events panel major-type filter", () => {
 
     // -- Baseline: with every major checked BOTH seeded rows are in the timeline --
     //
-    // Navigate-and-assert inside toPass, because the panel's upper time bound is the
-    // BROWSER's clock at mount (events-panel.tsx resolves its preset range once per
-    // mount: `to = Date.now()`), while the rows were stamped by the API with the
-    // CLUSTER's clock. Any client-behind-server skew therefore puts a just-written
-    // event in the browser's future, and the panel correctly reports "No events … in
-    // the selected window". Re-mounting recomputes `to` and absorbs it. Observed on
-    // this dev host at ~2.1s of skew (sntp -d time.apple.com: +2.111s), which exceeds
-    // the ~1.5s the REST seed above takes end-to-end.
+    // One navigation, then wait in place. The panel's preset window is open above —
+    // it sends `from` only and omits `to` — so a row the API stamped with the
+    // CLUSTER's clock can never fall outside the window, whatever the browser's
+    // clock says. What is left is the poll interval: the panel refetches every 15 s
+    // (usePoll), so the wait budget must span at least one tick with margin.
+    // spec: FRONTEND_BASIC.md §shared-component-notes (RangePicker) — "A preset
+    //   resolves to an open-ended window — the lower bound only, with `to`/`until`
+    //   omitted — so the read always reaches the present, which is what lets a 15 s-
+    //   polled panel … surface records written after page load."
     // spec: TESTING.md §E2E §Execution discipline — "Never sleep for a fixed duration":
-    //   wait with a bounded construct — "`await expect(async () => { … }).toPass({ timeout })`
-    //   around a navigate-and-assert block".
-    await expect(async () => {
-      await page.goto(DATA_URL);
-      await expect(page).not.toHaveURL(/\/login/);
+    //   wait with a bounded construct — "expect(locator).toBeVisible({ timeout })".
+    await page.goto(DATA_URL);
+    await expect(page).not.toHaveURL(/\/login/);
 
-      // Ensure the Events panel is expanded so its filter is in the DOM.
-      await expect(eventsHeader).toBeVisible({ timeout: 15_000 });
-      if ((await eventsHeader.getAttribute("aria-expanded")) === "false") {
-        await eventsHeader.click();
-      }
+    // Ensure the Events panel is expanded so its filter is in the DOM.
+    await expect(eventsHeader).toBeVisible({ timeout: 15_000 });
+    if ((await eventsHeader.getAttribute("aria-expanded")) === "false") {
+      await eventsHeader.click();
+    }
 
-      await expect(ingestionRow).toBeVisible({ timeout: 5_000 });
-      await expect(validationRow).toBeVisible({ timeout: 5_000 });
-    }).toPass({ timeout: 60_000, intervals: [1_000, 2_000, 3_000, 5_000] });
+    await expect(ingestionRow).toBeVisible({ timeout: 30_000 });
+    await expect(validationRow).toBeVisible({ timeout: 30_000 });
 
     // -- UI assertion: one checkbox per major type, all checked by default --
     // spec: FRONTEND_BASIC.md §Per-dataset page — EventMajorTypeFilter default all checked.

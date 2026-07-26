@@ -708,13 +708,17 @@ These component IDs are referenced from per-function specs.
   (`HH:mm`, no AM/PM). The picker has **no per-panel timezone control**: like
   all timestamps in the UI, the calendar days and times it shows are interpreted
   and displayed in the **global Settings timezone preference** (Local or UTC,
-  default Local). The emitted/queried bounds remain canonical inclusive UTC ISO
+  default Local). Every bound it emits is a canonical inclusive UTC ISO instant
   regardless. The trigger shows the preset's label (e.g. "Last 7 days")
   when a preset is selected, or the resolved bounds for a custom range —
-  `YYYY-MM-DD – YYYY-MM-DD` (date) / `YYYY-MM-DD HH:mm – YYYY-MM-DD HH:mm`
-  (datetime) — in the global timezone. Presets are **relative**: each visit re-resolves a preset to a
-  window ending at the current day, so "Last 7 days" always includes today;
-  custom ranges are **absolute**. The selection **persists across visits** in
+  `YYYY-MM-DD – YYYY-MM-DD <tz>` (date) / `YYYY-MM-DD HH:mm – YYYY-MM-DD HH:mm <tz>`
+  (datetime) — in the global timezone. A preset with no matching label falls
+  back to that resolved-bounds form for the granularity with its open upper
+  bound rendered as the literal `now` — `YYYY-MM-DD – now <tz>` (date) /
+  `YYYY-MM-DD HH:mm – now <tz>` (datetime). Presets are **relative**: a preset
+  stores intent rather than pinned bounds — a lower bound resolved against the
+  present and an upper bound left open — so "Last 7 days" always includes today
+  and everything recorded since; custom ranges are **absolute**. The selection **persists across visits** in
   browser `localStorage` under a stable key per logical panel — each panel
   (e.g. validation results vs. validation events) persists independently and the
   preference is shared across all entities of that panel type — so revisiting a
@@ -729,14 +733,30 @@ These component IDs are referenced from per-function specs.
   explicit calendar-day or time edit turns the staged preset into a **custom**
   absolute range (so an edited time is kept on Apply). The custom-range calendar renders the chosen span as a
   highlighted band with emphasized start and end days (a UI affordance with no
-  API impact). Call sites resolve the selection to an inclusive `{from, to}`
-  ISO-8601 pair and map it to the query params each endpoint accepts (see
+  API impact). Call sites resolve the selection to ISO-8601 bounds and map them
+  to the query params each endpoint accepts (see
   [API §Query Parameters](../API.md#query-parameters)): endpoints whose end-bound
-  param is `from`/`to` (events, governance metric `attr/result`) receive `from`
-  and `to` directly, while the validation `attr/validation/result` endpoint —
-  which names its end-bound `until` rather than `to` (see
-  [API.md](../API.md), `attr/validation/result`) — receives `until = to`. It has
-  no API of its own; it only shapes the query strings of the reads it drives.
+  param is `to` (events, governance metric `attr/result`) receive `from`/`to`
+  directly, while the validation `attr/validation/result` endpoint — which names
+  its end-bound `until` rather than `to` (see [API.md](../API.md),
+  `attr/validation/result`) — takes the upper bound in that slot instead.
+  **A preset resolves to an open-ended window** — the lower bound only, with
+  `to`/`until` omitted — so the read always reaches the present, which is what
+  lets a 15 s-polled panel (see [Live Updates](#live-updates)) surface records
+  written after page load. **A custom range resolves to the closed inclusive
+  pair** the user picked and keeps both bounds. Two consequences are accepted
+  deliberately. First, a preset's *lower* bound is resolved against the clock at
+  resolution time and then held — re-derived only when the selection or the
+  display timezone changes, or on the next visit, never per render and never per
+  poll tick, because it participates in the query key and re-resolving it per
+  render would mint a new key every render and spin an unbounded refetch loop. A
+  long-lived page's window therefore only ever **widens**, and past local
+  midnight a `date` preset labelled "Last 7 days" may span eight calendar days. Second, validation results carry a caller-supplied
+  `data_time`, so an open upper bound surfaces future-dated rows; a row dated
+  ahead of the present is an anomaly worth surfacing, not hiding. Governance
+  metric results are unaffected — their timestamp is server-stamped.
+  The picker has no API of its own; it only shapes the query strings of the reads
+  it drives.
 - **DatahubDatasetLink** — a shared external deep-link to a dataset's DataHub page,
   `<datahub_url>/dataset/{urn}` (URN URL-encoded). It resolves the DataHub URL from
   `GET /spoke/common/peripheral-links` by the same rule as the header icon

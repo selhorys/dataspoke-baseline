@@ -923,7 +923,7 @@ Single-resource responses return the object directly with `resp_time` at the top
 | `limit` | integer | Page size (default `20`, max `1000`) |
 | `sort` | string | Field name + direction suffix `_asc` or `_desc`, e.g. `quality_score_desc`, `occurred_at_asc` |
 | `from` | string (ISO 8601) | Start of time-range filter, inclusive; used on `result` and `event` endpoints |
-| `to` | string (ISO 8601) | End of time-range filter, inclusive; used on `result` and `event` endpoints |
+| `to` | string (ISO 8601) | End of time-range filter, inclusive; used on `result` and `event` endpoints. Optional — omitting it leaves the range unbounded above, so the filter reaches the newest record |
 | `event_major_type` | string (repeatable) | Filter the unified per-dataset timeline (`/spoke/common/data/{urn}/event`) by event-type major prefix — `INGESTION`, `VALIDATION`, or `METAGEN`. Repeat to OR multiple majors; omitted = all majors |
 | `q` | string | Natural language query (search endpoints only) |
 

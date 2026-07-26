@@ -491,16 +491,20 @@ test("UC1 Case 2 step 5 — events panel shows INGESTION.COMPLETE for the real r
   // -- UI assertion: INGESTION.COMPLETE event visible in the event table --
   // spec: FRONTEND_INGESTION.md §Source Detail §Events — event_type rendered as text
   // Multiple runs (dry + real) log events; assert at least one is present.
-  // Navigate-and-assert inside toPass: the run completed a step earlier behind a bounded
-  // readiness poll, so its event is already confirmed present in the backend; what remains
-  // is residual client-side render lag. Re-mounting re-issues the panel's fetch.
+  // No re-mount loop: the source-detail events query resolves its preset window open
+  // above (`from` only, `to` omitted), so an event booked a step earlier is inside the
+  // window however long ago the page mounted. The run completed behind a bounded
+  // readiness poll, so its event is already confirmed present in the backend; what
+  // remains is the panel's own 15 s poll tick, waited out in place.
+  // spec: FRONTEND_BASIC.md §shared-component-notes (RangePicker) — "A preset resolves
+  //   to an open-ended window — the lower bound only, with `to`/`until` omitted — so the
+  //   read always reaches the present, which is what lets a 15 s-polled panel (see Live
+  //   Updates) surface records written after page load."
   // spec: TESTING.md §E2E §Execution discipline — "Never sleep for a fixed duration":
-  //   wait with a bounded construct — "`await expect(async () => { … }).toPass({ timeout })`
-  //   around a navigate-and-assert block".
-  await expect(async () => {
-    await page.goto(`/ingestion/sources/${encodeURIComponent(sourceId!)}`);
-    await expect(page.getByText("INGESTION.COMPLETE").first()).toBeVisible({ timeout: 5_000 });
-  }).toPass({ timeout: 60_000, intervals: [1_000, 2_000, 3_000, 5_000] });
+  //   wait with a bounded construct — "expect(locator).toBeVisible({ timeout })".
+  await expect(page.getByText("INGESTION.COMPLETE").first()).toBeVisible({
+    timeout: 30_000,
+  });
 
   // -- Backend probe: GET /sources/{id}/event → INGESTION.COMPLETE with status='success' --
   // spec: USE_CASE_en.md §UC1 Case 2 step 6 — INGESTION.COMPLETE carries status='success'

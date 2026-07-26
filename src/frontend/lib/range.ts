@@ -2,12 +2,27 @@
  * Single source of truth for time-range presets and range math used by the
  * shared <RangePicker>. Pure functions — no React imports; safe in any context.
  *
- * Canonical ranges are inclusive, expressed as ISO-8601 UTC strings (toISOString).
+ * Bounds are expressed as ISO-8601 UTC strings (toISOString) and are inclusive
+ * where present. Two resolved shapes exist and must not be confused:
+ *
+ *   - {@link RangeValue} — what queries USE. `to` is optional; a preset
+ *     resolves with `to` absent, i.e. an open-ended window that always reaches
+ *     the present so a polled panel keeps surfacing new records.
+ *   - {@link ClosedRange} — what the picker EDITS. Always a concrete pair,
+ *     because calendars and time fields need something to seed from.
  *
  * A timezone mode (TzMode) governs how calendar days/times are interpreted and
  * displayed; the emitted bounds are always absolute UTC instants. "utc" treats
  * a chosen day/time as a UTC wall-clock value; "local" treats it as the
  * browser's local wall-clock value, then converts to the matching UTC instant.
+ *
+ * CALL-SITE CONTRACT — every consumer that feeds a query key MUST keep its
+ * `useMemo(() => resolveRange(sel, granularity, tz), [sel, tz])` wrapper. The
+ * open upper bound removes the *dead* bound, not the need to memoize: the lower
+ * bound is still computed from `new Date()`, so an unmemoized call would mint a
+ * fresh `from` (and therefore a fresh query key) on every render — a cache miss
+ * per render, i.e. an unbounded refetch loop. `staleTime` does not help; it is
+ * per-key.
  */
 
 export type RangeGranularity = "date" | "datetime";
@@ -17,7 +32,9 @@ export type RangeGranularity = "date" | "datetime";
  *  how days/times are interpreted and displayed. */
 export type TzMode = "local" | "utc";
 
-export interface RangeValue {
+/** A concrete closed window — both bounds pinned. What the picker edits and
+ *  what preset math produces internally; never what a query key embeds. */
+export interface ClosedRange {
   /** Inclusive lower bound, ISO-8601 (UTC). */
   from: string;
   /** Inclusive upper bound, ISO-8601 (UTC). */
@@ -25,10 +42,27 @@ export interface RangeValue {
 }
 
 /**
- * User intent behind a range. A preset is now-relative (re-resolved on every
- * read so it always includes today); a custom window pins concrete bounds.
- * This is what gets persisted — never the resolved {@link RangeValue}, so a
- * stored "Last 7 days" keeps tracking the present.
+ * A resolved window as queries consume it.
+ *
+ * `to` absent = open above: the read is unbounded upward and therefore always
+ * reaches the newest record. Presets resolve this way; custom ranges keep the
+ * closed pair the user picked. Call sites map `to` straight into the endpoint's
+ * end-bound param (`to`, or `until` on `attr/validation/result`); the URL
+ * builders omit falsy bounds, so an absent `to` simply drops the param.
+ */
+export interface RangeValue {
+  /** Inclusive lower bound, ISO-8601 (UTC). */
+  from: string;
+  /** Inclusive upper bound, ISO-8601 (UTC). Absent = unbounded above. */
+  to?: string;
+}
+
+/**
+ * User intent behind a range. A preset is now-relative (its lower bound is
+ * resolved against the clock and its upper bound left open, so it always
+ * includes today and everything recorded since); a custom window pins concrete
+ * bounds. This is what gets persisted — never the resolved
+ * {@link RangeValue}, so a stored "Last 7 days" keeps tracking the present.
  */
 export type RangeSelection =
   | { kind: "preset"; days: number }
@@ -91,7 +125,8 @@ function makeInstant(f: DateFields, tz: TzMode): Date {
 }
 
 /**
- * Build a range covering the last `days` ending at now, interpreted in `tz`.
+ * Build the closed window covering the last `days` ending at now, interpreted
+ * in `tz`. Internal — the concrete pair a preset *would* cover right now.
  *
  * Date mode bounds whole days (in `tz`): `from` = 00:00:00.000 of
  * (today - (days-1)), `to` = 23:59:59.999 of today — so "Last 1 day" is today
@@ -100,11 +135,11 @@ function makeInstant(f: DateFields, tz: TzMode): Date {
  * Datetime mode bounds the exact instant: `from` = (now - days), `to` = now
  * (tz-independent, since both are absolute instants).
  */
-export function presetRange(
+function presetWindow(
   days: number,
   granularity: RangeGranularity,
   tz: TzMode,
-): RangeValue {
+): ClosedRange {
   const now = new Date();
   if (granularity === "date") {
     const nf = readFields(now, tz);
@@ -124,10 +159,33 @@ export function presetRange(
 }
 
 /**
- * Resolve a {@link RangeSelection} into concrete bounds for the granularity.
- * Presets are recomputed against now on every call (so today is always
- * included); custom selections pin absolute UTC instants and pass through
- * unchanged (tz only governs how they are displayed/seeded, not stored).
+ * Resolve a preset into the window queries should use: its lower bound only.
+ *
+ * The upper bound is deliberately omitted so the read stays open above and a
+ * polled panel keeps picking up records written after page load. The lower
+ * bound is derived from `new Date()`, so this MUST stay behind the call site's
+ * `useMemo` — see the call-site contract in the module header.
+ *
+ * For the concrete pair the picker seeds its calendars from, use
+ * {@link resolveRangeForEdit}.
+ */
+export function presetRange(
+  days: number,
+  granularity: RangeGranularity,
+  tz: TzMode,
+): RangeValue {
+  return { from: presetWindow(days, granularity, tz).from };
+}
+
+/**
+ * Resolve a {@link RangeSelection} into the bounds a query should send.
+ * Presets resolve open above (lower bound recomputed against now, so today and
+ * everything since is always included); custom selections pin absolute UTC
+ * instants and pass through as a closed pair (tz only governs how they are
+ * displayed/seeded, not stored).
+ *
+ * Keep every call behind `useMemo(..., [selection, tz])` — see the module
+ * header.
  */
 export function resolveRange(
   sel: RangeSelection,
@@ -136,6 +194,27 @@ export function resolveRange(
 ): RangeValue {
   if (sel.kind === "preset") {
     return presetRange(sel.days, granularity, tz);
+  }
+  return { from: sel.from, to: sel.to };
+}
+
+/**
+ * Resolve a {@link RangeSelection} into a concrete closed pair, for seeding an
+ * *editor* (the RangePicker's calendars and time fields) that needs a bound on
+ * both ends. A preset resolves to the window it covers at the moment of the
+ * call.
+ *
+ * MUST NOT be used to build a query key or query params: it reinstates the
+ * frozen upper bound that {@link resolveRange} exists to avoid. Use
+ * {@link resolveRange} for anything that hits the API.
+ */
+export function resolveRangeForEdit(
+  sel: RangeSelection,
+  granularity: RangeGranularity,
+  tz: TzMode,
+): ClosedRange {
+  if (sel.kind === "preset") {
+    return presetWindow(sel.days, granularity, tz);
   }
   return { from: sel.from, to: sel.to };
 }
@@ -178,7 +257,8 @@ function formatDateTimeBound(iso: string, tz: TzMode): string {
 /**
  * Human-readable label for the trigger button, rendered in `tz` with a short
  * zone tag. "YYYY-MM-DD – YYYY-MM-DD <tz>" (date) or "… HH:mm – … HH:mm <tz>"
- * (datetime).
+ * (datetime). An open upper bound renders as the literal "now" — formatting an
+ * absent bound as a date would silently print "NaN-NaN-NaN".
  */
 export function formatRange(
   value: RangeValue,
@@ -186,13 +266,15 @@ export function formatRange(
   tz: TzMode,
 ): string {
   const fmt = granularity === "date" ? formatDateBound : formatDateTimeBound;
-  return `${fmt(value.from, tz)} – ${fmt(value.to, tz)}${tzTag(tz)}`;
+  const upper = value.to === undefined ? "now" : fmt(value.to, tz);
+  return `${fmt(value.from, tz)} – ${upper}${tzTag(tz)}`;
 }
 
 /**
  * Human-readable label for the trigger button, driven by intent.
  * Preset → its {@link RANGE_PRESETS} label (falling back to the formatted
- * resolved window if no label matches); custom → the formatted bounds.
+ * resolved window — "YYYY-MM-DD – now <tz>" — if no label matches); custom →
+ * the formatted bounds.
  */
 export function selectionLabel(
   sel: RangeSelection,

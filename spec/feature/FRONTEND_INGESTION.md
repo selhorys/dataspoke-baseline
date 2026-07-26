@@ -93,7 +93,7 @@ daily / weekly) to the backing Airflow DAG
    flag is set carries a "wrapper" tag. A
    `datetime`-granularity [RangePicker](FRONTEND_BASIC.md#shared-component-notes) (presets Last
    1 day / 7 days / 2 weeks (default) / 4 weeks / 12 weeks, plus a custom calendar range) drives
-   the `from`/`to` filters from its inclusive `{from, to}` pair. The `detail` cell shows the
+   the `from`/`to` filters from its resolved window. The `detail` cell shows the
    compact JSON truncated to ~30 characters and is click-to-expand into a pretty-printed JSON
    dialog.
 

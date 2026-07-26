@@ -347,6 +347,33 @@ describe("useIngestionSourceEvents — URL construction", () => {
     expect(url).toContain("to=");
   });
 
+  it("emits from= and NO to= for an open window (preset)", async () => {
+    // spec/feature/FRONTEND_BASIC.md §shared-component-notes (RangePicker):
+    // "**A preset resolves to an open-ended window** — the lower bound only,
+    // with `to`/`until` omitted — so the read always reaches the present".
+    // spec/API.md §Query Parameters, `to`: "Optional — omitting it leaves the
+    // range unbounded above, so the filter reaches the newest record".
+    //
+    // This is the shape the ingestion source-detail page actually produces
+    // (`to: range.to`, absent under a preset). The both-bounds test above is the
+    // backstop for this absence assertion: it proves the builder does emit `to=`
+    // when one is supplied, so a missing `to=` here means the caller omitted it,
+    // not that the builder can never produce it.
+    const from = "2024-03-01T08:30:00.000Z";
+    const { result } = renderHook(
+      () => useIngestionSourceEvents("src-1", { from, offset: 0, limit: 20 }),
+      { wrapper: makeWrapper() },
+    );
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    const url = lastUrl();
+    expect(url).toContain(`from=${encodeURIComponent(from)}`);
+    expect(url).not.toContain("to=");
+    // …and the rest of the query is intact, so "no to=" is not the side effect
+    // of the builder having bailed out.
+    expect(url).toContain("limit=20");
+    expect(url).toContain("sort=occurred_at_desc");
+  });
+
   it("omits from and to when not provided", async () => {
     const { result } = renderHook(
       () => useIngestionSourceEvents("src-1", { offset: 0, limit: 20 }),

@@ -10,9 +10,14 @@
  * a preset — is staged locally and committed to onChange only on Apply; Cancel
  * discards.
  *
- * Emits canonical inclusive {from, to} ISO-8601 (UTC) strings; see lib/range.ts.
- * The `tz` prop (the global display timezone) only governs interpretation/
- * display — the emitted bounds are always absolute UTC instants.
+ * Emits a RangeSelection (preset intent or a canonical inclusive custom
+ * {from, to} pair of ISO-8601 UTC strings); see lib/range.ts. The `tz` prop
+ * (the global display timezone) only governs interpretation/display — the
+ * emitted bounds are always absolute UTC instants.
+ *
+ * Being an editor, it seeds its calendars via `resolveRangeForEdit` — the one
+ * entry point that pins both bounds of a preset. Query paths use
+ * `resolveRange`, which leaves a preset open above; never swap the two.
  */
 
 import * as React from "react";
@@ -24,7 +29,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { cn } from "@/lib/utils";
 import {
   RANGE_PRESETS,
-  resolveRange,
+  resolveRangeForEdit,
   selectionLabel,
   type RangeGranularity,
   type RangeSelection,
@@ -125,8 +130,10 @@ export function RangePicker({
   // Resolve the selection to concrete bounds for seeding the calendars/time
   // fields — so opening while a preset is active starts the edit from that
   // preset's concrete window (and keeps the preset staged for highlight).
+  // *ForEdit: the calendars need a pinned upper bound, which the query-path
+  // resolveRange deliberately omits for presets.
   const seedDraft = React.useCallback(() => {
-    const resolved = resolveRange(value, granularity, tz);
+    const resolved = resolveRangeForEdit(value, granularity, tz);
     const from = isoToCalendarDate(resolved.from, tz);
     const to = isoToCalendarDate(resolved.to, tz);
     setDraftFrom(from);
@@ -144,9 +151,9 @@ export function RangePicker({
   };
 
   // Stage a preset — moves both calendars to the preset window. Does NOT close
-  // or commit; only Apply commits.
+  // or commit; only Apply commits. Editor seeding, so *ForEdit (see seedDraft).
   const handlePreset = (days: number) => {
-    const resolved = resolveRange({ kind: "preset", days }, granularity, tz);
+    const resolved = resolveRangeForEdit({ kind: "preset", days }, granularity, tz);
     const from = isoToCalendarDate(resolved.from, tz);
     const to = isoToCalendarDate(resolved.to, tz);
     setDraftFrom(from);

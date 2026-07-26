@@ -61,7 +61,8 @@ export default function IngestionSourceDetailPage({
   const [eventOffset, setEventOffset] = useState(0);
   const [eventLimit, setEventLimit] = useState(DEFAULT_PAGE_SIZE);
   // Persisted selection; resolving via useMemo keeps the events query key
-  // stable until the selection changes.
+  // stable until the selection changes. Still required even though a preset now
+  // resolves open above — resolveRange reads the clock for `from`.
   const tz = useDisplayTz();
   // From GET /spoke/common/peripheral-links; safety-checked there.
   const { datahubUrl } = useDisplayLinks();
