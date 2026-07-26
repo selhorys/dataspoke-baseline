@@ -192,10 +192,53 @@ def registered_route_response_models(app: object) -> tuple[tuple[RouteRef, objec
     in a path-parameter *name* normalise to the same :data:`RouteRef`, and a dict would
     silently collapse them.
     """
-    return _walk_routes(getattr(app, "routes", []), "")
+    return tuple(
+        (ref, getattr(route, "response_model", None))
+        for ref, route in _walk_routes(getattr(app, "routes", []), "")
+    )
+
+
+def registered_route_query_params(app: object) -> tuple[tuple[RouteRef, frozenset[str]], ...]:
+    """``((method, path), {query-param wire name, …})`` for every registered route.
+
+    Same walk as :func:`registered_routes`, reporting each route's query parameters
+    under the names a **client** must send. That is the alias where one is declared
+    (``Query(alias="from")`` is reachable only as ``from``, never as the Python
+    parameter name ``from_time``), which is what makes this usable to check a
+    documented query-param contract rather than an internal signature.
+
+    Sub-dependencies are traversed, so a param supplied by a shared
+    ``Depends(...)`` provider counts as declared on the route that includes it.
+
+    Returned as a tuple of pairs rather than a dict for the same reason as
+    :func:`registered_route_response_models`: two routes differing only in a
+    path-parameter *name* normalise to one :data:`RouteRef`.
+    """
+    return tuple(
+        (ref, _query_param_aliases(route))
+        for ref, route in _walk_routes(getattr(app, "routes", []), "")
+    )
+
+
+def _query_param_aliases(route: object) -> frozenset[str]:
+    """Wire names of every query param on *route*, including sub-dependency params."""
+    root = getattr(route, "dependant", None)
+    if root is None:
+        return frozenset()
+    aliases: set[str] = set()
+    pending = [root]
+    while pending:
+        dependant = pending.pop()
+        for field in getattr(dependant, "query_params", None) or ():
+            alias = getattr(field, "alias", None)
+            if alias:
+                aliases.add(str(alias))
+        pending.extend(getattr(dependant, "dependencies", None) or ())
+    return frozenset(aliases)
 
 
 def _walk_routes(routes: Iterable[object], prefix: str) -> tuple[tuple[RouteRef, object], ...]:
+    """``((method, path), route object)`` for every leaf route, walked recursively."""
     found: list[tuple[RouteRef, object]] = []
     for route in routes:
         original = getattr(route, "original_router", None)
@@ -215,7 +258,7 @@ def _walk_routes(routes: Iterable[object], prefix: str) -> tuple[tuple[RouteRef,
             if method in ("HEAD", "OPTIONS"):
                 continue
             ref = (method, normalise_path(prefix + path))
-            found.append((ref, getattr(route, "response_model", None)))
+            found.append((ref, route))
     return tuple(found)
 
 

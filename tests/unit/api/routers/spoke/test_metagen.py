@@ -35,7 +35,7 @@ from src.backend.metagen.service import (
     UncoveredRowDTO,
 )
 from src.shared.exceptions import ConflictError, EntityNotFoundError
-from tests.unit.api.conftest import auth_headers
+from tests.unit.api.conftest import auth_headers, capture_event_route_sql
 from tests.unit.conftest import route_db_execute
 
 _BASE = "/api/v1/spoke/metagen"
@@ -852,3 +852,104 @@ async def test_get_conf_event_returns_200_with_events_envelope(
     assert status_code == 200
     assert "events" in body
     assert body["total_count"] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "path",
+    [f"{_BASE}/event", f"{_BASE}/conf/{_CONF_ID}/event"],
+    ids=["cross_conf", "per_conf"],
+)
+async def test_event_routes_filter_on_from_and_to_inclusively(client, mock_svc, path) -> None:
+    """``?from=…&to=…`` reaches the WHERE clause of both metagen event routes, inclusively.
+
+    The route-catalogue and query-param conformance checks
+    (tests/unit/spec_conformance/) can only see that a route *declares* `from`/`to`; a
+    handler that declares them and never reads them answers 200 with an unfiltered body
+    and satisfies every declaration check. This is the behavioural half, at a tier that
+    runs without a cluster: fire the wire names and assert the compiled SQL of both the
+    count and the rows query carries each bound under its own comparison. It therefore
+    fails when a handler ignores a bound (no comparison at all), when either operator is
+    exclusive (``>`` / ``<`` render without the ``=``), and when the two bounds are
+    swapped between the operators (each assertion names the value it expects, so
+    ``occurred_at <= from`` does not satisfy the lower-bound assertion).
+
+    Asserting each operator *adjacent to its own literal* is what buys the swap
+    sensitivity: checking only that ``>=`` and ``<=`` each appear somewhere, and that both
+    dates appear somewhere, is satisfied by a swapped pair. The rendering of those literals
+    depends on ``compiled_sql``'s ``literal_binds`` pass (see the caveat in
+    ``tests/unit/conftest.py``), and a semantically equivalent rewrite to
+    ``Event.occurred_at.between(from_time, to_time)`` renders as ``BETWEEN`` and would fail
+    here despite being correct — read such a failure as this expression needing an update,
+    not as a regression.
+
+    Spec: API.md §Query Parameters — `from` is the "Start of time-range filter,
+      inclusive", `to` the "End of time-range filter, inclusive"; both "used on
+      `result` and `event` endpoints".
+    Spec: API.md §Meta-Classifier Conventions → `event` — event endpoints
+      "Supports `from`/`to` for time-range filtering".
+    """
+    status_code, event_stmts = await capture_event_route_sql(
+        client, f"{path}?from=2024-03-01T00:00:00Z&to=2024-03-15T23:59:59Z"
+    )
+    assert status_code == 200
+
+    # Backstop: both the count and the rows query must have been seen, so a
+    # windowed rows query cannot hide an unwindowed count (or vice versa).
+    assert len(event_stmts) == 2, (
+        f"expected the count + rows queries on dataspoke.events; got {len(event_stmts)}: "
+        f"{event_stmts}"
+    )
+    for sql in event_stmts:
+        assert "occurred_at >= '2024-03-01" in sql, (
+            "`from` must apply as an inclusive lower bound carrying the requested start "
+            f"value; compiled SQL has no `occurred_at >= '2024-03-01…`: {sql}"
+        )
+        assert "occurred_at <= '2024-03-15" in sql, (
+            "`to` must apply as an inclusive upper bound carrying the requested end "
+            f"value; compiled SQL has no `occurred_at <= '2024-03-15…`: {sql}"
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "path",
+    [f"{_BASE}/event", f"{_BASE}/conf/{_CONF_ID}/event"],
+    ids=["cross_conf", "per_conf"],
+)
+async def test_event_routes_leave_the_window_open_above_when_to_is_omitted(
+    client, mock_svc, path
+) -> None:
+    """``?from=…`` with no ``to`` bounds the query below only — nothing above.
+
+    This is the *common* shape, not an edge case: a RangePicker preset resolves to an
+    open-ended window (lower bound only), so the polled feeds spend most of their life on
+    this path. A handler that substituted any upper bound when `to` is absent — clamping
+    to `from`, to "now", to the request time — would still pass a both-bounds test while
+    truncating every preset window.
+
+    The absence assertion is backed by
+    :func:`test_event_routes_filter_on_from_and_to_inclusively` in this module, which
+    proves the same compiled statement *does* carry ``occurred_at <=`` when a `to` is
+    supplied — so a missing upper bound here means the handler left the range open, not
+    that the assertion cannot observe one.
+
+    Spec: API.md §Query Parameters — `to` is "Optional — omitting it leaves the range
+      unbounded above, so the filter reaches the newest record".
+    """
+    status_code, event_stmts = await capture_event_route_sql(
+        client, f"{path}?from=2024-03-01T00:00:00Z"
+    )
+    assert status_code == 200
+    assert len(event_stmts) == 2, (
+        f"expected the count + rows queries on dataspoke.events; got {len(event_stmts)}: "
+        f"{event_stmts}"
+    )
+    for sql in event_stmts:
+        assert "occurred_at >= '2024-03-01" in sql, (
+            f"the supplied `from` must still bound the query below: {sql}"
+        )
+        assert "occurred_at <=" not in sql, (
+            "with `to` omitted the range must stay unbounded above; compiled SQL "
+            f"acquired an upper bound: {sql}"
+        )

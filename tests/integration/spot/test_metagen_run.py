@@ -14,6 +14,8 @@ Multi-conf isolation:
 
 Event endpoints:
   test_metagen_conf_event_filters_by_conf_id
+  test_metagen_conf_event_time_range_narrows_to_the_inclusive_window
+  test_metagen_event_time_range_bounds_are_inclusive
   test_metagen_global_event_union_across_confs
   test_metagen_dataset_event_list_envelope
 
@@ -403,6 +405,208 @@ async def test_metagen_conf_event_filters_by_conf_id(
 
 
 @pytest.mark.asyncio
+async def test_metagen_conf_event_time_range_narrows_to_the_inclusive_window(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    async_session: AsyncSession,
+) -> None:
+    """GET /metagen/conf/{conf_id}/event?from=&to= returns only events inside the window.
+
+    Seeds five events one to two seconds apart across a four-second window — one before
+    `from`, one exactly at `from`, one strictly interior, one exactly at `to`, one after
+    `to` — and requests that window. Every leg is load-bearing:
+
+    - the two out-of-window events are absence assertions, not subset containment: a
+      handler that ignores the window returns the whole feed, which a containment check
+      would happily accept;
+    - the at-`from` and at-`to` events make this the exact-bound test for this route,
+      failing an exclusive ``>`` / ``<``. It has to live here because the two metagen event
+      handlers are duplicated code, so the sibling test on ``/metagen/event`` does not
+      cover this one;
+    - the bounds being *distinct* (four seconds apart, not one instant) is what discriminates
+      a pair swapped between the operators: under ``<= from`` / ``>= to`` the predicate
+      selects nothing and the three in-window assertions fail. A degenerate
+      ``from == to`` window cannot see that mutation, because the swap collapses to
+      equality and still returns the single event;
+    - ``total_count`` proves the count query carries the same window as the rows query.
+
+    spec: API.md §Query Parameters — `from` is the "Start of time-range filter,
+      inclusive", `to` the "End of time-range filter, inclusive"; both are "used on
+      `result` and `event` endpoints".
+    spec: API.md §Meta-Classifier Conventions (`event`) — event endpoints "Supports
+      `from`/`to` for time-range filtering".
+    spec: feature/FRONTEND_METAGEN.md §Conf create / detail — the conf run-history events
+      table renders "with a `datetime` RangePicker driving `from`/`to`".
+    """
+    from tests.integration.util.metagen import seed_metagen_event
+
+    conf_id = str(uuid.uuid4())
+    # Whole-second timestamps so the request bounds land on the stored values exactly; a
+    # fixed past anchor keeps the window clear of events other runs emit at "now".
+    from_at = datetime.now(tz=UTC).replace(microsecond=0) - timedelta(minutes=30)
+    to_at = from_at + timedelta(seconds=4)
+    seeded: dict[str, str] = {}
+    try:
+        for leg, occurred_at in (
+            ("before_from", from_at - timedelta(seconds=1)),
+            ("at_from", from_at),
+            ("interior", from_at + timedelta(seconds=2)),
+            ("at_to", to_at),
+            ("after_to", to_at + timedelta(seconds=1)),
+        ):
+            seeded[leg] = await seed_metagen_event(
+                async_session,
+                entity_type="metagen",
+                entity_id=conf_id,
+                event_type="METAGEN.RUN_COMPLETE",
+                detail={"run_id": str(uuid.uuid4()), "conf_id": conf_id, "leg": leg},
+                occurred_at=occurred_at,
+            )
+
+        # `…Z` is the wire form spec/API.md §Date/Time states and the frontend client sends.
+        resp = await api_client.get(
+            f"{_CONF_URL}/{conf_id}/event"
+            f"?from={urllib.parse.quote(from_at.isoformat().replace('+00:00', 'Z'), safe='')}"
+            f"&to={urllib.parse.quote(to_at.isoformat().replace('+00:00', 'Z'), safe='')}"
+            "&limit=100",
+            headers=admin_headers,
+        )
+        assert resp.status_code == 200, f"{resp.status_code} {resp.text}"
+        body = resp.json()
+        ids = {e["id"] for e in body["events"]}
+
+        assert seeded["at_from"] in ids, (
+            "An event whose occurred_at equals `from` exactly must be returned. "
+            "spec: API.md §Query Parameters — `from` is the start of the time-range "
+            "filter, inclusive"
+        )
+        assert seeded["interior"] in ids, (
+            "An event strictly inside the window must be returned. "
+            "spec: API.md §Meta-Classifier Conventions — event endpoints support from/to"
+        )
+        assert seeded["at_to"] in ids, (
+            "An event whose occurred_at equals `to` exactly must be returned. "
+            "spec: API.md §Query Parameters — `to` is the end of the time-range "
+            "filter, inclusive"
+        )
+        assert seeded["before_from"] not in ids, (
+            "An event before `from` must be filtered out, not returned. "
+            "spec: API.md §Query Parameters — `from` is the start of the time-range filter"
+        )
+        assert seeded["after_to"] not in ids, (
+            "An event after `to` must be filtered out, not returned. "
+            "spec: API.md §Query Parameters — `to` is the end of the time-range filter"
+        )
+        assert body["total_count"] == 3, (
+            "total_count must count the windowed rows, not the whole feed; "
+            f"got {body['total_count']} for a window holding exactly three seeded events. "
+            "spec: API.md §Query Parameters — from/to filter the `event` endpoint"
+        )
+    finally:
+        for eid in seeded.values():
+            with suppress(Exception):
+                await async_session.execute(
+                    text("DELETE FROM dataspoke.events WHERE id = CAST(:id AS uuid)"),
+                    {"id": eid},
+                )
+                await async_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_metagen_event_time_range_bounds_are_inclusive(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    async_session: AsyncSession,
+) -> None:
+    """GET /metagen/event?from=&to= treats both bounds as inclusive.
+
+    Seeds four events one second apart on the cross-conf feed: one before `from`, one
+    whose ``occurred_at`` equals `from` exactly, one equal to `to` exactly, and one after
+    `to`. The at-`from` event is the assertion that separates an inclusive `>=` lower
+    bound from an exclusive `>` one; the two out-of-window events are the injected proof
+    that the bounds are enforced at all rather than the filter being a no-op.
+
+    spec: API.md §Query Parameters — `from` is the "Start of time-range filter,
+      inclusive"; `to` is the "End of time-range filter, inclusive".
+    spec: feature/FRONTEND_METAGEN.md §Components — `MetagenEventTable` is bound to the
+      cross-conf `…/event` feed, "paired with a `datetime` RangePicker … for the
+      `from`/`to` window".
+    """
+    from tests.integration.util.metagen import seed_metagen_event
+
+    conf_id = str(uuid.uuid4())
+    # Whole-second timestamps so the request bounds land on the stored values exactly.
+    from_at = datetime.now(tz=UTC).replace(microsecond=0) - timedelta(minutes=30)
+    to_at = from_at + timedelta(seconds=2)
+    before_at = from_at - timedelta(seconds=1)
+    after_at = to_at + timedelta(seconds=1)
+    seeded: dict[str, str] = {}
+    try:
+        for leg, occurred_at in (
+            ("before_from", before_at),
+            ("at_from", from_at),
+            ("at_to", to_at),
+            ("after_to", after_at),
+        ):
+            seeded[leg] = await seed_metagen_event(
+                async_session,
+                entity_type="metagen",
+                entity_id=conf_id,
+                event_type="METAGEN.RUN_COMPLETE",
+                detail={"run_id": str(uuid.uuid4()), "conf_id": conf_id, "leg": leg},
+                occurred_at=occurred_at,
+            )
+
+        # `…Z` is the wire form spec/API.md §Date/Time states and the frontend client sends.
+        resp = await api_client.get(
+            "/api/v1/spoke/metagen/event"
+            f"?from={urllib.parse.quote(from_at.isoformat().replace('+00:00', 'Z'), safe='')}"
+            f"&to={urllib.parse.quote(to_at.isoformat().replace('+00:00', 'Z'), safe='')}"
+            "&limit=100",
+            headers=admin_headers,
+        )
+        assert resp.status_code == 200, f"{resp.status_code} {resp.text}"
+        body = resp.json()
+        ids = {e["id"] for e in body["events"]}
+
+        assert seeded["at_from"] in ids, (
+            "An event whose occurred_at equals `from` exactly must be included. "
+            "spec: API.md §Query Parameters — `from` is the start of the time-range "
+            "filter, inclusive"
+        )
+        assert seeded["at_to"] in ids, (
+            "An event whose occurred_at equals `to` exactly must be included. "
+            "spec: API.md §Query Parameters — `to` is the end of the time-range "
+            "filter, inclusive"
+        )
+        assert seeded["before_from"] not in ids, (
+            "An event one second before `from` must be excluded — otherwise the "
+            "inclusive-bound assertions above pass on an unfiltered feed"
+        )
+        assert seeded["after_to"] not in ids, (
+            "An event one second after `to` must be excluded — otherwise the "
+            "inclusive-bound assertions above pass on an unfiltered feed"
+        )
+        # The count query must carry the same window as the rows query, else an
+        # unwindowed total_count would slip past the id-only assertions above. Valid
+        # because the 2-second window holds far fewer rows than the limit=100 page, so
+        # the page is not truncated and the two numbers are comparable.
+        assert body["total_count"] == len(body["events"]), (
+            f"total_count {body['total_count']} must match the {len(body['events'])} "
+            "returned rows — a count query without the from/to window overstates it. "
+            "spec: API.md §Query Parameters — from/to filter the `event` endpoint"
+        )
+    finally:
+        for eid in seeded.values():
+            with suppress(Exception):
+                await async_session.execute(
+                    text("DELETE FROM dataspoke.events WHERE id = CAST(:id AS uuid)"),
+                    {"id": eid},
+                )
+                await async_session.commit()
+
+
+@pytest.mark.asyncio
 async def test_metagen_global_event_union_across_confs(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
@@ -441,7 +645,7 @@ async def test_metagen_global_event_union_across_confs(
         cutoff = (now - timedelta(minutes=1)).isoformat()
         resp = await api_client.get(
             "/api/v1/spoke/metagen/event"
-            f"?after={urllib.parse.quote(cutoff, safe='')}&limit=100",
+            f"?from={urllib.parse.quote(cutoff, safe='')}&limit=100",
             headers=admin_headers,
         )
         assert resp.status_code == 200

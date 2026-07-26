@@ -29,3 +29,4 @@
 - [Spec-conformance #86 anchors](project_spec_conformance_86_anchors.md) — verified 124/124 routes, 57 codes; TESTING.md has no allowlist rule; drift left unencoded
 - [E2E TESTING.md citations RESOLVED](project_e2e_testing_md_fabricated_citations.md) — §Execution discipline/§Selectors landed; keeps the normalised-substring sweep that proves citations
 - [Events panel freezes its upper bound](project_e2e_events_panel_frozen_upper_bound.md) — `to = Date.now()` memoised at mount from the browser clock; why toPass wrappers ring event assertions
+- [Metagen from/to test seam](project_metagen_from_to_test_seam.md) — #90 mutation-survival table; no aiosqlite so compiled-SQL is the only always-run seam; 3rd inline site unguarded

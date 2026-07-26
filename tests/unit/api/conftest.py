@@ -36,6 +36,54 @@ def _make_mock_user(role: str = "Admin") -> MagicMock:
     return u
 
 
+async def capture_event_route_sql(client: AsyncClient, url: str) -> tuple[int, list[str]]:
+    """Drive a DB-direct ``event`` route; return its status and its events queries' SQL.
+
+    Several ``event`` routes build their query inline instead of delegating to a service
+    (``src/api/routers/spoke/metagen.py`` ×2, ``src/api/routers/spoke/common/data/metagen.py``
+    ×1), so there is no mockable service call to assert a filter against — the query itself
+    is the only observable. This override yields a query-routing session that records every
+    statement, and returns the ones touching ``dataspoke.events`` (the count query and the
+    rows query) compiled to PostgreSQL SQL with literal binds, newest call last.
+
+    Callers assert on the returned SQL, so a param the handler declares but never reads is
+    visible as a missing predicate. See ``tests/unit/conftest.py`` ``compiled_sql`` for the
+    rendering (and its documented fallback when a bound value will not inline).
+    """
+    from src.api.dependencies import get_db
+    from tests.unit.conftest import route_db_execute
+
+    captured: list[str] = []
+
+    def _capture(sql: str) -> bool:
+        """Record every statement, then decline so the routes below supply the result."""
+        captured.append(sql)
+        return False
+
+    count_result = MagicMock()
+    count_result.scalar.return_value = 0
+    rows_result = MagicMock()
+    rows_result.scalars.return_value.all.return_value = []
+    auth_result = MagicMock()
+    auth_result.scalar_one_or_none.return_value = _make_mock_user()
+
+    mock_db = AsyncMock()
+    # Route by SQL: auth user-lookup (users), the events count(), then the events rows.
+    route_db_execute(
+        mock_db,
+        [(_capture, None), ("users", auth_result), ("count(", count_result)],
+        default=rows_result,
+    )
+
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        resp = await client.get(url, headers=auth_headers())
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    return resp.status_code, [sql for sql in captured if "dataspoke.events" in sql]
+
+
 @pytest.fixture
 async def client() -> AsyncClient:
     """Async HTTP client backed by the ASGI app — no running server needed.

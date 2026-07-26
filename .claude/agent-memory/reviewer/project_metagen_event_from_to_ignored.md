@@ -1,32 +1,27 @@
 ---
 name: metagen-event-from-to-ignored
-description: /spoke/metagen/event and /spoke/metagen/conf/{id}/event accept `after`, not `from`/`to` — the frontend sends from/to and FastAPI silently drops them
+description: RESOLVED (issue #90) — metagen event routes now take from/to; the durable lesson is that a URL builder emitting a param never proves the server reads it
 metadata:
   type: project
 ---
 
-The two cross-conf/per-conf metagen event routes in
-`src/api/routers/spoke/metagen.py` (`get_metagen_conf_event`,
-`get_metagen_events`) declare `event_type`, `after`, `limit`, `offset`,
-`sort` — **no** `from` / `to`. Every other event/result route in the repo
-declares `to_time: datetime | None = Query(default=None, alias="to")`.
+**Status: resolved.** Issue #90 Stage 1 replaced `after` with
+`from_time`/`to_time` (`alias="from"`/`alias="to"`, inclusive `>=`/`<=`,
+independent guards) on `get_metagen_conf_event` and `get_metagen_events` in
+`src/api/routers/spoke/metagen.py`, and dropped a declared-but-unread `cursor`.
+Both metagen range pickers are now genuinely server-filtered.
 
-`src/frontend/lib/api/metagen.ts` (`useMetagenConfEvents`, `useMetagenEvents`)
-builds `?from=&to=` and never sends `after`. FastAPI ignores unknown query
-params, so both metagen range pickers are **decorative** — the panels always
-return the full unfiltered feed.
+**Why it happened:** the routes declared `after`, the frontend
+(`src/frontend/lib/api/metagen.ts`) built `?from=&to=`, and FastAPI silently
+ignores unknown query params — so both range pickers were decorative while
+presenting a working control. Surfaced during review of issue #89 (time-range
+presets emitting a dead upper bound).
 
-`spec/API.md` §Query Parameters says `from`/`to` are "used on `result` and
-`event` endpoints", so spec and impl disagree here.
-
-**Why:** surfaced while reviewing issue #89 (time-range presets emitting a dead
-upper bound). The plan classified both metagen pages as "acute — dead on
-arrival"; they were never server-filtered at all, so the bug never applied
-there and the fix is a no-op for them.
-
-**How to apply:** when reviewing anything that claims a range filter works on a
-metagen event feed, or when a plan enumerates `resolveRange` call sites, check
-the router signature — do not assume `from`/`to` exist just because the URL
-builder emits them. Same trap for any endpoint: a green typecheck proves the
-*client* type tolerates the param, never that the *server* reads it.
+**How to apply:** the trap generalizes past metagen. When a plan or completion
+report claims a filter/param works, read the *router signature*, not the URL
+builder. A green frontend typecheck proves the client type tolerates the param,
+never that the server reads it. Corollary for reviewers: an aliased param is
+only reachable under its alias — dump `app.openapi()["paths"][p]["get"]
+["parameters"]` to see the real wire names. This class of drift is invisible to
+the repo's test suite — see [[spec-conformance-paths-only]].
 Related: [[shared-response-model-unpopulated-field]].

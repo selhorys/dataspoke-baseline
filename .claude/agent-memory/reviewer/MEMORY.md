@@ -23,4 +23,5 @@
 - [XFF trust radius & rate-limit buckets](project_xff_trust_radius_rate_limit.md) — RFC1918 FORWARDED_ALLOW_IPS trusts XFF chain entries; dev SNAT ⇒ per-node buckets
 - [Shared response model unpopulated field](feedback_shared_response_model_unpopulated_field.md) — one model, two routes: the handler that omits a defaulted field ships a silent zero
 - [Isolate failures under concurrent edit](feedback_isolate_failures_concurrent_edit.md) — git archive HEAD into scratchpad, overlay one file; base scenario proves HEAD green
-- [metagen event from/to ignored](project_metagen_event_from_to_ignored.md) — metagen event routes take `after`, not from/to; frontend sends from/to and FastAPI drops them silently
+- [metagen event from/to ignored](project_metagen_event_from_to_ignored.md) — RESOLVED (#90); lesson: a URL builder emitting a param never proves the server reads it
+- [spec_conformance is paths-only](feedback_spec_conformance_paths_only.md) — conformance compares route paths vs API.md, never query params; param drift passes every suite

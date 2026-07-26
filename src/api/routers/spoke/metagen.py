@@ -215,7 +215,8 @@ async def post_metagen_conf_run(
 async def get_metagen_conf_event(
     conf_id: str,
     event_type: str | None = Query(default=None),
-    after: datetime | None = Query(default=None),
+    from_time: datetime | None = Query(default=None, alias="from"),
+    to_time: datetime | None = Query(default=None, alias="to"),
     limit: int = Query(default=20, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
     sort: str | None = Query(default=None),
@@ -232,8 +233,10 @@ async def get_metagen_conf_event(
     )
     if event_type is not None:
         base = base.where(Event.event_type == event_type)
-    if after is not None:
-        base = base.where(Event.occurred_at > after)
+    if from_time is not None:
+        base = base.where(Event.occurred_at >= from_time)
+    if to_time is not None:
+        base = base.where(Event.occurred_at <= to_time)
 
     count_q = select(func.count()).select_from(base.subquery())
     total = (await db.execute(count_q)).scalar() or 0
@@ -349,9 +352,9 @@ async def get_metagen_conf_covered_datasets(
 @router.get("/event", response_model=EventListResponse)
 async def get_metagen_events(
     event_type: str | None = Query(default=None),
-    after: datetime | None = Query(default=None),
+    from_time: datetime | None = Query(default=None, alias="from"),
+    to_time: datetime | None = Query(default=None, alias="to"),
     limit: int = Query(default=20, ge=1, le=1000),
-    cursor: str | None = Query(default=None),
     offset: int = Query(default=0, ge=0),
     sort: str | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
@@ -366,8 +369,10 @@ async def get_metagen_events(
     )
     if event_type is not None:
         base = base.where(Event.event_type == event_type)
-    if after is not None:
-        base = base.where(Event.occurred_at > after)
+    if from_time is not None:
+        base = base.where(Event.occurred_at >= from_time)
+    if to_time is not None:
+        base = base.where(Event.occurred_at <= to_time)
 
     count_q = select(func.count()).select_from(base.subquery())
     total = (await db.execute(count_q)).scalar() or 0

@@ -269,12 +269,6 @@ const SPEC_ENUMERATED_QUERY_SITES = [
   // table has "a `datetime` [RangePicker](FRONTEND_BASIC.md#shared-component-notes)
   // driving `from`/`to`"; §Result rollup gives the cross-conf event feed the
   // same `datetime` RangePicker.
-  //
-  // NOTE: these two are covered as *import / call-shape* sites only. The metagen
-  // routers (src/api/routers/spoke/metagen.py) declare `after`, not `from`/`to`,
-  // so the window these pages emit is silently dropped server-side today. That
-  // drift is a separate pre-existing issue and is not what these entries assert;
-  // the resolver-boundary and memoization invariants hold regardless.
   "app/(app)/metagen/conf/[id]/page.tsx",
   "app/(app)/metagen/result/page.tsx",
 ];
