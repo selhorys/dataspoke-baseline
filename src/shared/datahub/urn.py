@@ -6,9 +6,7 @@ platform itself is a nested URN. This module exposes a dependency-free helper to
 extract the platform id from such a URN.
 """
 
-import re
-
-DATASET_URN_PLATFORM_RE = re.compile(r"urn:li:dataset:\(urn:li:dataPlatform:([^,]+),")
+DATASET_URN_PLATFORM_PREFIX = "urn:li:dataset:(urn:li:dataPlatform:"
 
 
 def platform_from_dataset_urn(urn: str) -> str | None:
@@ -17,5 +15,11 @@ def platform_from_dataset_urn(urn: str) -> str | None:
     The platform id is the value between ``urn:li:dataPlatform:`` and the first
     comma of the URN inner tuple (e.g. ``postgres`` for a postgres dataset URN).
     """
-    m = DATASET_URN_PLATFORM_RE.search(urn)
-    return m.group(1) if m else None
+    start = urn.find(DATASET_URN_PLATFORM_PREFIX)
+    if start < 0:
+        return None
+    start += len(DATASET_URN_PLATFORM_PREFIX)
+    end = urn.find(",", start)
+    if end < 0:
+        return None
+    return urn[start:end] or None

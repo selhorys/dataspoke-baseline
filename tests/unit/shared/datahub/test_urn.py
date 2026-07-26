@@ -69,3 +69,32 @@ def test_empty_string_returns_none() -> None:
     Spec: BACKEND.md §Sync + mapping sweep — malformed input maps nothing.
     """
     assert platform_from_dataset_urn("") is None
+
+
+def test_comma_free_urn_returns_none() -> None:
+    """A URN carrying the platform prefix but no terminating comma returns None.
+
+    Spec: BACKEND.md §Sync + mapping sweep — the platform id is delimited by the
+    first comma of the inner tuple; without one there is no extractable id.
+    """
+    assert platform_from_dataset_urn("urn:li:dataset:(urn:li:dataPlatform:postgres") is None
+
+
+def test_repeated_prefix_without_comma_returns_none() -> None:
+    """Repeated platform prefixes with no comma anywhere return None.
+
+    Spec: BACKEND.md §Sync + mapping sweep — malformed input maps nothing. This
+    input shape is scanned linearly: the prefix is located once and the comma
+    searched forward from there, with no per-position retry.
+    """
+    assert platform_from_dataset_urn("urn:li:dataset:(urn:li:dataPlatform:" * 2000) is None
+
+
+def test_empty_platform_segment_returns_none() -> None:
+    """A URN whose platform segment is empty returns None, not an empty string.
+
+    Spec: BACKEND.md §Sync + mapping sweep — callers substitute a fallback (e.g.
+    'unknown') on None, so an absent platform must not surface as ''.
+    """
+    urn = "urn:li:dataset:(urn:li:dataPlatform:,example_db.catalog.orders,DEV)"
+    assert platform_from_dataset_urn(urn) is None
