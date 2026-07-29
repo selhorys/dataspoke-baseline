@@ -127,7 +127,15 @@ async def ingestion_sync() -> dict[str, object]:
     Retryable: DataHub transient failures surface as 500 so Airflow retries.
 
     Returns:
-        {sources_synced, sources_removed, datasets_mapped, pipeline_links, events_mirrored}
+        {sources_synced, sources_removed, datasets_mapped, pipeline_links,
+         events_mirrored, registry_inserted, registry_marked_true,
+         registry_marked_false, sources_zero_coverage, sources_pattern_degraded}
+
+        ``sources_zero_coverage`` and ``sources_pattern_degraded`` are the two
+        defect signals: a non-zero ``sources_pattern_degraded`` means that many
+        sources had no usable pattern set this sweep, so their stored mappings were
+        left unreconciled rather than rebuilt. Every other counter can read as a
+        healthy no-op sweep while that is true.
     """
     try:
         async with make_db_session() as db:

@@ -386,8 +386,72 @@ DAG) reconciles all modes:
    `schema_pattern`/`table_pattern` for `DATAHUB_MANAGED`/`ACTIVE_CUSTOM_MANAGED`; the declared `AllowDenyPattern`
    scope for `PASSIVE`. `derivation = matched` (authority `medium`). Matching parses dataset URNs and applies filters the
    way the connector names them — declared/derived coverage, an explicit approximation (DataHub
-   exposes no native source→dataset reverse lookup). A source with no derivable selection patterns
-   (`schema_pattern`/`table_pattern`/`topic_patterns`/`dataset_pattern` all absent) maps no datasets.
+   exposes no native source→dataset reverse lookup).
+
+   **Name-shape contract.** `table_pattern` / `dataset_pattern` are matched against the full URN
+   name. `schema_pattern` is matched against the name's **container segment**, whose position
+   depends on how many segments the connector puts in the name — in a two-segment name the
+   trailing segment is always the table, so the leading one is the container:
+
+   | URN name shape | Platforms | `schema_pattern` evaluated against |
+   |---|---|---|
+   | `database.schema.table` | postgres, oracle with `add_database_name_to_urn` | second segment |
+   | `schema.table` / `database.table` | athena, mysql, oracle (default) | leading segment |
+   | single segment | unqualified names with no container in the URN | the whole name |
+
+   On a two-tier platform whose leading segment is the database rather than a schema (mysql), an
+   anchored `schema_pattern` is therefore filtering the database name. Kafka is the one platform
+   outside this contract: `topic_patterns` is its own branch, tested against both the full name and
+   — when a dot is present — the substring after the first dot (a kafka URN name is `<topic>` or
+   `<platform_instance>.<topic>`), with allow and deny evaluated independently.
+
+   When both `schema_pattern` and `table_pattern` are present a dataset must pass both, so an
+   anchored `schema_pattern` evaluated against the wrong segment cannot be rescued by a correct
+   `table_pattern`.
+
+   **Coverage outcomes and prune invariant.** Rebuilding the `matched` mappings prunes only on
+   evidence. When a source contributes no matches, three distinct outcomes hide behind that
+   emptiness, and the sweep keeps them apart because they justify different actions on the rows
+   already stored:
+
+   | Outcome | Reached when | Stored `matched` rows | Signal |
+   |---|---|---|---|
+   | **Evaluated, no derivable patterns** | the recipe is well-formed and carries none of the four selection-pattern keys | **pruned** | none |
+   | **Not evaluated** | the recipe cannot be parsed at all; the deciding selection-pattern key is wrongly shaped; a declared pattern does not compile; or the acryl-datahub library supplying `AllowDenyPattern` semantics cannot be imported while the source declares patterns | **left in place** | warning naming the source and what could not be read; `sources_pattern_degraded` |
+   | **Evaluated, derivable, matched nothing** | the patterns ran and no dataset matched | **pruned** | warning naming the source and its platform, and `sources_zero_coverage`, **when DataHub holds datasets for that platform** |
+
+   The first outcome prunes because coverage that cannot be inferred is never assumed: a source that
+   declares nothing covers nothing, and an empty match set is the correct answer. The second does
+   not, and the difference is load-bearing rather than pedantic — a source that *declares* no
+   coverage and a source whose declared coverage *could not be read* are different facts, and only
+   the first is an assertion about the estate. A `DATAHUB_MANAGED` recipe is mirrored from DataHub,
+   so an unreadable recipe is a failed read of an upstream fact; pruning on it would delete mappings
+   that are still true, because DataSpoke could not see the evidence for them this sweep.
+
+   The third outcome is a defect signal rather than a legitimate result: without it, a misconfigured
+   or wrongly-evaluated pattern is indistinguishable from a source that legitimately covers nothing.
+   It is counted once per registered source — a CLI wrapper mirrors its parent's recipe, so counting
+   it too would report one misconfiguration twice.
+
+   Whether a source declares derivable coverage at all is decided by the **first selection-pattern
+   key the matcher reads** in its cascade order — `schema_pattern` → `table_pattern` →
+   `topic_patterns` → `dataset_pattern`: the source declares coverage when that deciding key carries
+   an `AllowDenyPattern`-shaped value. Recipe JSONB is writer-supplied, so the key may instead hold
+   `null` or a bare string; that is a **recipe defect**, and it places the source in the
+   not-evaluated outcome — warned with the source and the offending key named — rather than in
+   either pruning outcome.
+
+   **Trust boundary on writer-supplied patterns.** A malformed, wrongly-typed or uncompilable
+   pattern is caught when the matcher is built, degrading that one source to the not-evaluated
+   outcome with a log line rather than aborting the sweep. The reason that log line reports is
+   derived from recipe content and is therefore itself untrusted, so it is bounded in length and
+   escaped before it reaches a log record: a writer cannot forge log structure or grow a record
+   without limit. Pattern *execution* time is not bounded, so a pathological pattern — one whose
+   backtracking cost grows explosively with the length of the name it is tested against — is
+   unbounded synchronous CPU work inside the API process. Its blast radius is the whole process,
+   not just the sweep: requests are served by a single worker, so all API request handling stalls
+   until the liveness probe restarts the pod. Bounding pattern execution is tracked as issue
+   **#114**.
 3. **Observed enrichment (optional, the two MANAGED modes)**: read `systemMetadata.pipelineName`
    per dataset to link datasets to their source authoritatively — `DATAHUB_MANAGED` (DataHub
    stamps the source URN), `ACTIVE_CUSTOM_MANAGED` (DataSpoke's extractor stamps the source id).
@@ -441,6 +505,19 @@ DAG) reconciles all modes:
    triggered surfaces on the regular source they look at, not on the hidden wrapper.
 5. **Unmanaged bucket**: datasets in DataHub linked to no source (served by
    `GET /spoke/ingestion/unmanaged`).
+
+**Sweep summary.** `sync()` returns a counter dict consumed by the activity endpoint and the DAG
+log. Most counters report **state changes**, not rows examined: `datasets_mapped`,
+`pipeline_links`, `events_mirrored`, `sources_removed` and the `registry_*` counters increment only
+on an insert, a removal or a genuine transition (for `pipeline_links`, a new link or a `matched` →
+`pipeline_name` upgrade — a re-confirmation of an existing `pipeline_name` row still refreshes its
+`last_seen_at` but does not count). A second consecutive sweep over an unchanged estate returns zero
+for all of those. Three counters are steady-state readings instead: `sources_synced` reports how many
+`DATAHUB_MANAGED` rows were mirrored, counting inserts and updates alike, so an unchanged estate
+reports the same non-zero value on every sweep; `sources_zero_coverage` and
+`sources_pattern_degraded` each report a **condition** — respectively, sources that matched nothing
+despite derivable patterns, and sources whose selection patterns could not be evaluated this sweep —
+so each stays non-zero for as long as the affected sources do.
 
 See [DATAHUB_INTEGRATION §Ingestion Source Sync](../DATAHUB_INTEGRATION.md#ingestion-source-sync)
 for the GraphQL surfaces and field citations.
