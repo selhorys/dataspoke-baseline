@@ -30,3 +30,6 @@
 - [E2E TESTING.md citations RESOLVED](project_e2e_testing_md_fabricated_citations.md) — §Execution discipline/§Selectors landed; keeps the normalised-substring sweep that proves citations
 - [Events panel freezes its upper bound](project_e2e_events_panel_frozen_upper_bound.md) — `to = Date.now()` memoised at mount from the browser clock; why toPass wrappers ring event assertions
 - [Metagen from/to test seam](project_metagen_from_to_test_seam.md) — #90 mutation-survival table; no aiosqlite so compiled-SQL is the only always-run seam; 3rd inline site unguarded
+- [E2E 60s timeout vs 180s polls](project_e2e_60s_timeout_vs_180s_polls.md) — hand-rolled 120-180s poll deadlines are cut off by the 60s per-test timeout; their "budget exhausted" messages never print
+- [uc1-01 retry is doomed at step 6](project_e2e_uc1_01_retry_doomed_step6.md) — serial-group retry makes a new source URN; DataHub aspect dedup keeps the old pipelineName, so pipeline_name/high can never re-fire
+- [DataHub GQL 401 is not JSON](project_datahub_gql_401_is_not_json.md) — a stale PAT throws in resp.json() before any GraphQL-errors assert, so token diagnoses on those asserts never print
