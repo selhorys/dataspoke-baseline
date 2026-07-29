@@ -33,3 +33,4 @@
 - [E2E 60s timeout vs 180s polls](project_e2e_60s_timeout_vs_180s_polls.md) — hand-rolled 120-180s poll deadlines are cut off by the 60s per-test timeout; their "budget exhausted" messages never print
 - [uc1-01 retry is doomed at step 6](project_e2e_uc1_01_retry_doomed_step6.md) — serial-group retry makes a new source URN; DataHub aspect dedup keeps the old pipelineName, so pipeline_name/high can never re-fire
 - [DataHub GQL 401 is not JSON](project_datahub_gql_401_is_not_json.md) — a stale PAT throws in resp.json() before any GraphQL-errors assert, so token diagnoses on those asserts never print
+- [Sync sweep counter tiers](project_sync_sweep_counter_vacuity.md) — pipeline_links is provably unreachable over REST (emitted rows shadow it); which counters live at which tier; stub side effects are pre-existing
