@@ -83,6 +83,23 @@ test.afterAll(async ({ adminApi }) => {
   }
 });
 
+// Serial mode: the steps below form one ordered, stateful scenario (each step
+// depends on the source + module state established by the prior step). In serial
+// mode the file's tests run as one group and a failing step aborts the rest, so a
+// broken step reports as the failure it is instead of leaving the dependent steps
+// to run against inconsistent state.
+//   - retries: 0 → overrides the project-level `retries: 1`. Step 1 creates the
+//     source named SOURCE_NAME through the UI and does NOT pre-delete by that
+//     natural key; if the step dies after the POST but before `sourceId` is
+//     assigned, afterAll has no id to clean up and the group retry re-submits the
+//     same name over the orphan. This arc therefore takes the spec's other option
+//     and fails loudly in place.
+// spec: spec/TESTING.md §E2E §Execution discipline — "Ordered scenarios run serial…
+// Serial mode also states its retry stance: Playwright retries a failed serial group
+// from the first step, so a file either makes every step re-runnable or sets
+// `retries: 0` and fails loudly in place."
+test.describe.configure({ mode: "serial", retries: 0 });
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Step 0 — Pre-source positive check: imazon.* topics appear in /unmanaged
 // spec: USE_CASE_en.md §UC1 Case 3 — "Datasets covered by no source appear in
@@ -243,8 +260,6 @@ test("UC1 Case 3 step 2 — Run panel shows disabled state for PASSIVE source", 
   page,
   adminApi,
 }) => {
-  if (!sourceId) test.skip();
-
   await page.goto(`/ingestion/sources/${encodeURIComponent(sourceId!)}`);
   await expect(page.getByRole("heading", { name: SOURCE_NAME })).toBeVisible({ timeout: 15_000 });
 
@@ -285,8 +300,6 @@ test("UC1 Case 3 step 3 — datasets panel shows imazon Kafka topics with matche
   page,
   adminApi,
 }) => {
-  if (!sourceId) test.skip();
-
   // Trigger sync sweeps (backend, no UI surface) until both Kafka URNs appear in datasets.
   // spec: test_uc1_03_passive_kafka.py step 4 — re-trigger sync each iteration.
   const base = apiBaseUrl();
@@ -367,8 +380,6 @@ test("UC1 Case 3 step 4 — imazon Kafka topics absent from /unmanaged after sou
   page,
   adminApi,
 }) => {
-  if (!sourceId) test.skip();
-
   // Poll until both imazon topics leave /unmanaged (≤120s).
   // spec: test_uc1_03_passive_kafka.py step 6 — poll ≤120s for mapping propagation.
   const deadline = Date.now() + 120_000;
@@ -416,8 +427,6 @@ test("UC1 Case 3 step 5 — fresh Kafka Operation surfaces as a passive_observat
   page,
   adminApi,
 }) => {
-  if (!sourceId) test.skip();
-
   // Emit ONE fresh DataHub Operation on the orders Kafka topic via the Python util —
   // mirrors global-setup.ts's execSync(uv run python -m tests.integration.util ...) pattern.
   // repoRoot is three levels above tests/e2e/use-case/. Capture stdout to read back the
@@ -513,8 +522,6 @@ test("UC1 Case 3 step 6 — events panel is accessible for PASSIVE source", asyn
   page,
   adminApi,
 }) => {
-  if (!sourceId) test.skip();
-
   await page.goto(`/ingestion/sources/${encodeURIComponent(sourceId!)}`);
   await expect(page.getByRole("heading", { name: SOURCE_NAME })).toBeVisible({ timeout: 15_000 });
 
@@ -538,8 +545,6 @@ test("UC1 Case 3 step 7 — delete PASSIVE source; source gone from list", async
   page,
   adminApi,
 }) => {
-  if (!sourceId) test.skip();
-
   await page.goto(`/ingestion/sources/${encodeURIComponent(sourceId!)}`);
   await expect(page.getByRole("heading", { name: SOURCE_NAME })).toBeVisible({ timeout: 15_000 });
 

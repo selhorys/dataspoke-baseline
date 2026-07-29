@@ -173,6 +173,13 @@ function gqlHeaders(): Record<string, string> {
 }
 
 // Helper: fire a DataHub GQL mutation.
+//
+// A credential problem never reaches the GraphQL layer: GMS's AuthenticationEnforcementFilter
+// rejects a missing or expired PAT with `sendError(SC_UNAUTHORIZED, …)` — a servlet error page,
+// not a GraphQL envelope — so parsing that body as JSON would throw an opaque syntax error far
+// from its cause. Fail here instead, naming the status and the credential remedy. A GraphQL
+// `errors` array (which arrives on an HTTP 200 JSON envelope) means the opposite: GMS ACCEPTED
+// the credential and refused the operation, and the callers judge that case themselves.
 async function gqlMutate(
   query: string,
   variables: Record<string, unknown>
@@ -182,6 +189,21 @@ async function gqlMutate(
     headers: gqlHeaders(),
     body: JSON.stringify({ query, variables }),
   });
+  const contentType = resp.headers.get("content-type") ?? "";
+  if (!resp.ok || !contentType.includes("json")) {
+    const body = await resp.text().catch(() => "");
+    const credentialHint =
+      resp.status === 401 || resp.status === 403
+        ? "This is GMS's authentication filter rejecting the PAT, so DATASPOKE_TEST_DATAHUB_TOKEN " +
+          "is missing or stale — re-derive it from the cluster secret and re-source " +
+          "helm-charts/.env.dev (a fragmented --from-component install skips that env-sync). "
+        : "";
+    throw new Error(
+      `DataHub GraphQL call failed before reaching the GraphQL layer: HTTP ${resp.status} ` +
+        `${resp.statusText}, content-type '${contentType || "none"}'. ${credentialHint}` +
+        `Body: ${body.slice(0, 300)}`
+    );
+  }
   return resp.json() as Promise<{ data?: Record<string, unknown>; errors?: unknown[] }>;
 }
 
@@ -211,6 +233,38 @@ test.afterAll(async ({ adminApi }) => {
   secretUrn = null;
   sourceId = null;
 });
+
+// Serial mode: the steps below form one ordered, stateful scenario (each step
+// depends on the DataHub + module state established by the prior step). In serial
+// mode the file's tests run as one group and a failing step aborts the rest, so a
+// broken step reports as the failure it is instead of leaving the dependent steps
+// to run against inconsistent state.
+//
+// Setup replays cleanly: step 1 opens by deleting SECRET_DH_URN and every leftover
+// IngestionSource named SOURCE_NAME before creating them, so a second attempt lands
+// over the failed attempt's leftovers instead of colliding on "This Secret already
+// exists!" or accumulating duplicate sources.
+// spec: spec/TESTING.md §E2E §Execution discipline — "Because a group retry replays
+// setup over the leftovers of the failed attempt, each setup path pre-deletes by
+// natural key and accepts the upsert/absent status codes".
+//
+// That is necessary but NOT sufficient, so `retries: 0` overrides the project-level
+// `retries: 1`: STEP 6 is single-shot per E2E run and cannot replay. Its 6e assertion
+// needs ≥1 dataset row at derivation='pipeline_name'/authority='high', which the sync
+// sweep derives from `systemMetadata.pipelineName == datahub_source_urn`. pipelineName
+// lands on the `subTypes` aspect alone, and DataHub dedups an unchanged aspect on
+// re-ingest — so a retried group, which creates a NEW source URN, re-emits an identical
+// subTypes aspect that is dropped as a no-op and leaves pipelineName pointing at the
+// first attempt's URN. The upgrade can never re-fire. E2E has no per-file dataset reset
+// to break that (global-setup runs --reset-seed once for the whole run; the util CLI
+// exposes no platform-scoped hard-delete), unlike the api-wired twin whose fixture
+// re-ingests via reset_datasets(platform=PG_PLATFORM). A retry would therefore re-run a
+// structurally doomed step 6 and report that harness artifact as the failure, burying
+// the original defect.
+// spec: spec/TESTING.md §E2E §Execution discipline — "Serial mode also states its retry
+// stance: Playwright retries a failed serial group from the first step, so a file either
+// makes every step re-runnable or sets `retries: 0` and fails loudly in place."
+test.describe.configure({ mode: "serial", retries: 0 });
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Step 1 — Seed: create DataHub Secret + IngestionSource via GraphQL
@@ -259,14 +313,24 @@ test("UC1 Case 1 step 1 — seed DataHub Secret + IngestionSource", async () => 
       },
     }
   );
-  if (secretResult.errors) {
-    test.skip(
-      true,
-      `createSecret GraphQL error: ${JSON.stringify(secretResult.errors)}. ` +
-        "DataHub GMS may not support Managed Secrets in this dev-env."
-    );
-    return;
-  }
+  // A GraphQL error here is a BROKEN dependency, not an absent one: reaching the GraphQL
+  // layer at all means GMS authenticated the caller (gqlMutate throws before this on an
+  // auth rejection), and Managed Ingestion — Secrets included — is provisioned by the dev
+  // install. Skipping would report a DataHub that cannot hold a Managed Secret as green.
+  // spec: spec/TESTING.md §E2E §Execution discipline — "A step never skips on an outcome
+  //   it exists to judge"; skips are reserved for "an unconfigured dependency" whose
+  //   reason "names the precondition and how to supply it".
+  expect(
+    secretResult.errors,
+    `createSecret returned GraphQL errors: ${JSON.stringify(secretResult.errors)}. ` +
+      "GMS accepted the credential and refused the operation, so two causes produce this: " +
+      "(1) the authenticated actor is under-privileged — the PAT's actor lacks MANAGE_SECRETS, " +
+      "so grant it (or use an admin PAT) and refresh DATASPOKE_TEST_DATAHUB_TOKEN in " +
+      "helm-charts/.env.dev; or (2) Managed Secrets are broken or absent in this GMS — " +
+      "they are provisioned by the dev install " +
+      "(./helm-charts/bin/install.sh --profile dev --components datahub). Check the " +
+      "privilege before reinstalling DataHub. Neither is an absent precondition."
+  ).toBeFalsy();
   secretUrn = (secretResult.data?.["createSecret"] as string) ?? null;
   expect(secretUrn, "createSecret must return a URN").toBeTruthy();
 
@@ -306,14 +370,22 @@ test("UC1 Case 1 step 1 — seed DataHub Secret + IngestionSource", async () => 
       },
     }
   );
-  if (sourceResult.errors) {
-    test.skip(
-      true,
-      `createIngestionSource GraphQL error: ${JSON.stringify(sourceResult.errors)}. ` +
-        "DataHub GMS may not support Managed Ingestion in this dev-env."
-    );
-    return;
-  }
+  // Same stance as createSecret above: the call authenticated (gqlMutate throws otherwise)
+  // and Managed Ingestion is part of the dev DataHub stack this file's beforeEach requires,
+  // so a GraphQL error is a broken dependency and fails the step.
+  // spec: spec/TESTING.md §E2E §Execution discipline — "A step never skips on an outcome
+  //   it exists to judge".
+  expect(
+    sourceResult.errors,
+    `createIngestionSource returned GraphQL errors: ${JSON.stringify(sourceResult.errors)}. ` +
+      "GMS accepted the credential and refused the operation, so two causes produce this: " +
+      "(1) the authenticated actor is under-privileged — the PAT's actor lacks the Manage " +
+      "Ingestion privilege, so grant it (or use an admin PAT) and refresh " +
+      "DATASPOKE_TEST_DATAHUB_TOKEN in helm-charts/.env.dev; or (2) Managed Ingestion is " +
+      "broken or absent in this GMS — it is provisioned by the dev install " +
+      "(./helm-charts/bin/install.sh --profile dev --components datahub). Check the " +
+      "privilege before reinstalling DataHub. Neither is an absent precondition."
+  ).toBeFalsy();
   sourceUrn = (sourceResult.data?.["createIngestionSource"] as string) ?? null;
   expect(sourceUrn, "createIngestionSource must return a URN").toBeTruthy();
 });
@@ -327,8 +399,6 @@ test("UC1 Case 1 step 1 — seed DataHub Secret + IngestionSource", async () => 
 test("UC1 Case 1 step 2 — sync sweep mirrors the DATAHUB_MANAGED source into DataSpoke", async ({
   adminApi,
 }) => {
-  if (!sourceUrn) test.skip();
-
   const base = apiBaseUrl();
   const token = process.env["DATASPOKE_TEST_INTERNAL_TOKEN"] ?? "";
 
@@ -376,8 +446,6 @@ test("UC1 Case 1 step 3 — /ingestion/conf list shows DATAHUB_MANAGED row with 
   page,
   adminApi,
 }) => {
-  if (!sourceId) test.skip();
-
   // Navigate to the ingestion source list (moved to /ingestion/conf; /ingestion redirects here).
   await page.goto("/ingestion/conf");
   await expect(page).not.toHaveURL(/\/login/);
@@ -438,8 +506,6 @@ test("UC1 Case 1 step 4 — source detail shows secret ref preserved; is read-on
   page,
   adminApi,
 }) => {
-  if (!sourceId) test.skip();
-
   // Navigate to source detail.
   await page.goto(`/ingestion/sources/${encodeURIComponent(sourceId!)}`);
   await expect(page).not.toHaveURL(/\/login/);
@@ -527,8 +593,6 @@ test("UC1 Case 1 step 5 — datasets panel shows mapped non-catalog datasets", a
   page,
   adminApi,
 }) => {
-  if (!sourceId) test.skip();
-
   const base = apiBaseUrl();
   const token = process.env["DATASPOKE_TEST_INTERNAL_TOKEN"] ?? "";
 
@@ -608,8 +672,6 @@ test("UC1 Case 1 step 6 — execute in DataHub; DataSpoke reflects the run", asy
   page,
   adminApi,
 }) => {
-  if (!sourceId) test.skip();
-
   const base = apiBaseUrl();
   const token = process.env["DATASPOKE_TEST_INTERNAL_TOKEN"] ?? "";
 
@@ -644,23 +706,28 @@ test("UC1 Case 1 step 6 — execute in DataHub; DataSpoke reflects the run", asy
      }`,
     { input: { ingestionSourceUrn: sourceUrn! } }
   );
-  if (execResult.errors) {
-    test.skip(
-      true,
-      `createIngestionExecutionRequest GraphQL error: ${JSON.stringify(execResult.errors)}. ` +
-        "DataHub executor may not be available or ready in this dev-env."
-    );
-    return;
-  }
+  // Post-trigger: everything from here on is an outcome this step exists to judge.
+  // The executor's schedulability — the one absent-precondition case — was settled
+  // above, so a GraphQL error on the trigger is DataHub refusing to book a run it is
+  // provisioned to book, and fails.
+  // spec: spec/TESTING.md §E2E §Execution discipline — "A step never skips on an outcome
+  //   it exists to judge: a failed run, an empty result, or a wait that exhausts its
+  //   budget is a failure, not a skip."
+  expect(
+    execResult.errors,
+    `createIngestionExecutionRequest returned GraphQL errors: ${JSON.stringify(execResult.errors)}. ` +
+      "The acryl-datahub-actions executor reported a ready replica before this trigger, " +
+      "so DataHub refused a run it is provisioned to accept."
+  ).toBeFalsy();
   const executionRequestUrn = (execResult.data?.["createIngestionExecutionRequest"] as string) ?? null;
-  if (!executionRequestUrn) {
-    test.skip(
-      true,
-      `createIngestionExecutionRequest returned no URN: ${JSON.stringify(execResult.data)}. ` +
-        "Skipping execution-and-reflect step."
-    );
-    return;
-  }
+  // An errorless mutation that yields no URN is the same class of outcome: the trigger
+  // did not take, and there is nothing left for the reflect assertions to observe.
+  expect(
+    executionRequestUrn,
+    `createIngestionExecutionRequest returned no execution-request URN: ${JSON.stringify(execResult.data)}. ` +
+      "The mutation reported no error, so DataHub accepted the request and still booked " +
+      "no run — the execution beat UC1 Case 1 asserts never started."
+  ).toBeTruthy();
 
   // -- 6b: Poll the execution request DIRECTLY to terminal SUCCESS/SUCCEEDED (≤180s) --
   // By design DataHub books the run on a hidden CLI wrapper source, so the parent's
