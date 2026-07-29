@@ -1,6 +1,9 @@
 """CLI entry point for manual dummy-data management.
 
 Usage:
+    uv run python -m tests.integration.util --help
+        print this usage text and exit
+
     uv run python -m tests.integration.util
         same as --reset-all
 
@@ -63,11 +66,48 @@ import sys
 
 _UC4_STATE_FILE = "/tmp/dataspoke_uc4_state.json"
 
+# Every flag main() dispatches on. An argument outside this set is rejected rather
+# than ignored, so a typo cannot pass for a completed run. Keep in sync with the
+# module docstring, which is the usage text --help prints.
+_RECOGNIZED_FLAGS = frozenset(
+    {
+        "--reset-all",
+        "--reset-seed",
+        "--pg",
+        "--kafka",
+        "--datahub",
+        "--datahub-seed",
+        "--reset-dataspoke-db",
+        "--datahub-sync",
+        "--emit-passive-kafka-ops",
+        "--langfuse",
+        "--uc4-seed",
+        "--uc4-restore",
+    }
+)
+
 
 def main() -> None:
+    raw_args = sys.argv[1:]
+
+    # Resolved before any util import so usage and rejection stay available
+    # without a reachable cluster.
+    if "--help" in raw_args or "-h" in raw_args:
+        print(__doc__)
+        sys.exit(0)
+
+    unknown = [arg for arg in raw_args if arg not in _RECOGNIZED_FLAGS]
+    if unknown:
+        print(f"[ERROR] Unrecognized argument(s): {' '.join(unknown)}", file=sys.stderr)
+        print(__doc__, file=sys.stderr)
+        sys.exit(1)
+
     from tests.integration.util import datahub, dataspoke_db, kafka, langfuse, postgres
 
-    args = set(sys.argv[1:])
+    args = set(raw_args)
+    # Names the actions that actually ran, so the closing line distinguishes a
+    # real run from one that did nothing.
+    performed: list[str] = []
 
     if "--reset-all" in args and "--reset-seed" in args:
         print(
@@ -130,40 +170,51 @@ def main() -> None:
     # are not collapsed into a single fast-path: reset must finish first.
     if "--reset-all" in args:
         _reset_all()
+        performed.append("reset-all")
     elif "--reset-seed" in args:
         _reset_seed()
+        performed.append("reset-seed")
     elif not args:
         _reset_all()
+        performed.append("reset-all")
 
     if "--uc4-seed" in args:
         asyncio.run(_uc4_seed())
+        performed.append("uc4-seed")
 
     if "--uc4-restore" in args:
         asyncio.run(_uc4_restore())
+        performed.append("uc4-restore")
 
     if "--pg" in args:
         print("[INFO] Resetting PostgreSQL dummy data (with seed SQL)...")
         asyncio.run(postgres.reset_all())
+        performed.append("pg")
 
     if "--kafka" in args:
         print("[INFO] Resetting Kafka dummy data (with seed messages)...")
         kafka.reset_all()
+        performed.append("kafka")
 
     if "--datahub" in args:
         print("[INFO] Hard-deleting DataHub datasets (no ingest)...")
         datahub.reset_only()
+        performed.append("datahub")
 
     if "--datahub-seed" in args:
         print("[INFO] Hard-deleting DataHub datasets then re-ingesting...")
         asyncio.run(datahub.seed())
+        performed.append("datahub-seed")
 
     if "--reset-dataspoke-db" in args:
         print("[INFO] Resetting DataSpoke operational DB...")
         asyncio.run(dataspoke_db.reset_all())
+        performed.append("reset-dataspoke-db")
 
     if "--datahub-sync" in args:
         print("[INFO] Running ingestion datahub-sync (reconcile dataset_registry)...")
         asyncio.run(_datahub_sync())
+        performed.append("datahub-sync")
 
     if "--emit-passive-kafka-ops" in args:
         print("[INFO] Emitting one fresh Operation on the orders Kafka topic...")
@@ -171,12 +222,14 @@ def main() -> None:
         # Parseable marker line so callers (E2E Step 5) can grep the emit timestamp and
         # match the resulting fresh passive_observation event.
         print(f"EMITTED_OCCURRED_AT_MS={emitted_ms}")
+        performed.append("emit-passive-kafka-ops")
 
     if "--langfuse" in args:
         print("[INFO] Clearing Langfuse traces in the dataspoke project...")
         asyncio.run(langfuse.reset_project())
+        performed.append("langfuse")
 
-    print("[INFO] Done.")
+    print(f"[INFO] Done ({', '.join(performed)}).")
 
 
 async def _uc4_seed() -> None:
