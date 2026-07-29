@@ -7,7 +7,8 @@ so neither imports from the other for ingestion primitives.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+import re
+from collections.abc import Callable, Mapping
 from enum import StrEnum
 from typing import Any
 
@@ -22,6 +23,7 @@ class Platform(StrEnum):
     POSTGRESQL = "postgres"
     MYSQL = "mysql"
     ORACLE = "oracle"
+    ATHENA = "athena"
     BIGQUERY = "bigquery"
     SNOWFLAKE = "snowflake"
     KAFKA = "kafka"
@@ -66,7 +68,39 @@ CRON_TO_TIER: dict[str, str] = dict(_CRON_TO_TIER)
 # Source types whose dataset URN names are always database-prefixed
 # (``database.schema.table`` for postgres, ``database.table`` for mysql), so the
 # recipe's ``database`` always names the first dot-separated segment.
+#
+# ``athena`` is deliberately absent: an athena recipe declares ``catalog_name``
+# (never ``database``), and its URN names are ``schema.table``. Keeping it out of
+# this set means the database gate stays inactive for athena even if a recipe
+# carries a stray ``database`` key.
 _DB_PREFIXED_SOURCE_TYPES = frozenset({"postgres", "mysql"})
+
+# The ``source.config`` keys ``build_matcher_checked`` derives coverage from. Its
+# branch cascade and the ``has_selection_patterns`` predicate read the same
+# constants, so a key rename cannot desync them; a *new* branch key must be added
+# to ``_SELECTION_PATTERN_CASCADE`` as well, or the predicate will not see it.
+_SCHEMA_PATTERN_KEY = "schema_pattern"
+_TABLE_PATTERN_KEY = "table_pattern"
+_TOPIC_PATTERNS_KEY = "topic_patterns"
+_DATASET_PATTERN_KEY = "dataset_pattern"
+
+# Ordered exactly as ``build_matcher_checked`` tests them: the first key present in
+# ``source.config`` selects the branch and the later keys are never reached
+# (``table_pattern`` only participates as ``schema_pattern``'s co-predicate).
+# ``has_selection_patterns`` walks this same order so predicate and matcher agree
+# on which key decides.
+_SELECTION_PATTERN_CASCADE: tuple[str, ...] = (
+    _SCHEMA_PATTERN_KEY,
+    _TABLE_PATTERN_KEY,
+    _TOPIC_PATTERNS_KEY,
+    _DATASET_PATTERN_KEY,
+)
+
+# Upper bound on a degradation reason emitted to a log record. A reason embeds
+# writer-supplied text (a pattern string, an exception message quoting one), and a
+# recipe pattern can expand to hundreds of kilobytes, so every reason is truncated
+# before it reaches a log line. See ``truncate_reason``.
+MAX_REASON_CHARS = 500
 
 
 def parse_recipe(recipe: dict[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -155,22 +189,72 @@ def cron_to_tier(schedule: str | None) -> str | None:
     return tier
 
 
+def _match_nothing(_name: str) -> bool:
+    """Predicate for a source whose coverage cannot be inferred: matches nothing."""
+    return False
+
+
+def truncate_reason(reason: str, limit: int = MAX_REASON_CHARS) -> str:
+    """Bound a degradation reason to ``limit`` characters for logging.
+
+    A reason quotes writer-supplied recipe text, which carries no length bound of
+    its own — a single expanded pattern string has produced a six-figure-character
+    reason. Every log call site passes the reason through here and emits it with
+    ``%r``, so the record stays one bounded, escaped line whatever the recipe holds.
+    """
+    if len(reason) <= limit:
+        return reason
+    return f"{reason[:limit]}… (truncated, {len(reason)} chars)"
+
+
 def build_matcher(recipe: dict[str, Any]) -> Callable[[str], bool]:
     """Build a dataset-name predicate from the recipe's allow/deny patterns.
+
+    Exists alongside ``build_matcher_checked`` as the convenience form for callers
+    that only need to evaluate names and have no branch to take on *why* a pattern
+    set is empty — tests, ad-hoc coverage previews, and any read path that neither
+    deletes rows nor reports a defect. It logs and discards the degradation reason,
+    so an empty match set here is indistinguishable from "the pattern set could not
+    be built". A caller that acts on an empty match set — deleting stored mappings,
+    or reporting a coverage defect — must call ``build_matcher_checked`` and branch
+    on the reason instead.
+
+    See ``build_matcher_checked`` for the full matching contract.
+    """
+    matcher, reason = build_matcher_checked(recipe)
+    if reason is not None:
+        # Logged here rather than in build_matcher_checked, so a caller that keeps
+        # the reason reports it once, with its own subject identity attached.
+        # %r + truncate_reason: the reason embeds writer-supplied recipe text, and a
+        # raw newline in it would otherwise split this record for a line-based
+        # collector.
+        logger.warning("build_matcher: %r", truncate_reason(reason))
+    return matcher
+
+
+def build_matcher_checked(recipe: dict[str, Any]) -> tuple[Callable[[str], bool], str | None]:
+    """Build a dataset-name predicate, plus why it could not be built over the recipe.
 
     Uses ``datahub.configuration.common.AllowDenyPattern`` from the acryl-datahub
     SDK to evaluate whether a given dataset name is covered by this source.
 
     The dataset name passed to the returned callable must be the
     platform-specific name as it appears in the DataHub dataset URN:
-      - postgres / mysql / oracle: ``database.schema.table`` (three dot-separated parts)
+      - postgres: ``database.schema.table`` (three dot-separated parts)
+      - oracle: ``schema.table``, or ``database.schema.table`` when the recipe sets
+        ``add_database_name_to_urn``
+      - athena: ``schema.table``
+      - mysql: ``database.table``
       - kafka: ``topic`` (bare, no instance) or ``platform_instance.topic``
       - bigquery / snowflake: the full dataset identifier
 
     Pattern semantics per DataHub's SQL source config:
-      - ``schema_pattern`` is matched against the **schema segment only**
-        (e.g. ``^catalog$`` applied to the schema part of ``example_db.catalog.orders``).
-      - ``table_pattern`` is matched against the **full** ``database.schema.table`` string.
+      - ``schema_pattern`` is matched against the **container segment only** — the
+        second segment of a three-segment name (``^catalog$`` applied to the schema
+        part of ``example_db.catalog.orders``) and the leading segment of a
+        two-segment name (``^schema_a$`` applied to ``schema_a`` of
+        ``schema_a.table_1``). See ``_schema_segment``.
+      - ``table_pattern`` is matched against the **full** URN name string.
       - ``topic_patterns`` (kafka) allow and deny are each evaluated against the topic
         name. Because a kafka dataset URN name may be ``<topic>`` (no platform instance)
         or ``<platform_instance>.<topic>`` (instance set), both candidate forms — the full
@@ -182,6 +266,13 @@ def build_matcher(recipe: dict[str, Any]) -> Callable[[str], bool]:
 
     When both ``schema_pattern`` and ``table_pattern`` are present, a dataset
     must pass both predicates to be included.
+
+    Known divergence from the connector: every ``AllowDenyPattern`` here is built from
+    ``allow`` / ``deny`` only, so a recipe setting ``"ignoreCase": false`` on a pattern
+    is still evaluated case-insensitively (the SDK's default is ``True``). Such a source
+    is reported as covering names its own DataHub connector would exclude on case, so
+    the sweep over-reports its coverage. This is the present contract, not a bug being
+    tracked: the matcher is a declared-coverage approximation throughout.
 
     Database scoping:
       When the recipe declares a ``database`` and the source type's URN names are
@@ -197,18 +288,54 @@ def build_matcher(recipe: dict[str, Any]) -> Callable[[str], bool]:
           so the gate activates only when the recipe also sets
           ``add_database_name_to_urn`` truthy (which prepends the database segment).
           Gating on ``database`` alone would reject every oracle name.
-        - bigquery / snowflake / kafka: the gate never activates; their names are not
-          database-prefixed in this form.
+        - athena / bigquery / snowflake / kafka: the gate never activates; their names
+          are not database-prefixed in this form (an athena recipe scopes with
+          ``catalog_name``, not ``database``).
 
     Caller contract:
-      The matcher evaluates dataset names only — it has no view of the URN platform.
-      Platform scoping is the caller's responsibility: the sync sweep feeds the matcher
-      only names whose URN platform equals the recipe's ``source.type``.
+      The matcher evaluates dataset names only — it has no view of the URN platform,
+      and it does not gate on ``source.type`` being a recognised connector. Platform
+      scoping is the caller's responsibility: the sync sweep feeds the matcher only
+      names whose URN platform equals the recipe's ``source.type``. The sweep's
+      zero-coverage warning reports a derivable-but-matches-nothing source only when
+      DataHub holds datasets for that declared platform; a ``source.type`` naming no
+      platform present in the estate is offered no candidate name at all, and that
+      case is reported nowhere.
 
-    If none of the above keys are found in ``source.config``, the matcher
-    returns ``False`` for every name (match-nothing). A source with no
+    If a well-formed recipe carries none of the above keys in ``source.config``, the
+    matcher returns ``False`` for every name (match-nothing). A source with no
     derivable selection patterns maps no datasets — coverage that cannot be
     inferred must not be assumed.
+
+    Returns:
+        ``(predicate, reason)``. The predicate is match-nothing whenever the pattern
+        set is not usable; ``reason`` is what separates the two ways that happens, and
+        the distinction is load-bearing for a caller that prunes stored mappings
+        against the match set.
+
+        ``reason is None`` — **evaluated**. The predicate was built over a pattern set
+        that is well-shaped and compiles, or over a well-formed recipe that declares no
+        selection pattern at all. In both cases an empty match set is real evidence
+        that no dataset is covered, so pruning on it is sound. A pattern-less recipe is
+        the documented outcome rather than a defect, and reporting it would mark every
+        recipe-less source in a sweep, on every sweep.
+
+        ``reason`` a string — **not evaluated**. Nothing was ever run over the estate,
+        so an empty match set is absence of evidence and a caller must not prune on it.
+        The string is short and human-readable, naming the offending ``source.config``
+        key where one is known and what could not be read otherwise; it embeds
+        writer-supplied recipe text, so log it via ``truncate_reason`` with ``%r``.
+        Four conditions produce a reason, and a caller may treat them alike:
+          - the recipe cannot be parsed at all (no ``source``, no ``source.type``, a
+            non-dict ``source.config``) — including the empty ``{}`` a failed read of
+            DataHub's stored recipe string collapses to,
+          - a pattern value the matcher cannot read (a bare string or ``null`` where an
+            allow/deny mapping belongs),
+          - a pattern string that fails ``re.compile``,
+          - any other failure the guarded block catches, including the acryl-datahub
+            SDK being unimportable while the recipe declares selection patterns. That
+            one degrades only a source that actually declares patterns, so a no-SDK
+            context does not make every source look like a recipe defect.
 
     Note: This is an explicit approximation. DataHub exposes no native
     source→dataset reverse lookup; the matcher reconstructs coverage from
@@ -216,9 +343,13 @@ def build_matcher(recipe: dict[str, Any]) -> Callable[[str], bool]:
     """
     try:
         source_type, config = parse_recipe(recipe)
-    except ValueError:
-        # Malformed recipe — match nothing.
-        return lambda name: False
+    except ValueError as exc:
+        # The recipe could not be read, so no pattern set was ever evaluated — as
+        # distinct from a readable recipe that declares no patterns. Match nothing and
+        # say why: a caller that prunes on the match set must not prune here.
+        return _match_nothing, (
+            f"recipe could not be read ({exc}), so no selection pattern was evaluated"
+        )
 
     # Database scoping gate: when active, every predicate requires the name to
     # start with ``<database>.`` before its pattern branch runs.
@@ -245,34 +376,71 @@ def build_matcher(recipe: dict[str, Any]) -> Callable[[str], bool]:
 
         return _gated
 
+    # The config key whose value is being read when the guarded block below raises.
+    # Set as each branch is entered so the failure names the key an operator has to
+    # go and fix, rather than only the exception text.
+    key_in_progress: str | None = None
+
     try:
         from datahub.configuration.common import AllowDenyPattern
 
+        def _precompile(*pattern_lists: Any) -> None:
+            """Compile the raw pattern strings eagerly, inside this guarded block.
+
+            ``AllowDenyPattern`` compiles lazily, so constructing one validates no
+            regex — a malformed pattern would otherwise raise ``re.error`` on the
+            first ``allowed()`` call, i.e. from inside the returned predicate, past
+            every handler here. Running ``re.compile`` over the same public input
+            strings first moves that failure into the ``except`` below, where it is
+            logged and degrades this one source to match-nothing. The runtime match
+            path stays ``AllowDenyPattern``'s own compilation; this is a validity
+            check on the inputs, not a substitute for it.
+            """
+            for patterns in pattern_lists:
+                for pattern in patterns:
+                    re.compile(pattern)
+
         def _make_adp(allow: list[str], deny: list[str]) -> Callable[[str], bool]:
+            _precompile(allow, deny)
             adp = AllowDenyPattern(allow=allow, deny=deny)
             return lambda name: adp.allowed(name)
 
         def _schema_segment(name: str) -> str:
-            """Extract the schema part from a ``database.schema.table`` name.
+            """Extract the container segment a ``schema_pattern`` is evaluated against.
 
-            Splits on '.' and returns the second segment (index 1) when at least
-            two segments are present, otherwise returns the whole name.
+            The container's position depends on how many segments the connector
+            puts in the URN name:
+              - three or more (``database.schema.table``, postgres / oracle with
+                ``add_database_name_to_urn``): the second segment.
+              - exactly two (``schema.table`` on athena and default oracle,
+                ``database.table`` on mysql): the **leading** segment — in a
+                two-segment name the trailing segment is always the table, so the
+                leading one is the container.
+              - one: the whole name, the only shape for which returning the entire
+                string can be correct. Returning it for a two-segment name would
+                make an anchored pattern such as ``^schema_a$`` unmatchable.
             """
             parts = name.split(".")
-            return parts[1] if len(parts) >= 3 else name
+            if len(parts) >= 3:
+                return parts[1]
+            if len(parts) == 2:
+                return parts[0]
+            return name
 
-        # Schema-level pattern (postgres / mysql / oracle family).
-        # schema_pattern is applied to the schema segment only.
-        if "schema_pattern" in config:
-            sp = config["schema_pattern"]
+        # Schema-level pattern (postgres / mysql / oracle / athena family).
+        # schema_pattern is applied to the container segment only.
+        if _SCHEMA_PATTERN_KEY in config:
+            key_in_progress = _SCHEMA_PATTERN_KEY
+            sp = config[_SCHEMA_PATTERN_KEY]
             schema_adp = _make_adp(sp.get("allow", [".*"]), sp.get("deny", []))
 
             def schema_pred(name: str, _a: Callable[[str], bool] = schema_adp) -> bool:
                 return _a(_schema_segment(name))
 
-            # table_pattern (when present) applies to the full database.schema.table string.
-            if "table_pattern" in config:
-                tp = config["table_pattern"]
+            # table_pattern (when present) applies to the full URN name string.
+            if _TABLE_PATTERN_KEY in config:
+                key_in_progress = _TABLE_PATTERN_KEY
+                tp = config[_TABLE_PATTERN_KEY]
                 table_adp = _make_adp(tp.get("allow", [".*"]), tp.get("deny", []))
 
                 def schema_table_pred(
@@ -282,13 +450,14 @@ def build_matcher(recipe: dict[str, Any]) -> Callable[[str], bool]:
                 ) -> bool:
                     return _s(name) and _t(name)
 
-                return _gate(schema_table_pred)
-            return _gate(schema_pred)
+                return _gate(schema_table_pred), None
+            return _gate(schema_pred), None
 
-        # Table-only pattern — matched against the full database.schema.table string.
-        if "table_pattern" in config:
-            tp = config["table_pattern"]
-            return _gate(_make_adp(tp.get("allow", [".*"]), tp.get("deny", [])))
+        # Table-only pattern — matched against the full URN name string.
+        if _TABLE_PATTERN_KEY in config:
+            key_in_progress = _TABLE_PATTERN_KEY
+            tp = config[_TABLE_PATTERN_KEY]
+            return _gate(_make_adp(tp.get("allow", [".*"]), tp.get("deny", []))), None
 
         # Kafka topic patterns — allow and deny evaluated against the topic name.
         # A kafka dataset URN name may be bare (<topic>) or instance-prefixed
@@ -297,14 +466,14 @@ def build_matcher(recipe: dict[str, Any]) -> Callable[[str], bool]:
         # covered(name) = ALLOW_matches_any_form AND NOT DENY_matches_any_form.
         # deny is checked independently so it cannot be bypassed by the allow
         # branch matching a different form of the same name.
-        if "topic_patterns" in config:
-            tp = config["topic_patterns"]
+        if _TOPIC_PATTERNS_KEY in config:
+            key_in_progress = _TOPIC_PATTERNS_KEY
+            tp = config[_TOPIC_PATTERNS_KEY]
             allow_pats: list[str] = tp.get("allow", [".*"])
             deny_pats: list[str] = tp.get("deny", [])
+            _precompile(allow_pats, deny_pats)
             allow_adp = AllowDenyPattern(allow=allow_pats, deny=[])
-            deny_adp: Any = (
-                AllowDenyPattern(allow=deny_pats, deny=[]) if deny_pats else None
-            )
+            deny_adp: Any = AllowDenyPattern(allow=deny_pats, deny=[]) if deny_pats else None
 
             def _kafka_pred(
                 name: str,
@@ -319,21 +488,71 @@ def build_matcher(recipe: dict[str, Any]) -> Callable[[str], bool]:
                     return False
                 return True
 
-            return _gate(_kafka_pred)
+            return _gate(_kafka_pred), None
 
         # BigQuery / Snowflake dataset pattern — matched against the full name.
-        if "dataset_pattern" in config:
-            dp = config["dataset_pattern"]
-            return _gate(_make_adp(dp.get("allow", [".*"]), dp.get("deny", [])))
+        if _DATASET_PATTERN_KEY in config:
+            key_in_progress = _DATASET_PATTERN_KEY
+            dp = config[_DATASET_PATTERN_KEY]
+            return _gate(_make_adp(dp.get("allow", [".*"]), dp.get("deny", []))), None
 
-    except ImportError:
-        # acryl-datahub not available in this context — no SDK means no
-        # evaluation is possible; fall through to match-nothing.
-        pass
+    except ImportError as exc:
+        # acryl-datahub not available in this context — no SDK means no evaluation is
+        # possible, so match nothing. It degrades only a recipe that declares patterns:
+        # the import is the first statement in this block, so every source reaches it,
+        # and flagging the pattern-less ones would report the SDK's absence as though
+        # each of them carried a recipe defect.
+        if any(key in config for key in _SELECTION_PATTERN_CASCADE):
+            return _match_nothing, (
+                f"acryl-datahub SDK is not importable ({exc}), so the declared "
+                f"selection patterns cannot be evaluated"
+            )
     except Exception as exc:
-        # Pattern construction failed — log so a malformed pattern is observable,
-        # then fall through to match-nothing (no coverage can be inferred).
-        logger.warning("build_matcher: pattern construction failed: %s", exc)
+        # A wrongly-typed pattern value, a pattern that fails to compile, or any other
+        # construction failure: match nothing (no coverage can be inferred) and hand
+        # the caller the reason. ``_precompile`` runs the pattern strings through
+        # ``re.compile`` first, so this handler, not the caller's matcher call, sees a
+        # malformed regex — the caller can therefore trust that a returned matcher
+        # with no reason will not blow up mid-sweep on a bad pattern.
+        where = f"source.config.{key_in_progress}" if key_in_progress else "source.config"
+        return _match_nothing, f"{where} is not a usable allow/deny pattern set: {exc}"
 
-    # No derivable selection patterns → no inferable coverage → matches nothing.
-    return lambda name: False
+    # No derivable selection patterns → no inferable coverage → matches nothing, and
+    # that is the documented outcome rather than a degradation.
+    return _match_nothing, None
+
+
+def has_selection_patterns(recipe: dict[str, Any]) -> bool:
+    """Report whether the recipe declares a usable selection pattern ``build_matcher`` reads.
+
+    Decided by the **first** of ``_SELECTION_PATTERN_CASCADE`` (``schema_pattern`` →
+    ``table_pattern`` → ``topic_patterns`` → ``dataset_pattern``) present in
+    ``source.config``, and by that key alone: True when its value has the
+    AllowDenyPattern shape (a mapping, from which ``build_matcher`` reads ``allow`` /
+    ``deny``), False otherwise. This is the rule ``build_matcher`` itself follows —
+    the first present key selects the branch and the later keys are never reached —
+    so a config whose leading key is wrongly typed reports False even when a later
+    key is well-formed, matching the match-nothing result the matcher produces for it.
+
+    The shape check is the trust boundary: ``recipe`` is writer-supplied JSONB passed
+    through unchanged, so a key can hold ``null`` or a bare string. Such a value makes
+    ``build_matcher`` fail and log, and this predicate reports ``False`` — a
+    wrongly-typed pattern value is a recipe defect with its own log line, not a
+    matcher/config coverage defect. A recipe that cannot be parsed at all returns
+    ``False`` too, but that case is decided before this predicate is consulted:
+    ``build_matcher_checked`` returns a reason for it (**not evaluated**), and callers
+    gate on that reason first, so an unreadable recipe is never reported as coverage.
+
+    Callers use this to separate the reasons an **evaluated** source maps nothing: no
+    derivable patterns at all (expected — coverage is never assumed), versus a
+    derivable, well-formed pattern set that matched no dataset (a defect signal worth
+    reporting).
+    """
+    try:
+        _, config = parse_recipe(recipe)
+    except ValueError:
+        return False
+    for key in _SELECTION_PATTERN_CASCADE:
+        if key in config:
+            return isinstance(config[key], Mapping)
+    return False

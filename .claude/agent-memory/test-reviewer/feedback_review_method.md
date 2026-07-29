@@ -46,3 +46,19 @@ as the fix for a coverage finding silently narrows the finding.
 **How to apply:** after any static-invariant test lands, run two mutations at an
 unguarded call site — one that changes an identifier (scan should catch) and one
 that changes only an expression (scan will not). Report both results.
+
+**4. "Untestable without patching import machinery" is usually false — check it.**
+An agent excluding a spec'd branch because reaching it "means patching Python's
+import machinery" can normally be refuted in two lines:
+`monkeypatch.setitem(sys.modules, "<pkg.mod>", None)` makes
+`from <pkg.mod> import X` raise `ImportError`. Reproduce the branch yourself
+before accepting the exclusion, then ask whether the branch's *discriminating*
+logic (usually a guard deciding **which** inputs degrade) is behavioural rather
+than a tautology.
+
+**Why:** a "deliberately unexercised, exclusion is a decision not an oversight"
+docstring reads as rigour and is rarely re-checked, so it can permanently retire a
+row of a spec outcome table.
+
+**How to apply:** any test-file docstring that argues a spec'd case is unreachable.
+Reproduce first; only then judge the argument.

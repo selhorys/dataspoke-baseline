@@ -341,13 +341,19 @@ async def _datahub_sync() -> None:
     finally:
         await engine.dispose()
 
+    # sources_zero_coverage / sources_pattern_degraded are the sweep's two defect
+    # signals (spec/feature/BACKEND.md §Sync + mapping sweep §Sweep summary): every
+    # other counter can read as a healthy sweep while a source maps nothing or keeps
+    # an unreconciled mapping set, so an operator running a manual sweep sees them here.
     print(
         "datahub-sync done: "
         f"registry_inserted={summary['registry_inserted']} "
         f"registry_marked_true={summary['registry_marked_true']} "
         f"registry_marked_false={summary['registry_marked_false']} "
         f"sources_synced={summary['sources_synced']} "
-        f"datasets_mapped={summary['datasets_mapped']}"
+        f"datasets_mapped={summary['datasets_mapped']} "
+        f"sources_zero_coverage={summary['sources_zero_coverage']} "
+        f"sources_pattern_degraded={summary['sources_pattern_degraded']}"
     )
 
 

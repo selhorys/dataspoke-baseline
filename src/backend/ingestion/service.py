@@ -12,6 +12,7 @@ import re
 import secrets
 import time
 import uuid
+from collections import Counter
 from datetime import UTC, datetime
 from typing import Any
 
@@ -54,10 +55,12 @@ from src.shared.exceptions import (
 )
 from src.shared.models.ingestion import (
     Mode,
-    build_matcher,
+    build_matcher_checked,
     cron_to_tier,
     extract_secret_refs,
+    has_selection_patterns,
     parse_recipe,
+    truncate_reason,
 )
 from src.shared.secrets import (
     SecretRefMalformed,
@@ -1276,7 +1279,12 @@ class IngestionService:
         2. **Mapping + registry reconcile**: enumerate all DataHub datasets once,
            rebuild ingestion_source_dataset rows with derivation='matched' for every
            source. Preserve derivation='emitted' rows (authoritative from active-custom
-           runs). Reconcile dataset_registry to mirror the full DataHub URN set:
+           runs). A source whose pattern set never ran — the recipe could not be read,
+           a pattern key holds a value the matcher cannot read, or the matcher raised —
+           keeps its stored matched rows for this sweep; they are not pruned against an
+           unevaluated pattern, and the source is counted in
+           ``sources_pattern_degraded``.
+           Reconcile dataset_registry to mirror the full DataHub URN set:
            insert new URNs as registered, soft-flag removed URNs as unregistered.
         3. **Observed enrichment**: for DATAHUB_MANAGED and ACTIVE_CUSTOM_MANAGED
            sources, read systemMetadata.pipelineName per dataset and upsert
@@ -1288,15 +1296,39 @@ class IngestionService:
            persist a separate table.
 
         Returns:
-            Summary dict for the activity endpoint / logging:
-              sources_synced    — DATAHUB_MANAGED rows upserted
+            Summary dict for the activity endpoint / logging. Every counter but
+            ``sources_synced`` and ``sources_zero_coverage`` reports **state
+            changes**, so a second consecutive sweep over an unchanged estate
+            returns zero for all of them:
+              sources_synced    — DATAHUB_MANAGED rows mirrored (inserts and updates
+                                  alike; a steady-state reading, not a delta)
               sources_removed   — DATAHUB_MANAGED rows removed (gone from DataHub)
               datasets_mapped   — new ingestion_source_dataset matched rows inserted
-              pipeline_links    — pipeline_name-derivation rows upserted
+              pipeline_links    — new pipeline_name rows, plus matched → pipeline_name
+                                  upgrades; a re-confirmed pipeline_name row still
+                                  refreshes last_seen_at but does not count
               events_mirrored   — new INGESTION events written
               registry_inserted — new dataset_registry rows inserted (datahub_registered=True)
               registry_marked_true   — existing rows flipped from False to True
               registry_marked_false  — existing rows soft-flagged as False (left DataHub)
+              sources_zero_coverage  — sources whose selection patterns are derivable
+                                  and well-formed but matched no dataset while DataHub
+                                  holds datasets for their platform (a condition, so it
+                                  stays non-zero for as long as the affected sources do).
+                                  Counted once per registered source — a CLI wrapper
+                                  mirrors its parent's recipe and is not counted again.
+              sources_pattern_degraded — sources whose pattern set was never evaluated
+                                  this sweep: the recipe could not be read, a
+                                  selection-pattern key is wrongly shaped, a pattern does
+                                  not compile, or the matcher raised while running. Their
+                                  stored ``matched`` rows are kept rather than pruned, so
+                                  this counter is the wire signal that some of the
+                                  mapping set is stale rather than reconciled. Also a
+                                  condition, not a delta. Counted per source row
+                                  including CLI wrappers — unlike zero coverage this is
+                                  not a shared recipe misconfiguration but a per-row
+                                  prune that was skipped, and each wrapper holds its own
+                                  mapping set that the skip protects.
         """
         summary: dict[str, Any] = {
             "sources_synced": 0,
@@ -1307,6 +1339,8 @@ class IngestionService:
             "registry_inserted": 0,
             "registry_marked_true": 0,
             "registry_marked_false": 0,
+            "sources_zero_coverage": 0,
+            "sources_pattern_degraded": 0,
         }
 
         # ── Step 1: Source defs (DATAHUB_MANAGED) ────────────────────────────
@@ -1449,6 +1483,14 @@ class IngestionService:
             if platform:
                 urn_to_platform[urn] = platform
 
+        # Candidate count per platform, computed once over the set the matcher is
+        # actually offered — URNs present in *both* maps, since a name that failed to
+        # parse is never evaluated. A source whose platform is absent here had no
+        # candidate at all, so its empty match set is not a defect signal.
+        platform_dataset_counts: Counter[str] = Counter(
+            urn_to_platform[urn] for urn in urn_to_name if urn in urn_to_platform
+        )
+
         # Load all source rows to evaluate matchers.
         result = await self._db.execute(select(IngestionSource))
         all_sources_rows = result.scalars().all()
@@ -1461,12 +1503,88 @@ class IngestionService:
             # names): require the URN platform to equal the recipe's source.type
             # before evaluating the name matcher.
             expected_platform = _safe_parse_recipe(recipe)[0].lower()
-            matcher = build_matcher(recipe)
-            matched_urns: set[str] = {
-                urn
-                for urn, name in urn_to_name.items()
-                if urn_to_platform.get(urn) == expected_platform and matcher(name)
-            }
+            # The reason is None only when the pattern set is well-shaped and compiles;
+            # it names the offending config key otherwise. Taking it here rather than
+            # from build_matcher is what lets this sweep tell "matched nothing" apart
+            # from "could not be evaluated" — and log it with the source attached.
+            matcher, degraded_reason = build_matcher_checked(recipe)
+            matcher_failed = False
+            try:
+                matched_urns: set[str] = {
+                    urn
+                    for urn, name in urn_to_name.items()
+                    if urn_to_platform.get(urn) == expected_platform and matcher(name)
+                }
+            except Exception:
+                # One source's pattern must never abort the sweep for every other
+                # source: log, degrade this source to match-nothing, carry on.
+                # build_matcher_checked reports malformed and wrongly-typed patterns
+                # as a reason, so what reaches here failed at match time. Pattern
+                # *execution* time is not bounded — a catastrophically backtracking
+                # regex never raises, and it is synchronous CPU work inside this
+                # ``async def``: on the single-worker uvicorn process that serves the
+                # API it stalls the event loop, so no request of any kind is handled
+                # until the /health liveness probe gives up and the pod is restarted.
+                # (asyncio.to_thread is no mitigation: CPython holds the GIL for the
+                # whole of one re match.) Tracked as issue #114.
+                matcher_failed = True
+                logger.exception(
+                    "ingestion_sync_matcher_failed — source_id=%s name=%r: "
+                    "treating as match-nothing for this sweep",
+                    source_id,
+                    src_row.name,
+                )
+                matched_urns = set()
+
+            # This source's pattern set was never evaluated over the estate: either it
+            # could not be built (the recipe could not be read at all, or — ``recipe``
+            # being writer-supplied JSONB — a pattern key holds a bare string or a
+            # pattern that does not compile) or the matcher raised while running. An
+            # empty match set is evidence that datasets stopped matching only when the
+            # matcher actually ran over a well-formed pattern set; a degraded source is
+            # absence of evidence, so it neither reports coverage nor prunes below.
+            # It is counted instead, so the caller sees on the wire that part of the
+            # mapping set went unreconciled rather than reading a clean sweep.
+            patterns_degraded = matcher_failed or degraded_reason is not None
+            if patterns_degraded:
+                summary["sources_pattern_degraded"] += 1
+            if degraded_reason is not None:
+                # %r + truncate_reason: the reason quotes writer-supplied recipe text,
+                # which is unbounded and may contain a real newline that would split
+                # this record for a line-based collector.
+                logger.warning(
+                    "ingestion_sync_pattern_not_derivable — source_id=%s name=%r: %r "
+                    "— this source matches nothing this sweep and its stored matched "
+                    "rows are kept rather than pruned",
+                    source_id,
+                    src_row.name,
+                    truncate_reason(degraded_reason),
+                )
+
+            # Zero coverage: a well-formed, derivable pattern set that matched
+            # nothing while this platform did offer candidates. A source with no
+            # derivable patterns legitimately maps nothing and is not reported, and
+            # a degraded one is a recipe/matcher defect carrying its own warning —
+            # reporting it here too would double-count it as a coverage signal.
+            # CLI wrappers are skipped: a wrapper mirrors its parent's recipe, so
+            # counting it too would report one misconfiguration twice.
+            if (
+                not matched_urns
+                and not patterns_degraded
+                and src_row.parent_source_id is None
+                and has_selection_patterns(recipe)
+                and expected_platform in platform_dataset_counts
+            ):
+                logger.warning(
+                    "ingestion_sync_zero_coverage — source_id=%s name=%r platform=%r: "
+                    "selection patterns are derivable but matched none of the %d "
+                    "datasets DataHub holds for this platform",
+                    source_id,
+                    src_row.name,
+                    expected_platform,
+                    platform_dataset_counts[expected_platform],
+                )
+                summary["sources_zero_coverage"] += 1
 
             # Fetch currently stored matched-derivation rows for this source.
             existing_result = await self._db.execute(
@@ -1513,9 +1631,17 @@ class IngestionService:
             # These rows were fetched with derivation=='matched' filter above, so this
             # loop can only delete matched-derivation rows — emitted/pipeline_name rows
             # are never in existing_matcher_rows and are therefore never deleted here.
-            for urn, stale_row in existing_matcher_rows.items():
-                if urn not in matched_urns:
-                    await self._db.delete(stale_row)
+            #
+            # Skipped for a degraded pattern set (the matcher raised, or could not be
+            # built over the recipe at all): the empty match set is then an absence of
+            # evidence, not evidence that the stored rows stopped matching, so pruning
+            # on it would drop this source's entire mapping set over one bad pattern.
+            # Keep them and let the next sweep, over a pattern set that actually ran,
+            # decide.
+            if not patterns_degraded:
+                for urn, stale_row in existing_matcher_rows.items():
+                    if urn not in matched_urns:
+                        await self._db.delete(stale_row)
 
         await self._db.commit()
 
@@ -1577,6 +1703,31 @@ class IngestionService:
                 elif src_row.mode == Mode.ACTIVE_CUSTOM_MANAGED.value:
                     pipeline_to_sources.setdefault(str(src_row.id), []).append(src_row.id)
 
+            # Existing pipeline_name rows for the sources about to be upserted,
+            # read once before the loop (mirrors step 2's existing_matcher_rows).
+            # The upsert's ON CONFLICT DO UPDATE reports rowcount == 1 even when it
+            # only re-confirms an unchanged row, so distinguishing a new link (or a
+            # matched → pipeline_name upgrade) from a re-confirmation needs the
+            # prior state.
+            existing_pipeline_keys: set[tuple[uuid.UUID, str]] = set()
+            if pipeline_to_sources:
+                candidate_source_ids = {
+                    sid for sids in pipeline_to_sources.values() for sid in sids
+                }
+                existing_pipeline_result = await self._db.execute(
+                    select(
+                        IngestionSourceDataset.source_id,
+                        IngestionSourceDataset.dataset_urn,
+                    ).where(
+                        IngestionSourceDataset.source_id.in_(candidate_source_ids),
+                        IngestionSourceDataset.derivation == "pipeline_name",
+                    )
+                )
+                existing_pipeline_keys = {
+                    (row_source_id, row_dataset_urn)
+                    for row_source_id, row_dataset_urn in existing_pipeline_result.all()
+                }
+
             now = datetime.now(tz=UTC)
             for dataset_urn, pipeline_name in pipeline_map.items():
                 if not pipeline_name:
@@ -1604,8 +1755,15 @@ class IngestionService:
                     insert_result = await self._db.execute(stmt)
                     # rowcount == 1 on INSERT, 1 on UPDATE, 0 when the WHERE guard
                     # filtered out the conflict update (an emitted row shadows the
-                    # slot). Count only rows actually written, not upsert attempts.
-                    if insert_result.rowcount == 1:  # type: ignore[attr-defined]  # Result.rowcount exists at runtime.
+                    # slot). Count state changes only: a new link or a genuine
+                    # matched → pipeline_name upgrade. Re-confirming an existing
+                    # pipeline_name row still refreshes last_seen_at — reverse_lookup's
+                    # tie-break, the ingestion-freshness measurer and the mappings list
+                    # ordering all read it — but is not a change, so it does not count.
+                    if (
+                        insert_result.rowcount == 1  # type: ignore[attr-defined]  # Result.rowcount exists at runtime.
+                        and (source_id, dataset_urn) not in existing_pipeline_keys
+                    ):
                         summary["pipeline_links"] += 1
 
             await self._db.commit()

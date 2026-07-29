@@ -25,3 +25,4 @@
 - [Isolate failures under concurrent edit](feedback_isolate_failures_concurrent_edit.md) — git archive HEAD into scratchpad, overlay one file; base scenario proves HEAD green
 - [metagen event from/to ignored](project_metagen_event_from_to_ignored.md) — RESOLVED (#90); lesson: a URL builder emitting a param never proves the server reads it
 - [spec_conformance is paths-only](feedback_spec_conformance_paths_only.md) — conformance compares route paths vs API.md, never query params; param drift passes every suite
+- [sync() has no unit coverage](feedback_sync_sweep_no_unit_coverage.md) — green `tests/unit/` proves nothing about sweep changes; only spot integration calls sync()
