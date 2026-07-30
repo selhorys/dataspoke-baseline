@@ -516,23 +516,28 @@ a row disables the corresponding integration.
 
 #### `peripheral_health`
 
-Last observed liveness of a peripheral, keyed on the same names as
-`peripheral_config`. Written by the long-running processes that hold a
-connection — presently the DataHub event consumer — and read back by
+Last observed liveness of a peripheral connection, written by the processes that
+exercise that transport and read back by
 `GET /api/v1/admin/peripherals/datahub`. The table exists because
 `is_configured` reports only that settings are present; a wrong SASL mechanism
 or an unauthorized IAM role produces a fully "configured" row that never
 connects.
 
+Rows are keyed per **transport**, not per peripheral product: `datahub` is DataHub's
+event stream, reported by the event consumer, and `datahub-api` is its GMS metadata
+API, reported by the hourly sync sweep. The two planes fail independently, so they
+never share a row — see
+[BACKEND §Health reporting](BACKEND.md#health-reporting).
+
 | Column | Type | Description |
 |--------|------|-------------|
-| `name` | `VARCHAR(32)` PK | Peripheral name; `CHECK` ∈ `datahub`, `langfuse`, `smtp` — the same domain as `peripheral_config`, but **no foreign key** to it |
+| `name` | `VARCHAR(32)` PK | Transport name; `CHECK` ∈ `datahub`, `langfuse`, `smtp`, `datahub-api` — a superset of the `peripheral_config` domain (`datahub-api` is a second transport of the `datahub` peripheral, not a peripheral of its own), with **no foreign key** to it |
 | `status` | `VARCHAR(16)` | `CHECK` ∈ `unknown`, `ok`, `error`; `unknown` until a reporter writes |
 | `last_error` | `TEXT` | Most recent failure message; `NULL` when never failed |
 | `last_ok_at` | `TIMESTAMPTZ` | Last successful connection; `NULL` when never succeeded |
 | `updated_at` | `TIMESTAMPTZ` | Last report of any status |
 
-A row is upserted on report, so the table never grows past the peripheral set
+A row is upserted on report, so the table never grows past the transport set
 and carries no history. Absence of a row and `status='unknown'` mean the same
 thing to readers: nothing has reported yet.
 
@@ -540,7 +545,7 @@ The two tables are deliberately **independent**. A foreign key on `name` would
 make the health upsert fail precisely when the `peripheral_config` row is
 missing — a deleted or never-created peripheral is exactly the condition the
 health table exists to report, so the constraint would suppress the signal it
-is meant to carry. The shared `CHECK` domain keeps the key spaces aligned
+is meant to carry. The overlapping `CHECK` domains keep the key spaces aligned
 without coupling the writes.
 
 ### Indexes

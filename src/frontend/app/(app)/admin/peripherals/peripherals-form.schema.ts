@@ -38,7 +38,17 @@ import type {
  * field error instead of a raw 422 toast.
  *
  * Applied to every operator-supplied URL the backend constrains this way: the
- * DataHub `frontend_url` and the Langfuse `host`.
+ * DataHub `gms_url` and `frontend_url`, and the Langfuse `host`.
+ *
+ * `gms_url` never reaches an `href` — it is held to the rule because the pattern
+ * bars userinfo, and a transport exception quoting a URL that carried an embedded
+ * credential would persist it into `peripheral_health.last_error`, which the
+ * admin API serves back.
+ *
+ * Known limitation, shared with the backend pattern: the authority admits a
+ * hostname plus an optional numeric port, so a bracketed IPv6 literal
+ * (`http://[::1]:8080`) is rejected. Widening it is a coordinated change to both
+ * engines, pinned by `tests/fixtures/safe-url-cases.json`.
  */
 export const safeDisplayUrlField = z
   .string()
@@ -163,7 +173,10 @@ export function deriveMskRegion(brokers: string): string | null {
 
 export const datahubSchema = z
   .object({
-    gms_url: z.string(),
+    // Both DataHub URLs carry the same backend constraint (`pattern=
+    // SAFE_DISPLAY_URL_PATTERN` on each in src/api/schemas/admin.py), so both
+    // mirror it here rather than letting one reach the API unchecked.
+    gms_url: safeDisplayUrlField,
     frontend_url: safeDisplayUrlField,
     kafka_brokers: z.string(),
     kafka_security_protocol: z.enum(KAFKA_SECURITY_PROTOCOLS),

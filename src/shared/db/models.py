@@ -584,18 +584,24 @@ class PeripheralConfig(Base):
 
 
 class PeripheralHealth(Base):
-    """Last observed liveness of a peripheral, written by long-running connection holders.
+    """Last observed liveness of a peripheral, written by the process exercising it.
 
-    Keyed on the same names as ``peripheral_config`` but with **no foreign key**
-    to it: a missing config row is exactly the condition this table exists to
-    report, so a constraint would fail the upsert precisely when the signal
-    matters most.
+    Rows are keyed per **transport**, not per peripheral product: ``datahub`` is
+    DataHub's event stream (reported by the event consumer) and ``datahub-api``
+    its GMS metadata API (reported by the hourly sync sweep). The two planes use
+    separate transports and fail independently, so a shared row would be
+    last-writer-wins.
+
+    There is **no foreign key** to ``peripheral_config``: a missing config row is
+    exactly the condition this table exists to report, so a constraint would fail
+    the upsert precisely when the signal matters most.
     """
 
     __tablename__ = "peripheral_health"
     __table_args__ = (
         CheckConstraint(
-            "name IN ('datahub', 'langfuse', 'smtp')", name="ck_peripheral_health_name"
+            "name IN ('datahub', 'datahub-api', 'langfuse', 'smtp')",
+            name="ck_peripheral_health_name",
         ),
         CheckConstraint(
             "status IN ('unknown', 'ok', 'error')", name="ck_peripheral_health_status"

@@ -5,6 +5,10 @@ SASL mechanism or an unauthorized IAM role produces a fully "configured" DataHub
 peripheral whose event consumer never connects.  Long-running connection holders
 report their outcome here and ``GET /admin/peripherals/datahub`` reads it back.
 
+Rows are keyed per **transport**: ``datahub`` is DataHub's Kafka event stream and
+``datahub-api`` its GMS metadata API, reported by the event consumer and the
+hourly sync sweep respectively.
+
 Absence of a row and ``status='unknown'`` mean the same thing to readers: nothing
 has reported yet — which covers every deployment that runs no consumer at all.
 
@@ -22,6 +26,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.shared.db.models import PeripheralHealth
+from src.shared.redaction import sanitize_error_message
 
 HEALTH_STATUSES: set[str] = {"unknown", "ok", "error"}
 
@@ -70,6 +75,13 @@ async def report_peripheral_health(
     ``ok`` stamps ``last_ok_at`` and clears ``last_error``; ``error`` records the
     message and leaves the previous ``last_ok_at`` intact so a reader can see how
     long ago the peripheral last worked.
+
+    ``last_error`` is bounded and credential-free as a property of the *table*,
+    not of any one reporter: every writer funnels through here, so the redaction
+    and the length cap are applied at this single choke point. A reporter that
+    holds the live credential (the event consumer, ``DataHubClient``) additionally
+    scrubs it by exact value before calling — a strictly stronger control than the
+    pattern layer, but one only that reporter can apply.
     """
     if status not in HEALTH_STATUSES:
         raise ValueError(f"Unknown peripheral health status: {status!r}")
@@ -80,7 +92,8 @@ async def report_peripheral_health(
         fields["last_ok_at"] = now
         fields["last_error"] = None
     else:
-        fields["last_error"] = (error or "")[:_MAX_ERROR_LENGTH] or None
+        sanitized = sanitize_error_message(error) or ""
+        fields["last_error"] = sanitized[:_MAX_ERROR_LENGTH] or None
 
     stmt = (
         pg_insert(PeripheralHealth)

@@ -500,9 +500,11 @@ def upgrade() -> None:
     )
 
     # ── peripheral_health ────────────────────────────────────────────────
-    # Same name domain as peripheral_config, deliberately without a foreign key:
-    # a missing config row is the condition this table reports, so the constraint
-    # would suppress the very signal it carries.
+    # Keyed per transport, not per peripheral product: DataHub's event stream
+    # ('datahub') and its GMS metadata API ('datahub-api') fail independently and
+    # have separate reporters. Deliberately without a foreign key to
+    # peripheral_config: a missing config row is the condition this table reports,
+    # so the constraint would suppress the very signal it carries.
     op.create_table(
         "peripheral_health",
         sa.Column("name", sa.String(32), primary_key=True),
@@ -511,7 +513,8 @@ def upgrade() -> None:
         sa.Column("last_ok_at", TIMESTAMPTZ, nullable=True),
         sa.Column("updated_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
         sa.CheckConstraint(
-            "name IN ('datahub', 'langfuse', 'smtp')", name="ck_peripheral_health_name"
+            "name IN ('datahub', 'datahub-api', 'langfuse', 'smtp')",
+            name="ck_peripheral_health_name",
         ),
         sa.CheckConstraint(
             "status IN ('unknown', 'ok', 'error')", name="ck_peripheral_health_status"

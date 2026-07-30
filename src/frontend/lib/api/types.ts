@@ -116,7 +116,8 @@ export type KafkaSaslMechanism = "PLAIN" | "SCRAM-SHA-256" | "SCRAM-SHA-512" | "
  * A peripheral's last self-reported connection state.
  *
  * `unknown` covers both "never reported" and "no reporter deployed" — the API
- * does not distinguish them.
+ * does not distinguish them. Both DataHub reporters are opt-in, so `unknown` is
+ * the ordinary reading on a stock install rather than a fault.
  */
 export interface PeripheralHealth {
   status: "unknown" | "ok" | "error";
@@ -145,8 +146,22 @@ export interface DatahubPeripheral {
   default_env: string;
   /** Keys on `token` alone — the Kafka credential is optional and never participates. */
   is_configured: boolean;
-  /** Read-only: whether the configuration actually works, as opposed to merely being present. */
+  /**
+   * Read-only: the **event consumer's** last report of the Kafka event stream.
+   *
+   * Not a verdict on DataHub overall — the metadata API is a separate transport
+   * with its own row (`api_health`) that fails independently.
+   */
   health: PeripheralHealth;
+  /**
+   * Read-only: the hourly `datahub-sync` sweep's last report of the DataHub
+   * **metadata API** (GMS REST/GraphQL) plane.
+   *
+   * Same shape and same status domain as `health`, kept as a separate row
+   * because the two transports fail independently — one shared row would be
+   * last-writer-wins between the two reporters.
+   */
+  api_health: PeripheralHealth;
   updated_at: string | null;
 }
 

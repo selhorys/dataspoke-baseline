@@ -150,6 +150,11 @@ class DatahubPeripheralResponse(SingleResponse):
 
     ``kafka_sasl_password_version`` is API-owned bookkeeping incremented on every
     password write; it is read-only and not accepted on PATCH.
+
+    DataSpoke reaches DataHub over two independent transports, each with its own
+    health row: ``health`` is the event consumer's report of the Kafka event
+    stream, ``api_health`` the sync sweep's report of the GMS metadata API.
+    Neither is a verdict on DataHub overall.
     """
 
     gms_url: str
@@ -166,6 +171,7 @@ class DatahubPeripheralResponse(SingleResponse):
     default_env: str
     is_configured: bool
     health: PeripheralHealthModel
+    api_health: PeripheralHealthModel
     updated_at: datetime | None = None
 
 
@@ -181,6 +187,20 @@ class DatahubPeripheralPatchRequest(BaseModel):
     settings stored in the DB; they drive the emitted DataHub actor URN and the
     ingestion fabric/env default respectively.
 
+    ``gms_url`` and ``frontend_url`` share the same http(s) shape constraint.
+    ``frontend_url`` needs it because it is interpolated into an anchor ``href``;
+    ``gms_url`` needs it because the pattern bars **userinfo**, and a transport
+    exception quoting a URL that carried an embedded credential would persist it
+    into ``peripheral_health.last_error`` and the API's logs.
+
+    Known limitation: the shared pattern's authority admits a hostname plus an
+    optional numeric port, so a bracketed **IPv6 literal** (``http://[::1]:8080``)
+    is rejected. For ``frontend_url`` that only costs a UI deep-link; for
+    ``gms_url`` it means an IPv6-only GMS cannot be configured through this route.
+    Widening the authority is a change to ``SAFE_DISPLAY_URL_PATTERN``, which
+    ``src/frontend/lib/safe-url.ts`` mirrors character-for-character under
+    ``tests/fixtures/safe-url-cases.json``, so both engines must move together.
+
     ``frontend_url`` is the browser-facing DataHub UI URL — distinct from
     ``gms_url``, which addresses the GMS service.  It is served to any
     authenticated role via ``/spoke/common/peripheral-links`` and interpolated
@@ -193,7 +213,14 @@ class DatahubPeripheralPatchRequest(BaseModel):
     ``kafka_sasl_password_version`` is not accepted — the API owns the counter.
     """
 
-    gms_url: Annotated[str | None, Field(default=None, max_length=512)] = None
+    gms_url: Annotated[
+        str | None,
+        Field(
+            default=None,
+            max_length=SAFE_DISPLAY_URL_MAX_LENGTH,
+            pattern=SAFE_DISPLAY_URL_PATTERN,
+        ),
+    ] = None
     frontend_url: Annotated[
         str | None,
         Field(

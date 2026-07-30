@@ -7,7 +7,9 @@
  *       partial PATCH); non-secret fields (service_corpuser_urn, default_env,
  *       project_id, environment_tag) prefilled from GET and sent plain; secrets
  *       (token, secret_key) start blank, are blank-omitted from PATCH, never echo
- *       "********" back as a value; only changed fields are PATCHed; admin-gated.
+ *       "********" back as a value; only changed fields are PATCHed; admin-gated;
+ *       two labelled health badges (`health` = event stream, `api_health` =
+ *       metadata API) sharing one rendering, with `unknown` neutral on both.
  *   - spec/API.md §/admin/peripherals/datahub + /langfuse: the response/patch shapes.
  *
  * Mocked: useMe, the four admin hooks, toast, timezone — Vitest unit tier (no API).
@@ -40,7 +42,10 @@ function makeDatahub(overrides: Partial<DatahubPeripheral> = {}): DatahubPeriphe
     service_corpuser_urn: "urn:li:corpuser:dataspoke",
     default_env: "DEV",
     is_configured: true,
+    // Two independent transports, two rows. A stock install reads `unknown` on
+    // both — no event consumer is deployed and the sync DAG ships paused.
     health: { status: "unknown", last_error: null, last_ok_at: null, updated_at: null },
+    api_health: { status: "unknown", last_error: null, last_ok_at: null, updated_at: null },
     updated_at: "2026-06-26T10:00:00Z",
     ...overrides,
   };
@@ -389,6 +394,52 @@ describe("peripherals schemas — operator-supplied URL validation", () => {
     expect(parsed.success).toBe(false);
     // The operator sees a usable message, not a bare "Invalid input".
     expect(parsed.error?.issues[0].message).toMatch(/http:\/\/ or https:\/\//);
+  });
+
+  it.each(HOSTILE)("datahubSchema rejects gms_url %s", (url) => {
+    // The backend applies `pattern=SAFE_DISPLAY_URL_PATTERN` to gms_url as well
+    // as frontend_url, so an unvalidated field here would only earn a raw 422.
+    const values = { ...datahubToFormDefaults(makeDatahub()), gms_url: url };
+    const parsed = datahubSchema.safeParse(values);
+    expect(parsed.success).toBe(false);
+    expect(parsed.error?.issues[0].message).toMatch(/http:\/\/ or https:\/\//);
+  });
+
+  it("datahubSchema rejects a gms_url carrying embedded credentials", () => {
+    // The reason gms_url is constrained at all: a transport exception quoting
+    // this URL would persist the credential into peripheral_health.last_error,
+    // which the admin API serves back.
+    const values = {
+      ...datahubToFormDefaults(makeDatahub()),
+      gms_url: "http://dataspoke:s3cr3t@datahub-gms:8080",
+    };
+    expect(datahubSchema.safeParse(values).success).toBe(false);
+  });
+
+  it.each([
+    "http://datahub-gms:8080\r\nX-Injected: 1",
+    "http://datahub-gms:8080\nX-Injected: 1",
+    // U+202E written as an escape on purpose — a literal would be unreviewable.
+    "http://datahub\u202Egms:8080",
+  ])("datahubSchema rejects gms_url with control/bidi characters (%j)", (url) => {
+    const values = { ...datahubToFormDefaults(makeDatahub()), gms_url: url };
+    expect(datahubSchema.safeParse(values).success).toBe(false);
+  });
+
+  it("datahubSchema accepts the in-cluster GMS URL the dev installer seeds", () => {
+    // The value a stock `install.sh --profile dev` writes; a rule that rejected
+    // it would break the page on every dev deployment.
+    const values = {
+      ...datahubToFormDefaults(makeDatahub()),
+      gms_url: "http://datahub-datahub-gms.datahub-01.svc.cluster.local:8080",
+    };
+    expect(datahubSchema.safeParse(values).success).toBe(true);
+  });
+
+  it("datahubSchema accepts a blank gms_url — an unconfigured peripheral", () => {
+    expect(
+      datahubSchema.safeParse({ ...datahubToFormDefaults(makeDatahub()), gms_url: "" }).success,
+    ).toBe(true);
   });
 
   it.each(HOSTILE)("langfuseSchema rejects host %s (same constraint as DataHub)", (url) => {
@@ -858,24 +909,41 @@ describe("DatahubCard — Kafka progressive disclosure (FRONTEND_BASIC.md §Peri
 });
 
 // ---------------------------------------------------------------------------
-// 2e. Read-only consumer health (FRONTEND_BASIC.md §Peripherals)
+// 2e. Read-only two-plane health badges (FRONTEND_BASIC.md §Peripherals)
+//
+//     DataSpoke reaches DataHub over two independent transports, each with its
+//     own peripheral_health row: `health` (Kafka event stream, written by the
+//     event consumer) and `api_health` (GMS metadata API, written by the hourly
+//     datahub-sync sweep). They fail independently, so every test here seeds the
+//     two rows with DIFFERENT verdicts — an implementation that renders one row
+//     twice must fail rather than pass by coincidence.
 // ---------------------------------------------------------------------------
-describe("DatahubCard — consumer health badge (FRONTEND_BASIC.md §Peripherals)", () => {
-  it("renders 'unknown' as a neutral badge — the normal state with no consumer deployed", async () => {
-    render(<AdminPeripheralsPage />);
-    const badge = await waitFor(() => {
-      const el = document.getElementById("datahub_health_status");
-      expect(el).toBeTruthy();
-      return el!;
-    });
-    expect(badge.dataset.status).toBe("unknown");
-    expect(badge.textContent).toMatch(/unknown/i);
-  });
+describe("DatahubCard — two-plane health badges (FRONTEND_BASIC.md §Peripherals)", () => {
+  const EVENT_STREAM_BADGE = "datahub_health_status";
+  const METADATA_API_BADGE = "datahub_api_health_status";
 
-  it("renders 'ok' with the last-OK timestamp", async () => {
+  async function badges() {
+    return await waitFor(() => {
+      const stream = document.getElementById(EVENT_STREAM_BADGE);
+      const api = document.getElementById(METADATA_API_BADGE);
+      expect(stream).toBeTruthy();
+      expect(api).toBeTruthy();
+      return { stream: stream!, api: api! };
+    });
+  }
+
+  it("renders both planes from their own field — event stream 'error' beside metadata API 'ok'", async () => {
+    // The dev cluster's actual state at the time of writing: Kafka unreachable
+    // while GMS serves fine. The two badges must disagree.
     mockUseDatahub.mockReturnValue({
       data: makeDatahub({
         health: {
+          status: "error",
+          last_error: "Failed to connect to broker: _ALL_BROKERS_DOWN",
+          last_ok_at: null,
+          updated_at: "2026-06-26T14:35:00Z",
+        },
+        api_health: {
           status: "ok",
           last_error: null,
           last_ok_at: "2026-06-26T14:30:00Z",
@@ -885,12 +953,53 @@ describe("DatahubCard — consumer health badge (FRONTEND_BASIC.md §Peripherals
       isLoading: false,
     });
     render(<AdminPeripheralsPage />);
-    const badge = await waitFor(() => document.getElementById("datahub_health_status")!);
-    expect(badge.dataset.status).toBe("ok");
-    expect(screen.getByText(/Last OK/)).toBeTruthy();
+    const { stream, api } = await badges();
+
+    expect(stream.dataset.status).toBe("error");
+    expect(stream.textContent).toMatch(/event stream/i);
+    expect(document.getElementById("datahub_health_error")?.textContent).toMatch(
+      /_ALL_BROKERS_DOWN/,
+    );
+
+    expect(api.dataset.status).toBe("ok");
+    expect(api.textContent).toMatch(/metadata api/i);
+    // The healthy plane carries no error text of its own.
+    expect(document.getElementById("datahub_api_health_error")).toBeNull();
   });
 
-  it("renders 'error' with the last error visible — a SASL failure must not stay in pod logs", async () => {
+  it("renders the opposite split too — event stream 'ok' beside metadata API 'error'", async () => {
+    // Mirrors the first case so neither plane can be hard-wired to one status.
+    mockUseDatahub.mockReturnValue({
+      data: makeDatahub({
+        health: {
+          status: "ok",
+          last_error: null,
+          last_ok_at: "2026-06-26T14:30:00Z",
+          updated_at: "2026-06-26T14:30:00Z",
+        },
+        api_health: {
+          status: "error",
+          last_error: "GMS returned 401: token expired",
+          last_ok_at: null,
+          updated_at: "2026-06-26T14:40:00Z",
+        },
+      }),
+      isLoading: false,
+    });
+    render(<AdminPeripheralsPage />);
+    const { stream, api } = await badges();
+
+    expect(stream.dataset.status).toBe("ok");
+    expect(screen.getByText(/Last OK/)).toBeTruthy();
+    expect(document.getElementById("datahub_health_error")).toBeNull();
+
+    expect(api.dataset.status).toBe("error");
+    expect(document.getElementById("datahub_api_health_error")?.textContent).toMatch(
+      /token expired/,
+    );
+  });
+
+  it("surfaces a SASL failure on the event-stream plane — it must not stay in pod logs", async () => {
     mockUseDatahub.mockReturnValue({
       data: makeScramDatahub({
         health: {
@@ -899,15 +1008,70 @@ describe("DatahubCard — consumer health badge (FRONTEND_BASIC.md §Peripherals
           last_ok_at: null,
           updated_at: "2026-06-26T14:35:00Z",
         },
+        api_health: {
+          status: "ok",
+          last_error: null,
+          last_ok_at: "2026-06-26T14:30:00Z",
+          updated_at: "2026-06-26T14:30:00Z",
+        },
       }),
       isLoading: false,
     });
     render(<AdminPeripheralsPage />);
-    const badge = await waitFor(() => document.getElementById("datahub_health_status")!);
-    expect(badge.dataset.status).toBe("error");
+    const { stream, api } = await badges();
+    expect(stream.dataset.status).toBe("error");
     expect(document.getElementById("datahub_health_error")?.textContent).toMatch(
       /SASL authentication failed/,
     );
+    expect(api.dataset.status).toBe("ok");
+  });
+
+  it("renders 'unknown' neutrally on BOTH planes, each with its own reason", async () => {
+    // The stock-install state. Neither reporter is deployed-and-running by
+    // default, so `unknown` must read as neutral (outline badge, muted copy) on
+    // both — never as a fault on a healthy fresh deployment.
+    render(<AdminPeripheralsPage />);
+    const { stream, api } = await badges();
+
+    expect(stream.dataset.status).toBe("unknown");
+    expect(stream.textContent).toMatch(/event stream status unknown/i);
+    expect(api.dataset.status).toBe("unknown");
+    expect(api.textContent).toMatch(/metadata api status unknown/i);
+
+    // Neutral, not destructive: no error styling and no error text on either.
+    for (const badge of [stream, api]) {
+      expect(badge.className).not.toMatch(/destructive/);
+    }
+    expect(document.getElementById("datahub_health_error")).toBeNull();
+    expect(document.getElementById("datahub_api_health_error")).toBeNull();
+
+    // Each plane explains its OWN reason — a shared blurb would misinform.
+    expect(document.getElementById("datahub_health_unknown_reason")?.textContent).toMatch(
+      /no event consumer/i,
+    );
+    expect(document.getElementById("datahub_api_health_unknown_reason")?.textContent).toMatch(
+      /paused/i,
+    );
+  });
+
+  it("renders one plane 'unknown' while the other reports — the rows are independent", async () => {
+    // A deployment running the sweep but no consumer: the metadata API answers
+    // while the event stream has never reported.
+    mockUseDatahub.mockReturnValue({
+      data: makeDatahub({
+        api_health: {
+          status: "ok",
+          last_error: null,
+          last_ok_at: "2026-06-26T14:30:00Z",
+          updated_at: "2026-06-26T14:30:00Z",
+        },
+      }),
+      isLoading: false,
+    });
+    render(<AdminPeripheralsPage />);
+    const { stream, api } = await badges();
+    expect(stream.dataset.status).toBe("unknown");
+    expect(api.dataset.status).toBe("ok");
   });
 });
 

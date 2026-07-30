@@ -329,7 +329,14 @@ def _datahub_dto_to_response(
     dto: object | None,
     updated_at: datetime | None,
     health: "PeripheralHealthDTO",
+    api_health: "PeripheralHealthDTO",
 ) -> DatahubPeripheralResponse:
+    """Render the DataHub peripheral config plus both transport health rows.
+
+    ``health`` is the ``datahub`` row (Kafka event stream, reported by the event
+    consumer); ``api_health`` is the ``datahub-api`` row (GMS metadata API,
+    reported by the hourly sync sweep).
+    """
     from src.backend.admin.peripheral_service import DatahubConfigDTO
 
     if dto is None or not isinstance(dto, DatahubConfigDTO):
@@ -348,6 +355,7 @@ def _datahub_dto_to_response(
             default_env=_DEFAULT_INGESTION_ENV,
             is_configured=False,
             health=_health_to_model(health),
+            api_health=_health_to_model(api_health),
             updated_at=updated_at,
         )
     token_set = datahub_token_is_set()
@@ -367,6 +375,7 @@ def _datahub_dto_to_response(
         # The Kafka credential is optional and never participates in is_configured.
         is_configured=token_set,
         health=_health_to_model(health),
+        api_health=_health_to_model(api_health),
         updated_at=updated_at,
     )
 
@@ -438,7 +447,8 @@ async def get_datahub_peripheral(
     dto = await get_peripheral_config(db, "datahub")
     updated_at = await _get_peripheral_updated_at(db, "datahub")
     health = await get_peripheral_health(db, "datahub")
-    return _datahub_dto_to_response(dto, updated_at, health)
+    api_health = await get_peripheral_health(db, "datahub-api")
+    return _datahub_dto_to_response(dto, updated_at, health, api_health)
 
 
 def _kafka_password_is_set_uncached() -> bool:
@@ -567,7 +577,8 @@ async def _apply_datahub_patch_and_respond(
 
     updated_at = await _get_peripheral_updated_at(db, "datahub")
     health = await get_peripheral_health(db, "datahub")
-    return _datahub_dto_to_response(dto, updated_at, health)
+    api_health = await get_peripheral_health(db, "datahub-api")
+    return _datahub_dto_to_response(dto, updated_at, health, api_health)
 
 
 @router.patch("/peripherals/datahub")
