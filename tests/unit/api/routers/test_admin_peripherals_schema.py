@@ -79,13 +79,86 @@ class TestDatahubPeripheralPatchRequestEmpty:
 
 
 class TestDatahubGmsUrlBounds:
-    """gms_url: max_length=512.
+    """gms_url: the display-link safety rule, plus its 512-character length bound.
 
-    spec: src/api/schemas/admin.py DatahubPeripheralPatchRequest.
+    ``gms_url`` is never rendered to a browser, but it carries the same URL constraint
+    as the display links for a different reason: a transport exception quoting it is
+    persisted to ``peripheral_health.last_error`` and served over the admin API, so
+    barring **userinfo** is what keeps an embedded credential out of that row.
+
+    It is "constrained on write only — no non-Admin route serves it, so there is no read
+    boundary to coerce at", which makes this schema the sole enforcement point.
+
+    The rejection cases below are a hand-picked sample, not one per rule class: they cover
+    Scheme, Authority (twice — userinfo and the IPv6 literal) and Characters (twice — C0
+    controls and bidi), while Shape has no case here at all. Full per-class coverage of
+    this field comes from the systematic sweep over the whole shared corpus in
+    ``tests/unit/api/schemas/test_safe_url_corpus.py``, which parametrizes ``gms_url``
+    alongside the display fields and also guards the Python and frontend copies of the
+    pattern against drift. What the sample adds is a readable, local statement of the
+    shapes that matter most for *this* field's reason to carry the rule.
+
+    spec: spec/API.md §Data Resource → Display-link safety — the rule-class table
+        (Scheme / Authority / Characters / Shape / Length) and "DataHub ``gms_url``
+        carries the same URL constraint for a different reason: … barring userinfo is
+        what keeps an embedded credential out of that row".
+    spec: spec/feature/BACKEND.md §Health reporting — "``last_error`` is bounded and
+        credential-free".
     """
 
+    @pytest.mark.parametrize(
+        ("rule", "value"),
+        [
+            # Scheme: only lowercase http(s) or "" — a script URL must not be storable.
+            ("Scheme", "javascript:alert(1)"),
+            # Authority: userinfo rejected. This is the case gms_url exists in this list
+            # for — an operator-embedded credential would otherwise reach last_error.
+            ("Authority", "http://dsuser:s3cret@gms:8080"),
+            # Authority: a bracketed IPv6 literal is rejected too, and the spec names that
+            # as a stated outcome with a stated cost for this field specifically — "an
+            # IPv6-only GMS must be addressed by hostname". Pinned here so the cost is
+            # visible where the field is configured, not only in the corpus sweep.
+            ("Authority", "http://[::1]:8080"),
+            # Characters: no C0 controls (CR/LF header splitting).
+            ("Characters", "http://gms:8080/\r\nX-Injected: 1"),
+            # Characters: no unicode bidi controls (right-to-left override).
+            ("Characters", "http://gms:8080/‮path"),
+        ],
+        ids=[
+            "scheme-javascript",
+            "authority-userinfo",
+            "authority-ipv6-literal",
+            "characters-crlf",
+            "characters-bidi",
+        ],
+    )
+    def test_gms_url_violating_the_safety_rule_is_rejected(self, rule: str, value: str) -> None:
+        """A value violating any rule class is refused at the write boundary.
+
+        spec: spec/API.md §Data Resource → Display-link safety — the ``{rule}`` row; "On
+        write, ``PATCH /admin/peripherals/{datahub,langfuse}`` rejects a violating value
+        with ``422``".
+        """
+        _dh_invalid(gms_url=value)
+
+    def test_gms_url_ordinary_service_url_is_accepted(self) -> None:
+        """The in-cluster GMS URL the default install configures is admitted.
+
+        The matching side of the filter: a rule that rejected the product's own default
+        would be caught here rather than at deploy time.
+
+        spec: spec/API.md §Data Resource → Display-link safety — Authority row admits "a
+        host plus an optional numeric port".
+        """
+        for url in ("http://datahub-gms:8080", "https://gms.example.com/api/gms", ""):
+            assert _dh_valid(gms_url=url).gms_url == url
+
     def test_gms_url_at_max_length_accepted(self) -> None:
-        url = "http://gms:" + "x" * 500  # well within 512
+        # A well-formed long URL: the concern here is the *length* bound, so the
+        # length lives in the path segment rather than in a non-numeric port that
+        # the shape pattern would (correctly) reject for its own reason.
+        url = "http://gms.example/" + "x" * 493  # 19 + 493 = 512 chars
+        assert len(url) == 512, "the fixture must sit exactly at the max_length bound"
         req = _dh_valid(gms_url=url)
         assert req.gms_url == url
 

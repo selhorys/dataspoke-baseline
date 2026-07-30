@@ -49,7 +49,15 @@
     "definitions, which is what both classes now encode.",
     "",
     "Invisible characters are stored as \\uXXXX escapes on purpose: a literal one would",
-    "be unreviewable in a diff."
+    "be unreviewable in a diff.",
+    "",
+    "BRACKETED IPv6 LITERALS ARE REJECTED, and the spec states that as an outcome rather",
+    "than an accident: 'The Authority rule admits a hostname plus an optional numeric port",
+    "and nothing else, so a bracketed IPv6 literal (http://[::1]:8080) is rejected. For a",
+    "display link that costs only the deep link; for gms_url it means an IPv6-only GMS must",
+    "be addressed by hostname.' The cases live here rather than in one language's test file",
+    "because the spec also says widening the authority is 'a coordinated change rather than",
+    "a one-line edit ... both move together or not at all'."
   ],
   "_rule_classes": {
     "Scheme": "Lowercase http:// or https://, or \"\" meaning unset. Lowercasing is a strictness choice for an operator-entered config field, not a safety property; the host itself stays case-insensitive.",
@@ -197,6 +205,16 @@
         "rule": "Authority",
         "label": "empty port",
         "value": "https://evil.example.com:"
+      },
+      {
+        "rule": "Authority",
+        "label": "bracketed IPv6 literal with a port",
+        "value": "http://[::1]:8080"
+      },
+      {
+        "rule": "Authority",
+        "label": "bracketed IPv6 literal without a port",
+        "value": "https://[2001:db8::1]"
       },
       {
         "rule": "Shape",

@@ -14,8 +14,10 @@ Concerns covered — for each domain (ingestion, validation, metagen, metrics, o
 The last section drives ``IngestionService.sync()`` — the exact call the sync activity
 endpoint wraps — directly against a real DB session with a stubbed DataHub client, for
 the summary rows a REST caller cannot reach: the platform-absent gate, the CLI-wrapper
-no-double-count rule, the positive prune case, and the state-change counters. Handcrafting
-the URN list is what buys exact equalities there instead of ``>=`` deltas.
+no-double-count rule, the positive prune case, the five state-change counters, and the
+bounded/escaped degradation log record. Handcrafting the URN list is what buys exact
+equalities there instead of ``>=`` deltas; running in-process is what puts the sweep's
+own log records within reach of ``caplog``.
 spec: TESTING.md §Spot integration tests §Boundary — 'a spot test may call dataspoke
 Python directly (e.g., a backend service or a workflow stub) **or** call the API over HTTP'.
 
@@ -28,8 +30,10 @@ Internal routes are mounted WITHOUT the /api/v1 prefix (see src/api/main.py line
 # spec: BACKEND.md §Validation Service / §Metrics Service
 
 import json
+import logging
 import os
 import uuid
+from contextlib import suppress
 from typing import Any
 
 import httpx
@@ -38,9 +42,18 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.backend.ingestion.service import IngestionService
+from src.shared.models.ingestion import MAX_REASON_CHARS, build_matcher_checked
 from tests.integration.util import dataspoke_db
 
+# The sweep's own logger — the record the writer-supplied degradation reason reaches.
+_SYNC_LOGGER = "src.backend.ingestion.service"
+
 _FAIL_TAIL: frozenset[str] = frozenset({"fail", "failed", "failure", "error", "errored"})
+
+# This module drives IngestionService.sync() in-process but does not own the
+# `datahub-api` peripheral_health row the sweep writes as a side effect — see the
+# fixture docstring in tests/integration/spot/conftest.py.
+pytestmark = pytest.mark.usefixtures("silence_api_health_report")
 
 # In-cluster cluster-DNS address of the dummy-data postgres (resolvable inside
 # the cluster; mode-independent — recipes are consumed in-cluster). Populated by
@@ -1074,9 +1087,10 @@ class _StubDataHubForSync:
     """Minimal DataHub stub exposing only what ``IngestionService.sync()`` touches.
 
     Every attribute is mutable so a test can walk one estate through several consecutive
-    sweeps — adding a source, adding a dataset, rewriting a recipe — and read the summary
-    each time. ``list_execution_requests`` returns nothing: run-event mirroring is a
-    different concern, covered by test_ingestion_cli_pipeline_inheritance.py.
+    sweeps — adding a source, adding a dataset, rewriting a recipe, publishing an
+    execution request — and read the summary each time. ``execution_requests`` maps a
+    source URN to the ``listExecutionRequests`` payload DataHub would return for it;
+    a source absent from the mapping has no run history.
     """
 
     def __init__(
@@ -1084,10 +1098,12 @@ class _StubDataHubForSync:
         sources: list[dict[str, Any]],
         datasets: list[str],
         pipeline_names: dict[str, str] | None = None,
+        execution_requests: dict[str, list[dict[str, Any]]] | None = None,
     ) -> None:
         self.sources = sources
         self.datasets = datasets
         self.pipeline_names = pipeline_names or {}
+        self.execution_requests = execution_requests or {}
 
     async def list_ingestion_sources(self) -> list[dict[str, Any]]:
         return self.sources
@@ -1101,7 +1117,7 @@ class _StubDataHubForSync:
         return {u: self.pipeline_names.get(u) for u in urns}
 
     async def list_execution_requests(self, source_urn: str) -> list[dict[str, Any]]:
-        return []
+        return self.execution_requests.get(source_urn, [])
 
 
 async def _matched_urns_for(async_session: AsyncSession, source_urn: str) -> set[str]:
@@ -1346,8 +1362,8 @@ async def test_sync_zero_coverage_gates_and_pattern_less_prune(
 async def test_sync_summary_counts_state_changes_not_rows_examined(
     async_session: AsyncSession,
 ) -> None:
-    """``pipeline_links``/``datasets_mapped`` fall to zero on an unchanged second sweep,
-    while ``sources_synced`` repeats its non-zero reading.
+    """All five state-change counters fall to zero on an unchanged next sweep, while
+    ``sources_synced`` repeats its non-zero reading.
 
     A stubbed estate is what makes this provable: one registered DATAHUB_MANAGED source,
     two catalog datasets, and a ``systemMetadata.pipelineName`` stamp on each naming that
@@ -1355,12 +1371,25 @@ async def test_sync_summary_counts_state_changes_not_rows_examined(
     and that same run writes ``derivation='emitted'`` rows for exactly the URNs it stamped,
     which the step-3 upsert's ``derivation != 'emitted'`` guard then filters — so
     ``pipeline_links`` can never leave zero from outside and the no-op assertion would be a
-    green no-op there.
+    green no-op there. The remaining three counters are equally unreachable from outside:
+    ``events_mirrored`` needs DataHub to hold a terminal execution request,
+    ``registry_inserted`` a dataset DataSpoke has never seen, and ``sources_removed`` a
+    registered source disappearing from DataHub.
 
-    Sweep 1 must move both state-change counters (2 datasets mapped, 2 links created);
-    sweep 2 changes nothing and must report 0 for both. ``sources_synced`` is the
-    counterexample in the same reading: it is a steady-state count, so it reports 1 twice
-    rather than falling to zero.
+    One estate walked through eight sweeps, one variable per phase. Each counter is
+    asserted non-zero on the phase whose single change should move it (the backstop) and
+    zero on the next, unchanged phase:
+
+    1. Baseline: 2 datasets mapped, 2 pipeline links created; ``sources_synced`` == 1.
+    2. Unchanged → ``datasets_mapped`` and ``pipeline_links`` fall to 0, while
+       ``sources_synced`` repeats 1 (the steady-state counterexample).
+    3. Add a dataset DataSpoke's registry has never held → ``registry_inserted`` == 1.
+    4. Unchanged → ``registry_inserted`` == 0.
+    5. Publish one terminal ``SUCCESS`` execution request → ``events_mirrored`` == 1.
+    6. Unchanged (the same execution request still listed) → ``events_mirrored`` == 0,
+       because dedup keys on the execution-request URN, not on the sweep.
+    7. Add a second registered source → ``sources_synced`` == 2, ``sources_removed`` == 0.
+    8. Drop that source from DataHub → ``sources_removed`` == 1; the sweep after it → 0.
 
     spec: BACKEND.md §Sync + mapping sweep §Sweep summary — 'datasets_mapped,
         pipeline_links, events_mirrored, sources_removed and the registry_* counters
@@ -1372,6 +1401,13 @@ async def test_sync_summary_counts_state_changes_not_rows_examined(
         unchanged estate reports the same non-zero value on every sweep'.
     spec: BACKEND.md §Sync + mapping sweep step 3 — a dataset's pipelineName awards
         derivation='pipeline_name' to the source whose datahub_source_urn equals it.
+    spec: BACKEND.md §Sync + mapping sweep step 4 — 'Identity / dedup = execution-request
+        URN. One DataSpoke event per execution request, **upserted** by its URN … so
+        repeated syncs and status transitions are idempotent (no per-sync event growth).'
+    spec: BACKEND.md §Sync + mapping sweep step 4 — status table: 'SUCCESS, SUCCEEDED
+        (cross-version) | INGESTION.COMPLETE'.
+    spec: BACKEND.md §Sync + mapping sweep step 1 — DATAHUB_MANAGED rows whose source URN
+        is no longer in DataHub are removed.
     """
     await dataspoke_db.reset_ingestion_sources()
 
@@ -1390,18 +1426,45 @@ async def test_sync_summary_counts_state_changes_not_rows_examined(
         "schedule": None,
         "executor_id": "default",
     }
-
-    service = IngestionService(
-        datahub=_StubDataHubForSync(  # type: ignore[arg-type]
-            sources=[registered_source],
-            datasets=[_SYNC_DS_A, _SYNC_DS_B],
-            # DataHub stamps the registered source's URN on the aspects its run emits.
-            pipeline_names={_SYNC_DS_A: source_urn, _SYNC_DS_B: source_urn},
+    # A second registered source, added and then removed, so the removal does not take
+    # the rest of the estate with it. Its recipe is well-formed and carries none of the
+    # four selection-pattern keys, so it declares no coverage and maps nothing.
+    removable_urn = "urn:li:dataHubIngestionSource:" + str(uuid.uuid4())
+    removable_source = {
+        "urn": removable_urn,
+        "name": "spot-sync-removable",
+        "recipe": json.dumps(
+            {"source": {"type": "postgres", "config": {"host_port": "pg:5432"}}}
         ),
-        db=async_session,
+        "schedule": None,
+        "executor_id": "default",
+    }
+    # A dataset DataSpoke's registry has never held. Its schema segment is unique, so it
+    # matches no source's patterns and changes nothing but the registry.
+    novel_dataset = (
+        "urn:li:dataset:(urn:li:dataPlatform:postgres,"
+        f"example_db.spot_sync_registry_{uuid.uuid4().hex}.probe,DEV)"
     )
+    # One terminal SUCCESS execution request, carrying the stable URN the dedup keys on.
+    execution_request_urn = "urn:li:dataHubExecutionRequest:" + uuid.uuid4().hex
+    execution_request = {
+        "urn": execution_request_urn,
+        "status": "SUCCESS",
+        "startTimeMs": 1_700_000_000_000,
+        "requestedAt": 1_700_000_000_000,
+        "durationMs": 4200,
+    }
+
+    stub = _StubDataHubForSync(
+        sources=[registered_source],
+        datasets=[_SYNC_DS_A, _SYNC_DS_B],
+        # DataHub stamps the registered source's URN on the aspects its run emits.
+        pipeline_names={_SYNC_DS_A: source_urn, _SYNC_DS_B: source_urn},
+    )
+    service = IngestionService(datahub=stub, db=async_session)  # type: ignore[arg-type]
 
     try:
+        # ── 1 & 2: mapping and pipeline links move, then fall to zero ──────────
         first = await service.sync()
         second = await service.sync()
 
@@ -1428,6 +1491,261 @@ async def test_sync_summary_counts_state_changes_not_rows_examined(
             f"sources_synced counts inserts and updates alike, so an unchanged estate "
             f"reports the same non-zero value on every sweep: first="
             f"{first['sources_synced']}, second={second['sources_synced']}. "
+            "spec: BACKEND.md §Sync + mapping sweep §Sweep summary."
+        )
+
+        # ── 3 & 4: registry_inserted fires on a genuinely new dataset, then zero ─
+        stub.datasets = [_SYNC_DS_A, _SYNC_DS_B, novel_dataset]
+        with_new_dataset = await service.sync()
+        assert with_new_dataset["registry_inserted"] == 1, (
+            f"Exactly the one dataset the registry has never held must be inserted; got "
+            f"{with_new_dataset['registry_inserted']}. "
+            "spec: BACKEND.md §Sync + mapping sweep §Sweep summary."
+        )
+        unchanged_dataset = await service.sync()
+        assert unchanged_dataset["registry_inserted"] == 0, (
+            f"registry_inserted counts inserts, so re-enumerating the same estate must "
+            f"report 0; got {unchanged_dataset['registry_inserted']}. "
+            "spec: BACKEND.md §Sync + mapping sweep §Sweep summary."
+        )
+
+        # ── 5 & 6: events_mirrored fires once per execution-request URN ────────
+        stub.execution_requests = {source_urn: [execution_request]}
+        with_run = await service.sync()
+        assert with_run["events_mirrored"] == 1, (
+            f"One terminal SUCCESS execution request must mirror one INGESTION.COMPLETE; "
+            f"got {with_run['events_mirrored']}. "
+            "spec: BACKEND.md §Sync + mapping sweep step 4."
+        )
+        unchanged_run = await service.sync()
+        assert unchanged_run["events_mirrored"] == 0, (
+            f"Dedup keys on the execution-request URN, not on the sweep, so listing the "
+            f"same request again must mirror nothing; got "
+            f"{unchanged_run['events_mirrored']}. "
+            "spec: BACKEND.md §Sync + mapping sweep step 4 — 'repeated syncs and status "
+            "transitions are idempotent (no per-sync event growth)'."
+        )
+        # Read the side effect back, not just the counter: exactly one event carries this
+        # execution-request URN after two sweeps that both listed it.
+        mirrored_rows = await async_session.execute(
+            text(
+                "SELECT count(*) FROM dataspoke.events "
+                "WHERE entity_type = 'ingestion_source' "
+                "AND event_type = 'INGESTION.COMPLETE' "
+                "AND detail->>'execution_request_urn' = :urn"
+            ),
+            {"urn": execution_request_urn},
+        )
+        assert mirrored_rows.scalar_one() == 1, (
+            "Exactly one event row may exist per execution-request URN across repeated "
+            "sweeps. spec: BACKEND.md §Sync + mapping sweep step 4."
+        )
+
+        # ── 7 & 8: sources_removed fires on the removal, then falls to zero ────
+        stub.sources = [registered_source, removable_source]
+        with_second_source = await service.sync()
+        assert with_second_source["sources_synced"] == 2, (
+            f"Backstop: the second registered source must actually be mirrored before its "
+            f"removal can be counted; got sources_synced="
+            f"{with_second_source['sources_synced']}."
+        )
+        assert with_second_source["sources_removed"] == 0, (
+            f"Nothing left DataHub in this phase, so sources_removed must be 0; got "
+            f"{with_second_source['sources_removed']}."
+        )
+
+        stub.sources = [registered_source]
+        with_removal = await service.sync()
+        assert with_removal["sources_removed"] == 1, (
+            f"A DATAHUB_MANAGED row whose source URN is no longer in DataHub must be "
+            f"removed and counted once; got {with_removal['sources_removed']}. "
+            "spec: BACKEND.md §Sync + mapping sweep step 1."
+        )
+        after_removal = await service.sync()
+        assert after_removal["sources_removed"] == 0, (
+            f"sources_removed counts removals, so the next sweep over the now-stable "
+            f"estate must report 0; got {after_removal['sources_removed']}. "
+            "spec: BACKEND.md §Sync + mapping sweep §Sweep summary."
+        )
+    finally:
+        with suppress(Exception):
+            await async_session.rollback()
+            await async_session.execute(
+                text(
+                    "DELETE FROM dataspoke.events "
+                    "WHERE detail->>'execution_request_urn' = :urn"
+                ),
+                {"urn": execution_request_urn},
+            )
+            await async_session.execute(
+                text("DELETE FROM dataspoke.dataset_registry WHERE dataset_urn = :urn"),
+                {"urn": novel_dataset},
+            )
+            await async_session.commit()
+        await dataspoke_db.reset_ingestion_sources()
+
+
+@pytest.mark.asyncio
+async def test_sync_degradation_log_is_bounded_and_escaped_and_the_counter_persists(
+    async_session: AsyncSession,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The sweep's ``ingestion_sync_pattern_not_derivable`` record is one bounded line,
+    and ``sources_pattern_degraded`` persists while the source stays degraded.
+
+    Two concerns, both at the sweep — the site the spec sentence describes. ``sync()``
+    runs in-process here against a real DB session with a stubbed DataHub, so ``caplog``
+    reaches the sweep's own logger; the same assertions made against
+    ``build_matcher``'s convenience log would leave this call site unpinned (reverting
+    its ``%r`` to ``%s`` would still pass).
+
+    The estate holds three registered sources, and the healthy one is what keeps the
+    counter from being a headcount:
+
+      - ``^catalog$`` — well-formed and covering; must not be counted.
+      - ``schema_pattern: {"allow": "not-a-list"}`` — ``AllowDenyPattern`` construction
+        raises a multi-line pydantic error, so the reason genuinely contains ``\\n``
+        (asserted before the record is inspected). A line-based collector would
+        otherwise read the tail of writer-supplied recipe text as a forged record.
+      - a ``table_pattern`` carrying an invalid group name built from 200 000
+        characters, which ``re`` quotes back verbatim — a reason two orders of
+        magnitude past the bound (also asserted first).
+
+    ``sources_pattern_degraded`` is then read on a **second** sweep over the unchanged
+    estate: it reports a *condition*, not a transition, so it must still read 2 rather
+    than falling to zero the way the state-change counters do.
+
+    spec: BACKEND.md §Sync + mapping sweep step 2 §Trust boundary on writer-supplied
+        patterns — 'The reason that log line reports is derived from recipe content and
+        is therefore itself untrusted, so it is bounded in length and escaped before it
+        reaches a log record: a writer cannot forge log structure or grow a record
+        without limit.'
+    spec: BACKEND.md §Sync + mapping sweep step 2 §Coverage outcomes and prune invariant
+        — the Not-evaluated row is reached when 'the deciding selection-pattern key is
+        wrongly shaped' or 'a declared pattern does not compile', signalled by a
+        'warning naming the source and what could not be read; sources_pattern_degraded'.
+    spec: BACKEND.md §Sync + mapping sweep §Sweep summary — 'sources_zero_coverage and
+        sources_pattern_degraded each report a **condition** … so each stays non-zero
+        for as long as the affected sources do.'
+    """
+    await dataspoke_db.reset_ingestion_sources()
+
+    healthy_urn = "urn:li:dataHubIngestionSource:" + str(uuid.uuid4())
+    newline_urn = "urn:li:dataHubIngestionSource:" + str(uuid.uuid4())
+    oversized_urn = "urn:li:dataHubIngestionSource:" + str(uuid.uuid4())
+
+    newline_config = {"schema_pattern": {"allow": "not-a-list"}}
+    oversized_config = {"table_pattern": {"allow": ["(?P<a-" + "a" * 200_000 + ">x)"]}}
+
+    # Backstops on the fixtures: assert the reasons really carry a newline and really
+    # exceed the bound, so the record assertions below are not trivially true.
+    _, newline_reason = build_matcher_checked(
+        {"source": {"type": "postgres", "config": newline_config}}
+    )
+    assert newline_reason is not None and "\n" in newline_reason, (
+        "Backstop: this fixture must put a raw newline in the degradation reason, or the "
+        f"one-line assertion below proves nothing. Got {newline_reason!r}."
+    )
+    _, oversized_reason = build_matcher_checked(
+        {"source": {"type": "postgres", "config": oversized_config}}
+    )
+    assert oversized_reason is not None and len(oversized_reason) > MAX_REASON_CHARS * 10, (
+        "Backstop: this fixture must produce a reason far past the bound, or the "
+        f"boundedness assertion below is vacuous. Got len={len(oversized_reason or '')}."
+    )
+
+    sources = [
+        {
+            "urn": healthy_urn,
+            "name": "spot-sync-degrade-healthy",
+            "recipe": json.dumps(
+                {
+                    "source": {
+                        "type": "postgres",
+                        "config": {"schema_pattern": {"allow": ["^catalog$"]}},
+                    }
+                }
+            ),
+            "schedule": None,
+            "executor_id": "default",
+        },
+        {
+            "urn": newline_urn,
+            "name": "spot-sync-degrade-newline",
+            "recipe": json.dumps({"source": {"type": "postgres", "config": newline_config}}),
+            "schedule": None,
+            "executor_id": "default",
+        },
+        {
+            "urn": oversized_urn,
+            "name": "spot-sync-degrade-oversized",
+            "recipe": json.dumps({"source": {"type": "postgres", "config": oversized_config}}),
+            "schedule": None,
+            "executor_id": "default",
+        },
+    ]
+
+    service = IngestionService(
+        datahub=_StubDataHubForSync(  # type: ignore[arg-type]
+            sources=sources,
+            datasets=[_SYNC_DS_A, _SYNC_DS_B],
+        ),
+        db=async_session,
+    )
+
+    try:
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger=_SYNC_LOGGER):
+            first = await service.sync()
+
+        assert first["sources_pattern_degraded"] == 2, (
+            f"Exactly the two sources whose patterns could not be read must be counted — "
+            f"the well-formed covering source must not; got "
+            f"{first['sources_pattern_degraded']}. "
+            "spec: BACKEND.md §Sync + mapping sweep step 2 §Coverage outcomes."
+        )
+
+        records = [
+            r
+            for r in caplog.records
+            if r.name == _SYNC_LOGGER
+            and "ingestion_sync_pattern_not_derivable" in r.getMessage()
+        ]
+        assert len(records) == 2, (
+            f"The sweep must warn once per not-evaluated source, naming it; got "
+            f"{len(records)} records. spec: BACKEND.md §Sync + mapping sweep step 2 "
+            "§Coverage outcomes — 'warning naming the source and what could not be read'."
+        )
+        # Slack covers the record's fixed prefix, the source id and name, the truncation
+        # marker and repr quoting. It is a constant: it does not scale with the recipe.
+        slack = 512
+        for record in records:
+            message = record.getMessage()
+            assert "\n" not in message, (
+                "A writer-supplied newline must be escaped, not carried into the record — "
+                f"a line-based collector would read the tail as a forged line. Got "
+                f"{message!r}. spec: BACKEND.md §Sync + mapping sweep step 2 §Trust "
+                "boundary on writer-supplied patterns."
+            )
+            assert len(message) <= MAX_REASON_CHARS + slack, (
+                f"A 200 000-character recipe pattern must not grow the record; got "
+                f"{len(message)} chars. spec: BACKEND.md §Sync + mapping sweep step 2 "
+                "§Trust boundary — 'a writer cannot … grow a record without limit'."
+            )
+        # Both degraded sources are named, so neither record is the other one twice.
+        named = {name for name in ("spot-sync-degrade-newline", "spot-sync-degrade-oversized")
+                 if any(name in r.getMessage() for r in records)}
+        assert named == {"spot-sync-degrade-newline", "spot-sync-degrade-oversized"}, (
+            f"Each not-evaluated source must be named in its own record; got {named}. "
+            "spec: BACKEND.md §Sync + mapping sweep step 2 §Coverage outcomes."
+        )
+
+        # The counter is a condition, not a transition: it persists while the sources do.
+        second = await service.sync()
+        assert second["sources_pattern_degraded"] == 2, (
+            f"sources_pattern_degraded reports a condition, so a further sweep over the "
+            f"same degraded sources must still report 2, not fall to 0; got "
+            f"{second['sources_pattern_degraded']}. "
             "spec: BACKEND.md §Sync + mapping sweep §Sweep summary."
         )
     finally:

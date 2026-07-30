@@ -19,7 +19,7 @@ Spec: spec/USE_CASE_en.md §UC1
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -30,6 +30,7 @@ from datahub.metadata.schema_classes import (  # type: ignore
     DataProcessRunStatusClass,
     DataProcessTypeClass,
 )
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.backend.ingestion.extractors import IngestionResult
 from src.backend.ingestion.service import (
@@ -37,7 +38,13 @@ from src.backend.ingestion.service import (
     IngestionService,
     run_report_detail,
 )
-from src.shared.exceptions import ConflictError, EntityNotFoundError, PreconditionFailedError
+from src.shared.exceptions import (
+    ConflictError,
+    DataHubUnavailableError,
+    EntityNotFoundError,
+    PreconditionFailedError,
+)
+from src.shared.redaction import REDACTED
 from tests.unit.backend.conftest import mock_db_refresh, mock_scalar_query
 from tests.unit.backend.ingestion.conftest import (
     _DATASET_URN,
@@ -433,6 +440,67 @@ class TestReverseLookupPrecedence:
             f"got '{winner.name}'. "
             "Spec: BACKEND_SCHEMA.md §ingestion_source_dataset"
             " — pipeline_name (high) > matched (medium)."
+        )
+
+    @pytest.mark.asyncio
+    async def test_most_recent_last_seen_at_breaks_a_tie_between_two_regular_sources(
+        self, service: IngestionService, db: AsyncMock
+    ) -> None:
+        """At equal derivation rank and neither source a wrapper, the newer mapping wins.
+
+        The third and last term of the rank, and the only fixture shape that reaches it:
+        both sources are **regular** (``parent_source_id is None``), so the wrapper term is
+        equal, and both claim the dataset at ``pipeline_name``, so the derivation term is
+        equal too. A parent-versus-its-wrapper fixture cannot substitute — the wrapper term
+        decides there before ``last_seen_at`` is consulted.
+
+        The older mapping is first in the result list, so a lookup that dropped the
+        ``last_seen_at`` term would keep that order and return the older source; a lookup
+        that inverted it would return the older source as well.
+
+        Spec: feature/BACKEND.md §Metrics Service §Time windows — "derivation rank emitted
+        > pipeline_name > matched; at equal rank a regular parent beats its CLI wrapper;
+        remaining ties go to the most recent last_seen_at."
+        """
+        now = datetime.now(tz=UTC)
+
+        mapping_older = MagicMock()
+        mapping_older.derivation = "pipeline_name"
+        mapping_older.last_seen_at = now - timedelta(hours=3)
+        mapping_older.dataset_urn = _DATASET_URN
+
+        mapping_newer = MagicMock()
+        mapping_newer.derivation = "pipeline_name"
+        mapping_newer.last_seen_at = now
+        mapping_newer.dataset_urn = _DATASET_URN
+
+        source_older = _make_source_row(name="older-source", schedule_tier="daily")
+        source_older.parent_source_id = None
+        source_newer = _make_source_row(name="newer-source", schedule_tier="hourly")
+        source_newer.parent_source_id = None
+
+        result_mock = MagicMock()
+        # Older first: a rank that ignores last_seen_at leaves this order untouched.
+        result_mock.all.return_value = [
+            (mapping_older, source_older),
+            (mapping_newer, source_newer),
+        ]
+        db.execute = AsyncMock(return_value=result_mock)
+
+        winner = await service.reverse_lookup(_DATASET_URN)
+
+        assert winner is not None, (
+            "Backstop: a mapped dataset must resolve to an owner, or the name comparison "
+            "below compares against None."
+        )
+        assert winner.name == "newer-source", (
+            f"the most recently seen mapping must win the tie; got {winner.name!r}. "
+            "Spec: feature/BACKEND.md §Metrics Service §Time windows — 'remaining ties go "
+            "to the most recent last_seen_at'."
+        )
+        assert winner.schedule_tier == "hourly", (
+            "the returned record must be the newer source's row, whose tier is what the "
+            f"freshness measurer derives its window from; got {winner.schedule_tier!r}."
         )
 
     @pytest.mark.asyncio
@@ -1716,3 +1784,230 @@ class TestObservePassiveOperations:
         )
         assert passive[0].detail["dataset_urn"] == self._ORDERS_URN
         assert passive[0].occurred_at == datetime.fromtimestamp(ts_ms / 1000, tz=UTC)
+
+
+# ── sync(): the datahub-api health side effect ────────────────────────────────
+
+
+class TestSyncReportsApiHealth:
+    """``sync()`` reports the ``datahub-api`` peripheral health as a side effect.
+
+    The persisted row and its two-session independence are covered against real
+    PostgreSQL in ``tests/integration/spot/test_datahub_api_health.py``. What this class
+    covers is the part a unit test can prove better: which status is reported for which
+    outcome, that the failure is re-raised, and that the reported *message* carries
+    neither a credential nor a stack trace.
+
+    spec: feature/BACKEND.md §Sync + mapping sweep §Health side effect — "``ok`` on
+        completion, ``error`` carrying the message on failure — which is then re-raised";
+        "The ``error`` branch catches broadly — any failure that escapes the sweep, not
+        only ``DataHubUnavailableError``".
+    spec: feature/BACKEND.md §Health reporting — "no credentials, no stack traces, and a
+        length bound".
+    """
+
+    class _PassThroughSanitize:
+        """A DataHub client whose ``sanitize`` holds no matching credential.
+
+        Real behaviour for a client whose PAT does not appear in the message: the text
+        comes back unchanged. Used as the default so the message assertions below read the
+        text the reporter would actually store, rather than a bare ``MagicMock`` repr.
+        """
+
+        def sanitize(self, message: str) -> str:
+            return message
+
+    @classmethod
+    def _service(cls, sweep_raises: BaseException | None = None, datahub: object | None = None):
+        service = IngestionService(
+            datahub=datahub if datahub is not None else cls._PassThroughSanitize(),  # type: ignore[arg-type]
+            db=AsyncMock(spec=AsyncSession),
+        )
+
+        async def _run_sweep() -> dict[str, int]:
+            if sweep_raises is not None:
+                raise sweep_raises
+            return {"sources_synced": 1}
+
+        service._run_sweep = _run_sweep  # type: ignore[method-assign]
+        return service
+
+    @pytest.mark.asyncio
+    async def test_completed_sweep_reports_ok_with_no_message(self) -> None:
+        """A sweep that completes reports ``ok`` and returns its summary unchanged.
+
+        spec: feature/BACKEND.md §Sync + mapping sweep §Health side effect — "``ok`` on
+        completion".
+        """
+        service = self._service()
+        reports: list[tuple[str, str | None]] = []
+
+        async def _report(status: str, error: str | None = None) -> None:
+            reports.append((status, error))
+
+        service._report_api_health = _report  # type: ignore[method-assign]
+
+        summary = await service.sync()
+
+        assert summary == {"sources_synced": 1}, "the sweep's summary must pass through"
+        assert reports == [("ok", None)], (
+            f"a completed sweep must report exactly ('ok', None); got {reports}. "
+            "spec: feature/BACKEND.md §Sync + mapping sweep §Health side effect."
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("label", "exc"),
+        [
+            ("DataSpoke transport error", DataHubUnavailableError("GMS unreachable")),
+            # A rotated PAT takes DataHubClient's 401/403 fail-fast path and escapes as a
+            # raw SDK exception, never as DataHubUnavailableError. A narrow catch here
+            # would leave api_health reading 'ok' through a dead credential.
+            ("raw 401 from a revoked PAT", RuntimeError("401 Client Error: Unauthorized")),
+            ("a database fault, not a GMS one", ValueError("current transaction is aborted")),
+        ],
+    )
+    async def test_any_escaping_failure_reports_error_and_is_re_raised(
+        self, label: str, exc: BaseException
+    ) -> None:
+        """Every exception escaping the sweep reports ``error`` and then propagates.
+
+        spec: feature/BACKEND.md §Sync + mapping sweep §Health side effect — "The
+        ``error`` branch catches broadly — any failure that escapes the sweep, not only
+        ``DataHubUnavailableError``"; "The accepted trade-off: a non-GMS failure escaping
+        the sweep (a database error, say) also flips the row."
+        """
+        service = self._service(sweep_raises=exc)
+        reports: list[tuple[str, str | None]] = []
+
+        async def _report(status: str, error: str | None = None) -> None:
+            reports.append((status, error))
+
+        service._report_api_health = _report  # type: ignore[method-assign]
+
+        with pytest.raises(type(exc)) as raised:
+            await service.sync()
+
+        assert raised.value is exc, (
+            f"{label}: the original exception must be re-raised unchanged so the activity "
+            "endpoint answers as it would have. "
+            "spec: feature/BACKEND.md §Sync + mapping sweep §Health side effect."
+        )
+        assert len(reports) == 1 and reports[0][0] == "error", (
+            f"{label}: the failure must be reported as 'error'; got {reports}."
+        )
+        assert reports[0][1] and str(exc) in reports[0][1], (
+            f"{label}: the report must carry the failure's own message; got {reports[0][1]!r}. "
+            "spec: feature/BACKEND.md §Sync + mapping sweep §Health side effect — "
+            "'``error`` carrying the message on failure'."
+        )
+        # Deliberately not asserted here: how the message is *formatted*, or whether the
+        # exception class appears in it. The spec requires only that the report carry "the
+        # message"; a reporter that rendered it as "GMS unreachable (DataHubUnavailableError)"
+        # would satisfy the contract just as well. The one place the layout is pinned is
+        # ``test_describe_failure_reports_no_stack_trace``, which says why.
+
+    def test_describe_failure_routes_through_the_clients_own_sanitizer(self) -> None:
+        """``_describe_failure`` calls ``DataHubClient.sanitize`` when the client has it.
+
+        Only the client holds the live PAT, so only it can scrub by exact value — and the
+        401/403 fail-fast path re-raises the SDK's own exception, which therefore never
+        crossed the client's boundary scrub on the way here.
+
+        spec: feature/BACKEND.md §Health reporting — "A reporter that holds the live
+        credential (the event consumer, ``DataHubClient``) additionally scrubs it by exact
+        value before calling".
+        """
+        seen: list[str] = []
+
+        class _DataHubWithSanitize:
+            def sanitize(self, message: str) -> str:
+                seen.append(message)
+                # The marker is imported from the production module rather than spelled
+                # out: no spec names a marker string, so the property under test is that
+                # the sanitizer's *result* is what gets reported, not which literal it
+                # substitutes.
+                return message.replace("pat-abc123def456ghi", REDACTED)
+
+        service = self._service(datahub=_DataHubWithSanitize())
+
+        described = service._describe_failure(
+            RuntimeError("401 Unauthorized while presenting pat-abc123def456ghi")
+        )
+
+        assert seen, (
+            "the client's sanitize must be called — this is the only path that scrubs the "
+            "live PAT by exact value. "
+            "spec: feature/BACKEND.md §Health reporting."
+        )
+        assert "pat-abc123def456ghi" not in described, (
+            f"the sanitizer's result must be what is reported; got {described!r}"
+        )
+        assert REDACTED in described and "401 Unauthorized" in described
+
+    def test_describe_failure_survives_a_client_without_a_sanitizer(self) -> None:
+        """A DataHub client carrying no ``sanitize`` still yields a usable message.
+
+        Health reporting must never be the thing that raises; the pattern layer at
+        ``report_peripheral_health`` still applies to whatever comes out. What is asserted
+        is the spec'd property — the exception's own message survives — not the layout it
+        is rendered in, which no spec fixes.
+
+        spec: feature/BACKEND.md §Sync + mapping sweep §Health side effect — "``error``
+        carrying the message on failure".
+        """
+        service = self._service(datahub=object())
+        exc = ValueError("boom")
+
+        described = service._describe_failure(exc)
+
+        assert str(exc) in described, (
+            f"the failure's own message must survive a client with no sanitizer; got "
+            f"{described!r}."
+        )
+        for marker in ("Traceback", 'File "'):
+            assert marker not in described, (
+                f"a stack-trace marker ({marker!r}) must not appear; got {described!r}. "
+                "spec: feature/BACKEND.md §Health reporting — 'no stack traces'."
+            )
+
+    def test_describe_failure_reports_no_stack_trace(self) -> None:
+        """The reported message carries the exception, not its traceback.
+
+        A traceback would put file paths and source lines into a column an Admin reads
+        back over HTTP, and the sanitizer would not help: it collapses a traceback onto
+        one line rather than dropping frames.
+
+        **This is the one place the message layout is pinned by exact equality, and that is
+        deliberate.** "No stack traces" is an absence claim, and the marker list below can
+        only rule out the shapes it happens to enumerate — a frame rendered without the word
+        ``Traceback`` would slip past it. Equality is the strongest available way to say
+        "the output is the exception and nothing else": any extra content at all, framed
+        however, fails. The cost is that a spec-conformant reformat of ``_describe_failure``
+        fails here too; that is accepted at exactly one site, and the other
+        ``_describe_failure`` tests assert containment instead so a reformat is a one-line
+        update rather than a suite-wide one.
+
+        spec: feature/BACKEND.md §Health reporting — a persisted message carries "no
+        credentials, no stack traces, and a length bound".
+        """
+        service = self._service()
+        try:
+            raise RuntimeError("GMS said no")
+        except RuntimeError as exc:
+            # Backstop: the exception really has a traceback to leak, so the absence
+            # assertions below have a subject.
+            assert exc.__traceback__ is not None
+            described = service._describe_failure(exc)
+
+        for marker in ("Traceback", 'File "', "line ", __file__):
+            assert marker not in described, (
+                f"a stack-trace marker ({marker!r}) must not reach the health row; got "
+                f"{described!r}. spec: feature/BACKEND.md §Health reporting."
+            )
+        assert described == "RuntimeError: GMS said no", (
+            f"the output must be the exception and nothing else — no frame, no path, no "
+            f"trailing context; got {described!r}. If ``_describe_failure`` is reformatted "
+            f"deliberately, update this expectation: it is the layout pin, and the sibling "
+            f"tests assert containment precisely so that this is the only site to touch."
+        )

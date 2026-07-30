@@ -8,7 +8,9 @@
  * edited → Save DataHub → persisted value confirmed via adminApi GET → reverted.
  *
  * Also covered: the DataHub Kafka security sub-form's progressive disclosure and
- * option scoping, and the read-only consumer-health badge.
+ * option scoping, and the two read-only health badges — the event-stream plane
+ * (`health`) and the metadata-API plane (`api_health`), each mirroring its own
+ * field of the GET response.
  *
  * CRITICAL: do NOT touch the secret inputs (token, secret_key, kafka_sasl_password) —
  * they route to the K8s Secret and clearing them would break the dev cluster's
@@ -48,7 +50,10 @@ interface DatahubPeripheral {
   service_corpuser_urn: string;
   default_env: string;
   is_configured: boolean;
+  /** Event-stream (Kafka) plane — written by the event consumer. */
   health: PeripheralHealth;
+  /** Metadata-API (GMS) plane — written by the hourly datahub-sync sweep. */
+  api_health: PeripheralHealth;
   updated_at: string | null;
 }
 
@@ -370,40 +375,81 @@ test("/admin/peripherals — AWS_MSK_IAM swaps credentials for the region field 
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Test 6 — the consumer-health badge mirrors GET health (dual confirmation)
-// spec: API.md §DataHub Kafka security — "The health object on GET reports whether
-//   that configuration actually works … status is unknown when the consumer has
-//   never reported — including every deployment that runs no consumer at all"
-// spec: FRONTEND_BASIC.md §Peripherals — the DataHub card renders consumer health
+// Test 6 — both health badges mirror their OWN plane of GET (dual confirmation)
+// spec: API.md §/admin/peripherals/datahub — "`health` is the **event consumer's**
+//   last self-report of the Kafka event stream … and not a verdict on DataHub
+//   overall. `api_health` is the sync sweep's last self-report of DataHub
+//   **metadata-API** (GMS) reachability, with the same object shape and the same
+//   `status` domain"
+// spec: FRONTEND_BASIC.md §Peripherals — "Health badges render the two read-only
+//   health objects … each labelled for its plane so an operator can tell them
+//   apart: **Event stream** from `health` … and **Metadata API** from `api_health`"
+//
+// Why a real browser earns its keep here: the two rows fail independently and on a
+// live cluster they genuinely disagree (the event stream can be down while GMS
+// answers). Each badge is therefore asserted against its OWN API field, so an
+// implementation that renders one row twice — a conflated badge pair — fails on
+// whichever plane it dropped. jsdom covers the rendering of fabricated statuses;
+// only this run covers the wiring against the live pair.
 // SAVE-FREE (read-only).
 // ─────────────────────────────────────────────────────────────────────────────
 
-test("/admin/peripherals — consumer health badge matches GET /admin/peripherals/datahub", async ({
+test("/admin/peripherals — event-stream and metadata-API badges each match their own GET field", async ({
   page,
   adminApi,
 }) => {
-  // Backend probe first: the badge must mirror whatever the API reports, not a
-  // hard-coded expectation — the dev cluster ships the consumer disabled, so the
-  // normal value is "unknown", but the assertion holds for any of the three states.
+  // Backend probe first: each badge must mirror whatever the API reports for its
+  // own plane, not a hard-coded expectation. Both reporters are opt-in, so any of
+  // the three states is legitimate on either plane and the assertions hold for all.
   const resp = await adminApi.get("/api/v1/admin/peripherals/datahub");
   expect(resp.status()).toBe(200);
   const dh = (await resp.json()) as DatahubPeripheral;
   expect(["unknown", "ok", "error"]).toContain(dh.health.status);
+  expect(["unknown", "ok", "error"]).toContain(dh.api_health.status);
 
   await page.goto("/admin/peripherals");
   await expect(
     page.getByRole("heading", { name: "Admin — Peripherals", exact: true }),
   ).toBeVisible({ timeout: 15_000 });
 
-  const badge = page.locator("#datahub_health_status");
-  await expect(badge).toBeVisible({ timeout: 15_000 });
-  await expect(badge).toHaveAttribute("data-status", dh.health.status);
+  // -- Event stream plane (`health`) --
+  const eventBadge = page.locator("#datahub_health_status");
+  await expect(eventBadge).toBeVisible({ timeout: 15_000 });
+  await expect(eventBadge).toHaveAttribute("data-status", dh.health.status);
+  // The label is what lets an operator attribute the status to a transport.
+  await expect(eventBadge).toContainText("Event stream");
 
   if (dh.health.status === "error") {
     // The failure message is the actionable part; is_configured cannot express it.
     await expect(page.locator("#datahub_health_error")).toContainText(dh.health.last_error ?? "");
   } else {
     await expect(page.locator("#datahub_health_error")).toHaveCount(0);
+  }
+
+  // -- Metadata API plane (`api_health`) --
+  const apiBadge = page.locator("#datahub_api_health_status");
+  await expect(apiBadge).toBeVisible({ timeout: 15_000 });
+  await expect(apiBadge).toHaveAttribute("data-status", dh.api_health.status);
+  await expect(apiBadge).toContainText("Metadata API");
+
+  if (dh.api_health.status === "error") {
+    await expect(page.locator("#datahub_api_health_error")).toContainText(
+      dh.api_health.last_error ?? "",
+    );
+  } else {
+    await expect(page.locator("#datahub_api_health_error")).toHaveCount(0);
+  }
+
+  // -- The two planes are rendered independently --
+  // When the live rows disagree the badges must disagree too; when they agree this
+  // states the far weaker fact that both were read, which the per-plane asserts
+  // above already established. Kept explicit so a conflated render (one row
+  // rendered into both badges) is named as the failure, not inferred from it.
+  if (dh.health.status !== dh.api_health.status) {
+    expect(
+      await eventBadge.getAttribute("data-status"),
+      "divergent rows must not collapse into one status",
+    ).not.toBe(await apiBadge.getAttribute("data-status"));
   }
 
   // Health is a report about the connection, never an input to is_configured.

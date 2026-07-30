@@ -4,11 +4,12 @@ Resilience. Covers retry logic, circuit breaker, aspect emission (MCP wrapper), 
 downstream lineage query construction."""
 
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from src.shared.exceptions import DataHubUnavailableError
+from src.shared.redaction import REDACTED
 
 
 @pytest.fixture
@@ -385,3 +386,135 @@ async def test_emit_aspect_wraps_mcp(client, mock_emitter) -> None:
     assert mcp.entityType == "dataset"
     # The original aspect object must be preserved unchanged
     assert mcp.aspect is aspect
+
+
+# ── Credential scrubbing on operator-facing messages ─────────────────────────
+#
+# The redaction *algorithm* is covered in tests/unit/shared/test_redaction.py. These
+# tests cover the client's **wiring** of it: that the client registers its own live
+# credentials as exact values (the strongest layer, and the only path that supplies
+# `secrets=` anywhere in the product), and that both DataHubUnavailableError raise sites
+# route their message through it.
+#
+# spec: DATAHUB_INTEGRATION.md §Resilience Conventions — a reported failure carries no
+#   credentials.
+# spec: feature/BACKEND.md §Health reporting — "``last_error`` is bounded and
+#   credential-free"; the DataHubUnavailableError message is one of the strings that
+#   reaches that column.
+
+_PAT = "pat-abc123def456ghi"
+_URL_PW = "tOpS3cretPass"
+
+
+@pytest.fixture
+def token_client(mock_graph, mock_emitter):
+    """A client holding a distinctive PAT and a GMS URL carrying userinfo.
+
+    Both are credentials only this client knows the value of, so only the exact-value
+    layer can remove them: neither appears next to a credential-shaped name in the
+    messages below, and neither sits inside a `scheme://…@host` URL there.
+    """
+    from src.shared.datahub.client import DataHubClient
+
+    return DataHubClient(gms_url=f"http://dsuser:{_URL_PW}@gms:8080", token=_PAT)
+
+
+def test_sanitize_scrubs_the_live_pat_by_exact_value(token_client) -> None:
+    """The client's own token is removed from a message that merely quotes it.
+
+    The token is not adjacent to any credential-shaped name here, so the pattern layer
+    cannot catch it — passing only if the client registered the live value.
+    """
+    out = token_client.sanitize(f"GMS refused the request carrying {_PAT} at the edge")
+
+    assert _PAT not in out, f"the live PAT must not survive; got {out!r}"
+    # The marker is imported, not spelled out: no spec names a marker string, so the
+    # property is that *a* marker is present rather than which one.
+    assert REDACTED in out
+    # Backstop: the diagnostic either side survives, so the scrub did not blank it.
+    assert "GMS refused the request carrying" in out and "at the edge" in out
+
+
+def test_sanitize_scrubs_the_gms_url_userinfo_password(token_client) -> None:
+    """The password half of the GMS URL's userinfo is removed too.
+
+    Quoted outside a URL, so the userinfo pattern cannot match it — this passes only if
+    the client extracted the password from ``gms_url`` and registered it as an exact
+    value.
+    """
+    out = token_client.sanitize(f"pg handshake rejected the supplied {_URL_PW} value")
+
+    assert _URL_PW not in out, f"the GMS URL password must not survive; got {out!r}"
+    assert REDACTED in out
+    assert "pg handshake rejected the supplied" in out
+
+
+def test_sanitize_scrubs_a_pat_split_by_a_transport_newline(token_client) -> None:
+    """A PAT with a newline spliced into it is still matched.
+
+    Transport messages wrap; the exact-value match is space-tolerant *after*
+    normalization for exactly this reason. Asserted through the client so the wiring of
+    ``secrets=`` is what is under test, not the matcher in isolation.
+    """
+    tampered = _PAT[:8] + "\n" + _PAT[8:]
+    assert _PAT not in f"token {tampered}", (
+        "Backstop: the fixture must not contain the untampered PAT."
+    )
+
+    out = token_client.sanitize(f"GMS refused token {tampered} here")
+
+    assert _PAT not in out, f"normalization must not reassemble the PAT; got {out!r}"
+    for half in (_PAT[:8], _PAT[8:]):
+        assert half not in out, f"no half of the PAT may survive either; {half!r} in {out!r}"
+
+
+def test_sanitize_leaves_a_credential_free_message_intact(token_client) -> None:
+    """A message holding no credential is returned unchanged.
+
+    The non-matching side of the filter: a client that blanked or truncated every
+    message would destroy the only operator signal a transport failure carries.
+    """
+    message = (
+        "Unable to fetch entity with key: "
+        "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
+    )
+    assert token_client.sanitize(message) == message
+
+
+async def test_retry_exhaustion_error_message_is_sanitized(token_client, mock_graph) -> None:
+    """The DataHubUnavailableError raised after retry exhaustion carries no credential.
+
+    This is the message that reaches ``peripheral_health.last_error`` and the internal
+    activity's 500 body, so the scrub has to happen at the raise site rather than at
+    each sink.
+    """
+    mock_graph.get_aspect.side_effect = ConnectionError(
+        f"connection refused while presenting {_PAT}"
+    )
+
+    with patch("asyncio.sleep", new=AsyncMock()), pytest.raises(DataHubUnavailableError) as exc:
+        await token_client.get_aspect("urn:li:dataset:test", MagicMock)
+
+    assert _PAT not in str(exc.value), (
+        f"the raised message must be scrubbed; got {str(exc.value)!r}"
+    )
+    # Backstop: the transport's own diagnostic survives, so the message is still useful.
+    assert "connection refused" in str(exc.value)
+
+
+async def test_strict_read_error_message_is_sanitized(token_client, mock_graph) -> None:
+    """The strict-mode DataHubUnavailableError is scrubbed at its own raise site.
+
+    A second, independent raise site: a non-retryable exception never reaches
+    ``_with_retry``'s final raise, so scrubbing there alone would leave this path
+    leaking.
+    """
+    mock_graph.get_aspect.side_effect = Exception(f"schema mismatch, sent {_PAT}")
+
+    with pytest.raises(DataHubUnavailableError) as exc:
+        await token_client.get_aspect("urn:li:dataset:test", MagicMock, strict=True)
+
+    assert _PAT not in str(exc.value), (
+        f"the strict-mode message must be scrubbed; got {str(exc.value)!r}"
+    )
+    assert "schema mismatch" in str(exc.value)

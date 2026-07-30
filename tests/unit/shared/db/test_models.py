@@ -554,7 +554,8 @@ def test_peripheral_health_columns_and_types() -> None:
     """peripheral_health carries name/status/last_error/last_ok_at/updated_at.
 
     spec: BACKEND_SCHEMA.md §peripheral_health — the five-column table written by
-    long-running connection holders and read back by GET /admin/peripherals/datahub.
+    "the processes that exercise that transport" and read back by
+    GET /admin/peripherals/datahub.
     """
     cols = PeripheralHealth.__table__.columns
     assert {c.name for c in cols} == {
@@ -572,10 +573,10 @@ def test_peripheral_health_columns_and_types() -> None:
 
 
 def test_peripheral_health_name_is_the_primary_key() -> None:
-    """One row per peripheral — reports upsert rather than accumulate.
+    """One row per transport — reports upsert rather than accumulate.
 
     spec: BACKEND_SCHEMA.md §peripheral_health — "A row is upserted on report, so
-    the table never grows past the peripheral set and carries no history."
+    the table never grows past the transport set and carries no history."
     """
     pk_cols = inspect(PeripheralHealth).primary_key
     assert len(pk_cols) == 1
@@ -597,10 +598,12 @@ def test_peripheral_health_has_no_foreign_key_to_peripheral_config() -> None:
 
 
 def test_peripheral_health_check_constraints_pin_both_domains() -> None:
-    """CHECKs restrict ``name`` to the peripheral set and ``status`` to the three states.
+    """CHECKs restrict ``name`` to the transport set and ``status`` to the three states.
 
-    spec: BACKEND_SCHEMA.md §peripheral_health — ``name`` CHECK ∈ datahub, langfuse,
-    smtp (the same domain as peripheral_config); ``status`` CHECK ∈ unknown, ok, error.
+    spec: BACKEND_SCHEMA.md §peripheral_health — ``name`` CHECK ∈ datahub,
+    datahub-api, langfuse, smtp (one row per transport: ``datahub`` is the Kafka
+    event stream, ``datahub-api`` the GMS metadata API); ``status`` CHECK ∈
+    unknown, ok, error.
     """
     from sqlalchemy import CheckConstraint
 
@@ -610,7 +613,7 @@ def test_peripheral_health_check_constraints_pin_both_domains() -> None:
         if isinstance(c, CheckConstraint)
     }
     joined = " ".join(checks)
-    for value in ("datahub", "langfuse", "smtp"):
+    for value in ("'datahub'", "'datahub-api'", "'langfuse'", "'smtp'"):
         assert value in joined, f"name CHECK must admit {value!r}; constraints: {checks!r}"
     for value in ("unknown", "ok", "error"):
         assert value in joined, f"status CHECK must admit {value!r}; constraints: {checks!r}"

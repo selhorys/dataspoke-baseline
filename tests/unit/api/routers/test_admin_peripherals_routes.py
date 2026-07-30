@@ -2265,6 +2265,111 @@ async def test_get_datahub_surfaces_a_reported_connection_failure(client) -> Non
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["GET", "PATCH"])
+async def test_datahub_response_reads_health_and_api_health_from_two_distinct_rows(
+    client, method: str
+) -> None:
+    """``health`` renders the ``datahub`` row and ``api_health`` the ``datahub-api`` row.
+
+    The two rows are seeded with opposite verdicts and routed by the row name the
+    query carries, so a route that read one row for both fields — the conflation the
+    two-row design exists to prevent — cannot pass: it would report the same status
+    twice.
+
+    Both verbs are driven because ``DatahubPeripheralResponse`` is the PATCH response
+    model too, and the router reads the ``datahub-api`` row at **two** independent call
+    sites (``get_datahub_peripheral`` and ``_apply_datahub_patch_and_respond``). Covering
+    only GET leaves the second one free to read the wrong row name.
+
+    spec: feature/BACKEND.md §Health reporting — "``GET /admin/peripherals/datahub``
+    returns the first as ``health`` and the second as ``api_health``"; the table binds
+    ``datahub`` to the event stream (event consumer) and ``datahub-api`` to the
+    metadata API (sync sweep).
+    spec: feature/BACKEND.md §Health reporting — "**Two rows, not one.** … A single
+    shared row would let the consumer and the sweep overwrite each other's verdict".
+    spec: API.md §Admin (/admin) — PATCH returns the same peripheral representation as
+    GET.
+    """
+    kafka_row = MagicMock()
+    kafka_row.status = "error"
+    kafka_row.last_error = "KafkaError{code=_ALL_BROKERS_DOWN}"
+    kafka_row.last_ok_at = None
+    kafka_row.updated_at = datetime.now(tz=UTC)
+
+    api_row = MagicMock()
+    api_row.status = "ok"
+    api_row.last_error = None
+    api_row.last_ok_at = datetime.now(tz=UTC)
+    api_row.updated_at = datetime.now(tz=UTC)
+
+    def _health_result(row):
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = row
+        result.scalar_one.return_value = row
+        return result
+
+    auth_result = MagicMock()
+    auth_result.scalar_one_or_none.return_value = _make_mock_user(role="Admin")
+    config_result = MagicMock()
+    config_result.scalar_one_or_none.return_value = MagicMock(updated_at=datetime.now(tz=UTC))
+
+    db = AsyncMock()
+    # 'datahub-api' is routed first: the substring "'datahub'" does not appear in the
+    # hyphenated literal, but routing the broader matcher first would shadow it.
+    route_db_execute(
+        db,
+        [
+            ("users", auth_result),
+            ("'datahub-api'", _health_result(api_row)),
+            ("peripheral_health", _health_result(kafka_row)),
+        ],
+        default=config_result,
+    )
+
+    async def _gen():
+        yield db
+
+    app.dependency_overrides[get_db] = _gen
+    try:
+        with (
+            patch(
+                "src.api.routers.admin.get_peripheral_config",
+                AsyncMock(return_value=_FAKE_DH_DTO_SCRAM),
+            ),
+            patch(
+                "src.api.routers.admin.patch_peripheral_config",
+                AsyncMock(return_value=_FAKE_DH_DTO_SCRAM),
+            ),
+            patch("src.api.routers.admin.datahub_token_is_set", return_value=True),
+        ):
+            if method == "GET":
+                resp = await client.get(_PERIPHERALS_DH, headers=auth_headers())
+            else:
+                resp = await client.patch(
+                    _PERIPHERALS_DH,
+                    json={"gms_url": "http://gms:8080"},
+                    headers=auth_headers(),
+                )
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert resp.status_code == 200, f"{method}: {resp.text}"
+    body = resp.json()
+    assert body["health"]["status"] == "error", (
+        f"{method}: 'health' must render the 'datahub' row (the event stream). "
+        "spec: feature/BACKEND.md §Health reporting."
+    )
+    assert body["health"]["last_error"] == "KafkaError{code=_ALL_BROKERS_DOWN}"
+    assert body["api_health"]["status"] == "ok", (
+        f"{method}: 'api_health' must render the 'datahub-api' row (the GMS metadata "
+        "API), which here reports the opposite verdict. "
+        "spec: feature/BACKEND.md §Health reporting."
+    )
+    assert body["api_health"]["last_error"] is None
+    assert body["api_health"]["last_ok_at"] is not None
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("stored", "body", "field", "rule"),
     [
@@ -2541,8 +2646,13 @@ async def test_patch_datahub_clears_a_stored_password_when_switching_to_msk_iam(
         app.dependency_overrides.pop(get_db, None)
 
     assert resp.status_code == 200, resp.text
-    mock_set_password.assert_called_once_with(""), (
-        "the stored credential must be cleared, not left in the Secret"
+    # A plain assert, not `assert_called_once_with(...), ("msg")`: the mock assert family
+    # takes no message argument, so a trailing tuple silences nothing and hides that the
+    # check ran at all (spec/TESTING.md §Assertion Discipline — "No dead assertion-message
+    # tuples").
+    assert mock_set_password.call_args_list == [call("")], (
+        "the stored credential must be cleared exactly once, not left in the Secret; got "
+        f"{mock_set_password.call_args_list}"
     )
     _, kwargs = mock_patch_db.call_args
     assert kwargs.get("bump_kafka_sasl_password_version") is True, (
