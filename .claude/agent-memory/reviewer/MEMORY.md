@@ -26,3 +26,5 @@
 - [metagen event from/to ignored](project_metagen_event_from_to_ignored.md) — RESOLVED (#90); lesson: a URL builder emitting a param never proves the server reads it
 - [spec_conformance is paths-only](feedback_spec_conformance_paths_only.md) — conformance compares route paths vs API.md, never query params; param drift passes every suite
 - [sync() has no unit coverage](feedback_sync_sweep_no_unit_coverage.md) — green `tests/unit/` proves nothing about sweep changes; only spot integration calls sync()
+- [DataHubUnavailableError is retryable-only](project_datahub_unavailable_only_retryable.md) — 401/403 + GraphError propagate raw; `except DataHubUnavailableError` misses a rotated PAT
+- [Auditing a "no-op" rollback](feedback_rollback_noop_claim_audit.md) — check pending DML *and* rollback()'s identity-map expiry (MissingGreenlet for async callers)

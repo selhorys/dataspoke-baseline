@@ -59,6 +59,11 @@ from src.backend.ingestion.service import (
 )
 from tests.integration.util import dataspoke_db
 
+# This module drives IngestionService.sync() in-process but does not own the
+# `datahub-api` peripheral_health row the sweep writes as a side effect — see the
+# fixture docstring in tests/integration/spot/conftest.py.
+pytestmark = pytest.mark.usefixtures("silence_api_health_report")
+
 # These tests seed and assert purely on dataspoke.ingestion_source* / events rows with
 # a stubbed DataHub client — no real dataset enumeration is needed, so no DUMMY_DATA_*
 # constants (no PG/DataHub reset dependency).

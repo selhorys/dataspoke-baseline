@@ -406,7 +406,7 @@ fields.
 ┌──────────────────────────────────────────────────────────────┐
 │  Admin — Peripherals                                         │
 ├──────────────────────────────────────────────────────────────┤
-│  DataHub                              ● Consumer OK 14:30    │
+│  DataHub        ● Event stream OK 14:30  ● Metadata API OK   │
 │    GMS URL        [ http://datahub-gms…              ]       │
 │    Frontend URL   [ https://datahub.example.com      ]       │
 │    Kafka brokers  [ broker:9092                      ]       │
@@ -440,7 +440,8 @@ fields.
 | DataHub | SASL username | `kafka_sasl_username` | Plain text; rendered only for `PLAIN` and `SCRAM-*` |
 | DataHub | SASL password | `kafka_sasl_password` | Masked write-only secret (see below); rendered only for `PLAIN` and `SCRAM-*` |
 | DataHub | AWS region | `kafka_aws_region` | Plain text, optional; rendered only for `AWS_MSK_IAM`. Blank means "derive from the broker hostname" |
-| DataHub | Consumer health | `health` | Read-only badge in the card header (see below) |
+| DataHub | Event stream health | `health` | Read-only badge in the card header (see below) |
+| DataHub | Metadata API health | `api_health` | Read-only badge in the card header (see below) |
 | DataHub | Token | `token` | Masked write-only secret (see below) |
 | DataHub | Service corpuser URN | `service_corpuser_urn` | Non-secret, returned plain; default `urn:li:corpuser:dataspoke` |
 | DataHub | Default env | `default_env` | Non-secret, returned plain; fabric/env, default `DEV` |
@@ -466,12 +467,16 @@ fields.
   are *rejected* under this mechanism, not merely unused. It is a real limit of
   the page, not an omission — the credential is a pod identity, so selecting the
   mechanism is the only part the UI can own.
-- **Consumer health** renders the read-only `health` object from
-  `GET /admin/peripherals/datahub` as a badge in the DataHub card header:
-  `ok` with `last_ok_at`, `error` with `last_error` as its detail, and `unknown`
-  when no consumer has ever reported — which is the normal state of a deployment
-  running no event consumer, so it reads as a neutral badge rather than a fault.
-  Saving does not refresh it; it moves when the consumer next reports.
+- **Health badges** render the two read-only health objects from
+  `GET /admin/peripherals/datahub` in the DataHub card header, each labelled for
+  its plane so an operator can tell them apart: **Event stream** from `health`
+  (the event consumer's report) and **Metadata API** from `api_health` (the sync
+  sweep's report). Both use the same rendering — `ok` with `last_ok_at`, `error`
+  with `last_error` as its detail, and `unknown` when nothing has reported yet.
+  `unknown` is a neutral badge on **either** plane rather than a fault, because
+  both reporters are opt-in: no event consumer is deployed by default, and the
+  sync sweep's DAG ships paused. Saving does not refresh either badge; each moves
+  when its own reporter next writes.
 - **Masked secrets** (`token`, `kafka_sasl_password`, `secret_key`) use `PasswordInput` and behave like
   `llm_api_key` on `/admin/conf`: `GET` returns `""` (unset) or `"********"`
   (set); the field shows "leave blank to keep current"; an empty submission omits

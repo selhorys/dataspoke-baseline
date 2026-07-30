@@ -59,6 +59,11 @@ from tests.integration.util import dataspoke_db
 
 _SOURCES_BASE = "/api/v1/spoke/ingestion/sources"
 
+# This module drives IngestionService.sync() in-process but does not own the
+# `datahub-api` peripheral_health row the sweep writes as a side effect — see the
+# fixture docstring in tests/integration/spot/conftest.py.
+pytestmark = pytest.mark.usefixtures("silence_api_health_report")
+
 
 # ── Stub DataHub client for the sync-linkage test ─────────────────────────────
 

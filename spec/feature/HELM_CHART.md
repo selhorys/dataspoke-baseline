@@ -757,8 +757,9 @@ chart at it via `secrets.existingSecret: <name>`.
   routed by the PATCH handler to dedicated K8s Secrets, never to the DB —
   see Out-of-band Secrets below. [API.md](../API.md) §`/admin/peripherals` is the
   contract; this list mirrors it.
-- `peripheral_health` table — last observed liveness per peripheral, written by
-  the event consumer and read back on `GET /api/v1/admin/peripherals/datahub`.
+- `peripheral_health` table — last observed liveness per transport, written by
+  the event consumer (`datahub`) and the hourly sync sweep (`datahub-api`) and
+  read back on `GET /api/v1/admin/peripherals/datahub`.
   Not operator-configurable and not env-driven.
 - `runtime_config` table — LLM provider/model, debate/RAG/iteration tunables,
   and `auth_datahub_corp_group` (string, default `dataspoke-users` — names

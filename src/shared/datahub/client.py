@@ -4,6 +4,7 @@ import asyncio
 import time
 from dataclasses import dataclass, field
 from typing import Any, TypeVar
+from urllib.parse import urlsplit
 
 from datahub.emitter.mcp import MetadataChangeProposalWrapper
 from datahub.emitter.rest_emitter import DatahubRestEmitter
@@ -17,6 +18,7 @@ from src.shared.config import (
     RETRY_MAX_ATTEMPTS,
 )
 from src.shared.exceptions import DataHubUnavailableError
+from src.shared.redaction import sanitize_error_message
 
 T = TypeVar("T")
 
@@ -50,11 +52,36 @@ class DocumentationAspects:
     editable_field_descriptions: dict[str, str] = field(default_factory=dict)
 
 
+def _url_password(url: str) -> str | None:
+    """Return the password component of *url*'s userinfo, if it has one."""
+    try:
+        return urlsplit(url).password
+    except ValueError:
+        return None
+
+
 class DataHubClient:
     """Thin wrapper around DataHub SDK with retry and circuit breaker.
 
     The acryl-datahub SDK is synchronous; all calls are wrapped with
     asyncio.to_thread() to avoid blocking the event loop.
+
+    A ``DataHubUnavailableError`` carries the transport's own ``str(exc)``, which
+    can quote the failed request. That message reaches three sinks with three
+    different reader populations — the ``peripheral_health.last_error`` column an
+    Admin reads back, the internal activity's ``500`` body Airflow keeps in its
+    task logs, and the API's own logs — so it is sanitized here, at the one
+    boundary where the transport's string becomes a DataSpoke-owned message,
+    rather than once per sink. This client is also the only place that holds the
+    live credential, so it can scrub it by exact value instead of by pattern.
+
+    The ``401``/``403`` fail-fast path re-raises the SDK's own exception rather
+    than wrapping it, deliberately: an auth failure is a configuration fault, not
+    unavailability, and callers distinguish the two by type. That exception
+    therefore never passes through this boundary even though it is the failure
+    most likely to quote the PAT, so :meth:`sanitize` is public — a caller that
+    reports an arbitrary DataHub exception (``IngestionService.sync``) routes the
+    text through it to get the same exact-value scrub.
     """
 
     def __init__(self, gms_url: str, token: str) -> None:
@@ -64,6 +91,17 @@ class DataHubClient:
         self._emitter = DatahubRestEmitter(gms_server=gms_url, token=effective_token)
         self._consecutive_failures: int = 0
         self._circuit_open_until: float = 0.0
+        # Exact values to scrub from any reported transport message: the PAT, and
+        # the password half of the GMS URL's userinfo when one is configured
+        # (gms_url accepts a userinfo component). The host is left intact — it is
+        # not a secret and removing it would gut the message's diagnostic value.
+        self._redact_values: tuple[str, ...] = tuple(
+            v for v in (token, _url_password(gms_url)) if v
+        )
+
+    def sanitize(self, message: str) -> str:
+        """Scrub this client's live credentials out of an operator-facing message."""
+        return sanitize_error_message(message, secrets=self._redact_values) or ""
 
     def _check_circuit(self) -> None:
         if self._consecutive_failures < CIRCUIT_BREAKER_THRESHOLD:
@@ -102,7 +140,7 @@ class DataHubClient:
                     continue
                 raise
         self._record_failure()
-        raise DataHubUnavailableError(str(last_exc))
+        raise DataHubUnavailableError(self.sanitize(str(last_exc)))
 
     async def get_aspect(
         self,
@@ -131,7 +169,7 @@ class DataHubClient:
             if status_code in _FAIL_FAST_STATUS_CODES:
                 raise
             if strict:
-                raise DataHubUnavailableError(str(exc)) from exc
+                raise DataHubUnavailableError(self.sanitize(str(exc))) from exc
             return None
 
     async def get_timeseries(

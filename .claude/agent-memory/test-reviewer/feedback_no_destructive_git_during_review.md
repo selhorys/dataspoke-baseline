@@ -14,3 +14,7 @@ When reviewing generator output, the deliverables under review live as **uncommi
 - Take the cp backup ONCE at the very start, before any edit, so the backup captures the as-delivered (post-generator) state, not a half-mutated one.
 - Verify restoration with `git diff --stat <file>` and confirm the expected generator changes are still present (not zeroed out).
 - Prefer non-destructive sensitivity reasoning (read the Query/param definition) over live mutation when the impl path is clear; only mutate when you genuinely need empirical proof.
+- Back up **every** `src/` file in the change-set up front, not only the ones you plan to
+  mutate. On the #102/#103 review I skipped `src/shared/datahub/client.py`, then decided
+  mid-review to neuter its `sanitize` method and had to hand-reverse two edits and verify
+  by diffstat. The change-set's own `git diff --stat` is the backup list.

@@ -34,3 +34,6 @@
 - [uc1-01 retry is doomed at step 6](project_e2e_uc1_01_retry_doomed_step6.md) — serial-group retry makes a new source URN; DataHub aspect dedup keeps the old pipelineName, so pipeline_name/high can never re-fire
 - [DataHub GQL 401 is not JSON](project_datahub_gql_401_is_not_json.md) — a stale PAT throws in resp.json() before any GraphQL-errors assert, so token diagnoses on those asserts never print
 - [Sync sweep counter tiers](project_sync_sweep_counter_vacuity.md) — pipeline_links is provably unreachable over REST (emitted rows shadow it); which counters live at which tier; stub side effects are pre-existing
+- [Redaction wiring RESOLVED](project_redaction_control_wiring_untested.md) — all 3 call sites now guarded; residue is the `<redacted>` literal duplication + an outer bound no assertion can see
+- [Owning-source last_seen_at tie-break untested](project_owning_source_last_seen_tiebreak_untested.md) — inverting it leaves 2809 unit tests green; equivalence tests are blind to shared-rank mutations
+- [datahub-api health row is a shared singleton](project_datahub_api_health_row_shared_singleton.md) — REST sync activities make the API pod write it; module-local restore is defeated

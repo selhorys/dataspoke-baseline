@@ -23,9 +23,11 @@
 5. [Event Emission](#event-emission)
 6. [Airflow Workflows (`src/workflows/`)](#airflow-workflows-srcworkflows)
 7. [Kafka Consumers *(optional, not enabled in baseline)*](#kafka-consumers-optional-not-enabled-in-baseline)
-8. [Dependency Injection](#dependency-injection)
-9. [Error Handling](#error-handling)
-10. [Configuration](#configuration)
+8. [Health reporting](#health-reporting)
+9. [Dependency Injection](#dependency-injection)
+10. [Error Handling](#error-handling)
+11. [Configuration](#configuration)
+12. [Authentication & User Account Management](#authentication--user-account-management)
 
 Data contracts (PostgreSQL schema including pgvector tables) are specified in
 [BACKEND_SCHEMA](BACKEND_SCHEMA.md).
@@ -518,6 +520,31 @@ reports the same non-zero value on every sweep; `sources_zero_coverage` and
 `sources_pattern_degraded` each report a **condition** — respectively, sources that matched nothing
 despite derivable patterns, and sources whose selection patterns could not be evaluated this sweep —
 so each stays non-zero for as long as the affected sources do.
+
+**Health side effect.** Because the sweep is the one scheduled process that exercises the GMS
+metadata API end to end, it reports the `datahub-api` peripheral health as a side effect of
+running: `ok` on completion, `error` carrying the message on failure — which is then re-raised,
+so the activity endpoint still answers with a retryable failure. This is a side effect of the
+sweep, not a step of the pipeline above. See [§Health reporting](#health-reporting).
+
+Three rules keep the signal honest:
+
+- **The `error` branch catches broadly** — any failure that escapes the sweep, not only
+  `DataHubUnavailableError`. That exception covers retry-exhausted transport faults and an open
+  circuit; an authentication or authorization failure (a rotated or revoked PAT) takes the
+  client's fail-fast path and escapes as a raw SDK exception, as does a `GraphError` returned in
+  an HTTP 200 body. Catching narrowly would leave the row serving `ok` against a stale
+  `last_ok_at` through a dead credential — the one fault an operator most needs to see next to
+  the token that caused it. The accepted trade-off: a non-GMS failure escaping the sweep (a
+  database error, say) also flips the row. Over-reporting is preferable to a signal that reads
+  `ok` through a revoked credential.
+- **`ok` asserts only that the sweep's GMS enumeration completed**, not that every GMS call
+  inside it succeeded. Per-source run-history polls are best-effort
+  (§[Best-Effort Operations](#best-effort-operations)) and a skipped source does not flip the
+  row.
+- **The `error` report is committed independently of the sweep's transaction.** Written inside
+  it, the re-raise rolls the report back and leaves `api_health` pinned to the last `ok`
+  exactly when it is wrong.
 
 See [DATAHUB_INTEGRATION §Ingestion Source Sync](../DATAHUB_INTEGRATION.md#ingestion-source-sync)
 for the GraphQL surfaces and field citations.
@@ -1074,8 +1101,36 @@ results emitted by an external system, deferred to a future release.
 resolved **per dataset**, not from a single `metric_conf` value. `metric_conf.time_window_sec`
 is only the fallback used when no per-dataset window can be derived.
 
-- `ingestion-freshness`: the window is read from each dataset's owning ingestion source
-  (resolved via the `ingestion_source_dataset` mapping). `ACTIVE_CUSTOM_MANAGED` /
+- `ingestion-freshness`: a dataset's ingestion recency **is the recency of its owning
+  source's runs**. `INGESTION.COMPLETE` / `INGESTION.FAIL` are booked on the owning source
+  (`entity_type="ingestion_source"`, `entity_id=source_id` — see the
+  [Event Catalogue](#event-catalogue)) and never on the dataset, so the measurer resolves each
+  dataset's **owning source** first and reads that source's events. The same resolution
+  supplies the window.
+
+  **Owning source** is what `IngestionService.reverse_lookup` returns — or, over a whole
+  dataset list at once, its batched single-winner sibling `reverse_lookup_batch`, which the
+  measurer calls and which resolves the identical rule in two queries rather than one round
+  trip per URN. Either way the resolution runs in two steps. First a
+  sort over the dataset's covering sources — a dataset may be covered by several: `derivation`
+  rank `emitted` > `pipeline_name` > `matched`; at equal rank a regular parent beats its CLI
+  wrapper; remaining ties go to the most recent `last_seen_at`. Then, **if the sort winner is
+  itself a wrapper it resolves up to its regular parent** — a wrapper is never the owning
+  source. The second step is not the tie-break restated: it also fires when a wrapper claims a
+  dataset at a *higher* derivation rank than its parent, where the tie-break never runs. That
+  the owning source is always regular is what makes the wrapper-run union below well-defined.
+
+  This is the resolution the per-dataset event timeline also uses, so freshness and the
+  timeline agree on which source owns a dataset by construction. Freshness is explicitly
+  **not** "the most recent event across all covering sources": that is non-deterministic where
+  the priority rule is not, and it would let a source that merely recipe-matches a table
+  (`matched`) mask the staleness of the pipeline that actually writes it. The owning source's
+  **CLI-wrapper runs count as its own** — DataHub books a managed source's executions on an
+  auto-created wrapper rather than on the registered source, so a source's events are the union
+  of its own and its wrappers', the same union `GET /spoke/ingestion/sources/{id}/event` serves
+  (see [Querying Events](#querying-events)).
+
+  **Window**: `ACTIVE_CUSTOM_MANAGED` /
   `DATAHUB_MANAGED` with a schedule → `SCHEDULE_TIER_SECONDS[schedule_tier] × 2`; `PASSIVE` (no
   schedule) → `PASSIVE_SYNC_PERIOD_SEC × 2` (mirrors the `@hourly` `datahub-sync-hourly` DAG);
   a dataset mapped to no source, or a source with no derivable schedule →
@@ -1463,7 +1518,7 @@ instead of trusting the stored row to satisfy the API's rules. `peripheral_confi
 plain table that direct SQL or dev seeding can write behind the API, and the same
 re-check-on-read convention already guards the display-link fields this table serves to
 `/spoke/common/peripheral-links`. A row that fails re-validation is treated as a
-configuration error and reported through `peripheral_health` — the consumer does not
+configuration error and reported on the `datahub` `peripheral_health` row — the consumer does not
 attempt the connection. This matters most for `AWS_MSK_IAM`, where the broker-host and
 protocol constraints in [API.md](../API.md#datahub-kafka-security) are what keep the pod's
 IAM identity from being pointed somewhere it was never granted for.
@@ -1472,15 +1527,46 @@ IAM identity from being pointed somewhere it was never granted for.
 the value lives in the Secret. The API increments the counter whenever it writes the Secret,
 which turns a rotation into an ordinary DB-plane change the poll loop already detects.
 
-### Health reporting
+---
 
-Kafka connection state is otherwise unobservable from any HTTP surface: a bad mechanism or an
-unauthorized IAM role leaves a peripheral that reads `is_configured: true` and a consumer that
-logs warnings nobody reads. The consumer therefore upserts the `datahub` row of
-`peripheral_health` — `ok` once subscribed and polling, `error` with the message on a
-connection or authentication failure — and `GET /admin/peripherals/datahub` returns it as
-`health`. `unknown` covers both "never reported" and "no consumer deployed"; the API does not
-distinguish them, because a deployment without a consumer has no Kafka health to report.
+## Health reporting
+
+DataSpoke reaches DataHub over two independent transports. Each has its own `peripheral_health`
+row, written by the process that exercises that transport:
+
+| Row | Plane | Reporter | Meaning |
+|---|---|---|---|
+| `datahub` | Event stream (Kafka MCL topics) | the DataHub event consumer | `ok` once subscribed and polling; `error` with the message on a connection or authentication failure |
+| `datahub-api` | Metadata API (GMS REST / GraphQL) | the hourly sync + mapping sweep ([Ingestion Service](#ingestion-service-srcbackendingestion)) | `ok` on a completed sweep; `error` on any failure that escapes it |
+
+`GET /admin/peripherals/datahub` returns the first as `health` and the second as `api_health`.
+On either row `unknown` covers both "never reported" and "no reporter deployed". **Both
+reporters are opt-in, so `unknown` is the ordinary reading on a stock install**: the event
+consumer is not deployed by chart default, and the sweep runs from a scheduled DAG that ships
+paused, so `datahub-api` stays `unknown` until an operator unpauses the `datahub_sync` group
+(see [§Schedule Control](#schedule-control)). Neither row reads `unknown` as a fault.
+
+The two planes need a persisted row for different reasons. The **event stream** has no other
+HTTP surface at all: a bad mechanism or an unauthorized IAM role leaves a consumer that logs
+warnings nobody reads, so without the row the fault is unobservable. The **metadata API** is
+already probed live by `GET /ready` ([API §System](../API.md#system)), but that is a
+point-in-time boolean for kubelet and ingress probes — no history, no failure message, no
+operator context. `peripheral_health` is instead the persisted, operator-facing record
+(`last_error`, `last_ok_at`) rendered beside the configuration that caused the fault.
+
+`last_error` is bounded and credential-free. This binds every reporter writing the table —
+`langfuse` and `smtp` as much as the two DataHub rows — because it is a property of the column,
+not of one plane. The read is Admin-only rather than a 502/503 body, so
+[DATAHUB_INTEGRATION §Resilience Conventions](../DATAHUB_INTEGRATION.md#resilience-conventions)
+rule 7 does not apply literally, but the same discipline holds: no credentials, no stack
+traces, and a length bound, so a persisted message cannot become a disclosure or log-forging
+surface.
+
+**Two rows, not one.** The planes use separate transports and credentials and fail
+independently: Kafka can be unreachable while GMS serves fine, and the reverse. A single shared
+row would let the consumer and the sweep overwrite each other's verdict, so an operator would
+read whichever reporter wrote last rather than either plane's health — strictly worse than an
+honest `unknown`.
 
 ---
 

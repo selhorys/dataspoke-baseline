@@ -12,3 +12,5 @@
 - [FORWARDED_ALLOW_IPS trust radius](project_forwarded_allow_ips_trust_radius.md) — trust list = who may choose their own client IP; also governs XFP/OAuth redirect_uri scheme
 - [Auth credential-carrier inventory](project_auth_credential_carrier_inventory.md) — the 7 carriers every auth diff must clear; lock order users→api_tokens→reset_tokens; why the lock alone isn't enough
 - [Recipe regex trust boundary](project_recipe_regex_trust_boundary.md) — writer regexes on the API's one event loop; malformed guarded, ReDoS is #114 (2 fixes already rejected)
+- [peripheral_health last_error redaction](project_peripheral_health_error_redaction.md) — the 3 sinks for a DataHub transport error; 401/403 still bypasses the exact-value scrub
+- [Sanitizer pipeline ordering](project_sanitizer_pipeline_ordering.md) — normalize BEFORE exact-scrub; affix⊋lookbehind class drives a 48x regex constant

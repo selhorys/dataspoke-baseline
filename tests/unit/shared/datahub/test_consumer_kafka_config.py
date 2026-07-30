@@ -454,8 +454,10 @@ def test_fault_survives_repeated_reads() -> None:
     This encodes a fixed flapping bug — the non-flapping property is asserted directly.
 
     spec: feature/BACKEND.md §Health reporting — the row reports ``error`` "on a
-    connection or authentication failure"; the signal exists because the failure is
-    "otherwise unobservable from any HTTP surface".
+    connection or authentication failure"; the signal exists because the event stream
+    "has no other HTTP surface at all: a bad mechanism or an unauthorized IAM role leaves
+    a consumer that logs warnings nobody reads, so without the row the fault is
+    unobservable".
     """
     from src.shared.datahub.consumer import KafkaFaultState
 
@@ -471,8 +473,8 @@ def test_fault_survives_repeated_reads() -> None:
 def test_fresh_state_reports_neither_fault_nor_evidence() -> None:
     """Before anything happens, nothing is known — which is not the same as healthy.
 
-    spec: feature/BACKEND.md §Health reporting — "``unknown`` covers both 'never
-    reported' and 'no consumer deployed'".
+    spec: feature/BACKEND.md §Health reporting — "On either row ``unknown`` covers both
+    'never reported' and 'no reporter deployed'".
     """
     from src.shared.datahub.consumer import KafkaFaultState
 

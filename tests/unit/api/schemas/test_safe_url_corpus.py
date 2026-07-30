@@ -2,12 +2,26 @@
 
 Spec anchor: ``spec/API.md`` §Data Resource → **Display-link safety**. That block
 defines the rule as five classes (Scheme / Authority / Characters / Shape /
-Length) and states it "is enforced at **both** boundaries. On write,
-``PATCH /admin/peripherals/{datahub,langfuse}`` rejects a violating value with
-``422``. On read, ``GET /spoke/common/peripheral-links`` coerces one to ``""``".
+Length) and binds it to **four** request fields, at a number of boundaries that
+differs by field:
 
-Those two boundaries are two *different regex engines* compiled from the same
-pattern string, and a third copy lives in the frontend:
+- The three *display* fields — DataHub ``frontend_url``, Langfuse ``host``, and
+  Langfuse ``project_id`` — are the ones the spec means when it says "The rule is
+  enforced at **both** boundaries for the display links. On write,
+  ``PATCH /admin/peripherals/{datahub,langfuse}`` rejects a violating value with
+  ``422``. On read, ``GET /spoke/common/peripheral-links`` coerces one to ``""``".
+- DataHub ``gms_url`` carries the identical pattern for a different reason — it is
+  dialled, never rendered, but a transport exception quoting it is persisted to
+  ``peripheral_health.last_error`` — and is "constrained on write only — no non-Admin
+  route serves it, so there is no read boundary to coerce at".
+
+This module parametrizes all four fields, so the split matters when reading a
+failure: the write-boundary blocks below cover all four, while the read-boundary
+blocks (``sanitize_*`` and ``PeripheralLinksResponse``) cover only the three
+display fields, because ``gms_url`` has no read boundary to assert.
+
+The write and read boundaries are two *different regex engines* compiled from the
+same pattern string, and a third copy lives in the frontend:
 
 1. ``SAFE_DISPLAY_URL_PATTERN`` / ``SAFE_PROJECT_ID_PATTERN`` in
    ``src/api/schemas/common.py``, compiled by Python ``re`` and applied on read by
@@ -26,8 +40,9 @@ naming the spec rule-class row it derives from, and this module fails a case tha
 cites a row the spec does not define.
 
 Spec traceability:
-- spec/API.md §Data Resource → Display-link safety — the five rule classes and
-  the two enforcement boundaries.
+- spec/API.md §Data Resource → Display-link safety — the five rule classes; the two
+  enforcement boundaries for the display links; the write-only boundary for
+  ``gms_url``.
 - spec/feature/FRONTEND_BASIC.md §Shell — the client re-check and its rationale.
 """
 
@@ -237,17 +252,24 @@ def test_sanitize_project_id_rejects(rule: str, label: str, value: str) -> None:
 
 @pytest.mark.parametrize(("rule", "label", "value"), DISPLAY_ACCEPT, ids=_ids(DISPLAY_ACCEPT))
 def test_patch_request_accepts_display_url(rule: str, label: str, value: str) -> None:
-    """A conforming display URL is admitted by the admin PATCH schema.
+    """A conforming URL is admitted by the admin PATCH schema on all three fields.
 
-    Covers both display-URL-typed request fields — the DataHub browser URL and the
+    Covers every request field the rule binds — the DataHub browser URL and the
     Langfuse host, which the spec names together as the values "that clients
-    interpolate into a browser ``href``".
+    interpolate into a browser ``href``", plus DataHub ``gms_url``, which "carries
+    the same URL constraint for a different reason": it is never rendered, but
+    barring userinfo is what keeps an embedded credential out of
+    ``peripheral_health.last_error``.
 
     spec: spec/API.md §Data Resource → Display-link safety — "DataHub
-        ``frontend_url``, Langfuse ``host``".
+        ``frontend_url``, Langfuse ``host``, and Langfuse ``project_id``"; "DataHub
+        ``gms_url`` carries the same URL constraint for a different reason".
     """
     assert DatahubPeripheralPatchRequest(frontend_url=value).frontend_url == value, (
         f"[{rule}] {label!r}: PATCH must admit a conforming frontend_url"
+    )
+    assert DatahubPeripheralPatchRequest(gms_url=value).gms_url == value, (
+        f"[{rule}] {label!r}: PATCH must admit a conforming gms_url"
     )
     assert LangfusePeripheralPatchRequest(host=value).host == value, (
         f"[{rule}] {label!r}: PATCH must admit a conforming Langfuse host"
@@ -256,16 +278,24 @@ def test_patch_request_accepts_display_url(rule: str, label: str, value: str) ->
 
 @pytest.mark.parametrize(("rule", "label", "value"), DISPLAY_REJECT, ids=_ids(DISPLAY_REJECT))
 def test_patch_request_rejects_display_url(rule: str, label: str, value: str) -> None:
-    """A violating display URL is refused at the write boundary.
+    """A violating URL is refused at the write boundary, on all three fields.
+
+    ``gms_url`` is included because it is "constrained on write only — no non-Admin
+    route serves it, so there is no read boundary to coerce at". The write boundary
+    is therefore the *only* place its rule is enforced, which makes an untested
+    ``pattern=`` there a control that can be deleted silently.
 
     spec: spec/API.md §Data Resource → Display-link safety — "On write,
         ``PATCH /admin/peripherals/{datahub,langfuse}`` rejects a violating value
-        with ``422``". (The 422 status itself is asserted over HTTP in
+        with ``422``"; "``gms_url`` is constrained on write only". (The 422 status
+        itself is asserted over HTTP in
         ``tests/integration/spot/test_peripheral_links.py``; here it is the schema
         that must refuse.)
     """
     with pytest.raises(ValidationError):
         DatahubPeripheralPatchRequest(frontend_url=value)
+    with pytest.raises(ValidationError):
+        DatahubPeripheralPatchRequest(gms_url=value)
     with pytest.raises(ValidationError):
         LangfusePeripheralPatchRequest(host=value)
 

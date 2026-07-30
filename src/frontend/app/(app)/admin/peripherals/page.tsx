@@ -62,21 +62,63 @@ function describeError(err: unknown): string {
 // ── DataHub card ────────────────────────────────────────────────────────────────
 
 /**
- * Read-only consumer health, rendered in the DataHub card header.
+ * One of the two transports DataSpoke reaches DataHub over.
+ *
+ * The planes differ only in their operator-facing label, their DOM id stem, and
+ * why they are legitimately `unknown` — the status vocabulary and the rendering
+ * are identical, so `PeripheralHealthBadge` serves both.
+ */
+interface HealthPlane {
+  /** Names the transport, so an operator can tell the two badges apart. */
+  label: string;
+  /** Id stem; each plane owns its own ids so the two badges are separately addressable. */
+  idPrefix: string;
+  /** Why this plane reports `unknown` on a stock install — a different reason per plane. */
+  unknownReason: string;
+}
+
+/** `health` — written by the DataHub event consumer. */
+const EVENT_STREAM_PLANE: HealthPlane = {
+  label: "Event stream",
+  idPrefix: "datahub_health",
+  unknownReason:
+    "No event consumer has reported yet — none is deployed by default, so this is the ordinary reading.",
+};
+
+/** `api_health` — written by the hourly DataHub sync sweep. */
+const METADATA_API_PLANE: HealthPlane = {
+  label: "Metadata API",
+  idPrefix: "datahub_api_health",
+  unknownReason:
+    "The hourly datahub-sync sweep has not reported yet — its DAG ships paused, so this is the ordinary reading.",
+};
+
+/**
+ * Read-only health badge for one DataHub transport, rendered in the card header.
  *
  * `is_configured` reports presence, not correctness: a wrong mechanism or an
- * expired credential is indistinguishable from a working setup until the event
- * consumer tries to connect. `unknown` is the normal state of a deployment
- * running no consumer, so it reads as neutral rather than as a fault.
+ * expired credential is indistinguishable from a working setup until a reporter
+ * actually tries to connect. Both reporters are opt-in, so `unknown` is neutral
+ * on either plane rather than a fault — the copy names the plane's own reason.
+ *
+ * Stateless and fully prop-driven: the component holds nothing across renders,
+ * so the two instances cannot leak one plane's status into the other.
  */
-function ConsumerHealth({ health }: { health: PeripheralHealth }) {
+function PeripheralHealthBadge({
+  plane,
+  health,
+}: {
+  plane: HealthPlane;
+  health: PeripheralHealth;
+}) {
   const tz = useDisplayTz();
+  const statusId = `${plane.idPrefix}_status`;
 
   if (health.status === "ok") {
     return (
       <div className="text-right">
-        <Badge id="datahub_health_status" data-status="ok" variant="success">
-          Consumer OK
+        <Badge id={statusId} data-status="ok" variant="success">
+          {plane.label} OK
         </Badge>
         {health.last_ok_at && (
           <p className="mt-1 text-xs text-muted-foreground">
@@ -90,12 +132,15 @@ function ConsumerHealth({ health }: { health: PeripheralHealth }) {
   if (health.status === "error") {
     return (
       <div className="max-w-md text-right">
-        <Badge id="datahub_health_status" data-status="error" variant="destructive">
+        <Badge id={statusId} data-status="error" variant="destructive">
           <AlertTriangle className="mr-1 h-3 w-3" aria-hidden="true" />
-          Consumer error
+          {plane.label} error
         </Badge>
         {health.last_error && (
-          <p id="datahub_health_error" className="mt-1 break-words text-xs text-destructive">
+          <p
+            id={`${plane.idPrefix}_error`}
+            className="mt-1 break-words text-xs text-destructive"
+          >
             {health.last_error}
           </p>
         )}
@@ -104,12 +149,12 @@ function ConsumerHealth({ health }: { health: PeripheralHealth }) {
   }
 
   return (
-    <div className="text-right">
-      <Badge id="datahub_health_status" data-status="unknown" variant="outline">
-        Consumer status unknown
+    <div className="max-w-md text-right">
+      <Badge id={statusId} data-status="unknown" variant="outline">
+        {plane.label} status unknown
       </Badge>
-      <p className="mt-1 text-xs text-muted-foreground">
-        No event consumer has reported yet.
+      <p id={`${plane.idPrefix}_unknown_reason`} className="mt-1 text-xs text-muted-foreground">
+        {plane.unknownReason}
       </p>
     </div>
   );
@@ -187,8 +232,24 @@ function DatahubCard({ peripheral }: { peripheral: DatahubPeripheral }) {
     <Card>
       <CardHeader className="flex flex-row items-start justify-between gap-4 space-y-0">
         <CardTitle className="text-base">DataHub</CardTitle>
-        <div className="flex flex-col items-end gap-1">
-          <ConsumerHealth health={peripheral.health} />
+        <div className="flex flex-col items-end gap-2">
+          {/*
+            Two independent planes, two badges. Each is keyed by its plane so a
+            status change on one can never be reconciled into the other's node,
+            and each reads its own field — nothing is derived from the pair.
+          */}
+          <div className="flex flex-wrap items-start justify-end gap-x-6 gap-y-2">
+            <PeripheralHealthBadge
+              key={EVENT_STREAM_PLANE.idPrefix}
+              plane={EVENT_STREAM_PLANE}
+              health={peripheral.health}
+            />
+            <PeripheralHealthBadge
+              key={METADATA_API_PLANE.idPrefix}
+              plane={METADATA_API_PLANE}
+              health={peripheral.api_health}
+            />
+          </div>
           {savedAt && (
             <p className="text-xs text-muted-foreground">
               Saved · updated {formatDateTime(savedAt, tz)}
@@ -202,7 +263,7 @@ function DatahubCard({ peripheral }: { peripheral: DatahubPeripheral }) {
             <Field
               label="GMS URL"
               htmlFor="datahub_gms_url"
-              description="DataHub GMS (metadata service) base URL used for REST + GraphQL calls."
+              description="DataHub GMS (metadata service) base URL used for REST + GraphQL calls. Must be a plain http(s) URL with no embedded credentials — authenticate with the token below, since a URL-borne credential can end up quoted in a stored transport error."
               error={errors.gms_url?.message}
             >
               <Input id="datahub_gms_url" {...register("gms_url")} />

@@ -193,24 +193,46 @@ def _dataset_from_row(row: IngestionSourceDataset) -> IngestionSourceDatasetReco
 _DERIVATION_PRIORITY = {"emitted": 0, "pipeline_name": 1, "matched": 2}
 
 
-def _reverse_lookup_key(
-    pair: tuple[IngestionSourceDataset, IngestionSource],
+def _reverse_lookup_rank(
+    derivation: str,
+    is_wrapper: bool,
+    last_seen_at: datetime,
 ) -> tuple[int, int, float]:
-    """Sort key selecting the single owning source for a dataset URN.
+    """Rank one covering source; the minimum rank is the dataset's owning source.
 
-    Used only by :meth:`IngestionService.reverse_lookup` (single-winner
-    selection): ``emitted`` > ``pipeline_name`` > ``matched``; a regular parent
+    Shared by the single-winner reverse lookups —
+    :meth:`IngestionService.reverse_lookup` (one URN) and
+    :meth:`IngestionService.reverse_lookup_batch` (many URNs), which must agree
+    on the winner: ``emitted`` > ``pipeline_name`` > ``matched``; a regular parent
     (``parent_source_id IS NULL`` → 0) wins over its CLI wrapper (1); within
     those ties the most recent ``last_seen_at`` sorts first.
 
+    Taking loose values rather than the ORM pair lets the batch caller rank rows
+    it selected as bare columns, without loading whole entities.
+
+    The wrapper term is only a **tie-break**: a wrapper that claims a dataset at a
+    higher derivation rank than its parent wins this ranking outright. Resolving a
+    winning wrapper up to its regular parent is therefore a separate step in both
+    callers, not something this rank can express.
+
     :meth:`IngestionService.reverse_lookup_all_batch` intentionally does NOT use
-    this key — it returns every covering source sorted by ``(name, id)`` without
+    this rank — it returns every covering source sorted by ``(name, id)`` without
     applying the priority rule.
     """
+    priority = _DERIVATION_PRIORITY.get(derivation, 99)
+    return (priority, 1 if is_wrapper else 0, -last_seen_at.timestamp())
+
+
+def _reverse_lookup_key(
+    pair: tuple[IngestionSourceDataset, IngestionSource],
+) -> tuple[int, int, float]:
+    """:func:`_reverse_lookup_rank` over a ``(mapping, source)`` ORM pair."""
     mapping, source = pair
-    priority = _DERIVATION_PRIORITY.get(mapping.derivation, 99)
-    is_wrapper = 1 if source.parent_source_id is not None else 0
-    return (priority, is_wrapper, -mapping.last_seen_at.timestamp())
+    return _reverse_lookup_rank(
+        mapping.derivation,
+        source.parent_source_id is not None,
+        mapping.last_seen_at,
+    )
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -1102,6 +1124,86 @@ class IngestionService:
 
         return _source_from_row(best_source)
 
+    async def reverse_lookup_batch(
+        self,
+        urns: list[str],
+    ) -> dict[str, IngestionSourceRecord | None]:
+        """Batched single-winner reverse-lookup — the owning source per URN.
+
+        The batched sibling of :meth:`reverse_lookup`: same priority rule
+        (``_reverse_lookup_rank``), same wrapper resolution, but two queries for
+        the whole list instead of one round trip per URN.
+
+        1. one mapping⋈source join filtered by ``dataset_urn IN urns``, selecting
+           only the four columns the ranking needs, grouped per URN and reduced to
+           the minimum rank. Selecting bare columns rather than entities matters
+           at this fan-out: the join returns one row per (URN, covering source),
+           so a source covering 224 datasets would otherwise ship its full
+           ``recipe`` JSONB 224 times.
+        2. one ``IngestionSource.id IN (…)`` query loading the winners as
+           entities — resolving each winning wrapper up to its regular parent in
+           the same round trip, since step 1 already read ``parent_source_id``.
+
+        The wrapper resolution is a distinct step, not part of the ranking: the
+        rank's wrapper term only breaks ties at equal derivation rank, so a
+        wrapper that claims a dataset at a *higher* rank than its parent wins step
+        1 outright and still has to resolve up. A wrapper is never the owning
+        source.
+
+        Returns a dict keyed by every URN in ``urns``; the value is ``None`` when
+        no source claims that URN (so callers can read every URN unconditionally).
+        """
+        result: dict[str, IngestionSourceRecord | None] = {urn: None for urn in urns}
+        if not urns:
+            return result
+
+        rows_result = await self._db.execute(
+            select(
+                IngestionSourceDataset.dataset_urn,
+                IngestionSourceDataset.derivation,
+                IngestionSourceDataset.last_seen_at,
+                IngestionSource.id,
+                IngestionSource.parent_source_id,
+            )
+            .join(IngestionSource, IngestionSourceDataset.source_id == IngestionSource.id)
+            .where(IngestionSourceDataset.dataset_urn.in_(list(urns)))
+        )
+        rows = rows_result.all()
+        if not rows:
+            return result
+
+        # Winner per URN, kept as (rank, own id, parent id | None).
+        winners: dict[str, tuple[tuple[int, int, float], uuid.UUID, uuid.UUID | None]] = {}
+        for row in rows:
+            rank = _reverse_lookup_rank(
+                row.derivation, row.parent_source_id is not None, row.last_seen_at
+            )
+            current = winners.get(row.dataset_urn)
+            if current is None or rank < current[0]:
+                winners[row.dataset_urn] = (rank, row.id, row.parent_source_id)
+
+        # Load the winners as entities. Both ids of a winning wrapper are fetched
+        # so the parent-missing case falls back to the wrapper itself, exactly as
+        # reverse_lookup does; the extra ids number at most the distinct winners.
+        wanted: set[uuid.UUID] = set()
+        for _rank, own_id, parent_id in winners.values():
+            wanted.add(own_id)
+            if parent_id is not None:
+                wanted.add(parent_id)
+        owner_result = await self._db.execute(
+            select(IngestionSource).where(IngestionSource.id.in_(list(wanted)))
+        )
+        loaded: dict[uuid.UUID, IngestionSource] = {r.id: r for r in owner_result.scalars().all()}
+
+        for urn, (_rank, own_id, parent_id) in winners.items():
+            owner = loaded.get(own_id)
+            if parent_id is not None:
+                owner = loaded.get(parent_id) or owner
+            if owner is not None:
+                result[urn] = _source_from_row(owner)
+
+        return result
+
     async def reverse_lookup_all_batch(
         self,
         urns: list[str],
@@ -1173,6 +1275,76 @@ class IngestionService:
         return result
 
     # ── Events ────────────────────────────────────────────────────────────────
+
+    async def latest_ingestion_complete_by_source(
+        self,
+        source_ids: list[str],
+    ) -> dict[str, datetime]:
+        """Return the newest ``INGESTION.COMPLETE`` timestamp per source.
+
+        A source's runs are the union of its own events and those of its linked
+        CLI wrappers (``parent_source_id = <source id>``) — DataHub books a
+        managed source's executions on the auto-created wrapper rather than on
+        the registered source, so a lookup by the registered id alone misses
+        exactly the events it is after. This is the same union
+        :meth:`get_events_for_source` serves, batched over many sources.
+
+        Two queries regardless of list size: one resolving wrapper ids, then one
+        ``max(occurred_at) GROUP BY entity_id`` over the union of every id
+        involved. Grouping on the raw ``entity_id`` keeps the emitted SQL of fixed
+        size and lets the ``events(entity_type, entity_id, occurred_at)`` index
+        serve the ``IN`` list; folding each wrapper's maximum into its parent's is
+        a max over at most ``1 + len(wrappers)`` values, done here in the one
+        method that owns the union rule.
+
+        Returns a dict keyed by the *given* source id strings; a source with no
+        ``INGESTION.COMPLETE`` event is **absent** from the dict rather than
+        mapped to ``None``. Passing both a parent and one of its own wrappers is
+        not meaningful — the wrapper's runs belong to the parent — so a wrapper
+        given alongside its parent resolves to the parent and does not get a key
+        of its own.
+        """
+        if not source_ids:
+            return {}
+
+        # Canonicalize: stored entity_id values are canonical str(uuid).
+        by_uid: dict[uuid.UUID, str] = {}
+        for sid in source_ids:
+            try:
+                by_uid[uuid.UUID(sid)] = sid
+            except ValueError:
+                # A non-UUID id can match no stored row; it simply has no events.
+                continue
+        if not by_uid:
+            return {}
+
+        # entity_id (own row or wrapper row) → the caller-supplied owning source id.
+        owner_by_entity: dict[str, str] = {str(uid): sid for uid, sid in by_uid.items()}
+        child_result = await self._db.execute(
+            select(IngestionSource.id, IngestionSource.parent_source_id).where(
+                IngestionSource.parent_source_id.in_(list(by_uid.keys()))
+            )
+        )
+        for child_id, parent_id in child_result.all():
+            owner_by_entity[str(child_id)] = by_uid[parent_id]
+
+        result = await self._db.execute(
+            select(Event.entity_id, func.max(Event.occurred_at))
+            .where(
+                Event.event_type == INGESTION_COMPLETE,
+                Event.entity_type == "ingestion_source",
+                Event.entity_id.in_(list(owner_by_entity.keys())),
+            )
+            .group_by(Event.entity_id)
+        )
+
+        latest: dict[str, datetime] = {}
+        for entity_id, occurred_at in result.all():
+            owner = owner_by_entity[entity_id]
+            current = latest.get(owner)
+            if current is None or occurred_at > current:
+                latest[owner] = occurred_at
+        return latest
 
     async def get_events_for_source(
         self,
@@ -1270,6 +1442,89 @@ class IngestionService:
     # ── Sync sweep (Phase 2b) ─────────────────────────────────────────────────
 
     async def sync(self) -> dict[str, Any]:
+        """Run the sweep and report the ``datahub-api`` peripheral health.
+
+        The sweep itself is :meth:`_run_sweep`; this wrapper adds the health
+        side effect described in spec/feature/BACKEND.md §Health reporting.
+        Because the sweep is the one scheduled process that exercises the GMS
+        metadata API end to end, its outcome is the API plane's health signal:
+        ``ok`` once the sweep completes, ``error`` on **any** exception escaping
+        it — which is then re-raised, so the activity endpoint still answers as it
+        would have.
+
+        The report deliberately does not key on ``DataHubUnavailableError``.
+        ``DataHubClient._with_retry`` re-raises a ``401``/``403`` raw, before it
+        even records a failure, so a rotated or revoked GMS PAT never becomes that
+        type; the SDK likewise raises ``GraphError`` for an HTTP 200 body carrying
+        an ``errors`` array. Keying on the type would leave ``api_health`` reading
+        ``ok`` through exactly the credential fault the row exists to surface. The
+        accepted cost is that a DB fault also flips the row — preferable to a
+        signal that is silently wrong.
+
+        ``ok`` asserts only that the sweep's GMS **enumeration** completed, not
+        that every GMS call inside it succeeded: per-source run-history polls are
+        best-effort and a skipped source does not flip the row.
+
+        Returns:
+            The sweep summary counters — see :meth:`_run_sweep`.
+        """
+        try:
+            summary = await self._run_sweep()
+        except Exception as exc:
+            await self._report_api_health("error", self._describe_failure(exc))
+            raise
+        await self._report_api_health("ok")
+        return summary
+
+    def _describe_failure(self, exc: BaseException) -> str:
+        """Render *exc* for the health row, scrubbing the GMS credential by value.
+
+        ``type(exc).__name__`` is included because a bare ``requests``/``GraphError``
+        string can be terse enough that the class is the only usable signal.
+
+        The text is routed through ``DataHubClient.sanitize`` rather than left to
+        ``report_peripheral_health``'s pattern layer: the ``401``/``403`` fail-fast
+        path re-raises the SDK's own exception, so it never crosses the client's
+        own boundary scrub — and that is the failure most likely to quote the PAT.
+        Only the client holds the live credential, so only it can match it exactly.
+        """
+        raw = f"{type(exc).__name__}: {exc}"
+        # Duck-typed: tests drive sync() against minimal DataHub stubs, and health
+        # reporting must never be the thing that raises. The pattern layer at
+        # report_peripheral_health still applies either way.
+        sanitize = getattr(self._datahub, "sanitize", None)
+        return str(sanitize(raw)) if callable(sanitize) else raw
+
+    async def _report_api_health(self, status: str, error: str | None = None) -> None:
+        """Write the ``datahub-api`` health row on a session of its own.
+
+        The ``error`` report is written while an exception is unwinding and has to
+        outlive it, so it does not share the sweep's session: a dedicated
+        ``SessionLocal()`` makes that independence structural rather than
+        contingent on the sweep having no writes pending. This mirrors the sibling
+        reporter in ``src/shared/datahub/consumer.py``.
+
+        Reporting is observability, never a reason to change the sweep's outcome,
+        so a failure here is logged and swallowed.
+        """
+        # Function-local, matching the consumer: peripheral_health lives under
+        # src.backend.admin, which must not become a module-level dependency of
+        # the ingestion service.
+        from src.backend.admin.peripheral_health import report_peripheral_health
+        from src.shared.db.session import SessionLocal
+
+        try:
+            async with SessionLocal() as db:
+                await report_peripheral_health(db, "datahub-api", status, error)
+        except Exception:
+            # ERROR, not WARNING: a swallowed report leaves api_health reading
+            # `unknown`, which is indistinguishable from "no reporter deployed".
+            # The log line is then the only evidence that a reporter is running
+            # and failing — e.g. against a schema predating the ck_peripheral_
+            # health_name value 'datahub-api'.
+            logger.error("datahub_api_health_report_failed status=%s", status, exc_info=True)
+
+    async def _run_sweep(self) -> dict[str, Any]:
         """Reconcile all ingestion sources against DataHub.
 
         Five-step pipeline (per spec/feature/BACKEND.md §Sync + mapping sweep):

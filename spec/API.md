@@ -279,7 +279,12 @@ peripheral shortcuts.
 **Display-link safety.** The operator-supplied peripheral values that clients interpolate
 into a browser `href` — DataHub `frontend_url`, Langfuse `host`, and Langfuse `project_id`
 (which lands in a path segment) — are constrained so that none of them can escape the anchor
-it is rendered into:
+it is rendered into. DataHub `gms_url` carries the same URL constraint for a different reason:
+it is a connection URL the API dials and is never rendered to a browser, but a transport
+exception quoting it is persisted to `peripheral_health.last_error` and served over the admin
+API, so barring userinfo is what keeps an embedded credential out of that row (see
+[`spec/feature/BACKEND.md` §Health reporting](feature/BACKEND.md#health-reporting), which
+requires every `last_error` to be bounded and credential-free):
 
 | Rule class | Constraint |
 |---|---|
@@ -289,11 +294,21 @@ it is rendered into:
 | Shape | A path, query, or fragment must be introduced by `/`. This is a grammar constraint, not an anti-spoofing rule |
 | Length | Bounded — 512 characters for a URL, 256 for `project_id`, which is further restricted to an alphanumeric slug |
 
-The rule is enforced at **both** boundaries. On write, `PATCH /admin/peripherals/{datahub,langfuse}`
+The `Authority` rule admits a hostname plus an optional numeric port and nothing else, so a
+bracketed **IPv6 literal** (`http://[::1]:8080`) is rejected. For a display link that costs only
+the deep link; for `gms_url` it means an IPv6-only GMS must be addressed by hostname — in-cluster
+service DNS, as the default install already configures — rather than by literal. Widening the
+authority is a coordinated change rather than a one-line edit: the pattern has a
+character-for-character frontend mirror whose agreement with the API's engine is pinned by a
+shared fixture, so both move together or not at all.
+
+The rule is enforced at **both** boundaries for the display links. On write,
+`PATCH /admin/peripherals/{datahub,langfuse}`
 rejects a violating value with `422`. On read, `GET /spoke/common/peripheral-links` coerces one to
 `""`: `peripheral_config.settings` is JSONB, so a row written by direct SQL or by dev seeding can
 bypass the request schema. Degrading to `""` reuses the documented "render no link" state rather
-than failing the whole response.
+than failing the whole response. `gms_url` is constrained on write only — no non-Admin route
+serves it, so there is no read boundary to coerce at.
 
 > **Event endpoints share one envelope.** Every `event/<feature>` feed and the
 > unified `event` timeline return standard `EventResponse` rows and support
@@ -598,7 +613,7 @@ instead of a JWT.
 | `DELETE` | `/admin/users/{id}/google` | — | `204` — releases the row's Google binding: clears `google_sub` and increments `session_epoch`, ending sessions established under it. The next Google sign-in at that address binds afresh. `409 GOOGLE_IS_ONLY_AUTH_METHOD` when the row has no password. See [AUTH §Admin unbind](feature/AUTH.md#admin-unbind) | JWT + Admin role |
 | `GET` | `/admin/users/{id}/api-tokens` | — | a user's API tokens (same shape as `GET /auth/api-tokens`, sans raw token; paginated with the standard `offset`/`limit`/`total_count` envelope, sortable by `created_at`, default `created_at_desc`) | JWT + Admin role |
 | `DELETE` | `/admin/users/{id}/api-tokens/{token_id}` | — | `204` — revokes a user's token (incident response) | JWT + Admin role |
-| `GET` | `/admin/peripherals/datahub` | — | current DataHub config: `{gms_url, frontend_url, kafka_brokers, kafka_security_protocol, kafka_sasl_mechanism, kafka_sasl_username, kafka_sasl_password, kafka_sasl_password_version, kafka_aws_region, token, service_corpuser_urn, default_env, is_configured, health, updated_at}`. `token` and `kafka_sasl_password` are masked (`""` unset, `"********"` set); `frontend_url` (the browser-facing DataHub UI URL, distinct from the `gms_url` service endpoint), `service_corpuser_urn`, `default_env`, and every non-secret `kafka_*` field are returned plain. `health` is the event-consumer's last self-report `{status, last_error, last_ok_at, updated_at}` with `status` ∈ `unknown`/`ok`/`error` | JWT + Admin role |
+| `GET` | `/admin/peripherals/datahub` | — | current DataHub config: `{gms_url, frontend_url, kafka_brokers, kafka_security_protocol, kafka_sasl_mechanism, kafka_sasl_username, kafka_sasl_password, kafka_sasl_password_version, kafka_aws_region, token, service_corpuser_urn, default_env, is_configured, health, api_health, updated_at}`. `token` and `kafka_sasl_password` are masked (`""` unset, `"********"` set); `frontend_url` (the browser-facing DataHub UI URL, distinct from the `gms_url` service endpoint), `service_corpuser_urn`, `default_env`, and every non-secret `kafka_*` field are returned plain. `health` is the **event consumer's** last self-report of the Kafka event stream — `{status, last_error, last_ok_at, updated_at}` with `status` ∈ `unknown`/`ok`/`error` — and not a verdict on DataHub overall. `api_health` is the sync sweep's last self-report of DataHub **metadata-API** (GMS) reachability, with the same object shape and the same `status` domain | JWT + Admin role |
 | `PATCH` | `/admin/peripherals/datahub` | partial DataHub fields | updated DataHub config (with `token` and `kafka_sasl_password` masked) | JWT + Admin role |
 | `GET` | `/admin/peripherals/langfuse` | — | current Langfuse config: `{host, public_key, secret_key, project_id, environment_tag, is_configured, updated_at}`. `secret_key` is masked (`""` unset, `"********"` set); `project_id` and `environment_tag` are non-secret and returned plain | JWT + Admin role |
 | `PATCH` | `/admin/peripherals/langfuse` | partial Langfuse fields | updated Langfuse config (with `secret_key` masked) | JWT + Admin role |
@@ -608,7 +623,8 @@ instead of a JWT.
 The DataHub `frontend_url` and the Langfuse `host` and `project_id` are served onward to any
 authenticated role by `/spoke/common/peripheral-links`, so a `PATCH` carrying a value that
 violates the display-link safety rule (§[Data Resource](#data-resource-spokecommondata)) is
-rejected with `422`.
+rejected with `422`. DataHub `gms_url` is held to the same rule and the same `422`, for the
+credential-in-`last_error` reason given there rather than for a rendering one.
 
 `/admin/dags` is **operational schedule control**: it pauses and unpauses the periodic
 DAGs that Airflow runs, and Airflow is the SSOT for paused state (DataSpoke keeps no copy).

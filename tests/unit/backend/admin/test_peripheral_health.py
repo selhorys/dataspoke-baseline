@@ -1,22 +1,27 @@
 """Unit tests for src/backend/admin/peripheral_health.py.
 
-The service owns the ``peripheral_health`` row that long-running connection holders
-write and ``GET /admin/peripherals/{name}`` reads back. Its contract is small and
-entirely spec-derived:
+The service owns the ``peripheral_health`` row that "the processes that exercise that
+transport" write and ``GET /admin/peripherals/{name}`` reads back. Its contract is small
+and entirely spec-derived:
 
 - an absent row and ``status='unknown'`` mean the same thing to readers;
 - ``ok`` stamps ``last_ok_at`` and clears ``last_error``;
 - ``error`` records the message and leaves the previous ``last_ok_at`` intact, so a
   reader can see how long ago the peripheral last worked;
+- the recorded message is bounded, credential-free and control-character-free — a
+  property of the *column*, enforced here because every reporter funnels through this
+  one function;
 - the write is an upsert, so the table never accumulates history.
 
 A real DB is not needed: the session is a mock whose statements are inspected.
 
 Spec traceability:
 - spec/feature/BACKEND_SCHEMA.md §peripheral_health — column semantics; "A row is
-  upserted on report, so the table never grows past the peripheral set and carries no
+  upserted on report, so the table never grows past the transport set and carries no
   history"; "Absence of a row and ``status='unknown'`` mean the same thing to readers".
-- spec/feature/BACKEND.md §Health reporting — ``ok`` / ``error`` / ``unknown``.
+- spec/feature/BACKEND.md §Health reporting — ``ok`` / ``error`` / ``unknown``;
+  "``last_error`` is bounded and credential-free. This binds every reporter writing the
+  table … because it is a property of the column, not of one plane."
 - spec/API.md §DataHub Kafka security — "``status`` is ``unknown`` when the consumer has
   never reported — including every deployment that runs no consumer at all."
 """
@@ -35,6 +40,7 @@ from src.backend.admin.peripheral_health import (
     report_peripheral_health,
 )
 from src.shared.db.models import PeripheralHealth
+from src.shared.redaction import REDACTED
 from tests.unit.conftest import compiled_sql
 
 
@@ -66,6 +72,17 @@ def _db(row: MagicMock | None) -> AsyncMock:
 
 def _executed_sql(db: AsyncMock) -> list[str]:
     return [compiled_sql(c.args[0]) for c in db.execute.await_args_list]
+
+
+def _written_last_error(db: AsyncMock) -> str | None:
+    """Return the ``last_error`` value the upsert actually bound.
+
+    Reads the bound parameter rather than the DTO the function returns, because the DTO
+    comes from a mocked read-back and would echo whatever the fixture row was given —
+    the write is the side effect under test.
+    """
+    params = db.execute.await_args_list[0].args[0].compile().params
+    return params["last_error"]  # type: ignore[no-any-return]
 
 
 # ── Status vocabulary ────────────────────────────────────────────────────────
@@ -100,11 +117,13 @@ async def test_report_rejects_a_status_outside_the_vocabulary(status: str) -> No
 async def test_get_returns_unknown_when_no_row_exists() -> None:
     """No reporter has written yet → the ``unknown`` sentinel, not an error.
 
-    ``unknown`` covers both "never reported" and "no consumer deployed"; the API does not
+    ``unknown`` covers both "never reported" and "no reporter deployed"; the API does not
     distinguish them.
 
-    spec: API.md §DataHub Kafka security — "``status`` is ``unknown`` when the consumer
-    has never reported — including every deployment that runs no consumer at all";
+    spec: feature/BACKEND.md §Health reporting — "On either row ``unknown`` covers both
+    'never reported' and 'no reporter deployed'"; API.md §DataHub Kafka security —
+    "``status`` is ``unknown`` when the consumer has never reported — including every
+    deployment that runs no consumer at all";
     BACKEND_SCHEMA.md §peripheral_health — "Absence of a row and ``status='unknown'``
     mean the same thing to readers".
     """
@@ -237,11 +256,98 @@ async def test_report_truncates_a_verbose_failure_message() -> None:
 
     await report_peripheral_health(db, "datahub", "error", long_message)
 
-    params = db.execute.await_args_list[0].args[0].compile().params
-    written = next(v for v in params.values() if isinstance(v, str) and v.startswith("xxx"))
-    assert len(written) == _MAX_ERROR_LENGTH, (
-        f"the stored message must be capped at {_MAX_ERROR_LENGTH}; got {len(written)}"
+    written = _written_last_error(db)
+    assert written is not None and len(written) == _MAX_ERROR_LENGTH, (
+        f"the stored message must be capped at {_MAX_ERROR_LENGTH}; "
+        f"got {len(written or '')}"
     )
+
+
+# ── report: last_error is credential-free at the choke point ─────────────────
+#
+# The redaction *algorithm* is covered in tests/unit/shared/test_redaction.py. What these
+# tests cover is that it is **wired in here** — the single choke point every reporter
+# funnels through. Deleting the sanitize call from this function must fail a test, or the
+# control can be removed silently and only the pure function's tests keep passing.
+
+
+@pytest.mark.asyncio
+async def test_report_error_redacts_a_credential_out_of_the_message() -> None:
+    """A credential quoted by a transport message is not persisted to ``last_error``.
+
+    Asserted on the value the upsert binds, so a report that redacted nothing fails
+    here rather than being masked by a mocked read-back.
+
+    spec: feature/BACKEND.md §Health reporting — "``last_error`` is bounded and
+    credential-free. This binds every reporter writing the table — ``langfuse`` and
+    ``smtp`` as much as the two DataHub rows — because it is a property of the column,
+    not of one plane."
+    """
+    db = _db(_row(status="error"))
+
+    await report_peripheral_health(
+        db, "datahub-api", "error", "GMS refused: access_token=SUPERSECRET123 (401)"
+    )
+
+    written = _written_last_error(db)
+    assert written is not None
+    assert "SUPERSECRET123" not in written, (
+        f"the credential value must not reach the column; got {written!r}. "
+        "spec: feature/BACKEND.md §Health reporting — last_error is credential-free."
+    )
+    assert REDACTED in written, (
+        f"the value must be replaced by the redaction marker so an operator can see "
+        f"something was withheld; got {written!r}. The marker is imported rather than "
+        f"spelled out: no spec names a marker string, so the property is that *a* marker "
+        f"is present, not which one."
+    )
+    # Backstop: the surrounding diagnostic survives, so the write was scrubbed rather
+    # than blanked — a function that stored a constant would fail this.
+    assert "GMS refused" in written and "(401)" in written, (
+        f"the diagnostic text either side of the credential must survive; got {written!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_report_error_strips_control_characters_before_writing() -> None:
+    """Newlines and NUL never reach the column.
+
+    ``NUL`` is the sharper of the two: a PostgreSQL ``text`` column rejects it outright,
+    so an unsanitized message turns a redaction problem into a lost row — the report is
+    then absent exactly when it matters.
+
+    spec: feature/BACKEND.md §Health reporting — a persisted message "cannot become a
+    disclosure or log-forging surface".
+    """
+    db = _db(_row(status="error"))
+
+    await report_peripheral_health(
+        db, "datahub", "error", "line one\nline two\x00tail"
+    )
+
+    written = _written_last_error(db)
+    assert written is not None
+    assert "\n" not in written and "\x00" not in written, (
+        f"control characters must be stripped before the write; got {written!r}"
+    )
+    assert "line one" in written and "line two" in written and "tail" in written, (
+        f"the words either side must survive, unspliced; got {written!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_report_ok_writes_no_message_to_redact() -> None:
+    """An ``ok`` report clears ``last_error`` rather than sanitizing anything.
+
+    The complement of the two tests above: the redaction path belongs to the ``error``
+    branch only, and ``ok`` must null the column.
+
+    spec: feature/BACKEND.md §Health reporting — "``ok`` stamps ``last_ok_at`` and clears
+    ``last_error``".
+    """
+    db = _db(_row(status="ok"))
+    await report_peripheral_health(db, "datahub-api", "ok")
+    assert _written_last_error(db) is None
 
 
 # ── report: upsert, not append ───────────────────────────────────────────────
@@ -252,7 +358,7 @@ async def test_report_upserts_so_the_table_carries_no_history() -> None:
     """The write is INSERT … ON CONFLICT DO UPDATE keyed on ``name``.
 
     spec: BACKEND_SCHEMA.md §peripheral_health — "A row is upserted on report, so the
-    table never grows past the peripheral set and carries no history."
+    table never grows past the transport set and carries no history."
     """
     db = _db(_row())
     await report_peripheral_health(db, "datahub", "ok")

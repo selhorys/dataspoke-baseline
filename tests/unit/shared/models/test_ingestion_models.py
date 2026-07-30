@@ -1516,6 +1516,14 @@ class TestBuildMatcherCheckedReason:
 class TestReasonIsBoundedAndEscapedBeforeLogging:
     """The degradation reason is writer-controlled text, so it is bounded and escaped.
 
+    Scope: ``truncate_reason`` itself, plus ``build_matcher``'s convenience log — the
+    record emitted for callers that *discard* the reason. The log line the spec sentence
+    below describes is the **sweep's** ``ingestion_sync_pattern_not_derivable`` record,
+    which needs a DB session and is pinned in ``tests/integration/spot/
+    test_internal_activities.py::test_sync_degradation_log_is_bounded_and_escaped_and_
+    the_counter_persists``. Both call sites carry the same obligation and neither
+    substitutes for the other.
+
     spec: feature/BACKEND.md §Sync + mapping sweep step 2 §Trust boundary on
     writer-supplied patterns — 'The reason that log line reports is derived from recipe
     content and is therefore itself untrusted, so it is bounded in length and escaped
