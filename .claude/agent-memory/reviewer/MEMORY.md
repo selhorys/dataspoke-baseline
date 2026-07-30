@@ -34,3 +34,6 @@
 - [values-prod.example is not a superset](feedback_prod_example_not_superset.md) — pasted "see config.X below" goes dangling; inserted sections rot above/below pointers AND other files' line-number refs
 - [Off-loop fix, all call sites](feedback_offload_fix_all_callsites.md) — a to_thread fix proven on one plane; heartbeat-probe every plane before believing it
 - [slowapi bucket scope](project_slowapi_bucket_scope.md) — application_limits is the only global-per-caller knob; exempt routes and unmatched 404 paths are charged nothing
+- [regex bounded matcher: rejected](project_regex_bounded_matcher_facts.md) — #114's regex+timeout swap was built and rejected; inside any size cap: 464s compile, 212MB retained (re: 0.0004s)
+- [str iterated as pattern list](feedback_str_iterated_as_pattern_list.md) — `list[str]` helper loops a bare str per character; check JSONB-fed call sites, mypy can't see it
+- [Resource caps: worst case inside the cap](feedback_resource_cap_worst_case.md) — sweep construct SHAPES at a fixed cap value, not just sizes; measure every resource the cap claims to bound
