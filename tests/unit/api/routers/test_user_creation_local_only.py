@@ -68,10 +68,12 @@ async def test_register_touches_no_datahub_primitive() -> None:
         from contextlib import ExitStack
 
         with ExitStack() as stack:
-            # The handler is wrapped by the slowapi rate limiter, which demands a
-            # real starlette Request and a live storage backend; the limit itself
-            # is not what this test is about.
-            stack.enter_context(patch.object(auth_router.limiter, "enabled", False))
+            # The handler is wrapped by the fail-closed auth rate limiter, which
+            # demands a real starlette Request and a live storage backend; the limit
+            # itself is not what this test is about.
+            from src.api.middleware import rate_limit as _rate_limit
+
+            stack.enter_context(patch.object(_rate_limit.auth_limiter, "enabled", False))
             for name in _DATAHUB_PRIMITIVES:
                 captured[name] = stack.enter_context(
                     patch.object(dh_users, name, new_callable=AsyncMock)

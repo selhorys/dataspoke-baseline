@@ -14,6 +14,10 @@ data:
   DATASPOKE_AIRFLOW_URL: {{ .Values.config.airflow.url | quote }}
   DATASPOKE_AIRFLOW_CALLBACK_BASE_URL: {{ .Values.config.airflow.callbackBaseUrl | quote }}
   DATASPOKE_CORS_ORIGINS: {{ .Values.config.corsOrigins | quote }}
+  {{- if not (regexMatch "^[1-9][0-9]*$" (toString .Values.config.rateLimitPerMinute)) }}
+  {{- fail (printf "config.rateLimitPerMinute must be a positive integer, got %v — a non-positive or non-integer value silently defeats or breaks the rate limiter (see values.yaml's config.rateLimitPerMinute comment and src/api/middleware/rate_limit.py)." .Values.config.rateLimitPerMinute) }}
+  {{- end }}
+  DATASPOKE_RATE_LIMIT_PER_MINUTE: {{ .Values.config.rateLimitPerMinute | quote }}
   DATASPOKE_COOKIE_SECURE: {{ .Values.auth.cookieSecure | quote }}
   DATASPOKE_GOOGLE_OAUTH_CLIENT_ID: {{ .Values.auth.googleClientId | quote }}
   DATASPOKE_OAUTH_POST_LOGIN_REDIRECT: {{ .Values.config.oauthPostLoginRedirect | quote }}
@@ -24,8 +28,9 @@ data:
   # See values.yaml's config.trustedProxyIps comment for why this exists,
   # why the default is loopback-only, and why it must never be "*" or
   # widened without naming the ingress controller's actual pod CIDR.
-  {{- if or (not .Values.config.trustedProxyIps) (eq .Values.config.trustedProxyIps "*") }}
-  {{- fail "config.trustedProxyIps must not be empty or \"*\" — both silently defeat the rate limiter's client-IP attribution (see values.yaml's config.trustedProxyIps comment). Set it to \"127.0.0.1\" (default, single global bucket) or to \"127.0.0.1,<ingress controller's pod CIDR>\" for per-client limits." }}
+  {{- $trustedProxyIps := .Values.config.trustedProxyIps | toString }}
+  {{- if or (not .Values.config.trustedProxyIps) (eq $trustedProxyIps "*") (regexMatch "(^|,)\\s*(0\\.0\\.0\\.0/0|::/0)\\s*(,|$)" $trustedProxyIps) }}
+  {{- fail (printf "config.trustedProxyIps must not be empty, \"*\", or include the all-address network 0.0.0.0/0 / ::/0 (got %q) — any of these silently defeat the rate limiter's client-IP attribution (see values.yaml's config.trustedProxyIps comment). Set it to \"127.0.0.1\" (default, single global bucket) or to \"127.0.0.1,<ingress controller's pod CIDR>\" for per-client limits. This check only catches the literal all-address forms above — other over-broad ranges (e.g. the full RFC1918 space) render successfully and are on you to avoid." $trustedProxyIps) }}
   {{- end }}
   FORWARDED_ALLOW_IPS: {{ .Values.config.trustedProxyIps | quote }}
 {{- end }}

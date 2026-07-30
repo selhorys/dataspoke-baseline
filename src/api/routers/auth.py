@@ -24,7 +24,7 @@ from src.api.auth.dependencies import (
     revalidate_under_user_lock,
 )
 from src.api.dependencies import get_db, get_notification, get_redis
-from src.api.middleware.rate_limit import limiter
+from src.api.middleware.rate_limit import auth_route_limit
 from src.api.schemas.auth import (
     ApiTokenItem,
     ApiTokenListResponse,
@@ -105,7 +105,7 @@ def _user_to_me(user: object) -> MeResponse:
 
 
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
-@limiter.limit("5/minute")
+@auth_route_limit("5/minute")
 async def post_register(
     request: Request,
     body: RegisterRequest,
@@ -133,7 +133,7 @@ async def post_register(
 
 
 @router.post("/token", response_model=TokenResponse, status_code=status.HTTP_200_OK)
-@limiter.limit("10/minute")
+@auth_route_limit("10/minute")
 async def post_token(
     request: Request,
     body: TokenRequest,
@@ -271,7 +271,7 @@ async def patch_me(
 
 
 @router.post("/password/reset/request", status_code=status.HTTP_204_NO_CONTENT)
-@limiter.limit("5/minute")
+@auth_route_limit("5/minute")
 async def post_password_reset_request(
     request: Request,
     body: PasswordResetRequest,
@@ -284,7 +284,7 @@ async def post_password_reset_request(
 
 
 @router.post("/password/reset/confirm", status_code=status.HTTP_204_NO_CONTENT)
-@limiter.limit("10/minute")
+@auth_route_limit("10/minute")
 async def post_password_reset_confirm(
     request: Request,
     body: PasswordResetConfirmRequest,

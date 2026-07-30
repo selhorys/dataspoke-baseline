@@ -55,6 +55,10 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# After argument parsing so `--help` works on a host without kubectl/helm
+# installed — matches install.sh's placement of the same check.
+require_tools kubectl helm
+
 if [[ -z "$PROFILE" ]]; then
   error "--profile {dev|prod} is required. Use --help for usage."
 fi
@@ -177,10 +181,37 @@ if [[ "$PROFILE" == "dev" ]]; then
   fi
   kubectl delete pod -n "${NS}" -l app.kubernetes.io/instance=dataspoke \
     --force --grace-period=0 2>/dev/null || true
+  # dataspoke-secrets (source of DATASPOKE_AIRFLOW_FERNET_KEY and
+  # DATASPOKE_POSTGRES_PASSWORD) and its dataspoke-airflow-metadata-
+  # encryption-key projection are deleted unconditionally below, while the
+  # Postgres PVC — which holds the Fernet-encrypted Airflow connections/
+  # Variables that key decrypts, and which was provisioned against the old
+  # Postgres password — is retained by default (the PVC prompt is further
+  # down, at step 7, and is skipped entirely under --no-question, which
+  # retains by default). If you keep the PVC, the next install regenerates
+  # the whole credential set (see HELM_CHART.md §Secrets Management) with no
+  # live Fernet key to adopt in any carrier, permanently stranding that PVC's
+  # encrypted rows — and a new Postgres password the retained PVC's user
+  # doesn't have either way. Pass --delete-pvcs, or answer 'y' to the PVC
+  # prompt when one is shown, for a clean dev reset.
+  warn "Deleting dataspoke-secrets now — if you retain the Postgres PVC (default under"
+  warn "--no-question, and the PVC prompt below defaults to No when shown), the next"
+  warn "install regenerates the whole credential set — Fernet key AND Postgres password —"
+  warn "permanently stranding that PVC's encrypted Airflow rows and its Postgres user."
+  warn "Recommended: pass --delete-pvcs (or answer 'y' to the PVC prompt) for a clean reset."
+  # Read before the loop below deletes dataspoke-secrets — the legacy-Secret
+  # guard further down needs this value to decide whether
+  # dataspoke-airflow-fernet-key is a safe-to-drop redundant copy.
+  _contract_fernet_key=""
+  if kubectl get secret dataspoke-secrets -n "${NS}" >/dev/null 2>&1; then
+    _contract_fernet_key="$(kubectl get secret dataspoke-secrets -n "${NS}" \
+      -o jsonpath='{.data.DATASPOKE_AIRFLOW_FERNET_KEY}' 2>/dev/null | base64 --decode 2>/dev/null || true)"
+  fi
   for SECRET in dataspoke-secrets \
                 dataspoke-airflow-metadata-db \
                 dataspoke-airflow-api-secret-key \
                 dataspoke-airflow-jwt-secret \
+                dataspoke-airflow-metadata-encryption-key \
                 dataspoke-llm-secret \
                 dataspoke-datahub-secret \
                 dataspoke-langfuse-secret; do
@@ -188,6 +219,35 @@ if [[ "$PROFILE" == "dev" ]]; then
       kubectl delete secret "${SECRET}" -n "${NS}"
     fi
   done
+
+  # dataspoke-airflow-fernet-key is a different case from the Secrets above:
+  # it is the Airflow subchart's own pre-install-hook Secret
+  # (`hook-delete-policy: before-hook-creation`), so `helm uninstall` never
+  # removes it, and it only exists on a cluster that ran a release before
+  # airflow.fernetKeySecretName was pinned to dataspoke-airflow-metadata-
+  # encryption-key. On such a cluster it may be the ONLY live carrier of the
+  # Fernet key that decrypts the retained Postgres PVC's Airflow connections/
+  # Variables (dataspoke-secrets predating the 13-key contract has no
+  # DATASPOKE_AIRFLOW_FERNET_KEY of its own to compare against). Delete it
+  # only when its value agrees with what dataspoke-secrets carries — a
+  # redundant copy, safe to drop — otherwise leave it as a last-resort
+  # adoption carrier for a future install and warn instead.
+  _legacy_fernet_key=""
+  if kubectl get secret dataspoke-airflow-fernet-key -n "${NS}" >/dev/null 2>&1; then
+    _legacy_fernet_key="$(kubectl get secret dataspoke-airflow-fernet-key -n "${NS}" \
+      -o jsonpath='{.data.fernet-key}' 2>/dev/null | base64 --decode 2>/dev/null || true)"
+  fi
+  if [[ -n "${_legacy_fernet_key}" ]]; then
+    if [[ "${_legacy_fernet_key}" == "${_contract_fernet_key}" ]]; then
+      kubectl delete secret dataspoke-airflow-fernet-key -n "${NS}"
+    else
+      warn "Leaving dataspoke-airflow-fernet-key in place — it disagrees with (or"
+      warn "dataspoke-secrets no longer carries) DATASPOKE_AIRFLOW_FERNET_KEY, so it may hold"
+      warn "the only live copy of the key that decrypts the retained Postgres PVC's Airflow"
+      warn "connections/Variables. Delete it manually once you've confirmed the PVC no longer"
+      warn "needs it: kubectl delete secret dataspoke-airflow-fernet-key -n ${NS}"
+    fi
+  fi
 
   # 4. Langfuse
   info "Removing Langfuse..."
@@ -240,6 +300,10 @@ if [[ "$PROFILE" == "dev" ]]; then
   # 7. Optionally delete PVCs (dataspoke + Langfuse)
   echo ""
   if [[ "${DELETE_PVCS}" != true && "${NO_QUESTION}" != true ]]; then
+    warn "dataspoke-secrets is already gone — keeping the Postgres PVC now strands it on the"
+    warn "old DATASPOKE_POSTGRES_PASSWORD and, unless dataspoke-airflow-fernet-key survived as"
+    warn "a last-resort carrier above, its encrypted Airflow rows too. 'y' here is the clean"
+    warn "dev reset."
     read -r -p "Delete PVCs in '${NS}' and '${LANGFUSE_NS}'? [y/N] " CONFIRM_PVC
     [[ "${CONFIRM_PVC}" =~ ^[Yy]$ ]] && DELETE_PVCS=true
   fi
@@ -287,6 +351,18 @@ if [[ "$PROFILE" == "dev" ]]; then
 elif [[ "$PROFILE" == "prod" ]]; then
   NS="${DATASPOKE_KUBE_DATASPOKE_NAMESPACE}"
 
+  # Resolve the operator's existingSecret name from the live release's values
+  # before uninstalling it — once the release is gone, "helm get values" is no
+  # longer available, so this is the only place this script can learn that
+  # name rather than hardcoding the chart default "dataspoke-secrets".
+  SECRET_TO_CHECK="dataspoke-secrets"
+  if helm status dataspoke --namespace "${NS}" >/dev/null 2>&1; then
+    require_tools python3
+    _resolved_secret="$(helm get values dataspoke --namespace "${NS}" -o json 2>/dev/null \
+      | python3 -c 'import json,sys; d=json.load(sys.stdin); print((d.get("secrets") or {}).get("existingSecret",""))' 2>/dev/null || true)"
+    [[ -n "${_resolved_secret}" ]] && SECRET_TO_CHECK="${_resolved_secret}"
+  fi
+
   info "Removing DataSpoke umbrella Helm release (prod)..."
   if helm status dataspoke --namespace "${NS}" >/dev/null 2>&1; then
     helm uninstall dataspoke --namespace "${NS}" --wait --timeout 120s
@@ -294,16 +370,54 @@ elif [[ "$PROFILE" == "prod" ]]; then
     warn "Helm release 'dataspoke' not found in namespace '${NS}' — skipping."
   fi
 
-  # Delete only the chart-derived Secrets; operator-owned dataspoke-secrets is preserved.
+  # Delete only the chart-derived Secrets; the operator-owned credentials
+  # Secret is preserved. These four are projections of keys held in that
+  # Secret, so deleting them is safe — the next install rebuilds them
+  # byte-identically from the retained source.
   for SECRET in dataspoke-airflow-metadata-db \
                 dataspoke-airflow-api-secret-key \
-                dataspoke-airflow-jwt-secret; do
+                dataspoke-airflow-jwt-secret \
+                dataspoke-airflow-metadata-encryption-key; do
     if kubectl get secret "${SECRET}" -n "${NS}" >/dev/null 2>&1; then
       info "Deleting chart-derived Secret '${SECRET}'..."
       kubectl delete secret "${SECRET}" -n "${NS}"
     fi
   done
-  info "Operator-owned Secret 'dataspoke-secrets' (or secrets.existingSecret) retained."
+
+  # dataspoke-airflow-fernet-key is a different case: the Airflow subchart's
+  # own pre-install-hook Secret (`hook-delete-policy: before-hook-creation`),
+  # so `helm uninstall` above never removed it. It only exists on a cluster
+  # that ran a release before airflow.fernetKeySecretName was pinned to
+  # dataspoke-airflow-metadata-encryption-key on every install — and on that
+  # cluster it may be the ONLY live carrier of the Fernet key that decrypts
+  # the retained Postgres PVC's Airflow connections/Variables, if the
+  # operator's pre-created Secret predates DATASPOKE_AIRFLOW_FERNET_KEY
+  # joining the 13-key contract. Delete it only when its value agrees with
+  # what the operator's Secret carries — a redundant copy, safe to drop —
+  # otherwise leave it in place and warn.
+  _legacy_fernet_key=""
+  if kubectl get secret dataspoke-airflow-fernet-key -n "${NS}" >/dev/null 2>&1; then
+    _legacy_fernet_key="$(kubectl get secret dataspoke-airflow-fernet-key -n "${NS}" \
+      -o jsonpath='{.data.fernet-key}' 2>/dev/null | base64 --decode 2>/dev/null || true)"
+  fi
+  _contract_fernet_key=""
+  if kubectl get secret "${SECRET_TO_CHECK}" -n "${NS}" >/dev/null 2>&1; then
+    _contract_fernet_key="$(kubectl get secret "${SECRET_TO_CHECK}" -n "${NS}" \
+      -o jsonpath='{.data.DATASPOKE_AIRFLOW_FERNET_KEY}' 2>/dev/null | base64 --decode 2>/dev/null || true)"
+  fi
+  if [[ -n "${_legacy_fernet_key}" ]]; then
+    if [[ "${_legacy_fernet_key}" == "${_contract_fernet_key}" ]]; then
+      info "Deleting chart-derived Secret 'dataspoke-airflow-fernet-key'..."
+      kubectl delete secret dataspoke-airflow-fernet-key -n "${NS}"
+    else
+      warn "Leaving dataspoke-airflow-fernet-key in place — it disagrees with (or"
+      warn "'${SECRET_TO_CHECK}' no longer carries) DATASPOKE_AIRFLOW_FERNET_KEY, so it may"
+      warn "hold the only live copy of the key that decrypts the retained Postgres PVC's"
+      warn "Airflow connections/Variables. Delete it manually once you've confirmed the PVC"
+      warn "no longer needs it: kubectl delete secret dataspoke-airflow-fernet-key -n ${NS}"
+    fi
+  fi
+  info "Operator-owned Secret '${SECRET_TO_CHECK}' retained."
 
   # ---------------------------------------------------------------------------
   # Delete namespace? Ask BEFORE printing the retained-resources summary below —
@@ -367,19 +481,23 @@ elif [[ "$PROFILE" == "prod" ]]; then
     fi
 
     info "  Secrets:"
-    info "    dataspoke-secrets (or your secrets.existingSecret name) — operator-owned"
-    if kubectl get secret dataspoke-airflow-fernet-key -n "${NS}" >/dev/null 2>&1; then
-      info "    dataspoke-airflow-fernet-key — keep-annotated by the Airflow chart"
-      warn "      Coupled to the Postgres PVC above: keeping one without the other breaks Airflow —"
-      warn "      if the Postgres PVC survives, existing encrypted Airflow connections are only"
-      warn "      decryptable with this same fernet key."
-    fi
+    info "    ${SECRET_TO_CHECK} — operator-owned"
     for oob_secret in dataspoke-llm-secret dataspoke-datahub-secret \
                       dataspoke-langfuse-secret dataspoke-smtp-secret; do
       if kubectl get secret "${oob_secret}" -n "${NS}" >/dev/null 2>&1; then
         info "    ${oob_secret} — out-of-band, not managed by this script"
       fi
     done
+    warn "  Coupled to the Postgres PVC above: '${SECRET_TO_CHECK}' carries"
+    warn "  DATASPOKE_AIRFLOW_FERNET_KEY, which Airflow uses to decrypt the connections and"
+    warn "  Variables stored in that PVC's metadata DB. Keep or drop the Secret and the PVC"
+    warn "  together — changing DATASPOKE_AIRFLOW_FERNET_KEY in '${SECRET_TO_CHECK}' while the"
+    warn "  PVC survives leaves that data permanently undecryptable. Re-running install.sh"
+    warn "  against this still-live release aborts on a disagreeing key rather than silently"
+    warn "  re-projecting it — this teardown deleted the projection Secret that comparison reads,"
+    warn "  so a full uninstall/reinstall cycle trusts whatever DATASPOKE_AIRFLOW_FERNET_KEY"
+    warn "  '${SECRET_TO_CHECK}' holds unchecked. Do not edit that key by hand between teardown"
+    warn "  and reinstall while the PVC survives."
 
     info "  To delete manually:"
     if [[ "${#CORE_PVCS_FOUND[@]}" -gt 0 ]]; then
@@ -388,12 +506,12 @@ elif [[ "$PROFILE" == "prod" ]]; then
     if [[ "${#LOG_PVCS[@]}" -gt 0 ]]; then
       info "    kubectl delete pvc ${LOG_PVCS[*]} -n '${NS}'"
     fi
-    info "    kubectl delete secret dataspoke-secrets dataspoke-airflow-fernet-key -n '${NS}'"
-    warn "  Deleting 'dataspoke-secrets' (or your secrets.existingSecret) destroys the only copy"
-    warn "  of all 12 credentials unless they also live in an external secrets manager, AND"
-    warn "  strands the Postgres PVC above if you keep it (the running cluster still expects the"
-    warn "  old DATASPOKE_POSTGRES_PASSWORD). Delete the Secret only together with the PVCs above,"
-    warn "  or not at all."
+    info "    kubectl delete secret ${SECRET_TO_CHECK} -n '${NS}'"
+    warn "  Deleting '${SECRET_TO_CHECK}' destroys the only copy of all 13 credentials unless"
+    warn "  they also live in an external secrets manager, AND strands the Postgres PVC above if"
+    warn "  you keep it (the running cluster still expects the old DATASPOKE_POSTGRES_PASSWORD and"
+    warn "  DATASPOKE_AIRFLOW_FERNET_KEY). Delete the Secret only together with the PVCs above, or"
+    warn "  not at all."
     info "  Or delete the namespace '${NS}' for a full wipe — the only sanctioned full teardown in prod."
     echo ""
   fi

@@ -8,6 +8,7 @@ dev-only peripheral manifests in `helm-charts/dev-peripherals/`.
 
 - `kubectl` installed and configured
 - `helm` v3 installed
+- `python3` (Fernet key generation, values parsing — required by every profile of `bin/install.sh` and by the prod path of `bin/uninstall.sh`)
 - A Kubernetes cluster with **8+ CPUs / 24 GB RAM** (dev) or operator-specified sizing (prod)
 
 ## Quick Start
@@ -106,10 +107,15 @@ runbook in order.
   your API generates from `http://` to `https://` — re-verify the redirect
   URI registered in the Google Cloud Console still matches before rolling
   this out.
+- `config.rateLimitPerMinute` (chart default: `120`) — max requests per
+  minute per rate-limit key (the same JWT-sub-or-client-IP key `trustedProxyIps`
+  above attributes). The chart render fails fast on any value that is not a
+  positive integer, so a bad overlay is caught by `helm template`/`install.sh`
+  rather than reaching a pod.
 
-#### 2. Create the namespace and the 12-key credential Secret
+#### 2. Create the namespace and the 13-key credential Secret
 
-For a real deployment, deliver these 12 keys via ExternalSecrets, Vault, or
+For a real deployment, deliver these 13 keys via ExternalSecrets, Vault, or
 SealedSecrets rather than plain `kubectl`. The `kubectl` form below is only
 the floor for a one-off bootstrap: run it from a private/short-lived shell,
 and prefer the `--from-env-file` variant over `--from-literal=` — the latter
@@ -117,12 +123,27 @@ lands every credential in your shell history and in `ps auxww` /
 `/proc/<pid>/cmdline` for the process's lifetime, visible to any co-tenant on
 the same bastion.
 
-Generate the five high-entropy keys first (HS256/HMAC signing and
+Generate the five high-entropy hex keys first (HS256/HMAC signing and
 random-token values — security is entirely a function of their entropy):
 
 ```bash
 openssl rand -hex 32   # run 5 times, one per high-entropy key below
 ```
+
+`DATASPOKE_AIRFLOW_FERNET_KEY` is high-entropy too, but Fernet rejects the hex
+encoding above — it requires URL-safe base64 of exactly 32 raw bytes:
+
+```bash
+python3 -c "import secrets, base64; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())"
+```
+
+Only run that command for a genuinely fresh install. If this namespace already
+ran Airflow against a Postgres metadata DB you are keeping — for example a PVC
+retained from a previous release — generating a new key instead of supplying
+the one that DB was encrypted with leaves its stored connections and Variables
+permanently undecryptable; see
+[§Prod: what survives an uninstall](#prod-what-survives-an-uninstall) for how
+to recover the live key.
 
 ```bash
 kubectl create namespace <your-namespace>
@@ -138,6 +159,7 @@ DATASPOKE_AIRFLOW_USER=<u>
 DATASPOKE_AIRFLOW_PASSWORD=<p>
 DATASPOKE_AIRFLOW_WEBSERVER_SECRET_KEY=<k>
 DATASPOKE_AIRFLOW_JWT_SECRET=<k>
+DATASPOKE_AIRFLOW_FERNET_KEY=<f>
 DATASPOKE_INTERNAL_TOKEN=<t>
 DATASPOKE_JWT_SECRET_KEY=<k>
 DATASPOKE_OAUTH_STATE_SECRET=<k>
@@ -157,6 +179,7 @@ you:
 | Key | Type | How to set it |
 |-----|------|----------------|
 | `DATASPOKE_JWT_SECRET_KEY`, `DATASPOKE_OAUTH_STATE_SECRET`, `DATASPOKE_INTERNAL_TOKEN`, `DATASPOKE_AIRFLOW_WEBSERVER_SECRET_KEY`, `DATASPOKE_AIRFLOW_JWT_SECRET` | high-entropy random | `openssl rand -hex 32` |
+| `DATASPOKE_AIRFLOW_FERNET_KEY` | high-entropy random, fixed shape | URL-safe base64 of 32 raw bytes — see command above, not `openssl rand -hex` |
 | `DATASPOKE_POSTGRES_USER`/`PASSWORD`/`DB`, `DATASPOKE_REDIS_PASSWORD`, `DATASPOKE_AIRFLOW_USER`/`PASSWORD` | operator-chosen | pick unique values; avoid `admin`/`postgres`-style defaults |
 | `DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET` | externally issued | from the Google Cloud Console OAuth client |
 
@@ -168,21 +191,34 @@ branch) fails fast — before any resources are created — on any of:
 |-------|---------------|
 | IngressClass | not found in the cluster |
 | Secret | missing entirely |
-| All 12 keys | any of the 12 keys above is absent |
+| All 13 keys | any of the 13 keys above is absent |
 | `DATASPOKE_JWT_SECRET_KEY` | equals the dev default `changeme-dev-secret-do-not-use-in-prod` |
 | `DATASPOKE_AIRFLOW_USER` | equals `admin` |
 | `DATASPOKE_AIRFLOW_PASSWORD` | empty, or equals `admin` |
 | `DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET` | starts with `placeholder-` |
+| `DATASPOKE_AIRFLOW_FERNET_KEY` shape | not URL-safe base64 of exactly 32 raw bytes (43 chars + `=`) — catches an `openssl rand -hex 32` value pasted in by mistake |
 | `--image-tag` | not passed explicitly (prod refuses the mutable `:dev` tag) |
 
-Note preflight validates known-bad literals only — it does not measure
-entropy, so e.g. `DATASPOKE_JWT_SECRET_KEY=x` passes.
+Note preflight validates known-bad literals and the Fernet key's shape only —
+it does not measure entropy, so e.g. `DATASPOKE_JWT_SECRET_KEY=x` passes, and
+a correctly-shaped but low-entropy Fernet key passes too. The shape check
+only rejects a wrong-length value; it does not (and cannot) verify the key
+actually decrypts an existing Postgres PVC's Airflow connections/Variables —
+see the missing-key error's own warning against generating a new key when
+one is retained.
 
 This walkthrough already uses a custom Secret name
 (`dataspoke-secrets-prod`) via `secrets.existingSecret` in the overlay (§3) —
-the same 12 keys and rejection rules apply to whatever Secret that name
+the same 13 keys and rejection rules apply to whatever Secret that name
 resolves to. Set it to `dataspoke-secrets` instead (or omit
 `secrets.existingSecret` from your overlay) to use the chart default name.
+
+A disagreement between `DATASPOKE_AIRFLOW_FERNET_KEY` in this Secret and the
+key already projected into `dataspoke-airflow-metadata-encryption-key` on a
+live cluster aborts the install rather than re-projecting, and the aborting
+install prints the recovery command — see
+[§Prod: what survives an uninstall](#prod-what-survives-an-uninstall) for why
+the guard exists and the one cycle it does not cover.
 
 #### 3. Author your operator overlay
 
@@ -263,12 +299,14 @@ See `spec/API.md` for the full request/response contracts.
 
 `--env-file <path>` accepts any path on both `install.sh` and `uninstall.sh`
 (the `--env-file` flag parsing near the top of each script) — it is not
-limited to `helm-charts/.env.{dev,prod}`. `.gitignore` only ignores the three
-literal names `helm-charts/.env`, `.env.dev`, and `.env.prod` — any other
-filename is committable. A deployment fork can therefore commit a file like
-`helm-charts/env.prod-no-credential` for reproducible team installs, as long
-as it carries **no credentials**. Start the file with a header comment
-stating the rule mechanically, not just descriptively:
+limited to `helm-charts/.env.{dev,prod}`. `.gitignore` denies by default any
+file whose basename starts with `.env` (`.env*`, unanchored — matches at any
+depth, so `--env-file`'s arbitrary-path story is covered too), re-including
+only `*.example` templates and `.envrc`. A filename that does NOT start with
+a dot is unaffected by that rule and remains committable — a deployment fork
+can commit a file like `helm-charts/env.prod-no-credential` for reproducible
+team installs, as long as it carries **no credentials**. Start the file with
+a header comment stating the rule mechanically, not just descriptively:
 
 ```bash
 # DEPLOYMENT SHAPE ONLY. Rule: if a variable's name is not DATASPOKE_KUBE_*,
@@ -284,14 +322,30 @@ DATASPOKE_KUBE_DATASPOKE_NAMESPACE=...
 ### Prod: what survives an uninstall
 
 `./helm-charts/bin/uninstall.sh --profile prod` uninstalls the Helm release
-and the chart-derived Secrets (`dataspoke-airflow-metadata-db`,
-`dataspoke-airflow-api-secret-key`, `dataspoke-airflow-jwt-secret`), but
-retains everything below by design. There is no prod `--delete-pvcs` — that
-flag is dev-only; namespace deletion is prod's only full wipe. **The
-uninstaller asks "delete the namespace?" first and only prints this same
-summary afterward, when you answered no** (`--delete-all` also implies
-`--delete-namespaces`, so it skips the summary too) — the table below is a
-reference, not something you need to remember.
+and four chart-derived Secrets (`dataspoke-airflow-metadata-db`,
+`dataspoke-airflow-api-secret-key`, `dataspoke-airflow-jwt-secret`,
+`dataspoke-airflow-metadata-encryption-key`), but retains everything below by
+design. These four are projections of keys held in the retained credentials
+Secret, so deleting them is safe — the next install rebuilds them
+byte-identically from that source.
+
+`dataspoke-airflow-fernet-key` — the Airflow subchart's own pre-install-hook
+Secret, which `helm uninstall` never removes (`hook-delete-policy:
+before-hook-creation`) and which only exists on a cluster that ran a release
+before `airflow.fernetKeySecretName` was pinned to
+`dataspoke-airflow-metadata-encryption-key` — is deleted **conditionally**:
+only when its `fernet-key` value agrees with `DATASPOKE_AIRFLOW_FERNET_KEY`
+in the retained credentials Secret (a redundant copy, safe to drop). If it
+disagrees, or the credentials Secret has no `DATASPOKE_AIRFLOW_FERNET_KEY` to
+compare against (a Secret that predates the 13-key contract), the uninstaller
+leaves it in place and warns — on such a cluster it may be the only live
+carrier of the key that decrypts the retained Postgres PVC's Airflow
+connections/Variables. There is no prod `--delete-pvcs` — that flag is
+dev-only; namespace deletion is prod's only full wipe. **The uninstaller asks
+"delete the namespace?" first and only prints this same summary afterward,
+when you answered no** (`--delete-all` also implies `--delete-namespaces`, so
+it skips the summary too) — the table below is a reference, not something you
+need to remember.
 
 | Resource | Kind | Size | Notes |
 |----------|------|------|-------|
@@ -299,20 +353,50 @@ reference, not something you need to remember.
 | `redis-data-dataspoke-redis-master-0` | PVC | 8Gi | Redis primary data |
 | `redis-data-dataspoke-redis-replicas-0` | PVC | 8Gi | Redis replica data (StatefulSet `dataspoke-redis-replicas`, plural — only the replica name pluralizes) |
 | `dataspoke-secrets` (or your `secrets.existingSecret`) | Secret | -- | operator-owned; never deleted |
-| `dataspoke-airflow-fernet-key` | Secret | -- | keep-annotated by the Airflow chart; survives silently |
 | `dataspoke-llm-secret`, `dataspoke-datahub-secret`, `dataspoke-langfuse-secret`, `dataspoke-smtp-secret` | Secret | -- | out-of-band, not managed by this script; survive silently if present |
 
-**Fernet-key coupling**: if you keep the Postgres PVC, keep
-`dataspoke-airflow-fernet-key` too — existing encrypted Airflow connections
-are only decryptable with that same key. Deleting one without the other
-breaks Airflow on the next install that reuses the PVC.
+**Fernet key ↔ Postgres PVC coupling**: Airflow encrypts connection secrets
+and Variables in its metadata DB with the Fernet key it reads from
+`dataspoke-airflow-metadata-encryption-key`, projected from
+`DATASPOKE_AIRFLOW_FERNET_KEY` in the retained credentials Secret. Because
+that metadata lives in the retained Postgres PVC, the credentials Secret and
+the PVC must be kept or dropped together.
+
+Two different guarantees apply depending on what you do next:
+
+- **Re-running `install.sh` against this still-live release** (no uninstall in
+  between) compares `DATASPOKE_AIRFLOW_FERNET_KEY` in the credentials Secret
+  against the live `dataspoke-airflow-metadata-encryption-key` projection and
+  aborts on a disagreement instead of silently re-projecting it. Recover the
+  live value with:
+
+  ```bash
+  kubectl get secret dataspoke-airflow-metadata-encryption-key -n <your-namespace> \
+    -o jsonpath='{.data.fernet-key}' | base64 --decode
+  ```
+
+  then set `DATASPOKE_AIRFLOW_FERNET_KEY` in the credentials Secret to that
+  value before retrying.
+- **A full uninstall/reinstall cycle** carries a weaker version of this
+  protection: this teardown always deletes `dataspoke-airflow-metadata-
+  encryption-key` (it is safely regenerable, byte-identically, from the
+  retained credentials Secret), removing the comparison point the guard above
+  reads. Whether a comparison still happens on the next install depends on
+  `dataspoke-airflow-fernet-key` (see above) — if it agreed with the
+  credentials Secret at teardown time it was deleted too, and the next
+  install trusts `DATASPOKE_AIRFLOW_FERNET_KEY` in the retained credentials
+  Secret unchecked; if it disagreed (or the Secret had no key to compare) it
+  was left in place, and the next install's `_ensure_airflow_fernet_secret`
+  falls back to comparing against it, aborting on a mismatch exactly as in
+  the still-live-release case above. Either way, do not edit that key by hand
+  between teardown and reinstall while the Postgres PVC survives.
 
 **Deleting the credential Secret**: deleting `dataspoke-secrets` (or your
-`secrets.existingSecret`) destroys the only copy of all 12 credentials unless
+`secrets.existingSecret`) destroys the only copy of all 13 credentials unless
 they also live in an external secrets manager, and strands the Postgres PVC
 above if you keep it — the running cluster still expects the old
-`DATASPOKE_POSTGRES_PASSWORD`. Delete the Secret only together with the PVCs
-above, or not at all.
+`DATASPOKE_POSTGRES_PASSWORD` and `DATASPOKE_AIRFLOW_FERNET_KEY`. Delete the
+Secret only together with the PVCs above, or not at all.
 
 **Airflow log PVCs**: `logs-dataspoke-airflow-scheduler-0` and
 `logs-dataspoke-airflow-triggerer-0` exist only if your overlay enables
@@ -335,7 +419,7 @@ kubectl delete pvc logs-dataspoke-airflow-scheduler-0 \
   logs-dataspoke-airflow-triggerer-0 \
   -n <your-namespace>
 
-kubectl delete secret dataspoke-secrets dataspoke-airflow-fernet-key \
+kubectl delete secret dataspoke-secrets \
   -n <your-namespace>
 ```
 

@@ -306,10 +306,14 @@ airflow:
       pullPolicy: IfNotPresent
 
   # Airflow signing keys are stored in dataspoke-secrets and projected into
-  # chart-compatible Secrets by install.sh (_ensure_airflow_key_secrets).
-  # install.sh passes these names via --set at deploy time.
+  # chart-compatible Secrets by install.sh (_ensure_airflow_key_secrets /
+  # _ensure_airflow_fernet_secret). install.sh passes these names via --set at
+  # deploy time. Pinning fernetKeySecretName here (base values.yaml, so every
+  # profile inherits it) suppresses the subchart's own pre-install hook that
+  # would otherwise generate and own a Fernet key of its own.
   apiSecretKeySecretName: dataspoke-airflow-api-secret-key
   jwtSecretName: dataspoke-airflow-jwt-secret
+  fernetKeySecretName: dataspoke-airflow-metadata-encryption-key
 
   # Use existing PostgreSQL — do not deploy Airflow's bundled instance
   postgresql:
@@ -516,6 +520,13 @@ config:
     url: "http://dataspoke-airflow-api-server:8080"
     callbackBaseUrl: "http://dataspoke-api:8002"
   corsOrigins: "http://localhost:3000"
+  # Max requests per minute per rate-limit key (JWT sub, falling back to
+  # client IP — see config.trustedProxyIps below for how that IP is
+  # attributed). Applies to the application-wide default limiter; the
+  # fail-closed auth limiter on POST /auth/token has its own fixed
+  # 10/minute limit, unrelated to this value. See src/shared/settings.py
+  # `rate_limit_per_minute` and src/api/middleware/rate_limit.py.
+  rateLimitPerMinute: 120
   # URL the Google/OIDC callback 302-redirects to after login (the frontend
   # origin). install.sh sets this per --frontend mode in dev; prod operators set
   # it in their overlay. Default "/" works only when UI and API share a host.
@@ -567,15 +578,16 @@ config:
 secrets:
   # If set, the chart references this Secret instead of "dataspoke-secrets"
   # everywhere. Used for prod BYO patterns (ExternalSecrets / Vault /
-  # SealedSecrets). The Secret must contain these 12 keys:
+  # SealedSecrets). The Secret must contain these 13 keys:
   #   DATASPOKE_POSTGRES_USER, DATASPOKE_POSTGRES_PASSWORD, DATASPOKE_POSTGRES_DB,
   #   DATASPOKE_REDIS_PASSWORD, DATASPOKE_AIRFLOW_USER, DATASPOKE_AIRFLOW_PASSWORD,
   #   DATASPOKE_INTERNAL_TOKEN, DATASPOKE_JWT_SECRET_KEY,
   #   DATASPOKE_AIRFLOW_WEBSERVER_SECRET_KEY, DATASPOKE_AIRFLOW_JWT_SECRET,
+  #   DATASPOKE_AIRFLOW_FERNET_KEY,
   #   DATASPOKE_OAUTH_STATE_SECRET, DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET
-  # install.sh (_check_airflow_credentials_prod) validates all 12 keys in prod.
+  # install.sh (_check_airflow_credentials_prod) validates all 13 keys in prod.
   # Airflow signing keys are projected into chart-compatible Secrets by
-  # install.sh (_ensure_airflow_key_secrets).
+  # install.sh (_ensure_airflow_key_secrets / _ensure_airflow_fernet_secret).
   existingSecret: ""
   # install.sh pre-creates the Secret; Helm does not template it.
   createSecret: false

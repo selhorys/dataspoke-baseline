@@ -52,7 +52,7 @@ are specified, operate on **all-for-profile**.
 | Plane | Holds | Source |
 |---|---|---|
 | env file (`helm-charts/.env.prod`) | deployment shape only — `DATASPOKE_KUBE_*` | `.env.prod.example`; `--env-file <path>` overrides the default |
-| `dataspoke-secrets` K8s Secret | the 12 credential keys | operator pre-creates before install — `helm-charts/README.md §2` |
+| `dataspoke-secrets` K8s Secret | the 13 credential keys | operator pre-creates before install — `helm-charts/README.md §2` |
 | operator overlay (`--values`) | ingress hosts, TLS secret names, CORS origins, OAuth redirect + client ID, `secrets.existingSecret` | copy of `values-prod.example.yaml` — `README.md §3` |
 
 Steps 1–3 and 5 below apply to both profiles; step 4 is dev-only.
@@ -82,7 +82,8 @@ Run `configure` first if the profile env file (`helm-charts/.env.dev` or `helm-c
    - `--image-tag <tag>` is passed explicitly — prod refuses the mutable `:dev` tag.
    - The `DATASPOKE_KUBE_INGRESS_CLASS` IngressClass (default `nginx`) exists: `kubectl get ingressclass <class>`.
    - The credential Secret exists in the target namespace — `dataspoke-secrets`, or whatever the overlay's `secrets.existingSecret` names.
-   - All 12 keys are present in it: `DATASPOKE_POSTGRES_{USER,PASSWORD,DB}`, `DATASPOKE_REDIS_PASSWORD`, `DATASPOKE_AIRFLOW_{USER,PASSWORD}`, `DATASPOKE_AIRFLOW_{WEBSERVER_SECRET_KEY,JWT_SECRET}`, `DATASPOKE_INTERNAL_TOKEN`, `DATASPOKE_JWT_SECRET_KEY`, `DATASPOKE_OAUTH_STATE_SECRET`, `DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET`.
+   - All 13 keys are present in it: `DATASPOKE_POSTGRES_{USER,PASSWORD,DB}`, `DATASPOKE_REDIS_PASSWORD`, `DATASPOKE_AIRFLOW_{USER,PASSWORD}`, `DATASPOKE_AIRFLOW_{WEBSERVER_SECRET_KEY,JWT_SECRET}`, `DATASPOKE_AIRFLOW_FERNET_KEY`, `DATASPOKE_INTERNAL_TOKEN`, `DATASPOKE_JWT_SECRET_KEY`, `DATASPOKE_OAUTH_STATE_SECRET`, `DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET`.
+     `DATASPOKE_AIRFLOW_FERNET_KEY` must be URL-safe base64 of 32 raw bytes (`openssl rand -base64 32 | tr '+/' '-_'`) — the prod pre-flight rejects a hex value, because Fernet cannot decode it.
    - None holds a known-bad literal: `DATASPOKE_JWT_SECRET_KEY` equal to the dev default, `DATASPOKE_AIRFLOW_USER` equal to `admin`, `DATASPOKE_AIRFLOW_PASSWORD` empty or `admin`, `DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET` starting with `placeholder-`.
 
    If the Secret is missing, point the user at `README.md §2` — deliver the keys via ExternalSecrets, Vault, or SealedSecrets; the `kubectl create secret --from-env-file` form is the one-off bootstrap floor, never `--from-literal` (leaks into shell history and `ps auxww`). Do not create the Secret for the user, and do not put its values in the env file.
@@ -154,7 +155,7 @@ None of the dev steps above apply — prod installs no peripherals, seeds no dum
    - dev — mix-and-match with `--delete-pvcs` and/or `--delete-namespaces` for partial wipes.
    - **prod** — `--delete-pvcs` is dev-only and does not apply. Namespace deletion is prod's only full wipe:
      `./helm-charts/bin/uninstall.sh --profile prod --no-question --delete-namespaces`
-     The flagless form uninstalls the release and chart-derived Secrets only. The operator-owned credential Secret is never deleted by the script. Before removing anything by hand, read `README.md §"Prod: what survives an uninstall"` — deleting `dataspoke-secrets` destroys the only copy of the 12 credentials and strands a retained Postgres PVC, and `dataspoke-airflow-fernet-key` must be kept or deleted together with that PVC or Airflow breaks on the next install.
+     The flagless form uninstalls the release and chart-derived Secrets only. The operator-owned credential Secret is never deleted by the script. Before removing anything by hand, read `README.md §"Prod: what survives an uninstall"` — deleting `dataspoke-secrets` destroys the only copy of the 13 credentials and strands a retained Postgres PVC. The coupling is whole-Secret, not per-key: `DATASPOKE_AIRFLOW_FERNET_KEY` decrypts the Airflow connections and Variables in that PVC, and `DATASPOKE_POSTGRES_PASSWORD` is regenerated on the next install if the Secret is absent — so the credentials Secret and the PVCs must be kept or dropped together, never one without the other.
 3. Clean up any orphaned PersistentVolumes in `Released` state.
 
 ### Partial uninstall (specific components)

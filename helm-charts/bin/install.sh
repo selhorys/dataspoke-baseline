@@ -19,7 +19,7 @@
 #                               cluster — build image and deploy in-cluster via Helm.
 #                                         (prod default; also available in dev)
 #   --skip-build                Skip Docker image rebuilds (api/airflow/postgres/frontend).
-#   --skip-seed                 Skip post-install admin-API seeding (dev only).
+#   --skip-seed                 Skip post-install admin-API seeding (both profiles).
 #   --values <path>             Extra values file for the umbrella chart (prod).
 #   --image-tag <tag>           Override image tag (default: dev).
 #   --help, -h                  Print this usage message.
@@ -111,6 +111,25 @@ source "$ENV_FILE"
 # an editor that inherits a permissive umask.
 chmod 600 "$ENV_FILE" 2>/dev/null || true
 
+# Every *_NAMESPACE var below is interpolated into `kubectl apply -f -` YAML
+# documents throughout this script (metadata.name / metadata.namespace), so an
+# unvalidated value could inject an arbitrary extra manifest. Kubernetes
+# namespaces are DNS-1123 labels: lowercase alphanumeric or '-', starting and
+# ending alphanumeric, max 63 chars. Checked once here rather than per call
+# site, mirroring ingress_class()/ingress_tls_secret() in lib/helpers.sh.
+_validate_namespace_var() {
+  local var_name="$1"
+  local val="${!var_name:-}"
+  [[ -z "$val" ]] && return 0
+  if [[ ! "$val" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ || "${#val}" -gt 63 ]]; then
+    error "Invalid ${var_name} '${val}'. Must be a valid Kubernetes namespace (DNS-1123 label: lowercase alphanumeric and '-', max 63 chars)."
+  fi
+}
+_validate_namespace_var DATASPOKE_KUBE_DATASPOKE_NAMESPACE
+_validate_namespace_var DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE
+_validate_namespace_var DATASPOKE_DEV_KUBE_LANGFUSE_NAMESPACE
+_validate_namespace_var DATASPOKE_DEV_KUBE_DUMMY_DATA_NAMESPACE
+
 START_TIME=$SECONDS
 export START_TIME
 
@@ -122,8 +141,8 @@ echo ""
 # Pre-flight: required tools
 # ---------------------------------------------------------------------------
 info "Checking required tools..."
-require_tools kubectl helm
-info "kubectl and helm are available."
+require_tools kubectl helm python3
+info "kubectl, helm, and python3 are available."
 
 # ---------------------------------------------------------------------------
 # Per-install tempdir for background task logs (0700, cleaned on exit)
@@ -192,6 +211,65 @@ _build_chart_deps() {
 # Secret management helpers
 # ---------------------------------------------------------------------------
 
+# _ensure_fernet_key_joins_credentials_secret <namespace> <secret_name>
+# Dev-only self-heal for a credentials Secret that predates
+# DATASPOKE_AIRFLOW_FERNET_KEY joining the 13-key contract: patches the key in
+# rather than leaving the Secret on its old 12-key shape, which would
+# otherwise hard-error later in _ensure_airflow_fernet_secret with no
+# remediation. Adopts, in order: the key already projected into
+# dataspoke-airflow-metadata-encryption-key (the new-name projection), then
+# dataspoke-airflow-fernet-key (the Airflow subchart's own pre-install-hook
+# Secret, from a release installed before fernetKeySecretName was pinned) —
+# so a cluster that already ran Airflow keeps its stored connections and
+# Variables decryptable. Generation is the last resort, only when neither
+# exists. No-op once the key is present. Prod never calls this — the operator
+# owns the pre-created Secret's shape; see _check_airflow_credentials_prod.
+_ensure_fernet_key_joins_credentials_secret() {
+  local ns="$1"
+  local secret_name="$2"
+
+  local existing
+  existing="$(kubectl get secret "${secret_name}" -n "${ns}" \
+    -o jsonpath='{.data.DATASPOKE_AIRFLOW_FERNET_KEY}' 2>/dev/null | base64 --decode 2>/dev/null || true)"
+  [[ -n "${existing}" ]] && return 0
+
+  info "'${secret_name}' predates DATASPOKE_AIRFLOW_FERNET_KEY joining the credentials contract — adding it."
+
+  local fernet_key="" adopted_from=""
+  if kubectl get secret dataspoke-airflow-metadata-encryption-key -n "${ns}" >/dev/null 2>&1; then
+    fernet_key="$(kubectl get secret dataspoke-airflow-metadata-encryption-key -n "${ns}" \
+      -o jsonpath='{.data.fernet-key}' | base64 --decode)"
+    adopted_from="dataspoke-airflow-metadata-encryption-key"
+  fi
+  if [[ -z "${fernet_key}" ]] && kubectl get secret dataspoke-airflow-fernet-key -n "${ns}" >/dev/null 2>&1; then
+    fernet_key="$(kubectl get secret dataspoke-airflow-fernet-key -n "${ns}" \
+      -o jsonpath='{.data.fernet-key}' | base64 --decode)"
+    adopted_from="dataspoke-airflow-fernet-key"
+  fi
+
+  if [[ -n "${fernet_key}" ]]; then
+    info "  Adopting the Fernet key already live in this cluster (${adopted_from})."
+  else
+    info "  No live Fernet key found on this cluster — generating a new one."
+    fernet_key="$(python3 -c 'import secrets, base64; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())')"
+  fi
+
+  # --patch-file /dev/stdin (not -p with the value inlined) so the key
+  # material never lands in this process's argv — matching every other
+  # Secret write in this file and the ps-visibility guidance in README.md.
+  kubectl patch secret "${secret_name}" -n "${ns}" --type=merge --patch-file /dev/stdin <<EOF
+{"data":{"DATASPOKE_AIRFLOW_FERNET_KEY":"$(printf '%s' "${fernet_key}" | base64 | tr -d '\n')"}}
+EOF
+
+  # dataspoke-airflow-fernet-key is left in place even when adopted from —
+  # it is not deleted here so a mid-upgrade pod restart never finds Airflow's
+  # secretKeyRef pointing at a Secret that no longer exists (the umbrella
+  # helm upgrade that re-points every Airflow component onto
+  # dataspoke-airflow-metadata-encryption-key has not run yet at this point
+  # in the install). helm-charts/bin/uninstall.sh deletes it alongside the
+  # other chart-derived Airflow Secrets on both profiles.
+}
+
 # _ensure_dataspoke_secrets <namespace> <profile> [<secret_name>]
 # Idempotent: creates the consolidated credential Secret in dev with
 # auto-generated values (including Airflow webserver/jwt secrets).
@@ -203,7 +281,16 @@ _ensure_dataspoke_secrets() {
   local secret_name="${3:-dataspoke-secrets}"
 
   if kubectl get secret "${secret_name}" -n "${ns}" >/dev/null 2>&1; then
-    info "'${secret_name}' already exists in '${ns}' — leaving untouched."
+    if [[ "$profile" == "dev" ]]; then
+      # Dev may still self-heal a pre-existing Secret that predates the
+      # 13-key contract (see _ensure_fernet_key_joins_credentials_secret), so
+      # "leaving untouched" would be inaccurate here — that function logs its
+      # own message on the patch path.
+      info "'${secret_name}' already exists in '${ns}'."
+      _ensure_fernet_key_joins_credentials_secret "${ns}" "${secret_name}"
+    else
+      info "'${secret_name}' already exists in '${ns}' — leaving untouched."
+    fi
     return 0
   fi
 
@@ -220,6 +307,7 @@ _ensure_dataspoke_secrets() {
     --from-literal=DATASPOKE_JWT_SECRET_KEY=<k> \\
     --from-literal=DATASPOKE_AIRFLOW_WEBSERVER_SECRET_KEY=<k> \\
     --from-literal=DATASPOKE_AIRFLOW_JWT_SECRET=<k> \\
+    --from-literal=DATASPOKE_AIRFLOW_FERNET_KEY=<f> \\
     --from-literal=DATASPOKE_OAUTH_STATE_SECRET=<k> \\
     --from-literal=DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET=<s> \\
     -n ${ns}
@@ -242,6 +330,36 @@ or pass --values <overlay.yaml> with secrets.existingSecret: <name>"
   # OAuth state secret: auto-generated per install (random HMAC key).
   local oauth_state_secret
   oauth_state_secret="$(openssl rand -hex 32)"
+
+  # Airflow Fernet key: encrypts connection secrets and Variables in Airflow's
+  # metadata DB (the Postgres PVC), so it must not silently change while that
+  # PVC survives — a fresh value would leave every stored connection and
+  # Variable permanently undecryptable. `openssl rand -hex 32` (used for every
+  # other key above) is the wrong shape: it decodes to 48 raw bytes, and
+  # Fernet requires exactly 32. Generation is the last resort — first adopt
+  # whatever key is already projected into
+  # dataspoke-airflow-metadata-encryption-key on this cluster, so a
+  # credentials Secret re-created by hand while the release is live keeps the
+  # Postgres PVC's Airflow connections decryptable. This path — a fresh
+  # `_ensure_dataspoke_secrets` create — does not cover a `bin/uninstall.sh`
+  # dev teardown, which deletes the credentials Secret and this projection
+  # together; see spec/feature/HELM_CHART.md §Dev — install-time provisioning.
+  local airflow_fernet_key=""
+  if kubectl get secret dataspoke-airflow-metadata-encryption-key -n "${ns}" >/dev/null 2>&1; then
+    airflow_fernet_key="$(kubectl get secret dataspoke-airflow-metadata-encryption-key -n "${ns}" \
+      -o jsonpath='{.data.fernet-key}' | base64 --decode)"
+    [[ -n "${airflow_fernet_key}" ]] && info "  Adopting the Fernet key already projected into dataspoke-airflow-metadata-encryption-key."
+  fi
+  if [[ -z "${airflow_fernet_key}" ]] && kubectl get secret dataspoke-airflow-fernet-key -n "${ns}" >/dev/null 2>&1; then
+    # The Airflow subchart's own pre-install-hook Secret, from a release
+    # installed before fernetKeySecretName was pinned.
+    airflow_fernet_key="$(kubectl get secret dataspoke-airflow-fernet-key -n "${ns}" \
+      -o jsonpath='{.data.fernet-key}' | base64 --decode)"
+    [[ -n "${airflow_fernet_key}" ]] && info "  Adopting the Fernet key already projected into dataspoke-airflow-fernet-key (legacy subchart hook Secret)."
+  fi
+  if [[ -z "${airflow_fernet_key}" ]]; then
+    airflow_fernet_key="$(python3 -c 'import secrets, base64; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())')"
+  fi
 
   # Google OAuth client secret: sourced from DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_SECRET
   # in .env. Falls back to a placeholder if absent — the OAuth callback will fail
@@ -268,6 +386,7 @@ data:
   DATASPOKE_JWT_SECRET_KEY: $(printf '%s' "${jwt_secret}" | base64 | tr -d '\n')
   DATASPOKE_AIRFLOW_WEBSERVER_SECRET_KEY: $(printf '%s' "${airflow_webserver_secret}" | base64 | tr -d '\n')
   DATASPOKE_AIRFLOW_JWT_SECRET: $(printf '%s' "${airflow_jwt_secret}" | base64 | tr -d '\n')
+  DATASPOKE_AIRFLOW_FERNET_KEY: $(printf '%s' "${airflow_fernet_key}" | base64 | tr -d '\n')
   DATASPOKE_OAUTH_STATE_SECRET: $(printf '%s' "${oauth_state_secret}" | base64 | tr -d '\n')
   DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET: $(printf '%s' "${google_oauth_client_secret}" | base64 | tr -d '\n')
 EOF
@@ -389,6 +508,91 @@ EOF
   fi
 }
 
+# _ensure_airflow_fernet_secret <namespace> <secret_name>
+# Projects DATASPOKE_AIRFLOW_FERNET_KEY from the consolidated Secret into
+# dataspoke-airflow-metadata-encryption-key (key: fernet-key), the single-key
+# shape the Airflow chart's fernetKeySecretName expects. Idempotent, but —
+# unlike _ensure_airflow_key_secrets — deliberately has no rotation branch:
+# the two signing keys tolerate rotation (a mismatch is re-projected and the
+# affected pods restarted, costing only live Airflow sessions), but the
+# Fernet key encrypts Airflow's stored connections and Variables in the
+# metadata DB, so re-projecting a changed value would leave that data
+# permanently undecryptable with no recovery path. A live projection that
+# disagrees with the source key therefore aborts the install with the
+# recovery command instead of silently overwriting it. The comparison source
+# falls back to dataspoke-airflow-fernet-key (the Airflow subchart's own
+# pre-install-hook Secret) whenever dataspoke-airflow-metadata-encryption-key
+# does not exist yet OR exists with an empty/absent fernet-key — gated on the
+# read VALUE, not on Secret existence, so a cluster installed before
+# fernetKeySecretName was pinned to the new name — where the new-name
+# projection has never been created, or exists but was never populated —
+# still gets a real comparison instead of an unchecked create. Mirrors
+# _ensure_fernet_key_joins_credentials_secret's emptiness-gated fallback above.
+_ensure_airflow_fernet_secret() {
+  local ns="$1"
+  local secret_name="$2"
+
+  local fernet_key
+  fernet_key="$(kubectl get secret "${secret_name}" -n "${ns}" \
+    -o jsonpath='{.data.DATASPOKE_AIRFLOW_FERNET_KEY}' | base64 --decode)"
+
+  if [[ -z "${fernet_key}" ]]; then
+    error "Secret '${secret_name}' is missing DATASPOKE_AIRFLOW_FERNET_KEY."
+  fi
+
+  local existing_fernet_key="" compared_against="dataspoke-airflow-metadata-encryption-key"
+  if kubectl get secret dataspoke-airflow-metadata-encryption-key -n "${ns}" >/dev/null 2>&1; then
+    existing_fernet_key="$(kubectl get secret dataspoke-airflow-metadata-encryption-key -n "${ns}" \
+      -o jsonpath='{.data.fernet-key}' | base64 --decode)"
+  fi
+  if [[ -z "${existing_fernet_key}" ]] && kubectl get secret dataspoke-airflow-fernet-key -n "${ns}" >/dev/null 2>&1; then
+    existing_fernet_key="$(kubectl get secret dataspoke-airflow-fernet-key -n "${ns}" \
+      -o jsonpath='{.data.fernet-key}' | base64 --decode)"
+    compared_against="dataspoke-airflow-fernet-key"
+  fi
+
+  if [[ -n "${existing_fernet_key}" && "${existing_fernet_key}" != "${fernet_key}" ]]; then
+    error "DATASPOKE_AIRFLOW_FERNET_KEY in Secret '${secret_name}' disagrees with the key already
+projected into '${compared_against}' on this cluster. Re-projecting it
+would leave Airflow's stored connections and Variables in the metadata DB permanently
+undecryptable, so this aborts instead. To recover, restore the source key to match the live
+projection:
+  kubectl get secret ${compared_against} -n ${ns} \\
+    -o jsonpath='{.data.fernet-key}' | base64 --decode
+then set DATASPOKE_AIRFLOW_FERNET_KEY in '${secret_name}' to that value. Alternatively, drop the
+Postgres PVC together with the credentials Secret for a clean reset (dev: --delete-pvcs; prod:
+--delete-namespaces) — a freshly generated Fernet key is correct only once the PVC it would have
+disagreed with is also gone."
+  fi
+
+  # Gate the skip branch on the *value* actually live in the new-name
+  # projection matching the contract key — not on the Secret merely
+  # existing. existing_fernet_key is read from dataspoke-airflow-metadata-
+  # encryption-key only when compared_against still holds its default (the
+  # emptiness-gated fallback above overwrites it to the legacy Secret's name
+  # whenever the new one is absent OR present-but-empty); a missing Secret, a
+  # present Secret with an empty/absent fernet-key key, and a legacy-only
+  # projection all fail this check and fall through to the idempotent kubectl
+  # apply below.
+  if [[ -n "${existing_fernet_key}" \
+        && "${existing_fernet_key}" == "${fernet_key}" \
+        && "${compared_against}" == "dataspoke-airflow-metadata-encryption-key" ]]; then
+    info "  dataspoke-airflow-metadata-encryption-key already up to date — skipping."
+  else
+    info "Creating dataspoke-airflow-metadata-encryption-key..."
+    cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dataspoke-airflow-metadata-encryption-key
+  namespace: ${ns}
+type: Opaque
+data:
+  fernet-key: $(printf '%s' "${fernet_key}" | base64 | tr -d '\n')
+EOF
+  fi
+}
+
 # _rollout_restart_workload <namespace> <name>
 # Restarts a workload without hardcoding its kind: the Airflow chart renders
 # scheduler and triggerer as either a Deployment or a StatefulSet depending on
@@ -480,7 +684,7 @@ _write_env_var() {
 }
 
 # _check_airflow_credentials_prod <namespace> <secret_name>
-# Validates ALL 12 required keys are present, non-empty, and not equal to known
+# Validates ALL 13 required keys are present, non-empty, and not equal to known
 # insecure defaults. Prod profile only.
 _check_airflow_credentials_prod() {
   local ns="$1"
@@ -492,6 +696,7 @@ _check_airflow_credentials_prod() {
     DATASPOKE_AIRFLOW_USER DATASPOKE_AIRFLOW_PASSWORD
     DATASPOKE_INTERNAL_TOKEN DATASPOKE_JWT_SECRET_KEY
     DATASPOKE_AIRFLOW_WEBSERVER_SECRET_KEY DATASPOKE_AIRFLOW_JWT_SECRET
+    DATASPOKE_AIRFLOW_FERNET_KEY
     DATASPOKE_OAUTH_STATE_SECRET DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET
   )
 
@@ -500,9 +705,43 @@ _check_airflow_credentials_prod() {
     val="$(kubectl get secret "${secret_name}" -n "${ns}" \
       -o jsonpath="{.data.${key}}" 2>/dev/null | base64 --decode 2>/dev/null || true)"
     if [[ -z "${val}" ]]; then
-      error "prod Secret '${secret_name}' is missing required key: ${key}"
+      if [[ "${key}" == "DATASPOKE_AIRFLOW_FERNET_KEY" ]]; then
+        error "prod Secret '${secret_name}' is missing required key: DATASPOKE_AIRFLOW_FERNET_KEY.
+If this namespace already ran Airflow against a Postgres metadata DB you are keeping (for
+example a PVC retained from a previous release), do NOT generate a new key — supply the exact
+key that DB's connections and Variables were encrypted with, or they become permanently
+undecryptable. Recover it from whatever this cluster last projected it into:
+  kubectl get secret dataspoke-airflow-metadata-encryption-key -n ${ns} \\
+    -o jsonpath='{.data.fernet-key}' | base64 --decode
+  # or, on a cluster that predates DATASPOKE_AIRFLOW_FERNET_KEY joining the credentials Secret:
+  kubectl get secret dataspoke-airflow-fernet-key -n ${ns} \\
+    -o jsonpath='{.data.fernet-key}' | base64 --decode
+Add DATASPOKE_AIRFLOW_FERNET_KEY=<that value> to '${secret_name}' and re-run the install.
+Only if this is a genuinely fresh install (no retained Postgres PVC to decrypt), generate one:
+  python3 -c \"import secrets, base64; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())\""
+      else
+        error "prod Secret '${secret_name}' is missing required key: ${key}"
+      fi
     fi
   done
+
+  # Shape check for the Fernet key: `openssl rand -hex 32` — the shape every
+  # other high-entropy key above uses, and the one the README's own
+  # generation block sits directly next to — decodes to 48 raw bytes, not the
+  # 32 Fernet requires, so it passes pod startup and fails only the first
+  # time Airflow tries to encrypt or decrypt a connection or Variable, long
+  # after install reports success. Catch the shape mismatch here instead.
+  local fernet_val
+  fernet_val="$(kubectl get secret "${secret_name}" -n "${ns}" \
+    -o jsonpath='{.data.DATASPOKE_AIRFLOW_FERNET_KEY}' | base64 --decode)"
+  if [[ ! "${fernet_val}" =~ ^[A-Za-z0-9_-]{43}=$ ]]; then
+    error "DATASPOKE_AIRFLOW_FERNET_KEY in Secret '${secret_name}' is not shaped like a Fernet key
+(must be URL-safe base64 of exactly 32 raw bytes: 43 base64 characters followed by '='). Generate
+one with:
+  python3 -c \"import secrets, base64; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())\"
+— but only for a genuinely fresh install; see the missing-key error above if a Postgres PVC with
+existing Airflow connections/Variables survives this namespace."
+  fi
 
   local jwt_val
   jwt_val="$(kubectl get secret "${secret_name}" -n "${ns}" \
@@ -687,6 +926,20 @@ EOF
 # Reads the global $FRONTEND_MODE to decide whether to append frontend --set flags.
 _helm_upgrade_dataspoke_dev() {
   local ns="$1"
+
+  # This upgrade pins airflow.{apiSecretKeySecretName,jwtSecretName,
+  # fernetKeySecretName} below, so every call site of this function — the
+  # full install's phase 3 and the `--components api` fast path — must
+  # guarantee those projected Secrets (and the credentials Secret they derive
+  # from) exist first. The `--components frontend` fast path renders its own
+  # separate helm upgrade with the same pins and runs the identical sequence
+  # inline rather than through this function. Idempotent: a no-op once
+  # everything is already in sync.
+  _ensure_dataspoke_secrets "${ns}" "dev" "dataspoke-secrets"
+  _derive_airflow_metadata_secret "${ns}" "dataspoke-secrets"
+  _ensure_airflow_key_secrets "${ns}" "dataspoke-secrets"
+  _ensure_airflow_fernet_secret "${ns}" "dataspoke-secrets"
+
   local extra_env_file
   extra_env_file="$(_build_airflow_extra_env_file "dataspoke-secrets")"
   local dev_domain="${DATASPOKE_KUBE_INGRESS_DOMAIN:-dev.dataspoke.example.com}"
@@ -726,6 +979,7 @@ _helm_upgrade_dataspoke_dev() {
     --set-file "airflow.extraEnv=${extra_env_file}"
     --set "airflow.apiSecretKeySecretName=dataspoke-airflow-api-secret-key"
     --set "airflow.jwtSecretName=dataspoke-airflow-jwt-secret"
+    --set "airflow.fernetKeySecretName=dataspoke-airflow-metadata-encryption-key"
     --set-string "auth.googleClientId=${DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_ID:-}"
     --timeout 10m
   )
@@ -814,6 +1068,13 @@ if [[ "$PROFILE" == "dev" ]]; then
 
     _helm_upgrade_dataspoke_dev "${NS}"
 
+    # Roll the Airflow pods still holding a superseded signing key, if
+    # _helm_upgrade_dataspoke_dev found the credentials Secret's Airflow keys
+    # had drifted from their live projections.
+    if [[ "${AIRFLOW_KEYS_ROTATED}" == "true" ]]; then
+      _restart_airflow_key_consumers "${NS}"
+    fi
+
     info "Restarting dataspoke-api deployment to pick up new image..."
     kubectl rollout restart deployment/dataspoke-api -n "${NS}"
     kubectl rollout status deployment/dataspoke-api -n "${NS}" --timeout=5m \
@@ -884,6 +1145,15 @@ if [[ "$PROFILE" == "dev" ]]; then
     # of the stale packaged subchart in charts/.
     _build_chart_deps "$CHART_DIR"
 
+    # This is a full-release helm upgrade (below) that pins
+    # airflow.{apiSecretKeySecretName,jwtSecretName,fernetKeySecretName}, so it
+    # must guarantee those projected Secrets — and the credentials Secret they
+    # derive from — exist first. Idempotent: a no-op once already in sync.
+    _ensure_dataspoke_secrets "${NS}" "dev" "dataspoke-secrets"
+    _derive_airflow_metadata_secret "${NS}" "dataspoke-secrets"
+    _ensure_airflow_key_secrets "${NS}" "dataspoke-secrets"
+    _ensure_airflow_fernet_secret "${NS}" "dataspoke-secrets"
+
     SCHEME="$(ingress_scheme)"
     # One class for every Ingress this release renders. The API and frontend
     # templates read `ingress.className`, the Airflow chart reads
@@ -926,6 +1196,7 @@ if [[ "$PROFILE" == "dev" ]]; then
       --set-file "airflow.extraEnv=${local_extra_env_file}" \
       --set "airflow.apiSecretKeySecretName=dataspoke-airflow-api-secret-key" \
       --set "airflow.jwtSecretName=dataspoke-airflow-jwt-secret" \
+      --set "airflow.fernetKeySecretName=dataspoke-airflow-metadata-encryption-key" \
       --set-string "auth.googleClientId=${DATASPOKE_DEV_GOOGLE_OAUTH_CLIENT_ID:-}" \
       "${frontend_fast_args[@]}" \
       ${tls_fast_args[@]+"${tls_fast_args[@]}"} \
@@ -935,6 +1206,13 @@ if [[ "$PROFILE" == "dev" ]]; then
     kubectl rollout status deployment/dataspoke-frontend -n "${NS}" --timeout=5m \
       && info "dataspoke-frontend is ready." \
       || error "dataspoke-frontend did not become ready in time — check pod logs."
+
+    # Roll the Airflow pods still holding a superseded signing key, if the
+    # ensure-secrets step above found the credentials Secret's Airflow keys
+    # had drifted from their live projections.
+    if [[ "${AIRFLOW_KEYS_ROTATED}" == "true" ]]; then
+      _restart_airflow_key_consumers "${NS}"
+    fi
 
     echo ""
     info "Frontend deploy complete (t+$((SECONDS - START_TIME))s)."
@@ -1005,14 +1283,10 @@ if [[ "$PROFILE" == "dev" ]]; then
   if _has_component dataspoke-infra; then
     step 3 5 "dataspoke-infra (umbrella chart)"
 
-    # Consolidated credential Secret (idempotent)
-    _ensure_dataspoke_secrets "${NS}" "dev" "dataspoke-secrets"
-
-    # Airflow metadata DB connection Secret
-    _derive_airflow_metadata_secret "${NS}" "dataspoke-secrets"
-
-    # Airflow webserver/jwt key secrets (derived from dataspoke-secrets)
-    _ensure_airflow_key_secrets "${NS}" "dataspoke-secrets"
+    # The consolidated credential Secret and its Airflow projections
+    # (metadata-db connection, webserver/jwt keys, Fernet key) are ensured
+    # inside _helm_upgrade_dataspoke_dev below, ahead of the helm upgrade that
+    # pins their Secret names — see that function's header comment.
 
     # LLM API key (out-of-band secret)
     if [[ -n "${DATASPOKE_DEV_LLM_API_KEY:-}" ]]; then
@@ -1330,6 +1604,14 @@ elif [[ "$PROFILE" == "prod" ]]; then
   # Validate ALL required keys are present and not insecure defaults
   _check_airflow_credentials_prod "${NS}" "${SECRET_TO_CHECK}"
 
+  # Compare the Fernet key first and before any other Secret in this phase is
+  # mutated: on a mismatch it aborts non-mutating (it only writes when there is
+  # nothing yet to disagree with), so ordering it ahead of
+  # _derive_airflow_metadata_secret / _ensure_airflow_key_secrets keeps the
+  # "pre-flight fails before any resources are created" promise (README.md
+  # §2) true even for this check.
+  _ensure_airflow_fernet_secret "${NS}" "${SECRET_TO_CHECK}"
+
   # Derive Airflow metadata Secret from the operator Secret
   _derive_airflow_metadata_secret "${NS}" "${SECRET_TO_CHECK}"
 
@@ -1422,10 +1704,11 @@ elif [[ "$PROFILE" == "prod" ]]; then
     --set-file "airflow.extraEnv=${local_extra_env_file}" \
     --set "airflow.apiSecretKeySecretName=dataspoke-airflow-api-secret-key" \
     --set "airflow.jwtSecretName=dataspoke-airflow-jwt-secret" \
+    --set "airflow.fernetKeySecretName=dataspoke-airflow-metadata-encryption-key" \
     --set "secrets.existingSecret=${SECRET_TO_CHECK}" \
-    --set "frontend.existingSecretName=${SECRET_TO_CHECK}" \
     --set "postgresql.auth.existingSecret=${SECRET_TO_CHECK}" \
     --set "redis.auth.existingSecret=${SECRET_TO_CHECK}" \
+    --set "event-consumer.existingSecretName=${SECRET_TO_CHECK}" \
     --timeout 15m
 
   # -----------------------------------------------------------------------
@@ -1439,6 +1722,19 @@ elif [[ "$PROFILE" == "prod" ]]; then
   # Seed default admin user (idempotent)
   # -----------------------------------------------------------------------
   if [[ "$SKIP_SEED" == "false" ]]; then
+    # The seed script kubectl execs into the API pod. `--timeout 15m` above
+    # only waits for the Helm release, not pod readiness — a cold install can
+    # still be running the API's wait-for-postgres/alembic-migrate init
+    # containers here. Gate on the same idiom the dev branch uses (see
+    # "Wait for DataSpoke API" above) so a not-yet-ready pod produces a
+    # truthful error instead of the seed script's misleading "is the API
+    # running?" — the seed hard-depends on this pod, so `error` (not `warn`)
+    # is correct here.
+    info "Waiting for DataSpoke API to become ready before seeding..."
+    kubectl rollout status deployment/dataspoke-api -n "${NS}" --timeout=5m \
+      && info "DataSpoke API is ready." \
+      || error "DataSpoke API did not become ready in time — check pod logs (kubectl logs -n '${NS}' deploy/dataspoke-api)."
+
     info "Seeding default admin user..."
     bash "$SCRIPT_DIR/post-install/seed-admin-user.sh"
   else

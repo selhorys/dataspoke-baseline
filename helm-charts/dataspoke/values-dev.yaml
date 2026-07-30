@@ -294,3 +294,11 @@ airflow:
 # ---------------------------------------------------------------------------
 config:
   createConfigMap: true
+  # Dev runs the default trustedProxyIps (loopback only), so uvicorn does not trust
+  # the ingress controller's X-Forwarded-For and every request is attributed to the
+  # controller's own pod address — one bucket for the whole cluster. The test suites
+  # then contend with each other and with the frontend's polling for a single budget,
+  # which throttles the runner rather than any real client. Raised here so the shared
+  # bucket is not the bottleneck; the shipped default stays 120 in values.yaml, where
+  # it is a per-client budget for deployments that name their ingress CIDR.
+  rateLimitPerMinute: 6000

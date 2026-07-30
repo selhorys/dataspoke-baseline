@@ -870,11 +870,17 @@ not call these routes; they are not exposed through ingress.
 | `GET` | `/health` | Liveness check (no auth required) |
 | `GET` | `/ready` | Readiness check — per-dependency reachability for DataHub, PostgreSQL, Redis |
 
-`/ready` always returns `200` with `{status, checks}`, where `checks` carries a boolean per
-dependency (`datahub`, `postgres`, `redis`). `status` is `"ok"` only when every check is `true`,
-otherwise `"degraded"`. An unconfigured or unreachable peripheral (e.g. DataHub) yields its
-`checks` flag `false` and a `"degraded"` status — never a `503`. The endpoint reports state for
-probes to interpret rather than gating on dependency presence.
+`/ready` does not gate on dependency health: whenever the handler runs it answers `200` with
+`{status, checks}`, where `checks` carries a boolean per dependency (`datahub`, `postgres`,
+`redis`). `status` is `"ok"` only when every check is `true`, otherwise `"degraded"`. An
+unconfigured or unreachable peripheral (e.g. DataHub) yields its `checks` flag `false` and a
+`"degraded"` status — never a `503`. The endpoint reports state for probes to interpret rather
+than gating on dependency presence.
+
+Unlike `/health`, `/ready` is charged against the caller's default rate-limit budget and can
+therefore answer `429` before the handler runs — each call performs live dependency checks, so
+leaving it unmetered would make it an unauthenticated amplification vector. A prober that must
+never be throttled should use `/health`.
 
 > **Prefix exception**: System routes are mounted at the root (`/health`, `/ready`) — not
 > under `/api/v1/…` — so probes from kubelet, ingress, and platform tooling stay independent
@@ -980,8 +986,19 @@ All timestamps use ISO 8601 with UTC: `2026-02-27T10:00:00.000Z`.
 
 Requests pass through, in order: (1) **CORS** — allow configured origins, reject others with
 403; (2) **request logging** — method, path, trace ID, client IP before the handler;
-(3) **rate limiting** — SlowAPI fixed-window per user (Redis with in-memory fallback,
-default 120 req/min). On 429 the response body matches the standard error envelope
+(3) **rate limiting** — SlowAPI fixed-window, Redis-backed. The default budget is a **single
+per-caller limit** (default 120 req/min, `DATASPOKE_RATE_LIMIT_PER_MINUTE`) shared across every
+non-exempt route, not a fresh budget per endpoint. `/health` and the `/internal/*` callback plane
+sit outside this plane entirely — `/ready` is charged like any other route, because it performs
+live dependency checks ([§System](#system)) — and a request that
+matches no route is charged against the caller's budget rather than passing unmetered. This plane
+falls back to in-memory counting when Redis is unreachable. The credential-accepting auth routes —
+`/auth/register`, `/auth/token`, and the password-reset pair — are governed by a **separate
+fail-closed limiter** that answers `503 STORAGE_UNAVAILABLE` instead of falling back; they are
+charged on that limiter *instead of* the default budget, not in addition to it. Both planes'
+bucket keys, and the reasoning behind them, are in
+[AUTH.md §Client-IP attribution for rate limiting](feature/AUTH.md#client-ip-attribution-for-rate-limiting).
+On 429 the response body matches the standard error envelope
 (`error_code: "RATE_LIMIT_EXCEEDED"`, `message`, `trace_id`, `resp_time`) and headers
 include `Retry-After` plus `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`;
 (4) **JWT validation** — verify signature/expiry and extract claims; this is the token-local
@@ -993,11 +1010,11 @@ comparison rides on the role read, adding no round trip;
 (6) **route handler** — FastAPI DI + business logic;
 (7) **response logging** — status, latency, trace ID.
 
-> Rate limiting runs as Starlette middleware before any route handler so unauthenticated
-> clients are rate-limited too. The per-user key is the JWT `sub` claim when present,
-> falling back to client IP. Auth/role checks (layers 4–5) are route-level dependencies
-> rather than blanket middleware, so unauthenticated routes (`/health`, `/auth/*`)
-> coexist without exclusion lists.
+> The default limiter runs as Starlette middleware before any route handler, so unauthenticated
+> callers on the routes it covers are rate-limited too; `/health` and `/internal/*` are outside it,
+> and the credential-accepting auth routes are metered by the fail-closed limiter instead.
+> Auth/role checks (layers 4–5) are route-level dependencies rather than blanket
+> middleware, so unauthenticated routes (`/health`, `/auth/*`) coexist without exclusion lists.
 
 ### Trace ID
 
@@ -1113,7 +1130,7 @@ Clients should treat `detail` as optional; absent for errors that don't need it.
 | `PERIPHERAL_NOT_CONFIGURED` | 503 | A required peripheral is not configured. `detail.peripheral` identifies which one (`"smtp"` for `/auth/password/reset/request`; `"datahub"` for any DataHub-requiring endpoint when DataHub is unconfigured). Distinct from `DATAHUB_UNAVAILABLE` (502), which is the configured-but-unreachable case. The `/ready` health endpoint is the exception that reports an unconfigured peripheral as `degraded` rather than returning this code |
 | `DATAHUB_UNAVAILABLE` | 502 | DataHub GMS is configured but did not respond or returned an error |
 | `AIRFLOW_UNAVAILABLE` | 503 | The in-cluster Airflow REST API did not respond or returned an error while reading or setting DAG paused state (`GET`/`PATCH /admin/dags`) |
-| `STORAGE_UNAVAILABLE` | 503 | PostgreSQL or Redis connection failed (including auth refresh or revoke fail-closed when the revocation store is unreachable) |
+| `STORAGE_UNAVAILABLE` | 503 | PostgreSQL or Redis connection failed. Fail-closed sources: auth refresh and revoke when the revocation store is unreachable, and the credential-accepting auth routes when the rate limiter's storage is unreachable ([§Middleware Stack](#middleware-stack)) |
 | `INTERNAL_AUTH_NOT_CONFIGURED` | 503 | `X-Internal-Token` shared-secret header is required for `/internal/*` routes but the server-side secret is unset |
 | `RATE_LIMIT_EXCEEDED` | 429 | Too many requests; back off and retry |
 | `BAD_REQUEST` | 400 | `BadRequestError` raised with no more specific code (fallback) |

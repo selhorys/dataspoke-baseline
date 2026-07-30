@@ -19,7 +19,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -316,7 +316,18 @@ def _rate_limit_redis():
     """
     import redis as _redis_sync
 
-    client = _redis_sync.Redis(host=_redis_host, port=_redis_port, password=_redis_password or None)
+    from src.api.middleware.rate_limit import RATE_LIMIT_REDIS_DB
+
+    # Import the index rather than repeating it: the limiter keeps its counters in
+    # their own logical DB, away from the cache, the SET NX locks and the refresh
+    # revocation set. A hardcoded 0 here would flush the wrong keyspace and the
+    # only symptom would be auth tests bleeding their 5/min window into each other.
+    client = _redis_sync.Redis(
+        host=_redis_host,
+        port=_redis_port,
+        password=_redis_password or None,
+        db=RATE_LIMIT_REDIS_DB,
+    )
     yield client
     client.close()
 
@@ -740,11 +751,23 @@ async def override_app(
 
         app.dependency_overrides[get_notification] = lambda: notification
 
-    async with AsyncClient(
-        transport=ASGITransport(app=app),
-        base_url="http://testserver",
-    ) as client:
-        yield client
+    # This transport runs the app inside the test process, where `settings.redis_host`
+    # points at a Redis the host does not run. The credential-accepting auth routes are
+    # governed by a fail-closed limiter, so leaving it armed makes every request to
+    # /auth/* answer 503 STORAGE_UNAVAILABLE before reaching the handler under test —
+    # masking whatever the test actually asserts. The limits themselves are exercised
+    # against the in-cluster API, not here.
+    from src.api.middleware import rate_limit as _rate_limit
+
+    with (
+        patch.object(_rate_limit.auth_limiter, "enabled", False),
+        patch.object(_rate_limit.limiter, "enabled", False),
+    ):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://testserver",
+        ) as client:
+            yield client
 
     app.dependency_overrides.clear()
 

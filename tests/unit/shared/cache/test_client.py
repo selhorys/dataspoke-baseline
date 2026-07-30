@@ -21,7 +21,6 @@ from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from src.shared.cache.client import (
     QUALITY_CACHE_KEY,
-    RATE_LIMIT_KEY,
     VALIDATION_CACHE_KEY,
     RedisClient,
 )
@@ -118,7 +117,6 @@ def test_cache_key_formatting() -> None:
     assert (
         QUALITY_CACHE_KEY.format(dataset_urn="urn:li:dataset:x") == "quality:urn:li:dataset:x:score"
     )
-    assert RATE_LIMIT_KEY.format(user_id="user-1") == "rate_limit:user-1"
 
 
 # ── Connection resilience knobs ───────────────────────────────────────────────

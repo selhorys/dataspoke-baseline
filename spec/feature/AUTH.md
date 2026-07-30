@@ -886,6 +886,7 @@ on the next install only if zero Admin rows remain.
 | SMTP peripheral missing during password-reset request | Request refuses; no DB write. | `503 PERIPHERAL_NOT_CONFIGURED`. | Admin configures `/admin/peripherals/smtp`. |
 | SMTP configured but delivery fails (transport error, auth rejection, queue full) during password-reset request | Request refuses; no DB write — the token row is written only after `send_email` returns successfully. | `503 STORAGE_UNAVAILABLE` with a static message; the underlying SMTP error is logged but not echoed to the client. | Inspect API logs for the upstream cause; fix the SMTP path and retry. |
 | Redis unreachable during refresh or revoke | Refresh/revoke fail-closed. | `503 STORAGE_UNAVAILABLE`. | Restore Redis. |
+| Redis unreachable during rate limiting | The auth-route limiter fails closed, matching the refresh path above; after a storage failure it fast-denies for a short cooldown rather than re-paying the connect timeout on each request. Every other route keeps its single per-caller budget on the default limiter, which falls back to per-process in-memory counting. Neither plane stalls the event loop while Redis hangs — both check limits on a worker thread under bounded socket timeouts ([§Client-IP attribution for rate limiting](#client-ip-attribution-for-rate-limiting)). | Auth routes (`/auth/register`, `/auth/token`, and the password-reset pair): `503 STORAGE_UNAVAILABLE`. Other routes: served, but the effective budget multiplies by the number of API worker processes, so the global limit is not enforced for the duration. | Restore Redis, then restart the API pods. The fallback is a sticky per-process flag whose recovery probe backs off exponentially, so a worker that flipped to memory does not necessarily resume shared counting when Redis returns. |
 | Google OAuth state mismatch on callback | Callback aborts before token issuance. | `400 OAUTH_STATE_MISMATCH`. | User retries the OAuth flow. |
 | Google OAuth callback receives ID token with `email_verified=false` | Callback rejects the token; no user is created or logged in. | `400 OAUTH_EMAIL_NOT_VERIFIED`. | User verifies their Google account email and retries. |
 | Google identity binds onto an unbound row matched by email | The bind and the [credential reset](#credential-reset-on-link) commit in one transaction; one `AUTH.GOOGLE_LINK_CREDENTIAL_RESET` event records what was cleared. | The user is logged in via Google. Password login and every previously minted API token stop working; `GET /auth/me` reports `has_password: false`. | None. The user sets a new password via `PATCH /auth/me` and re-mints any API tokens they still need. |
@@ -918,10 +919,11 @@ radius is bounded to DataSpoke:
   point it exists and belongs to them. The squatter's row still never
   addresses it, because the squatter cannot produce a Google identity for that
   address and therefore cannot bind their row to it.
-- `POST /auth/register` is rate-limited by the API rate-limit middleware. This
-  bounds *bulk automated* registration only. It is not a meaningful barrier to
-  the targeted squatting described above, which needs exactly one request per
-  address claimed. The limit is per client only in deployments that have named
+- `POST /auth/register` is rate-limited by the fail-closed auth limiter that
+  governs the credential-accepting routes, not by the default middleware
+  limiter. This bounds *bulk automated* registration only. It is not a meaningful
+  barrier to the targeted squatting described above, which needs exactly one
+  request per address claimed. The limit is per client only in deployments that have named
   their trusted proxies and preserve the real client IP; by default all
   unauthenticated traffic shares one bucket (see
   [Client-IP attribution for rate limiting](#client-ip-attribution-for-rate-limiting)).
@@ -982,16 +984,61 @@ Residual exposure that the reset does not remove:
 
 ### Client-IP attribution for rate limiting
 
-The rate-limit middleware keys on the JWT `sub` claim when a request carries
-one and falls back to the client IP otherwise
-([API.md §Middleware Stack](../API.md#middleware-stack)). The key is derived
-from the `Authorization: Bearer` header alone, so every request without an
-access token — `/auth/register`, `/auth/token`, the password-reset pair, and
-the cookie- or OAuth-credentialed routes — is bucketed by whatever address the
-API observes as the client. That address is a security-relevant deployment
-property: if it collapses to a single value, all unauthenticated traffic shares
-one bucket. It is the only brute-force control on `POST /auth/token` — DataSpoke
-has no account lockout — so its fidelity matters beyond registration abuse.
+Each of the two rate-limit planes buckets a request by a key it derives from
+that request, and the two derive it differently on purpose
+([API.md §Middleware Stack](../API.md#middleware-stack) owns the budgets, the
+route exemptions, and the 429 contract).
+
+**The default plane keys on caller identity**, taking the first of: the JWT
+`sub` claim; a fingerprint (truncated SHA-256) of an opaque `dsk_…` API token;
+the `sub` of a signature-verified refresh cookie — consulted only when the
+request presents no `Authorization: Bearer` header at all, so a request carrying
+an unreadable bearer token keys on the address even if a valid cookie rides
+along; the observed client address.
+This is a *fairness* key, not a security boundary — the caller chooses which of
+those credentials it presents. Each branch keeps a class of caller out of the
+address bucket: API-token clients (the end-user plugin carries no other
+credential) would otherwise share one budget deployment-wide, and
+`POST /auth/token/refresh` — a public route that authenticates by cookie alone —
+would let one client exhaust every user's ability to refresh.
+
+**The auth plane keys on the observed client address, unconditionally.** The
+routes it governs accept credentials, so their callers are unauthenticated by
+definition and every identity in such a request is one the caller chose; both
+`POST /auth/register` and `POST /auth/token` moreover *hand out* exactly such a
+credential, so any request-derived key would let the limited party mint itself a
+fresh budget per credential acquired. This limiter is the only brute-force
+control on `POST /auth/token` — DataSpoke has no account lockout — and a bound
+the limited party can reset is not a bound on guessing rate. The price of the
+choice is that the address has to be attributed correctly, which is what the
+rest of this section is about: if it collapses to a single value, all
+unauthenticated traffic shares one bucket.
+
+Being the only such control also shapes how that plane fails and where its
+counters live:
+
+- **Fail-closed.** No in-memory fallback and no swallowed storage errors: an
+  unreachable Redis makes these routes answer `503 STORAGE_UNAVAILABLE`, the
+  same posture `/auth/token/refresh` takes on revocation lookups. The control
+  cannot weaken silently — it becomes a visible outage. The default plane keeps
+  its in-memory fallback instead, because denying every read route on a Redis
+  outage is a worse outcome than an imprecise shared budget.
+- **Bounded storage timeouts.** The limiters' Redis client pins explicit connect
+  and read timeouts rather than inheriting the OS default, which runs to minutes
+  against a blackholed SYN. A fail-closed limiter never marks its storage dead,
+  so every auth request would otherwise re-pay that wait; a short post-failure
+  cooldown fast-denies without touching the socket until Redis is worth
+  retrying.
+- **Off the event loop.** The counter store is a synchronous Redis client, so
+  both planes run the limit check on a worker thread. Checked inline it would
+  park the whole uvicorn worker for the socket timeout on every request while
+  Redis is unreachable, freezing every other in-flight request with it —
+  including the Kubernetes probes on `/health`, which turns a Redis stall into a
+  pod restart loop.
+- **A dedicated Redis logical DB.** The counters live apart from the application
+  cache, the `SET NX` concurrency locks, and the refresh-revocation set, so
+  nothing in the key-eviction path of ordinary cached data can clear a
+  brute-force counter.
 
 The observed address is the real client only if **every hop between client and
 API preserves it**. Two classes of hop matter:

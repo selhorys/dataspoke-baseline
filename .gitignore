@@ -10,9 +10,16 @@ __pycache__/
 .ruff_cache/
 .venv/
 
-helm-charts/.env
-helm-charts/.env.dev
-helm-charts/.env.prod
+# Env files anywhere in the repo — deny by default. Unanchored (no leading
+# /) so it covers not just the repo root and helm-charts/ but any path a
+# --env-file argument to bin/install.sh or bin/uninstall.sh can name (e.g.
+# deploy/.env.staging). Matches on basename, so .prauto/config.env,
+# .prauto/config.local.env.example, and migrations/env.py are unaffected
+# (their basenames don't start with ".env"). *.example templates and
+# .envrc (direnv config, not a credential file) are re-included.
+.env*
+!.env*.example
+!.envrc
 helm-charts/dataspoke/charts/
 helm-charts/dev-peripherals/langfuse/charts/
 memory/

@@ -9,8 +9,12 @@
 - [Consumer DB-plane → wire boundary](project_consumer_db_plane_to_wire_boundary.md) — peripheral_config JSONB must be re-validated on READ; consumer skips it, unlike peripheral_links
 - [.env → sed/helm interpolation boundary](project_env_to_sed_helm_interpolation_boundary.md) — ingress_tls_secret validates, ingress_class/domain do not; sed→kubectl apply is a sink
 - [DataHub GMS public virtual host](project_datahub_gms_public_virtual_host.md) — GMS at datahub-gms.<domain>/ root; auth-excluded paths + no TLS block; exposure set unchanged vs old /gms route
-- [FORWARDED_ALLOW_IPS trust radius](project_forwarded_allow_ips_trust_radius.md) — trust list = who may choose their own client IP; also governs XFP/OAuth redirect_uri scheme
+- [FORWARDED_ALLOW_IPS trust radius](project_forwarded_allow_ips_trust_radius.md) — who picks their own client IP; the render guard blocks "" and "*" but not 0.0.0.0/0
 - [Auth credential-carrier inventory](project_auth_credential_carrier_inventory.md) — the 7 carriers every auth diff must clear; lock order users→api_tokens→reset_tokens; why the lock alone isn't enough
 - [Recipe regex trust boundary](project_recipe_regex_trust_boundary.md) — writer regexes on the API's one event loop; malformed guarded, ReDoS is #114 (2 fixes already rejected)
 - [peripheral_health last_error redaction](project_peripheral_health_error_redaction.md) — the 3 sinks for a DataHub transport error; 401/403 still bypasses the exact-value scrub
 - [Sanitizer pipeline ordering](project_sanitizer_pipeline_ordering.md) — normalize BEFORE exact-scrub; affix⊋lookbehind class drives a 48x regex constant
+- [slowapi blocking storage on event loop](project_slowapi_blocking_storage_event_loop.md) — both planes now off-loop; verify with heartbeat ticks (128 vs 2), never elapsed time
+- [Credentials-Secret key addition](project_credentials_secret_contract_key_addition.md) — 4 blind spots, all closed; dev Fernet loss ≠ prod
+- [Credentials-Secret envFrom fan-out](project_credentials_secret_envfrom_fanout.md) — envFrom, no key selection: api + 2 init containers + event-consumer; frontend grant removed
+- [Default rate-limit plane enforcement](project_default_rate_limit_plane_enforcement.md) — bucket is (caller, "global"); the caller key is attacker-chosen — Bearer dsk_<random> bypasses the whole budget

@@ -124,7 +124,7 @@ def _key_behind_proxy_headers(
 def test_limiter_has_in_memory_fallback_enabled() -> None:
     """Rate limiter must have in_memory_fallback_enabled=True to survive Redis outages.
 
-    spec: API.md §Middleware — a transient Redis outage must not block every request.
+    spec: API.md §Middleware Stack — a transient Redis outage must not block every request.
     """
     # slowapi Limiter stores this flag on the storage backend
     # The attribute is accessible via limiter._storage_uri or the in_memory flag.
@@ -135,21 +135,81 @@ def test_limiter_has_in_memory_fallback_enabled() -> None:
     # slowapi sets _in_memory_fallback_enabled on the limiter object
     assert getattr(limiter, "_in_memory_fallback_enabled", False) is True, (
         "Limiter must have in_memory_fallback_enabled=True so Redis outages do not "
-        "block all requests. spec: API.md §Middleware."
+        "block all requests. spec: API.md §Middleware Stack."
+    )
+
+
+def test_auth_limiter_has_no_in_memory_fallback() -> None:
+    """The credential-accepting routes must fail closed, not degrade to per-process counting.
+
+    spec: feature/AUTH.md §Failure Modes — Redis unreachable during rate limiting denies
+    the auth routes with 503 STORAGE_UNAVAILABLE. This is the inverse of the default
+    plane above, and the distinction is the whole point of having two limiters: falling
+    back to in-memory here would multiply the effective login limit by the replica count
+    at exactly the moment Redis is under pressure.
+    """
+    from src.api.middleware.rate_limit import auth_limiter
+
+    assert getattr(auth_limiter, "_in_memory_fallback_enabled", True) is False, (
+        "auth_limiter must be built with in_memory_fallback_enabled=False so a Redis "
+        "outage denies rather than silently weakens the only brute-force control. "
+        "spec: feature/AUTH.md §Failure Modes."
+    )
+
+
+def test_auth_limiter_bucket_key_is_not_caller_selectable() -> None:
+    """The auth limiter must key on the observed client address and nothing else.
+
+    spec: feature/AUTH.md §Client-IP attribution — this limiter is the only brute-force
+    control on POST /auth/token, as DataSpoke has no account lockout. Its routes accept
+    credentials, so every identity carried in the request is one the caller chose; both
+    /auth/register and /auth/token hand out such credentials, so a key derived from a
+    bearer token or the refresh cookie would let an attacker mint a fresh budget at will.
+    A bound the attacker can reset is not a bound on guessing rate.
+    """
+    import uuid
+    from unittest.mock import MagicMock
+
+    from src.api.middleware.rate_limit import auth_limiter
+    from src.backend.auth.tokens import issue_access_token
+
+    same_ip = "203.0.113.9"
+    token, _ = issue_access_token(uuid.uuid4(), "attacker@example.com", 0)
+
+    def _req(**headers: str) -> Request:
+        req = MagicMock(spec=Request)
+        req.headers = headers
+        req.cookies = {}
+        req.client = MagicMock()
+        req.client.host = same_ip
+        return req
+
+    anonymous = auth_limiter._key_func(_req())
+    with_bearer = auth_limiter._key_func(_req(authorization=f"Bearer {token}"))
+    with_cookie = auth_limiter._key_func(_req(cookie=f"refresh_token={token}"))
+
+    assert anonymous == with_bearer == with_cookie == same_ip, (
+        "auth_limiter must bucket on the client address regardless of any credential in "
+        f"the request; got anonymous={anonymous!r}, bearer={with_bearer!r}, "
+        f"cookie={with_cookie!r}. spec: feature/AUTH.md §Client-IP attribution."
     )
 
 
 def test_rate_limit_per_minute_derived_from_settings() -> None:
-    """default_limits must include a '/minute' limit from settings.rate_limit_per_minute.
+    """The default budget must be one per-caller limit from settings.rate_limit_per_minute.
 
-    spec: API.md §Middleware — rate limit is configured per settings.
+    spec: API.md §Middleware Stack — a single per-caller budget shared across every
+    non-exempt route, not a fresh budget per endpoint. SlowAPI expresses that as an
+    *application* limit (scope="global"); a per-endpoint budget would live in
+    ``_default_limits`` instead, so asserting on ``_application_limits`` is what
+    distinguishes the two.
 
     SlowAPI wraps each limit string in a LimitGroup object; the raw limit string is
     stored on the ``_LimitGroup__limit_provider`` private attribute.
     """
     from src.shared.settings import settings
 
-    default_limits = limiter._default_limits
+    application_limits = limiter._application_limits
     expected_fragment = f"{settings.rate_limit_per_minute}/minute"
 
     def _extract(lim) -> str:
@@ -159,10 +219,15 @@ def test_rate_limit_per_minute_derived_from_settings() -> None:
             return str(provider)
         return str(lim)
 
-    limit_strings = [_extract(lim) for lim in default_limits]
+    limit_strings = [_extract(lim) for lim in application_limits]
     assert any(expected_fragment in s for s in limit_strings), (
-        f"default_limits must contain '{expected_fragment}'; got: {limit_strings}. "
-        "spec: API.md §Middleware — per-minute limit derived from settings."
+        f"application_limits must contain '{expected_fragment}'; got: {limit_strings}. "
+        "spec: API.md §Middleware Stack — per-minute limit derived from settings."
+    )
+    assert not limiter._default_limits, (
+        "The default budget must be an application-wide limit, not a per-endpoint one: "
+        f"_default_limits should be empty, got {limiter._default_limits}. "
+        "spec: API.md §Middleware Stack — one per-caller budget across all routes."
     )
 
 
@@ -172,7 +237,8 @@ def test_rate_limit_per_minute_derived_from_settings() -> None:
 def test_get_user_key_falls_back_to_ip_without_auth_header() -> None:
     """_get_user_key falls back to remote address when Authorization header is absent.
 
-    spec: API.md §Middleware Stack — "The per-user key is the JWT `sub` claim when
+    spec: feature/AUTH.md §Client-IP attribution for rate limiting — "The per-user key
+    is the JWT `sub` claim when
     present, falling back to client IP." The key must *be* the client address, not
     merely some non-empty string: a constant would satisfy "non-empty" while collapsing
     every unauthenticated caller into one bucket.
@@ -245,7 +311,8 @@ def test_get_user_key_extracts_sub_from_valid_jwt() -> None:
 def test_distinct_client_addresses_get_distinct_rate_limit_keys() -> None:
     """Two unauthenticated clients at different addresses land in different buckets.
 
-    spec: API.md §Middleware Stack — "The per-user key is the JWT `sub` claim when
+    spec: feature/AUTH.md §Client-IP attribution for rate limiting — "The per-user key
+    is the JWT `sub` claim when
     present, falling back to client IP." A key that does not vary with the client IP
     is not a fallback to client IP: it collapses every unauthenticated caller into one
     bucket, so one attacker exhausts POST /auth/register and POST /auth/token for
@@ -288,7 +355,8 @@ def test_distinct_client_addresses_get_distinct_rate_limit_keys() -> None:
 def test_distinct_authenticated_users_from_one_address_get_distinct_keys() -> None:
     """Two users behind one NAT address are bucketed by JWT sub, not by the shared IP.
 
-    spec: API.md §Middleware Stack — "The per-user key is the JWT `sub` claim when
+    spec: feature/AUTH.md §Client-IP attribution for rate limiting — "The per-user key
+    is the JWT `sub` claim when
     present, falling back to client IP." The sub takes precedence, so co-located users
     do not consume each other's budget.
     """
@@ -650,13 +718,20 @@ def test_chart_configmap_binds_forwarded_allow_ips_to_trusted_proxy_ips() -> Non
     # The render-time guard is the chart's own enforcement of the two values that
     # silently defeat client-IP attribution: "" trusts nobody (XFF discarded, one
     # global bucket) and "*" trusts everybody (any caller names its own bucket).
-    guard = re.search(r"\{\{-?\s*fail\s.*?\}\}", configmap, re.S)
-    assert guard is not None, (
+    # Select the guard by its subject rather than by position: the template carries
+    # more than one `fail` guard, so matching the first one would silently start
+    # asserting against an unrelated value the moment another is added above it.
+    guard_condition = None
+    for match in re.finditer(r"\{\{-?\s*fail\s.*?\}\}", configmap, re.S):
+        condition = configmap[: match.start()].rsplit("{{", 1)[-1]
+        if "trustedProxyIps" in condition:
+            guard_condition = condition
+            break
+    assert guard_condition is not None, (
         "templates/configmap.yaml must fail the render on an empty or '*' "
         "config.trustedProxyIps rather than shipping a silently-inert trust list. "
         "spec: feature/HELM_CHART.md — '`*` is never correct'."
     )
-    guard_condition = configmap[: guard.start()].rsplit("{{", 1)[-1]
     for token in ("trustedProxyIps", "not ", '"*"'):
         assert token in guard_condition, (
             f"The fail guard's condition must cover {token!r}; got {guard_condition!r}. "

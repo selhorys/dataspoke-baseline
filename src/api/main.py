@@ -12,13 +12,18 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError as PydanticValidationError
+from redis.exceptions import RedisError
 from slowapi.errors import RateLimitExceeded
-from slowapi.middleware import SlowAPIMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
 from src.api.config import settings
 from src.api.middleware.logging import RequestLoggingMiddleware
-from src.api.middleware.rate_limit import limiter
+from src.api.middleware.rate_limit import (
+    RouteResolvingSlowAPIMiddleware,
+    limiter,
+    rate_limit_headers,
+    verify_route_resolution,
+)
 from src.api.routers import admin as admin_router
 from src.api.routers import auth as auth_router
 from src.api.routers import health
@@ -136,24 +141,24 @@ def _error_json(
 
 
 async def _handle_rate_limit(request: Request, exc: RateLimitExceeded) -> JSONResponse:
-    """Return the standard error envelope on 429 plus SlowAPI's rate-limit headers.
+    """Return the standard error envelope on 429 plus the rate-limit headers.
 
-    SlowAPI's default handler emits a plain text body. We wrap it so clients see
-    the standard {error_code, message, trace_id, resp_time} envelope while keeping
-    SlowAPI's X-RateLimit-* and Retry-After headers via _inject_headers.
+    SlowAPI's default handler emits a plain text body. This one gives clients the
+    standard {error_code, message, trace_id, resp_time} envelope alongside the
+    `Retry-After` and `X-RateLimit-*` headers spec/API.md §Middleware Stack
+    attaches to a 429. The header values come from the storage of whichever
+    limiter charged the request (see
+    `src.api.middleware.rate_limit.rate_limit_headers`).
     """
-    response = _error_json(
+    return _error_json(
         request,
         429,
         "RATE_LIMIT_EXCEEDED",
         f"Rate limit exceeded: {exc.detail}"
         if getattr(exc, "detail", None)
         else "Rate limit exceeded.",
+        headers=await rate_limit_headers(request),
     )
-    view_rate_limit = getattr(request.state, "view_rate_limit", None)
-    if view_rate_limit is not None:
-        response = request.app.state.limiter._inject_headers(response, view_rate_limit)
-    return response
 
 
 async def _handle_bad_request(request: Request, exc: BadRequestError) -> JSONResponse:
@@ -219,6 +224,30 @@ async def _handle_datahub(request: Request, exc: DataHubUnavailableError) -> JSO
 
 async def _handle_storage(request: Request, exc: StorageUnavailableError) -> JSONResponse:
     return _error_json(request, 503, exc.error_code, str(exc))
+
+
+async def _handle_unhandled_redis(request: Request, exc: RedisError) -> JSONResponse:
+    """Envelope-preserving catch for a `redis.RedisError` no caller converted.
+
+    Redis is a storage-tier dependency, so this keeps the `503
+    STORAGE_UNAVAILABLE` classification spec/API.md gives it. The message states
+    only that Redis is unreachable: this handler sees both reads that plainly
+    did not take effect and Redis calls made after a transaction has already
+    committed, so it is not in a position to tell the client whether its request
+    was denied. It is logged at ERROR because a Redis call reaching here is one
+    the code did not classify itself.
+    """
+    logger.error(
+        "unhandled_redis_error",
+        extra={"detail": str(exc), "path": request.url.path},
+        exc_info=True,
+    )
+    return _error_json(
+        request,
+        503,
+        StorageUnavailableError.error_code,
+        "Redis is unreachable.",
+    )
 
 
 async def _handle_airflow_unavailable(
@@ -353,6 +382,9 @@ def create_app() -> FastAPI:
     )
 
     # ── State (needed by slowapi) ──────────────────────────────────────────────
+    # The rate-limit middleware reads its limiter from app.state, so this names the
+    # default limiter. The fail-closed auth limiter is applied per route by
+    # @auth_route_limit and is never installed as middleware.
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _handle_rate_limit)  # type: ignore[arg-type]
 
@@ -371,6 +403,7 @@ def create_app() -> FastAPI:
     app.add_exception_handler(RequestValidationError, _handle_request_validation)  # type: ignore[arg-type]
     app.add_exception_handler(DataHubUnavailableError, _handle_datahub)  # type: ignore[arg-type]
     app.add_exception_handler(StorageUnavailableError, _handle_storage)  # type: ignore[arg-type]
+    app.add_exception_handler(RedisError, _handle_unhandled_redis)  # type: ignore[arg-type]
     app.add_exception_handler(AirflowUnavailableError, _handle_airflow_unavailable)  # type: ignore[arg-type]
     app.add_exception_handler(DataSpokeError, _handle_dataspoke_generic)  # type: ignore[arg-type]
 
@@ -378,8 +411,10 @@ def create_app() -> FastAPI:
     # Spec stack order (API.md §Middleware): 1 CORS, 2 logging, 3 rate-limit,
     # 4 JWT, 5 role, 6 handler. Steps 4–6 run as route-level Depends (see NOTE
     # below), so only 1–3 are registered as Starlette middleware here.
-    # 3. Rate limiting
-    app.add_middleware(SlowAPIMiddleware)
+    # 3. Rate limiting. The stock SlowAPIMiddleware cannot resolve endpoints
+    # behind `include_router` on FastAPI's lazy router, so it would exempt every
+    # application route; see src.api.middleware.rate_limit.
+    app.add_middleware(RouteResolvingSlowAPIMiddleware)
     # 2. Request logging (also adds trace ID header)
     app.add_middleware(RequestLoggingMiddleware)
     # Session (auxiliary — required by authlib OAuth state/nonce storage)
@@ -425,6 +460,11 @@ def create_app() -> FastAPI:
 
     # ── Admin routes (Admin role only) ────────────────────────────────────────
     app.include_router(admin_router.router, prefix=API_PREFIX)
+
+    # The rate-limit middleware resolves endpoints behind `include_router` using
+    # FastAPI internals; if a version bump removes them the default limit stops
+    # being enforced silently, so say so at startup.
+    verify_route_resolution(app)
 
     return app
 
