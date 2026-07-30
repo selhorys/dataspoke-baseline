@@ -9,7 +9,7 @@ dev-only peripheral manifests in `helm-charts/dev-peripherals/`.
 - `kubectl` installed and configured
 - `helm` v3 installed
 - `python3` (Fernet key generation, values parsing — required by every profile of `bin/install.sh` and by the prod path of `bin/uninstall.sh`)
-- A Kubernetes cluster with **8+ CPUs / 24 GB RAM** (dev) or operator-specified sizing (prod)
+- A Kubernetes cluster with **8+ CPUs / 24 GB RAM** (dev) or, for prod, node capacity for the umbrella chart's steady-state resource **requests** — **~4.35 CPU / 7.7 GiB RAM** across all replicas, per `spec/feature/HELM_CHART.md §Resource Sizing`'s Total row (limits burst to ~10.15 CPU / 18.1 GiB; add 66 GiB persistent volume across Postgres and Redis) — see [§Prod profile](#prod-profile), step 1, below for the per-component breakdown
 
 ## Quick Start
 
@@ -72,6 +72,11 @@ runbook in order.
 
 #### 1. Prerequisites
 
+- Cluster-scoped prerequisites the Helm release cannot own itself — at
+  minimum, any non-default `StorageClass` your operator overlay pins for
+  Postgres, Redis, or Airflow persistence. Apply these first; see
+  [`helm-charts/prod-prereq/`](prod-prereq/) for what belongs here and why,
+  and the exact overlay keys the pre-flight checks.
 - An IngressClass already installed in the cluster (default expected name
   `nginx`; override with `DATASPOKE_KUBE_INGRESS_CLASS`) — the preflight checks
   for it and fails fast if absent, and every Ingress the install creates (API,
@@ -89,9 +94,18 @@ runbook in order.
   The frontend subchart does not support a pull secret at all yet, so a
   private-registry operator running `--frontend cluster` will see
   `ImagePullBackOff` on that one workload regardless.
-- Cluster capacity for the prod resource budget in `dataspoke/values.yaml` (2
-  API + 2 frontend replicas, Postgres 1-2 CPU / 2-6Gi, Airflow's five
-  components, Redis primary + replica) — size nodes accordingly.
+- Cluster capacity for the prod resource budget in `dataspoke/values.yaml` — 2
+  API + 2 frontend replicas (API: 500m/1 CPU, 512Mi/1024Mi mem each; frontend:
+  250m/500m CPU, 256Mi/512Mi mem each), Postgres 1-2 CPU / 2-6Gi mem, Redis
+  master **and** replica sized identically at 250m/500m CPU, 256Mi/512Mi mem
+  each (a smaller replica OOMKills under a full resync while the master stays
+  healthy — see `spec/feature/HELM_CHART.md §Redis memory policy`), and
+  Airflow's five components (api-server, scheduler, triggerer, dag-processor,
+  statsd) plus the transient `db-migrate` hook Job. Total steady-state
+  request/limit: **4350m/10150m CPU, 7.7Gi/18.1Gi memory, 66Gi PV** (excludes
+  event-consumer, disabled by default, and the `db-migrate` hook) — see
+  `spec/feature/HELM_CHART.md §Resource Sizing → Production defaults` for the
+  full per-component table. Size nodes accordingly.
 - `config.trustedProxyIps` (chart default: `"127.0.0.1"` — loopback only, no
   proxy trusted). The auth rate limiter (`POST /auth/token` 10/min, `POST
   /auth/register` 5/min — the only brute-force control, there is no account
@@ -112,6 +126,17 @@ runbook in order.
   above attributes). The chart render fails fast on any value that is not a
   positive integer, so a bad overlay is caught by `helm template`/`install.sh`
   rather than reaching a pod.
+
+**The namespace needs no pre-creating — with one exception.** `install.sh`'s
+prod pre-flight calls `ensure_namespace` ahead of every check that touches the
+cluster's contents (the `--image-tag` refusal and context selection run first), so
+`DATASPOKE_KUBE_DATASPOKE_NAMESPACE` is created automatically if it does not
+already exist, and no separate operator step is required for it. The
+credentials Secret in step 2 below is namespace-scoped, though, and is
+created *before* `install.sh` ever runs — so an operator pre-creating that
+Secret must create the namespace themselves first. Only the ordering is at
+stake: `ensure_namespace` is idempotent and adopts a namespace the operator
+already made.
 
 #### 2. Create the namespace and the 13-key credential Secret
 
@@ -184,12 +209,17 @@ you:
 | `DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET` | externally issued | from the Google Cloud Console OAuth client |
 
 The preflight (`_check_airflow_credentials_prod` in `bin/install.sh`, plus the
-IngressClass/Secret-existence/`--image-tag` checks earlier in the same prod
-branch) fails fast — before any resources are created — on any of:
+IngressClass/StorageClass/Secret-existence/`--image-tag` checks earlier in the
+same prod branch) fails fast — before the chart is installed, and before any
+credential-derived Secret (e.g. `dataspoke-airflow-metadata-encryption-key`)
+is created or modified — on any of (note the namespace itself may already
+exist by this point: `ensure_namespace` runs ahead of these checks, per
+[§1. Prerequisites](#1-prerequisites) above):
 
 | Check | Rejected when |
 |-------|---------------|
 | IngressClass | not found in the cluster |
+| StorageClass | any class pinned in the `--values` overlay is not found in the cluster (see [§1. Prerequisites](#1-prerequisites) and `helm-charts/prod-prereq/README.md`), or a literal `-` is pinned on an Airflow key that does not honour it |
 | Secret | missing entirely |
 | All 13 keys | any of the 13 keys above is absent |
 | `DATASPOKE_JWT_SECRET_KEY` | equals the dev default `changeme-dev-secret-do-not-use-in-prod` |
@@ -230,6 +260,10 @@ map-merge / list-replace semantics before touching the
 operators not running cert-manager.
 
 #### 4. Install
+
+`--values` is single-use — unlike helm's repeatable `-f`, it takes exactly
+one overlay file and the script errors if you pass it twice. Merge multiple
+overlays into one file first.
 
 ```bash
 ./helm-charts/bin/install.sh --profile prod \
@@ -341,11 +375,15 @@ compare against (a Secret that predates the 13-key contract), the uninstaller
 leaves it in place and warns — on such a cluster it may be the only live
 carrier of the key that decrypts the retained Postgres PVC's Airflow
 connections/Variables. There is no prod `--delete-pvcs` — that flag is
-dev-only; namespace deletion is prod's only full wipe. **The uninstaller asks
-"delete the namespace?" first and only prints this same summary afterward,
-when you answered no** (`--delete-all` also implies `--delete-namespaces`, so
-it skips the summary too) — the table below is a reference, not something you
-need to remember.
+dev-only; namespace deletion is prod's only full wipe of the namespace's own
+objects. **The uninstaller asks "delete the namespace?" first and only
+prints this same summary afterward, when you answered no**
+(`--delete-all` also implies `--delete-namespaces`, so it skips the summary
+too) — the table below is a reference, not something you need to remember.
+A namespace deletion does not by itself destroy the credential material on
+these PVCs, though: under a `Retain`-reclaim-policy `StorageClass` (see
+below) the underlying volumes survive the namespace and must be deleted by
+hand — or their disk-encryption key destroyed — for a complete decommission.
 
 | Resource | Kind | Size | Notes |
 |----------|------|------|-------|
@@ -354,6 +392,18 @@ need to remember.
 | `redis-data-dataspoke-redis-replicas-0` | PVC | 8Gi | Redis replica data (StatefulSet `dataspoke-redis-replicas`, plural — only the replica name pluralizes) |
 | `dataspoke-secrets` (or your `secrets.existingSecret`) | Secret | -- | operator-owned; never deleted |
 | `dataspoke-llm-secret`, `dataspoke-datahub-secret`, `dataspoke-langfuse-secret`, `dataspoke-smtp-secret` | Secret | -- | out-of-band, not managed by this script; survive silently if present |
+
+Deleting one of these PVCs — by hand (see the manual commands below) or as a
+side effect of a namespace deletion — does not necessarily destroy the
+underlying volume: whether it does depends on the `StorageClass`'s
+`reclaimPolicy`. A `Retain` reclaimPolicy leaves the volume behind, unbound
+and unreclaimed, once its PVC is gone; `Delete` (the common provisioner
+default) destroys it in the same action. That distinction matters here
+because these volumes hold the credential store on the Postgres PVC
+(password hashes, `api_tokens`/`password_reset_tokens`, Fernet-encrypted
+ingestion secrets) and Redis's AOF (refresh-token revocation keys). See
+[`helm-charts/prod-prereq/` §StorageClass](prod-prereq/#storageclass--the-first-case)
+for the `Retain`-vs-`Delete` trade-off and an example manifest.
 
 **Fernet key ↔ Postgres PVC coupling**: Airflow encrypts connection secrets
 and Variables in its metadata DB with the Fernet key it reads from

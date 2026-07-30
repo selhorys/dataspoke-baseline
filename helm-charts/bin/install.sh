@@ -20,7 +20,7 @@
 #                                         (prod default; also available in dev)
 #   --skip-build                Skip Docker image rebuilds (api/airflow/postgres/frontend).
 #   --skip-seed                 Skip post-install admin-API seeding (both profiles).
-#   --values <path>             Extra values file for the umbrella chart (prod).
+#   --values <path>             Extra values file for the umbrella chart (prod, single use).
 #   --image-tag <tag>           Override image tag (default: dev).
 #   --help, -h                  Print this usage message.
 #
@@ -66,7 +66,20 @@ while [[ $# -gt 0 ]]; do
     --frontend)        FRONTEND_MODE="${2:-}"; shift 2 ;;
     --skip-build)      SKIP_BUILD=true; shift ;;
     --skip-seed)       SKIP_SEED=true; shift ;;
-    --values)          EXTRA_VALUES="${2:-}"; shift 2 ;;
+    --values)
+      if [[ -n "${EXTRA_VALUES}" ]]; then
+        error "--values may only be given once; it takes exactly one overlay file (unlike helm's repeatable -f). Merge multiple overlays into one file first."
+      fi
+      EXTRA_VALUES="${2:-}"
+      # Checked here, not deferred to Phase 3: the Phase 1 pre-flight (prod)
+      # reads this overlay for pinned StorageClasses and secrets.existingSecret
+      # via `-f "${EXTRA_VALUES}"`-guarded calls. A typo'd path would silently
+      # skip both — falling back to the unchecked cluster default StorageClass
+      # and the literal `dataspoke-secrets` name — and only fail later, deep
+      # into resource creation. The downstream `-f` guards become belt-and-
+      # braces once this fires first.
+      [[ -f "${EXTRA_VALUES}" ]] || error "Extra values file not found: ${EXTRA_VALUES}"
+      shift 2 ;;
     --image-tag)       IMAGE_TAG="${2:-dev}"; IMAGE_TAG_EXPLICIT=true; shift 2 ;;
     --help|-h) print_usage; exit 0 ;;
     *) error "Unknown option: $1 (use --help)" ;;
@@ -793,7 +806,11 @@ EOF
 
 # _resolve_existing_secret_name [<overlay_file>]
 # Extracts secrets.existingSecret from an operator overlay using python3+yaml.
-# Prints the resolved name, or empty string if absent/unset.
+# Prints the resolved name, or empty string if absent/unset. On a malformed
+# overlay (invalid YAML, or YAML that doesn't parse to a mapping — a list or
+# scalar document), prints one stderr line and exits non-zero; the caller
+# assigns via `$(...) || error "..."` so the failure gets the same [ERROR]
+# voice as every other pre-flight abort instead of a bare Python traceback.
 _resolve_existing_secret_name() {
   local overlay_file="${1:-}"
   if [[ -z "${overlay_file}" || ! -f "${overlay_file}" ]]; then
@@ -805,9 +822,160 @@ _resolve_existing_secret_name() {
   fi
   python3 - "${overlay_file}" <<'PYEOF'
 import sys, yaml
-with open(sys.argv[1]) as f:
-    data = yaml.safe_load(f) or {}
-print((data.get("secrets") or {}).get("existingSecret", ""))
+
+PATH = sys.argv[1]
+
+
+def fail(msg):
+    print(msg, file=sys.stderr)
+    sys.exit(1)
+
+
+def dig(node, *keys):
+    # A node that is PRESENT but not a mapping is an operator error, not an
+    # absent key. Coercing it to {} would resolve the whole path to "unset"
+    # and let the caller fall through to a default — fail loudly instead.
+    walked = []
+    for key in keys:
+        if node is None:
+            return None
+        if not isinstance(node, dict):
+            fail(f"Overlay file '{PATH}': '{'.'.join(walked)}' must be a mapping, got {type(node).__name__}.")
+        walked.append(key)
+        node = node.get(key)
+    return node
+
+
+with open(PATH) as f:
+    try:
+        data = yaml.safe_load(f)
+    except yaml.YAMLError as exc:
+        fail(f"Invalid YAML in overlay file '{PATH}': {' '.join(str(exc).split())}")
+
+if data is not None and not isinstance(data, dict):
+    fail(f"Overlay file '{PATH}' does not parse to a YAML mapping at its top level.")
+
+print(dig(data, "secrets", "existingSecret") or "")
+PYEOF
+}
+
+# _resolve_storage_classes [<overlay_file>]
+# Extracts every StorageClass name the operator's overlay pins from the keys
+# the postgresql/redis/airflow subcharts honour, using the same python3+yaml
+# pattern as _resolve_existing_secret_name above:
+#   postgresql.primary.persistence.storageClass
+#   redis.master.persistence.storageClass
+#   redis.replica.persistence.storageClass
+#   global.defaultStorageClass, global.storageClass (Bitnami-wide fallbacks)
+#   postgresql.global.{defaultStorageClass,storageClass}
+#   redis.global.{defaultStorageClass,storageClass} — a `global:` block nested
+#     inside a Bitnami subchart still reaches that child as .Values.global,
+#     and common.storage.class ranks it AHEAD of the component's own
+#     persistence.storageClass, so a pin here shadows the three above.
+#   airflow.{logs,dags,triggerer,workers,workers.celery,redis}.persistence.
+#     storageClassName — NOTE the different spelling (`storageClassName`, not
+#     `storageClass`) inherited from the upstream apache-airflow chart. This
+#     is a copy-paste trap: pasting a Bitnami-shaped key here silently pins
+#     nothing. values-prod.example.yaml §Airflow log persistence actively
+#     tells operators to uncomment two of these (workers.celery and
+#     triggerer) for post-mortem log retention.
+# Out of scope because the shipped architecture cannot reach them:
+# postgresql.readReplicas.persistence, postgresql.backup.cronjob.storage, and
+# redis.sentinel.persistence (standalone, no backup CronJob, no sentinel).
+#
+# A literal "-" is the upstream Bitnami convention (charts/common/templates/
+# _storage.tpl, documented at redis/values.yaml:543,1035 and mirrored by
+# postgresql) for "disable dynamic provisioning, bind a pre-provisioned PV"
+# — it renders as storageClassName: "". The apache-airflow chart reproduces
+# that exact mapping ONLY on the `logs` and `dags` persistence blocks
+# (logs-persistent-volume-claim.yaml:46, dags-persistent-volume-claim.yaml:46);
+# `triggerer`, `workers`, `workers.celery`, and `redis` pass the value
+# straight into `storageClassName` with no such branch, so a "-" there
+# renders literally and Kubernetes rejects it as an invalid class name. Each
+# printed line therefore carries a provenance tag ahead of the name —
+# "bitnami" and "airflow-sentinel" honour "-"; "airflow-literal" does not —
+# and de-duplication is keyed on the (tag, name) pair, not the bare name, so
+# a caller can tell a Bitnami "-" from an Airflow "-" apart even after two
+# different keys pin the identical string.
+# Prints one `<tag>\t<name>` line per resolved, de-duplicated, non-empty pin;
+# nothing at all when the overlay pins none (the cluster default then
+# applies and the pre-flight check skips cleanly). On a malformed overlay,
+# behaves like _resolve_existing_secret_name above.
+_resolve_storage_classes() {
+  local overlay_file="${1:-}"
+  if [[ -z "${overlay_file}" || ! -f "${overlay_file}" ]]; then
+    return 0
+  fi
+  if ! python3 -c "import yaml" 2>/dev/null; then
+    error "python3 with PyYAML is required to parse the operator overlay for pinned StorageClasses. Install: pip install pyyaml"
+  fi
+  python3 - "${overlay_file}" <<'PYEOF'
+import sys, yaml
+
+PATH = sys.argv[1]
+
+
+def fail(msg):
+    print(msg, file=sys.stderr)
+    sys.exit(1)
+
+
+def dig(node, *keys):
+    # A node that is PRESENT but not a mapping is an operator error, not an
+    # absent key. Coercing it to {} would make the whole gate silently
+    # resolve zero pins and no-op — fail loudly instead.
+    walked = []
+    for key in keys:
+        if node is None:
+            return None
+        if not isinstance(node, dict):
+            fail(f"Overlay file '{PATH}': '{'.'.join(walked)}' must be a mapping, got {type(node).__name__}.")
+        walked.append(key)
+        node = node.get(key)
+    return node
+
+
+with open(PATH) as f:
+    try:
+        data = yaml.safe_load(f)
+    except yaml.YAMLError as exc:
+        fail(f"Invalid YAML in overlay file '{PATH}': {' '.join(str(exc).split())}")
+
+if data is not None and not isinstance(data, dict):
+    fail(f"Overlay file '{PATH}' does not parse to a YAML mapping at its top level.")
+
+airflow = dig(data, "airflow")
+
+# (provenance tag, resolved value) — tag decides whether "-" is a valid
+# pre-provisioned-PV sentinel (bitnami / airflow-sentinel) or an unsupported
+# literal that will reach the API server verbatim (airflow-literal). See the
+# docstring above for which upstream template each tag corresponds to.
+pins = [
+    ("bitnami", dig(data, "postgresql", "primary", "persistence", "storageClass")),
+    ("bitnami", dig(data, "redis", "master", "persistence", "storageClass")),
+    ("bitnami", dig(data, "redis", "replica", "persistence", "storageClass")),
+    ("bitnami", dig(data, "global", "defaultStorageClass")),
+    ("bitnami", dig(data, "global", "storageClass")),
+    # A `global:` block nested INSIDE a Bitnami subchart reaches that child as
+    # .Values.global too, and common.storage.class gives it precedence over
+    # the component's own persistence.storageClass — so a pin here shadows
+    # the three above and must be gated with them.
+    ("bitnami", dig(data, "postgresql", "global", "defaultStorageClass")),
+    ("bitnami", dig(data, "postgresql", "global", "storageClass")),
+    ("bitnami", dig(data, "redis", "global", "defaultStorageClass")),
+    ("bitnami", dig(data, "redis", "global", "storageClass")),
+    ("airflow-sentinel", dig(airflow, "logs", "persistence", "storageClassName")),
+    ("airflow-sentinel", dig(airflow, "dags", "persistence", "storageClassName")),
+    ("airflow-literal", dig(airflow, "triggerer", "persistence", "storageClassName")),
+    ("airflow-literal", dig(airflow, "workers", "persistence", "storageClassName")),
+    ("airflow-literal", dig(airflow, "workers", "celery", "persistence", "storageClassName")),
+    ("airflow-literal", dig(airflow, "redis", "persistence", "storageClassName")),
+]
+seen = set()
+for tag, name in pins:
+    if isinstance(name, str) and name and (tag, name) not in seen:
+        seen.add((tag, name))
+        print(f"{tag}\t{name}")
 PYEOF
 }
 
@@ -1591,12 +1759,84 @@ elif [[ "$PROFILE" == "prod" ]]; then
   fi
   info "IngressClass '${INGRESS_CLASS}' is present."
 
+  # Verify every StorageClass the operator's overlay pins exists (fail fast).
+  #
+  # A namespace-scoped Helm release cannot own a cluster-scoped StorageClass —
+  # see helm-charts/prod-prereq/ for the cluster-admin prerequisite this
+  # check assumes was applied first. Resolved from eleven overlay keys across
+  # the postgresql/redis Bitnami subcharts and the Airflow subchart's
+  # persistence blocks — see _resolve_storage_classes's docstring above for
+  # the full list, the `storageClass` (Bitnami) vs `storageClassName`
+  # (Airflow) spelling difference, and which of the two honour a literal
+  # `-`. An overlay that pins none of them skips this check cleanly — the
+  # cluster default StorageClass then applies.
+  #
+  # Failing here, rather than later, is the point: a missing class otherwise
+  # leaves the PVC Pending, so PostgreSQL/Redis/Airflow never start, the
+  # API's wait-for-postgres init container loops, and the install dies on a
+  # rollout timeout whose symptom names PostgreSQL rather than storage.
+  # Recovery then needs the stuck PVCs deleted by hand, because
+  # storageClassName is immutable once bound.
+  #
+  # Resolved into a variable FIRST, then iterated — not
+  # `done < <(_resolve_storage_classes ...)`. A process substitution's exit
+  # status is invisible to `set -e`: the helper's own `error()` (or an
+  # uncaught parse failure) would terminate only the subshell, the
+  # while-loop would read zero lines, and this fail-fast gate would silently
+  # no-op instead of aborting. Assigning via `$( ... )` makes a non-zero
+  # status trip `set -e` as intended; `|| error ...` gives the parse-failure
+  # path the same [ERROR] voice as every other pre-flight abort here.
+  if [[ -n "${EXTRA_VALUES:-}" && -f "${EXTRA_VALUES}" ]]; then
+    PINNED_STORAGE_CLASSES="$(_resolve_storage_classes "${EXTRA_VALUES}")" \
+      || error "Could not parse the --values overlay for pinned StorageClasses (see above)."
+    while IFS=$'\t' read -r sc_class sc_name; do
+      [[ -z "$sc_name" ]] && continue
+      # A literal "-" is the upstream Bitnami convention (see the docstring
+      # on _resolve_storage_classes) for "disable dynamic provisioning, bind
+      # a pre-provisioned PV" (renders as storageClassName: ""). The Airflow
+      # chart reproduces that mapping ONLY on the `logs`/`dags` persistence
+      # blocks (sc_class "airflow-sentinel"); on `triggerer`/`workers`/
+      # `workers.celery`/`redis` (sc_class "airflow-literal") it passes the
+      # value straight into storageClassName with no such branch, so a "-"
+      # there would render literally and Kubernetes would reject it as an
+      # invalid class name — reject it here instead, before any resource is
+      # created.
+      if [[ "$sc_name" == "-" ]]; then
+        if [[ "$sc_class" == "bitnami" || "$sc_class" == "airflow-sentinel" ]]; then
+          info "StorageClass pin '-' (${sc_class}) — dynamic provisioning disabled (pre-provisioned PV expected); skipping existence check."
+          continue
+        fi
+        error "StorageClass pin '-' on an Airflow persistence key (triggerer/workers/workers.celery/redis) is not honoured by the apache-airflow chart — it would render storageClassName: '-' literally, which Kubernetes rejects as an invalid class name. Remove the '-' and name an explicit StorageClass. There is no pre-provisioned-PV path on these keys: triggerer/workers/workers.celery expose no existingClaim, and persistence.enabled: false renders an emptyDir, not a bound PV (airflow.redis.persistence does accept existingClaim)."
+      fi
+      # Validate against the Kubernetes DNS-subdomain grammar before using it
+      # as a kubectl argument — an overlay value beginning with `-` would
+      # otherwise be parsed as a kubectl flag (e.g. a name of `-A`), letting a
+      # malformed overlay pass the gate for a class that was never checked.
+      if ! [[ "$sc_name" =~ ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$ ]]; then
+        error "StorageClass name '${sc_name}' pinned in your --values overlay is not a valid Kubernetes name."
+      fi
+      if ! kubectl get storageclass "${sc_name}" >/dev/null 2>&1; then
+        error "StorageClass '${sc_name}' pinned in your --values overlay was not found in the cluster. Apply the cluster-scoped prerequisites first — see helm-charts/prod-prereq/."
+      fi
+      info "StorageClass '${sc_name}' is present."
+    done <<< "${PINNED_STORAGE_CLASSES}"
+  fi
+
   # Determine which Secret name is in play (default or BYO overlay)
   EXISTING_SECRET_NAME=""
   if [[ -n "${EXTRA_VALUES:-}" && -f "${EXTRA_VALUES}" ]]; then
-    EXISTING_SECRET_NAME="$(_resolve_existing_secret_name "${EXTRA_VALUES}")"
+    EXISTING_SECRET_NAME="$(_resolve_existing_secret_name "${EXTRA_VALUES}")" \
+      || error "Could not parse the --values overlay for secrets.existingSecret (see above)."
   fi
   SECRET_TO_CHECK="${EXISTING_SECRET_NAME:-dataspoke-secrets}"
+  # Grammar-check before it reaches kubectl argv or a `helm --set` token
+  # below — the same reasoning as the StorageClass name check above: an
+  # overlay value beginning with `-` would be parsed as a flag, and a comma
+  # or `=` in the value would split a `--set` token into more than one
+  # assignment.
+  if ! [[ "$SECRET_TO_CHECK" =~ ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$ ]]; then
+    error "secrets.existingSecret '${SECRET_TO_CHECK}' in your --values overlay is not a valid Kubernetes name."
+  fi
 
   # Verify operator-pre-created Secret (fail fast; never auto-generate in prod)
   _ensure_dataspoke_secrets "${NS}" "prod" "${SECRET_TO_CHECK}"
@@ -1705,10 +1945,10 @@ elif [[ "$PROFILE" == "prod" ]]; then
     --set "airflow.apiSecretKeySecretName=dataspoke-airflow-api-secret-key" \
     --set "airflow.jwtSecretName=dataspoke-airflow-jwt-secret" \
     --set "airflow.fernetKeySecretName=dataspoke-airflow-metadata-encryption-key" \
-    --set "secrets.existingSecret=${SECRET_TO_CHECK}" \
-    --set "postgresql.auth.existingSecret=${SECRET_TO_CHECK}" \
-    --set "redis.auth.existingSecret=${SECRET_TO_CHECK}" \
-    --set "event-consumer.existingSecretName=${SECRET_TO_CHECK}" \
+    --set-string "secrets.existingSecret=${SECRET_TO_CHECK}" \
+    --set-string "postgresql.auth.existingSecret=${SECRET_TO_CHECK}" \
+    --set-string "redis.auth.existingSecret=${SECRET_TO_CHECK}" \
+    --set-string "event-consumer.existingSecretName=${SECRET_TO_CHECK}" \
     --timeout 15m
 
   # -----------------------------------------------------------------------

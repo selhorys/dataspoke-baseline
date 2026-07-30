@@ -42,9 +42,13 @@ The orchestrator invokes you **only when a generator's diff touches a sensitive 
 - `helm-charts/bin/post-install/**`, `helm-charts/bin/dev-peripherals/**` — install-time orchestration that mutates Kubernetes Secrets and PATCHes admin API endpoints
 - `helm-charts/bin/lib/helpers.sh` — shared derivation of ingress class, scheme, TLS secret name, and service hostnames; its values are interpolated into `helm --set` tokens, `sed` replacements, and `kubectl apply` input by every install script
 - `helm-charts/dev-peripherals/**/*.yaml` — static manifests rendered by `sed` and applied with `kubectl`, plus peripheral chart values
+- `helm-charts/bin/install.sh` — creates and validates the credentials Secret, enforces the required-key and Fernet-key-shape gates, rejects insecure dev defaults, resolves `secrets.existingSecret` and pinned StorageClasses from the operator overlay, and gates the prod pre-flight
+- `helm-charts/prod-prereq/**` — cluster-admin-applied, cluster-scoped manifests (StorageClass and future prerequisites) outside Helm's ownership
 - `plugin/bin/**`, `plugin/skills/dataspoke-access/**` — end-user plugin credential model: mints/stores/transmits the `dsk_` API token and handles a login password
+- `helm-charts/bin/uninstall.sh` — the destructive counterpart: conditionally deletes the credentials Secret, deletes the Airflow fernet-key Secret on a value comparison against it, and drives PVC and namespace removal
+- `.claude/agents/**`, `.claude/workflows/**` — the review harness itself: this glob list decides when you are invoked, so an edit that narrows it removes the review step for whatever diff follows
 
-Keep this list in sync with reality — if you see a new sensitive surface that is not listed, flag it in your findings and the orchestrator will update.
+Keep this list in sync with reality — if you see a new sensitive surface that is not listed, flag it in your findings. **Only the orchestrator or the human edits this file** — a generator that can narrow the list governing its own review can review itself out of the loop, so report the gap rather than closing it yourself.
 
 ## Before reviewing
 

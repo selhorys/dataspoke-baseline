@@ -24,6 +24,51 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{/*
+        topologySpreadConstraints has a default, unlike the three knobs above.
+        This subchart's own selector (frontend.selectorLabels = name +
+        app.kubernetes.io/instance: {{ .Release.Name }}) needs .Release.Name,
+        which a values.yaml default cannot reach — so the default spread is
+        supplied here rather than in values.yaml (contrast with the umbrella
+        api Deployment, whose name-only selector is fully expressible as a
+        values.yaml default). Shape mirrors api's: maxSkew 1, both hostname
+        and zone (a hostname-only constraint would silently remove the
+        cluster's default zone spread under defaultingType: System —
+        see spec/feature/HELM_CHART.md §Scheduling and spread), both
+        ScheduleAnyway (a hard constraint would leave the second replica
+        Pending on a single-node/single-AZ cluster). An operator overrides by
+        setting frontend.topologySpreadConstraints in their values.
+      */}}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- else }}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "frontend.selectorLabels" . | nindent 14 }}
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "frontend.selectorLabels" . | nindent 14 }}
+      {{- end }}
       containers:
         - name: frontend
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"

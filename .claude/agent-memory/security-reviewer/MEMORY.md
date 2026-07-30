@@ -5,11 +5,11 @@
 - [Frontend 401/refresh conflation](project_frontend_401_refresh_conflation.md) — apiFetch: refreshed===false also means 503; "401 ⇒ no live session" carve-outs are unsound
 - [peripheral_config → href trust chain](project_peripheral_config_to_href_trust_chain.md) — DB peripheral URLs now render as browser hrefs; validate write AND read boundary
 - [Pydantic v2 pattern anchoring](project_pydantic_v2_pattern_anchoring.md) — rust-regex, ^ is start-of-haystack; ^scheme:// guards hold, but no trailing $ still allows creds/CRLF/unicode
-- [Operator runbook is a credential surface](project_operator_runbook_is_credential_surface.md) — helm-charts/README.md prod runbook: verify doc claims against install.sh, not against other docs
+- [Operator runbook is a credential surface](project_operator_runbook_is_credential_surface.md) — 3 claim classes that keep shipping wrong: what auto-runs, what the pre-flight guarantees, what teardown leaves behind
 - [Consumer DB-plane → wire boundary](project_consumer_db_plane_to_wire_boundary.md) — peripheral_config JSONB must be re-validated on READ; consumer skips it, unlike peripheral_links
 - [.env → sed/helm interpolation boundary](project_env_to_sed_helm_interpolation_boundary.md) — ingress_tls_secret validates, ingress_class/domain do not; sed→kubectl apply is a sink
 - [DataHub GMS public virtual host](project_datahub_gms_public_virtual_host.md) — GMS at datahub-gms.<domain>/ root; auth-excluded paths + no TLS block; exposure set unchanged vs old /gms route
-- [FORWARDED_ALLOW_IPS trust radius](project_forwarded_allow_ips_trust_radius.md) — who picks their own client IP; the render guard blocks "" and "*" but not 0.0.0.0/0
+- [FORWARDED_ALLOW_IPS trust radius](project_forwarded_allow_ips_trust_radius.md) — who picks their own client IP; "wider = one shared bucket" is inverted; networkPolicy.enabled is egress-only and misses the API
 - [Auth credential-carrier inventory](project_auth_credential_carrier_inventory.md) — the 7 carriers every auth diff must clear; lock order users→api_tokens→reset_tokens; why the lock alone isn't enough
 - [Recipe regex trust boundary](project_recipe_regex_trust_boundary.md) — writer regexes on the API's one event loop; malformed guarded, ReDoS is #114 (2 fixes already rejected)
 - [peripheral_health last_error redaction](project_peripheral_health_error_redaction.md) — the 3 sinks for a DataHub transport error; 401/403 still bypasses the exact-value scrub
@@ -18,3 +18,6 @@
 - [Credentials-Secret key addition](project_credentials_secret_contract_key_addition.md) — 4 blind spots, all closed; dev Fernet loss ≠ prod
 - [Credentials-Secret envFrom fan-out](project_credentials_secret_envfrom_fanout.md) — envFrom, no key selection: api + 2 init containers + event-consumer; frontend grant removed
 - [Default rate-limit plane enforcement](project_default_rate_limit_plane_enforcement.md) — bucket is (caller, "global"); the caller key is attacker-chosen — Bearer dsk_<random> bypasses the whole budget
+- [install.sh pre-flight gate mechanics](project_install_sh_preflight_gate_mechanics.md) — `-` sentinel split now correct; live holes: subchart-scoped `global.storageClass` shadows the checked key, wrong-typed nodes fail open
+- [Redis single failure domain](project_redis_single_failure_domain.md) — one instance, 3 tenants, instance-wide maxmemory; the unbounded tenant is the attacker-keyable DB1 limiter, not the response cache
+- [Reviewer config is generator-writable](project_reviewer_config_is_generator_writable.md) — .claude/agents/** now self-globs; diff the list for removals every run; README.md still uncovered

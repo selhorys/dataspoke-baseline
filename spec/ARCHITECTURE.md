@@ -240,7 +240,7 @@ For SDK entry points, aspect catalog, error handling, and configuration, see
 | Message Broker | Kafka | Event streaming (shared with DataHub) |
 | Orchestration | Airflow | Workflow execution via Python DAGs and HttpOperator tasks (ingestion, embedding sync, metrics collection). Validation results originate in the data pipeline, not in DataSpoke's Airflow. |
 | Operational DB | PostgreSQL 17 (pgvector + AGE) | Ingestion configs, validation configs (description + declared variables) and pipeline-posted results, health scores, ontology graph, user preferences, **vector embeddings** (pgvector); Apache AGE graph extension is installed as reserved infrastructure |
-| Cache | Redis | API response caching, rate limiting |
+| Cache | Redis | API response caching, rate limiting, distributed locks |
 | LLM Provider | External API | Semantic analysis, ontology construction, documentation generation, code interpretation |
 
 ---
@@ -307,7 +307,7 @@ Each feature owns a top-level namespace under `/spoke/`.
 |---------|----------------|-----------|
 | Airflow DAGs | Airflow | Periodic active-custom ingestion (UC1), DataHub-managed/passive source + mapping sync (UC1, hourly `datahub-sync-hourly`), ontology re-inference (UC3), metadata generation (UC4), governance metrics (UC5). Validation (UC2) is **not** scheduled by DataSpoke — pipelines POST results directly. |
 | PostgreSQL Operational Tables | PostgreSQL (pgvector + AGE reserved) | Ingestion sources (per-source recipes) + source→dataset mapping, validation configs (description + declared variables) and pipeline-posted results (data_time, score, variables), ontology seeds + nodes + edges + triples + embeddings, metadata generation proposals + review state, governance metric results |
-| Redis Caching | Redis | API response cache, rate limiting, JWT refresh-token revocation list |
+| Redis Caching | Redis | API response cache, rate limiting, JWT refresh-token revocation list, distributed locks |
 | Kafka Event Consumers *(optional)* | Kafka (shared with DataHub) | Reserved for future event-driven cross-feature triggers; not used by baseline UC1–UC5 flows, which are schedule-driven via Airflow |
 
 ---
@@ -374,7 +374,7 @@ logic, and convenience methods. Patterns defined in
 | Message Broker | Kafka | DataHub integration standard |
 | Orchestration | Airflow 3.1.8 | Python DAG definitions, HttpOperator tasks calling internal activity endpoints, built-in scheduling and retry; LocalExecutor on the dev profile |
 | Operational DB | PostgreSQL 17 (pgvector + AGE) | ACID guarantees, JSONB flexibility, first-class vector similarity (pgvector); Apache AGE installed as reserved graph infrastructure |
-| Cache | Redis | API caching, rate limiting, session management |
+| Cache | Redis | API response cache, rate limiting, refresh-token revocation list, distributed locks |
 | LLM Integration | External API (via LangChain) | Semantic analysis, ontology, documentation, code interpretation |
 | LLM Observability | Self-hosted Langfuse | Per-run trace store for prompts, completions, tool calls, and token counts; sibling subsystem with its own chart and namespace. See [`spec/feature/BACKEND_LLM.md` §Observability](feature/BACKEND_LLM.md#observability) |
 | Charts | Highcharts / Recharts | Rich visualization (metrics dashboards, graph views) |

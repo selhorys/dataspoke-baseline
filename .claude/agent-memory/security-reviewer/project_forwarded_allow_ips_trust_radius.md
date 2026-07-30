@@ -34,6 +34,38 @@ reviewing a change to this value:
    mode) unless the operator uncomments it. Grep the example overlay, not the
    base values, when judging "the default is documented".
 
+4. **On a VPC-CNI cluster there is no narrow value to derive.** EKS with the AWS
+   VPC CNI (and GKE VPC-native/alias-IP) hands pods IPs straight out of VPC subnets
+   and leaves `.spec.podCIDR` empty on every Node, so the "name the ingress
+   controller's pod CIDR" instruction has no answer — the only derivable CIDR is the
+   worker-node subnet, which pods share. Naming it trusts **every pod in the cluster**
+   (and every other ENI in that subnet) as a proxy allowed to choose its own client IP.
+   The only way to keep the set narrow there is a dedicated node group/subnet for the
+   ingress controller. `helm-charts/values-prod.example.yaml`'s derivation note must
+   carry that caveat, or it silently contradicts the "never widen beyond the
+   controller's actual pod CIDR" rule ten lines above it.
+
+5. **The direction keeps getting written backwards.** A docs generator shipped
+   "a range wider than the ingress controller's actual pod CIDR is fail-safe
+   (traffic just falls back to one shared bucket)" into
+   `values-prod.example.yaml`. That is inverted: **one shared bucket is the
+   NARROW/loopback outcome**; wider means the bucket key becomes
+   attacker-chosen. `dataspoke/values.yaml:737-744` states the correct form
+   ("strictly worse than the single-bucket bug it's meant to fix") and
+   `spec/feature/AUTH.md` §Client-IP attribution agrees. When reviewing prose
+   about this value, read the *outcome* it assigns to widening — not whether it
+   contains a warning.
+
+6. **`networkPolicy.enabled` is not a mitigation for this, and saying so is a
+   double error.** `templates/networkpolicy.yaml` renders `policyTypes:
+   [Egress]` only (allow DataHub 8080/9092), so it restricts **no** ingress to
+   the API. Its `podSelector` is `app.kubernetes.io/instance: <release>`, and
+   the **API Deployment's pod template does not carry that label** (its selector
+   is name-only) — so enabling it default-denies egress for frontend /
+   postgresql / redis (DNS included, breaking replica→master resolution) while
+   leaving the API, the only DataHub client, out of scope. Verify by rendering
+   and reading pod-template labels, not by the knob's name.
+
 **Why:** the rate limiter (`src/api/middleware/rate_limit.py`) keys unauthenticated
 traffic on the client IP, and there is **no account lockout and no failed-attempt
 counter anywhere in `src/backend/auth/`** — the 10/min on `POST /auth/token` is the

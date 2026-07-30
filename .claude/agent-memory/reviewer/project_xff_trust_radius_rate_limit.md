@@ -44,3 +44,35 @@ facts were missed or understated in the first pass.
 attribution, or ingress values, verify against `uvicorn/middleware/proxy_headers.py`
 and the actual ingress Service spec — don't accept "we set the trusted proxies"
 as proof the bug is fixed. Related: [[helm-null-and-replicas-gotchas]].
+
+**Deriving the CIDR is CNI-specific — one sentence cannot cover both clouds.**
+The repo's canonical example, `"127.0.0.1,10.4.0.0/14"`, is a *GKE* cluster pod
+range (`spec/feature/HELM_CHART.md` §Env-var table, `dataspoke/values.yaml`,
+`helm-charts/README.md`). On GKE VPC-native/alias-IP clusters that range exists and
+each Node carries a `/24` slice of it in `.spec.podCIDR`; pod IPs come from that
+secondary range, **not** from the node subnet. On EKS with the AWS VPC CNI the
+opposite holds: pods take secondary IPs on the node's ENIs, `.spec.podCIDR` is
+empty, and the node/worker subnet CIDR is the right answer. Guidance that names
+both platforms in one breath (as a "VPC-CNI clusters (EKS …, GKE VPC-native …)"
+note did) is wrong for one of them, and naming the node subnet on GKE yields a
+trust list that never matches the ingress controller pod — per-client bucketing
+silently stays off while the operator believes it is on.
+
+**How to apply:** when a doc gives a recipe for reading the pod CIDR, check which
+CNI it assumes and confirm it against the `10.4.0.0/14` example the rest of the
+repo ships. `kubectl get nodes -o …podCIDR` returning `<none>` is an AWS-VPC-CNI
+signal, not a universal one.
+
+**The chart's `networkPolicy.enabled` is NOT an ingress mitigation for this.**
+`dataspoke/templates/networkpolicy.yaml` renders exactly one policy with
+`policyTypes: [Egress]`, allowing DataSpoke pods egress to the DataHub
+namespace on 8080/9092; `spec/feature/HELM_CHART.md §Network Policy` frames it
+as an allow-rule for default-deny clusters. It therefore cannot restrict *who
+reaches* the API, so it does nothing about a pod inside a trusted CIDR forging
+`X-Forwarded-For` — and switching it on in a cluster with no complementary
+policy clamps every DataSpoke pod's egress (DNS, Postgres, Redis, LLM, SMTP)
+down to that single DataHub allowance.
+
+**How to apply:** operator guidance that offers `networkPolicy.enabled` as a
+way to "narrow the trust radius" is wrong twice over — read the template's
+`policyTypes` before accepting any NetworkPolicy claim as a hardening knob.

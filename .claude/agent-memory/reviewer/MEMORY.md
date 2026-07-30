@@ -16,11 +16,11 @@
 - [token_urlsafe scrub charset](project_token_urlsafe_scrub_charset.md) — dsk_/token_urlsafe are base64url; scrub regex needs [A-Za-z0-9_-]+ or ~74% of PATs leak a tail
 - [mypy override audit](feedback_mypy_override_audit.md) — --warn-unused-configs misses over-granted codes; re-run mypy with overrides stripped to get the true suppressed set
 - [Display-URL guard x3](project_display_url_guard_three_copies.md) — one safety regex hand-copied into pydantic + Python sanitizer + lib/safe-url.ts; diff-verify recipe
-- [Helm null + redis-replicas gotchas](project_helm_null_and_replicas_gotchas.md) — redis replica STS is plural; `key: null` removes/keeps-empty/errors depending on parent vs subchart vs schema chart
+- [Helm chart gotchas x4](project_helm_null_and_replicas_gotchas.md) — redis STS `-replicas`; `key: null` varies by depth; db-migrate is POST-install; `"-"` sentinel honoured by only some keys
 - [Verify install.sh prod-branch claims](feedback_verify_install_branch_claims.md) — read the whole prod elif past the last step banner; dev's `_has_component` gating doesn't apply
 - [peripheral_config cache x 2 replicas](project_peripheral_cache_multireplica.md) — 30s process cache + replicaCount 2 makes read-modify-write counters silently no-op
 - [Grep old-rule prose in consumers](feedback_grep_old_rule_prose_in_consumers.md) — deleting a precedence rule? grep its prose across consumers; identifier-only greps miss stale doc comments
-- [XFF trust radius & rate-limit buckets](project_xff_trust_radius_rate_limit.md) — RFC1918 FORWARDED_ALLOW_IPS trusts XFF chain entries; dev SNAT ⇒ per-node buckets
+- [XFF trust radius & rate-limit buckets](project_xff_trust_radius_rate_limit.md) — trusts XFF chain entries; pod-CIDR derivation differs GKE vs EKS; chart networkPolicy is egress-only, not a mitigation
 - [Shared response model unpopulated field](feedback_shared_response_model_unpopulated_field.md) — one model, two routes: the handler that omits a defaulted field ships a silent zero
 - [Isolate failures under concurrent edit](feedback_isolate_failures_concurrent_edit.md) — git archive HEAD into scratchpad, overlay one file; base scenario proves HEAD green
 - [metagen event from/to ignored](project_metagen_event_from_to_ignored.md) — RESOLVED (#90); lesson: a URL builder emitting a param never proves the server reads it
@@ -31,6 +31,6 @@
 - [Fernet blast radius](project_fernet_blast_radius_env_connections.md) — Airflow conns are env vars, so the metadata DB has ~no Fernet-encrypted rows; caps #111-style severity
 - [Renamed guard comparison target](feedback_renamed_guard_comparison_target.md) — rename + guard in one change: the guard reads nothing on pre-change clusters, check sibling helpers for the legacy name
 - [Dormant middleware blast radius](feedback_dormant_middleware_blast_radius.md) — repairing an inert middleware governs /internal + probes for the first time; measure the blocking cost it adds
-- [values-prod.example is not a superset](feedback_prod_example_not_superset.md) — "see config.X below" pasted from values.yaml goes dangling in the prod overlay; grep each named key in the target file
+- [values-prod.example is not a superset](feedback_prod_example_not_superset.md) — pasted "see config.X below" goes dangling; inserted sections rot above/below pointers AND other files' line-number refs
 - [Off-loop fix, all call sites](feedback_offload_fix_all_callsites.md) — a to_thread fix proven on one plane; heartbeat-probe every plane before believing it
 - [slowapi bucket scope](project_slowapi_bucket_scope.md) — application_limits is the only global-per-caller knob; exempt routes and unmatched 404 paths are charged nothing

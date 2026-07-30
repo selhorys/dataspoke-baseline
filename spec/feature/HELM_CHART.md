@@ -93,6 +93,8 @@ helm-charts/
 │   ├── templates/                       # api-deployment/service/ingress/pdb, configmap, secrets, RBAC, networkpolicy
 │   ├── subcharts/{frontend,event-consumer}/
 │   └── charts/                          # bitnami pg/redis, apache-airflow (resolved deps)
+├── prod-prereq/                         # cluster-scoped prerequisites a cluster-admin
+│                                        #   applies before the release (StorageClass)
 └── dev-peripherals/                     # dev-only values + manifests + charts
     ├── nginx-ingress/values.yaml
     ├── datahub/
@@ -146,7 +148,7 @@ wires them via the runtime admin API (`/api/v1/admin/peripherals/{datahub,langfu
 | `--from-component <name>` | — | Resume an interrupted full install at this component. |
 | `--skip-build` | false | Skip Docker image rebuild (api/airflow/postgres). |
 | `--skip-seed` | false (dev) | Skip post-install admin-API seeding. |
-| `--values <path>` | — | Extra values file passed to the umbrella chart (prod). |
+| `--values <path>` | — | Extra values file passed to the umbrella chart (prod). **Single use** — a repeated `--values` is a hard error, so an operator layering several overlays merges them into one file first. |
 | `--image-tag <tag>` | `dev` | Override the image tag for api/airflow/postgres (prod CI). |
 | `--frontend {none\|local\|cluster}` | `none` (dev), `cluster` (prod) | Frontend deployment mode for a full install. `none`: not deployed. `local` (dev-only): writes `src/frontend/.env.local` pointing at the in-cluster API for host `pnpm dev`. `cluster`: builds the image and deploys the UI in-cluster. |
 | `--help`, `-h` | — | Print usage. |
@@ -339,26 +341,104 @@ Each component has a `<component>.enabled` toggle.
 
 ### Eviction resilience
 
-Every component ships a PodDisruptionBudget paired with a
+Every workload component except the Airflow statsd relay ships a
+PodDisruptionBudget paired with a
 `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` pod annotation:
 `templates/api-pdb.yaml`, `subcharts/{frontend,event-consumer}/templates/pdb.yaml`,
 and the subchart-native keys for the dependencies (bitnami redis `master.pdb` /
 `replica.pdb`, bitnami postgresql `primary.pdb`, Airflow
 `podDisruptionBudget.config`). This is a deliberate availability guard against
-Autopilot / cluster-autoscaler evicting a pod during scale-in. The annotation
-alone is advisory, so the PDB is what actually blocks the disruption. On the
+Autopilot / cluster-autoscaler evicting a pod during scale-in. On the
 Airflow scheduler, triggerer, and dag-processor `safeToEvict: false` suppresses
 the chart's default `safe-to-evict="true"` annotation so `podAnnotations` can set
-`"false"` without rendering a conflicting duplicate key.
+`"false"` without rendering a conflicting duplicate key. statsd carries neither
+mechanism because it is a non-critical metrics relay whose loss costs
+observability, not correctness, and holding a node out of scale-down for it is
+not worth the price.
 
-**Every single-replica component permits zero voluntary disruption** — expressed
+**The annotation and the PDB are two independent mechanisms with different
+audiences** — not a belt-and-braces pair on one path:
+
+| Mechanism | Honoured by | Blocks | Limit |
+|---|---|---|---|
+| `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` | cluster-autoscaler only | node scale-down, unconditionally — the autoscaler drops the node from its candidate set without simulating a drain, so no PDB arithmetic can be relaxed into permitting it | `kubectl drain`, node-pool upgrades, the descheduler, and every other Eviction-API caller never read it |
+| PodDisruptionBudget | the Eviction API — and cluster-autoscaler, which simulates the drain against live PDBs before removing a node | `kubectl drain`, node-pool and node-repair upgrades, any other Eviction-API caller — **and** scale-down, for as long as the budget admits no disruption | it is relaxable per workload: a budget widened to let drains through stops constraining scale-down at the same moment |
+
+Both cover the same set: frontend, api, event-consumer, the postgresql primary,
+the redis master and replica, and the four Airflow components.
+
+The two overlap on scale-down and diverge on the Eviction API, so neither
+substitutes for the other:
+
+- **Relaxing or deleting a PDB unblocks drains, not scale-down** — the annotation
+  still holds the node out of the autoscaler's candidate set.
+- **Removing the annotation alone unblocks neither** — for the components whose
+  budget admits no disruption. At the chart's single-replica budgets
+  (`maxUnavailable: 0` / `minAvailable: 1`) the PDB refuses every voluntary
+  disruption, and cluster-autoscaler honours it during the drain simulation, so
+  scale-down stays blocked too.
+- Retiring a node therefore needs both cleared.
+
+The annotation's distinct value is holding scale-down *independently of PDB
+arithmetic*: it survives a budget an operator widens to let drains through, and
+it is the only scale-down guard on the three workloads whose budget already
+admits one disruption — the two-replica api and frontend at `minAvailable: 1`,
+and the single-replica event-consumer at `maxUnavailable: 1` (a budget chosen so
+one replica does not stall drains indefinitely, since a consumer group rebalances
+in seconds).
+
+**Every single-replica component except the event-consumer permits zero
+voluntary disruption** — expressed
 as `maxUnavailable: 0` in the Airflow chart and `minAvailable: 1` in the Bitnami
 charts (semantically identical at one replica). This covers the Airflow
 api-server, scheduler, triggerer, and dag-processor, the postgresql primary, the
-redis master, and the dev API (`values-dev.yaml` sets `replicaCount: 1` while
-inheriting `api.podDisruptionBudget.minAvailable: 1`). The operational
-consequence is that node drains and cluster upgrades **block until an operator
-intervenes** — the guard trades drain automation for uptime.
+redis master, the redis replica (`replica.replicaCount: 1` with
+`replica.pdb.minAvailable: 1`), and the dev API (`values-dev.yaml` sets
+`replicaCount: 1` while inheriting `api.podDisruptionBudget.minAvailable: 1`).
+For those pods the PDB is absolute: it admits no voluntary disruption at all
+rather than merely rate-limiting it, so node drains and cluster upgrades **block
+until an operator intervenes** — the guard trades drain automation for uptime.
+
+### Scheduling and spread
+
+All three application pod templates — `templates/api-deployment.yaml`,
+`subcharts/frontend/templates/deployment.yaml`, and
+`subcharts/event-consumer/templates/deployment.yaml` — expose `nodeSelector`,
+`tolerations`, `affinity`, and `topologySpreadConstraints`, each `{{- with }}`-guarded
+so an unset key renders nothing. Operators place DataSpoke on dedicated or
+tainted node pools through their values overlay without patching templates.
+
+`api` and `frontend` run `replicaCount: 2` and ship a **default spread on two
+topology keys** — `kubernetes.io/hostname` and `topology.kubernetes.io/zone`,
+both `maxSkew: 1`, both `whenUnsatisfiable: ScheduleAnyway`. `event-consumer`
+runs one replica and ships the four knobs with no default spread.
+
+Two decisions behind that shape are load-bearing:
+
+- **Both keys ship, because a pod-level constraint replaces the cluster-level
+  default wholesale.** Under kube-scheduler's default
+  `defaultingType: System`, `defaultConstraints` apply only to pods that declare
+  *no* `topologySpreadConstraints` of their own. Shipping a hostname-only
+  constraint would therefore silently *remove* whatever zone spread the pods were
+  getting for free from the cluster default — a regression disguised as a
+  hardening change. Shipping both keys restores it explicitly.
+- **`ScheduleAnyway`, not `DoNotSchedule`.** A hard constraint makes the second
+  replica flatly unschedulable on a single-node or single-AZ cluster, which is
+  every dev install and many small prod clusters. Soft spread degrades to
+  co-location instead of leaving a pod `Pending`, so no off switch is needed.
+
+**Each `labelSelector` mirrors its own Deployment's selector, and the two
+Deployments differ.** `api-deployment.yaml` selects on
+`app.kubernetes.io/name: dataspoke-api` alone — a hardcoded literal with no
+instance label — while the frontend subchart selects via `frontend.selectorLabels`,
+which adds `app.kubernetes.io/instance: {{ .Release.Name }}`. A selector broader
+than its Deployment's counts foreign pods into the skew calculation, so the two
+defaults cannot share one shape. That forces two homes for them: the api default
+lives in `values.yaml` under `api.topologySpreadConstraints` because a literal
+selector is fully expressible there; the frontend default lives in the subchart
+template (`{{- with .Values.topologySpreadConstraints }}…{{- else }}…{{- end }}`)
+because values cannot reach `.Release.Name`. An operator overrides either by
+setting their own list.
 
 ---
 
@@ -697,18 +777,59 @@ the operator's, performed against the running deployment.
 
 | # | Step | Interface |
 |---|---|---|
-| 1 | Pre-create the credentials Secret with all thirteen keys (see §Secret keys below) | Any secrets manager (ExternalSecrets Operator, Vault Agent, SealedSecrets) or `kubectl create secret generic` |
-| 2 | Write the values overlay: `secrets.existingSecret`, ingress hosts, TLS, registry, replica counts. The IngressClass is *not* an overlay field — it comes from `DATASPOKE_KUBE_INGRESS_CLASS` in `.env.prod` (see §Ingress) | Start from `helm-charts/values-prod.example.yaml` |
-| 3 | Install — the chart, then the automatic admin seed | `bin/install.sh --profile prod --image-tag <tag> --values <overlay.yaml>` |
-| 4 | **Rotate the default admin credential — required** | `PATCH /api/v1/auth/me` |
-| 5 | Register peripherals | `/api/v1/admin/peripherals/{datahub,langfuse,smtp}` and `/api/v1/admin/conf` (LLM provider/model/key) |
+| 1 | Apply the cluster-scoped prerequisites — at minimum the StorageClass the overlay pins | `kubectl apply -f` against manifests derived from `helm-charts/prod-prereq/` (cluster-admin) |
+| 2 | Pre-create the credentials Secret with all thirteen keys (see §Secret keys below) | Any secrets manager (ExternalSecrets Operator, Vault Agent, SealedSecrets) or `kubectl create secret generic` |
+| 3 | Write the values overlay: `secrets.existingSecret`, ingress hosts, TLS, registry, replica counts, storage classes. The IngressClass is *not* an overlay field — it comes from `DATASPOKE_KUBE_INGRESS_CLASS` in `.env.prod` (see §Ingress) | Start from `helm-charts/values-prod.example.yaml` |
+| 4 | Install — the chart, then the automatic admin seed | `bin/install.sh --profile prod --image-tag <tag> --values <overlay.yaml>` |
+| 5 | **Rotate the default admin credential — required** | `PATCH /api/v1/auth/me` |
+| 6 | Register peripherals | `/api/v1/admin/peripherals/{datahub,langfuse,smtp}` and `/api/v1/admin/conf` (LLM provider/model/key) |
 
 The literal copy-paste command sequence, including Secret-creation examples and
 verification probes, lives in [`helm-charts/README.md`](../../helm-charts/README.md).
 
+**Cluster-scoped prerequisites of a namespace-scoped release.** The Helm release
+owns namespaced objects only, so anything cluster-scoped it depends on must exist
+before the install and outlive the uninstall. `helm-charts/prod-prereq/` is where
+those manifests live; StorageClass is the first case, and the directory is the
+convention for any that follow. The prod pre-flight resolves fifteen overlay
+keys across two spellings: the Bitnami `postgresql.primary.persistence.
+storageClass`, `redis.{master,replica}.persistence.storageClass`, and the
+`defaultStorageClass` / `storageClass` fallbacks both at the top level and
+inside the `postgresql:` and `redis:` blocks — a subchart-scoped `global:`
+still reaches the child as `.Values.global`, and `common.storage.class` ranks
+it ahead of the component's own key, so a pin there shadows the others; and
+the apache-airflow chart's `airflow.{logs,dags,triggerer,workers,
+workers.celery,redis}.persistence.storageClassName` — note the different key name
+(`storageClassName`, not `storageClass`), a copy-paste trap when adapting a
+Bitnami-shaped snippet to an Airflow key. It fails fast on any pinned name
+that does not exist, mirroring the IngressClass probe beside it — with one
+exception: a literal `-` (the Bitnami convention for "bind a pre-provisioned
+PV, skip dynamic provisioning") is accepted without a cluster lookup only on
+the keys whose template maps it to an empty `storageClassName` — the five
+Bitnami keys and the Airflow `logs`/`dags` keys. `triggerer`, `workers`,
+`workers.celery`, and `redis` pass the value straight through with no such
+mapping, so a `-` there is rejected by the pre-flight instead of reaching
+Kubernetes as a literal (and invalid) class name. An overlay that pins
+nothing skips the check and takes the cluster default. **Failing here is the
+point**: a missing class otherwise leaves the PVC `Pending`, the owning
+component never starts, the API's `wait-for-postgres` init container loops
+(for the Postgres/Redis keys), and the install dies on a rollout timeout
+whose symptom names the workload rather than storage. Recovery then needs
+the stuck PVCs deleted, because `storageClassName` is immutable once bound.
+
+**The namespace needs no pre-creating — with one exception.** The prod pre-flight
+calls `ensure_namespace` before any other check, so
+`DATASPOKE_KUBE_DATASPOKE_NAMESPACE` is created if absent and no separate
+operator step is required for it. The credentials Secret of step 2 is
+namespace-scoped, however, and is created *before* `install.sh` ever runs — so an
+operator following the table must create the namespace themselves at step 2. Only
+the ordering is at stake: `ensure_namespace` is idempotent and adopts a namespace
+the operator made.
+
 **Pre-flight is a hard gate.** Before touching the chart the prod install fails
-fast on: a missing `DATASPOKE_KUBE_INGRESS_CLASS` IngressClass; a missing
-credentials Secret; any of the thirteen required keys absent or empty;
+fast on: a missing `DATASPOKE_KUBE_INGRESS_CLASS` IngressClass; a StorageClass
+the overlay pins that does not exist in the cluster (per the storage paragraph
+above); a missing credentials Secret; any of the thirteen required keys absent or empty;
 `DATASPOKE_AIRFLOW_FERNET_KEY` not shaped like a Fernet key (URL-safe base64 of
 exactly 32 raw bytes — 43 characters then `=`), which catches the
 `openssl rand -hex 32` value every other key uses and which would otherwise fail
@@ -732,7 +853,7 @@ unreachable, not a peripheral problem.
 **Rotation is required, not advisory.** A first install therefore returns with
 an active Admin account whose credentials — `dataspoke@dataspoke.local /
 dataspoke` — are published in this repository. The deployment is not
-production-ready until step 4 rotates it. Who can reach that account depends on
+production-ready until the rotation step rotates it. Who can reach that account depends on
 the operator's ingress controller and network posture, which the prod profile
 does not own or configure; the chart adds no source-range restriction or
 inbound policy of its own. Operators who want no default credential to exist at
@@ -754,7 +875,7 @@ The `ENV_FILE=` prefix is required — the script defaults it to `.env.dev`.
 The install's own invocation needs no prefix because `install.sh` exports the
 resolved env file for child scripts.
 
-**Step 5 is the operator's, not the installer's.** DataHub URL/token, Langfuse
+**Peripheral registration is the operator's, not the installer's.** DataHub URL/token, Langfuse
 host/keys, and LLM provider/model/key are all registered at runtime through the
 admin API (see §Configuration Flow and §Profiles). Until then the dependent
 features stay inert rather than failing the install.
@@ -1071,24 +1192,156 @@ credential is a required follow-up — see §Prod operator workflow.
 
 ### Production defaults
 
+Per-pod figures. Multiply by the replica count to reach the row's contribution.
+
 | Component | Replicas | CPU Req / Limit | Mem Req / Limit | PV |
 |---|---|---|---|---|
 | frontend | 2 | 250m / 500m | 256 Mi / 512 Mi | — |
 | api | 2 | 500m / 1000m | 512 Mi / 1024 Mi | — |
 | event-consumer† | 1 | 250m / 500m | 512 Mi / 1024 Mi | — |
 | postgresql | 1 | 1000m / 2000m | 2048 Mi / 6144 Mi | 50 Gi (custom image with `pgvector` + Apache AGE) |
-| redis | 1 + 1 | master 250m / 500m; replica 100m / 150m | master 256 Mi / 512 Mi; replica 128 Mi / 192 Mi | 8 Gi per pod (master + replica) = 16 Gi |
-| airflow (api-server + scheduler + triggerer + dag-processor) | 1+1+1+1 | per-component; see `values.yaml` | per-component; see `values.yaml` | none — task logs in emptyDir (2 Gi cap), DAGs baked into the custom image |
-| **Total** (excludes event-consumer) | | **4075m / 8200m** | **6.5 Gi / 15.7 Gi** | **66 Gi** (postgresql 50 + redis 2×8) |
+| redis master | 1 | 250m / 500m | 256 Mi / 512 Mi | 8 Gi |
+| redis replica | 1 | 250m / 500m | 256 Mi / 512 Mi | 8 Gi |
+| airflow api-server | 1 | 250m / 1000m | 512 Mi / 1024 Mi | — |
+| airflow scheduler | 1 | 500m / 1500m | 1536 Mi / 3072 Mi | — |
+| airflow triggerer | 1 | 200m / 750m | 768 Mi / 1536 Mi | — |
+| airflow dag-processor | 1 | 200m / 500m | 512 Mi / 1024 Mi | — |
+| airflow logGroomer sidecar | ×3 (one per scheduler / triggerer / dag-processor pod) | 50m / 100m each | 128 Mi / 512 Mi each | — |
+| airflow statsd | 1 | 50m / 100m | 64 Mi / 128 Mi | — |
+| airflow db-migrate‡ | hook Job | 200m / 500m | 512 Mi / 1024 Mi | — |
+| **Total** (steady state; excludes event-consumer and the db-migrate hook) | | **4350m / 10150m** | **7.7 Gi / 18.1 Gi** | **66 Gi** (postgresql 50 + redis 2×8) |
 
 † event-consumer disabled by default — add ~250m / 500m CPU + ~512 Mi / 1024 Mi
 memory when enabled.
 
-The Total row sums the rendered pod specs (`helm template` against `values.yaml`)
-rather than the per-pod cells above, so it also carries the Airflow logGroomer
-sidecars that the component rows do not break out. Per-component Airflow
-requests/limits differ across api-server, scheduler, triggerer, and
-dag-processor; the concrete values live in `values.yaml`.
+‡ `db-migrate` is the Airflow subchart's **`post-install`/`post-upgrade`** hook
+Job (`templates/jobs/migrate-database-job.yaml`, hook-weight 1, delete policy
+`before-hook-creation,hook-succeeded`). It is not steady-state load, but it runs
+*after* every workload has been applied, so an install or upgrade transiently
+needs its 200m / 512 Mi of request on top of the Total. Because it is a post
+hook, its failure leaves a partially live release: the manifests are all applied
+and each Airflow pod sits in its own `wait-for-airflow-migrations` init container
+waiting for a schema that never arrives — a different recovery story from a
+`pre-install` failure, which creates nothing and leaves the cluster untouched.
+
+**Redis master and replica are sized identically, deliberately.** A replica holds
+the same dataset as its master, so a smaller replica OOMKills, full-resyncs, and
+OOMKills again while the master stays healthy and the failure reads as a replica
+bug. The Bitnami chart's `resourcesPreset` mechanism makes the asymmetry easy to
+introduce by accident: an explicit `resources:` map **replaces** the preset
+wholesale rather than merging with it, so setting `master.resources` alone leaves
+the replica on the `nano` preset. The same replace-not-merge rule is why both
+pods carry an explicit `ephemeral-storage` pair rather than inheriting the
+preset's.
+
+Airflow components differ from one another because their failure modes do. The
+**triggerer** holds every deferred task's trigger instance in a single asyncio
+loop, so its memory scales with deferred tasks in flight and losing it strands
+all of them — it is the tightest allocation in the chart and the one whose
+memory floor is raised furthest. Its CPU request rises proportionally less than
+its memory, because on nodes where allocatable CPU is the scarce dimension a
+memory-request increase is often free while every CPU-request increase shrinks
+the set of nodes the pod can land on.
+
+**A raised scheduler CPU limit has a derived side effect.** The Airflow subchart
+computes `config.celery.sync_parallelism` from the `cpu_count` of the scheduler's
+CPU **limit**, so changing that limit moves the rendered `airflow.cfg` and its
+config checksum. Inert under the baseline `LocalExecutor`, live under any Celery
+executor an operator switches to.
+
+The Total row's scope is every container of every steady-state pod the umbrella
+chart renders from `values.yaml`, including the three logGroomer sidecars. It
+excludes the `db-migrate` hook Job per the note above, and all init containers,
+which never raise a pod's effective request — Kubernetes takes `max(largest init
+container, sum of app containers)`, and in this chart every pod's app containers
+request at least as much as its largest init container. The Airflow subchart
+applies each component's own `resources` block to its `wait-for-airflow-migrations`
+init container, so on those pods the two sides are equal rather than the app side
+being larger; the conclusion is unchanged either way.
+
+### Chart invariant — every container is sized
+
+**No container in the rendered chart lacks both requests and limits.** The rule
+covers init containers, sidecars, and hook Jobs, not just the main container of
+each workload. A container with neither lands in the BestEffort QoS class, which
+the kubelet evicts first under node pressure; for the `post-install`/`post-upgrade`
+`db-migrate` hook Job that means the whole install or upgrade fails with every
+workload already applied and blocked on its migration wait, and for a sidecar it
+means the pod loses a component while the main container survives.
+
+The invariant is enforced by review, not by CI: a render walk over `helm template`
+output that enumerates every container across every workload kind. The failure
+mode it guards is a **subchart version bump introducing a new unsized
+container** — the Airflow, PostgreSQL, and Redis subcharts each add components
+across minor releases, and a new one arrives unsized unless the umbrella pins it.
+Re-run the walk whenever a `Chart.yaml` dependency version changes.
+
+### Redis memory policy
+
+The chart pins `redis.commonConfiguration` with `maxmemory` and
+`maxmemory-policy noeviction`, applied to master and replica alike.
+
+**`noeviction` because this Redis is not a *pure* cache.** Alongside the API
+response cache it carries refresh-token revocation keys
+(`src/backend/auth/tokens.py`) and distributed locks (`src/shared/cache/client.py`
+— `SET NX` plus a Lua compare-and-delete). Under any LRU or LFU policy Redis
+would drop those keys silently and, by its own logic, *correctly*: they look
+exactly like cold cache entries. A dropped revocation key un-revokes a refresh
+token; a dropped lock key releases a lock nobody holds. `noeviction` converts
+both into a loud write failure instead.
+
+**The rate limiter's keyspace is what makes the `maxmemory` headroom
+load-bearing.** It is the one tenant that grows without bound and is reachable
+without authentication: the limiter derives one bucket key per distinct
+caller-supplied bearer or client address, and for an API-token-prefixed bearer it
+hashes the string into a key *without resolving the token*, so an unauthenticated
+caller mints a fresh key per request. The cached-read keyspace is the opposite
+shape — entity-scoped, one key per dataset URN or ontology entity id (see
+[BACKEND.md §Cache Key Conventions](BACKEND.md#cache-key-conventions)) — bounded
+by catalog size and written only behind authenticated routes. `maxmemory` is an **instance-wide** budget with no
+per-logical-DB isolation, and the limiter runs in its own logical DB
+(`RATE_LIMIT_REDIS_DB`), so filling that DB starves writes on the auth-critical
+keys — revocation entries and distributed locks — sharing the same budget.
+
+**One known asymmetry.** The rate limiter (`src/api/middleware/rate_limit.py`)
+shares this Redis, and its application-wide default limiter runs with
+`in_memory_fallback_enabled=True` — on any `RedisError`, OOM included, it degrades
+silently to per-process counting rather than surfacing the failure. The
+fail-closed limiter on the credential-accepting auth routes is the opposite by
+design: no fallback, errors not swallowed, so it answers 503 (see [API.md §Middleware
+Stack](../API.md#middleware-stack)). A Redis at `maxmemory` therefore weakens the
+general limit quietly while the brute-force control fails closed.
+
+**`maxmemory` sits well below the container memory limit, not at it — but that
+gap is headroom, not a safety guarantee.** Redis's own accounting covers the
+dataset but excludes replica output buffers and part of the AOF buffer, while
+the cgroup counts all of it. Setting `maxmemory` at the container limit hands
+the kernel an OOMKill before Redis ever reports OOM to a client — which defeats
+the point of `noeviction`, since the loud failure never reaches the caller. Two
+residual risks remain even with the gap in place:
+
+- **BGREWRITEAOF fork copy-on-write is the actual consumer of the headroom.**
+  `appendonly yes` means AOF rewrites fork a child process; pages the parent
+  does not modify after the fork stay shared, but pages either process writes
+  afterward are duplicated, and both processes are charged to the same cgroup.
+  If that copy-on-write growth exceeds what the gap leaves, the outcome is a
+  kernel OOMKill of the whole pod — exactly the silent, non-client-visible
+  failure mode `noeviction` is chosen to avoid for ordinary write traffic.
+- **The tightened `client-output-buffer-limit replica` cap is a trade, not a
+  free reduction.** The chart sets `64mb 32mb 60`, tighter than the upstream
+  default's `256mb 64mb 60`. This swaps the OOMKill risk the wider default
+  would pose (a replica buffer large enough to fit alongside the dataset
+  *inside* the container limit during a resync) for a master-side forced
+  disconnect and replica resync-retry loop if write volume during a full
+  resync fills the 64mb buffer before the replica drains it. The application
+  connects only to `dataspoke-redis-master`, never the replica, so this trade
+  costs standby durability during a resync window — not the request path.
+
+`commonConfiguration` is a plain scalar in the Bitnami chart, so setting it
+replaces the upstream default rather than extending it. The upstream directives —
+the two `loadmodule` lines, `appendonly yes`, and `save ""` — must be carried
+forward verbatim alongside the additions, or AOF durability is silently switched
+off.
 
 ### Dev minimums
 
@@ -1149,15 +1402,31 @@ local storage usage exceeds the total limit of containers`. `/opt/airflow/logs`
 is an emptyDir on every Airflow component, so it counts against the ephemeral
 budget alongside stdout. Explicit ephemeral-storage
 limits in the table below prevent that class of eviction. Low-log containers
-(dev-lock, redis, frontend, Airflow logGroomer sidecars) keep the Autopilot
-default.
+(dev-lock, frontend, Airflow logGroomer sidecars) keep the Autopilot default.
+
+Redis is the one low-log component that carries an explicit pair anyway in the
+production defaults — 50 Mi request and 2 Gi limit on master and replica alike.
+The figures are a restoration rather than a sizing decision: the Bitnami `nano`
+preset supplies them, and the chart's explicit `resources:` map replaces that
+preset wholesale (see §Production defaults). On Autopilot the effective ceiling
+is therefore the 50 Mi request rather than the 1 GiB default, which suffices
+because Redis logs sparsely and its AOF and RDB files live on the PVC, not on
+ephemeral storage.
 
 The table lists the **configured `limits.ephemeral-storage`**. On Autopilot the
 effective ceiling is the paired `requests.ephemeral-storage`, which the umbrella
-chart sets to half the limit — 4 Gi for the four Airflow components, 2 Gi for
-`dataspoke-api` and `postgresql`. Size against the request, not the limit; the
-Airflow `logs.emptyDirConfig.sizeLimit` of 2 Gi is chosen to stay under the 4 Gi
-Airflow request for that reason.
+chart sets to half the limit for the six entries it owns below — 4 Gi for the
+four Airflow components, 2 Gi for `dataspoke-api` and `postgresql`. The
+datahub-\*, OpenSearch, Kafka, MySQL and example-\* rows are peripheral-chart
+values, and the redis pair above is a preset restoration rather than a half-split.
+Size against the request, not the limit; the Airflow
+`logs.emptyDirConfig.sizeLimit` of 2 Gi is chosen to stay under the 4 Gi Airflow
+request for that reason.
+
+Airflow-side containers the umbrella chart sizes but the table does not list —
+statsd and the `db-migrate` hook Job — carry an `ephemeral-storage`
+request/limit pair on the same per-component convention, scaled to their much
+smaller log volume.
 
 | Component | Namespace | Configured limit | Why |
 |---|---|---|---|
@@ -1517,6 +1786,9 @@ target pod is `1/1 Running`. Re-run `bin/health-check.sh` once pods are ready.
 - [DataHub prerequisites defaults](https://github.com/acryldata/datahub-helm/blob/master/charts/prerequisites/values.yaml)
 - [Migrating Graph Service Implementation](https://docs.datahub.com/docs/how/migrating-graph-service-implementation)
 - [Helm — Chart Dependencies](https://helm.sh/docs/helm/helm_dependency/)
+- [Kubernetes — Pod Topology Spread Constraints](https://kubernetes.io/docs/concepts/scheduling-eviction/topology-spread-constraints/) — `defaultConstraints` and `defaultingType`
+- [cluster-autoscaler FAQ — what types of pods can prevent scale-down](https://github.com/kubernetes/autoscaler/blob/master/cluster-autoscaler/FAQ.md#what-types-of-pods-can-prevent-ca-from-removing-a-node)
+- [Redis — key eviction policies](https://redis.io/docs/latest/develop/reference/eviction/)
 - [Bitnami PostgreSQL Chart](https://github.com/bitnami/charts/tree/main/bitnami/postgresql)
 - [Bitnami Redis Chart](https://github.com/bitnami/charts/tree/main/bitnami/redis)
 - [Apache Airflow Helm Chart](https://github.com/apache/airflow/tree/main/chart)
