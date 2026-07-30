@@ -50,6 +50,16 @@
 #         annotations:
 #           cert-manager.io/cluster-issuer: ""   # null FAILS helm template here — see above
 #
+# Verified against helm v3.18.4 (the live binary available here) against the
+# vendored charts/airflow-1.20.0.tgz — the only version pair verified. How a
+# subchart's values.schema.json treats a null-valued key has varied across
+# helm minor releases, so confirm the three behaviors above against your own
+# binary if you are not on v3.18.4. A downstream report on helm v3.14.3
+# claims `null` removes the cert-manager.io/cluster-issuer key cleanly on all
+# three ingresses below — that does NOT reproduce at v3.18.4, where the
+# per-ingress split above still holds. This header states only what was
+# tested, not a version range.
+#
 # ------------------------------------------------------------------------------
 # NO CREDENTIALS IN THIS FILE
 # ------------------------------------------------------------------------------
@@ -207,6 +217,41 @@ config:
   # controller's actual pod CIDR, guard or no guard. See dataspoke/values.yaml's
   # trustedProxyIps comment and spec/feature/AUTH.md §Client-IP attribution
   # for rate limiting.
+  # Deriving the value on a VPC-CNI cluster differs by provider — the two
+  # shapes below are NOT interchangeable:
+  #   - AWS VPC CNI (EKS): pod IPs come straight from ENI-attached VPC subnet
+  #     addresses, so `.spec.podCIDR` is empty on every Node —
+  #     `kubectl get nodes -o
+  #     custom-columns=NAME:.metadata.name,PODCIDR:.spec.podCIDR` prints
+  #     `<none>` for all of them, and there is no single CIDR to read off
+  #     the cluster. Name the node/worker subnet(s) your ingress
+  #     controller's pods can be scheduled onto instead (from your cloud
+  #     console or a Node's `.status.addresses`) — on this CNI, pod and node
+  #     IPs share the same address space.
+  #   - GKE VPC-native / alias-IP clusters: pods DO get a real cluster-wide
+  #     pod range — a secondary range sliced into a /24 per Node, readable
+  #     as `.spec.podCIDR` on any Node or as the cluster's `clusterIpv4Cidr`.
+  #     Name that pod secondary range, NOT the node/worker subnet — the two
+  #     are disjoint on this CNI. The shipped example below (`10.4.0.0/14`)
+  #     is exactly that shape, not a node subnet.
+  # The two error directions are NOT symmetric. Too narrow fails safe: the
+  # forwarded header is ignored, every request is attributed to the ingress
+  # controller's own pod IP, and the whole deployment shares one coarse
+  # bucket — cheap to deny service to, but the limiter still counts. Too
+  # wide fails OPEN: uvicorn applies the trust list to every hop of
+  # X-Forwarded-For, so any caller reachable from inside the named range
+  # forges a fresh client IP per request, lands in a fresh bucket every
+  # time, and is never limited at all — which removes the only brute-force
+  # control on POST /auth/token and /auth/register. Err narrow.
+  # On the AWS VPC CNI in particular, naming the whole node/worker subnet —
+  # because pods and nodes share that address space — trusts every pod
+  # scheduled on it, not only the ingress controller's. Narrow the blast
+  # radius by scheduling the ingress controller onto a dedicated node
+  # group/subnet and naming only that CIDR. The chart's `networkPolicy` is
+  # not a mitigation here: it renders `policyTypes: [Egress]` only (a single
+  # allow rule to the DataHub namespace), so it restricts no ingress and
+  # cannot keep an untrusted pod out of the range you named. When you cannot
+  # narrow it, the loopback-only default is the safer trade.
   # trustedProxyIps: "127.0.0.1,10.4.0.0/14"
 
 
@@ -245,6 +290,10 @@ auth:
 #
 # event-consumer:
 #   enabled: true
+#   image:
+#     pullPolicy: Always   # only if your build pipeline reuses a mutable
+#                          # tag — see the "pullPolicy" section below for
+#                          # the full rationale
 #   serviceAccount:
 #     create: true
 #     annotations:
@@ -314,9 +363,6 @@ secrets:
 # api:
 #   image:
 #     pullPolicy: Always
-# event-consumer:
-#   image:
-#     pullPolicy: Always
 # postgresql:
 #   image:
 #     pullPolicy: Always
@@ -324,6 +370,117 @@ secrets:
 #   images:
 #     airflow:
 #       pullPolicy: Always
+#
+#   (event-consumer: set its pullPolicy in the "Event consumer" section above,
+#    where the rest of that workload's keys live.)
+
+
+# ------------------------------------------------------------------------------
+# Resource sizing guidance — field-tested, not chart defaults
+# ------------------------------------------------------------------------------
+# `dataspoke/values.yaml` ships prod defaults for every component — see
+# spec/feature/HELM_CHART.md §Resource Sizing → Production defaults for the
+# full per-component table. `api`, `frontend`, `postgresql`, and
+# `airflow.dagProcessor` are the four components whose chart defaults are
+# most commonly tuned for a real workload; the figures below are one
+# operator's field-tested numbers for those four, derived from one node
+# shape and one workload profile, offered as a starting point to tune from
+# rather than a proven floor:
+#
+# frontend:
+#   resources:
+#     requests:
+#       memory: 384Mi        # chart default: 256Mi
+#     limits:
+#       cpu: "1"             # chart default: 500m
+#       memory: 1024Mi       # chart default: 512Mi
+# api:
+#   resources:
+#     requests:
+#       memory: 768Mi        # chart default: 512Mi
+#     limits:
+#       cpu: 1500m           # chart default: 1
+#       memory: 2048Mi       # chart default: 1024Mi
+# postgresql:
+#   primary:
+#     resources:
+#       requests:
+#         memory: 4096Mi     # chart default: 2048Mi
+# airflow:
+#   dagProcessor:
+#     resources:
+#       requests:
+#         memory: 768Mi      # chart default: 512Mi
+#       limits:
+#         memory: 1.5Gi      # chart default: 1Gi (1.5Gi == 1536Mi)
+#
+# Two rationales worth carrying into your own tuning pass:
+#   - Raising the PostgreSQL request is not only a capacity change — under
+#     memory pressure the kubelet ranks pods for eviction first by whether
+#     usage exceeds the request, then by pod priority, and only then by how
+#     far usage sits above the request — so a wide limit-to-request ratio
+#     puts Postgres into that first bucket early and makes it an early
+#     eviction candidate as soon as its usage climbs past a request that is
+#     small relative to its limit. At the chart default's 3x ratio (2048Mi
+#     request / 6144Mi limit) that gap is reached quickly. Raising the
+#     request narrows the ratio, so Postgres has to exceed its (now larger)
+#     request by far more before the kubelet considers it a candidate — it
+#     is evicted later, not sooner.
+#   - Every row above raises memory further than CPU (frontend and api raise
+#     no CPU request at all) — the same asymmetry values.yaml's own
+#     airflow.triggerer comment documents: on nodes where allocatable CPU is
+#     the scarce dimension, a memory-request increase is often free while
+#     each CPU-request increase shrinks the set of nodes a pod can land on.
+#
+# Field result: the full table above scheduled without autoscaling on a
+# 2 vCPU / ~7 GiB-allocatable burstable node pool.
+
+
+# ------------------------------------------------------------------------------
+# StorageClass — pinning a non-default class for Postgres/Redis
+# ------------------------------------------------------------------------------
+# postgresql.primary.persistence.storageClass and
+# redis.{master,replica}.persistence.storageClass (Bitnami spelling — see the
+# Airflow log persistence section below for the different apache-airflow
+# spelling, storageClassName) each default to your cluster's default
+# StorageClass when unset. Pin one only if you need something other than the
+# default — a class with a specific disk type, encryption-at-rest, or
+# reclaimPolicy:
+#
+# postgresql:
+#   primary:
+#     persistence:
+#       storageClass: your-storage-class
+# redis:
+#   master:
+#     persistence:
+#       storageClass: your-storage-class
+#   replica:
+#     persistence:
+#       storageClass: your-storage-class
+#
+# Whichever class you pin here must already exist in the cluster BEFORE you
+# run install.sh — a namespace-scoped Helm release cannot create a
+# cluster-scoped StorageClass for itself. `install.sh --profile prod`
+# resolves all fifteen overlay keys this check covers — the three above, the
+# top-level `global.defaultStorageClass` / `global.storageClass` fallbacks,
+# the same two spelled inside the `postgresql:` and `redis:` blocks (which
+# Bitnami's precedence ranks AHEAD of a component's own key, so a pin there
+# shadows the three above), and the six Airflow persistence keys below this
+# block (`storageClassName` spelling) — and fails on any pinned name
+# `kubectl get storageclass` cannot find, before the chart is installed: no
+# workload, PVC, or Secret is created off a class the check has not confirmed
+# exists. It also rejects a literal `-` on the four Airflow keys that do not
+# honour it (see the Airflow log persistence section below). Fifteen covers
+# every PVC the shipped architecture provisions; `readReplicas`,
+# `backup.cronjob` and `sentinel` are out of scope because the chart pins
+# standalone with no backup CronJob and no Sentinel. See prod-prereq/ for what belongs
+# there, an example manifest, and the reclaimPolicy/encryption trade-off
+# these PVs carry (they hold the Postgres credential store and Redis's AOF
+# revocation-key log) — prod-prereq/'s example manifest deliberately pins
+# `Retain` rather than the provisioner's usual `Delete`, against losing that
+# data to a mistaken PVC or namespace delete, at the cost of a PV that
+# outlives its PVC and must be reclaimed by hand.
 
 
 # ------------------------------------------------------------------------------
@@ -337,13 +494,30 @@ secrets:
 # helm-charts/README.md §Prod: what survives an uninstall for what a
 # subsequent teardown then leaves behind.
 #
+# To pin a non-default StorageClass for these PVCs, the key is spelled
+# `storageClassName` here (the apache-airflow chart's own spelling), NOT the
+# `storageClass` used by the postgresql/redis blocks above — pasting the
+# Bitnami spelling here silently pins nothing. It must already exist in the
+# cluster; see helm-charts/prod-prereq/. Neither `triggerer.persistence`
+# nor `workers.celery.persistence` honours a literal `-` for
+# "pre-provisioned PV" the way the Bitnami keys do, and neither exposes an
+# `existingClaim` key at all (verified against the subchart's own
+# values.yaml — `existingClaim` exists only under `redis`, `dags`, and
+# `logs` persistence, not here) — these two keys need an explicit class
+# name. Disabling persistence on either (`persistence.enabled: false`, or
+# leaving it unset) does not fall back to a pre-provisioned PV; it renders
+# an `emptyDir` instead, which is the ephemeral-logs behavior this section
+# exists to move away from.
+#
 # airflow:
 #   workers:
 #     celery:
 #       persistence:
 #         enabled: true
 #         size: 20Gi
+#         # storageClassName: your-storage-class
 #   triggerer:
 #     persistence:
 #       enabled: true
 #       size: 20Gi
+#       # storageClassName: your-storage-class

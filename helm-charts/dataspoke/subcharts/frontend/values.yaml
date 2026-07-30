@@ -29,6 +29,23 @@ ingress:
 
 resources: {}
 
+# Scheduling knobs — {{- with }}-guarded in templates/deployment.yaml, so an
+# unset key renders nothing. topologySpreadConstraints is deliberately left
+# UNSET (not `[]`) rather than defaulted here: this subchart's own selector
+# (frontend.selectorLabels = name + app.kubernetes.io/instance:
+# {{ .Release.Name }}) needs .Release.Name, which a values.yaml default
+# cannot reach, so the template supplies the default spread itself via
+# `{{- with .Values.topologySpreadConstraints }}…{{- else }}…{{- end }}` and
+# an operator overrides it by setting their own non-empty list — an explicit
+# `[]` is treated as unset by `{{- with }}` and falls through to the shipped
+# default, so there is no way to opt out of the spread entirely (by design:
+# ScheduleAnyway is soft and never leaves a pod Pending). The umbrella chart
+# leaves this key unset too, for the same reason — see
+# spec/feature/HELM_CHART.md §Scheduling and spread.
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
 # Runtime config injected into the Next.js server via the frontend ConfigMap.
 # Values are consumed server-side (no NEXT_PUBLIC_ prefix; not baked at build time).
 # Override via umbrella values.yaml (frontend.config.*) or --set at deploy time.

@@ -45,6 +45,14 @@ waitForDeps:
 
 resources: {}
 
+# Scheduling knobs — {{- with }}-guarded in templates/deployment.yaml, so an
+# unset key renders nothing. No default topologySpreadConstraints: this
+# component's replicaCount is 1, so there is no sibling pod to spread against.
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+
 # Name of the pre-created K8s Secret containing runtime credentials
 # (Postgres password, DataHub token/Kafka SASL password, JWT secret, etc.).
 # Set by the umbrella chart via the parent's secrets.existingSecret value

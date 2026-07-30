@@ -54,6 +54,25 @@ frontend:
     limits:
       cpu: 500m
       memory: 512Mi
+  # Scheduling knobs — {{- with }}-guarded in the subchart's deployment.yaml,
+  # so an unset key renders nothing. topologySpreadConstraints is deliberately
+  # left UNSET here (not an empty list) — the frontend subchart's selector
+  # needs .Release.Name, which values.yaml cannot reach, so
+  # deployment.yaml supplies a default spread via
+  # `{{- with .Values.topologySpreadConstraints }}…{{- else }}…{{- end }}`
+  # keyed on `include "frontend.selectorLabels"` (name + release instance) —
+  # the same two-key, ScheduleAnyway shape shipped for `api` below. Override
+  # by setting frontend.topologySpreadConstraints in your overlay — note the
+  # override must be a non-empty list: the template's
+  # `{{- with .Values.topologySpreadConstraints }}…{{- else }}…{{- end }}`
+  # treats an explicit `[]` as unset and falls through to the shipped default,
+  # so there is no way to opt out of the spread entirely (by design —
+  # ScheduleAnyway is soft and never leaves a pod Pending, so no off switch is
+  # needed). See spec/feature/HELM_CHART.md §Scheduling and spread for the
+  # full rationale.
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
   # Runtime config consumed server-side by Next.js (injected via ConfigMap;
   # no NEXT_PUBLIC_ prefix — values are not baked at build time).
   config:
@@ -107,6 +126,43 @@ api:
       cpu: "1"
       memory: 1024Mi
       ephemeral-storage: 4Gi
+  # Scheduling knobs — {{- with }}-guarded in api-deployment.yaml, so an unset
+  # key renders nothing. Let an operator place DataSpoke on dedicated or
+  # tainted node pools through their values overlay without patching templates.
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  # Default spread on two topology keys — see spec/feature/HELM_CHART.md
+  # §Scheduling and spread for the two load-bearing reasons: (a) a pod-level
+  # topologySpreadConstraints REPLACES the scheduler's cluster-level
+  # defaultConstraints wholesale under the default defaultingType: System, so
+  # a hostname-only constraint would silently remove whatever zone spread
+  # these pods got for free — shipping both keys restores it explicitly;
+  # (b) ScheduleAnyway rather than DoNotSchedule, because a hard constraint
+  # makes the second replica flatly unschedulable on a single-node or
+  # single-AZ cluster (every dev install and many small prod clusters).
+  #
+  # labelSelector mirrors THIS Deployment's own selector — api-deployment.yaml
+  # selects on app.kubernetes.io/name: dataspoke-api only (a hardcoded
+  # literal, no instance label). A broader selector (e.g. adding an instance
+  # label a foreign release also carries) would count foreign pods into the
+  # skew calculation, which is why this default lives here as a literal
+  # rather than in the template (contrast with the frontend subchart above,
+  # whose selector needs .Release.Name and so ships its default from the
+  # template instead).
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/name: dataspoke-api
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/name: dataspoke-api
   secretReader:
     enabled: true
   migrate:
@@ -177,6 +233,13 @@ event-consumer:
       cpu: 500m
       memory: 1024Mi
       ephemeral-storage: 4Gi
+  # Scheduling knobs — {{- with }}-guarded in the subchart's deployment.yaml,
+  # so an unset key renders nothing. No default topologySpreadConstraints:
+  # replicaCount is 1, so there is no sibling pod to spread against.
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  topologySpreadConstraints: []
 
 # ---------------------------------------------------------------------------
 # Infrastructure subcharts
@@ -264,6 +327,61 @@ redis:
     enabled: true
     existingSecret: "dataspoke-secrets"
     existingSecretPasswordKey: "DATASPOKE_REDIS_PASSWORD"
+  # commonConfiguration applies to master and replica alike. It is a plain
+  # SCALAR in the Bitnami chart (redis/values.yaml), so setting it here
+  # REPLACES the upstream default wholesale rather than merging with it — the
+  # six lines through `save ""` are the upstream directives (redis-25.3.12.tgz
+  # redis/values.yaml:200-207) carried forward verbatim; dropping any of them
+  # silently disables AOF durability or the ReJSON/RediSearch modules.
+  #
+  # `maxmemory 256mb` + `maxmemory-policy noeviction`: this Redis is not a pure
+  # cache — it also holds refresh-token revocation keys
+  # (src/backend/auth/tokens.py is_refresh_revoked) and distributed locks
+  # (src/shared/cache/client.py, SET NX + Lua compare-and-delete). An LRU/LFU
+  # policy would drop both silently and, by Redis's own logic, "correctly" —
+  # they look like cold cache entries. noeviction converts a full dataset into
+  # a loud write failure instead. Known asymmetry: the rate limiter
+  # (src/api/middleware/rate_limit.py, RATE_LIMIT_REDIS_DB) shares this Redis
+  # with in_memory_fallback_enabled=True, so it degrades silently to
+  # per-process counting on any RedisError including OOM — the fail-closed
+  # auth limiter has no such fallback and answers 503 instead. The limiter's
+  # keyspace is the genuinely unbounded, unauthenticated-reachable tenant here
+  # (one bucket key per distinct caller-supplied bearer/IP, versus the
+  # dataset-count-bounded cache keys); `maxmemory` is instance-wide with no
+  # per-logical-DB isolation, so exhausting the limiter's DB can also starve
+  # writes on the auth-critical DB (revocation keys, distributed locks) sharing
+  # the same budget.
+  #
+  # `maxmemory` sits well below the 512Mi container limit rather than at it,
+  # because Redis's own accounting excludes replica output buffers and part of
+  # the AOF buffer while the cgroup counts all of it. This is headroom, not a
+  # safety guarantee — two residual risks remain:
+  # (a) `appendonly yes` means BGREWRITEAOF forks a child process; pages the
+  # parent does not modify after the fork stay shared, but pages either
+  # process writes afterward are duplicated, and both processes are charged
+  # to the same cgroup. That copy-on-write growth is the actual consumer of
+  # this headroom, and if it exceeds what is left, the outcome is a kernel
+  # OOMKill of the whole pod — exactly the silent, non-client-visible failure
+  # mode `noeviction` is chosen to avoid for ordinary write traffic.
+  # (b) The `client-output-buffer-limit replica 64mb 32mb 60` cap (tightened
+  # from the upstream default's `256mb 64mb 60`) is a deliberate trade, not a
+  # free reduction: it swaps the OOMKill risk in the default for a master-side
+  # forced disconnect (and replica resync retry loop) if write volume during a
+  # full resync fills the buffer past 64mb before the replica drains it. The
+  # application only talks to `dataspoke-redis-master`, never the replica, so
+  # this trade costs standby durability during a resync window — not the
+  # request path.
+  commonConfiguration: |-
+    # Enable ReJSON y Redisearch
+    loadmodule /opt/bitnami/redis/lib/redis/modules/redisearch.so
+    loadmodule /opt/bitnami/redis/lib/redis/modules/rejson.so
+    # Enable AOF https://redis.io/topics/persistence#append-only-file
+    appendonly yes
+    # Disable RDB persistence, AOF persistence already enabled.
+    save ""
+    maxmemory 256mb
+    maxmemory-policy noeviction
+    client-output-buffer-limit replica 64mb 32mb 60
   master:
     # Bitnami redis 25.x keys: master.podAnnotations and master.pdb
     podAnnotations:
@@ -272,12 +390,19 @@ redis:
       create: true
       minAvailable: 1
     resources:
+      # An explicit `resources:` map REPLACES the Bitnami `resourcesPreset`
+      # wholesale rather than merging with it (charts/redis-25.3.12.tgz
+      # common/templates/_resources.tpl), so `ephemeral-storage` must be
+      # listed here explicitly — there is no preset underneath to fall back
+      # to for it.
       requests:
         cpu: 250m
         memory: 256Mi
+        ephemeral-storage: 50Mi
       limits:
         cpu: 500m
         memory: 512Mi
+        ephemeral-storage: 2Gi
   replica:
     replicaCount: 1
     # Bitnami redis 25.x keys: replica.podAnnotations and replica.pdb
@@ -286,6 +411,20 @@ redis:
     pdb:
       create: true
       minAvailable: 1
+    # Sized EQUAL to master, deliberately — a replica holds the same dataset
+    # as its master, so a smaller replica (the Bitnami `nano` preset:
+    # 100m/128Mi -> 150m/192Mi) OOMKills, full resyncs, and OOMKills again
+    # while the master stays healthy, reading like a replica-only bug. See
+    # ephemeral-storage note under master.resources.
+    resources:
+      requests:
+        cpu: 250m
+        memory: 256Mi
+        ephemeral-storage: 50Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+        ephemeral-storage: 2Gi
 
 airflow:
   enabled: true
@@ -321,8 +460,42 @@ airflow:
   redis:
     enabled: false
   # StatsD metrics collector (Prometheus-scrapable) for Airflow observability.
+  # Unsized in the chart default — a BestEffort statsd pod is the first thing
+  # the kubelet evicts under node pressure, silently blinding Airflow
+  # observability rather than failing loudly. Low-log container (a UDP
+  # aggregator, no per-request logging), so ephemeral-storage stays small.
   statsd:
     enabled: true
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+        ephemeral-storage: 128Mi
+      limits:
+        cpu: 100m
+        memory: 128Mi
+        ephemeral-storage: 256Mi
+
+  # `db-migrate` is the subchart's post-install/post-upgrade hook Job
+  # (templates/jobs/migrate-database-job.yaml, helm.sh/hook:
+  # post-install,post-upgrade with hook-weight 1) that runs `airflow db migrate`.
+  # This block is required because the chart ships no default for it — a
+  # BestEffort hook pod evicted under node pressure fails the release with
+  # every workload already applied and blocked on its own
+  # wait-for-airflow-migrations init container, rather than failing before
+  # anything was created. Sized above the app's own
+  # alembic-migrate init container (api.migrate.resources) because Airflow's
+  # metadata schema migration touches far more tables.
+  migrateDatabaseJob:
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+        ephemeral-storage: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+        ephemeral-storage: 512Mi
 
   # Metadata DB connection — Secret pre-created by install.sh with key `connection`.
   data:
@@ -405,7 +578,9 @@ airflow:
         memory: 512Mi
         ephemeral-storage: 4Gi
       limits:
-        cpu: 500m
+        # 500m -> 1: this pod's request already sits at half its old limit
+        # under sustained UI/API traffic, leaving little burst headroom.
+        cpu: "1"
         memory: 1Gi
         ephemeral-storage: 8Gi
   scheduler:
@@ -419,14 +594,23 @@ airflow:
       enabled: true
       config:
         maxUnavailable: 0
+    # NOTE: raising resources.limits.cpu below has an undocumented derived
+    # side effect — the Airflow subchart computes config.celery.sync_parallelism
+    # from cpu_count of the scheduler's CPU LIMIT, so this change also moves the
+    # rendered airflow.cfg (sync_parallelism 1 -> 2) and its config checksum.
+    # Inert under the baseline LocalExecutor; live only if an operator switches
+    # to a Celery executor.
     resources:
+      # Raised to sit at or above this component's own values-dev.yaml floor:
+      # the scheduler runs the same LocalExecutor over the same DAGs in both
+      # profiles, so a prod default below the dev floor is backwards.
       requests:
         cpu: 500m
-        memory: 1Gi
+        memory: 1536Mi
         ephemeral-storage: 4Gi
       limits:
-        cpu: "1"
-        memory: 2Gi
+        cpu: 1500m
+        memory: 3Gi
         ephemeral-storage: 8Gi
     logGroomerSidecar:
       resources: &logGroomerResources
@@ -451,14 +635,21 @@ airflow:
       enabled: true
       config:
         maxUnavailable: 0
+    # The tightest allocation in the chart. The triggerer holds every deferred
+    # task's trigger instance in a single asyncio loop, so its memory scales
+    # with deferred tasks in flight — losing it strands all of them. Its CPU
+    # request rises proportionally less than its memory: on nodes where
+    # allocatable CPU is the scarce dimension, a memory-request increase is
+    # often free while each CPU-request increase shrinks the set of nodes the
+    # pod can land on.
     resources:
       requests:
-        cpu: 125m
-        memory: 256Mi
+        cpu: 200m
+        memory: 768Mi
         ephemeral-storage: 4Gi
       limits:
-        cpu: 250m
-        memory: 512Mi
+        cpu: 750m
+        memory: 1536Mi
         ephemeral-storage: 8Gi
     logGroomerSidecar:
       resources: *logGroomerResources
