@@ -177,6 +177,37 @@ config:
   # the frontend origin above; the default "/" only works when UI and API
   # share a host, which is not the case once you split app./api. subdomains.
   oauthPostLoginRedirect: "https://app.dataspoke.example.com/"
+  # Max requests per minute per rate-limit key (JWT sub, falling back to
+  # client IP — see trustedProxyIps below for how that IP is attributed).
+  # Chart default is 120; uncomment to tune. Must be a positive integer.
+  # helm-charts/dataspoke/templates/configmap.yaml render-fails the install
+  # for ANY other value before it ever reaches a pod — verified with `helm
+  # template`: 0, a negative number, and null all fail the render exactly
+  # like a non-numeric string ("config.rateLimitPerMinute must be a positive
+  # integer, got <value>"). There is no live path where an invalid value
+  # here reaches the API pod and pydantic Settings parsing.
+  # rateLimitPerMinute: 120
+  # Proxies uvicorn trusts to read X-Forwarded-For / X-Forwarded-Proto — the
+  # client IP is the rate-limit key above for unauthenticated traffic, so
+  # this is the only knob between per-client buckets and one shared bucket
+  # keyed on the ingress controller's own pod IP (the chart default, safe
+  # but coarse). Opt in by naming your ingress controller's actual pod CIDR,
+  # e.g. "127.0.0.1,10.4.0.0/14" — NEVER widen to the full RFC1918 space or
+  # "*": uvicorn applies the trust list to every hop of X-Forwarded-For, so
+  # an over-broad range lets any reachable caller forge a fresh IP per
+  # request and get a fresh bucket every time, defeating the only
+  # brute-force control on POST /auth/token. Widening this also flips the
+  # OAuth redirect_uri scheme from http:// to https://, since uvicorn
+  # applies the same trust gate to X-Forwarded-Proto — re-verify your
+  # Google Cloud Console redirect URI before rolling out a widened value.
+  # The chart render fails on an empty value, "*", or a literal 0.0.0.0/0 /
+  # ::/0 entry — but that check is literal-only: it does NOT catch other
+  # over-broad ranges (e.g. the full RFC1918 space warned about above), which
+  # render and deploy successfully. Never widen this beyond your ingress
+  # controller's actual pod CIDR, guard or no guard. See dataspoke/values.yaml's
+  # trustedProxyIps comment and spec/feature/AUTH.md §Client-IP attribution
+  # for rate limiting.
+  # trustedProxyIps: "127.0.0.1,10.4.0.0/14"
 
 
 # ------------------------------------------------------------------------------
@@ -245,7 +276,7 @@ auth:
 # ------------------------------------------------------------------------------
 secrets:
   # Name of the Kubernetes Secret you created before running install.sh. Must
-  # contain all 12 required keys — see helm-charts/README.md §Prod profile.
+  # contain all 13 required keys — see helm-charts/README.md §Prod profile.
   existingSecret: "dataspoke-secrets-prod"
 
 

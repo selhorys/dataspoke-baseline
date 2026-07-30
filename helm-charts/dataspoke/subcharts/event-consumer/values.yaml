@@ -44,3 +44,12 @@ waitForDeps:
   image: "busybox:1.37"
 
 resources: {}
+
+# Name of the pre-created K8s Secret containing runtime credentials
+# (Postgres password, DataHub token/Kafka SASL password, JWT secret, etc.).
+# Set by the umbrella chart via the parent's secrets.existingSecret value
+# (install.sh passes the resolved name via
+# --set event-consumer.existingSecretName=<name> in prod; dev always uses the
+# chart default below since dev never sets a custom secrets.existingSecret).
+# Empty defaults to "dataspoke-secrets" in the templates.
+existingSecretName: ""

@@ -132,7 +132,7 @@ for current method signatures.
 | Vector (pgvector) | `vector/client.py` | Table-backed vector upsert/search (cosine, HNSW-indexed). Shares the PostgreSQL session factory. | `PgVectorManager` + `VectorHit` dataclass; collection name whitelisted against `EMBEDDING_COLLECTION`. |
 | Graph (Apache AGE, reserved) | `graph/client.py` | AGE extension installed on the same PG instance for future graph-shaped queries. `AgeGraph` exposes `materialize_triple` / `delete_triple` / `traverse` helpers usable by any service that opts in. | See [BACKEND_SCHEMA §Graph](BACKEND_SCHEMA.md#graph-apache-age-reserved). |
 | LLM | `llm/client.py` | Provider-agnostic client (LangChain). Single completion, JSON completion, embedding, and tool-calling loop (`complete_with_tools`) bound to a service-supplied validator. | Provider/model from the `llm_provider`/`llm_model` runtime config (`/api/v1/admin/conf`); the API key is read at runtime from the `dataspoke-llm-secret` Secret and rotated online via the same conf surface. Loop semantics, validator rule tables, debate framework, and test-mode toggles defined in [BACKEND_LLM](BACKEND_LLM.md). |
-| Redis | `cache/client.py` | Async wrapper for caching, rate limiting, pub/sub | -- |
+| Redis | `cache/client.py` | Async wrapper for caching, concurrency locks, refresh-token revocation, pub/sub | Owns the default logical DB. API rate limiting does **not** go through this wrapper — see [Cache Key Conventions](#cache-key-conventions). |
 | Notifications | `notifications/service.py` | Outbound email notifications. Used by Validation (UC2) and Governance (UC5). | Enablement is governed by the SMTP peripheral: connection settings read from the `peripheral_config` row and the password from `dataspoke-smtp-secret` at send time. When SMTP is unconfigured (no row, host/from_address empty, or password unset), `send_email` raises `PeripheralNotConfiguredError('smtp')` -- best-effort callers swallow it; password reset propagates it. See [API §`/admin/peripherals/smtp`](../API.md). |
 | Domain Models | `models/` | Shared Pydantic models (`QualityScore`, `EventRecord`, etc.) -- internal domain objects, not API schemas | API schemas live in `src/api/schemas/` |
 | Exceptions | `exceptions.py` | `DataSpokeError` hierarchy with error codes for HTTP mapping | See [Error Handling](#error-handling) |
@@ -157,7 +157,14 @@ they invoke the loop.
 | `ontogen:node:{node_id}` | 300s | Ontology Generation node lookup cache |
 | `ontogen:edge:{edge_id}` | 300s | Ontology Generation edge lookup cache |
 | `ontogen:triple:{triple_id}` | 300s | Ontology Generation triple lookup cache |
-| `rate_limit:{user_id}` | 60s | Rate limiting counter |
+
+Rate-limit counters are outside this namespace and outside the `cache/client.py`
+wrapper. The API's SlowAPI limiters delegate storage to the `limits` library,
+which owns its own `LIMITS:LIMITER/*` keyspace with per-window expiry, in a
+**dedicated Redis logical DB** separate from the keys above — so evicting cached
+data can never clear a rate-limit or brute-force counter. See
+[API.md §Middleware Stack](../API.md#middleware-stack) and
+[AUTH.md §Client-IP attribution for rate limiting](AUTH.md#client-ip-attribution-for-rate-limiting).
 
 ---
 

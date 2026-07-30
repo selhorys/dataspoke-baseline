@@ -28,3 +28,9 @@
 - [sync() has no unit coverage](feedback_sync_sweep_no_unit_coverage.md) — green `tests/unit/` proves nothing about sweep changes; only spot integration calls sync()
 - [DataHubUnavailableError is retryable-only](project_datahub_unavailable_only_retryable.md) — 401/403 + GraphError propagate raw; `except DataHubUnavailableError` misses a rotated PAT
 - [Auditing a "no-op" rollback](feedback_rollback_noop_claim_audit.md) — check pending DML *and* rollback()'s identity-map expiry (MissingGreenlet for async callers)
+- [Fernet blast radius](project_fernet_blast_radius_env_connections.md) — Airflow conns are env vars, so the metadata DB has ~no Fernet-encrypted rows; caps #111-style severity
+- [Renamed guard comparison target](feedback_renamed_guard_comparison_target.md) — rename + guard in one change: the guard reads nothing on pre-change clusters, check sibling helpers for the legacy name
+- [Dormant middleware blast radius](feedback_dormant_middleware_blast_radius.md) — repairing an inert middleware governs /internal + probes for the first time; measure the blocking cost it adds
+- [values-prod.example is not a superset](feedback_prod_example_not_superset.md) — "see config.X below" pasted from values.yaml goes dangling in the prod overlay; grep each named key in the target file
+- [Off-loop fix, all call sites](feedback_offload_fix_all_callsites.md) — a to_thread fix proven on one plane; heartbeat-probe every plane before believing it
+- [slowapi bucket scope](project_slowapi_bucket_scope.md) — application_limits is the only global-per-caller knob; exempt routes and unmatched 404 paths are charged nothing

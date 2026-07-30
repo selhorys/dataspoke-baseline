@@ -980,8 +980,18 @@ All timestamps use ISO 8601 with UTC: `2026-02-27T10:00:00.000Z`.
 
 Requests pass through, in order: (1) **CORS** — allow configured origins, reject others with
 403; (2) **request logging** — method, path, trace ID, client IP before the handler;
-(3) **rate limiting** — SlowAPI fixed-window per user (Redis with in-memory fallback,
-default 120 req/min). On 429 the response body matches the standard error envelope
+(3) **rate limiting** — SlowAPI fixed-window, Redis-backed. The default budget is a **single
+per-caller limit** (default 120 req/min, `DATASPOKE_RATE_LIMIT_PER_MINUTE`) shared across every
+non-exempt route, not a fresh budget per endpoint. `/health` and the `/internal/*` callback plane
+sit outside this plane entirely — `/ready` is charged like any other route — and a request that
+matches no route is charged against the caller's budget rather than passing unmetered. This plane
+falls back to in-memory counting when Redis is unreachable. The credential-accepting auth routes —
+`/auth/register`, `/auth/token`, and the password-reset pair — are governed by a **separate
+fail-closed limiter** that answers `503 STORAGE_UNAVAILABLE` instead of falling back; they are
+charged on that limiter *instead of* the default budget, not in addition to it. Both planes'
+bucket keys, and the reasoning behind them, are in
+[AUTH.md §Client-IP attribution for rate limiting](feature/AUTH.md#client-ip-attribution-for-rate-limiting).
+On 429 the response body matches the standard error envelope
 (`error_code: "RATE_LIMIT_EXCEEDED"`, `message`, `trace_id`, `resp_time`) and headers
 include `Retry-After` plus `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`;
 (4) **JWT validation** — verify signature/expiry and extract claims; this is the token-local
@@ -993,11 +1003,11 @@ comparison rides on the role read, adding no round trip;
 (6) **route handler** — FastAPI DI + business logic;
 (7) **response logging** — status, latency, trace ID.
 
-> Rate limiting runs as Starlette middleware before any route handler so unauthenticated
-> clients are rate-limited too. The per-user key is the JWT `sub` claim when present,
-> falling back to client IP. Auth/role checks (layers 4–5) are route-level dependencies
-> rather than blanket middleware, so unauthenticated routes (`/health`, `/auth/*`)
-> coexist without exclusion lists.
+> The default limiter runs as Starlette middleware before any route handler, so unauthenticated
+> callers on the routes it covers are rate-limited too; `/health` and `/internal/*` are outside it,
+> and the credential-accepting auth routes are metered by the fail-closed limiter instead.
+> Auth/role checks (layers 4–5) are route-level dependencies rather than blanket
+> middleware, so unauthenticated routes (`/health`, `/auth/*`) coexist without exclusion lists.
 
 ### Trace ID
 

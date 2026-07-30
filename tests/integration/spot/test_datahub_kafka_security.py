@@ -152,9 +152,17 @@ async def test_seeded_error_health_row_surfaces_on_the_admin_route(
     """
     await async_session.execute(
         text(
+            # Upsert, not a bare insert: the row is cluster-wide singleton state and the
+            # running event consumer rewrites it on its own schedule, so it can reappear
+            # between the removal fixture and this seed. What the test asserts is that the
+            # admin route returns whatever the row holds — so the seed must win
+            # deterministically rather than race the consumer for who inserts first.
             "INSERT INTO dataspoke.peripheral_health "
             "(name, status, last_error, last_ok_at, updated_at) VALUES "
-            "('datahub', 'error', :err, NOW() - INTERVAL '3 hours', NOW())"
+            "('datahub', 'error', :err, NOW() - INTERVAL '3 hours', NOW()) "
+            "ON CONFLICT (name) DO UPDATE SET "
+            "status = EXCLUDED.status, last_error = EXCLUDED.last_error, "
+            "last_ok_at = EXCLUDED.last_ok_at, updated_at = EXCLUDED.updated_at"
         ),
         {"err": "SASL authentication error: Authentication failed"},
     )
@@ -184,9 +192,13 @@ async def test_seeded_ok_health_row_surfaces_on_the_admin_route(
     """
     await async_session.execute(
         text(
+            # Upsert for the same reason as the error-row seed above.
             "INSERT INTO dataspoke.peripheral_health "
             "(name, status, last_error, last_ok_at, updated_at) VALUES "
-            "('datahub', 'ok', NULL, NOW(), NOW())"
+            "('datahub', 'ok', NULL, NOW(), NOW()) "
+            "ON CONFLICT (name) DO UPDATE SET "
+            "status = EXCLUDED.status, last_error = EXCLUDED.last_error, "
+            "last_ok_at = EXCLUDED.last_ok_at, updated_at = EXCLUDED.updated_at"
         )
     )
     await async_session.commit()
