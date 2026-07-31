@@ -4,7 +4,7 @@
 - [E2E cross-host cookie auth](project_e2e_cross_host_cookie_auth.md) — storageState auth rests on a fragile cross-host refresh-cookie chain; require a green smoke run on a real cluster before trusting it
 - [Validation INVALID_PARAMETER is 422](project_validation_invalid_param_422.md) — both API.md and VALIDATION.md say 422; flag tests claiming a 400 spec/impl discrepancy
 - [RangePicker day-bounds unspecced](project_rangepicker_day_bounds_unspecced.md) — date-mode T23:59:59.999Z is impl-only; spec only says inclusive {from,to}, 14d default, 5 presets, until=to mapping
-- [UC1 event status anchor](project_uc1_event_status_anchor.md) — status='success' anchors to USE_CASE_en.md L107-108, not BACKEND.md step 4; INGESTION catalogue names no detail keys
+- [UC1 event status anchor](project_uc1_event_status_anchor.md) — status='success' anchors to USE_CASE_en.md L107-108, not BACKEND.md step 4; catalogue DOES spec detail.execution_request_urn
 - [Data hub panel has no section headings](project_data_hub_panel_no_section_headings.md) — /data/[urn] ValidationDataPanel renders no attr/validation/conf or event/validation heading; events fold into unified EventsPanel
 - [Validation emits no status aspect](project_validation_no_status_aspect_divergence.md) — spec says no status aspect; impl still emits StatusClass(removed=False) on PUT; flag tests pinning it
 - [Seed create-disabled copy pinned](project_seed_create_disabled_copy.md) — ontogen seed Vitest pins exact "new seeds ship disabled" copy; spec only says create-disabled
@@ -32,8 +32,12 @@
 - [Metagen from/to test seam](project_metagen_from_to_test_seam.md) — #90 mutation-survival table; no aiosqlite so compiled-SQL is the only always-run seam; 3rd inline site unguarded
 - [E2E 60s timeout vs 180s polls](project_e2e_60s_timeout_vs_180s_polls.md) — hand-rolled 120-180s poll deadlines are cut off by the 60s per-test timeout; their "budget exhausted" messages never print
 - [uc1-01 retry is doomed at step 6](project_e2e_uc1_01_retry_doomed_step6.md) — serial-group retry makes a new source URN; DataHub aspect dedup keeps the old pipelineName, so pipeline_name/high can never re-fire
-- [DataHub GQL 401 is not JSON](project_datahub_gql_401_is_not_json.md) — a stale PAT throws in resp.json() before any GraphQL-errors assert, so token diagnoses on those asserts never print
+- [DataHub GQL 401: status, not content-type](project_datahub_gql_401_is_not_json.md) — measured: the 401 body IS valid JSON, so only the status code discriminates a stale PAT
 - [Sync sweep counter tiers](project_sync_sweep_counter_vacuity.md) — pipeline_links is provably unreachable over REST (emitted rows shadow it); which counters live at which tier; stub side effects are pre-existing
 - [Redaction wiring RESOLVED](project_redaction_control_wiring_untested.md) — all 3 call sites now guarded; residue is the `<redacted>` literal duplication + an outer bound no assertion can see
 - [Owning-source last_seen_at tie-break untested](project_owning_source_last_seen_tiebreak_untested.md) — inverting it leaves 2809 unit tests green; equivalence tests are blind to shared-rank mutations
 - [datahub-api health row is a shared singleton](project_datahub_api_health_row_shared_singleton.md) — REST sync activities make the API pod write it; module-local restore is defeated
+- [E2E pre-delete natural keys](project_e2e_predelete_natural_key_timestamped.md) — which keys are stable; a Date.now() name makes the pre-delete hook inert
+- [beforeAll skip blast radius](project_e2e_beforeall_skip_blast_radius.md) — PW1.60 source: skip in beforeAll skips the whole suite; setTimeout in a hook resizes only that hook
+- [UC1-01 wrapper flag assertion gap](project_uc1_01_wrapper_flag_assertion_gap.md) — headers say wrapper=true, docstring says false, assertion says any bool; API.md L364 makes it determinate
+- [Metagen drop-all run is specced](project_metagen_dropall_run_is_specced.md) — BACKEND_LLM.md 309-310 sanctions a zero-candidate real-LLM metagen run; UC4 per-slot hard-fails overclaim
