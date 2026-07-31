@@ -25,4 +25,8 @@ COPY migrations/ ./migrations/
 
 EXPOSE 8002
 
-CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8002"]
+# --no-access-log: uvicorn's access line appends the raw query string, which on
+# GET /auth/google/callback?code=… is a live Google authorization code.
+# RequestLoggingMiddleware already emits method, path, status, elapsed, client_ip
+# and trace_id per request, and logs the path without the query string.
+CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8002", "--no-access-log"]

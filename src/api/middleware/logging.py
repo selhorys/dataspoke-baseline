@@ -14,6 +14,11 @@ _TRACE_HEADER = "X-Trace-Id"
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         trace_id = request.headers.get(_TRACE_HEADER) or str(uuid.uuid4())
+        # Published on request state because the fallback above is generative: a
+        # handler that re-ran this expression would mint a *second* id and its
+        # log lines would join neither `request_started`/`request_finished` nor
+        # the echoed response header. Readers take this value or nothing.
+        request.state.trace_id = trace_id
         start = time.perf_counter()
 
         logger.info(

@@ -29,6 +29,7 @@ group does not cover the route; the other column does.
 | `/register` | — | `ground/auth/register.public.spec.ts` (form render, short-password validation, real signup → redirect) |
 | `/forgot-password` | — | `ground/auth/password-reset.public.spec.ts` (form render, submit → confirmation state) |
 | `/reset-password` | — | `ground/auth/password-reset.public.spec.ts` (no-token error state, dummy-token form render, short-password validation) |
+| `/oauth-error` | — | `ground/auth/oauth-error.public.spec.ts` (public reachability, bound-elsewhere three-step recovery, sibling-code copy, absent-code fallback, hostile `?error=` not echoed, Back-to-sign-in link, and the real `/auth/google/callback` redirect target rendering this page) |
 
 ### App routes (authenticated)
 

@@ -35,11 +35,12 @@ policy rather than mechanism:
    shares one bucket. With the chart default ``config.trustedProxyIps:
    "127.0.0.1"`` (``helm-charts/dataspoke/values.yaml``) the observed address of
    every caller outside the cluster is the ingress pod, so all unattributable
-   default-plane traffic — ``/ready``, ``/redoc``, ``/openapi.json``,
-   ``/auth/google/login``, ``/auth/google/callback`` — draws from a single
-   deployment-wide budget, and one client hammering an unauthenticated route can
-   deny OAuth login to everyone behind that ingress. Widening `trustedProxyIps`
-   to the ingress controller's address is what separates those callers.
+   default-plane traffic — ``/ready``, ``/redoc``, ``/openapi.json`` — draws from
+   a single deployment-wide budget, and one client hammering an unauthenticated
+   route can exhaust it for everyone behind that ingress. Widening
+   `trustedProxyIps` to the ingress controller's address is what separates those
+   callers. The same collapse applies to the auth plane, whose key is that
+   address by construction.
 2. **``/health`` is never charged.** It is the target of all three Kubernetes
    probes (``helm-charts/dataspoke/templates/api-deployment.yaml`` startup,
    liveness, readiness), and a 429 served to a probe reads as an unhealthy

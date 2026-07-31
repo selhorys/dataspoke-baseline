@@ -101,7 +101,7 @@ async def resolve_or_create_user(
     forces such a row to carry a password, so every bind clears at least that one
     credential and emits exactly one ``AUTH.GOOGLE_LINK_CREDENTIAL_RESET``
     event recording what went. A row already carrying a different ``google_sub``
-    is refused ``409 EMAIL_BOUND_TO_ANOTHER_GOOGLE_ACCOUNT`` by
+    is refused ``EMAIL_BOUND_TO_ANOTHER_GOOGLE_ACCOUNT`` by
     :func:`users.bind_google_identity`, leaving the row untouched; a row already
     carrying **this** ``sub`` — a raced or retried callback — is an ordinary
     login that writes no binding and emits no event.

@@ -178,6 +178,7 @@ ingestion recipe YAML editor) remain one full-width field.
 | `/register` | Self-service sign-up (email + name + password ≥ 10 chars) and Google sign-up | `POST /auth/register`, `GET /auth/google/login` |
 | `/forgot-password` | Request a password-reset email | `POST /auth/password/reset/request` |
 | `/reset-password` | Submit a new password using the token from the email link (`?token=…` query param). An "Invalid link" guard state renders before any API call when `token` is missing/empty; a "Password updated" state renders on success | `POST /auth/password/reset/confirm` |
+| `/oauth-error` | Landing page for a failed Google sign-in (`?error=<code>` query param) — see [OAuth error page](#oauth-error-page-oauth-error). Pure presentation of the query param | — (no API call) |
 | `/profile` | Own profile + change display name + change password | `GET /auth/me`, `PATCH /auth/me` |
 | `/profile/tokens` | Long-lived API token management — list, mint (copy-once display), revoke | `GET /auth/api-tokens`, `POST /auth/api-tokens`, `DELETE /auth/api-tokens/{id}` |
 | `/admin/users` | Admin user management — list, change name, change role, hard delete, revoke any token | `GET /admin/users`, `PATCH /admin/users/{id}`, `PATCH /admin/users/{id}/role`, `DELETE /admin/users/{id}`, `GET /admin/users/{id}/api-tokens`, `DELETE /admin/users/{id}/api-tokens/{token_id}` |
@@ -212,7 +213,7 @@ authoritative for them: [Governance](FRONTEND_GOVERNANCE.md) (`/governance/metri
 
 Route guards layer two checks:
 
-- **JWT presence** — `/login`, `/register`, `/forgot-password`, `/reset-password`, and the OAuth callback URL are public; all other routes redirect to `/login?next=<path>` when no access token is available. The login page honors `next` on success (default fallback `/governance/dashboard`).
+- **JWT presence** — `/login`, `/register`, `/forgot-password`, `/reset-password`, `/oauth-error`, and the OAuth callback URL are public; all other routes redirect to `/login?next=<path>` when no access token is available. The login page honors `next` on success (default fallback `/governance/dashboard`).
 - **`users.role` (read from `GET /auth/me.role`)** — `/admin/*` is server-side gated by the API's role check (`role = 'Admin'`); the UI hides the admin-menu entry when the role is not `Admin`. Inside each function page, write actions (approve/reject buttons, edit forms, run triggers) are rendered only when `role ∈ {Editor, Admin}` — Reader users see read-only views. The API enforces the same gate via `403 READ_ONLY_ROLE` on write methods; the UI suppression is for UX hygiene, not security.
 
 ---
@@ -238,7 +239,8 @@ token and navigate to `/login` — a failed revoke leaves the session live, so
 the UI surfaces the error and keeps the user signed in rather than showing a
 signed-out shell over a refresh cookie only the API can clear. The Google flow
 is a full-page browser navigation — the SPA reloads itself at the callback URL
-with tokens already attached.
+with tokens already attached, or at [`/oauth-error`](#oauth-error-page-oauth-error)
+when either Google route fails.
 
 Full lifecycle (link rules, partial-failure semantics, OAuth state cookie
 contract) lives in [AUTH](AUTH.md).
@@ -313,6 +315,27 @@ shown only for rows with `has_google` and disabled for rows without
 user's `api_tokens` rows with per-token revoke buttons
 (`GET /admin/users/{id}/api-tokens`,
 `DELETE /admin/users/{id}/api-tokens/{token_id}`).
+
+### OAuth error page (`/oauth-error`)
+
+The Google routes are browser-navigation endpoints whose handlers 302 on every
+outcome, so a failed sign-in arrives here rather than on an error envelope
+([API §OAuth browser-redirect contract](../API.md#oauth-browser-redirect-contract)).
+The page is public, makes no API call, and renders copy selected by the `error`
+query parameter. Selection is a lookup into the fixed map below — the received
+parameter value is never echoed into the rendered output, since the page is
+directly navigable with any value:
+
+| `error` | Copy |
+|---|---|
+| `EMAIL_BOUND_TO_ANOTHER_GOOGLE_ACCOUNT` | This address is already linked to a different Google account, plus the three-step recovery sequence — request and complete a password reset, ask an admin to unlink, then sign in with Google again ([AUTH §Admin unbind](AUTH.md#admin-unbind)). The only code whose copy is a procedure rather than a sentence, because it is a steady state the user cannot leave unaided. |
+| `GOOGLE_ACCOUNT_LINKED_ELSEWHERE` | This Google account is already linked to another DataSpoke user; retry the sign-in, which resolves against the existing link, and ask an admin to release the link if it is stale ([AUTH §Admin unbind](AUTH.md#admin-unbind)). |
+| `OAUTH_STATE_MISMATCH` | The sign-in attempt expired or was interrupted; start again from `/login`. |
+| `OAUTH_EMAIL_NOT_VERIFIED` | Google has not verified this address; verify it with Google and retry. |
+| `OAUTH_NOT_CONFIGURED` | Google sign-in is not configured on this deployment; use email + password and contact an administrator. |
+| absent or unrecognised | Generic "Google sign-in could not be completed" wording. |
+
+Every state carries a link back to `/login`, the only way onward from the page.
 
 ### Configurations (`/admin/conf`)
 

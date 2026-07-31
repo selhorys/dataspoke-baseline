@@ -141,8 +141,11 @@ DOCSTRING_BLOCK_ANCHORS: dict[str, tuple[int, frozenset[str]]] = {
             }
         ),
     ),
-    "AuthenticationError": (5, frozenset({"UNAUTHORIZED", "OAUTH_STATE_MISMATCH"})),
-    "BadRequestError": (2, frozenset({"BAD_REQUEST", "INVALID_RESET_TOKEN"})),
+    "AuthenticationError": (4, frozenset({"UNAUTHORIZED", "TOKEN_REVOKED"})),
+    "BadRequestError": (
+        4,
+        frozenset({"BAD_REQUEST", "INVALID_RESET_TOKEN", "OAUTH_STATE_MISMATCH"}),
+    ),
     "ForbiddenError": (2, frozenset({"FORBIDDEN", "READ_ONLY_ROLE"})),
 }
 

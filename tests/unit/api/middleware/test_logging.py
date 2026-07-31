@@ -11,6 +11,7 @@ spec: API.md §Trace ID — X-Trace-Id assigned at layer 2; echoed in
       response; request-supplied value reused.
 """
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -40,6 +41,9 @@ class _FakeRequest:
 
     Uses a case-insensitive dict for headers so that lookup by ``"X-Trace-Id"``
     matches a header stored as ``"x-trace-id"``, mirroring Starlette's behaviour.
+
+    ``state`` is an attribute bag, as ``starlette.requests.Request.state`` is:
+    the middleware publishes the trace id there for handlers to read.
     """
 
     def __init__(self, method: str = "GET", path: str = "/health", trace_id: str | None = None):
@@ -48,6 +52,7 @@ class _FakeRequest:
         self.url.path = path
         self.client = MagicMock()
         self.client.host = "127.0.0.1"
+        self.state = SimpleNamespace()
         headers: _CaseInsensitiveDict = _CaseInsensitiveDict()
         if trace_id:
             headers["x-trace-id"] = trace_id

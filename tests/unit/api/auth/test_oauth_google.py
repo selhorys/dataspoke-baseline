@@ -32,7 +32,7 @@ def test_is_configured_all_present_returns_true() -> None:
     """is_configured returns True when all three OAuth fields are non-empty.
 
     spec: spec/feature/AUTH.md §Security Considerations §OAuth flow hardening — when
-    client_id is empty, both routes return 503 OAUTH_NOT_CONFIGURED.
+    client_id is empty, both routes 302 to /oauth-error?error=OAUTH_NOT_CONFIGURED.
     """
     from src.backend.auth.oauth_google import is_configured
 
@@ -51,7 +51,7 @@ def test_is_configured_missing_client_id_returns_false() -> None:
     """is_configured returns False when google_oauth_client_id is empty.
 
     spec: spec/feature/AUTH.md §Security Considerations §OAuth flow hardening —
-    empty client_id → 503 OAUTH_NOT_CONFIGURED.
+    empty client_id → 302 /oauth-error?error=OAUTH_NOT_CONFIGURED.
     """
     from src.backend.auth.oauth_google import is_configured
 
@@ -433,8 +433,8 @@ async def test_resolve_row_bound_to_another_account_propagates_and_emits_nothing
     """A row bound to a different Google account refuses; no event is recorded.
 
     spec: spec/feature/AUTH.md §Google OAuth registration & login — "No | Yes, and
-    that row carries a **different** `google_sub` | Refuse — 409
-    EMAIL_BOUND_TO_ANOTHER_GOOGLE_ACCOUNT. No row is modified and no session is
+    that row carries a **different** `google_sub` | Refuse —
+    `EMAIL_BOUND_TO_ANOTHER_GOOGLE_ACCOUNT`. No row is modified and no session is
     issued."
     """
     from src.backend.auth import users as _users
@@ -617,26 +617,27 @@ async def test_resolve_new_user_succeeds_when_datahub_unreachable() -> None:
 
 
 @pytest.mark.asyncio
-async def test_google_callback_state_mismatch_raises_bad_request() -> None:
-    """get_google_callback raises BadRequestError(OAUTH_STATE_MISMATCH) when authlib raises.
+async def test_google_callback_state_mismatch_redirects_to_error_page() -> None:
+    """get_google_callback 302s to /oauth-error?error=OAUTH_STATE_MISMATCH when authlib raises.
 
     authlib's authorize_access_token raises when the state query param does not
-    match the session-stored value. The callback handler catches any exception from
-    that call and maps it to OAUTH_STATE_MISMATCH.
+    match the session-stored value. The callback maps any exception from that call
+    to OAUTH_STATE_MISMATCH and, being a browser-navigation route, delivers the code
+    as a redirect rather than an error envelope.
 
     Approach: monkeypatch is_configured to return True so the handler proceeds past
     the OAUTH_NOT_CONFIGURED guard, then mock build_oauth_client so that
     authorize_access_token raises (simulating a state/nonce mismatch).
 
     spec: spec/feature/AUTH.md §Security Considerations §OAuth flow hardening —
-          mismatches return 400 OAUTH_STATE_MISMATCH without attempting token exchange.
-    spec: spec/feature/AUTH.md §Failure Modes — Google OAuth state mismatch →
-          400 OAUTH_STATE_MISMATCH.
+          mismatches fail OAUTH_STATE_MISMATCH without attempting token exchange.
+    spec: spec/API.md §OAuth browser-redirect contract — any failure 302s to
+          <ui>/oauth-error?error=<code>, no cookie set.
     """
     from unittest.mock import patch
 
+    from src.api.middleware import rate_limit as _rate_limit
     from src.api.routers import auth as auth_router
-    from src.shared.exceptions import BadRequestError
 
     mock_request = MagicMock()
     mock_db = AsyncMock()
@@ -650,22 +651,33 @@ async def test_google_callback_state_mismatch_raises_bad_request() -> None:
     mock_oauth_client.google = mock_google_client
 
     with (
+        # The handler is wrapped by the fail-closed auth rate limiter, which
+        # demands a real starlette Request and a live storage backend; the limit
+        # itself is not what this test is about.
+        patch.object(_rate_limit.auth_limiter, "enabled", False),
         patch("src.api.routers.auth.oauth_google.is_configured", return_value=True),
         patch(
             "src.api.routers.auth.oauth_google.build_oauth_client",
             return_value=mock_oauth_client,
         ),
     ):
-        with pytest.raises(BadRequestError) as exc_info:
-            await auth_router.get_google_callback(
-                request=mock_request,
-                db=mock_db,
-            )
+        response = await auth_router.get_google_callback(
+            request=mock_request,
+            db=mock_db,
+        )
 
-    assert exc_info.value.error_code == "OAUTH_STATE_MISMATCH", (
-        "Any exception from authorize_access_token must map to "
-        "BadRequestError('OAUTH_STATE_MISMATCH') per spec/feature/AUTH.md §Security Considerations "
+    assert response.status_code == 302, (
+        "The callback is a browser-navigation route — every outcome is a 302 "
+        "per spec/API.md §OAuth browser-redirect contract"
+    )
+    assert response.headers["location"].endswith("/oauth-error?error=OAUTH_STATE_MISMATCH"), (
+        "Any exception from authorize_access_token must reach the error page as "
+        "OAUTH_STATE_MISMATCH per spec/feature/AUTH.md §Security Considerations "
         "§OAuth flow hardening"
+    )
+    assert "set-cookie" not in response.headers, (
+        "No refresh cookie is set on the failure path per spec/API.md "
+        "§OAuth browser-redirect contract"
     )
 
 
@@ -673,23 +685,26 @@ async def test_google_callback_state_mismatch_raises_bad_request() -> None:
 
 
 @pytest.mark.asyncio
-async def test_google_callback_email_not_verified_raises_bad_request() -> None:
-    """get_google_callback raises BadRequestError(OAUTH_EMAIL_NOT_VERIFIED) for unverified email.
+async def test_google_callback_email_not_verified_redirects_to_error_page() -> None:
+    """get_google_callback 302s to /oauth-error?error=OAUTH_EMAIL_NOT_VERIFIED.
 
     The Google callback rejects ID tokens with email_verified=false. Unverified Google
-    emails cannot resolve to a DataSpoke account.
+    emails cannot resolve to a DataSpoke account, and the refusal reaches the browser
+    as a redirect to the error page rather than an error envelope.
 
     Approach: mock authorize_access_token to return a token_response with
-    userinfo.email_verified=False. Assert the handler raises OAUTH_EMAIL_NOT_VERIFIED.
+    userinfo.email_verified=False. Assert the redirect carries the code.
 
     spec: spec/feature/AUTH.md §Security Considerations §OAuth flow hardening —
           The Google callback rejects ID tokens with email_verified=false; unverified
           Google emails cannot resolve to a DataSpoke account.
+    spec: spec/API.md §OAuth browser-redirect contract — any failure 302s to
+          <ui>/oauth-error?error=<code>, no cookie set.
     """
     from unittest.mock import patch
 
+    from src.api.middleware import rate_limit as _rate_limit
     from src.api.routers import auth as auth_router
-    from src.shared.exceptions import BadRequestError
 
     mock_request = MagicMock()
     mock_db = AsyncMock()
@@ -710,19 +725,31 @@ async def test_google_callback_email_not_verified_raises_bad_request() -> None:
     mock_oauth_client.google = mock_google_client
 
     with (
+        # The handler is wrapped by the fail-closed auth rate limiter, which
+        # demands a real starlette Request and a live storage backend; the limit
+        # itself is not what this test is about.
+        patch.object(_rate_limit.auth_limiter, "enabled", False),
         patch("src.api.routers.auth.oauth_google.is_configured", return_value=True),
         patch(
             "src.api.routers.auth.oauth_google.build_oauth_client",
             return_value=mock_oauth_client,
         ),
     ):
-        with pytest.raises(BadRequestError) as exc_info:
-            await auth_router.get_google_callback(
-                request=mock_request,
-                db=mock_db,
-            )
+        response = await auth_router.get_google_callback(
+            request=mock_request,
+            db=mock_db,
+        )
 
-    assert exc_info.value.error_code == "OAUTH_EMAIL_NOT_VERIFIED", (
-        "ID token with email_verified=False must raise BadRequestError('OAUTH_EMAIL_NOT_VERIFIED') "
-        "per spec/feature/AUTH.md §Security Considerations §OAuth flow hardening"
+    assert response.status_code == 302, (
+        "The callback is a browser-navigation route — every outcome is a 302 "
+        "per spec/API.md §OAuth browser-redirect contract"
+    )
+    assert response.headers["location"].endswith("/oauth-error?error=OAUTH_EMAIL_NOT_VERIFIED"), (
+        "An ID token with email_verified=False must reach the error page as "
+        "OAUTH_EMAIL_NOT_VERIFIED per spec/feature/AUTH.md §Security Considerations "
+        "§OAuth flow hardening"
+    )
+    assert "set-cookie" not in response.headers, (
+        "No refresh cookie is set on the failure path per spec/API.md "
+        "§OAuth browser-redirect contract"
     )

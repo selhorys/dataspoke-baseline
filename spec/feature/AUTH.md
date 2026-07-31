@@ -132,7 +132,7 @@ exchanges the authorisation code for an ID token, and resolves the user:
 | Yes | — | Log in. Refresh display name from the Google profile onto the DataSpoke row. |
 | No | Yes, and that row has `google_sub IS NULL` | Bind `google_sub` onto the row, refresh display name from the Google profile, run the [credential reset](#credential-reset-on-link), and log in. |
 | No | Yes, and that row already carries **this** `sub` | Log in, exactly as the `sub`-known branch. No bind, no reset, no epoch bump, no event. |
-| No | Yes, and that row carries a **different** `google_sub` | Refuse — `409 EMAIL_BOUND_TO_ANOTHER_GOOGLE_ACCOUNT`. No row is modified and no session is issued. |
+| No | Yes, and that row carries a **different** `google_sub` | Refuse — `EMAIL_BOUND_TO_ANOTHER_GOOGLE_ACCOUNT`. No row is modified and no session is issued. |
 | No | No | Create a fresh `users` row with `password_hash=null` and `role = 'Reader'`. Log in. |
 
 The bind branch refreshes `name` from the Google claim for the same reason the
@@ -151,7 +151,7 @@ The bind branch therefore applies only to an unbound row. One DataSpoke row
 carries at most one Google identity at a time, and one Google identity belongs
 to at most one row: a bind whose incoming `sub` is already held by a
 different row loses the `UNIQUE(google_sub)` race and fails
-`409 GOOGLE_ACCOUNT_LINKED_ELSEWHERE`. An operator can release a stale binding
+`GOOGLE_ACCOUNT_LINKED_ELSEWHERE`. An operator can release a stale binding
 with [`DELETE /admin/users/{id}/google`](#admin-surface).
 
 #### Credential reset on link
@@ -189,6 +189,27 @@ authenticated by the session the Google callback just issued. This is the
 deliberate price of making the link path safe against a pre-registered squatter —
 the bind path cannot distinguish the account's owner from someone who claimed the
 address first, so it treats both the same way.
+
+#### Callback failure surface
+
+Both `/auth/google/*` routes are reached only as full-page browser navigations —
+Google redirects the user agent to the callback, and the login route is a link the
+user clicks. Neither is ever called by an API client. **Every outcome their
+handlers produce is therefore a 302, never the JSON error envelope**: success
+redirects to the configured post-login target with the refresh cookie set, and
+every raised error redirects to the public UI page `/oauth-error` with no cookie
+set. The contract table (including which failures carry an `error` query
+parameter and what a failure leaves behind), the middleware-plane exception, and
+the redirect-target derivation are in [API §OAuth browser-redirect
+contract](../API.md#oauth-browser-redirect-contract).
+
+Each code that reaches the page gets its own copy; an unrecognised or absent code
+falls back to generic wording. `EMAIL_BOUND_TO_ANOTHER_GOOGLE_ACCOUNT` is the one
+the page exists for: it is the steady state of a re-issued address rather than a
+transient fault, the holder cannot self-serve out of it, and recovery is the
+three-step admin sequence in [§Admin unbind](#admin-unbind) — which the page
+states rather than leaving the user to discover. Per-code copy in
+[FRONTEND_BASIC §OAuth error page](FRONTEND_BASIC.md#oauth-error-page-oauth-error).
 
 ### Login
 
@@ -772,7 +793,9 @@ silent rebinding is the pre-hijacking hole — but it strands a row whose Google
 `sub` has ceased to exist. The common case is a re-issued Workspace address: the
 directory account is deleted and recreated, the new one carries a new `sub`, and
 the row still names the old one, so the address's rightful holder is refused
-`409 EMAIL_BOUND_TO_ANOTHER_GOOGLE_ACCOUNT` on every attempt.
+`EMAIL_BOUND_TO_ANOTHER_GOOGLE_ACCOUNT` on every attempt — landing, each time, on
+the `/oauth-error` page that carries the three-step sequence below
+([§Callback failure surface](#callback-failure-surface)).
 
 `DELETE /admin/users/{id}/google` is the non-destructive remedy. It clears
 `google_sub` and increments `session_epoch` — unbinding is a credential change,
@@ -886,13 +909,14 @@ on the next install only if zero Admin rows remain.
 | SMTP peripheral missing during password-reset request | Request refuses; no DB write. | `503 PERIPHERAL_NOT_CONFIGURED`. | Admin configures `/admin/peripherals/smtp`. |
 | SMTP configured but delivery fails (transport error, auth rejection, queue full) during password-reset request | Request refuses; no DB write — the token row is written only after `send_email` returns successfully. | `503 STORAGE_UNAVAILABLE` with a static message; the underlying SMTP error is logged but not echoed to the client. | Inspect API logs for the upstream cause; fix the SMTP path and retry. |
 | Redis unreachable during refresh or revoke | Refresh/revoke fail-closed. | `503 STORAGE_UNAVAILABLE`. | Restore Redis. |
-| Redis unreachable during rate limiting | The auth-route limiter fails closed, matching the refresh path above; after a storage failure it fast-denies for a short cooldown rather than re-paying the connect timeout on each request. Every other route keeps its single per-caller budget on the default limiter, which falls back to per-process in-memory counting. Neither plane stalls the event loop while Redis hangs — both check limits on a worker thread under bounded socket timeouts ([§Client-IP attribution for rate limiting](#client-ip-attribution-for-rate-limiting)). | Auth routes (`/auth/register`, `/auth/token`, and the password-reset pair): `503 STORAGE_UNAVAILABLE`. Other routes: served, but the effective budget multiplies by the number of API worker processes, so the global limit is not enforced for the duration. | Restore Redis, then restart the API pods. The fallback is a sticky per-process flag whose recovery probe backs off exponentially, so a worker that flipped to memory does not necessarily resume shared counting when Redis returns. |
-| Google OAuth state mismatch on callback | Callback aborts before token issuance. | `400 OAUTH_STATE_MISMATCH`. | User retries the OAuth flow. |
-| Google OAuth callback receives ID token with `email_verified=false` | Callback rejects the token; no user is created or logged in. | `400 OAUTH_EMAIL_NOT_VERIFIED`. | User verifies their Google account email and retries. |
+| Redis unreachable during rate limiting | The auth-route limiter fails closed, matching the refresh path above; after a storage failure it fast-denies for a short cooldown rather than re-paying the connect timeout on each request. Every other route keeps its single per-caller budget on the default limiter, which falls back to per-process in-memory counting. Neither plane stalls the event loop while Redis hangs — both check limits on a worker thread under bounded socket timeouts ([§Client-IP attribution for rate limiting](#client-ip-attribution-for-rate-limiting)). | Auth routes (`/auth/register`, `/auth/token`, the password-reset pair, and `/auth/google/{login,callback}`): `503 STORAGE_UNAVAILABLE` — on the two Google routes this is the limiter's envelope, ahead of the handler's redirect contract. Other routes: served, but the effective budget multiplies by the number of API worker processes, so the global limit is not enforced for the duration. | Restore Redis, then restart the API pods. The fallback is a sticky per-process flag whose recovery probe backs off exponentially, so a worker that flipped to memory does not necessarily resume shared counting when Redis returns. |
+| Google OAuth credentials or the OAuth-state secret unset | Both `/auth/google/*` routes refuse before contacting Google. | 302 to `/oauth-error?error=OAUTH_NOT_CONFIGURED`. | Operator sets `DATASPOKE_GOOGLE_OAUTH_CLIENT_{ID,SECRET}` and `DATASPOKE_OAUTH_STATE_SECRET`. |
+| Google OAuth state mismatch on callback | Callback aborts before token issuance. | 302 to `/oauth-error?error=OAUTH_STATE_MISMATCH` ([§Callback failure surface](#callback-failure-surface)). | User retries the OAuth flow. |
+| Google OAuth callback receives ID token with `email_verified=false` | Callback rejects the token; no user is created or logged in. | 302 to `/oauth-error?error=OAUTH_EMAIL_NOT_VERIFIED`. | User verifies their Google account email and retries. |
 | Google identity binds onto an unbound row matched by email | The bind and the [credential reset](#credential-reset-on-link) commit in one transaction; one `AUTH.GOOGLE_LINK_CREDENTIAL_RESET` event records what was cleared. | The user is logged in via Google. Password login and every previously minted API token stop working; `GET /auth/me` reports `has_password: false`. | None. The user sets a new password via `PATCH /auth/me` and re-mints any API tokens they still need. |
 | A JWT presented after its owner's `session_epoch` was incremented | The bearer path and `/auth/token/refresh` both reject on the `ses` comparison. | `401 UNAUTHORIZED`; the frontend clears the session and redirects to `/login`. | None — expected behaviour after a credential reset. |
-| Google callback whose email matches a row already bound to a **different** Google `sub` | Callback refuses before any write; no row is modified and no session is issued. | `409 EMAIL_BOUND_TO_ANOTHER_GOOGLE_ACCOUNT`. | Admin releases the stale binding with `DELETE /admin/users/{id}/google` ([§Admin unbind](#admin-unbind)); the next sign-in binds the current `sub`. |
-| Two callbacks race to bind the same Google `sub` onto different rows, or a bind commits between one callback's resolution and its write | The losing bind violates `UNIQUE(google_sub)`; its transaction rolls back whole, so that row keeps its password, tokens, and session epoch. | `409 GOOGLE_ACCOUNT_LINKED_ELSEWHERE`. | None — the winning bind stands and the user retries, which now resolves by `sub`. |
+| Google callback whose email matches a row already bound to a **different** Google `sub` | Callback refuses before any write; no row is modified and no session is issued. | 302 to `/oauth-error?error=EMAIL_BOUND_TO_ANOTHER_GOOGLE_ACCOUNT`, whose page states the unbind sequence. | Admin releases the stale binding with `DELETE /admin/users/{id}/google` ([§Admin unbind](#admin-unbind)); the next sign-in binds the current `sub`. |
+| Two callbacks race to bind the same Google `sub` onto different rows, or a bind commits between one callback's resolution and its write | The losing bind violates `UNIQUE(google_sub)`; its transaction rolls back whole, so that row keeps its password, tokens, and session epoch. | 302 to `/oauth-error?error=GOOGLE_ACCOUNT_LINKED_ELSEWHERE`. | None — the winning bind stands and the user retries, which now resolves by `sub`. |
 | Role change via `/admin/users/{id}/role`: DataSpoke write succeeds, DataHub propagation fails | The new role takes effect immediately on the DataSpoke API; DataHub-side stays stale until the nightly reconciliation DAG re-asserts. | The admin call returns `200` (DataSpoke side succeeded); a warning log records the propagation failure. | None — DAG handles. Manual recovery: re-PATCH the role. |
 | Nightly reconciliation finds a divergence on either facet | The pass re-asserts `users.role` and/or marker-group membership to DataHub. | Operator visible via the `AUTH.ROLE_SYNC_FIXED` event row, whose `detail` names the repaired facet(s). | None unless the divergence was intentional (DataHub-only super-admin); in that case, keep that corpuser out of the DataSpoke `users` table. |
 | API token revoked while in use | Next request with the token fails. | `401 TOKEN_REVOKED`. | None — expected behaviour. |
@@ -1003,8 +1027,9 @@ credential) would otherwise share one budget deployment-wide, and
 would let one client exhaust every user's ability to refresh.
 
 **The auth plane keys on the observed client address, unconditionally.** The
-routes it governs accept credentials, so their callers are unauthenticated by
-definition and every identity in such a request is one the caller chose; both
+routes it governs accept or issue credentials, so their callers are
+unauthenticated by definition and every identity in such a request is one the
+caller chose; both
 `POST /auth/register` and `POST /auth/token` moreover *hand out* exactly such a
 credential, so any request-derived key would let the limited party mint itself a
 fresh budget per credential acquired. This limiter is the only brute-force
@@ -1089,12 +1114,14 @@ entry is registered as an authorised redirect URI on the OAuth client. Widening
 State and nonce are stored in the signed Starlette session cookie (HMAC
 key `DATASPOKE_OAUTH_STATE_SECRET`); authlib generates fresh random
 values on every `/auth/google/login` and validates them on callback.
-Mismatches return `400 OAUTH_STATE_MISMATCH` without attempting token
+Mismatches fail `OAUTH_STATE_MISMATCH` without attempting token
 exchange. The callback rejects ID tokens with `email_verified=false`
-(`400 OAUTH_EMAIL_NOT_VERIFIED`) — unverified Google emails cannot
+(`OAUTH_EMAIL_NOT_VERIFIED`) — unverified Google emails cannot
 resolve to a DataSpoke account. If the credentials or the session
-secret are unset, `/auth/google/{login,callback}` returns
-`503 OAUTH_NOT_CONFIGURED`.
+secret are unset, `/auth/google/{login,callback}` fails
+`OAUTH_NOT_CONFIGURED`. All three are delivered as a redirect to the
+`/oauth-error` page rather than a response body
+([§Callback failure surface](#callback-failure-surface)).
 
 ### Token-type confusion rejected
 

@@ -42,3 +42,4 @@
 - [UC1-01 wrapper flag assertion gap](project_uc1_01_wrapper_flag_assertion_gap.md) — headers say wrapper=true, docstring says false, assertion says any bool; API.md L364 makes it determinate
 - [Metagen drop-all run is specced](project_metagen_dropall_run_is_specced.md) — BACKEND_LLM.md 309-310 sanctions a zero-candidate real-LLM metagen run; UC4 per-slot hard-fails overclaim
 - [Pre/post-lock 401 indistinguishable](project_auth_prelock_postlock_401_indistinguishable.md) — same 401/UNAUTHORIZED/message from both gates; only an observed lock wait proves the post-lock re-check
+- [OAuth 302 test seams](project_oauth_302_test_seams.md) — #83: 7 mutations killed, 2 survived (route-level except breadth; success-path verbatim redirect + cookie)

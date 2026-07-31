@@ -440,8 +440,8 @@ async def test_bind_google_identity_refuses_a_row_bound_to_another_account() -> 
     """A row carrying a DIFFERENT google_sub is refused; nothing on it is modified.
 
     spec: spec/feature/AUTH.md §Google OAuth registration & login — "Yes, and that
-    row carries a **different** `google_sub` | Refuse — 409
-    EMAIL_BOUND_TO_ANOTHER_GOOGLE_ACCOUNT. No row is modified and no session is
+    row carries a **different** `google_sub` | Refuse —
+    `EMAIL_BOUND_TO_ANOTHER_GOOGLE_ACCOUNT`. No row is modified and no session is
     issued."
     """
     from src.backend.auth.users import bind_google_identity
@@ -476,8 +476,8 @@ async def test_bind_google_identity_unique_collision_raises_linked_elsewhere() -
     """A sub already held by a different row loses the UNIQUE(google_sub) race.
 
     spec: spec/feature/AUTH.md §Google OAuth registration & login — "a bind whose
-    incoming `sub` is already held by a different row loses the UNIQUE(google_sub)
-    race and fails 409 GOOGLE_ACCOUNT_LINKED_ELSEWHERE".
+    incoming `sub` is already held by a different row loses the `UNIQUE(google_sub)`
+    race and fails `GOOGLE_ACCOUNT_LINKED_ELSEWHERE`".
     spec: spec/feature/AUTH.md §Failure Modes — "The losing bind violates
     UNIQUE(google_sub); its transaction rolls back whole, so that row keeps its
     password, tokens, and session epoch."

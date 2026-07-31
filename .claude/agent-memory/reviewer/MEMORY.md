@@ -37,3 +37,8 @@
 - [regex bounded matcher: rejected](project_regex_bounded_matcher_facts.md) — #114's regex+timeout swap was built and rejected; inside any size cap: 464s compile, 212MB retained (re: 0.0004s)
 - [str iterated as pattern list](feedback_str_iterated_as_pattern_list.md) — `list[str]` helper loops a bare str per character; check JSONB-fed call sites, mypy can't see it
 - [Resource caps: worst case inside the cap](feedback_resource_cap_worst_case.md) — sweep construct SHAPES at a fixed cap value, not just sizes; measure every resource the cap claims to bound
+- [URL-param object map prototype keys](feedback_url_param_object_map_prototype.md) — `map[code] ?? FALLBACK` renders blank for toString/__proto__; TS and a SOMETHING_ELSE test both miss it
+- ["Always redirects" contract audit](feedback_always_redirect_contract_audit.md) — `except DataSpokeError` misses authlib's OIDC discovery fetch + DB driver errors; no `Exception` handler ⇒ plain 500
+- [exc_info leaks bind parameters](feedback_exc_info_leaks_bind_parameters.md) — "logs only the code" is false next to exc_info=True; SQLAlchemy prints [parameters: {email…}]
+- [Fabricated correlation id](feedback_fabricated_correlation_id.md) — copying a `header or uuid4()` derivation yields a DIFFERENT trace_id; the handler line joins nothing
+- [Status change: silent skip + stale catalogue](feedback_status_change_silent_skip_and_catalogue.md) — old-status skip guards go green-by-skip; exceptions.py keeps its HTTP claim in class docstrings

@@ -10,10 +10,14 @@ Spec: spec/API.md §Auth, spec/feature/AUTH.md.
 
 from __future__ import annotations
 
+import contextlib
 import uuid
 from datetime import timedelta
+from typing import TYPE_CHECKING
+from urllib.parse import quote, urljoin
 
 import bcrypt as _bcrypt
+import structlog
 from fastapi import APIRouter, Cookie, Depends, Query, Request, Response, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -47,13 +51,19 @@ from src.shared.cache.client import RedisClient
 from src.shared.exceptions import (
     AuthenticationError,
     BadRequestError,
+    DataSpokeError,
     OAuthNotConfiguredError,
 )
 from src.shared.notifications.service import NotificationService
 
+if TYPE_CHECKING:
+    from src.shared.settings import Settings
+
 # Pre-computed dummy hash to ensure constant-time password verification even
 # when the email is unknown (prevents timing-based email enumeration attacks).
 _DUMMY_HASH: str = users._hash_password("__dummy_password_for_timing__")  # noqa: SLF001
+
+logger = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -297,29 +307,187 @@ async def post_password_reset_confirm(
 
 # ── Google OAuth ──────────────────────────────────────────────────────────────
 
+# Absolute path of the public UI page that renders an OAuth failure. Joined
+# against the configured post-login redirect target to reach the UI origin.
+_OAUTH_ERROR_PATH = "/oauth-error"
+
+#: The error codes that reach ``/oauth-error`` as an ``?error=`` value
+#: (spec/API.md §OAuth browser-redirect contract). Every other failure — a
+#: backend error raised outside this set, or a non-DataSpoke exception —
+#: redirects to the page with no ``error`` parameter, which renders the generic
+#: copy spec/feature/FRONTEND_BASIC.md §OAuth error page specifies for an absent
+#: code, and is logged at ERROR instead of being passed off as ordinary user
+#: error.
+_OAUTH_ERROR_CODES: frozenset[str] = frozenset(
+    {
+        "OAUTH_NOT_CONFIGURED",
+        "OAUTH_STATE_MISMATCH",
+        "OAUTH_EMAIL_NOT_VERIFIED",
+        "GOOGLE_ACCOUNT_LINKED_ELSEWHERE",
+        "EMAIL_BOUND_TO_ANOTHER_GOOGLE_ACCOUNT",
+    }
+)
+
+
+def _oauth_error_url(settings: Settings, error_code: str | None) -> str:
+    """Build the browser Location for a failed ``/auth/google/*`` navigation.
+
+    The target is the ORIGIN of ``settings.oauth_post_login_redirect`` plus the
+    absolute path ``/oauth-error`` — ``urljoin`` against an absolute path drops
+    any path component the configured value carries, and the ``/`` default
+    (same-host deployment) degrades to the relative location ``/oauth-error``.
+    Note the asymmetry with the success path, which uses the configured value
+    verbatim, path included.
+
+    The host half is server configuration only and ``error_code`` is one of the
+    five codes in ``_OAUTH_ERROR_CODES`` (or ``None``), never request input, so
+    the location is not attacker-influenced.
+
+    Spec: spec/API.md §OAuth browser-redirect contract.
+    """
+    post_login = settings.oauth_post_login_redirect or "/"
+    base = urljoin(post_login, _OAUTH_ERROR_PATH)
+    if error_code is None:
+        return base
+    return f"{base}?error={quote(error_code, safe='')}"
+
+
+def _request_actor(request: Request) -> dict[str, str]:
+    """Actor fields for a log line raised from inside a request handler.
+
+    ``trace_id`` is *read* from ``request.state``, where
+    ``RequestLoggingMiddleware`` publishes the id it minted, rather than derived
+    again here. Re-deriving would copy a recipe whose fallback is a fresh
+    ``uuid4`` — and these two routes are full-page browser navigations, which
+    carry no ``X-Trace-Id``, so that fallback is the only branch either side ever
+    takes. The line would then carry an id joining neither the
+    ``request_started`` / ``request_finished`` pair nor the echoed response
+    header. With no middleware in the stack the field is empty rather than
+    fabricated, the same choice ``_error_json`` in ``src/api/main.py`` makes.
+
+    ``client_ip`` is the address uvicorn observed, derived as the middleware
+    derives it. Under the chart default ``config.trustedProxyIps: "127.0.0.1"``
+    uvicorn does not rewrite it from ``X-Forwarded-For``, so for every caller
+    outside the cluster it is the ingress pod and distinguishes nothing; it
+    separates callers only where an operator widened that set
+    (spec/feature/AUTH.md §Client-IP attribution for rate limiting). Reading the
+    forwarded header here instead would widen the trust radius past what uvicorn
+    is configured to accept.
+    """
+    return {
+        "trace_id": getattr(request.state, "trace_id", ""),
+        "client_ip": request.client.host if request.client else "unknown",
+    }
+
+
+def _oauth_error_redirect(request: Request, settings: Settings, exc: Exception) -> RedirectResponse:
+    """Map a failed ``/auth/google/*`` navigation onto the 302 the browser gets.
+
+    Both routes are browser-navigation endpoints, so every outcome their bodies
+    produce is a redirect rather than the JSON error envelope (spec/API.md
+    §OAuth browser-redirect contract). No cookie is set on this path.
+
+    Only the five spec'd codes are forwarded to the page. Anything else — a
+    ``DataSpokeError`` raised with another code, or an unexpected exception such
+    as a transport or database failure — redirects without an ``error``
+    parameter and is logged at ERROR, so the failure stays visible to
+    monitoring instead of degrading into ordinary user-facing copy.
+
+    Every refusal is logged, because the response no longer distinguishes it: a
+    302 to the error page is indistinguishable from a successful sign-in in the
+    request log, which makes this line the only detection surface for a refused
+    pre-hijack bind or for ``OAUTH_STATE_MISMATCH`` probing. It therefore carries
+    the request's ``trace_id`` and the observed ``client_ip`` alongside the route
+    path and either the error code or the exception's class name, and nothing
+    else. The ``trace_id`` ties the line back to the middleware's
+    ``request_started`` / ``request_finished`` pair; the ``client_ip`` narrows to
+    an actor only where the trusted-proxy set has been widened past the chart
+    default — see ``_request_actor`` for both qualifications.
+
+    The email, the Google ``sub``, and the exception message are all withheld:
+    each can carry the authenticating identity, and a ``DBAPIError`` renders the
+    failing statement's bind parameters into its own message.
+    """
+    actor = _request_actor(request)
+    path = request.url.path
+    code: str | None = None
+    if isinstance(exc, DataSpokeError) and exc.error_code in _OAUTH_ERROR_CODES:
+        code = exc.error_code
+        logger.warning("oauth_route_refused", path=path, error_code=code, **actor)
+    elif isinstance(exc, DataSpokeError):
+        # The message may name the authenticating user, so log the code only.
+        logger.error("oauth_route_failed_unmapped", path=path, error_code=exc.error_code, **actor)
+    else:
+        # No `exc_info`, and nothing else logs it either — this line is the whole
+        # production record of an unexpected OAuth failure. The traceback is
+        # withheld because a driver error renders the failing statement's bind
+        # parameters, which on this path are the authenticating user's email and
+        # Google `sub`, and the engine is built without `hide_parameters`
+        # (`src/shared/db/session.py`). Setting that would make the frame safe to
+        # emit here; until then the class name is all monitoring gets.
+        logger.error(
+            "oauth_route_error",
+            path=path,
+            error_type=type(exc).__name__,
+            **actor,
+        )
+    return RedirectResponse(url=_oauth_error_url(settings, code), status_code=302)
+
 
 @router.get("/google/login")
+# Sits on the fail-closed plane with its callback, but carries a far larger
+# budget: this route accepts no credential — it only starts the consent
+# redirect — so it needs no brute-force bound, and under the chart default
+# `config.trustedProxyIps: "127.0.0.1"` every external caller presents the
+# ingress pod address, making any budget here a single deployment-wide counter.
+# At the callback's 10/minute that would cap org-wide sign-in *initiation* at
+# ten a minute.
+@auth_route_limit("60/minute")
 async def get_google_login(request: Request) -> Response:
     """Redirect the browser to Google's OAuth consent screen.
-
-    Disabled path: returns ``503 OAUTH_NOT_CONFIGURED`` when credentials or
-    the session secret are absent.
 
     Enabled path: delegates fully to authlib, which auto-generates state and
     nonce, stores them in ``request.session`` (via SessionMiddleware), and
     embeds them in the redirect URL. No custom state cookie is set.
+
+    Disabled path: 302 to ``<ui>/oauth-error?error=OAUTH_NOT_CONFIGURED`` when
+    credentials or the session secret are absent.
+
+    Every failure the handler body produces — authlib's discovery-document fetch
+    against Google included — also 302s to the error page rather than an error
+    body (spec/API.md §OAuth browser-redirect contract). The rate-limit guard
+    runs before the body and is the one outcome that is not a redirect: it
+    answers ``429 RATE_LIMIT_EXCEEDED`` or, on a limiter-storage outage, ``503
+    STORAGE_UNAVAILABLE``.
+
+    Rate-limited on the fail-closed, IP-keyed auth plane at the same 10/minute
+    sign-in budget as ``POST /auth/token``: this is a sign-in entry point whose
+    callers are unauthenticated by definition, so the default plane's
+    caller-selectable bucket key would bound nothing (spec/feature/AUTH.md
+    §Client-IP attribution for rate limiting).
+
+    What that budget actually buckets, for whoever tunes it next: the key is the
+    address uvicorn observed, and under the chart default
+    ``config.trustedProxyIps: "127.0.0.1"`` that is the ingress pod for every
+    caller outside the cluster — so the 10/minute is one deployment-wide counter,
+    not per client, until the trusted-proxy set is widened. This route accepts no
+    credential; it only redirects to Google.
     """
     from src.shared.settings import settings
 
-    if not oauth_google.is_configured(settings):
-        raise OAuthNotConfiguredError("Google OAuth not configured.")
+    try:
+        if not oauth_google.is_configured(settings):
+            raise OAuthNotConfiguredError("Google OAuth not configured.")
 
-    client = oauth_google.build_oauth_client(settings)
-    redirect_uri = str(request.url_for("get_google_callback"))
-    return await client.google.authorize_redirect(request, redirect_uri)  # type: ignore[no-any-return]  # authlib authorize_redirect is untyped.
+        client = oauth_google.build_oauth_client(settings)
+        redirect_uri = str(request.url_for("get_google_callback"))
+        return await client.google.authorize_redirect(request, redirect_uri)  # type: ignore[no-any-return]  # authlib authorize_redirect is untyped.
+    except Exception as exc:
+        return _oauth_error_redirect(request, settings, exc)
 
 
 @router.get("/google/callback")
+@auth_route_limit("10/minute")
 async def get_google_callback(
     request: Request,
     db: AsyncSession = Depends(get_db),
@@ -328,15 +496,49 @@ async def get_google_callback(
 
     authlib's ``authorize_access_token`` validates the ``state`` query param
     against the session-stored value and verifies the ID-token ``nonce``
-    against the session-stored nonce. Any mismatch raises an exception which
-    we map to ``400 OAUTH_STATE_MISMATCH``.
+    against the session-stored nonce. Any mismatch is reported as
+    ``OAUTH_STATE_MISMATCH``.
 
     On success, resolves (or creates) the DataSpoke user, sets the refresh
     cookie, and issues a 302 redirect to the post-login URL so the SPA can
     call ``POST /auth/token/refresh`` to obtain an access token.
+
+    On any failure the handler body produces — a refused bind, an invalid token
+    exchange, or an unexpected transport/database error alike — the browser is
+    redirected to the ``/oauth-error`` page with no cookie set and the
+    transaction rolled back (spec/API.md §OAuth browser-redirect contract). The
+    rate-limit guard runs before the body and is the one outcome that is not a
+    redirect: it answers ``429 RATE_LIMIT_EXCEEDED`` or, on a limiter-storage
+    outage, ``503 STORAGE_UNAVAILABLE``.
+
+    Rate-limited on the fail-closed, IP-keyed auth plane at the same 10/minute
+    sign-in budget as ``POST /auth/token``: this route accepts a Google
+    authorization code and mints a session, so it is credential-accepting, and
+    the default plane keys on an identity the caller supplies — a fresh bearer
+    value per request would buy a fresh budget each time (spec/feature/AUTH.md
+    §Client-IP attribution for rate limiting).
+
+    What that budget actually buckets, for whoever tunes it next: the key is the
+    address uvicorn observed, and under the chart default
+    ``config.trustedProxyIps: "127.0.0.1"`` that is the ingress pod for every
+    caller outside the cluster — so the 10/minute is one deployment-wide counter,
+    not per client, until the trusted-proxy set is widened.
     """
     from src.shared.settings import settings
 
+    try:
+        return await _google_callback(request, db, settings)
+    except Exception as exc:
+        # A failed rollback (dead connection) must not replace the redirect
+        # with the 500 this route exists to avoid; the session is discarded by
+        # the request-scoped dependency either way.
+        with contextlib.suppress(Exception):
+            await db.rollback()
+        return _oauth_error_redirect(request, settings, exc)
+
+
+async def _google_callback(request: Request, db: AsyncSession, settings: Settings) -> Response:
+    """Success path of the Google callback; raises on every failure."""
     if not oauth_google.is_configured(settings):
         raise OAuthNotConfiguredError("Google OAuth not configured.")
 
@@ -390,9 +592,10 @@ async def get_google_callback(
     # already landed and the token carries the new session epoch.
     refresh_token = _tokens.issue_refresh_token(user.id, user.session_epoch)
 
-    # Redirect to SPA root; the frontend calls POST /auth/token/refresh to
-    # obtain an access token using the HttpOnly refresh cookie.
-    redirect_url = getattr(settings, "oauth_post_login_redirect", "/")
+    # Redirect to the configured post-login target verbatim; the frontend calls
+    # POST /auth/token/refresh to obtain an access token using the HttpOnly
+    # refresh cookie.
+    redirect_url = settings.oauth_post_login_redirect or "/"
     redirect_response = RedirectResponse(url=redirect_url, status_code=302)
 
     _set_refresh_cookie(redirect_response, refresh_token)

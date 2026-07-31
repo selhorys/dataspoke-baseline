@@ -77,8 +77,11 @@ class ConflictError(DataSpokeError):
       EMAIL_ALREADY_REGISTERED      — registration for an address that already has a users row
       TOKEN_LIMIT_EXCEEDED          — user already holds the maximum active API tokens
       EMAIL_BOUND_TO_ANOTHER_GOOGLE_ACCOUNT — Google callback matched an email whose row
-                                      already carries a different google_sub
-      GOOGLE_ACCOUNT_LINKED_ELSEWHERE — the incoming Google sub is held by another users row
+                                      already carries a different google_sub. Not delivered as
+                                      409: the callback catches it and 302s to the UI error page
+                                      (spec/API.md §OAuth browser-redirect contract)
+      GOOGLE_ACCOUNT_LINKED_ELSEWHERE — the incoming Google sub is held by another users row.
+                                      Delivered as a 302 like the code above
       GOOGLE_IS_ONLY_AUTH_METHOD    — DELETE /admin/users/{id}/google on a row with no
                                       password_hash; releasing the binding would leave it
                                       with no authentication method
@@ -148,7 +151,6 @@ class AuthenticationError(DataSpokeError):
       TOKEN_REVOKED         — API token has been revoked
       TOKEN_EXPIRED         — API token has passed its expires_at
       INVALID_API_TOKEN     — API token not found or hash mismatch
-      OAUTH_STATE_MISMATCH  — Google OAuth state cookie did not match
     """
 
     error_code: str = "UNAUTHORIZED"
@@ -160,7 +162,12 @@ class AuthenticationError(DataSpokeError):
 
 class OAuthNotConfiguredError(DataSpokeError):
     """Raised when an OAuth operation is attempted but credentials are not configured.
-    Maps to HTTP 503.
+
+    Raised only by ``GET /auth/google/{login,callback}``, which are
+    browser-navigation routes: both catch it and answer 302 to the UI's
+    ``/oauth-error?error=OAUTH_NOT_CONFIGURED`` page rather than an error
+    envelope (spec/API.md §OAuth browser-redirect contract). There is therefore
+    no app-level handler mapping it to a status.
 
     error_code: OAUTH_NOT_CONFIGURED
     """
@@ -175,6 +182,12 @@ class BadRequestError(DataSpokeError):
     Valid error_code values:
       BAD_REQUEST           — default
       INVALID_RESET_TOKEN   — password reset token missing, used, or expired
+      OAUTH_STATE_MISMATCH  — Google callback state absent or not matching the signed
+                              session cookie. Not delivered as 400: the callback catches it
+                              and 302s to the UI error page (spec/API.md §OAuth
+                              browser-redirect contract)
+      OAUTH_EMAIL_NOT_VERIFIED — Google ID token carried email_verified=false. Delivered as
+                              a 302 like the code above
     """
 
     error_code: str = "BAD_REQUEST"

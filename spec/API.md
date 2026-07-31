@@ -226,11 +226,56 @@ All routes are prefixed with `/api/v1`.
 | `PATCH` | `/auth/me` | Update own display name and/or password (body `{name?, password?}`); returns the updated profile in the same shape as `GET /auth/me` |
 | `POST` | `/auth/password/reset/request` | Send password-reset email (body `{email}`). Silent for unknown emails (no account-enumeration leak). |
 | `POST` | `/auth/password/reset/confirm` | Confirm reset with token + new password (body `{token, new_password}`); returns `204` on success |
-| `GET` | `/auth/google/login` | Begin Google OAuth: establish state cookie and 302 to Google consent screen |
-| `GET` | `/auth/google/callback` | Google OAuth callback. On success it logs in the user whose row already carries the Google `sub`, binds the identity onto an unbound row matching the email, or creates a fresh user with Reader role. A bind invalidates every credential that existed on the row beforehand — password, API tokens, outstanding JWT sessions, unused reset tokens — in the same transaction ([AUTH §Credential reset on link](feature/AUTH.md#credential-reset-on-link)). A row already bound to a different Google `sub` is refused `409 EMAIL_BOUND_TO_ANOTHER_GOOGLE_ACCOUNT` |
+| `GET` | `/auth/google/login` | Begin Google OAuth: establish state cookie and 302 to the Google consent screen. Browser-navigation route — the handler answers 302 on every outcome, never a JSON body ([§OAuth browser-redirect contract](#oauth-browser-redirect-contract)) |
+| `GET` | `/auth/google/callback` | Google OAuth callback. On success it logs in the user whose row already carries the Google `sub`, binds the identity onto an unbound row matching the email, or creates a fresh user with Reader role, then sets the refresh cookie and 302s to the configured post-login redirect target. A bind invalidates every credential that existed on the row beforehand — password, API tokens, outstanding JWT sessions, unused reset tokens — in the same transaction ([AUTH §Credential reset on link](feature/AUTH.md#credential-reset-on-link)). A row already bound to a different Google `sub` is refused with `EMAIL_BOUND_TO_ANOTHER_GOOGLE_ACCOUNT`. Browser-navigation route — every failure 302s to the UI error page and sets no cookie ([§OAuth browser-redirect contract](#oauth-browser-redirect-contract)) |
 | `GET` | `/auth/api-tokens` | List own API tokens (content key `tokens: [{id, name, role_snapshot, created_at, last_used_at, expires_at}]` — never the raw token; paginated with the standard `offset`/`limit`/`total_count` envelope, sortable by `created_at`, default `created_at_desc`). Authenticated. |
 | `POST` | `/auth/api-tokens` | Mint a new API token (body `{name, expires_at?}`). Response includes the raw token in `{token: "dsk_...", id, name, role_snapshot, created_at, expires_at}` — **only time the raw token is returned plain**. `409 TOKEN_LIMIT_EXCEEDED` if user already has 10 active tokens. Authenticated. |
 | `DELETE` | `/auth/api-tokens/{id}` | Revoke own API token (sets `revoked_at = now()`). Authenticated. |
+
+#### OAuth browser-redirect contract
+
+`GET /auth/google/login` and `GET /auth/google/callback` are reached only as
+full-page browser navigations — the user agent, not an API client, follows them.
+Every outcome the route handler produces — success, and any error it raises —
+is therefore a 302, never an [error envelope](#error-catalogue); a JSON body
+would leave the browser parked on raw text with no way forward. The middleware
+and limiter plane is unaffected: both routes sit on the fail-closed auth limiter
+([§Middleware Stack](#middleware-stack)), and a request rejected there never
+reaches the handler — it still answers with the envelope, `429` when the caller
+is over budget and `503 STORAGE_UNAVAILABLE` when that limiter's storage is
+unreachable.
+
+| Route | Outcome | Response |
+|---|---|---|
+| `/auth/google/login` | OAuth configured | `302` to the Google consent screen, state cookie set |
+| `/auth/google/login` | OAuth not configured | `302` to `<ui>/oauth-error?error=OAUTH_NOT_CONFIGURED` |
+| `/auth/google/callback` | Success | `302` to the configured post-login redirect target (`DATASPOKE_OAUTH_POST_LOGIN_REDIRECT`) verbatim, refresh cookie set |
+| `/auth/google/callback` | Catalogued failure | `302` to `<ui>/oauth-error?error=<code>` for the codes listed below |
+
+Any other failure on **either** route — an uncatalogued `DataSpokeError`, or an
+exception outside the error taxonomy — redirects to `<ui>/oauth-error` with no
+`error` parameter and is logged at ERROR; the page falls back to generic wording.
+No failure on either route sets a cookie. Nothing is committed when the failure
+is raised before the callback's bind commits; a failure raised after it — the
+bind necessarily commits before the refresh token is issued, so that the token
+carries the post-reset `session_epoch` — leaves the bind standing and still
+redirects.
+
+`<ui>/oauth-error` is the origin of the configured post-login redirect target
+(`DATASPOKE_OAUTH_POST_LOGIN_REDIRECT`) plus the absolute path `/oauth-error` —
+any path component on the configured value is discarded, and a bare `/` (the
+default, for a same-host deployment) degrades to the relative location
+`/oauth-error`. The host half of the location is therefore
+server configuration only; the `error` value is URL-encoded and originates from
+DataSpoke's own error codes, never from request input. Five codes reach the error
+page: `OAUTH_NOT_CONFIGURED` (both routes), plus `OAUTH_STATE_MISMATCH`,
+`OAUTH_EMAIL_NOT_VERIFIED`, `GOOGLE_ACCOUNT_LINKED_ELSEWHERE`, and
+`EMAIL_BOUND_TO_ANOTHER_GOOGLE_ACCOUNT` on the callback. The page that renders
+them is specified in
+[FRONTEND_BASIC §OAuth error page](feature/FRONTEND_BASIC.md#oauth-error-page-oauth-error);
+the recovery
+sequence behind the bound-elsewhere code is in
+[AUTH §Admin unbind](feature/AUTH.md#admin-unbind).
 
 ### Data Resource (`/spoke/common/data`)
 
@@ -992,8 +1037,12 @@ non-exempt route, not a fresh budget per endpoint. `/health` and the `/internal/
 sit outside this plane entirely — `/ready` is charged like any other route, because it performs
 live dependency checks ([§System](#system)) — and a request that
 matches no route is charged against the caller's budget rather than passing unmetered. This plane
-falls back to in-memory counting when Redis is unreachable. The credential-accepting auth routes —
-`/auth/register`, `/auth/token`, and the password-reset pair — are governed by a **separate
+falls back to in-memory counting when Redis is unreachable. The credential-accepting and
+credential-issuing auth routes — `/auth/register`, `/auth/token`, the password-reset pair, and
+`/auth/google/login` + `/auth/google/callback` (the callback accepts a Google-issued authorization
+code and hands back a DataSpoke session; the login route opens that same credential-issuing flow —
+either way the caller is unauthenticated in exactly the sense the plane assumes) — are
+governed by a **separate
 fail-closed limiter** that answers `503 STORAGE_UNAVAILABLE` instead of falling back; they are
 charged on that limiter *instead of* the default budget, not in addition to it. Both planes'
 bucket keys, and the reasoning behind them, are in
@@ -1040,6 +1089,12 @@ All errors follow the standard envelope:
 The `resp_time` (ISO 8601 UTC, millisecond precision) is included on every error
 response, matching the success envelope.
 
+`GET /auth/google/login` and `GET /auth/google/callback` are the one exception:
+they are browser-navigation routes and deliver the codes **their handlers raise**
+as a `302` to the UI error page instead of this envelope (a rejection on the
+limiter plane, before the handler, still answers with the envelope) — see
+[§OAuth browser-redirect contract](#oauth-browser-redirect-contract).
+
 A small set of errors carry an additional `detail` object with structured,
 machine-readable context about the failure. Currently emitted by:
 
@@ -1056,6 +1111,7 @@ Clients should treat `detail` as optional; absent for errors that don't need it.
 | `200 OK` | Successful read, action, or `PUT` that replaces an existing resource |
 | `201 Created` | Resource successfully created (`POST`, or `PUT` targeting a new resource) |
 | `204 No Content` | Successful deletion |
+| `302 Found` | Browser-navigation redirect. Used only by `GET /auth/google/{login,callback}`, on both their success and failure paths ([§OAuth browser-redirect contract](#oauth-browser-redirect-contract)) |
 | `400 Bad Request` | Malformed request, missing required fields, invalid parameter values |
 | `401 Unauthorized` | Missing or expired access token |
 | `403 Forbidden` | Valid token but insufficient group claim |
@@ -1113,11 +1169,11 @@ Clients should treat `detail` as optional; absent for errors that don't need it.
 | `NOT_IMPLEMENTED` | 501 | The requested mode or capability is reserved for future work. Returned by `POST /spoke/governance/metric` and `PUT /spoke/governance/metric/{id}/attr/conf` when `mode: "passive"` |
 | `EMAIL_ALREADY_REGISTERED` | 409 | `POST /auth/register` body carries an email already mapped to an existing user |
 | `INVALID_RESET_TOKEN` | 400 | `POST /auth/password/reset/confirm` token does not match any row, is expired, or has already been used |
-| `OAUTH_STATE_MISMATCH` | 400 | `GET /auth/google/callback` state cookie missing or does not match the value embedded in the OAuth state JWT |
-| `OAUTH_EMAIL_NOT_VERIFIED` | 400 | `GET /auth/google/callback` received an ID token where `email_verified=false`; unverified Google emails cannot resolve to a DataSpoke account |
-| `OAUTH_NOT_CONFIGURED` | 503 | `GET /auth/google/{login,callback}` invoked while Google OAuth credentials or the OAuth-state HMAC secret are not configured — operator must set `DATASPOKE_GOOGLE_OAUTH_CLIENT_{ID,SECRET}` and `DATASPOKE_OAUTH_STATE_SECRET` |
-| `GOOGLE_ACCOUNT_LINKED_ELSEWHERE` | 409 | `GET /auth/google/callback` lost a concurrent-bind race — a competing bind claimed the incoming Google `sub` for a different `users` row first, so this one violates `UNIQUE(google_sub)` and rolls back whole (one Google account per user). A retry resolves by `sub` and logs into the row that won |
-| `EMAIL_BOUND_TO_ANOTHER_GOOGLE_ACCOUNT` | 409 | `GET /auth/google/callback` matched an email whose `users` row already carries a **different** Google `sub`; a bound row is never silently rebound. An admin releases the binding with `DELETE /admin/users/{id}/google` |
+| `OAUTH_STATE_MISMATCH` | 302 | `GET /auth/google/callback` state missing or does not match the value stored in the signed session cookie. Delivered as `?error=` on the redirect to `/oauth-error` ([§OAuth browser-redirect contract](#oauth-browser-redirect-contract)) |
+| `OAUTH_EMAIL_NOT_VERIFIED` | 302 | `GET /auth/google/callback` received an ID token where `email_verified=false`; unverified Google emails cannot resolve to a DataSpoke account. Delivered as `?error=` on the redirect to `/oauth-error` |
+| `OAUTH_NOT_CONFIGURED` | 302 | `GET /auth/google/{login,callback}` invoked while Google OAuth credentials or the OAuth-state HMAC secret are not configured — operator must set `DATASPOKE_GOOGLE_OAUTH_CLIENT_{ID,SECRET}` and `DATASPOKE_OAUTH_STATE_SECRET`. Delivered as `?error=` on the redirect to `/oauth-error` |
+| `GOOGLE_ACCOUNT_LINKED_ELSEWHERE` | 302 | `GET /auth/google/callback` lost a concurrent-bind race — a competing bind claimed the incoming Google `sub` for a different `users` row first, so this one violates `UNIQUE(google_sub)` and rolls back whole (one Google account per user). A retry resolves by `sub` and logs into the row that won. Delivered as `?error=` on the redirect to `/oauth-error` |
+| `EMAIL_BOUND_TO_ANOTHER_GOOGLE_ACCOUNT` | 302 | `GET /auth/google/callback` matched an email whose `users` row already carries a **different** Google `sub`; a bound row is never silently rebound. An admin releases the binding with `DELETE /admin/users/{id}/google`. Delivered as `?error=` on the redirect to `/oauth-error` |
 | `GOOGLE_IS_ONLY_AUTH_METHOD` | 409 | `DELETE /admin/users/{id}/google` on a row with no `password_hash` — releasing the binding would leave the row with no authentication method. This is the normal state of a bound row; the sequence that clears it is in [AUTH §Admin unbind](feature/AUTH.md#admin-unbind) |
 | `INVALID_REFRESH_TOKEN` | 401 | `POST /auth/token/refresh` received a structurally-valid JWT whose `type` claim is not `"refresh"` (e.g. an access token presented at the refresh endpoint) |
 | `READ_ONLY_ROLE` | 403 | Caller has `Reader` role (or an API token with effective `Reader` privilege); route requires `Editor` or `Admin` (any write method on `/spoke/*`, or the Editor+ read route `GET /spoke/ingestion/secrets`) |

@@ -46,7 +46,6 @@ from src.shared.exceptions import (
     ForbiddenError,
     InvalidDatasetUrnError,
     NotImplementedAPIError,
-    OAuthNotConfiguredError,
     PeripheralNotConfiguredError,
     PreconditionFailedError,
     StorageUnavailableError,
@@ -124,7 +123,12 @@ def _error_json(
     headers: dict[str, str] | None = None,
     detail: dict[str, object] | list[object] | None = None,
 ) -> JSONResponse:
-    trace_id = request.headers.get(_TRACE_HEADER, "")
+    # RequestLoggingMiddleware publishes the id it minted; prefer it over the
+    # inbound header so an envelope carries the same trace_id as that request's
+    # log lines and its X-Trace-Id response header. A browser cannot set the
+    # header on a full-page navigation, which is the only way the OAuth routes'
+    # limiter responses are ever seen.
+    trace_id = getattr(request.state, "trace_id", "") or request.headers.get(_TRACE_HEADER, "")
     body: dict[str, object] = {
         "error_code": error_code,
         "message": message,
@@ -165,12 +169,6 @@ async def _handle_bad_request(request: Request, exc: BadRequestError) -> JSONRes
     return _error_json(request, 400, exc.error_code, str(exc))
 
 
-async def _handle_oauth_not_configured(
-    request: Request, exc: OAuthNotConfiguredError
-) -> JSONResponse:
-    return _error_json(request, 503, exc.error_code, str(exc))
-
-
 async def _handle_not_found(request: Request, exc: EntityNotFoundError) -> JSONResponse:
     return _error_json(request, 404, exc.error_code, str(exc))
 
@@ -197,9 +195,7 @@ async def _handle_validation(request: Request, exc: PydanticValidationError) -> 
     return _error_json(request, 422, "INVALID_PARAMETER", str(exc))
 
 
-async def _handle_request_validation(
-    request: Request, exc: RequestValidationError
-) -> JSONResponse:
+async def _handle_request_validation(request: Request, exc: RequestValidationError) -> JSONResponse:
     return _error_json(
         request,
         422,
@@ -271,9 +267,7 @@ async def _handle_forbidden(request: Request, exc: ForbiddenError) -> JSONRespon
 async def _handle_peripheral_not_configured(
     request: Request, exc: PeripheralNotConfiguredError
 ) -> JSONResponse:
-    return _error_json(
-        request, 503, exc.error_code, str(exc), detail=exc.detail or None
-    )
+    return _error_json(request, 503, exc.error_code, str(exc), detail=exc.detail or None)
 
 
 async def _handle_dataspoke_generic(request: Request, exc: DataSpokeError) -> JSONResponse:
@@ -391,7 +385,6 @@ def create_app() -> FastAPI:
     # ── Exception handlers (specific → generic) ───────────────────────────────
     app.add_exception_handler(NotImplementedAPIError, _handle_not_implemented)  # type: ignore[arg-type]
     app.add_exception_handler(BadRequestError, _handle_bad_request)  # type: ignore[arg-type]
-    app.add_exception_handler(OAuthNotConfiguredError, _handle_oauth_not_configured)  # type: ignore[arg-type]
     app.add_exception_handler(EntityNotFoundError, _handle_not_found)  # type: ignore[arg-type]
     app.add_exception_handler(ConflictError, _handle_conflict)  # type: ignore[arg-type]
     app.add_exception_handler(PreconditionFailedError, _handle_precondition)  # type: ignore[arg-type]
@@ -450,13 +443,13 @@ def create_app() -> FastAPI:
     app.include_router(admin_router.internal_router, include_in_schema=False)
 
     # ── Spoke routes ───────────────────────────────────────────────────────────
-    app.include_router(common_data.router,       prefix=SPOKE_COMMON)
+    app.include_router(common_data.router, prefix=SPOKE_COMMON)
     app.include_router(common_peripheral_links.router, prefix=SPOKE_COMMON)
-    app.include_router(spoke_ontogen.router,     prefix=SPOKE)
-    app.include_router(spoke_metagen.router,     prefix=SPOKE)
-    app.include_router(spoke_ingestion.router,   prefix=SPOKE)
-    app.include_router(spoke_validation.router,  prefix=SPOKE)
-    app.include_router(spoke_governance.router,  prefix=f"{SPOKE}/governance")
+    app.include_router(spoke_ontogen.router, prefix=SPOKE)
+    app.include_router(spoke_metagen.router, prefix=SPOKE)
+    app.include_router(spoke_ingestion.router, prefix=SPOKE)
+    app.include_router(spoke_validation.router, prefix=SPOKE)
+    app.include_router(spoke_governance.router, prefix=f"{SPOKE}/governance")
 
     # ── Admin routes (Admin role only) ────────────────────────────────────────
     app.include_router(admin_router.router, prefix=API_PREFIX)
