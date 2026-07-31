@@ -417,6 +417,11 @@ async function triggerRunViaUI(
   metricId: string,
   metricTitle: string
 ): Promise<void> {
+  // Budget (applies to the calling test): a 15s header wait, a 10s dialog wait, then up
+  // to 90s for the run to resolve and close the dialog, then a second run fired as the
+  // backend probe — chained past the 60s project ceiling.
+  test.setTimeout(180_000);
+
   await page.goto(`/governance/metrics/${metricId}`);
   await expect(
     page.getByRole("heading", { name: metricTitle, exact: true })
@@ -496,6 +501,11 @@ test("UC5 step 3a — dashboard shows combined metric cards (title, type badge, 
   page,
   adminApi,
 }) => {
+  // Budget: a 60s result-readiness poll — the whole project ceiling on its own, so without
+  // this an exhausted poll would be pre-empted before its assertion — chained with the
+  // 120s toPass block.
+  test.setTimeout(240_000);
+
   // Poll adminApi until ≥1 result row appears for ingestion-freshness (bellwether metric).
   // spec: TESTING.md §E2E §Execution discipline — "Gate data-dependent UI assertions on
   //   confirmed backend state": read (or poll) the same state through adminApi first,

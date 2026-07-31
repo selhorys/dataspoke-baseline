@@ -211,6 +211,10 @@ test("UC2 step 2 — POST results; detail page renders score + variables charts"
   page,
   adminApi,
 }) => {
+  // Budget: a 30s result-readiness poll chained with the 120s toPass render block, past
+  // the 60s project ceiling.
+  test.setTimeout(240_000);
+
   // POST 3 daily results for postgres.
   for (const payload of PG_RESULTS) {
     const resp = await adminApi.post(PG_RESULT_API, { data: payload });
@@ -310,6 +314,9 @@ test("UC2 step 3 — /validation list shows both datasets with score badges", as
   page,
   adminApi,
 }) => {
+  // Budget: a 180s ES-lag readiness poll chained with the 120s toPass render block.
+  test.setTimeout(360_000);
+
   // Readiness poll: the cross-dataset list is sourced via DataHub ES, which lags
   // conf/result writes by ~2-3 min. Poll until BOTH dataset URNs are present in
   // the aggregated list before navigating + asserting the UI table.

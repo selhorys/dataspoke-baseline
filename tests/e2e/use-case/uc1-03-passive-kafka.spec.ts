@@ -74,6 +74,28 @@ const RECIPE_YAML = `source:
 
 let sourceId: string | null = null;
 
+// ── Setup: pre-delete any source holding this arc's natural key ───────────
+//
+// SOURCE_NAME is the natural key step 1 creates through the UI. A leftover of that
+// name — from an aborted run whose afterAll never saw an id, or from a group retry
+// replaying over the failed attempt — would make the step-1 create collide, so the
+// hook clears it first and treats an absent source as success (the DELETE status is
+// unchecked, so 404 passes). The create gesture itself stays in step 1: it is the
+// behavior under test.
+// spec: spec/TESTING.md §E2E §Execution discipline — "Setup is idempotent and lives in
+//   hooks… each setup path pre-deletes by natural key and accepts the upsert/absent
+//   status codes (200-or-201, 404-as-success)."
+test.beforeAll(async ({ adminApi }) => {
+  const r = await adminApi.get("/api/v1/spoke/ingestion/sources?mode=PASSIVE&limit=100");
+  if (r.ok()) {
+    const b = (await r.json()) as { sources?: Array<{ id: string; name: string }> };
+    for (const s of (b.sources ?? []).filter((x) => x.name === SOURCE_NAME)) {
+      await adminApi.delete(`/api/v1/spoke/ingestion/sources/${s.id}`);
+    }
+  }
+  sourceId = null;
+});
+
 // ── Cleanup: delete the created source after all steps ────────────────────
 
 test.afterAll(async ({ adminApi }) => {
@@ -88,12 +110,10 @@ test.afterAll(async ({ adminApi }) => {
 // mode the file's tests run as one group and a failing step aborts the rest, so a
 // broken step reports as the failure it is instead of leaving the dependent steps
 // to run against inconsistent state.
-//   - retries: 0 → overrides the project-level `retries: 1`. Step 1 creates the
-//     source named SOURCE_NAME through the UI and does NOT pre-delete by that
-//     natural key; if the step dies after the POST but before `sourceId` is
-//     assigned, afterAll has no id to clean up and the group retry re-submits the
-//     same name over the orphan. This arc therefore takes the spec's other option
-//     and fails loudly in place.
+//   - retries: 0 → overrides the project-level `retries: 1`. This arc takes the
+//     spec's fail-loudly-in-place option: a failing step is reported where it broke
+//     rather than replayed, so the operator reads the original defect instead of a
+//     second attempt's derived symptoms.
 // spec: spec/TESTING.md §E2E §Execution discipline — "Ordered scenarios run serial…
 // Serial mode also states its retry stance: Playwright retries a failed serial group
 // from the first step, so a file either makes every step re-runnable or sets
@@ -110,6 +130,10 @@ test("UC1 Case 3 step 0 — imazon Kafka topics appear in /unmanaged before sour
   page,
   adminApi,
 }) => {
+  // Budget: a 180s ES-lag sync poll chained with the page's 15s + 30s render waits — far
+  // past the 60s project ceiling, which would pre-empt the post-loop presence assertion.
+  test.setTimeout(300_000);
+
   // Trigger the sync sweep via the internal API to populate the dataset registry.
   // spec: test_uc1_03_passive_kafka.py step 0 — re-trigger sync each iteration so newly-ES-indexed URNs surface.
   // This step has no UI surface — fired via adminApi with the internal token.
@@ -300,6 +324,9 @@ test("UC1 Case 3 step 3 — datasets panel shows imazon Kafka topics with matche
   page,
   adminApi,
 }) => {
+  // Budget: a 180s sync poll chained with the detail page's 15s + 15s render waits.
+  test.setTimeout(270_000);
+
   // Trigger sync sweeps (backend, no UI surface) until both Kafka URNs appear in datasets.
   // spec: test_uc1_03_passive_kafka.py step 4 — re-trigger sync each iteration.
   const base = apiBaseUrl();
@@ -380,6 +407,9 @@ test("UC1 Case 3 step 4 — imazon Kafka topics absent from /unmanaged after sou
   page,
   adminApi,
 }) => {
+  // Budget: a 120s mapping-propagation poll chained with the page's 15s + two 10s waits.
+  test.setTimeout(240_000);
+
   // Poll until both imazon topics leave /unmanaged (≤120s).
   // spec: test_uc1_03_passive_kafka.py step 6 — poll ≤120s for mapping propagation.
   const deadline = Date.now() + 120_000;
@@ -427,6 +457,10 @@ test("UC1 Case 3 step 5 — fresh Kafka Operation surfaces as a passive_observat
   page,
   adminApi,
 }) => {
+  // Budget: a 120s --emit-passive-kafka-ops subprocess, then a 120s sync/observe poll,
+  // then the events panel's 15s + 15s render waits.
+  test.setTimeout(330_000);
+
   // Emit ONE fresh DataHub Operation on the orders Kafka topic via the Python util —
   // mirrors global-setup.ts's execSync(uv run python -m tests.integration.util ...) pattern.
   // repoRoot is three levels above tests/e2e/use-case/. Capture stdout to read back the

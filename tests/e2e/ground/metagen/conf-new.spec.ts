@@ -17,11 +17,35 @@
 import { test, expect } from "../../fixtures/index";
 
 const CONF_API = "/api/v1/spoke/metagen/conf";
-const CONF_NAME = `ground-new-${Date.now().toString(36)}`;
+/** Natural-key prefix this spec owns. Every conf it creates carries it, so the setup
+ *  sweep can find leftovers from earlier runs whose exact name it cannot predict. */
+const CONF_NAME_PREFIX = "ground-new-";
+const CONF_NAME = `${CONF_NAME_PREFIX}${Date.now().toString(36)}`;
 const TITLE_MASTER_URN =
   "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)";
 
 let confId: string | null = null;
+
+// ── Setup: pre-delete every conf holding this spec's natural key ──────────────
+// `confId` is resolved from the read-back AFTER the create, so a run that dies between
+// the POST and that read-back leaves its conf behind with nothing for afterAll to delete.
+// The natural key swept here is the CONF_NAME_PREFIX this spec owns, not the exact
+// CONF_NAME: the per-load timestamp suffix differs on every worker load (a retry
+// re-imports the module), so only the prefix matches a leftover from an earlier attempt.
+// An absent conf is success — the sweep simply finds nothing.
+// spec: spec/TESTING.md §E2E §Execution discipline — "Setup is idempotent and lives in
+//   hooks… each setup path pre-deletes by natural key and accepts the upsert/absent
+//   status codes (200-or-201, 404-as-success)."
+test.beforeAll(async ({ adminApi }) => {
+  const listResp = await adminApi.get(`${CONF_API}?limit=100`);
+  if (listResp.ok()) {
+    const list = (await listResp.json()) as { confs?: Array<{ id: string; name: string }> };
+    for (const c of (list.confs ?? []).filter((x) => x.name.startsWith(CONF_NAME_PREFIX))) {
+      await adminApi.delete(`${CONF_API}/${c.id}`);
+    }
+  }
+  confId = null;
+});
 
 test.afterAll(async ({ adminApi }) => {
   if (confId) await adminApi.delete(`${CONF_API}/${confId}`).catch(() => null);

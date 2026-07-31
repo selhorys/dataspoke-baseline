@@ -149,7 +149,7 @@ rendering; assert on accessible roles, not DOM internals.
 These rules apply to **every** test layer — Python unit, frontend Vitest, spot integration, api-wired
 integration, and Playwright E2E. A test that passes without proving anything is worse than no test: it
 certifies broken behavior and blocks the next author from noticing. Author assertions so that a passing
-result is only reachable when the spec'd behavior actually occurred. The four core anti-vacuity rules
+result is only reachable when the spec'd behavior actually occurred. The core anti-vacuity rules below
 apply to all layers; the dead-assertion-tuple rule is Python/mock-specific (noted inline). The related
 `db.execute` mock rule lives in [Unit Testing](#unit-testing) → Mocking rules.
 
@@ -168,6 +168,11 @@ apply to all layers; the dead-assertion-tuple rule is Python/mock-specific (note
 - **Mutation tests verify a concrete side effect.** A test of a mutating operation must read back and
   assert the concrete side effect (the DB row, the emitted event, the DataHub aspect, the changed field),
   not merely a 2xx status. A handler that returns 200 and does nothing must fail the test.
+- **Skip only on an absent precondition.** A test skips when a precondition it cannot establish is
+  missing — an unset credential or env var, an unconfigured dependency, a gated LLM variant — and the
+  skip reason names the precondition and how to supply it. A test never skips on an outcome it exists
+  to judge: a failed run, an empty result, or a wait that exhausts its budget is a failure, not a
+  skip.
 - **No dead assertion-message tuples** *(Python/mock)*. The `mock.assert_called_*` / `assert_*` family takes no message
   argument. Writing `mock.assert_called_once(), ("msg")` evaluates the assertion, discards its result, and
   builds a dead tuple — the message silences nothing and hides that no real check ran. Never attach a
@@ -413,7 +418,7 @@ set -a && source helm-charts/.env.dev && set +a && uv run pytest tests/integrati
 kubectl scale deployment/dataspoke-api --replicas=0 -n "${DATASPOKE_KUBE_DATASPOKE_NAMESPACE}"
 ```
 
-The session-scoped `runtime_conf` fixture (in `tests/integration/conftest.py`) GETs `/api/v1/admin/conf` once and asserts the three infra stubs (`stub_redis_client`, `stub_pgvector_manager`, `stub_notification_service`) are true. `stub_llm_client` is intentionally unchecked so real-LLM tests can run with it false; each such test guards inline as the first statement of its body (`if runtime_conf.get("stub_llm_client"): pytest.skip(...)`), not via a decorator. The two UCs carry different shapes: UC3 is a single test parametrized over `llm_mode` in `["stub", "real"]` (node ids `test_uc3_ontology_generation[stub]` / `[real]`), while UC4 keeps two distinct tests (`_under_stub` and `_with_real_llm`) because they assert genuinely different contracts rather than duplicating one arc. UC3's guard is **symmetric** — `real` skips when `stub_llm_client` is true, `stub` skips when it is false — so exactly one case runs per dev-env configuration and each runs against the LLM its node id names. The `require_server` fixture additionally verifies `/health` returns 200 and Airflow DAGs are registered via `/admin/dags/verify`. Spot tests opt in by depending on the fixture; api-wired tests always depend on it.
+The session-scoped `runtime_conf` fixture (in `tests/integration/conftest.py`) GETs `/api/v1/admin/conf` once and asserts the three infra stubs (`stub_redis_client`, `stub_pgvector_manager`, `stub_notification_service`) are true. `stub_llm_client` is intentionally unchecked so real-LLM tests can run with it false; each such test guards inline as the first statement of its body (`if runtime_conf.get("stub_llm_client"): pytest.skip(...)`), not via a decorator — the gated-LLM-variant case of the skip rule in [Assertion Discipline](#assertion-discipline). The two UCs carry different shapes: UC3 is a single test parametrized over `llm_mode` in `["stub", "real"]` (node ids `test_uc3_ontology_generation[stub]` / `[real]`), while UC4 keeps two distinct tests (`_under_stub` and `_with_real_llm`) because they assert genuinely different contracts rather than duplicating one arc. UC3's guard is **symmetric** — `real` skips when `stub_llm_client` is true, `stub` skips when it is false — so exactly one case runs per dev-env configuration and each runs against the LLM its node id names. The `require_server` fixture additionally verifies `/health` returns 200 and Airflow DAGs are registered via `/admin/dags/verify`. Spot tests opt in by depending on the fixture; api-wired tests always depend on it.
 
 ### Python (pytest) Execution Groups
 
@@ -618,10 +623,6 @@ E2E-specific authoring rules. The layer-wide anti-vacuity rules in
   source-credential Secret, resetting data, taking the dev-env lock — shells out to `kubectl` or to
   `tests/integration/util`. E2E adds no TypeScript Kubernetes client and no reimplemented reset
   logic.
-- **Skip only on an absent precondition.** A step skips when a precondition it cannot establish is
-  missing — an unset credential or env var, an unconfigured dependency, a gated LLM variant — and the
-  reason names the precondition and how to supply it. A step never skips on an outcome it exists to
-  judge: a failed run, an empty result, or a wait that exhausts its budget is a failure, not a skip.
 
 ### Authentication
 
