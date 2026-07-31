@@ -43,7 +43,14 @@
  * spec: spec/TESTING.md §End-to-End (E2E) Testing — dual confirmation, selector guidance
  */
 
-import { test, expect, IMAZON_URNS } from "../fixtures/index";
+import {
+  test,
+  expect,
+  IMAZON_URNS,
+  readStubLlmClient,
+  resolveUnreadableStubLlmClient,
+  type StubLlmClientRead,
+} from "../fixtures/index";
 
 // ── Constants (verbatim from api-wired test) ────────────────────────────────
 
@@ -72,18 +79,8 @@ const CONF_PAYLOAD = {
 
 // Admin-only — filename convention (*.spec.ts → admin project). Do not override storageState.
 
-// ── Helper: read stub_llm_client from /admin/conf ──────────────────────────────
-// Module-scoped: read by BOTH arcs below — the stub arc's step 4b precondition gate and
-// every real-LLM step's gate.
-
-async function readStubLlmClient(
-  adminApi: import("@playwright/test").APIRequestContext
-): Promise<boolean> {
-  const resp = await adminApi.get("/api/v1/admin/conf");
-  if (!resp.ok()) return true; // fail-safe: treat as stubbed
-  const body = (await resp.json()) as { stub_llm_client: boolean };
-  return body.stub_llm_client;
-}
+// The `stub_llm_client` gate is read ONCE per arc, in that arc's beforeAll, via the
+// shared fixtures/index.ts helper. Each arc keeps its own module variable below.
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // STUB-MODE ARC
@@ -116,6 +113,22 @@ test.describe("UC3 — stub-mode arc", () => {
   let seedId: string | null = null;
   // Track conf state so afterAll can patch disabled if a test creates it.
   let confCreated = false;
+  // LLM mode for this arc, read once below and resolved where it is consumed. Only step 4b
+  // consults it; every other step is mode-agnostic, so the read is stored as the union it
+  // is rather than collapsed (or skipped on) here.
+  let llmMode: StubLlmClientRead | null = null;
+
+  // ── Setup: read the LLM-mode gate once for the whole arc ─────────────────────
+  // The hook only READS. It raises no skip: a skip raised in beforeAll is replayed onto
+  // every test in the suite, which would take this arc's mode-agnostic steps down with the
+  // single step whose precondition is actually missing. Step 4b resolves the read itself.
+  // spec: spec/TESTING.md §E2E §Two groups — "the real-LLM variant `test.skip`s unless
+  //   `stub_llm_client` is false in `/admin/conf`."
+  // spec: spec/TESTING.md §Assertion Discipline — "A test skips when a precondition it
+  //   cannot establish is missing."
+  test.beforeAll(async ({ adminApi }) => {
+    llmMode = await readStubLlmClient(adminApi);
+  });
 
   // ── Cleanup: disable conf + delete seed after all steps ───────────────────────
 
@@ -376,6 +389,11 @@ test.describe("UC3 — stub-mode arc", () => {
     page,
     adminApi,
   }) => {
+    // Budget: 120s run-complete toast + 90s RUN_COMPLETE event poll + a second
+    // shape-probe run, chained — well past the 60s project ceiling, which would kill the
+    // test before either wait could report what it was waiting for.
+    test.setTimeout(300_000);
+
     // Navigate to the conf page, which hosts the Run control.
     // spec: FRONTEND_ONTOGEN.md §Navigation — /ontogen/conf → Conf editor + Run
     await page.goto("/ontogen/conf");
@@ -719,15 +737,25 @@ test.describe("UC3 — stub-mode arc", () => {
     page,
     adminApi,
   }) => {
-    // -- Precondition gate: keyed on the stub toggle, not on the row count --
+    // -- Precondition gate: keyed on the stub toggle read once in this arc's beforeAll,
+    //    not on the row count --
     // Under the stub, nodes are an unestablishable precondition; on a real-LLM env an empty
-    // result set is a genuine failure and must not skip silently.
-    // spec: TESTING.md §E2E §Execution discipline — "Skip only on an absent precondition…
-    //   A step never skips on an outcome it exists to judge: … an empty result … is a
+    // result set is a genuine failure and must not skip silently. An unreadable toggle is
+    // resolved here too: a live-but-broken /admin/conf fails, an unreachable one skips just
+    // this step (the rest of the arc is mode-agnostic).
+    // spec: TESTING.md §Assertion Discipline — "Skip only on an absent precondition…
+    //   A test never skips on an outcome it exists to judge: … an empty result … is a
     //   failure, not a skip."
-    const stubLlm = await readStubLlmClient(adminApi);
+    const mode = llmMode;
+    if (mode === null) {
+      throw new Error(
+        "[uc3 step 4b] the arc's beforeAll did not record an /admin/conf read; the LLM-mode " +
+          "gate has nothing to resolve",
+      );
+    }
+    if (!mode.readable) resolveUnreadableStubLlmClient(mode, "UC3 step 4b");
     test.skip(
-      stubLlm,
+      mode.stubbed,
       "stub_llm_client=true: a stub inference run persists zero ontology rows, so there is " +
         "no node to revoke. Supply the precondition with " +
         'PATCH /api/v1/admin/conf {"stub_llm_client": false} (≤30s propagation), trigger an ' +
@@ -916,6 +944,30 @@ test.describe("UC3 — real-LLM arc", () => {
   let realSeedId: string | null = null;
   let realConfCreated = false;
 
+  // ── Setup: read the LLM-mode gate once for the whole arc ─────────────────────
+  // The gate belongs to the GROUP here, unlike the stub arc: every step of this arc asserts
+  // real-LLM inference output, so real-LLM mode is a precondition of each one, and a skip
+  // raised in beforeAll — which Playwright replays onto every test in the suite — matches
+  // the precondition's true blast radius.
+  // spec: spec/TESTING.md §E2E §Two groups — "the real-LLM variant `test.skip`s unless
+  //   `stub_llm_client` is false in `/admin/conf`."
+  // spec: spec/TESTING.md §Assertion Discipline — "Skip only on an absent precondition…
+  //   the skip reason names the precondition and how to supply it."
+  test.beforeAll(async ({ adminApi }) => {
+    const mode = await readStubLlmClient(adminApi);
+    if (!mode.readable) {
+      // Distinct from the gate below: the toggle's value is unknown, which is not the
+      // same as knowing the env runs stubbed. A live-but-broken /admin/conf fails here.
+      resolveUnreadableStubLlmClient(mode, "UC3 real-LLM arc");
+    }
+    test.skip(
+      mode.stubbed,
+      "stub_llm_client=true: this arc asserts the output of a real inference run, which a " +
+        "stub run does not produce. Supply the precondition with " +
+        'PATCH /api/v1/admin/conf {"stub_llm_client": false} (≤30s propagation), then re-run.'
+    );
+  });
+
   test.afterAll(async ({ adminApi }) => {
     if (realSeedId) {
       await adminApi.delete(`${SEED_API}/${realSeedId}`);
@@ -931,9 +983,6 @@ test.describe("UC3 — real-LLM arc", () => {
   // Real-LLM step 1 — enable ontogen conf (same as stub step 1)
   // ─────────────────────────────────────────────────────────────────────────────
   test("UC3 real-LLM step 1 — enable ontogen conf", async ({ adminApi }) => {
-    const stubLlm = await readStubLlmClient(adminApi);
-    test.skip(stubLlm, "stub_llm_client=true; set false via PATCH /admin/conf to run real-LLM tests");
-
     const putResp = await adminApi.put(CONF_API, { data: CONF_PAYLOAD });
     expect([200, 201]).toContain(putResp.status());
     realConfCreated = true;
@@ -950,9 +999,6 @@ test.describe("UC3 — real-LLM arc", () => {
   // Real-LLM step 2 — create seed via UI (same as stub step 2)
   // ─────────────────────────────────────────────────────────────────────────────
   test("UC3 real-LLM step 2 — create domain seed", async ({ page, adminApi }) => {
-    const stubLlm = await readStubLlmClient(adminApi);
-    test.skip(stubLlm, "stub_llm_client=true; set false via PATCH /admin/conf to run real-LLM tests");
-
     await page.goto("/ontogen/seed");
     await expect(page).not.toHaveURL(/\/login/);
     await expect(
@@ -995,8 +1041,9 @@ test.describe("UC3 — real-LLM arc", () => {
     page,
     adminApi,
   }) => {
-    const stubLlm = await readStubLlmClient(adminApi);
-    test.skip(stubLlm, "stub_llm_client=true; set false via PATCH /admin/conf to run real-LLM tests");
+    // Budget: 300s for the real inference POST to respond + 30s for the toast that
+    // follows it + 120s RUN_COMPLETE event poll, chained.
+    test.setTimeout(540_000);
 
     // Run lives on /ontogen/conf (FRONTEND_ONTOGEN.md §Page contracts — Run control top-right).
     await page.goto("/ontogen/conf");
@@ -1023,10 +1070,13 @@ test.describe("UC3 — real-LLM arc", () => {
     await page.getByRole("button", { name: "Run" }).last().click();
     const runResp = await runRespPromise;
 
-    // Wait for run-complete toast (real LLM may take longer).
+    // Wait for the run-complete toast. The inference wait is already spent above —
+    // `runRespPromise` resolved, so the POST has returned and the toast is the mutation's
+    // onSuccess render, seconds away. A second inference-sized budget here would only
+    // delay the report of a toast that never rendered.
     await expect(
       page.getByText(/run complete|dry run complete/i).first()
-    ).toBeVisible({ timeout: 300_000 });
+    ).toBeVisible({ timeout: 30_000 });
 
     // Poll for ONTOGEN.RUN_COMPLETE event.
     const deadline = Date.now() + 120_000;
@@ -1080,9 +1130,6 @@ test.describe("UC3 — real-LLM arc", () => {
     page,
     adminApi,
   }) => {
-    const stubLlm = await readStubLlmClient(adminApi);
-    test.skip(stubLlm, "stub_llm_client=true; set false via PATCH /admin/conf to run real-LLM tests");
-
     // Arm the Evidence-cell settle signal before navigating: the page's own
     // peripheral-links read is what turns an Evidence cell from its link-free first
     // paint into its final state. The rejection is folded into a null so the Link
@@ -1266,9 +1313,6 @@ test.describe("UC3 — real-LLM arc", () => {
   // Real-LLM step 5 — cleanup: DELETE seed; PATCH conf disabled
   // ─────────────────────────────────────────────────────────────────────────────
   test("UC3 real-LLM step 5 — cleanup: delete seed + disable conf", async ({ page, adminApi }) => {
-    const stubLlm = await readStubLlmClient(adminApi);
-    test.skip(stubLlm, "stub_llm_client=true; set false via PATCH /admin/conf to run real-LLM tests");
-
     // Backstops: the arc state this cleanup consumes must exist. Without them the two
     // cleanup blocks below would be guarded asserts that pass vacuously when the state
     // is absent — the same green-on-broken-arc failure mode the serial mode above

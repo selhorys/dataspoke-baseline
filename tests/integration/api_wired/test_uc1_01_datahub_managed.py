@@ -33,8 +33,18 @@ Steps mirror USE_CASE_en.md §UC1 Case 1:
        The wrapper source is ABSENT from GET /sources?mode=DATAHUB_MANAGED.
        SECONDARY: GET /sources/{id}/datasets has ≥1 row with derivation='pipeline_name'
                   and authority='high'; attr/ingestion latest_run reflects the run.
-     Tolerant: skip only for true executor unavailability.
+     Skip/fail split: the ONLY skip is the pre-trigger precondition probe — the
+     acryl-datahub-actions executor reporting no ready replica, i.e. nothing can run
+     the request. Every post-trigger outcome FAILS: a terminal non-success status
+     (the run completed and the ingestion broke) and an exhausted 180s wait alike.
   9. Cleanup: deleteIngestionSource, deleteSecret, re-run sync to remove mirrored rows.
+
+tests/e2e/use-case/uc1-01-datahub-managed.spec.ts walks the same UC1 Case 1 arc in the
+browser and shares this file's skip/fail stance: a skip marks a precondition this run
+cannot establish (GMS URL unset, PAT unset, executor unschedulable) and names how to
+supply it, while every outcome the arc exists to judge is an assertion. The two files
+express that stance through their own layers' gestures, so they are not step-for-step
+identical.
 
 spec: USE_CASE_en.md §UC1 Case 1
 spec: USE_CASE_en.md §UC1 Case 1 — execution beat: sync mirrors the run as INGESTION.COMPLETE
@@ -43,14 +53,19 @@ spec: API.md §Ingestion — DATAHUB_MANAGED, read-only invariant (409 INGESTION
 spec: feature/BACKEND.md §Ingestion Service §Sync sweep steps 3-4
 spec: BACKEND_SCHEMA.md §ingestion_source_dataset — derivation→authority pairing
 spec: TESTING.md §Api-Wired Integration Tests
+spec: TESTING.md §Assertion Discipline — "Skip only on an absent precondition … A test
+      never skips on an outcome it exists to judge: a failed run, an empty result, or a
+      wait that exhausts its budget is a failure, not a skip."
 """
 
 import asyncio
 import json
 import os
+import subprocess
 import time
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
+from typing import Literal
 
 import httpx
 import pytest
@@ -112,6 +127,139 @@ _SECRET_REF = f"${{{_SECRET_NAME}}}"  # "${UC1_POSTGRES_PASSWORD}"
 _SOURCE_NAME = "dummy datahub-managed"
 
 
+def _gql_headers(datahub_token: str) -> dict[str, str]:
+    """Headers for a DataHub GMS GraphQL call.
+
+    The PAT is always sent: GMS's authentication filter rejects an unauthenticated call with
+    HTTP 401, and the module-scoped fixture establishes a non-empty token as a precondition
+    before any caller reaches here, so an omitted Authorization header could only produce a
+    masked 401.
+    """
+    return {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {datahub_token}",
+    }
+
+
+def _datahub_gql(
+    gms_url: str,
+    headers: dict[str, str],
+    query: str,
+    variables: dict,
+    *,
+    timeout: float = 15.0,
+) -> dict:
+    """POST a GraphQL operation to DataHub GMS and return the parsed response envelope.
+
+    Fails — never skips — when the call does not reach the GraphQL layer at all.
+
+    The **HTTP status** is the load-bearing discriminator. GMS's
+    AuthenticationEnforcementFilter rejects a missing or stale PAT with
+    ``sendError(SC_UNAUTHORIZED, …)``, which this GMS renders as an ``application/json``
+    error body — ``{"timestamp":…,"status":401,"error":"Unauthorized","path":"/api/graphql"}``
+    — carrying neither ``data`` nor ``errors``. A status-blind parse therefore succeeds and
+    hands back a superficially valid dict whose missing fields resurface far from their cause
+    (as "the mutation returned no URN"), so the 401/403 status is what identifies a rejected
+    PAT here and what names the credential remedy. The content-type check is belt-and-braces
+    for builds that render a non-JSON servlet error page instead; keep both.
+
+    A GraphQL ``errors`` array means the opposite: it arrives on an HTTP-200 JSON envelope,
+    so GMS accepted the credential and refused the operation. This helper returns that
+    envelope unjudged; each caller judges its own operation's errors.
+
+    spec: TESTING.md §Assertion Discipline — "A test never skips on an outcome it exists to
+      judge"; a skip is reserved for an absent precondition whose reason "names the
+      precondition and how to supply it".
+    """
+    resp = httpx.post(
+        f"{gms_url}/api/graphql",
+        headers=headers,
+        json={"query": query, "variables": variables},
+        timeout=timeout,
+    )
+    content_type = resp.headers.get("content-type", "")
+    if resp.status_code != 200 or "json" not in content_type.lower():
+        credential_hint = ""
+        if resp.status_code in (401, 403):
+            credential_hint = (
+                "This is GMS's authentication filter rejecting the PAT, so "
+                "DATASPOKE_TEST_DATAHUB_TOKEN is missing or stale — re-derive it from the "
+                "cluster secret and re-source helm-charts/.env.dev (a fragmented "
+                "--from-component install skips that env-sync). "
+            )
+        raise AssertionError(
+            f"DataHub GraphQL call failed before reaching the GraphQL layer: "
+            f"HTTP {resp.status_code}, content-type {(content_type or 'none')!r}. "
+            f"{credential_hint}Body: {resp.text[:300]}"
+        )
+    return resp.json()
+
+
+def _probe_datahub_executor() -> Literal["ready", "unavailable", "unknown"]:
+    """Pre-trigger precondition probe: is the DataHub ingestion executor schedulable?
+
+    DataHub does not run ingestion in GMS — the ``acryl-datahub-actions`` deployment picks
+    execution requests off Kafka and runs them. With no ready replica a triggered request
+    never leaves PENDING: the precondition is absent and the step has nothing to judge.
+    Probed BEFORE the trigger so the post-trigger wait is free to treat an exhausted budget
+    as the failure it is.
+
+    Returns "unavailable" ONLY on positive evidence of zero ready replicas. Anything that
+    makes the probe itself untrustworthy — kubectl missing, namespace unset, selector
+    matching nothing — returns "unknown", and an "unknown" never skips: an unreliable probe
+    must not become a new mask for a real product failure.
+
+    Selected by the chart-canonical label ``app.kubernetes.io/name=acryl-datahub-actions``
+    rather than a release-derived deployment name, so a differently-named release matches.
+    The NAME prefix in the jsonpath is load-bearing: Kubernetes omits ``readyReplicas``
+    entirely when it is zero, so a value-only template renders a 0-ready deployment as a
+    blank line — indistinguishable from "the selector matched nothing".
+
+    spec: TESTING.md §Assertion Discipline — "Skip only on an absent precondition … an
+      unconfigured dependency".
+    spec: TESTING.md §End-to-End (E2E) Testing → Execution discipline — "Cluster-side setup
+      reuses the existing tooling. Setup with no REST route … shells out to `kubectl` or to
+      `tests/integration/util`." (stated there for E2E; this probe is the same kind of
+      cluster-side setup with no REST route).
+    """
+    namespace = os.environ.get("DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE", "")
+    if not namespace:
+        return "unknown"
+    try:
+        completed = subprocess.run(
+            [
+                "kubectl",
+                "get",
+                "deployment",
+                "-n",
+                namespace,
+                "-l",
+                "app.kubernetes.io/name=acryl-datahub-actions",
+                "-o",
+                r'jsonpath={range .items[*]}{.metadata.name}={.status.readyReplicas}{"\n"}{end}',
+            ],
+            capture_output=True,
+            text=True,
+            timeout=20.0,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    if completed.returncode != 0:
+        return "unknown"
+    lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+    # No deployment matched the label — the executor may be deployed under a shape this
+    # probe does not recognise, so this is "unknown", not evidence of absence.
+    if not lines:
+        return "unknown"
+    # `<name>=<readyReplicas>`; the value is empty when Kubernetes omitted the field (zero).
+    for line in lines:
+        _, _, ready = line.partition("=")
+        if ready.isdigit() and int(ready) > 0:
+            return "ready"
+    return "unavailable"
+
+
 @dataclass
 class _ManagedSource:
     """Typed container for the single DATAHUB_MANAGED source provisioned by the fixture.
@@ -159,12 +307,28 @@ async def _managed_source_setup(
     datahub_gms_url = os.environ.get("DATASPOKE_TEST_DATAHUB_GMS_URL", "")
     datahub_token = os.environ.get("DATASPOKE_TEST_DATAHUB_TOKEN", "")
 
+    # Absent preconditions this run cannot establish: the GMS endpoint and the PAT that
+    # authenticates every GraphQL call below. Both name how to supply them — an empty PAT
+    # would otherwise produce unauthenticated calls that GMS rejects with HTTP 401.
+    # spec: TESTING.md §Assertion Discipline — "Skip only on an absent precondition …
+    #   an unset credential or env var … and the skip reason names the precondition and
+    #   how to supply it."
     if not datahub_gms_url:
-        pytest.skip("DATASPOKE_TEST_DATAHUB_GMS_URL not set; skipping DATAHUB_MANAGED UC1 test")
+        pytest.skip(
+            "DATASPOKE_TEST_DATAHUB_GMS_URL is not set, so this UC1 Case 1 module has no "
+            "DataHub GMS to provision the managed source in. "
+            "Source helm-charts/.env.dev before running this test."
+        )
+    if not datahub_token:
+        pytest.skip(
+            "DATASPOKE_TEST_DATAHUB_TOKEN is not set, so every DataHub GraphQL call in "
+            "this module would be unauthenticated and rejected by GMS. "
+            "Source helm-charts/.env.dev before running this test (a fragmented "
+            "--from-component install skips the env-sync that derives this PAT from the "
+            "cluster secret; re-run the install to refresh it)."
+        )
 
-    gql_headers: dict[str, str] = {"Content-Type": "application/json"}
-    if datahub_token:
-        gql_headers["Authorization"] = f"Bearer {datahub_token}"
+    gql_headers = _gql_headers(datahub_token)
 
     # Clean slate before test — spec: TESTING.md §Integration Testing §Per-Module reset
     await dataspoke_db.reset_ingestion_sources()
@@ -190,58 +354,57 @@ async def _managed_source_setup(
     # Idempotency: drop any leftover DataHub Secret from a prior interrupted run.
     # DataHub Secrets are name-keyed (urn:li:dataHubSecret:<name>) and survive a DataSpoke
     # reset-seed, so without this createSecret below fails with "This Secret already exists!".
-    # Best-effort — ignore errors when the secret is absent (mirrors the teardown deleteSecret
-    # and the e2e uc1-01 step-1 pre-delete).
-    httpx.post(
-        f"{datahub_gms_url}/api/graphql",
-        headers=gql_headers,
-        json={
-            "query": "mutation deleteSecret($urn: String!) { deleteSecret(urn: $urn) }",
-            "variables": {"urn": f"urn:li:dataHubSecret:{_SECRET_NAME}"},
-        },
-        timeout=10.0,
-    )
+    # Best-effort at the GraphQL layer only: the returned envelope is not judged, so GraphQL
+    # errors from an absent secret are ignored (mirrors the teardown deleteSecret and the e2e
+    # uc1-01 beforeAll pre-delete). Anything that never reached the GraphQL layer raises out of
+    # _datahub_gql, so a stale PAT is reported here rather than masked — except a transport
+    # blip against the ingress, tolerated the same way as the leftover-source pre-delete
+    # below because a genuinely down GMS fails loudly at the provisioning that follows.
+    try:
+        _datahub_gql(
+            datahub_gms_url,
+            gql_headers,
+            "mutation deleteSecret($urn: String!) { deleteSecret(urn: $urn) }",
+            {"urn": f"urn:li:dataHubSecret:{_SECRET_NAME}"},
+            timeout=10.0,
+        )
+    except httpx.TransportError:
+        pass
 
     # Idempotency: drop any leftover DataHub IngestionSource with the same fixed name
     # from a prior interrupted run. The source name is stable (_SOURCE_NAME), so a
     # leftover would otherwise accumulate as a duplicate. Best-effort — list the
-    # sources, delete any whose name matches, and ignore errors. Mirrors the secret
-    # pre-delete above and the e2e uc1-01 step-1 pre-delete.
+    # sources, delete any whose name matches. Mirrors the secret pre-delete above and the
+    # e2e uc1-01 beforeAll pre-delete. A transport blip here is tolerated (the provisioning
+    # below fails loudly on its own if GMS is really down), but a credential rejection
+    # propagates out of _datahub_gql so it is reported at its cause.
     try:
-        leftovers_resp = httpx.post(
-            f"{datahub_gms_url}/api/graphql",
-            headers=gql_headers,
-            json={
-                "query": (
-                    "query listIngestionSources($input: ListIngestionSourcesInput!) {"
-                    " listIngestionSources(input: $input) {"
-                    " ingestionSources { urn name } } }"
-                ),
-                "variables": {"input": {"start": 0, "count": 100}},
-            },
-            timeout=15.0,
+        leftovers_data = _datahub_gql(
+            datahub_gms_url,
+            gql_headers,
+            (
+                "query listIngestionSources($input: ListIngestionSourcesInput!) {"
+                " listIngestionSources(input: $input) {"
+                " ingestionSources { urn name } } }"
+            ),
+            {"input": {"start": 0, "count": 100}},
         )
         leftover_sources = (
-            leftovers_resp.json()
-            .get("data", {})
-            .get("listIngestionSources", {})
-            .get("ingestionSources", [])
-        )
+            (leftovers_data.get("data") or {}).get("listIngestionSources") or {}
+        ).get("ingestionSources", [])
         for src in leftover_sources:
             if src.get("name") == _SOURCE_NAME and src.get("urn"):
-                httpx.post(
-                    f"{datahub_gms_url}/api/graphql",
-                    headers=gql_headers,
-                    json={
-                        "query": (
-                            "mutation deleteIngestionSource($urn: String!) {"
-                            " deleteIngestionSource(urn: $urn) }"
-                        ),
-                        "variables": {"urn": src["urn"]},
-                    },
+                _datahub_gql(
+                    datahub_gms_url,
+                    gql_headers,
+                    (
+                        "mutation deleteIngestionSource($urn: String!) {"
+                        " deleteIngestionSource(urn: $urn) }"
+                    ),
+                    {"urn": src["urn"]},
                     timeout=10.0,
                 )
-    except Exception:
+    except httpx.TransportError:
         pass
 
     # ── Step 1a: Create DataHub Secret ────────────────────────────────────────
@@ -254,28 +417,34 @@ async def _managed_source_setup(
         createSecret(input: $input)
     }
     """
-    secret_resp = httpx.post(
-        f"{datahub_gms_url}/api/graphql",
-        headers=gql_headers,
-        json={
-            "query": create_secret_mutation,
-            "variables": {
-                "input": {
-                    "name": _SECRET_NAME,
-                    "value": _PLAINTEXT_PW_IN_FIXTURE,
-                    "description": "UC1 test secret: postgres password for DATAHUB_MANAGED fixture",
-                }
-            },
+    secret_data = _datahub_gql(
+        datahub_gms_url,
+        gql_headers,
+        create_secret_mutation,
+        {
+            "input": {
+                "name": _SECRET_NAME,
+                "value": _PLAINTEXT_PW_IN_FIXTURE,
+                "description": "UC1 test secret: postgres password for DATAHUB_MANAGED fixture",
+            }
         },
-        timeout=15.0,
     )
-    secret_resp.raise_for_status()
-    secret_data = secret_resp.json()
-    if "errors" in secret_data:
-        pytest.skip(
-            f"createSecret GraphQL error: {secret_data['errors']}. "
-            "DataHub GMS may not support Managed Secrets in this dev-env."
-        )
+    # A GraphQL error here is a BROKEN dependency, not an absent one: reaching the GraphQL
+    # layer at all means GMS authenticated the caller (_datahub_gql raises before this on an
+    # auth rejection), and Managed Ingestion — Secrets included — is provisioned by the dev
+    # install. Skipping would report a DataHub that cannot hold a Managed Secret as green.
+    # spec: TESTING.md §Assertion Discipline — "A test never skips on an outcome it exists
+    #   to judge"; skips are reserved for an absent precondition.
+    assert "errors" not in secret_data, (
+        f"createSecret returned GraphQL errors: {secret_data['errors']}. "
+        "GMS accepted the credential and refused the operation, so two causes produce this: "
+        "(1) the authenticated actor is under-privileged — the PAT's actor lacks "
+        "MANAGE_SECRETS, so grant it (or use an admin PAT) and refresh "
+        "DATASPOKE_TEST_DATAHUB_TOKEN in helm-charts/.env.dev; or (2) Managed Secrets are "
+        "broken or absent in this GMS — they are provisioned by the dev install "
+        "(./helm-charts/bin/install.sh --profile dev --components datahub). Check the "
+        "privilege before reinstalling DataHub. Neither is an absent precondition."
+    )
     secret_urn = secret_data.get("data", {}).get("createSecret")
     assert secret_urn, f"createSecret returned no URN: {secret_data}"
 
@@ -313,34 +482,39 @@ async def _managed_source_setup(
         createIngestionSource(input: $input)
     }
     """
-    gql_resp = httpx.post(
-        f"{datahub_gms_url}/api/graphql",
-        headers=gql_headers,
-        json={
-            "query": create_mutation,
-            "variables": {
-                "input": {
-                    "name": name,
-                    "type": "postgres",
-                    "config": {
-                        "recipe": json.dumps(recipe),
-                        "executorId": "default",
-                        "debugMode": False,
-                    },
-                    # spec: USE_CASE_en.md §UC1 Case 1 — "scheduled daily"
-                    "schedule": {"interval": "0 0 * * *", "timezone": "UTC"},
-                }
-            },
+    gql_data = _datahub_gql(
+        datahub_gms_url,
+        gql_headers,
+        create_mutation,
+        {
+            "input": {
+                "name": name,
+                "type": "postgres",
+                "config": {
+                    "recipe": json.dumps(recipe),
+                    "executorId": "default",
+                    "debugMode": False,
+                },
+                # spec: USE_CASE_en.md §UC1 Case 1 — "scheduled daily"
+                "schedule": {"interval": "0 0 * * *", "timezone": "UTC"},
+            }
         },
-        timeout=15.0,
     )
-    gql_resp.raise_for_status()
-    gql_data = gql_resp.json()
-    if "errors" in gql_data:
-        pytest.skip(
-            f"createIngestionSource (secret-ref) GraphQL error: {gql_data['errors']}. "
-            "DataHub GMS may not support Managed Ingestion in this dev-env."
-        )
+    # Same stance as createSecret above: the call authenticated (_datahub_gql raises
+    # otherwise) and Managed Ingestion is part of the dev DataHub stack this module's
+    # GMS-URL precondition names, so a GraphQL error is a broken dependency and fails.
+    # spec: TESTING.md §Assertion Discipline — "A test never skips on an outcome it exists
+    #   to judge".
+    assert "errors" not in gql_data, (
+        f"createIngestionSource (secret-ref) returned GraphQL errors: {gql_data['errors']}. "
+        "GMS accepted the credential and refused the operation, so two causes produce this: "
+        "(1) the authenticated actor is under-privileged — the PAT's actor lacks the Manage "
+        "Ingestion privilege, so grant it (or use an admin PAT) and refresh "
+        "DATASPOKE_TEST_DATAHUB_TOKEN in helm-charts/.env.dev; or (2) Managed Ingestion is "
+        "broken or absent in this GMS — it is provisioned by the dev install "
+        "(./helm-charts/bin/install.sh --profile dev --components datahub). Check the "
+        "privilege before reinstalling DataHub. Neither is an absent precondition."
+    )
     urn = gql_data.get("data", {}).get("createIngestionSource")
     assert urn, f"createIngestionSource returned no URN: {gql_data}"
 
@@ -418,27 +592,24 @@ async def _managed_source_setup(
             deleteSecret(urn: $urn)
         }
         """
+        # Best-effort: a teardown failure must not mask the test's own outcome.
         try:
-            httpx.post(
-                f"{datahub_gms_url}/api/graphql",
-                headers=gql_headers,
-                json={
-                    "query": delete_mutation,
-                    "variables": {"urn": urn},
-                },
+            _datahub_gql(
+                datahub_gms_url,
+                gql_headers,
+                delete_mutation,
+                {"urn": urn},
                 timeout=10.0,
             )
         except Exception:
             pass
 
         try:
-            httpx.post(
-                f"{datahub_gms_url}/api/graphql",
-                headers=gql_headers,
-                json={
-                    "query": delete_secret_mutation,
-                    "variables": {"urn": secret_urn},
-                },
+            _datahub_gql(
+                datahub_gms_url,
+                gql_headers,
+                delete_secret_mutation,
+                {"urn": secret_urn},
                 timeout=10.0,
             )
         except Exception:
@@ -603,15 +774,21 @@ async def test_uc1_datahub_managed_sync_and_readonly(
     # Each sync iteration re-runs the matcher so new indexed URNs surface on each call.
     poll_deadline = time.time() + 180.0  # ≥180s per ES lag budget
     poll_interval = 5.0
+    # A single blip against the ingress must not fail the run (a laptop→LB drop is transient),
+    # so the sweep's own outcome is recorded rather than asserted per iteration — and carried
+    # into the post-loop failure below, so a sweep that 500s on every pass is reported as
+    # itself instead of being misattributed to ES lag.
+    last_sync_outcome: str = "not attempted"
     while time.time() < poll_deadline:
         # Re-trigger the sync sweep to pick up any newly-indexed DataHub URNs
         try:
-            await api_client.post(
+            sync_poll_resp = await api_client.post(
                 "/internal/activities/ingestion/sync",
                 headers=internal_headers,
             )
-        except Exception:
-            pass  # transient; outer deadline handles retry
+            last_sync_outcome = f"HTTP {sync_poll_resp.status_code}: {sync_poll_resp.text[:200]}"
+        except httpx.HTTPError as exc:
+            last_sync_outcome = f"transport error: {exc!r}"
 
         datasets_resp = await api_client.get(
             f"/api/v1/spoke/ingestion/sources/{managed.id}/datasets",
@@ -645,6 +822,9 @@ async def test_uc1_datahub_managed_sync_and_readonly(
         f"The recipe covers example_db excluding catalog; DataHub should have seeded "
         f"orders/customers/reviews/shipping URNs. "
         f"Got empty datasets list after {180}s. "
+        f"Last POST /internal/activities/ingestion/sync outcome: {last_sync_outcome} — if "
+        "that is not a 200, the sweep itself failed and the empty mapping is its symptom, "
+        "not ES lag. "
         "spec: USE_CASE_en.md §UC1 Case 1 — /sources/{id}/datasets lists the mapping. "
         "spec: project_es_indexing_lag_after_reset_seed — ES lag budget is 2-3 min."
     )
@@ -720,8 +900,10 @@ async def test_uc1_datahub_managed_sync_and_readonly(
     #      contains a hash suffix).  This proves a system-typed source exists in the
     #      dev DataHub, making the subsequent absence assertions non-vacuous: if the
     #      sweep drops the type deny-list the row would appear in step 2 / step 3.
-    #      Skip the guard (not fail) if GMS is unreachable, returns a GraphQL error,
-    #      or contains no system-typed source at all.
+    #      Only an empty system-typed set skips — there is then genuinely nothing to
+    #      judge. A GMS that is unreachable or refuses the list query fails: the module's
+    #      preconditions (GMS URL + PAT) were established by the fixture, so those are
+    #      broken-dependency outcomes, not absent ones.
     #   2. Bare-URN absence check — assert neither `datahub-gc` nor
     #      `datahub-documents` appears in DataSpoke's DATAHUB_MANAGED
     #      datahub_source_urn set.
@@ -743,11 +925,11 @@ async def test_uc1_datahub_managed_sync_and_readonly(
     _SYSTEM_SOURCE_TYPES = {"datahub-gc", "datahub-documents"}
 
     # Reuse the GMS-access pattern from _managed_source_setup: same env vars + gql_headers.
-    datahub_gms_url = os.environ.get("DATASPOKE_TEST_DATAHUB_GMS_URL", "")
-    datahub_token = os.environ.get("DATASPOKE_TEST_DATAHUB_TOKEN", "")
-    gql_headers_guard: dict[str, str] = {"Content-Type": "application/json"}
-    if datahub_token:
-        gql_headers_guard["Authorization"] = f"Bearer {datahub_token}"
+    # Both are non-empty here — the module-scoped fixture skips the module when either is
+    # unset, so a test body only runs once they are established.
+    datahub_gms_url = os.environ["DATASPOKE_TEST_DATAHUB_GMS_URL"]
+    datahub_token = os.environ["DATASPOKE_TEST_DATAHUB_TOKEN"]
+    gql_headers_guard = _gql_headers(datahub_token)
 
     # Select both urn and type so the precondition can key on source type (catching
     # CLI wrappers like `[CLI] datahub-documents` with hash-suffixed URNs).
@@ -761,30 +943,30 @@ async def test_uc1_datahub_managed_sync_and_readonly(
         }
     }
     """
-    try:
-        gms_resp = httpx.post(
-            f"{datahub_gms_url}/api/graphql",
-            headers=gql_headers_guard,
-            json={
-                "query": list_sources_query,
-                "variables": {"input": {"start": 0, "count": 100}},
-            },
-            timeout=15.0,
-        )
-        gms_resp.raise_for_status()
-        gms_data = gms_resp.json()
-    except Exception as exc:
-        pytest.skip(
-            f"Could not reach DataHub GMS to confirm system-source precondition: {exc}. "
-            "Skipping system-source guard to avoid a vacuous absence assertion."
-        )
+    # _datahub_gql fails (never skips) when the call does not reach the GraphQL layer: a
+    # servlet 401/403 names the PAT remedy instead of being misreported as unreachable
+    # infrastructure, and any other transport/HTTP outcome fails against a GMS this module
+    # already provisioned a source in.
+    gms_data = _datahub_gql(
+        datahub_gms_url,
+        gql_headers_guard,
+        list_sources_query,
+        {"input": {"start": 0, "count": 100}},
+    )
 
-    if "errors" in gms_data:
-        pytest.skip(
-            f"listIngestionSources GraphQL error: {gms_data['errors']}. "
-            "DataHub GMS may not support Managed Ingestion — "
-            "skipping system-source guard to avoid a vacuous absence assertion."
-        )
+    # Errors on an HTTP-200 envelope mean GMS authenticated the caller and refused the
+    # query — Managed Ingestion broken or the actor under-privileged, both outcomes rather
+    # than absent preconditions.
+    # spec: TESTING.md §Assertion Discipline — "A test never skips on an outcome it exists
+    #   to judge".
+    assert "errors" not in gms_data, (
+        f"listIngestionSources returned GraphQL errors: {gms_data['errors']}. "
+        "GMS accepted the credential and refused the query, so either the PAT's actor "
+        "lacks the Manage Ingestion privilege (grant it, or use an admin PAT, and refresh "
+        "DATASPOKE_TEST_DATAHUB_TOKEN in helm-charts/.env.dev) or Managed Ingestion is "
+        "broken in this GMS (./helm-charts/bin/install.sh --profile dev --components "
+        "datahub). Neither is an absent precondition."
+    )
 
     gms_sources = (
         gms_data.get("data", {}).get("listIngestionSources", {}).get("ingestionSources", [])
@@ -799,14 +981,21 @@ async def test_uc1_datahub_managed_sync_and_readonly(
     # (datahub-gc, datahub-documents) and any [CLI] wrapper with a hash-suffixed URN.
     # Fall back to the bare-URN check so the guard still runs on DataHub builds
     # where type is absent from the response (older schema).
+    # An absent precondition: with no system-typed source in DataHub there is nothing whose
+    # exclusion could be judged, and the absence assertions below would pass vacuously.
+    # spec: TESTING.md §Assertion Discipline — "Absence assertions require injection"; and
+    #   "Skip only on an absent precondition … the skip reason names the precondition and
+    #   how to supply it."
     has_system_typed_source = bool(gms_system_typed_urns) or (_GC_URN in gms_urns)
     if not has_system_typed_source:
         pytest.skip(
             f"No system-typed source (type ∈ {_SYSTEM_SOURCE_TYPES}) found in DataHub's "
             f"unfiltered listIngestionSources (returned {len(gms_urns)} source(s)) "
-            f"and bare {_GC_URN!r} is also absent. "
-            "Cannot confirm the system-source precondition — "
-            "skipping guard to avoid a vacuous absence assertion."
+            f"and bare {_GC_URN!r} is also absent, so the deny-list guard has nothing to "
+            "exclude and its absence assertions would be vacuous. Supply the precondition "
+            "by installing a DataHub whose bootstrap provisions the system ingestion "
+            "sources (./helm-charts/bin/install.sh --profile dev --components datahub), "
+            "which creates datahub-gc and datahub-documents."
         )
 
     # Precondition confirmed: at least one system-typed source exists in DataHub's
@@ -900,9 +1089,15 @@ async def test_uc1_datahub_managed_execute_and_reflect(
                    and authority='high'
       - attr/ingestion latest_run on a covered dataset reflects the run (status='success')
 
-    Tolerant: if createIngestionExecutionRequest errors (executor unavailable) or the
-    execution does not reach SUCCESS/SUCCEEDED within the budget, the test is skipped —
-    only for true executor unavailability.
+    Skip/fail split: the ONLY skip is the pre-trigger precondition probe — the
+    acryl-datahub-actions executor reporting no ready replica, i.e. nothing in the cluster
+    can run the request. Every post-trigger outcome FAILS: GraphQL errors on the trigger,
+    a trigger that books no execution request, an exhausted 180s wait, and a terminal
+    non-success status (the executor ran the ingestion to completion and it broke — the
+    product failure this test exists to detect).
+    spec: TESTING.md §Assertion Discipline — "Skip only on an absent precondition … A test
+      never skips on an outcome it exists to judge: a failed run, an empty result, or a
+      wait that exhausts its budget is a failure, not a skip."
 
     spec: USE_CASE_en.md §UC1 Case 1 — execution beat: sync mirrors the run as
           INGESTION.COMPLETE and upgrades datasets from matched/medium to pipeline_name/high
@@ -922,15 +1117,33 @@ async def test_uc1_datahub_managed_execute_and_reflect(
     """
     managed = _managed_source_setup
 
-    datahub_gms_url = os.environ.get("DATASPOKE_TEST_DATAHUB_GMS_URL", "")
-    datahub_token = os.environ.get("DATASPOKE_TEST_DATAHUB_TOKEN", "")
+    # The GMS URL and the PAT are established by _managed_source_setup, which skips this
+    # test's whole module when either is unset — a module-scoped fixture that skips during
+    # setup skips every requesting test without running its body. Reading them here is
+    # therefore unconditional: both are non-empty by the time this line executes.
+    datahub_gms_url = os.environ["DATASPOKE_TEST_DATAHUB_GMS_URL"]
+    datahub_token = os.environ["DATASPOKE_TEST_DATAHUB_TOKEN"]
 
-    if not datahub_gms_url:
-        pytest.skip("DATASPOKE_TEST_DATAHUB_GMS_URL not set; skipping execution step")
+    gql_headers = _gql_headers(datahub_token)
 
-    gql_headers: dict[str, str] = {"Content-Type": "application/json"}
-    if datahub_token:
-        gql_headers["Authorization"] = f"Bearer {datahub_token}"
+    # ── Precondition (pre-trigger): the DataHub executor can run the request at all ──
+    # The ONLY skip past this point. Everything after the trigger is an outcome this test
+    # exists to judge and therefore fails rather than skips. An "unknown" probe result does
+    # NOT skip: an unreliable probe must not become a new mask for a real product failure.
+    # spec: TESTING.md §Assertion Discipline — "Skip only on an absent precondition …
+    #   an unconfigured dependency — and the skip reason names the precondition and how to
+    #   supply it."
+    executor_state = _probe_datahub_executor()
+    if executor_state == "unavailable":
+        datahub_namespace = os.environ.get("DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE", "")
+        pytest.skip(
+            "DataHub ingestion executor is not schedulable: the acryl-datahub-actions "
+            f"deployment in namespace {datahub_namespace} has 0 ready replicas, so a "
+            "triggered execution request would never leave PENDING. Supply the "
+            f"precondition with: kubectl -n {datahub_namespace} scale deployment "
+            "-l app.kubernetes.io/name=acryl-datahub-actions --replicas=1 (or reinstall: "
+            "./helm-charts/bin/install.sh --profile dev --components datahub)."
+        )
 
     # ── Step 8a: Trigger the execution in DataHub ─────────────────────────────
     # spec: ref/github/datahub/datahub-graphql-core/src/main/resources/ingestion.graphql
@@ -944,37 +1157,41 @@ async def test_uc1_datahub_managed_execute_and_reflect(
         createIngestionExecutionRequest(input: $input)
     }
     """
-    try:
-        exec_resp = httpx.post(
-            f"{datahub_gms_url}/api/graphql",
-            headers=gql_headers,
-            json={
-                "query": exec_mutation,
-                "variables": {"input": {"ingestionSourceUrn": managed.urn}},
-            },
-            timeout=20.0,
-        )
-        exec_resp.raise_for_status()
-        exec_data = exec_resp.json()
-    except Exception as exc:
-        pytest.skip(
-            f"createIngestionExecutionRequest HTTP error: {exc}. "
-            "DataHub executor may not be available in this dev-env."
-        )
+    # _datahub_gql fails on a call that never reaches the GraphQL layer: a servlet 401/403
+    # names the PAT remedy rather than being misattributed to executor availability.
+    exec_data = _datahub_gql(
+        datahub_gms_url,
+        gql_headers,
+        exec_mutation,
+        {"input": {"ingestionSourceUrn": managed.urn}},
+        timeout=20.0,
+    )
 
-    if "errors" in exec_data:
-        pytest.skip(
-            f"createIngestionExecutionRequest GraphQL error: {exec_data['errors']}. "
-            "DataHub executor may not be available or ready in this dev-env."
-        )
-    execution_request_urn: str = exec_data.get("data", {}).get(
-        "createIngestionExecutionRequest"
-    ) or ""
-    if not execution_request_urn:
-        pytest.skip(
-            f"createIngestionExecutionRequest returned no URN: {exec_data}. "
-            "Skipping execution-and-reflect step."
-        )
+    # Post-trigger: everything from here on is an outcome this test exists to judge. The
+    # executor's schedulability — the one absent-precondition case — was settled above, so
+    # a GraphQL error on the trigger is DataHub refusing to book a run it is provisioned
+    # to book, and fails.
+    # spec: TESTING.md §Assertion Discipline — "A test never skips on an outcome it exists
+    #   to judge: a failed run, an empty result, or a wait that exhausts its budget is a
+    #   failure, not a skip."
+    assert "errors" not in exec_data, (
+        f"createIngestionExecutionRequest returned GraphQL errors: {exec_data['errors']}. "
+        f"GMS accepted the credential and refused the operation; the executor probe "
+        f"reported {executor_state!r} before this trigger, so DataHub refused a run it is "
+        "provisioned to accept. Check the PAT actor's Manage Ingestion privilege and the "
+        "GMS logs before dismissing this as env noise."
+    )
+    execution_request_urn: str = (
+        exec_data.get("data", {}).get("createIngestionExecutionRequest") or ""
+    )
+    # An errorless mutation that yields no URN is the same class of outcome: the trigger
+    # did not take, and there is nothing left for the reflect assertions to observe.
+    assert execution_request_urn, (
+        f"createIngestionExecutionRequest returned no execution-request URN: {exec_data}. "
+        "The mutation reported no error, so DataHub accepted the request and still booked "
+        "no run — the execution beat UC1 Case 1 asserts never started. "
+        "spec: USE_CASE_en.md §UC1 Case 1 — execution beat."
+    )
 
     # ── Step 8b: Poll the execution request DIRECTLY to terminal SUCCESS (≤180s) ─
     # By design DataHub books a managed source's run on a CLI wrapper source, so the
@@ -987,10 +1204,12 @@ async def test_uc1_datahub_managed_execute_and_reflect(
     #   result.status: String! — per the spec status→event mapping (BACKEND.md §Sync step 4):
     #     SUCCESS / SUCCEEDED → INGESTION.COMPLETE (→ test succeeds)
     #     FAILURE / TIMEOUT / ABORTED / ROLLBACK_FAILED → INGESTION.FAIL
-    #       (executor ran but source errored → skip, not fail)
-    #     RUNNING / ROLLING_BACK / UP_FOR_RETRY → in-progress, not mirrored → keep polling
-    #     CANCELLED / DUPLICATE / ROLLED_BACK → not an ingestion outcome, not mirrored
-    #     None / absent result → still running → keep polling
+    #       (the executor ran the ingestion to completion and it broke → test fails)
+    #     RUNNING / ROLLING_BACK / UP_FOR_RETRY / PENDING → in-progress → keep polling
+    #     CANCELLED / DUPLICATE / ROLLED_BACK → not an ingestion outcome, not mirrored;
+    #       terminal all the same, so the loop ends on them and the terminal-outcome
+    #       assertion names them at their cause (→ test fails)
+    #     None / absent result → still pending → keep polling
     poll_query = """
     query executionRequest($urn: String!) {
         executionRequest(urn: $urn) {
@@ -1003,56 +1222,110 @@ async def test_uc1_datahub_managed_execute_and_reflect(
     """
     # Success statuses map to INGESTION.COMPLETE per BACKEND.md §Sync step 4 status table.
     _SUCCESS_STATUSES = frozenset({"SUCCESS", "SUCCEEDED"})
-    # In-progress / non-outcome statuses are not terminal — keep polling. Only
-    # SUCCESS/SUCCEEDED or a hard-failure status (FAILURE/TIMEOUT/ABORTED/ROLLBACK_FAILED)
-    # ends the loop.
-    _NON_TERMINAL_STATUSES = frozenset(
-        {"PENDING", "RUNNING", "ROLLING_BACK", "UP_FOR_RETRY", "CANCELLED", "DUPLICATE",
-         "ROLLED_BACK"}
+    # Only the spec's in-progress tier keeps the loop running: the request has not yet
+    # reached an outcome, so waiting is the right response.
+    # spec: feature/BACKEND.md §Sync sweep step 4 status table — "RUNNING, ROLLING_BACK,
+    #   UP_FOR_RETRY, no result | not mirrored (in-progress / pending)". PENDING is DataHub's
+    #   name for the queued state the table describes as "pending", so it belongs here.
+    _IN_PROGRESS_STATUSES = frozenset(
+        {"PENDING", "RUNNING", "ROLLING_BACK", "UP_FOR_RETRY"}
     )
+    # Every other status is terminal and ends the loop: SUCCESS/SUCCEEDED, the hard failures
+    # (FAILURE/TIMEOUT/ABORTED/ROLLBACK_FAILED), and the statuses the spec classes as "not an
+    # ingestion outcome". The last group is terminal too — the request will never produce an
+    # ingestion result — so breaking on it reports the outcome at its cause within seconds
+    # rather than burning the whole 180s budget and reporting an exhausted wait instead.
+    # spec: feature/BACKEND.md §Sync sweep step 4 status table — "CANCELLED, DUPLICATE,
+    #   ROLLED_BACK | not mirrored (not an ingestion outcome)".
+    _NOT_AN_INGESTION_OUTCOME = frozenset({"CANCELLED", "DUPLICATE", "ROLLED_BACK"})
 
     poll_deadline = time.time() + 180.0
     poll_interval = 8.0
     exec_status: str | None = None
+    last_poll_errors: list | None = None
+    # Only a repeated transport blip is retried. A credential rejection, any other HTTP
+    # outcome, and a non-JSON body all raise out of _datahub_gql immediately, so they
+    # surface at their cause instead of being retried silently for the whole 180s window.
+    consecutive_transport_failures = 0
+    _MAX_CONSECUTIVE_TRANSPORT_FAILURES = 3
 
     while time.time() < poll_deadline:
         try:
-            poll_resp = httpx.post(
-                f"{datahub_gms_url}/api/graphql",
-                headers=gql_headers,
-                json={"query": poll_query, "variables": {"urn": execution_request_urn}},
-                timeout=15.0,
+            poll_data = _datahub_gql(
+                datahub_gms_url,
+                gql_headers,
+                poll_query,
+                {"urn": execution_request_urn},
             )
-            poll_resp.raise_for_status()
-            poll_data = poll_resp.json()
-        except Exception:
+        except httpx.TransportError as exc:
+            consecutive_transport_failures += 1
+            if consecutive_transport_failures > _MAX_CONSECUTIVE_TRANSPORT_FAILURES:
+                raise AssertionError(
+                    f"Polling execution {execution_request_urn!r} hit "
+                    f"{consecutive_transport_failures} consecutive transport failures "
+                    f"against {datahub_gms_url}; the last was: {exc!r}. DataHub GMS is not "
+                    "reachable from this run, so the execution outcome cannot be observed."
+                ) from exc
             await asyncio.sleep(poll_interval)
             continue
+        consecutive_transport_failures = 0
 
+        # GraphQL errors on the poll query do not end the wait — a request that is not yet
+        # readable is indistinguishable here from one that never will be — but the last set
+        # is carried into the exhausted-budget failure below so the cause is visible there.
+        last_poll_errors = poll_data.get("errors")
         exec_request = (poll_data.get("data", {}) or {}).get("executionRequest") or {}
         result = exec_request.get("result") or {}
         status = result.get("status") or None
-        if status and status not in _NON_TERMINAL_STATUSES:
-            # Terminal: either success or failure
+        if status and status not in _IN_PROGRESS_STATUSES:
+            # Terminal: success, hard failure, or a not-an-ingestion-outcome status.
             exec_status = status
             break
         await asyncio.sleep(poll_interval)
 
-    if exec_status is None:
-        pytest.skip(
-            f"Execution {execution_request_urn!r} did not reach a terminal status "
-            f"within 180s (last poll: no terminal result seen). "
-            "DataHub executor may be slow or unavailable in this dev-env. "
-            "spec: TESTING.md — tolerant skip when executor unavailable."
-        )
+    # The wait exhausted its budget. The executor's schedulability was settled before the
+    # trigger, so this is the run failing to complete — an outcome this test judges.
+    # spec: TESTING.md §Assertion Discipline — "A test never skips on an outcome it exists
+    #   to judge: a failed run, an empty result, or a wait that exhausts its budget is a
+    #   failure, not a skip."
+    _datahub_namespace = os.environ.get("DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE", "<datahub-ns>")
+    assert exec_status is not None, (
+        f"Execution {execution_request_urn!r} did not reach a terminal status within 180s. "
+        f"The executor probe reported {executor_state!r} before the trigger, so the request "
+        f"is stuck in progress ({'/'.join(sorted(_IN_PROGRESS_STATUSES))}, or no result at "
+        "all) or unreadable. "
+        f"Last GraphQL errors seen while polling: {last_poll_errors}. "
+        f"Inspect the executor: kubectl -n {_datahub_namespace} logs "
+        "-l app.kubernetes.io/name=acryl-datahub-actions --tail=200, and the request's own "
+        "status in DataHub (Ingestion → the source → its runs)."
+    )
 
-    if exec_status not in _SUCCESS_STATUSES:
-        pytest.skip(
-            f"Execution {execution_request_urn!r} completed with non-success status "
-            f"{exec_status!r} (executor ran but source errored — likely a connectivity "
-            "issue in this dev-env, not a DataSpoke bug). "
-            "spec: TESTING.md — tolerant skip when executor completes with failure."
+    # A TERMINAL non-success status is the opposite case: the request will never yield the
+    # successful ingestion UC1 Case 1 asserts. That is the product failure this test exists
+    # to detect, so it fails — skipping here would report a permanently broken
+    # DataHub-managed run as green.
+    # spec: USE_CASE_en.md §UC1 Case 1 — "DataSpoke's next sync mirrors that execution into
+    #   …/event as an INGESTION.COMPLETE event"; INGESTION.COMPLETE is the success type.
+    # spec: feature/BACKEND.md §Sync sweep step 4 — SUCCESS/SUCCEEDED→INGESTION.COMPLETE,
+    #   FAILURE/TIMEOUT/ABORTED/ROLLBACK_FAILED→INGESTION.FAIL, and CANCELLED/DUPLICATE/
+    #   ROLLED_BACK are "not an ingestion outcome".
+    if exec_status in _NOT_AN_INGESTION_OUTCOME:
+        _outcome_note = (
+            "DataHub classes this status as 'not an ingestion outcome', so the run this "
+            "test triggered was superseded or discarded before producing one — check "
+            "whether a concurrent run of the same source is racing this test."
         )
+    else:
+        _outcome_note = (
+            "The DataHub executor ran the ingestion to completion and it failed — the run "
+            "outcome UC1 Case 1 asserts."
+        )
+    assert exec_status in _SUCCESS_STATUSES, (
+        f"Execution {execution_request_urn!r} reached TERMINAL status {exec_status!r}, not "
+        f"one of {sorted(_SUCCESS_STATUSES)}. {_outcome_note} Inspect the "
+        "execution request's logs in DataHub (Ingestion → the source → the run) "
+        "before dismissing this as env noise."
+    )
 
     # ── Step 8c: Re-run DataSpoke sync to mirror the completed execution ──────
     # spec: feature/BACKEND.md §Sync sweep step 4 — _mirror_execution_requests mirrors
@@ -1245,15 +1518,21 @@ async def test_uc1_datahub_managed_execute_and_reflect(
     datasets_body: dict = {}
     pipeline_name_rows: list = []
     deadline = time.time() + 180.0
+    # Same stance as the mapping poll in the sync-and-readonly test: record the sweep's
+    # outcome per pass instead of asserting it (one transient LB drop must not fail the run)
+    # and surface the last one in the post-loop failure, so a sweep that fails every pass is
+    # reported as itself rather than as missing pipelineName enrichment.
+    last_sync_outcome = "not attempted"
     while time.time() < deadline:
         # Re-trigger sync so any freshly-indexed pipelineName aspects are picked up.
         try:
-            await api_client.post(
+            sync_poll_resp = await api_client.post(
                 "/internal/activities/ingestion/sync",
                 headers=internal_headers,
             )
-        except Exception:
-            pass
+            last_sync_outcome = f"HTTP {sync_poll_resp.status_code}: {sync_poll_resp.text[:200]}"
+        except httpx.HTTPError as exc:
+            last_sync_outcome = f"transport error: {exc!r}"
 
         ds_resp = await api_client.get(
             f"/api/v1/spoke/ingestion/sources/{managed.id}/datasets",
@@ -1278,6 +1557,9 @@ async def test_uc1_datahub_managed_execute_and_reflect(
         f"in GET /sources/{managed.id}/datasets after a successful DataHub execution "
         f"and re-sync (within 180s). "
         f"Datasets returned: {datasets_body.get('datasets', [])}. "
+        f"Last POST /internal/activities/ingestion/sync outcome: {last_sync_outcome} — if "
+        "that is not a 200, the sweep itself failed and the missing upgrade is its symptom, "
+        "not absent pipelineName stamping. "
         "spec: USE_CASE_en.md §UC1 Case 1 — execution upgrades datasets from matched/medium "
         "to pipeline_name/high via DataHub systemMetadata.pipelineName stamping. "
         "spec: feature/BACKEND.md §Sync sweep step 3 — _link_pipeline_datasets upserts "

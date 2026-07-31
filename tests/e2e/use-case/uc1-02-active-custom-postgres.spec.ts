@@ -289,6 +289,10 @@ test("UC1 Case 2 step 1 — create ACTIVE_CUSTOM_MANAGED postgres source", async
 // spec: FRONTEND_INGESTION.md §Source Detail §Run — dry_run toggle + Run button
 // ─────────────────────────────────────────────────────────────────────────────
 test("UC1 Case 2 step 2 — dry_run emits nothing", async ({ page, adminApi }) => {
+  // Budget: the dry run's result panel is given 60s to appear — the whole project ceiling
+  // on its own — after a 15s header wait, plus the backend dry-run probe that follows.
+  test.setTimeout(180_000);
+
   // Navigate to source detail.
   await page.goto(`/ingestion/sources/${encodeURIComponent(sourceId!)}`);
   await expect(page.getByRole("heading", { name: SOURCE_NAME })).toBeVisible({ timeout: 15_000 });
@@ -351,6 +355,10 @@ test("UC1 Case 2 step 2 — dry_run emits nothing", async ({ page, adminApi }) =
 // spec: FRONTEND_INGESTION.md §Source Detail §Run — dry_run OFF, Run button
 // ─────────────────────────────────────────────────────────────────────────────
 test("UC1 Case 2 step 3 — real run emits ≥ 2 catalog datasets", async ({ page, adminApi }) => {
+  // Budget: the real run's result panel is given 120s to appear, plus a 15s header wait
+  // and a second real run fired as the backend probe.
+  test.setTimeout(300_000);
+
   await page.goto(`/ingestion/sources/${encodeURIComponent(sourceId!)}`);
   await expect(page.getByRole("heading", { name: SOURCE_NAME })).toBeVisible({ timeout: 15_000 });
 
@@ -407,6 +415,9 @@ test("UC1 Case 2 step 4 — datasets panel shows catalog rows with emitted deriv
   page,
   adminApi,
 }) => {
+  // Budget: a 180s ES-lag readiness poll chained with the 120s toPass render block.
+  test.setTimeout(360_000);
+
   // Readiness poll: datasets here are derived from DataHub ES, which lags the
   // real run by ~2-3 min. Poll the backend until the catalog dataset URN is
   // present before navigating + asserting the UI table.
@@ -527,6 +538,9 @@ test("UC1 Case 2 step 6 — per-dataset reverse-lookup shows owning source", asy
   page,
   adminApi,
 }) => {
+  // Budget: a 180s ES-lag readiness poll chained with the 120s toPass render block.
+  test.setTimeout(360_000);
+
   const encodedUrnPre = encodeURIComponent(CATALOG_TITLE_URN);
 
   // Readiness poll: the reverse-lookup attr/ingestion is keyed off the emitted

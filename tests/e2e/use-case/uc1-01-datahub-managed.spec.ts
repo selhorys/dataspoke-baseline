@@ -94,7 +94,12 @@ const GMS_TOKEN = process.env["DATASPOKE_TEST_DATAHUB_TOKEN"] ?? "";
 // the dev stack, so normally these tests run.
 // spec: test_uc1_01_datahub_managed.py fixture — skips when GMS URL absent.
 test.beforeEach(() => {
-  test.skip(!GMS_URL, "DATASPOKE_TEST_DATAHUB_GMS_URL not set; DATAHUB_MANAGED UC1 requires DataHub GMS.");
+  test.skip(
+    !GMS_URL,
+    "DATASPOKE_TEST_DATAHUB_GMS_URL is not set, and DATAHUB_MANAGED UC1 talks to DataHub " +
+      "GMS directly. Supply the precondition by exporting the dev-env file into the shell " +
+      "before the run — `set -a && source helm-charts/.env.dev && set +a` — then re-run.",
+  );
 });
 
 // Deterministic DataHub Secret URN (name-keyed) — used to clear leftovers so the
@@ -115,10 +120,10 @@ let sourceId: string | null = null;
  * a triggered request simply never leaves PENDING: the precondition is absent and the
  * step has nothing to judge. Probed here, BEFORE the trigger, so the post-trigger wait
  * is free to treat an exhausted budget as the failure it is.
- * spec: spec/TESTING.md §E2E §Execution discipline — "Skip only on an absent
- *   precondition… an unconfigured dependency… and the reason names the precondition and
- *   how to supply it"; "A step never skips on an outcome it exists to judge: … or a wait
- *   that exhausts its budget is a failure, not a skip."
+ * spec: spec/TESTING.md §Assertion Discipline — "Skip only on an absent
+ *   precondition… an unconfigured dependency… and the skip reason names the precondition
+ *   and how to supply it"; "A test never skips on an outcome it exists to judge: … or a
+ *   wait that exhausts its budget is a failure, not a skip."
  * spec: spec/TESTING.md §E2E §Execution discipline — "Cluster-side setup reuses the
  *   existing tooling… shells out to `kubectl`… E2E adds no TypeScript Kubernetes client and
  *   no reimplemented reset logic."
@@ -207,6 +212,48 @@ async function gqlMutate(
   return resp.json() as Promise<{ data?: Record<string, unknown>; errors?: unknown[] }>;
 }
 
+// ── Setup: clear leftovers holding this arc's natural keys ───────────────
+//
+// The two seeded DataHub entities are name-keyed: the Secret at SECRET_DH_URN and the
+// IngestionSource named SOURCE_NAME. A leftover of either makes step 1 collide
+// ("This Secret already exists!") or accumulate a duplicate source, so the hook clears
+// both before the group runs and treats absence as success (best-effort `.catch`, since
+// deleting an entity that is not there is the expected no-op). The seeding mutations
+// themselves stay in step 1: they are the behavior under test.
+// spec: spec/TESTING.md §E2E §Execution discipline — "Setup is idempotent and lives in
+//   hooks… each setup path pre-deletes by natural key and accepts the upsert/absent
+//   status codes (200-or-201, 404-as-success)."
+test.beforeAll(async () => {
+  // No GMS configured — the whole file skips per the beforeEach guard, and every call
+  // below would target a bare "/api/graphql". Nothing to clear.
+  if (!GMS_URL) return;
+
+  await gqlMutate(
+    `mutation deleteSecret($urn: String!) { deleteSecret(urn: $urn) }`,
+    { urn: SECRET_DH_URN }
+  ).catch(() => {});
+
+  const leftovers = await gqlMutate(
+    `query listIngestionSources($input: ListIngestionSourcesInput!) {
+       listIngestionSources(input: $input) { ingestionSources { urn name } }
+     }`,
+    { input: { start: 0, count: 100 } }
+  ).catch(() => ({}) as { data?: Record<string, unknown> });
+  const leftoverSources =
+    (
+      (leftovers.data?.["listIngestionSources"] as Record<string, unknown> | undefined)
+        ?.["ingestionSources"] as Array<{ urn: string; name: string }> | undefined
+    ) ?? [];
+  for (const src of leftoverSources) {
+    if (src.name === SOURCE_NAME && src.urn) {
+      await gqlMutate(
+        `mutation deleteIngestionSource($urn: String!) { deleteIngestionSource(urn: $urn) }`,
+        { urn: src.urn }
+      ).catch(() => {});
+    }
+  }
+});
+
 // ── Cleanup: delete source + secret from DataHub and re-sync ─────────────
 
 test.afterAll(async ({ adminApi }) => {
@@ -240,10 +287,10 @@ test.afterAll(async ({ adminApi }) => {
 // broken step reports as the failure it is instead of leaving the dependent steps
 // to run against inconsistent state.
 //
-// Setup replays cleanly: step 1 opens by deleting SECRET_DH_URN and every leftover
-// IngestionSource named SOURCE_NAME before creating them, so a second attempt lands
-// over the failed attempt's leftovers instead of colliding on "This Secret already
-// exists!" or accumulating duplicate sources.
+// Setup replays cleanly: the beforeAll hook deletes SECRET_DH_URN and every leftover
+// IngestionSource named SOURCE_NAME before step 1 creates them, so a second attempt
+// lands over the failed attempt's leftovers instead of colliding on "This Secret
+// already exists!" or accumulating duplicate sources.
 // spec: spec/TESTING.md §E2E §Execution discipline — "Because a group retry replays
 // setup over the leftovers of the failed attempt, each setup path pre-deletes by
 // natural key and accepts the upsert/absent status codes".
@@ -273,34 +320,8 @@ test.describe.configure({ mode: "serial", retries: 0 });
 // spec: test_uc1_01_datahub_managed.py _managed_source_setup — createSecret + createIngestionSource
 // ─────────────────────────────────────────────────────────────────────────────
 test("UC1 Case 1 step 1 — seed DataHub Secret + IngestionSource", async () => {
-  // Idempotency: clear any leftover secret from a prior run (createSecret errors
-  // with "This Secret already exists!" otherwise). Ignore errors when absent.
-  await gqlMutate(
-    `mutation deleteSecret($urn: String!) { deleteSecret(urn: $urn) }`,
-    { urn: SECRET_DH_URN }
-  ).catch(() => {});
-
-  // Idempotency: drop any leftover same-named IngestionSource from a prior run so the
-  // fixed-name source doesn't accumulate as a duplicate. Best-effort — ignore errors.
-  const leftovers = await gqlMutate(
-    `query listIngestionSources($input: ListIngestionSourcesInput!) {
-       listIngestionSources(input: $input) { ingestionSources { urn name } }
-     }`,
-    { input: { start: 0, count: 100 } }
-  ).catch(() => ({}) as { data?: Record<string, unknown> });
-  const leftoverSources =
-    (
-      (leftovers.data?.["listIngestionSources"] as Record<string, unknown> | undefined)
-        ?.["ingestionSources"] as Array<{ urn: string; name: string }> | undefined
-    ) ?? [];
-  for (const src of leftoverSources) {
-    if (src.name === SOURCE_NAME && src.urn) {
-      await gqlMutate(
-        `mutation deleteIngestionSource($urn: String!) { deleteIngestionSource(urn: $urn) }`,
-        { urn: src.urn }
-      ).catch(() => {});
-    }
-  }
+  // The beforeAll hook above cleared any entity holding SECRET_DH_URN or SOURCE_NAME,
+  // so both creates below land on a clean estate.
 
   // Create DataHub Secret
   const secretResult = await gqlMutate(
@@ -317,9 +338,9 @@ test("UC1 Case 1 step 1 — seed DataHub Secret + IngestionSource", async () => 
   // layer at all means GMS authenticated the caller (gqlMutate throws before this on an
   // auth rejection), and Managed Ingestion — Secrets included — is provisioned by the dev
   // install. Skipping would report a DataHub that cannot hold a Managed Secret as green.
-  // spec: spec/TESTING.md §E2E §Execution discipline — "A step never skips on an outcome
+  // spec: spec/TESTING.md §Assertion Discipline — "A test never skips on an outcome
   //   it exists to judge"; skips are reserved for "an unconfigured dependency" whose
-  //   reason "names the precondition and how to supply it".
+  //   skip reason "names the precondition and how to supply it".
   expect(
     secretResult.errors,
     `createSecret returned GraphQL errors: ${JSON.stringify(secretResult.errors)}. ` +
@@ -373,7 +394,7 @@ test("UC1 Case 1 step 1 — seed DataHub Secret + IngestionSource", async () => 
   // Same stance as createSecret above: the call authenticated (gqlMutate throws otherwise)
   // and Managed Ingestion is part of the dev DataHub stack this file's beforeEach requires,
   // so a GraphQL error is a broken dependency and fails the step.
-  // spec: spec/TESTING.md §E2E §Execution discipline — "A step never skips on an outcome
+  // spec: spec/TESTING.md §Assertion Discipline — "A test never skips on an outcome
   //   it exists to judge".
   expect(
     sourceResult.errors,
@@ -399,6 +420,10 @@ test("UC1 Case 1 step 1 — seed DataHub Secret + IngestionSource", async () => 
 test("UC1 Case 1 step 2 — sync sweep mirrors the DATAHUB_MANAGED source into DataSpoke", async ({
   adminApi,
 }) => {
+  // Budget: the ES-lag poll below declares 180s, three times the project ceiling — which
+  // would kill the test before the post-loop assertion could name what never appeared.
+  test.setTimeout(240_000);
+
   const base = apiBaseUrl();
   const token = process.env["DATASPOKE_TEST_INTERNAL_TOKEN"] ?? "";
 
@@ -593,6 +618,9 @@ test("UC1 Case 1 step 5 — datasets panel shows mapped non-catalog datasets", a
   page,
   adminApi,
 }) => {
+  // Budget: a 180s ES-lag poll chained with the panel's 15s + 30s render waits.
+  test.setTimeout(300_000);
+
   const base = apiBaseUrl();
   const token = process.env["DATASPOKE_TEST_INTERNAL_TOKEN"] ?? "";
 
@@ -672,14 +700,20 @@ test("UC1 Case 1 step 6 — execute in DataHub; DataSpoke reflects the run", asy
   page,
   adminApi,
 }) => {
+  // Budget: three chained polls — 180s to a terminal DataHub execution status, 30s for
+  // the mirrored event, 60s for the pipeline_name dataset upgrade — plus the page's own
+  // 15s render waits. Each carries a hand-written diagnostic that the 60s project ceiling
+  // would otherwise pre-empt with a bare "Test timeout".
+  test.setTimeout(420_000);
+
   const base = apiBaseUrl();
   const token = process.env["DATASPOKE_TEST_INTERNAL_TOKEN"] ?? "";
 
   // -- Precondition (pre-trigger): the DataHub executor can run the request at all --
   // The ONLY skip in this step. Everything after the trigger is an outcome this step
   // exists to judge and therefore fails rather than skips.
-  // spec: spec/TESTING.md §E2E §Execution discipline — "Skip only on an absent
-  //   precondition… the reason names the precondition and how to supply it."
+  // spec: spec/TESTING.md §Assertion Discipline — "Skip only on an absent
+  //   precondition… the skip reason names the precondition and how to supply it."
   const executorState = probeDatahubExecutor();
   if (executorState === "unavailable") {
     test.skip(
@@ -710,7 +744,7 @@ test("UC1 Case 1 step 6 — execute in DataHub; DataSpoke reflects the run", asy
   // The executor's schedulability — the one absent-precondition case — was settled
   // above, so a GraphQL error on the trigger is DataHub refusing to book a run it is
   // provisioned to book, and fails.
-  // spec: spec/TESTING.md §E2E §Execution discipline — "A step never skips on an outcome
+  // spec: spec/TESTING.md §Assertion Discipline — "A test never skips on an outcome
   //   it exists to judge: a failed run, an empty result, or a wait that exhausts its
   //   budget is a failure, not a skip."
   expect(
@@ -777,7 +811,7 @@ test("UC1 Case 1 step 6 — execute in DataHub; DataSpoke reflects the run", asy
 
   // The wait exhausted its budget. The executor was confirmed schedulable before the
   // trigger, so this is the run failing to complete — an outcome this step judges.
-  // spec: spec/TESTING.md §E2E §Execution discipline — "A step never skips on an outcome
+  // spec: spec/TESTING.md §Assertion Discipline — "A test never skips on an outcome
   //   it exists to judge: a failed run, an empty result, or a wait that exhausts its
   //   budget is a failure, not a skip."
   expect(

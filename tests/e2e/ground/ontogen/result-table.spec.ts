@@ -36,26 +36,14 @@
  *   project" (this file runs under the admin/writer session).
  */
 
-import { test, expect } from "../../fixtures/index";
+import {
+  test,
+  expect,
+  readStubLlmClient,
+  resolveUnreadableStubLlmClient,
+} from "../../fixtures/index";
 
 const NODE_RESULT_API = "/api/v1/spoke/ontogen/result/node";
-
-/**
- * Reads the dev env's `stub_llm_client` toggle. Read-only — a test may read the stub
- * toggles to gate a variant but never sets them.
- * spec: TESTING.md §E2E §Execution discipline — "Never flip the stub toggles… A test may
- *   read them to gate an LLM variant… but never sets them."
- * Mirrors tests/e2e/use-case/uc3-01-ontology-generation.spec.ts readStubLlmClient.
- */
-async function readStubLlmClient(
-  adminApi: import("@playwright/test").APIRequestContext
-): Promise<boolean> {
-  const resp = await adminApi.get("/api/v1/admin/conf");
-  if (!resp.ok()) return true; // fail-safe: treat as stubbed
-  const body = (await resp.json()) as { stub_llm_client: boolean };
-  return body.stub_llm_client;
-}
-
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Sort control writes ?sort= onto the node result request (server-side sort).
@@ -153,14 +141,20 @@ test("/ontogen/result — node rows render 7 columns; Evidence cell links to the
   // Keyed on `stub_llm_client`, not on "did any row turn up": under the stub the rows are
   // an unestablishable precondition, but on a REAL-LLM env an empty result set is a genuine
   // failure and must not skip silently.
-  // spec: TESTING.md §E2E §Execution discipline — "Skip only on an absent precondition…
-  //   the reason names the precondition and how to supply it. A step never skips on an
+  // spec: TESTING.md §Assertion Discipline — "Skip only on an absent precondition…
+  //   the skip reason names the precondition and how to supply it. A test never skips on an
   //   outcome it exists to judge: a failed run, an empty result, … is a failure, not a skip."
   // spec: TESTING.md §Stub Toggles (RuntimeConfig) — flippable online via PATCH /admin/conf;
   //   "changes propagate in ≤30s".
-  const stubLlm = await readStubLlmClient(adminApi);
+  const mode = await readStubLlmClient(adminApi);
+  if (!mode.readable) {
+    // The toggle is unknown, which is NOT the same as knowing the env runs stubbed: the
+    // gate itself has no value to resolve. A live-but-broken /admin/conf fails here; an
+    // unreachable one skips with a reason naming the endpoint.
+    resolveUnreadableStubLlmClient(mode, "/ontogen/result node-row rendering");
+  }
   test.skip(
-    stubLlm,
+    mode.stubbed,
     "stub_llm_client=true: a stub inference run persists zero ontology rows, so the rows " +
       "this step renders cannot exist. Supply the precondition with " +
       'PATCH /api/v1/admin/conf {"stub_llm_client": false} (≤30s propagation), trigger an ' +

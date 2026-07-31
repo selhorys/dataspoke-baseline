@@ -37,6 +37,10 @@ const DATASETS_URL = "/governance/datasets";
 // spec: project_es_indexing_lag_after_reset_seed — ES lag ~2-3 min after seed.
 // spec: tests/e2e/use-case/uc1-01-datahub-managed.spec.ts:270-304 — sync-poll pattern.
 test.beforeAll(async ({ adminApi }) => {
+  // Budget: the 180s sync poll below runs in a HOOK, which carries its own timeout —
+  // defaulted to the 60s project ceiling, three times too small for the declared poll.
+  test.setTimeout(240_000);
+
   const base = apiBaseUrl();
   const token = process.env["DATASPOKE_TEST_INTERNAL_TOKEN"] ?? "";
   const deadline = Date.now() + 180_000;

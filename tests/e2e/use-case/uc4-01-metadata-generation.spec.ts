@@ -57,7 +57,15 @@
 import { execSync } from "child_process";
 import * as path from "path";
 import type { APIRequestContext, Page } from "@playwright/test";
-import { test, expect, IMAZON_URNS } from "../fixtures/index";
+import {
+  test,
+  expect,
+  IMAZON_URNS,
+  readStubLlmClient,
+  resolveUnreadableStubLlmClient,
+  describeStubLlmClient,
+  type StubLlmClientRead,
+} from "../fixtures/index";
 
 // ── Serial, shared-state retry policy ─────────────────────────────────────────
 //
@@ -137,12 +145,17 @@ let oeBoundaryCreated = false;
 
 let euRunId: string | null = null;
 let oeRunId: string | null = null;
+// The EU run's own RUN_COMPLETE outcome (debate_outcome + counts.candidates_added), kept so
+// steps 7/8 can tell a product defect apart from the spec'd drop-all run in their diagnostics.
+let euRunOutcome: MetagenRunOutcome | null = null;
 
 let approvedEuDescCandidateId: string | null = null;
 let rejectedEuColCandidateId: string | null = null;
 
-// Stub-mode flag, read once in beforeAll.
-let stubLlmClient = true;
+// LLM mode for this arc, read once in beforeAll from /admin/conf and stored as the union it
+// is. Only step 8b and the real-LLM add-on GATE on it (they resolve it themselves); steps 7
+// and 8 merely REPORT it in their failure diagnostics. Every other step is mode-agnostic.
+let llmMode: StubLlmClientRead | null = null;
 
 // ── UC4 context seed helpers (--uc4-seed / --uc4-restore) ────────────────────
 
@@ -203,23 +216,32 @@ function runUc4Restore(): void {
   }
 }
 
-// ── beforeAll: seed + read stub mode ─────────────────────────────────────────
-
+// ── beforeAll: read the LLM mode once, then seed ──────────────────────────────
+//
+// The hook only READS the toggle. It raises no skip: a skip raised in beforeAll is replayed
+// onto every test in the suite, and only step 8b and the real-LLM add-on have the LLM mode
+// as a precondition — the other ten steps are mode-agnostic and must still run (and still
+// be able to fail) when /admin/conf is unreadable. Those two steps resolve the read
+// themselves.
+// spec: spec/TESTING.md §Assertion Discipline — "A test skips when a precondition it cannot
+//   establish is missing."
 test.beforeAll(async ({ adminApi }) => {
-  runUc4Seed();
+  // Budget: the --uc4-seed subprocess alone is allowed 120s, and a beforeAll hook gets
+  // its own timeout, defaulted to the 60s project ceiling.
+  test.setTimeout(240_000);
 
-  const confResp = await adminApi.get("/api/v1/admin/conf");
-  if (confResp.ok()) {
-    const body = (await confResp.json()) as Record<string, unknown>;
-    stubLlmClient = body["stub_llm_client"] === true;
-  } else {
-    stubLlmClient = true; // assume stub when we cannot check
-  }
+  llmMode = await readStubLlmClient(adminApi);
+
+  runUc4Seed();
 });
 
 // ── afterAll: cleanup REST state + restore DataHub ───────────────────────────
 
 test.afterAll(async ({ adminApi }) => {
+  // Budget: the --uc4-restore subprocess alone is allowed 120s; an afterAll hook gets its
+  // own timeout, defaulted to the 60s project ceiling.
+  test.setTimeout(180_000);
+
   if (euBoundaryCreated) {
     await adminApi.delete(EU_BOUNDARY_API).catch(() => null);
     euBoundaryCreated = false;
@@ -304,16 +326,32 @@ async function enterBoundaryEditMode(page: Page): Promise<void> {
 }
 
 /**
+ * One metagen conf run's outcome, as reported by its METAGEN.RUN_COMPLETE event.
+ * `debateOutcome` + `candidatesAdded` are what let a later step distinguish a product
+ * defect from the spec-sanctioned drop-all run.
+ * spec: BACKEND.md §Event Catalogue — METAGEN `RUN_COMPLETE` "Detail keys: `run_id`
+ *   (uuid4), `conf_id`, `conf_name`, … `counts` (dict — `items_considered`,
+ *   `candidates_added`, `candidates_evicted`, `rejected_cleared` on real-run …),
+ *   `dry_run`, `producer_iterations`, `debate_outcome` (`accept` / `turns_exhausted` /
+ *   `cycle_detected`)".
+ */
+type MetagenRunOutcome = {
+  runId: string;
+  debateOutcome: string | null;
+  candidatesAdded: number | null;
+};
+
+/**
  * Trigger a run from a conf detail page via the Run dialog, then poll the
  * cross-conf event feed until a METAGEN.RUN_COMPLETE for this conf appears.
- * Returns the run_id observed in the event.
+ * Returns that event's run_id together with its debate_outcome / candidates_added.
  */
 async function runConfFromDetail(
   page: Page,
   adminApi: APIRequestContext,
   confId: string,
   confName: string,
-): Promise<string> {
+): Promise<MetagenRunOutcome> {
   await page.goto(`/metagen/conf/${confId}`);
   await expect(page).not.toHaveURL(/\/login/);
   await expect(page.getByRole("heading", { name: confName, exact: true })).toBeVisible({
@@ -357,12 +395,77 @@ async function runConfFromDetail(
         const detail = (found.detail ?? {}) as Record<string, unknown>;
         expect(typeof detail["run_id"]).toBe("string");
         expect(detail["dry_run"]).toBe(false);
-        return detail["run_id"] as string;
+        const counts = detail["counts"] as Record<string, unknown> | undefined;
+        const added = counts?.["candidates_added"];
+        const outcome = detail["debate_outcome"];
+        return {
+          runId: detail["run_id"] as string,
+          debateOutcome: typeof outcome === "string" ? outcome : null,
+          candidatesAdded: typeof added === "number" ? added : null,
+        };
       }
     }
     await new Promise((res) => setTimeout(res, 3_000));
   }
   throw new Error(`No METAGEN.RUN_COMPLETE event for conf_id=${confId} within deadline`);
+}
+
+/**
+ * Diagnostic clause for steps 7/8 when the conf EU run left nothing to review on a slot the
+ * seed made under-documented. The assertion itself stays unconditional in both modes — this
+ * only tells the operator WHICH failure they are looking at, using the EU run's own
+ * RUN_COMPLETE detail:
+ *
+ *   - `candidates_added >= 1` and nothing on this slot → generation worked; the gap is
+ *     specific to this item, i.e. a real defect.
+ *   - `candidates_added === 0` with `debate_outcome != accept` → the spec'd drop-all run,
+ *     which is a legitimate real-LLM outcome (and a defect under the stub, whose Reviewer
+ *     always accepts).
+ *
+ * spec: BACKEND_LLM.md §Metagen Adversarial Debate (Termination row) — metagen: "`accept`
+ *   → persist surviving candidates as `llm_approved`; `turns_exhausted` / `cycle_detected`
+ *   → **drop all candidates from this run**. The next scheduled run is the recovery path."
+ * spec: BACKEND_LLM.md §Metagen Adversarial Debate (Persistence threshold row) —
+ *   "**Below-threshold candidates are dropped** — metagen has no `llm_pending` state. Only
+ *   candidates with `outcome=accept` AND `confidence_score >= METAGEN_CONFIDENCE_THRESHOLD`
+ *   persist as `status='llm_approved'`."
+ */
+function diagnoseEmptyEuRun(): string {
+  const run = euRunOutcome;
+  if (run === null) {
+    return (
+      "The EU run's METAGEN.RUN_COMPLETE detail was not captured (step 4 did not record it), " +
+      "so this failure cannot be attributed — inspect the run event directly."
+    );
+  }
+  const where =
+    `EU run_id=${run.runId} reported debate_outcome=${run.debateOutcome ?? "unset"}, ` +
+    `counts.candidates_added=${run.candidatesAdded ?? "unset"}.`;
+  if (run.candidatesAdded !== null && run.candidatesAdded >= 1) {
+    return (
+      `${where} Generation and persistence worked for that run, so the gap is specific to ` +
+      "this slot: check the conf's dataset scope, the eu_profiles boundary `allowed` set, " +
+      "and the item targeting — this is a product defect, not an LLM outcome."
+    );
+  }
+  if (
+    run.candidatesAdded === 0 &&
+    run.debateOutcome !== null &&
+    run.debateOutcome !== "accept"
+  ) {
+    return (
+      `${where} A run that ends turns_exhausted / cycle_detected drops all its candidates ` +
+      "(BACKEND_LLM.md §Metagen Adversarial Debate, Termination row), with the next run as " +
+      "the recovery path — under a real LLM that is a spec-sanctioned outcome, so re-run " +
+      "the arc before filing a defect. Under the stub it IS a defect: the stub Reviewer " +
+      'returns overall_verdict="accept", so the debate terminates on accept.'
+    );
+  }
+  return (
+    `${where} With debate_outcome=accept and nothing persisted, every produced candidate ` +
+    "fell below METAGEN_CONFIDENCE_THRESHOLD (below-threshold candidates are dropped — " +
+    "metagen has no llm_pending state) or the Producer targeted no item at all."
+  );
 }
 
 /**
@@ -384,8 +487,9 @@ async function runConfFromDetail(
  * timeout): we wait on real committed state, then sync the UI to it.
  *
  * Returns the matched item — `{ itemId, candidateId }` — or `null` when the bounded
- * poll finds no open candidate of `kind`. Callers decide whether a null is a stub
- * regression (fail loud) or a benign real-LLM no-op.
+ * poll finds no open candidate of `kind`. A `null` is diagnostic context only: the
+ * caller re-reads the authoritative state afterwards and asserts on it, so an absent
+ * candidate fails the step in either LLM mode.
  *
  * @param predicate optional extra filter on the matched item (e.g. status !== approved)
  */
@@ -581,8 +685,6 @@ test("UC4 step 3 — opt eu_profiles and orders.events in via per-dataset bounda
   page,
   adminApi,
 }) => {
-  if (!confEuId || !confOeId) test.skip(true, "step 2 did not create both confs");
-
   // ── 3a: eu_profiles boundary (dataset + column descriptions) ──────────────
   await page.goto(EU_DATASET_URL);
   await expect(page).not.toHaveURL(/\/login/);
@@ -684,13 +786,21 @@ test("UC4 step 4 — run conf OE then conf EU; each RUN_COMPLETE carries its con
   page,
   adminApi,
 }) => {
-  if (!confEuId || !confOeId || !euBoundaryCreated) {
-    test.skip(true, "steps 2-3 did not complete");
-  }
+  // Budget: runConfFromDetail chains a 120s run-complete toast and a 120s RUN_COMPLETE
+  // event poll, and this step calls it TWICE (conf OE then conf EU) — four chained waits
+  // against a 60s project ceiling. Neither wait is shrunk: a real-LLM metagen run
+  // legitimately occupies the toast budget, and the event poll absorbs read-after-write
+  // lag on the cross-conf feed.
+  test.setTimeout(600_000);
 
   // Run conf OE first, then conf EU (the EU run is the one later steps review).
-  oeRunId = await runConfFromDetail(page, adminApi, confOeId!, CONF_OE_NAME);
-  euRunId = await runConfFromDetail(page, adminApi, confEuId!, CONF_EU_NAME);
+  const oeRun = await runConfFromDetail(page, adminApi, confOeId!, CONF_OE_NAME);
+  const euRun = await runConfFromDetail(page, adminApi, confEuId!, CONF_EU_NAME);
+  oeRunId = oeRun.runId;
+  euRunId = euRun.runId;
+  // Kept for steps 7/8: debate_outcome + counts.candidates_added discriminate a product
+  // defect from the spec'd drop-all run when a seeded slot carries no candidate.
+  euRunOutcome = euRun;
 
   expect(oeRunId).toBeTruthy();
   expect(euRunId).toBeTruthy();
@@ -705,8 +815,6 @@ test("UC4 step 5 — conf EU detail shows its own RUN_COMPLETE; OE run does not 
   page,
   adminApi,
 }) => {
-  if (!confEuId || !euRunId) test.skip(true, "step 4 did not complete");
-
   await page.goto(`/metagen/conf/${confEuId}`);
   await expect(page.getByRole("heading", { name: CONF_EU_NAME, exact: true })).toBeVisible({
     timeout: 15_000,
@@ -752,8 +860,6 @@ test("UC4 step 6 — result rollup lists datasets; cross-conf events show both r
   page,
   adminApi,
 }) => {
-  if (!euRunId || !oeRunId) test.skip(true, "step 4 did not complete");
-
   await page.goto(RESULT_URL);
   await expect(page).not.toHaveURL(/\/login/);
 
@@ -847,7 +953,9 @@ test("UC4 step 7 — approve eu_profiles dataset.description candidate (conf_nam
   page,
   adminApi,
 }) => {
-  if (!euRunId) test.skip(true, "step 4 did not complete");
+  // Budget: a 90s backend readiness poll plus the page's own 30s/20s/30s render and
+  // toast waits, chained past the 60s project ceiling.
+  test.setTimeout(300_000);
 
   await page.goto(EU_DATASET_URL);
   await expect(page.getByText(EU_PROFILES_URN, { exact: false }).first()).toBeVisible({
@@ -895,35 +1003,46 @@ test("UC4 step 7 — approve eu_profiles dataset.description candidate (conf_nam
     candidates: Array<{ candidate_id: string; status: string; conf_name: string | null }>;
   };
   const llmApproved = detailBody.candidates.find((c) => c.status === "llm_approved");
-  // Under stub mode candidate generation is deterministic — the stub Producer
-  // emits one candidate per target item and the stub Reviewer accepts it — so a
-  // dataset.description item with NO llm_approved candidate is a stub regression,
-  // not a benign skip. The readiness poll above already gave the backend a bounded
-  // window to commit it. Assert the candidate PRECONDITION (mirrors the api-wired
-  // counts.candidates_added >= 1 expectation) so a missing candidate FAILS the
-  // test rather than silently no-opping (which would also skip step 9).
-  // Real-LLM mode (stub_llm_client=false) may legitimately produce nothing, so
-  // there the graceful early-return applies.
-  // spec: BACKEND_LLM.md §Test Mode — metagen stub emits one candidate per item
-  // spec: BACKEND.md §Event Catalogue — counts.candidates_added ≥ 1 under stub
-  if (!llmApproved) {
-    if (stubLlmClient) {
-      throw new Error(
-        "[uc4 step 7] STUB regression: no llm_approved candidate on eu_profiles " +
-          "dataset.description after the conf EU run (bounded readiness poll also " +
-          `found ${ready ? "one then it vanished" : "none"}). Under stub mode generation ` +
-          "is deterministic (one candidate per target item), so the candidate must exist. " +
-          "Check src/workflows/_stubs.py metagen_validate branch and " +
-          "src/backend/metagen/prompts.py TARGET ITEMS block format.",
-      );
-    }
-    console.warn("[uc4 step 7] real-LLM mode produced no llm_approved candidate; skipping approve.");
-    return;
-  }
-  approvedEuDescCandidateId = llmApproved.candidate_id;
+  // An open candidate is the outcome this step exists to judge, in BOTH modes: --uc4-seed
+  // wipes DatasetProperties.description on eu_profiles and the EU boundary allows
+  // dataset.description, so the slot is under-documented and in scope by construction, and
+  // UC4's user story is that the run proposes candidates for exactly such slots for a
+  // reviewer to approve. A run that leaves nothing to approve has failed that story, so this
+  // is asserted rather than skipped — a softer report would let step 9's review-event
+  // assertions pass vacuously.
+  // The seed only guarantees the slot is in scope; whether a candidate PERSISTS still depends
+  // on the debate outcome and the confidence threshold, so under a real LLM this failure can
+  // be the spec'd drop-all rather than a defect. diagnoseEmptyEuRun() reads the EU run's own
+  // debate_outcome / counts.candidates_added and says which it is.
+  // spec: BACKEND_LLM.md §Metagen Adversarial Debate (Termination row) — metagen: "`turns_exhausted` /
+  //   `cycle_detected` → **drop all candidates from this run**. The next scheduled run is the
+  //   recovery path."
+  // The readiness poll above already gave the backend a bounded window to commit it.
+  // spec: USE_CASE_en.md §UC4 §User Story — "I want DataSpoke to propose documentation
+  //   candidates for under-documented datasets and let me browse several alternatives per
+  //   slot, approve one, and reject the ones that miss".
+  // spec: tests/integration/util/metagen.py seed_uc4_context — --uc4-seed masks
+  //   DatasetProperties.description and every SchemaMetadata field description on
+  //   eu_profiles, and fails loud rather than leaving the estate unmasked.
+  // spec: BACKEND_LLM.md §Test Mode — stub `complete_with_tools` (metagen Producer) returns
+  //   "One candidate per target item parsed from the prompt's TARGET ITEMS block"; the stub
+  //   Reviewer returns `overall_verdict="accept"`.
+  // spec: spec/TESTING.md §Assertion Discipline — "A test never skips on an outcome it
+  //   exists to judge: a failed run, an empty result, or a wait that exhausts its budget
+  //   is a failure, not a skip."
+  expect(
+    llmApproved,
+    "[uc4 step 7] the conf EU run left no llm_approved candidate on eu_profiles " +
+      `dataset.description (the bounded readiness poll found ${ready ? "one, then it vanished" : "none"}). ` +
+      `LLM mode: ${describeStubLlmClient(llmMode)}. Under the stub, generation is ` +
+      "deterministic — one candidate per target item, accepted by the stub Reviewer — so " +
+      "check src/workflows/_stubs.py metagen_validate and src/backend/metagen/prompts.py " +
+      `TARGET ITEMS block format. ${diagnoseEmptyEuRun()}`,
+  ).toBeTruthy();
+  approvedEuDescCandidateId = llmApproved!.candidate_id;
   // Per-candidate conf_name is the producing conf (conf EU here).
   // spec: FRONTEND_METAGEN.md §Per-dataset — candidates carry conf_id/conf_name
-  expect(llmApproved.conf_name).toBe(CONF_EU_NAME);
+  expect(llmApproved!.conf_name).toBe(CONF_EU_NAME);
 
   // -- UI gesture: the dataset.description ItemKindTable renders one candidate row
   //    per candidate (panel default-open; no expand gesture). Scope to the conf EU,
@@ -992,7 +1111,9 @@ test("UC4 step 8 — reject eu_profiles column.description candidate", async ({
   page,
   adminApi,
 }) => {
-  if (!euRunId) test.skip(true, "step 4 did not complete");
+  // Budget: a 90s backend readiness poll plus the page's own 30s/20s/15s/30s render and
+  // toast waits, chained past the 60s project ceiling.
+  test.setTimeout(300_000);
 
   await page.goto(EU_DATASET_URL);
   await expect(page.getByText(EU_PROFILES_URN, { exact: false }).first()).toBeVisible({
@@ -1024,24 +1145,33 @@ test("UC4 step 8 — reject eu_profiles column.description candidate", async ({
   const colItem = itemsBody.items.find(
     (i) => i.kind === "column.description" && i.status !== "approved",
   );
-  // Stub mode is deterministic: eu_profiles has 8 masked column descriptions, all
-  // boundary-allowed, none approved in step 7 — so a non-approved
-  // column.description item MUST exist. A missing one is a stub regression, not a
-  // benign skip (it would also cascade to skip step 9's reject assertion).
-  // spec: BACKEND_LLM.md §Test Mode — stub emits one candidate per column item
-  if (!colItem) {
-    if (stubLlmClient) {
-      throw new Error(
-        "[uc4 step 8] STUB regression: no non-approved column.description item for " +
-          "eu_profiles after the conf EU run. Under stub mode all 8 masked column " +
-          "descriptions yield items deterministically. Check the masking seed and " +
-          "src/workflows/_stubs.py metagen_validate branch.",
-      );
-    }
-    console.warn("[uc4 step 8] real-LLM mode produced no column.description item; skipping reject.");
-    return;
-  }
-  const colItemEnc = encodeURIComponent(colItem.item_id);
+  // A reviewable column item is the outcome this step exists to judge, in BOTH modes:
+  // --uc4-seed blanks every SchemaMetadata field description on eu_profiles and the EU
+  // boundary allows column.description, so all 8 column slots are under-documented and in
+  // scope by construction, and step 7 approved none of them. The seed establishes scope
+  // only — persistence still turns on the debate outcome and the confidence threshold, so
+  // diagnoseEmptyEuRun() attributes the failure from the EU run's own RUN_COMPLETE detail.
+  // spec: BACKEND_LLM.md §Metagen Adversarial Debate (Termination row) — metagen: "`turns_exhausted` /
+  //   `cycle_detected` → **drop all candidates from this run**. The next scheduled run is
+  //   the recovery path."
+  // spec: USE_CASE_en.md §UC4 §User Story — the reviewer approves one candidate per slot
+  //   "and reject the ones that miss"; with no open column item there is nothing to
+  //   reject and step 9's CANDIDATE_REJECT assertion has nothing to observe.
+  // spec: tests/integration/util/metagen.py seed_uc4_context — --uc4-seed blanks the
+  //   SchemaMetadata field descriptions on eu_profiles.
+  // spec: BACKEND_LLM.md §Test Mode — stub `complete_with_tools` (metagen Producer) returns
+  //   "One candidate per target item parsed from the prompt's TARGET ITEMS block".
+  // spec: spec/TESTING.md §Assertion Discipline — "A test never skips on an outcome it
+  //   exists to judge: … an empty result … is a failure, not a skip."
+  expect(
+    colItem,
+    "[uc4 step 8] no non-approved column.description item exists for eu_profiles after " +
+      `the conf EU run. LLM mode: ${describeStubLlmClient(llmMode)}. Under the stub all 8 ` +
+      "masked column descriptions yield items deterministically — check the masking seed " +
+      "(tests/integration/util/metagen.py) and src/workflows/_stubs.py metagen_validate. " +
+      `${diagnoseEmptyEuRun()}`,
+  ).toBeTruthy();
+  const colItemEnc = encodeURIComponent(colItem!.item_id);
   const detailResp = await adminApi.get(
     `/api/v1/spoke/common/data/${EU_PROFILES_ENC}/attr/metagen/item/${colItemEnc}`,
   );
@@ -1050,21 +1180,28 @@ test("UC4 step 8 — reject eu_profiles column.description candidate", async ({
     candidates: Array<{ candidate_id: string; status: string }>;
   };
   const llmApproved = detailBody.candidates.find((c) => c.status === "llm_approved");
-  // Same stub-determinism precondition as step 7: the chosen non-approved column
-  // item must carry an llm_approved candidate under stub mode.
-  // spec: BACKEND_LLM.md §Test Mode — stub Reviewer accepts → llm_approved
-  if (!llmApproved) {
-    if (stubLlmClient) {
-      throw new Error(
-        "[uc4 step 8] STUB regression: column.description item has no llm_approved " +
-          "candidate under stub mode. Check src/workflows/_stubs.py metagen_validate " +
-          "branch and src/backend/metagen/prompts.py TARGET ITEMS block format.",
-      );
-    }
-    console.warn("[uc4 step 8] real-LLM mode: no llm_approved candidate on column item; skipping.");
-    return;
-  }
-  rejectedEuColCandidateId = llmApproved.candidate_id;
+  // Same judgement as step 7, on the column slot: the item above exists because the run
+  // targeted this seeded-under-documented column, so an item with no open candidate leaves
+  // the reject gesture nothing to act on, in either mode. An item that exists with zero
+  // surviving candidates is the below-threshold / non-accept drop path, which the message
+  // attributes rather than the assertion tolerating.
+  // spec: BACKEND_LLM.md §Metagen Adversarial Debate (Persistence threshold row) — "**Below-threshold
+  //   candidates are dropped** — metagen has no `llm_pending` state."
+  // spec: USE_CASE_en.md §UC4 §User Story — "browse several alternatives per slot,
+  //   approve one, and reject the ones that miss".
+  // spec: BACKEND_LLM.md §Test Mode — the stub Reviewer returns `overall_verdict="accept"`,
+  //   so every produced candidate lands llm_approved.
+  // spec: spec/TESTING.md §Assertion Discipline — "A test never skips on an outcome it
+  //   exists to judge: … an empty result … is a failure, not a skip."
+  expect(
+    llmApproved,
+    "[uc4 step 8] the chosen non-approved column.description item carries no " +
+      `llm_approved candidate. LLM mode: ${describeStubLlmClient(llmMode)}. Under the stub ` +
+      "the Reviewer accepts every produced candidate — check src/workflows/_stubs.py " +
+      "metagen_validate and src/backend/metagen/prompts.py TARGET ITEMS block format. " +
+      `${diagnoseEmptyEuRun()}`,
+  ).toBeTruthy();
+  rejectedEuColCandidateId = llmApproved!.candidate_id;
 
   // -- UI assertion: column.description foldable panel (default-open) --
   await expect(
@@ -1080,7 +1217,7 @@ test("UC4 step 8 — reject eu_profiles column.description candidate", async ({
   //    row that carries the tracked column's field_path text AND the conf-EU /
   //    llm_approved attributes, so the acted-on candidate is the tracked one. --
   // item-kind-table.tsx: leading <td>{field_path}</td> + per-row Approve/Reject.
-  const colFieldPath = colItem.field_path ?? "";
+  const colFieldPath = colItem!.field_path ?? "";
   const colRow = page
     .locator(
       `[data-testid="metagen-candidate-row"][data-conf-name="${CONF_EU_NAME}"]` +
@@ -1088,26 +1225,20 @@ test("UC4 step 8 — reject eu_profiles column.description candidate", async ({
     )
     .filter({ hasText: colFieldPath })
     .first();
-  // The row must render: the backend probe confirmed this column has an open
-  // llm_approved conf-EU candidate, and we reloaded after the readiness poll. A
-  // missing row under stub mode is a real UI bug (the per-kind table is not
-  // surfacing the column), not a benign all-finalized state.
-  const rowVisible = await colRow
-    .waitFor({ state: "visible", timeout: 20_000 })
-    .then(() => true)
-    .catch(() => false);
-  if (!rowVisible) {
-    if (stubLlmClient) {
-      throw new Error(
-        "[uc4 step 8] STUB regression: backend has an open llm_approved conf-EU " +
-          `candidate on column "${colFieldPath}" but its row did not render in the ` +
-          "column.description ItemKindTable after readiness poll + reload + bounded " +
-          "wait. The per-kind table (item-kind-table.tsx) is not surfacing this column.",
-      );
-    }
-    console.warn("[uc4 step 8] real-LLM mode: tracked column row did not render; skipping.");
-    return;
-  }
+  // The row must render, in either mode: the backend probe just confirmed this column
+  // has an open llm_approved conf-EU candidate and the page was reloaded after the
+  // readiness poll, so a missing row is the per-kind table failing to surface committed
+  // state — a UI defect, not an absent precondition.
+  // spec: FRONTEND_METAGEN.md §Components (ItemKindTable) — "a candidate-row table
+  //   (generated value, run info, status, Approve / Reject). The `column.description`
+  //   instance adds a leading `field_path` column and groups its rows by column (item)."
+  await expect(
+    colRow,
+    "[uc4 step 8] the backend has an open llm_approved conf-EU candidate on column " +
+      `"${colFieldPath}" but its row did not render in the column.description ` +
+      "ItemKindTable after the readiness poll + reload. item-kind-table.tsx is not " +
+      "surfacing this column.",
+  ).toBeVisible({ timeout: 20_000 });
 
   // -- UI assertion: this row's candidate is llm_approved --
   await expect(colRow.getByText("llm_approved", { exact: true }).first()).toBeVisible({
@@ -1174,13 +1305,30 @@ test("UC4 step 8b — cross-conf approval supersedes the sibling globally (one a
   page,
   adminApi,
 }) => {
-  if (!euRunId || !confEuId) test.skip(true, "steps 2-4 did not complete");
+  // Budget: a 120s RIVAL run request, a per-item scan over eu_profiles' column items, and
+  // the page's own 20s/10s/30s/20s render and toast waits, chained past the 60s ceiling.
+  test.setTimeout(300_000);
+
   // This invariant is exercised deterministically only under stub mode (each conf
   // emits one candidate per open column item, guaranteeing a shared two-conf item).
   // Real-LLM mode may not produce a candidate from both confs on the same item.
+  // The arc's one /admin/conf read is resolved HERE, at the gate that consumes it: a
+  // live-but-broken admin route fails, an unreachable one skips only this step.
+  // spec: BACKEND_LLM.md §Test Mode — stub `complete_with_tools` (metagen Producer) returns
+  //   "One candidate per target item parsed from the prompt's TARGET ITEMS block".
+  const mode = llmMode;
+  if (mode === null) {
+    throw new Error(
+      "[uc4 step 8b] the arc's beforeAll did not record an /admin/conf read; the LLM-mode " +
+        "gate has nothing to resolve",
+    );
+  }
+  if (!mode.readable) resolveUnreadableStubLlmClient(mode, "UC4 step 8b");
   test.skip(
-    !stubLlmClient,
-    "real-LLM mode: a shared two-conf candidate item is not guaranteed; skip cross-conf demotion",
+    !mode.stubbed,
+    "real-LLM mode: a shared two-conf candidate item is not guaranteed, so the cross-conf " +
+      "demotion invariant has no deterministic subject. Supply the precondition with " +
+      'PATCH /api/v1/admin/conf {"stub_llm_client": true} (≤30s propagation), then re-run.',
   );
 
   // -- Setup: create RIVAL conf scoped to eu_profiles and run it --
@@ -1403,22 +1551,27 @@ test("UC4 step 9 — per-dataset events include CANDIDATE_APPROVE and CANDIDATE_
   page,
   adminApi,
 }) => {
-  // Under stub mode steps 7 and 8 are guaranteed to have produced an approve and
-  // a reject (they throw otherwise), so BOTH ids must be set. Asserting this here
-  // closes the cascade where a skipped 7/8 silently skips 9 too. Real-LLM mode may
-  // legitimately have produced no candidate to review, so the skip applies there.
-  if (stubLlmClient) {
-    expect(
-      approvedEuDescCandidateId,
-      "stub mode: step 7 must have approved a dataset.description candidate",
-    ).toBeTruthy();
-    expect(
-      rejectedEuColCandidateId,
-      "stub mode: step 8 must have rejected a column.description candidate",
-    ).toBeTruthy();
-  } else if (!approvedEuDescCandidateId && !rejectedEuColCandidateId) {
-    test.skip(true, "real-LLM mode: steps 7/8 produced no review actions");
-  }
+  // Budget: the two 30s event waits below are unconditional, and they chain after a 15s
+  // URN render wait and a 10s Events-panel wait — 85s worst case, past the 60s project
+  // ceiling. Without this the operator would see "Test timeout of 60000ms exceeded"
+  // instead of the named event that failed to surface.
+  test.setTimeout(150_000);
+
+  // Backstops, mode-independent: steps 7 and 8 fail rather than no-op when they find
+  // nothing to review, in either LLM mode, so by the time this step runs BOTH ids are
+  // set. Asserting them here keeps the audit assertions below unconditional — a guarded
+  // version would pass vacuously exactly when the review beat never happened.
+  // spec: spec/TESTING.md §Assertion Discipline — "Any guarded assert must be paired with
+  //   a backstop that proves the guarded path executed … so the test fails when the value
+  //   is absent instead of skipping silently."
+  expect(
+    approvedEuDescCandidateId,
+    "step 7 must have approved a dataset.description candidate",
+  ).toBeTruthy();
+  expect(
+    rejectedEuColCandidateId,
+    "step 8 must have rejected a column.description candidate",
+  ).toBeTruthy();
 
   await page.goto(EU_DATASET_URL);
   await expect(page.getByText(EU_PROFILES_URN, { exact: false }).first()).toBeVisible({
@@ -1435,16 +1588,12 @@ test("UC4 step 9 — per-dataset events include CANDIDATE_APPROVE and CANDIDATE_
     await eventsPanel.click();
   }
 
-  if (approvedEuDescCandidateId) {
-    await expect(
-      page.getByText("METAGEN.CANDIDATE_APPROVE", { exact: false }).first(),
-    ).toBeVisible({ timeout: 30_000 });
-  }
-  if (rejectedEuColCandidateId) {
-    await expect(
-      page.getByText("METAGEN.CANDIDATE_REJECT", { exact: false }).first(),
-    ).toBeVisible({ timeout: 30_000 });
-  }
+  await expect(
+    page.getByText("METAGEN.CANDIDATE_APPROVE", { exact: false }).first(),
+  ).toBeVisible({ timeout: 30_000 });
+  await expect(
+    page.getByText("METAGEN.CANDIDATE_REJECT", { exact: false }).first(),
+  ).toBeVisible({ timeout: 30_000 });
 
   // -- Backend probe: per-dataset event feed carries the review events with detail keys --
   const evResp = await adminApi.get(
@@ -1460,20 +1609,21 @@ test("UC4 step 9 — per-dataset events include CANDIDATE_APPROVE and CANDIDATE_
   expect(evBody).toHaveProperty("offset");
   expect(evBody).toHaveProperty("total_count");
 
-  if (approvedEuDescCandidateId) {
-    const ev = evBody.events.find((e) => e.event_type === "METAGEN.CANDIDATE_APPROVE");
-    expect(ev, "CANDIDATE_APPROVE event missing after approval").toBeTruthy();
-    expect(ev!.detail).toHaveProperty("item_id");
-    expect(ev!.detail).toHaveProperty("candidate_id");
-    expect(ev!.detail).toHaveProperty("reason");
-  }
-  if (rejectedEuColCandidateId) {
-    const ev = evBody.events.find((e) => e.event_type === "METAGEN.CANDIDATE_REJECT");
-    expect(ev, "CANDIDATE_REJECT event missing after rejection").toBeTruthy();
-    expect(ev!.detail).toHaveProperty("item_id");
-    expect(ev!.detail).toHaveProperty("candidate_id");
-    expect(ev!.detail).toHaveProperty("reason");
-  }
+  const approveEvent = evBody.events.find(
+    (e) => e.event_type === "METAGEN.CANDIDATE_APPROVE",
+  );
+  expect(approveEvent, "CANDIDATE_APPROVE event missing after approval").toBeTruthy();
+  expect(approveEvent!.detail).toHaveProperty("item_id");
+  expect(approveEvent!.detail).toHaveProperty("candidate_id");
+  expect(approveEvent!.detail).toHaveProperty("reason");
+
+  const rejectEvent = evBody.events.find(
+    (e) => e.event_type === "METAGEN.CANDIDATE_REJECT",
+  );
+  expect(rejectEvent, "CANDIDATE_REJECT event missing after rejection").toBeTruthy();
+  expect(rejectEvent!.detail).toHaveProperty("item_id");
+  expect(rejectEvent!.detail).toHaveProperty("candidate_id");
+  expect(rejectEvent!.detail).toHaveProperty("reason");
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1484,8 +1634,6 @@ test("UC4 step 10 — uncovered view + include_disallowed toggle", async ({
   page,
   adminApi,
 }) => {
-  if (!confEuId || !confOeId) test.skip(true, "step 2 did not create both confs");
-
   await page.goto(UNCOVERED_URL);
   await expect(page).not.toHaveURL(/\/login/);
 
@@ -1565,9 +1713,21 @@ test("UC4 step 10 — uncovered view + include_disallowed toggle", async ({
 test("UC4 real-LLM — EU run produced ≥1 candidate (gated on stub_llm_client=false)", async ({
   adminApi,
 }) => {
-  test.skip(stubLlmClient, "stub_llm_client is true — real-LLM assertion skipped");
-  if (!euRunId) test.skip(true, "step 4 did not complete");
-
+  // The arc's one /admin/conf read is resolved here, at the gate that consumes it.
+  const mode = llmMode;
+  if (mode === null) {
+    throw new Error(
+      "[uc4 real-LLM] the arc's beforeAll did not record an /admin/conf read; the LLM-mode " +
+        "gate has nothing to resolve",
+    );
+  }
+  if (!mode.readable) resolveUnreadableStubLlmClient(mode, "UC4 real-LLM add-on");
+  test.skip(
+    mode.stubbed,
+    "stub_llm_client=true: a stub run does not exercise real inference, so this assertion " +
+      "has no subject. Supply the precondition with " +
+      'PATCH /api/v1/admin/conf {"stub_llm_client": false} (≤30s propagation), then re-run.',
+  );
   const evResp = await adminApi.get(`${GLOBAL_EVENT_API}?limit=100`);
   expect(evResp.status()).toBe(200);
   const evBody = (await evResp.json()) as {
