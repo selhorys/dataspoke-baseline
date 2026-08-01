@@ -178,6 +178,249 @@ upsert_env_var() {
   chmod 600 "${file}" 2>/dev/null || true
 }
 
+# resolve_image_digest <image_ref>
+# Resolves the pushed content digest for <image_ref> ("<registry>/<name>:<tag>")
+# and prints a bare `sha256:...` token on stdout. Vendor-aware, mirroring the
+# three-way `case "${VENDOR}"` dispatch in build-image.sh exactly:
+#   GCP|gcp -> `gcloud artifacts docker images describe --project <parsed>`.
+#              Required for GCP: those builds go through Cloud Build
+#              server-side, so no image ever lands in a local Docker daemon
+#              and `docker inspect` has nothing to inspect. `--project` is
+#              parsed out of the registry host the same way build-image.sh's
+#              own GCP branch does — the active gcloud config project need
+#              not match the registry project, and a mismatch here aborts the
+#              install (bin/install.sh's _resolve_digest_or_abort) unless the
+#              operator re-runs with --no-digest-pin.
+#   AWS|aws -> `aws ecr describe-images`, parsing the ECR host/region/repo out
+#              of <image_ref> with the identical sed/parameter-expansion this
+#              function's caller uses to build it, matching build-image.sh's
+#              own AWS branch. Reads the registry's current record for the
+#              tag (not a local daemon), unlike the branch below.
+#   empty/local (and any other value) -> `docker inspect` against the LOCAL
+#              Docker daemon's recorded RepoDigests for <image_ref>, honouring
+#              DATASPOKE_DOCKER_SUDO. This reports what THIS HOST pushed, not
+#              what the registry's tag currently resolves to — a TOCTOU gap
+#              relative to the GCP/AWS branches above that query the registry
+#              directly. On a stale local `<repository>:<tag>` (a prior build
+#              cached under the same tag, not re-pulled or re-built since),
+#              this branch RESOLVES SUCCESSFULLY but to the OLD content's
+#              digest — a successful resolve that is nonetheless wrong, since
+#              nothing here compares the local daemon's cached image against
+#              the registry's current tag. This is a real gap on a
+#              --skip-build install run from a host whose local Docker cache
+#              was not refreshed by this run's own build step. An image ID
+#              that was also pushed/tagged into a second repository carries
+#              multiple RepoDigests in unspecified order, so the match is
+#              keyed on the repository part of <image_ref> rather than
+#              blindly taking index 0.
+# Never aborts ITSELF: a missing CLI or a non-zero/malformed result prints
+# nothing on stdout and `warn`s instead of erroring here — its caller,
+# _resolve_digest_or_abort (bin/install.sh), aborts the whole install on an
+# empty result (the explicit escape hatch is --no-digest-pin, which skips
+# this function entirely). Every caller captures this function's stdout via
+# `$(resolve_image_digest ...)`, and `warn` (unlike `error`) writes to
+# stdout, not stderr — so every `warn` call below is explicitly redirected to
+# fd 2, or its text would leak into the captured digest variable instead of
+# leaving it empty.
+#
+# The GCP and AWS branches retry their registry call up to 3 times (2s apart)
+# before giving up — a bare CLI invocation with no retry would abort the
+# whole install on one transient network blip, the same class of failure
+# `_build_chart_deps` already rides out for `helm dependency build`. Both
+# branches short-circuit that retry loop, without waiting out the full 3
+# attempts, on the one response each knows is not transient: gcloud's
+# NOT_FOUND (the image/tag genuinely does not exist in the registry) and
+# AWS's literal "None" (the analogous nonexistent-tag response from
+# `describe-images --query ... --output text`) — retrying either gains
+# nothing, since the image will not exist on the next attempt either. The
+# local/no-vendor branch reads a local Docker daemon, not the network, so it
+# is not retried at all.
+resolve_image_digest() {
+  local image_ref="$1"
+  local vendor="${DATASPOKE_KUBE_CLOUD_VENDOR:-}"
+  local digest=""
+  # `${image_ref%:*}` strips only the shortest trailing ":*" match — i.e. the
+  # ":<tag>" suffix — even when the registry host itself carries a port
+  # (host:port/name:tag), because bash's shortest-suffix rule for `%` anchors
+  # on the LAST colon in the string. Shared by the AWS and local branches below.
+  local repo="${image_ref%:*}"
+
+  case "${vendor}" in
+    GCP|gcp)
+      if ! command -v gcloud >/dev/null 2>&1; then
+        warn "gcloud not found — cannot resolve image digest for '${image_ref}'." >&2
+        return 0
+      fi
+      # <region>-docker.pkg.dev/<project>/<repo> -> <project>. Same extraction
+      # as build-image.sh's GCP branch; omitted entirely (rather than defaulted)
+      # when the registry URL doesn't match, so a non-Artifact-Registry GCP
+      # registry still gets a (project-less) lookup attempt instead of an error.
+      local gcp_project
+      gcp_project="$(echo "${image_ref}" | sed -n 's|^\([^/]*-docker\.pkg\.dev\)/\([^/]*\)/.*|\2|p')"
+      local -a gcloud_args=(artifacts docker images describe "${image_ref}" --format='value(image_summary.digest)')
+      [[ -n "${gcp_project}" ]] && gcloud_args+=(--project "${gcp_project}")
+      local gcloud_attempt gcloud_err_file gcloud_status gcloud_not_found=false
+      for gcloud_attempt in 1 2 3; do
+        # stderr is captured to a temp file rather than merged in with `2>&1`
+        # — merging would corrupt a SUCCESSFUL digest capture the moment
+        # gcloud also emits anything on stderr (e.g. an unrelated deprecation/
+        # config warning), silently turning a working lookup into a malformed
+        # digest that fails the sha256 shape check below with no visible
+        # cause. The `if ... ; then ... ; else` form (not `var=$(...) || true`
+        # followed by a bare `$?` on the next line) is required: a plain `if`
+        # with no matching command in its failed branch reports exit status 0
+        # for the WHOLE compound statement, so `gcloud_status=$?` read AFTER
+        # the `fi` would always read 0 regardless of gcloud's real exit code
+        # — capturing it inside the `else` branch is the only place it is the
+        # real gcloud exit status.
+        gcloud_err_file="$(mktemp)"
+        if digest="$(gcloud "${gcloud_args[@]}" 2>"${gcloud_err_file}")"; then
+          gcloud_status=0
+          rm -f "${gcloud_err_file}"
+          break
+        else
+          gcloud_status=$?
+        fi
+        # A missing image/tag is not a transient failure, so a retry 2s later
+        # gains nothing — same reasoning as the AWS branch's literal "None"
+        # short-circuit below. Two distinct gcloud error shapes both mean
+        # "does not exist" and must both short-circuit here:
+        #   - a missing REPOSITORY surfaces the uncaught `GetRepository` 404
+        #     verbatim: "NOT_FOUND: Requested entity was not found."
+        #   - a missing image/tag inside an existing repository is caught by
+        #     `_ValidateAndGetDockerVersion`
+        #     (googlecloudsdk/command_lib/artifacts/docker_util.py) and
+        #     re-raised as InvalidInputValueError(_DOCKER_IMAGE_NOT_FOUND),
+        #     whose text is "Image not found.\n\nA valid container image ..."
+        #     — it does NOT contain the substring "NOT_FOUND".
+        # Matched case-insensitively against both phrasings so either shape
+        # short-circuits instead of only the repository-missing one.
+        # PERMISSION_DENIED is left on the general retry path below instead: an
+        # IAM propagation delay or a token that gets refreshed mid-run can
+        # plausibly resolve within 3 attempts, unlike a genuinely absent image.
+        if grep -qiE "NOT_FOUND|Image not found" "${gcloud_err_file}" 2>/dev/null; then
+          gcloud_not_found=true
+          warn "Image '${image_ref}' not found in Artifact Registry — not retrying: $(cat "${gcloud_err_file}" 2>/dev/null)" >&2
+          break
+        fi
+        if (( gcloud_attempt < 3 )); then
+          warn "gcloud artifacts docker images describe failed for '${image_ref}' (attempt ${gcloud_attempt}/3, exit ${gcloud_status}) — retrying in 2s: $(cat "${gcloud_err_file}" 2>/dev/null)" >&2
+          rm -f "${gcloud_err_file}"
+          sleep 2
+        fi
+      done
+      if [[ ${gcloud_status} -ne 0 ]]; then
+        # The NOT_FOUND branch above already warned with the specific cause —
+        # avoid a second, misleading "after 3 attempts" report for a lookup
+        # that only ran once.
+        if [[ "${gcloud_not_found}" == "false" ]]; then
+          warn "gcloud artifacts docker images describe failed for '${image_ref}' after 3 attempts (exit ${gcloud_status}): $(cat "${gcloud_err_file}" 2>/dev/null)" >&2
+        fi
+        digest=""
+      fi
+      rm -f "${gcloud_err_file}"
+      ;;
+    AWS|aws)
+      if ! command -v aws >/dev/null 2>&1; then
+        warn "aws CLI not found — cannot resolve image digest for '${image_ref}'." >&2
+        return 0
+      fi
+      # Mirrors build-image.sh's own ECR host/region/repo parsing exactly:
+      # registry host = everything before the first '/' of the repo (tag
+      # stripped), region parsed out of that host, repository name = the
+      # remainder joined with the image name (already part of <image_ref>).
+      local ecr_host="${repo%%/*}"
+      local ecr_repo="${repo#*/}"
+      local tag="${image_ref##*:}"
+      local ecr_region
+      ecr_region="$(echo "${ecr_host}" | sed -n 's|^[0-9]*\.dkr\.ecr\.\([a-z0-9-]\{1,\}\)\.amazonaws\.com$|\1|p')"
+      if [[ -z "${ecr_region}" ]]; then
+        warn "Could not parse the AWS region from '${image_ref}' — cannot resolve image digest." >&2
+        return 0
+      fi
+      if [[ -z "${DATASPOKE_AWS_PROFILE:-}" ]]; then
+        warn "DATASPOKE_AWS_PROFILE is unset — cannot resolve image digest for '${image_ref}'." >&2
+        return 0
+      fi
+      local aws_attempt aws_err_file aws_status aws_not_found=false
+      for aws_attempt in 1 2 3; do
+        # stderr captured to a temp file (not merged with `2>&1`), and the
+        # `if ... ; then ... ; else` form (not a bare `$?` read after the
+        # `fi`) so aws_status carries the real aws exit code — same reasoning
+        # as the GCP branch above (a plain `if` with no matching command in
+        # its failed branch reports exit status 0 for the whole compound
+        # statement, so a `$?` read after `fi` would always read 0).
+        aws_err_file="$(mktemp)"
+        if digest="$(aws ecr describe-images --region "${ecr_region}" --profile "${DATASPOKE_AWS_PROFILE}" \
+          --repository-name "${ecr_repo}" --image-ids "imageTag=${tag}" \
+          --query 'imageDetails[0].imageDigest' --output text 2>"${aws_err_file}")"; then
+          aws_status=0
+          rm -f "${aws_err_file}"
+          break
+        else
+          aws_status=$?
+        fi
+        # A missing repository (RepositoryNotFoundException) or a missing tag
+        # inside an existing repository (ImageNotFoundException) are both
+        # non-zero-exit failures that mean "does not exist" — not transient,
+        # so retrying gains nothing, same reasoning as the tag-only "None"
+        # short-circuit below (which only fires on exit 0).
+        if grep -qE "RepositoryNotFoundException|ImageNotFoundException" "${aws_err_file}" 2>/dev/null; then
+          aws_not_found=true
+          warn "'${image_ref}' not found in ECR (region ${ecr_region}) — not retrying: $(cat "${aws_err_file}" 2>/dev/null)" >&2
+          break
+        fi
+        if (( aws_attempt < 3 )); then
+          warn "aws ecr describe-images failed for '${image_ref}' (attempt ${aws_attempt}/3, exit ${aws_status}) — retrying in 2s: $(cat "${aws_err_file}" 2>/dev/null)" >&2
+          rm -f "${aws_err_file}"
+          sleep 2
+        fi
+      done
+      if [[ ${aws_status} -ne 0 ]]; then
+        # The RepositoryNotFoundException/ImageNotFoundException branch above
+        # already warned with the specific cause — avoid a second, misleading
+        # "after 3 attempts" report for a lookup that only ran once.
+        if [[ "${aws_not_found}" == "false" ]]; then
+          warn "aws ecr describe-images failed for '${image_ref}' after 3 attempts (exit ${aws_status}): $(cat "${aws_err_file}" 2>/dev/null)" >&2
+        fi
+        digest=""
+      elif [[ "${digest}" == "None" ]]; then
+        # `--query ... --output text` on a nonexistent tag returns the
+        # literal string "None" with exit 0 — not a describe-images failure,
+        # so it would otherwise fall through to the generic sha256-shape
+        # warning below with no indication of the real cause. Not retried:
+        # a nonexistent tag will not exist on the next attempt either.
+        warn "Tag '${tag}' not found in ECR repository '${ecr_repo}' (region ${ecr_region})." >&2
+        digest=""
+      fi
+      rm -f "${aws_err_file}"
+      ;;
+    *)
+      if ! command -v docker >/dev/null 2>&1; then
+        warn "docker not found — cannot resolve image digest for '${image_ref}'." >&2
+        return 0
+      fi
+      local docker_cmd=(docker)
+      [[ "${DATASPOKE_DOCKER_SUDO:-false}" == "true" ]] && docker_cmd=(sudo docker)
+      local repo_digests
+      repo_digests="$("${docker_cmd[@]}" inspect --format='{{range .RepoDigests}}{{println .}}{{end}}' "${image_ref}" 2>/dev/null || true)"
+      # An image ID pushed to more than one repository carries multiple
+      # RepoDigests in unspecified order — select the entry whose repository
+      # (the part before '@') matches this image_ref's repository instead of
+      # blindly taking index 0, which could silently attest another
+      # repository's digest.
+      digest="$(printf '%s\n' "${repo_digests}" | awk -F'@' -v repo="${repo}" '$1==repo{print $2; exit}')"
+      ;;
+  esac
+
+  if [[ ! "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    warn "Could not resolve an image digest for '${image_ref}'. The caller (_resolve_digest_or_abort in bin/install.sh) aborts the install on this — re-run with --no-digest-pin to deploy '${image_ref}' by its mutable tag instead." >&2
+    return 0
+  fi
+
+  echo "${digest}"
+}
+
 # wait_for_pod <name> <ns> <timeout_secs>
 # Poll until the named pod reports Ready=True or timeout.
 wait_for_pod() {

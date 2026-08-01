@@ -29,6 +29,12 @@ frontend:
   image:
     repository: dataspoke/frontend
     tag: latest
+    # Set (via --set-string) by install.sh's digest resolution — see
+    # spec/feature/HELM_CHART.md §Digest stamping and this subchart's own
+    # templates/_helpers.tpl's frontend.imageRef (a chart-scoped copy of the
+    # umbrella's dataspoke.imageRef, kept so this subchart lints and renders
+    # standalone). Empty by default: renders "repository:tag".
+    digest: ""
     pullPolicy: IfNotPresent
   service:
     type: ClusterIP
@@ -97,6 +103,10 @@ api:
   image:
     repository: dataspoke/api
     tag: latest
+    # Set (via --set-string) by install.sh's digest resolution — see
+    # spec/feature/HELM_CHART.md §Digest stamping and templates/_helpers.tpl's
+    # dataspoke.imageRef. Empty by default: renders "repository:tag".
+    digest: ""
     pullPolicy: IfNotPresent
   imagePullSecrets: []
   service:
@@ -215,6 +225,12 @@ event-consumer:
   image:
     repository: dataspoke/api
     tag: latest
+    # Set (via --set-string) by install.sh's digest resolution — see
+    # spec/feature/HELM_CHART.md §Digest stamping and this subchart's own
+    # templates/_helpers.tpl's event-consumer.imageRef (a chart-scoped copy of
+    # the umbrella's dataspoke.imageRef, kept so this subchart lints and
+    # renders standalone). Empty by default: renders "repository:tag".
+    digest: ""
     pullPolicy: IfNotPresent
   # ServiceAccount + secret-reader RBAC for the consumer. annotations is the
   # attachment point for cloud workload identity — required for

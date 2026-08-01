@@ -1,7 +1,7 @@
 ---
 name: k8s-deploy
 description: Drive the helm-charts/bin/ install/uninstall/build/health scripts for both dev and prod profiles — configure, install, reinstall, uninstall, health-check, and rebuild-the-API / rebuild-the-frontend. The dev profile installs umbrella chart + peripherals (nginx-ingress, DataHub, Langfuse, dummy data, dev-lock) and auto-seeds peripheral connection config via the admin API. The prod profile installs the umbrella chart only; operator wires peripherals via /api/v1/admin/peripherals/*.
-argument-hint: "[configure|install|reinstall|uninstall|health-check|run-api] [--profile dev|prod] [--components <csv>] [other options...]"
+argument-hint: "[configure|install|reinstall|uninstall|health-check|run-api] [--profile dev|prod] [--components <csv>, dev only] [other options...]"
 allowed-tools: Bash(*), Read, Edit, Write, Glob, Grep, Skill(k8s-work), AskUserQuestion
 ---
 
@@ -31,14 +31,19 @@ When the user specifies components, match against these names (the
 `--components` flag accepts a comma-separated subset). If no components
 are specified, operate on **all-for-profile**.
 
+`--components` and `--from-component` are dev-only — `install.sh` rejects both
+under `--profile prod`, which always runs its full phase sequence. A prod
+request naming components is a request for something the installer does not
+offer: say so rather than dropping the flag and running a full install.
+
 | Component | Profiles | Aliases |
 |---|---|---|
 | `nginx-ingress` | dev | `ingress` |
 | `datahub` | dev | — |
 | `langfuse` | dev | `lf`, `observability` |
-| `dataspoke-infra` | dev, prod | `infra`, `infrastructure`, `chart`, `umbrella` |
-| `api` | dev, prod | (rebuild + helm-upgrade the API only — iteration path) |
-| `frontend` | dev, prod | `ui`, `web` (rebuild + helm-upgrade the Next.js UI only — iteration path) |
+| `dataspoke-infra` | dev | `infra`, `infrastructure`, `chart`, `umbrella` |
+| `api` | dev | (rebuild + helm-upgrade the API only — iteration path) |
+| `frontend` | dev | `ui`, `web` (rebuild + helm-upgrade the Next.js UI only — iteration path) |
 | `dummy-data` | dev | `example`, `dummy` |
 | `dev-lock` | dev | `lock` |
 | `seed` | dev | (post-install admin-API seeding only) |
@@ -215,7 +220,7 @@ Rebuild the DataSpoke API Docker image, redeploy it via `helm upgrade`, and roll
 
 ### Pre-flight
 
-1. Verify `helm-charts/.env.dev` (or `.env.prod` for prod) exists. If not, run **configure** first.
+1. Verify `helm-charts/.env.dev` exists. If not, run **configure** first. This action is dev-only — its deploy command is `--components api`, which `install.sh` rejects under `--profile prod`.
 2. If the user requests it (or `--health-check` flag), run `./helm-charts/bin/health-check.sh --quick` to confirm infrastructure is reachable. If it fails, suggest `/k8s-deploy health-check` or `/k8s-deploy install` and stop.
 3. Run `uv sync` to ensure Python dependencies are up to date.
 

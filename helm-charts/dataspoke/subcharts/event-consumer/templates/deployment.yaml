@@ -77,7 +77,7 @@ spec:
       {{- end }}
       containers:
         - name: event-consumer
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: "{{ include "event-consumer.imageRef" .Values.image }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           {{/*
             The image is the API image (docker-images/api/Dockerfile), which

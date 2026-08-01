@@ -144,12 +144,13 @@ wires them via the runtime admin API (`/api/v1/admin/peripherals/{datahub,langfu
 |---|---|---|
 | `--profile {dev\|prod}` | required | Selects component set + values overlay. |
 | `--env-file <path>` | `helm-charts/.env.<profile>` | Env file to source. Defaults to `.env.dev` for `--profile dev`, `.env.prod` for `--profile prod`. Exported so child and post-install scripts inherit the same resolved file. |
-| `--components <list>` | all-for-profile | Comma-separated subset (e.g. `api`, `dataspoke-infra`, `datahub`). |
-| `--from-component <name>` | — | Resume an interrupted full install at this component. |
+| `--components <list>` | all-for-profile | **Dev only.** Comma-separated subset (e.g. `api`, `dataspoke-infra`, `datahub`). |
+| `--from-component <name>` | — | **Dev only.** Resume an interrupted full install at this component. |
 | `--skip-build` | false | Skip Docker image rebuild (api/airflow/postgres). |
 | `--skip-seed` | false (dev) | Skip post-install admin-API seeding. |
 | `--values <path>` | — | Extra values file passed to the umbrella chart (prod). **Single use** — a repeated `--values` is a hard error, so an operator layering several overlays merges them into one file first. |
-| `--image-tag <tag>` | `dev` | Override the image tag for api/airflow/postgres (prod CI). |
+| `--image-tag <tag>` | `dev` | Override the image tag for api/airflow/postgres (prod CI). Validated against `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` before use — it flows into several `helm --set`/`--set-string` tokens, where an unvalidated comma or newline could inject an arbitrary values path. |
+| `--no-digest-pin` | false | Skip image-digest resolution entirely (§Digest stamping) for the three DataSpoke-owned workloads (`dataspoke-api`, `dataspoke-event-consumer`, `dataspoke-frontend`): each renders the mutable `<repository>:<tag>` reference with `imagePullPolicy: Always` instead, and `install.sh` unconditionally issues an explicit rollout restart of all three (`dataspoke-frontend` only when deployed) after the umbrella upgrade. `postgresql` and `airflow` are never digest-stamped regardless of this flag — see §Digest stamping's "airflow and postgres are not digest-stamped" note. |
 | `--frontend {none\|local\|cluster}` | `none` (dev), `cluster` (prod) | Frontend deployment mode for a full install. `none`: not deployed. `local` (dev-only): writes `src/frontend/.env.local` pointing at the in-cluster API for host `pnpm dev`. `cluster`: builds the image and deploys the UI in-cluster. |
 | `--help`, `-h` | — | Print usage. |
 
@@ -159,7 +160,7 @@ wires them via the runtime admin API (`/api/v1/admin/peripherals/{datahub,langfu
 |---|---|---|---|
 | 1 | Pre-flight | tool check, context switch, namespace ensure, nginx-ingress install | nginx-ingress must complete first to provide `INGRESS_IP` / `_DOMAIN` for downstream. |
 | 2 | **Parallel bootstrap** | `build-image.sh api` ‖ `build-image.sh airflow` ‖ `build-image.sh postgres` ‖ `dev-peripherals/datahub.sh` ‖ `dev-peripherals/langfuse.sh` | bash `&` + `wait`. Failures of any branch abort the install. `build-image.sh frontend` is added only when `--frontend cluster`. |
-| 3 | Umbrella chart | `helm upgrade --install dataspoke ./helm-charts/dataspoke -f values-dev.yaml` | Depends on phase 2: images pulled by deployment, DataHub URL/PAT/Kafka + Langfuse host/public-key fed via `--set` for downstream seeding. `frontend.enabled` is `false` unless `--frontend cluster`, which appends the frontend `--set` flags and waits for the `dataspoke-frontend` rollout. |
+| 3 | Umbrella chart | `helm upgrade --install dataspoke ./helm-charts/dataspoke -f values-dev.yaml` | Depends on phase 2: images pulled by deployment, their resolved digests stamped into pod annotations (§Digest stamping), DataHub URL/PAT/Kafka + Langfuse host/public-key fed via `--set` for downstream seeding. `frontend.enabled` is `false` unless `--frontend cluster`, which appends the frontend `--set` flags and waits for the `dataspoke-frontend` rollout. |
 | 4 | **Parallel post-bootstrap** | `dev-peripherals/dummy-data.sh` ‖ `dev-peripherals/dev-lock.sh` | Both depend on cluster connectivity but not on each other. |
 | 5 | Post-install seeding | `seed-peripheral-config.sh`, `seed-runtime-config.sh`, `seed-admin-user.sh` | PATCHes `/internal/admin/peripherals/{datahub,langfuse}`, `/internal/admin/conf`, and POSTs `/internal/admin/bootstrap` (idempotent: seeds the default `dataspoke@dataspoke.local / dataspoke` Admin only when no Admin exists). Skipped by `--skip-seed`. |
 
@@ -167,10 +168,50 @@ wires them via the runtime admin API (`/api/v1/admin/peripherals/{datahub,langfu
 
 | # | Phase | Components | Notes |
 |---|---|---|---|
-| 1 | Pre-flight | tool check, context switch, namespace ensure | No nginx-ingress install — operator's controller. |
+| 1 | Pre-flight | tool check, context switch, namespace ensure, IngressClass/StorageClass checks, then — only under `--skip-build` — image-digest resolution, then Secret checks | No nginx-ingress install — operator's controller. Digest resolution, when it runs here, lands ahead of every credential Secret this phase goes on to create/update, only when `--skip-build` means the image already exists in the registry; otherwise it waits for phase 2's push (see §Digest stamping). |
 | 2 | Image build | `build-image.sh api` ‖ `build-image.sh airflow` ‖ `build-image.sh postgres` | Skipped by `--skip-build` when CI built and pushed the images. `build-image.sh frontend` runs under the default `--frontend cluster`; skipped under `--frontend none`. |
-| 3 | Umbrella chart | `helm upgrade --install dataspoke ./helm-charts/dataspoke -f values.yaml -f <operator-overlay>` | Operator supplies values overlay with their own ingress hosts, TLS, registry, replica counts, source-credential references. `frontend.enabled` is set from `--frontend` (`cluster`→true, `none`→false; default `cluster`). |
+| 3 | Umbrella chart | `helm upgrade --install dataspoke ./helm-charts/dataspoke -f values.yaml -f <operator-overlay>` | Operator supplies values overlay with their own ingress hosts, TLS, registry, replica counts, source-credential references. Digest stamping applies in prod as well (resolved here instead of phase 1 unless `--skip-build` was passed), so the same tag name carrying new content still rolls api/frontend, and event-consumer too when the overlay enables it. `frontend.enabled` is set from `--frontend` (`cluster`→true, `none`→false; default `cluster`). |
 | — | Admin seed | `post-install/seed-admin-user.sh` | Runs after the chart phase unless `--skip-seed` is passed. Idempotent; seeds the default `dataspoke@dataspoke.local / dataspoke` Admin only when no Admin exists. Carries no `step` marker of its own. |
+
+**Post-upgrade blocking waits (phase 3).** Immediately after the `helm
+upgrade` above, `install.sh` runs `kubectl rollout status --timeout=5m`
+against each workload the release was actually asked to render, aborting the
+whole install on a timeout:
+
+| Workload | Waited on | Conditional on |
+|---|---|---|
+| `dataspoke-api` | always | `api.enabled`, which the installer pins to `true` on the upgrade so an overlay cannot switch it off underneath the wait |
+| `dataspoke-event-consumer` | only if the Deployment object exists post-upgrade | `event-consumer.enabled` (chart default `false`; ships commented out in `values-prod.example.yaml` — an operator overlay is the only way to turn it on). Checked by existence, not by re-parsing the overlay, so it tracks whatever the release actually rendered regardless of how `enabled` got set. |
+| `dataspoke-frontend` | only when the frontend is deployed | `--frontend cluster` (`_prod_frontend_enabled`) |
+
+The API wait needs no existence check because the installer `--set`s
+`api.enabled=true` on the upgrade, the same script-wins pin it uses for
+`frontend.enabled`. The api Deployment template is gated on that value, so
+without the pin an operator overlay could switch it off and the wait would
+abort against a Deployment the release never rendered. The event-consumer wait's existence check is what keeps the
+default install (`event-consumer.enabled=false`) from aborting on a `rollout
+status` against an object the chart never created. Under `--no-digest-pin`,
+each in-scope workload is also explicitly `kubectl rollout restart`ed ahead
+of its wait (see §Digest stamping).
+
+`_restart_airflow_key_consumers` (see §Rotation tolerance of the Airflow
+projections) runs immediately after the `helm upgrade` above and strictly
+before all three
+`kubectl rollout status` waits — not after them. Phase 3 has already
+re-projected a rotated signing key out of the credentials Secret into
+`dataspoke-airflow-api-secret-key` / `dataspoke-airflow-jwt-secret` ahead of
+this point (the credentials Secret itself is operator-owned in prod and never
+written by the installer); placing
+the restart after the waits would let a 5-minute wait timeout abort the
+install with the rotated key applied but the consuming Airflow pods never
+restarted to pick it up, and the next run's own comparison would then find
+the Secret and the live projection already in agreement and skip the restart
+silently. Every call site of the helper orders it this way.
+
+The `helm upgrade` itself still sits between the key write and the restart on
+every path, so an upgrade failure strands a rotated key the same way. Removing
+that residual means restarting the consumers directly after the write, ahead of
+the upgrade.
 
 Peripheral wiring (DataHub URL/token, Langfuse host/keys, LLM provider/model/key)
 is the operator's responsibility post-install, via `/api/v1/admin/peripherals/*`
@@ -187,16 +228,18 @@ workflow.
 | `nginx-ingress` | dev | `dev-peripherals/nginx-ingress.sh` |
 | `datahub` | dev | `dev-peripherals/datahub.sh` |
 | `langfuse` | dev | `dev-peripherals/langfuse.sh` |
-| `dataspoke-infra` | dev, prod | `dataspoke/` umbrella chart (alias: `chart`, `umbrella`) |
-| `api` | dev, prod | umbrella chart, `api.*` block (rebuilds api image and `helm upgrade` of the API only) |
-| `frontend` | dev, prod | umbrella chart, `frontend.*` block (rebuilds frontend image and `helm upgrade` of the UI only) |
+| `dataspoke-infra` | dev | `dataspoke/` umbrella chart (alias: `chart`, `umbrella`) |
+| `api` | dev | umbrella chart, `api.*` block (rebuilds api image and `helm upgrade` of the API only) |
+| `frontend` | dev | umbrella chart, `frontend.*` block (rebuilds frontend image and `helm upgrade` of the UI only) |
 | `dummy-data` | dev | `dev-peripherals/dummy-data.sh` |
 | `dev-lock` | dev | `dev-peripherals/dev-lock.sh` |
 | `seed` | dev | `post-install/*` |
 
-`--components api` rebuilds the API image, runs `helm upgrade` against the
-umbrella chart, and rolls the API deployment. `--components frontend` is the
-analogous code-iteration path for the UI pod.
+`--components` and `--from-component` are honoured by the dev profile only; a
+prod install always runs its full phase sequence. `--components api` rebuilds
+the API image and runs `helm upgrade` against the umbrella chart, which rolls
+the API deployment through digest stamping (§Digest stamping). `--components
+frontend` is the analogous code-iteration path for the UI pod.
 
 For a full install, `--frontend` governs the UI: `none` deploys nothing; `local`
 (dev-only) writes `src/frontend/.env.local` after seeding so host `pnpm dev`
@@ -300,7 +343,8 @@ respecting the `api.*` values block.
 The event-consumer subchart builds **no image of its own** — its Deployment runs
 the API image with a `command:` override, so `--image-tag` selects one artifact
 for both workloads and the two can never run different revisions of `src/`. Its
-`image.*` values therefore default to the API's coordinates. See
+`image.*` values therefore default to the API's coordinates, and it carries the
+same image-digest pod annotation, so one push rolls both Deployments together. See
 [BACKEND §Kafka Consumers](BACKEND.md#kafka-consumers-optional-not-enabled-in-baseline).
 
 ### Dependencies
@@ -983,9 +1027,117 @@ output is buffered per branch so the operator sees one stream finish at a
 time.
 
 The umbrella chart pulls `${REGISTRY}/postgres:dev`, `${REGISTRY}/airflow:dev`,
-`${REGISTRY}/api:dev` (or the operator-supplied tag in prod). Updating a DAG
-or DataSpoke code requires a rebuild + `kubectl rollout restart` — both
-automated by `bin/install.sh --components api` (or `airflow`, `postgres`).
+`${REGISTRY}/api:dev` (or the operator-supplied tag in prod).
+
+### Digest stamping
+
+Image tags are mutable: a rebuild pushed to the same tag leaves the rendered pod
+template byte-identical, so `helm upgrade` finds nothing to change and the
+running pods keep the old image. The three DataSpoke-owned workloads — **api**,
+**event-consumer**, **frontend** — close that gap by digest pinning. After the
+push, `install.sh` resolves the image's `sha256:` content digest (`resolve_image_digest`
+in `bin/lib/helpers.sh`) and, when resolution succeeds, both (a) renders that
+workload's image reference as `<repository>@<digest>` instead of the mutable
+`<repository>:<tag>` (`api.image.digest` / `frontend.image.digest` /
+`event-consumer.image.digest`, consumed by the umbrella chart's
+`dataspoke.imageRef` named template — the frontend and event-consumer
+subcharts define their own chart-scoped `frontend.imageRef` /
+`event-consumer.imageRef` with an identical body so each lints and renders
+standalone) and (b) stamps the same value as a `dataspoke.io/image-digest`
+annotation delivered through the workload's existing `podAnnotations` map —
+`api.podAnnotations`, `event-consumer.podAnnotations`, `frontend.podAnnotations`
+— composing with the `cluster-autoscaler.kubernetes.io/safe-to-evict` entry
+already in those maps (§Eviction resilience) rather than replacing them. This
+annotation is provenance only — useful for `kubectl get deploy -o jsonpath` —
+and nothing in `install.sh` ever reads it back to decide what to deploy.
+Pinning the image reference itself (not only the annotation) is what makes the
+guarantee real regardless of `imagePullPolicy`: a cached `repo@sha256:X` can
+only ever be content `X`, so `IfNotPresent` (the default for every chart) is
+as safe as `Always`. Because the digest is part of both the image field and
+the pod template, the pod-template hash changes exactly when a freshly
+resolved digest changes, so Helm rolls the workload by construction.
+
+**Two outcomes only.** Resolution for a given workload
+(`_resolve_digest_or_abort` in `bin/install.sh`) is one of:
+
+- **`resolve_image_digest` succeeds** — pin the freshly resolved digest. Helm
+  rolls the workload by construction, as described above.
+- **`resolve_image_digest` fails** — abort the install (exit 1), strictly
+  BEFORE the umbrella `helm upgrade` runs, naming the image reference and
+  carrying the underlying resolution failure (`resolve_image_digest` already
+  `warn`s the registry error, missing-CLI, or network cause to stderr
+  immediately above this abort message) and pointing at `--no-digest-pin` as
+  the recovery path.
+
+This is the whole contract: the installer never reads cluster state — a
+Deployment's live image, a pod annotation, a prior run's outcome — to decide
+what to deploy. Every input to the deployed image reference comes from THIS
+run's own build/registry lookup. That is what makes a stale-content deploy
+structurally impossible rather than guarded against by a second layer of
+comparison logic.
+
+**`--no-digest-pin`** is the explicit, operator-chosen escape hatch that
+replaces every implicit fallback. When passed, `install.sh` skips digest
+resolution entirely for that run — `resolve_image_digest` is never called, no
+`image.digest` `--set` flag is emitted, and every workload renders the chart's
+default mutable `<repository>:<tag>` reference. Because a same-tag rebuild
+then leaves the pod template byte-identical, `install.sh` also forces that
+workload's `image.pullPolicy` to `Always` (chart default: `IfNotPresent`,
+safe only under the digest-pinned reference above) and unconditionally issues
+an explicit `kubectl rollout restart` after the umbrella upgrade for
+`dataspoke-api`, `dataspoke-event-consumer`, and `dataspoke-frontend` (the
+last only when it is actually deployed — `frontend.enabled=true`). The
+`pullPolicy` override is what makes the restart actually land new content: a
+bare `kubectl rollout restart` does not force a re-pull, so without it a node
+that already has the reused tag cached keeps serving the stale image while
+the rollout still reports success. This is the pre-digest-pinning behavior,
+now reached only when explicitly requested instead of by degrading
+resolution.
+
+Resolution is vendor-dependent and not equally strong everywhere: the GCP
+branch (`gcloud artifacts docker images describe`) and the AWS branch (`aws
+ecr describe-images`) both query the registry directly — each retrying its
+call up to 3 times, 2s apart, to ride out a transient network blip rather than
+aborting the install on one bad request. Each also short-circuits that retry
+loop on the one response it knows is not transient — gcloud's `NOT_FOUND` and
+AWS's literal `"None"` (both mean the image/tag genuinely does not exist in
+the registry) — rather than waiting out the full 3 attempts on a result that
+cannot change. Each vendor raises that verdict in more than one shape, so the
+match covers both: on GCP a missing *repository* and a missing *image or tag*
+surface as different SDK errors, and on AWS the not-found exceptions sit
+alongside the exit-0 `"None"` result. Any other failure (auth, network,
+malformed response) still rides out all 3 attempts. The local/no-vendor branch falls
+back to the local Docker daemon's recorded `RepoDigests` for the image — i.e.
+what *this host* last pushed, not necessarily what the registry's tag
+currently resolves to; it is not retried, since a local daemon state check
+gains nothing from repeating it 2s later. **This is a real gap, not just a
+weaker guarantee:** on a `--skip-build` install run from a host whose local
+Docker cache holds a STALE `<repository>:<tag>` (built and cached by an
+earlier, different run, never refreshed by this run's own build step), this
+branch resolves SUCCESSFULLY — it finds a `RepoDigests` entry and returns a
+well-formed `sha256:...` — but to the OLD content's digest, not necessarily
+what the registry's tag currently serves. A successful resolve is therefore
+not by itself proof the pinned digest matches what a fresh pull of the tag
+would produce on this vendor; only the GCP/AWS branches query the registry
+directly and close that gap. Operators on the local/no-vendor path who deploy
+from a host distinct from the one that built and pushed the image should
+prefer `DATASPOKE_KUBE_CLOUD_VENDOR=GCP` or `AWS` for a registry-side
+guarantee.
+
+**airflow and postgres are not digest-stamped.** Both are third-party
+subcharts whose pod templates DataSpoke does not author: Airflow renders four
+workloads (api-server, scheduler, triggerer, dag-processor) from the one
+image, so the one digest would have to be stamped into four separate
+`podAnnotations` maps kept in lockstep — a cost paid on every install for a
+component that changes only on a DAG or image edit; PostgreSQL is a
+StatefulSet, where a template-driven roll is a stateful data-plane operation
+rather than a code push. `install.sh` restarts neither automatically after a
+rebuild: `_restart_airflow_key_consumers` rolls the four Airflow workloads
+only when a signing-key Secret was rotated, not on an image update, and there
+is no automated PostgreSQL restart at all. Updating a DAG or the PG image is
+therefore a rebuild, the umbrella upgrade, and an operator-issued explicit
+`kubectl rollout restart` of the affected Deployments (`restart statefulset`
+for PostgreSQL).
 
 ---
 

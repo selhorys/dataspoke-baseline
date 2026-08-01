@@ -134,7 +134,8 @@ skips itself when the diff does not reach its layer or its dependencies are unav
    orchestrator-owned.
 2. **Integration fix loop** — under the dev-env lock. When the diff touches `src/api/`,
    `src/backend/`, or `src/shared/`, the branch's API is deployed first (`install.sh --components
-   api`, which does its own rollout restart + wait) so the tests reach the branch's code. Then spot
+   api`, which pins the rebuilt image by digest so helm rolls it by construction, then waits on
+   `kubectl rollout status`) so the tests reach the branch's code. Then spot
    and api-wired run as two separate groups — mixing them puts competing Airflow load on the cluster
    and flakes on timing. An attempt fails if either group fails; failures feed a Claude fix session,
    bounded by `PRAUTO_INTEGRATION_FIX_MAX_RETRIES`.

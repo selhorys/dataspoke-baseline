@@ -74,7 +74,7 @@ spec:
         {{- end }}
         {{- if .Values.api.migrate.enabled }}
         - name: alembic-migrate
-          image: "{{ .Values.api.image.repository }}:{{ .Values.api.image.tag }}"
+          image: "{{ include "dataspoke.imageRef" .Values.api.image }}"
           imagePullPolicy: {{ .Values.api.image.pullPolicy }}
           command: ["python", "-m", "alembic", "upgrade", "head"]
           envFrom:
@@ -105,7 +105,7 @@ spec:
       {{- end }}
       containers:
         - name: api
-          image: "{{ .Values.api.image.repository }}:{{ .Values.api.image.tag }}"
+          image: "{{ include "dataspoke.imageRef" .Values.api.image }}"
           imagePullPolicy: {{ .Values.api.image.pullPolicy }}
           ports:
             - containerPort: 8002

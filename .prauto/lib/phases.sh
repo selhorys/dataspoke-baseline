@@ -478,8 +478,10 @@ run_integration_test_fix() {
 }
 
 # Deploy the branch's API so the integration groups exercise the branch's code rather
-# than a stale image. `--components api` runs its own rollout restart + rollout status
-# on dataspoke-api, so no restart/wait logic is needed here — just invoke and check exit.
+# than a stale image. `--components api` pins the rebuilt image by digest (helm upgrade
+# then rolls dataspoke-api by construction — see spec/feature/HELM_CHART.md §Digest
+# stamping) and runs its own `kubectl rollout status` wait, so no restart/wait logic is
+# needed here — just invoke and check exit.
 # ORDERING: this must precede any deploy_branch_frontend. `--components api` is a
 # full-release upgrade that reverts frontend.enabled→false, deleting the cluster
 # frontend; running it after the frontend deploy would destroy the UI the E2E stage
@@ -524,8 +526,13 @@ deploy_branch_api() {
 }
 
 # Deploy the branch's frontend so the E2E suite exercises the branch's UI.
-# The umbrella upgrade reuses the :dev image tag and therefore does not roll pods
-# on its own — the forced restart is what puts the new image behind the run.
+# The umbrella upgrade pins the rebuilt image by digest, which rolls the pod by
+# construction even though the tag string (:dev) stays the same (see
+# spec/feature/HELM_CHART.md §Digest stamping) — a resolution failure aborts
+# install.sh outright (checked via deploy_exit below) rather than deploying a
+# stale image, so this stage never reaches the forced restart on a resolution
+# failure. The forced restart below is a belt-and-braces guarantee on top of
+# that, independent of install.sh's own digest-pin/restart logic.
 # SOURCE vs CLUSTER split: install.sh (→ build-image.sh) runs from the branch WORKTREE so
 # the branch's src/, Dockerfile, and chart are built and deployed. The env_file (namespace
 # lookup below, cluster selection) stays $REPO_DIR-anchored via resolve_dev_env, so the

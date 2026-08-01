@@ -14,6 +14,11 @@ podDisruptionBudget:
 image:
   repository: dataspoke/frontend
   tag: latest
+  # Set (via --set-string) by install.sh's digest resolution — see
+  # spec/feature/HELM_CHART.md §Digest stamping and this chart's own
+  # templates/_helpers.tpl frontend.imageRef. Empty by default: renders
+  # "repository:tag".
+  digest: ""
   pullPolicy: IfNotPresent
 
 service:

@@ -5,10 +5,10 @@
 #
 # OPTIONS
 #   --env-file <path>           Path to the env file (default: helm-charts/.env.<PROFILE>).
-#   --components <csv>          Subset of components to install (default: all-for-profile).
+#   --components <csv>          (dev only) Subset of components to install (default: all-for-profile).
 #                               Names: nginx-ingress, datahub, langfuse, dataspoke-infra,
 #                                      api, frontend, dummy-data, dev-lock, seed
-#   --from-component <n>        Resume an interrupted full install at <n>.
+#   --from-component <n>        (dev only) Resume an interrupted full install at <n>.
 #   --frontend none|local|cluster
 #                               Frontend deployment mode. Controls whether the Next.js
 #                               frontend is deployed and how developers access it.
@@ -22,6 +22,20 @@
 #   --skip-seed                 Skip post-install admin-API seeding (both profiles).
 #   --values <path>             Extra values file for the umbrella chart (prod, single use).
 #   --image-tag <tag>           Override image tag (default: dev).
+#   --no-digest-pin             Skip image-digest resolution entirely for the three
+#                               DataSpoke-owned workloads (api, event-consumer,
+#                               frontend): render each one's image as the mutable
+#                               `repo:tag` reference, force its image.pullPolicy to
+#                               Always (so the substituted rollout restart below
+#                               actually re-pulls instead of reusing a cached tag),
+#                               and, after the umbrella helm upgrade, unconditionally
+#                               issue an explicit rollout restart of dataspoke-api,
+#                               dataspoke-event-consumer, and dataspoke-frontend (the
+#                               last only when it is actually deployed). postgresql
+#                               and airflow are never digest-stamped regardless of
+#                               this flag. The explicit, operator-chosen escape hatch
+#                               from digest pinning — see
+#                               spec/feature/HELM_CHART.md §Digest stamping.
 #   --help, -h                  Print this usage message.
 #
 # The --components api path rebuilds the API image, runs helm upgrade, and
@@ -56,6 +70,29 @@ SKIP_SEED=false
 EXTRA_VALUES=""
 IMAGE_TAG="dev"
 IMAGE_TAG_EXPLICIT=false
+NO_DIGEST_PIN=false
+
+# Resolved once per install (see resolve_image_digest in lib/helpers.sh) and
+# read by _api_image_helm_set_args / _frontend_helm_set_args to pin the image
+# reference itself to `<repository>@sha256:...` (via the `dataspoke.imageRef`
+# named template, api.image.digest / frontend.image.digest /
+# event-consumer.image.digest) and to stamp the identical value as the
+# dataspoke.io/image-digest pod annotation (provenance only — nothing in this
+# script reads it back) on every workload running that image. A non-empty
+# digest means the pod-template hash changes exactly when the digest changes,
+# so Helm rolls the workload by construction. `--no-digest-pin` skips
+# resolution entirely, leaving both variables empty; every call site then
+# also forces that workload's image.pullPolicy to Always (see
+# _api_image_helm_set_args / the prod frontend --set args below) — every
+# chart's pullPolicy defaults to IfNotPresent, and a bare `rollout restart`
+# does not force a re-pull, so without this a node with the reused tag
+# already cached would keep serving stale layers while every readiness wait
+# still reports success — and issues an explicit rollout restart after the
+# umbrella helm upgrade instead (see _rollout_restart_workload's call sites
+# below). `set -u` safety: both start empty so an unresolved digest reads as
+# "" rather than an unbound-variable error.
+API_IMAGE_DIGEST=""
+FRONTEND_IMAGE_DIGEST=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -66,6 +103,7 @@ while [[ $# -gt 0 ]]; do
     --frontend)        FRONTEND_MODE="${2:-}"; shift 2 ;;
     --skip-build)      SKIP_BUILD=true; shift ;;
     --skip-seed)       SKIP_SEED=true; shift ;;
+    --no-digest-pin)   NO_DIGEST_PIN=true; shift ;;
     --values)
       if [[ -n "${EXTRA_VALUES}" ]]; then
         error "--values may only be given once; it takes exactly one overlay file (unlike helm's repeatable -f). Merge multiple overlays into one file first."
@@ -91,6 +129,34 @@ if [[ -z "$PROFILE" ]]; then
 fi
 if [[ "$PROFILE" != "dev" && "$PROFILE" != "prod" ]]; then
   error "Invalid profile '${PROFILE}'. Must be 'dev' or 'prod'."
+fi
+
+# IMAGE_TAG flows unvalidated into several `--set`/`--set-string` tokens below
+# (e.g. `api.image.tag=${IMAGE_TAG}`) and into image references passed to
+# build-image.sh / resolve_image_digest. helm treats `,` as an assignment
+# separator within a single --set token, so an unvalidated tag could inject an
+# arbitrary values path (e.g. `v1,api.image.repository=evil/img`), and a
+# newline would desync the one-token-per-line heredoc streams read via `while
+# IFS= read -r` throughout this script.
+if [[ ! "$IMAGE_TAG" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; then
+  error "Invalid --image-tag '${IMAGE_TAG}'. Must match ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ (alphanumeric, '.', '_', '-' only — no comma, no whitespace, no newline)."
+fi
+
+# --components / --from-component (single/subset-component reinstall and
+# resume) are dev-only fast paths — the prod branch below has no per-component
+# dispatch and always runs a full install regardless of either flag. Hard
+# error rather than warn-and-proceed: a caller passing either flag on
+# --profile prod out of dev habit expects a narrow, single-component action
+# (e.g. rebuild just the API) and silently running the COMPLETE prod install
+# instead — full Secret derivation, every Ingress's class override, the whole
+# umbrella upgrade, the admin seed — is "do more than the operator asked",
+# the same failure direction the repeated-`--values` check above already
+# hard-errors on.
+if [[ "$PROFILE" == "prod" && -n "$COMPONENTS_CSV" ]]; then
+  error "--components is dev-only; --profile prod always runs a full install. Re-run without --components '${COMPONENTS_CSV}', or use --profile dev if that is what you meant."
+fi
+if [[ "$PROFILE" == "prod" && -n "$FROM_COMPONENT" ]]; then
+  error "--from-component is dev-only; --profile prod always runs a full install. Re-run without --from-component '${FROM_COMPONENT}', or use --profile dev if that is what you meant."
 fi
 
 # Apply per-profile defaults for FRONTEND_MODE
@@ -609,7 +675,9 @@ EOF
 # _rollout_restart_workload <namespace> <name>
 # Restarts a workload without hardcoding its kind: the Airflow chart renders
 # scheduler and triggerer as either a Deployment or a StatefulSet depending on
-# log/triggerer persistence.
+# log/triggerer persistence. A restart failure is a genuine problem — RBAC
+# denial, API-server error — and is left unguarded so `set -euo pipefail`
+# aborts the install on it.
 _rollout_restart_workload() {
   local ns="$1"
   local name="$2"
@@ -623,6 +691,34 @@ _rollout_restart_workload() {
   done
 
   info "  ${name} not found in ${ns} — skipping restart."
+}
+
+# _resolve_digest_or_abort <image_ref>
+# Two-outcome digest resolution — the only two outcomes this installer
+# supports:
+#   resolve_image_digest succeeds -> print the resolved `sha256:...` digest.
+#   resolve_image_digest fails    -> abort the install (exit 1), strictly
+#                                     BEFORE the umbrella `helm upgrade` runs.
+# resolve_image_digest (lib/helpers.sh) already `warn`s the underlying cause
+# (registry error, missing CLI, network failure) to stderr immediately above
+# this function's own abort message. The explicit, operator-chosen escape
+# hatch is `--no-digest-pin`: every call site below skips this function
+# entirely when NO_DIGEST_PIN=true, leaving the corresponding *_IMAGE_DIGEST
+# variable empty so the image renders as the mutable `<repository>:<tag>`,
+# and issues an explicit rollout restart after the upgrade instead (see each
+# call site's own restart block). This installer never reads cluster state
+# (a Deployment's live image, a pod annotation) to decide what to deploy —
+# every input to the deployed image reference comes from this run's own
+# build/registry, not from a prior run's outcome.
+_resolve_digest_or_abort() {
+  local image_ref="$1"
+
+  local digest
+  digest="$(resolve_image_digest "${image_ref}")"
+  if [[ -z "${digest}" ]]; then
+    error "Could not resolve an image digest for '${image_ref}' (see the resolution failure reported above). Fix the underlying cause — registry credentials, CLI availability, network — and re-run, or re-run with --no-digest-pin to deploy '${image_ref}' by its mutable tag instead."
+  fi
+  echo "${digest}"
 }
 
 # _restart_airflow_key_consumers <namespace>
@@ -985,6 +1081,27 @@ PYEOF
 # override and builds nothing of its own. They are emitted from one place so a
 # new call site cannot pin one and forget the other — a consumer left on the
 # chart default resolves to `dataspoke/api:latest`, which no build produces.
+# Also pins both workloads' image reference to `<repository>@<digest>` (instead
+# of the mutable `<repository>:<tag>`) and stamps the same value as the
+# dataspoke.io/image-digest pod annotation (provenance only — nothing reads it
+# back), from the global $API_IMAGE_DIGEST (see resolve_image_digest /
+# _resolve_digest_or_abort), when non-empty — a rebuild under a mutable tag
+# pushes a new digest under the same tag string, which by itself renders a
+# byte-identical pod template and rolls nothing; pinning by digest makes the
+# image reference itself content-addressed, so `helm upgrade` creates a new
+# ReplicaSet correctly by construction and `imagePullPolicy: IfNotPresent`
+# remains safe (a cached `repo@sha256:X` can only ever be content X). Emitted
+# only when the digest resolved — empty under `--no-digest-pin`, where the
+# chart's `<repository>:<tag>` default renders instead and every call site
+# issues an explicit rollout restart after the upgrade. Also, under
+# `--no-digest-pin`, forces `image.pullPolicy=Always` on both workloads: the
+# chart default is `IfNotPresent`, safe only when the image reference itself
+# is content-addressed (the digest-pinned path above); on a reused mutable
+# tag, the substituted `kubectl rollout restart` does not force a re-pull, so
+# without this a node with that tag already cached would keep the stale
+# content while `rollout status` still reports success. `--set` treats `.` as
+# a path separator, so the dot in the annotation key must be escaped as `\.`
+# — same idiom as the nginx annotation in _frontend_helm_set_args below.
 # Output is one token per line; callers read into an array via a while-read loop.
 _api_image_helm_set_args() {
   cat <<EOF
@@ -997,6 +1114,37 @@ event-consumer.image.repository=${DATASPOKE_KUBE_IMAGE_REGISTRY}/api
 --set
 event-consumer.image.tag=${IMAGE_TAG}
 EOF
+  if [[ -n "${API_IMAGE_DIGEST:-}" ]]; then
+    cat <<EOF
+--set-string
+api.image.digest=${API_IMAGE_DIGEST}
+--set-string
+event-consumer.image.digest=${API_IMAGE_DIGEST}
+--set-string
+api.podAnnotations.dataspoke\.io/image-digest=${API_IMAGE_DIGEST}
+--set-string
+event-consumer.podAnnotations.dataspoke\.io/image-digest=${API_IMAGE_DIGEST}
+EOF
+  fi
+  if [[ "${NO_DIGEST_PIN:-false}" == "true" ]]; then
+    # Clears any api.image.digest / event-consumer.image.digest a values.yaml
+    # default or the operator's --values overlay may have set: omitting a
+    # --set flag only removes what a PREVIOUS --set supplied, it does not
+    # touch a value that came from a -f file, so without this an overlay-
+    # pinned digest would survive --no-digest-pin and `dataspoke.imageRef`
+    # would keep rendering `<repository>@sha256:<stale>` instead of the
+    # mutable `<repository>:<tag>` this flag is supposed to produce.
+    cat <<EOF
+--set-string
+api.image.digest=
+--set-string
+event-consumer.image.digest=
+--set
+api.image.pullPolicy=Always
+--set
+event-consumer.image.pullPolicy=Always
+EOF
+  fi
 }
 
 # _frontend_helm_set_args <domain>
@@ -1039,6 +1187,29 @@ frontend.config.apiBaseUrl=${scheme}://api.${domain}
 --set
 frontend.config.airflowUrl=${scheme}://airflow.${domain}
 EOF
+  # Pins the frontend image reference to `<repository>@<digest>` and stamps
+  # the dataspoke.io/image-digest pod annotation (provenance only), both from
+  # the global $FRONTEND_IMAGE_DIGEST (see resolve_image_digest /
+  # _resolve_digest_or_abort in lib/helpers.sh and install.sh) — same
+  # reasoning and escaping idiom as _api_image_helm_set_args above. Emitted
+  # only when the digest resolved — empty under `--no-digest-pin`.
+  if [[ -n "${FRONTEND_IMAGE_DIGEST:-}" ]]; then
+    cat <<EOF
+--set-string
+frontend.image.digest=${FRONTEND_IMAGE_DIGEST}
+--set-string
+frontend.podAnnotations.dataspoke\.io/image-digest=${FRONTEND_IMAGE_DIGEST}
+EOF
+  elif [[ "${NO_DIGEST_PIN:-false}" == "true" ]]; then
+    # Clears any frontend.image.digest a values file may have set — same
+    # reasoning as the clearing block in _api_image_helm_set_args above:
+    # omitting a --set only removes what a previous --set supplied, not a
+    # value set via -f.
+    cat <<EOF
+--set-string
+frontend.image.digest=
+EOF
+  fi
   local tls_secret
   tls_secret="$(ingress_tls_secret)"
   if [[ -n "$tls_secret" ]]; then
@@ -1103,10 +1274,18 @@ _helm_upgrade_dataspoke_dev() {
   # separate helm upgrade with the same pins and runs the identical sequence
   # inline rather than through this function. Idempotent: a no-op once
   # everything is already in sync.
+  # Fernet before keys, matching the prod branch. _ensure_airflow_fernet_secret
+  # hard-errors on a source/projection mismatch, and _ensure_airflow_key_secrets
+  # sets AIRFLOW_KEYS_ROTATED and writes the rotated key into the projections
+  # that _restart_airflow_key_consumers (further down, after the upgrade) is the
+  # only thing to repair. With keys first, that fernet abort lands between the
+  # write and the restart: the projections keep the new key, the pods keep
+  # signing with the old one, and every later run compares the two, finds them
+  # in agreement, and skips the restart — stranding the rotation permanently.
   _ensure_dataspoke_secrets "${ns}" "dev" "dataspoke-secrets"
   _derive_airflow_metadata_secret "${ns}" "dataspoke-secrets"
-  _ensure_airflow_key_secrets "${ns}" "dataspoke-secrets"
   _ensure_airflow_fernet_secret "${ns}" "dataspoke-secrets"
+  _ensure_airflow_key_secrets "${ns}" "dataspoke-secrets"
 
   local extra_env_file
   extra_env_file="$(_build_airflow_extra_env_file "dataspoke-secrets")"
@@ -1167,6 +1346,24 @@ _helm_upgrade_dataspoke_dev() {
   done < <(_api_airflow_tls_helm_set_args "${dev_domain}")
 
   helm "${args[@]}"
+
+  # Covers both call sites of this function: the full dev install (phase 3)
+  # and the `--components api` fast path. Under a digest pin, the pod-template
+  # hash changed exactly when the digest changed, so Helm already rolled
+  # whatever it needed to — nothing further to do. Under `--no-digest-pin`
+  # there is no digest to change the pod template, so restart explicitly. The
+  # frontend restart is additionally gated on FRONTEND_MODE=="cluster" — on
+  # the `--components api` fast path with a prior cluster-deployed frontend,
+  # this same helm upgrade disables and deletes the frontend, so restarting it
+  # here would race that deletion.
+  if [[ "${NO_DIGEST_PIN}" == "true" ]]; then
+    info "Restarting api/event-consumer workloads (--no-digest-pin: no digest pin to change the pod template)..."
+    _rollout_restart_workload "${ns}" "dataspoke-api"
+    _rollout_restart_workload "${ns}" "dataspoke-event-consumer"
+    if [[ "${FRONTEND_MODE:-none}" == "cluster" ]]; then
+      _rollout_restart_workload "${ns}" "dataspoke-frontend"
+    fi
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -1216,7 +1413,9 @@ if [[ "$PROFILE" == "dev" ]]; then
   if [[ "${#COMPONENTS[@]}" -eq 1 && "${COMPONENTS[0]}" == "api" ]]; then
     NS="${DATASPOKE_KUBE_DATASPOKE_NAMESPACE}"
     SCHEME="$(ingress_scheme)"
-    info "==> Fast path: rebuild API image + helm upgrade + rollout restart"
+    info "==> Fast path: rebuild API image + helm upgrade (digest-pinned roll) + rollout wait"
+
+    use_context "${DATASPOKE_KUBE_CLUSTER}"
 
     if [[ "$SKIP_BUILD" == "false" ]]; then
       info "Building API image (tag: ${IMAGE_TAG})..."
@@ -1225,8 +1424,26 @@ if [[ "$PROFILE" == "dev" ]]; then
       info "--skip-build: skipping API image build."
     fi
 
+    # Resolved once here and read by _api_image_helm_set_args (invoked inside
+    # _helm_upgrade_dataspoke_dev below) to pin the dataspoke.io/image-digest
+    # pod annotation and image reference onto the api and event-consumer
+    # workloads. --no-digest-pin skips resolution entirely (both variables
+    # stay empty) and _helm_upgrade_dataspoke_dev issues an explicit rollout
+    # restart after the upgrade instead.
+    API_IMAGE_DIGEST=""
+    if [[ "${NO_DIGEST_PIN}" == "false" ]]; then
+      API_IMAGE_DIGEST="$(_resolve_digest_or_abort "${DATASPOKE_KUBE_IMAGE_REGISTRY}/api:${IMAGE_TAG}")"
+    fi
+    # This is a full-release helm upgrade (below, via _helm_upgrade_dataspoke_dev)
+    # that also renders the frontend's pod template whenever FRONTEND_MODE is
+    # "cluster" — resolve its digest too so the pin is not dropped from that
+    # template on every API-only iteration.
+    FRONTEND_IMAGE_DIGEST=""
+    if [[ "$FRONTEND_MODE" == "cluster" && "${NO_DIGEST_PIN}" == "false" ]]; then
+      FRONTEND_IMAGE_DIGEST="$(_resolve_digest_or_abort "${DATASPOKE_KUBE_IMAGE_REGISTRY}/frontend:${IMAGE_TAG}")"
+    fi
+
     info "Running helm upgrade for dataspoke umbrella chart..."
-    use_context "${DATASPOKE_KUBE_CLUSTER}"
 
     # Re-package local subcharts so event-consumer template edits ship instead
     # of the stale packaged subchart in charts/. This upgrade is a full-release
@@ -1243,16 +1460,12 @@ if [[ "$PROFILE" == "dev" ]]; then
       _restart_airflow_key_consumers "${NS}"
     fi
 
-    info "Restarting dataspoke-api deployment to pick up new image..."
-    kubectl rollout restart deployment/dataspoke-api -n "${NS}"
+    # _helm_upgrade_dataspoke_dev already rolled dataspoke-api and
+    # dataspoke-event-consumer (via the digest pin, or an explicit rollout
+    # restart under --no-digest-pin) — just wait for the API to report ready.
     kubectl rollout status deployment/dataspoke-api -n "${NS}" --timeout=5m \
       && info "dataspoke-api is ready." \
       || error "dataspoke-api did not become ready in time — check pod logs."
-
-    # The event-consumer runs the same image, so a rebuilt API image leaves it
-    # holding stale code. The tag is unchanged, so helm alone rolls nothing.
-    info "Restarting dataspoke-event-consumer (shares the API image)..."
-    _rollout_restart_workload "${NS}" "dataspoke-event-consumer"
 
     # Verify Airflow DAGs
     DOMAIN="${DATASPOKE_KUBE_INGRESS_DOMAIN:-}"
@@ -1299,6 +1512,8 @@ if [[ "$PROFILE" == "dev" ]]; then
     info "==> Fast path: rebuild frontend image + helm upgrade + rollout"
     info "    Note: deploys the containerised frontend in-cluster (overrides frontend.enabled=false)."
 
+    use_context "${DATASPOKE_KUBE_CLUSTER}"
+
     if [[ "$SKIP_BUILD" == "false" ]]; then
       info "Building frontend image (tag: ${IMAGE_TAG})..."
       bash "$SCRIPT_DIR/build-image.sh" frontend "${IMAGE_TAG}"
@@ -1306,8 +1521,21 @@ if [[ "$PROFILE" == "dev" ]]; then
       info "--skip-build: skipping frontend image build."
     fi
 
+    # Resolved once here and read by _frontend_helm_set_args /
+    # _api_image_helm_set_args below to pin the dataspoke.io/image-digest pod
+    # annotation and image reference onto every workload this upgrade renders.
+    # --no-digest-pin skips resolution entirely and the restart below after
+    # the upgrade covers all three workloads unconditionally instead.
+    FRONTEND_IMAGE_DIGEST=""
+    if [[ "${NO_DIGEST_PIN}" == "false" ]]; then
+      FRONTEND_IMAGE_DIGEST="$(_resolve_digest_or_abort "${DATASPOKE_KUBE_IMAGE_REGISTRY}/frontend:${IMAGE_TAG}")"
+    fi
+    API_IMAGE_DIGEST=""
+    if [[ "${NO_DIGEST_PIN}" == "false" ]]; then
+      API_IMAGE_DIGEST="$(_resolve_digest_or_abort "${DATASPOKE_KUBE_IMAGE_REGISTRY}/api:${IMAGE_TAG}")"
+    fi
+
     info "Running helm upgrade for dataspoke umbrella chart (frontend.enabled=true)..."
-    use_context "${DATASPOKE_KUBE_CLUSTER}"
 
     # Re-package local subcharts so frontend template/config edits ship instead
     # of the stale packaged subchart in charts/.
@@ -1317,10 +1545,12 @@ if [[ "$PROFILE" == "dev" ]]; then
     # airflow.{apiSecretKeySecretName,jwtSecretName,fernetKeySecretName}, so it
     # must guarantee those projected Secrets — and the credentials Secret they
     # derive from — exist first. Idempotent: a no-op once already in sync.
+    # Fernet before keys — see _helm_upgrade_dataspoke_dev for why the reverse
+    # strands a key rotation permanently.
     _ensure_dataspoke_secrets "${NS}" "dev" "dataspoke-secrets"
     _derive_airflow_metadata_secret "${NS}" "dataspoke-secrets"
-    _ensure_airflow_key_secrets "${NS}" "dataspoke-secrets"
     _ensure_airflow_fernet_secret "${NS}" "dataspoke-secrets"
+    _ensure_airflow_key_secrets "${NS}" "dataspoke-secrets"
 
     SCHEME="$(ingress_scheme)"
     # One class for every Ingress this release renders. The API and frontend
@@ -1370,17 +1600,33 @@ if [[ "$PROFILE" == "dev" ]]; then
       ${tls_fast_args[@]+"${tls_fast_args[@]}"} \
       --timeout 10m
 
+    # Under a digest pin, the pod-template hash changed exactly when the
+    # digest changed, so Helm already rolled whatever it needed to. Under
+    # --no-digest-pin there is no digest to change the pod template, so
+    # restart all three workloads this upgrade renders explicitly.
+    if [[ "${NO_DIGEST_PIN}" == "true" ]]; then
+      info "Restarting api/event-consumer/frontend workloads (--no-digest-pin: no digest pin to change the pod template)..."
+      _rollout_restart_workload "${NS}" "dataspoke-api"
+      _rollout_restart_workload "${NS}" "dataspoke-event-consumer"
+      _rollout_restart_workload "${NS}" "dataspoke-frontend"
+    fi
+
+    # Roll the Airflow pods still holding a superseded signing key, if the
+    # ensure-secrets step above found the credentials Secret's Airflow keys
+    # had drifted from their live projections. Ordered ahead of the rollout
+    # wait below: _ensure_airflow_key_secrets has already written the new key
+    # into the projected Secrets, so an abort between the two leaves the
+    # Airflow pods signing with a superseded key — and the next run compares
+    # the credentials Secret against those same projections, finds them equal,
+    # and skips the restart, stranding it permanently.
+    if [[ "${AIRFLOW_KEYS_ROTATED}" == "true" ]]; then
+      _restart_airflow_key_consumers "${NS}"
+    fi
+
     info "Waiting for frontend deployment to become ready..."
     kubectl rollout status deployment/dataspoke-frontend -n "${NS}" --timeout=5m \
       && info "dataspoke-frontend is ready." \
       || error "dataspoke-frontend did not become ready in time — check pod logs."
-
-    # Roll the Airflow pods still holding a superseded signing key, if the
-    # ensure-secrets step above found the credentials Secret's Airflow keys
-    # had drifted from their live projections.
-    if [[ "${AIRFLOW_KEYS_ROTATED}" == "true" ]]; then
-      _restart_airflow_key_consumers "${NS}"
-    fi
 
     echo ""
     info "Frontend deploy complete (t+$((SECONDS - START_TIME))s)."
@@ -1508,6 +1754,26 @@ if [[ "$PROFILE" == "dev" ]]; then
     # Build chart dependencies
     info "Building Helm chart dependencies..."
     _build_chart_deps "$CHART_DIR"
+
+    # Resolved here — immediately ahead of the helm upgrade below, and only
+    # when dataspoke-infra is actually part of this run — and read by
+    # _api_image_helm_set_args / _frontend_helm_set_args inside
+    # _helm_upgrade_dataspoke_dev to pin the dataspoke.io/image-digest pod
+    # annotation and image reference onto every workload running that image.
+    # --no-digest-pin skips resolution entirely; _helm_upgrade_dataspoke_dev
+    # restarts explicitly after the upgrade instead. Scoped inside this
+    # `_has_component dataspoke-infra` gate — a `--components
+    # nginx-ingress|datahub|langfuse|dummy-data|dev-lock|seed` run never
+    # touches the umbrella chart, so it must not perform a cloud lookup (or
+    # dereference DATASPOKE_KUBE_IMAGE_REGISTRY under `set -u`) for it.
+    API_IMAGE_DIGEST=""
+    FRONTEND_IMAGE_DIGEST=""
+    if [[ "${NO_DIGEST_PIN}" == "false" ]]; then
+      API_IMAGE_DIGEST="$(_resolve_digest_or_abort "${DATASPOKE_KUBE_IMAGE_REGISTRY}/api:${IMAGE_TAG}")"
+      if [[ "$FRONTEND_MODE" == "cluster" ]]; then
+        FRONTEND_IMAGE_DIGEST="$(_resolve_digest_or_abort "${DATASPOKE_KUBE_IMAGE_REGISTRY}/frontend:${IMAGE_TAG}")"
+      fi
+    fi
 
     # Helm upgrade --install
     info "Installing DataSpoke umbrella chart..."
@@ -1737,6 +2003,17 @@ elif [[ "$PROFILE" == "prod" ]]; then
 
   NS="${DATASPOKE_KUBE_DATASPOKE_NAMESPACE}"
 
+  # Derive frontend.enabled from FRONTEND_MODE (true=cluster, false=none) up
+  # front — resolved this early (rather than inside Phase 3, where the helm
+  # upgrade itself lives) because the --skip-build early digest resolution
+  # below, in Phase 1, needs to know whether a frontend digest is in scope
+  # too.
+  if [[ "$FRONTEND_MODE" == "cluster" ]]; then
+    _prod_frontend_enabled="true"
+  else
+    _prod_frontend_enabled="false"
+  fi
+
   # -----------------------------------------------------------------------
   # Phase 1: Pre-flight (no nginx-ingress — operator's controller)
   # -----------------------------------------------------------------------
@@ -1822,6 +2099,29 @@ elif [[ "$PROFILE" == "prod" ]]; then
     done <<< "${PINNED_STORAGE_CLASSES}"
   fi
 
+  # --skip-build assumes the image was already pushed by a prior run (e.g. a
+  # CI pipeline that built and pushed, then invoked this script only to
+  # deploy) — the image already exists in the registry at this point, so its
+  # digest can be resolved now, before any credential Secret below is created
+  # or mutated. This matters specifically for a deploy-only host that lacks
+  # gcloud/aws on PATH (a supported shape — it is exactly what --skip-build is
+  # for): without this early resolution, Phase 1 below would go on to create/
+  # update dataspoke-airflow-metadata-encryption-key and
+  # dataspoke-airflow-metadata-db, and
+  # only then discover in Phase 3 that no digest could be resolved and abort —
+  # mutating cluster Secrets on a run that was never going to complete. When a
+  # build is about to run (the default, no --skip-build), the image does not
+  # exist in the registry yet at this point, so resolution stays where it can
+  # actually succeed: immediately after Phase 2's push, in Phase 3 below.
+  API_IMAGE_DIGEST=""
+  FRONTEND_IMAGE_DIGEST=""
+  if [[ "$SKIP_BUILD" == "true" && "${NO_DIGEST_PIN}" == "false" ]]; then
+    API_IMAGE_DIGEST="$(_resolve_digest_or_abort "${DATASPOKE_KUBE_IMAGE_REGISTRY}/api:${IMAGE_TAG}")"
+    if [[ "${_prod_frontend_enabled}" == "true" ]]; then
+      FRONTEND_IMAGE_DIGEST="$(_resolve_digest_or_abort "${DATASPOKE_KUBE_IMAGE_REGISTRY}/frontend:${IMAGE_TAG}")"
+    fi
+  fi
+
   # Determine which Secret name is in play (default or BYO overlay)
   EXISTING_SECRET_NAME=""
   if [[ -n "${EXTRA_VALUES:-}" && -f "${EXTRA_VALUES}" ]]; then
@@ -1847,16 +2147,14 @@ elif [[ "$PROFILE" == "prod" ]]; then
   # Compare the Fernet key first and before any other Secret in this phase is
   # mutated: on a mismatch it aborts non-mutating (it only writes when there is
   # nothing yet to disagree with), so ordering it ahead of
-  # _derive_airflow_metadata_secret / _ensure_airflow_key_secrets keeps the
-  # "pre-flight fails before any resources are created" promise (README.md
-  # §2) true even for this check.
+  # _derive_airflow_metadata_secret keeps the "pre-flight fails before any
+  # resources are created" promise (README.md §2) true even for this check.
+  # _ensure_airflow_key_secrets is the other Secret write it must precede;
+  # that one runs in Phase 3, so the ordering holds a fortiori.
   _ensure_airflow_fernet_secret "${NS}" "${SECRET_TO_CHECK}"
 
   # Derive Airflow metadata Secret from the operator Secret
   _derive_airflow_metadata_secret "${NS}" "${SECRET_TO_CHECK}"
-
-  # Derive Airflow key secrets from the operator Secret
-  _ensure_airflow_key_secrets "${NS}" "${SECRET_TO_CHECK}"
 
   # -----------------------------------------------------------------------
   # Phase 2: Image builds (skippable)
@@ -1905,16 +2203,84 @@ elif [[ "$PROFILE" == "prod" ]]; then
   local_extra_env_file="$(_build_airflow_extra_env_file "${SECRET_TO_CHECK}")"
 
   info "Installing DataSpoke umbrella chart (prod)..."
-  # Derive frontend.enabled from FRONTEND_MODE (true=cluster, false=none)
-  if [[ "$FRONTEND_MODE" == "cluster" ]]; then
-    _prod_frontend_enabled="true"
-  else
-    _prod_frontend_enabled="false"
+
+  # Resolved here — read by _api_image_helm_set_args below (api_image_prod_args)
+  # and used directly for the frontend --set-string flags further down — to
+  # pin the dataspoke.io/image-digest pod annotation and image reference onto
+  # every workload this upgrade renders, so `helm upgrade` creates a new
+  # ReplicaSet correctly by construction instead of relying solely on an
+  # explicit rollout restart. --no-digest-pin skips resolution entirely (both
+  # variables stay empty) and the restart-floor block below restarts every
+  # rendered workload unconditionally instead. The frontend digest is
+  # resolved only when the frontend is actually being deployed. Under
+  # --skip-build the image was already pushed by a prior run, so both
+  # variables were already resolved in Phase 1, ahead of any credential
+  # Secret mutation — see that block's comment. Only the default
+  # build-then-deploy path (SKIP_BUILD == false) resolves here, since the
+  # image does not exist in the registry until Phase 2's push, just above,
+  # completes.
+  if [[ "$SKIP_BUILD" == "false" && "${NO_DIGEST_PIN}" == "false" ]]; then
+    API_IMAGE_DIGEST="$(_resolve_digest_or_abort "${DATASPOKE_KUBE_IMAGE_REGISTRY}/api:${IMAGE_TAG}")"
+    if [[ "${_prod_frontend_enabled}" == "true" ]]; then
+      FRONTEND_IMAGE_DIGEST="$(_resolve_digest_or_abort "${DATASPOKE_KUBE_IMAGE_REGISTRY}/frontend:${IMAGE_TAG}")"
+    fi
   fi
+
+  # Derive Airflow key secrets from the operator Secret. Deliberately ordered
+  # after digest resolution rather than beside the other Phase-1 credential
+  # derivations: this call sets AIRFLOW_KEYS_ROTATED and writes the new key
+  # into the projected Secrets, and the only thing that repairs the resulting
+  # split is _restart_airflow_key_consumers further below. Any abort between
+  # the two — _resolve_digest_or_abort above being the one this script can
+  # itself raise — would leave the Airflow pods signing with a superseded key,
+  # and the next run compares the credentials Secret against those same
+  # projections, finds them equal, and skips the restart, stranding it.
+  #
+  # This removes digest resolution from that gap, not the gap itself. What
+  # remains between this write and the restart is the `helm upgrade` below —
+  # a failed upgrade strands the key the same way. The dev paths carry a wider
+  # gap than this one: `ingress_scheme` / `ingress_class` are validated inline
+  # there rather than pre-flighted, and under --no-digest-pin the deliberately
+  # unguarded `_rollout_restart_workload` calls sit inside it too. Closing the
+  # residual means restarting the consumers directly after this call, ahead of
+  # the upgrade, on all four paths.
+  _ensure_airflow_key_secrets "${NS}" "${SECRET_TO_CHECK}"
+
   api_image_prod_args=()
   while IFS= read -r _iarg; do
     api_image_prod_args+=("${_iarg}")
   done < <(_api_image_helm_set_args)
+
+  # --set treats `.` as a path separator, so the dot in the annotation key
+  # must be escaped as `\.` — same idiom as _api_image_helm_set_args /
+  # _frontend_helm_set_args above. Emitted only when the digest resolved
+  # (skipped when the frontend is disabled or resolution failed).
+  frontend_image_digest_args=()
+  if [[ -n "${FRONTEND_IMAGE_DIGEST:-}" ]]; then
+    frontend_image_digest_args=(
+      --set-string "frontend.image.digest=${FRONTEND_IMAGE_DIGEST}"
+      --set-string "frontend.podAnnotations.dataspoke\.io/image-digest=${FRONTEND_IMAGE_DIGEST}"
+    )
+  elif [[ "${NO_DIGEST_PIN}" == "true" && "${_prod_frontend_enabled}" == "true" ]]; then
+    # Clears any frontend.image.digest the operator's --values overlay may
+    # have set — omitting a --set only removes what a previous --set
+    # supplied, not a value set via -f, so without this an overlay-pinned
+    # digest would survive --no-digest-pin.
+    frontend_image_digest_args=(--set-string "frontend.image.digest=")
+  fi
+
+  # Forces frontend.image.pullPolicy to Always under --no-digest-pin, same
+  # reasoning as _api_image_helm_set_args's api/event-consumer pullPolicy
+  # flags above — chart default is IfNotPresent, safe only when the image
+  # reference itself is content-addressed. Unlike the dev fast paths (which
+  # render the frontend via _frontend_helm_set_args, always Always
+  # regardless of digest pin), prod sets the frontend's image fields
+  # directly below, so this flag is the only place that pins it. Emitted
+  # only when the frontend is actually being deployed.
+  frontend_pull_policy_prod_args=()
+  if [[ "${NO_DIGEST_PIN}" == "true" && "${_prod_frontend_enabled}" == "true" ]]; then
+    frontend_pull_policy_prod_args=(--set "frontend.image.pullPolicy=Always")
+  fi
 
   # One class for every Ingress this release renders, taken from
   # DATASPOKE_KUBE_INGRESS_CLASS (required and verified against the cluster in
@@ -1938,9 +2304,12 @@ elif [[ "$PROFILE" == "prod" ]]; then
     --set-string "postgresql.image.tag=${IMAGE_TAG}" \
     --set-string "airflow.images.airflow.repository=${DATASPOKE_KUBE_IMAGE_REGISTRY}/airflow" \
     --set-string "airflow.images.airflow.tag=${IMAGE_TAG}" \
+    --set "api.enabled=true" \
     --set "frontend.enabled=${_prod_frontend_enabled}" \
     --set "frontend.image.repository=${DATASPOKE_KUBE_IMAGE_REGISTRY}/frontend" \
     --set "frontend.image.tag=${IMAGE_TAG}" \
+    ${frontend_image_digest_args[@]+"${frontend_image_digest_args[@]}"} \
+    ${frontend_pull_policy_prod_args[@]+"${frontend_pull_policy_prod_args[@]}"} \
     --set-file "airflow.extraEnv=${local_extra_env_file}" \
     --set "airflow.apiSecretKeySecretName=dataspoke-airflow-api-secret-key" \
     --set "airflow.jwtSecretName=dataspoke-airflow-jwt-secret" \
@@ -1952,29 +2321,82 @@ elif [[ "$PROFILE" == "prod" ]]; then
     --timeout 15m
 
   # -----------------------------------------------------------------------
-  # Roll the Airflow pods still holding a superseded signing key
+  # Roll the Airflow pods still holding a superseded signing key. This runs
+  # immediately after the helm upgrade and before any rollout-status wait
+  # below, so an abort on one of those waits (a real risk — they're 5m
+  # timeouts against a fresh rollout) never leaves the credentials Secret
+  # holding a rotated key that the running Airflow pods were never restarted
+  # to pick up. Every call site of this helper orders it the same way, for
+  # the same reason.
   # -----------------------------------------------------------------------
   if [[ "${AIRFLOW_KEYS_ROTATED}" == "true" ]]; then
     _restart_airflow_key_consumers "${NS}"
   fi
 
   # -----------------------------------------------------------------------
+  # Under a digest pin, the pod-template hash changed exactly when the
+  # digest changed, so Helm already rolled whatever it needed to. Under
+  # --no-digest-pin there is no digest to change the pod template, so
+  # restart every workload this upgrade renders explicitly. `helm upgrade`
+  # above has no `--wait`, so it can return before either a Helm-triggered
+  # roll or an explicit restart has finished — `kubectl rollout status`
+  # follows so the script does not exit mid-roll.
+  # -----------------------------------------------------------------------
+  if [[ "${NO_DIGEST_PIN}" == "true" ]]; then
+    info "Restarting api/event-consumer workloads (--no-digest-pin: no digest pin to change the pod template)..."
+    _rollout_restart_workload "${NS}" "dataspoke-api"
+    _rollout_restart_workload "${NS}" "dataspoke-event-consumer"
+  fi
+  kubectl rollout status deployment/dataspoke-api -n "${NS}" --timeout=5m \
+    || error "dataspoke-api did not become ready after the upgrade — check pod logs (kubectl logs -n '${NS}' deploy/dataspoke-api)."
+  # event-consumer.enabled defaults to false in prod (dataspoke/values.yaml)
+  # and ships commented out in values-prod.example.yaml — an operator overlay
+  # is the only way to turn it on. Waiting unconditionally would abort every
+  # default prod install on `kubectl rollout status` against a Deployment the
+  # chart never rendered. Gate on whether the object actually exists
+  # post-upgrade — the ground truth of what this release rendered.
+  #
+  # `--ignore-not-found -o name`, not a bare exit-code check: a plain
+  # `kubectl get ... >/dev/null 2>&1` conflates "not found" with a transient
+  # API-server error or an RBAC denial (both non-zero exit, or in some client
+  # versions zero exit with an empty error body) — either would silently skip
+  # this readiness gate. With --ignore-not-found, a genuine NotFound prints
+  # nothing and still exits 0; any other failure exits non-zero and is
+  # reported as what it is instead of being read as "not deployed".
+  #
+  # stderr goes to a file rather than being merged into the capture: the
+  # emptiness test below is the "was it rendered" signal, and kubectl writes
+  # non-fatal notices there on success — an exec-credential plugin notice, an
+  # auth-plugin deprecation warning, a server-side Warning header. Merged with
+  # 2>&1, any of those makes a genuine NotFound read as "deployed" and the
+  # wait then aborts the install against an object the chart never created.
+  # The stderr file lives in INSTALL_TMPDIR so the EXIT trap reclaims it on the
+  # error path too.
+  _ec_get_out=""
+  _ec_get_err="$(mktemp "${INSTALL_TMPDIR}/event-consumer-get-err.XXXX")"
+  if ! _ec_get_out="$(kubectl get deployment/dataspoke-event-consumer -n "${NS}" --ignore-not-found -o name 2>"${_ec_get_err}")"; then
+    error "Could not check whether dataspoke-event-consumer is deployed: $(cat "${_ec_get_err}")"
+  fi
+  if [[ -n "${_ec_get_out}" ]]; then
+    kubectl rollout status deployment/dataspoke-event-consumer -n "${NS}" --timeout=5m \
+      || error "dataspoke-event-consumer did not become ready after the upgrade — check pod logs (kubectl logs -n '${NS}' deploy/dataspoke-event-consumer)."
+  else
+    info "dataspoke-event-consumer not deployed (event-consumer.enabled=false) — skipping rollout wait."
+  fi
+  if [[ "${_prod_frontend_enabled}" == "true" ]]; then
+    if [[ "${NO_DIGEST_PIN}" == "true" ]]; then
+      _rollout_restart_workload "${NS}" "dataspoke-frontend"
+    fi
+    kubectl rollout status deployment/dataspoke-frontend -n "${NS}" --timeout=5m \
+      || error "dataspoke-frontend did not become ready after the upgrade — check pod logs (kubectl logs -n '${NS}' deploy/dataspoke-frontend)."
+  fi
+
+  # -----------------------------------------------------------------------
   # Seed default admin user (idempotent)
   # -----------------------------------------------------------------------
   if [[ "$SKIP_SEED" == "false" ]]; then
-    # The seed script kubectl execs into the API pod. `--timeout 15m` above
-    # only waits for the Helm release, not pod readiness — a cold install can
-    # still be running the API's wait-for-postgres/alembic-migrate init
-    # containers here. Gate on the same idiom the dev branch uses (see
-    # "Wait for DataSpoke API" above) so a not-yet-ready pod produces a
-    # truthful error instead of the seed script's misleading "is the API
-    # running?" — the seed hard-depends on this pod, so `error` (not `warn`)
-    # is correct here.
-    info "Waiting for DataSpoke API to become ready before seeding..."
-    kubectl rollout status deployment/dataspoke-api -n "${NS}" --timeout=5m \
-      && info "DataSpoke API is ready." \
-      || error "DataSpoke API did not become ready in time — check pod logs (kubectl logs -n '${NS}' deploy/dataspoke-api)."
-
+    # The seed script kubectl execs into the API pod; the unconditional
+    # dataspoke-api rollout-status wait above already guarantees it is ready.
     info "Seeding default admin user..."
     bash "$SCRIPT_DIR/post-install/seed-admin-user.sh"
   else

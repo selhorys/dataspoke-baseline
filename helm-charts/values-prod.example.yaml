@@ -290,10 +290,6 @@ auth:
 #
 # event-consumer:
 #   enabled: true
-#   image:
-#     pullPolicy: Always   # only if your build pipeline reuses a mutable
-#                          # tag — see the "pullPolicy" section below for
-#                          # the full rationale
 #   serviceAccount:
 #     create: true
 #     annotations:
@@ -347,22 +343,27 @@ secrets:
 # ------------------------------------------------------------------------------
 # pullPolicy
 # ------------------------------------------------------------------------------
-# Every image.pullPolicy in values.yaml defaults to IfNotPresent, which assumes
-# immutable tags (each build gets its own git-sha or semver tag, e.g. via
-# --image-tag) — the recommended pattern for prod, since kubelet can safely
-# cache layers and skip a re-pull on rollout.
+# `api`, `event-consumer`, and `frontend` need no manual pullPolicy override —
+# `install.sh` already handles image freshness for these three DataSpoke-owned
+# workloads on every prod run, by content-addressing the image itself: it
+# resolves each one's registry digest and pins `image.digest` (rendering
+# `<repository>@sha256:...`) so a rebuild pushed to the same tag still changes
+# the pod template and rolls the workload under the chart-default
+# `IfNotPresent`. Pass `--no-digest-pin` instead (host cannot reach the
+# registry API) and `install.sh` forces `image.pullPolicy=Always` on all three
+# itself and issues an explicit `kubectl rollout restart` after the upgrade.
+# Either way, any `pullPolicy` you set here for these three is redundant with
+# what `install.sh` already does — see `spec/feature/HELM_CHART.md` §Digest
+# stamping.
 #
-# If your build pipeline instead reuses a mutable tag (e.g. always deploying
-# `:prod`), switch the relevant pullPolicy fields to Always so kubelet re-pulls
-# on every rollout — otherwise a redeploy with an unchanged tag can silently
-# keep running the previous image:
+# `postgresql` and `airflow` are different: both are third-party subcharts
+# `install.sh` never digest-stamps or restarts (§Digest stamping's "airflow
+# and postgres are not digest-stamped" note), so if your build pipeline
+# reuses a mutable tag for them (e.g. always deploying `:prod`) you must both
+# switch their pullPolicy to Always here AND issue the `kubectl rollout
+# restart`/`restart statefulset` yourself after every image update — neither
+# happens automatically:
 #
-# frontend:
-#   image:
-#     pullPolicy: Always
-# api:
-#   image:
-#     pullPolicy: Always
 # postgresql:
 #   image:
 #     pullPolicy: Always
@@ -370,9 +371,6 @@ secrets:
 #   images:
 #     airflow:
 #       pullPolicy: Always
-#
-#   (event-consumer: set its pullPolicy in the "Event consumer" section above,
-#    where the rest of that workload's keys live.)
 
 
 # ------------------------------------------------------------------------------

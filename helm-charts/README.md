@@ -126,6 +126,20 @@ runbook in order.
   above attributes). The chart render fails fast on any value that is not a
   positive integer, so a bad overlay is caught by `helm template`/`install.sh`
   rather than reaching a pod.
+- A CLI that can resolve an image digest, on the PATH of whatever host runs
+  `install.sh`, matching what `DATASPOKE_KUBE_CLOUD_VENDOR` names: an
+  authenticated `gcloud` for `GCP`, an authenticated `aws` for `AWS`, and
+  `docker` when the variable is empty or names anything else — that branch
+  reads the local daemon's recorded digests, so the host must also hold the
+  image it is deploying. This applies to a deploy-only CI host invoked with
+  `--skip-build` against images a separate build stage already pushed, which
+  on the empty-vendor branch means such a host cannot resolve at all and must
+  pass `--no-digest-pin`. `install.sh` uses it to resolve each
+  in-scope workload's image digest before rendering the chart, so a rebuild
+  pushed to the same mutable tag still rolls the workload (see
+  `spec/feature/HELM_CHART.md §Digest stamping`). Pass `--no-digest-pin` to
+  skip this requirement entirely — see step 4 below for what that trades
+  away.
 
 **The namespace needs no pre-creating — with one exception.** `install.sh`'s
 prod pre-flight calls `ensure_namespace` ahead of every check that touches the
@@ -237,6 +251,18 @@ actually decrypts an existing Postgres PVC's Airflow connections/Variables —
 see the missing-key error's own warning against generating a new key when
 one is retained.
 
+Beyond the Secret checks above, a prod install also fails fast on
+image-digest resolution (`_resolve_digest_or_abort` in `bin/install.sh`) for
+the DataSpoke-owned workloads actually in scope — **api** (event-consumer
+shares the api image and therefore the api digest — it has no resolution
+step of its own), **frontend** (only when `--frontend cluster`) — before the
+umbrella `helm upgrade` ever runs, using the vendor CLI required in [§1.
+Prerequisites](#1-prerequisites) above. If that CLI is missing, or the
+registry lookup itself fails (auth, network), the install aborts naming the
+image reference it could not resolve — it does not silently fall back to
+deploying the mutable tag. See step 4 below for `--no-digest-pin`, the
+explicit escape hatch.
+
 This walkthrough already uses a custom Secret name
 (`dataspoke-secrets-prod`) via `secrets.existingSecret` in the overlay (§3) —
 the same 13 keys and rejection rules apply to whatever Secret that name
@@ -270,6 +296,21 @@ overlays into one file first.
   --values /path/to/your-overlay.yaml \
   --image-tag 1.2.3
 ```
+
+This resolves each in-scope workload's image digest before rendering the
+chart (see [§1. Prerequisites](#1-prerequisites) above) — `gcloud`/`aws`
+(per `DATASPOKE_KUBE_CLOUD_VENDOR`) must be on this host's PATH and
+authenticated against the registry, including when this same command runs
+with `--skip-build` on a deploy-only CI host against images a separate build
+stage already pushed. Add `--no-digest-pin` if that host cannot reach the
+registry API (only `docker`/local image handling is available, or none at
+all) — the three DataSpoke-owned workloads (api, event-consumer, frontend)
+then deploy by mutable `<repository>:<tag>` with `imagePullPolicy: Always`,
+and an explicit `kubectl rollout restart` replaces the digest-triggered
+roll. `postgresql` and `airflow` are never digest-stamped regardless of this
+flag — see `spec/feature/HELM_CHART.md` §Digest stamping's "airflow and
+postgres are not digest-stamped" note for the manual-restart requirement
+those two still carry after an image update.
 
 This automatically seeds the default admin user
 (`dataspoke@dataspoke.local` / `dataspoke`) at the end unless `--skip-seed` is
@@ -587,8 +628,9 @@ To rebuild and redeploy:
 ./helm-charts/bin/install.sh --profile dev --components api
 ```
 
-This rebuilds the API image, runs `helm upgrade`, restarts the deployment, and
-waits for rollout.
+This rebuilds the API image, runs `helm upgrade` (which pins the rebuilt image
+by digest so it rolls the deployment by construction — see
+`spec/feature/HELM_CHART.md` §Digest stamping), and waits for rollout.
 
 ---
 

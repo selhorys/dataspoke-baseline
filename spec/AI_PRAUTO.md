@@ -310,7 +310,7 @@ executing that change, which a trusted base checkout cannot do.
 | Diff touches | Deploy (run from the worktree) |
 |---|---|
 | `src/{api,backend,shared}` | `install.sh --profile dev --env-file $PRAUTO_DEV_ENV_FILE --components api` |
-| `src/frontend/` | `install.sh --profile dev --env-file $PRAUTO_DEV_ENV_FILE --components frontend` (plus a forced rollout restart — the `:dev` tag is unchanged, so the umbrella upgrade alone does not roll pods) |
+| `src/frontend/` | `install.sh --profile dev --env-file $PRAUTO_DEV_ENV_FILE --components frontend` (plus a forced rollout restart — a belt-and-braces guard so the stage never tests a stale pod, independent of the chart's digest stamping) |
 
 **Trusted cluster selection, untrusted build — the one invariant of the deploy.** The two halves
 resolve from different trees on purpose: the `--env-file` always resolves from `$REPO_DIR`, never the

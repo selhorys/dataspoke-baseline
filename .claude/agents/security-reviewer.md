@@ -38,6 +38,7 @@ The orchestrator invokes you **only when a generator's diff touches a sensitive 
 - `src/shared/secrets/**` — secret resolution: ref grammar, source-cred prefix guard, backend dispatch, k8s client bootstrap
 - `migrations/**` — any DB migration (data-loss or privilege risk)
 - `helm-charts/**/templates/secrets.yaml`, `helm-charts/**/values*.yaml` — credentials / config
+- `helm-charts/dataspoke/templates/**`, `helm-charts/dataspoke/subcharts/**/templates/**` — the image reference the cluster actually runs. `dataspoke.imageRef` / `frontend.imageRef` / `event-consumer.imageRef` decide digest-vs-tag precedence, so an edit to that rule changes which content executes in the cluster
 - `pyproject.toml`, `uv.lock`, `src/frontend/package.json`, `src/frontend/pnpm-lock.yaml` — new/bumped dependencies
 - `.prauto/**` — autonomous worker (unsupervised, higher blast radius)
 - `helm-charts/dev-peripherals/langfuse/templates/**`, `helm-charts/dev-peripherals/langfuse/values*.yaml`, `helm-charts/bin/dev-peripherals/langfuse.sh` — Langfuse credentials and config (LLM trace store)
@@ -45,6 +46,7 @@ The orchestrator invokes you **only when a generator's diff touches a sensitive 
 - `helm-charts/bin/lib/helpers.sh` — shared derivation of ingress class, scheme, TLS secret name, and service hostnames; its values are interpolated into `helm --set` tokens, `sed` replacements, and `kubectl apply` input by every install script
 - `helm-charts/dev-peripherals/**/*.yaml` — static manifests rendered by `sed` and applied with `kubectl`, plus peripheral chart values
 - `helm-charts/bin/install.sh` — creates and validates the credentials Secret, enforces the required-key and Fernet-key-shape gates, rejects insecure dev defaults, resolves `secrets.existingSecret` and pinned StorageClasses from the operator overlay, and gates the prod pre-flight
+- `helm-charts/bin/build-image.sh` — builds and pushes the artifact that `install.sh`'s image-digest resolution attests; also holds the GCP/AWS registry auth and push step
 - `helm-charts/prod-prereq/**` — cluster-admin-applied, cluster-scoped manifests (StorageClass and future prerequisites) outside Helm's ownership
 - `plugin/bin/**`, `plugin/skills/dataspoke-access/**` — end-user plugin credential model: mints/stores/transmits the `dsk_` API token and handles a login password
 - `helm-charts/bin/uninstall.sh` — the destructive counterpart: conditionally deletes the credentials Secret, deletes the Airflow fernet-key Secret on a value comparison against it, and drives PVC and namespace removal
