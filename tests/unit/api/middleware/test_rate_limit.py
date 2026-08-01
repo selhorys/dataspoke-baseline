@@ -8,6 +8,12 @@ context). Tests verify:
 - The per-minute limit string is derived from settings.rate_limit_per_minute.
 - Distinct clients land in distinct buckets — the key varies with the client address
   the API observes.
+- The Redis storage URI survives a round trip through redis-py's own ``parse_url``: the
+  password arrives verbatim whatever characters it contains, and the URI selects the
+  dedicated rate-limit logical DB. Asserted on the module-level ``storage_uri`` the two
+  limiters are actually built from — not only on the private helper behind it — by
+  loading a second copy of the module under a throwaway name with a hostile password
+  in ``settings`` (see ``_probe_module_with_redis_settings``).
 - The chart actually supplies that trust list: ``config.trustedProxyIps`` is loopback-only
   by default, the ConfigMap binds it to uvicorn's ``FORWARDED_ALLOW_IPS``, and the API
   container pulls that ConfigMap. Tests that assert on the *shipped default* read it from
@@ -20,23 +26,49 @@ spec: API.md §Middleware Stack — rate limiting uses a per-user key (JWT sub, 
 spec: feature/AUTH.md §Client-IP attribution for rate limiting — the observed address
       is the real client only if every hop preserves it; the API's own trust boundary
       is closed by default and per-client bucketing is opt-in.
+spec: feature/BACKEND.md §Cache Key Conventions — the limiters' counters live in a
+      dedicated Redis logical DB, and the storage URI percent-encodes the password so
+      ``DATASPOKE_REDIS_PASSWORD`` accepts any character.
 """
 
 import asyncio
+import importlib.util
 import re
 from pathlib import Path
+from types import ModuleType
 from typing import Any
+from unittest.mock import patch
 
+import pytest
 import yaml
+from redis.connection import parse_url
 from starlette.requests import Request
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
-from src.api.middleware.rate_limit import _get_user_key, limiter
+import src.api.middleware.rate_limit as rate_limit_module
+from src.api.middleware.rate_limit import (
+    RATE_LIMIT_REDIS_DB,
+    _build_storage_uri,
+    _get_user_key,
+    limiter,
+    storage_uri,
+)
+from src.shared.settings import settings
 
 _CHART_DIR = Path(__file__).resolve().parents[4] / "helm-charts" / "dataspoke"
 _CHART_VALUES = _CHART_DIR / "values.yaml"
 _CHART_CONFIGMAP = _CHART_DIR / "templates" / "configmap.yaml"
 _CHART_API_DEPLOYMENT = _CHART_DIR / "templates" / "api-deployment.yaml"
+
+# Characters an operator may legally put in ``DATASPOKE_REDIS_PASSWORD``. Each entry is a
+# distinct corruption mode of the raw-interpolated URI this module no longer builds:
+#   "p@ss"     — an extra `@` in the netloc
+#   "p%2Fss"   — a literal `%2F` decoded on read into "p/ss", a different credential
+#   "pa ss"    — a space, which `quote_plus` would encode as `+` and no reader reverses
+#   "p/s?s#x"  — `/`, `?` and `#` terminate the netloc, so the port parse blew up (#120)
+#   "p:ss"     — the `:` read as the user/password separator
+#   "100%"     — a trailing `%` is an invalid percent-escape for any unquoting reader
+_HOSTILE_PASSWORDS = ["p@ss", "p%2Fss", "pa ss", "p/s?s#x", "p:ss", "100%"]
 
 
 # ── Test drivers ──────────────────────────────────────────────────────────────
@@ -116,6 +148,159 @@ def _key_behind_proxy_headers(
 
     assert captured, "driver bug: the inner ASGI app never ran, so no key was computed"
     return captured[0]
+
+
+def _probe_module_with_redis_settings(*, host: str, port: int, password: str) -> ModuleType:
+    """Load a *second, throwaway copy* of the rate-limit module under given settings.
+
+    The module builds ``storage_uri`` at import time from ``settings``, so observing it
+    under a hostile password means re-executing the module. ``importlib.reload`` of the
+    real module is not usable: ``_AUTH_LIMITED_ENDPOINTS`` is populated by the auth
+    router's ``@auth_route_limit`` decorators at *their* import, and a reload resets it to
+    an empty set for the rest of the session, silently breaking ``limiter_for_request``
+    for every later test.
+
+    Executing a fresh module object built from the same file avoids that: it is never
+    inserted into ``sys.modules``, so the real module and its registry are untouched (the
+    caller asserts that). Nothing here opens a socket — ``Limiter`` builds its storage
+    lazily.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "_rate_limit_probe", Path(rate_limit_module.__file__)
+    )
+    assert spec is not None and spec.loader is not None, (
+        "driver bug: could not build an import spec for the rate-limit module"
+    )
+    probe = importlib.util.module_from_spec(spec)
+    with (
+        patch.object(settings, "redis_host", host),
+        patch.object(settings, "redis_port", port),
+        patch.object(settings, "redis_password", password),
+    ):
+        spec.loader.exec_module(probe)
+    return probe
+
+
+# ── Storage URI: the password survives the round trip ─────────────────────────
+
+
+@pytest.mark.parametrize("password", _HOSTILE_PASSWORDS)
+def test_storage_uri_carries_the_password_verbatim(password: str) -> None:
+    """The password redis-py parses back out of the storage URI is the one we put in.
+
+    ``limits`` takes a URI string rather than connection kwargs, so this layer has to
+    escape the credential and something downstream has to unescape it. The assertion is
+    therefore made on the *consumer* of the URI — ``redis.connection.parse_url``, the
+    function redis-py applies to it — rather than on the URI text, because the property
+    that matters is that the write and read halves are exact inverses.
+
+    Regression for issue #120: the password was interpolated raw. ``@`` happened to
+    survive (redis-py splits the netloc at the *last* ``@``), but ``/``, ``#`` and ``?``
+    terminated the netloc so ``parse_url`` split it in the wrong place and the API died
+    at import with "Port could not be cast to integer", and ``%`` decoded into a
+    different credential. The host/port/db assertions pin that split.
+
+    spec: feature/BACKEND.md §Cache Key Conventions — "The storage URI percent-encodes
+    the password, so `DATASPOKE_REDIS_PASSWORD` accepts any character."
+    """
+    parsed = parse_url(_build_storage_uri("redis.example.com", 6380, 1, password))
+
+    assert parsed["password"] == password
+    assert parsed["host"] == "redis.example.com"
+    assert parsed["port"] == 6380
+    assert parsed["db"] == 1
+
+
+@pytest.mark.parametrize("password", _HOSTILE_PASSWORDS)
+def test_module_storage_uri_carries_the_password_verbatim(password: str) -> None:
+    """The URI the two limiters are built from carries the password verbatim.
+
+    The companion above proves the escaping helper is correct; this one proves the
+    module actually *uses* it. Without this leg, reverting ``storage_uri`` to the
+    pre-fix raw f-string while leaving ``_build_storage_uri`` defined-but-unused would
+    restore the import-time crash under a fully green suite.
+
+    The ``_storage_uri`` assertions close the last link: the escaped URI is what both
+    ``limiter`` and ``auth_limiter`` were constructed with, which is what the cited
+    clause is about — a URI a limiter never receives escapes nothing.
+
+    Regression for issue #120: with the raw interpolation, ``settings.redis_password``
+    values containing ``/``, ``#`` or ``?`` made redis-py's ``parse_url`` split the
+    netloc in the wrong place and the API died at import with "Port could not be cast
+    to integer".
+
+    spec: feature/BACKEND.md §Cache Key Conventions — "The storage URI percent-encodes
+    the password, so `DATASPOKE_REDIS_PASSWORD` accepts any character."
+    """
+    registry_before = set(rate_limit_module._AUTH_LIMITED_ENDPOINTS)
+
+    probe = _probe_module_with_redis_settings(
+        host="redis.example.com", port=6380, password=password
+    )
+    parsed = parse_url(probe.storage_uri)
+
+    assert parsed["password"] == password
+    assert parsed["host"] == "redis.example.com"
+    assert parsed["port"] == 6380
+    assert parsed["db"] == RATE_LIMIT_REDIS_DB
+    assert probe.limiter._storage_uri == probe.storage_uri, (
+        "the default limiter must be built from the escaped storage URI; got "
+        f"{probe.limiter._storage_uri!r}."
+    )
+    assert probe.auth_limiter._storage_uri == probe.storage_uri, (
+        "the fail-closed auth limiter must share that same storage URI; got "
+        f"{probe.auth_limiter._storage_uri!r}."
+    )
+    assert set(rate_limit_module._AUTH_LIMITED_ENDPOINTS) == registry_before, (
+        "driver bug: loading the probe copy mutated the real module's auth-endpoint "
+        "registry, which would break limiter_for_request for every later test."
+    )
+
+
+def test_storage_uri_without_a_password_carries_no_credential() -> None:
+    """An unset ``DATASPOKE_REDIS_PASSWORD`` yields a URI with no credential at all.
+
+    Unspecced invariant, stated here rather than attributed to §Cache Key Conventions:
+    that clause covers only what the URI does *with* a password. This is hygiene, not a
+    live failure mode — ``parse_url`` discards an empty password before it reaches AUTH,
+    so ``redis://:@host:6380/1`` and ``redis://host:6380/1`` parse identically. The
+    assertion is therefore on the URI text, which is where the difference exists: a
+    parsed-form assertion here would be inert and would survive removal of the guard.
+
+    ``settings.redis_password`` is ``""`` on the dev profile, so this is the shape the
+    URI actually takes there.
+    """
+    built = _build_storage_uri("redis.example.com", 6380, 1, "")
+
+    assert built == "redis://redis.example.com:6380/1"
+    parsed = parse_url(built)
+    assert parsed["host"] == "redis.example.com"
+    assert parsed["port"] == 6380
+    assert parsed["db"] == 1
+
+
+def test_storage_uri_selects_the_dedicated_rate_limit_logical_db() -> None:
+    """The module-level ``storage_uri`` both limiters share points at ``RATE_LIMIT_REDIS_DB``.
+
+    "Dedicated" is the load-bearing word, and it is a claim about a *different* DB from
+    the application cache's. ``RedisClient`` (``src/shared/cache/client.py``) passes no
+    ``db`` to ``redis.asyncio.Redis``, so the application cache, the SET NX concurrency
+    locks and the ``revoked_refresh:*`` set all live in logical DB 0. Setting
+    ``RATE_LIMIT_REDIS_DB = 0`` would therefore land the counters in exactly the
+    keyspace ordinary eviction clears while leaving the URI-vs-constant comparison below
+    trivially true — hence the second assertion.
+
+    spec: feature/BACKEND.md §Cache Key Conventions — the limiters' storage lives "in a
+    **dedicated Redis logical DB** separate from the keys above — so evicting cached
+    data can never clear a rate-limit or brute-force counter".
+    """
+    assert RATE_LIMIT_REDIS_DB != 0, (
+        f"RATE_LIMIT_REDIS_DB is {RATE_LIMIT_REDIS_DB}, the same logical DB RedisClient "
+        "uses for the application cache and the refresh-revocation set; the counters "
+        "would then be clearable by ordinary cache eviction. spec: feature/BACKEND.md "
+        "§Cache Key Conventions."
+    )
+    assert parse_url(storage_uri)["db"] == RATE_LIMIT_REDIS_DB
 
 
 # ── Configuration assertions ──────────────────────────────────────────────────
@@ -207,8 +392,6 @@ def test_rate_limit_per_minute_derived_from_settings() -> None:
     SlowAPI wraps each limit string in a LimitGroup object; the raw limit string is
     stored on the ``_LimitGroup__limit_provider`` private attribute.
     """
-    from src.shared.settings import settings
-
     application_limits = limiter._application_limits
     expected_fragment = f"{settings.rate_limit_per_minute}/minute"
 

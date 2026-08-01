@@ -471,6 +471,15 @@ data:
 EOF
 }
 
+# _url_encode <value>
+# Percent-encodes a value for use inside a URI userinfo component. SQLAlchemy's
+# parser unquotes both halves of `user:password`, so both must be encoded for a
+# credential holding `@`, `/`, `%`, or any other delimiter to survive the trip.
+_url_encode() {
+  printf '%s' "$1" | python3 -c \
+    'import urllib.parse,sys; print(urllib.parse.quote(sys.stdin.read(),safe=""))'
+}
+
 # _derive_airflow_metadata_secret <namespace> [<secret_name>]
 # Reads DATASPOKE_POSTGRES_{USER,PASSWORD} from the consolidated Secret,
 # builds the Airflow metadata connection URI, and applies
@@ -486,11 +495,11 @@ _derive_airflow_metadata_secret() {
   pg_password="$(kubectl get secret "${secret_name}" -n "${ns}" \
     -o jsonpath='{.data.DATASPOKE_POSTGRES_PASSWORD}' | base64 --decode)"
 
-  local url_enc_pwd
-  url_enc_pwd="$(printf '%s' "${pg_password}" | python3 -c \
-    'import urllib.parse,sys; print(urllib.parse.quote(sys.stdin.read(),safe=""))')"
+  local enc_user enc_pwd
+  enc_user="$(_url_encode "${pg_user}")"
+  enc_pwd="$(_url_encode "${pg_password}")"
 
-  local conn_uri="postgresql://${pg_user}:${url_enc_pwd}@dataspoke-postgresql:5432/airflow?sslmode=disable"
+  local conn_uri="postgresql://${enc_user}:${enc_pwd}@dataspoke-postgresql:5432/airflow?sslmode=disable"
 
   info "Applying dataspoke-airflow-metadata-db..."
   if kubectl get secret dataspoke-airflow-metadata-db -n "${ns}" >/dev/null 2>&1; then

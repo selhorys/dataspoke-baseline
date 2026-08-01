@@ -1,57 +1,196 @@
-"""Tests for src/shared/db/session.py — verifies the async session factory contracts
-from spec/feature/BACKEND.md §Shared Services (PostgreSQL row): pool size 10, max
-overflow 5, asyncpg driver, DATABASE_URL construction from DATASPOKE_POSTGRES_* env
-vars."""
+"""Tests for src/shared/db/session.py — the async session factory contracts from
+spec/feature/BACKEND.md §Shared Services (PostgreSQL row): pool size 10, max overflow 5,
+asyncpg driver, and the connection URL built from the ``DATASPOKE_POSTGRES_*`` env vars.
 
+The credential assertions do not stop at the ``URL`` the module builds: they push one
+layer further and read back what the asyncpg dialect would hand the driver
+(``create_connect_args``), because "reach the driver verbatim" is a statement about the
+driver's arguments, not about the shape of the object in between. Anything that
+re-introduces a DSN round trip — here or in a future refactor — changes those arguments
+and fails these tests.
+"""
+
+import importlib
 import inspect as stdlib_inspect
+import os
+from typing import Any
 from unittest.mock import patch
 
-from src.shared.db.session import SessionLocal, engine, get_session
+import pytest
+from sqlalchemy import URL
+from sqlalchemy.ext.asyncio import create_async_engine
+
+from src.shared.db.session import SessionLocal, _build_url, engine, get_session
+
+# Characters an operator may legally put in a PostgreSQL credential that a DSN string
+# would have to escape. Each entry is a distinct corruption mode of the string-interpolated
+# DSN this module no longer builds:
+#   "p@ss"     — the `@` split the DSN, so the host became "ss@db.example.com" (issue #120)
+#   "p%2Fss"   — a literal `%2F` was decoded on read into "p/ss", a different credential
+#   "pa ss"    — `quote_plus` (migrations/env.py) encoded the space as `+`, which the
+#                consuming `unquote` does not reverse, yielding "pa+ss"
+#   "p/s?s#x"  — `/`, `?` and `#` terminate the netloc, truncating the credential
+#   "p:ss"     — the `:` was read as the user/password separator
+#   "100%"     — a trailing `%` is an invalid percent-escape for any unquoting reader
+_HOSTILE_CREDENTIALS = ["p@ss", "p%2Fss", "pa ss", "p/s?s#x", "p:ss", "100%"]
+
+_POSTGRES_ENV_KEYS = (
+    "DATASPOKE_POSTGRES_HOST",
+    "DATASPOKE_POSTGRES_PORT",
+    "DATASPOKE_POSTGRES_USER",
+    "DATASPOKE_POSTGRES_PASSWORD",
+    "DATASPOKE_POSTGRES_DB",
+)
+
+
+def _connect_args(url: URL) -> dict[str, Any]:
+    """The keyword arguments the asyncpg dialect would pass to the driver for *url*.
+
+    This is the last observable point before the credential leaves DataSpoke, so it is
+    where "verbatim" is provable. ``create_async_engine`` opens no socket — the pool is
+    lazy — so this stays a unit test.
+    """
+    async_engine = create_async_engine(url)
+    _, kwargs = async_engine.dialect.create_connect_args(url)
+    return dict(kwargs)
 
 
 def test_get_session_is_async_generator() -> None:
     assert stdlib_inspect.isasyncgenfunction(get_session)
 
 
-def test_database_url_default() -> None:
-    import importlib
+# ── Credentials reach the driver verbatim ────────────────────────────────────
 
+
+@pytest.mark.parametrize("password", _HOSTILE_CREDENTIALS)
+def test_password_reaches_the_driver_verbatim(password: str) -> None:
+    """asyncpg receives ``DATASPOKE_POSTGRES_PASSWORD`` exactly as the operator set it.
+
+    Regression for issue #120: the DSN was interpolated as
+    ``postgresql+asyncpg://{user}:{password}@{host}…``, so a password containing ``@``
+    made SQLAlchemy read the credential as the text before it and the host as the text
+    after it — the API then failed DNS resolution against a host that does not exist
+    instead of reporting a bad credential — and a ``%`` was silently decoded into a
+    different credential. The host assertion below is what pins that specific failure.
+
+    spec: feature/BACKEND.md §Shared Services (PostgreSQL row) — "Credentials are
+    carried as `sqlalchemy.URL` fields rather than interpolated into a DSN string, so
+    `DATASPOKE_POSTGRES_USER` / `DATASPOKE_POSTGRES_PASSWORD` reach the driver verbatim
+    from this connection layer whatever characters they contain".
+    """
+    args = _connect_args(_build_url("db.example.com", "9999", "myuser", password, "mydb"))
+
+    assert args["password"] == password
+    assert args["user"] == "myuser"
+    assert args["host"] == "db.example.com"
+    assert args["port"] == 9999
+    assert args["database"] == "mydb"
+
+
+@pytest.mark.parametrize("user", _HOSTILE_CREDENTIALS)
+def test_username_reaches_the_driver_verbatim(user: str) -> None:
+    """The same guarantee holds for ``DATASPOKE_POSTGRES_USER``.
+
+    The spec clause names both credentials; a username is the other half of the netloc
+    and corrupts the DSN in exactly the same ways.
+
+    spec: feature/BACKEND.md §Shared Services (PostgreSQL row) — "`DATASPOKE_POSTGRES_USER`
+    / `DATASPOKE_POSTGRES_PASSWORD` reach the driver verbatim from this connection layer
+    whatever characters they contain".
+    """
+    args = _connect_args(_build_url("db.example.com", "9999", user, "secret", "mydb"))
+
+    assert args["user"] == user
+    assert args["password"] == "secret"
+    assert args["host"] == "db.example.com"
+    assert args["port"] == 9999
+    assert args["database"] == "mydb"
+
+
+def test_url_string_form_masks_the_password() -> None:
+    """A distinctive password injected into the URL does not appear in its string form.
+
+    The absence assertion is meaningful because the value is injected here: the URL is
+    built with this exact secret, and ``url.password`` is asserted as the backstop that
+    the credential is genuinely carried rather than dropped on the floor. ``str(url)``
+    is what lands in a repr, a log line, or an engine traceback.
+
+    spec: feature/BACKEND.md §Shared Services (PostgreSQL row) — "the URL's string form
+    masks the password rather than carrying it into a log line or traceback".
+    """
+    secret = "s3cr3t-never-log-this"  # noqa: S105 - test fixture value, not a credential
+    url = _build_url("db.example.com", "5432", "myuser", secret, "mydb")
+
+    assert url.password == secret, "backstop: the URL must actually carry the credential"
+    assert secret not in str(url)
+    assert secret not in repr(url)
+    # The real DSN is still reachable for the caller that explicitly asks for it.
+    assert secret in url.render_as_string(hide_password=False)
+
+
+# ── Env vars land on the URL's fields ────────────────────────────────────────
+
+
+def test_database_url_fields_come_from_the_postgres_env_vars() -> None:
+    """``DATASPOKE_POSTGRES_*`` populate the URL's fields; unset vars fall back.
+
+    Asserted component-wise rather than against a rendered DSN: the rendered form masks
+    the password, and comparing against a literal string is exactly the DSN round trip
+    the connection layer exists to avoid.
+
+    The populated password carries an ``@`` and a ``/`` on purpose, so this test states
+    the issue #120 invariant on the module-level ``DATABASE_URL`` — the surface the
+    engine is actually built from — and not only on the helper behind it: with the
+    pre-fix interpolated DSN the ``@`` moved the tail of the password into the host.
+
+    spec: feature/BACKEND.md §Shared Services (PostgreSQL row) — credentials "carried as
+    `sqlalchemy.URL` fields ... whatever characters they contain". That clause covers
+    the *carriage* (the ``URL``-fields shape and the driver name) and names
+    ``DATASPOKE_POSTGRES_USER`` / ``_PASSWORD``.
+
+    NOT spec-derived: the ``_HOST`` / ``_PORT`` / ``_DB`` variable names and the
+    cleared-env fallbacks (``localhost``, 5432, ``dataspoke``/``dataspoke``) appear in no
+    spec document — they are impl-documented dev conveniences, pinned here because they
+    are the values a developer gets with no environment at all and a silent change to
+    them would point a laptop at a different database.
+    """
     import src.shared.db.session as mod
 
-    env_keys = [
-        "DATASPOKE_POSTGRES_HOST",
-        "DATASPOKE_POSTGRES_PORT",
-        "DATASPOKE_POSTGRES_USER",
-        "DATASPOKE_POSTGRES_PASSWORD",
-        "DATASPOKE_POSTGRES_DB",
-    ]
-    clean_env = {k: v for k, v in __import__("os").environ.items() if k not in env_keys}
-    with patch.dict("os.environ", clean_env, clear=True):
+    try:
+        cleared = {k: v for k, v in os.environ.items() if k not in _POSTGRES_ENV_KEYS}
+        with patch.dict("os.environ", cleared, clear=True):
+            importlib.reload(mod)
+            default_url = mod.DATABASE_URL
+        assert default_url.drivername == "postgresql+asyncpg"
+        assert default_url.username == "dataspoke"
+        assert default_url.password == "dataspoke"
+        assert default_url.host == "localhost"
+        assert default_url.port == 5432
+        assert default_url.database == "dataspoke"
+
+        populated = {
+            "DATASPOKE_POSTGRES_HOST": "db.example.com",
+            "DATASPOKE_POSTGRES_PORT": "9999",
+            "DATASPOKE_POSTGRES_USER": "myuser",
+            "DATASPOKE_POSTGRES_PASSWORD": "p@ss/word",
+            "DATASPOKE_POSTGRES_DB": "mydb",
+        }
+        with patch.dict("os.environ", populated, clear=False):
+            importlib.reload(mod)
+            env_url = mod.DATABASE_URL
+        assert env_url.drivername == "postgresql+asyncpg"
+        assert env_url.username == "myuser"
+        assert env_url.password == "p@ss/word"
+        assert env_url.host == "db.example.com"
+        assert env_url.port == 9999
+        assert env_url.database == "mydb"
+    finally:
+        # Restore the module bound to the ambient environment for every later test.
         importlib.reload(mod)
-        assert (
-            mod.DATABASE_URL == "postgresql+asyncpg://dataspoke:dataspoke@localhost:5432/dataspoke"
-        )
-    importlib.reload(mod)
+        assert mod.DATABASE_URL.drivername == "postgresql+asyncpg"
 
 
-def test_database_url_from_env() -> None:
-    env = {
-        "DATASPOKE_POSTGRES_HOST": "db.example.com",
-        "DATASPOKE_POSTGRES_PORT": "9999",
-        "DATASPOKE_POSTGRES_USER": "myuser",
-        "DATASPOKE_POSTGRES_PASSWORD": "secret",
-        "DATASPOKE_POSTGRES_DB": "mydb",
-    }
-    with patch.dict("os.environ", env, clear=False):
-        import importlib
-
-        import src.shared.db.session as mod
-
-        importlib.reload(mod)
-        assert mod.DATABASE_URL == "postgresql+asyncpg://myuser:secret@db.example.com:9999/mydb"
-
-    # Reload to restore defaults
-    importlib.reload(mod)
+# ── Engine and session-factory configuration ─────────────────────────────────
 
 
 def test_engine_pool_size() -> None:

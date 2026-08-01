@@ -128,7 +128,7 @@ for current method signatures.
 | Service | Module | Role | Key design decisions |
 |---------|--------|------|---------------------|
 | DataHub Client | `datahub/client.py` | Unified read/write wrapper around `acryl-datahub` SDK | Exponential backoff (3 attempts, 500ms base). Circuit breaker (opens after 5 failures, 60s probe). See [DATAHUB_INTEGRATION](../DATAHUB_INTEGRATION.md). |
-| PostgreSQL | `db/session.py`, `db/models.py` | SQLAlchemy 2.0 async with `asyncpg`. Session factory + ORM models. | Pool size 10, max overflow 5 |
+| PostgreSQL | `db/session.py`, `db/models.py` | SQLAlchemy 2.0 async with `asyncpg`. Session factory + ORM models. | Pool size 10, max overflow 5. Credentials are carried as `sqlalchemy.URL` fields rather than interpolated into a DSN string, so `DATASPOKE_POSTGRES_USER` / `DATASPOKE_POSTGRES_PASSWORD` reach the driver verbatim from this connection layer whatever characters they contain, and the URL's string form masks the password rather than carrying it into a log line or traceback. |
 | Vector (pgvector) | `vector/client.py` | Table-backed vector upsert/search (cosine, HNSW-indexed). Shares the PostgreSQL session factory. | `PgVectorManager` + `VectorHit` dataclass; collection name whitelisted against `EMBEDDING_COLLECTION`. |
 | Graph (Apache AGE, reserved) | `graph/client.py` | AGE extension installed on the same PG instance for future graph-shaped queries. `AgeGraph` exposes `materialize_triple` / `delete_triple` / `traverse` helpers usable by any service that opts in. | See [BACKEND_SCHEMA §Graph](BACKEND_SCHEMA.md#graph-apache-age-reserved). |
 | LLM | `llm/client.py` | Provider-agnostic client (LangChain). Single completion, JSON completion, embedding, and tool-calling loop (`complete_with_tools`) bound to a service-supplied validator. | Provider/model from the `llm_provider`/`llm_model` runtime config (`/api/v1/admin/conf`); the API key is read at runtime from the `dataspoke-llm-secret` Secret and rotated online via the same conf surface. Loop semantics, validator rule tables, debate framework, and test-mode toggles defined in [BACKEND_LLM](BACKEND_LLM.md). |
@@ -162,7 +162,8 @@ Rate-limit counters are outside this namespace and outside the `cache/client.py`
 wrapper. The API's SlowAPI limiters delegate storage to the `limits` library,
 which owns its own `LIMITS:LIMITER/*` keyspace with per-window expiry, in a
 **dedicated Redis logical DB** separate from the keys above — so evicting cached
-data can never clear a rate-limit or brute-force counter. See
+data can never clear a rate-limit or brute-force counter. The storage URI percent-encodes
+the password, so `DATASPOKE_REDIS_PASSWORD` accepts any character. See
 [API.md §Middleware Stack](../API.md#middleware-stack) and
 [AUTH.md §Client-IP attribution for rate limiting](AUTH.md#client-ip-attribution-for-rate-limiting).
 

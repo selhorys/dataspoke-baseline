@@ -76,6 +76,7 @@ import time
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextvars import ContextVar
 from typing import Any, TypeVar, cast
+from urllib.parse import quote
 
 from anyio import to_thread
 from fastapi import routing as _fastapi_routing
@@ -253,8 +254,30 @@ def _storage_options() -> dict[str, Any]:
     }
 
 
-_auth = f":{settings.redis_password}@" if settings.redis_password else ""
-storage_uri = f"redis://{_auth}{settings.redis_host}:{settings.redis_port}/{RATE_LIMIT_REDIS_DB}"
+def _build_storage_uri(host: str, port: int, db: int, password: str) -> str:
+    """Redis URI for the limiters' storage, with the password percent-encoded.
+
+    ``limits`` takes a URI string rather than connection kwargs, so unlike
+    ``src/shared/cache/client.py`` this layer cannot hand the password to the
+    driver as a field and has to escape it. ``quote(..., safe="")`` is the exact
+    inverse of the ``unquote`` redis-py's ``parse_url`` applies, so the password
+    arrives verbatim: without it a ``/``, ``#`` or ``?`` makes ``parse_url``
+    split the netloc in the wrong place and the API dies at import, and a ``%``
+    decodes into a different password. spec/feature/BACKEND.md §Cache Key
+    Conventions: the storage URI percent-encodes the password, so
+    ``DATASPOKE_REDIS_PASSWORD`` accepts any character. ``port`` and ``db`` are
+    typed ``int`` and reach the URI through ``f``-string rendering of that int.
+    """
+    auth = f":{quote(password, safe='')}@" if password else ""
+    return f"redis://{auth}{host}:{port}/{db}"
+
+
+storage_uri = _build_storage_uri(
+    settings.redis_host,
+    settings.redis_port,
+    RATE_LIMIT_REDIS_DB,
+    settings.redis_password,
+)
 
 limiter = Limiter(
     key_func=_get_user_key,
