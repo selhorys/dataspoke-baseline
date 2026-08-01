@@ -31,7 +31,7 @@ from datahub.metadata.schema_classes import (
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from src.backend.ingestion.extractors import run_extractor
 from src.shared.cache.client import RedisClient
@@ -1496,25 +1496,45 @@ class IngestionService:
         return str(sanitize(raw)) if callable(sanitize) else raw
 
     async def _report_api_health(self, status: str, error: str | None = None) -> None:
-        """Write the ``datahub-api`` health row on a session of its own.
+        """Write the ``datahub-api`` health row on a distinct session over the sweep's own engine.
 
-        The ``error`` report is written while an exception is unwinding and has to
-        outlive it, so it does not share the sweep's session: a dedicated
-        ``SessionLocal()`` makes that independence structural rather than
-        contingent on the sweep having no writes pending. This mirrors the sibling
-        reporter in ``src/shared/datahub/consumer.py``.
+        Two properties, and they are separate:
+
+        *Distinct session* — the ``error`` report is written while an exception is
+        unwinding and has to outlive it, so it does not share the sweep's session.
+        Opening one of its own makes that independence structural rather than
+        contingent on the sweep having no writes pending
+        (spec/feature/BACKEND.md §Sync + mapping sweep).
+
+        *Same engine* — the session is built on the bind of the injected session, so
+        the report reaches the database the caller is actually using. A module-level
+        factory is bound at import time to the app-runtime ``DATASPOKE_POSTGRES_*``
+        values, which a host-side caller (a sweep driven from a developer machine
+        through a forwarded port) does not have; the write would then be aimed at a
+        different address than every other statement in the same call and be
+        swallowed below.
+
+        A session with no usable bind falls back to the module-level factory, which
+        is the only address available in that case.
 
         Reporting is observability, never a reason to change the sweep's outcome,
         so a failure here is logged and swallowed.
         """
-        # Function-local, matching the consumer: peripheral_health lives under
-        # src.backend.admin, which must not become a module-level dependency of
-        # the ingestion service.
+        # Function-local: peripheral_health lives under src.backend.admin, which must
+        # not become a module-level dependency of the ingestion service.
         from src.backend.admin.peripheral_health import report_peripheral_health
         from src.shared.db.session import SessionLocal
 
         try:
-            async with SessionLocal() as db:
+            # Derived here rather than in __init__ so an exotic bind degrades into
+            # the swallowed-and-logged path below instead of breaking construction.
+            bind = getattr(self._db, "bind", None)
+            factory = (
+                async_sessionmaker(bind, class_=AsyncSession, expire_on_commit=False)
+                if isinstance(bind, AsyncEngine)
+                else SessionLocal
+            )
+            async with factory() as db:
                 await report_peripheral_health(db, "datahub-api", status, error)
         except Exception:
             # ERROR, not WARNING: a swallowed report leaves api_health reading

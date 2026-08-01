@@ -35,10 +35,8 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import patch
 
 import httpx
 import pytest
@@ -103,23 +101,6 @@ async def _read_health(engine: AsyncEngine, name: str) -> dict[str, Any] | None:
         )
         row = result.mappings().one_or_none()
         return dict(row) if row is not None else None
-
-
-@asynccontextmanager
-async def _session_local_on(engine: AsyncEngine) -> AsyncIterator[None]:
-    """Point the reporter's ``SessionLocal`` at the dev cluster for the duration.
-
-    ``IngestionService._report_api_health`` opens ``src.shared.db.session.SessionLocal``
-    — a module-level factory bound to ``DATASPOKE_POSTGRES_*``, which out of cluster
-    resolves to localhost. Patching it to a factory on the integration engine is the
-    same seam the event consumer's reporter is tested through
-    (``tests/unit/shared/datahub/test_consumer_kafka_config.py``), and it preserves the
-    property under test: the reporter still gets its **own** session, distinct from the
-    one the sweep runs on.
-    """
-    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    with patch("src.shared.db.session.SessionLocal", factory):
-        yield
 
 
 async def _write_health(async_engine: AsyncEngine, row: dict[str, Any] | None, name: str) -> None:
@@ -276,8 +257,7 @@ async def test_completed_sweep_writes_the_datahub_api_row_as_ok(
     )
     try:
         before = datetime.now(tz=UTC)
-        async with _session_local_on(async_engine):
-            await service.sync()
+        await service.sync()
 
         row = await _read_health(async_engine, "datahub-api")
         assert row is not None, (
@@ -429,8 +409,7 @@ async def test_a_sweep_that_raises_flips_datahub_api_to_error_and_the_row_surviv
             datahub=_StubDataHubForHealth(),  # type: ignore[arg-type]
             db=async_session,
         )
-        async with _session_local_on(async_engine):
-            await healthy.sync()
+        await healthy.sync()
         assert (await _read_health(async_engine, "datahub-api"))["status"] == "ok", (  # type: ignore[index]
             "Backstop: the row must start this test at 'ok', or the 'error' reading below "
             "could be a row that was never written at all."
@@ -441,8 +420,7 @@ async def test_a_sweep_that_raises_flips_datahub_api_to_error_and_the_row_surviv
             db=async_session,
         )
         with pytest.raises(Exception) as raised:  # noqa: B017, PT011 — the type is the point
-            async with _session_local_on(async_engine):
-                await failing.sync()
+            await failing.sync()
         assert sentinel in str(raised.value), (
             f"{label}: the sweep must re-raise the original failure, not swallow it; got "
             f"{raised.value!r}. "
@@ -549,8 +527,7 @@ async def test_a_credential_in_the_sweep_failure_is_redacted_in_the_row(
             db=async_session,
         )
         with pytest.raises(Exception):  # noqa: B017 — the message is the point, not the type
-            async with _session_local_on(async_engine):
-                await failing.sync()
+            await failing.sync()
         await async_session.rollback()
 
         row = await _read_health(async_engine, "datahub-api")
@@ -597,12 +574,26 @@ async def test_the_error_report_survives_a_sweep_session_left_in_a_failed_transa
 ) -> None:
     """The report lands even when the sweep's own session can no longer execute SQL.
 
-    This is the case that makes the dedicated ``SessionLocal()`` structural rather than
+    This is the case that makes the reporter's session of its own structural rather than
     stylistic. The failure injected here is a *database* error raised mid-sweep, which
     leaves the sweep's session in an aborted transaction: any further statement on it
     raises. A reporter sharing that session would fail, and because reporting is
     best-effort the failure would be swallowed — leaving ``api_health`` pinned at the
     last ``ok`` exactly when it is wrong.
+
+    The sweep's session and the reporter's are two sessions on the **same engine**, and
+    that is what makes this discriminating: sharing an engine is not sharing a
+    transaction, so a report on a fresh session commits while the sweep's connection is
+    still poisoned. **Which** engine the reporter picks is observable here too, on a
+    host-driven run: a module-level factory is bound at import time to the app-runtime
+    ``DATASPOKE_POSTGRES_*`` values, which a developer machine reaching the cluster
+    through a forwarded port does not have, so a reporter that regressed to one would
+    write no row at all and this assertion would fail. Do not reinstate a patch of that
+    factory here — it is what makes this test discriminate. Engine identity is
+    additionally pinned at the unit tier
+    (``tests/unit/backend/ingestion/test_service.py::TestSyncReportsApiHealth``), which is
+    the tier that can still discriminate it in-cluster, where both addresses resolve to
+    the same database.
 
     A successful sweep drives the row to ``ok`` first, so ``error`` here is an observed
     transition.
@@ -633,8 +624,7 @@ async def test_the_error_report_survives_a_sweep_session_left_in_a_failed_transa
             datahub=_StubDataHubForHealth(),  # type: ignore[arg-type]
             db=async_session,
         )
-        async with _session_local_on(async_engine):
-            await healthy.sync()
+        await healthy.sync()
         assert (await _read_health(async_engine, "datahub-api"))["status"] == "ok", (  # type: ignore[index]
             "Backstop: the row must start at 'ok', or the 'error' reading below could be "
             "a row that was never written."
@@ -645,8 +635,7 @@ async def test_the_error_report_survives_a_sweep_session_left_in_a_failed_transa
             db=async_session,
         )
         with pytest.raises(Exception):  # noqa: B017 — any DB error; the driver names it
-            async with _session_local_on(async_engine):
-                await poisoned.sync()
+            await poisoned.sync()
 
         await async_session.rollback()
         row = await _read_health(async_engine, "datahub-api")

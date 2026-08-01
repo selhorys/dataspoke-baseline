@@ -18,6 +18,7 @@ Spec: spec/USE_CASE_en.md §UC1
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -30,7 +31,7 @@ from datahub.metadata.schema_classes import (  # type: ignore
     DataProcessRunStatusClass,
     DataProcessTypeClass,
 )
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from src.backend.ingestion.extractors import IngestionResult
 from src.backend.ingestion.service import (
@@ -317,9 +318,7 @@ class TestReverseLookupPrecedence:
     """
 
     @pytest.mark.asyncio
-    async def test_emitted_beats_matched(
-        self, service: IngestionService, db: AsyncMock
-    ) -> None:
+    async def test_emitted_beats_matched(self, service: IngestionService, db: AsyncMock) -> None:
         """Source with derivation='emitted' wins over derivation='matched'.
 
         Spec: BACKEND_SCHEMA.md §ingestion_source_dataset — emitted is authority 'high',
@@ -504,9 +503,7 @@ class TestReverseLookupPrecedence:
         )
 
     @pytest.mark.asyncio
-    async def test_no_mapping_returns_none(
-        self, service: IngestionService, db: AsyncMock
-    ) -> None:
+    async def test_no_mapping_returns_none(self, service: IngestionService, db: AsyncMock) -> None:
         """No source maps the dataset → reverse_lookup returns None."""
         result_mock = MagicMock()
         result_mock.all.return_value = []
@@ -656,9 +653,7 @@ class TestMirrorExecutionRequestsStatusMapping:
 
         count = await service._mirror_execution_requests(source_id, dh_urn)
 
-        assert count == 1, (
-            f"Expected 1 event for DataHub status {datahub_status!r}; got {count}."
-        )
+        assert count == 1, f"Expected 1 event for DataHub status {datahub_status!r}; got {count}."
         db.add.assert_called_once()
         added_event = db.add.call_args[0][0]
         assert added_event.event_type == INGESTION_COMPLETE, (
@@ -680,9 +675,7 @@ class TestMirrorExecutionRequestsStatusMapping:
     # ── FAIL outcomes ─────────────────────────────────────────────────────────
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        "datahub_status", ["FAILURE", "TIMEOUT", "ABORTED", "ROLLBACK_FAILED"]
-    )
+    @pytest.mark.parametrize("datahub_status", ["FAILURE", "TIMEOUT", "ABORTED", "ROLLBACK_FAILED"])
     async def test_fail_statuses_write_fail_event(
         self,
         service: IngestionService,
@@ -709,9 +702,7 @@ class TestMirrorExecutionRequestsStatusMapping:
 
         count = await service._mirror_execution_requests(source_id, dh_urn)
 
-        assert count == 1, (
-            f"Expected 1 event for DataHub status {datahub_status!r}; got {count}."
-        )
+        assert count == 1, f"Expected 1 event for DataHub status {datahub_status!r}; got {count}."
         db.add.assert_called_once()
         added_event = db.add.call_args[0][0]
         assert added_event.event_type == INGESTION_FAIL, (
@@ -961,8 +952,7 @@ def _emitted_aspects(datahub: AsyncMock) -> list[object]:
 
 def _dpi_properties(datahub: AsyncMock) -> DataProcessInstancePropertiesClass:
     props = [
-        a for a in _emitted_aspects(datahub)
-        if isinstance(a, DataProcessInstancePropertiesClass)
+        a for a in _emitted_aspects(datahub) if isinstance(a, DataProcessInstancePropertiesClass)
     ]
     assert len(props) == 1, (
         f"Expected exactly one DataProcessInstanceProperties emission; got {len(props)}."
@@ -971,10 +961,7 @@ def _dpi_properties(datahub: AsyncMock) -> DataProcessInstancePropertiesClass:
 
 
 def _dpi_outputs(datahub: AsyncMock) -> list[DataProcessInstanceOutputClass]:
-    return [
-        a for a in _emitted_aspects(datahub)
-        if isinstance(a, DataProcessInstanceOutputClass)
-    ]
+    return [a for a in _emitted_aspects(datahub) if isinstance(a, DataProcessInstanceOutputClass)]
 
 
 def _patched_run(
@@ -1032,9 +1019,7 @@ class TestDpiEmissionContract:
         row = _make_source_row(mode="ACTIVE_CUSTOM_MANAGED")
         mock_scalar_query(db, row)
 
-        with _patched_run(
-            service, emitted_urns=[_DATASET_URN]
-        ):
+        with _patched_run(service, emitted_urns=[_DATASET_URN]):
             await service._run_inner(str(row.id), dry_run=False, manual=True)
 
         props = _dpi_properties(datahub)
@@ -1054,9 +1039,7 @@ class TestDpiEmissionContract:
         row = _make_source_row(mode="ACTIVE_CUSTOM_MANAGED")
         mock_scalar_query(db, row)
 
-        with _patched_run(
-            service, emitted_urns=[_DATASET_URN]
-        ):
+        with _patched_run(service, emitted_urns=[_DATASET_URN]):
             await service._run_inner(str(row.id), dry_run=False, manual=False)
 
         props = _dpi_properties(datahub)
@@ -1078,9 +1061,7 @@ class TestDpiEmissionContract:
         row = _make_source_row(mode="ACTIVE_CUSTOM_MANAGED")
         mock_scalar_query(db, row)
 
-        with _patched_run(
-            service, emitted_urns=[_DATASET_URN]
-        ):
+        with _patched_run(service, emitted_urns=[_DATASET_URN]):
             # No cache configured on the bare `service` fixture, so run() runs
             # _run_inner directly with its manual default.
             await service.run(str(row.id), dry_run=False)
@@ -1103,10 +1084,7 @@ class TestDpiEmissionContract:
         """
         row = _make_source_row(mode="ACTIVE_CUSTOM_MANAGED")
         mock_scalar_query(db, row)
-        second_urn = (
-            "urn:li:dataset:(urn:li:dataPlatform:postgres,"
-            "example_db.catalog.editions,DEV)"
-        )
+        second_urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.editions,DEV)"
         emitted = [_DATASET_URN, second_urn]
 
         with _patched_run(service, emitted_urns=emitted):
@@ -1138,13 +1116,12 @@ class TestDpiEmissionContract:
         row = _make_source_row(mode="ACTIVE_CUSTOM_MANAGED")
         mock_scalar_query(db, row)
 
-        with _patched_run(
-            service, emitted_urns=[_DATASET_URN]
-        ):
+        with _patched_run(service, emitted_urns=[_DATASET_URN]):
             await service._run_inner(str(row.id), dry_run=False, manual=True)
 
         output_calls = [
-            c for c in datahub.emit_aspect.call_args_list
+            c
+            for c in datahub.emit_aspect.call_args_list
             if isinstance(c.args[1], DataProcessInstanceOutputClass)
         ]
         assert len(output_calls) == 1
@@ -1168,8 +1145,7 @@ class TestDpiEmissionContract:
         )
         # Same sysmeta object reused across the run's emissions.
         all_sysmetas = {
-            id(c.kwargs.get("system_metadata"))
-            for c in datahub.emit_aspect.call_args_list
+            id(c.kwargs.get("system_metadata")) for c in datahub.emit_aspect.call_args_list
         }
         assert len(all_sysmetas) == 1, (
             "All emissions in a run must reuse one SystemMetadataClass instance. "
@@ -1188,19 +1164,17 @@ class TestDpiEmissionContract:
         row = _make_source_row(mode="ACTIVE_CUSTOM_MANAGED")
         mock_scalar_query(db, row)
 
-        with _patched_run(
-            service, emitted_urns=[_DATASET_URN]
-        ):
+        with _patched_run(service, emitted_urns=[_DATASET_URN]):
             await service._run_inner(str(row.id), dry_run=False, manual=True)
 
         aspects = _emitted_aspects(datahub)
         output_idx = next(
-            i for i, a in enumerate(aspects)
-            if isinstance(a, DataProcessInstanceOutputClass)
+            i for i, a in enumerate(aspects) if isinstance(a, DataProcessInstanceOutputClass)
         )
         # The terminal RunEvent is the COMPLETE one (STARTED precedes the crawl).
         complete_idx = next(
-            i for i, a in enumerate(aspects)
+            i
+            for i, a in enumerate(aspects)
             if isinstance(a, DataProcessInstanceRunEventClass)
             and a.status == DataProcessRunStatusClass.COMPLETE
         )
@@ -1223,9 +1197,7 @@ class TestDpiEmissionContract:
         row = _make_source_row(mode="ACTIVE_CUSTOM_MANAGED")
         mock_scalar_query(db, row)
 
-        with _patched_run(
-            service, emitted_urns=[_DATASET_URN]
-        ):
+        with _patched_run(service, emitted_urns=[_DATASET_URN]):
             await service._run_inner(str(row.id), dry_run=True, manual=True)
 
         assert _dpi_outputs(datahub) == [], (
@@ -1259,7 +1231,8 @@ class TestDpiEmissionContract:
         )
         # A failed run still emits the terminal COMPLETE RunEvent (failure semantics).
         complete_events = [
-            a for a in _emitted_aspects(datahub)
+            a
+            for a in _emitted_aspects(datahub)
             if isinstance(a, DataProcessInstanceRunEventClass)
             and a.status == DataProcessRunStatusClass.COMPLETE
         ]
@@ -1282,9 +1255,7 @@ class TestDpiEmissionContract:
         row = _make_source_row(mode="ACTIVE_CUSTOM_MANAGED")
         mock_scalar_query(db, row)
 
-        with _patched_run(
-            service, emitted_urns=[]
-        ):
+        with _patched_run(service, emitted_urns=[]):
             await service._run_inner(str(row.id), dry_run=False, manual=True)
 
         assert _dpi_outputs(datahub) == [], (
@@ -1795,8 +1766,10 @@ class TestSyncReportsApiHealth:
     The persisted row and its two-session independence are covered against real
     PostgreSQL in ``tests/integration/spot/test_datahub_api_health.py``. What this class
     covers is the part a unit test can prove better: which status is reported for which
-    outcome, that the failure is re-raised, and that the reported *message* carries
-    neither a credential nor a stack trace.
+    outcome, that the failure is re-raised, that the reported *message* carries neither a
+    credential nor a stack trace, and **which database the report is aimed at** — a
+    property the integration tier cannot discriminate, because there the caller's engine
+    and the module-level one address the same cluster.
 
     spec: feature/BACKEND.md §Sync + mapping sweep §Health side effect — "``ok`` on
         completion, ``error`` carrying the message on failure — which is then re-raised";
@@ -1818,10 +1791,15 @@ class TestSyncReportsApiHealth:
             return message
 
     @classmethod
-    def _service(cls, sweep_raises: BaseException | None = None, datahub: object | None = None):
+    def _service(
+        cls,
+        sweep_raises: BaseException | None = None,
+        datahub: object | None = None,
+        db: object | None = None,
+    ):
         service = IngestionService(
             datahub=datahub if datahub is not None else cls._PassThroughSanitize(),  # type: ignore[arg-type]
-            db=AsyncMock(spec=AsyncSession),
+            db=db if db is not None else AsyncMock(spec=AsyncSession),  # type: ignore[arg-type]
         )
 
         async def _run_sweep() -> dict[str, int]:
@@ -1962,8 +1940,7 @@ class TestSyncReportsApiHealth:
         described = service._describe_failure(exc)
 
         assert str(exc) in described, (
-            f"the failure's own message must survive a client with no sanitizer; got "
-            f"{described!r}."
+            f"the failure's own message must survive a client with no sanitizer; got {described!r}."
         )
         for marker in ("Traceback", 'File "'):
             assert marker not in described, (
@@ -2010,4 +1987,348 @@ class TestSyncReportsApiHealth:
             f"trailing context; got {described!r}. If ``_describe_failure`` is reformatted "
             f"deliberately, update this expectation: it is the layout pin, and the sibling "
             f"tests assert containment precisely so that this is the only site to touch."
+        )
+
+    # ── which database the report is written to ───────────────────────────────
+    #
+    # The spec fixes *that* the report is committed independently of the sweep's
+    # transaction (feature/BACKEND.md §Sync + mapping sweep §Health side effect) and
+    # *that* the sweep is the writer of the ``datahub-api`` row (§Health reporting).
+    # Independence alone is satisfiable by a session on some other database entirely —
+    # in which case no row the sweep's caller can read is ever written, and the
+    # swallowing ``except`` below makes that indistinguishable from success. The two
+    # tests here hold both halves at once: a session of its own, on the database the
+    # caller handed the service.
+    #
+    # Both drive the real ``_report_api_health`` and stub only ``report_peripheral_health``
+    # — the seam is the row writer, not the session plumbing under test. Engines are never
+    # connected to: SQLAlchemy defers connection until a statement runs, and no statement
+    # does.
+
+    @staticmethod
+    def _unconnected_engine(host: str):
+        """An ``AsyncEngine`` that is never connected to — only its identity is used."""
+        return create_async_engine(f"postgresql+asyncpg://u:p@{host}:5432/d")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("label", "sweep_raises", "expected_status"),
+        [
+            ("completed sweep", None, "ok"),
+            # The failing leg matters most: this is the report that has to outlive the
+            # re-raise, so it is the one whose loss is silent.
+            ("failing sweep", DataHubUnavailableError("GMS unreachable"), "error"),
+        ],
+    )
+    async def test_the_report_goes_to_the_callers_database_on_a_session_of_its_own(
+        self, label: str, sweep_raises: BaseException | None, expected_status: str
+    ) -> None:
+        """The report is written on a **new** session bound to the **injected** session's engine.
+
+        Two properties, asserted together because either alone is satisfiable by a
+        reporter that does the wrong thing:
+
+        - *A session of its own* — the ``error`` report is written while an exception is
+          unwinding and must not ride the sweep's transaction.
+        - *The caller's engine* — a session on a module-level factory is bound at import
+          time to the app-runtime connection settings, which a caller that injected a
+          session built elsewhere (a host-side sweep through a forwarded port) does not
+          share. The write would then land in a different database than every other
+          statement of the same call — or nowhere — and the swallowing ``except`` in the
+          reporter makes that outcome look exactly like success.
+
+        A distinct fallback engine is installed as ``SessionLocal`` for the duration, so
+        "the caller's engine was used" is a discriminating reading rather than the only
+        engine in the process.
+
+        spec: feature/BACKEND.md §Sync + mapping sweep §Health side effect — 'The
+            ``error`` report is committed independently of the sweep's transaction.'
+        spec: feature/BACKEND.md §Health reporting — '``datahub-api`` | Metadata API (GMS
+            REST / GraphQL) | the hourly sync + mapping sweep': the sweep is the writer of
+            that row, so the row must land where the sweep's caller reads it.
+        """
+        callers_engine = self._unconnected_engine("callers-db")
+        fallback_engine = self._unconnected_engine("module-level-db")
+        injected = async_sessionmaker(callers_engine, class_=AsyncSession, expire_on_commit=False)()
+        seen: list[tuple[object, str, str, str | None]] = []
+
+        async def _record(db, name, status, error=None):  # type: ignore[no-untyped-def]
+            seen.append((db, name, status, error))
+            return None
+
+        service = self._service(sweep_raises=sweep_raises, db=injected)
+        try:
+            with (
+                patch(
+                    "src.backend.admin.peripheral_health.report_peripheral_health",
+                    _record,
+                ),
+                patch(
+                    "src.shared.db.session.SessionLocal",
+                    async_sessionmaker(
+                        fallback_engine, class_=AsyncSession, expire_on_commit=False
+                    ),
+                ),
+            ):
+                if sweep_raises is None:
+                    await service.sync()
+                else:
+                    with pytest.raises(type(sweep_raises)):
+                        await service.sync()
+        finally:
+            await injected.close()
+            await callers_engine.dispose()
+            await fallback_engine.dispose()
+
+        # Backstop: the reporter really reached the row writer. Without this the three
+        # assertions below would pass vacuously on a reporter that wrote nothing at all
+        # — which is precisely the defect they exist to catch, since the reporter's
+        # ``except`` swallows the failure that would otherwise announce it.
+        assert len(seen) == 1, (
+            f"{label}: the sweep must call the health-row writer exactly once; got "
+            f"{len(seen)} call(s). spec: feature/BACKEND.md §Health reporting."
+        )
+        reported_db, name, status, _error = seen[0]
+        assert (name, status) == ("datahub-api", expected_status), (
+            f"{label}: the sweep writes the 'datahub-api' row with status "
+            f"{expected_status!r}; got {(name, status)!r}. "
+            "spec: feature/BACKEND.md §Health reporting."
+        )
+        assert reported_db is not injected, (
+            f"{label}: the report must be written on a session distinct from the sweep's, "
+            "so it survives the sweep's transaction unwinding. "
+            "spec: feature/BACKEND.md §Sync + mapping sweep §Health side effect."
+        )
+        assert reported_db.bind is callers_engine, (
+            f"{label}: the report must be written against the engine the caller's session "
+            f"is bound to ({callers_engine!r}), so it reaches the database the sweep is "
+            f"actually operating on; it went to {reported_db.bind!r}. "
+            "spec: feature/BACKEND.md §Health reporting — the sweep is the writer of the "
+            "'datahub-api' row."
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("label", "db"),
+        [
+            # An AsyncMock(spec=AsyncSession) exposes no `bind`: it is not in
+            # dir(AsyncSession). This is the shape every other unit test in this class
+            # injects, so the fallback is what keeps them off a nonsense factory.
+            ("a session mock carrying no bind at all", AsyncMock(spec=AsyncSession)),
+            ("a session whose bind is None", MagicMock(spec_set=["bind"], bind=None)),
+            # A *sync* Engine, or anything else that is not an AsyncEngine, cannot build
+            # an async factory: degrade rather than raise out of the reporter.
+            (
+                "a session bound to something that is not an AsyncEngine",
+                MagicMock(spec_set=["bind"], bind=object()),
+            ),
+        ],
+    )
+    async def test_a_session_with_no_usable_engine_falls_back_without_raising(
+        self, label: str, db: object
+    ) -> None:
+        """An injected session that offers no usable engine degrades to the module-level factory.
+
+        The fallback is the only address available in that case, and reporting must never
+        be the thing that breaks the sweep: the sweep's own summary still returns.
+
+        spec: feature/BACKEND.md §Health reporting — '``datahub-api`` | … | the hourly
+            sync + mapping sweep': the sweep is the writer of that row, so there is no
+            shape of injected session for which it stops trying to write it.
+        spec: feature/BACKEND.md §Sync + mapping sweep — the health report 'is a side
+            effect of the sweep, not a step of the pipeline above', so it never changes
+            the sweep's outcome.
+        """
+        fallback_engine = self._unconnected_engine("module-level-db")
+        seen: list[tuple[object, str, str, str | None]] = []
+
+        async def _record(db_, name, status, error=None):  # type: ignore[no-untyped-def]
+            seen.append((db_, name, status, error))
+            return None
+
+        service = self._service(db=db)
+        try:
+            with (
+                patch(
+                    "src.backend.admin.peripheral_health.report_peripheral_health",
+                    _record,
+                ),
+                patch(
+                    "src.shared.db.session.SessionLocal",
+                    async_sessionmaker(
+                        fallback_engine, class_=AsyncSession, expire_on_commit=False
+                    ),
+                ),
+            ):
+                summary = await service.sync()
+        finally:
+            await fallback_engine.dispose()
+
+        assert summary == {"sources_synced": 1}, (
+            f"{label}: the sweep's summary must pass through untouched — health reporting "
+            f"is a side effect, never a step of the pipeline; got {summary!r}. "
+            "spec: feature/BACKEND.md §Sync + mapping sweep."
+        )
+        assert len(seen) == 1, (
+            f"{label}: the sweep must still attempt the 'datahub-api' report through the "
+            f"module-level factory; the row writer was called {len(seen)} time(s). "
+            "spec: feature/BACKEND.md §Health reporting."
+        )
+        reported_db, name, status, _error = seen[0]
+        assert (name, status) == ("datahub-api", "ok"), (
+            f"{label}: the sweep writes the 'datahub-api' row with status 'ok'; got "
+            f"{(name, status)!r}. spec: feature/BACKEND.md §Health reporting."
+        )
+        assert reported_db.bind is fallback_engine, (
+            f"{label}: with no usable engine on the injected session the report must go "
+            f"through the module-level factory; it went to {reported_db.bind!r}."
+        )
+
+    @pytest.mark.asyncio
+    async def test_reading_the_injected_sessions_bind_cannot_break_the_sweep(self) -> None:
+        """A session whose ``bind`` raises on access is swallowed like any other report failure.
+
+        This is what makes the placement of the engine derivation observable. The
+        derivation reads ``self._db.bind`` and builds the factory *inside*
+        ``_report_api_health``'s ``try``; hoisted above it, the read below escapes the
+        reporter. On the success leg that turns a completed sweep into a failed one, and
+        on the failing leg it substitutes itself for the sweep's own exception — the
+        re-raise the spec requires would never run.
+
+        The shape is deliberately synthetic: no production caller can produce it, because
+        every injected session comes from an ``AsyncEngine``-bound sessionmaker. It exists
+        so the try-scope is pinned by something rather than by nothing.
+
+        spec: feature/BACKEND.md §Sync + mapping sweep §Health side effect — the report
+            'is a side effect of the sweep, not a step of the pipeline above', so no shape
+            of injected session may propagate out of the reporter.
+        """
+
+        class _BindRaises:
+            """Stands in for a session whose ``bind`` is unreadable (e.g. detached)."""
+
+            @property
+            def bind(self) -> object:
+                raise RuntimeError("session is detached")
+
+        # Stubbed so that if the implementation does reach the writer under this shape,
+        # it reaches a harmless one rather than a real session.
+        async def _record(_db, _name, _status, error=None):  # type: ignore[no-untyped-def]
+            return None
+
+        service = self._service(db=_BindRaises())
+        with patch("src.backend.admin.peripheral_health.report_peripheral_health", _record):
+            summary = await service.sync()
+
+        # The sweep's outcome is the whole assertion. Whether the row is written under
+        # this shape is deliberately left open: an implementation that caught the
+        # unreadable bind and still reported through the module-level factory would also
+        # satisfy the spec — §Health reporting names the sweep as the row's writer — so
+        # pinning ``seen`` here would fail a conformant alternative rather than a
+        # regression. The hoist mutation this test exists for is caught above, where the
+        # escaping RuntimeError fails ``await service.sync()`` outright.
+        assert summary == {"sources_synced": 1}, (
+            f"a bind that raises must not change the sweep's outcome; got {summary!r}. "
+            "spec: feature/BACKEND.md §Sync + mapping sweep §Health side effect."
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("label", "sweep_raises"),
+        [
+            ("completed sweep", None),
+            # The failing leg is the load-bearing one: the reporter is invoked from
+            # inside ``except Exception as exc:``, so a reporter that raised would
+            # *replace* the sweep's exception and the spec'd re-raise would never run.
+            ("failing sweep", DataHubUnavailableError("GMS unreachable")),
+        ],
+    )
+    async def test_a_health_row_write_that_raises_never_changes_the_sweeps_outcome(
+        self, label: str, sweep_raises: BaseException | None, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A row writer that raises is swallowed: the sweep's own outcome is unchanged.
+
+        This pins the ``except Exception`` in ``_report_api_health``, which is not
+        decoration. ``sync()`` calls the reporter from inside its own
+        ``except Exception as exc:`` clause, immediately before ``raise``. A reporter that
+        let a DB fault escape would therefore substitute its own exception for the sweep's
+        and the spec'd re-raise — the thing that makes the activity endpoint answer with a
+        *retryable* failure — would never execute. On the success leg the same escape
+        would turn a completed sweep into a failed one.
+
+        The failure is injected at the row writer (``report_peripheral_health``) because
+        that is where a real one lands: an unreachable database, or a schema predating the
+        ``datahub-api`` name in the ``ck_peripheral_health_name`` constraint.
+
+        spec: feature/BACKEND.md §Sync + mapping sweep §Health side effect — '``ok`` on
+            completion, ``error`` carrying the message on failure — which is then
+            re-raised, so the activity endpoint still answers with a retryable failure.'
+        spec: feature/BACKEND.md §Sync + mapping sweep §Health side effect — 'This is a
+            side effect of the sweep, not a step of the pipeline above.'
+        """
+        callers_engine = self._unconnected_engine("callers-db")
+        injected = async_sessionmaker(callers_engine, class_=AsyncSession, expire_on_commit=False)()
+        attempts: list[str] = []
+        reporter_failure = RuntimeError("pg down")
+
+        async def _boom(_db, _name, status, error=None):  # type: ignore[no-untyped-def]
+            attempts.append(status)
+            raise reporter_failure
+
+        service = self._service(sweep_raises=sweep_raises, db=injected)
+        # Root, not the reporter's module: the identity assertion below already
+        # discriminates against records from other loggers, and pinning the module path
+        # here would silently stop guarding the demotion case if the reporter ever moves.
+        caplog.set_level(logging.DEBUG)
+        try:
+            with patch("src.backend.admin.peripheral_health.report_peripheral_health", _boom):
+                if sweep_raises is None:
+                    summary = await service.sync()
+                    assert summary == {"sources_synced": 1}, (
+                        f"{label}: a report that raises must not turn a completed sweep "
+                        f"into a failed one; got {summary!r}. "
+                        "spec: feature/BACKEND.md §Sync + mapping sweep §Health side "
+                        "effect — the report is a side effect, not a step of the pipeline."
+                    )
+                else:
+                    with pytest.raises(Exception) as raised:  # noqa: B017 — identity asserted below
+                        await service.sync()
+                    assert raised.value is sweep_raises, (
+                        f"{label}: the sweep's own exception must be what propagates, so "
+                        f"the activity endpoint answers with a retryable failure; got "
+                        f"{raised.value!r}. A failing reporter must not substitute its "
+                        "own. spec: feature/BACKEND.md §Sync + mapping sweep §Health side "
+                        "effect."
+                    )
+        finally:
+            await injected.close()
+            await callers_engine.dispose()
+
+        # Backstop: the writer really was reached and really did raise. Without it both
+        # legs above pass on a reporter that never called the writer at all — the exact
+        # shape the swallowing ``except`` makes invisible.
+        assert attempts == ["error" if sweep_raises is not None else "ok"], (
+            f"{label}: the row writer must have been called once with the outcome's "
+            f"status and raised from there; got {attempts!r}. "
+            "spec: feature/BACKEND.md §Sync + mapping sweep §Health side effect."
+        )
+
+        # A swallowed report is invisible by construction: the row keeps whatever it held,
+        # which reads identically to "no reporter deployed". The log record is the only
+        # evidence that a reporter ran and failed, so the swallow is only safe while it
+        # stays observable — a silent ``except: pass`` would pass every assertion above.
+        # The level is deliberately not pinned: the impl uses ERROR and argues for it in a
+        # comment, while §Best-Effort Operations names WARNING for a different set of rows.
+        #
+        # spec: feature/BACKEND.md §Best-Effort Operations — failures are logged "with
+        #     ``exc_info=True``", so the swallowed cause is recoverable from the log.
+        swallowed = [r for r in caplog.records if r.exc_info is not None]
+        assert swallowed, (
+            f"{label}: the swallowed report failure must reach the log with exc_info, or a "
+            f"reporter that is running and failing leaves no evidence at all; captured "
+            f"{[(r.levelname, r.getMessage()) for r in caplog.records]!r}."
+        )
+        assert any(r.exc_info[1] is reporter_failure for r in swallowed), (  # type: ignore[index]
+            f"{label}: the logged cause must be the reporter's own failure, not some other "
+            "exception that happened to be in flight."
         )

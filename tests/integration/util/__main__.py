@@ -63,6 +63,10 @@ import asyncio
 import json
 import os
 import sys
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from sqlalchemy import URL
 
 _UC4_STATE_FILE = "/tmp/dataspoke_uc4_state.json"
 
@@ -85,6 +89,39 @@ _RECOGNIZED_FLAGS = frozenset(
         "--uc4-restore",
     }
 )
+
+
+def _dataspoke_db_url() -> URL:
+    """Build the DataSpoke operational-DB URL from the ``DATASPOKE_TEST_POSTGRES_*`` block.
+
+    The credentials are carried as ``URL`` fields rather than interpolated into a DSN
+    string, matching ``src/shared/db/session.py::_build_url``. An ``@`` in the password
+    truncates an interpolated DSN — the tail becomes the host — and a ``%`` decodes into a
+    different password entirely; held as fields there is no round-trip to get wrong.
+    ``str()`` of the result masks the password, so it cannot reach a traceback.
+
+    spec: feature/BACKEND.md §Shared Services (PostgreSQL row) — 'Credentials are carried
+        as ``sqlalchemy.URL`` fields rather than interpolated into a DSN string, so
+        ``DATASPOKE_POSTGRES_USER`` / ``DATASPOKE_POSTGRES_PASSWORD`` reach the driver
+        verbatim from this connection layer whatever characters they contain, and the
+        URL's string form masks the password.' Same invariant, one layer over: this helper
+        is the reset utility's connection layer and reads the ``DATASPOKE_TEST_*`` block.
+    spec: TESTING.md §Integration Lifecycle & Isolation — 'Reset helpers … read all
+        credentials from the environment (the ``DATASPOKE_TEST_*`` block in
+        ``helm-charts/.env.dev``); no credential is hardcoded in a helper.'
+
+    Covered by ``tests/unit/integration_util/test_main_db_url.py``.
+    """
+    from sqlalchemy import URL
+
+    return URL.create(
+        "postgresql+asyncpg",
+        username=os.environ.get("DATASPOKE_TEST_POSTGRES_USER", "dataspoke"),
+        password=os.environ.get("DATASPOKE_TEST_POSTGRES_PASSWORD", ""),
+        host=os.environ.get("DATASPOKE_TEST_POSTGRES_HOST", "localhost"),
+        port=int(os.environ.get("DATASPOKE_TEST_POSTGRES_PORT", "9201")),
+        database=os.environ.get("DATASPOKE_TEST_POSTGRES_DB", "dataspoke"),
+    )
 
 
 def main() -> None:
@@ -241,15 +278,7 @@ async def _uc4_seed() -> None:
 
     dh_token = get_datahub_token()
 
-    ds_host = os.environ.get("DATASPOKE_TEST_POSTGRES_HOST", "localhost")
-    ds_port = os.environ.get("DATASPOKE_TEST_POSTGRES_PORT", "9201")
-    ds_user = os.environ.get("DATASPOKE_TEST_POSTGRES_USER", "dataspoke")
-    ds_password = os.environ.get("DATASPOKE_TEST_POSTGRES_PASSWORD", "")
-    ds_db = os.environ.get("DATASPOKE_TEST_POSTGRES_DB", "dataspoke")
-
-    engine = create_async_engine(
-        f"postgresql+asyncpg://{ds_user}:{ds_password}@{ds_host}:{ds_port}/{ds_db}"
-    )
+    engine = create_async_engine(_dataspoke_db_url())
     async_session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
     async with async_session_factory() as session:
@@ -279,15 +308,7 @@ async def _uc4_restore() -> None:
 
     dh_token = get_datahub_token()
 
-    ds_host = os.environ.get("DATASPOKE_TEST_POSTGRES_HOST", "localhost")
-    ds_port = os.environ.get("DATASPOKE_TEST_POSTGRES_PORT", "9201")
-    ds_user = os.environ.get("DATASPOKE_TEST_POSTGRES_USER", "dataspoke")
-    ds_password = os.environ.get("DATASPOKE_TEST_POSTGRES_PASSWORD", "")
-    ds_db = os.environ.get("DATASPOKE_TEST_POSTGRES_DB", "dataspoke")
-
-    engine = create_async_engine(
-        f"postgresql+asyncpg://{ds_user}:{ds_password}@{ds_host}:{ds_port}/{ds_db}"
-    )
+    engine = create_async_engine(_dataspoke_db_url())
     async_session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
     async with async_session_factory() as session:
@@ -322,15 +343,7 @@ async def _datahub_sync() -> None:
 
     dh_token = get_datahub_token()
 
-    ds_host = os.environ.get("DATASPOKE_TEST_POSTGRES_HOST", "localhost")
-    ds_port = os.environ.get("DATASPOKE_TEST_POSTGRES_PORT", "9201")
-    ds_user = os.environ.get("DATASPOKE_TEST_POSTGRES_USER", "dataspoke")
-    ds_password = os.environ.get("DATASPOKE_TEST_POSTGRES_PASSWORD", "")
-    ds_db = os.environ.get("DATASPOKE_TEST_POSTGRES_DB", "dataspoke")
-
-    engine = create_async_engine(
-        f"postgresql+asyncpg://{ds_user}:{ds_password}@{ds_host}:{ds_port}/{ds_db}"
-    )
+    engine = create_async_engine(_dataspoke_db_url())
     async_session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
     datahub = DataHubClient(_gms_url, dh_token)

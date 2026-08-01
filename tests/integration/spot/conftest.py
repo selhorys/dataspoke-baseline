@@ -37,22 +37,17 @@ def silence_api_health_report(monkeypatch: pytest.MonkeyPatch) -> None:
     any module that drives ``IngestionService.sync()`` **in-process without owning the
     ``datahub-api`` health row**.
 
-    Two reasons, and both matter:
+    **Isolation of the in-process sweeps.** ``sync()`` writes the ``datahub-api``
+    ``peripheral_health`` row as a side effect, on a session it opens over the engine the
+    injected session is bound to — so a host-driven sweep reaches the dev cluster's row just
+    as an in-cluster one does. That row is dev-cluster-wide singleton state, so a module that
+    drives several sweeps and has no snapshot/restore around them would leave it holding
+    whatever its last sweep produced. Only ``test_datahub_api_health.py`` owns that row — it
+    snapshots and verifiably restores it — so every other sweep-driving module silences its
+    own **in-process** sweeps instead. This fixture is what keeps them off the row; without
+    it their writes land, they do not merely fail quietly.
 
-    1. **Isolation of the in-process sweeps.** ``sync()`` writes the ``datahub-api``
-       ``peripheral_health`` row as a side effect. That row is dev-cluster-wide singleton
-       state, so a module that drives several sweeps and has no snapshot/restore around them
-       would leave it holding whatever its last sweep produced. Only
-       ``test_datahub_api_health.py`` owns that row — it snapshots and verifiably restores it
-       — so every other sweep-driving module silences its own **in-process** sweeps instead.
-    2. **Readable failures.** The reporter opens the module-level
-       ``src.shared.db.session.SessionLocal``, which resolves to ``localhost:5432`` outside
-       the cluster. The write therefore fails, is swallowed by design, and logs a ~40-line
-       ``OSError: Connect call failed ('127.0.0.1', 5432)`` traceback per sweep. On a green
-       run that is invisible; on a failing one it occupies the output tail and hides the
-       assertion that actually failed.
-
-    Patched at the ``IngestionService`` method rather than at ``SessionLocal`` so a real
+    Patched at the ``IngestionService`` method rather than at the session factory so a real
     ``SessionLocal`` user elsewhere in the same test is unaffected.
 
     **Scope limit — this fixture cannot silence a REST-driven sweep.** ``monkeypatch`` binds
@@ -63,8 +58,7 @@ def silence_api_health_report(monkeypatch: pytest.MonkeyPatch) -> None:
 
     - Nothing here becomes vacuous. No assertion in any opted-in module reads
       ``peripheral_health``, so a stray write cannot make one of their checks pass falsely;
-      only reason 2 (log noise) is fully delivered for those calls, and reason 1 is delivered
-      only for the in-process half.
+      the isolation is delivered only for the in-process half.
     - The row is left dirty at session end. Files run in name order, so
       ``test_datahub_api_health.py`` sorts *before* ``test_internal_activities.py``: its
       verified restore does happen, and is then clobbered by the later REST-driven sweeps.
