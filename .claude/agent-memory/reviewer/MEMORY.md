@@ -25,7 +25,7 @@
 - [Isolate failures under concurrent edit](feedback_isolate_failures_concurrent_edit.md) — git archive HEAD into scratchpad, overlay one file; base scenario proves HEAD green
 - [metagen event from/to ignored](project_metagen_event_from_to_ignored.md) — RESOLVED (#90); lesson: a URL builder emitting a param never proves the server reads it
 - [spec_conformance is paths-only](feedback_spec_conformance_paths_only.md) — conformance compares route paths vs API.md, never query params; param drift passes every suite
-- [sync() has no unit coverage](feedback_sync_sweep_no_unit_coverage.md) — green `tests/unit/` proves nothing about sweep changes; only spot integration calls sync()
+- [sync() sweep body has no unit coverage](feedback_sync_sweep_no_unit_coverage.md) — the one unit caller stubs _run_sweep AND _report_api_health; green `tests/unit/` proves nothing
 - [DataHubUnavailableError is retryable-only](project_datahub_unavailable_only_retryable.md) — 401/403 + GraphError propagate raw; `except DataHubUnavailableError` misses a rotated PAT
 - [Auditing a "no-op" rollback](feedback_rollback_noop_claim_audit.md) — check pending DML *and* rollback()'s identity-map expiry (MissingGreenlet for async callers)
 - [Fernet blast radius](project_fernet_blast_radius_env_connections.md) — Airflow conns are env vars, so the metadata DB has ~no Fernet-encrypted rows; caps #111-style severity
@@ -53,3 +53,4 @@
 - [Airflow key-rotation strand gap](project_airflow_key_rotation_strand_gap.md) — prod gap is now just helm upgrade; dev still runs the fernet hard-abort between the key write and the restart
 - [DSN escape symmetry facts](project_dsn_escape_symmetry_facts.md) — URL fields are verbatim; render_as_string is symmetric for user/pw but never for `database`; limits→redis-py unquotes
 - [Tailwind child-svg specificity](project_tailwind_child_svg_specificity.md) — Button's `[&_svg]:size-4` outranks a child icon's own `h-3.5`; authored classes lie about icon size
+- [AsyncSession.bind seam](project_asyncsession_bind_seam.md) — set only if a bind is passed, absent from dir() so spec'd mocks miss it; AsyncConnection binds silently fall back

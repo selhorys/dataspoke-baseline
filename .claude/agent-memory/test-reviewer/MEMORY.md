@@ -48,3 +48,5 @@
 - [Vitest TZ pin isolation](project_vitest_tz_pin_isolation.md) — forks+isolate means no cross-file leak; only the afterAll self-check guards the delete-vs-assign restore
 - [chart-grain local monotonicity](project_chart_grain_local_monotonicity.md) — DST fall-back breaks label distinctness, NOT ordering; the usual tz="utc" rationale is wrong
 - [Grain 'no request param' untested](project_grain_no_request_param_untested.md) — enforced at 1 of 3 surfaces; tsc catches a new key but not an altered limit
+- [API-health reporter test seams](project_api_health_reporter_test_seams.md) — full kill/tolerate table; both survivors closed; keep level mutations tolerated; one over-pinned `seen == []`
+- [DSN URL-fields anchor](project_dsn_url_fields_anchor.md) — rule is BACKEND.md:131 not TESTING.md; test_session.py is the reference; getsource env-key backstops add zero kill power

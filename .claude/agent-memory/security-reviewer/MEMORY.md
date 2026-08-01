@@ -12,7 +12,7 @@
 - [FORWARDED_ALLOW_IPS trust radius](project_forwarded_allow_ips_trust_radius.md) — who picks their own client IP; "wider = one shared bucket" is inverted; networkPolicy.enabled is egress-only and misses the API
 - [Auth credential-carrier inventory](project_auth_credential_carrier_inventory.md) — the 7 carriers every auth diff must clear; lock order users→api_tokens→reset_tokens; why the lock alone isn't enough
 - [Recipe regex trust boundary](project_recipe_regex_trust_boundary.md) — writer regexes on the API's one event loop; malformed guarded, ReDoS is #114 (2 fixes already rejected)
-- [peripheral_health last_error redaction](project_peripheral_health_error_redaction.md) — the 3 sinks for a DataHub transport error; 401/403 still bypasses the exact-value scrub
+- [peripheral_health last_error redaction](project_peripheral_health_error_redaction.md) — 3 sinks; 401/403 now re-routed via client.sanitize; why binding the reporter to db.bind is safe
 - [Sanitizer pipeline ordering](project_sanitizer_pipeline_ordering.md) — normalize BEFORE exact-scrub; affix⊋lookbehind class drives a 48x regex constant
 - [slowapi blocking storage on event loop](project_slowapi_blocking_storage_event_loop.md) — both planes now off-loop; verify with heartbeat ticks (128 vs 2), never elapsed time
 - [Credentials-Secret key addition](project_credentials_secret_contract_key_addition.md) — 4 blind spots, all closed; dev Fernet loss ≠ prod
@@ -23,4 +23,4 @@
 - [Reviewer config is generator-writable](project_reviewer_config_is_generator_writable.md) — .claude/agents/** now self-globs; diff the list for removals every run; README.md still uncovered
 - [OAuth 302-only failure surface](project_oauth_302_only_failure_surface.md) — bypass/decoy/CRLF/log-forging all closed & measured; 3 survive: deployment-wide 10/min bucket, hide_parameters, uvicorn access log
 - [Image-digest stamping](project_image_digest_stamping_attestation.md) — resolve-or-abort pinning; r5 pulled digest resolution out of the Airflow-key window on all 4 paths, but dev still writes keys before the Fernet abort
-- [Credential URI escaping boundary](project_credential_uri_escaping_boundary.md) — 4 DSN sites, all fixed; 2 controls still never reach an existing install (Airflow metadata Secret early-return, sslmode=disable)
+- [Credential URI escaping boundary](project_credential_uri_escaping_boundary.md) — 4 src DSN sites fixed; 6 raw f-strings remain in tests/; 2 controls never reach an existing install

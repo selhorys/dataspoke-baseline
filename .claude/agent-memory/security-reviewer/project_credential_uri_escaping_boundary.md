@@ -18,6 +18,14 @@ branch `fix/credential-uri-escaping-consumer-retry`) the split is:
 No raw `postgresql://` / `postgresql+asyncpg://` f-string and no `quote_plus` remains anywhere
 in `src/` or `migrations/` — re-verify with that grep pair on any future DSN diff.
 
+**`tests/` still has six of them** (verified 2026-08-01): `tests/integration/conftest.py:123`,
+`tests/integration/util/__main__.py:251,289,332`, `tests/integration/spot/
+test_ontogen_embedding_upserts.py:47`, `tests/integration/spot/test_uc4_metagen_evidence_prompt.py:84`
+— all interpolating `DATASPOKE_TEST_POSTGRES_PASSWORD` raw, the exact bug `5d339fa` fixed in
+`src/shared/db/session.py`. They carry a live dev-cluster credential, so an `@`/`/`/`%` in it
+silently retargets the DSN. Any plan that fixes "the" test DSN should be checked for covering all
+six, not one.
+
 **Verified library facts** (measured against the repo's pinned SQLAlchemy / redis-py):
 - `URL.create` -> `create_async_engine` -> `dialect.create_connect_args` delivers `user` and
   `password` byte-identical for `@ % / ? # : space + newline` and non-ASCII.
