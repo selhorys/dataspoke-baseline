@@ -14,7 +14,9 @@ Concerns covered here:
    that stands in for a Secret-only rotation.
 3. ``_run_inner_loop()`` — returns on a changed tuple, keeps polling on an unchanged
    one.
-4. ``run_consumer()`` outer loop — closes the old client before constructing the new one.
+4. ``run_consumer()`` outer loop — closes the old client before constructing the new one;
+   parks rather than exits when the peripheral is unconfigured; and survives a
+   ``peripheral_config`` read that fails outright.
 
 No Kafka broker, database, or Kubernetes API is contacted.
 
@@ -22,8 +24,12 @@ Spec traceability:
 - spec/feature/BACKEND.md §Kafka connection — "The consumer reads its whole connection
   from ``peripheral_config.datahub`` — brokers plus the security tuple … and re-reads
   it every few seconds while polling. A change to any element ends the inner poll loop,
-  closes the client, and rebuilds it; an unconfigured peripheral parks the process in a
-  retry sleep rather than crash-looping."
+  closes the client, and rebuilds it. An unconfigured peripheral parks the process in a
+  retry sleep rather than crash-looping, recording no fault".
+- spec/feature/BACKEND.md §Kafka connection — "a ``peripheral_config`` read that fails
+  outright — the database unreachable, or its schema not yet migrated — keeps the
+  process alive on the same retry sleep and reports the fault on the ``datahub``
+  ``peripheral_health`` row on a best-effort basis."
 - spec/feature/BACKEND.md §Kafka connection — "``kafka_sasl_password_version`` exists
   because a rotated password is invisible in the DB row … which turns a rotation into
   an ordinary DB-plane change the poll loop already detects."
@@ -326,7 +332,7 @@ async def test_inner_loop_keeps_polling_while_the_tuple_is_unchanged() -> None:
     )
 
 
-# ── 4. run_consumer outer loop — rebuild ordering ────────────────────────────
+# ── 4. run_consumer outer loop — rebuild ordering and fault survival ─────────
 
 
 class _StopOuterLoop(BaseException):
@@ -399,17 +405,27 @@ async def test_outer_loop_closes_the_old_client_before_building_the_new_one(
 
 
 @pytest.mark.asyncio
-async def test_outer_loop_sleeps_instead_of_exiting_when_unconfigured(monkeypatch) -> None:
-    """An unconfigured peripheral parks the process rather than crash-looping.
+async def test_outer_loop_sleeps_instead_of_exiting_when_unconfigured() -> None:
+    """An unconfigured peripheral parks the process, and records no fault while it waits.
 
-    No Consumer is constructed while the connection reads ``None``.
+    Three things are asserted, because the spec sentence has three clauses: no Consumer
+    is constructed while the connection reads ``None``, the loop sleeps on
+    ``_UNCONFIGURED_SLEEP_S``, and nothing is written to the ``datahub``
+    ``peripheral_health`` row.
 
-    spec: feature/BACKEND.md §Kafka connection — "an unconfigured peripheral parks the
-    process in a retry sleep rather than crash-looping".
+    The negative health assertion is what makes this branch distinguishable from the
+    fault branch below: without it, a handler that reported ``error`` for a peripheral
+    the operator simply has not configured yet would pass here *and* satisfy the fault
+    test's ``report.assert_any_call``, so neither test would be pinning which branch ran.
+
+    ``asyncio.sleep`` is mocked rather than the constant shortened, so the awaited value
+    is the shipped one — a park that forgets to sleep would hot-loop against the
+    database.
+
+    spec: feature/BACKEND.md §Kafka connection — "An unconfigured peripheral parks the
+    process in a retry sleep rather than crash-looping, recording no fault".
     """
     import src.shared.datahub.consumer as consumer_mod
-
-    monkeypatch.setattr(consumer_mod, "_UNCONFIGURED_SLEEP_S", 0.0)
 
     reads = 0
 
@@ -421,12 +437,16 @@ async def test_outer_loop_sleeps_instead_of_exiting_when_unconfigured(monkeypatc
         return None
 
     ctor = MagicMock(side_effect=AssertionError("no client may be built while unconfigured"))
+    report = AsyncMock()
+    sleep = AsyncMock()
 
     with (
         patch.object(consumer_mod, "read_kafka_connection", side_effect=_read),
         patch.object(consumer_mod, "Consumer", ctor),
         patch.object(consumer_mod, "build_router", return_value=MagicMock()),
         patch.object(consumer_mod, "_create_airflow_client", return_value=None),
+        patch.object(consumer_mod.HealthReporter, "report", report),
+        patch.object(consumer_mod.asyncio, "sleep", sleep),
     ):
         with pytest.raises(_StopOuterLoop):
             await consumer_mod.run_consumer()
@@ -434,3 +454,130 @@ async def test_outer_loop_sleeps_instead_of_exiting_when_unconfigured(monkeypatc
     # Backstop: the loop actually iterated (rather than exiting on the first read).
     assert reads == 3
     ctor.assert_not_called()
+    sleep.assert_awaited_with(consumer_mod._UNCONFIGURED_SLEEP_S)
+    assert report.await_count == 0, (
+        "an unconfigured peripheral is not a fault — nothing may be written to the "
+        f"datahub peripheral_health row; got {report.await_args_list!r}. "
+        "spec: feature/BACKEND.md §Kafka connection — 'recording no fault'."
+    )
+
+
+@pytest.mark.asyncio
+async def test_outer_loop_survives_a_config_read_that_raises() -> None:
+    """A ``peripheral_config`` read that raises is retried, not fatal.
+
+    Regression for issue #117: the bootstrap ``read_kafka_connection()`` was the one
+    segment of the outer loop with no ``try``. On a fresh install the event-consumer
+    starts before the API's Alembic init container has created
+    ``dataspoke.peripheral_config``, so the read raised ``UndefinedTableError``, escaped
+    ``asyncio.run``, and the pod exited 1 — a crash-loop that resolved only by luck of
+    restart timing.
+
+    The proof of recovery is that the *second* read is reached and its connection is
+    carried all the way to the ``Consumer`` constructor, which is where the sentinel is
+    raised. On the pre-fix code the test dies at the first read and never gets there.
+
+    The health assertion is what stops a fix that keeps the process alive while leaving
+    the health row reading ``ok`` — a consumer dead in the water with nothing to show
+    for it. Because the spec calls that write **best-effort**, the assertion is on the
+    *attempt* (``HealthReporter.report`` was called with the fault), not on its
+    persistence: the row lives in the same database that just failed, so it may well not
+    land. Its negative counterpart is in the unconfigured test above, which asserts no
+    report at all — together they pin *which* branch ran.
+
+    The sleep assertions are the third leg: "keeps the process alive on the same retry
+    sleep" is two claims, that a sleep happens at all (without it the recovery is a hot
+    loop hammering the database that just failed) and that it is the same one the
+    unconfigured branch parks on. ``asyncio.sleep`` is mocked rather than the constant
+    shortened, so the awaited value is the shipped 10s and not a test-injected 1ms.
+
+    The raised error is a plain ``RuntimeError`` carrying the production message text.
+    The invariant is "any ``Exception``", not "this exception class" — constructing a
+    real ``asyncpg.exceptions.UndefinedTableError`` requires driver internals and would
+    pin the test to a dependency detail the spec does not name.
+
+    spec: feature/BACKEND.md §Kafka connection — "a ``peripheral_config`` read that fails
+    outright — the database unreachable, or its schema not yet migrated — keeps the
+    process alive on the same retry sleep and reports the fault on the ``datahub``
+    ``peripheral_health`` row on a best-effort basis."
+    """
+    import src.shared.datahub.consumer as consumer_mod
+
+    failure = 'relation "peripheral_config" does not exist'
+    reads = 0
+
+    async def _read():
+        nonlocal reads
+        reads += 1
+        if reads == 1:
+            raise RuntimeError(failure)
+        return KafkaConnection(brokers="kafka:9092", security_protocol="PLAINTEXT")
+
+    def _ctor(_config: dict) -> None:
+        # Reaching the constructor is the evidence: the loop recovered from the failed
+        # read and got as far as building a client from the connection it then read.
+        raise _StopOuterLoop
+
+    report = AsyncMock()
+    sleep = AsyncMock()
+
+    with (
+        patch.object(consumer_mod, "read_kafka_connection", side_effect=_read),
+        patch.object(consumer_mod, "Consumer", side_effect=_ctor),
+        patch.object(consumer_mod, "build_router", return_value=MagicMock()),
+        patch.object(consumer_mod, "_create_airflow_client", return_value=None),
+        patch.object(consumer_mod.HealthReporter, "report", report),
+        patch.object(consumer_mod.asyncio, "sleep", sleep),
+    ):
+        with pytest.raises(_StopOuterLoop):
+            await consumer_mod.run_consumer()
+
+    assert reads == 2, (
+        f"the failed read must be retried and the retry must reach the client build; "
+        f"got {reads} read(s)"
+    )
+    report.assert_any_call("error", failure)
+    sleep.assert_awaited_once_with(consumer_mod._FAULT_RETRY_SLEEP_S)
+    assert consumer_mod._FAULT_RETRY_SLEEP_S == consumer_mod._UNCONFIGURED_SLEEP_S, (
+        "the fault retry must park on the *same* sleep as the unconfigured branch; got "
+        f"{consumer_mod._FAULT_RETRY_SLEEP_S} vs {consumer_mod._UNCONFIGURED_SLEEP_S}. "
+        "spec: feature/BACKEND.md §Kafka connection — 'keeps the process alive on the "
+        "same retry sleep'."
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_base_exception_from_the_config_read_still_escapes() -> None:
+    """Guard, not a regression: ``BaseException`` from the read is not swallowed.
+
+    This passes on the pre-fix code too — its job is to fail if the handler added above
+    is ever widened to ``except BaseException``, which would swallow the
+    ``CancelledError`` a pod shutdown delivers and leave the consumer spinning through
+    its retry sleep until the kubelet SIGKILLs it.
+
+    spec: feature/BACKEND.md §Kafka connection — the retry covers a ``peripheral_config``
+    read "that fails outright", i.e. an error of the operation; process cancellation is
+    not one.
+    """
+    import src.shared.datahub.consumer as consumer_mod
+
+    async def _read():
+        raise _StopOuterLoop
+
+    # A widened handler would swallow the sentinel and retry forever. Failing the
+    # sleep turns that into an immediate, named failure rather than a hung run —
+    # the suite carries no timeout, and a test that never terminates certifies
+    # nothing.
+    swallowed = AsyncMock(
+        side_effect=AssertionError("the bootstrap read handler swallowed a BaseException")
+    )
+
+    with (
+        patch.object(consumer_mod, "read_kafka_connection", side_effect=_read),
+        patch.object(consumer_mod, "build_router", return_value=MagicMock()),
+        patch.object(consumer_mod, "_create_airflow_client", return_value=None),
+        patch.object(consumer_mod.HealthReporter, "report", AsyncMock()),
+        patch.object(consumer_mod.asyncio, "sleep", swallowed),
+    ):
+        with pytest.raises(_StopOuterLoop):
+            await consumer_mod.run_consumer()

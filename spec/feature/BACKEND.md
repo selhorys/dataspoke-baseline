@@ -1487,8 +1487,12 @@ the shared code than the API it shares a database with.
 The consumer reads its whole connection from `peripheral_config.datahub` — brokers plus the
 security tuple defined in [API.md](../API.md#datahub-kafka-security) — and re-reads it every
 few seconds while polling. A change to any element ends the inner poll loop, closes the
-client, and rebuilds it; an unconfigured peripheral parks the process in a retry sleep rather
-than crash-looping. Consequently the entire credential-based configuration surface is live
+client, and rebuilds it. An unconfigured peripheral parks the process in a retry sleep
+rather than crash-looping, recording no fault; a `peripheral_config` read that fails
+outright — the database unreachable, or its schema not yet migrated — keeps the process
+alive on the same retry sleep and reports the fault on the `datahub` `peripheral_health`
+row on a best-effort basis. That row lives in the same database, so it surfaces only once
+the database does. Consequently the entire credential-based configuration surface is live
 and UI-driven — protocol, mechanism, username, and password all take effect without a
 redeploy. `AWS_MSK_IAM` is the one exception: selecting it is a DB-plane change like any
 other, but it authenticates with an identity the chart attaches at install time, so a
@@ -1544,7 +1548,7 @@ row, written by the process that exercises that transport:
 
 | Row | Plane | Reporter | Meaning |
 |---|---|---|---|
-| `datahub` | Event stream (Kafka MCL topics) | the DataHub event consumer | `ok` once subscribed and polling; `error` with the message on a connection or authentication failure |
+| `datahub` | Event stream (Kafka MCL topics) | the DataHub event consumer | `ok` once subscribed and polling; `error` with the message on any fault it reports — connection, authentication, configuration, or a failed read of its own configuration |
 | `datahub-api` | Metadata API (GMS REST / GraphQL) | the hourly sync + mapping sweep ([Ingestion Service](#ingestion-service-srcbackendingestion)) | `ok` on a completed sweep; `error` on any failure that escapes it |
 
 `GET /admin/peripherals/datahub` returns the first as `health` and the second as `api_health`.

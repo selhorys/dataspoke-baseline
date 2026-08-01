@@ -463,7 +463,19 @@ async def run_consumer() -> None:
     health = HealthReporter()
 
     while True:
-        conn = await read_kafka_connection()
+        try:
+            conn = await read_kafka_connection()
+        except Exception as exc:
+            # This read reaches the same database every other segment of the loop
+            # already treats as fallible. On a fresh install the API's Alembic
+            # init container has not yet created `peripheral_config`; mid-life a
+            # Postgres blip looks the same. Neither is a reason to exit and be
+            # restarted.
+            logger.error("consumer_config_read_failed", error=str(exc))
+            await health.report("error", str(exc))
+            await asyncio.sleep(_FAULT_RETRY_SLEEP_S)
+            continue
+
         if conn is None:
             logger.info("consumer_waiting_for_config", retry_in_s=_UNCONFIGURED_SLEEP_S)
             await asyncio.sleep(_UNCONFIGURED_SLEEP_S)
