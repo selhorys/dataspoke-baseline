@@ -14,16 +14,31 @@ function pad(n: number): string {
   return String(n).padStart(2, "0");
 }
 
-interface Fields {
+/** Wall-clock fields of an instant, read in a display timezone. */
+export interface TzParts {
   year: number;
+  /** 0-based, as with Date#getMonth. */
   month: number;
   day: number;
   hours: number;
   minutes: number;
+  /** 0 = Sunday … 6 = Saturday, as with Date#getDay. */
+  weekday: number;
 }
 
-/** Read the wall-clock fields of a Date in the given tz. */
-function readFields(d: Date, tz: TzMode): Fields {
+/**
+ * Read the wall-clock fields of an ISO instant in the given tz.
+ * Returns null when the input is null, undefined, or not a valid date — the
+ * single place the UTC/local getter split lives; every other tz-aware read in
+ * this module (and lib/chart-grain.ts) goes through it.
+ */
+export function tzParts(
+  iso: string | null | undefined,
+  tz: TzMode = "local",
+): TzParts | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
   if (tz === "utc") {
     return {
       year: d.getUTCFullYear(),
@@ -31,6 +46,7 @@ function readFields(d: Date, tz: TzMode): Fields {
       day: d.getUTCDate(),
       hours: d.getUTCHours(),
       minutes: d.getUTCMinutes(),
+      weekday: d.getUTCDay(),
     };
   }
   return {
@@ -39,6 +55,7 @@ function readFields(d: Date, tz: TzMode): Fields {
     day: d.getDate(),
     hours: d.getHours(),
     minutes: d.getMinutes(),
+    weekday: d.getDay(),
   };
 }
 
@@ -67,10 +84,8 @@ export function formatDateTime(
   iso: string | null | undefined,
   tz: TzMode = "local",
 ): string {
-  if (!iso) return "—";
-  const t = new Date(iso).getTime();
-  if (Number.isNaN(t)) return "—";
-  const f = readFields(new Date(t), tz);
+  const f = tzParts(iso, tz);
+  if (!f) return "—";
   return `${f.year}-${pad(f.month + 1)}-${pad(f.day)} ${pad(f.hours)}:${pad(f.minutes)}`;
 }
 
@@ -82,9 +97,7 @@ export function formatDate(
   iso: string | null | undefined,
   tz: TzMode = "local",
 ): string {
-  if (!iso) return "—";
-  const t = new Date(iso).getTime();
-  if (Number.isNaN(t)) return "—";
-  const f = readFields(new Date(t), tz);
+  const f = tzParts(iso, tz);
+  if (!f) return "—";
   return `${f.year}-${pad(f.month + 1)}-${pad(f.day)}`;
 }

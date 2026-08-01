@@ -64,7 +64,7 @@ retired per-feature `/{feature}/data/[urn]` routes are redirects to `/data/[urn]
 | `/governance/dashboard` | `_smoke.spec.ts` (post-login landing); `uc5-01-governance.spec.ts` step 3a (metric cards + trend chart) | `ground/shell/root-redirect.spec.ts` (`/` redirect target) |
 | `/governance/metrics` | `uc5-01-governance.spec.ts` step 3b (list: metrics, type badges, Enabled) | — |
 | `/governance/metrics/new` | `uc5-01-governance.spec.ts` step 1a (create form → redirect) | — |
-| `/governance/metrics/[id]` | `uc5-01-governance.spec.ts` steps 1c, 2, 3c, 4 (Edit→PUT, Run, Config+Result+Event, Delete) | — |
+| `/governance/metrics/[id]` | `uc5-01-governance.spec.ts` steps 1c, 2, 3c, 4 (Edit→PUT, Run, Config+Result+Event, Delete) | `ground/governance/metric-grain.spec.ts` (Result panel ChartGrainPicker: Hourly/Daily/Weekly with Daily default; switching grain adds no request parameter — no `grain` in the `attr/result` query and the sent query strings unchanged; the choice survives a reload and carries to a second metric's Result panel — one stored grain per panel type) |
 | `/governance/datasets` | — | `ground/governance/datasets.spec.ts` (Governance-menu navigation + 5 column headers incl. validation; dataset_urn → /data/[urn] link, datahub deep-link, click-through to the hub; dual-confirmed against GET /spoke/common/data) |
 
 #### Validation (UC2)

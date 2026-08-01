@@ -20,14 +20,21 @@ import { MetricTimeseriesChart } from "@/components/governance/metric-timeseries
 import { formatDate } from "@/lib/format-time";
 import { useDisplayTz } from "@/lib/preferences/timezone";
 import type { RangeValue } from "@/lib/range";
+import { DEFAULT_CHART_GRAIN, type ChartGrain } from "@/lib/chart-grain";
 import type { MetricDefinition } from "@/types/governance";
 
 interface MetricCardProps {
   metric: MetricDefinition;
   range: RangeValue;
+  /** Display grain for the trend chart — passthrough, no effect on the reads. */
+  grain?: ChartGrain;
 }
 
-export function MetricCard({ metric, range }: MetricCardProps) {
+export function MetricCard({
+  metric,
+  range,
+  grain = DEFAULT_CHART_GRAIN,
+}: MetricCardProps) {
   const tz = useDisplayTz();
   const { data, isLoading } = useLatestMetricResult(metric.id);
   const latest = data?.results[0] ?? null;
@@ -74,7 +81,11 @@ export function MetricCard({ metric, range }: MetricCardProps) {
           <p className="text-sm text-muted-foreground">No results yet.</p>
         )}
 
-        <MetricTimeseriesChart results={rangedData?.results ?? []} height={160} />
+        <MetricTimeseriesChart
+          results={rangedData?.results ?? []}
+          height={160}
+          grain={grain}
+        />
       </CardContent>
     </Card>
   );

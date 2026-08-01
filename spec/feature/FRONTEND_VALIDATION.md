@@ -72,7 +72,13 @@ The `Quality Score` section renders a `score` line chart; the `Variables`
 section renders **small multiples** — one auto-scaled, full-width line chart per declared
 variable stacked in a single column (one chart per row), each captioned with the variable's
 name and description so differing value scales do not flatten each other. Both draw straight
-lines (linear interpolation, no smoothing). Validation events — config lifecycle
+lines (linear interpolation, no smoothing) with a visible point per plotted value.
+A single [ChartGrainPicker](FRONTEND_BASIC.md#shared-component-notes) sits in the
+`Quality Score` heading row and governs the `Quality Score` chart and every `Variables`
+chart together — the `Variables` section carries no picker of its own. Each chart plots one
+point per grain window, that window's last result. The grain is a client-side display
+concern: it collapses the rows already fetched and leaves `from`/`until`/`limit`
+untouched. Validation events — config lifecycle
 (create/update) plus one `RESULT_RECORDED` entry per accepted result POST — are not a
 separate panel here; they appear in the page's unified **Events** panel (narrow with
 `event_major_type=VALIDATION`). The `Quality Score` and `Variables` sections (and the list
@@ -104,7 +110,7 @@ no resurrection branch and no deleted/frozen state to surface.
 
 ```
 ┌───────────────────────────────────────────────────────────────┐
-│  ← orders.line_items  Latest score 1.0000  [Last 2 weeks ▾]   │
+│  ← orders.line_items  Latest score 1.0000                     │
 ├───────────────────────────────────────────────────────────────┤
 │  Config                                       [Edit] [Delete] │
 │  Description                                                  │
@@ -115,7 +121,7 @@ no resurrection branch and no deleted/frozen state to surface.
 │    qty_total        — Total quantity                         │
 │    user_id_null_cnt — Null user_id count                     │
 │                                                               │
-│  Quality Score                                                │
+│  Quality Score                     [Last 2 weeks ▾] [Daily ▾] │
 │    (attr/validation/result?from=…&until=…&limit=…)            │
 │    [Recharts: score line chart]                               │
 │                                                               │

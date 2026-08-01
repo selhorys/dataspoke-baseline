@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, cleanup } from "@testing-library/react";
 import { MetricCard } from "./metric-card";
 import { formatDate } from "@/lib/format-time";
 import type { MetricDefinition, MetricResult } from "@/types/governance";
@@ -26,9 +26,11 @@ vi.mock("@/lib/preferences/timezone", () => ({ useDisplayTz: () => "utc" }));
 
 const mockLatest = vi.fn();
 const mockRanged = vi.fn();
+// Args are forwarded (not swallowed) so the params the card hands each read are
+// observable — see the "grain adds no request parameter" block.
 vi.mock("@/lib/api/governance", () => ({
-  useLatestMetricResult: () => mockLatest(),
-  useMetricResults: () => mockRanged(),
+  useLatestMetricResult: (...args: unknown[]) => mockLatest(...args),
+  useMetricResults: (...args: unknown[]) => mockRanged(...args),
 }));
 
 // recharts pulls in ResponsiveContainer/ResizeObserver (absent in jsdom). Stub
@@ -39,8 +41,21 @@ vi.mock("recharts", () => {
   );
   return {
     ResponsiveContainer: Passthrough,
-    LineChart: ({ children }: { children?: React.ReactNode }) => (
-      <div data-testid="line-chart">{children}</div>
+    // The plotted x categories are echoed so the "grain adds no request
+    // parameter" block can prove the grain prop really reached the chart.
+    LineChart: ({
+      children,
+      data,
+    }: {
+      children?: React.ReactNode;
+      data?: { date: string }[];
+    }) => (
+      <div
+        data-testid="line-chart"
+        data-categories={JSON.stringify((data ?? []).map((d) => d.date))}
+      >
+        {children}
+      </div>
     ),
     Line: () => <div data-testid="line" />,
     CartesianGrid: () => null,
@@ -154,5 +169,53 @@ describe("MetricCard — combined dashboard card (FRONTEND_GOVERNANCE.md §Dashb
     // Structural guard: with no latest stat, the values rows must be absent —
     // "total" would render only from the latest result's `values` dict.
     expect(screen.queryByText("total")).not.toBeInTheDocument();
+  });
+});
+
+// ── Grain is display-only ───────────────────────────────────────────────────────
+// spec: spec/feature/FRONTEND_BASIC.md §Shared Component Notes → ChartGrainPicker:
+//   "the grain is a **client-side display concern and adds no request
+//   parameter**: it never alters the `from` / `to` / `until` / `limit` a call
+//   site sends".
+// spec: spec/feature/FRONTEND_GOVERNANCE.md §Dashboard: "range drives every
+//   card's trend `from`/`to` (plus a limit); grain drives no request parameter".
+//
+// The FULL argument list of both reads is compared, not merely the absence of a
+// `grain` key: the leak the spec sentence names is a CHANGED existing param
+// (e.g. a larger `limit` at hourly), which no type check can see.
+
+describe("MetricCard — grain adds no request parameter", () => {
+  function categories(): string[] {
+    return JSON.parse(
+      screen.getByTestId("line-chart").getAttribute("data-categories") as string,
+    ) as string[];
+  }
+
+  it("issues identical latest + trend reads at hourly and at weekly", () => {
+    render(<MetricCard metric={METRIC} range={RANGE} grain="hourly" />);
+    const hourlyLatest = mockLatest.mock.calls.at(-1);
+    const hourlyRanged = mockRanged.mock.calls.at(-1);
+    // Backstop: the grain really did reach the chart, so the equality below is
+    // "grain changed, params didn't" — not "the prop was ignored".
+    // RANGED spans two calendar weeks (2026-05-19 → week of 05-18,
+    // 2026-05-26 → week of 05-25), so hourly and weekly label differently.
+    expect(categories()).toEqual(["2026-05-19 00:00", "2026-05-26 00:00"]);
+
+    cleanup();
+    render(<MetricCard metric={METRIC} range={RANGE} grain="weekly" />);
+    expect(categories()).toEqual(["2026-05-18", "2026-05-25"]);
+
+    expect(mockRanged.mock.calls.at(-1)).toEqual(hourlyRanged);
+    expect(mockLatest.mock.calls.at(-1)).toEqual(hourlyLatest);
+  });
+
+  it("issues the same reads with no grain prop at all as with one", () => {
+    render(<MetricCard metric={METRIC} range={RANGE} />);
+    const defaultRanged = mockRanged.mock.calls.at(-1);
+
+    cleanup();
+    render(<MetricCard metric={METRIC} range={RANGE} grain="hourly" />);
+
+    expect(mockRanged.mock.calls.at(-1)).toEqual(defaultRanged);
   });
 });

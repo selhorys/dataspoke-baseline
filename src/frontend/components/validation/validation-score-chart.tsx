@@ -6,6 +6,9 @@
  * Props:
  *   results  — ValidationResultRow[] from GET .../attr/validation/result
  *   height?  — chart height in px (default 200)
+ *   grain?   — display grain; collapses results to one point per window (that
+ *              window's last result). Display-only — it never changes what was
+ *              fetched. Default: daily.
  */
 
 import {
@@ -18,21 +21,38 @@ import {
   YAxis,
 } from "recharts";
 import type { ValidationResultRow } from "@/types/validation";
-import { formatDate } from "@/lib/format-time";
+import {
+  DEFAULT_CHART_GRAIN,
+  grainTooltipLabel,
+  toGrainPoints,
+  type ChartGrain,
+} from "@/lib/chart-grain";
 import { useDisplayTz } from "@/lib/preferences/timezone";
 
 interface ValidationScoreChartProps {
   results: ValidationResultRow[];
   height?: number;
+  grain?: ChartGrain;
 }
 
 export function ValidationScoreChart({
   results,
   height = 200,
+  grain = DEFAULT_CHART_GRAIN,
 }: ValidationScoreChartProps) {
   const tz = useDisplayTz();
 
-  if (results.length === 0) {
+  // One point per grain window — that window's last result — ascending.
+  const data = toGrainPoints(results, {
+    grain,
+    tz,
+    timeOf: (r) => r.data_time,
+    valuesOf: (r) => ({ score: r.score }),
+  });
+
+  // Empty covers both "nothing fetched" and "nothing plottable" (every row's
+  // timestamp unparseable), so the user never sees bare axes.
+  if (data.length === 0) {
     return (
       <div
         className="flex items-center justify-center text-sm text-muted-foreground"
@@ -42,16 +62,6 @@ export function ValidationScoreChart({
       </div>
     );
   }
-
-  // Sort ascending by data_time for the chart.
-  const sorted = [...results].sort(
-    (a, b) => new Date(a.data_time).getTime() - new Date(b.data_time).getTime(),
-  );
-
-  const data = sorted.map((r) => ({
-    date: formatDate(r.data_time, tz),
-    score: r.score,
-  }));
 
   return (
     <ResponsiveContainer width="100%" height={height}>
@@ -72,14 +82,15 @@ export function ValidationScoreChart({
         />
         <Tooltip
           contentStyle={{ fontSize: 12 }}
-          labelFormatter={(label) => `Date: ${label}`}
+          labelFormatter={(label) => `${grainTooltipLabel(grain)}: ${label}`}
           formatter={(value) => [typeof value === "number" ? value.toFixed(4) : value, "score"]}
         />
         <Line
           type="linear"
           dataKey="score"
           stroke="hsl(var(--brand))"
-          dot={false}
+          dot={{ r: 3 }}
+          activeDot={{ r: 5 }}
           strokeWidth={2}
           connectNulls
         />

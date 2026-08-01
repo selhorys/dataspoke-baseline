@@ -25,11 +25,12 @@
  *   lib/range.import-boundary.test.ts.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, act, fireEvent } from "@testing-library/react";
+import { render, screen, act, cleanup, fireEvent } from "@testing-library/react";
 import React from "react";
 import { ValidationDataPanel } from "./validation-data-panel";
 import { ApiError } from "@/lib/api/client";
 import { RANGE_KEYS } from "@/lib/hooks/use-range-selection";
+import { GRAIN_KEYS } from "@/lib/hooks/use-grain-selection";
 import { useTimezoneStore } from "@/lib/preferences/timezone";
 import { DEFAULT_PRESET_DAYS, presetRange } from "@/lib/range";
 import type { ValidationConfResponse } from "@/types/validation";
@@ -65,12 +66,22 @@ vi.mock("@/lib/api/validation", () => ({
 vi.mock("@/components/range-picker", () => ({
   RangePicker: () => React.createElement("div", { "data-testid": "range-picker" }),
 }));
+// The chart stubs echo the `grain` prop they were handed, so the "grain is
+// display-only" block below can prove the two renders really differed in grain
+// while the read params stayed byte-identical.
 vi.mock("@/components/validation/validation-score-chart", () => ({
-  ValidationScoreChart: () => React.createElement("div", { "data-testid": "score-chart" }),
+  ValidationScoreChart: ({ grain }: { grain?: string }) =>
+    React.createElement("div", {
+      "data-testid": "score-chart",
+      "data-grain": String(grain),
+    }),
 }));
 vi.mock("@/components/validation/validation-variables-chart", () => ({
-  ValidationVariablesChart: () =>
-    React.createElement("div", { "data-testid": "variables-chart" }),
+  ValidationVariablesChart: ({ grain }: { grain?: string }) =>
+    React.createElement("div", {
+      "data-testid": "variables-chart",
+      "data-grain": String(grain),
+    }),
 }));
 
 // The conf form renders a Create/Save submit only in its host; stub it so we can
@@ -284,6 +295,15 @@ describe("ValidationDataPanel — existing conf", () => {
     // Timeseries charts render once a conf exists.
     expect(screen.getByTestId("score-chart")).toBeTruthy();
     expect(screen.getByTestId("variables-chart")).toBeTruthy();
+    // spec: FRONTEND_BASIC.md §Shared Component Notes → ChartGrainPicker — the
+    // picker sits in "the per-dataset page's Validation panel `Quality Score`
+    // heading row (beside that row's RangePicker)". ONE picker governs both chart
+    // sections, so the Variables section must not carry a second one. The real
+    // ChartGrainPicker renders here (only the RangePicker and the charts are
+    // stubbed), so this counts actual pickers.
+    expect(
+      screen.getAllByRole("combobox", { name: "Chart grain" }),
+    ).toHaveLength(1);
   });
 
   it("Reader sees neither Edit nor Delete nor a Create form", async () => {
@@ -426,5 +446,65 @@ describe("ValidationDataPanel — resolved result window", () => {
     const second = lastResultsParams();
     expect(second.from).toBe(first.from);
     expect(second.until).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Display grain is display-only — it must not reach the read.
+//
+// spec/feature/FRONTEND_BASIC.md §shared-component-notes (ChartGrainPicker):
+//   "the grain is a **client-side display concern and adds no request
+//   parameter**: it never alters the `from` / `to` / `until` / `limit` a call
+//   site sends".
+//
+// The whole params object is compared, not just an absent `grain` key: the leak
+// shape the sentence names is a CHANGED existing param (e.g. a larger `limit` at
+// hourly), which no type check can see. The clock is frozen because a preset's
+// lower bound is resolved against it, so two separate mounts milliseconds apart
+// would otherwise differ for reasons unrelated to grain.
+// ---------------------------------------------------------------------------
+describe("ValidationDataPanel — grain adds no request parameter", () => {
+  const NOW = new Date("2024-03-15T08:30:00.000Z");
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    mockUseMe.mockReturnValue({ canWrite: true, isAdmin: false, isEditor: true });
+    mockConf.mockReturnValue({ data: makeConf(), isLoading: false, error: null });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("hands the results query identical params at hourly and at weekly", async () => {
+    localStorage.setItem(GRAIN_KEYS.validationResults, "hourly");
+    await renderPanel();
+    const hourlyCall = mockResults.mock.calls.at(-1);
+    // Backstop: the stored grain really did reach the charts, so the equality
+    // below is "grain changed, params didn't" and not "grain never applied".
+    expect(screen.getByTestId("score-chart")).toHaveAttribute("data-grain", "hourly");
+
+    cleanup();
+    localStorage.setItem(GRAIN_KEYS.validationResults, "weekly");
+    await renderPanel();
+    expect(screen.getByTestId("score-chart")).toHaveAttribute("data-grain", "weekly");
+
+    // Same URN, same from/until/limit — the entire argument list is unchanged.
+    expect(mockResults.mock.calls.at(-1)).toEqual(hourlyCall);
+  });
+
+  it("applies the one panel grain to BOTH chart sections", async () => {
+    // spec: the picker sits in the Quality Score heading row and governs the
+    // panel's charts; the Variables small multiples share it "so both stay in
+    // lockstep".
+    localStorage.setItem(GRAIN_KEYS.validationResults, "weekly");
+    await renderPanel();
+
+    expect(screen.getByTestId("score-chart")).toHaveAttribute("data-grain", "weekly");
+    expect(screen.getByTestId("variables-chart")).toHaveAttribute(
+      "data-grain",
+      "weekly",
+    );
   });
 });

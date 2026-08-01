@@ -19,6 +19,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { QueryErrorState } from "@/components/query-error-state";
 import { RangePicker } from "@/components/range-picker";
+import { ChartGrainPicker } from "@/components/chart-grain-picker";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { ValidationConfForm } from "@/components/validation/validation-conf-form";
 import { ValidationScoreChart } from "@/components/validation/validation-score-chart";
@@ -26,6 +27,7 @@ import { ValidationVariablesChart } from "@/components/validation/validation-var
 import { toInternal, defaultFormValues } from "@/components/validation/validation-conf-form.schema";
 import { resolveRange } from "@/lib/range";
 import { usePersistedRangeState, RANGE_KEYS } from "@/lib/hooks/use-range-selection";
+import { usePersistedGrainState, GRAIN_KEYS } from "@/lib/hooks/use-grain-selection";
 import { ApiError } from "@/lib/api/client";
 import {
   useValidationConf,
@@ -92,6 +94,10 @@ export function ValidationDataPanel({ datasetUrn }: ValidationDataPanelProps) {
     RANGE_KEYS.validationResults,
   );
   const resultRange = useMemo(() => resolveRange(resultSel, "date", tz), [resultSel, tz]);
+  // One display grain governs the Quality Score chart and every Variables chart
+  // together, so they stay in lockstep. Display-only — it collapses the rows
+  // already fetched and leaves from/until/limit untouched.
+  const { grain, setGrain } = usePersistedGrainState(GRAIN_KEYS.validationResults);
 
   // ── Queries ──────────────────────────────────────────────────────────────────
   const { data: conf, isLoading: confLoading, error: confError } = useValidationConf(datasetUrn);
@@ -242,9 +248,16 @@ export function ValidationDataPanel({ datasetUrn }: ValidationDataPanelProps) {
           <div>
             <div className="mb-3 flex items-center justify-between">
               <h3 className="text-sm font-medium">Quality Score (attr/validation/result)</h3>
-              <RangePicker value={resultSel} onChange={setResultSel} tz={tz} granularity="date" />
+              <div className="flex items-center gap-2">
+                <RangePicker value={resultSel} onChange={setResultSel} tz={tz} granularity="date" />
+                <ChartGrainPicker value={grain} onChange={setGrain} />
+              </div>
             </div>
-            <ValidationScoreChart results={resultsData?.results ?? []} height={200} />
+            <ValidationScoreChart
+              results={resultsData?.results ?? []}
+              height={200}
+              grain={grain}
+            />
           </div>
 
           <div>
@@ -253,6 +266,7 @@ export function ValidationDataPanel({ datasetUrn }: ValidationDataPanelProps) {
               results={resultsData?.results ?? []}
               variables={confExists ? conf.variables : undefined}
               height={160}
+              grain={grain}
             />
           </div>
         </div>

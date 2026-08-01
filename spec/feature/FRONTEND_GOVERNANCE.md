@@ -33,8 +33,8 @@ responsive grid of combined cards:
 
 | Element | Read | Notes |
 |---|---|---|
-| Combined metric card | `GET /spoke/governance/metric` (filter `is_enabled=true`) + latest `GET .../{id}/attr/result?limit=1` per metric + trend `GET .../{id}/attr/result?from=…&to=…` per metric | One card per enabled metric. Each card stacks, top to bottom: the metric `title` (emphasized heading), a `metric_type` outline badge, the latest `values` dict rendered as a compact stat row (each key a muted label with its value emphasized alongside) with its measured-at date, and that metric's per-metric trend chart (one line per that metric's `values` key). Per-metric charts avoid collapsing shared keys (e.g. `total`) across metrics onto one ambiguous line. No per-card delta indicator |
-| Shared RangePicker | drives every card's trend `from`/`to` (plus a limit) | A single [RangePicker](FRONTEND_BASIC.md#shared-component-notes) (`date` granularity, presets Last 1 day / 7 days / 2 weeks (default) / 4 weeks / 12 weeks) sits above the grid and applies the same window to every card's chart together |
+| Combined metric card | `GET /spoke/governance/metric` (filter `is_enabled=true`) + latest `GET .../{id}/attr/result?limit=1` per metric + trend `GET .../{id}/attr/result?from=…&to=…` per metric | One card per enabled metric. Each card stacks, top to bottom: the metric `title` (emphasized heading), a `metric_type` outline badge, the latest `values` dict rendered as a compact stat row (each key a muted label with its value emphasized alongside) with its measured-at date, and that metric's per-metric trend chart (one line per that metric's `values` key, one visible point per grain window). Per-metric charts avoid collapsing shared keys (e.g. `total`) across metrics onto one ambiguous line. No per-card delta indicator |
+| Shared RangePicker + ChartGrainPicker | range drives every card's trend `from`/`to` (plus a limit); grain drives no request parameter | A single [RangePicker](FRONTEND_BASIC.md#shared-component-notes) (`date` granularity, presets Last 1 day / 7 days / 2 weeks (default) / 4 weeks / 12 weeks) sits above the grid and applies the same window to every card's chart together, with a [ChartGrainPicker](FRONTEND_BASIC.md#shared-component-notes) immediately beside it applying the same grain to every card's chart. The grain is a client-side display concern — it collapses the fetched rows to one point per window — that window's last measurement — and leaves the read untouched |
 | Responsive grid | — | Equal-width cards with an enforced minimum width, laid out as `repeat(auto-fit, minmax(~22rem, 1fr))`. The grid wraps dynamically 3→2→1 as the viewport narrows, with **no fixed column cap** — on an ultra-wide viewport with more than three enabled metrics a fourth may pack into a row |
 
 Trend charts poll on the 15s interval (paused when the tab is hidden) per the
@@ -43,7 +43,7 @@ load (refreshed on range change or manual refetch), not polled.
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│  Governance · Dashboard               [Last 2 weeks ▾]   │
+│  Governance · Dashboard     [Last 2 weeks ▾] [Daily ▾]   │
 ├──────────────────────────────────────────────────────────┤
 │  ┌─────────────────┐ ┌─────────────────┐ ┌─────────────┐ │
 │  │ Ingestion Fresh.│ │ Validation Score│ │ Doc Health  │ │
@@ -99,7 +99,7 @@ list, create, edit, run, disable, delete.
 |---|---|---|
 | `/governance/metrics` (list) | `GET /spoke/governance/metric` — rendered filter bar (`metric_type` / `mode` / status Selects, mapped to query params) plus the shared [Pagination](FRONTEND_BASIC.md#shared-component-notes) control (page-size selector defaulting to 20, Prev/Next, numbered pages) bound to the standard `offset`/`limit`/`total_count` envelope. Each row shows the `title` (link to detail) with `metric_id` as a subtitle, a `metric_type` badge, the `mode` and `schedule_tier`, an `Enabled`/`Disabled` status badge, the `updated_at` timestamp, and a **Last Run** column (`last_run_at`, formatted via the shared tz/datetime helper; `—` when `null`) as the last column | "New metric" action → `/governance/metrics/new` |
 | `/governance/metrics/new` | — | `POST /spoke/governance/metric` (definition fields **plus** a client-supplied `metric_id`) |
-| `/governance/metrics/[id]` | `GET .../attr/conf`, `GET .../attr/result?from&to` (a `date`-granularity [RangePicker](FRONTEND_BASIC.md#shared-component-notes) above the chart drives `from`/`to`), `GET .../event?offset&limit&from&to&sort=occurred_at_desc` (a `datetime` RangePicker drives the event panel's `from`/`to`, with Pagination on `offset`/`limit`) | `PUT/PATCH/DELETE .../attr/conf` (fields: `mode`, `is_enabled`, `metric_type`, `title`, `description`, `metrics`, `metric_conf`, `schedule_tier`, `dataset_filter`); `POST .../method/run` (`?dry_run=true`) |
+| `/governance/metrics/[id]` | `GET .../attr/conf`, `GET .../attr/result?from&to` (a `date`-granularity [RangePicker](FRONTEND_BASIC.md#shared-component-notes) in the `Result` panel header drives `from`/`to`, with a [ChartGrainPicker](FRONTEND_BASIC.md#shared-component-notes) beside it collapsing the fetched results to one visible point per grain window — display-only, no request parameter), `GET .../event?offset&limit&from&to&sort=occurred_at_desc` (a `datetime` RangePicker drives the event panel's `from`/`to`, with Pagination on `offset`/`limit`) | `PUT/PATCH/DELETE .../attr/conf` (fields: `mode`, `is_enabled`, `metric_type`, `title`, `description`, `metrics`, `metric_conf`, `schedule_tier`, `dataset_filter`); `POST .../method/run` (`?dry_run=true`) |
 
 The create form is the edit form (below) with one extra leading field: a
 `metric_id` text input — **create-only** (validated per
@@ -138,7 +138,7 @@ detail render a null tier as *on-demand*.
 │    description: Daily documentation-completeness      │
 │    dataset_filter: origin=DEV                        │
 │                                                      │
-│  Result                      [Last 2 weeks ▾]        │
+│  Result          [Last 2 weeks ▾] [Daily ▾]          │
 │    [Recharts line chart — one line per `values` key] │
 │                                                      │
 │  Event                     [Last 2 weeks ▾]          │

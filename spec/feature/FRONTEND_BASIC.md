@@ -802,6 +802,36 @@ These component IDs are referenced from per-function specs.
   metric results are unaffected — their timestamp is server-stamped.
   The picker has no API of its own; it only shapes the query strings of the reads
   it drives.
+- **ChartGrainPicker** — the **display-grain** control for every chart surface,
+  placed in the heading row of the section whose charts it governs: the governance
+  dashboard header (beside that page's [RangePicker](#shared-component-notes)),
+  the governance metric detail `Result` panel header (beside that panel's
+  RangePicker), and the per-dataset page's Validation panel `Quality Score`
+  heading row (beside that row's RangePicker). It selects one of
+  three grains — **hourly**, **daily** (default), **weekly** — governing how the
+  rows a chart has already fetched are collapsed before plotting. Rows are
+  bucketed into grain windows and each window contributes exactly **one** point:
+  that window's **last** measurement (greatest timestamp), labelled by the
+  truncated window start, carrying enough date component to stay unique across the
+  selected range (hourly windows include the date, not the hour alone). Every x
+  label is therefore distinct, and each point is drawn with a visible dot and an
+  enlarged active dot, so a series of a single measurement renders as one visible
+  point and every plotted measurement is hoverable. Window boundaries are derived
+  in the **global Settings timezone preference** (Local or UTC, default Local) —
+  the same one the RangePicker's calendar reads — so switching Local↔UTC
+  re-derives the buckets; weekly windows start on **Monday** and are labelled by
+  that Monday's date. A row whose timestamp does not parse contributes to no
+  window and is dropped rather than grouped under a placeholder label; when two
+  rows in a window carry the same timestamp the later one in the fetched order
+  wins; and because the window label occupies the `date` key, a series named
+  `date` is never plotted.
+  Like the timezone preference itself, the grain is a **client-side display
+  concern and adds no request parameter**: it never alters the `from` / `to` /
+  `until` / `limit` a call site sends, and stored and queried timestamps remain
+  canonical UTC ISO per `API.md`. The selection **persists across visits** in
+  browser `localStorage` under a stable key per logical panel, by the same rule as
+  the RangePicker selection — each panel keeps its own grain, shared across all
+  entities of that panel type. The picker has no API of its own.
 - **DatahubDatasetLink** — a shared external deep-link to a dataset's DataHub page,
   `<datahub_url>/dataset/{urn}` (URN URL-encoded). It resolves the DataHub URL from
   `GET /spoke/common/peripheral-links` by the same rule as the header icon

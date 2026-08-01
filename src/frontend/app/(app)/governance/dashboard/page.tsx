@@ -5,12 +5,18 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { QueryErrorState } from "@/components/query-error-state";
 import { EmptyState } from "@/components/ui/empty-state";
 import { RangePicker } from "@/components/range-picker";
+import { ChartGrainPicker } from "@/components/chart-grain-picker";
 import { PageHeader } from "@/components/page-header";
 import { resolveRange, type RangeValue } from "@/lib/range";
 import {
   usePersistedRangeState,
   RANGE_KEYS,
 } from "@/lib/hooks/use-range-selection";
+import {
+  usePersistedGrainState,
+  GRAIN_KEYS,
+} from "@/lib/hooks/use-grain-selection";
+import type { ChartGrain } from "@/lib/chart-grain";
 import { MetricCard } from "@/components/governance/metric-card";
 import { useEnabledMetrics } from "@/lib/api/governance";
 import { useDisplayTz } from "@/lib/preferences/timezone";
@@ -21,9 +27,11 @@ import type { MetricDefinition } from "@/types/governance";
 function DashboardContent({
   metrics,
   range,
+  grain,
 }: {
   metrics: MetricDefinition[];
   range: RangeValue;
+  grain: ChartGrain;
 }) {
   if (metrics.length === 0) {
     return (
@@ -34,7 +42,7 @@ function DashboardContent({
   return (
     <div className="grid gap-4 [grid-template-columns:repeat(auto-fit,minmax(22rem,1fr))]">
       {metrics.map((m) => (
-        <MetricCard key={m.id} metric={m} range={range} />
+        <MetricCard key={m.id} metric={m} range={range} grain={grain} />
       ))}
     </div>
   );
@@ -53,13 +61,21 @@ export default function GovernanceDashboardPage() {
     RANGE_KEYS.governanceDashboard,
   );
   const range = useMemo(() => resolveRange(sel, "date", tz), [sel, tz]);
+  // One shared, persisted display grain for every card's chart. Display-only —
+  // it collapses the rows already fetched and never enters a query key.
+  const { grain, setGrain } = usePersistedGrainState(
+    GRAIN_KEYS.governanceDashboard,
+  );
 
   return (
     <div className="space-y-4">
       <PageHeader
         title="Governance · Dashboard"
         actions={
-          <RangePicker value={sel} onChange={setSel} tz={tz} granularity="date" />
+          <>
+            <RangePicker value={sel} onChange={setSel} tz={tz} granularity="date" />
+            <ChartGrainPicker value={grain} onChange={setGrain} />
+          </>
         }
       />
 
@@ -75,7 +91,9 @@ export default function GovernanceDashboardPage() {
         <QueryErrorState error={error} context="Failed to load metrics" />
       )}
 
-      {data && <DashboardContent metrics={data.metrics} range={range} />}
+      {data && (
+        <DashboardContent metrics={data.metrics} range={range} grain={grain} />
+      )}
     </div>
   );
 }

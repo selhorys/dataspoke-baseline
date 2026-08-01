@@ -8,11 +8,16 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { RangePicker } from "@/components/range-picker";
+import { ChartGrainPicker } from "@/components/chart-grain-picker";
 import { resolveRange } from "@/lib/range";
 import {
   usePersistedRangeState,
   RANGE_KEYS,
 } from "@/lib/hooks/use-range-selection";
+import {
+  usePersistedGrainState,
+  GRAIN_KEYS,
+} from "@/lib/hooks/use-grain-selection";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
@@ -81,6 +86,11 @@ export default function MetricDetailPage({
   const eventRange = useMemo(
     () => resolveRange(eventSel, "datetime", tz),
     [eventSel, tz],
+  );
+  // Display grain for the Result chart — collapses the rows already fetched;
+  // it adds no request parameter and never enters a query key.
+  const { grain: resultGrain, setGrain: setResultGrain } = usePersistedGrainState(
+    GRAIN_KEYS.governanceMetricResults,
   );
 
   // ── Queries ────────────────────────────────────────────────────────────────
@@ -333,14 +343,21 @@ export default function MetricDetailPage({
       <section className="rounded-lg border p-5">
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-sm font-medium">Result</h2>
-          <RangePicker
-            value={resultSel}
-            onChange={setResultSel}
-            tz={tz}
-            granularity="date"
-          />
+          <div className="flex items-center gap-2">
+            <RangePicker
+              value={resultSel}
+              onChange={setResultSel}
+              tz={tz}
+              granularity="date"
+            />
+            <ChartGrainPicker value={resultGrain} onChange={setResultGrain} />
+          </div>
         </div>
-        <MetricTimeseriesChart results={resultsData?.results ?? []} height={200} />
+        <MetricTimeseriesChart
+          results={resultsData?.results ?? []}
+          height={200}
+          grain={resultGrain}
+        />
       </section>
 
       {/* event log */}

@@ -14,6 +14,10 @@
  *               Determines chart ordering and captions. If empty, falls back
  *               to all variable names observed across the results.
  *   height?   — per-chart height in px (default 160)
+ *   grain?    — display grain; collapses results to one point per window (that
+ *               window's last result). Display-only — it never changes what was
+ *               fetched, and it is shared with the Quality Score chart so both
+ *               stay in lockstep. Default: daily.
  *
  * Spec: spec/feature/FRONTEND_VALIDATION.md §Page contracts (small multiples).
  */
@@ -29,19 +33,26 @@ import {
 } from "recharts";
 import type { ValidationResultRow, ValidationVariable } from "@/types/validation";
 import { colorForKey } from "@/lib/chart-colors";
-import { formatDate } from "@/lib/format-time";
+import {
+  DEFAULT_CHART_GRAIN,
+  grainTooltipLabel,
+  toGrainPoints,
+  type ChartGrain,
+} from "@/lib/chart-grain";
 import { useDisplayTz } from "@/lib/preferences/timezone";
 
 interface ValidationVariablesChartProps {
   results: ValidationResultRow[];
   variables?: ValidationVariable[];
   height?: number;
+  grain?: ChartGrain;
 }
 
 export function ValidationVariablesChart({
   results,
   variables,
   height = 160,
+  grain = DEFAULT_CHART_GRAIN,
 }: ValidationVariablesChartProps) {
   const tz = useDisplayTz();
 
@@ -56,7 +67,21 @@ export function ValidationVariablesChart({
 
   const keys = charted.map((v) => v.name);
 
-  if (results.length === 0) {
+  // Bucket ONCE over every result, then project each small multiple from that
+  // shared point set — so all stacked charts carry the identical x category
+  // set and a given window sits at the same horizontal position in each. A
+  // window whose last result omits a variable leaves that series undefined
+  // there; connectNulls bridges the gap.
+  const points = toGrainPoints(results, {
+    grain,
+    tz,
+    timeOf: (r) => r.data_time,
+    valuesOf: (r) => r.variables,
+  });
+
+  // Empty covers both "nothing fetched" and "nothing plottable" (every row's
+  // timestamp unparseable), so the user never sees bare axes.
+  if (points.length === 0) {
     return (
       <div
         className="flex items-center justify-center text-sm text-muted-foreground"
@@ -67,22 +92,13 @@ export function ValidationVariablesChart({
     );
   }
 
-  // Sort ascending by data_time for the charts.
-  const sorted = [...results].sort(
-    (a, b) => new Date(a.data_time).getTime() - new Date(b.data_time).getTime(),
-  );
-
   return (
     <div className="grid grid-cols-1 gap-6">
       {charted.map((variable) => {
         const { name, description } = variable;
         const color = colorForKey(name, keys);
-        const data = sorted
-          .filter((r) => r.variables[name] !== undefined)
-          .map((r) => ({
-            date: formatDate(r.data_time, tz),
-            value: r.variables[name],
-          }));
+        const data = points.map((p) => ({ date: p.date, value: p[name] }));
+        const hasData = data.some((d) => d.value !== undefined);
 
         return (
           <div key={name} className="space-y-1">
@@ -99,7 +115,7 @@ export function ValidationVariablesChart({
                 </p>
               )}
             </div>
-            {data.length === 0 ? (
+            {!hasData ? (
               <div
                 className="flex items-center justify-center text-xs text-muted-foreground"
                 style={{ height }}
@@ -128,14 +144,15 @@ export function ValidationVariablesChart({
                   />
                   <Tooltip
                     contentStyle={{ fontSize: 12 }}
-                    labelFormatter={(label) => `Date: ${label}`}
+                    labelFormatter={(label) => `${grainTooltipLabel(grain)}: ${label}`}
                     formatter={(value) => [value, name]}
                   />
                   <Line
                     type="linear"
                     dataKey="value"
                     stroke={color}
-                    dot={false}
+                    dot={{ r: 3 }}
+                    activeDot={{ r: 5 }}
                     strokeWidth={2}
                     connectNulls
                   />
