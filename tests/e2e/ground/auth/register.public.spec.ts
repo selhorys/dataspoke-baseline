@@ -8,12 +8,24 @@
  *      error without hitting the server.
  *   3. Real successful signup via the UI → redirects to /governance/dashboard.
  *      Cleanup: afterAll deletes the created user via adminApi.
+ *   4. The FIRST HTML response already carries an absolute "Sign up with Google"
+ *      href pointing at the configured API host (regression cover for issue #129).
+ *
+ * Run-mode precondition (test 4 only): the app under test must be the CLUSTER
+ * frontend (`install.sh --frontend cluster`, which is what `baseURL` =
+ * `http://app.<INGRESS_DOMAIN>` serves). That image bakes no NEXT_PUBLIC_API_BASE_URL
+ * (.dockerignore excludes .env*), so the server-side DATASPOKE_API_BASE_URL read is
+ * the ONLY thing that can make the href absolute. Under host `pnpm dev` +
+ * PLAYWRIGHT_BASE_URL=http://localhost:3000, .env.local supplies
+ * NEXT_PUBLIC_API_BASE_URL and even the pre-fix build renders an absolute href, so
+ * test 4 would pass vacuously there — it proves nothing about issue #129 in that mode.
  *
  * Email domain: @test.dataspoke.example.com (the API's EmailStr validator
  * rejects .local as a special-use domain; .example.com is always accepted).
  *
  * Rate-limit note: only 1 real registration call across the module (test 3).
- * The 5/min /auth/register limit is not approached.
+ * The 5/min /auth/register limit is not approached. Test 4 adds exactly one
+ * `/auth/google/login` request, against that route's own 10/min budget.
  *
  * spec: spec/feature/FRONTEND_BASIC.md §Authentication — /register form contract.
  * spec: spec/feature/FRONTEND_BASIC.md §Routing — public routes; /register
@@ -24,6 +36,34 @@
  */
 
 import { test, expect } from "../../fixtures/index";
+import { appBaseUrl, apiBaseUrl } from "../../fixtures/env";
+
+/**
+ * Extracts the `href` of the anchor that wraps `label`, out of RAW HTML.
+ *
+ * Operates on the response text rather than on a parsed live DOM on purpose — the
+ * subject of test 4 is what the server sent, before any client bundle ran.
+ * `(?:(?!</a>)[\s\S])*?` stops the match at the first closing tag, so an anchor
+ * appearing earlier in the document can never have its href attributed to this one.
+ *
+ * Assumption: `label` survives server rendering as one contiguous run of text. It does
+ * today because the button label is a single static child. Were it ever split into
+ * multiple JSX text/expression children, React would emit a `<!-- -->` separator between
+ * them, the match would return null, and the failure message below would MISDIAGNOSE the
+ * cause ("the page did not server-render the Google button at all") — so a label change
+ * needs a matching change here, not a retry.
+ */
+function anchorHrefWrapping(html: string, label: string): string {
+  const match = html.match(
+    new RegExp(`<a\\b[^>]*\\bhref="([^"]*)"[^>]*>(?:(?!</a>)[\\s\\S])*?${label}`)
+  );
+  expect(
+    match,
+    `no anchor wrapping "${label}" found in the server HTML — the page did not ` +
+      `server-render the Google button at all, so its href cannot be judged`
+  ).not.toBeNull();
+  return match![1];
+}
 
 // Deterministic email — stable across reruns; suffix is fixed so afterAll
 // cleanup is idempotent (delete-if-exists even if the test that created it failed).
@@ -153,4 +193,80 @@ test("successful registration redirects to /governance/dashboard", async ({ page
 
   // Mark created so afterAll can clean up.
   createdUserId = REGISTER_EMAIL; // afterAll uses email lookup, not stored id
+});
+
+// ── Test 4 — The server-rendered Google href targets the API host (issue #129) ─
+//
+// spec: src/frontend/README.md §Production / runtime configuration — "Server (SSR and
+//   Server Components, where that window global does not exist yet) — from `process.env`
+//   directly. Server-rendered markup therefore carries the deployed URLs, so absolute
+//   links such as the Google sign-in href are correct in the first HTML response rather
+//   than depending on hydration to repair them."
+// spec: FRONTEND_BASIC.md §Routing — "/register | Self-service sign-up … and Google
+//   sign-up | POST /auth/register, GET /auth/google/login" — /register carries the same
+//   OAuth entry point as /login, from the same runtime-config read, so it regresses with
+//   it and is covered here rather than assumed. FRONTEND_BASIC.md §Stack also permits an
+//   empty API base URL (same-origin), so the assertion below is equality with the
+//   CONFIGURED API host rather than "not the app host".
+// spec: API.md §OAuth browser-redirect contract — "/auth/google/login … the handler
+//   answers 302 on every outcome, never a JSON body".
+//
+// Asserts on the INITIAL SERVER HTML, not the post-hydration DOM: React does not repair
+// an attribute it already rendered, so a `page.goto` + `getAttribute("href")` check would
+// pass even against the defect this test exists to catch.
+
+test("the first HTML response carries an absolute Google sign-up href on the configured API host", async ({
+  request,
+}) => {
+  const appOrigin = new URL(appBaseUrl()).origin;
+  // Only the cluster frontend image proves anything here — see the sibling assertion in
+  // login.public.spec.ts for why host `pnpm dev` would pass this vacuously.
+  test.skip(
+    new URL(appBaseUrl()).hostname === "localhost" || Boolean(process.env.PLAYWRIGHT_BASE_URL),
+    "the #129 guard is load-bearing only against the cluster frontend image — " +
+      "run ./helm-charts/bin/install.sh --profile dev --components frontend and retry"
+  );
+
+  // The value the chart was configured with: install.sh sets
+  // `frontend.config.apiBaseUrl=<scheme>://api.<INGRESS_DOMAIN>`, and fixtures/env.ts
+  // derives apiBaseUrl() from the same DATASPOKE_KUBE_INGRESS_DOMAIN.
+  const expectedApiHost = new URL(apiBaseUrl()).host;
+
+  // maxRedirects: 0 — a followed 302 would still report 200 and misdiagnose downstream.
+  const resp = await request.get(`${appOrigin}/register`, { maxRedirects: 0 });
+  expect(resp.status(), "the /register document itself must render").toBe(200);
+  const html = await resp.text();
+
+  const href = anchorHrefWrapping(html, "Sign up with Google");
+
+  // -- SSR assertion: the href is absolute, not a bare path --
+  expect(
+    href,
+    `server-rendered Google sign-up href was "${href}"; a relative href means the SSR ` +
+      `runtime-config read resolved apiBaseUrl to "" (issue #129)`
+  ).toMatch(/^https?:\/\//);
+
+  const target = new URL(href);
+
+  // -- SSR assertion: it points at the API the deployment was configured with --
+  // Host, not origin: the ingress scheme follows DATASPOKE_KUBE_INGRESS_SCHEME, so an
+  // https deployment must not fail this. Equality (rather than "not the app origin") is
+  // what pins the href to apiBaseUrl: a swapped-field regression building the href from
+  // airflowUrl is still absolute and still off the app origin, and only this assertion
+  // catches it.
+  expect(
+    target.host,
+    `Google sign-up points at ${target.host}; the deployment's API is ${expectedApiHost}`
+  ).toBe(expectedApiHost);
+
+  // -- SSR assertion: it is the OAuth entry point, not some other API path --
+  expect(target.pathname).toBe("/api/v1/auth/google/login");
+
+  // -- Backend confirmation: that absolute URL is a live route, independently probed --
+  const probe = await request.get(href, { maxRedirects: 0 });
+  expect(
+    probe.status(),
+    `GET ${href} answered ${probe.status()}; per API.md §OAuth browser-redirect contract ` +
+      `this route answers 302 on every outcome`
+  ).toBe(302);
 });

@@ -25,8 +25,8 @@ group does not cover the route; the other column does.
 
 | Route | UC test | Ground test |
 |---|---|---|
-| `/login` | `_smoke.spec.ts` (auth harness) | `ground/auth/login.public.spec.ts` (form render, bad-creds error, Register link, Forgot-password link) |
-| `/register` | — | `ground/auth/register.public.spec.ts` (form render, short-password validation, real signup → redirect) |
+| `/login` | `_smoke.spec.ts` (auth harness) | `ground/auth/login.public.spec.ts` (form render, bad-creds error, Register link, Forgot-password link, and the **initial server HTML** — fetched over raw HTTP, not the post-hydration DOM — carrying an absolute `Sign in with Google` href whose host is the chart-configured API host and whose path is `/api/v1/auth/google/login`, independently probed for its contractual 302; cluster-frontend run mode only) |
+| `/register` | — | `ground/auth/register.public.spec.ts` (form render, short-password validation, real signup → redirect, and the same **initial server HTML** absolute-href check on `Sign up with Google`) |
 | `/forgot-password` | — | `ground/auth/password-reset.public.spec.ts` (form render, submit → confirmation state) |
 | `/reset-password` | — | `ground/auth/password-reset.public.spec.ts` (no-token error state, dummy-token form render, short-password validation) |
 | `/oauth-error` | — | `ground/auth/oauth-error.public.spec.ts` (public reachability, bound-elsewhere three-step recovery, sibling-code copy, absent-code fallback, hostile `?error=` not echoed, Back-to-sign-in link, and the real `/auth/google/callback` redirect target rendering this page) |

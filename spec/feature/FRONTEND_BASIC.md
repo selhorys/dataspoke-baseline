@@ -19,9 +19,26 @@ client state via Zustand; forms via React Hook Form. The API client at
 `src/frontend/lib/api/client.ts` prepends `/api/v1`, attaches
 `Authorization: Bearer <access_token>`, surfaces the standard error envelope
 (`{error_code, message, trace_id}`) as typed errors, and triggers a refresh
-on `401`. The API base URL is resolved at runtime (the server injects
-`DATASPOKE_API_BASE_URL` into the page; empty falls back to same-origin),
-not inlined at build time, so one image serves any environment.
+on `401`. The API base URL is resolved at runtime, not inlined at build time,
+so one image serves any environment.
+
+Resolution runs per field, and both the browser and the server render must
+reach the same answer — a server render that resolves differently ships an
+href the client never corrects, because React leaves an already-rendered
+attribute alone. Highest priority first:
+
+| Source | Available to |
+|---|---|
+| `window.__DATASPOKE_RUNTIME_CONFIG__`, injected by the root layout per request | client only |
+| `DATASPOKE_API_BASE_URL` / `DATASPOKE_AIRFLOW_URL` | server only — the injected global does not exist yet during SSR |
+| `NEXT_PUBLIC_API_BASE_URL` / `NEXT_PUBLIC_AIRFLOW_URL` | both; a local-dev convenience, absent from the deployed image |
+| `""` — same-origin API, no Airflow link | both |
+
+An empty string counts as unset at every tier and falls through to the next,
+so a deployment that sets a variable to `""` behaves as if it had not set it.
+The `DATASPOKE_*` tier is deliberately non-`NEXT_PUBLIC_*`: Next.js inlines
+only the latter, so keeping these server-side is what preserves the one-image
+property above.
 
 ---
 

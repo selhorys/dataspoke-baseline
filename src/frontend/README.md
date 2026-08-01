@@ -29,7 +29,12 @@ The production image is built once and configured at runtime via environment var
 | `DATASPOKE_API_BASE_URL` | Base URL of the DataSpoke API, e.g. `https://api.dataspoke.example.com` |
 | `DATASPOKE_AIRFLOW_URL` | Base URL of the Airflow UI, e.g. `https://airflow.dataspoke.example.com` |
 
-These are **non-public** server-side env vars (no `NEXT_PUBLIC_` prefix) so Next.js never inlines them at build time. The client reads them from `window.__DATASPOKE_RUNTIME_CONFIG__`, which is written by the inline script tag in `<head>`. The `NEXT_PUBLIC_*` vars remain supported as a dev-only fallback (`.env.local`) and are ignored in production when the runtime vars are set.
+These are **non-public** server-side env vars (no `NEXT_PUBLIC_` prefix) so Next.js never inlines them at build time. Both rendering sides read them through `getRuntimeConfig()` in `lib/runtime-config.ts`:
+
+- **Client** — from `window.__DATASPOKE_RUNTIME_CONFIG__`, written by the inline script tag in `<head>`.
+- **Server** (SSR and Server Components, where that window global does not exist yet) — from `process.env` directly. Server-rendered markup therefore carries the deployed URLs, so absolute links such as the Google sign-in href are correct in the first HTML response rather than depending on hydration to repair them.
+
+Resolution is per field, and an empty string counts as unset: each of `apiBaseUrl` and `airflowUrl` takes the `DATASPOKE_*` value when it is non-empty, otherwise the matching `NEXT_PUBLIC_*` value, otherwise `""`. The `NEXT_PUBLIC_*` vars are a dev-only fallback (`.env.local`); in production, where they are unset, the `DATASPOKE_*` values are what resolve.
 
 Only deployment-local wiring travels this way: the API itself (which also backs the ReDoc link) and Airflow, both of which ship with the deployment. Externally-wired peripherals — DataHub and Langfuse — are configured through the API's peripheral endpoints instead, so re-wiring them needs no chart operation and no pod restart.
 
