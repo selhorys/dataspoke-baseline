@@ -32,8 +32,10 @@ helper wraps it. Absence of validation is a finding even though `.env` is
 operator-authored and gitignored — the in-repo precedent makes it an inconsistency,
 not a judgment call. Related: [[operator-runbook-is-credential-surface]].
 
-**Sensitive-path glob gap** (propose to the orchestrator): `helm-charts/bin/lib/helpers.sh`
-is the shared derivation point for ingress class, scheme, TLS secret name, and
-service hostnames, and `helm-charts/dev-peripherals/**` static manifests (e.g.
-`datahub/gms-ingress.yaml`) are applied with `kubectl` — neither matches the
-authoritative globs except incidentally via `values*.yaml`.
+**Sensitive-path glob status**: `helm-charts/bin/lib/helpers.sh` and
+`helm-charts/dev-peripherals/**/*.yaml` are now both in the authoritative glob
+list — that gap is closed. Still uncovered and worth proposing:
+`helm-charts/bin/build-image.sh` (builds + pushes the images the cluster runs,
+holds the ECR/gcloud auth step) and `helm-charts/dataspoke/**/templates/*.yaml`
+other than `secrets.yaml` (the deployment templates decide `imagePullPolicy`,
+`envFrom`, and serviceAccount — see [[image-digest-stamping-attestation]]).

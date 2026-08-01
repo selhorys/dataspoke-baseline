@@ -6,7 +6,7 @@
 - [asyncpg str→UUID column](project_asyncpg_str_uuid_column.md) — str(uuid4) binds fine to UUID(as_uuid=True) col via asyncpg pgproto; unit mocks won't catch real mismatch
 - [Metagen conf Save button morph](project_metagen_conf_save_button_morph.md) — metagen conf moved Save into header slot; re-introduces submit-on-Edit hazard, needs keys + browser E2E
 - [EXISTS subquery auto-correlate](feedback_exists_subquery_autocorrelate.md) — EXISTS over a table already in outer FROM raises InvalidRequestError at build; compile real SQL, mocks miss it
-- [Helm stale local subchart tgz](project_helm_stale_local_subchart_tgz.md) — umbrella renders stale charts/*.tgz not subcharts/ source; `--components api` never rebuilds deps
+- [Helm stale local subchart tgz](project_helm_stale_local_subchart_tgz.md) — umbrella renders stale charts/*.tgz not subcharts/ source; repackage before trusting any review render
 - [Runtime env-file rename blast radius](project_runtime_envfile_rename_blast_radius.md) — renaming helm-charts/.env→.env.dev breaks ~17 hardcoded loaders/skills + a gitignore secret-leak gotcha
 - ["No references remain" brace grep](feedback_no_references_remain_brace_grep.md) — `/hub` grep stays clean while `{auth,spoke,hub}` brace-list survives; grep token-level minus homographs
 - [Recharts var() in SVG attr](project_recharts_css_var_svg_attr.md) — var() DOES resolve in SVG presentation attrs (Chromium-verified); Recharts hsl(var(--token)) stroke is fine, not a regression
@@ -32,7 +32,7 @@
 - [Renamed guard comparison target](feedback_renamed_guard_comparison_target.md) — rename + guard in one change: the guard reads nothing on pre-change clusters, check sibling helpers for the legacy name
 - [Dormant middleware blast radius](feedback_dormant_middleware_blast_radius.md) — repairing an inert middleware governs /internal + probes for the first time; measure the blocking cost it adds
 - [values-prod.example is not a superset](feedback_prod_example_not_superset.md) — pasted "see config.X below" goes dangling; inserted sections rot above/below pointers AND other files' line-number refs
-- [Off-loop fix, all call sites](feedback_offload_fix_all_callsites.md) — a to_thread fix proven on one plane; heartbeat-probe every plane before believing it
+- [Fix proven on one call site](feedback_offload_fix_all_callsites.md) — enumerate every call site; also catches "the other three already order it this way" claims
 - [slowapi bucket scope](project_slowapi_bucket_scope.md) — application_limits is the only global-per-caller knob; exempt routes and unmatched 404 paths are charged nothing
 - [regex bounded matcher: rejected](project_regex_bounded_matcher_facts.md) — #114's regex+timeout swap was built and rejected; inside any size cap: 464s compile, 212MB retained (re: 0.0004s)
 - [str iterated as pattern list](feedback_str_iterated_as_pattern_list.md) — `list[str]` helper loops a bare str per character; check JSONB-fed call sites, mypy can't see it
@@ -42,3 +42,12 @@
 - [exc_info leaks bind parameters](feedback_exc_info_leaks_bind_parameters.md) — "logs only the code" is false next to exc_info=True; SQLAlchemy prints [parameters: {email…}]
 - [Fabricated correlation id](feedback_fabricated_correlation_id.md) — copying a `header or uuid4()` derivation yields a DIFFERENT trace_id; the handler line joins nothing
 - [Status change: silent skip + stale catalogue](feedback_status_change_silent_skip_and_catalogue.md) — old-status skip guards go green-by-skip; exceptions.py keeps its HTTP claim in class docstrings
+- [Next non-public env in client bundle](project_next_nonpublic_env_client_bundle.md) — DATASPOKE_* isn't inlined and can't ReferenceError (process shim); force-dynamic layout; canary+next-start recipe
+- [Conditional helm --set clears the value](feedback_conditional_helm_set_clears_value.md) — no --reuse-values, so a skipped flag DELETES the key and changes the pod template
+- [Preserve-on-failure pins stale](feedback_preserve_on_failure_pins_stale.md) — RESOLVED (two-outcome resolve-or-abort); count mocked restarts, verify aborts escape $( )
+- [Parent-only named template](project_parent_only_named_template_subchart.md) — RESOLVED via chart-scoped imageRef; keep the tgz-vs-source diff recipe
+- [install.sh tool baseline](project_install_sh_tool_baseline.md) — require_tools is kubectl/helm/python3, but digest resolution hard-aborts --skip-build prod without a vendor CLI
+- [Guard annotation on all render paths](feedback_guard_annotation_all_render_paths.md) — prod hand-rolls frontend --set flags, so anything only _frontend_helm_set_args emits is missing there
+- [Opt-in workload unconditional wait](feedback_optin_workload_unconditional_wait.md) — event-consumer gate RESOLVED; `api.enabled` is the same shape and its wait is STILL ungated
+- [Vendor CLI error-string match](feedback_vendor_cli_error_string_match.md) — RESOLVED in code (matcher widened); gcloud says "Image not found.", not NOT_FOUND; spec text lagged
+- [Airflow key-rotation strand gap](project_airflow_key_rotation_strand_gap.md) — prod gap is now just helm upgrade; dev still runs the fernet hard-abort between the key write and the restart

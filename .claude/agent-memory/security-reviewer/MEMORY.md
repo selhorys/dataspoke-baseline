@@ -22,3 +22,4 @@
 - [Redis single failure domain](project_redis_single_failure_domain.md) — one instance, 3 tenants, instance-wide maxmemory; the unbounded tenant is the attacker-keyable DB1 limiter, not the response cache
 - [Reviewer config is generator-writable](project_reviewer_config_is_generator_writable.md) — .claude/agents/** now self-globs; diff the list for removals every run; README.md still uncovered
 - [OAuth 302-only failure surface](project_oauth_302_only_failure_surface.md) — bypass/decoy/CRLF/log-forging all closed & measured; 3 survive: deployment-wide 10/min bucket, hide_parameters, uvicorn access log
+- [Image-digest stamping](project_image_digest_stamping_attestation.md) — resolve-or-abort pinning; r5 pulled digest resolution out of the Airflow-key window on all 4 paths, but dev still writes keys before the Fernet abort
