@@ -51,3 +51,4 @@
 - [Opt-in workload unconditional wait](feedback_optin_workload_unconditional_wait.md) — event-consumer gate RESOLVED; `api.enabled` is the same shape and its wait is STILL ungated
 - [Vendor CLI error-string match](feedback_vendor_cli_error_string_match.md) — RESOLVED in code (matcher widened); gcloud says "Image not found.", not NOT_FOUND; spec text lagged
 - [Airflow key-rotation strand gap](project_airflow_key_rotation_strand_gap.md) — prod gap is now just helm upgrade; dev still runs the fernet hard-abort between the key write and the restart
+- [DSN escape symmetry facts](project_dsn_escape_symmetry_facts.md) — URL fields are verbatim; render_as_string is symmetric for user/pw but never for `database`; limits→redis-py unquotes

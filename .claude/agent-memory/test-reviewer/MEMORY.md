@@ -44,3 +44,4 @@
 - [Pre/post-lock 401 indistinguishable](project_auth_prelock_postlock_401_indistinguishable.md) — same 401/UNAUTHORIZED/message from both gates; only an observed lock wait proves the post-lock re-check
 - [OAuth 302 test seams](project_oauth_302_test_seams.md) — #83: 7 mutations killed, 2 survived (route-level except breadth; success-path verbatim redirect + cookie)
 - [Runtime-config SSR test seams](project_runtime_config_ssr_test_seams.md) — #129: 6 mutants killed / restructure survives; measured SSR HTML; E2E still vacuous under host `pnpm dev`
+- [Credential-URI test seams](project_credential_uri_test_seams.md) — #120/#117 cycle-2: 23/26 mutants killed; the BaseException guard HANGS instead of failing; empty-password assert is inert
