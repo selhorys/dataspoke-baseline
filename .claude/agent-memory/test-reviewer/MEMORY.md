@@ -45,3 +45,6 @@
 - [OAuth 302 test seams](project_oauth_302_test_seams.md) — #83: 7 mutations killed, 2 survived (route-level except breadth; success-path verbatim redirect + cookie)
 - [Runtime-config SSR test seams](project_runtime_config_ssr_test_seams.md) — #129: 6 mutants killed / restructure survives; measured SSR HTML; E2E still vacuous under host `pnpm dev`
 - [Credential-URI test seams](project_credential_uri_test_seams.md) — #120/#117 cycle-2: 23/26 mutants killed; the BaseException guard HANGS instead of failing; empty-password assert is inert
+- [Vitest TZ pin isolation](project_vitest_tz_pin_isolation.md) — forks+isolate means no cross-file leak; only the afterAll self-check guards the delete-vs-assign restore
+- [chart-grain local monotonicity](project_chart_grain_local_monotonicity.md) — DST fall-back breaks label distinctness, NOT ordering; the usual tz="utc" rationale is wrong
+- [Grain 'no request param' untested](project_grain_no_request_param_untested.md) — enforced at 1 of 3 surfaces; tsc catches a new key but not an altered limit
