@@ -142,13 +142,36 @@ api:
       nginx.ingress.kubernetes.io/proxy-body-size: "50m"
       cert-manager.io/cluster-issuer: "letsencrypt-prod"   # no cert-manager? set to null — this deletes the key (see header)
     hosts:
-      # MUST be api.<the same domain you use everywhere else in this overlay> —
-      # helm-charts/bin/post-install/seed-admin-user.sh hardcodes
-      # <scheme>://api.<DATASPOKE_KUBE_INGRESS_DOMAIN>/internal/admin/bootstrap,
-      # so a mismatched host here breaks the manual admin seed step.
+      # The API ingress host is your own choice — nothing else in this
+      # overlay is pinned to it.
+      #
+      # Only the public API surface is published here. `/internal/*`
+      # (admin bootstrap/config, peripheral seeding) is deliberately absent:
+      # it is an in-cluster-only surface reached by Airflow over cluster DNS
+      # and by the installer's own kubectl-exec-into-the-API-pod seed step
+      # (bin/lib/helpers.sh's api_internal_request), never through this
+      # ingress. Publishing `/internal/*` here is what issue #130 warned
+      # against.
       - host: api.dataspoke.example.com
         paths:
-          - path: /
+          - path: /api/v1
+            pathType: Prefix
+          - path: /health
+            pathType: Prefix
+          - path: /ready
+            pathType: Prefix
+          # /redoc and /openapi.json expose only the already-public API
+          # surface — both internal routers (spec/feature/HELM_CHART.md
+          # §Ingress & Network Policy) are include_in_schema=False
+          # (src/api/main.py), so the schema never discloses /internal/*.
+          # The frontend's always-visible "API docs" nav item
+          # (src/frontend/components/app-shell.tsx, spec/feature/
+          # FRONTEND_BASIC.md) links to `${apiBaseUrl}/redoc`; removing this
+          # path is available as a hardening step, at the cost of that link
+          # 404ing. There is no /docs route (docs_url is disabled).
+          - path: /redoc
+            pathType: Prefix
+          - path: /openapi.json
             pathType: Prefix
     tls:
       - secretName: dataspoke-api-tls

@@ -75,7 +75,7 @@ helm-charts/
 │   ├── health-check.sh                  # service-by-service probe
 │   ├── build-image.sh                   # api | airflow | postgres | frontend (Cloud Build / ECR / local)
 │   ├── port-forward.sh                  # forward TCP services to 127.0.0.1 (shared ingress mode)
-│   ├── lib/helpers.sh                   # logging + kubectl/helm wrappers + ingress-mode helpers
+│   ├── lib/helpers.sh                   # logging + kubectl/helm wrappers + ingress-mode helpers + in-pod admin-API caller
 │   ├── dev-peripherals/                 # dev-only orchestrators
 │   │   ├── nginx-ingress.sh
 │   │   ├── datahub.sh
@@ -162,7 +162,7 @@ wires them via the runtime admin API (`/api/v1/admin/peripherals/{datahub,langfu
 | 2 | **Parallel bootstrap** | `build-image.sh api` ‖ `build-image.sh airflow` ‖ `build-image.sh postgres` ‖ `dev-peripherals/datahub.sh` ‖ `dev-peripherals/langfuse.sh` | bash `&` + `wait`. Failures of any branch abort the install. `build-image.sh frontend` is added only when `--frontend cluster`. |
 | 3 | Umbrella chart | `helm upgrade --install dataspoke ./helm-charts/dataspoke -f values-dev.yaml` | Depends on phase 2: images pulled by deployment, their resolved digests stamped into pod annotations (§Digest stamping), DataHub URL/PAT/Kafka + Langfuse host/public-key fed via `--set` for downstream seeding. `frontend.enabled` is `false` unless `--frontend cluster`, which appends the frontend `--set` flags and waits for the `dataspoke-frontend` rollout. |
 | 4 | **Parallel post-bootstrap** | `dev-peripherals/dummy-data.sh` ‖ `dev-peripherals/dev-lock.sh` | Both depend on cluster connectivity but not on each other. |
-| 5 | Post-install seeding | `seed-peripheral-config.sh`, `seed-runtime-config.sh`, `seed-admin-user.sh` | PATCHes `/internal/admin/peripherals/{datahub,langfuse}`, `/internal/admin/conf`, and POSTs `/internal/admin/bootstrap` (idempotent: seeds the default `dataspoke@dataspoke.local / dataspoke` Admin only when no Admin exists). Skipped by `--skip-seed`. |
+| 5 | Post-install seeding | `seed-peripheral-config.sh`, `seed-runtime-config.sh`, `seed-admin-user.sh` | From inside the API pod, PATCHes `/internal/admin/peripherals/{datahub,langfuse}`, `/internal/admin/conf`, and POSTs `/internal/admin/bootstrap` (idempotent: seeds the default `dataspoke@dataspoke.local / dataspoke` Admin only when no Admin exists). Skipped by `--skip-seed`. |
 
 ### Phases — prod profile
 
@@ -171,7 +171,7 @@ wires them via the runtime admin API (`/api/v1/admin/peripherals/{datahub,langfu
 | 1 | Pre-flight | tool check, context switch, namespace ensure, IngressClass/StorageClass checks, then — only under `--skip-build` — image-digest resolution, then Secret checks | No nginx-ingress install — operator's controller. Digest resolution, when it runs here, lands ahead of every credential Secret this phase goes on to create/update, only when `--skip-build` means the image already exists in the registry; otherwise it waits for phase 2's push (see §Digest stamping). |
 | 2 | Image build | `build-image.sh api` ‖ `build-image.sh airflow` ‖ `build-image.sh postgres` | Skipped by `--skip-build` when CI built and pushed the images. `build-image.sh frontend` runs under the default `--frontend cluster`; skipped under `--frontend none`. |
 | 3 | Umbrella chart | `helm upgrade --install dataspoke ./helm-charts/dataspoke -f values.yaml -f <operator-overlay>` | Operator supplies values overlay with their own ingress hosts, TLS, registry, replica counts, source-credential references. Digest stamping applies in prod as well (resolved here instead of phase 1 unless `--skip-build` was passed), so the same tag name carrying new content still rolls api/frontend, and event-consumer too when the overlay enables it. `frontend.enabled` is set from `--frontend` (`cluster`→true, `none`→false; default `cluster`). |
-| — | Admin seed | `post-install/seed-admin-user.sh` | Runs after the chart phase unless `--skip-seed` is passed. Idempotent; seeds the default `dataspoke@dataspoke.local / dataspoke` Admin only when no Admin exists. Carries no `step` marker of its own. |
+| — | Admin seed | `post-install/seed-admin-user.sh` | Runs after the chart phase unless `--skip-seed` is passed, calling the API from inside its own pod rather than through the ingress. Idempotent; seeds the default `dataspoke@dataspoke.local / dataspoke` Admin only when no Admin exists. Carries no `step` marker of its own. |
 
 **Post-upgrade blocking waits (phase 3).** Immediately after the `helm
 upgrade` above, `install.sh` runs `kubectl rollout status --timeout=5m`
@@ -518,7 +518,8 @@ API's uvicorn server reads `FORWARDED_ALLOW_IPS` under that fixed name.
 - `DATASPOKE_POSTGRES_{HOST,PORT,USER,PASSWORD,DB}`
 - `DATASPOKE_REDIS_{HOST,PORT,PASSWORD}`
 - `DATASPOKE_AIRFLOW_{URL,USER,PASSWORD,CALLBACK_BASE_URL}`
-- `DATASPOKE_INTERNAL_TOKEN` — shared secret for Airflow → API internal calls
+- `DATASPOKE_INTERNAL_TOKEN` — shared secret carried by every call into
+  `/internal/*`: Airflow → API callbacks and the post-install seed scripts
 - `DATASPOKE_JWT_SECRET_KEY` — JWT HS256 signing key
 - `DATASPOKE_OAUTH_STATE_SECRET` — HMAC key for the Google-OAuth state cookie
 - `DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET` — Google OAuth client secret (paired with the public client_id; see chart-values-only callout below)
@@ -619,8 +620,8 @@ Same convention in both profiles; values differ.
 - `DATASPOKE_KUBE_INGRESS_SCHEME` — `http` (default, both modes) or `https`.
   Selects the URL scheme for every ingress-domain-based URL the dev install
   path builds (frontend config values, `src/frontend/.env.local`
-  `NEXT_PUBLIC_*`, the post-login redirect, the DataHub OIDC base, post-install
-  seed endpoints, `health-check.sh` probes, the host-bearing `DATASPOKE_TEST_*`
+  `NEXT_PUBLIC_*`, the post-login redirect, the DataHub OIDC base,
+  `health-check.sh` probes, the host-bearing `DATASPOKE_TEST_*`
   URLs, and printed access URLs). Set `https` when the shared controller
   terminates TLS in front of the virtual hosts (it emits HSTS, so HTTP pages
   break under mixed-content/auto-upgrade). Validated by the `ingress_scheme()`
@@ -840,7 +841,7 @@ the operator's, performed against the running deployment.
 |---|---|---|
 | 1 | Apply the cluster-scoped prerequisites — at minimum the StorageClass the overlay pins | `kubectl apply -f` against manifests derived from `helm-charts/prod-prereq/` (cluster-admin) |
 | 2 | Pre-create the credentials Secret with all eleven keys (see §Secret keys below) | Any secrets manager (ExternalSecrets Operator, Vault Agent, SealedSecrets) or `kubectl create secret generic` |
-| 3 | Write the values overlay: `secrets.existingSecret`, ingress hosts, TLS, registry, replica counts, storage classes. The IngressClass is *not* an overlay field — it comes from `DATASPOKE_KUBE_INGRESS_CLASS` in `.env.prod` (see §Ingress) | Start from `helm-charts/values-prod.example.yaml` |
+| 3 | Write the values overlay: `secrets.existingSecret`, ingress hosts and the published path list, TLS, registry, replica counts, storage classes. The IngressClass is *not* an overlay field — it comes from `DATASPOKE_KUBE_INGRESS_CLASS` in `.env.prod` (see §Ingress) | Start from `helm-charts/values-prod.example.yaml` |
 | 4 | Install — the chart, then the automatic admin seed | `bin/install.sh --profile prod --image-tag <tag> --values <overlay.yaml>` |
 | 5 | **Rotate the default admin credential — required** | `PATCH /api/v1/auth/me` |
 | 6 | Register peripherals | `/api/v1/admin/peripherals/{datahub,langfuse,smtp}` and `/api/v1/admin/conf` (LLM provider/model/key) |
@@ -909,10 +910,12 @@ mutable `:dev` tag.
 
 **The admin seed runs automatically.** After the chart phase, the prod install
 invokes `seed-admin-user.sh` unless `--skip-seed` is passed. It POSTs
-`/internal/admin/bootstrap`, which is idempotent — it returns `created: false`
-when any Admin already exists, so re-running an install is safe. The endpoint
-makes no external call, so a 503 from it means the API's own Postgres is
-unreachable, not a peripheral problem.
+`/internal/admin/bootstrap` from inside the API pod (§Post-Install Seeding), so
+the step needs neither DNS nor the API's public ingress and the overlay's
+`api.ingress` host is a free choice. The endpoint is idempotent — it returns
+`created: false` when any Admin already exists, so re-running an install is
+safe — and makes no external call, so a 503 from it means the API's own Postgres
+is unreachable, not a peripheral problem.
 
 **Rotation is required, not advisory.** A first install therefore returns with
 an active Admin account whose credentials — `dataspoke@dataspoke.local /
@@ -922,11 +925,6 @@ the operator's ingress controller and network posture, which the prod profile
 does not own or configure; the chart adds no source-range restriction or
 inbound policy of its own. Operators who want no default credential to exist at
 all install with `--skip-seed` and seed deliberately later (see below).
-
-**`api.ingress` host is load-bearing.** `seed-admin-user.sh` addresses the admin
-API at `api.<DATASPOKE_KUBE_INGRESS_DOMAIN>`, so the overlay's `api.ingress` host
-must be exactly that name or the seed step cannot reach the API and the install
-reports a failure at the last phase.
 
 **Seeding by hand.** Under `--skip-seed`, or to re-run the seed after fixing a
 failure, invoke the script directly:
@@ -1408,8 +1406,32 @@ is standalone and env-file-driven, so any of them can also be invoked by hand.
 | `bin/post-install/seed-runtime-config.sh` | PATCH `/internal/admin/conf` with `{llm_provider, llm_model}` from `DATASPOKE_DEV_LLM_{PROVIDER,MODEL}`, then a second PATCH setting the four `stub_*` dependency flags (`stub_redis_client`, `stub_llm_client`, `stub_pgvector_manager`, `stub_notification_service`) to `true` for the dev profile. |
 | `bin/post-install/seed-admin-user.sh` | POST `/internal/admin/bootstrap` to idempotently seed the built-in `dataspoke@dataspoke.local / dataspoke` Admin user (returns `{created: false}` when any Admin already exists). The endpoint makes no DataHub call, so this step has no ordering dependency on peripheral seeding and succeeds on a fresh install before DataHub is wired. See [feature/AUTH.md §Built-in Bootstrap Admin](AUTH.md#built-in-bootstrap-admin). |
 
-Auth: both use the `DATASPOKE_INTERNAL_TOKEN` read from the `dataspoke-secrets` Secret
-(mounted on the API pod via `envFrom`).
+**Transport and auth.** The shared
+`api_internal_request <namespace> <METHOD> <path> <json-body> [timeout]` helper
+in `bin/lib/helpers.sh` carries every `/internal/*` call the installer makes —
+all three seed scripts, plus the dev `--components api` fast path's
+`POST /internal/admin/dags/verify`. It `kubectl exec`s into the `dataspoke-api` pod and
+runs a stdlib `urllib.request` call against `http://127.0.0.1:8002`, the API's
+own container port. The call therefore never leaves the cluster: no ingress
+host, no DNS, and no `curl` in the `python:3.13-slim` API image. The in-pod
+script reads `DATASPOKE_INTERNAL_TOKEN` from its own environment — mounted from
+the `dataspoke-secrets` Secret via `envFrom` — and sends it as
+`X-Internal-Token`, so the seed path itself never copies the token out of the
+pod. A prod install exports it nowhere; dev's Tier-4 sync deliberately does,
+writing `DATASPOKE_TEST_INTERNAL_TOKEN` into `.env.dev` for the integration
+tests (§Tier 4 — Test access). The namespace comes from `ENV_FILE`. The helper prints the HTTP status on the
+first line and the body on the rest, with `000` standing for a connection
+failure; only that case is retried (5 attempts, 3s apart), while any HTTP
+response, 4xx and 5xx included, returns immediately. `timeout` bounds each
+attempt's in-pod request at 10s by default; the DAG-verification call raises it
+to 70 because that endpoint's `AirflowClient.list_dags()` carries its own 60s
+client timeout, and a warming Airflow under the default would be misread as a
+connection failure. A retried worst case is therefore bounded by five timeouts
+plus the four sleeps between them, not by the sleeps alone — an immediately
+refused connection is the fast end of that range. Setting
+`API_INTERNAL_REQUEST_QUIET=1` downgrades a `kubectl exec` failure from an abort
+to a warning plus a non-zero return, which the best-effort DAG-verification call
+site does and the seed scripts do not.
 
 Skip with `--skip-seed`; useful when a previous install already seeded
 peripheral config and the operator wants to preserve their PATCHes.
@@ -1722,17 +1744,32 @@ class written into a values overlay has no effect — an operator on `alb` or
 owned controller registers as its own `ingressClassResource`, so a mismatch
 between controller and resource is not representable.
 
-**Route correctness depends on no annotation.** Every rule is a host-root path
-(`/`) with no regex match and no rewrite annotation, because path-splitting and
-rewriting are honored only by specific controllers. The host-root path also
-makes the rendered `pathType` immaterial — whichever value a chart defaults to
-matches everything. The annotations DataSpoke does carry are community
+**Route correctness depends on no annotation.** No rule carries a regex match or
+a rewrite annotation, because path-splitting and rewriting are honored only by
+specific controllers. The chart's own default rule for every host is the root
+path (`/`), which matches everything and leaves the rendered `pathType`
+immaterial — whichever value a chart defaults to behaves identically. The prod
+example overlay replaces the API's rule with an explicit path list, and there
+`pathType: Prefix` is load-bearing rather than immaterial: the published
+prefixes are the boundary of what the ingress exposes, so the list and the
+`pathType` beside it are read together. The annotations DataSpoke does carry are community
 ingress-nginx spellings; a foreign controller ignores them and falls back to its
 own default for that knob, which never changes where a request is routed. The
 GMS manifest is the exception that states its own reason: as the metadata-push
 path it must accept large payloads, so it carries the body-size limit in both
 the `nginx.ingress.kubernetes.io/` and `nginx.org/` spellings and each
 controller ignores the other's. No other manifest does this.
+
+**The prod example overlay publishes the API's public surface only.** Its API
+rule publishes five paths — `/api/v1`, `/health`, `/ready`, `/redoc`, and
+`/openapi.json`; `/internal/*` is not published. The two documentation paths are
+in that list because they expose only the already-public surface: both internal
+routers are registered `include_in_schema=False` in `src/api/main.py`, so the
+schema never describes `/internal/*`, and the frontend's "API docs" navigation
+item links to `/redoc`. Dropping them is available as a hardening step at the
+cost of that link. Where a
+host-root rule is in force instead, `/internal/*` is reachable through the
+ingress and the `X-Internal-Token` shared secret is the only control on it.
 
 **The GMS host is public and relies on GMS's own token auth.** No Ingress
 DataSpoke creates carries an allow-list, source-range restriction, or auth

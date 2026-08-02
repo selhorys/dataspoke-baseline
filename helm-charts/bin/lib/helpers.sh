@@ -119,6 +119,126 @@ ingress_tls_secret() {
   echo "$secret"
 }
 
+# Static in-pod Python source for api_internal_request() below. METHOD,
+# path, body, and the connect/read timeout reach it at runtime as argv
+# (sys.argv[1..4]) — nothing here is ever assembled by interpolating caller
+# data into this string.
+read -r -d '' _API_INTERNAL_REQUEST_PY <<'PYEOF' || true
+import sys, os, urllib.request, urllib.error
+
+method = sys.argv[1]
+path = sys.argv[2]
+body = sys.argv[3] if len(sys.argv) > 3 else ""
+timeout = float(sys.argv[4]) if len(sys.argv) > 4 and sys.argv[4] else 10
+
+token = os.environ.get("DATASPOKE_INTERNAL_TOKEN", "")
+url = "http://127.0.0.1:8002" + path
+data = body.encode("utf-8") if body else None
+headers = {"X-Internal-Token": token, "Content-Type": "application/json"}
+
+req = urllib.request.Request(url, data=data, method=method, headers=headers)
+try:
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        print(resp.status)
+        sys.stdout.write(resp.read().decode("utf-8", errors="replace"))
+except urllib.error.HTTPError as e:
+    # A real HTTP response (4xx/5xx), not a connection failure — printed the
+    # same way as a success, never treated as one here.
+    print(e.code)
+    sys.stdout.write(e.read().decode("utf-8", errors="replace"))
+except Exception as e:
+    print("000")
+    sys.stderr.write("api_internal_request: connection failed: %s\n" % e)
+PYEOF
+
+# api_internal_request <namespace> <METHOD> <path> <json-body> [timeout]
+# Calls the DataSpoke API's /internal/* surface from inside its own pod:
+# `kubectl exec`s into deploy/dataspoke-api and runs the stdlib
+# `urllib.request` script above against http://127.0.0.1:8002<path> — the
+# API's own container port (docker-images/api/Dockerfile EXPOSE 8002,
+# dataspoke-api Service targetPort 8002). No ingress host, no DNS, and no
+# `curl` (absent from the python:3.13-slim API image) are involved. METHOD,
+# path, body, and timeout are passed as argv to `python3 -c`, not spliced
+# into the Python source — `kubectl exec` runs the command array directly
+# with no shell in the loop, so there is no quoting hazard.
+#
+# `timeout` (seconds) bounds the in-pod urlopen() call, default 10 — plenty
+# for the storage-bounded seed-script PATCHes, but too tight for a slow-but-
+# working handler: /internal/admin/dags/verify calls AirflowClient.list_dags(),
+# whose own httpx client carries a 60s timeout after authenticating first.
+# Callers whose endpoint can legitimately take longer than 10s pass a larger
+# value explicitly rather than tripping this helper's `000`/retry path on a
+# request that was never actually a connection failure.
+#
+# The in-pod script reads DATASPOKE_INTERNAL_TOKEN from its own environment
+# (mounted via envFrom from dataspoke-secrets) and sends it as
+# X-Internal-Token, so the token is never extracted to the caller's machine.
+#
+# Output contract: stdout's first line is the HTTP status code, the rest is
+# the response body — the same shape callers used to branch on from curl's
+# %{http_code}. `000` on the first line means the in-pod script could not
+# connect at all (a completely empty response is also treated as `000` —
+# there is otherwise no valid status line to read); an HTTPError (a real
+# 4xx/5xx response) is printed the same way and is never treated as a
+# connection failure.
+#
+# Only a `000` is retried — 5 attempts, 3s apart — to ride out a pod that is
+# Ready but momentarily refusing connections right after startup. Any real
+# HTTP response, 4xx/5xx included, returns immediately and is never retried.
+#
+# `kubectl exec` itself failing (pod missing, RBAC denied) is a distinct
+# failure from a `000` connection failure and is not retried either. By
+# default it aborts immediately via `error()` so it never gets folded into a
+# confusing "connection failed after 5 attempts" message. Set
+# API_INTERNAL_REQUEST_QUIET=1 to downgrade that one failure mode to `warn`
+# plus `return 1` instead — for a caller whose own call site is deliberately
+# best-effort and must never abort the surrounding script; the seed scripts
+# leave this unset so an exec failure still aborts them.
+api_internal_request() {
+  local ns="$1" method="$2" path="$3" body="${4:-}" timeout="${5:-10}"
+  local quiet="${API_INTERNAL_REQUEST_QUIET:-0}"
+  local attempt output exec_err exec_status exec_err_text status
+  for attempt in 1 2 3 4 5; do
+    exec_err="$(mktemp)"
+    if output="$(kubectl exec -n "${ns}" deploy/dataspoke-api -c api -- \
+      python3 -c "${_API_INTERNAL_REQUEST_PY}" "${method}" "${path}" "${body}" "${timeout}" \
+      2>"${exec_err}")"; then
+      exec_status=0
+    else
+      exec_status=$?
+    fi
+    # Read and remove the temp file before any exit path below — the earlier
+    # shape only removed it on success, leaking one file per kubectl-exec
+    # failure (every attempt on a pod that never comes back).
+    exec_err_text="$(cat "${exec_err}" 2>/dev/null)"
+    rm -f "${exec_err}"
+    if [[ ${exec_status} -ne 0 ]]; then
+      if [[ "${quiet}" == "1" ]]; then
+        warn "kubectl exec into dataspoke-api (-n ${ns}) failed (exit ${exec_status}): ${exec_err_text}"
+        return 1
+      fi
+      error "kubectl exec into dataspoke-api (-n ${ns}) failed (exit ${exec_status}): ${exec_err_text}"
+    fi
+    if [[ -z "${output}" ]]; then
+      status="000"
+    else
+      status="$(printf '%s\n' "${output}" | head -n1)"
+    fi
+    if [[ "${status}" != "000" ]]; then
+      printf '%s\n' "${output}"
+      return 0
+    fi
+    if (( attempt < 5 )); then
+      sleep 3
+    fi
+  done
+  if [[ -z "${output}" ]]; then
+    printf '000\n'
+  else
+    printf '%s\n' "${output}"
+  fi
+}
+
 # tcp_access_host
 # Echo the host that laptop/test clients use to reach TCP services (Postgres,
 # Redis, Kafka, dev-lock). In shared mode these are not published on the shared

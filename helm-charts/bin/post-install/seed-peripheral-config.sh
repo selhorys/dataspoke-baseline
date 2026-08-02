@@ -4,9 +4,14 @@
 # fields from .env; secret fields (DataHub PAT, Langfuse secret key) are
 # already in K8s Secrets placed by install.sh.
 #
-# Auth: retrieves DATASPOKE_INTERNAL_TOKEN from the running API pod.
-# Endpoint: <scheme>://api.<DOMAIN>/internal/admin/peripherals/{datahub,langfuse}
-# (scheme per DATASPOKE_KUBE_INGRESS_SCHEME, default http)
+# Auth: the API pod's own DATASPOKE_INTERNAL_TOKEN, read from inside the pod
+# by api_internal_request (bin/lib/helpers.sh) and sent as X-Internal-Token —
+# never extracted to this machine.
+# Transport: PATCH /internal/admin/peripherals/{datahub,langfuse}, reached
+# over the API's own loopback port from inside its pod (no ingress host in
+# the request URL). The ingress scheme+domain still appear below, but only
+# as payload data — the browser-facing DataHub UI URL this script PATCHes
+# into peripheral_config, not as anything this script connects to.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -32,13 +37,12 @@ DATAHUB_NS="${DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE}"
 DOMAIN="${DATASPOKE_KUBE_INGRESS_DOMAIN:-}"
 
 if [[ -z "$DOMAIN" ]]; then
-  error "DATASPOKE_KUBE_INGRESS_DOMAIN not set in .env — cannot reach the admin API."
+  error "DATASPOKE_KUBE_INGRESS_DOMAIN not set in .env — needed to build the DataHub frontend_url payload field."
 fi
 SCHEME="$(ingress_scheme)"
 
 # The API runs in-cluster, so its peripheral_config must hold the
-# in-cluster service DNS (not the ingress URL that .env now stores for
-# laptop consumers).
+# in-cluster service DNS (not the laptop-facing ingress URL .env also stores).
 DATAHUB_GMS_INCLUSTER="http://datahub-datahub-gms.${DATAHUB_NS}.svc.cluster.local:8080"
 DATAHUB_KAFKA_INCLUSTER="datahub-prerequisites-kafka.${DATAHUB_NS}.svc.cluster.local:9092"
 
@@ -50,39 +54,25 @@ DATAHUB_KAFKA_INCLUSTER="datahub-prerequisites-kafka.${DATAHUB_NS}.svc.cluster.l
 DATAHUB_FRONTEND_URL="${SCHEME}://datahub.${DOMAIN}"
 
 # ---------------------------------------------------------------------------
-# Retrieve internal token from the running API pod
-# ---------------------------------------------------------------------------
-info "Retrieving DATASPOKE_INTERNAL_TOKEN from dataspoke-api pod..."
-INTERNAL_TOKEN="$(kubectl exec -n "${NS}" deploy/dataspoke-api -c api -- \
-  printenv DATASPOKE_INTERNAL_TOKEN 2>/dev/null || true)"
-
-if [[ -z "$INTERNAL_TOKEN" ]]; then
-  error "Could not read DATASPOKE_INTERNAL_TOKEN from dataspoke-api pod — is the API running?"
-fi
-info "Internal token retrieved."
-
-BASE_URL="${SCHEME}://api.${DOMAIN}/internal/admin/peripherals"
-
-# ---------------------------------------------------------------------------
 # Seed DataHub peripheral config (required fields + optional operator metadata)
 # ---------------------------------------------------------------------------
-info "Seeding DataHub connection into peripheral config via ${BASE_URL}/datahub..."
+info "Seeding DataHub connection into peripheral config via /internal/admin/peripherals/datahub..."
 datahub_payload="{\"gms_url\": \"${DATAHUB_GMS_INCLUSTER}\", \"kafka_brokers\": \"${DATAHUB_KAFKA_INCLUSTER}\", \"frontend_url\": \"${DATAHUB_FRONTEND_URL}\""
 [[ -n "${DATASPOKE_DEV_DATAHUB_SERVICE_CORPUSER_URN:-}" ]] && datahub_payload+=", \"service_corpuser_urn\": \"${DATASPOKE_DEV_DATAHUB_SERVICE_CORPUSER_URN}\""
 [[ -n "${DATASPOKE_DEV_DATAHUB_DEFAULT_ENV:-}" ]]          && datahub_payload+=", \"default_env\": \"${DATASPOKE_DEV_DATAHUB_DEFAULT_ENV}\""
 datahub_payload+="}"
-HTTP_CODE=$(curl -fsS -o /tmp/seed-resp.json -w "%{http_code}" -X PATCH \
-  "${BASE_URL}/datahub" \
-  -H "X-Internal-Token: ${INTERNAL_TOKEN}" \
-  -H "Content-Type: application/json" \
-  -d "${datahub_payload}" \
-  2>&1 || echo "000")
+RESPONSE="$(api_internal_request "${NS}" PATCH "/internal/admin/peripherals/datahub" "${datahub_payload}")"
+HTTP_CODE="$(printf '%s\n' "$RESPONSE" | head -n1)"
+BODY="$(printf '%s\n' "$RESPONSE" | tail -n +2)"
 case "$HTTP_CODE" in
   200|204)
     info "OK (HTTP ${HTTP_CODE}): DataHub peripheral config seeded."
     ;;
+  000)
+    error "Could not reach the API's own port (127.0.0.1:8002) from inside the dataspoke-api pod (namespace ${NS}) after 5 retries — check that deploy/dataspoke-api's 'api' container is Ready and listening."
+    ;;
   *)
-    error "PATCH failed (HTTP ${HTTP_CODE}): ${BASE_URL}/datahub — see /tmp/seed-resp.json"
+    error "PATCH failed (HTTP ${HTTP_CODE}) from /internal/admin/peripherals/datahub. Response body: ${BODY}"
     ;;
 esac
 
@@ -90,25 +80,25 @@ esac
 # Seed Langfuse peripheral config (required fields + optional operator metadata)
 # ---------------------------------------------------------------------------
 if [[ -n "${DATASPOKE_TEST_LANGFUSE_HOST:-}" && -n "${DATASPOKE_TEST_LANGFUSE_PUBLIC_KEY:-}" ]]; then
-  info "Seeding Langfuse connection into peripheral config via ${BASE_URL}/langfuse..."
+  info "Seeding Langfuse connection into peripheral config via /internal/admin/peripherals/langfuse..."
   langfuse_payload="{\"host\": \"${DATASPOKE_TEST_LANGFUSE_HOST}\", \"public_key\": \"${DATASPOKE_TEST_LANGFUSE_PUBLIC_KEY}\""
   # Same `:-dataspoke-project` default langfuse.sh creates the project under, so
   # the seeded project_id cannot diverge from the project that actually exists.
   langfuse_payload+=", \"project_id\": \"${DATASPOKE_DEV_LANGFUSE_INIT_PROJECT_ID:-dataspoke-project}\""
   [[ -n "${DATASPOKE_DEV_LANGFUSE_ENVIRONMENT_TAG:-}" ]]  && langfuse_payload+=", \"environment_tag\": \"${DATASPOKE_DEV_LANGFUSE_ENVIRONMENT_TAG}\""
   langfuse_payload+="}"
-  HTTP_CODE=$(curl -fsS -o /tmp/seed-resp.json -w "%{http_code}" -X PATCH \
-    "${BASE_URL}/langfuse" \
-    -H "X-Internal-Token: ${INTERNAL_TOKEN}" \
-    -H "Content-Type: application/json" \
-    -d "${langfuse_payload}" \
-    2>&1 || echo "000")
+  RESPONSE="$(api_internal_request "${NS}" PATCH "/internal/admin/peripherals/langfuse" "${langfuse_payload}")"
+  HTTP_CODE="$(printf '%s\n' "$RESPONSE" | head -n1)"
+  BODY="$(printf '%s\n' "$RESPONSE" | tail -n +2)"
   case "$HTTP_CODE" in
     200|204)
       info "OK (HTTP ${HTTP_CODE}): Langfuse peripheral config seeded."
       ;;
+    000)
+      error "Could not reach the API's own port (127.0.0.1:8002) from inside the dataspoke-api pod (namespace ${NS}) after 5 retries — check that deploy/dataspoke-api's 'api' container is Ready and listening."
+      ;;
     *)
-      error "PATCH failed (HTTP ${HTTP_CODE}): ${BASE_URL}/langfuse — see /tmp/seed-resp.json"
+      error "PATCH failed (HTTP ${HTTP_CODE}) from /internal/admin/peripherals/langfuse. Response body: ${BODY}"
       ;;
   esac
 else

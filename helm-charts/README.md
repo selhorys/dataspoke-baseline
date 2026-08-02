@@ -321,7 +321,18 @@ hosts, TLS secret names, CORS origins, OAuth post-login redirect, Google
 client ID, `secrets.existingSecret`), and read its header comment on Helm's
 map-merge / list-replace semantics before touching the
 `cert-manager.io/cluster-issuer` annotation — the single biggest footgun for
-operators not running cert-manager.
+operators not running cert-manager. The API ingress host is your own choice —
+nothing in the install depends on it matching a fixed pattern, except
+`bin/health-check.sh`: that dev-only probe tool still assumes
+`api.<DATASPOKE_KUBE_INGRESS_DOMAIN>` regardless of what your prod overlay
+sets. The example overlay publishes the public API surface — `/api/v1`,
+`/health`, `/ready`, `/redoc`, `/openapi.json` — and never `/internal/*`; a
+prod pre-flight check in `install.sh` refuses to install if any configured
+path would admit `/internal/*`. `/redoc` and `/openapi.json` disclose nothing
+beyond the already-public surface (the internal routers are excluded from the
+schema), but the frontend's "API docs" nav link points at
+`${apiBaseUrl}/redoc` — removing either path is a valid hardening step, at
+the cost of that link 404ing.
 
 #### 4. Install
 
@@ -392,10 +403,7 @@ ENV_FILE=helm-charts/.env.prod bash helm-charts/bin/post-install/seed-admin-user
 ```
 
 The `ENV_FILE=` prefix is **required** — the script defaults to `.env.dev`
-when `ENV_FILE` is unset. It hardcodes
-`<scheme>://api.<DATASPOKE_KUBE_INGRESS_DOMAIN>/internal/admin/bootstrap`, so
-your overlay's API ingress host **must** equal
-`api.<DATASPOKE_KUBE_INGRESS_DOMAIN>`.
+when `ENV_FILE` is unset.
 
 #### 7. Register peripherals and runtime config
 

@@ -1338,6 +1338,118 @@ for tag, name in pins:
 PYEOF
 }
 
+# _assert_no_internal_ingress_exposure <chart_values_file> [<overlay_file>]
+# Prod-only guard: aborts when the effective api.ingress.hosts[*].paths[*]
+# would publish /internal/* on the public API ingress — the residual half of
+# issue #130. /internal/* includes POST /internal/admin/bootstrap, which seeds
+# a default admin whose credentials are published in this repository (see
+# helm-charts/README.md §Prod profile). Narrowing the chart default itself is
+# not an option: the api-wired integration tests drive /internal/* over the
+# dev ingress, which shares this same default (values-dev.yaml), so this
+# check runs only on the prod pre-flight, never on dev.
+#
+# Resolves the effective hosts the same way Helm does — the chart default
+# from <chart_values_file>, wholesale-replaced by the overlay's
+# api.ingress.hosts when the overlay sets that key at all (Helm's
+# list-replace semantics for lists — see values-prod.example.yaml's header
+# comment) — using the same python3+PyYAML pattern as
+# _resolve_existing_secret_name/_resolve_storage_classes above.
+#
+# A path admits /internal/* when it is the catch-all "/" or is, after
+# stripping a trailing slash, exactly "/internal" — the only two
+# path-element-wise prefixes of "/internal", since it has a single path
+# segment. On a malformed chart/overlay file, behaves like
+# _resolve_existing_secret_name above.
+_assert_no_internal_ingress_exposure() {
+  local chart_values_file="$1" overlay_file="${2:-}"
+  if ! python3 -c "import yaml" 2>/dev/null; then
+    error "python3 with PyYAML is required to check the API ingress paths for /internal exposure. Install: pip install pyyaml"
+  fi
+  # Written directly to a temp file rather than captured via `x="$(... <<EOF)"`
+  # — a heredoc nested inside a command substitution confuses bash's own
+  # paren-matching the moment the heredoc body carries an odd number of
+  # literal `'` characters (an apostrophe in a comment is enough), even
+  # though the quoted `<<'PYEOF'` terminator makes those characters fully
+  # inert to expansion. Redirecting to a file sidesteps the nesting.
+  local offenders_file
+  offenders_file="$(mktemp)"
+  if ! python3 - "${chart_values_file}" "${overlay_file}" > "${offenders_file}" <<'PYEOF'
+import sys, yaml
+
+CHART_FILE = sys.argv[1]
+OVERLAY_FILE = sys.argv[2] if len(sys.argv) > 2 else ""
+
+
+def fail(msg):
+    print(msg, file=sys.stderr)
+    sys.exit(1)
+
+
+def load_mapping(path, label):
+    with open(path) as f:
+        try:
+            data = yaml.safe_load(f)
+        except yaml.YAMLError as exc:
+            fail(f"Invalid YAML in {label} '{path}': {' '.join(str(exc).split())}")
+    if data is not None and not isinstance(data, dict):
+        fail(f"{label} '{path}' does not parse to a YAML mapping at its top level.")
+    return data or {}
+
+
+def dig(node, *keys):
+    walked = []
+    for key in keys:
+        if node is None:
+            return None
+        if not isinstance(node, dict):
+            fail(f"'{'.'.join(walked)}' must be a mapping, got {type(node).__name__}.")
+        walked.append(key)
+        node = node.get(key)
+    return node
+
+
+chart_data = load_mapping(CHART_FILE, "chart values file")
+hosts = dig(chart_data, "api", "ingress", "hosts") or []
+
+if OVERLAY_FILE:
+    overlay_data = load_mapping(OVERLAY_FILE, "overlay file")
+    overlay_hosts = dig(overlay_data, "api", "ingress", "hosts")
+    # Helm list-replace semantics: an overlay hosts key replaces the chart
+    # default hosts list wholesale, not merged into it.
+    if overlay_hosts is not None:
+        hosts = overlay_hosts
+
+for host in hosts:
+    if not isinstance(host, dict):
+        continue
+    host_name = host.get("host", "<unknown host>")
+    for p in host.get("paths") or []:
+        if not isinstance(p, dict):
+            continue
+        path = p.get("path")
+        if not isinstance(path, str):
+            continue
+        normalized = path.rstrip("/") or "/"
+        if normalized == "/" or normalized == "/internal":
+            print(f"{host_name}\t{path}")
+PYEOF
+  then
+    rm -f "${offenders_file}"
+    error "Could not parse the API ingress paths for /internal exposure (see above)."
+  fi
+
+  if [[ -s "${offenders_file}" ]]; then
+    local offenders offender_host offender_path
+    offenders="$(cat "${offenders_file}")"
+    rm -f "${offenders_file}"
+    while IFS=$'\t' read -r offender_host offender_path; do
+      [[ -z "$offender_path" ]] && continue
+      error "The API ingress host '${offender_host}' publishes path '${offender_path}', which admits /internal/* — including POST /internal/admin/bootstrap, which seeds a default admin whose credentials are published in this repository. Narrow api.ingress.hosts[].paths in your --values overlay to the public API surface (/api/v1, /health, /ready, and optionally /redoc, /openapi.json) — see helm-charts/values-prod.example.yaml for the correct path list."
+    done <<< "${offenders}"
+  fi
+  rm -f "${offenders_file}"
+}
+
 # _api_image_helm_set_args
 # Prints the --set flags pinning every workload that runs the API image: the API
 # itself, and the event-consumer, which runs the same image under a `command:`
@@ -1733,20 +1845,30 @@ if [[ "$PROFILE" == "dev" ]]; then
       && info "dataspoke-api is ready." \
       || error "dataspoke-api did not become ready in time — check pod logs."
 
-    # Verify Airflow DAGs
-    DOMAIN="${DATASPOKE_KUBE_INGRESS_DOMAIN:-}"
-    if [[ -n "$DOMAIN" ]]; then
-      info "Verifying Airflow DAGs..."
-      INTERNAL_TOKEN="$(kubectl exec -n "${NS}" deploy/dataspoke-api -c api -- \
-        printenv DATASPOKE_INTERNAL_TOKEN 2>/dev/null || true)"
-      if [[ -z "$INTERNAL_TOKEN" ]]; then
-        warn "Could not read DATASPOKE_INTERNAL_TOKEN — skipping DAG verification."
-      elif curl -sf -X POST "${SCHEME}://api.${DOMAIN}/internal/admin/dags/verify" \
-            -H "X-Internal-Token: ${INTERNAL_TOKEN}" -o /dev/null; then
+    # Verify Airflow DAGs — best effort; never aborts this fast path. Routed
+    # through api_internal_request (bin/lib/helpers.sh) — the same
+    # kubectl-exec-into-the-pod call shape the post-install seed scripts use —
+    # rather than a second, ingress-routed request. 70s timeout (well above
+    # the helper's 10s default): the endpoint calls AirflowClient.list_dags(),
+    # whose own httpx client carries a 60s timeout after authenticating
+    # first, and a slow-but-working Airflow right after the umbrella upgrade
+    # is exactly the state this check runs in — the tighter default would
+    # misread that as a connection failure and retry it 5x for no reason.
+    # API_INTERNAL_REQUEST_QUIET=1 downgrades a kubectl-exec failure to a
+    # `warn` (helpers.sh) instead of a red [ERROR] — this step's own failure
+    # already only warns and continues, so its plumbing should not print a
+    # line that reads like an aborted install. Any failure here — a non-2xx
+    # response, or api_internal_request itself failing — only warns.
+    info "Verifying Airflow DAGs..."
+    if DAGS_VERIFY_RESPONSE="$(API_INTERNAL_REQUEST_QUIET=1 api_internal_request "${NS}" POST "/internal/admin/dags/verify" '{}' 70)"; then
+      DAGS_VERIFY_CODE="$(printf '%s\n' "$DAGS_VERIFY_RESPONSE" | head -n1)"
+      if [[ "$DAGS_VERIFY_CODE" == "200" || "$DAGS_VERIFY_CODE" == "204" ]]; then
         info "Airflow DAGs verified."
       else
         warn "Failed to verify Airflow DAGs — retry after Airflow is ready."
       fi
+    else
+      warn "Failed to verify Airflow DAGs — retry after Airflow is ready."
     fi
 
     echo ""
@@ -2316,6 +2438,12 @@ elif [[ "$PROFILE" == "prod" ]]; then
   fi
   info "IngressClass '${INGRESS_CLASS}' is present."
 
+  # Refuse to publish /internal/* on the public API ingress (fail fast). See
+  # _assert_no_internal_ingress_exposure's docstring above for why this is a
+  # prod-only pre-flight gate rather than a narrower chart default.
+  _assert_no_internal_ingress_exposure "$CHART_DIR/values.yaml" "${EXTRA_VALUES:-}"
+  info "API ingress paths do not publish /internal/*."
+
   # Verify every StorageClass the operator's overlay pins exists (fail fast).
   #
   # A namespace-scoped Helm release cannot own a cluster-scoped StorageClass —
@@ -2677,8 +2805,11 @@ elif [[ "$PROFILE" == "prod" ]]; then
   # Seed default admin user (idempotent)
   # -----------------------------------------------------------------------
   if [[ "$SKIP_SEED" == "false" ]]; then
-    # The seed script kubectl execs into the API pod; the unconditional
-    # dataspoke-api rollout-status wait above already guarantees it is ready.
+    # The seed script's api_internal_request helper (bin/lib/helpers.sh)
+    # kubectl execs into the API pod and calls its own loopback port
+    # directly — no ingress or DNS involved. The unconditional
+    # dataspoke-api rollout-status wait above already guarantees the pod
+    # is Ready to accept the call.
     info "Seeding default admin user..."
     bash "$SCRIPT_DIR/post-install/seed-admin-user.sh"
   else

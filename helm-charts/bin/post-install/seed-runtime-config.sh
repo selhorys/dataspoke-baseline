@@ -2,9 +2,11 @@
 # Seed LLM provider and model into the runtime config table via the internal
 # admin API. Source values: DATASPOKE_DEV_LLM_{PROVIDER,MODEL} from .env.
 #
-# Auth: retrieves DATASPOKE_INTERNAL_TOKEN from the running API pod.
-# Endpoint: <scheme>://api.<DOMAIN>/internal/admin/conf (scheme per
-# DATASPOKE_KUBE_INGRESS_SCHEME, default http)
+# Auth: the API pod's own DATASPOKE_INTERNAL_TOKEN, read from inside the pod
+# by api_internal_request (bin/lib/helpers.sh) and sent as X-Internal-Token —
+# never extracted to this machine.
+# Endpoint: PATCH /internal/admin/conf, reached over the API's own loopback
+# port from inside its pod (no ingress, no DNS).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,42 +28,24 @@ fi
 source "$ENV_FILE"
 
 NS="${DATASPOKE_KUBE_DATASPOKE_NAMESPACE}"
-DOMAIN="${DATASPOKE_KUBE_INGRESS_DOMAIN:-}"
-
-if [[ -z "$DOMAIN" ]]; then
-  error "DATASPOKE_KUBE_INGRESS_DOMAIN not set in .env — cannot reach the admin API."
-fi
-SCHEME="$(ingress_scheme)"
-
-# ---------------------------------------------------------------------------
-# Retrieve internal token from the running API pod
-# ---------------------------------------------------------------------------
-info "Retrieving DATASPOKE_INTERNAL_TOKEN from dataspoke-api pod..."
-INTERNAL_TOKEN="$(kubectl exec -n "${NS}" deploy/dataspoke-api -c api -- \
-  printenv DATASPOKE_INTERNAL_TOKEN 2>/dev/null || true)"
-
-if [[ -z "$INTERNAL_TOKEN" ]]; then
-  error "Could not read DATASPOKE_INTERNAL_TOKEN from dataspoke-api pod — is the API running?"
-fi
-info "Internal token retrieved."
 
 # ---------------------------------------------------------------------------
 # Seed LLM provider/model into runtime config
 # ---------------------------------------------------------------------------
 if [[ -n "${DATASPOKE_DEV_LLM_PROVIDER:-}" && -n "${DATASPOKE_DEV_LLM_MODEL:-}" ]]; then
   info "Seeding dev LLM provider/model into runtime config via /internal/admin/conf..."
-  HTTP_CODE=$(curl -fsS -o /tmp/seed-resp.json -w "%{http_code}" -X PATCH \
-    "${SCHEME}://api.${DOMAIN}/internal/admin/conf" \
-    -H "X-Internal-Token: ${INTERNAL_TOKEN}" \
-    -H "Content-Type: application/json" \
-    -d "{\"llm_provider\": \"${DATASPOKE_DEV_LLM_PROVIDER}\", \"llm_model\": \"${DATASPOKE_DEV_LLM_MODEL}\"}" \
-    2>&1 || echo "000")
+  RESPONSE="$(api_internal_request "${NS}" PATCH "/internal/admin/conf" "{\"llm_provider\": \"${DATASPOKE_DEV_LLM_PROVIDER}\", \"llm_model\": \"${DATASPOKE_DEV_LLM_MODEL}\"}")"
+  HTTP_CODE="$(printf '%s\n' "$RESPONSE" | head -n1)"
+  BODY="$(printf '%s\n' "$RESPONSE" | tail -n +2)"
   case "$HTTP_CODE" in
     200|204)
       info "OK (HTTP ${HTTP_CODE}): Runtime config seeded (provider=${DATASPOKE_DEV_LLM_PROVIDER} model=${DATASPOKE_DEV_LLM_MODEL})."
       ;;
+    000)
+      error "Could not reach the API's own port (127.0.0.1:8002) from inside the dataspoke-api pod (namespace ${NS}) after 5 retries — check that deploy/dataspoke-api's 'api' container is Ready and listening."
+      ;;
     *)
-      error "PATCH failed (HTTP ${HTTP_CODE}): ${SCHEME}://api.${DOMAIN}/internal/admin/conf — see /tmp/seed-resp.json"
+      error "PATCH failed (HTTP ${HTTP_CODE}) from /internal/admin/conf. Response body: ${BODY}"
       ;;
   esac
 else
@@ -72,17 +56,17 @@ fi
 # Seed stub service flags for dev
 # ---------------------------------------------------------------------------
 info "Seeding stub service flags into runtime config via /internal/admin/conf..."
-HTTP_CODE=$(curl -fsS -o /tmp/seed-stub-resp.json -w "%{http_code}" -X PATCH \
-  "${SCHEME}://api.${DOMAIN}/internal/admin/conf" \
-  -H "X-Internal-Token: ${INTERNAL_TOKEN}" \
-  -H "Content-Type: application/json" \
-  -d '{"stub_redis_client": true, "stub_llm_client": true, "stub_pgvector_manager": true, "stub_notification_service": true}' \
-  2>&1 || echo "000")
+RESPONSE="$(api_internal_request "${NS}" PATCH "/internal/admin/conf" '{"stub_redis_client": true, "stub_llm_client": true, "stub_pgvector_manager": true, "stub_notification_service": true}')"
+HTTP_CODE="$(printf '%s\n' "$RESPONSE" | head -n1)"
+BODY="$(printf '%s\n' "$RESPONSE" | tail -n +2)"
 case "$HTTP_CODE" in
   200|204)
     info "OK (HTTP ${HTTP_CODE}): Stub service flags seeded."
     ;;
+  000)
+    error "Could not reach the API's own port (127.0.0.1:8002) from inside the dataspoke-api pod (namespace ${NS}) after 5 retries — check that deploy/dataspoke-api's 'api' container is Ready and listening."
+    ;;
   *)
-    error "PATCH failed (HTTP ${HTTP_CODE}): ${SCHEME}://api.${DOMAIN}/internal/admin/conf — see /tmp/seed-stub-resp.json"
+    error "PATCH failed (HTTP ${HTTP_CODE}) from /internal/admin/conf. Response body: ${BODY}"
     ;;
 esac
