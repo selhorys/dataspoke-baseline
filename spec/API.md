@@ -906,7 +906,11 @@ DNS) to drive long-running domain workflows (ingestion, ontogen, metagen, metric
 Gated by the same `X-Internal-Token` header. The per-domain route shapes are not
 catalogued in this spec — they are an implementation detail of the workflow boundary and live
 with the relevant feature service in [BACKEND.md](feature/BACKEND.md). External clients must
-not call these routes; they are not exposed through ingress.
+not call these routes. Whether they are reachable from outside the cluster depends on the
+published ingress path list: the prod example overlay publishes only the public API surface,
+while a host-root rule admits them. The `X-Internal-Token` gate is therefore the control that
+enforces this in every deployment — see
+[feature/HELM_CHART.md §Ingress](feature/HELM_CHART.md#ingress).
 
 ### System
 
