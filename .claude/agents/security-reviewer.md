@@ -37,6 +37,7 @@ The orchestrator invokes you **only when a generator's diff touches a sensitive 
 - `migrations/**` — any DB migration (data-loss or privilege risk)
 - `helm-charts/**/templates/secrets.yaml`, `helm-charts/**/values*.yaml` — credentials / config
 - `helm-charts/dataspoke/templates/**`, `helm-charts/dataspoke/subcharts/**/templates/**` — the image reference the cluster actually runs. `dataspoke.imageRef` / `frontend.imageRef` / `event-consumer.imageRef` decide digest-vs-tag precedence, so an edit to that rule changes which content executes in the cluster
+- `helm-charts/dataspoke/charts/*.tgz` — vendored upstream subcharts. Their templates are a Go-template *evaluator* over values DataSpoke composes: the Airflow chart runs `airflow.extraEnv` through `tpl`, so any operator-supplied string interpolated into it (and `tpl`'s `lookup`, which is live under `helm upgrade`) reaches the template engine. A subchart bump changes that evaluator
 - `pyproject.toml`, `uv.lock`, `src/frontend/package.json`, `src/frontend/pnpm-lock.yaml` — new/bumped dependencies
 - `.prauto/**` — autonomous worker (unsupervised, higher blast radius)
 - `helm-charts/dev-peripherals/langfuse/templates/**`, `helm-charts/dev-peripherals/langfuse/values*.yaml`, `helm-charts/bin/dev-peripherals/langfuse.sh` — Langfuse credentials and config (LLM trace store)
@@ -49,6 +50,7 @@ The orchestrator invokes you **only when a generator's diff touches a sensitive 
 - `helm-charts/prod-prereq/**` — cluster-admin-applied, cluster-scoped manifests (StorageClass and future prerequisites) outside Helm's ownership
 - `plugin/bin/**`, `plugin/skills/dataspoke-access/**` — end-user plugin credential model: mints/stores/transmits the `dsk_` API token and handles a login password
 - `helm-charts/bin/uninstall.sh` — the destructive counterpart: conditionally deletes the credentials Secret, deletes the Airflow fernet-key Secret on a value comparison against it, and drives PVC and namespace removal
+- `spec/feature/HELM_CHART.md` — states the normative behaviour of the credential gates `install.sh` implements (required-key presence, pre-flight rejections, secret delivery). An operator acts on the spec's wording, so a spec that overstates a gate is a real misconfiguration even when the code is correct; check it against the code rather than against `helm-charts/README.md`
 - `.claude/agents/**`, `.claude/workflows/**` — the review harness itself: this glob list decides when you are invoked, so an edit that narrows it removes the review step for whatever diff follows
 
 Keep this list in sync with reality — if you see a new sensitive surface that is not listed, flag it in your findings. **Only the orchestrator or the human edits this file** — a generator that can narrow the list governing its own review can review itself out of the loop, so report the gap rather than closing it yourself.

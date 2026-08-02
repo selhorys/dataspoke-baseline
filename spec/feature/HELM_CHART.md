@@ -125,6 +125,7 @@ helm-charts/
 | Dev-lock | ✓ | ✗ |
 | Post-install peripheral seeding | ✓ | ✗ (operator uses admin API / UI) |
 | Post-install admin-user seed | ✓ | ✓ (both skippable with `--skip-seed`) |
+| Airflow credential check at login | ✗ (`simple_auth_manager_all_admins: "True"`) | ✓ (`"False"` + a seeded passwords file; §Airflow authentication) |
 | Online LLM key rotation | ✓ | ✓ |
 
 **Why prod skips peripherals**: production DataHub and Langfuse installations
@@ -183,6 +184,7 @@ whole install on a timeout:
 | `dataspoke-api` | always | `api.enabled`, which the installer pins to `true` on the upgrade so an overlay cannot switch it off underneath the wait |
 | `dataspoke-event-consumer` | only if the Deployment object exists post-upgrade | `event-consumer.enabled` (chart default `false`; ships commented out in `values-prod.example.yaml` — an operator overlay is the only way to turn it on). Checked by existence, not by re-parsing the overlay, so it tracks whatever the release actually rendered regardless of how `enabled` got set. |
 | `dataspoke-frontend` | only when the frontend is deployed | `--frontend cluster` (`_prod_frontend_enabled`) |
+| `dataspoke-airflow-api-server` | always | `airflow.enabled`. This wait is what makes a broken passwords-file materialisation an install failure rather than a success followed by an api-server that never serves a login (§Airflow authentication). |
 
 The API wait needs no existence check because the installer `--set`s
 `api.enabled=true` on the upgrade, the same script-wins pin it uses for
@@ -923,8 +925,13 @@ exactly 32 raw bytes — 43 characters then `=`), which catches the
 `openssl rand -hex 32` value every other key uses and which would otherwise fail
 only the first time Airflow encrypts or decrypts a connection, long after the
 install reported success; `DATASPOKE_JWT_SECRET_KEY` still set to the dev
-default; `DATASPOKE_AIRFLOW_USER` equal to `admin`; `DATASPOKE_AIRFLOW_PASSWORD`
-empty or `admin`; `DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET` still the dev
+default; `DATASPOKE_AIRFLOW_USER` equal to `admin`, or outside the charset
+allowlist Airflow's user-list grammar requires; an operator overlay that sets any
+of `airflow.apiServer.{extraInitContainers,extraVolumes,extraVolumeMounts}`,
+which would replace the passwords-file wiring; a `DATASPOKE_AIRFLOW_PASSWORD`
+of `admin`, on the branch condition §Airflow authentication states normatively
+(an *empty* password is already covered by the eleven-key rule above, in either
+branch); `DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET` still the dev
 placeholder. The missing-key message for the Fernet key names the recovery read
 rather than a generator, because a namespace with a retained metadata DB needs
 the exact key that DB was encrypted with. An
@@ -1535,7 +1542,10 @@ container, sum of app containers)`, and in this chart every pod's app containers
 request at least as much as its largest init container. The Airflow subchart
 applies each component's own `resources` block to its `wait-for-airflow-migrations`
 init container, so on those pods the two sides are equal rather than the app side
-being larger; the conclusion is unchanged either way.
+being larger; the conclusion is unchanged either way. The passwords-file init
+container the umbrella adds to the Airflow api-server pod (§Airflow
+authentication) is sized within that component's envelope for the same reason, so
+it does not become the `max()` winner.
 
 ### Chart invariant — every container is sized
 
@@ -1702,9 +1712,10 @@ Size against the request, not the limit; the Airflow
 request for that reason.
 
 Airflow-side containers the umbrella chart sizes but the table does not list —
-statsd and the `db-migrate` hook Job — carry an `ephemeral-storage`
+statsd, the `db-migrate` hook Job, and the api-server pod's passwords-file init
+container (§Airflow authentication) — carry an `ephemeral-storage`
 request/limit pair on the same per-component convention, scaled to their much
-smaller log volume.
+smaller footprint.
 
 | Component | Namespace | Configured limit | Why |
 |---|---|---|---|
@@ -1982,6 +1993,167 @@ Airflow actually mounts. Writes always target
 an operator overlay is unsupported**: the projection would land in one Secret
 while Airflow mounts another, and the install would report success with Airflow
 holding no key at all.
+
+### Airflow authentication
+
+Airflow's UI and REST API are guarded by its built-in
+[`SimpleAuthManager`](https://airflow.apache.org/docs/apache-airflow/stable/core-concepts/auth-manager/simple.html)
+in both profiles (`airflow.config.core.auth_manager`), which is also why the
+chart disables the subchart's `createUserJob` — that hook runs the FAB-only
+`airflow users create`. What differs between profiles is whether the manager
+checks a credential.
+
+| | dev | prod |
+|---|---|---|
+| `core.simple_auth_manager_all_admins` (`values-dev.yaml` / `values.yaml`) | `"True"` | `"False"` |
+| Credential checked at login | ✗ — any credentials mint an admin JWT | ✓ — `DATASPOKE_AIRFLOW_{USER,PASSWORD}` |
+| Passwords file | none | init-container-materialised (below) |
+
+Neither the user list nor the passwords-file path is a values key. Both reach
+Airflow as env vars — `AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_{USERS,PASSWORDS_FILE}`
+— emitted by `install.sh`'s `_build_airflow_extra_env_file` under a flag the prod
+call site sets and both dev call sites clear. Gating the emission rather than
+letting one shared code path apply it everywhere is what keeps the dev render
+identical: dev's all-admins mode reads neither variable, so emitting them there
+would roll the Airflow pods for two values Airflow never consults.
+
+An `AIRFLOW__*` env var outranks `airflow.cfg`, so
+`airflow.config.core.simple_auth_manager_users` set in an operator overlay is
+rendered into the config file and then ignored. The env var is the only place
+either value takes effect.
+
+Dev trades the credential check for a zero-friction local loop; prod defaults to
+the credentialed path. The same credential pair is what the DataSpoke API's own
+Airflow client presents (tier-1 `DATASPOKE_AIRFLOW_{USER,PASSWORD}`,
+§Configuration — Four-Tier Env Vars), so the user list and the API's identity are
+necessarily the same account — a user list naming anyone else leaves every
+workflow trigger unauthenticated.
+
+**The user list is a composed value, and its grammar constrains the username.**
+Its content is `<DATASPOKE_AIRFLOW_USER>:ADMIN`, so the username must be
+*resolved at install time* rather than referenced from the credentials Secret at
+pod start — the role suffix makes it a string the installer builds, not a value a
+pod can dereference. Airflow parses it as a comma-separated list of
+`username:role` pairs, so a username carrying either delimiter parses into a
+different user set than the operator wrote.
+
+**The username is therefore held to a positive charset allowlist.** The accepted
+shape is `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`, enforced
+in the prod pre-flight and again inside the emitting helper. Scanning for the two
+delimiters instead would not hold in front of a template evaluator: the value
+transits Helm's `tpl`,
+where a template expression can manufacture a `,` or `:` that no literal-character
+scan sees, and a YAML escape (`\x3a`) reaches the same result through the values
+parser. Only a positive charset — checked at both the gate and the point of
+composition, so neither path can be reached without it — closes that off.
+
+**The passwords file needs a writable volume, not a read-only Secret mount.**
+`SimpleAuthManager` keeps its password material in the JSON file named by
+`core.simple_auth_manager_passwords_file`. Projecting that file from the
+credentials Secret does not work: `SimpleAuthManager.init()` opens it with mode
+`a+` and catches only `BlockingIOError`, so a read-only mount raises an uncaught
+`OSError` and crashes api-server startup. An init container on the api-server pod
+therefore materialises the single-entry mapping `{"<user>": "<password>"}` into
+an `emptyDir` mounted at that path, which the api-server container mounts
+writable. Pre-seeding — rather than letting Airflow create the file — is what
+pins the password to the operator's value: Airflow generates a random password
+only for a username *absent* from the file and preserves an entry already
+present.
+
+Three properties of that container are load-bearing rather than incidental:
+
+- **The volume is memory-backed (`emptyDir.medium: Memory`) and the file is
+  written `0600`.** The file holds a plaintext credential; a default `emptyDir`
+  would persist it on the node's filesystem for the pod's lifetime.
+- **It carries an explicit request/limit pair**, sized inside the api-server
+  component's own envelope, per §Chart invariant — every container is sized. Both
+  halves matter on Autopilot, which forces requests equal to limits and injects
+  defaults into an unsized container: an unsized or over-requested init container
+  would raise the pod's effective request through Kubernetes'
+  `max(largest init container, sum of app containers)` rule (see §Production
+  defaults).
+- **It carries the same hardening as its siblings** —
+  `allowPrivilegeEscalation: false` and a dropped `ALL` capability set — so the
+  one container in the pod that handles the plaintext credential is not the one
+  running with the widest posture.
+
+**Rotation rolls the pod, by construction.** The api-server pod carries an
+annotation hashing the effective user/password pair, so a rewritten
+`DATASPOKE_AIRFLOW_PASSWORD` changes the pod template and Helm restarts the pod,
+which re-runs the init container against the new value. Without it the file is
+materialised once at pod creation and never revisited: `dataspoke-api` would roll
+onto the new password (it reads the Secret via `envFrom`) while the api-server
+kept serving the old file, and every workflow trigger would 401 permanently. This
+is the same class of coupling as the signing-key and metadata-DSN restarts in
+§Installation, reached by a pod-template change rather than by an explicit
+restart.
+
+**Both pieces are install-time injections, not chart content.** The init
+container, its volume, and its mount arrive as an extra `-f` values fragment on
+the prod `helm upgrade` (`airflow.apiServer.{extraInitContainers,extraVolumes,
+extraVolumeMounts}`), and the two env vars arrive via `--set-file
+airflow.extraEnv=`. Neither can live in `values.yaml`: Helm always loads a
+chart's own `values.yaml` as the base layer even when only `values-dev.yaml` is
+passed with `-f`, and `values-dev.yaml` does not reset those `apiServer` keys, so
+a static default there would deep-merge into the dev release as well. The
+consequence for operators is that **`install.sh` is the only supported path to a
+prod upgrade**: a hand-run `helm upgrade -f <overlay>` that bypasses it drops the
+init container and both env vars, and Airflow falls back to its own config
+defaults — an `admin` user with a password it generates itself, which no one
+holds.
+
+**An overlay that touches those three `apiServer` keys replaces the wiring
+wholesale.** Helm deep-merges maps but *replaces* lists, so an operator setting
+any of `extraInitContainers`, `extraVolumes`, or `extraVolumeMounts` drops
+DataSpoke's entry from that list rather than appending to it. The failure is
+quiet in exactly the wrong way — a surviving `volumeMount` with no matching
+volume renders cleanly through `helm template` and `helm lint`, and is rejected
+only by the API server at apply time. The prod pre-flight therefore aborts when
+an overlay sets any of the three.
+
+**Only the api-server carries the file.** Airflow calls `init_auth_manager` from
+exactly one place (`api_fastapi/app.py`), so the scheduler, dag-processor, and
+triggerer need neither the init container nor the volume; they reach the metadata
+DB directly and never authenticate through the manager.
+
+**Pre-flight decides which credential is load-bearing — normatively, here.**
+`_check_airflow_credentials_prod` reads the *effective*
+`airflow.config.core.simple_auth_manager_all_admins` — chart values merged with
+the operator overlay — rather than assuming the chart default, because the
+overlay is free to turn it back on. Two rules are **unconditional in both
+branches** and are not what the effective value governs:
+
+- **Presence.** The eleven-key rule of §Prod operator workflow stands unchanged:
+  a `DATASPOKE_AIRFLOW_PASSWORD` that is absent or empty aborts the install
+  regardless of the branch, exactly as every other required key does.
+- **Username shape.** A `DATASPOKE_AIRFLOW_USER` of `admin`, or one outside the
+  allowlist above, aborts in either branch — that account is also DataSpoke's own
+  client identity, so its shape is never irrelevant.
+
+What the effective value governs is the **password value check** layered on top
+of the presence rule:
+
+- **unset or `False`** (the default posture): the password gates every login, so
+  the literal `admin` is a hard error.
+- **explicitly `True`**: the credential pair is not consulted at login, so an
+  `admin` password is no longer an error. This branch warns **unconditionally**,
+  whatever the password happens to be — the exposure is the branch itself, not
+  the credential in it: anyone who can reach `airflow.<domain>` is an Airflow
+  admin. The chart ships no source-range restriction or inbound policy of its own
+  (§Ingress & Network Policy), so that exposure is bounded only by the operator's
+  controller and network posture.
+
+**Credentialed `SimpleAuthManager` is still not a production IdP.** Airflow's own
+docstring states it "should not be used in production". DataSpoke's use of it is
+narrower still — a single account, chosen by this chart rather than imposed by
+Airflow, whose password lives in one file on one pod. It is a real improvement
+over an unauthenticated admin surface, not an authentication system. Operators
+wanting more front the Airflow host with an authenticating proxy: that is neutral
+to DataSpoke, whose own client reaches Airflow over cluster DNS and never
+traverses the ingress. Replacing `core.auth_manager` outright is the sharper
+option and carries a constraint — the replacement must still mint a token for
+`DATASPOKE_AIRFLOW_{USER,PASSWORD}`, or every DataSpoke workflow trigger stops
+working.
 
 ### API RBAC for source-credential Secrets
 

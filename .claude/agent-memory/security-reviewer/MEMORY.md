@@ -28,3 +28,4 @@
 - [/internal exposure model](project_internal_surface_exposure_model.md) — /internal is app-root, not under /api/v1; seed path now in-pod, but chart default still publishes it at `/` with no gate
 - [Ingress ssl-redirect dual spelling](project_ingress_ssl_redirect_dual_spelling.md) — INGRESS_SCHEME is not a proxy for "host terminates TLS"; 7-site emission inventory + verified --set escaping
 - [Prod bootstrap recipe §2](project_prod_bootstrap_recipe_measurements.md) — measured leak sinks (argv/history/temp-file mode); Airflow all_admins makes 2 of 11 keys decorative
+- [Airflow extraEnv tpl injection surface](project_airflow_extraenv_tpl_injection_surface.md) — airflow.extraEnv goes through Helm `tpl`; a `,`/`:` denylist cannot hold, and 3.1.8 ≠ 3.2.0

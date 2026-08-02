@@ -547,14 +547,32 @@ airflow:
       load_examples: "False"
       dag_dir_list_interval: "60"
       # Airflow 3.x built-in SimpleAuthManager (no FAB dependency). With
-      # all_admins=True, the /auth/token endpoint accepts any credentials and
-      # issues a valid JWT with admin role — matches the chart's
-      # secrets.airflow.{user,password} flow without maintaining a
-      # passwords file. Prod operators who want stricter auth should
-      # override this to False and supply simple_auth_manager_users +
-      # a pre-seeded simple_auth_manager_passwords.json file.
+      # all_admins=True, GET /auth/token needs no credential at all — it
+      # returns an anonymous ADMIN JWT unconditionally, and
+      # GET /auth/token/login sets that JWT as an httponly cookie and
+      # redirects into the UI, so reachability alone grants admin. With
+      # all_admins=False (this default), Airflow instead checks the
+      # requester's credential against core.simple_auth_manager_users (a
+      # comma-separated username:role list) and a JSON passwords file named
+      # by core.simple_auth_manager_passwords_file. install.sh's prod-only
+      # helm-upgrade call (_build_airflow_extra_env_file,
+      # _build_airflow_simple_auth_init_container_file) supplies both:
+      # AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS carries
+      # "<DATASPOKE_AIRFLOW_USER>:ADMIN" (the same tier-1 identity the
+      # DataSpoke API's own Airflow client presents), and a prod-only init
+      # container pre-seeds the passwords file with
+      # {"<user>": "<password>"} on a writable emptyDir — SimpleAuthManager
+      # opens that file in mode a+, which crashes api-server startup against
+      # a read-only Secret mount. Neither the passwords-file materialisation
+      # nor the users list is a static key here: both are chart-default MAP
+      # entries Helm would otherwise carry into the dev release too (dev's
+      # own apiServer/config.core overrides do not reset them), rendering an
+      # inert-but-present init container and ConfigMap key there — see
+      # install.sh's docstrings above for the full reasoning. Dev keeps
+      # all_admins=True (values-dev.yaml) for a zero-friction local login.
+      # See spec/feature/HELM_CHART.md §Airflow authentication.
       auth_manager: airflow.api_fastapi.auth.managers.simple.simple_auth_manager.SimpleAuthManager
-      simple_auth_manager_all_admins: "True"
+      simple_auth_manager_all_admins: "False"
     webserver:
       expose_config: "False"
       base_url: http://localhost:8080
@@ -587,16 +605,24 @@ airflow:
       sizeLimit: 2Gi
 
   # SimpleAuthManager replaces FAB; the chart's createUserJob runs
-  # `airflow users create` which was removed from core in 3.x (FAB-only).
-  # With all_admins=True the login endpoint accepts any user, so we skip
-  # this hook entirely.
+  # `airflow users create`, which was removed from core in 3.x (FAB-only) —
+  # SimpleAuthManager needs no such job regardless of all_admins, since it
+  # manages its own users via core.simple_auth_manager_users and a passwords
+  # file (or, under all_admins, none at all). We skip this hook entirely.
   createUserJob:
     enabled: false
 
   # extraEnv is injected at install time via --set-file airflow.extraEnv=<path>
-  # (see install.sh _build_airflow_extra_env_file). This injects
+  # (see install.sh _build_airflow_extra_env_file). This always injects
   # AIRFLOW_CONN_DATASPOKE_API and DATASPOKE_INTERNAL_TOKEN with the correct
-  # resolved secret name for both dev and prod BYO-Secret deployments.
+  # resolved secret name for both dev and prod BYO-Secret deployments; in
+  # prod it additionally injects
+  # AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_{USERS,PASSWORDS_FILE} (see
+  # config.core's own comment above). These arrive as environment variables,
+  # which Airflow's configuration precedence places ABOVE airflow.cfg — an
+  # operator overlay that sets airflow.config.core.simple_auth_manager_users
+  # (rendered into airflow.cfg) has it silently ignored in favor of the
+  # env var this chart already sets.
 
   # Component resources. Airflow 3.x renamed the webserver component to
   # api-server; chart 1.20 reads these from `apiServer.*` when

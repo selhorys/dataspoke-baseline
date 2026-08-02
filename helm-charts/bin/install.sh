@@ -231,6 +231,40 @@ chmod 700 "$INSTALL_TMPDIR"
 trap 'rm -rf "${INSTALL_TMPDIR}"' EXIT
 
 # ---------------------------------------------------------------------------
+# Airflow SimpleAuthManager passwords-file path (prod only)
+# ---------------------------------------------------------------------------
+# Materialised by the prod-only init container
+# (_build_airflow_simple_auth_init_container_file) and read by Airflow itself
+# via AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE
+# (_build_airflow_extra_env_file). Kept as one constant so the writer and the
+# reader of "the same path" cannot drift apart.
+AIRFLOW_SIMPLE_AUTH_PASSWORDS_DIR="/opt/airflow/simple-auth-manager"
+AIRFLOW_SIMPLE_AUTH_PASSWORDS_FILE="${AIRFLOW_SIMPLE_AUTH_PASSWORDS_DIR}/passwords.json"
+
+# DATASPOKE_AIRFLOW_USER's allowlist. This project's house convention for
+# every OTHER interpolated operator string (SECRET_TO_CHECK, namespaces,
+# StorageClass names, --image-tag) is already a positive allowlist rather
+# than a denylist of specific bad characters — this username needs the same
+# treatment for a sharper reason: _build_airflow_extra_env_file composes it
+# into airflow.extraEnv, which the vendored Airflow chart renders through Go
+# template `tpl` (custom_airflow_environment in
+# charts/airflow-1.20.0.tgz's _helpers.yaml, included by every Airflow
+# component's env block), making the username a template-injection sink, not
+# merely a config string. A denylist of literal ',' and ':' does not close
+# that sink: `{{ printf "%c" 58 }}` / `{{ printf "%c" 44 }}` synthesize the
+# denylisted characters inside the template evaluator, a YAML double-quoted
+# escape (e.g. "a\x3aADMIN") reaches ':' without the source string ever
+# containing the literal character, `{{ lookup ... }}` is live under `helm
+# upgrade` and can render an arbitrary cluster Secret the installer's
+# kubeconfig can read into the manifests (and the release's stored history),
+# and a routine trailing newline (common with --from-file / external-secrets
+# / a Vault injector) folds to a space in the rendered env var while the init
+# container's own read of the same Secret key keeps the raw value — splitting
+# what the two writers agree the username is. The allowlist closes all of
+# these by construction instead of enumerating each one.
+AIRFLOW_SIMPLE_AUTH_USERNAME_REGEX='^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+
+# ---------------------------------------------------------------------------
 # Shared helpers (used by both profile branches)
 # ---------------------------------------------------------------------------
 PIDS=()
@@ -988,7 +1022,103 @@ _write_env_var() {
   chmod 600 "$ENV_FILE"
 }
 
-# _check_airflow_credentials_prod <namespace> <secret_name>
+# _resolve_effective_all_admins <chart_values_file> [<overlay_file>]
+# Prints the effective airflow.config.core.simple_auth_manager_all_admins,
+# NORMALIZED to the lowercase literal "true" or "false" — never the raw
+# value — by mirroring Airflow's own boolean coercion
+# (airflow/configuration.py: str(v).strip().lower() tested against a fixed
+# spelling set) rather than a strict `== "True"` comparison. Airflow accepts
+# t/true/1 and f/false/0 case-insensitively and whitespace-trimmed for EVERY
+# boolean config key, so an overlay spelling it "true", "TRUE", "t", or "1"
+# is honoured by Airflow identically to "True" — a caller comparing against
+# the literal string "True" would fail-open on any of those spellings,
+# silently skipping the anonymous-admin disclosure warning
+# _check_airflow_credentials_prod exists to print. Anything outside that
+# spelling set is what Airflow's OWN parser raises AirflowConfigException
+# over and crash-loops every component on, so this hard-errors on it too,
+# before any Secret is touched, rather than letting the chart values pass a
+# pre-flight that then deploys a release that cannot start.
+#
+# The chart default, overridden by the operator overlay's value at the same
+# path when the overlay sets it at all. Same python3+PyYAML dig() pattern as
+# _assert_no_internal_ingress_exposure / _resolve_existing_secret_name above.
+# An overlay is free to set this back to a true-ish value, and
+# _check_airflow_credentials_prod must judge the merged result, not the
+# chart default. Prints "" if the key is absent from both files (not
+# expected in practice — the chart's own values.yaml always sets it — kept
+# as a defensive fallback rather than a hard requirement on that fact).
+_resolve_effective_all_admins() {
+  local chart_values_file="$1" overlay_file="${2:-}"
+  if ! python3 -c "import yaml" 2>/dev/null; then
+    error "python3 with PyYAML is required to resolve the effective simple_auth_manager_all_admins setting. Install: pip install pyyaml"
+  fi
+  python3 - "${chart_values_file}" "${overlay_file}" <<'PYEOF'
+import sys, yaml
+
+CHART_FILE = sys.argv[1]
+OVERLAY_FILE = sys.argv[2] if len(sys.argv) > 2 else ""
+
+TRUE_VALUES = {"t", "true", "1"}
+FALSE_VALUES = {"f", "false", "0"}
+
+
+def fail(msg):
+    print(msg, file=sys.stderr)
+    sys.exit(1)
+
+
+def load_mapping(path, label):
+    with open(path) as f:
+        try:
+            data = yaml.safe_load(f)
+        except yaml.YAMLError as exc:
+            fail(f"Invalid YAML in {label} '{path}': {' '.join(str(exc).split())}")
+    if data is not None and not isinstance(data, dict):
+        fail(f"{label} '{path}' does not parse to a YAML mapping at its top level.")
+    return data or {}
+
+
+def dig(node, *keys):
+    walked = []
+    for key in keys:
+        if node is None:
+            return None
+        if not isinstance(node, dict):
+            fail(f"'{'.'.join(walked)}' must be a mapping, got {type(node).__name__}.")
+        walked.append(key)
+        node = node.get(key)
+    return node
+
+
+chart_data = load_mapping(CHART_FILE, "chart values file")
+value = dig(chart_data, "airflow", "config", "core", "simple_auth_manager_all_admins")
+
+if OVERLAY_FILE:
+    overlay_data = load_mapping(OVERLAY_FILE, "overlay file")
+    overlay_value = dig(overlay_data, "airflow", "config", "core", "simple_auth_manager_all_admins")
+    if overlay_value is not None:
+        value = overlay_value
+
+if value is None:
+    print("")
+else:
+    normalized = str(value).strip().lower()
+    if normalized in TRUE_VALUES:
+        print("true")
+    elif normalized in FALSE_VALUES:
+        print("false")
+    else:
+        fail(
+            f"airflow.config.core.simple_auth_manager_all_admins resolved to {value!r}, which "
+            "Airflow's own boolean parser does not accept (valid spellings: t/true/1 for True, "
+            "f/false/0 for False — case-insensitive, whitespace-trimmed). Airflow raises "
+            "AirflowConfigException and every component crash-loops on this value at startup — "
+            "fix your --values overlay before re-running the install."
+        )
+PYEOF
+}
+
+# _check_airflow_credentials_prod <namespace> <secret_name> <chart_values_file> [<overlay_file>]
 # Validates ALL 11 required keys are present, non-empty, and not equal to known
 # insecure defaults. Also hard-errors if the Secret still carries
 # DATASPOKE_POSTGRES_USER or DATASPOKE_POSTGRES_DB — both relocated to the app
@@ -996,9 +1126,27 @@ _write_env_var() {
 # install.sh-driven repair here: install.sh never mutates an operator-owned
 # Secret in prod, so a lingering key is surfaced as a pre-flight failure with
 # a copy-pasteable removal command instead. Prod profile only.
+#
+# DATASPOKE_AIRFLOW_PASSWORD's PRESENCE stays in the blanket required_keys
+# loop below, unconditionally — the prod-only init container
+# (_build_airflow_simple_auth_init_container_file) renders regardless of
+# simple_auth_manager_all_admins and its secretKeyRef carries no
+# `optional: true`, so an absent key is a kubelet
+# CreateContainerConfigError, not a graceful skip; the prod branch has no
+# `rollout status` wait for Airflow at all before this fix (see §8's
+# addition), so without this presence check a bad Secret would abort here in
+# Phase 1, before anything is mutated, instead of reporting install success
+# over a permanently crash-looping api-server. Only the "admin"-literal
+# rejection and the anonymous-admin disclosure warning are keyed on the
+# EFFECTIVE airflow.config.core.simple_auth_manager_all_admins
+# (<chart_values_file> merged with <overlay_file> via
+# _resolve_effective_all_admins, since an overlay may set it back to a
+# true-ish value), handled in their own branch further down.
 _check_airflow_credentials_prod() {
   local ns="$1"
   local secret_name="$2"
+  local chart_values_file="$3"
+  local overlay_file="${4:-}"
 
   local required_keys=(
     DATASPOKE_POSTGRES_PASSWORD
@@ -1122,18 +1270,60 @@ existing Airflow connections/Variables survives this namespace."
     error "DATASPOKE_JWT_SECRET_KEY is the dev default — operator must set a unique secret."
   fi
 
+  # The 'X' sentinel is stripped back off below: `$(...)` eats trailing
+  # newlines, so without it a username carrying one reaches the allowlist as a
+  # clean value and passes. The init container reads the same key through a
+  # secretKeyRef, which preserves every byte — so the pre-flight must see the
+  # raw value or the two disagree. See _build_airflow_simple_auth_init_container_file.
   local airflow_user
   airflow_user="$(kubectl get secret "${secret_name}" -n "${ns}" \
-    -o jsonpath='{.data.DATASPOKE_AIRFLOW_USER}' | base64 --decode)"
+    -o jsonpath='{.data.DATASPOKE_AIRFLOW_USER}' | base64 --decode; printf 'X')"
+  airflow_user="${airflow_user%X}"
   if [[ "${airflow_user}" == "admin" ]]; then
     error "DATASPOKE_AIRFLOW_USER must not be 'admin' — rename to reduce brute-force exposure."
   fi
+  # Allowlist, not a denylist of ','/':' — see $AIRFLOW_SIMPLE_AUTH_USERNAME_REGEX's
+  # own comment (near INSTALL_TMPDIR above) for why this username is a Helm
+  # `tpl` injection sink and a denylist does not close it.
+  if [[ ! "${airflow_user}" =~ ${AIRFLOW_SIMPLE_AUTH_USERNAME_REGEX} ]]; then
+    error "DATASPOKE_AIRFLOW_USER '${airflow_user}' in Secret '${secret_name}' does not match
+${AIRFLOW_SIMPLE_AUTH_USERNAME_REGEX} — the same allowlist install.sh already applies to
+SECRET_TO_CHECK, namespaces, StorageClass names, and --image-tag. This username is composed into
+airflow.extraEnv, which the vendored Airflow chart renders through Go template \`tpl\`
+(custom_airflow_environment, included by every Airflow component's env block) — a denylist of
+specific characters (',' / ':') is not sufficient in front of a template evaluator: Go template
+escapes (e.g. {{ printf \"%c\" 58 }}), YAML string escapes, and a trailing newline all reach the
+same mis-parse by different routes. Rename it to match the allowlist."
+  fi
+
+  # DATASPOKE_AIRFLOW_PASSWORD's PRESENCE is unconditionally required above
+  # (required_keys). Only the "admin"-literal rejection and the
+  # anonymous-admin disclosure warning are keyed on the EFFECTIVE
+  # simple_auth_manager_all_admins (chart default merged with the operator
+  # overlay) — not the chart's own "False" default, since the overlay is free
+  # to set it back to a true-ish value. See spec/feature/HELM_CHART.md
+  # §Airflow authentication.
+  local effective_all_admins
+  effective_all_admins="$(_resolve_effective_all_admins "${chart_values_file}" "${overlay_file}")"
 
   local airflow_password
   airflow_password="$(kubectl get secret "${secret_name}" -n "${ns}" \
     -o jsonpath='{.data.DATASPOKE_AIRFLOW_PASSWORD}' | base64 --decode)"
-  if [[ -z "${airflow_password}" || "${airflow_password}" == "admin" ]]; then
-    error "DATASPOKE_AIRFLOW_PASSWORD in Secret '${secret_name}' must not be empty or 'admin'."
+
+  if [[ "${effective_all_admins}" == "true" ]]; then
+    warn "airflow.config.core.simple_auth_manager_all_admins resolves to a true-ish value in the
+effective chart values (chart default overridden by your --values overlay) —
+DATASPOKE_AIRFLOW_{USER,PASSWORD} is NOT consulted at Airflow login. Anyone who can reach
+airflow.<domain> is granted an Airflow ADMIN session with no credential at all
+(SimpleAuthManager's GET /auth/token / /auth/token/login). The chart ships no source-range
+restriction of its own (see spec/feature/HELM_CHART.md §Ingress & Network Policy) — restrict this
+host at the network layer if that exposure is not acceptable.
+See spec/feature/HELM_CHART.md §Airflow authentication."
+  elif [[ "${airflow_password}" == "admin" ]]; then
+    error "DATASPOKE_AIRFLOW_PASSWORD in Secret '${secret_name}' must not be 'admin' — it gates every
+Airflow login under the default airflow.config.core.simple_auth_manager_all_admins: \"False\". Set
+a real password, or set that value to a true-ish value (t/true/1) in your --values overlay to
+accept anonymous-admin Airflow access instead (see spec/feature/HELM_CHART.md §Airflow authentication)."
   fi
 
   local google_oauth_secret_val
@@ -1144,11 +1334,40 @@ existing Airflow connections/Variables survives this namespace."
   fi
 }
 
-# _build_airflow_extra_env_file <secret_name>
+# _build_airflow_extra_env_file <namespace> <secret_name> [<emit_simple_auth_vars>]
 # Writes the Airflow extraEnv YAML block (with the resolved secret name) to a
 # temp file and prints its path. Caller is responsible for cleanup.
+#
+# <emit_simple_auth_vars> ("true"/"false", default "false") additionally
+# emits AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS — the literal
+# "<DATASPOKE_AIRFLOW_USER>:ADMIN", read from the Secret and composed here
+# rather than a bare secretKeyRef, since the ":ADMIN" role suffix must be
+# appended and Airflow parses the whole value as a comma-separated
+# username:role list — and AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE,
+# the fixed path the prod-only init container materialises
+# (_build_airflow_simple_auth_init_container_file; $AIRFLOW_SIMPLE_AUTH_PASSWORDS_FILE).
+#
+# The composed value is re-validated against $AIRFLOW_SIMPLE_AUTH_USERNAME_REGEX
+# here too, not just in _check_airflow_credentials_prod's pre-flight: this
+# function is the one place that actually renders the username into
+# airflow.extraEnv, which the vendored Airflow chart evaluates through Go
+# template `tpl` (a defense-in-depth re-assertion at the point of use, in
+# case a future caller ever invokes this helper without having gone through
+# that pre-flight first).
+#
+# The prod call site passes "true"; both dev call sites pass "false" (or omit
+# the argument) — dev's simple_auth_manager_all_admins: "True" never reads
+# either var, and gating them here (rather than unconditionally) keeps the
+# dev chart render byte-identical: this function's caller is the one place
+# all three call sites share, so a profile-blind emission here would leak
+# into dev even though the profile-specific pieces of §Airflow authentication
+# otherwise live entirely in the prod-only helm-upgrade call (see
+# _build_airflow_simple_auth_init_container_file's own docstring for why that
+# init container/volume similarly cannot live in values.yaml).
 _build_airflow_extra_env_file() {
-  local secret_name="$1"
+  local ns="$1"
+  local secret_name="$2"
+  local emit_simple_auth_vars="${3:-false}"
   local tmp_env_file
   tmp_env_file="$(mktemp "${INSTALL_TMPDIR}/airflow-extra-env.XXXX.yaml")"
   cat > "${tmp_env_file}" <<EOF
@@ -1160,7 +1379,195 @@ _build_airflow_extra_env_file() {
       name: ${secret_name}
       key: DATASPOKE_INTERNAL_TOKEN
 EOF
+  if [[ "${emit_simple_auth_vars}" == "true" ]]; then
+    # 'X' sentinel: preserve trailing bytes through `$(...)` so the allowlist
+    # judges the raw secret value, not a newline-stripped copy of it.
+    local airflow_user
+    airflow_user="$(kubectl get secret "${secret_name}" -n "${ns}" \
+      -o jsonpath='{.data.DATASPOKE_AIRFLOW_USER}' | base64 --decode; printf 'X')"
+    airflow_user="${airflow_user%X}"
+    if [[ ! "${airflow_user}" =~ ${AIRFLOW_SIMPLE_AUTH_USERNAME_REGEX} ]]; then
+      error "DATASPOKE_AIRFLOW_USER '${airflow_user}' in Secret '${secret_name}' does not match
+${AIRFLOW_SIMPLE_AUTH_USERNAME_REGEX} — re-asserted here because this function is the shared path
+that composes it into airflow.extraEnv, a Helm \`tpl\` injection sink (see
+\$AIRFLOW_SIMPLE_AUTH_USERNAME_REGEX's own comment). _check_airflow_credentials_prod should have
+caught this in pre-flight; re-run the install after fixing the Secret."
+    fi
+    cat >> "${tmp_env_file}" <<EOF
+- name: AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS
+  value: "${airflow_user}:ADMIN"
+- name: AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE
+  value: "${AIRFLOW_SIMPLE_AUTH_PASSWORDS_FILE}"
+EOF
+  fi
   printf '%s' "${tmp_env_file}"
+}
+
+# _build_airflow_simple_auth_init_container_file <namespace> <secret_name>
+# Writes a prod-only values fragment
+# (airflow.apiServer.{podAnnotations,extraInitContainers,extraVolumes,extraVolumeMounts})
+# to a temp file and prints its path. Caller is responsible for cleanup.
+#
+# Kept out of values.yaml deliberately. Helm always loads a chart's own
+# values.yaml as the base layer, even when only values-dev.yaml is passed via
+# -f — and values-dev.yaml's own `airflow.apiServer:` map does not reset
+# extraInitContainers/extraVolumes/extraVolumeMounts (it only overrides
+# `resources`), so a static default under those keys in values.yaml would be
+# inherited by the dev release too via Helm's map-deep-merge (the same
+# mechanism already carries apiServer.podAnnotations/podDisruptionBudget into
+# dev's render today). That would add an (inert, since dev's
+# simple_auth_manager_all_admins: "True" never opens the passwords file) init
+# container and emptyDir to dev's Airflow api-server Deployment — moving
+# dev's rendered output for no behavioural gain. Passing this as an
+# additional -f on the prod-only helm-upgrade call keeps dev's chart render
+# untouched.
+#
+# **This -f layer's own hazard**: it sits ahead of the operator's --values
+# overlay in VALUES_ARGS specifically so an overlay CAN extend these same
+# three list-typed fields for an unrelated reason (a sidecar, a debug
+# volume). But Helm deep-merges MAPS and REPLACES LISTS wholesale — an
+# overlay that sets ANY of airflow.apiServer.{extraInitContainers,
+# extraVolumes,extraVolumeMounts} at all silently drops this entire init
+# container/volume/mount instead of appending to them, and neither `helm
+# template` nor `helm lint` catches it (both still exit 0 against the
+# resulting broken pod template). _assert_no_airflow_simple_auth_overlay_conflict
+# (pre-flight, called before this function) is the guard against that —
+# aborting instead of letting an overlay silently disable this issue's own
+# fix. See also helm-charts/README.md's operator-facing note on this hazard.
+#
+# The init container materialises the single-entry mapping
+# `{"<user>": "<password>"}` into a memory-backed emptyDir mounted at
+# $AIRFLOW_SIMPLE_AUTH_PASSWORDS_DIR — SimpleAuthManager.init() opens
+# core.simple_auth_manager_passwords_file with mode a+ and catches only
+# BlockingIOError, so a read-only Secret mount would raise an uncaught
+# OSError and crash api-server startup; an emptyDir mounted writable avoids
+# that. `medium: Memory` keeps the plaintext password off the node
+# filesystem — this volume holds nothing but that one file. The password
+# arrives via a secretKeyRef env var, never in argv (a command-line password
+# is visible in `ps auxww` and the pod spec) — the `python3 -c` argument is
+# only the script source, which reads the value from os.environ at run
+# time. json.dumps over os.environ (rather than a hand-built string) is what
+# lets an arbitrary BYO password escape correctly. The script opens the file
+# via os.open with an explicit 0o600 mode rather than the builtin open(): the
+# `command:` override replaces the image's own ENTRYPOINT, so nothing sets a
+# restrictive umask first, and a bare open(path, "w") would land on the
+# runtime default (0o644, e.g. via umask 0o022) — world- and group-readable
+# in an emptyDir mounted into every container of this pod, including
+# wait-for-airflow-migrations (the chart's own apiServer.extraVolumeMounts
+# hook applies to it too). Pre-seeding this way — rather than letting Airflow
+# generate one — is what pins the password to the operator's value:
+# SimpleAuthManager generates a random password only for a username absent
+# from the file and preserves an entry already present.
+#
+# Resources/securityContext are set explicitly to match this pod's other two
+# containers (wait-for-airflow-migrations, api-server) rather than inheriting
+# nothing: an unsized init container is exactly the invariant this chart's
+# own render-walk enforces everywhere else (see values.yaml's resource
+# comments), and on GKE Autopilot an unsized container gets its own injected
+# defaults (0.5 vCPU / 2Gi memory at the time of writing) folded into the
+# pod's max(largest-init, sum-of-app) sizing — multiples of what
+# airflow.apiServer.resources itself asks for. allowPrivilegeEscalation:
+# false / capabilities.drop: [ALL] / readOnlyRootFilesystem: true (this
+# script only ever writes to the mounted volume, never the root fs) mirrors
+# the chart's own containerSecurityContext default, so a
+# pod-security.kubernetes.io/enforce: restricted namespace admits this
+# container the same as its siblings.
+#
+# A hash of the effective {user,password} pair is stamped as a pod
+# annotation (podAnnotations, deep-merged with the chart's own
+# cluster-autoscaler safe-to-evict annotation already at that map key) so a
+# credential rotation rolls the api-server pod template naturally through
+# Helm's own mechanism. Without this, rotating ONLY the password leaves the
+# pod template byte-identical (the username, unlike the password, IS baked
+# into the manifest today as a literal in AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS,
+# so rotating it already rolls the pod) — `helm upgrade` creates no new
+# ReplicaSet, the api-server keeps running against its OLD passwords file,
+# and the API's own Airflow client (which DOES pick up the new password
+# immediately, since it reads the Secret at request time) presents a
+# credential Airflow's stale file no longer recognises: a silent, permanent
+# 401 on every workflow trigger. This was a no-op under all_admins: "True"
+# (no credential was ever checked), so it is a newly load-bearing rotation
+# path this issue introduces.
+_build_airflow_simple_auth_init_container_file() {
+  local ns="$1"
+  local secret_name="$2"
+  local tmp_values_file
+  tmp_values_file="$(mktemp "${INSTALL_TMPDIR}/airflow-simple-auth-init.XXXX.yaml")"
+
+  # 'X' sentinel on both reads: the annotation must hash the same bytes the
+  # init container receives through its secretKeyRefs. `$(...)` strips trailing
+  # newlines, so hashing the stripped copy would leave the annotation unchanged
+  # across a rotation that only altered trailing whitespace — and the pod would
+  # not roll onto the new credential.
+  local airflow_user airflow_password credentials_hash
+  airflow_user="$(kubectl get secret "${secret_name}" -n "${ns}" \
+    -o jsonpath='{.data.DATASPOKE_AIRFLOW_USER}' | base64 --decode; printf 'X')"
+  airflow_user="${airflow_user%X}"
+  airflow_password="$(kubectl get secret "${secret_name}" -n "${ns}" \
+    -o jsonpath='{.data.DATASPOKE_AIRFLOW_PASSWORD}' | base64 --decode; printf 'X')"
+  airflow_password="${airflow_password%X}"
+  credentials_hash="$(printf '%s:%s' "${airflow_user}" "${airflow_password}" | openssl dgst -sha256 -r | awk '{print $1}')"
+
+  cat > "${tmp_values_file}" <<EOF
+airflow:
+  apiServer:
+    podAnnotations:
+      dataspoke.io/simple-auth-credentials-hash: "${credentials_hash}"
+    extraInitContainers:
+      - name: simple-auth-manager-passwords
+        image: "${DATASPOKE_KUBE_IMAGE_REGISTRY}/airflow:${IMAGE_TAG}"
+        imagePullPolicy: "{{ .Values.images.airflow.pullPolicy }}"
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+              - ALL
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+            ephemeral-storage: 64Mi
+          limits:
+            cpu: 50m
+            memory: 64Mi
+            ephemeral-storage: 64Mi
+        env:
+          - name: DATASPOKE_AIRFLOW_USER
+            valueFrom:
+              secretKeyRef:
+                name: ${secret_name}
+                key: DATASPOKE_AIRFLOW_USER
+          - name: DATASPOKE_AIRFLOW_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: ${secret_name}
+                key: DATASPOKE_AIRFLOW_PASSWORD
+        command: ["python3", "-c"]
+        args:
+          - |
+            import json, os
+
+            path = "${AIRFLOW_SIMPLE_AUTH_PASSWORDS_FILE}"
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as f:
+                json.dump(
+                    {os.environ["DATASPOKE_AIRFLOW_USER"]: os.environ["DATASPOKE_AIRFLOW_PASSWORD"]},
+                    f,
+                )
+        volumeMounts:
+          - name: simple-auth-manager-passwords
+            mountPath: ${AIRFLOW_SIMPLE_AUTH_PASSWORDS_DIR}
+    extraVolumes:
+      - name: simple-auth-manager-passwords
+        emptyDir:
+          medium: Memory
+          sizeLimit: 1Mi
+    extraVolumeMounts:
+      - name: simple-auth-manager-passwords
+        mountPath: ${AIRFLOW_SIMPLE_AUTH_PASSWORDS_DIR}
+EOF
+  printf '%s' "${tmp_values_file}"
 }
 
 # _resolve_existing_secret_name [<overlay_file>]
@@ -1476,6 +1883,96 @@ PYEOF
   rm -f "${offenders_file}"
 }
 
+# _assert_no_airflow_simple_auth_overlay_conflict [<overlay_file>]
+# Prod-only guard: Helm deep-merges MAPS but REPLACES LIST-typed values
+# wholesale, never merges them. install.sh's own -f layer for the Airflow
+# SimpleAuthManager passwords mechanism
+# (_build_airflow_simple_auth_init_container_file) sets
+# airflow.apiServer.{extraInitContainers,extraVolumes,extraVolumeMounts} —
+# and sits ahead of the operator's --values overlay in VALUES_ARGS
+# specifically so an overlay CAN extend those same fields for an unrelated
+# reason (a sidecar, a debug volume). But an overlay that sets ANY of the
+# three at all does not append to this release's list — it silently
+# REPLACES it, deleting the passwords-file init container/volume/mount with
+# no error from either `helm template` or `helm lint` (both still exit 0
+# against the resulting pod template, which mounts a path the passwords-file
+# env var still names but no container ever writes). Abort here instead of
+# letting an overlay silently disable this issue's own fix — see
+# helm-charts/README.md for the operator-facing workaround (re-declare the
+# simple-auth-manager-passwords entry alongside whatever else the overlay
+# adds to these lists).
+_assert_no_airflow_simple_auth_overlay_conflict() {
+  local overlay_file="${1:-}"
+  if [[ -z "${overlay_file}" || ! -f "${overlay_file}" ]]; then
+    return 0
+  fi
+  if ! python3 -c "import yaml" 2>/dev/null; then
+    error "python3 with PyYAML is required to check the --values overlay for an Airflow apiServer list conflict. Install: pip install pyyaml"
+  fi
+  local offenders_file
+  offenders_file="$(mktemp)"
+  if ! python3 - "${overlay_file}" > "${offenders_file}" <<'PYEOF'
+import sys, yaml
+
+OVERLAY_FILE = sys.argv[1]
+
+
+def fail(msg):
+    print(msg, file=sys.stderr)
+    sys.exit(1)
+
+
+def load_mapping(path, label):
+    with open(path) as f:
+        try:
+            data = yaml.safe_load(f)
+        except yaml.YAMLError as exc:
+            fail(f"Invalid YAML in {label} '{path}': {' '.join(str(exc).split())}")
+    if data is not None and not isinstance(data, dict):
+        fail(f"{label} '{path}' does not parse to a YAML mapping at its top level.")
+    return data or {}
+
+
+def dig(node, *keys):
+    walked = []
+    for key in keys:
+        if node is None:
+            return None
+        if not isinstance(node, dict):
+            fail(f"'{'.'.join(walked)}' must be a mapping, got {type(node).__name__}.")
+        walked.append(key)
+        node = node.get(key)
+    return node
+
+
+data = load_mapping(OVERLAY_FILE, "overlay file")
+for field in ("extraInitContainers", "extraVolumes", "extraVolumeMounts"):
+    if dig(data, "airflow", "apiServer", field) is not None:
+        print(field)
+PYEOF
+  then
+    rm -f "${offenders_file}"
+    error "Could not parse the --values overlay for an Airflow apiServer list conflict (see above)."
+  fi
+
+  if [[ -s "${offenders_file}" ]]; then
+    local offenders offender_list
+    offenders="$(cat "${offenders_file}")"
+    rm -f "${offenders_file}"
+    offender_list="$(echo "${offenders}" | tr '\n' ' ' | sed 's/ *$//')"
+    error "Your --values overlay sets airflow.apiServer.{${offender_list}}. Helm replaces LIST-typed
+values wholesale rather than merging them, and install.sh's own -f layer for the Airflow
+SimpleAuthManager passwords-file mechanism (the init container, its emptyDir, and its
+volumeMount — see spec/feature/HELM_CHART.md §Airflow authentication) sets exactly these fields.
+Your overlay would silently delete them, leaving the api-server pointed at a passwords file no
+container ever writes, with no error from helm template/lint. Re-declare the
+simple-auth-manager-passwords entry alongside whatever else you are adding to these lists (see
+helm-charts/README.md's note on this hazard), or move your addition to a field this release does
+not already use."
+  fi
+  rm -f "${offenders_file}"
+}
+
 # _api_image_helm_set_args
 # Prints the --set flags pinning every workload that runs the API image: the API
 # itself, and the event-consumer, which runs the same image under a `command:`
@@ -1692,7 +2189,7 @@ _helm_upgrade_dataspoke_dev() {
   _derive_airflow_metadata_secret "${ns}" "dataspoke-secrets"
 
   local extra_env_file
-  extra_env_file="$(_build_airflow_extra_env_file "dataspoke-secrets")"
+  extra_env_file="$(_build_airflow_extra_env_file "${ns}" "dataspoke-secrets" "false")"
   local dev_domain="${DATASPOKE_KUBE_INGRESS_DOMAIN:-dev.dataspoke.example.com}"
   local scheme
   scheme="$(ingress_scheme)"
@@ -1974,7 +2471,7 @@ if [[ "$PROFILE" == "dev" ]]; then
     # `ingress.apiServer.ingressClassName` — the wrong spelling is silently
     # dropped and GKE falls back to provisioning a GCE LoadBalancer.
     INGRESS_CLS="$(ingress_class)"
-    local_extra_env_file="$(_build_airflow_extra_env_file "dataspoke-secrets")"
+    local_extra_env_file="$(_build_airflow_extra_env_file "${NS}" "dataspoke-secrets" "false")"
     frontend_fast_args=()
     while IFS= read -r _farg; do
       frontend_fast_args+=("${_farg}")
@@ -2470,6 +2967,12 @@ elif [[ "$PROFILE" == "prod" ]]; then
   _assert_no_internal_ingress_exposure "$CHART_DIR/values.yaml" "${EXTRA_VALUES:-}"
   info "API ingress paths do not publish /internal/*."
 
+  # Refuse an overlay that would silently replace the Airflow SimpleAuthManager
+  # passwords-file init container/volume/mount (fail fast). See
+  # _assert_no_airflow_simple_auth_overlay_conflict's docstring above.
+  _assert_no_airflow_simple_auth_overlay_conflict "${EXTRA_VALUES:-}"
+  info "--values overlay does not conflict with the Airflow SimpleAuthManager passwords-file mechanism."
+
   # Verify every StorageClass the operator's overlay pins exists AND, where
   # it names an out-of-tree CSI provisioner, that the matching CSIDriver is
   # actually registered (fail fast).
@@ -2670,8 +3173,11 @@ elif [[ "$PROFILE" == "prod" ]]; then
   # Verify operator-pre-created Secret (fail fast; never auto-generate in prod)
   _ensure_dataspoke_secrets "${NS}" "prod" "${SECRET_TO_CHECK}"
 
-  # Validate ALL required keys are present and not insecure defaults
-  _check_airflow_credentials_prod "${NS}" "${SECRET_TO_CHECK}"
+  # Validate ALL required keys are present and not insecure defaults. Reads
+  # the effective simple_auth_manager_all_admins from $CHART_DIR/values.yaml
+  # merged with the operator's --values overlay (${EXTRA_VALUES}), same
+  # inputs as _assert_no_internal_ingress_exposure above.
+  _check_airflow_credentials_prod "${NS}" "${SECRET_TO_CHECK}" "$CHART_DIR/values.yaml" "${EXTRA_VALUES:-}"
 
   # Compare the Fernet key before any other Secret in this run is mutated: on
   # a mismatch it aborts non-mutating, so running it here keeps the
@@ -2706,6 +3212,24 @@ elif [[ "$PROFILE" == "prod" ]]; then
   step 3 3 "umbrella chart (prod)"
 
   VALUES_ARGS=(-f "$CHART_DIR/values.yaml")
+
+  # Prod-only Airflow SimpleAuthManager passwords-file materialisation (init
+  # container + emptyDir + volumeMount) — see
+  # _build_airflow_simple_auth_init_container_file's docstring for why this
+  # rides on its own -f layer instead of a static values.yaml key. Placed
+  # ahead of the operator's own --values overlay in VALUES_ARGS so an overlay
+  # CAN extend airflow.apiServer.extraInitContainers/extraVolumes/
+  # extraVolumeMounts for an unrelated reason — but Helm replaces LIST values
+  # wholesale rather than merging them, so an overlay that sets any of the
+  # three at all silently deletes this mechanism instead of extending it;
+  # _assert_no_airflow_simple_auth_overlay_conflict (pre-flight, above) is
+  # the guard against that, not this ordering. Rendered unconditionally in
+  # prod — it is inert (never opened) when the effective
+  # simple_auth_manager_all_admins is "true", so no branch on
+  # _resolve_effective_all_admins is needed here.
+  airflow_simple_auth_values_file="$(_build_airflow_simple_auth_init_container_file "${NS}" "${SECRET_TO_CHECK}")"
+  VALUES_ARGS+=(-f "${airflow_simple_auth_values_file}")
+
   if [[ -n "$EXTRA_VALUES" ]]; then
     if [[ ! -f "$EXTRA_VALUES" ]]; then
       error "Extra values file not found: $EXTRA_VALUES"
@@ -2725,8 +3249,11 @@ elif [[ "$PROFILE" == "prod" ]]; then
   info "Building Helm chart dependencies..."
   _build_chart_deps "$CHART_DIR"
 
-  # Build resolved extraEnv referencing the operator secret name
-  local_extra_env_file="$(_build_airflow_extra_env_file "${SECRET_TO_CHECK}")"
+  # Build resolved extraEnv referencing the operator secret name. "true":
+  # prod also carries AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_{USERS,PASSWORDS_FILE}
+  # (§Airflow authentication) — harmless when the effective all_admins is
+  # "True" (SimpleAuthManager never reads either), load-bearing otherwise.
+  local_extra_env_file="$(_build_airflow_extra_env_file "${NS}" "${SECRET_TO_CHECK}" "true")"
 
   info "Installing DataSpoke umbrella chart (prod)..."
 
@@ -2877,6 +3404,20 @@ elif [[ "$PROFILE" == "prod" ]]; then
     _rollout_restart_workload "${NS}" "dataspoke-api"
     _rollout_restart_workload "${NS}" "dataspoke-event-consumer"
   fi
+  # Wait for the Airflow api-server BEFORE dataspoke-api — the prod branch
+  # had no rollout wait for any Airflow workload at all before this fix,
+  # so a broken simple-auth-manager-passwords init container (e.g. a
+  # missing/rejected credential the pre-flight above should have already
+  # caught, or a CreateContainerConfigError from a Secret race) reported
+  # install success over a permanently crash-looping Airflow. This is the
+  # same wait dev already runs (see "Waiting for Airflow api-server to
+  # become ready" above).
+  info "Waiting for Airflow api-server to become ready..."
+  kubectl rollout status deployment/dataspoke-airflow-api-server -n "${NS}" --timeout=5m \
+    || error "dataspoke-airflow-api-server did not become ready after the upgrade — check pod logs
+(kubectl logs -n '${NS}' deploy/dataspoke-airflow-api-server), in particular the
+simple-auth-manager-passwords init container if airflow.config.core.simple_auth_manager_all_admins
+is not a true-ish value: kubectl logs -n '${NS}' deploy/dataspoke-airflow-api-server -c simple-auth-manager-passwords"
   kubectl rollout status deployment/dataspoke-api -n "${NS}" --timeout=5m \
     || error "dataspoke-api did not become ready after the upgrade — check pod logs (kubectl logs -n '${NS}' deploy/dataspoke-api)."
   # event-consumer.enabled defaults to false in prod (dataspoke/values.yaml)

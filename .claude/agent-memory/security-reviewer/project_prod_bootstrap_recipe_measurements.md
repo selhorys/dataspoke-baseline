@@ -34,17 +34,18 @@ do not re-derive them, but do re-check if the block's shape changes.
   rejects it); `base64.urlsafe_b64encode(secrets.token_bytes(32))` → 44 chars, matches
   `^[A-Za-z0-9_-]{43}=$`, decodes to exactly 32.
 
-**Airflow's two keys are decorative under the chart default.** `values.yaml`
-`core.simple_auth_manager_all_admins: "True"` (prod default, apiServer ingress enabled
-on `airflow.<domain>`) means — verified in the pinned airflow package —
-`simple/services/login.py::create_token` early-returns an **anonymous ADMIN JWT**
-before ever looking at the body, and `simple/middleware.py::SimpleAllAdminMiddleware`
-appends an admin `Authorization` header to *every* request. So anyone who reaches
-`airflow.<domain>` is an Airflow admin; `DATASPOKE_AIRFLOW_USER`/`_PASSWORD` entropy
-protects nothing, and the pre-flight's `!= admin` gate ("reduce brute-force exposure")
-guards a login that does not exist. Any §2 text presenting those two as a protective
-credential pair is missing a disclosure. `values.yaml`'s own comment already states
-this — the runbook does not.
+**Airflow's two keys WERE decorative — no longer, as of the issue #138 change.**
+`dataspoke/values.yaml` now ships `core.simple_auth_manager_all_admins: "False"`
+for prod (dev's `values-dev.yaml` still pins `"True"`), and install.sh seeds a
+passwords file via a prod-only api-server init container, so
+`DATASPOKE_AIRFLOW_{USER,PASSWORD}` are consulted at every Airflow login. The
+old anonymous-admin reading still applies to **any overlay that sets all_admins
+back on** — and to the True-equivalent spellings the pre-flight fails to
+recognise. See [[airflow-extraenv-tpl-injection-surface]] for the measured
+3.1.8 login behaviour, the accepted boolean spellings, and the template-
+injection path that can re-enable the anonymous route from the Secret itself.
+NOTE: the 3.2.0 `SimpleAllAdminMiddleware` referenced in the old text does not
+exist at the pinned 3.1.8 — read the 3.1.8 wheel, not the uv cache.
 
 **The Fernet scenario with no code gate:** fresh credentials Secret + retained Postgres
 PVC. `_check_airflow_credentials_prod`'s retained-PVC WARNING lives only in the

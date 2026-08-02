@@ -192,9 +192,12 @@ airflow:
       dags_folder: /opt/airflow/dags
       load_examples: "False"
       dag_dir_list_interval: "60"
-      # Airflow 3.x built-in SimpleAuthManager (no FAB). all_admins=True makes
-      # /auth/token accept any credentials and issue a JWT with admin role —
-      # fine for dev.
+      # Airflow 3.x built-in SimpleAuthManager (no FAB). all_admins=True means
+      # GET /auth/token needs no credential at all — it issues an anonymous
+      # ADMIN JWT unconditionally, and GET /auth/token/login sets that JWT as
+      # a cookie and redirects into the UI — fine for a zero-friction local
+      # dev loop; prod defaults to the credentialed path instead (see
+      # dataspoke/values.yaml's config.core comment).
       auth_manager: airflow.api_fastapi.auth.managers.simple.simple_auth_manager.SimpleAuthManager
       simple_auth_manager_all_admins: "True"
     webserver:

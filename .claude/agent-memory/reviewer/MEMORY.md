@@ -59,3 +59,5 @@
 - [Dropped pre-flight reroutes status](feedback_dropped_preflight_reroutes_status.md) — blank token now returns 503, landing in the "Postgres is down" branch; flat vs nested error_code envelopes
 - [Ingress path list vs app-shell](project_ingress_path_list_vs_app_shell.md) — narrowing to /api/v1+/health+/ready kills the UI's "API docs" link; /openapi.json does NOT expose /internal
 - [StorageClass provisioner vs CSIDriver](project_storageclass_provisioner_vs_csidriver.md) — external provisioners carry `/` and register no CSIDriver; in-tree exemption skips CSI-migrated EKS gp2
+- [Value crosses parser boundaries](feedback_value_crosses_parser_boundaries.md) — PyYAML vs Helm vs app coercion disagree; quoted "true" misses `== "True"`, trailing \n folds to a space
+- [Airflow prod auth wiring](project_airflow_prod_auth_wiring.md) — 3.1.8 SimpleAuthManager verified facts; prod install has NO airflow api-server rollout wait (dev does)

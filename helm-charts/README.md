@@ -282,8 +282,46 @@ uniqueness beyond that are on you:
 |-----|------|-------------------------------|
 | `DATASPOKE_POSTGRES_PASSWORD`, `DATASPOKE_REDIS_PASSWORD`, `DATASPOKE_AIRFLOW_PASSWORD`, `DATASPOKE_JWT_SECRET_KEY`, `DATASPOKE_OAUTH_STATE_SECRET`, `DATASPOKE_INTERNAL_TOKEN`, `DATASPOKE_AIRFLOW_WEBSERVER_SECRET_KEY`, `DATASPOKE_AIRFLOW_JWT_SECRET` | high-entropy random | `openssl rand -hex 32` |
 | `DATASPOKE_AIRFLOW_FERNET_KEY` | high-entropy random, fixed shape | URL-safe base64 of 32 raw bytes — Fernet rejects hex |
-| `DATASPOKE_AIRFLOW_USER` | randomized literal, not a secret | `dataspoke-admin-<8 hex chars>`; see the pre-flight table below for the one rejected value |
+| `DATASPOKE_AIRFLOW_USER` | randomized literal, not a secret | `dataspoke-admin-<8 hex chars>`; see the pre-flight table below for the two rejection rules |
 | `DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET` | externally issued | the one value you must supply — read via the prompt above |
+
+**`DATASPOKE_AIRFLOW_PASSWORD` is genuinely consulted, under this chart's
+default.** Airflow's built-in `SimpleAuthManager` checks it — alongside
+`DATASPOKE_AIRFLOW_USER` — at every login, because
+`airflow.config.core.simple_auth_manager_all_admins` defaults to `"False"`.
+This key's presence is required unconditionally (like every other key in
+this Secret) — the prod-only init container that materialises the
+passwords file renders regardless of `all_admins`, and a missing key crashes
+api-server startup rather than being skipped — but the pre-flight's rejection
+of the literal `admin` value is conditional: it only fires when the
+effective `simple_auth_manager_all_admins` is unset or a false-ish value
+(this chart's default). An operator overlay that sets
+`simple_auth_manager_all_admins` to a true-ish value (`t`/`true`/`1`,
+case-insensitively — Airflow's own boolean parser, which this pre-flight
+mirrors) instead makes both `DATASPOKE_AIRFLOW_{USER,PASSWORD}` dead weight
+at login: `GET /auth/token` issues an anonymous ADMIN JWT to any caller with
+no credential at all, and `GET /auth/token/login` sets that JWT as an
+httponly cookie and redirects into the Airflow UI — reachability alone
+grants Airflow admin. The chart ships no source-range restriction of its
+own, so that overlay is only safe when the operator restricts
+`airflow.<domain>` at the network layer instead. The pre-flight cannot fail
+a deliberate operator choice, so it only warns in that case, naming the
+exposure. Airflow's own `SimpleAuthManager` docstring states it "should not
+be used in production" — under either posture it has no session revocation,
+no password policy, no lockout, and (under the default) one file-backed
+account; an operator wanting a real production IdP fronts the Airflow host
+with an authenticating proxy, or points `airflow.config.core.auth_manager`
+at a manager backed by their own IdP. See `spec/feature/HELM_CHART.md`
+§Airflow authentication.
+
+**The username and password arrive as environment variables, which outrank
+`airflow.cfg`.** `install.sh` injects
+`AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_{USERS,PASSWORDS_FILE}` directly as pod
+env vars (Airflow's own configuration precedence places these above the
+rendered `airflow.cfg`), so an overlay that instead sets
+`airflow.config.core.simple_auth_manager_users` has that value silently
+ignored in favor of the env var this chart already sets from
+`DATASPOKE_AIRFLOW_USER`.
 
 `DATASPOKE_POSTGRES_USER` and `DATASPOKE_POSTGRES_DB` are **not** in this
 Secret. Both are non-secret and live in the app ConfigMap instead
@@ -338,11 +376,11 @@ exist by this point: `ensure_namespace` runs ahead of these checks, per
 | CSIDriver | a pinned StorageClass names a **bare** out-of-tree CSI provisioner (e.g. `ebs.csi.aws.com`) with no matching `CSIDriver` registered — a CSI-migrated in-tree name or an external non-CSI (`vendor/name`) provisioner only warns instead; see `helm-charts/prod-prereq/README.md` §StorageClass for the full provisioner-shape table |
 | CSIDriver RBAC | the install identity lacks `get` on `csidrivers.storage.k8s.io` (a `Forbidden` reply) — fatal/warn split by the same provisioner shape as the row above; see the same section |
 | Secret | missing entirely |
-| All 11 keys | any of the 11 keys above is absent |
+| All 11 keys | any of the 11 keys is absent, **including** `DATASPOKE_AIRFLOW_PASSWORD` — its presence is unconditional; only the separate `admin`-literal rejection below is conditional |
 | `DATASPOKE_POSTGRES_USER` / `DATASPOKE_POSTGRES_DB` | either key is still present in the Secret — both moved to the app ConfigMap (`config.postgres.*`); see the migration note above |
 | `DATASPOKE_JWT_SECRET_KEY` | equals the dev default `changeme-dev-secret-do-not-use-in-prod` |
-| `DATASPOKE_AIRFLOW_USER` | equals `admin` |
-| `DATASPOKE_AIRFLOW_PASSWORD` | empty, or equals `admin` |
+| `DATASPOKE_AIRFLOW_USER` | equals `admin`, **or** does not match the allowlist `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$` (the same convention as `SECRET_TO_CHECK`, namespaces, StorageClass names, and `--image-tag`). This username is composed into `airflow.extraEnv`, which the vendored Airflow chart renders through Go template `tpl` — an allowlist, not a denylist of `,`/`:`, because a denylist alone does not close a template-injection sink (a Go template escape, a YAML string escape, or a trailing newline all reach the same mis-parse by a different route) |
+| `DATASPOKE_AIRFLOW_PASSWORD` | equals `admin` — **only when the effective `airflow.config.core.simple_auth_manager_all_admins` (chart default merged with your `--values` overlay, normalized the same way Airflow's own boolean parser does) is unset or a false-ish value** (this chart's default). An overlay value of `t`/`true`/`1` (case-insensitively) downgrades this to a warning instead — the credential pair is not consulted at all under that overlay; see the callout above. (Presence/non-emptiness is unconditional — see "All 11 keys" above.) |
 | `DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET` | starts with `placeholder-` |
 | `DATASPOKE_AIRFLOW_FERNET_KEY` shape | not URL-safe base64 of exactly 32 raw bytes (43 chars + `=`) — catches an `openssl rand -hex 32` value pasted in by mistake |
 | `--image-tag` | not passed explicitly (prod refuses the mutable `:dev` tag) |
@@ -399,6 +437,23 @@ beyond the already-public surface (the internal routers are excluded from the
 schema), but the frontend's "API docs" nav link points at
 `${apiBaseUrl}/redoc` — removing either path is a valid hardening step, at
 the cost of that link 404ing.
+
+**The same list-replace semantics apply to `airflow.apiServer.{extraInitContainers,
+extraVolumes,extraVolumeMounts}` — and here they can silently disable this
+chart's own security fix.** `install.sh` injects the Airflow SimpleAuthManager
+passwords-file mechanism (an init container, its memory-backed `emptyDir`,
+and the matching volume mount — see the `DATASPOKE_AIRFLOW_PASSWORD` callout
+above) onto exactly these three fields, on its own `-f` layer ahead of your
+overlay. If your overlay also sets any of the three — to add an unrelated
+sidecar or debug volume, say — Helm replaces the whole list rather than
+merging it, deleting the passwords-file mechanism with **no error** from
+either `helm template` or `helm lint` (both still exit 0 against the
+resulting pod template). `install.sh` now refuses to install in that case
+(a prod-only pre-flight check), so the fix is: re-declare the
+`simple-auth-manager-passwords` init container/volume/volumeMount alongside
+whatever else your overlay adds to these same three lists, rather than
+setting them independently. See `spec/feature/HELM_CHART.md`
+§Airflow authentication for the exact shape those three entries need.
 
 #### 4. Install
 
