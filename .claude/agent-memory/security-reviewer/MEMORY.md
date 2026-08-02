@@ -24,3 +24,4 @@
 - [OAuth 302-only failure surface](project_oauth_302_only_failure_surface.md) — bypass/decoy/CRLF/log-forging all closed & measured; 3 survive: deployment-wide 10/min bucket, hide_parameters, uvicorn access log
 - [Image-digest stamping](project_image_digest_stamping_attestation.md) — resolve-or-abort pinning; r5 pulled digest resolution out of the Airflow-key window on all 4 paths, but dev still writes keys before the Fernet abort
 - [Credential URI escaping boundary](project_credential_uri_escaping_boundary.md) — 4 src DSN sites fixed; 6 raw f-strings remain in tests/; 2 controls never reach an existing install
+- [Postgres identity → ConfigMap](project_postgres_identity_configmap_relocation.md) — envFrom LAST source wins, so a leftover Secret key shadows the ConfigMap; dev patches, prod rejects

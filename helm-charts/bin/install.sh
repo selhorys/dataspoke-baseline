@@ -290,19 +290,93 @@ _build_chart_deps() {
 # Secret management helpers
 # ---------------------------------------------------------------------------
 
+# _resolve_fernet_secret_name <namespace>
+# Resolves airflow.fernetKeySecretName from the deployed release's
+# user-supplied values (no `-a` — the chart default is already the second
+# candidate in _fernet_key_candidates below). Never `error`s: no release, a
+# `helm` failure, a malformed values blob, or a name failing the
+# Kubernetes-name grammar all resolve to empty, so the caller falls through
+# to the next candidate. `json.load(...) or {}` guards against `helm get
+# values` printing bare `null` for a release with no overrides — `d.get(...)`
+# on `None` would otherwise raise `AttributeError`.
+_resolve_fernet_secret_name() {
+  local ns="$1"
+
+  if ! helm status dataspoke --namespace "${ns}" >/dev/null 2>&1; then
+    echo ""
+    return 0
+  fi
+
+  local name
+  name="$(helm get values dataspoke --namespace "${ns}" -o json 2>/dev/null | python3 -c '
+import json, sys
+
+try:
+    d = json.load(sys.stdin) or {}
+except Exception:
+    d = {}
+print((d.get("airflow") or {}).get("fernetKeySecretName") or "")
+' 2>/dev/null || echo "")"
+
+  # Validated before it ever reaches kubectl argv or the operator-facing
+  # recovery text in _check_airflow_credentials_prod's Fernet error — the
+  # same grammar SECRET_TO_CHECK is checked against below, applied here to a
+  # less-trusted source (a release value, not a --values overlay this
+  # operator authored).
+  if [[ ! "${name}" =~ ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$ ]]; then
+    echo ""
+    return 0
+  fi
+  echo "${name}"
+}
+
+# _fernet_key_candidates <namespace>
+# Prints the de-duplicated, ordered union of every Secret name that could be
+# carrying the live Fernet key: the resolved release's
+# airflow.fernetKeySecretName first (when non-empty), then the chart's own
+# projection name, then the legacy pre-hook Secret from a release installed
+# before fernetKeySecretName was pinned. An unresolved release value (fresh
+# install, no live release, a `helm` failure) simply drops the first
+# candidate — the two-literal search still runs. One name per line; callers
+# read via `while IFS= read -r`.
+_fernet_key_candidates() {
+  local ns="$1"
+
+  local resolved
+  resolved="$(_resolve_fernet_secret_name "${ns}")"
+
+  local seen=() name dup s
+  for name in "${resolved}" "dataspoke-airflow-metadata-encryption-key" "dataspoke-airflow-fernet-key"; do
+    [[ -z "${name}" ]] && continue
+    dup=false
+    for s in ${seen[@]+"${seen[@]}"}; do
+      if [[ "${s}" == "${name}" ]]; then
+        dup=true
+        break
+      fi
+    done
+    if [[ "${dup}" == "false" ]]; then
+      seen+=("${name}")
+      echo "${name}"
+    fi
+  done
+}
+
 # _ensure_fernet_key_joins_credentials_secret <namespace> <secret_name>
 # Dev-only self-heal for a credentials Secret that predates
-# DATASPOKE_AIRFLOW_FERNET_KEY joining the 13-key contract: patches the key in
-# rather than leaving the Secret on its old 12-key shape, which would
+# DATASPOKE_AIRFLOW_FERNET_KEY joining the credentials contract: patches the
+# key in rather than leaving the Secret on its old shape, which would
 # otherwise hard-error later in _ensure_airflow_fernet_secret with no
-# remediation. Adopts, in order: the key already projected into
-# dataspoke-airflow-metadata-encryption-key (the new-name projection), then
-# dataspoke-airflow-fernet-key (the Airflow subchart's own pre-install-hook
-# Secret, from a release installed before fernetKeySecretName was pinned) —
-# so a cluster that already ran Airflow keeps its stored connections and
-# Variables decryptable. Generation is the last resort, only when neither
-# exists. No-op once the key is present. Prod never calls this — the operator
-# owns the pre-created Secret's shape; see _check_airflow_credentials_prod.
+# remediation. Adopts the first non-empty `fernet-key` found by walking
+# _fernet_key_candidates in order — the deployed release's own
+# airflow.fernetKeySecretName (when resolvable), then the chart's projection
+# name, then the legacy pre-hook Secret from a release installed before
+# fernetKeySecretName was pinned — so a cluster that already ran Airflow
+# keeps its stored connections and Variables decryptable regardless of which
+# Secret name it actually mounts. Generation is the last resort, only when no
+# candidate carries a key. No-op once the key is present. Prod never calls
+# this — the operator owns the pre-created Secret's shape; see
+# _check_airflow_credentials_prod.
 _ensure_fernet_key_joins_credentials_secret() {
   local ns="$1"
   local secret_name="$2"
@@ -314,17 +388,15 @@ _ensure_fernet_key_joins_credentials_secret() {
 
   info "'${secret_name}' predates DATASPOKE_AIRFLOW_FERNET_KEY joining the credentials contract — adding it."
 
-  local fernet_key="" adopted_from=""
-  if kubectl get secret dataspoke-airflow-metadata-encryption-key -n "${ns}" >/dev/null 2>&1; then
-    fernet_key="$(kubectl get secret dataspoke-airflow-metadata-encryption-key -n "${ns}" \
-      -o jsonpath='{.data.fernet-key}' | base64 --decode)"
-    adopted_from="dataspoke-airflow-metadata-encryption-key"
-  fi
-  if [[ -z "${fernet_key}" ]] && kubectl get secret dataspoke-airflow-fernet-key -n "${ns}" >/dev/null 2>&1; then
-    fernet_key="$(kubectl get secret dataspoke-airflow-fernet-key -n "${ns}" \
-      -o jsonpath='{.data.fernet-key}' | base64 --decode)"
-    adopted_from="dataspoke-airflow-fernet-key"
-  fi
+  local fernet_key="" adopted_from="" candidate
+  while IFS= read -r candidate; do
+    [[ -n "${fernet_key}" ]] && break
+    if kubectl get secret "${candidate}" -n "${ns}" >/dev/null 2>&1; then
+      fernet_key="$(kubectl get secret "${candidate}" -n "${ns}" \
+        -o jsonpath='{.data.fernet-key}' | base64 --decode)"
+      [[ -n "${fernet_key}" ]] && adopted_from="${candidate}"
+    fi
+  done < <(_fernet_key_candidates "${ns}")
 
   if [[ -n "${fernet_key}" ]]; then
     info "  Adopting the Fernet key already live in this cluster (${adopted_from})."
@@ -349,6 +421,48 @@ EOF
   # other chart-derived Airflow Secrets on both profiles.
 }
 
+# _ensure_postgres_identity_leaves_credentials_secret <namespace> <secret_name>
+# Dev-only self-heal for a credentials Secret still carrying
+# DATASPOKE_POSTGRES_USER or DATASPOKE_POSTGRES_DB — both relocated out of this
+# Secret and into the app ConfigMap (config.postgres.{user,db}), so the
+# ConfigMap stays the single source of the Postgres identity and the two
+# cannot silently drift apart. `envFrom` lists the ConfigMap ahead of the
+# Secret on every workload that mounts both (api-deployment.yaml), so a
+# lingering key here would otherwise keep shadowing the ConfigMap's value —
+# this self-heal is what actually closes that gap on an existing install, not
+# the values-file/ConfigMap-template change alone.
+# A strategic-merge patch setting each key to `null` removes it when present
+# and is a clean no-op when absent (a JSON-patch `remove` op would error
+# instead on whichever of the two keys is already missing), so the patch
+# itself runs unconditionally — only the log line below is gated on presence.
+# Presence is tested with --allow-missing-template-keys=false (exit non-zero
+# when the field is absent), not on the value being non-empty: a key present
+# with an empty string ("" from a blank line in --from-env-file) must still
+# be caught, since `envFrom.secretRef` still shadows the ConfigMap's value in
+# that case. Prod never calls this — a Secret still carrying either key is a
+# pre-flight failure instead (_check_airflow_credentials_prod); install.sh
+# never mutates an operator-owned Secret.
+_ensure_postgres_identity_leaves_credentials_secret() {
+  local ns="$1"
+  local secret_name="$2"
+
+  local key
+  for key in DATASPOKE_POSTGRES_USER DATASPOKE_POSTGRES_DB; do
+    if kubectl get secret "${secret_name}" -n "${ns}" \
+         -o jsonpath="{.data.${key}}" --allow-missing-template-keys=false >/dev/null 2>&1; then
+      info "'${secret_name}' still carries DATASPOKE_POSTGRES_{USER,DB} — removing them (the app ConfigMap is the single source of the Postgres identity)."
+      break
+    fi
+  done
+
+  # --patch-file /dev/stdin with a fixed literal (not -p with a value
+  # interpolated) so nothing but this constant JSON lands in this process's
+  # argv — matching every other Secret write in this file.
+  kubectl patch secret "${secret_name}" -n "${ns}" --type=merge --patch-file /dev/stdin <<'EOF'
+{"data":{"DATASPOKE_POSTGRES_USER":null,"DATASPOKE_POSTGRES_DB":null}}
+EOF
+}
+
 # _ensure_dataspoke_secrets <namespace> <profile> [<secret_name>]
 # Idempotent: creates the consolidated credential Secret in dev with
 # auto-generated values (including Airflow webserver/jwt secrets).
@@ -362,11 +476,13 @@ _ensure_dataspoke_secrets() {
   if kubectl get secret "${secret_name}" -n "${ns}" >/dev/null 2>&1; then
     if [[ "$profile" == "dev" ]]; then
       # Dev may still self-heal a pre-existing Secret that predates the
-      # 13-key contract (see _ensure_fernet_key_joins_credentials_secret), so
-      # "leaving untouched" would be inaccurate here — that function logs its
-      # own message on the patch path.
+      # current credentials contract (see
+      # _ensure_fernet_key_joins_credentials_secret), so "leaving untouched"
+      # would be inaccurate here — that function logs its own message on the
+      # patch path.
       info "'${secret_name}' already exists in '${ns}'."
       _ensure_fernet_key_joins_credentials_secret "${ns}" "${secret_name}"
+      _ensure_postgres_identity_leaves_credentials_secret "${ns}" "${secret_name}"
     else
       info "'${secret_name}' already exists in '${ns}' — leaving untouched."
     fi
@@ -374,28 +490,19 @@ _ensure_dataspoke_secrets() {
   fi
 
   if [[ "$profile" == "prod" ]]; then
-    error "prod install requires a pre-created K8s Secret named '${secret_name}'. Either:
+    error "prod install requires a pre-created K8s Secret named '${secret_name}'. Create it with
+--from-env-file (never --from-literal, which leaks every value into shell history and process
+argv) — see helm-charts/README.md §2 for the full eleven-key env-file recipe:
   kubectl create secret generic ${secret_name} \\
-    --from-literal=DATASPOKE_POSTGRES_USER=<u> \\
-    --from-literal=DATASPOKE_POSTGRES_PASSWORD=<p> \\
-    --from-literal=DATASPOKE_POSTGRES_DB=<db> \\
-    --from-literal=DATASPOKE_REDIS_PASSWORD=<p> \\
-    --from-literal=DATASPOKE_AIRFLOW_USER=<u> \\
-    --from-literal=DATASPOKE_AIRFLOW_PASSWORD=<p> \\
-    --from-literal=DATASPOKE_INTERNAL_TOKEN=<t> \\
-    --from-literal=DATASPOKE_JWT_SECRET_KEY=<k> \\
-    --from-literal=DATASPOKE_AIRFLOW_WEBSERVER_SECRET_KEY=<k> \\
-    --from-literal=DATASPOKE_AIRFLOW_JWT_SECRET=<k> \\
-    --from-literal=DATASPOKE_AIRFLOW_FERNET_KEY=<f> \\
-    --from-literal=DATASPOKE_OAUTH_STATE_SECRET=<k> \\
-    --from-literal=DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET=<s> \\
+    --from-env-file=/tmp/dataspoke-secrets.env \\
     -n ${ns}
-or pass --values <overlay.yaml> with secrets.existingSecret: <name>"
+or pass --values <overlay.yaml> with secrets.existingSecret: <name>
+(DATASPOKE_POSTGRES_USER and DATASPOKE_POSTGRES_DB are NOT part of this Secret
+— they are non-secret and are set via config.postgres.{user,db} chart values
+instead, default \"dataspoke\"/\"dataspoke\")"
   fi
 
-  local pg_user pg_password pg_db redis_password
-  pg_user="dataspoke"
-  pg_db="dataspoke"
+  local pg_password redis_password
   pg_password="$(openssl rand -hex 32)"
   redis_password="$(openssl rand -hex 32)"
 
@@ -415,27 +522,25 @@ or pass --values <overlay.yaml> with secrets.existingSecret: <name>"
   # PVC survives — a fresh value would leave every stored connection and
   # Variable permanently undecryptable. `openssl rand -hex 32` (used for every
   # other key above) is the wrong shape: it decodes to 48 raw bytes, and
-  # Fernet requires exactly 32. Generation is the last resort — first adopt
-  # whatever key is already projected into
-  # dataspoke-airflow-metadata-encryption-key on this cluster, so a
-  # credentials Secret re-created by hand while the release is live keeps the
-  # Postgres PVC's Airflow connections decryptable. This path — a fresh
+  # Fernet requires exactly 32. Generation is the last resort — first walk
+  # _fernet_key_candidates (the deployed release's own
+  # airflow.fernetKeySecretName when resolvable, then the chart's projection
+  # name, then the legacy pre-hook Secret) and adopt the first non-empty
+  # `fernet-key` found, so a credentials Secret re-created by hand while the
+  # release is live keeps the Postgres PVC's Airflow connections decryptable
+  # regardless of which Secret name it actually mounts. This path — a fresh
   # `_ensure_dataspoke_secrets` create — does not cover a `bin/uninstall.sh`
   # dev teardown, which deletes the credentials Secret and this projection
   # together; see spec/feature/HELM_CHART.md §Dev — install-time provisioning.
-  local airflow_fernet_key=""
-  if kubectl get secret dataspoke-airflow-metadata-encryption-key -n "${ns}" >/dev/null 2>&1; then
-    airflow_fernet_key="$(kubectl get secret dataspoke-airflow-metadata-encryption-key -n "${ns}" \
-      -o jsonpath='{.data.fernet-key}' | base64 --decode)"
-    [[ -n "${airflow_fernet_key}" ]] && info "  Adopting the Fernet key already projected into dataspoke-airflow-metadata-encryption-key."
-  fi
-  if [[ -z "${airflow_fernet_key}" ]] && kubectl get secret dataspoke-airflow-fernet-key -n "${ns}" >/dev/null 2>&1; then
-    # The Airflow subchart's own pre-install-hook Secret, from a release
-    # installed before fernetKeySecretName was pinned.
-    airflow_fernet_key="$(kubectl get secret dataspoke-airflow-fernet-key -n "${ns}" \
-      -o jsonpath='{.data.fernet-key}' | base64 --decode)"
-    [[ -n "${airflow_fernet_key}" ]] && info "  Adopting the Fernet key already projected into dataspoke-airflow-fernet-key (legacy subchart hook Secret)."
-  fi
+  local airflow_fernet_key="" candidate
+  while IFS= read -r candidate; do
+    [[ -n "${airflow_fernet_key}" ]] && break
+    if kubectl get secret "${candidate}" -n "${ns}" >/dev/null 2>&1; then
+      airflow_fernet_key="$(kubectl get secret "${candidate}" -n "${ns}" \
+        -o jsonpath='{.data.fernet-key}' | base64 --decode)"
+      [[ -n "${airflow_fernet_key}" ]] && info "  Adopting the Fernet key already projected into ${candidate}."
+    fi
+  done < <(_fernet_key_candidates "${ns}")
   if [[ -z "${airflow_fernet_key}" ]]; then
     airflow_fernet_key="$(python3 -c 'import secrets, base64; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())')"
   fi
@@ -455,9 +560,7 @@ metadata:
   namespace: ${ns}
 type: Opaque
 data:
-  DATASPOKE_POSTGRES_USER: $(printf '%s' "${pg_user}" | base64 | tr -d '\n')
   DATASPOKE_POSTGRES_PASSWORD: $(printf '%s' "${pg_password}" | base64 | tr -d '\n')
-  DATASPOKE_POSTGRES_DB: $(printf '%s' "${pg_db}" | base64 | tr -d '\n')
   DATASPOKE_REDIS_PASSWORD: $(printf '%s' "${redis_password}" | base64 | tr -d '\n')
   DATASPOKE_AIRFLOW_USER: $(printf '%s' "dataspoke-admin" | base64 | tr -d '\n')
   DATASPOKE_AIRFLOW_PASSWORD: $(printf '%s' "${airflow_password}" | base64 | tr -d '\n')
@@ -481,31 +584,57 @@ _url_encode() {
 }
 
 # _derive_airflow_metadata_secret <namespace> [<secret_name>]
-# Reads DATASPOKE_POSTGRES_{USER,PASSWORD} from the consolidated Secret,
-# builds the Airflow metadata connection URI, and applies
-# dataspoke-airflow-metadata-db (key: connection). Idempotent.
+# Reads DATASPOKE_POSTGRES_PASSWORD from the consolidated Secret, builds the
+# Airflow metadata connection URI against the fixed role 'dataspoke' (see
+# below), and applies dataspoke-airflow-metadata-db (key: connection).
+# Compare-and-rotate, mirroring _ensure_airflow_key_secrets below: the URI is
+# re-derived on every run and the Secret rewritten only when the derived
+# value differs from what is already live, so a rotated
+# DATASPOKE_POSTGRES_PASSWORD reaches Airflow on every run.
 # <secret_name> defaults to "dataspoke-secrets".
 _derive_airflow_metadata_secret() {
   local ns="$1"
   local secret_name="${2:-dataspoke-secrets}"
 
-  local pg_user pg_password
-  pg_user="$(kubectl get secret "${secret_name}" -n "${ns}" \
-    -o jsonpath='{.data.DATASPOKE_POSTGRES_USER}' | base64 --decode)"
+  AIRFLOW_METADATA_DSN_ROTATED=false
+
+  local pg_password
   pg_password="$(kubectl get secret "${secret_name}" -n "${ns}" \
     -o jsonpath='{.data.DATASPOKE_POSTGRES_PASSWORD}' | base64 --decode)"
 
+  # The role is the literal 'dataspoke', not a value read from this Secret or
+  # the app ConfigMap: this DSN's 'airflow' database is created
+  # `OWNER dataspoke` by the bundled subchart's initdb (create-airflow-db.sql
+  # in dataspoke/values.yaml / values-dev.yaml — see config.postgres.user's
+  # comment there for why the role name is chart-pinned), so the DSN's role
+  # must be that owner. Consistent with the host (dataspoke-postgresql) and
+  # database (airflow) this function already hardcodes for the same reason —
+  # none of the three is operator-choosable without also editing the initdb
+  # SQL that creates them.
   local enc_user enc_pwd
-  enc_user="$(_url_encode "${pg_user}")"
+  enc_user="$(_url_encode "dataspoke")"
   enc_pwd="$(_url_encode "${pg_password}")"
 
   local conn_uri="postgresql://${enc_user}:${enc_pwd}@dataspoke-postgresql:5432/airflow?sslmode=disable"
 
-  info "Applying dataspoke-airflow-metadata-db..."
+  local existing_conn_uri=""
   if kubectl get secret dataspoke-airflow-metadata-db -n "${ns}" >/dev/null 2>&1; then
-    info "  dataspoke-airflow-metadata-db already exists — skipping."
+    existing_conn_uri="$(kubectl get secret dataspoke-airflow-metadata-db -n "${ns}" \
+      -o jsonpath='{.data.connection}' | base64 --decode)"
+  fi
+
+  if [[ "${existing_conn_uri}" == "${conn_uri}" ]]; then
+    info "  dataspoke-airflow-metadata-db already up to date — skipping."
     return 0
   fi
+
+  # A fresh create (existing_conn_uri empty) must not trigger a restart — only
+  # a genuine rotation of an already-live connection string does.
+  if [[ -n "${existing_conn_uri}" ]]; then
+    AIRFLOW_METADATA_DSN_ROTATED=true
+  fi
+
+  info "Applying dataspoke-airflow-metadata-db..."
   cat <<EOF | kubectl apply -f -
 apiVersion: v1
 kind: Secret
@@ -516,6 +645,10 @@ type: Opaque
 data:
   connection: $(printf '%s' "${conn_uri}" | base64 | tr -d '\n')
 EOF
+
+  if [[ "${AIRFLOW_METADATA_DSN_ROTATED}" == "true" ]]; then
+    warn "Airflow metadata DB connection rotated (derived connection string changed) — the consuming pods will be restarted after the upgrade."
+  fi
 }
 
 # Set by _ensure_airflow_key_secrets when a derived Airflow key Secret was
@@ -523,6 +656,17 @@ EOF
 # Read after the umbrella helm upgrade to decide whether to roll the pods that
 # hold the old key in memory.
 AIRFLOW_KEYS_ROTATED=false
+
+# Set by _derive_airflow_metadata_secret when the derived Airflow metadata
+# connection string was *updated* (DATASPOKE_POSTGRES_PASSWORD rotated), as
+# opposed to created on a fresh install. A dedicated flag rather than sharing
+# AIRFLOW_KEYS_ROTATED above: _ensure_airflow_key_secrets resets that flag at
+# its own entry (below), so a shared flag would be clobbered wherever the
+# key-secrets call follows this one — as it does in prod's Phase 3. Read after
+# the umbrella helm upgrade,
+# alongside AIRFLOW_KEYS_ROTATED, to decide whether to restart the pods that
+# hold the old connection string in memory.
+AIRFLOW_METADATA_DSN_ROTATED=false
 
 # _ensure_airflow_key_secrets <namespace> <secret_name>
 # Derives Airflow webserver/jwt secrets from the consolidated Secret and
@@ -607,15 +751,21 @@ EOF
 # metadata DB, so re-projecting a changed value would leave that data
 # permanently undecryptable with no recovery path. A live projection that
 # disagrees with the source key therefore aborts the install with the
-# recovery command instead of silently overwriting it. The comparison source
-# falls back to dataspoke-airflow-fernet-key (the Airflow subchart's own
-# pre-install-hook Secret) whenever dataspoke-airflow-metadata-encryption-key
-# does not exist yet OR exists with an empty/absent fernet-key — gated on the
-# read VALUE, not on Secret existence, so a cluster installed before
-# fernetKeySecretName was pinned to the new name — where the new-name
-# projection has never been created, or exists but was never populated —
-# still gets a real comparison instead of an unchecked create. Mirrors
-# _ensure_fernet_key_joins_credentials_secret's emptiness-gated fallback above.
+# recovery command instead of silently overwriting it.
+#
+# The comparison source walks _fernet_key_candidates in order — the deployed
+# release's own airflow.fernetKeySecretName (when resolvable), then the
+# chart's projection name, then the legacy pre-hook Secret — taking the
+# first candidate with a non-empty fernet-key. This covers a release whose
+# Airflow chart actually mounts a self-chosen Secret name (installed by a
+# means other than this script's own forced --set, e.g. a direct `helm
+# upgrade` or GitOps tool applying an overlay unmodified), not just the two
+# literals every install.sh invocation itself pins to. Gated on the read
+# VALUE at each candidate, not on Secret existence, so a cluster installed
+# before any projection existed — where the candidate Secret is absent, or
+# present but never populated — still gets a real comparison instead of an
+# unchecked create. Mirrors _ensure_fernet_key_joins_credentials_secret's
+# emptiness-gated fallback above.
 _ensure_airflow_fernet_secret() {
   local ns="$1"
   local secret_name="$2"
@@ -628,16 +778,15 @@ _ensure_airflow_fernet_secret() {
     error "Secret '${secret_name}' is missing DATASPOKE_AIRFLOW_FERNET_KEY."
   fi
 
-  local existing_fernet_key="" compared_against="dataspoke-airflow-metadata-encryption-key"
-  if kubectl get secret dataspoke-airflow-metadata-encryption-key -n "${ns}" >/dev/null 2>&1; then
-    existing_fernet_key="$(kubectl get secret dataspoke-airflow-metadata-encryption-key -n "${ns}" \
-      -o jsonpath='{.data.fernet-key}' | base64 --decode)"
-  fi
-  if [[ -z "${existing_fernet_key}" ]] && kubectl get secret dataspoke-airflow-fernet-key -n "${ns}" >/dev/null 2>&1; then
-    existing_fernet_key="$(kubectl get secret dataspoke-airflow-fernet-key -n "${ns}" \
-      -o jsonpath='{.data.fernet-key}' | base64 --decode)"
-    compared_against="dataspoke-airflow-fernet-key"
-  fi
+  local existing_fernet_key="" compared_against="" candidate
+  while IFS= read -r candidate; do
+    [[ -n "${existing_fernet_key}" ]] && break
+    if kubectl get secret "${candidate}" -n "${ns}" >/dev/null 2>&1; then
+      existing_fernet_key="$(kubectl get secret "${candidate}" -n "${ns}" \
+        -o jsonpath='{.data.fernet-key}' | base64 --decode)"
+      [[ -n "${existing_fernet_key}" ]] && compared_against="${candidate}"
+    fi
+  done < <(_fernet_key_candidates "${ns}")
 
   if [[ -n "${existing_fernet_key}" && "${existing_fernet_key}" != "${fernet_key}" ]]; then
     error "DATASPOKE_AIRFLOW_FERNET_KEY in Secret '${secret_name}' disagrees with the key already
@@ -653,21 +802,29 @@ Postgres PVC together with the credentials Secret for a clean reset (dev: --dele
 disagreed with is also gone."
   fi
 
-  # Gate the skip branch on the *value* actually live in the new-name
-  # projection matching the contract key — not on the Secret merely
-  # existing. existing_fernet_key is read from dataspoke-airflow-metadata-
-  # encryption-key only when compared_against still holds its default (the
-  # emptiness-gated fallback above overwrites it to the legacy Secret's name
-  # whenever the new one is absent OR present-but-empty); a missing Secret, a
-  # present Secret with an empty/absent fernet-key key, and a legacy-only
-  # projection all fail this check and fall through to the idempotent kubectl
-  # apply below.
+  # Gate the skip branch on the *value* actually live in the WRITE TARGET
+  # (dataspoke-airflow-metadata-encryption-key — hardcoded below, see that
+  # comment for why it must stay hardcoded even though the read above is
+  # now candidate-driven) matching the contract key — not merely on some
+  # candidate agreeing. A value found via a different candidate (a
+  # self-chosen fernetKeySecretName the deployed release does not actually
+  # use for THIS Secret, or the legacy hook) always falls through to the
+  # idempotent kubectl apply below, even when it agrees with the contract
+  # key, because the one Secret this function writes has not itself been
+  # confirmed up to date.
   if [[ -n "${existing_fernet_key}" \
         && "${existing_fernet_key}" == "${fernet_key}" \
         && "${compared_against}" == "dataspoke-airflow-metadata-encryption-key" ]]; then
     info "  dataspoke-airflow-metadata-encryption-key already up to date — skipping."
   else
     info "Creating dataspoke-airflow-metadata-encryption-key..."
+    # The write target stays hardcoded — NOT resolved via
+    # _fernet_key_candidates / _resolve_fernet_secret_name. All three helm
+    # invocations in this script pin airflow.fernetKeySecretName to this
+    # exact name, so a dynamic write target would fork the release from this
+    # projection: Airflow would still mount
+    # dataspoke-airflow-metadata-encryption-key regardless of what got
+    # written here.
     cat <<EOF | kubectl apply -f -
 apiVersion: v1
 kind: Secret
@@ -731,16 +888,26 @@ _resolve_digest_or_abort() {
 }
 
 # _restart_airflow_key_consumers <namespace>
-# Rolls every Airflow component that holds a signing key in memory. A Secret
-# content update does not roll pods that reference it via secretKeyRef, and the
-# chart's own checksum/jwt-secret annotation is suppressed when jwtSecretName is
-# set (which install.sh always sets), so the restart must be explicit.
-# AIRFLOW__API__SECRET_KEY reaches all four components; the JWT secret reaches
-# api-server and scheduler only.
+# Rolls every Airflow component that holds a signing key or the metadata-DB
+# connection string in memory. A Secret content update does not roll pods
+# that reference it via secretKeyRef, and the chart's own checksum/jwt-secret
+# annotation is suppressed when jwtSecretName is set (which install.sh always
+# sets) — and, for the metadata-DB connection, the chart renders no
+# checksum/metadata-secret annotation at all once data.metadataSecretName is
+# set (also always, see §Rotation tolerance of the Airflow projections in
+# spec/feature/HELM_CHART.md) — so the restart must be explicit either way.
+# AIRFLOW__API__SECRET_KEY reaches all four components; the JWT secret
+# reaches api-server and scheduler only; the metadata-DB connection string
+# reaches every Airflow workload (the shared standard_airflow_environment
+# helper includes it for all four components plus the db-migrate job). This
+# helper restarts all four uniformly rather than branch per caller on which
+# of the three rotated. Called whenever AIRFLOW_KEYS_ROTATED or
+# AIRFLOW_METADATA_DSN_ROTATED is set — a DSN-only rotation fires this
+# identically to a signing-key rotation.
 _restart_airflow_key_consumers() {
   local ns="$1"
 
-  info "Restarting Airflow components to pick up the rotated signing keys..."
+  info "Restarting Airflow components to pick up the rotated signing key(s) and/or metadata-DB connection..."
   local component
   for component in api-server scheduler dag-processor triggerer; do
     _rollout_restart_workload "${ns}" "dataspoke-airflow-${component}"
@@ -778,6 +945,26 @@ _sync_env_from_secret() {
   chmod 600 "$ENV_FILE"
 }
 
+# _read_configmap_value <namespace> <key>
+# Reads a single key out of the app ConfigMap (dataspoke-app-config) — the
+# ConfigMap counterpart to reading a key out of the credentials Secret. Used
+# for DATASPOKE_POSTGRES_{USER,DB}, which live in the ConfigMap rather than
+# the Secret (see spec/feature/HELM_CHART.md §ConfigMap keys). Deliberately a
+# thin reader with no env-file-writing body of its own — callers pipe the
+# result into _write_env_var, so this does not become a third near-duplicate
+# of _sync_env_from_secret / _write_env_var's own awk/mktemp rewrite logic.
+_read_configmap_value() {
+  local ns="$1"
+  local key="$2"
+
+  local value
+  if ! value="$(kubectl get configmap dataspoke-app-config -n "${ns}" \
+       -o jsonpath="{.data.${key}}" 2>/dev/null)"; then
+    error "Could not read '${key}' from ConfigMap 'dataspoke-app-config' in namespace '${ns}' — is config.createConfigMap set to false?"
+  fi
+  echo "${value}"
+}
+
 # _write_env_var <env_var_name> <value>
 # Writes/updates a plain (non-Secret) value in helm-charts/.env.<profile>. Idempotent.
 _write_env_var() {
@@ -802,14 +989,19 @@ _write_env_var() {
 }
 
 # _check_airflow_credentials_prod <namespace> <secret_name>
-# Validates ALL 13 required keys are present, non-empty, and not equal to known
-# insecure defaults. Prod profile only.
+# Validates ALL 11 required keys are present, non-empty, and not equal to known
+# insecure defaults. Also hard-errors if the Secret still carries
+# DATASPOKE_POSTGRES_USER or DATASPOKE_POSTGRES_DB — both relocated to the app
+# ConfigMap (config.postgres.{user,db}), never rejected in favor of an
+# install.sh-driven repair here: install.sh never mutates an operator-owned
+# Secret in prod, so a lingering key is surfaced as a pre-flight failure with
+# a copy-pasteable removal command instead. Prod profile only.
 _check_airflow_credentials_prod() {
   local ns="$1"
   local secret_name="$2"
 
   local required_keys=(
-    DATASPOKE_POSTGRES_USER DATASPOKE_POSTGRES_PASSWORD DATASPOKE_POSTGRES_DB
+    DATASPOKE_POSTGRES_PASSWORD
     DATASPOKE_REDIS_PASSWORD
     DATASPOKE_AIRFLOW_USER DATASPOKE_AIRFLOW_PASSWORD
     DATASPOKE_INTERNAL_TOKEN DATASPOKE_JWT_SECRET_KEY
@@ -818,25 +1010,87 @@ _check_airflow_credentials_prod() {
     DATASPOKE_OAUTH_STATE_SECRET DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET
   )
 
+  # DATASPOKE_POSTGRES_USER / DATASPOKE_POSTGRES_DB are not secrets and do not
+  # belong in this Secret — they live in the app ConfigMap
+  # (config.postgres.*) instead, where templates/configmap.yaml asserts they
+  # agree with postgresql.auth.username/database. install.sh never patches an
+  # operator-owned Secret in prod (contrast with the dev self-heal,
+  # _ensure_postgres_identity_leaves_credentials_secret), so this rejects
+  # rather than repairs it. Presence is tested with
+  # --allow-missing-template-keys=false, not on the value being non-empty —
+  # see that self-heal's own comment for why an empty-string value must still
+  # be caught.
+  local relocated_key
+  for relocated_key in DATASPOKE_POSTGRES_USER DATASPOKE_POSTGRES_DB; do
+    if kubectl get secret "${secret_name}" -n "${ns}" \
+         -o jsonpath="{.data.${relocated_key}}" --allow-missing-template-keys=false >/dev/null 2>&1; then
+      error "prod Secret '${secret_name}' still carries ${relocated_key}, which belongs to the app
+ConfigMap (config.postgres.*) instead — it is not a secret and its presence here is a second,
+silently divergent source of the Postgres identity. Remove it:
+  kubectl patch secret ${secret_name} -n ${ns} --type=merge \\
+    -p='{\"data\":{\"${relocated_key}\":null}}'
+then re-run the install."
+    fi
+  done
+
   for key in "${required_keys[@]}"; do
     local val
     val="$(kubectl get secret "${secret_name}" -n "${ns}" \
       -o jsonpath="{.data.${key}}" 2>/dev/null | base64 --decode 2>/dev/null || true)"
     if [[ -z "${val}" ]]; then
       if [[ "${key}" == "DATASPOKE_AIRFLOW_FERNET_KEY" ]]; then
-        error "prod Secret '${secret_name}' is missing required key: DATASPOKE_AIRFLOW_FERNET_KEY.
+        local _fernet_msg
+        _fernet_msg="prod Secret '${secret_name}' is missing required key: DATASPOKE_AIRFLOW_FERNET_KEY.
 If this namespace already ran Airflow against a Postgres metadata DB you are keeping (for
 example a PVC retained from a previous release), do NOT generate a new key — supply the exact
 key that DB's connections and Variables were encrypted with, or they become permanently
-undecryptable. Recover it from whatever this cluster last projected it into:
-  kubectl get secret dataspoke-airflow-metadata-encryption-key -n ${ns} \\
-    -o jsonpath='{.data.fernet-key}' | base64 --decode
-  # or, on a cluster that predates DATASPOKE_AIRFLOW_FERNET_KEY joining the credentials Secret:
-  kubectl get secret dataspoke-airflow-fernet-key -n ${ns} \\
-    -o jsonpath='{.data.fernet-key}' | base64 --decode
+undecryptable."
+
+        # The missing irreversibility signal: a retained Postgres PVC proves
+        # this is NOT a fresh install, independent of anything the recovery
+        # search below finds. Without this, an operator who finds no
+        # matching Secret in that search has nothing stopping them from
+        # concluding "fresh install" anyway and generating a new key.
+        if kubectl get pvc data-dataspoke-postgresql-0 -n "${ns}" >/dev/null 2>&1; then
+          _fernet_msg+="
+WARNING: PersistentVolumeClaim 'data-dataspoke-postgresql-0' survives in namespace '${ns}' — this
+is NOT a fresh install. Generating a new key below would leave every connection and Variable
+already encrypted in that PVC's Airflow metadata DB permanently undecryptable."
+        fi
+
+        _fernet_msg+="
+Recover it from whatever this cluster last projected it into — try each of the following, in
+order (the first is this release's own airflow.fernetKeySecretName, when resolvable — an operator
+who pinned a self-chosen name here is exactly the case this ordering exists to cover):"
+        local _fc
+        while IFS= read -r _fc; do
+          _fernet_msg+="
+  kubectl get secret ${_fc} -n ${ns} -o jsonpath='{.data.fernet-key}' | base64 --decode"
+        done < <(_fernet_key_candidates "${ns}")
+
+        # Namespace-wide scan for ANY Secret carrying a fernet-key data key —
+        # guidance text only, never the adoption search order above: silently
+        # trusting an arbitrary discovered Secret would be unsafe. This finds
+        # a pin that never reached this release's own recorded values at
+        # all — e.g. a Secret an operator created and named directly in an
+        # overlay whose release was never applied, or was applied by tooling
+        # _resolve_fernet_secret_name cannot introspect — and needs no live
+        # release to exist for that.
+        local _fernet_scan
+        _fernet_scan="$(kubectl get secret -n "${ns}" \
+          -o jsonpath='{range .items[?(@.data.fernet-key)]}{.metadata.name} {end}' 2>/dev/null || true)"
+        if [[ -n "${_fernet_scan}" ]]; then
+          _fernet_msg+="
+A namespace-wide scan for any Secret carrying a fernet-key also found: ${_fernet_scan}— check
+whether one of these is the Secret your Airflow release actually mounts; its name may never have
+reached the release's own recorded values."
+        fi
+
+        _fernet_msg+="
 Add DATASPOKE_AIRFLOW_FERNET_KEY=<that value> to '${secret_name}' and re-run the install.
 Only if this is a genuinely fresh install (no retained Postgres PVC to decrypt), generate one:
   python3 -c \"import secrets, base64; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())\""
+        error "${_fernet_msg}"
       else
         error "prod Secret '${secret_name}' is missing required key: ${key}"
       fi
@@ -1283,18 +1537,21 @@ _helm_upgrade_dataspoke_dev() {
   # separate helm upgrade with the same pins and runs the identical sequence
   # inline rather than through this function. Idempotent: a no-op once
   # everything is already in sync.
-  # Fernet before keys, matching the prod branch. _ensure_airflow_fernet_secret
-  # hard-errors on a source/projection mismatch, and _ensure_airflow_key_secrets
-  # sets AIRFLOW_KEYS_ROTATED and writes the rotated key into the projections
-  # that _restart_airflow_key_consumers (further down, after the upgrade) is the
-  # only thing to repair. With keys first, that fernet abort lands between the
-  # write and the restart: the projections keep the new key, the pods keep
-  # signing with the old one, and every later run compares the two, finds them
-  # in agreement, and skips the restart — stranding the rotation permanently.
+  # Fernet first, before either rotating write, matching the prod branch:
+  # _ensure_airflow_fernet_secret hard-errors on a source/projection
+  # mismatch and writes nothing when it does. _ensure_airflow_key_secrets
+  # runs next, ahead of _derive_airflow_metadata_secret, because it
+  # VALIDATES the credentials Secret carries
+  # DATASPOKE_AIRFLOW_WEBSERVER_SECRET_KEY / DATASPOKE_AIRFLOW_JWT_SECRET
+  # before writing anything — a dev Secret still missing those aborts here
+  # with nothing yet written. Only _restart_airflow_key_consumers (further
+  # down, after the upgrade) repairs a rotated write's split from what the
+  # running pods hold, so _derive_airflow_metadata_secret runs last: if IT
+  # aborts, no other call in this sequence has a write stranded without it.
   _ensure_dataspoke_secrets "${ns}" "dev" "dataspoke-secrets"
-  _derive_airflow_metadata_secret "${ns}" "dataspoke-secrets"
   _ensure_airflow_fernet_secret "${ns}" "dataspoke-secrets"
   _ensure_airflow_key_secrets "${ns}" "dataspoke-secrets"
+  _derive_airflow_metadata_secret "${ns}" "dataspoke-secrets"
 
   local extra_env_file
   extra_env_file="$(_build_airflow_extra_env_file "dataspoke-secrets")"
@@ -1462,10 +1719,10 @@ if [[ "$PROFILE" == "dev" ]]; then
 
     _helm_upgrade_dataspoke_dev "${NS}"
 
-    # Roll the Airflow pods still holding a superseded signing key, if
-    # _helm_upgrade_dataspoke_dev found the credentials Secret's Airflow keys
-    # had drifted from their live projections.
-    if [[ "${AIRFLOW_KEYS_ROTATED}" == "true" ]]; then
+    # Roll the Airflow pods still holding a superseded signing key or a
+    # superseded metadata-DB connection string, if _helm_upgrade_dataspoke_dev
+    # found either had drifted from what these pods are currently using.
+    if [[ "${AIRFLOW_KEYS_ROTATED}" == "true" || "${AIRFLOW_METADATA_DSN_ROTATED}" == "true" ]]; then
       _restart_airflow_key_consumers "${NS}"
     fi
 
@@ -1554,12 +1811,14 @@ if [[ "$PROFILE" == "dev" ]]; then
     # airflow.{apiSecretKeySecretName,jwtSecretName,fernetKeySecretName}, so it
     # must guarantee those projected Secrets — and the credentials Secret they
     # derive from — exist first. Idempotent: a no-op once already in sync.
-    # Fernet before keys — see _helm_upgrade_dataspoke_dev for why the reverse
-    # strands a key rotation permanently.
+    # Fernet, then keys, then derive last — see _helm_upgrade_dataspoke_dev
+    # for why _ensure_airflow_key_secrets must precede
+    # _derive_airflow_metadata_secret (it validates before writing; derive
+    # does not).
     _ensure_dataspoke_secrets "${NS}" "dev" "dataspoke-secrets"
-    _derive_airflow_metadata_secret "${NS}" "dataspoke-secrets"
     _ensure_airflow_fernet_secret "${NS}" "dataspoke-secrets"
     _ensure_airflow_key_secrets "${NS}" "dataspoke-secrets"
+    _derive_airflow_metadata_secret "${NS}" "dataspoke-secrets"
 
     SCHEME="$(ingress_scheme)"
     # One class for every Ingress this release renders. The API and frontend
@@ -1620,15 +1879,15 @@ if [[ "$PROFILE" == "dev" ]]; then
       _rollout_restart_workload "${NS}" "dataspoke-frontend"
     fi
 
-    # Roll the Airflow pods still holding a superseded signing key, if the
-    # ensure-secrets step above found the credentials Secret's Airflow keys
-    # had drifted from their live projections. Ordered ahead of the rollout
-    # wait below: _ensure_airflow_key_secrets has already written the new key
-    # into the projected Secrets, so an abort between the two leaves the
-    # Airflow pods signing with a superseded key — and the next run compares
-    # the credentials Secret against those same projections, finds them equal,
-    # and skips the restart, stranding it permanently.
-    if [[ "${AIRFLOW_KEYS_ROTATED}" == "true" ]]; then
+    # Roll the Airflow pods still holding a superseded signing key or a
+    # superseded metadata-DB connection string, if the ensure-secrets steps
+    # above found either had drifted from what these pods are currently
+    # using. Ordered ahead of the rollout wait below: the writes above have
+    # already landed in the projected Secrets, so an abort between the two
+    # leaves the Airflow pods running on a superseded value — and the next
+    # run compares the credentials Secret against those same projections,
+    # finds them equal, and skips the restart, stranding it permanently.
+    if [[ "${AIRFLOW_KEYS_ROTATED}" == "true" || "${AIRFLOW_METADATA_DSN_ROTATED}" == "true" ]]; then
       _restart_airflow_key_consumers "${NS}"
     fi
 
@@ -1788,25 +2047,34 @@ if [[ "$PROFILE" == "dev" ]]; then
     info "Installing DataSpoke umbrella chart..."
     _helm_upgrade_dataspoke_dev "${NS}"
 
-    # Roll the Airflow pods still holding a superseded signing key
-    if [[ "${AIRFLOW_KEYS_ROTATED}" == "true" ]]; then
+    # Roll the Airflow pods still holding a superseded signing key or a
+    # superseded metadata-DB connection string
+    if [[ "${AIRFLOW_KEYS_ROTATED}" == "true" || "${AIRFLOW_METADATA_DSN_ROTATED}" == "true" ]]; then
       _restart_airflow_key_consumers "${NS}"
     fi
 
     # Ensure pgvector + AGE extensions
     info "Ensuring pgvector + age extensions in the dataspoke database..."
 
-    # Read postgres credentials from the consolidated Secret (never from .env)
-    DS_POSTGRES_USER="$(kubectl get secret dataspoke-secrets -n "${NS}" \
-      -o jsonpath='{.data.DATASPOKE_POSTGRES_USER}' | base64 --decode)"
+    # DATASPOKE_POSTGRES_{USER,DB} come from the app ConfigMap, not the
+    # credentials Secret — they are non-secret and live there instead (see
+    # spec/feature/HELM_CHART.md §ConfigMap keys). Only the password is a
+    # secret, read from the consolidated Secret (never from .env).
+    DS_POSTGRES_USER="$(_read_configmap_value "${NS}" "DATASPOKE_POSTGRES_USER")"
     DS_POSTGRES_PASSWORD="$(kubectl get secret dataspoke-secrets -n "${NS}" \
       -o jsonpath='{.data.DATASPOKE_POSTGRES_PASSWORD}' | base64 --decode)"
-    DS_POSTGRES_DB="$(kubectl get secret dataspoke-secrets -n "${NS}" \
-      -o jsonpath='{.data.DATASPOKE_POSTGRES_DB}' | base64 --decode)"
+    DS_POSTGRES_DB="$(_read_configmap_value "${NS}" "DATASPOKE_POSTGRES_DB")"
 
-    # Validate the postgres username before interpolating it into SQL.
+    # Validate the postgres username before interpolating it into the GRANT
+    # statements below.
     if [[ ! "${DS_POSTGRES_USER}" =~ ^[a-zA-Z_][a-zA-Z0-9_]{0,62}$ ]]; then
       error "DATASPOKE_POSTGRES_USER '${DS_POSTGRES_USER}' is not a valid SQL identifier."
+    fi
+    # Same shape check on the database name — it reaches `psql -d` below as
+    # an argv element (no shell re-parses it), so a leading '-' would be
+    # taken as a flag rather than a database name.
+    if [[ ! "${DS_POSTGRES_DB}" =~ ^[a-zA-Z_][a-zA-Z0-9_]{0,62}$ ]]; then
+      error "DATASPOKE_POSTGRES_DB '${DS_POSTGRES_DB}' is not a valid SQL identifier."
     fi
 
     kubectl rollout status statefulset/dataspoke-postgresql -n "${NS}" --timeout=5m >/dev/null 2>&1 || true
@@ -1852,9 +2120,12 @@ if [[ "$PROFILE" == "dev" ]]; then
 
     # Populate DATASPOKE_TEST_* block in .env for laptop-side test access
     info "Writing DATASPOKE_TEST_* values to .env..."
-    _sync_env_from_secret "${NS}" "DATASPOKE_POSTGRES_USER"     "DATASPOKE_TEST_POSTGRES_USER"
+    # DATASPOKE_POSTGRES_{USER,DB} come from the app ConfigMap, not the
+    # credentials Secret — they are non-secret and live there instead (see
+    # spec/feature/HELM_CHART.md §ConfigMap keys).
+    _write_env_var        "DATASPOKE_TEST_POSTGRES_USER" "$(_read_configmap_value "${NS}" "DATASPOKE_POSTGRES_USER")"
     _sync_env_from_secret "${NS}" "DATASPOKE_POSTGRES_PASSWORD" "DATASPOKE_TEST_POSTGRES_PASSWORD"
-    _sync_env_from_secret "${NS}" "DATASPOKE_POSTGRES_DB"       "DATASPOKE_TEST_POSTGRES_DB"
+    _write_env_var        "DATASPOKE_TEST_POSTGRES_DB"   "$(_read_configmap_value "${NS}" "DATASPOKE_POSTGRES_DB")"
     _sync_env_from_secret "${NS}" "DATASPOKE_REDIS_PASSWORD"    "DATASPOKE_TEST_REDIS_PASSWORD"
     _sync_env_from_secret "${NS}" "DATASPOKE_AIRFLOW_USER"      "DATASPOKE_TEST_AIRFLOW_USER"
     _sync_env_from_secret "${NS}" "DATASPOKE_AIRFLOW_PASSWORD"  "DATASPOKE_TEST_AIRFLOW_PASSWORD"
@@ -2112,16 +2383,17 @@ elif [[ "$PROFILE" == "prod" ]]; then
   # CI pipeline that built and pushed, then invoked this script only to
   # deploy) — the image already exists in the registry at this point, so its
   # digest can be resolved now, before any credential Secret below is created
-  # or mutated. This matters specifically for a deploy-only host that lacks
-  # gcloud/aws on PATH (a supported shape — it is exactly what --skip-build is
-  # for): without this early resolution, Phase 1 below would go on to create/
-  # update dataspoke-airflow-metadata-encryption-key and
-  # dataspoke-airflow-metadata-db, and
-  # only then discover in Phase 3 that no digest could be resolved and abort —
-  # mutating cluster Secrets on a run that was never going to complete. When a
-  # build is about to run (the default, no --skip-build), the image does not
-  # exist in the registry yet at this point, so resolution stays where it can
-  # actually succeed: immediately after Phase 2's push, in Phase 3 below.
+  # or mutated. This matters for a deploy-only host that lacks gcloud/aws on
+  # PATH (a supported shape — it is exactly what --skip-build is for):
+  # without this early resolution, Phase 1 would create/update
+  # dataspoke-airflow-metadata-encryption-key (the only Secret Phase 1
+  # writes — dataspoke-airflow-metadata-db and the two signing-key
+  # projections are Phase 3's, see that phase) and only then discover in
+  # Phase 3 that no digest could be resolved and abort — mutating a cluster
+  # Secret on a run that was never going to complete. When a build is about
+  # to run (the default, no --skip-build), the image does not exist in the
+  # registry yet at this point, so resolution stays where it can actually
+  # succeed: immediately after Phase 2's push, in Phase 3 below.
   API_IMAGE_DIGEST=""
   FRONTEND_IMAGE_DIGEST=""
   if [[ "$SKIP_BUILD" == "true" && "${NO_DIGEST_PIN}" == "false" ]]; then
@@ -2153,17 +2425,14 @@ elif [[ "$PROFILE" == "prod" ]]; then
   # Validate ALL required keys are present and not insecure defaults
   _check_airflow_credentials_prod "${NS}" "${SECRET_TO_CHECK}"
 
-  # Compare the Fernet key first and before any other Secret in this phase is
-  # mutated: on a mismatch it aborts non-mutating (it only writes when there is
-  # nothing yet to disagree with), so ordering it ahead of
-  # _derive_airflow_metadata_secret keeps the "pre-flight fails before any
-  # resources are created" promise (README.md §2) true even for this check.
-  # _ensure_airflow_key_secrets is the other Secret write it must precede;
-  # that one runs in Phase 3, so the ordering holds a fortiori.
+  # Compare the Fernet key before any other Secret in this run is mutated: on
+  # a mismatch it aborts non-mutating, so running it here keeps the
+  # "pre-flight fails before any resources are created" promise (README.md
+  # §2) true even for this check. _derive_airflow_metadata_secret and
+  # _ensure_airflow_key_secrets — the two rotating Secret writes — both run
+  # in Phase 3 (see that phase), so the ordering holds a fortiori. Phase 1's
+  # only mutation is this Fernet projection's idempotent create.
   _ensure_airflow_fernet_secret "${NS}" "${SECRET_TO_CHECK}"
-
-  # Derive Airflow metadata Secret from the operator Secret
-  _derive_airflow_metadata_secret "${NS}" "${SECRET_TO_CHECK}"
 
   # -----------------------------------------------------------------------
   # Phase 2: Image builds (skippable)
@@ -2235,24 +2504,28 @@ elif [[ "$PROFILE" == "prod" ]]; then
     fi
   fi
 
-  # Derive Airflow key secrets from the operator Secret. Deliberately ordered
-  # after digest resolution rather than beside the other Phase-1 credential
-  # derivations: this call sets AIRFLOW_KEYS_ROTATED and writes the new key
-  # into the projected Secrets, and the only thing that repairs the resulting
-  # split is _restart_airflow_key_consumers further below. Any abort between
-  # the two — _resolve_digest_or_abort above being the one this script can
-  # itself raise — would leave the Airflow pods signing with a superseded key,
-  # and the next run compares the credentials Secret against those same
-  # projections, finds them equal, and skips the restart, stranding it.
-  #
-  # This removes digest resolution from that gap, not the gap itself. What
+  # Derive the Airflow metadata Secret from the operator Secret. Runs in
+  # Phase 3, not Phase 1: this call rewrites dataspoke-airflow-metadata-db
+  # whenever DATASPOKE_POSTGRES_PASSWORD has rotated, and the only thing that
+  # repairs the resulting split between that write and what the running
+  # Airflow pods hold is _restart_airflow_key_consumers further below.
+  # Running it in Phase 1 would put the whole of Phase 2 (image builds)
+  # between the write and the restart — the same gap
+  # _ensure_airflow_key_secrets' own comment below describes for the
+  # signing-key path — and a Phase-3 upgrade failure would leave a rewritten
+  # DSN the pods only adopt on some later, unrelated restart. Phase 1's only
+  # mutation stays the Fernet projection's idempotent create (README.md §2's
+  # "pre-flight fails before any resources are created" promise).
+  _derive_airflow_metadata_secret "${NS}" "${SECRET_TO_CHECK}"
+
+  # Derive Airflow key secrets from the operator Secret. Ordered after digest
+  # resolution rather than beside the other Phase-1 credential derivations:
+  # this call writes a rotated key into the projected Secrets, and only
+  # _restart_airflow_key_consumers further below repairs the resulting split
+  # (same reasoning covers _derive_airflow_metadata_secret just above). What
   # remains between this write and the restart is the `helm upgrade` below —
-  # a failed upgrade strands the key the same way. The dev paths carry a wider
-  # gap than this one: `ingress_scheme` / `ingress_class` are validated inline
-  # there rather than pre-flighted, and under --no-digest-pin the deliberately
-  # unguarded `_rollout_restart_workload` calls sit inside it too. Closing the
-  # residual means restarting the consumers directly after this call, ahead of
-  # the upgrade, on all four paths.
+  # a failed upgrade strands the key the same way; restarting the consumers
+  # directly after this call, ahead of the upgrade, closes the rest.
   _ensure_airflow_key_secrets "${NS}" "${SECRET_TO_CHECK}"
 
   api_image_prod_args=()
@@ -2330,15 +2603,15 @@ elif [[ "$PROFILE" == "prod" ]]; then
     --timeout 15m
 
   # -----------------------------------------------------------------------
-  # Roll the Airflow pods still holding a superseded signing key. This runs
-  # immediately after the helm upgrade and before any rollout-status wait
-  # below, so an abort on one of those waits (a real risk — they're 5m
-  # timeouts against a fresh rollout) never leaves the credentials Secret
-  # holding a rotated key that the running Airflow pods were never restarted
-  # to pick up. Every call site of this helper orders it the same way, for
-  # the same reason.
+  # Roll the Airflow pods still holding a superseded signing key or a
+  # superseded metadata-DB connection string. This runs immediately after the
+  # helm upgrade and before any rollout-status wait below, so an abort on one
+  # of those waits (a real risk — they're 5m timeouts against a fresh
+  # rollout) never leaves the credentials Secret holding a rotated value that
+  # the running Airflow pods were never restarted to pick up. Every call site
+  # of this helper orders it the same way, for the same reason.
   # -----------------------------------------------------------------------
-  if [[ "${AIRFLOW_KEYS_ROTATED}" == "true" ]]; then
+  if [[ "${AIRFLOW_KEYS_ROTATED}" == "true" || "${AIRFLOW_METADATA_DSN_ROTATED}" == "true" ]]; then
     _restart_airflow_key_consumers "${NS}"
   fi
 

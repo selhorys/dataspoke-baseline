@@ -54,3 +54,4 @@
 - [DSN escape symmetry facts](project_dsn_escape_symmetry_facts.md) — URL fields are verbatim; render_as_string is symmetric for user/pw but never for `database`; limits→redis-py unquotes
 - [Tailwind child-svg specificity](project_tailwind_child_svg_specificity.md) — Button's `[&_svg]:size-4` outranks a child icon's own `h-3.5`; authored classes lie about icon size
 - [AsyncSession.bind seam](project_asyncsession_bind_seam.md) — set only if a bind is passed, absent from dir() so spec'd mocks miss it; AsyncConnection binds silently fall back
+- [Postgres identity plane facts](project_postgres_identity_plane_facts.md) — only the ROLE is an initdb literal; DSN role is hardcoded in install.sh; metadataSecretName freezes the checksum

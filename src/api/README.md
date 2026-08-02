@@ -73,8 +73,8 @@ DataHub, Langfuse, and LLM provider/model/key are **not** env vars on the API po
 | `DATASPOKE_RATE_LIMIT_PER_MINUTE` | `120` | Max requests per minute per client |
 | `DATASPOKE_POSTGRES_HOST` | `localhost` | PostgreSQL host |
 | `DATASPOKE_POSTGRES_PORT` | `5432` | PostgreSQL port |
-| `DATASPOKE_POSTGRES_USER` | `postgres` | PostgreSQL user |
-| `DATASPOKE_POSTGRES_PASSWORD` | `postgres` | PostgreSQL password |
+| `DATASPOKE_POSTGRES_USER` | `dataspoke` | PostgreSQL user |
+| `DATASPOKE_POSTGRES_PASSWORD` | `dataspoke` | PostgreSQL password |
 | `DATASPOKE_POSTGRES_DB` | `dataspoke` | PostgreSQL database name |
 | `DATASPOKE_REDIS_HOST` | `localhost` | Redis host |
 | `DATASPOKE_REDIS_PORT` | `6379` | Redis port |

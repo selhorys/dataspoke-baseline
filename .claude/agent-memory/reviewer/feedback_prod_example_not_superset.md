@@ -37,3 +37,11 @@ and a StorageClass section above it left that range naming the unrelated
 any insertion into a doc other files cite:
 `grep -rn "values-prod.example.yaml:[0-9]\|install.sh:[0-9]\|values.yaml:[0-9]" helm-charts/ spec/`
 Prefer a section-name reference over a line range when suggesting the fix.
+
+**The `config:` block is the recurring dangling target.** `values-prod.example.yaml` has a
+`config:` block, but it carries only `corsOrigins`, `oauthPostLoginRedirect`,
+`rateLimitPerMinute` and `trustedProxyIps` — no `postgres:`. So a comment (or an `install.sh`
+error message) telling the operator to "set `config.postgres.{user,db}` in your overlay — see
+values-prod.example.yaml" points at a file where that key does not exist. Grep
+`grep -n '^config:' -A 40 helm-charts/values-prod.example.yaml` before accepting any new
+`config.X` pointer.

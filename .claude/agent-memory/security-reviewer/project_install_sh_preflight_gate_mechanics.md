@@ -80,10 +80,33 @@ chart resolves through a precedence chain — whether the gate reads the key
 that actually **wins**. Reproduce a gate bypass by rendering the same overlay
 with `helm template` and diffing what the gate printed against what rendered.
 
-`helm-charts/bin/install.sh` and `helm-charts/prod-prereq/**` are on the
-security-reviewer sensitive-path list; `helm-charts/bin/uninstall.sh` (which
-conditionally deletes `dataspoke-secrets` and the Airflow fernet-key Secret)
-is **not** — worth proposing.
+**Gate inventory refresh (2026-08-02).** The prod pre-flight now also rejects a
+credentials Secret still carrying `DATASPOKE_POSTGRES_USER`/`_DB`
+(see [[postgres-identity-configmap-relocation]]) — gated on a **non-empty**
+decoded value, so an empty-valued key passes. Ordering in the prod branch is
+`_ensure_dataspoke_secrets` (read-or-error) -> `_check_airflow_credentials_prod`
+-> `_ensure_airflow_fernet_secret`, and `_derive_airflow_metadata_secret` moved
+out of Phase 1 into Phase 3. Phase 1's only remaining mutation is the Fernet
+projection's idempotent create.
+
+**Name-grammar asymmetry — the live hole in this area.** `SECRET_TO_CHECK`
+(`install.sh:2427`) and StorageClass names (`:2381`) are DNS-subdomain
+regex-checked before reaching `kubectl` argv or a `--set` token. The Secret name
+`_resolve_fernet_secret_name` reads out of the deployed release's
+`airflow.fernetKeySecretName` (`helm get values ... | python3`) gets **no**
+check, and reaches (a) `kubectl get secret "$candidate"` argv, (b) `info`/`error`
+text, which `helpers.sh` emits with `echo -e` — so backslash escapes in the value
+are interpreted, and (c) a copy-pasteable `kubectl get secret ${_fc} ...` line
+inside the prod "recover your Fernet key" runbook message. The less-trusted
+source is the unchecked one. Same class as the IngressClass hole above.
+
+`helm-charts/bin/install.sh`, `helm-charts/bin/uninstall.sh` and
+`helm-charts/prod-prereq/**` are all on the security-reviewer sensitive-path
+list as of 2026-08-02 (the earlier gap was closed). Still unlisted and still
+worth proposing: `helm-charts/README.md` (§Prod runbook — the credential
+creation instructions), `spec/feature/HELM_CHART.md`, and
+`.claude/skills/k8s-deploy/SKILL.md`, all three of which state the credentials
+contract operators act on.
 
 Related: [[env-to-sed-helm-interpolation-boundary]],
 [[operator-runbook-is-credential-surface]],

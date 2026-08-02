@@ -152,9 +152,9 @@ Secret must create the namespace themselves first. Only the ordering is at
 stake: `ensure_namespace` is idempotent and adopts a namespace the operator
 already made.
 
-#### 2. Create the namespace and the 13-key credential Secret
+#### 2. Create the namespace and the 11-key credential Secret
 
-For a real deployment, deliver these 13 keys via ExternalSecrets, Vault, or
+For a real deployment, deliver these 11 keys via ExternalSecrets, Vault, or
 SealedSecrets rather than plain `kubectl`. The `kubectl` form below is only
 the floor for a one-off bootstrap: run it from a private/short-lived shell,
 and prefer the `--from-env-file` variant over `--from-literal=` — the latter
@@ -190,9 +190,7 @@ kubectl create namespace <your-namespace>
 # Write values to a file kubectl reads (not --from-literal=, which leaks into
 # shell history/argv — see above), then remove the file.
 cat > /tmp/dataspoke-secrets.env <<'EOF'
-DATASPOKE_POSTGRES_USER=<u>
 DATASPOKE_POSTGRES_PASSWORD=<p>
-DATASPOKE_POSTGRES_DB=<db>
 DATASPOKE_REDIS_PASSWORD=<p>
 DATASPOKE_AIRFLOW_USER=<u>
 DATASPOKE_AIRFLOW_PASSWORD=<p>
@@ -219,8 +217,47 @@ you:
 |-----|------|----------------|
 | `DATASPOKE_JWT_SECRET_KEY`, `DATASPOKE_OAUTH_STATE_SECRET`, `DATASPOKE_INTERNAL_TOKEN`, `DATASPOKE_AIRFLOW_WEBSERVER_SECRET_KEY`, `DATASPOKE_AIRFLOW_JWT_SECRET` | high-entropy random | `openssl rand -hex 32` |
 | `DATASPOKE_AIRFLOW_FERNET_KEY` | high-entropy random, fixed shape | URL-safe base64 of 32 raw bytes — see command above, not `openssl rand -hex` |
-| `DATASPOKE_POSTGRES_USER`/`PASSWORD`/`DB`, `DATASPOKE_REDIS_PASSWORD`, `DATASPOKE_AIRFLOW_USER`/`PASSWORD` | operator-chosen | pick unique values; avoid `admin`/`postgres`-style defaults |
+| `DATASPOKE_POSTGRES_PASSWORD`, `DATASPOKE_REDIS_PASSWORD`, `DATASPOKE_AIRFLOW_USER`/`PASSWORD` | operator-chosen | pick unique values; avoid `admin`/`postgres`-style defaults |
 | `DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET` | externally issued | from the Google Cloud Console OAuth client |
+
+`DATASPOKE_POSTGRES_USER` and `DATASPOKE_POSTGRES_DB` are **not** in this
+Secret. Both are non-secret and live in the app ConfigMap instead
+(`config.postgres.user`/`config.postgres.db` chart values, default
+`"dataspoke"`/`"dataspoke"`) — see `helm-charts/dataspoke/values.yaml`'s
+`config.postgres` comment. The role (`DATASPOKE_POSTGRES_USER` /
+`config.postgres.user`) is chart-pinned: it also appears as a bare literal in
+the bundled subchart's `initdb` `GRANT`/`OWNER` statements
+(`primary.initdb.scripts` in both `dataspoke/values.yaml` and
+`dataspoke/values-dev.yaml`) and in `install.sh`'s
+`_derive_airflow_metadata_secret` — changing it is unsupported. The database
+(`DATASPOKE_POSTGRES_DB` / `config.postgres.db`) has no such third site:
+`initdb` runs against `postgresql.auth.database` as its default connection
+and never names it as a literal, so `config.postgres.db` plus
+`postgresql.auth.database` is a clean, fully-guarded two-value pair you may
+change together.
+
+**Migration note for existing prod installs.** If your credentials Secret
+still carries `DATASPOKE_POSTGRES_USER` or `DATASPOKE_POSTGRES_DB` from
+before this change, remove them before your next `install.sh` run — the
+preflight below now rejects a Secret that still carries either key rather
+than silently ignoring it:
+
+```bash
+kubectl patch secret dataspoke-secrets-prod -n <your-namespace> --type=merge \
+  -p='{"data":{"DATASPOKE_POSTGRES_USER":null,"DATASPOKE_POSTGRES_DB":null}}'
+```
+
+**Rotating `DATASPOKE_POSTGRES_PASSWORD` needs a manual `ALTER ROLE` too.**
+Bitnami's PostgreSQL image only sets the role's password from
+`DATASPOKE_POSTGRES_PASSWORD` at first bootstrap (`initdb`) — writing a new
+value into the credentials Secret and re-running `install.sh` re-derives
+`dataspoke-airflow-metadata-db` with the new password and restarts the
+Airflow pods that hold it (see §Secrets Management in
+`spec/feature/HELM_CHART.md`), but the running PostgreSQL role's own
+password is untouched. Without also running `ALTER ROLE dataspoke WITH
+PASSWORD '<new-password>';` against the live database, the API's
+alembic-migrate init container and every rotated consumer fail
+authentication against the old password on the very next rollout.
 
 The preflight (`_check_airflow_credentials_prod` in `bin/install.sh`, plus the
 IngressClass/StorageClass/Secret-existence/`--image-tag` checks earlier in the
@@ -235,7 +272,8 @@ exist by this point: `ensure_namespace` runs ahead of these checks, per
 | IngressClass | not found in the cluster |
 | StorageClass | any class pinned in the `--values` overlay is not found in the cluster (see [§1. Prerequisites](#1-prerequisites) and `helm-charts/prod-prereq/README.md`), or a literal `-` is pinned on an Airflow key that does not honour it |
 | Secret | missing entirely |
-| All 13 keys | any of the 13 keys above is absent |
+| All 11 keys | any of the 11 keys above is absent |
+| `DATASPOKE_POSTGRES_USER` / `DATASPOKE_POSTGRES_DB` | either key is still present in the Secret — both moved to the app ConfigMap (`config.postgres.*`); see the migration note above |
 | `DATASPOKE_JWT_SECRET_KEY` | equals the dev default `changeme-dev-secret-do-not-use-in-prod` |
 | `DATASPOKE_AIRFLOW_USER` | equals `admin` |
 | `DATASPOKE_AIRFLOW_PASSWORD` | empty, or equals `admin` |
@@ -265,7 +303,7 @@ explicit escape hatch.
 
 This walkthrough already uses a custom Secret name
 (`dataspoke-secrets-prod`) via `secrets.existingSecret` in the overlay (§3) —
-the same 13 keys and rejection rules apply to whatever Secret that name
+the same 11 keys and rejection rules apply to whatever Secret that name
 resolves to. Set it to `dataspoke-secrets` instead (or omit
 `secrets.existingSecret` from your overlay) to use the chart default name.
 
@@ -412,7 +450,8 @@ before `airflow.fernetKeySecretName` was pinned to
 only when its `fernet-key` value agrees with `DATASPOKE_AIRFLOW_FERNET_KEY`
 in the retained credentials Secret (a redundant copy, safe to drop). If it
 disagrees, or the credentials Secret has no `DATASPOKE_AIRFLOW_FERNET_KEY` to
-compare against (a Secret that predates the 13-key contract), the uninstaller
+compare against (a Secret that predates the Fernet key joining the
+credentials contract), the uninstaller
 leaves it in place and warns — on such a cluster it may be the only live
 carrier of the key that decrypts the retained Postgres PVC's Airflow
 connections/Variables. There is no prod `--delete-pvcs` — that flag is
@@ -425,6 +464,18 @@ A namespace deletion does not by itself destroy the credential material on
 these PVCs, though: under a `Retain`-reclaim-policy `StorageClass` (see
 below) the underlying volumes survive the namespace and must be deleted by
 hand — or their disk-encryption key destroyed — for a complete decommission.
+
+**A custom-named Fernet Secret is untouched by `uninstall.sh`.** If this
+release's Airflow chart was ever pointed at a self-chosen
+`airflow.fernetKeySecretName` — for example by a direct `helm upgrade` or a
+GitOps tool applying an overlay that `install.sh`'s own forced `--set` never
+ran ahead of — the cleanup above only knows the two fixed names,
+`dataspoke-airflow-metadata-encryption-key` (always deleted) and
+`dataspoke-airflow-fernet-key` (conditionally deleted per the paragraph
+above). A third, self-chosen Secret name is neither deleted nor
+conditionally preserved; `uninstall.sh` does not know it exists and leaves
+it exactly as it was. Locate and dispose of it by hand if you are
+decommissioning the namespace for good.
 
 | Resource | Kind | Size | Notes |
 |----------|------|------|-------|
@@ -483,7 +534,7 @@ Two different guarantees apply depending on what you do next:
   between teardown and reinstall while the Postgres PVC survives.
 
 **Deleting the credential Secret**: deleting `dataspoke-secrets` (or your
-`secrets.existingSecret`) destroys the only copy of all 13 credentials unless
+`secrets.existingSecret`) destroys the only copy of all 11 credentials unless
 they also live in an external secrets manager, and strands the Postgres PVC
 above if you keep it — the running cluster still expects the old
 `DATASPOKE_POSTGRES_PASSWORD` and `DATASPOKE_AIRFLOW_FERNET_KEY`. Delete the

@@ -8,6 +8,16 @@ metadata:
 data:
   DATASPOKE_POSTGRES_HOST: {{ .Values.config.postgres.host | quote }}
   DATASPOKE_POSTGRES_PORT: {{ .Values.config.postgres.port | quote }}
+  # Guarded on .Values.postgresql.enabled — with the bundled subchart off there
+  # is no postgresql.auth.* to compare against, and the role/database names
+  # are then entirely the external database's to define.
+  {{- if and .Values.postgresql.enabled (ne (.Values.config.postgres.user | toString) (.Values.postgresql.auth.username | toString)) }}
+  {{- fail (printf "config.postgres.user (%q) disagrees with postgresql.auth.username (%q) — the latter is the only Postgres role the bundled subchart's initdb actually creates, so a mismatch here passes every pre-flight and deploys a healthy-looking stack whose API then fails Postgres authentication against a role that was never created. The role is chart-pinned, not operator-choosable: it also appears as a bare literal in primary.initdb.scripts' GRANT/OWNER statements (both dataspoke/values.yaml and values-dev.yaml) and in install.sh's _derive_airflow_metadata_secret, neither of which this guard reaches. This guard catches one-sided drift only — it does not make the role changeable." (.Values.config.postgres.user | toString) (.Values.postgresql.auth.username | toString)) }}
+  {{- end }}
+  DATASPOKE_POSTGRES_USER: {{ .Values.config.postgres.user | quote }}
+  {{- if and .Values.postgresql.enabled (ne (.Values.config.postgres.db | toString) (.Values.postgresql.auth.database | toString)) }}
+  {{- fail (printf "config.postgres.db (%q) disagrees with postgresql.auth.database (%q) — the latter is the only database the bundled subchart's initdb actually creates, so a mismatch here passes every pre-flight and deploys a healthy-looking stack whose API then fails to find its database. Unlike the role above, this is a clean two-site change: initdb's scripts run against postgresql.auth.database as their default connection and never name the database as a literal, so this guard fully covers it." (.Values.config.postgres.db | toString) (.Values.postgresql.auth.database | toString)) }}
+  {{- end }}
   DATASPOKE_POSTGRES_DB: {{ .Values.config.postgres.db | quote }}
   DATASPOKE_REDIS_HOST: {{ .Values.config.redis.host | quote }}
   DATASPOKE_REDIS_PORT: {{ .Values.config.redis.port | quote }}

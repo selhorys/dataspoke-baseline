@@ -272,6 +272,18 @@ postgresql:
     repository: "dataspoke/postgres"
     tag: "17-extensions"
     pullPolicy: IfNotPresent
+  # username here is the ONLY thing that actually creates the Postgres role.
+  # config.postgres.user below (rendered into the app ConfigMap) must equal
+  # it, or the API deploys healthy and then fails Postgres authentication —
+  # templates/configmap.yaml fails the render on a mismatch. The role is
+  # chart-pinned, not operator-choosable: it also appears as a bare literal in
+  # primary.initdb.scripts below (and its copy in values-dev.yaml) and in
+  # install.sh's _derive_airflow_metadata_secret, neither of which the render
+  # guard reaches.
+  # database, unlike the role, is a clean two-site value (this key and
+  # config.postgres.db below, guarded against each other at render time) —
+  # initdb's scripts run against it as their default connection but never
+  # name it as a literal.
   auth:
     username: "dataspoke"
     database: "dataspoke"
@@ -317,6 +329,15 @@ postgresql:
         # IF NOT EXISTS` idempotently on every deploy — both are complementary.
         # Extensions are created in the `dataspoke` DB (default connection).
         # AGE and pgvector workloads must therefore connect to the `dataspoke` DB.
+        # The 'dataspoke' role literal below is chart-pinned, not
+        # operator-choosable: it must match auth.username above and
+        # config.postgres.user (rendered into the app ConfigMap, guarded at
+        # render time against auth.username in templates/configmap.yaml), and
+        # install.sh's _derive_airflow_metadata_secret — none reachable from
+        # this initdb SQL. create-airflow-db.sql's database name carries no
+        # such third site: it runs against auth.database as the default
+        # connection and never names it as a literal, so config.postgres.db +
+        # auth.database is a clean, fully-guarded two-site pair.
         01-extensions.sql: |
           CREATE EXTENSION IF NOT EXISTS vector;
           CREATE EXTENSION IF NOT EXISTS age;
@@ -719,6 +740,17 @@ config:
   postgres:
     host: "dataspoke-postgresql"
     port: "5432"
+    # user/db: the app ConfigMap is the single source of the Postgres
+    # identity (the credentials Secret carries only
+    # DATASPOKE_POSTGRES_PASSWORD; neither name is a secret).
+    # templates/configmap.yaml fails the render if either disagrees with
+    # postgresql.auth.username/database above. The role is chart-pinned, not
+    # operator-choosable: it also appears as a bare literal in
+    # primary.initdb.scripts above (and its copy in values-dev.yaml) and in
+    # install.sh's _derive_airflow_metadata_secret, neither reachable from
+    # this guard. db has no such third site — a clean, fully-guarded pair
+    # with postgresql.auth.database.
+    user: "dataspoke"
     db: "dataspoke"
   redis:
     host: "dataspoke-redis-master"
@@ -785,16 +817,22 @@ config:
 secrets:
   # If set, the chart references this Secret instead of "dataspoke-secrets"
   # everywhere. Used for prod BYO patterns (ExternalSecrets / Vault /
-  # SealedSecrets). The Secret must contain these 13 keys:
-  #   DATASPOKE_POSTGRES_USER, DATASPOKE_POSTGRES_PASSWORD, DATASPOKE_POSTGRES_DB,
+  # SealedSecrets). The Secret must contain these 11 keys:
+  #   DATASPOKE_POSTGRES_PASSWORD,
   #   DATASPOKE_REDIS_PASSWORD, DATASPOKE_AIRFLOW_USER, DATASPOKE_AIRFLOW_PASSWORD,
   #   DATASPOKE_INTERNAL_TOKEN, DATASPOKE_JWT_SECRET_KEY,
   #   DATASPOKE_AIRFLOW_WEBSERVER_SECRET_KEY, DATASPOKE_AIRFLOW_JWT_SECRET,
   #   DATASPOKE_AIRFLOW_FERNET_KEY,
   #   DATASPOKE_OAUTH_STATE_SECRET, DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET
-  # install.sh (_check_airflow_credentials_prod) validates all 13 keys in prod.
+  # install.sh (_check_airflow_credentials_prod) validates all 11 keys in prod.
   # Airflow signing keys are projected into chart-compatible Secrets by
   # install.sh (_ensure_airflow_key_secrets / _ensure_airflow_fernet_secret).
+  # DATASPOKE_POSTGRES_USER and DATASPOKE_POSTGRES_DB are NOT in this Secret —
+  # they are non-secret and live in the app ConfigMap instead (config.postgres.*
+  # above), which is also where the render-time consistency guard against
+  # postgresql.auth.* lives (templates/configmap.yaml). A Secret still
+  # carrying either key is a prod pre-flight failure (install.sh
+  # _check_airflow_credentials_prod), not silently ignored.
   existingSecret: ""
   # install.sh pre-creates the Secret; Helm does not template it.
   createSecret: false

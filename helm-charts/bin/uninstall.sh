@@ -227,8 +227,9 @@ if [[ "$PROFILE" == "dev" ]]; then
   # airflow.fernetKeySecretName was pinned to dataspoke-airflow-metadata-
   # encryption-key. On such a cluster it may be the ONLY live carrier of the
   # Fernet key that decrypts the retained Postgres PVC's Airflow connections/
-  # Variables (dataspoke-secrets predating the 13-key contract has no
-  # DATASPOKE_AIRFLOW_FERNET_KEY of its own to compare against). Delete it
+  # Variables (dataspoke-secrets predating the Fernet key joining the
+  # credentials contract has no DATASPOKE_AIRFLOW_FERNET_KEY of its own to
+  # compare against). Delete it
   # only when its value agrees with what dataspoke-secrets carries — a
   # redundant copy, safe to drop — otherwise leave it as a last-resort
   # adoption carrier for a future install and warn instead.
@@ -358,8 +359,11 @@ elif [[ "$PROFILE" == "prod" ]]; then
   SECRET_TO_CHECK="dataspoke-secrets"
   if helm status dataspoke --namespace "${NS}" >/dev/null 2>&1; then
     require_tools python3
+    # `or {}` guards a release with no user-supplied overrides, where `helm
+    # get values` prints bare `null` and `json.load(...)` returns `None` —
+    # `d.get(...)` on `None` would otherwise raise `AttributeError`.
     _resolved_secret="$(helm get values dataspoke --namespace "${NS}" -o json 2>/dev/null \
-      | python3 -c 'import json,sys; d=json.load(sys.stdin); print((d.get("secrets") or {}).get("existingSecret",""))' 2>/dev/null || true)"
+      | python3 -c 'import json,sys; d=json.load(sys.stdin) or {}; print((d.get("secrets") or {}).get("existingSecret",""))' 2>/dev/null || true)"
     [[ -n "${_resolved_secret}" ]] && SECRET_TO_CHECK="${_resolved_secret}"
   fi
 
@@ -392,7 +396,7 @@ elif [[ "$PROFILE" == "prod" ]]; then
   # cluster it may be the ONLY live carrier of the Fernet key that decrypts
   # the retained Postgres PVC's Airflow connections/Variables, if the
   # operator's pre-created Secret predates DATASPOKE_AIRFLOW_FERNET_KEY
-  # joining the 13-key contract. Delete it only when its value agrees with
+  # joining the credentials contract. Delete it only when its value agrees with
   # what the operator's Secret carries — a redundant copy, safe to drop —
   # otherwise leave it in place and warn.
   _legacy_fernet_key=""
@@ -507,7 +511,7 @@ elif [[ "$PROFILE" == "prod" ]]; then
       info "    kubectl delete pvc ${LOG_PVCS[*]} -n '${NS}'"
     fi
     info "    kubectl delete secret ${SECRET_TO_CHECK} -n '${NS}'"
-    warn "  Deleting '${SECRET_TO_CHECK}' destroys the only copy of all 13 credentials unless"
+    warn "  Deleting '${SECRET_TO_CHECK}' destroys the only copy of all 11 credentials unless"
     warn "  they also live in an external secrets manager, AND strands the Postgres PVC above if"
     warn "  you keep it (the running cluster still expects the old DATASPOKE_POSTGRES_PASSWORD and"
     warn "  DATASPOKE_AIRFLOW_FERNET_KEY). Delete the Secret only together with the PVCs above, or"

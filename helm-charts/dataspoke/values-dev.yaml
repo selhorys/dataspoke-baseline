@@ -112,6 +112,9 @@ postgresql:
       scripts:
         # Extensions are created in the `dataspoke` DB (the default initdb
         # connection). AGE and pgvector workloads must connect to `dataspoke`.
+        # The 'dataspoke' role literal below is chart-pinned, not
+        # operator-choosable — see values.yaml's matching comment on this same
+        # script pair for the full role/database distinction.
         01-extensions.sql: |
           CREATE EXTENSION IF NOT EXISTS vector;
           CREATE EXTENSION IF NOT EXISTS age;

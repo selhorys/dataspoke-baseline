@@ -45,8 +45,15 @@ appending `\.?` to the pattern fixes that while still rejecting `@ / ? # : %`. T
 lives in the middleware module, so the other two `settings.redis_host` consumers
 (`src/api/main.py`, `src/workflows/_common.py` → `RedisClient` kwargs) are ungoverned.
 
-**install.sh strand** — `_derive_airflow_metadata_secret` returns early when
-`dataspoke-airflow-metadata-db` already exists, so any credential-encoding fix in it never
-reaches an existing install. The `DATASPOKE_POSTGRES_USER` shape gate (`:1807`,
-`^[a-zA-Z_][a-zA-Z0-9_]{0,62}$`) sits inside the `PROFILE == "dev"` branch opened at `:1381` —
-prod usernames are ungated, so "dev pre-flight rejects odd names" is false for prod.
+**install.sh strand** — RESOLVED on branch `fix/119-122-131-132-helm-credential-integrity`
+(2026-08-02): `_derive_airflow_metadata_secret` is now compare-and-rotate (re-derives the URI
+every run, rewrites only on a diff, sets `AIRFLOW_METADATA_DSN_ROTATED` only when the prior
+value was non-empty), so the `_url_encode` fix does reach an existing install. Verify before
+relying on it — the branch was uncommitted when this was written.
+
+**The `DATASPOKE_POSTGRES_USER` shape gate is still dev-only, and now structurally so**: the
+value moved out of the credentials Secret into the app ConfigMap, so the prod pre-flight has
+nothing to read. A sibling `DATASPOKE_POSTGRES_DB` gate was added beside it, also dev-only.
+Neither is a render-time guard, so an overlay overriding `config.postgres.*` reaches prod
+unshape-checked — `templates/configmap.yaml` only asserts agreement with `postgresql.auth.*`,
+never shape. See [[postgres-identity-plane-facts]].

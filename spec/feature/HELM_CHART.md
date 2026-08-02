@@ -208,10 +208,20 @@ restarted to pick it up, and the next run's own comparison would then find
 the Secret and the live projection already in agreement and skip the restart
 silently. Every call site of the helper orders it this way.
 
-The `helm upgrade` itself still sits between the key write and the restart on
-every path, so an upgrade failure strands a rotated key the same way. Removing
-that residual means restarting the consumers directly after the write, ahead of
-the upgrade.
+**Two independent rotations reach that restart, at the same point in the
+sequence.** A rewritten `dataspoke-airflow-metadata-db` connection URI
+(§Secrets Management) triggers it on the same rule as a rotated signing key,
+and for the same reason: the Secret is written earlier in the run — before the
+`helm upgrade`, in both profiles — so the restart is the only thing that makes
+the new value live. The silent-skip hazard is identical as well. An abort
+between the rewrite and the restart leaves the four consumers on the superseded
+DSN, and the next run's comparison finds the Secret already carrying the
+derived value and skips the restart.
+
+The `helm upgrade` itself still sits between the Secret write and the restart on
+every path, so an upgrade failure strands a rotated key or DSN the same way.
+Removing that residual means restarting the consumers directly after the write,
+ahead of the upgrade.
 
 Peripheral wiring (DataHub URL/token, Langfuse host/keys, LLM provider/model/key)
 is the operator's responsibility post-install, via `/api/v1/admin/peripherals/*`
@@ -283,9 +293,11 @@ Three PVCs, **66 Gi** total, keep consuming storage after teardown. The uninstal
 output names four Secrets as deleted — `dataspoke-airflow-metadata-db`,
 `dataspoke-airflow-api-secret-key`, `dataspoke-airflow-jwt-secret`,
 `dataspoke-airflow-metadata-encryption-key` — and separately logs the
-credentials Secret as retained. All four are projections of keys held in that
-credentials Secret, so deleting them is safe: the next install rebuilds them
-byte-identically from the retained source. The out-of-band Secrets are listed
+credentials Secret as retained. All four derive from that retained Secret —
+three are single-key projections of it, and `dataspoke-airflow-metadata-db`
+composes its Postgres password into a connection URI whose every other part is
+fixed — so deleting them is safe: the next install rebuilds them
+byte-identically from it. The out-of-band Secrets are listed
 under the retained-resources summary when present, and the prod profile never
 deletes them.
 
@@ -657,7 +669,9 @@ read these.
 
 ### Tier 4 — Test access (`DATASPOKE_TEST_*`)
 
-Auto-populated by `install.sh` post-install via `_sync_env_from_secret`. Read by
+Auto-populated by `install.sh` post-install — credential values out of the
+`dataspoke-secrets` Secret via `_sync_env_from_secret`, the Postgres role and
+database name out of the app ConfigMap that owns them (§ConfigMap keys). Read by
 `tests/integration/{conftest.py,util/*}` for laptop-side access to in-cluster
 services. App pods never read these.
 
@@ -772,7 +786,8 @@ the operator-pre-set `INGRESS_DOMAIN`), `DATASPOKE_TEST_DATAHUB_*` (by
 including `DATASPOKE_TEST_LOCK_URL` and
 `DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST_PORT` — by `install.sh`
 post-install (`_sync_env_from_secret` extracts credentials from the
-`dataspoke-secrets` K8s Secret; the host-bearing vars take the laptop-side
+`dataspoke-secrets` K8s Secret, `DATASPOKE_TEST_POSTGRES_{USER,DB}` come from
+the app ConfigMap, and the host-bearing vars take the laptop-side
 TCP host for the active ingress mode).
 
 ---
@@ -784,7 +799,8 @@ TCP host for the active ingress mode).
               │
               ├─ _ensure_dataspoke_secrets
               │    dev: auto-generate dataspoke-secrets on first install; an existing
-              │         Secret is left as-is apart from the Fernet-key self-heal
+              │         Secret is left as-is apart from the two self-heals — Fernet-key
+              │         patch-in and DATASPOKE_POSTGRES_{USER,DB} removal
               │         (see §Secrets Management)
               │    prod: verify secrets.existingSecret Secret is present; fail fast if missing
               │
@@ -801,6 +817,7 @@ TCP host for the active ingress mode).
               │
               ├─ _sync_env_from_secret
               │    Extract dataspoke-secrets values → append DATASPOKE_TEST_* block to .env.dev
+              │    DATASPOKE_TEST_POSTGRES_{USER,DB} come from the app ConfigMap
               │    Also appends DATASPOKE_TEST_DATAHUB_*, DATASPOKE_TEST_LANGFUSE_*,
               │    DATASPOKE_TEST_DUMMY_DATA_* from peripheral install outputs
               │
@@ -822,7 +839,7 @@ the operator's, performed against the running deployment.
 | # | Step | Interface |
 |---|---|---|
 | 1 | Apply the cluster-scoped prerequisites — at minimum the StorageClass the overlay pins | `kubectl apply -f` against manifests derived from `helm-charts/prod-prereq/` (cluster-admin) |
-| 2 | Pre-create the credentials Secret with all thirteen keys (see §Secret keys below) | Any secrets manager (ExternalSecrets Operator, Vault Agent, SealedSecrets) or `kubectl create secret generic` |
+| 2 | Pre-create the credentials Secret with all eleven keys (see §Secret keys below) | Any secrets manager (ExternalSecrets Operator, Vault Agent, SealedSecrets) or `kubectl create secret generic` |
 | 3 | Write the values overlay: `secrets.existingSecret`, ingress hosts, TLS, registry, replica counts, storage classes. The IngressClass is *not* an overlay field — it comes from `DATASPOKE_KUBE_INGRESS_CLASS` in `.env.prod` (see §Ingress) | Start from `helm-charts/values-prod.example.yaml` |
 | 4 | Install — the chart, then the automatic admin seed | `bin/install.sh --profile prod --image-tag <tag> --values <overlay.yaml>` |
 | 5 | **Rotate the default admin credential — required** | `PATCH /api/v1/auth/me` |
@@ -873,7 +890,10 @@ the operator made.
 **Pre-flight is a hard gate.** Before touching the chart the prod install fails
 fast on: a missing `DATASPOKE_KUBE_INGRESS_CLASS` IngressClass; a StorageClass
 the overlay pins that does not exist in the cluster (per the storage paragraph
-above); a missing credentials Secret; any of the thirteen required keys absent or empty;
+above); a missing credentials Secret; any of the eleven required keys absent or empty;
+a credentials Secret still carrying `DATASPOKE_POSTGRES_USER` or
+`DATASPOKE_POSTGRES_DB`, which belong to the app ConfigMap and would otherwise
+stand as a second, silently divergent source of the Postgres identity;
 `DATASPOKE_AIRFLOW_FERNET_KEY` not shaped like a Fernet key (URL-safe base64 of
 exactly 32 raw bytes — 43 characters then `=`), which catches the
 `openssl rand -hex 32` value every other key uses and which would otherwise fail
@@ -926,7 +946,7 @@ features stay inert rather than failing the install.
 
 ### ConfigMap keys (non-sensitive)
 
-`DATASPOKE_POSTGRES_{HOST,PORT,DB}`,
+`DATASPOKE_POSTGRES_{HOST,PORT,USER,DB}`,
 `DATASPOKE_REDIS_{HOST,PORT}`, `DATASPOKE_AIRFLOW_{URL,CALLBACK_BASE_URL}`,
 plus the six chart-values-only keys — `DATASPOKE_CORS_ORIGINS`,
 `DATASPOKE_COOKIE_SECURE`, `DATASPOKE_GOOGLE_OAUTH_CLIENT_ID`,
@@ -937,25 +957,86 @@ chart values, not `.env`
 `DATASPOKE_AIRFLOW_CALLBACK_BASE_URL` is hardcoded in the chart (`http://dataspoke-api:8002`);
 it is not derived from `.env`.
 
+**Two of these keys carry a value-shape constraint — the same shape, for
+different reasons.** `DATASPOKE_POSTGRES_USER` must be a valid SQL identifier
+because it is interpolated into `GRANT` statement text rather than bound as a
+parameter, so a name needing quoting — or carrying a statement terminator —
+turns bootstrap SQL into a syntax error or an injection point.
+`DATASPOKE_POSTGRES_DB` is not SQL at all but an argv element: it reaches
+`psql -d`, where a leading `-` is parsed as a flag rather than a database name,
+and any shell metacharacter lands on the same command line as those `GRANT`s.
+
+**Only the dev path checks either shape.** `install.sh` validates both against
+an identifier regex immediately before it issues the AGE `GRANT` SQL, and aborts
+rather than proceeding. That check and the `GRANT` it guards are dev-only, and
+the prod pre-flight cannot stand in for them — the values are not in the Secret
+that pre-flight reads. What holds in prod instead is that both are chart values
+an operator must deliberately override, with the failure then surfacing at
+initdb bootstrap rather than at pre-flight. The consistency guard below is not a
+shape check — it compares the two sides for agreement, nothing more.
+
+**The Postgres identity is asserted consistent at render time.**
+`templates/configmap.yaml` `fail`s when `config.postgres.user` disagrees with
+`postgresql.auth.username`, or `config.postgres.db` with
+`postgresql.auth.database`. Without the guard an operator who changes one side
+passes every pre-flight and deploys a healthy-looking stack whose API then
+authenticates against the bundled database with a role or database name that
+was never created.
+
+**The role name is chart-pinned, and changing it is unsupported.** It occurs in
+four places that would all have to agree: `postgresql.auth.username`,
+`config.postgres.user`, bare literals in the subchart's `initdb` scripts in both
+values files (the two AGE `GRANT`s and `CREATE DATABASE airflow OWNER <role>`),
+and the Airflow metadata DSN, which hardcodes `dataspoke` because that DSN's
+database is created owned by it (§Secrets Management). The render guard reaches
+the first two only, so an overlay that changes both consistently still renders a
+bootstrap granting AGE to a role which does not exist and failing the
+Airflow-DB creation, while Airflow goes on connecting as `dataspoke`.
+
+**The database name, by contrast, is a clean two-site change the guard fully
+covers.** It has no unguarded further site: the initdb scripts never name it —
+they run against `postgresql.auth.database` as their default connection — and
+the Airflow metadata DSN addresses Airflow's own `airflow` database, not this
+one.
+
+Both guards are gated on `postgresql.enabled`, because with the bundled subchart
+off there is no `postgresql.auth.*` for the ConfigMap to be compared against.
+That gate is not by itself a complete external-database story: the derived
+Airflow metadata DSN still targets the bundled `dataspoke-postgresql`
+(§Secrets Management).
+
 ### Secret keys (`dataspoke-secrets`, mounted via `envFrom`)
 
-Thirteen keys, the same set in dev and prod. The whole Secret is mounted
+Eleven keys, the same set in dev and prod. The whole Secret is mounted
 `envFrom` on the API pods, but three of the keys are Airflow key material that
 DataSpoke code never reads — `DATASPOKE_AIRFLOW_WEBSERVER_SECRET_KEY`,
 `DATASPOKE_AIRFLOW_JWT_SECRET`, `DATASPOKE_AIRFLOW_FERNET_KEY` reach Airflow
 through single-key projections instead (see §Secrets Management):
 
-`DATASPOKE_POSTGRES_{USER,PASSWORD}`, `DATASPOKE_POSTGRES_DB`,
-`DATASPOKE_REDIS_PASSWORD`,
+`DATASPOKE_POSTGRES_PASSWORD`, `DATASPOKE_REDIS_PASSWORD`,
 `DATASPOKE_AIRFLOW_{USER,PASSWORD}`,
 `DATASPOKE_AIRFLOW_WEBSERVER_SECRET_KEY`, `DATASPOKE_AIRFLOW_JWT_SECRET`,
 `DATASPOKE_AIRFLOW_FERNET_KEY`,
 `DATASPOKE_INTERNAL_TOKEN`, `DATASPOKE_JWT_SECRET_KEY`,
 `DATASPOKE_OAUTH_STATE_SECRET`, `DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET`.
 
-`DATASPOKE_AIRFLOW_FERNET_KEY` is the one key with a value-shape constraint
-rather than merely a length one: Fernet accepts only URL-safe base64 of 32 raw
-bytes, so the hex encoding used for every other generated key is rejected.
+The Postgres role and database names are not secrets and are not carried here —
+they live in the app ConfigMap, which is also where their shape constraints and
+the chart's consistency guard are described (§ConfigMap keys).
+
+**A leftover key here shadows the ConfigMap rather than sitting inertly beside
+it.** Every container that consumes both lists `configMapRef` before
+`secretRef` in its `envFrom`, and duplicate keys resolve last-source-wins, so a
+credentials Secret still carrying `DATASPOKE_POSTGRES_USER` or
+`DATASPOKE_POSTGRES_DB` silently overrides the ConfigMap value the chart
+guarded. That is why such a key is removed in dev and rejected in prod instead
+of ignored, and it makes the order of those two `envFrom` entries load-bearing
+for any future edit to the pod templates.
+
+Within this Secret, `DATASPOKE_AIRFLOW_FERNET_KEY` is the one key with a
+value-shape constraint rather than merely a length one: Fernet accepts only
+URL-safe base64 of 32 raw bytes, so the hex encoding used for every other
+generated key is rejected.
 
 In dev, `install.sh` auto-generates this Secret — the OAuth state secret and
 JWT signing key are random; the Google client secret is sourced from
@@ -1717,8 +1798,8 @@ with default-deny.
 
 | Family | Owner | Purpose |
 |---|---|---|
-| **`dataspoke-secrets`** | `install.sh` (dev auto-generate) or operator (prod pre-create) | DataSpoke's own runtime credentials — Postgres user/password/db, Redis password, Airflow user/password/webserver-secret/jwt-secret/fernet-key, internal-auth token, JWT signing key, OAuth state secret, Google OAuth client secret. Thirteen keys; mounted `envFrom` on the API Deployment and alembic-migrate init container. |
-| **`dataspoke-airflow-metadata-db`** | `install.sh` `_derive_airflow_metadata_secret` (both profiles) | Single key `connection` = full PostgreSQL URI for Airflow's metadata DB. Wired via `airflow.data.metadataSecretName`. |
+| **`dataspoke-secrets`** | `install.sh` (dev auto-generate) or operator (prod pre-create) | DataSpoke's own runtime credentials — Postgres password, Redis password, Airflow user/password/webserver-secret/jwt-secret/fernet-key, internal-auth token, JWT signing key, OAuth state secret, Google OAuth client secret. Eleven keys; mounted `envFrom` on the API Deployment and alembic-migrate init container. The Postgres role and database names are non-secret and live in the app ConfigMap instead (§ConfigMap keys). |
+| **`dataspoke-airflow-metadata-db`** | `install.sh` `_derive_airflow_metadata_secret` (both profiles) | Single key `connection` = full PostgreSQL URI for Airflow's metadata DB, wired via `airflow.data.metadataSecretName`. It composes the credentials Secret's `DATASPOKE_POSTGRES_PASSWORD` into a fixed `dataspoke@dataspoke-postgresql:5432/airflow` — **the password is the only part that varies**. The role is the literal `dataspoke`, read from neither the Secret nor the ConfigMap: the `airflow` database is created `OWNER dataspoke` by the bundled subchart's initdb, so the DSN's role must be that owner, and setting `config.postgres.user` does not reach Airflow. That `airflow` database is Airflow's own metadata store, unrelated to `DATASPOKE_POSTGRES_DB`. Compare-and-rotate: the URI is re-derived on every run and the Secret rewritten whenever the derived value differs, so the Secret tracks the derived value rather than its first-install content. A change to a **non-empty** prior value additionally restarts the four Airflow consumers (api-server, scheduler, dag-processor, triggerer) at the point §Installation fixes for the signing-key restart. That restart is mandatory rather than incidental: with `data.metadataSecretName` set the subchart renders no metadata Secret of its own, so the `checksum/metadata-secret` annotation on its Deployments is a constant and Helm never rolls them on a DSN change. |
 | **`dataspoke-airflow-api-secret-key`**, **`dataspoke-airflow-jwt-secret`** | `install.sh` `_ensure_airflow_key_secrets` (both profiles) | Projections of the `DATASPOKE_AIRFLOW_WEBSERVER_SECRET_KEY` / `DATASPOKE_AIRFLOW_JWT_SECRET` keys into the single-key shape (`api-secret-key`, `jwt-secret`) the Airflow chart expects. Wired via `airflow.apiSecretKeySecretName` / `airflow.jwtSecretName`. |
 | **`dataspoke-airflow-metadata-encryption-key`** | `install.sh` `_ensure_airflow_fernet_secret` (both profiles) | Projection of `DATASPOKE_AIRFLOW_FERNET_KEY` into the single-key shape (`fernet-key`) the Airflow chart expects. Wired via `airflow.fernetKeySecretName`, which is pinned in the chart's own `values.yaml` so it applies to every profile; pinning it also suppresses the subchart's pre-install hook that would otherwise generate and own a key of its own. The name states the key's job — it encrypts the contents of the database whose connection `dataspoke-airflow-metadata-db` carries. |
 | **Out-of-band Secrets** (`dataspoke-llm-secret`, `dataspoke-datahub-secret`, `dataspoke-langfuse-secret`, `dataspoke-smtp-secret`) | Operator (`kubectl` / ESO) or the app on first PATCH | Tokens/keys that rotate online via `/api/v1/admin/conf` and `/api/v1/admin/peripherals/*`. Not Helm-managed — `helm upgrade` would clobber rotations. The app tolerates their absence (reads as unset). `dataspoke-datahub-secret` carries two keys — `token` for GMS and `kafka_sasl_password` for the event consumer's Kafka credential — and is the only one of these Secrets read by a workload other than the API. `dataspoke-smtp-secret` (key `password`) backs `/auth/password/reset/request` (see [feature/AUTH.md](AUTH.md)). Note: a Secret of the same name `dataspoke-langfuse-secret` also exists in the Langfuse namespace (`langfuse-01`) carrying the full set of Langfuse pod credentials (NextAuth, salt, ClickHouse, MinIO, Postgres, Redis, init-user); the DataSpoke-side copy holds only the project `secret_key` consumed by the API via RBAC. |
@@ -1734,20 +1815,28 @@ populated only if their seed value is present in `.env`; if absent, the dependen
 feature stays disabled until the operator sets it via the admin API.
 
 For `DATASPOKE_AIRFLOW_FERNET_KEY`, generation is the last resort: the step first
-adopts whatever key is already live on the cluster — the
-`dataspoke-airflow-metadata-encryption-key` projection, else the legacy
+adopts whatever key is already live on the cluster, searching the Secret the
+deployed release names in `airflow.fernetKeySecretName`, then the
+`dataspoke-airflow-metadata-encryption-key` projection, then the legacy
 `dataspoke-airflow-fernet-key` hook Secret — so a credentials Secret rebuilt or
 re-generated while the release is live keeps the Postgres PVC's Airflow
 connections and Variables decryptable. What it generates when there is nothing to
 adopt follows the encoding constraint in §Secret keys, not `openssl rand -hex`.
 
-The one way dev writes into an existing credentials Secret is the same
-adoption path: a Secret that carries no `DATASPOKE_AIRFLOW_FERNET_KEY` at all —
-one predating the key's addition to the contract — has it patched in, rather
-than being left on a shape that would hard-fail the projection step later with
-no remediation. Nothing else in the Secret is touched, and prod never takes this
-path: there the operator owns the Secret's shape and a missing key is a
-preflight failure.
+Dev writes into an existing credentials Secret in exactly two self-heal cases,
+and nothing else in the Secret is touched:
+
+- **A missing `DATASPOKE_AIRFLOW_FERNET_KEY` is patched in** by the same
+  adoption path, rather than the Secret being left on a shape that would
+  hard-fail the projection step later with no remediation.
+- **A `DATASPOKE_POSTGRES_USER` or `DATASPOKE_POSTGRES_DB` still present is
+  removed**, so the app ConfigMap stays the single source of the Postgres
+  identity and the two cannot drift apart unnoticed.
+
+Prod takes neither path — `install.sh` never mutates an operator-owned Secret —
+so there both a missing Fernet key and a lingering `DATASPOKE_POSTGRES_{USER,DB}`
+are pre-flight failures instead. The asymmetry is the same in both cases: dev
+owns the Secret it generated and may repair it; prod does not.
 
 Adoption reads in-cluster state only, so it does not span a `bin/uninstall.sh`
 dev teardown: that deletes the credentials Secret and its projection together,
@@ -1783,11 +1872,23 @@ therefore aborts the install and names the command that restores the key, in
 both profiles.
 
 What counts as "the live projection" is decided on the value read, not on a
-Secret existing: when `dataspoke-airflow-metadata-encryption-key` is absent, or
-present with an empty `fernet-key`, the comparison falls back to the legacy
-`dataspoke-airflow-fernet-key` hook Secret. A cluster installed before
+Secret existing: a Secret that is absent, or present with an empty `fernet-key`,
+falls through to the next candidate name. A cluster installed before
 `airflow.fernetKeySecretName` was pinned therefore still gets a real comparison
 instead of an unchecked create.
+
+**Reads resolve the Secret name from the release; the write target is fixed.**
+The name to read is taken from the deployed release's
+`airflow.fernetKeySecretName` and searched ahead of the two known literals
+(`dataspoke-airflow-metadata-encryption-key`, then the legacy
+`dataspoke-airflow-fernet-key`). That order governs both the rotation comparison
+and the recovery command the failure message names, so each addresses the Secret
+Airflow actually mounts. Writes always target
+`dataspoke-airflow-metadata-encryption-key` — the name the chart's own
+`values.yaml` pins `airflow.fernetKeySecretName` to. **Repointing that value in
+an operator overlay is unsupported**: the projection would land in one Secret
+while Airflow mounts another, and the install would report success with Airflow
+holding no key at all.
 
 ### API RBAC for source-credential Secrets
 

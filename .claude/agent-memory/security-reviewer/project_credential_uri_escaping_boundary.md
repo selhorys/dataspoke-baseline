@@ -45,13 +45,21 @@ six, not one.
   `src/backend/ingestion/extractors.py::asyncpg.connect` — the latter is the only
   *user-supplied* datasource credential path.
 
-**Two controls that do NOT reach an existing install** (both still open as of 2026-08-01):
-- `_derive_airflow_metadata_secret` returns early when `dataspoke-airflow-metadata-db` already
-  exists — dev (`install.sh:1295`, `:1560`) and prod (`:2166`). So the `_url_encode` fix is
-  inert on every upgrade, and a Postgres password rotation never propagates to Airflow.
-  `_ensure_airflow_key_secrets` has the correct derive/compare/re-apply/roll shape to copy.
-- `sslmode=disable` and the host `dataspoke-postgresql:5432` are hardcoded in that same URI on
-  the prod path too.
+**Control status on an existing install** (re-checked 2026-08-02, branch
+`fix/119-122-131-132-helm-credential-integrity`):
+- **CLOSED** — `_derive_airflow_metadata_secret` is now compare-and-rotate: it re-derives the
+  URI every run and rewrites `dataspoke-airflow-metadata-db` only on a difference, setting
+  `AIRFLOW_METADATA_DSN_ROTATED` so `_restart_airflow_key_consumers` rolls the four Airflow
+  components. So `_url_encode` finally reaches upgrades. Side effect to remember: a credentials
+  Secret whose `DATASPOKE_POSTGRES_PASSWORD` has drifted from the live role's actual password
+  (bitnami sets it only at initdb) now **overwrites a working DSN and restarts Airflow**.
+  `helm-charts/README.md` documents the required manual `ALTER ROLE`.
+- **STILL OPEN** — `sslmode=disable` and the host `dataspoke-postgresql:5432` are hardcoded in
+  that same URI on the prod path too, with no override.
+- The DSN's **role** is now the hardcoded literal `dataspoke` (`_url_encode "dataspoke"`), not
+  read from the Secret or the ConfigMap — despite what `spec/feature/HELM_CHART.md` claims.
+  The password is the only varying component. `_url_encode` feeds python via **stdin**
+  (`printf '%s' | python3 -c`), so no credential reaches argv.
 
 **Claimed mitigations that do not exist:** "dev pre-flight rejects odd db names" is false.
 `install.sh:1807` shape-gates `DATASPOKE_POSTGRES_USER` (`^[a-zA-Z_][a-zA-Z0-9_]{0,62}$`) only

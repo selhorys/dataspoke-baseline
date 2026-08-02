@@ -180,6 +180,14 @@ airflow:
 # Shared application config (CORS + OAuth redirect)
 # ------------------------------------------------------------------------------
 config:
+  # postgres.user/db need no override here — the chart default
+  # ("dataspoke"/"dataspoke") already matches dataspoke/values.yaml's
+  # postgresql.auth.username/database. The role is chart-pinned; changing it
+  # is unsupported (see values.yaml's config.postgres comment). The database
+  # name is a clean two-site value — if you need a different one, set BOTH
+  # this and postgresql.auth.database consistently:
+  # postgres:
+  #   db: "your-database-name"
   # Origins allowed to call the API cross-origin — must include every host
   # that serves the frontend (comma-separated, no spaces).
   corsOrigins: "https://app.dataspoke.example.com"
@@ -321,7 +329,9 @@ auth:
 # ------------------------------------------------------------------------------
 secrets:
   # Name of the Kubernetes Secret you created before running install.sh. Must
-  # contain all 13 required keys — see helm-charts/README.md §Prod profile.
+  # contain all 11 required keys — see helm-charts/README.md §Prod profile.
+  # DATASPOKE_POSTGRES_USER and DATASPOKE_POSTGRES_DB do NOT go in this
+  # Secret — see the config.postgres comment near the top of this file.
   existingSecret: "dataspoke-secrets-prod"
 
 
