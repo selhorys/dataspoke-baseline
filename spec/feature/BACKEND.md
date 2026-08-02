@@ -128,7 +128,7 @@ for current method signatures.
 | Service | Module | Role | Key design decisions |
 |---------|--------|------|---------------------|
 | DataHub Client | `datahub/client.py` | Unified read/write wrapper around `acryl-datahub` SDK | Exponential backoff (3 attempts, 500ms base). Circuit breaker (opens after 5 failures, 60s probe). See [DATAHUB_INTEGRATION](../DATAHUB_INTEGRATION.md). |
-| PostgreSQL | `db/session.py`, `db/models.py` | SQLAlchemy 2.0 async with `asyncpg`. Session factory + ORM models. | Pool size 10, max overflow 5. Credentials are carried as `sqlalchemy.URL` fields rather than interpolated into a DSN string, so `DATASPOKE_POSTGRES_USER` / `DATASPOKE_POSTGRES_PASSWORD` reach the driver verbatim from this connection layer whatever characters they contain, and the URL's string form masks the password rather than carrying it into a log line or traceback. |
+| PostgreSQL | `db/session.py`, `db/models.py` | SQLAlchemy 2.0 async with `asyncpg`. Session factory + ORM models. | Pool size 10, max overflow 5. Credentials are carried as `sqlalchemy.URL` fields rather than interpolated into a DSN string, so `DATASPOKE_POSTGRES_USER` / `DATASPOKE_POSTGRES_PASSWORD` reach the driver verbatim from this connection layer whatever characters they contain, and the URL's string form masks the password rather than carrying it into a log line or traceback. A write that must commit on its own terms while the caller holds a session of its own — one that has to survive a rollback the caller is about to take, or land on a read-only request that never commits — opens a session from a factory built on the **bind of the injected session**, so it reaches the database the caller is actually using. The module-level factory is bound at import time to the app-runtime `DATASPOKE_POSTGRES_*` values, which an in-process caller carrying a session on another engine does not have; the write would otherwise be aimed at a different address than every other statement in the same call, with no diagnostic distinguishing that from success. A session with no usable bind falls back to the module-level factory, the only address available in that case. |
 | Vector (pgvector) | `vector/client.py` | Table-backed vector upsert/search (cosine, HNSW-indexed). Shares the PostgreSQL session factory. | `PgVectorManager` + `VectorHit` dataclass; collection name whitelisted against `EMBEDDING_COLLECTION`. |
 | Graph (Apache AGE, reserved) | `graph/client.py` | AGE extension installed on the same PG instance for future graph-shaped queries. `AgeGraph` exposes `materialize_triple` / `delete_triple` / `traverse` helpers usable by any service that opts in. | See [BACKEND_SCHEMA §Graph](BACKEND_SCHEMA.md#graph-apache-age-reserved). |
 | LLM | `llm/client.py` | Provider-agnostic client (LangChain). Single completion, JSON completion, embedding, and tool-calling loop (`complete_with_tools`) bound to a service-supplied validator. | Provider/model from the `llm_provider`/`llm_model` runtime config (`/api/v1/admin/conf`); the API key is read at runtime from the `dataspoke-llm-secret` Secret and rotated online via the same conf surface. Loop semantics, validator rule tables, debate framework, and test-mode toggles defined in [BACKEND_LLM](BACKEND_LLM.md). |
@@ -552,7 +552,8 @@ Three rules keep the signal honest:
   row.
 - **The `error` report is committed independently of the sweep's transaction.** Written inside
   it, the re-raise rolls the report back and leaves `api_health` pinned to the last `ok`
-  exactly when it is wrong.
+  exactly when it is wrong. Which database that independent write lands on is governed by
+  [§Shared Services](#shared-services-srcshared) (PostgreSQL row).
 
 See [DATAHUB_INTEGRATION §Ingestion Source Sync](../DATAHUB_INTEGRATION.md#ingestion-source-sync)
 for the GraphQL surfaces and field citations.
@@ -1558,6 +1559,14 @@ consumer is not deployed by chart default, and the sweep runs from a scheduled D
 paused, so `datahub-api` stays `unknown` until an operator unpauses the `datahub_sync` group
 (see [§Schedule Control](#schedule-control)). Neither row reads `unknown` as a fault.
 
+**A reporter's own write failure is swallowed** — reporting never changes the outcome of the
+operation being reported — and logged at `ERROR` with `exc_info=True`. The level is deliberate:
+the [best-effort operations](#best-effort-operations) logged at WARNING each leave an observable
+in-band fallback behind, whereas a lost health write leaves the row at its prior value, where a
+stale or `unknown` reading is indistinguishable from the "no reporter deployed" case above. The
+log record is then the only evidence that a deployed reporter is running and failing. Like
+`last_error` below, this binds every reporter writing the table, not only the two DataHub rows.
+
 The two planes need a persisted row for different reasons. The **event stream** has no other
 HTTP surface at all: a bad mechanism or an unauthorized IAM role leaves a consumer that logs
 warnings nobody reads, so without the row the fault is unobservable. The **metadata API** is
@@ -1618,7 +1627,10 @@ defined in `src/shared/exceptions.py`.
 ### Best-Effort Operations
 
 Non-critical operations execute best-effort -- if they fail, the primary operation
-completes with reduced enrichment. All failures are logged at WARNING with `exc_info=True`.
+completes with reduced enrichment. Failures of the operations listed below are logged at
+WARNING with `exc_info=True`; a reporter's failure to write its own `peripheral_health` row
+falls outside this set and is logged at `ERROR` (see
+[§Health reporting](#health-reporting)).
 
 | Operation | Service | Fallback |
 |-----------|---------|----------|

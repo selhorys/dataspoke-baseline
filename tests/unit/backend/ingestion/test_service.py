@@ -937,6 +937,165 @@ class TestMirrorExecutionRequestsStatusMapping:
         assert added_types == {INGESTION_COMPLETE, INGESTION_FAIL}
 
 
+# ── The run-history poll is best-effort ──────────────────────────────────────
+
+
+class TestMirrorExecutionRequestsPollIsBestEffort:
+    """A per-source run-history poll that fails skips that source and nothing else.
+
+    This is the one best-effort operation whose fallback is "skip the affected source
+    for this hourly tick" — the source contributes no events and the sweep carries on.
+    Two consequences are separable, and both are asserted below, because an
+    implementation can satisfy either alone:
+
+    - The failure is *contained*: it does not escape the mirror call, so no other source
+      loses its events and the sweep still completes.
+    - The failure is *not promoted to a fault signal*: it must not flip the
+      ``datahub-api`` health row to ``error``, because that row answers a different
+      question — whether the sweep's GMS enumeration completed.
+
+    spec: feature/BACKEND.md §Best-Effort Operations — the table row 'DataHub run-history
+        poll | IngestionService (sync sweep) | Skip the affected source for this hourly
+        tick; retry next tick'.
+    spec: feature/BACKEND.md §Best-Effort Operations — 'Failures of the operations listed
+        below are logged at WARNING with ``exc_info=True``.'
+    spec: feature/BACKEND.md §Sync + mapping sweep — '``ok`` asserts only that the sweep's
+        GMS enumeration completed, not that every GMS call inside it succeeded. Per-source
+        run-history polls are best-effort ... and a skipped source does not flip the row.'
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_failed_poll_skips_the_source_and_logs_at_warning(
+        self,
+        service: IngestionService,
+        db: AsyncMock,
+        datahub: AsyncMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The poll's failure is swallowed: zero events, no raise, one WARNING carrying it.
+
+        The failure is injected at ``list_execution_requests`` because that is the GMS
+        call the spec calls out — a transport fault or an expired PAT on the run-history
+        query for one source.
+
+        spec: feature/BACKEND.md §Best-Effort Operations — 'Skip the affected source for
+            this hourly tick; retry next tick', logged 'at WARNING with ``exc_info=True``'.
+        """
+        source_id = str(uuid.uuid4())
+        dh_urn = "urn:li:dataHubIngestionSource:poll-fails"
+        poll_failure = DataHubUnavailableError("GMS refused the run-history query")
+
+        datahub.list_execution_requests = AsyncMock(side_effect=poll_failure)
+        caplog.set_level(logging.DEBUG)
+
+        # No pytest.raises: the point is that nothing escapes. A propagating failure
+        # fails the test as an error, which is the correct verdict.
+        mirrored = await service._mirror_execution_requests(source_id, dh_urn)
+
+        assert mirrored == 0, (
+            f"a source whose run-history poll failed contributes no events this tick; got "
+            f"{mirrored}. spec: feature/BACKEND.md §Best-Effort Operations — 'Skip the "
+            "affected source for this hourly tick'."
+        )
+        assert db.add.call_args_list == [], (
+            f"a skipped source must write no event rows at all; got "
+            f"{db.add.call_args_list!r}. spec: feature/BACKEND.md §Best-Effort Operations."
+        )
+
+        # The skip is invisible in the summary — the count simply does not rise — so the
+        # log record is the only evidence that a source was dropped this tick.
+        carrying = [
+            r for r in caplog.records if r.exc_info is not None and r.exc_info[1] is poll_failure
+        ]
+        assert carrying, (
+            f"the swallowed poll failure must reach the log with exc_info, or a source "
+            f"silently stops contributing events; captured "
+            f"{[(r.levelname, r.getMessage()) for r in caplog.records]!r}. "
+            "spec: feature/BACKEND.md §Best-Effort Operations — logged 'with "
+            "``exc_info=True``'."
+        )
+        # Non-empty by the assertion above, so this cannot pass vacuously.
+        assert {r.levelname for r in carrying} == {"WARNING"}, (
+            f"a best-effort poll failure is one of the operations logged at WARNING; got "
+            f"{sorted({r.levelname for r in carrying})!r}. spec: feature/BACKEND.md "
+            "§Best-Effort Operations — 'Failures of the operations listed below are logged "
+            "at WARNING with ``exc_info=True``'; the ERROR level is reserved for a "
+            "reporter's own peripheral_health write (§Health reporting)."
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_failed_poll_does_not_flip_the_datahub_api_row_to_error(
+        self,
+        datahub: AsyncMock,
+        db: AsyncMock,
+    ) -> None:
+        """A skipped source leaves ``datahub-api`` reading ``ok``.
+
+        The health row answers whether the sweep's GMS enumeration completed, not whether
+        every GMS call inside it succeeded. Reporting ``error`` for a single source's
+        run-history poll would make the row fire on a condition the operator cannot act
+        on, and would mask the fault it exists to surface.
+
+        The sweep body is stood in for here rather than driven whole: only step 4 is under
+        test, so the stand-in performs exactly step 4's contribution — await the *real*
+        ``_mirror_execution_requests`` and fold its return into ``events_mirrored``. What
+        is genuinely exercised is ``sync()``'s outer ``try/except``, which is what decides
+        the reported status. Step 4 wraps the mirror call in no ``try`` of its own, so the
+        mirror's ``except`` is the sole containment: deleting it makes the failure escape
+        the stand-in exactly as it would escape the real sweep. This test then errors on
+        the escape rather than reading ``error`` from the row — the row reading ``error``
+        alongside a suppressed re-raise is a combination the sibling tests already forbid.
+        The assertion below is therefore a boundary statement, not the regression's catcher.
+
+        spec: feature/BACKEND.md §Sync + mapping sweep — 'Per-source run-history polls are
+            best-effort ... and a skipped source does not flip the row.'
+        spec: feature/BACKEND.md §Health reporting — '``datahub-api`` | ... | ``ok`` on a
+            completed sweep; ``error`` on any failure that escapes it'.
+        """
+        service = IngestionService(datahub=datahub, db=db)
+        source_id = str(uuid.uuid4())
+        dh_urn = "urn:li:dataHubIngestionSource:poll-fails"
+        datahub.list_execution_requests = AsyncMock(
+            side_effect=DataHubUnavailableError("GMS refused the run-history query")
+        )
+
+        async def _sweep_step_four_only() -> dict[str, int]:
+            mirrored = await service._mirror_execution_requests(
+                source_id=source_id, datahub_source_urn=dh_urn
+            )
+            return {"events_mirrored": mirrored}
+
+        service._run_sweep = _sweep_step_four_only  # type: ignore[method-assign]
+
+        reported: list[tuple[str, str, str | None]] = []
+
+        async def _record(_db, name, status, error=None):  # type: ignore[no-untyped-def]
+            reported.append((name, status, error))
+            return None
+
+        with patch("src.backend.admin.peripheral_health.report_peripheral_health", _record):
+            summary = await service.sync()
+
+        assert summary == {"events_mirrored": 0}, (
+            f"the sweep completes and the skipped source contributes nothing; got "
+            f"{summary!r}. spec: feature/BACKEND.md §Best-Effort Operations — 'Skip the "
+            "affected source for this hourly tick; retry next tick'."
+        )
+        # Backstop: the health report really was attempted. Without it the status
+        # assertion below passes on a sweep that reported nothing at all.
+        assert len(reported) == 1, (
+            f"a completed sweep writes the 'datahub-api' row exactly once; got "
+            f"{reported!r}. spec: feature/BACKEND.md §Health reporting."
+        )
+        assert reported[0][:2] == ("datahub-api", "ok"), (
+            f"a best-effort run-history poll failure must not flip 'datahub-api' to "
+            f"'error' — the row reports whether the sweep's GMS enumeration completed, "
+            f"which it did; got {reported[0][:2]!r} with message {reported[0][2]!r}. "
+            "spec: feature/BACKEND.md §Sync + mapping sweep — 'a skipped source does not "
+            "flip the row'."
+        )
+
+
 # ── DPI emission contract (run pipeline) ──────────────────────────────────────
 
 
@@ -2042,7 +2201,15 @@ class TestSyncReportsApiHealth:
         engine in the process.
 
         spec: feature/BACKEND.md §Sync + mapping sweep §Health side effect — 'The
-            ``error`` report is committed independently of the sweep's transaction.'
+            ``error`` report is committed independently of the sweep's transaction.
+            ... Which database that independent write lands on is governed by §Shared
+            Services (PostgreSQL row).'
+        spec: feature/BACKEND.md §Shared Services (PostgreSQL row) — such a write 'opens a
+            session from a factory built on the **bind of the injected session**, so it
+            reaches the database the caller is actually using'; aimed at the module-level
+            factory instead it 'would otherwise be aimed at a different address than every
+            other statement in the same call, with no diagnostic distinguishing that from
+            success'.
         spec: feature/BACKEND.md §Health reporting — '``datahub-api`` | Metadata API (GMS
             REST / GraphQL) | the hourly sync + mapping sweep': the sweep is the writer of
             that row, so the row must land where the sweep's caller reads it.
@@ -2132,6 +2299,9 @@ class TestSyncReportsApiHealth:
         The fallback is the only address available in that case, and reporting must never
         be the thing that breaks the sweep: the sweep's own summary still returns.
 
+        spec: feature/BACKEND.md §Shared Services (PostgreSQL row) — 'A session with no
+            usable bind falls back to the module-level factory, the only address available
+            in that case.'
         spec: feature/BACKEND.md §Health reporting — '``datahub-api`` | … | the hourly
             sync + mapping sweep': the sweep is the writer of that row, so there is no
             shape of injected session for which it stops trying to write it.
@@ -2317,11 +2487,16 @@ class TestSyncReportsApiHealth:
         # which reads identically to "no reporter deployed". The log record is the only
         # evidence that a reporter ran and failed, so the swallow is only safe while it
         # stays observable — a silent ``except: pass`` would pass every assertion above.
-        # The level is deliberately not pinned: the impl uses ERROR and argues for it in a
-        # comment, while §Best-Effort Operations names WARNING for a different set of rows.
+        # The level is part of that contract, not a stylistic choice: the operations that
+        # log at WARNING each leave an in-band fallback behind, and a lost health write
+        # leaves nothing, so it is the one best-effort failure that reports at ERROR.
         #
-        # spec: feature/BACKEND.md §Best-Effort Operations — failures are logged "with
-        #     ``exc_info=True``", so the swallowed cause is recoverable from the log.
+        # spec: feature/BACKEND.md §Health reporting — a reporter's own write failure is
+        #     swallowed "and logged at ``ERROR`` with ``exc_info=True``"; "The log record
+        #     is then the only evidence that a deployed reporter is running and failing."
+        # spec: feature/BACKEND.md §Best-Effort Operations — the WARNING level covers
+        #     "the operations listed below"; "a reporter's failure to write its own
+        #     ``peripheral_health`` row falls outside this set and is logged at ``ERROR``".
         swallowed = [r for r in caplog.records if r.exc_info is not None]
         assert swallowed, (
             f"{label}: the swallowed report failure must reach the log with exc_info, or a "
@@ -2331,4 +2506,17 @@ class TestSyncReportsApiHealth:
         assert any(r.exc_info[1] is reporter_failure for r in swallowed), (  # type: ignore[index]
             f"{label}: the logged cause must be the reporter's own failure, not some other "
             "exception that happened to be in flight."
+        )
+        # Non-empty by the assertion above, so this cannot pass vacuously.
+        reported_levels = {
+            r.levelname
+            for r in swallowed
+            if r.exc_info[1] is reporter_failure  # type: ignore[index]
+        }
+        assert reported_levels == {"ERROR"}, (
+            f"{label}: the reporter's own write failure must be logged at ERROR, not at the "
+            f"WARNING level the best-effort operations use; got {sorted(reported_levels)!r}. "
+            "A WARNING is filtered out of the default operational log exactly where the row "
+            "it would have explained is stuck reading `unknown`. "
+            "spec: feature/BACKEND.md §Health reporting."
         )

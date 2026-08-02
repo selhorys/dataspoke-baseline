@@ -16,7 +16,7 @@ from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.shared.db.models import ApiToken, User
-from src.shared.db.session import SessionLocal
+from src.shared.db.session import independent_sessionmaker
 from src.shared.exceptions import AuthenticationError, ConflictError, EntityNotFoundError
 
 _TOKEN_PREFIX = "dsk_"
@@ -229,10 +229,14 @@ async def lookup_and_validate(db: AsyncSession, raw_token: str) -> tuple[User, s
 
     effective_role = _intersect_role(token.role_snapshot, user.role)
 
-    # Throttled last_used_at update — dedicated session so the commit is
-    # independent of the caller's session (which may be a read-only GET request
-    # that never calls commit).  The WHERE clause makes this a no-op below 60s.
-    async with SessionLocal() as throttle_session:
+    # Throttled last_used_at update on a session of its own, committed here: the
+    # caller's session commonly belongs to a read-only GET that never calls commit,
+    # and the stamp has to land regardless of what the request does with its own
+    # transaction. ``independent_sessionmaker`` carries the reason that session is
+    # built on the caller's bind rather than the module-level factory. The WHERE
+    # clause makes this a no-op below 60s.
+    factory = independent_sessionmaker(db)
+    async with factory() as throttle_session:
         await throttle_session.execute(
             update(ApiToken)
             .where(

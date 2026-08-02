@@ -1139,12 +1139,28 @@ async def test_health_reporter_scrubs_the_live_credential_from_the_message() -> 
 
 @pytest.mark.asyncio
 async def test_health_reporting_failure_does_not_stop_the_consumer() -> None:
-    """A failed health write is swallowed — observability never halts consumption.
+    """A failed health write is swallowed, and logged at ERROR so it stays observable.
 
-    spec: feature/BACKEND.md §Best-Effort Operations — non-critical operations execute
-    best-effort; §Health reporting — the row is a report of the connection, not the
-    connection itself.
+    The swallow is invisible by construction: the ``datahub`` row keeps whatever it held,
+    and a stale or ``unknown`` reading is exactly what a stock install shows when no
+    consumer is deployed at all. The log record is therefore the only evidence that a
+    deployed consumer is running and failing to report — which is why the level is part
+    of the contract rather than a stylistic choice, and why a silent ``except: pass``
+    would satisfy the does-not-raise half of this test.
+
+    ``capture_logs`` records the ``exc_info=True`` flag rather than the exception object
+    (it bypasses the exception-rendering processor), so the flag is what is asserted here.
+
+    spec: feature/BACKEND.md §Health reporting — a reporter's own write failure is
+        "swallowed -- reporting never changes the outcome of the operation being reported
+        -- and logged at ``ERROR`` with ``exc_info=True``"; "this binds every reporter
+        writing the table, not only the two DataHub rows."
+    spec: feature/BACKEND.md §Best-Effort Operations — the WARNING level covers "the
+        operations listed below"; a health-row write failure "falls outside this set and
+        is logged at ``ERROR``".
     """
+    import structlog
+
     from src.shared.datahub.consumer import HealthReporter
 
     with (
@@ -1153,5 +1169,27 @@ async def test_health_reporting_failure_does_not_stop_the_consumer() -> None:
             side_effect=RuntimeError("db down"),
         ),
         patch("src.shared.db.session.SessionLocal", return_value=_async_ctx()),
+        structlog.testing.capture_logs() as logs,
     ):
         await HealthReporter().report("ok")  # must not raise
+
+    # Backstop: something was logged at all. Without it every assertion below passes
+    # vacuously on a reporter that swallowed in silence.
+    reported = [e for e in logs if e.get("event") == "peripheral_health_report_failed"]
+    assert len(reported) == 1, (
+        f"a swallowed health-write failure must leave exactly one log record behind, or a "
+        f"consumer that is running and failing to report is indistinguishable from one "
+        f"that was never deployed; captured {logs!r}. "
+        "spec: feature/BACKEND.md §Health reporting."
+    )
+    assert reported[0].get("log_level") == "error", (
+        f"the swallowed write failure must be logged at ERROR, not at the WARNING level "
+        f"the best-effort operations use; got {reported[0].get('log_level')!r}. "
+        "spec: feature/BACKEND.md §Health reporting / §Best-Effort Operations — a "
+        "reporter's own row-write failure falls outside the WARNING set."
+    )
+    assert reported[0].get("exc_info") is True, (
+        f"the record must carry exc_info so the swallowed cause is recoverable from the "
+        f"log; got {reported[0]!r}. spec: feature/BACKEND.md §Health reporting — logged "
+        "'at ``ERROR`` with ``exc_info=True``'."
+    )

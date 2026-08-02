@@ -221,3 +221,157 @@ def test_engine_pool_recycle_set() -> None:
 
 def test_session_factory_expire_on_commit_false() -> None:
     assert SessionLocal.kw.get("expire_on_commit") is False
+
+
+# ── independent_sessionmaker: which database an independent write lands on ───
+#
+# The two branches are asserted separately because they fail in opposite directions.
+# Choosing the module-level factory when the caller's session carries an engine sends the
+# write to a different address than every other statement of the same call; choosing a
+# derived factory when the session carries no usable engine has no address to derive from
+# at all. Callers are ``IngestionService._report_api_health`` and
+# ``auth.api_tokens.lookup_and_validate``; both hold their end-to-end assertions in their
+# own test modules, and this table pins the shared decision itself.
+#
+# Identity checks resolve ``SessionLocal`` through the live module rather than the name
+# imported at the top of this file: the ``_build_url`` tests above ``importlib.reload`` the
+# module, which rebinds ``SessionLocal`` to a new object. Comparing against the stale
+# top-level name makes the fallback branch look like the derived one.
+
+
+def _live_session_local():
+    from src.shared.db import session as session_mod
+
+    return session_mod.SessionLocal
+
+
+def test_a_session_bound_to_an_engine_yields_a_factory_on_that_engine() -> None:
+    """The derived factory addresses the caller's database, not the app-runtime one.
+
+    spec: spec/feature/BACKEND.md §Shared Services (PostgreSQL row) — such a write "opens
+        a session from a factory built on the **bind of the injected session**, so it
+        reaches the database the caller is actually using".
+    spec: spec/feature/BACKEND.md §Shared Services (PostgreSQL row) — the module-level
+        factory is bound to values "which an in-process caller carrying a session on
+        another engine does not have; the write would otherwise be aimed at a different
+        address than every other statement in the same call, with no diagnostic
+        distinguishing that from success".
+    """
+    from unittest.mock import MagicMock
+
+    from src.shared.db.session import independent_sessionmaker
+
+    callers_engine = create_async_engine("postgresql+asyncpg://u:p@callers-db:5432/d")
+    try:
+        factory = independent_sessionmaker(MagicMock(spec_set=["bind"], bind=callers_engine))
+
+        assert factory is not _live_session_local(), (
+            "a caller carrying its own engine must not be served the module-level "
+            "factory, whose address it does not share. spec: spec/feature/BACKEND.md "
+            "§Shared Services (PostgreSQL row)."
+        )
+        assert factory.kw.get("bind") is callers_engine, (
+            f"the factory must be built on the bind of the injected session; it was built "
+            f"on {factory.kw.get('bind')!r}. spec: spec/feature/BACKEND.md §Shared "
+            "Services (PostgreSQL row)."
+        )
+    finally:
+        # Never connected to — only the engine's identity is read.
+        callers_engine.sync_engine.dispose()
+
+
+def test_the_derived_factory_keeps_expire_on_commit_false() -> None:
+    """The derived factory carries the same session semantics as the module-level one.
+
+    Not cosmetic. The callers of this helper are the same functions that run on the
+    module-level factory when the fallback branch is taken, and they are written against
+    ``expire_on_commit=False``: ``src/backend/admin/peripheral_health.py`` re-selects the
+    row it just upserted with ``populate_existing=True`` precisely because a non-expiring
+    session would otherwise hand back the stale pre-upsert instance. A derived factory
+    with different semantics makes that one function behave differently depending on which
+    branch its caller happened to take — the branch being an accident of how the caller
+    built its session, not a decision anyone made about identity-map behaviour.
+
+    spec: spec/feature/BACKEND.md §Shared Services (PostgreSQL row) — the independent
+        write "opens a session from a factory built on the **bind of the injected
+        session**". The bind is the only property the spec varies between the two
+        branches; ``expire_on_commit=False`` is the module-level factory's contract,
+        pinned above in ``test_session_factory_expire_on_commit_false``. That the derived
+        factory inherits it is a reading of the spec's silence, not a quoted clause.
+    """
+    from unittest.mock import MagicMock
+
+    from src.shared.db.session import independent_sessionmaker
+
+    callers_engine = create_async_engine("postgresql+asyncpg://u:p@callers-db:5432/d")
+    try:
+        factory = independent_sessionmaker(MagicMock(spec_set=["bind"], bind=callers_engine))
+
+        assert factory.kw.get("expire_on_commit") is False, (
+            f"the derived factory must keep expire_on_commit=False, matching the "
+            f"module-level factory; got {factory.kw.get('expire_on_commit')!r}. A "
+            "committed instance would otherwise be expired and re-read on a connection "
+            "the caller may no longer hold (src/backend/admin/peripheral_health.py "
+            "re-selects the row it just upserted)."
+        )
+    finally:
+        callers_engine.sync_engine.dispose()
+
+
+def _session_without_a_bind_attribute() -> object:
+    """The shape most unit-test callers inject: ``bind`` is not in ``dir(AsyncSession)``,
+    so the attribute is absent rather than present-and-None."""
+    from unittest.mock import MagicMock
+
+    return MagicMock(spec_set=[])
+
+
+def _session_bound_to_none() -> object:
+    from unittest.mock import MagicMock
+
+    return MagicMock(spec_set=["bind"], bind=None)
+
+
+def _session_bound_to_a_sync_engine() -> object:
+    """A *sync* ``Engine`` cannot build an async factory — an in-memory SQLite engine is
+    a real ``Engine`` that is never connected to."""
+    from unittest.mock import MagicMock
+
+    from sqlalchemy import create_engine
+
+    return MagicMock(spec_set=["bind"], bind=create_engine("sqlite://"))
+
+
+def _session_bound_to_a_non_engine() -> object:
+    from unittest.mock import MagicMock
+
+    return MagicMock(spec_set=["bind"], bind=object())
+
+
+@pytest.mark.parametrize(
+    ("label", "build_session"),
+    [
+        ("a session exposing no bind attribute at all", _session_without_a_bind_attribute),
+        ("a session whose bind is None", _session_bound_to_none),
+        ("a session bound to a sync Engine", _session_bound_to_a_sync_engine),
+        ("a session bound to something that is not an engine", _session_bound_to_a_non_engine),
+    ],
+)
+def test_a_session_with_no_usable_bind_falls_back_to_the_module_level_factory(
+    label: str, build_session
+) -> None:
+    """No usable bind leaves the module-level factory as the only available address.
+
+    spec: spec/feature/BACKEND.md §Shared Services (PostgreSQL row) — "A session with no
+        usable bind falls back to the module-level factory, the only address available in
+        that case."
+    """
+    from src.shared.db.session import independent_sessionmaker
+
+    factory = independent_sessionmaker(build_session())
+
+    assert factory is _live_session_local(), (
+        f"{label}: with nothing to derive an engine from, the write must go through the "
+        f"module-level factory — the only address available; got {factory!r}. "
+        "spec: spec/feature/BACKEND.md §Shared Services (PostgreSQL row)."
+    )

@@ -65,14 +65,10 @@ async def test_mint_returns_dsk_prefix() -> None:
     mock_db.flush = AsyncMock()
     mock_db.refresh = AsyncMock(side_effect=lambda obj: None)
 
-    # Patch SessionLocal used for throttled last_used_at update to a no-op
-    with patch("src.backend.auth.api_tokens.SessionLocal") as mock_session_cls:
-        mock_throttle = AsyncMock()
-        mock_throttle.__aenter__ = AsyncMock(return_value=mock_throttle)
-        mock_throttle.__aexit__ = AsyncMock(return_value=False)
-        mock_session_cls.return_value = mock_throttle
-
-        raw_token, api_token = await mint(mock_db, user_id, "test-token")
+    # No session patching here: ``mint`` writes through the caller's session only. The
+    # ``last_used_at`` stamp that needs a session of its own belongs to
+    # ``lookup_and_validate``, not to minting.
+    raw_token, api_token = await mint(mock_db, user_id, "test-token")
 
     assert raw_token.startswith("dsk_"), (
         "Minted token must start with 'dsk_' per spec/feature/AUTH.md §API Tokens §Token format"
@@ -110,13 +106,7 @@ async def test_mint_stores_sha256_hash_not_raw() -> None:
     mock_db.flush = AsyncMock()
     mock_db.refresh = AsyncMock()
 
-    with patch("src.backend.auth.api_tokens.SessionLocal") as mock_session_cls:
-        mock_throttle = AsyncMock()
-        mock_throttle.__aenter__ = AsyncMock(return_value=mock_throttle)
-        mock_throttle.__aexit__ = AsyncMock(return_value=False)
-        mock_session_cls.return_value = mock_throttle
-
-        raw_token, _ = await mint(mock_db, user_id, "ci-token")
+    raw_token, _ = await mint(mock_db, user_id, "ci-token")
 
     assert len(captured_token_rows) == 1
     stored = captured_token_rows[0]
@@ -195,13 +185,27 @@ async def test_intersection_snapshot_admin_current_reader_returns_reader() -> No
     mock_db = AsyncMock()
     mock_db.execute = AsyncMock(return_value=mock_result)
 
+    # ``lookup_and_validate`` stamps ``last_used_at`` on a session of its own, so that
+    # session is stubbed here to keep this test off a real database. The patch lands on
+    # the module-level ``SessionLocal`` rather than on the seam that selects it: this test
+    # hands in an ``AsyncMock`` whose ``bind`` is not an engine, which is the no-usable-bind
+    # case, and the module-level factory is then the only address the write can resolve to
+    # (spec/feature/BACKEND.md §Shared Services, PostgreSQL row — "A session with no usable
+    # bind falls back to the module-level factory, the only address available in that
+    # case."). Stubbing the selector instead would suppress the engine choice entirely;
+    # patching the destination leaves the real selection running.
+    #
+    # No test using a mock ``db`` can *observe* which engine is selected — every branch
+    # converges on the module-level factory — so which database the stamp lands in is
+    # asserted separately, in
+    # ``test_the_last_used_at_stamp_is_written_to_the_callers_database`` below.
     mock_throttle_session = AsyncMock()
     mock_throttle_session.execute = AsyncMock()
     mock_throttle_session.commit = AsyncMock()
     mock_throttle_session.__aenter__ = AsyncMock(return_value=mock_throttle_session)
     mock_throttle_session.__aexit__ = AsyncMock(return_value=False)
 
-    with patch("src.backend.auth.api_tokens.SessionLocal") as mock_session_cls:
+    with patch("src.shared.db.session.SessionLocal") as mock_session_cls:
         mock_session_cls.return_value = mock_throttle_session
         user, effective_role, token_id = await lookup_and_validate(
             mock_db, "dsk_admin_snapshot_reader_current"
@@ -252,7 +256,7 @@ async def test_intersection_snapshot_reader_current_admin_returns_reader() -> No
     mock_throttle_session.__aenter__ = AsyncMock(return_value=mock_throttle_session)
     mock_throttle_session.__aexit__ = AsyncMock(return_value=False)
 
-    with patch("src.backend.auth.api_tokens.SessionLocal") as mock_session_cls:
+    with patch("src.shared.db.session.SessionLocal") as mock_session_cls:
         mock_session_cls.return_value = mock_throttle_session
         user, effective_role, token_id = await lookup_and_validate(
             mock_db, "dsk_reader_snapshot_admin_current"
@@ -298,7 +302,7 @@ async def test_intersection_equal_roles_preserved() -> None:
     mock_throttle_session.__aenter__ = AsyncMock(return_value=mock_throttle_session)
     mock_throttle_session.__aexit__ = AsyncMock(return_value=False)
 
-    with patch("src.backend.auth.api_tokens.SessionLocal") as mock_session_cls:
+    with patch("src.shared.db.session.SessionLocal") as mock_session_cls:
         mock_session_cls.return_value = mock_throttle_session
         user, effective_role, token_id = await lookup_and_validate(
             mock_db, "dsk_editor_snapshot_editor_current"
@@ -451,7 +455,7 @@ async def test_lookup_and_validate_updates_last_used_at_when_stale() -> None:
     mock_throttle_session.__aenter__ = AsyncMock(return_value=mock_throttle_session)
     mock_throttle_session.__aexit__ = AsyncMock(return_value=False)
 
-    with patch("src.backend.auth.api_tokens.SessionLocal") as mock_session_cls:
+    with patch("src.shared.db.session.SessionLocal") as mock_session_cls:
         mock_session_cls.return_value = mock_throttle_session
         user, role, token_id = await lookup_and_validate(mock_db, "dsk_test_token_stale")
 
@@ -462,3 +466,143 @@ async def test_lookup_and_validate_updates_last_used_at_when_stale() -> None:
     assert user is mock_user
     assert role == "Reader"
     assert token_id == mock_token.id
+
+
+@pytest.mark.asyncio
+async def test_the_last_used_at_stamp_is_written_to_the_callers_database() -> None:
+    """The throttled UPDATE runs against the engine the caller's session is bound to.
+
+    The stamp is written on a session of its own — the authenticating request commonly
+    belongs to a read-only GET that never commits, so riding the caller's transaction
+    would drop it. That independence is satisfiable by a session on *any* database,
+    including one nobody in this call is reading: a module-level factory is bound at
+    import time to the app-runtime connection settings, which a caller holding a session
+    built somewhere else does not share. A stamp written there is written nowhere as far
+    as ``GET /auth/api-tokens`` is concerned, and nothing in this function's return value
+    or in the tests above would notice — the write is fire-and-forget.
+
+    So both halves are held at once: a session distinct from the caller's, on the
+    database the caller handed in. A distinct engine is installed as the module-level
+    ``SessionLocal`` for the duration, so "the caller's engine" is a discriminating
+    reading rather than the only engine in the process.
+
+    ``AsyncSession.execute``/``commit`` are stubbed at the class so the statements are
+    observed without a connection ever being opened; the caller's ``db`` is a mock and is
+    unaffected. Only ``Update`` statements are counted as stamps — the throttle is spec'd
+    as a check made *before* issuing the UPDATE, so an implementation that reads
+    ``last_used_at`` back with its own SELECT first is equally conformant and must not
+    fail here. Engines are never connected to: SQLAlchemy defers connection until a
+    statement runs, and none does.
+
+    spec: spec/feature/BACKEND.md §Shared Services (PostgreSQL row) — "A write that must
+        commit on its own terms while the caller holds a session of its own — one that has
+        to survive a rollback the caller is about to take, or land on a read-only request
+        that never commits — opens a session from a factory built on the **bind of the
+        injected session**, so it reaches the database the caller is actually using."
+    spec: spec/feature/BACKEND.md §Shared Services (PostgreSQL row) — the module-level
+        factory is bound at import time to values "which an in-process caller carrying a
+        session on another engine does not have; the write would otherwise be aimed at a
+        different address than every other statement in the same call, with no diagnostic
+        distinguishing that from success" — hence the distinct fallback engine below, and
+        hence this assertion existing at all.
+    spec: spec/feature/AUTH.md §Audit and ``last_used_at`` — "Every successful API-token
+        authentication updates ``api_tokens.last_used_at``", i.e. the row of the token
+        that just authenticated, which lives in the database the caller is querying.
+    spec: spec/feature/AUTH.md §Lifecycle endpoints — ``GET /auth/api-tokens`` returns
+        ``last_used_at`` to the user; a stamp on another database never reaches that read.
+    """
+    from sqlalchemy import Update
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+    from src.backend.auth.api_tokens import lookup_and_validate
+
+    callers_engine = create_async_engine("postgresql+asyncpg://u:p@callers-db:5432/d")
+    fallback_engine = create_async_engine("postgresql+asyncpg://u:p@module-level-db:5432/d")
+
+    mock_token = MagicMock()
+    mock_token.revoked_at = None
+    mock_token.expires_at = None
+    mock_token.role_snapshot = "Reader"
+    mock_token.id = uuid.uuid4()
+    mock_token.last_used_at = None
+
+    mock_user = MagicMock()
+    mock_user.id = uuid.uuid4()
+    mock_user.role = "Reader"
+
+    mock_result = MagicMock()
+    mock_result.first.return_value = (mock_token, mock_user)
+
+    mock_db = AsyncMock()
+    mock_db.execute = AsyncMock(return_value=mock_result)
+    mock_db.bind = callers_engine  # the caller's session carries its own engine
+
+    executed: list[tuple[object, object]] = []  # (session, statement)
+    committed: list[object] = []
+
+    async def _record_execute(self, statement, *args, **kwargs):  # type: ignore[no-untyped-def]
+        executed.append((self, statement))
+        return MagicMock()
+
+    async def _record_commit(self) -> None:  # type: ignore[no-untyped-def]
+        committed.append(self)
+
+    try:
+        with (
+            patch.object(AsyncSession, "execute", _record_execute),
+            patch.object(AsyncSession, "commit", _record_commit),
+            patch(
+                "src.shared.db.session.SessionLocal",
+                async_sessionmaker(fallback_engine, class_=AsyncSession, expire_on_commit=False),
+            ),
+        ):
+            await lookup_and_validate(mock_db, "dsk_stamp_goes_to_the_callers_database")
+    finally:
+        await callers_engine.dispose()
+        await fallback_engine.dispose()
+
+    stamps = [(session, stmt) for session, stmt in executed if isinstance(stmt, Update)]
+
+    # Backstop: the UPDATE really was issued. Without it every assertion below passes on
+    # an implementation that stopped stamping altogether — which nothing else observes,
+    # since the caller never reads the stamp back.
+    assert len(stamps) == 1, (
+        f"a successful authentication must issue exactly one last_used_at UPDATE; got "
+        f"{len(stamps)} (all statements: {[type(s).__name__ for _, s in executed]!r}). "
+        "spec: spec/feature/AUTH.md §Audit and last_used_at — 'Every successful API-token "
+        "authentication updates api_tokens.last_used_at.'"
+    )
+    stamp_session, _stamp_stmt = stamps[0]
+
+    assert stamp_session.bind is callers_engine, (
+        f"the last_used_at stamp must be written against the engine the caller's session "
+        f"is bound to ({callers_engine.url.host}), so it lands on the row "
+        f"GET /auth/api-tokens reads back; it went to "
+        f"{getattr(stamp_session.bind, 'url', stamp_session.bind)}. A write aimed at the "
+        f"module-level factory's engine ({fallback_engine.url.host}) is lost with no "
+        "diagnostic distinguishing it from success. spec: spec/feature/BACKEND.md "
+        "§Shared Services (PostgreSQL row) — the factory is built on the bind of the "
+        "injected session."
+    )
+
+    # The stamp is worthless uncommitted: the authenticating request is commonly a
+    # read-only GET whose own session never commits, so nothing else will flush it.
+    assert committed == [stamp_session], (
+        f"the stamping session must commit on its own terms, or the UPDATE is discarded "
+        f"when the session closes; sessions that committed: {committed!r}. "
+        "spec: spec/feature/BACKEND.md §Shared Services (PostgreSQL row) — a write that "
+        "must 'land on a read-only request that never commits' commits on its own terms."
+    )
+
+    # Shape, not statement count: the caller's session must carry no stamp at all. Counting
+    # its statements instead would pin how the lookup is issued — splitting the join into
+    # two selects is behaviour-neutral and must stay free.
+    caller_stamps = [
+        call for call in mock_db.execute.await_args_list if isinstance(call.args[0], Update)
+    ]
+    assert caller_stamps == [], (
+        f"the caller's session must never carry the stamp — it belongs to a session of its "
+        f"own, so writing it on both is not 'a session of its own'; the caller's session ran "
+        f"{len(caller_stamps)} UPDATE(s). spec: spec/feature/BACKEND.md "
+        "§Shared Services (PostgreSQL row)."
+    )

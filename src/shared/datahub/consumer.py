@@ -376,7 +376,13 @@ class HealthReporter:
                 await report_peripheral_health(db, "datahub", status, error)
         except Exception:
             # Health reporting is observability, never a reason to stop consuming.
-            logger.warning("peripheral_health_report_failed", status=status)
+            # ERROR with exc_info, per spec/feature/BACKEND.md §Health reporting: the
+            # row keeps its prior value, where a stale or `unknown` reading is
+            # indistinguishable from "no reporter deployed", so this record is the
+            # only evidence a deployed reporter is failing. Returning without
+            # advancing `_last_status` leaves the next heartbeat free to retry, which
+            # clears a transient fault but not a standing one.
+            logger.error("peripheral_health_report_failed", status=status, exc_info=True)
             return
 
         self._last_status = status
