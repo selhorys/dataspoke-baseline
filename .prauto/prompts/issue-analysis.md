@@ -18,7 +18,7 @@ The plan is executed by `.claude/workflows/wf-minimal.js`, which runs generator 
 ## PRauto Execution Metadata
 
 - **Stages**: a JSON array of the generator stages this plan needs, in execution order, drawn ONLY from `spec`, `backend`, `airflow-dag`, `test`, `frontend`. Group stages that may run concurrently in an inner array. NEVER include `k8s-helm` — deploys are orchestrator-owned. Lead with `spec` when the plan changes specs, so later stages read the updated spec. Example: `["spec", ["backend", "airflow-dag"], "test", "frontend"]`.
-- **Security**: a JSON array naming the subset of Stages whose diff touches the sensitive paths listed in `.claude/agents/security-reviewer.md` (auth, DataHub emission/write paths, secret resolution, `src/shared/settings.py`, dependency manifests, helm secrets/values, `.prauto/**`, install-time orchestration). Empty array `[]` if none.
+- **Security**: a JSON array naming the subset of Stages whose diff touches the sensitive paths listed in `.claude/agents/security-reviewer.md` (all of `src/shared/**` and `src/backend/**`, plus `src/api/` auth / middleware / routers, migrations, dependency manifests, helm secrets/values, `.prauto/**`, install-time orchestration). Empty array `[]` if none.
 - **Skip-plan eligible**: `yes` only if your plan meets ALL of CLAUDE.md's skip-plan criteria — touches < 3 files AND < 60 lines of logic; introduces no new API endpoint, DB table/column, pgvector collection, or Airflow DAG; and requires no cross-layer coordination. Otherwise `no`. Judge your own plan, not the issue's self-description. When unsure, answer `no`.
 - **Skip-plan rationale**: one line stating which criteria decided the answer.
 
