@@ -48,5 +48,6 @@
 - [Vitest TZ pin isolation](project_vitest_tz_pin_isolation.md) — forks+isolate means no cross-file leak; only the afterAll self-check guards the delete-vs-assign restore
 - [chart-grain local monotonicity](project_chart_grain_local_monotonicity.md) — DST fall-back breaks label distinctness, NOT ordering; the usual tz="utc" rationale is wrong
 - [Grain 'no request param' untested](project_grain_no_request_param_untested.md) — enforced at 1 of 3 surfaces; tsc catches a new key but not an altered limit
-- [API-health reporter test seams](project_api_health_reporter_test_seams.md) — full kill/tolerate table; both survivors closed; keep level mutations tolerated; one over-pinned `seen == []`
+- [API-health reporter test seams](project_api_health_reporter_test_seams.md) — full kill/tolerate table; ERROR level now spec'd + pinned (#135); logger.exception still tolerated; one over-pinned `seen == []`
 - [DSN URL-fields anchor](project_dsn_url_fields_anchor.md) — BACKEND.md:131; TESTING L404 not L335 for fixtures; p%2Fss load-bearing; conftest exec seam
+- [independent_sessionmaker seams](project_independent_sessionmaker_seams.md) — #134/#135 cycle-2: 32 mutants, rule now specced; residue = await_count/Update/commit-mechanism false-kills; reload trap

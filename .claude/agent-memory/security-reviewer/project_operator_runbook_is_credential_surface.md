@@ -11,11 +11,11 @@ they contain no code. They are the sole instruction set for creating the 13-key
 `dataspoke-secrets`, rotating the seeded default admin, and tearing down without
 stranding or destroying key material.
 
-They are **not** covered by the sensitive-path globs in `.claude/agents/security-reviewer.md`
-(which list `helm-charts/**/templates/secrets.yaml` and `values*.yaml` but not `README.md`
-or the prod example overlay by name). Worth proposing as an addition — likewise
-`helm-charts/bin/uninstall.sh`, which conditionally deletes `dataspoke-secrets` and the
-Airflow fernet-key Secret.
+`helm-charts/bin/install.sh` and `bin/uninstall.sh` are now in the sensitive-path globs
+(added since this memory was first written). **`helm-charts/README.md` still is not** —
+the globs list `helm-charts/**/templates/secrets.yaml` and `values*.yaml`, neither of
+which matches it. Keep re-proposing it: every review of this surface so far has fired
+only because the same diff happened to touch a listed path.
 
 **Why:** a doc-only diff on this path caused a high-severity finding — the runbook asserted
 prod does no automatic admin seeding, while the prod branch of `install.sh` calls
@@ -50,4 +50,6 @@ the router prefixes in `src/api/main.py`. Doc-vs-doc consistency is worthless he
 artifacts can agree and all be wrong. Cross-check `spec/API.md` — as the priority-1
 contract it has been the accurate one. See [[project-auth-fail-closed-spans-layers]] for
 the analogous "one layer's correctness is undone by another's" pattern, and
-[[install-sh-preflight-gate-mechanics]] for the gate-shape details.
+[[install-sh-preflight-gate-mechanics]] for the gate-shape details, and
+[[prod-bootstrap-recipe-measurements]] for §2's measured shell/kubectl facts and the
+Airflow `all_admins` bypass that makes two documented "credentials" non-enforcing.

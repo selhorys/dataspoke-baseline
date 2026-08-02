@@ -20,11 +20,16 @@ guard, `get_bind()` instead of `.bind`, fallback-to-injected, wrong row name, `e
 **dropping `exc_info=True`** (2 fails), **deleting the swallow log** (2 fails), **hoisting the
 bind/factory derivation above the `try`** (1 fail). Both cycle-2 survivors are now closed.
 
-**Correctly tolerated** (do not let anyone "strengthen" these into pins): `logger.error` →
-`logger.debug` / `logger.warning`, and `logger.error(..., exc_info=True)` → `logger.exception(...)`.
-`BACKEND.md §Best-Effort Operations` (L1621) says best-effort failures log at **WARNING**; the impl
-deliberately uses ERROR and argues for it in a comment. Unresolved spec divergence — do not pin a
-level until it is.
+**The log level is now spec'd and pinned (#135).** `BACKEND.md §Health reporting` (L1561-1567)
+says a reporter's own write failure is swallowed "and logged at `ERROR` with `exc_info=True`", and
+§Best-Effort Operations (L1629-1632) scopes its WARNING sentence to its four table rows and
+cross-references it. The rule binds **every** reporter writing the table — both
+`_report_api_health` and `src/shared/datahub/consumer.py::HealthReporter`. Measured: demoting
+either to `logger.warning` now fails (2 ingestion params / the consumer test). The earlier
+"do not pin the level, the divergence is unresolved" note is obsolete.
+**Still correctly tolerated:** `logger.error(..., exc_info=True)` → `logger.exception(...)`
+(same level, same `exc_info`) — measured green on both reporters. Do not let anyone pin the
+call spelling.
 
 **Over-pinned, one assertion:** `test_reading_the_injected_sessions_bind_cannot_break_the_sweep`'s
 `assert seen == []`. Measured: an impl that wraps only the `bind` read in its own

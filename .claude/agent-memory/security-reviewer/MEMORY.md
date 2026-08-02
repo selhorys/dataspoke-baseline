@@ -26,3 +26,5 @@
 - [Credential URI escaping boundary](project_credential_uri_escaping_boundary.md) — 4 src DSN sites fixed; 6 raw f-strings remain in tests/; 2 controls never reach an existing install
 - [Postgres identity → ConfigMap](project_postgres_identity_configmap_relocation.md) — envFrom LAST source wins, so a leftover Secret key shadows the ConfigMap; dev patches, prod rejects
 - [/internal exposure model](project_internal_surface_exposure_model.md) — /internal is app-root, not under /api/v1; seed path now in-pod, but chart default still publishes it at `/` with no gate
+- [Ingress ssl-redirect dual spelling](project_ingress_ssl_redirect_dual_spelling.md) — INGRESS_SCHEME is not a proxy for "host terminates TLS"; 7-site emission inventory + verified --set escaping
+- [Prod bootstrap recipe §2](project_prod_bootstrap_recipe_measurements.md) — measured leak sinks (argv/history/temp-file mode); Airflow all_admins makes 2 of 11 keys decorative

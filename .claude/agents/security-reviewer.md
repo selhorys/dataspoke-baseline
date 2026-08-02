@@ -44,6 +44,7 @@ The orchestrator invokes you **only when a generator's diff touches a sensitive 
 - `helm-charts/bin/lib/helpers.sh` — shared derivation of ingress class, scheme, TLS secret name, and service hostnames; its values are interpolated into `helm --set` tokens, `sed` replacements, and `kubectl apply` input by every install script
 - `helm-charts/dev-peripherals/**/*.yaml` — static manifests rendered by `sed` and applied with `kubectl`, plus peripheral chart values
 - `helm-charts/bin/install.sh` — creates and validates the credentials Secret, enforces the required-key and Fernet-key-shape gates, rejects insecure dev defaults, resolves `secrets.existingSecret` and pinned StorageClasses from the operator overlay, and gates the prod pre-flight
+- `helm-charts/README.md` — the operator runbook: it carries the credential-bootstrap recipe an operator pastes verbatim, the per-key classification table, and the transport-security claims for every published host, so an error here becomes a real prod misconfiguration even though no code changes
 - `helm-charts/bin/build-image.sh` — builds and pushes the artifact that `install.sh`'s image-digest resolution attests; also holds the GCP/AWS registry auth and push step
 - `helm-charts/prod-prereq/**` — cluster-admin-applied, cluster-scoped manifests (StorageClass and future prerequisites) outside Helm's ownership
 - `plugin/bin/**`, `plugin/skills/dataspoke-access/**` — end-user plugin credential model: mints/stores/transmits the `dsk_` API token and handles a login password

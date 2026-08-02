@@ -58,3 +58,4 @@
 - [Untimed→timed client swap](feedback_untimed_to_timed_client_swap.md) — curl had no cap; helpers.sh's 10s sits under AirflowClient's 60s; hung-socket retry worst case is ~62s not 12s
 - [Dropped pre-flight reroutes status](feedback_dropped_preflight_reroutes_status.md) — blank token now returns 503, landing in the "Postgres is down" branch; flat vs nested error_code envelopes
 - [Ingress path list vs app-shell](project_ingress_path_list_vs_app_shell.md) — narrowing to /api/v1+/health+/ready kills the UI's "API docs" link; /openapi.json does NOT expose /internal
+- [StorageClass provisioner vs CSIDriver](project_storageclass_provisioner_vs_csidriver.md) — external provisioners carry `/` and register no CSIDriver; in-tree exemption skips CSI-migrated EKS gp2
