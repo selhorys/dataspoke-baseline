@@ -26,8 +26,13 @@ fallback default, and `_FAULT_RETRY_SLEEP_S != _UNCONFIGURED_SLEEP_S`.
    `{'host','port','db'}` — redis-py drops an empty password before AUTH, so
    `test_storage_uri_without_a_password_carries_no_credential`'s stated failure mode does not
    exist and its assertion cannot fail. Assert on the URI **text**, not on `parse_url`.
-3. `port=int(port)` -> `port=port` is equivalent — SQLAlchemy's `URL._assert_port` coerces.
-   Not a test gap.
+3. `port=int(port)` -> `port=port` is equivalent — SQLAlchemy's `URL._assert_port` coerces a
+   `str` port to `int` before it reaches the driver. **Re-confirmed at a second site (#133,
+   `tests/integration/util/db_url.py::build_postgres_url`): the mutation survives all 24 tests
+   across the three builder-test files.** Not a test gap. Both `src/shared/db/session.py::
+   _build_url` and the integration builder keep the `int()` as documented explicitness/forward
+   guard; do not ask for a test that pins it, and do not treat its survival as a finding —
+   just check the code says so.
 
 **Seam that works** for testing the public `storage_uri` without `importlib.reload` (reload resets
 `_AUTH_LIMITED_ENDPOINTS`, which the auth-router decorators populate once at import): load a second

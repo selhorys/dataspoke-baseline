@@ -1,38 +1,56 @@
 ---
 name: dsn-url-fields-anchor
-description: The URL-fields-not-DSN-string rule is spec/feature/BACKEND.md:131; test_session.py is the reference shape; the getsource env-key backstop is redundant and refactor-brittle
+description: The URL-fields-not-DSN-string rule is spec/feature/BACKEND.md:131; test_session.py is the reference shape; the integration layer now has one shared builder plus the conftest-fixture seam
 metadata:
   type: project
 ---
 
 The rule "credentials are carried as `sqlalchemy.URL` fields rather than interpolated into a DSN
 string … and the URL's string form masks the password" is specced at
-**`spec/feature/BACKEND.md` §Shared Services, PostgreSQL row (line ~131)**. It is *not* in
-`spec/TESTING.md §Integration Lifecycle & Isolation` — that section (~L333-336) only says reset
-helpers read credentials from the `DATASPOKE_TEST_*` env block and hardcode none. Both citations
-now appear correctly split in `tests/unit/integration_util/test_main_db_url.py`.
+**`spec/feature/BACKEND.md` §Shared Services, PostgreSQL row (line ~131)** — verbatim, verified
+twice. It is *not* in `spec/TESTING.md §Integration Lifecycle & Isolation` — that bullet (~L333-336)
+is scoped to **reset helpers** ("Reset helpers fail loud and carry no baked-in credentials … read
+all credentials from the environment (the `DATASPOKE_TEST_*` block)"). For a *conftest fixture*
+reading that block, the on-point anchor is **`spec/TESTING.md` L404 (§Running)** — "`conftest.py`
+and `util/*.py` consume the `DATASPOKE_TEST_*` block it contains". Citing L335 for a fixture is a
+scope stretch; L404 is the precise one.
 
 Reference shape: `tests/unit/shared/db/test_session.py` (~35-128) — parametrize over
 `_HOSTILE_CREDENTIALS = ["p@ss", "p%2Fss", "pa ss", "p/s?s#x", "p:ss", "100%"]`, assert
 `dialect.create_connect_args(url)[1]` round-trips password *and* host (the `@`-truncation pin),
-plus `str`/`repr` masking. `tests/unit/migrations/test_env.py` uses the identical set.
-`URL.create` exists in exactly two src/migration files: `src/shared/db/session.py`,
-`migrations/env.py`; `tests/integration/util/__main__.py::_dataspoke_db_url` is the third.
+plus `str`/`repr` masking. `tests/unit/migrations/test_env.py` and
+`tests/unit/integration_util/test_main_db_url.py` use the identical 6-member set.
 
-**Measured, #118, and re-measured after the `getsource` test was deleted (file is now 15 tests):**
-reverting `_dataspoke_db_url` to the f-string DSN kills nearly the whole file. Renaming *any one* of
-the five `DATASPOKE_TEST_POSTGRES_*` keys — either to the runtime `DATASPOKE_POSTGRES_*` block or to
-a typo outside both blocks — is still caught by the behavioural tests alone (1-15 failures each; the
-thinnest is `PORT` → typo at 1). So an `inspect.getsource(...)`-substring "env key names are stable"
-backstop adds **zero** kill power, and it is the one test that fails a behaviour-identical refactor
-(keys built from an `f"DATASPOKE_TEST_POSTGRES_{field}"` prefix). Deleting it lost nothing. Flag
-that shape wherever it reappears; the `populated` half of a component-wise env test already covers
-it.
+**The 6-member set is not padding — measured.** With the set thinned to `["p@ss/word", "100%"]`,
+`password=unquote(password)` and `username=unquote(user)` (the read-side half of a DSN escape
+asymmetry) both SURVIVE: `unquote("100%") == "100%"` and `unquote("p@ss/word")` is unchanged, so
+only `p%2Fss` exercises the percent-*decode* direction. `100%` covers the *encode* direction
+(`quote`) only. Keep `p%2Fss` in any set that claims to pin "a `%` decodes into a different
+password entirely".
 
-`_dataspoke_db_url` is annotated `-> URL` via a `TYPE_CHECKING` import (the module has
-`from __future__ import annotations`); the runtime `from sqlalchemy import URL` stays function-local
-so `--help` does not pay for SQLAlchemy. mypy is clean on that module.
+**Integration-layer state after #133:** no raw-DSN f-string remains anywhere in `tests/`, `src/`,
+`migrations/`. The two spot `_dsn()` helpers are gone; `tests/integration/util/db_url.py::
+build_postgres_url` is the shared builder for both `tests/integration/conftest.py::
+integration_db_url` (required host/port/user/password, `DB` defaults to `dataspoke`) and
+`tests/integration/util/__main__.py::_dataspoke_db_url` (all five defaulted). The other
+`util/*.py` reset helpers pass keyword args straight to `asyncpg.connect`, so they never had a
+DSN to escape.
 
-Still raw-DSN f-strings: `tests/integration/conftest.py:118-121`,
-`tests/integration/spot/test_ontogen_embedding_upserts.py`,
-`tests/integration/spot/test_uc4_metagen_evidence_prompt.py`.
+**The fixture's only gate is a unit test.** Measured: reverting `integration_db_url` to the
+f-string form leaves the *whole* unit suite green (2933 passed) except
+`tests/unit/integration_conftest/test_integration_db_url.py`, which fails 3. Nothing else observes
+the fixture's return value and `tests/` is not type-checked, so the `-> URL` annotation is no
+backstop. The seam: `importlib.util.spec_from_file_location` + `exec_module` on
+`tests/integration/conftest.py` under a throwaway module name, inside
+`patch.dict(os.environ, _IMPORT_ENV, clear=True)`, then call
+`module.integration_db_url.__wrapped__()`. Verified safe — `os.environ` is restored *exactly*
+(patch.dict contains `_load_dotenv()`), hostile ambient `DATASPOKE_TEST_POSTGRES_*` cannot leak,
+and the module's five required import-time env reads (conftest L94/97/98/101/102) are exactly the
+five keys `_IMPORT_ENV` supplies. Residue: the exec freezes `tests.integration.util.{datahub,
+postgres,kafka}` module-level constants from `.env.dev`-on-disk; harmless unless unit and
+integration run in one process with unit first (a bare `pytest` is safe — `integration` sorts
+before `unit`).
+
+An `inspect.getsource(...)`-substring "env key names are stable" backstop adds **zero** kill power
+over the behavioural tests and is the one shape that fails a behaviour-identical refactor. Flag it
+wherever it reappears.
