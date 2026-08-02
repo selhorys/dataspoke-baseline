@@ -140,6 +140,7 @@ api:
     className: "nginx"          # ignored — install.sh --sets it from DATASPOKE_KUBE_INGRESS_CLASS
     annotations:
       nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+      nginx.org/client-max-body-size: "50m"
       cert-manager.io/cluster-issuer: "letsencrypt-prod"   # no cert-manager? set to null — this deletes the key (see header)
     hosts:
       # The API ingress host is your own choice — nothing else in this

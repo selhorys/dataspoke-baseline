@@ -74,6 +74,7 @@ langfuse:
       annotations:
         nginx.ingress.kubernetes.io/ssl-redirect: "false"
         nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+        nginx.org/client-max-body-size: "50m"
       hosts:
         - host: "langfuse.dev.dataspoke.example.com"
           paths:

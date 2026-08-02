@@ -1338,6 +1338,32 @@ for tag, name in pins:
 PYEOF
 }
 
+# _csidriver_state <name>
+# Echoes exactly one of "found" / "absent" / "forbidden" for the cluster-
+# scoped CSIDriver object <name>, used by the StorageClass pre-flight below.
+# A plain exit-code check (`kubectl get csidriver ... >/dev/null 2>&1`)
+# cannot tell a genuine NotFound apart from an RBAC denial — both are
+# non-zero exits with nothing on stdout — and collapsing them would have the
+# pre-flight tell an operator to install a driver that is already there,
+# purely because the installer's own kubectl identity lacks read access to
+# CSIDriver objects (a cluster-scoped resource, so `csidrivers.storage.k8s.io`
+# get/list is a real, separate RBAC grant an operator may not have given the
+# installer identity — see helm-charts/prod-prereq/). `--` terminates flag
+# parsing ahead of <name>: every caller already validates it against a
+# DNS-subdomain-with-optional-path grammar before passing it here, but that
+# grammar still permits a leading character kubectl's own parser could read
+# as a flag.
+_csidriver_state() {
+  local name="$1" stderr_out
+  if stderr_out="$(kubectl get csidriver -- "${name}" 2>&1 >/dev/null)"; then
+    echo "found"
+  elif [[ "$stderr_out" == *"Forbidden"* || "$stderr_out" == *"forbidden"* ]]; then
+    echo "forbidden"
+  else
+    echo "absent"
+  fi
+}
+
 # _assert_no_internal_ingress_exposure <chart_values_file> [<overlay_file>]
 # Prod-only guard: aborts when the effective api.ingress.hosts[*].paths[*]
 # would publish /internal/* on the public API ingress — the residual half of
@@ -2444,11 +2470,13 @@ elif [[ "$PROFILE" == "prod" ]]; then
   _assert_no_internal_ingress_exposure "$CHART_DIR/values.yaml" "${EXTRA_VALUES:-}"
   info "API ingress paths do not publish /internal/*."
 
-  # Verify every StorageClass the operator's overlay pins exists (fail fast).
+  # Verify every StorageClass the operator's overlay pins exists AND, where
+  # it names an out-of-tree CSI provisioner, that the matching CSIDriver is
+  # actually registered (fail fast).
   #
   # A namespace-scoped Helm release cannot own a cluster-scoped StorageClass —
   # see helm-charts/prod-prereq/ for the cluster-admin prerequisite this
-  # check assumes was applied first. Resolved from eleven overlay keys across
+  # check assumes was applied first. Resolved from fifteen overlay keys across
   # the postgresql/redis Bitnami subcharts and the Airflow subchart's
   # persistence blocks — see _resolve_storage_classes's docstring above for
   # the full list, the `storageClass` (Bitnami) vs `storageClassName`
@@ -2456,12 +2484,13 @@ elif [[ "$PROFILE" == "prod" ]]; then
   # `-`. An overlay that pins none of them skips this check cleanly — the
   # cluster default StorageClass then applies.
   #
-  # Failing here, rather than later, is the point: a missing class otherwise
-  # leaves the PVC Pending, so PostgreSQL/Redis/Airflow never start, the
-  # API's wait-for-postgres init container loops, and the install dies on a
-  # rollout timeout whose symptom names PostgreSQL rather than storage.
-  # Recovery then needs the stuck PVCs deleted by hand, because
-  # storageClassName is immutable once bound.
+  # Failing here, rather than later, is the point: a missing class, or a
+  # provisioner with no driver behind it, otherwise leaves the PVC Pending,
+  # so PostgreSQL/Redis/Airflow never start, the API's wait-for-postgres init
+  # container loops, and the install dies on a rollout timeout whose symptom
+  # names the stalled workload rather than storage. Recovery then needs the
+  # stuck PVCs deleted by hand, because storageClassName is immutable once
+  # bound.
   #
   # Resolved into a variable FIRST, then iterated — not
   # `done < <(_resolve_storage_classes ...)`. A process substitution's exit
@@ -2500,10 +2529,101 @@ elif [[ "$PROFILE" == "prod" ]]; then
       if ! [[ "$sc_name" =~ ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$ ]]; then
         error "StorageClass name '${sc_name}' pinned in your --values overlay is not a valid Kubernetes name."
       fi
-      if ! kubectl get storageclass "${sc_name}" >/dev/null 2>&1; then
-        error "StorageClass '${sc_name}' pinned in your --values overlay was not found in the cluster. Apply the cluster-scoped prerequisites first — see helm-charts/prod-prereq/."
+
+      # One round trip covers both existence and provisioner: `-o jsonpath`
+      # against a StorageClass that does not exist exits non-zero with no
+      # output, exactly like the separate `kubectl get storageclass ...`
+      # existence probe this replaces — so a single failed read here still
+      # reports "not found", and a class pinned under two different overlay
+      # keys (see _resolve_storage_classes's (tag, name) de-duplication
+      # docstring) no longer pays for two round trips to learn the same
+      # thing twice. `$( ... )` assignment, not a bare command inside
+      # `[[ ... ]]`: `set -e` sees a command-substitution assignment's exit
+      # status directly, so `|| error` reaches the standard `[ERROR]` voice
+      # on a genuine failure. A StorageClass whose `.provisioner` field is
+      # present but empty — a malformed object, not a missing one — exits 0
+      # with empty output here; that case is caught by the grammar check
+      # just below, not by this line.
+      sc_provisioner="$(kubectl get storageclass "${sc_name}" -o jsonpath='{.provisioner}' 2>/dev/null)" \
+        || error "StorageClass '${sc_name}' pinned in your --values overlay was not found in the cluster. Apply the cluster-scoped prerequisites first — see helm-charts/prod-prereq/."
+      info "StorageClass '${sc_name}' is present (provisioner: ${sc_provisioner})."
+
+      # Validate the provisioner's own grammar before it reaches any string
+      # comparison or a `kubectl get csidriver` argument below. A
+      # StorageClass provisioner is not a bare object name: it is either a
+      # DNS-subdomain CSI driver name (`ebs.csi.aws.com`) or a
+      # `<vendor-domain>/<name>` external non-CSI provisioner
+      # (`rancher.io/local-path`, `kubernetes.io/no-provisioner`) —
+      # rejecting the slash form outright would misdiagnose a valid,
+      # supported cluster (k3s/RKE's `rancher.io/local-path`, OpenEBS, the
+      # NFS subdir provisioner) as an invalid provisioner name. The anchored
+      # `^...$` still rejects a value beginning with `-`, which would
+      # otherwise be parsed as a flag by a subsequent kubectl invocation.
+      if ! [[ "$sc_provisioner" =~ ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?(/[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?)?$ ]]; then
+        error "StorageClass '${sc_name}' has provisioner '${sc_provisioner}', which is not a valid Kubernetes provisioner name."
       fi
-      info "StorageClass '${sc_name}' is present."
+
+      # CSI migration lets a StorageClass keep declaring one of these
+      # compiled-in `kubernetes.io/*` names while the operator has installed
+      # the matching CSI driver out-of-band and disabled the in-tree
+      # plugin — EKS's own default `gp2` StorageClass still reads
+      # `kubernetes.io/aws-ebs` while provisioning is actually delegated to
+      # the separately-installed `ebs.csi.aws.com` addon. Exempting the
+      # whole `kubernetes.io/*` family from the CSIDriver check would skip
+      # the single most likely real instance of the failure this block
+      # exists to catch. A cluster genuinely still on the in-tree plugin is
+      # equally legitimate, though, so a driver absent here is reported and
+      # does not abort the install — only a name this installer cannot map
+      # at all (the `else` branch below) hard-gates.
+      case "$sc_provisioner" in
+        kubernetes.io/aws-ebs)    _csi_migrated_name="ebs.csi.aws.com" ;;
+        kubernetes.io/gce-pd)     _csi_migrated_name="pd.csi.storage.gke.io" ;;
+        kubernetes.io/azure-disk) _csi_migrated_name="disk.csi.azure.com" ;;
+        *)                        _csi_migrated_name="" ;;
+      esac
+
+      if [[ -n "${_csi_migrated_name}" ]]; then
+        case "$(_csidriver_state "${_csi_migrated_name}")" in
+          found)
+            info "StorageClass '${sc_name}' uses the CSI-migrated provisioner '${sc_provisioner}'; CSIDriver '${_csi_migrated_name}' is registered."
+            ;;
+          forbidden)
+            warn "Could not confirm CSIDriver '${_csi_migrated_name}' for StorageClass '${sc_name}' (provisioner '${sc_provisioner}') — the installer's kubectl identity is denied read access to cluster-scoped CSIDriver objects. Verify manually: kubectl get csidriver ${_csi_migrated_name}"
+            ;;
+          absent)
+            warn "StorageClass '${sc_name}' declares the CSI-migrated provisioner '${sc_provisioner}', but no '${_csi_migrated_name}' CSIDriver is registered — this cluster may genuinely still run the in-tree plugin. If it does not, the PVC will stick Pending; install the CSI driver addon (see helm-charts/prod-prereq/) before this release."
+            ;;
+        esac
+      elif [[ "$sc_provisioner" == kubernetes.io/* ]]; then
+        # Every other compiled-in provisioner, including
+        # kubernetes.io/no-provisioner (pre-provisioned/static volumes),
+        # registers no CSIDriver object at all — nothing to check.
+        info "StorageClass '${sc_name}' uses the in-tree provisioner '${sc_provisioner}'; no CSIDriver required."
+      elif [[ "$sc_provisioner" == */* ]]; then
+        # A slash-bearing provisioner outside the kubernetes.io/ namespace is
+        # an external non-CSI provisioner — a controller that watches
+        # PersistentVolumeClaims directly rather than a CSI driver — and no
+        # CSIDriver object will ever exist for it. Requiring one here would
+        # reject k3s/RKE's rancher.io/local-path, openebs.io/local, and the
+        # NFS subdir provisioner outright.
+        warn "StorageClass '${sc_name}' names provisioner '${sc_provisioner}', an external (non-CSI) provisioner — skipping the CSIDriver check (none will ever exist for it). Confirm its controller is actually running in-cluster; a StorageClass object alone does not guarantee that."
+      else
+        # A bare DNS-subdomain name with no kubernetes.io/ prefix and no
+        # vendor path is the shape of an out-of-tree CSI driver name
+        # (ebs.csi.aws.com, pd.csi.storage.gke.io, ...) — the one
+        # unambiguous case this gate can enforce as a hard failure.
+        case "$(_csidriver_state "${sc_provisioner}")" in
+          found)
+            info "CSIDriver '${sc_provisioner}' is registered for StorageClass '${sc_name}'."
+            ;;
+          forbidden)
+            error "Could not confirm CSIDriver '${sc_provisioner}' is registered for StorageClass '${sc_name}' — the installer's kubectl identity is denied read access to cluster-scoped CSIDriver objects (get on csidrivers.storage.k8s.io). Grant that read access (see helm-charts/prod-prereq/) or verify manually: kubectl get csidriver ${sc_provisioner}"
+            ;;
+          absent)
+            error "StorageClass '${sc_name}' names CSI provisioner '${sc_provisioner}', but no matching CSIDriver is registered in the cluster. Install the CSI driver (its own Helm chart or manifest bundle, per the vendor) before this release — see helm-charts/prod-prereq/."
+            ;;
+        esac
+      fi
     done <<< "${PINNED_STORAGE_CLASSES}"
   fi
 

@@ -607,9 +607,10 @@ Same convention in both profiles; values differ.
   DataSpoke installs and owns an nginx-ingress controller + LoadBalancer
   (GKE Autopilot / minikube). `shared`: DataSpoke reuses a pre-existing
   cluster ingress controller and installs nothing (AWS/EKS). See §Ingress.
-- `DATASPOKE_KUBE_INGRESS_CLASS` — IngressClass name, default `nginx`, resolved
-  by the `ingress_class()` helper in `bin/lib/helpers.sh`. In shared mode the
-  install verifies the class already exists. See §Ingress.
+- `DATASPOKE_KUBE_INGRESS_CLASS` — IngressClass name, resolved by the
+  `ingress_class()` helper in `bin/lib/helpers.sh`; default `nginx` in dev,
+  required explicitly in prod. In shared mode the install verifies the class
+  already exists. See §Ingress.
 - `DATASPOKE_KUBE_INGRESS_IP` — managed: populated by the nginx-ingress
   install from the LoadBalancer external IP; shared: blank (no owned
   LoadBalancer); prod: operator-supplied as needed.
@@ -867,11 +868,30 @@ Bitnami-shaped snippet to an Airflow key. It fails fast on any pinned name
 that does not exist, mirroring the IngressClass probe beside it — with one
 exception: a literal `-` (the Bitnami convention for "bind a pre-provisioned
 PV, skip dynamic provisioning") is accepted without a cluster lookup only on
-the keys whose template maps it to an empty `storageClassName` — the five
+the keys whose template maps it to an empty `storageClassName` — the nine
 Bitnami keys and the Airflow `logs`/`dags` keys. `triggerer`, `workers`,
 `workers.celery`, and `redis` pass the value straight through with no such
 mapping, so a `-` there is rejected by the pre-flight instead of reaching
-Kubernetes as a literal (and invalid) class name. An overlay that pins
+Kubernetes as a literal (and invalid) class name. Existence alone is not
+sufficient either: the pre-flight reads the pinned class's `.provisioner` and,
+wherever a `CSIDriver` could exist for it, checks that one is registered —
+a class whose driver is absent strands the PVC `Pending` exactly as a missing
+class does. What a missing driver costs depends on the provisioner's shape. A
+bare DNS-subdomain name (`ebs.csi.aws.com`) is an out-of-tree CSI driver and the
+one unambiguous case, so an absent `CSIDriver` there **aborts**. The three
+CSI-migrated in-tree names (`kubernetes.io/{aws-ebs,gce-pd,azure-disk}`) are
+looked up under their CSI successors (`ebs.csi.aws.com`,
+`pd.csi.storage.gke.io`, `disk.csi.azure.com`), because a class may keep
+declaring the in-tree name while provisioning is delegated to a separately
+installed addon — EKS's default `gp2` is exactly that — but a cluster genuinely
+still running the in-tree plugin is equally legitimate, so absence there
+**warns**. Every other `kubernetes.io/*` name, `kubernetes.io/no-provisioner`
+included, is exempt with no lookup, and an external non-CSI provisioner in
+`vendor/name` form (`rancher.io/local-path`) **warns** and skips, since no
+`CSIDriver` will ever exist for it. A `Forbidden` reply is reported as itself
+rather than as absence, so an installer identity lacking `get` on
+`csidrivers.storage.k8s.io` (see `helm-charts/prod-prereq/`) is told to fix its
+RBAC instead of to install a driver that may already be there. An overlay that pins
 nothing skips the check and takes the cluster default. **Failing here is the
 point**: a missing class otherwise leaves the PVC `Pending`, the owning
 component never starts, the API's `wait-for-postgres` init container loops
@@ -890,7 +910,10 @@ the operator made.
 
 **Pre-flight is a hard gate.** Before touching the chart the prod install fails
 fast on: a missing `DATASPOKE_KUBE_INGRESS_CLASS` IngressClass; a StorageClass
-the overlay pins that does not exist in the cluster (per the storage paragraph
+the overlay pins that does not exist in the cluster, or that names a bare
+out-of-tree CSI provisioner with no registered `CSIDriver` — the only
+provisioner shape that aborts, the CSI-migrated in-tree and external
+non-CSI shapes warning instead (per the storage paragraph
 above); a missing credentials Secret; any of the eleven required keys absent or empty;
 a credentials Secret still carrying `DATASPOKE_POSTGRES_USER` or
 `DATASPOKE_POSTGRES_DB`, which belong to the app ConfigMap and would otherwise
@@ -1734,7 +1757,9 @@ The class key in those blocks — `api`/`frontend.ingress.className`,
 effective class is supplied by the install.
 
 **One class, one source.** Every Ingress in the table below binds to the class
-resolved by `ingress_class()` (`DATASPOKE_KUBE_INGRESS_CLASS`, default `nginx`):
+resolved by `ingress_class()` — `DATASPOKE_KUBE_INGRESS_CLASS`, default `nginx`
+in dev and required explicitly in prod, where a default would silently
+republish onto whatever controller happens to be named `nginx`:
 `install.sh` supplies it to the umbrella chart's API, frontend, and Airflow
 ingresses; each `bin/dev-peripherals/*.sh` supplies it to its own chart (DataHub
 frontend, Langfuse); and it is substituted into the GMS kubectl manifest. All
@@ -1752,13 +1777,44 @@ immaterial — whichever value a chart defaults to behaves identically. The prod
 example overlay replaces the API's rule with an explicit path list, and there
 `pathType: Prefix` is load-bearing rather than immaterial: the published
 prefixes are the boundary of what the ingress exposes, so the list and the
-`pathType` beside it are read together. The annotations DataSpoke does carry are community
-ingress-nginx spellings; a foreign controller ignores them and falls back to its
-own default for that knob, which never changes where a request is routed. The
-GMS manifest is the exception that states its own reason: as the metadata-push
-path it must accept large payloads, so it carries the body-size limit in both
-the `nginx.ingress.kubernetes.io/` and `nginx.org/` spellings and each
-controller ignores the other's. No other manifest does this.
+`pathType` beside it are read together.
+
+**Annotation spellings are vendor-specific, and the chart's reach differs by
+knob.** `DATASPOKE_KUBE_INGRESS_CLASS` selects a class *name* only, and in
+shared mode a class named `nginx` may be served by either the community
+controller (`k8s.io/ingress-nginx`, which reads
+`nginx.ingress.kubernetes.io/*`) or NGINX Inc./F5's
+(`nginx.org/ingress-controller`, which reads `nginx.org/*`); each ignores the
+other's namespace entirely. For routing that is immaterial — an unrecognised
+annotation falls back to that controller's own default for the knob, and no
+such default changes where a request is routed. For functional knobs the
+foreign default is not the chart's intent, and the two vendors differ in key
+name as well as prefix:
+
+- **Body size is dual-spelled.** `nginx.ingress.kubernetes.io/proxy-body-size`
+  and `nginx.org/client-max-body-size` (there is no
+  `nginx.org/proxy-body-size`) both pin `50m` on every rule that raises the
+  limit. The NGINX Inc. default is `1m`, so a single spelling would let a
+  1 MB–50 MB payload fail `413` at the proxy under the other controller —
+  load-bearing on the GMS host, the metadata-push path.
+- **The HTTPS redirect is community-spelled only.**
+  `nginx.ingress.kubernetes.io/ssl-redirect` is pinned off wherever the chart
+  sets it, except on the GMS rule, which derives the value from
+  `DATASPOKE_KUBE_INGRESS_SCHEME` and so refuses the plaintext hop under
+  `https` — that host carries the DataHub personal access token on every call.
+  There is no `nginx.org/` counterpart, so under a shared NGINX Inc.
+  controller the redirect follows that controller's own default
+  (`nginx.org/ssl-redirect`, `True`) rather than the chart's setting. Both
+  controllers gate the redirect on the server actually holding a certificate,
+  which confines the divergence to hosts that terminate TLS. That is the
+  boundary of the chart's control over the redirect; deriving it deliberately
+  across both controllers is tracked separately.
+
+`nginx.org/redirect-to-https` (default `False`) is the separate knob for TLS
+terminated *upstream* of the controller; DataSpoke does not set it, leaving
+that case to the operator's controller configuration. See the [NGINX Inc.
+annotation
+reference](https://docs.nginx.com/nginx-ingress-controller/configuration/ingress-resources/advanced-configuration-with-annotations/).
 
 **The prod example overlay publishes the API's public surface only.** Its API
 rule publishes five paths — `/api/v1`, `/health`, `/ready`, `/redoc`, and

@@ -72,6 +72,35 @@ it has bound — you cannot patch your way out of the wrong class after the
 fact. The pre-flight check exists to turn that into an immediate, legible
 error at the very start of the install instead.
 
+**A class also needs its driver.** A `StorageClass` naming an out-of-tree CSI
+provisioner whose driver is not installed passes the existence check and then
+produces exactly the failure above — the PVC stays `Pending` because no driver
+claims it. The pre-flight therefore reads the pinned class's `.provisioner`
+and, wherever a `CSIDriver` could exist for it, looks one up:
+
+```bash
+kubectl get csidriver <provisioner>
+```
+
+What a missing driver costs depends on the provisioner's shape:
+
+| Provisioner shape | Example | Driver not registered |
+|---|---|---|
+| Bare DNS-subdomain CSI driver name | `ebs.csi.aws.com`, `pd.csi.storage.gke.io` | **Aborts the install.** Install the driver (its own Helm chart or manifest bundle, per the vendor) before the release. |
+| CSI-migrated in-tree name | `kubernetes.io/aws-ebs`, `kubernetes.io/gce-pd`, `kubernetes.io/azure-disk` | **Warns and proceeds.** Looked up under `ebs.csi.aws.com` / `pd.csi.storage.gke.io` / `disk.csi.azure.com`, because such a class commonly provisions through a separately installed addon (EKS's default `gp2` does). A cluster still running the in-tree plugin is equally legitimate, so this cannot be a hard gate — if yours is not one, install the addon or the PVC will stick `Pending`. |
+| Any other in-tree name | `kubernetes.io/no-provisioner` (static/pre-provisioned volumes) | Not looked up. Compiled into kube-controller-manager; registers no `CSIDriver` object at all. |
+| External non-CSI provisioner (`vendor/name`) | `rancher.io/local-path`, `openebs.io/local` | Not looked up — no `CSIDriver` will ever exist for it. Confirm its controller is actually running in-cluster yourself; a `StorageClass` object alone does not guarantee that. |
+
+**The installer identity needs cluster-scoped read on CSIDrivers.** That lookup
+is a read of a cluster-scoped resource, so whatever identity runs `install.sh`
+needs `get` on `csidrivers.storage.k8s.io` on top of its namespace-scoped
+rights — a separate grant from anything the Helm release itself requires, and
+one an operator scoping the install identity to a single namespace will not
+have given it. A `Forbidden` reply is reported distinctly from a missing
+driver, so the pre-flight tells you to grant the read rather than to install a
+driver that may already be there; it is fatal in the one row above that is
+fatal on absence, and a warning in the others.
+
 Example manifest for a cloud provider's dynamic provisioner (adjust
 `provisioner` and `parameters` for your platform — this is illustrative, not
 a manifest to apply as-is). These PVs hold the credential store (password

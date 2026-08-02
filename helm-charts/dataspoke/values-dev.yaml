@@ -28,6 +28,7 @@ api:
     className: "nginx"  # chart default; install.sh --sets it from DATASPOKE_KUBE_INGRESS_CLASS
     annotations:
       nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+      nginx.org/client-max-body-size: "50m"
       nginx.ingress.kubernetes.io/ssl-redirect: "false"
     hosts:
       - host: "api.dev.dataspoke.example.com"

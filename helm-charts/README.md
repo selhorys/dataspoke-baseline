@@ -77,12 +77,26 @@ runbook in order.
   Postgres, Redis, or Airflow persistence. Apply these first; see
   [`helm-charts/prod-prereq/`](prod-prereq/) for what belongs here and why,
   and the exact overlay keys the pre-flight checks.
-- An IngressClass already installed in the cluster (default expected name
-  `nginx`; override with `DATASPOKE_KUBE_INGRESS_CLASS`) — the preflight checks
-  for it and fails fast if absent, and every Ingress the install creates (API,
-  frontend, Airflow) binds to it. The install passes it by `--set`, which
+- An IngressClass already installed in the cluster, named by
+  `DATASPOKE_KUBE_INGRESS_CLASS` — **required in prod, with no default**,
+  because a default would silently republish the API, frontend, and Airflow UI
+  on any class that happens to be named `nginx`, often another team's
+  internet-facing controller. The preflight checks the class exists and fails
+  fast if absent (existence proves the class is real, not that it is the one
+  you meant), and every Ingress the install creates (API, frontend, Airflow)
+  binds to it. The install passes it by `--set`, which
   outranks the `className` in a `--values` overlay, so the env var is the one
-  place to change it.
+  place to change it. The name does not identify the controller behind it —
+  read that with
+  `kubectl get ingressclass <class> -o jsonpath='{.spec.controller}'`.
+  `k8s.io/ingress-nginx` is the community controller and honours the
+  `nginx.ingress.kubernetes.io/*` annotations; `nginx.org/ingress-controller`
+  is NGINX Inc./F5 and honours `nginx.org/*` instead. DataSpoke's ingresses
+  carry the 50 MB body-size limit in both spellings, so it holds on either
+  controller; the HTTPS-redirect annotation is community-spelled only, so on
+  an NGINX Inc. controller a TLS-terminating host redirects on that
+  controller's own default instead. Any annotation you add in an overlay must
+  be spelled for the controller you actually run.
 - DNS (or your own resolution mechanism) pointing the `app.`, `api.`, and
   `airflow.` subdomains of your chosen domain at that ingress controller.
 - Registry auth for pulling the built images — either a public registry or an
@@ -154,71 +168,122 @@ already made.
 
 #### 2. Create the namespace and the 11-key credential Secret
 
+Of the 11 required keys, only **one** — `DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET`
+— must come from outside this shell (the Google Cloud Console OAuth client).
+9 of the remaining 10 are generated as high-entropy secrets by the blocks
+below; the tenth, `DATASPOKE_AIRFLOW_USER`, is a literal with a short random
+suffix (not a secret). Nothing else needs sourcing for **this Secret** — §3
+below still needs the same console's OAuth **client ID**, a separate,
+non-secret value that goes in your operator overlay instead, not here.
+
 For a real deployment, deliver these 11 keys via ExternalSecrets, Vault, or
-SealedSecrets rather than plain `kubectl`. The `kubectl` form below is only
-the floor for a one-off bootstrap: run it from a private/short-lived shell,
-and prefer the `--from-env-file` variant over `--from-literal=` — the latter
-lands every credential in your shell history and in `ps auxww` /
-`/proc/<pid>/cmdline` for the process's lifetime, visible to any co-tenant on
-the same bastion.
+SealedSecrets rather than plain `kubectl`. The blocks below are only the
+floor for a one-off bootstrap: run them from a private/short-lived shell.
+The `kubectl create secret` step uses `--from-env-file` rather than
+`--from-literal=`, which would land every credential in your shell history
+and in `ps auxww` / `/proc/<pid>/cmdline` for the process's lifetime,
+visible to any co-tenant on the same bastion.
 
-Generate the five high-entropy hex keys first (HS256/HMAC signing and
-random-token values — security is entirely a function of their entropy):
+Every generated value uses `openssl rand -hex 32` (64 lowercase hex
+characters, 256 bits of entropy) — a uniform class that is trivial to audit
+and needs no escaping in a shell heredoc, an env-file, or a `kubectl`
+argument. It is not what makes a password DSN-safe, though: `install.sh`
+already percent-encodes any password before it reaches a connection-string
+URI (`_url_encode`, used by `_derive_airflow_metadata_secret` for Airflow's
+metadata-DB connection and by the API's rate limiter for its Redis URI), and
+the app's own DB session carries credentials as discrete `sqlalchemy.URL`
+fields rather than a DSN string in the first place (see
+`src/shared/db/session.py`) — no path in this repo corrupts a non-hex
+password. `DATASPOKE_AIRFLOW_FERNET_KEY` needs a different shape regardless
+of any of that: Fernet requires URL-safe base64 of exactly 32 raw bytes, and
+hex-encoded 32 bytes (48 raw bytes once decoded) passes pod startup but
+fails Airflow's own decrypt at first use, long after install reports
+success.
 
 ```bash
-openssl rand -hex 32   # run 5 times, one per high-entropy key below
+NS="<your-namespace>"
+kubectl create namespace "$NS"
 ```
 
-`DATASPOKE_AIRFLOW_FERNET_KEY` is high-entropy too, but Fernet rejects the hex
-encoding above — it requires URL-safe base64 of exactly 32 raw bytes:
+Check next whether this is a genuinely fresh install — the Fernet key
+generated below must be replaced with the one already live on this cluster
+if it is not:
 
 ```bash
-python3 -c "import secrets, base64; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())"
+kubectl get pvc data-dataspoke-postgresql-0 -n "$NS"
 ```
 
-Only run that command for a genuinely fresh install. If this namespace already
-ran Airflow against a Postgres metadata DB you are keeping — for example a PVC
-retained from a previous release — generating a new key instead of supplying
-the one that DB was encrypted with leaves its stored connections and Variables
-permanently undecryptable; see
-[§Prod: what survives an uninstall](#prod-what-survives-an-uninstall) for how
-to recover the live key.
+A hit means Airflow already ran against a retained metadata DB in this
+namespace; generating a new `DATASPOKE_AIRFLOW_FERNET_KEY` instead of
+supplying the one that DB was encrypted with leaves its stored connections
+and Variables permanently undecryptable. See
+[§Prod: what survives an uninstall](#prod-what-survives-an-uninstall) for
+whether the key is still recoverable at all — a full uninstall/reinstall
+cycle can delete the only remaining copy.
+
+Read the one external value with your terminal's own echo-suppressing
+input — not `export`, which would land it in shell history the same way
+`--from-literal=` would, and not `read -p`, which is not portable (a
+bracketed-paste-unaware terminal on bash < 5.1 can hand `read` the *next*
+pasted line instead of console input, and zsh has no `-p` flag at all — it
+exits 0 having read nothing, so the failure is silent):
 
 ```bash
-kubectl create namespace <your-namespace>
+printf 'Google OAuth client secret (from the Google Cloud Console OAuth client): '
+read -rs DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET
+echo
+```
 
-# Write values to a file kubectl reads (not --from-literal=, which leaks into
-# shell history/argv — see above), then remove the file.
-cat > /tmp/dataspoke-secrets.env <<'EOF'
-DATASPOKE_POSTGRES_PASSWORD=<p>
-DATASPOKE_REDIS_PASSWORD=<p>
-DATASPOKE_AIRFLOW_USER=<u>
-DATASPOKE_AIRFLOW_PASSWORD=<p>
-DATASPOKE_AIRFLOW_WEBSERVER_SECRET_KEY=<k>
-DATASPOKE_AIRFLOW_JWT_SECRET=<k>
-DATASPOKE_AIRFLOW_FERNET_KEY=<f>
-DATASPOKE_INTERNAL_TOKEN=<t>
-DATASPOKE_JWT_SECRET_KEY=<k>
-DATASPOKE_OAUTH_STATE_SECRET=<k>
-DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET=<s>
+```bash
+# mktemp, not a fixed /tmp path — a co-tenant on the same host cannot
+# pre-create this filename with permissive permissions the way they could a
+# guessable one, and mktemp's own default mode (0600) keeps it private from
+# the first byte written, with no window where a later chmod would still be
+# racing a reader. If you stop here (e.g. to substitute a recovered Fernet
+# key per the PVC check above), remove the file by hand: rm "$SECRETS_ENV".
+SECRETS_ENV="$(mktemp)"
+cat > "$SECRETS_ENV" <<EOF
+DATASPOKE_POSTGRES_PASSWORD=$(openssl rand -hex 32)
+DATASPOKE_REDIS_PASSWORD=$(openssl rand -hex 32)
+DATASPOKE_AIRFLOW_USER=dataspoke-admin-$(openssl rand -hex 4)
+DATASPOKE_AIRFLOW_PASSWORD=$(openssl rand -hex 32)
+DATASPOKE_INTERNAL_TOKEN=$(openssl rand -hex 32)
+DATASPOKE_JWT_SECRET_KEY=$(openssl rand -hex 32)
+DATASPOKE_AIRFLOW_WEBSERVER_SECRET_KEY=$(openssl rand -hex 32)
+DATASPOKE_AIRFLOW_JWT_SECRET=$(openssl rand -hex 32)
+DATASPOKE_AIRFLOW_FERNET_KEY=$(python3 -c "import secrets, base64; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())")
+DATASPOKE_OAUTH_STATE_SECRET=$(openssl rand -hex 32)
+DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET=${DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET}
 EOF
-chmod 600 /tmp/dataspoke-secrets.env
-kubectl create secret generic dataspoke-secrets-prod \
-  --from-env-file=/tmp/dataspoke-secrets.env \
-  -n <your-namespace>
-rm /tmp/dataspoke-secrets.env
 ```
 
-Key classification — the preflight below rejects only the one known-bad
-literal per key, not weak values in general; entropy and uniqueness are on
-you:
+`DATASPOKE_AIRFLOW_USER`'s random suffix (unlike the published dev-install
+literal `dataspoke-admin`) keeps it from being a fixed, guessable target —
+it is not itself a secret, and the preflight only requires it not equal
+`admin` (see the pre-flight table below). If you hand-edit this or the
+Fernet line above, write the bare value: no surrounding quotes, no trailing
+spaces. `kubectl`'s `--from-env-file` parser strips neither, so a quoted or
+padded value is stored verbatim, and only the Fernet line's fixed length
+would ever catch it.
 
-| Key | Type | How to set it |
-|-----|------|----------------|
-| `DATASPOKE_JWT_SECRET_KEY`, `DATASPOKE_OAUTH_STATE_SECRET`, `DATASPOKE_INTERNAL_TOKEN`, `DATASPOKE_AIRFLOW_WEBSERVER_SECRET_KEY`, `DATASPOKE_AIRFLOW_JWT_SECRET` | high-entropy random | `openssl rand -hex 32` |
-| `DATASPOKE_AIRFLOW_FERNET_KEY` | high-entropy random, fixed shape | URL-safe base64 of 32 raw bytes — see command above, not `openssl rand -hex` |
-| `DATASPOKE_POSTGRES_PASSWORD`, `DATASPOKE_REDIS_PASSWORD`, `DATASPOKE_AIRFLOW_USER`/`PASSWORD` | operator-chosen | pick unique values; avoid `admin`/`postgres`-style defaults |
-| `DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET` | externally issued | from the Google Cloud Console OAuth client |
+```bash
+kubectl create secret generic dataspoke-secrets-prod \
+  --from-env-file="$SECRETS_ENV" \
+  -n "$NS" \
+  && rm "$SECRETS_ENV"
+unset DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET
+```
+
+Key classification — the pre-flight table below rejects only the one
+known-bad literal per key, not weak values in general; entropy and
+uniqueness beyond that are on you:
+
+| Key | Type | How the blocks above set it |
+|-----|------|-------------------------------|
+| `DATASPOKE_POSTGRES_PASSWORD`, `DATASPOKE_REDIS_PASSWORD`, `DATASPOKE_AIRFLOW_PASSWORD`, `DATASPOKE_JWT_SECRET_KEY`, `DATASPOKE_OAUTH_STATE_SECRET`, `DATASPOKE_INTERNAL_TOKEN`, `DATASPOKE_AIRFLOW_WEBSERVER_SECRET_KEY`, `DATASPOKE_AIRFLOW_JWT_SECRET` | high-entropy random | `openssl rand -hex 32` |
+| `DATASPOKE_AIRFLOW_FERNET_KEY` | high-entropy random, fixed shape | URL-safe base64 of 32 raw bytes — Fernet rejects hex |
+| `DATASPOKE_AIRFLOW_USER` | randomized literal, not a secret | `dataspoke-admin-<8 hex chars>`; see the pre-flight table below for the one rejected value |
+| `DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET` | externally issued | the one value you must supply — read via the prompt above |
 
 `DATASPOKE_POSTGRES_USER` and `DATASPOKE_POSTGRES_DB` are **not** in this
 Secret. Both are non-secret and live in the app ConfigMap instead
@@ -236,11 +301,9 @@ and never names it as a literal, so `config.postgres.db` plus
 `postgresql.auth.database` is a clean, fully-guarded two-value pair you may
 change together.
 
-**Migration note for existing prod installs.** If your credentials Secret
-still carries `DATASPOKE_POSTGRES_USER` or `DATASPOKE_POSTGRES_DB` from
-before this change, remove them before your next `install.sh` run — the
-preflight below now rejects a Secret that still carries either key rather
-than silently ignoring it:
+**A credentials Secret carrying `DATASPOKE_POSTGRES_USER` or
+`DATASPOKE_POSTGRES_DB` fails the pre-flight** rather than being silently
+ignored — remove either key before running `install.sh`:
 
 ```bash
 kubectl patch secret dataspoke-secrets-prod -n <your-namespace> --type=merge \
@@ -260,7 +323,8 @@ alembic-migrate init container and every rotated consumer fail
 authentication against the old password on the very next rollout.
 
 The preflight (`_check_airflow_credentials_prod` in `bin/install.sh`, plus the
-IngressClass/StorageClass/Secret-existence/`--image-tag` checks earlier in the
+IngressClass/StorageClass (and its CSI driver)/Secret-existence/`--image-tag`
+checks earlier in the
 same prod branch) fails fast — before the chart is installed, and before any
 credential-derived Secret (e.g. `dataspoke-airflow-metadata-encryption-key`)
 is created or modified — on any of (note the namespace itself may already
@@ -271,6 +335,8 @@ exist by this point: `ensure_namespace` runs ahead of these checks, per
 |-------|---------------|
 | IngressClass | not found in the cluster |
 | StorageClass | any class pinned in the `--values` overlay is not found in the cluster (see [§1. Prerequisites](#1-prerequisites) and `helm-charts/prod-prereq/README.md`), or a literal `-` is pinned on an Airflow key that does not honour it |
+| CSIDriver | a pinned StorageClass names a **bare** out-of-tree CSI provisioner (e.g. `ebs.csi.aws.com`) with no matching `CSIDriver` registered — a CSI-migrated in-tree name or an external non-CSI (`vendor/name`) provisioner only warns instead; see `helm-charts/prod-prereq/README.md` §StorageClass for the full provisioner-shape table |
+| CSIDriver RBAC | the install identity lacks `get` on `csidrivers.storage.k8s.io` (a `Forbidden` reply) — fatal/warn split by the same provisioner shape as the row above; see the same section |
 | Secret | missing entirely |
 | All 11 keys | any of the 11 keys above is absent |
 | `DATASPOKE_POSTGRES_USER` / `DATASPOKE_POSTGRES_DB` | either key is still present in the Secret — both moved to the app ConfigMap (`config.postgres.*`); see the migration note above |

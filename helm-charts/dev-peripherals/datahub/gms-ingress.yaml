@@ -19,8 +19,7 @@
 #
 # GMS is the metadata-push path and must accept large payloads, so the
 # body-size limit is carried in both the community ingress-nginx and the NGINX
-# Inc annotation spellings; each controller ignores the other's. This is the
-# only DataSpoke manifest that does so.
+# Inc annotation spellings; each controller ignores the other's.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -31,7 +30,7 @@ metadata:
   annotations:
     nginx.ingress.kubernetes.io/proxy-body-size: "50m"
     nginx.ingress.kubernetes.io/ssl-redirect: "__DATAHUB_SSL_REDIRECT__"
-    nginx.org/proxy-body-size: "50m"
+    nginx.org/client-max-body-size: "50m"
 spec:
   ingressClassName: "__DATAHUB_INGRESS_CLASS__"
   rules:
