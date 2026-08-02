@@ -55,3 +55,6 @@
 - [Tailwind child-svg specificity](project_tailwind_child_svg_specificity.md) — Button's `[&_svg]:size-4` outranks a child icon's own `h-3.5`; authored classes lie about icon size
 - [AsyncSession.bind seam](project_asyncsession_bind_seam.md) — set only if a bind is passed, absent from dir() so spec'd mocks miss it; AsyncConnection binds silently fall back
 - [Postgres identity plane facts](project_postgres_identity_plane_facts.md) — only the ROLE is an initdb literal; DSN role is hardcoded in install.sh; metadataSecretName freezes the checksum
+- [Untimed→timed client swap](feedback_untimed_to_timed_client_swap.md) — curl had no cap; helpers.sh's 10s sits under AirflowClient's 60s; hung-socket retry worst case is ~62s not 12s
+- [Dropped pre-flight reroutes status](feedback_dropped_preflight_reroutes_status.md) — blank token now returns 503, landing in the "Postgres is down" branch; flat vs nested error_code envelopes
+- [Ingress path list vs app-shell](project_ingress_path_list_vs_app_shell.md) — narrowing to /api/v1+/health+/ready kills the UI's "API docs" link; /openapi.json does NOT expose /internal
