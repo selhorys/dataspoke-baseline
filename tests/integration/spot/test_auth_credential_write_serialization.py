@@ -75,8 +75,8 @@ from collections.abc import AsyncGenerator
 import httpx
 import pytest
 import pytest_asyncio
+from sqlalchemy import URL, text
 from sqlalchemy import pool as sa_pool
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 # The seeded row's password — held only here in plaintext; the bcrypt protocol stays
@@ -218,7 +218,7 @@ async def _wait_until_blocked_by(
 
 @pytest_asyncio.fixture
 async def session_factory(
-    integration_db_url: str,
+    integration_db_url: URL,
 ) -> AsyncGenerator[async_sessionmaker[AsyncSession]]:
     """Per-test engine whose sessions each own a distinct PostgreSQL connection.
 

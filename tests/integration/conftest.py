@@ -25,7 +25,7 @@ import httpx
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import text
+from sqlalchemy import URL, text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -36,6 +36,7 @@ from sqlalchemy.ext.asyncio import (
 from src.shared.cache.client import RedisClient
 from src.shared.datahub.client import DataHubClient
 from tests.integration.util.auth import login_headers
+from tests.integration.util.db_url import build_postgres_url
 
 _PROJECT_ROOT = str(Path(__file__).resolve().parents[2])
 
@@ -114,17 +115,29 @@ _lock_owner = os.environ.get(
 
 
 @pytest.fixture(scope="session")
-def integration_db_url() -> str:
-    host = os.environ["DATASPOKE_TEST_POSTGRES_HOST"]
-    port = os.environ["DATASPOKE_TEST_POSTGRES_PORT"]
-    user = os.environ["DATASPOKE_TEST_POSTGRES_USER"]
-    password = os.environ["DATASPOKE_TEST_POSTGRES_PASSWORD"]
-    db = os.environ.get("DATASPOKE_TEST_POSTGRES_DB", "dataspoke")
-    return f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{db}"
+def integration_db_url() -> URL:
+    """The dev-env DataSpoke Postgres URL, credentials carried as ``URL`` fields.
+
+    Host, port, user and password are required env with no fallback: a missing
+    ``DATASPOKE_TEST_POSTGRES_*`` block means `helm-charts/.env.dev` was not exported,
+    and raising ``KeyError`` here names the cause instead of letting every DB-touching
+    test fail against a fallback host. ``DATASPOKE_TEST_POSTGRES_DB`` is the one
+    defaulted key (``dataspoke``) — it names the cluster's fixed database rather than a
+    coordinate that varies per developer.
+
+    Covered by ``tests/unit/integration_conftest/test_integration_db_url.py``.
+    """
+    return build_postgres_url(
+        host=os.environ["DATASPOKE_TEST_POSTGRES_HOST"],
+        port=os.environ["DATASPOKE_TEST_POSTGRES_PORT"],
+        user=os.environ["DATASPOKE_TEST_POSTGRES_USER"],
+        password=os.environ["DATASPOKE_TEST_POSTGRES_PASSWORD"],
+        db=os.environ.get("DATASPOKE_TEST_POSTGRES_DB", "dataspoke"),
+    )
 
 
 @pytest_asyncio.fixture(scope="session")
-async def async_engine(integration_db_url: str) -> AsyncGenerator[AsyncEngine]:
+async def async_engine(integration_db_url: URL) -> AsyncGenerator[AsyncEngine]:
     from sqlalchemy import pool as sa_pool
 
     eng = create_async_engine(integration_db_url, poolclass=sa_pool.NullPool)
@@ -344,7 +357,7 @@ def _flush_rate_limit_keys(_rate_limit_redis) -> None:
         pass
 
 
-async def _bootstrap_schema(db_url: str) -> None:
+async def _bootstrap_schema(db_url: URL) -> None:
     from sqlalchemy import pool as sa_pool
 
     from src.shared.config import EMBEDDING_DIMENSION
@@ -406,7 +419,7 @@ async def _bootstrap_schema(db_url: str) -> None:
 
 
 @pytest.fixture(scope="session", autouse=True)
-def schema_bootstrap(integration_db_url: str) -> None:
+def schema_bootstrap(integration_db_url: URL) -> None:
     """Idempotent schema setup: schema, extensions, AGE graph, ORM tables, HNSW indexes."""
     asyncio.run(_bootstrap_schema(integration_db_url))
     yield  # type: ignore[misc]

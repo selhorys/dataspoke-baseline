@@ -39,8 +39,8 @@ from collections.abc import AsyncGenerator
 import httpx
 import pytest
 import pytest_asyncio
+from sqlalchemy import URL, text
 from sqlalchemy import pool as sa_pool
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from tests.integration.util import dataspoke_db
@@ -97,7 +97,7 @@ def _unique_email(prefix: str = "spot-ingestion") -> str:
 
 
 @pytest_asyncio.fixture(scope="module")
-async def reader_headers(integration_db_url: str) -> AsyncGenerator[dict[str, str]]:
+async def reader_headers(integration_db_url: URL) -> AsyncGenerator[dict[str, str]]:
     """Module-scoped fixture: seed a Reader user directly in the DB and return auth headers.
 
     Uses the same proven pattern as the reader_token fixture in test_auth_privilege.py:

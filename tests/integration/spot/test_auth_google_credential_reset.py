@@ -34,8 +34,8 @@ from datetime import UTC, datetime, timedelta
 import httpx
 import pytest
 import pytest_asyncio
+from sqlalchemy import URL, text
 from sqlalchemy import pool as sa_pool
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 # The squatter's password — held only here in plaintext; the bcrypt protocol stays
@@ -49,7 +49,7 @@ def _ingress_url() -> str:
 
 
 @pytest_asyncio.fixture(scope="module")
-async def bound_row(integration_db_url: str) -> AsyncGenerator[dict[str, object]]:
+async def bound_row(integration_db_url: URL) -> AsyncGenerator[dict[str, object]]:
     """Pre-register a row, stock it with every credential, then bind a Google identity onto it.
 
     Mirrors the pre-hijacking scenario: a squatter registers the address with a
@@ -613,7 +613,7 @@ async def test_the_bind_records_exactly_one_credential_reset_event(
 
 @pytest.mark.asyncio
 async def test_a_second_google_identity_on_the_same_email_is_refused(
-    integration_db_url: str,
+    integration_db_url: URL,
     bound_row: dict[str, object],
 ) -> None:
     """A different Google `sub` arriving at the bound row is refused, and nothing moves.

@@ -20,13 +20,12 @@ spec: BACKEND_SCHEMA.md §node_embeddings, §edge_embeddings, §triple_embedding
 
 from __future__ import annotations
 
-import os
 import uuid
 from collections.abc import AsyncGenerator
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import text
+from sqlalchemy import URL, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from src.backend.ontogen.service import (
@@ -38,18 +37,9 @@ from src.shared.config import EMBEDDING_COLLECTION, EMBEDDING_DIMENSION
 from src.shared.vector.client import PgVectorManager, VectorHit
 
 
-def _dsn() -> str:
-    host = os.environ["DATASPOKE_TEST_POSTGRES_HOST"]
-    port = os.environ["DATASPOKE_TEST_POSTGRES_PORT"]
-    user = os.environ["DATASPOKE_TEST_POSTGRES_USER"]
-    password = os.environ["DATASPOKE_TEST_POSTGRES_PASSWORD"]
-    db = os.environ["DATASPOKE_TEST_POSTGRES_DB"]
-    return f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{db}"
-
-
 @pytest_asyncio.fixture
-async def vector() -> AsyncGenerator[PgVectorManager]:
-    engine = create_async_engine(_dsn(), pool_pre_ping=True)
+async def vector(integration_db_url: URL) -> AsyncGenerator[PgVectorManager]:
+    engine = create_async_engine(integration_db_url, pool_pre_ping=True)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     yield PgVectorManager(session_factory=factory)
     await engine.dispose()

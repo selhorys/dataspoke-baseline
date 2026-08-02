@@ -15,6 +15,7 @@ import uuid
 import httpx
 import pytest
 import pytest_asyncio
+from sqlalchemy import URL
 
 
 def _unique_email(prefix: str = "me-test") -> str:
@@ -24,7 +25,7 @@ def _unique_email(prefix: str = "me-test") -> str:
 # Module-scoped shared user: seed directly in DB to avoid the /auth/register
 # rate limit (5/min per IP) when multiple spot modules run together.
 @pytest_asyncio.fixture(scope="module")
-async def me_user_token(integration_db_url: str) -> str:
+async def me_user_token(integration_db_url: URL) -> str:
     """Seed a user directly in DB and return a JWT token for GET/PATCH /auth/me tests.
 
     Uses DB seeding instead of /auth/register to avoid rate-limit exhaustion.

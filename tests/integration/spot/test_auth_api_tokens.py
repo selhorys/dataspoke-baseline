@@ -15,6 +15,7 @@ import uuid
 import httpx
 import pytest
 import pytest_asyncio
+from sqlalchemy import URL
 
 
 def _unique_email(prefix: str = "api-tokens") -> str:
@@ -25,7 +26,7 @@ def _unique_email(prefix: str = "api-tokens") -> str:
 # (5/min per IP). All api-token tests (mint/list/revoke) share this one user.
 
 @pytest_asyncio.fixture(scope="module")
-async def api_token_user_access_token(integration_db_url: str) -> str:
+async def api_token_user_access_token(integration_db_url: URL) -> str:
     """Seed a Reader user directly in DB and return a JWT token for API token tests.
 
     Uses DB seeding instead of /auth/register to avoid rate-limit exhaustion
@@ -205,7 +206,7 @@ async def test_revoke_token_returns_401_on_reuse(
 @pytest.mark.asyncio
 async def test_10_token_cap(
     api_client: httpx.AsyncClient,
-    integration_db_url: str,
+    integration_db_url: URL,
 ) -> None:
     """11th mint returns 409 TOKEN_LIMIT_EXCEEDED.
 
@@ -286,7 +287,7 @@ async def test_10_token_cap(
 async def test_api_token_hash_stored_as_sha256(
     api_client: httpx.AsyncClient,
     async_session,
-    integration_db_url: str,
+    integration_db_url: URL,
 ) -> None:
     """api_tokens.token_hash is exactly 64 chars and equals sha256(raw_token).
 

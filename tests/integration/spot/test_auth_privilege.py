@@ -16,6 +16,7 @@ import uuid
 import httpx
 import pytest
 import pytest_asyncio
+from sqlalchemy import URL
 
 # Reader-accessible GET on /spoke/* — returns 200 for any authenticated user.
 # The per-source overhaul replaced the bare /spoke/ingestion route; use the list endpoint.
@@ -38,7 +39,7 @@ def _unique_email(prefix: str = "priv") -> str:
 
 
 @pytest_asyncio.fixture(scope="module")
-async def reader_token(integration_db_url: str) -> str:
+async def reader_token(integration_db_url: URL) -> str:
     """Seed a Reader user directly in the DB and return a JWT token.
 
     Uses DB seeding instead of /auth/register to avoid rate-limit exhaustion
@@ -92,7 +93,7 @@ async def reader_token(integration_db_url: str) -> str:
 
 
 @pytest_asyncio.fixture(scope="module")
-async def editor_token(integration_db_url: str) -> str:
+async def editor_token(integration_db_url: URL) -> str:
     """Seed an Editor user directly in the DB and return a JWT token.
 
     Uses DB seeding instead of /auth/register to avoid rate-limit exhaustion.

@@ -34,7 +34,6 @@ spec: spec/TESTING.md §Spot vs Api-Wired Integration Tests
 """
 
 import asyncio
-import os
 import uuid
 from contextlib import suppress
 from datetime import UTC, datetime
@@ -42,7 +41,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import text
+from sqlalchemy import URL, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from src.backend.metagen.debate_models import DebateResult
@@ -75,19 +74,10 @@ _INDEX_TIMEOUT_SECONDS = 15
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
 
-def _dsn() -> str:
-    host = os.environ["DATASPOKE_TEST_POSTGRES_HOST"]
-    port = os.environ["DATASPOKE_TEST_POSTGRES_PORT"]
-    user = os.environ["DATASPOKE_TEST_POSTGRES_USER"]
-    password = os.environ["DATASPOKE_TEST_POSTGRES_PASSWORD"]
-    db = os.environ.get("DATASPOKE_TEST_POSTGRES_DB", "dataspoke")
-    return f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{db}"
-
-
 @pytest_asyncio.fixture
-async def test_vector() -> PgVectorManager:
+async def test_vector(integration_db_url: URL) -> PgVectorManager:
     """PgVectorManager bound to the dev-env PostgreSQL for this test."""
-    engine = create_async_engine(_dsn(), pool_pre_ping=True)
+    engine = create_async_engine(integration_db_url, pool_pre_ping=True)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     yield PgVectorManager(session_factory=factory)
     await engine.dispose()

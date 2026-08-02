@@ -112,15 +112,14 @@ def _dataspoke_db_url() -> URL:
 
     Covered by ``tests/unit/integration_util/test_main_db_url.py``.
     """
-    from sqlalchemy import URL
+    from tests.integration.util.db_url import build_postgres_url
 
-    return URL.create(
-        "postgresql+asyncpg",
-        username=os.environ.get("DATASPOKE_TEST_POSTGRES_USER", "dataspoke"),
-        password=os.environ.get("DATASPOKE_TEST_POSTGRES_PASSWORD", ""),
+    return build_postgres_url(
         host=os.environ.get("DATASPOKE_TEST_POSTGRES_HOST", "localhost"),
-        port=int(os.environ.get("DATASPOKE_TEST_POSTGRES_PORT", "9201")),
-        database=os.environ.get("DATASPOKE_TEST_POSTGRES_DB", "dataspoke"),
+        port=os.environ.get("DATASPOKE_TEST_POSTGRES_PORT", "9201"),
+        user=os.environ.get("DATASPOKE_TEST_POSTGRES_USER", "dataspoke"),
+        password=os.environ.get("DATASPOKE_TEST_POSTGRES_PASSWORD", ""),
+        db=os.environ.get("DATASPOKE_TEST_POSTGRES_DB", "dataspoke"),
     )
 
 
