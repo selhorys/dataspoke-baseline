@@ -20,9 +20,9 @@ guard, `get_bind()` instead of `.bind`, fallback-to-injected, wrong row name, `e
 **dropping `exc_info=True`** (2 fails), **deleting the swallow log** (2 fails), **hoisting the
 bind/factory derivation above the `try`** (1 fail). Both cycle-2 survivors are now closed.
 
-**The log level is now spec'd and pinned (#135).** `BACKEND.md §Health reporting` (L1561-1567)
+**The log level is now spec'd and pinned (#135).** `BACKEND.md §Health reporting`
 says a reporter's own write failure is swallowed "and logged at `ERROR` with `exc_info=True`", and
-§Best-Effort Operations (L1629-1632) scopes its WARNING sentence to its four table rows and
+§Best-Effort Operations scopes its WARNING sentence to its table rows and
 cross-references it. The rule binds **every** reporter writing the table — both
 `_report_api_health` and `src/shared/datahub/consumer.py::HealthReporter`. Measured: demoting
 either to `logger.warning` now fails (2 ingestion params / the consumer test). The earlier

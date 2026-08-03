@@ -1626,11 +1626,11 @@ defined in `src/shared/exceptions.py`.
 
 ### Best-Effort Operations
 
-Non-critical operations execute best-effort -- if they fail, the primary operation
-completes with reduced enrichment. Failures of the operations listed below are logged at
-WARNING with `exc_info=True`; a reporter's failure to write its own `peripheral_health` row
-falls outside this set and is logged at `ERROR` (see
-[§Health reporting](#health-reporting)).
+Non-critical operations execute best-effort -- if they fail, the primary operation's local
+state stays durable; the caller may still receive an error (see each row's Fallback).
+Failures of the operations listed below are logged at WARNING with `exc_info=True`; a
+reporter's failure to write its own `peripheral_health` row falls outside this set and is
+logged at `ERROR` (see [§Health reporting](#health-reporting)).
 
 | Operation | Service | Fallback |
 |-----------|---------|----------|

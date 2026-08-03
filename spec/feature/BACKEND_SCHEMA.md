@@ -354,7 +354,7 @@ Maps datasets to nodes with confidence scores.
 |--------|------|-------------|
 | `dataset_urn` | `TEXT` PK | Dataset URN |
 | `node_id` | `TEXT` PK, FK → `ontogen_nodes(id)` | Node |
-| `confidence_score` | `REAL` | LLM classification confidence (0.0–1.0) |
+| `confidence_score` | `REAL` | LLM inference confidence (0.0–1.0) |
 | `status` | `TEXT` | `llm_pending`, `llm_approved`, `approved`, `rejected` — same vocabulary as `ontogen_nodes`; cascaded from the parent node row on human review |
 | `is_primary` | `BOOLEAN` | True for the primary (authoritative) member dataset of the node |
 | `created_at` | `TIMESTAMPTZ` | |
