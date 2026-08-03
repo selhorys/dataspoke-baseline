@@ -1636,7 +1636,6 @@ falls outside this set and is logged at `ERROR` (see
 |-----------|---------|----------|
 | `assertionRunEvent` emission | ValidationService | Row stays in `validation_results` (local store remains the historical-baseline cache); caller receives `502/503` so the pipeline can decide whether to retry |
 | pgvector similarity search | MetagenService | Reviewer proceeds without prior-approved-candidate RAG; debate quality drops but the run completes |
-| LLM dataset classification | OntogenService | Dataset excluded from classification |
 | DataHub run-history poll | IngestionService (sync sweep) | Skip the affected source for this hourly tick; retry next tick |
 
 ---
