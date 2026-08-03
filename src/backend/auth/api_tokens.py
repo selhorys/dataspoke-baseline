@@ -7,17 +7,20 @@ Storage: only ``sha256(raw).hexdigest()`` in ``api_tokens.token_hash``.
 from __future__ import annotations
 
 import hashlib
+import logging
 import secrets
 import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import func, select, text, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.shared.db.models import ApiToken, User
 from src.shared.db.session import independent_sessionmaker
 from src.shared.exceptions import AuthenticationError, ConflictError, EntityNotFoundError
+
+logger = logging.getLogger(__name__)
 
 _TOKEN_PREFIX = "dsk_"
 _MAX_ACTIVE_PER_USER = 10
@@ -202,6 +205,11 @@ async def lookup_and_validate(db: AsyncSession, raw_token: str) -> tuple[User, s
     ``token_id`` names the row that authorised the request; credential-creating
     writes re-read it under the ``users`` row lock before committing.
 
+    The ``last_used_at`` stamp that follows validation is best-effort: its failure
+    is logged at ``ERROR`` and swallowed, never raised at the caller
+    (spec/feature/BACKEND.md §Best-Effort Operations, which carries the carve-out
+    putting this one stamp at ``ERROR`` rather than the list's WARNING).
+
     Raises:
         AuthenticationError('INVALID_API_TOKEN')  — token not found.
         AuthenticationError('TOKEN_REVOKED')       — token has been revoked.
@@ -234,24 +242,54 @@ async def lookup_and_validate(db: AsyncSession, raw_token: str) -> tuple[User, s
     # and the stamp has to land regardless of what the request does with its own
     # transaction. ``independent_sessionmaker`` carries the reason that session is
     # built on the caller's bind rather than the module-level factory. The WHERE
-    # clause makes this a no-op below 60s.
-    factory = independent_sessionmaker(db)
-    async with factory() as throttle_session:
-        await throttle_session.execute(
-            update(ApiToken)
-            .where(
-                ApiToken.id == token.id,
-                (ApiToken.last_used_at.is_(None))
-                | (
-                    ApiToken.last_used_at
-                    < func.now()
-                    # Safe: hardcoded constant. If this becomes config-driven,
-                    # switch to bound parameters.
-                    - text("INTERVAL '60 seconds'")
-                ),
+    # clause makes this a no-op inside the ``_LAST_USED_THROTTLE_SECONDS`` window.
+    #
+    # Best-effort (spec/feature/AUTH.md §Audit and ``last_used_at``): the stamp is
+    # an audit side effect of an authentication that has already succeeded, so a
+    # failure to write it — a pool timeout, a connection lost mid-UPDATE, a commit
+    # that cannot land — is logged and swallowed. The alternative is a request that
+    # presented a valid, unrevoked, unexpired token being answered with a 500
+    # because a column nobody reads in-band could not be stamped. The guard sits
+    # below the three ``AuthenticationError`` raises above, which still propagate.
+    #
+    # ERROR, not the WARNING the rest of §Best-Effort Operations uses: nothing reads
+    # this column in band, so the log record is the only trace a stamp was lost, and
+    # a stale value is indistinguishable from a genuinely unused token.
+    #
+    # ``token_id`` is read before the guard opens. An attribute read on a detached
+    # instance can itself raise (``MissingGreenlet``); done inside the ``except``
+    # handler it would raise out of the very guard that exists to keep this
+    # request off the 500 path.
+    token_id = token.id
+    try:
+        factory = independent_sessionmaker(db)
+        async with factory() as throttle_session:
+            await throttle_session.execute(
+                update(ApiToken)
+                .where(
+                    ApiToken.id == token_id,
+                    (ApiToken.last_used_at.is_(None))
+                    | (
+                        ApiToken.last_used_at
+                        < func.now()
+                        # ``make_interval(years, months, weeks, days, hours, mins,
+                        # secs)`` — SQLAlchemy renders each argument as a bound
+                        # parameter, keeping the module-level constant above the
+                        # single source of the throttle window. No value is ever
+                        # interpolated into ``text()`` in this module, whatever its
+                        # provenance.
+                        - func.make_interval(0, 0, 0, 0, 0, 0, _LAST_USED_THROTTLE_SECONDS)
+                    ),
+                )
+                .values(last_used_at=func.now())
             )
-            .values(last_used_at=func.now())
-        )
-        await throttle_session.commit()
+            await throttle_session.commit()
+    except Exception:
+        # Interpolated into the message rather than passed via ``extra``: the
+        # deployed API installs no root log handler, so records fall through to
+        # ``logging.lastResort``, which formats ``%(message)s`` only and drops
+        # every ``extra`` key. The token id is the whole triage value of this
+        # record, and AUTH §Audit makes it the only trace of a lost stamp.
+        logger.error("api_token_last_used_stamp_failed token_id=%s", token_id, exc_info=True)
 
-    return user, effective_role, token.id
+    return user, effective_role, token_id

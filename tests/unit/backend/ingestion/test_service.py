@@ -1019,8 +1019,11 @@ class TestMirrorExecutionRequestsPollIsBestEffort:
             f"a best-effort poll failure is one of the operations logged at WARNING; got "
             f"{sorted({r.levelname for r in carrying})!r}. spec: feature/BACKEND.md "
             "§Best-Effort Operations — 'Failures of the operations listed below are logged "
-            "at WARNING with ``exc_info=True``'; the ERROR level is reserved for a "
-            "reporter's own peripheral_health write (§Health reporting)."
+            "at WARNING with ``exc_info=True``'. ERROR belongs to the two carve-outs that "
+            "section names — a reporter's own peripheral_health write and the "
+            "api_tokens.last_used_at stamp — and this poll is neither; per §Health "
+            "reporting the WARNING operations 'sit outside that surface: their failure "
+            "degrades a single operation, not the operator's view of the system.'"
         )
 
     @pytest.mark.asyncio
@@ -2358,20 +2361,27 @@ class TestSyncReportsApiHealth:
     async def test_reading_the_injected_sessions_bind_cannot_break_the_sweep(self) -> None:
         """A session whose ``bind`` raises on access is swallowed like any other report failure.
 
-        This is what makes the placement of the engine derivation observable. The
-        derivation reads ``self._db.bind`` and builds the factory *inside*
-        ``_report_api_health``'s ``try``; hoisted above it, the read below escapes the
-        reporter. On the success leg that turns a completed sweep into a failed one, and
-        on the failing leg it substitutes itself for the sweep's own exception — the
-        re-raise the spec requires would never run.
+        The containment this holds is the helper's, not the reporter's ``try``. Since
+        ``independent_sessionmaker`` became total, an unreadable ``bind`` is caught inside
+        the helper and answered with the module-level factory, so the read cannot escape
+        the reporter wherever the derivation sits. This test therefore does **not**
+        discriminate the derivation's placement: hoisting
+        ``factory = independent_sessionmaker(self._db)`` above ``_report_api_health``'s
+        ``try`` was measured against the whole unit suite and killed nothing. What the test
+        still holds is the end-to-end statement in its own right — no shape of injected
+        session, including one whose ``bind`` cannot be read at all, changes what the sweep
+        returns — which is a joint property of the helper and the reporter and would break
+        if either side stopped swallowing.
 
         The shape is deliberately synthetic: no production caller can produce it, because
-        every injected session comes from an ``AsyncEngine``-bound sessionmaker. It exists
-        so the try-scope is pinned by something rather than by nothing.
+        every injected session comes from an ``AsyncEngine``-bound sessionmaker.
 
         spec: feature/BACKEND.md §Sync + mapping sweep §Health side effect — the report
             'is a side effect of the sweep, not a step of the pipeline above', so no shape
             of injected session may propagate out of the reporter.
+        spec: feature/BACKEND.md §Shared Services (PostgreSQL row) — 'the helper is total
+            -- it never propagates', which is why the bind read is contained wherever the
+            derivation sits.
         """
 
         class _BindRaises:
@@ -2381,25 +2391,34 @@ class TestSyncReportsApiHealth:
             def bind(self) -> object:
                 raise RuntimeError("session is detached")
 
-        # Stubbed so that if the implementation does reach the writer under this shape,
-        # it reaches a harmless one rather than a real session.
-        async def _record(_db, _name, _status, error=None):  # type: ignore[no-untyped-def]
+        # Stubbed so the writer this shape reaches is a harmless one rather than a real
+        # session; recorded so the report is provably still attempted.
+        seen: list[tuple[str, str]] = []
+
+        async def _record(_db, name, status, error=None):  # type: ignore[no-untyped-def]
+            seen.append((name, status))
             return None
 
         service = self._service(db=_BindRaises())
         with patch("src.backend.admin.peripheral_health.report_peripheral_health", _record):
             summary = await service.sync()
 
-        # The sweep's outcome is the whole assertion. Whether the row is written under
-        # this shape is deliberately left open: an implementation that caught the
-        # unreadable bind and still reported through the module-level factory would also
-        # satisfy the spec — §Health reporting names the sweep as the row's writer — so
-        # pinning ``seen`` here would fail a conformant alternative rather than a
-        # regression. The hoist mutation this test exists for is caught above, where the
-        # escaping RuntimeError fails ``await service.sync()`` outright.
         assert summary == {"sources_synced": 1}, (
             f"a bind that raises must not change the sweep's outcome; got {summary!r}. "
             "spec: feature/BACKEND.md §Sync + mapping sweep §Health side effect."
+        )
+        # The row is still written, and that is the discriminating half. The sweep's
+        # outcome alone would also survive a helper that re-raised the unreadable bind —
+        # the reporter's own ``except`` would swallow it — leaving the row silently
+        # unwritten under a shape the spec says falls back. Asserting the report happened
+        # is what distinguishes "contained" from "skipped".
+        assert seen == [("datahub-api", "ok")], (
+            f"an unreadable bind must still resolve to the module-level factory and write "
+            f"the row; the writer saw {seen!r}. spec: feature/BACKEND.md §Shared Services "
+            "(PostgreSQL row) — 'A session with no usable bind falls back to the "
+            "module-level factory, the only address available in that case, and the helper "
+            "is total -- it never propagates.' spec: feature/BACKEND.md §Health reporting — "
+            "the sweep is the writer of the ``datahub-api`` row."
         )
 
     @pytest.mark.asyncio

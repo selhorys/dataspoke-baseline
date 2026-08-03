@@ -652,7 +652,7 @@ identity. There is no separate header.
 
 ### Effective privilege — intersection
 
-On each request authenticated by an API token, the middleware computes:
+On each request authenticated by an API token, the auth dependency computes:
 
 ```
 effective_role = min(token.role_snapshot, owner.users.role)
@@ -674,11 +674,26 @@ where the ordering is `Admin > Editor > Reader`. This means:
 ### Audit and `last_used_at`
 
 Every successful API-token authentication updates `api_tokens.last_used_at`.
-The update is throttled to per-minute granularity (the middleware checks
-`now - last_used_at > 60s` before issuing the `UPDATE`) so a high-frequency
-client doesn't flood the DB. Stale updates from concurrent requests are
-acceptable — `last_used_at` is for human inspection, not race-sensitive
-billing.
+The update is throttled to per-minute granularity — the authentication path
+issues the `UPDATE` with a `WHERE` clause that makes it a no-op below 60s — so
+a high-frequency client doesn't flood the DB. Stale updates from concurrent
+requests are acceptable — `last_used_at` is for human inspection, not
+race-sensitive billing.
+
+The stamp is a side effect of authentication, not a step of it. It runs
+after the token has already passed every validation check, and any failure
+writing it — a lost connection, a pool timeout, a session that cannot be
+opened — is logged at `ERROR` and swallowed rather than surfaced: the column
+keeps its prior value and the request continues with the identity it earned. See
+[BACKEND §Best-Effort Operations](BACKEND.md#best-effort-operations) for the
+logging convention this follows and why this stamp is the one operation in that
+list that logs at `ERROR` rather than WARNING. A consequence for anyone
+reading the column: a stale or NULL `last_used_at` is not evidence the token went
+unused, because a swallowed stamp leaves exactly the value a genuinely unused
+token carries — the `ERROR` log record is the only trace of that case. The
+swallow covers the stamp only: the three `401` outcomes above
+(`INVALID_API_TOKEN`, `TOKEN_REVOKED`, `TOKEN_EXPIRED`) are decided before it
+and still raise.
 
 ### Lifecycle endpoints
 

@@ -17,8 +17,11 @@ spec: spec/API.md §Authentication Mechanisms
 from __future__ import annotations
 
 import hashlib
+import logging
 import uuid
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -488,11 +491,12 @@ async def test_the_last_used_at_stamp_is_written_to_the_callers_database() -> No
 
     ``AsyncSession.execute``/``commit`` are stubbed at the class so the statements are
     observed without a connection ever being opened; the caller's ``db`` is a mock and is
-    unaffected. Only ``Update`` statements are counted as stamps — the throttle is spec'd
-    as a check made *before* issuing the UPDATE, so an implementation that reads
-    ``last_used_at`` back with its own SELECT first is equally conformant and must not
-    fail here. Engines are never connected to: SQLAlchemy defers connection until a
-    statement runs, and none does.
+    unaffected. Only ``Update`` statements are counted as stamps: the throttle lives in the
+    UPDATE's own ``WHERE`` clause, so the stamp *is* the UPDATE and nothing else the
+    stamping session may issue is one. Filtering by statement type rather than counting
+    every statement keeps this assertion off the shape of the session's other traffic.
+    Engines are never connected to: SQLAlchemy defers connection until a statement runs,
+    and none does.
 
     spec: spec/feature/BACKEND.md §Shared Services (PostgreSQL row) — "A write that must
         commit on its own terms while the caller holds a session of its own — one that has
@@ -508,6 +512,10 @@ async def test_the_last_used_at_stamp_is_written_to_the_callers_database() -> No
     spec: spec/feature/AUTH.md §Audit and ``last_used_at`` — "Every successful API-token
         authentication updates ``api_tokens.last_used_at``", i.e. the row of the token
         that just authenticated, which lives in the database the caller is querying.
+    spec: spec/feature/AUTH.md §Audit and ``last_used_at`` — "The update is throttled to
+        per-minute granularity — the authentication path issues the ``UPDATE`` with a
+        ``WHERE`` clause that makes it a no-op below 60s" — the throttle rides the UPDATE,
+        which is why one UPDATE per authentication is the spec'd shape.
     spec: spec/feature/AUTH.md §Lifecycle endpoints — ``GET /auth/api-tokens`` returns
         ``last_used_at`` to the user; a stamp on another database never reaches that read.
     """
@@ -605,4 +613,877 @@ async def test_the_last_used_at_stamp_is_written_to_the_callers_database() -> No
         f"own, so writing it on both is not 'a session of its own'; the caller's session ran "
         f"{len(caller_stamps)} UPDATE(s). spec: spec/feature/BACKEND.md "
         "§Shared Services (PostgreSQL row)."
+    )
+
+
+# ── last_used_at stamp is best-effort ─────────────────────────────────────────
+#
+# The stamp is an audit side effect of an authentication that has already succeeded. A
+# failure to write it must not reach the caller, and — because nothing reads the column
+# in band — the log record is the only trace that it was lost.
+
+
+class _StampSession:
+    """Stand-in for the independent stamping session; fails at the requested point.
+
+    ``at`` is ``"execute"`` (the UPDATE itself faults — a connection lost mid-statement)
+    or ``"commit"`` (the write cannot land), or ``None`` for a session that works.
+    """
+
+    def __init__(self, failure: BaseException | None = None, at: str | None = None) -> None:
+        self._failure = failure
+        self._at = at
+        self.statements: list[object] = []
+        self.commits = 0
+
+    async def __aenter__(self) -> _StampSession:
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> bool:
+        return False
+
+    async def execute(self, statement: object, *args: object, **kwargs: object) -> object:
+        if self._at == "execute":
+            assert self._failure is not None
+            raise self._failure
+        self.statements.append(statement)
+        return MagicMock()
+
+    async def commit(self) -> None:
+        if self._at == "commit":
+            assert self._failure is not None
+            raise self._failure
+        self.commits += 1
+
+
+def _valid_token_and_user() -> tuple[MagicMock, MagicMock]:
+    """A token that passes every validation check, and its owner.
+
+    ``spec=`` on both so a renamed or mistyped ORM field fails loud instead of answering
+    with a fresh auto-mock (spec/TESTING.md §Unit Testing → Mocking rules).
+    """
+    from src.shared.db.models import ApiToken, User
+
+    token = MagicMock(spec=ApiToken)
+    token.revoked_at = None
+    token.expires_at = None
+    token.role_snapshot = "Editor"
+    token.id = uuid.uuid4()
+    token.last_used_at = None
+
+    user = MagicMock(spec=User)
+    user.id = uuid.uuid4()
+    user.role = "Editor"
+    return token, user
+
+
+def _db_returning(token: object, user: object) -> AsyncMock:
+    """A caller session whose one query answers with ``(token, user)``.
+
+    Safe to give ``spec=AsyncSession`` even though ``bind`` is an instance attribute
+    absent from the class: every consumer of this helper patches
+    ``independent_sessionmaker``, so nothing reads the bind.
+    """
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    result = MagicMock()
+    result.first.return_value = (token, user)
+    db = AsyncMock(spec=AsyncSession)
+    db.execute = AsyncMock(return_value=result)
+    return db
+
+
+# ── The throttle window ───────────────────────────────────────────────────────
+
+
+def _throttle_window_seconds(stmt: object) -> float:
+    """Return the length in seconds of the interval *stmt*'s WHERE clause subtracts from now().
+
+    The window is read out of the statement's clause tree rather than out of the source
+    line, so an argument landing in the wrong slot of a seven-positional-argument SQL
+    function is observable. Two spellings are accepted — a Postgres
+    ``make_interval(years, months, weeks, days, hours, mins, secs)`` call and a bound
+    ``timedelta`` — because the spec fixes the *window*, not the expression the
+    implementation builds it with; a refactor between those two forms is behaviour-neutral
+    and must stay free.
+
+    Month and year slots are converted at 30 and 365 days. Nothing depends on the exact
+    conversion: it exists only so a value that lands in one of those slots reads as a
+    number of seconds far from the spec'd window rather than as the window itself.
+    """
+    from datetime import timedelta
+
+    from sqlalchemy.sql.elements import BindParameter
+    from sqlalchemy.sql.functions import Function
+
+    slot_seconds = (365 * 86400, 30 * 86400, 7 * 86400, 86400, 3600, 60, 1)
+
+    def _walk(element: object) -> Iterator[object]:
+        yield element
+        children = getattr(element, "get_children", None)
+        if children is None:
+            return
+        for child in children():
+            yield from _walk(child)
+
+    windows: list[float] = []
+    for element in _walk(stmt):
+        if isinstance(element, Function) and element.name == "make_interval":
+            args = [getattr(clause, "value", None) for clause in element.clauses]
+            assert len(args) == len(slot_seconds), (
+                f"make_interval takes {len(slot_seconds)} positional arguments "
+                f"(years, months, weeks, days, hours, mins, secs); the statement passes "
+                f"{len(args)}: {args!r}"
+            )
+            windows.append(sum(a * s for a, s in zip(args, slot_seconds, strict=True)))
+        elif isinstance(element, BindParameter) and isinstance(element.value, timedelta):
+            windows.append(element.value.total_seconds())
+
+    assert len(windows) == 1, (
+        f"the throttle WHERE clause must subtract exactly one interval from now(); found "
+        f"{len(windows)} ({windows!r}) in {stmt!r}. If the implementation now spells the "
+        f"window some third way, teach this reader that spelling — do not delete the "
+        f"assertion, or the window stops being checked anywhere."
+    )
+    return windows[0]
+
+
+@pytest.mark.asyncio
+async def test_the_throttle_holds_the_stamp_off_for_sixty_seconds() -> None:
+    """The interval the WHERE clause subtracts from ``now()`` is 60 seconds.
+
+    Nothing else observes this number. The predicate is Postgres SQL, so no unit test
+    connects an engine to it; a window that is too large produces no error at all — the
+    first authentication matches the ``last_used_at IS NULL`` leg and stamps, every later
+    one evaluates the comparison as false and quietly declines — so an integration test
+    that authenticates twice cannot see it either. Both of its assertions hold identically
+    under a 60-second window and a 60-*year* one, which is exactly the mistake a
+    seven-positional-argument function invites. This test is the only place the number
+    lives.
+
+    The value asserted is the spec's, not the module constant's: reading
+    ``_LAST_USED_THROTTLE_SECONDS`` back out of the module would agree with itself no
+    matter what it held.
+
+    spec: spec/feature/AUTH.md §Audit and ``last_used_at`` — "The update is throttled to
+        per-minute granularity — the authentication path issues the ``UPDATE`` with a
+        ``WHERE`` clause that makes it a no-op below 60s — so a high-frequency client
+        doesn't flood the DB."
+    spec: spec/feature/BACKEND_SCHEMA.md §``api_tokens`` — the stamp is "throttled to
+        per-minute granularity to avoid DB pressure".
+    """
+    from sqlalchemy import Update
+
+    from src.backend.auth.api_tokens import lookup_and_validate
+
+    token, user = _valid_token_and_user()
+    stamp_session = _StampSession()
+
+    with patch(
+        "src.backend.auth.api_tokens.independent_sessionmaker",
+        MagicMock(return_value=lambda: stamp_session),
+    ):
+        await lookup_and_validate(_db_returning(token, user), "dsk_throttle_window")
+
+    stamps = [s for s in stamp_session.statements if isinstance(s, Update)]
+    # Backstop: the UPDATE this test reads the window out of really was issued, so the
+    # assertion below cannot pass on an implementation that stopped stamping.
+    assert len(stamps) == 1, (
+        f"a successful authentication must issue exactly one last_used_at UPDATE to read "
+        f"the throttle window out of; got {len(stamps)}. spec: spec/feature/AUTH.md "
+        "§Audit and last_used_at."
+    )
+
+    window = _throttle_window_seconds(stamps[0])
+    assert window == 60, (
+        f"the throttle must make the UPDATE a no-op below 60s; the WHERE clause subtracts "
+        f"{window}s from now(). A window in the wrong unit is "
+        f"silent at every other tier: too large freezes last_used_at at its first value "
+        f"forever, too small removes the DB-pressure guard the throttle exists for. "
+        "spec: spec/feature/AUTH.md §Audit and last_used_at — 'a WHERE clause that makes "
+        "it a no-op below 60s'."
+    )
+
+
+# ── The stamp's target row, predicate direction, and SET clause ───────────────
+#
+# The window reader above answers one question about the UPDATE — how long the interval
+# is. The rest of the statement carries just as much spec, and none of it is observable
+# anywhere else: the caller never reads the stamp back, and an integration test that
+# authenticates with its own token sees a correct stamp on that token whether or not the
+# statement also stamped every other row in the table, inverted its comparison, or wrote
+# the wrong column. So the whole statement is read here, the same way — out of the clause
+# tree, by meaning rather than by spelling.
+
+
+_STAMP_NOW = datetime(2031, 7, 4, 12, 0, 0, tzinfo=UTC)
+"""The instant ``now()`` is taken to return while the stamp's clause tree is evaluated."""
+
+
+def _sql_function_value(fn: Any) -> Any:
+    """Evaluate a SQL function call appearing in the stamp statement.
+
+    Two spellings of the throttle interval are accepted for the same reason
+    ``_throttle_window_seconds`` accepts two — the spec fixes the window, not the
+    expression that builds it — and any third spelling raises rather than being skipped.
+    """
+    if fn.name in {"now", "current_timestamp", "statement_timestamp", "transaction_timestamp"}:
+        return _STAMP_NOW
+    if fn.name == "make_interval":
+        slot_seconds = (365 * 86400, 30 * 86400, 7 * 86400, 86400, 3600, 60, 1)
+        args = [getattr(clause, "value", None) for clause in fn.clauses]
+        assert len(args) == len(slot_seconds), (
+            f"make_interval takes {len(slot_seconds)} positional arguments (years, months, "
+            f"weeks, days, hours, mins, secs); the statement passes {len(args)}: {args!r}"
+        )
+        return timedelta(seconds=sum(a * s for a, s in zip(args, slot_seconds, strict=True)))
+    raise AssertionError(
+        f"the stamp statement calls SQL function {fn.name!r}, which this reader cannot "
+        f"evaluate. Teach it that spelling — do not delete the assertions that depend on "
+        f"it, or the predicate stops being checked anywhere."
+    )
+
+
+def _sql_eval(element: Any, row: dict[str, Any]) -> Any:
+    """Evaluate SQL expression *element* against *row*, in SQL's three-valued logic.
+
+    ``None`` is SQL ``NULL`` — as a scalar and as the UNKNOWN truth value, which is what
+    SQL itself does, so a ``WHERE`` clause selects a row only when this returns ``True``
+    (``NULL`` and ``False`` both mean "not this row"). Comparison and arithmetic operators
+    are applied by calling the operator SQLAlchemy stored on the node, so a predicate
+    respelled with the operands swapped, or with the conjunction restructured, evaluates
+    the same — this reads meaning, not spelling.
+
+    Any node the reader does not recognise raises. A clause silently skipped would leave
+    the caller asserting on whatever predicate remained.
+    """
+    from sqlalchemy.sql import operators
+    from sqlalchemy.sql.elements import (
+        BinaryExpression,
+        BindParameter,
+        BooleanClauseList,
+        ColumnClause,
+        False_,
+        Grouping,
+        Null,
+        True_,
+        UnaryExpression,
+    )
+    from sqlalchemy.sql.functions import Function
+
+    if isinstance(element, Grouping):
+        return _sql_eval(element.element, row)
+    if isinstance(element, Null):
+        return None
+    if isinstance(element, True_):
+        return True
+    if isinstance(element, False_):
+        return False
+    if isinstance(element, BindParameter):
+        return element.value
+    if isinstance(element, Function):
+        return _sql_function_value(element)
+    if isinstance(element, ColumnClause):
+        table_name = getattr(getattr(element, "table", None), "name", None)
+        assert table_name == "api_tokens", (
+            f"the stamp predicate reads column {element.name!r} of table {table_name!r}; "
+            f"the UPDATE targets api_tokens alone, so no other table's column belongs in it."
+        )
+        assert element.name in row, (
+            f"the stamp predicate reads api_tokens.{element.name}, which this test does not "
+            f"model (it seeds {sorted(row)!r}). Extend the seeded row so the new column is "
+            f"actually exercised rather than assumed."
+        )
+        return row[element.name]
+    if isinstance(element, BooleanClauseList):
+        parts = [_sql_eval(clause, row) for clause in element.clauses]
+        if element.operator is operators.and_:
+            if any(p is False for p in parts):
+                return False
+            return None if any(p is None for p in parts) else True
+        if element.operator is operators.or_:
+            if any(p is True for p in parts):
+                return True
+            return None if any(p is None for p in parts) else False
+        raise AssertionError(f"unsupported boolean connective {element.operator!r} in the stamp")
+    if isinstance(element, UnaryExpression) and element.operator is operators.inv:
+        inner = _sql_eval(element.element, row)
+        return None if inner is None else not inner
+    if isinstance(element, BinaryExpression):
+        left = _sql_eval(element.left, row)
+        right = _sql_eval(element.right, row)
+        op = element.operator
+        # ``IS`` / ``IS NOT`` are the two operators that are never UNKNOWN: they compare
+        # NULL as a value rather than propagating it.
+        same = (left is None) == (right is None) and (left is None or left == right)
+        if op is operators.is_:
+            return same
+        if op is operators.is_not:
+            return not same
+        if left is None or right is None:
+            return None  # every other operator propagates NULL
+        comparisons = {operators.eq, operators.ne, operators.lt, operators.le}
+        comparisons |= {operators.gt, operators.ge}
+        if op in comparisons:
+            return bool(op(left, right))
+        if op in {operators.add, operators.sub}:
+            return op(left, right)
+        raise AssertionError(f"unsupported operator {op!r} in the stamp predicate")
+    raise AssertionError(
+        f"the stamp statement contains {type(element).__name__}, which this reader cannot "
+        f"evaluate: {element!r}. Teach it that node — skipping it would leave the caller "
+        f"asserting on whatever predicate remained."
+    )
+
+
+def _stamp_matches(stmt: Any, row: dict[str, Any]) -> bool:
+    """True when *stmt*'s WHERE clause selects *row* — i.e. that row would be stamped."""
+    assert stmt.whereclause is not None, (
+        "the last_used_at UPDATE must carry a WHERE clause: an unqualified UPDATE stamps "
+        "every row in api_tokens. spec: spec/feature/AUTH.md §Audit and last_used_at."
+    )
+    return _sql_eval(stmt.whereclause, row) is True
+
+
+def _stamp_set_clause(stmt: Any) -> dict[str, Any]:
+    """Return the UPDATE's SET clause as ``{column name: evaluated value}``.
+
+    ``_values`` is the accessor SQLAlchemy 2.0 offers for an ``Update``'s assignment map;
+    compiling to SQL instead would make the assertion read the dialect's spelling.
+    """
+    assert stmt.table.name == "api_tokens", (
+        f"the stamp must update api_tokens; it targets {stmt.table.name!r}. spec: "
+        "spec/feature/BACKEND_SCHEMA.md §api_tokens — last_used_at lives on that table."
+    )
+    return {column.name: _sql_eval(value, {}) for column, value in dict(stmt._values).items()}
+
+
+async def _authenticate_and_capture_the_stamp() -> tuple[Any, Any]:
+    """Authenticate once with a valid token; return ``(the last_used_at UPDATE, that token)``.
+
+    The ``len(stamps) == 1`` check is the backstop every caller relies on: without it a
+    reader asserting on "the stamp" would have nothing to read, and callers would fail on
+    an IndexError rather than on the spec'd claim that an authentication stamps.
+    """
+    from sqlalchemy import Update
+
+    from src.backend.auth.api_tokens import lookup_and_validate
+
+    token, user = _valid_token_and_user()
+    stamp_session = _StampSession()
+
+    with patch(
+        "src.backend.auth.api_tokens.independent_sessionmaker",
+        MagicMock(return_value=lambda: stamp_session),
+    ):
+        await lookup_and_validate(_db_returning(token, user), "dsk_read_the_stamp_statement")
+
+    stamps = [s for s in stamp_session.statements if isinstance(s, Update)]
+    assert len(stamps) == 1, (
+        f"a successful authentication must issue exactly one last_used_at UPDATE to read "
+        f"the statement out of; got {len(stamps)} (issued {stamp_session.statements!r}). "
+        "spec: spec/feature/AUTH.md §Audit and last_used_at — 'Every successful API-token "
+        "authentication updates api_tokens.last_used_at.'"
+    )
+    return stamps[0], token
+
+
+@pytest.mark.asyncio
+async def test_the_stamp_lands_on_the_authenticating_row_and_on_no_other() -> None:
+    """The WHERE clause selects the token that just authenticated — not every token.
+
+    §Audit stamps the row of the token that just authenticated; a WHERE clause that dropped
+    the identity leg would stamp every row in ``api_tokens`` on every PAT authentication,
+    rewriting every other user's audit column with this caller's clock. Nothing observes
+    that. The caller never reads the stamp back, and an integration test authenticating
+    with its own token sees exactly the correct value on exactly the row it inspects — its
+    own — whether or not every other row was stamped alongside it. So both sides are seeded
+    here, per spec/TESTING.md §Assertion Discipline ("a test of a filter, query predicate,
+    or matching rule must seed both rows that match and rows that do not"): the
+    authenticating row, and a stranger's row identical in every other respect.
+
+    spec: spec/feature/AUTH.md §Audit and ``last_used_at`` — "Every successful API-token
+        authentication updates ``api_tokens.last_used_at``", i.e. the row of the token that
+        authenticated; nothing in §Audit reaches any other token's row.
+    spec: spec/feature/BACKEND_SCHEMA.md §``api_tokens`` — ``last_used_at`` is "Null until
+        first use", which stops being true of every unused token the moment a stranger's
+        authentication stamps it.
+    spec: spec/feature/AUTH.md §Audit and ``last_used_at`` — "``last_used_at`` is for human
+        inspection"; an inspector reading a stamp on a token nobody used is reading a
+        fabrication.
+    """
+    stmt, token = await _authenticate_and_capture_the_stamp()
+
+    a_strangers_token_id = uuid.uuid4()
+    assert a_strangers_token_id != token.id  # sanity: two distinct rows are being compared
+
+    assert _stamp_matches(stmt, {"id": token.id, "last_used_at": None}), (
+        "the row of the token that just authenticated must be selected by the stamp's "
+        "WHERE clause, or no authentication ever stamps anything. spec: "
+        "spec/feature/AUTH.md §Audit and last_used_at."
+    )
+    assert not _stamp_matches(stmt, {"id": a_strangers_token_id, "last_used_at": None}), (
+        "an unrelated token's row must NOT be selected: the stamp records that *this* token "
+        "was used, and a WHERE clause without the identity leg rewrites every user's "
+        "last_used_at on every PAT authentication — silently, since nothing reads the "
+        "column in band. spec: spec/feature/BACKEND_SCHEMA.md §api_tokens — last_used_at is "
+        "'Null until first use'."
+    )
+    assert not _stamp_matches(
+        stmt, {"id": a_strangers_token_id, "last_used_at": _STAMP_NOW - timedelta(days=30)}
+    ), (
+        "a stranger's long-stale row must not be selected either — staleness is only ever "
+        "asked about the authenticating row. spec: spec/feature/AUTH.md §Audit and "
+        "last_used_at."
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_stamp_selects_never_used_and_stale_rows_and_declines_fresh_ones() -> None:
+    """First use stamps; a row stamped inside the window does not; a stale row does again.
+
+    This is the throttle's actual contract, evaluated rather than inspected. Three
+    independent mistakes produce a statement that still compiles, still runs, and still
+    satisfies every other assertion in this file: inverting the comparison (stamp only rows
+    *newer* than the cutoff), dropping or negating the ``IS NULL`` leg (a token's first use
+    never stamps, so ``last_used_at`` stays NULL forever and every token in the system
+    reads as never used), and a window in the wrong unit. An integration test that
+    authenticates twice cannot separate them: under the inverted comparison the first
+    authentication still stamps through the ``IS NULL`` leg, and the second still declines.
+
+    The rows straddle the 60s boundary rather than sitting far from it, so the window's own
+    magnitude is exercised by the same truth table.
+
+    spec: spec/feature/AUTH.md §Audit and ``last_used_at`` — "Every successful API-token
+        authentication updates ``api_tokens.last_used_at``. The update is throttled to
+        per-minute granularity — the authentication path issues the ``UPDATE`` with a
+        ``WHERE`` clause that makes it a no-op below 60s — so a high-frequency client
+        doesn't flood the DB."
+    spec: spec/feature/BACKEND_SCHEMA.md §``api_tokens`` — ``last_used_at`` is "Updated per
+        use (throttled to per-minute granularity to avoid DB pressure). Null until first
+        use." — that NULL start state is what the ``IS NULL`` leg exists to stamp out of.
+    """
+    stmt, token = await _authenticate_and_capture_the_stamp()
+
+    def stamped(last_used_at: datetime | None) -> bool:
+        return _stamp_matches(stmt, {"id": token.id, "last_used_at": last_used_at})
+
+    assert stamped(None), (
+        "a token's first use must stamp: last_used_at is 'Null until first use', so without "
+        "the IS NULL leg the column never leaves NULL and every token reads as unused "
+        "forever. spec: spec/feature/BACKEND_SCHEMA.md §api_tokens."
+    )
+    assert not stamped(_STAMP_NOW - timedelta(seconds=1)), (
+        "a row stamped one second ago must not be stamped again — the throttle exists so a "
+        "high-frequency client doesn't flood the DB. spec: spec/feature/AUTH.md §Audit and "
+        "last_used_at."
+    )
+    assert not stamped(_STAMP_NOW - timedelta(seconds=59)), (
+        "a row stamped 59 seconds ago is still inside the 60s window and must not be "
+        "stamped again. spec: spec/feature/AUTH.md §Audit and last_used_at — 'a WHERE "
+        "clause that makes it a no-op below 60s'."
+    )
+    assert stamped(_STAMP_NOW - timedelta(seconds=61)), (
+        "a row stamped 61 seconds ago is outside the window and must be stamped again, or "
+        "last_used_at freezes at its first value and stops being an audit trail at all. "
+        "spec: spec/feature/AUTH.md §Audit and last_used_at — 'Every successful API-token "
+        "authentication updates api_tokens.last_used_at.'"
+    )
+    assert stamped(_STAMP_NOW - timedelta(days=30)), (
+        "a long-dormant token must be stamped on use. spec: spec/feature/AUTH.md §Audit and "
+        "last_used_at."
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_stamp_writes_the_current_time_into_last_used_at_and_nothing_else() -> None:
+    """The SET clause assigns ``now()`` to ``last_used_at`` — that column, that value.
+
+    The two ways to get this wrong both leave a statement that runs cleanly and a suite
+    that stays green: assigning NULL (``last_used_at`` is *cleared* on every use, so a
+    constantly-used token reads exactly like one that has never been used — the reading
+    §Audit warns is not evidence of disuse), and assigning the timestamp to a neighbouring
+    column such as ``created_at``, which rewrites the token's creation record while leaving
+    the audit column stale. Neither is visible to a caller: nothing reads ``last_used_at``
+    in band, and the UPDATE's row count is the same either way.
+
+    spec: spec/feature/AUTH.md §Audit and ``last_used_at`` — "Every successful API-token
+        authentication updates ``api_tokens.last_used_at``."
+    spec: spec/feature/BACKEND_SCHEMA.md §``api_tokens`` — ``last_used_at`` is "Updated per
+        use"; ``created_at`` is a separate column that a use does not touch.
+    spec: spec/feature/AUTH.md §Lifecycle endpoints — ``GET /auth/api-tokens`` returns
+        ``{id, name, role_snapshot, created_at, last_used_at, expires_at}``, so both columns
+        are read by users and neither may be written in place of the other.
+    """
+    stmt, _token = await _authenticate_and_capture_the_stamp()
+
+    set_clause = _stamp_set_clause(stmt)
+
+    assert set(set_clause) == {"last_used_at"}, (
+        f"the stamp must assign last_used_at and no other column; it assigns "
+        f"{sorted(set_clause)!r}. Writing the timestamp to a neighbour (created_at) "
+        "rewrites that column while leaving the audit column stale, and nothing reads "
+        "either in band. spec: spec/feature/AUTH.md §Audit and last_used_at."
+    )
+    assert set_clause["last_used_at"] == _STAMP_NOW, (
+        f"the stamp must assign the current time; it assigns "
+        f"{set_clause['last_used_at']!r}. Assigning NULL clears the column on every use, so "
+        "a constantly-used token reads exactly like one never used — the reading "
+        "spec/feature/AUTH.md §Audit and last_used_at warns about. spec: "
+        "spec/feature/BACKEND_SCHEMA.md §api_tokens — last_used_at is 'Updated per use'."
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("label", "at"),
+    [
+        # The session cannot be opened at all — a pool timeout, or an engine that
+        # cannot hand out a connection.
+        ("the stamping session cannot be opened", "open"),
+        ("the UPDATE itself faults", "execute"),
+        ("the commit cannot land", "commit"),
+    ],
+)
+async def test_a_failed_last_used_stamp_never_fails_the_authentication(
+    label: str, at: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A stamp that cannot be written is swallowed, logged at ERROR, and the caller is served.
+
+    The identity was already earned: the token was found, is unrevoked and unexpired, and
+    the effective role has been computed. Answering that request with a 500 because an
+    audit column could not be stamped would deny a valid credential over a write nobody
+    reads in band.
+
+    ERROR rather than the WARNING the rest of the best-effort list uses, and the token id
+    is asserted in the *formatted message* rather than as a record attribute: the deployed
+    API installs no root handler, so records reach ``logging.lastResort``, which renders
+    ``%(message)s`` alone. An id carried only in ``extra`` would satisfy a record-attribute
+    assertion while the deployed log line named no token at all — and this record is the
+    only trace of a lost stamp.
+
+    spec: spec/feature/AUTH.md §Audit and ``last_used_at`` — "any failure writing it — a
+        lost connection, a pool timeout, a session that cannot be opened — is logged at
+        ``ERROR`` and swallowed rather than surfaced: the column keeps its prior value and
+        the request continues with the identity it earned."
+    spec: spec/feature/BACKEND.md §Best-Effort Operations — "the ``api_tokens.last_used_at``
+        stamp is logged at ``ERROR`` with ``exc_info=True``, because nothing reads that
+        column in band, so the log record is the only trace of a lost stamp".
+    spec: spec/feature/BACKEND.md §Best-Effort Operations (table) — "``api_tokens.last_used_at``
+        throttled stamp | PAT authentication | The column keeps its prior value;
+        authentication succeeds and the request proceeds."
+    """
+    from src.backend.auth.api_tokens import lookup_and_validate
+
+    token, user = _valid_token_and_user()
+    mock_db = _db_returning(token, user)
+    stamp_failure = RuntimeError("pool timed out")
+
+    if at == "open":
+        # The factory is derived fine and its *call* raises — a pool that cannot hand out
+        # a connection. Arming the derivation instead (``independent_sessionmaker`` itself
+        # raising) would exercise a shape production cannot reach, since the helper is
+        # total (spec/feature/BACKEND.md §Shared Services — "the helper is total -- it
+        # never propagates"), and would pin the derivation's placement relative to the
+        # ``try`` as if it were load-bearing.
+        seam = MagicMock(return_value=MagicMock(side_effect=stamp_failure))
+    else:
+        seam = MagicMock(return_value=lambda: _StampSession(stamp_failure, at))
+
+    caplog.set_level(logging.DEBUG)
+    # Module scope, not the source module: ``api_tokens`` imports the helper by name.
+    with patch("src.backend.auth.api_tokens.independent_sessionmaker", seam):
+        returned_user, effective_role, token_id = await lookup_and_validate(
+            mock_db, "dsk_stamp_fails_but_auth_stands"
+        )
+
+    assert (returned_user, effective_role, token_id) == (user, "Editor", token.id), (
+        f"{label}: authentication must return the identity it earned; got "
+        f"{(returned_user, effective_role, token_id)!r}. spec: spec/feature/AUTH.md "
+        "§Audit and last_used_at — 'the request continues with the identity it earned'."
+    )
+
+    # Scoped to this module's logger as well as to the exception object: without the name
+    # filter a record emitted anywhere else in the process — a shared handler, a wrapper
+    # that re-logs the same exception instance — would satisfy the level and message
+    # assertions below on behalf of an ``api_tokens`` that logged nothing at all.
+    carrying = [
+        r
+        for r in caplog.records
+        if r.name == "src.backend.auth.api_tokens"
+        and r.exc_info is not None
+        and r.exc_info[1] is stamp_failure  # type: ignore[index]
+    ]
+    assert carrying, (
+        f"{label}: the swallowed stamp failure must reach the log with the exception — it "
+        f"is the only trace that the stamp was lost, since a stale last_used_at is "
+        f"indistinguishable from a genuinely unused token; captured "
+        f"{[(r.levelname, r.getMessage()) for r in caplog.records]!r}. "
+        "spec: spec/feature/BACKEND.md §Best-Effort Operations."
+    )
+    # Non-empty by the assertion above, so neither assertion below passes vacuously.
+    assert {r.levelname for r in carrying} == {"ERROR"}, (
+        f"{label}: this stamp is the one best-effort operation logged at ERROR rather than "
+        f"WARNING; got {sorted({r.levelname for r in carrying})!r}. "
+        "spec: spec/feature/BACKEND.md §Best-Effort Operations — 'One listed row takes the "
+        "same exception: the api_tokens.last_used_at stamp is logged at ERROR with "
+        "exc_info=True'."
+    )
+    assert all(str(token.id) in r.getMessage() for r in carrying), (
+        f"{label}: the token id must appear in the formatted message, not only in a record "
+        f"attribute — the deployed API renders %(message)s alone through "
+        f"logging.lastResort, so an id passed via extra reaches no operator; got "
+        f"{[r.getMessage() for r in carrying]!r}. spec: spec/feature/AUTH.md §Audit and "
+        "last_used_at — 'the ERROR log record is the only trace of that case'."
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_successful_stamp_leaves_no_error_record(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Nothing is logged when the stamp lands — the ERROR means a stamp was lost, or nothing.
+
+    The absence assertion carries its own backstop: the first leg fails the stamp and
+    proves an ERROR record from this module is emitted and captured under exactly this
+    configuration. Without it, the second leg would pass on an implementation that never
+    logs at all, and the ERROR record is the only signal an operator gets.
+
+    A record on the healthy path would be worse than noise: §Audit makes this record the
+    evidence that a stamp was lost, so one emitted on every authentication makes the
+    evidence unreadable.
+
+    spec: spec/feature/BACKEND.md §Best-Effort Operations — the ERROR is logged on a
+        *failure* of the stamp ("One listed row takes the same exception: the
+        ``api_tokens.last_used_at`` stamp is logged at ``ERROR`` with ``exc_info=True``,
+        because nothing reads that column in band, so the log record is the only trace of
+        a lost stamp").
+    spec: spec/feature/AUTH.md §Audit and ``last_used_at`` — "Every successful API-token
+        authentication updates ``api_tokens.last_used_at``" — the stamp is the normal
+        path, so the normal path is not an error condition.
+    """
+    from src.backend.auth.api_tokens import lookup_and_validate
+
+    caplog.set_level(logging.DEBUG)
+
+    # ── Backstop leg: a failing stamp does produce an ERROR record here ──
+    failing_token, failing_user = _valid_token_and_user()
+    caplog.clear()
+    with patch(
+        "src.backend.auth.api_tokens.independent_sessionmaker",
+        # The session cannot be opened; the factory derivation itself is total and is
+        # left working (spec/feature/BACKEND.md §Shared Services).
+        MagicMock(return_value=MagicMock(side_effect=RuntimeError("pool timed out"))),
+    ):
+        await lookup_and_validate(_db_returning(failing_token, failing_user), "dsk_control_leg")
+    control = [
+        r
+        for r in caplog.records
+        if r.name == "src.backend.auth.api_tokens" and r.levelname == "ERROR"
+    ]
+    assert len(control) == 1, (
+        f"backstop: a failed stamp must emit exactly one ERROR from this module, or the "
+        f"silence asserted below proves nothing; captured "
+        f"{[(r.name, r.levelname, r.getMessage()) for r in caplog.records]!r}."
+    )
+
+    # ── The healthy path ──
+    token, user = _valid_token_and_user()
+    stamp_session = _StampSession()
+    caplog.clear()
+    with patch(
+        "src.backend.auth.api_tokens.independent_sessionmaker",
+        MagicMock(return_value=lambda: stamp_session),
+    ):
+        returned_user, effective_role, token_id = await lookup_and_validate(
+            _db_returning(token, user), "dsk_stamp_succeeds"
+        )
+
+    assert (returned_user, effective_role, token_id) == (user, "Editor", token.id), (
+        f"the healthy leg must authenticate normally, or the silence below is the silence "
+        f"of a path that never ran; got {(returned_user, effective_role, token_id)!r}. "
+        "spec: spec/feature/AUTH.md §Audit and last_used_at — 'the request continues with "
+        "the identity it earned'."
+    )
+    # Backstop for the silence: the stamp really was issued and committed on this leg,
+    # so the absent ERROR is the healthy path rather than a skipped one.
+    assert len(stamp_session.statements) == 1 and stamp_session.commits == 1, (
+        f"the healthy leg must actually stamp and commit; issued "
+        f"{stamp_session.statements!r} and committed {stamp_session.commits} time(s). "
+        "spec: spec/feature/AUTH.md §Audit and last_used_at — 'Every successful API-token "
+        "authentication updates api_tokens.last_used_at.'"
+    )
+    logged = [r for r in caplog.records if r.name == "src.backend.auth.api_tokens"]
+    assert logged == [], (
+        f"a stamp that landed must log nothing — the ERROR record is the evidence that a "
+        f"stamp was lost, and one emitted on every authentication destroys that evidence; "
+        f"got {[(r.levelname, r.getMessage()) for r in logged]!r}. "
+        "spec: spec/feature/BACKEND.md §Best-Effort Operations."
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("label", "revoked_at", "expires_at", "row", "error_code"),
+    [
+        ("unknown token", None, None, None, "INVALID_API_TOKEN"),
+        ("revoked token", datetime.now(tz=UTC), None, "present", "TOKEN_REVOKED"),
+        (
+            "expired token",
+            None,
+            datetime.now(tz=UTC) - timedelta(hours=1),
+            "present",
+            "TOKEN_EXPIRED",
+        ),
+    ],
+)
+async def test_the_stamp_guard_never_swallows_the_401_outcomes(
+    label: str,
+    revoked_at: datetime | None,
+    expires_at: datetime | None,
+    row: str | None,
+    error_code: str,
+) -> None:
+    """The three rejections still raise even when the stamp seam is broken.
+
+    The stamp's failure is swallowed; a rejected credential is not. The seam is armed to
+    raise on every call here, so a guard widened to cover the validation checks — the
+    obvious way to write this containment wrong — would turn a rejected token into a
+    served request or a ``NameError``, instead of the 401 the spec requires. With a
+    working seam that mutation is invisible: the guard never sees an exception to swallow.
+
+    spec: spec/feature/AUTH.md §Audit and ``last_used_at`` — "The swallow covers the stamp
+        only: the three ``401`` outcomes above (``INVALID_API_TOKEN``, ``TOKEN_REVOKED``,
+        ``TOKEN_EXPIRED``) are decided before it and still raise."
+    """
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from src.backend.auth.api_tokens import lookup_and_validate
+    from src.shared.exceptions import AuthenticationError
+
+    if row is None:
+        first_value = None
+    else:
+        token, user = _valid_token_and_user()
+        token.revoked_at = revoked_at
+        token.expires_at = expires_at
+        first_value = (token, user)
+
+    result = MagicMock()
+    result.first.return_value = first_value
+    # ``spec=`` for the same reason ``_db_returning`` carries one: an attribute typo or a
+    # renamed session method must fail loud rather than answer with a fresh auto-mock
+    # (spec/TESTING.md §Unit Testing → Mocking rules).
+    mock_db = AsyncMock(spec=AsyncSession)
+    mock_db.execute = AsyncMock(return_value=result)
+
+    with (
+        patch(
+            "src.backend.auth.api_tokens.independent_sessionmaker",
+            # Armed so that any stamping session opened on these paths fails; the factory
+            # derivation stays total, as production's does.
+            MagicMock(return_value=MagicMock(side_effect=RuntimeError("pool timed out"))),
+        ),
+        pytest.raises(AuthenticationError) as exc_info,
+    ):
+        await lookup_and_validate(mock_db, "dsk_rejected_even_with_a_broken_stamp_seam")
+
+    assert exc_info.value.error_code == error_code, (
+        f"{label}: must still raise AuthenticationError('{error_code}') with the stamp "
+        f"seam broken; got '{exc_info.value.error_code}'. spec: spec/feature/AUTH.md "
+        "§Audit and last_used_at — 'The swallow covers the stamp only'."
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_stamp_handler_cannot_raise_from_reading_the_token_id(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A token id that becomes unreadable after the stamp fails still leaves the caller served.
+
+    This is the realistic shape of the failure, not a synthetic one: the fault that breaks
+    the stamp and the fault that detaches the ORM instance are commonly the same event, so
+    by the time the handler runs, ``token.id`` may no longer be readable
+    (``MissingGreenlet`` on a lazy attribute read). A handler that reads the id for its own
+    log line at that moment raises out of the very guard that exists to keep this request
+    off the 500 path — and it raises while another exception is in flight, so the traceback
+    names the log call rather than the lost stamp.
+
+    What is held is that the ERROR handler and the return value never *re-read* the id;
+    the trap is armed by making every read after the first one fail. Where the first read
+    sits relative to the ``try`` is impl-incidental and was measured unkillable: moving
+    ``token_id = token.id`` inside the ``try`` leaves the suite green, correctly — as the
+    first statement in the guarded block, a read that fails there yields an
+    ``UnboundLocalError`` from the handler instead of the original exception, and both are
+    the same 500.
+
+    spec: spec/feature/AUTH.md §Audit and ``last_used_at`` — "any failure writing it ... is
+        logged at ``ERROR`` and swallowed rather than surfaced: the column keeps its prior
+        value and the request continues with the identity it earned."
+    spec: spec/feature/BACKEND.md §Best-Effort Operations — "if they fail, the primary
+        operation succeeds"; the stamp's row: "authentication succeeds and the request
+        proceeds."
+    """
+    from src.backend.auth.api_tokens import lookup_and_validate
+
+    detached = RuntimeError("MissingGreenlet: attribute read on a detached instance")
+
+    class _TokenWhoseIdBreaksAfterTheFirstRead:
+        def __init__(self, token_id: uuid.UUID) -> None:
+            self._token_id = token_id
+            self.reads = 0
+            self.revoked_at = None
+            self.expires_at = None
+            self.role_snapshot = "Editor"
+            self.last_used_at = None
+
+        @property
+        def id(self) -> uuid.UUID:
+            self.reads += 1
+            if self.reads > 1:
+                raise detached
+            return self._token_id
+
+    expected_id = uuid.uuid4()
+    token = _TokenWhoseIdBreaksAfterTheFirstRead(expected_id)
+    user = MagicMock()
+    user.id = uuid.uuid4()
+    user.role = "Editor"
+
+    stamp_failure = RuntimeError("connection lost mid-UPDATE")
+    caplog.set_level(logging.DEBUG)
+
+    with patch(
+        "src.backend.auth.api_tokens.independent_sessionmaker",
+        MagicMock(return_value=lambda: _StampSession(stamp_failure, "execute")),
+    ):
+        returned_user, effective_role, token_id = await lookup_and_validate(
+            _db_returning(token, user), "dsk_id_unreadable_by_the_time_the_handler_runs"
+        )
+
+    assert (returned_user, effective_role, token_id) == (user, "Editor", expected_id), (
+        f"the request must still be served the identity it earned; got "
+        f"{(returned_user, effective_role, token_id)!r}. spec: spec/feature/AUTH.md "
+        "§Audit and last_used_at."
+    )
+    # Backstop: the trap was armed and would have fired on a second read.
+    assert token.reads == 1, (
+        f"the token id must be read exactly once — neither the ERROR handler nor the "
+        f"return may re-read it; it was read {token.reads} time(s), and every read after "
+        f"the first raises."
+    )
+    logged = [
+        r
+        for r in caplog.records
+        if r.name == "src.backend.auth.api_tokens" and r.levelname == "ERROR"
+    ]
+    assert len(logged) == 1 and str(expected_id) in logged[0].getMessage(), (
+        f"the handler must still name the token whose stamp was lost; captured "
+        f"{[(r.levelname, r.getMessage()) for r in caplog.records]!r}. "
+        "spec: spec/feature/AUTH.md §Audit and last_used_at — 'the ERROR log record is the "
+        "only trace of that case'."
+    )
+    assert logged[0].exc_info is not None and logged[0].exc_info[1] is stamp_failure, (
+        f"the record must carry the stamp's own failure, not one raised by the handler; "
+        f"got {logged[0].exc_info!r}."
     )

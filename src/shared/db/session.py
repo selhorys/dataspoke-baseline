@@ -1,5 +1,6 @@
 """SQLAlchemy 2.0 async session factory for DataSpoke PostgreSQL."""
 
+import logging
 import os
 from collections.abc import AsyncGenerator
 
@@ -10,6 +11,8 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+
+logger = logging.getLogger(__name__)
 
 _host = os.environ.get("DATASPOKE_POSTGRES_HOST", "localhost")
 _port = os.environ.get("DATASPOKE_POSTGRES_PORT", "5432")
@@ -87,9 +90,35 @@ def independent_sessionmaker(db: AsyncSession) -> async_sessionmaker[AsyncSessio
     statement in the same call, and land somewhere nobody is reading.
 
     A session with no usable bind falls back to ``SessionLocal``, which is the
-    only address available in that case.
+    only address available in that case. That covers a bind that is absent, one
+    that is not an async engine, and one that cannot be read at all — reading
+    ``bind`` is itself an operation that may raise, and a caller of this helper
+    gets the same fallback whichever of the three it injects.
+
+    Three of those shapes fall back **silently**, because the caller can see them
+    in what it injected: an unset ``bind`` attribute (``AsyncSession.__init__``
+    only sets it when a bind is passed, so a session built without one carries no
+    attribute at all — the shape a ``spec``'d mock also takes), a ``None`` bind,
+    and a bind that is not an ``AsyncEngine`` (a sync ``Engine`` or an
+    ``AsyncConnection`` among them). A ``bind`` whose read raises for some other
+    reason is logged at WARNING with the exception: there the fallback is
+    otherwise undiagnosable, because the caller passed a session it believes
+    carries an engine and the write silently lands on the app-runtime one
+    instead. The unset case is recognised by the ``AttributeError`` the read
+    raises, so an ``AttributeError`` raised from *inside* a ``bind`` property is
+    indistinguishable from it and takes the silent path too.
     """
-    bind = getattr(db, "bind", None)
+    try:
+        bind = db.bind
+    except AttributeError:
+        # The attribute is not set — the shape a bind-less session and a ``spec``'d
+        # mock both take, and one the caller can see in what it injected. An
+        # ``AttributeError`` raised from inside a ``bind`` property is
+        # indistinguishable from it and lands here as well.
+        bind = None
+    except Exception:
+        logger.warning("independent_sessionmaker_bind_unreadable", exc_info=True)
+        bind = None
     if isinstance(bind, AsyncEngine):
         return async_sessionmaker(bind, class_=AsyncSession, expire_on_commit=False)
     return SessionLocal

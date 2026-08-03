@@ -72,7 +72,7 @@ clients (CI jobs, AI agents). See [AUTH §API Tokens](AUTH.md#api-tokens).
 | `token_hash` | `CHAR(64)` UNIQUE NOT NULL | SHA-256 hex of the opaque token (`dsk_<...>`). The raw token is never stored. |
 | `role_snapshot` | `TEXT` NOT NULL | Owner's `users.role` at mint time. Effective privilege = `min(role_snapshot, users.role)`. `CHECK` same vocabulary as `users.role`. |
 | `created_at` | `TIMESTAMPTZ` | |
-| `last_used_at` | `TIMESTAMPTZ` NULL | Updated per use (throttled to per-minute granularity to avoid DB pressure). Null until first use. |
+| `last_used_at` | `TIMESTAMPTZ` NULL | Updated per use (throttled to per-minute granularity to avoid DB pressure). Null until first use. The write is best-effort; what a reader may conclude from a stale or null value is stated in [AUTH §Audit and `last_used_at`](AUTH.md#audit-and-last_used_at). |
 | `expires_at` | `TIMESTAMPTZ` NULL | Optional expiry; null = no expiry |
 | `revoked_at` | `TIMESTAMPTZ` NULL | Set when the user or an admin revokes the token, and set on every one of a user's active tokens by the credential reset that runs when a Google identity binds onto their row ([AUTH §Credential reset on link](AUTH.md#credential-reset-on-link)). Once non-null, the token authenticates no further requests. |
 

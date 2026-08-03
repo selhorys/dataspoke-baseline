@@ -39,6 +39,7 @@ from src.shared.datahub.client import DataHubClient
 from src.shared.datahub.urn import platform_from_dataset_urn
 from src.shared.db.models import Event, IngestionSource, IngestionSourceDataset
 from src.shared.db.registry import reconcile_registry
+from src.shared.db.session import independent_sessionmaker
 from src.shared.events import (
     INGESTION_COMPLETE,
     INGESTION_FAIL,
@@ -1512,11 +1513,8 @@ class IngestionService:
         # Function-local: peripheral_health lives under src.backend.admin, which must
         # not become a module-level dependency of the ingestion service.
         from src.backend.admin.peripheral_health import report_peripheral_health
-        from src.shared.db.session import independent_sessionmaker
 
         try:
-            # Resolved per call rather than in __init__ so an exotic bind degrades
-            # into the swallowed-and-logged path below instead of breaking construction.
             factory = independent_sessionmaker(self._db)
             async with factory() as db:
                 await report_peripheral_health(db, "datahub-api", status, error)

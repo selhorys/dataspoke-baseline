@@ -128,7 +128,7 @@ for current method signatures.
 | Service | Module | Role | Key design decisions |
 |---------|--------|------|---------------------|
 | DataHub Client | `datahub/client.py` | Unified read/write wrapper around `acryl-datahub` SDK | Exponential backoff (3 attempts, 500ms base). Circuit breaker (opens after 5 failures, 60s probe). See [DATAHUB_INTEGRATION](../DATAHUB_INTEGRATION.md). |
-| PostgreSQL | `db/session.py`, `db/models.py` | SQLAlchemy 2.0 async with `asyncpg`. Session factory + ORM models. | Pool size 10, max overflow 5. Credentials are carried as `sqlalchemy.URL` fields rather than interpolated into a DSN string, so `DATASPOKE_POSTGRES_USER` / `DATASPOKE_POSTGRES_PASSWORD` reach the driver verbatim from this connection layer whatever characters they contain, and the URL's string form masks the password rather than carrying it into a log line or traceback. A write that must commit on its own terms while the caller holds a session of its own — one that has to survive a rollback the caller is about to take, or land on a read-only request that never commits — opens a session from a factory built on the **bind of the injected session**, so it reaches the database the caller is actually using. The module-level factory is bound at import time to the app-runtime `DATASPOKE_POSTGRES_*` values, which an in-process caller carrying a session on another engine does not have; the write would otherwise be aimed at a different address than every other statement in the same call, with no diagnostic distinguishing that from success. A session with no usable bind falls back to the module-level factory, the only address available in that case. |
+| PostgreSQL | `db/session.py`, `db/models.py` | SQLAlchemy 2.0 async with `asyncpg`. Session factory + ORM models. | Pool size 10, max overflow 5. Credentials are carried as `sqlalchemy.URL` fields rather than interpolated into a DSN string, so `DATASPOKE_POSTGRES_USER` / `DATASPOKE_POSTGRES_PASSWORD` reach the driver verbatim from this connection layer whatever characters they contain, and the URL's string form masks the password rather than carrying it into a log line or traceback. A write that must commit on its own terms while the caller holds a session of its own — one that has to survive a rollback the caller is about to take, or land on a read-only request that never commits — opens a session from a factory built on the **bind of the injected session**, so it reaches the database the caller is actually using. The module-level factory is bound at import time to the app-runtime `DATASPOKE_POSTGRES_*` values, which an in-process caller carrying a session on another engine does not have; the write would otherwise be aimed at a different address than every other statement in the same call, with no diagnostic distinguishing that from success. A session with no usable bind falls back to the module-level factory, the only address available in that case, and the helper is total -- it never propagates. A bind that is absent (the attribute is simply not set), `None`, or not an async engine falls back silently -- those are shapes the caller can see in what it injected. A bind whose read fails for any other reason is logged at WARNING with the exception, because that shape is invisible to the caller. The unset case is recognised by the `AttributeError` the read raises, so an `AttributeError` raised from *inside* a `bind` property is indistinguishable from an unset attribute and is silent too. |
 | Vector (pgvector) | `vector/client.py` | Table-backed vector upsert/search (cosine, HNSW-indexed). Shares the PostgreSQL session factory. | `PgVectorManager` + `VectorHit` dataclass; collection name whitelisted against `EMBEDDING_COLLECTION`. |
 | Graph (Apache AGE, reserved) | `graph/client.py` | AGE extension installed on the same PG instance for future graph-shaped queries. `AgeGraph` exposes `materialize_triple` / `delete_triple` / `traverse` helpers usable by any service that opts in. | See [BACKEND_SCHEMA §Graph](BACKEND_SCHEMA.md#graph-apache-age-reserved). |
 | LLM | `llm/client.py` | Provider-agnostic client (LangChain). Single completion, JSON completion, embedding, and tool-calling loop (`complete_with_tools`) bound to a service-supplied validator. | Provider/model from the `llm_provider`/`llm_model` runtime config (`/api/v1/admin/conf`); the API key is read at runtime from the `dataspoke-llm-secret` Secret and rotated online via the same conf surface. Loop semantics, validator rule tables, debate framework, and test-mode toggles defined in [BACKEND_LLM](BACKEND_LLM.md). |
@@ -1561,11 +1561,15 @@ paused, so `datahub-api` stays `unknown` until an operator unpauses the `datahub
 
 **A reporter's own write failure is swallowed** — reporting never changes the outcome of the
 operation being reported — and logged at `ERROR` with `exc_info=True`. The level is deliberate:
-the [best-effort operations](#best-effort-operations) logged at WARNING each leave an observable
-in-band fallback behind, whereas a lost health write leaves the row at its prior value, where a
-stale or `unknown` reading is indistinguishable from the "no reporter deployed" case above. The
-log record is then the only evidence that a deployed reporter is running and failing. Like
-`last_error` below, this binds every reporter writing the table, not only the two DataHub rows.
+`peripheral_health` is itself the operator-facing fault surface, so a lost write leaves the row
+at its prior value, where a stale or `unknown` reading is indistinguishable from the "no reporter
+deployed" case above — the surface silently loses the fault it exists to expose. The log record
+is then the only evidence that a deployed reporter is running and failing. The
+[best-effort operations](#best-effort-operations) logged at WARNING sit outside that surface:
+their failure degrades a single operation, not the operator's view of the system. That section
+carries one exception, the `api_tokens.last_used_at` stamp, which logs at `ERROR` — see its row
+for why. Like `last_error` below, this binds every reporter writing the table, not only the two
+DataHub rows.
 
 The two planes need a persisted row for different reasons. The **event stream** has no other
 HTTP surface at all: a bad mechanism or an unauthorized IAM role leaves a consumer that logs
@@ -1630,13 +1634,18 @@ Non-critical operations execute best-effort -- if they fail, the primary operati
 state stays durable; the caller may still receive an error (see each row's Fallback).
 Failures of the operations listed below are logged at WARNING with `exc_info=True`; a
 reporter's failure to write its own `peripheral_health` row falls outside this set and is
-logged at `ERROR` (see [§Health reporting](#health-reporting)).
+logged at `ERROR` (see [§Health reporting](#health-reporting)). One listed row takes the
+same exception: the `api_tokens.last_used_at` stamp is logged at `ERROR` with
+`exc_info=True`, because nothing reads that column in band, so the log record is the only
+trace of a lost stamp — what a reader may then conclude from the column is stated in
+[AUTH §Audit and `last_used_at`](AUTH.md#audit-and-last_used_at).
 
 | Operation | Service | Fallback |
 |-----------|---------|----------|
 | `assertionRunEvent` emission | ValidationService | Row stays in `validation_results` (local store remains the historical-baseline cache); caller receives `502/503` so the pipeline can decide whether to retry |
 | pgvector similarity search | MetagenService | Reviewer proceeds without prior-approved-candidate RAG; debate quality drops but the run completes |
 | DataHub run-history poll | IngestionService (sync sweep) | Skip the affected source for this hourly tick; retry next tick |
+| `api_tokens.last_used_at` throttled stamp | PAT authentication | The column keeps its prior value; authentication succeeds and the request proceeds. Logged at `ERROR` per the exception in the lead-in above, not at WARNING |
 
 ---
 
@@ -1677,7 +1686,7 @@ This section captures the service-layer composition only.
 |--------|---------------|
 | `users.py` | DataSpoke user repository — create / read / update name / update password / hard delete; reads and writes `users.role`. bcrypt via the `bcrypt` library at cost factor 12. Binds a Google `sub` onto an existing row, and in the same transaction clears `password_hash`, revokes the user's active `api_tokens`, deletes their unused `password_reset_tokens`, and increments `session_epoch` ([AUTH §Credential reset on link](AUTH.md#credential-reset-on-link)). UNIQUE(email) → `409 EMAIL_ALREADY_REGISTERED`; UNIQUE(google_sub) → `GOOGLE_ACCOUNT_LINKED_ELSEWHERE`, rolling the whole reset back with it. Also the admin unbind — clears `google_sub` and increments `session_epoch`, refusing a row with no `password_hash` (`409 GOOGLE_IS_ONLY_AUTH_METHOD`) per [AUTH §Admin unbind](AUTH.md#admin-unbind). |
 | `tokens.py` | JWT issue / refresh / revoke. Refresh-token revocation list in Redis under `revoked_refresh:{sha256[:16]}`. Access-token claims are `sub`, `email`, `exp`, `iat`, `ses` (the issuing session epoch); role is **not** in the JWT (read from `users.role` per request, on the read that also resolves the epoch). |
-| `api_tokens.py` | Long-lived opaque API token CRUD. Mint generates `dsk_<token_urlsafe(32)>`, stores SHA-256 hash in `api_tokens.token_hash`, snapshots `users.role` into `role_snapshot`. Enforces 10-token-per-user cap (`409 TOKEN_LIMIT_EXCEEDED`). On lookup: computes `effective_role = min(role_snapshot, users.role)`; updates `last_used_at` throttled to per-minute granularity. Revoke sets `revoked_at = now()`. |
+| `api_tokens.py` | Long-lived opaque API token CRUD. Mint generates `dsk_<token_urlsafe(32)>`, stores SHA-256 hash in `api_tokens.token_hash`, snapshots `users.role` into `role_snapshot`. Enforces 10-token-per-user cap (`409 TOKEN_LIMIT_EXCEEDED`). On lookup: computes `effective_role = min(role_snapshot, users.role)`; stamps `last_used_at` best-effort on a session of its own ([§Privilege Enforcement](#privilege-enforcement)). Revoke sets `revoked_at = now()`. |
 | `oauth_google.py` | Google OAuth handler via `authlib.integrations.starlette_client`. State cookie (random opaque, HMAC-signed with `DATASPOKE_OAUTH_STATE_SECRET`) + ID-token `nonce` validation. On callback: resolve by Google `sub`; else by email, which binds only onto an **unbound** row (`google_sub IS NULL`) and drives the [credential reset](AUTH.md#credential-reset-on-link) plus its `AUTH.GOOGLE_LINK_CREDENTIAL_RESET` event in the bind transaction, refreshing `name` from the Google claim, logs in without writing when the row under the lock already carries this same `sub` (a raced or retried callback), and refuses a row carrying a different `sub` with `EMAIL_BOUND_TO_ANOTHER_GOOGLE_ACCOUNT`; else create. |
 | `reset.py` | Password-reset token issuance (256-bit `secrets.token_urlsafe`, SHA-256 hashed into `password_reset_tokens`) and confirm. Email transport via `aiosmtplib` driven by the SMTP peripheral (below). |
 | `privilege.py` | The `require_role(...)` FastAPI dependency family. Reads caller's role from `users.role` (or `min(role_snapshot, users.role)` for API tokens). Method × tier matrix enforcement per [AUTH §Privilege Model](AUTH.md#privilege-model). |
@@ -1801,9 +1810,12 @@ carries the session epoch:
   branch runs no epoch check — an API token carries no `ses`, and a credential
   reset revokes the rows themselves.
 
-The same query updates `last_used_at` when `now - last_used_at > 60s` (or
-NULL) — the throttle keeps a high-frequency client from flooding the row
-with UPDATEs.
+`last_used_at` is stamped by a separate `UPDATE`, issued and committed on its
+own session after the token-state checks have passed. The stamp is best-effort —
+a failure to write it never fails the authentication it follows, and is logged at
+`ERROR` (see [§Best-Effort Operations](#best-effort-operations)). The throttle it
+carries and what a reader may conclude from the column live in
+[AUTH §Audit and `last_used_at`](AUTH.md#audit-and-last_used_at).
 
 ### Deletion Composition
 

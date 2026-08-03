@@ -11,14 +11,26 @@ metadata:
 **Runtime facts (SQLAlchemy 2.0.51, verified):** `AsyncSession.bind` holds the **`AsyncEngine`**;
 `bind` is *not* in `dir(AsyncSession)`, so `AsyncMock(spec=AsyncSession)` has no `bind` and falls
 through to the guard. `AsyncSession.get_bind()` returns the *sync* `Engine` — the wrong accessor.
-`getattr(obj, "bind", None)` only swallows `AttributeError`, so a `bind` **property that raises**
-propagates — that is the only injected shape that makes the try-scope observable.
+**The helper is now total (#140).** `independent_sessionmaker` reads `db.bind` under
+`except AttributeError` (silent fallback — the unset-attribute shape, which an
+`AsyncMock(spec=AsyncSession)` also takes) and `except Exception` (WARNING + `exc_info`, then
+fallback). It never propagates, so **no injected session shape makes the try-scope observable
+any more**. A `bind` property that raises is swallowed inside the helper, not by the caller's
+`try`.
 
 **Killed by `TestSyncReportsApiHealth` (re-measured after the fix pass, class only, 15 tests):**
 always-`SessionLocal` (the #118 bug), reuse-the-injected-session, drop the `isinstance(AsyncEngine)`
 guard, `get_bind()` instead of `.bind`, fallback-to-injected, wrong row name, `except: raise`,
-**dropping `exc_info=True`** (2 fails), **deleting the swallow log** (2 fails), **hoisting the
-bind/factory derivation above the `try`** (1 fail). Both cycle-2 survivors are now closed.
+**dropping `exc_info=True`** (2 fails), **deleting the swallow log** (2 fails). Both cycle-2
+survivors are now closed.
+
+**Re-measured after #140 made the helper total:** **hoisting the bind/factory derivation above
+the `try`** no longer kills. It used to kill via a `RuntimeError` escaping `sync()`; with the
+helper swallowing, nothing escapes and the hoist is behaviour-neutral. The surviving killer of a
+*propagating* helper is `test_reading_the_injected_sessions_bind_cannot_break_the_sweep`'s
+`seen == [("datahub-api", "ok")]` — measured sole killer, because `summary == {...}` alone
+survives (the reporter's own `except` absorbs the raise). Do not let anyone weaken that
+assertion to a summary-only check.
 
 **The log level is now spec'd and pinned (#135).** `BACKEND.md §Health reporting`
 says a reporter's own write failure is swallowed "and logged at `ERROR` with `exc_info=True`", and
@@ -35,8 +47,9 @@ call spelling.
 `assert seen == []`. Measured: an impl that wraps only the `bind` read in its own
 `try/except → bind = None` and still writes the row through `SessionLocal` fails there — yet it
 satisfies §Health side effect *and* the sibling fallback test's own stated reading ("there is no
-shape of injected session for which it stops trying to write it"). It adds no kill power: the hoist
-mutation kills via the `RuntimeError` escaping `sync()` before that line runs.
+shape of injected session for which it stops trying to write it"). Post-#140 that assertion is no
+longer redundant with the hoist mutation — the hoist stopped killing — so re-derive before judging
+it over-pinned again.
 
 **Spot tier (`tests/integration/spot/test_datahub_api_health.py`) is the real host-side regression
 test.** `_session_local_on` was deleted; `async_session` is bound to `async_engine` (the forwarded

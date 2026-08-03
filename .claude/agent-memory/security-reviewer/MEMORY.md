@@ -29,3 +29,4 @@
 - [Ingress ssl-redirect dual spelling](project_ingress_ssl_redirect_dual_spelling.md) — INGRESS_SCHEME is not a proxy for "host terminates TLS"; 7-site emission inventory + verified --set escaping
 - [Prod bootstrap recipe §2](project_prod_bootstrap_recipe_measurements.md) — measured leak sinks (argv/history/temp-file mode); Airflow all_admins makes 2 of 11 keys decorative
 - [Airflow extraEnv tpl injection surface](project_airflow_extraenv_tpl_injection_surface.md) — airflow.extraEnv goes through Helm `tpl`; a `,`/`:` denylist cannot hold, and 3.1.8 ≠ 3.2.0
+- [independent_sessionmaker silent fallback](project_independent_sessionmaker_silent_fallback.md) — silent by default; .name discriminates the AttributeError conflation; lastResort drops the level AND every extra={} key; 2 pooled conns per PAT request

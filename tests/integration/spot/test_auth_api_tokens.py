@@ -5,6 +5,7 @@ Concerns covered:
 - GET /auth/api-tokens lists active tokens (raw token absent from list)
 - DELETE /auth/api-tokens/{id} revokes a token; subsequent use returns 401 TOKEN_REVOKED
 - 10-token cap: 11th mint returns 409 TOKEN_LIMIT_EXCEEDED
+- PAT authentication stamps api_tokens.last_used_at, and the throttle holds within the window
 
 spec: spec/feature/AUTH.md §API Tokens
 spec: spec/API.md §Auth GET/POST/DELETE /auth/api-tokens
@@ -281,6 +282,132 @@ async def test_10_token_cap(
                 )
         finally:
             await engine2.dispose()
+
+
+@pytest.mark.asyncio
+async def test_pat_authentication_stamps_last_used_at_and_then_throttles(
+    api_client: httpx.AsyncClient,
+    api_token_user_access_token: str,
+    async_session,
+) -> None:
+    """Authenticating with a PAT advances last_used_at; an immediate re-use does not.
+
+    Both halves are here because both are invisible from the request. The stamp runs on a
+    session of its own and its failure is swallowed and logged at ERROR, so a broken write
+    still answers 200 with a permanently NULL audit column — nothing in band reports it.
+    The predicate that carries the throttle
+    (``now() - make_interval(0,0,0,0,0,0,60)``) is SQL, and only a real PostgreSQL behind
+    asyncpg can say whether the function resolves, whether the argument list is the one
+    PostgreSQL expects, and whether the interval subtraction types check. No unit test runs
+    this statement against an engine, so this is the only place a resolution failure is
+    caught before it freezes the column in production.
+
+    Seeding both sides of the predicate: the first authentication lands on the NULL leg
+    (``last_used_at IS NULL``), the second on the timestamp comparison inside the window.
+    A predicate that never matches fails the first assertion; one that always matches fails
+    the second.
+
+    What this test cannot see is a window that is too *long*: a 60-year interval also
+    stamps once and then declines, so both assertions hold. The window's length is pinned
+    at the unit tier instead, where the statement's clause tree can be read directly —
+    ``tests/unit/api/auth/test_api_tokens.py::
+    test_the_throttle_holds_the_stamp_off_for_sixty_seconds``. This test's job is the half
+    that needs a real engine: that the SQL resolves, executes, and moves the column.
+
+    **The column is read out of band, straight from Postgres, on purpose.** Reading it back
+    through ``GET /auth/api-tokens`` authenticated by this same token cannot see it: the
+    router body and the authentication dependency share one FastAPI-cached ``get_db``
+    session with ``expire_on_commit=False``, and ``list_active`` re-selects without
+    ``populate_existing=True``, so the identity map answers with the row as it was loaded
+    *before* this request's stamp. Every observation would be off by one request and the
+    throttle assertion would pass no matter what the predicate did. Do not "simplify" this
+    into an API read-back.
+
+    spec: spec/feature/AUTH.md §Audit and ``last_used_at`` — "Every successful API-token
+        authentication updates ``api_tokens.last_used_at``. The update is throttled to
+        per-minute granularity — the authentication path issues the ``UPDATE`` with a
+        ``WHERE`` clause that makes it a no-op below 60s — so a high-frequency client
+        doesn't flood the DB."
+    spec: spec/feature/BACKEND_SCHEMA.md §api_tokens — ``last_used_at`` is "Updated per use
+        (throttled to per-minute granularity to avoid DB pressure). Null until first use."
+    spec: spec/feature/BACKEND.md §Privilege Enforcement — "``last_used_at`` is stamped by a
+        separate ``UPDATE``, issued and committed on its own session after the token-state
+        checks have passed."
+    """
+    from sqlalchemy import text as _text
+
+    mint_resp = await api_client.post(
+        "/api/v1/auth/api-tokens",
+        json={"name": "last-used-stamp"},
+        headers={"Authorization": f"Bearer {api_token_user_access_token}"},
+    )
+    assert mint_resp.status_code == 201, f"Mint failed: {mint_resp.text}"
+    raw_token = mint_resp.json()["token"]
+    token_id = mint_resp.json()["id"]
+
+    async def _read_last_used_at():
+        """The column as PostgreSQL holds it, on a connection the API does not share."""
+        result = await async_session.execute(
+            _text("SELECT last_used_at FROM dataspoke.api_tokens WHERE id = :id"),
+            {"id": str(token_id)},
+        )
+        row = result.fetchone()
+        # End this read's transaction so the next read starts a fresh snapshot and can
+        # see a stamp committed in between.
+        await async_session.rollback()
+        assert row is not None, f"the minted api_tokens row {token_id} must exist"
+        return row.last_used_at
+
+    async def _db_now():
+        result = await async_session.execute(_text("SELECT now() AS ts"))
+        ts = result.fetchone().ts
+        await async_session.rollback()
+        return ts
+
+    assert await _read_last_used_at() is None, (
+        "a freshly minted token is unused, so last_used_at starts NULL — the baseline the "
+        "first stamp is measured against. spec: spec/feature/BACKEND_SCHEMA.md §api_tokens "
+        "— 'Null until first use.'"
+    )
+
+    before_first_use = await _db_now()
+
+    first_use = await api_client.get(
+        "/api/v1/auth/me",
+        headers={"Authorization": f"Bearer {raw_token}"},
+    )
+    assert first_use.status_code == 200, (
+        f"the minted PAT must authenticate; got {first_use.status_code}: {first_use.text}"
+    )
+
+    first_stamp = await _read_last_used_at()
+    assert first_stamp is not None, (
+        "a successful PAT authentication must stamp last_used_at. A NULL here is what a "
+        "silently failing stamp looks like: the stamp is best-effort, so a predicate that "
+        "PostgreSQL cannot resolve leaves the column frozen while the request still "
+        "answers 200. spec: spec/feature/AUTH.md §Audit and last_used_at — 'Every "
+        "successful API-token authentication updates api_tokens.last_used_at.'"
+    )
+    assert first_stamp >= before_first_use, (
+        f"the stamp must be this authentication's, not an earlier value: {first_stamp!r} "
+        f"predates the request, which began at {before_first_use!r}."
+    )
+
+    second_use = await api_client.get(
+        "/api/v1/auth/me",
+        headers={"Authorization": f"Bearer {raw_token}"},
+    )
+    assert second_use.status_code == 200, (
+        f"the second authentication must also succeed — the throttle is about the write, "
+        f"not the request; got {second_use.status_code}: {second_use.text}"
+    )
+
+    assert await _read_last_used_at() == first_stamp, (
+        "a second authentication inside the 60s window must leave the column untouched, "
+        "or a high-frequency client rewrites this row on every request. spec: "
+        "spec/feature/AUTH.md §Audit and last_used_at — the UPDATE's WHERE clause 'makes "
+        "it a no-op below 60s'."
+    )
 
 
 @pytest.mark.asyncio

@@ -348,23 +348,65 @@ def _session_bound_to_a_non_engine() -> object:
     return MagicMock(spec_set=["bind"], bind=object())
 
 
-@pytest.mark.parametrize(
-    ("label", "build_session"),
-    [
-        ("a session exposing no bind attribute at all", _session_without_a_bind_attribute),
-        ("a session whose bind is None", _session_bound_to_none),
-        ("a session bound to a sync Engine", _session_bound_to_a_sync_engine),
-        ("a session bound to something that is not an engine", _session_bound_to_a_non_engine),
-    ],
-)
+class _SessionWhoseBindReadRaises:
+    """A session whose ``bind`` read raises the injected exception every time.
+
+    Reading ``bind`` is itself an operation, and on a real session it is a property that
+    can fail (a detached or otherwise broken instance). This shape stands in for that.
+    """
+
+    def __init__(self, exc: BaseException) -> None:
+        self._exc = exc
+
+    @property
+    def bind(self) -> object:
+        raise self._exc
+
+
+def _session_whose_bind_read_raises() -> object:
+    return _SessionWhoseBindReadRaises(RuntimeError("session is detached"))
+
+
+def _session_whose_bind_read_raises_attribute_error() -> object:
+    """A ``bind`` property that raises ``AttributeError`` from inside its own body.
+
+    Indistinguishable at the call site from an attribute that was never set, which the
+    spec states outright — see the silence assertion in
+    ``test_only_an_unreadable_bind_is_diagnosed`` below.
+    """
+    return _SessionWhoseBindReadRaises(AttributeError("bind delegates to a gone attribute"))
+
+
+_NO_USABLE_BIND_SHAPES = [
+    ("a session exposing no bind attribute at all", _session_without_a_bind_attribute),
+    ("a session whose bind is None", _session_bound_to_none),
+    ("a session bound to a sync Engine", _session_bound_to_a_sync_engine),
+    ("a session bound to something that is not an engine", _session_bound_to_a_non_engine),
+    ("a session whose bind read raises", _session_whose_bind_read_raises),
+    (
+        "a session whose bind property raises AttributeError",
+        _session_whose_bind_read_raises_attribute_error,
+    ),
+]
+
+
+@pytest.mark.parametrize(("label", "build_session"), _NO_USABLE_BIND_SHAPES)
 def test_a_session_with_no_usable_bind_falls_back_to_the_module_level_factory(
     label: str, build_session
 ) -> None:
     """No usable bind leaves the module-level factory as the only available address.
 
+    The raising shapes are in this table for the same reason as the rest: the helper is
+    total, so a read that fails resolves to a factory rather than propagating. A helper
+    that let the read escape would fail here as an error, not as a wrong factory.
+
     spec: spec/feature/BACKEND.md §Shared Services (PostgreSQL row) — "A session with no
         usable bind falls back to the module-level factory, the only address available in
-        that case."
+        that case, and the helper is total -- it never propagates."
+    spec: spec/feature/BACKEND.md §Shared Services (PostgreSQL row) — "A bind that is
+        absent (the attribute is simply not set), `None`, or not an async engine falls
+        back silently ... A bind whose read fails for any other reason is logged at
+        WARNING with the exception".
     """
     from src.shared.db.session import independent_sessionmaker
 
@@ -375,3 +417,83 @@ def test_a_session_with_no_usable_bind_falls_back_to_the_module_level_factory(
         f"module-level factory — the only address available; got {factory!r}. "
         "spec: spec/feature/BACKEND.md §Shared Services (PostgreSQL row)."
     )
+
+
+def test_only_an_unreadable_bind_is_diagnosed(caplog: pytest.LogCaptureFixture) -> None:
+    """The fallback is silent for the shapes the caller can see, and logged for the one it cannot.
+
+    Both halves are asserted in one body on purpose. The silent half is an absence
+    assertion, and the unreadable-bind leg that runs first is its backstop: it proves a
+    record from this module is emitted and captured under exactly this configuration, so
+    the silence below cannot pass merely because logging was never wired up.
+
+    The split is the whole point of the guarded read. Logging every fallback would fire a
+    WARNING on the ``spec``'d-mock shape that most unit-test callers inject — noise on a
+    condition nobody can act on — while logging none of them leaves the one shape the
+    caller cannot see in what it injected undiagnosable: the write silently lands on the
+    app-runtime database instead of the caller's.
+
+    The ``AttributeError``-from-inside-a-property case is silent by the spec's own
+    statement, not by preference: the unset attribute is recognised by the
+    ``AttributeError`` its read raises, so the two are indistinguishable.
+
+    spec: spec/feature/BACKEND.md §Shared Services (PostgreSQL row) — "A bind that is
+        absent (the attribute is simply not set), `None`, or not an async engine falls
+        back silently -- those are shapes the caller can see in what it injected. A bind
+        whose read fails for any other reason is logged at WARNING with the exception,
+        because that shape is invisible to the caller. The unset case is recognised by the
+        `AttributeError` the read raises, so an `AttributeError` raised from *inside* a
+        `bind` property is indistinguishable from an unset attribute and is silent too."
+    """
+    import logging
+
+    from src.shared.db.session import independent_sessionmaker
+
+    caplog.set_level(logging.DEBUG)
+    unreadable = RuntimeError("session is detached")
+
+    # ── The logged leg (also the backstop for the silent leg below) ──
+    caplog.clear()
+    factory = independent_sessionmaker(_SessionWhoseBindReadRaises(unreadable))
+
+    assert factory is _live_session_local(), (
+        f"an unreadable bind still falls back to the module-level factory; got {factory!r}. "
+        "spec: spec/feature/BACKEND.md §Shared Services (PostgreSQL row)."
+    )
+    diagnosed = [r for r in caplog.records if r.name == "src.shared.db.session"]
+    assert len(diagnosed) == 1, (
+        f"a bind whose read fails for a reason other than an unset attribute must be "
+        f"diagnosed exactly once — it is the shape the caller cannot see, and the write "
+        f"otherwise lands on the app-runtime database with no trace; captured "
+        f"{[(r.levelname, r.getMessage()) for r in diagnosed]!r}. "
+        "spec: spec/feature/BACKEND.md §Shared Services (PostgreSQL row)."
+    )
+    assert diagnosed[0].levelname == "WARNING", (
+        f"the unreadable-bind fallback is logged at WARNING; got {diagnosed[0].levelname}. "
+        "spec: spec/feature/BACKEND.md §Shared Services (PostgreSQL row)."
+    )
+    assert diagnosed[0].exc_info is not None and diagnosed[0].exc_info[1] is unreadable, (
+        f"the record must carry the exception that made the bind unreadable, or the "
+        f"operator learns a fallback happened without learning why; got "
+        f"{diagnosed[0].exc_info!r}. spec: spec/feature/BACKEND.md §Shared Services "
+        "(PostgreSQL row) — 'logged at WARNING with the exception'."
+    )
+
+    # ── The silent legs ──
+    for label, build_session in _NO_USABLE_BIND_SHAPES:
+        if build_session is _session_whose_bind_read_raises:
+            continue  # the logged leg, asserted above
+        caplog.clear()
+        factory = independent_sessionmaker(build_session())
+
+        assert factory is _live_session_local(), (
+            f"{label}: expected the module-level factory; got {factory!r}."
+        )
+        records = [r for r in caplog.records if r.name == "src.shared.db.session"]
+        assert records == [], (
+            f"{label}: this shape is visible to the caller in what it injected, so the "
+            f"fallback is silent; it emitted "
+            f"{[(r.levelname, r.getMessage()) for r in records]!r}. "
+            "spec: spec/feature/BACKEND.md §Shared Services (PostgreSQL row) — such a bind "
+            "'falls back silently'."
+        )
