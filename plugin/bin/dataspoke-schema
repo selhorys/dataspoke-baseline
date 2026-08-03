@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+# dataspoke-schema — look up the DataSpoke API contract from the deployment's
+# own OpenAPI document.
+#
+# The deployment is the authority on its own API. This helper fetches
+# /openapi.json and prints only the operations matching a path fragment, plus
+# the schemas those operations reference (transitively) — so a skill can read
+# the real request/response shape without pulling the whole contract into
+# context. Touches ONLY the public API surface.
+#
+# /redoc is the human-facing renderer: an HTML shell that loads the same
+# document in a browser. Hand that URL to a person; use this helper to read
+# the contract yourself.
+#
+# Usage:
+#   dataspoke-schema <PATH_FRAGMENT> [--list]
+#
+#   PATH_FRAGMENT  case-insensitive substring of the route path,
+#                  e.g. 'ingestion/sources' or 'validation/result'
+#   --list         one line per matching operation (method, path, summary)
+#                  instead of the full schema dump — cheap discovery first
+#
+# Config resolution (first match wins):
+#   1. env: DATASPOKE_API_URL
+#   2. file: ~/.dataspoke/config.json  -> {api_base_url}
+#
+# Examples:
+#   dataspoke-schema ingestion/sources --list
+#   dataspoke-schema ingestion/sources
+#   dataspoke-schema attr/validation/result
+set -uo pipefail
+
+CONFIG="${HOME}/.dataspoke/config.json"
+err() { printf '%s\n' "$*" >&2; }
+
+if [[ $# -lt 1 ]]; then
+  err "usage: dataspoke-schema <PATH_FRAGMENT> [--list]"
+  exit 2
+fi
+
+QUERY="$1"
+MODE="detail"
+[[ "${2:-}" == "--list" ]] && MODE="list"
+
+if [[ -z "$QUERY" ]]; then
+  err "PATH_FRAGMENT must not be empty — it would match every route."
+  exit 2
+fi
+
+BASE="${DATASPOKE_API_URL:-}"
+TOKEN="${DATASPOKE_API_TOKEN:-}"
+
+if [[ -z "$BASE" || -z "$TOKEN" ]] && [[ -f "$CONFIG" ]]; then
+  # Pass the config path via env, never interpolated into the python source.
+  [[ -z "$BASE" ]] && BASE="$(DS_CONFIG="$CONFIG" python3 -c "import json,os;print(json.load(open(os.environ['DS_CONFIG'])).get('api_base_url',''))" 2>/dev/null || true)"
+  [[ -z "$TOKEN" ]] && TOKEN="$(DS_CONFIG="$CONFIG" python3 -c "import json,os;print(json.load(open(os.environ['DS_CONFIG'])).get('token',''))" 2>/dev/null || true)"
+fi
+
+if [[ -z "$BASE" ]]; then
+  err "No DataSpoke access configured."
+  err "Run /dataspoke:dataspoke-access, or export DATASPOKE_API_URL."
+  exit 3
+fi
+
+# ORIGIN = base with any trailing /api/v1 and trailing slash stripped.
+ORIGIN="${BASE%/}"
+ORIGIN="${ORIGIN%/api/v1}"
+
+args=(-sS --max-time 20 -w $'\n%{http_code}')
+# /openapi.json is public; the header is sent only so a deployment that chooses
+# to gate its schema still resolves.
+[[ -n "$TOKEN" ]] && args+=(-H "Authorization: Bearer ${TOKEN}")
+
+RESP="$(curl "${args[@]}" "${ORIGIN}/openapi.json")" || {
+  err "curl failed for ${ORIGIN}/openapi.json"
+  exit 4
+}
+
+CODE="${RESP##*$'\n'}"
+PAYLOAD="${RESP%$'\n'*}"
+
+if [[ "$CODE" != 2* ]]; then
+  err "→ HTTP ${CODE} fetching ${ORIGIN}/openapi.json"
+  [[ -n "$PAYLOAD" ]] && printf '%s\n' "$PAYLOAD" >&2
+  exit 1
+fi
+
+# Filter in python: match paths, then close over every referenced schema.
+# Query and mode arrive via env so no user input reaches the source text.
+printf '%s' "$PAYLOAD" | DS_QUERY="$QUERY" DS_MODE="$MODE" python3 -c '
+import json, os, sys
+
+try:
+    spec = json.load(sys.stdin)
+except json.JSONDecodeError:
+    print("openapi.json was not valid JSON — is the base URL a DataSpoke API?", file=sys.stderr)
+    sys.exit(1)
+
+raw_query = os.environ["DS_QUERY"]
+query = raw_query.lower()
+mode = os.environ.get("DS_MODE", "detail")
+
+matched = {
+    path: ops
+    for path, ops in spec.get("paths", {}).items()
+    if query in path.lower()
+}
+
+if not matched:
+    print("No route path contains " + repr(raw_query) + ".", file=sys.stderr)
+    print("Try a shorter fragment, or list a prefix: dataspoke-schema /spoke/ --list",
+          file=sys.stderr)
+    sys.exit(1)
+
+if mode == "list":
+    for path in sorted(matched):
+        for method, op in sorted(matched[path].items()):
+            if not isinstance(op, dict):
+                continue
+            summary = op.get("summary") or op.get("operationId") or ""
+            print(f"{method.upper():7} {path}  {summary}")
+    sys.exit(0)
+
+
+def find_refs(node, out):
+    """Collect every #/components/schemas/<Name> reference under node."""
+    if isinstance(node, dict):
+        ref = node.get("$ref")
+        if isinstance(ref, str) and ref.startswith("#/components/schemas/"):
+            out.add(ref.rsplit("/", 1)[1])
+        for value in node.values():
+            find_refs(value, out)
+    elif isinstance(node, list):
+        for value in node:
+            find_refs(value, out)
+
+
+schemas = spec.get("components", {}).get("schemas", {})
+pending = set()
+find_refs(matched, pending)
+
+resolved = {}
+while pending:
+    name = pending.pop()
+    if name in resolved:
+        continue
+    schema = schemas.get(name)
+    if schema is None:
+        continue
+    resolved[name] = schema
+    nested = set()
+    find_refs(schema, nested)
+    pending |= nested - resolved.keys()
+
+json.dump(
+    {"paths": matched, "components": {"schemas": resolved}},
+    sys.stdout,
+    indent=2,
+)
+sys.stdout.write("\n")
+'

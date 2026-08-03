@@ -50,7 +50,7 @@ Specs must not contradict each other — propagate changes up and down. Priority
 | 1 | `MANIFESTO_en/kr.md`, `API.md`, `USE_CASE_en/kr.md` | Golden product identity, API contract, and scenario set. Never modify unless explicitly requested; everything else syncs to these. |
 | 2 | `API_DESIGN_PRINCIPLE_en/kr.md`, `DATAHUB_INTEGRATION.md` | Binding conventions. |
 | 3 | `ARCHITECTURE.md`, `TESTING.md` | System architecture and testing conventions. |
-| 4 | `AI_SCAFFOLD.md`, `AI_PRAUTO.md` | Claude Code scaffold conventions; autonomous PR worker. |
+| 4 | `AI_SCAFFOLD.md`, `AI_PRAUTO.md`, `AI_PLUGIN.md` | Claude Code scaffold conventions; autonomous PR worker; end-user plugin. |
 | 5 | `feature/<FEATURE>.md` | Common feature specs and per-function FRONTEND specs (`FRONTEND_{BASIC,GOVERNANCE,INGESTION,VALIDATION,ONTOGEN,METAGEN}.md`). |
 
 When both `_en.md` and `_kr.md` exist, read only English unless directed otherwise. Write Korean in plain style (-다/-한다).

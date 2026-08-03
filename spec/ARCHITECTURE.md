@@ -533,7 +533,7 @@ shared privilege boundary:
 | Scaffold | Lives in | Access | Audience |
 |----------|----------|--------|----------|
 | **Developer AI Scaffold** ([`AI_SCAFFOLD.md`](AI_SCAFFOLD.md)) | `.claude/` (in repo) | Full repo: specs, `src/`, helm, DB | Contributors building the product |
-| **End-User AI Scaffold** ([`AI_PLUGIN.md`](AI_PLUGIN.md)) | `plugin/` (distributable plugin) | Public API surface only (`/api/v1/{auth,spoke}`, `/redoc`) | Engineers operating a deployed instance |
+| **End-User AI Scaffold** ([`AI_PLUGIN.md`](AI_PLUGIN.md)) | `plugin/` (distributable plugin) | Public API surface only (`/api/v1/{auth,spoke}`, `/ready`, `/openapi.json`, `/redoc`) | Engineers operating a deployed instance |
 
 The Developer scaffold *builds* DataSpoke; the End-User plugin *consumes* a deployed
 DataSpoke.

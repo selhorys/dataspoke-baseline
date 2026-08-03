@@ -40,7 +40,7 @@ need — access to the deployment internals.
 |---------|-----|
 | `/api/v1/auth/…` | Login, profile, mint/list/revoke API tokens |
 | `/api/v1/spoke/…` | The five baseline features (ingestion, validation, ontogen, metagen, governance) |
-| `/ready`, `/redoc` | Readiness probe and the live OpenAPI reference |
+| `/ready`, `/openapi.json`, `/redoc` | Readiness probe, the machine-readable contract, and its human-facing rendering |
 
 **Out of scope** — explicitly never touched by any skill:
 
@@ -48,7 +48,7 @@ need — access to the deployment internals.
 - `/api/v1/admin/*` and any `/internal/*` route — these require Admin/operator privilege
   the plugin's audience does not assume.
 - Inventing endpoints. Every capability traces to a route in `spec/API.md`; when unsure,
-  the plugin consults the deployment's own `/redoc`.
+  the plugin reads the deployment's own contract via `bin/dataspoke-schema`.
 
 ---
 
@@ -76,6 +76,7 @@ The plugin lives in a `plugin/` directory, and the repository that hosts it doub
     │   └── plugin.json        ← plugin manifest (name "dataspoke", version, skills)
     ├── skills/<skill>/SKILL.md
     ├── bin/dataspoke-api      ← auth + base-URL curl wrapper
+    ├── bin/dataspoke-schema   ← OpenAPI contract lookup (filtered by path fragment)
     └── bin/datahub-graphql    ← direct-DataHub GraphQL helper (URN search)
 ```
 
@@ -85,6 +86,15 @@ URL and token (see §Credential Model), attaches the `Authorization` header, and
 credential handling lives in one audited place. `bin/datahub-graphql` is the parallel primitive
 for direct DataHub access — it resolves `datahub_gms_url` + `datahub_token` and posts a GraphQL
 query to `<datahub_gms_url>/graphql`, used by the validation skill for dataset-URN search.
+
+`bin/dataspoke-schema` makes the deployment authoritative about its own contract. It fetches
+`/openapi.json` and emits only the operations whose path contains a given fragment, together
+with the transitive closure of the schemas they reference — a narrowed lookup rather than the
+whole document, which is large enough that dumping it would crowd out the task. Skills consult
+it before authoring a request body instead of relying on shapes transcribed into SKILL.md, which
+drift. `/redoc` serves the same document as a browser-rendered reference for humans; because it
+is a client-side renderer, skills read the contract through this helper and hand `redoc_url` to
+the user.
 
 ### Distribution
 
@@ -164,7 +174,7 @@ stubs pending demand.
 |-------|----|----------|----------------|
 | `dataspoke-access` | — | full | `GET /ready`, `GET /auth/me`, `POST /auth/token`, `POST /auth/api-tokens` |
 | `dataspoke-ingestion` | UC1 | full | `/spoke/ingestion/sources` CRUD, `…/method/run`, `…/event`, `…/datasets`, `/spoke/ingestion/unmanaged` |
-| `dataspoke-validation` | UC2 | full (flagship) | `…/attr/validation/{conf,result}`, `/spoke/validation`, `…/event/validation`, plus routine authoring |
+| `dataspoke-validation` | UC2 | full (flagship) | routine authoring into the user's pipeline, over `…/attr/validation/{conf,result}`; plus `/spoke/validation`, `…/event/validation` |
 | `dataspoke-ontogen` | UC3 | stub | `/spoke/ontogen/…` |
 | `dataspoke-metagen` | UC4 | stub | `/spoke/metagen/…`, `…/attr/metagen/…` |
 | `dataspoke-governance` | UC5 | stub | `/spoke/governance/…` |
@@ -188,34 +198,50 @@ history (`…/event`), the source→dataset mapping (`…/datasets`), and the un
 
 ### `dataspoke-validation` (flagship)
 
-Two modes:
+Two modes, in priority order:
 
+- **Author a validation routine** into the engineer's own pipeline — the differentiating
+  capability, detailed below. The skill activates on pipeline-authoring context (PySpark,
+  awswrangler/pandas, dbt, SQL, an Airflow task that writes a partition), including when the
+  user asks for a row-count or null check without naming validation at all.
 - **Manage the validation slot** (UC2) — read / register / edit the per-dataset conf
   (`GET`/`PUT`/`PATCH`/`DELETE …/attr/validation/conf`), POST and query results
   (`POST`/`GET …/attr/validation/result`), browse the cross-dataset list
   (`GET /spoke/validation`), and read the lifecycle timeline (`GET …/event/validation`).
-- **Author a validation routine** into the engineer's own pipeline — the differentiating
-  capability, detailed below.
+
+Two conf operations are destructive and the skill warns before either. `DELETE …/conf` is a
+hard delete: it cascades the dataset's results and `VALIDATION.*` events and removes the DataHub
+assertion, leaving the slot as never-created. Replacing a conf's `variables[]` does not migrate
+past results, which retain the keys they were posted with, so a rename orphans the existing
+series and breaks the pipeline's next POST with `422 UNKNOWN_VARIABLE`.
 
 ### `dataspoke-ontogen` / `dataspoke-metagen` / `dataspoke-governance` (stubs)
 
-Each stub knows its route prefix, points the user at the deployment's `/redoc` for the
-current contract, and answers basic questions about the feature's surface. They are
-deliberately thin — marked **TBD** until a concrete end-user workflow justifies promoting
-them to full capabilities. No invented behavior beyond what the API already exposes.
+Each stub knows its route prefix, reads the current contract with `bin/dataspoke-schema`
+(handing `/redoc` to the user when they want to browse it), and answers basic questions about
+the feature's surface. They are deliberately thin — marked **TBD** until a concrete end-user
+workflow justifies promoting them to full capabilities. No invented behavior beyond what the
+API already exposes.
 
 ---
 
 ## Validation Routine Authoring (Flagship)
 
-The flagship capability helps an engineer add a DataSpoke quality check to their own
-pipeline. It must be honest about the **passivity boundary**: DataSpoke validation is a
-*passive result store*. The conf declares only `{description, variables[]}`. There is **no
-threshold engine, no forecast engine, no rule evaluation** in DataSpoke. The engineer's
-pipeline computes every metric (null ratio, row count, a Prophet forecast, …) **and** the
-pass/fail `score`, then POSTs `{data_time, score, variables}`. The skill generates the code
-that does this computation; DataSpoke only stores and emits the result. (See
-`spec/feature/VALIDATION.md`.)
+The flagship capability writes data-quality validation into the pipeline the engineer is
+building — the code that runs after a partition is written and checks what landed.
+
+It must be honest about the division of labor. DataSpoke validation is an **API for
+registration, get, and put of values**: the conf declares only `{description, variables[]}`,
+and the service stores results and emits them to DataHub. It ships **no computing engine** —
+no metric computation, no forecasting, no anomaly detection, and no threshold or rule
+evaluation. Every number, each variable and the pass/fail `score` alike, is computed by the
+pipeline on the engineer's own engine with their own credentials.
+
+The skill therefore authors the computing code — metrics, baseline comparison, anomaly logic,
+thresholds — and touches DataSpoke through exactly three calls: **register** the slot (once, at
+setup), **get** the recent baseline, and **put** each run's result. A request to have DataSpoke
+"detect anomalies" or "enforce a threshold" is answered by writing that logic into the pipeline,
+not by implying the service evaluates it. (See `spec/feature/VALIDATION.md`.)
 
 The skill drives three phases.
 
@@ -256,7 +282,11 @@ The engineer rarely knows the exact URN. The skill resolves it carefully, never 
 The skill emits code **into the engineer's own pipeline script** (their environment, their
 credentials — never DataSpoke's). The generated routine:
 
-1. Computes the declared metrics over the freshly written partition.
+1. Computes the declared metrics over the partition just written. Only this step is
+   engine-specific; the skill adapts it to the stack in front of it (a Spark aggregation, an
+   aggregation pushed into Athena, plain SQL). It validates what actually landed — re-reading
+   the destination partition rather than reusing the in-memory frame, since the two diverge
+   exactly when the write went wrong.
 2. Fetches the recent baseline via `GET …/attr/validation/result?from=<~14d ago>` (the
    historical-result cache; newest-first, so index 0 is the latest sample).
 3. Fits a forecast over that baseline (e.g. Prophet with default settings) or applies
@@ -266,6 +296,18 @@ credentials — never DataSpoke's). The generated routine:
 5. POSTs `{data_time, score, variables}` to `…/attr/validation/result`, keying `variables`
    by the conf's declared names (unknown keys are rejected `422 UNKNOWN_VARIABLE`;
    `score` must satisfy `0.0 ≤ score ≤ 1.0`).
+
+Registration stays out of the generated code. A conf re-registered on every run is a recurring
+opportunity to change the declared variables underneath the accumulated history, so the skill
+performs the `PUT` itself during the prerequisite chain.
+
+Two properties of the result store shape what the routine may assume. Reads collapse
+last-write-wins per `data_time`, so a retried run corrects its partition rather than duplicating
+it and no deduplication guard belongs in the generated code. But collapsing is keyed on
+`data_time` alone, not on the day: the series carries one point per distinct `data_time`, so the
+baseline must be bounded by the time window rather than by a row count, and `data_time` must
+identify the partition — never the moment of the run, which would make every retry a new point
+and silently reduce a multi-day window to a handful of hours.
 
 The skill makes the boundary explicit in what it generates and explains: forecasting and
 thresholding are **the pipeline's** logic, authored locally; DataSpoke receives only the

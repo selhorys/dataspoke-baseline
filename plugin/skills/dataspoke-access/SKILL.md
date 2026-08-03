@@ -37,17 +37,33 @@ already exists, otherwise `set`.
 
 ### `status` — verify current access
 
-1. `dataspoke-api GET /ready` — deployment reachable and healthy.
+1. `dataspoke-api GET /ready` — deployment reachable. Read the body, not just the status: it
+   never returns 503, so `status: "degraded"` with a `false` entry in `checks` (`datahub`,
+   `postgres`, `redis`) still arrives as 200. Name the degraded dependency in the report.
 2. `dataspoke-api GET /auth/me` — confirm identity and **effective role**.
-3. Report: base URL, account email, role (Reader / Editor / Admin), and the redoc + UI URLs
-   from the config. If the config is missing or `/auth/me` returns 401, tell the user to run
-   `set`.
+3. Report: base URL, deployment status, account email, role (Reader / Editor / Admin), and the
+   redoc + UI URLs from the config. If the config is missing or `/auth/me` returns 401, tell the
+   user to run `set`.
 
 ### `set` — configure access
 
 1. **Collect the base URL.** Ask the user for the deployment origin (e.g.
    `https://dataspoke.example.com`, or the dev `http://api.<INGRESS_IP>.nip.io`). Derive
    `redoc_url` = `<origin>/redoc`, `ui_url` = `<origin>`, `api_base_url` = `<origin>/api/v1`.
+
+   Then probe the origin **before collecting any credential**, so a typo or an unreachable
+   deployment surfaces as a clear message rather than a confusing failure mid-mint. `/ready`
+   is public — no token needed:
+   ```bash
+   curl -sS --max-time 10 -w '\n%{http_code}\n' "<origin>/ready"
+   ```
+   A `200` with a `{"status": …, "checks": {…}}` body confirms a reachable DataSpoke. On a
+   connection failure or a non-200 code, report what was tried and ask the user to correct the
+   origin — do not proceed to step 2. `/ready` reports state and never returns 503, so read the
+   body too: `status: "degraded"` (any `false` entry in `checks` — `datahub`, `postgres`,
+   `redis`) still arrives as 200. Surface which dependency is down as a warning and let the user
+   decide whether to continue; minting works while DataHub is degraded, but feature skills that
+   need it will fail later.
 
 2. **Obtain a token.** Ask whether the user will *paste an existing* `dsk_…` token or *mint a
    new one* from credentials.
@@ -93,6 +109,9 @@ already exists, otherwise `set`.
 
 ## Notes
 
+- `redoc_url` is stored so skills can hand a **human** a browsable API reference. It renders in a
+  browser and is not readable by fetching it — skills that need the contract themselves call
+  `dataspoke-schema <path-fragment>`, which reads the same document as JSON.
 - The `dsk_` prefix marks the token for leak detection — treat it like a password; it belongs
   only in `~/.dataspoke/config.json` (mode 600) or the env override, never in committed files.
 - To rotate or revoke: mint a new token (re-run `set`) and revoke old ones via
