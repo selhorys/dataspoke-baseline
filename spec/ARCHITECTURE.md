@@ -468,7 +468,7 @@ and `/api/v1/admin/conf` (see [`spec/API.md` §Admin](API.md)), seeded with fact
 | `DATASPOKE_*` (no `KUBE`/`DEV`/`TEST`) | App runtime, both profiles | DataSpoke app code (FastAPI, frontend) |
 | `DATASPOKE_KUBE_*` | Kube deployment, both profiles | `helm-charts/bin/*.sh` install/uninstall/build scripts |
 | `DATASPOKE_DEV_*` | Dev profile only | `helm-charts/bin/dev-peripherals/*.sh`, `helm-charts/bin/post-install/*.sh` |
-| `DATASPOKE_TEST_*` | Dev profile only | `tests/integration/{conftest.py,util/*}` — laptop-side test access auto-populated by `install.sh`; never read by app pods |
+| `DATASPOKE_DEV_*` | Dev profile only | `tests/integration/{conftest.py,util/*}` — laptop-side test access auto-populated by `install.sh`; never read by app pods |
 
 App-runtime variables (`DATASPOKE_*`) are the same names in dev and prod — only the values
 differ. In dev they point to the nginx-ingress external IP (TCP services) or ingress hostnames

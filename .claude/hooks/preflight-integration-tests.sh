@@ -20,10 +20,10 @@ if [[ "$tool_name" != "Bash" ]]; then
 fi
 
 # Anchor at start-of-command (after optional leading whitespace and env prefix).
-# Supported prefix: DATASPOKE_DEV_ENV_LOCK_PREACQUIRED=1.
+# Supported prefix: DATASPOKE_DEV_LOCK_PREACQUIRED=1.
 # Match only literal pytest invocations; commands that merely mention the string
 # (e.g., echo or grep arguments) should not trigger.
-pytest_re='^[[:space:]]*(DATASPOKE_DEV_ENV_LOCK_PREACQUIRED=1[[:space:]]+)?uv run pytest[[:space:]]+tests/integration'
+pytest_re='^[[:space:]]*(DATASPOKE_DEV_LOCK_PREACQUIRED=1[[:space:]]+)?uv run pytest[[:space:]]+tests/integration'
 if ! printf '%s' "$cmd" | grep -qE "$pytest_re"; then
   exit 0
 fi

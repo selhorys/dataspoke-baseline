@@ -142,7 +142,7 @@ test("UC1 Case 3 step 0 — imazon Kafka topics appear in /unmanaged before sour
   //   no distinct gesture) and is asserted on the backend alone — the dual-confirmation rule
   //   binds only where a gesture exists."
   const base = apiBaseUrl();
-  const token = process.env["DATASPOKE_TEST_INTERNAL_TOKEN"] ?? "";
+  const token = process.env["DATASPOKE_DEV_INTERNAL_TOKEN"] ?? "";
 
   // Poll until both imazon topics appear in /unmanaged (≤180s, ES lag budget).
   // spec: project_es_indexing_lag_after_reset_seed — ES lags ~2-3 min after seed.
@@ -330,7 +330,7 @@ test("UC1 Case 3 step 3 — datasets panel shows imazon Kafka topics with matche
   // Trigger sync sweeps (backend, no UI surface) until both Kafka URNs appear in datasets.
   // spec: test_uc1_03_passive_kafka.py step 4 — re-trigger sync each iteration.
   const base = apiBaseUrl();
-  const token = process.env["DATASPOKE_TEST_INTERNAL_TOKEN"] ?? "";
+  const token = process.env["DATASPOKE_DEV_INTERNAL_TOKEN"] ?? "";
   const deadline = Date.now() + 180_000;
   let datasetsUrns: string[] = [];
 
@@ -497,7 +497,7 @@ test("UC1 Case 3 step 5 — fresh Kafka Operation surfaces as a passive_observat
   // fresh T proves a new observation surfaced (not just the seed-time event).
   // spec: test_uc1_03_passive_kafka.py step 5 — re-trigger sync each iteration; match occurred_at==T.
   const base = apiBaseUrl();
-  const token = process.env["DATASPOKE_TEST_INTERNAL_TOKEN"] ?? "";
+  const token = process.env["DATASPOKE_DEV_INTERNAL_TOKEN"] ?? "";
   const deadline = Date.now() + 120_000;
   let freshObserved = false;
   while (Date.now() < deadline) {

@@ -753,7 +753,7 @@ sit behind. With `DATASPOKE_KUBE_INGRESS_SCHEME=https` the GMS Ingress refuses
 the plaintext hop (`ssl-redirect: "true"`), so a missing SAN surfaces as a TLS
 error rather than a silent downgrade.
 
-Upgrading an existing dev environment: `DATASPOKE_TEST_DATAHUB_GMS_URL` in
+Upgrading an existing dev environment: `DATASPOKE_DEV_DATAHUB_GMS_URL` in
 `helm-charts/.env.dev` is only rewritten by the DataHub install step. Until you
 re-run it, that variable still names the old origin and tooling keeps sending
 the PAT there:
@@ -839,12 +839,12 @@ Component names: `nginx-ingress`, `datahub`, `langfuse`, `dataspoke-infra`,
 The dev-lock service provides an advisory mutex for coordinating multi-tester
 access to shared dev-env resources.
 
-`install.sh` auto-populates `DATASPOKE_TEST_LOCK_URL` in `helm-charts/.env.dev`
+`install.sh` auto-populates `DATASPOKE_DEV_LOCK_URL` in `helm-charts/.env.dev`
 (`http://<INGRESS_IP>:9221` in managed mode, `http://127.0.0.1:9221` via
 `bin/port-forward.sh` in shared mode), so the same command works in both:
 
 ```bash
-LOCK_URL=$(grep DATASPOKE_TEST_LOCK_URL helm-charts/.env.dev | cut -d= -f2)
+LOCK_URL=$(grep DATASPOKE_DEV_LOCK_URL helm-charts/.env.dev | cut -d= -f2)
 curl -s -X POST ${LOCK_URL}/lock/acquire \
   -H "Content-Type: application/json" \
   -d '{"owner": "alice", "message": "running ingestion test"}'

@@ -27,7 +27,7 @@ spec: feature/BACKEND.md §Shared Services (PostgreSQL row) — "Credentials are
       from this connection layer whatever characters they contain, and the URL's string
       form masks the password rather than carrying it into a log line or traceback".
 spec: TESTING.md §Integration Lifecycle & Isolation — "Reset helpers ... read all
-      credentials from the environment (the `DATASPOKE_TEST_*` block in
+      credentials from the environment (the `DATASPOKE_DEV_*` block in
       `helm-charts/.env.dev`); no credential is hardcoded in a helper".
 """
 
@@ -48,11 +48,11 @@ _CONFTEST_PATH = Path(__file__).resolve().parents[2] / "integration" / "conftest
 # no `helm-charts/.env.dev` and no exported environment; none of these keys is read by
 # the fixture under test.
 _IMPORT_ENV = {
-    "DATASPOKE_TEST_DATAHUB_GMS_URL": "http://datahub-gms.import-only.invalid",
-    "DATASPOKE_TEST_REDIS_HOST": "redis.import-only.invalid",
-    "DATASPOKE_TEST_REDIS_PORT": "9202",
-    "DATASPOKE_TEST_DUMMY_DATA_KAFKA_BROKERS": "example-kafka.import-only.invalid:9104",
-    "DATASPOKE_TEST_DATAHUB_KAFKA_BROKERS": "datahub-kafka.import-only.invalid:9005",
+    "DATASPOKE_DEV_DATAHUB_GMS_URL": "http://datahub-gms.import-only.invalid",
+    "DATASPOKE_DEV_REDIS_HOST": "redis.import-only.invalid",
+    "DATASPOKE_DEV_REDIS_PORT": "9202",
+    "DATASPOKE_DEV_DUMMY_DATA_KAFKA_BROKERS": "example-kafka.import-only.invalid:9104",
+    "DATASPOKE_DEV_DATAHUB_KAFKA_BROKERS": "datahub-kafka.import-only.invalid:9005",
     # Inherited so the interpreter keeps working (subprocess lookups, cert paths) under
     # ``clear=True``; not read by the module under test.
     "PATH": os.environ.get("PATH", ""),
@@ -93,7 +93,7 @@ def _url_with_env(**env: str) -> URL:
     """Call the shipped fixture body with exactly *env* in the environment.
 
     ``clear=True``: a developer runs the integration groups with `helm-charts/.env.dev`
-    exported, so the ambient shell carries real ``DATASPOKE_TEST_POSTGRES_*`` values that
+    exported, so the ambient shell carries real ``DATASPOKE_DEV_POSTGRES_*`` values that
     would otherwise leak into the assertions below — including the cleared-env one.
     """
     with patch.dict(os.environ, env, clear=True):
@@ -101,7 +101,7 @@ def _url_with_env(**env: str) -> URL:
 
 
 def test_the_env_block_populates_the_urls_fields() -> None:
-    """Each ``DATASPOKE_TEST_POSTGRES_*`` value lands on its own ``URL`` field.
+    """Each ``DATASPOKE_DEV_POSTGRES_*`` value lands on its own ``URL`` field.
 
     The ``isinstance`` assertion is the direct pin: the fixture's consumers pass its
     result straight to ``create_async_engine``, which accepts a DSN string just as
@@ -116,11 +116,11 @@ def test_the_env_block_populates_the_urls_fields() -> None:
     from this connection layer whatever characters they contain".
     """
     url = _url_with_env(
-        DATASPOKE_TEST_POSTGRES_HOST="db.example.com",
-        DATASPOKE_TEST_POSTGRES_PORT="9999",
-        DATASPOKE_TEST_POSTGRES_USER="myuser",
-        DATASPOKE_TEST_POSTGRES_PASSWORD="p@ss",  # noqa: S106 - test fixture value
-        DATASPOKE_TEST_POSTGRES_DB="mydb",
+        DATASPOKE_DEV_POSTGRES_HOST="db.example.com",
+        DATASPOKE_DEV_POSTGRES_PORT="9999",
+        DATASPOKE_DEV_POSTGRES_USER="myuser",
+        DATASPOKE_DEV_POSTGRES_PASSWORD="p@ss",  # noqa: S106 - test fixture value
+        DATASPOKE_DEV_POSTGRES_DB="mydb",
     )
 
     assert isinstance(url, URL), (
@@ -136,7 +136,7 @@ def test_the_env_block_populates_the_urls_fields() -> None:
 
 
 def test_the_fixture_reads_the_test_env_block_not_the_app_runtime_one() -> None:
-    """The fixture reads ``DATASPOKE_TEST_POSTGRES_*``, never the app-runtime block.
+    """The fixture reads ``DATASPOKE_DEV_POSTGRES_*``, never the app-runtime block.
 
     A fixture that fell back to ``DATASPOKE_POSTGRES_*`` would silently target whatever
     the app runtime is configured for — in-cluster coordinates unreachable from a
@@ -146,16 +146,16 @@ def test_the_fixture_reads_the_test_env_block_not_the_app_runtime_one() -> None:
     to the other call site.
 
     spec: TESTING.md §Running — "Export `helm-charts/.env.dev` into the shell before
-    invoking pytest — `conftest.py` and `util/*.py` consume the `DATASPOKE_TEST_*` block
+    invoking pytest — `conftest.py` and `util/*.py` consume the `DATASPOKE_DEV_*` block
     it contains". §Integration Lifecycle & Isolation carries the same rule but scopes it
     to reset helpers; this fixture is neither, so §Running is the anchor that governs it.
     """
     url = _url_with_env(
-        DATASPOKE_TEST_POSTGRES_HOST="forwarded.example.com",
-        DATASPOKE_TEST_POSTGRES_PORT="9201",
-        DATASPOKE_TEST_POSTGRES_USER="testuser",
-        DATASPOKE_TEST_POSTGRES_PASSWORD="testpass",  # noqa: S106 - test fixture value
-        DATASPOKE_TEST_POSTGRES_DB="testdb",
+        DATASPOKE_DEV_POSTGRES_HOST="forwarded.example.com",
+        DATASPOKE_DEV_POSTGRES_PORT="9201",
+        DATASPOKE_DEV_POSTGRES_USER="testuser",
+        DATASPOKE_DEV_POSTGRES_PASSWORD="testpass",  # noqa: S106 - test fixture value
+        DATASPOKE_DEV_POSTGRES_DB="testdb",
         DATASPOKE_POSTGRES_HOST="in-cluster.example.com",
         DATASPOKE_POSTGRES_PORT="5432",
         DATASPOKE_POSTGRES_USER="runtimeuser",
@@ -170,7 +170,7 @@ def test_the_fixture_reads_the_test_env_block_not_the_app_runtime_one() -> None:
         "testpass",
         "testdb",
     ), (
-        f"the fixture must read the DATASPOKE_TEST_* block, not the app-runtime "
+        f"the fixture must read the DATASPOKE_DEV_* block, not the app-runtime "
         f"DATASPOKE_POSTGRES_* one; got {url.render_as_string(hide_password=False)!r}."
     )
 
@@ -178,10 +178,10 @@ def test_the_fixture_reads_the_test_env_block_not_the_app_runtime_one() -> None:
 @pytest.mark.parametrize(
     "missing",
     [
-        "DATASPOKE_TEST_POSTGRES_HOST",
-        "DATASPOKE_TEST_POSTGRES_PORT",
-        "DATASPOKE_TEST_POSTGRES_USER",
-        "DATASPOKE_TEST_POSTGRES_PASSWORD",
+        "DATASPOKE_DEV_POSTGRES_HOST",
+        "DATASPOKE_DEV_POSTGRES_PORT",
+        "DATASPOKE_DEV_POSTGRES_USER",
+        "DATASPOKE_DEV_POSTGRES_PASSWORD",
     ],
 )
 def test_each_required_key_is_individually_required(missing: str) -> None:
@@ -194,7 +194,7 @@ def test_each_required_key_is_individually_required(missing: str) -> None:
 
     Parametrized one key at a time rather than clearing the environment wholesale: with
     everything unset the first lookup short-circuits, so a single cleared-env case proves
-    only that *some* key is required. A fallback added to ``DATASPOKE_TEST_POSTGRES_PASSWORD``
+    only that *some* key is required. A fallback added to ``DATASPOKE_DEV_POSTGRES_PASSWORD``
     alone — the most consequential one, since it would let a run proceed against an empty
     credential instead of failing — would survive that weaker test. Each case here omits
     exactly one key from an otherwise-complete block, so each key is pinned on its own.
@@ -204,11 +204,11 @@ def test_each_required_key_is_individually_required(missing: str) -> None:
     distinguishes it from the reset utility's defaulted sibling.
     """
     env = {
-        "DATASPOKE_TEST_POSTGRES_HOST": "db.example.com",
-        "DATASPOKE_TEST_POSTGRES_PORT": "9999",
-        "DATASPOKE_TEST_POSTGRES_USER": "myuser",
-        "DATASPOKE_TEST_POSTGRES_PASSWORD": "secret",
-        "DATASPOKE_TEST_POSTGRES_DB": "mydb",
+        "DATASPOKE_DEV_POSTGRES_HOST": "db.example.com",
+        "DATASPOKE_DEV_POSTGRES_PORT": "9999",
+        "DATASPOKE_DEV_POSTGRES_USER": "myuser",
+        "DATASPOKE_DEV_POSTGRES_PASSWORD": "secret",
+        "DATASPOKE_DEV_POSTGRES_DB": "mydb",
     }
     del env[missing]
 
@@ -221,7 +221,7 @@ def test_each_required_key_is_individually_required(missing: str) -> None:
 
 
 def test_only_the_database_name_is_defaulted() -> None:
-    """``DATASPOKE_TEST_POSTGRES_DB`` is the single key with a fallback.
+    """``DATASPOKE_DEV_POSTGRES_DB`` is the single key with a fallback.
 
     Its absence is not a signal that the env file went unexported — the cluster's
     database name is fixed — so it defaults while the four coordinates that vary per
@@ -230,15 +230,15 @@ def test_only_the_database_name_is_defaulted() -> None:
 
     NOT spec-derived: the default value ``dataspoke`` appears in no spec document; it is
     the DataSpoke database name the install scripts auto-populate into
-    `helm-charts/.env.dev` (``DATASPOKE_TEST_POSTGRES_DB``, from the app ConfigMap).
+    `helm-charts/.env.dev` (``DATASPOKE_DEV_POSTGRES_DB``, from the app ConfigMap).
     Pinned because a silent change would point every integration engine at a different
     database.
     """
     url = _url_with_env(
-        DATASPOKE_TEST_POSTGRES_HOST="db.example.com",
-        DATASPOKE_TEST_POSTGRES_PORT="9999",
-        DATASPOKE_TEST_POSTGRES_USER="myuser",
-        DATASPOKE_TEST_POSTGRES_PASSWORD="mypass",  # noqa: S106 - test fixture value
+        DATASPOKE_DEV_POSTGRES_HOST="db.example.com",
+        DATASPOKE_DEV_POSTGRES_PORT="9999",
+        DATASPOKE_DEV_POSTGRES_USER="myuser",
+        DATASPOKE_DEV_POSTGRES_PASSWORD="mypass",  # noqa: S106 - test fixture value
     )
 
     assert url.database == "dataspoke"
@@ -246,11 +246,11 @@ def test_only_the_database_name_is_defaulted() -> None:
     # fixture ignores it.
     assert (
         _url_with_env(
-            DATASPOKE_TEST_POSTGRES_HOST="db.example.com",
-            DATASPOKE_TEST_POSTGRES_PORT="9999",
-            DATASPOKE_TEST_POSTGRES_USER="myuser",
-            DATASPOKE_TEST_POSTGRES_PASSWORD="mypass",  # noqa: S106 - test fixture value
-            DATASPOKE_TEST_POSTGRES_DB="explicitdb",
+            DATASPOKE_DEV_POSTGRES_HOST="db.example.com",
+            DATASPOKE_DEV_POSTGRES_PORT="9999",
+            DATASPOKE_DEV_POSTGRES_USER="myuser",
+            DATASPOKE_DEV_POSTGRES_PASSWORD="mypass",  # noqa: S106 - test fixture value
+            DATASPOKE_DEV_POSTGRES_DB="explicitdb",
         ).database
         == "explicitdb"
     )

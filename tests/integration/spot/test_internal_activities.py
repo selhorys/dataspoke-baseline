@@ -60,7 +60,7 @@ pytestmark = pytest.mark.usefixtures("silence_api_health_report")
 # install.sh; required (no default) so an unset env fails loud rather than
 # guessing a namespace.
 # spec: TESTING.md — example_db on the dev-env host.
-_PG_HOST_PORT = os.environ["DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST_PORT"]
+_PG_HOST_PORT = os.environ["DATASPOKE_DEV_DUMMY_DATA_POSTGRES_HOST_PORT"]
 # Secret reference: provisioned K8s Secret dataspoke-source-cred-dummy-data-pg, key 'password'.
 # spec: SECRET_RESOLUTION.md §Name prefix policy — DNS-label-safe (hyphens, no underscores).
 _SECRET_REF_HOURLY = "${dummy-data-pg__password}"

@@ -164,7 +164,7 @@ async def _executing_query(session_factory: async_sessionmaker[AsyncSession], pi
 
     Additive narrowing on top of ``pg_blocking_pids``, used only to name *which*
     statement a waiter is stuck on. Readable here because the tests connect as the
-    same role the API pod uses — ``DATASPOKE_TEST_POSTGRES_USER`` is populated from
+    same role the API pod uses — ``DATASPOKE_DEV_POSTGRES_USER`` is populated from
     the same ``dataspoke-secrets`` the API reads.
     """
     async with session_factory() as observer:

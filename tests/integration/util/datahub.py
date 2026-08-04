@@ -9,10 +9,10 @@ Usage (as a module):
     uv run python -m tests.integration.util.datahub --reset-only  # delete only
 
 Environment variables (loaded from helm-charts/.env.dev if present):
-    DATASPOKE_TEST_DATAHUB_GMS_URL       (default: http://localhost:9004)
-    DATASPOKE_TEST_DATAHUB_TOKEN         (required for DataHub-touching helpers)
-    DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST                        (default: localhost)
-    DATASPOKE_TEST_DUMMY_DATA_POSTGRES_PORT                        (default: 9102)
+    DATASPOKE_DEV_DATAHUB_GMS_URL       (default: http://localhost:9004)
+    DATASPOKE_DEV_DATAHUB_TOKEN         (required for DataHub-touching helpers)
+    DATASPOKE_DEV_DUMMY_DATA_POSTGRES_HOST                        (default: localhost)
+    DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PORT                        (default: 9102)
     DATASPOKE_DEV_DUMMY_DATA_POSTGRES_USER      (default: postgres)
     DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD  (default: ExampleDev2024!)
     DATASPOKE_DEV_DUMMY_DATA_POSTGRES_DB        (default: example_db)
@@ -194,7 +194,7 @@ def _require_env(name: str) -> str:
 
     Per spec/TESTING.md §Integration Lifecycle & Isolation: reset helpers carry no
     baked-in credentials — every credential is read from the environment (the
-    DATASPOKE_TEST_* / DATASPOKE_DEV_* block in helm-charts/.env.dev). A missing
+    DATASPOKE_DEV_* / DATASPOKE_DEV_* block in helm-charts/.env.dev). A missing
     value must abort with a clear message, never fall back to a hardcoded default.
     """
     value = os.environ.get(name)
@@ -206,11 +206,11 @@ def _require_env(name: str) -> str:
     return value
 
 
-_gms_url = os.environ.get("DATASPOKE_TEST_DATAHUB_GMS_URL", "http://localhost:9004")
-_token_env = os.environ.get("DATASPOKE_TEST_DATAHUB_TOKEN", "")
+_gms_url = os.environ.get("DATASPOKE_DEV_DATAHUB_GMS_URL", "http://localhost:9004")
+_token_env = os.environ.get("DATASPOKE_DEV_DATAHUB_TOKEN", "")
 
-_pg_host = os.environ.get("DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST", "localhost")
-_pg_port = int(os.environ.get("DATASPOKE_TEST_DUMMY_DATA_POSTGRES_PORT", "9102"))
+_pg_host = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_HOST", "localhost")
+_pg_port = int(os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PORT", "9102"))
 _pg_user = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_USER", "postgres")
 _pg_password = _require_env("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD")
 _pg_db = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_DB", "example_db")
@@ -219,11 +219,11 @@ _kafka_instance = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_KAFKA_INSTANCE", "exa
 
 # Dataspoke operational DB — used to reconcile dataset_registry rows whose
 # datahub_registered cache was frozen False before this ingest.
-_DATASPOKE_PG_HOST = os.environ.get("DATASPOKE_TEST_POSTGRES_HOST", "localhost")
-_DATASPOKE_PG_PORT = int(os.environ.get("DATASPOKE_TEST_POSTGRES_PORT", "9201"))
-_DATASPOKE_PG_USER = os.environ.get("DATASPOKE_TEST_POSTGRES_USER", "dataspoke")
-_DATASPOKE_PG_PASSWORD = _require_env("DATASPOKE_TEST_POSTGRES_PASSWORD")
-_DATASPOKE_PG_DB = os.environ.get("DATASPOKE_TEST_POSTGRES_DB", "dataspoke")
+_DATASPOKE_PG_HOST = os.environ.get("DATASPOKE_DEV_POSTGRES_HOST", "localhost")
+_DATASPOKE_PG_PORT = int(os.environ.get("DATASPOKE_DEV_POSTGRES_PORT", "9201"))
+_DATASPOKE_PG_USER = os.environ.get("DATASPOKE_DEV_POSTGRES_USER", "dataspoke")
+_DATASPOKE_PG_PASSWORD = _require_env("DATASPOKE_DEV_POSTGRES_PASSWORD")
+_DATASPOKE_PG_DB = os.environ.get("DATASPOKE_DEV_POSTGRES_DB", "dataspoke")
 
 # ---------------------------------------------------------------------------
 # Lazy token resolution — never called at module import time
@@ -256,7 +256,7 @@ def get_datahub_token() -> str:
     tok = _get_token()
     if not tok:
         raise RuntimeError(
-            "Cannot obtain a DataHub token. Set DATASPOKE_TEST_DATAHUB_TOKEN "
+            "Cannot obtain a DataHub token. Set DATASPOKE_DEV_DATAHUB_TOKEN "
             "(populated from helm-charts/.env.dev by the install scripts)."
         )
     return tok

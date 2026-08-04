@@ -57,7 +57,7 @@ let confCreated = false;
 test.beforeAll(async ({ adminApi }) => {
   test.setTimeout(240_000);
   const base = apiBaseUrl();
-  const token = process.env["DATASPOKE_TEST_INTERNAL_TOKEN"] ?? "";
+  const token = process.env["DATASPOKE_DEV_INTERNAL_TOKEN"] ?? "";
   const deadline = Date.now() + 180_000;
   let ready = false;
   while (Date.now() < deadline) {

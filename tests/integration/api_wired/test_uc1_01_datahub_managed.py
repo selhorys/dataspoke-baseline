@@ -84,7 +84,7 @@ from tests.integration.util.datahub import (
 # (the DataHub executor consumes ingestion recipes IN-CLUSTER via cluster DNS).
 # Populated by install.sh; required (no default) so an unset env fails loud
 # rather than guessing a namespace.
-_PG_HOST_PORT = os.environ["DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST_PORT"]
+_PG_HOST_PORT = os.environ["DATASPOKE_DEV_DUMMY_DATA_POSTGRES_HOST_PORT"]
 
 # ── Dummy-data module constants ────────────────────────────────────────────────
 # spec: TESTING.md §Per-Module Dummy-Data Reset
@@ -183,7 +183,7 @@ def _datahub_gql(
         if resp.status_code in (401, 403):
             credential_hint = (
                 "This is GMS's authentication filter rejecting the PAT, so "
-                "DATASPOKE_TEST_DATAHUB_TOKEN is missing or stale — re-derive it from the "
+                "DATASPOKE_DEV_DATAHUB_TOKEN is missing or stale — re-derive it from the "
                 "cluster secret and re-source helm-charts/.env.dev (a fragmented "
                 "--from-component install skips that env-sync). "
             )
@@ -304,8 +304,8 @@ async def _managed_source_setup(
           managed sources leaking into DataHub for subsequent runs.
     spec: USE_CASE_en.md §UC1 Case 1 — DataHub-managed source exposed read-only via DataSpoke.
     """
-    datahub_gms_url = os.environ.get("DATASPOKE_TEST_DATAHUB_GMS_URL", "")
-    datahub_token = os.environ.get("DATASPOKE_TEST_DATAHUB_TOKEN", "")
+    datahub_gms_url = os.environ.get("DATASPOKE_DEV_DATAHUB_GMS_URL", "")
+    datahub_token = os.environ.get("DATASPOKE_DEV_DATAHUB_TOKEN", "")
 
     # Absent preconditions this run cannot establish: the GMS endpoint and the PAT that
     # authenticates every GraphQL call below. Both name how to supply them — an empty PAT
@@ -315,13 +315,13 @@ async def _managed_source_setup(
     #   how to supply it."
     if not datahub_gms_url:
         pytest.skip(
-            "DATASPOKE_TEST_DATAHUB_GMS_URL is not set, so this UC1 Case 1 module has no "
+            "DATASPOKE_DEV_DATAHUB_GMS_URL is not set, so this UC1 Case 1 module has no "
             "DataHub GMS to provision the managed source in. "
             "Source helm-charts/.env.dev before running this test."
         )
     if not datahub_token:
         pytest.skip(
-            "DATASPOKE_TEST_DATAHUB_TOKEN is not set, so every DataHub GraphQL call in "
+            "DATASPOKE_DEV_DATAHUB_TOKEN is not set, so every DataHub GraphQL call in "
             "this module would be unauthenticated and rejected by GMS. "
             "Source helm-charts/.env.dev before running this test (a fragmented "
             "--from-component install skips the env-sync that derives this PAT from the "
@@ -440,7 +440,7 @@ async def _managed_source_setup(
         "GMS accepted the credential and refused the operation, so two causes produce this: "
         "(1) the authenticated actor is under-privileged — the PAT's actor lacks "
         "MANAGE_SECRETS, so grant it (or use an admin PAT) and refresh "
-        "DATASPOKE_TEST_DATAHUB_TOKEN in helm-charts/.env.dev; or (2) Managed Secrets are "
+        "DATASPOKE_DEV_DATAHUB_TOKEN in helm-charts/.env.dev; or (2) Managed Secrets are "
         "broken or absent in this GMS — they are provisioned by the dev install "
         "(./helm-charts/bin/install.sh --profile dev --components datahub). Check the "
         "privilege before reinstalling DataHub. Neither is an absent precondition."
@@ -510,7 +510,7 @@ async def _managed_source_setup(
         "GMS accepted the credential and refused the operation, so two causes produce this: "
         "(1) the authenticated actor is under-privileged — the PAT's actor lacks the Manage "
         "Ingestion privilege, so grant it (or use an admin PAT) and refresh "
-        "DATASPOKE_TEST_DATAHUB_TOKEN in helm-charts/.env.dev; or (2) Managed Ingestion is "
+        "DATASPOKE_DEV_DATAHUB_TOKEN in helm-charts/.env.dev; or (2) Managed Ingestion is "
         "broken or absent in this GMS — it is provisioned by the dev install "
         "(./helm-charts/bin/install.sh --profile dev --components datahub). Check the "
         "privilege before reinstalling DataHub. Neither is an absent precondition."
@@ -927,8 +927,8 @@ async def test_uc1_datahub_managed_sync_and_readonly(
     # Reuse the GMS-access pattern from _managed_source_setup: same env vars + gql_headers.
     # Both are non-empty here — the module-scoped fixture skips the module when either is
     # unset, so a test body only runs once they are established.
-    datahub_gms_url = os.environ["DATASPOKE_TEST_DATAHUB_GMS_URL"]
-    datahub_token = os.environ["DATASPOKE_TEST_DATAHUB_TOKEN"]
+    datahub_gms_url = os.environ["DATASPOKE_DEV_DATAHUB_GMS_URL"]
+    datahub_token = os.environ["DATASPOKE_DEV_DATAHUB_TOKEN"]
     gql_headers_guard = _gql_headers(datahub_token)
 
     # Select both urn and type so the precondition can key on source type (catching
@@ -963,7 +963,7 @@ async def test_uc1_datahub_managed_sync_and_readonly(
         f"listIngestionSources returned GraphQL errors: {gms_data['errors']}. "
         "GMS accepted the credential and refused the query, so either the PAT's actor "
         "lacks the Manage Ingestion privilege (grant it, or use an admin PAT, and refresh "
-        "DATASPOKE_TEST_DATAHUB_TOKEN in helm-charts/.env.dev) or Managed Ingestion is "
+        "DATASPOKE_DEV_DATAHUB_TOKEN in helm-charts/.env.dev) or Managed Ingestion is "
         "broken in this GMS (./helm-charts/bin/install.sh --profile dev --components "
         "datahub). Neither is an absent precondition."
     )
@@ -1121,8 +1121,8 @@ async def test_uc1_datahub_managed_execute_and_reflect(
     # test's whole module when either is unset — a module-scoped fixture that skips during
     # setup skips every requesting test without running its body. Reading them here is
     # therefore unconditional: both are non-empty by the time this line executes.
-    datahub_gms_url = os.environ["DATASPOKE_TEST_DATAHUB_GMS_URL"]
-    datahub_token = os.environ["DATASPOKE_TEST_DATAHUB_TOKEN"]
+    datahub_gms_url = os.environ["DATASPOKE_DEV_DATAHUB_GMS_URL"]
+    datahub_token = os.environ["DATASPOKE_DEV_DATAHUB_TOKEN"]
 
     gql_headers = _gql_headers(datahub_token)
 

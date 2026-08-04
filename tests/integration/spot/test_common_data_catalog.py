@@ -48,11 +48,11 @@ _MULTI_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,spot_multi.s.title,DE
 
 async def _get_ds_conn() -> asyncpg.Connection:
     return await asyncpg.connect(
-        host=os.environ.get("DATASPOKE_TEST_POSTGRES_HOST", "localhost"),
-        port=int(os.environ.get("DATASPOKE_TEST_POSTGRES_PORT", "9201")),
-        user=os.environ.get("DATASPOKE_TEST_POSTGRES_USER", "dataspoke"),
-        password=os.environ.get("DATASPOKE_TEST_POSTGRES_PASSWORD", ""),
-        database=os.environ.get("DATASPOKE_TEST_POSTGRES_DB", "dataspoke"),
+        host=os.environ.get("DATASPOKE_DEV_POSTGRES_HOST", "localhost"),
+        port=int(os.environ.get("DATASPOKE_DEV_POSTGRES_PORT", "9201")),
+        user=os.environ.get("DATASPOKE_DEV_POSTGRES_USER", "dataspoke"),
+        password=os.environ.get("DATASPOKE_DEV_POSTGRES_PASSWORD", ""),
+        database=os.environ.get("DATASPOKE_DEV_POSTGRES_DB", "dataspoke"),
     )
 
 

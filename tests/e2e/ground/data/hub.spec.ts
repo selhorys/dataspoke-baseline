@@ -257,7 +257,7 @@ test.describe("Events panel major-type filter", () => {
     //   its deadline and asserts the awaited condition after the loop, so exhausting the
     //   budget fails rather than falling through."
     const enc = encodeURIComponent(DATASET_URN);
-    const internalToken = process.env["DATASPOKE_TEST_INTERNAL_TOKEN"] ?? "";
+    const internalToken = process.env["DATASPOKE_DEV_INTERNAL_TOKEN"] ?? "";
     const deadline = Date.now() + 150_000;
     let mapped = false;
     while (Date.now() < deadline) {

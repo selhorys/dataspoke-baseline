@@ -51,7 +51,7 @@ test.beforeAll(async ({ adminApi }) => {
   // spec: TESTING.md §E2E §Execution discipline — "A hand-rolled polling loop declares its
   //   deadline and asserts the awaited condition after the loop, so exhausting the budget
   //   fails rather than falling through."
-  const internalToken = process.env["DATASPOKE_TEST_INTERNAL_TOKEN"] ?? "";
+  const internalToken = process.env["DATASPOKE_DEV_INTERNAL_TOKEN"] ?? "";
   const deadline = Date.now() + 150_000;
   let registered = false;
   while (Date.now() < deadline) {

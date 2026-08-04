@@ -82,18 +82,18 @@ _FORBIDDEN_KEYS = ("gms_url", "kafka_brokers", "service_corpuser_urn", "default_
 def _psql(sql: str) -> subprocess.CompletedProcess[bytes]:
     """Run one SQL statement against the dev Postgres, failing loud on error.
 
-    Credentials come from the ``DATASPOKE_TEST_*`` block in helm-charts/.env.dev.
+    Credentials come from the ``DATASPOKE_DEV_*`` block in helm-charts/.env.dev.
     spec/TESTING.md §Integration Lifecycle & Isolation — "Reset helpers fail loud
     and carry no baked-in credentials".
     """
-    env = {**os.environ, "PGPASSWORD": os.environ["DATASPOKE_TEST_POSTGRES_PASSWORD"]}
+    env = {**os.environ, "PGPASSWORD": os.environ["DATASPOKE_DEV_POSTGRES_PASSWORD"]}
     return subprocess.run(
         [
             "psql",
-            f"--host={os.environ['DATASPOKE_TEST_POSTGRES_HOST']}",
-            f"--port={os.environ['DATASPOKE_TEST_POSTGRES_PORT']}",
-            f"--username={os.environ['DATASPOKE_TEST_POSTGRES_USER']}",
-            f"--dbname={os.environ['DATASPOKE_TEST_POSTGRES_DB']}",
+            f"--host={os.environ['DATASPOKE_DEV_POSTGRES_HOST']}",
+            f"--port={os.environ['DATASPOKE_DEV_POSTGRES_PORT']}",
+            f"--username={os.environ['DATASPOKE_DEV_POSTGRES_USER']}",
+            f"--dbname={os.environ['DATASPOKE_DEV_POSTGRES_DB']}",
             "--set=ON_ERROR_STOP=1",
             f"--command={sql}",
         ],

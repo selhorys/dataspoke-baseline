@@ -49,7 +49,7 @@ tests/e2e/
 ## Auth and lock/reset
 
 **Lock**: global-setup acquires the dev-env lock at `http://<INGRESS_IP>:9221/lock/acquire`
-(same lock as Python integration tests). Set `DATASPOKE_DEV_ENV_LOCK_PREACQUIRED=1` if an outer
+(same lock as Python integration tests). Set `DATASPOKE_DEV_LOCK_PREACQUIRED=1` if an outer
 process holds it.
 
 **Reset**: global-setup calls `uv run python -m tests.integration.util --reset-seed`. The Python

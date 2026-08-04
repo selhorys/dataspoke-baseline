@@ -3,7 +3,7 @@
  *
  * Steps (mirrors tests/integration/conftest.py acquire_lock + dummy_data_reset):
  *   1. Load helm-charts/.env
- *   2. Acquire dev-env lock (honours DATASPOKE_DEV_ENV_LOCK_PREACQUIRED)
+ *   2. Acquire dev-env lock (honours DATASPOKE_DEV_LOCK_PREACQUIRED)
  *   3. Reset + seed dummy data via Python utilities
  *   4. Provision editor + reader users via admin API
  *   5. Log in once per role, save storageState JSON to tests/e2e/.auth/
@@ -50,7 +50,7 @@ const STORAGE_STATE_FILES: Record<string, string> = {
 const ADMIN_API_TOKEN_FILE = path.join(AUTH_DIR, "admin-api-token.txt");
 
 async function acquireLock(): Promise<void> {
-  if (process.env["DATASPOKE_DEV_ENV_LOCK_PREACQUIRED"]) {
+  if (process.env["DATASPOKE_DEV_LOCK_PREACQUIRED"]) {
     console.log("[e2e setup] Lock pre-acquired; skipping acquire.");
     return;
   }
@@ -80,7 +80,7 @@ async function acquireLock(): Promise<void> {
     throw new Error(
       `Dev-env lock is held by another process. ` +
         `Release it first: DELETE ${url}/lock\n` +
-        `Or set DATASPOKE_DEV_ENV_LOCK_PREACQUIRED=1 if you hold it externally.`
+        `Or set DATASPOKE_DEV_LOCK_PREACQUIRED=1 if you hold it externally.`
     );
   }
   if (!resp!.ok) {
@@ -120,7 +120,7 @@ async function getAdminToken(): Promise<string> {
   const base = apiBaseUrl();
 
   // Best-effort bootstrap so the admin account exists after a --reset-all.
-  const internalToken = process.env["DATASPOKE_TEST_INTERNAL_TOKEN"];
+  const internalToken = process.env["DATASPOKE_DEV_INTERNAL_TOKEN"];
   if (internalToken) {
     try {
       await fetch(`${base}/internal/admin/bootstrap`, {
@@ -155,11 +155,11 @@ async function getAdminToken(): Promise<string> {
  * redis npm dependency to the e2e project.
  */
 function flushRateLimitKeys(): void {
-  const host = process.env["DATASPOKE_TEST_REDIS_HOST"];
-  const port = process.env["DATASPOKE_TEST_REDIS_PORT"] ?? "6379";
-  const password = process.env["DATASPOKE_TEST_REDIS_PASSWORD"] ?? "";
+  const host = process.env["DATASPOKE_DEV_REDIS_HOST"];
+  const port = process.env["DATASPOKE_DEV_REDIS_PORT"] ?? "6379";
+  const password = process.env["DATASPOKE_DEV_REDIS_PASSWORD"] ?? "";
   if (!host) {
-    console.log("[e2e setup] DATASPOKE_TEST_REDIS_HOST not set; skipping rate-limit key flush.");
+    console.log("[e2e setup] DATASPOKE_DEV_REDIS_HOST not set; skipping rate-limit key flush.");
     return;
   }
   console.log("[e2e setup] Flushing slowapi rate-limit keys from Redis...");

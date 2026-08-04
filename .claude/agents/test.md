@@ -83,7 +83,7 @@ Agent-specific notes:
   status badges). List needed test-ids in your completion report so they can be added in a frontend
   fix pass.
 - **Lock + reset + stub mode**: reuse the existing Python utilities from `globalSetup`/
-  `globalTeardown` (lock via `$DATASPOKE_TEST_LOCK_URL`, `uv run python -m tests.integration.util --reset-seed`,
+  `globalTeardown` (lock via `$DATASPOKE_DEV_LOCK_URL`, `uv run python -m tests.integration.util --reset-seed`,
   UC4 `--uc4-seed`). Do not reimplement reset/lock in TypeScript. Gate UC3/UC4 real-LLM variants on
   `stub_llm_client` from `GET /admin/conf` (`test.skip` when stubbed), mirroring api-wired.
 - **Readability over DRY**: inline gestures and expected values per step (mirrors the api-wired

@@ -3,7 +3,7 @@
 The integration layer connects to the dev cluster's DataSpoke Postgres from two
 places — the ``integration_db_url`` session fixture (which the pgvector spot
 fixtures consume) and the reset utility's ``_dataspoke_db_url``. Both read the
-same ``DATASPOKE_TEST_POSTGRES_*`` env block under different fallback policies,
+same ``DATASPOKE_DEV_POSTGRES_*`` env block under different fallback policies,
 and both need the same connection invariant, so the URL construction lives here
 once.
 
@@ -14,7 +14,7 @@ spec: feature/BACKEND.md §Shared Services (PostgreSQL row) — "Credentials are
     URL's string form masks the password rather than carrying it into a log line
     or traceback." Same invariant, one layer over.
 spec: TESTING.md §Integration Lifecycle & Isolation — "Reset helpers ... read all
-    credentials from the environment (the `DATASPOKE_TEST_*` block in
+    credentials from the environment (the `DATASPOKE_DEV_*` block in
     `helm-charts/.env.dev`); no credential is hardcoded in a helper." Reading the
     environment stays at the call sites, which is why this helper takes
     parameters: both read the same five keys, but the fixture's required-env

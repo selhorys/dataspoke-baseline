@@ -10,9 +10,9 @@ string … and the URL's string form masks the password" is specced at
 **`spec/feature/BACKEND.md` §Shared Services, PostgreSQL row (line ~131)** — verbatim, verified
 twice. It is *not* in `spec/TESTING.md §Integration Lifecycle & Isolation` — that bullet (~L333-336)
 is scoped to **reset helpers** ("Reset helpers fail loud and carry no baked-in credentials … read
-all credentials from the environment (the `DATASPOKE_TEST_*` block)"). For a *conftest fixture*
+all credentials from the environment (the `DATASPOKE_DEV_*` block)"). For a *conftest fixture*
 reading that block, the on-point anchor is **`spec/TESTING.md` L404 (§Running)** — "`conftest.py`
-and `util/*.py` consume the `DATASPOKE_TEST_*` block it contains". Citing L335 for a fixture is a
+and `util/*.py` consume the `DATASPOKE_DEV_*` block it contains". Citing L335 for a fixture is a
 scope stretch; L404 is the precise one.
 
 Reference shape: `tests/unit/shared/db/test_session.py` (~35-128) — parametrize over
@@ -44,7 +44,7 @@ backstop. The seam: `importlib.util.spec_from_file_location` + `exec_module` on
 `tests/integration/conftest.py` under a throwaway module name, inside
 `patch.dict(os.environ, _IMPORT_ENV, clear=True)`, then call
 `module.integration_db_url.__wrapped__()`. Verified safe — `os.environ` is restored *exactly*
-(patch.dict contains `_load_dotenv()`), hostile ambient `DATASPOKE_TEST_POSTGRES_*` cannot leak,
+(patch.dict contains `_load_dotenv()`), hostile ambient `DATASPOKE_DEV_POSTGRES_*` cannot leak,
 and the module's five required import-time env reads (conftest L94/97/98/101/102) are exactly the
 five keys `_IMPORT_ENV` supplies. Residue: the exec freezes `tests.integration.util.{datahub,
 postgres,kafka}` module-level constants from `.env.dev`-on-disk; harmless unless unit and

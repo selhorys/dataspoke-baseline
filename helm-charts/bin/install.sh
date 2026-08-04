@@ -2627,25 +2627,25 @@ if [[ "$PROFILE" == "dev" ]]; then
     fi
 
     # DataHub token (out-of-band secret)
-    if [[ -n "${DATASPOKE_TEST_DATAHUB_TOKEN:-}" ]]; then
+    if [[ -n "${DATASPOKE_DEV_DATAHUB_TOKEN:-}" ]]; then
       info "Applying dataspoke-datahub-secret (DataHub PAT)..."
       kubectl create secret generic dataspoke-datahub-secret \
         --namespace "${NS}" \
-        --from-literal=token="${DATASPOKE_TEST_DATAHUB_TOKEN}" \
+        --from-literal=token="${DATASPOKE_DEV_DATAHUB_TOKEN}" \
         --dry-run=client -o yaml | kubectl apply -f -
     else
-      info "DATASPOKE_TEST_DATAHUB_TOKEN is unset — dataspoke-datahub-secret not created."
+      info "DATASPOKE_DEV_DATAHUB_TOKEN is unset — dataspoke-datahub-secret not created."
     fi
 
     # Langfuse secret key (out-of-band secret)
-    if [[ -n "${DATASPOKE_TEST_LANGFUSE_SECRET_KEY:-}" ]]; then
+    if [[ -n "${DATASPOKE_DEV_LANGFUSE_SECRET_KEY:-}" ]]; then
       info "Applying dataspoke-langfuse-secret (Langfuse secret key)..."
       kubectl create secret generic dataspoke-langfuse-secret \
         --namespace "${NS}" \
-        --from-literal=secret_key="${DATASPOKE_TEST_LANGFUSE_SECRET_KEY}" \
+        --from-literal=secret_key="${DATASPOKE_DEV_LANGFUSE_SECRET_KEY}" \
         --dry-run=client -o yaml | kubectl apply -f -
     else
-      info "DATASPOKE_TEST_LANGFUSE_SECRET_KEY is unset — dataspoke-langfuse-secret not created."
+      info "DATASPOKE_DEV_LANGFUSE_SECRET_KEY is unset — dataspoke-langfuse-secret not created."
     fi
 
     # Source-credential Secret: dummy-data Postgres (dev only)
@@ -2763,44 +2763,44 @@ if [[ "$PROFILE" == "dev" ]]; then
         || warn "DataSpoke frontend did not become ready in time — check pod logs."
     fi
 
-    # Populate DATASPOKE_TEST_* block in .env for laptop-side test access
-    info "Writing DATASPOKE_TEST_* values to .env..."
+    # Populate DATASPOKE_DEV_* block in .env for laptop-side test access
+    info "Writing DATASPOKE_DEV_* values to .env..."
     # DATASPOKE_POSTGRES_{USER,DB} come from the app ConfigMap, not the
     # credentials Secret — they are non-secret and live there instead (see
     # spec/feature/HELM_CHART.md §ConfigMap keys).
-    _write_env_var        "DATASPOKE_TEST_POSTGRES_USER" "$(_read_configmap_value "${NS}" "DATASPOKE_POSTGRES_USER")"
-    _sync_env_from_secret "${NS}" "DATASPOKE_POSTGRES_PASSWORD" "DATASPOKE_TEST_POSTGRES_PASSWORD"
-    _write_env_var        "DATASPOKE_TEST_POSTGRES_DB"   "$(_read_configmap_value "${NS}" "DATASPOKE_POSTGRES_DB")"
-    _sync_env_from_secret "${NS}" "DATASPOKE_REDIS_PASSWORD"    "DATASPOKE_TEST_REDIS_PASSWORD"
-    _sync_env_from_secret "${NS}" "DATASPOKE_AIRFLOW_USER"      "DATASPOKE_TEST_AIRFLOW_USER"
-    _sync_env_from_secret "${NS}" "DATASPOKE_AIRFLOW_PASSWORD"  "DATASPOKE_TEST_AIRFLOW_PASSWORD"
-    _sync_env_from_secret "${NS}" "DATASPOKE_INTERNAL_TOKEN"    "DATASPOKE_TEST_INTERNAL_TOKEN"
-    _sync_env_from_secret "${NS}" "DATASPOKE_JWT_SECRET_KEY"    "DATASPOKE_TEST_JWT_SECRET_KEY"
+    _write_env_var        "DATASPOKE_DEV_POSTGRES_USER" "$(_read_configmap_value "${NS}" "DATASPOKE_POSTGRES_USER")"
+    _sync_env_from_secret "${NS}" "DATASPOKE_POSTGRES_PASSWORD" "DATASPOKE_DEV_POSTGRES_PASSWORD"
+    _write_env_var        "DATASPOKE_DEV_POSTGRES_DB"   "$(_read_configmap_value "${NS}" "DATASPOKE_POSTGRES_DB")"
+    _sync_env_from_secret "${NS}" "DATASPOKE_REDIS_PASSWORD"    "DATASPOKE_DEV_REDIS_PASSWORD"
+    _sync_env_from_secret "${NS}" "DATASPOKE_AIRFLOW_USER"      "DATASPOKE_DEV_AIRFLOW_USER"
+    _sync_env_from_secret "${NS}" "DATASPOKE_AIRFLOW_PASSWORD"  "DATASPOKE_DEV_AIRFLOW_PASSWORD"
+    _sync_env_from_secret "${NS}" "DATASPOKE_INTERNAL_TOKEN"    "DATASPOKE_DEV_INTERNAL_TOKEN"
+    _sync_env_from_secret "${NS}" "DATASPOKE_JWT_SECRET_KEY"    "DATASPOKE_DEV_JWT_SECRET_KEY"
 
     # Laptop-side host/port for direct DB/cache access. In managed mode this is
     # the ingress LoadBalancer IP; in shared mode it is 127.0.0.1, reached via
     # `kubectl port-forward` (bin/port-forward.sh) on the same canonical ports.
     TCP_HOST="$(tcp_access_host)"
-    _write_env_var "DATASPOKE_TEST_POSTGRES_HOST" "${TCP_HOST}"
-    _write_env_var "DATASPOKE_TEST_POSTGRES_PORT" "9201"
-    _write_env_var "DATASPOKE_TEST_REDIS_HOST"    "${TCP_HOST}"
-    _write_env_var "DATASPOKE_TEST_REDIS_PORT"    "9202"
-    _write_env_var "DATASPOKE_TEST_AIRFLOW_URL"   "$(ingress_scheme)://airflow.${DATASPOKE_KUBE_INGRESS_DOMAIN:-dev.dataspoke.example.com}"
+    _write_env_var "DATASPOKE_DEV_POSTGRES_HOST" "${TCP_HOST}"
+    _write_env_var "DATASPOKE_DEV_POSTGRES_PORT" "9201"
+    _write_env_var "DATASPOKE_DEV_REDIS_HOST"    "${TCP_HOST}"
+    _write_env_var "DATASPOKE_DEV_REDIS_PORT"    "9202"
+    _write_env_var "DATASPOKE_DEV_AIRFLOW_URL"   "$(ingress_scheme)://airflow.${DATASPOKE_KUBE_INGRESS_DOMAIN:-dev.dataspoke.example.com}"
 
     # Dummy-data source access. In shared mode TCP_HOST is 127.0.0.1 (port-forward);
     # in managed mode it is the LoadBalancer IP (nginx TCP passthrough).
     # _POSTGRES_HOST_PORT is the in-cluster cluster-DNS address used by the
     # DataSpoke API pod when building ingestion source recipes — it is the same
     # in both modes because the API always runs in-cluster.
-    _write_env_var "DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST"      "${TCP_HOST}"
-    _write_env_var "DATASPOKE_TEST_DUMMY_DATA_KAFKA_BROKERS"      "${TCP_HOST}:9104"
-    _write_env_var "DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST_PORT" \
+    _write_env_var "DATASPOKE_DEV_DUMMY_DATA_POSTGRES_HOST"      "${TCP_HOST}"
+    _write_env_var "DATASPOKE_DEV_DUMMY_DATA_KAFKA_BROKERS"      "${TCP_HOST}:9104"
+    _write_env_var "DATASPOKE_DEV_DUMMY_DATA_POSTGRES_HOST_PORT" \
       "example-postgres.${DATASPOKE_DEV_KUBE_DUMMY_DATA_NAMESPACE}.svc.cluster.local:5432"
 
     # Dev-lock URL — same pattern: 127.0.0.1 in shared mode, LoadBalancer IP in managed.
-    _write_env_var "DATASPOKE_TEST_LOCK_URL" "http://${TCP_HOST}:9221"
+    _write_env_var "DATASPOKE_DEV_LOCK_URL" "http://${TCP_HOST}:9221"
 
-    info ".env updated with DATASPOKE_TEST_* values."
+    info ".env updated with DATASPOKE_DEV_* values."
   fi
 
   # -----------------------------------------------------------------------
@@ -2860,7 +2860,7 @@ if [[ "$PROFILE" == "dev" ]]; then
   echo "  DataHub GMS:   ${SCHEME}://datahub-gms.${DATASPOKE_KUBE_INGRESS_DOMAIN:-<not set>}/"
   echo "  DataSpoke API: ${SCHEME}://api.${DATASPOKE_KUBE_INGRESS_DOMAIN:-<not set>}/api/v1/"
   echo "  Airflow UI:    ${SCHEME}://airflow.${DATASPOKE_KUBE_INGRESS_DOMAIN:-<not set>}/"
-  echo "  Langfuse UI:   ${DATASPOKE_TEST_LANGFUSE_HOST:-${SCHEME}://langfuse.<not set>}/"
+  echo "  Langfuse UI:   ${DATASPOKE_DEV_LANGFUSE_HOST:-${SCHEME}://langfuse.<not set>}/"
   echo ""
   if [[ "$(ingress_mode)" == "shared" ]]; then
     echo "  TCP services (Postgres/Redis/Kafka/lock) are not on the shared ingress."
@@ -2876,7 +2876,7 @@ if [[ "$PROFILE" == "dev" ]]; then
     echo "  Lock API:      ${DATASPOKE_KUBE_INGRESS_IP:-<not set>}:9221"
   fi
   echo ""
-  echo "  Credentials (auto-generated): see DATASPOKE_TEST_AIRFLOW_{USER,PASSWORD} in ${ENV_FILE}"
+  echo "  Credentials (auto-generated): see DATASPOKE_DEV_AIRFLOW_{USER,PASSWORD} in ${ENV_FILE}"
   echo "  Langfuse: ${DATASPOKE_DEV_LANGFUSE_INIT_USER_EMAIL:-dataspoke@dataspoke.local} / ${DATASPOKE_DEV_LANGFUSE_INIT_USER_PASSWORD:-<see .env>}"
   echo ""
   case "$FRONTEND_MODE" in

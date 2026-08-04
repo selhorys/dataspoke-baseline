@@ -21,7 +21,7 @@ driver verbatim" is a statement about the driver's arguments, not about the shap
 object in between. Anything that reintroduces a DSN round trip fails these tests.
 
 The builder takes parameters rather than reading the environment because its two call
-sites read the *same* five ``DATASPOKE_TEST_POSTGRES_*`` keys under deliberately
+sites read the *same* five ``DATASPOKE_DEV_POSTGRES_*`` keys under deliberately
 different fallback policies: the fixture requires host/port/user/password and fails
 loudly when `helm-charts/.env.dev` was not exported, while the reset utility falls back
 to the forwarded-port dev defaults. Reading the environment therefore stays at the call
@@ -33,7 +33,7 @@ spec: feature/BACKEND.md §Shared Services (PostgreSQL row) — "Credentials are
       from this connection layer whatever characters they contain, and the URL's string
       form masks the password rather than carrying it into a log line or traceback".
 spec: TESTING.md §Integration Lifecycle & Isolation — "Reset helpers ... read all
-      credentials from the environment (the `DATASPOKE_TEST_*` block in
+      credentials from the environment (the `DATASPOKE_DEV_*` block in
       `helm-charts/.env.dev`); no credential is hardcoded in a helper".
 """
 
@@ -168,7 +168,7 @@ def test_the_builder_bakes_in_no_credential_of_its_own() -> None:
     """Empty credentials stay empty — the builder supplies no default user or password.
 
     spec: TESTING.md §Integration Lifecycle & Isolation — "Reset helpers ... read all
-    credentials from the environment (the `DATASPOKE_TEST_*` block in
+    credentials from the environment (the `DATASPOKE_DEV_*` block in
     `helm-charts/.env.dev`); no credential is hardcoded in a helper". Reading the
     environment is the call site's job; this asserts the executable half of the clause
     that belongs to the builder — a helper that substituted a working credential for an

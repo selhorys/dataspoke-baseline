@@ -4,7 +4,7 @@
 # In shared ingress mode the cluster's ingress controller exposes only HTTP
 # (80/443), so the TCP services (Postgres, Redis, Kafka, dev-lock) are not
 # reachable through it. This script forwards them to localhost on the exact
-# ports that integration tests and helm-charts/.env.dev expect (the DATASPOKE_TEST_*
+# ports that integration tests and helm-charts/.env.dev expect (the DATASPOKE_DEV_*
 # ports), so laptop-side tests and health-check.sh work against 127.0.0.1.
 #
 # Runs in the foreground and holds all forwards open; Ctrl-C tears them all down.
@@ -52,7 +52,7 @@ DD_NS="${DATASPOKE_DEV_KUBE_DUMMY_DATA_NAMESPACE}"
 
 # Each spec: "<local-port>:<namespace>/<service>:<remote-port>".
 # Mirrors the Tier-B map in dev-peripherals/nginx-ingress/values.yaml — the
-# local ports are the canonical DATASPOKE_TEST_* ports.
+# local ports are the canonical DATASPOKE_DEV_* ports.
 PF_SPECS=(
   "9201:${DS_NS}/dataspoke-postgresql:5432"
   "9202:${DS_NS}/dataspoke-redis-master:6379"

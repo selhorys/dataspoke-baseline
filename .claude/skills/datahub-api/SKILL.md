@@ -70,7 +70,7 @@ python3 -c "import datahub; print('acryl-datahub', datahub.__version__)" 2>/dev/
 
 # 2. Read the GMS URL from .env.dev (GMS has its own ingress host)
 source helm-charts/.env.dev 2>/dev/null || true
-DATAHUB_GMS_URL="${DATASPOKE_TEST_DATAHUB_GMS_URL:-http://datahub-gms.${DATASPOKE_KUBE_INGRESS_DOMAIN}}"
+DATAHUB_GMS_URL="${DATASPOKE_DEV_DATAHUB_GMS_URL:-http://datahub-gms.${DATASPOKE_KUBE_INGRESS_DOMAIN}}"
 
 # 3. Check GMS is reachable via ingress
 curl -s "${DATAHUB_GMS_URL}/config" \
@@ -78,8 +78,8 @@ curl -s "${DATAHUB_GMS_URL}/config" \
   || echo "ERROR: GMS not reachable at ${DATAHUB_GMS_URL}. Run: ./helm-charts/bin/health-check.sh"
 
 # 4. Check token
-if [ -z "${DATASPOKE_TEST_DATAHUB_TOKEN:-}" ]; then
-  echo "DATASPOKE_TEST_DATAHUB_TOKEN not set — generate via: http://datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN} → Settings → Access Tokens"
+if [ -z "${DATASPOKE_DEV_DATAHUB_TOKEN:-}" ]; then
+  echo "DATASPOKE_DEV_DATAHUB_TOKEN not set — generate via: http://datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN} → Settings → Access Tokens"
 fi
 ```
 
@@ -92,13 +92,13 @@ If any prerequisite fails, stop and inform the user with the fix instructions.
 Only use this if the static `ref/` files don't answer the question.
 
 Derive the base URLs from `helm-charts/.env.dev`: `source helm-charts/.env.dev`, then:
-- GMS base: `${DATASPOKE_TEST_DATAHUB_GMS_URL}` (i.e. `http://datahub-gms.${DATASPOKE_KUBE_INGRESS_DOMAIN}`)
+- GMS base: `${DATASPOKE_DEV_DATAHUB_GMS_URL}` (i.e. `http://datahub-gms.${DATASPOKE_KUBE_INGRESS_DOMAIN}`)
 - DataHub UI: `http://datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN}`
 
 | Resource | URL pattern | Notes |
 |---|---|---|
 | Swagger UI (REST/OpenAPI) | `<GMS_BASE>/openapi/swagger-ui/index.html` | Set Bearer token in Authorize dialog |
-| Raw OpenAPI spec | `curl -s -H "Authorization: Bearer $DATASPOKE_TEST_DATAHUB_TOKEN" <GMS_BASE>/openapi/v3/api-docs` | JSON, pipe to `python3 -m json.tool` |
+| Raw OpenAPI spec | `curl -s -H "Authorization: Bearer $DATASPOKE_DEV_DATAHUB_TOKEN" <GMS_BASE>/openapi/v3/api-docs` | JSON, pipe to `python3 -m json.tool` |
 | GraphiQL | `http://datahub.<DOMAIN>/api/graphiql` | Browser only, uses session cookie |
 | Unauthenticated health | `<GMS_BASE>/config`, `<GMS_BASE>/health` | No token needed |
 
@@ -114,11 +114,11 @@ from datahub.ingestion.graph.client import DataHubGraph, DatahubClientConfig
 import os
 
 # GMS is accessible via its own ingress host: http://datahub-gms.<INGRESS_DOMAIN>
-gms_url = os.environ["DATASPOKE_TEST_DATAHUB_GMS_URL"]  # set in helm-charts/.env
+gms_url = os.environ["DATASPOKE_DEV_DATAHUB_GMS_URL"]  # set in helm-charts/.env
 
 graph = DataHubGraph(DatahubClientConfig(
     server=gms_url,
-    token=os.environ.get("DATASPOKE_TEST_DATAHUB_TOKEN", ""),
+    token=os.environ.get("DATASPOKE_DEV_DATAHUB_TOKEN", ""),
 ))
 ```
 
@@ -128,8 +128,8 @@ from datahub.emitter.rest_emitter import DatahubRestEmitter
 import os
 
 emitter = DatahubRestEmitter(
-    os.environ["DATASPOKE_TEST_DATAHUB_GMS_URL"],
-    token=os.environ.get("DATASPOKE_TEST_DATAHUB_TOKEN", ""),
+    os.environ["DATASPOKE_DEV_DATAHUB_GMS_URL"],
+    token=os.environ.get("DATASPOKE_DEV_DATAHUB_TOKEN", ""),
 )
 ```
 
@@ -178,7 +178,7 @@ from datahub.emitter.mce_builder import (
 ## Constraints
 
 1. **Never use `kubectl exec`** to interact with DataHub — it bypasses the API surface and doesn't reflect production behavior.
-2. **Never run ad-hoc `kubectl port-forward`** — DataHub GMS is accessible via ingress at `http://datahub-gms.<INGRESS_DOMAIN>` (`$DATASPOKE_TEST_DATAHUB_GMS_URL`). If the ingress is unreachable, run `./helm-charts/bin/health-check.sh` to diagnose.
+2. **Never run ad-hoc `kubectl port-forward`** — DataHub GMS is accessible via ingress at `http://datahub-gms.<INGRESS_DOMAIN>` (`$DATASPOKE_DEV_DATAHUB_GMS_URL`). If the ingress is unreachable, run `./helm-charts/bin/health-check.sh` to diagnose.
 3. **Always read the matching tutorial/example first** before writing API code.
 4. **Prefer static `ref/` lookup over live API exploration** for speed — only fall back to Swagger/GraphiQL when the static ref is ambiguous.
 

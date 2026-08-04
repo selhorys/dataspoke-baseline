@@ -381,8 +381,8 @@ def _restore_dev_kafka_baseline():
     yield
 
     domain = os.environ.get("DATASPOKE_KUBE_INGRESS_DOMAIN")
-    internal_token = os.environ.get("DATASPOKE_TEST_INTERNAL_TOKEN", "")
-    brokers = os.environ.get("DATASPOKE_TEST_DATAHUB_KAFKA_BROKERS", "")
+    internal_token = os.environ.get("DATASPOKE_DEV_INTERNAL_TOKEN", "")
+    brokers = os.environ.get("DATASPOKE_DEV_DATAHUB_KAFKA_BROKERS", "")
     if not (domain and internal_token):
         return
 

@@ -31,7 +31,7 @@ nobody, and/or by narrowing on `pg_stat_activity.query`.
 Technique notes that hold up:
 - `pg_blocking_pids(pid)` is EXECUTE-to-PUBLIC and `pid` is never masked, so it works across roles;
   `query`/`state`/`wait_event*` are masked for other roles. In this dev env
-  `DATASPOKE_TEST_POSTGRES_USER` is populated from the same `dataspoke-secrets` role the API pod
+  `DATASPOKE_DEV_POSTGRES_USER` is populated from the same `dataspoke-secrets` role the API pod
   uses, so `query` *is* readable here — usable as an additive narrowing, not as the primary signal.
 - `pg_stat_activity` is snapshotted per transaction (`pgstat_clear_snapshot` at txn end), so a
   polling loop must roll back every iteration or it re-reads the first observation forever.

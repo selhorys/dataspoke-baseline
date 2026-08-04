@@ -43,7 +43,7 @@ and does not count against `PRAUTO_MAX_RETRIES_PER_JOB`.
 > the DataHub ingress+PAT step. Automatic resume is not implemented — the stage simply skips. To
 > resume by hand, run `./helm-charts/bin/install.sh --profile dev --from-component datahub`
 > (not `dataspoke-infra`); a fragmented `--from-component` resume skips the env-sync step, so rebuild
-> stale `DATASPOKE_TEST_*` credentials in the env file from the cluster secrets afterward.
+> stale `DATASPOKE_DEV_*` credentials in the env file from the cluster secrets afterward.
 
 ## Setup
 
@@ -161,9 +161,9 @@ with them.
 
 ### Dev-env lock protocol
 
-The integration and E2E stages each acquire the dev-env lock at `$DATASPOKE_TEST_LOCK_URL` (base
-URL; the endpoint is `$DATASPOKE_TEST_LOCK_URL/lock`) for the duration of their run, and release it
-afterward. They pass `DATASPOKE_DEV_ENV_LOCK_PREACQUIRED=1` so the pytest and Playwright suites
+The integration and E2E stages each acquire the dev-env lock at `$DATASPOKE_DEV_LOCK_URL` (base
+URL; the endpoint is `$DATASPOKE_DEV_LOCK_URL/lock`) for the duration of their run, and release it
+afterward. They pass `DATASPOKE_DEV_LOCK_PREACQUIRED=1` so the pytest and Playwright suites
 reuse the orchestrator's hold instead of acquiring their own. When the lock endpoint is
 unreachable, or another owner holds the lock, the stage skips.
 
@@ -190,7 +190,7 @@ cd /path/to/dataspoke-baseline
 
 - **Lock issues**: Check `.prauto/state/heartbeat.lock` — if the PID is stale, delete the file.
 - **Dev-env lock stuck**: A crashed run can leave the dev-env lock held. Release it with
-  `curl -X POST "$DATASPOKE_TEST_LOCK_URL/lock/release" -H 'Content-Type: application/json' -d '{"owner": "prauto-<worker-id>"}'`.
+  `curl -X POST "$DATASPOKE_DEV_LOCK_URL/lock/release" -H 'Content-Type: application/json' -d '{"owner": "prauto-<worker-id>"}'`.
 - **Job stuck**: Check heartbeat log and GitHub labels (`prauto:wip`, `prauto:review`) to determine the current phase.
 - **Logs**: Check `.prauto/state/heartbeat_cron.log` — the destination the cron/launchd entry redirects to.
 - **Integration or E2E silently skipped**: The log names the reason — a missing `PRAUTO_DEV_ENV_FILE`,

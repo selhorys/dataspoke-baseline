@@ -3,7 +3,7 @@
  *
  * Steps (mirrors tests/integration/conftest.py acquire_lock teardown):
  *   1. Reset-seed to restore baseline (per spec/TESTING.md §Workflow step 6)
- *   2. Release dev-env lock (unless DATASPOKE_DEV_ENV_LOCK_PREACQUIRED)
+ *   2. Release dev-env lock (unless DATASPOKE_DEV_LOCK_PREACQUIRED)
  *
  * Reuses the existing Python utilities — no TS reimplementation.
  *
@@ -32,7 +32,7 @@ function resetSeed(): void {
 }
 
 async function releaseLock(): Promise<void> {
-  if (process.env["DATASPOKE_DEV_ENV_LOCK_PREACQUIRED"]) {
+  if (process.env["DATASPOKE_DEV_LOCK_PREACQUIRED"]) {
     console.log("[e2e teardown] Lock pre-acquired; skipping release.");
     return;
   }

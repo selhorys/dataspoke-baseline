@@ -32,6 +32,6 @@ placeholder default, so admin-UI peripheral wiring never reached the link.
   currently unasserted.
 - Dev cluster seeds `frontend_url` via `helm-charts/bin/post-install/seed-peripheral-config.sh`,
   so E2E DataHub-link assertions have a value; Langfuse seeding is gated on
-  `DATASPOKE_TEST_LANGFUSE_HOST` + public key, so the Evidence-cell em-dash branch is reachable.
+  `DATASPOKE_DEV_LANGFUSE_HOST` + public key, so the Evidence-cell em-dash branch is reachable.
 
 Related: [[display-link-safety-spec-landed]], [[waitfor-presettlement-race]], [[query-error-policy-test-anchors]]

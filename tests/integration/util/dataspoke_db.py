@@ -34,11 +34,11 @@ from tests.integration.util.postgres import _load_dotenv
 
 _load_dotenv()
 
-_DS_HOST = os.environ.get("DATASPOKE_TEST_POSTGRES_HOST", "localhost")
-_DS_PORT = int(os.environ.get("DATASPOKE_TEST_POSTGRES_PORT", "9201"))
-_DS_USER = os.environ.get("DATASPOKE_TEST_POSTGRES_USER", "dataspoke")
-_DS_PASSWORD = os.environ.get("DATASPOKE_TEST_POSTGRES_PASSWORD", "")
-_DS_DB = os.environ.get("DATASPOKE_TEST_POSTGRES_DB", "dataspoke")
+_DS_HOST = os.environ.get("DATASPOKE_DEV_POSTGRES_HOST", "localhost")
+_DS_PORT = int(os.environ.get("DATASPOKE_DEV_POSTGRES_PORT", "9201"))
+_DS_USER = os.environ.get("DATASPOKE_DEV_POSTGRES_USER", "dataspoke")
+_DS_PASSWORD = os.environ.get("DATASPOKE_DEV_POSTGRES_PASSWORD", "")
+_DS_DB = os.environ.get("DATASPOKE_DEV_POSTGRES_DB", "dataspoke")
 _SCHEMA = "dataspoke"
 
 
@@ -130,13 +130,13 @@ async def reset_all() -> None:
             *[rc_seed[c] for c in cols],
         )
 
-        datahub_gms = os.environ.get("DATASPOKE_TEST_DATAHUB_GMS_URL", "")
-        datahub_kafka = os.environ.get("DATASPOKE_TEST_DATAHUB_KAFKA_BROKERS", "")
+        datahub_gms = os.environ.get("DATASPOKE_DEV_DATAHUB_GMS_URL", "")
+        datahub_kafka = os.environ.get("DATASPOKE_DEV_DATAHUB_KAFKA_BROKERS", "")
         # The browser-facing UI URL is carried in its own variable rather than
         # derived from gms_url: the two differ in host, port, and scheme in a
         # real deployment. Restoring it here keeps the dev UI's DataHub link
         # working after a reset, which would otherwise drop the field.
-        datahub_frontend = os.environ.get("DATASPOKE_TEST_DATAHUB_FRONTEND_URL", "")
+        datahub_frontend = os.environ.get("DATASPOKE_DEV_DATAHUB_FRONTEND_URL", "")
         if datahub_gms and datahub_kafka:
             datahub_settings = {"gms_url": datahub_gms, "kafka_brokers": datahub_kafka}
             if datahub_frontend:
@@ -146,8 +146,8 @@ async def reset_all() -> None:
                 "datahub",
                 json.dumps(datahub_settings),
             )
-        langfuse_host = os.environ.get("DATASPOKE_TEST_LANGFUSE_HOST", "")
-        langfuse_pk = os.environ.get("DATASPOKE_TEST_LANGFUSE_PUBLIC_KEY", "")
+        langfuse_host = os.environ.get("DATASPOKE_DEV_LANGFUSE_HOST", "")
+        langfuse_pk = os.environ.get("DATASPOKE_DEV_LANGFUSE_PUBLIC_KEY", "")
         if langfuse_host and langfuse_pk:
             await conn.execute(
                 f"INSERT INTO {_SCHEMA}.peripheral_config (name, settings) VALUES ($1, $2::jsonb)",

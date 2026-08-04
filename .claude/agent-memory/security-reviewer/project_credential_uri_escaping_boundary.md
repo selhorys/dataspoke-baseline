@@ -21,7 +21,7 @@ in `src/` or `migrations/` — re-verify with that grep pair on any future DSN d
 **`tests/` still has six of them** (verified 2026-08-01): `tests/integration/conftest.py:123`,
 `tests/integration/util/__main__.py:251,289,332`, `tests/integration/spot/
 test_ontogen_embedding_upserts.py:47`, `tests/integration/spot/test_uc4_metagen_evidence_prompt.py:84`
-— all interpolating `DATASPOKE_TEST_POSTGRES_PASSWORD` raw, the exact bug `5d339fa` fixed in
+— all interpolating `DATASPOKE_DEV_POSTGRES_PASSWORD` raw, the exact bug `5d339fa` fixed in
 `src/shared/db/session.py`. They carry a live dev-cluster credential, so an `@`/`/`/`%` in it
 silently retargets the DSN. Any plan that fixes "the" test DSN should be checked for covering all
 six, not one.

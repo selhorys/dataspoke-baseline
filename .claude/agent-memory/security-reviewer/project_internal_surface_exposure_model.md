@@ -23,7 +23,7 @@ cannot normalize *into* `/api/v1…` while resolving *to* `/internal/…`).
   shell — `kubectl exec` uses the exec subresource command array. The token is
   read from the pod's own env, so it no longer reaches the operator machine or
   host `ps` on this path. **But dev still exports it**: `install.sh:2135`
-  `_sync_env_from_secret … DATASPOKE_TEST_INTERNAL_TOKEN` writes it to `.env.dev`.
+  `_sync_env_from_secret … DATASPOKE_DEV_INTERNAL_TOKEN` writes it to `.env.dev`.
 
 **The residual, and why it keeps being mis-stated as fixed.** Only
 `values-prod.example.yaml` got the narrow path list. Three live routes to a

@@ -69,14 +69,14 @@ _load_dotenv()
 
 
 def _promote_test_runtime_overrides() -> None:
-    """Promote DATASPOKE_TEST_* values into the runtime DATASPOKE_* names that
+    """Promote DATASPOKE_DEV_* values into the runtime DATASPOKE_* names that
     src/ Pydantic Settings reads. Required when test code imports src/ helpers
     (e.g. src.backend.auth.tokens.issue_access_token) and must sign with the same
     secret the API pod uses — the chart-generated secret is mirrored into .env
-    as DATASPOKE_TEST_JWT_SECRET_KEY by install.sh's _sync_env_from_secret.
+    as DATASPOKE_DEV_JWT_SECRET_KEY by install.sh's _sync_env_from_secret.
     """
-    if "DATASPOKE_TEST_JWT_SECRET_KEY" in os.environ:
-        os.environ["DATASPOKE_JWT_SECRET_KEY"] = os.environ["DATASPOKE_TEST_JWT_SECRET_KEY"]
+    if "DATASPOKE_DEV_JWT_SECRET_KEY" in os.environ:
+        os.environ["DATASPOKE_JWT_SECRET_KEY"] = os.environ["DATASPOKE_DEV_JWT_SECRET_KEY"]
 
 
 _promote_test_runtime_overrides()
@@ -91,22 +91,22 @@ def _shared_ingress_url() -> str:
 
 # ── Shared infrastructure env vars ────────────────────────────────────────────
 
-_datahub_gms_url = os.environ["DATASPOKE_TEST_DATAHUB_GMS_URL"]
-_datahub_token = os.environ.get("DATASPOKE_TEST_DATAHUB_TOKEN", "")
+_datahub_gms_url = os.environ["DATASPOKE_DEV_DATAHUB_GMS_URL"]
+_datahub_token = os.environ.get("DATASPOKE_DEV_DATAHUB_TOKEN", "")
 
-_redis_host = os.environ["DATASPOKE_TEST_REDIS_HOST"]
-_redis_port = int(os.environ["DATASPOKE_TEST_REDIS_PORT"])
-_redis_password = os.environ.get("DATASPOKE_TEST_REDIS_PASSWORD", "")
+_redis_host = os.environ["DATASPOKE_DEV_REDIS_HOST"]
+_redis_port = int(os.environ["DATASPOKE_DEV_REDIS_PORT"])
+_redis_password = os.environ.get("DATASPOKE_DEV_REDIS_PASSWORD", "")
 
-_kafka_brokers = os.environ["DATASPOKE_TEST_DUMMY_DATA_KAFKA_BROKERS"]
-_datahub_kafka_brokers = os.environ["DATASPOKE_TEST_DATAHUB_KAFKA_BROKERS"]
+_kafka_brokers = os.environ["DATASPOKE_DEV_DUMMY_DATA_KAFKA_BROKERS"]
+_datahub_kafka_brokers = os.environ["DATASPOKE_DEV_DATAHUB_KAFKA_BROKERS"]
 
-_airflow_url = os.environ.get("DATASPOKE_TEST_AIRFLOW_URL", "http://localhost:8080")
-_airflow_user = os.environ.get("DATASPOKE_TEST_AIRFLOW_USER", "")
-_airflow_password = os.environ.get("DATASPOKE_TEST_AIRFLOW_PASSWORD", "")
+_airflow_url = os.environ.get("DATASPOKE_DEV_AIRFLOW_URL", "http://localhost:8080")
+_airflow_user = os.environ.get("DATASPOKE_DEV_AIRFLOW_USER", "")
+_airflow_password = os.environ.get("DATASPOKE_DEV_AIRFLOW_PASSWORD", "")
 
 _lock_owner = os.environ.get(
-    "DATASPOKE_TEST_LOCK_OWNER",
+    "DATASPOKE_DEV_LOCK_OWNER",
     f"integration-test-{os.environ.get('USER', 'unknown')}",
 )
 
@@ -119,20 +119,20 @@ def integration_db_url() -> URL:
     """The dev-env DataSpoke Postgres URL, credentials carried as ``URL`` fields.
 
     Host, port, user and password are required env with no fallback: a missing
-    ``DATASPOKE_TEST_POSTGRES_*`` block means `helm-charts/.env.dev` was not exported,
+    ``DATASPOKE_DEV_POSTGRES_*`` block means `helm-charts/.env.dev` was not exported,
     and raising ``KeyError`` here names the cause instead of letting every DB-touching
-    test fail against a fallback host. ``DATASPOKE_TEST_POSTGRES_DB`` is the one
+    test fail against a fallback host. ``DATASPOKE_DEV_POSTGRES_DB`` is the one
     defaulted key (``dataspoke``) — it names the cluster's fixed database rather than a
     coordinate that varies per developer.
 
     Covered by ``tests/unit/integration_conftest/test_integration_db_url.py``.
     """
     return build_postgres_url(
-        host=os.environ["DATASPOKE_TEST_POSTGRES_HOST"],
-        port=os.environ["DATASPOKE_TEST_POSTGRES_PORT"],
-        user=os.environ["DATASPOKE_TEST_POSTGRES_USER"],
-        password=os.environ["DATASPOKE_TEST_POSTGRES_PASSWORD"],
-        db=os.environ.get("DATASPOKE_TEST_POSTGRES_DB", "dataspoke"),
+        host=os.environ["DATASPOKE_DEV_POSTGRES_HOST"],
+        port=os.environ["DATASPOKE_DEV_POSTGRES_PORT"],
+        user=os.environ["DATASPOKE_DEV_POSTGRES_USER"],
+        password=os.environ["DATASPOKE_DEV_POSTGRES_PASSWORD"],
+        db=os.environ.get("DATASPOKE_DEV_POSTGRES_DB", "dataspoke"),
     )
 
 
@@ -155,7 +155,7 @@ async def async_session(async_engine: AsyncEngine) -> AsyncGenerator[AsyncSessio
 @pytest_asyncio.fixture
 async def datahub_client():
     if not _datahub_token:
-        pytest.skip("DATASPOKE_TEST_DATAHUB_TOKEN not set")
+        pytest.skip("DATASPOKE_DEV_DATAHUB_TOKEN not set")
     return DataHubClient(gms_url=_datahub_gms_url, token=_datahub_token)
 
 
@@ -197,7 +197,7 @@ def require_server(runtime_conf) -> None:  # noqa: ARG001 — runtime_conf perfo
         )
 
     # Ensure the bootstrap admin user exists before minting a token.
-    internal_token = os.environ.get("DATASPOKE_TEST_INTERNAL_TOKEN", "")
+    internal_token = os.environ.get("DATASPOKE_DEV_INTERNAL_TOKEN", "")
     if internal_token:
         try:
             httpx.post(
@@ -297,7 +297,7 @@ def admin_token(require_server) -> str:  # noqa: ARG001 — gates on server read
 @pytest.fixture(scope="session")
 def internal_headers() -> dict[str, str]:
     """Session-scoped X-Internal-Token header dict for internal routes."""
-    return {"X-Internal-Token": os.environ["DATASPOKE_TEST_INTERNAL_TOKEN"]}
+    return {"X-Internal-Token": os.environ["DATASPOKE_DEV_INTERNAL_TOKEN"]}
 
 
 @pytest.fixture(scope="session")
@@ -428,16 +428,16 @@ def schema_bootstrap(integration_db_url: URL) -> None:
 @pytest.fixture(scope="session", autouse=True)
 def acquire_lock() -> None:
     # When run from prauto phases.sh, the lock is already held externally.
-    if os.environ.get("DATASPOKE_DEV_ENV_LOCK_PREACQUIRED"):
+    if os.environ.get("DATASPOKE_DEV_LOCK_PREACQUIRED"):
         yield  # type: ignore[misc]
         return
 
     # Two ingress modes: managed (LoadBalancer IP populated in DATASPOKE_KUBE_INGRESS_IP)
     # and shared (no IP — lock reached on 127.0.0.1 via port-forward). install.sh writes
-    # DATASPOKE_TEST_LOCK_URL for both modes, so prefer it; the IP is only a legacy fallback
+    # DATASPOKE_DEV_LOCK_URL for both modes, so prefer it; the IP is only a legacy fallback
     # and is read defensively (empty in shared mode) to avoid a KeyError.
     _ingress_ip = os.environ.get("DATASPOKE_KUBE_INGRESS_IP", "")
-    lock_url = os.environ.get("DATASPOKE_TEST_LOCK_URL", f"http://{_ingress_ip}:9221")
+    lock_url = os.environ.get("DATASPOKE_DEV_LOCK_URL", f"http://{_ingress_ip}:9221")
     try:
         resp = httpx.post(
             f"{lock_url}/lock/acquire",
@@ -805,7 +805,7 @@ def runtime_conf(acquire_lock) -> dict:  # noqa: ARG001 — depends on lock
     base_url = _shared_ingress_url()
 
     # Ensure the bootstrap admin user exists — a prior `--reset-all` may have wiped it.
-    internal_token = os.environ.get("DATASPOKE_TEST_INTERNAL_TOKEN", "")
+    internal_token = os.environ.get("DATASPOKE_DEV_INTERNAL_TOKEN", "")
     if internal_token:
         try:
             httpx.post(

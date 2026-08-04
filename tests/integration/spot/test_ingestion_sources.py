@@ -65,7 +65,7 @@ _ENCODED_URN = urllib.parse.quote(_TEST_URN, safe="")
 # consumed by the API pod IN-CLUSTER, so it must be the cluster-DNS host:port,
 # NOT the laptop-side ingress/port-forward address. Populated by install.sh;
 # required (no default) so an unset env fails loud rather than guessing.
-_PG_HOST_PORT = os.environ["DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST_PORT"]
+_PG_HOST_PORT = os.environ["DATASPOKE_DEV_DUMMY_DATA_POSTGRES_HOST_PORT"]
 _PG_DB = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_DB", "example_db")
 _PG_USER = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_USER", "postgres")
 
@@ -134,7 +134,7 @@ async def reader_headers(integration_db_url: URL) -> AsyncGenerator[dict[str, st
         await engine.dispose()
 
     # issue_access_token signs with DATASPOKE_JWT_SECRET_KEY, which conftest promotes
-    # from DATASPOKE_TEST_JWT_SECRET_KEY so it matches the in-cluster API pod.
+    # from DATASPOKE_DEV_JWT_SECRET_KEY so it matches the in-cluster API pod.
     # spec: feedback_test_runtime_env_promotion — conftest must promote JWT secret.
     token, _ = issue_access_token(user_id, email, session_epoch=0)
 

@@ -102,7 +102,7 @@ resolve_dev_env() {
   DEV_ENV_FILE="$candidate"
 
   local lock_base
-  lock_base=$(env_file_value "$DEV_ENV_FILE" "DATASPOKE_TEST_LOCK_URL")
+  lock_base=$(env_file_value "$DEV_ENV_FILE" "DATASPOKE_DEV_LOCK_URL")
   DEV_LOCK_URL="${lock_base:-http://localhost:9221}/lock"
   return 0
 }
@@ -261,13 +261,13 @@ run_integration_groups() {
 
   if [[ -d "tests/integration/spot" ]]; then
     info "Running spot integration tests (tests/integration/spot/)..."
-    INTEG_SPOT_OUTPUT=$(DATASPOKE_DEV_ENV_LOCK_PREACQUIRED=1 with_dev_env "$env_file" \
+    INTEG_SPOT_OUTPUT=$(DATASPOKE_DEV_LOCK_PREACQUIRED=1 with_dev_env "$env_file" \
       uv run pytest tests/integration/spot/ --tb=short 2>&1) || INTEG_SPOT_EXIT=$?
   fi
 
   if [[ -d "tests/integration/api_wired" ]]; then
     info "Running api-wired integration tests (tests/integration/api_wired/)..."
-    INTEG_API_WIRED_OUTPUT=$(DATASPOKE_DEV_ENV_LOCK_PREACQUIRED=1 with_dev_env "$env_file" \
+    INTEG_API_WIRED_OUTPUT=$(DATASPOKE_DEV_LOCK_PREACQUIRED=1 with_dev_env "$env_file" \
       uv run pytest tests/integration/api_wired/ --tb=short 2>&1) || INTEG_API_WIRED_EXIT=$?
   fi
 
@@ -705,7 +705,7 @@ run_e2e_test_fix() {
 
     info "Running E2E tests..."
     e2e_exit=0
-    e2e_output=$(DATASPOKE_DEV_ENV_LOCK_PREACQUIRED=1 with_dev_env "$DEV_ENV_FILE" \
+    e2e_output=$(DATASPOKE_DEV_LOCK_PREACQUIRED=1 with_dev_env "$DEV_ENV_FILE" \
       pnpm -C tests/e2e test 2>&1) || e2e_exit=$?
 
     if [[ "$e2e_exit" -eq 0 ]]; then

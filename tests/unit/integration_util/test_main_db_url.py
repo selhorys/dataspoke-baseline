@@ -9,7 +9,7 @@ driver verbatim" is a statement about the driver's arguments, not about the shap
 object in between. Anything that reintroduces a DSN round trip fails these tests.
 
 The helper differs from its three siblings in only one respect: it reads the
-``DATASPOKE_TEST_*`` block (the forwarded-port coordinates in ``helm-charts/.env.dev``)
+``DATASPOKE_DEV_*`` block (the forwarded-port coordinates in ``helm-charts/.env.dev``)
 rather than the app-runtime ``DATASPOKE_POSTGRES_*`` block, because it runs on a
 developer machine outside the cluster.
 
@@ -19,7 +19,7 @@ spec: feature/BACKEND.md §Shared Services (PostgreSQL row) — "Credentials are
       from this connection layer whatever characters they contain, and the URL's string
       form masks the password rather than carrying it into a log line or traceback".
 spec: TESTING.md §Integration Lifecycle & Isolation — "Reset helpers ... read all
-      credentials from the environment (the `DATASPOKE_TEST_*` block in
+      credentials from the environment (the `DATASPOKE_DEV_*` block in
       `helm-charts/.env.dev`); no credential is hardcoded in a helper".
 """
 
@@ -45,7 +45,7 @@ def _url_with_env(**env: str) -> URL:
 
     ``clear=True``: a developer runs the integration groups with
     ``helm-charts/.env.dev`` exported, so the ambient shell carries real
-    ``DATASPOKE_TEST_POSTGRES_*`` values that would otherwise leak into the assertions
+    ``DATASPOKE_DEV_POSTGRES_*`` values that would otherwise leak into the assertions
     below — including the fallback ones.
     """
     with patch.dict("os.environ", env, clear=True):
@@ -67,7 +67,7 @@ def _connect_args(url: URL) -> dict[str, Any]:
 
 @pytest.mark.parametrize("password", _HOSTILE_CREDENTIALS)
 def test_password_reaches_the_driver_verbatim(password: str) -> None:
-    """asyncpg receives ``DATASPOKE_TEST_POSTGRES_PASSWORD`` exactly as the operator set it.
+    """asyncpg receives ``DATASPOKE_DEV_POSTGRES_PASSWORD`` exactly as the operator set it.
 
     The ``host`` assertion is the one that pins the specific corruption: an interpolated
     DSN carrying ``p@ss`` yields a host of ``ss@127.0.0.1``, and every reset run then
@@ -79,11 +79,11 @@ def test_password_reaches_the_driver_verbatim(password: str) -> None:
     from this connection layer whatever characters they contain".
     """
     url = _url_with_env(
-        DATASPOKE_TEST_POSTGRES_HOST="127.0.0.1",
-        DATASPOKE_TEST_POSTGRES_PORT="9201",
-        DATASPOKE_TEST_POSTGRES_USER="myuser",
-        DATASPOKE_TEST_POSTGRES_PASSWORD=password,
-        DATASPOKE_TEST_POSTGRES_DB="mydb",
+        DATASPOKE_DEV_POSTGRES_HOST="127.0.0.1",
+        DATASPOKE_DEV_POSTGRES_PORT="9201",
+        DATASPOKE_DEV_POSTGRES_USER="myuser",
+        DATASPOKE_DEV_POSTGRES_PASSWORD=password,
+        DATASPOKE_DEV_POSTGRES_DB="mydb",
     )
     args = _connect_args(url)
 
@@ -96,7 +96,7 @@ def test_password_reaches_the_driver_verbatim(password: str) -> None:
 
 @pytest.mark.parametrize("user", _HOSTILE_CREDENTIALS)
 def test_username_reaches_the_driver_verbatim(user: str) -> None:
-    """The same guarantee holds for ``DATASPOKE_TEST_POSTGRES_USER``.
+    """The same guarantee holds for ``DATASPOKE_DEV_POSTGRES_USER``.
 
     The spec clause names both credentials; a username is the other half of the netloc
     and corrupts the DSN in exactly the same ways.
@@ -106,11 +106,11 @@ def test_username_reaches_the_driver_verbatim(user: str) -> None:
     whatever characters they contain".
     """
     url = _url_with_env(
-        DATASPOKE_TEST_POSTGRES_HOST="127.0.0.1",
-        DATASPOKE_TEST_POSTGRES_PORT="9201",
-        DATASPOKE_TEST_POSTGRES_USER=user,
-        DATASPOKE_TEST_POSTGRES_PASSWORD="secret",  # noqa: S106 - test fixture value
-        DATASPOKE_TEST_POSTGRES_DB="mydb",
+        DATASPOKE_DEV_POSTGRES_HOST="127.0.0.1",
+        DATASPOKE_DEV_POSTGRES_PORT="9201",
+        DATASPOKE_DEV_POSTGRES_USER=user,
+        DATASPOKE_DEV_POSTGRES_PASSWORD="secret",  # noqa: S106 - test fixture value
+        DATASPOKE_DEV_POSTGRES_DB="mydb",
     )
     args = _connect_args(url)
 
@@ -135,11 +135,11 @@ def test_url_string_form_masks_the_password() -> None:
     """
     secret = "s3cr3t-never-log-this"  # noqa: S105 - test fixture value, not a credential
     url = _url_with_env(
-        DATASPOKE_TEST_POSTGRES_HOST="127.0.0.1",
-        DATASPOKE_TEST_POSTGRES_PORT="9201",
-        DATASPOKE_TEST_POSTGRES_USER="myuser",
-        DATASPOKE_TEST_POSTGRES_PASSWORD=secret,
-        DATASPOKE_TEST_POSTGRES_DB="mydb",
+        DATASPOKE_DEV_POSTGRES_HOST="127.0.0.1",
+        DATASPOKE_DEV_POSTGRES_PORT="9201",
+        DATASPOKE_DEV_POSTGRES_USER="myuser",
+        DATASPOKE_DEV_POSTGRES_PASSWORD=secret,
+        DATASPOKE_DEV_POSTGRES_DB="mydb",
     )
 
     assert url.password == secret, "backstop: the URL must actually carry the credential"
@@ -153,14 +153,14 @@ def test_url_string_form_masks_the_password() -> None:
 
 
 def test_url_fields_come_from_the_test_postgres_env_block() -> None:
-    """``DATASPOKE_TEST_POSTGRES_*`` populate the URL's fields; unset vars fall back.
+    """``DATASPOKE_DEV_POSTGRES_*`` populate the URL's fields; unset vars fall back.
 
     Asserted component-wise rather than against a rendered DSN: the rendered form masks
     the password, and comparing against a literal string is exactly the DSN round trip
     this connection layer exists to avoid.
 
     spec: TESTING.md §Integration Lifecycle & Isolation — "Reset helpers ... read all
-    credentials from the environment (the `DATASPOKE_TEST_*` block in
+    credentials from the environment (the `DATASPOKE_DEV_*` block in
     `helm-charts/.env.dev`); no credential is hardcoded in a helper". The assertion that
     a cleared environment yields an *empty* password rather than a working one is the
     executable form of "no credential is hardcoded".
@@ -181,11 +181,11 @@ def test_url_fields_come_from_the_test_postgres_env_block() -> None:
     assert cleared.database == "dataspoke"
 
     populated = _url_with_env(
-        DATASPOKE_TEST_POSTGRES_HOST="db.example.com",
-        DATASPOKE_TEST_POSTGRES_PORT="9999",
-        DATASPOKE_TEST_POSTGRES_USER="myuser",
-        DATASPOKE_TEST_POSTGRES_PASSWORD="p@ss/word",  # noqa: S106 - test fixture value
-        DATASPOKE_TEST_POSTGRES_DB="mydb",
+        DATASPOKE_DEV_POSTGRES_HOST="db.example.com",
+        DATASPOKE_DEV_POSTGRES_PORT="9999",
+        DATASPOKE_DEV_POSTGRES_USER="myuser",
+        DATASPOKE_DEV_POSTGRES_PASSWORD="p@ss/word",  # noqa: S106 - test fixture value
+        DATASPOKE_DEV_POSTGRES_DB="mydb",
     )
 
     assert populated.drivername == "postgresql+asyncpg"
@@ -199,7 +199,7 @@ def test_url_fields_come_from_the_test_postgres_env_block() -> None:
 
 
 def test_every_env_key_the_helper_reads_is_the_test_block() -> None:
-    """The helper reads only ``DATASPOKE_TEST_POSTGRES_*``, never the app-runtime block.
+    """The helper reads only ``DATASPOKE_DEV_POSTGRES_*``, never the app-runtime block.
 
     A reset utility that fell back to ``DATASPOKE_POSTGRES_*`` would silently target
     whatever the app runtime is configured for — in-cluster coordinates unreachable from
@@ -207,15 +207,15 @@ def test_every_env_key_the_helper_reads_is_the_test_block() -> None:
     Both blocks are populated here with *different* values, so this discriminates.
 
     spec: TESTING.md §Integration Lifecycle & Isolation — "Reset helpers ... read all
-    credentials from the environment (the `DATASPOKE_TEST_*` block in
+    credentials from the environment (the `DATASPOKE_DEV_*` block in
     `helm-charts/.env.dev`)".
     """
     url = _url_with_env(
-        DATASPOKE_TEST_POSTGRES_HOST="forwarded.example.com",
-        DATASPOKE_TEST_POSTGRES_PORT="9201",
-        DATASPOKE_TEST_POSTGRES_USER="testuser",
-        DATASPOKE_TEST_POSTGRES_PASSWORD="testpass",  # noqa: S106 - test fixture value
-        DATASPOKE_TEST_POSTGRES_DB="testdb",
+        DATASPOKE_DEV_POSTGRES_HOST="forwarded.example.com",
+        DATASPOKE_DEV_POSTGRES_PORT="9201",
+        DATASPOKE_DEV_POSTGRES_USER="testuser",
+        DATASPOKE_DEV_POSTGRES_PASSWORD="testpass",  # noqa: S106 - test fixture value
+        DATASPOKE_DEV_POSTGRES_DB="testdb",
         DATASPOKE_POSTGRES_HOST="in-cluster.example.com",
         DATASPOKE_POSTGRES_PORT="5432",
         DATASPOKE_POSTGRES_USER="runtimeuser",
@@ -230,6 +230,6 @@ def test_every_env_key_the_helper_reads_is_the_test_block() -> None:
         "testpass",
         "testdb",
     ), (
-        f"the reset helper must read the DATASPOKE_TEST_* block, not the app-runtime "
+        f"the reset helper must read the DATASPOKE_DEV_* block, not the app-runtime "
         f"DATASPOKE_POSTGRES_* one; got {url.render_as_string(hide_password=False)!r}."
     )

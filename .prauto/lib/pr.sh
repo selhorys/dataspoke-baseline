@@ -363,7 +363,7 @@ get_pr_number_for_branch() {
 }
 
 # Redact credentials before test output reaches a public-ish PR comment.
-# The E2E and api-wired suites exercise auth flows with DATASPOKE_TEST_* credentials, so a
+# The E2E and api-wired suites exercise auth flows with DATASPOKE_DEV_* credentials, so a
 # failing Playwright/pytest assertion can echo a token or a postgresql://user:PASS@host URL
 # verbatim. Redact, replacing the secret with ***REDACTED***:
 #   - DATASPOKE_*= env assignments (the value, keeping the key for context)

@@ -41,7 +41,7 @@ def _clear_langfuse_env(monkeypatch: pytest.MonkeyPatch) -> None:
     the test expects None, and vice versa.
 
     Spec: BACKEND_LLM.md §Observability §Process environment — Langfuse activates
-    only when all three DATASPOKE_TEST_LANGFUSE_* vars are explicitly set.
+    only when all three DATASPOKE_DEV_LANGFUSE_* vars are explicitly set.
     """
     for key in list(os.environ.keys()):
         if key.startswith("LANGFUSE_"):

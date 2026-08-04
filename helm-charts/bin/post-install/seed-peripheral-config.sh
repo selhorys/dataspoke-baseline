@@ -79,9 +79,9 @@ esac
 # ---------------------------------------------------------------------------
 # Seed Langfuse peripheral config (required fields + optional operator metadata)
 # ---------------------------------------------------------------------------
-if [[ -n "${DATASPOKE_TEST_LANGFUSE_HOST:-}" && -n "${DATASPOKE_TEST_LANGFUSE_PUBLIC_KEY:-}" ]]; then
+if [[ -n "${DATASPOKE_DEV_LANGFUSE_HOST:-}" && -n "${DATASPOKE_DEV_LANGFUSE_PUBLIC_KEY:-}" ]]; then
   info "Seeding Langfuse connection into peripheral config via /internal/admin/peripherals/langfuse..."
-  langfuse_payload="{\"host\": \"${DATASPOKE_TEST_LANGFUSE_HOST}\", \"public_key\": \"${DATASPOKE_TEST_LANGFUSE_PUBLIC_KEY}\""
+  langfuse_payload="{\"host\": \"${DATASPOKE_DEV_LANGFUSE_HOST}\", \"public_key\": \"${DATASPOKE_DEV_LANGFUSE_PUBLIC_KEY}\""
   # Same `:-dataspoke-project` default langfuse.sh creates the project under, so
   # the seeded project_id cannot diverge from the project that actually exists.
   langfuse_payload+=", \"project_id\": \"${DATASPOKE_DEV_LANGFUSE_INIT_PROJECT_ID:-dataspoke-project}\""
@@ -102,5 +102,5 @@ if [[ -n "${DATASPOKE_TEST_LANGFUSE_HOST:-}" && -n "${DATASPOKE_TEST_LANGFUSE_PU
       ;;
   esac
 else
-  info "DATASPOKE_TEST_LANGFUSE_HOST or DATASPOKE_TEST_LANGFUSE_PUBLIC_KEY not set — skipping Langfuse peripheral PATCH."
+  info "DATASPOKE_DEV_LANGFUSE_HOST or DATASPOKE_DEV_LANGFUSE_PUBLIC_KEY not set — skipping Langfuse peripheral PATCH."
 fi

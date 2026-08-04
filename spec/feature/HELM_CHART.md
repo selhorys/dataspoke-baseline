@@ -507,7 +507,7 @@ setting their own list.
 | App runtime | `DATASPOKE_*` (no `KUBE` / `DEV` / `TEST`) | Both profiles | DataSpoke Python/Node code via K8s ConfigMap/Secret (`envFrom`) |
 | Kube deployment | `DATASPOKE_KUBE_*` | Both profiles | `bin/*.sh` install / uninstall / build scripts |
 | Dev-only inputs | `DATASPOKE_DEV_*` | Dev profile only | `bin/dev-peripherals/*.sh`, `bin/post-install/*.sh` |
-| Test access | `DATASPOKE_TEST_*` | Dev profile only | `tests/integration/{conftest.py,util/*}`; auto-populated by install.sh post-install; never read by app pods |
+| Test access | `DATASPOKE_DEV_*` | Dev profile only | `tests/integration/{conftest.py,util/*}`; auto-populated by install.sh post-install; never read by app pods |
 
 ### Tier 1 — App runtime (`DATASPOKE_*`)
 
@@ -624,7 +624,7 @@ Same convention in both profiles; values differ.
   Selects the URL scheme for every ingress-domain-based URL the dev install
   path builds (frontend config values, `src/frontend/.env.local`
   `NEXT_PUBLIC_*`, the post-login redirect, the DataHub OIDC base,
-  `health-check.sh` probes, the host-bearing `DATASPOKE_TEST_*`
+  `health-check.sh` probes, the host-bearing `DATASPOKE_DEV_*`
   URLs, and printed access URLs). Set `https` when the shared controller
   terminates TLS in front of the virtual hosts (it emits HSTS, so HTTP pages
   break under mixed-content/auto-upgrade). Validated by the `ingress_scheme()`
@@ -671,7 +671,7 @@ read these.
 - Test harness: `_ENV_LOCK_PREACQUIRED` (set by outer wrappers that already
   hold the dev-env lock)
 
-### Tier 4 — Test access (`DATASPOKE_TEST_*`)
+### Tier 4 — Dev access (`DATASPOKE_DEV_*`)
 
 Auto-populated by `install.sh` post-install — credential values out of the
 `dataspoke-secrets` Secret via `_sync_env_from_secret`, the Postgres role and
@@ -686,26 +686,26 @@ controller); in shared mode it is `127.0.0.1`, reached via
 (9201/9202/9005/9102/9104/9221) are identical in both modes. The `_PORT`
 fields are these fixed passthrough ports, carried statically in `.env.dev.example`;
 only the host-bearing values (`_HOST`, `_HOST_PORT`, `_KAFKA_BROKERS`,
-`DATASPOKE_TEST_LOCK_URL`) are written by `install.sh`.
+`DATASPOKE_DEV_LOCK_URL`) are written by `install.sh`.
 
-- DataSpoke subsystem: `DATASPOKE_TEST_POSTGRES_{HOST,PORT,USER,PASSWORD,DB}`,
-  `DATASPOKE_TEST_REDIS_{HOST,PORT,PASSWORD}`,
-  `DATASPOKE_TEST_AIRFLOW_{URL,USER,PASSWORD}`,
-  `DATASPOKE_TEST_INTERNAL_TOKEN`,
-  `DATASPOKE_TEST_JWT_SECRET_KEY` (conftest promotes it to `DATASPOKE_JWT_SECRET_KEY`
+- DataSpoke subsystem: `DATASPOKE_DEV_POSTGRES_{HOST,PORT,USER,PASSWORD,DB}`,
+  `DATASPOKE_DEV_REDIS_{HOST,PORT,PASSWORD}`,
+  `DATASPOKE_DEV_AIRFLOW_{URL,USER,PASSWORD}`,
+  `DATASPOKE_DEV_INTERNAL_TOKEN`,
+  `DATASPOKE_DEV_JWT_SECRET_KEY` (conftest promotes it to `DATASPOKE_JWT_SECRET_KEY`
   so locally-minted JWTs verify against the API pod)
-- DataHub access: `DATASPOKE_TEST_DATAHUB_{GMS_URL,TOKEN,KAFKA_BROKERS,FRONTEND_URL}` —
+- DataHub access: `DATASPOKE_DEV_DATAHUB_{GMS_URL,TOKEN,KAFKA_BROKERS,FRONTEND_URL}` —
   `FRONTEND_URL` is the browser-facing UI URL, carried separately because it is not
   derivable from `GMS_URL`; the integration reset helpers restore it into
   `peripheral_config` so a reset leaves the dev UI with a working DataHub link
-- Langfuse access: `DATASPOKE_TEST_LANGFUSE_{HOST,PUBLIC_KEY,SECRET_KEY}`
-- Dev-lock access: `DATASPOKE_TEST_LOCK_URL` — full base URL of the dev-env lock
+- Langfuse access: `DATASPOKE_DEV_LANGFUSE_{HOST,PUBLIC_KEY,SECRET_KEY}`
+- Dev-lock access: `DATASPOKE_DEV_LOCK_URL` — full base URL of the dev-env lock
   service (`http://<host>:9221`, host per the laptop-side rule above). The
-  integration and E2E lock protocol uses `$DATASPOKE_TEST_LOCK_URL/lock/...`.
-- Dummy data source access: `DATASPOKE_TEST_DUMMY_DATA_{POSTGRES_HOST,POSTGRES_PORT,KAFKA_BROKERS}`
+  integration and E2E lock protocol uses `$DATASPOKE_DEV_LOCK_URL/lock/...`.
+- Dummy data source access: `DATASPOKE_DEV_DUMMY_DATA_{POSTGRES_HOST,POSTGRES_PORT,KAFKA_BROKERS}`
   — laptop-side, mode-dependent host (per the rule above), used by tests that
   read the example source directly.
-- `DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST_PORT` — **in-cluster**
+- `DATASPOKE_DEV_DUMMY_DATA_POSTGRES_HOST_PORT` — **in-cluster**
   cluster-DNS address of the example Postgres
   (`example-postgres.<dummy-data-ns>.svc.cluster.local:5432`),
   **mode-independent**. Used by the in-cluster API pod when it builds
@@ -773,7 +773,7 @@ The runtime env file is profile-named (`.env.<profile>`); copy the matching
 or default to `.env.<profile>`. No auto-rename shim is provided.
 
 Dev layout: three top-level sections — Kube deployment operator inputs, Dev
-profile operator inputs, Auto-populated block (ingress + `DATASPOKE_TEST_*`).
+profile operator inputs, Auto-populated block (ingress + `DATASPOKE_DEV_*`).
 `bin/*.sh` scripts source it; `tests/integration/conftest.py` loads it for
 integration tests.
 
@@ -784,13 +784,13 @@ in the values overlay) — no credentials in `.env` for prod operators.
 In dev, the **auto-populated** block is written by install scripts, not edited by
 hand: in managed mode `DATASPOKE_KUBE_INGRESS_{IP,DOMAIN}` (by
 `dev-peripherals/nginx-ingress.sh`; shared mode leaves `INGRESS_IP` blank and reads
-the operator-pre-set `INGRESS_DOMAIN`), `DATASPOKE_TEST_DATAHUB_*` (by
-`dev-peripherals/datahub.sh`), `DATASPOKE_TEST_LANGFUSE_*` (by
-`dev-peripherals/langfuse.sh`), and the full `DATASPOKE_TEST_*` subsystem block —
-including `DATASPOKE_TEST_LOCK_URL` and
-`DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST_PORT` — by `install.sh`
+the operator-pre-set `INGRESS_DOMAIN`), `DATASPOKE_DEV_DATAHUB_*` (by
+`dev-peripherals/datahub.sh`), `DATASPOKE_DEV_LANGFUSE_*` (by
+`dev-peripherals/langfuse.sh`), and the full `DATASPOKE_DEV_*` subsystem block —
+including `DATASPOKE_DEV_LOCK_URL` and
+`DATASPOKE_DEV_DUMMY_DATA_POSTGRES_HOST_PORT` — by `install.sh`
 post-install (`_sync_env_from_secret` extracts credentials from the
-`dataspoke-secrets` K8s Secret, `DATASPOKE_TEST_POSTGRES_{USER,DB}` come from
+`dataspoke-secrets` K8s Secret, `DATASPOKE_DEV_POSTGRES_{USER,DB}` come from
 the app ConfigMap, and the host-bearing vars take the laptop-side
 TCP host for the active ingress mode).
 
@@ -820,10 +820,10 @@ TCP host for the active ingress mode).
               │  Deployment envFrom → container env vars (DATASPOKE_* names)
               │
               ├─ _sync_env_from_secret
-              │    Extract dataspoke-secrets values → append DATASPOKE_TEST_* block to .env.dev
-              │    DATASPOKE_TEST_POSTGRES_{USER,DB} come from the app ConfigMap
-              │    Also appends DATASPOKE_TEST_DATAHUB_*, DATASPOKE_TEST_LANGFUSE_*,
-              │    DATASPOKE_TEST_DUMMY_DATA_* from peripheral install outputs
+              │    Extract dataspoke-secrets values → append DATASPOKE_DEV_* block to .env.dev
+              │    DATASPOKE_DEV_POSTGRES_{USER,DB} come from the app ConfigMap
+              │    Also appends DATASPOKE_DEV_DATAHUB_*, DATASPOKE_DEV_LANGFUSE_*,
+              │    DATASPOKE_DEV_DUMMY_DATA_* from peripheral install outputs
               │
               └─ post-install/seed-*.sh
                        │
@@ -1267,7 +1267,7 @@ Run independently or as part of a full `--profile dev` install.
 | Namespace | `ingress-nginx` |
 | Source | `dev-peripherals/nginx-ingress/values.yaml` (helm release) |
 | Function | Installs and owns a single LoadBalancer for all dev namespaces — HTTP virtual hosts (port 80) + TCP passthrough (PG 9201, Redis 9202, DataHub Kafka 9005, example PG 9102, example Kafka 9104, lock 9221) |
-| Writes to .env.dev | `DATASPOKE_KUBE_INGRESS_IP`, `DATASPOKE_KUBE_INGRESS_DOMAIN`, plus the IP-derived `DATASPOKE_TEST_*` host/broker vars |
+| Writes to .env.dev | `DATASPOKE_KUBE_INGRESS_IP`, `DATASPOKE_KUBE_INGRESS_DOMAIN`, plus the IP-derived `DATASPOKE_DEV_*` host/broker vars |
 
 **Shared mode** (AWS/EKS, or any cluster with a pre-existing controller): the
 script installs nothing. It verifies the `DATASPOKE_KUBE_INGRESS_CLASS`
@@ -1329,10 +1329,10 @@ Service name prefixes: `datahub-prerequisites-*` for the prerequisites
 release (MySQL, Kafka controller); `opensearch-cluster-master` for the
 OpenSearch subchart's own release.
 
-Writes to .env.dev: `DATASPOKE_TEST_DATAHUB_GMS_URL`
-(`<SCHEME>://datahub-gms.<INGRESS_DOMAIN>`), `DATASPOKE_TEST_DATAHUB_TOKEN`
-(generated PAT), `DATASPOKE_TEST_DATAHUB_KAFKA_BROKERS`,
-`DATASPOKE_TEST_DATAHUB_FRONTEND_URL` (browser-facing UI URL).
+Writes to .env.dev: `DATASPOKE_DEV_DATAHUB_GMS_URL`
+(`<SCHEME>://datahub-gms.<INGRESS_DOMAIN>`), `DATASPOKE_DEV_DATAHUB_TOKEN`
+(generated PAT), `DATASPOKE_DEV_DATAHUB_KAFKA_BROKERS`,
+`DATASPOKE_DEV_DATAHUB_FRONTEND_URL` (browser-facing UI URL).
 
 **Google OIDC SSO**: `helm-charts/dev-peripherals/datahub.sh` configures DataHub's
 frontend to authenticate users via the same Google OAuth client as DataSpoke.
@@ -1372,7 +1372,7 @@ Langfuse wired via the admin API. The
 MinIO/Postgres/Redis secrets on first run, creates the `dataspoke` project +
 public/secret API keys, and writes them back to `.env.dev`.
 
-Writes to .env.dev: `DATASPOKE_TEST_LANGFUSE_{HOST,PUBLIC_KEY,SECRET_KEY}` plus
+Writes to .env.dev: `DATASPOKE_DEV_LANGFUSE_{HOST,PUBLIC_KEY,SECRET_KEY}` plus
 the Langfuse internals (`DATASPOKE_DEV_LANGFUSE_*`) on first install.
 
 **Startup ordering**: the Langfuse `web` and `worker` containers run ClickHouse
@@ -1448,8 +1448,8 @@ script reads `DATASPOKE_INTERNAL_TOKEN` from its own environment — mounted fro
 the `dataspoke-secrets` Secret via `envFrom` — and sends it as
 `X-Internal-Token`, so the seed path itself never copies the token out of the
 pod. A prod install exports it nowhere; dev's Tier-4 sync deliberately does,
-writing `DATASPOKE_TEST_INTERNAL_TOKEN` into `.env.dev` for the integration
-tests (§Tier 4 — Test access). The namespace comes from `ENV_FILE`. The helper prints the HTTP status on the
+writing `DATASPOKE_DEV_INTERNAL_TOKEN` into `.env.dev` for the integration
+tests (§Tier 4 — Dev access). The namespace comes from `ENV_FILE`. The helper prints the HTTP status on the
 first line and the body on the rest, with `000` standing for a connection
 failure; only that case is retried (5 attempts, 3s apart), while any HTTP
 response, 4xx and 5xx included, returns immediately. `timeout` bounds each
@@ -1885,7 +1885,7 @@ mixed-content or auto-upgrade. The TCP datastores are independent of the scheme:
 they are never on the ingress. `bin/port-forward.sh` runs in the foreground and
 `kubectl port-forward`s the same six services to their canonical ports on
 `127.0.0.1`; Kafka EXTERNAL listeners advertise `127.0.0.1:<port>`. Integration
-tests, `health-check.sh`, and `helm-charts/.env.dev`'s TCP `DATASPOKE_TEST_*`
+tests, `health-check.sh`, and `helm-charts/.env.dev`'s TCP `DATASPOKE_DEV_*`
 host values all resolve to `127.0.0.1` while the port-forward holds, regardless
 of the virtual-host scheme.
 

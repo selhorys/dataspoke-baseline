@@ -207,10 +207,10 @@ and Steps 3/6 (dummy-data reset) at module scope. It also loads `helm-charts/.en
 1. **Write test scenarios** -- map to [Imazon](USE_CASE_en.md) entities. Place compact
    per-concern tests under `integration/spot/`; reserve `integration/api_wired/` for the five
    UC user-story tests (see [Spot vs Api-Wired Integration Tests](#spot-vs-api-wired-integration-tests)).
-2. **Acquire dev-env lock** -- `POST $DATASPOKE_TEST_LOCK_URL/lock/acquire` with
+2. **Acquire dev-env lock** -- `POST $DATASPOKE_DEV_LOCK_URL/lock/acquire` with
    `{"owner": "...", "message": "..."}`. Returns `409` if held by another tester. Set
-   `DATASPOKE_DEV_ENV_LOCK_PREACQUIRED=1` if an outer process already holds it.
-   `DATASPOKE_TEST_LOCK_URL` is auto-populated in `helm-charts/.env.dev` by `install.sh`
+   `DATASPOKE_DEV_LOCK_PREACQUIRED=1` if an outer process already holds it.
+   `DATASPOKE_DEV_LOCK_URL` is auto-populated in `helm-charts/.env.dev` by `install.sh`
    (`http://<INGRESS_IP>:9221` in managed ingress mode; `http://127.0.0.1:9221`
    via `bin/port-forward.sh` in shared ingress mode).
 3. **Reset dummy data** -- always reset before running, even if data appears clean.
@@ -221,8 +221,8 @@ and Steps 3/6 (dummy-data reset) at module scope. It also loads `helm-charts/.en
 5. **Run and iterate** -- `uv run pytest tests/integration/`. Re-run from Step 3 as needed.
 6. **Reset on exit** -- module-scoped teardowns restore baseline. Manual fallback:
    `--reset-seed`.
-7. **Release lock** -- `POST $DATASPOKE_TEST_LOCK_URL/lock/release` with `{"owner": "..."}`.
-   Force-release: `DELETE $DATASPOKE_TEST_LOCK_URL/lock`.
+7. **Release lock** -- `POST $DATASPOKE_DEV_LOCK_URL/lock/release` with `{"owner": "..."}`.
+   Force-release: `DELETE $DATASPOKE_DEV_LOCK_URL/lock`.
 
 #### Per-Module Dummy-Data Reset
 
@@ -284,7 +284,7 @@ identity-bound assertions (see [Integration Lifecycle & Isolation](#integration-
 ### Airflow Integration Test Pitfalls
 
 - **Connection**: Airflow is accessed via nginx-ingress at `http://airflow.<INGRESS_IP>.nip.io`
-  (`DATASPOKE_TEST_AIRFLOW_URL` in `helm-charts/.env.dev`). `conftest.py` loads this automatically;
+  (`DATASPOKE_DEV_AIRFLOW_URL` in `helm-charts/.env.dev`). `conftest.py` loads this automatically;
   tests in worktrees must source it explicitly.
 - **Direct activity testing**: Preferred approach -- call `/internal/activities/{domain}/*` via
   `httpx.AsyncClient` (ASGI transport) without Airflow orchestration.
@@ -332,7 +332,7 @@ on shared logs must isolate themselves so they neither leak into nor flake again
   torn down in a `finally` block so a mid-test failure still restores the baseline.
 - **Reset helpers fail loud and carry no baked-in credentials.** Utility reset helpers raise on any reset
   failure — never swallow the error and continue against a dirty baseline. They read all credentials from
-  the environment (the `DATASPOKE_TEST_*` block in `helm-charts/.env.dev`); no credential is hardcoded in
+  the environment (the `DATASPOKE_DEV_*` block in `helm-charts/.env.dev`); no credential is hardcoded in
   a helper.
 
 ---
@@ -401,7 +401,7 @@ spot; lifting them into api-wired would violate the rules above.
 
 ### Running
 
-Export `helm-charts/.env.dev` into the shell before invoking pytest — `conftest.py` and `util/*.py` consume the `DATASPOKE_TEST_*` block it contains: `set -a && source helm-charts/.env.dev && set +a`.
+Export `helm-charts/.env.dev` into the shell before invoking pytest — `conftest.py` and `util/*.py` consume the `DATASPOKE_DEV_*` block it contains: `set -a && source helm-charts/.env.dev && set +a`.
 
 ```bash
 # Spot
@@ -486,8 +486,8 @@ Route namespaces: `/api/v1/spoke/{governance,ingestion,validation,ontogen,metage
 |---|---|
 | Event logged | `GET /api/v1/spoke/<feature>/data/{urn}/event` (one of `ingestion`, `validation`, `metagen`) |
 | Airflow DAG | `curl http://airflow.<INGRESS_IP>.nip.io/api/v2/dags/{dag_id}` |
-| DB row | `psql -h $DATASPOKE_TEST_POSTGRES_HOST -p $DATASPOKE_TEST_POSTGRES_PORT -U $DATASPOKE_TEST_POSTGRES_USER -d $DATASPOKE_TEST_POSTGRES_DB` |
-| DataHub aspect | `curl $DATASPOKE_TEST_DATAHUB_GMS_URL/aspects?urn={urn}&aspect={aspect}` (`http://datahub-gms.<INGRESS_IP>.nip.io`) |
+| DB row | `psql -h $DATASPOKE_DEV_POSTGRES_HOST -p $DATASPOKE_DEV_POSTGRES_PORT -U $DATASPOKE_DEV_POSTGRES_USER -d $DATASPOKE_DEV_POSTGRES_DB` |
+| DataHub aspect | `curl $DATASPOKE_DEV_DATAHUB_GMS_URL/aspects?urn={urn}&aspect={aspect}` (`http://datahub-gms.<INGRESS_IP>.nip.io`) |
 
 ### References
 
@@ -635,7 +635,7 @@ tests select the matching project. Non-admin users are provisioned via the admin
 
 Same dev-env lock and data-reset protocol as integration tests, driven from Playwright's
 `globalSetup`/`globalTeardown` by **reusing the existing Python utilities** — acquire the lock
-(`POST $DATASPOKE_TEST_LOCK_URL/lock/acquire`, honouring `DATASPOKE_DEV_ENV_LOCK_PREACQUIRED`),
+(`POST $DATASPOKE_DEV_LOCK_URL/lock/acquire`, honouring `DATASPOKE_DEV_LOCK_PREACQUIRED`),
 `uv run python -m tests.integration.util --reset-seed`, run, reset, release. UC4 uses the same
 `--uc4-seed` / `--uc4-restore` staging as the manual skill.
 

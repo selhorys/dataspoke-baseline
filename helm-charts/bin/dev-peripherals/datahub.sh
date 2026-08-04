@@ -278,20 +278,20 @@ fi
 # in-cluster URL by post-install/seed-peripheral-config.sh), not from .env.
 # ---------------------------------------------------------------------------
 if [[ -n "${DATASPOKE_KUBE_INGRESS_DOMAIN:-}" ]]; then
-  upsert_env_var DATASPOKE_TEST_DATAHUB_GMS_URL \
+  upsert_env_var DATASPOKE_DEV_DATAHUB_GMS_URL \
     "${SCHEME}://${GMS_HOST}" \
     "$ENV_FILE"
-  upsert_env_var DATASPOKE_TEST_DATAHUB_KAFKA_BROKERS \
+  upsert_env_var DATASPOKE_DEV_DATAHUB_KAFKA_BROKERS \
     "${KAFKA_EXTERNAL_HOST}:9005" \
     "$ENV_FILE"
   # The browser-facing DataHub UI URL. Carried separately from the GMS URL
   # because it is not derivable from it — the two differ in host, port, and
   # scheme in a real deployment. The integration reset helpers restore this
   # into peripheral_config so a reset leaves the dev UI with a working link.
-  upsert_env_var DATASPOKE_TEST_DATAHUB_FRONTEND_URL \
+  upsert_env_var DATASPOKE_DEV_DATAHUB_FRONTEND_URL \
     "${SCHEME}://datahub.${DATASPOKE_KUBE_INGRESS_DOMAIN}" \
     "$ENV_FILE"
-  info "DATASPOKE_TEST_DATAHUB_{GMS_URL,KAFKA_BROKERS,FRONTEND_URL} written to .env."
+  info "DATASPOKE_DEV_DATAHUB_{GMS_URL,KAFKA_BROKERS,FRONTEND_URL} written to .env."
 else
   warn "DATASPOKE_KUBE_INGRESS_DOMAIN not set — skipping DataHub .env addresses."
 fi
@@ -304,7 +304,7 @@ if [[ -n "${DATASPOKE_KUBE_INGRESS_DOMAIN:-}" ]]; then
 
   # Re-read .env to pick up any existing token
   source "$ENV_FILE"
-  EXISTING_TOKEN="${DATASPOKE_TEST_DATAHUB_TOKEN:-}"
+  EXISTING_TOKEN="${DATASPOKE_DEV_DATAHUB_TOKEN:-}"
 
   NEED_TOKEN=true
   if [[ -n "$EXISTING_TOKEN" ]]; then
@@ -395,8 +395,8 @@ if [[ -n "${DATASPOKE_KUBE_INGRESS_DOMAIN:-}" ]]; then
     done
 
     if [[ -n "$NEW_TOKEN" ]]; then
-      upsert_env_var DATASPOKE_TEST_DATAHUB_TOKEN "${NEW_TOKEN}" "$ENV_FILE"
-      info "DataHub PAT written to .env as DATASPOKE_TEST_DATAHUB_TOKEN."
+      upsert_env_var DATASPOKE_DEV_DATAHUB_TOKEN "${NEW_TOKEN}" "$ENV_FILE"
+      info "DataHub PAT written to .env as DATASPOKE_DEV_DATAHUB_TOKEN."
     else
       # Extract only the errors[] array — never log the raw response which may
       # contain a partial token, user URNs, or platform-privilege metadata.
@@ -410,7 +410,7 @@ except Exception as e:
     print(f'<unparseable response: {e}>')
 ")
       warn "DataHub GraphQL errors: $ERRORS"
-      error "Failed to generate DataHub PAT — cannot proceed without DATASPOKE_TEST_DATAHUB_TOKEN."
+      error "Failed to generate DataHub PAT — cannot proceed without DATASPOKE_DEV_DATAHUB_TOKEN."
     fi
   fi
 fi

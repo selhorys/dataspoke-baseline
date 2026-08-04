@@ -19,9 +19,9 @@ from src.workflows.registry import ALL_DAG_IDS
 
 def _airflow_client() -> AirflowClient:
     return AirflowClient(
-        base_url=os.environ["DATASPOKE_TEST_AIRFLOW_URL"],
-        username=os.environ.get("DATASPOKE_TEST_AIRFLOW_USER", "admin"),
-        password=os.environ.get("DATASPOKE_TEST_AIRFLOW_PASSWORD", "admin"),
+        base_url=os.environ["DATASPOKE_DEV_AIRFLOW_URL"],
+        username=os.environ.get("DATASPOKE_DEV_AIRFLOW_USER", "admin"),
+        password=os.environ.get("DATASPOKE_DEV_AIRFLOW_PASSWORD", "admin"),
     )
 
 

@@ -44,7 +44,7 @@ const SOURCE_NAME = "dummy postgres example_db in catalog schema";
 // In-cluster host:port of the dummy-data postgres, read from the auto-populated env var
 // so the dummy-data namespace isn't hardcoded (mirrors api-wired _PG_HOST_PORT); no
 // hardcoded fallback so a wrong host fails the run loudly.
-const PG_HOST_PORT = required("DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST_PORT");
+const PG_HOST_PORT = required("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_HOST_PORT");
 
 // Secret ref: ${dummy-data-pg__password} — the bare ref without ${...} wrapper.
 const SECRET_REF_BARE = "dummy-data-pg__password";

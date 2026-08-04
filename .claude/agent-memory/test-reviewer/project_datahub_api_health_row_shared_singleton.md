@@ -24,7 +24,7 @@ logged at ERROR with `exc_info=True`. It is invisible on a passing run (pytest o
 captured logs for failures) but on a *failing* run it dominates the tail of the output and
 masks the real assertion — it cost me one misdiagnosis during the #102/#103 review.
 
-Promoting `DATASPOKE_TEST_POSTGRES_*` → `DATASPOKE_POSTGRES_*` in
+Promoting `DATASPOKE_DEV_POSTGRES_*` → `DATASPOKE_POSTGRES_*` in
 `tests/integration/conftest.py::_promote_test_runtime_overrides` *would* work — verified
 that `src.shared.db.session` is not in `sys.modules` after the conftest import block, so
 its import-time engine construction happens after the promotion. But it would also let

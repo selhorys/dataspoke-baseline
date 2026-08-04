@@ -82,18 +82,18 @@ export const ADMIN_PASSWORD = "dataspoke";
 
 /** Internal token for /internal/* routes */
 export function internalToken(): string {
-  return required("DATASPOKE_TEST_INTERNAL_TOKEN");
+  return required("DATASPOKE_DEV_INTERNAL_TOKEN");
 }
 
-/** Lock service URL: DATASPOKE_TEST_LOCK_URL override, else http://<ip>:9221 */
+/** Lock service URL: DATASPOKE_DEV_LOCK_URL override, else http://<ip>:9221 */
 export function lockUrl(): string {
-  return optional("DATASPOKE_TEST_LOCK_URL") || `http://${ingressIp()}:9221`;
+  return optional("DATASPOKE_DEV_LOCK_URL") || `http://${ingressIp()}:9221`;
 }
 
-/** Lock owner identifier: DATASPOKE_TEST_LOCK_OWNER override, else e2e-test-<USER> */
+/** Lock owner identifier: DATASPOKE_DEV_LOCK_OWNER override, else e2e-test-<USER> */
 export function lockOwner(): string {
   return (
-    optional("DATASPOKE_TEST_LOCK_OWNER") ||
+    optional("DATASPOKE_DEV_LOCK_OWNER") ||
     `e2e-test-${optional("USER", "unknown")}`
   );
 }

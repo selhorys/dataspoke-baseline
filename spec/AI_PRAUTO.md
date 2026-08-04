@@ -297,7 +297,7 @@ says nothing about the work.
 **Autopilot abort mode**: on GKE Autopilot, a GMS scale-up timeout aborts `install.sh` before the
 DataHub ingress+PAT step. The resume is `--from-component datahub`, not `dataspoke-infra`. Note
 that fragmented `--from-component` resumes skip the env-sync step and leave stale
-`DATASPOKE_TEST_*` credentials in the env file; those are rebuilt from cluster secrets.
+`DATASPOKE_DEV_*` credentials in the env file; those are rebuilt from cluster secrets.
 
 ### Branch image deploys
 
@@ -363,7 +363,7 @@ branch, so failing it would burn retries against unrelated code.
 
 **Environment**: the orchestrator's integration and E2E stages source the worker's env file
 (`$PRAUTO_DEV_ENV_FILE`, resolved under `$REPO_DIR`) via `set -a` (the file carries no `export`
-prefixes) and hold the dev-env lock at `$DATASPOKE_TEST_LOCK_URL`.
+prefixes) and hold the dev-env lock at `$DATASPOKE_DEV_LOCK_URL`.
 
 **Stage 1 -- Static gates** *(Claude)*: `uv run ruff check src/ tests/` and `uv run mypy src/`,
 invoked as **checks, never `--fix`** — prauto verifies the author-run gate rather than mutating

@@ -124,7 +124,7 @@ Each MANIFESTO feature has a clear integration direction:
 
 ### Client Initialization
 
-Two SDK clients serve different purposes. The app pod reads `gms_url` from the DB `peripheral_config` table (populated via `/api/v1/admin/peripherals/datahub`) and the `token` from the `dataspoke-datahub-secret` K8s Secret via RBAC; test/dev tooling reads both from `DATASPOKE_TEST_DATAHUB_{GMS_URL,TOKEN}` in `helm-charts/.env.dev`.
+Two SDK clients serve different purposes. The app pod reads `gms_url` from the DB `peripheral_config` table (populated via `/api/v1/admin/peripherals/datahub`) and the `token` from the `dataspoke-datahub-secret` K8s Secret via RBAC; test/dev tooling reads both from `DATASPOKE_DEV_DATAHUB_{GMS_URL,TOKEN}` in `helm-charts/.env.dev`.
 
 ```python
 from datahub.ingestion.graph.client import DataHubGraph, DatahubClientConfig
@@ -132,8 +132,8 @@ from datahub.emitter.rest_emitter import DatahubRestEmitter
 
 # Read client — queries aspects and GraphQL
 graph = DataHubGraph(DatahubClientConfig(
-    server=gms_url,      # peripheral_config.datahub.gms_url (app) | $DATASPOKE_TEST_DATAHUB_GMS_URL (tests)
-    token=token,         # dataspoke-datahub-secret.token (app, via RBAC) | $DATASPOKE_TEST_DATAHUB_TOKEN (tests)
+    server=gms_url,      # peripheral_config.datahub.gms_url (app) | $DATASPOKE_DEV_DATAHUB_GMS_URL (tests)
+    token=token,         # dataspoke-datahub-secret.token (app, via RBAC) | $DATASPOKE_DEV_DATAHUB_TOKEN (tests)
 ))
 
 # Write client — emits MCPs
@@ -967,7 +967,7 @@ If 5 consecutive DataHub API calls fail:
 
 DataHub connection settings are split on the app pod side: non-secret parameters in the DB
 `peripheral_config` table, the credentials in the `dataspoke-datahub-secret` K8s Secret. Test/dev
-tooling reads everything from `DATASPOKE_TEST_DATAHUB_*` env vars in `helm-charts/.env.dev`
+tooling reads everything from `DATASPOKE_DEV_DATAHUB_*` env vars in `helm-charts/.env.dev`
 (integration tests run only against dev clusters).
 
 ### App pod — `peripheral_config.datahub`
@@ -995,9 +995,9 @@ only *select* the mechanism — it cannot supply the credential.
 
 | Variable | Purpose | Dev Source |
 |----------|---------|------------|
-| `DATASPOKE_TEST_DATAHUB_GMS_URL` | GMS endpoint read by integration tests, `tests/integration/util/datahub.py`, and the `datahub-api` skill | Written by `helm-charts/bin/dev-peripherals/datahub.sh` (`<SCHEME>://datahub-gms.<INGRESS_DOMAIN>` — GMS has its own ingress host, so no path prefix) |
-| `DATASPOKE_TEST_DATAHUB_TOKEN` | Personal access token; required because dev GMS runs with `METADATA_SERVICE_AUTH_ENABLED=true`. Minted by `helm-charts/bin/dev-peripherals/datahub.sh` directly against the GMS metadata service (see [Dev PAT minting](#dev-pat-minting)) and written back to `.env.dev`. | generated PAT |
-| `DATASPOKE_TEST_DATAHUB_KAFKA_BROKERS` | Kafka brokers for MCE/MAE events. **Optional** — only required when an organisation enables event-driven extensions; the baseline UC1–UC5 flows are schedule-driven via Airflow and do not subscribe to Kafka. | `<INGRESS_IP>:9005` |
+| `DATASPOKE_DEV_DATAHUB_GMS_URL` | GMS endpoint read by integration tests, `tests/integration/util/datahub.py`, and the `datahub-api` skill | Written by `helm-charts/bin/dev-peripherals/datahub.sh` (`<SCHEME>://datahub-gms.<INGRESS_DOMAIN>` — GMS has its own ingress host, so no path prefix) |
+| `DATASPOKE_DEV_DATAHUB_TOKEN` | Personal access token; required because dev GMS runs with `METADATA_SERVICE_AUTH_ENABLED=true`. Minted by `helm-charts/bin/dev-peripherals/datahub.sh` directly against the GMS metadata service (see [Dev PAT minting](#dev-pat-minting)) and written back to `.env.dev`. | generated PAT |
+| `DATASPOKE_DEV_DATAHUB_KAFKA_BROKERS` | Kafka brokers for MCE/MAE events. **Optional** — only required when an organisation enables event-driven extensions; the baseline UC1–UC5 flows are schedule-driven via Airflow and do not subscribe to Kafka. | `<INGRESS_IP>:9005` |
 
 #### Dev PAT minting
 

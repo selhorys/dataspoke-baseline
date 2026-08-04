@@ -7,7 +7,7 @@
  *   - Backend probe via adminApi (same REST read-back the api-wired step asserts)
  *
  * Steps (verbatim from USE_CASE_en.md §UC1 Case 1):
- *   0. Skip-guard: if DATASPOKE_TEST_DATAHUB_GMS_URL is absent, skip cleanly.
+ *   0. Skip-guard: if DATASPOKE_DEV_DATAHUB_GMS_URL is absent, skip cleanly.
  *      (Mirrors api-wired fixture which skips when GMS URL not set.)
  *   1. Seed: via GraphQL — create DataHub Secret + IngestionSource (no UI surface;
  *      DataHub is the SSOT, DataSpoke reads from it).
@@ -68,7 +68,7 @@ loadDotenv();
 // In-cluster host:port of the dummy-data postgres, read from the auto-populated env var
 // so the dummy-data namespace isn't hardcoded (mirrors api-wired _PG_HOST_PORT); no
 // hardcoded fallback so a wrong host fails the run loudly.
-const PG_HOST_PORT = required("DATASPOKE_TEST_DUMMY_DATA_POSTGRES_HOST_PORT");
+const PG_HOST_PORT = required("DATASPOKE_DEV_DUMMY_DATA_POSTGRES_HOST_PORT");
 
 const SECRET_NAME = "UC1_POSTGRES_PASSWORD";
 const SECRET_REF = "${UC1_POSTGRES_PASSWORD}";
@@ -86,8 +86,8 @@ const SOURCE_NAME = "dummy datahub-managed";
 // storageState. Do not override storageState here (a relative path would resolve
 // against the playwright cwd and break context creation).
 
-const GMS_URL = process.env["DATASPOKE_TEST_DATAHUB_GMS_URL"] ?? "";
-const GMS_TOKEN = process.env["DATASPOKE_TEST_DATAHUB_TOKEN"] ?? "";
+const GMS_URL = process.env["DATASPOKE_DEV_DATAHUB_GMS_URL"] ?? "";
+const GMS_TOKEN = process.env["DATASPOKE_DEV_DATAHUB_TOKEN"] ?? "";
 
 // Skip-guard at runtime (not module top level, where a conditional test.skip is
 // fragile): only skip when DataHub GMS is genuinely unconfigured. GMS is part of
@@ -96,7 +96,7 @@ const GMS_TOKEN = process.env["DATASPOKE_TEST_DATAHUB_TOKEN"] ?? "";
 test.beforeEach(() => {
   test.skip(
     !GMS_URL,
-    "DATASPOKE_TEST_DATAHUB_GMS_URL is not set, and DATAHUB_MANAGED UC1 talks to DataHub " +
+    "DATASPOKE_DEV_DATAHUB_GMS_URL is not set, and DATAHUB_MANAGED UC1 talks to DataHub " +
       "GMS directly. Supply the precondition by exporting the dev-env file into the shell " +
       "before the run — `set -a && source helm-charts/.env.dev && set +a` — then re-run.",
   );
@@ -199,7 +199,7 @@ async function gqlMutate(
     const body = await resp.text().catch(() => "");
     const credentialHint =
       resp.status === 401 || resp.status === 403
-        ? "This is GMS's authentication filter rejecting the PAT, so DATASPOKE_TEST_DATAHUB_TOKEN " +
+        ? "This is GMS's authentication filter rejecting the PAT, so DATASPOKE_DEV_DATAHUB_TOKEN " +
           "is missing or stale — re-derive it from the cluster secret and re-source " +
           "helm-charts/.env.dev (a fragmented --from-component install skips that env-sync). "
         : "";
@@ -271,7 +271,7 @@ test.afterAll(async ({ adminApi }) => {
   }
   // Re-run sync to remove the mirrored DataSpoke row.
   const base = apiBaseUrl();
-  const token = process.env["DATASPOKE_TEST_INTERNAL_TOKEN"] ?? "";
+  const token = process.env["DATASPOKE_DEV_INTERNAL_TOKEN"] ?? "";
   await fetch(`${base}/internal/activities/ingestion/sync`, {
     method: "POST",
     headers: { "X-Internal-Token": token, "Content-Type": "application/json" },
@@ -346,7 +346,7 @@ test("UC1 Case 1 step 1 — seed DataHub Secret + IngestionSource", async () => 
     `createSecret returned GraphQL errors: ${JSON.stringify(secretResult.errors)}. ` +
       "GMS accepted the credential and refused the operation, so two causes produce this: " +
       "(1) the authenticated actor is under-privileged — the PAT's actor lacks MANAGE_SECRETS, " +
-      "so grant it (or use an admin PAT) and refresh DATASPOKE_TEST_DATAHUB_TOKEN in " +
+      "so grant it (or use an admin PAT) and refresh DATASPOKE_DEV_DATAHUB_TOKEN in " +
       "helm-charts/.env.dev; or (2) Managed Secrets are broken or absent in this GMS — " +
       "they are provisioned by the dev install " +
       "(./helm-charts/bin/install.sh --profile dev --components datahub). Check the " +
@@ -402,7 +402,7 @@ test("UC1 Case 1 step 1 — seed DataHub Secret + IngestionSource", async () => 
       "GMS accepted the credential and refused the operation, so two causes produce this: " +
       "(1) the authenticated actor is under-privileged — the PAT's actor lacks the Manage " +
       "Ingestion privilege, so grant it (or use an admin PAT) and refresh " +
-      "DATASPOKE_TEST_DATAHUB_TOKEN in helm-charts/.env.dev; or (2) Managed Ingestion is " +
+      "DATASPOKE_DEV_DATAHUB_TOKEN in helm-charts/.env.dev; or (2) Managed Ingestion is " +
       "broken or absent in this GMS — it is provisioned by the dev install " +
       "(./helm-charts/bin/install.sh --profile dev --components datahub). Check the " +
       "privilege before reinstalling DataHub. Neither is an absent precondition."
@@ -425,7 +425,7 @@ test("UC1 Case 1 step 2 — sync sweep mirrors the DATAHUB_MANAGED source into D
   test.setTimeout(240_000);
 
   const base = apiBaseUrl();
-  const token = process.env["DATASPOKE_TEST_INTERNAL_TOKEN"] ?? "";
+  const token = process.env["DATASPOKE_DEV_INTERNAL_TOKEN"] ?? "";
 
   // Poll: trigger sync + check list until the source appears (≤180s ES lag budget).
   // spec: project_es_indexing_lag_after_reset_seed — ES lags ~2-3 min after seed.
@@ -622,7 +622,7 @@ test("UC1 Case 1 step 5 — datasets panel shows mapped non-catalog datasets", a
   test.setTimeout(300_000);
 
   const base = apiBaseUrl();
-  const token = process.env["DATASPOKE_TEST_INTERNAL_TOKEN"] ?? "";
+  const token = process.env["DATASPOKE_DEV_INTERNAL_TOKEN"] ?? "";
 
   // Poll: re-trigger sync each iteration until non-catalog URNs appear.
   // spec: project_es_indexing_lag_after_reset_seed — ES lags ~2-3 min; budget ≥180s.
@@ -707,7 +707,7 @@ test("UC1 Case 1 step 6 — execute in DataHub; DataSpoke reflects the run", asy
   test.setTimeout(420_000);
 
   const base = apiBaseUrl();
-  const token = process.env["DATASPOKE_TEST_INTERNAL_TOKEN"] ?? "";
+  const token = process.env["DATASPOKE_DEV_INTERNAL_TOKEN"] ?? "";
 
   // -- Precondition (pre-trigger): the DataHub executor can run the request at all --
   // The ONLY skip in this step. Everything after the trigger is an outcome this step
