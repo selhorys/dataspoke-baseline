@@ -14,6 +14,8 @@ from pathlib import Path
 from confluent_kafka import KafkaError, KafkaException, Producer
 from confluent_kafka.admin import AdminClient, NewTopic
 
+from tests.integration.util.env_file import load_dotenv
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -30,30 +32,9 @@ _FIXTURES_DIR: Path = Path(__file__).parent / "fixtures" / "kafka"
 # ---------------------------------------------------------------------------
 
 
-def _load_dotenv() -> None:
-    """Load helm-charts/.env.dev into os.environ without overwriting existing vars."""
-    start = Path(__file__).resolve().parents[3]
-    for candidate in (start, *start.parents):
-        env_path = candidate / "helm-charts" / ".env.dev"
-        if env_path.is_file():
-            break
-    else:
-        return
-    for line in env_path.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        key, _, value = line.partition("=")
-        key, value = key.strip(), value.strip()
-        if key and key not in os.environ:
-            os.environ[key] = value
+load_dotenv(Path(__file__).resolve().parents[3])
 
-
-_load_dotenv()
-
-_kafka_bootstrap = os.environ.get(
-    "DATASPOKE_DEV_DUMMY_DATA_KAFKA_BROKERS", "localhost:9104"
-)
+_kafka_bootstrap = os.environ.get("DATASPOKE_DEV_DUMMY_DATA_KAFKA_BROKERS", "localhost:9104")
 
 # ---------------------------------------------------------------------------
 # Client factories
@@ -151,11 +132,7 @@ def _produce_messages(producer: Producer, topic: str, jsonl_file: str) -> int:
     for our purposes. Returns the number of messages produced.
     """
     fixture_path = _FIXTURES_DIR / jsonl_file
-    lines = [
-        line.strip()
-        for line in fixture_path.read_text().splitlines()
-        if line.strip()
-    ]
+    lines = [line.strip() for line in fixture_path.read_text().splitlines() if line.strip()]
 
     last_exc: Exception | None = None
     for attempt in range(3):

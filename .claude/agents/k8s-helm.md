@@ -20,7 +20,7 @@ Your job is to write Helm charts, Dockerfiles, and dev environment scripts.
 ```
 helm-charts/
 ├── README.md                  # Operational guide for bin/ scripts
-├── .env.dev.example            # 3-section env file (kube deployment / dev profile / auto-populated test access)
+├── .env.dev.example            # 3-section env file (kube deployment / dev profile inputs / auto-populated dev access)
 ├── bin/
 │   ├── install.sh              # --profile {dev|prod} [--components … (dev only)] [--frontend none|local|cluster] [--skip-build] …
 │   ├── uninstall.sh            # --profile {dev|prod} [--components frontend] [--no-question] [--delete-pvcs] [--delete-namespaces] [--delete-all]

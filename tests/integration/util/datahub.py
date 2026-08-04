@@ -9,10 +9,10 @@ Usage (as a module):
     uv run python -m tests.integration.util.datahub --reset-only  # delete only
 
 Environment variables (loaded from helm-charts/.env.dev if present):
-    DATASPOKE_DEV_DATAHUB_GMS_URL       (default: http://localhost:9004)
-    DATASPOKE_DEV_DATAHUB_TOKEN         (required for DataHub-touching helpers)
-    DATASPOKE_DEV_DUMMY_DATA_POSTGRES_HOST                        (default: localhost)
-    DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PORT                        (default: 9102)
+    DATASPOKE_DEV_DATAHUB_GMS_URL               (default: http://localhost:9004)
+    DATASPOKE_DEV_DATAHUB_TOKEN                 (required for DataHub-touching helpers)
+    DATASPOKE_DEV_DUMMY_DATA_POSTGRES_HOST      (default: localhost)
+    DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PORT      (default: 9102)
     DATASPOKE_DEV_DUMMY_DATA_POSTGRES_USER      (default: postgres)
     DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD  (default: ExampleDev2024!)
     DATASPOKE_DEV_DUMMY_DATA_POSTGRES_DB        (default: example_db)
@@ -71,6 +71,8 @@ from datahub.metadata.schema_classes import (
     TimeTypeClass,
 )
 
+from tests.integration.util.env_file import load_dotenv
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -99,6 +101,7 @@ _KAFKA_TOPIC_AREA_TAGS: dict[str, str] = {
     "imazon.orders.events": TAG_AREA_FULFILLMENT,
     "imazon.shipping.updates": TAG_AREA_FULFILLMENT,
 }
+
 
 async def _mark_registry_registered(urns: list[str]) -> None:
     """Flip dataset_registry.datahub_registered=true for any existing rows in `urns`.
@@ -167,26 +170,7 @@ _PG_TO_DATAHUB_TYPE: dict[str, object] = {
 # ---------------------------------------------------------------------------
 
 
-def _load_dotenv() -> None:
-    """Load helm-charts/.env.dev into os.environ without overwriting existing vars."""
-    start = Path(__file__).resolve().parents[3]
-    for candidate in (start, *start.parents):
-        env_path = candidate / "helm-charts" / ".env.dev"
-        if env_path.is_file():
-            break
-    else:
-        return
-    for line in env_path.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        key, _, value = line.partition("=")
-        key, value = key.strip(), value.strip()
-        if key and key not in os.environ:
-            os.environ[key] = value
-
-
-_load_dotenv()
+load_dotenv(Path(__file__).resolve().parents[3])
 
 
 def _require_env(name: str) -> str:
@@ -194,7 +178,7 @@ def _require_env(name: str) -> str:
 
     Per spec/TESTING.md §Integration Lifecycle & Isolation: reset helpers carry no
     baked-in credentials — every credential is read from the environment (the
-    DATASPOKE_DEV_* / DATASPOKE_DEV_* block in helm-charts/.env.dev). A missing
+    DATASPOKE_DEV_* block in helm-charts/.env.dev). A missing
     value must abort with a clear message, never fall back to a hardcoded default.
     """
     value = os.environ.get(name)
@@ -894,10 +878,7 @@ async def ingest_pg_datasets(schemas: frozenset[str] | None = None) -> int:
     )
     for wu in gen_containers(container_key=db_key, name=PG_INSTANCE, sub_types=["Database"]):
         mcp = wu.metadata
-        if (
-            hasattr(mcp, "entityUrn") and hasattr(mcp, "aspect")
-            and mcp.entityUrn and mcp.aspect
-        ):
+        if hasattr(mcp, "entityUrn") and hasattr(mcp, "aspect") and mcp.entityUrn and mcp.aspect:
             emitter.emit_mcp(
                 MetadataChangeProposalWrapper(entityUrn=mcp.entityUrn, aspect=mcp.aspect)
             )
@@ -927,8 +908,10 @@ async def ingest_pg_datasets(schemas: frozenset[str] | None = None) -> int:
             ):
                 mcp = wu.metadata
                 if (
-                    hasattr(mcp, "entityUrn") and hasattr(mcp, "aspect")
-                    and mcp.entityUrn and mcp.aspect
+                    hasattr(mcp, "entityUrn")
+                    and hasattr(mcp, "aspect")
+                    and mcp.entityUrn
+                    and mcp.aspect
                 ):
                     emitter.emit_mcp(
                         MetadataChangeProposalWrapper(entityUrn=mcp.entityUrn, aspect=mcp.aspect)

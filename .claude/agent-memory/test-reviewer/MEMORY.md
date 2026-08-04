@@ -52,3 +52,4 @@
 - [DSN URL-fields anchor](project_dsn_url_fields_anchor.md) — BACKEND.md:131; TESTING L404 not L335 for fixtures; p%2Fss load-bearing; conftest exec seam
 - [independent_sessionmaker seams](project_independent_sessionmaker_seams.md) — #134/#135 cycle-2: 32 mutants, rule now specced; residue = await_count/Update/commit-mechanism false-kills; reload trap
 - [last_used_at stamp seams](project_last_used_at_stamp_seams.md) — #140 cycle-2: clause-tree evaluator now kills all 5 former survivors; what stays free by design, and the unrun-on-Postgres residue
+- [conftest promotion set is one name](project_conftest_promotion_set_is_one_name.md) — DATASPOKE_DEV_* now spans peripheral creds; any prefix-driven promotion in conftest is a credential leak

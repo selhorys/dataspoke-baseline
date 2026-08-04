@@ -62,3 +62,8 @@
 - [StorageClass provisioner vs CSIDriver](project_storageclass_provisioner_vs_csidriver.md) — external provisioners carry `/` and register no CSIDriver; in-tree exemption skips CSI-migrated EKS gp2
 - [Value crosses parser boundaries](feedback_value_crosses_parser_boundaries.md) — PyYAML vs Helm vs app coercion disagree; quoted "true" misses `== "True"`, trailing \n folds to a space
 - [Airflow prod auth wiring](project_airflow_prod_auth_wiring.md) — 3.1.8 SimpleAuthManager verified facts; prod install has NO airflow api-server rollout wait (dev does)
+- [Scratchpad shared with parallel agents](feedback_scratchpad_shared_with_parallel_agents.md) — namespace harness stubs per-run; a parallel reviewer overwrote mine mid-experiment, silently
+- [Residual diff for move claims](feedback_residual_diff_for_move_claims.md) — normalise HEAD for other phases' edits, strip moved blocks, diff the residual; also diff docstrings
+- [trap EXIT INT TERM swallows Ctrl-C](feedback_trap_int_term_swallows_ctrl_c.md) — non-exiting INT handler makes the run CONTINUE and exit 0; EXIT alone already fires on SIGINT
+- [Override flag the 2nd command can't express](feedback_override_flag_downstream_cannot_express.md) — diff both arg parsers + defaults; pre-flight --namespace/--secret-name have no install.sh counterpart
+- [Documented verdict never printed](feedback_documented_verdict_never_printed.md) — literal status tokens live in a `case`, not on stdout; failure arms may kill the caller

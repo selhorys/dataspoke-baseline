@@ -200,7 +200,7 @@ upsert_env_var DATASPOKE_DEV_DUMMY_DATA_KAFKA_BROKERS "${EXTERNAL_IP}:9104"     
 info "Written to .env:"
 info "  DATASPOKE_KUBE_INGRESS_IP=${EXTERNAL_IP}"
 info "  DATASPOKE_KUBE_INGRESS_DOMAIN=${INGRESS_DOMAIN}"
-info "  + 5 derived test variables (DATASPOKE_DEV_POSTGRES_HOST, DATASPOKE_DEV_REDIS_HOST, etc.)"
+info "  + 5 derived dev-access variables (DATASPOKE_DEV_POSTGRES_HOST, DATASPOKE_DEV_REDIS_HOST, etc.)"
 
 # ---------------------------------------------------------------------------
 # Print access summary

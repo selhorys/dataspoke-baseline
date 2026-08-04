@@ -458,17 +458,23 @@ unreachable peripheral as `"degraded"` rather than failing (see [`spec/API.md` �
 ### Configuration
 
 Configuration splits across two mechanisms. **App-runtime settings** flow as environment
-variables (three tiers below); **peripheral connections** (DataHub URL/token, Langfuse
+variables (five tiers below); **peripheral connections** (DataHub URL/token, Langfuse
 host/keys) and **behavioral tunables** (LLM provider/model, generation knobs) are runtime
 configuration stored in the DB and edited via `/api/v1/admin/peripherals/{datahub,langfuse}`
 and `/api/v1/admin/conf` (see [`spec/API.md` §Admin](API.md)), seeded with factory defaults.
 
 | Prefix | Scope | Who reads it |
 |--------|-------|-------------|
-| `DATASPOKE_*` (no `KUBE`/`DEV`/`TEST`) | App runtime, both profiles | DataSpoke app code (FastAPI, frontend) |
+| `DATASPOKE_*` (no `KUBE`/`DEV`/`PROD`) | App runtime, both profiles | DataSpoke app code (FastAPI, frontend) |
 | `DATASPOKE_KUBE_*` | Kube deployment, both profiles | `helm-charts/bin/*.sh` install/uninstall/build scripts |
-| `DATASPOKE_DEV_*` | Dev profile only | `helm-charts/bin/dev-peripherals/*.sh`, `helm-charts/bin/post-install/*.sh` |
-| `DATASPOKE_DEV_*` | Dev profile only | `tests/integration/{conftest.py,util/*}` — laptop-side test access auto-populated by `install.sh`; never read by app pods |
+| `DATASPOKE_DEV_*` | Dev profile only, operator-supplied | `helm-charts/bin/dev-peripherals/*.sh`, `helm-charts/bin/post-install/*.sh` |
+| `DATASPOKE_DEV_*` | Dev profile only, auto-populated post-install | `tests/integration/{conftest.py,util/*}`, `health-check.sh`, `port-forward.sh` — laptop-side dev access written back by `install.sh`; never read by app pods |
+| `DATASPOKE_PROD_*` | Prod profile only, operator-supplied | `helm-charts/bin/install-prod-preflight.sh`, `helm-charts/bin/post-install/*.sh` — the credential subset is mapped into the credentials Secret; app pods never read the env file |
+
+The two `DATASPOKE_DEV_*` rows share a prefix and are separated by provenance rather than by
+name — who writes a value is a property of the variable, documented per tier and
+marked by the `.env.dev` section a line sits in. See
+[`spec/feature/HELM_CHART.md` §Configuration — Five-Tier Env Vars](feature/HELM_CHART.md#configuration--five-tier-env-vars).
 
 App-runtime variables (`DATASPOKE_*`) are the same names in dev and prod — only the values
 differ. In dev they point to the nginx-ingress external IP (TCP services) or ingress hostnames

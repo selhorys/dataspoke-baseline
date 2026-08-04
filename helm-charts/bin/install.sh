@@ -131,16 +131,13 @@ if [[ "$PROFILE" != "dev" && "$PROFILE" != "prod" ]]; then
   error "Invalid profile '${PROFILE}'. Must be 'dev' or 'prod'."
 fi
 
-# IMAGE_TAG flows unvalidated into several `--set`/`--set-string` tokens below
-# (e.g. `api.image.tag=${IMAGE_TAG}`) and into image references passed to
-# build-image.sh / resolve_image_digest. helm treats `,` as an assignment
-# separator within a single --set token, so an unvalidated tag could inject an
-# arbitrary values path (e.g. `v1,api.image.repository=evil/img`), and a
-# newline would desync the one-token-per-line heredoc streams read via `while
-# IFS= read -r` throughout this script.
-if [[ ! "$IMAGE_TAG" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; then
-  error "Invalid --image-tag '${IMAGE_TAG}'. Must match ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ (alphanumeric, '.', '_', '-' only — no comma, no whitespace, no newline)."
-fi
+# IMAGE_TAG flows into several `--set`/`--set-string` tokens below (e.g.
+# `api.image.tag=${IMAGE_TAG}`) and into image references passed to
+# build-image.sh / resolve_image_digest. The grammar is assert_image_tag's in
+# lib/helpers.sh — shared with the standalone pre-flight, which derives a tag
+# and prints the install command carrying it, so it cannot hand over one this
+# line then rejects.
+assert_image_tag "$IMAGE_TAG"
 
 # --components / --from-component (single/subset-component reinstall and
 # resume) are dev-only fast paths — the prod branch below has no per-component
@@ -192,17 +189,18 @@ chmod 600 "$ENV_FILE" 2>/dev/null || true
 
 # Every *_NAMESPACE var below is interpolated into `kubectl apply -f -` YAML
 # documents throughout this script (metadata.name / metadata.namespace), so an
-# unvalidated value could inject an arbitrary extra manifest. Kubernetes
-# namespaces are DNS-1123 labels: lowercase alphanumeric or '-', starting and
-# ending alphanumeric, max 63 chars. Checked once here rather than per call
-# site, mirroring ingress_class()/ingress_tls_secret() in lib/helpers.sh.
+# unvalidated value could inject an arbitrary extra manifest. The grammar is
+# assert_k8s_namespace's in lib/helpers.sh, shared with the standalone
+# pre-flight's --namespace so the two entry points cannot disagree about which
+# names are legal. Checked once here rather than per call site, mirroring
+# ingress_class()/ingress_tls_secret() in lib/helpers.sh. An unset variable is
+# not this wrapper's business — the consumers below decide which of them are
+# required for the profile in play.
 _validate_namespace_var() {
   local var_name="$1"
   local val="${!var_name:-}"
   [[ -z "$val" ]] && return 0
-  if [[ ! "$val" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ || "${#val}" -gt 63 ]]; then
-    error "Invalid ${var_name} '${val}'. Must be a valid Kubernetes namespace (DNS-1123 label: lowercase alphanumeric and '-', max 63 chars)."
-  fi
+  assert_k8s_namespace "${var_name}" "$val" || exit 1
 }
 _validate_namespace_var DATASPOKE_KUBE_DATASPOKE_NAMESPACE
 _validate_namespace_var DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE
@@ -240,29 +238,6 @@ trap 'rm -rf "${INSTALL_TMPDIR}"' EXIT
 # reader of "the same path" cannot drift apart.
 AIRFLOW_SIMPLE_AUTH_PASSWORDS_DIR="/opt/airflow/simple-auth-manager"
 AIRFLOW_SIMPLE_AUTH_PASSWORDS_FILE="${AIRFLOW_SIMPLE_AUTH_PASSWORDS_DIR}/passwords.json"
-
-# DATASPOKE_AIRFLOW_USER's allowlist. This project's house convention for
-# every OTHER interpolated operator string (SECRET_TO_CHECK, namespaces,
-# StorageClass names, --image-tag) is already a positive allowlist rather
-# than a denylist of specific bad characters — this username needs the same
-# treatment for a sharper reason: _build_airflow_extra_env_file composes it
-# into airflow.extraEnv, which the vendored Airflow chart renders through Go
-# template `tpl` (custom_airflow_environment in
-# charts/airflow-1.20.0.tgz's _helpers.yaml, included by every Airflow
-# component's env block), making the username a template-injection sink, not
-# merely a config string. A denylist of literal ',' and ':' does not close
-# that sink: `{{ printf "%c" 58 }}` / `{{ printf "%c" 44 }}` synthesize the
-# denylisted characters inside the template evaluator, a YAML double-quoted
-# escape (e.g. "a\x3aADMIN") reaches ':' without the source string ever
-# containing the literal character, `{{ lookup ... }}` is live under `helm
-# upgrade` and can render an arbitrary cluster Secret the installer's
-# kubeconfig can read into the manifests (and the release's stored history),
-# and a routine trailing newline (common with --from-file / external-secrets
-# / a Vault injector) folds to a space in the rendered env var while the init
-# container's own read of the same Secret key keeps the raw value — splitting
-# what the two writers agree the username is. The allowlist closes all of
-# these by construction instead of enumerating each one.
-AIRFLOW_SIMPLE_AUTH_USERNAME_REGEX='^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
 
 # ---------------------------------------------------------------------------
 # Shared helpers (used by both profile branches)
@@ -324,78 +299,6 @@ _build_chart_deps() {
 # Secret management helpers
 # ---------------------------------------------------------------------------
 
-# _resolve_fernet_secret_name <namespace>
-# Resolves airflow.fernetKeySecretName from the deployed release's
-# user-supplied values (no `-a` — the chart default is already the second
-# candidate in _fernet_key_candidates below). Never `error`s: no release, a
-# `helm` failure, a malformed values blob, or a name failing the
-# Kubernetes-name grammar all resolve to empty, so the caller falls through
-# to the next candidate. `json.load(...) or {}` guards against `helm get
-# values` printing bare `null` for a release with no overrides — `d.get(...)`
-# on `None` would otherwise raise `AttributeError`.
-_resolve_fernet_secret_name() {
-  local ns="$1"
-
-  if ! helm status dataspoke --namespace "${ns}" >/dev/null 2>&1; then
-    echo ""
-    return 0
-  fi
-
-  local name
-  name="$(helm get values dataspoke --namespace "${ns}" -o json 2>/dev/null | python3 -c '
-import json, sys
-
-try:
-    d = json.load(sys.stdin) or {}
-except Exception:
-    d = {}
-print((d.get("airflow") or {}).get("fernetKeySecretName") or "")
-' 2>/dev/null || echo "")"
-
-  # Validated before it ever reaches kubectl argv or the operator-facing
-  # recovery text in _check_airflow_credentials_prod's Fernet error — the
-  # same grammar SECRET_TO_CHECK is checked against below, applied here to a
-  # less-trusted source (a release value, not a --values overlay this
-  # operator authored).
-  if [[ ! "${name}" =~ ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$ ]]; then
-    echo ""
-    return 0
-  fi
-  echo "${name}"
-}
-
-# _fernet_key_candidates <namespace>
-# Prints the de-duplicated, ordered union of every Secret name that could be
-# carrying the live Fernet key: the resolved release's
-# airflow.fernetKeySecretName first (when non-empty), then the chart's own
-# projection name, then the legacy pre-hook Secret from a release installed
-# before fernetKeySecretName was pinned. An unresolved release value (fresh
-# install, no live release, a `helm` failure) simply drops the first
-# candidate — the two-literal search still runs. One name per line; callers
-# read via `while IFS= read -r`.
-_fernet_key_candidates() {
-  local ns="$1"
-
-  local resolved
-  resolved="$(_resolve_fernet_secret_name "${ns}")"
-
-  local seen=() name dup s
-  for name in "${resolved}" "dataspoke-airflow-metadata-encryption-key" "dataspoke-airflow-fernet-key"; do
-    [[ -z "${name}" ]] && continue
-    dup=false
-    for s in ${seen[@]+"${seen[@]}"}; do
-      if [[ "${s}" == "${name}" ]]; then
-        dup=true
-        break
-      fi
-    done
-    if [[ "${dup}" == "false" ]]; then
-      seen+=("${name}")
-      echo "${name}"
-    fi
-  done
-}
-
 # _ensure_fernet_key_joins_credentials_secret <namespace> <secret_name>
 # Dev-only self-heal for a credentials Secret that predates
 # DATASPOKE_AIRFLOW_FERNET_KEY joining the credentials contract: patches the
@@ -410,7 +313,7 @@ _fernet_key_candidates() {
 # Secret name it actually mounts. Generation is the last resort, only when no
 # candidate carries a key. No-op once the key is present. Prod never calls
 # this — the operator owns the pre-created Secret's shape; see
-# _check_airflow_credentials_prod.
+# verify_credential_secret in lib/helpers.sh.
 _ensure_fernet_key_joins_credentials_secret() {
   local ns="$1"
   local secret_name="$2"
@@ -474,7 +377,7 @@ EOF
 # with an empty string ("" from a blank line in --from-env-file) must still
 # be caught, since `envFrom.secretRef` still shadows the ConfigMap's value in
 # that case. Prod never calls this — a Secret still carrying either key is a
-# pre-flight failure instead (_check_airflow_credentials_prod); install.sh
+# pre-flight failure instead (verify_credential_secret); install.sh
 # never mutates an operator-owned Secret.
 _ensure_postgres_identity_leaves_credentials_secret() {
   local ns="$1"
@@ -951,7 +854,9 @@ _restart_airflow_key_consumers() {
 # _sync_env_from_secret <namespace> <secret_key> <env_var_name> [<secret_name>]
 # Extracts <secret_key> from the consolidated Secret and writes/updates
 # <env_var_name>=<value> in helm-charts/.env.<profile>. Idempotent.
-# <secret_name> defaults to "dataspoke-secrets".
+# <secret_name> defaults to "dataspoke-secrets". The read is this function's
+# own; the write is env_file_set_var's (lib/helpers.sh), which is the single
+# rewriter every env-file writer in this project shares.
 _sync_env_from_secret() {
   local ns="$1"
   local secret_key="$2"
@@ -962,21 +867,7 @@ _sync_env_from_secret() {
   value="$(kubectl get secret "${secret_name}" -n "${ns}" \
     -o jsonpath="{.data.${secret_key}}" | base64 --decode)"
 
-  local prefix="${env_var_name}="
-  local tmp_file
-  tmp_file="$(mktemp)"
-
-  if grep -q "^${env_var_name}=" "$ENV_FILE" 2>/dev/null; then
-    awk -v prefix="${prefix}" -v val="${value}" \
-      'index($0, prefix)==1 {print prefix val; next} {print}' \
-      "$ENV_FILE" > "$tmp_file"
-    mv "$tmp_file" "$ENV_FILE"
-  else
-    cp "$ENV_FILE" "$tmp_file"
-    printf '%s=%s\n' "${env_var_name}" "${value}" >> "$tmp_file"
-    mv "$tmp_file" "$ENV_FILE"
-  fi
-  chmod 600 "$ENV_FILE"
+  env_file_set_var "${env_var_name}" "${value}" "$ENV_FILE"
 }
 
 # _read_configmap_value <namespace> <key>
@@ -985,8 +876,8 @@ _sync_env_from_secret() {
 # for DATASPOKE_POSTGRES_{USER,DB}, which live in the ConfigMap rather than
 # the Secret (see spec/feature/HELM_CHART.md §ConfigMap keys). Deliberately a
 # thin reader with no env-file-writing body of its own — callers pipe the
-# result into _write_env_var, so this does not become a third near-duplicate
-# of _sync_env_from_secret / _write_env_var's own awk/mktemp rewrite logic.
+# result into _write_env_var, so every env-file write in this script still
+# lands in the one rewriter, env_file_set_var in lib/helpers.sh.
 _read_configmap_value() {
   local ns="$1"
   local key="$2"
@@ -1000,338 +891,12 @@ _read_configmap_value() {
 }
 
 # _write_env_var <env_var_name> <value>
-# Writes/updates a plain (non-Secret) value in helm-charts/.env.<profile>. Idempotent.
+# Writes/updates a plain (non-Secret) value in helm-charts/.env.<profile>.
+# Idempotent. A named wrapper over env_file_set_var (lib/helpers.sh) bound to
+# this install's resolved $ENV_FILE, so the dev post-install block below reads
+# as one column of assignments rather than repeating the file argument.
 _write_env_var() {
-  local env_var_name="$1"
-  local value="$2"
-
-  local prefix="${env_var_name}="
-  local tmp_file
-  tmp_file="$(mktemp)"
-
-  if grep -q "^${env_var_name}=" "$ENV_FILE" 2>/dev/null; then
-    awk -v prefix="${prefix}" -v val="${value}" \
-      'index($0, prefix)==1 {print prefix val; next} {print}' \
-      "$ENV_FILE" > "$tmp_file"
-    mv "$tmp_file" "$ENV_FILE"
-  else
-    cp "$ENV_FILE" "$tmp_file"
-    printf '%s=%s\n' "${env_var_name}" "${value}" >> "$tmp_file"
-    mv "$tmp_file" "$ENV_FILE"
-  fi
-  chmod 600 "$ENV_FILE"
-}
-
-# _resolve_effective_all_admins <chart_values_file> [<overlay_file>]
-# Prints the effective airflow.config.core.simple_auth_manager_all_admins,
-# NORMALIZED to the lowercase literal "true" or "false" — never the raw
-# value — by mirroring Airflow's own boolean coercion
-# (airflow/configuration.py: str(v).strip().lower() tested against a fixed
-# spelling set) rather than a strict `== "True"` comparison. Airflow accepts
-# t/true/1 and f/false/0 case-insensitively and whitespace-trimmed for EVERY
-# boolean config key, so an overlay spelling it "true", "TRUE", "t", or "1"
-# is honoured by Airflow identically to "True" — a caller comparing against
-# the literal string "True" would fail-open on any of those spellings,
-# silently skipping the anonymous-admin disclosure warning
-# _check_airflow_credentials_prod exists to print. Anything outside that
-# spelling set is what Airflow's OWN parser raises AirflowConfigException
-# over and crash-loops every component on, so this hard-errors on it too,
-# before any Secret is touched, rather than letting the chart values pass a
-# pre-flight that then deploys a release that cannot start.
-#
-# The chart default, overridden by the operator overlay's value at the same
-# path when the overlay sets it at all. Same python3+PyYAML dig() pattern as
-# _assert_no_internal_ingress_exposure / _resolve_existing_secret_name above.
-# An overlay is free to set this back to a true-ish value, and
-# _check_airflow_credentials_prod must judge the merged result, not the
-# chart default. Prints "" if the key is absent from both files (not
-# expected in practice — the chart's own values.yaml always sets it — kept
-# as a defensive fallback rather than a hard requirement on that fact).
-_resolve_effective_all_admins() {
-  local chart_values_file="$1" overlay_file="${2:-}"
-  if ! python3 -c "import yaml" 2>/dev/null; then
-    error "python3 with PyYAML is required to resolve the effective simple_auth_manager_all_admins setting. Install: pip install pyyaml"
-  fi
-  python3 - "${chart_values_file}" "${overlay_file}" <<'PYEOF'
-import sys, yaml
-
-CHART_FILE = sys.argv[1]
-OVERLAY_FILE = sys.argv[2] if len(sys.argv) > 2 else ""
-
-TRUE_VALUES = {"t", "true", "1"}
-FALSE_VALUES = {"f", "false", "0"}
-
-
-def fail(msg):
-    print(msg, file=sys.stderr)
-    sys.exit(1)
-
-
-def load_mapping(path, label):
-    with open(path) as f:
-        try:
-            data = yaml.safe_load(f)
-        except yaml.YAMLError as exc:
-            fail(f"Invalid YAML in {label} '{path}': {' '.join(str(exc).split())}")
-    if data is not None and not isinstance(data, dict):
-        fail(f"{label} '{path}' does not parse to a YAML mapping at its top level.")
-    return data or {}
-
-
-def dig(node, *keys):
-    walked = []
-    for key in keys:
-        if node is None:
-            return None
-        if not isinstance(node, dict):
-            fail(f"'{'.'.join(walked)}' must be a mapping, got {type(node).__name__}.")
-        walked.append(key)
-        node = node.get(key)
-    return node
-
-
-chart_data = load_mapping(CHART_FILE, "chart values file")
-value = dig(chart_data, "airflow", "config", "core", "simple_auth_manager_all_admins")
-
-if OVERLAY_FILE:
-    overlay_data = load_mapping(OVERLAY_FILE, "overlay file")
-    overlay_value = dig(overlay_data, "airflow", "config", "core", "simple_auth_manager_all_admins")
-    if overlay_value is not None:
-        value = overlay_value
-
-if value is None:
-    print("")
-else:
-    normalized = str(value).strip().lower()
-    if normalized in TRUE_VALUES:
-        print("true")
-    elif normalized in FALSE_VALUES:
-        print("false")
-    else:
-        fail(
-            f"airflow.config.core.simple_auth_manager_all_admins resolved to {value!r}, which "
-            "Airflow's own boolean parser does not accept (valid spellings: t/true/1 for True, "
-            "f/false/0 for False — case-insensitive, whitespace-trimmed). Airflow raises "
-            "AirflowConfigException and every component crash-loops on this value at startup — "
-            "fix your --values overlay before re-running the install."
-        )
-PYEOF
-}
-
-# _check_airflow_credentials_prod <namespace> <secret_name> <chart_values_file> [<overlay_file>]
-# Validates ALL 11 required keys are present, non-empty, and not equal to known
-# insecure defaults. Also hard-errors if the Secret still carries
-# DATASPOKE_POSTGRES_USER or DATASPOKE_POSTGRES_DB — both relocated to the app
-# ConfigMap (config.postgres.{user,db}), never rejected in favor of an
-# install.sh-driven repair here: install.sh never mutates an operator-owned
-# Secret in prod, so a lingering key is surfaced as a pre-flight failure with
-# a copy-pasteable removal command instead. Prod profile only.
-#
-# DATASPOKE_AIRFLOW_PASSWORD's PRESENCE stays in the blanket required_keys
-# loop below, unconditionally — the prod-only init container
-# (_build_airflow_simple_auth_init_container_file) renders regardless of
-# simple_auth_manager_all_admins and its secretKeyRef carries no
-# `optional: true`, so an absent key is a kubelet
-# CreateContainerConfigError, not a graceful skip; the prod branch has no
-# `rollout status` wait for Airflow at all before this fix (see §8's
-# addition), so without this presence check a bad Secret would abort here in
-# Phase 1, before anything is mutated, instead of reporting install success
-# over a permanently crash-looping api-server. Only the "admin"-literal
-# rejection and the anonymous-admin disclosure warning are keyed on the
-# EFFECTIVE airflow.config.core.simple_auth_manager_all_admins
-# (<chart_values_file> merged with <overlay_file> via
-# _resolve_effective_all_admins, since an overlay may set it back to a
-# true-ish value), handled in their own branch further down.
-_check_airflow_credentials_prod() {
-  local ns="$1"
-  local secret_name="$2"
-  local chart_values_file="$3"
-  local overlay_file="${4:-}"
-
-  local required_keys=(
-    DATASPOKE_POSTGRES_PASSWORD
-    DATASPOKE_REDIS_PASSWORD
-    DATASPOKE_AIRFLOW_USER DATASPOKE_AIRFLOW_PASSWORD
-    DATASPOKE_INTERNAL_TOKEN DATASPOKE_JWT_SECRET_KEY
-    DATASPOKE_AIRFLOW_WEBSERVER_SECRET_KEY DATASPOKE_AIRFLOW_JWT_SECRET
-    DATASPOKE_AIRFLOW_FERNET_KEY
-    DATASPOKE_OAUTH_STATE_SECRET DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET
-  )
-
-  # DATASPOKE_POSTGRES_USER / DATASPOKE_POSTGRES_DB are not secrets and do not
-  # belong in this Secret — they live in the app ConfigMap
-  # (config.postgres.*) instead, where templates/configmap.yaml asserts they
-  # agree with postgresql.auth.username/database. install.sh never patches an
-  # operator-owned Secret in prod (contrast with the dev self-heal,
-  # _ensure_postgres_identity_leaves_credentials_secret), so this rejects
-  # rather than repairs it. Presence is tested with
-  # --allow-missing-template-keys=false, not on the value being non-empty —
-  # see that self-heal's own comment for why an empty-string value must still
-  # be caught.
-  local relocated_key
-  for relocated_key in DATASPOKE_POSTGRES_USER DATASPOKE_POSTGRES_DB; do
-    if kubectl get secret "${secret_name}" -n "${ns}" \
-         -o jsonpath="{.data.${relocated_key}}" --allow-missing-template-keys=false >/dev/null 2>&1; then
-      error "prod Secret '${secret_name}' still carries ${relocated_key}, which belongs to the app
-ConfigMap (config.postgres.*) instead — it is not a secret and its presence here is a second,
-silently divergent source of the Postgres identity. Remove it:
-  kubectl patch secret ${secret_name} -n ${ns} --type=merge \\
-    -p='{\"data\":{\"${relocated_key}\":null}}'
-then re-run the install."
-    fi
-  done
-
-  for key in "${required_keys[@]}"; do
-    local val
-    val="$(kubectl get secret "${secret_name}" -n "${ns}" \
-      -o jsonpath="{.data.${key}}" 2>/dev/null | base64 --decode 2>/dev/null || true)"
-    if [[ -z "${val}" ]]; then
-      if [[ "${key}" == "DATASPOKE_AIRFLOW_FERNET_KEY" ]]; then
-        local _fernet_msg
-        _fernet_msg="prod Secret '${secret_name}' is missing required key: DATASPOKE_AIRFLOW_FERNET_KEY.
-If this namespace already ran Airflow against a Postgres metadata DB you are keeping (for
-example a PVC retained from a previous release), do NOT generate a new key — supply the exact
-key that DB's connections and Variables were encrypted with, or they become permanently
-undecryptable."
-
-        # The missing irreversibility signal: a retained Postgres PVC proves
-        # this is NOT a fresh install, independent of anything the recovery
-        # search below finds. Without this, an operator who finds no
-        # matching Secret in that search has nothing stopping them from
-        # concluding "fresh install" anyway and generating a new key.
-        if kubectl get pvc data-dataspoke-postgresql-0 -n "${ns}" >/dev/null 2>&1; then
-          _fernet_msg+="
-WARNING: PersistentVolumeClaim 'data-dataspoke-postgresql-0' survives in namespace '${ns}' — this
-is NOT a fresh install. Generating a new key below would leave every connection and Variable
-already encrypted in that PVC's Airflow metadata DB permanently undecryptable."
-        fi
-
-        _fernet_msg+="
-Recover it from whatever this cluster last projected it into — try each of the following, in
-order (the first is this release's own airflow.fernetKeySecretName, when resolvable — an operator
-who pinned a self-chosen name here is exactly the case this ordering exists to cover):"
-        local _fc
-        while IFS= read -r _fc; do
-          _fernet_msg+="
-  kubectl get secret ${_fc} -n ${ns} -o jsonpath='{.data.fernet-key}' | base64 --decode"
-        done < <(_fernet_key_candidates "${ns}")
-
-        # Namespace-wide scan for ANY Secret carrying a fernet-key data key —
-        # guidance text only, never the adoption search order above: silently
-        # trusting an arbitrary discovered Secret would be unsafe. This finds
-        # a pin that never reached this release's own recorded values at
-        # all — e.g. a Secret an operator created and named directly in an
-        # overlay whose release was never applied, or was applied by tooling
-        # _resolve_fernet_secret_name cannot introspect — and needs no live
-        # release to exist for that.
-        local _fernet_scan
-        _fernet_scan="$(kubectl get secret -n "${ns}" \
-          -o jsonpath='{range .items[?(@.data.fernet-key)]}{.metadata.name} {end}' 2>/dev/null || true)"
-        if [[ -n "${_fernet_scan}" ]]; then
-          _fernet_msg+="
-A namespace-wide scan for any Secret carrying a fernet-key also found: ${_fernet_scan}— check
-whether one of these is the Secret your Airflow release actually mounts; its name may never have
-reached the release's own recorded values."
-        fi
-
-        _fernet_msg+="
-Add DATASPOKE_AIRFLOW_FERNET_KEY=<that value> to '${secret_name}' and re-run the install.
-Only if this is a genuinely fresh install (no retained Postgres PVC to decrypt), generate one:
-  python3 -c \"import secrets, base64; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())\""
-        error "${_fernet_msg}"
-      else
-        error "prod Secret '${secret_name}' is missing required key: ${key}"
-      fi
-    fi
-  done
-
-  # Shape check for the Fernet key: `openssl rand -hex 32` — the shape every
-  # other high-entropy key above uses, and the one the README's own
-  # generation block sits directly next to — decodes to 48 raw bytes, not the
-  # 32 Fernet requires, so it passes pod startup and fails only the first
-  # time Airflow tries to encrypt or decrypt a connection or Variable, long
-  # after install reports success. Catch the shape mismatch here instead.
-  local fernet_val
-  fernet_val="$(kubectl get secret "${secret_name}" -n "${ns}" \
-    -o jsonpath='{.data.DATASPOKE_AIRFLOW_FERNET_KEY}' | base64 --decode)"
-  if [[ ! "${fernet_val}" =~ ^[A-Za-z0-9_-]{43}=$ ]]; then
-    error "DATASPOKE_AIRFLOW_FERNET_KEY in Secret '${secret_name}' is not shaped like a Fernet key
-(must be URL-safe base64 of exactly 32 raw bytes: 43 base64 characters followed by '='). Generate
-one with:
-  python3 -c \"import secrets, base64; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())\"
-— but only for a genuinely fresh install; see the missing-key error above if a Postgres PVC with
-existing Airflow connections/Variables survives this namespace."
-  fi
-
-  local jwt_val
-  jwt_val="$(kubectl get secret "${secret_name}" -n "${ns}" \
-    -o jsonpath='{.data.DATASPOKE_JWT_SECRET_KEY}' | base64 --decode)"
-  if [[ "${jwt_val}" == "changeme-dev-secret-do-not-use-in-prod" ]]; then
-    error "DATASPOKE_JWT_SECRET_KEY is the dev default — operator must set a unique secret."
-  fi
-
-  # The 'X' sentinel is stripped back off below: `$(...)` eats trailing
-  # newlines, so without it a username carrying one reaches the allowlist as a
-  # clean value and passes. The init container reads the same key through a
-  # secretKeyRef, which preserves every byte — so the pre-flight must see the
-  # raw value or the two disagree. See _build_airflow_simple_auth_init_container_file.
-  local airflow_user
-  airflow_user="$(kubectl get secret "${secret_name}" -n "${ns}" \
-    -o jsonpath='{.data.DATASPOKE_AIRFLOW_USER}' | base64 --decode; printf 'X')"
-  airflow_user="${airflow_user%X}"
-  if [[ "${airflow_user}" == "admin" ]]; then
-    error "DATASPOKE_AIRFLOW_USER must not be 'admin' — rename to reduce brute-force exposure."
-  fi
-  # Allowlist, not a denylist of ','/':' — see $AIRFLOW_SIMPLE_AUTH_USERNAME_REGEX's
-  # own comment (near INSTALL_TMPDIR above) for why this username is a Helm
-  # `tpl` injection sink and a denylist does not close it.
-  if [[ ! "${airflow_user}" =~ ${AIRFLOW_SIMPLE_AUTH_USERNAME_REGEX} ]]; then
-    error "DATASPOKE_AIRFLOW_USER '${airflow_user}' in Secret '${secret_name}' does not match
-${AIRFLOW_SIMPLE_AUTH_USERNAME_REGEX} — the same allowlist install.sh already applies to
-SECRET_TO_CHECK, namespaces, StorageClass names, and --image-tag. This username is composed into
-airflow.extraEnv, which the vendored Airflow chart renders through Go template \`tpl\`
-(custom_airflow_environment, included by every Airflow component's env block) — a denylist of
-specific characters (',' / ':') is not sufficient in front of a template evaluator: Go template
-escapes (e.g. {{ printf \"%c\" 58 }}), YAML string escapes, and a trailing newline all reach the
-same mis-parse by different routes. Rename it to match the allowlist."
-  fi
-
-  # DATASPOKE_AIRFLOW_PASSWORD's PRESENCE is unconditionally required above
-  # (required_keys). Only the "admin"-literal rejection and the
-  # anonymous-admin disclosure warning are keyed on the EFFECTIVE
-  # simple_auth_manager_all_admins (chart default merged with the operator
-  # overlay) — not the chart's own "False" default, since the overlay is free
-  # to set it back to a true-ish value. See spec/feature/HELM_CHART.md
-  # §Airflow authentication.
-  local effective_all_admins
-  effective_all_admins="$(_resolve_effective_all_admins "${chart_values_file}" "${overlay_file}")"
-
-  local airflow_password
-  airflow_password="$(kubectl get secret "${secret_name}" -n "${ns}" \
-    -o jsonpath='{.data.DATASPOKE_AIRFLOW_PASSWORD}' | base64 --decode)"
-
-  if [[ "${effective_all_admins}" == "true" ]]; then
-    warn "airflow.config.core.simple_auth_manager_all_admins resolves to a true-ish value in the
-effective chart values (chart default overridden by your --values overlay) —
-DATASPOKE_AIRFLOW_{USER,PASSWORD} is NOT consulted at Airflow login. Anyone who can reach
-airflow.<domain> is granted an Airflow ADMIN session with no credential at all
-(SimpleAuthManager's GET /auth/token / /auth/token/login). The chart ships no source-range
-restriction of its own (see spec/feature/HELM_CHART.md §Ingress & Network Policy) — restrict this
-host at the network layer if that exposure is not acceptable.
-See spec/feature/HELM_CHART.md §Airflow authentication."
-  elif [[ "${airflow_password}" == "admin" ]]; then
-    error "DATASPOKE_AIRFLOW_PASSWORD in Secret '${secret_name}' must not be 'admin' — it gates every
-Airflow login under the default airflow.config.core.simple_auth_manager_all_admins: \"False\". Set
-a real password, or set that value to a true-ish value (t/true/1) in your --values overlay to
-accept anonymous-admin Airflow access instead (see spec/feature/HELM_CHART.md §Airflow authentication)."
-  fi
-
-  local google_oauth_secret_val
-  google_oauth_secret_val="$(kubectl get secret "${secret_name}" -n "${ns}" \
-    -o jsonpath='{.data.DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET}' | base64 --decode)"
-  if [[ "${google_oauth_secret_val}" == placeholder-* ]]; then
-    error "DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET is the dev placeholder — operator must set a real Google OAuth client secret."
-  fi
+  env_file_set_var "$1" "$2" "$ENV_FILE"
 }
 
 # _build_airflow_extra_env_file <namespace> <secret_name> [<emit_simple_auth_vars>]
@@ -1348,7 +913,7 @@ accept anonymous-admin Airflow access instead (see spec/feature/HELM_CHART.md §
 # (_build_airflow_simple_auth_init_container_file; $AIRFLOW_SIMPLE_AUTH_PASSWORDS_FILE).
 #
 # The composed value is re-validated against $AIRFLOW_SIMPLE_AUTH_USERNAME_REGEX
-# here too, not just in _check_airflow_credentials_prod's pre-flight: this
+# here too, not just in verify_credential_secret's pre-flight: this
 # function is the one place that actually renders the username into
 # airflow.extraEnv, which the vendored Airflow chart evaluates through Go
 # template `tpl` (a defense-in-depth re-assertion at the point of use, in
@@ -1390,7 +955,7 @@ EOF
       error "DATASPOKE_AIRFLOW_USER '${airflow_user}' in Secret '${secret_name}' does not match
 ${AIRFLOW_SIMPLE_AUTH_USERNAME_REGEX} — re-asserted here because this function is the shared path
 that composes it into airflow.extraEnv, a Helm \`tpl\` injection sink (see
-\$AIRFLOW_SIMPLE_AUTH_USERNAME_REGEX's own comment). _check_airflow_credentials_prod should have
+\$AIRFLOW_SIMPLE_AUTH_USERNAME_REGEX's own comment). verify_credential_secret should have
 caught this in pre-flight; re-run the install after fixing the Secret."
     fi
     cat >> "${tmp_env_file}" <<EOF
@@ -1568,409 +1133,6 @@ airflow:
         mountPath: ${AIRFLOW_SIMPLE_AUTH_PASSWORDS_DIR}
 EOF
   printf '%s' "${tmp_values_file}"
-}
-
-# _resolve_existing_secret_name [<overlay_file>]
-# Extracts secrets.existingSecret from an operator overlay using python3+yaml.
-# Prints the resolved name, or empty string if absent/unset. On a malformed
-# overlay (invalid YAML, or YAML that doesn't parse to a mapping — a list or
-# scalar document), prints one stderr line and exits non-zero; the caller
-# assigns via `$(...) || error "..."` so the failure gets the same [ERROR]
-# voice as every other pre-flight abort instead of a bare Python traceback.
-_resolve_existing_secret_name() {
-  local overlay_file="${1:-}"
-  if [[ -z "${overlay_file}" || ! -f "${overlay_file}" ]]; then
-    echo ""
-    return 0
-  fi
-  if ! python3 -c "import yaml" 2>/dev/null; then
-    error "python3 with PyYAML is required to parse the operator overlay for secrets.existingSecret. Install: pip install pyyaml"
-  fi
-  python3 - "${overlay_file}" <<'PYEOF'
-import sys, yaml
-
-PATH = sys.argv[1]
-
-
-def fail(msg):
-    print(msg, file=sys.stderr)
-    sys.exit(1)
-
-
-def dig(node, *keys):
-    # A node that is PRESENT but not a mapping is an operator error, not an
-    # absent key. Coercing it to {} would resolve the whole path to "unset"
-    # and let the caller fall through to a default — fail loudly instead.
-    walked = []
-    for key in keys:
-        if node is None:
-            return None
-        if not isinstance(node, dict):
-            fail(f"Overlay file '{PATH}': '{'.'.join(walked)}' must be a mapping, got {type(node).__name__}.")
-        walked.append(key)
-        node = node.get(key)
-    return node
-
-
-with open(PATH) as f:
-    try:
-        data = yaml.safe_load(f)
-    except yaml.YAMLError as exc:
-        fail(f"Invalid YAML in overlay file '{PATH}': {' '.join(str(exc).split())}")
-
-if data is not None and not isinstance(data, dict):
-    fail(f"Overlay file '{PATH}' does not parse to a YAML mapping at its top level.")
-
-print(dig(data, "secrets", "existingSecret") or "")
-PYEOF
-}
-
-# _resolve_storage_classes [<overlay_file>]
-# Extracts every StorageClass name the operator's overlay pins from the keys
-# the postgresql/redis/airflow subcharts honour, using the same python3+yaml
-# pattern as _resolve_existing_secret_name above:
-#   postgresql.primary.persistence.storageClass
-#   redis.master.persistence.storageClass
-#   redis.replica.persistence.storageClass
-#   global.defaultStorageClass, global.storageClass (Bitnami-wide fallbacks)
-#   postgresql.global.{defaultStorageClass,storageClass}
-#   redis.global.{defaultStorageClass,storageClass} — a `global:` block nested
-#     inside a Bitnami subchart still reaches that child as .Values.global,
-#     and common.storage.class ranks it AHEAD of the component's own
-#     persistence.storageClass, so a pin here shadows the three above.
-#   airflow.{logs,dags,triggerer,workers,workers.celery,redis}.persistence.
-#     storageClassName — NOTE the different spelling (`storageClassName`, not
-#     `storageClass`) inherited from the upstream apache-airflow chart. This
-#     is a copy-paste trap: pasting a Bitnami-shaped key here silently pins
-#     nothing. values-prod.example.yaml §Airflow log persistence actively
-#     tells operators to uncomment two of these (workers.celery and
-#     triggerer) for post-mortem log retention.
-# Out of scope because the shipped architecture cannot reach them:
-# postgresql.readReplicas.persistence, postgresql.backup.cronjob.storage, and
-# redis.sentinel.persistence (standalone, no backup CronJob, no sentinel).
-#
-# A literal "-" is the upstream Bitnami convention (charts/common/templates/
-# _storage.tpl, documented at redis/values.yaml:543,1035 and mirrored by
-# postgresql) for "disable dynamic provisioning, bind a pre-provisioned PV"
-# — it renders as storageClassName: "". The apache-airflow chart reproduces
-# that exact mapping ONLY on the `logs` and `dags` persistence blocks
-# (logs-persistent-volume-claim.yaml:46, dags-persistent-volume-claim.yaml:46);
-# `triggerer`, `workers`, `workers.celery`, and `redis` pass the value
-# straight into `storageClassName` with no such branch, so a "-" there
-# renders literally and Kubernetes rejects it as an invalid class name. Each
-# printed line therefore carries a provenance tag ahead of the name —
-# "bitnami" and "airflow-sentinel" honour "-"; "airflow-literal" does not —
-# and de-duplication is keyed on the (tag, name) pair, not the bare name, so
-# a caller can tell a Bitnami "-" from an Airflow "-" apart even after two
-# different keys pin the identical string.
-# Prints one `<tag>\t<name>` line per resolved, de-duplicated, non-empty pin;
-# nothing at all when the overlay pins none (the cluster default then
-# applies and the pre-flight check skips cleanly). On a malformed overlay,
-# behaves like _resolve_existing_secret_name above.
-_resolve_storage_classes() {
-  local overlay_file="${1:-}"
-  if [[ -z "${overlay_file}" || ! -f "${overlay_file}" ]]; then
-    return 0
-  fi
-  if ! python3 -c "import yaml" 2>/dev/null; then
-    error "python3 with PyYAML is required to parse the operator overlay for pinned StorageClasses. Install: pip install pyyaml"
-  fi
-  python3 - "${overlay_file}" <<'PYEOF'
-import sys, yaml
-
-PATH = sys.argv[1]
-
-
-def fail(msg):
-    print(msg, file=sys.stderr)
-    sys.exit(1)
-
-
-def dig(node, *keys):
-    # A node that is PRESENT but not a mapping is an operator error, not an
-    # absent key. Coercing it to {} would make the whole gate silently
-    # resolve zero pins and no-op — fail loudly instead.
-    walked = []
-    for key in keys:
-        if node is None:
-            return None
-        if not isinstance(node, dict):
-            fail(f"Overlay file '{PATH}': '{'.'.join(walked)}' must be a mapping, got {type(node).__name__}.")
-        walked.append(key)
-        node = node.get(key)
-    return node
-
-
-with open(PATH) as f:
-    try:
-        data = yaml.safe_load(f)
-    except yaml.YAMLError as exc:
-        fail(f"Invalid YAML in overlay file '{PATH}': {' '.join(str(exc).split())}")
-
-if data is not None and not isinstance(data, dict):
-    fail(f"Overlay file '{PATH}' does not parse to a YAML mapping at its top level.")
-
-airflow = dig(data, "airflow")
-
-# (provenance tag, resolved value) — tag decides whether "-" is a valid
-# pre-provisioned-PV sentinel (bitnami / airflow-sentinel) or an unsupported
-# literal that will reach the API server verbatim (airflow-literal). See the
-# docstring above for which upstream template each tag corresponds to.
-pins = [
-    ("bitnami", dig(data, "postgresql", "primary", "persistence", "storageClass")),
-    ("bitnami", dig(data, "redis", "master", "persistence", "storageClass")),
-    ("bitnami", dig(data, "redis", "replica", "persistence", "storageClass")),
-    ("bitnami", dig(data, "global", "defaultStorageClass")),
-    ("bitnami", dig(data, "global", "storageClass")),
-    # A `global:` block nested INSIDE a Bitnami subchart reaches that child as
-    # .Values.global too, and common.storage.class gives it precedence over
-    # the component's own persistence.storageClass — so a pin here shadows
-    # the three above and must be gated with them.
-    ("bitnami", dig(data, "postgresql", "global", "defaultStorageClass")),
-    ("bitnami", dig(data, "postgresql", "global", "storageClass")),
-    ("bitnami", dig(data, "redis", "global", "defaultStorageClass")),
-    ("bitnami", dig(data, "redis", "global", "storageClass")),
-    ("airflow-sentinel", dig(airflow, "logs", "persistence", "storageClassName")),
-    ("airflow-sentinel", dig(airflow, "dags", "persistence", "storageClassName")),
-    ("airflow-literal", dig(airflow, "triggerer", "persistence", "storageClassName")),
-    ("airflow-literal", dig(airflow, "workers", "persistence", "storageClassName")),
-    ("airflow-literal", dig(airflow, "workers", "celery", "persistence", "storageClassName")),
-    ("airflow-literal", dig(airflow, "redis", "persistence", "storageClassName")),
-]
-seen = set()
-for tag, name in pins:
-    if isinstance(name, str) and name and (tag, name) not in seen:
-        seen.add((tag, name))
-        print(f"{tag}\t{name}")
-PYEOF
-}
-
-# _csidriver_state <name>
-# Echoes exactly one of "found" / "absent" / "forbidden" for the cluster-
-# scoped CSIDriver object <name>, used by the StorageClass pre-flight below.
-# A plain exit-code check (`kubectl get csidriver ... >/dev/null 2>&1`)
-# cannot tell a genuine NotFound apart from an RBAC denial — both are
-# non-zero exits with nothing on stdout — and collapsing them would have the
-# pre-flight tell an operator to install a driver that is already there,
-# purely because the installer's own kubectl identity lacks read access to
-# CSIDriver objects (a cluster-scoped resource, so `csidrivers.storage.k8s.io`
-# get/list is a real, separate RBAC grant an operator may not have given the
-# installer identity — see helm-charts/prod-prereq/). `--` terminates flag
-# parsing ahead of <name>: every caller already validates it against a
-# DNS-subdomain-with-optional-path grammar before passing it here, but that
-# grammar still permits a leading character kubectl's own parser could read
-# as a flag.
-_csidriver_state() {
-  local name="$1" stderr_out
-  if stderr_out="$(kubectl get csidriver -- "${name}" 2>&1 >/dev/null)"; then
-    echo "found"
-  elif [[ "$stderr_out" == *"Forbidden"* || "$stderr_out" == *"forbidden"* ]]; then
-    echo "forbidden"
-  else
-    echo "absent"
-  fi
-}
-
-# _assert_no_internal_ingress_exposure <chart_values_file> [<overlay_file>]
-# Prod-only guard: aborts when the effective api.ingress.hosts[*].paths[*]
-# would publish /internal/* on the public API ingress — the residual half of
-# issue #130. /internal/* includes POST /internal/admin/bootstrap, which seeds
-# a default admin whose credentials are published in this repository (see
-# helm-charts/README.md §Prod profile). Narrowing the chart default itself is
-# not an option: the api-wired integration tests drive /internal/* over the
-# dev ingress, which shares this same default (values-dev.yaml), so this
-# check runs only on the prod pre-flight, never on dev.
-#
-# Resolves the effective hosts the same way Helm does — the chart default
-# from <chart_values_file>, wholesale-replaced by the overlay's
-# api.ingress.hosts when the overlay sets that key at all (Helm's
-# list-replace semantics for lists — see values-prod.example.yaml's header
-# comment) — using the same python3+PyYAML pattern as
-# _resolve_existing_secret_name/_resolve_storage_classes above.
-#
-# A path admits /internal/* when it is the catch-all "/" or is, after
-# stripping a trailing slash, exactly "/internal" — the only two
-# path-element-wise prefixes of "/internal", since it has a single path
-# segment. On a malformed chart/overlay file, behaves like
-# _resolve_existing_secret_name above.
-_assert_no_internal_ingress_exposure() {
-  local chart_values_file="$1" overlay_file="${2:-}"
-  if ! python3 -c "import yaml" 2>/dev/null; then
-    error "python3 with PyYAML is required to check the API ingress paths for /internal exposure. Install: pip install pyyaml"
-  fi
-  # Written directly to a temp file rather than captured via `x="$(... <<EOF)"`
-  # — a heredoc nested inside a command substitution confuses bash's own
-  # paren-matching the moment the heredoc body carries an odd number of
-  # literal `'` characters (an apostrophe in a comment is enough), even
-  # though the quoted `<<'PYEOF'` terminator makes those characters fully
-  # inert to expansion. Redirecting to a file sidesteps the nesting.
-  local offenders_file
-  offenders_file="$(mktemp)"
-  if ! python3 - "${chart_values_file}" "${overlay_file}" > "${offenders_file}" <<'PYEOF'
-import sys, yaml
-
-CHART_FILE = sys.argv[1]
-OVERLAY_FILE = sys.argv[2] if len(sys.argv) > 2 else ""
-
-
-def fail(msg):
-    print(msg, file=sys.stderr)
-    sys.exit(1)
-
-
-def load_mapping(path, label):
-    with open(path) as f:
-        try:
-            data = yaml.safe_load(f)
-        except yaml.YAMLError as exc:
-            fail(f"Invalid YAML in {label} '{path}': {' '.join(str(exc).split())}")
-    if data is not None and not isinstance(data, dict):
-        fail(f"{label} '{path}' does not parse to a YAML mapping at its top level.")
-    return data or {}
-
-
-def dig(node, *keys):
-    walked = []
-    for key in keys:
-        if node is None:
-            return None
-        if not isinstance(node, dict):
-            fail(f"'{'.'.join(walked)}' must be a mapping, got {type(node).__name__}.")
-        walked.append(key)
-        node = node.get(key)
-    return node
-
-
-chart_data = load_mapping(CHART_FILE, "chart values file")
-hosts = dig(chart_data, "api", "ingress", "hosts") or []
-
-if OVERLAY_FILE:
-    overlay_data = load_mapping(OVERLAY_FILE, "overlay file")
-    overlay_hosts = dig(overlay_data, "api", "ingress", "hosts")
-    # Helm list-replace semantics: an overlay hosts key replaces the chart
-    # default hosts list wholesale, not merged into it.
-    if overlay_hosts is not None:
-        hosts = overlay_hosts
-
-for host in hosts:
-    if not isinstance(host, dict):
-        continue
-    host_name = host.get("host", "<unknown host>")
-    for p in host.get("paths") or []:
-        if not isinstance(p, dict):
-            continue
-        path = p.get("path")
-        if not isinstance(path, str):
-            continue
-        normalized = path.rstrip("/") or "/"
-        if normalized == "/" or normalized == "/internal":
-            print(f"{host_name}\t{path}")
-PYEOF
-  then
-    rm -f "${offenders_file}"
-    error "Could not parse the API ingress paths for /internal exposure (see above)."
-  fi
-
-  if [[ -s "${offenders_file}" ]]; then
-    local offenders offender_host offender_path
-    offenders="$(cat "${offenders_file}")"
-    rm -f "${offenders_file}"
-    while IFS=$'\t' read -r offender_host offender_path; do
-      [[ -z "$offender_path" ]] && continue
-      error "The API ingress host '${offender_host}' publishes path '${offender_path}', which admits /internal/* — including POST /internal/admin/bootstrap, which seeds a default admin whose credentials are published in this repository. Narrow api.ingress.hosts[].paths in your --values overlay to the public API surface (/api/v1, /health, /ready, and optionally /redoc, /openapi.json) — see helm-charts/values-prod.example.yaml for the correct path list."
-    done <<< "${offenders}"
-  fi
-  rm -f "${offenders_file}"
-}
-
-# _assert_no_airflow_simple_auth_overlay_conflict [<overlay_file>]
-# Prod-only guard: Helm deep-merges MAPS but REPLACES LIST-typed values
-# wholesale, never merges them. install.sh's own -f layer for the Airflow
-# SimpleAuthManager passwords mechanism
-# (_build_airflow_simple_auth_init_container_file) sets
-# airflow.apiServer.{extraInitContainers,extraVolumes,extraVolumeMounts} —
-# and sits ahead of the operator's --values overlay in VALUES_ARGS
-# specifically so an overlay CAN extend those same fields for an unrelated
-# reason (a sidecar, a debug volume). But an overlay that sets ANY of the
-# three at all does not append to this release's list — it silently
-# REPLACES it, deleting the passwords-file init container/volume/mount with
-# no error from either `helm template` or `helm lint` (both still exit 0
-# against the resulting pod template, which mounts a path the passwords-file
-# env var still names but no container ever writes). Abort here instead of
-# letting an overlay silently disable this issue's own fix — see
-# helm-charts/README.md for the operator-facing workaround (re-declare the
-# simple-auth-manager-passwords entry alongside whatever else the overlay
-# adds to these lists).
-_assert_no_airflow_simple_auth_overlay_conflict() {
-  local overlay_file="${1:-}"
-  if [[ -z "${overlay_file}" || ! -f "${overlay_file}" ]]; then
-    return 0
-  fi
-  if ! python3 -c "import yaml" 2>/dev/null; then
-    error "python3 with PyYAML is required to check the --values overlay for an Airflow apiServer list conflict. Install: pip install pyyaml"
-  fi
-  local offenders_file
-  offenders_file="$(mktemp)"
-  if ! python3 - "${overlay_file}" > "${offenders_file}" <<'PYEOF'
-import sys, yaml
-
-OVERLAY_FILE = sys.argv[1]
-
-
-def fail(msg):
-    print(msg, file=sys.stderr)
-    sys.exit(1)
-
-
-def load_mapping(path, label):
-    with open(path) as f:
-        try:
-            data = yaml.safe_load(f)
-        except yaml.YAMLError as exc:
-            fail(f"Invalid YAML in {label} '{path}': {' '.join(str(exc).split())}")
-    if data is not None and not isinstance(data, dict):
-        fail(f"{label} '{path}' does not parse to a YAML mapping at its top level.")
-    return data or {}
-
-
-def dig(node, *keys):
-    walked = []
-    for key in keys:
-        if node is None:
-            return None
-        if not isinstance(node, dict):
-            fail(f"'{'.'.join(walked)}' must be a mapping, got {type(node).__name__}.")
-        walked.append(key)
-        node = node.get(key)
-    return node
-
-
-data = load_mapping(OVERLAY_FILE, "overlay file")
-for field in ("extraInitContainers", "extraVolumes", "extraVolumeMounts"):
-    if dig(data, "airflow", "apiServer", field) is not None:
-        print(field)
-PYEOF
-  then
-    rm -f "${offenders_file}"
-    error "Could not parse the --values overlay for an Airflow apiServer list conflict (see above)."
-  fi
-
-  if [[ -s "${offenders_file}" ]]; then
-    local offenders offender_list
-    offenders="$(cat "${offenders_file}")"
-    rm -f "${offenders_file}"
-    offender_list="$(echo "${offenders}" | tr '\n' ' ' | sed 's/ *$//')"
-    error "Your --values overlay sets airflow.apiServer.{${offender_list}}. Helm replaces LIST-typed
-values wholesale rather than merging them, and install.sh's own -f layer for the Airflow
-SimpleAuthManager passwords-file mechanism (the init container, its emptyDir, and its
-volumeMount — see spec/feature/HELM_CHART.md §Airflow authentication) sets exactly these fields.
-Your overlay would silently delete them, leaving the api-server pointed at a passwords file no
-container ever writes, with no error from helm template/lint. Re-declare the
-simple-auth-manager-passwords entry alongside whatever else you are adding to these lists (see
-helm-charts/README.md's note on this hazard), or move your addition to a field this release does
-not already use."
-  fi
-  rm -f "${offenders_file}"
 }
 
 # _api_image_helm_set_args
@@ -2763,7 +1925,7 @@ if [[ "$PROFILE" == "dev" ]]; then
         || warn "DataSpoke frontend did not become ready in time — check pod logs."
     fi
 
-    # Populate DATASPOKE_DEV_* block in .env for laptop-side test access
+    # Populate the auto-populated DATASPOKE_DEV_* block in .env for laptop-side dev access
     info "Writing DATASPOKE_DEV_* values to .env..."
     # DATASPOKE_POSTGRES_{USER,DB} come from the app ConfigMap, not the
     # credentials Secret — they are non-secret and live there instead (see
@@ -2947,188 +2109,33 @@ elif [[ "$PROFILE" == "prod" ]]; then
   ensure_namespace "${NS}"
 
   # Verify the operator's shared ingress controller is installed (fail fast).
-  #
-  # Required explicitly in prod — no `nginx` default. The --set below overrides
-  # whatever class the operator's --values overlay pins, so defaulting would
-  # silently republish the API, frontend, and Airflow UI on any IngressClass
-  # that happens to be named `nginx` (often another team's internet-facing
-  # controller). The existence check that follows proves the class is real, not
-  # that it is the one the operator meant.
+  # Required explicitly in prod — no `nginx` default; see
+  # assert_ingress_class_present in lib/helpers.sh, the shared probe the
+  # standalone pre-flight runs too, for why.
   : "${DATASPOKE_KUBE_INGRESS_CLASS:?must be set explicitly in the prod .env — install.sh --sets this class onto every DataSpoke Ingress, overriding the className in your --values overlay}"
   INGRESS_CLASS="$(ingress_class)"
-  if ! kubectl get ingressclass "${INGRESS_CLASS}" >/dev/null 2>&1; then
-    error "IngressClass '${INGRESS_CLASS}' not found in the cluster. Install a controller or set DATASPOKE_KUBE_INGRESS_CLASS."
-  fi
+  assert_ingress_class_present "${INGRESS_CLASS}"
   info "IngressClass '${INGRESS_CLASS}' is present."
 
   # Refuse to publish /internal/* on the public API ingress (fail fast). See
-  # _assert_no_internal_ingress_exposure's docstring above for why this is a
-  # prod-only pre-flight gate rather than a narrower chart default.
+  # _assert_no_internal_ingress_exposure's docstring in lib/helpers.sh for why
+  # this is a prod-only pre-flight gate rather than a narrower chart default.
   _assert_no_internal_ingress_exposure "$CHART_DIR/values.yaml" "${EXTRA_VALUES:-}"
   info "API ingress paths do not publish /internal/*."
 
   # Refuse an overlay that would silently replace the Airflow SimpleAuthManager
   # passwords-file init container/volume/mount (fail fast). See
-  # _assert_no_airflow_simple_auth_overlay_conflict's docstring above.
+  # _assert_no_airflow_simple_auth_overlay_conflict's docstring in lib/helpers.sh.
   _assert_no_airflow_simple_auth_overlay_conflict "${EXTRA_VALUES:-}"
   info "--values overlay does not conflict with the Airflow SimpleAuthManager passwords-file mechanism."
 
   # Verify every StorageClass the operator's overlay pins exists AND, where
   # it names an out-of-tree CSI provisioner, that the matching CSIDriver is
-  # actually registered (fail fast).
-  #
-  # A namespace-scoped Helm release cannot own a cluster-scoped StorageClass —
-  # see helm-charts/prod-prereq/ for the cluster-admin prerequisite this
-  # check assumes was applied first. Resolved from fifteen overlay keys across
-  # the postgresql/redis Bitnami subcharts and the Airflow subchart's
-  # persistence blocks — see _resolve_storage_classes's docstring above for
-  # the full list, the `storageClass` (Bitnami) vs `storageClassName`
-  # (Airflow) spelling difference, and which of the two honour a literal
-  # `-`. An overlay that pins none of them skips this check cleanly — the
-  # cluster default StorageClass then applies.
-  #
-  # Failing here, rather than later, is the point: a missing class, or a
-  # provisioner with no driver behind it, otherwise leaves the PVC Pending,
-  # so PostgreSQL/Redis/Airflow never start, the API's wait-for-postgres init
-  # container loops, and the install dies on a rollout timeout whose symptom
-  # names the stalled workload rather than storage. Recovery then needs the
-  # stuck PVCs deleted by hand, because storageClassName is immutable once
-  # bound.
-  #
-  # Resolved into a variable FIRST, then iterated — not
-  # `done < <(_resolve_storage_classes ...)`. A process substitution's exit
-  # status is invisible to `set -e`: the helper's own `error()` (or an
-  # uncaught parse failure) would terminate only the subshell, the
-  # while-loop would read zero lines, and this fail-fast gate would silently
-  # no-op instead of aborting. Assigning via `$( ... )` makes a non-zero
-  # status trip `set -e` as intended; `|| error ...` gives the parse-failure
-  # path the same [ERROR] voice as every other pre-flight abort here.
-  if [[ -n "${EXTRA_VALUES:-}" && -f "${EXTRA_VALUES}" ]]; then
-    PINNED_STORAGE_CLASSES="$(_resolve_storage_classes "${EXTRA_VALUES}")" \
-      || error "Could not parse the --values overlay for pinned StorageClasses (see above)."
-    while IFS=$'\t' read -r sc_class sc_name; do
-      [[ -z "$sc_name" ]] && continue
-      # A literal "-" is the upstream Bitnami convention (see the docstring
-      # on _resolve_storage_classes) for "disable dynamic provisioning, bind
-      # a pre-provisioned PV" (renders as storageClassName: ""). The Airflow
-      # chart reproduces that mapping ONLY on the `logs`/`dags` persistence
-      # blocks (sc_class "airflow-sentinel"); on `triggerer`/`workers`/
-      # `workers.celery`/`redis` (sc_class "airflow-literal") it passes the
-      # value straight into storageClassName with no such branch, so a "-"
-      # there would render literally and Kubernetes would reject it as an
-      # invalid class name — reject it here instead, before any resource is
-      # created.
-      if [[ "$sc_name" == "-" ]]; then
-        if [[ "$sc_class" == "bitnami" || "$sc_class" == "airflow-sentinel" ]]; then
-          info "StorageClass pin '-' (${sc_class}) — dynamic provisioning disabled (pre-provisioned PV expected); skipping existence check."
-          continue
-        fi
-        error "StorageClass pin '-' on an Airflow persistence key (triggerer/workers/workers.celery/redis) is not honoured by the apache-airflow chart — it would render storageClassName: '-' literally, which Kubernetes rejects as an invalid class name. Remove the '-' and name an explicit StorageClass. There is no pre-provisioned-PV path on these keys: triggerer/workers/workers.celery expose no existingClaim, and persistence.enabled: false renders an emptyDir, not a bound PV (airflow.redis.persistence does accept existingClaim)."
-      fi
-      # Validate against the Kubernetes DNS-subdomain grammar before using it
-      # as a kubectl argument — an overlay value beginning with `-` would
-      # otherwise be parsed as a kubectl flag (e.g. a name of `-A`), letting a
-      # malformed overlay pass the gate for a class that was never checked.
-      if ! [[ "$sc_name" =~ ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$ ]]; then
-        error "StorageClass name '${sc_name}' pinned in your --values overlay is not a valid Kubernetes name."
-      fi
-
-      # One round trip covers both existence and provisioner: `-o jsonpath`
-      # against a StorageClass that does not exist exits non-zero with no
-      # output, exactly like the separate `kubectl get storageclass ...`
-      # existence probe this replaces — so a single failed read here still
-      # reports "not found", and a class pinned under two different overlay
-      # keys (see _resolve_storage_classes's (tag, name) de-duplication
-      # docstring) no longer pays for two round trips to learn the same
-      # thing twice. `$( ... )` assignment, not a bare command inside
-      # `[[ ... ]]`: `set -e` sees a command-substitution assignment's exit
-      # status directly, so `|| error` reaches the standard `[ERROR]` voice
-      # on a genuine failure. A StorageClass whose `.provisioner` field is
-      # present but empty — a malformed object, not a missing one — exits 0
-      # with empty output here; that case is caught by the grammar check
-      # just below, not by this line.
-      sc_provisioner="$(kubectl get storageclass "${sc_name}" -o jsonpath='{.provisioner}' 2>/dev/null)" \
-        || error "StorageClass '${sc_name}' pinned in your --values overlay was not found in the cluster. Apply the cluster-scoped prerequisites first — see helm-charts/prod-prereq/."
-      info "StorageClass '${sc_name}' is present (provisioner: ${sc_provisioner})."
-
-      # Validate the provisioner's own grammar before it reaches any string
-      # comparison or a `kubectl get csidriver` argument below. A
-      # StorageClass provisioner is not a bare object name: it is either a
-      # DNS-subdomain CSI driver name (`ebs.csi.aws.com`) or a
-      # `<vendor-domain>/<name>` external non-CSI provisioner
-      # (`rancher.io/local-path`, `kubernetes.io/no-provisioner`) —
-      # rejecting the slash form outright would misdiagnose a valid,
-      # supported cluster (k3s/RKE's `rancher.io/local-path`, OpenEBS, the
-      # NFS subdir provisioner) as an invalid provisioner name. The anchored
-      # `^...$` still rejects a value beginning with `-`, which would
-      # otherwise be parsed as a flag by a subsequent kubectl invocation.
-      if ! [[ "$sc_provisioner" =~ ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?(/[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?)?$ ]]; then
-        error "StorageClass '${sc_name}' has provisioner '${sc_provisioner}', which is not a valid Kubernetes provisioner name."
-      fi
-
-      # CSI migration lets a StorageClass keep declaring one of these
-      # compiled-in `kubernetes.io/*` names while the operator has installed
-      # the matching CSI driver out-of-band and disabled the in-tree
-      # plugin — EKS's own default `gp2` StorageClass still reads
-      # `kubernetes.io/aws-ebs` while provisioning is actually delegated to
-      # the separately-installed `ebs.csi.aws.com` addon. Exempting the
-      # whole `kubernetes.io/*` family from the CSIDriver check would skip
-      # the single most likely real instance of the failure this block
-      # exists to catch. A cluster genuinely still on the in-tree plugin is
-      # equally legitimate, though, so a driver absent here is reported and
-      # does not abort the install — only a name this installer cannot map
-      # at all (the `else` branch below) hard-gates.
-      case "$sc_provisioner" in
-        kubernetes.io/aws-ebs)    _csi_migrated_name="ebs.csi.aws.com" ;;
-        kubernetes.io/gce-pd)     _csi_migrated_name="pd.csi.storage.gke.io" ;;
-        kubernetes.io/azure-disk) _csi_migrated_name="disk.csi.azure.com" ;;
-        *)                        _csi_migrated_name="" ;;
-      esac
-
-      if [[ -n "${_csi_migrated_name}" ]]; then
-        case "$(_csidriver_state "${_csi_migrated_name}")" in
-          found)
-            info "StorageClass '${sc_name}' uses the CSI-migrated provisioner '${sc_provisioner}'; CSIDriver '${_csi_migrated_name}' is registered."
-            ;;
-          forbidden)
-            warn "Could not confirm CSIDriver '${_csi_migrated_name}' for StorageClass '${sc_name}' (provisioner '${sc_provisioner}') — the installer's kubectl identity is denied read access to cluster-scoped CSIDriver objects. Verify manually: kubectl get csidriver ${_csi_migrated_name}"
-            ;;
-          absent)
-            warn "StorageClass '${sc_name}' declares the CSI-migrated provisioner '${sc_provisioner}', but no '${_csi_migrated_name}' CSIDriver is registered — this cluster may genuinely still run the in-tree plugin. If it does not, the PVC will stick Pending; install the CSI driver addon (see helm-charts/prod-prereq/) before this release."
-            ;;
-        esac
-      elif [[ "$sc_provisioner" == kubernetes.io/* ]]; then
-        # Every other compiled-in provisioner, including
-        # kubernetes.io/no-provisioner (pre-provisioned/static volumes),
-        # registers no CSIDriver object at all — nothing to check.
-        info "StorageClass '${sc_name}' uses the in-tree provisioner '${sc_provisioner}'; no CSIDriver required."
-      elif [[ "$sc_provisioner" == */* ]]; then
-        # A slash-bearing provisioner outside the kubernetes.io/ namespace is
-        # an external non-CSI provisioner — a controller that watches
-        # PersistentVolumeClaims directly rather than a CSI driver — and no
-        # CSIDriver object will ever exist for it. Requiring one here would
-        # reject k3s/RKE's rancher.io/local-path, openebs.io/local, and the
-        # NFS subdir provisioner outright.
-        warn "StorageClass '${sc_name}' names provisioner '${sc_provisioner}', an external (non-CSI) provisioner — skipping the CSIDriver check (none will ever exist for it). Confirm its controller is actually running in-cluster; a StorageClass object alone does not guarantee that."
-      else
-        # A bare DNS-subdomain name with no kubernetes.io/ prefix and no
-        # vendor path is the shape of an out-of-tree CSI driver name
-        # (ebs.csi.aws.com, pd.csi.storage.gke.io, ...) — the one
-        # unambiguous case this gate can enforce as a hard failure.
-        case "$(_csidriver_state "${sc_provisioner}")" in
-          found)
-            info "CSIDriver '${sc_provisioner}' is registered for StorageClass '${sc_name}'."
-            ;;
-          forbidden)
-            error "Could not confirm CSIDriver '${sc_provisioner}' is registered for StorageClass '${sc_name}' — the installer's kubectl identity is denied read access to cluster-scoped CSIDriver objects (get on csidrivers.storage.k8s.io). Grant that read access (see helm-charts/prod-prereq/) or verify manually: kubectl get csidriver ${sc_provisioner}"
-            ;;
-          absent)
-            error "StorageClass '${sc_name}' names CSI provisioner '${sc_provisioner}', but no matching CSIDriver is registered in the cluster. Install the CSI driver (its own Helm chart or manifest bundle, per the vendor) before this release — see helm-charts/prod-prereq/."
-            ;;
-        esac
-      fi
-    done <<< "${PINNED_STORAGE_CLASSES}"
-  fi
+  # actually registered (fail fast). An overlay that pins none skips cleanly.
+  # See assert_pinned_storage_classes in lib/helpers.sh for the fifteen
+  # overlay keys it resolves, the Bitnami/Airflow spelling split, and why a
+  # missing class has to fail here rather than as a rollout timeout later.
+  assert_pinned_storage_classes "${EXTRA_VALUES:-}"
 
   # --skip-build assumes the image was already pushed by a prior run (e.g. a
   # CI pipeline that built and pushed, then invoked this script only to
@@ -3165,7 +2172,10 @@ elif [[ "$PROFILE" == "prod" ]]; then
   # below — the same reasoning as the StorageClass name check above: an
   # overlay value beginning with `-` would be parsed as a flag, and a comma
   # or `=` in the value would split a `--set` token into more than one
-  # assignment.
+  # assignment. The shared gates in lib/helpers.sh assert the same grammar
+  # themselves (assert_k8s_name), since they are reachable from the
+  # standalone pre-flight's --secret-name too; this stays because the
+  # `--set` tokens below are install.sh's own and are built here.
   if ! [[ "$SECRET_TO_CHECK" =~ ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$ ]]; then
     error "secrets.existingSecret '${SECRET_TO_CHECK}' in your --values overlay is not a valid Kubernetes name."
   fi
@@ -3176,8 +2186,10 @@ elif [[ "$PROFILE" == "prod" ]]; then
   # Validate ALL required keys are present and not insecure defaults. Reads
   # the effective simple_auth_manager_all_admins from $CHART_DIR/values.yaml
   # merged with the operator's --values overlay (${EXTRA_VALUES}), same
-  # inputs as _assert_no_internal_ingress_exposure above.
-  _check_airflow_credentials_prod "${NS}" "${SECRET_TO_CHECK}" "$CHART_DIR/values.yaml" "${EXTRA_VALUES:-}"
+  # inputs as _assert_no_internal_ingress_exposure above. The key-length
+  # report is the standalone pre-flight's audit mode, not an install's, so
+  # the trailing argument stays unset here.
+  verify_credential_secret "${NS}" "${SECRET_TO_CHECK}" "$CHART_DIR/values.yaml" "${EXTRA_VALUES:-}"
 
   # Compare the Fernet key before any other Secret in this run is mutated: on
   # a mismatch it aborts non-mutating, so running it here keeps the
@@ -3404,14 +2416,13 @@ elif [[ "$PROFILE" == "prod" ]]; then
     _rollout_restart_workload "${NS}" "dataspoke-api"
     _rollout_restart_workload "${NS}" "dataspoke-event-consumer"
   fi
-  # Wait for the Airflow api-server BEFORE dataspoke-api — the prod branch
-  # had no rollout wait for any Airflow workload at all before this fix,
-  # so a broken simple-auth-manager-passwords init container (e.g. a
+  # Wait for the Airflow api-server BEFORE dataspoke-api. Without this wait
+  # a broken simple-auth-manager-passwords init container — a
   # missing/rejected credential the pre-flight above should have already
-  # caught, or a CreateContainerConfigError from a Secret race) reported
-  # install success over a permanently crash-looping Airflow. This is the
-  # same wait dev already runs (see "Waiting for Airflow api-server to
-  # become ready" above).
+  # caught, or a CreateContainerConfigError from a Secret race — would let
+  # the script report install success over a permanently crash-looping
+  # Airflow. This is the same wait dev runs (see "Waiting for Airflow
+  # api-server to become ready" above).
   info "Waiting for Airflow api-server to become ready..."
   kubectl rollout status deployment/dataspoke-airflow-api-server -n "${NS}" --timeout=5m \
     || error "dataspoke-airflow-api-server did not become ready after the upgrade — check pod logs
@@ -3465,6 +2476,16 @@ is not a true-ish value: kubectl logs -n '${NS}' deploy/dataspoke-airflow-api-se
   # -----------------------------------------------------------------------
   # Seed default admin user (idempotent)
   # -----------------------------------------------------------------------
+  # _ADMIN_SEED_STATUS: 0 (skipped or fully succeeded), 2 (seed-admin-user.sh's
+  # ROTATION_FAILED_EXIT — the bootstrap succeeded but the rotation attempt
+  # did not land, e.g. a transient 429 from the auth limiter), or anything
+  # else (bootstrap itself failed — a broken deployment, not a rotation
+  # hiccup). Only the last case aborts: `|| _ADMIN_SEED_STATUS=$?` catches the
+  # exit under `set -e` rather than letting it end this script, because by
+  # this point the helm upgrade above already succeeded and discarding a
+  # completed install over a rotation retry is worse than reporting it loudly
+  # in the summary below.
+  _ADMIN_SEED_STATUS=0
   if [[ "$SKIP_SEED" == "false" ]]; then
     # The seed script's api_internal_request helper (bin/lib/helpers.sh)
     # kubectl execs into the API pod and calls its own loopback port
@@ -3472,7 +2493,12 @@ is not a true-ish value: kubectl logs -n '${NS}' deploy/dataspoke-airflow-api-se
     # dataspoke-api rollout-status wait above already guarantees the pod
     # is Ready to accept the call.
     info "Seeding default admin user..."
-    bash "$SCRIPT_DIR/post-install/seed-admin-user.sh"
+    bash "$SCRIPT_DIR/post-install/seed-admin-user.sh" || _ADMIN_SEED_STATUS=$?
+    if (( _ADMIN_SEED_STATUS != 0 && _ADMIN_SEED_STATUS != 2 )); then
+      error "Seeding the default admin user failed (see the output above) after the helm upgrade
+already succeeded — the release is up, but the built-in admin account may not exist. Investigate
+and re-run: bash ${SCRIPT_DIR}/post-install/seed-admin-user.sh"
+    fi
   else
     info "Skipping admin user seed (--skip-seed)."
   fi
@@ -3482,6 +2508,21 @@ is not a true-ish value: kubectl logs -n '${NS}' deploy/dataspoke-airflow-api-se
   echo ""
   echo "  Helm release: dataspoke  namespace: ${NS}"
   echo ""
+  # Whether the admin seed above rotated the account, evaluated on exactly the
+  # predicate seed-admin-user.sh rotates on — the env file naming the prod
+  # profile through the shared seed_profile, plus a non-blank password — AND
+  # requiring _ADMIN_SEED_STATUS == 0. Without that last condition a rotation
+  # this run attempted and FAILED (status 2, reported above but not fatal to
+  # this script — see the call site) would still print as "rotated": the
+  # preconditions for attempting it were met, but attempting is not the same
+  # as succeeding. Printing the published default as the login while it is no
+  # longer live is worse than printing nothing: an operator reads it as the
+  # credential to use and, failing that, as one still worth rotating.
+  _admin_rotated=false
+  if [[ "$SKIP_SEED" == "false" && -n "${DATASPOKE_PROD_ADMIN_PASSWORD:-}" \
+        && "$(seed_profile "$ENV_FILE")" == "prod" && "${_ADMIN_SEED_STATUS}" == "0" ]]; then
+    _admin_rotated=true
+  fi
   if [[ "$FRONTEND_MODE" == "cluster" ]]; then
     # Best-effort: resolve the deployed frontend ingress host
     _frontend_host="$(kubectl get ingress -n "${NS}" \
@@ -3491,18 +2532,52 @@ is not a true-ish value: kubectl logs -n '${NS}' deploy/dataspoke-airflow-api-se
     else
       echo "  Web UI: served at your configured frontend.ingress host (see your operator overlay)."
     fi
-    if [[ "$SKIP_SEED" == "true" ]]; then
-      echo "  Login:  (admin not seeded — --skip-seed)"
-    else
-      echo "  Login:  dataspoke@dataspoke.local / dataspoke  (rotate via PATCH /auth/me)"
-    fi
   else
     echo "  Frontend: disabled (--frontend none)."
   fi
+  # Outside the frontend conditional deliberately. The account exists and is
+  # reachable through the API whether or not a UI was deployed, so tying the
+  # only notice about the published default to `--frontend cluster` would let a
+  # `--frontend none` prod install finish with no warning about it at all.
+  if [[ "$SKIP_SEED" == "true" ]]; then
+    echo "  Login:  dataspoke@dataspoke.local  (admin not seeded — --skip-seed)"
+  elif [[ "${_admin_rotated}" == "true" ]]; then
+    echo "  Login:  dataspoke@dataspoke.local  (password: DATASPOKE_PROD_ADMIN_PASSWORD in ${ENV_FILE};"
+    echo "          read the admin seed's verdict above before treating it as the live one)"
+  elif [[ "${_ADMIN_SEED_STATUS}" == "2" ]]; then
+    # A rotation was attempted (the preconditions above were met) and did not
+    # land — see seed-admin-user.sh's ROTATION_FAILED_EXIT. Loud, and distinct
+    # from the "nothing attempted" branch below: an operator scanning past
+    # the wall of text above should not have to notice a missing "Rotated"
+    # line to learn this.
+    echo "  Login:  dataspoke@dataspoke.local  (ROTATION TO DATASPOKE_PROD_ADMIN_PASSWORD FAILED THIS RUN"
+    echo "          — see the seed-admin-user.sh output above. The password published in this"
+    echo "          repository may still be live. Re-run: bash ${SCRIPT_DIR}/post-install/seed-admin-user.sh)"
+  else
+    # "may still be live", not "still live": with DATASPOKE_PROD_ADMIN_PASSWORD
+    # blank this run rotated nothing, which says nothing about whether an
+    # earlier one — or an operator with a curl — already did. Asserting the
+    # published default is live against a deployment whose admin was rotated by
+    # hand is a claim this script cannot check, and one that reads as a
+    # completed step in reverse.
+    echo "  Login:  dataspoke@dataspoke.local / dataspoke  (PUBLISHED DEFAULT — this run rotated"
+    echo "          nothing, so it may still be live; rotate via PATCH /api/v1/auth/me, or set"
+    echo "          DATASPOKE_PROD_ADMIN_PASSWORD and re-run bin/post-install/seed-admin-user.sh)"
+  fi
   echo ""
-  echo "  Post-install: configure peripherals and runtime settings via:"
-  echo "    /api/v1/admin/peripherals/{datahub,langfuse}"
-  echo "    /api/v1/admin/conf"
+  # The seed scripts read the same env file, so they are only worth naming when
+  # it actually carries a block for them to send. Otherwise the admin routes are
+  # the honest instruction — a seed command against blank blocks patches
+  # nothing and reads as a step that was completed.
+  if [[ -n "${DATASPOKE_PROD_PERIPHERAL_DATAHUB_GMS_URL:-}" || -n "${DATASPOKE_PROD_LLM_PROVIDER:-}" ]]; then
+    echo "  Post-install: apply the peripheral and LLM blocks of ${ENV_FILE} with:"
+    echo "    ENV_FILE=${ENV_FILE} bash ${SCRIPT_DIR}/post-install/seed-peripheral-config.sh"
+    echo "    ENV_FILE=${ENV_FILE} bash ${SCRIPT_DIR}/post-install/seed-runtime-config.sh"
+  else
+    echo "  Post-install: configure peripherals and runtime settings via:"
+    echo "    /api/v1/admin/peripherals/{datahub,langfuse}"
+    echo "    /api/v1/admin/conf"
+  fi
   echo ""
   info "Total elapsed: $((SECONDS - START_TIME))s"
   echo ""

@@ -30,3 +30,6 @@
 - [Prod bootstrap recipe §2](project_prod_bootstrap_recipe_measurements.md) — measured leak sinks (argv/history/temp-file mode); Airflow all_admins makes 2 of 11 keys decorative
 - [Airflow extraEnv tpl injection surface](project_airflow_extraenv_tpl_injection_surface.md) — airflow.extraEnv goes through Helm `tpl`; a `,`/`:` denylist cannot hold, and 3.1.8 ≠ 3.2.0
 - [independent_sessionmaker silent fallback](project_independent_sessionmaker_silent_fallback.md) — silent by default; .name discriminates the AttributeError conflation; lastResort drops the level AND every extra={} key; 2 pooled conns per PAT request
+\n- [Seed-script profile selection is split](project_seed_profile_selection_split.md) — one env file can be prod to one seed script and dev to the other; stub_* still reachable on prod\n- [422 envelope echoes rejected input](project_api_422_echoes_rejected_input.md) — pydantic `input` is in `detail.errors`; any caller printing the body is a credential sink\n
+- [env-file writer is a source() sink](project_env_file_writer_source_execution.md) — newline now rejected; $(...)/backtick still execute on source (measured), prod adopt feeds it cluster bytes
+- [Prod pre-flight credential plane](project_prod_preflight_credential_plane.md) — controls that hold; --skip-secret still writes 11 creds to disk; create-then-verify order

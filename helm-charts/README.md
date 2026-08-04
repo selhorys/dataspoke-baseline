@@ -40,8 +40,30 @@ The `--frontend` flag controls how the Next.js UI is handled:
 ### Health check
 
 ```bash
-./helm-charts/bin/health-check.sh
+./helm-charts/bin/health-check.sh --profile dev
+./helm-charts/bin/health-check.sh --profile prod --quick
 ```
+
+`--profile {dev|prod}` resolves `helm-charts/.env.<profile>` by the same rule
+`install.sh` uses; `--env-file <path>` overrides it. Either way the script
+echoes the resolved env file and ingress domain before its first probe, so a
+confident verdict is never read off a deployment other than the one you meant.
+A bare invocation still falls back to `.env.dev`. Other flags: `--quick`
+(TCP-only), `--keep-lock`, `--force-release`.
+
+**Under `--profile prod`, read the `DataSpoke Infra` section and nothing else,
+and expect a non-zero exit.** The `DataHub`, `Dummy Data` and `Dev
+Coordination` sections probe dev-only peripherals the prod profile never
+installs, and they run unconditionally — against a healthy prod deployment they
+report unhealthy, so the summary ends with `N service(s) unhealthy`, a
+`Reinstall hint:` naming the dev-only `install.sh --profile dev --components
+<name>`, and exit 1. Neither the count nor the hint is a verdict on your
+deployment.
+
+Prefer `--quick` on prod: the deep (non-`--quick`) Langfuse probe reads
+`DATASPOKE_DEV_KUBE_LANGFUSE_NAMESPACE`, which a prod env file does not carry,
+and the script runs under `set -u`, so a full prod run stops there — after the
+DataSpoke Infra lines it has already printed, and before the summary.
 
 ### Uninstall
 
@@ -52,7 +74,11 @@ The `--frontend` flag controls how the Next.js UI is handled:
 
 ### Prod profile
 
-A prod install runs three phases — pre-flight, image build, umbrella chart —
+Prod is a two-command sequence: `bin/install-prod-preflight.sh` validates and
+populates, then `bin/install.sh --profile prod` mutates the release — see
+[§The short path](#the-short-path-fill-in-the-env-file-run-the-pre-flight) below.
+`install.sh` itself then runs three phases — its own pre-flight, image build,
+umbrella chart —
 followed by an automatic post-install step: it seeds the default admin user
 (`dataspoke@dataspoke.local` / `dataspoke`) unless `--skip-seed` is passed.
 `SKIP_SEED` defaults to `false`, so **this runs on every prod install unless
@@ -66,9 +92,84 @@ depends entirely on your ingress controller and cluster network posture —
 DataSpoke's chart applies no source-range or auth gating on the API ingress,
 and the prod profile does not install or configure an ingress controller
 (`DATASPOKE_KUBE_INGRESS_MODE=shared` by default — you bring your own).
-Rotate the credential (§5) immediately after install regardless; treat it as
-urgent if your controller is shared or internet-reachable. Follow this
-runbook in order.
+The same seed rotates that account to `DATASPOKE_PROD_ADMIN_PASSWORD` when
+you set it in the env file, closing the window inside the install itself; with
+that line blank the published credential stays live and §5 is a required manual
+step. Treat it as urgent if your controller is shared or internet-reachable.
+Follow this runbook in order.
+
+#### The short path: fill in the env file, run the pre-flight
+
+Prod is a **two-command sequence**, and every *variable* you supply lives in one
+file. The values overlay (§3) is the other operator-authored input, and it has
+to exist before the pre-flight runs: the pre-flight validates it, and takes the
+Secret name it verifies from the overlay's `secrets.existingSecret`. So write
+the overlay first — `helm-charts/values-prod.example.yaml` is the starting
+point — then:
+
+```bash
+cp helm-charts/.env.prod.example helm-charts/.env.prod
+# Edit helm-charts/.env.prod: the deployment shape, the Google OAuth client
+# secret, and whichever other DATASPOKE_PROD_* inputs are yours to know.
+# LEAVE THE CREDENTIAL LINES BLANK — a blank line is a request for the
+# pre-flight to resolve that key, not an omission.
+
+./helm-charts/bin/install-prod-preflight.sh --values /path/to/your-overlay.yaml
+```
+
+That single command performs the validation and the Secret creation §2 below
+describes — it checks the env file, the values overlay and the cluster
+prerequisites, resolves the eleven credentials into the env file, creates the
+credentials Secret, and derives an image tag from `git HEAD` — then prints the
+exact §4 install command, tag included, for you to paste. Add
+`--create-namespace` on a first install, since the credentials Secret is
+namespace-scoped and is created before `install.sh` ever runs.
+
+Two of the numbered steps are **inputs it consumes rather than work it does**.
+It validates §1's cluster prerequisites without providing them: the
+IngressClass, the StorageClasses your overlay pins and their CSI drivers, DNS,
+registry auth and node capacity are still yours to have in place. And it
+validates the §3 overlay without producing it — the overlay is an input, so §3
+is a step you complete before this command rather than one it replaces. (With
+no overlay to read, stage 2 judges the chart defaults instead, and those
+publish the whole API surface, so it stops there.) The pre-flight's contribution
+is telling you which piece is missing before a release is mutated rather than
+after.
+
+```bash
+./helm-charts/bin/install-prod-preflight.sh --values /path/to/your-overlay.yaml --verify-only
+```
+
+`--verify-only` is a read-only audit: it runs every check and performs none of
+the script's three mutations (writing the env file, creating the namespace,
+creating the Secret), which makes it safe to run against a live deployment.
+
+The pre-flight applies its gates through `bin/lib/helpers.sh`, the same
+functions `install.sh`'s own prod pre-flight calls on the same inputs, **so a
+pass here means `install.sh`'s pre-flight will pass**. That shared-gate
+invariant is what makes the split into two commands worth the extra step rather
+than a second place for the rules to drift. It is also non-interactive — no
+prompt, and no credential in any flag — so the identical command works in a
+terminal and in CI.
+
+Its flags:
+
+| Flag | Effect |
+|------|--------|
+| `--env-file <path>` | Operator env file (default `helm-charts/.env.prod`) |
+| `--values <path>` | Values overlay; single-use, like `install.sh`'s. Defaults to `helm-charts/values-prod.yaml` when that file exists, and warns loudly when there is no overlay at all |
+| `--namespace <ns>` | Inspect a namespace other than `DATASPOKE_KUBE_DATASPOKE_NAMESPACE`. `install.sh` has no counterpart, so never use it to produce the install command |
+| `--secret-name <name>` | Inspect a Secret other than the overlay's `secrets.existingSecret`. Same caveat |
+| `--image-tag <tag>` / `--allow-dirty` | Use an explicit tag instead of `git rev-parse --short HEAD`, or accept a dirty work tree for the derived one |
+| `--create-namespace` | Create the namespace when absent (the Secret is namespace-scoped, so it must exist by stage 5) |
+| `--skip-secret` | Do not create the Secret — for operators delivering the eleven keys via ExternalSecrets, Vault or SealedSecrets. Every other stage still runs, and blank credential lines are left alone rather than resolved: minting eleven values the deployment will never use would put fresh prod credentials on disk for nothing, and would make stage 5 report all eleven as drift the moment the external system materialises the Secret |
+| `--skip-postinstall-check` | Do not require the `DATASPOKE_PROD_PERIPHERAL_*` / `DATASPOKE_PROD_LLM_*` blocks to be complete (see §7) |
+| `--verify-only` | Read-only audit, as above |
+
+The numbered steps below remain valid and stay authoritative for *what* is
+checked. Work through them if you prefer the manual route, if you deliver the
+credentials through a secrets manager, or when you need to know exactly what
+the script produces.
 
 #### 1. Prerequisites
 
@@ -161,12 +262,54 @@ cluster's contents (the `--image-tag` refusal and context selection run first), 
 `DATASPOKE_KUBE_DATASPOKE_NAMESPACE` is created automatically if it does not
 already exist, and no separate operator step is required for it. The
 credentials Secret in step 2 below is namespace-scoped, though, and is
-created *before* `install.sh` ever runs — so an operator pre-creating that
-Secret must create the namespace themselves first. Only the ordering is at
-stake: `ensure_namespace` is idempotent and adopts a namespace the operator
-already made.
+created *before* `install.sh` ever runs — so the namespace has to exist by the
+time the pre-flight reaches its stage 5. `install-prod-preflight.sh
+--create-namespace` covers that without a separate operator step; an operator
+building the Secret by hand creates the namespace themselves first. Only the
+ordering is at stake: `ensure_namespace` is idempotent and adopts a namespace
+the operator (or the pre-flight) already made.
 
 #### 2. Create the namespace and the 11-key credential Secret
+
+**Short path — the pre-flight does both:**
+
+```bash
+./helm-charts/bin/install-prod-preflight.sh \
+  --values /path/to/your-overlay.yaml \
+  --create-namespace
+```
+
+It resolves each of the eleven keys in a fixed order and writes the result back
+into `helm-charts/.env.prod`:
+
+1. **your own value**, when the `DATASPOKE_PROD_<X>` line is non-empty;
+2. otherwise **the value this cluster's Secret is already using** (adopt);
+3. otherwise a **freshly generated** value.
+
+**Adoption precedes generation**, and the reason is the Fernet key ↔ Postgres
+PVC coupling described in
+[§Prod: what survives an uninstall](#prod-what-survives-an-uninstall).
+`DATASPOKE_AIRFLOW_FERNET_KEY` encrypts Airflow's stored connections and
+Variables inside a PVC that survives `helm uninstall`; a key regenerated while
+that PVC survives leaves everything it encrypted permanently undecryptable, and
+Airflow reports it at decrypt time rather than at install time. Resolving from
+the running deployment first is what stops a re-install contradicting it. Only
+`DATASPOKE_PROD_GOOGLE_OAUTH_CLIENT_SECRET` has no generator — the Google Cloud
+Console issues it — so a blank line there stops the run.
+
+The pre-flight reports **provenance per key** (`from the env file` / `adopted
+from the cluster` / `generated`) and never a value; on an existing Secret it
+verifies and never rewrites, reporting drift by key name.
+
+**The walkthrough below is the manual equivalent**, and the Secret's content
+contract is identical either way — same eleven keys, same rejection rules,
+verified by the same `verify_credential_secret` in `bin/lib/helpers.sh` whether
+the Secret was created by the script, by these commands, or by your secrets
+manager. That is what keeps an ExternalSecrets/Vault/SealedSecrets operator
+running `install-prod-preflight.sh --skip-secret` on exactly the same validated
+path as everyone else, rather than guessing at what the release expects. Read
+on if you are that operator, or if you need to know precisely what the script
+produces.
 
 Of the 11 required keys, only **one** — `DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET`
 — must come from outside this shell (the Google Cloud Console OAuth client).
@@ -360,10 +503,12 @@ PASSWORD '<new-password>';` against the live database, the API's
 alembic-migrate init container and every rotated consumer fail
 authentication against the old password on the very next rollout.
 
-The preflight (`_check_airflow_credentials_prod` in `bin/install.sh`, plus the
-IngressClass/StorageClass (and its CSI driver)/Secret-existence/`--image-tag`
-checks earlier in the
-same prod branch) fails fast — before the chart is installed, and before any
+The preflight (`verify_credential_secret` in `bin/lib/helpers.sh`, plus the
+IngressClass / `assert_pinned_storage_classes` (StorageClass and its CSI
+driver) / Secret-existence / `--image-tag` checks around it — all shared
+functions, so `install-prod-preflight.sh` and `install.sh --profile prod` apply
+the identical rules to the identical inputs) fails fast — before the chart is
+installed, and before any
 credential-derived Secret (e.g. `dataspoke-airflow-metadata-encryption-key`)
 is created or modified — on any of (note the namespace itself may already
 exist by this point: `ensure_namespace` runs ahead of these checks, per
@@ -427,7 +572,8 @@ map-merge / list-replace semantics before touching the
 `cert-manager.io/cluster-issuer` annotation — the single biggest footgun for
 operators not running cert-manager. The API ingress host is your own choice —
 nothing in the install depends on it matching a fixed pattern, except
-`bin/health-check.sh`: that dev-only probe tool still assumes
+`bin/health-check.sh`: run as `--profile prod` it builds every probe URL from
+`DATASPOKE_KUBE_INGRESS_DOMAIN` in `.env.prod` and assumes
 `api.<DATASPOKE_KUBE_INGRESS_DOMAIN>` regardless of what your prod overlay
 sets. The example overlay publishes the public API surface — `/api/v1`,
 `/health`, `/ready`, `/redoc`, `/openapi.json` — and never `/internal/*`; a
@@ -457,6 +603,13 @@ setting them independently. See `spec/feature/HELM_CHART.md`
 
 #### 4. Install
 
+**Run the command the pre-flight printed**, image tag included — it ends with
+an `Install with:` line carrying the overlay path and the tag it resolved from
+`git rev-parse --short HEAD`. Do not retype the tag from memory: the pre-flight
+refuses a dirty work tree for the derived tag precisely so the tag names a
+commit that contains what is being built, and `install.sh` requires an explicit
+`--image-tag` in prod so a shared registry never receives the mutable `:dev`.
+
 `--values` is single-use — unlike helm's repeatable `-f`, it takes exactly
 one overlay file and the script errors if you pass it twice. Merge multiple
 overlays into one file first.
@@ -464,8 +617,13 @@ overlays into one file first.
 ```bash
 ./helm-charts/bin/install.sh --profile prod \
   --values /path/to/your-overlay.yaml \
-  --image-tag 1.2.3
+  --image-tag <tag from the pre-flight>
 ```
+
+`--env-file` is not passed: `--profile prod` resolves `helm-charts/.env.prod`
+on its own, and naming it explicitly is one more place a second file can be
+named by mistake. (The pre-flight adds `--env-file` to the command it prints
+only when you ran it against a non-default env file.)
 
 This resolves each in-scope workload's image digest before rendering the
 chart (see [§1. Prerequisites](#1-prerequisites) above) — `gcloud`/`aws`
@@ -484,16 +642,41 @@ those two still carry after an image update.
 
 This automatically seeds the default admin user
 (`dataspoke@dataspoke.local` / `dataspoke`) at the end unless `--skip-seed` is
-passed — see §5, which you should treat as the immediate next step.
+passed, and rotates it to `DATASPOKE_PROD_ADMIN_PASSWORD` in the same step when
+that input is set — see §5 for which of the two happened and what is left to do.
 
-#### 5. Rotate the auto-seeded default admin (REQUIRED — it is already live)
+#### 5. Rotate the auto-seeded default admin (REQUIRED, unless step 4 did it)
 
-Step 4's install seeded `dataspoke@dataspoke.local` / `dataspoke`
-automatically the moment it completed. That credential is published in this
-repository, so it authenticates against your API for anyone who can reach it
-— see the exposure note in §Prod profile above for how reachability depends
-on your ingress controller and cluster network posture. Rotate it now, before
-treating the deployment as usable by anyone other than the install operator:
+**Already done when `DATASPOKE_PROD_ADMIN_PASSWORD` was set in
+`helm-charts/.env.prod`.** Step 4's admin seed rotated
+`dataspoke@dataspoke.local` to that password and verified the result by logging
+in with it. What that attempt did is in the seed's own line in the install
+output:
+
+| The seed printed | State |
+|---|---|
+| `[INFO] Rotated 'dataspoke@dataspoke.local' to DATASPOKE_PROD_ADMIN_PASSWORD …` | the published default authenticated and the change took |
+| `[INFO] 'dataspoke@dataspoke.local' already authenticates with DATASPOKE_PROD_ADMIN_PASSWORD …` | the target password authenticated on the first attempt — an earlier run had already done it |
+| `[WARN] 'dataspoke@dataspoke.local' accepts neither DATASPOKE_PROD_ADMIN_PASSWORD nor the password published in this repository …` | someone rotated the account to a third value; the seed left it alone and the install **finished normally** |
+| a red `[ERROR]` from the seed | **the install aborted there** — the seed exits non-zero and `install.sh` runs it under `set -euo pipefail`, so the `=== Installation complete (profile: prod) ===` summary never printed. The chart is installed; the install *command* failed |
+
+On either `[INFO]`, confirm you can log in with your own password and skip the
+rest of this section. On the `[WARN]`, reconcile `helm-charts/.env.prod` with
+what that account actually holds, or reset it through `PATCH /api/v1/auth/me`
+as its current owner. On an `[ERROR]`, read which of the three failures the
+message names — the `PATCH` was rejected, the confirming login did not succeed,
+or the in-pod exchange never completed — treat the published default as
+possibly live, and re-run the install (or §6's standalone seed) once the cause
+is fixed.
+
+**Otherwise it is still live.** With that line blank, step 4's install seeded
+`dataspoke@dataspoke.local` / `dataspoke` and rotated nothing. That credential
+is published in this repository, so it authenticates against your API for
+anyone who can reach it — see the exposure note in §Prod profile above for how
+reachability depends on your ingress controller and cluster network posture.
+Rotate it now, before treating the deployment as usable by anyone other than
+the install operator. The account address is not configurable here:
+`PATCH /auth/me` sets name and password only.
 
 ```bash
 TOKEN="<token from logging in as the seeded admin>"
@@ -524,39 +707,119 @@ ENV_FILE=helm-charts/.env.prod bash helm-charts/bin/post-install/seed-admin-user
 ```
 
 The `ENV_FILE=` prefix is **required** — the script defaults to `.env.dev`
-when `ENV_FILE` is unset.
+when `ENV_FILE` is unset. When `DATASPOKE_PROD_ADMIN_PASSWORD` is set in that
+file, this same run also rotates the account to it and prints one of the lines
+§5 lists, exiting non-zero on the `[ERROR]` ones; it is idempotent because it
+tries the target password first.
 
 #### 7. Register peripherals and runtime config
 
+Fill in sections 4 (LLM) and 5 (peripherals) of `helm-charts/.env.prod`, then
+run the two seed scripts against it:
+
 ```bash
-curl -X PATCH https://api.<your-domain>/api/v1/admin/peripherals/datahub  -d '{...}'
-curl -X PATCH https://api.<your-domain>/api/v1/admin/peripherals/langfuse -d '{...}'
-curl -X PATCH https://api.<your-domain>/api/v1/admin/peripherals/smtp     -d '{...}'
-curl -X PATCH https://api.<your-domain>/api/v1/admin/conf -d '{...}'
+ENV_FILE=helm-charts/.env.prod bash helm-charts/bin/post-install/seed-peripheral-config.sh
+ENV_FILE=helm-charts/.env.prod bash helm-charts/bin/post-install/seed-runtime-config.sh
+```
+
+The `ENV_FILE=` prefix is **required** — both scripts default to `.env.dev`,
+so an unprefixed run against a prod cluster PATCHes dev addresses into prod's
+config. Each script picks its profile from the prefix the named file declares
+(`DATASPOKE_PROD_*` vs `DATASPOKE_DEV_*`), so there is no profile flag to get
+wrong. Both are re-runnable at any time: an absent or empty value is read as
+"leave unchanged", never as a clearing write.
+
+**This is a correctness fix, not a convenience.** Hand-assembling four JSON
+bodies from a schema that lives in another document is exactly where invented
+placeholder values and malformed-PAT JSON come from — the two failure modes the
+pre-flight's `placeholder-` rejection and the seeds' serialised payload
+construction exist to catch (a quote or a backslash in a DataHub PAT otherwise
+yields a `422` naming a field you never typed). The seed commands remove the
+opportunity.
+
+**The secret fields ride inside the PATCH.** The DataHub personal access token,
+the Kafka SASL password and the Langfuse secret key are sent as part of the
+peripheral payload, and the API writes them into `dataspoke-datahub-secret` /
+`dataspoke-langfuse-secret` itself; the LLM API key goes the same way into
+`dataspoke-llm-secret` via `PATCH /internal/admin/conf`. **You do not need to
+pre-create those three Secrets** — the API creates each on first PATCH. Nor
+does pre-creating one break the seed: the accessors are create-or-patch and the
+patch is a strategic merge on `data`, so a Secret your own secrets manager
+already owns is patched key-by-key rather than clobbered. Payloads carrying a
+credential reach the in-pod caller through stdin rather than argv, so none of
+these values appears in `ps auxww` on your machine or in the pod.
+
+**The prod path sets no `stub_*` flag.** The four dependency toggles
+(`stub_redis_client`, `stub_llm_client`, `stub_pgvector_manager`,
+`stub_notification_service`) are a dev mechanism; a production deployment
+running on a stub answers `200` and delivers none of it. A `stub_*` flag true
+on a prod deployment means the dev path was run against it.
+
+**SMTP stays a `curl`**, because it is deliberately not carried in the env file
+— no install step needs it, and it is set against the running deployment:
+
+```bash
+curl -X PATCH https://api.<your-domain>/api/v1/admin/peripherals/smtp \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{...}'
 ```
 
 See `spec/API.md` for the full request/response contracts.
 
-### Prod: committing an operator env file
+### Prod: committing a credential-free copy source
 
-`--env-file <path>` accepts any path on both `install.sh` and `uninstall.sh`
-(the `--env-file` flag parsing near the top of each script) — it is not
-limited to `helm-charts/.env.{dev,prod}`. `.gitignore` denies by default any
-file whose basename starts with `.env` (`.env*`, unanchored — matches at any
-depth, so `--env-file`'s arbitrary-path story is covered too), re-including
-only `*.example` templates and `.envrc`. A filename that does NOT start with
-a dot is unaffected by that rule and remains committable — a deployment fork
-can commit a file like `helm-charts/env.prod-no-credential` for reproducible
-team installs, as long as it carries **no credentials**. Start the file with
-a header comment stating the rule mechanically, not just descriptively:
+`helm-charts/.env.prod` carries the whole of a prod deployment's operator
+input, the eleven `DATASPOKE_PROD_*` credentials included, and it is
+gitignored. A team that installs the same deployment repeatedly still wants the
+non-credential half — cluster context, namespace, ingress class and domain,
+registry, cloud vendor — captured somewhere rather than re-derived each time.
+The supported way to do that is a committed **copy source**:
+
+```
+helm-charts/.env.prod.<name>-no-credential.example
+```
+
+**The rule is about which copy, not which variables.** A tracked `*.example`
+carries the full variable set with placeholders and no real values; the
+gitignored `.env.prod` carries the real ones. So this file has the same shape
+as `.env.prod.example` — every section, every variable — with your deployment's
+real shape filled in and every credential line left blank. Blank is the correct
+state for those lines anyway: the pre-flight resolves each one by adopting from
+the cluster or generating (see §2), so a copy source that leaves them empty is
+a complete input, not a truncated one.
+
+**It is a copy source only, never an `--env-file` argument.** Copy it to
+`helm-charts/.env.prod` and run the pre-flight against that. Passing an
+`.example` path to `--env-file` would have the pre-flight write resolved
+credentials into a tracked file.
+
+**Why the filename has to keep its leading dot.** `.gitignore` denies any file
+whose basename starts with `.env` (`.env*`, unanchored — matching at any depth,
+which covers `--env-file`'s arbitrary-path story on both `install.sh` and
+`uninstall.sh`), and re-includes `*.example` templates and `.envrc`
+(`!.env*.example`, `!.envrc`). A dot-less name like `env.prod-no-credential`
+would also be committable — but it works by *evading* the rule rather than
+satisfying it, and `.env*` is denied precisely because these files are
+credential-bearing. Making the safety net depend on a filename convention
+nobody enforces, on the single file type most likely to receive a pasted
+secret, is backwards. `.env.prod.<name>-no-credential.example` needs no
+exemption of its own, is caught by the deny rule the moment someone drops the
+`.example` suffix, and is self-documenting as a copy source rather than live
+config.
+
+**Credential-free is not disclosure-free.** Such a file still names your
+cluster context, cloud project, container registry and ingress hosts. Commit it
+only to a **private** deployment repo. State that in its header:
 
 ```bash
-# DEPLOYMENT SHAPE ONLY. Rule: if a variable's name is not DATASPOKE_KUBE_*,
-# it does not go in this file — credentials live in the pre-created
-# dataspoke-secrets(-prod) K8s Secret (see §Prod profile above), never here.
-# Credential-free is NOT disclosure-free: this file still names your cluster
-# context, cloud project, container registry, and ingress host. Commit it
-# only to a PRIVATE deployment repo.
+# COPY SOURCE — copy to helm-charts/.env.prod, never pass as --env-file.
+# Real deployment shape; every credential line left blank for the pre-flight
+# to resolve (adopt from the cluster, else generate). Never paste a credential
+# into this file: it is tracked.
+# Credential-free is NOT disclosure-free — this file names the cluster
+# context, cloud project, container registry, and ingress hosts. PRIVATE repo
+# only.
 DATASPOKE_KUBE_CLUSTER=...
 DATASPOKE_KUBE_DATASPOKE_NAMESPACE=...
 ```
@@ -668,6 +931,37 @@ they also live in an external secrets manager, and strands the Postgres PVC
 above if you keep it — the running cluster still expects the old
 `DATASPOKE_POSTGRES_PASSWORD` and `DATASPOKE_AIRFLOW_FERNET_KEY`. Delete the
 Secret only together with the PVCs above, or not at all.
+
+**A populated `.env.prod` makes a deleted Secret recoverable.** Once the env
+file holds all eleven `DATASPOKE_PROD_*` credential inputs — which it does
+after one pre-flight run — `bin/install-prod-preflight.sh` rebuilds the Secret
+byte-identically, Fernet key included, so the env file, not the Secret, is the
+surviving copy of what the retained PVCs depend on.
+
+This **relocates** the risk rather than removing it. The env file becomes the
+thing to protect, and the whole-Secret ↔ PVC coupling above reapplies in full
+if it is lost, or if its Fernet line was never populated (an operator who has
+only ever run `--verify-only`, or `--skip-secret`, has an env file that resolves
+nothing). So the check that belongs before any teardown is on the env file, not
+on the cluster — **confirm all eleven keys are set, by name with set/blank
+verdicts only, never values**:
+
+```bash
+awk -F= '/^DATASPOKE_PROD_/ {printf "%-58s %s\n", $1, (length($2)>0 ? "SET" : "blank")}' \
+  helm-charts/.env.prod
+```
+
+That prints the whole `DATASPOKE_PROD_*` block; the eleven that matter here are
+the credential inputs — `..._POSTGRES_PASSWORD`, `..._REDIS_PASSWORD`,
+`..._AIRFLOW_{USER,PASSWORD,WEBSERVER_SECRET_KEY,JWT_SECRET,FERNET_KEY}`,
+`..._INTERNAL_TOKEN`, `..._JWT_SECRET_KEY`, `..._OAUTH_STATE_SECRET`,
+`..._GOOGLE_OAUTH_CLIENT_SECRET`. Any of those reported `blank` exists only in
+the cluster. Recover it before deleting anything — the pre-flight's own adopt
+step does exactly that:
+
+```bash
+./helm-charts/bin/install-prod-preflight.sh --values /path/to/your-overlay.yaml
+```
 
 **Airflow log PVCs**: `logs-dataspoke-airflow-scheduler-0` and
 `logs-dataspoke-airflow-triggerer-0` exist only if your overlay enables

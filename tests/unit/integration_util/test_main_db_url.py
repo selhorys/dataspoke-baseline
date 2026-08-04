@@ -152,7 +152,7 @@ def test_url_string_form_masks_the_password() -> None:
 # ── Env vars land on the URL's fields ────────────────────────────────────────
 
 
-def test_url_fields_come_from_the_test_postgres_env_block() -> None:
+def test_url_fields_come_from_the_dev_postgres_env_block() -> None:
     """``DATASPOKE_DEV_POSTGRES_*`` populate the URL's fields; unset vars fall back.
 
     Asserted component-wise rather than against a rendered DSN: the rendered form masks
@@ -198,7 +198,7 @@ def test_url_fields_come_from_the_test_postgres_env_block() -> None:
     assert populated.database == "mydb"
 
 
-def test_every_env_key_the_helper_reads_is_the_test_block() -> None:
+def test_every_env_key_the_helper_reads_is_the_dev_block() -> None:
     """The helper reads only ``DATASPOKE_DEV_POSTGRES_*``, never the app-runtime block.
 
     A reset utility that fell back to ``DATASPOKE_POSTGRES_*`` would silently target

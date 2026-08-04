@@ -8,7 +8,7 @@
 4. [Installation](#installation)
 5. [Uninstallation](#uninstallation)
 6. [Umbrella Chart Structure](#umbrella-chart-structure)
-7. [Configuration — Four-Tier Env Vars](#configuration--four-tier-env-vars)
+7. [Configuration — Five-Tier Env Vars](#configuration--five-tier-env-vars)
 8. [Namespace Sourcing](#namespace-sourcing)
 9. [The .env File](#the-env-file)
 10. [Configuration Flow](#configuration-flow)
@@ -67,12 +67,15 @@ step of `install.sh` (`--components api` runs only the rebuild + helm-upgrade
 helm-charts/
 ├── README.md                           # operational guide for bin/ scripts
 ├── .env.dev.example                     # dev canonical env-var listing (3 sections)
-├── .env.prod.example                    # prod operator template (deployment shape only)
+├── .env.prod.example                    # prod operator template (full operator input set)
+├── .env.prod.<name>-no-credential.example  # optional per-deployment copy source (credential-free)
 ├── values-prod.example.yaml             # prod values-overlay template (--values starting point)
 ├── bin/
 │   ├── install.sh                       # main installer
+│   ├── install-prod-preflight.sh        # prod: validate the three config planes + populate
+│   │                                    #   credentials; mutates no Helm release
 │   ├── uninstall.sh                     # main uninstaller
-│   ├── health-check.sh                  # service-by-service probe
+│   ├── health-check.sh                  # service-by-service probe (--profile {dev|prod})
 │   ├── build-image.sh                   # api | airflow | postgres | frontend (Cloud Build / ECR / local)
 │   ├── port-forward.sh                  # forward TCP services to 127.0.0.1 (shared ingress mode)
 │   ├── lib/helpers.sh                   # logging + kubectl/helm wrappers + ingress-mode helpers + in-pod admin-API caller
@@ -123,7 +126,7 @@ helm-charts/
 | Langfuse install | ✓ (in-cluster) | ✗ (external; operator-managed) |
 | Dummy data | ✓ | ✗ |
 | Dev-lock | ✓ | ✗ |
-| Post-install peripheral seeding | ✓ | ✗ (operator uses admin API / UI) |
+| Post-install peripheral seeding | ✓ (part of the install) | ✗ from the install; the operator runs the same scripts against `.env.prod`, or the admin API / UI |
 | Post-install admin-user seed | ✓ | ✓ (both skippable with `--skip-seed`) |
 | Airflow credential check at login | ✗ (`simple_auth_manager_all_admins: "True"`) | ✓ (`"False"` + a seeded passwords file; §Airflow authentication) |
 | Online LLM key rotation | ✓ | ✓ |
@@ -155,6 +158,17 @@ wires them via the runtime admin API (`/api/v1/admin/peripherals/{datahub,langfu
 | `--frontend {none\|local\|cluster}` | `none` (dev), `cluster` (prod) | Frontend deployment mode for a full install. `none`: not deployed. `local` (dev-only): writes `src/frontend/.env.local` pointing at the in-cluster API for host `pnpm dev`. `cluster`: builds the image and deploys the UI in-cluster. |
 | `--help`, `-h` | — | Print usage. |
 
+`--profile` is the common selector across the `bin/` entry points an operator
+invokes directly — `install-prod-preflight.sh`, `install.sh`, `uninstall.sh`,
+and `health-check.sh` — each resolving `helm-charts/.env.<profile>` by the same
+rule, with `--env-file` overriding it. `build-image.sh` and `port-forward.sh`
+are driven by the `ENV_FILE` the caller exports rather than by a profile of
+their own.
+
+In prod the installer is the second half of a two-command sequence:
+`bin/install-prod-preflight.sh` validates and populates, `install.sh` mutates
+the release (§Prod operator workflow).
+
 ### Phases — dev profile
 
 | # | Phase | Components | Notes |
@@ -169,7 +183,7 @@ wires them via the runtime admin API (`/api/v1/admin/peripherals/{datahub,langfu
 
 | # | Phase | Components | Notes |
 |---|---|---|---|
-| 1 | Pre-flight | tool check, context switch, namespace ensure, IngressClass/StorageClass checks, then — only under `--skip-build` — image-digest resolution, then Secret checks | No nginx-ingress install — operator's controller. Digest resolution, when it runs here, lands ahead of every credential Secret this phase goes on to create/update, only when `--skip-build` means the image already exists in the registry; otherwise it waits for phase 2's push (see §Digest stamping). |
+| 1 | Pre-flight | tool check, context switch, namespace ensure, IngressClass/StorageClass checks, then — only under `--skip-build` — image-digest resolution, then Secret checks | No nginx-ingress install — operator's controller. Digest resolution, when it runs here, lands ahead of the derived Airflow key Secrets this phase writes, only when `--skip-build` means the image already exists in the registry; otherwise it waits for phase 2's push (see §Digest stamping). The operator-owned credentials Secret is not among them — prod verifies it and never writes it (§The pre-flight). |
 | 2 | Image build | `build-image.sh api` ‖ `build-image.sh airflow` ‖ `build-image.sh postgres` | Skipped by `--skip-build` when CI built and pushed the images. `build-image.sh frontend` runs under the default `--frontend cluster`; skipped under `--frontend none`. |
 | 3 | Umbrella chart | `helm upgrade --install dataspoke ./helm-charts/dataspoke -f values.yaml -f <operator-overlay>` | Operator supplies values overlay with their own ingress hosts, TLS, registry, replica counts, source-credential references. Digest stamping applies in prod as well (resolved here instead of phase 1 unless `--skip-build` was passed), so the same tag name carrying new content still rolls api/frontend, and event-consumer too when the overlay enables it. `frontend.enabled` is set from `--frontend` (`cluster`→true, `none`→false; default `cluster`). |
 | — | Admin seed | `post-install/seed-admin-user.sh` | Runs after the chart phase unless `--skip-seed` is passed, calling the API from inside its own pod rather than through the ingress. Idempotent; seeds the default `dataspoke@dataspoke.local / dataspoke` Admin only when no Admin exists. Carries no `step` marker of its own. |
@@ -256,8 +270,13 @@ frontend` is the analogous code-iteration path for the UI pod.
 For a full install, `--frontend` governs the UI: `none` deploys nothing; `local`
 (dev-only) writes `src/frontend/.env.local` after seeding so host `pnpm dev`
 reaches the in-cluster API; `cluster` deploys the containerised UI. The `local`
-and `cluster` install summaries surface the Web UI URL and the default
-`dataspoke@dataspoke.local / dataspoke` login.
+and `cluster` install summaries surface the Web UI URL together with the login
+for the seeded `dataspoke@dataspoke.local` Admin. The published `dataspoke`
+password is printed only while it is still the live one — dev, and prod with
+`DATASPOKE_PROD_ADMIN_PASSWORD` blank. Once the admin seed has rotated the
+account to that input (§Prod operator workflow) the summary names the address
+and points at the operator's own password instead, so no summary ever presents a
+superseded credential as the way in.
 
 ---
 
@@ -331,6 +350,17 @@ projections](#rotation-tolerance-of-the-airflow-projections). The alignment is
 the operator's to maintain in the one case the script cannot decide — deleting
 the credentials Secret by hand, which must happen together with the PVCs or not
 at all.
+
+**A populated `.env.prod` makes a deleted credentials Secret recoverable.** Once
+the env file holds all eleven `DATASPOKE_PROD_*` credential inputs (§Tier 5 —
+Prod-only inputs), `bin/install-prod-preflight.sh` rebuilds the Secret
+byte-identically, Fernet key included, so the Secret is not the only surviving
+copy of what the retained PVCs depend on. This **relocates** the risk
+rather than removing it: the env file becomes the thing to protect, and the
+whole-Secret ↔ PVC coupling above reapplies in full if the env file is lost or
+if its Fernet line was never populated. The check that belongs before any
+teardown is therefore on the env file, not the cluster — confirm all eleven keys
+are set, **by name with set/blank verdicts only, never values**.
 
 **Full wipe.** `--delete-pvcs` is a dev-only flag. In prod the sanctioned full
 wipe is `--delete-namespaces` (or `--delete-all`), which removes the namespace
@@ -500,14 +530,24 @@ setting their own list.
 
 ---
 
-## Configuration — Four-Tier Env Vars
+## Configuration — Five-Tier Env Vars
 
 | Tier | Prefix | Scope | Read by |
 |---|---|---|---|
-| App runtime | `DATASPOKE_*` (no `KUBE` / `DEV` / `TEST`) | Both profiles | DataSpoke Python/Node code via K8s ConfigMap/Secret (`envFrom`) |
+| App runtime | `DATASPOKE_*` (no `KUBE` / `DEV` / `PROD`) | Both profiles | DataSpoke Python/Node code via K8s ConfigMap/Secret (`envFrom`) |
 | Kube deployment | `DATASPOKE_KUBE_*` | Both profiles | `bin/*.sh` install / uninstall / build scripts |
-| Dev-only inputs | `DATASPOKE_DEV_*` | Dev profile only | `bin/dev-peripherals/*.sh`, `bin/post-install/*.sh` |
-| Test access | `DATASPOKE_DEV_*` | Dev profile only | `tests/integration/{conftest.py,util/*}`; auto-populated by install.sh post-install; never read by app pods |
+| Dev-only inputs | `DATASPOKE_DEV_*` | Dev profile only, **operator-supplied** | `bin/dev-peripherals/*.sh`, `bin/post-install/*.sh` |
+| Dev access | `DATASPOKE_DEV_*` | Dev profile only, **auto-populated post-install; not operator-supplied** | `tests/integration/{conftest.py,util/*}`, `bin/health-check.sh`, `bin/port-forward.sh`; never read by app pods |
+| Prod-only inputs | `DATASPOKE_PROD_*` | Prod profile only | `bin/install-prod-preflight.sh`, `bin/post-install/*.sh`; the credential subset is mapped into the credentials Secret, and app pods never read the env file |
+
+**Tiers 3 and 4 share the `DATASPOKE_DEV_*` prefix and are separated by
+provenance, not by name.** The prefix axis is the profile a variable belongs to,
+which makes `DATASPOKE_DEV_*` and `DATASPOKE_PROD_*` symmetric peers: the same
+input in the two profiles carries the same suffix, so the two env files read side
+by side. Who writes a value — the operator by hand, or `install.sh` after the
+install — is a property of the variable, so it is documented per tier rather than
+encoded in the name. It matters in one direction only: hand-editing a tier-4
+value is pointless, because the next install overwrites it from the cluster.
 
 ### Tier 1 — App runtime (`DATASPOKE_*`)
 
@@ -649,6 +689,8 @@ read these.
 - DataHub chart versions: `_KUBE_DATAHUB_CHART_VERSION`,
   `_KUBE_DATAHUB_PREREQUISITES_CHART_VERSION`
 - DataHub install inputs: `_DATAHUB_MYSQL_ROOT_PASSWORD`, `_DATAHUB_MYSQL_PASSWORD`
+  — the install half of the one `DATASPOKE_DEV_DATAHUB_*` block whose connection
+  half Tier 4 auto-populates
 - Langfuse install internals: `_LANGFUSE_NEXTAUTH_SECRET`, `_LANGFUSE_SALT`,
   `_LANGFUSE_ENCRYPTION_KEY`, `_LANGFUSE_CLICKHOUSE_PASSWORD`,
   `_LANGFUSE_MINIO_{ROOT_USER,ROOT_PASSWORD}`, `_LANGFUSE_POSTGRES_PASSWORD`,
@@ -659,7 +701,9 @@ read these.
   `INIT_ORG_NAME`, `INIT_PROJECT_ID`, `INIT_PROJECT_NAME`) default inside
   `langfuse.sh` and only need explicit `.env` entries to override.
 - Dummy data inputs: `_DUMMY_DATA_KAFKA_INSTANCE`, `_DUMMY_DATA_POSTGRES_USER`,
-  `_DUMMY_DATA_POSTGRES_PASSWORD`, `_DUMMY_DATA_POSTGRES_DB`
+  `_DUMMY_DATA_POSTGRES_PASSWORD`, `_DUMMY_DATA_POSTGRES_DB` — the credential
+  half of the one `DATASPOKE_DEV_DUMMY_DATA_*` block whose address half Tier 4
+  auto-populates
 - LLM seed: `_LLM_PROVIDER`, `_LLM_API_KEY`, `_LLM_MODEL` — written into the
   `dataspoke-llm-secret` Secret and PATCHed into `/admin/conf`
 - Google OAuth credentials: `_GOOGLE_OAUTH_CLIENT_ID`,
@@ -668,25 +712,36 @@ read these.
   `dataspoke-secrets` (`DATASPOKE_GOOGLE_OAUTH_CLIENT_SECRET`) and the API
   chart values (`auth.googleClientId`). Absence leaves OAuth disabled on
   both DataSpoke and DataHub.
-- Test harness: `_ENV_LOCK_PREACQUIRED` (set by outer wrappers that already
-  hold the dev-env lock)
+- Dev-env lock: `_LOCK_PREACQUIRED` (set by outer wrappers that already hold the
+  dev-env lock), beside the `_LOCK_URL` Tier 4 auto-populates
 
-### Tier 4 — Dev access (`DATASPOKE_DEV_*`)
+### Tier 4 — Dev access (`DATASPOKE_DEV_*`, auto-populated)
 
-Auto-populated by `install.sh` post-install — credential values out of the
-`dataspoke-secrets` Secret via `_sync_env_from_secret`, the Postgres role and
-database name out of the app ConfigMap that owns them (§ConfigMap keys). Read by
-`tests/integration/{conftest.py,util/*}` for laptop-side access to in-cluster
-services. App pods never read these.
+Written by `install.sh` post-install, not by the operator — credential values
+out of the `dataspoke-secrets` Secret via `_sync_env_from_secret`, the Postgres
+role and database name out of the app ConfigMap that owns them (§ConfigMap
+keys), and the peripheral connections out of each `dev-peripherals/*.sh` install.
+Read by `tests/integration/{conftest.py,util/*}`, `bin/health-check.sh`, and
+`bin/port-forward.sh` for laptop-side access to in-cluster services. App pods
+never read these, and a hand-edited value does not survive the next install.
 
 The **laptop-side host** these point at is ingress-mode-dependent: in managed
 mode it is the LoadBalancer external IP (TCP passthrough on the owned
 controller); in shared mode it is `127.0.0.1`, reached via
 `bin/port-forward.sh` on the same canonical ports. The TCP service ports
-(9201/9202/9005/9102/9104/9221) are identical in both modes. The `_PORT`
-fields are these fixed passthrough ports, carried statically in `.env.dev.example`;
-only the host-bearing values (`_HOST`, `_HOST_PORT`, `_KAFKA_BROKERS`,
-`DATASPOKE_DEV_LOCK_URL`) are written by `install.sh`.
+(9201/9202/9005/9102/9104/9221) are identical in both modes, so the `_PORT`
+fields are fixed: `install.sh` rewrites `_POSTGRES_PORT` / `_REDIS_PORT` each
+run with the same literal, and `_DUMMY_DATA_POSTGRES_PORT` is carried statically
+in `.env.dev.example` and written by nothing. What actually varies is the
+host-bearing values (`_HOST`, `_HOST_PORT`, `_KAFKA_BROKERS`,
+`DATASPOKE_DEV_LOCK_URL`), which `install.sh` resolves from the cluster.
+
+Three tier-4 values are generated only when blank and otherwise honoured:
+`_DATAHUB_TOKEN` (`dev-peripherals/datahub.sh` validates an existing PAT against
+GMS and regenerates only when absent or stale) and
+`_LANGFUSE_{PUBLIC,SECRET}_KEY`. `DATASPOKE_KUBE_INGRESS_DOMAIN` is likewise
+operator-set in shared ingress mode, where no LoadBalancer exists to read it
+from. Every other tier-4 line is overwritten on each install.
 
 - DataSpoke subsystem: `DATASPOKE_DEV_POSTGRES_{HOST,PORT,USER,PASSWORD,DB}`,
   `DATASPOKE_DEV_REDIS_{HOST,PORT,PASSWORD}`,
@@ -695,16 +750,19 @@ only the host-bearing values (`_HOST`, `_HOST_PORT`, `_KAFKA_BROKERS`,
   `DATASPOKE_DEV_JWT_SECRET_KEY` (conftest promotes it to `DATASPOKE_JWT_SECRET_KEY`
   so locally-minted JWTs verify against the API pod)
 - DataHub access: `DATASPOKE_DEV_DATAHUB_{GMS_URL,TOKEN,KAFKA_BROKERS,FRONTEND_URL}` —
+  the connection half of the block whose install inputs Tier 3 carries.
   `FRONTEND_URL` is the browser-facing UI URL, carried separately because it is not
   derivable from `GMS_URL`; the integration reset helpers restore it into
   `peripheral_config` so a reset leaves the dev UI with a working DataHub link
-- Langfuse access: `DATASPOKE_DEV_LANGFUSE_{HOST,PUBLIC_KEY,SECRET_KEY}`
+- Langfuse access: `DATASPOKE_DEV_LANGFUSE_{HOST,PUBLIC_KEY,SECRET_KEY}` — the
+  connection half of the block whose install internals Tier 3 carries
 - Dev-lock access: `DATASPOKE_DEV_LOCK_URL` — full base URL of the dev-env lock
   service (`http://<host>:9221`, host per the laptop-side rule above). The
   integration and E2E lock protocol uses `$DATASPOKE_DEV_LOCK_URL/lock/...`.
 - Dummy data source access: `DATASPOKE_DEV_DUMMY_DATA_{POSTGRES_HOST,POSTGRES_PORT,KAFKA_BROKERS}`
-  — laptop-side, mode-dependent host (per the rule above), used by tests that
-  read the example source directly.
+  — the address half of the block whose credentials Tier 3 carries; laptop-side,
+  mode-dependent host (per the rule above), used by tests that read the example
+  source directly.
 - `DATASPOKE_DEV_DUMMY_DATA_POSTGRES_HOST_PORT` — **in-cluster**
   cluster-DNS address of the example Postgres
   (`example-postgres.<dummy-data-ns>.svc.cluster.local:5432`),
@@ -712,9 +770,112 @@ only the host-bearing values (`_HOST`, `_HOST_PORT`, `_KAFKA_BROKERS`,
   ingestion source recipes, so it is always the cluster-internal address
   regardless of how a laptop reaches the same database.
 
+### Tier 5 — Prod-only inputs (`DATASPOKE_PROD_*`)
+
+Operator-supplied inputs for a prod install, carried in `helm-charts/.env.prod`
+and read by `bin/install-prod-preflight.sh` and `bin/post-install/*.sh`. The
+credential subset is mapped into the credentials Secret; application pods read
+that Secret and never the env file.
+
+**The eleven credential inputs.** `DATASPOKE_PROD_<X>` supplies Secret key
+`DATASPOKE_<X>` for exactly these eleven suffixes — the same set §Secret keys
+enumerates:
+
+`POSTGRES_PASSWORD`, `REDIS_PASSWORD`, `AIRFLOW_USER`, `AIRFLOW_PASSWORD`,
+`AIRFLOW_WEBSERVER_SECRET_KEY`, `AIRFLOW_JWT_SECRET`, `AIRFLOW_FERNET_KEY`,
+`INTERNAL_TOKEN`, `JWT_SECRET_KEY`, `OAUTH_STATE_SECRET`,
+`GOOGLE_OAUTH_CLIENT_SECRET`.
+
+**The substitution is scoped to those eleven names, not to the prefix.**
+`DATASPOKE_PROD_PERIPHERAL_*`, `DATASPOKE_PROD_LLM_*`, and
+`DATASPOKE_PROD_ADMIN_PASSWORD` are not Secret keys and have no `DATASPOKE_<X>`
+counterpart; a blanket rule over the whole prefix would synthesise Secret keys
+that do not exist. The prefix is what keeps the unprefixed tier-1 names out of
+every env file, where a stale copy would shadow the Secret for anything that
+sources the file — which is why the pre-flight rejects a bare tier-1 name in
+`.env.prod` (§Prod operator workflow).
+
+**Resolution order**, applied per key by the pre-flight:
+
+1. the operator's own value, when the line is non-empty;
+2. otherwise the value this cluster's Secret already uses (**adopt**);
+3. otherwise a freshly generated value, written back into the env file.
+
+Adoption precedes generation for two reasons. It is what stops a re-install
+contradicting a running deployment, and it is what makes the Airflow Fernet key
+recoverable rather than regenerated against a retained Postgres PVC — the
+coupling [§What a prod uninstall leaves
+behind](#what-a-prod-uninstall-leaves-behind) describes. A blank line is
+therefore a **request**, not an omission, and the env file becomes the
+operator's copy of record after the first run.
+
+**Identity and the seeded admin:**
+
+- `DATASPOKE_PROD_GOOGLE_OAUTH_CLIENT_ID` — the operator's record of the public
+  half of the OAuth pair. The deployment itself reads `auth.googleClientId` from
+  the values overlay, and drift between the two halves fails at the OAuth
+  callback rather than at install, so the pre-flight compares them.
+- `DATASPOKE_PROD_ADMIN_PASSWORD` — the password post-install rotates the
+  built-in admin to. 10–128 characters, per `MePatchRequest` in
+  `src/api/schemas/auth.py`, and not the literal `dataspoke`. That range is the
+  API-enforced floor the pre-flight and the rotation share, so a value the API
+  would reject fails before the install rather than at the PATCH; §Policies is
+  the stricter operator standard the value should meet.
+
+**LLM inference.** `DATASPOKE_PROD_LLM_{PROVIDER,MODEL,API_KEY}`, symmetric with
+`DATASPOKE_DEV_LLM_*`. These are not chart values: they are applied post-install
+into the `runtime_config` row via `PATCH /internal/admin/conf`, with the API
+routing the key into `dataspoke-llm-secret` itself.
+
+**Peripheral connections**, `DATASPOKE_PROD_PERIPHERAL_{DATAHUB,LANGFUSE}_*`,
+applied post-install via `PATCH /internal/admin/peripherals/{datahub,langfuse}`.
+**Each suffix is the API contract field it carries, upper-cased**, so the
+schemas in `src/api/schemas/admin.py` stay the single authority and no
+translation table exists to drift:
+
+- DataHub — `_GMS_URL`, `_FRONTEND_URL`, `_TOKEN`, `_KAFKA_BROKERS`,
+  `_KAFKA_SECURITY_PROTOCOL`, `_KAFKA_SASL_MECHANISM`, `_KAFKA_SASL_USERNAME`,
+  `_KAFKA_SASL_PASSWORD`, `_KAFKA_AWS_REGION`, `_SERVICE_CORPUSER_URN`,
+  `_DEFAULT_ENV`. `gms_url` addresses the GMS service and `frontend_url` is the
+  browser-facing UI URL; they differ in host, port and scheme in most
+  deployments and neither is derivable from the other. Dev's counterparts are the
+  auto-populated `DATASPOKE_DEV_DATAHUB_{GMS_URL,FRONTEND_URL,TOKEN,KAFKA_BROKERS}`
+  (§Tier 4 — Dev access); the remaining suffixes have no dev env var and take
+  their peripheral defaults.
+- Langfuse — `_HOST`, `_PUBLIC_KEY`, `_SECRET_KEY`, `_PROJECT_ID`,
+  `_ENVIRONMENT_TAG`. Dev's counterparts are
+  `DATASPOKE_DEV_LANGFUSE_{HOST,PUBLIC_KEY,SECRET_KEY}` and
+  `DATASPOKE_DEV_LANGFUSE_INIT_PROJECT_ID`.
+
+The six Kafka fields are cross-validated by the API as a **set**
+(`validate_datahub_kafka_security`), not field by field, so which of them an
+operator fills in follows from the security posture rather than from the list.
+The four common postures:
+
+| Posture | Fields an operator fills in |
+|---|---|
+| `PLAINTEXT` | brokers only |
+| `SSL` | brokers, protocol — no mechanism, which the API rejects outside the `SASL_*` protocols |
+| `SASL_SSL` + `AWS_MSK_IAM` | brokers, protocol, mechanism — and **no** username or password, because the consumer authenticates as its ServiceAccount's IAM role. Region is optional: blank derives it from the broker hostnames, and a supplied value must agree with the region those hostnames encode |
+| `SASL_SSL` or `SASL_PLAINTEXT` with a typed mechanism | brokers, protocol, mechanism, username, password |
+
+[`API.md` §DataHub Kafka
+security](../API.md#datahub-kafka-security) carries the complete rule set,
+including the constraints on the `AWS_MSK_IAM` broker hostnames that make the
+pod's IAM identity non-redirectable. This table is a filling-in guide, not a
+second copy of it.
+
+**SMTP is deliberately absent from this tier.** It is set with
+`PATCH /api/v1/admin/peripherals/smtp` against the running deployment and no
+install step needs it, so it stays out of the env file rather than being carried
+for symmetry.
+
 ### Policies
 
-- Password policy: 16+ chars, mixed case, at least one special character.
+- Password policy for operator-chosen credentials: 16+ chars, mixed case, at
+  least one special character. Where the API also bounds a value —
+  `DATASPOKE_PROD_ADMIN_PASSWORD` at 10–128 — the API's bound is the floor a
+  malformed input fails against and this policy is the target a sound one meets.
 - API keys: never committed; `.env` is gitignored. CI/CD injects via K8s
   Secrets or a secrets manager.
 
@@ -764,29 +925,48 @@ operator's namespace and host.
 | Path | Tracked | Purpose |
 |---|---|---|
 | `helm-charts/.env.dev` | gitignored | Per-developer dev-profile values |
-| `helm-charts/.env.prod` | gitignored | Per-cluster prod-profile values |
+| `helm-charts/.env.prod` | gitignored | Per-cluster prod-profile values — deployment shape plus the `DATASPOKE_PROD_*` operator inputs, credential inputs included |
 | `helm-charts/.env.dev.example` | tracked | Dev canonical listing (three sections) |
-| `helm-charts/.env.prod.example` | tracked | Prod operator template (deployment shape only) |
+| `helm-charts/.env.prod.example` | tracked | Prod operator template — the full variable set with placeholders |
+| `helm-charts/.env.prod.<name>-no-credential.example` | tracked, optional | Optional per-deployment copy source: one real deployment's shape, credential-free |
 
 The runtime env file is profile-named (`.env.<profile>`); copy the matching
 `.example` to create it. `install.sh`/`uninstall.sh` resolve it from `--env-file`
 or default to `.env.<profile>`. No auto-rename shim is provided.
 
 Dev layout: three top-level sections — Kube deployment operator inputs, Dev
-profile operator inputs, Auto-populated block (ingress + `DATASPOKE_DEV_*`).
+profile operator inputs (Tier 3), and the auto-populated block written back by
+the install (the ingress vars plus Tier 4). The section boundary, not the
+prefix, is what tells an operator which lines are theirs to edit.
 `bin/*.sh` scripts source it; `tests/integration/conftest.py` loads it for
 integration tests.
 
-Prod `.env.prod` contains only the `DATASPOKE_KUBE_*` deployment-shape vars.
-All credentials are managed via a pre-created K8s Secret (`secrets.existingSecret`
-in the values overlay) — no credentials in `.env` for prod operators.
+Prod `.env.prod` is the single operator input file: the `DATASPOKE_KUBE_*`
+deployment shape plus the `DATASPOKE_PROD_*` inputs of §Tier 5, the eleven
+credential inputs among them. `bin/install-prod-preflight.sh` resolves those
+into the credentials Secret the values overlay names in
+`secrets.existingSecret`; the release reads the Secret and no pod ever reads the
+file.
+
+**Tracked example, gitignored copy.** The rule separating them is about which
+copy, not which variables: a tracked `*.example` carries the full variable set
+with placeholders and no real value, while the gitignored `.env.prod` carries
+the real ones. `helm-charts/.env.prod.<name>-no-credential.example` is the
+optional per-deployment form of that rule — one real deployment's shape with
+every credential line left blank, so a team reproduces an install without
+re-deriving the cluster context, registry and ingress hosts. `.gitignore`'s
+`!.env*.example` re-include already permits the filename, so it needs no
+exemption of its own. It is a **copy source only, never an `--env-file`
+argument**. Credential-free is not disclosure-free: such a file still names the
+cluster context, cloud project, registry and ingress hosts, so it belongs only
+in a private deployment repo.
 
 In dev, the **auto-populated** block is written by install scripts, not edited by
 hand: in managed mode `DATASPOKE_KUBE_INGRESS_{IP,DOMAIN}` (by
 `dev-peripherals/nginx-ingress.sh`; shared mode leaves `INGRESS_IP` blank and reads
 the operator-pre-set `INGRESS_DOMAIN`), `DATASPOKE_DEV_DATAHUB_*` (by
 `dev-peripherals/datahub.sh`), `DATASPOKE_DEV_LANGFUSE_*` (by
-`dev-peripherals/langfuse.sh`), and the full `DATASPOKE_DEV_*` subsystem block —
+`dev-peripherals/langfuse.sh`), and the full Tier-4 subsystem block —
 including `DATASPOKE_DEV_LOCK_URL` and
 `DATASPOKE_DEV_DUMMY_DATA_POSTGRES_HOST_PORT` — by `install.sh`
 post-install (`_sync_env_from_secret` extracts credentials from the
@@ -820,7 +1000,7 @@ TCP host for the active ingress mode).
               │  Deployment envFrom → container env vars (DATASPOKE_* names)
               │
               ├─ _sync_env_from_secret
-              │    Extract dataspoke-secrets values → append DATASPOKE_DEV_* block to .env.dev
+              │    Extract dataspoke-secrets values → append the Tier-4 block to .env.dev
               │    DATASPOKE_DEV_POSTGRES_{USER,DB} come from the app ConfigMap
               │    Also appends DATASPOKE_DEV_DATAHUB_*, DATASPOKE_DEV_LANGFUSE_*,
               │    DATASPOKE_DEV_DUMMY_DATA_* from peripheral install outputs
@@ -837,20 +1017,87 @@ TCP host for the active ingress mode).
 
 ### Prod operator workflow
 
-The prod install covers the chart and the admin-user seed. Peripheral wiring is
-the operator's, performed against the running deployment.
+Prod is a **two-command sequence**: `bin/install-prod-preflight.sh` validates and
+populates, then `bin/install.sh --profile prod` mutates the release. Everything
+the operator supplies lives in one file — `helm-charts/.env.prod` — plus the
+values overlay.
 
 | # | Step | Interface |
 |---|---|---|
 | 1 | Apply the cluster-scoped prerequisites — at minimum the StorageClass the overlay pins | `kubectl apply -f` against manifests derived from `helm-charts/prod-prereq/` (cluster-admin) |
-| 2 | Pre-create the credentials Secret with all eleven keys (see §Secret keys below) | Any secrets manager (ExternalSecrets Operator, Vault Agent, SealedSecrets) or `kubectl create secret generic` |
+| 2 | Fill in `helm-charts/.env.prod`: the deployment shape, the Google OAuth client secret, and whichever other `DATASPOKE_PROD_*` inputs are the operator's to know. A blank credential line is a request, not an omission (§Tier 5) | Copy `helm-charts/.env.prod.example`, or a committed `.env.prod.<name>-no-credential.example` when the deployment publishes one |
 | 3 | Write the values overlay: `secrets.existingSecret`, ingress hosts and the published path list, TLS, registry, replica counts, storage classes. The IngressClass is *not* an overlay field — it comes from `DATASPOKE_KUBE_INGRESS_CLASS` in `.env.prod` (see §Ingress) | Start from `helm-charts/values-prod.example.yaml` |
-| 4 | Install — the chart, then the automatic admin seed | `bin/install.sh --profile prod --image-tag <tag> --values <overlay.yaml>` |
-| 5 | **Rotate the default admin credential — required** | `PATCH /api/v1/auth/me` |
-| 6 | Register peripherals | `/api/v1/admin/peripherals/{datahub,langfuse,smtp}` and `/api/v1/admin/conf` (LLM provider/model/key) |
+| 4 | Pre-flight — validate the three configuration planes, resolve the eleven credentials into the env file, create the credentials Secret, derive the image tag | `bin/install-prod-preflight.sh --values <overlay.yaml> [--create-namespace]` |
+| 5 | Install — the chart, then the automatic admin seed | `bin/install.sh --profile prod --image-tag <tag> --values <overlay.yaml>`, with the tag the pre-flight resolved |
+| 6 | **Rotate the default admin credential — required.** Already done when `DATASPOKE_PROD_ADMIN_PASSWORD` is set, since the step-5 seed rotates and verifies it | `bin/post-install/seed-admin-user.sh`, else `PATCH /api/v1/auth/me` |
+| 7 | Register peripherals and LLM settings | `bin/post-install/seed-{peripheral-config,runtime-config}.sh` under `ENV_FILE=helm-charts/.env.prod`; `/api/v1/admin/peripherals/smtp` for SMTP, which the env file deliberately does not carry |
 
-The literal copy-paste command sequence, including Secret-creation examples and
-verification probes, lives in [`helm-charts/README.md`](../../helm-charts/README.md).
+The literal copy-paste command sequence, including the manual Secret-creation
+equivalent and verification probes, lives in
+[`helm-charts/README.md`](../../helm-charts/README.md).
+
+#### The pre-flight
+
+`bin/install-prod-preflight.sh` **validates and populates; it never installs,
+upgrades, deletes, or builds.** Its only three mutations are writing resolved
+credentials into the env file, creating the namespace (behind
+`--create-namespace`), and creating the credentials Secret. `--verify-only`
+removes all three, which is what makes it safe to run against a live prod
+deployment as an audit.
+
+Seven stages, announced `<n>/7`, with populate third:
+
+| # | Stage | Must hold |
+|---|---|---|
+| 1 | env file | the deployment-shape vars are present; no unprefixed tier-1 `DATASPOKE_*` name appears; no `stub_*` toggle appears; `DATASPOKE_PROD_ADMIN_PASSWORD`, when set, is 10–128 characters and not `dataspoke`; the current kubectl context equals `DATASPOKE_KUBE_CLUSTER` |
+| 2 | values overlay | the API ingress does not publish `/internal/*`; no Airflow SimpleAuthManager conflict; `secrets.existingSecret` resolves; `auth.googleClientId` agrees with `DATASPOKE_PROD_GOOGLE_OAUTH_CLIENT_ID` |
+| 3 | credential populate | the eleven keys resolve by the §Tier 5 order — the operator's value, else this cluster's Secret, else a generated value written back. Only `DATASPOKE_PROD_GOOGLE_OAUTH_CLIENT_SECRET` can fail to resolve, since nothing can generate it, and it stops the run |
+| 4 | cluster prerequisites | the namespace exists, or `--create-namespace` creates it; the `DATASPOKE_KUBE_INGRESS_CLASS` IngressClass exists; every StorageClass the overlay pins exists with a usable CSI driver, on the terms the storage paragraph below states |
+| 5 | credentials Secret | created from the env file when absent; when present, **verified and never rewritten** — drift is reported by key name and then stops the run |
+| 6 | post-install readiness | the DataHub and LLM blocks are complete, each stopping the run (`--skip-postinstall-check` overrides); the Kafka tuple is required **only when `event-consumer.enabled` resolves true** in the effective values, so a deployment that never runs the consumer is not made to supply brokers it never uses; an incomplete Langfuse block warns only, because its absence disables tracing and nothing else |
+| 7 | image tag | an explicit `--image-tag`, else `git rev-parse --short HEAD` on a clean tree, with `--allow-dirty` to override; never a mutable tag |
+
+**Two orderings are load-bearing.** The stage-1 kubectl-context check and the
+stage-2 overlay resolution both precede populate: populate reads the cluster to
+adopt, so resolving under the wrong context would write another deployment's
+credentials into this file, and the Secret it adopts from is the one the overlay
+names.
+
+**An existing Secret is never rewritten**, drift included. It may hold the only
+surviving copy of material a retained PVC depends on, so the decision belongs to
+the operator and the pre-flight's job is to name the keys that differ. Refusing
+a dirty tree for the git-HEAD tag is the same principle applied to images — a
+tag naming a commit that does not contain what is being deployed is worse than
+no tag.
+
+**The pre-flight shares its gates with `install.sh` through
+`bin/lib/helpers.sh`**, so a pass here means `install.sh`'s own pre-flight
+passes. That invariant is what justifies the split into two commands: the same
+predicates are evaluated first where a failure costs nothing, and `install.sh`
+still evaluates every one of them itself.
+
+**`--skip-secret`** is the path for operators who deliver the eleven keys through
+ExternalSecrets, Vault or SealedSecrets. Every other stage still **validates**,
+and the Secret's content contract is identical either way — which is what keeps
+those operators on the same validated path rather than on a guessed one. Populate
+does not *mint* under this flag: a blank line reads as "delivered out of band", so
+nothing is generated and nothing is written back. Minting would put eleven
+credentials on the operator's disk on the one path whose purpose is keeping them
+off it, and every one of them would differ from what the external system
+ultimately delivers — leaving the next run's drift check reporting all eleven
+through no fault of the operator.
+
+**No credential ever reaches argv.** The Secret is created from a `0600` `mktemp`
+env file via `kubectl create secret --from-env-file`, never `--from-literal`,
+which would leak every value into shell history and into `ps auxww` /
+`/proc/<pid>/cmdline` for the process's lifetime. There is no interactive prompt
+and no credential-bearing flag either, so the same command works in a terminal
+and in CI.
+
+**The reciprocal contract.** `install.sh --profile prod` never creates or
+modifies the credentials Secret, and aborts when it is absent. That is what makes
+the pre-flight a genuine prerequisite rather than a convenience wrapper, and it
+is why an env file alone cannot deploy a credential.
 
 **Cluster-scoped prerequisites of a namespace-scoped release.** The Helm release
 owns namespaced objects only, so anything cluster-scoped it depends on must exist
@@ -901,16 +1148,17 @@ component never starts, the API's `wait-for-postgres` init container loops
 whose symptom names the workload rather than storage. Recovery then needs
 the stuck PVCs deleted, because `storageClassName` is immutable once bound.
 
-**The namespace needs no pre-creating — with one exception.** The prod pre-flight
-calls `ensure_namespace` before any other check, so
-`DATASPOKE_KUBE_DATASPOKE_NAMESPACE` is created if absent and no separate
-operator step is required for it. The credentials Secret of step 2 is
-namespace-scoped, however, and is created *before* `install.sh` ever runs — so an
-operator following the table must create the namespace themselves at step 2. Only
+**The namespace needs no pre-creating.** `install.sh`'s prod pre-flight calls
+`ensure_namespace` before any other check, so
+`DATASPOKE_KUBE_DATASPOKE_NAMESPACE` is created if absent. The credentials Secret
+is namespace-scoped and is created a command earlier, so the namespace has to
+exist by the time `install-prod-preflight.sh` reaches stage 5 —
+`--create-namespace` is what covers that without a separate operator step. Only
 the ordering is at stake: `ensure_namespace` is idempotent and adopts a namespace
-the operator made.
+the operator (or the pre-flight) made.
 
-**Pre-flight is a hard gate.** Before touching the chart the prod install fails
+**`install.sh`'s own pre-flight is a hard gate.** Before touching the chart the
+prod install fails
 fast on: a missing `DATASPOKE_KUBE_INGRESS_CLASS` IngressClass; a StorageClass
 the overlay pins that does not exist in the cluster, or that names a bare
 out-of-tree CSI provisioner with no registered `CSIDriver` — the only
@@ -949,8 +1197,11 @@ is unreachable, not a peripheral problem.
 
 **Rotation is required, not advisory.** A first install therefore returns with
 an active Admin account whose credentials — `dataspoke@dataspoke.local /
-dataspoke` — are published in this repository. The deployment is not
-production-ready until the rotation step rotates it. Who can reach that account depends on
+dataspoke` — are published in this repository. The same seed rotates it to
+`DATASPOKE_PROD_ADMIN_PASSWORD` when that input is set, closing the window in
+the same command; with the input blank the published credential stays live and
+the deployment is not production-ready until the operator rotates it by hand.
+Who can reach that account depends on
 the operator's ingress controller and network posture, which the prod profile
 does not own or configure; the chart adds no source-range restriction or
 inbound policy of its own. Operators who want no default credential to exist at
@@ -967,9 +1218,11 @@ The `ENV_FILE=` prefix is required — the script defaults it to `.env.dev`.
 The install's own invocation needs no prefix because `install.sh` exports the
 resolved env file for child scripts.
 
-**Peripheral registration is the operator's, not the installer's.** DataHub URL/token, Langfuse
-host/keys, and LLM provider/model/key are all registered at runtime through the
-admin API (see §Configuration Flow and §Profiles). Until then the dependent
+**Peripheral registration is the operator's, not the installer's.** DataHub
+URL/token, Langfuse host/keys, and LLM provider/model/key are all registered
+after the release exists, through the admin API — by hand, or by the two seed
+scripts reading the `DATASPOKE_PROD_PERIPHERAL_*` and `DATASPOKE_PROD_LLM_*`
+blocks of the same env file (§Post-Install Seeding). Until then the dependent
 features stay inert rather than failing the install.
 
 ### ConfigMap keys (non-sensitive)
@@ -981,7 +1234,7 @@ plus the six chart-values-only keys — `DATASPOKE_CORS_ORIGINS`,
 `DATASPOKE_OAUTH_POST_LOGIN_REDIRECT`, `DATASPOKE_RATE_LIMIT_PER_MINUTE`,
 `FORWARDED_ALLOW_IPS` — which come from
 chart values, not `.env`
-(their source values and roles are in §Configuration — Four-Tier Env Vars).
+(their source values and roles are in §Configuration — Five-Tier Env Vars).
 `DATASPOKE_AIRFLOW_CALLBACK_BASE_URL` is hardcoded in the chart (`http://dataspoke-api:8002`);
 it is not derived from `.env`.
 
@@ -1099,8 +1352,10 @@ chart at it via `secrets.existingSecret: <name>`.
 ### Out-of-band Secret
 
 `dataspoke-llm-secret` (key `api_key`) — LLM provider API key. Provisioned by
-`install.sh` from `DATASPOKE_DEV_LLM_API_KEY` in dev; by an operator
-(`kubectl` / External Secrets Operator) in prod. The API reads it at runtime
+`install.sh` from `DATASPOKE_DEV_LLM_API_KEY` in dev; in prod written by the API
+itself when `seed-runtime-config.sh` PATCHes
+`DATASPOKE_PROD_LLM_API_KEY` through `/internal/admin/conf`, or by an operator
+(`kubectl` / External Secrets Operator). The API reads it at runtime
 via the K8s API (`api-secret-reader` RBAC) and rotates it online via
 `/api/v1/admin/conf`. Not Helm-managed — `helm upgrade` would clobber online
 rotations.
@@ -1425,16 +1680,49 @@ DELETE force-release) in `helm-charts/README.md`.
 
 ## Post-Install Seeding
 
-Runs after the umbrella chart's API deployment is Ready. The dev profile runs
-all three scripts; the prod profile runs `seed-admin-user.sh` only — peripheral
-and runtime config are the operator's, per §Prod operator workflow. Each script
-is standalone and env-file-driven, so any of them can also be invoked by hand.
+Runs after the umbrella chart's API deployment is Ready. Each script is
+standalone and reads whichever env file `ENV_FILE=` names, **selecting its source
+from the prefix that file declares** — `DATASPOKE_PROD_*` or `DATASPOKE_DEV_*`,
+by name presence and never by value, so a placeholder line still names its
+profile. One shared resolver (`seed_profile` in `bin/lib/helpers.sh`) answers for
+every seed, so no two of them can disagree about which profile they are running
+against; a file declaring both prefixes is ambiguous and aborts the seed rather
+than being guessed at, and one declaring neither names no source and is skipped.
+`ENV_FILE=` alone therefore picks the profile and no script carries a profile
+flag. `install.sh` exports the resolved env file, so its
+own invocations need no prefix; a hand-run against prod does
+(`ENV_FILE=helm-charts/.env.prod`), because the default is `.env.dev`.
 
 | Script | Effect |
 |---|---|
-| `bin/post-install/seed-peripheral-config.sh` | PATCH `/internal/admin/peripherals/datahub` with `{gms_url, frontend_url, kafka_brokers}` and `/internal/admin/peripherals/langfuse` with `{host, public_key}`. When set in `.env.dev`, the script also forwards optional operator-supplied non-secret fields from `DATASPOKE_DEV_*` env vars: DataHub `service_corpuser_urn` and `default_env`; Langfuse `project_id` (from `DATASPOKE_DEV_LANGFUSE_INIT_PROJECT_ID`) and `environment_tag`. The DataHub Kafka security tuple is not seeded — the dev broker is plaintext, which is the field's default — so a secured broker is configured by the operator afterwards via the admin API. The secret fields the script would otherwise carry — DataHub PAT `token` and Langfuse `secret_key` — are placed into K8s Secrets out-of-band by the install script before the API pod starts (the API reads them via RBAC); the seed script does not send them through the admin API — only non-secret fields go through it. |
-| `bin/post-install/seed-runtime-config.sh` | PATCH `/internal/admin/conf` with `{llm_provider, llm_model}` from `DATASPOKE_DEV_LLM_{PROVIDER,MODEL}`, then a second PATCH setting the four `stub_*` dependency flags (`stub_redis_client`, `stub_llm_client`, `stub_pgvector_manager`, `stub_notification_service`) to `true` for the dev profile. |
-| `bin/post-install/seed-admin-user.sh` | POST `/internal/admin/bootstrap` to idempotently seed the built-in `dataspoke@dataspoke.local / dataspoke` Admin user (returns `{created: false}` when any Admin already exists). The endpoint makes no DataHub call, so this step has no ordering dependency on peripheral seeding and succeeds on a fresh install before DataHub is wired. See [feature/AUTH.md §Built-in Bootstrap Admin](AUTH.md#built-in-bootstrap-admin). |
+| `bin/post-install/seed-peripheral-config.sh` | One script over two sources, selected by which prefix the env file declares. **Dev** derives the connection from the dev peripheral topology: PATCH `/internal/admin/peripherals/datahub` with `{gms_url, frontend_url, kafka_brokers}` and `/internal/admin/peripherals/langfuse` with `{host, public_key}`, plus the optional non-secret fields set in `.env.dev` — DataHub `service_corpuser_urn` and `default_env`; Langfuse `project_id` (from `DATASPOKE_DEV_LANGFUSE_INIT_PROJECT_ID`) and `environment_tag`. The DataHub Kafka security tuple is not seeded — the dev broker is plaintext, which is the field's default. The dev secret fields — DataHub PAT `token` and Langfuse `secret_key` — are placed into K8s Secrets by `install.sh` before the API pod starts, and the dev path never sends them through the admin API. **Prod** takes the operator's connection verbatim from `DATASPOKE_PROD_PERIPHERAL_*`, **secret fields included**, and lets the API route the DataHub PAT, the Kafka SASL password and the Langfuse secret key into `dataspoke-{datahub,langfuse}-secret` itself — so the prod path creates no Secret, and those Secrets must not be pre-created. |
+| `bin/post-install/seed-runtime-config.sh` | **Dev** PATCHes `/internal/admin/conf` with `{llm_provider, llm_model}` from `DATASPOKE_DEV_LLM_{PROVIDER,MODEL}`, then a second PATCH setting the four `stub_*` dependency flags (`stub_redis_client`, `stub_llm_client`, `stub_pgvector_manager`, `stub_notification_service`) to `true`. **Prod** seeds `DATASPOKE_PROD_LLM_{PROVIDER,MODEL,API_KEY}` — refusing a provider without a model, since the inference loop needs both, and warning on an empty key — and sets **no `stub_*` flag at all**. |
+| `bin/post-install/seed-admin-user.sh` | POST `/internal/admin/bootstrap` to idempotently seed the built-in `dataspoke@dataspoke.local / dataspoke` Admin user (returns `{created: false}` when any Admin already exists). The endpoint makes no DataHub call, so this step has no ordering dependency on peripheral seeding and succeeds on a fresh install before DataHub is wired. When `DATASPOKE_PROD_ADMIN_PASSWORD` is set, the script then rotates that account to it. See [feature/AUTH.md §Built-in Bootstrap Admin](AUTH.md#built-in-bootstrap-admin). |
+
+**The prod path sets no `stub_*` flag.** The four toggles are a dev mechanism
+(`BACKEND_LLM.md §Test Mode`); a production deployment silently running on a stub
+Redis, LLM, pgvector manager or notification service answers `200` and delivers
+none of it, which fails invisibly. A deployment that fails loudly is the better
+outcome, so the prod path leaves the flags unwritten rather than asserting them
+`false`.
+
+**Admin rotation closes the published-credential window.** When
+`DATASPOKE_PROD_ADMIN_PASSWORD` is set, `seed-admin-user.sh` rotates
+`dataspoke@dataspoke.local` to it immediately after bootstrap. The whole exchange
+runs inside the API pod in one `kubectl exec`: the target password arrives on
+stdin, the access token is obtained and discarded in-process, and only a one-word
+verdict comes back — `ROTATED`, `ALREADY_ROTATED`, `NO_KNOWN_PASSWORD`,
+`PATCH_FAILED_<code>`, `VERIFY_FAILED`, `UNREACHABLE`. It is idempotent by
+construction because it tries the target password first. `NO_KNOWN_PASSWORD` —
+neither the target nor the published default authenticates — warns and leaves the
+account alone rather than guessing at it. The address is not configurable:
+`PATCH /auth/me` sets name and password only.
+
+**Payload construction.** Both paths of both config seeds build their JSON with a
+serialiser rather than by string concatenation — a quote or backslash in a
+DataHub PAT otherwise produces a `422` naming a field the operator never typed —
+and treat an absent value and an empty value identically as "leave unchanged",
+since an empty string is a *clearing* write for a secret field.
 
 **Transport and auth.** The shared
 `api_internal_request <namespace> <METHOD> <path> <json-body> [timeout]` helper
@@ -1463,13 +1751,18 @@ refused connection is the fast end of that range. Setting
 to a warning plus a non-zero return, which the best-effort DAG-verification call
 site does and the seed scripts do not.
 
+**Credential-bearing payloads reach the in-pod caller through stdin, not argv**,
+so a DataHub PAT, a Kafka SASL password, a Langfuse secret key, an LLM API key or
+an admin password never appears in `ps auxww` or `/proc/<pid>/cmdline` — on the
+operator's machine or inside the pod.
+
 Skip with `--skip-seed`; useful when a previous install already seeded
 peripheral config and the operator wants to preserve their PATCHes.
 
-In prod the admin seed is automatic and the other two scripts do not run: the
-operator performs their equivalents through `/api/v1/admin/peripherals/*` and
-`/api/v1/admin/conf` against the running deployment. Rotating the seeded default
-credential is a required follow-up — see §Prod operator workflow.
+**Profile coverage.** The dev install runs all three scripts. The prod install
+runs `seed-admin-user.sh` automatically after the chart phase; the other two are
+the operator's to run once the peripheral and LLM blocks of `.env.prod` are
+filled in, and both are re-runnable at any time against a live deployment.
 
 ---
 
@@ -1958,11 +2251,13 @@ prompt (both dev-only).
 
 ### Prod
 
-The operator pre-creates `dataspoke-secrets` out-of-band (ExternalSecrets Operator,
-Vault Agent, SealedSecrets, or plain `kubectl create secret generic`), then sets
-`secrets.existingSecret: <name>` in the values overlay. `install.sh` refuses to
-auto-generate Secrets in the prod profile and fails fast with a clear message if the
-named Secret is absent.
+The Secret exists before `install.sh` runs, and the values overlay names it in
+`secrets.existingSecret: <name>`. `bin/install-prod-preflight.sh` creates it from
+the eleven `DATASPOKE_PROD_*` credential inputs (§Prod operator workflow);
+operators who deliver those keys through ExternalSecrets Operator, Vault Agent or
+SealedSecrets pass `--skip-secret` and provision it themselves, against the same
+content contract. `install.sh` refuses to auto-generate Secrets in the prod
+profile and fails fast with a clear message if the named Secret is absent.
 
 ### Rotation tolerance of the Airflow projections
 
@@ -2025,7 +2320,7 @@ either value takes effect.
 Dev trades the credential check for a zero-friction local loop; prod defaults to
 the credentialed path. The same credential pair is what the DataSpoke API's own
 Airflow client presents (tier-1 `DATASPOKE_AIRFLOW_{USER,PASSWORD}`,
-§Configuration — Four-Tier Env Vars), so the user list and the API's identity are
+§Configuration — Five-Tier Env Vars), so the user list and the API's identity are
 necessarily the same account — a user list naming anyone else leaves every
 workflow trigger unauthenticated.
 
@@ -2227,11 +2522,17 @@ for the policy and ARN forms.
 
 ## Health Check
 
-`bin/health-check.sh` probes each service through nginx-ingress (HTTP
-endpoints) or the laptop-side TCP host (TCP services — the ingress IP in
-managed mode, `127.0.0.1` via `bin/port-forward.sh` in shared mode). Required before any integration
-test run per `TESTING.md §Prerequisites`. On failure, reinstall the
-affected subsystem via `bin/install.sh --profile dev --components <name>`.
+`bin/health-check.sh --profile {dev|prod}` probes each service through
+nginx-ingress (HTTP endpoints) or the laptop-side TCP host (TCP services — the
+ingress IP in managed mode, `127.0.0.1` via `bin/port-forward.sh` in shared
+mode). `--profile` resolves `helm-charts/.env.<profile>` by the same rule
+`install.sh` uses, with `--env-file` overriding it, and the script echoes the
+resolved env file and ingress domain before its first probe — so a confident
+verdict is never read off a deployment other than the one intended. Required
+before any integration test run per `TESTING.md §Prerequisites`. On failure,
+reinstall the affected subsystem via
+`bin/install.sh --profile dev --components <name>`; `--components` is dev-only,
+so a prod fix is a full pre-flight-plus-install cycle.
 
 | Failing service | Component to reinstall |
 |---|---|

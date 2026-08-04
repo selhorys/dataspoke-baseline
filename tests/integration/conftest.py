@@ -60,20 +60,50 @@ def _load_dotenv() -> None:
             continue
         key, _, value = line.partition("=")
         key = key.strip()
-        value = value.strip()
+        value = _unquote_env_value(value.strip())
         if key and key not in os.environ:
             os.environ[key] = value
+
+
+def _unquote_env_value(value: str) -> str:
+    """Reverse the quoting ``env_file_set_var`` applies when it writes the file.
+
+    ``helm-charts/bin/lib/helpers.sh`` wraps a value in single quotes whenever it
+    carries anything the shell would act on -- whitespace, ``$``, a backtick,
+    ``#`` -- escaping embedded apostrophes as ``'\\''``.  The real consumer of
+    the file is ``source``, which undoes that; this parser reads the text
+    directly and has to undo it too, or such a value arrives here still wearing
+    its quotes and every comparison against it fails on characters no test ever
+    put there.
+
+    Deliberately a local copy of ``tests.integration.util.env_file`` rather than
+    an import of it: ``tests/integration/util/__init__.py`` eagerly imports the
+    DataHub helpers, which require a populated environment at import time — so
+    importing it from conftest would make collection depend on the very env this
+    function exists to load.
+    """
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        inner = value[1:-1]
+        return inner.replace("'\\''", "'") if value[0] == "'" else inner
+    return value
 
 
 _load_dotenv()
 
 
 def _promote_test_runtime_overrides() -> None:
-    """Promote DATASPOKE_DEV_* values into the runtime DATASPOKE_* names that
-    src/ Pydantic Settings reads. Required when test code imports src/ helpers
-    (e.g. src.backend.auth.tokens.issue_access_token) and must sign with the same
-    secret the API pod uses — the chart-generated secret is mirrored into .env
-    as DATASPOKE_DEV_JWT_SECRET_KEY by install.sh's _sync_env_from_secret.
+    """Promote named DATASPOKE_DEV_* values into the runtime DATASPOKE_* names
+    that src/ Pydantic Settings reads. Required when test code imports src/
+    helpers (e.g. src.backend.auth.tokens.issue_access_token) and must sign with
+    the same secret the API pod uses — the chart-generated secret is mirrored
+    into .env as DATASPOKE_DEV_JWT_SECRET_KEY by install.sh's
+    _sync_env_from_secret.
+
+    Promotion is per name, never by prefix: the dev tiers of dev-only install
+    inputs and auto-populated dev access share the DATASPOKE_DEV_* prefix (spec:
+    feature/HELM_CHART.md §Configuration — Five-Tier Env Vars), so promoting the
+    whole prefix would push peripheral install inputs into app-runtime settings.
+    The JWT secret is the only promoted name; add one here only with a reason.
     """
     if "DATASPOKE_DEV_JWT_SECRET_KEY" in os.environ:
         os.environ["DATASPOKE_JWT_SECRET_KEY"] = os.environ["DATASPOKE_DEV_JWT_SECRET_KEY"]

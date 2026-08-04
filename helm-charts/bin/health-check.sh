@@ -6,11 +6,21 @@
 #
 # Usage:
 #   ./helm-charts/bin/health-check.sh                          # Check all; prompt to release held lock
+#   ./helm-charts/bin/health-check.sh --profile {dev|prod}     # Probe that profile's deployment
 #   ./helm-charts/bin/health-check.sh --quick                  # TCP-only (skip deep checks)
 #   ./helm-charts/bin/health-check.sh --keep-lock              # Don't touch an existing lock
 #   ./helm-charts/bin/health-check.sh --force-release          # Release held lock without prompting
 #   ./helm-charts/bin/health-check.sh --env-file <path>        # Use a specific env file
 #   ./helm-charts/bin/health-check.sh --help                   # Print this usage message
+#
+# --profile resolves helm-charts/.env.<profile> the way install.sh does, with
+# --env-file overriding it. Which deployment is being probed is printed before
+# the first probe either way: a confident verdict read off the wrong deployment
+# is the failure this reporting exists to prevent.
+#
+# The DataHub, dummy-data and dev-lock sections have no prod counterpart — they
+# are dev-only peripherals — so they report unreachable against a prod
+# deployment rather than being skipped.
 #
 # Exit codes: 0 = all healthy, 1 = one or more unhealthy
 set -euo pipefail
@@ -20,16 +30,34 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/helpers.sh
 source "$SCRIPT_DIR/lib/helpers.sh"
 
+# _require_option_value <flag> <remaining_argc> asserts a value-taking flag
+# actually got one before the shift, matching the pre-flight's own guard: a
+# flag given last (e.g. an empty CI variable expanding `--profile` to
+# nothing) would otherwise make `shift 2` fail under `set -e` and end the run
+# at exit 1 with no output. <remaining_argc> is the CALLER's own `$#`, taken
+# as a parameter rather than read here — this function's own argument count
+# is always 2.
+_require_option_value() {
+  (( $2 >= 2 )) || { echo -e "\033[0;31m[ERROR]\033[0m $1 requires a value (use --help)." >&2; exit 1; }
+}
+
 QUICK=false
 KEEP_LOCK=false
 FORCE_RELEASE=false
 ENV_FILE_ARG=""
+PROFILE=""
+# Whether --profile was GIVEN, not whether its value is non-empty: --profile
+# '' must be reported as an invalid profile rather than silently falling
+# through to the dev default, which is what a bare non-emptiness check on
+# PROFILE would do.
+PROFILE_GIVEN=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --quick) QUICK=true; shift ;;
     --keep-lock) KEEP_LOCK=true; shift ;;
     --force-release) FORCE_RELEASE=true; shift ;;
-    --env-file) ENV_FILE_ARG="${2:-}"; shift 2 ;;
+    --env-file) _require_option_value "$1" $#; ENV_FILE_ARG="$2"; shift 2 ;;
+    --profile) _require_option_value "$1" $#; PROFILE="$2"; PROFILE_GIVEN=true; shift 2 ;;
     --help|-h)
       awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "$0"
       exit 0
@@ -41,13 +69,28 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-ENV_FILE="${ENV_FILE_ARG:-${ENV_FILE:-$(cd "$SCRIPT_DIR/.." && pwd)/.env.dev}}"
+if $PROFILE_GIVEN && [[ "$PROFILE" != "dev" && "$PROFILE" != "prod" ]]; then
+  echo -e "\033[0;31m[ERROR]\033[0m Invalid --profile '${PROFILE}'. Must be 'dev' or 'prod'." >&2
+  exit 1
+fi
+
+# Explicit --env-file wins, then --profile's own file, then the inherited
+# ENV_FILE an install exports for its child scripts, then the dev default. The
+# first two mirror install.sh; the last two are what keeps a bare invocation
+# behaving as it always has.
+if [[ -n "$ENV_FILE_ARG" ]]; then
+  ENV_FILE="$ENV_FILE_ARG"
+elif $PROFILE_GIVEN; then
+  ENV_FILE="$(cd "$SCRIPT_DIR/.." && pwd)/.env.${PROFILE}"
+else
+  ENV_FILE="${ENV_FILE:-$(cd "$SCRIPT_DIR/.." && pwd)/.env.dev}"
+fi
 
 # ---------------------------------------------------------------------------
 # Load configuration
 # ---------------------------------------------------------------------------
 if [[ ! -f "$ENV_FILE" ]]; then
-  echo -e "\033[0;31m[ERROR]\033[0m Env file not found at $ENV_FILE — copy helm-charts/.env.dev.example and edit it." >&2
+  echo -e "\033[0;31m[ERROR]\033[0m Env file not found at $ENV_FILE — copy the matching helm-charts/.env.<profile>.example and edit it." >&2
   exit 1
 fi
 source "$ENV_FILE"
@@ -66,13 +109,13 @@ if [[ "$INGRESS_MODE" == "shared" ]]; then
   # services are reached on 127.0.0.1 via `kubectl port-forward`
   # (bin/port-forward.sh). No ingress IP.
   if [[ -z "$DOMAIN" ]]; then
-    echo -e "\033[0;31m[ERROR]\033[0m DATASPOKE_KUBE_INGRESS_DOMAIN must be set in .env (shared ingress mode)." >&2
+    echo -e "\033[0;31m[ERROR]\033[0m DATASPOKE_KUBE_INGRESS_DOMAIN must be set in ${ENV_FILE} (shared ingress mode)." >&2
     exit 1
   fi
   TCP_HOST="127.0.0.1"
 else
   if [[ -z "$INGRESS_IP" || -z "$DOMAIN" ]]; then
-    echo -e "\033[0;31m[ERROR]\033[0m DATASPOKE_KUBE_INGRESS_IP and DATASPOKE_KUBE_INGRESS_DOMAIN must be set in .env." >&2
+    echo -e "\033[0;31m[ERROR]\033[0m DATASPOKE_KUBE_INGRESS_IP and DATASPOKE_KUBE_INGRESS_DOMAIN must be set in ${ENV_FILE}." >&2
     echo "       Run helm-charts/bin/dev-peripherals/nginx-ingress.sh first." >&2
     exit 1
   fi
@@ -186,27 +229,37 @@ check_dataspoke_postgresql() {
   if $QUICK; then _pass "$label (tcp)"; return; fi
 
   if command -v pg_isready &>/dev/null; then
-    if pg_isready -h "$DS_PG_HOST" -p "$DS_PG_PORT" -U "$DS_PG_USER" -d "$DS_PG_DB" -q 2>/dev/null; then
+    # PGPASSWORD in the child's environment, never argv: this profile can be
+    # prod's, and argv is world-readable through `ps auxww` /
+    # /proc/<pid>/cmdline for the life of the process.
+    if PGPASSWORD="${DATASPOKE_DEV_POSTGRES_PASSWORD:-}" pg_isready -h "$DS_PG_HOST" -p "$DS_PG_PORT" -U "$DS_PG_USER" -d "$DS_PG_DB" -q 2>/dev/null; then
       _pass "$label"
     else
       _fail "$label — pg_isready failed (pod may be restarting)"
       ((FAILURES++))
     fi
   else
-    if uv run python -c "
-import asyncio, asyncpg, sys
+    # Connection parameters on stdin via a heredoc, read from the child's own
+    # environment rather than interpolated into `-c` — a `-c` string built
+    # from the password would both land in argv and be a Python-injection
+    # sink for a `'` in it (closes the literal early).
+    if PGHOST="$DS_PG_HOST" PGPORT="$DS_PG_PORT" PGUSER="$DS_PG_USER" PGDATABASE="$DS_PG_DB" \
+       PGPASSWORD="${DATASPOKE_DEV_POSTGRES_PASSWORD:-}" \
+       uv run python - <<'PYEOF' 2>/dev/null
+import asyncio, asyncpg, os, sys
 async def check():
     try:
-        conn = await asyncpg.connect(host='$DS_PG_HOST', port=$DS_PG_PORT,
-                                     user='$DS_PG_USER', database='$DS_PG_DB',
-                                     password='${DATASPOKE_DEV_POSTGRES_PASSWORD:-}', timeout=3)
+        conn = await asyncpg.connect(host=os.environ['PGHOST'], port=int(os.environ['PGPORT']),
+                                     user=os.environ['PGUSER'], database=os.environ['PGDATABASE'],
+                                     password=os.environ.get('PGPASSWORD') or None, timeout=3)
         await conn.execute('SELECT 1')
         await conn.close()
     except Exception as e:
         print(str(e), file=sys.stderr)
         sys.exit(1)
 asyncio.run(check())
-" 2>/dev/null; then
+PYEOF
+    then
       _pass "$label"
     else
       _fail "$label — cannot connect (pod may be restarting)"
@@ -224,27 +277,30 @@ check_example_postgres() {
   if $QUICK; then _pass "$label (tcp)"; return; fi
 
   if command -v pg_isready &>/dev/null; then
-    if pg_isready -h "$DD_PG_HOST" -p "$DD_PG_PORT" -U "$DD_PG_USER" -d "$DD_PG_DB" -q 2>/dev/null; then
+    if PGPASSWORD="${DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD:-}" pg_isready -h "$DD_PG_HOST" -p "$DD_PG_PORT" -U "$DD_PG_USER" -d "$DD_PG_DB" -q 2>/dev/null; then
       _pass "$label"
     else
       _fail "$label — pg_isready failed"
       ((FAILURES++))
     fi
   else
-    if uv run python -c "
-import asyncio, asyncpg, sys
+    if PGHOST="$DD_PG_HOST" PGPORT="$DD_PG_PORT" PGUSER="$DD_PG_USER" PGDATABASE="$DD_PG_DB" \
+       PGPASSWORD="${DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD:-}" \
+       uv run python - <<'PYEOF' 2>/dev/null
+import asyncio, asyncpg, os, sys
 async def check():
     try:
-        conn = await asyncpg.connect(host='$DD_PG_HOST', port=$DD_PG_PORT,
-                                     user='$DD_PG_USER', database='$DD_PG_DB',
-                                     password='${DATASPOKE_DEV_DUMMY_DATA_POSTGRES_PASSWORD:-}', timeout=3)
+        conn = await asyncpg.connect(host=os.environ['PGHOST'], port=int(os.environ['PGPORT']),
+                                     user=os.environ['PGUSER'], database=os.environ['PGDATABASE'],
+                                     password=os.environ.get('PGPASSWORD') or None, timeout=3)
         await conn.execute('SELECT 1')
         await conn.close()
     except Exception as e:
         print(str(e), file=sys.stderr)
         sys.exit(1)
 asyncio.run(check())
-" 2>/dev/null; then
+PYEOF
+    then
       _pass "$label"
     else
       _fail "$label — cannot connect"
@@ -261,12 +317,11 @@ check_dataspoke_redis() {
   fi
   if $QUICK; then _pass "$label (tcp)"; return; fi
 
-  local auth_args=()
-  if [[ -n "$DS_REDIS_PASSWORD" ]]; then
-    auth_args=(-a "$DS_REDIS_PASSWORD")
-  fi
+  # REDISCLI_AUTH in the child's environment rather than `-a` in argv, which
+  # is world-readable through `ps auxww` / /proc/<pid>/cmdline for the life of
+  # the process — the same reasoning as PGPASSWORD above.
   local response
-  response=$(redis-cli -h "$DS_REDIS_HOST" -p "$DS_REDIS_PORT" ${auth_args[@]+"${auth_args[@]}"} \
+  response=$(REDISCLI_AUTH="$DS_REDIS_PASSWORD" redis-cli -h "$DS_REDIS_HOST" -p "$DS_REDIS_PORT" \
     PING 2>/dev/null) || true
 
   if [[ "$response" == "PONG" ]]; then
@@ -505,6 +560,10 @@ check_lock_service() {
 echo ""
 echo "DataSpoke health check"
 echo "======================"
+# Named before the first probe, always: every URL and host below comes out of
+# this file, so an operator who meant one deployment and resolved another sees
+# it here rather than reading its verdict as their own.
+echo "  Env file:       ${ENV_FILE}"
 if [[ "$INGRESS_MODE" == "shared" ]]; then
   echo "  Ingress mode:   shared (TCP via 127.0.0.1 port-forward — run bin/port-forward.sh)"
 else

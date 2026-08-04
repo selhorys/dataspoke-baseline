@@ -22,7 +22,7 @@ if [[ ! -f "$ENV_FILE" ]]; then
 fi
 source "$ENV_FILE"
 
-# Host used by Kafka's EXTERNAL advertised listener and for laptop-side test
+# Host used by Kafka's EXTERNAL advertised listener and for laptop-side dev
 # access to the broker. In managed mode this is the ingress LoadBalancer IP
 # (which must already be populated by nginx-ingress.sh); in shared mode it is
 # 127.0.0.1, reached via `kubectl port-forward` (bin/port-forward.sh), as the

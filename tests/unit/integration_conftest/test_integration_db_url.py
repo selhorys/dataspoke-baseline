@@ -44,7 +44,7 @@ from sqlalchemy import URL
 _CONFTEST_PATH = Path(__file__).resolve().parents[2] / "integration" / "conftest.py"
 
 # The module-level env reads ``tests/integration/conftest.py`` performs at import time
-# (``os.environ[...]``, lines 94-102). Supplied so the import succeeds on a machine with
+# (``os.environ[...]``, lines 101-109). Supplied so the import succeeds on a machine with
 # no `helm-charts/.env.dev` and no exported environment; none of these keys is read by
 # the fixture under test.
 _IMPORT_ENV = {
@@ -135,14 +135,14 @@ def test_the_env_block_populates_the_urls_fields() -> None:
     assert url.database == "mydb"
 
 
-def test_the_fixture_reads_the_test_env_block_not_the_app_runtime_one() -> None:
+def test_the_fixture_reads_the_dev_env_block_not_the_app_runtime_one() -> None:
     """The fixture reads ``DATASPOKE_DEV_POSTGRES_*``, never the app-runtime block.
 
     A fixture that fell back to ``DATASPOKE_POSTGRES_*`` would silently target whatever
     the app runtime is configured for — in-cluster coordinates unreachable from a
     developer machine. Both blocks are populated here with *different* values, so this
     discriminates; it is the same shape as ``tests/unit/integration_util/
-    test_main_db_url.py::test_every_env_key_the_helper_reads_is_the_test_block``, applied
+    test_main_db_url.py::test_every_env_key_the_helper_reads_is_the_dev_block``, applied
     to the other call site.
 
     spec: TESTING.md §Running — "Export `helm-charts/.env.dev` into the shell before

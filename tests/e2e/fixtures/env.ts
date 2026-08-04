@@ -13,6 +13,23 @@ import * as fs from "fs";
 import * as path from "path";
 
 /**
+ * Reverse the quoting `env_file_set_var` applies when it writes the file.
+ * `helm-charts/bin/lib/helpers.sh` wraps a value in single quotes whenever it
+ * carries anything the shell would act on — whitespace, `$`, a backtick, `#` —
+ * escaping embedded apostrophes as `'\''`. The file's real consumer is
+ * `source`, which undoes that; this parser reads the text directly and has to
+ * undo it too, or such a value arrives still wearing its quotes and every
+ * comparison against it fails on characters no test ever put there.
+ */
+function unquoteEnvValue(value: string): string {
+  if (value.length >= 2 && value[0] === value[value.length - 1] && (value[0] === "'" || value[0] === '"')) {
+    const inner = value.slice(1, -1);
+    return value[0] === "'" ? inner.split("'\\''").join("'") : inner;
+  }
+  return value;
+}
+
+/**
  * Load helm-charts/.env.dev into process.env without overwriting existing vars.
  * Searches upward from this file's location to find the repo root, matching
  * the worktree-aware logic in tests/integration/conftest.py _load_dotenv().
@@ -30,7 +47,7 @@ export function loadDotenv(): void {
         const eqIdx = line.indexOf("=");
         if (eqIdx === -1) continue;
         const key = line.slice(0, eqIdx).trim();
-        const value = line.slice(eqIdx + 1).trim();
+        const value = unquoteEnvValue(line.slice(eqIdx + 1).trim());
         if (key && !(key in process.env)) {
           process.env[key] = value;
         }
