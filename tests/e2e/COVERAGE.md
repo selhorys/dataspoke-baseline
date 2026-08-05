@@ -61,7 +61,7 @@ retired per-feature `/{feature}/data/[urn]` routes are redirects to `/data/[urn]
 
 | Route | UC test | Ground test |
 |---|---|---|
-| `/governance/dashboard` | `_smoke.spec.ts` (post-login landing); `uc5-01-governance.spec.ts` step 3a (metric cards + trend chart) | `ground/shell/root-redirect.spec.ts` (`/` redirect target) |
+| `/governance/dashboard` | `_smoke.spec.ts` (post-login landing); `uc5-01-governance.spec.ts` step 3a (metric cards + trend chart) | `ground/shell/root-redirect.spec.ts` (`/` redirect target); `ground/governance/dashboard-view-controls.spec.ts` (view controls: all types checked / blank search / ascending description order by default; deselecting one type drops its cards; case-insensitive substring description search, inactive while blank; deselecting every type empties the grid into the view-controls empty state, not the enable-a-metric one; the three choices survive a reload; and none of them changes the metric-list read — every `GET /spoke/governance/metric` carries exactly `is_enabled=true` + `limit=100`) |
 | `/governance/metrics` | `uc5-01-governance.spec.ts` step 3b (list: metrics, type badges, Enabled) | — |
 | `/governance/metrics/new` | `uc5-01-governance.spec.ts` step 1a (create form → redirect) | — |
 | `/governance/metrics/[id]` | `uc5-01-governance.spec.ts` steps 1c, 2, 3c, 4 (Edit→PUT, Run, Config+Result+Event, Delete) | `ground/governance/metric-grain.spec.ts` (Result panel ChartGrainPicker: Hourly/Daily/Weekly with Daily default; switching grain adds no request parameter — no `grain` in the `attr/result` query and the sent query strings unchanged; the choice survives a reload and carries to a second metric's Result panel — one stored grain per panel type) |

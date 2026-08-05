@@ -618,7 +618,7 @@ validation.
 
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|
-| `GET` | `/spoke/governance/metric` | List all metrics (paginated, sortable by `created_at`/`updated_at`/`title` (default `created_at_desc`); filterable by `metric_type`, `mode`, `is_enabled`). The display label is `title` — `metric_definitions` has no `name` column. Each row also carries `last_run_at` (the `occurred_at` of the latest `METRIC.RUN_COMPLETE` event for the metric, or `null` when it has never completed a run) | Governance | UC5 |
+| `GET` | `/spoke/governance/metric` | List all metrics (paginated, sortable by `created_at`/`updated_at`/`title`/`description` (default `created_at_desc`); filterable by `metric_type`, `mode`, `is_enabled`). The display label is `title` — `metric_definitions` has no `name` column. Each row also carries `last_run_at` (the `occurred_at` of the latest `METRIC.RUN_COMPLETE` event for the metric, or `null` when it has never completed a run) | Governance | UC5 |
 | `POST` | `/spoke/governance/metric` | Create a metric; `metric_id` supplied in body. Returns `409 METRIC_EXISTS` on a colliding id, `501 NOT_IMPLEMENTED` when `mode: "passive"` | Governance | UC5 |
 | `GET` | `/spoke/governance/metric/{metric_id}` | Get metric summary (identity, mode, metric_type, enabled status) | Governance | UC5 |
 | `GET` | `/spoke/governance/metric/{metric_id}/attr` | Get metric attributes overview (`id`, `title`, mode, metric_type, schedule_tier, enabled status, latest `values`, `latest_measured_at`) | Governance | UC5 |

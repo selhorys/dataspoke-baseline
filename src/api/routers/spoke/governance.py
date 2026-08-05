@@ -131,6 +131,7 @@ async def get_metric_list(
             "created_at": MetricDefinition.created_at,
             "updated_at": MetricDefinition.updated_at,
             "title": MetricDefinition.title,
+            "description": MetricDefinition.description,
         },
         None,
     )

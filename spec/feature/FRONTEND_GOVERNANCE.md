@@ -28,22 +28,36 @@ route (menu placement and API namespace need not match).
 
 ## Dashboard (`/governance/dashboard`)
 
-The Dashboard is a read-only visualization of every enabled metric as a
-responsive grid of combined cards:
+The Dashboard is a read-only visualization of the enabled metrics — narrowed
+and ordered by the view controls below — as a responsive grid of combined
+cards:
 
 | Element | Read | Notes |
 |---|---|---|
-| Combined metric card | `GET /spoke/governance/metric` (filter `is_enabled=true`) + latest `GET .../{id}/attr/result?limit=1` per metric + trend `GET .../{id}/attr/result?from=…&to=…` per metric | One card per enabled metric. Each card stacks, top to bottom: the metric `title` (emphasized heading), a `metric_type` outline badge, the latest `values` dict rendered as a compact stat row (each key a muted label with its value emphasized alongside) with its measured-at date, and that metric's per-metric trend chart (one line per that metric's `values` key, one visible point per grain window). Per-metric charts avoid collapsing shared keys (e.g. `total`) across metrics onto one ambiguous line. No per-card delta indicator |
+| Combined metric card | `GET /spoke/governance/metric` (filter `is_enabled=true`) + latest `GET .../{id}/attr/result?limit=1` per metric + trend `GET .../{id}/attr/result?from=…&to=…` per metric | One card per metric visible under the view controls. Each card stacks, top to bottom: the metric `title` (emphasized heading), a `metric_type` outline badge, the latest `values` dict rendered as a compact stat row (each key a muted label with its value emphasized alongside) with its measured-at date, and that metric's per-metric trend chart (one line per that metric's `values` key, one visible point per grain window). Per-metric charts avoid collapsing shared keys (e.g. `total`) across metrics onto one ambiguous line. No per-card delta indicator |
 | Shared RangePicker + ChartGrainPicker | range drives every card's trend `from`/`to` (plus a limit); grain drives no request parameter | A single [RangePicker](FRONTEND_BASIC.md#shared-component-notes) (`date` granularity, presets Last 1 day / 7 days / 2 weeks (default) / 4 weeks / 12 weeks) sits above the grid and applies the same window to every card's chart together, with a [ChartGrainPicker](FRONTEND_BASIC.md#shared-component-notes) immediately beside it applying the same grain to every card's chart. The grain is a client-side display concern — it collapses the fetched rows to one point per window — that window's last measurement — and leaves the read untouched |
+| Metric view controls | the same `GET /spoke/governance/metric` (filter `is_enabled=true`) read that backs the cards — **no request parameter** | A row of three controls beneath the header narrows and orders the already-fetched enabled set entirely client-side, the same way the ChartGrainPicker beside them is display-only: a **metric-type filter** (checkbox-group multi-select over the built-in `metric_type` values listed in [USE_CASE §UC5](../USE_CASE_en.md#uc5-governance), each box labelled by its raw `metric_type` value, all selected by default; deselecting every type yields an empty set rather than falling back to all), a **description search** (case-insensitive substring over each metric's `description`, inactive while blank), and a **description sort** (`Description A→Z` / `Description Z→A`, ascending by default). Each selection persists across visits in browser `localStorage` under a stable key, by the same rule as the shared [RangePicker](FRONTEND_BASIC.md#shared-component-notes) and [ChartGrainPicker](FRONTEND_BASIC.md#shared-component-notes) selections. Distinct from the single-select, server-side `metric_type` filter on the [metric list page](#metrics-governancemetrics), which does map to a query parameter |
+| Cap disclosure | `total_count` of the same read | The dashboard read is capped at `limit=100`. When `total_count` exceeds the returned row count, a muted note above the grid states that only the first 100 enabled metrics are shown and that the filter and sort apply to those 100 only |
 | Responsive grid | — | Equal-width cards with an enforced minimum width, laid out as `repeat(auto-fit, minmax(~22rem, 1fr))`. The grid wraps dynamically 3→2→1 as the viewport narrows, with **no fixed column cap** — on an ultra-wide viewport with more than three enabled metrics a fourth may pack into a row |
 
 Trend charts poll on the 15s interval (paused when the tab is hidden) per the
 BASIC convention; the latest-`values` snapshot on each card is fetched once per
 load (refreshed on range change or manual refetch), not polled.
 
+The grid carries two distinct empty states. With no enabled metrics at all it
+points at the Metrics page as the place to enable one. With enabled metrics
+present but none surviving the type filter and description search it points at
+the view controls instead — the correction is the reader's own selection, not the
+catalogue.
+
 ```
 ┌──────────────────────────────────────────────────────────┐
 │  Governance · Dashboard     [Last 2 weeks ▾] [Daily ▾]   │
+├──────────────────────────────────────────────────────────┤
+│  [x] ingestion-freshness [x] validation-score            │
+│  [x] doc-health                                          │
+│  [ Search descriptions…    ]  [ Description A→Z      ▾]  │
+│  Showing the first 100 of 142 enabled metrics            │
 ├──────────────────────────────────────────────────────────┤
 │  ┌─────────────────┐ ┌─────────────────┐ ┌─────────────┐ │
 │  │ Ingestion Fresh.│ │ Validation Score│ │ Doc Health  │ │

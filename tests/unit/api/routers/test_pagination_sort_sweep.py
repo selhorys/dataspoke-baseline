@@ -497,7 +497,13 @@ async def test_admin_users_sort_by_updated_at(client) -> None:
 async def test_governance_metric_list_sort_and_cap(client) -> None:
     """GET /governance/metric?sort=created_at_asc reverses default; limit caps at 1000.
 
-    spec/API.md §Metric — paginated; sortable by created_at/updated_at/title.
+    spec/API.md §Metric — "List all metrics (paginated, sortable by
+    ``created_at``/``updated_at``/``title``/``description`` (default
+    ``created_at_desc``) ...)".
+
+    ``description_asc`` is the sort key the governance dashboard's description
+    ordering is anchored on (spec/feature/FRONTEND_GOVERNANCE.md §Dashboard —
+    "a **description sort**"), so it is exercised alongside ``created_at_asc``.
     """
     svc = AsyncMock()
     svc.list_metrics = AsyncMock(return_value=([], 0))
@@ -509,6 +515,20 @@ async def test_governance_metric_list_sort_and_cap(client) -> None:
         )
         assert asc.status_code == 200
         assert _order_str(svc.list_metrics.await_args).endswith("ASC")
+
+        by_description = await client.get(
+            "/api/v1/spoke/governance/metric?sort=description_asc",
+            headers=auth_headers(),
+        )
+        assert by_description.status_code == 200
+        rendered = _order_str(svc.list_metrics.await_args)
+        assert rendered is not None and rendered.endswith("ASC"), (
+            f"sort=description_asc must forward an ASC order_by; got {rendered!r}"
+        )
+        assert "description" in rendered, (
+            "sort=description_asc must order by the description column; "
+            f"got {rendered!r}"
+        )
 
         body = asc.json()
         for key in ("offset", "limit", "total_count"):

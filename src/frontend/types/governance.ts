@@ -6,6 +6,13 @@ export type MetricType = "ingestion-freshness" | "validation-score" | "doc-healt
 export type MetricMode = "active" | "passive";
 export type ScheduleTier = "hourly" | "daily" | "weekly";
 
+/** Canonical metric-type order for type-list controls. */
+export const METRIC_TYPES: readonly MetricType[] = [
+  "ingestion-freshness",
+  "validation-score",
+  "doc-health",
+] as const;
+
 /** Keys emitted by each built-in metric type (mirrors _EMITTED_KEYS in the backend). */
 export const METRIC_EMITTED_KEYS: Record<MetricType, string[]> = {
   "ingestion-freshness": ["total", "ingested_in_time"],

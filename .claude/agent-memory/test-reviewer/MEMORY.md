@@ -54,3 +54,4 @@
 - [last_used_at stamp seams](project_last_used_at_stamp_seams.md) — #140 cycle-2: clause-tree evaluator now kills all 5 former survivors; what stays free by design, and the unrun-on-Postgres residue
 - [conftest promotion set is one name](project_conftest_promotion_set_is_one_name.md) — DATASPOKE_DEV_* now spans peripheral creds; any prefix-driven promotion in conftest is a credential leak
 - [DatasetFilterEditor mutation seams](project_dataset_filter_editor_mutation_seams.md) — #146/#147 cycle-2: 22/26 killed; 4 survivors are equivalent/React-artifact/spec-conformant; residue is one level up
+- [Dashboard cap-note count is ambiguous](project_dashboard_cap_note_count_ambiguous.md) — spec says "the first 100", impl renders returned rows; the unit fixture models an unreachable state

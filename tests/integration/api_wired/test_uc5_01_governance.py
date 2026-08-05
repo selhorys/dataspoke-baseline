@@ -118,6 +118,31 @@ async def test_uc5_governance_imazon_example(
                 "spec: USE_CASE_en.md §UC5 §Imazon Example."
             )
 
+        # ── Step 1a: the list route orders by description ─────────────────────
+        # The CDO's dashboard orders its metric cards by description, which rests
+        # on `description` being a sortable key of the list route.
+        # spec: API.md §Metric — GET /spoke/governance/metric "sortable by
+        #       created_at/updated_at/title/description".
+        # spec: FRONTEND_GOVERNANCE.md §Dashboard — "a **description sort**".
+        by_description = await api_client.get(
+            "/api/v1/spoke/governance/metric",
+            headers=admin_headers,
+            params={"sort": "description_asc", "limit": 1000},
+        )
+        assert by_description.status_code == 200, (
+            f"GET /spoke/governance/metric?sort=description_asc expected 200, "
+            f"got {by_description.status_code}: {by_description.text}. "
+            "spec: API.md §Metric."
+        )
+        created_ids = {cfg["metric_id"] for cfg in metrics_to_create}
+        created_descriptions = [
+            m["description"] for m in by_description.json()["metrics"] if m["id"] in created_ids
+        ]
+        assert created_descriptions == sorted(cfg["description"] for cfg in metrics_to_create), (
+            "sort=description_asc must return the three created metrics in ascending "
+            f"description order; got {created_descriptions}. spec: API.md §Metric."
+        )
+
         # ── Step 1b: Collision rejection ──────────────────────────────────────
         # Re-POSTing with the same metric_id must return 409 METRIC_EXISTS.
         # spec: API.md §Metric — colliding id returns 409 METRIC_EXISTS.
