@@ -67,3 +67,5 @@
 - [trap EXIT INT TERM swallows Ctrl-C](feedback_trap_int_term_swallows_ctrl_c.md) — non-exiting INT handler makes the run CONTINUE and exit 0; EXIT alone already fires on SIGINT
 - [Override flag the 2nd command can't express](feedback_override_flag_downstream_cannot_express.md) — diff both arg parsers + defaults; pre-flight --namespace/--secret-name have no install.sh counterpart
 - [Documented verdict never printed](feedback_documented_verdict_never_printed.md) — literal status tokens live in a `case`, not on stdout; failure arms may kill the caller
+- [Frontend probe silent no-ops](feedback_frontend_probe_silent_noop.md) — pnpm test ignores the file filter, console.log needs --reporter=verbose, RHF submit no-ops on invalid defaults
+- [Filter-editor reseed vs refetch](project_filter_editor_reseed_refetch_coupling.md) — raw-text retention leans on refetchOnWindowFocus:false + the conf pages' useEffect([conf])

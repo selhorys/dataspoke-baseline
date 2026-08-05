@@ -166,9 +166,15 @@ detail render a null tier as *on-demand*.
 │                                                     │
 │  dataset_filter                                     │
 │    origin:           [ DEV                       v] │
-│    tags[]:           [urn:li:tag:env:DEV,     ]     │
-│    glossary_terms[]: [urn:li:glossaryTerm:…,  ]     │
-│    dataset_urns[]:   [urn:li:dataset:(…),     ]     │
+│    tags[]:           ┌─ one URN per line ───────┐   │
+│                      │ urn:li:tag:env:DEV       │   │
+│                      └──────────────────────────┘   │
+│    glossary_terms[]: ┌─ one URN per line ───────┐   │
+│                      │ urn:li:glossaryTerm:…    │   │
+│                      └──────────────────────────┘   │
+│    dataset_urns[]:   ┌─ one URN per line ───────┐   │
+│                      │ urn:li:dataset:(…)       │   │
+│                      └──────────────────────────┘   │
 └─────────────────────────────────────────────────────┘
         Config form (PUT/PATCH .../attr/conf)
 ```

@@ -269,7 +269,7 @@ test.afterAll(async ({ adminApi }) => {
 
 /**
  * Fill the dataset_urns field of the DatasetFilterEditor with a single URN.
- * The editor renders each multi-value dimension as a newline/comma-separated
+ * The editor renders each multi-value dimension as a newline-separated
  * textarea; dataset_urns has the stable id "df-dataset-urns"
  * (dataset-filter-editor.tsx). The resulting dataset_filter shape is asserted
  * via the backend probe, not the DOM.

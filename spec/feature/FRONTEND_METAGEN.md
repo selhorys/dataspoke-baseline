@@ -225,7 +225,10 @@ uncovered list, and candidate text, with no action buttons.
 - `MetagenConfList` — the conf list with the "Create conf" button.
 - `MetagenConfForm` — the conf form (create + edit), with the `dataset_filter` builder.
 - `MetagenConfView` — the read-only conf view (plain-text fields, `schedule_tier` as a DAG link, `dataset_filter` via `DatasetFilterView`), shown on `/metagen/conf/[id]` until `Edit`.
-- `RunDialog` — per-conf dry-run / run trigger dialog with status.
+- `RunDialog` — per-conf dry-run / run trigger dialog with status. Its optional
+  `dataset_urns` override is a **newline-separated** textarea parsed on submit,
+  following the same input contract as
+  [DatasetFilterEditor](FRONTEND_BASIC.md#shared-component-notes).
 - `MetagenDatasetTable` — the per-dataset result rollup on `/metagen/result` (`GET /spoke/metagen/dataset`) with the `dataset_urn` text filter and `conf_id` select.
 - `MetagenUncoveredTable` — the uncovered-datasets list with the `include_disallowed` toggle and a `datahub` deep-link second column.
 - `BoundaryForm` — the per-dataset boundary form (`attr/metagen/boundary`).

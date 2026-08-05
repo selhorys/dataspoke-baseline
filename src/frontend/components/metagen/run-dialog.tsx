@@ -2,6 +2,11 @@
 
 /**
  * RunDialog — trigger a global MetaGen run with optional dataset URN filter and dry-run toggle.
+ *
+ * The dataset_urns override follows the same input contract as DatasetFilterEditor:
+ * the textarea holds the raw text the user typed and is parsed on submit —
+ * newline-separated, one URN per line, each line edge-trimmed, blank lines
+ * dropped. Commas are not separators; a dataset URN contains them by construction.
  */
 
 import { useState } from "react";
@@ -17,6 +22,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Field } from "@/components/forms/field";
 import { Textarea } from "@/components/ui/textarea";
+import { splitList } from "@/components/dataset-filter-editor";
 import type { MetagenRunBody } from "@/types/metagen";
 
 interface RunDialogProps {
@@ -31,10 +37,7 @@ export function RunDialog({ open, onOpenChange, onRun, isRunning }: RunDialogPro
   const [dryRun, setDryRun] = useState(false);
 
   function handleRun() {
-    const urns = datasetUrnsRaw
-      .split(/[\n,]+/)
-      .map((s) => s.trim())
-      .filter(Boolean);
+    const urns = splitList(datasetUrnsRaw);
     onRun({
       dataset_urns: urns.length > 0 ? urns : null,
       dry_run: dryRun,
@@ -56,7 +59,7 @@ export function RunDialog({ open, onOpenChange, onRun, isRunning }: RunDialogPro
           <Field
             label="dataset_urns (optional)"
             htmlFor="run-dataset-urns"
-            hint="One URN per line or comma-separated. Empty = all in-scope datasets."
+            hint="One URN per line — blank lines dropped, each line edge-trimmed. Empty = all in-scope datasets."
           >
             <Textarea
               id="run-dataset-urns"

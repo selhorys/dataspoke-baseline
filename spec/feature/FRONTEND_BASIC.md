@@ -731,12 +731,23 @@ These component IDs are referenced from per-function specs.
   cross-feature event feeds (`GET /spoke/ontogen/event`,
   `GET /spoke/metagen/event`) on one poll (see [Live Updates](#live-updates)).
   Governance exposes only per-metric feeds, so it is not aggregated here.
-- **DatasetFilterEditor** — controlled editor for the four-dimension
+- **DatasetFilterEditor** — parent-owned editor for the four-dimension
   `dataset_filter` (`origin` plus `tags[]` / `glossary_terms[]` /
   `dataset_urns[]`). Reused by Governance metrics, OntoGen conf, and MetaGen conf.
+  Each list dimension is one **newline-separated** textarea — one URN per line —
+  buffering the raw text the user typed; parsing happens on the way out (each
+  line edge-trimmed, blank lines dropped, an empty dimension omitted from the
+  filter) and parsed state is never re-serialised back into the box, so
+  whitespace the user is mid-way through typing survives. Commas are **not**
+  separators: tag and glossary-term URNs embed a user-authored name that may
+  contain a comma, and dataset URNs always contain them. The editor reseeds its
+  boxes from props only when the incoming filter is not the one it last emitted
+  (e.g. a freshly loaded record).
 - **DatasetFilterView** — read-only render of the four-dimension `dataset_filter`,
   the view-mode analogue of DatasetFilterEditor (empty dimensions show an em dash).
-  Reused by the OntoGen and MetaGen conf views.
+  List entries render monospaced with internal whitespace preserved, so a URN's
+  own spacing reads back as stored. Reused by the Governance metric detail, and
+  the OntoGen and MetaGen conf views.
 - **ScheduleTierLink** — renders a schedule tier (hourly / daily / weekly) as a
   link to its backing Airflow DAG, or plain text for an unscheduled / custom value.
   Reused by Ingestion (`ingestion-active-<tier>`), MetaGen (`metagen-<tier>`), and

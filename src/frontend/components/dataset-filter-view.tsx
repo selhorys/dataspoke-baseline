@@ -7,6 +7,10 @@
  *   tags            — optional string[] (tag URNs)
  *   glossary_terms  — optional string[] (glossary term URNs)
  *   dataset_urns    — optional string[] (explicit dataset URNs)
+ *
+ * List entries render monospaced with internal whitespace preserved, so a URN's
+ * own spacing reads back as stored (DatasetFilterEditor edge-trims each line on
+ * the way in, so leading and trailing whitespace never reaches here).
  */
 
 import { FieldValue } from "@/components/forms/field-value";
@@ -18,8 +22,10 @@ function ListValue({ items }: { items: string[] | undefined }) {
   }
   return (
     <ul className="space-y-0.5 font-mono text-xs">
-      {items.map((item) => (
-        <li key={item} className="break-all">
+      {items.map((item, i) => (
+        // Duplicate entries are legal (nothing dedupes on the way in), so the
+        // index is part of the key.
+        <li key={`${i}:${item}`} className="whitespace-pre-wrap break-all">
           {item}
         </li>
       ))}
