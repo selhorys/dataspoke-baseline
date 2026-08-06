@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useContext, useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
+import { QueryClientContext } from "@tanstack/react-query";
 import {
   BarChart3,
   ChevronDown,
@@ -191,6 +192,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const { me, isAdmin } = useMe();
   const clear = useAuthStore((s) => s.clear);
+  // Read through the context rather than useQueryClient(): the cache purge on
+  // sign-out is a side effect of one event handler, and useQueryClient() turns
+  // a missing provider into a render-time throw that would blank the shell on
+  // every authed route. Skipping a purge is recoverable; losing the shell is not.
+  const queryClient = useContext(QueryClientContext);
 
   /**
    * Fails closed: local state is cleared only once the server confirms the
@@ -215,6 +221,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       return;
     }
     clear();
+    // Every cached response belongs to the session that just ended — including
+    // `["auth","me"]`, the admin token inventory and the user roster. The
+    // QueryClient outlives this client-side navigation, so without this the
+    // next person to sign in at this browser paints the previous user's data
+    // from cache while their own reads are still in flight.
+    queryClient?.removeQueries();
     router.replace("/login");
   }
 

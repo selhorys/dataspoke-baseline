@@ -2,10 +2,11 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api/client";
+import { invalidateTokenReads } from "@/lib/api/auth";
 import type {
+  AdminApiTokenListResponse,
   AdminUser,
   ApiTokenItem,
-  ApiTokenListResponse,
   DagGroup,
   DagGroupPatch,
   DagGroupStatus,
@@ -99,14 +100,74 @@ export function useUnlinkUserGoogle() {
   });
 }
 
-// ── User API tokens (admin view) ───────────────────────────────────────────────
+// ── API tokens (admin views) ───────────────────────────────────────────────────
 
-export function useAdminUserTokens(userId: string) {
-  return useQuery<ApiTokenListResponse>({
-    queryKey: ["admin", "users", userId, "api-tokens"],
+interface AdminUserTokensParams {
+  /** Include rows with `revoked_at` set. Off by default, matching the route. */
+  includeRevoked?: boolean;
+}
+
+/**
+ * One user's tokens, reached from that user's row. Unpaged: the window is one
+ * screenful wide by construction (a user holds at most 10 active tokens), and
+ * the caller discloses any overflow from `total_count`.
+ *
+ * The key names the user being read, not the caller reading them. Adding the
+ * caller would buy nothing here: the caller's id is itself read from
+ * `["auth","me"]`, so two sessions sharing a stale `me` would share the scoped
+ * key too. What separates them is the cache purge on sign-out and sign-in
+ * (`components/app-shell.tsx`, `lib/api/auth.ts`), which this key relies on
+ * exactly as `["admin","users",…]` beside it does.
+ */
+export function useAdminUserTokens(userId: string, params: AdminUserTokensParams = {}) {
+  const offset = 0;
+  const limit = 100;
+  const { includeRevoked = false } = params;
+  const query = `offset=${offset}&limit=${limit}&include_revoked=${includeRevoked}`;
+  return useQuery<AdminApiTokenListResponse>({
+    // The varying params sit in the key so a toggle refetches rather than
+    // serving the previous scope's rows.
+    queryKey: ["admin", "users", userId, "api-tokens", { offset, limit, includeRevoked }],
     queryFn: () =>
-      apiFetch<ApiTokenListResponse>(`/admin/users/${userId}/api-tokens`),
+      apiFetch<AdminApiTokenListResponse>(`/admin/users/${userId}/api-tokens?${query}`),
     enabled: !!userId,
+    meta: { handledInline: true },
+  });
+}
+
+interface AdminApiTokensParams {
+  /**
+   * The signed-in user's id, carried in the query key so two sessions in one
+   * tab cannot share a cache entry. It is defence in depth, not the fix for a
+   * cross-session paint: the id is itself read from `["auth","me"]`, so it only
+   * separates the two once that entry has been replaced. The cache purge on
+   * sign-out and sign-in (`components/app-shell.tsx`, `lib/api/auth.ts`) is
+   * what actually ends the previous session's data.
+   */
+  callerId: string | undefined;
+  /** The page window. Required — a paged view owns its own offset/limit. */
+  offset: number;
+  limit: number;
+  /** Include rows with `revoked_at` set. Off by default, matching the route. */
+  includeRevoked?: boolean;
+  enabled?: boolean;
+}
+
+/**
+ * The deployment-wide token inventory.
+ *
+ * The route is Admin-only and `require_admin` is where that is enforced; this
+ * `enabled` gate is a client-side courtesy that keeps a session the client does
+ * not believe to be Admin — or one whose identity has not resolved — from
+ * issuing a request that would 403.
+ */
+export function useAdminApiTokens(params: AdminApiTokensParams) {
+  const { callerId, offset, limit, includeRevoked = false, enabled = true } = params;
+  const query = `offset=${offset}&limit=${limit}&include_revoked=${includeRevoked}`;
+  return useQuery<AdminApiTokenListResponse>({
+    queryKey: ["admin", "api-tokens", callerId, { offset, limit, includeRevoked }],
+    queryFn: () => apiFetch<AdminApiTokenListResponse>(`/admin/api-tokens?${query}`),
+    enabled: enabled && !!callerId,
     meta: { handledInline: true },
   });
 }
@@ -119,10 +180,10 @@ export function useDeleteAdminUserToken() {
         method: "DELETE",
       }),
     meta: { handledInline: true },
+    // The revoked row can be showing in the per-user drawer, the cross-user
+    // inventory, and — when the owner is the caller — their own list.
     onSuccess: (_data, vars) => {
-      void qc.invalidateQueries({
-        queryKey: ["admin", "users", vars.userId, "api-tokens"],
-      });
+      invalidateTokenReads(qc, vars.userId);
     },
   });
 }

@@ -84,4 +84,10 @@ AUTH_GOOGLE_LINK_CREDENTIAL_RESET = "AUTH.GOOGLE_LINK_CREDENTIAL_RESET"
 # Emitted once per admin unbind that releases a binding — the record that an
 # authentication method was removed and every session ended. entity_id = users.id.
 AUTH_GOOGLE_UNBOUND = "AUTH.GOOGLE_UNBOUND"
+# Emitted once per admin revoke of a token via
+# DELETE /admin/users/{id}/api-tokens/{token_id} — the route that acts on a
+# credential its caller does not own. Booked on the token's owner, so
+# entity_id = users.id of the owner, not of the acting admin. The self-service
+# DELETE /auth/api-tokens/{id} emits nothing.
+AUTH_API_TOKEN_REVOKED = "AUTH.API_TOKEN_REVOKED"
 AUTH_PREFIX = "AUTH."

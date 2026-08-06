@@ -1,5 +1,6 @@
 /**
- * Tests for app/(app)/admin/users/page.tsx — the ⋯ menu's "Unlink Google" action.
+ * Tests for app/(app)/admin/users/page.tsx — the ⋯ menu's "Unlink Google"
+ * action and the per-user token drawer.
  *
  * Spec traces:
  *   - spec/feature/FRONTEND_BASIC.md §Authentication: the ⋯ menu carries
@@ -8,8 +9,17 @@
  *     again), shown only for rows with `has_google` and disabled for rows
  *     without `has_password`, since the route refuses those with
  *     `409 GOOGLE_IS_ONLY_AUTH_METHOD`.
+ *   - spec/feature/FRONTEND_BASIC.md §Authentication: "manage tokens", a drawer
+ *     listing the user's `api_tokens` rows "with the same three-state Status
+ *     column as `/profile/tokens`, a 'Show revoked' toggle driving the route's
+ *     `include_revoked` param, and per-token revoke buttons on every unrevoked
+ *     row".
  *   - spec/API.md §/admin/users/{id}/google: 204 on success; 409
  *     GOOGLE_IS_ONLY_AUTH_METHOD when the row has no password.
+ *   - spec/API.md §Admin, `GET /admin/users/{id}/api-tokens`: "paginated with the
+ *     standard `offset`/`limit`/`total_count` envelope; content key `tokens`…
+ *     `?include_revoked=true` also returns rows with `revoked_at` set; default
+ *     `false` (unrevoked rows only — expiry is not filtered)".
  *   - spec/feature/AUTH.md §Admin unbind: the unbind increments session_epoch,
  *     so sessions established under the released binding do not survive it.
  *
@@ -18,7 +28,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import React from "react";
-import type { AdminUser } from "@/lib/api/types";
+import type { AdminApiTokenItem, AdminUser } from "@/lib/api/types";
 
 // ---------------------------------------------------------------------------
 // Browser API stubs — jsdom lacks ResizeObserver / pointer capture, both of
@@ -52,14 +62,17 @@ vi.mock("@/lib/auth/use-me", () => ({
 const mockUseAdminUsers = vi.fn();
 const mockUnlinkGoogle = vi.fn();
 const mockDeleteUser = vi.fn();
+const mockUseAdminUserTokens = vi.fn();
+const mockRevokeUserToken = vi.fn();
 vi.mock("@/lib/api/admin", () => ({
   useAdminUsers: () => mockUseAdminUsers(),
   useUpdateUserName: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useUpdateUserRole: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useDeleteUser: () => ({ mutateAsync: mockDeleteUser, isPending: false }),
   useUnlinkUserGoogle: () => ({ mutateAsync: mockUnlinkGoogle, isPending: false }),
-  useAdminUserTokens: () => ({ data: { tokens: [], total: 0 }, isLoading: false }),
-  useDeleteAdminUserToken: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useAdminUserTokens: (userId: string, params?: { includeRevoked?: boolean }) =>
+    mockUseAdminUserTokens(userId, params),
+  useDeleteAdminUserToken: () => ({ mutateAsync: mockRevokeUserToken, isPending: false }),
 }));
 
 const mockToast = vi.fn();
@@ -113,19 +126,88 @@ function makeUser(overrides: Partial<AdminUser> = {}): AdminUser {
 
 function renderWithUsers(users: AdminUser[]) {
   mockUseAdminUsers.mockReturnValue({
-    data: { users, total: users.length },
+    // The standard list envelope: offset / limit / total_count around the
+    // content key. spec/API.md §Admin, `GET /admin/users`.
+    data: { offset: 0, limit: 20, total_count: users.length, users },
     isLoading: false,
   });
   render(<AdminUsersPage />);
 }
+
+/**
+ * The drawer's rows — one per status, so neither the Status column nor the
+ * per-row revoke affordance can be satisfied by a single-state fixture. Stamps
+ * are pushed far into the past / future so a row's status is decided here and
+ * not by when the suite runs.
+ */
+const LONG_PAST = "2020-02-01T00:00:00Z";
+const LONG_FUTURE = "2099-07-01T00:00:00Z";
+
+const USER_TOKENS: AdminApiTokenItem[] = [
+  {
+    id: "t-active",
+    name: "ci-jenkins",
+    role_snapshot: "Editor",
+    created_at: "2026-04-01T00:00:00Z",
+    last_used_at: "2026-05-25T00:00:00Z",
+    expires_at: LONG_FUTURE,
+    revoked_at: null,
+    user_id: "u-1",
+    user_email: "alice@imazon.com",
+  },
+  {
+    id: "t-expired",
+    name: "etl-runner",
+    role_snapshot: "Editor",
+    created_at: "2025-11-02T00:00:00Z",
+    last_used_at: "2026-01-08T00:00:00Z",
+    expires_at: LONG_PAST,
+    revoked_at: null,
+    user_id: "u-1",
+    user_email: "alice@imazon.com",
+  },
+  {
+    id: "t-revoked",
+    name: "laptop-cli",
+    role_snapshot: "Editor",
+    created_at: "2026-05-10T00:00:00Z",
+    last_used_at: null,
+    expires_at: null,
+    revoked_at: "2026-05-20T00:00:00Z",
+    user_id: "u-1",
+    user_email: "alice@imazon.com",
+  },
+];
+
+/** More rows exist than this page carries, so the drawer's count line renders. */
+const USER_TOKENS_TOTAL = 7;
 
 /** Radix opens its dropdown on pointerdown, not click. */
 function openRowMenu() {
   fireEvent.pointerDown(screen.getByRole("button", { name: /more actions/i }));
 }
 
+/** Open the ⋯ menu's token drawer for the single rendered row. */
+async function openTokenDrawer() {
+  openRowMenu();
+  fireEvent.click(await screen.findByText("Manage tokens"));
+  return within(await screen.findByRole("dialog"));
+}
+
+/** The drawer row carrying `name`, as a scope for per-row assertions. */
+function tokenRow(drawer: ReturnType<typeof within>, name: string): HTMLElement {
+  const row = drawer.getByRole("cell", { name }).closest("tr");
+  if (!row) throw new Error(`No drawer row found for "${name}"`);
+  return row as HTMLElement;
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
+  mockUseAdminUserTokens.mockReturnValue({
+    data: { offset: 0, limit: 20, total_count: USER_TOKENS_TOTAL, tokens: USER_TOKENS },
+    isLoading: false,
+    error: null,
+  });
   mockUseMeFn.mockReturnValue({
     me: {
       id: "admin-1",
@@ -267,5 +349,131 @@ describe("AdminUsersPage — Unlink Google confirmation (AUTH.md §Admin unbind)
 
     await waitFor(() => expect(mockUnlinkGoogle).toHaveBeenCalled());
     expect(mockToast).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 3. Token drawer — Status column + Show revoked
+// ---------------------------------------------------------------------------
+describe("AdminUsersPage — token drawer (FRONTEND_BASIC.md §Authentication)", () => {
+  it("reads the user's tokens with the route's default filter, revoked excluded", async () => {
+    renderWithUsers([makeUser()]);
+    await openTokenDrawer();
+
+    // The drawer addresses the row it was opened from, and asks for the
+    // default view — `include_revoked` off.
+    expect(mockUseAdminUserTokens).toHaveBeenCalledWith(
+      "u-1",
+      expect.objectContaining({ includeRevoked: false }),
+    );
+    expect(mockUseAdminUserTokens).not.toHaveBeenCalledWith(
+      "u-1",
+      expect.objectContaining({ includeRevoked: true }),
+    );
+  });
+
+  it("carries the same three-state Status column as /profile/tokens", async () => {
+    renderWithUsers([makeUser()]);
+    const drawer = await openTokenDrawer();
+
+    expect(drawer.getByRole("columnheader", { name: "Status" })).toBeTruthy();
+    // One row per state, so a column that hardcoded a single label would fail.
+    expect(within(tokenRow(drawer, "ci-jenkins")).getByText("active")).toBeTruthy();
+    expect(within(tokenRow(drawer, "etl-runner")).getByText("expired")).toBeTruthy();
+    expect(within(tokenRow(drawer, "laptop-cli")).getByText("revoked")).toBeTruthy();
+  });
+
+  it("offers revoke on every unrevoked row and none on the revoked one", async () => {
+    renderWithUsers([makeUser()]);
+    const drawer = await openTokenDrawer();
+
+    expect(
+      within(tokenRow(drawer, "ci-jenkins")).getByRole("button", { name: "Revoke" }),
+    ).toBeTruthy();
+    // Expiry is a clock, revocation is a decision — an expired token is still
+    // revocable.
+    expect(
+      within(tokenRow(drawer, "etl-runner")).getByRole("button", { name: "Revoke" }),
+    ).toBeTruthy();
+    // A revoked token grants nothing, so there is nothing left to withdraw.
+    expect(
+      within(tokenRow(drawer, "laptop-cli")).queryByRole("button", { name: "Revoke" }),
+    ).toBeNull();
+  });
+
+  it("turns Show revoked into the route's include_revoked param", async () => {
+    renderWithUsers([makeUser()]);
+    const drawer = await openTokenDrawer();
+
+    const toggle = drawer.getByLabelText("Show revoked");
+    expect(toggle).toHaveAttribute("data-state", "unchecked");
+
+    fireEvent.click(toggle);
+
+    await waitFor(() =>
+      expect(mockUseAdminUserTokens).toHaveBeenCalledWith(
+        "u-1",
+        expect.objectContaining({ includeRevoked: true }),
+      ),
+    );
+  });
+
+  it("says how many of the user's tokens this page holds", async () => {
+    // spec/API.md §Admin — the per-user read is "paginated with the standard
+    // `offset`/`limit`/`total_count` envelope", so a drawer showing three rows
+    // out of seven must not read as "this user has three tokens". The wording
+    // is the page's own; only the two numbers are held to the envelope.
+    renderWithUsers([makeUser()]);
+    const drawer = await openTokenDrawer();
+
+    expect(
+      drawer.getByText(new RegExp(String.raw`\b${USER_TOKENS.length}\s*of\s*${USER_TOKENS_TOTAL}\b`)),
+    ).toBeTruthy();
+  });
+
+  it("distinguishes an empty default view from an empty inventory", async () => {
+    // spec/feature/AUTH.md §Revoked-token visibility — withdrawn rows stay out
+    // of the default view behind an explicit opt-in, so "no rows" with the
+    // toggle off does not mean the user never held a token. The two states must
+    // therefore read differently, and the default one must say which scope it
+    // is empty of; the exact sentences are the page's to choose.
+    mockUseAdminUserTokens.mockReturnValue({
+      data: { offset: 0, limit: 20, total_count: 0, tokens: [] },
+      isLoading: false,
+      error: null,
+    });
+    renderWithUsers([makeUser()]);
+    const drawer = await openTokenDrawer();
+
+    const defaultEmpty = drawer.getByText(/^no\b.*tokens/i).textContent ?? "";
+    expect(defaultEmpty).toMatch(/active/i);
+
+    fireEvent.click(drawer.getByLabelText("Show revoked"));
+
+    await waitFor(() => {
+      const allEmpty = drawer.getByText(/^no\b.*tokens/i).textContent ?? "";
+      expect(allEmpty).not.toBe(defaultEmpty);
+      // With revoked rows included there is no narrower scope left to name.
+      expect(allEmpty).not.toMatch(/active/i);
+    });
+  });
+
+  it("revokes a token through the per-user admin route", async () => {
+    mockRevokeUserToken.mockResolvedValue(undefined);
+    renderWithUsers([makeUser()]);
+    const drawer = await openTokenDrawer();
+
+    fireEvent.click(within(tokenRow(drawer, "ci-jenkins")).getByRole("button", { name: "Revoke" }));
+
+    // The confirm is a second dialog; scope to the one carrying the confirm copy.
+    const confirm = await screen.findByText(/permanently revoke/i);
+    const confirmDialog = within(confirm.closest('[role="dialog"]') as HTMLElement);
+    expect(mockRevokeUserToken).not.toHaveBeenCalled();
+
+    fireEvent.click(confirmDialog.getByRole("button", { name: "Revoke" }));
+
+    await waitFor(() =>
+      expect(mockRevokeUserToken).toHaveBeenCalledWith({ userId: "u-1", tokenId: "t-active" }),
+    );
   });
 });

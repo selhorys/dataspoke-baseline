@@ -45,8 +45,28 @@ export interface ApiTokenItem {
 }
 
 export interface ApiTokenListResponse {
+  offset: number;
+  limit: number;
+  total_count: number;
   tokens: ApiTokenItem[];
-  total: number;
+}
+
+/**
+ * A token as the admin reads see it: the self-list fields plus the owner and
+ * the revocation stamp. `GET /auth/api-tokens` carries neither — its owner is
+ * the caller by construction, and it lists active tokens only.
+ */
+export interface AdminApiTokenItem extends ApiTokenItem {
+  revoked_at: string | null;
+  user_id: string;
+  user_email: string;
+}
+
+export interface AdminApiTokenListResponse {
+  offset: number;
+  limit: number;
+  total_count: number;
+  tokens: AdminApiTokenItem[];
 }
 
 export interface ApiTokenMintResponse {
@@ -72,8 +92,10 @@ export interface AdminUser {
 }
 
 export interface UsersListResponse {
+  offset: number;
+  limit: number;
+  total_count: number;
   users: AdminUser[];
-  total: number;
 }
 
 // ── Runtime Configuration ─────────────────────────────────────────────────────

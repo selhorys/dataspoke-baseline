@@ -9,6 +9,10 @@ Concerns covered:
 - Expired → AuthenticationError("TOKEN_EXPIRED")
 - Unknown → AuthenticationError("INVALID_API_TOKEN")
 - last_used_at updated when stale; not re-updated within the throttle window
+- list_page (the query behind both admin token reads): the token hash is never in the
+  SELECT list; include_revoked / user_id filter predicates; the COUNT carries the same
+  predicates and no page window; NULLS LAST + id tiebreak on every sort input
+- revoke reports the token's owner and whether this call was the one that revoked it
 
 spec: spec/feature/AUTH.md §API Tokens
 spec: spec/API.md §Authentication Mechanisms
@@ -26,7 +30,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tests.unit.conftest import route_db_execute
+from tests.unit.conftest import compiled_sql, route_db_execute
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -1487,3 +1491,573 @@ async def test_the_stamp_handler_cannot_raise_from_reading_the_token_id(
         f"the record must carry the stamp's own failure, not one raised by the handler; "
         f"got {logged[0].exc_info!r}."
     )
+
+
+# ── list_page — the one query behind both admin token reads ───────────────────
+#
+# ``list_page`` is not observable from its return value in a unit test: it hands back
+# whatever the session's result object was told to hand back. What it decides is the
+# *statement* — which columns leave the database, which rows the predicates admit, and in
+# what order the page is cut out of them. So the statements are compiled and read here,
+# the way the sweep tests read a router's ORDER BY, rather than executed.
+#
+# The row-level half — that a matching row really appears and a non-matching one really
+# does not, against PostgreSQL — is spot integration's
+# (``tests/integration/spot/test_auth_api_tokens.py``). These tests hold the half that
+# survives no DB: a predicate the impl never put in the statement cannot filter anything,
+# and a column in the SELECT list is on the wire whether or not the schema serialises it.
+
+
+def _normalised(sql: str) -> str:
+    """Collapse the compiled statement's whitespace so clause splitting is reliable."""
+    return " ".join(sql.split())
+
+
+def _select_list(sql: str) -> str:
+    """The compiled statement's SELECT list — everything before its top-level ``FROM``."""
+    normalised = _normalised(sql)
+    assert " from " in normalised, (
+        f"expected a SELECT ... FROM statement to read the column list out of; got {sql!r}"
+    )
+    return normalised.split(" from ", 1)[0]
+
+
+def _where_clause(sql: str) -> str:
+    """The compiled statement's WHERE clause; ``""`` when it carries none.
+
+    A statement with no WHERE is the *unfiltered* case and must read as such — returning
+    the empty string rather than raising is what lets the filter tests below assert both
+    directions (predicate present / predicate absent) with one reader.
+    """
+    normalised = _normalised(sql)
+    if " where " not in normalised:
+        return ""
+    tail = normalised.split(" where ", 1)[1]
+    for stop in (" order by ", " limit ", " offset "):
+        tail = tail.split(stop, 1)[0]
+    return tail.strip()
+
+
+def _order_by_clause(sql: str) -> str:
+    """The compiled statement's ORDER BY clause; ``""`` when it carries none."""
+    normalised = _normalised(sql)
+    if " order by " not in normalised:
+        return ""
+    tail = normalised.split(" order by ", 1)[1]
+    for stop in (" limit ", " offset "):
+        tail = tail.split(stop, 1)[0]
+    return tail.strip()
+
+
+async def _capture_list_page_sql(**kwargs: Any) -> tuple[str, str, Any, int]:
+    """Run ``list_page`` on a recording session; return ``(rows SQL, count SQL, rows, total)``.
+
+    The session routes by the SQL each statement compiles to — the aggregate goes to the
+    count result, everything else to the rows result — per spec/TESTING.md §Unit Testing →
+    Mocking rules ("use a query-routing fake session that returns results by inspecting the
+    SQL/statement it receives"), never a call-ordered ``side_effect`` list.
+
+    The two-statement assertion is the backstop every caller leans on: without it a reader
+    would happily describe one statement while the other went unexamined, and the
+    "same predicates" test below would compare a clause against itself.
+    """
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from src.backend.auth.api_tokens import list_page
+
+    captured: list[str] = []
+    sentinel_rows = [object(), object()]
+
+    rows_result = MagicMock()
+    rows_result.all.return_value = sentinel_rows
+    count_result = MagicMock()
+    count_result.scalar_one.return_value = 7
+
+    def _record(sql: str) -> bool:
+        """Record every statement, then decline so the real routes supply the result."""
+        captured.append(sql)
+        return False
+
+    db = AsyncMock(spec=AsyncSession)
+    route_db_execute(db, [(_record, None), ("count(", count_result)], default=rows_result)
+
+    rows, total = await list_page(db, **kwargs)
+
+    assert len(captured) == 2, (
+        f"list_page must issue exactly two statements — the page of rows and the matching "
+        f"COUNT — for these assertions to have both to read; it issued {len(captured)}: "
+        f"{captured!r}"
+    )
+    rows_sql = next(sql for sql in captured if "count(" not in sql)
+    count_sql = next(sql for sql in captured if "count(" in sql)
+    return rows_sql, count_sql, rows, total
+
+
+@pytest.mark.asyncio
+async def test_list_page_never_puts_the_token_hash_on_the_wire() -> None:
+    """``token_hash`` is in no part of the statement the admin reads run.
+
+    This is the central security invariant of the two admin token reads, and it is the one
+    the response schema cannot hold on its own: a Pydantic model that omits a field still
+    lets the column cross the wire from PostgreSQL into an ORM instance any later code —
+    a debug dump, a ``model_dump`` on the ORM row, a logged repr — can read. §Token format
+    and storage makes the hash the *only* stored form of the credential, so a SELECT that
+    ships it hands out the material a stolen page needs.
+
+    The absence assertion is not vacuous: the control leg compiles a plain ``select(ApiToken)``
+    and asserts this same reader *does* see ``token_hash`` there, so a reader that simply
+    never finds the string cannot pass this test (spec/TESTING.md §Assertion Discipline —
+    "Absence assertions require injection"). The positive leg pins the documented item
+    shape, so a ``load_only`` narrowed until nothing useful is selected also fails.
+
+    spec: spec/API.md §Admin — ``GET /admin/api-tokens`` returns
+        ``tokens: [{id, name, role_snapshot, created_at, last_used_at, expires_at,
+        revoked_at, user_id, user_email}]`` — "the token hash is never returned".
+    spec: spec/feature/AUTH.md §API Tokens §Token format and storage — "Only the SHA-256
+        hash of the token is stored in the ``api_tokens`` table (column ``token_hash``).
+        The raw token is returned **once** ... and never retrievable again."
+    """
+    from sqlalchemy import select
+
+    from src.shared.db.models import ApiToken
+
+    # ── Control leg: the reader can see token_hash when a statement really selects it ──
+    unrestricted = _select_list(compiled_sql(select(ApiToken)))
+    assert "token_hash" in unrestricted, (
+        f"backstop: a plain select(ApiToken) must show token_hash in its SELECT list, or "
+        f"the absence asserted below is the absence of a working reader rather than of the "
+        f"column; got {unrestricted!r}"
+    )
+
+    rows_sql, count_sql, _rows, _total = await _capture_list_page_sql()
+
+    assert "token_hash" not in rows_sql, (
+        f"the admin token reads must never select api_tokens.token_hash — it is the only "
+        f"stored form of the credential, and a column that reaches the ORM instance is "
+        f"readable by anything downstream regardless of what the response schema "
+        f"serialises. Statement: {rows_sql!r}. spec: spec/API.md §Admin — 'the token hash "
+        f"is never returned'."
+    )
+    assert "token_hash" not in count_sql, (
+        f"the COUNT must not name token_hash either. Statement: {count_sql!r}"
+    )
+
+    # Positive leg: the documented item shape is what the SELECT list carries, so a
+    # load_only narrowed past usefulness fails here rather than passing the absence check.
+    select_list = _select_list(rows_sql)
+    for column in (
+        "api_tokens.id",
+        "api_tokens.name",
+        "api_tokens.role_snapshot",
+        "api_tokens.created_at",
+        "api_tokens.last_used_at",
+        "api_tokens.expires_at",
+        "api_tokens.revoked_at",
+        "api_tokens.user_id",
+        "users.email",
+    ):
+        assert column in select_list, (
+            f"the admin item shape needs {column} and the SELECT list does not carry it: "
+            f"{select_list!r}. spec: spec/API.md §Admin — 'tokens: [{{id, name, "
+            f"role_snapshot, created_at, last_used_at, expires_at, revoked_at, user_id, "
+            f"user_email}}]'."
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("include_revoked", "predicate_expected"),
+    [(False, True), (True, False)],
+)
+async def test_include_revoked_governs_the_revoked_at_predicate(
+    include_revoked: bool, predicate_expected: bool
+) -> None:
+    """``revoked_at IS NULL`` is the default filter, and ``include_revoked=true`` drops it.
+
+    Both directions are asserted from one parametrization because either alone is
+    satisfiable by a broken impl: a statement that always carries the predicate hides the
+    opt-in (revoked rows become unreachable, and §Revoked-token visibility says incident
+    review needs them), and one that never carries it hides the default (revoked
+    credentials pad every page).
+
+    The clause is also checked to name *nothing else*: §Revoked-token visibility says
+    "``revoked_at IS NULL`` is the whole of the default filter", and an ``expires_at``
+    predicate smuggled in beside it would silently turn the list into a liveness view —
+    the exact reading that section rules out.
+
+    spec: spec/feature/AUTH.md §Revoked-token visibility — "Both admin reads exclude
+        revoked rows by default and take ``include_revoked=true`` to bring them back";
+        "``revoked_at IS NULL`` is the whole of the default filter. Expiry is not filtered".
+    spec: spec/API.md §Admin — "``?include_revoked=true`` also returns rows with
+        ``revoked_at`` set; default ``false``".
+    """
+    rows_sql, _count_sql, _rows, _total = await _capture_list_page_sql(
+        include_revoked=include_revoked
+    )
+    where = _where_clause(rows_sql)
+
+    if predicate_expected:
+        assert "api_tokens.revoked_at is null" in where, (
+            f"the default read must filter revoked rows out; its WHERE clause is {where!r}. "
+            f"spec: spec/feature/AUTH.md §Revoked-token visibility."
+        )
+    else:
+        assert "revoked_at" not in where, (
+            f"include_revoked=true must drop the revocation predicate so withdrawn "
+            f"credentials come back; its WHERE clause is {where!r}. spec: "
+            f"spec/feature/AUTH.md §Revoked-token visibility — 'Those rows stay reachable "
+            f"because incident review needs to see when a credential was withdrawn'."
+        )
+
+    assert "expires_at" not in where, (
+        f"expiry must not be filtered — a token past expires_at 'sits in the default page "
+        f"like any other row', and the item's own expires_at is what identifies it; the "
+        f"WHERE clause is {where!r}. spec: spec/feature/AUTH.md §Revoked-token visibility."
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scoped", [True, False])
+async def test_user_id_narrows_to_one_owner_and_omitting_it_spans_every_user(
+    scoped: bool,
+) -> None:
+    """``user_id`` adds an owner predicate; omitting it leaves the inventory deployment-wide.
+
+    Both directions again, and for the same reason: a predicate that is always present
+    would make ``GET /admin/api-tokens`` unable to answer the question it exists for
+    ("what long-lived credentials stand against this deployment"), while one that is never
+    present would make ``GET /admin/users/{id}/api-tokens`` return everyone's tokens on a
+    page an admin opened from one user's row.
+
+    spec: spec/API.md §Admin — ``GET /admin/api-tokens`` is "every user's API tokens — the
+        deployment-wide inventory ... ``?user_id=`` narrows to one owner".
+    spec: spec/API.md §Admin — ``GET /admin/users/{id}/api-tokens`` is "one user's API
+        tokens ... The ``id`` is an owner filter".
+    """
+    owner_id = uuid.uuid4()
+    rows_sql, _count_sql, _rows, _total = await _capture_list_page_sql(
+        user_id=owner_id if scoped else None
+    )
+    where = _where_clause(rows_sql)
+
+    if scoped:
+        assert "api_tokens.user_id =" in where, (
+            f"a user_id must become an owner predicate on the rows query; its WHERE clause "
+            f"is {where!r}. spec: spec/API.md §Admin — 'the id is an owner filter'."
+        )
+    else:
+        assert "api_tokens.user_id" not in where, (
+            f"with no user_id the inventory must span every owner; its WHERE clause is "
+            f"{where!r}. spec: spec/API.md §Admin — 'every user's API tokens — the "
+            f"deployment-wide inventory'."
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("label", "kwargs"),
+    [
+        ("default view", {}),
+        ("revoked included", {"include_revoked": True}),
+        ("one owner", {"user_id": uuid.uuid4()}),
+        ("one owner, revoked included", {"include_revoked": True, "user_id": uuid.uuid4()}),
+    ],
+)
+async def test_the_count_matches_the_rows_query_filters_and_carries_no_page_window(
+    label: str, kwargs: dict[str, Any]
+) -> None:
+    """``total_count`` counts the same filtered set the page is cut from, unpaged.
+
+    Two independent ways to get this wrong both produce a response that looks fine: a COUNT
+    over a *different* predicate set (say, one that forgot ``include_revoked``) reports a
+    total no page can ever reach, so a client paging to ``total_count`` walks off the end
+    into empty pages; and a COUNT that inherits the rows query's ``LIMIT``/``OFFSET``
+    reports the page size instead of the collection size, so pagination controls collapse
+    to one page. Neither is visible from a single request's body.
+
+    The equality is asserted on the *clause*, not on the presence of individual predicates,
+    so a filter added to one query and not the other fails here whatever it is.
+
+    spec: spec/API_DESIGN_PRINCIPLE_en.md §5 (Pagination — the standard envelope) —
+        "``total_count`` is the unpaged size of the filtered collection, letting clients
+        render page counts without a second request."
+    spec: spec/feature/AUTH.md §Revoked-token visibility — "Both routes express their
+        filter, ordering, and page bounds in SQL, so a request transfers and materialises
+        one page rather than the whole matching set."
+    """
+    rows_sql, count_sql, _rows, _total = await _capture_list_page_sql(limit=5, offset=10, **kwargs)
+
+    assert _where_clause(count_sql) == _where_clause(rows_sql), (
+        f"{label}: the COUNT must filter exactly as the rows query does, or total_count "
+        f"describes a collection the page is not drawn from. rows WHERE "
+        f"{_where_clause(rows_sql)!r} vs count WHERE {_where_clause(count_sql)!r}. spec: "
+        f"spec/API_DESIGN_PRINCIPLE_en.md §5 — 'total_count is the unpaged size of the "
+        f"filtered collection'."
+    )
+    assert " limit " not in _normalised(count_sql) and " offset " not in _normalised(count_sql), (
+        f"{label}: the COUNT must be unpaged — a LIMIT/OFFSET on it reports the page size "
+        f"as the collection size. Statement: {count_sql!r}. spec: "
+        f"spec/API_DESIGN_PRINCIPLE_en.md §5."
+    )
+    assert " limit " in _normalised(rows_sql) and " offset " in _normalised(rows_sql), (
+        f"{label}: the page window must be expressed in SQL rather than sliced in Python. "
+        f"Statement: {rows_sql!r}. spec: spec/feature/AUTH.md §Revoked-token visibility — "
+        f"'Both routes express their filter, ordering, and page bounds in SQL'."
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_count_backstop_sees_a_predicate_at_all() -> None:
+    """Backstop for the equality above: the default view's WHERE is not empty.
+
+    ``_where_clause`` returns ``""`` for an unfiltered statement, so
+    ``count_where == rows_where`` is satisfied by two statements that both carry no
+    predicate at all — which is precisely what a ``list_page`` that dropped every filter
+    would produce. This asserts the compared clause is a real one in the case the routes
+    serve by default.
+
+    spec: spec/feature/AUTH.md §Revoked-token visibility — "``revoked_at IS NULL`` is the
+        whole of the default filter."
+    """
+    rows_sql, count_sql, _rows, _total = await _capture_list_page_sql()
+    assert _where_clause(rows_sql) and _where_clause(count_sql), (
+        f"the default read must carry a WHERE clause on both statements, or the equality "
+        f"asserted elsewhere in this module compares nothing to nothing. rows: "
+        f"{rows_sql!r}; count: {count_sql!r}"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("label", "order_by_spec", "expected_key", "expected_direction"),
+    [
+        ("sort omitted", None, "api_tokens.created_at", "desc"),
+        ("created_at_desc", ("created_at", "desc"), "api_tokens.created_at", "desc"),
+        ("created_at_asc", ("created_at", "asc"), "api_tokens.created_at", "asc"),
+        ("last_used_at_desc", ("last_used_at", "desc"), "api_tokens.last_used_at", "desc"),
+        ("last_used_at_asc", ("last_used_at", "asc"), "api_tokens.last_used_at", "asc"),
+    ],
+)
+async def test_every_sort_input_orders_nulls_last_and_tiebreaks_on_the_row_id(
+    label: str,
+    order_by_spec: tuple[str, str] | None,
+    expected_key: str,
+    expected_direction: str,
+) -> None:
+    """The compiled ordering is ``<key> <dir> NULLS LAST, api_tokens.id ASC`` — always.
+
+    Three claims, none of which a single request can expose:
+
+    1. **The default is ``created_at`` descending.** ``spec/API.md §Admin`` fixes it for
+       both routes; the router forwards ``order_by=None`` when ``sort`` is omitted, so the
+       default lives here.
+    2. **NULLS LAST.** ``last_used_at`` is NULL for every never-used token and PostgreSQL
+       sorts NULLs *first* under a bare ``DESC``. Without this, ``sort=last_used_at_desc``
+       fills the front of the page with tokens that have never authenticated — the exact
+       inverse of what an auditor asked for, on a page that is otherwise perfectly
+       well-formed. It is applied to every sort input rather than to ``last_used_at``
+       alone so the rule does not need re-deriving each time a sort key is added.
+    3. **The ``id`` tiebreak.** Neither sort column is unique — tokens minted in one
+       transaction share a ``created_at``, and every unused token shares a NULL
+       ``last_used_at`` — so without a unique final key PostgreSQL may order the tied
+       block differently between the page-1 and page-2 queries. A credential can then
+       appear twice, or in no page at all: an inventory that silently omits a live
+       credential is worse than one that fails.
+
+    The reader keys on meaning (which column, which direction, which position in the
+    clause), not on the whole rendered string, so respelling the expression is free.
+
+    spec: spec/API.md §Admin — ``GET /admin/api-tokens`` and
+        ``GET /admin/users/{id}/api-tokens`` are "sortable by ``created_at``/``last_used_at``
+        (default ``created_at_desc``)".
+    spec: spec/feature/AUTH.md §Revoked-token visibility — "Either ordering places nulls
+        last and is tiebroken by token id, so paging an inventory returns each token exactly
+        once regardless of the requested ``sort``."
+    spec: spec/feature/AUTH.md §Revoked-token visibility — "ties are certain under
+        ``last_used_at``, where every never-used token shares a null, and reachable under
+        ``created_at``, where tokens minted in one transaction share a timestamp — an
+        unspecified order within a tie can shift between the page-1 and page-2 queries and
+        drop a live credential from every page."
+    spec: spec/API_DESIGN_PRINCIPLE_en.md §5 (Pagination) — ``offset``/``limit`` paging over
+        a collection whose ``total_count`` "lets clients render page counts": walking those
+        pages returns each row once only if the ordering is total.
+    """
+    from src.shared.db.models import ApiToken
+
+    order_by = None
+    if order_by_spec is not None:
+        column_name, direction = order_by_spec
+        order_by = getattr(getattr(ApiToken, column_name), direction)()
+
+    rows_sql, count_sql, _rows, _total = await _capture_list_page_sql(order_by=order_by)
+    order_clause = _order_by_clause(rows_sql)
+
+    assert order_clause, (
+        f"{label}: the rows query must carry an ORDER BY; got {rows_sql!r}"
+    )
+    keys = [part.strip() for part in order_clause.split(",")]
+    assert len(keys) == 2, (
+        f"{label}: the ordering must be the requested key plus exactly one tiebreak; got "
+        f"{keys!r}"
+    )
+
+    primary, tiebreak = keys
+    # ``endswith`` on the first word: the compiled name is schema-qualified
+    # (``dataspoke.api_tokens.<column>``) and the schema is not what is being asserted.
+    assert primary.split()[0].endswith(expected_key), (
+        f"{label}: must order by {expected_key} first; got {primary!r}. spec: "
+        f"spec/API.md §Admin — sortable by created_at/last_used_at, default created_at_desc."
+    )
+    if expected_direction == "desc":
+        assert " desc" in primary, f"{label}: must order {expected_key} descending; got {primary!r}"
+    else:
+        assert " desc" not in primary, (
+            f"{label}: must order {expected_key} ascending; got {primary!r}"
+        )
+    assert "nulls last" in primary, (
+        f"{label}: the requested key must sort NULLS LAST, or a sort by last_used_at fills "
+        f"the front of the page with tokens that have never been used; got {primary!r}."
+    )
+    assert tiebreak.split()[0].endswith("api_tokens.id") and " desc" not in tiebreak, (
+        f"{label}: the ordering must be tie-broken on the unique row id so a page boundary "
+        f"falling inside a block of rows sharing a sort value cannot show a credential "
+        f"twice or drop it; got {tiebreak!r}."
+    )
+
+    assert not _order_by_clause(count_sql), (
+        f"{label}: the COUNT must not order — ordering an aggregate is work that changes no "
+        f"answer; got {count_sql!r}."
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_page_returns_the_rows_and_the_count_it_read() -> None:
+    """The page comes from the rows query and the total from the COUNT — not vice versa.
+
+    The two results are distinguishable here (a two-element rows sequence, a total of 7),
+    so a return that paired the page length with itself — the shape that silently caps
+    ``total_count`` at ``limit`` and makes pagination look complete on page one — cannot
+    pass.
+
+    spec: spec/API_DESIGN_PRINCIPLE_en.md §5 (Pagination — the standard envelope) —
+        "``total_count`` is the unpaged size of the filtered collection".
+    """
+    _rows_sql, _count_sql, rows, total = await _capture_list_page_sql(limit=2)
+
+    assert len(rows) == 2, f"the page must be the rows query's result; got {rows!r}"
+    assert total == 7, (
+        f"total_count must be the COUNT's scalar, not the page length; got {total!r}. "
+        f"spec: spec/API_DESIGN_PRINCIPLE_en.md §5."
+    )
+
+
+# ── revoke — what the admin route's audit event is built from ─────────────────
+
+
+def _revoke_session(token: Any) -> AsyncMock:
+    """A session whose one SELECT answers with *token* (or ``None`` for a missing row)."""
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = token
+
+    db = AsyncMock(spec=AsyncSession)
+    db.execute = AsyncMock(return_value=result)
+    db.flush = AsyncMock()
+    return db
+
+
+@pytest.mark.asyncio
+async def test_revoke_reports_the_owner_and_that_this_call_ended_the_token() -> None:
+    """A first revoke sets ``revoked_at`` and reports ``(owner, revoked=True)``.
+
+    The admin route books its ``AUTH.API_TOKEN_REVOKED`` event on the **owner**, and it
+    reaches ``revoke`` holding only a token id — the path's user id is not checked against
+    the row, which is what makes the route usable for incident response. So the owner the
+    event names can only come from here: a ``revoke`` that reported the wrong id would file
+    a lost credential on a stranger's timeline, and nothing downstream could tell.
+
+    spec: spec/feature/AUTH.md §Admin revoke audit — "It emits one
+        ``AUTH.API_TOKEN_REVOKED`` event against the token's owner ... The event carries
+        the token and its owner, not the acting admin."
+    spec: spec/feature/BACKEND.md §Event Catalogue — ``AUTH`` (``user``,
+        ``entity_id=user_id`` of the token's owner) / ``API_TOKEN_REVOKED``.
+    spec: spec/feature/AUTH.md §Lifecycle endpoints — "Revoke a user's token (admin;
+        incident response)"; the write is ``revoked_at = now()``.
+    """
+    from src.backend.auth.api_tokens import revoke
+    from src.shared.db.models import ApiToken
+
+    owner_id = uuid.uuid4()
+    token_id = uuid.uuid4()
+    token = MagicMock(spec=ApiToken)
+    token.id = token_id
+    token.user_id = owner_id
+    token.revoked_at = None
+
+    db = _revoke_session(token)
+    result = await revoke(db, token_id=token_id)
+
+    assert result.owner_user_id == owner_id, (
+        f"revoke must report the token's owner — the admin route has no other way to know "
+        f"whose timeline the AUTH.API_TOKEN_REVOKED event belongs on; got "
+        f"{result.owner_user_id!r}, expected {owner_id!r}. spec: spec/feature/AUTH.md "
+        f"§Admin revoke audit."
+    )
+    assert result.revoked is True, (
+        "a token that was live before the call must report revoked=True, or the route "
+        "writes no event for a credential it just killed. spec: spec/feature/AUTH.md "
+        "§Admin revoke audit — 'Setting revoked_at is the whole of what ends a token's "
+        "life, so the write is the security event'."
+    )
+    assert token.revoked_at is not None, (
+        "revoke must actually set revoked_at; a result object reporting revoked=True over "
+        "an untouched row is a report of nothing. spec: spec/feature/AUTH.md §Lifecycle "
+        "endpoints — 'Revoke a user's token'."
+    )
+
+
+@pytest.mark.asyncio
+async def test_revoking_an_already_revoked_token_reports_no_second_kill() -> None:
+    """A repeat revoke reports ``revoked=False`` and leaves the original timestamp alone.
+
+    The event exists because the *write* is the security act. A second call writes nothing,
+    so a second event would claim a credential was killed twice — noise on the one timeline
+    §Admin revoke audit puts every credential a user loses onto. The original ``revoked_at``
+    must also survive: it is when the credential was actually withdrawn, which is what
+    incident review reads.
+
+    spec: spec/feature/AUTH.md §Admin revoke audit — "Setting ``revoked_at`` is the whole
+        of what ends a token's life, so the write **is** the security event".
+    spec: spec/feature/AUTH.md §Revoked-token visibility — revoked rows "stay reachable
+        because incident review needs to see when a credential was withdrawn, which is what
+        ``revoked_at`` carries."
+    """
+    from src.backend.auth.api_tokens import revoke
+    from src.shared.db.models import ApiToken
+
+    owner_id = uuid.uuid4()
+    token_id = uuid.uuid4()
+    already_revoked_at = datetime(2031, 2, 3, 4, 5, 6, tzinfo=UTC)
+    token = MagicMock(spec=ApiToken)
+    token.id = token_id
+    token.user_id = owner_id
+    token.revoked_at = already_revoked_at
+
+    db = _revoke_session(token)
+    result = await revoke(db, token_id=token_id)
+
+    assert result.revoked is False, (
+        "a repeat revoke wrote nothing, so it must report revoked=False — the route keys "
+        "its event off this flag, and an event for a no-op describes an act that did not "
+        "happen. spec: spec/feature/AUTH.md §Admin revoke audit."
+    )
+    assert result.owner_user_id == owner_id, (
+        f"the owner must still be reported on the no-op path; got {result.owner_user_id!r}"
+    )
+    assert token.revoked_at == already_revoked_at, (
+        f"the original revocation timestamp must survive a repeat call — it is when the "
+        f"credential was withdrawn, which is what incident review reads; got "
+        f"{token.revoked_at!r}. spec: spec/feature/AUTH.md §Revoked-token visibility."
+    )
+    db.flush.assert_not_awaited()

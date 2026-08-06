@@ -93,6 +93,31 @@ class ApiTokenListResponse(PaginatedResponse):
     tokens: list[ApiTokenItem]
 
 
+class AdminApiTokenItem(BaseModel):
+    """A token as the admin reads see it — the self-list fields plus owner and status.
+
+    ``revoked_at`` carries when a credential was withdrawn, which is what makes a
+    revoked row worth returning at all; ``user_id`` addresses
+    ``DELETE /admin/users/{id}/api-tokens/{token_id}`` and ``user_email`` names the
+    owner. None of the three belong on the self-scoped list, whose owner is the
+    caller and whose rows are all active. The token hash is returned by nothing.
+    """
+
+    id: uuid.UUID
+    name: str
+    role_snapshot: str
+    created_at: datetime
+    last_used_at: datetime | None = None
+    expires_at: datetime | None = None
+    revoked_at: datetime | None = None
+    user_id: uuid.UUID
+    user_email: str
+
+
+class AdminApiTokenListResponse(PaginatedResponse):
+    tokens: list[AdminApiTokenItem]
+
+
 class ApiTokenMintRequest(BaseModel):
     name: str = Field(max_length=128, description="Descriptive name for this token")
     expires_at: datetime | None = None

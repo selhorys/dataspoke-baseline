@@ -38,7 +38,7 @@ from src.api.schemas.admin import (
     UsersListResponse,
     validate_datahub_kafka_security,
 )
-from src.api.schemas.auth import ApiTokenItem, ApiTokenListResponse
+from src.api.schemas.auth import AdminApiTokenItem, AdminApiTokenListResponse
 from src.api.schemas.common import parse_sort
 from src.backend.admin.config_service import get_runtime_config, patch_runtime_config
 from src.backend.admin.dag_control_service import get_dag_groups, set_group_paused
@@ -71,9 +71,9 @@ from src.backend.admin.smtp_secret import (
 from src.backend.auth import api_tokens, users
 from src.backend.datahub import users as dh_users
 from src.shared.datahub.client import DataHubClient
-from src.shared.db.models import Event
+from src.shared.db.models import ApiToken, Event
 from src.shared.db.registry import sync_with_datahub
-from src.shared.events import AUTH_GOOGLE_UNBOUND
+from src.shared.events import AUTH_API_TOKEN_REVOKED, AUTH_GOOGLE_UNBOUND
 from src.shared.exceptions import ConflictError, StorageUnavailableError
 from src.shared.models.enums import EventStatus
 from src.shared.secrets import SecretResolverUnavailable
@@ -788,18 +788,29 @@ def _user_to_response(user: object) -> UserResponse:
     )
 
 
-def _token_to_item(t: object) -> ApiTokenItem:
-    from src.shared.db.models import ApiToken
+def _admin_token_to_item(token: ApiToken, user_email: str) -> AdminApiTokenItem:
+    """Build the admin item from one ``(ApiToken, owner_email)`` row.
 
-    assert isinstance(t, ApiToken)
-    return ApiTokenItem(
-        id=t.id,
-        name=t.name,
-        role_snapshot=t.role_snapshot,
-        created_at=t.created_at,
-        last_used_at=t.last_used_at,
-        expires_at=t.expires_at,
+    Both admin reads hand it the row shape ``api_tokens.list_page`` yields, so the
+    owner email is already in hand and no route re-resolves it.
+    """
+    return AdminApiTokenItem(
+        id=token.id,
+        name=token.name,
+        role_snapshot=token.role_snapshot,
+        created_at=token.created_at,
+        last_used_at=token.last_used_at,
+        expires_at=token.expires_at,
+        revoked_at=token.revoked_at,
+        user_id=token.user_id,
+        user_email=user_email,
     )
+
+
+_TOKEN_SORT_COLUMNS: dict[str, Any] = {
+    "created_at": ApiToken.created_at,
+    "last_used_at": ApiToken.last_used_at,
+}
 
 
 @router.get("/users")
@@ -953,21 +964,31 @@ async def get_user_api_tokens(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=1000),
     sort: str | None = Query(default=None),
+    include_revoked: bool = Query(
+        default=False, description="Include revoked tokens (default: active only)"
+    ),
     db: AsyncSession = Depends(get_db),
-) -> ApiTokenListResponse:
-    """List all API tokens for a user (admin view — includes revoked).
+) -> AdminApiTokenListResponse:
+    """List one user's API tokens — the per-user admin read.
 
-    Paginated; sortable by created_at (default: created_at descending).
+    Revoked tokens are left out unless ``include_revoked`` is set. Paginated;
+    sortable by created_at / last_used_at (default: created_at descending). The
+    path's user id is an owner filter, so one naming no row yields an empty page.
     """
-    token_list = await api_tokens.list_all_for_user(db, user_id)
-    token_list = api_tokens.sort_tokens(token_list, sort)
-    total = len(token_list)
-    page = token_list[offset : offset + limit]
-    return ApiTokenListResponse(
+    order_by = parse_sort(sort, _TOKEN_SORT_COLUMNS, None)
+    rows, total = await api_tokens.list_page(
+        db,
+        limit=limit,
+        offset=offset,
+        order_by=order_by,
+        include_revoked=include_revoked,
+        user_id=user_id,
+    )
+    return AdminApiTokenListResponse(
         offset=offset,
         limit=limit,
         total_count=total,
-        tokens=[_token_to_item(t) for t in page],
+        tokens=[_admin_token_to_item(token, email) for token, email in rows],
     )
 
 
@@ -977,9 +998,75 @@ async def delete_user_api_token(
     token_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
 ) -> None:
-    """Revoke a user's API token (admin incident response — no ownership check)."""
-    await api_tokens.revoke(db, token_id=token_id)
+    """Revoke a user's API token (admin incident response — no ownership check).
+
+    Emits one ``AUTH.API_TOKEN_REVOKED`` event (spec/feature/AUTH.md §Admin revoke
+    audit). This route acts on a credential its caller does not own, and setting
+    ``revoked_at`` is the whole of what ends a token's life — so without the event
+    the only trace is the column's new value, which names neither the act nor when
+    it happened. The event is booked against the token's **owner**, so every
+    credential a user loses lands on one timeline; the acting admin is the request
+    log's business. Idempotent: revoking an already-revoked token writes no event,
+    and still answers 204.
+    """
+    result = await api_tokens.revoke(db, token_id=token_id)
+    if result.revoked:
+        db.add(
+            Event(
+                entity_type="user",
+                entity_id=str(result.owner_user_id),
+                event_type=AUTH_API_TOKEN_REVOKED,
+                status=EventStatus.SUCCESS,
+                detail={"token_id": str(token_id), "owner_user_id": str(result.owner_user_id)},
+            )
+        )
     await db.commit()
+
+
+# ── API token inventory ────────────────────────────────────────────────────────
+
+
+@router.get("/api-tokens")
+async def get_api_tokens(
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=1000),
+    sort: str | None = Query(default=None),
+    include_revoked: bool = Query(
+        default=False, description="Include revoked tokens (default: active only)"
+    ),
+    user_id: uuid.UUID | None = Query(default=None, description="Narrow to one token owner"),
+    db: AsyncSession = Depends(get_db),
+) -> AdminApiTokenListResponse:
+    """List API tokens across all users — the deployment-wide credential inventory.
+
+    Answers what long-lived credentials stand against this deployment, which the
+    per-user read cannot: it requires already knowing whose tokens to ask about.
+    Each item carries its owner (``user_id``, ``user_email``), so revocation goes
+    through ``DELETE /admin/users/{user_id}/api-tokens/{token_id}`` with the row's
+    own id and the inventory needs no revoke route of its own.
+
+    Revoked tokens are left out unless ``include_revoked`` is set — which is a
+    revocation filter, not a liveness one: an expired token is unusable and still
+    listed, with its ``expires_at`` for the client to read. ``user_id`` narrows to
+    one owner, and an id naming no user yields an empty page. Paginated; sortable
+    by created_at / last_used_at (default: created_at descending). Filtering,
+    ordering, and paging happen in SQL.
+    """
+    order_by = parse_sort(sort, _TOKEN_SORT_COLUMNS, None)
+    rows, total = await api_tokens.list_page(
+        db,
+        limit=limit,
+        offset=offset,
+        order_by=order_by,
+        include_revoked=include_revoked,
+        user_id=user_id,
+    )
+    return AdminApiTokenListResponse(
+        offset=offset,
+        limit=limit,
+        total_count=total,
+        tokens=[_admin_token_to_item(token, email) for token, email in rows],
+    )
 
 
 # ── Bootstrap ──────────────────────────────────────────────────────────────────

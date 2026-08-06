@@ -10,11 +10,14 @@ import hashlib
 import logging
 import secrets
 import uuid
+from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import Row, func, nulls_last, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
 
 from src.shared.db.models import ApiToken, User
 from src.shared.db.session import independent_sessionmaker
@@ -125,12 +128,86 @@ async def is_active(db: AsyncSession, token_id: uuid.UUID) -> bool:
     return token is not None and token.revoked_at is None
 
 
-async def list_all_for_user(db: AsyncSession, user_id: uuid.UUID) -> list[ApiToken]:
-    """Return all tokens for *user_id* (includes revoked — for admin view)."""
-    result = await db.execute(
-        select(ApiToken).where(ApiToken.user_id == user_id).order_by(ApiToken.created_at)
+async def list_page(
+    db: AsyncSession,
+    *,
+    limit: int = 20,
+    offset: int = 0,
+    order_by: Any = None,
+    include_revoked: bool = False,
+    user_id: uuid.UUID | None = None,
+) -> tuple[Sequence[Row[tuple[ApiToken, str]]], int]:
+    """Return one page of tokens across every user, plus the total row count.
+
+    Backs both admin token reads (spec/feature/AUTH.md §API Tokens) — the
+    deployment-wide inventory, and the single-owner read that passes ``user_id``.
+    Each row is ``(ApiToken, owner_email)``: the owner is joined in so a page
+    costs one query whatever its size, where a per-row lookup would be N+1 by
+    construction. Filtering, ordering, and the page window are all expressed in
+    SQL, so the rows transferred and materialised in Python are bounded by
+    ``limit`` rather than by the deployment's accumulated token history.
+
+    ``include_revoked=False`` (the default) keeps revoked rows out. It is not a
+    liveness filter: a token past ``expires_at`` is unusable
+    (``401 TOKEN_EXPIRED``) yet still appears, which is why ``expires_at`` rides
+    on every item for the client to read.
+
+    ``user_id`` narrows to one owner; an id naming no user is a filter that
+    matches nothing, which is an empty page rather than a 404. ``order_by``
+    defaults to ``created_at`` descending — newest first, the standard list
+    ordering.
+
+    The requested ordering is applied ``NULLS LAST`` and tie-broken on ``id``.
+    Both matter to a paged credential list: ``last_used_at`` is NULL for every
+    never-used token, which under a bare ``DESC`` Postgres sorts *first* and so
+    would fill the front of the very page an auditor reads to find exercised
+    credentials; and neither sort column is unique — ``created_at`` is shared by
+    rows written in one transaction, ``last_used_at`` by every unused row — so
+    without the tiebreaker the unordered remainder can shift between the page-1
+    and page-2 queries, showing a token twice or not at all.
+
+    The token hash is excluded from the SELECT list under ``raiseload``, so it is
+    not merely unserialised but unavailable on these instances.
+    """
+    filters: list[Any] = []
+    if not include_revoked:
+        filters.append(ApiToken.revoked_at.is_(None))
+    if user_id is not None:
+        filters.append(ApiToken.user_id == user_id)
+
+    order_clause = order_by if order_by is not None else ApiToken.created_at.desc()
+
+    rows_result = await db.execute(
+        select(ApiToken, User.email)
+        .join(User, ApiToken.user_id == User.id)
+        .options(
+            load_only(
+                ApiToken.user_id,
+                ApiToken.name,
+                ApiToken.role_snapshot,
+                ApiToken.created_at,
+                ApiToken.last_used_at,
+                ApiToken.expires_at,
+                ApiToken.revoked_at,
+                raiseload=True,
+            )
+        )
+        .where(*filters)
+        .order_by(nulls_last(order_clause), ApiToken.id.asc())
+        .limit(limit)
+        .offset(offset)
     )
-    return list(result.scalars().all())
+    rows = rows_result.all()
+
+    count_result = await db.execute(
+        select(func.count())
+        .select_from(ApiToken)
+        .join(User, ApiToken.user_id == User.id)
+        .where(*filters)
+    )
+    total: int = count_result.scalar_one()
+
+    return rows, total
 
 
 def sort_tokens(tokens: list[ApiToken], sort: str | None) -> list[ApiToken]:
@@ -138,9 +215,9 @@ def sort_tokens(tokens: list[ApiToken], sort: str | None) -> list[ApiToken]:
 
     Only ``created_at`` is sortable; the default (``sort`` omitted) is
     ``created_at`` descending — newest first — matching the standard list
-    ordering. Used by the router-side pagination of the token list endpoints
-    (``GET /auth/api-tokens``, ``GET /admin/users/{id}/api-tokens``), whose data
-    source is a small per-user in-memory list.
+    ordering. Serves ``GET /auth/api-tokens``, whose data source is the caller's
+    own active tokens — a list the per-user cap holds to ten rows, materialised
+    by :func:`list_active` and paged in the router.
     """
     if sort is None:
         return sorted(tokens, key=lambda t: t.created_at, reverse=True)
@@ -153,15 +230,34 @@ def sort_tokens(tokens: list[ApiToken], sort: str | None) -> list[ApiToken]:
 # ── Revoke ────────────────────────────────────────────────────────────────────
 
 
+@dataclass(frozen=True)
+class TokenRevokeResult:
+    """Outcome of :func:`revoke` — whose token it was, and whether this call killed it.
+
+    ``revoked`` is False when the row was already revoked: that call wrote
+    nothing, so no event describes it. ``owner_user_id`` is the token's owner,
+    which the admin route books its audit event against and cannot otherwise know
+    — the route is reached with a token id, and the path's user id is not
+    checked against the row.
+    """
+
+    owner_user_id: uuid.UUID
+    revoked: bool
+
+
 async def revoke(
     db: AsyncSession,
     token_id: uuid.UUID,
     owner_user_id: uuid.UUID | None = None,
-) -> None:
+) -> TokenRevokeResult:
     """Set ``revoked_at = now()`` on *token_id*.
 
     When *owner_user_id* is provided, enforce ownership (raises 404 to avoid
     leaking existence).  No-op if already revoked.
+
+    Returns the owner of the row it acted on, and whether this call was the one
+    that revoked it — the admin route books its audit event on the owner, and
+    books nothing for a no-op, since the write is what the event records.
     """
     where_clauses: list[Any] = [ApiToken.id == token_id]
     if owner_user_id is not None:
@@ -172,9 +268,12 @@ async def revoke(
     if token is None:
         raise EntityNotFoundError("token", str(token_id))
 
-    if token.revoked_at is None:
-        token.revoked_at = datetime.now(tz=UTC)
-        await db.flush()
+    if token.revoked_at is not None:
+        return TokenRevokeResult(owner_user_id=token.user_id, revoked=False)
+
+    token.revoked_at = datetime.now(tz=UTC)
+    await db.flush()
+    return TokenRevokeResult(owner_user_id=token.user_id, revoked=True)
 
 
 async def revoke_all_for_user(db: AsyncSession, user_id: uuid.UUID) -> int:

@@ -34,6 +34,7 @@ from src.api.dependencies import (
 )
 from src.api.main import app
 from tests.unit.api.conftest import TEST_SESSION_EPOCH, auth_headers
+from tests.unit.conftest import route_db_execute
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -501,9 +502,10 @@ async def test_governance_metric_list_sort_and_cap(client) -> None:
     ``created_at``/``updated_at``/``title``/``description`` (default
     ``created_at_desc``) ...)".
 
-    ``description_asc`` is the sort key the governance dashboard's description
-    ordering is anchored on (spec/feature/FRONTEND_GOVERNANCE.md §Dashboard —
-    "a **description sort**"), so it is exercised alongside ``created_at_asc``.
+    ``description_asc`` is exercised alongside ``created_at_asc`` because it is
+    the sort key furthest from the timestamp default — a non-timestamp text
+    column the same spec sentence lists as sortable, so a sort map that only
+    wired up the two timestamps is caught here.
     """
     svc = AsyncMock()
     svc.list_metrics = AsyncMock(return_value=([], 0))
@@ -667,6 +669,285 @@ async def test_auth_api_tokens_limit_cap(client) -> None:
             "/api/v1/auth/api-tokens?limit=1001", headers=auth_headers()
         )
         assert over.status_code == 422
+
+
+# ── Admin API-token inventory — the cross-user credential list ────────────────
+
+
+async def _drive_admin_api_tokens(client, query: str = "", *, total: int = 0):
+    """GET ``/admin/api-tokens{query}`` against a capturing session.
+
+    Unlike the service-backed entries above, this route has no mockable service call to
+    read an ``order_by`` kwarg off: it forwards the parsed clause into
+    ``api_tokens.list_page``, which expresses filter, ordering, and page bounds in SQL
+    (spec/feature/AUTH.md §Revoked-token visibility). So the statement is the observable,
+    the same way the ``/ingestion/unmanaged`` cases above read theirs — and reading the SQL
+    rather than the forwarded kwarg is what makes "the rejected sort key never reaches SQL"
+    assertable at all.
+
+    The session routes by SQL rather than by call order (spec/TESTING.md §Unit Testing →
+    Mocking rules): the aggregate answers the COUNT, any other ``api_tokens`` statement
+    answers the page, and everything left over — the ``require_authenticated`` principal
+    lookup — answers with an Admin user.
+
+    Returns ``(response, [compiled SQL of each api_tokens statement])``. ``route_db_execute``
+    compiles and lowercases each statement before matching, so the recorded strings are
+    already the PostgreSQL rendering the assertions read.
+    """
+    from src.api.dependencies import get_db
+
+    captured: list[str] = []
+
+    def _record(sql: str) -> bool:
+        captured.append(sql)
+        return False  # decline, so the real routes below supply the result
+
+    count_result = MagicMock()
+    count_result.scalar_one.return_value = total
+    rows_result = MagicMock()
+    rows_result.all.return_value = []
+    user_result = MagicMock()
+    user_result.scalar_one_or_none.return_value = _make_unmanaged_user()
+
+    mock_session = AsyncMock()
+    route_db_execute(
+        mock_session,
+        [(_record, None), ("count(", count_result), ("api_tokens", rows_result)],
+        default=user_result,
+    )
+
+    async def _mock_db():
+        yield mock_session
+
+    app.dependency_overrides[get_db] = _mock_db
+    try:
+        resp = await client.get(f"/api/v1/admin/api-tokens{query}", headers=auth_headers())
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    return resp, [sql for sql in captured if "api_tokens" in sql]
+
+
+def _order_by_of(sql: str) -> str:
+    """The ORDER BY clause of a compiled statement; ``""`` when it carries none."""
+    flat = " ".join(sql.split())
+    if " order by " not in flat:
+        return ""
+    tail = flat.split(" order by ", 1)[1]
+    for stop in (" limit ", " offset "):
+        tail = tail.split(stop, 1)[0]
+    return tail.strip()
+
+
+@pytest.mark.asyncio
+async def test_admin_api_tokens_envelope_total_count_and_limit_cap(client) -> None:
+    """GET /admin/api-tokens carries the standard envelope; limit caps at 1000.
+
+    spec/API.md §Admin — ``GET /admin/api-tokens`` returns "every user's API tokens — the
+    deployment-wide inventory (standard ``offset``/``limit``/``total_count`` envelope;
+    content key ``tokens``...)".
+    spec/API_DESIGN_PRINCIPLE_en.md §5 (Pagination) — "``limit`` (page size, default ``20``,
+    max ``1000``)"; ``total_count`` is "the unpaged size of the filtered collection".
+    """
+    from src.api.schemas.auth import AdminApiTokenListResponse
+    from src.api.schemas.common import PaginatedResponse
+
+    assert issubclass(AdminApiTokenListResponse, PaginatedResponse), (
+        "AdminApiTokenListResponse must extend PaginatedResponse"
+    )
+
+    resp, _sql = await _drive_admin_api_tokens(client, "?offset=5&limit=1000", total=7)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    for key in ("offset", "limit", "total_count", "tokens"):
+        assert key in body, f"response must carry {key!r}"
+    assert body["offset"] == 5
+    assert body["limit"] == 1000
+    assert body["total_count"] == 7, (
+        f"total_count must be the collection size the COUNT reported, not the page length; "
+        f"got {body['total_count']!r}"
+    )
+
+    over, _ = await _drive_admin_api_tokens(client, "?limit=1001")
+    assert over.status_code == 422, "limit > 1000 must be rejected (le=1000)"
+
+
+@pytest.mark.asyncio
+async def test_admin_api_tokens_default_sort_is_created_at_desc(client) -> None:
+    """GET /admin/api-tokens with no ``sort`` orders created_at DESC — newest first.
+
+    spec/API.md §Admin — ``GET /admin/api-tokens`` is "Sortable by
+    ``created_at``/``last_used_at`` (default ``created_at_desc``)".
+    """
+    resp, statements = await _drive_admin_api_tokens(client)
+    assert resp.status_code == 200, resp.text
+
+    ordered = [_order_by_of(sql) for sql in statements if _order_by_of(sql)]
+    assert len(ordered) == 1, (
+        f"exactly one of the route's statements (the page, not the COUNT) must carry an "
+        f"ORDER BY; got {ordered!r} from {statements!r}"
+    )
+    clause = ordered[0]
+    assert "created_at desc" in clause, (
+        f"the default ordering must be created_at descending — newest first; got {clause!r}. "
+        f"spec/API.md §Admin — 'default created_at_desc'."
+    )
+
+
+@pytest.mark.asyncio
+async def test_admin_api_tokens_created_at_asc_reverses_the_default(client) -> None:
+    """GET /admin/api-tokens?sort=created_at_asc orders created_at ASC — oldest first.
+
+    Paired with the default case above so an ordering hard-coded to DESC (which would pass
+    that test on its own) fails here.
+
+    spec/API.md §Admin — sortable by ``created_at``/``last_used_at``, ``sort=<field>_asc`` /
+    ``<field>_desc`` per spec/API_DESIGN_PRINCIPLE_en.md §5.
+    """
+    resp, statements = await _drive_admin_api_tokens(client, "?sort=created_at_asc")
+    assert resp.status_code == 200, resp.text
+
+    ordered = [_order_by_of(sql) for sql in statements if _order_by_of(sql)]
+    assert len(ordered) == 1, f"expected one ordered statement; got {ordered!r}"
+    clause = ordered[0]
+    # "orders by created_at, and not descending" rather than a literal " asc": SQLAlchemy
+    # only renders the ASC keyword for some spellings, and the direction — not the
+    # keyword — is what the sort grammar fixes.
+    assert "created_at" in clause and "created_at desc" not in clause, (
+        f"sort=created_at_asc must reverse the default to ascending; got {clause!r}. "
+        f"spec/API_DESIGN_PRINCIPLE_en.md §5 — 'sort=<field>_asc or sort=<field>_desc'."
+    )
+
+
+@pytest.mark.asyncio
+async def test_admin_api_tokens_last_used_at_sort_is_wired(client) -> None:
+    """GET /admin/api-tokens?sort=last_used_at_desc orders by last_used_at.
+
+    ``last_used_at`` is the second documented sort key and the one an auditor reaches for —
+    it answers which credentials are actually being exercised. A sort map wired for
+    ``created_at`` alone would silently serve the default here and pass every other case in
+    this file.
+
+    spec/API.md §Admin — ``GET /admin/api-tokens`` is "Sortable by
+    ``created_at``/``last_used_at``".
+    """
+    resp, statements = await _drive_admin_api_tokens(client, "?sort=last_used_at_desc")
+    assert resp.status_code == 200, resp.text
+
+    ordered = [_order_by_of(sql) for sql in statements if _order_by_of(sql)]
+    assert len(ordered) == 1, f"expected one ordered statement; got {ordered!r}"
+    clause = ordered[0]
+    assert "last_used_at desc" in clause, (
+        f"sort=last_used_at_desc must order by last_used_at descending; got {clause!r}. "
+        f"spec/API.md §Admin — sortable by created_at/last_used_at."
+    )
+
+
+@pytest.mark.asyncio
+async def test_admin_api_tokens_rejects_an_undocumented_sort_key_without_reaching_sql(
+    client,
+) -> None:
+    """``sort=token_hash_desc`` falls back to the default; ``token_hash`` never enters the SQL.
+
+    Two things at once. The sort grammar is a **closed** allow-list — each endpoint
+    "documents its own allowed sort fields", and ``token_hash`` is on neither route's list —
+    so an unrecognised key must resolve to the documented default rather than be forwarded.
+    And because the rejected key here names the credential hash, the consequence of
+    forwarding it is not merely a surprising order: it would put ``token_hash`` into a
+    statement on a route whose whole contract is that the hash never leaves the database.
+
+    The default-ordering leg is the backstop that keeps the absence assertion honest: a
+    route that answered 500, or ordered by nothing at all, would satisfy "token_hash is not
+    in the SQL" while proving nothing.
+
+    spec/API_DESIGN_PRINCIPLE_en.md §5 (Sorting) — "Each endpoint **documents its own
+    allowed sort fields and its default ordering** (the ordering applied when ``sort`` is
+    omitted)."
+    spec/API.md §Admin — ``GET /admin/api-tokens``: "Sortable by
+    ``created_at``/``last_used_at`` (default ``created_at_desc``) ... the token hash is
+    never returned".
+    """
+    resp, statements = await _drive_admin_api_tokens(client, "?sort=token_hash_desc")
+    assert resp.status_code == 200, (
+        f"an unrecognised sort key must fall back to the default, not error; got "
+        f"{resp.status_code}: {resp.text}"
+    )
+    assert statements, "the route must have issued its api_tokens statements"
+
+    for sql in statements:
+        assert "token_hash" not in sql, (
+            f"sort=token_hash_desc must not reach SQL — token_hash is the stored credential "
+            f"and belongs in no statement this route issues; got {sql!r}. spec/API.md "
+            f"§Admin — 'the token hash is never returned'."
+        )
+
+    ordered = [_order_by_of(sql) for sql in statements if _order_by_of(sql)]
+    assert len(ordered) == 1, f"expected one ordered statement; got {ordered!r}"
+    assert "created_at desc" in ordered[0], (
+        f"an unrecognised sort key must fall back to the documented default "
+        f"(created_at_desc); got {ordered[0]!r}. spec/API_DESIGN_PRINCIPLE_en.md §5."
+    )
+
+
+@pytest.mark.asyncio
+async def test_admin_user_api_tokens_shares_the_admin_item_shape_and_cap(client) -> None:
+    """GET /admin/users/{id}/api-tokens carries the same envelope and the same 1000 cap.
+
+    The two admin reads are one query behind one response model, so the per-user route is
+    swept alongside the inventory rather than assumed to follow it.
+
+    spec/feature/AUTH.md §Lifecycle endpoints — "The two admin reads share an item shape
+    distinct from the self read's".
+    spec/API.md §Admin — ``GET /admin/users/{id}/api-tokens`` returns "one user's API
+    tokens, in the admin item shape (paginated with the standard
+    ``offset``/``limit``/``total_count`` envelope; content key ``tokens``...)".
+    """
+    from src.api.dependencies import get_db
+    from src.api.routers.admin import get_user_api_tokens
+
+    count_result = MagicMock()
+    count_result.scalar_one.return_value = 3
+    rows_result = MagicMock()
+    rows_result.all.return_value = []
+    user_result = MagicMock()
+    user_result.scalar_one_or_none.return_value = _make_unmanaged_user()
+
+    mock_session = AsyncMock()
+    route_db_execute(
+        mock_session,
+        [("count(", count_result), ("api_tokens", rows_result)],
+        default=user_result,
+    )
+
+    async def _mock_db():
+        yield mock_session
+
+    # Both admin reads must declare the same response model, or "same item shape" is a
+    # claim about two independently drifting schemas.
+    from src.api.routers.admin import get_api_tokens
+
+    assert get_user_api_tokens.__annotations__["return"] is get_api_tokens.__annotations__[
+        "return"
+    ], "the two admin token reads must return the same response model"
+
+    owner_id = uuid.uuid4()
+    app.dependency_overrides[get_db] = _mock_db
+    try:
+        resp = await client.get(
+            f"/api/v1/admin/users/{owner_id}/api-tokens", headers=auth_headers()
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        for key in ("offset", "limit", "total_count", "tokens"):
+            assert key in body, f"response must carry {key!r}"
+        assert body["total_count"] == 3
+
+        over = await client.get(
+            f"/api/v1/admin/users/{owner_id}/api-tokens?limit=1001", headers=auth_headers()
+        )
+        assert over.status_code == 422, "limit > 1000 must be rejected (le=1000)"
+    finally:
+        app.dependency_overrides.pop(get_db, None)
 
 
 # ── Ingestion secrets — rebased onto PaginatedResponse (in-memory slice) ───────

@@ -656,8 +656,9 @@ instead of a JWT.
 | `PATCH` | `/admin/users/{id}/role` | `{role: "Admin"\|"Editor"\|"Reader"}` | `{role}` | JWT + Admin role |
 | `DELETE` | `/admin/users/{id}` | — | `204` | JWT + Admin role |
 | `DELETE` | `/admin/users/{id}/google` | — | `204` — releases the row's Google binding: clears `google_sub` and increments `session_epoch`, ending sessions established under it. The next Google sign-in at that address binds afresh. `409 GOOGLE_IS_ONLY_AUTH_METHOD` when the row has no password. See [AUTH §Admin unbind](feature/AUTH.md#admin-unbind) | JWT + Admin role |
-| `GET` | `/admin/users/{id}/api-tokens` | — | a user's API tokens (same shape as `GET /auth/api-tokens`, sans raw token; paginated with the standard `offset`/`limit`/`total_count` envelope, sortable by `created_at`, default `created_at_desc`) | JWT + Admin role |
+| `GET` | `/admin/users/{id}/api-tokens` | — | one user's API tokens, in the admin item shape (paginated with the standard `offset`/`limit`/`total_count` envelope; content key `tokens`, sortable by `created_at`/`last_used_at`, default `created_at_desc`). `?include_revoked=true` also returns rows with `revoked_at` set; default `false` (unrevoked rows only — expiry is not filtered). The `id` is an owner filter, so one naming no user yields an empty page rather than `404` | JWT + Admin role |
 | `DELETE` | `/admin/users/{id}/api-tokens/{token_id}` | — | `204` — revokes a user's token (incident response) | JWT + Admin role |
+| `GET` | `/admin/api-tokens` | — | every user's API tokens — the deployment-wide inventory (standard `offset`/`limit`/`total_count` envelope; content key `tokens: [{id, name, role_snapshot, created_at, last_used_at, expires_at, revoked_at, user_id, user_email}]` — the token hash is never returned). Sortable by `created_at`/`last_used_at` (default `created_at_desc`); `?user_id=` narrows to one owner — a `user_id` naming no user matches nothing and yields an empty page rather than `404`; `?include_revoked=true` also returns rows with `revoked_at` set, default `false` | JWT + Admin role |
 | `GET` | `/admin/peripherals/datahub` | — | current DataHub config: `{gms_url, frontend_url, kafka_brokers, kafka_security_protocol, kafka_sasl_mechanism, kafka_sasl_username, kafka_sasl_password, kafka_sasl_password_version, kafka_aws_region, token, service_corpuser_urn, default_env, is_configured, health, api_health, updated_at}`. `token` and `kafka_sasl_password` are masked (`""` unset, `"********"` set); `frontend_url` (the browser-facing DataHub UI URL, distinct from the `gms_url` service endpoint), `service_corpuser_urn`, `default_env`, and every non-secret `kafka_*` field are returned plain. `health` is the **event consumer's** last self-report of the Kafka event stream — `{status, last_error, last_ok_at, updated_at}` with `status` ∈ `unknown`/`ok`/`error` — and not a verdict on DataHub overall. `api_health` is the sync sweep's last self-report of DataHub **metadata-API** (GMS) reachability, with the same object shape and the same `status` domain | JWT + Admin role |
 | `PATCH` | `/admin/peripherals/datahub` | partial DataHub fields | updated DataHub config (with `token` and `kafka_sasl_password` masked) | JWT + Admin role |
 | `GET` | `/admin/peripherals/langfuse` | — | current Langfuse config: `{host, public_key, secret_key, project_id, environment_tag, is_configured, updated_at}`. `secret_key` is masked (`""` unset, `"********"` set); `project_id` and `environment_tag` are non-secret and returned plain | JWT + Admin role |
@@ -734,10 +735,20 @@ binding that has gone stale — a re-issued Workspace address whose new Google
 `sub` the callback refuses to bind onto the row still naming the old one. It
 touches DataSpoke state only; the corpuser is left in place.
 
-`GET /admin/users/{id}/api-tokens` and `DELETE /admin/users/{id}/api-tokens/{token_id}`
-exist for incident response — admins can see and revoke any user's tokens,
-but they cannot mint tokens on behalf of other users (only the owner can
-mint). See [feature/AUTH.md §API Tokens](feature/AUTH.md#api-tokens).
+`GET /admin/api-tokens`, `GET /admin/users/{id}/api-tokens`, and
+`DELETE /admin/users/{id}/api-tokens/{token_id}` exist for credential audit and
+incident response. The first answers what long-lived credentials stand against the
+deployment as a whole, in one paginated view narrowable to a single owner with
+`?user_id=`; the second answers the same question for one user, reached from that
+user's row. Both return the admin item shape — the self-list fields plus
+`revoked_at`, `user_id`, and `user_email`. The default view of either excludes
+revoked rows and nothing else; expiry is not a filter, so a page can hold a token
+past its `expires_at`, which the item's own field is what identifies. Owner
+identity and `revoked_at` stay off `GET /auth/api-tokens`, which is
+scoped to the caller's own tokens and has no other owner to name. Admins can see and
+revoke any user's tokens (addressed by the `user_id` each admin item carries), but
+they cannot mint tokens on behalf of other users (only the owner can mint). See
+[feature/AUTH.md §API Tokens](feature/AUTH.md#api-tokens).
 
 `/admin/peripherals/smtp` follows the same pattern as the existing
 `/admin/peripherals/datahub` and `/admin/peripherals/langfuse` routes
@@ -1186,7 +1197,7 @@ Clients should treat `detail` as optional; absent for errors that don't need it.
 | `TOKEN_EXPIRED` | 401 | API token row exists but `expires_at` is in the past |
 | `TOKEN_NOT_FOUND` | 404 | `DELETE /auth/api-tokens/{id}` or `DELETE /admin/users/{id}/api-tokens/{token_id}` references a non-existent token |
 | `TOKEN_LIMIT_EXCEEDED` | 409 | `POST /auth/api-tokens` attempted while user already has 10 active (non-revoked) tokens |
-| `USER_NOT_FOUND` | 404 | User id does not resolve to a `users` row (e.g. `/admin/users/{id}` and its `/role`, `/google`, `/api-tokens` sub-routes, or `PATCH /auth/me`) |
+| `USER_NOT_FOUND` | 404 | User id does not resolve to a `users` row (e.g. `/admin/users/{id}` and its `/role` and `/google` sub-routes, or `PATCH /auth/me`). The admin token reads are the exception: there the id is a filter, and one matching no user returns an empty page |
 | `PERIPHERAL_NOT_CONFIGURED` | 503 | A required peripheral is not configured. `detail.peripheral` identifies which one (`"smtp"` for `/auth/password/reset/request`; `"datahub"` for any DataHub-requiring endpoint when DataHub is unconfigured). Distinct from `DATAHUB_UNAVAILABLE` (502), which is the configured-but-unreachable case. The `/ready` health endpoint is the exception that reports an unconfigured peripheral as `degraded` rather than returning this code |
 | `DATAHUB_UNAVAILABLE` | 502 | DataHub GMS is configured but did not respond or returned an error |
 | `AIRFLOW_UNAVAILABLE` | 503 | The in-cluster Airflow REST API did not respond or returned an error while reading or setting DAG paused state (`GET`/`PATCH /admin/dags`) |

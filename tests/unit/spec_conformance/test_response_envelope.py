@@ -116,12 +116,21 @@ def _paginated_models() -> dict[str, type[PaginatedResponse]]:
 #: ``EventListResponse`` — the per-feature and per-resource event timelines are the same
 #: resource rendered from the same rows; spec/API.md §Route Catalogue gives every ``event``
 #: route an identical row inventory.
-#: ``ApiTokenListResponse`` — ``GET /auth/api-tokens`` (own tokens) and
-#: ``GET /admin/users/{user_id}/api-tokens`` (another user's) differ in scope, not in shape.
+#: ``AdminApiTokenListResponse`` — ``GET /admin/api-tokens`` (every user's tokens) and
+#: ``GET /admin/users/{user_id}/api-tokens`` (one user's) differ in scope, not in shape:
+#: spec/feature/AUTH.md §API Tokens — "The two admin reads share an item shape distinct
+#: from the self read's".
+#:
+#: ``ApiTokenListResponse`` is deliberately *not* listed: it serves ``GET /auth/api-tokens``
+#: alone. Its item shape is the lean self-scoped one, without the ``revoked_at`` /
+#: ``user_id`` / ``user_email`` fields spec/feature/AUTH.md §Revoked-token visibility keeps
+#: off the self read ("``revoked_at`` is not on the self item shape"). Listing it here would
+#: fail branch 2 of ``assert_drift_allowlist``, which is the point — the allowlist records
+#: the sharing that exists now, not the sharing that once did.
 SHARED_PAGINATED_MODELS: frozenset[str] = frozenset(
     {
         "EventListResponse",
-        "ApiTokenListResponse",
+        "AdminApiTokenListResponse",
     }
 )
 
@@ -157,9 +166,9 @@ class TestEnvelopeBaseFields:
         This does two things, neither of which is "stop the suite going quiet" — because it
         would not: ``_extra_fields`` subtracts the ``ENVELOPE_FIELDS`` constant rather than
         the base model's own fields, so a field added to ``PaginatedResponse`` is already
-        reported as an extra field on all 22 subclasses.
+        reported as an extra field on all 23 subclasses.
 
-        What it does deliver: (1) it turns those 22 near-identical failures into one
+        What it does deliver: (1) it turns those 23 near-identical failures into one
         failure that names the actual cause, and (2) it pins ``ENVELOPE_FIELDS`` to the
         implementation, so the constant this module measures everything against cannot
         quietly diverge from the envelope the API really serves.
@@ -185,7 +194,7 @@ class TestPaginatedModelDiscovery:
     def test_models_are_discovered(self) -> None:
         """Floor at the current count — raise it as collection routes are added."""
         models = _paginated_models()
-        assert len(models) >= 22, (
+        assert len(models) >= 23, (
             f"Only {len(models)} PaginatedResponse subclasses discovered under "
             f"src/api/schemas — the import walk is finding almost nothing, so the "
             f"envelope conformance assertions below are near-vacuous."
@@ -342,7 +351,7 @@ class TestSharedModelBinding:
         examining an empty mapping.
         """
         bindings = _route_bindings()
-        assert len(bindings) >= 22, (
+        assert len(bindings) >= 23, (
             f"Only {len(bindings)} paginated response models are bound to a route "
             f"({sorted(bindings)}) — the route walk is finding almost nothing, so the "
             f"binding assertions below are vacuous."

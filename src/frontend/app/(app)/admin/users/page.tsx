@@ -19,6 +19,7 @@ import type { AdminUser, UserRole } from "@/lib/api/types";
 import { ApiError } from "@/lib/api/client";
 import { toast } from "@/components/ui/use-toast";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -49,8 +50,11 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { ConfirmDialog } from "@/components/confirm-dialog";
+import { QueryErrorState } from "@/components/query-error-state";
+import { TokenStatusBadge } from "@/components/token-status-badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatDate } from "@/lib/format-time";
+import { tokenStatus } from "@/lib/token-status";
 import { useDisplayTz } from "@/lib/preferences/timezone";
 
 const roles: UserRole[] = ["Admin", "Editor", "Reader"];
@@ -147,7 +151,8 @@ function RenameDialog({ user, onClose }: { user: AdminUser; onClose: () => void 
 // ── User tokens drawer ────────────────────────────────────────────────────────
 
 function UserTokensDialog({ user, onClose }: { user: AdminUser; onClose: () => void }) {
-  const { data, isLoading } = useAdminUserTokens(user.id);
+  const [showRevoked, setShowRevoked] = useState(false);
+  const { data, isLoading, error } = useAdminUserTokens(user.id, { includeRevoked: showRevoked });
   const { mutateAsync: revokeToken, isPending: revoking } = useDeleteAdminUserToken();
   const [confirmTokenId, setConfirmTokenId] = useState<string | null>(null);
   const tz = useDisplayTz();
@@ -164,37 +169,67 @@ function UserTokensDialog({ user, onClose }: { user: AdminUser; onClose: () => v
 
   return (
     <div className="space-y-4">
-      {isLoading ? (
+      <div className="flex items-center gap-2">
+        <Checkbox
+          id="user-tokens-show-revoked"
+          checked={showRevoked}
+          onCheckedChange={(v) => setShowRevoked(!!v)}
+        />
+        <label htmlFor="user-tokens-show-revoked" className="cursor-pointer text-sm">
+          Show revoked
+        </label>
+      </div>
+      {error ? (
+        <QueryErrorState error={error} context="Failed to load tokens" />
+      ) : isLoading ? (
         <Skeleton className="h-20 w-full" />
-      ) : data?.tokens.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No tokens.</p>
+      ) : (data?.tokens.length ?? 0) === 0 ? (
+        <p className="text-sm text-muted-foreground">
+          {showRevoked ? "No tokens." : "No active tokens."}
+        </p>
       ) : (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Name</TableHead>
-              <TableHead>Created</TableHead>
-              <TableHead />
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {data?.tokens.map((t) => (
-              <TableRow key={t.id}>
-                <TableCell className="font-medium">{t.name}</TableCell>
-                <TableCell>{formatDate(t.created_at, tz)}</TableCell>
-                <TableCell>
-                  <Button
-                    variant="destructive"
-                    size="sm"
-                    onClick={() => setConfirmTokenId(t.id)}
-                  >
-                    Revoke
-                  </Button>
-                </TableCell>
+        <>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Name</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Created</TableHead>
+                <TableHead />
               </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+            </TableHeader>
+            <TableBody>
+              {data?.tokens.map((t) => (
+                <TableRow key={t.id}>
+                  <TableCell className="font-medium">{t.name}</TableCell>
+                  <TableCell>
+                    <TokenStatusBadge token={t} tz={tz} />
+                  </TableCell>
+                  <TableCell>{formatDate(t.created_at, tz)}</TableCell>
+                  <TableCell>
+                    {/* A revoked token grants nothing, so there is nothing left
+                        to withdraw. An expired one is still revocable — expiry
+                        is a clock, revocation is a decision. */}
+                    {tokenStatus(t) !== "revoked" && (
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        onClick={() => setConfirmTokenId(t.id)}
+                      >
+                        Revoke
+                      </Button>
+                    )}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+          {data && data.total_count > data.tokens.length && (
+            <p className="text-sm text-muted-foreground">
+              Showing {data.tokens.length} of {data.total_count} tokens.
+            </p>
+          )}
+        </>
       )}
       <div className="flex justify-end">
         <Button variant="outline" onClick={onClose}>

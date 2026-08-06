@@ -1,7 +1,8 @@
 "use client";
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api/client";
+import { useAuthStore } from "@/lib/auth/store";
 import { getRuntimeConfig } from "@/lib/runtime-config";
 import type {
   ApiTokenItem,
@@ -18,7 +19,23 @@ interface LoginVars {
   password: string;
 }
 
+/**
+ * Drop every cached response before a new session begins.
+ *
+ * The `QueryClient` is created once in `app/providers.tsx` and outlives the
+ * client-side navigation between `/login` and the app, so without this the
+ * incoming user reads the previous one's cache: `["auth","me"]` still resolves
+ * to the outgoing user (and, being fresh, does not refetch), which in turn
+ * makes every role-derived gate and every caller-scoped query key report the
+ * outgoing identity. Runs before the caller stores the access token, so the new
+ * session's own reads — all gated on that token — start against an empty cache.
+ */
+function resetSessionCache(qc: QueryClient): void {
+  qc.removeQueries();
+}
+
 export function useLogin() {
+  const qc = useQueryClient();
   return useMutation<TokenResponse, Error, LoginVars>({
     mutationFn: (vars) =>
       apiFetch<TokenResponse>("/auth/token", {
@@ -26,6 +43,9 @@ export function useLogin() {
         body: JSON.stringify(vars),
       }),
     meta: { handledInline: true },
+    onSuccess: () => {
+      resetSessionCache(qc);
+    },
   });
 }
 
@@ -38,6 +58,7 @@ interface RegisterVars {
 }
 
 export function useRegister() {
+  const qc = useQueryClient();
   return useMutation<TokenResponse, Error, RegisterVars>({
     mutationFn: (vars) =>
       apiFetch<TokenResponse>("/auth/register", {
@@ -45,6 +66,9 @@ export function useRegister() {
         body: JSON.stringify(vars),
       }),
     meta: { handledInline: true },
+    onSuccess: () => {
+      resetSessionCache(qc);
+    },
   });
 }
 
@@ -91,6 +115,23 @@ export function useUpdateProfile() {
 
 // ── API tokens ─────────────────────────────────────────────────────────────────
 
+/**
+ * Invalidate every cache that can be showing a given user's tokens: the
+ * self-scoped list, the deployment-wide admin inventory, and that user's row
+ * drawer under Admin → Users. The last two exist only in an Admin session;
+ * invalidating an absent key is a no-op.
+ *
+ * Shared by the self-service mint/revoke here and the admin revoke in
+ * `lib/api/admin.ts`, which reach the same three caches from opposite ends.
+ */
+export function invalidateTokenReads(qc: QueryClient, ownerId: string | undefined): void {
+  void qc.invalidateQueries({ queryKey: ["auth", "api-tokens"] });
+  void qc.invalidateQueries({ queryKey: ["admin", "api-tokens"] });
+  if (ownerId) {
+    void qc.invalidateQueries({ queryKey: ["admin", "users", ownerId, "api-tokens"] });
+  }
+}
+
 export function useApiTokens() {
   return useQuery<ApiTokenListResponse>({
     queryKey: ["auth", "api-tokens"],
@@ -106,6 +147,7 @@ interface MintTokenVars {
 
 export function useCreateApiToken() {
   const qc = useQueryClient();
+  const meId = useAuthStore((s) => s.me?.id);
   return useMutation<ApiTokenMintResponse, Error, MintTokenVars>({
     mutationFn: (vars) =>
       apiFetch<ApiTokenMintResponse>("/auth/api-tokens", {
@@ -114,19 +156,20 @@ export function useCreateApiToken() {
       }),
     meta: { handledInline: true },
     onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ["auth", "api-tokens"] });
+      invalidateTokenReads(qc, meId);
     },
   });
 }
 
 export function useDeleteApiToken() {
   const qc = useQueryClient();
+  const meId = useAuthStore((s) => s.me?.id);
   return useMutation<void, Error, { id: string }>({
     mutationFn: ({ id }) =>
       apiFetch<void>(`/auth/api-tokens/${id}`, { method: "DELETE" }),
     meta: { handledInline: true },
     onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ["auth", "api-tokens"] });
+      invalidateTokenReads(qc, meId);
     },
   });
 }

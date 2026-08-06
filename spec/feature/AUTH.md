@@ -627,9 +627,10 @@ operators are advised to keep at least two Admin users in production.
 Long-lived personal access tokens (PATs) for non-interactive clients (CI
 jobs, AI agents, third-party integrations). Self-service: every authenticated
 user mints, lists, and revokes their own tokens under `/auth/api-tokens`.
-Admins can list and revoke any user's tokens via
-`/admin/users/{id}/api-tokens` (for incident response). Admins cannot mint
-tokens on behalf of other users — only the owner can mint.
+Admins read other users' tokens through two surfaces — a deployment-wide
+inventory and a per-user list — and revoke any of them, for incident response.
+Minting is owner-only in every case: no route mints a token for anyone but its
+caller.
 
 ### Token format and storage
 
@@ -702,11 +703,82 @@ The API contract lives in [API §Auth](../API.md#auth) and
 
 | Endpoint | Purpose |
 |----------|---------|
-| `GET /auth/api-tokens` | List own tokens (returns `{tokens: [{id, name, role_snapshot, created_at, last_used_at, expires_at}], total}` — never the raw token) |
+| `GET /auth/api-tokens` | List own tokens (content key `tokens: [{id, name, role_snapshot, created_at, last_used_at, expires_at}]` under the standard pagination envelope — never the raw token) |
 | `POST /auth/api-tokens` | Mint a new token (body `{name, expires_at?}`); response includes the raw token in `{token: "dsk_..."}` — only time it is returned plain |
 | `DELETE /auth/api-tokens/{id}` | Revoke an own token (sets `revoked_at = now()`) |
-| `GET /admin/users/{id}/api-tokens` | List a user's tokens (admin) |
+| `GET /admin/users/{id}/api-tokens` | List one user's tokens (admin), in the admin item shape |
+| `GET /admin/api-tokens` | List tokens across all users (admin) — the deployment-wide inventory; optional `user_id` owner filter, sortable by `created_at`/`last_used_at` |
 | `DELETE /admin/users/{id}/api-tokens/{token_id}` | Revoke a user's token (admin; incident response) |
+
+The two admin reads share an item shape distinct from the self read's; both are
+enumerated in [API §Admin](../API.md#admin-admin). Revocation needs no route of
+its own on the inventory — each item carries the `user_id` that addresses
+`DELETE /admin/users/{id}/api-tokens/{token_id}`.
+
+### Revoked-token visibility
+
+Both admin reads exclude revoked rows by default and take `include_revoked=true`
+to bring them back, following the project's convention of keeping withdrawn
+records out of the default view behind an explicit opt-in. A revoked row grants
+nothing — authentication fails `401 TOKEN_REVOKED` — so carrying it in the
+default list pads the answer with credentials already dealt with. Those rows stay
+reachable because incident review needs to see when a credential was withdrawn,
+which is what `revoked_at` carries.
+
+`revoked_at IS NULL` is the whole of the default filter. Expiry is not filtered:
+a token past its `expires_at` authenticates nothing (`401 TOKEN_EXPIRED`) yet sits
+in the default page like any other row. What separates the two is the item's own
+`expires_at`, which is why it is on the shape — a reader counting what is usable
+reads that field per row rather than treating the page as the usable set.
+
+Both routes express their filter, ordering, and page bounds in SQL, so a request
+transfers and materialises one page rather than the whole matching set. The
+ordering still ranges over that set: `api_tokens` is indexed for the per-user
+active lookup, not for the sort keys these routes offer.
+
+Either ordering places nulls last and is tiebroken by token id, so paging an
+inventory returns each token exactly once regardless of the requested `sort`.
+Both properties are load-bearing rather than cosmetic: ties are certain under
+`last_used_at`, where every never-used token shares a null, and reachable under
+`created_at`, where tokens minted in one transaction share a timestamp — an
+unspecified order within a tie can shift between the page-1 and page-2 queries and
+drop a live credential from every page. Nulls-last keeps `last_used_at_desc`, the
+ordering that asks which credentials are in use, from opening with the ones that
+never have been.
+
+`GET /auth/api-tokens` excludes revoked rows and offers no opt-in. A revoked
+token is nothing its owner can act on — it cannot be used, un-revoked, or revoked
+again — and `revoked_at` is not on the self item shape, so there is no withdrawal
+timeline to read there either. Audit of withdrawn credentials is an admin concern,
+served by the two routes above.
+
+### Admin revoke audit
+
+`DELETE /admin/users/{id}/api-tokens/{token_id}` acts on a credential the caller
+does not own, and by design applies no ownership check — that is what makes it
+usable for incident response, and what makes it worth recording. It emits one
+`AUTH.API_TOKEN_REVOKED` event against the token's owner; the catalogue entry,
+including the detail keys, is in
+[BACKEND §Event Catalogue](BACKEND.md#event-catalogue). Setting `revoked_at` is
+the whole of what ends a token's life, so the write **is** the security event:
+absent the record, the only trace of an admin killing someone else's credential is
+the column's new value, which names neither who set it nor when anyone noticed.
+The event carries the token and its owner, not the acting admin — the request log
+is where the principal lives.
+
+Every other path by which a PAT dies already leaves a record: the [credential
+reset on link](#credential-reset-on-link) counts the tokens it revokes in its own
+event, and the [admin unbind](#admin-unbind) emits one for the authentication
+method it removes. The by-hand admin revoke completes that picture, which matters
+more here than it would for an incident-response corner: the deployment-wide
+inventory makes cross-user revocation an ordinary workflow rather than a rare
+intervention.
+
+`DELETE /auth/api-tokens/{id}` emits nothing. A user retiring their own token is
+routine hygiene with no privilege asymmetry to audit, and the outcome is already
+visible to the only party it concerns. Recording it would bury the admin event —
+the one that says someone acted on a credential that was not theirs — under the
+ordinary traffic of self-service.
 
 ---
 

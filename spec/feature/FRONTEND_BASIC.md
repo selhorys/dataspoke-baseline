@@ -197,7 +197,7 @@ ingestion recipe YAML editor) remain one full-width field.
 | `/reset-password` | Submit a new password using the token from the email link (`?token=…` query param). An "Invalid link" guard state renders before any API call when `token` is missing/empty; a "Password updated" state renders on success | `POST /auth/password/reset/confirm` |
 | `/oauth-error` | Landing page for a failed Google sign-in (`?error=<code>` query param) — see [OAuth error page](#oauth-error-page-oauth-error). Pure presentation of the query param | — (no API call) |
 | `/profile` | Own profile + change display name + change password | `GET /auth/me`, `PATCH /auth/me` |
-| `/profile/tokens` | Long-lived API token management — list, mint (copy-once display), revoke | `GET /auth/api-tokens`, `POST /auth/api-tokens`, `DELETE /auth/api-tokens/{id}` |
+| `/profile/tokens` | Long-lived API token management — list, mint (copy-once display), revoke. An Admin-only scope control switches between **My tokens** (default) and **All tokens**, the deployment-wide inventory with Owner and Status columns and a "Show revoked" toggle | `GET /auth/api-tokens`, `POST /auth/api-tokens`, `DELETE /auth/api-tokens/{id}`, `GET /admin/api-tokens`, `DELETE /admin/users/{id}/api-tokens/{token_id}` |
 | `/admin/users` | Admin user management — list, change name, change role, hard delete, revoke any token | `GET /admin/users`, `PATCH /admin/users/{id}`, `PATCH /admin/users/{id}/role`, `DELETE /admin/users/{id}`, `GET /admin/users/{id}/api-tokens`, `DELETE /admin/users/{id}/api-tokens/{token_id}` |
 | `/admin/conf` | Admin runtime configuration — view and edit the singleton behavioral tunables, dependency-stub toggles, and LLM provider/model/key, plus a self-contained **Workflow schedules** section to pause/unpause the six DAG groups | `GET /admin/conf`, `PATCH /admin/conf`, `GET /admin/dags`, `PATCH /admin/dags/{group}` |
 | `/admin/peripherals` | Admin peripheral connections — view and edit DataHub and Langfuse connection settings (two cards, per-card partial PATCH) | `GET /admin/peripherals/datahub`, `PATCH /admin/peripherals/datahub`, `GET /admin/peripherals/langfuse`, `PATCH /admin/peripherals/langfuse` |
@@ -329,9 +329,14 @@ that states the consequence (the user's sessions end and they sign in again),
 shown only for rows with `has_google` and disabled for rows without
 `has_password`, since the route refuses those with
 `409 GOOGLE_IS_ONLY_AUTH_METHOD` — and "manage tokens", a drawer listing the
-user's `api_tokens` rows with per-token revoke buttons
+user's `api_tokens` rows with the same three-state Status column as
+[`/profile/tokens`](#api-tokens-profiletokens), a "Show revoked" toggle driving
+the route's `include_revoked` param, and per-token revoke buttons on every
+unrevoked row
 (`GET /admin/users/{id}/api-tokens`,
-`DELETE /admin/users/{id}/api-tokens/{token_id}`).
+`DELETE /admin/users/{id}/api-tokens/{token_id}`). The drawer is the
+per-user entry point reached from a user row; the cross-user inventory is the
+All-tokens scope of [`/profile/tokens`](#api-tokens-profiletokens).
 
 ### OAuth error page (`/oauth-error`)
 
@@ -555,15 +560,28 @@ condition across the whole app with no pod restart, by the same
 `peripheral_config` path the shell's links resolve through (see
 [Shell](#shell)); pages already open pick it up on their next poll.
 
+### API tokens (`/profile/tokens`)
+
 ```
-┌────────────────────────────────────────────────────────────────────────┐
-│  Profile · API tokens                            [ + New token ]        │
-├────────────────────────────────────────────────────────────────────────┤
-│  Name          Role    Created     Last used   Expires      Actions     │
-│  ci-jenkins    Editor  2026-04-01  2026-05-25  2026-07-01   Revoke      │
-│  laptop-cli    Editor  2026-05-10  —           never        Revoke      │
-└────────────────────────────────────────────────────────────────────────┘
-       Own API tokens (`/profile/tokens`)
+┌────────────────────────────────────────────────────────────────────────────┐
+│  Profile · API tokens      [ My tokens | All tokens ]       [ + New token ] │
+├────────────────────────────────────────────────────────────────────────────┤
+│  Name          Role    Created     Last used   Expires      Actions        │
+│  ci-jenkins    Editor  2026-04-01  2026-05-25  2026-07-01   Revoke         │
+│  laptop-cli    Editor  2026-05-10  —           never        Revoke         │
+└────────────────────────────────────────────────────────────────────────────┘
+    Own API tokens — My-tokens scope, the default for every role
+
+┌──────────────────────────────────────────────────────────────────────────────────────────┐
+│  Profile · API tokens             [ My tokens | All tokens ]             [ ] Show revoked│
+├──────────────────────────────────────────────────────────────────────────────────────────┤
+│  Owner         Name        Role    Status   Created     Last used   Expires      Actions │
+│  alice@imazon  ci-jenkins  Editor  active   2026-04-01  2026-05-25  2026-07-01   Revoke  │
+│  bob@imazon    laptop-cli  Reader  revoked  2026-05-10  —           never        —       │
+│  carol@imazon  etl-runner  Reader  expired  2025-11-02  2026-01-08  2026-02-01   Revoke  │
+│                                                                          [Pagination]   │
+└──────────────────────────────────────────────────────────────────────────────────────────┘
+    Deployment-wide inventory — All-tokens scope, Admin only
 
 ┌─────────────────────────────────────────────────┐
 │  New API token                                  │
@@ -585,6 +603,33 @@ The raw token is displayed exactly once, inside the create dialog. The
 clipboard copy button is the primary action — the user must transfer the
 token to wherever it will be used before closing the dialog. Closing
 without copy means the user must revoke and re-mint.
+
+The scope control renders for Admins only; every other role sees the My-tokens
+table alone and never issues the admin request. My tokens reads
+`GET /auth/api-tokens`; All tokens reads `GET /admin/api-tokens` and adds the
+Owner and Status columns to the same set plus a "Show revoked" checkbox carrying
+the route's `include_revoked` param, off by default
+([AUTH §Revoked-token visibility](AUTH.md#revoked-token-visibility)).
+
+Status is one of **active**, **expired**, or **revoked**, derived client-side:
+`revoked` when `revoked_at` is set, else `expired` when `expires_at` has passed,
+else `active`. Revocation wins over expiry, being the deliberate act. The expired
+state exists because the route filters on `revoked_at` alone, so an expired token
+sits in the default page while authenticating nothing — labelling it "active" on
+the one view built to answer what can reach the deployment would over-count
+exactly what an operator came to count.
+
+The All-tokens table composes the shared [Pagination](#shared-component-notes)
+control against the route's `offset`/`limit`/`total_count`, since a
+deployment-wide inventory is unbounded; My tokens needs none, bounded by the
+10-active-token-per-user cap.
+
+"New token" is hidden in the All-tokens scope: minting is self-only, so a mint
+control sitting above an all-users table would read as minting for the listed
+user. Revoke in that scope goes through
+`DELETE /admin/users/{id}/api-tokens/{token_id}` addressed by the row's
+`user_id`, including for an Admin's own token, so the confirm copy is
+single-valued; a revoked row exposes no revoke action.
 
 ---
 
@@ -865,6 +910,11 @@ These component IDs are referenced from per-function specs.
   [Pagination](#shared-component-notes) (→ `offset`/`limit`/`total_count`), and renders each row's
   `event_type`, `occurred_at`, `status`, and a click-to-expand `detail` cell; ingestion rows whose
   derived `wrapper` flag is set carry a "wrapper" tag.
+- **Skeleton** — the in-flight placeholder. While a surface's backing read is
+  pending it renders `Skeleton` blocks shaped like the content they stand in for —
+  table rows, cards, chart frames — rather than an empty frame or a blank page, so
+  nothing reflows when the data lands. The counterpart of
+  [QueryErrorState](#shared-component-notes) on the other outcome of the same read.
 - **QueryErrorState** — the render point for a page or panel that surfaces a
   failed read inline, and the only one (see
   [Query Error Policy](#query-error-policy), which also covers the reads that
