@@ -119,11 +119,11 @@ async def test_uc5_governance_imazon_example(
             )
 
         # ── Step 1a: the list route orders by description ─────────────────────
-        # The CDO's dashboard orders its metric cards by description, which rests
-        # on `description` being a sortable key of the list route.
+        # `description` is one of the four sortable keys of the list route, and
+        # the only non-timestamp one besides `title`, so it is the sharpest probe
+        # that the server-side sort map is wired past the timestamp default.
         # spec: API.md §Metric — GET /spoke/governance/metric "sortable by
         #       created_at/updated_at/title/description".
-        # spec: FRONTEND_GOVERNANCE.md §Dashboard — "a **description sort**".
         by_description = await api_client.get(
             "/api/v1/spoke/governance/metric",
             headers=admin_headers,

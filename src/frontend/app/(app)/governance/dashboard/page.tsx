@@ -56,7 +56,7 @@ function DashboardContent({
     // catalogue, while an empty result over a non-empty set points at the
     // reader's own view controls.
     return hasEnabledMetrics ? (
-      <EmptyState message="No enabled metrics match the current type filter and description search. Adjust the controls above to see data here." />
+      <EmptyState message="No enabled metrics match the current type filter and title search. Adjust the controls above to see data here." />
     ) : (
       <EmptyState message="No enabled metrics. Enable a metric on the Metrics page to see data here." />
     );
@@ -91,7 +91,7 @@ export default function GovernanceDashboardPage() {
   const { grain, setGrain } = usePersistedGrainState(
     GRAIN_KEYS.governanceDashboard,
   );
-  // Type filter + description search + description sort, persisted together.
+  // Type filter + title search + title sort, persisted together.
   // Display-only as well: they narrow and order the already-fetched enabled set
   // and add no request parameter.
   const { view, setTypes, setSearch, setSortDir } = usePersistedMetricViewState(
@@ -105,11 +105,11 @@ export default function GovernanceDashboardPage() {
     const kept = metrics.filter(
       (m) =>
         view.types.includes(m.metric_type) &&
-        (needle === "" || m.description.toLowerCase().includes(needle)),
+        (needle === "" || m.title.toLowerCase().includes(needle)),
     );
-    // Copy before sorting — the source array belongs to the query cache.
+    // Sort a copy — never mutate an array derived from the query cache.
     const dir = view.sortDir === "desc" ? -1 : 1;
-    return [...kept].sort((a, b) => dir * a.description.localeCompare(b.description));
+    return [...kept].sort((a, b) => dir * a.title.localeCompare(b.title));
   }, [metrics, view.types, view.search, view.sortDir]);
 
   // The read is capped at limit=100; disclose when the catalogue is larger, so
@@ -134,8 +134,8 @@ export default function GovernanceDashboardPage() {
         <Input
           value={view.search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search descriptions…"
-          aria-label="Search descriptions"
+          placeholder="Search titles…"
+          aria-label="Search titles"
           className="h-9 w-[240px]"
         />
         <Select
@@ -146,8 +146,8 @@ export default function GovernanceDashboardPage() {
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="asc">Description A→Z</SelectItem>
-            <SelectItem value="desc">Description Z→A</SelectItem>
+            <SelectItem value="asc">Title A→Z</SelectItem>
+            <SelectItem value="desc">Title Z→A</SelectItem>
           </SelectContent>
         </Select>
       </div>

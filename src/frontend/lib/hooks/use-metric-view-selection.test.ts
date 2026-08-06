@@ -4,8 +4,8 @@
  *
  * Spec traces (spec/feature/FRONTEND_GOVERNANCE.md §Dashboard → "Metric view
  * controls"):
- *   - the type filter is "all selected by default", the description search is
- *     "inactive while blank", and the description sort is "ascending by
+ *   - the type filter is "all selected by default", the title search is
+ *     "inactive while blank", and the title sort is "ascending by
  *     default" — so an unseeded hook must return every metric type, an empty
  *     search, and the ascending direction;
  *   - "Each selection persists across visits in browser `localStorage` under a
@@ -38,7 +38,7 @@ const KEY = "view:test:panel";
  *
  * spec: FRONTEND_GOVERNANCE.md §Dashboard — the type filter is over "the built-in
  *   `metric_type` values listed in USE_CASE §UC5 … all selected by default", the
- *   description search is "inactive while blank", the sort is "ascending by
+ *   title search is "inactive while blank", the sort is "ascending by
  *   default".
  * spec: USE_CASE_en.md §UC5 §Built-in active metric types — ingestion-freshness,
  *   validation-score, doc-health.

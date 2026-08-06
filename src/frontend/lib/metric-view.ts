@@ -4,9 +4,8 @@
  * before rendering. Pure functions — no React imports; safe in any context.
  *
  * The view state carries three parts: the metric types kept (`types`), a
- * case-insensitive substring matched against each metric's `description`
- * (`search`, inactive while blank), and the direction of the `description` sort
- * (`sortDir`).
+ * case-insensitive substring matched against each metric's `title` (`search`,
+ * inactive while blank), and the direction of the `title` sort (`sortDir`).
  *
  * A metric view is a CLIENT-SIDE DISPLAY CONCERN and adds no request parameter:
  * it never alters the `is_enabled` / `limit` a call site sends, and it must
@@ -21,9 +20,9 @@ export type MetricSortDir = "asc" | "desc";
 export interface MetricViewState {
   /** Metric types kept, in canonical METRIC_TYPES order. */
   types: MetricType[];
-  /** Case-insensitive substring over `description`; blank means inactive. */
+  /** Case-insensitive substring over `title`; blank means inactive. */
   search: string;
-  /** Direction of the `description` sort. */
+  /** Direction of the `title` sort. */
   sortDir: MetricSortDir;
 }
 

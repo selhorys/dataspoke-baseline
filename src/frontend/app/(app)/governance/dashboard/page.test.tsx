@@ -1,9 +1,9 @@
 /**
  * Tests for the Governance Dashboard page — /governance/dashboard.
  *
- * Focus: the metric view controls (type multi-select, description search,
- * description sort), the cap disclosure, the two distinct empty states, and the
- * pre-envelope (loading / failed) paints the controls sit above.
+ * Focus: the metric view controls (type multi-select, title search, title sort),
+ * the cap disclosure, the two distinct empty states, and the pre-envelope
+ * (loading / failed) paints the controls sit above.
  *
  * Spec: spec/feature/FRONTEND_GOVERNANCE.md §Dashboard — "Metric view controls"
  * row:
@@ -14,10 +14,11 @@
  *   - "a **metric-type filter** (checkbox-group multi-select … all selected by
  *     default; deselecting every type yields an empty set rather than falling
  *     back to all)";
- *   - "a **description search** (case-insensitive substring over each metric's
- *     `description`, inactive while blank)";
- *   - "a **description sort** (`Description A→Z` / `Description Z→A`, ascending
- *     by default)".
+ *   - "a **title search** (case-insensitive substring over each metric's
+ *     `title`, inactive while blank)";
+ *   - "a **title sort** (`Title A→Z` / `Title Z→A`, ascending by default) — the
+ *     title is the metric's human-facing identifier and what the reader scans
+ *     the grid by, so both controls key off it".
  * Spec: same section, "Cap disclosure" row — "When `total_count` exceeds the
  *   returned row count, a muted note above the grid states that only the first
  *   100 enabled metrics are shown and that the filter and sort apply to those
@@ -25,7 +26,7 @@
  * Spec: same section — "The grid carries two distinct empty states. With no
  *   enabled metrics at all it points at the Metrics page as the place to enable
  *   one. With enabled metrics present but none surviving the type filter and
- *   description search it points at the view controls instead."
+ *   title search it points at the view controls instead."
  *
  * Mocking is at the boundary: the enabled-metrics read is a vi.fn (no network),
  * MetricCard is a marker (it owns its own per-card reads and has its own test),
@@ -59,7 +60,7 @@ vi.mock("@/lib/api/governance", () => ({
 }));
 
 // The card owns its own latest/trend reads (components/governance/metric-card.test.tsx).
-// Here it is a marker echoing the identity and description the page ordered by.
+// Here it is a marker echoing the identity and the title the page ordered by.
 vi.mock("@/components/governance/metric-card", () => ({
   MetricCard: ({ metric }: { metric: MetricDefinitionListItem }) =>
     React.createElement(
@@ -161,18 +162,28 @@ vi.mock("@/components/ui/select", () => ({
 
 import GovernanceDashboardPage from "./page";
 
-// ── Fixtures (inline literals; descriptions are the load-bearing values) ───────
+// ── Fixtures (inline literals; titles are the load-bearing values) ─────────────
 //
-// Ascending by `description`: ALPHA ("Alpha …") < BRAVO ("Bravo …") <
-// CHARLIE ("Charlie …"), one metric per metric_type.
+// The two candidate sort keys DISAGREE, on purpose:
+//   - ascending by `title`:       ALPHA ("Alpha …") < BRAVO ("Bravo …") < CHARLIE ("Charlie …");
+//   - ascending by `description`: BRAVO ("Xray …") < ALPHA ("Yankee …") < CHARLIE ("Zulu …").
+// The description order is a THIRD-ORDER PERMUTATION of the title order, not its
+// reverse: it equals neither ascending nor descending title order, so ordering
+// by `description` is caught whichever way the direction flag is mapped. (A
+// reversed description order would let a description sort with an inverted
+// direction slip through.)
+// Every search needle likewise sits MID-`title` and appears in NO description,
+// and each description opens with a token ("Yankee" / "Xray" / "Zulu") that
+// appears in no title — so a search over `description` is detectable too.
+// One metric per metric_type.
 
 const ALPHA: MetricDefinitionListItem = {
   id: "alpha-freshness",
   mode: "active",
   is_enabled: true,
   metric_type: "ingestion-freshness",
-  title: "Alpha Freshness",
-  description: "Alpha freshness across DEV datasets",
+  title: "Alpha Quebec Freshness",
+  description: "Yankee ingest coverage across DEV datasets",
   metrics: ["total", "ingested_in_time"],
   metric_conf: { time_window_sec: 172800 },
   schedule_tier: "daily",
@@ -187,8 +198,10 @@ const BRAVO: MetricDefinitionListItem = {
   mode: "active",
   is_enabled: true,
   metric_type: "validation-score",
-  title: "Bravo Validation",
-  description: "Bravo VALIDATION coverage on PROD",
+  // "ROMEO" is upper-case and mid-title, matched below by a lower-case needle;
+  // "Tango" is shared with CHARLIE alone.
+  title: "Bravo ROMEO Tango Validation",
+  description: "Xray coverage on PROD runs",
   metrics: ["total", "validation_score_sum"],
   metric_conf: { time_window_sec: 172800 },
   schedule_tier: "daily",
@@ -203,8 +216,9 @@ const CHARLIE: MetricDefinitionListItem = {
   mode: "active",
   is_enabled: true,
   metric_type: "doc-health",
-  title: "Charlie Doc Health",
-  description: "Charlie documentation completeness",
+  // "sierra" mirrors ROMEO in the other case direction.
+  title: "Charlie sierra Tango Doc Health",
+  description: "Zulu documentation quality",
   metrics: ["total", "doc_health"],
   metric_conf: {},
   schedule_tier: "daily",
@@ -258,10 +272,11 @@ async function click(el: HTMLElement): Promise<void> {
   });
 }
 
-// The sort options are addressed by the LABELS the spec names ("Description A→Z"
-// / "Description Z→A"), not by the impl's internal "asc"/"desc" enum, which the
-// spec never mentions. The two patterns are disjoint: "Description Z→A" has no
-// upper-case A before a Z, and vice versa.
+// Options are SELECTED by the ordering their label names, not by the impl's
+// internal "asc"/"desc" enum, which the spec never mentions. The two patterns are
+// disjoint: "Title Z→A" has no upper-case A before a Z, and vice versa. They say
+// nothing about the rest of the label — the sort KEY the labels name is pinned
+// separately, in "offers an ascending and a descending title order".
 const ascOption = (): HTMLElement => screen.getByRole("option", { name: /A.*Z/ });
 const descOption = (): HTMLElement => screen.getByRole("option", { name: /Z.*A/ });
 
@@ -278,7 +293,7 @@ afterEach(() => {
 // ── Defaults ───────────────────────────────────────────────────────────────────
 
 describe("GovernanceDashboardPage — view-control defaults", () => {
-  it("checks every metric type, leaves the search blank, and orders ascending by description", async () => {
+  it("checks every metric type, leaves the search blank, and orders ascending by title", async () => {
     setEnabledMetrics([CHARLIE, ALPHA, BRAVO]); // deliberately unsorted from the API
     await renderPage();
 
@@ -291,9 +306,17 @@ describe("GovernanceDashboardPage — view-control defaults", () => {
     }
     // spec: the search is "inactive while blank" — it starts blank, so every
     // enabled metric is present.
-    expect(screen.getByLabelText("Search descriptions")).toHaveValue("");
-    // spec: "ascending by default" — ordered by `description`, not by the
-    // arbitrary order the read returned.
+    expect(screen.getByLabelText("Search titles")).toHaveValue("");
+    // The prompt the reader actually sees has to name the field searched, not
+    // only the accessible name: spec/feature/FRONTEND_GOVERNANCE.md §Dashboard
+    // renders the control as "[ Search titles…          ]". Matched on the
+    // leading words, since the trailing ellipsis is the impl's typography.
+    expect(
+      screen.getByLabelText("Search titles").getAttribute("placeholder"),
+    ).toMatch(/^Search titles\b/i);
+    // spec: "ascending by default" — ordered by `title`, which here is neither
+    // the arbitrary order the read returned nor ascending `description` order
+    // (which here is [bravo, alpha, charlie] — neither title direction).
     expect(cardIds()).toEqual([
       "alpha-freshness",
       "bravo-validation",
@@ -350,31 +373,50 @@ describe("GovernanceDashboardPage — metric-type filter", () => {
   });
 });
 
-// ── Description search ─────────────────────────────────────────────────────────
+// ── Title search ───────────────────────────────────────────────────────────────
 
-describe("GovernanceDashboardPage — description search", () => {
-  it("keeps only the metrics whose description contains the needle as a substring", async () => {
+describe("GovernanceDashboardPage — title search", () => {
+  it("keeps only the metrics whose title contains the needle as a substring", async () => {
     setEnabledMetrics([ALPHA, BRAVO, CHARLIE]);
     await renderPage();
 
-    // "documentation" appears mid-description in CHARLIE only — a substring
-    // match, not a prefix and not an exact match.
-    await type("Search descriptions", "documentation");
+    // "Quebec" appears mid-TITLE in ALPHA only and in no description — a
+    // substring match, not a prefix and not an exact match.
+    await type("Search titles", "Quebec");
 
-    expect(cardIds()).toEqual(["charlie-doc-health"]);
+    expect(cardIds()).toEqual(["alpha-freshness"]);
   });
 
   it("matches case-insensitively in both directions", async () => {
     setEnabledMetrics([ALPHA, BRAVO, CHARLIE]);
     await renderPage();
 
-    // Lowercase needle against BRAVO's upper-case "VALIDATION".
-    await type("Search descriptions", "validation");
+    // Lowercase needle against BRAVO's upper-case, mid-title "ROMEO".
+    await type("Search titles", "romeo");
     expect(cardIds()).toEqual(["bravo-validation"]);
 
-    // Upper-case needle against CHARLIE's lower-case "completeness".
-    await type("Search descriptions", "COMPLETENESS");
+    // Upper-case needle against CHARLIE's lower-case, mid-title "sierra".
+    await type("Search titles", "SIERRA");
     expect(cardIds()).toEqual(["charlie-doc-health"]);
+  });
+
+  it("ignores the description — a token only a description carries matches nothing", async () => {
+    setEnabledMetrics([ALPHA, BRAVO, CHARLIE]);
+    await renderPage();
+
+    // Backstop: a title token narrows to one card, so the empty results below
+    // are the search declining to read `description`, not an inert input.
+    await type("Search titles", "Quebec");
+    expect(cardIds()).toEqual(["alpha-freshness"]);
+
+    // spec: the search is a substring "over each metric's `title`". "Yankee"
+    // opens ALPHA's `description` and "Xray" opens BRAVO's; neither is in any
+    // title, so a search that fell back to `description` would return a card.
+    await type("Search titles", "Yankee");
+    expect(cardIds()).toEqual([]);
+
+    await type("Search titles", "Xray");
+    expect(cardIds()).toEqual([]);
   });
 
   it("is inactive while blank or whitespace-only", async () => {
@@ -383,11 +425,11 @@ describe("GovernanceDashboardPage — description search", () => {
 
     // Backstop: a real needle narrows first, so the "everything back" result
     // below is the blank search being inactive, not the input being ignored.
-    await type("Search descriptions", "Alpha");
+    await type("Search titles", "Quebec");
     expect(cardIds()).toEqual(["alpha-freshness"]);
 
-    await type("Search descriptions", "   ");
-    expect(screen.getByLabelText("Search descriptions")).toHaveValue("   ");
+    await type("Search titles", "   ");
+    expect(screen.getByLabelText("Search titles")).toHaveValue("   ");
     expect(cardIds()).toEqual([
       "alpha-freshness",
       "bravo-validation",
@@ -399,7 +441,7 @@ describe("GovernanceDashboardPage — description search", () => {
     setEnabledMetrics([ALPHA, BRAVO, CHARLIE]);
     await renderPage();
 
-    await type("Search descriptions", "no-such-description");
+    await type("Search titles", "no-such-title");
 
     expect(cardIds()).toEqual([]);
     expect(screen.getByText(/controls/i)).toBeInTheDocument();
@@ -407,18 +449,25 @@ describe("GovernanceDashboardPage — description search", () => {
   });
 });
 
-// ── Description sort ───────────────────────────────────────────────────────────
+// ── Title sort ─────────────────────────────────────────────────────────────────
 
-describe("GovernanceDashboardPage — description sort", () => {
-  it("offers an ascending and a descending description order", async () => {
+describe("GovernanceDashboardPage — title sort", () => {
+  it("offers an ascending and a descending title order", async () => {
     setEnabledMetrics([ALPHA, BRAVO, CHARLIE]);
     await renderPage();
 
-    // spec: "`Description A→Z` / `Description Z→A`" — exactly those two orders,
-    // matched on the ordering each label names.
+    // spec: "`Title A→Z` / `Title Z→A`" — exactly those two orders, matched on
+    // the ordering each label names.
     expect(screen.getAllByRole("option")).toHaveLength(2);
     expect(ascOption()).toBeInTheDocument();
     expect(descOption()).toBeInTheDocument();
+
+    // Each label must also NAME the key it sorts on: a control whose visible copy
+    // still says "Description" while the grid orders by title misdescribes what
+    // the reader is choosing. "Description" contains no A or Z, so the ordering
+    // patterns above cannot catch that on their own.
+    expect(ascOption()).toHaveTextContent(/^Title\b/);
+    expect(descOption()).toHaveTextContent(/^Title\b/);
   });
 
   it("reverses the card order when toggled to descending, and restores it", async () => {
@@ -458,25 +507,76 @@ describe("GovernanceDashboardPage — description sort", () => {
     );
   });
 
-  it("orders by description rather than by the read's own order or by title", async () => {
-    // TITLE_VS_DESCRIPTION: the two orderings disagree, so a title sort (or no
-    // sort at all) fails here.
-    const zebraTitleAlphaDescription: MetricDefinitionListItem = {
+  it("orders by title rather than by the read's own order or by description", async () => {
+    // TITLE_VS_DESCRIPTION isolates the sort key on a three-card read. Three
+    // cards, not two: with two cards any second key is either the same order or
+    // its exact reverse, so a description sort could hide behind a flipped
+    // direction. Here the description order is a third-order permutation —
+    //   read order:      [zebra, aardvark, mango]
+    //   title asc:       [aardvark, mango, zebra]   ← the expectation
+    //   title desc:      [zebra, mango, aardvark]
+    //   description asc: [mango, aardvark, zebra]
+    //   description desc:[zebra, aardvark, mango]
+    // — so only a `title` sort in the ascending direction produces it.
+    const aardvarkTitleMikeDescription: MetricDefinitionListItem = {
       ...ALPHA,
-      id: "zebra-title",
-      title: "Zebra",
-      description: "Aardvark ingest freshness",
-    };
-    const alphaTitleZebraDescription: MetricDefinitionListItem = {
-      ...CHARLIE,
       id: "aardvark-title",
-      title: "Aardvark",
-      description: "Zebra documentation completeness",
+      title: "Aardvark ingest freshness",
+      description: "Mike ingest freshness",
     };
-    setEnabledMetrics([alphaTitleZebraDescription, zebraTitleAlphaDescription]);
+    const mangoTitleAardvarkDescription: MetricDefinitionListItem = {
+      ...BRAVO,
+      id: "mango-title",
+      title: "Mango validation coverage",
+      description: "Aardvark validation coverage",
+    };
+    const zebraTitleTangoDescription: MetricDefinitionListItem = {
+      ...CHARLIE,
+      id: "zebra-title",
+      title: "Zebra documentation completeness",
+      description: "Tango documentation completeness",
+    };
+    setEnabledMetrics([
+      zebraTitleTangoDescription,
+      aardvarkTitleMikeDescription,
+      mangoTitleAardvarkDescription,
+    ]);
     await renderPage();
 
-    expect(cardIds()).toEqual(["zebra-title", "aardvark-title"]);
+    expect(cardIds()).toEqual(["aardvark-title", "mango-title", "zebra-title"]);
+  });
+
+  it("orders by human collation, not by raw code-unit order", async () => {
+    // A lower-case initial sorts BETWEEN two upper-case ones for a reader
+    // scanning an "A→Z" grid, but AFTER both under a raw code-unit comparator
+    // ('b' = 0x62 > 'C' = 0x43). spec: FRONTEND_GOVERNANCE.md §Dashboard — the
+    // sort is presented as `Title A→Z`, i.e. the alphabet the reader knows.
+    const upperAlpha: MetricDefinitionListItem = {
+      ...ALPHA,
+      id: "upper-alpha-title",
+      title: "Alpha ingest freshness",
+      description: "Mike ingest freshness",
+    };
+    const lowerBravado: MetricDefinitionListItem = {
+      ...BRAVO,
+      id: "lower-bravado-title",
+      title: "bravado validation coverage",
+      description: "Zulu validation coverage",
+    };
+    const upperCharlie: MetricDefinitionListItem = {
+      ...CHARLIE,
+      id: "upper-charlie-title",
+      title: "Charlie documentation completeness",
+      description: "Tango documentation completeness",
+    };
+    setEnabledMetrics([upperCharlie, lowerBravado, upperAlpha]);
+    await renderPage();
+
+    expect(cardIds()).toEqual([
+      "upper-alpha-title",
+      "lower-bravado-title",
+      "upper-charlie-title",
+    ]);
   });
 });
 
@@ -536,10 +636,13 @@ describe("GovernanceDashboardPage — the two empty states", () => {
     setEnabledMetrics([ALPHA, BRAVO, CHARLIE]);
     await renderPage();
 
-    await type("Search descriptions", "zzz-nothing-matches");
+    // "Xray" opens BRAVO's `description` and appears in no title: a search that
+    // read `description` would keep a card and never reach this state.
+    await type("Search titles", "Xray");
 
     // spec: "With enabled metrics present but none surviving the type filter and
-    // description search it points at the view controls instead."
+    // title search it points at the view controls instead."
+    expect(cardIds()).toEqual([]);
     expect(screen.queryByText(/Metrics page/i)).not.toBeInTheDocument();
     expect(screen.getByText(/controls/i)).toBeInTheDocument();
   });
@@ -548,10 +651,10 @@ describe("GovernanceDashboardPage — the two empty states", () => {
     setEnabledMetrics([ALPHA, BRAVO, CHARLIE]);
     await renderPage();
 
-    await type("Search descriptions", "zzz-nothing-matches");
+    await type("Search titles", "zzz-nothing-matches");
     expect(cardIds()).toEqual([]);
 
-    await type("Search descriptions", "");
+    await type("Search titles", "");
     expect(cardIds()).toHaveLength(3);
   });
 });
@@ -573,7 +676,7 @@ describe("GovernanceDashboardPage — the read is in flight or failed", () => {
     await renderPage();
 
     // The controls mount regardless — they are client-side over whatever arrives.
-    expect(screen.getByLabelText("Search descriptions")).toBeInTheDocument();
+    expect(screen.getByLabelText("Search titles")).toBeInTheDocument();
 
     // Nothing derived from the (absent) envelope renders: no card, no cap note,
     // and neither empty state — spec: the two empty states describe a resolved
@@ -583,9 +686,11 @@ describe("GovernanceDashboardPage — the read is in flight or failed", () => {
     expect(screen.queryByText(/enabled metrics/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/Metrics page/i)).not.toBeInTheDocument();
 
-    // Loading placeholders stand in for the grid. `animate-pulse` is the shared
-    // Skeleton component's marker class, not a spec'd string — this asserts only
-    // that the page shows a busy placeholder rather than an empty page.
+    // Loading placeholders stand in for the grid — spec:
+    // FRONTEND_BASIC.md §Shared Component Notes, the loading-affordance
+    // convention (an in-flight read shows a placeholder in the grid's place).
+    // `animate-pulse` is the shared Skeleton component's marker class, chosen as
+    // the observable proxy; the spec names the affordance, not the class.
     expect(document.querySelectorAll(".animate-pulse").length).toBeGreaterThan(0);
   });
 
@@ -620,7 +725,7 @@ describe("GovernanceDashboardPage — the view controls add no request parameter
     const readAtDefaults = mockUseEnabledMetrics.mock.calls.at(-1);
 
     await click(screen.getByRole("checkbox", { name: "doc-health" }));
-    await type("Search descriptions", "validation");
+    await type("Search titles", "romeo");
     await click(descOption());
 
     // Backstop: the three controls really did reshape the grid, so the equality
@@ -644,7 +749,9 @@ describe("GovernanceDashboardPage — the view persists across visits", () => {
     await renderPage();
 
     await click(screen.getByRole("checkbox", { name: "ingestion-freshness" }));
-    await type("Search descriptions", "o");
+    // "Tango" sits mid-title in BRAVO and CHARLIE only and in no description,
+    // so the persisted search has to be doing real work for the pair below.
+    await type("Search titles", "Tango");
     await click(descOption());
     expect(cardIds()).toEqual(["charlie-doc-health", "bravo-validation"]);
 
@@ -658,7 +765,7 @@ describe("GovernanceDashboardPage — the view persists across visits", () => {
       "aria-checked",
       "false",
     );
-    expect(screen.getByLabelText("Search descriptions")).toHaveValue("o");
+    expect(screen.getByLabelText("Search titles")).toHaveValue("Tango");
     // The sort control itself is restored too, not just the resulting order.
     expect(screen.getByTestId("sort-select-root")).toHaveAttribute(
       "data-value",
