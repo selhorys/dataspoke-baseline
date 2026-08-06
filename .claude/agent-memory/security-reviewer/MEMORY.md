@@ -33,3 +33,4 @@
 \n- [Seed-script profile selection is split](project_seed_profile_selection_split.md) — one env file can be prod to one seed script and dev to the other; stub_* still reachable on prod\n- [422 envelope echoes rejected input](project_api_422_echoes_rejected_input.md) — pydantic `input` is in `detail.errors`; any caller printing the body is a credential sink\n
 - [env-file writer is a source() sink](project_env_file_writer_source_execution.md) — newline now rejected; $(...)/backtick still execute on source (measured), prod adopt feeds it cluster bytes
 - [Prod pre-flight credential plane](project_prod_preflight_credential_plane.md) — controls that hold; --skip-secret still writes 11 creds to disk; create-then-verify order
+- [Admin token-inventory surface](project_admin_token_inventory_surface.md) — token_hash IS fetched; field-by-field item construction is the only barrier; 422 str() echo path

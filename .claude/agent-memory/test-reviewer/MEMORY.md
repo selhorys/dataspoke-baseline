@@ -55,3 +55,6 @@
 - [conftest promotion set is one name](project_conftest_promotion_set_is_one_name.md) — DATASPOKE_DEV_* now spans peripheral creds; any prefix-driven promotion in conftest is a credential leak
 - [DatasetFilterEditor mutation seams](project_dataset_filter_editor_mutation_seams.md) — #146/#147 cycle-2: 22/26 killed; 4 survivors are equivalent/React-artifact/spec-conformant; residue is one level up
 - [Dashboard cap-note count is ambiguous](project_dashboard_cap_note_count_ambiguous.md) — spec says "the first 100", impl renders returned rows; the unit fixture models an unreachable state
+- [Metric view-controls test seams](project_metric_view_controls_test_seams.md) — cycle-2: only the filtered-empty copy correctly survives; the fixture invariants a later edit must preserve
+- [Playwright toHaveText regex isn't whitespace-normalized](project_playwright_tohavetext_regex_not_normalized.md) — `^`-anchored regexes run against raw textContent; verify child order
+- [Admin token inventory test seams](project_admin_token_inventory_test_seams.md) — nulls-last/id-tiebreak IS specced now; lean self item shape unpinned; badge sr-only span breaks Playwright toHaveText

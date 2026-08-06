@@ -21,6 +21,11 @@ Three silent no-ops seen in one session:
    Getting a real submit out of `MetricForm` needs literal-valid enum values
    (`mode: "active"`, a `metric_type` from `types/governance.ts`) plus every `.min(1)` field.
 
+jsdom implements **neither** `document.execCommand` nor `navigator.clipboard` (both are
+`undefined`). Any clipboard helper that feature-detects them returns its failure value in
+Vitest unconditionally, so a "copy" assertion proves only the failure branch — the
+`execCommand` selection fallback needs a real browser (or an explicit stub of both).
+
 Rendering any form that embeds a Radix `Select` (all three `DatasetFilterEditor` consumers)
 also needs jsdom stubs for `ResizeObserver` and `Element.prototype.hasPointerCapture` /
 `setPointerCapture` / `releasePointerCapture` / `scrollIntoView`, or the render throws in a

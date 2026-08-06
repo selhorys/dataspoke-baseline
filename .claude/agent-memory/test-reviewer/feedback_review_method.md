@@ -62,3 +62,19 @@ row of a spec outcome table.
 
 **How to apply:** any test-file docstring that argues a spec'd case is unreachable.
 Reproduce first; only then judge the argument.
+
+**5. Read-only reviews can still mutation-test the frontend — rsync it to the
+scratchpad and symlink `node_modules`.**
+When the launch prompt forbids editing the tree, `rsync -a --exclude node_modules
+--exclude .next src/frontend/ <scratchpad>/fe1/` then
+`ln -s <repo>/src/frontend/node_modules <scratchpad>/fe1/node_modules`, and run
+`npx vitest run <paths>` from the copy. Vitest resolves `@/` from the copied
+`vitest.config.mts`/`tsconfig.json`, so aliases work and the repo is never touched.
+
+**Why:** the alternative — accepting the generator's prose about what its fixture
+discriminates — is exactly the claim most worth falsifying, and "read-only" is not
+a reason to downgrade to prose review.
+
+**How to apply:** any Vitest-scoped review. Keep a `page.tsx.orig` inside the copy
+and `diff` after each mutation so the copy itself stays honest. `rm -rf` may be
+permission-blocked; use a fresh numbered dir instead.

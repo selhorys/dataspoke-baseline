@@ -21,7 +21,7 @@
 - [peripheral_config cache x 2 replicas](project_peripheral_cache_multireplica.md) — 30s process cache + replicaCount 2 makes read-modify-write counters silently no-op
 - [Grep old-rule prose in consumers](feedback_grep_old_rule_prose_in_consumers.md) — deleting a precedence rule? grep its prose across consumers; identifier-only greps miss stale doc comments
 - [XFF trust radius & rate-limit buckets](project_xff_trust_radius_rate_limit.md) — trusts XFF chain entries; pod-CIDR derivation differs GKE vs EKS; chart networkPolicy is egress-only, not a mitigation
-- [Shared response model unpopulated field](feedback_shared_response_model_unpopulated_field.md) — one model, two routes: the handler that omits a defaulted field ships a silent zero
+- [Shared response model unpopulated field](feedback_shared_response_model_unpopulated_field.md) — one model two routes: silent default; SHARED_PAGINATED_MODELS reds the suite by design
 - [Isolate failures under concurrent edit](feedback_isolate_failures_concurrent_edit.md) — git archive HEAD into scratchpad, overlay one file; base scenario proves HEAD green
 - [metagen event from/to ignored](project_metagen_event_from_to_ignored.md) — RESOLVED (#90); lesson: a URL builder emitting a param never proves the server reads it
 - [spec_conformance is paths-only](feedback_spec_conformance_paths_only.md) — conformance compares route paths vs API.md, never query params; param drift passes every suite
@@ -69,3 +69,5 @@
 - [Documented verdict never printed](feedback_documented_verdict_never_printed.md) — literal status tokens live in a `case`, not on stdout; failure arms may kill the caller
 - [Frontend probe silent no-ops](feedback_frontend_probe_silent_noop.md) — pnpm test ignores the file filter, console.log needs --reporter=verbose, RHF submit no-ops on invalid defaults
 - [Filter-editor reseed vs refetch](project_filter_editor_reseed_refetch_coupling.md) — raw-text retention leans on refetchOnWindowFocus:false + the conf pages' useEffect([conf])
+- [Frontend prettier is not a gate](feedback_frontend_prettier_not_a_gate.md) — 129 files warn at HEAD; diff vs HEAD before reporting format drift, tsc --noEmit is the gate
+- [Frontend role gate reads a stale `me`](project_frontend_role_gate_stale_me.md) — logout clears zustand but not the query cache; `enabled: isAdmin` + "control renders under isAdmin" is ONE signal
