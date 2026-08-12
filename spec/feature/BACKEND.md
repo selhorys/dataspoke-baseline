@@ -215,7 +215,13 @@ dataset. `get_events` therefore unions two streams:
 2. **Ingestion runs** — reverse-looked-up via `IngestionService.reverse_lookup(urn)` to find
    the covering source, then that source's aggregated run events (the source-and-wrappers union
    already used by `GET /spoke/ingestion/sources/{id}/event`, see [§Querying Events](#querying-events)),
-   each row carrying the derived `wrapper: bool`.
+   each row carrying the derived `wrapper: bool`. The union is narrowed to **this** dataset:
+   a row qualifies when its `detail.dataset_urn` is this URN **or is absent** — the source's
+   per-dataset observations for sibling datasets are excluded, while its run-level rows, which
+   carry no scalar `dataset_urn` at all, are kept (see
+   [producers](#ingestioncomplete--ingestionfail-producers)). Absence covers both shapes: a
+   missing key and an explicit JSON `null`. The predicate belongs to the shared base select, so
+   the page query and its `total_count` cannot diverge.
 
 The two streams are merged, sorted `occurred_at` newest-first, filtered by `from`/`to` and by
 the repeatable `event_major_type` prefix set (`INGESTION`/`VALIDATION`/`METAGEN`; omitted = all),
@@ -476,22 +482,94 @@ DAG) reconciles all modes:
    dataset's `pipelineName`. Sources that only recipe-match
    the same tables (no `pipelineName` correspondence) stay `matched`/`medium`. Orphan wrappers do
    not reach this step — they are never stored (step 1).
-4. **Run events**: mirror run history into the `events` table — `listExecutionRequests` for
-   `DATAHUB_MANAGED`; `Operation` / `DataProcessInstance` observation for `PASSIVE` — with
-   `event_type = INGESTION.COMPLETE` / `INGESTION.FAIL`. The mapping mirrors DataHub's own
-   execution-request model: a request has **no result aspect until the executor starts** (queued =
-   "Pending…"), `startTimeMs` is the optional *execution start* time (absent/`0` before the executor
-   runs), and DataHub's "last run" is shown with its real status — never coerced to failure. Each
-   request carries a stable URN `urn:li:dataHubExecutionRequest:<id>`. Citations:
+4. **Run and observation events**: book ingestion evidence into the `events` table with
+   `event_type = INGESTION.COMPLETE` / `INGESTION.FAIL`, in **three sub-passes**:
+
+   | Sub-pass | DataHub surface | Modes | Grain | Outcomes | `detail.source` |
+   |---|---|---|---|---|---|
+   | Execution-request mirror | `listExecutionRequests` | `DATAHUB_MANAGED` | per run | `COMPLETE` + `FAIL` | `datahub_sync` |
+   | `Operation` observation | `Operation` aspects (`operationType ∈ {INSERT, UPDATE, CREATE, ALTER}`) | `PASSIVE` | per dataset | `COMPLETE` only | `passive_observation` |
+   | `lastIngested` observation | `Dataset.lastIngested`, read once for the whole estate | **all modes** | per dataset | `COMPLETE` only | `last_ingested_observation` |
+
+   The run layer and the observation layer are **additive, not alternatives**. Observation is
+   inherently success-only — an `Operation` is written when data changes and `lastIngested` advances
+   when aspects are written, so neither can express a failure. The run layer is therefore what
+   carries run outcome, run identity, duration and diagnostics; observation is what answers *"was
+   this dataset ingested, and when"*. A dataset's timeline consequently shows its own per-dataset
+   `COMPLETE`s plus its owning source's run-level `FAIL`s, and never a per-dataset `FAIL`.
+
+   **`lastIngested` observation** gives `PASSIVE` a per-dataset signal that does not depend on the
+   estate's pipelines emitting `Operation` aspects, and is the only per-dataset evidence the two
+   managed modes have. For every dataset mapped to a source, when DataHub reports a
+   non-null `Dataset.lastIngested`, the sweep books an `INGESTION.COMPLETE` carrying
+   `detail.dataset_urn`. Four properties of that guarantee are load-bearing:
+
+   - **It is not an event *on* the dataset.** `entity_type = "ingestion_source"`,
+     `entity_id = <source_id>`; the dataset link is `detail.dataset_urn` alone, and the per-dataset
+     timeline resolves it by reverse-lookup plus a `detail.dataset_urn` predicate (see
+     [Querying Events](#querying-events)).
+   - **A dataset mapped to N sources books N events.** There is no owner arbitration at write time;
+     the owning-source rule is a read-side resolution recomputed on every read. CLI wrapper sources
+     are skipped: `lastIngested` is a property of the dataset with no wrapper affinity, the parent
+     already covers the URN, and the per-source feed unions parent with wrappers — booking on both
+     would show one fact twice on the parent.
+   - **A null `lastIngested` books nothing.** It is null when every aspect on the dataset carries
+     DataHub's `"no-run-id-provided"` sentinel — there is nothing observable to date. Absence is the
+     guard; the alternative is minting an event at an instant DataHub never reported.
+   - **The estate read is one call per sweep**, hoisted out of the per-source loop the same way
+     step 2's dataset enumeration and step 3's `pipelineName` read are. Shape and paging rules:
+     [DATAHUB_INTEGRATION §Observed Ingestion Recency](../DATAHUB_INTEGRATION.md#observed-ingestion-recency).
+
+   The **execution-request mirror** follows DataHub's own model: a request has **no result aspect
+   until the executor starts** (queued = "Pending…"), `startTimeMs` is the optional *execution
+   start* time (absent/`0` before the executor runs), and DataHub's "last run" is shown with its
+   real status — never coerced to failure. Each request carries a stable URN
+   `urn:li:dataHubExecutionRequest:<id>`. Citations:
    [DATAHUB_INTEGRATION §Ingestion Source Sync](../DATAHUB_INTEGRATION.md#ingestion-source-sync).
 
-   - **Identity / dedup = execution-request URN.** One DataSpoke event per execution request,
-     **upserted** by its URN — never appended by timestamp. The upsert looks up an existing event for
-     the source by `detail->>'execution_request_urn'` and writes at most one row per URN, so repeated
-     syncs and status transitions are idempotent (no per-sync event growth). For `PASSIVE`
-     `Operation` observation the identity is the **(source, dataset URN, `occurred_at`)** triple —
-     dedup keys on all three (the dataset URN lives in `detail->>'dataset_urn'`), so two datasets
-     mapped to one source whose Operations share an `occurred_at` each retain their own event.
+   - **Identity is per *producer*, not per mode**, discriminated by `detail.source`:
+
+     | `detail.source` | Producer | Identity | Write shape |
+     |---|---|---|---|
+     | `datahub_sync` | execution-request mirror | `detail.execution_request_urn` | **upserted** — at most one row per URN per source, so repeated syncs and status transitions are idempotent (no per-sync event growth) |
+     | `passive_observation` | `Operation` observation | (source, `detail.dataset_urn`, `occurred_at`, `detail.source`) | **appended** — booked once for that instant, never again |
+     | `last_ingested_observation` | `lastIngested` observation | the same four-term tuple | **appended**, same rule |
+
+     The normative statement of the observed-ingestion identity tuple and why each term is
+     load-bearing is
+     [DATAHUB_INTEGRATION §Ingestion Source Sync](../DATAHUB_INTEGRATION.md#ingestion-source-sync);
+     the full producer set, including the inline `ACTIVE_CUSTOM_MANAGED` run record, is in the
+     [Event Catalogue](#ingestioncomplete--ingestionfail-producers).
+
+     Appending is bounded by the observed instant, not by the sweep: an unchanged observation books
+     nothing on the next sweep. The guarantee is "at least one event over the dataset's lifetime",
+     not one per hour, and there is **no cap of one event per dataset per sweep** — every new
+     qualifying instant since the last sweep is booked in that sweep, which is what makes two
+     consecutive sweeps over an unchanged estate report zero. The `Operation` read is itself bounded
+     to a few of the most recent aspects per dataset, so a dataset receiving more qualifying
+     Operations than that between two sweeps loses the oldest — a bounded loss, not a growing lag.
+   - **The dedup read binds a constant number of parameters, independent of estate size.** The
+     observation identity is per-instant, so the naive prefetch matches `occurred_at` against the
+     set of instants observed this sweep — one bind parameter per instant. The PostgreSQL wire
+     protocol caps a statement at 32,767 parameters, so that shape fails outright on a source with
+     more mapped datasets than the cap, and it fails on the **first** sweep, which books the whole
+     historical backlog. The prefetch therefore bounds `occurred_at` by a **range** (`BETWEEN` the
+     minimum and maximum instant of the batch) and intersects the exact tuples in memory: eight
+     parameters whatever the estate holds.
+   - **`occurred_at` is bounded on both sides for every producer, and an out-of-range value is
+     rejected rather than clamped.**
+     - Mirror: `startTimeMs`, falling back to `requestedAt` (the always-present request time on the
+       execution-request input). Both are remote, writer-supplied values and both pass the same
+       bounds as an observed instant; an execution neither field can date is **not mirrored**.
+     - Observation: the observed millisecond timestamp must be a positive integer resolving to a
+       representable instant no later than a small skew allowance past now. A value that is absent,
+       zero, non-numeric, negative, out of range, or **future-dated** books nothing and is logged.
+
+     Neither producer ever falls back to `now()`, and neither clamps. The consequences that make
+     both bounds mandatory — a `now()` fallback breaking dedup so a dataset accrues one event per
+     sweep forever, and one future-dated value permanently poisoning `ingestion-freshness` — are
+     stated with the identity rule in
+     [DATAHUB_INTEGRATION §Ingestion Source Sync](../DATAHUB_INTEGRATION.md#ingestion-source-sync).
    - **Status → event** (mirror only executions that reached a real ingestion outcome):
 
      | DataHub status | DataSpoke event |
@@ -501,13 +579,28 @@ DAG) reconciles all modes:
      | `RUNNING`, `ROLLING_BACK`, `UP_FOR_RETRY`, *no result* | **not mirrored** (in-progress / pending) |
      | `CANCELLED`, `DUPLICATE`, `ROLLED_BACK` | **not mirrored** (not an ingestion outcome) |
 
-   - **`occurred_at` = `startTimeMs` when present (`> 0`), else `requestedAt`** (the always-present
-     request time on the execution-request input) — never `now()`.
-   - **Source `latest_run` = latest *terminal* outcome** (`COMPLETE` / `FAIL`). In-progress and
-     pending runs produce no event yet, mirroring DataHub's "Pending…" — so `attr/ingestion.latest_run`
-     reflects the most recent real outcome, not a transient or spurious failure.
+   - **Source `latest_run` = latest terminal *run* outcome**, over run-level producers only. Two
+     predicates, both required: an **event-type whitelist** (`INGESTION.COMPLETE` /
+     `INGESTION.FAIL`), so `SOURCE_CREATE`/`SOURCE_UPDATE`/`SOURCE_DELETE` and any future non-run
+     `INGESTION.*` cannot be read as a run; and a **`detail.source` blacklist** of the observation
+     producers, so a newer per-dataset `COMPLETE` cannot outrank an older run `FAIL`. The blacklist
+     must treat an **absent** `detail.source` as run-level — the inline `ACTIVE_CUSTOM_MANAGED`
+     record carries no `source` key, and a bare `NOT IN` over SQL `NULL` drops exactly the events
+     `latest_run` exists to report. In-progress and pending runs produce no event yet, mirroring
+     DataHub's "Pending…", so `attr/ingestion.latest_run` reflects the most recent real outcome,
+     not a transient or spurious failure. The per-source `event/…` timeline is deliberately **not**
+     filtered this way: it shows every producer.
 
-   Mirroring runs for
+     **A `PASSIVE` source reports no `latest_run`, by construction.** Neither run-level producer
+     covers that mode — the inline record is written only by an `ACTIVE_CUSTOM_MANAGED` run and the
+     mirror only by a `DATAHUB_MANAGED` execution — so a passive source's only
+     `INGESTION.COMPLETE`s are per-dataset observations, and `attr/ingestion.latest_run` is `null`
+     for it. That is the intended reading and not a missing signal: DataSpoke does not orchestrate
+     a passive pipeline and therefore never learns its run outcome, only that datasets received
+     data. A passive source's recency is read from its datasets' observation events (its
+     `event/…` timeline, and `ingestion-freshness` tier 1), never from a run outcome.
+
+   The mirror runs for
    every `DATAHUB_MANAGED` row including wrappers, since a registered source's runs are recorded on
    its wrapper. **The regular source aggregates events across itself and its linked wrappers**: the
    per-source event endpoint and the per-dataset latest-run aggregation union the parent's own events
@@ -518,11 +611,22 @@ DAG) reconciles all modes:
 
 **Sweep summary.** `sync()` returns a counter dict consumed by the activity endpoint and the DAG
 log. Most counters report **state changes**, not rows examined: `datasets_mapped`,
-`pipeline_links`, `events_mirrored`, `sources_removed` and the `registry_*` counters increment only
+`pipeline_links`, `events_mirrored`, `last_ingested_observed`, `sources_removed` and the
+`registry_*` counters increment only
 on an insert, a removal or a genuine transition (for `pipeline_links`, a new link or a `matched` →
 `pipeline_name` upgrade — a re-confirmation of an existing `pipeline_name` row still refreshes its
 `last_seen_at` but does not count). A second consecutive sweep over an unchanged estate returns zero
-for all of those. Three counters are steady-state readings instead: `sources_synced` reports how many
+for all of those.
+
+Step 4's three sub-passes split across two counters: `events_mirrored` covers the first two — the
+execution-request mirror and the `Operation` observation — while `last_ingested_observed` covers the
+third. It stays a counter of its own rather than folding into `events_mirrored`: the two have
+different identity rules and different failure units — per-dataset best-effort inserts versus a
+single estate-wide read that degrades wholesale. The **first sweep of a fresh deployment books the whole observable backlog**,
+one event per mapped dataset DataHub can date, so a large first reading is historical catch-up
+rather than a run storm; the reading collapses to zero on the next sweep over an unchanged estate.
+
+Three counters are steady-state readings instead: `sources_synced` reports how many
 `DATAHUB_MANAGED` rows were mirrored, counting inserts and updates alike, so an unchanged estate
 reports the same non-zero value on every sweep; `sources_zero_coverage` and
 `sources_pattern_degraded` each report a **condition** — respectively, sources that matched nothing
@@ -546,10 +650,13 @@ Three rules keep the signal honest:
   the token that caused it. The accepted trade-off: a non-GMS failure escaping the sweep (a
   database error, say) also flips the row. Over-reporting is preferable to a signal that reads
   `ok` through a revoked credential.
-- **`ok` asserts only that the sweep's GMS enumeration completed**, not that every GMS call
-  inside it succeeded. Per-source run-history polls are best-effort
-  (§[Best-Effort Operations](#best-effort-operations)) and a skipped source does not flip the
-  row.
+- **`ok` asserts only that the sweep's source-definition enumeration completed**, not that every
+  GMS call inside it succeeded. Both the per-source run-history polls and the estate-wide
+  `lastIngested` read are best-effort (§[Best-Effort Operations](#best-effort-operations)) — a
+  skipped source, or an observation sub-pass that books nothing because that read failed, does not
+  flip the row. The exception is an interface violation on the estate-wide `lastIngested` read,
+  which is not a fault of the remote system and escapes to the `error` branch like any other
+  unhandled failure.
 - **The `error` report is committed independently of the sweep's transaction.** Written inside
   it, the re-raise rolls the report back and leaves `api_health` pinned to the last `ok`
   exactly when it is wrong. Which database that independent write lands on is governed by
@@ -572,12 +679,18 @@ Adding an extractor for a new `source.type` (with AI-assisted coding) is the exp
 fork-and-extend path — the project's Productized-Scaffold identity.
 
 **Run-event consumption**: every observed run maps into the dataset's `event/ingestion` timeline.
-DataSpoke's own extractor records its runs inline (see run pipeline above). `DATAHUB_MANAGED` and
-`PASSIVE` runs are observed by the `datahub-sync-hourly` DAG — `listExecutionRequests` for
-DataHub-managed, and `DataProcessInstance` runs + ingestion-like `Operation` aspects
-(`operationType ∈ {INSERT, UPDATE, CREATE, ALTER}`) for passive. For `DATAHUB_MANAGED` the
-status→event mapping and execution-request identity follow the sync-sweep **step 4** table above;
-in-progress and non-outcome statuses are not mirrored.
+DataSpoke's own extractor records its runs inline (see run pipeline above). `DATAHUB_MANAGED` runs
+are mirrored from `listExecutionRequests` by the `datahub-sync-hourly` DAG, and the same DAG's
+observation sub-passes supply the per-dataset `COMPLETE`s for every mode — sync-sweep **step 4**
+above holds the status→event mapping, the per-producer identity rules, and the `occurred_at` bounds.
+
+The two **run-level** producers stamp `occurred_at` at **opposite ends of the same run**, and a
+consumer reading the ordered feed has to expect it. The inline `ACTIVE_CUSTOM_MANAGED` record is
+written at run *completion*, so it sorts **after** the observations that run produced. The
+`DATAHUB_MANAGED` mirror uses `startTimeMs`, so it sorts **before** them. Neither ordering is a
+defect and neither may be assumed by the other's consumers: "the newest event for this source" is
+not "the newest run", which is why `latest_run` filters on producer rather than taking the head of
+the feed.
 
 **DataSpoke's own conventions**:
 
@@ -1110,12 +1223,57 @@ results emitted by an external system, deferred to a future release.
 resolved **per dataset**, not from a single `metric_conf` value. `metric_conf.time_window_sec`
 is only the fallback used when no per-dataset window can be derived.
 
-- `ingestion-freshness`: a dataset's ingestion recency **is the recency of its owning
-  source's runs**. `INGESTION.COMPLETE` / `INGESTION.FAIL` are booked on the owning source
+- `ingestion-freshness`: every `INGESTION.*` event is booked on a source
   (`entity_type="ingestion_source"`, `entity_id=source_id` — see the
   [Event Catalogue](#event-catalogue)) and never on the dataset, so the measurer resolves each
-  dataset's **owning source** first and reads that source's events. The same resolution
-  supplies the window.
+  dataset's **owning source** first. It then reads that source's feed in **two tiers of
+  evidence**, per-dataset first and source-level as fallback. The same resolution supplies the
+  window.
+
+  | Tier | Evidence | Applies to |
+  |---|---|---|
+  | 1 (preferred) | `max(occurred_at)` over the observation events the owning source booked **for that dataset** — `detail.dataset_urn = <urn>`, `detail.source ∈ {passive_observation, last_ingested_observation}` | any dataset DataHub reports an ingestion trace for |
+  | 2 (fallback) | `max(occurred_at)` over **every** `INGESTION.COMPLETE` booked on the owning source — no producer filter, **excluding dry runs** | datasets with no observation evidence yet |
+
+  Tier 1 exists because a run-level `COMPLETE` is a claim about a *run*, not about a dataset, and
+  four independent facts make it unsound as a per-dataset claim:
+
+  1. **A dry run emits nothing by definition**, yet a dry run without errors still books
+     `INGESTION.COMPLETE` (carrying `detail.dry_run = true`) — only a *real* run whose emitted set
+     is empty is coerced to failure.
+  2. **Partial emission still reads `COMPLETE`.** `discovered − emitted > 0` on a real run signals
+     per-table emission failures, and those tables were not ingested.
+  3. **A `DATAHUB_MANAGED` `SUCCESS` is not a per-table claim** — the status mapping does not
+     inspect the run's structured report.
+  4. **The mapping is broader than the run.** A `matched` mapping is recipe-*pattern* derived, so a
+     dataset the source merely *could* cover inherits its freshness having never been ingested.
+
+  Tier 2 keeps cases 2–4 by construction — an event booked on a source genuinely cannot say which
+  dataset it touched — so it applies only where nothing better exists. It is **source-grained, not
+  producer-filtered**: any `COMPLETE` on the owning source qualifies, so a sibling dataset's
+  observation can stand in for a dataset that has none of its own. That is the same
+  approximation the four cases describe, and it is the reason tier 1 is preferred wherever it
+  exists. Because per-dataset evidence exists for every mode, the measurement is never worse than a
+  purely source-grained one, and exact wherever DataHub can date the dataset. The **dry-run
+  exclusion is required on tier 2 regardless**, or case 1 survives untouched in the fallback path; a
+  producer that carries no `dry_run` key at all (the mirror and both observation producers) is
+  included, since only the inline `ACTIVE_CUSTOM_MANAGED` record ever sets it.
+
+  **`latest_run` and freshness read the same feed differently, deliberately.**
+  `attr/ingestion.latest_run` answers *"what was the last run outcome"*, so it reads run-level
+  producers only and does **not** filter dry runs: a dry run is a real run outcome the operator
+  asked for, and its `detail.dry_run` flag is already on the event for the reader to act on.
+  Freshness answers *"when was this dataset last ingested"*, so it prefers per-dataset evidence,
+  excludes dry runs (which ingested nothing), and applies **no** producer blacklist in its fallback —
+  an observation is exactly the kind of recency evidence it wants, even a sibling's. Filtering dry
+  runs out of `latest_run` would hide a run the operator triggered; admitting them into freshness
+  would mark an untouched estate fresh.
+
+  A producer blacklist on tier 2 would not merely narrow the fallback, it would **empty** it for
+  `PASSIVE`: that mode books no run-level event at all, so its only `INGESTION.COMPLETE` rows are
+  observations. Blacklisting them would leave every `PASSIVE` dataset without its own observation
+  with no evidence of any kind, reading permanently stale. Tier 2 is therefore source-grained and
+  producer-agnostic by design, not by omission.
 
   **Owning source** is what `IngestionService.reverse_lookup` returns — or, over a whole
   dataset list at once, its batched single-winner sibling `reverse_lookup_batch`, which the
@@ -1192,8 +1350,8 @@ unified shape:
 `datasets[]` lists **only failed datasets** — membership in the list is itself
 the classification. A dataset is failed when:
 
-- `ingestion-freshness`: latest `INGESTION.COMPLETE` is older than the dataset's
-  freshness window (see **Time windows** above) or absent
+- `ingestion-freshness`: the resolved ingestion evidence (tier 1 or tier 2 — see
+  **Time windows** above) is older than the dataset's freshness window, or absent on both tiers
 - `validation-score`: latest validation `score` inside the dataset's window is `< 1.0`
   (or no result inside the window)
 - `doc-health`: documentation score is `< 1.0` (table description missing OR any
@@ -1203,7 +1361,11 @@ the classification. A dataset is failed when:
 report the applied window via `time_window_sec` (the resolved per-dataset value) and
 `window_source` (`"managed:<tier>"` / `"passive"` / `"default"` for freshness;
 `"intervals"` / `"default"` for validation-score), alongside `last_event_at` (freshness)
-or `latest_data_time` + `score` (validation-score). `dataset_count` is the total scanned
+or `latest_data_time` + `score` (validation-score). `ingestion-freshness` additionally names
+**which tier supplied `last_event_at`** in `evidence_tier` (`"observation"` for tier 1,
+`"source_level"` for tier 2, `null` when neither tier produced evidence) — the two tiers make
+different claims, so without it a stale verdict is not diagnosable. Tier 2's label names the
+*grain*, not a producer: it is the newest `COMPLETE` on the owning source whatever wrote it. `dataset_count` is the total scanned
 (matching `dataset_filter`),
 not the number of failed entries; `len(datasets) == failed count` is implied. The
 breakdown lets time-range queries on `attr/result` answer per-dataset historical
@@ -1259,7 +1421,7 @@ delete event would be self-defeating. Domain-specific actions:
 
 | Domain (`entity_type`) | Action | Trigger |
 |---|---|---|
-| `INGESTION` (`ingestion_source`, `entity_id=source_id`) | `COMPLETE` / `FAIL` | An ingestion run completes — `ACTIVE_CUSTOM_MANAGED` via `POST sources/{id}/method/run` inline; `DATAHUB_MANAGED`/`PASSIVE` mirrored by the sync sweep. Booked on the owning source (not the dataset); projected onto a dataset's timeline via reverse-lookup (see [Querying Events](#querying-events)). For sync-mirrored `DATAHUB_MANAGED` rows, `detail.execution_request_urn` is the **identity key** (not merely informational): the sweep upserts at most one event per execution-request URN per source (see step 4). `ACTIVE_CUSTOM_MANAGED` run detail keys: `run_id`, `platform`, `dry_run`, `discovered_urns` (dataset URNs passing `schema_pattern` — the "would emit" plan, present on dry-run and real runs), `discovered_urns_count`, `emitted_urns` (dataset URNs written to DataHub; empty on dry-run), `emitted_urns_count`, `errors`, `warnings`; `emitted_urns ⊆ discovered_urns` |
+| `INGESTION` (`ingestion_source`, `entity_id=source_id`) | `COMPLETE` / `FAIL` | An ingestion run completes, or the sync sweep observes that a dataset was ingested. Always booked on a source, never on the dataset; projected onto a dataset's timeline via reverse-lookup plus the `detail.dataset_urn` predicate (see [Querying Events](#querying-events)). Four producers, discriminated by `detail.source` — see [producers and `detail` vocabulary](#ingestioncomplete--ingestionfail-producers) below |
 | `VALIDATION` (`dataset`) | `RESULT_RECORDED` | `POST attr/validation/result` succeeds (one event per accepted result) |
 | `METAGEN` (`metagen`, `entity_id=conf_id`) | `RUN_COMPLETE` / `RUN_FAILED` | per-conf generation run end; `RUN_COMPLETE` recorded for both dry-run and non-dry-run, `dry_run` flag in detail. Detail keys: `run_id` (uuid4), `conf_id`, `conf_name`, `unresolved_urns` (list, same shape as METRIC), `counts` (dict — `items_considered`, `candidates_added`, `candidates_evicted`, `rejected_cleared` on real-run; `items_considered`, `candidates_proposed` on dry-run), `dry_run`, `producer_iterations`, `debate_outcome` (`accept` / `turns_exhausted` / `cycle_detected`) |
 | `METAGEN` (`dataset`) | `CANDIDATE_APPROVE` / `CANDIDATE_REJECT` | `POST attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review` with `verdict: "approve"\|"reject"`. Detail keys: `item_id`, `candidate_id`, `reason` |
@@ -1271,11 +1433,44 @@ delete event would be self-defeating. Domain-specific actions:
 | `AUTH` (`user`, `entity_id=user_id`) | `GOOGLE_LINK_CREDENTIAL_RESET` | A Google identity binds onto an existing row matched by email, invalidating that row's credentials in the same transaction ([AUTH §Credential reset on link](AUTH.md#credential-reset-on-link)). Exactly one event per bind: the branch reaches only unbound rows, which `ck_users_auth_method` guarantees carry a password, so every bind clears at least that. Detail keys: `api_tokens_revoked` (int), `reset_tokens_deleted` (int), `session_epoch` (the new value). |
 | `AUTH` (`user`, `entity_id=user_id` of the token's owner) | `API_TOKEN_REVOKED` | An admin revokes a token they do not own via `DELETE /admin/users/{id}/api-tokens/{token_id}` ([AUTH §Admin revoke audit](AUTH.md#admin-revoke-audit)). Setting `revoked_at` is the whole of what ends a token's life, so the write is the security event. Booked on the owner rather than the acting admin, so every credential a user loses lands on one timeline. The self-service `DELETE /auth/api-tokens/{id}` emits nothing. Detail keys: `token_id`, `owner_user_id`. No token name, hash, or prefix — same no-secrets shape as the other `AUTH` events. |
 
+#### `INGESTION.COMPLETE` / `INGESTION.FAIL` producers
+
+`detail.source` is the normative producer discriminator: every consumer that must tell a run apart
+from an observation reads it, and it is the fourth term of the observation identity tuple.
+
+| `detail.source` | Producer | Modes | Grain | Outcomes | Identity |
+|---|---|---|---|---|---|
+| *(key absent)* | inline run record written by `POST sources/{id}/method/run` | `ACTIVE_CUSTOM_MANAGED` | per run | `COMPLETE` + `FAIL` | run-local |
+| `datahub_sync` | execution-request mirror, sweep step 4 | `DATAHUB_MANAGED` | per run | `COMPLETE` + `FAIL` | `detail.execution_request_urn`, upserted |
+| `passive_observation` | `Operation`-aspect observation, sweep step 4 | `PASSIVE` | per dataset | `COMPLETE` only | (source, `detail.dataset_urn`, `occurred_at`, `detail.source`) |
+| `last_ingested_observation` | `Dataset.lastIngested` observation, sweep step 4 | all | per dataset | `COMPLETE` only | the same four-term tuple |
+
+`detail` keys per producer:
+
+| Producer | Keys |
+|---|---|
+| inline run record | `run_id`, `platform`, `dry_run`, `discovered_urns` (dataset URNs passing the recipe's selection patterns — the "would emit" plan, present on dry-run and real runs), `discovered_urns_count`, `emitted_urns` (dataset URNs written to DataHub; empty on dry-run), `emitted_urns_count`, `errors`, `warnings`; `emitted_urns ⊆ discovered_urns` |
+| `datahub_sync` | `source`, `execution_request_urn` (the identity key, not merely informational), `duration_ms` |
+| `passive_observation` | `source`, `dataset_urn`, `operation_type` (the qualifying `Operation.operationType`) |
+| `last_ingested_observation` | `source`, `dataset_urn` |
+
+Two invariants hold across the four, and consumers rest on them:
+
+- **No run-level producer writes a scalar `detail.dataset_urn`.** The mirror carries no dataset
+  link at all, and the inline record carries dataset URN *lists* (`discovered_urns` /
+  `emitted_urns`) under different keys. That is what lets the per-dataset timeline admit run-level
+  rows through an `IS NULL` disjunct while excluding a sibling dataset's observations — an
+  equality-only predicate would delete precisely the run and `FAIL` rows from every timeline.
+- **`detail.source` is absent, not null, on the inline record.** A consumer's producer filter must
+  therefore treat a missing key as run-level; `detail->>'source'` on a missing key is SQL `NULL`,
+  and a bare `NOT IN` silently drops those rows.
+
 ### Querying Events
 
 - **Per-dataset timeline** (`GET .../data/{urn}/event`): the complete dataset feed.
   Unions the `entity_type="dataset"` events (validation + metagen) with the covering
-  source's ingestion runs resolved by reverse-lookup — see the
+  source's ingestion runs and its observations *for this dataset*, resolved by reverse-lookup
+  plus the `detail.dataset_urn` predicate — see the
   [unified timeline aggregation](#dataset-service-srcbackenddataset) on the Dataset Service.
   Supports the repeatable `event_major_type` prefix filter (`INGESTION`/`VALIDATION`/`METAGEN`).
 - **Domain-level endpoint** (`GET .../event`): filters by `event_type` prefix
@@ -1646,7 +1841,23 @@ trace of a lost stamp — what a reader may then conclude from the column is sta
 | `assertionRunEvent` emission | ValidationService | Row stays in `validation_results` (local store remains the historical-baseline cache); caller receives `502/503` so the pipeline can decide whether to retry |
 | pgvector similarity search | MetagenService | Reviewer proceeds without prior-approved-candidate RAG; debate quality drops but the run completes |
 | DataHub run-history poll | IngestionService (sync sweep) | Skip the affected source for this hourly tick; retry next tick |
+| Estate-wide `lastIngested` read and its per-dataset observation inserts | IngestionService (sync sweep) | The sub-pass books nothing this tick and reports `last_ingested_observed = 0`; the other two sub-passes, the rest of the sweep, and the `datahub-api` health row are untouched; retry next tick |
 | `api_tokens.last_used_at` throttled stamp | PAT authentication | The column keeps its prior value; authentication succeeds and the request proceeds. Logged at `ERROR` per the exception in the lead-in above, not at WARNING |
+
+**Interface violations are exempt from best-effort, on the estate-wide `lastIngested` read.** An
+`AttributeError` or `TypeError` raised by that client call is a fault in DataSpoke's own call
+shape — a renamed or removed method — not a fault of the remote system, because the read is a
+fixed-shape traversal of a GraphQL response in which every element is shape-checked. Those are
+logged at `ERROR` and **re-raised**; only transport, protocol and database faults degrade it to its
+fallback. The split matters because a swallowed interface error reports `last_ingested_observed = 0`
+forever, indistinguishable from an estate with nothing observable, and a duck-typed test double
+missing the method passes green with the sub-pass never executing.
+
+The exemption stops there. The per-dataset `Operation` read is **not** exempt: it deserialises a
+writer-supplied remote aspect through the acryl-datahub SDK, which raises `AttributeError` on a
+malformed stored payload, so an error of that type is not evidence of a call-shape fault and one
+corrupted aspect would abort the sweep for every source. Every failure of that read skips the
+dataset.
 
 ---
 

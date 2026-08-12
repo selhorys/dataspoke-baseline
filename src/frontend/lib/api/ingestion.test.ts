@@ -61,6 +61,7 @@ import {
   useIngestionDatasetEvents,
   useIngestionSourceDatasetCounts,
   useIngestionSourceLatestRuns,
+  selectLatestRunEvent,
 } from "./ingestion";
 
 // ---------------------------------------------------------------------------
@@ -670,12 +671,77 @@ describe("useIngestionSourceLatestRuns — URL construction", () => {
     );
     await waitFor(() => expect(result.current[0].isSuccess).toBe(true));
     const url = lastUrl();
-    // Path and sort are stable spec contracts; limit=1 is the impl's latest-run probe
-    // choice (fetching one event to get its status) — not a spec contract.
+    // spec: spec/feature/FRONTEND_INGESTION.md §List View — "The status comes from
+    //   GET /spoke/ingestion/sources/{id}/event?sort=occurred_at_desc requested at the
+    //   route's maximum page size, because that feed carries more than run outcomes".
+    //   That maximum is 1000 (the route declares limit as le=1000). The value is
+    //   load-bearing, not cosmetic: at limit=1 the derivation sees only the newest event,
+    //   so a source-lifecycle row or a per-dataset observation above the run outcome
+    //   leaves the status column blank or wrong — the exact regression this hook fixes.
     expect(url).toContain("/spoke/ingestion/sources/src-b/event");
     expect(url).toContain("offset=0");
-    expect(url).toContain("limit=");
+    expect(url).toContain("limit=1000");
     expect(url).toContain("sort=occurred_at_desc");
+  });
+
+  it("exposes the derived run outcome as each result's data, not the raw page", async () => {
+    // The derivation is exhaustively covered below as a pure function, and the list-view
+    // component test mocks this hook module wholesale — so neither can see whether the
+    // hook actually APPLIES the derivation. Without that wiring the hook hands the
+    // component a whole event page: `page.events[0]` is then the newest row of any kind,
+    // which is precisely the inversion (#160) this hook exists to fix, and the status
+    // column silently returns to reading the head of the feed.
+    //
+    // The page below is the inverted shape — a newer per-dataset observation above an
+    // older run failure — so a hook that returned the page (or applied no `select`) yields
+    // an object with an `events` array rather than the FAIL event, and the assertions
+    // separate the two.
+    //
+    // spec: spec/feature/FRONTEND_INGESTION.md §List View — "Each row's status cell shows
+    //   the newest **run outcome** … derived from that page by two predicates".
+    mockApiFetch.mockResolvedValue({
+      events: [
+        {
+          id: "ev-obs",
+          entity_type: "ingestion_source",
+          entity_id: "src-c",
+          event_type: "INGESTION.COMPLETE",
+          status: "success",
+          detail: {
+            source: "last_ingested_observation",
+            dataset_urn:
+              "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)",
+          },
+          occurred_at: "2026-01-02T12:00:00Z",
+        },
+        {
+          id: "ev-fail",
+          entity_type: "ingestion_source",
+          entity_id: "src-c",
+          event_type: "INGESTION.FAIL",
+          status: "error",
+          detail: { run_id: "run-42", platform: "postgres" },
+          occurred_at: "2026-01-02T10:00:00Z",
+        },
+      ],
+      total_count: 2,
+      offset: 0,
+      limit: 1000,
+    });
+
+    const { result } = renderHook(() => useIngestionSourceLatestRuns(["src-c"]), {
+      wrapper: makeWrapper(),
+    });
+    await waitFor(() => expect(result.current[0].isSuccess).toBe(true));
+
+    const data = result.current[0].data;
+    expect(
+      data && "events" in (data as object),
+      "the hook must expose the derived event, not the raw page envelope",
+    ).toBe(false);
+    expect(data?.event_type).toBe("INGESTION.FAIL");
+    expect(data?.status).toBe("error");
+    expect(data?.detail.run_id).toBe("run-42");
   });
 });
 
@@ -774,5 +840,203 @@ describe("useDeleteIngestionSource — DELETE /spoke/ingestion/sources/{id}", ()
     await result.current.mutateAsync();
     expect(lastUrl()).toBe("/spoke/ingestion/sources/src-1");
     expect(lastMethod()).toBe("DELETE");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 13. selectLatestRunEvent — the list view's run-status derivation
+//
+// The source event feed carries more than run outcomes: per-dataset ingestion
+// observations and source-lifecycle events share it, and either can be newer than
+// the run the status badge must report. The derivation applies two predicates in the
+// backend's order — an event-type whitelist, then a null-safe producer blacklist.
+//
+// spec: spec/feature/FRONTEND_INGESTION.md §List View — "The newest **run outcome** is
+//   derived from that page by two predicates … 1. **Event-type whitelist** — keep only
+//   `INGESTION.COMPLETE` and `INGESTION.FAIL` … 2. **Producer blacklist, null-safe** —
+//   of those, drop rows whose `detail.source` names a per-dataset observation producer.
+//   A row carrying no `detail.source` is **kept**".
+// spec: spec/feature/FRONTEND_INGESTION.md §List View — "Both predicates are required
+//   and neither is sufficient alone — the whitelist alone lets a per-dataset observation
+//   outrank an older failure, the blacklist alone lets a newer `SOURCE_UPDATE`
+//   (`status="success"`) do the same."
+// spec: spec/feature/BACKEND.md §Event Catalogue — the four `detail.source` producers.
+// ---------------------------------------------------------------------------
+
+/** One row of `GET /spoke/ingestion/sources/{id}/event`, newest-first. */
+function evt(
+  event_type: string,
+  status: string,
+  detail: Record<string, unknown>,
+  occurred_at: string,
+) {
+  return {
+    id: `ev-${occurred_at}`,
+    entity_type: "ingestion_source",
+    entity_id: "src-1",
+    event_type,
+    status,
+    detail,
+    occurred_at,
+  };
+}
+
+/** A `GET …/event?sort=occurred_at_desc` page envelope. */
+function page(events: ReturnType<typeof evt>[]) {
+  return { events, total_count: events.length, offset: 0, limit: 1000 };
+}
+
+const OBSERVATION = {
+  source: "last_ingested_observation",
+  dataset_urn:
+    "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)",
+};
+
+describe("selectLatestRunEvent — newest run outcome on a page", () => {
+  it("reports an older FAIL over a newer per-dataset observation", () => {
+    // The observation is newer AND carries status="success", so a derivation that took
+    // the head of the feed would render a green badge over a failed run.
+    const result = selectLatestRunEvent(
+      page([
+        evt("INGESTION.COMPLETE", "success", OBSERVATION, "2026-01-02T12:00:00Z"),
+        evt(
+          "INGESTION.FAIL",
+          "error",
+          { run_id: "run-42", platform: "postgres" },
+          "2026-01-02T10:00:00Z",
+        ),
+      ]),
+    );
+    expect(result?.event_type).toBe("INGESTION.FAIL");
+    expect(result?.status).toBe("error");
+  });
+
+  it("reports an older FAIL over a newer SOURCE_UPDATE lifecycle event", () => {
+    // SOURCE_UPDATE carries status="success" and NO detail.source key, so the producer
+    // blacklist alone keeps it — only the event-type whitelist excludes it. This is the
+    // case the first fix attempt for this defect got wrong.
+    const result = selectLatestRunEvent(
+      page([
+        evt(
+          "INGESTION.SOURCE_UPDATE",
+          "success",
+          { operation: "PATCH", fields_changed: ["schedule"] },
+          "2026-01-02T12:00:00Z",
+        ),
+        evt(
+          "INGESTION.FAIL",
+          "error",
+          { run_id: "run-42" },
+          "2026-01-02T10:00:00Z",
+        ),
+      ]),
+    );
+    expect(result?.event_type).toBe("INGESTION.FAIL");
+  });
+
+  it("keeps a key-less inline run event — the ACM record has no detail.source", () => {
+    // The inline ACTIVE_CUSTOM_MANAGED run record carries no `source` key at all. A
+    // blacklist that treated "not in the allowed set" as "drop" would remove exactly the
+    // events the status column exists to report; this is the client-side mirror of the
+    // backend's `detail->>'source' IS NULL` disjunct.
+    const result = selectLatestRunEvent(
+      page([
+        evt(
+          "INGESTION.COMPLETE",
+          "success",
+          {
+            run_id: "run-inline",
+            platform: "postgres",
+            dry_run: false,
+            emitted_urns_count: 2,
+          },
+          "2026-01-02T12:00:00Z",
+        ),
+      ]),
+    );
+    expect(result?.detail.run_id).toBe("run-inline");
+    expect(result?.status).toBe("success");
+  });
+
+  it("keeps the datahub_sync mirror — it is a run-level producer", () => {
+    // The mirror carries detail.source="datahub_sync", which is NOT an observation
+    // producer. A blacklist keyed on "has a detail.source at all" would drop it and every
+    // DATAHUB_MANAGED source would show no status.
+    const result = selectLatestRunEvent(
+      page([
+        evt(
+          "INGESTION.COMPLETE",
+          "success",
+          {
+            source: "datahub_sync",
+            execution_request_urn: "urn:li:dataHubExecutionRequest:run-1",
+            duration_ms: 5000,
+          },
+          "2026-01-02T12:00:00Z",
+        ),
+      ]),
+    );
+    expect(result?.detail.source).toBe("datahub_sync");
+  });
+
+  it("drops passive_observation as well as last_ingested_observation", () => {
+    // Both observation producers must be excluded; seeding only one would not catch a
+    // blacklist that named a single producer.
+    const result = selectLatestRunEvent(
+      page([
+        evt(
+          "INGESTION.COMPLETE",
+          "success",
+          {
+            source: "passive_observation",
+            dataset_urn: OBSERVATION.dataset_urn,
+            operation_type: "INSERT",
+          },
+          "2026-01-02T13:00:00Z",
+        ),
+        evt("INGESTION.COMPLETE", "success", OBSERVATION, "2026-01-02T12:00:00Z"),
+        evt("INGESTION.COMPLETE", "success", { run_id: "run-real" }, "2026-01-02T09:00:00Z"),
+      ]),
+    );
+    expect(result?.detail.run_id).toBe("run-real");
+  });
+
+  it("returns undefined for a page holding only observations", () => {
+    // The PASSIVE reading: neither run-level producer covers that mode, so its feed holds
+    // only per-dataset observations and the status cell renders its muted placeholder.
+    // The page is deliberately non-empty, so `undefined` is a filtered result rather than
+    // an empty feed.
+    const observations = page([
+      evt("INGESTION.COMPLETE", "success", OBSERVATION, "2026-01-02T12:00:00Z"),
+      evt(
+        "INGESTION.COMPLETE",
+        "success",
+        {
+          source: "passive_observation",
+          dataset_urn: OBSERVATION.dataset_urn,
+          operation_type: "INSERT",
+        },
+        "2026-01-02T11:00:00Z",
+      ),
+    ]);
+    expect(observations.events).toHaveLength(2);
+    expect(selectLatestRunEvent(observations)).toBeUndefined();
+  });
+
+  it("returns undefined for an empty page", () => {
+    expect(selectLatestRunEvent(page([]))).toBeUndefined();
+  });
+
+  it("takes the first surviving row of a newest-first page", () => {
+    // The route is requested with sort=occurred_at_desc, so the first surviving row is
+    // the newest run outcome. Two run outcomes are seeded so "first" and "any" differ.
+    const result = selectLatestRunEvent(
+      page([
+        evt("INGESTION.COMPLETE", "success", OBSERVATION, "2026-01-02T14:00:00Z"),
+        evt("INGESTION.FAIL", "error", { run_id: "run-newer" }, "2026-01-02T13:00:00Z"),
+        evt("INGESTION.COMPLETE", "success", { run_id: "run-older" }, "2026-01-02T09:00:00Z"),
+      ]),
+    );
+    expect(result?.detail.run_id).toBe("run-newer");
   });
 });

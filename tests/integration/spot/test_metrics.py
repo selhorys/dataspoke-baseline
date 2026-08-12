@@ -1233,8 +1233,15 @@ async def test_breakdown_counts_reconcile_with_run_event(
 ) -> None:
     """Breakdown counts derive from seeded state and reconcile with the RUN_COMPLETE event.
 
-    Seeds one ACTIVE_CUSTOM_MANAGED daily source **per dataset** — freshness is the
-    recency of a dataset's owning source's runs, so a shared source would give both
+    **Evidence tier exercised: 2 (`source_level`).** The seeded `INGESTION.COMPLETE` rows
+    carry `detail = {}` — no `source` key — so they are run-level rows that no observation
+    producer wrote, and neither seeded dataset has an observation of its own. Tier 1 is
+    therefore empty and the source-level fallback answers, which is what makes the
+    one-source-per-dataset shape below still produce a fresh/stale split. The empty
+    `detail` also has no `dry_run` key, so the tier-2 dry-run exclusion admits both rows.
+
+    Seeds one ACTIVE_CUSTOM_MANAGED daily source **per dataset** — on tier 2 a dataset's
+    recency is the recency of its owning source's runs, so a shared source would give both
     datasets one verdict and collapse the contrast this test needs — then runs the metric:
       - urn_stale: its source's INGESTION.COMPLETE 200000s ago (> 172800s) → FAILED
       - urn_fresh: its source's INGESTION.COMPLETE 130000s ago (< 172800s) → in-time
@@ -1534,21 +1541,28 @@ async def test_ingestion_freshness_active_custom_daily_window(
       - source_fresh / urn_fresh: run 130000s ago (< 172800s) → in-time
       - source_stale / urn_stale: run 200000s ago (> 172800s) → stale
 
-    One source per dataset is not incidental. Freshness is the recency of a dataset's
-    *owning source's* runs, so two datasets sharing a source necessarily share one
-    verdict: the fresh/stale contrast would collapse and the test would stay green
-    while proving nothing. It is also the shape production produces.
+    **Evidence tier exercised: 2 (`source_level`).** The seeded rows carry `detail = {}`,
+    so no observation producer wrote them and neither dataset has an observation of its
+    own: tier 1 is empty and the source-level fallback answers. The window resolution
+    under test is tier-independent — it comes from the owning source's mode and
+    schedule_tier, not from which tier supplied the instant.
 
-    Breakdown stale entry detail must include time_window_sec=172800 and
-    window_source='managed:daily'.
+    One source per dataset is not incidental. On tier 2 a dataset's recency is the
+    recency of its owning source's runs, so two datasets sharing a source necessarily
+    share one verdict: the fresh/stale contrast would collapse and the test would stay
+    green while proving nothing. It is also the shape production produces.
+
+    Breakdown stale entry detail must include time_window_sec=172800,
+    window_source='managed:daily' and evidence_tier='source_level'.
 
     Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types —
           ACTIVE_CUSTOM_MANAGED / DATAHUB_MANAGED daily → SCHEDULE_TIER_SECONDS[daily] × 2
           = 86400 × 2 = 172800s.
-    Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — "INGESTION.COMPLETE /
-          INGESTION.FAIL are booked on the owning source (entity_type='ingestion_source',
-          entity_id=source_id …) and never on the dataset"; breakdown detail carries
-          time_window_sec and window_source.
+    Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — "every `INGESTION.*`
+          event is booked on a source (entity_type="ingestion_source",
+          entity_id=source_id …) and never on the dataset, so the measurer resolves each
+          dataset's **owning source** first"; breakdown detail carries time_window_sec,
+          window_source and evidence_tier.
     Spec: spec/feature/BACKEND_SCHEMA.md §ingestion_source / §ingestion_source_dataset.
     """
     _METRIC_ID = "spot-freshness-daily-window"
@@ -1699,6 +1713,20 @@ async def test_ingestion_freshness_active_custom_daily_window(
             f"got {detail.get('window_source')!r}. "
             "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — "
             "window_source='managed:{tier}' for MANAGED modes."
+        )
+        # Which tier answered. The seeded evidence is a source-level COMPLETE with no
+        # detail.source, so the fallback is what supplies last_event_at below and the
+        # instant assertion is a statement about tier 2.
+        # Triage note: 'observation' here means a sync sweep booked a
+        # last_ingested_observation for this dataset on this seeded source while the test
+        # was running — the seeded state was overtaken, not the measurer misreading it.
+        # spec: feature/BACKEND.md §Metrics Service §Breakdown format — evidence_tier is
+        # "'observation' for tier 1, 'source_level' for tier 2, null when neither tier
+        # produced evidence".
+        assert detail["evidence_tier"] == "source_level", (
+            f"the stale entry's evidence must come from the source-level fallback; got "
+            f"evidence_tier={detail.get('evidence_tier')!r}. "
+            "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
         )
         # The stale entry must report the run booked on its OWN owning source — not
         # None (which is what a measurer reading dataset-keyed events would report).
@@ -1954,8 +1982,8 @@ async def test_ingestion_freshness_no_config_fallback(
 
     Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types —
           dataset mapped to no source → metric_conf.time_window_sec.
-    Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — "INGESTION.COMPLETE /
-          INGESTION.FAIL are booked on the owning source (entity_type='ingestion_source',
+    Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — "every INGESTION.*
+          event is booked on a source (entity_type='ingestion_source',
           entity_id=source_id …) and never on the dataset"; window_source='default' for a
           dataset mapped to no source.
     Spec: spec/feature/BACKEND_SCHEMA.md §ingestion_source_dataset — no row → fallback.
@@ -2093,11 +2121,11 @@ async def test_ingestion_freshness_reads_source_keyed_events_not_dataset_keyed(
     ``entity_id=source_id`` rows may be read. Real PostgreSQL is required — the unit
     tier's fake session cannot prove a WHERE clause it would have to reimplement.
 
-    Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — "INGESTION.COMPLETE /
-          INGESTION.FAIL are booked on the owning source (entity_type='ingestion_source',
+    Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — "every INGESTION.*
+          event is booked on a source (entity_type='ingestion_source',
           entity_id=source_id — see the Event Catalogue) and never on the dataset, so the
-          measurer resolves each dataset's owning source first and reads that source's
-          events."
+          measurer resolves each dataset's owning source first. It then reads that
+          source's feed in two tiers of evidence."
     Spec: spec/TESTING.md §Assertion Discipline — "Filter/query/matching tests seed both
           sides."
     """

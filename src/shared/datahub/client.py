@@ -1,6 +1,7 @@
 """DataHub client wrapper with retry and circuit breaker."""
 
 import asyncio
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any, TypeVar
@@ -20,11 +21,16 @@ from src.shared.config import (
 from src.shared.exceptions import DataHubUnavailableError
 from src.shared.redaction import sanitize_error_message
 
+logger = logging.getLogger(__name__)
+
 T = TypeVar("T")
 
 _RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 _FAIL_FAST_STATUS_CODES = {401, 403}
 _DOC_HEALTH_BATCH_SIZE = 100
+# Cursor-paged reads have no intrinsic bound (unlike the ``total``-bounded ones),
+# and they run on the API pod's event loop. Stop after this many pages.
+_SCROLL_MAX_PAGES = 100
 # DataHub's reserved internal pipeline types. Their CLI wrappers (executorId
 # "__datahub_cli_") are NOT tagged sourceType=SYSTEM, so the GraphQL filter
 # alone misses them — deny by type here too.
@@ -637,6 +643,126 @@ class DataHubClient:
                 break
 
         return all_requests
+
+    async def get_last_ingested(self, count: int = 1000) -> dict[str, int]:
+        """Return ``{dataset_urn: lastIngested_ms}`` for the whole dataset estate.
+
+        ``Dataset.lastIngested`` is DataHub's own answer to "when was this dataset
+        last ingested", derived from each aspect's ``systemMetadata.runId``. One
+        paged ``scrollAcrossEntities`` covers the estate, so the sweep reads it
+        once rather than probing per dataset (spec/DATAHUB_INTEGRATION.md
+        §Observed Ingestion Recency).
+
+        Four properties of this read are load-bearing:
+
+        - **The ``... on Dataset`` inline fragment is mandatory.** ``lastIngested``
+          is declared on the concrete ``Dataset`` type, not on the ``Entity``
+          interface that ``entity`` resolves to, so selecting it directly on
+          ``entity`` fails the *whole query* as a GraphQL validation error rather
+          than returning null for the field.
+        - **Null, non-integer and non-positive values are omitted**, never carried
+          as ``None``. ``lastIngested`` is null exactly when every aspect on the
+          dataset carries DataHub's ``"no-run-id-provided"`` sentinel — nothing
+          observable — and absence is what stops the caller booking an event at an
+          instant DataHub never reported. ``bool`` is rejected explicitly: it is an
+          ``int`` subclass and would otherwise pass the numeric check.
+        - **``scrollId`` is transmitted only once non-empty**, so the first page
+          sends no cursor rather than an explicit null.
+        - **The cursor loop is capped** at ``_SCROLL_MAX_PAGES`` and also stops on
+          an unchanged cursor, each with a warning. An unchanged cursor is
+          otherwise undetectable and burns the whole page budget every sweep.
+        - **Every element of the response is shape-checked**, so a malformed one is
+          skipped rather than raising. The call site classifies an
+          ``AttributeError``/``TypeError`` out of this client as a fault in
+          DataSpoke's own call shape and re-raises it out of the sweep; a remote
+          payload must never be able to reach that branch.
+
+        Raises:
+            DataHubUnavailableError: on transport failure after retries. Errors
+            propagate, as in every sibling read; containment lives at the single
+            call site (spec/feature/BACKEND.md §Best-Effort Operations).
+        """
+        _QUERY = """
+        query ScrollDatasetLastIngested($input: ScrollAcrossEntitiesInput!) {
+            scrollAcrossEntities(input: $input) {
+                nextScrollId
+                searchResults {
+                    entity {
+                        urn
+                        ... on Dataset {
+                            lastIngested
+                        }
+                    }
+                }
+            }
+        }
+        """
+        result: dict[str, int] = {}
+        scroll_id: str | None = None
+
+        for _ in range(_SCROLL_MAX_PAGES):
+            scroll_input: dict[str, Any] = {
+                "types": ["DATASET"],
+                "query": "*",
+                "count": count,
+            }
+            if scroll_id:
+                scroll_input["scrollId"] = scroll_id
+
+            raw = await self.execute_graphql(_QUERY, variables={"input": scroll_input})
+            page = raw.get("scrollAcrossEntities") if isinstance(raw, dict) else None
+            if not isinstance(page, dict):
+                logger.warning(
+                    "datahub_last_ingested_payload_unreadable — GMS returned no "
+                    "readable scrollAcrossEntities container after %d datasets; "
+                    "stopping this read",
+                    len(result),
+                )
+                break
+
+            # Every element is shape-checked rather than duck-typed. The remote
+            # payload is GMS's, not DataSpoke's: the single call site treats an
+            # AttributeError/TypeError out of this client as a fault in DataSpoke's
+            # own call shape and re-raises it out of the sweep, so a malformed
+            # element here must degrade the signal instead of reaching that branch.
+            hits = page.get("searchResults")
+            for hit in hits if isinstance(hits, list) else []:
+                if not isinstance(hit, dict):
+                    continue
+                entity = hit.get("entity")
+                if not isinstance(entity, dict):
+                    continue
+                urn = entity.get("urn")
+                last_ingested = entity.get("lastIngested")
+                if not urn or not isinstance(urn, str):
+                    continue
+                if isinstance(last_ingested, bool) or not isinstance(last_ingested, int):
+                    continue
+                if last_ingested <= 0:
+                    continue
+                result[urn] = last_ingested
+
+            next_scroll_id = page.get("nextScrollId")
+            if not next_scroll_id or not isinstance(next_scroll_id, str):
+                break
+            if next_scroll_id == scroll_id:
+                logger.warning(
+                    "datahub_last_ingested_cursor_stalled — GMS returned an unchanged "
+                    "nextScrollId after %d datasets; stopping this read",
+                    len(result),
+                )
+                break
+            scroll_id = next_scroll_id
+        else:
+            logger.warning(
+                "datahub_last_ingested_page_cap — stopped at the %d-page ceiling with "
+                "%d datasets read; the estate's remaining datasets are not observed "
+                "this sweep",
+                _SCROLL_MAX_PAGES,
+                len(result),
+            )
+
+        return result
 
     async def get_pipeline_names(
         self, dataset_urns: list[str]

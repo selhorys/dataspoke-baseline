@@ -38,7 +38,7 @@ from typing import Any
 
 import httpx
 import pytest
-from sqlalchemy import text
+from sqlalchemy import ARRAY, Text, bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.backend.ingestion.service import IngestionService
@@ -1088,9 +1088,12 @@ class _StubDataHubForSync:
 
     Every attribute is mutable so a test can walk one estate through several consecutive
     sweeps — adding a source, adding a dataset, rewriting a recipe, publishing an
-    execution request — and read the summary each time. ``execution_requests`` maps a
-    source URN to the ``listExecutionRequests`` payload DataHub would return for it;
-    a source absent from the mapping has no run history.
+    execution request, advancing a dataset's ``lastIngested`` — and read the summary each
+    time. ``execution_requests`` maps a source URN to the ``listExecutionRequests`` payload
+    DataHub would return for it; a source absent from the mapping has no run history.
+    ``last_ingested`` maps a dataset URN to its epoch-millisecond reading, and a dataset
+    absent from it is one DataHub reports no ingestion trace for — the client omits null
+    readings rather than carrying them as ``None``.
     """
 
     def __init__(
@@ -1099,11 +1102,13 @@ class _StubDataHubForSync:
         datasets: list[str],
         pipeline_names: dict[str, str] | None = None,
         execution_requests: dict[str, list[dict[str, Any]]] | None = None,
+        last_ingested: dict[str, int] | None = None,
     ) -> None:
         self.sources = sources
         self.datasets = datasets
         self.pipeline_names = pipeline_names or {}
         self.execution_requests = execution_requests or {}
+        self.last_ingested = last_ingested or {}
 
     async def list_ingestion_sources(self) -> list[dict[str, Any]]:
         return self.sources
@@ -1118,6 +1123,18 @@ class _StubDataHubForSync:
 
     async def list_execution_requests(self, source_urn: str) -> list[dict[str, Any]]:
         return self.execution_requests.get(source_urn, [])
+
+    async def get_last_ingested(self, count: int = 1000) -> dict[str, int]:
+        """The estate-wide ``lastIngested`` reading step 4's third sub-pass consumes.
+
+        Present on the double by necessity, not for completeness: that sub-pass treats
+        ``AttributeError`` from the client as a call-shape fault and re-raises it out of the
+        whole sweep, exactly so "a duck-typed test double missing the method passes green
+        with the sub-pass never executing" cannot happen
+        (spec: feature/BACKEND.md §Best-Effort Operations). A double without this method
+        would fail every sweep in this module rather than skip one signal.
+        """
+        return dict(self.last_ingested)
 
 
 async def _matched_urns_for(async_session: AsyncSession, source_urn: str) -> set[str]:
@@ -1390,6 +1407,13 @@ async def test_sync_summary_counts_state_changes_not_rows_examined(
        because dedup keys on the execution-request URN, not on the sweep.
     7. Add a second registered source → ``sources_synced`` == 2, ``sources_removed`` == 0.
     8. Drop that source from DataHub → ``sources_removed`` == 1; the sweep after it → 0.
+    9. Report a ``lastIngested`` instant for both mapped datasets →
+       ``last_ingested_observed`` == 2 (one per mapping).
+    10. Unchanged (the same two instants still reported) → ``last_ingested_observed`` == 0,
+        because observation identity keys on ``(source, dataset, occurred_at, producer)``
+        and not on the sweep. This is the step-4 counter that completes the sweep-wide rule
+        that "two consecutive sweeps over an unchanged estate report zero": with
+        ``last_ingested`` left empty it would read zero for want of anything to observe.
 
     spec: BACKEND.md §Sync + mapping sweep §Sweep summary — 'datasets_mapped,
         pipeline_links, events_mirrored, sources_removed and the registry_* counters
@@ -1567,9 +1591,79 @@ async def test_sync_summary_counts_state_changes_not_rows_examined(
             f"estate must report 0; got {after_removal['sources_removed']}. "
             "spec: BACKEND.md §Sync + mapping sweep §Sweep summary."
         )
+
+        # ── 9 & 10: last_ingested_observed fires per mapping, then falls to zero ─
+        # Both mapped datasets acquire an observable instant at once. Distinct
+        # milliseconds so the pair cannot collapse through the identity tuple's
+        # occurred_at term and read as one.
+        stub.last_ingested = {_SYNC_DS_A: 1_700_000_111_000, _SYNC_DS_B: 1_700_000_222_000}
+        with_observation = await service.sync()
+        assert with_observation["last_ingested_observed"] == 2, (
+            f"Both datasets mapped to the one bookable source acquired an observable "
+            f"instant, and a dataset books one event per mapping, so the sweep must report "
+            f"2; got {with_observation['last_ingested_observed']}. This is also the "
+            "backstop for the zero below — with nothing observable the counter would read "
+            "0 for want of input rather than for want of a change. "
+            "spec: BACKEND.md §Sync + mapping sweep step 4."
+        )
+        unchanged_observation = await service.sync()
+        assert unchanged_observation["last_ingested_observed"] == 0, (
+            f"Observation identity is (source, dataset_urn, occurred_at, detail.source), "
+            f"so re-reading the same two instants must book nothing; got "
+            f"{unchanged_observation['last_ingested_observed']}. "
+            "spec: BACKEND.md §Sync + mapping sweep step 4 — 'Appending is bounded by the "
+            "observed instant, not by the sweep: an unchanged observation books nothing on "
+            "the next sweep.'"
+        )
+        # Read the side effect back rather than trusting the counter: two sweeps that both
+        # saw the same reading leave exactly two rows, one per dataset.
+        #
+        # Scoped by entity_id, not by dataset URN alone. _SYNC_DS_A/_SYNC_DS_B are the same
+        # two catalog URNs uc1_02 books last_ingested_observation for, and the only reset this
+        # test runs (reset_ingestion_sources) never touches `events` — so a URN-only match
+        # would see that arc's rows too.
+        observation_source_id = (
+            await async_session.execute(
+                text(
+                    "SELECT id::text FROM dataspoke.ingestion_source "
+                    "WHERE datahub_source_urn = :urn"
+                ),
+                {"urn": source_urn},
+            )
+        ).scalar_one()
+        observation_rows = await async_session.execute(
+            text(
+                "SELECT detail->>'dataset_urn' FROM dataspoke.events "
+                "WHERE entity_type = 'ingestion_source' "
+                "AND entity_id = :source_id "
+                "AND event_type = 'INGESTION.COMPLETE' "
+                "AND detail->>'source' = 'last_ingested_observation' "
+                "AND detail->>'dataset_urn' = ANY(:urns)"
+            ).bindparams(bindparam("urns", type_=ARRAY(Text()))),
+            {"source_id": observation_source_id, "urns": [_SYNC_DS_A, _SYNC_DS_B]},
+        )
+        assert sorted(observation_rows.scalars().all()) == sorted([_SYNC_DS_A, _SYNC_DS_B]), (
+            "Exactly one observation row per (source, dataset, instant) may exist across "
+            "repeated sweeps — no per-sweep growth, and no dataset dropped. "
+            "spec: BACKEND.md §Sync + mapping sweep step 4."
+        )
     finally:
         with suppress(Exception):
             await async_session.rollback()
+            await async_session.execute(
+                text(
+                    "DELETE FROM dataspoke.events "
+                    "WHERE detail->>'source' = 'last_ingested_observation' "
+                    "AND detail->>'dataset_urn' = ANY(:urns) "
+                    # Same scoping as the read-back: uc1_02 books this producer for these
+                    # two URNs, and an unscoped DELETE would take its rows with ours.
+                    "AND entity_id IN ("
+                    "  SELECT id::text FROM dataspoke.ingestion_source "
+                    "  WHERE datahub_source_urn = :source_urn"
+                    ")"
+                ).bindparams(bindparam("urns", type_=ARRAY(Text()))),
+                {"urns": [_SYNC_DS_A, _SYNC_DS_B], "source_urn": source_urn},
+            )
             await async_session.execute(
                 text(
                     "DELETE FROM dataspoke.events "

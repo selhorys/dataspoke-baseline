@@ -12,6 +12,10 @@ Steps mirror USE_CASE_en.md §UC1 Case 2:
   6. GET /sources/{id}/datasets → derivation='emitted' rows for catalog datasets
   7. GET /sources/{id}/event → INGESTION.COMPLETE event
   8. GET /spoke/common/data/{catalog_urn}/attr/ingestion → reverse-lookup returns this source
+  8b. lastIngested observation + per-dataset timeline — the run stamped a non-default
+      systemMetadata.runId, so DataHub can now date both emitted catalog tables; a sweep
+      books one last_ingested_observation each, and title_master's timeline shows its own
+      observation plus the run-level rows but NOT the editions sibling's observation
   9. Cleanup: DELETE /sources/{id}
 
 The K8s Secret dataspoke-source-cred-dummy-data-pg is provisioned in the setup fixture
@@ -123,6 +127,7 @@ _CATALOG_TITLE_ENCODED = urllib.parse.quote(_CATALOG_TITLE_URN, safe="")
 async def test_uc1_active_custom_postgres(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
+    internal_headers: dict[str, str],
 ) -> None:
     """UC1 Case 2 — DataSpoke owns extraction for the catalog schema.
 
@@ -488,6 +493,130 @@ async def test_uc1_active_custom_postgres(
         )
         assert latest_run.get("status") == "success", (
             f"latest_run.status must be 'success'; got {latest_run.get('status')!r}"
+        )
+
+        # ── Step 7b: lastIngested observation, and the per-dataset timeline ──
+        # The run just emitted DataSpoke's own aspects with a non-default
+        # systemMetadata.runId, so DataHub can now date these two catalog tables and
+        # Dataset.lastIngested advances for both. This is the only arc in the api-wired
+        # suite where that is true — every other harness emit leaves the
+        # "no-run-id-provided" sentinel behind, which keeps lastIngested null — so it is
+        # the only place the observation sub-pass can be proved end-to-end against a real
+        # DataHub.
+        #
+        # Two things are asserted, and the second is what makes the first safe:
+        #   1. the sweep books one last_ingested_observation per emitted dataset, carrying
+        #      detail.dataset_urn and exactly the two spec'd keys;
+        #   2. the per-dataset timeline for title_master shows its OWN observation plus the
+        #      run-level rows, and NOT the sibling editions observation. Without (2) the
+        #      observations of every dataset a source covers appear on every one of its
+        #      datasets' timelines.
+        #
+        # spec: feature/BACKEND.md §Ingestion Service — Sync step 4 — "For every dataset
+        #   mapped to a source, when DataHub reports a non-null Dataset.lastIngested, the
+        #   sweep books an INGESTION.COMPLETE carrying detail.dataset_urn."
+        # spec: DATAHUB_INTEGRATION.md §Observed Ingestion Recency — lastIngested is
+        #   "computed by scanning each aspect's systemMetadata.runId".
+        # spec: feature/BACKEND.md §Event Catalogue — last_ingested_observation detail
+        #   keys are "source, dataset_urn".
+        observed_urns: set[str] = set()
+        deadline = time.time() + 180.0
+        while time.time() < deadline:
+            sync_resp = await api_client.post(
+                "/internal/activities/ingestion/sync", headers=internal_headers
+            )
+            assert sync_resp.status_code == 200, (
+                f"POST /internal/activities/ingestion/sync expected 200, "
+                f"got {sync_resp.status_code}: {sync_resp.text}"
+            )
+            assert "last_ingested_observed" in sync_resp.json(), (
+                f"the sweep summary must report last_ingested_observed; got "
+                f"{sorted(sync_resp.json())}. A missing counter reads exactly like an "
+                "estate with nothing observable. "
+                "spec: feature/BACKEND.md §Ingestion Service — Sweep summary."
+            )
+
+            feed_resp = await api_client.get(
+                f"/api/v1/spoke/ingestion/sources/{source_id}/event?offset=0&limit=1000",
+                headers=admin_headers,
+            )
+            assert feed_resp.status_code == 200, (
+                f"GET /sources/{source_id}/event expected 200, got "
+                f"{feed_resp.status_code}: {feed_resp.text}"
+            )
+            observed_urns = {
+                (ev.get("detail") or {})["dataset_urn"]
+                for ev in feed_resp.json()["events"]
+                if (ev.get("detail") or {}).get("source") == "last_ingested_observation"
+            }
+            if {_CATALOG_TITLE_URN, _CATALOG_EDITIONS_URN} <= observed_urns:
+                break
+            await asyncio.sleep(5.0)
+
+        assert {_CATALOG_TITLE_URN, _CATALOG_EDITIONS_URN} <= observed_urns, (
+            f"both emitted catalog tables must be observed via Dataset.lastIngested after "
+            f"a real run and a sweep; observed {sorted(observed_urns)}. "
+            "spec: feature/BACKEND.md §Ingestion Service — Sync step 4."
+        )
+        for ev in feed_resp.json()["events"]:
+            detail = ev.get("detail") or {}
+            if detail.get("source") != "last_ingested_observation":
+                continue
+            assert set(detail) == {"source", "dataset_urn"}, (
+                f"last_ingested_observation detail keys must be exactly "
+                f"{{source, dataset_urn}}; got {sorted(detail)}. "
+                "spec: feature/BACKEND.md §Event Catalogue."
+            )
+            assert ev["event_type"] == "INGESTION.COMPLETE" and ev["status"] == "success", (
+                "observation is success-only — lastIngested advances when aspects are "
+                "written and cannot express a failure. "
+                "spec: feature/BACKEND.md §Ingestion Service — Sync step 4."
+            )
+
+        # The per-dataset timeline: title_master's own observation and the run-level rows
+        # (which carry no scalar dataset_urn) are kept; editions' observation is excluded.
+        # total_count is asserted against the returned length as well — the predicate lives
+        # on the shared base select, so the page query and the count over its subquery
+        # cannot diverge, and a divergence is otherwise invisible until a caller paginates.
+        #
+        # spec: feature/BACKEND.md §Querying Events — a source row qualifies "when its
+        #   detail.dataset_urn is this URN **or is absent** … The predicate belongs to the
+        #   shared base select, so the page query and its total_count cannot diverge."
+        timeline_resp = await api_client.get(
+            f"/api/v1/spoke/common/data/{_CATALOG_TITLE_ENCODED}/event/ingestion"
+            "?offset=0&limit=1000",
+            headers=admin_headers,
+        )
+        assert timeline_resp.status_code == 200, (
+            f"GET /data/{{urn}}/event/ingestion expected 200, got "
+            f"{timeline_resp.status_code}: {timeline_resp.text}"
+        )
+        timeline = timeline_resp.json()
+        timeline_urns = {
+            (ev.get("detail") or {}).get("dataset_urn") for ev in timeline["events"]
+        }
+        assert _CATALOG_TITLE_URN in timeline_urns, (
+            f"this dataset's own observation must appear on its timeline; got "
+            f"{sorted(u for u in timeline_urns if u)}. "
+            "spec: feature/BACKEND.md §Querying Events."
+        )
+        assert _CATALOG_EDITIONS_URN not in timeline_urns, (
+            f"a sibling dataset's observation must NOT appear on this dataset's timeline; "
+            f"got {sorted(u for u in timeline_urns if u)}. "
+            "spec: feature/BACKEND.md §Querying Events."
+        )
+        assert any(
+            (ev.get("detail") or {}).get("run_id") == run_id for ev in timeline["events"]
+        ), (
+            f"the run-level INGESTION.COMPLETE for run_id={run_id!r} must stay on the "
+            "timeline — it carries no scalar dataset_urn, and an equality-only predicate "
+            "would delete precisely the run and FAIL rows from every dataset's timeline. "
+            "spec: feature/BACKEND.md §Querying Events."
+        )
+        assert timeline["total_count"] == len(timeline["events"]), (
+            f"total_count must equal the returned row count on an unpaginated read; got "
+            f"total_count={timeline['total_count']} with {len(timeline['events'])} rows. "
+            "spec: feature/BACKEND.md §Querying Events."
         )
 
         # ── Step 8: Dataset catalog reflects ingestion coverage ──────────────

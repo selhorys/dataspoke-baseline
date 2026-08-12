@@ -654,7 +654,8 @@ async def test_only_completed_source_keyed_runs_are_read(
         entity_type predicate
 
     spec: feature/BACKEND.md §Metrics Service §Breakdown format — a dataset fails when
-    "latest INGESTION.COMPLETE is older than the dataset's freshness window or absent",
+    "the resolved ingestion evidence (tier 1 or tier 2) is older than the dataset's "
+    "freshness window, or absent on both tiers",
     so a failed run must not refresh it.
     spec: feature/BACKEND.md §Metrics Service §Time windows — runs are booked with
     entity_type="ingestion_source".

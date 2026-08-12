@@ -489,6 +489,43 @@ class Event(Base):
     __tablename__ = "events"
     __table_args__ = (
         Index("ix_events_entity_occurred", "entity_type", "entity_id", desc("occurred_at")),
+        # Per-dataset ingestion timeline and per-dataset freshness evidence.
+        # entity_id must lead: the timeline's predicate is
+        # `detail->>'dataset_urn' IS NULL OR = :urn`, whose IS NULL branch is the
+        # estate-wide run-level feed, so an index keyed on the JSONB expression
+        # alone is not selective enough to be chosen. The trailing occurred_at
+        # serves the from/to range, not the ORDER BY — the disjunction plans as a
+        # bitmap combination and a bitmap heap scan discards index order.
+        Index(
+            "ix_events_ingestion_dataset_urn",
+            "entity_id",
+            text("(detail->>'dataset_urn')"),
+            desc("occurred_at"),
+            postgresql_where=text("entity_type = 'ingestion_source'"),
+        ),
+        # Latest run-outcome lookup behind attr/ingestion.latest_run. The predicate
+        # mirrors the query's two terms exactly (event-type whitelist + observation
+        # producer blacklist, with the IS NULL disjunct for the inline
+        # ACTIVE_CUSTOM_MANAGED record, which carries no `source` key). Vocabulary
+        # drift is asymmetric: adding an observation producer needs no DDL, since a
+        # longer NOT IN implies the shorter one; removing one leaves the predicate
+        # no longer implied by the query and the index unusable until it is edited.
+        # Paired with the st_events_detail_source statistics object, which has no
+        # declarative form and lives only in the migration — without it the planner
+        # over-estimates the matching rows and prefers ix_events_entity_occurred's
+        # fast-start path under ORDER BY … LIMIT 1.
+        Index(
+            "ix_events_ingestion_run_level",
+            "entity_id",
+            desc("occurred_at"),
+            postgresql_where=text(
+                "entity_type = 'ingestion_source' "
+                "AND event_type IN ('INGESTION.COMPLETE', 'INGESTION.FAIL') "
+                "AND (detail->>'source' IS NULL "
+                "OR detail->>'source' NOT IN "
+                "('last_ingested_observation', 'passive_observation'))"
+            ),
+        ),
         {"schema": SCHEMA},
     )
 

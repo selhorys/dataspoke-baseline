@@ -485,7 +485,10 @@ extraction rather than a single dataset. The dataset-level event endpoint
 `entity_type=dataset` filter: it returns the `entity_type=dataset` rows for the
 URN combined with the covering source's ingestion runs, located by reverse-lookup
 (`IngestionService.reverse_lookup(urn)` → source, then that source's aggregated
-run events, each row carrying the derived `wrapper` flag). The merged stream is
+run events, each row carrying the derived `wrapper` flag). The source's rows are
+narrowed to those whose `detail.dataset_urn` is this URN **or is absent**, so a
+sibling dataset's per-dataset observations are excluded while run-level rows —
+which carry no scalar `dataset_urn` — are kept. The merged stream is
 sorted newest-first, filtered by `from`/`to` and by the repeatable
 `event_major_type` prefix set (`INGESTION`/`VALIDATION`/`METAGEN`; omitted = all),
 then paginated. See [BACKEND §Dataset Service](BACKEND.md#dataset-service-srcbackenddataset) for
@@ -558,10 +561,48 @@ without coupling the writes.
 | `metagen_candidates` | `(run_id)` | Run-scoped cleanup |
 | `metric_results` | `(metric_id, measured_at DESC)` | Time-range queries on measurements |
 | `events` | `(entity_type, entity_id, occurred_at DESC)` | Event log queries per entity |
+| `events` | `ix_events_ingestion_dataset_urn`: `(entity_id, (detail->>'dataset_urn'), occurred_at DESC) WHERE entity_type='ingestion_source'` | Per-dataset ingestion timeline (`…/data/{urn}/event`) and per-dataset observation evidence for `ingestion-freshness` |
+| `events` | `ix_events_ingestion_run_level`: `(entity_id, occurred_at DESC) WHERE entity_type='ingestion_source' AND event_type IN ('INGESTION.COMPLETE','INGESTION.FAIL') AND (detail->>'source' IS NULL OR detail->>'source' NOT IN (<observation producers>))` | Latest run-outcome lookup behind `attr/ingestion.latest_run` and the source list's status column |
 | `dataset_node_map` | `(node_id)` | Node-to-datasets lookup |
 | `ontogen_triples` | `(subject_node_id)`, `(object_node_id)`, `(edge_id)` | Triple lookup by any participant |
 | `password_reset_tokens` | `(user_id, expires_at DESC)` | Cleanup of active / expired tokens per user |
 | `api_tokens` | `(user_id) WHERE revoked_at IS NULL` | Per-user active token list and cap enforcement |
+
+#### Ingestion event indexes
+
+Both ingestion indexes are partial on `entity_type='ingestion_source'`, and both are
+shaped by the two-branch predicates their queries emit (read paths:
+[BACKEND §Ingestion Service](BACKEND.md#ingestion-service-srcbackendingestion);
+`detail.source` producer vocabulary: [BACKEND §Event Catalogue](BACKEND.md#event-catalogue)).
+Three shape constraints are load-bearing:
+
+- **`entity_id` must lead.** The per-dataset timeline filters
+  `detail->>'dataset_urn' IS NULL OR detail->>'dataset_urn' = :urn` — the `IS NULL` branch is
+  the run-level feed and is therefore estate-wide, so an index keyed on the JSONB expression
+  alone is not selective enough to be chosen and buys nothing over the scan the query already
+  performs. The source id is the only selective leading key, and it is present on every caller.
+- **The trailing `occurred_at DESC` serves the `from`/`to` range, not the `ORDER BY`.** Because
+  every caller emits the disjunction, the plan is a bitmap combination of both branches, and a
+  bitmap heap scan discards index order — the sort happens regardless. The column is there so the
+  time window is bounded inside the index rather than on the heap.
+- **`ix_events_ingestion_run_level` is inert without extended statistics.** Without them the
+  planner has no distribution for `detail->>'source'`, over-estimates the number of matching rows
+  by orders of magnitude, and under `ORDER BY occurred_at DESC LIMIT 1` prefers the generic
+  `(entity_type, entity_id, occurred_at DESC)` index's fast-start path — precisely on the sources
+  the partial index exists for, whose feed is dominated by per-dataset observations. It is
+  therefore paired with a statistics object:
+
+  ```sql
+  CREATE STATISTICS st_events_detail_source ON (detail->>'source') FROM events;
+  ```
+
+Vocabulary drift on the run-level predicate is asymmetric: **adding** an observation producer
+needs no DDL, since a longer `NOT IN` list implies the shorter one, while **removing** one leaves
+the index predicate no longer implied by the query and the index unusable until it is edited.
+
+A statistics object has no declarative table-metadata form, so it exists only in the migration.
+Schemas built directly from the ORM metadata (test fixtures) lack it — acceptable, because it is a
+planner hint and no behaviour depends on the plan chosen.
 
 ---
 

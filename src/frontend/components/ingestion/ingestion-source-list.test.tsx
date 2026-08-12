@@ -15,7 +15,7 @@
  * The component calls useIngestionSourceDatasetCounts and useIngestionSourceLatestRuns
  * internally. Both are mocked at the @/lib/api/ingestion module boundary.
  */
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import React from "react";
 import { IngestionSourceList } from "./ingestion-source-list";
@@ -108,13 +108,24 @@ vi.mock("@/components/ui/select", () => {
   };
 });
 
-// Mock the two hooks the component calls internally. Both return stable empty
-// data so per-row count/status rendering is inert in these tests.
+// Mock the two hooks the component calls internally. Both default to empty data so
+// per-row count/status rendering is inert; the status-column tests below override
+// `latestRunData` to supply a derived run outcome.
+//
+// `useIngestionSourceLatestRuns` already applies the run-outcome derivation through its
+// `select`, so each result's `data` is the winning event (or undefined) — NOT the raw
+// page. That contract is what the status column consumes, and the derivation itself is
+// covered in lib/api/ingestion.test.ts.
+// spec: spec/feature/FRONTEND_INGESTION.md §List View.
+const { latestRunData } = vi.hoisted(() => ({
+  latestRunData: { current: undefined as unknown },
+}));
+
 vi.mock("@/lib/api/ingestion", () => ({
   useIngestionSourceDatasetCounts: (_ids: string[]) =>
     (_ids ?? []).map(() => ({ data: undefined, isLoading: false })),
   useIngestionSourceLatestRuns: (_ids: string[]) =>
-    (_ids ?? []).map(() => ({ data: undefined, isLoading: false })),
+    (_ids ?? []).map(() => ({ data: latestRunData.current, isLoading: false })),
 }));
 
 // ---------------------------------------------------------------------------
@@ -372,5 +383,70 @@ describe("IngestionSourceList — empty state", () => {
       />,
     );
     expect(screen.queryByText(/no ingestion sources found/i)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 5. Status column — the badge reads the DERIVED run outcome
+//
+// The per-source probe fetches a page of the source's event feed and derives the newest
+// run outcome from it, because the feed also carries per-dataset ingestion observations
+// and source-lifecycle events. The column must render that derived event's status, not
+// the head of the raw page.
+//
+// spec: spec/feature/FRONTEND_INGESTION.md §List View — "The first surviving row supplies
+//   the badge; a source whose newest page holds no run outcome shows none."
+// spec: spec/feature/FRONTEND_INGESTION.md §List View — "A `PASSIVE` source shows none
+//   **always** … The cell then renders the muted `—` placeholder".
+// ---------------------------------------------------------------------------
+
+describe("IngestionSourceList — status column", () => {
+  afterEach(() => {
+    latestRunData.current = undefined;
+  });
+
+  it("renders the derived run outcome's status as the badge", () => {
+    // The derivation resolved to a FAILED run: the badge must read 'error'. A column
+    // reading the raw feed's head would have rendered the newer observation's 'success'.
+    latestRunData.current = {
+      id: "ev-1",
+      entity_type: "ingestion_source",
+      entity_id: "src-ACTIVE_CUSTOM_MANAGED",
+      event_type: "INGESTION.FAIL",
+      status: "error",
+      detail: { run_id: "run-42" },
+      occurred_at: "2026-01-02T10:00:00Z",
+    };
+    render(
+      <IngestionSourceList
+        sources={[makeSource("ACTIVE_CUSTOM_MANAGED")]}
+        isLoading={false}
+        filterKey="ALL"
+        onFilterKeyChange={noop}
+        page={{ ...basePage, totalCount: 1 }}
+        onOffset={noop}
+        onLimit={noop}
+      />,
+    );
+    expect(screen.getByText("error")).toBeTruthy();
+    expect(screen.queryByText("—")).toBeNull();
+  });
+
+  it("renders the muted placeholder when the derivation found no run outcome", () => {
+    // `undefined` is what the derivation returns for a feed of observations only — the
+    // PASSIVE reading. The cell shows the muted em dash rather than a badge.
+    latestRunData.current = undefined;
+    render(
+      <IngestionSourceList
+        sources={[makeSource("PASSIVE")]}
+        isLoading={false}
+        filterKey="ALL"
+        onFilterKeyChange={noop}
+        page={{ ...basePage, totalCount: 1 }}
+        onOffset={noop}
+        onLimit={noop}
+      />,
+    );
+    expect(screen.getByText("—")).toBeTruthy();
   });
 });

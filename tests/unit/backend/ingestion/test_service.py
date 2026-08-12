@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1653,23 +1654,450 @@ class TestRunZeroEmitFailureAndEventDetail:
         )
 
 
-# ── _observe_passive_operations: per-dataset observation identity ─────────────
+# ── Observed instants: the _observed_at bounds ────────────────────────────────
+
+
+def _to_ms(moment: datetime) -> int:
+    """Epoch milliseconds for *moment*, the shape DataHub stores every instant in."""
+    return int(moment.timestamp() * 1000)
+
+
+class TestObservedAtBounds:
+    """``_observed_at`` converts a writer-supplied epoch-millisecond value, or rejects it.
+
+    Every instant this function sees is writer-supplied on the MCP that wrote it —
+    ``Operation.lastUpdatedTimestamp``, the ``systemMetadata`` scan behind
+    ``Dataset.lastIngested``, and the execution request's ``startTimeMs`` /
+    ``requestedAt`` — so as far as DataSpoke is concerned the value is arbitrary JSON
+    and a malformed one must cost that one observation and nothing more.
+
+    spec: feature/BACKEND.md §Sync + mapping sweep step 4 — "the observed millisecond
+        timestamp must be a positive integer resolving to a representable instant no
+        later than a small skew allowance past now. A value that is absent, zero,
+        non-numeric, negative, out of range, or **future-dated** books nothing and is
+        logged."
+    spec: feature/BACKEND.md §Sync + mapping sweep step 4 — "Neither producer ever falls
+        back to ``now()``, and neither clamps."
+    spec: DATAHUB_INTEGRATION.md §Ingestion Source Sync — "a null, non-numeric,
+        non-positive, out-of-range, or beyond-a-small-future-skew value is **rejected,
+        never clamped and never defaulted to ``now()``**. Clamping or defaulting
+        fabricates an instant DataHub never reported."
+    """
+
+    # Every shape the spec enumerates as unusable, plus the two Python traps the
+    # enumeration implies: ``bool`` is an ``int`` subclass so it passes a bare numeric
+    # check, and a non-finite float passes an ``isinstance(..., float)`` one.
+    _REJECTED: list[tuple[str, object]] = [
+        ("absent", None),
+        ("zero", 0),
+        ("negative", -1),
+        ("negative-epoch", -1_700_000_000_000),
+        ("bool-true", True),
+        ("bool-false", False),
+        ("numeric-string", "1700000000000"),
+        ("nan", float("nan")),
+        ("positive-infinity", float("inf")),
+        ("negative-infinity", float("-inf")),
+        ("beyond-datetime-range", 10**18),
+        ("mapping", {"lastUpdatedTimestamp": 1_700_000_000_000}),
+    ]
+
+    @pytest.mark.parametrize(
+        ("label", "value"), _REJECTED, ids=[label for label, _ in _REJECTED]
+    )
+    def test_an_unusable_value_is_rejected_and_logged(
+        self, label: str, value: object, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """An unusable millisecond value returns ``None`` — never an instant, never a raise.
+
+        ``None`` is what the callers read as "nothing observable here", so it is the only
+        answer that books nothing. The log record is the other half of the contract: a
+        silently dropped observation is indistinguishable from a dataset DataHub cannot
+        date.
+
+        spec: feature/BACKEND.md §Sync + mapping sweep step 4 — such a value "books
+            nothing and is logged".
+        """
+        from src.backend.ingestion.service import _observed_at
+
+        caplog.set_level(logging.WARNING)
+        assert _observed_at(value) is None, (
+            f"{label}: an unusable observed millisecond value ({value!r}) must be "
+            "rejected, not converted. spec: feature/BACKEND.md §Sync + mapping sweep "
+            "step 4."
+        )
+        assert caplog.records, (
+            f"{label}: the rejection must be logged, or a dropped observation is "
+            "indistinguishable from an undatable dataset. "
+            "spec: feature/BACKEND.md §Sync + mapping sweep step 4."
+        )
+
+    def test_a_representable_past_instant_converts_to_that_exact_instant(self) -> None:
+        """A positive past millisecond value converts to exactly the instant it names.
+
+        The expected instant is written out independently of the conversion arithmetic,
+        so an off-by-a-factor error (seconds read as milliseconds, or the reverse) fails
+        here rather than passing against a restatement of the implementation.
+
+        spec: DATAHUB_INTEGRATION.md §Observed Ingestion Recency — "``Dataset.lastIngested``
+            (epoch ms)".
+        """
+        from src.backend.ingestion.service import _observed_at
+
+        # 1_700_000_000_123 ms = 2023-11-14T22:13:20.123Z.
+        assert _observed_at(1_700_000_000_123) == datetime(
+            2023, 11, 14, 22, 13, 20, 123_000, tzinfo=UTC
+        )
+
+    @pytest.mark.parametrize(
+        "ms",
+        [1, 1_000, 1_200_000_000_999, 1_500_000_000_000, 1_700_000_000_123],
+        ids=["epoch+1ms", "epoch+1s", "2008", "2017", "2023"],
+    )
+    def test_the_integer_form_agrees_with_the_float_form_across_the_usable_range(
+        self, ms: int
+    ) -> None:
+        """Integer-exact conversion agrees with ``fromtimestamp(ms / 1000)`` everywhere usable.
+
+        This is what makes the change safe on an existing estate: rows already booked by
+        the float form must dedup against rows the integer form computes, and they only
+        do so if the two land on the same instant.
+
+        spec: DATAHUB_INTEGRATION.md §Ingestion Source Sync — the observation identity
+            tuple includes ``occurred_at``, so a shifted instant is a *new* identity and
+            would re-book every historical observation.
+        """
+        from src.backend.ingestion.service import _observed_at
+
+        assert _observed_at(ms) == datetime.fromtimestamp(ms / 1000, tz=UTC)
+
+    def test_the_future_bound_is_the_declared_skew_allowance(self) -> None:
+        """The upper bound sits at ``now + _OBSERVED_AT_MAX_SKEW``, on both sides of it.
+
+        Both legs are derived from the declared constant rather than from a wall-clock
+        literal, so widening or narrowing the allowance moves the test with it and only a
+        *removed* bound fails. The backstop guards the degenerate reading: a zero (or
+        negative) allowance would make the "inside" leg pass for the wrong reason.
+
+        spec: feature/BACKEND.md §Sync + mapping sweep step 4 — "no later than a small
+            skew allowance past now"; a "**future-dated**" value "books nothing".
+        spec: DATAHUB_INTEGRATION.md §Ingestion Source Sync — "an unbounded upper end lets
+            one future-dated value permanently poison every recency reading derived from
+            it, since the newest evidence always wins and nothing later can displace it."
+        """
+        from src.backend.ingestion.service import _OBSERVED_AT_MAX_SKEW, _observed_at
+
+        assert _OBSERVED_AT_MAX_SKEW > timedelta(0), (
+            "backstop: the skew allowance must be a real, positive window, or the "
+            "'inside the allowance' leg below proves nothing."
+        )
+        # Both offsets are proportions of the allowance rather than fixed durations, so
+        # neither leg degenerates at any positive value of it: a fixed −30s offset would
+        # make `inside` a *past* instant for any allowance under half a minute, and the
+        # "accepted" leg would then be proving the past branch instead of the bound.
+        now = datetime.now(tz=UTC)
+        inside = now + _OBSERVED_AT_MAX_SKEW / 2
+        beyond = now + _OBSERVED_AT_MAX_SKEW * 2
+
+        assert _observed_at(_to_ms(inside)) is not None, (
+            "an instant inside the declared skew allowance must be accepted — writer "
+            "clocks drift and DataHub's need not agree with the API pod's. "
+            "spec: feature/BACKEND.md §Sync + mapping sweep step 4."
+        )
+        assert _observed_at(_to_ms(beyond)) is None, (
+            "an instant past the declared skew allowance must be rejected outright. "
+            "spec: DATAHUB_INTEGRATION.md §Ingestion Source Sync — one future-dated "
+            "value otherwise poisons every recency reading derived from it."
+        )
+
+    def test_a_far_future_instant_is_rejected_rather_than_clamped(self) -> None:
+        """A representable but far-future value is rejected, not clamped back to now.
+
+        ``10**14`` ms resolves to the year 5138 — perfectly representable, so the
+        range check cannot be what rejects it. Rejecting it (rather than clamping to
+        ``now``) is the discriminating half: a clamp would return an instant, and a
+        clamped instant outranks every real one forever.
+
+        spec: DATAHUB_INTEGRATION.md §Ingestion Source Sync — "rejected, never clamped
+            and never defaulted to ``now()``".
+        """
+        from src.backend.ingestion.service import _observed_at
+
+        # Backstop: the value must be representable, or this test would be re-proving the
+        # out-of-range branch instead of the future branch. Asserting the resolved year
+        # (rather than merely that the arithmetic did not raise) also fails if the value
+        # ever stops being far-future.
+        representable = datetime(1970, 1, 1, tzinfo=UTC) + timedelta(milliseconds=10**14)
+        assert representable.year > datetime.now(tz=UTC).year + 1000, (
+            f"backstop: 10**14 ms must resolve to a representable far-future instant; got "
+            f"{representable!r}."
+        )
+        assert _observed_at(10**14) is None
+
+
+# ── Step 4 observation sub-passes: shared in-memory store ─────────────────────
+
+
+class _ObservationStore:
+    """A query-routing fake session over the two tables step 4's observers touch.
+
+    Two queries reach the database from an observation sub-pass, and both are routed by
+    the SQL they compile to, never by call position
+    (spec: TESTING.md §Unit Testing §Mocking rules):
+
+    1. ``SELECT dataset_urn FROM ingestion_source_dataset WHERE source_id = :id`` — the
+       source's mapped datasets.
+    2. ``SELECT detail->>'dataset_urn', occurred_at FROM events WHERE …`` — the batched
+       dedup read (:meth:`IngestionService._existing_observation_keys`).
+
+    Query 2 is **emulated, not reimplemented**. The rows it returns come from what
+    ``db.add`` actually stored, filtered by the values the statement bound: the source
+    id, the observed-instant range, and — *only when the statement binds one* — the
+    producer. That last conditional is what makes the fake honest in both directions. A
+    real database given a dedup query with no ``detail->>'source'`` term returns rows of
+    every producer, and this fake does the same, so an implementation that drops the
+    producer term from the identity tuple sees the other signal's row and skips its own
+    insert. An implementation that keeps it sees only its own.
+
+    The store persists across calls, so a second sweep's dedup read sees the first
+    sweep's committed rows.
+    """
+
+    def __init__(self, mappings: dict[str, list[str]]) -> None:
+        self.mappings = {str(k): list(v) for k, v in mappings.items()}
+        self.events: list[Any] = []
+        self.commits = 0
+        self.rollbacks = 0
+        # (compiled SQL, DBAPI-level bind count) of every dedup read, for the
+        # parameter-bound pin in TestObservationDedupReadIsParameterBounded.
+        self.dedup_reads: list[tuple[str, int]] = []
+
+    # ── wiring ────────────────────────────────────────────────────────────────
+
+    def wire(self, db: AsyncMock) -> None:
+        db.execute = AsyncMock(side_effect=self._execute)
+        db.add = MagicMock(side_effect=self.events.append)
+        db.commit = AsyncMock(side_effect=self._commit)
+        db.rollback = AsyncMock(side_effect=self._rollback)
+
+    async def _commit(self) -> None:
+        self.commits += 1
+
+    async def _rollback(self) -> None:
+        self.rollbacks += 1
+
+    # ── routing ───────────────────────────────────────────────────────────────
+
+    async def _execute(self, stmt: Any, *args: Any, **kwargs: Any) -> MagicMock:
+        from sqlalchemy.dialects import postgresql
+
+        # render_postcompile expands an ``IN (...)`` list into one bind per element,
+        # which is how the driver ultimately sends it. Compiling without it reports a
+        # single "expanding" parameter for any list length, which would make the
+        # per-instant and the constant form indistinguishable to the bind-count pin.
+        compiled = stmt.compile(
+            dialect=postgresql.dialect(), compile_kwargs={"render_postcompile": True}
+        )
+        sql = str(compiled)
+        binds = list(compiled.params.values())
+
+        if "ingestion_source_dataset" in sql:
+            return self._mapping_result(binds)
+        if "events" in sql:
+            self.dedup_reads.append((sql, len(compiled.params)))
+            return self._dedup_result(binds)
+        raise AssertionError(f"_ObservationStore: unrouted statement:\n{sql}")
+
+    def _mapping_result(self, binds: list[Any]) -> MagicMock:
+        bound_ids = {str(v) for v in binds}
+        urns: list[str] = []
+        for source_id, mapped in self.mappings.items():
+            if source_id in bound_ids:
+                urns.extend(mapped)
+        result = MagicMock()
+        result.scalars.return_value.all.return_value = urns
+        return result
+
+    def _dedup_result(self, binds: list[Any]) -> MagicMock:
+        from src.backend.ingestion.service import _OBSERVATION_SOURCES
+
+        bound_strings = {str(v) for v in binds}
+        bound_instants = [v for v in binds if isinstance(v, datetime)]
+        bound_producers = bound_strings & set(_OBSERVATION_SOURCES)
+
+        rows: list[tuple[str | None, datetime]] = []
+        for event in self.events:
+            if event.entity_id not in bound_strings:
+                continue
+            if bound_instants and not (
+                min(bound_instants) <= event.occurred_at <= max(bound_instants)
+            ):
+                continue
+            # No producer term bound ⇒ a real database returns every producer's rows.
+            if bound_producers and event.detail.get("source") not in bound_producers:
+                continue
+            rows.append((event.detail.get("dataset_urn"), event.occurred_at))
+
+        result = MagicMock()
+        result.all.return_value = rows
+        return result
+
+    # ── readbacks ─────────────────────────────────────────────────────────────
+
+    def booked(self, producer: str) -> list[Any]:
+        """Events stored for one ``detail.source`` producer, in insertion order."""
+        return [e for e in self.events if e.detail.get("source") == producer]
+
+
+def _make_operation(ts_ms: object, op_type: str | None = "INSERT") -> MagicMock:
+    """A DataHub ``Operation`` timeseries record.
+
+    Exposes only ``operationType`` and ``lastUpdatedTimestamp`` — the two attributes the
+    sweep reads (spec: feature/BACKEND.md §Sync + mapping sweep step 4).
+    """
+    op = MagicMock()
+    op.operationType = op_type
+    op.lastUpdatedTimestamp = ts_ms
+    return op
+
+
+# ── The batched dedup read is bind-parameter bounded ──────────────────────────
+
+
+class TestObservationDedupReadIsParameterBounded:
+    """One dedup read costs the same number of bind parameters whatever the batch size.
+
+    ``_existing_observation_keys`` is handed one instant per observation the sub-pass is
+    about to book, and the first sweep of a fresh deployment books the whole historical
+    backlog — one instant per mapped dataset. Binding the instants individually
+    (``occurred_at IN (…)``) therefore scales the parameter count with the estate, and
+    asyncpg hard-fails above 32767 bind parameters: a source with more mapped datasets
+    than that takes the whole sub-pass down on the sweep that matters most. The parameter
+    count must be a function of the *query*, not of the batch.
+
+    No behavioural test can see this: both forms return the same keys, and every estate a
+    test can afford to build is orders of magnitude below the ceiling. The bind count is
+    the only observable that separates them, which is why it is pinned directly.
+
+    NOTE — no spec anchor. This rule is stated in the approved plan (§Stage B2, "Do not
+    use ``occurred_at IN (<instants>)`` … asyncpg hard-fails above 32767 … Use a range
+    predicate … 8 bind parameters, constant") and in the docstring of
+    ``_existing_observation_keys``, but not in ``spec/feature/BACKEND.md``. Flagged for the
+    spec owner: it belongs in §Sync + mapping sweep step 4 beside the identity rule.
+    """
+
+    _ORDERS_URN = (
+        "urn:li:dataset:(urn:li:dataPlatform:kafka,example_kafka.imazon.orders.events,DEV)"
+    )
+
+    @pytest.mark.asyncio
+    async def test_a_hundredfold_larger_batch_binds_no_more_parameters(
+        self, service: IngestionService, db: AsyncMock
+    ) -> None:
+        """3 instants and 300 instants compile to the same bind-parameter count."""
+        from src.backend.ingestion.service import _OBS_PASSIVE_OPERATION
+
+        base = datetime(2024, 6, 1, tzinfo=UTC)
+        counts: dict[int, int] = {}
+        statements: dict[int, str] = {}
+
+        for batch in (3, 300):
+            source_id = str(uuid.uuid4())
+            instants = {base + timedelta(minutes=n) for n in range(batch)}
+            store = _ObservationStore({source_id: [self._ORDERS_URN]})
+            store.wire(db)
+
+            keys = await service._existing_observation_keys(
+                source_id, instants, _OBS_PASSIVE_OPERATION
+            )
+
+            # Backstop: the read really was issued for this batch. Without it the
+            # comparison below could hold between two batches that never reached the
+            # database at all.
+            assert len(store.dedup_reads) == 1, (
+                f"batch={batch}: the dedup read is one statement per source per signal; "
+                f"got {len(store.dedup_reads)}."
+            )
+            assert keys == set(), (
+                f"batch={batch}: nothing is booked yet, so no key comes back; got {keys!r}."
+            )
+            statements[batch], counts[batch] = store.dedup_reads[0]
+
+        assert counts[3] == counts[300], (
+            f"the dedup read must bind a constant number of parameters: a 3-instant batch "
+            f"bound {counts[3]} and a 300-instant batch bound {counts[300]}, so the count "
+            f"tracks the batch and the first sweep of a large estate walks into asyncpg's "
+            f"32767-parameter ceiling. plan §Stage B2 — 'Do not use occurred_at IN "
+            f"(<instants>) … Use a range predicate … 8 bind parameters, constant'. "
+            f"statement (truncated): {statements[300][:400]}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_read_still_matches_the_instants_it_was_given(
+        self, service: IngestionService, db: AsyncMock
+    ) -> None:
+        """A constant-parameter read is still exact: only the booked instant comes back.
+
+        Paired with the count pin above so "bind fewer parameters" cannot be satisfied by
+        binding fewer *predicates*: the range narrows the read, and the intersection with
+        the requested instant set is what makes the result exact.
+
+        spec: feature/BACKEND.md §Sync + mapping sweep step 4 — identity is the "(source,
+            ``detail.dataset_urn``, ``occurred_at``, ``detail.source``)" tuple.
+        """
+        from src.backend.ingestion.service import _OBS_PASSIVE_OPERATION
+        from src.shared.db.models import Event
+        from src.shared.events import INGESTION_COMPLETE
+
+        source_id = str(uuid.uuid4())
+        booked_at = datetime(2024, 6, 1, 12, 0, tzinfo=UTC)
+        inside_the_range_but_not_requested = booked_at + timedelta(seconds=30)
+        store = _ObservationStore({source_id: [self._ORDERS_URN]})
+        store.wire(db)
+        store.events.extend(
+            Event(
+                entity_type="ingestion_source",
+                entity_id=source_id,
+                event_type=INGESTION_COMPLETE,
+                status="success",
+                detail={"dataset_urn": self._ORDERS_URN, "source": _OBS_PASSIVE_OPERATION},
+                occurred_at=moment,
+            )
+            for moment in (booked_at, inside_the_range_but_not_requested)
+        )
+
+        keys = await service._existing_observation_keys(
+            source_id,
+            {booked_at, booked_at + timedelta(minutes=1)},
+            _OBS_PASSIVE_OPERATION,
+        )
+
+        assert keys == {(self._ORDERS_URN, booked_at)}, (
+            f"only the requested instants may come back — a row inside the bound range "
+            f"that was not asked about is not an identity match; got {keys!r}. "
+            "spec: feature/BACKEND.md §Sync + mapping sweep step 4 — the identity tuple."
+        )
+
+
+# ── _observe_passive_operations: per-dataset Operation observation ────────────
 
 
 class TestObservePassiveOperations:
-    """Spec: spec/feature/BACKEND.md §Sync step 4 (Run events) — 'For PASSIVE sources,
-    observe Operation timeseries on mapped datasets.'
+    """Sub-pass 4b: ingestion-like ``Operation`` aspects on a PASSIVE source's datasets.
 
-    Spec invariant under test (per-dataset observation identity): every dataset mapped to
-    a PASSIVE source that has a fresh DataHub Operation yields its OWN passive_observation
-    event — a distinct row keyed on its dataset_urn. Two datasets under the same PASSIVE
-    source whose Operations share an identical millisecond lastUpdatedTimestamp must each
-    produce an event; they must NOT collide into one. The event detail carries
-    {dataset_urn, operation_type, source='passive_observation'} and occurred_at is derived
-    from the Operation's lastUpdatedTimestamp.
-
-    The success/failure status-string vocabulary is anchored in USE_CASE_en.md §UC1
-    API Mapping (BACKEND.md §Sync step 4 maps DataHub status → event type only).
+    spec: feature/BACKEND.md §Sync + mapping sweep step 4 — the sub-pass table row
+        "``Operation`` observation | ``Operation`` aspects (``operationType ∈ {INSERT,
+        UPDATE, CREATE, ALTER}``) | ``PASSIVE`` | per dataset | ``COMPLETE`` only |
+        ``passive_observation``".
+    spec: feature/BACKEND.md §Sync + mapping sweep step 4 — identity is the "(source,
+        ``detail.dataset_urn``, ``occurred_at``, ``detail.source``)" tuple, "**appended**
+        — booked once for that instant, never again".
+    spec: feature/BACKEND.md §Sync + mapping sweep step 4 — "there is **no cap of one
+        event per dataset per sweep** — every new qualifying instant since the last sweep
+        is booked in that sweep, which is what makes two consecutive sweeps over an
+        unchanged estate report zero."
+    spec: feature/BACKEND.md §Event Catalogue §producers — ``passive_observation`` detail
+        keys are "``source``, ``dataset_urn``, ``operation_type``".
     """
 
     _ORDERS_URN = (
@@ -1679,244 +2107,1531 @@ class TestObservePassiveOperations:
         "urn:li:dataset:(urn:li:dataPlatform:kafka,example_kafka.imazon.shipping.updates,DEV)"
     )
 
-    @staticmethod
-    def _make_ds_row(source_id: str, dataset_urn: str) -> MagicMock:
-        """An IngestionSourceDataset row mapped to the PASSIVE source."""
-        row = MagicMock()
-        row.source_id = uuid.UUID(source_id)
-        row.dataset_urn = dataset_urn
-        return row
+    @pytest.mark.asyncio
+    async def test_five_qualifying_operations_book_five_events_in_one_sweep(
+        self, service: IngestionService, db: AsyncMock, datahub: AsyncMock
+    ) -> None:
+        """Five qualifying Operations on one dataset book FIVE events in a single sweep.
 
-    @staticmethod
-    def _make_op(ts_ms: int | None, op_type: str | None = "INSERT") -> MagicMock:
-        """A DataHub Operation timeseries record exposing operationType +
-        lastUpdatedTimestamp (the only attributes the sweep reads)."""
-        op = MagicMock()
-        op.operationType = op_type
-        op.lastUpdatedTimestamp = ts_ms
-        return op
+        The cap this replaces walked the window backwards one record per sweep, so the
+        same estate reported a non-zero count on every tick and the oldest instant took
+        five hours to surface. Both halves are asserted: five in the first sweep, and
+        **zero** in a second sweep over the unchanged estate.
 
-    @staticmethod
-    def _wire_fake_session(
-        db: AsyncMock,
-        datahub: AsyncMock,
-        dataset_rows: list[object],
-        ops_by_urn: dict[str, list[object]],
-    ) -> list[object]:
-        """Wire a fake AsyncSession + DataHub stub for _observe_passive_operations and
-        return the list of Event objects passed to db.add().
-
-        In-memory dedup simulation: the fake session dedups by exactly the bind values the
-        running code puts in its WHERE clause — so the test adapts to whatever dedup key the
-        impl uses (pre-fix: no dataset_urn → collision; fixed: dataset_urn → no collision)
-        without pinning to the service's current bytes. State (seen_keys/added_events) lives
-        in this closure, so it persists across repeated _observe_passive_operations calls —
-        modelling a flushed/committed row visible to a later sweep's dedup read.
+        spec: feature/BACKEND.md §Sync + mapping sweep step 4 — "every new qualifying
+            instant since the last sweep is booked in that sweep, which is what makes two
+            consecutive sweeps over an unchanged estate report zero."
         """
-        from sqlalchemy.dialects import postgresql
+        from src.backend.ingestion.service import _OBS_PASSIVE_OPERATION
 
-        seen_keys: set[tuple[str, ...]] = set()
-        added_events: list[object] = []
-        pending: dict[str, tuple[str, ...] | None] = {"key": None}
-
-        def _where_key(stmt: object) -> tuple[str, ...]:
-            compiled = stmt.compile(dialect=postgresql.dialect())  # type: ignore[attr-defined]
-            return tuple(sorted(str(v) for v in compiled.params.values()))
-
-        async def _fake_execute(stmt: object, *args: object, **kwargs: object) -> MagicMock:
-            sql = str(stmt.compile(dialect=postgresql.dialect()))  # type: ignore[attr-defined]
-            if "ingestion_source_dataset" in sql:
-                result = MagicMock()
-                result.scalars.return_value.all.return_value = dataset_rows
-                return result
-            # Dedup query on the events table: match iff this WHERE key was already inserted.
-            key = _where_key(stmt)
-            pending["key"] = key
-            result = MagicMock()
-            result.scalar_one_or_none.return_value = object() if key in seen_keys else None
-            return result
-
-        def _fake_add(obj: object) -> None:
-            added_events.append(obj)
-            if pending["key"] is not None:
-                seen_keys.add(pending["key"])
-                pending["key"] = None
-
+        source_id = str(uuid.uuid4())
+        instants = [1_700_000_000_000 + n * 60_000 for n in range(5)]
+        store = _ObservationStore({source_id: [self._ORDERS_URN]})
+        store.wire(db)
         datahub.get_timeseries = AsyncMock(
-            side_effect=lambda urn, *args, **kwargs: ops_by_urn.get(urn, [])
+            return_value=[_make_operation(ms) for ms in instants]
         )
-        db.execute = AsyncMock(side_effect=_fake_execute)
-        db.add = MagicMock(side_effect=_fake_add)
-        return added_events
 
-    @staticmethod
-    def _passive(added_events: list[object]) -> list[object]:
-        """Filter to the passive_observation events among db.add() calls."""
-        return [
-            e
-            for e in added_events
-            if getattr(e, "detail", {}).get("source") == "passive_observation"
-        ]
+        first = await service._observe_passive_operations(source_id)
+        second = await service._observe_passive_operations(source_id)
+
+        assert first == 5, (
+            f"five distinct qualifying Operation instants must book five events in one "
+            f"sweep; got {first}. spec: feature/BACKEND.md §Sync + mapping sweep step 4 — "
+            "no cap of one event per dataset per sweep."
+        )
+        assert second == 0, (
+            f"a second sweep over an unchanged estate must book nothing; got {second}. "
+            "spec: feature/BACKEND.md §Sweep summary — 'A second consecutive sweep over "
+            "an unchanged estate returns zero for all of those.'"
+        )
+        booked = store.booked(_OBS_PASSIVE_OPERATION)
+        assert {e.occurred_at for e in booked} == {
+            datetime.fromtimestamp(ms / 1000, tz=UTC) for ms in instants
+        }, (
+            "each booked event must carry its own observed instant, so the five are five "
+            "distinct identities rather than one repeated. "
+            "spec: DATAHUB_INTEGRATION.md §Ingestion Source Sync — observed-ingestion "
+            "identity."
+        )
 
     @pytest.mark.asyncio
-    async def test_two_datasets_sharing_occurred_at_yield_two_events(
-        self,
-        service: IngestionService,
-        db: AsyncMock,
-        datahub: AsyncMock,
+    async def test_two_operations_on_one_dataset_sharing_a_millisecond_book_one_event(
+        self, service: IngestionService, db: AsyncMock, datahub: AsyncMock
     ) -> None:
-        """Two PASSIVE-mapped datasets with Operations at the SAME millisecond timestamp
-        produce TWO distinct passive_observation events — one per dataset_urn.
+        """Two Operations on ONE dataset at the same millisecond book exactly one event.
 
-        Spec: spec/feature/BACKEND.md §Sync step 4 — per-dataset Operation observation.
-        Asserts the spec invariant (each mapped dataset with a fresh Operation gets its own
-        observation event), not the dedup query's internals. The shared occurred_at is the
-        regression trigger: a dedup key that omits dataset_urn would drop the second event,
-        leaving 1 — so this asserts 2 to fail on that collision and pass on the fix.
+        Same source, same dataset, same instant is one identity, so the second is a
+        duplicate. The dedup read cannot see it — the colliding row is one this same pass
+        is about to insert — so only an in-pass guard can catch it, and without one the
+        pair persists forever and every later sweep treats the two rows as one.
+
+        spec: feature/BACKEND.md §Sync + mapping sweep step 4 — identity is the "(source,
+            ``detail.dataset_urn``, ``occurred_at``, ``detail.source``)" tuple.
         """
+        from src.backend.ingestion.service import _OBS_PASSIVE_OPERATION
+
+        source_id = str(uuid.uuid4())
+        shared_ms = 1_700_000_000_000
+        store = _ObservationStore({source_id: [self._ORDERS_URN]})
+        store.wire(db)
+        # Two aspects, same instant — different operationTypes so they are genuinely two
+        # records rather than one repeated object.
+        datahub.get_timeseries = AsyncMock(
+            return_value=[
+                _make_operation(shared_ms, op_type="INSERT"),
+                _make_operation(shared_ms, op_type="UPDATE"),
+            ]
+        )
+
+        inserted = await service._observe_passive_operations(source_id)
+
+        assert inserted == 1, (
+            f"two Operations on one dataset sharing a millisecond are one identity and "
+            f"must book exactly one event; got {inserted}. "
+            "spec: feature/BACKEND.md §Sync + mapping sweep step 4."
+        )
+        assert len(store.booked(_OBS_PASSIVE_OPERATION)) == 1
+
+    @pytest.mark.asyncio
+    async def test_two_datasets_sharing_a_millisecond_each_book_their_own_event(
+        self, service: IngestionService, db: AsyncMock, datahub: AsyncMock
+    ) -> None:
+        """Two datasets whose Operations share a millisecond each keep their own event.
+
+        The complement of the collision test above: the dataset URN is a term of the
+        identity tuple, so a shared instant across *different* datasets is two identities.
+        A dedup key omitting the URN would collapse them into one.
+
+        spec: feature/BACKEND.md §Sync + mapping sweep step 4 — identity is the "(source,
+            ``detail.dataset_urn``, ``occurred_at``, ``detail.source``)" tuple.
+        spec: feature/BACKEND.md §Event Catalogue §producers — ``passive_observation``
+            detail keys "``source``, ``dataset_urn``, ``operation_type``".
+        """
+        from src.backend.ingestion.service import _OBS_PASSIVE_OPERATION
         from src.shared.events import INGESTION_COMPLETE
 
         source_id = str(uuid.uuid4())
-        dataset_rows = [
-            self._make_ds_row(source_id, self._ORDERS_URN),
-            self._make_ds_row(source_id, self._SHIPPING_URN),
-        ]
-        # Both Operations carry the IDENTICAL millisecond lastUpdatedTimestamp — the
-        # collision condition. operationType=INSERT is an ingestion-class op.
-        shared_ts_ms = 1_700_000_000_000
-        ops_by_urn = {
-            self._ORDERS_URN: [self._make_op(shared_ts_ms)],
-            self._SHIPPING_URN: [self._make_op(shared_ts_ms)],
-        }
-        added_events = self._wire_fake_session(db, datahub, dataset_rows, ops_by_urn)
+        shared_ms = 1_700_000_000_000
+        store = _ObservationStore({source_id: [self._ORDERS_URN, self._SHIPPING_URN]})
+        store.wire(db)
+        datahub.get_timeseries = AsyncMock(
+            side_effect=lambda urn, *a, **kw: [_make_operation(shared_ms)]
+        )
 
         inserted = await service._observe_passive_operations(source_id)
 
         assert inserted == 2, (
-            "Two datasets mapped to one PASSIVE source, each with a fresh Operation at the "
-            f"same millisecond, must yield two passive_observation events; got {inserted}. "
-            "A dedup key omitting dataset_urn collapses them into one. "
-            "Spec: spec/feature/BACKEND.md §Sync step 4."
+            f"two mapped datasets with Operations at the same millisecond must each book "
+            f"their own event; got {inserted}. A dedup key omitting dataset_urn collapses "
+            "them. spec: feature/BACKEND.md §Sync + mapping sweep step 4."
         )
-
-        passive = self._passive(added_events)
-        observed_urns = {e.detail["dataset_urn"] for e in passive}
-        assert observed_urns == {self._ORDERS_URN, self._SHIPPING_URN}, (
-            "Each mapped dataset must get its own passive_observation event keyed on its "
-            f"dataset_urn; observed {observed_urns!r}. Spec: spec/feature/BACKEND.md §Sync step 4."
-        )
-        for e in passive:
-            assert e.event_type == INGESTION_COMPLETE
-            assert e.status == "success"
-            assert e.detail["operation_type"] == "INSERT"
-            # occurred_at derived from the Operation's lastUpdatedTimestamp, not now().
-            assert e.occurred_at == datetime.fromtimestamp(shared_ts_ms / 1000, tz=UTC)
-
-    @pytest.mark.asyncio
-    async def test_non_ingestion_operation_types_yield_no_event(
-        self,
-        service: IngestionService,
-        db: AsyncMock,
-        datahub: AsyncMock,
-    ) -> None:
-        """Operations whose operationType is not an ingestion-class type (e.g. 'DROP', or
-        absent/None) produce NO passive_observation event and NO commit.
-
-        Spec: spec/feature/BACKEND.md §Sync step 4 — only ingestion-class Operations
-        (INSERT/UPDATE/CREATE/ALTER) are observed as ingestion-completion signals; a DROP or
-        a typeless Operation is not an ingestion outcome.
-        """
-        source_id = str(uuid.uuid4())
-        dataset_rows = [self._make_ds_row(source_id, self._ORDERS_URN)]
-        ops_by_urn = {
-            self._ORDERS_URN: [
-                self._make_op(1_700_000_000_000, op_type="DROP"),
-                self._make_op(1_700_000_000_500, op_type=None),
-            ]
+        booked = store.booked(_OBS_PASSIVE_OPERATION)
+        assert {e.detail["dataset_urn"] for e in booked} == {
+            self._ORDERS_URN,
+            self._SHIPPING_URN,
         }
-        added_events = self._wire_fake_session(db, datahub, dataset_rows, ops_by_urn)
-
-        inserted = await service._observe_passive_operations(source_id)
-
-        assert inserted == 0, (
-            f"Non-ingestion Operations (DROP / typeless) must mint no events; got {inserted}. "
-            "Spec: spec/feature/BACKEND.md §Sync step 4."
-        )
-        assert self._passive(added_events) == []
-        db.commit.assert_not_called()
+        for event in booked:
+            assert event.entity_type == "ingestion_source", (
+                "an observation is booked on the source, never on the dataset. "
+                "spec: feature/BACKEND.md §Sync + mapping sweep step 4 — 'It is not an "
+                "event *on* the dataset.'"
+            )
+            assert event.entity_id == source_id
+            assert event.event_type == INGESTION_COMPLETE, (
+                "observation is success-only — an Operation is written when data changes "
+                "and cannot express a failure. "
+                "spec: feature/BACKEND.md §Sync + mapping sweep step 4."
+            )
+            assert event.status == "success"
+            assert set(event.detail) == {"source", "dataset_urn", "operation_type"}, (
+                f"passive_observation detail keys must be exactly "
+                f"{{source, dataset_urn, operation_type}}; got {sorted(event.detail)}. "
+                "spec: feature/BACKEND.md §Event Catalogue §producers."
+            )
+            assert event.detail["source"] == _OBS_PASSIVE_OPERATION
+            assert event.detail["operation_type"] == "INSERT"
+            assert event.occurred_at == datetime.fromtimestamp(shared_ms / 1000, tz=UTC)
 
     @pytest.mark.asyncio
-    async def test_empty_timeseries_yields_no_event(
+    @pytest.mark.parametrize(
+        ("label", "op_type"),
+        [("drop", "DROP"), ("typeless", None), ("custom", "CUSTOM")],
+    )
+    async def test_a_non_ingestion_operation_type_books_nothing(
         self,
         service: IngestionService,
         db: AsyncMock,
         datahub: AsyncMock,
+        label: str,
+        op_type: str | None,
     ) -> None:
-        """A mapped dataset whose Operation timeseries is empty produces NO event, NO commit.
+        """An Operation outside the qualifying set books nothing and commits nothing.
 
-        Spec: spec/feature/BACKEND.md §Sync step 4 — a dataset with no observed Operation has
-        nothing to mirror.
+        Both sides are seeded across this class: the qualifying INSERT/UPDATE types are
+        booked by the tests above, and these types are excluded here, so an over-broad
+        ``operationType`` filter fails one or the other.
+
+        spec: feature/BACKEND.md §Sync + mapping sweep step 4 — the qualifying set is
+            "``operationType ∈ {INSERT, UPDATE, CREATE, ALTER}``".
         """
         source_id = str(uuid.uuid4())
-        dataset_rows = [self._make_ds_row(source_id, self._ORDERS_URN)]
-        ops_by_urn: dict[str, list[object]] = {self._ORDERS_URN: []}
-        added_events = self._wire_fake_session(db, datahub, dataset_rows, ops_by_urn)
+        store = _ObservationStore({source_id: [self._ORDERS_URN]})
+        store.wire(db)
+        datahub.get_timeseries = AsyncMock(
+            return_value=[_make_operation(1_700_000_000_000, op_type=op_type)]
+        )
 
         inserted = await service._observe_passive_operations(source_id)
 
         assert inserted == 0, (
-            f"An empty Operation timeseries must mint no events; got {inserted}. "
-            "Spec: spec/feature/BACKEND.md §Sync step 4."
+            f"{label}: operationType {op_type!r} is not an ingestion-class operation and "
+            f"must book nothing; got {inserted}. "
+            "spec: feature/BACKEND.md §Sync + mapping sweep step 4."
         )
-        assert self._passive(added_events) == []
-        db.commit.assert_not_called()
+        assert store.events == []
+        assert store.commits == 0
 
     @pytest.mark.asyncio
-    async def test_same_operation_across_two_sweeps_yields_one_event(
+    @pytest.mark.parametrize(
+        ("label", "ts_ms"),
+        [
+            ("absent", None),
+            ("zero", 0),
+            ("negative", -1),
+            ("non-numeric", "not-a-timestamp"),
+            ("out-of-range", 10**18),
+        ],
+    )
+    async def test_an_undatable_operation_books_nothing_and_raises_nothing(
         self,
         service: IngestionService,
         db: AsyncMock,
         datahub: AsyncMock,
+        label: str,
+        ts_ms: object,
     ) -> None:
-        """The SAME Operation surfacing on two consecutive sweeps yields exactly ONE event
-        for that (source, dataset_urn, occurred_at) — no per-sweep growth.
+        """An Operation whose timestamp is unusable books nothing and does not raise.
 
-        This is the positive-dedup complement of the collision test: the (source, dataset
-        URN, occurred_at) triple is the observation identity, so a repeat sweep over an
-        unchanged Operation must not append a duplicate. Sweep 2's dedup read sees sweep 1's
-        persisted row (modelled by the shared in-memory store).
+        The zero case is the one that used to matter most: a truthiness test let ``0``
+        fall through to ``now()``, so the identity never matched on the next sweep and
+        that dataset accrued one event per sweep forever. A qualifying ``operationType``
+        is supplied throughout, so the timestamp is the only reason nothing is booked.
 
-        Spec: spec/feature/BACKEND.md §Sync step 4 — one passive_observation event per
-        (source, mapped dataset URN, Operation timestamp).
+        spec: feature/BACKEND.md §Sync + mapping sweep step 4 — "A value that is absent,
+            zero, non-numeric, negative, out of range, or **future-dated** books nothing".
+        spec: DATAHUB_INTEGRATION.md §Ingestion Source Sync — "defaulting to ``now()``
+            breaks the identity tuple, so the key never matches on the next sweep and
+            that dataset accrues one event per sweep forever".
         """
         source_id = str(uuid.uuid4())
-        ts_ms = 1_700_000_000_000
-        dataset_rows = [self._make_ds_row(source_id, self._ORDERS_URN)]
-        ops_by_urn = {self._ORDERS_URN: [self._make_op(ts_ms)]}
-        added_events = self._wire_fake_session(db, datahub, dataset_rows, ops_by_urn)
-
-        # Sweep 1: the Operation is observed for the first time → one event.
-        inserted_1 = await service._observe_passive_operations(source_id)
-        assert inserted_1 == 1, (
-            f"First sweep over a fresh Operation must mint exactly one event; got {inserted_1}."
+        store = _ObservationStore({source_id: [self._ORDERS_URN]})
+        store.wire(db)
+        datahub.get_timeseries = AsyncMock(
+            return_value=[_make_operation(ts_ms, op_type="INSERT")]
         )
 
-        # Sweep 2: the SAME Operation (same source/URN/timestamp) → dedup finds the first
-        # sweep's row → no new event.
-        inserted_2 = await service._observe_passive_operations(source_id)
-        assert inserted_2 == 0, (
-            f"Re-observing the same Operation must mint no further event (idempotent); "
-            f"got {inserted_2}. Spec: spec/feature/BACKEND.md §Sync step 4 — one event per "
-            "(source, dataset URN, occurred_at)."
+        inserted = await service._observe_passive_operations(source_id)
+
+        assert inserted == 0, (
+            f"{label}: an Operation carrying {ts_ms!r} must book nothing; got {inserted}. "
+            "spec: feature/BACKEND.md §Sync + mapping sweep step 4."
+        )
+        assert store.events == [], (
+            f"{label}: nothing may be booked at a fabricated instant (now(), the epoch, "
+            "or a clamp). spec: DATAHUB_INTEGRATION.md §Ingestion Source Sync."
         )
 
-        passive = self._passive(added_events)
-        assert len(passive) == 1, (
-            f"Exactly one passive_observation event must exist for the URN across both sweeps; "
-            f"got {len(passive)}. No per-sweep growth."
+    @pytest.mark.asyncio
+    async def test_a_future_dated_operation_books_nothing_while_a_past_one_still_does(
+        self, service: IngestionService, db: AsyncMock, datahub: AsyncMock
+    ) -> None:
+        """A future-dated Operation books nothing; a past one in the same batch still books.
+
+        Both sides are in one batch so the assertion cannot pass by the sub-pass failing
+        wholesale: exactly one of the two instants survives, and it is the past one.
+
+        spec: feature/BACKEND.md §Sync + mapping sweep step 4 — a "**future-dated**" value
+            "books nothing and is logged".
+        spec: DATAHUB_INTEGRATION.md §Ingestion Source Sync — "an unbounded upper end lets
+            one future-dated value permanently poison every recency reading derived from
+            it".
+        """
+        from src.backend.ingestion.service import _OBS_PASSIVE_OPERATION, _OBSERVED_AT_MAX_SKEW
+
+        source_id = str(uuid.uuid4())
+        now = datetime.now(tz=UTC)
+        past = now - timedelta(hours=1)
+        future = now + _OBSERVED_AT_MAX_SKEW + timedelta(hours=1)
+        store = _ObservationStore({source_id: [self._ORDERS_URN]})
+        store.wire(db)
+        datahub.get_timeseries = AsyncMock(
+            return_value=[
+                _make_operation(_to_ms(future)),
+                _make_operation(_to_ms(past)),
+            ]
         )
-        assert passive[0].detail["dataset_urn"] == self._ORDERS_URN
-        assert passive[0].occurred_at == datetime.fromtimestamp(ts_ms / 1000, tz=UTC)
+
+        inserted = await service._observe_passive_operations(source_id)
+
+        assert inserted == 1, (
+            f"exactly the past Operation must be booked out of a future/past pair; got "
+            f"{inserted}. spec: feature/BACKEND.md §Sync + mapping sweep step 4."
+        )
+        booked = store.booked(_OBS_PASSIVE_OPERATION)
+        assert len(booked) == 1
+        assert booked[0].occurred_at < now, (
+            f"the surviving event must be the past one; got {booked[0].occurred_at!r}. "
+            "spec: DATAHUB_INTEGRATION.md §Ingestion Source Sync — future-dated instants "
+            "are rejected, never clamped."
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_database_failure_degrades_this_source_and_rolls_the_session_back(
+        self, service: IngestionService, db: AsyncMock, datahub: AsyncMock
+    ) -> None:
+        """A DB failure inside the sub-pass books nothing, raises nothing, and rolls back.
+
+        Degrading the *signal* rather than the sweep is the whole point of the wrapper: a
+        failure that escaped here would reach ``sync()``'s ``except`` and flip the
+        ``datahub-api`` health row to ``error`` for every source. The rollback is the
+        other half — a failed statement aborts the whole PostgreSQL transaction, so
+        without it every later statement in the sweep fails too and the containment holds
+        in name only.
+
+        spec: feature/BACKEND.md §Best-Effort Operations — "Every failure of that read
+            skips the dataset."
+        spec: feature/BACKEND.md §Sync + mapping sweep §Health side effect — "``ok``
+            asserts only that the sweep's source-definition enumeration completed, not
+            that every GMS call inside it succeeded".
+        """
+        source_id = str(uuid.uuid4())
+        store = _ObservationStore({source_id: [self._ORDERS_URN]})
+        store.wire(db)
+        datahub.get_timeseries = AsyncMock(
+            return_value=[_make_operation(1_700_000_000_000)]
+        )
+        # The dedup read fails; the mapping read still succeeds, so the sub-pass has
+        # genuinely reached the point where it would otherwise insert.
+        real_execute = db.execute.side_effect
+
+        async def _fail_on_events(stmt: Any, *a: Any, **kw: Any) -> Any:
+            from sqlalchemy.dialects import postgresql
+
+            if "events" in str(stmt.compile(dialect=postgresql.dialect())):
+                raise RuntimeError("connection reset by peer")
+            return await real_execute(stmt, *a, **kw)
+
+        db.execute = AsyncMock(side_effect=_fail_on_events)
+
+        inserted = await service._observe_passive_operations(source_id)
+
+        assert inserted == 0, (
+            f"a database failure must degrade this source's signal to zero, not raise; "
+            f"got {inserted}. spec: feature/BACKEND.md §Best-Effort Operations."
+        )
+        assert store.rollbacks == 1, (
+            "the aborted transaction must be rolled back so the rest of the sweep can "
+            "still issue statements. spec: feature/BACKEND.md §Best-Effort Operations."
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_malformed_remote_aspect_skips_that_dataset_only(
+        self, service: IngestionService, db: AsyncMock, datahub: AsyncMock
+    ) -> None:
+        """An ``AttributeError`` from the per-dataset read skips that dataset, not the pass.
+
+        The interface-violation exemption applies to the estate-wide ``lastIngested`` read
+        and deliberately **not** here: this read deserialises a writer-supplied remote
+        aspect through the SDK, which raises ``AttributeError`` on a malformed stored
+        payload, so an error of that type is not evidence of a call-shape fault. The
+        second dataset is the backstop — it proves the pass carried on rather than
+        aborting silently.
+
+        spec: feature/BACKEND.md §Best-Effort Operations — "The per-dataset ``Operation``
+            read is **not** exempt … one corrupted aspect would abort the sweep for every
+            source. Every failure of that read skips the dataset."
+        """
+        from src.backend.ingestion.service import _OBS_PASSIVE_OPERATION
+
+        source_id = str(uuid.uuid4())
+        store = _ObservationStore({source_id: [self._ORDERS_URN, self._SHIPPING_URN]})
+        store.wire(db)
+
+        async def _timeseries(urn: str, *a: Any, **kw: Any) -> list[Any]:
+            if urn == self._ORDERS_URN:
+                raise AttributeError("'NoneType' object has no attribute 'operationType'")
+            return [_make_operation(1_700_000_000_000)]
+
+        datahub.get_timeseries = AsyncMock(side_effect=_timeseries)
+
+        inserted = await service._observe_passive_operations(source_id)
+
+        assert inserted == 1, (
+            f"the malformed dataset must be skipped and the healthy one still booked; got "
+            f"{inserted}. spec: feature/BACKEND.md §Best-Effort Operations."
+        )
+        booked = store.booked(_OBS_PASSIVE_OPERATION)
+        assert [e.detail["dataset_urn"] for e in booked] == [self._SHIPPING_URN]
+
+
+# ── _observe_last_ingested: per-dataset Dataset.lastIngested observation ──────
+
+
+class TestObserveLastIngested:
+    """Sub-pass 4c: ``Dataset.lastIngested`` observation, for every mode.
+
+    spec: feature/BACKEND.md §Sync + mapping sweep step 4 — the sub-pass table row
+        "``lastIngested`` observation | ``Dataset.lastIngested``, read once for the whole
+        estate | **all modes** | per dataset | ``COMPLETE`` only |
+        ``last_ingested_observation``".
+    spec: feature/BACKEND.md §Sync + mapping sweep step 4 — the four load-bearing
+        properties: "It is not an event *on* the dataset"; "A dataset mapped to N sources
+        books N events"; "CLI wrapper sources are skipped"; "A null ``lastIngested`` books
+        nothing."
+    spec: feature/BACKEND.md §Event Catalogue §producers — ``last_ingested_observation``
+        detail keys are "``source``, ``dataset_urn``".
+    """
+
+    _TITLE_URN = (
+        "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
+    )
+    _EDITIONS_URN = (
+        "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.editions,DEV)"
+    )
+
+    @staticmethod
+    def _sweep_source(
+        source_id: uuid.UUID,
+        *,
+        mode: str = "PASSIVE",
+        parent_source_id: uuid.UUID | None = None,
+    ):
+        """One detached sweep snapshot, the shape step 4 drives off."""
+        from src.backend.ingestion.service import _SweepSource
+
+        return _SweepSource(
+            id=source_id,
+            name=f"unit-source-{source_id}",
+            mode=mode,
+            parent_source_id=parent_source_id,
+            datahub_source_urn=None,
+            recipe={},
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "mode", ["PASSIVE", "DATAHUB_MANAGED", "ACTIVE_CUSTOM_MANAGED"]
+    )
+    async def test_every_mode_books_a_per_dataset_observation(
+        self, service: IngestionService, db: AsyncMock, datahub: AsyncMock, mode: str
+    ) -> None:
+        """Every mode books one ``INGESTION.COMPLETE`` per mapped, datable dataset.
+
+        The mode parametrisation is the contract: this is the only per-dataset evidence
+        the two managed modes have, and the only PASSIVE signal that does not depend on
+        the estate's pipelines emitting ``Operation`` aspects.
+
+        spec: feature/BACKEND.md §Sync + mapping sweep step 4 — "For every dataset mapped
+            to a source, when DataHub reports a non-null ``Dataset.lastIngested``, the
+            sweep books an ``INGESTION.COMPLETE`` carrying ``detail.dataset_urn``."
+        spec: feature/BACKEND.md §Event Catalogue §producers — detail keys "``source``,
+            ``dataset_urn``".
+        """
+        from src.backend.ingestion.service import _OBS_LAST_INGESTED
+        from src.shared.events import INGESTION_COMPLETE
+
+        source_uid = uuid.uuid4()
+        ms = 1_700_000_000_000
+        store = _ObservationStore({str(source_uid): [self._TITLE_URN]})
+        store.wire(db)
+        datahub.get_last_ingested = AsyncMock(return_value={self._TITLE_URN: ms})
+
+        observed = await service._observe_last_ingested(
+            [self._sweep_source(source_uid, mode=mode)]
+        )
+
+        assert observed == 1, (
+            f"mode={mode}: a mapped dataset with a non-null lastIngested must book one "
+            f"observation; got {observed}. spec: feature/BACKEND.md §Sync + mapping sweep "
+            "step 4 — the sub-pass applies to **all modes**."
+        )
+        booked = store.booked(_OBS_LAST_INGESTED)
+        assert len(booked) == 1
+        event = booked[0]
+        assert event.entity_type == "ingestion_source", (
+            "the observation is booked on the source; the dataset link is "
+            "detail.dataset_urn alone. spec: feature/BACKEND.md §Sync + mapping sweep "
+            "step 4 — 'It is not an event *on* the dataset.'"
+        )
+        assert event.entity_id == str(source_uid)
+        assert event.event_type == INGESTION_COMPLETE, (
+            "observation is success-only — lastIngested advances when aspects are written "
+            "and cannot express a failure. spec: feature/BACKEND.md §Sync + mapping sweep "
+            "step 4."
+        )
+        assert event.status == "success"
+        assert set(event.detail) == {"source", "dataset_urn"}, (
+            f"last_ingested_observation detail keys must be exactly {{source, "
+            f"dataset_urn}}; got {sorted(event.detail)}. "
+            "spec: feature/BACKEND.md §Event Catalogue §producers."
+        )
+        assert event.detail["source"] == _OBS_LAST_INGESTED
+        assert event.detail["dataset_urn"] == self._TITLE_URN
+        assert event.occurred_at == datetime.fromtimestamp(ms / 1000, tz=UTC)
+
+    @pytest.mark.asyncio
+    async def test_a_dataset_mapped_to_two_sources_books_one_event_per_source(
+        self, service: IngestionService, db: AsyncMock, datahub: AsyncMock
+    ) -> None:
+        """One dataset mapped to two regular sources books two events, one per source.
+
+        There is no owner arbitration at write time — the owning-source rule is a
+        read-side resolution recomputed on every read — so an implementation that picked
+        a winner here would silently drop the other source's evidence.
+
+        spec: feature/BACKEND.md §Sync + mapping sweep step 4 — "A dataset mapped to N
+            sources books N events. There is no owner arbitration at write time".
+        """
+        from src.backend.ingestion.service import _OBS_LAST_INGESTED
+
+        first = uuid.uuid4()
+        second = uuid.uuid4()
+        store = _ObservationStore(
+            {str(first): [self._TITLE_URN], str(second): [self._TITLE_URN]}
+        )
+        store.wire(db)
+        datahub.get_last_ingested = AsyncMock(
+            return_value={self._TITLE_URN: 1_700_000_000_000}
+        )
+
+        observed = await service._observe_last_ingested(
+            [self._sweep_source(first), self._sweep_source(second)]
+        )
+
+        assert observed == 2, (
+            f"a dataset mapped to two sources must book one event per source; got "
+            f"{observed}. spec: feature/BACKEND.md §Sync + mapping sweep step 4."
+        )
+        assert {e.entity_id for e in store.booked(_OBS_LAST_INGESTED)} == {
+            str(first),
+            str(second),
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_cli_wrapper_books_nothing_while_its_parent_books(
+        self, service: IngestionService, db: AsyncMock, datahub: AsyncMock
+    ) -> None:
+        """A dataset mapped to a parent and its CLI wrapper books once, on the parent.
+
+        Both sides are seeded — the wrapper carries the same mapping — so a pass that
+        ignored ``parent_source_id`` would book two events and the per-source feed, which
+        unions parent with wrappers, would show one fact twice on the parent.
+
+        spec: feature/BACKEND.md §Sync + mapping sweep step 4 — "CLI wrapper sources are
+            skipped: ``lastIngested`` is a property of the dataset with no wrapper
+            affinity, the parent already covers the URN, and the per-source feed unions
+            parent with wrappers — booking on both would show one fact twice on the
+            parent."
+        """
+        from src.backend.ingestion.service import _OBS_LAST_INGESTED
+
+        parent = uuid.uuid4()
+        wrapper = uuid.uuid4()
+        store = _ObservationStore(
+            {str(parent): [self._TITLE_URN], str(wrapper): [self._TITLE_URN]}
+        )
+        store.wire(db)
+        datahub.get_last_ingested = AsyncMock(
+            return_value={self._TITLE_URN: 1_700_000_000_000}
+        )
+
+        observed = await service._observe_last_ingested(
+            [
+                self._sweep_source(parent, mode="DATAHUB_MANAGED"),
+                self._sweep_source(
+                    wrapper, mode="DATAHUB_MANAGED", parent_source_id=parent
+                ),
+            ]
+        )
+
+        assert observed == 1, (
+            f"a parent and its CLI wrapper covering one dataset must book exactly one "
+            f"event; got {observed}. spec: feature/BACKEND.md §Sync + mapping sweep step 4."
+        )
+        booked = store.booked(_OBS_LAST_INGESTED)
+        assert [e.entity_id for e in booked] == [str(parent)], (
+            f"the single event must be booked on the parent, not the wrapper; got "
+            f"{[e.entity_id for e in booked]}. "
+            "spec: feature/BACKEND.md §Sync + mapping sweep step 4."
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_dataset_datahub_cannot_date_books_nothing(
+        self, service: IngestionService, db: AsyncMock, datahub: AsyncMock
+    ) -> None:
+        """A mapped dataset absent from the estate reading books nothing.
+
+        The client omits null and non-positive values rather than carrying them as
+        ``None``, so absence is the guard. Both sides are mapped and only one is datable,
+        so a pass that booked at ``now()`` for the undatable one would produce two.
+
+        spec: feature/BACKEND.md §Sync + mapping sweep step 4 — "A null ``lastIngested``
+            books nothing. It is null when every aspect on the dataset carries DataHub's
+            ``"no-run-id-provided"`` sentinel — there is nothing observable to date."
+        """
+        from src.backend.ingestion.service import _OBS_LAST_INGESTED
+
+        source_uid = uuid.uuid4()
+        store = _ObservationStore(
+            {str(source_uid): [self._TITLE_URN, self._EDITIONS_URN]}
+        )
+        store.wire(db)
+        # Only the title table is datable; editions carries the sentinel, so the client
+        # omitted it from the reading entirely.
+        datahub.get_last_ingested = AsyncMock(
+            return_value={self._TITLE_URN: 1_700_000_000_000}
+        )
+
+        observed = await service._observe_last_ingested([self._sweep_source(source_uid)])
+
+        assert observed == 1, (
+            f"only the datable dataset may book an event; got {observed}. "
+            "spec: feature/BACKEND.md §Sync + mapping sweep step 4 — a null lastIngested "
+            "books nothing."
+        )
+        assert [e.detail["dataset_urn"] for e in store.booked(_OBS_LAST_INGESTED)] == [
+            self._TITLE_URN
+        ]
+
+    @pytest.mark.asyncio
+    async def test_an_unchanged_reading_books_nothing_on_the_next_sweep(
+        self, service: IngestionService, db: AsyncMock, datahub: AsyncMock
+    ) -> None:
+        """The same ``lastIngested`` on two consecutive sweeps books exactly one event.
+
+        spec: feature/BACKEND.md §Sync + mapping sweep step 4 — "An unchanged observation
+            books nothing on the next sweep. The guarantee is 'at least one event over the
+            dataset's lifetime', not one per hour."
+        """
+        from src.backend.ingestion.service import _OBS_LAST_INGESTED
+
+        source_uid = uuid.uuid4()
+        store = _ObservationStore({str(source_uid): [self._TITLE_URN]})
+        store.wire(db)
+        datahub.get_last_ingested = AsyncMock(
+            return_value={self._TITLE_URN: 1_700_000_000_000}
+        )
+        sources = [self._sweep_source(source_uid)]
+
+        first = await service._observe_last_ingested(sources)
+        second = await service._observe_last_ingested(sources)
+
+        assert (first, second) == (1, 0), (
+            f"the first sweep books the observation and the second books nothing; got "
+            f"{(first, second)}. spec: feature/BACKEND.md §Sweep summary — 'the reading "
+            "collapses to zero on the next sweep over an unchanged estate.'"
+        )
+        assert len(store.booked(_OBS_LAST_INGESTED)) == 1
+
+    @pytest.mark.asyncio
+    async def test_an_advanced_reading_books_a_second_event(
+        self, service: IngestionService, db: AsyncMock, datahub: AsyncMock
+    ) -> None:
+        """An advanced ``lastIngested`` is a new identity and books a second event.
+
+        The backstop for the idempotence test above: without it, an implementation that
+        booked nothing at all would satisfy "the second sweep books nothing".
+
+        spec: DATAHUB_INTEGRATION.md §Ingestion Source Sync — "a dataset accrues one event
+            per distinct observed instant over its life".
+        """
+        from src.backend.ingestion.service import _OBS_LAST_INGESTED
+
+        source_uid = uuid.uuid4()
+        store = _ObservationStore({str(source_uid): [self._TITLE_URN]})
+        store.wire(db)
+        sources = [self._sweep_source(source_uid)]
+
+        datahub.get_last_ingested = AsyncMock(
+            return_value={self._TITLE_URN: 1_700_000_000_000}
+        )
+        first = await service._observe_last_ingested(sources)
+        datahub.get_last_ingested = AsyncMock(
+            return_value={self._TITLE_URN: 1_700_000_600_000}
+        )
+        second = await service._observe_last_ingested(sources)
+
+        assert (first, second) == (1, 1), (
+            f"an advanced lastIngested is a new identity and books again; got "
+            f"{(first, second)}. spec: DATAHUB_INTEGRATION.md §Ingestion Source Sync."
+        )
+        assert {e.occurred_at for e in store.booked(_OBS_LAST_INGESTED)} == {
+            datetime.fromtimestamp(1_700_000_000_000 / 1000, tz=UTC),
+            datetime.fromtimestamp(1_700_000_600_000 / 1000, tz=UTC),
+        }
+
+    @pytest.mark.asyncio
+    async def test_an_operation_and_a_last_ingested_instant_that_coincide_book_both(
+        self, service: IngestionService, db: AsyncMock, datahub: AsyncMock
+    ) -> None:
+        """The two observation signals coinciding to the millisecond book BOTH events.
+
+        The producer is the fourth term of the identity tuple precisely for this case:
+        without it the two signals share a key and whichever sub-pass runs second
+        silently drops its event. The store's dedup emulation honours a producer term
+        only when the statement binds one, so an implementation that dropped the term
+        sees the ``Operation`` row and skips — which is the failure this asserts against.
+
+        spec: DATAHUB_INTEGRATION.md §Ingestion Source Sync — "The producer term is not
+            optional: the ``Operation`` and ``lastIngested`` observations otherwise share
+            a key, so an instant both report to the same millisecond silently drops one."
+        """
+        from src.backend.ingestion.service import _OBS_LAST_INGESTED, _OBS_PASSIVE_OPERATION
+
+        source_uid = uuid.uuid4()
+        ms = 1_700_000_000_000
+        store = _ObservationStore({str(source_uid): [self._TITLE_URN]})
+        store.wire(db)
+        datahub.get_timeseries = AsyncMock(return_value=[_make_operation(ms)])
+        datahub.get_last_ingested = AsyncMock(return_value={self._TITLE_URN: ms})
+
+        passive = await service._observe_passive_operations(str(source_uid))
+        last_ingested = await service._observe_last_ingested(
+            [self._sweep_source(source_uid)]
+        )
+
+        assert (passive, last_ingested) == (1, 1), (
+            f"both observation producers must book their own event at a coincident "
+            f"instant; got passive={passive}, last_ingested={last_ingested}. "
+            "spec: DATAHUB_INTEGRATION.md §Ingestion Source Sync — the producer is the "
+            "fourth term of the identity tuple."
+        )
+        assert len(store.booked(_OBS_PASSIVE_OPERATION)) == 1
+        assert len(store.booked(_OBS_LAST_INGESTED)) == 1
+
+    @pytest.mark.asyncio
+    async def test_no_bookable_source_makes_no_gms_call(
+        self, service: IngestionService, db: AsyncMock, datahub: AsyncMock
+    ) -> None:
+        """An estate of nothing but CLI wrappers reads nothing from GMS.
+
+        spec: feature/BACKEND.md §Sync + mapping sweep step 4 — "The estate read is one
+            call per sweep"; CLI wrappers are skipped, so a sweep with no bookable source
+            has nothing to read for.
+        """
+        parent = uuid.uuid4()
+        store = _ObservationStore({})
+        store.wire(db)
+        datahub.get_last_ingested = AsyncMock(return_value={self._TITLE_URN: 1})
+
+        observed = await service._observe_last_ingested(
+            [
+                self._sweep_source(
+                    uuid.uuid4(), mode="DATAHUB_MANAGED", parent_source_id=parent
+                )
+            ]
+        )
+
+        assert observed == 0
+        datahub.get_last_ingested.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_transport_failure_degrades_the_signal_without_raising(
+        self, service: IngestionService, db: AsyncMock, datahub: AsyncMock
+    ) -> None:
+        """A GMS transport failure books nothing and lets the sweep continue.
+
+        spec: feature/BACKEND.md §Best-Effort Operations — the "Estate-wide
+            ``lastIngested`` read and its per-dataset observation inserts" row: "The
+            sub-pass books nothing this tick and reports ``last_ingested_observed = 0``;
+            the other two sub-passes, the rest of the sweep, and the ``datahub-api``
+            health row are untouched".
+        """
+        source_uid = uuid.uuid4()
+        store = _ObservationStore({str(source_uid): [self._TITLE_URN]})
+        store.wire(db)
+        datahub.get_last_ingested = AsyncMock(
+            side_effect=DataHubUnavailableError("GMS unreachable")
+        )
+
+        observed = await service._observe_last_ingested([self._sweep_source(source_uid)])
+
+        assert observed == 0, (
+            f"a transport failure must degrade the signal to zero, not raise; got "
+            f"{observed}. spec: feature/BACKEND.md §Best-Effort Operations."
+        )
+        assert store.events == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("label", "error"),
+        [
+            ("renamed method", AttributeError("'DataHubClient' has no 'get_last_ingested'")),
+            ("changed signature", TypeError("get_last_ingested() takes 1 positional arg")),
+        ],
+    )
+    async def test_an_interface_violation_is_re_raised_rather_than_degraded(
+        self,
+        service: IngestionService,
+        db: AsyncMock,
+        datahub: AsyncMock,
+        caplog: pytest.LogCaptureFixture,
+        label: str,
+        error: BaseException,
+    ) -> None:
+        """``AttributeError`` / ``TypeError`` from the estate read escape the sub-pass.
+
+        Swallowing them would report ``last_ingested_observed = 0`` forever —
+        indistinguishable from an estate with nothing observable — and a duck-typed test
+        double missing the method would pass green with the sub-pass never running. The
+        ERROR log is asserted too: it is what tells an operator the fault is DataSpoke's
+        own call shape rather than DataHub's.
+
+        spec: feature/BACKEND.md §Best-Effort Operations — "**Interface violations are
+            exempt from best-effort, on the estate-wide ``lastIngested`` read.** … Those
+            are logged at ``ERROR`` and **re-raised**".
+        """
+        source_uid = uuid.uuid4()
+        store = _ObservationStore({str(source_uid): [self._TITLE_URN]})
+        store.wire(db)
+        datahub.get_last_ingested = AsyncMock(side_effect=error)
+        caplog.set_level(logging.ERROR)
+
+        with pytest.raises(type(error)) as raised:
+            await service._observe_last_ingested([self._sweep_source(source_uid)])
+
+        assert raised.value is error, (
+            f"{label}: the client's own exception must propagate unchanged. "
+            "spec: feature/BACKEND.md §Best-Effort Operations."
+        )
+        assert store.events == []
+        assert [r.levelname for r in caplog.records] == ["ERROR"], (
+            f"{label}: an interface violation must be logged at ERROR, not at the WARNING "
+            f"level the degraded paths use; got "
+            f"{[(r.levelname, r.getMessage()) for r in caplog.records]!r}. "
+            "spec: feature/BACKEND.md §Best-Effort Operations."
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_database_failure_degrades_one_source_and_rolls_back(
+        self, service: IngestionService, db: AsyncMock, datahub: AsyncMock
+    ) -> None:
+        """A DB failure books nothing for that source, raises nothing, and rolls back.
+
+        The rollback matters beyond this sub-pass: a rollback expires every ORM instance
+        in the identity map, which is why the sweep drives off detached snapshots rather
+        than ORM rows — a later attribute read would emit a lazy refresh outside
+        ``greenlet_spawn`` and turn the contained degradation back into a sweep-wide
+        failure.
+
+        spec: feature/BACKEND.md §Best-Effort Operations — the estate-read row: "the other
+            two sub-passes, the rest of the sweep, and the ``datahub-api`` health row are
+            untouched".
+        """
+        source_uid = uuid.uuid4()
+        store = _ObservationStore({str(source_uid): [self._TITLE_URN]})
+        store.wire(db)
+        datahub.get_last_ingested = AsyncMock(
+            return_value={self._TITLE_URN: 1_700_000_000_000}
+        )
+        db.execute = AsyncMock(side_effect=RuntimeError("connection reset by peer"))
+
+        observed = await service._observe_last_ingested([self._sweep_source(source_uid)])
+
+        assert observed == 0, (
+            f"a database failure must degrade this source's signal to zero, not raise; "
+            f"got {observed}. spec: feature/BACKEND.md §Best-Effort Operations."
+        )
+        assert store.rollbacks == 1, (
+            "the aborted transaction must be rolled back so the rest of the sweep can "
+            "still issue statements. spec: feature/BACKEND.md §Best-Effort Operations."
+        )
+
+
+# ── Step 4 wiring: each sub-pass's return reaches its own counter ──────────────
+
+
+class _SweepSession:
+    """A query-routing fake session for driving a whole ``_run_sweep`` over one source.
+
+    Every sibling test in this file exercises a sub-pass *directly*, so none of them can
+    see whether step 4 calls it at all. This fake exists to drive the real
+    :meth:`IngestionService._run_sweep` end to end over a deliberately empty estate —
+    DataHub reports no managed source and no dataset — so that the only thing left with a
+    non-zero contribution is step 4, and the summary is a statement about step 4's wiring.
+
+    Statements are routed by the table they compile against, never by call position
+    (spec: TESTING.md §Unit Testing §Mocking rules). Three reads reach this fake:
+
+    1. ``SELECT … FROM ingestion_source WHERE mode = 'DATAHUB_MANAGED'`` — step 1's
+       stale-removal scan. Empty: DataHub reports no managed source, so nothing is stale.
+    2. ``SELECT … FROM ingestion_source`` (unfiltered) — step 2's source load, which is
+       what step 4 iterates. This one returns the estate.
+    3. ``ingestion_source_dataset`` / ``dataset_registry`` — step 2's matched-row prefetch
+       and step 2b's registry reconcile, both empty on an estate DataHub reports no
+       dataset for.
+    """
+
+    def __init__(self, source_rows: list[Any]) -> None:
+        self.source_rows = source_rows
+        self.commits = 0
+        self.added: list[Any] = []
+
+    def wire(self, db: AsyncMock) -> None:
+        db.execute = AsyncMock(side_effect=self._execute)
+        db.add = MagicMock(side_effect=self.added.append)
+        db.delete = AsyncMock()
+        db.commit = AsyncMock(side_effect=self._commit)
+        db.rollback = AsyncMock()
+
+    async def _commit(self) -> None:
+        self.commits += 1
+
+    async def _execute(self, stmt: Any, *args: Any, **kwargs: Any) -> MagicMock:
+        from sqlalchemy.dialects import postgresql
+
+        compiled = stmt.compile(dialect=postgresql.dialect())
+        sql = str(compiled)
+        bound = {str(v) for v in compiled.params.values()}
+
+        rows: list[Any] = []
+        if "ingestion_source_dataset" in sql or "dataset_registry" in sql:
+            rows = []
+        elif "ingestion_source" in sql:
+            # The stale-removal scan binds the mode; the step-2 source load does not.
+            rows = [] if "DATAHUB_MANAGED" in bound else self.source_rows
+        else:
+            raise AssertionError(f"_SweepSession: unrouted statement:\n{sql}")
+
+        result = MagicMock()
+        result.scalars.return_value.all.return_value = rows
+        return result
+
+
+class TestStepFourFoldsEachSubPassIntoItsCounter:
+    """Step 4 calls all three sub-passes and folds each return into the right counter.
+
+    Asserting only that a counter *key* exists is satisfied by the zero-initialised
+    summary with the sub-pass never called — the sweep would report
+    ``last_ingested_observed = 0`` on an estate full of observable datasets, which reads
+    exactly like an estate with nothing observable. Each sub-pass is therefore stood in
+    with a distinct non-zero sentinel, so the summary can only carry it if step 4 both
+    invoked that sub-pass and folded its return into the counter the spec assigns it.
+
+    The estate is empty by construction (no managed source in DataHub, no dataset in the
+    enumeration), so every other counter's contribution is zero and the sentinels are the
+    only signal in the summary.
+
+    spec: feature/BACKEND.md §Sync + mapping sweep — Sweep summary — "Step 4's three
+        sub-passes split across two counters: ``events_mirrored`` covers the first two —
+        the execution-request mirror and the ``Operation`` observation — while
+        ``last_ingested_observed`` covers the third."
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_two_observation_sub_passes_land_in_their_own_counters(
+        self, service: IngestionService, db: AsyncMock, datahub: AsyncMock
+    ) -> None:
+        """A PASSIVE estate: 2 → ``events_mirrored``, 3 → ``last_ingested_observed``.
+
+        The two sentinels are distinct so a cross-fold (either return landing in the other
+        counter, or both summed into one) fails as loudly as a sub-pass never called.
+
+        spec: feature/BACKEND.md §Sync + mapping sweep — Sweep summary — the split above,
+            and "It stays a counter of its own rather than folding into
+            ``events_mirrored``".
+        """
+        passive = _make_source_row(mode="PASSIVE", recipe={})
+        passive.parent_source_id = None
+        passive.datahub_source_urn = None
+        _SweepSession([passive]).wire(db)
+        datahub.list_ingestion_sources = AsyncMock(return_value=[])
+        datahub.enumerate_datasets = AsyncMock(return_value=[])
+
+        service._observe_passive_operations = AsyncMock(return_value=2)  # type: ignore[method-assign]
+        service._observe_last_ingested = AsyncMock(return_value=3)  # type: ignore[method-assign]
+
+        summary = await service._run_sweep()
+
+        # Backstop: both stand-ins really ran, and the Operation sub-pass was told which
+        # source to observe. Without this the counter assertions below would also pass on
+        # a sweep that never reached step 4 at all. Argument *shape* is not pinned —
+        # positional or keyword is the caller's business — only that the source reaches it.
+        service._observe_passive_operations.assert_awaited_once()
+        passive_call = service._observe_passive_operations.await_args
+        assert str(passive.id) in {
+            str(v) for v in (*passive_call.args, *passive_call.kwargs.values())
+        }, (
+            f"the Operation observation must be run for the PASSIVE source the sweep "
+            f"loaded; got {passive_call!r}. spec: feature/BACKEND.md §Sync + mapping sweep "
+            "step 4 — the sub-pass covers PASSIVE sources' mapped datasets."
+        )
+        service._observe_last_ingested.assert_awaited_once()
+        observed_sources = service._observe_last_ingested.await_args.args[0]
+        assert [s.id for s in observed_sources] == [passive.id], (
+            f"the lastIngested sub-pass must be handed the sweep's own source set — "
+            f"handing it an empty list observes nothing while still returning a number; "
+            f"got {observed_sources!r}. spec: feature/BACKEND.md §Sync + mapping sweep "
+            "step 4 — the sub-pass runs over every mapped dataset of every bookable source."
+        )
+
+        assert summary["events_mirrored"] == 2, (
+            f"the Operation observation's return is step 4's contribution to "
+            f"events_mirrored; got {summary['events_mirrored']} for a sub-pass that "
+            f"returned 2. spec: feature/BACKEND.md §Sync + mapping sweep — Sweep summary."
+        )
+        assert summary["last_ingested_observed"] == 3, (
+            f"the lastIngested observation's return is reported under its own counter; got "
+            f"{summary['last_ingested_observed']} for a sub-pass that returned 3. A sweep "
+            "that never calls it reports the zero-initialised key, which is "
+            "indistinguishable from an estate with nothing observable. "
+            "spec: feature/BACKEND.md §Sync + mapping sweep — Sweep summary."
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_execution_request_mirror_lands_in_events_mirrored(
+        self, service: IngestionService, db: AsyncMock, datahub: AsyncMock
+    ) -> None:
+        """A DATAHUB_MANAGED estate: the mirror's 7 reaches ``events_mirrored``.
+
+        spec: feature/BACKEND.md §Sync + mapping sweep — Sweep summary — "``events_mirrored``
+            covers the first two — the execution-request mirror and the ``Operation``
+            observation".
+        """
+        managed = _make_source_row(
+            mode="DATAHUB_MANAGED",
+            recipe={},
+            datahub_source_urn="urn:li:dataHubIngestionSource:unit-managed",
+        )
+        managed.parent_source_id = None
+        _SweepSession([managed]).wire(db)
+        # Empty: the estate this sweep reconciles against holds no source and no dataset,
+        # so step 1 removes nothing and steps 2–3 do nothing. The row above is a stored
+        # row the sweep loads in step 2, which is what step 4 iterates.
+        datahub.list_ingestion_sources = AsyncMock(return_value=[])
+        datahub.enumerate_datasets = AsyncMock(return_value=[])
+
+        service._mirror_execution_requests = AsyncMock(return_value=7)  # type: ignore[method-assign]
+        service._observe_last_ingested = AsyncMock(return_value=0)  # type: ignore[method-assign]
+
+        summary = await service._run_sweep()
+
+        # Backstop, argument-shape agnostic: the mirror ran, for this source and against
+        # the DataHub source URN the stored row carries.
+        service._mirror_execution_requests.assert_awaited_once()
+        mirror_call = service._mirror_execution_requests.await_args
+        mirror_args = {str(v) for v in (*mirror_call.args, *mirror_call.kwargs.values())}
+        assert {
+            str(managed.id),
+            "urn:li:dataHubIngestionSource:unit-managed",
+        } <= mirror_args, (
+            f"the mirror must be run for the DATAHUB_MANAGED source and its DataHub source "
+            f"URN; got {mirror_call!r}. spec: feature/BACKEND.md §Sync + mapping sweep "
+            "step 4 — the mirror runs for every DATAHUB_MANAGED row."
+        )
+        assert summary["events_mirrored"] == 7, (
+            f"the mirror's return is step 4's first contribution to events_mirrored; got "
+            f"{summary['events_mirrored']} for a sub-pass that returned 7. "
+            "spec: feature/BACKEND.md §Sync + mapping sweep — Sweep summary."
+        )
+        assert summary["last_ingested_observed"] == 0, (
+            f"the mirror's events belong to events_mirrored alone; got "
+            f"last_ingested_observed={summary['last_ingested_observed']}. "
+            "spec: feature/BACKEND.md §Sync + mapping sweep — Sweep summary."
+        )
+
+    @pytest.mark.asyncio
+    async def test_each_sub_pass_covers_exactly_the_modes_the_spec_scopes_it_to(
+        self, service: IngestionService, db: AsyncMock, datahub: AsyncMock
+    ) -> None:
+        """A three-mode estate in one sweep: each sub-pass sees exactly its own scope.
+
+        The two tests above each drive a *single-mode* estate, so neither can see a mode
+        gate at all: with only one mode present, "runs for this mode" and "runs for every
+        source" are the same observation, in both directions. This estate carries one
+        source of each mode at once, which is the only shape where the three scoping rules
+        of step 4's sub-pass table are separable:
+
+        - the mirror is ``DATAHUB_MANAGED``-only — a gate that let it run for the other two
+          would poll ``listExecutionRequests`` for sources that have no DataHub source URN;
+        - the ``Operation`` observation is ``PASSIVE``-only — dropping that gate books
+          per-dataset ``Operation`` evidence for managed sources, which the run layer
+          already covers;
+        - the ``lastIngested`` observation is **all modes** — narrowing it to ``PASSIVE``
+          (or excluding ``DATAHUB_MANAGED``) silently removes the only per-dataset evidence
+          the two managed modes have, and `ingestion-freshness` tier 1 with it. That
+          narrowing is invisible in a single-mode estate *and* in the api-wired suite,
+          where each UC arc drives one mode.
+
+        spec: feature/BACKEND.md §Sync + mapping sweep step 4 — the sub-pass table's
+            **Modes** column: "Execution-request mirror … ``DATAHUB_MANAGED``";
+            "``Operation`` observation … ``PASSIVE``"; "``lastIngested`` observation …
+            **all modes**".
+        spec: feature/BACKEND.md §Sync + mapping sweep step 4 — "``lastIngested``
+            observation … is the only per-dataset evidence the two managed modes have."
+        """
+        managed = _make_source_row(
+            mode="DATAHUB_MANAGED",
+            recipe={},
+            datahub_source_urn="urn:li:dataHubIngestionSource:unit-mixed-managed",
+        )
+        managed.parent_source_id = None
+        passive = _make_source_row(mode="PASSIVE", recipe={})
+        passive.parent_source_id = None
+        passive.datahub_source_urn = None
+        active = _make_source_row(mode="ACTIVE_CUSTOM_MANAGED", recipe={})
+        active.parent_source_id = None
+        active.datahub_source_urn = None
+
+        _SweepSession([managed, passive, active]).wire(db)
+        datahub.list_ingestion_sources = AsyncMock(return_value=[])
+        datahub.enumerate_datasets = AsyncMock(return_value=[])
+
+        service._mirror_execution_requests = AsyncMock(return_value=5)  # type: ignore[method-assign]
+        service._observe_passive_operations = AsyncMock(return_value=2)  # type: ignore[method-assign]
+        service._observe_last_ingested = AsyncMock(return_value=3)  # type: ignore[method-assign]
+
+        summary = await service._run_sweep()
+
+        # 4a — the mirror, DATAHUB_MANAGED only.
+        mirrored_ids = {
+            str(v)
+            for call in service._mirror_execution_requests.await_args_list
+            for v in (*call.args, *call.kwargs.values())
+        }
+        assert service._mirror_execution_requests.await_count == 1, (
+            f"the execution-request mirror runs for the DATAHUB_MANAGED source alone; got "
+            f"{service._mirror_execution_requests.await_count} awaits over a three-mode "
+            f"estate. spec: feature/BACKEND.md §Sync + mapping sweep step 4 — sub-pass "
+            "table, Modes column."
+        )
+        assert str(managed.id) in mirrored_ids
+        assert {str(passive.id), str(active.id)}.isdisjoint(mirrored_ids), (
+            f"neither the PASSIVE nor the ACTIVE_CUSTOM_MANAGED source may reach the "
+            f"mirror; got {mirrored_ids!r}."
+        )
+
+        # 4b — the Operation observation, PASSIVE only.
+        observed_op_ids = {
+            str(v)
+            for call in service._observe_passive_operations.await_args_list
+            for v in (*call.args, *call.kwargs.values())
+        }
+        assert service._observe_passive_operations.await_count == 1, (
+            f"the Operation observation runs for the PASSIVE source alone; got "
+            f"{service._observe_passive_operations.await_count} awaits over a three-mode "
+            f"estate. spec: feature/BACKEND.md §Sync + mapping sweep step 4 — sub-pass "
+            "table, Modes column."
+        )
+        assert str(passive.id) in observed_op_ids
+        assert {str(managed.id), str(active.id)}.isdisjoint(observed_op_ids), (
+            f"only the PASSIVE source's mapped datasets are observed through Operation "
+            f"aspects; got {observed_op_ids!r}."
+        )
+
+        # 4c — the lastIngested observation, every mode.
+        service._observe_last_ingested.assert_awaited_once()
+        handed = service._observe_last_ingested.await_args.args[0]
+        assert {s.id for s in handed} == {managed.id, passive.id, active.id}, (
+            f"the lastIngested sub-pass must be handed every source the sweep loaded, "
+            f"whatever its mode; got {sorted(str(s.id) for s in handed)} for an estate of "
+            f"managed={managed.id}, passive={passive.id}, active={active.id}. "
+            "spec: feature/BACKEND.md §Sync + mapping sweep step 4 — sub-pass table, "
+            "Modes column: **all modes**."
+        )
+        assert {s.mode for s in handed} == {
+            "DATAHUB_MANAGED",
+            "PASSIVE",
+            "ACTIVE_CUSTOM_MANAGED",
+        }, (
+            f"all three modes must reach the sub-pass, since the two managed modes have no "
+            f"other per-dataset evidence; got {sorted({s.mode for s in handed})}."
+        )
+
+        assert summary["events_mirrored"] == 7, (
+            f"events_mirrored carries the mirror's 5 plus the Operation observation's 2; "
+            f"got {summary['events_mirrored']}. "
+            "spec: feature/BACKEND.md §Sync + mapping sweep — Sweep summary."
+        )
+        assert summary["last_ingested_observed"] == 3, (
+            f"the lastIngested observation reports under its own counter; got "
+            f"{summary['last_ingested_observed']}. "
+            "spec: feature/BACKEND.md §Sync + mapping sweep — Sweep summary."
+        )
+
+
+# ── get_events_for_source: dataset_urn is keyword-only ────────────────────────
+
+
+class TestGetEventsForSourceRejectsAPositionalDatasetUrn:
+    """``dataset_urn`` cannot be reached positionally on ``get_events_for_source``.
+
+    The callers' side of this — that every one of them passes the URN by keyword — is
+    asserted in ``tests/unit/backend/dataset/test_service.py`` and in the router test.
+    Neither can see the signature: they would keep passing a keyword argument to a
+    parameter that had become positional, and the defect this rules out is on the *other*
+    side. ``dataset_urn`` sits after ``order_by: Any``, so a positional caller's sort spec
+    would land in it and become a silent ``detail->>'dataset_urn' = <sort spec>`` text
+    comparison — matching nothing, emptying every dataset timeline of exactly the run-level
+    rows the ``IS NULL`` disjunct exists to keep, and invisible to ``mypy`` through ``Any``.
+    Positional calls into this service are not hypothetical: ``core.py`` already calls the
+    sibling ``get_events`` that way.
+
+    spec: feature/BACKEND.md §Querying Events — the per-dataset timeline resolves the
+        covering source's feed "by reverse-lookup plus the ``detail.dataset_urn``
+        predicate", which is the read this parameter drives.
+    """
+
+    def test_an_extra_positional_argument_raises_rather_than_binding_dataset_urn(
+        self, service: IngestionService
+    ) -> None:
+        """A fully positional call is a ``TypeError``, not a silently narrowed feed."""
+        import inspect
+
+        sig = inspect.signature(service.get_events_for_source)
+        positional = [
+            p.name
+            for p in sig.parameters.values()
+            if p.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+        ]
+        assert "dataset_urn" not in positional, (
+            f"dataset_urn must be keyword-only; it is currently positional at index "
+            f"{positional.index('dataset_urn') if 'dataset_urn' in positional else None} "
+            f"of {positional!r}, where a positional order_by would land in it."
+        )
+
+        # One positional argument per positional parameter — a well-formed call in its own
+        # right. Derived from the signature rather than hard-coded so that adding a
+        # positional parameter does not turn this into an arity test by accident.
+        args: list[Any] = ["source-id"] + [None] * (len(positional) - 1)
+        sig.bind(*args, dataset_urn=_DATASET_URN)  # backstop: raises if args are malformed
+
+        with pytest.raises(TypeError) as raised:
+            service.get_events_for_source(*args, _DATASET_URN)
+
+        assert "positional" in str(raised.value), (
+            f"the refusal must come from argument binding, not from something the body "
+            f"did with a URN it should never have received; got {raised.value!r}."
+        )
+
+
+# ── Producer invariant: no run-level producer writes a scalar dataset_urn ──────
+
+
+class TestRunLevelProducersWriteNoScalarDatasetUrn:
+    """No run-level ``INGESTION.*`` producer writes a scalar ``detail.dataset_urn``.
+
+    This is the invariant the per-dataset timeline's ``IS NULL`` disjunct rests on. If
+    any run-level producer ever wrote that key, the disjunct would stop admitting its
+    rows and every dataset's timeline would silently lose exactly the run outcomes and
+    failures it exists to show — a regression with no other visible symptom.
+
+    Both run-level producers are covered: the inline ``ACTIVE_CUSTOM_MANAGED`` record on
+    all four of its paths (success, zero-emit failure, secret-resolution failure,
+    extractor crash) and the ``datahub_sync`` execution-request mirror.
+
+    spec: feature/BACKEND.md §Event Catalogue §producers — "**No run-level producer
+        writes a scalar ``detail.dataset_urn``.** The mirror carries no dataset link at
+        all, and the inline record carries dataset URN *lists* (``discovered_urns`` /
+        ``emitted_urns``) under different keys. That is what lets the per-dataset timeline
+        admit run-level rows through an ``IS NULL`` disjunct".
+    spec: feature/BACKEND.md §Event Catalogue §producers — "**``detail.source`` is absent,
+        not null, on the inline record.**"
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_mirror_writes_no_scalar_dataset_urn(
+        self, service: IngestionService, db: AsyncMock, datahub: AsyncMock
+    ) -> None:
+        """The ``datahub_sync`` mirror's detail carries no ``dataset_urn`` key.
+
+        spec: feature/BACKEND.md §Event Catalogue §producers — ``datahub_sync`` detail keys
+            are "``source``, ``execution_request_urn`` …, ``duration_ms``".
+        """
+        source_id = str(uuid.uuid4())
+        datahub.list_execution_requests = AsyncMock(
+            return_value=[
+                {
+                    "urn": "urn:li:dataHubExecutionRequest:run-1",
+                    "status": "SUCCESS",
+                    "startTimeMs": 1_700_000_000_000,
+                    "durationMs": 1000,
+                    "requestedAt": 1_699_999_000_000,
+                }
+            ]
+        )
+        dup_result = MagicMock()
+        dup_result.first.return_value = None
+        db.execute = AsyncMock(return_value=dup_result)
+
+        inserted = await service._mirror_execution_requests(
+            source_id, "urn:li:dataHubIngestionSource:abc"
+        )
+
+        assert inserted == 1, "backstop: the mirror must actually have booked an event."
+        detail = db.add.call_args[0][0].detail
+        assert "dataset_urn" not in detail, (
+            f"the execution-request mirror must write no scalar dataset_urn; got "
+            f"{sorted(detail)}. spec: feature/BACKEND.md §Event Catalogue §producers."
+        )
+        assert detail["source"] == "datahub_sync"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("label", "emitted", "discovered"),
+        [
+            ("success", [_DATASET_URN], [_DATASET_URN]),
+            ("zero-emit failure", [], [_DATASET_URN]),
+        ],
+    )
+    async def test_the_inline_run_record_writes_lists_not_a_scalar_dataset_urn(
+        self,
+        service: IngestionService,
+        db: AsyncMock,
+        datahub: AsyncMock,
+        label: str,
+        emitted: list[str],
+        discovered: list[str],
+    ) -> None:
+        """The inline ACM record carries URN *lists*, never a scalar ``dataset_urn``.
+
+        And it carries no ``source`` key at all, which is the other half of the same
+        invariant: a consumer's producer filter must treat an absent key as run-level,
+        because ``detail->>'source'`` on a missing key is SQL ``NULL``.
+
+        spec: feature/BACKEND.md §Event Catalogue §producers — the inline run record's
+            keys, and "``detail.source`` is absent, not null, on the inline record".
+        """
+        row = _make_source_row(mode="ACTIVE_CUSTOM_MANAGED")
+        mock_scalar_query(db, row)
+        recorded: list[dict[str, Any]] = []
+
+        async def _capture(source_id, event_type, status, detail):  # type: ignore[no-untyped-def]
+            recorded.append(detail)
+
+        with (
+            _patched_run(service, emitted_urns=emitted, discovered_urns=discovered),
+            patch.object(service, "_record_source_event", side_effect=_capture),
+        ):
+            await service._run_inner(str(row.id), dry_run=False, manual=True)
+
+        assert len(recorded) == 1, (
+            f"{label}: backstop — the run must have recorded exactly one event; got "
+            f"{len(recorded)}."
+        )
+        detail = recorded[0]
+        assert "dataset_urn" not in detail, (
+            f"{label}: the inline run record must carry URN lists, never a scalar "
+            f"dataset_urn; got {sorted(detail)}. "
+            "spec: feature/BACKEND.md §Event Catalogue §producers."
+        )
+        assert "source" not in detail, (
+            f"{label}: the inline run record carries no detail.source key; got "
+            f"{sorted(detail)}. spec: feature/BACKEND.md §Event Catalogue §producers."
+        )
+        assert "discovered_urns" in detail and "emitted_urns" in detail
+
+    @pytest.mark.asyncio
+    async def test_the_extractor_crash_failure_writes_no_scalar_dataset_urn(
+        self, service: IngestionService, db: AsyncMock, datahub: AsyncMock
+    ) -> None:
+        """The extractor-crash ``INGESTION.FAIL`` payload carries no scalar ``dataset_urn``.
+
+        This payload is reachable from no other test in the suite, and it is the shape
+        most likely to acquire a dataset link: a crash mid-crawl is exactly when an
+        author reaches for "which dataset was it on".
+
+        spec: feature/BACKEND.md §Event Catalogue §producers — the invariant holds across
+            "run-level" producers, and a ``FAIL`` is one.
+        """
+        row = _make_source_row(mode="ACTIVE_CUSTOM_MANAGED")
+        mock_scalar_query(db, row)
+        recorded: list[dict[str, Any]] = []
+
+        async def _capture(source_id, event_type, status, detail):  # type: ignore[no-untyped-def]
+            recorded.append(detail)
+
+        crash = RuntimeError("connection to example-pg refused mid-crawl")
+        with (
+            patch.multiple(
+                "src.backend.ingestion.service",
+                resolve_recipe_secrets=MagicMock(side_effect=lambda r: r),
+                run_extractor=AsyncMock(side_effect=crash),
+            ),
+            patch.object(service, "_record_source_event", side_effect=_capture),
+        ):
+            with pytest.raises(RuntimeError):
+                await service._run_inner(str(row.id), dry_run=False, manual=True)
+
+        assert len(recorded) == 1, (
+            f"backstop — the crash path must record exactly one FAIL event; got "
+            f"{len(recorded)}."
+        )
+        detail = recorded[0]
+        assert "dataset_urn" not in detail, (
+            f"the extractor-crash FAIL must carry no scalar dataset_urn; got "
+            f"{sorted(detail)}. spec: feature/BACKEND.md §Event Catalogue §producers."
+        )
+        assert "source" not in detail
+        assert detail["exception"] == str(crash), (
+            "backstop: the captured payload must be the crash event, not some earlier one."
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_secret_resolution_failure_writes_no_scalar_dataset_urn(
+        self, service: IngestionService, db: AsyncMock, datahub: AsyncMock
+    ) -> None:
+        """The secret-resolution ``INGESTION.FAIL`` payload carries no scalar ``dataset_urn``.
+
+        spec: feature/BACKEND.md §Event Catalogue §producers — the invariant holds across
+            run-level producers.
+        """
+        from src.shared.secrets.interface import SecretRefNotFound
+
+        row = _make_source_row(mode="ACTIVE_CUSTOM_MANAGED")
+        mock_scalar_query(db, row)
+        recorded: list[dict[str, Any]] = []
+
+        async def _capture(source_id, event_type, status, detail):  # type: ignore[no-untyped-def]
+            recorded.append(detail)
+
+        with (
+            patch(
+                "src.backend.ingestion.service.resolve_recipe_secrets",
+                MagicMock(side_effect=SecretRefNotFound("dummy-data-pg__password")),
+            ),
+            patch.object(service, "_record_source_event", side_effect=_capture),
+        ):
+            result = await service._run_inner(str(row.id), dry_run=False, manual=True)
+
+        assert result.status == "error", (
+            "backstop: an unresolvable secret must fail the run, or no FAIL payload was "
+            "produced to inspect."
+        )
+        assert len(recorded) == 1
+        detail = recorded[0]
+        assert "dataset_urn" not in detail, (
+            f"the secret-resolution FAIL must carry no scalar dataset_urn; got "
+            f"{sorted(detail)}. spec: feature/BACKEND.md §Event Catalogue §producers."
+        )
+        assert "source" not in detail
+
+
+# ── The mirror's own occurred_at bounds ───────────────────────────────────────
+
+
+class TestMirrorExecutionRequestUndatable:
+    """An execution neither timestamp can date is not mirrored at all.
+
+    spec: feature/BACKEND.md §Sync + mapping sweep step 4 — "Mirror: ``startTimeMs``,
+        falling back to ``requestedAt`` … Both are remote, writer-supplied values and both
+        pass the same bounds as an observed instant; an execution neither field can date
+        is **not mirrored**."
+    spec: DATAHUB_INTEGRATION.md §Ingestion Source Sync — "an execution neither field can
+        date is **not mirrored**, rather than booked at the epoch or at a future instant
+        that would then outrank every later run."
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("label", "start_ms", "requested_ms"),
+        [
+            ("both zero", 0, 0),
+            ("both absent", None, None),
+            ("both negative", -1, -5),
+            ("both non-numeric", "soon", "soon"),
+        ],
+    )
+    async def test_an_undatable_execution_is_not_mirrored(
+        self,
+        service: IngestionService,
+        db: AsyncMock,
+        datahub: AsyncMock,
+        label: str,
+        start_ms: object,
+        requested_ms: object,
+    ) -> None:
+        """Neither field usable ⇒ no event, rather than an event at the epoch.
+
+        The old form booked such a run at ``1970-01-01``, which is the worst possible
+        answer for ``latest_run``: it is a real terminal outcome pinned so far in the past
+        that it is invisible to every recency reading.
+        """
+        source_id = str(uuid.uuid4())
+        datahub.list_execution_requests = AsyncMock(
+            return_value=[
+                {
+                    "urn": "urn:li:dataHubExecutionRequest:undatable",
+                    "status": "SUCCESS",
+                    "startTimeMs": start_ms,
+                    "durationMs": 1000,
+                    "requestedAt": requested_ms,
+                }
+            ]
+        )
+        dup_result = MagicMock()
+        dup_result.first.return_value = None
+        db.execute = AsyncMock(return_value=dup_result)
+
+        inserted = await service._mirror_execution_requests(
+            source_id, "urn:li:dataHubIngestionSource:abc"
+        )
+
+        assert inserted == 0, (
+            f"{label}: an execution neither timestamp can date must not be mirrored; got "
+            f"{inserted}. spec: feature/BACKEND.md §Sync + mapping sweep step 4."
+        )
+        db.add.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_future_dated_start_falls_back_to_a_usable_requested_at(
+        self, service: IngestionService, db: AsyncMock, datahub: AsyncMock
+    ) -> None:
+        """A future-dated ``startTimeMs`` is rejected and ``requestedAt`` supplies the instant.
+
+        The discriminating case: an implementation that only checked ``> 0`` would take
+        the future value and pin the source's ``latest_run`` at an instant nothing later
+        can displace.
+
+        spec: DATAHUB_INTEGRATION.md §Ingestion Source Sync — "both pass the same bounds as
+            an observed instant (positive, representable, no further ahead than a small
+            skew allowance)".
+        """
+        from src.backend.ingestion.service import _OBSERVED_AT_MAX_SKEW
+
+        source_id = str(uuid.uuid4())
+        requested = datetime.now(tz=UTC) - timedelta(hours=2)
+        future_start = datetime.now(tz=UTC) + _OBSERVED_AT_MAX_SKEW + timedelta(days=365)
+        datahub.list_execution_requests = AsyncMock(
+            return_value=[
+                {
+                    "urn": "urn:li:dataHubExecutionRequest:future-start",
+                    "status": "SUCCESS",
+                    "startTimeMs": _to_ms(future_start),
+                    "durationMs": 1000,
+                    "requestedAt": _to_ms(requested),
+                }
+            ]
+        )
+        dup_result = MagicMock()
+        dup_result.first.return_value = None
+        db.execute = AsyncMock(return_value=dup_result)
+
+        inserted = await service._mirror_execution_requests(
+            source_id, "urn:li:dataHubIngestionSource:abc"
+        )
+
+        assert inserted == 1, (
+            f"a usable requestedAt must still date the execution; got {inserted}. "
+            "spec: feature/BACKEND.md §Sync + mapping sweep step 4."
+        )
+        occurred_at = db.add.call_args[0][0].occurred_at
+        assert occurred_at < datetime.now(tz=UTC), (
+            f"the future-dated startTimeMs must be rejected in favour of requestedAt; got "
+            f"{occurred_at!r}. spec: DATAHUB_INTEGRATION.md §Ingestion Source Sync."
+        )
+        assert abs((occurred_at - requested).total_seconds()) < 0.001
 
 
 # ── sync(): the datahub-api health side effect ────────────────────────────────

@@ -54,11 +54,13 @@ async def get_data_ingestion(
             latest_run=None,
         )
 
-    # Fetch the most recent INGESTION.COMPLETE or INGESTION.FAIL event.
+    # The most recent terminal *run* outcome. get_latest_run_event applies both
+    # required predicates — the COMPLETE/FAIL whitelist and the observation-producer
+    # blacklist — so a lifecycle event or a newer per-dataset observation cannot be
+    # reported as a run (BACKEND.md §Sync step 4 — Source latest_run).
     latest_run: IngestionLatestRunSummary | None = None
-    events, _ = await service.get_events_for_source(source_id=source.id, limit=1)
-    if events:
-        ev = events[0]
+    ev = await service.get_latest_run_event(source.id)
+    if ev is not None:
         detail = ev.get("detail") or {}
         latest_run = IngestionLatestRunSummary(
             run_id=detail.get("run_id"),
@@ -90,8 +92,10 @@ async def get_data_ingestion_event(
 ) -> EventListResponse:
     """Ingestion event reports for this dataset.
 
-    Events are mirrored from the owning source's run history. When no source
-    covers this dataset, an empty event list is returned (HTTP 200).
+    Events come from the owning source's feed, narrowed to this dataset: its
+    run-level rows (which carry no scalar ``detail.dataset_urn``) plus the
+    observations booked for this URN, with sibling datasets' observations excluded.
+    When no source covers this dataset, an empty event list is returned (HTTP 200).
     """
     # Resolve the owning source; return empty list if unmapped.
     source = await service.reverse_lookup(dataset_urn)
@@ -111,6 +115,7 @@ async def get_data_ingestion_event(
         from_dt=from_time,
         to_dt=to_time,
         order_by=order_by,
+        dataset_urn=dataset_urn,
     )
     return EventListResponse(
         offset=offset,

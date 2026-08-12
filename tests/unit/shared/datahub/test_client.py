@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from src.shared.config import RETRY_MAX_ATTEMPTS
 from src.shared.exceptions import DataHubUnavailableError
 from src.shared.redaction import REDACTED
 
@@ -518,3 +519,361 @@ async def test_strict_read_error_message_is_sanitized(token_client, mock_graph) 
         f"the strict-mode message must be scrubbed; got {str(exc.value)!r}"
     )
     assert "schema mismatch" in str(exc.value)
+
+
+# ── get_last_ingested: the estate-wide observed-recency read ──────────────────
+#
+# spec: spec/DATAHUB_INTEGRATION.md §Observed Ingestion Recency — "DataSpoke reads it
+#   estate-wide as **one paged ``scrollAcrossEntities`` per sweep** —
+#   ``{dataset_urn: lastIngested_ms}`` for every dataset". The four constraints listed
+#   there are covered one test each below.
+
+
+def _scroll_page(hits: list[dict], next_scroll_id: str | None) -> dict:
+    """One ``scrollAcrossEntities`` response envelope."""
+    return {
+        "scrollAcrossEntities": {
+            "nextScrollId": next_scroll_id,
+            "searchResults": hits,
+        }
+    }
+
+
+def _dataset_hit(urn: str, last_ingested: object) -> dict:
+    """One search hit whose entity carries ``urn`` and ``lastIngested``."""
+    return {"entity": {"urn": urn, "lastIngested": last_ingested}}
+
+
+async def test_get_last_ingested_selects_last_ingested_through_a_dataset_fragment(
+    client, mock_graph
+) -> None:
+    """The query selects ``lastIngested`` inside an ``... on Dataset`` inline fragment.
+
+    This is pinned as query *text* because the failure mode it guards has no other
+    observable: ``lastIngested`` is declared on the concrete ``Dataset`` type rather than
+    on the ``Entity`` interface ``entity`` resolves to, so selecting it directly on
+    ``entity`` fails the whole query as a GraphQL validation error against a real GMS
+    while a mocked graph would happily return the same rows. The two assertions are
+    ordered: the fragment must be present, and ``lastIngested`` must sit inside it.
+
+    spec: spec/DATAHUB_INTEGRATION.md §Observed Ingestion Recency — "**The ``... on
+        Dataset`` inline fragment is mandatory.** … Selecting it directly on ``entity``
+        fails the **whole query** as a GraphQL validation error — it does not return
+        ``null`` for the field, so the failure is total rather than partial."
+    """
+    mock_graph.execute_graphql.return_value = _scroll_page([], None)
+
+    await client.get_last_ingested()
+
+    query = mock_graph.execute_graphql.call_args.args[0]
+    assert "... on Dataset" in query, (
+        f"the query must select through an '... on Dataset' inline fragment; got:\n{query}"
+    )
+    fragment_body = query.split("... on Dataset", 1)[1]
+    assert "lastIngested" in fragment_body.split("}", 1)[0], (
+        "lastIngested must be selected INSIDE the Dataset fragment, not on the Entity "
+        f"interface; got:\n{query}"
+    )
+
+
+async def test_get_last_ingested_merges_pages_and_sends_the_cursor_only_once_set(
+    client, mock_graph
+) -> None:
+    """Two pages merge into one mapping; the first request transmits no ``scrollId``.
+
+    Both halves are contractual. Merging is what makes this one read per sweep rather
+    than one per page, and omitting the cursor on the first request is what stops the
+    first page transmitting an explicit null.
+
+    spec: spec/DATAHUB_INTEGRATION.md §Observed Ingestion Recency — "one paged
+        ``scrollAcrossEntities`` per sweep — ``{dataset_urn: lastIngested_ms}`` for every
+        dataset"; "**``scrollId`` is transmitted only once non-empty**, so the first page
+        sends no cursor rather than an explicit null."
+    """
+    first = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
+    second = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.editions,DEV)"
+    mock_graph.execute_graphql.side_effect = [
+        _scroll_page([_dataset_hit(first, 1_700_000_000_000)], "cursor-2"),
+        _scroll_page([_dataset_hit(second, 1_700_000_600_000)], None),
+    ]
+
+    result = await client.get_last_ingested()
+
+    assert result == {first: 1_700_000_000_000, second: 1_700_000_600_000}, (
+        f"both pages must merge into one estate mapping; got {result!r}. "
+        "spec: DATAHUB_INTEGRATION.md §Observed Ingestion Recency."
+    )
+    calls = mock_graph.execute_graphql.call_args_list
+    assert len(calls) == 2, f"exactly two requests for two pages; got {len(calls)}."
+    assert "scrollId" not in calls[0].kwargs["variables"]["input"], (
+        "the first request must carry no scrollId key at all. "
+        "spec: DATAHUB_INTEGRATION.md §Observed Ingestion Recency."
+    )
+    assert calls[1].kwargs["variables"]["input"]["scrollId"] == "cursor-2", (
+        "the second request must carry the cursor the first page returned."
+    )
+
+
+@pytest.mark.parametrize(
+    ("label", "last_ingested"),
+    [
+        ("null", None),
+        ("zero", 0),
+        ("negative", -1),
+    ],
+)
+async def test_get_last_ingested_omits_null_and_non_positive_values(
+    client, mock_graph, label: str, last_ingested: object
+) -> None:
+    """A null or non-positive ``lastIngested`` is absent from the mapping.
+
+    Absent, never mapped to ``None``: absence is the caller's whole guard against booking
+    an event at an instant DataHub never reported. Both sides are in the same page — a
+    usable neighbour is always returned — so an implementation that dropped the page
+    wholesale would fail on the neighbour rather than pass on the omission.
+
+    spec: spec/DATAHUB_INTEGRATION.md §Observed Ingestion Recency — "**Null and
+        non-positive values are omitted, not carried as ``None``.** ``lastIngested`` is
+        ``null`` exactly when every aspect on the dataset carries the
+        ``"no-run-id-provided"`` sentinel — nothing observable. Absence is the guard
+        against booking an event at an instant DataHub never reported."
+    """
+    unusable = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.editions,DEV)"
+    usable = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
+    mock_graph.execute_graphql.return_value = _scroll_page(
+        [_dataset_hit(unusable, last_ingested), _dataset_hit(usable, 1_700_000_000_000)],
+        None,
+    )
+
+    result = await client.get_last_ingested()
+
+    assert result == {usable: 1_700_000_000_000}, (
+        f"{label}: a lastIngested of {last_ingested!r} must be omitted while its usable "
+        f"neighbour is kept; got {result!r}. "
+        "spec: DATAHUB_INTEGRATION.md §Observed Ingestion Recency."
+    )
+
+
+@pytest.mark.parametrize(
+    ("label", "last_ingested"),
+    [
+        ("boolean-true", True),
+        ("boolean-false", False),
+        ("string", "1700000000000"),
+    ],
+)
+async def test_get_last_ingested_omits_a_value_that_is_no_epoch_millisecond(
+    client, mock_graph, label: str, last_ingested: object
+) -> None:
+    """A value that is not an epoch-millisecond reading is omitted, not coerced.
+
+    The read answers with epoch milliseconds. A ``bool`` and a numeric string are not
+    readings DataHub took: coercing either fabricates an instant — ``True`` would map to
+    one millisecond after the epoch, and a string would map to whatever ``int()`` made of
+    it — and the caller books an ``INGESTION.COMPLETE`` at it. ``bool`` is the sharp case
+    because it is an ``int`` subclass and passes a bare numeric check.
+
+    spec: spec/DATAHUB_INTEGRATION.md §Observed Ingestion Recency — "``Dataset.lastIngested``
+        (epoch ms) … DataSpoke reads it estate-wide … ``{dataset_urn: lastIngested_ms}``
+        for every dataset"; "Absence is the guard against booking an event at an instant
+        DataHub never reported."
+    """
+    unusable = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.editions,DEV)"
+    usable = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
+    mock_graph.execute_graphql.return_value = _scroll_page(
+        [_dataset_hit(unusable, last_ingested), _dataset_hit(usable, 1_700_000_000_000)],
+        None,
+    )
+
+    result = await client.get_last_ingested()
+
+    assert result == {usable: 1_700_000_000_000}, (
+        f"{label}: a lastIngested of {last_ingested!r} is no epoch-millisecond reading and "
+        f"must be omitted while its usable neighbour is kept; got {result!r}. "
+        "spec: DATAHUB_INTEGRATION.md §Observed Ingestion Recency."
+    )
+
+
+@pytest.mark.parametrize(
+    ("label", "hits"),
+    [
+        ("hit is not a mapping", ["not-a-hit"]),
+        ("entity is not a mapping", [{"entity": "not-a-mapping"}]),
+        ("entity missing", [{}]),
+        ("urn missing", [{"entity": {"lastIngested": 1_700_000_000_000}}]),
+        ("urn is not a string", [{"entity": {"urn": 42, "lastIngested": 1}}]),
+    ],
+)
+async def test_get_last_ingested_skips_a_malformed_hit_without_raising(
+    client, mock_graph, label: str, hits: list
+) -> None:
+    """A malformed search hit is skipped; the well-formed one in the same page survives.
+
+    The shape check is load-bearing rather than defensive: the single call site treats an
+    ``AttributeError``/``TypeError`` out of this client as a fault in DataSpoke's own call
+    shape and **re-raises it out of the sweep**, so a malformed remote payload reaching
+    that branch would turn one bad GMS row into a failed hourly sync for every source.
+
+    spec: spec/feature/BACKEND.md §Best-Effort Operations — the interface-violation
+        exemption holds "because the read is a fixed-shape traversal of a GraphQL response
+        in which every element is shape-checked", so an ``AttributeError``/``TypeError``
+        out of this client can only be a call-shape fault.
+    """
+    usable = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
+    mock_graph.execute_graphql.return_value = _scroll_page(
+        [*hits, _dataset_hit(usable, 1_700_000_000_000)], None
+    )
+
+    result = await client.get_last_ingested()
+
+    assert result == {usable: 1_700_000_000_000}, (
+        f"{label}: a malformed hit must be skipped, not raise, and the well-formed hit in "
+        f"the same page must still be read; got {result!r}. "
+        "spec: feature/BACKEND.md §Best-Effort Operations."
+    )
+
+
+async def test_get_last_ingested_stops_on_an_unchanged_cursor(client, mock_graph) -> None:
+    """An unchanged ``nextScrollId`` stops the loop after the repeat, keeping what it read.
+
+    A GMS that returns the same cursor forever is capped by the page ceiling, but an
+    unchanged cursor is otherwise undetectable and would burn the whole page budget on
+    every sweep. The call count is what discriminates: the ceiling alone would let this
+    run to 100 requests.
+
+    spec: spec/DATAHUB_INTEGRATION.md §Observed Ingestion Recency — "the sweep stops at a
+        fixed page ceiling **and also on an unchanged cursor** — each logged as a warning,
+        since an unchanged cursor is otherwise undetectable and burns the whole page
+        budget every sweep."
+    """
+    from src.shared.datahub.client import _SCROLL_MAX_PAGES
+
+    urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
+    mock_graph.execute_graphql.return_value = _scroll_page(
+        [_dataset_hit(urn, 1_700_000_000_000)], "stuck"
+    )
+
+    result = await client.get_last_ingested()
+
+    assert mock_graph.execute_graphql.call_count == 2, (
+        f"the loop must stop on the repeated cursor rather than run to the "
+        f"{_SCROLL_MAX_PAGES}-page ceiling; got "
+        f"{mock_graph.execute_graphql.call_count} requests. "
+        "spec: DATAHUB_INTEGRATION.md §Observed Ingestion Recency."
+    )
+    assert result == {urn: 1_700_000_000_000}, (
+        "what was read before the stall is still returned; the guard bounds the read, it "
+        "does not discard it."
+    )
+
+
+async def test_get_last_ingested_stops_at_the_page_ceiling(client, mock_graph) -> None:
+    """An endless cursor stream stops at ``_SCROLL_MAX_PAGES`` requests.
+
+    Unlike the ``total``-bounded sibling reads a cursor loop has no intrinsic bound, and
+    this one runs on the API pod's event loop. Every cursor differs, so the unchanged-
+    cursor guard cannot be what stops it — only the ceiling can.
+
+    spec: spec/DATAHUB_INTEGRATION.md §Observed Ingestion Recency — "**The cursor loop is
+        capped.** Unlike the ``total``-bounded reads, ``nextScrollId`` paging has no
+        intrinsic bound and this runs on the API pod's event loop, so the sweep stops at a
+        fixed page ceiling".
+    """
+    from src.shared.datahub.client import _SCROLL_MAX_PAGES
+
+    page = {"n": 0}
+
+    def _endless(*_args, **_kwargs):
+        page["n"] += 1
+        urn = f"urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.p{page['n']},DEV)"
+        return _scroll_page([_dataset_hit(urn, 1_700_000_000_000)], f"cursor-{page['n']}")
+
+    mock_graph.execute_graphql.side_effect = _endless
+
+    result = await client.get_last_ingested()
+
+    assert mock_graph.execute_graphql.call_count == _SCROLL_MAX_PAGES, (
+        f"the loop must stop at the {_SCROLL_MAX_PAGES}-page ceiling; got "
+        f"{mock_graph.execute_graphql.call_count} requests. "
+        "spec: DATAHUB_INTEGRATION.md §Observed Ingestion Recency."
+    )
+    assert len(result) == _SCROLL_MAX_PAGES, (
+        "every page read before the ceiling is still returned."
+    )
+
+
+async def test_get_last_ingested_returns_empty_on_an_unreadable_envelope(
+    client, mock_graph
+) -> None:
+    """A response with no readable ``scrollAcrossEntities`` container yields ``{}``.
+
+    Absence propagates as absence rather than as an exception, which is what lets the
+    caller's interface-violation exemption mean what it says.
+
+    spec: spec/feature/BACKEND.md §Best-Effort Operations — the exemption holds "because the
+        read is a fixed-shape traversal of a GraphQL response in which every element is
+        shape-checked"; an envelope with no readable container is such a shape check, so it
+        must yield absence rather than an ``AttributeError``/``TypeError`` the caller would
+        re-raise out of the whole sweep.
+    """
+    mock_graph.execute_graphql.return_value = {"errors": [{"message": "boom"}]}
+
+    assert await client.get_last_ingested() == {}
+
+
+async def test_get_last_ingested_propagates_a_non_retryable_failure(client, mock_graph) -> None:
+    """A non-retryable failure propagates unchanged rather than becoming an empty mapping.
+
+    Identity, not type: an implementation that caught it and returned ``{}`` would report
+    an estate with nothing observable, which is what the caller's whole guard reads as
+    "book nothing" — the failure would then be indistinguishable from a healthy estate of
+    undatable datasets.
+
+    spec: spec/DATAHUB_INTEGRATION.md §Observed Ingestion Recency — "Errors propagate to
+        the single call site, matching every other client read; containment (best-effort
+        degradation of the signal, and the interface-violation exemption from it) is
+        defined in BACKEND §Best-Effort Operations."
+    """
+    transport_failure = ValueError("gms said no")
+    mock_graph.execute_graphql.side_effect = transport_failure
+
+    with pytest.raises(ValueError) as exc:
+        await client.get_last_ingested()
+
+    assert exc.value is transport_failure, (
+        f"the read must propagate the transport's own failure rather than swallowing it "
+        f"into an empty mapping or substituting its own; got {exc.value!r}."
+    )
+
+
+async def test_get_last_ingested_surfaces_an_exhausted_retry_as_the_documented_error(
+    client, mock_graph
+) -> None:
+    """A retryable transport fault that outlives the retries raises ``DataHubUnavailableError``.
+
+    This is the shape production actually sees, and it is the one the sub-pass's
+    best-effort branch is written against: the caller degrades every exception except
+    ``AttributeError``/``TypeError``, so a transport fault that arrived *as* one of those
+    would be re-raised out of the whole hourly sweep instead of costing one signal. The
+    retry wrapper is what decides that, and this read must not bypass it.
+
+    spec: spec/DATAHUB_INTEGRATION.md §Observed Ingestion Recency — "Errors propagate to
+        the single call site, matching every other client read".
+    spec: spec/feature/BACKEND.md §Best-Effort Operations — the interface-violation
+        exemption applies to ``AttributeError``/``TypeError`` alone; every other failure
+        of this read degrades the signal.
+    """
+    mock_graph.execute_graphql.side_effect = ConnectionError("connection refused")
+
+    # ``pytest.raises`` is the discriminating assertion here: a read that bypassed
+    # ``_with_retry`` would let the raw ``ConnectionError`` out and fail this block.
+    with pytest.raises(DataHubUnavailableError):
+        await client.get_last_ingested()
+
+    assert mock_graph.execute_graphql.call_count == RETRY_MAX_ATTEMPTS, (
+        f"the read must go through the shared retry wrapper, which is what converts a "
+        f"transport fault into the documented error instead of some type the call site's "
+        f"interface-violation branch would re-raise out of the whole sweep; got "
+        f"{mock_graph.execute_graphql.call_count} attempts. "
+        "spec: DATAHUB_INTEGRATION.md §Observed Ingestion Recency."
+    )

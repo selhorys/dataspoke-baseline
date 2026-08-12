@@ -36,6 +36,11 @@ TRIPLE_EMBEDDINGS_HNSW_INDEX = "triple_embeddings_embedding_hnsw_idx"
 
 
 def upgrade() -> None:
+    # Concurrent runs are serialized one level up, in ``migrations/env.py``: this
+    # body is not race-safe on its own (an ``IF NOT EXISTS`` existence check
+    # precedes name reservation, so two runs collide on
+    # ``pg_class_relname_nsp_index``), and a lock taken here would come too late —
+    # Alembic creates and reads ``alembic_version`` before it calls ``upgrade()``.
     op.execute(sa.text(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA}"))
 
     # pgvector extension — idempotent. The Bitnami initdb hook also creates
@@ -414,6 +419,35 @@ def upgrade() -> None:
         "events",
         ["entity_type", "entity_id", sa.text("occurred_at DESC")],
         schema=SCHEMA,
+    )
+    # Ingestion event indexes — both partial on entity_type='ingestion_source',
+    # both shaped by the two-branch predicates their queries emit. Rationale and
+    # shape constraints: spec/feature/BACKEND_SCHEMA.md §Ingestion event indexes.
+    op.execute(
+        f"CREATE INDEX ix_events_ingestion_dataset_urn "
+        f"ON {SCHEMA}.events (entity_id, (detail->>'dataset_urn'), occurred_at DESC) "
+        f"WHERE entity_type = 'ingestion_source'"
+    )
+    op.execute(
+        f"CREATE INDEX ix_events_ingestion_run_level "
+        f"ON {SCHEMA}.events (entity_id, occurred_at DESC) "
+        f"WHERE entity_type = 'ingestion_source' "
+        f"AND event_type IN ('INGESTION.COMPLETE', 'INGESTION.FAIL') "
+        f"AND (detail->>'source' IS NULL "
+        f"OR detail->>'source' NOT IN "
+        f"('last_ingested_observation', 'passive_observation'))"
+    )
+    # Extended statistics on the producer discriminator. Without it the planner has
+    # no distribution for detail->>'source', over-estimates the run-level index's
+    # matching rows by orders of magnitude, and under ORDER BY occurred_at DESC
+    # LIMIT 1 falls back to ix_events_entity_occurred — precisely on the sources
+    # the partial index exists for, whose feed is dominated by observations. It has
+    # no declarative table-metadata form, so it exists only here: schemas built
+    # straight from the ORM metadata lack it, which is acceptable for a planner hint
+    # that no behaviour depends on.
+    op.execute(
+        f"CREATE STATISTICS {SCHEMA}.st_events_detail_source "
+        f"ON (detail->>'source') FROM {SCHEMA}.events"
     )
 
     # ── ontogen_config (singleton) ───────────────────────────────────────

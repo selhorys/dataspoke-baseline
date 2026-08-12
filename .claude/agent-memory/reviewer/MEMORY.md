@@ -27,7 +27,7 @@
 - [spec_conformance is paths-only](feedback_spec_conformance_paths_only.md) — conformance compares route paths vs API.md, never query params; param drift passes every suite
 - [sync() sweep body has no unit coverage](feedback_sync_sweep_no_unit_coverage.md) — the one unit caller stubs _run_sweep AND _report_api_health; green `tests/unit/` proves nothing
 - [DataHubUnavailableError is retryable-only](project_datahub_unavailable_only_retryable.md) — 401/403 + GraphError propagate raw; `except DataHubUnavailableError` misses a rotated PAT
-- [Auditing a "no-op" rollback](feedback_rollback_noop_claim_audit.md) — check pending DML *and* rollback()'s identity-map expiry (MissingGreenlet for async callers)
+- [Auditing an added rollback()](feedback_rollback_noop_claim_audit.md) — pending DML *and* identity-map expiry; expire_on_commit=False does NOT cover rollback; check the caller loop
 - [Fernet blast radius](project_fernet_blast_radius_env_connections.md) — Airflow conns are env vars, so the metadata DB has ~no Fernet-encrypted rows; caps #111-style severity
 - [Renamed guard comparison target](feedback_renamed_guard_comparison_target.md) — rename + guard in one change: the guard reads nothing on pre-change clusters, check sibling helpers for the legacy name
 - [Dormant middleware blast radius](feedback_dormant_middleware_blast_radius.md) — repairing an inert middleware governs /internal + probes for the first time; measure the blocking cost it adds
@@ -69,5 +69,6 @@
 - [Documented verdict never printed](feedback_documented_verdict_never_printed.md) — literal status tokens live in a `case`, not on stdout; failure arms may kill the caller
 - [Frontend probe silent no-ops](feedback_frontend_probe_silent_noop.md) — pnpm test ignores the file filter, console.log needs --reporter=verbose, RHF submit no-ops on invalid defaults
 - [Filter-editor reseed vs refetch](project_filter_editor_reseed_refetch_coupling.md) — raw-text retention leans on refetchOnWindowFocus:false + the conf pages' useEffect([conf])
-- [Frontend prettier is not a gate](feedback_frontend_prettier_not_a_gate.md) — 129 files warn at HEAD; diff vs HEAD before reporting format drift, tsc --noEmit is the gate
+- [Formatters are not a gate](feedback_frontend_prettier_not_a_gate.md) — prettier AND `ruff format` are dirty at HEAD; isolate vs HEAD before reporting format drift
 - [Frontend role gate reads a stale `me`](project_frontend_role_gate_stale_me.md) — logout clears zustand but not the query cache; `enabled: isAdmin` + "control renders under isAdmin" is ONE signal
+- [Audit list spans a concurrent stage](feedback_audit_list_spans_concurrent_stage.md) — traps for the sibling stage land mid-review; re-run git status + check mtimes before judging

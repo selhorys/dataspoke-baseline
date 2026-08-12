@@ -15,6 +15,7 @@ import type {
   IngestionSourcePatchBody,
   IngestionRunResponse,
   IngestionSourceDatasetsResponse,
+  IngestionEvent,
   IngestionEventListResponse,
   IngestionUnmanagedResponse,
   SecretRefListResponse,
@@ -67,18 +68,79 @@ export function useIngestionSourceDatasetCounts(ids: string[]) {
 }
 
 /**
- * Per-row latest-run status: fires `event?limit=1&sort=occurred_at_desc` per
- * source id and exposes the newest event's status. Used by the list view's
- * status column.
+ * Maximum page size accepted by `GET /spoke/ingestion/sources/{id}/event`
+ * (`limit` is `le=1000`). The latest-run probe requests the whole page rather
+ * than one event, because the feed also carries per-dataset observations and
+ * source-lifecycle events — either can sit above the run outcome the status
+ * column reports.
+ */
+const EVENT_PAGE_MAX = 1000;
+
+/**
+ * Event types that record a run outcome. Lifecycle events
+ * (`INGESTION.SOURCE_CREATE` / `SOURCE_UPDATE` / `SOURCE_DELETE`) and any
+ * future non-run `INGESTION.*` are excluded.
+ */
+const RUN_OUTCOME_EVENT_TYPES: ReadonlySet<string> = new Set([
+  "INGESTION.COMPLETE",
+  "INGESTION.FAIL",
+]);
+
+/**
+ * `detail.source` wire values of the per-dataset observation producers
+ * (spec/feature/BACKEND.md §Event Catalogue). They book `INGESTION.COMPLETE`
+ * per mapped dataset with `status="success"`, so they are not run outcomes.
+ */
+const OBSERVATION_PRODUCERS: ReadonlySet<string> = new Set([
+  "passive_observation",
+  "last_ingested_observation",
+]);
+
+/**
+ * Mirror of the server-side `latest_run` predicate, applied in the backend's
+ * order. Both terms are required and neither is sufficient alone: the
+ * whitelist alone lets a per-dataset observation outrank an older failure, the
+ * blacklist alone lets a newer `SOURCE_UPDATE` (`status="success"`) do the
+ * same.
+ */
+function isRunOutcomeEvent(event: IngestionEvent): boolean {
+  // 1. Event-type whitelist.
+  if (!RUN_OUTCOME_EVENT_TYPES.has(event.event_type)) return false;
+  // 2. Producer blacklist, null-safe in the same direction as the backend's
+  //    `detail->>'source' IS NULL OR ... NOT IN (...)`: an event carrying no
+  //    `detail.source` is the inline ACM run record and must be kept.
+  const producer = event.detail?.source;
+  if (typeof producer !== "string") return true;
+  return !OBSERVATION_PRODUCERS.has(producer);
+}
+
+/**
+ * Newest run outcome on a page of source events, or `undefined` when the page
+ * holds none. The page is requested newest-first, so the first surviving row
+ * wins. Page-bounded by construction: unlike the unbounded server-side
+ * `latest_run`, a run outcome pushed off the newest page reads as "no status".
+ */
+export function selectLatestRunEvent(
+  page: IngestionEventListResponse,
+): IngestionEvent | undefined {
+  return page.events.find(isRunOutcomeEvent);
+}
+
+/**
+ * Per-row latest-run status: fires `event?limit=1000&sort=occurred_at_desc`
+ * per source id and derives the newest **run outcome** from that page. Each
+ * result's `data` is the winning event (or `undefined`). Used by the list
+ * view's status column.
  */
 export function useIngestionSourceLatestRuns(ids: string[]) {
   return useQueries({
     queries: ids.map((id) => ({
-      queryKey: ["ingestion", "events", id, { offset: 0, limit: 1 }],
+      queryKey: ["ingestion", "events", id, { offset: 0, limit: EVENT_PAGE_MAX }],
       queryFn: () =>
         apiFetch<IngestionEventListResponse>(
-          `/spoke/ingestion/sources/${encodeURIComponent(id)}/event?offset=0&limit=1&sort=occurred_at_desc`,
+          `/spoke/ingestion/sources/${encodeURIComponent(id)}/event?offset=0&limit=${EVENT_PAGE_MAX}&sort=occurred_at_desc`,
         ),
+      select: selectLatestRunEvent,
       meta: { handledInline: true },
     })),
   });

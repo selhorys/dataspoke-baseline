@@ -69,7 +69,10 @@ export function IngestionSourceList({
   const runStatusById: Record<string, string | undefined> = {};
   sources.forEach((s, i) => {
     countById[s.id] = counts[i]?.data?.total_count;
-    runStatusById[s.id] = latestRuns[i]?.data?.events[0]?.status;
+    // `data` is the derived run outcome: the feed's newest event need not be
+    // one, because per-dataset observations and source-lifecycle events share
+    // the feed.
+    runStatusById[s.id] = latestRuns[i]?.data?.status;
   });
 
   return (

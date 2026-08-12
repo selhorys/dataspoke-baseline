@@ -6,7 +6,7 @@ from logging.config import fileConfig
 from pathlib import Path
 
 from alembic import context
-from sqlalchemy import URL, pool
+from sqlalchemy import URL, pool, text
 from sqlalchemy.ext.asyncio import async_engine_from_config, create_async_engine
 
 from src.shared.db.models import Base
@@ -103,6 +103,20 @@ def run_migrations_offline() -> None:
 def do_run_migrations(connection):  # type: ignore[no-untyped-def]
     context.configure(connection=connection, target_metadata=target_metadata)
     with context.begin_transaction():
+        # Serialize concurrent migration runs. Migrations run as an init container
+        # on every API replica, so a fresh install and a scale-from-0 both start
+        # several at once. The lock is taken here rather than inside a revision
+        # because `run_migrations` creates and reads `alembic_version` before it
+        # calls any revision's `upgrade()`: a lock taken there would be reached
+        # only after both runs had already decided to migrate, and the loser would
+        # then execute the full body against a populated schema and fail on the
+        # first `CREATE`. Held for this transaction, which spans the version-table
+        # creation, the head read, the migration body and the version write, so a
+        # waiting run resumes after the winner commits, reads the head that is now
+        # recorded, and has nothing to do.
+        connection.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext('dataspoke_migrations'))")
+        )
         context.run_migrations()
 
 

@@ -91,6 +91,18 @@ class _StubDataHubForSync:
     async def list_execution_requests(self, source_urn: str) -> list[dict[str, Any]]:
         return []
 
+    async def get_last_ingested(self, count: int = 1000) -> dict[str, int]:
+        """An estate with nothing observable — the observation sub-pass books nothing.
+
+        This method is **not optional on a double**. Step 4's ``lastIngested`` sub-pass
+        treats ``AttributeError`` from the client as a call-shape fault and re-raises it out
+        of the whole sweep, precisely so that "a duck-typed test double missing the method
+        passes green with the sub-pass never executing" cannot happen
+        (spec: feature/BACKEND.md §Best-Effort Operations). Omitting it here would take the
+        sweep down rather than skip a signal.
+        """
+        return {}
+
 
 @pytest.mark.asyncio
 async def test_sync_links_wrapper_to_parent_and_drops_orphan(

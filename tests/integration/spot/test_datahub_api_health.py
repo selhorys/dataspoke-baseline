@@ -83,6 +83,18 @@ class _StubDataHubForHealth:
     async def list_execution_requests(self, source_urn: str) -> list[dict[str, Any]]:
         return []
 
+    async def get_last_ingested(self, count: int = 1000) -> dict[str, int]:
+        """An estate with nothing observable, so the sub-pass books nothing here.
+
+        Defined rather than omitted even though this module's sources list is empty: step
+        4's ``lastIngested`` sub-pass re-raises ``AttributeError`` from the client out of
+        the whole sweep (spec: feature/BACKEND.md §Best-Effort Operations — "a duck-typed
+        test double missing the method passes green with the sub-pass never executing"), so
+        a double without it would flip the very ``datahub-api`` health row this module
+        asserts on the moment any test here books a source.
+        """
+        return {}
+
 
 async def _read_health(engine: AsyncEngine, name: str) -> dict[str, Any] | None:
     """Read one ``peripheral_health`` row through a session of its own.

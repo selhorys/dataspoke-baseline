@@ -137,6 +137,18 @@ class _StubDataHubForPipelineSync:
     async def list_execution_requests(self, source_urn: str) -> list[dict[str, Any]]:
         return self._execution_requests.get(source_urn, [])
 
+    async def get_last_ingested(self, count: int = 1000) -> dict[str, int]:
+        """An estate with nothing observable, so this module's event counts stay run-level.
+
+        Required on the double rather than optional: step 4's ``lastIngested`` sub-pass
+        re-raises ``AttributeError`` from the client out of the whole sweep so that "a
+        duck-typed test double missing the method passes green with the sub-pass never
+        executing" cannot happen (spec: feature/BACKEND.md §Best-Effort Operations).
+        Returning ``{}`` is the documented shape for a dataset DataHub reports no ingestion
+        trace for, which keeps this module scoped to pipeline-name inheritance.
+        """
+        return {}
+
 
 async def _datasets_for_source(
     async_session: AsyncSession, source_urn: str

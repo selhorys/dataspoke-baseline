@@ -48,7 +48,43 @@ regular sources. `DATAHUB_MANAGED` rows carry a read-only badge. The name cell s
 subtitle below the name for DataHub-managed rows; rows without a URN
 (`ACTIVE_CUSTOM_MANAGED` / `PASSIVE`) show the name alone. (`GET /spoke/ingestion/sources`.) The
 covered-dataset count and latest run status are not fields on the list payload — each is
-client-derived via a per-source fan-out (`datasets?limit=1` and `event?limit=1`).
+client-derived via a per-source fan-out.
+
+The count is the `total_count` of `GET /spoke/ingestion/sources/{id}/datasets?limit=1`.
+
+The status comes from `GET /spoke/ingestion/sources/{id}/event?sort=occurred_at_desc` requested at
+the route's maximum page size, because that feed carries more than run outcomes: per-dataset
+ingestion observations and source-lifecycle events share it, and either can be newer than the run
+the badge must report. The newest **run outcome** is derived from that page by two predicates,
+listed here in the backend's order for readability:
+
+1. **Event-type whitelist** — keep only `INGESTION.COMPLETE` and `INGESTION.FAIL`. Lifecycle
+   events (`INGESTION.SOURCE_CREATE` / `SOURCE_UPDATE` / `SOURCE_DELETE`) and any future non-run
+   `INGESTION.*` are not run outcomes.
+2. **Producer blacklist, null-safe** — of those, drop rows whose `detail.source` names a
+   per-dataset observation producer. A row carrying no `detail.source` is **kept**: the inline run
+   record written by DataSpoke's own extractor has no such key, and dropping it would remove
+   exactly the events the status column exists to report.
+
+The first surviving row supplies the badge; a source whose newest page holds no run outcome shows
+none. A `PASSIVE` source shows none **always**: neither run-level producer covers that mode
+([BACKEND §Sync + mapping sweep](BACKEND.md#sync--mapping-sweep), step 4 — source `latest_run`), so
+its feed holds only per-dataset observations. The cell then renders the muted `—` placeholder, and
+the reading is "DataSpoke does not orchestrate this pipeline and never learns its run outcome", not
+"the fetch failed" — that source's recency lives on its datasets' timelines instead. Both predicates are required and neither is sufficient alone — the whitelist alone lets a
+per-dataset observation outrank an older failure, the blacklist alone lets a newer
+`SOURCE_UPDATE` (`status="success"`) do the same. The producer vocabulary is
+[BACKEND §Event Catalogue](BACKEND.md#event-catalogue).
+
+The derivation applies the same two predicates as the server-side `latest_run` behind
+`GET /spoke/common/data/{dataset_urn}/attr/ingestion`, but over a different input, and the
+difference is a real bound rather than a rounding error. This derivation is **page-bounded**: it
+sees only the newest page (`limit` max `1000`) and shows no badge when that page holds no run
+outcome. `latest_run` is **unbounded** — it resolves over the source's whole feed and always reports
+the most recent run. The two therefore agree only while the source's newest run outcome sits inside
+that page. Per-dataset observations share the feed and are booked per mapped dataset per observed
+instant, so a source covering many datasets can push its run outcomes off the newest page; the list
+badge then reads empty while the per-dataset Ingestion summary card still reports the run.
 
 ## Source Detail (`/ingestion/sources/[id]`)
 
@@ -85,12 +121,15 @@ daily / weekly) to the backing Airflow DAG
    for `ACTIVE_CUSTOM_MANAGED`; other modes show an explanatory disabled state (the run happens in
    DataHub or externally; the API returns `409 INGESTION_RUN_NOT_APPLICABLE`). For `DATAHUB_MANAGED`
    and `PASSIVE`, a second line below the read-only explanation briefly describes the
-   `datahub-sync-hourly` DAG's role (it refreshes the source→dataset mapping and mirrors run status
-   on a fixed hourly cadence) with an Airflow link to `<airflowUrl>/dags/datahub-sync-hourly`
+   `datahub-sync-hourly` DAG's role (on a fixed hourly cadence it refreshes the source→dataset
+   mapping, observes per-dataset ingestion for both modes, and mirrors DataHub run status for
+   `DATAHUB_MANAGED`) with an Airflow link to `<airflowUrl>/dags/datahub-sync-hourly`
    (rendered only when `airflowUrl` is set).
-4. **Events** — `GET /spoke/ingestion/sources/{id}/event` history table, newest first, aggregating
-   the source's own runs with those booked on its internal DataHub wrappers. A row whose `wrapper`
-   flag is set carries a "wrapper" tag. A
+4. **Events** — `GET /spoke/ingestion/sources/{id}/event` history table, newest first. The feed is
+   the source's full event history, unfiltered by producer — run outcomes, per-dataset ingestion
+   observations, and source-lifecycle events alike — unioned with the events booked on its internal
+   DataHub wrappers. On a source covering many datasets the observation rows dominate. A row whose
+   `wrapper` flag is set carries a "wrapper" tag. A
    `datetime`-granularity [RangePicker](FRONTEND_BASIC.md#shared-component-notes) (presets Last
    1 day / 7 days / 2 weeks (default) / 4 weeks / 12 weeks, plus a custom calendar range) drives
    the `from`/`to` filters from its resolved window. The `detail` cell shows the

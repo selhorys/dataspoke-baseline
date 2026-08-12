@@ -122,14 +122,20 @@ async def ingestion_sync() -> dict[str, object]:
 
     Called hourly by the datahub-sync-hourly DAG. Runs the sync pipeline
     (source defs, mapping, dataset_registry reconcile, observed enrichment,
-    run events) and returns a summary dict.
+    run and observation events) and returns a summary dict.
 
     Retryable: DataHub transient failures surface as 500 so Airflow retries.
 
     Returns:
         {sources_synced, sources_removed, datasets_mapped, pipeline_links,
-         events_mirrored, registry_inserted, registry_marked_true,
-         registry_marked_false, sources_zero_coverage, sources_pattern_degraded}
+         events_mirrored, last_ingested_observed, registry_inserted,
+         registry_marked_true, registry_marked_false, sources_zero_coverage,
+         sources_pattern_degraded}
+
+        ``last_ingested_observed`` counts the per-dataset INGESTION.COMPLETE events
+        booked from the estate-wide Dataset.lastIngested read. The first sweep of a
+        fresh deployment books the whole observable backlog, so a large first
+        reading is historical catch-up rather than a run storm.
 
         ``sources_zero_coverage`` and ``sources_pattern_degraded`` are the two
         defect signals: a non-zero ``sources_pattern_degraded`` means that many

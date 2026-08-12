@@ -8,12 +8,15 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import secrets
 import time
 import uuid
 from collections import Counter
-from datetime import UTC, datetime
+from collections.abc import Sequence
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from datahub.metadata.schema_classes import (
@@ -29,7 +32,7 @@ from datahub.metadata.schema_classes import (
     SystemMetadataClass,
 )
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import Boolean, cast, false, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -86,8 +89,99 @@ _FAIL_STATUSES: frozenset[str] = frozenset(
     {"FAILURE", "TIMEOUT", "ABORTED", "ROLLBACK_FAILED"}
 )
 
+# ── Observation vocabulary ────────────────────────────────────────────────────
+# ``detail.source`` is the normative producer discriminator on INGESTION.COMPLETE /
+# INGESTION.FAIL (spec/feature/BACKEND.md §Event Catalogue). Two of the four
+# producers are dataset-grained *observations*: they carry a scalar
+# ``detail.dataset_urn`` and can only ever report success. The run-level producers
+# are the execution-request mirror (``datahub_sync``) and the inline
+# ACTIVE_CUSTOM_MANAGED record, which carries no ``source`` key at all — every
+# consumer that filters on this vocabulary must therefore treat an absent key as
+# run-level.
+_OBS_PASSIVE_OPERATION = "passive_observation"
+_OBS_LAST_INGESTED = "last_ingested_observation"
+_OBSERVATION_SOURCES: frozenset[str] = frozenset(
+    {_OBS_PASSIVE_OPERATION, _OBS_LAST_INGESTED}
+)
+# Operation.operationType values that mean "this dataset received data".
+_INGESTION_OP_TYPES: frozenset[str] = frozenset({"INSERT", "UPDATE", "CREATE", "ALTER"})
+
+_MS_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+# How far past ``now`` an observed instant may resolve before it is rejected.
+# Writer clocks drift; DataHub's do not have to agree with the API pod's.
+_OBSERVED_AT_MAX_SKEW = timedelta(minutes=5)
+
+
+def _observed_at(ms: Any) -> datetime | None:
+    """Convert a writer-supplied epoch-millisecond value to an instant, or ``None``.
+
+    Total by contract: it never raises, whatever an aspect holds. Both observation
+    inputs (``Operation.lastUpdatedTimestamp`` and the ``systemMetadata`` scan
+    behind ``Dataset.lastIngested``) are writer-supplied on every MCP, so the value
+    is arbitrary JSON as far as DataSpoke is concerned, and a malformed one must
+    cost that observation and nothing more.
+
+    An out-of-range value is **rejected, never clamped and never defaulted to
+    ``now()``** (spec/feature/BACKEND.md §Sync step 4). Both escape hatches
+    fabricate an instant DataHub never reported, and each fails a different way:
+    ``now()`` breaks the observation identity tuple, so the dedup key never matches
+    on the next sweep and that dataset accrues one event per sweep forever; an
+    unbounded upper end lets one future-dated value permanently poison every
+    recency reading derived from it, because the newest evidence always wins and
+    nothing later can displace it.
+
+    Rejected: non-numeric, ``bool`` (an ``int`` subclass, so it passes a bare
+    numeric check), ``NaN``/infinity, non-positive, out of ``datetime`` range, and
+    anything resolving beyond ``now + _OBSERVED_AT_MAX_SKEW``.
+
+    The arithmetic is integer-exact (``_MS_EPOCH + timedelta(milliseconds=ms)``)
+    rather than ``fromtimestamp(ms / 1000)``. The two agree on every value this
+    function can accept — ``ms / 1000`` carries better than microsecond precision
+    below ``now``, so the float form's rounding lands on the same microsecond — and
+    the exact form does not depend on that headroom holding.
+    """
+    if isinstance(ms, bool) or not isinstance(ms, int | float):
+        logger.warning("ingestion_observed_at_rejected reason=non_numeric value=%r", ms)
+        return None
+    if isinstance(ms, float) and not math.isfinite(ms):
+        logger.warning("ingestion_observed_at_rejected reason=not_finite value=%r", ms)
+        return None
+    if ms <= 0:
+        logger.warning("ingestion_observed_at_rejected reason=non_positive value=%r", ms)
+        return None
+    try:
+        observed = _MS_EPOCH + timedelta(milliseconds=ms)
+    except (OverflowError, ValueError, OSError):
+        logger.warning("ingestion_observed_at_rejected reason=out_of_range value=%r", ms)
+        return None
+    if observed > datetime.now(tz=UTC) + _OBSERVED_AT_MAX_SKEW:
+        logger.warning("ingestion_observed_at_rejected reason=future value=%r", ms)
+        return None
+    return observed
+
 
 # ── Value objects ─────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class _SweepSource:
+    """Detached snapshot of one ``ingestion_sources`` row, taken once per sweep.
+
+    The sweep's steps 2–4 drive off these plain values, never off the ORM
+    instances they were read from. A degraded sub-pass rolls the session back to
+    keep it usable, and ``Session.rollback()`` expires every instance in the
+    identity map; the next attribute read on one of them would then emit a lazy
+    refresh ``SELECT`` outside ``greenlet_spawn`` and raise ``MissingGreenlet``,
+    turning a contained per-source degradation back into a sweep-wide failure —
+    exactly the outcome the containment exists to prevent.
+    """
+
+    id: uuid.UUID
+    name: str
+    mode: str
+    parent_source_id: uuid.UUID | None
+    datahub_source_urn: str | None
+    recipe: dict[str, Any]
 
 
 class IngestionSourceRecord(BaseModel):
@@ -1277,17 +1371,117 @@ class IngestionService:
 
     # ── Events ────────────────────────────────────────────────────────────────
 
+    async def _owner_by_entity_id(self, source_ids: list[str]) -> dict[str, str]:
+        """Map every ``events.entity_id`` that belongs to *source_ids* to its owner.
+
+        A source's events are the union of its own and those of its linked CLI
+        wrappers (``parent_source_id = <source id>``) — DataHub books a managed
+        source's executions on the auto-created wrapper rather than on the
+        registered source, so a lookup by the registered id alone misses exactly
+        the events it is after. The returned dict has one key per participating
+        entity id (own row and wrapper rows alike) and maps it to the
+        *caller-supplied* source id string, so the caller folds wrapper results
+        into their parent's with a plain dict lookup.
+
+        Non-UUID ids are dropped: stored ``entity_id`` values are canonical
+        ``str(uuid)``, so such an id can match no row. A wrapper passed alongside
+        its own parent resolves to the parent and gets no key of its own — the
+        wrapper's runs belong to the parent.
+        """
+        by_uid: dict[uuid.UUID, str] = {}
+        for sid in source_ids:
+            try:
+                by_uid[uuid.UUID(sid)] = sid
+            except ValueError:
+                continue
+        if not by_uid:
+            return {}
+
+        owner_by_entity: dict[str, str] = {str(uid): sid for uid, sid in by_uid.items()}
+        child_result = await self._db.execute(
+            select(IngestionSource.id, IngestionSource.parent_source_id).where(
+                IngestionSource.parent_source_id.in_(list(by_uid.keys()))
+            )
+        )
+        for child_id, parent_id in child_result.all():
+            owner_by_entity[str(child_id)] = by_uid[parent_id]
+        return owner_by_entity
+
+    async def latest_ingestion_observed_by_dataset(
+        self,
+        source_ids: list[str],
+    ) -> dict[tuple[str, str], datetime]:
+        """Return the newest observation instant per ``(source id, dataset URN)``.
+
+        This is tier 1 of ``ingestion-freshness`` evidence: the per-dataset
+        `INGESTION.COMPLETE`s the owning source booked **for that dataset**, written
+        by the two observation producers (spec/feature/BACKEND.md §Metrics Service —
+        Time windows). A run-level `COMPLETE` is a claim about a *run*, not about a
+        dataset, so it cannot serve here; the source-grained fallback is
+        :meth:`latest_ingestion_complete_by_source`.
+
+        Only the **source ids** are bound, never the dataset URNs, and the caller
+        intersects in Python. The measurer's dataset list can be the whole estate,
+        and asyncpg hard-fails above 32767 bind parameters — an ``IN`` list of URNs
+        walks straight into that ceiling on a large estate. Grouping by
+        ``(entity_id, detail->>'dataset_urn')`` keeps the result one row per pair
+        rather than one per event.
+
+        Served by ``ix_events_ingestion_dataset_urn``; the ``detail->>'source'``
+        term is a heap filter. Rows whose ``dataset_urn`` is absent (run-level
+        producers) cannot match the producer filter, and are excluded explicitly
+        anyway so the grouping never yields a keyless pair.
+        """
+        owner_by_entity = await self._owner_by_entity_id(source_ids)
+        if not owner_by_entity:
+            return {}
+
+        dataset_urn_col = Event.detail["dataset_urn"].astext
+        result = await self._db.execute(
+            select(Event.entity_id, dataset_urn_col, func.max(Event.occurred_at))
+            .where(
+                Event.entity_type == "ingestion_source",
+                Event.event_type == INGESTION_COMPLETE,
+                Event.entity_id.in_(list(owner_by_entity.keys())),
+                Event.detail["source"].astext.in_(sorted(_OBSERVATION_SOURCES)),
+                dataset_urn_col.isnot(None),
+            )
+            .group_by(Event.entity_id, dataset_urn_col)
+        )
+
+        latest: dict[tuple[str, str], datetime] = {}
+        for entity_id, dataset_urn, occurred_at in result.all():
+            if not dataset_urn:
+                continue
+            key = (owner_by_entity[entity_id], dataset_urn)
+            current = latest.get(key)
+            if current is None or occurred_at > current:
+                latest[key] = occurred_at
+        return latest
+
     async def latest_ingestion_complete_by_source(
         self,
         source_ids: list[str],
     ) -> dict[str, datetime]:
-        """Return the newest ``INGESTION.COMPLETE`` timestamp per source.
+        """Return the newest non-dry-run ``INGESTION.COMPLETE`` timestamp per source.
+
+        This is tier 2 of ``ingestion-freshness`` evidence — the source-grained
+        fallback for datasets that have no observation of their own
+        (spec/feature/BACKEND.md §Metrics Service — Time windows). It is
+        deliberately **producer-agnostic**: a blacklist here would not narrow the
+        fallback but empty it for ``PASSIVE``, which books no run-level event at
+        all, leaving every passive dataset without its own observation reading
+        permanently stale.
+
+        **Dry runs are excluded.** A dry run emits nothing to DataHub by
+        definition, yet one without errors still books ``INGESTION.COMPLETE`` — so
+        without this term a dry run would mark every dataset mapped to the source
+        ingested-in-time. Producers that carry no ``dry_run`` key (the mirror and
+        both observation producers) yield SQL ``NULL`` → ``false`` → included,
+        which is correct: only the inline ACTIVE_CUSTOM_MANAGED record sets it.
 
         A source's runs are the union of its own events and those of its linked
-        CLI wrappers (``parent_source_id = <source id>``) — DataHub books a
-        managed source's executions on the auto-created wrapper rather than on
-        the registered source, so a lookup by the registered id alone misses
-        exactly the events it is after. This is the same union
+        CLI wrappers, resolved by :meth:`_owner_by_entity_id` — the same union
         :meth:`get_events_for_source` serves, batched over many sources.
 
         Two queries regardless of list size: one resolving wrapper ids, then one
@@ -1299,35 +1493,18 @@ class IngestionService:
         method that owns the union rule.
 
         Returns a dict keyed by the *given* source id strings; a source with no
-        ``INGESTION.COMPLETE`` event is **absent** from the dict rather than
-        mapped to ``None``. Passing both a parent and one of its own wrappers is
-        not meaningful — the wrapper's runs belong to the parent — so a wrapper
+        qualifying ``INGESTION.COMPLETE`` event is **absent** from the dict rather
+        than mapped to ``None``. Passing both a parent and one of its own wrappers
+        is not meaningful — the wrapper's runs belong to the parent — so a wrapper
         given alongside its parent resolves to the parent and does not get a key
         of its own.
         """
         if not source_ids:
             return {}
 
-        # Canonicalize: stored entity_id values are canonical str(uuid).
-        by_uid: dict[uuid.UUID, str] = {}
-        for sid in source_ids:
-            try:
-                by_uid[uuid.UUID(sid)] = sid
-            except ValueError:
-                # A non-UUID id can match no stored row; it simply has no events.
-                continue
-        if not by_uid:
+        owner_by_entity = await self._owner_by_entity_id(source_ids)
+        if not owner_by_entity:
             return {}
-
-        # entity_id (own row or wrapper row) → the caller-supplied owning source id.
-        owner_by_entity: dict[str, str] = {str(uid): sid for uid, sid in by_uid.items()}
-        child_result = await self._db.execute(
-            select(IngestionSource.id, IngestionSource.parent_source_id).where(
-                IngestionSource.parent_source_id.in_(list(by_uid.keys()))
-            )
-        )
-        for child_id, parent_id in child_result.all():
-            owner_by_entity[str(child_id)] = by_uid[parent_id]
 
         result = await self._db.execute(
             select(Event.entity_id, func.max(Event.occurred_at))
@@ -1335,6 +1512,9 @@ class IngestionService:
                 Event.event_type == INGESTION_COMPLETE,
                 Event.entity_type == "ingestion_source",
                 Event.entity_id.in_(list(owner_by_entity.keys())),
+                ~func.coalesce(
+                    cast(Event.detail["dry_run"].astext, Boolean), false()
+                ),
             )
             .group_by(Event.entity_id)
         )
@@ -1347,6 +1527,87 @@ class IngestionService:
                 latest[owner] = occurred_at
         return latest
 
+    async def _source_entity_ids(self, source_id: str) -> tuple[str, list[str]]:
+        """Return ``(canonical_id, [canonical_id, *wrapper_ids])`` for a source.
+
+        A source's event feed is the union of its own rows and those of its linked
+        CLI wrapper rows (``parent_source_id = source_id``) — DataHub books a
+        managed source's runs on the wrapper, not the parent. The canonical id is
+        returned alongside so callers can derive each row's ``wrapper`` flag.
+
+        Stored ``entity_id`` values are canonical ``str(uuid)``, so the id is
+        normalized: a non-canonical (e.g. uppercase) path param still matches the
+        parent's own events instead of being mis-flagged as a wrapper row. A
+        non-UUID id can match no stored row and yields no wrappers.
+        """
+        try:
+            uid = uuid.UUID(source_id)
+        except ValueError:
+            return source_id, [source_id]
+
+        canonical = str(uid)
+        child_result = await self._db.execute(
+            select(IngestionSource.id).where(IngestionSource.parent_source_id == uid)
+        )
+        child_ids = [str(cid) for cid in child_result.scalars().all()]
+        return canonical, [canonical, *child_ids]
+
+    async def get_latest_run_event(self, source_id: str) -> dict[str, Any] | None:
+        """Return the source's most recent terminal **run** outcome, or ``None``.
+
+        Backs ``attr/ingestion.latest_run``. Two predicates, both required
+        (spec/feature/BACKEND.md §Sync step 4 — Source ``latest_run``):
+
+        - an **event-type whitelist** (``INGESTION.COMPLETE`` /
+          ``INGESTION.FAIL``), so ``SOURCE_CREATE``/``SOURCE_UPDATE``/
+          ``SOURCE_DELETE`` and any future non-run ``INGESTION.*`` cannot be read
+          as a run outcome; and
+        - a **``detail.source`` blacklist** of the observation producers, so a
+          newer per-dataset ``COMPLETE`` cannot outrank an older run ``FAIL``.
+
+        The blacklist's ``IS NULL`` disjunct is not optional: the inline
+        ACTIVE_CUSTOM_MANAGED run record carries no ``source`` key, and
+        ``detail->>'source'`` on a missing key is SQL ``NULL``, so a bare
+        ``NOT IN`` would silently drop exactly the events this method exists to
+        report.
+
+        The per-source ``event/…`` timeline (:meth:`get_events_for_source`) is
+        deliberately *not* filtered this way — it shows every producer.
+
+        In-progress and pending runs surface no event at all, so ``None`` means
+        "no run outcome yet", mirroring DataHub's "Pending…".
+        """
+        canonical, entity_ids = await self._source_entity_ids(source_id)
+        producer = Event.detail["source"].astext
+
+        result = await self._db.execute(
+            select(Event)
+            .where(
+                Event.entity_type == "ingestion_source",
+                Event.entity_id.in_(entity_ids),
+                Event.event_type.in_([INGESTION_COMPLETE, INGESTION_FAIL]),
+                or_(
+                    producer.is_(None),
+                    producer.notin_(sorted(_OBSERVATION_SOURCES)),
+                ),
+            )
+            .order_by(Event.occurred_at.desc())
+            .limit(1)
+        )
+        row = result.scalars().first()
+        if row is None:
+            return None
+        return {
+            "id": str(row.id),
+            "entity_type": row.entity_type,
+            "entity_id": row.entity_id,
+            "event_type": row.event_type,
+            "status": row.status,
+            "detail": row.detail,
+            "occurred_at": row.occurred_at,
+            "wrapper": row.entity_id != canonical,
+        }
+
     async def get_events_for_source(
         self,
         source_id: str,
@@ -1355,6 +1616,8 @@ class IngestionService:
         from_dt: datetime | None = None,
         to_dt: datetime | None = None,
         order_by: Any = None,
+        *,
+        dataset_urn: str | None = None,
     ) -> tuple[list[dict[str, Any]], int]:
         """Return ingestion events for a source (paginated).
 
@@ -1365,32 +1628,38 @@ class IngestionService:
         on the wrapper, not the parent. Each returned row carries a derived
         ``wrapper`` flag (``True`` when the event's ``entity_id`` is a wrapper,
         i.e. not this source's own id).
-        """
-        # Resolve linked wrapper ids; their run events surface on this source.
-        try:
-            uid = uuid.UUID(source_id)
-        except ValueError:
-            # Non-UUID source_id can match no stored row; fall back to the raw
-            # string so the (empty-result) query still runs without children.
-            canonical = source_id
-            child_ids: list[str] = []
-        else:
-            # Stored entity_id values are canonical str(uuid); normalize so a
-            # non-canonical (e.g. uppercase) path param still matches the parent's
-            # own events and does not mis-flag them as wrapper rows.
-            canonical = str(uid)
-            child_result = await self._db.execute(
-                select(IngestionSource.id).where(IngestionSource.parent_source_id == uid)
-            )
-            child_ids = [str(cid) for cid in child_result.scalars().all()]
 
-        entity_ids = [canonical, *child_ids]
+        ``dataset_urn`` narrows the feed to one dataset's timeline: a row qualifies
+        when its ``detail.dataset_urn`` equals the URN **or is absent**. The
+        ``IS NULL`` disjunct is the crux — no run-level producer writes a scalar
+        ``detail.dataset_urn`` (the mirror carries no dataset link at all and the
+        inline record carries URN *lists* under other keys), so an equality-only
+        predicate would delete precisely the run and ``FAIL`` rows from every
+        dataset's timeline while keeping only observations. ``detail->>'…'``
+        covers both absence shapes, a missing key and an explicit JSON ``null``.
+
+        The predicate is applied to the shared ``base`` select, so the page query
+        and the count over its subquery cannot drift.
+
+        It is keyword-only: positionally it would sit after ``order_by: Any``,
+        where a positional caller's ``order_by`` would land in it and become a
+        silent JSONB text comparison that ``mypy`` cannot catch through ``Any``.
+        """
+        canonical, entity_ids = await self._source_entity_ids(source_id)
 
         base = select(Event).where(
             Event.entity_type == "ingestion_source",
             Event.entity_id.in_(entity_ids),
             Event.event_type.startswith(INGESTION_PREFIX),
         )
+        if dataset_urn is not None:
+            event_dataset_urn = Event.detail["dataset_urn"].astext
+            base = base.where(
+                or_(
+                    event_dataset_urn.is_(None),
+                    event_dataset_urn == dataset_urn,
+                )
+            )
         if from_dt is not None:
             base = base.where(Event.occurred_at >= from_dt)
         if to_dt is not None:
@@ -1462,9 +1731,14 @@ class IngestionService:
         accepted cost is that a DB fault also flips the row — preferable to a
         signal that is silently wrong.
 
-        ``ok`` asserts only that the sweep's GMS **enumeration** completed, not
-        that every GMS call inside it succeeded: per-source run-history polls are
-        best-effort and a skipped source does not flip the row.
+        ``ok`` asserts only that the sweep's source-definition **enumeration**
+        completed, not that every GMS call inside it succeeded: the per-source
+        run-history polls and the estate-wide ``lastIngested`` read are both
+        best-effort, so a skipped source — or an observation sub-pass that books
+        nothing because that read failed — does not flip the row. The exception is
+        an interface violation, which is a fault in DataSpoke's own call shape
+        rather than in the remote system and escapes to the ``error`` branch like
+        any other unhandled failure.
 
         Returns:
             The sweep summary counters — see :meth:`_run_sweep`.
@@ -1545,9 +1819,11 @@ class IngestionService:
         3. **Observed enrichment**: for DATAHUB_MANAGED and ACTIVE_CUSTOM_MANAGED
            sources, read systemMetadata.pipelineName per dataset and upsert
            derivation='pipeline_name' rows where the name matches a source.
-        4. **Run events**: mirror terminal execution requests for DATAHUB_MANAGED
-           sources as INGESTION.COMPLETE / INGESTION.FAIL events.
-           For PASSIVE sources, observe Operation timeseries on mapped datasets.
+        4. **Run and observation events**: book ingestion evidence as
+           INGESTION.COMPLETE / INGESTION.FAIL in three sub-passes — mirror
+           terminal execution requests for DATAHUB_MANAGED sources; observe
+           Operation timeseries on PASSIVE sources' mapped datasets; and observe
+           Dataset.lastIngested for every mode from one estate-wide read.
         5. **Unmanaged bucket**: served on-read by the router — sync() does not
            persist a separate table.
 
@@ -1563,7 +1839,19 @@ class IngestionService:
               pipeline_links    — new pipeline_name rows, plus matched → pipeline_name
                                   upgrades; a re-confirmed pipeline_name row still
                                   refreshes last_seen_at but does not count
-              events_mirrored   — new INGESTION events written
+              events_mirrored   — new INGESTION events written by step 4's first two
+                                  sub-passes (execution-request mirror + Operation
+                                  observation)
+              last_ingested_observed — new INGESTION.COMPLETE events written by the
+                                  lastIngested observation sub-pass. A counter of its
+                                  own rather than folded into events_mirrored: the two
+                                  have different identity rules and different failure
+                                  units (per-dataset best-effort inserts versus one
+                                  estate-wide read that degrades wholesale). The first
+                                  sweep of a fresh deployment books the whole observable
+                                  backlog — one event per mapped dataset DataHub can
+                                  date — so a large first reading is historical catch-up,
+                                  and it collapses to zero on the next unchanged sweep.
               registry_inserted — new dataset_registry rows inserted (datahub_registered=True)
               registry_marked_true   — existing rows flipped from False to True
               registry_marked_false  — existing rows soft-flagged as False (left DataHub)
@@ -1592,6 +1880,7 @@ class IngestionService:
             "datasets_mapped": 0,
             "pipeline_links": 0,
             "events_mirrored": 0,
+            "last_ingested_observed": 0,
             "registry_inserted": 0,
             "registry_marked_true": 0,
             "registry_marked_false": 0,
@@ -1747,13 +2036,28 @@ class IngestionService:
             urn_to_platform[urn] for urn in urn_to_name if urn in urn_to_platform
         )
 
-        # Load all source rows to evaluate matchers.
+        # Load all source rows to evaluate matchers, then take a detached snapshot
+        # of every field steps 2–4 read. Nothing below this point touches an ORM
+        # instance: step 2b and each of step 4's sub-passes roll the session back
+        # when they degrade, which expires the whole identity map, and a later
+        # attribute read would emit a lazy refresh SELECT outside greenlet_spawn
+        # and raise MissingGreenlet — escaping the sweep it was contained in.
         result = await self._db.execute(select(IngestionSource))
-        all_sources_rows = result.scalars().all()
+        sources = [
+            _SweepSource(
+                id=row.id,
+                name=row.name,
+                mode=row.mode,
+                parent_source_id=row.parent_source_id,
+                datahub_source_urn=row.datahub_source_urn,
+                recipe=dict(row.recipe) if row.recipe else {},
+            )
+            for row in result.scalars().all()
+        ]
 
-        for src_row in all_sources_rows:
+        for src_row in sources:
             source_id = src_row.id
-            recipe = dict(src_row.recipe) if src_row.recipe else {}
+            recipe = src_row.recipe
 
             # Platform scoping is the sweep's responsibility (the matcher sees only
             # names): require the URN platform to equal the recipe's source.type
@@ -1933,14 +2237,14 @@ class IngestionService:
             #   stamps pipelineName = source_id per the DPI emission convention).
             id_to_urn: dict[uuid.UUID, str] = {
                 row.id: row.datahub_source_urn
-                for row in all_sources_rows
+                for row in sources
                 if row.mode == Mode.DATAHUB_MANAGED.value
                 and row.parent_source_id is None
                 and row.datahub_source_urn
             }
 
             pipeline_to_sources: dict[str, list[uuid.UUID]] = {}
-            for src_row in all_sources_rows:
+            for src_row in sources:
                 if src_row.mode == Mode.DATAHUB_MANAGED.value:
                     if src_row.parent_source_id is None:
                         if src_row.datahub_source_urn:
@@ -2024,9 +2328,15 @@ class IngestionService:
 
             await self._db.commit()
 
-        # ── Step 4: Run events ────────────────────────────────────────────────
-        # Mirror DATAHUB_MANAGED terminal executions into the events table.
-        for src_row in all_sources_rows:
+        # ── Step 4: Run and observation events ────────────────────────────────
+        # Three sub-passes, additive rather than alternative: the run layer carries
+        # outcome, identity and diagnostics; the observation layer answers "was this
+        # dataset ingested, and when". Observation is success-only by nature — an
+        # Operation is written when data changes and lastIngested advances when
+        # aspects are written, so neither can express a failure.
+
+        # 4a. DATAHUB_MANAGED: mirror terminal executions (per run).
+        for src_row in sources:
             if src_row.mode == Mode.DATAHUB_MANAGED.value and src_row.datahub_source_urn:
                 mirrored = await self._mirror_execution_requests(
                     source_id=str(src_row.id),
@@ -2034,11 +2344,16 @@ class IngestionService:
                 )
                 summary["events_mirrored"] += mirrored
 
-        # PASSIVE: observe Operation timeseries on mapped datasets (best-effort).
-        for src_row in all_sources_rows:
+        # 4b. PASSIVE: observe Operation timeseries on mapped datasets (per dataset).
+        for src_row in sources:
             if src_row.mode == Mode.PASSIVE.value:
                 mirrored = await self._observe_passive_operations(str(src_row.id))
                 summary["events_mirrored"] += mirrored
+
+        # 4c. All modes: observe Dataset.lastIngested (per dataset), from one
+        # estate-wide read hoisted out of the per-source loop the same way step 2's
+        # dataset enumeration and step 3's pipelineName read are.
+        summary["last_ingested_observed"] += await self._observe_last_ingested(sources)
 
         return summary
 
@@ -2060,8 +2375,13 @@ class IngestionService:
         event, upserted (looked up via ``detail->>'execution_request_urn'`` for
         this source) so repeated syncs and status transitions never duplicate.
 
-        ``occurred_at`` is ``startTimeMs`` when present (>0), else ``requestedAt``;
-        never ``now()``.
+        ``occurred_at`` is ``startTimeMs``, falling back to ``requestedAt``, both
+        read through :func:`_observed_at` — never ``now()``. The remote timestamps
+        are writer-supplied like every other observed instant, so the same total
+        conversion applies: a malformed or future-dated value costs this one
+        execution (it is skipped, not booked at the epoch and not clamped) instead
+        of raising out of the sweep or poisoning every recency reading derived from
+        the source's newest event.
 
         Returns the count of newly inserted events.
         """
@@ -2102,12 +2422,18 @@ class IngestionService:
             if dup_result.first() is not None:
                 continue
 
-            start_ms = req.get("startTimeMs")
-            if start_ms is not None and start_ms > 0:
-                occurred_at = datetime.fromtimestamp(start_ms / 1000, tz=UTC)
-            else:
-                requested_at = req.get("requestedAt")
-                occurred_at = datetime.fromtimestamp((requested_at or 0) / 1000, tz=UTC)
+            occurred_at = _observed_at(req.get("startTimeMs"))
+            if occurred_at is None:
+                occurred_at = _observed_at(req.get("requestedAt"))
+            if occurred_at is None:
+                logger.warning(
+                    "ingestion_sync_execution_request_undatable — source_id=%s urn=%s: "
+                    "neither startTimeMs nor requestedAt yields a usable instant; "
+                    "this execution is not mirrored",
+                    source_id,
+                    urn,
+                )
+                continue
 
             self._db.add(
                 Event(
@@ -2130,16 +2456,83 @@ class IngestionService:
 
         return inserted
 
-    async def _observe_passive_operations(self, source_id: str) -> int:
-        """Observe Operation timeseries on datasets mapped to a PASSIVE source.
+    async def _existing_observation_keys(
+        self,
+        source_id: str,
+        instants: set[datetime],
+        detail_source: str,
+    ) -> set[tuple[str, datetime]]:
+        """Return the ``(dataset_urn, occurred_at)`` pairs already booked on a source.
 
-        Best-effort: per-dataset errors are logged and skipped.
+        One batched dedup read per source per signal, in the prefetch shape step 2's
+        ``existing_matcher_rows`` and step 3's ``existing_pipeline_keys`` already use.
+        Scoped to one ``detail.source`` because the producer is the fourth term of
+        the observation identity tuple — without it the two observation signals share
+        a key, so an instant both report to the same millisecond silently drops one.
+
+        The instants are bound as a **range** (``BETWEEN min AND max``) and
+        intersected in Python, never as ``occurred_at IN (<instants>)``. The ``IN``
+        form binds one parameter per instant and asyncpg hard-fails above 32767 —
+        reachable on a source with more mapped datasets than that, and it fires on
+        the *first* sweep, which books the whole historical backlog. The range form
+        binds a constant number of parameters whatever the estate's size.
+
+        Reading a *set* of key columns, rather than asserting uniqueness per record,
+        is deliberate: dedup is application-level SELECT-then-INSERT, so two
+        concurrent sweeps can each leave a duplicate row behind, and a
+        uniqueness-assuming read would then raise on every later sweep. That is the
+        same shape :meth:`_mirror_execution_requests` uses for its own dedup.
+        """
+        if not instants:
+            return set()
+
+        dataset_urn_col = Event.detail["dataset_urn"].astext
+        result = await self._db.execute(
+            select(dataset_urn_col, Event.occurred_at).where(
+                Event.entity_type == "ingestion_source",
+                Event.entity_id == source_id,
+                Event.event_type == INGESTION_COMPLETE,
+                Event.detail["source"].astext == detail_source,
+                Event.occurred_at >= min(instants),
+                Event.occurred_at <= max(instants),
+            )
+        )
+        return {
+            (dataset_urn, occurred_at)
+            for dataset_urn, occurred_at in result.all()
+            if dataset_urn is not None and occurred_at in instants
+        }
+
+    async def _observe_passive_operations(self, source_id: str) -> int:
+        """Observe ``Operation`` aspects on datasets mapped to a PASSIVE source.
+
+        Collect → one batched dedup read → insert all. **Every** qualifying instant
+        observed since the last sweep is booked, not one per dataset per sweep: the
+        appended identity is bounded by the observed instant, so an unchanged estate
+        books nothing next sweep and a dataset with five new Operations gets five
+        events now rather than one per hour for five hours.
+
+        The in-memory ``seen`` set is mandatory, not an optimisation: two Operations
+        on one dataset can share a millisecond, and the dedup read cannot see rows
+        this same pass is about to insert — without it they would insert a permanent
+        duplicate pair that every later sweep then treats as one.
+
+        The ``limit=5`` read window is retained. A dataset receiving more than five
+        qualifying Operations between two sweeps loses the oldest — a bounded loss.
+
+        Best-effort per spec/feature/BACKEND.md §Best-Effort Operations: **every**
+        failure of the per-dataset read skips that dataset, including
+        ``AttributeError``/``TypeError``. The interface-violation exemption that
+        applies to the estate-wide ``lastIngested`` read deliberately does not
+        apply here: ``get_timeseries`` deserialises a writer-supplied remote aspect
+        through the acryl-datahub SDK, which raises ``AttributeError`` on a
+        malformed stored payload, so an error of that type is not evidence of a
+        DataSpoke call-shape fault. A database failure degrades this signal to zero
+        and leaves the rest of the sweep untouched.
 
         Returns the count of newly inserted events.
         """
         from datahub.metadata.schema_classes import OperationClass
-
-        _INGESTION_OP_TYPES = {"INSERT", "UPDATE", "CREATE", "ALTER"}
 
         try:
             uid = uuid.UUID(source_id)
@@ -2147,70 +2540,254 @@ class IngestionService:
             return 0
 
         # Fetch datasets mapped to this PASSIVE source.
-        ds_result = await self._db.execute(
-            select(IngestionSourceDataset).where(
-                IngestionSourceDataset.source_id == uid,
+        try:
+            ds_result = await self._db.execute(
+                select(IngestionSourceDataset.dataset_urn).where(
+                    IngestionSourceDataset.source_id == uid,
+                )
             )
-        )
-        dataset_rows = ds_result.scalars().all()
+            dataset_urns = list(ds_result.scalars().all())
+        except Exception:
+            logger.warning(
+                "ingestion_sync_passive_observation_failed — source_id=%s: mapping read "
+                "failed, booking nothing for this source this tick",
+                source_id,
+                exc_info=True,
+            )
+            await self._rollback_quietly()
+            return 0
 
-        inserted = 0
-        for ds_row in dataset_rows:
+        # ── Collect ───────────────────────────────────────────────────────────
+        observations: list[tuple[str, datetime, str]] = []
+        seen: set[tuple[str, datetime]] = set()
+        for dataset_urn in dataset_urns:
             try:
                 ops = await self._datahub.get_timeseries(
-                    ds_row.dataset_urn,
+                    dataset_urn,
                     OperationClass,
                     limit=5,
                 )
             except Exception as exc:
-                logger.debug("get_timeseries(Operation) failed for %s: %s", ds_row.dataset_urn, exc)
+                logger.debug("get_timeseries(Operation) failed for %s: %s", dataset_urn, exc)
                 continue
 
             for op in ops:
                 op_type = getattr(op, "operationType", None)
                 if op_type not in _INGESTION_OP_TYPES:
                     continue
-
-                last_updated_ts = getattr(op, "lastUpdatedTimestamp", None)
-                if last_updated_ts:
-                    occurred_at = datetime.fromtimestamp(last_updated_ts / 1000, tz=UTC)
-                else:
-                    occurred_at = datetime.now(tz=UTC)
-
-                event_type = INGESTION_COMPLETE
-
-                # Deduplicate on source, event type, timestamp, and dataset URN.
-                dup_result = await self._db.execute(
-                    select(Event).where(
-                        Event.entity_type == "ingestion_source",
-                        Event.entity_id == source_id,
-                        Event.event_type == event_type,
-                        Event.occurred_at == occurred_at,
-                        Event.detail["dataset_urn"].astext == ds_row.dataset_urn,
-                    )
-                )
-                if dup_result.scalar_one_or_none() is not None:
+                occurred_at = _observed_at(getattr(op, "lastUpdatedTimestamp", None))
+                if occurred_at is None:
                     continue
+                key = (dataset_urn, occurred_at)
+                if key in seen:
+                    continue
+                seen.add(key)
+                observations.append((dataset_urn, occurred_at, op_type))
 
+        if not observations:
+            return 0
+
+        # ── One dedup read, then insert all ───────────────────────────────────
+        try:
+            existing = await self._existing_observation_keys(
+                source_id,
+                {occurred_at for _, occurred_at, _ in observations},
+                _OBS_PASSIVE_OPERATION,
+            )
+
+            inserted = 0
+            for dataset_urn, occurred_at, op_type in observations:
+                if (dataset_urn, occurred_at) in existing:
+                    continue
                 self._db.add(
                     Event(
                         entity_type="ingestion_source",
                         entity_id=source_id,
-                        event_type=event_type,
+                        event_type=INGESTION_COMPLETE,
                         status="success",
                         detail={
-                            "dataset_urn": ds_row.dataset_urn,
+                            "dataset_urn": dataset_urn,
                             "operation_type": op_type,
-                            "source": "passive_observation",
+                            "source": _OBS_PASSIVE_OPERATION,
                         },
                         occurred_at=occurred_at,
                     )
                 )
                 inserted += 1
-                # One event per dataset per sweep is sufficient.
-                break
 
-        if inserted:
-            await self._db.commit()
+            if inserted:
+                await self._db.commit()
+        except Exception:
+            logger.warning(
+                "ingestion_sync_passive_observation_failed — source_id=%s: booking "
+                "nothing for this source this tick",
+                source_id,
+                exc_info=True,
+            )
+            await self._rollback_quietly()
+            return 0
 
         return inserted
+
+    async def _observe_last_ingested(self, sources: Sequence[_SweepSource]) -> int:
+        """Observe ``Dataset.lastIngested`` for every mapped dataset, all modes.
+
+        For every dataset mapped to a bookable source, when DataHub reports a
+        non-null ``lastIngested`` the sweep books an ``INGESTION.COMPLETE`` carrying
+        ``detail.dataset_urn``. This gives PASSIVE a per-dataset signal that does not
+        depend on the estate's pipelines emitting ``Operation`` aspects, and is the
+        only per-dataset evidence the two managed modes have.
+
+        Four properties of that guarantee are load-bearing
+        (spec/feature/BACKEND.md §Sync step 4):
+
+        - **It is not an event on the dataset.** ``entity_type='ingestion_source'``,
+          ``entity_id=<source id>``; the dataset link is ``detail.dataset_urn`` alone.
+        - **A dataset mapped to N sources books N events.** There is no owner
+          arbitration at write time — the owning-source rule is a read-side
+          resolution recomputed on every read.
+        - **CLI wrappers are skipped.** ``lastIngested`` is a property of the dataset
+          with no wrapper affinity, the parent already covers the URN, and the
+          per-source feed unions parent with wrappers — booking on both would show
+          one fact twice on the parent.
+        - **A null ``lastIngested`` books nothing**; the client omits those, so
+          absence here is the guard against minting an event at an instant DataHub
+          never reported.
+
+        ``sources`` are :class:`_SweepSource` snapshots, not ORM rows: the
+        per-source pass below rolls the session back when it degrades, which would
+        expire any ORM instance still held here.
+
+        One estate read per sweep, taken only when a bookable source exists.
+        Transport faults degrade this signal to zero and leave the ``datahub-api``
+        health row untouched. Interface violations are exempt and re-raised: a
+        renamed client method would otherwise report ``last_ingested_observed = 0``
+        forever, indistinguishable from an estate with nothing observable, and a
+        duck-typed test double missing the method would pass green with this pass
+        never running. The exemption is scoped to this read alone, whose client
+        parses a fixed-shape GraphQL response with every element shape-checked, so
+        an ``AttributeError``/``TypeError`` here can only be DataSpoke's own call
+        shape — :meth:`_observe_passive_operations` deserialises writer-supplied
+        remote aspects and is deliberately not exempt.
+        """
+        bookable = [row.id for row in sources if row.parent_source_id is None]
+        if not bookable:
+            return 0
+
+        try:
+            last_ingested = await self._datahub.get_last_ingested()
+        except (AttributeError, TypeError):
+            logger.error(
+                "ingestion_sync_client_interface_error — get_last_ingested; this is a "
+                "DataSpoke call-shape fault, not a DataHub fault",
+                exc_info=True,
+            )
+            raise
+        except Exception:
+            logger.warning(
+                "ingestion_sync_last_ingested_read_failed — the lastIngested "
+                "observation books nothing this tick",
+                exc_info=True,
+            )
+            return 0
+
+        if not last_ingested:
+            return 0
+
+        observed = 0
+        for source_uid in bookable:
+            observed += await self._observe_last_ingested_for_source(source_uid, last_ingested)
+        return observed
+
+    async def _observe_last_ingested_for_source(
+        self,
+        source_uid: uuid.UUID,
+        last_ingested: dict[str, int],
+    ) -> int:
+        """Book one source's share of the estate-wide ``lastIngested`` reading.
+
+        Wrapped so a database failure degrades this source's signal rather than the
+        sweep. ``(source_id, dataset_urn)`` is unique in
+        ``ingestion_source_dataset``, so each URN is considered at most once and no
+        in-pass collision is possible here.
+
+        Returns the count of newly inserted events.
+        """
+        source_id = str(source_uid)
+        try:
+            ds_result = await self._db.execute(
+                select(IngestionSourceDataset.dataset_urn).where(
+                    IngestionSourceDataset.source_id == source_uid,
+                )
+            )
+            observations: list[tuple[str, datetime]] = []
+            for dataset_urn in ds_result.scalars().all():
+                ms = last_ingested.get(dataset_urn)
+                if ms is None:
+                    continue
+                occurred_at = _observed_at(ms)
+                if occurred_at is None:
+                    continue
+                observations.append((dataset_urn, occurred_at))
+
+            if not observations:
+                return 0
+
+            existing = await self._existing_observation_keys(
+                source_id,
+                {occurred_at for _, occurred_at in observations},
+                _OBS_LAST_INGESTED,
+            )
+
+            inserted = 0
+            for dataset_urn, occurred_at in observations:
+                if (dataset_urn, occurred_at) in existing:
+                    continue
+                self._db.add(
+                    Event(
+                        entity_type="ingestion_source",
+                        entity_id=source_id,
+                        event_type=INGESTION_COMPLETE,
+                        status="success",
+                        detail={
+                            "dataset_urn": dataset_urn,
+                            "source": _OBS_LAST_INGESTED,
+                        },
+                        occurred_at=occurred_at,
+                    )
+                )
+                inserted += 1
+
+            if inserted:
+                await self._db.commit()
+        except Exception:
+            logger.warning(
+                "ingestion_sync_last_ingested_observation_failed — source_id=%s: "
+                "booking nothing for this source this tick",
+                source_id,
+                exc_info=True,
+            )
+            await self._rollback_quietly()
+            return 0
+
+        return inserted
+
+    async def _rollback_quietly(self) -> None:
+        """Roll the sweep's session back so a degraded sub-pass leaves it usable.
+
+        A failed statement aborts the whole PostgreSQL transaction, so without this
+        the "degrade the signal, not the sweep" contract would hold only in name —
+        every subsequent statement in the sweep would fail too. Step 3 commits before
+        step 4 begins, so there is no earlier uncommitted work to lose.
+
+        A rollback also expires every ORM instance in the session's identity map
+        (``expire_on_commit=False`` governs the *commit* path only), so any later
+        attribute read on one would emit a lazy refresh ``SELECT`` outside
+        ``greenlet_spawn`` and raise ``MissingGreenlet``. That is why the sweep
+        drives off :class:`_SweepSource` snapshots: no caller of this helper may
+        hold a live ORM instance across it.
+        """
+        try:
+            await self._db.rollback()
+        except Exception:
+            logger.warning("ingestion_sync_rollback_failed", exc_info=True)

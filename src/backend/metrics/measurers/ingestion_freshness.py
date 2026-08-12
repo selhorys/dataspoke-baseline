@@ -1,12 +1,27 @@
 """Measurer: ingestion-freshness — counts datasets ingested within a per-dataset window.
 
-A dataset's ingestion recency **is the recency of its owning source's runs**:
-``INGESTION.COMPLETE`` is booked on the source (``entity_type='ingestion_source'``)
-and never on the dataset. So the measurer resolves each dataset's owning source
-first (``IngestionService.reverse_lookup_batch`` — the same priority rule the
-per-dataset event timeline uses) and reads that source's runs, counting the
-source's CLI-wrapper runs as its own
-(``IngestionService.latest_ingestion_complete_by_source``).
+Every ``INGESTION.*`` event is booked on a source (``entity_type='ingestion_source'``)
+and never on the dataset, so the measurer resolves each dataset's owning source first
+(``IngestionService.reverse_lookup_batch`` — the same priority rule the per-dataset
+event timeline uses) and reads that source's feed, counting the source's CLI-wrapper
+rows as its own. It reads that feed in **two tiers of evidence**:
+
+1. ``observation`` — ``max(occurred_at)`` over the per-dataset observation events the
+   owning source booked **for this dataset**
+   (``IngestionService.latest_ingestion_observed_by_dataset``). Exact.
+2. ``source_level`` — ``max(occurred_at)`` over every non-dry-run
+   ``INGESTION.COMPLETE`` on the owning source
+   (``IngestionService.latest_ingestion_complete_by_source``), whatever wrote it.
+
+Tier 1 is preferred because a run-level ``COMPLETE`` is a claim about a *run*, not
+about a dataset: partial emission still reads ``COMPLETE``, a ``DATAHUB_MANAGED``
+``SUCCESS`` is not a per-table claim, and a ``matched`` mapping is recipe-*pattern*
+derived, so a dataset the source merely could cover would inherit its freshness.
+Tier 2 keeps those approximations by construction and applies only where nothing
+better exists — a source-booked event genuinely cannot say which dataset it touched.
+It is source-grained rather than producer-filtered on purpose: blacklisting
+observations there would leave every ``PASSIVE`` dataset without one of its own with
+no evidence at all.
 
 That same owning source supplies the window:
 
@@ -72,7 +87,8 @@ async def measure(
     tuple[dict[str, float], dict]
         ``(values, breakdown)`` where values has keys ``total`` and
         ``ingested_in_time``; breakdown lists only stale datasets with
-        ``last_event_at``, ``time_window_sec``, and ``window_source`` in detail.
+        ``last_event_at``, ``time_window_sec``, ``window_source`` and
+        ``evidence_tier`` in detail.
     """
     default_window_sec = int(metric_conf["time_window_sec"])
     ingestion = IngestionService(datahub=datahub, db=db)
@@ -95,11 +111,16 @@ async def measure(
             return PASSIVE_SYNC_PERIOD_SEC * LATE_INGESTION_FACTOR, "passive"
         return default_window_sec, "default"
 
-    # ── 2. Fetch the latest INGESTION.COMPLETE per owning source ──────────────
-    # The helper unions each source's own events with its CLI wrappers' — DataHub
-    # books a managed source's executions on the wrapper — and is absent for a
-    # source that has never completed a run.
+    # ── 2. Fetch both evidence tiers, keyed by owning source ──────────────────
+    # Both helpers union each source's own events with its CLI wrappers' — DataHub
+    # books a managed source's executions on the wrapper. Both bind only the source
+    # ids: the dataset list can be the whole estate, and an IN list of URNs would
+    # walk into asyncpg's 32767-bind-parameter ceiling. A source (tier 2) or a
+    # (source, dataset) pair (tier 1) with no qualifying event is simply absent.
     source_ids = sorted({owner.id for owner in owners.values() if owner is not None})
+    observed_by_dataset: dict[
+        tuple[str, str], datetime
+    ] = await ingestion.latest_ingestion_observed_by_dataset(source_ids)
     latest_by_source: dict[str, datetime] = await ingestion.latest_ingestion_complete_by_source(
         source_ids
     )
@@ -114,7 +135,21 @@ async def measure(
         owner = owners.get(urn)
         window_sec, window_source = _resolve_window(owner)
         cutoff = now - timedelta(seconds=window_sec)
-        last_event_at = latest_by_source.get(owner.id) if owner is not None else None
+
+        # Tier 1 (this dataset's own observations) preferred; tier 2 (any COMPLETE
+        # on the owning source) only where tier 1 has nothing. evidence_tier names
+        # which one answered, so a stale verdict is diagnosable — the two tiers make
+        # different claims. Tier 2's label names the *grain*, not a producer.
+        last_event_at: datetime | None = None
+        evidence_tier: str | None = None
+        if owner is not None:
+            last_event_at = observed_by_dataset.get((owner.id, urn))
+            if last_event_at is not None:
+                evidence_tier = "observation"
+            else:
+                last_event_at = latest_by_source.get(owner.id)
+                if last_event_at is not None:
+                    evidence_tier = "source_level"
 
         if last_event_at is not None and last_event_at > cutoff:
             ingested_in_time += 1
@@ -126,6 +161,7 @@ async def measure(
                         "last_event_at": last_event_at.isoformat() if last_event_at else None,
                         "time_window_sec": window_sec,
                         "window_source": window_source,
+                        "evidence_tier": evidence_tier,
                     },
                 }
             )

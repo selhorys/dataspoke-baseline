@@ -115,12 +115,18 @@ Each MANIFESTO feature has a clear integration direction:
 | Feature | UC | Direction | Primary Operations |
 |---------|----|-----------|-------------------|
 | Ingestion Control (`ACTIVE_CUSTOM_MANAGED`) | UC1 | **Write** | The pluggable extractor emits dataset metadata (`Status`, `DatasetProperties`, `SchemaMetadata`) plus per-run `DataProcessInstance` aspects. |
-| Ingestion Control (`DATAHUB_MANAGED` / `PASSIVE`) | UC1 | **Read** | The hourly `datahub-sync-hourly` DAG syncs source defs (`listIngestionSources`), rebuilds the source→dataset mapping, and mirrors run history (`listExecutionRequests` / `DataProcessInstance` / `Operation`). No aspect writes by DataSpoke. |
+| Ingestion Control (`DATAHUB_MANAGED` / `PASSIVE`) | UC1 | **Read** | The hourly `datahub-sync-hourly` DAG syncs source defs (`listIngestionSources`), rebuilds the source→dataset mapping, and observes ingestion — `listExecutionRequests` for `DATAHUB_MANAGED`, ingestion-like `Operation` aspects for `PASSIVE`, and the estate-wide `Dataset.lastIngested` read for every mode. No aspect writes by DataSpoke. |
 | Validation | UC2 | **Write** | Emit `assertionInfo` on conf upsert (variable list joined as `customAssertion.logic`); emit `assertionRunEvent` per pipeline-posted result (timestamped to `data_time`); hard-delete the assertion entity on conf DELETE. Validation logic lives in the data pipeline. |
 | Ontology Generation | UC3 | **Read** | Read `datasetProperties`, `schemaMetadata`, `editableDatasetProperties`, `editableSchemaMetadata`, `glossaryTerms`, and `documentInfo` on `document` entities whose `relatedAssets` reference an in-scope dataset. Ontology is modelled as a subject / predicate / object triple set (nodes / edges / triples) and stored entirely in DataSpoke (PostgreSQL relational + pgvector). |
 | Metadata Generation | UC4 | **Read + Write (editable description only)** | Read the same DataHub aspect set as UC3 (`datasetProperties`, `schemaMetadata`, `editableDatasetProperties`, `editableSchemaMetadata`, `glossaryTerms`, `documentInfo`) plus UC3-approved nodes/triples from DataSpoke storage. On reviewer approval of a candidate, write only to the *editable* description aspects — `editableDatasetProperties.description` for `dataset.description` items, `editableSchemaMetadata.editableSchemaFieldInfo[].description` for `column.<fieldPath>.description` items. Tag and glossary-term proposals are future scope. |
 | Governance | UC5 | **Read** | Aggregate pre-existing metadata (properties, ownership, tags) and DataSpoke validation / ontology state |
 | Redefined DataHub Functions *(TBD)* | — | **Read + Write** | Blended API/UI that proxies DataHub reads/writes alongside DataSpoke-specific data |
+
+The mode scoping in the two Ingestion Control rows names each mode's **primary** direction, not an
+exclusive one. The estate-wide `Dataset.lastIngested` read
+([§Observed Ingestion Recency](#observed-ingestion-recency)) runs for every mode, including
+`ACTIVE_CUSTOM_MANAGED` whose row is otherwise a write path: a source's mode selects which
+*run-level* surface is polled, not whether the dataset-grained observation applies.
 
 ### Client Initialization
 
@@ -394,7 +400,10 @@ per-run DataProcessInstance aspects per the [Custom Extractor Guide](#custom-ext
 postgres datasets additionally receive `Container` and `BrowsePathsV2` aspects so they
 nest under the same database → schema hierarchy as DataHub's managed-PG source);
 `DATAHUB_MANAGED` / `PASSIVE` modes read source defs + run history out-of-band via the
-`datahub-sync-hourly` DAG and write no aspects.*
+`datahub-sync-hourly` DAG and write no aspects. That same DAG also reads the dataset-grained
+observation surfaces — `Operation` aspects and `Dataset.lastIngested`
+([§Observed Ingestion Recency](#observed-ingestion-recency)) — which is why `operation` reads R for
+Ingestion Control below.*
 
 | Aspect | Ingestion Control | Validation | Ontology Generation | Metadata Generation | Governance |
 |--------|:---:|:---:|:---:|:---:|:---:|
@@ -409,7 +418,7 @@ nest under the same database → schema hierarchy as DataHub's managed-PG source
 | `status` | W | W *(`removed=false` on register; conf DELETE hard-deletes the entity rather than tombstoning)* | — | — | — |
 | `deprecation` | — | — | — | — | — |
 | `datasetProfile` | — | — | — | — | — |
-| `operation` | — | — | — | — | — |
+| `operation` | R *(ingestion-like `operationType`s, `PASSIVE` observation)* | — | — | — | — |
 | `datasetUsageStatistics` | — | — | — | — | — |
 | `assertionInfo` | — | W | — | — | — |
 | `assertionRunEvent` | — | W | — | — | — |
@@ -669,8 +678,14 @@ are to `ref/github/datahub/` v1.6.0.
   own sources; DataSpoke's extractor stamps the source id) to link authoritatively.
 - **Run/event history**: `listExecutionRequests` +
   `ExecutionRequestResult{status,startTimeMs,durationMs,structuredReport}` and the request `input`
-  (`requestedAt`) for `DATAHUB_MANAGED`; `DataProcessInstance` runs + ingestion-like `Operation`
-  aspects for `PASSIVE`. Mirroring follows DataHub's execution-request model:
+  (`requestedAt`) for `DATAHUB_MANAGED`; ingestion-like `Operation` aspects
+  (`operationType ∈ {INSERT, UPDATE, CREATE, ALTER}`, read as a timeseries aspect) for `PASSIVE`;
+  and `Dataset.lastIngested` for every mode
+  ([§Observed Ingestion Recency](#observed-ingestion-recency)). The first surface is run-grained
+  and carries an outcome; the latter two are dataset-grained **observations** that cannot express
+  failure — DataHub records an `Operation` when data changes and advances `lastIngested` when
+  aspects are written — so they extend the run-level mirror rather than replace it. Mirroring of
+  the run-level surface follows DataHub's execution-request model:
   - **No result aspect until the executor starts.** `CreateIngestionExecutionRequest` writes only
     `ExecutionRequestInput` (with `requestedAt`, no status); a queued request has no result and
     renders "Pending…" in the DataHub UI. DataSpoke mirrors **only** result-bearing executions.
@@ -687,13 +702,36 @@ are to `ref/github/datahub/` v1.6.0.
     `CANCELLED`/`DUPLICATE`/`ROLLED_BACK` (not an ingestion outcome) are **not** mirrored.
   - **Identity = execution-request URN** (`urn:li:dataHubExecutionRequest:<id>`): DataSpoke upserts at
     most one event per URN per source (idempotent across syncs), never appending by timestamp.
-  - **`occurred_at`** = `startTimeMs` when present (`> 0`, the optional *execution start* time —
-    absent/`0` before the executor runs and for CANCELLED/DUPLICATE-before-start, per
-    `ExecutionRequestResult.pdl` and `metadata-ingestion/.../ingest_cli.py`), else the always-present
-    `input.requestedAt`; never `now()`.
+  - **`occurred_at`** = `startTimeMs` (the optional *execution start* time — absent/`0` before the
+    executor runs and for CANCELLED/DUPLICATE-before-start, per `ExecutionRequestResult.pdl` and
+    `metadata-ingestion/.../ingest_cli.py`), else the always-present `input.requestedAt`; never
+    `now()`. Both are remote, writer-supplied values, so both pass the same bounds as an observed
+    instant (positive, representable, no further ahead than a small skew allowance); an execution
+    neither field can date is **not mirrored**, rather than booked at the epoch or at a future
+    instant that would then outrank every later run.
 
-  The source's `latest_run` is the latest terminal outcome (`COMPLETE`/`FAIL`); in-progress/pending
-  runs surface no event yet, mirroring DataHub's "Pending…". See
+  The two dataset-grained observation producers sit outside that model — they mirror no execution
+  request, so none of the rules above apply to them — and follow their own identity rule:
+
+  - **Observed-ingestion identity** = the
+    **(source, dataset URN, `occurred_at`, producer)** tuple, **appended** rather than upserted. The
+    producer term is not optional: the `Operation` and `lastIngested` observations otherwise share a
+    key, so an instant both report to the same millisecond silently drops one. An unchanged
+    observation books nothing on the next sweep, so a dataset accrues one event per distinct observed
+    instant over its life — not one per sweep. Both instants are **writer-supplied on every MCP**
+    (`Operation.lastUpdatedTimestamp`; the `systemMetadata` scan behind `lastIngested`), so DataSpoke
+    bounds them on both sides: a null, non-numeric, non-positive, out-of-range, or
+    beyond-a-small-future-skew value is **rejected, never clamped and never defaulted to `now()`**.
+    Clamping or defaulting fabricates an instant DataHub never reported. Each escape hatch fails a
+    different way: defaulting to `now()` breaks the identity tuple, so the key never matches on the
+    next sweep and that dataset accrues one event per sweep forever; an unbounded upper end lets one
+    future-dated value permanently poison every recency reading derived from it, since the newest
+    evidence always wins and nothing later can displace it. Sweep wiring and counters:
+    [BACKEND §Ingestion Service step 4](feature/BACKEND.md#ingestion-service-srcbackendingestion).
+
+  The source's `latest_run` is the latest terminal outcome of a **run-level** producer
+  (`COMPLETE`/`FAIL`, dataset-grained observations excluded — they report recency, not outcome);
+  in-progress/pending runs surface no event yet, mirroring DataHub's "Pending…". See
   [BACKEND §Ingestion Service step 4](feature/BACKEND.md#ingestion-service-srcbackendingestion).
 - **Recipe secret substitution**: DataHub substitutes `${NAME}` where `NAME` matches
   `[A-Za-z_][A-Za-z0-9_]*` (`metadata-ingestion/.../configuration/config_loader.py`). DataSpoke
@@ -880,6 +918,38 @@ empty, `origin` becomes the single AND-clause and the enumeration returns every
 dataset with that origin. Explicit `dataset_urns` are validated separately via
 `get_aspect` and AND-ed against `origin` by checking the URN's third segment before
 resolving the aspect.
+
+### Observed Ingestion Recency
+
+`Dataset.lastIngested` (epoch ms) is DataHub's own answer to "when was this dataset last
+ingested", computed by scanning each aspect's `systemMetadata.runId`
+(see [§systemMetadata requirement](#systemmetadata-requirement)). DataSpoke reads it estate-wide as
+**one paged `scrollAcrossEntities` per sweep** — `{dataset_urn: lastIngested_ms}` for every dataset
+— hoisted out of the per-source loops like the sweep's other bulk reads, never probed per dataset.
+
+```
+searchResults { entity { urn ... on Dataset { lastIngested } } }
+```
+
+Four constraints on that read:
+
+- **The `... on Dataset` inline fragment is mandatory.** `lastIngested` is declared on the concrete
+  `Dataset` type, not on the `Entity` interface `entity` resolves to. Selecting it directly on
+  `entity` fails the **whole query** as a GraphQL validation error — it does not return `null` for
+  the field, so the failure is total rather than partial.
+- **Null and non-positive values are omitted, not carried as `None`.** `lastIngested` is `null`
+  exactly when every aspect on the dataset carries the `"no-run-id-provided"` sentinel — nothing
+  observable. Absence is the guard against booking an event at an instant DataHub never reported.
+- **`scrollId` is transmitted only once non-empty**, so the first page sends no cursor rather than
+  an explicit null.
+- **The cursor loop is capped.** Unlike the `total`-bounded reads, `nextScrollId` paging has no
+  intrinsic bound and this runs on the API pod's event loop, so the sweep stops at a fixed page
+  ceiling and also on an unchanged cursor — each logged as a warning, since an unchanged cursor is
+  otherwise undetectable and burns the whole page budget every sweep.
+
+Errors propagate to the single call site, matching every other client read; containment (best-effort
+degradation of the signal, and the interface-violation exemption from it) is defined in
+[BACKEND §Best-Effort Operations](feature/BACKEND.md#best-effort-operations).
 
 ### When to Use GraphQL vs REST
 

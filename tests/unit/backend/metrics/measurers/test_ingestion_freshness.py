@@ -20,14 +20,24 @@ Spec sources:
   strict comparison as the implementation's chosen tie-break, not a spec requirement.
 
   spec/feature/BACKEND.md §Metrics Service §Time windows:
-    - "a dataset's ingestion recency **is the recency of its owning source's runs**.
-      INGESTION.COMPLETE / INGESTION.FAIL are booked on the owning source
-      (entity_type="ingestion_source", entity_id=source_id …) and never on the
-      dataset, so the measurer resolves each dataset's **owning source** first and
-      reads that source's events. The same resolution supplies the window."
+    - "every `INGESTION.*` event is booked on a source (entity_type="ingestion_source",
+      entity_id=source_id …) and never on the dataset, so the measurer resolves each
+      dataset's **owning source** first. It then reads that source's feed in **two tiers
+      of evidence**, per-dataset first and source-level as fallback. The same resolution
+      supplies the window."
+    - Tier 1 (preferred): "max(occurred_at) over the observation events the owning source
+      booked **for that dataset**"; tier 2 (fallback): "max(occurred_at) over **every**
+      INGESTION.COMPLETE booked on the owning source — no producer filter, **excluding
+      dry runs**", applying only to "datasets with no observation evidence yet".
     - "Owning source is what IngestionService.reverse_lookup returns — or, over a
       whole dataset list at once, its batched single-winner sibling
       reverse_lookup_batch, which the measurer calls".
+
+  Which tier each test exercises: every test that seeds only ``events=`` exercises
+  **tier 2** (a source-level COMPLETE, the only evidence available), which is what the
+  window, wrapper-union and owning-source tests are about — they are unchanged in
+  substance by the two-tier split. The tests under §Evidence tiers seed
+  ``observations=`` and exercise **tier 1** and the preference between them.
     - "if the sort winner is itself a wrapper it resolves up to its regular parent —
       a wrapper is never the owning source."
     - "The owning source's **CLI-wrapper runs count as its own** … a source's events
@@ -39,8 +49,9 @@ Spec sources:
   spec/feature/BACKEND.md §Metrics Service §Breakdown format:
     - datasets[] carries only failed entries (stale datasets).
     - Entry shape is {"urn": …, "detail": {…}} — no 'category' field.
-    - detail for ingestion-freshness: {last_event_at, time_window_sec, window_source}
-      with window_source in {"managed:<tier>", "passive", "default"}.
+    - detail for ingestion-freshness: {last_event_at, time_window_sec, window_source,
+      evidence_tier} with window_source in {"managed:<tier>", "passive", "default"} and
+      evidence_tier in {"observation", "source_level", null}.
 """
 
 import re
@@ -129,11 +140,12 @@ def _fake_measurer_db(
     sources: list[IngestionSource] = (),
     wrappers: list[tuple[uuid.UUID, uuid.UUID]] = (),
     events: list[tuple[str, datetime]] = (),
+    observations: list[tuple[str, str, datetime]] = (),
 ) -> AsyncMock:
     """Query-routing fake session for the measurer's DB reads.
 
-    The measurer itself issues no SQL: it calls two ``IngestionService`` helpers,
-    which between them issue exactly these four queries. Each is routed by the SQL
+    The measurer itself issues no SQL: it calls three ``IngestionService`` helpers,
+    which between them issue exactly these queries. Each is routed by the SQL
     it compiles to (never by call position), so an added, reordered or
     short-circuited query cannot silently shift a result:
 
@@ -145,34 +157,45 @@ def _fake_measurer_db(
     2   ``SELECT ingestion_source WHERE id IN (…)`` loading the ranked
         winners and their parents (``reverse_lookup_batch`` step 2)      ``sources``
     3   ``SELECT id, parent_source_id WHERE parent_source_id IN (…)``
-        resolving each owner's CLI wrappers
-        (``latest_ingestion_complete_by_source`` step 1)                 ``wrappers``
-    4   ``SELECT entity_id, max(occurred_at) … GROUP BY entity_id``
-        (``latest_ingestion_complete_by_source`` step 2)                 ``events``
+        resolving each owner's CLI wrappers (``_owner_by_entity_id``,
+        issued once per evidence helper)                                 ``wrappers``
+    4   ``SELECT entity_id, detail->>'dataset_urn', max(occurred_at)
+        … GROUP BY entity_id, detail->>'dataset_urn'`` — **tier 1**
+        (``latest_ingestion_observed_by_dataset``)                       ``observations``
+    5   ``SELECT entity_id, max(occurred_at) … GROUP BY entity_id`` —
+        **tier 2** (``latest_ingestion_complete_by_source``)             ``events``
     ==  ==============================================================  ==============
 
+    Queries 4 and 5 both aggregate ``max(occurred_at)`` over ``events``; they are told
+    apart by the ``detail->>'dataset_urn'`` grouping key, which only tier 1 carries.
+
     **Modelled**, because the behaviour under test depends on it: the ``IN`` list of
-    queries 3 and 4. Each returns only rows whose key appears in the id list that
+    queries 3, 4 and 5. Each returns only rows whose key appears in the id list that
     query actually asked for, read out of the compiled SQL. Two reasons, and the second
     is the important one:
 
-    - Query 4 must filter or the helper's ``owner_by_entity[entity_id]`` lookup raises
-      ``KeyError`` on a row production could never return.
+    - Queries 4 and 5 must filter or the helpers' ``owner_by_entity[entity_id]`` lookup
+      raises ``KeyError`` on a row production could never return.
     - Query 3 must filter or a mutation to the *owning-source resolution* surfaces as a
-      ``KeyError`` deep inside ``latest_ingestion_complete_by_source`` instead of as the
+      ``KeyError`` deep inside the evidence helper instead of as the
       window assertion the test names as its discriminator. A fake that hands back every
       seeded wrapper regardless of who was asked about hides which step broke.
 
     **Not modelled**, and covered against real PostgreSQL instead — a fake cannot prove a
     ``WHERE`` clause it reimplements:
 
-    - Query 4's ``event_type`` **and** ``entity_type`` predicates —
+    - Query 5's ``event_type`` **and** ``entity_type`` predicates —
       ``tests/integration/spot/test_ingestion_owning_source.py``
       ``::test_only_completed_source_keyed_runs_are_read``: one ``entity_id`` carrying a
       ``COMPLETE``/``ingestion_source`` row plus *newer* ``INGESTION.FAIL`` and
       ``entity_type='dataset'`` decoys, so either predicate leaking changes the answer.
       ``tests/integration/spot/test_metrics.py`` covers the ``entity_type`` half again
       through a whole metric run (dataset-keyed decoys either side of the window).
+    - Query 5's **dry-run exclusion**, and query 4's ``detail->>'source'`` producer
+      filter — ``tests/integration/spot/test_ingestion_freshness_evidence.py``, against
+      real JSONB. Here, ``observations`` and ``events`` are separate stub arguments, so a
+      test seeds a row into whichever tier it means to exercise; the tier *preference* is
+      what these tests judge.
     - Query 1's ``dataset_urn IN`` predicate —
       ``tests/integration/spot/test_ingestion_owning_source.py``
       ``::test_every_input_urn_is_a_key_and_unclaimed_urns_map_to_none`` (a claimed and an
@@ -186,10 +209,14 @@ def _fake_measurer_db(
     source_result = MagicMock()
     source_result.scalars.return_value.all.return_value = list(sources)
 
-    # The ids each of queries 3 and 4 asked about, captured from the compiled SQL when the
+    # The ids each of queries 3–5 asked about, captured from the compiled SQL when the
     # route matches and read back when the result's `.all()` is called (which happens
     # after, inside the code under test).
-    requested: dict[str, set[str]] = {"parents": set(), "entities": set()}
+    requested: dict[str, set[str]] = {
+        "parents": set(),
+        "entities": set(),
+        "obs_entities": set(),
+    }
 
     def _capture(sql: str, marker: str, slot: str) -> bool:
         if marker not in sql:
@@ -200,6 +227,13 @@ def _fake_measurer_db(
     wrapper_result = MagicMock()
     wrapper_result.all.side_effect = lambda: [
         (child, parent) for child, parent in wrappers if str(parent) in requested["parents"]
+    ]
+
+    observation_result = MagicMock()
+    observation_result.all.side_effect = lambda: [
+        (entity_id, dataset_urn, occurred_at)
+        for entity_id, dataset_urn, occurred_at in observations
+        if entity_id in requested["obs_entities"]
     ]
 
     event_result = MagicMock()
@@ -221,6 +255,13 @@ def _fake_measurer_db(
             (lambda sql: "ingestion_source.id in" in sql, source_result),
             (
                 lambda sql: "max(dataspoke.events.occurred_at)" in sql
+                and "'dataset_urn'" in sql
+                and _capture(sql, "entity_id in", "obs_entities"),
+                observation_result,
+            ),
+            (
+                lambda sql: "max(dataspoke.events.occurred_at)" in sql
+                and "'dataset_urn'" not in sql
                 and _capture(sql, "entity_id in", "entities"),
                 event_result,
             ),
@@ -367,8 +408,8 @@ async def test_dataset_with_stale_event_in_breakdown() -> None:
     """A source run older than the cutoff puts its dataset in breakdown.
 
     Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format —
-          ingestion-freshness: "latest INGESTION.COMPLETE is older than the dataset's
-          freshness window … or absent".
+          ingestion-freshness: "the resolved ingestion evidence (tier 1 or tier 2)
+          is older than the dataset's freshness window, or absent on both tiers".
     """
     measure = _get_measurer()
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.orders.fulfillment,DEV)"
@@ -430,8 +471,8 @@ async def test_event_well_outside_window_is_stale() -> None:
           ``INGESTION.COMPLETE`` that "falls within a **per-dataset freshness window**"
           counts; twice the window ago falls outside it.
     Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format — a dataset is failed
-          when its "latest INGESTION.COMPLETE is older than the dataset's freshness window
-          … or absent".
+          when "the resolved ingestion evidence (tier 1 or tier 2) is older than the
+          dataset's freshness window, or absent on both tiers".
     """
     measure = _get_measurer()
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.boundary2.test,DEV)"
@@ -485,13 +526,20 @@ async def test_breakdown_entries_have_no_category_field() -> None:
 
 
 @pytest.mark.asyncio
-async def test_stale_breakdown_detail_includes_time_window_sec_and_window_source() -> None:
-    """Stale detail carries last_event_at, time_window_sec and window_source, nothing else.
+async def test_stale_breakdown_detail_includes_the_window_and_the_evidence_tier() -> None:
+    """Stale detail carries last_event_at, time_window_sec, window_source, evidence_tier.
+
+    ``evidence_tier`` is ``None`` here because neither tier produced evidence: the dataset
+    is mapped to no source at all. The two tiers make different claims, so a stale verdict
+    without it is not diagnosable.
 
     Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format —
           "ingestion-freshness and validation-score report the applied window via
           time_window_sec (the resolved per-dataset value) and window_source …
-          alongside last_event_at (freshness)".
+          alongside last_event_at (freshness)"; "``ingestion-freshness`` additionally
+          names **which tier supplied ``last_event_at``** in ``evidence_tier``
+          (``"observation"`` for tier 1, ``"source_level"`` for tier 2, ``null`` when
+          neither tier produced evidence)".
     """
     measure = _get_measurer()
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.detail-check,DEV)"
@@ -506,12 +554,23 @@ async def test_stale_breakdown_detail_includes_time_window_sec_and_window_source
 
     assert len(breakdown["datasets"]) == 1
     detail = breakdown["datasets"][0]["detail"]
-    assert set(detail) == {"last_event_at", "time_window_sec", "window_source"}, (
-        "Stale detail keys must be exactly {last_event_at, time_window_sec, window_source}. "
+    assert set(detail) == {
+        "last_event_at",
+        "time_window_sec",
+        "window_source",
+        "evidence_tier",
+    }, (
+        "Stale detail keys must be exactly {last_event_at, time_window_sec, "
+        "window_source, evidence_tier}. "
         "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
     )
     assert isinstance(detail["time_window_sec"], int)
     assert isinstance(detail["window_source"], str)
+    assert detail["evidence_tier"] is None, (
+        f"with no owning source neither tier produced evidence, so evidence_tier must be "
+        f"null; got {detail['evidence_tier']!r}. "
+        "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
+    )
 
 
 # ── Mixed dataset set: each dataset reads its OWN owning source ───────────────
@@ -526,7 +585,9 @@ async def test_mixed_fresh_and_stale_counts_correctly() -> None:
     the same freshness and the fresh/stale contrast would collapse.
 
     Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — "the measurer
-          resolves each dataset's owning source first and reads that source's events".
+          resolves each dataset's owning source first. It then reads that source's
+          feed in two tiers of evidence, per-dataset first and source-level as
+          fallback."
     """
     measure = _get_measurer()
     urn_fresh1 = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.a,DEV)"
@@ -565,15 +626,18 @@ async def test_mixed_fresh_and_stale_counts_correctly() -> None:
 
 
 @pytest.mark.asyncio
-async def test_two_datasets_on_one_source_share_that_source_freshness() -> None:
-    """Two datasets covered by the same source get the same verdict from its one run.
+async def test_two_datasets_sharing_a_source_share_its_tier_2_evidence() -> None:
+    """On **tier 2**, two datasets covered by one source get the same verdict.
 
-    The complement of the test above: freshness is a property of the *source*, so a
-    shared source cannot produce a fresh/stale split. Both datasets go stale
-    together on a single out-of-window run.
+    Neither dataset has an observation of its own, so both fall back to the source-level
+    maximum and cannot split — which is precisely the approximation tier 2 admits ("an
+    event booked on a source genuinely cannot say which dataset it touched"). The
+    contrast is ``test_a_dataset_reads_its_own_observation_and_not_a_siblings``: the same
+    two-datasets-one-source shape *does* split once each carries tier-1 evidence.
 
-    Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — "a dataset's
-          ingestion recency **is the recency of its owning source's runs**".
+    Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — tier 2 is
+          "``max(occurred_at)`` over **every** ``INGESTION.COMPLETE`` booked on the owning
+          source", applying to "datasets with no observation evidence yet".
     """
     measure = _get_measurer()
     urn_a = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.shared.a,DEV)"
@@ -1167,3 +1231,224 @@ async def test_owning_source_is_the_regular_parent_of_a_claiming_wrapper() -> No
     )
     assert detail["time_window_sec"] == 172800
     assert detail["last_event_at"] == stale_ts.isoformat()
+
+
+# ── Evidence tiers: per-dataset observation preferred, source-level as fallback ──
+#
+# spec/feature/BACKEND.md §Metrics Service §Time windows — the two-tier table, and
+# "Tier 1 exists because a run-level COMPLETE is a claim about a *run*, not about a
+# dataset"; "Tier 2 … applies only where nothing better exists".
+
+
+@pytest.mark.asyncio
+async def test_a_dataset_with_its_own_observation_reads_that_instant_not_the_source_max() -> None:
+    """Tier 1 wins over tier 2 even when the source's newest run is newer.
+
+    The discriminating shape: the dataset's own observation is STALE while its owning
+    source's newest ``COMPLETE`` is FRESH. A measurer that still preferred the
+    source-level maximum would call the dataset ingested-in-time, which is exactly the
+    claim the two-tier rule retires — a run-level COMPLETE says a *run* finished, not that
+    this dataset was written.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — tier 1 is
+          "(preferred)"; tier 2 "applies only where nothing better exists".
+    """
+    measure = _get_measurer()
+    urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.tier1.own,DEV)"
+    src = _source(mode="ACTIVE_CUSTOM_MANAGED", schedule_tier=None, name="tier1-own")
+    now = datetime.now(tz=UTC)
+    own_observation = now - timedelta(seconds=90_000)  # stale against the 86400s window
+    source_run = now - timedelta(hours=1)  # fresh — must NOT be what answers
+
+    values, breakdown = await measure(
+        datasets=[urn],
+        metric_conf={"time_window_sec": 86400},
+        datahub=_datahub(),
+        db=_fake_measurer_db(
+            mappings=[_mapped(urn, src)],
+            sources=[src],
+            observations=[(str(src.id), urn, own_observation)],
+            events=[(str(src.id), source_run)],
+        ),
+    )
+
+    assert values["ingested_in_time"] == 0.0, (
+        "the dataset's own observation is the evidence, and it is outside the window, so "
+        "the fresh source-level run must not make it in-time. "
+        "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — tier 1 preferred."
+    )
+    detail = breakdown["datasets"][0]["detail"]
+    assert detail["last_event_at"] == own_observation.isoformat(), (
+        f"last_event_at must be the dataset's own observation instant; got "
+        f"{detail['last_event_at']!r}, expected {own_observation.isoformat()!r}."
+    )
+    assert detail["evidence_tier"] == "observation", (
+        f"evidence_tier must name tier 1 as the answer; got {detail['evidence_tier']!r}. "
+        "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_dataset_reads_its_own_observation_and_not_a_siblings() -> None:
+    """Two datasets on one source read their own observations, not each other's.
+
+    Both are covered by the same source, so under the old source-grained rule they were
+    necessarily the same verdict. With per-dataset evidence they split: the sibling's
+    observation is fresh and this dataset's is stale, so a lookup keyed on the source
+    alone would report both fresh.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — tier 1 is
+          "max(occurred_at) over the observation events the owning source booked **for
+          that dataset**".
+    """
+    measure = _get_measurer()
+    stale_urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.tier1.stale,DEV)"
+    fresh_urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.tier1.fresh,DEV)"
+    src = _source(mode="ACTIVE_CUSTOM_MANAGED", schedule_tier=None, name="tier1-shared")
+    now = datetime.now(tz=UTC)
+
+    values, breakdown = await measure(
+        datasets=[stale_urn, fresh_urn],
+        metric_conf={"time_window_sec": 86400},
+        datahub=_datahub(),
+        db=_fake_measurer_db(
+            mappings=[_mapped(stale_urn, src), _mapped(fresh_urn, src)],
+            sources=[src],
+            observations=[
+                (str(src.id), stale_urn, now - timedelta(seconds=90_000)),
+                (str(src.id), fresh_urn, now - timedelta(hours=1)),
+            ],
+        ),
+    )
+
+    assert values["total"] == 2.0
+    assert values["ingested_in_time"] == 1.0, (
+        "two datasets on one source must split on their own observations. "
+        "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — tier 1."
+    )
+    assert [e["urn"] for e in breakdown["datasets"]] == [stale_urn], (
+        f"only the dataset whose own observation is outside the window is stale; got "
+        f"{[e['urn'] for e in breakdown['datasets']]}."
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_dataset_with_no_observation_falls_back_to_the_source_level_maximum() -> None:
+    """Tier 2 answers for a dataset that has no observation of its own.
+
+    Both sides are seeded in one call: the sibling carries an observation and this dataset
+    does not, so a measurer that had dropped the fallback entirely would report this one
+    stale with ``last_event_at=None``.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — tier 2 applies to
+          "datasets with no observation evidence yet"; it is "source-grained, not
+          producer-filtered: any COMPLETE on the owning source qualifies, so a sibling
+          dataset's observation can stand in for a dataset that has none of its own".
+    """
+    measure = _get_measurer()
+    observed_urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.tier2.observed,DEV)"
+    bare_urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.tier2.bare,DEV)"
+    src = _source(mode="ACTIVE_CUSTOM_MANAGED", schedule_tier=None, name="tier2-fallback")
+    now = datetime.now(tz=UTC)
+    source_run = now - timedelta(hours=2)
+
+    values, breakdown = await measure(
+        datasets=[observed_urn, bare_urn],
+        metric_conf={"time_window_sec": 86400},
+        datahub=_datahub(),
+        db=_fake_measurer_db(
+            mappings=[_mapped(observed_urn, src), _mapped(bare_urn, src)],
+            sources=[src],
+            observations=[(str(src.id), observed_urn, now - timedelta(hours=1))],
+            events=[(str(src.id), source_run)],
+        ),
+    )
+
+    assert values["ingested_in_time"] == 2.0, (
+        "the dataset with no observation of its own must still read the source-level "
+        "maximum and count as in-time. "
+        "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — tier 2."
+    )
+    assert breakdown["datasets"] == []
+
+
+@pytest.mark.asyncio
+async def test_the_fallback_names_the_source_level_tier_in_the_breakdown() -> None:
+    """A stale dataset answered by tier 2 reports ``evidence_tier='source_level'``.
+
+    The label names the *grain*, not a producer: tier 2 admits observations too, so a
+    label naming a producer would be wrong wherever a sibling's observation supplied it.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format — "``"source_level"``
+          for tier 2 … Tier 2's label names the *grain*, not a producer: it is the newest
+          ``COMPLETE`` on the owning source whatever wrote it."
+    """
+    measure = _get_measurer()
+    urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.tier2.stale,DEV)"
+    src = _source(mode="ACTIVE_CUSTOM_MANAGED", schedule_tier=None, name="tier2-stale")
+    stale_ts = datetime.now(tz=UTC) - timedelta(seconds=90_000)
+
+    _values, breakdown = await measure(
+        datasets=[urn],
+        metric_conf={"time_window_sec": 86400},
+        datahub=_datahub(),
+        db=_fake_measurer_db(
+            mappings=[_mapped(urn, src)],
+            sources=[src],
+            events=[(str(src.id), stale_ts)],
+        ),
+    )
+
+    assert len(breakdown["datasets"]) == 1
+    detail = breakdown["datasets"][0]["detail"]
+    assert detail["last_event_at"] == stale_ts.isoformat(), (
+        "backstop: tier 2 must actually have supplied the instant, or the label below is "
+        "attached to nothing."
+    )
+    assert detail["evidence_tier"] == "source_level", (
+        f"evidence_tier must name tier 2 as the answer; got {detail['evidence_tier']!r}. "
+        "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_observation_on_a_wrapper_counts_for_the_owning_parent() -> None:
+    """A tier-1 observation booked on a CLI wrapper answers for the owning parent.
+
+    The parent carries no observation of its own, only the wrapper does, so a lookup by
+    the registered source id alone would fall through to tier 2 (or to nothing). The
+    wrapper union is the same rule tier 2 already applies, and it has to hold on tier 1
+    too, or a `DATAHUB_MANAGED` source's per-dataset evidence would be invisible.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — "The owning source's
+          **CLI-wrapper runs count as its own** … a source's events are the union of its
+          own and its wrappers'."
+    """
+    measure = _get_measurer()
+    urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.tier1.wrapper,DEV)"
+    parent = _source(mode="DATAHUB_MANAGED", schedule_tier="daily", name="parent")
+    wrapper = _source(
+        mode="DATAHUB_MANAGED",
+        schedule_tier=None,
+        parent_source_id=parent.id,
+        name="[CLI] postgres",
+    )
+    observed = datetime.now(tz=UTC) - timedelta(seconds=130_000)  # inside 172800s
+
+    values, breakdown = await measure(
+        datasets=[urn],
+        metric_conf={"time_window_sec": 60},  # fallback — must NOT be used
+        datahub=_datahub(),
+        db=_fake_measurer_db(
+            mappings=[_mapped(urn, parent)],
+            sources=[parent],
+            wrappers=[(wrapper.id, parent.id)],
+            observations=[(str(wrapper.id), urn, observed)],  # only the wrapper booked it
+        ),
+    )
+
+    assert values["ingested_in_time"] == 1.0, (
+        "an observation booked on the CLI wrapper must count as the owning parent's own. "
+        "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows."
+    )
+    assert breakdown["datasets"] == []

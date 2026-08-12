@@ -34,3 +34,6 @@
 - [env-file writer is a source() sink](project_env_file_writer_source_execution.md) — newline now rejected; $(...)/backtick still execute on source (measured), prod adopt feeds it cluster bytes
 - [Prod pre-flight credential plane](project_prod_preflight_credential_plane.md) — controls that hold; --skip-secret still writes 11 creds to disk; create-then-verify order
 - [Admin token-inventory surface](project_admin_token_inventory_surface.md) — token_hash IS fetched; field-by-field item construction is the only barrier; 422 str() echo path
+
+- [Ingestion event producer split](project_ingestion_event_producer_split.md) — 4 producers/2 grains; every producer filter needs an IS NULL disjunct; PASSIVE latest_run null by design
+- [Alembic advisory-lock ordering](project_alembic_advisory_lock_ordering.md) — only an env.py lock serializes init containers; 3 facts to check before believing begin_transaction()

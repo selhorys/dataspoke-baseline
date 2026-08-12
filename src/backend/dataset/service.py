@@ -244,9 +244,13 @@ class DatasetService:
 
         (a) dataset-level events (``entity_type='dataset'``) — validation events
             and metagen candidate-review events recorded directly on the dataset, and
-        (b) the covering source's ingestion runs — found via
-            :meth:`IngestionService.reverse_lookup`, then aggregated (including the
-            CLI-wrapper union) via :meth:`IngestionService.get_events_for_source`.
+        (b) the covering source's ingestion runs **and its observations for this
+            dataset** — found via :meth:`IngestionService.reverse_lookup`, then
+            aggregated (including the CLI-wrapper union) via
+            :meth:`IngestionService.get_events_for_source`, narrowed by
+            ``dataset_urn``: a row qualifies when its ``detail.dataset_urn`` is this
+            URN or is absent, so a sibling dataset's observations are excluded while
+            run-level rows — which carry no scalar ``dataset_urn`` — are kept.
             Rows sourced from a wrapper carry ``wrapper=True``.
 
         The merged stream is sorted ``occurred_at`` descending, the ``from``/``to``
@@ -290,7 +294,7 @@ class DatasetService:
             # paginates over the merged stream, so fetch without source-level
             # pagination (a high limit covers the small per-source volume).
             source_events, _ = await self._ingestion.get_events_for_source(
-                source.id, offset=0, limit=10_000
+                source.id, offset=0, limit=10_000, dataset_urn=dataset_urn
             )
             records.extend(
                 EventRecord(

@@ -462,3 +462,52 @@ async def test_get_events_pagination_total_count(service, db):
     assert total2 == 5
     # Only one row remains after offset 4.
     assert len(page2) == 1
+
+
+# ── The source feed is narrowed to THIS dataset ───────────────────────────────
+
+
+async def test_get_events_narrows_the_source_feed_to_this_dataset(service, db):
+    """The covering source's feed is requested narrowed to this dataset's URN.
+
+    The source's feed is estate-wide: it carries one per-dataset observation per mapped
+    dataset per observed instant, so without the narrowing every sibling dataset's
+    observations would appear on this dataset's timeline (and, at a high enough volume,
+    push its own run-level rows off the page the service reads).
+
+    ``dataset_urn`` is asserted to arrive as a **keyword**, which is the contract rather
+    than a style preference: positionally the parameter would sit after ``order_by: Any``,
+    where a positional caller's ``order_by`` would land in it silently. This test covers
+    the caller's half only — the callee's half (that the parameter is keyword-*only*, so
+    such a call cannot bind at all) is pinned in
+    ``tests/unit/backend/ingestion/test_service.py``
+    ``::TestGetEventsForSourceRejectsAPositionalDatasetUrn``.
+
+    spec: feature/BACKEND.md §Querying Events — the per-dataset timeline unions the
+        dataset-level events with "the covering source's ingestion runs **and its
+        observations for this dataset**, resolved by reverse-lookup plus the
+        ``detail.dataset_urn`` predicate".
+    spec: feature/BACKEND_SCHEMA.md §events — "The source's rows are narrowed to those
+        whose ``detail.dataset_urn`` is this URN **or is absent**".
+    """
+    mock_scalars_query(db, [])
+    ing = _stub_ingestion(
+        service,
+        source=_make_source_record(),
+        source_events=[_source_event_dict(event_type="INGESTION.COMPLETE", minutes_ago=1)],
+    )
+
+    events, total = await service.get_events(_DATASET_URN, offset=0, limit=20)
+
+    assert total == 1, (
+        f"backstop: the source feed must actually have been read, or the call assertion "
+        f"below inspects a call that never happened; got total={total}."
+    )
+    assert events[0].event_type == "INGESTION.COMPLETE"
+    ing.get_events_for_source.assert_awaited_once()
+    kwargs = ing.get_events_for_source.await_args.kwargs
+    assert kwargs.get("dataset_urn") == _DATASET_URN, (
+        f"the source feed must be requested narrowed to this dataset URN, passed by "
+        f"keyword; got kwargs={kwargs!r} args={ing.get_events_for_source.await_args.args!r}. "
+        "spec: feature/BACKEND.md §Querying Events."
+    )
