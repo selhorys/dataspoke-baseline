@@ -1,7 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin.json",
   "name": "dataspoke",
-  "version": "0.1.0",
   "description": "End-user AI scaffold for a deployed DataSpoke: connect to a deployment, manage ingestion and validation through the public API, and author validation routines into your own pipelines.",
   "author": {
     "name": "DataSpoke"

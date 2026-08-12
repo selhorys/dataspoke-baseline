@@ -73,7 +73,7 @@ The plugin lives in a `plugin/` directory, and the repository that hosts it doub
 │   └── marketplace.json      ← marketplace manifest → lists the one plugin
 └── plugin/
     ├── .claude-plugin/
-    │   └── plugin.json        ← plugin manifest (name "dataspoke", version, skills)
+    │   └── plugin.json        ← plugin manifest (name "dataspoke", skills)
     ├── skills/<skill>/SKILL.md
     ├── bin/dataspoke-api      ← auth + base-URL curl wrapper
     ├── bin/dataspoke-schema   ← OpenAPI contract lookup (filtered by path fragment)
@@ -107,6 +107,9 @@ A user installs from the hosting repository:
 
 Skills then appear as `/dataspoke:dataspoke-access`, `/dataspoke:dataspoke-validation`,
 and so on.
+
+Neither manifest declares a `version`, so the update-cache key resolves to the commit SHA of
+`./plugin` and every merged commit reaches installed users without a bump.
 
 ---
 
