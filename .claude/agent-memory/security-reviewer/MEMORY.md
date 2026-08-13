@@ -37,3 +37,4 @@
 
 - [Ingestion event producer split](project_ingestion_event_producer_split.md) — 4 producers/2 grains; every producer filter needs an IS NULL disjunct; PASSIVE latest_run null by design
 - [Alembic advisory-lock ordering](project_alembic_advisory_lock_ordering.md) — only an env.py lock serializes init containers; 3 facts to check before believing begin_transaction()
+- [runtime_config field lifecycle](project_runtime_conf_field_lifecycle.md) — six layers per /admin/conf field; PATCH silently ignores unknown keys; extra="forbid" would echo a mistyped llm_api_key
