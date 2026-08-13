@@ -8,7 +8,7 @@ the evidence pipeline all the way to the run() → build_run_prompt call.
 This test drives MetagenService.run() (the full entry point) with:
 - A real DataHub document seeded against _TEST_URN
 - A real approved OntogenNode + node_embedding row in PostgreSQL
-- MetagenConfig (is_enabled=True, dataset_urns=[_TEST_URN]) and
+- MetagenConfig (is_enabled=True, dataset_filter="dataset_urn = '<_TEST_URN>'") and
   MetagenBoundary (is_enabled=True, allowed=["dataset.description"])
   inserted directly via the test session
 - run_debate patched to capture the producer_prompt argument and return
@@ -148,7 +148,7 @@ async def _seed_metagen_conf(session: AsyncSession, *, dataset_urn: str) -> str:
         session,
         name=f"spot-evidence-{uuid.uuid4().hex[:8]}",
         is_enabled=True,
-        dataset_filter={"dataset_urns": [dataset_urn]},
+        dataset_filter=f"dataset_urn = '{dataset_urn}'",
     )
 
 
@@ -253,7 +253,8 @@ async def test_uc4_evidence_reaches_producer_prompt(
        linked to _TEST_URN.
     2. Seed an approved OntogenNode row + its node_embedding row (using the
        fixed vector so cosine similarity is 1.0 against the stub embed).
-    3. Seed MetagenConfig (is_enabled=True, dataset_urns=[_TEST_URN]) and
+    3. Seed MetagenConfig (is_enabled=True, dataset_filter="dataset_urn = '<_TEST_URN>'")
+       and
        MetagenBoundary (is_enabled=True, allowed=["dataset.description"]).
     4. Build a stub LLM client whose embed() returns the same fixed vector.
     5. Patch run_debate to capture producer_prompt; return DebateResult with

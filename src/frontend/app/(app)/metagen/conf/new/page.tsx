@@ -11,7 +11,7 @@ import { useCreateMetagenConf } from "@/lib/api/metagen";
 import { useMe } from "@/lib/auth/use-me";
 import { ApiError } from "@/lib/api/client";
 import { useToast } from "@/components/ui/use-toast";
-import type { DatasetFilter } from "@/types/governance";
+import { datasetFilterError } from "@/lib/dataset-filter-error";
 import type { MetagenConfPutBody } from "@/types/metagen";
 
 const CONF_FORM_ID = "metagen-conf-form";
@@ -21,7 +21,7 @@ export default function CreateMetagenConfPage() {
   const { canWrite } = useMe();
   const { toast } = useToast();
 
-  const [datasetFilter, setDatasetFilter] = useState<DatasetFilter>({});
+  const [datasetFilter, setDatasetFilter] = useState<string>("");
   const create = useCreateMetagenConf();
 
   if (!canWrite) {
@@ -35,8 +35,12 @@ export default function CreateMetagenConfPage() {
     );
   }
 
-  const serverError =
-    create.error instanceof ApiError
+  // A 422 INVALID_DATASET_FILTER belongs against the filter field, not in the
+  // form's generic error slot (which the conf name Field renders).
+  const filterError = datasetFilterError(create.error);
+  const serverError = filterError
+    ? undefined
+    : create.error instanceof ApiError
       ? `${create.error.error_code}: ${create.error.message}`
       : create.error?.message;
 
@@ -72,6 +76,7 @@ export default function CreateMetagenConfPage() {
           initialValues={null}
           datasetFilter={datasetFilter}
           onDatasetFilterChange={setDatasetFilter}
+          datasetFilterError={filterError}
           onSubmit={handleSubmit}
           serverError={serverError}
           formId={CONF_FORM_ID}

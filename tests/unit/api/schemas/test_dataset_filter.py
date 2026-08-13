@@ -1,259 +1,145 @@
-"""Unit tests for src/api/schemas/_dataset_filter.py — shared dataset_filter validators.
+"""Unit tests for src/api/schemas/_dataset_filter.py — the schema-layer wrapper.
+
+The grammar itself is covered by tests/unit/shared/test_dataset_filter.py. What
+matters here is the *boundary* behaviour the API contract depends on: which
+exception each class of bad filter raises, since that is what decides whether a
+request comes back as `422 INVALID_DATASET_FILTER` (with a character position) or
+`422 INVALID_DATASET_URN` rather than a generic envelope.
 
 Spec traceability:
-- spec/API.md §Governance — Metric (Payload caps) — dataset_filter list dimensions capped at 1,000
-- spec/API.md §Error Catalogue — 422 INVALID_DATASET_URN for malformed URNs
-- spec/API.md §Governance — Metric (Definition body) — origin: str | None;
-  forwarded verbatim to DataHub
+- spec/API.md §Error Catalogue — INVALID_DATASET_FILTER (422, `detail` carries
+  the character position) and INVALID_DATASET_URN (422)
+- spec/API.md §`dataset_filter` grammar — accepted forms, caps
 """
 
 import pytest
 
 from src.api.schemas._dataset_filter import (
-    DATASET_FILTER_LIST_CAP,
-    check_dataset_filter_bounds,
-    check_dataset_urn_format,
-    check_origin,
+    DATASET_FILTER_FIELD_DESCRIPTION,
     validate_dataset_filter,
+)
+from src.shared.dataset_filter import (
+    MAX_FILTER_CHARS,
+    MAX_STRING_LITERALS,
+    DatasetFilterSyntaxError,
 )
 from src.shared.exceptions import InvalidDatasetUrnError
 
-# ── DATASET_FILTER_LIST_CAP constant ──────────────────────────────────────────
+_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,PROD)"
 
 
-def test_dataset_filter_list_cap_is_1000() -> None:
-    """DATASET_FILTER_LIST_CAP is exactly 1000.
-
-    Spec: spec/API.md §Payload caps — dataset_filter list dimensions capped at 1,000.
-    """
-    assert DATASET_FILTER_LIST_CAP == 1000
-
-
-# ── check_dataset_filter_bounds ───────────────────────────────────────────────
-
-
-class TestCheckDatasetFilterBounds:
-    def test_exactly_1000_entries_does_not_raise(self) -> None:
-        """dataset_filter.{tags,glossary_terms,dataset_urns} with exactly 1,000 entries is accepted.
-
-        Spec: spec/API.md §Payload caps — 1,000 entries is the inclusive maximum.
-        """
-        at_cap_urns = [
-            f"urn:li:dataset:(urn:li:dataPlatform:postgres,db.t{i},DEV)" for i in range(1000)
-        ]
-        at_cap_tags = [f"urn:li:tag:t{i}" for i in range(1000)]
-        at_cap_terms = [f"urn:li:glossaryTerm:t{i}" for i in range(1000)]
-        check_dataset_filter_bounds({"dataset_urns": at_cap_urns})
-        check_dataset_filter_bounds({"tags": at_cap_tags})
-        check_dataset_filter_bounds({"glossary_terms": at_cap_terms})
-
-    def test_1001_dataset_urns_raises_value_error(self) -> None:
-        """dataset_filter.dataset_urns with 1,001 entries raises ValueError.
-
-        Spec: spec/API.md §Payload caps — 1,001 entries exceeds cap; ValueError propagates to 422.
-        """
-        over_cap = [
-            f"urn:li:dataset:(urn:li:dataPlatform:postgres,db.t{i},DEV)" for i in range(1001)
-        ]
-        with pytest.raises(ValueError, match="dataset_urns"):
-            check_dataset_filter_bounds({"dataset_urns": over_cap})
-
-    def test_1001_tags_raises_value_error(self) -> None:
-        """dataset_filter.tags with 1,001 entries raises ValueError.
-
-        Spec: spec/API.md §Payload caps — tags list capped at 1,000.
-        """
-        over_cap = [f"urn:li:tag:t{i}" for i in range(1001)]
-        with pytest.raises(ValueError, match="tags"):
-            check_dataset_filter_bounds({"tags": over_cap})
-
-    def test_1001_glossary_terms_raises_value_error(self) -> None:
-        """dataset_filter.glossary_terms with 1,001 entries raises ValueError.
-
-        Spec: spec/API.md §Payload caps — glossary_terms list capped at 1,000.
-        """
-        over_cap = [f"urn:li:glossaryTerm:t{i}" for i in range(1001)]
-        with pytest.raises(ValueError, match="glossary_terms"):
-            check_dataset_filter_bounds({"glossary_terms": over_cap})
-
-    def test_missing_dimension_key_does_not_raise(self) -> None:
-        """dataset_filter with a missing dimension key is accepted (uses dict.get semantics).
-
-        Spec: spec/API.md §Payload caps — missing key is the same as empty/null; no cap applies.
-        """
-        check_dataset_filter_bounds({})
-        check_dataset_filter_bounds({"origin": "DEV"})
-
-    def test_none_value_for_dimension_does_not_raise(self) -> None:
-        """dataset_filter with dimension=None is accepted (null clears the filter).
-
-        Spec: spec/API.md §Payload caps — None value is treated as absent.
-        """
-        check_dataset_filter_bounds({"tags": None, "glossary_terms": None, "dataset_urns": None})
-
-    def test_origin_is_not_subject_to_list_cap(self) -> None:
-        """dataset_filter.origin is a scalar str and is not subject to the list cap.
-
-        Spec: spec/API.md §Payload caps — only list dimensions are capped; origin is a scalar.
-        """
-        # origin is a str, not a list — check_dataset_filter_bounds skips it entirely
-        check_dataset_filter_bounds({"origin": "DEV"})
-        check_dataset_filter_bounds({"origin": "PROD"})
-
-
-# ── check_dataset_urn_format ──────────────────────────────────────────────────
-
-
-class TestCheckDatasetUrnFormat:
-    _WELL_FORMED = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.t,DEV)"
-
-    def test_well_formed_urn_does_not_raise(self) -> None:
-        """A well-formed dataset URN passes without raising.
-
-        Spec: spec/API.md §Error Catalogue — INVALID_DATASET_URN raised for malformed URNs only.
-        """
-        check_dataset_urn_format({"dataset_urns": [self._WELL_FORMED]})
-
-    def test_not_a_urn_raises_invalid_dataset_urn_error(self) -> None:
-        """A plain string that is not a URN raises InvalidDatasetUrnError.
-
-        Spec: spec/API.md §Error Catalogue — 422 INVALID_DATASET_URN for malformed URNs.
-        """
-        with pytest.raises(InvalidDatasetUrnError):
-            check_dataset_urn_format({"dataset_urns": ["not-a-urn"]})
-
-    def test_missing_parens_raises_invalid_dataset_urn_error(self) -> None:
-        """A URN missing the parenthesized platform tuple raises InvalidDatasetUrnError.
-
-        Spec: spec/API.md §Error Catalogue — URN must match urn:li:dataset:(...) pattern.
-        """
-        with pytest.raises(InvalidDatasetUrnError):
-            check_dataset_urn_format({"dataset_urns": ["urn:li:dataset:postgres"]})
-
-    def test_empty_string_raises_invalid_dataset_urn_error(self) -> None:
-        """An empty string in dataset_urns raises InvalidDatasetUrnError.
-
-        Spec: spec/API.md §Error Catalogue — 422 INVALID_DATASET_URN for empty string.
-        """
-        with pytest.raises(InvalidDatasetUrnError):
-            check_dataset_urn_format({"dataset_urns": [""]})
-
-
-# ── check_origin ──────────────────────────────────────────────────────────────
-
-
-class TestCheckOrigin:
-    def test_none_origin_does_not_raise(self) -> None:
-        """origin=None is accepted; null means no origin filter is applied.
-
-        Spec: spec/API.md §Governance — Metric (Definition body) — origin is optional;
-              null means all origins.
-        """
-        check_origin({"origin": None})
-
-    def test_prod_origin_does_not_raise(self) -> None:
-        """origin='PROD' is accepted; forwarded verbatim to DataHub.
-
-        Spec: spec/API.md §Governance — Metric (Definition body) — non-empty origin forwarded
-              verbatim; DataHub validates enum.
-        """
-        check_origin({"origin": "PROD"})
-
-    def test_lowercase_origin_accepted_verbatim(self) -> None:
-        """origin='dev' (lowercase) is accepted and forwarded verbatim.
-
-        Spec: spec/API.md §Governance — Metric (Definition body) — case is forwarded to
-              DataHub, not validated here.
-        """
-        check_origin({"origin": "dev"})
-
-    def test_empty_string_origin_raises_value_error(self) -> None:
-        """origin='' raises ValueError — empty strings are rejected after strip().
-
-        Spec: spec/API.md §Governance — Metric (Definition body) — empty-or-whitespace origin
-              rejected at PUT/PATCH with 422 INVALID_PARAMETER.
-        """
-        with pytest.raises(ValueError, match="origin"):
-            check_origin({"origin": ""})
-
-    def test_whitespace_only_origin_raises_value_error(self) -> None:
-        """origin='   ' (whitespace only) raises ValueError after trim.
-
-        Spec: spec/API.md §Governance — Metric (Definition body) — empty-or-whitespace origin
-              rejected at PUT/PATCH with 422 INVALID_PARAMETER.
-        """
-        with pytest.raises(ValueError, match="origin"):
-            check_origin({"origin": "   "})
-
-    def test_missing_origin_key_does_not_raise(self) -> None:
-        """dataset_filter without origin key is accepted (same as origin=None).
-
-        Spec: spec/API.md §Governance — Metric (Definition body) — origin key is optional.
-        """
-        check_origin({})
-        check_origin({"tags": ["urn:li:tag:foo"]})
-
-
-# ── validate_dataset_filter (composed validator) ──────────────────────────────
-
-
-class TestValidateDatasetFilter:
-    _FULL_SHAPE = {
-        "origin": "DEV",
-        "tags": ["urn:li:tag:area:catalog"],
-        "glossary_terms": ["urn:li:glossaryTerm:entity:Book"],
-        "dataset_urns": [
-            "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
+class TestAcceptedFilters:
+    @pytest.mark.parametrize(
+        "dataset_filter",
+        [
+            "",
+            "origin = 'PROD'",
+            "origin IN ('PROD', 'DEV')",
+            "platform_urn = 'urn:li:dataPlatform:postgres'",
+            "'urn:li:tag:area:catalog' IN tag_urns",
+            "'urn:li:glossaryTerm:pii.gdpr' IN glossary_term_urns",
+            f"dataset_urn = '{_URN}'",
+            (
+                "origin = 'PROD' AND ('urn:li:tag:area:catalog' IN tag_urns"
+                " OR 'urn:li:glossaryTerm:pii.gdpr' IN glossary_term_urns)"
+            ),
         ],
-    }
+    )
+    def test_grammar_forms_pass_the_write_boundary(self, dataset_filter: str) -> None:
+        """Every production of spec/API.md §`dataset_filter` grammar is writable."""
+        validate_dataset_filter(dataset_filter)
 
-    def test_full_shape_accepted(self) -> None:
-        """A dataset_filter with all four dimensions populated is accepted.
+    def test_none_is_treated_as_the_empty_filter(self) -> None:
+        """An absent filter is the empty filter — 'the empty string matches every
+        registered dataset' (spec/API.md §`dataset_filter` grammar)."""
+        validate_dataset_filter(None)
 
-        Spec: spec/API.md §Governance — Metric (Definition body) — {origin, tags,
-              glossary_terms, dataset_urns} is the unified four-dimension shape
-              across UC3, UC4, UC5.
-        """
-        validate_dataset_filter(self._FULL_SHAPE)
 
-    def test_empty_dict_accepted(self) -> None:
-        """An empty dataset_filter ({}) is accepted; all dimensions are optional.
+class TestSyntaxErrorsCarryTheFilterCode:
+    """spec/API.md §Error Catalogue: 'INVALID_DATASET_FILTER | 422 | A
+    `dataset_filter` string does not parse under the filter grammar, names an
+    unknown column, or exceeds a payload cap. `detail` carries the character
+    position of the error.'"""
 
-        Spec: spec/API.md §Governance — Metric (Definition body) — empty filter
-              enumerates all datasets.
-        """
-        validate_dataset_filter({})
+    @pytest.mark.parametrize(
+        "dataset_filter",
+        [
+            "origin = ",
+            "origin = PROD",
+            'origin = "PROD"',
+            "owner = 'alice'",
+            "tag_urns = 'urn:li:tag:pii'",
+            "origin = 'A' AND origin = 'B' OR origin = 'C'",
+            "origin = 'A' AND (origin = 'B' OR (origin = 'C' AND (origin = 'D' OR origin = 'E')))",
+            "origin = 'PROD'; DROP TABLE dataset_registry",
+        ],
+    )
+    def test_malformed_filter_raises_the_filter_syntax_error(self, dataset_filter: str) -> None:
+        with pytest.raises(DatasetFilterSyntaxError) as excinfo:
+            validate_dataset_filter(dataset_filter)
+        assert excinfo.value.error_code == "INVALID_DATASET_FILTER"
+        assert excinfo.value.detail == {"position": excinfo.value.position}
 
-    def test_origin_only_accepted(self) -> None:
-        """dataset_filter with only origin is accepted.
+    def test_the_syntax_error_is_not_a_value_error(self) -> None:
+        """Pydantic v2 re-raises non-ValueError exceptions out of a validator
+        unchanged, which is what keeps the code and position intact instead of
+        collapsing into the generic INVALID_PARAMETER envelope."""
+        with pytest.raises(DatasetFilterSyntaxError) as excinfo:
+            validate_dataset_filter("origin = ")
+        assert not isinstance(excinfo.value, ValueError)
 
-        Spec: spec/API.md §Governance — Metric (Definition body) — partial filter
-              with origin=DEV is valid.
-        """
-        validate_dataset_filter({"origin": "DEV"})
+    def test_over_character_cap_is_rejected(self) -> None:
+        prefix = "origin = '"
+        over_cap = prefix + "x" * (MAX_FILTER_CHARS - len(prefix)) + "'"
+        assert len(over_cap) == MAX_FILTER_CHARS + 1
+        with pytest.raises(DatasetFilterSyntaxError):
+            validate_dataset_filter(over_cap)
 
-    def test_over_cap_tags_raises(self) -> None:
-        """dataset_filter.tags over 1,000 raises ValueError via bounds check.
+    def test_over_literal_cap_is_rejected(self) -> None:
+        values = ", ".join(f"'v{i}'" for i in range(MAX_STRING_LITERALS + 1))
+        with pytest.raises(DatasetFilterSyntaxError):
+            validate_dataset_filter(f"origin IN ({values})")
 
-        Spec: spec/API.md §Payload caps — tags list capped at 1,000.
-        """
-        over_cap_tags = [f"urn:li:tag:t{i}" for i in range(1001)]
-        with pytest.raises(ValueError):
-            validate_dataset_filter({"tags": over_cap_tags})
+    def test_at_the_literal_cap_is_accepted(self) -> None:
+        """The cap is inclusive — 1,000 literals is admissible, so the rejection
+        above is a cap check and not a blanket refusal of large filters."""
+        values = ", ".join(f"'v{i}'" for i in range(MAX_STRING_LITERALS))
+        validate_dataset_filter(f"origin IN ({values})")
 
-    def test_malformed_urn_raises_invalid_dataset_urn_error(self) -> None:
-        """Malformed URN in dataset_urns raises InvalidDatasetUrnError.
 
-        Spec: spec/API.md §Error Catalogue — 422 INVALID_DATASET_URN for malformed URNs.
-        """
+class TestUrnErrorsCarryTheUrnCode:
+    """spec/API.md §Error Catalogue: 'INVALID_DATASET_URN | 422 | A `dataset_urn`
+    literal inside a `dataset_filter` is not a well-formed `urn:li:dataset:(…)`
+    URN.'"""
+
+    @pytest.mark.parametrize(
+        "bad", ["not-a-urn", "urn:li:dataset:postgres", "", "urn:li:dataset"]
+    )
+    def test_malformed_dataset_urn_literal_raises_the_urn_error(self, bad: str) -> None:
+        with pytest.raises(InvalidDatasetUrnError) as excinfo:
+            validate_dataset_filter(f"dataset_urn = '{bad}'")
+        assert excinfo.value.error_code == "INVALID_DATASET_URN"
+
+    def test_malformed_literal_in_an_in_list_raises_the_urn_error(self) -> None:
         with pytest.raises(InvalidDatasetUrnError):
-            validate_dataset_filter({"dataset_urns": ["not-a-urn"]})
+            validate_dataset_filter(f"dataset_urn IN ('{_URN}', 'not-a-urn')")
 
-    def test_empty_origin_raises(self) -> None:
-        """origin='' raises ValueError after trim check.
+    def test_non_urn_values_on_other_columns_are_not_urn_checked(self) -> None:
+        """Only `dataset_urn` literals carry a URN shape (spec/API.md
+        §`dataset_filter` grammar — column table)."""
+        validate_dataset_filter("origin = 'not-a-urn' AND 'not-a-urn' IN tag_urns")
 
-        Spec: spec/API.md §Governance — Metric (Definition body) — origin must be
-              non-empty if provided.
-        """
-        with pytest.raises(ValueError):
-            validate_dataset_filter({"origin": ""})
+
+def test_field_description_states_the_caps_and_columns() -> None:
+    """The OpenAPI description is the only place a client sees the grammar, so it
+    must name the columns and both caps (spec/API.md §`dataset_filter` grammar)."""
+    for column in [
+        "dataset_urn",
+        "origin",
+        "platform_urn",
+        "tag_urns",
+        "glossary_term_urns",
+    ]:
+        assert column in DATASET_FILTER_FIELD_DESCRIPTION
+    assert f"{MAX_FILTER_CHARS:,}" in DATASET_FILTER_FIELD_DESCRIPTION
+    assert f"{MAX_STRING_LITERALS:,}" in DATASET_FILTER_FIELD_DESCRIPTION

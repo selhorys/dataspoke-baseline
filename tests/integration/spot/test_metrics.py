@@ -14,9 +14,14 @@ Concerns covered (each test targets one spec contract):
 - PUT ingestion-freshness with time_window_sec=-1 → 422
 - PUT doc-health with non-empty metric_conf → 422
 - PUT ingestion-freshness with unknown metrics[] key → 422
-- PUT dataset_filter.dataset_urns > 1000 entries → 422
-- PUT dataset_filter.dataset_urns == 1000 entries → 200/201
-- PUT dataset_filter.dataset_urns=['not-a-urn'] → 422 INVALID_DATASET_URN
+- PUT dataset_filter with > 1000 string literals → 422 INVALID_DATASET_FILTER
+- POST dataset_filter with exactly 1000 string literals → 201
+- PUT dataset_filter="dataset_urn = 'not-a-urn'" → 422 INVALID_DATASET_URN
+- a non-dry run writes one metric_dataset_results row per dataset in scope; a dry run
+  writes none and leaves the previous run's verdicts readable
+- GET .../dataset serves the tri-state met view, its met filter combinations, and the
+  scope-relative attrs_synced_at watermark
+- DELETE .../attr/conf clears the metric's verdict rows
 - PUT metric_id with invalid path chars → 422
 - ingestion-freshness applies metric_conf.time_window_sec uniformly: a PASSIVE-owned
   dataset is judged by the declared window (in-time and stale sides both seeded), and a
@@ -103,7 +108,7 @@ def _reset_factory_metric_conf() -> Iterator[None]:
     restore PATCH, that mutated state would otherwise leak into the next pytest
     session and violate the factory-defaults invariant
     (spec/USE_CASE_en.md §UC5 §Factory defaults — seeds ship is_enabled=False with
-    an empty dataset_filter). The reset is performed directly in the operational DB
+    dataset_filter=""). The reset is performed directly in the operational DB
     rather than through the API so that it cannot itself be skipped by an API-layer
     guard, an auth failure, or a metric left in a running state.
     """
@@ -113,7 +118,7 @@ def _reset_factory_metric_conf() -> Iterator[None]:
         try:
             await conn.execute(
                 "UPDATE dataspoke.metric_definitions "
-                "SET is_enabled = FALSE, dataset_filter = '{}'::jsonb "
+                "SET is_enabled = FALSE, dataset_filter = '' "
                 "WHERE id = ANY($1::text[])",
                 list(_FACTORY_IDS),
             )
@@ -227,10 +232,13 @@ async def test_create_replace_flow(
         "metric_type": "doc-health",
         "title": "Create Replace Flow",
         "description": "Spot test for create/replace semantics",
-        "metrics": ["total", "doc_health"],
+        "metrics": [
+            {"name": "total", "color": "#64748B", "idx": 1},
+            {"name": "doc_health", "color": "#A855F7", "idx": 2},
+        ],
         "metric_conf": {},
         "schedule_tier": "daily",
-        "dataset_filter": {},
+        "dataset_filter": "",
     }
 
     # Ensure clean state
@@ -276,10 +284,13 @@ async def test_create_replace_flow(
                 "metric_type": "doc-health",
                 "title": "Replaced Title",
                 "description": "Replaced description",
-                "metrics": ["total", "doc_health"],
+                "metrics": [
+                    {"name": "total", "color": "#64748B", "idx": 1},
+                    {"name": "doc_health", "color": "#A855F7", "idx": 2},
+                ],
                 "metric_conf": {},
                 "schedule_tier": "weekly",
-                "dataset_filter": {},
+                "dataset_filter": "",
             },
         )
         assert replace_resp.status_code == 200, (
@@ -304,10 +315,13 @@ async def test_create_replace_flow(
                 "metric_type": "doc-health",
                 "title": "Should Fail",
                 "description": "PUT on absent id",
-                "metrics": ["total", "doc_health"],
+                "metrics": [
+                    {"name": "total", "color": "#64748B", "idx": 1},
+                    {"name": "doc_health", "color": "#A855F7", "idx": 2},
+                ],
                 "metric_conf": {},
                 "schedule_tier": "daily",
-                "dataset_filter": {},
+                "dataset_filter": "",
             },
         )
         assert absent_resp.status_code == 404, (
@@ -369,10 +383,13 @@ async def test_post_get_patch_delete_round_trip(
                 "metric_type": "doc-health",
                 "title": "Doc Health Custom",
                 "description": "Custom doc-health for tests",
-                "metrics": ["total", "doc_health"],
+                "metrics": [
+                    {"name": "total", "color": "#64748B", "idx": 1},
+                    {"name": "doc_health", "color": "#A855F7", "idx": 2},
+                ],
                 "metric_conf": {},
                 "schedule_tier": "weekly",
-                "dataset_filter": {"origin": "DEV"},
+                "dataset_filter": "origin = 'DEV'",
             },
         )
         assert create_resp.status_code == 201, create_resp.text
@@ -436,10 +453,13 @@ async def test_post_passive_mode_returns_501(
             "metric_type": "doc-health",
             "title": "Passive Test",
             "description": "Should fail",
-            "metrics": ["total", "doc_health"],
+            "metrics": [
+                {"name": "total", "color": "#64748B", "idx": 1},
+                {"name": "doc_health", "color": "#A855F7", "idx": 2},
+            ],
             "metric_conf": {},
             "schedule_tier": "daily",
-            "dataset_filter": {},
+            "dataset_filter": "",
         },
     )
     assert resp.status_code == 501, (
@@ -473,10 +493,13 @@ async def test_put_passive_mode_returns_501(
             "metric_type": "doc-health",
             "title": "Passive Test",
             "description": "Should fail",
-            "metrics": ["total", "doc_health"],
+            "metrics": [
+                {"name": "total", "color": "#64748B", "idx": 1},
+                {"name": "doc_health", "color": "#A855F7", "idx": 2},
+            ],
             "metric_conf": {},
             "schedule_tier": "daily",
-            "dataset_filter": {},
+            "dataset_filter": "",
         },
     )
     assert resp.status_code == 501, (
@@ -511,7 +534,7 @@ async def test_unknown_metric_type_returns_422(
             "metrics": [],
             "metric_conf": {},
             "schedule_tier": "daily",
-            "dataset_filter": {},
+            "dataset_filter": "",
         },
     )
     assert resp.status_code == 422, (
@@ -538,10 +561,13 @@ async def test_metric_conf_missing_time_window_returns_422(
             "metric_type": "ingestion-freshness",
             "title": "Missing time_window",
             "description": "Should fail",
-            "metrics": ["total", "ingested_in_time"],
+            "metrics": [
+                {"name": "total", "color": "#64748B", "idx": 1},
+                {"name": "ingested_in_time", "color": "#22C55E", "idx": 2},
+            ],
             "metric_conf": {},
             "schedule_tier": "daily",
-            "dataset_filter": {},
+            "dataset_filter": "",
         },
     )
     assert resp.status_code == 422, (
@@ -568,10 +594,13 @@ async def test_metric_conf_negative_time_window_returns_422(
             "metric_type": "ingestion-freshness",
             "title": "Negative time_window",
             "description": "Should fail",
-            "metrics": ["total", "ingested_in_time"],
+            "metrics": [
+                {"name": "total", "color": "#64748B", "idx": 1},
+                {"name": "ingested_in_time", "color": "#22C55E", "idx": 2},
+            ],
             "metric_conf": {"time_window_sec": -1},
             "schedule_tier": "daily",
-            "dataset_filter": {},
+            "dataset_filter": "",
         },
     )
     assert resp.status_code == 422, (
@@ -598,10 +627,13 @@ async def test_doc_health_nonempty_metric_conf_returns_422(
             "metric_type": "doc-health",
             "title": "Doc Health conf check",
             "description": "Should fail",
-            "metrics": ["total", "doc_health"],
+            "metrics": [
+                {"name": "total", "color": "#64748B", "idx": 1},
+                {"name": "doc_health", "color": "#A855F7", "idx": 2},
+            ],
             "metric_conf": {"time_window_sec": 86400},
             "schedule_tier": "daily",
-            "dataset_filter": {},
+            "dataset_filter": "",
         },
     )
     assert resp.status_code == 422, (
@@ -628,10 +660,10 @@ async def test_metrics_list_unknown_key_returns_422(
             "metric_type": "ingestion-freshness",
             "title": "Unknown metrics key",
             "description": "Should fail",
-            "metrics": ["nope"],
+            "metrics": [{"name": "nope", "color": "#64748B", "idx": 1}],
             "metric_conf": {"time_window_sec": 86400},
             "schedule_tier": "daily",
-            "dataset_filter": {},
+            "dataset_filter": "",
         },
     )
     assert resp.status_code == 422, (
@@ -648,14 +680,12 @@ async def test_dataset_filter_cap_returns_422(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """PUT dataset_filter.dataset_urns=[<1001 well-formed urns>] → 422.
+    """PUT a dataset_filter carrying 1,001 string literals → 422 INVALID_DATASET_FILTER.
 
-    Spec: spec/API.md §Metric §Payload caps — dataset_urns ≤ 1,000 entries.
+    Spec: spec/API.md §`dataset_filter` grammar — Caps: "≤ 1,000 string literals";
+    Spec: spec/API.md §Error Catalogue — INVALID_DATASET_FILTER, 422, "exceeds a payload cap".
     """
-    urns_1001 = [
-        f"urn:li:dataset:(urn:li:dataPlatform:postgres,db.s.t_{i},DEV)"
-        for i in range(1001)
-    ]
+    over_cap = "origin IN (" + ", ".join(f"'v{i}'" for i in range(1001)) + ")"
     resp = await api_client.put(
         "/api/v1/spoke/governance/metric/spot-cap-over/attr/conf",
         headers=admin_headers,
@@ -665,16 +695,20 @@ async def test_dataset_filter_cap_returns_422(
             "metric_type": "doc-health",
             "title": "Cap over",
             "description": "Should fail on cap",
-            "metrics": ["total", "doc_health"],
+            "metrics": [
+                {"name": "total", "color": "#64748B", "idx": 1},
+                {"name": "doc_health", "color": "#A855F7", "idx": 2},
+            ],
             "metric_conf": {},
             "schedule_tier": "daily",
-            "dataset_filter": {"dataset_urns": urns_1001},
+            "dataset_filter": over_cap,
         },
     )
     assert resp.status_code == 422, (
-        f"Expected 422 for 1001 dataset_urns (over cap), got {resp.status_code}. "
-        "Spec: spec/API.md §Metric §Payload caps — cap is 1,000."
+        f"Expected 422 for 1,001 string literals (over cap), got {resp.status_code}: "
+        f"{resp.text}. Spec: spec/API.md §`dataset_filter` grammar — Caps."
     )
+    assert resp.json().get("error_code") == "INVALID_DATASET_FILTER", resp.text
 
 
 @pytest.mark.asyncio
@@ -682,15 +716,13 @@ async def test_dataset_filter_at_cap_accepted(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """POST dataset_filter.dataset_urns=[<1000 well-formed urns>] → 201.
+    """POST a dataset_filter carrying exactly 1,000 string literals → 201.
 
-    Spec: spec/API.md §Metric §Payload caps — exactly 1,000 MUST be accepted.
+    Spec: spec/API.md §`dataset_filter` grammar — Caps: the cap is inclusive, so
+    exactly 1,000 literals MUST be accepted.
     """
     _METRIC_ID = "spot-cap-at"
-    urns_1000 = [
-        f"urn:li:dataset:(urn:li:dataPlatform:postgres,db.s.t_{i},DEV)"
-        for i in range(1000)
-    ]
+    at_cap = "origin IN (" + ", ".join(f"'v{i}'" for i in range(1000)) + ")"
     base = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/attr/conf"
     # Ensure clean state
     await api_client.delete(base, headers=admin_headers)
@@ -705,15 +737,18 @@ async def test_dataset_filter_at_cap_accepted(
                 "metric_type": "doc-health",
                 "title": "Cap at boundary",
                 "description": "Should succeed at cap",
-                "metrics": ["total", "doc_health"],
+                "metrics": [
+                    {"name": "total", "color": "#64748B", "idx": 1},
+                    {"name": "doc_health", "color": "#A855F7", "idx": 2},
+                ],
                 "metric_conf": {},
                 "schedule_tier": "daily",
-                "dataset_filter": {"dataset_urns": urns_1000},
+                "dataset_filter": at_cap,
             },
         )
         assert resp.status_code == 201, (
-            f"Expected 201 for 1000 dataset_urns (at cap), got {resp.status_code}: {resp.text}. "
-            "Spec: spec/API.md §Metric §Payload caps — exactly 1,000 MUST be accepted."
+            f"Expected 201 for 1,000 string literals (at cap), got {resp.status_code}: "
+            f"{resp.text}. Spec: spec/API.md §`dataset_filter` grammar — Caps."
         )
     finally:
         with suppress(Exception):
@@ -725,10 +760,10 @@ async def test_invalid_dataset_urn_format_returns_422_with_specific_code(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """PUT dataset_filter.dataset_urns=['not-a-urn'] → 422 INVALID_DATASET_URN.
+    """PUT dataset_filter="dataset_urn = 'not-a-urn'" → 422 INVALID_DATASET_URN.
 
-    Spec: spec/API.md §Metric — dataset_urns URN format validated at PUT/PATCH
-          (422 INVALID_DATASET_URN).
+    Spec: spec/API.md §Error Catalogue — "A `dataset_urn` literal inside a
+          `dataset_filter` is not a well-formed `urn:li:dataset:(…)` URN".
     """
     resp = await api_client.put(
         "/api/v1/spoke/governance/metric/spot-bad-urn/attr/conf",
@@ -739,10 +774,13 @@ async def test_invalid_dataset_urn_format_returns_422_with_specific_code(
             "metric_type": "doc-health",
             "title": "Bad URN",
             "description": "Should fail on URN format",
-            "metrics": ["total", "doc_health"],
+            "metrics": [
+                {"name": "total", "color": "#64748B", "idx": 1},
+                {"name": "doc_health", "color": "#A855F7", "idx": 2},
+            ],
             "metric_conf": {},
             "schedule_tier": "daily",
-            "dataset_filter": {"dataset_urns": ["not-a-urn"]},
+            "dataset_filter": "dataset_urn = 'not-a-urn'",
         },
     )
     assert resp.status_code == 422, (
@@ -775,10 +813,13 @@ async def test_invalid_metric_id_path_param_returns_422(
             "metric_type": "doc-health",
             "title": "Invalid ID",
             "description": "Should fail on path param regex",
-            "metrics": ["total", "doc_health"],
+            "metrics": [
+                {"name": "total", "color": "#64748B", "idx": 1},
+                {"name": "doc_health", "color": "#A855F7", "idx": 2},
+            ],
             "metric_conf": {},
             "schedule_tier": "daily",
-            "dataset_filter": {},
+            "dataset_filter": "",
         },
     )
     assert resp.status_code == 422, (
@@ -814,7 +855,7 @@ async def test_dry_run_does_not_persist_result_or_event(
             headers=admin_headers,
             json={
                 "is_enabled": True,
-                "dataset_filter": {"dataset_urns": [_BOUNDED_URN]},
+                "dataset_filter": f"dataset_urn = '{_BOUNDED_URN}'",
             },
         )
         assert patch_resp.status_code == 200, patch_resp.text
@@ -890,7 +931,7 @@ async def test_dry_run_does_not_persist_result_or_event(
             await api_client.patch(
                 base_conf,
                 headers=admin_headers,
-                json={"is_enabled": False, "dataset_filter": {}},
+                json={"is_enabled": False, "dataset_filter": ""},
             )
 
 
@@ -915,7 +956,7 @@ async def test_metric_run_persists_values_dict(
         headers=admin_headers,
         json={
             "is_enabled": True,
-            "dataset_filter": {"dataset_urns": [_BOUNDED_URN]},
+            "dataset_filter": f"dataset_urn = '{_BOUNDED_URN}'",
         },
     )
     assert patch_resp.status_code == 200, patch_resp.text
@@ -959,7 +1000,7 @@ async def test_metric_run_persists_values_dict(
     await api_client.patch(
         base_conf,
         headers=admin_headers,
-        json={"is_enabled": False, "dataset_filter": {}},
+        json={"is_enabled": False, "dataset_filter": ""},
     )
 
 
@@ -992,10 +1033,13 @@ async def test_metric_run_concurrent_returns_409(
             "metric_type": "ingestion-freshness",
             "title": "Concurrent Guard Test",
             "description": "Tests concurrent run guard.",
-            "metrics": ["total", "ingested_in_time"],
+            "metrics": [
+                {"name": "total", "color": "#64748B", "idx": 1},
+                {"name": "ingested_in_time", "color": "#22C55E", "idx": 2},
+            ],
             "metric_conf": {"time_window_sec": 172800},
             "schedule_tier": "daily",
-            "dataset_filter": {"dataset_urns": [_BOUNDED_URN]},
+            "dataset_filter": f"dataset_urn = '{_BOUNDED_URN}'",
         },
     )
     assert create_resp.status_code == 201, create_resp.text
@@ -1060,7 +1104,7 @@ async def test_breakdown_datasets_has_no_category_field(
         headers=admin_headers,
         json={
             "is_enabled": True,
-            "dataset_filter": {"dataset_urns": [_BOUNDED_URN]},
+            "dataset_filter": f"dataset_urn = '{_BOUNDED_URN}'",
         },
     )
     assert patch_resp.status_code == 200, patch_resp.text
@@ -1095,7 +1139,7 @@ async def test_breakdown_datasets_has_no_category_field(
     await api_client.patch(
         base_conf,
         headers=admin_headers,
-        json={"is_enabled": False, "dataset_filter": {}},
+        json={"is_enabled": False, "dataset_filter": ""},
     )
 
 
@@ -1109,12 +1153,14 @@ async def test_metric_run_unresolved_urns_in_event(
 ) -> None:
     """METRIC.RUN_COMPLETE event carries unresolved_urns and expected detail shape.
 
-    A URN present in dataset_filter.dataset_urns but absent from DataHub must appear
+    A `dataset_urn` literal inside dataset_filter that matches no registered dataset
+    must appear
     in the METRIC.RUN_COMPLETE event's unresolved_urns field.  The event detail must
     also carry the full key set prescribed by the Event Catalogue.
 
-    Spec: spec/USE_CASE_en.md §UC5 §dataset_filter — unresolved-at-runtime entries
-          are skipped and reported in the METRIC.RUN_COMPLETE event's unresolved_urns.
+    Spec: spec/USE_CASE_en.md §UC5 §Concept — "literal URNs matching no registered
+          dataset at run time are reported in the `METRIC.RUN_COMPLETE` event's
+          `unresolved_urns` field".
     Spec: spec/feature/BACKEND.md §Event Catalogue — METRIC.RUN_COMPLETE detail keys:
           {run_id, metric_id, values, dry_run, unresolved_urns, breakdown_summary};
           breakdown_summary has {dataset_count, affected_count}.
@@ -1146,9 +1192,12 @@ async def test_metric_run_unresolved_urns_in_event(
                 "metric_type": "ingestion-freshness",
                 "title": "Unresolved URN Spot Test",
                 "description": "Verifies ghost URN appears in unresolved_urns event field.",
-                "metrics": ["total", "ingested_in_time"],
+                "metrics": [
+                    {"name": "total", "color": "#64748B", "idx": 1},
+                    {"name": "ingested_in_time", "color": "#22C55E", "idx": 2},
+                ],
                 "metric_conf": {"time_window_sec": 172800},
-                "dataset_filter": {"dataset_urns": [_GHOST_URN]},
+                "dataset_filter": f"dataset_urn = '{_GHOST_URN}'",
                 "schedule_tier": None,
             },
         )
@@ -1186,14 +1235,14 @@ async def test_metric_run_unresolved_urns_in_event(
         detail = event["detail"]
 
         # Ghost URN must appear in unresolved_urns.
-        # Spec: spec/USE_CASE_en.md §UC5 §dataset_filter.
+        # Spec: spec/USE_CASE_en.md §UC5 §Concept.
         assert isinstance(detail.get("unresolved_urns"), list), (
             "METRIC.RUN_COMPLETE detail.unresolved_urns must be a list. "
-            "Spec: spec/USE_CASE_en.md §UC5 §dataset_filter."
+            "Spec: spec/USE_CASE_en.md §UC5 §Concept."
         )
         assert _GHOST_URN in detail["unresolved_urns"], (
             f"Ghost URN '{_GHOST_URN}' must appear in detail.unresolved_urns. "
-            "Spec: spec/USE_CASE_en.md §UC5 §dataset_filter."
+            "Spec: spec/USE_CASE_en.md §UC5 §Concept."
         )
 
         # Full event-shape invariant — all required keys must be present.
@@ -1356,12 +1405,15 @@ async def test_breakdown_counts_reconcile_with_run_event(
                 "metric_type": "ingestion-freshness",
                 "title": "Breakdown Reconcile Spot Test",
                 "description": "Reconciles result breakdown counts with the RUN_COMPLETE event.",
-                "metrics": ["total", "ingested_in_time"],
+                "metrics": [
+                    {"name": "total", "color": "#64748B", "idx": 1},
+                    {"name": "ingested_in_time", "color": "#22C55E", "idx": 2},
+                ],
                 # 130000s is inside this window and 200000s is outside it, so the two
                 # seeded sources land on opposite verdicts.
                 "metric_conf": {"time_window_sec": 172800},
                 "schedule_tier": None,
-                "dataset_filter": {"dataset_urns": [urn_fresh, urn_stale]},
+                "dataset_filter": f"dataset_urn IN ('{urn_fresh}', '{urn_stale}')",
             },
         )
         assert create_resp.status_code == 201, create_resp.text
@@ -1653,10 +1705,13 @@ async def test_ingestion_freshness_declared_window_applies_to_a_passive_source(
                 "metric_type": "ingestion-freshness",
                 "title": "Declared Window Spot Test",
                 "description": "The declared window judges a PASSIVE-owned dataset",
-                "metrics": ["total", "ingested_in_time"],
+                "metrics": [
+                    {"name": "total", "color": "#64748B", "idx": 1},
+                    {"name": "ingested_in_time", "color": "#22C55E", "idx": 2},
+                ],
                 "metric_conf": {"time_window_sec": 172800},
                 "schedule_tier": None,
-                "dataset_filter": {"dataset_urns": [urn_fresh, urn_stale]},
+                "dataset_filter": f"dataset_urn IN ('{urn_fresh}', '{urn_stale}')",
             },
         )
         assert create_resp.status_code == 201, create_resp.text
@@ -1817,12 +1872,15 @@ async def test_ingestion_freshness_dataset_with_no_owning_source_is_stale(
                 "description": (
                     "A dataset with no ingestion_source_dataset row has no evidence to read"
                 ),
-                "metrics": ["total", "ingested_in_time"],
+                "metrics": [
+                    {"name": "total", "color": "#64748B", "idx": 1},
+                    {"name": "ingested_in_time", "color": "#22C55E", "idx": 2},
+                ],
                 # The declared window the breakdown must report. It is not what makes the
                 # dataset stale — the absent owning source is.
                 "metric_conf": {"time_window_sec": 3600},
                 "schedule_tier": None,
-                "dataset_filter": {"dataset_urns": [urn]},
+                "dataset_filter": f"dataset_urn = '{urn}'",
             },
         )
         assert create_resp.status_code == 201, create_resp.text
@@ -1993,12 +2051,15 @@ async def test_ingestion_freshness_reads_source_keyed_events_not_dataset_keyed(
                 "description": (
                     "Runs are read from the owning source, never from a dataset-keyed row."
                 ),
-                "metrics": ["total", "ingested_in_time"],
+                "metrics": [
+                    {"name": "total", "color": "#64748B", "idx": 1},
+                    {"name": "ingested_in_time", "color": "#22C55E", "idx": 2},
+                ],
                 # 130000s is inside this window and 200000s is outside it, so the two
                 # seeded pairs land on opposite verdicts.
                 "metric_conf": {"time_window_sec": 172800},
                 "schedule_tier": None,
-                "dataset_filter": {"dataset_urns": [urn_a, urn_b]},
+                "dataset_filter": f"dataset_urn IN ('{urn_a}', '{urn_b}')",
             },
         )
         assert create_resp.status_code == 201, create_resp.text
@@ -2167,10 +2228,13 @@ async def test_validation_score_declared_window_gates_the_latest_row(
                 "metric_type": "validation-score",
                 "title": "Declared Window Spot Test",
                 "description": "The declared window gates the latest validation row",
-                "metrics": ["total", "validation_score_sum"],
+                "metrics": [
+                    {"name": "total", "color": "#64748B", "idx": 1},
+                    {"name": "validation_score_sum", "color": "#3B82F6", "idx": 2},
+                ],
                 "metric_conf": {"time_window_sec": 86400},
                 "schedule_tier": None,
-                "dataset_filter": {"dataset_urns": [urn_fresh, urn_stale]},
+                "dataset_filter": f"dataset_urn IN ('{urn_fresh}', '{urn_stale}')",
             },
         )
         assert create_resp.status_code == 201, create_resp.text
@@ -2284,10 +2348,10 @@ async def test_metric_values_filtered_to_declared_subset(
                 "metric_type": "ingestion-freshness",
                 "title": "Subset Filter Check",
                 "description": "Verifies values dict is filtered to the declared metrics[] subset",
-                "metrics": ["total"],
+                "metrics": [{"name": "total", "color": "#64748B", "idx": 1}],
                 "metric_conf": {"time_window_sec": 172800},
                 "schedule_tier": None,
-                "dataset_filter": {"dataset_urns": [_URN]},
+                "dataset_filter": f"dataset_urn = '{_URN}'",
             },
         )
         assert create_resp.status_code == 201, (
@@ -2295,9 +2359,12 @@ async def test_metric_values_filtered_to_declared_subset(
             f"got {create_resp.status_code}: {create_resp.text}. "
             "Spec: spec/USE_CASE_en.md §UC5 §API Mapping."
         )
-        assert create_resp.json()["metrics"] == ["total"], (
-            "Created metric must carry the declared metrics=['total'] subset. "
-            "Spec: spec/API.md §Metric — metrics[] is a subset of emitted keys."
+        assert create_resp.json()["metrics"] == [
+            {"name": "total", "color": "#64748B", "idx": 1}
+        ], (
+            "Created metric must carry the declared single series descriptor for 'total'. "
+            "Spec: spec/API.md §Metric §Definition body — `metrics` | object[] | "
+            "\"Series descriptors — {name, color, idx}\"."
         )
 
         # Run (dry_run=false so the result is persisted)
@@ -2384,10 +2451,13 @@ async def test_list_last_run_at_reflects_latest_run_complete_event(
         "metric_type": "doc-health",
         "title": "Last-run spot",
         "description": "Seeds METRIC.RUN_COMPLETE events to assert last_run_at.",
-        "metrics": ["total", "doc_health"],
+        "metrics": [
+            {"name": "total", "color": "#64748B", "idx": 1},
+            {"name": "doc_health", "color": "#A855F7", "idx": 2},
+        ],
         "metric_conf": {},
         "schedule_tier": "daily",
-        "dataset_filter": {},
+        "dataset_filter": "",
     }
 
     # Two RUN_COMPLETE events: the OLDER and the NEWER. last_run_at must equal the
@@ -2456,3 +2526,676 @@ async def test_list_last_run_at_reflects_latest_run_complete_event(
             await api_client.delete(ran_conf, headers=admin_headers)
         with suppress(Exception):
             await api_client.delete(never_conf, headers=admin_headers)
+
+
+# ── Per-dataset verdicts and GET .../dataset ──────────────────────────────────
+#
+# Spot rather than api-wired: these need `metric_dataset_results` read straight from
+# the operational DB, and a dry run whose *absence* of writes must be observed against
+# a known prior verdict set — state the api-wired pipeline cannot arrange through the
+# public API alone (spec/TESTING.md §Integration Testing).
+
+_VERDICT_FRESH = (
+    "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
+)
+_VERDICT_STALE = (
+    "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.editions,DEV)"
+)
+
+
+async def _verdict_rows(conn: asyncpg.Connection, metric_id: str) -> list[dict]:
+    """Every `metric_dataset_results` row for a metric, ordered by dataset_urn."""
+    rows = await conn.fetch(
+        "SELECT dataset_urn, met, evidence_at, detail, measured_at "
+        "FROM dataspoke.metric_dataset_results WHERE metric_id = $1 ORDER BY dataset_urn",
+        metric_id,
+    )
+    return [dict(row) for row in rows]
+
+
+@pytest.mark.asyncio
+async def test_a_real_run_writes_one_verdict_row_per_dataset_in_scope(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """A non-dry run persists a verdict for every dataset in scope, passing and failing.
+
+    Two datasets are seeded onto opposite sides of the declared window, so a store that
+    kept only the failures would be caught by the missing `met = true` row.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service — "**Per-dataset verdict store**
+          (`metric_dataset_results`, keyed `(metric_id, dataset_urn)`) holds the
+          **latest** verdict only. A non-dry run replaces the metric's rows wholesale
+          inside the result transaction";
+    Spec: §Verdict contract — "`verdicts` covers **every** dataset in scope, not only
+          the failing ones".
+    """
+    _METRIC_ID = "spot-verdict-write"
+    base_conf = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/attr/conf"
+    base_run = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/method/run"
+
+    await api_client.delete(base_conf, headers=admin_headers)
+
+    conn = await _get_ds_conn()
+    now = datetime.now(tz=UTC)
+    source_fresh = str(uuid.UUID("00000000-0000-4000-8000-000000000d01"))
+    source_stale = str(uuid.UUID("00000000-0000-4000-8000-000000000d02"))
+    try:
+        await conn.execute(
+            "DELETE FROM dataspoke.ingestion_source_dataset WHERE dataset_urn = ANY($1::text[])",
+            [_VERDICT_FRESH, _VERDICT_STALE],
+        )
+        for source_id, urn, name, age_sec in (
+            (source_fresh, _VERDICT_FRESH, "spot-verdict-fresh", 130000),
+            (source_stale, _VERDICT_STALE, "spot-verdict-stale", 200000),
+        ):
+            await conn.execute(
+                "INSERT INTO dataspoke.ingestion_source "
+                "(id, mode, name, platform, recipe, schedule, schedule_tier, status) "
+                "VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8) "
+                "ON CONFLICT (id) DO UPDATE SET mode=$2, schedule_tier=$7",
+                source_id,
+                "ACTIVE_CUSTOM_MANAGED",
+                name,
+                "postgres",
+                json.dumps({"source": {"type": "postgres", "config": {}}}),
+                "0 0 * * *",
+                "daily",
+                "OK",
+            )
+            await conn.execute(
+                "INSERT INTO dataspoke.ingestion_source_dataset "
+                "(source_id, dataset_urn, derivation) VALUES ($1, $2, $3) "
+                "ON CONFLICT (source_id, dataset_urn) DO UPDATE SET derivation=$3",
+                source_id, urn, "emitted",
+            )
+            await conn.execute(
+                "DELETE FROM dataspoke.events"
+                " WHERE event_type = 'INGESTION.COMPLETE' AND entity_id = $1",
+                source_id,
+            )
+            await conn.execute(
+                "INSERT INTO dataspoke.events "
+                "(id, entity_type, entity_id, event_type, status, detail, occurred_at) "
+                "VALUES (gen_random_uuid(), $1, $2, $3, $4, $5::jsonb, $6)",
+                "ingestion_source", source_id, "INGESTION.COMPLETE", "success",
+                json.dumps({}),
+                now - timedelta(seconds=age_sec),
+            )
+
+        create_resp = await api_client.post(
+            "/api/v1/spoke/governance/metric",
+            headers=admin_headers,
+            json={
+                "metric_id": _METRIC_ID,
+                "mode": "active",
+                "is_enabled": True,
+                "metric_type": "ingestion-freshness",
+                "title": "Verdict write spot test",
+                "description": "One verdict row per dataset in scope.",
+                "metrics": [
+                    {"name": "total", "color": "#64748B", "idx": 1},
+                    {"name": "ingested_in_time", "color": "#22C55E", "idx": 2},
+                ],
+                "metric_conf": {"time_window_sec": 172800},
+                "schedule_tier": None,
+                "dataset_filter": (
+                    f"dataset_urn IN ('{_VERDICT_FRESH}', '{_VERDICT_STALE}')"
+                ),
+            },
+        )
+        assert create_resp.status_code == 201, create_resp.text
+
+        run_resp = await api_client.post(base_run, headers=admin_headers)
+        assert run_resp.status_code == 200, run_resp.text
+
+        rows = await _verdict_rows(conn, _METRIC_ID)
+        assert [row["dataset_urn"] for row in rows] == sorted(
+            [_VERDICT_FRESH, _VERDICT_STALE]
+        ), (
+            f"one row per dataset in scope, passing and failing alike; got {rows!r}. "
+            "Spec: spec/feature/BACKEND.md §Metrics Service §Verdict contract."
+        )
+        by_urn = {row["dataset_urn"]: row for row in rows}
+        assert by_urn[_VERDICT_FRESH]["met"] is True
+        assert by_urn[_VERDICT_STALE]["met"] is False
+        assert by_urn[_VERDICT_FRESH]["evidence_at"] is not None, (
+            "ingestion-freshness dates each verdict by its resolved evidence. "
+            "Spec: spec/feature/BACKEND.md §Metrics Service §Verdict contract."
+        )
+        assert by_urn[_VERDICT_FRESH]["measured_at"] == by_urn[_VERDICT_STALE]["measured_at"], (
+            "both rows come from the same run, so they carry one measured_at. "
+            "Spec: spec/feature/BACKEND.md §Metrics Service — "
+            "'the store always reflects exactly one run'."
+        )
+
+        # A second run replaces the set wholesale rather than accumulating.
+        second_resp = await api_client.post(base_run, headers=admin_headers)
+        assert second_resp.status_code == 200, second_resp.text
+        second_rows = await _verdict_rows(conn, _METRIC_ID)
+        assert len(second_rows) == 2, (
+            f"a re-run must replace, not accumulate; got {len(second_rows)} rows. "
+            "Spec: spec/feature/BACKEND.md §Metrics Service — replaced 'wholesale'."
+        )
+        assert second_rows[0]["measured_at"] > rows[0]["measured_at"], (
+            "backstop: the second run must actually have re-measured"
+        )
+    finally:
+        with suppress(Exception):
+            await api_client.delete(base_conf, headers=admin_headers)
+        with suppress(Exception):
+            await conn.execute(
+                "DELETE FROM dataspoke.events WHERE entity_id = ANY($1::text[])",
+                [source_fresh, source_stale],
+            )
+            await conn.execute(
+                "DELETE FROM dataspoke.ingestion_source_dataset "
+                "WHERE source_id = ANY($1::uuid[])",
+                [source_fresh, source_stale],
+            )
+            await conn.execute(
+                "DELETE FROM dataspoke.ingestion_source WHERE id = ANY($1::uuid[])",
+                [source_fresh, source_stale],
+            )
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_a_dry_run_leaves_the_previous_runs_verdicts_untouched(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """A dry run neither writes verdicts nor clears the ones a real run left.
+
+    "Persists nothing" is stronger than "writes nothing new": a dry run that deleted
+    first and then skipped the insert would leave the store empty, which reads exactly
+    like a metric that never ran.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service — "A **dry run persists nothing** —
+          the standing metrics invariant — leaving the previous run's verdicts readable";
+    Spec: spec/API.md §Metric — "a dry run persists none, so `/dataset` after a dry run
+          still reports the previous run's verdicts".
+    """
+    _METRIC_ID = "spot-verdict-dry-run"
+    base_conf = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/attr/conf"
+    base_run = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/method/run"
+
+    await api_client.delete(base_conf, headers=admin_headers)
+
+    conn = await _get_ds_conn()
+    try:
+        create_resp = await api_client.post(
+            "/api/v1/spoke/governance/metric",
+            headers=admin_headers,
+            json={
+                "metric_id": _METRIC_ID,
+                "mode": "active",
+                "is_enabled": True,
+                "metric_type": "doc-health",
+                "title": "Dry-run verdict spot test",
+                "description": "A dry run must persist no verdicts.",
+                "metrics": [
+                    {"name": "total", "color": "#64748B", "idx": 1},
+                    {"name": "doc_health", "color": "#A855F7", "idx": 2},
+                ],
+                "metric_conf": {},
+                "schedule_tier": None,
+                "dataset_filter": f"dataset_urn = '{_BOUNDED_URN}'",
+            },
+        )
+        assert create_resp.status_code == 201, create_resp.text
+
+        real_resp = await api_client.post(base_run, headers=admin_headers)
+        assert real_resp.status_code == 200, real_resp.text
+        after_real = await _verdict_rows(conn, _METRIC_ID)
+        assert len(after_real) == 1, (
+            f"backstop: the real run must have written a verdict; got {after_real!r}"
+        )
+
+        dry_resp = await api_client.post(f"{base_run}?dry_run=true", headers=admin_headers)
+        assert dry_resp.status_code == 200, dry_resp.text
+        assert dry_resp.json()["detail"]["dry_run"] is True
+
+        after_dry = await _verdict_rows(conn, _METRIC_ID)
+        assert after_dry == after_real, (
+            "a dry run must leave the previous run's verdicts byte-identical; got "
+            f"{after_dry!r} vs {after_real!r}. "
+            "Spec: spec/feature/BACKEND.md §Metrics Service — dry run persists nothing."
+        )
+
+        # And the read model agrees: /dataset still reports the real run's verdict.
+        view = await api_client.get(
+            f"/api/v1/spoke/governance/metric/{_METRIC_ID}/dataset", headers=admin_headers
+        )
+        assert view.status_code == 200, view.text
+        assert [row["met"] for row in view.json()["datasets"]] != ["unknown"], (
+            "after a dry run the dataset must still carry the real run's verdict. "
+            "Spec: spec/API.md §Metric."
+        )
+    finally:
+        with suppress(Exception):
+            await api_client.delete(base_conf, headers=admin_headers)
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_dataset_view_met_filter_combinations(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """`met` selects any combination of the three states; omitting it selects all.
+
+    The metric is run scoped to two datasets seeded onto opposite sides of the window,
+    then widened to every DEV dataset *without* re-running — so the view carries a
+    known `true`, a known `false`, and at least one `unknown` (a dataset that entered
+    scope after the last run). Each combination therefore has something to include and
+    something to exclude.
+
+    Spec: spec/API.md §Metric — "Repeatable `met` query param (default: all three)";
+          "`met` is `"unknown"` exactly when the dataset is in the filter's scope but
+          carries no verdict — the metric has never run, or the dataset entered scope
+          after the last run".
+    """
+    _METRIC_ID = "spot-dataset-met-filter"
+    base_conf = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/attr/conf"
+    base_run = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/method/run"
+    base_view = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/dataset"
+
+    await api_client.delete(base_conf, headers=admin_headers)
+
+    conn = await _get_ds_conn()
+    now = datetime.now(tz=UTC)
+    source_fresh = str(uuid.UUID("00000000-0000-4000-8000-000000000d11"))
+    source_stale = str(uuid.UUID("00000000-0000-4000-8000-000000000d12"))
+    try:
+        await conn.execute(
+            "DELETE FROM dataspoke.ingestion_source_dataset WHERE dataset_urn = ANY($1::text[])",
+            [_VERDICT_FRESH, _VERDICT_STALE],
+        )
+        for source_id, urn, name, age_sec in (
+            (source_fresh, _VERDICT_FRESH, "spot-met-filter-fresh", 130000),
+            (source_stale, _VERDICT_STALE, "spot-met-filter-stale", 200000),
+        ):
+            await conn.execute(
+                "INSERT INTO dataspoke.ingestion_source "
+                "(id, mode, name, platform, recipe, schedule, schedule_tier, status) "
+                "VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8) "
+                "ON CONFLICT (id) DO UPDATE SET mode=$2, schedule_tier=$7",
+                source_id,
+                "ACTIVE_CUSTOM_MANAGED",
+                name,
+                "postgres",
+                json.dumps({"source": {"type": "postgres", "config": {}}}),
+                "0 0 * * *",
+                "daily",
+                "OK",
+            )
+            await conn.execute(
+                "INSERT INTO dataspoke.ingestion_source_dataset "
+                "(source_id, dataset_urn, derivation) VALUES ($1, $2, $3) "
+                "ON CONFLICT (source_id, dataset_urn) DO UPDATE SET derivation=$3",
+                source_id, urn, "emitted",
+            )
+            await conn.execute(
+                "DELETE FROM dataspoke.events"
+                " WHERE event_type = 'INGESTION.COMPLETE' AND entity_id = $1",
+                source_id,
+            )
+            await conn.execute(
+                "INSERT INTO dataspoke.events "
+                "(id, entity_type, entity_id, event_type, status, detail, occurred_at) "
+                "VALUES (gen_random_uuid(), $1, $2, $3, $4, $5::jsonb, $6)",
+                "ingestion_source", source_id, "INGESTION.COMPLETE", "success",
+                json.dumps({}),
+                now - timedelta(seconds=age_sec),
+            )
+
+        create_resp = await api_client.post(
+            "/api/v1/spoke/governance/metric",
+            headers=admin_headers,
+            json={
+                "metric_id": _METRIC_ID,
+                "mode": "active",
+                "is_enabled": True,
+                "metric_type": "ingestion-freshness",
+                "title": "met filter spot test",
+                "description": "Exercises every met filter combination.",
+                "metrics": [
+                    {"name": "total", "color": "#64748B", "idx": 1},
+                    {"name": "ingested_in_time", "color": "#22C55E", "idx": 2},
+                ],
+                "metric_conf": {"time_window_sec": 172800},
+                "schedule_tier": None,
+                "dataset_filter": (
+                    f"dataset_urn IN ('{_VERDICT_FRESH}', '{_VERDICT_STALE}')"
+                ),
+            },
+        )
+        assert create_resp.status_code == 201, create_resp.text
+
+        run_resp = await api_client.post(base_run, headers=admin_headers)
+        assert run_resp.status_code == 200, run_resp.text
+
+        # Widen scope without re-running: every other DEV dataset is now in scope
+        # but was never evaluated, so it reads `unknown`.
+        widen = await api_client.patch(
+            base_conf, headers=admin_headers, json={"dataset_filter": "origin = 'DEV'"}
+        )
+        assert widen.status_code == 200, widen.text
+
+        all_states = await api_client.get(f"{base_view}?limit=1000", headers=admin_headers)
+        assert all_states.status_code == 200, all_states.text
+        all_body = all_states.json()
+        served = {row["dataset_urn"]: row["met"] for row in all_body["datasets"]}
+        assert served.get(_VERDICT_FRESH) == "true", served
+        assert served.get(_VERDICT_STALE) == "false", served
+        unknown_urns = {urn for urn, met in served.items() if met == "unknown"}
+        assert unknown_urns, (
+            "widening the filter must bring never-evaluated datasets into scope, or the "
+            f"`unknown` cases below are vacuous; got {served!r}. "
+            "Spec: spec/API.md §Metric — 'the dataset entered scope after the last run'."
+        )
+
+        for params, states, known_included in (
+            ("?met=true", {"true"}, {_VERDICT_FRESH}),
+            ("?met=false", {"false"}, {_VERDICT_STALE}),
+            ("?met=unknown", {"unknown"}, set()),
+            ("?met=true&met=false", {"true", "false"}, {_VERDICT_FRESH, _VERDICT_STALE}),
+            ("?met=false&met=unknown", {"false", "unknown"}, {_VERDICT_STALE}),
+            (
+                "?met=true&met=false&met=unknown",
+                {"true", "false", "unknown"},
+                {_VERDICT_FRESH, _VERDICT_STALE},
+            ),
+        ):
+            resp = await api_client.get(f"{base_view}{params}&limit=1000", headers=admin_headers)
+            assert resp.status_code == 200, resp.text
+            body = resp.json()
+            returned = {row["dataset_urn"]: row["met"] for row in body["datasets"]}
+            assert set(returned.values()) <= states, (
+                f"{params}: only the selected states may be returned; got "
+                f"{sorted(set(returned.values()))}. "
+                "Spec: spec/API.md §Metric — repeatable met filter."
+            )
+            assert known_included <= set(returned), (
+                f"{params}: the seeded datasets in a selected state must be present; got "
+                f"{sorted(returned)}."
+            )
+            excluded = {_VERDICT_FRESH, _VERDICT_STALE} - known_included
+            assert not (excluded & set(returned)), (
+                f"{params}: a dataset whose state was not selected must be excluded; got "
+                f"{sorted(returned)}."
+            )
+            expected_count = sum(1 for met in served.values() if met in states)
+            assert body["total_count"] == expected_count, (
+                f"{params}: total_count must count the filtered set; expected "
+                f"{expected_count}, got {body['total_count']}"
+            )
+            assert body["attrs_synced_at"] == all_body["attrs_synced_at"], (
+                f"{params}: attrs_synced_at is scope-relative and must not move with the "
+                "met filter. Spec: spec/API.md §Metric — 'unaffected by `met` filtering "
+                "or paging'."
+            )
+    finally:
+        with suppress(Exception):
+            await api_client.delete(base_conf, headers=admin_headers)
+        with suppress(Exception):
+            await conn.execute(
+                "DELETE FROM dataspoke.events WHERE entity_id = ANY($1::text[])",
+                [source_fresh, source_stale],
+            )
+            await conn.execute(
+                "DELETE FROM dataspoke.ingestion_source_dataset "
+                "WHERE source_id = ANY($1::uuid[])",
+                [source_fresh, source_stale],
+            )
+            await conn.execute(
+                "DELETE FROM dataspoke.ingestion_source WHERE id = ANY($1::uuid[])",
+                [source_fresh, source_stale],
+            )
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_metric_clears_its_verdict_rows(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """DELETE .../attr/conf removes the metric's own `metric_dataset_results` rows.
+
+    A bystander metric is measured alongside it: the deletion must clear *its*
+    verdicts, and only its verdicts, so an unscoped DELETE that wipes the estate's
+    whole verdict table fails here rather than reading as a pass.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service — "Deleting a metric definition
+          clears its verdicts";
+    Spec: spec/feature/BACKEND_SCHEMA.md §metric_dataset_results — "`metric_id` | `TEXT`
+          FK → `metric_definitions(id)` ON DELETE CASCADE".
+    """
+    _METRIC_ID = "spot-verdict-delete-cascade"
+    _BYSTANDER_ID = "spot-verdict-delete-bystander"
+    base_conf = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/attr/conf"
+    base_run = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/method/run"
+    bystander_conf = f"/api/v1/spoke/governance/metric/{_BYSTANDER_ID}/attr/conf"
+    bystander_run = f"/api/v1/spoke/governance/metric/{_BYSTANDER_ID}/method/run"
+
+    await api_client.delete(base_conf, headers=admin_headers)
+    await api_client.delete(bystander_conf, headers=admin_headers)
+
+    conn = await _get_ds_conn()
+    try:
+        create_resp = await api_client.post(
+            "/api/v1/spoke/governance/metric",
+            headers=admin_headers,
+            json={
+                "metric_id": _METRIC_ID,
+                "mode": "active",
+                "is_enabled": True,
+                "metric_type": "doc-health",
+                "title": "Delete cascade spot test",
+                "description": "Verdicts must not outlive their metric.",
+                "metrics": [
+                    {"name": "total", "color": "#64748B", "idx": 1},
+                    {"name": "doc_health", "color": "#A855F7", "idx": 2},
+                ],
+                "metric_conf": {},
+                "schedule_tier": None,
+                "dataset_filter": f"dataset_urn = '{_BOUNDED_URN}'",
+            },
+        )
+        assert create_resp.status_code == 201, create_resp.text
+
+        bystander_create = await api_client.post(
+            "/api/v1/spoke/governance/metric",
+            headers=admin_headers,
+            json={
+                "metric_id": _BYSTANDER_ID,
+                "mode": "active",
+                "is_enabled": True,
+                "metric_type": "doc-health",
+                "title": "Delete cascade bystander",
+                "description": "Another metric's verdicts must survive the delete.",
+                "metrics": [
+                    {"name": "total", "color": "#64748B", "idx": 1},
+                    {"name": "doc_health", "color": "#A855F7", "idx": 2},
+                ],
+                "metric_conf": {},
+                "schedule_tier": None,
+                "dataset_filter": f"dataset_urn = '{_BOUNDED_URN}'",
+            },
+        )
+        assert bystander_create.status_code == 201, bystander_create.text
+
+        run_resp = await api_client.post(base_run, headers=admin_headers)
+        assert run_resp.status_code == 200, run_resp.text
+        bystander_run_resp = await api_client.post(bystander_run, headers=admin_headers)
+        assert bystander_run_resp.status_code == 200, bystander_run_resp.text
+        assert await _verdict_rows(conn, _METRIC_ID), (
+            "backstop: the run must have written a verdict before the delete is meaningful"
+        )
+        assert await _verdict_rows(conn, _BYSTANDER_ID), (
+            "backstop: the bystander must hold verdicts for its survival to mean anything"
+        )
+
+        delete_resp = await api_client.delete(base_conf, headers=admin_headers)
+        assert delete_resp.status_code in (200, 204), delete_resp.text
+
+        assert await _verdict_rows(conn, _METRIC_ID) == [], (
+            "the metric's verdict rows must not outlive its definition. "
+            "Spec: spec/feature/BACKEND.md §Metrics Service."
+        )
+        assert await _verdict_rows(conn, _BYSTANDER_ID), (
+            "deleting one metric must clear only *its* verdicts — the bystander's rows "
+            "were wiped, so the DELETE is unscoped. "
+            "Spec: spec/feature/BACKEND_SCHEMA.md §metric_dataset_results — PK "
+            "`(metric_id, dataset_urn)` with a per-metric FK."
+        )
+    finally:
+        with suppress(Exception):
+            await api_client.delete(base_conf, headers=admin_headers)
+        with suppress(Exception):
+            await api_client.delete(bystander_conf, headers=admin_headers)
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_dataset_view_reports_the_registry_sync_watermark(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """`attrs_synced_at` echoes the newest `dataset_registry.attrs_synced_at` in scope.
+
+    Read straight from the registry rather than from another API call: the point of the
+    field is that it exposes the sweep watermark the scope was filtered against, so the
+    assertion has to compare against that column.
+
+    Spec: spec/API.md §Metric — "the **maximum** `dataset_registry.attrs_synced_at` over
+          the datasets in scope […] `null` when the scope is empty or no covered dataset
+          has ever synced".
+    """
+    _METRIC_ID = "spot-dataset-attrs-synced"
+    base_conf = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/attr/conf"
+    base_view = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/dataset"
+
+    await api_client.delete(base_conf, headers=admin_headers)
+
+    conn = await _get_ds_conn()
+    try:
+        create_resp = await api_client.post(
+            "/api/v1/spoke/governance/metric",
+            headers=admin_headers,
+            json={
+                "metric_id": _METRIC_ID,
+                "mode": "active",
+                "is_enabled": False,
+                "metric_type": "doc-health",
+                "title": "attrs_synced_at spot test",
+                "description": "Scope freshness watermark.",
+                "metrics": [
+                    {"name": "total", "color": "#64748B", "idx": 1},
+                    {"name": "doc_health", "color": "#A855F7", "idx": 2},
+                ],
+                "metric_conf": {},
+                "schedule_tier": None,
+                "dataset_filter": f"dataset_urn = '{_BOUNDED_URN}'",
+            },
+        )
+        assert create_resp.status_code == 201, create_resp.text
+
+        expected = await conn.fetchval(
+            "SELECT max(attrs_synced_at) FROM dataspoke.dataset_registry "
+            "WHERE datahub_registered = TRUE AND dataset_urn = $1",
+            _BOUNDED_URN,
+        )
+
+        resp = await api_client.get(base_view, headers=admin_headers)
+        assert resp.status_code == 200, resp.text
+        served = resp.json()["attrs_synced_at"]
+
+        if expected is None:
+            assert served is None, (
+                "a scope whose datasets have never synced must report null. "
+                "Spec: spec/API.md §Metric."
+            )
+        else:
+            assert served is not None, (
+                f"the registry holds attrs_synced_at={expected!r} for the scoped dataset, "
+                "so the envelope must report it. Spec: spec/API.md §Metric."
+            )
+            assert datetime.fromisoformat(served.replace("Z", "+00:00")) == expected, (
+                f"attrs_synced_at must echo the registry column; got {served!r}, "
+                f"registry holds {expected!r}. Spec: spec/API.md §Metric."
+            )
+    finally:
+        with suppress(Exception):
+            await api_client.delete(base_conf, headers=admin_headers)
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_dataset_view_scope_matches_the_runs_own_scope(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """The view's dataset list is exactly the set the run measured.
+
+    Both read the filter from the same registry, so `values.total` (the run's scanned
+    count) and the view's `total_count` must agree; a divergence is the failure the
+    single-resolver decision exists to prevent.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service — "Resolving scope from the same
+          registry the run resolved it from is what keeps the run's verdicts and the
+          endpoint's dataset list from disagreeing."
+    """
+    _METRIC_ID = "spot-dataset-scope-agreement"
+    base_conf = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/attr/conf"
+    base_run = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/method/run"
+    base_view = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/dataset"
+
+    await api_client.delete(base_conf, headers=admin_headers)
+
+    try:
+        create_resp = await api_client.post(
+            "/api/v1/spoke/governance/metric",
+            headers=admin_headers,
+            json={
+                "metric_id": _METRIC_ID,
+                "mode": "active",
+                "is_enabled": True,
+                "metric_type": "doc-health",
+                "title": "Scope agreement spot test",
+                "description": "The run and the view resolve one scope.",
+                "metrics": [
+                    {"name": "total", "color": "#64748B", "idx": 1},
+                    {"name": "doc_health", "color": "#A855F7", "idx": 2},
+                ],
+                "metric_conf": {},
+                "schedule_tier": None,
+                "dataset_filter": "origin = 'DEV'",
+            },
+        )
+        assert create_resp.status_code == 201, create_resp.text
+
+        run_resp = await api_client.post(base_run, headers=admin_headers)
+        assert run_resp.status_code == 200, run_resp.text
+        scanned = int(run_resp.json()["detail"]["values"]["total"])
+        assert scanned > 0, (
+            "backstop: the DEV-origin scope must be non-empty, or the agreement below "
+            "is vacuous. A zero here means the attribute sweep has not run — see "
+            "spec/TESTING.md §Prerequisites."
+        )
+
+        view = await api_client.get(f"{base_view}?limit=1000", headers=admin_headers)
+        assert view.status_code == 200, view.text
+        body = view.json()
+        assert body["total_count"] == scanned, (
+            f"the view covers {body['total_count']} datasets but the run measured "
+            f"{scanned}. Spec: spec/feature/BACKEND.md §Metrics Service."
+        )
+        assert all(row["met"] in ("true", "false") for row in body["datasets"]), (
+            "every dataset in scope was measured by the run just made, so none may read "
+            "'unknown'. Spec: spec/API.md §Metric."
+        )
+    finally:
+        with suppress(Exception):
+            await api_client.delete(base_conf, headers=admin_headers)

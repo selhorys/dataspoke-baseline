@@ -48,10 +48,14 @@ function createBody(metricId: string, title: string) {
     metric_type: "doc-health",
     title,
     description: "Ground spec fixture for the chart grain picker",
-    metrics: ["total", "doc_health"],
+    metrics: [
+      { name: "total", color: "#64748B", idx: 1 },
+      { name: "doc_health", color: "#A855F7", idx: 2 },
+    ],
     metric_conf: {},
     schedule_tier: null,
-    dataset_filter: {},
+    // Empty clause = every registered dataset (API.md §`dataset_filter` grammar).
+    dataset_filter: "",
   };
 }
 

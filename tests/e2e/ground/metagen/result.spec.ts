@@ -31,7 +31,8 @@ test.beforeAll(async ({ adminApi }) => {
       name: CONF_NAME,
       is_enabled: true,
       schedule_tier: null,
-      dataset_filter: {},
+      // Empty clause = every registered dataset (API.md §`dataset_filter` grammar).
+      dataset_filter: "",
       result_limit: 3,
       overwrite_pending: true,
     },

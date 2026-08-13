@@ -15,6 +15,10 @@ from src.shared.db.models import MetricDefinition
 
 logger = logging.getLogger(__name__)
 
+# Series colors: the shared "total" baseline is slate, and each type's own key
+# takes a distinct hue so two metrics on one dashboard stay tellable apart.
+_TOTAL_COLOR = "#64748B"
+
 _FACTORY_DEFAULTS: list[dict[str, Any]] = [
     {
         "id": "ingestion-freshness",
@@ -22,9 +26,12 @@ _FACTORY_DEFAULTS: list[dict[str, Any]] = [
         "metric_type": "ingestion-freshness",
         "title": "Ingestion freshness",
         "description": "Daily count of datasets ingested within the configured time window",
-        "metrics": ["total", "ingested_in_time"],
+        "metrics": [
+            {"name": "total", "color": _TOTAL_COLOR, "idx": 1},
+            {"name": "ingested_in_time", "color": "#22C55E", "idx": 2},
+        ],
         "metric_conf": {"time_window_sec": 172800},
-        "dataset_filter": {},
+        "dataset_filter": "",
         "schedule_tier": "daily",
         "is_enabled": False,
     },
@@ -34,9 +41,12 @@ _FACTORY_DEFAULTS: list[dict[str, Any]] = [
         "metric_type": "validation-score",
         "title": "Validation score",
         "description": "Daily sum of dataset validation scores within the configured time window",
-        "metrics": ["total", "validation_score_sum"],
+        "metrics": [
+            {"name": "total", "color": _TOTAL_COLOR, "idx": 1},
+            {"name": "validation_score_sum", "color": "#3B82F6", "idx": 2},
+        ],
         "metric_conf": {"time_window_sec": 172800},
-        "dataset_filter": {},
+        "dataset_filter": "",
         "schedule_tier": "daily",
         "is_enabled": False,
     },
@@ -46,9 +56,12 @@ _FACTORY_DEFAULTS: list[dict[str, Any]] = [
         "metric_type": "doc-health",
         "title": "Documentation health",
         "description": "Daily count of fully documented datasets (table + every column)",
-        "metrics": ["total", "doc_health"],
+        "metrics": [
+            {"name": "total", "color": _TOTAL_COLOR, "idx": 1},
+            {"name": "doc_health", "color": "#A855F7", "idx": 2},
+        ],
         "metric_conf": {},
-        "dataset_filter": {},
+        "dataset_filter": "",
         "schedule_tier": "daily",
         "is_enabled": False,
     },

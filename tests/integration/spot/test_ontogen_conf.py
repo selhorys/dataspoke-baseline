@@ -12,8 +12,8 @@ Seed CRUD:
   test_ontogen_seed_create_list_get_patch_delete
 
 Payload cap and schedule_tier boundary:
-  test_ontogen_conf_put_dataset_filter_dimension_caps
-    parametrized over (n, expected_status_set) x dimension x method:
+  test_ontogen_conf_put_dataset_filter_literal_cap
+    parametrized over (n, expected_status_set) x method:
       [at-cap-1000-accepted] — 200/201 accepted
       [over-cap-1001-rejected] — 422 rejected
   test_ontogen_conf_put_invalid_schedule_tier_422
@@ -23,7 +23,8 @@ These tests are pure REST and do not require raw-SQL seeding or DataHub document
 Spec traceability:
 - spec/feature/BACKEND.md §Ontology Generation Service §Inference Pipeline
 - spec/API.md §Ontology Generation — OntogenConfResponse fields (GET attr/conf)
-- spec/API.md §UC3 Payload caps — dataset_filter.{tags,glossary_terms,dataset_urns} ≤ 1,000
+- spec/API.md §Ontology Generation §Payload caps — `attr/conf.dataset_filter` ≤ 8,000 chars
+  and ≤ 1,000 string literals
 - spec/TESTING.md §Spot vs Api-Wired Integration Tests
 """
 
@@ -71,10 +72,14 @@ async def test_ontogen_conf_put(
     not stale pre-write state. A non-empty dataset_filter makes the response read-back
     assertion deterministic regardless of prior conf state.
 
-    spec: spec/API.md §UC3 — PUT replaces the singleton conf; response reflects the write.
+    spec: spec/API.md §Ontology Generation — PUT replaces the singleton conf; response
+      reflects the write.
+    spec: spec/API.md §`dataset_filter` grammar — the filter is a SQL WHERE-clause string
+      (`predicate := scalar_col '=' string`, `scalar_col := … | origin | …`); "UC3's
+      `ontogen/attr/conf.dataset_filter` … use this same grammar and validation".
     """
     conf_url = "/api/v1/spoke/ontogen/attr/conf"
-    expected_filter = {"origin": "PROD"}
+    expected_filter = "origin = 'PROD'"
     try:
         resp = await api_client.put(
             conf_url,
@@ -93,7 +98,7 @@ async def test_ontogen_conf_put(
         assert body["schedule_tier"] == "daily"
         assert body["dataset_filter"] == expected_filter, (
             f"PUT response dataset_filter not preserved: {body.get('dataset_filter')!r}. "
-            "spec: API.md §UC3 — PUT response reflects the write"
+            "spec: API.md §Ontology Generation — PUT response reflects the write"
         )
 
         # The write must also persist — a fresh GET confirms read-back independent of
@@ -101,17 +106,17 @@ async def test_ontogen_conf_put(
         get_body = (await api_client.get(conf_url, headers=admin_headers)).json()
         assert get_body["dataset_filter"] == expected_filter, (
             f"GET round-trip dataset_filter mismatch: {get_body.get('dataset_filter')!r}. "
-            "spec: API.md §UC3 — PUT replacement is persisted"
+            "spec: API.md §Ontology Generation — PUT replacement is persisted"
         )
     finally:
         # Cleanup — reset to disabled with an empty filter (unconditional, so a
-        # mid-test failure can't leave {"origin": "PROD"} resident and mask a retry).
+        # mid-test failure can't leave "origin = 'PROD'" resident and mask a retry).
         from contextlib import suppress
         with suppress(Exception):
             await api_client.patch(
                 conf_url,
                 headers=admin_headers,
-                json={"is_enabled": False, "dataset_filter": {}},
+                json={"is_enabled": False, "dataset_filter": ""},
             )
 
 
@@ -130,7 +135,7 @@ async def test_ontogen_conf_patch(
             json={
                 "is_enabled": False,
                 "schedule_tier": "daily",
-                "dataset_filter": {},
+                "dataset_filter": "",
             },
         )
 
@@ -150,7 +155,7 @@ async def test_ontogen_conf_patch(
             await api_client.patch(
                 conf_url,
                 headers=admin_headers,
-                json={"is_enabled": False, "schedule_tier": "daily", "dataset_filter": {}},
+                json={"is_enabled": False, "schedule_tier": "daily", "dataset_filter": ""},
             )
 
 
@@ -169,7 +174,7 @@ async def test_ontogen_conf_delete_resets(
             json={
                 "is_enabled": False,
                 "schedule_tier": "daily",
-                "dataset_filter": {},
+                "dataset_filter": "",
             },
         )
 
@@ -291,46 +296,29 @@ async def test_ontogen_seed_create_list_get_patch_enable_delete(
     ids=["at-cap-1000-accepted", "over-cap-1001-rejected"],
 )
 @pytest.mark.parametrize(
-    "dimension",
-    ["tags", "glossary_terms", "dataset_urns"],
-    ids=["tags", "glossary_terms", "dataset_urns"],
-)
-@pytest.mark.parametrize(
     "method",
     ["PUT", "PATCH"],
     ids=["PUT", "PATCH"],
 )
 @pytest.mark.asyncio
-async def test_ontogen_conf_put_dataset_filter_dimension_caps(
+async def test_ontogen_conf_put_dataset_filter_literal_cap(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
     method: str,
-    dimension: str,
     n: int,
     expected_status_set: set[int],
 ) -> None:
-    """PUT or PATCH at-cap (n=1000, accepted) and over-cap (n=1001, rejected) on a
-    single dataset_filter dimension.
+    """PUT or PATCH at-cap (1000 literals, accepted) and over-cap (1001, rejected).
 
-    The boundary test (n=1000) verifies the cap itself: a regression dropping the
-    limit to 500 would still pass the n=1001 test but fail here.  Well-formed URNs
-    are used so cap enforcement — not URN validation — triggers the result.
+    The at-cap side verifies the cap itself: a regression dropping the limit to 500
+    would still reject 1,001 but fail here.
 
-    spec: API.md §UC3 Payload caps — dataset_filter.{tags,glossary_terms,dataset_urns}
-      ≤ 1,000 entries per dimension; exactly 1,000 MUST be accepted; 1,001 MUST be rejected.
+    spec: API.md §`dataset_filter` grammar — Caps: "≤ 1,000 string literals", enforced
+      "on every route that writes a filter".
     """
     conf_url = "/api/v1/spoke/ontogen/attr/conf"
 
-    # Build n well-formed URN strings for the chosen dimension.
-    if dimension == "tags":
-        entries = [f"urn:li:tag:t-{i}" for i in range(n)]
-    elif dimension == "glossary_terms":
-        entries = [f"urn:li:glossaryTerm:gt-{i}" for i in range(n)]
-    else:  # dataset_urns
-        entries = [
-            f"urn:li:dataset:(urn:li:dataPlatform:postgres,db.s.t_{i},DEV)"
-            for i in range(n)
-        ]
+    dataset_filter = "origin IN (" + ", ".join(f"'v{i}'" for i in range(n)) + ")"
 
     try:
         if method == "PUT":
@@ -341,7 +329,7 @@ async def test_ontogen_conf_put_dataset_filter_dimension_caps(
                     "is_enabled": False,
                     "schedule_tier": "daily",
                     "default_run_prompt": "",
-                    "dataset_filter": {dimension: entries},
+                    "dataset_filter": dataset_filter,
                 },
             )
         else:  # PATCH — the ontogen conf always exists (singleton with defaults), so
@@ -349,21 +337,21 @@ async def test_ontogen_conf_put_dataset_filter_dimension_caps(
             resp = await api_client.patch(
                 conf_url,
                 headers=admin_headers,
-                json={"dataset_filter": {dimension: entries}},
+                json={"dataset_filter": dataset_filter},
             )
 
         # spec: API.md §UC3 Payload caps — exactly 1,000 entries MUST be accepted
         # (200 or 201); 1,001 entries MUST be rejected (422) at the Pydantic boundary
         # before any service-layer or DB call.
         assert resp.status_code in expected_status_set, (
-            f"{method} with n={n} {dimension} entries: expected status in {expected_status_set}, "
+            f"{method} with n={n} string literals: expected status in {expected_status_set}, "
             f"got {resp.status_code}: {resp.text}. "
-            "spec: API.md §UC3 Payload caps — dataset_filter cap is 1,000 per dimension"
+            "spec: API.md §`dataset_filter` grammar — Caps: ≤ 1,000 string literals"
         )
 
         if 422 in expected_status_set:
             # The 422 body must be non-empty JSON (we do not pin the error message wording).
-            # spec: API.md §UC3 Payload caps — over-cap dimension rejected at schema boundary.
+            # spec: API.md §Error Catalogue — INVALID_DATASET_FILTER at the schema boundary.
             body = resp.json()
             assert body, (
                 f"422 response body must be non-empty JSON; got: {resp.text!r}. "
@@ -377,7 +365,7 @@ async def test_ontogen_conf_put_dataset_filter_dimension_caps(
             await api_client.patch(
                 conf_url,
                 headers=admin_headers,
-                json={"is_enabled": False, "dataset_filter": {}},
+                json={"is_enabled": False, "dataset_filter": ""},
             )
 
 
@@ -386,18 +374,16 @@ async def test_ontogen_conf_put_origin_filter_round_trips(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """PUT dataset_filter with origin+tags, then GET verifies the filter is persisted.
+    """PUT a composite dataset_filter, then GET verifies it is persisted verbatim.
 
-    Exercises the unified four-dimension dataset_filter shape for UC3.
-
-    spec: spec/API.md §UC3 — dataset_filter unified four-dimension shape; origin dimension.
-    spec: USE_CASE_en.md §UC3 §Conf — dataset_filter is optional scope filter.
+    spec: spec/API.md §`dataset_filter` grammar — "UC3's `ontogen/attr/conf.dataset_filter`
+      […] use[s] this same grammar and validation"; the clause is stored as written —
+      the backend owns the grammar, so no route rewrites or normalises it.
+    spec: USE_CASE_en.md §UC3 §Imazon Example — the conf PUT body carries
+      `dataset_filter` as a WHERE-clause string.
     """
     conf_url = "/api/v1/spoke/ontogen/attr/conf"
-    expected_filter = {
-        "origin": "DEV",
-        "tags": ["urn:li:tag:area:fulfillment"],
-    }
+    expected_filter = "origin = 'DEV' AND 'urn:li:tag:area:fulfillment' IN tag_urns"
 
     try:
         put_resp = await api_client.put(
@@ -410,13 +396,14 @@ async def test_ontogen_conf_put_origin_filter_round_trips(
             },
         )
         assert put_resp.status_code in (200, 201), (
-            f"PUT with origin+tags dataset_filter failed: {put_resp.status_code} {put_resp.text}. "
-            "spec: API.md §UC3 — dataset_filter unified four-dimension shape"
+            f"PUT with a composite dataset_filter failed: "
+            f"{put_resp.status_code} {put_resp.text}. "
+            "spec: API.md §`dataset_filter` grammar"
         )
         put_body = put_resp.json()
         assert put_body["dataset_filter"] == expected_filter, (
             f"PUT response dataset_filter not preserved: {put_body.get('dataset_filter')!r}. "
-            "spec: USE_CASE_en.md §UC3 §Conf — dataset_filter round-trip"
+            "spec: API.md §Ontology Generation — GET attr/conf returns `dataset_filter`"
         )
 
         get_resp = await api_client.get(conf_url, headers=admin_headers)
@@ -424,7 +411,7 @@ async def test_ontogen_conf_put_origin_filter_round_trips(
         get_body = get_resp.json()
         assert get_body["dataset_filter"] == expected_filter, (
             f"GET round-trip dataset_filter mismatch: {get_body.get('dataset_filter')!r}. "
-            "spec: USE_CASE_en.md §UC3 §Conf — dataset_filter must be persisted"
+            "spec: API.md §Ontology Generation — GET attr/conf returns `dataset_filter`"
         )
 
     finally:
@@ -433,7 +420,7 @@ async def test_ontogen_conf_put_origin_filter_round_trips(
             await api_client.patch(
                 conf_url,
                 headers=admin_headers,
-                json={"is_enabled": False, "dataset_filter": {}},
+                json={"is_enabled": False, "dataset_filter": ""},
             )
 
 
@@ -444,8 +431,9 @@ async def test_ontogen_conf_patch_adds_origin_to_existing_conf(
 ) -> None:
     """PATCH adding origin='DEV' to an existing conf persists the updated filter.
 
-    spec: spec/API.md §UC3 — dataset_filter unified four-dimension shape; PATCH is partial.
-    spec: USE_CASE_en.md §UC3 §Conf — PATCH must update only the provided fields.
+    spec: spec/API.md §`dataset_filter` grammar — one clause string; PATCH is partial.
+    spec: API.md §Ontology Generation — `PUT/PATCH/GET/DELETE /spoke/ontogen/attr/conf`
+      carries `dataset_filter`.
     """
     conf_url = "/api/v1/spoke/ontogen/attr/conf"
 
@@ -457,23 +445,29 @@ async def test_ontogen_conf_patch_adds_origin_to_existing_conf(
             json={
                 "is_enabled": False,
                 "schedule_tier": "daily",
-                "dataset_filter": {"tags": ["urn:li:tag:area:catalog"]},
+                "dataset_filter": "'urn:li:tag:area:catalog' IN tag_urns",
             },
         )
 
         patch_resp = await api_client.patch(
             conf_url,
             headers=admin_headers,
-            json={"dataset_filter": {"origin": "DEV", "tags": ["urn:li:tag:area:catalog"]}},
+            json={
+                "dataset_filter": (
+                    "origin = 'DEV' AND 'urn:li:tag:area:catalog' IN tag_urns"
+                )
+            },
         )
         assert patch_resp.status_code == 200, (
             f"PATCH with origin failed: {patch_resp.status_code} {patch_resp.text}. "
-            "spec: API.md §UC3 — dataset_filter unified four-dimension shape"
+            "spec: API.md §`dataset_filter` grammar"
         )
         patch_body = patch_resp.json()
-        assert patch_body["dataset_filter"].get("origin") == "DEV", (
-            f"PATCH did not persist origin='DEV': {patch_body.get('dataset_filter')!r}. "
-            "spec: USE_CASE_en.md §UC3 §Conf — PATCH updates dataset_filter"
+        assert patch_body["dataset_filter"] == (
+            "origin = 'DEV' AND 'urn:li:tag:area:catalog' IN tag_urns"
+        ), (
+            f"PATCH did not persist the new clause: {patch_body.get('dataset_filter')!r}. "
+            "spec: API.md §Ontology Generation — PATCH attr/conf updates `dataset_filter`"
         )
 
     finally:
@@ -482,7 +476,7 @@ async def test_ontogen_conf_patch_adds_origin_to_existing_conf(
             await api_client.patch(
                 conf_url,
                 headers=admin_headers,
-                json={"is_enabled": False, "dataset_filter": {}},
+                json={"is_enabled": False, "dataset_filter": ""},
             )
 
 

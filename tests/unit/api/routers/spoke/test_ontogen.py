@@ -23,7 +23,7 @@ _BASE = "/api/v1/spoke/ontogen"
 # Named constants — payload caps mandated by API.md §Ontology Generation (Payload caps)
 _REASON_MAX_LEN = 2000  # API.md §Ontology Generation — review.reason ≤ 2,000 chars
 _BODY_MAX_BYTES = 128 * 1024  # API.md §Ontology Generation — seed/run Markdown ≤ 128 KiB
-# API.md §Ontology Generation — dataset_filter.{tags,glossary_terms,dataset_urns} ≤ 1,000/dim
+# API.md §`dataset_filter` grammar — Caps: ≤ 8,000 chars and ≤ 1,000 string literals
 _DATASET_FILTER_LIST_CAP = 1000
 
 
@@ -31,7 +31,7 @@ def _make_conf_row() -> MagicMock:
     row = MagicMock()
     row.is_enabled = False
     row.schedule_tier = None
-    row.dataset_filter = {}
+    row.dataset_filter = ""
     row.default_run_prompt = None
     row.updated_at = datetime.now(tz=UTC)
     return row
@@ -101,26 +101,23 @@ async def test_put_conf_returns_200(client, mock_svc: AsyncMock) -> None:
 
 
 @pytest.mark.asyncio
-async def test_put_conf_validates_dataset_filter_list_cap(client, mock_svc: AsyncMock) -> None:
-    """PUT /ontogen/attr/conf with dataset_filter.dataset_urns > 1000 entries returns 422.
+async def test_put_conf_validates_dataset_filter_literal_cap(client, mock_svc: AsyncMock) -> None:
+    """PUT /ontogen/attr/conf with a filter over the 1,000-literal cap returns 422.
 
-    Cap: _DATASET_FILTER_LIST_CAP — API.md §Ontology Generation (Payload caps),
-    ≤ 1,000 entries per dimension.
+    Spec: API.md §`dataset_filter` grammar — Caps: "≤ 1,000 string literals";
+    Spec: API.md §Error Catalogue — INVALID_DATASET_FILTER, 422, "exceeds a payload cap".
     """
-    too_many_urns = [
-        f"urn:li:dataset:(urn:li:dataPlatform:postgres,t{i},PROD)"
-        for i in range(_DATASET_FILTER_LIST_CAP + 1)
-    ]
+    over_cap = "origin IN (" + ", ".join(
+        f"'v{i}'" for i in range(_DATASET_FILTER_LIST_CAP + 1)
+    ) + ")"
 
     resp = await client.put(
         f"{_BASE}/attr/conf",
-        json={
-            "is_enabled": False,
-            "dataset_filter": {"dataset_urns": too_many_urns},
-        },
+        json={"is_enabled": False, "dataset_filter": over_cap},
         headers=auth_headers(),
     )
-    assert resp.status_code == 422
+    assert resp.status_code == 422, resp.text
+    assert resp.json().get("error_code") == "INVALID_DATASET_FILTER", resp.text
 
 
 # ── Seeds ─────────────────────────────────────────────────────────────────────
@@ -340,37 +337,53 @@ def test_ontogen_conf_schemas_omit_query_caps() -> None:
             )
 
 
-# ── dataset_filter origin — HTTP-level (router + schema layer) ────────────────
+# ── dataset_filter — HTTP-level (router + schema layer) ───────────────────────
 
 
 @pytest.mark.asyncio
-async def test_put_conf_with_origin_and_tags_returns_200(
+async def test_put_conf_with_a_composite_filter_returns_200(
     client, mock_svc: AsyncMock
 ) -> None:
-    """PUT /ontogen/attr/conf with dataset_filter={"origin": "DEV", "tags": [...]} returns 200.
+    """A composite clause round-trips through the route and reaches the service verbatim.
 
-    The schema layer accepts the four-dimension filter; the service layer is called
-    with the validated dict. This exercises the unified dataset_filter shape at the
-    HTTP layer for UC3.
-
-    Spec: spec/API.md §Ontology Generation — dataset_filter unified four-dimension shape.
+    Spec: spec/API.md §`dataset_filter` grammar — "UC3's `ontogen/attr/conf.dataset_filter`
+    […] use[s] this same grammar and validation"; the worked example combines an origin
+    equality with tag / glossary-term membership.
     """
+    clause = "origin = 'DEV' AND 'urn:li:tag:area:fulfillment' IN tag_urns"
     conf_row = _make_conf_row()
-    conf_row.dataset_filter = {"origin": "DEV", "tags": ["urn:li:tag:area:fulfillment"]}
+    conf_row.dataset_filter = clause
     mock_svc.put_conf = AsyncMock(return_value=conf_row)
 
     resp = await client.put(
         f"{_BASE}/attr/conf",
-        json={
-            "is_enabled": False,
-            "dataset_filter": {"origin": "DEV", "tags": ["urn:li:tag:area:fulfillment"]},
-        },
+        json={"is_enabled": False, "dataset_filter": clause},
         headers=auth_headers(),
     )
-    assert resp.status_code == 200, (
-        f"PUT with origin+tags dataset_filter must return 200; "
-        f"got {resp.status_code}: {resp.text}. "
-        "spec: API.md §Ontology Generation — dataset_filter unified four-dimension shape"
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["dataset_filter"] == clause
+    assert mock_svc.put_conf.await_args.args[0]["dataset_filter"] == clause, (
+        "the clause must reach the service unmodified — the backend owns the grammar, "
+        "so the route neither rewrites nor normalises it"
+    )
+
+
+@pytest.mark.asyncio
+async def test_put_conf_with_a_malformed_filter_returns_422_invalid_dataset_filter(
+    client, mock_svc: AsyncMock
+) -> None:
+    """Spec: spec/API.md §Error Catalogue — INVALID_DATASET_FILTER, 422, "`detail`
+    carries the character position of the error"."""
+    resp = await client.put(
+        f"{_BASE}/attr/conf",
+        json={"is_enabled": False, "dataset_filter": "owner = 'alice'"},
+        headers=auth_headers(),
+    )
+    assert resp.status_code == 422, resp.text
+    body = resp.json()
+    assert body.get("error_code") == "INVALID_DATASET_FILTER", body
+    assert "position" in (body.get("detail") or {}), (
+        f"the 422 body must carry the character position; got {body!r}"
     )
 
 
@@ -390,7 +403,7 @@ async def test_put_conf_with_malformed_urn_returns_422_invalid_dataset_urn(
         f"{_BASE}/attr/conf",
         json={
             "is_enabled": False,
-            "dataset_filter": {"dataset_urns": ["not-a-valid-urn"]},
+            "dataset_filter": "dataset_urn = 'not-a-valid-urn'",
         },
         headers=auth_headers(),
     )
@@ -415,7 +428,7 @@ async def test_patch_conf_with_malformed_urn_returns_422_invalid_dataset_urn(
     """
     resp = await client.patch(
         f"{_BASE}/attr/conf",
-        json={"dataset_filter": {"dataset_urns": ["not-a-valid-urn"]}},
+        json={"dataset_filter": "dataset_urn = 'not-a-valid-urn'"},
         headers=auth_headers(),
     )
     assert resp.status_code == 422, (

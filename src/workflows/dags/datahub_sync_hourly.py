@@ -1,10 +1,15 @@
 """Airflow DAG: datahub-sync-hourly
 
-Hourly full DataHub→DataSpoke reconciliation sweep. In a single pass it:
+Full DataHub→DataSpoke reconciliation sweep, every two hours. In a single pass it:
 - reconciles dataset_registry existence from DataHub's entity enumeration,
+- refreshes the dataset attributes every dataset_filter resolves against,
 - rebuilds ingestion source→dataset mappings,
 - mirrors managed source definitions,
 - mirrors run events into the events table.
+
+The cadence is the upper bound on dataset_filter scope staleness across UC3,
+UC4 and UC5. The `-hourly` suffix in the dag_id, filename and tags is a
+retained identifier, not a cadence claim.
 
 Single task — the service iterates all sources internally.
 
@@ -24,10 +29,11 @@ _DAG_ID = "datahub-sync-hourly"
 with DAG(
     dag_id=_DAG_ID,
     description=(
-        "Hourly DataHub→DataSpoke reconciliation: dataset_registry existence, "
-        "ingestion source→dataset mapping, managed source defs, run events"
+        "Two-hourly DataHub→DataSpoke reconciliation: dataset_registry existence, "
+        "dataset filter attributes, ingestion source→dataset mapping, managed "
+        "source defs, run events"
     ),
-    schedule="@hourly",
+    schedule="0 */2 * * *",
     start_date=datetime(2025, 1, 1),
     catchup=False,
     max_active_runs=1,

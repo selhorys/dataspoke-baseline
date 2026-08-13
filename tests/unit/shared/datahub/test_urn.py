@@ -13,7 +13,7 @@ tests/unit/backend/dataset/test_service.py (removed when _parse_platform was
 extracted to this shared helper).
 """
 
-from src.shared.datahub.urn import platform_from_dataset_urn
+from src.shared.datahub.urn import platform_from_dataset_urn, platform_urn_from_dataset_urn
 
 # ── postgres URN ─────────────────────────────────────────────────────────────
 
@@ -98,3 +98,49 @@ def test_empty_platform_segment_returns_none() -> None:
     """
     urn = "urn:li:dataset:(urn:li:dataPlatform:,example_db.catalog.orders,DEV)"
     assert platform_from_dataset_urn(urn) is None
+
+
+# ── platform_urn_from_dataset_urn — the dataset_registry mirror column ────────
+
+
+def test_platform_urn_reprefixes_the_platform_id() -> None:
+    """The helper answers the URN's first segment, the `platform_urn` a filter reads.
+
+    Spec: spec/DATAHUB_INTEGRATION.md §Dataset attribute sync — "`origin`,
+    `platform_urn` | parsed from the dataset URN | `urn:li:dataset:(<platform_urn>,
+    <name>,<origin>)` encodes both by definition".
+    Spec: spec/API.md §`dataset_filter` grammar — "`platform_urn` | scalar | The URN's
+    first segment — `urn:li:dataPlatform:…`".
+    """
+    urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.orders,DEV)"
+    assert platform_urn_from_dataset_urn(urn) == "urn:li:dataPlatform:postgres"
+
+
+def test_platform_urn_of_a_name_carrying_commas_reads_the_first_segment_only() -> None:
+    """The platform id is delimited by the FIRST comma; the name may carry more.
+
+    Spec: spec/API.md §`dataset_filter` grammar — `platform_urn` is the URN's first
+    segment.
+    """
+    urn = "urn:li:dataset:(urn:li:dataPlatform:kafka,a,b.c,DEV)"
+    assert platform_urn_from_dataset_urn(urn) == "urn:li:dataPlatform:kafka"
+
+
+def test_platform_urn_of_a_malformed_urn_is_none() -> None:
+    """A URN with no extractable platform yields None, never a bare prefix.
+
+    A `"urn:li:dataPlatform:"` with nothing after it would be a registry value no
+    dataset can carry and every `platform_urn` filter would silently mismatch.
+
+    Spec: spec/feature/BACKEND_SCHEMA.md §dataset_registry — `platform_urn` is
+    `TEXT` NULL, so "unparseable" has a representation of its own.
+    """
+    for urn in ["not-a-urn", "", "urn:li:corpuser:foo"]:
+        assert platform_urn_from_dataset_urn(urn) is None
+
+
+def test_platform_urn_of_an_empty_platform_segment_is_none() -> None:
+    """Spec: spec/feature/BACKEND_SCHEMA.md §dataset_registry — `platform_urn` NULL
+    rather than an empty-prefix value."""
+    urn = "urn:li:dataset:(urn:li:dataPlatform:,example_db.catalog.orders,DEV)"
+    assert platform_urn_from_dataset_urn(urn) is None

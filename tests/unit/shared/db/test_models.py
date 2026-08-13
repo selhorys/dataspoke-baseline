@@ -7,7 +7,7 @@ and are subject to rename without changing behavior. Tests for constraint *behav
 (i.e., what CHECK expressions enforce) are preferred over tests for constraint *names*.
 Name assertions are retained only where a spec source explicitly mandates the name."""
 
-from sqlalchemy import inspect
+from sqlalchemy import ARRAY, TIMESTAMP, Boolean, Text, inspect
 from sqlalchemy.dialects.postgresql import JSONB, UUID  # noqa: F811
 
 from src.shared.db.models import (
@@ -25,6 +25,7 @@ from src.shared.db.models import (
     MetagenCandidateEmbedding,
     MetagenConfig,
     MetagenItem,
+    MetricDatasetResult,
     MetricDefinition,
     MetricResult,
     NodeEmbedding,
@@ -59,6 +60,7 @@ ALL_MODELS = [
     MetagenCandidateEmbedding,
     MetricDefinition,
     MetricResult,
+    MetricDatasetResult,
     Event,
     OntogenConfig,
     RuntimeConfig,
@@ -90,6 +92,7 @@ EXPECTED_TABLES = {
     "metagen_candidate_embeddings",
     "metric_definitions",
     "metric_results",
+    "metric_dataset_results",
     "events",
     "ontogen_config",
     "runtime_config",
@@ -204,19 +207,79 @@ def test_jsonb_columns() -> None:
         (IngestionSource, "recipe"),
         # ValidationConfig: no JSONB column — variables is ARRAY(Text)
         (ValidationResult, "variables"),  # measured variable values
-        (MetagenConfig, "dataset_filter"),
         (MetagenCandidate, "evidence"),
         (MetricDefinition, "metrics"),
         (MetricDefinition, "metric_conf"),
-        (MetricDefinition, "dataset_filter"),
         (MetricResult, "values"),
         (MetricResult, "breakdown"),
+        (MetricDatasetResult, "detail"),
         (Event, "detail"),
-        (OntogenConfig, "dataset_filter"),
     ]
     for model, col_name in jsonb_checks:
         col = model.__table__.columns[col_name]
         assert isinstance(col.type, JSONB), f"{model.__name__}.{col_name} should be JSONB"
+
+
+def test_dataset_filter_columns_are_text_on_every_carrier() -> None:
+    """`dataset_filter` is a SQL WHERE-clause string, not a structured object.
+
+    spec: BACKEND_SCHEMA.md §metagen_config / §ontogen_config / §metric_definitions —
+    '`dataset_filter` | `TEXT` | Scope filter — a SQL `WHERE` clause over
+    `dataset_registry` […]; `''` = all registered datasets'. All three carriers
+    share one grammar, so all three share one column type.
+    """
+    for model in (MetagenConfig, OntogenConfig, MetricDefinition):
+        col = model.__table__.columns["dataset_filter"]
+        assert isinstance(col.type, Text), f"{model.__name__}.dataset_filter should be TEXT"
+        assert col.nullable is False, f"{model.__name__}.dataset_filter should be NOT NULL"
+
+
+def test_dataset_registry_carries_the_filter_attribute_columns() -> None:
+    """The registry mirrors the attributes `dataset_filter` is evaluated against.
+
+    spec: BACKEND_SCHEMA.md §dataset_registry — `origin` TEXT NULL, `platform_urn`
+    TEXT NULL, `tag_urns` TEXT[] NOT NULL, `glossary_term_urns` TEXT[] NOT NULL,
+    `attrs_synced_at` TIMESTAMPTZ NULL.
+    """
+    columns = DatasetRegistry.__table__.columns
+
+    for name in ("origin", "platform_urn"):
+        assert isinstance(columns[name].type, Text), f"{name} should be TEXT"
+        assert columns[name].nullable is True, f"{name} should be nullable"
+
+    for name in ("tag_urns", "glossary_term_urns"):
+        col_type = columns[name].type
+        assert isinstance(col_type, ARRAY), f"{name} should be an array column"
+        assert isinstance(col_type.item_type, Text), f"{name} should be TEXT[]"
+        assert columns[name].nullable is False, f"{name} should be NOT NULL"
+
+    assert isinstance(columns["attrs_synced_at"].type, TIMESTAMP)
+    assert columns["attrs_synced_at"].type.timezone is True
+    assert columns["attrs_synced_at"].nullable is True
+
+
+def test_metric_dataset_results_is_keyed_by_metric_and_dataset() -> None:
+    """The verdict store holds the latest verdict per (metric, dataset).
+
+    spec: BACKEND_SCHEMA.md §metric_dataset_results — '**PK**: `(metric_id,
+    dataset_urn)`' and the column table (`met` BOOLEAN, `evidence_at` TIMESTAMPTZ
+    NULL, `detail` JSONB, `measured_at` TIMESTAMPTZ).
+    """
+    table = MetricDatasetResult.__table__
+    assert {col.name for col in table.primary_key.columns} == {"metric_id", "dataset_urn"}
+
+    assert isinstance(table.columns["met"].type, Boolean)
+    assert table.columns["evidence_at"].nullable is True
+    assert isinstance(table.columns["measured_at"].type, TIMESTAMP)
+
+
+def test_metric_dataset_results_cascades_from_its_metric() -> None:
+    """spec: BACKEND_SCHEMA.md §metric_dataset_results — '`metric_id` | `TEXT` FK →
+    `metric_definitions(id)` ON DELETE CASCADE'."""
+    fks = list(MetricDatasetResult.__table__.columns["metric_id"].foreign_keys)
+    assert len(fks) == 1
+    assert fks[0].column.table.name == "metric_definitions"
+    assert fks[0].ondelete == "CASCADE"
 
 
 def test_is_enabled_column_on_config_models() -> None:

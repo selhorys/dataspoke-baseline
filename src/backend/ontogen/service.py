@@ -181,7 +181,7 @@ class OntogenService:
         if row is None:
             stmt = (
                 pg_insert(OntogenConfig)
-                .values(id=1, is_enabled=False, dataset_filter={})
+                .values(id=1, is_enabled=False, dataset_filter="")
                 .on_conflict_do_nothing(index_elements=["id"])
             )
             await self._db.execute(stmt)
@@ -193,12 +193,13 @@ class OntogenService:
     async def put_conf(self, conf: dict[str, Any]) -> OntogenConfig:
         """Full replacement of the singleton conf.
 
-        Validates dataset_filter.dataset_urns format — raises
-        InvalidDatasetUrnError for malformed entries. `schedule_tier` values
-        are constrained at the API schema layer (`OntogenConfPutRequest`).
+        Validates the `dataset_filter` grammar — raises DatasetFilterSyntaxError
+        (422 INVALID_DATASET_FILTER) or InvalidDatasetUrnError for a malformed
+        URN literal. `schedule_tier` values are constrained at the API schema
+        layer (`OntogenConfPutRequest`).
         Emits ONTOGEN.CONFIG_CREATE or ONTOGEN.CONFIG_UPDATE.
         """
-        dataset_filter = conf.get("dataset_filter", {}) or {}
+        dataset_filter = conf.get("dataset_filter") or ""
         validate_dataset_filter_service(dataset_filter)
 
         result = await self._db.execute(select(OntogenConfig).where(OntogenConfig.id == 1))
@@ -242,7 +243,7 @@ class OntogenService:
     async def patch_conf(self, partial: dict[str, Any]) -> OntogenConfig:
         """Partial update of the singleton conf.
 
-        Validates dataset_filter.dataset_urns format if provided. `schedule_tier`
+        Validates the `dataset_filter` grammar when provided. `schedule_tier`
         values are constrained at the API schema layer (`OntogenConfPatchRequest`).
         Emits ONTOGEN.CONFIG_UPDATE.
         """
@@ -260,7 +261,10 @@ class OntogenService:
             if field_name in partial and partial[field_name] is not None:
                 setattr(row, field_name, partial[field_name])
             elif field_name in partial and partial[field_name] is None:
-                # Allow explicit null for nullable fields
+                # Explicit null clears a nullable field; the two NOT NULL columns
+                # keep their stored value rather than violating the constraint.
+                if field_name in ("is_enabled", "dataset_filter"):
+                    continue
                 setattr(row, field_name, None)
 
         row.updated_at = datetime.now(tz=UTC)
@@ -481,9 +485,8 @@ class OntogenService:
 
         effective_prompt = prompt_md or conf.default_run_prompt
 
-        # Step 3: Enumerate datasets matching dataset_filter
-        dataset_filter = conf.dataset_filter or {}
-        dataset_urns, unresolved_urns = await self._enumerate_datasets(dataset_filter)
+        # Step 3: Resolve datasets matching dataset_filter
+        dataset_urns, unresolved_urns = await self._enumerate_datasets(conf.dataset_filter)
 
         # Step 4: Gather evidence per dataset (best-effort)
         evidence_per_dataset: dict[str, dict[str, Any]] = {}
@@ -1378,16 +1381,14 @@ class OntogenService:
     # ── Internal helpers ──────────────────────────────────────────────────────
 
     async def _enumerate_datasets(
-        self, dataset_filter: dict[str, Any]
+        self, dataset_filter: str | None
     ) -> tuple[list[str], list[str]]:
-        """Resolve dataset_filter to a list of URNs.
+        """Resolve dataset_filter to a list of URNs — one SQL query, no DataHub call.
 
-        Returns (resolved_urns, unresolved_urns).  Unresolved = explicit URNs
-        that don't match any dataset in DataHub at runtime.
+        Returns (resolved_urns, unresolved_urns). Unresolved = literal
+        ``dataset_urn`` values in the filter matching no registered dataset.
         """
-        scope = await resolve_dataset_scope(
-            self._datahub, dataset_filter, swallow_enumerate_errors=True
-        )
+        scope = await resolve_dataset_scope(self._db, dataset_filter)
         return scope.resolved_urns, scope.unresolved_urns
 
     async def _refresh_node_embeddings(self, nodes_to_upsert: list[dict[str, Any]]) -> None:

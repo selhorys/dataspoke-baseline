@@ -1341,7 +1341,7 @@ chart at it via `secrets.existingSecret: <name>`.
   see Out-of-band Secrets below. [API.md](../API.md) §`/admin/peripherals` is the
   contract; this list mirrors it.
 - `peripheral_health` table — last observed liveness per transport, written by
-  the event consumer (`datahub`) and the hourly sync sweep (`datahub-api`) and
+  the event consumer (`datahub`) and the `datahub-sync-hourly` sweep (`datahub-api`) and
   read back on `GET /api/v1/admin/peripherals/datahub`.
   Not operator-configurable and not env-driven.
 - `runtime_config` table — LLM provider/model, debate/RAG/iteration tunables,

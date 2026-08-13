@@ -201,9 +201,9 @@ summary (`{covered}`), and the `metagen` conf list (`[{conf_id, name}]`, possibl
   WHERE dataset_urn IN (...)`) over the page's URN list; membership in the result set drives the
   per-URN `validation.covered` flag. Mirrors the ingestion batch pattern (one extra query per page).
 - **`MetagenService.match_confs_for_urns(urns)`** — inverts the enabled-conf `dataset_filter`
-  resolution into a `urn → [{conf_id, name}]` map. It iterates each enabled conf once,
-  resolves its scope via `resolve_dataset_scope` (the same matcher `list_uncovered` uses), and
-  buckets matches by URN; cost is bounded by the conf count, not the dataset count.
+  resolution into a `urn → [{conf_id, name}]` map. It evaluates each enabled conf's compiled
+  filter clause against the page's URNs (the same matcher `list_uncovered` uses) and buckets
+  matches by URN; cost is bounded by the conf count, not the dataset count.
 
 **Unified timeline aggregation**: a dataset's events live in two places — validation and
 metagen events are booked on `entity_type="dataset"` (`entity_id=urn`), while ingestion run
@@ -357,8 +357,8 @@ run signals per-table emission failures; on a dry-run the emitted set is empty. 
 ever emits table datasets, so both sides are plain dataset-URN lists. Exact key names are in the
 [Event Catalogue](#event-catalogue) INGESTION row.
 
-**Sync + mapping sweep** (`IngestionService.sync()`, called hourly by the `datahub-sync-hourly`
-DAG) reconciles all modes:
+**Sync + mapping sweep** (`IngestionService.sync()`, called every two hours by the
+`datahub-sync-hourly` DAG) reconciles all modes:
 
 1. **Source defs (reconciling sync)**: pull `DATAHUB_MANAGED` source recipes + schedules via
    DataHub's `listIngestionSources` / `ingestionSource(urn)`; upsert read-only rows. The list is a
@@ -468,7 +468,18 @@ DAG) reconciles all modes:
    not just the sweep: requests are served by a single worker, so all API request handling stalls
    until the liveness probe restarts the pod. Bounding pattern execution is tracked as issue
    **#114**.
-3. **Observed enrichment (optional, the two MANAGED modes)**: read `systemMetadata.pipelineName`
+3. **Dataset attribute sync**: refresh the `dataset_registry` columns every `dataset_filter`
+   resolves against — `origin` and `platform_urn` parsed out of each dataset URN, `tag_urns` and
+   `glossary_term_urns` from one paged attribute read, and `attrs_synced_at` as the watermark.
+   Shape and hardening: [DATAHUB_INTEGRATION §Dataset attribute sync](../DATAHUB_INTEGRATION.md#dataset-attribute-sync).
+
+   **Partial failure never narrows a filter.** The step **upserts per dataset and never
+   deletes-then-inserts**: a dataset the attribute read did not return keeps its stored
+   attributes. A half-completed read that blanked `tag_urns` would silently shrink the scope of
+   every UC3, UC4, and UC5 filter in the system — a wrong answer that looks like a correct one —
+   whereas retaining stale attributes is bounded, visible through `attrs_synced_at`, and
+   self-correcting on the next sweep. The sweep summary counts refreshed rows as `attrs_synced`.
+4. **Observed enrichment (optional, the two MANAGED modes)**: read `systemMetadata.pipelineName`
    per dataset to link datasets to their source authoritatively — `DATAHUB_MANAGED` (DataHub
    stamps the source URN), `ACTIVE_CUSTOM_MANAGED` (DataSpoke's extractor stamps the source id).
    `derivation = pipeline_name` (authority `high`). Not used for `PASSIVE`. A dataset's
@@ -476,13 +487,13 @@ DAG) reconciles all modes:
    registered source whose own `datahub_source_urn` equals the `pipelineName`, **and** any wrapper
    linked to that source. When DataHub runs a registered source, the aspects it emits are stamped
    `systemMetadata.pipelineName = <parent registered-source URN>`, while the run itself is booked on
-   a CLI wrapper source. The wrapper is already linked to its parent in step 1 (via the stored
+   a CLI wrapper source. The wrapper is already linked to its parent in the source-defs step (via the stored
    `parent_source_id`), so the enrichment resolves the inheritance directly from that stored link — a
    wrapper inherits `pipeline_name`/`high` when its parent's `datahub_source_urn` equals the
    dataset's `pipelineName`. Sources that only recipe-match
    the same tables (no `pipelineName` correspondence) stay `matched`/`medium`. Orphan wrappers do
-   not reach this step — they are never stored (step 1).
-4. **Run and observation events**: book ingestion evidence into the `events` table with
+   not reach this step — they are never stored (source-defs step).
+5. **Run and observation events**: book ingestion evidence into the `events` table with
    `event_type = INGESTION.COMPLETE` / `INGESTION.FAIL`, in **three sub-passes**:
 
    | Sub-pass | DataHub surface | Modes | Grain | Outcomes | `detail.source` |
@@ -517,7 +528,8 @@ DAG) reconciles all modes:
      DataHub's `"no-run-id-provided"` sentinel — there is nothing observable to date. Absence is the
      guard; the alternative is minting an event at an instant DataHub never reported.
    - **The estate read is one call per sweep**, hoisted out of the per-source loop the same way
-     step 2's dataset enumeration and step 3's `pipelineName` read are. Shape and paging rules:
+     the mapping step's dataset enumeration and the observed-enrichment step's `pipelineName` read
+     are. Shape and paging rules:
      [DATAHUB_INTEGRATION §Observed Ingestion Recency](../DATAHUB_INTEGRATION.md#observed-ingestion-recency).
 
    The **execution-request mirror** follows DataHub's own model: a request has **no result aspect
@@ -606,7 +618,7 @@ DAG) reconciles all modes:
    per-source event endpoint and the per-dataset latest-run aggregation union the parent's own events
    with its wrappers' events (each carrying the derived `wrapper` flag — see below), so the run a user
    triggered surfaces on the regular source they look at, not on the hidden wrapper.
-5. **Unmanaged bucket**: datasets in DataHub linked to no source (served by
+6. **Unmanaged bucket**: datasets in DataHub linked to no source (served by
    `GET /spoke/ingestion/unmanaged`).
 
 **Sweep summary.** `sync()` returns a counter dict consumed by the activity endpoint and the DAG
@@ -616,9 +628,12 @@ log. Most counters report **state changes**, not rows examined: `datasets_mapped
 on an insert, a removal or a genuine transition (for `pipeline_links`, a new link or a `matched` →
 `pipeline_name` upgrade — a re-confirmation of an existing `pipeline_name` row still refreshes its
 `last_seen_at` but does not count). A second consecutive sweep over an unchanged estate returns zero
-for all of those.
+for all of those. `attrs_synced` is the exception and counts rows refreshed, not rows changed: it
+reports how much of the estate the attribute read actually covered, which is the question a narrowed
+filter raises.
 
-Step 4's three sub-passes split across two counters: `events_mirrored` covers the first two — the
+The run-and-observation-events step's three sub-passes split across two counters:
+`events_mirrored` covers the first two — the
 execution-request mirror and the `Operation` observation — while `last_ingested_observed` covers the
 third. It stays a counter of its own rather than folding into `events_mirrored`: the two have
 different identity rules and different failure units — per-dataset best-effort inserts versus a
@@ -651,10 +666,13 @@ Three rules keep the signal honest:
   database error, say) also flips the row. Over-reporting is preferable to a signal that reads
   `ok` through a revoked credential.
 - **`ok` asserts only that the sweep's source-definition enumeration completed**, not that every
-  GMS call inside it succeeded. Both the per-source run-history polls and the estate-wide
-  `lastIngested` read are best-effort (§[Best-Effort Operations](#best-effort-operations)) — a
-  skipped source, or an observation sub-pass that books nothing because that read failed, does not
-  flip the row. The exception is an interface violation on the estate-wide `lastIngested` read,
+  GMS call inside it succeeded. Three of its GMS reads are best-effort
+  (§[Best-Effort Operations](#best-effort-operations)) — the per-source run-history polls, the
+  estate-wide `lastIngested` read, and the estate-wide dataset attribute read. A skipped source,
+  an observation sub-pass that books nothing because that read failed, or an attribute read that
+  refreshed nothing does not flip the row; a reader detects the last of those from
+  `attrs_synced_at` standing still, not from `datahub-api`. The exception is an interface
+  violation on the estate-wide `lastIngested` read,
   which is not a fault of the remote system and escapes to the `error` branch like any other
   unhandled failure.
 - **The `error` report is committed independently of the sweep's transaction.** Written inside
@@ -681,8 +699,9 @@ fork-and-extend path — the project's Productized-Scaffold identity.
 **Run-event consumption**: every observed run maps into the dataset's `event/ingestion` timeline.
 DataSpoke's own extractor records its runs inline (see run pipeline above). `DATAHUB_MANAGED` runs
 are mirrored from `listExecutionRequests` by the `datahub-sync-hourly` DAG, and the same DAG's
-observation sub-passes supply the per-dataset `COMPLETE`s for every mode — sync-sweep **step 4**
-above holds the status→event mapping, the per-producer identity rules, and the `occurred_at` bounds.
+observation sub-passes supply the per-dataset `COMPLETE`s for every mode — the sweep's
+**run and observation events** step above holds the status→event mapping, the per-producer
+identity rules, and the `occurred_at` bounds.
 
 The two **run-level** producers stamp `occurred_at` at **opposite ends of the same run**, and a
 consumer reading the ordered feed has to expect it. The inline `ACTIVE_CUSTOM_MANAGED` record is
@@ -827,7 +846,7 @@ UC3 ontology — which every conf reads — holds cross-conf consistency. Per-co
 | `name` | Unique conf name; `409 METAGEN_CONF_EXISTS` on create collision. |
 | `is_enabled` | Master switch — enabled confs run on their `schedule_tier` and participate in the scheduled fan-out. |
 | `schedule_tier` | `hourly` / `daily` / `weekly` re-generation cadence; null = on-demand only. |
-| `dataset_filter` | Optional scope filter — `origin` (DataHub `FabricType` value carried as the third URN segment; AND-ed with the OR-group), `tags`, `glossary_terms`, `dataset_urns` (OR-ed across the three list dimensions; `{}` means all). Each list dimension is capped at 1,000 entries (`422 INVALID_PARAMETER` on overflow); URN format validated at POST/PUT/PATCH (`422 INVALID_DATASET_URN`); unresolved-at-runtime entries are skipped and reported in the run-complete event's `unresolved_urns`. Same shape as UC3 `ontogen/attr/conf.dataset_filter` and UC5 `metric/{metric_id}/attr/conf.dataset_filter`. |
+| `dataset_filter` | Scope filter — a SQL `WHERE` clause over `dataset_registry` ([API §`dataset_filter` grammar](../API.md#dataset_filter-grammar)); the empty string means all registered datasets. Malformed text is rejected at POST/PUT/PATCH (`422 INVALID_DATASET_FILTER`, `422 INVALID_DATASET_URN` for a malformed URN literal); literal URNs matching no registered dataset are reported in the run-complete event's `unresolved_urns`. Same grammar as UC3 `ontogen/attr/conf.dataset_filter` and UC5 `metric/{metric_id}/attr/conf.dataset_filter`. |
 | `result_limit` | Integer ∈ `[1, 20]`, default `3`. Maximum candidate count per `(conf, item)` at any time. |
 | `overwrite_pending` | Boolean, default `true`. When this conf already holds `result_limit` non-rejected candidates on an item that has no `approved` candidate, controls whether a new run evicts the conf's oldest `llm_approved` candidate (`true`) or skips the item (`false`). |
 
@@ -882,13 +901,12 @@ fired `tier` and runs each one under its own per-conf lock. A conf already runni
 
 **Generation Pipeline** (per conf — the unit of a run):
 
-1. Enumerate **in-scope datasets** for this conf — union of datasets matching the
-   conf's `dataset_filter` (`origin` AND-ed with the OR-group of `tags`,
-   `glossary_terms`, `dataset_urns`) **intersected** with the set of datasets
+1. Enumerate **in-scope datasets** for this conf — the datasets the conf's
+   `dataset_filter` resolves to **intersected** with the set of datasets
    that have a `metagen_boundary` row with `is_enabled=true`. Boundary-less or
    boundary-disabled datasets are excluded regardless of the conf's
-   `dataset_filter`. Unresolved `dataset_urns` entries are accumulated for the
-   run-complete event's `unresolved_urns`. If the in-scope set is empty, the run
+   `dataset_filter`. Literal `dataset_urn` values matching no registered dataset are
+   accumulated for the run-complete event's `unresolved_urns`. If the in-scope set is empty, the run
    still completes successfully and emits `METAGEN.RUN_COMPLETE` with all
    counts at zero so reviewers and ops dashboards see every scheduled
    tick.
@@ -1023,9 +1041,10 @@ The view is paginated and read-only; it never triggers generation.
 
 **Covered-datasets view** (`GET /spoke/metagen/conf/{conf_id}/dataset`). The
 per-conf inverse of the uncovered view: lists the datasets this conf's
-`dataset_filter` matches. Resolution reuses `resolve_dataset_scope`
-(`src/backend/_dataset_filter.py`) for the conf's filter, then left-joins each
-matched dataset's `metagen_boundary`. Each row carries `dataset_urn`,
+`dataset_filter` matches. It pushes the compiled filter clause
+(`src/backend/_dataset_filter.py`) into its own paginated query over
+`dataset_registry` and left-joins each matched dataset's `metagen_boundary`, so
+sorting and paging happen in SQL. Each row carries `dataset_urn`,
 `is_enabled`, `allowed`, `blocked` (bool), and `reason`.
 
 - A dataset is `blocked` when its boundary is missing, `is_enabled=false`, or has
@@ -1068,7 +1087,7 @@ config. Fields:
 |-------|---------|
 | `is_enabled` | Master switch for the inference DAG. |
 | `schedule_tier` | `hourly` / `daily` / `weekly` re-inference cadence. |
-| `dataset_filter` | Optional scope filter — `origin` (DataHub `FabricType` value carried as the third URN segment; AND-ed with the OR-group), `tags` (DataHub tag URNs), `glossary_terms` (DataHub glossary term URNs), and `dataset_urns` (explicit `urn:li:dataset:(…)` URN list). The three list dimensions are OR-ed among themselves; `{}` means all. Each list dimension is capped at 1,000 entries (`422 INVALID_PARAMETER` on overflow); URNs validated at PUT/PATCH (`422 INVALID_DATASET_URN`); unresolved-at-runtime entries are skipped and reported in the run-complete event's `unresolved_urns`. Same shape as UC4 per-conf `metagen/conf.dataset_filter` and UC5 `metric/{metric_id}/attr/conf.dataset_filter`. |
+| `dataset_filter` | Scope filter — a SQL `WHERE` clause over `dataset_registry` ([API §`dataset_filter` grammar](../API.md#dataset_filter-grammar)); the empty string means all registered datasets. Malformed text is rejected at PUT/PATCH (`422 INVALID_DATASET_FILTER`, `422 INVALID_DATASET_URN` for a malformed URN literal); literal URNs matching no registered dataset are reported in the run-complete event's `unresolved_urns`. Same grammar as UC4 per-conf `metagen/conf.dataset_filter` and UC5 `metric/{metric_id}/attr/conf.dataset_filter`. |
 | `default_run_prompt` | Optional Markdown string used as the one-shot prompt for runs without an explicit body — i.e., the periodic Airflow DAG and manual `POST /method/run` calls with no body. Null disables the default. |
 
 UC3 inputs are sourced entirely from DataHub-resident metadata (the proofread
@@ -1100,11 +1119,10 @@ or manual `POST /method/run`):
 1. Load the working ontology — all `status='approved'` rows from `ontogen_nodes`,
    `ontogen_edges`, `ontogen_triples` (incremental inference; pending and rejected
    rows are not carried forward).
-2. Enumerate datasets matching `dataset_filter` from DataHub — union of datasets
-   carrying any listed `tags`, any listed `glossary_terms`, and any of the explicit
-   `dataset_urns`, AND-ed with `origin` when set. Listed URNs that don't resolve
-   are skipped and accumulated for the run-complete event's `unresolved_urns`.
-   `{}` means all datasets.
+2. Resolve `dataset_filter` against `dataset_registry` (one SQL query, no DataHub
+   search). Literal `dataset_urn` values matching no registered dataset are skipped and
+   accumulated for the run-complete event's `unresolved_urns`. The empty filter means all
+   registered datasets.
 3. Fetch DataHub evidence per in-scope dataset (the proofread boundary shared
    with UC4): `datasetProperties`, `schemaMetadata`, `editableDatasetProperties`,
    `editableSchemaMetadata`, `glossaryTerms`, and `documentInfo.contents.text` on
@@ -1184,11 +1202,11 @@ factory defaults, `dataset_filter`, and result shape live in
 [DATAHUB_INTEGRATION §Aspect Usage by Feature](../DATAHUB_INTEGRATION.md#aspect-usage-by-feature).
 
 **Pure aggregation**: metrics never probe source data — they aggregate pre-existing
-DataHub aspects (`DatasetProperties`, `SchemaMetadata`, `GlobalTags`, `GlossaryTerms`,
-and the dataset URN's `origin` segment for the origin filter) and DataSpoke event /
+DataHub aspects (`DatasetProperties`, `SchemaMetadata`), the mirrored dataset attributes in
+`dataset_registry` that `dataset_filter` resolves against, and DataSpoke event /
 validation-result rows. The metrics layer therefore has no source credentials and no
-SQL access to production databases. Unsupported `metric_type` or unknown `metrics[]`
-keys return `422 INVALID_PARAMETER`.
+SQL access to production databases. Unsupported `metric_type` or an unknown `metrics[]`
+`name` returns `422 INVALID_PARAMETER`.
 
 #### Implementation
 
@@ -1311,10 +1329,35 @@ of its own and its wrappers', the same union `GET /spoke/ingestion/sources/{id}/
 **Measurers** (`src/backend/metrics/measurers/`): one async function per built-in
 `metric_type`, registered via the measurer registry. Each measurer receives the resolved
 dataset URN list, `metric_conf`, a `DataHubClient`, and an `AsyncSession`, and returns
-`(values: dict[str, float], breakdown: dict)`. `values` keys are exactly those listed in
+`(values, verdicts)`. `values` keys are exactly those listed in
 [USE_CASE §UC5 — Built-in active metric types](../USE_CASE_en.md#built-in-active-metric-types);
-the service filters the dict to the subset declared by `attr/conf.metrics[]` before
+the service filters the dict to the names declared by `attr/conf.metrics[]` before
 persisting.
+
+**Verdict contract.** `verdicts` covers **every** dataset in scope, not only the failing
+ones — one entry per dataset carrying `urn`, `met: bool`, `evidence_at: datetime | None`,
+and a type-specific `detail`. Full coverage is what makes "in scope but never evaluated"
+(`unknown`) distinguishable from "evaluated and passing": a failures-only return cannot
+express the difference. The failures-only `breakdown` below is **derived** from the
+verdicts, so the stored `metric_results.breakdown` payload is unchanged and the two can
+never disagree. `evidence_at` per type: `ingestion-freshness` → the resolved ingestion
+evidence time; `validation-score` → the counted result's `data_time`; `doc-health` →
+`None`, since a documentation state carries no timestamp.
+
+**Per-dataset verdict store** (`metric_dataset_results`, keyed `(metric_id, dataset_urn)`)
+holds the **latest** verdict only. A non-dry run replaces the metric's rows wholesale
+inside the result transaction, so the store always reflects exactly one run. A **dry run
+persists nothing** — the standing metrics invariant — leaving the previous run's verdicts
+readable. Deleting a metric definition clears its verdicts.
+
+`GET /spoke/governance/metric/{metric_id}/dataset` serves the store joined to the metric's
+current scope: it pushes the compiled filter clause into a paginated query over
+`dataset_registry` and left-joins the verdict rows, so a dataset in scope with no verdict
+reads `met = "unknown"`. Resolving scope from the same registry the run resolved it from is
+what keeps the run's verdicts and the endpoint's dataset list from disagreeing. The response
+envelope carries `attrs_synced_at` (aggregation defined in
+[API §Metric](../API.md#metric-spokegovernancemetric)) because a filter that matches nothing
+and a filter whose attributes have not yet synced are otherwise indistinguishable.
 
 **`doc-health`** sources table description from `DatasetPropertiesClass.description` (or
 `EditableDatasetPropertiesClass.description` when present) and column descriptions from
@@ -1322,19 +1365,26 @@ persisting.
 when present). A dataset scores `1.0` iff the resolved table description is non-empty
 and every column has a non-empty description; otherwise `0.0`.
 
-**Dataset resolution**: UC3 ontogen, UC4 metagen, and UC5 metrics services share
-the same `dataset_filter` resolver in `src/backend/_dataset_filter.py`. The resolver
-calls `DataHubClient.enumerate_datasets(origin=…, tags=…, glossary_terms=…)`. The
-client emits `origin` as its own AND-clause inside each `or` clause of
-`scrollAcrossEntities` so DataHub returns datasets that match the requested origin
-AND any one of the tag / glossary-term clauses — see
-[DATAHUB_INTEGRATION §Origin filter group](../DATAHUB_INTEGRATION.md#origin-filter-group)
-for the GraphQL shape and the `FabricType` enum it accepts. `origin` values are
-forwarded to DataHub verbatim; unknowns are rejected at DataHub query time.
-Explicit `dataset_urns` are AND-ed against `origin` by inspecting each URN's third
-segment before the per-URN aspect probe; mismatches and URNs that don't resolve in
-DataHub at run time are accumulated into the run-complete event's
-`unresolved_urns`.
+**Dataset resolution**: UC3 ontogen, UC4 metagen, and UC5 metrics share one
+`dataset_filter` grammar ([API §`dataset_filter` grammar](../API.md#dataset_filter-grammar))
+and one resolver, `src/backend/_dataset_filter.py`. Resolution is two stages:
+
+| Stage | Module | Output |
+|---|---|---|
+| Parse | `src/shared/dataset_filter.py` | An AST, or a syntax error carrying the offending character position (surfaced as `422 INVALID_DATASET_FILTER`). Also exposes the filter's literal `dataset_urn` values and a canonical formatter |
+| Compile + run | `src/backend/_dataset_filter.py` | A SQLAlchemy boolean expression over `dataset_registry`, run as one query restricted to `datahub_registered = true`. An empty filter is the bare registered set |
+
+Two properties are load-bearing. **Every literal compiles to a bound parameter** and the
+column set is the grammar's own whitelist, so user filter text never reaches the database as
+SQL text — the parser is the only thing between an operator's input and a query. And the
+resolver **materialises no URN list where the caller can page in SQL**: it also exports the
+compiled clause on its own, so per-conf and per-metric dataset views push the filter into
+their own paginated query rather than slicing a resolved list in Python.
+
+`dataset_urn` literals that match no registered dataset are accumulated into the run-complete
+event's `unresolved_urns`, preserving that field's meaning. Because the registry is refreshed
+by the sync sweep, a filter's scope is at most one sweep interval stale — a newly created or
+newly tagged dataset enters scope on the next sweep.
 
 **Breakdown format**: Every measurement result includes a `breakdown` JSONB with a
 unified shape:
@@ -1344,7 +1394,8 @@ unified shape:
 ```
 
 `datasets[]` lists **only failed datasets** — membership in the list is itself
-the classification. A dataset is failed when:
+the classification. It is the `met = false` subset of the run's verdicts. A dataset is
+failed when:
 
 - `ingestion-freshness`: the resolved ingestion evidence (tier 1 or tier 2 — see
   **Ingestion evidence** above) is older than `metric_conf.time_window_sec`, or absent on both
@@ -1370,9 +1421,10 @@ questions without re-running the metric.
 
 **Factory defaults**: On API startup, an idempotent bootstrap inserts one
 `metric_definitions` row for each built-in `metric_type` if absent. Defaults are
-`mode="active"`, `is_enabled=false`, `schedule_tier="daily"`, `dataset_filter={}`,
-type-appropriate `metric_conf` (`{"time_window_sec": 172800}` for the first two, `{}`
-for `doc-health`). Seeds ship disabled so scheduled DAG runs are a no-op until the
+`mode="active"`, `is_enabled=false`, `schedule_tier="daily"`, `dataset_filter=""`,
+a `metrics` descriptor per emitted key (each with a distinct color and an `idx` in emission
+order), and type-appropriate `metric_conf` (`{"time_window_sec": 172800}` for the first two,
+`{}` for `doc-health`). Seeds ship disabled so scheduled DAG runs are a no-op until the
 governance lead PATCHes `is_enabled=true`; the bootstrap never overwrites an
 existing row.
 
@@ -1422,7 +1474,7 @@ delete event would be self-defeating. Domain-specific actions:
 | `VALIDATION` (`dataset`) | `RESULT_RECORDED` | `POST attr/validation/result` succeeds (one event per accepted result) |
 | `METAGEN` (`metagen`, `entity_id=conf_id`) | `RUN_COMPLETE` / `RUN_FAILED` | per-conf generation run end; `RUN_COMPLETE` recorded for both dry-run and non-dry-run, `dry_run` flag in detail. Detail keys: `run_id` (uuid4), `conf_id`, `conf_name`, `unresolved_urns` (list, same shape as METRIC), `counts` (dict — `items_considered`, `candidates_added`, `candidates_evicted`, `rejected_cleared` on real-run; `items_considered`, `candidates_proposed` on dry-run), `dry_run`, `producer_iterations`, `debate_outcome` (`accept` / `turns_exhausted` / `cycle_detected`) |
 | `METAGEN` (`dataset`) | `CANDIDATE_APPROVE` / `CANDIDATE_REJECT` | `POST attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review` with `verdict: "approve"\|"reject"`. Detail keys: `item_id`, `candidate_id`, `reason` |
-| `METRIC` (`metric`) | `RUN_COMPLETE` | `POST method/run` succeeds. Detail keys: `run_id`, `metric_id`, `values` (dict[str,float] — the persisted result), `dry_run`, `unresolved_urns` (list — `dataset_filter.dataset_urns` entries that didn't resolve in DataHub), `breakdown_summary` (`{dataset_count, affected_count}`) |
+| `METRIC` (`metric`) | `RUN_COMPLETE` | `POST method/run` succeeds. Detail keys: `run_id`, `metric_id`, `values` (dict[str,float] — the persisted result), `dry_run`, `unresolved_urns` (list — literal `dataset_urn` values in `dataset_filter` that matched no registered dataset), `breakdown_summary` (`{dataset_count, affected_count}`) |
 | `ONTOGEN` (`ontogen`) | `SEED_CREATE` / `SEED_UPDATE` / `SEED_DELETE` | seed CRUD on `attr/seed/{seed_id}` |
 | `ONTOGEN` (`ontogen`) | `RUN_COMPLETE` / `RUN_FAILED` | re-inference run end; `RUN_COMPLETE` recorded for both dry-run and non-dry-run, `dry_run` flag in detail. Detail keys: `run_id` (uuid4), `unresolved_urns` (list, same shape as METRIC), `counts` (dict — `nodes_added/edges_added/triples_added` on real-run, `nodes_proposed/edges_proposed/triples_proposed` on dry-run), `dry_run`, `producer_iterations` (inference-loop turns the Producer took), `producer_errors_dropped` (validator-rejected row count), `debate_outcome` (`accept` / `turns_exhausted` / `cycle_detected`) |
 | `NODE` / `EDGE` / `TRIPLE` (`node` / `edge` / `triple`) | `APPROVE` / `REJECT` | `POST ontogen/result/{type}/{id}/method/review` |
@@ -1438,9 +1490,9 @@ from an observation reads it, and it is the fourth term of the observation ident
 | `detail.source` | Producer | Modes | Grain | Outcomes | Identity |
 |---|---|---|---|---|---|
 | *(key absent)* | inline run record written by `POST sources/{id}/method/run` | `ACTIVE_CUSTOM_MANAGED` | per run | `COMPLETE` + `FAIL` | run-local |
-| `datahub_sync` | execution-request mirror, sweep step 4 | `DATAHUB_MANAGED` | per run | `COMPLETE` + `FAIL` | `detail.execution_request_urn`, upserted |
-| `passive_observation` | `Operation`-aspect observation, sweep step 4 | `PASSIVE` | per dataset | `COMPLETE` only | (source, `detail.dataset_urn`, `occurred_at`, `detail.source`) |
-| `last_ingested_observation` | `Dataset.lastIngested` observation, sweep step 4 | all | per dataset | `COMPLETE` only | the same four-term tuple |
+| `datahub_sync` | execution-request mirror, sweep run/observation-events step | `DATAHUB_MANAGED` | per run | `COMPLETE` + `FAIL` | `detail.execution_request_urn`, upserted |
+| `passive_observation` | `Operation`-aspect observation, sweep run/observation-events step | `PASSIVE` | per dataset | `COMPLETE` only | (source, `detail.dataset_urn`, `occurred_at`, `detail.source`) |
+| `last_ingested_observation` | `Dataset.lastIngested` observation, sweep run/observation-events step | all | per dataset | `COMPLETE` only | the same four-term tuple |
 
 `detail` keys per producer:
 
@@ -1510,7 +1562,7 @@ Source of truth: `src/workflows/registry.py` exposes `ALL_DAG_IDS`
 | `ingestion-active-hourly` | `ingestion_active_hourly.py` | Airflow schedule | `@hourly` |
 | `ingestion-active-daily` | `ingestion_active_daily.py` | Airflow schedule | `@daily` |
 | `ingestion-active-weekly` | `ingestion_active_weekly.py` | Airflow schedule | `@weekly` |
-| `datahub-sync-hourly` | `datahub_sync_hourly.py` | Airflow schedule | `@hourly` |
+| `datahub-sync-hourly` | `datahub_sync_hourly.py` | Airflow schedule | `0 */2 * * *` |
 | `metrics-hourly` | `metrics_hourly.py` | Airflow schedule | `@hourly` |
 | `metrics-daily` | `metrics_daily.py` | Airflow schedule | `@daily` |
 | `metrics-weekly` | `metrics_weekly.py` | Airflow schedule | `@weekly` |
@@ -1522,6 +1574,11 @@ Source of truth: `src/workflows/registry.py` exposes `ALL_DAG_IDS`
 | `ontogen-daily` | `ontogen_daily.py` | Airflow schedule | `@daily` |
 | `ontogen-weekly` | `ontogen_weekly.py` | Airflow schedule | `@weekly` |
 | `auth-role-sync-daily` | `auth_role_sync_daily.py` | Airflow schedule | `@daily` |
+
+`datahub-sync-hourly` runs on a 2-hour crontab; the `-hourly` suffix in its `dag_id`,
+filename, and tags is a retained identifier, not a cadence claim. Because the sweep also
+refreshes the dataset attributes every `dataset_filter` resolves against, its cadence is
+the upper bound on filter-scope staleness across UC3, UC4, and UC5.
 
 > **Tier-DAG selection**: For features with a `schedule_tier` field on a conf
 > **collection** (`ingestion`, `metrics`, `metagen`), the periodic DAG that runs
@@ -1571,7 +1628,7 @@ the live DataHub URN set. Accepts an optional `dataset_urns` list in the body
 found in DataHub, false when it has disappeared. Returns counts
 `{checked, flipped_true, flipped_false, unchanged, not_found}`. This endpoint is the
 **on-demand / scoped** path (e.g. validation's per-dataset precision check). Scheduled
-full-estate reconciliation runs **hourly** as part of the `datahub-sync-hourly` sweep
+full-estate reconciliation runs **every two hours** as part of the `datahub-sync-hourly` sweep
 (the DAG drives it via `POST /internal/activities/ingestion/sync`, i.e.
 `IngestionService.sync()` — not this admin endpoint), which
 enumerates DataHub once and reconciles `dataset_registry` — inserting newly-seen URNs and
@@ -1743,7 +1800,7 @@ row, written by the process that exercises that transport:
 | Row | Plane | Reporter | Meaning |
 |---|---|---|---|
 | `datahub` | Event stream (Kafka MCL topics) | the DataHub event consumer | `ok` once subscribed and polling; `error` with the message on any fault it reports — connection, authentication, configuration, or a failed read of its own configuration |
-| `datahub-api` | Metadata API (GMS REST / GraphQL) | the hourly sync + mapping sweep ([Ingestion Service](#ingestion-service-srcbackendingestion)) | `ok` on a completed sweep; `error` on any failure that escapes it |
+| `datahub-api` | Metadata API (GMS REST / GraphQL) | the `datahub-sync-hourly` sync + mapping sweep ([Ingestion Service](#ingestion-service-srcbackendingestion)) | `ok` on a completed sweep; `error` on any failure that escapes it |
 
 `GET /admin/peripherals/datahub` returns the first as `health` and the second as `api_health`.
 On either row `unknown` covers both "never reported" and "no reporter deployed". **Both
@@ -1837,8 +1894,9 @@ trace of a lost stamp — what a reader may then conclude from the column is sta
 |-----------|---------|----------|
 | `assertionRunEvent` emission | ValidationService | Row stays in `validation_results` (local store remains the historical-baseline cache); caller receives `502/503` so the pipeline can decide whether to retry |
 | pgvector similarity search | MetagenService | Reviewer proceeds without prior-approved-candidate RAG; debate quality drops but the run completes |
-| DataHub run-history poll | IngestionService (sync sweep) | Skip the affected source for this hourly tick; retry next tick |
+| DataHub run-history poll | IngestionService (sync sweep) | Skip the affected source for this tick; retry next tick |
 | Estate-wide `lastIngested` read and its per-dataset observation inserts | IngestionService (sync sweep) | The sub-pass books nothing this tick and reports `last_ingested_observed = 0`; the other two sub-passes, the rest of the sweep, and the `datahub-api` health row are untouched; retry next tick |
+| Estate-wide dataset attribute read | IngestionService (sync sweep) | No row is blanked — stored attributes and their `attrs_synced_at` stand, so every `dataset_filter` keeps resolving against the last good sweep; `attrs_synced` reports what did land; the `datahub-api` health row is **not** flipped, so a filter's staleness is read from `attrs_synced_at` rather than from peripheral health; retry next tick |
 | `api_tokens.last_used_at` throttled stamp | PAT authentication | The column keeps its prior value; authentication succeeds and the request proceeds. Logged at `ERROR` per the exception in the lead-in above, not at WARNING |
 
 **Interface violations are exempt from best-effort, on the estate-wide `lastIngested` read.** An

@@ -11,9 +11,13 @@ Spec sources:
       by EditableDatasetProperties.description when present.
     - Per-column descriptions from SchemaMetadata.fields[*].description,
       overlaid by EditableSchemaMetadata.editableSchemaFieldInfo[*].description.
-  spec/feature/BACKEND.md §Metrics Service §Breakdown format:
-    - datasets[] carries only failed entries (doc-health < 1.0).
-    - No 'category' field.
+  spec/feature/BACKEND.md §Metrics Service §Verdict contract:
+    - The measurer returns (values, verdicts); verdicts cover EVERY dataset in
+      scope, one entry per dataset carrying urn, met, evidence_at, detail.
+    - evidence_at is None for doc-health — "a documentation state carries no
+      timestamp" — so the endpoint falls back to the run's measured_at.
+    - The failures-only metric_results.breakdown is DERIVED from the verdicts by
+      MetricsService, not built here (see tests/unit/backend/metrics/test_service.py).
     - metric_conf={} (no parameters).
 
 DataHub is stubbed via _StubDH which implements get_dataset_documentation_aspects,
@@ -65,6 +69,25 @@ class _StubDH:
         return {urn: self._aspects.get(urn, self._EMPTY) for urn in urns}
 
 
+# ── Verdict helpers ───────────────────────────────────────────────────────────
+
+
+def _verdict(verdicts, urn):
+    """The one verdict for *urn* — verdicts cover every dataset exactly once.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service §Verdict contract — "`verdicts`
+    covers **every** dataset in scope, not only the failing ones — one entry per
+    dataset".
+    """
+    matches = [v for v in verdicts if v.urn == urn]
+    assert len(matches) == 1, f"expected exactly one verdict for {urn}; got {matches!r}"
+    return matches[0]
+
+
+def _failed(verdicts):
+    """The `met = false` subset — the entries the derived breakdown lists."""
+    return [v for v in verdicts if not v.met]
+
 # ── Registration ──────────────────────────────────────────────────────────────
 
 
@@ -89,7 +112,7 @@ async def test_empty_datasets_returns_zeros() -> None:
     """
     measure = _get_measurer()
 
-    values, breakdown = await measure(
+    values, verdicts = await measure(
         datasets=[],
         metric_conf={},
         datahub=_StubDH(),
@@ -97,15 +120,14 @@ async def test_empty_datasets_returns_zeros() -> None:
     )
 
     assert values == {"total": 0.0, "doc_health": 0.0}
-    assert breakdown["dataset_count"] == 0
-    assert breakdown["datasets"] == []
+    assert verdicts == []
 
 
 # ── Dataset with full documentation → score 1.0 ───────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_fully_documented_dataset_not_in_breakdown() -> None:
+async def test_fully_documented_dataset_meets_the_criterion() -> None:
     """Dataset with non-empty table description AND all columns described → score 1.0.
 
     Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — a dataset scores
@@ -124,7 +146,7 @@ async def test_fully_documented_dataset_not_in_breakdown() -> None:
         )
     })
 
-    values, breakdown = await measure(
+    values, verdicts = await measure(
         datasets=[urn],
         metric_conf={},
         datahub=dh,
@@ -133,18 +155,20 @@ async def test_fully_documented_dataset_not_in_breakdown() -> None:
 
     assert values["total"] == 1.0
     assert values["doc_health"] == 1.0
-    assert breakdown["datasets"] == [], (
-        "Fully documented dataset must NOT appear in breakdown. "
-        "Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types."
+    assert _verdict(verdicts, urn).met is True, (
+        "A fully documented dataset must carry a met verdict — it is still in scope, "
+        "so it gets a verdict rather than being omitted. "
+        "Spec: spec/feature/BACKEND.md §Metrics Service §Verdict contract."
     )
+    assert _failed(verdicts) == [], "nothing failed, so the derived breakdown is empty"
 
 
 # ── Missing table description → score 0.0 ────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_missing_table_description_in_breakdown() -> None:
-    """Dataset with empty/missing table description scores 0.0 and is in breakdown.
+async def test_missing_table_description_fails_the_criterion() -> None:
+    """Dataset with empty/missing table description scores 0.0 and fails its verdict.
 
     Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — must have
           non-empty table description; else 0.0.
@@ -161,7 +185,7 @@ async def test_missing_table_description_in_breakdown() -> None:
         )
     })
 
-    values, breakdown = await measure(
+    values, verdicts = await measure(
         datasets=[urn],
         metric_conf={},
         datahub=dh,
@@ -169,19 +193,18 @@ async def test_missing_table_description_in_breakdown() -> None:
     )
 
     assert values["doc_health"] == 0.0
-    assert len(breakdown["datasets"]) == 1
-    entry = breakdown["datasets"][0]
-    assert entry["urn"] == urn
-    assert "category" not in entry
-    assert isinstance(entry.get("detail", {}), dict)
+    verdict = _verdict(verdicts, urn)
+    assert verdict.met is False
+    assert verdict.detail["missing_table_description"] is True
+    assert _failed(verdicts) == [verdict]
 
 
 # ── Missing column description → score 0.0 ────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_missing_column_description_in_breakdown() -> None:
-    """Dataset with one column having empty description scores 0.0 and is in breakdown.
+async def test_missing_column_description_fails_the_criterion() -> None:
+    """Dataset with one column having empty description scores 0.0 and fails its verdict.
 
     Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — every column
           must have a non-empty description; else 0.0.
@@ -199,7 +222,7 @@ async def test_missing_column_description_in_breakdown() -> None:
         )
     })
 
-    values, breakdown = await measure(
+    values, verdicts = await measure(
         datasets=[urn],
         metric_conf={},
         datahub=dh,
@@ -207,11 +230,10 @@ async def test_missing_column_description_in_breakdown() -> None:
     )
 
     assert values["doc_health"] == 0.0
-    assert len(breakdown["datasets"]) == 1
-    entry = breakdown["datasets"][0]
-    assert entry["urn"] == urn
-    assert "category" not in entry
-    assert isinstance(entry.get("detail", {}), dict)
+    verdict = _verdict(verdicts, urn)
+    assert verdict.met is False
+    assert verdict.detail["missing_column_descriptions"] == ["notes"]
+    assert _failed(verdicts) == [verdict]
 
 
 # ── EditableDatasetProperties overrides base description ─────────────────────
@@ -237,7 +259,7 @@ async def test_editable_table_description_overrides_base() -> None:
         )
     })
 
-    values, breakdown = await measure(
+    values, verdicts = await measure(
         datasets=[urn],
         metric_conf={},
         datahub=dh,
@@ -248,7 +270,7 @@ async def test_editable_table_description_overrides_base() -> None:
         "EditableDatasetProperties.description must override empty base description. "
         "Spec: spec/feature/BACKEND.md §Metrics Service §doc-health."
     )
-    assert breakdown["datasets"] == []
+    assert _verdict(verdicts, urn).met is True
 
 
 # ── EditableSchemaMetadata overrides per-column base descriptions ─────────────
@@ -274,7 +296,7 @@ async def test_editable_schema_overrides_empty_column_description() -> None:
         )
     })
 
-    values, breakdown = await measure(
+    values, verdicts = await measure(
         datasets=[urn],
         metric_conf={},
         datahub=dh,
@@ -285,7 +307,7 @@ async def test_editable_schema_overrides_empty_column_description() -> None:
         "EditableSchemaMetadata must override empty base column description. "
         "Spec: spec/feature/BACKEND.md §Metrics Service §doc-health."
     )
-    assert breakdown["datasets"] == []
+    assert _verdict(verdicts, urn).met is True
 
 
 # ── metric_conf={} is accepted ────────────────────────────────────────────────
@@ -300,7 +322,7 @@ async def test_empty_metric_conf_is_accepted() -> None:
     """
     measure = _get_measurer()
 
-    values, breakdown = await measure(
+    values, verdicts = await measure(
         datasets=[],
         metric_conf={},
         datahub=_StubDH(),
@@ -310,15 +332,20 @@ async def test_empty_metric_conf_is_accepted() -> None:
     assert values["total"] == 0.0
 
 
-# ── No 'category' in breakdown entries ───────────────────────────────────────
+# ── Verdict field set ─────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_breakdown_entries_have_no_category_field() -> None:
-    """Breakdown entries must not carry a 'category' field.
+async def test_verdict_carries_exactly_the_four_contract_fields() -> None:
+    """A verdict is {urn, met, evidence_at, detail} — no classification field.
 
-    Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format —
-          datasets[] entries are {urn, detail?} only.
+    doc-health's evidence_at is None by contract, which is what makes the endpoint
+    fall back to the run's measured_at for this type.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service §Verdict contract — "one entry per
+          dataset carrying `urn`, `met: bool`, `evidence_at: datetime | None`, and a
+          type-specific `detail`"; "`doc-health` → `None`, since a documentation state
+          carries no timestamp".
     """
     measure = _get_measurer()
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.nocat,DEV)"
@@ -332,28 +359,30 @@ async def test_breakdown_entries_have_no_category_field() -> None:
         )
     })
 
-    values, breakdown = await measure(
+    values, verdicts = await measure(
         datasets=[urn],
         metric_conf={},
         datahub=dh,
         db=AsyncMock(),
     )
 
-    assert len(breakdown["datasets"]) >= 1
-    for entry in breakdown["datasets"]:
-        assert "category" not in entry, (
-            "Breakdown entry must not have 'category'. "
-            "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
-        )
-        assert "urn" in entry
+    from dataclasses import fields
+
+    verdict = _verdict(verdicts, urn)
+    assert {f.name for f in fields(verdict)} == {"urn", "met", "evidence_at", "detail"}
+    assert verdict.met is False, "backstop: this dataset must actually have failed"
+    assert verdict.evidence_at is None, (
+        "doc-health carries no per-dataset timestamp. "
+        "Spec: spec/feature/BACKEND.md §Metrics Service §Verdict contract."
+    )
 
 
 # ── No schema metadata (empty field_descriptions) ────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_no_schema_metadata_scores_zero_and_in_breakdown() -> None:
-    """Dataset with empty field_descriptions scores 0.0 and appears in breakdown.
+async def test_no_schema_metadata_scores_zero_and_fails_its_verdict() -> None:
+    """Dataset with empty field_descriptions scores 0.0 and fails its verdict.
 
     When field_descriptions is empty the measurer cannot satisfy "every column
     carries a non-empty description", so the score is 0.0.
@@ -363,7 +392,7 @@ async def test_no_schema_metadata_scores_zero_and_in_breakdown() -> None:
           description.
 
     Note: spec is silent on the exact treatment of absent SchemaMetadata; this test
-    encodes the impl's interpretation (score=0.0, dataset in breakdown) and is marked
+    encodes the impl's interpretation (score=0.0, met=false) and is marked
     as an interpretation-of-spec rather than a direct spec citation.
     """
     measure = _get_measurer()
@@ -378,7 +407,7 @@ async def test_no_schema_metadata_scores_zero_and_in_breakdown() -> None:
         )
     })
 
-    values, breakdown = await measure(
+    values, verdicts = await measure(
         datasets=[urn],
         metric_conf={},
         datahub=dh,
@@ -391,10 +420,7 @@ async def test_no_schema_metadata_scores_zero_and_in_breakdown() -> None:
     # Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — "every column
     # carries a non-empty description" cannot be satisfied with no columns.
     assert values["doc_health"] == 0.0
-    # breakdown invariants
-    assert len(breakdown["datasets"]) == 1
-    assert breakdown["datasets"][0]["urn"] == urn
-    assert "category" not in breakdown["datasets"][0]
+    assert _verdict(verdicts, urn).met is False
 
 
 # ── URN absent from DataHub batch response ────────────────────────────────────
@@ -402,7 +428,7 @@ async def test_no_schema_metadata_scores_zero_and_in_breakdown() -> None:
 
 @pytest.mark.asyncio
 async def test_unresolved_urn_scores_zero() -> None:
-    """A URN absent from the DataHub batch response scores 0.0 and is in the breakdown.
+    """A URN absent from the DataHub batch response scores 0.0 and fails its verdict.
 
     The _StubDH returns an empty map for the URN, simulating the real client's behaviour
     for URNs that DataHub does not return (unresolved entities).  The measurer must treat
@@ -416,7 +442,7 @@ async def test_unresolved_urn_scores_zero() -> None:
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.unresolved.ghost,DEV)"
 
     # Empty mapping — URN is NOT in the precomputed aspects (simulates unresolved entity).
-    values, breakdown = await measure(
+    values, verdicts = await measure(
         datasets=[urn],
         metric_conf={},
         datahub=_StubDH({}),
@@ -424,5 +450,50 @@ async def test_unresolved_urn_scores_zero() -> None:
     )
 
     assert values == {"total": 1.0, "doc_health": 0.0}
-    assert len(breakdown["datasets"]) == 1
-    assert breakdown["datasets"][0]["urn"] == urn
+    assert _verdict(verdicts, urn).met is False
+
+
+# ── Verdicts cover every dataset in scope ─────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_verdicts_cover_every_dataset_passing_and_failing_alike() -> None:
+    """Both a passing and a failing dataset get a verdict, in scope order.
+
+    Full coverage is the whole point of the contract: it is what lets
+    `GET /spoke/governance/metric/{id}/dataset` tell "evaluated and passing" from
+    "in scope but never evaluated" (`unknown`), which a failures-only return cannot.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service §Verdict contract — "Full coverage
+          is what makes 'in scope but never evaluated' (`unknown`) distinguishable from
+          'evaluated and passing': a failures-only return cannot express the difference."
+    """
+    measure = _get_measurer()
+    good = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.good,DEV)"
+    bad = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.bad,DEV)"
+
+    dh = _StubDH({
+        good: DocumentationAspects(
+            table_description="Described",
+            editable_table_description=None,
+            field_descriptions={"id": "Primary key"},
+            editable_field_descriptions={},
+        ),
+        bad: DocumentationAspects(
+            table_description="",
+            editable_table_description=None,
+            field_descriptions={"id": "Primary key"},
+            editable_field_descriptions={},
+        ),
+    })
+
+    values, verdicts = await measure(
+        datasets=[good, bad],
+        metric_conf={},
+        datahub=dh,
+        db=AsyncMock(),
+    )
+
+    assert values == {"total": 2.0, "doc_health": 1.0}
+    assert [v.urn for v in verdicts] == [good, bad]
+    assert [v.met for v in verdicts] == [True, False]

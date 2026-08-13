@@ -21,7 +21,7 @@ export interface MetagenConf {
   name: string;
   is_enabled: boolean;
   schedule_tier: ScheduleTier | null;
-  dataset_filter: Record<string, unknown>;
+  dataset_filter: string;
   result_limit: number;
   overwrite_pending: boolean;
   /** Distinct datasets that already have candidates from this conf. */
@@ -43,7 +43,7 @@ export interface MetagenConfCreateBody {
   name: string;
   is_enabled: boolean;
   schedule_tier: ScheduleTier | null;
-  dataset_filter: Record<string, unknown>;
+  dataset_filter: string;
   result_limit: number;
   overwrite_pending: boolean;
 }
@@ -55,7 +55,7 @@ export interface MetagenConfPatchBody {
   name?: string;
   is_enabled?: boolean;
   schedule_tier?: ScheduleTier | null;
-  dataset_filter?: Record<string, unknown>;
+  dataset_filter?: string;
   result_limit?: number;
   overwrite_pending?: boolean;
 }

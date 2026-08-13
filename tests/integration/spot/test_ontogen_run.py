@@ -214,14 +214,15 @@ async def test_ontogen_run_dry_run_includes_seeded_documents_in_evidence(
         )
 
         # ── Step 2: PUT ontogen conf narrowed to our dataset URN ─────────────────
-        # spec: USE_CASE_en.md §UC3 L392-L398 — dataset_filter.dataset_urns narrows scope
+        # spec: API.md §`dataset_filter` grammar — a `dataset_urn = '…'` predicate
+        # narrows the conf's scope to that single dataset
         conf_resp = await api_client.put(
             conf_url,
             headers=admin_headers,
             json={
                 "is_enabled": True,
                 "schedule_tier": "daily",
-                "dataset_filter": {"dataset_urns": [dataset_urn]},
+                "dataset_filter": f"dataset_urn = '{dataset_urn}'",
             },
         )
         assert conf_resp.status_code in (200, 201), (
@@ -258,12 +259,14 @@ async def test_ontogen_run_dry_run_includes_seeded_documents_in_evidence(
         )
         # The dataset_filter pins to our dataset_urn; if evidence-gathering succeeded it
         # must NOT appear in unresolved_urns (which lists URNs that were skipped).
-        # spec: USE_CASE_en.md §UC3 L396 — "entries that don't resolve … are skipped and
-        # reported in the run-complete event's unresolved_urns field"
+        # spec: feature/BACKEND.md §Ontology Generation Service — dataset_filter:
+        # "literal URNs matching no registered dataset are reported in the run-complete
+        # event's `unresolved_urns`"
         assert dataset_urn not in body["unresolved_urns"], (
             f"dataset_urn {dataset_urn!r} found in unresolved_urns — evidence-gathering failed. "
-            "spec: USE_CASE_en.md §UC3 §dataset_filter — seeded documents with matching "
-            "relatedAssets must not cause the dataset to be unresolvable. "
+            "spec: feature/BACKEND.md §Ontology Generation Service — unresolved_urns "
+            "lists only literal URNs matching no registered dataset; a registered, "
+            "document-bearing dataset must not appear there. "
             "Regression: _fetch_documents_for_dataset may have raised or returned wrong filter."
         )
 
@@ -306,7 +309,7 @@ async def test_ontogen_run_is_enabled_false_non_dry_run_returns_409_ONTOGEN_DISA
             json={
                 "is_enabled": False,
                 "schedule_tier": "daily",
-                "dataset_filter": {},
+                "dataset_filter": "",
             },
         )
         assert put_resp.status_code in (200, 201), (
@@ -439,15 +442,19 @@ async def test_ontogen_dry_run_with_origin_filter_does_not_raise(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """Dry-run with dataset_filter={"origin": "DEV"} completes without error.
+    """Dry-run with dataset_filter="origin = 'DEV'" completes without error.
 
-    When no DataHub datasets match the origin, the resolver returns an empty scope
-    cleanly (swallow_enumerate_errors=True for UC3). The run must succeed with
-    empty scope, not raise a 500.
+    An `origin` predicate is resolved by a local SQL query against `dataset_registry`,
+    whose `origin` column is populated by the attribute sweep. The run must return an
+    OntogenRunSummary either way — whether the sweep has already landed (scope
+    non-empty) or not (scope empty) — never a 500.
 
-    spec: spec/feature/BACKEND.md §UC3 dataset_filter — resolver returns empty scope
-          cleanly when no datasets match the origin filter.
-    spec: USE_CASE_en.md §UC3 §Run semantics — dry_run=true with empty scope completes.
+    spec: spec/feature/BACKEND.md §Ontology Generation Service — "Resolve
+          `dataset_filter` against `dataset_registry` (one SQL query, no DataHub
+          search)".
+    spec: spec/feature/BACKEND.md §Ontology Generation Service — "`?dry_run=true`
+          evaluates steps 2-8 without persisting"; "Dry-run is permitted regardless
+          of `is_enabled`".
     """
     conf_url = "/api/v1/spoke/ontogen/attr/conf"
 
@@ -458,7 +465,7 @@ async def test_ontogen_dry_run_with_origin_filter_does_not_raise(
             json={
                 "is_enabled": True,
                 "schedule_tier": "daily",
-                "dataset_filter": {"origin": "DEV"},
+                "dataset_filter": "origin = 'DEV'",
             },
         )
         assert put_resp.status_code in (200, 201), (
@@ -472,7 +479,8 @@ async def test_ontogen_dry_run_with_origin_filter_does_not_raise(
         assert run_resp.status_code == 200, (
             f"Dry-run with origin=DEV filter must return 200; "
             f"got {run_resp.status_code}: {run_resp.text}. "
-            "spec: BACKEND.md §UC3 dataset_filter — empty scope must not raise"
+            "spec: BACKEND.md §Ontology Generation Service — dataset_filter is resolved "
+            "by one SQL query against dataset_registry; an unmatched filter must not raise"
         )
         body = run_resp.json()
         assert "status" in body and isinstance(body["status"], str), (
@@ -488,5 +496,5 @@ async def test_ontogen_dry_run_with_origin_filter_does_not_raise(
             await api_client.patch(
                 conf_url,
                 headers=admin_headers,
-                json={"is_enabled": False, "dataset_filter": {}},
+                json={"is_enabled": False, "dataset_filter": ""},
             )

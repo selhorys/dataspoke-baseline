@@ -92,7 +92,7 @@ async def reset_all() -> None:
                 f"INSERT INTO {_SCHEMA}.metric_definitions "
                 "(id, mode, metric_type, title, description, metrics, "
                 " metric_conf, dataset_filter, schedule_tier, is_enabled) "
-                "VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10)",
+                "VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, $10)",
                 d["id"],
                 d["mode"],
                 d["metric_type"],
@@ -100,7 +100,7 @@ async def reset_all() -> None:
                 d["description"],
                 json.dumps(d["metrics"]),
                 json.dumps(d["metric_conf"]),
-                json.dumps(d["dataset_filter"]),
+                d["dataset_filter"],
                 d["schedule_tier"],
                 d["is_enabled"],
             )

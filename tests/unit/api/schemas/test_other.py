@@ -134,11 +134,16 @@ class TestMetricsSchemas:
             metric_type="ingestion-freshness",
             title="Ingestion freshness",
             description="Pct datasets ingested in time",
-            metrics=["total", "ingested_in_time"],
+            metrics=[
+                {"name": "total", "color": "#64748B", "idx": 1},
+                {"name": "ingested_in_time", "color": "#22C55E", "idx": 2},
+            ],
             metric_conf={"time_window_sec": 86400},
-            dataset_filter={},
+            dataset_filter="origin = 'PROD'",
         )
         assert req.is_enabled is False
+        assert [s.name for s in req.metrics] == ["total", "ingested_in_time"]
+        assert req.dataset_filter == "origin = 'PROD'"
         assert req.mode == "active"
         assert req.metric_type == "ingestion-freshness"
 
@@ -156,9 +161,12 @@ class TestMetricsSchemas:
             metric_type="doc-health",
             title="Doc Health",
             description="Documentation coverage",
-            metrics=["total", "doc_health"],
+            metrics=[
+                {"name": "total", "color": "#64748B", "idx": 1},
+                {"name": "doc_health", "color": "#A855F7", "idx": 2},
+            ],
             metric_conf={},
-            dataset_filter={},
+            dataset_filter="",
             schedule_tier=None,
             created_at=now,
             updated_at=now,

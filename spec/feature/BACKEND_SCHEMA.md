@@ -149,26 +149,35 @@ every source form the **unmanaged bucket**.
 | `last_seen_at` | `TIMESTAMPTZ` | Most recent sweep confirming the link |
 
 - **PK**: `(source_id, dataset_urn)`.
-- `derivation` is named to avoid collision with DataHub's dataset URN fabric (`origin`/`FabricType`, also used by `dataset_filter.origin`). The API additionally exposes a derived **`authority`** confidence level: `medium` for `matched` rows (declared/derived coverage — what the recipe says it covers, an explicit approximation since DataHub exposes no native source→dataset reverse lookup) and `high` for `emitted` / `pipeline_name` rows (observed and authoritative). `authority` is a pure function of `derivation`, so it is derived at the API layer rather than stored.
+- `derivation` is named to avoid collision with DataHub's dataset URN fabric (`origin`/`FabricType`, which is also the `dataset_registry.origin` column a `dataset_filter` reads). The API additionally exposes a derived **`authority`** confidence level: `medium` for `matched` rows (declared/derived coverage — what the recipe says it covers, an explicit approximation since DataHub exposes no native source→dataset reverse lookup) and `high` for `emitted` / `pipeline_name` rows (observed and authoritative). `authority` is a pure function of `derivation`, so it is derived at the API layer rather than stored.
 
 #### `dataset_registry`
 
 Mirrors the DataHub dataset estate: one row per known dataset URN with a
-`datahub_registered` flag. Feeds the validation precondition gate and the ingestion
-**unmanaged bucket** (`GET /spoke/ingestion/unmanaged` = rows with `datahub_registered=true`
-and no `ingestion_source_dataset` mapping). Presence is not a "validation-configured" marker —
-validation-config existence lives in `validation_configs`.
+`datahub_registered` flag plus the attributes `dataset_filter` is evaluated against. Feeds
+the validation precondition gate, the ingestion **unmanaged bucket**
+(`GET /spoke/ingestion/unmanaged` = rows with `datahub_registered=true` and no
+`ingestion_source_dataset` mapping), and scope resolution for UC3 ontogen, UC4 metagen, and
+UC5 metrics. Presence is not a "validation-configured" marker — validation-config existence
+lives in `validation_configs`.
 
 | Column | Type | Description |
 |--------|------|-------------|
 | `dataset_urn` | `TEXT` PK | Dataset URN |
 | `datahub_registered` | `BOOLEAN` | `true` when the dataset exists in DataHub |
+| `origin` | `TEXT` NULL | The URN's third segment — a DataHub `FabricType` value (`PROD`/`DEV`/…). Parsed from `dataset_urn`, not fetched |
+| `platform_urn` | `TEXT` NULL | The URN's first segment — `urn:li:dataPlatform:…`. Parsed from `dataset_urn`, not fetched |
+| `tag_urns` | `TEXT[]` NOT NULL DEFAULT `'{}'` | DataHub tag URNs on the dataset |
+| `glossary_term_urns` | `TEXT[]` NOT NULL DEFAULT `'{}'` | DataHub glossary-term URNs on the dataset |
+| `attrs_synced_at` | `TIMESTAMPTZ` NULL | When the four attribute columns above were last refreshed; `null` until the first attribute sweep reaches the row. Surfaced on `GET /spoke/governance/metric/{metric_id}/dataset` |
 | `created_at` | `TIMESTAMPTZ` | |
 | `updated_at` | `TIMESTAMPTZ` | |
 
-- **Creation / reconcile**: bulk, by the hourly `datahub-sync-hourly` sweep — it enumerates DataHub once and upserts every URN (insert new rows `datahub_registered=true`; soft-flag absent rows `false`; an empty enumeration is skipped as "no signal"). Additionally lazy, via `ensure_dataset_registered()` on validation-config upsert, which probes DataHub on-demand for per-dataset precision (the precondition gate `422 DATASET_NOT_IN_DATAHUB` reads the flag).
-- **DataHub sync**: the scheduled full reconcile is the hourly `datahub-sync-hourly` sweep; `POST /internal/admin/datahub/sync` provides on-demand scoped reconcile.
-- **SSOT**: DataHub is authoritative for dataset existence; the registry mirrors it (flag), refreshed hourly with on-demand reconcile for validation.
+- **Indexes**: GIN on `tag_urns` and `glossary_term_urns` (array containment is the array-column predicate's access path), btree on `origin` and `platform_urn`.
+- **Creation / reconcile**: bulk, by the `datahub-sync-hourly` sweep — it enumerates DataHub once and upserts every URN (insert new rows `datahub_registered=true`; soft-flag absent rows `false`; an empty enumeration is skipped as "no signal"). Additionally lazy, via `ensure_dataset_registered()` on validation-config upsert, which probes DataHub on-demand for per-dataset precision (the precondition gate `422 DATASET_NOT_IN_DATAHUB` reads the flag).
+- **Attribute sync**: the same sweep refreshes the attribute columns, upserting per dataset and never deleting-then-inserting — a dataset the attribute read missed keeps its prior attributes, so a partial sweep cannot silently narrow every `dataset_filter` in the system. See [BACKEND §Sync + mapping sweep](BACKEND.md#ingestion-service-srcbackendingestion) and [DATAHUB_INTEGRATION §Dataset attribute sync](../DATAHUB_INTEGRATION.md#dataset-attribute-sync).
+- **DataHub sync**: the scheduled full reconcile is the `datahub-sync-hourly` sweep; `POST /internal/admin/datahub/sync` provides on-demand scoped reconcile.
+- **SSOT**: DataHub is authoritative for dataset existence and attributes; the registry mirrors both, refreshed per sweep with on-demand reconcile for validation.
 
 #### `validation_configs`
 
@@ -219,7 +228,7 @@ singleton. Many confs can coexist, each with its own scope and budget.
 | `name` | `TEXT` UNIQUE NOT NULL | Human-readable conf name (`409 METAGEN_CONF_EXISTS` on create collision) |
 | `is_enabled` | `BOOLEAN` | Master switch — enabled confs run on their `schedule_tier` and are eligible for scheduled fan-out |
 | `schedule_tier` | `TEXT` NULL | `hourly`, `daily`, or `weekly` re-generation cadence. When null, no periodic DAG runs; manual `POST /conf/{conf_id}/method/run` is unaffected |
-| `dataset_filter` | `JSONB` | Optional scope filter — `{"origin": "...", "tags": [...], "glossary_terms": [...], "dataset_urns": [...]}`; `origin` AND-ed with the OR-group of the three list dimensions; `{}` = all. Same shape as `ontogen_config.dataset_filter` and `metric_definitions.dataset_filter` |
+| `dataset_filter` | `TEXT` | Scope filter — a SQL `WHERE` clause over `dataset_registry` ([API §`dataset_filter` grammar](../API.md#dataset_filter-grammar)); `''` = all registered datasets. Same grammar as `ontogen_config.dataset_filter` and `metric_definitions.dataset_filter` |
 | `result_limit` | `INTEGER` | Max non-rejected candidates per `(conf_id, item)` (range `[1, 20]`, default `3`) |
 | `overwrite_pending` | `BOOLEAN` | When this conf's per-item budget is full and the item has no `approved` candidate, true = evict oldest `llm_approved` candidate of this conf; false = skip the item (default true) |
 | `created_at` | `TIMESTAMPTZ` | |
@@ -312,7 +321,7 @@ Singleton row holding the Ontology Generation conf (UC3).
 | `id` | `INTEGER` PK (=1) | Singleton row |
 | `is_enabled` | `BOOLEAN` | Master switch for the inference DAG |
 | `schedule_tier` | `TEXT` NULL | `hourly`, `daily`, or `weekly` re-inference cadence. When null, no periodic DAG runs; manual `POST /method/run` is unaffected |
-| `dataset_filter` | `JSONB` | Optional scope filter — `{"origin": "...", "tags": [...], "glossary_terms": [...], "dataset_urns": [...]}`; `origin` AND-ed with the OR-group of the three list dimensions; `{}` = all. Same shape as `metagen_config.dataset_filter` and `metric_definitions.dataset_filter` |
+| `dataset_filter` | `TEXT` | Scope filter — a SQL `WHERE` clause over `dataset_registry` ([API §`dataset_filter` grammar](../API.md#dataset_filter-grammar)); `''` = all registered datasets. Same grammar as `metagen_config.dataset_filter` and `metric_definitions.dataset_filter` |
 | `default_run_prompt` | `TEXT` NULL | Markdown string used as the one-shot prompt for runs without an explicit body (periodic Airflow DAG; bodyless manual `POST /method/run`); null disables |
 | `updated_at` | `TIMESTAMPTZ` | |
 
@@ -404,9 +413,9 @@ Governance metric definitions.
 | `metric_type` | `TEXT` | One of `ingestion-freshness`, `validation-score`, `doc-health` |
 | `title` | `TEXT` | Display title |
 | `description` | `TEXT` | What this metric measures |
-| `metrics` | `JSONB` | List of `values` keys the metric persists — subset of the type's emitted keys (e.g. `["total", "ingested_in_time"]`) |
+| `metrics` | `JSONB` | Series descriptors — a list of `{name, color, idx}` objects. `name` is one of the type's emitted `values` keys, `color` a `#RRGGBB` hex string, `idx` a positive integer display order; `name` and `idx` are each unique within the row. Determines which keys the metric persists and how the dashboard chart draws them |
 | `metric_conf` | `JSONB` | Type-specific config — `{"time_window_sec": <int>}` for `ingestion-freshness` / `validation-score` (the measurement window applied to every dataset the metric scans; factory default `172800`, see BACKEND §Metrics Service); `{}` for `doc-health` |
-| `dataset_filter` | `JSONB` | `{"origin": "...", "tags": [...], "glossary_terms": [...], "dataset_urns": [...]}`. `origin` is a DataHub `FabricType` value (`PROD`/`DEV`/`CORP`/`EI`/`STG`/`NON_PROD`/…) — passed through to DataHub; the other three dimensions OR-ed among themselves and AND-ed with `origin`; `{}` = all datasets. Same shape as `ontogen_config.dataset_filter` and `metagen_config.dataset_filter` |
+| `dataset_filter` | `TEXT` | Scope filter — a SQL `WHERE` clause over `dataset_registry` ([API §`dataset_filter` grammar](../API.md#dataset_filter-grammar)); `''` = all registered datasets. Same grammar as `ontogen_config.dataset_filter` and `metagen_config.dataset_filter` |
 | `is_enabled` | `BOOLEAN` | Whether scheduled measurement is enabled |
 | `schedule_tier` | `TEXT` NULL | Schedule tier for scheduled measurement — `hourly`, `daily`, or `weekly` (null = on-demand only) |
 | `created_at` | `TIMESTAMPTZ` | |
@@ -421,8 +430,32 @@ Timeseries of metric measurements.
 | `id` | `UUID` PK | Result identifier |
 | `metric_id` | `TEXT` FK | Metric definition |
 | `values` | `JSONB` | Measured values — dict of named floats, e.g. `{"total": 142.0, "ingested_in_time": 87.0}` |
-| `breakdown` | `JSONB` NULL | Measurement breakdown: `{dataset_count, datasets: [{urn, detail?}]}`. `datasets[]` carries only failed entries (stale / validation `<1.0` / doc-health `<1.0` depending on `metric_type`); `dataset_count` is the total scanned |
+| `breakdown` | `JSONB` NULL | Measurement breakdown: `{dataset_count, datasets: [{urn, detail?}]}`. `datasets[]` carries only failed entries (stale / validation `<1.0` / doc-health `<1.0` depending on `metric_type`); `dataset_count` is the total scanned. Derived from the same verdicts that populate `metric_dataset_results` |
 | `measured_at` | `TIMESTAMPTZ` | Measurement timestamp |
+
+#### `metric_dataset_results`
+
+The **latest** per-dataset verdict for each metric — one row per dataset the metric
+covered on its most recent non-dry run. Unlike `metric_results`, this is not a timeseries:
+a non-dry run replaces the metric's rows wholesale inside the result transaction, and a dry
+run writes nothing. Backs `GET /spoke/governance/metric/{metric_id}/dataset`.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `metric_id` | `TEXT` FK → `metric_definitions(id)` ON DELETE CASCADE | Owning metric |
+| `dataset_urn` | `TEXT` | The evaluated dataset |
+| `met` | `BOOLEAN` | Whether the dataset met the metric's criterion on that run |
+| `evidence_at` | `TIMESTAMPTZ` NULL | The per-dataset evidence timestamp — resolved ingestion evidence (`ingestion-freshness`), counted result `data_time` (`validation-score`), `null` for `doc-health`, which has no per-dataset timestamp |
+| `detail` | `JSONB` | Type-specific per-dataset metadata, the same payload the failing entries carry in `metric_results.breakdown` |
+| `measured_at` | `TIMESTAMPTZ` | The run that produced this verdict |
+
+- **PK**: `(metric_id, dataset_urn)`.
+- A dataset in the metric's current `dataset_filter` scope with no row here is **unknown** —
+  in scope but never evaluated. The endpoint resolves that by left-joining this table onto
+  the filter's registry query, so scope and verdicts are read from one source and cannot
+  disagree with the run's own.
+- `last_check_at` on the API is `evidence_at` falling back to `measured_at`, resolved
+  server-side.
 
 #### `runtime_config`
 
@@ -527,7 +560,7 @@ connects.
 
 Rows are keyed per **transport**, not per peripheral product: `datahub` is DataHub's
 event stream, reported by the event consumer, and `datahub-api` is its GMS metadata
-API, reported by the hourly sync sweep. The two planes fail independently, so they
+API, reported by the `datahub-sync-hourly` sweep. The two planes fail independently, so they
 never share a row — see
 [BACKEND §Health reporting](BACKEND.md#health-reporting).
 
@@ -559,6 +592,8 @@ without coupling the writes.
 | `metagen_candidates` | `UNIQUE (dataset_urn, item_id) WHERE status='approved'` | Global one-approved-per-item invariant (across all confs) |
 | `metagen_candidates` | `(run_id)` | Run-scoped cleanup |
 | `metric_results` | `(metric_id, measured_at DESC)` | Time-range queries on measurements |
+| `dataset_registry` | GIN on `tag_urns`; GIN on `glossary_term_urns` | `'…' IN tag_urns` / `IN glossary_term_urns` predicates in `dataset_filter` |
+| `dataset_registry` | `(origin)`, `(platform_urn)` | `origin` / `platform_urn` equality and `IN` predicates in `dataset_filter` |
 | `events` | `(entity_type, entity_id, occurred_at DESC)` | Event log queries per entity |
 | `events` | `ix_events_ingestion_dataset_urn`: `(entity_id, (detail->>'dataset_urn'), occurred_at DESC) WHERE entity_type='ingestion_source'` | Per-dataset ingestion timeline (`…/data/{urn}/event`) and per-dataset observation evidence for `ingestion-freshness` |
 | `events` | `ix_events_ingestion_run_level`: `(entity_id, occurred_at DESC) WHERE entity_type='ingestion_source' AND event_type IN ('INGESTION.COMPLETE','INGESTION.FAIL') AND (detail->>'source' IS NULL OR detail->>'source' NOT IN (<observation producers>))` | Latest run-outcome lookup behind `attr/ingestion.latest_run` and the source list's status column |

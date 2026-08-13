@@ -412,7 +412,7 @@ PUT /api/v1/spoke/ontogen/attr/conf
 {
   "is_enabled": true,
   "schedule_tier": "daily",
-  "dataset_filter": {"tags": ["urn:li:tag:area:catalog"]}
+  "dataset_filter": "'urn:li:tag:area:catalog' IN tag_urns"
 }
 ```
 
@@ -590,7 +590,7 @@ POST /api/v1/spoke/metagen/conf
   "name": "fulfillment",
   "is_enabled": true,
   "schedule_tier": "daily",
-  "dataset_filter": {"tags": ["urn:li:tag:area:fulfillment"]},
+  "dataset_filter": "'urn:li:tag:area:fulfillment' IN tag_urns",
   "result_limit": 3,
   "overwrite_pending": true
 }
@@ -604,7 +604,7 @@ POST /api/v1/spoke/metagen/conf
   "name": "eu-privacy",
   "is_enabled": true,
   "schedule_tier": "weekly",
-  "dataset_filter": {"origin": "EU", "glossary_terms": ["urn:li:glossaryTerm:pii.gdpr"]},
+  "dataset_filter": "origin = 'EU' AND 'urn:li:glossaryTerm:pii.gdpr' IN glossary_term_urns",
   "result_limit": 2,
   "overwrite_pending": false
 }
@@ -741,16 +741,19 @@ are NOT pre-computed by the server — clients derive them from the named fields
 seconds, factory default `172800`), the freshness SLO the governance lead declares and the
 same for every dataset the metric scans; empty `{}` for `doc-health`.
 
-`dataset_filter` carries four optional dimensions: `origin` (the DataHub `FabricType`
-value carried as the third URN segment — `PROD` / `DEV` / `CORP` / `EI` / `STG` /
-`NON_PROD` / `QA` / `TEST` / `PRE` / `RVW` / `SIT` / `SANDBOX` / …; passed through to
-DataHub verbatim), `tags` (DataHub tag URNs), `glossary_terms` (DataHub glossary term
-URNs), and `dataset_urns` (explicit `urn:li:dataset:(…)` URNs). The tag / term / URN
-dimensions form an OR-group; `origin` is AND-ed with that group. `{}` means all
-datasets. URN format is validated at PUT/PATCH (`422 INVALID_DATASET_URN`);
-unresolved-at-runtime entries are skipped and reported in the `METRIC.RUN_COMPLETE`
-event's `unresolved_urns` field. The GraphQL shape of the resolver is documented in
-[`DATAHUB_INTEGRATION.md §Origin filter group`](DATAHUB_INTEGRATION.md#origin-filter-group);
+`dataset_filter` is a SQL `WHERE`-clause string over the dataset registry — DataSpoke's
+local mirror of the DataHub estate. Its columns are `dataset_urn`, `origin`, and
+`platform_urn` (scalars parsed from the dataset URN, `origin` being the DataHub
+`FabricType` segment — `PROD` / `DEV` / `CORP` / `EI` / `STG` / `NON_PROD` / …) plus
+`tag_urns` and `glossary_term_urns` (arrays synced from DataHub). Predicates combine with
+`AND` / `OR` and parentheses; the empty string means all registered datasets. The full
+grammar and its caps are in
+[`API.md` §`dataset_filter` grammar](API.md#dataset_filter-grammar). A malformed filter is
+rejected at PUT/PATCH (`422 INVALID_DATASET_FILTER`), a malformed `dataset_urn` literal
+with `422 INVALID_DATASET_URN`; literal URNs matching no registered dataset at run time
+are reported in the `METRIC.RUN_COMPLETE` event's `unresolved_urns` field. Resolution is a
+DataSpoke-side SQL query, so a filter's scope is as fresh as the last attribute sweep
+([`DATAHUB_INTEGRATION.md §Dataset attribute sync`](DATAHUB_INTEGRATION.md#dataset-attribute-sync));
 breakdown shape and DAG semantics are in
 [`BACKEND.md §Metrics Service`](feature/BACKEND.md#metrics-service-srcbackendmetrics).
 
@@ -758,7 +761,7 @@ breakdown shape and DAG semantics are in
 
 On first start, DataSpoke seeds one metric of each built-in type (idempotent — only
 inserted when the `metric_definitions` row is absent). Defaults are
-`mode: "active"`, `is_enabled: false`, `schedule_tier: "daily"`, `dataset_filter: {}`,
+`mode: "active"`, `is_enabled: false`, `schedule_tier: "daily"`, `dataset_filter: ""`,
 type-appropriate `metric_conf`. The seeds ship disabled so the governance lead opts
 in explicitly via PATCH `is_enabled: true` (or runs a one-off `method/run` with
 `?dry_run=true`) before scheduled measurement begins. The user can edit, disable, or
@@ -772,6 +775,7 @@ delete any default, and add more metrics of the same three types.
 | `PUT/PATCH/GET/DELETE /spoke/governance/metric/{metric_id}/attr/conf` | Replace / update / read / delete an existing metric (`mode`, `is_enabled`, `metric_type`, `title`, `description`, `metrics`, `metric_conf`, `schedule_tier`, `dataset_filter`). `PUT` replaces an existing definition and returns `404 METRIC_NOT_FOUND` when the id is absent |
 | `POST /spoke/governance/metric/{metric_id}/method/run` | Trigger a measurement run; `?dry_run=true` evaluates without persisting. Concurrent runs on the same metric return `409 METRIC_RUNNING` |
 | `GET /spoke/governance/metric/{metric_id}/attr/result?from=…&to=…` | Timeseries of past measurements (each row carries `values` and per-dataset `breakdown`) |
+| `GET /spoke/governance/metric/{metric_id}/dataset` | The datasets the metric covers with each one's latest verdict — `met` is `true` / `false` / `unknown` (in scope, never evaluated) — plus `last_check_at` and the scope's `attrs_synced_at` freshness |
 | `GET /spoke/governance/metric/{metric_id}/event` | Run completion / definition change events |
 | `GET /spoke/governance/metric` | List all metrics |
 
@@ -795,10 +799,13 @@ POST /api/v1/spoke/governance/metric
   "metric_type": "doc-health",
   "title": "Doc Health (DEV)",
   "description": "Daily documentation-completeness check across DEV datasets",
-  "metrics": ["total", "doc_health"],
+  "metrics": [
+    {"name": "total", "color": "#2563EB", "idx": 1},
+    {"name": "doc_health", "color": "#16A34A", "idx": 2}
+  ],
   "metric_conf": {},
   "schedule_tier": "daily",
-  "dataset_filter": {"origin": "DEV"}
+  "dataset_filter": "origin = 'DEV'"
 }
 ```
 

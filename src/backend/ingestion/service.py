@@ -39,9 +39,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.backend.ingestion.extractors import run_extractor
 from src.shared.cache.client import RedisClient
 from src.shared.datahub.client import DataHubClient
-from src.shared.datahub.urn import platform_from_dataset_urn
+from src.shared.datahub.urn import platform_from_dataset_urn, platform_urn_from_dataset_urn
 from src.shared.db.models import Event, IngestionSource, IngestionSourceDataset
-from src.shared.db.registry import reconcile_registry
+from src.shared.db.registry import (
+    DatasetAttributes,
+    reconcile_registry,
+    upsert_dataset_attributes,
+)
 from src.shared.db.session import independent_sessionmaker
 from src.shared.events import (
     INGESTION_COMPLETE,
@@ -1802,7 +1806,7 @@ class IngestionService:
     async def _run_sweep(self) -> dict[str, Any]:
         """Reconcile all ingestion sources against DataHub.
 
-        Five-step pipeline (per spec/feature/BACKEND.md §Sync + mapping sweep):
+        Six-step pipeline (per spec/feature/BACKEND.md §Sync + mapping sweep):
 
         1. **Source defs**: pull DATAHUB_MANAGED source recipes + schedules via
            listIngestionSources; upsert read-only rows; remove stale rows.
@@ -1816,22 +1820,27 @@ class IngestionService:
            ``sources_pattern_degraded``.
            Reconcile dataset_registry to mirror the full DataHub URN set:
            insert new URNs as registered, soft-flag removed URNs as unregistered.
-        3. **Observed enrichment**: for DATAHUB_MANAGED and ACTIVE_CUSTOM_MANAGED
+        3. **Dataset attribute sync**: refresh the dataset_registry columns every
+           dataset_filter resolves against — origin and platform_urn parsed from
+           each URN, tag_urns and glossary_term_urns from one paged attribute
+           read, attrs_synced_at as the watermark. Upsert per dataset: a dataset
+           the read missed keeps its prior attributes.
+        4. **Observed enrichment**: for DATAHUB_MANAGED and ACTIVE_CUSTOM_MANAGED
            sources, read systemMetadata.pipelineName per dataset and upsert
            derivation='pipeline_name' rows where the name matches a source.
-        4. **Run and observation events**: book ingestion evidence as
+        5. **Run and observation events**: book ingestion evidence as
            INGESTION.COMPLETE / INGESTION.FAIL in three sub-passes — mirror
            terminal execution requests for DATAHUB_MANAGED sources; observe
            Operation timeseries on PASSIVE sources' mapped datasets; and observe
            Dataset.lastIngested for every mode from one estate-wide read.
-        5. **Unmanaged bucket**: served on-read by the router — sync() does not
+        6. **Unmanaged bucket**: served on-read by the router — sync() does not
            persist a separate table.
 
         Returns:
             Summary dict for the activity endpoint / logging. Every counter but
-            ``sources_synced`` and ``sources_zero_coverage`` reports **state
-            changes**, so a second consecutive sweep over an unchanged estate
-            returns zero for all of them:
+            ``sources_synced``, ``sources_zero_coverage`` and ``attrs_synced``
+            reports **state changes**, so a second consecutive sweep over an
+            unchanged estate returns zero for all of them:
               sources_synced    — DATAHUB_MANAGED rows mirrored (inserts and updates
                                   alike; a steady-state reading, not a delta)
               sources_removed   — DATAHUB_MANAGED rows removed (gone from DataHub)
@@ -1839,7 +1848,7 @@ class IngestionService:
               pipeline_links    — new pipeline_name rows, plus matched → pipeline_name
                                   upgrades; a re-confirmed pipeline_name row still
                                   refreshes last_seen_at but does not count
-              events_mirrored   — new INGESTION events written by step 4's first two
+              events_mirrored   — new INGESTION events written by step 5's first two
                                   sub-passes (execution-request mirror + Operation
                                   observation)
               last_ingested_observed — new INGESTION.COMPLETE events written by the
@@ -1855,6 +1864,14 @@ class IngestionService:
               registry_inserted — new dataset_registry rows inserted (datahub_registered=True)
               registry_marked_true   — existing rows flipped from False to True
               registry_marked_false  — existing rows soft-flagged as False (left DataHub)
+              attrs_synced      — dataset_registry rows whose filter attributes were
+                                  refreshed by step 3. The exception to the
+                                  state-change rule: it counts rows refreshed, not
+                                  rows changed, because the question a narrowed
+                                  filter raises is how much of the estate the
+                                  attribute read actually covered. Zero means the
+                                  read or the write degraded — every filter then
+                                  resolves against the last good sweep.
               sources_zero_coverage  — sources whose selection patterns are derivable
                                   and well-formed but matched no dataset while DataHub
                                   holds datasets for their platform (a condition, so it
@@ -1884,6 +1901,7 @@ class IngestionService:
             "registry_inserted": 0,
             "registry_marked_true": 0,
             "registry_marked_false": 0,
+            "attrs_synced": 0,
             "sources_zero_coverage": 0,
             "sources_pattern_degraded": 0,
         }
@@ -2218,7 +2236,12 @@ class IngestionService:
             logger.exception("registry_reconcile_failed — skipping, will retry next sweep")
             await self._db.rollback()
 
-        # ── Step 3: Observed enrichment (MANAGED modes) ───────────────────────
+        # ── Step 3: Dataset attribute sync ────────────────────────────────────
+        # Refreshes the dataset_registry columns every dataset_filter resolves
+        # against. Best-effort and committed on its own, like the reconcile above.
+        summary["attrs_synced"] = await self._sync_dataset_attributes()
+
+        # ── Step 4: Observed enrichment (MANAGED modes) ───────────────────────
         if all_dataset_urns:
             pipeline_map = await self._datahub.get_pipeline_names(all_dataset_urns)
 
@@ -2328,7 +2351,7 @@ class IngestionService:
 
             await self._db.commit()
 
-        # ── Step 4: Run and observation events ────────────────────────────────
+        # ── Step 5: Run and observation events ────────────────────────────────
         # Three sub-passes, additive rather than alternative: the run layer carries
         # outcome, identity and diagnostics; the observation layer answers "was this
         # dataset ingested, and when". Observation is success-only by nature — an
@@ -2358,6 +2381,94 @@ class IngestionService:
         return summary
 
     # ── Sync helpers ──────────────────────────────────────────────────────────
+
+    async def _sync_dataset_attributes(self) -> int:
+        """Refresh the ``dataset_registry`` columns every ``dataset_filter`` reads.
+
+        Two sources, deliberately different (spec/DATAHUB_INTEGRATION.md §Dataset
+        attribute sync): ``origin`` and ``platform_urn`` are parsed out of each
+        dataset URN, which encodes both by definition, while ``tag_urns`` and
+        ``glossary_term_urns`` come from one paged estate-wide read.
+
+        **A dataset the read did not return keeps its stored attributes.** The
+        write is an upsert keyed on the URNs actually read — never a
+        delete-then-insert, never a blanking update — because a half-completed
+        read that emptied ``tag_urns`` would silently narrow every UC3, UC4 and
+        UC5 filter in the system instead of failing visibly
+        (:func:`upsert_dataset_attributes` carries the same rule).
+
+        Best-effort in both directions: a failed read or a failed write refreshes
+        nothing, is logged, and leaves the ``datahub-api`` health row alone — a
+        reader detects a stalled sync from ``attrs_synced_at`` standing still, not
+        from peripheral health (spec/feature/BACKEND.md §Best-Effort Operations).
+        Returns the number of rows refreshed, which is what the ``attrs_synced``
+        counter reports: coverage of the estate, not a count of changes.
+        """
+        # Neither the read nor the shape it returns may escape: this step must not
+        # flip the datahub-api health row, and an exception leaving here would
+        # (spec/feature/BACKEND.md §Health reporting scopes the
+        # interface-violation exemption to the lastIngested read alone). The two
+        # are guarded separately so the log says which one failed.
+        try:
+            attributes = await self._datahub.get_dataset_attributes()
+        except (AttributeError, TypeError):
+            # The method is missing or takes different arguments: a call-shape
+            # fault of DataSpoke's own, not a DataHub fault. Logged at ERROR
+            # because it is otherwise indistinguishable from an estate with
+            # nothing to read.
+            logger.error(
+                "ingestion_sync_client_interface_error — get_dataset_attributes; this "
+                "is a DataSpoke call-shape fault, not a DataHub fault",
+                exc_info=True,
+            )
+            return 0
+        except Exception:
+            logger.warning(
+                "ingestion_sync_dataset_attributes_read_failed — every dataset keeps "
+                "its stored attributes this tick",
+                exc_info=True,
+            )
+            return 0
+
+        try:
+            records = [
+                DatasetAttributes(
+                    dataset_urn=urn,
+                    origin=self._datahub.origin_from_dataset_urn(urn),
+                    # Platform comes from the shared URN parser, which splits on
+                    # the FIRST comma — a platform id carries none, while a name
+                    # segment may (`s3,bucket/a,b.csv,PROD`).
+                    platform_urn=platform_urn_from_dataset_urn(urn),
+                    tag_urns=list(tag_urns),
+                    glossary_term_urns=list(glossary_term_urns),
+                )
+                for urn, (tag_urns, glossary_term_urns) in attributes.items()
+            ]
+        except (TypeError, ValueError):
+            # The read returned something this step cannot iterate as
+            # {urn: (tags, terms)} — a remote-payload problem, not a call-shape
+            # one, so it degrades the signal rather than naming DataSpoke's call.
+            logger.error(
+                "ingestion_sync_dataset_attributes_payload_unreadable — the attribute "
+                "read returned a shape this step cannot iterate; every dataset keeps "
+                "its stored attributes this tick",
+                exc_info=True,
+            )
+            return 0
+
+        if not records:
+            return 0
+
+        try:
+            refreshed = await upsert_dataset_attributes(self._db, records)
+            await self._db.commit()
+            return refreshed
+        except Exception:
+            logger.exception(
+                "dataset_attribute_sync_failed — skipping, will retry next sweep"
+            )
+            await self._db.rollback()
+            return 0
 
     async def _mirror_execution_requests(
         self,

@@ -37,7 +37,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.backend.ingestion.service import IngestionService, IngestionSourceRecord
-from src.backend.metrics.measurers.registry import register_measurer
+from src.backend.metrics.measurers.registry import DatasetVerdict, register_measurer
 from src.shared.datahub.client import DataHubClient
 
 
@@ -48,8 +48,8 @@ async def measure(
     *,
     datahub: DataHubClient,
     db: AsyncSession,
-) -> tuple[dict[str, float], dict[str, Any]]:
-    """Return ingestion-freshness values and a stale-dataset breakdown.
+) -> tuple[dict[str, float], list[DatasetVerdict]]:
+    """Return ingestion-freshness values and one verdict per dataset in scope.
 
     Parameters
     ----------
@@ -67,10 +67,13 @@ async def measure(
 
     Returns
     -------
-    tuple[dict[str, float], dict]
-        ``(values, breakdown)`` where values has keys ``total`` and
-        ``ingested_in_time``; breakdown lists only stale datasets with
-        ``last_event_at``, ``time_window_sec`` and ``evidence_tier`` in detail.
+    tuple[dict[str, float], list[DatasetVerdict]]
+        ``(values, verdicts)`` where values has keys ``total`` and
+        ``ingested_in_time``. Verdicts cover **every** dataset — ``met`` is false
+        for a stale one — and carry ``evidence_at`` = the resolved ingestion
+        evidence time plus ``last_event_at``, ``time_window_sec`` and
+        ``evidence_tier`` in detail. The service derives the failures-only
+        breakdown from them.
     """
     window_sec = int(metric_conf["time_window_sec"])
     now = datetime.now(tz=UTC)
@@ -101,7 +104,7 @@ async def measure(
     # ── 3. Evaluate freshness per dataset ─────────────────────────────────────
     total = len(datasets)
     ingested_in_time = 0
-    stale_datasets: list[dict[str, Any]] = []
+    verdicts: list[DatasetVerdict] = []
 
     for urn in datasets:
         owner = owners.get(urn)
@@ -121,26 +124,27 @@ async def measure(
                 if last_event_at is not None:
                     evidence_tier = "source_level"
 
-        if last_event_at is not None and last_event_at > cutoff:
+        met = last_event_at is not None and last_event_at > cutoff
+        if met:
             ingested_in_time += 1
-        else:
-            stale_datasets.append(
-                {
-                    "urn": urn,
-                    "detail": {
-                        "last_event_at": last_event_at.isoformat() if last_event_at else None,
-                        "time_window_sec": window_sec,
-                        "evidence_tier": evidence_tier,
-                    },
-                }
+
+        # Every dataset gets a verdict, fresh or stale: the detail payload is the
+        # same one the failing entries carry in the derived breakdown.
+        verdicts.append(
+            DatasetVerdict(
+                urn=urn,
+                met=met,
+                evidence_at=last_event_at,
+                detail={
+                    "last_event_at": last_event_at.isoformat() if last_event_at else None,
+                    "time_window_sec": window_sec,
+                    "evidence_tier": evidence_tier,
+                },
             )
+        )
 
     values: dict[str, float] = {
         "total": float(total),
         "ingested_in_time": float(ingested_in_time),
     }
-    breakdown: dict[str, Any] = {
-        "dataset_count": total,
-        "datasets": stale_datasets,
-    }
-    return values, breakdown
+    return values, verdicts

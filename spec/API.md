@@ -389,7 +389,7 @@ DataHub/DataSpoke; DataSpoke records the registration + a declared `AllowDenyPat
 syncs results). The recipe is stored DataHub-compatible (`recipe.source.{type,config}`); secrets
 are referenced as `${name__key}` and resolved from K8s Secret `dataspoke-source-cred-<name>`.
 
-Source→dataset mapping is rebuilt by the hourly sync DAG (not a public mutation) by evaluating
+Source→dataset mapping is rebuilt by the `datahub-sync-hourly` sweep (not a public mutation) by evaluating
 each source's filter-matcher against the DataHub dataset set, optionally enriched by
 `systemMetadata.pipelineName` for the two MANAGED modes. Datasets covered by no source form the
 **unmanaged bucket** (`GET /spoke/ingestion/unmanaged`). Design, sync, and aspect details: see
@@ -407,7 +407,7 @@ and [DATAHUB_INTEGRATION §Ingestion Source Sync](DATAHUB_INTEGRATION.md#ingesti
 | `POST` | `/spoke/ingestion/sources/{id}/method/run` | Execute the extractor; `?dry_run=true` runs a connection check + discovery preview (connects, crawls `information_schema`, applies `schema_pattern`) that reports the datasets it would emit without writing. `ACTIVE_CUSTOM_MANAGED` only — `409 INGESTION_RUN_NOT_APPLICABLE` otherwise; concurrent runs return `409 INGESTION_RUNNING`. Both the run-response `detail` and the `INGESTION.COMPLETE`/`INGESTION.FAIL` event `detail` carry `dry_run`, `discovered_urns` / `discovered_urns_count` (dataset URNs passing the filter — the "would emit" plan, present on both dry-run and real runs), `emitted_urns` / `emitted_urns_count` (dataset URNs actually written to DataHub; empty with count `0` on a dry-run), `errors`, `warnings`; the run-response additionally surfaces `run_id` and `status` as top-level fields, and the event `detail` additionally carries `run_id` and `platform`. `emitted_urns ⊆ discovered_urns`; on a real run `discovered_urns_count − emitted_urns_count > 0` signals per-table emit failures | Ingestion Control | UC1 |
 | `GET` | `/spoke/ingestion/sources/{id}/datasets` | Datasets this source covers (the mapping; each row carries `authority` + `derivation`); paginated, sortable by `dataset_urn`/`first_seen_at`/`last_seen_at` (default `dataset_urn_asc`) | Ingestion Control | UC1 |
 | `GET` | `/spoke/ingestion/sources/{id}/event` | Run/event history for the source, including runs booked on its internal DataHub CLI wrapper sources (paginated, sortable by `occurred_at`, default `occurred_at_desc`). Each row carries a derived `wrapper: bool` — `true` for an event originating on a linked wrapper rather than the source itself | Ingestion Control | UC1 |
-| `GET` | `/spoke/ingestion/unmanaged` | DataHub datasets (`dataset_registry.datahub_registered=true`) covered by no ingestion source (paginated, sortable by `dataset_urn`/`created_at`/`updated_at`, default `dataset_urn_asc`) — the registry is refreshed hourly by the `datahub-sync-hourly` sweep | Ingestion Control | UC1 |
+| `GET` | `/spoke/ingestion/unmanaged` | DataHub datasets (`dataset_registry.datahub_registered=true`) covered by no ingestion source (paginated, sortable by `dataset_urn`/`created_at`/`updated_at`, default `dataset_urn_asc`) — the registry is refreshed by the `datahub-sync-hourly` sweep | Ingestion Control | UC1 |
 | `GET` | `/spoke/ingestion/secrets` | List source-credential references available to recipes — one row per `(secret, key)` under the `dataspoke-source-cred-` prefix, as `{ref: "name__key", secret_name, key}`. **Values are never returned.** Paginated (in-memory slice + count over the enumerated K8s Secret refs) and sortable by `ref` (default `ref_asc`). Admins author the K8s Secrets out-of-band (`kubectl create secret generic dataspoke-source-cred-<name> --from-literal=<key>=… -n <dataspoke-ns>`; the source editor UI renders this authoring guide next to the reference list — DataSpoke has no secret-write API, the model is reference-only); a recipe then references one as `${name__key}`. **Requires Editor or Admin** (`403 READ_ONLY_ROLE` for Reader) — exception to the Reader-GET rule, since enumerating which credential refs exist is author-only tooling | Ingestion Control | UC1 |
 
 **Source body shape.** The request and response bodies are JSON whose fields mirror the UC1
@@ -503,7 +503,7 @@ proceeds nodes → edges → triples.
 
 **Payload caps** (validated at the schema layer; cap violations return `422`):
 - `attr/conf.default_run_prompt` ≤ 16,000 chars
-- `attr/conf.dataset_filter.{tags,glossary_terms,dataset_urns}` ≤ 1,000 entries per dimension
+- `attr/conf.dataset_filter` ≤ 8,000 chars and ≤ 1,000 string literals ([grammar](#dataset_filter-grammar))
 - `attr/seed` Markdown body ≤ 128 KiB
 - `method/run` one-shot Markdown body ≤ 128 KiB
 - node / edge / triple `method/review.reason` ≤ 2,000 chars
@@ -566,7 +566,7 @@ missing, disabled, or has an empty `allowed` — only surfaced when
 `include_disallowed=true`).
 
 **Payload caps** (validated at the schema layer; cap violations return `422`):
-- conf `dataset_filter.{tags,glossary_terms,dataset_urns}` ≤ 1,000 entries per dimension
+- conf `dataset_filter` ≤ 8,000 chars and ≤ 1,000 string literals ([grammar](#dataset_filter-grammar))
 - conf `result_limit` ∈ `[1, 20]`
 - candidate `value` Markdown body ≤ 16 KiB
 - candidate `method/review.reason` ≤ 2,000 chars
@@ -605,16 +605,59 @@ route paths for read/update/delete and as the DAG-name suffix `metrics-{metric_i
 | `metric_type` | `"ingestion-freshness"` \| `"validation-score"` \| `"doc-health"` | Unsupported values return `422 INVALID_PARAMETER` |
 | `title` | string | Display title |
 | `description` | string | What the metric measures |
-| `metrics` | string[] | Subset of the type's emitted keys (see USE_CASE §UC5); unknown keys return `422 INVALID_PARAMETER` |
+| `metrics` | object[] | Series descriptors — `{name, color, idx}`. `name` is one of the type's emitted keys (see USE_CASE §UC5); unknown keys return `422 INVALID_PARAMETER`. `color` is a `#RRGGBB` hex string. `idx` is a positive integer display order. `name` and `idx` are each unique within the metric. The dashboard chart draws one line per descriptor, in `idx` order, stroked with `color` |
 | `metric_conf` | object | Type-specific. `ingestion-freshness` and `validation-score` require `time_window_sec` (positive int seconds) — the measurement window, applied to every dataset the metric scans (see USE_CASE §UC5); `doc-health` takes `{}` |
 | `schedule_tier` | `"hourly"` \| `"daily"` \| `"weekly"` \| null | When null, the metric runs only on-demand |
-| `dataset_filter` | object | Optional `{origin?, tags?[], glossary_terms?[], dataset_urns?[]}`. `origin` is the DataHub `FabricType` value carried as the third URN segment (e.g. `PROD`/`DEV`/`CORP`/`EI`/`STG`/`NON_PROD`/…); DataSpoke forwards it verbatim and lets DataHub reject unknowns, but an empty-or-whitespace-only `origin` is rejected at PUT/PATCH with `422 INVALID_PARAMETER`. The other three dimensions are OR-ed among themselves and AND-ed with `origin`. `{}` = all datasets. See [DATAHUB_INTEGRATION §Origin filter group](DATAHUB_INTEGRATION.md#origin-filter-group) for the resolver shape |
+| `dataset_filter` | string | A SQL `WHERE`-clause over the dataset registry (grammar below). The empty string matches every registered dataset |
 
-`dataset_urns` URN format is validated at PUT/PATCH (`422 INVALID_DATASET_URN`);
-unresolved-at-runtime entries are skipped and reported in the `METRIC.RUN_COMPLETE`
-event's `unresolved_urns` field. UC3's `ontogen/attr/conf.dataset_filter` and UC4's
-per-conf `metagen/conf.dataset_filter` use the same four-dimension shape and the same
-validation.
+##### `dataset_filter` grammar
+
+`dataset_filter` is a SQL `WHERE`-clause string evaluated against `dataset_registry`,
+DataSpoke's local mirror of the DataHub dataset estate. Resolution is a DataSpoke-side
+SQL query, not a DataHub search, so a filter's scope is as fresh as the last attribute
+sweep (see [BACKEND §Sync + mapping sweep](feature/BACKEND.md#ingestion-service-srcbackendingestion)).
+
+```
+filter      := ε | expr                        -- empty string = all registered datasets
+expr        := term { (AND|OR) term }           -- one operator kind per level
+term        := predicate | '(' expr ')'         -- parens nest at most 2 deep (see below)
+predicate   := scalar_col '=' string
+             | scalar_col IN '(' string {',' string} ')'
+             | string IN array_col
+scalar_col  := dataset_urn | origin | platform_urn
+array_col   := tag_urns | glossary_term_urns
+string      := '...'                            -- single quotes only; '' escapes a quote
+```
+
+| Column | Kind | Value |
+|---|---|---|
+| `dataset_urn` | scalar | The full `urn:li:dataset:(…)` URN |
+| `origin` | scalar | The URN's third segment — a DataHub `FabricType` value (`PROD`/`DEV`/`CORP`/`EI`/`STG`/`NON_PROD`/…) |
+| `platform_urn` | scalar | The URN's first segment — `urn:li:dataPlatform:…` |
+| `tag_urns` | array | DataHub tag URNs carried by the dataset |
+| `glossary_term_urns` | array | DataHub glossary-term URNs carried by the dataset |
+
+Keywords (`AND`, `OR`, `IN`) and column names are case-insensitive; values are
+case-sensitive. Mixing `AND` and `OR` at one level requires parentheses.
+
+**Caps** (part of the grammar, enforced on every route that writes a filter): filter text
+≤ 8,000 characters and ≤ 1,000 string literals. The per-feature Payload-caps lists restate
+these; the values do not vary by feature.
+
+**Nesting depth** counts parenthesised groups, with the unparenthesised top level as depth
+0. `a AND (b OR c)` is depth 1 and `a AND (b OR (c AND d))` is depth 2 — both accepted;
+a third parenthesised level, `a AND (b OR (c AND (d OR e)))`, is rejected. A malformed
+filter returns `422 INVALID_DATASET_FILTER` carrying the character position of the error. A
+`dataset_urn` literal that is not a well-formed URN returns `422 INVALID_DATASET_URN`;
+`dataset_urn` literals that match no registered dataset at run time are reported in the
+`METRIC.RUN_COMPLETE` event's `unresolved_urns` field. UC3's
+`ontogen/attr/conf.dataset_filter` and UC4's per-conf `metagen/conf.dataset_filter` use
+this same grammar and validation.
+
+```sql
+origin = 'PROD' AND ('urn:li:tag:area:catalog' IN tag_urns
+                     OR 'urn:li:glossaryTerm:pii.gdpr' IN glossary_term_urns)
+```
 
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|
@@ -627,11 +670,20 @@ validation.
 | `PATCH` | `/spoke/governance/metric/{metric_id}/attr/conf` | Update metric definition fields | Governance | UC5 |
 | `DELETE` | `/spoke/governance/metric/{metric_id}/attr/conf` | Remove metric definition | Governance | UC5 |
 | `GET` | `/spoke/governance/metric/{metric_id}/attr/result` | Get measurement results (each row carries `values: dict[str,float]` and `breakdown`; paginated, sortable by `measured_at`; `?from=…&to=…` for time range) | Governance | UC5 |
+| `GET` | `/spoke/governance/metric/{metric_id}/dataset` | The datasets this metric's `dataset_filter` covers, joined to the latest per-dataset verdict. Each row carries `dataset_urn`, `met` (`"true"` \| `"false"` \| `"unknown"` — `unknown` = in scope but never evaluated), `last_check_at`, and `detail`. Repeatable `met` query param (default: all three). Paginated (`offset`/`limit`/`total_count`), sortable by `dataset_urn` (default `dataset_urn_asc`). The response envelope also carries `attrs_synced_at` — the **maximum** `dataset_registry.attrs_synced_at` over the datasets in scope, i.e. the newest attribute sync any covered dataset has received; `null` when the scope is empty or no covered dataset has ever synced. It is scope-relative, not registry-wide, and unaffected by `met` filtering or paging, so it answers "how fresh is the scope this page is drawn from" | Governance | UC5 |
 | `POST` | `/spoke/governance/metric/{metric_id}/method/run` | Trigger a metric measurement run; `?dry_run=true` evaluates without persisting. Concurrent runs return `409 METRIC_RUNNING`. Rejected with `409 METRIC_DISABLED` when the metric is disabled and `dry_run` is not true | Governance | UC5 |
 | `GET` | `/spoke/governance/metric/{metric_id}/event` | Metric run events (run completions, definition changes). Paginated, sortable by `occurred_at` (default `occurred_at_desc`), `from`/`to` time-range | Governance | UC5 |
 
+`met` is `"unknown"` exactly when the dataset is in the filter's scope but carries no
+verdict — the metric has never run, or the dataset entered scope after the last run.
+`last_check_at` is the per-dataset evidence timestamp (`ingestion-freshness`: the resolved
+ingestion evidence time; `validation-score`: the counted result's `data_time`), falling
+back to the run's `measured_at` — `doc-health` has no per-dataset timestamp, so it always
+reports the run time. Every non-dry run replaces the metric's verdict set wholesale; a dry
+run persists none, so `/dataset` after a dry run still reports the previous run's verdicts.
+
 **Payload caps** (validated at the schema layer; cap violations return `422`):
-- `attr/conf.dataset_filter.{tags,glossary_terms,dataset_urns}` ≤ 1,000 entries per dimension
+- `dataset_filter` ≤ 8,000 chars and ≤ 1,000 string literals — on the `POST /spoke/governance/metric` create body as well as `PUT`/`PATCH .../attr/conf`
 
 ### Admin (`/admin`)
 
@@ -1180,7 +1232,8 @@ Clients should treat `detail` as optional; absent for errors that don't need it.
 | `ONTOGEN_DISABLED` | 409 | Ontogen conf has `is_enabled=false`; non-dry-run rejected |
 | `ONTOGEN_TRIPLE_DEPENDENCY_PENDING` | 422 | Triple review attempted while one or more of its subject node, edge, or object node is not yet approved |
 | `PAYLOAD_TOO_LARGE` | 413 | `text/markdown` request body exceeds the route's size cap. Ontogen seed (`POST`/`PATCH /spoke/ontogen/attr/seed[/{seed_id}]`) and run (`POST /spoke/ontogen/method/run`) bodies are capped at 128 KiB |
-| `INVALID_DATASET_URN` | 422 | A `dataset_filter.dataset_urns` entry is not a well-formed `urn:li:dataset:(…)` URN. Validated at POST/PUT/PATCH for `ontogen/attr/conf`, `metagen/conf[/{conf_id}]`, and `metric/{id}/attr/conf` |
+| `INVALID_DATASET_FILTER` | 422 | A `dataset_filter` string does not parse under the [filter grammar](#dataset_filter-grammar), names an unknown column, or exceeds a payload cap. `detail` carries the character position of the error. Validated wherever a `dataset_filter` is written: `PUT`/`PATCH /spoke/ontogen/attr/conf`; `POST /spoke/metagen/conf` and `PUT`/`PATCH /spoke/metagen/conf/{conf_id}`; `POST /spoke/governance/metric` (the create body carries the filter — there is no `POST` on `attr/conf`) and `PUT`/`PATCH /spoke/governance/metric/{metric_id}/attr/conf` |
+| `INVALID_DATASET_URN` | 422 | A `dataset_urn` literal inside a `dataset_filter` is not a well-formed `urn:li:dataset:(…)` URN. Validated on the same routes as `INVALID_DATASET_FILTER` |
 | `NOT_IMPLEMENTED` | 501 | The requested mode or capability is reserved for future work. Returned by `POST /spoke/governance/metric` and `PUT /spoke/governance/metric/{id}/attr/conf` when `mode: "passive"` |
 | `EMAIL_ALREADY_REGISTERED` | 409 | `POST /auth/register` body carries an email already mapped to an existing user |
 | `INVALID_RESET_TOKEN` | 400 | `POST /auth/password/reset/confirm` token does not match any row, is expired, or has already been used |

@@ -3049,6 +3049,7 @@ class TestStepFourFoldsEachSubPassIntoItsCounter:
         _SweepSession([passive]).wire(db)
         datahub.list_ingestion_sources = AsyncMock(return_value=[])
         datahub.enumerate_datasets = AsyncMock(return_value=[])
+        datahub.get_dataset_attributes = AsyncMock(return_value={})
 
         service._observe_passive_operations = AsyncMock(return_value=2)  # type: ignore[method-assign]
         service._observe_last_ingested = AsyncMock(return_value=3)  # type: ignore[method-assign]
@@ -3112,6 +3113,7 @@ class TestStepFourFoldsEachSubPassIntoItsCounter:
         # row the sweep loads in step 2, which is what step 4 iterates.
         datahub.list_ingestion_sources = AsyncMock(return_value=[])
         datahub.enumerate_datasets = AsyncMock(return_value=[])
+        datahub.get_dataset_attributes = AsyncMock(return_value={})
 
         service._mirror_execution_requests = AsyncMock(return_value=7)  # type: ignore[method-assign]
         service._observe_last_ingested = AsyncMock(return_value=0)  # type: ignore[method-assign]
@@ -3188,6 +3190,7 @@ class TestStepFourFoldsEachSubPassIntoItsCounter:
         _SweepSession([managed, passive, active]).wire(db)
         datahub.list_ingestion_sources = AsyncMock(return_value=[])
         datahub.enumerate_datasets = AsyncMock(return_value=[])
+        datahub.get_dataset_attributes = AsyncMock(return_value={})
 
         service._mirror_execution_requests = AsyncMock(return_value=5)  # type: ignore[method-assign]
         service._observe_passive_operations = AsyncMock(return_value=2)  # type: ignore[method-assign]
@@ -4254,4 +4257,153 @@ class TestSyncReportsApiHealth:
             "A WARNING is filtered out of the default operational log exactly where the row "
             "it would have explained is stuck reading `unknown`. "
             "spec: feature/BACKEND.md §Health reporting."
+        )
+
+
+# ── Step 3: dataset attribute sync ────────────────────────────────────────────
+
+
+class TestDatasetAttributeSync:
+    """Step 3 mirrors the columns every ``dataset_filter`` resolves against.
+
+    spec: feature/BACKEND.md §Sync + mapping sweep — step 3 "Dataset attribute sync";
+    spec: DATAHUB_INTEGRATION.md §Dataset attribute sync — the two-source split and the
+        never-blank upsert rule;
+    spec: BACKEND_SCHEMA.md §dataset_registry — the attribute columns and `attrs_synced_at`.
+    """
+
+    @staticmethod
+    def _capture_upsert(db: AsyncMock) -> list[tuple[Any, Any]]:
+        calls: list[tuple[Any, Any]] = []
+
+        async def _execute(stmt: Any, payload: Any = None, *args: Any, **kwargs: Any) -> MagicMock:
+            calls.append((stmt, payload))
+            return MagicMock()
+
+        db.execute = AsyncMock(side_effect=_execute)
+        return calls
+
+    @staticmethod
+    def _real_origin_parser(datahub: AsyncMock) -> None:
+        """Use the client's own URN parser rather than a mock return.
+
+        `origin_from_dataset_urn` is a pure, dependency-free parse on the client, so
+        stubbing it would only assert that the step calls *something*; wiring the real
+        one is what makes the parsed-from-the-URN claim testable.
+        """
+        from src.shared.datahub.client import DataHubClient
+
+        datahub.origin_from_dataset_urn = MagicMock(
+            side_effect=lambda urn: DataHubClient.origin_from_dataset_urn(datahub, urn)
+        )
+
+    @pytest.mark.asyncio
+    async def test_origin_and_platform_are_parsed_from_the_urn_not_fetched(
+        self, service: IngestionService, db: AsyncMock, datahub: AsyncMock
+    ) -> None:
+        """`origin` and `platform_urn` come from the URN; the read supplies only the arrays.
+
+        spec: DATAHUB_INTEGRATION.md §Dataset attribute sync — "`origin`, `platform_urn` |
+            parsed from the dataset URN | `urn:li:dataset:(<platform_urn>,<name>,<origin>)`
+            encodes both by definition […] Parsing is exact and free, and does not depend
+            on which fields a GraphQL `Dataset` happens to expose".
+        """
+        urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,PROD)"
+        calls = self._capture_upsert(db)
+        self._real_origin_parser(datahub)
+        datahub.get_dataset_attributes = AsyncMock(
+            return_value={urn: (["urn:li:tag:pii"], ["urn:li:glossaryTerm:pii.gdpr"])}
+        )
+
+        refreshed = await service._sync_dataset_attributes()
+
+        assert refreshed == 1
+        assert calls, "backstop: the step must have written the attributes it read"
+        row = calls[0][1][0]
+        assert row["dataset_urn"] == urn
+        assert row["origin"] == "PROD"
+        assert row["platform_urn"] == "urn:li:dataPlatform:postgres"
+        assert row["tag_urns"] == ["urn:li:tag:pii"]
+        assert row["glossary_term_urns"] == ["urn:li:glossaryTerm:pii.gdpr"]
+        assert row["attrs_synced_at"] is not None, (
+            "the sync watermark is what tells a reader how fresh a filter's scope is. "
+            "spec: BACKEND_SCHEMA.md §dataset_registry."
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_failed_read_refreshes_nothing_and_does_not_raise(
+        self, service: IngestionService, db: AsyncMock, datahub: AsyncMock
+    ) -> None:
+        """A DataHub failure degrades the signal — every dataset keeps its attributes.
+
+        spec: feature/BACKEND.md §Best-Effort Operations;
+        spec: DATAHUB_INTEGRATION.md §Dataset attribute sync — a dataset absent from the
+            read "keeps its prior attributes rather than being blanked".
+        """
+        calls = self._capture_upsert(db)
+        datahub.get_dataset_attributes = AsyncMock(
+            side_effect=DataHubUnavailableError("GMS down")
+        )
+
+        refreshed = await service._sync_dataset_attributes()
+
+        assert refreshed == 0
+        assert calls == [], "a failed read must write nothing at all"
+        db.commit.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_an_empty_read_writes_nothing(
+        self, service: IngestionService, db: AsyncMock, datahub: AsyncMock
+    ) -> None:
+        """An empty attribute read must not blank the estate.
+
+        spec: DATAHUB_INTEGRATION.md §Dataset attribute sync — the never-blank rule.
+        """
+        calls = self._capture_upsert(db)
+        datahub.get_dataset_attributes = AsyncMock(return_value={})
+
+        assert await service._sync_dataset_attributes() == 0
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_a_failed_write_rolls_back_and_reports_zero(
+        self, service: IngestionService, db: AsyncMock, datahub: AsyncMock
+    ) -> None:
+        """A write failure rolls back its own step so the rest of the sweep continues.
+
+        spec: feature/BACKEND.md §Best-Effort Operations.
+        """
+        urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,PROD)"
+        self._real_origin_parser(datahub)
+        db.execute = AsyncMock(side_effect=RuntimeError("deadlock detected"))
+        datahub.get_dataset_attributes = AsyncMock(return_value={urn: ([], [])})
+
+        assert await service._sync_dataset_attributes() == 0
+        db.rollback.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_sweep_reports_the_step_under_attrs_synced(
+        self, service: IngestionService, db: AsyncMock, datahub: AsyncMock
+    ) -> None:
+        """`attrs_synced` carries step 3's return — coverage, not a change count.
+
+        The stand-in returns a distinct non-zero sentinel so the assertion cannot be
+        satisfied by the zero-initialised summary key with the step never called.
+
+        spec: feature/BACKEND.md §Sync + mapping sweep — Sweep summary — "attrs_synced —
+            dataset_registry rows whose filter attributes were refreshed by step 3 […] it
+            counts rows refreshed, not rows changed".
+        """
+        _SweepSession([]).wire(db)
+        datahub.list_ingestion_sources = AsyncMock(return_value=[])
+        datahub.enumerate_datasets = AsyncMock(return_value=[])
+        service._sync_dataset_attributes = AsyncMock(return_value=11)  # type: ignore[method-assign]
+        service._observe_last_ingested = AsyncMock(return_value=0)  # type: ignore[method-assign]
+
+        summary = await service._run_sweep()
+
+        service._sync_dataset_attributes.assert_awaited_once()
+        assert summary["attrs_synced"] == 11, (
+            f"step 3's return must reach attrs_synced; got {summary['attrs_synced']} for a "
+            "step that returned 11. spec: feature/BACKEND.md §Sync + mapping sweep."
         )

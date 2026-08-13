@@ -34,12 +34,13 @@
  *   - lib/api/ontogen.ts useUpsertOntogenConf → PUT /spoke/ontogen/attr/conf.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, within, cleanup } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import React from "react";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { ApiError } from "@/lib/api/client";
 import type { OntogenConf } from "@/types/ontogen";
 
 // ---------------------------------------------------------------------------
@@ -60,7 +61,7 @@ function makeConf(overrides: Partial<OntogenConf> = {}): OntogenConf {
   return {
     is_enabled: false,
     schedule_tier: null,
-    dataset_filter: {},
+    dataset_filter: "",
     default_run_prompt: null,
     updated_at: null,
     ...overrides,
@@ -81,9 +82,15 @@ vi.mock("@/lib/auth/use-me", () => ({
 const mockUseOntogenConf = vi.fn();
 const mockUpsertMutate = vi.fn();
 const mockRunMutate = vi.fn();
+/** Mutable so a test can put a server error on the upsert (Save) mutation. */
+let upsertError: unknown = null;
 vi.mock("@/lib/api/ontogen", () => ({
   useOntogenConf: () => mockUseOntogenConf(),
-  useUpsertOntogenConf: () => ({ mutate: mockUpsertMutate, isPending: false }),
+  useUpsertOntogenConf: () => ({
+    mutate: mockUpsertMutate,
+    isPending: false,
+    error: upsertError,
+  }),
   useRunOntogen: () => ({ mutate: mockRunMutate, isPending: false }),
 }));
 
@@ -142,6 +149,7 @@ function checkboxIsDisabled(el: HTMLElement): boolean {
 beforeEach(() => {
   vi.clearAllMocks();
   cleanup();
+  upsertError = null;
   mockUseMeFn.mockReturnValue(editorMe());
   mockUseOntogenConf.mockReturnValue({ data: makeConf(), isLoading: false, error: null });
 });
@@ -316,5 +324,93 @@ describe("OntogenConfPage — Run opens the run dialog without submitting the co
     render(<OntogenConfPage />);
     const runBtn = screen.getByRole("button", { name: /^run$/i }) as HTMLButtonElement;
     expect(runBtn.type).toBe("button");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 6. dataset_filter is the shared SQL clause editor
+//
+// spec: spec/feature/FRONTEND_ONTOGEN.md §Configuration — "`dataset_filter` is a
+//   SQL `WHERE`-clause string, edited through the shared DatasetFilterEditor".
+// spec: spec/feature/FRONTEND_BASIC.md §Shared component notes → DatasetFilterEditor —
+//   "Validation is server-side: a `422 INVALID_DATASET_FILTER` renders inline
+//   against the field, carrying the position the API reported."
+// spec: spec/API.md §`dataset_filter` grammar — the clause is one string; the
+//   empty string matches every registered dataset.
+// ---------------------------------------------------------------------------
+
+/** The editor's fieldset — the inline slot a filter 422 must land in. */
+function filterFieldset(): HTMLElement {
+  const box = screen.getByLabelText("dataset_filter");
+  const set = box.closest("fieldset");
+  if (!set) throw new Error("dataset_filter editor is not inside a fieldset");
+  return set as HTMLElement;
+}
+
+describe("OntogenConfPage — dataset_filter is a SQL clause string", () => {
+  it("submits the clause the user typed, verbatim, as a string", async () => {
+    const user = userEvent.setup();
+    mockUseOntogenConf.mockReturnValue({
+      data: makeConf({ dataset_filter: "origin = 'DEV'" }),
+      isLoading: false,
+      error: null,
+    });
+    render(<OntogenConfPage />);
+
+    await user.click(screen.getByRole("button", { name: /^edit$/i }));
+    const box = (await screen.findByLabelText("dataset_filter")) as HTMLTextAreaElement;
+    expect(box.value).toBe("origin = 'DEV'");
+
+    // The UC3 Imazon clause — a tag-membership predicate.
+    const clause = "'urn:li:tag:area:catalog' IN tag_urns";
+    fireEvent.change(box, { target: { value: clause } });
+    await user.click(screen.getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() => expect(mockUpsertMutate).toHaveBeenCalledTimes(1));
+    const body = mockUpsertMutate.mock.calls[0][0] as Record<string, unknown>;
+    expect(body["dataset_filter"]).toBe(clause);
+  });
+
+  it("renders a 422 INVALID_DATASET_FILTER inline in the editor, with its position", async () => {
+    const user = userEvent.setup();
+    upsertError = new ApiError(
+      {
+        error_code: "INVALID_DATASET_FILTER",
+        message: "unknown column 'owner'",
+        trace_id: "t-1",
+        resp_time: "2026-01-01T00:00:00Z",
+        detail: { position: 0 },
+      },
+      422,
+    );
+    render(<OntogenConfPage />);
+
+    await user.click(screen.getByRole("button", { name: /^edit$/i }));
+
+    await screen.findByLabelText("dataset_filter");
+    const alert = within(filterFieldset()).getByRole("alert");
+    expect(alert.textContent).toContain("unknown column 'owner'");
+    expect(alert.textContent).toContain("0");
+  });
+
+  it("leaves every other save error out of the editor's inline slot", async () => {
+    // Backstop for the assertion above: the inline slot is reserved for filter
+    // errors; a non-filter failure is surfaced by the page's own onError toast.
+    const user = userEvent.setup();
+    upsertError = new ApiError(
+      {
+        error_code: "CONFLICT",
+        message: "conf changed underneath",
+        trace_id: "t-2",
+        resp_time: "2026-01-01T00:00:00Z",
+      },
+      409,
+    );
+    render(<OntogenConfPage />);
+
+    await user.click(screen.getByRole("button", { name: /^edit$/i }));
+    await screen.findByLabelText("dataset_filter");
+
+    expect(within(filterFieldset()).queryByRole("alert")).toBeNull();
   });
 });

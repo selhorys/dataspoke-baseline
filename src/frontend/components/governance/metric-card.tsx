@@ -3,15 +3,25 @@
 /**
  * MetricCard — combined dashboard card for a single enabled metric.
  *
- * Stacks, top to bottom: the metric title, a metric_type outline badge, the
- * latest `values` dict with its measured-at date, and the metric's per-metric
- * trend chart over the shared dashboard range.
+ * The header carries the metric `title` on the left and, top-right at a smaller
+ * size, the `metric_type` outline badge beside a `Details` button linking to
+ * /governance/metrics/{id}; `description` sits under the title in small muted
+ * text. The body stacks the latest `values` dict with its measured-at date and
+ * the metric's trend chart — one line per `metrics[]` series descriptor, in
+ * `idx` order, stroked with each descriptor's `color`.
+ *
+ * `description` and `metrics` both come from the list read that produced
+ * `metric`, so the card needs no extra fetch for either.
  *
  * Reads:
  *   GET /spoke/governance/metric/{id}/attr/result?limit=1            (latest stat)
  *   GET /spoke/governance/metric/{id}/attr/result?from=…&to=…&limit  (trend)
+ *
+ * Spec: spec/feature/FRONTEND_GOVERNANCE.md §Dashboard.
  */
 
+import Link from "next/link";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
@@ -48,12 +58,36 @@ export function MetricCard({
   return (
     <Card className="w-full" data-testid={`metric-card-${metric.id}`}>
       <CardHeader className="gap-1.5 pb-3">
-        <CardTitle className="text-lg font-semibold leading-tight">
-          {metric.title}
-        </CardTitle>
-        <Badge variant="outline" className="w-fit text-xs">
-          {metric.metric_type}
-        </Badge>
+        <div className="flex items-start justify-between gap-2">
+          <CardTitle className="text-lg font-semibold leading-tight">
+            {metric.title}
+          </CardTitle>
+          {/* Two controls share this slot; distinct keys keep React from
+              reusing one node as the other across re-renders. */}
+          <div className="flex shrink-0 items-center gap-1.5">
+            <Badge
+              key="metric-type-badge"
+              variant="outline"
+              className="px-1.5 py-0 text-[10px] font-medium"
+            >
+              {metric.metric_type}
+            </Badge>
+            <Button
+              key="metric-details-link"
+              asChild
+              variant="outline"
+              size="sm"
+              className="h-6 px-2 text-xs"
+            >
+              <Link href={`/governance/metrics/${encodeURIComponent(metric.id)}`}>
+                Details
+              </Link>
+            </Button>
+          </div>
+        </div>
+        {metric.description && (
+          <p className="text-xs text-muted-foreground">{metric.description}</p>
+        )}
       </CardHeader>
       <CardContent className="space-y-4">
         {isLoading ? (
@@ -83,6 +117,7 @@ export function MetricCard({
 
         <MetricTimeseriesChart
           results={rangedData?.results ?? []}
+          series={metric.metrics}
           height={160}
           grain={grain}
         />

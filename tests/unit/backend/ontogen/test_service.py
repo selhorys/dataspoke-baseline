@@ -55,7 +55,7 @@ async def test_get_conf_returns_default_when_absent(svc: OntogenService, db: Asy
     """get_conf creates and returns a default row when none exists."""
     absent = MagicMock()
     absent.scalar_one_or_none.return_value = None
-    persisted_row = MagicMock(id=1, is_enabled=False, dataset_filter={})
+    persisted_row = MagicMock(id=1, is_enabled=False, dataset_filter="")
     persisted = MagicMock()
     persisted.scalar_one.return_value = persisted_row
     # Route by statement: the conflict-safe INSERT is a throwaway; the two
@@ -72,7 +72,7 @@ async def test_get_conf_returns_default_when_absent(svc: OntogenService, db: Asy
     row = await svc.get_conf()
     assert row.is_enabled is False
     assert row.id == 1
-    assert row.dataset_filter == {}
+    assert row.dataset_filter == ""
 
 
 @pytest.mark.asyncio
@@ -93,7 +93,7 @@ async def test_put_conf_validates_malformed_urn(svc: OntogenService, db: AsyncMo
     with pytest.raises(InvalidDatasetUrnError):
         await svc.put_conf({
             "is_enabled": False,
-            "dataset_filter": {"dataset_urns": ["not-a-valid-urn"]},
+            "dataset_filter": "dataset_urn = 'not-a-valid-urn'",
         })
 
 
@@ -110,66 +110,90 @@ async def test_put_conf_accepts_valid_tiers(svc: OntogenService, db: AsyncMock) 
     assert row is not None
 
 
-# ── _enumerate_datasets — delegate to resolve_dataset_scope ──────────────────
+# ── _enumerate_datasets — SQL scope resolution ────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_enumerate_datasets_calls_datahub_with_origin(
-    svc: OntogenService, datahub: AsyncMock
+async def test_enumerate_datasets_resolves_the_filter_in_sql(
+    svc: OntogenService, db: AsyncMock, datahub: AsyncMock
 ) -> None:
-    """_enumerate_datasets passes origin from dataset_filter to datahub.enumerate_datasets.
+    """UC3 scope is one query over `dataset_registry` — no DataHub search.
 
-    Spec: spec/feature/BACKEND.md §UC3 Ontology Generation §dataset_filter —
-          origin is AND-ed with tag/glossary OR-group when resolving scope.
-    Spec: spec/DATAHUB_INTEGRATION.md §Dataset Resolution — origin forwarded as-is to DataHub.
+    Spec: spec/feature/BACKEND.md §Dataset resolution — "UC3 ontogen, UC4 metagen, and
+          UC5 metrics share one `dataset_filter` grammar […] and one resolver […] run as
+          one query restricted to `datahub_registered = true`";
+    Spec: spec/DATAHUB_INTEGRATION.md §Dataset attribute sync — "**Filter evaluation is
+          DataSpoke-side, not a DataHub search.**"
     """
-    datahub.enumerate_datasets = AsyncMock(return_value=[
-        "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
-    ])
+    from sqlalchemy.dialects import postgresql
 
-    dataset_filter = {"origin": "DEV", "tags": ["urn:li:tag:area:fulfillment"]}
-    resolved, unresolved = await svc._enumerate_datasets(dataset_filter)
+    urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = [urn]
+    db.execute = AsyncMock(return_value=result)
 
-    assert datahub.enumerate_datasets.called, "enumerate_datasets must be called"
-    for call in datahub.enumerate_datasets.call_args_list:
-        assert call.kwargs.get("origin") == "DEV", (
-            f"every enumerate_datasets call must carry origin='DEV'; got {call.kwargs}"
-        )
-    expected_urn = (
-        "urn:li:dataset:(urn:li:dataPlatform:postgres,"
-        "example_db.catalog.title_master,DEV)"
+    resolved, unresolved = await svc._enumerate_datasets(
+        "origin = 'DEV' AND 'urn:li:tag:area:fulfillment' IN tag_urns"
     )
-    assert expected_urn in resolved
+
+    assert resolved == [urn]
+    assert unresolved == []
+    datahub.enumerate_datasets.assert_not_called()
+    sql = str(db.execute.await_args.args[0].compile(dialect=postgresql.dialect())).lower()
+    assert "dataspoke.dataset_registry.origin" in sql, (
+        f"the conf's filter must be pushed into the query; got:\n{sql}"
+    )
+    assert "datahub_registered" in sql
 
 
 @pytest.mark.asyncio
-async def test_enumerate_datasets_mismatched_origin_goes_to_unresolved(
-    svc: OntogenService, datahub: AsyncMock
+async def test_enumerate_datasets_reports_a_named_urn_the_registry_lacks(
+    svc: OntogenService, db: AsyncMock, datahub: AsyncMock
 ) -> None:
-    """Explicit URN whose origin segment does not match dataset_filter.origin is unresolved.
+    """A `dataset_urn` literal matching no registered dataset comes back unresolved.
 
-    resolve_dataset_scope checks origin_from_dataset_urn(urn) against dataset_filter.origin
-    and appends mismatched URNs to unresolved_urns without probing DataHub.
-
-    Spec: spec/feature/BACKEND.md §UC3 dataset_filter — explicit URN with mismatching
-          origin segment is unresolved at resolution time.
+    Spec: spec/API.md §`dataset_filter` grammar — "`dataset_urn` literals that match no
+          registered dataset at run time are reported in […] `unresolved_urns`";
+    Spec: spec/feature/BACKEND.md §Dataset resolution — the same sentence, "preserving
+          that field's meaning".
     """
-    datahub.origin_from_dataset_urn = MagicMock(return_value="PROD")
+    present = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
+    missing = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.ghost,DEV)"
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = [present]
+    db.execute = AsyncMock(return_value=result)
 
-    # PROD URN but origin filter is DEV — should be unresolved
-    mismatched_urn = (
-        "urn:li:dataset:(urn:li:dataPlatform:postgres,"
-        "example_db.catalog.title_master,PROD)"
+    resolved, unresolved = await svc._enumerate_datasets(
+        f"dataset_urn IN ('{present}', '{missing}')"
     )
-    dataset_filter = {"origin": "DEV", "dataset_urns": [mismatched_urn]}
 
-    resolved, unresolved = await svc._enumerate_datasets(dataset_filter)
-
-    assert mismatched_urn in unresolved, (
-        "URN with PROD origin must appear in unresolved_urns when origin filter is DEV. "
-        "spec: spec/feature/BACKEND.md §UC3 dataset_filter — origin mismatch → unresolved"
+    assert resolved == [present]
+    assert unresolved == [missing], (
+        "the URN the operator named that the registry does not hold must be reported"
     )
-    assert mismatched_urn not in resolved
+
+
+@pytest.mark.asyncio
+async def test_enumerate_datasets_empty_filter_is_the_registered_set(
+    svc: OntogenService, db: AsyncMock
+) -> None:
+    """Spec: spec/feature/BACKEND.md §Dataset resolution — "An empty filter is the bare
+    registered set"."""
+    from sqlalchemy.dialects import postgresql
+
+    urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = [urn]
+    db.execute = AsyncMock(return_value=result)
+
+    resolved, unresolved = await svc._enumerate_datasets("")
+
+    assert resolved == [urn]
+    assert unresolved == []
+    sql = str(db.execute.await_args.args[0].compile(dialect=postgresql.dialect())).lower()
+    assert "dataspoke.dataset_registry.origin" not in sql, (
+        f"an empty filter constrains nothing but registration; got:\n{sql}"
+    )
 
 
 # ── Seed CRUD ─────────────────────────────────────────────────────────────────
@@ -448,7 +472,7 @@ async def test_run_rejects_non_dry_run_when_disabled(
     conf.id = 1
     conf.is_enabled = False
     conf.default_run_prompt = None
-    conf.dataset_filter = {}
+    conf.dataset_filter = ""
     mock_scalar_query(db, conf)
 
     with pytest.raises(ConflictError) as exc_info:
@@ -474,7 +498,7 @@ async def test_run_allows_dry_run_when_disabled(
     conf.id = 1
     conf.is_enabled = False
     conf.default_run_prompt = None
-    conf.dataset_filter = {}
+    conf.dataset_filter = ""
 
     def make_result(scalar_val=None, scalars_val=None):
         m = MagicMock()
@@ -531,7 +555,7 @@ async def test_run_dry_run_returns_summary_no_db_writes(
     conf.id = 1
     conf.is_enabled = True
     conf.default_run_prompt = None
-    conf.dataset_filter = {}
+    conf.dataset_filter = ""
 
     # For list of approved nodes/edges/triples (3 queries) + conf query
     def make_result(scalar_val=None, scalars_val=None):
@@ -615,7 +639,7 @@ async def test_run_real_run_emits_complete_event_with_dry_run_false(
     conf.id = 1
     conf.is_enabled = True
     conf.default_run_prompt = None
-    conf.dataset_filter = {}
+    conf.dataset_filter = ""
 
     def make_result(scalar_val=None, scalars_val=None):
         m = MagicMock()
@@ -959,7 +983,7 @@ async def test_run_validation_telemetry_surfaces_in_run_complete_event(
     conf.id = 1
     conf.is_enabled = True
     conf.default_run_prompt = None
-    conf.dataset_filter = {}
+    conf.dataset_filter = ""
 
     def make_result(scalar_val=None, scalars_val=None):
         m = MagicMock()
@@ -1093,7 +1117,7 @@ async def test_turns_exhausted_persists_rows_as_llm_pending(
     conf.id = 1
     conf.is_enabled = True
     conf.default_run_prompt = None
-    conf.dataset_filter = {}
+    conf.dataset_filter = ""
 
     def make_result(scalar_val=None, scalars_val=None):
         m = MagicMock()
@@ -1224,7 +1248,7 @@ async def test_cycle_detected_persists_rows_as_llm_pending(
     conf.id = 1
     conf.is_enabled = True
     conf.default_run_prompt = None
-    conf.dataset_filter = {}
+    conf.dataset_filter = ""
 
     def _any_result(*_args, **_kwargs):
         m = MagicMock()
@@ -1353,7 +1377,7 @@ async def test_reuse_lookup_where_clause_includes_all_three_eligible_statuses(
     conf.id = 1
     conf.is_enabled = True
     conf.default_run_prompt = None
-    conf.dataset_filter = {}
+    conf.dataset_filter = ""
 
     def make_result(scalar_val=None, scalars_val=None):
         m = MagicMock()
@@ -1469,7 +1493,7 @@ async def test_inference_seed_load_filters_on_is_enabled(
     conf.id = 1
     conf.is_enabled = True
     conf.default_run_prompt = None
-    conf.dataset_filter = {}
+    conf.dataset_filter = ""
 
     def make_result(scalar_val=None, scalars_val=None):
         m = MagicMock()

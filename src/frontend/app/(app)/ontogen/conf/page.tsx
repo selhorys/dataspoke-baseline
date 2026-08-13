@@ -15,7 +15,7 @@ import { useMe } from "@/lib/auth/use-me";
 import { useToast } from "@/components/ui/use-toast";
 import { QueryErrorState } from "@/components/query-error-state";
 import { EmptyState } from "@/components/ui/empty-state";
-import type { DatasetFilter } from "@/types/governance";
+import { datasetFilterError } from "@/lib/dataset-filter-error";
 import type { OntogenConfPutBody } from "@/types/ontogen";
 
 const CONF_FORM_ID = "ontogen-conf-form";
@@ -29,14 +29,14 @@ export default function OntogenConfPage() {
 
   const [editing, setEditing] = useState(false);
   const [runDialogOpen, setRunDialogOpen] = useState(false);
-  const [datasetFilter, setDatasetFilter] = useState<DatasetFilter>({});
+  const [datasetFilter, setDatasetFilter] = useState<string>("");
   // Bumped on Cancel to remount the form, discarding dirty react-hook-form fields
   // (the form only re-syncs from `conf` on mount / when `conf` changes).
   const [formNonce, setFormNonce] = useState(0);
 
   useEffect(() => {
     if (conf) {
-      setDatasetFilter((conf.dataset_filter as DatasetFilter) ?? {});
+      setDatasetFilter(conf.dataset_filter ?? "");
     }
   }, [conf]);
 
@@ -54,7 +54,7 @@ export default function OntogenConfPage() {
 
   function handleCancel() {
     setEditing(false);
-    setDatasetFilter((conf?.dataset_filter as DatasetFilter) ?? {});
+    setDatasetFilter(conf?.dataset_filter ?? "");
     // Discard dirty form fields (is_enabled / schedule_tier / default_run_prompt)
     // by remounting the form so it re-initializes from the saved conf.
     setFormNonce((n) => n + 1);
@@ -153,6 +153,7 @@ export default function OntogenConfPage() {
             initialValues={conf}
             datasetFilter={datasetFilter}
             onDatasetFilterChange={setDatasetFilter}
+            datasetFilterError={datasetFilterError(upsertMutation.error)}
             onSubmit={handleSubmit}
           />
         ) : (

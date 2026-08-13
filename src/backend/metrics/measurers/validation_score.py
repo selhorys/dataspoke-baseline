@@ -17,7 +17,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.backend.metrics.measurers.registry import register_measurer
+from src.backend.metrics.measurers.registry import DatasetVerdict, register_measurer
 from src.shared.datahub.client import DataHubClient
 from src.shared.db.models import ValidationResult
 
@@ -29,8 +29,8 @@ async def measure(
     *,
     datahub: DataHubClient,
     db: AsyncSession,
-) -> tuple[dict[str, float], dict[str, Any]]:
-    """Return validation-score values and a breakdown of datasets scoring below 1.0.
+) -> tuple[dict[str, float], list[DatasetVerdict]]:
+    """Return validation-score values and one verdict per dataset in scope.
 
     Parameters
     ----------
@@ -46,16 +46,19 @@ async def measure(
 
     Returns
     -------
-    tuple[dict[str, float], dict]
-        ``(values, breakdown)`` where values has keys ``total`` and
-        ``validation_score_sum``; breakdown lists datasets with score < 1.0,
-        no validation result at all, or a latest result outside the window.
+    tuple[dict[str, float], list[DatasetVerdict]]
+        ``(values, verdicts)`` where values has keys ``total`` and
+        ``validation_score_sum``. ``met`` is false for a dataset scoring < 1.0,
+        holding no validation result at all, or whose latest result falls outside
+        the window. ``evidence_at`` is the **counted** result's ``data_time`` and
+        ``None`` when nothing was counted — no result at all, or a latest result
+        outside the window. ``last_check_at`` then falls back to the run's
+        ``measured_at``, which is the honest reading: this metric checked the
+        dataset just now and found nothing inside its window. The stale
+        validation date stays available in ``detail.latest_data_time``.
     """
     if not datasets:
-        return (
-            {"total": 0.0, "validation_score_sum": 0.0},
-            {"dataset_count": 0, "datasets": []},
-        )
+        return ({"total": 0.0, "validation_score_sum": 0.0}, [])
 
     window_sec = int(metric_conf["time_window_sec"])
     now = datetime.now(tz=UTC)
@@ -93,61 +96,51 @@ async def measure(
     # ── 2. Evaluate per dataset ───────────────────────────────────────────────
     total = len(datasets)
     score_sum = 0.0
-    failed_datasets: list[dict[str, Any]] = []
+    verdicts: list[DatasetVerdict] = []
 
     for urn in datasets:
         latest_row = latest.get(urn)
 
         if latest_row is None:
-            # No validation result at all
-            failed_datasets.append(
-                {
-                    "urn": urn,
-                    "detail": {
+            # No validation result at all — no evidence, so no evidence_at.
+            verdicts.append(
+                DatasetVerdict(
+                    urn=urn,
+                    met=False,
+                    evidence_at=None,
+                    detail={
                         "latest_data_time": None,
                         "score": None,
                         "time_window_sec": window_sec,
                     },
-                }
+                )
             )
             continue
 
         latest_data_time, latest_score = latest_row
+        in_window = latest_data_time >= cutoff
+        if in_window:
+            # In-window row found: accumulate score.
+            score_sum += latest_score
 
-        if latest_data_time < cutoff:
-            # Latest row is outside the window
-            failed_datasets.append(
-                {
-                    "urn": urn,
-                    "detail": {
-                        "latest_data_time": latest_data_time.isoformat(),
-                        "score": latest_score,
-                        "time_window_sec": window_sec,
-                    },
-                }
+        verdicts.append(
+            DatasetVerdict(
+                urn=urn,
+                met=in_window and latest_score >= 1.0,
+                # Only a counted result dates the check. An out-of-window row is
+                # not evidence this window, so evidence_at stays None and
+                # last_check_at falls back to the run's measured_at.
+                evidence_at=latest_data_time if in_window else None,
+                detail={
+                    "latest_data_time": latest_data_time.isoformat(),
+                    "score": latest_score,
+                    "time_window_sec": window_sec,
+                },
             )
-            continue
-
-        # In-window row found: accumulate score
-        score_sum += latest_score
-        if latest_score < 1.0:
-            failed_datasets.append(
-                {
-                    "urn": urn,
-                    "detail": {
-                        "latest_data_time": latest_data_time.isoformat(),
-                        "score": latest_score,
-                        "time_window_sec": window_sec,
-                    },
-                }
-            )
+        )
 
     values: dict[str, float] = {
         "total": float(total),
         "validation_score_sum": float(score_sum),
     }
-    breakdown: dict[str, Any] = {
-        "dataset_count": total,
-        "datasets": failed_datasets,
-    }
-    return values, breakdown
+    return values, verdicts

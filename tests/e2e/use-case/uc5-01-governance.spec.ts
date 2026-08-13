@@ -18,11 +18,18 @@
  *       Backend: POST .../method/run → 200 with run_id.
  *   3.  Poll adminApi until ≥1 result row is present for each metric, THEN:
  *       - Dashboard (/governance/dashboard): one combined card per enabled metric
- *         (title + metric_type badge + latest values + inline trend chart).
+ *         (title + description + metric_type badge + Details link + latest values +
+ *         inline trend chart).
  *       - Metric list (/governance/metrics): all three rows listed with title + type badge.
  *       - Per-metric detail (/governance/metrics/[id]): Config, Result chart,
- *         Event log sections; Edit/Run/Delete buttons rendered for admin.
+ *         Datasets panel, Event log sections; Edit/Run/Delete buttons for admin.
  *   4.  Cleanup: delete the three metrics via ConfirmDialog; backend: GET → 404.
+ *
+ * A second scenario mirrors api-wired
+ * `test_uc5_dataset_filter_worked_examples_and_dataset_view`: the documented clause
+ * forms are authored in the browser's SQL editor (including Auto-indent), a clause
+ * outside the grammar renders its 422 inline, and the Datasets panel is read back
+ * after a real run.
  *
  * Data setup: global-setup runs --reset-seed (seeded Imazon baseline).
  * Metric result rows are written by the triggered run (POST .../method/run),
@@ -31,6 +38,7 @@
  *
  * spec: USE_CASE_en.md §UC5 §Imazon Example
  * spec: spec/feature/FRONTEND_GOVERNANCE.md §Dashboard, §Metrics
+ * spec: spec/API.md §`dataset_filter` grammar; §Metric — GET .../{metric_id}/dataset
  * spec: spec/TESTING.md §End-to-End (E2E) Testing — dual confirmation, selector guidance
  */
 
@@ -40,13 +48,26 @@ import { test, expect } from "../fixtures/index";
 
 // Three built-in active metric types — DEV-scoped, daily, enabled.
 // spec: USE_CASE_en.md §UC5 §Built-in active metric types
+//
+// `metrics` is a list of series descriptors `{name, color, idx}` — the chart draws
+// one line per descriptor, in `idx` order, stroked with `color`.
+// spec: API.md §Metric — Definition body.
+//
+// `dataset_filter` is a SQL WHERE clause over the dataset registry; `origin = 'DEV'`
+// is the DEV-scoped filter the UC5 narrative uses.
+// spec: API.md §`dataset_filter` grammar.
+
+const DEV_FILTER = "origin = 'DEV'";
 
 const METRIC_INGESTION = {
   metric_id: "ingestion-freshness-dev",
   metric_type: "ingestion-freshness",
   title: "Ingestion Freshness (DEV)",
   description: "Daily count of datasets ingested within the configured time window across DEV",
-  metrics: ["total", "ingested_in_time"],
+  metrics: [
+    { name: "total", color: "#64748B", idx: 1 },
+    { name: "ingested_in_time", color: "#22C55E", idx: 2 },
+  ],
   metric_conf: { time_window_sec: 172800 },
 } as const;
 
@@ -55,7 +76,10 @@ const METRIC_VALIDATION = {
   metric_type: "validation-score",
   title: "Validation Score (DEV)",
   description: "Daily sum of dataset validation scores within the configured time window across DEV",
-  metrics: ["total", "validation_score_sum"],
+  metrics: [
+    { name: "total", color: "#64748B", idx: 1 },
+    { name: "validation_score_sum", color: "#3B82F6", idx: 2 },
+  ],
   metric_conf: { time_window_sec: 172800 },
 } as const;
 
@@ -64,7 +88,10 @@ const METRIC_DOC = {
   metric_type: "doc-health",
   title: "Doc Health (DEV)",
   description: "Daily documentation-completeness check across DEV datasets",
-  metrics: ["total", "doc_health"],
+  metrics: [
+    { name: "total", color: "#64748B", idx: 1 },
+    { name: "doc_health", color: "#A855F7", idx: 2 },
+  ],
   metric_conf: {},
 } as const;
 
@@ -158,14 +185,23 @@ async function createMetricViaUI(
   // spec: metric-form.tsx — id="description"
   await page.locator("#description").fill(cfg.description);
 
-  // -- UI gesture: metrics checkboxes --
-  // spec: metric-form.tsx — Checkbox id="metric-key-{key}" per emitted key
-  // Only check the keys declared in cfg.metrics; others remain unchecked.
-  for (const key of cfg.metrics) {
-    const checkbox = page.locator(`#metric-key-${key}`);
-    if (await checkbox.isVisible()) {
-      await checkbox.check();
-    }
+  // -- UI gesture: metrics series rows (checkbox + color + display order) --
+  // spec: FRONTEND_GOVERNANCE.md §Metrics — "The form's `metrics` control is one
+  //   row per emitted key of the selected `metric_type`: a checkbox selecting the
+  //   key, a color control (native color swatch paired with a `#RRGGBB` text input,
+  //   kept in sync) and an order number. Only checked rows are submitted, as
+  //   `{name, color, idx}`."
+  // spec: metric-form.tsx — Checkbox id="metric-key-{name}", the hex text input
+  //   labelled "{name} color", the order input id="metric-idx-{name}".
+  // Only the keys declared in cfg.metrics are checked; any other row stays off.
+  for (const series of cfg.metrics) {
+    const checkbox = page.locator(`#metric-key-${series.name}`);
+    await expect(checkbox).toBeVisible({ timeout: 10_000 });
+    await checkbox.check();
+    // The color/order inputs are disabled until the row is checked, so these two
+    // fills also confirm the checkbox gesture landed.
+    await page.getByLabel(`${series.name} color`, { exact: true }).fill(series.color);
+    await page.locator(`#metric-idx-${series.name}`).fill(String(series.idx));
   }
 
   // -- UI gesture: time_window_sec field (ingestion-freshness / validation-score only) --
@@ -193,20 +229,15 @@ async function createMetricViaUI(
     await isEnabledCheckbox.check();
   }
 
-  // -- UI gesture: dataset_filter origin → DEV --
-  // spec: FRONTEND_GOVERNANCE.md §Metrics — dataset_filter.origin dropdown (Radix Select).
-  // DatasetFilterEditor renders a Radix Select for origin; no static id on the trigger,
-  // but the accessible label "origin" is a label element. We target by the visible
-  // label text then pick the adjacent SelectTrigger via aria-label or data-testid.
-  // Risk flag: DatasetFilterEditor does not expose a deterministic selector for origin.
-  // REQUIRED data-testid: dataset-filter-origin (component: DatasetFilterEditor, element: SelectTrigger)
-  // Fallback: select by placeholder text "Any origin".
-  const originTrigger = page.getByRole("combobox", { name: /origin/i }).first();
-  if (await originTrigger.isVisible({ timeout: 3_000 }).catch(() => false)) {
-    await originTrigger.click();
-    await page.getByRole("option", { name: "DEV", exact: true }).click();
-  }
-  // If the combobox is not reachable by name, skip — tested via adminApi backend probe.
+  // -- UI gesture: dataset_filter → the DEV-scoped SQL clause --
+  // spec: FRONTEND_BASIC.md §Shared component notes → DatasetFilterEditor — "One
+  //   vertically resizable monospace textarea holding the clause verbatim"; the
+  //   box carries aria-label "dataset_filter" (dataset-filter-editor.tsx).
+  // spec: API.md §`dataset_filter` grammar — `origin = 'DEV'` is a scalar-equality
+  //   predicate over the registry's `origin` column.
+  const filterBox = page.getByLabel("dataset_filter", { exact: true });
+  await expect(filterBox).toBeVisible({ timeout: 10_000 });
+  await filterBox.fill(DEV_FILTER);
 
   // -- UI gesture: click Save --
   // spec: metric-form.tsx — Button type="submit" "Save"
@@ -251,12 +282,25 @@ async function createMetricViaUI(
     mode: string;
     is_enabled: boolean;
     schedule_tier: string | null;
+    metrics: Array<{ name: string; color: string; idx: number }>;
+    dataset_filter: string;
   };
   expect(conf.id).toBe(cfg.metric_id);
   expect(conf.metric_type).toBe(cfg.metric_type);
   expect(conf.title).toBe(cfg.title);
   expect(conf.mode).toBe("active");
   expect(conf.is_enabled).toBe(true);
+
+  // The series rows the browser filled arrive as `{name, color, idx}` descriptors.
+  // spec: API.md §Metric — Definition body: `metrics` is a list of series descriptors.
+  expect(
+    [...conf.metrics].sort((a, b) => a.idx - b.idx),
+    "the checked series rows must persist with their color and display order"
+  ).toEqual(cfg.metrics.map((s) => ({ name: s.name, color: s.color, idx: s.idx })));
+
+  // The clause is stored verbatim — the backend owns the grammar, so no route
+  // rewrites or normalises it. spec: API.md §`dataset_filter` grammar.
+  expect(conf.dataset_filter).toBe(DEV_FILTER);
 
   return capturedId;
 }
@@ -306,10 +350,10 @@ test("UC5 step 1b — re-POST existing metric_id → 409 METRIC_EXISTS", async (
       metric_type: METRIC_INGESTION.metric_type,
       title: METRIC_INGESTION.title,
       description: METRIC_INGESTION.description,
-      metrics: Array.from(METRIC_INGESTION.metrics),
+      metrics: METRIC_INGESTION.metrics.map((s) => ({ ...s })),
       metric_conf: METRIC_INGESTION.metric_conf,
       schedule_tier: "daily",
-      dataset_filter: { origin: "DEV" },
+      dataset_filter: DEV_FILTER,
     },
   });
   expect(collisionResp.status()).toBe(409);
@@ -391,10 +435,13 @@ test("UC5 step 1c — PUT existing metric conf → 200 + change reflected; absen
         metric_type: "doc-health",
         title: "Should Fail",
         description: "PUT on absent id must return 404",
-        metrics: ["total", "doc_health"],
+        metrics: [
+          { name: "total", color: "#64748B", idx: 1 },
+          { name: "doc_health", color: "#A855F7", idx: 2 },
+        ],
         metric_conf: {},
         schedule_tier: "daily",
-        dataset_filter: {},
+        dataset_filter: "",
       },
     }
   );
@@ -497,7 +544,7 @@ test("UC5 step 2 — trigger immediate run for doc-health metric", async ({
 //   (title + metric_type badge + latest values + inline MetricTimeseriesChart).
 // ─────────────────────────────────────────────────────────────────────────────
 
-test("UC5 step 3a — dashboard shows combined metric cards (title, type badge, inline chart)", async ({
+test("UC5 step 3a — dashboard cards: title, type badge, description, Details link, colored trend chart", async ({
   page,
   adminApi,
 }) => {
@@ -578,6 +625,79 @@ test("UC5 step 3a — dashboard shows combined metric cards (title, type badge, 
     await expect(
       ingestionCard.locator(".recharts-wrapper, svg.recharts-surface").first()
     ).toBeVisible({ timeout: 10_000 });
+    // (c) the card header's Details button links to this metric's detail route.
+    // spec: FRONTEND_GOVERNANCE.md §Dashboard — "top-right at a smaller size, a
+    //   `metric_type` outline badge beside a `Details` button linking to
+    //   `/governance/metrics/{id}`".
+    await expect(
+      ingestionCard.getByRole("link", { name: "Details", exact: true })
+    ).toHaveAttribute("href", `/governance/metrics/${METRIC_INGESTION.metric_id}`);
+    // (d) `description` sits under the title — read from the same list response
+    //     as the title, so the card needs no extra fetch for it.
+    // spec: FRONTEND_GOVERNANCE.md §Dashboard — "Below the heading sits
+    //   `description` in small muted text. … `description` and `metrics` both come
+    //   from the list read, so the card needs no extra fetch."
+    await expect(
+      ingestionCard.getByText(METRIC_INGESTION.description, { exact: true })
+    ).toBeVisible({ timeout: 10_000 });
+    // (e) one line per series descriptor, in `idx` order, stroked with its color.
+    // spec: FRONTEND_GOVERNANCE.md §Dashboard — "one line per entry of the metric's
+    //   `metrics[]` series descriptors, drawn in `idx` order and stroked with each
+    //   descriptor's `color`, one visible point per grain window".
+    //
+    // How Recharts 3.8 renders that (verified against this chart's real DOM):
+    //   * each <Line> emits exactly one `g.recharts-layer.recharts-line`, always;
+    //   * the connecting `path.recharts-line-curve` is emitted **only when the
+    //     series has at least two plotted points** — a fresh UC5 run produces a
+    //     single measurement per metric, so every series is one point and no
+    //     curve path exists. Counting curves would therefore assert on how much
+    //     history happens to exist, not on the spec property;
+    //   * each <Line>'s dots are portalled into one shared z-index layer as a
+    //     `g.recharts-line-dots` group per series, in child render order, and
+    //     every `circle.recharts-line-dot` carries that series' `stroke`. This
+    //     holds for a series of any length, including one point — which is the
+    //     "one visible point per grain window" the spec sentence ends on;
+    //   * the `Legend` sorts its own items (Recharts default `itemSorter: "value"`,
+    //     i.e. by series name) independently of child render order, so legend
+    //     order is *not* evidence of draw order and is asserted as an unordered
+    //     name→color mapping only.
+    const expectedByIdx = [...METRIC_INGESTION.metrics].sort((a, b) => a.idx - b.idx);
+
+    // (e1) one line per descriptor.
+    await expect(
+      ingestionCard.locator("g.recharts-line"),
+      "one chart line per `metrics[]` series descriptor"
+    ).toHaveCount(expectedByIdx.length, { timeout: 10_000 });
+
+    // (e2) draw order + color: the per-series dot groups sit in the shared dot
+    //      layer in <Line> render order, each stroked with its descriptor color.
+    const seriesStrokes = await ingestionCard
+      .locator("g.recharts-line-dots")
+      .evaluateAll((groups) =>
+        groups.map((g) => g.querySelector("circle")?.getAttribute("stroke") ?? null)
+      );
+    expect(
+      seriesStrokes,
+      "chart lines must be drawn in idx order, stroked with the descriptors' colors"
+    ).toEqual(expectedByIdx.map((s) => s.color));
+
+    // (e3) each descriptor's color belongs to *its* series name (the dot groups
+    //      above carry no key, so the name↔color binding is read off the legend).
+    //      Compared as a map because Recharts sorts legend items by name.
+    const legendPairs = await ingestionCard
+      .locator("li.recharts-legend-item")
+      .evaluateAll((items) =>
+        items.map((li) => [
+          li.querySelector(".recharts-legend-item-text")?.textContent ?? "",
+          li.querySelector("path.recharts-legend-icon")?.getAttribute("stroke") ?? null,
+        ])
+      );
+    expect(
+      Object.fromEntries(legendPairs),
+      "each series descriptor's color must be bound to that descriptor's name"
+    ).toEqual(
+      Object.fromEntries(expectedByIdx.map((s) => [s.name, s.color]))
+    );
 
     // -- UI assertion: no separate "Daily trend" section --
     // spec: FRONTEND_GOVERNANCE.md §Dashboard — combined card only; guard against a
@@ -673,7 +793,7 @@ test("UC5 step 3b — /governance/metrics list shows all three metrics with type
 // spec: [id]/page.tsx — section h2 labels: "Config", "Result", "Event".
 // ─────────────────────────────────────────────────────────────────────────────
 
-test("UC5 step 3c — doc-health detail page: Config, Result, Event sections; Edit/Run/Delete buttons", async ({
+test("UC5 step 3c — doc-health detail page: Config (series + clause), Result, Datasets, Event; Edit/Run/Delete", async ({
   page,
   adminApi,
 }) => {
@@ -725,6 +845,68 @@ test("UC5 step 3c — doc-health detail page: Config, Result, Event sections; Ed
     .filter({ has: page.getByRole("heading", { name: "Result", exact: true }) });
   await expect(resultSection.getByRole("button").first()).toBeVisible({ timeout: 10_000 });
 
+  // -- UI assertion: the Config panel lists the series descriptors --
+  // spec: FRONTEND_GOVERNANCE.md §Metrics — "`metrics` renders one line per series
+  //   descriptor — a color swatch, the `name`, and its `idx` — in `idx` order."
+  for (const series of METRIC_DOC.metrics) {
+    await expect(
+      page.getByText(`${series.name}`, { exact: true }).first()
+    ).toBeVisible({ timeout: 10_000 });
+    await expect(
+      page.getByText(`(${series.idx})`, { exact: true }).first()
+    ).toBeVisible({ timeout: 10_000 });
+  }
+
+  // -- UI assertion: dataset_filter renders as the stored SQL clause --
+  // spec: FRONTEND_GOVERNANCE.md §Metrics — "`dataset_filter` is a SQL `WHERE`-clause
+  //   string …, rendered through DatasetFilterView".
+  await expect(
+    page.getByText(DEV_FILTER, { exact: true }).first()
+  ).toBeVisible({ timeout: 10_000 });
+
+  // -- UI assertion: Datasets section heading + its table --
+  // spec: FRONTEND_GOVERNANCE.md §Metrics — "The **Datasets** panel
+  //   (`MetricDatasetTable` …) sits between the `Result` and `Event` panels" with
+  //   columns dataset_urn / datahub / met / last check time.
+  await expect(
+    page.getByRole("heading", { name: "Datasets", exact: true })
+  ).toBeVisible({ timeout: 10_000 });
+  const datasetsSection = page
+    .locator("section")
+    .filter({ has: page.getByRole("heading", { name: "Datasets", exact: true }) });
+  for (const col of ["dataset_urn", "datahub", "met criterion", "last check time"]) {
+    await expect(
+      datasetsSection.getByRole("columnheader", { name: col, exact: true })
+    ).toBeVisible({ timeout: 10_000 });
+  }
+
+  // -- Backend probe (dual confirmation): GET .../dataset covers the same scope --
+  // spec: API.md §Metric — GET /spoke/governance/metric/{metric_id}/dataset returns
+  //   `{dataset_urn, met, last_check_at, detail}` rows plus `attrs_synced_at`.
+  const coveredResp = await adminApi.get(
+    `/api/v1/spoke/governance/metric/${METRIC_DOC.metric_id}/dataset?limit=200`
+  );
+  expect(coveredResp.status()).toBe(200);
+  const covered = (await coveredResp.json()) as {
+    total_count: number;
+    attrs_synced_at: string | null;
+    datasets: Array<{ dataset_urn: string; met: string; last_check_at: string | null }>;
+  };
+  expect(covered).toHaveProperty("attrs_synced_at");
+  // The run in step 2 measured every dataset in scope, so none may read "unknown".
+  // spec: API.md §Metric — "'unknown' = in scope but never evaluated".
+  for (const row of covered.datasets) {
+    expect(["true", "false"], `${row.dataset_urn} carries no verdict after a run`).toContain(
+      row.met
+    );
+  }
+  // Each served row is rendered, so the panel shows the scope the API reports.
+  if (covered.datasets.length > 0) {
+    await expect(
+      datasetsSection.getByRole("link", { name: covered.datasets[0]!.dataset_urn })
+    ).toBeVisible({ timeout: 10_000 });
+  }
+
   // -- UI assertion: Event section heading --
   // spec: [id]/page.tsx — section h2 "Event"
   await expect(
@@ -751,11 +933,15 @@ test("UC5 step 3c — doc-health detail page: Config, Result, Event sections; Ed
     results: Array<{ values: Record<string, number>; measured_at: string }>;
   };
   expect(resultBody.results.length).toBeGreaterThanOrEqual(1);
-  // values keys must match the declared metrics list.
-  // spec: USE_CASE_en.md §UC5 §Built-in active metric types — values is a dict; keys = metrics[]
+  // values keys must match the declared metrics list — one key per series descriptor.
+  // spec: USE_CASE_en.md §UC5 §Built-in active metric types — values is a dict;
+  //   spec: API.md §Metric — `metrics[].name` is one of the type's emitted keys.
   const valuesKeys = new Set(Object.keys(resultBody.results[0]!.values));
-  for (const key of METRIC_DOC.metrics) {
-    expect(valuesKeys.has(key), `values.${key} missing from doc-health result`).toBe(true);
+  for (const series of METRIC_DOC.metrics) {
+    expect(
+      valuesKeys.has(series.name),
+      `values.${series.name} missing from doc-health result`
+    ).toBe(true);
   }
 
   // -- Backend probe: GET event → ≥1 METRIC.RUN_COMPLETE event after the run --
@@ -845,4 +1031,267 @@ test("UC5 step 4 — delete doc-health metric via ConfirmDialog", async ({
 }) => {
   await deleteMetricViaUI(page, adminApi, METRIC_DOC.metric_id, METRIC_DOC.title);
   createdIds.delete(METRIC_DOC.metric_id);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UC5 continued — the documented `dataset_filter` clause forms, authored in the
+// browser's SQL editor, and the Datasets panel they scope.
+//
+// Mirrors tests/integration/api_wired/test_uc5_01_governance.py ::
+//   test_uc5_dataset_filter_worked_examples_and_dataset_view
+// step-for-step, with the browser doing the authoring the api-wired test does
+// over REST, and the same REST read-back as the dual confirmation.
+//
+// spec: USE_CASE_en.md §UC5 §Imazon Example — a metric is scoped by a
+//   `dataset_filter`, then run on demand.
+// spec: API.md §`dataset_filter` grammar — the grammar, its printed worked
+//   example, and the 422 INVALID_DATASET_FILTER carrying a character position.
+// spec: API.md §Metric — GET /spoke/governance/metric/{metric_id}/dataset.
+// spec: FRONTEND_BASIC.md §Shared component notes → DatasetFilterEditor —
+//   resizable monospace box, Auto-indent, server-side validation rendered inline.
+// spec: FRONTEND_GOVERNANCE.md §Metrics — the Datasets panel and its three-way
+//   verdict toggle.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test.describe("UC5 — dataset_filter worked examples and the Datasets panel", () => {
+  // Detached from the file's serial group: this is a self-contained story that
+  // creates and deletes its own metric, so a failure here must not retry (and
+  // re-run) the metric runs of steps 1–4 above.
+  test.describe.configure({ mode: "default" });
+
+  const FILTER_METRIC_ID = "uc5-filter-worked-examples";
+  const FILTER_METRIC_TITLE = "Catalog documentation health";
+  const CONF_PATH = `/api/v1/spoke/governance/metric/${FILTER_METRIC_ID}/attr/conf`;
+  const DATASET_PATH = `/api/v1/spoke/governance/metric/${FILTER_METRIC_ID}/dataset`;
+  const DETAIL_URL = `/governance/metrics/${FILTER_METRIC_ID}`;
+
+  // The clause UC3's Imazon example prints — the simplest documented form.
+  const TAG_CLAUSE = "'urn:li:tag:area:catalog' IN tag_urns";
+
+  // The worked example printed in API.md §`dataset_filter` grammar, typed as one
+  // line so Auto-indent has something to lay out.
+  const COMPOSITE_ONE_LINE =
+    "origin = 'DEV' AND ('urn:li:tag:area:catalog' IN tag_urns" +
+    " OR 'urn:li:glossaryTerm:pii.gdpr' IN glossary_term_urns)";
+
+  // What Auto-indent must produce from it: newline before each top-level
+  // AND / OR, the group's body indented one level, its `)` at the parent indent.
+  // spec: FRONTEND_BASIC.md §Shared component notes → DatasetFilterEditor.
+  const COMPOSITE_FORMATTED = [
+    "origin = 'DEV'",
+    "AND (",
+    "    'urn:li:tag:area:catalog' IN tag_urns",
+    "    OR 'urn:li:glossaryTerm:pii.gdpr' IN glossary_term_urns",
+    ")",
+  ].join("\n");
+
+  test.afterAll(async ({ adminApi }) => {
+    await adminApi.delete(CONF_PATH);
+  });
+
+  /** Enters edit mode on the detail page and returns the clause textarea. */
+  async function openFilterEditor(page: import("@playwright/test").Page) {
+    await page.getByRole("button", { name: "Edit" }).click();
+    const box = page.getByLabel("dataset_filter", { exact: true });
+    await expect(box).toBeVisible({ timeout: 10_000 });
+    return box;
+  }
+
+  test("UC5 filter — author the documented clauses, see a bad one refused, read the Datasets panel", async ({
+    page,
+    adminApi,
+  }) => {
+    // Budget: a metric run against the dev cluster plus several edit round-trips,
+    // chained past the 60s project ceiling.
+    test.setTimeout(240_000);
+
+    // ── Step 1: create with the tag-membership clause ───────────────────────
+    // Created over REST — the UI create path is already covered by step 1a above;
+    // this scenario is about editing the clause, not creating a metric.
+    // spec: USE_CASE_en.md §UC3 §Imazon Example prints this exact clause;
+    //   API.md §`dataset_filter` grammar states UC5 uses the same grammar.
+    await adminApi.delete(CONF_PATH); // pre-flight: a leftover must not 409
+    const createResp = await adminApi.post("/api/v1/spoke/governance/metric", {
+      data: {
+        metric_id: FILTER_METRIC_ID,
+        mode: "active",
+        is_enabled: true,
+        metric_type: "doc-health",
+        title: FILTER_METRIC_TITLE,
+        description: "Documentation completeness across the catalog-tagged estate",
+        metrics: [
+          { name: "total", color: "#2563EB", idx: 1 },
+          { name: "doc_health", color: "#16A34A", idx: 2 },
+        ],
+        metric_conf: {},
+        schedule_tier: "daily",
+        dataset_filter: TAG_CLAUSE,
+      },
+    });
+    expect(createResp.status(), await createResp.text()).toBe(201);
+
+    await page.goto(DETAIL_URL);
+    await expect(page).not.toHaveURL(/\/login/);
+    await expect(
+      page.getByRole("heading", { name: FILTER_METRIC_TITLE, exact: true })
+    ).toBeVisible({ timeout: 15_000 });
+
+    // -- UI assertion: the read-only view shows the stored clause verbatim --
+    // spec: FRONTEND_BASIC.md §Shared component notes → DatasetFilterView.
+    await expect(page.getByText(TAG_CLAUSE, { exact: true }).first()).toBeVisible({
+      timeout: 10_000,
+    });
+
+    // ── Step 2: replace with the composite worked example, via Auto-indent ──
+    const box = await openFilterEditor(page);
+    await box.fill(COMPOSITE_ONE_LINE);
+
+    // -- UI gesture: Auto-indent lays the clause out --
+    // spec: FRONTEND_BASIC.md §Shared component notes → DatasetFilterEditor —
+    //   "An **Auto-indent** button reformats the text in place: newline before
+    //   each top-level `AND` / `OR`, indent inside parentheses."
+    await page.getByRole("button", { name: "Auto-indent", exact: true }).click();
+    await expect(box).toHaveValue(COMPOSITE_FORMATTED);
+
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    // Save closing the form is the UI's signal that the PUT succeeded.
+    await expect(page.getByRole("button", { name: "Edit" })).toBeVisible({
+      timeout: 20_000,
+    });
+
+    // -- Backend probe: the formatted clause is stored byte-for-byte --
+    // spec: API.md §`dataset_filter` grammar — the backend owns the grammar and
+    //   stores the clause as written; no route normalises it.
+    const afterPut = await adminApi.get(CONF_PATH);
+    expect(afterPut.status()).toBe(200);
+    expect((await afterPut.json())["dataset_filter"]).toBe(COMPOSITE_FORMATTED);
+
+    // ── Step 3: a clause outside the grammar is refused, inline, with position ──
+    // spec: API.md §Error catalogue — INVALID_DATASET_FILTER, 422, "`detail`
+    //   carries the character position of the error".
+    // spec: FRONTEND_GOVERNANCE.md §Metrics — "A `422 INVALID_DATASET_FILTER`
+    //   from Save renders inline against the field."
+    const box2 = await openFilterEditor(page);
+    await box2.fill("owner = 'catalog-team'"); // `owner` is not a filter column
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+
+    // -- UI assertion: the error renders against the field, carrying a position --
+    const filterAlert = page.getByRole("alert").filter({ hasText: /character/i });
+    await expect(filterAlert).toBeVisible({ timeout: 20_000 });
+    // The form stays open: a refused Save must not look like a successful one.
+    await expect(page.getByRole("button", { name: "Save", exact: true })).toBeVisible();
+
+    // -- Backend probe: the rejected write left the stored clause alone --
+    const afterReject = await adminApi.get(CONF_PATH);
+    expect((await afterReject.json())["dataset_filter"]).toBe(COMPOSITE_FORMATTED);
+
+    // ── Step 4: scope to DEV, run, and open the Datasets panel ──────────────
+    // `origin` is parsed from every dataset URN by the registry sweep, so this
+    // clause resolves without waiting on the tag/glossary attribute mirror.
+    // spec: API.md §`dataset_filter` grammar — `origin` is the URN's third segment.
+    await box2.fill(DEV_FILTER);
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Edit" })).toBeVisible({
+      timeout: 20_000,
+    });
+
+    // -- UI gesture: Run the metric so every covered dataset gets a verdict --
+    await page.getByRole("button", { name: "Run" }).click();
+    await expect(
+      page.getByRole("heading", { name: "Run metric", exact: true })
+    ).toBeVisible({ timeout: 10_000 });
+    await page.getByRole("button", { name: "Run", exact: true }).last().click();
+    await expect(
+      page.getByRole("heading", { name: "Run metric", exact: true })
+    ).not.toBeVisible({ timeout: 90_000 });
+
+    // -- Backend probe: the panel's scope, as the API reports it --
+    // spec: API.md §Metric — rows carry `{dataset_urn, met, last_check_at, detail}`;
+    //   the envelope carries `attrs_synced_at`.
+    const coveredResp = await adminApi.get(`${DATASET_PATH}?limit=200`);
+    expect(coveredResp.status(), await coveredResp.text()).toBe(200);
+    const covered = (await coveredResp.json()) as {
+      total_count: number;
+      attrs_synced_at: string | null;
+      datasets: Array<{ dataset_urn: string; met: string; last_check_at: string | null }>;
+    };
+    expect(
+      covered.total_count,
+      "the DEV clause must cover at least one registered dataset, or every row " +
+        "assertion below is vacuous. A zero here means the ingestion sync sweep has " +
+        "not populated dataset_registry — see spec/TESTING.md §Prerequisites."
+    ).toBeGreaterThan(0);
+    for (const row of covered.datasets) {
+      expect(
+        ["true", "false"],
+        `${row.dataset_urn} was in scope for the run just made, so it must carry a ` +
+          "verdict rather than 'unknown' (API.md §Metric)"
+      ).toContain(row.met);
+    }
+    expect(covered).toHaveProperty("attrs_synced_at");
+
+    // -- UI assertion: the panel renders the served rows and the freshness line --
+    // spec: FRONTEND_GOVERNANCE.md §Metrics — the Datasets panel's columns and its
+    //   muted `attrs_synced_at` line ("so an empty or unexpectedly small table is
+    //   readable as a pending sync rather than as a filter that matches nothing").
+    const datasetsSection = page
+      .locator("section")
+      .filter({ has: page.getByRole("heading", { name: "Datasets", exact: true }) });
+    const firstUrn = covered.datasets[0]!.dataset_urn;
+    await expect(
+      datasetsSection.getByRole("link", { name: firstUrn })
+    ).toBeVisible({ timeout: 15_000 });
+    await expect(datasetsSection.getByText(/scope (synced|never synced)/i)).toBeVisible({
+      timeout: 10_000,
+    });
+
+    // ── Step 5: the verdict toggles narrow the panel ────────────────────────
+    // spec: FRONTEND_GOVERNANCE.md §Metrics — "A three-way toggle group — true /
+    //   false / unknown, all on by default — drives the repeatable `met` query
+    //   param"; "With **zero** toggles selected the client renders the empty state
+    //   and issues **no request**".
+    for (const verdict of ["true", "false", "unknown"]) {
+      await expect(
+        datasetsSection.getByRole("checkbox", { name: verdict, exact: true })
+      ).toBeChecked();
+    }
+
+    // Narrow to the verdict the run actually produced, so a row remains to see.
+    const presentVerdict = covered.datasets[0]!.met;
+    const absentVerdicts = ["true", "false", "unknown"].filter((v) => v !== presentVerdict);
+    for (const verdict of absentVerdicts) {
+      await datasetsSection
+        .getByRole("checkbox", { name: verdict, exact: true })
+        .uncheck();
+    }
+    await expect(
+      datasetsSection.getByRole("link", { name: firstUrn })
+    ).toBeVisible({ timeout: 15_000 });
+
+    // -- Backend probe: the same narrowing over REST --
+    // spec: API.md §Metric — "Repeatable `met` query param (default: all three)".
+    const narrowed = await adminApi.get(`${DATASET_PATH}?met=${presentVerdict}&limit=200`);
+    expect(narrowed.status()).toBe(200);
+    const narrowedBody = (await narrowed.json()) as {
+      total_count: number;
+      attrs_synced_at: string | null;
+      datasets: Array<{ met: string }>;
+    };
+    expect(new Set(narrowedBody.datasets.map((r) => r.met))).toEqual(
+      new Set([presentVerdict])
+    );
+    expect(
+      narrowedBody.attrs_synced_at,
+      "attrs_synced_at is scope-relative and must not move with the met filter"
+    ).toBe(covered.attrs_synced_at);
+
+    // Unchecking the last verdict is a client-side empty state, not a request.
+    await datasetsSection
+      .getByRole("checkbox", { name: presentVerdict, exact: true })
+      .uncheck();
+    await expect(datasetsSection.getByText(/no verdict selected/i)).toBeVisible({
+      timeout: 10_000,
+    });
+    await expect(datasetsSection.getByRole("table")).toHaveCount(0);
+  });
 });

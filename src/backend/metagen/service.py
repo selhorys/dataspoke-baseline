@@ -10,13 +10,18 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any, Literal
 
+import sqlalchemy as sa
 from pydantic import BaseModel
 from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy import and_, delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, joinedload
 
-from src.backend._dataset_filter import resolve_dataset_scope, validate_dataset_filter_service
+from src.backend._dataset_filter import (
+    dataset_filter_clause,
+    resolve_dataset_scope,
+    validate_dataset_filter_service,
+)
 from src.backend.admin.config_service import RuntimeConfigDTO, get_runtime_config
 from src.backend.metagen.debate import run_debate
 from src.backend.metagen.debate_models import MetagenLLMOutput
@@ -67,6 +72,11 @@ _LOCK_TTL_SECONDS = 3600
 
 _VALID_KINDS: frozenset[str] = frozenset({"dataset.description", "column.description"})
 
+#: Enabled confs whose compiled `dataset_filter` clauses may share one statement.
+#: Keeps a coverage query's bind-parameter count bounded by the batch rather than
+#: by how many confs an operator has created (see `match_confs_for_urns`).
+_CONF_CLAUSE_BATCH = 8
+
 
 def _lock_key(conf_id: str) -> str:
     """Per-conf Redis lock key (one in-flight run per conf)."""
@@ -81,7 +91,7 @@ class MetagenConfDTO(BaseModel):
     name: str
     is_enabled: bool
     schedule_tier: str | None
-    dataset_filter: dict[str, Any]
+    dataset_filter: str
     result_limit: int
     overwrite_pending: bool
     dataset_affected_count: int = 0
@@ -180,7 +190,7 @@ def _conf_to_dto(row: MetagenConfig) -> MetagenConfDTO:
         name=row.name,
         is_enabled=row.is_enabled,
         schedule_tier=row.schedule_tier,
-        dataset_filter=dict(row.dataset_filter) if row.dataset_filter else {},
+        dataset_filter=row.dataset_filter or "",
         result_limit=row.result_limit,
         overwrite_pending=row.overwrite_pending,
         created_at=row.created_at,
@@ -359,7 +369,7 @@ class MetagenService:
         `schedule_tier` values are constrained at the API schema layer
         (`MetagenConfCreateRequest`).
         """
-        dataset_filter = data.get("dataset_filter", {}) or {}
+        dataset_filter = data.get("dataset_filter") or ""
         validate_dataset_filter_service(dataset_filter)
 
         name = data["name"]
@@ -395,7 +405,7 @@ class MetagenService:
 
     async def put_conf(self, conf_id: str, data: dict[str, Any]) -> MetagenConfDTO:
         """Full replacement of a conf. Raises 404 when absent, 409 on name collision."""
-        dataset_filter = data.get("dataset_filter", {}) or {}
+        dataset_filter = data.get("dataset_filter") or ""
         validate_dataset_filter_service(dataset_filter)
 
         row = await self._load_conf_row(conf_id)
@@ -802,38 +812,62 @@ class MetagenService:
     ) -> dict[str, list[tuple[str, str]]]:
         """Map each URN to the enabled confs whose ``dataset_filter`` matches it.
 
-        Inverse of the ``list_uncovered`` matched-set loop: iterate every ENABLED
-        conf once, resolve its scope via :func:`resolve_dataset_scope`, and invert
-        into ``urn -> [(conf_id, name), ...]``. Cost is bounded by the number of
-        enabled confs, not the number of datasets, so this stays cheap when called
-        for a single page of the catalog.
+        Inverse of the ``list_uncovered`` matched set. Every conf's filter
+        compiles to a clause over the same ``dataset_registry`` row, so a batch
+        of confs rides along as one boolean column each over a single pass
+        restricted to this page's URNs: the catalog page pays a handful of round
+        trips instead of one dataset enumeration per enabled conf.
+
+        Confs are batched at :data:`_CONF_CLAUSE_BATCH` per statement and the
+        resulting maps merged. This route runs on every load of
+        ``GET /spoke/common/data``, so its statement width cannot be allowed to
+        grow with the conf count: the PostgreSQL wire protocol caps a statement
+        at 32,767 bind parameters, and a filter's literals are bound per
+        predicate (each ``IN`` list is one array parameter — see
+        :func:`src.shared.dataset_filter.filter_clause`), so an unbatched
+        statement over enough dense filters would fail with an opaque driver
+        error rather than a slow page.
 
         Returns a dict keyed by every URN in ``urns``; the value is ``[]`` when no
         enabled conf matches (so callers can read every URN unconditionally).
+        Each URN's conf list follows conf name order.
         """
         result: dict[str, list[tuple[str, str]]] = {urn: [] for urn in urns}
         if not urns:
             return result
 
-        target: set[str] = set(urns)
-        # Order by name so each URN's resulting conf list is stable across calls.
+        # Order by name so each URN's resulting conf list is stable across calls,
+        # and so the batches below preserve that order.
         confs_result = await self._db.execute(
             select(MetagenConfig)
             .where(MetagenConfig.is_enabled.is_(True))
             .order_by(MetagenConfig.name)
         )
-        enabled_confs = confs_result.scalars().all()
+        enabled_confs = list(confs_result.scalars().all())
 
-        for conf in enabled_confs:
-            scope = await resolve_dataset_scope(
-                self._datahub,
-                dict(conf.dataset_filter) if conf.dataset_filter else {},
-                swallow_enumerate_errors=True,
+        for start in range(0, len(enabled_confs), _CONF_CLAUSE_BATCH):
+            batch = enabled_confs[start : start + _CONF_CLAUSE_BATCH]
+            # Column labels are positional and generated here — never
+            # conf-supplied text. A NULL predicate (an attribute that has never
+            # synced) reads as "no match", the correct answer for coverage.
+            stmt = select(
+                DatasetRegistry.dataset_urn,
+                *[
+                    dataset_filter_clause(conf.dataset_filter).label(f"conf_match_{position}")
+                    for position, conf in enumerate(batch)
+                ],
+            ).where(
+                DatasetRegistry.datahub_registered.is_(True),
+                DatasetRegistry.dataset_urn.in_(urns),
             )
-            conf_id = str(conf.id)
-            for urn in scope.resolved_urns:
-                if urn in target:
-                    result[urn].append((conf_id, conf.name))
+
+            for row in (await self._db.execute(stmt)).all():
+                matches = result.get(row[0])
+                if matches is None:
+                    continue
+                for position, conf in enumerate(batch):
+                    if row[position + 1]:
+                        matches.append((str(conf.id), conf.name))
 
         return result
 
@@ -856,52 +890,81 @@ class MetagenService:
         some enabled conf but blocked by their boundary (missing, `is_enabled=false`,
         or empty `allowed`) → `reason="boundary_blocked"`. A dataset matched and
         writable by at least one enabled conf is never listed.
-        """
-        # Registered datasets (the UC1 unmanaged analogue base set).
-        reg_result = await self._db.execute(
-            select(DatasetRegistry.dataset_urn).where(DatasetRegistry.datahub_registered.is_(True))
-        )
-        registered: set[str] = {r[0] for r in reg_result.all()}
 
-        # Union of URNs matched by any enabled conf's dataset_filter.
+        One query: every enabled conf's filter compiles to a clause over the same
+        ``dataset_registry`` row, so the matched set is their OR — no per-conf
+        round trip, and paging and sorting happen in SQL.
+
+        Unlike :meth:`match_confs_for_urns` this cannot batch the confs: "matched
+        by no enabled conf" is a predicate of the paginated statement itself, and
+        splitting it across statements would mean materialising a URN set again.
+        Its bind-parameter count therefore grows with the number of enabled confs
+        — one parameter per predicate, since each ``IN`` list binds as a single
+        array (see :func:`src.shared.dataset_filter.filter_clause`). The
+        8,000-character filter cap puts roughly 400 predicates on the densest
+        possible filter, so the PostgreSQL 32,767-parameter ceiling is reached
+        only around 80 enabled confs each carrying a maximally dense filter.
+        That bound is stated rather than removed; this view is an operator page,
+        not the per-request catalog path.
+        """
         confs_result = await self._db.execute(
             select(MetagenConfig).where(MetagenConfig.is_enabled.is_(True))
         )
         enabled_confs = confs_result.scalars().all()
 
-        matched: set[str] = set()
-        for conf in enabled_confs:
-            scope = await resolve_dataset_scope(
-                self._datahub,
-                dict(conf.dataset_filter) if conf.dataset_filter else {},
-                swallow_enumerate_errors=True,
+        # coalesce(…, false) collapses SQL's three-valued logic before the
+        # negation below: `origin = 'PROD'` is NULL (not false) for a row whose
+        # origin has never synced, and `NOT NULL` is NULL, which would silently
+        # drop exactly the un-synced datasets this view exists to surface.
+        matched = (
+            func.coalesce(
+                sa.or_(*[dataset_filter_clause(conf.dataset_filter) for conf in enabled_confs]),
+                sa.false(),
             )
-            matched.update(scope.resolved_urns)
-        matched &= registered
-
-        # Writable boundary set: is_enabled=true with non-empty allowed.
-        bnd_result = await self._db.execute(
-            select(MetagenBoundary.dataset_urn).where(
-                MetagenBoundary.is_enabled.is_(True),
-                func.cardinality(MetagenBoundary.allowed) > 0,
-            )
+            if enabled_confs
+            else sa.false()
         )
-        writable_boundary: set[str] = {r[0] for r in bnd_result.all()}
 
-        # Default order: dataset_urn ascending. ?sort=dataset_urn_desc reverses
-        # the in-memory ordering (the uncovered set is computed in Python).
-        from sqlalchemy.sql import operators
+        # Writable boundary: is_enabled=true with non-empty allowed.
+        writable = sa.and_(
+            MetagenBoundary.dataset_urn.is_not(None),
+            MetagenBoundary.is_enabled.is_(True),
+            func.coalesce(func.cardinality(MetagenBoundary.allowed), 0) > 0,
+        )
 
-        reverse = order_by is not None and getattr(order_by, "modifier", None) is operators.desc_op
-        rows: list[UncoveredRowDTO] = []
-        for urn in sorted(registered, reverse=reverse):
-            if urn not in matched:
-                rows.append(UncoveredRowDTO(dataset_urn=urn, reason="no_conf_match"))
-            elif include_disallowed and urn not in writable_boundary:
-                rows.append(UncoveredRowDTO(dataset_urn=urn, reason="boundary_blocked"))
+        reason = sa.case(
+            (sa.not_(matched), sa.literal("no_conf_match")),
+            else_=sa.literal("boundary_blocked"),
+        ).label("reason")
 
-        total = len(rows)
-        return rows[offset : offset + limit], total
+        base = (
+            select(DatasetRegistry.dataset_urn, reason)
+            .select_from(DatasetRegistry)
+            .outerjoin(
+                MetagenBoundary,
+                MetagenBoundary.dataset_urn == DatasetRegistry.dataset_urn,
+            )
+            .where(DatasetRegistry.datahub_registered.is_(True))
+        )
+        if include_disallowed:
+            base = base.where(sa.or_(sa.not_(matched), sa.not_(writable)))
+        else:
+            base = base.where(sa.not_(matched))
+
+        count_q = select(func.count()).select_from(base.subquery())
+        total = (await self._db.execute(count_q)).scalar() or 0
+
+        default_order = DatasetRegistry.dataset_urn.asc()
+        rows_q = (
+            base.order_by(order_by if order_by is not None else default_order)
+            .offset(offset)
+            .limit(limit)
+        )
+        rows = (await self._db.execute(rows_q)).all()
+
+        return [
+            UncoveredRowDTO(dataset_urn=row.dataset_urn, reason=row.reason) for row in rows
+        ], int(total)
 
     # ── Covered datasets view ─────────────────────────────────────────────────
 
@@ -916,11 +979,13 @@ class MetagenService:
     ) -> tuple[list[CoveredDatasetRowDTO], int]:
         """Datasets a conf's `dataset_filter` matches (the per-conf covered view).
 
-        Resolves the conf's `dataset_filter` via `resolve_dataset_scope`, then
-        left-joins each matched dataset's `metagen_boundary`. A dataset is
-        `blocked` when its boundary is missing, `is_enabled=false`, or has empty
-        `allowed` (`reason="boundary_blocked"`); writable datasets carry
-        `blocked=false` and `reason=None`.
+        Pushes the compiled filter clause into one paginated query over
+        `dataset_registry` and left-joins each matched dataset's
+        `metagen_boundary`, so sorting and paging happen in SQL rather than over
+        a materialised URN list. A dataset is `blocked` when its boundary is
+        missing, `is_enabled=false`, or has empty `allowed`
+        (`reason="boundary_blocked"`); writable datasets carry `blocked=false`
+        and `reason=None`.
 
         Default (`include_disallowed=false`) returns only non-blocked rows;
         `include_disallowed=true` returns all matched rows with their blocked flag.
@@ -929,47 +994,53 @@ class MetagenService:
         """
         conf = await self._load_conf_row(conf_id)
 
-        scope = await resolve_dataset_scope(
-            self._datahub,
-            dict(conf.dataset_filter) if conf.dataset_filter else {},
-            swallow_enumerate_errors=True,
+        blocked = sa.or_(
+            MetagenBoundary.dataset_urn.is_(None),
+            MetagenBoundary.is_enabled.is_(False),
+            func.coalesce(func.cardinality(MetagenBoundary.allowed), 0) == 0,
+        ).label("blocked")
+
+        base = (
+            select(
+                DatasetRegistry.dataset_urn,
+                MetagenBoundary.is_enabled,
+                MetagenBoundary.allowed,
+                blocked,
+            )
+            .select_from(DatasetRegistry)
+            .outerjoin(
+                MetagenBoundary,
+                MetagenBoundary.dataset_urn == DatasetRegistry.dataset_urn,
+            )
+            .where(
+                DatasetRegistry.datahub_registered.is_(True),
+                dataset_filter_clause(conf.dataset_filter),
+            )
         )
-        matched: list[str] = scope.resolved_urns
+        if not include_disallowed:
+            base = base.where(sa.not_(blocked))
 
-        # Left-join boundary rows for the matched datasets.
-        boundaries: dict[str, MetagenBoundary] = {}
-        if matched:
-            bnd_result = await self._db.execute(
-                select(MetagenBoundary).where(MetagenBoundary.dataset_urn.in_(matched))
+        count_q = select(func.count()).select_from(base.subquery())
+        total = (await self._db.execute(count_q)).scalar() or 0
+
+        default_order = DatasetRegistry.dataset_urn.asc()
+        rows_q = (
+            base.order_by(order_by if order_by is not None else default_order)
+            .offset(offset)
+            .limit(limit)
+        )
+        rows = (await self._db.execute(rows_q)).all()
+
+        return [
+            CoveredDatasetRowDTO(
+                dataset_urn=row.dataset_urn,
+                is_enabled=bool(row.is_enabled),
+                allowed=list(row.allowed) if row.allowed is not None else [],
+                blocked=bool(row.blocked),
+                reason="boundary_blocked" if row.blocked else None,
             )
-            boundaries = {b.dataset_urn: b for b in bnd_result.scalars().all()}
-
-        # Default order: dataset_urn ascending. ?sort=dataset_urn_desc reverses
-        # the in-memory ordering (the covered set is computed in Python).
-        from sqlalchemy.sql import operators
-
-        reverse = order_by is not None and getattr(order_by, "modifier", None) is operators.desc_op
-
-        rows: list[CoveredDatasetRowDTO] = []
-        for urn in sorted(matched, reverse=reverse):
-            boundary = boundaries.get(urn)
-            blocked = (
-                boundary is None or not boundary.is_enabled or len(boundary.allowed) == 0
-            )
-            if blocked and not include_disallowed:
-                continue
-            rows.append(
-                CoveredDatasetRowDTO(
-                    dataset_urn=urn,
-                    is_enabled=boundary.is_enabled if boundary is not None else False,
-                    allowed=list(boundary.allowed) if boundary is not None else [],
-                    blocked=blocked,
-                    reason="boundary_blocked" if blocked else None,
-                )
-            )
-
-        total = len(rows)
-        return rows[offset : offset + limit], total
+            for row in rows
+        ], int(total)
 
     # ── Run pipeline ──────────────────────────────────────────────────────────
 
@@ -1360,15 +1431,17 @@ class MetagenService:
         conf: MetagenConfDTO,
         override_urns: list[str] | None,
     ) -> tuple[list[str], list[str]]:
-        """Intersect DataHub dataset_filter with metagen_boundary.is_enabled=true rows.
+        """Intersect the conf's dataset_filter with metagen_boundary.is_enabled=true rows.
+
+        ``override_urns`` (the run body's ``dataset_urns``) narrows the conf's own
+        scope; it never widens it past the filter.
 
         Returns (in_scope_urns, unresolved_urns).
         """
         scope = await resolve_dataset_scope(
-            self._datahub,
-            conf.dataset_filter or {},
+            self._db,
+            conf.dataset_filter,
             explicit_urns_override=override_urns if override_urns else None,
-            swallow_enumerate_errors=True,
         )
         datahub_urn_set: set[str] = set(scope.resolved_urns)
         unresolved: list[str] = scope.unresolved_urns

@@ -3,8 +3,14 @@
  *
  * Spec traces:
  *   - spec/feature/FRONTEND_GOVERNANCE.md §Dashboard (combined metric card):
- *     "that metric's per-metric trend chart (**one line per that metric's
- *     `values` key**, one visible point per grain window)".
+ *     "that metric's trend chart — **one line per entry of the metric's
+ *     `metrics[]` series descriptors, drawn in `idx` order and stroked with each
+ *     descriptor's `color`**, one visible point per grain window".
+ *   - spec/feature/FRONTEND_GOVERNANCE.md §Metric detail (Result panel):
+ *     "[Recharts line chart — one line per series, in `idx` order, stroked with
+ *     each `color`]".
+ *   - spec/API.md §Metric — Definition body, `metrics`: "The dashboard chart
+ *     draws one line per descriptor, in `idx` order, stroked with `color`".
  *   - spec/feature/FRONTEND_BASIC.md §Shared Component Notes → ChartGrainPicker:
  *     "Rows are bucketed into grain windows and each window contributes exactly
  *     one point: that window's last measurement … each point is drawn with a
@@ -17,9 +23,11 @@
  * recharts is stubbed (ResponsiveContainer measures the DOM; jsdom has no
  * ResizeObserver). The stub follows components/validation/validation-variables-chart.test.tsx
  * and additionally surfaces the props the spec sentences above are about —
- * `dataKey` (which series exist), the plotted `data` (which windows exist), the
- * dot / activeDot config, and the XAxis `dataKey` (that the axis actually reads
- * the bucket labels). YAxis stays stubbed to null; nothing here asserts on it.
+ * `dataKey` (which series exist), `stroke` (the color each is drawn in), the
+ * plotted `data` (which windows exist), the dot / activeDot config, and the
+ * XAxis `dataKey` (that the axis actually reads the bucket labels). Series are
+ * emitted as sibling markers in render order, so document order *is* draw order.
+ * YAxis stays stubbed to null; nothing here asserts on it.
  *
  * The display timezone is pinned to UTC so window boundaries are host-independent.
  */
@@ -27,6 +35,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { MetricTimeseriesChart } from "./metric-timeseries-chart";
+import { colorForKey } from "@/lib/chart-colors";
 import type { MetricResult } from "@/types/governance";
 
 vi.mock("@/lib/preferences/timezone", () => ({ useDisplayTz: () => "utc" }));
@@ -53,16 +62,19 @@ vi.mock("recharts", () => {
     ),
     Line: ({
       dataKey,
+      stroke,
       dot,
       activeDot,
     }: {
       dataKey?: string;
+      stroke?: string;
       dot?: { r?: number } | boolean;
       activeDot?: { r?: number } | boolean;
     }) => (
       <div
         data-testid="line"
         data-key={String(dataKey)}
+        data-stroke={String(stroke)}
         data-dot={JSON.stringify(dot ?? null)}
         data-active-dot={JSON.stringify(activeDot ?? null)}
       />
@@ -93,6 +105,22 @@ function seriesKeys(): string[] {
     .getAllByTestId("line")
     .map((el) => el.getAttribute("data-key") as string)
     .sort();
+}
+
+/** Series keys in draw order (document order), unsorted — for `idx` ordering. */
+function drawOrder(): string[] {
+  return screen
+    .getAllByTestId("line")
+    .map((el) => el.getAttribute("data-key") as string);
+}
+
+/** The stroke each series is drawn with, keyed by series name. */
+function strokes(): Record<string, string> {
+  return Object.fromEntries(
+    screen
+      .getAllByTestId("line")
+      .map((el) => [el.getAttribute("data-key") as string, el.getAttribute("data-stroke") as string]),
+  );
 }
 
 function categories(): string[] {
@@ -146,6 +174,100 @@ describe("MetricTimeseriesChart — one line per values key (FRONTEND_GOVERNANCE
     expect(seriesKeys()).toEqual(["total"]);
     // The x categories remain the bucket labels, not the shadowed numbers.
     expect(categories()).toEqual(["2026-05-04", "2026-05-05"]);
+  });
+});
+
+// ── Series descriptors: order by idx, stroke by color ──────────────────────────
+
+describe("MetricTimeseriesChart — series descriptors decide order and color", () => {
+  // spec/API.md §Metric — `metrics`: "The dashboard chart draws one line per
+  // descriptor, in `idx` order, stroked with `color`."
+  const RESULTS = [
+    result("2026-05-04T00:00:00Z", { total: 7, doc_health: 4 }),
+    result("2026-05-05T00:00:00Z", { total: 8, doc_health: 5 }),
+  ];
+
+  it("draws the descriptors in `idx` order, not in the order they arrive", () => {
+    render(
+      <MetricTimeseriesChart
+        results={RESULTS}
+        series={[
+          { name: "total", color: "#64748B", idx: 2 },
+          { name: "doc_health", color: "#A855F7", idx: 1 },
+        ]}
+      />,
+    );
+
+    // Declared total-then-doc_health, ordered doc_health-then-total by `idx`.
+    expect(drawOrder()).toEqual(["doc_health", "total"]);
+  });
+
+  it("strokes each line with its descriptor's color", () => {
+    render(
+      <MetricTimeseriesChart
+        results={RESULTS}
+        series={[
+          { name: "total", color: "#64748B", idx: 1 },
+          { name: "doc_health", color: "#A855F7", idx: 2 },
+        ]}
+      />,
+    );
+
+    expect(strokes()).toEqual({ total: "#64748B", doc_health: "#A855F7" });
+  });
+
+  it("draws one line per descriptor — a values key with no descriptor is not plotted", () => {
+    // "one line per entry of the metric's `metrics[]` series descriptors": the
+    // descriptor list, not the result rows, is what decides the series set.
+    render(
+      <MetricTimeseriesChart
+        results={RESULTS}
+        series={[{ name: "doc_health", color: "#A855F7", idx: 1 }]}
+      />,
+    );
+
+    expect(drawOrder()).toEqual(["doc_health"]);
+  });
+
+  it("still draws a descriptor whose key is absent from the fetched results", () => {
+    // A metric that has just gained a series has descriptors ahead of its data;
+    // the line is declared (empty) rather than silently dropped.
+    render(
+      <MetricTimeseriesChart
+        results={[result("2026-05-04T00:00:00Z", { total: 7 })]}
+        series={[
+          { name: "total", color: "#64748B", idx: 1 },
+          { name: "doc_health", color: "#A855F7", idx: 2 },
+        ]}
+      />,
+    );
+
+    expect(drawOrder()).toEqual(["total", "doc_health"]);
+  });
+
+  it("falls back to the palette color when no descriptors are supplied", () => {
+    // Backstop for the color assertion above: without descriptors the chart is
+    // still stroked (from the shared palette), so "stroke === descriptor color"
+    // is a real behaviour rather than the only stroke the component can produce.
+    render(<MetricTimeseriesChart results={RESULTS} />);
+
+    const palette = strokes();
+    expect(palette.total).toBe(colorForKey("total", ["doc_health", "total"]));
+    expect(palette.doc_health).toBe(colorForKey("doc_health", ["doc_health", "total"]));
+    expect(palette.total).not.toBe("#64748B");
+  });
+
+  it("does not reorder the caller's descriptor array in place", () => {
+    // The card and the detail page both hand `conf.metrics` straight from the
+    // query cache; sorting it in place would rewrite cached data. (Component
+    // contract, not a spec sentence — recorded here so the intent is explicit.)
+    const series = [
+      { name: "total", color: "#64748B", idx: 2 },
+      { name: "doc_health", color: "#A855F7", idx: 1 },
+    ];
+    render(<MetricTimeseriesChart results={RESULTS} series={series} />);
+
+    expect(series.map((s) => s.name)).toEqual(["total", "doc_health"]);
   });
 });
 

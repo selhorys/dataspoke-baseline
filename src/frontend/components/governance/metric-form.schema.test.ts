@@ -9,8 +9,9 @@
  *   - src/api/schemas/metrics.py _check_metric_conf_for_type (F2 invariant):
  *     ingestion-freshness and validation-score require a positive int time_window_sec;
  *     doc-health takes {} (no window)
- *   - src/api/schemas/metrics.py _check_metrics_subset (F3 invariant):
- *     metrics[] must be a subset of METRIC_EMITTED_KEYS[type]
+ *   - src/api/schemas/metrics.py _check_metrics_series (F3 invariant):
+ *     metrics[] names ⊆ METRIC_EMITTED_KEYS[type], #RRGGBB color, positive
+ *     unique idx
  *   - types/governance.ts METRIC_EMITTED_KEYS and METRIC_TYPES_WITH_TIME_WINDOW
  */
 
@@ -19,11 +20,12 @@ import {
   createSchema,
   baseSchema,
   METRIC_ID_PATTERN,
-  pruneMetricKeys,
+  seriesRowsForType,
+  toSeries,
   fromInternal,
   toInternal,
 } from "./metric-form.schema";
-import type { InternalFormValues } from "./metric-form.schema";
+import type { InternalFormValues, MetricSeriesRow } from "./metric-form.schema";
 import type { MetricFormValues } from "@/types/governance";
 
 // ── Shared valid base payload (edit schema — no metric_id validation) ──────────
@@ -33,11 +35,14 @@ const VALID_BASE = {
   metric_type: "doc-health" as const,
   title: "Doc Health (DEV)",
   description: "Daily documentation-completeness check",
-  metrics: ["total"],
+  metrics: [
+    { name: "total", selected: true, color: "#64748B", idx: 1 },
+    { name: "doc_health", selected: false, color: "#A855F7", idx: 2 },
+  ],
   time_window_sec: undefined,
   schedule_tier: "daily" as const,
   is_enabled: true,
-  dataset_filter: { origin: "DEV" },
+  dataset_filter: "origin = 'DEV'",
   metric_id: "",
 };
 
@@ -46,11 +51,11 @@ interface TimeWindowPayload {
   metric_type?: string;
   title?: string;
   description?: string;
-  metrics?: string[];
+  metrics?: MetricSeriesRow[];
   time_window_sec?: number;
   schedule_tier?: string | null;
   is_enabled?: boolean;
-  dataset_filter?: Record<string, unknown>;
+  dataset_filter?: string;
   metric_id?: string;
 }
 
@@ -58,7 +63,7 @@ function withTimeWindow(overrides: TimeWindowPayload): TimeWindowPayload {
   return {
     ...VALID_BASE,
     metric_type: "ingestion-freshness",
-    metrics: ["total"],
+    metrics: [{ name: "total", selected: true, color: "#64748B", idx: 1 }],
     ...overrides,
   };
 }
@@ -210,7 +215,11 @@ describe("F2 invariant — time_window_sec required for ingestion-freshness", ()
 
   it("fails when time_window_sec is absent for validation-score", () => {
     const result = baseSchema.safeParse(
-      withTimeWindow({ metric_type: "validation-score", metrics: ["total"], time_window_sec: undefined }),
+      withTimeWindow({
+        metric_type: "validation-score",
+        metrics: [{ name: "total", selected: true, color: "#64748B", idx: 1 }],
+        time_window_sec: undefined,
+      }),
     );
     expect(result.success).toBe(false);
     if (!result.success) {
@@ -275,44 +284,129 @@ describe("F2 invariant — doc-health passes without time_window_sec", () => {
   });
 });
 
-// ── 3. F3 — pruneMetricKeys pure helper (metrics.py _check_metrics_subset) ─────
+// ── 3. F3 — series rows (metrics.py _check_metrics_series) ────────────────────
 
-describe("pruneMetricKeys — F3 metrics subset invariant (src/api/schemas/metrics.py _check_metrics_subset)", () => {
-  it("returns only keys valid for ingestion-freshness from a prior selection", () => {
-    // doc-health has ['total', 'doc_health']; ingestion-freshness has ['total', 'ingested_in_time']
-    // 'doc_health' must be pruned when switching to ingestion-freshness
-    const pruned = pruneMetricKeys("ingestion-freshness", ["total", "doc_health"]);
-    expect(pruned).toEqual(["total"]);
+describe("seriesRowsForType — one row per emitted key, reseeded on type change", () => {
+  it("renders one row per emitted key of the type", () => {
+    const rows = seriesRowsForType("doc-health", []);
+    expect(rows.map((r) => r.name)).toEqual(["total", "doc_health"]);
+    expect(rows.every((r) => !r.selected)).toBe(true);
   });
 
-  it("returns only keys valid for doc-health, dropping ingestion-freshness-only keys", () => {
-    const pruned = pruneMetricKeys("doc-health", ["total", "ingested_in_time"]);
-    expect(pruned).toEqual(["total"]);
+  it("keeps color and order of keys the new type still emits, and drops the rest", () => {
+    const previous = [
+      { name: "total", selected: true, color: "#111111", idx: 2 },
+      { name: "doc_health", selected: true, color: "#222222", idx: 1 },
+    ];
+    const rows = seriesRowsForType("ingestion-freshness", previous);
+    expect(rows.map((r) => r.name)).toEqual(["total", "ingested_in_time"]);
+    expect(rows[0]).toEqual({ name: "total", selected: true, color: "#111111", idx: 2 });
+    // The key the new type adds arrives unchecked, on a free order slot.
+    expect(rows[1].selected).toBe(false);
+    expect(rows[1].idx).not.toBe(2);
   });
 
-  it("returns only keys valid for validation-score", () => {
-    const pruned = pruneMetricKeys("validation-score", ["total", "doc_health", "ingested_in_time"]);
-    // validation-score emits: total, validation_score_sum
-    expect(pruned).toContain("total");
-    expect(pruned).not.toContain("doc_health");
-    expect(pruned).not.toContain("ingested_in_time");
+  it("seeds unchecked rows with the backend's factory default color", () => {
+    const rows = seriesRowsForType("validation-score", []);
+    expect(rows.find((r) => r.name === "validation_score_sum")?.color).toBe("#3B82F6");
   });
 
-  it("keeps all keys when they are all valid for the new type", () => {
-    const pruned = pruneMetricKeys("ingestion-freshness", ["total", "ingested_in_time"]);
-    expect(pruned).toHaveLength(2);
-    expect(pruned).toContain("total");
-    expect(pruned).toContain("ingested_in_time");
+  it("accepts API series descriptors as the seed", () => {
+    const rows = seriesRowsForType("doc-health", [
+      { name: "doc_health", color: "#A855F7", idx: 1 },
+    ]);
+    expect(rows.find((r) => r.name === "doc_health")).toEqual({
+      name: "doc_health",
+      selected: true,
+      color: "#A855F7",
+      idx: 1,
+    });
+    expect(rows.find((r) => r.name === "total")?.selected).toBe(false);
+  });
+});
+
+describe("toSeries — only checked rows are submitted, in idx order", () => {
+  it("drops unchecked rows and the row-only `selected` flag", () => {
+    const series = toSeries([
+      { name: "doc_health", selected: true, color: "#A855F7", idx: 2 },
+      { name: "total", selected: false, color: "#64748B", idx: 3 },
+      { name: "other", selected: true, color: "#111111", idx: 1 },
+    ]);
+    expect(series).toEqual([
+      { name: "other", color: "#111111", idx: 1 },
+      { name: "doc_health", color: "#A855F7", idx: 2 },
+    ]);
+  });
+});
+
+describe("baseSchema — series rules mirror _check_metrics_series", () => {
+  it("rejects a selection with no checked key", () => {
+    const result = baseSchema.safeParse({
+      ...VALID_BASE,
+      metrics: [{ name: "total", selected: false, color: "#64748B", idx: 1 }],
+    });
+    expect(result.success).toBe(false);
   });
 
-  it("returns empty array when none of the prior keys are valid for the new type", () => {
-    const pruned = pruneMetricKeys("doc-health", ["ingested_in_time", "validation_score_sum"]);
-    expect(pruned).toHaveLength(0);
+  it("rejects a malformed hex color on a checked row", () => {
+    const result = baseSchema.safeParse({
+      ...VALID_BASE,
+      metrics: [{ name: "total", selected: true, color: "#12345", idx: 1 }],
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(
+        result.error.issues.some((i) => i.path.join(".") === "metrics.0.color"),
+      ).toBe(true);
+    }
   });
 
-  it("returns empty array when prior selection is empty", () => {
-    const pruned = pruneMetricKeys("ingestion-freshness", []);
-    expect(pruned).toHaveLength(0);
+  it("ignores a malformed color on an unchecked row", () => {
+    const result = baseSchema.safeParse({
+      ...VALID_BASE,
+      metrics: [
+        { name: "total", selected: true, color: "#64748B", idx: 1 },
+        { name: "doc_health", selected: false, color: "not-a-color", idx: 2 },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects a non-positive idx", () => {
+    const result = baseSchema.safeParse({
+      ...VALID_BASE,
+      metrics: [{ name: "total", selected: true, color: "#64748B", idx: 0 }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects duplicate idx values among checked rows", () => {
+    const result = baseSchema.safeParse({
+      ...VALID_BASE,
+      metrics: [
+        { name: "total", selected: true, color: "#64748B", idx: 1 },
+        { name: "doc_health", selected: true, color: "#A855F7", idx: 1 },
+      ],
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues.some((i) => i.path[0] === "metrics")).toBe(true);
+    }
+  });
+});
+
+describe("baseSchema — dataset_filter is a capped string", () => {
+  it("accepts an empty clause (all registered datasets)", () => {
+    const result = baseSchema.safeParse({ ...VALID_BASE, dataset_filter: "" });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects a clause over the 8,000-character payload cap", () => {
+    const result = baseSchema.safeParse({
+      ...VALID_BASE,
+      dataset_filter: "x".repeat(8001),
+    });
+    expect(result.success).toBe(false);
   });
 });
 
@@ -330,11 +424,11 @@ describe("fromInternal — doc-health serializes metric_conf as exactly {} (back
     metric_type: "doc-health",
     title: "Doc Health",
     description: "Checks documentation completeness",
-    metrics: ["total"],
+    metrics: [{ name: "total", selected: true, color: "#64748B", idx: 1 }],
     time_window_sec: undefined,
     schedule_tier: "daily",
     is_enabled: true,
-    dataset_filter: { origin: "DEV" },
+    dataset_filter: "origin = 'DEV'",
     metric_id: "",
   };
 
@@ -360,11 +454,11 @@ describe("fromInternal — ingestion-freshness serializes metric_conf as { time_
     metric_type: "ingestion-freshness",
     title: "Freshness",
     description: "Checks ingestion freshness",
-    metrics: ["total"],
+    metrics: [{ name: "total", selected: true, color: "#64748B", idx: 1 }],
     time_window_sec: 172800,
     schedule_tier: "daily",
     is_enabled: true,
-    dataset_filter: {},
+    dataset_filter: "",
     metric_id: "",
   };
 
@@ -386,11 +480,11 @@ describe("fromInternal — validation-score serializes metric_conf as { time_win
       metric_type: "validation-score",
       title: "Validation Score",
       description: "Tracks validation pass rate",
-      metrics: ["total"],
+      metrics: [{ name: "total", selected: true, color: "#64748B", idx: 1 }],
       time_window_sec: 604800,
       schedule_tier: "weekly",
       is_enabled: true,
-      dataset_filter: {},
+      dataset_filter: "",
       metric_id: "",
     };
     const result = fromInternal(internal);
@@ -407,11 +501,14 @@ describe("round-trip toInternal → fromInternal (API payload field preservation
       metric_type: "doc-health",
       title: "Doc Health",
       description: "Completeness check",
-      metrics: ["total", "doc_health"],
+      metrics: [
+        { name: "total", color: "#64748B", idx: 1 },
+        { name: "doc_health", color: "#A855F7", idx: 2 },
+      ],
       metric_conf: {},
       schedule_tier: "daily",
       is_enabled: true,
-      dataset_filter: { origin: "DEV" },
+      dataset_filter: "origin = 'DEV'",
     };
     const result = fromInternal(toInternal(original));
     expect(result.metric_conf).toStrictEqual({});
@@ -427,11 +524,11 @@ describe("round-trip toInternal → fromInternal (API payload field preservation
       metric_type: "ingestion-freshness",
       title: "Freshness",
       description: "Freshness check",
-      metrics: ["total"],
+      metrics: [{ name: "total", color: "#64748B", idx: 1 }],
       metric_conf: { time_window_sec: 172800 },
       schedule_tier: null,
       is_enabled: true,
-      dataset_filter: {},
+      dataset_filter: "",
     };
     const result = fromInternal(toInternal(original));
     expect(result.metric_conf).toStrictEqual({ time_window_sec: 172800 });
@@ -444,11 +541,14 @@ describe("round-trip toInternal → fromInternal (API payload field preservation
       metric_type: "validation-score",
       title: "Val Score",
       description: "Validation score metric",
-      metrics: ["total", "validation_score_sum"],
+      metrics: [
+        { name: "total", color: "#64748B", idx: 1 },
+        { name: "validation_score_sum", color: "#3B82F6", idx: 2 },
+      ],
       metric_conf: { time_window_sec: 3600 },
       schedule_tier: "hourly",
       is_enabled: false,
-      dataset_filter: {},
+      dataset_filter: "",
     };
     const result = fromInternal(toInternal(original));
     expect(result.metric_conf).toStrictEqual({ time_window_sec: 3600 });

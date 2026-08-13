@@ -1,11 +1,38 @@
 """Measurer registry — maps metric-type names to async measurer functions."""
 
 from collections.abc import Callable
+from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.shared.datahub.client import DataHubClient
+
+
+@dataclass(frozen=True)
+class DatasetVerdict:
+    """One dataset's outcome for one metric run.
+
+    Verdicts cover **every** dataset in scope, not only the failing ones: full
+    coverage is what makes "in scope but never evaluated" (``unknown`` on
+    ``GET /spoke/governance/metric/{metric_id}/dataset``) distinguishable from
+    "evaluated and passing", which a failures-only return cannot express. The
+    service derives the failures-only ``metric_results.breakdown`` from these,
+    so the stored breakdown and the per-dataset store can never disagree.
+
+    ``evidence_at`` is the per-dataset evidence timestamp — the resolved
+    ingestion evidence time for ``ingestion-freshness``, the counted result's
+    ``data_time`` for ``validation-score``, and ``None`` for ``doc-health``,
+    whose documentation state carries no timestamp.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service — Verdict contract.
+    """
+
+    urn: str
+    met: bool
+    evidence_at: datetime | None = None
+    detail: dict[str, Any] = field(default_factory=dict)
 
 
 class MeasurerFn(Protocol):
@@ -18,7 +45,7 @@ class MeasurerFn(Protocol):
         *,
         datahub: DataHubClient,
         db: AsyncSession,
-    ) -> tuple[dict[str, float], dict[str, Any]]: ...
+    ) -> tuple[dict[str, float], list[DatasetVerdict]]: ...
 
 
 _MEASURERS: dict[str, MeasurerFn] = {}

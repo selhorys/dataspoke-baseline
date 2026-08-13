@@ -142,3 +142,46 @@ def test_all_dag_ids_exactly_matches_spec_catalogue():
         f"ALL_DAG_IDS is missing DAG IDs from spec catalogue: {missing_from_impl}. "
         "Add them to src/workflows/registry.py or remove from spec."
     )
+
+
+# ---------------------------------------------------------------------------
+# Sweep cadence
+# ---------------------------------------------------------------------------
+
+
+def test_datahub_sync_hourly_runs_on_the_two_hour_crontab():
+    """The sweep's Airflow schedule is the crontab `0 */2 * * *`.
+
+    Its cadence is not cosmetic: the same sweep refreshes the `dataset_registry`
+    attribute columns every `dataset_filter` resolves against, so it is the upper
+    bound on filter-scope staleness for UC3, UC4 and UC5.
+
+    spec: BACKEND.md §DAG Catalogue — "| `datahub-sync-hourly` |
+        `datahub_sync_hourly.py` | Airflow schedule | `0 */2 * * *` |"; "Because the
+        sweep also refreshes the dataset attributes every `dataset_filter` resolves
+        against, its cadence is the upper bound on filter-scope staleness across
+        UC3, UC4, and UC5."
+    """
+    source = (_DAGS_DIR / "datahub_sync_hourly.py").read_text(encoding="utf-8")
+    assert 'schedule="0 */2 * * *"' in source, (
+        "the DAG must declare schedule='0 */2 * * *'. spec: BACKEND.md §DAG Catalogue."
+    )
+    assert 'schedule="@hourly"' not in source, (
+        "the `-hourly` suffix is a retained identifier, not a cadence claim. "
+        "spec: BACKEND.md §DAG Catalogue."
+    )
+
+
+def test_datahub_sync_hourly_dag_id_keeps_its_retained_name():
+    """The `-hourly` suffix survives the cadence change — the id is an identifier.
+
+    Renaming the DAG would orphan the `datahub_sync` admin group's member list and
+    every Airflow run history keyed on it, so the mismatch is deliberate.
+
+    spec: BACKEND.md §DAG Catalogue — "the `-hourly` suffix in its `dag_id`,
+        filename, and tags is a retained identifier, not a cadence claim."
+    """
+    from src.workflows.registry import ALL_DAG_IDS
+
+    assert _DAG_ID == "datahub-sync-hourly"
+    assert _DAG_ID in ALL_DAG_IDS

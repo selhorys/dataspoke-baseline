@@ -289,9 +289,12 @@ async def test_metrics_list_active_hourly(
         "metric_type": "ingestion-freshness",
         "title": "Spot List Freshness",
         "description": "Spot test metric for tier-selection.",
-        "metrics": ["total", "ingested_in_time"],
+        "metrics": [
+            {"name": "total", "color": "#4040F0", "idx": 1},
+            {"name": "ingested_in_time", "color": "#000000", "idx": 2},
+        ],
         "metric_conf": {"time_window_sec": 86400},
-        "dataset_filter": {"dataset_urns": [_TEST_URN]},
+        "dataset_filter": f"dataset_urn = '{_TEST_URN}'",
     }
 
     # Create an enabled metric in the target tier (hourly).
@@ -358,10 +361,13 @@ async def test_metrics_run_activity(
             "metric_type": "ingestion-freshness",
             "title": "Spot Activity Freshness",
             "description": "Spot test metric description.",
-            "metrics": ["total", "ingested_in_time"],
+            "metrics": [
+                {"name": "total", "color": "#4040F0", "idx": 1},
+                {"name": "ingested_in_time", "color": "#000000", "idx": 2},
+            ],
             "metric_conf": {"time_window_sec": 86400},
             "schedule_tier": "hourly",
-            "dataset_filter": {"dataset_urns": [_TEST_URN]},
+            "dataset_filter": f"dataset_urn = '{_TEST_URN}'",
         },
     )
 

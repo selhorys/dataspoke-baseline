@@ -27,7 +27,7 @@ function makeConf(id: string, name: string): MetagenConf {
     name,
     is_enabled: true,
     schedule_tier: null,
-    dataset_filter: {},
+    dataset_filter: "",
     result_limit: 3,
     overwrite_pending: true,
     dataset_affected_count: 0,

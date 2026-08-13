@@ -78,14 +78,16 @@ test.beforeAll(async ({ adminApi }) => {
 
   // -- Seed: an ENABLED conf scoping exactly that one dataset. No boundary is created
   //    for it, so the conf matches the dataset but may not write it → boundary_blocked. --
-  // spec: API.md §Metadata Generation — POST /spoke/metagen/conf; dataset_filter.dataset_urns
+  // spec: API.md §Metadata Generation — POST /spoke/metagen/conf.
+  // spec: API.md §`dataset_filter` grammar — `dataset_urn = '…'` is the scalar-equality
+  //   predicate that scopes a conf to exactly one dataset.
   // schedule_tier null so no scheduled DAG picks the conf up during the run.
   const createResp = await adminApi.post(CONF_API, {
     data: {
       name: CONF_NAME,
       is_enabled: true,
       schedule_tier: null,
-      dataset_filter: { dataset_urns: [BLOCKED_URN] },
+      dataset_filter: `dataset_urn = '${BLOCKED_URN}'`,
       result_limit: 1,
       overwrite_pending: false,
     },

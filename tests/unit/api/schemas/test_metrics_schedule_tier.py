@@ -7,9 +7,11 @@ Spec sources:
     - PUT /spoke/governance/metric/{id}/attr/conf: ReplaceMetricConfigRequest (replace-only)
     - mode: "active" | "passive"
     - metric_type: "ingestion-freshness" | "validation-score" | "doc-health"
-    - metrics: list[str] subset of type's emitted keys
+    - metrics: list of {name, color, idx} series descriptors; name from the type's
+      emitted keys, name and idx each unique within the metric
     - metric_conf: type-specific (time_window_sec for windowed types; {} for doc-health)
-    - dataset_filter: {origin, tags, glossary_terms, dataset_urns} — each list capped at 1,000
+    - dataset_filter: a SQL WHERE-clause string — ≤ 8,000 chars and ≤ 1,000 string
+      literals (spec/API.md §`dataset_filter` grammar — Caps)
     - schedule_tier: "hourly" | "daily" | "weekly" | null
   spec/feature/BACKEND_SCHEMA.md §metric_definitions — column shapes.
   spec/USE_CASE_en.md §UC5 §Built-in active metric types — emitted keys per type.
@@ -28,7 +30,9 @@ from src.api.schemas.metrics import (
     ReplaceMetricConfigRequest,
 )
 
-_DATASET_FILTER_LIST_CAP = 1000
+#: spec/API.md §`dataset_filter` grammar — Caps.
+_FILTER_LITERAL_CAP = 1000
+_FILTER_CHAR_CAP = 8000
 
 _VALID_INGESTION_BODY = {
     "mode": "active",
@@ -36,9 +40,12 @@ _VALID_INGESTION_BODY = {
     "metric_type": "ingestion-freshness",
     "title": "Ingestion freshness",
     "description": "Pct of datasets with a recent successful ingestion run",
-    "metrics": ["total", "ingested_in_time"],
+    "metrics": [
+        {"name": "total", "color": "#64748B", "idx": 1},
+        {"name": "ingested_in_time", "color": "#22C55E", "idx": 2},
+    ],
     "metric_conf": {"time_window_sec": 86400},
-    "dataset_filter": {},
+    "dataset_filter": "",
 }
 
 _VALID_VALIDATION_BODY = {
@@ -47,9 +54,12 @@ _VALID_VALIDATION_BODY = {
     "metric_type": "validation-score",
     "title": "Validation score",
     "description": "Sum of validation scores",
-    "metrics": ["total", "validation_score_sum"],
+    "metrics": [
+        {"name": "total", "color": "#64748B", "idx": 1},
+        {"name": "validation_score_sum", "color": "#3B82F6", "idx": 2},
+    ],
     "metric_conf": {"time_window_sec": 86400},
-    "dataset_filter": {},
+    "dataset_filter": "",
 }
 
 _VALID_DOC_HEALTH_BODY = {
@@ -58,20 +68,18 @@ _VALID_DOC_HEALTH_BODY = {
     "metric_type": "doc-health",
     "title": "Documentation health",
     "description": "Counts fully documented datasets",
-    "metrics": ["total", "doc_health"],
+    "metrics": [
+        {"name": "total", "color": "#64748B", "idx": 1},
+        {"name": "doc_health", "color": "#A855F7", "idx": 2},
+    ],
     "metric_conf": {},
-    "dataset_filter": {},
+    "dataset_filter": "",
 }
 
 
-def _too_many(dimension: str) -> list[str]:
-    if dimension == "dataset_urns":
-        return [
-            f"urn:li:dataset:(urn:li:dataPlatform:postgres,db.t{i},PROD)"
-            for i in range(_DATASET_FILTER_LIST_CAP + 1)
-        ]
-    prefix = "urn:li:tag:t" if dimension == "tags" else "urn:li:glossaryTerm:t"
-    return [f"{prefix}{i}" for i in range(_DATASET_FILTER_LIST_CAP + 1)]
+def _filter_with_literals(count: int) -> str:
+    """A syntactically valid filter carrying exactly *count* string literals."""
+    return "origin IN (" + ", ".join(f"'v{i}'" for i in range(count)) + ")"
 
 
 class TestReplaceMetricConfigRequest:
@@ -196,55 +204,158 @@ class TestReplaceMetricConfigRequest:
     # ── metrics[] validation ──────────────────────────────────────────────────
 
     def test_metrics_unknown_key_raises(self) -> None:
-        """metrics[] containing a key not emitted by the type raises ValidationError.
+        """A series naming a key the type does not emit raises ValidationError.
 
-        Spec: spec/API.md §Metric — unknown keys in metrics[] return
-              422 INVALID_PARAMETER.
+        Spec: spec/API.md §Metric — Definition body — "`name` is one of the type's
+              emitted keys […]; unknown keys return `422 INVALID_PARAMETER`".
         """
         with pytest.raises(ValidationError):
             ReplaceMetricConfigRequest(**{
                 **_VALID_INGESTION_BODY,
-                "metrics": ["nonexistent_key"],
+                "metrics": [{"name": "nonexistent_key", "color": "#64748B", "idx": 1}],
             })
 
     def test_metrics_valid_subset_accepted(self) -> None:
-        """metrics[] containing a valid subset of emitted keys is accepted.
+        """A subset of the type's emitted keys is accepted.
 
-        Spec: spec/API.md §Metric — metrics[] must be a subset of the type's
-              emitted keys.
+        Spec: spec/API.md §Metric — Definition body — "`name` is one of the type's
+              emitted keys".
         """
-        req = ReplaceMetricConfigRequest(**{**_VALID_INGESTION_BODY, "metrics": ["total"]})
-        assert req.metrics == ["total"]
-
-    # ── dataset_filter caps ───────────────────────────────────────────────────
-
-    @pytest.mark.parametrize("dimension", ["dataset_urns", "tags", "glossary_terms"])
-    def test_dataset_filter_dimension_exceeds_cap_raises(self, dimension: str) -> None:
-        """dataset_filter.{dimension} > 1000 raises ValidationError.
-
-        Spec: spec/API.md §Metric — dataset_filter list dimensions capped at 1,000.
-        """
-        body = {
-            **_VALID_INGESTION_BODY,
-            "dataset_filter": {dimension: _too_many(dimension)},
-        }
-        with pytest.raises(ValidationError):
-            ReplaceMetricConfigRequest(**body)
-
-    def test_dataset_filter_at_cap_accepted(self) -> None:
-        """dataset_filter.dataset_urns with exactly 1,000 entries is accepted.
-
-        Spec: spec/API.md §Metric — list capped at 1,000; exactly 1,000 is allowed.
-        """
-        exactly_cap = [
-            f"urn:li:dataset:(urn:li:dataPlatform:postgres,db.t{i},PROD)"
-            for i in range(_DATASET_FILTER_LIST_CAP)
-        ]
         req = ReplaceMetricConfigRequest(**{
             **_VALID_INGESTION_BODY,
-            "dataset_filter": {"dataset_urns": exactly_cap},
+            "metrics": [{"name": "total", "color": "#64748B", "idx": 1}],
         })
-        assert len(req.dataset_filter["dataset_urns"]) == _DATASET_FILTER_LIST_CAP
+        assert [s.name for s in req.metrics] == ["total"]
+
+    def test_metrics_duplicate_name_raises(self) -> None:
+        """Spec: spec/API.md §Metric — Definition body — "`name` and `idx` are each
+        unique within the metric"."""
+        with pytest.raises(ValidationError):
+            ReplaceMetricConfigRequest(**{
+                **_VALID_INGESTION_BODY,
+                "metrics": [
+                    {"name": "total", "color": "#64748B", "idx": 1},
+                    {"name": "total", "color": "#22C55E", "idx": 2},
+                ],
+            })
+
+    def test_metrics_duplicate_idx_raises(self) -> None:
+        """Two series at the same idx have no defined draw order.
+
+        Spec: spec/API.md §Metric — Definition body — "`name` and `idx` are each unique
+              within the metric. The dashboard chart draws one line per descriptor, in
+              `idx` order".
+        """
+        with pytest.raises(ValidationError):
+            ReplaceMetricConfigRequest(**{
+                **_VALID_INGESTION_BODY,
+                "metrics": [
+                    {"name": "total", "color": "#64748B", "idx": 1},
+                    {"name": "ingested_in_time", "color": "#22C55E", "idx": 1},
+                ],
+            })
+
+    @pytest.mark.parametrize("color", ["slate", "#FFF", "#GGGGGG", "64748B", ""])
+    def test_metrics_non_hex_color_raises(self, color: str) -> None:
+        """Spec: spec/API.md §Metric — Definition body — "`color` is a `#RRGGBB` hex
+        string"."""
+        with pytest.raises(ValidationError):
+            ReplaceMetricConfigRequest(**{
+                **_VALID_INGESTION_BODY,
+                "metrics": [{"name": "total", "color": color, "idx": 1}],
+            })
+
+    @pytest.mark.parametrize("idx", [0, -1])
+    def test_metrics_non_positive_idx_raises(self, idx: int) -> None:
+        """Spec: spec/API.md §Metric — Definition body — "`idx` is a positive integer
+        display order"."""
+        with pytest.raises(ValidationError):
+            ReplaceMetricConfigRequest(**{
+                **_VALID_INGESTION_BODY,
+                "metrics": [{"name": "total", "color": "#64748B", "idx": idx}],
+            })
+
+    # ── dataset_filter grammar + caps ─────────────────────────────────────────
+
+    @pytest.mark.parametrize(
+        "dataset_filter",
+        [
+            "",
+            "origin = 'PROD'",
+            "origin IN ('PROD', 'DEV')",
+            "'urn:li:tag:area:catalog' IN tag_urns",
+            (
+                "origin = 'PROD' AND ('urn:li:tag:area:catalog' IN tag_urns"
+                " OR 'urn:li:glossaryTerm:pii.gdpr' IN glossary_term_urns)"
+            ),
+        ],
+    )
+    def test_dataset_filter_grammar_forms_accepted(self, dataset_filter: str) -> None:
+        """Spec: spec/API.md §`dataset_filter` grammar — the productions and the
+        worked example."""
+        req = ReplaceMetricConfigRequest(**{
+            **_VALID_INGESTION_BODY,
+            "dataset_filter": dataset_filter,
+        })
+        assert req.dataset_filter == dataset_filter
+
+    def test_dataset_filter_malformed_raises(self) -> None:
+        """Spec: spec/API.md §Error Catalogue — INVALID_DATASET_FILTER, 422, "does not
+        parse under the filter grammar, names an unknown column"."""
+        from src.shared.dataset_filter import DatasetFilterSyntaxError
+
+        with pytest.raises(DatasetFilterSyntaxError):
+            ReplaceMetricConfigRequest(**{
+                **_VALID_INGESTION_BODY,
+                "dataset_filter": "owner = 'alice'",
+            })
+
+    def test_dataset_filter_over_literal_cap_raises(self) -> None:
+        """Spec: spec/API.md §`dataset_filter` grammar — Caps: "≤ 1,000 string
+        literals"."""
+        from src.shared.dataset_filter import DatasetFilterSyntaxError
+
+        with pytest.raises(DatasetFilterSyntaxError):
+            ReplaceMetricConfigRequest(**{
+                **_VALID_INGESTION_BODY,
+                "dataset_filter": _filter_with_literals(_FILTER_LITERAL_CAP + 1),
+            })
+
+    def test_dataset_filter_at_literal_cap_accepted(self) -> None:
+        """The cap is inclusive — exactly 1,000 literals is admissible.
+
+        Spec: spec/API.md §`dataset_filter` grammar — Caps.
+        """
+        at_cap = _filter_with_literals(_FILTER_LITERAL_CAP)
+        req = ReplaceMetricConfigRequest(**{
+            **_VALID_INGESTION_BODY,
+            "dataset_filter": at_cap,
+        })
+        assert req.dataset_filter == at_cap
+
+    def test_dataset_filter_over_character_cap_raises(self) -> None:
+        """Spec: spec/API.md §`dataset_filter` grammar — Caps: "filter text ≤ 8,000
+        characters"."""
+        from src.shared.dataset_filter import DatasetFilterSyntaxError
+
+        prefix = "origin = '"
+        over_cap = prefix + "x" * (_FILTER_CHAR_CAP - len(prefix)) + "'"
+        assert len(over_cap) == _FILTER_CHAR_CAP + 1
+        with pytest.raises(DatasetFilterSyntaxError):
+            ReplaceMetricConfigRequest(**{
+                **_VALID_INGESTION_BODY,
+                "dataset_filter": over_cap,
+            })
+
+    def test_dataset_filter_malformed_dataset_urn_literal_raises(self) -> None:
+        """Spec: spec/API.md §Error Catalogue — INVALID_DATASET_URN, 422."""
+        from src.shared.exceptions import InvalidDatasetUrnError
+
+        with pytest.raises(InvalidDatasetUrnError):
+            ReplaceMetricConfigRequest(**{
+                **_VALID_INGESTION_BODY,
+                "dataset_filter": "dataset_urn = 'not-a-urn'",
+            })
 
     # ── Field set matches spec ────────────────────────────────────────────────
 
@@ -292,14 +403,27 @@ class TestPatchMetricConfigRequest:
 
     # ── dataset_filter caps ───────────────────────────────────────────────────
 
-    @pytest.mark.parametrize("dimension", ["dataset_urns", "tags", "glossary_terms"])
-    def test_dataset_filter_dimension_exceeds_cap_raises(self, dimension: str) -> None:
-        """PATCH with dataset_filter.{dimension} > 1000 raises.
+    def test_dataset_filter_over_literal_cap_raises(self) -> None:
+        """Spec: spec/API.md §Error Catalogue — INVALID_DATASET_FILTER is validated on
+        `PATCH /spoke/governance/metric/{metric_id}/attr/conf` too."""
+        from src.shared.dataset_filter import DatasetFilterSyntaxError
 
-        Spec: spec/API.md §Metric — dataset_filter list dimensions capped at 1,000.
-        """
-        with pytest.raises(ValidationError):
-            PatchMetricConfigRequest(dataset_filter={dimension: _too_many(dimension)})
+        with pytest.raises(DatasetFilterSyntaxError):
+            PatchMetricConfigRequest(
+                dataset_filter=_filter_with_literals(_FILTER_LITERAL_CAP + 1)
+            )
+
+    def test_dataset_filter_malformed_raises(self) -> None:
+        """Spec: spec/API.md §Error Catalogue — INVALID_DATASET_FILTER, 422."""
+        from src.shared.dataset_filter import DatasetFilterSyntaxError
+
+        with pytest.raises(DatasetFilterSyntaxError):
+            PatchMetricConfigRequest(dataset_filter="owner = 'alice'")
+
+    def test_a_well_formed_filter_patch_is_accepted(self) -> None:
+        """Backstop for the two rejections above: a valid PATCH filter is kept verbatim."""
+        req = PatchMetricConfigRequest(dataset_filter="origin = 'PROD'")
+        assert req.dataset_filter == "origin = 'PROD'"
 
     # ── Partial update — all fields optional ─────────────────────────────────
 
@@ -446,34 +570,37 @@ class TestCreateMetricConfigRequest:
             )
 
     def test_inherited_metrics_subset_validator_fires(self) -> None:
-        """CreateMetricConfigRequest inherits metrics[] subset validation.
+        """CreateMetricConfigRequest inherits the series validation.
 
-        Spec: spec/API.md §Metric — unknown metrics[] keys return 422 INVALID_PARAMETER.
-              This check applies on create as well as replace.
+        Spec: spec/API.md §Metric — Definition body — unknown `metrics[].name` keys
+              return 422 INVALID_PARAMETER; the create body carries the same fields.
         """
         with pytest.raises(ValidationError):
             CreateMetricConfigRequest(
-                **{**_VALID_INGESTION_BODY, "metrics": ["nonexistent_key"]},
+                **{
+                    **_VALID_INGESTION_BODY,
+                    "metrics": [{"name": "nonexistent_key", "color": "#64748B", "idx": 1}],
+                },
                 metric_id="my-metric",
             )
 
     def test_inherited_dataset_filter_cap_fires(self) -> None:
-        """CreateMetricConfigRequest inherits dataset_filter cap validation.
+        """The create body validates the filter too — there is no POST on attr/conf.
 
-        Spec: spec/API.md §Metric — dataset_filter list dimensions capped at 1,000;
-              same rule applies to both POST create and PUT replace.
+        Spec: spec/API.md §Error Catalogue — INVALID_DATASET_FILTER is validated on
+              "`POST /spoke/governance/metric` (the create body carries the filter —
+              there is no `POST` on `attr/conf`)".
         """
-        over_cap = [
-            f"urn:li:dataset:(urn:li:dataPlatform:postgres,db.t{i},PROD)"
-            for i in range(_DATASET_FILTER_LIST_CAP + 1)
-        ]
-        body = {
-            **_VALID_INGESTION_BODY,
-            "metric_id": "my-metric",
-            "dataset_filter": {"dataset_urns": over_cap},
-        }
-        with pytest.raises(ValidationError):
-            CreateMetricConfigRequest(**body)
+        from src.shared.dataset_filter import DatasetFilterSyntaxError
+
+        with pytest.raises(DatasetFilterSyntaxError):
+            CreateMetricConfigRequest(
+                **{
+                    **_VALID_INGESTION_BODY,
+                    "dataset_filter": _filter_with_literals(_FILTER_LITERAL_CAP + 1),
+                },
+                metric_id="my-metric",
+            )
 
     # ── Field set ─────────────────────────────────────────────────────────────
 

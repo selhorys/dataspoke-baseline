@@ -71,10 +71,18 @@ const SEED_MD =
   "language over warehouse schema names whenever both are available.";
 
 // Conf payload (mirrors api-wired UC3 step 1).
+//
+// `dataset_filter` is a SQL WHERE clause over the dataset registry. The `origin`
+// conjunct is a test-environment narrowing, not part of the story: the dev DataHub
+// seed lives at origin DEV, and an origin-free clause would also sweep in whatever
+// else a shared cluster carries the tag on.
+// spec: API.md §`dataset_filter` grammar — "UC3's `ontogen/attr/conf.dataset_filter`
+//   […] use this same grammar and validation".
+const CONF_FILTER = "origin = 'DEV' AND 'urn:li:tag:area:catalog' IN tag_urns";
 const CONF_PAYLOAD = {
   is_enabled: true,
   schedule_tier: "daily",
-  dataset_filter: { origin: "DEV", tags: ["urn:li:tag:area:catalog"] },
+  dataset_filter: CONF_FILTER,
 };
 
 // Admin-only — filename convention (*.spec.ts → admin project). Do not override storageState.
@@ -252,10 +260,13 @@ test.describe("UC3 — stub-mode arc", () => {
     const conf = (await getResp.json()) as {
       is_enabled: boolean;
       schedule_tier: string | null;
-      dataset_filter: Record<string, unknown> | null;
+      dataset_filter: string;
     };
     expect(conf.is_enabled).toBe(true);
     expect(conf.schedule_tier).toBe("daily");
+    // The clause round-trips verbatim — the backend owns the grammar and the route
+    // neither rewrites nor normalises it. spec: API.md §`dataset_filter` grammar.
+    expect(conf.dataset_filter).toBe(CONF_FILTER);
   });
 
   // ─────────────────────────────────────────────────────────────────────────────

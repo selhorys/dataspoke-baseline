@@ -197,7 +197,7 @@ def _make_metagen_conf_dto(*, conf_id: str, schedule_tier: str | None, is_enable
         name=f"conf-{conf_id[:4]}",
         is_enabled=is_enabled,
         schedule_tier=schedule_tier,
-        dataset_filter={},
+        dataset_filter="",
         result_limit=3,
         overwrite_pending=True,
         created_at=datetime.now(tz=UTC),

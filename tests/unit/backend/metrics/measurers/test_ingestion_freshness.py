@@ -53,9 +53,15 @@ Spec sources:
   wrapper-union and owning-source tests are about. The tests under §Evidence tiers seed
   ``observations=`` and exercise **tier 1** and the preference between them.
 
+  spec/feature/BACKEND.md §Metrics Service §Verdict contract:
+    - The measurer returns (values, verdicts); verdicts cover EVERY dataset in scope,
+      one entry per dataset carrying urn, met, evidence_at, detail.
+    - "`ingestion-freshness` → the resolved ingestion evidence time" is evidence_at.
+    - The failures-only metric_results.breakdown is DERIVED from the verdicts by
+      MetricsService — `_failed()` below is the `met = false` subset it lists.
+
   spec/feature/BACKEND.md §Metrics Service §Breakdown format:
     - datasets[] carries only failed entries (stale datasets).
-    - Entry shape is {"urn": …, "detail": {…}} — no 'category' field.
     - detail for ingestion-freshness: {last_event_at, time_window_sec, evidence_tier}
       with evidence_tier in {"observation", "source_level", null}.
 """
@@ -84,6 +90,22 @@ def _get_measurer():
     fn = get_measurer("ingestion-freshness")
     assert fn is not None, "ingestion-freshness measurer must be registered"
     return fn
+
+
+def _verdict(verdicts, urn):
+    """The one verdict for *urn* — verdicts cover every dataset exactly once.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service §Verdict contract — "`verdicts`
+    covers **every** dataset in scope, not only the failing ones".
+    """
+    matches = [v for v in verdicts if v.urn == urn]
+    assert len(matches) == 1, f"expected exactly one verdict for {urn}; got {matches!r}"
+    return matches[0]
+
+
+def _failed(verdicts):
+    """The `met = false` subset — the entries the derived breakdown lists."""
+    return [v for v in verdicts if not v.met]
 
 
 def _datahub() -> MagicMock:
@@ -330,7 +352,7 @@ async def test_empty_datasets_returns_zeros() -> None:
     """
     measure = _get_measurer()
 
-    values, breakdown = await measure(
+    values, verdicts = await measure(
         datasets=[],
         metric_conf={"time_window_sec": 86400},
         datahub=_datahub(),
@@ -338,8 +360,8 @@ async def test_empty_datasets_returns_zeros() -> None:
     )
 
     assert values == {"total": 0.0, "ingested_in_time": 0.0}
-    assert breakdown["dataset_count"] == 0
-    assert breakdown["datasets"] == []
+    assert len(verdicts) == 0
+    assert _failed(verdicts) == []
 
 
 # ── Fresh / stale against the declared metric_conf window ─────────────────────
@@ -357,7 +379,7 @@ async def test_fresh_dataset_not_in_breakdown() -> None:
     src = _source(mode="ACTIVE_CUSTOM_MANAGED")
     recent = datetime.now(tz=UTC) - timedelta(hours=1)
 
-    values, breakdown = await measure(
+    values, verdicts = await measure(
         datasets=[urn],
         metric_conf={"time_window_sec": 86400},
         datahub=_datahub(),
@@ -370,11 +392,11 @@ async def test_fresh_dataset_not_in_breakdown() -> None:
 
     assert values["total"] == 1.0
     assert values["ingested_in_time"] == 1.0
-    assert breakdown["datasets"] == [], (
+    assert _failed(verdicts) == [], (
         "Fresh dataset must NOT appear in breakdown. "
         "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
     )
-    assert breakdown["dataset_count"] == 1
+    assert len(verdicts) == 1
 
 
 @pytest.mark.asyncio
@@ -394,7 +416,7 @@ async def test_dataset_with_no_event_in_breakdown_with_none_last_event() -> None
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.catalog.editions,DEV)"
     src = _source(mode="ACTIVE_CUSTOM_MANAGED")
 
-    values, breakdown = await measure(
+    values, verdicts = await measure(
         datasets=[urn],
         metric_conf={"time_window_sec": 86400},
         datahub=_datahub(),
@@ -403,10 +425,10 @@ async def test_dataset_with_no_event_in_breakdown_with_none_last_event() -> None
 
     assert values["total"] == 1.0
     assert values["ingested_in_time"] == 0.0
-    assert len(breakdown["datasets"]) == 1
-    entry = breakdown["datasets"][0]
-    assert entry["urn"] == urn
-    assert entry["detail"]["last_event_at"] is None
+    assert len(_failed(verdicts)) == 1
+    entry = _failed(verdicts)[0]
+    assert entry.urn == urn
+    assert entry.detail["last_event_at"] is None
 
 
 @pytest.mark.asyncio
@@ -423,7 +445,7 @@ async def test_dataset_with_stale_event_in_breakdown() -> None:
     src = _source(mode="ACTIVE_CUSTOM_MANAGED")
     stale_ts = datetime.now(tz=UTC) - timedelta(seconds=90000)  # older than 86400s
 
-    values, breakdown = await measure(
+    values, verdicts = await measure(
         datasets=[urn],
         metric_conf={"time_window_sec": 86400},
         datahub=_datahub(),
@@ -435,10 +457,10 @@ async def test_dataset_with_stale_event_in_breakdown() -> None:
     )
 
     assert values["ingested_in_time"] == 0.0
-    assert len(breakdown["datasets"]) == 1
-    entry = breakdown["datasets"][0]
-    assert entry["urn"] == urn
-    assert entry["detail"]["last_event_at"] == stale_ts.isoformat()
+    assert len(_failed(verdicts)) == 1
+    entry = _failed(verdicts)[0]
+    assert entry.urn == urn
+    assert entry.detail["last_event_at"] == stale_ts.isoformat()
 
 
 @pytest.mark.asyncio
@@ -455,7 +477,7 @@ async def test_event_well_inside_window_is_ingested_in_time() -> None:
     src = _source(mode="ACTIVE_CUSTOM_MANAGED")
     inside_window = datetime.now(tz=UTC) - timedelta(seconds=time_window_sec // 2)
 
-    values, breakdown = await measure(
+    values, verdicts = await measure(
         datasets=[urn],
         metric_conf={"time_window_sec": time_window_sec},
         datahub=_datahub(),
@@ -467,7 +489,7 @@ async def test_event_well_inside_window_is_ingested_in_time() -> None:
     )
 
     assert values["ingested_in_time"] == 1.0
-    assert breakdown["datasets"] == []
+    assert _failed(verdicts) == []
 
 
 @pytest.mark.asyncio
@@ -488,7 +510,7 @@ async def test_event_well_outside_window_is_stale() -> None:
     src = _source(mode="ACTIVE_CUSTOM_MANAGED")
     outside_window = datetime.now(tz=UTC) - timedelta(seconds=time_window_sec * 2)
 
-    values, breakdown = await measure(
+    values, verdicts = await measure(
         datasets=[urn],
         metric_conf={"time_window_sec": time_window_sec},
         datahub=_datahub(),
@@ -500,37 +522,40 @@ async def test_event_well_outside_window_is_stale() -> None:
     )
 
     assert values["ingested_in_time"] == 0.0
-    assert len(breakdown["datasets"]) == 1
+    assert len(_failed(verdicts)) == 1
 
 
-# ── Breakdown entry shape ─────────────────────────────────────────────────────
+# ── Verdict field set ─────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_breakdown_entries_have_no_category_field() -> None:
-    """Breakdown entries must not carry a 'category' field.
+async def test_verdict_carries_exactly_the_four_contract_fields() -> None:
+    """A verdict is {urn, met, evidence_at, detail} — no classification field.
 
-    Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format —
-          datasets[] entries are {"urn": "...", "detail": {...}} only.
+    Spec: spec/feature/BACKEND.md §Metrics Service §Verdict contract — "one entry per
+          dataset carrying `urn`, `met: bool`, `evidence_at: datetime | None`, and a
+          type-specific `detail`".
     """
     measure = _get_measurer()
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.nocategory.test,DEV)"
     src = _source(mode="ACTIVE_CUSTOM_MANAGED")
 
-    _values, breakdown = await measure(
+    _values, verdicts = await measure(
         datasets=[urn],
         metric_conf={"time_window_sec": 86400},
         datahub=_datahub(),
         db=_fake_measurer_db(mappings=[_mapped(urn, src)], sources=[src], events=[]),
     )
 
-    assert len(breakdown["datasets"]) == 1
-    entry = breakdown["datasets"][0]
-    assert "category" not in entry, (
-        "Breakdown entry must not carry 'category'. "
-        "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
+    from dataclasses import fields
+
+    verdict = _verdict(verdicts, urn)
+    assert {f.name for f in fields(verdict)} == {"urn", "met", "evidence_at", "detail"}
+    assert verdict.met is False, "backstop: this dataset must actually have failed"
+    assert verdict.evidence_at is None, (
+        "no evidence on either tier, so there is no evidence timestamp. "
+        "Spec: spec/feature/BACKEND.md §Metrics Service §Verdict contract."
     )
-    assert set(entry) == {"urn", "detail"}
 
 
 @pytest.mark.asyncio
@@ -556,15 +581,15 @@ async def test_stale_breakdown_detail_includes_the_window_and_the_evidence_tier(
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.detail-check,DEV)"
 
     # No mapping at all, no event → stale with neither tier answering.
-    _values, breakdown = await measure(
+    _values, verdicts = await measure(
         datasets=[urn],
         metric_conf={"time_window_sec": 86400},
         datahub=_datahub(),
         db=_fake_measurer_db(),
     )
 
-    assert len(breakdown["datasets"]) == 1
-    detail = breakdown["datasets"][0]["detail"]
+    assert len(_failed(verdicts)) == 1
+    detail = _failed(verdicts)[0].detail
     assert set(detail) == {
         "last_event_at",
         "time_window_sec",
@@ -617,7 +642,7 @@ async def test_mixed_fresh_and_stale_counts_correctly() -> None:
     src_fresh2 = _source(mode="ACTIVE_CUSTOM_MANAGED", name="b")
     src_stale = _source(mode="ACTIVE_CUSTOM_MANAGED", name="c")
 
-    values, breakdown = await measure(
+    values, verdicts = await measure(
         datasets=[urn_fresh1, urn_fresh2, urn_stale],
         metric_conf={"time_window_sec": time_window_sec},
         datahub=_datahub(),
@@ -638,8 +663,8 @@ async def test_mixed_fresh_and_stale_counts_correctly() -> None:
 
     assert values["total"] == 3.0
     assert values["ingested_in_time"] == 2.0
-    assert breakdown["dataset_count"] == 3
-    assert [e["urn"] for e in breakdown["datasets"]] == [urn_stale]
+    assert len(verdicts) == 3
+    assert [v.urn for v in _failed(verdicts)] == [urn_stale]
 
 
 @pytest.mark.asyncio
@@ -662,7 +687,7 @@ async def test_two_datasets_sharing_a_source_share_its_tier_2_evidence() -> None
     src = _source(mode="ACTIVE_CUSTOM_MANAGED", name="shared")
     stale_ts = datetime.now(tz=UTC) - timedelta(seconds=90000)
 
-    values, breakdown = await measure(
+    values, verdicts = await measure(
         datasets=[urn_a, urn_b],
         metric_conf={"time_window_sec": 86400},
         datahub=_datahub(),
@@ -674,9 +699,9 @@ async def test_two_datasets_sharing_a_source_share_its_tier_2_evidence() -> None
     )
 
     assert values["ingested_in_time"] == 0.0
-    assert {e["urn"] for e in breakdown["datasets"]} == {urn_a, urn_b}
-    for entry in breakdown["datasets"]:
-        assert entry["detail"]["last_event_at"] == stale_ts.isoformat()
+    assert {v.urn for v in _failed(verdicts)} == {urn_a, urn_b}
+    for entry in _failed(verdicts):
+        assert entry.detail["last_event_at"] == stale_ts.isoformat()
 
 
 # ── Deterministic clock boundary (strict >) ──────────────────────────────────
@@ -719,7 +744,7 @@ async def test_event_exactly_at_cutoff_is_stale(monkeypatch: pytest.MonkeyPatch)
     src = _source(mode="ACTIVE_CUSTOM_MANAGED")
     exact_cutoff = fixed_now - timedelta(seconds=time_window_sec)
 
-    values, breakdown = await measure(
+    values, verdicts = await measure(
         datasets=[urn],
         metric_conf={"time_window_sec": time_window_sec},
         datahub=_datahub(),
@@ -731,8 +756,8 @@ async def test_event_exactly_at_cutoff_is_stale(monkeypatch: pytest.MonkeyPatch)
     )
 
     assert values["ingested_in_time"] == 0.0
-    assert len(breakdown["datasets"]) == 1
-    assert breakdown["datasets"][0]["urn"] == urn
+    assert len(_failed(verdicts)) == 1
+    assert _failed(verdicts)[0].urn == urn
 
 
 @pytest.mark.asyncio
@@ -755,7 +780,7 @@ async def test_event_one_second_inside_window_is_fresh(monkeypatch: pytest.Monke
     src = _source(mode="ACTIVE_CUSTOM_MANAGED")
     one_sec_inside = fixed_now - timedelta(seconds=time_window_sec - 1)
 
-    values, breakdown = await measure(
+    values, verdicts = await measure(
         datasets=[urn],
         metric_conf={"time_window_sec": time_window_sec},
         datahub=_datahub(),
@@ -770,7 +795,7 @@ async def test_event_one_second_inside_window_is_fresh(monkeypatch: pytest.Monke
         "A run one second inside the window 'falls within' it and must be FRESH. "
         "Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types."
     )
-    assert breakdown["datasets"] == []
+    assert _failed(verdicts) == []
 
 
 # ── The window is the metric's declared config value, for every dataset ──────
@@ -799,7 +824,7 @@ async def test_window_is_the_declared_config_value_for_a_passive_owned_dataset()
     src = _source(mode="PASSIVE", name="passive-declared")
     three_hours_ago = datetime.now(tz=UTC) - timedelta(hours=3)
 
-    values, breakdown = await measure(
+    values, verdicts = await measure(
         datasets=[urn],
         metric_conf={"time_window_sec": 172800},
         datahub=_datahub(),
@@ -815,7 +840,7 @@ async def test_window_is_the_declared_config_value_for_a_passive_owned_dataset()
         "dataset is in-time whatever mode owns it. "
         "Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window."
     )
-    assert breakdown["datasets"] == []
+    assert _failed(verdicts) == []
 
 
 @pytest.mark.asyncio
@@ -837,7 +862,7 @@ async def test_a_passive_owned_dataset_outside_the_declared_window_is_stale() ->
     src = _source(mode="PASSIVE", name="passive-declared")
     past_the_window = datetime.now(tz=UTC) - timedelta(seconds=172800 + 3600)
 
-    values, breakdown = await measure(
+    values, verdicts = await measure(
         datasets=[urn],
         metric_conf={"time_window_sec": 172800},
         datahub=_datahub(),
@@ -849,8 +874,8 @@ async def test_a_passive_owned_dataset_outside_the_declared_window_is_stale() ->
     )
 
     assert values["ingested_in_time"] == 0.0
-    assert [e["urn"] for e in breakdown["datasets"]] == [urn]
-    detail = breakdown["datasets"][0]["detail"]
+    assert [v.urn for v in _failed(verdicts)] == [urn]
+    detail = _failed(verdicts)[0].detail
     assert detail["last_event_at"] == past_the_window.isoformat(), (
         "backstop: the seeded evidence must be what the verdict rests on."
     )
@@ -890,7 +915,7 @@ async def test_every_owning_mode_and_tier_reports_the_same_declared_window() -> 
 
     evidence_at = datetime.now(tz=UTC) - timedelta(seconds=8000)
 
-    values, breakdown = await measure(
+    values, verdicts = await measure(
         datasets=[hourly_urn, daily_urn, untiered_urn, passive_urn],
         metric_conf={"time_window_sec": 86400},
         datahub=_datahub(),
@@ -915,10 +940,10 @@ async def test_every_owning_mode_and_tier_reports_the_same_declared_window() -> 
     assert values["ingested_in_time"] == 4.0, (
         "one declared 86400s window applies to all four owning modes/tiers, and 8000s "
         "old evidence is inside it for every one of them; stale entries: "
-        f"{[e['urn'] for e in breakdown['datasets']]}. "
+        f"{[v.urn for v in _failed(verdicts)]}. "
         "Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window."
     )
-    assert breakdown["datasets"] == []
+    assert _failed(verdicts) == []
 
 
 @pytest.mark.asyncio
@@ -937,7 +962,7 @@ async def test_a_dataset_with_no_owning_source_uses_the_declared_window() -> Non
     measure = _get_measurer()
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.unclaimed,DEV)"
 
-    values, breakdown = await measure(
+    values, verdicts = await measure(
         datasets=[urn],
         metric_conf={"time_window_sec": 3600},
         datahub=_datahub(),
@@ -946,7 +971,7 @@ async def test_a_dataset_with_no_owning_source_uses_the_declared_window() -> Non
 
     assert values["total"] == 1.0
     assert values["ingested_in_time"] == 0.0
-    detail = breakdown["datasets"][0]["detail"]
+    detail = _failed(verdicts)[0].detail
     assert detail["last_event_at"] is None
     assert detail["evidence_tier"] is None
     assert detail["time_window_sec"] == 3600, (
@@ -983,7 +1008,7 @@ async def test_run_booked_on_a_wrapper_only_counts_for_the_owning_parent() -> No
     )
     wrapper_run = datetime.now(tz=UTC) - timedelta(seconds=130000)  # inside 172800s
 
-    values, breakdown = await measure(
+    values, verdicts = await measure(
         datasets=[urn],
         metric_conf={"time_window_sec": 172800},
         datahub=_datahub(),
@@ -999,7 +1024,7 @@ async def test_run_booked_on_a_wrapper_only_counts_for_the_owning_parent() -> No
         "A run booked on the CLI wrapper must count as the owning parent's own run. "
         "Spec: spec/feature/BACKEND.md §Metrics Service §Ingestion evidence."
     )
-    assert breakdown["datasets"] == []
+    assert _failed(verdicts) == []
 
 
 @pytest.mark.asyncio
@@ -1025,7 +1050,7 @@ async def test_newest_run_across_parent_and_wrapper_wins() -> None:
     parent_run = now - timedelta(seconds=8000)  # outside the declared 3600s window
     wrapper_run = now - timedelta(seconds=600)  # inside it, and newer
 
-    values, breakdown = await measure(
+    values, verdicts = await measure(
         datasets=[urn],
         metric_conf={"time_window_sec": 3600},
         datahub=_datahub(),
@@ -1043,7 +1068,7 @@ async def test_newest_run_across_parent_and_wrapper_wins() -> None:
         "own 8000s-old run is not. "
         "Spec: spec/feature/BACKEND.md §Metrics Service §Ingestion evidence."
     )
-    assert breakdown["datasets"] == []
+    assert _failed(verdicts) == []
 
 
 @pytest.mark.asyncio
@@ -1074,7 +1099,7 @@ async def test_owning_source_is_the_regular_parent_of_a_claiming_wrapper() -> No
     )
     stale_ts = datetime.now(tz=UTC) - timedelta(seconds=200000)  # outside 86400s
 
-    values, breakdown = await measure(
+    values, verdicts = await measure(
         datasets=[urn],
         metric_conf={"time_window_sec": 86400},
         datahub=_datahub(),
@@ -1090,7 +1115,7 @@ async def test_owning_source_is_the_regular_parent_of_a_claiming_wrapper() -> No
     )
 
     assert values["ingested_in_time"] == 0.0
-    detail = breakdown["datasets"][0]["detail"]
+    detail = _failed(verdicts)[0].detail
     assert detail["last_event_at"] == stale_ts.isoformat(), (
         "A winning wrapper must resolve up to its regular parent, so the parent's own "
         f"run is the evidence read; got {detail['last_event_at']!r}, expected "
@@ -1132,7 +1157,7 @@ async def test_a_dataset_with_its_own_observation_reads_that_instant_not_the_sou
     own_observation = now - timedelta(seconds=90_000)  # stale against the 86400s window
     source_run = now - timedelta(hours=1)  # fresh — must NOT be what answers
 
-    values, breakdown = await measure(
+    values, verdicts = await measure(
         datasets=[urn],
         metric_conf={"time_window_sec": 86400},
         datahub=_datahub(),
@@ -1149,7 +1174,7 @@ async def test_a_dataset_with_its_own_observation_reads_that_instant_not_the_sou
         "the fresh source-level run must not make it in-time. "
         "Spec: spec/feature/BACKEND.md §Metrics Service §Ingestion evidence — tier 1 preferred."
     )
-    detail = breakdown["datasets"][0]["detail"]
+    detail = _failed(verdicts)[0].detail
     assert detail["last_event_at"] == own_observation.isoformat(), (
         f"last_event_at must be the dataset's own observation instant; got "
         f"{detail['last_event_at']!r}, expected {own_observation.isoformat()!r}."
@@ -1179,7 +1204,7 @@ async def test_a_dataset_reads_its_own_observation_and_not_a_siblings() -> None:
     src = _source(mode="ACTIVE_CUSTOM_MANAGED", name="tier1-shared")
     now = datetime.now(tz=UTC)
 
-    values, breakdown = await measure(
+    values, verdicts = await measure(
         datasets=[stale_urn, fresh_urn],
         metric_conf={"time_window_sec": 86400},
         datahub=_datahub(),
@@ -1198,9 +1223,9 @@ async def test_a_dataset_reads_its_own_observation_and_not_a_siblings() -> None:
         "two datasets on one source must split on their own observations. "
         "Spec: spec/feature/BACKEND.md §Metrics Service §Ingestion evidence — tier 1."
     )
-    assert [e["urn"] for e in breakdown["datasets"]] == [stale_urn], (
+    assert [v.urn for v in _failed(verdicts)] == [stale_urn], (
         f"only the dataset whose own observation is outside the window is stale; got "
-        f"{[e['urn'] for e in breakdown['datasets']]}."
+        f"{[v.urn for v in _failed(verdicts)]}."
     )
 
 
@@ -1224,7 +1249,7 @@ async def test_a_dataset_with_no_observation_falls_back_to_the_source_level_maxi
     now = datetime.now(tz=UTC)
     source_run = now - timedelta(hours=2)
 
-    values, breakdown = await measure(
+    values, verdicts = await measure(
         datasets=[observed_urn, bare_urn],
         metric_conf={"time_window_sec": 86400},
         datahub=_datahub(),
@@ -1241,7 +1266,7 @@ async def test_a_dataset_with_no_observation_falls_back_to_the_source_level_maxi
         "maximum and count as in-time. "
         "Spec: spec/feature/BACKEND.md §Metrics Service §Ingestion evidence — tier 2."
     )
-    assert breakdown["datasets"] == []
+    assert _failed(verdicts) == []
 
 
 @pytest.mark.asyncio
@@ -1260,7 +1285,7 @@ async def test_the_fallback_names_the_source_level_tier_in_the_breakdown() -> No
     src = _source(mode="ACTIVE_CUSTOM_MANAGED", name="tier2-stale")
     stale_ts = datetime.now(tz=UTC) - timedelta(seconds=90_000)
 
-    _values, breakdown = await measure(
+    _values, verdicts = await measure(
         datasets=[urn],
         metric_conf={"time_window_sec": 86400},
         datahub=_datahub(),
@@ -1271,8 +1296,8 @@ async def test_the_fallback_names_the_source_level_tier_in_the_breakdown() -> No
         ),
     )
 
-    assert len(breakdown["datasets"]) == 1
-    detail = breakdown["datasets"][0]["detail"]
+    assert len(_failed(verdicts)) == 1
+    detail = _failed(verdicts)[0].detail
     assert detail["last_event_at"] == stale_ts.isoformat(), (
         "backstop: tier 2 must actually have supplied the instant, or the label below is "
         "attached to nothing."
@@ -1306,7 +1331,7 @@ async def test_an_observation_on_a_wrapper_counts_for_the_owning_parent() -> Non
     )
     observed = datetime.now(tz=UTC) - timedelta(seconds=130_000)  # inside 172800s
 
-    values, breakdown = await measure(
+    values, verdicts = await measure(
         datasets=[urn],
         metric_conf={"time_window_sec": 172800},
         datahub=_datahub(),
@@ -1322,4 +1347,102 @@ async def test_an_observation_on_a_wrapper_counts_for_the_owning_parent() -> Non
         "an observation booked on the CLI wrapper must count as the owning parent's own. "
         "Spec: spec/feature/BACKEND.md §Metrics Service §Ingestion evidence."
     )
-    assert breakdown["datasets"] == []
+    assert _failed(verdicts) == []
+
+
+# ── evidence_at: the per-dataset timestamp the /dataset view dates a check by ──
+
+
+@pytest.mark.asyncio
+async def test_evidence_at_is_the_resolved_evidence_instant_for_a_fresh_dataset() -> None:
+    """A met verdict carries the evidence instant that decided it.
+
+    `GET /spoke/governance/metric/{id}/dataset` reports it as `last_check_at`, so a
+    verdict that carried no timestamp would silently fall back to the run time and
+    report a stale dataset as freshly checked.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service §Verdict contract — "`evidence_at`
+          per type: `ingestion-freshness` → the resolved ingestion evidence time".
+    """
+    measure = _get_measurer()
+    urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.evidence.fresh,DEV)"
+    src = _source(mode="ACTIVE_CUSTOM_MANAGED", name="evidence-fresh")
+    observed = datetime.now(tz=UTC) - timedelta(hours=1)
+
+    values, verdicts = await measure(
+        datasets=[urn],
+        metric_conf={"time_window_sec": 86400},
+        datahub=_datahub(),
+        db=_fake_measurer_db(
+            mappings=[_mapped(urn, src)],
+            sources=[src],
+            observations=[(str(src.id), urn, observed)],
+        ),
+    )
+
+    assert values["ingested_in_time"] == 1.0, "backstop: this dataset must be fresh"
+    verdict = _verdict(verdicts, urn)
+    assert verdict.met is True
+    assert verdict.evidence_at == observed
+
+
+@pytest.mark.asyncio
+async def test_evidence_at_is_carried_on_a_stale_verdict_too() -> None:
+    """A stale dataset still carries the instant its (old) evidence was booked.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service §Verdict contract — evidence_at is
+          "the resolved ingestion evidence time", independent of the verdict.
+    """
+    measure = _get_measurer()
+    urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.evidence.stale,DEV)"
+    src = _source(mode="ACTIVE_CUSTOM_MANAGED", name="evidence-stale")
+    stale_ts = datetime.now(tz=UTC) - timedelta(seconds=90_000)
+
+    _values, verdicts = await measure(
+        datasets=[urn],
+        metric_conf={"time_window_sec": 86400},
+        datahub=_datahub(),
+        db=_fake_measurer_db(
+            mappings=[_mapped(urn, src)],
+            sources=[src],
+            events=[(str(src.id), stale_ts)],
+        ),
+    )
+
+    verdict = _verdict(verdicts, urn)
+    assert verdict.met is False
+    assert verdict.evidence_at == stale_ts
+    assert verdict.detail["evidence_tier"] == "source_level"
+
+
+@pytest.mark.asyncio
+async def test_verdicts_cover_every_dataset_fresh_and_stale_alike() -> None:
+    """Both a fresh and a stale dataset get a verdict, in scope order.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service §Verdict contract — "Full coverage
+          is what makes 'in scope but never evaluated' (`unknown`) distinguishable from
+          'evaluated and passing'".
+    """
+    measure = _get_measurer()
+    fresh_urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.cover.fresh,DEV)"
+    stale_urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.cover.stale,DEV)"
+    fresh_src = _source(mode="ACTIVE_CUSTOM_MANAGED", name="cover-fresh")
+    stale_src = _source(mode="ACTIVE_CUSTOM_MANAGED", name="cover-stale")
+    now = datetime.now(tz=UTC)
+
+    values, verdicts = await measure(
+        datasets=[fresh_urn, stale_urn],
+        metric_conf={"time_window_sec": 86400},
+        datahub=_datahub(),
+        db=_fake_measurer_db(
+            mappings=[_mapped(fresh_urn, fresh_src), _mapped(stale_urn, stale_src)],
+            sources=[fresh_src, stale_src],
+            events=[
+                (str(fresh_src.id), now - timedelta(hours=1)),
+                (str(stale_src.id), now - timedelta(seconds=90_000)),
+            ],
+        ),
+    )
+
+    assert values == {"total": 2.0, "ingested_in_time": 1.0}
+    assert [(v.urn, v.met) for v in verdicts] == [(fresh_urn, True), (stale_urn, False)]

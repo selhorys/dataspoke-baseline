@@ -17,7 +17,8 @@
  *             DataHub descriptions for both URNs (Python SDK; not reachable via REST).
  *   Step 1 — /metagen redirects to /metagen/conf (conf list).
  *   Step 2 — Create conf EU via /metagen/conf/new (name, is_enabled, schedule_tier,
- *             dataset_filter dataset_urns=[eu_profiles], result_limit, overwrite_pending).
+ *             dataset_filter `dataset_urn = '<eu_profiles>'`, result_limit,
+ *             overwrite_pending).
  *             Create conf OE the same way scoped to orders.events.
  *             Backend: POST /spoke/metagen/conf → 201; round-trip fields + dataset_filter.
  *   Step 3 — Opt each dataset in via /data/[urn] (MetaGen panel) boundary form.
@@ -268,16 +269,24 @@ test.afterAll(async ({ adminApi }) => {
 // ── Shared local gestures ─────────────────────────────────────────────────────
 
 /**
- * Fill the dataset_urns field of the DatasetFilterEditor with a single URN.
- * The editor renders each multi-value dimension as a newline-separated
- * textarea; dataset_urns has the stable id "df-dataset-urns"
- * (dataset-filter-editor.tsx). The resulting dataset_filter shape is asserted
- * via the backend probe, not the DOM.
+ * Scope the conf to a single dataset through the DatasetFilterEditor.
+ *
+ * `dataset_filter` is a SQL WHERE clause over the dataset registry; the editor is
+ * one monospace textarea holding it verbatim (aria-label "dataset_filter",
+ * dataset-filter-editor.tsx). Scoping to one dataset is the `dataset_urn = '…'`
+ * scalar-equality predicate. The stored clause is asserted via the backend probe.
+ *
+ * spec: API.md §`dataset_filter` grammar; FRONTEND_BASIC.md §Shared component
+ *   notes → DatasetFilterEditor.
  */
+function datasetUrnClause(urn: string): string {
+  return `dataset_urn = '${urn}'`;
+}
+
 async function fillDatasetUrnFilter(page: Page, urn: string): Promise<void> {
-  const urnInput = page.locator("#df-dataset-urns");
-  await expect(urnInput).toBeVisible({ timeout: 10_000 });
-  await urnInput.fill(urn);
+  const box = page.getByLabel("dataset_filter", { exact: true });
+  await expect(box).toBeVisible({ timeout: 10_000 });
+  await box.fill(datasetUrnClause(urn));
 }
 
 /**
@@ -596,7 +605,7 @@ test("UC4 step 2 — create conf EU and conf OE over different dataset groups", 
   await page.locator("#metagen-conf-schedule-tier").click();
   await page.getByRole("option", { name: "daily", exact: true }).click();
 
-  // -- UI gesture: dataset_filter dataset_urns=[eu_profiles] --
+  // -- UI gesture: dataset_filter scoped to eu_profiles --
   await fillDatasetUrnFilter(page, EU_PROFILES_URN);
 
   // -- UI gesture: result_limit + overwrite_pending --
@@ -625,7 +634,7 @@ test("UC4 step 2 — create conf EU and conf OE over different dataset groups", 
       name: string;
       is_enabled: boolean;
       schedule_tier: string | null;
-      dataset_filter: Record<string, unknown>;
+      dataset_filter: string;
       result_limit: number;
     }>;
   };
@@ -635,7 +644,9 @@ test("UC4 step 2 — create conf EU and conf OE over different dataset groups", 
   expect(euConf!.is_enabled).toBe(true);
   expect(euConf!.schedule_tier).toBe("daily");
   expect(euConf!.result_limit).toBe(3);
-  expect(euConf!.dataset_filter).toEqual({ dataset_urns: [EU_PROFILES_URN] });
+  // Stored verbatim — the backend owns the grammar and no route rewrites the
+  // clause. spec: API.md §`dataset_filter` grammar.
+  expect(euConf!.dataset_filter).toBe(datasetUrnClause(EU_PROFILES_URN));
 
   // ── 2b: conf OE (scoped to orders.events) ─────────────────────────────────
   await page.goto(CONF_NEW_URL);
@@ -661,12 +672,12 @@ test("UC4 step 2 — create conf EU and conf OE over different dataset groups", 
   const oeListResp = await adminApi.get(`${CONF_API}?limit=100`);
   expect(oeListResp.status()).toBe(200);
   const oeList = (await oeListResp.json()) as {
-    confs: Array<{ id: string; name: string; dataset_filter: Record<string, unknown> }>;
+    confs: Array<{ id: string; name: string; dataset_filter: string }>;
   };
   const oeConf = oeList.confs.find((c) => c.name === CONF_OE_NAME);
   expect(oeConf, `conf ${CONF_OE_NAME} must exist after create`).toBeTruthy();
   confOeId = oeConf!.id;
-  expect(oeConf!.dataset_filter).toEqual({ dataset_urns: [ORDERS_EVENTS_URN] });
+  expect(oeConf!.dataset_filter).toBe(datasetUrnClause(ORDERS_EVENTS_URN));
 
   // -- UI assertion: both confs render in the conf list --
   await page.goto(CONF_LIST_URL);
@@ -1339,7 +1350,7 @@ test("UC4 step 8b — cross-conf approval supersedes the sibling globally (one a
     data: {
       name: CONF_RIVAL_NAME,
       is_enabled: true,
-      dataset_filter: { dataset_urns: [EU_PROFILES_URN] },
+      dataset_filter: datasetUrnClause(EU_PROFILES_URN),
       result_limit: 3,
       overwrite_pending: true,
     },

@@ -21,9 +21,15 @@ Spec sources:
       `0.0`."
     - "Each run records the window it applied in the breakdown's
       `detail.time_window_sec`."
+  spec/feature/BACKEND.md §Metrics Service §Verdict contract:
+    - The measurer returns (values, verdicts); verdicts cover EVERY dataset in scope,
+      one entry per dataset carrying urn, met, evidence_at, detail.
+    - "`validation-score` → the counted result's `data_time`" is evidence_at.
+    - The failures-only metric_results.breakdown is DERIVED from the verdicts by
+      MetricsService, not built here.
   spec/feature/BACKEND.md §Metrics Service §Breakdown format:
-    - datasets[] carries only failed entries (score < 1.0 or no in-window row).
-    - No 'category' field in per-dataset entries.
+    - A dataset is failed when its latest in-window score is < 1.0, or it has no
+      result inside the window.
     - detail for validation-score: {latest_data_time, score, time_window_sec}.
 """
 
@@ -43,6 +49,21 @@ def _get_measurer():
     fn = get_measurer("validation-score")
     assert fn is not None, "validation-score measurer must be registered"
     return fn
+
+
+def _verdict(verdicts, urn):
+    """The one verdict for *urn* — verdicts cover every dataset exactly once.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service §Verdict contract.
+    """
+    matches = [v for v in verdicts if v.urn == urn]
+    assert len(matches) == 1, f"expected exactly one verdict for {urn}; got {matches!r}"
+    return matches[0]
+
+
+def _failed(verdicts):
+    """The `met = false` subset — the entries the derived breakdown lists."""
+    return [v for v in verdicts if not v.met]
 
 
 def _row(urn: str, data_time: datetime, score: float) -> MagicMock:
@@ -121,7 +142,7 @@ async def test_empty_datasets_returns_zeros_without_querying() -> None:
     measure = _get_measurer()
     db = _db([])
 
-    values, breakdown = await measure(
+    values, verdicts = await measure(
         datasets=[],
         metric_conf={"time_window_sec": 86400},
         datahub=_datahub(),
@@ -129,8 +150,7 @@ async def test_empty_datasets_returns_zeros_without_querying() -> None:
     )
 
     assert values == {"total": 0.0, "validation_score_sum": 0.0}
-    assert breakdown["dataset_count"] == 0
-    assert breakdown["datasets"] == []
+    assert verdicts == []
     db.execute.assert_not_awaited()
 
 
@@ -138,11 +158,13 @@ async def test_empty_datasets_returns_zeros_without_querying() -> None:
 
 
 @pytest.mark.asyncio
-async def test_all_datasets_score_one_not_in_breakdown() -> None:
-    """Datasets with in-window score=1.0 are NOT in breakdown.
+async def test_all_datasets_score_one_meet_the_criterion() -> None:
+    """Datasets with in-window score=1.0 are met, and each still carries a verdict.
 
     Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format —
           validation-score: latest score in window < 1.0 → failed.
+    Spec: spec/feature/BACKEND.md §Metrics Service §Verdict contract — verdicts cover
+          every dataset, "not only the failing ones".
     """
     measure = _get_measurer()
     urn1 = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.a,DEV)"
@@ -150,7 +172,7 @@ async def test_all_datasets_score_one_not_in_breakdown() -> None:
 
     now = datetime.now(tz=UTC)
 
-    values, breakdown = await measure(
+    values, verdicts = await measure(
         datasets=[urn1, urn2],
         metric_conf={"time_window_sec": 86400},
         datahub=_datahub(),
@@ -164,10 +186,11 @@ async def test_all_datasets_score_one_not_in_breakdown() -> None:
 
     assert values["total"] == 2.0
     assert values["validation_score_sum"] == 2.0
-    assert breakdown["datasets"] == [], (
-        "Datasets with score=1.0 must NOT appear in breakdown. "
-        "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
+    assert [(v.urn, v.met) for v in verdicts] == [(urn1, True), (urn2, True)], (
+        "Both datasets are in scope and both passed, so both carry a met verdict. "
+        "Spec: spec/feature/BACKEND.md §Metrics Service §Verdict contract."
     )
+    assert _failed(verdicts) == []
 
 
 # ── Three datasets: two passing, one partial ──────────────────────────────────
@@ -194,7 +217,7 @@ async def test_three_datasets_two_full_one_partial() -> None:
     now = datetime.now(tz=UTC)
     partial_data_time = now - timedelta(hours=3)
 
-    values, breakdown = await measure(
+    values, verdicts = await measure(
         datasets=[urn1, urn2, urn3],
         metric_conf={"time_window_sec": 86400},
         datahub=_datahub(),
@@ -212,14 +235,18 @@ async def test_three_datasets_two_full_one_partial() -> None:
         "the in-window 0.7 must accumulate alongside the two 1.0 scores. "
         "Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types."
     )
-    assert breakdown["dataset_count"] == 3
-    assert [e["urn"] for e in breakdown["datasets"]] == [urn3], (
+    assert len(verdicts) == 3, "every dataset in scope carries a verdict"
+    assert [v.urn for v in _failed(verdicts)] == [urn3], (
         "only the sub-1.0 dataset is failed. "
         "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
     )
-    assert breakdown["datasets"][0]["detail"]["score"] == 0.7
-    assert breakdown["datasets"][0]["detail"]["latest_data_time"] == (
-        partial_data_time.isoformat()
+    partial = _verdict(verdicts, urn3)
+    assert partial.detail["score"] == 0.7
+    assert partial.detail["latest_data_time"] == partial_data_time.isoformat()
+    assert partial.evidence_at == partial_data_time, (
+        "an in-window row was counted, so it dates the check. "
+        "Spec: spec/feature/BACKEND.md §Metrics Service §Verdict contract — "
+        "'`validation-score` → the counted result's `data_time`'."
     )
 
 
@@ -245,7 +272,7 @@ async def test_dataset_with_out_of_window_result_contributes_zero() -> None:
     time_window_sec = 86400
     outside = datetime.now(tz=UTC) - timedelta(seconds=time_window_sec + 3600)
 
-    values, breakdown = await measure(
+    values, verdicts = await measure(
         datasets=[urn],
         metric_conf={"time_window_sec": time_window_sec},
         datahub=_datahub(),
@@ -257,12 +284,18 @@ async def test_dataset_with_out_of_window_result_contributes_zero() -> None:
         "A row whose data_time is older than the window must not be counted. "
         "Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window."
     )
-    assert [e["urn"] for e in breakdown["datasets"]] == [urn]
-    detail = breakdown["datasets"][0]["detail"]
-    assert detail["latest_data_time"] == outside.isoformat()
-    assert detail["score"] == 0.9, (
+    verdict = _verdict(verdicts, urn)
+    assert verdict.met is False
+    assert verdict.detail["latest_data_time"] == outside.isoformat()
+    assert verdict.detail["score"] == 0.9, (
         "the out-of-window row is still reported so the reader can see how stale it is. "
         "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
+    )
+    assert verdict.evidence_at is None, (
+        "nothing was counted this window, so there is no evidence timestamp and "
+        "last_check_at falls back to the run's measured_at. "
+        "Spec: spec/API.md §Metric — '`last_check_at` is the per-dataset evidence "
+        "timestamp […] falling back to the run's `measured_at`'."
     )
 
 
@@ -270,8 +303,8 @@ async def test_dataset_with_out_of_window_result_contributes_zero() -> None:
 
 
 @pytest.mark.asyncio
-async def test_dataset_with_no_result_contributes_zero_and_is_in_breakdown() -> None:
-    """Dataset with no validation result at all contributes 0.0 and appears in breakdown.
+async def test_dataset_with_no_result_contributes_zero_and_fails_its_verdict() -> None:
+    """Dataset with no validation result at all contributes 0.0 and fails its verdict.
 
     Its detail carries a null ``latest_data_time`` and ``score``: there is no result to
     report, which is a different fact from a result that scored zero.
@@ -285,7 +318,7 @@ async def test_dataset_with_no_result_contributes_zero_and_is_in_breakdown() -> 
     measure = _get_measurer()
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.novalidation,DEV)"
 
-    values, breakdown = await measure(
+    values, verdicts = await measure(
         datasets=[urn],
         metric_conf={"time_window_sec": 86400},
         datahub=_datahub(),
@@ -293,40 +326,39 @@ async def test_dataset_with_no_result_contributes_zero_and_is_in_breakdown() -> 
     )
 
     assert values["validation_score_sum"] == 0.0
-    assert len(breakdown["datasets"]) == 1
-    entry = breakdown["datasets"][0]
-    assert entry["urn"] == urn
-    assert entry["detail"]["latest_data_time"] is None
-    assert entry["detail"]["score"] is None
+    verdict = _verdict(verdicts, urn)
+    assert verdict.met is False
+    assert verdict.detail["latest_data_time"] is None
+    assert verdict.detail["score"] is None
+    assert verdict.evidence_at is None
 
 
-# ── No 'category' in breakdown entries ───────────────────────────────────────
+# ── Verdict field set ─────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_breakdown_entries_have_no_category_field() -> None:
-    """Breakdown entries must not carry a 'category' field.
+async def test_verdict_carries_exactly_the_four_contract_fields() -> None:
+    """A verdict is {urn, met, evidence_at, detail} — no classification field.
 
-    Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format —
-          datasets[] entries are {"urn": "...", "detail": {...}} only.
+    Spec: spec/feature/BACKEND.md §Metrics Service §Verdict contract — "one entry per
+          dataset carrying `urn`, `met: bool`, `evidence_at: datetime | None`, and a
+          type-specific `detail`".
     """
     measure = _get_measurer()
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.nocat,DEV)"
 
-    _values, breakdown = await measure(
+    _values, verdicts = await measure(
         datasets=[urn],
         metric_conf={"time_window_sec": 86400},
         datahub=_datahub(),
         db=_db([]),
     )
 
-    assert len(breakdown["datasets"]) == 1
-    for entry in breakdown["datasets"]:
-        assert "category" not in entry, (
-            "Breakdown entries must not have 'category'. "
-            "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
-        )
-        assert set(entry) == {"urn", "detail"}
+    from dataclasses import fields
+
+    verdict = _verdict(verdicts, urn)
+    assert {f.name for f in fields(verdict)} == {"urn", "met", "evidence_at", "detail"}
+    assert verdict.met is False, "backstop: this dataset must actually have failed"
 
 
 # ── The declared window gates in both directions within one run ──────────────
@@ -360,7 +392,7 @@ async def test_one_declared_window_splits_two_datasets_in_the_same_run() -> None
 
     now = datetime.now(tz=UTC)
 
-    values, breakdown = await measure(
+    values, verdicts = await measure(
         datasets=[outside_urn, inside_urn],
         metric_conf={"time_window_sec": 86400},
         datahub=_datahub(),
@@ -378,12 +410,12 @@ async def test_one_declared_window_splits_two_datasets_in_the_same_run() -> None
         "contributes. "
         "Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window."
     )
-    assert [e["urn"] for e in breakdown["datasets"]] == [outside_urn], (
+    assert [v.urn for v in _failed(verdicts)] == [outside_urn], (
         "the 30-hour-old result is outside the declared window and the 2-hour-old one "
         "is inside it. "
         "Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window."
     )
-    assert breakdown["datasets"][0]["detail"]["time_window_sec"] == 86400
+    assert _verdict(verdicts, outside_urn).detail["time_window_sec"] == 86400
 
 
 # ── Deterministic clock boundary ─────────────────────────────────────────────
@@ -408,7 +440,7 @@ async def test_row_one_second_inside_window_is_counted(monkeypatch: pytest.Monke
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.boundary.inside,DEV)"
     one_sec_inside = fixed_now - timedelta(seconds=time_window_sec - 1)
 
-    values, breakdown = await measure(
+    values, verdicts = await measure(
         datasets=[urn],
         metric_conf={"time_window_sec": time_window_sec},
         datahub=_datahub(),
@@ -419,7 +451,7 @@ async def test_row_one_second_inside_window_is_counted(monkeypatch: pytest.Monke
         "a result one second inside the window is inside it and must be counted. "
         "Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window."
     )
-    assert breakdown["datasets"] == []
+    assert _verdict(verdicts, urn).met is True
 
 
 @pytest.mark.asyncio
@@ -445,7 +477,7 @@ async def test_row_one_second_outside_window_is_not_counted(
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.boundary.outside,DEV)"
     one_sec_outside = fixed_now - timedelta(seconds=time_window_sec + 1)
 
-    values, breakdown = await measure(
+    values, verdicts = await measure(
         datasets=[urn],
         metric_conf={"time_window_sec": time_window_sec},
         datahub=_datahub(),
@@ -456,10 +488,11 @@ async def test_row_one_second_outside_window_is_not_counted(
         "a result one second outside the window must not be counted. "
         "Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window."
     )
-    assert [e["urn"] for e in breakdown["datasets"]] == [urn]
-    assert breakdown["datasets"][0]["detail"]["latest_data_time"] == (
-        one_sec_outside.isoformat()
-    ), "backstop: the seeded out-of-window row must be what the verdict rests on."
+    verdict = _verdict(verdicts, urn)
+    assert verdict.met is False
+    assert verdict.detail["latest_data_time"] == one_sec_outside.isoformat(), (
+        "backstop: the seeded out-of-window row must be what the verdict rests on."
+    )
 
 
 @pytest.mark.asyncio
@@ -492,7 +525,7 @@ async def test_row_exactly_at_cutoff_is_counted(monkeypatch: pytest.MonkeyPatch)
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.boundary.exact,DEV)"
     exact_cutoff = fixed_now - timedelta(seconds=time_window_sec)
 
-    values, breakdown = await measure(
+    values, verdicts = await measure(
         datasets=[urn],
         metric_conf={"time_window_sec": time_window_sec},
         datahub=_datahub(),
@@ -500,15 +533,15 @@ async def test_row_exactly_at_cutoff_is_counted(monkeypatch: pytest.MonkeyPatch)
     )
 
     assert values["validation_score_sum"] == 1.0
-    assert breakdown["datasets"] == []
+    assert _verdict(verdicts, urn).met is True
 
 
-# ── Breakdown detail shape ───────────────────────────────────────────────────
+# ── Verdict detail shape ─────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_breakdown_detail_keys_are_exactly_the_three_spec_fields() -> None:
-    """Failed detail carries exactly latest_data_time, score, time_window_sec.
+async def test_verdict_detail_keys_are_exactly_the_three_spec_fields() -> None:
+    """Verdict detail carries exactly latest_data_time, score, time_window_sec.
 
     The key set is asserted as an equality so a detail key naming a *derived* window
     provenance — a quantity the spec says the window is not — cannot reappear unnoticed.
@@ -523,15 +556,16 @@ async def test_breakdown_detail_keys_are_exactly_the_three_spec_fields() -> None
     measure = _get_measurer()
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.detailshape,DEV)"
 
-    _values, breakdown = await measure(
+    _values, verdicts = await measure(
         datasets=[urn],
         metric_conf={"time_window_sec": 86400},
         datahub=_datahub(),
         db=_db([]),
     )
 
-    assert len(breakdown["datasets"]) == 1
-    detail = breakdown["datasets"][0]["detail"]
+    verdict = _verdict(verdicts, urn)
+    assert verdict.met is False, "backstop: this dataset must actually have failed"
+    detail = verdict.detail
     assert set(detail) == {"latest_data_time", "score", "time_window_sec"}, (
         "Failed detail keys must be exactly {latest_data_time, score, "
         "time_window_sec}; got " + f"{sorted(detail)}. "

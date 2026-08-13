@@ -465,3 +465,307 @@ async def test_reconcile_registry_idempotent(db: AsyncMock):
         "marked_false": 0,
         "unchanged": 1,
     }
+
+
+# ---------------------------------------------------------------------------
+# upsert_dataset_attributes — the dataset_filter attribute mirror
+# ---------------------------------------------------------------------------
+#
+# spec: BACKEND_SCHEMA.md §dataset_registry — "**Attribute sync**: the same sweep
+#   refreshes the attribute columns, upserting per dataset and never
+#   deleting-then-inserting — a dataset the attribute read missed keeps its prior
+#   attributes, so a partial sweep cannot silently narrow every `dataset_filter` in
+#   the system."
+
+
+def _captured_upsert(db: AsyncMock) -> list[tuple[object, object]]:
+    """Record every ``(statement, payload)`` the upsert issues."""
+    calls: list[tuple[object, object]] = []
+
+    async def _execute(stmt: object, payload: object = None, *args: object, **kwargs: object):
+        calls.append((stmt, payload))
+        return MagicMock()
+
+    db.execute = AsyncMock(side_effect=_execute)
+    return calls
+
+
+async def test_upsert_dataset_attributes_writes_every_filter_column(db: AsyncMock):
+    """Each record carries origin, platform_urn and both association arrays.
+
+    spec: BACKEND_SCHEMA.md §dataset_registry — the five attribute columns
+        (`origin`, `platform_urn`, `tag_urns`, `glossary_term_urns`,
+        `attrs_synced_at`) are what `dataset_filter` is evaluated against.
+    """
+    from src.shared.db.registry import DatasetAttributes, upsert_dataset_attributes
+
+    calls = _captured_upsert(db)
+    synced_at = datetime(2026, 3, 1, 12, 0, tzinfo=UTC)
+
+    refreshed = await upsert_dataset_attributes(
+        db,
+        [
+            DatasetAttributes(
+                dataset_urn=_URN_NEW,
+                origin="PROD",
+                platform_urn="urn:li:dataPlatform:postgres",
+                tag_urns=["urn:li:tag:pii"],
+                glossary_term_urns=["urn:li:glossaryTerm:pii.gdpr"],
+            )
+        ],
+        synced_at=synced_at,
+    )
+
+    assert refreshed == 1
+    assert len(calls) == 1, f"one round trip for one record; got {len(calls)}"
+    payload = calls[0][1]
+    assert payload == [
+        {
+            "dataset_urn": _URN_NEW,
+            "datahub_registered": False,
+            "origin": "PROD",
+            "platform_urn": "urn:li:dataPlatform:postgres",
+            "tag_urns": ["urn:li:tag:pii"],
+            "glossary_term_urns": ["urn:li:glossaryTerm:pii.gdpr"],
+            "attrs_synced_at": synced_at,
+            "created_at": synced_at,
+            "updated_at": synced_at,
+        }
+    ]
+
+
+async def test_upsert_dataset_attributes_only_touches_the_urns_it_was_given(db: AsyncMock):
+    """No delete precedes the write — an unread dataset keeps its stored attributes.
+
+    This is the rule the whole step hangs on: a delete-then-insert (or a blanking
+    update over the estate) would empty `tag_urns` for every dataset a partial read
+    missed, silently narrowing every UC3/UC4/UC5 filter instead of failing visibly.
+
+    spec: BACKEND_SCHEMA.md §dataset_registry — "upserting per dataset and never
+        deleting-then-inserting — a dataset the attribute read missed keeps its
+        prior attributes";
+    spec: DATAHUB_INTEGRATION.md §Dataset attribute sync — "a half-completed read
+        that emptied `tag_urns` would silently narrow every filter in the system
+        instead of failing visibly."
+    """
+    from sqlalchemy.dialects import postgresql
+
+    from src.shared.db.registry import DatasetAttributes, upsert_dataset_attributes
+
+    calls = _captured_upsert(db)
+
+    await upsert_dataset_attributes(
+        db,
+        [
+            DatasetAttributes(
+                dataset_urn=_URN_NEW,
+                origin="PROD",
+                platform_urn="urn:li:dataPlatform:postgres",
+                tag_urns=[],
+                glossary_term_urns=[],
+            )
+        ],
+    )
+
+    assert calls, "backstop: the upsert must have issued a statement"
+    for stmt, payload in calls:
+        sql = str(stmt.compile(dialect=postgresql.dialect())).lower()
+        assert "delete" not in sql, f"the attribute sync must never delete rows; got:\n{sql}"
+        assert "on conflict" in sql, f"the write must be an upsert; got:\n{sql}"
+        assert isinstance(payload, list), "rows are bound as an executemany payload"
+        assert {row["dataset_urn"] for row in payload} == {_URN_NEW}
+
+
+async def test_upsert_dataset_attributes_refreshes_the_attribute_columns_on_conflict(
+    db: AsyncMock,
+):
+    """An existing row's attribute columns are overwritten with the read's values.
+
+    An upsert that inserted but never refreshed (`DO NOTHING`, or a SET missing a
+    column) would freeze every UC3/UC4/UC5 filter at its first-sweep scope with no
+    observable symptom — `attrs_synced_at` would stand still while the sweep kept
+    reporting success. Each refreshed column is therefore asserted by name.
+
+    spec: BACKEND_SCHEMA.md §dataset_registry — `attrs_synced_at` is "When the four
+        attribute columns above were last refreshed", and the sweep's attribute step
+        "refreshes the attribute columns";
+    spec: BACKEND.md §dataset_filter — filter staleness is diagnosable from
+        "`attrs_synced_at` standing still".
+    """
+    from sqlalchemy.dialects import postgresql
+
+    from src.shared.db.registry import DatasetAttributes, upsert_dataset_attributes
+
+    calls = _captured_upsert(db)
+
+    await upsert_dataset_attributes(
+        db,
+        [
+            DatasetAttributes(
+                dataset_urn=_URN_NEW,
+                origin="PROD",
+                platform_urn="urn:li:dataPlatform:postgres",
+                tag_urns=["urn:li:tag:pii"],
+                glossary_term_urns=["urn:li:glossaryTerm:pii.gdpr"],
+            )
+        ],
+    )
+
+    assert calls, "backstop: the upsert must have issued a statement"
+    stmt, _payload = calls[0]
+    conflict_clause = (
+        str(stmt.compile(dialect=postgresql.dialect())).lower().split("on conflict", 1)[1]
+    )
+    assert "do update set" in conflict_clause, (
+        "a conflicting row must be updated, not skipped — DO NOTHING would freeze the "
+        f"attributes at their first-sweep values. Got:\n{conflict_clause}"
+    )
+    for column in (
+        "origin",
+        "platform_urn",
+        "tag_urns",
+        "glossary_term_urns",
+        "attrs_synced_at",
+    ):
+        assert f"{column} = excluded.{column}" in conflict_clause, (
+            f"{column} must be refreshed from the read on conflict; got:\n{conflict_clause}"
+        )
+
+
+async def test_upsert_dataset_attributes_does_not_register_an_unseen_urn(db: AsyncMock):
+    """The step is not a registration authority — `datahub_registered` stays false.
+
+    The attribute read and `reconcile_registry`'s enumeration page independently, so
+    a URN only this read returned must not enter the registered set: it would land in
+    the scope of every empty `dataset_filter` without ever passing reconcile.
+
+    spec: BACKEND_SCHEMA.md §dataset_registry — "**Creation / reconcile**: bulk, by
+        the `datahub-sync-hourly` sweep" is reconcile's job; the attribute sync
+        "refreshes the attribute columns".
+    """
+    from sqlalchemy.dialects import postgresql
+
+    from src.shared.db.registry import DatasetAttributes, upsert_dataset_attributes
+
+    calls = _captured_upsert(db)
+
+    await upsert_dataset_attributes(
+        db,
+        [
+            DatasetAttributes(
+                dataset_urn=_URN_NEW,
+                origin="PROD",
+                platform_urn="urn:li:dataPlatform:postgres",
+                tag_urns=[],
+                glossary_term_urns=[],
+            )
+        ],
+    )
+
+    stmt, payload = calls[0]
+    assert payload[0]["datahub_registered"] is False
+    conflict_clause = (
+        str(stmt.compile(dialect=postgresql.dialect())).lower().split("on conflict", 1)[1]
+    )
+    assert "datahub_registered" not in conflict_clause, (
+        "the conflict SET must not touch datahub_registered — this step can neither "
+        "register nor deregister a dataset. spec: BACKEND_SCHEMA.md §dataset_registry."
+    )
+
+
+async def test_upsert_dataset_attributes_skips_a_malformed_urn(db: AsyncMock):
+    """A record whose URN is not a dataset URN is skipped and not counted.
+
+    spec: BACKEND_SCHEMA.md §dataset_registry — `dataset_urn` is the dataset URN PK;
+        a non-dataset entity URN (e.g. a `Restricted` placeholder) is not a dataset.
+    """
+    from src.shared.db.registry import DatasetAttributes, upsert_dataset_attributes
+
+    calls = _captured_upsert(db)
+
+    refreshed = await upsert_dataset_attributes(
+        db,
+        [
+            DatasetAttributes(
+                dataset_urn="urn:li:restricted:opaque",
+                origin=None,
+                platform_urn=None,
+                tag_urns=[],
+                glossary_term_urns=[],
+            ),
+            DatasetAttributes(
+                dataset_urn=_URN_NEW,
+                origin="PROD",
+                platform_urn="urn:li:dataPlatform:postgres",
+                tag_urns=[],
+                glossary_term_urns=[],
+            ),
+        ],
+    )
+
+    assert refreshed == 1, "only the well-formed dataset URN is refreshed"
+    assert [row["dataset_urn"] for row in calls[0][1]] == [_URN_NEW]
+
+
+async def test_upsert_dataset_attributes_with_no_records_issues_no_statement(db: AsyncMock):
+    """An empty read writes nothing at all — it must not blank the estate."""
+    from src.shared.db.registry import upsert_dataset_attributes
+
+    calls = _captured_upsert(db)
+
+    assert await upsert_dataset_attributes(db, []) == 0
+    assert calls == []
+
+
+async def test_upsert_dataset_attributes_does_not_commit(db: AsyncMock):
+    """The caller owns the step-isolated transaction, as with `reconcile_registry`."""
+    from src.shared.db.registry import DatasetAttributes, upsert_dataset_attributes
+
+    _captured_upsert(db)
+
+    await upsert_dataset_attributes(
+        db,
+        [
+            DatasetAttributes(
+                dataset_urn=_URN_NEW,
+                origin="PROD",
+                platform_urn="urn:li:dataPlatform:postgres",
+                tag_urns=[],
+                glossary_term_urns=[],
+            )
+        ],
+    )
+
+    db.commit.assert_not_called()
+
+
+async def test_upsert_dataset_attributes_chunks_a_large_estate(db: AsyncMock):
+    """A large read is written in bounded batches, not one unbounded statement.
+
+    Not a spec line — an implementation invariant of `_ATTRIBUTE_CHUNK` recorded here
+    because the failure it prevents (PostgreSQL's 32,767-bind-parameter ceiling) is an
+    opaque driver error at estate scale rather than a visible regression.
+    """
+    from src.shared.db.registry import (
+        _ATTRIBUTE_CHUNK,
+        DatasetAttributes,
+        upsert_dataset_attributes,
+    )
+
+    calls = _captured_upsert(db)
+    records = [
+        DatasetAttributes(
+            dataset_urn=f"urn:li:dataset:(urn:li:dataPlatform:postgres,db.t{i},PROD)",
+            origin="PROD",
+            platform_urn="urn:li:dataPlatform:postgres",
+            tag_urns=[],
+            glossary_term_urns=[],
+        )
+        for i in range(_ATTRIBUTE_CHUNK + 1)
+    ]
+
+    refreshed = await upsert_dataset_attributes(db, records)
+
+    assert refreshed == _ATTRIBUTE_CHUNK + 1
+    assert len(calls) == 2, f"expected two batches; got {len(calls)}"
+    assert [len(payload) for _, payload in calls] == [_ATTRIBUTE_CHUNK, 1]

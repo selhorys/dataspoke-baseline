@@ -1,6 +1,6 @@
 """Initial schema — all DataSpoke tables in the ``dataspoke`` schema.
 
-Creates the full operational schema: 18 ORM-backed tables, the
+Creates the full operational schema: 19 ORM-backed tables, the
 ``dataset_embeddings`` pgvector table used by the search/reindex pipeline,
 the pgvector ``vector`` extension, and the Apache AGE ``dataspoke_ontogen``
 graph used to materialise ``ontogen_triples`` for graph traversal.
@@ -14,6 +14,7 @@ from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects.postgresql import ARRAY as PG_ARRAY
 from sqlalchemy.dialects.postgresql import CITEXT, JSONB, TIMESTAMP, UUID
 
 from src.shared.config import EMBEDDING_DIMENSION
@@ -192,8 +193,51 @@ def upgrade() -> None:
         "dataset_registry",
         sa.Column("dataset_urn", sa.Text(), primary_key=True),
         sa.Column("datahub_registered", sa.Boolean(), nullable=False, server_default="false"),
+        sa.Column("origin", sa.Text(), nullable=True),
+        sa.Column("platform_urn", sa.Text(), nullable=True),
+        sa.Column(
+            "tag_urns",
+            PG_ARRAY(sa.Text()),
+            nullable=False,
+            server_default=sa.text("'{}'::text[]"),
+        ),
+        sa.Column(
+            "glossary_term_urns",
+            PG_ARRAY(sa.Text()),
+            nullable=False,
+            server_default=sa.text("'{}'::text[]"),
+        ),
+        sa.Column("attrs_synced_at", TIMESTAMPTZ, nullable=True),
         sa.Column("created_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
         sa.Column("updated_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
+        schema=SCHEMA,
+    )
+    # GIN serves the `dataset_filter` array predicates (`col @> ARRAY[…]`);
+    # the btree pair serves the scalar equality / IN predicates.
+    op.create_index(
+        "ix_dataset_registry_tag_urns",
+        "dataset_registry",
+        ["tag_urns"],
+        postgresql_using="gin",
+        schema=SCHEMA,
+    )
+    op.create_index(
+        "ix_dataset_registry_glossary_term_urns",
+        "dataset_registry",
+        ["glossary_term_urns"],
+        postgresql_using="gin",
+        schema=SCHEMA,
+    )
+    op.create_index(
+        "ix_dataset_registry_origin",
+        "dataset_registry",
+        ["origin"],
+        schema=SCHEMA,
+    )
+    op.create_index(
+        "ix_dataset_registry_platform_urn",
+        "dataset_registry",
+        ["platform_urn"],
         schema=SCHEMA,
     )
 
@@ -241,7 +285,7 @@ def upgrade() -> None:
         sa.Column("name", sa.Text(), nullable=False),
         sa.Column("is_enabled", sa.Boolean(), nullable=False, server_default="false"),
         sa.Column("schedule_tier", sa.Text(), nullable=True),
-        sa.Column("dataset_filter", JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
+        sa.Column("dataset_filter", sa.Text(), nullable=False, server_default=""),
         sa.Column("result_limit", sa.Integer(), nullable=False, server_default="3"),
         sa.Column("overwrite_pending", sa.Boolean(), nullable=False, server_default="true"),
         sa.Column("created_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
@@ -372,7 +416,7 @@ def upgrade() -> None:
         sa.Column("description", sa.Text(), nullable=False),
         sa.Column("metrics", JSONB, nullable=False, server_default=sa.text("'[]'::jsonb")),
         sa.Column("metric_conf", JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
-        sa.Column("dataset_filter", JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
+        sa.Column("dataset_filter", sa.Text(), nullable=False, server_default=""),
         sa.Column("schedule_tier", sa.Text(), nullable=True),
         sa.Column("is_enabled", sa.Boolean(), nullable=False, server_default="false"),
         sa.Column("created_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
@@ -399,6 +443,23 @@ def upgrade() -> None:
         "ix_metric_results_metric_measured",
         "metric_results",
         ["metric_id", sa.text("measured_at DESC")],
+        schema=SCHEMA,
+    )
+
+    # ── metric_dataset_results ───────────────────────────────────────────
+    op.create_table(
+        "metric_dataset_results",
+        sa.Column(
+            "metric_id",
+            sa.Text(),
+            sa.ForeignKey(f"{SCHEMA}.metric_definitions.id", ondelete="CASCADE"),
+            primary_key=True,
+        ),
+        sa.Column("dataset_urn", sa.Text(), primary_key=True),
+        sa.Column("met", sa.Boolean(), nullable=False),
+        sa.Column("evidence_at", TIMESTAMPTZ, nullable=True),
+        sa.Column("detail", JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
+        sa.Column("measured_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
         schema=SCHEMA,
     )
 
@@ -461,7 +522,7 @@ def upgrade() -> None:
         ),
         sa.Column("is_enabled", sa.Boolean(), nullable=False, server_default="false"),
         sa.Column("schedule_tier", sa.Text(), nullable=True),
-        sa.Column("dataset_filter", JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
+        sa.Column("dataset_filter", sa.Text(), nullable=False, server_default=""),
         sa.Column("default_run_prompt", sa.Text(), nullable=True),
         sa.Column("updated_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
         sa.CheckConstraint("id = 1", name="ck_ontogen_config_singleton"),

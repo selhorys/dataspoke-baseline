@@ -35,6 +35,7 @@ from src.api.routers.spoke import ontogen as spoke_ontogen
 from src.api.routers.spoke import validation as spoke_validation
 from src.api.routers.spoke.common import data as common_data
 from src.api.routers.spoke.common import peripheral_links as common_peripheral_links
+from src.shared.dataset_filter import DatasetFilterSyntaxError
 from src.shared.exceptions import (
     AirflowUnavailableError,
     AuthenticationError,
@@ -185,6 +186,17 @@ async def _handle_invalid_dataset_urn(
     request: Request, exc: InvalidDatasetUrnError
 ) -> JSONResponse:
     return _error_json(request, 422, exc.error_code, str(exc))
+
+
+async def _handle_invalid_dataset_filter(
+    request: Request, exc: DatasetFilterSyntaxError
+) -> JSONResponse:
+    """422 INVALID_DATASET_FILTER, carrying the offending character position.
+
+    ``detail.position`` is what lets an editor put the caret on the error
+    (spec/API.md §Error Catalogue).
+    """
+    return _error_json(request, 422, exc.error_code, str(exc), detail=exc.detail)
 
 
 async def _handle_authentication(request: Request, exc: AuthenticationError) -> JSONResponse:
@@ -389,6 +401,7 @@ def create_app() -> FastAPI:
     app.add_exception_handler(ConflictError, _handle_conflict)  # type: ignore[arg-type]
     app.add_exception_handler(PreconditionFailedError, _handle_precondition)  # type: ignore[arg-type]
     app.add_exception_handler(InvalidDatasetUrnError, _handle_invalid_dataset_urn)  # type: ignore[arg-type]
+    app.add_exception_handler(DatasetFilterSyntaxError, _handle_invalid_dataset_filter)  # type: ignore[arg-type]
     app.add_exception_handler(ForbiddenError, _handle_forbidden)  # type: ignore[arg-type]
     app.add_exception_handler(AuthenticationError, _handle_authentication)  # type: ignore[arg-type]
     app.add_exception_handler(PeripheralNotConfiguredError, _handle_peripheral_not_configured)  # type: ignore[arg-type]

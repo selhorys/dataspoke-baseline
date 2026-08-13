@@ -80,9 +80,17 @@ ENVELOPE_FIELDS: frozenset[str] = frozenset({"offset", "limit", "total_count", "
 #:
 #: An entry here must quote the spec text that documents the field. A field that is merely
 #: convenient does not belong: put it on the rows, or give the route its own model.
+#: ``MetricDatasetListResponse.attrs_synced_at`` is documented for
+#: ``GET /spoke/governance/metric/{metric_id}/dataset`` in spec/API.md §Route Catalogue →
+#: Metric: "The response envelope also carries `attrs_synced_at` — the **maximum**
+#: `dataset_registry.attrs_synced_at` over the datasets in scope … It is scope-relative,
+#: not registry-wide, and unaffected by `met` filtering or paging, so it answers 'how fresh
+#: is the scope this page is drawn from'". Being scope-relative rather than page-relative is
+#: exactly what makes it an envelope aggregate rather than a row field.
 DOCUMENTED_ENVELOPE_AGGREGATES: frozenset[str] = frozenset(
     {
         "MetagenItemListResponse.candidate_count",
+        "MetricDatasetListResponse.attrs_synced_at",
     }
 )
 

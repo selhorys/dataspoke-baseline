@@ -1,11 +1,14 @@
 """Ontology Generation request/response schemas — UC3."""
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
 
+from src.api.schemas._dataset_filter import (
+    DATASET_FILTER_FIELD_DESCRIPTION as _FILTER_DESC,
+)
 from src.api.schemas._dataset_filter import validate_dataset_filter
 from src.api.schemas.common import PaginatedResponse, SingleResponse
 
@@ -17,14 +20,7 @@ class OntogenConfResponse(SingleResponse):
     schedule_tier: Literal["hourly", "daily", "weekly"] | None = Field(
         default=None, description="Periodic re-inference cadence: 'hourly', 'daily', or 'weekly'"
     )
-    dataset_filter: dict[str, Any] = Field(
-        default={},
-        description=(
-            "Optional scope filter. Keys: origin (DataHub FabricType, AND-ed with the OR-group), "
-            "tags (list[str], OR), glossary_terms (list[str], OR), "
-            "dataset_urns (list[str], OR). Each list dimension capped at 1,000 entries."
-        ),
-    )
+    dataset_filter: str = Field(default="", description=_FILTER_DESC)
     default_run_prompt: str | None = Field(
         default=None,
         description="Default one-shot prompt for periodic runs and bodyless manual calls",
@@ -40,7 +36,7 @@ class OntogenConfPutRequest(BaseModel):
         default=None,
         description="Schedule tier for periodic runs: 'hourly', 'daily', or 'weekly'.",
     )
-    dataset_filter: dict[str, Any] = Field(default={})
+    dataset_filter: str = Field(default="", description=_FILTER_DESC)
     default_run_prompt: str | None = Field(
         default=None,
         max_length=16_000,
@@ -59,7 +55,7 @@ class OntogenConfPatchRequest(BaseModel):
         default=None,
         description="Schedule tier for periodic runs: 'hourly', 'daily', or 'weekly'.",
     )
-    dataset_filter: dict[str, Any] | None = Field(default=None)
+    dataset_filter: str | None = Field(default=None, description=_FILTER_DESC)
     default_run_prompt: str | None = Field(
         default=None,
         max_length=16_000,

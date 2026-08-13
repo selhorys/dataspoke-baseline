@@ -50,7 +50,7 @@ def _make_conf_dto(**overrides) -> MetagenConfDTO:
         name="catalog-docs",
         is_enabled=False,
         schedule_tier=None,
-        dataset_filter={},
+        dataset_filter="",
         result_limit=3,
         overwrite_pending=True,
         created_at=datetime.now(tz=UTC),
@@ -249,7 +249,7 @@ async def test_post_conf_malformed_dataset_urn_returns_422_invalid_dataset_urn(
     """
     resp = await client.post(
         f"{_BASE}/conf",
-        json={"name": "c", "dataset_filter": {"dataset_urns": ["not-a-urn"]}},
+        json={"name": "c", "dataset_filter": "dataset_urn = 'not-a-urn'"},
         headers=auth_headers(),
     )
     assert resp.status_code == 422
@@ -257,20 +257,20 @@ async def test_post_conf_malformed_dataset_urn_returns_422_invalid_dataset_urn(
 
 
 @pytest.mark.asyncio
-async def test_post_conf_too_many_dataset_urns_returns_422(client, mock_svc: AsyncMock) -> None:
-    """POST /metagen/conf with > 1000 dataset_urns returns 422.
+async def test_post_conf_over_the_literal_cap_returns_422(client, mock_svc: AsyncMock) -> None:
+    """POST /metagen/conf with a filter over the 1,000-literal cap returns 422.
 
-    Spec: API.md §Payload caps — dataset_filter.dataset_urns ≤ 1,000 entries.
+    Spec: API.md §`dataset_filter` grammar — Caps: "≤ 1,000 string literals";
+    Spec: API.md §Error Catalogue — INVALID_DATASET_FILTER on `POST /spoke/metagen/conf`.
     """
-    too_many = [
-        f"urn:li:dataset:(urn:li:dataPlatform:postgres,db.t{i},PROD)" for i in range(1001)
-    ]
+    over_cap = "origin IN (" + ", ".join(f"'v{i}'" for i in range(1001)) + ")"
     resp = await client.post(
         f"{_BASE}/conf",
-        json={"name": "c", "dataset_filter": {"dataset_urns": too_many}},
+        json={"name": "c", "dataset_filter": over_cap},
         headers=auth_headers(),
     )
-    assert resp.status_code == 422
+    assert resp.status_code == 422, resp.text
+    assert resp.json().get("error_code") == "INVALID_DATASET_FILTER", resp.text
 
 
 # ── GET /conf/{conf_id} ───────────────────────────────────────────────────────
@@ -393,7 +393,7 @@ async def test_patch_conf_malformed_dataset_urn_returns_422(client, mock_svc: As
     """
     resp = await client.patch(
         f"{_BASE}/conf/{_CONF_ID}",
-        json={"dataset_filter": {"dataset_urns": ["not-a-urn"]}},
+        json={"dataset_filter": "dataset_urn = 'not-a-urn'"},
         headers=auth_headers(),
     )
     assert resp.status_code == 422

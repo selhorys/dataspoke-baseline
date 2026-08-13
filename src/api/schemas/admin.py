@@ -15,20 +15,11 @@ from src.api.schemas.common import (
     SAFE_DISPLAY_URL_PATTERN,
     SAFE_PROJECT_ID_MAX_LENGTH,
     SAFE_PROJECT_ID_PATTERN,
+    DatasetUrn,
     PaginatedResponse,
     SingleResponse,
 )
 from src.shared.datahub.kafka_security import check_kafka_security
-
-# A single DataHub dataset URN with format and length constraints.
-DatasetUrn = Annotated[
-    str,
-    Field(
-        min_length=1,
-        max_length=512,
-        pattern=r"^urn:li:dataset:\(.+\)$",
-    ),
-]
 
 
 class DatahubSyncRequest(BaseModel):

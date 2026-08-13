@@ -413,7 +413,7 @@ its own immediate `PATCH /admin/dags/{group}` and the section invalidates the
 ┌──────────────────────────────────────────────────────────────┐
 │  Workflow schedules                                          │
 ├──────────────────────────────────────────────────────────────┤
-│  ☑ DataHub hourly sync        ☑ Metadata generation         │
+│  ☑ DataHub sync               ☑ Metadata generation         │
 │  ☑ Auth role sync             ☑ Metrics                     │
 │  ☑ Active ingestion           ☐ Ontology generation         │
 └──────────────────────────────────────────────────────────────┘
@@ -422,7 +422,7 @@ its own immediate `PATCH /admin/dags/{group}` and the section invalidates the
 
 | Checkbox label | `group` |
 |---|---|
-| DataHub hourly sync | `datahub_sync` |
+| DataHub sync | `datahub_sync` |
 | Auth role sync | `auth_role_sync` |
 | Active ingestion | `ingestion_active` |
 | Ontology generation | `ontogen` |
@@ -775,23 +775,25 @@ These component IDs are referenced from per-function specs.
   cross-feature event feeds (`GET /spoke/ontogen/event`,
   `GET /spoke/metagen/event`) on one poll (see [Live Updates](#live-updates)).
   Governance exposes only per-metric feeds, so it is not aggregated here.
-- **DatasetFilterEditor** — parent-owned editor for the four-dimension
-  `dataset_filter` (`origin` plus `tags[]` / `glossary_terms[]` /
-  `dataset_urns[]`). Reused by Governance metrics, OntoGen conf, and MetaGen conf.
-  Each list dimension is one **newline-separated** textarea — one URN per line —
-  buffering the raw text the user typed; parsing happens on the way out (each
-  line edge-trimmed, blank lines dropped, an empty dimension omitted from the
-  filter) and parsed state is never re-serialised back into the box, so
-  whitespace the user is mid-way through typing survives. Commas are **not**
-  separators: tag and glossary-term URNs embed a user-authored name that may
-  contain a comma, and dataset URNs always contain them. The editor reseeds its
-  boxes from props only when the incoming filter is not the one it last emitted
-  (e.g. a freshly loaded record).
-- **DatasetFilterView** — read-only render of the four-dimension `dataset_filter`,
-  the view-mode analogue of DatasetFilterEditor (empty dimensions show an em dash).
-  List entries render monospaced with internal whitespace preserved, so a URN's
-  own spacing reads back as stored. Reused by the Governance metric detail, and
-  the OntoGen and MetaGen conf views.
+- **DatasetFilterEditor** — parent-owned editor for the `dataset_filter` SQL
+  `WHERE`-clause string ([API §`dataset_filter` grammar](../API.md#dataset_filter-grammar)).
+  Reused by Governance metrics, OntoGen conf, and MetaGen conf. One vertically
+  **resizable** monospace textarea holding the clause verbatim — the value is a single
+  string, so the editor buffers the raw text and never re-serialises parsed state back
+  into the box. An **Auto-indent** button reformats the text in place: newline before each
+  top-level `AND` / `OR`, indent inside parentheses. The formatter is purely lexical and
+  holds **no grammar knowledge** — the backend owns the grammar, so the button never
+  rejects, rewrites, or silently repairs a clause it cannot understand. Validation is
+  server-side: a `422 INVALID_DATASET_FILTER` renders inline against the field, carrying
+  the position the API reported. A folded grammar guide sits beneath the box, reusing the
+  collapsible pattern of
+  [SecretRefAuthoringGuide](FRONTEND_INGESTION.md#components). The editor reseeds from
+  props only when the incoming filter is not the one it last emitted (e.g. a freshly
+  loaded record).
+- **DatasetFilterView** — read-only render of the `dataset_filter` clause, the view-mode
+  analogue of DatasetFilterEditor: a monospace `<pre>` block preserving the stored
+  line breaks and indentation, an em dash when the filter is empty. Reused by the
+  Governance metric detail, and the OntoGen and MetaGen conf views.
 - **ScheduleTierLink** — renders a schedule tier (hourly / daily / weekly) as a
   link to its backing Airflow DAG, or plain text for an unscheduled / custom value.
   Reused by Ingestion (`ingestion-active-<tier>`), MetaGen (`metagen-<tier>`), and

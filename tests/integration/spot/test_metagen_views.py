@@ -59,7 +59,7 @@ async def test_metagen_covered_datasets_view(
 ) -> None:
     """GET /spoke/metagen/conf/{conf_id}/dataset — covered datasets boundary view.
 
-    A conf scoped (via an explicit dataset_urns filter) to two datasets:
+    A conf scoped (via an explicit `dataset_urn IN (…)` filter clause) to two datasets:
       - eu_profiles: writable boundary (is_enabled=true, non-empty allowed) → not blocked
       - orders.events: blocked boundary (is_enabled=false) → boundary-blocked
 
@@ -76,7 +76,8 @@ async def test_metagen_covered_datasets_view(
     """
     conf_id: str | None = None
     try:
-        # Seed a conf scoped to exactly the two fulfillment datasets via dataset_urns.
+        # Seed a conf scoped to exactly the two fulfillment datasets via a
+        # `dataset_urn IN (…)` filter clause.
         # spec: feature/BACKEND.md §Metadata Generation Service — Covered-datasets view — resolution
         #   reuses
         #   resolve_dataset_scope for the conf's dataset_filter.
@@ -85,7 +86,7 @@ async def test_metagen_covered_datasets_view(
             name=f"uc4-covered-{uuid.uuid4().hex[:8]}",
             is_enabled=True,
             schedule_tier="daily",
-            dataset_filter={"dataset_urns": [EU_PROFILES_URN, ORDERS_EVENTS_URN]},
+            dataset_filter=f"dataset_urn IN ('{EU_PROFILES_URN}', '{ORDERS_EVENTS_URN}')",
         )
 
         # eu_profiles: writable boundary (enabled + non-empty allowed) → blocked=false.
@@ -367,13 +368,13 @@ async def test_metagen_dataset_rollup_view(
             async_session,
             name=f"uc4-rollup-eu-{suffix}",
             is_enabled=True,
-            dataset_filter={"dataset_urns": [EU_PROFILES_URN]},
+            dataset_filter=f"dataset_urn = '{EU_PROFILES_URN}'",
         )
         conf_rival_id = await seed_metagen_conf(
             async_session,
             name=f"uc4-rollup-rival-{suffix}",
             is_enabled=True,
-            dataset_filter={"dataset_urns": [EU_PROFILES_URN, ORDERS_EVENTS_URN]},
+            dataset_filter=f"dataset_urn IN ('{EU_PROFILES_URN}', '{ORDERS_EVENTS_URN}')",
         )
 
         # ── eu_profiles: enabled boundary + two items ─────────────────────────

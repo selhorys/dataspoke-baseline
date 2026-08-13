@@ -1,38 +1,22 @@
 /**
- * summarizeDatasetFilter — render a compact one-line summary of a four-dimension
- * dataset_filter for list views.
+ * summarizeDatasetFilter — render a compact one-line summary of a
+ * `dataset_filter` for list views.
  *
- * The filter shape is the standard {origin?, tags?[], glossary_terms?[],
- * dataset_urns?[]} (API §Metric dataset_filter). An empty filter means "all
- * datasets".
+ * The filter is a SQL `WHERE`-clause string (API §`dataset_filter` grammar); an
+ * empty clause means "all datasets". Line breaks and runs of whitespace collapse
+ * to single spaces so a multi-line clause fits one table cell, and a long clause
+ * is truncated with an ellipsis — the full text lives on the conf detail page.
  */
 
-import type { DatasetFilter } from "@/types/governance";
+/** Maximum characters rendered in a list cell before truncation. */
+export const FILTER_SUMMARY_MAX_CHARS = 60;
 
 export function summarizeDatasetFilter(
-  filter: DatasetFilter | Record<string, unknown> | null | undefined,
+  filter: string | null | undefined,
+  maxChars: number = FILTER_SUMMARY_MAX_CHARS,
 ): string {
-  if (!filter) return "all datasets";
-
-  const f = filter as DatasetFilter;
-  const parts: string[] = [];
-
-  if (typeof f.origin === "string" && f.origin.trim().length > 0) {
-    parts.push(`origin=${f.origin}`);
-  }
-  if (Array.isArray(f.tags) && f.tags.length > 0) {
-    parts.push(`${f.tags.length} tag${f.tags.length === 1 ? "" : "s"}`);
-  }
-  if (Array.isArray(f.glossary_terms) && f.glossary_terms.length > 0) {
-    parts.push(
-      `${f.glossary_terms.length} term${f.glossary_terms.length === 1 ? "" : "s"}`,
-    );
-  }
-  if (Array.isArray(f.dataset_urns) && f.dataset_urns.length > 0) {
-    parts.push(
-      `${f.dataset_urns.length} URN${f.dataset_urns.length === 1 ? "" : "s"}`,
-    );
-  }
-
-  return parts.length === 0 ? "all datasets" : parts.join(", ");
+  const collapsed = (filter ?? "").replace(/\s+/g, " ").trim();
+  if (collapsed.length === 0) return "all datasets";
+  if (collapsed.length <= maxChars) return collapsed;
+  return `${collapsed.slice(0, maxChars).trimEnd()}…`;
 }

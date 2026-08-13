@@ -74,8 +74,13 @@ test("/metagen/conf/new — create form posts a conf and redirects to its detail
   await page.locator("#metagen-conf-schedule-tier").click();
   await page.getByRole("option", { name: "weekly", exact: true }).click();
 
-  // dataset_urns dimension of the DatasetFilterEditor — dataset-filter-editor.tsx #df-dataset-urns
-  await page.locator("#df-dataset-urns").fill(TITLE_MASTER_URN);
+  // dataset_filter — the shared DatasetFilterEditor's SQL clause box
+  // (dataset-filter-editor.tsx, aria-label "dataset_filter"). Scoping a conf to one
+  // dataset is the `dataset_urn = '…'` scalar-equality predicate.
+  // spec: API.md §`dataset_filter` grammar.
+  await page
+    .getByLabel("dataset_filter", { exact: true })
+    .fill(`dataset_urn = '${TITLE_MASTER_URN}'`);
 
   await page.locator("#metagen-conf-result-limit").fill("5");
 
@@ -101,7 +106,7 @@ test("/metagen/conf/new — create form posts a conf and redirects to its detail
       is_enabled: boolean;
       schedule_tier: string | null;
       result_limit: number;
-      dataset_filter: Record<string, unknown>;
+      dataset_filter: string;
     }>;
   };
   const created = list.confs.find((c) => c.name === CONF_NAME);
@@ -110,5 +115,7 @@ test("/metagen/conf/new — create form posts a conf and redirects to its detail
   expect(created!.is_enabled).toBe(true);
   expect(created!.schedule_tier).toBe("weekly");
   expect(created!.result_limit).toBe(5);
-  expect(created!.dataset_filter).toEqual({ dataset_urns: [TITLE_MASTER_URN] });
+  // The clause is stored verbatim — the backend owns the grammar and no route
+  // rewrites it. spec: API.md §`dataset_filter` grammar.
+  expect(created!.dataset_filter).toBe(`dataset_urn = '${TITLE_MASTER_URN}'`);
 });

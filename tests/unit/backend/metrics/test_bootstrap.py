@@ -188,37 +188,83 @@ async def test_seed_rows_metric_conf_matches_spec() -> None:
 
 
 @pytest.mark.asyncio
-async def test_seed_rows_dataset_filter_is_empty() -> None:
-    """All seeded rows have dataset_filter={}.
+async def test_seed_rows_dataset_filter_is_the_empty_clause() -> None:
+    """All seeded rows ship with `dataset_filter=""` — every registered dataset.
 
-    Spec: spec/feature/BACKEND.md §Metrics Service §Factory defaults —
-          dataset_filter={} means all datasets.
+    Spec: spec/feature/BACKEND.md §Metrics Service §Factory defaults — 'Defaults are
+          […] `dataset_filter=""`';
+    Spec: spec/API.md §`dataset_filter` grammar — "the empty string matches every
+          registered dataset".
     """
     db = _make_empty_db()
     await seed_factory_defaults(db)
 
+    assert db.add.call_args_list, "backstop: the bootstrap must have seeded rows"
     for add_call in db.add.call_args_list:
         row = add_call.args[0]
-        assert row.dataset_filter == {}, (
-            f"Seeded metric '{row.id}' must have dataset_filter={{}}. "
+        assert row.dataset_filter == "", (
+            f"Seeded metric '{row.id}' must have dataset_filter=''. "
             "Spec: spec/feature/BACKEND.md §Metrics Service §Factory defaults."
         )
 
 
 @pytest.mark.asyncio
-async def test_seed_rows_metrics_list_matches_spec() -> None:
-    """Seed row metrics[] contains all emitted keys for each type.
+async def test_seed_rows_carry_one_series_descriptor_per_emitted_key() -> None:
+    """Each seed names every emitted key of its type as a `{name, color, idx}` series.
 
-    Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — emitted keys.
+    Spec: spec/feature/BACKEND.md §Metrics Service §Factory defaults — "a `metrics`
+          descriptor per emitted key (each with a distinct color and an `idx` in
+          emission order)";
+    Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — the emitted keys.
     """
     db = _make_empty_db()
     await seed_factory_defaults(db)
 
     added = {call.args[0].id: call.args[0] for call in db.add.call_args_list}
 
-    assert set(added["ingestion-freshness"].metrics) == {"total", "ingested_in_time"}
-    assert set(added["validation-score"].metrics) == {"total", "validation_score_sum"}
-    assert set(added["doc-health"].metrics) == {"total", "doc_health"}
+    expected_names = {
+        "ingestion-freshness": ["total", "ingested_in_time"],
+        "validation-score": ["total", "validation_score_sum"],
+        "doc-health": ["total", "doc_health"],
+    }
+    for metric_id, names in expected_names.items():
+        series = added[metric_id].metrics
+        assert [s["name"] for s in series] == names, (
+            f"{metric_id}: one descriptor per emitted key, in emission order; got {series!r}"
+        )
+        assert [s["idx"] for s in series] == list(range(1, len(names) + 1)), (
+            f"{metric_id}: idx follows emission order. Spec: BACKEND.md §Factory defaults."
+        )
+        assert len({s["color"] for s in series}) == len(series), (
+            f"{metric_id}: each series takes a distinct color. "
+            "Spec: BACKEND.md §Factory defaults."
+        )
+
+
+@pytest.mark.asyncio
+async def test_seed_series_colors_are_hex_triplets() -> None:
+    """Every seeded color is a `#RRGGBB` string — the shape the schema accepts.
+
+    A seed the schema layer would reject on the next PUT is a latent 422 on a row the
+    operator never authored.
+
+    Spec: spec/API.md §Metric — Definition body — "`color` is a `#RRGGBB` hex string".
+    """
+    import re
+
+    db = _make_empty_db()
+    await seed_factory_defaults(db)
+
+    hex_re = re.compile(r"^#[0-9A-Fa-f]{6}$")
+    seen = 0
+    for add_call in db.add.call_args_list:
+        for series in add_call.args[0].metrics:
+            assert hex_re.match(series["color"]), (
+                f"{series!r} carries a color the schema layer would reject. "
+                "Spec: spec/API.md §Metric — Definition body."
+            )
+            seen += 1
+    assert seen == 6, f"backstop: three seeds × two series each; inspected {seen}"
 
 
 # ── seed_factory_defaults is idempotent ───────────────────────────────────────

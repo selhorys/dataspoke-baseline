@@ -178,7 +178,7 @@ async def get_ontogen_conf(
     return OntogenConfResponse(
         is_enabled=row.is_enabled,
         schedule_tier=cast(_ScheduleTier | None, row.schedule_tier),
-        dataset_filter=row.dataset_filter or {},
+        dataset_filter=row.dataset_filter or "",
         default_run_prompt=row.default_run_prompt,
         updated_at=row.updated_at,
     )
@@ -195,7 +195,7 @@ async def put_ontogen_conf(
     return OntogenConfResponse(
         is_enabled=row.is_enabled,
         schedule_tier=cast(_ScheduleTier | None, row.schedule_tier),
-        dataset_filter=row.dataset_filter or {},
+        dataset_filter=row.dataset_filter or "",
         default_run_prompt=row.default_run_prompt,
         updated_at=row.updated_at,
     )
@@ -212,7 +212,7 @@ async def patch_ontogen_conf(
     return OntogenConfResponse(
         is_enabled=row.is_enabled,
         schedule_tier=cast(_ScheduleTier | None, row.schedule_tier),
-        dataset_filter=row.dataset_filter or {},
+        dataset_filter=row.dataset_filter or "",
         default_run_prompt=row.default_run_prompt,
         updated_at=row.updated_at,
     )

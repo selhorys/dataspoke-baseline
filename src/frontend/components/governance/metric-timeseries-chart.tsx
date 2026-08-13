@@ -5,11 +5,17 @@
  *
  * Props:
  *   results    — MetricResult[] from GET .../attr/result
- *   valueKeys  — which keys from `values` to plot (defaults to all keys in results)
+ *   series     — the metric's `metrics[]` series descriptors. When given, they
+ *                decide both which keys are drawn and in what order (`idx`) and
+ *                color (`color`).
+ *   valueKeys  — which keys from `values` to plot when no descriptors are given
+ *                (defaults to all keys present in results, colored by colorForKey)
  *   height?    — chart height in px (default 220)
  *   grain?     — display grain; collapses results to one point per window
  *                (that window's last measurement). Display-only — it never
  *                changes what was fetched. Default: daily.
+ *
+ * Spec: spec/feature/FRONTEND_GOVERNANCE.md §Dashboard / §Metric detail.
  */
 
 import {
@@ -22,7 +28,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import type { MetricResult } from "@/types/governance";
+import type { MetricResult, MetricSeries } from "@/types/governance";
 import { colorForKey } from "@/lib/chart-colors";
 import {
   DEFAULT_CHART_GRAIN,
@@ -34,6 +40,7 @@ import { useDisplayTz } from "@/lib/preferences/timezone";
 
 interface MetricTimeseriesChartProps {
   results: MetricResult[];
+  series?: MetricSeries[];
   valueKeys?: string[];
   height?: number;
   grain?: ChartGrain;
@@ -41,19 +48,31 @@ interface MetricTimeseriesChartProps {
 
 export function MetricTimeseriesChart({
   results,
+  series,
   valueKeys,
   height = 220,
   grain = DEFAULT_CHART_GRAIN,
 }: MetricTimeseriesChartProps) {
   const tz = useDisplayTz();
 
-  // Determine all value keys across results if not supplied. `date` is the x
-  // key, so a value key of that name is shadowed by the bucket label and must
-  // never become a series — plotting a string would poison the auto Y domain.
+  // Series descriptors, in display order — sort a copy, never the prop's array.
+  const ordered = [...(series ?? [])].sort((a, b) => a.idx - b.idx);
+
+  // Determine all value keys across results if neither descriptors nor an
+  // explicit key list is supplied. `date` is the x key, so a value key of that
+  // name is shadowed by the bucket label and must never become a series —
+  // plotting a string would poison the auto Y domain.
   const allKeys = (
-    valueKeys ??
-    Array.from(new Set(results.flatMap((r) => Object.keys(r.values)))).sort()
+    ordered.length > 0
+      ? ordered.map((s) => s.name)
+      : (valueKeys ??
+        Array.from(new Set(results.flatMap((r) => Object.keys(r.values)))).sort())
   ).filter((k) => k !== "date");
+
+  // colorForKey stays the fallback for a chart drawn without descriptors.
+  const colorByName = new Map(ordered.map((s) => [s.name, s.color]));
+  const strokeFor = (key: string): string =>
+    colorByName.get(key) ?? colorForKey(key, allKeys);
 
   // One point per grain window — that window's last measurement — ascending.
   const data = toGrainPoints(results, {
@@ -94,7 +113,7 @@ export function MetricTimeseriesChart({
             key={key}
             type="monotone"
             dataKey={key}
-            stroke={colorForKey(key, allKeys)}
+            stroke={strokeFor(key)}
             dot={{ r: 3 }}
             activeDot={{ r: 5 }}
             strokeWidth={2}

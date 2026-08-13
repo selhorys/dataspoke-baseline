@@ -3,10 +3,10 @@
 /**
  * RunDialog — trigger a global MetaGen run with optional dataset URN filter and dry-run toggle.
  *
- * The dataset_urns override follows the same input contract as DatasetFilterEditor:
- * the textarea holds the raw text the user typed and is parsed on submit —
- * newline-separated, one URN per line, each line edge-trimmed, blank lines
- * dropped. Commas are not separators; a dataset URN contains them by construction.
+ * The dataset_urns override is a newline-separated textarea parsed on submit
+ * (lib/urn-list.ts): the box holds the raw text the user typed — one URN per
+ * line, each line edge-trimmed, blank lines dropped. Commas are not separators;
+ * a dataset URN contains them by construction.
  */
 
 import { useState } from "react";
@@ -22,7 +22,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Field } from "@/components/forms/field";
 import { Textarea } from "@/components/ui/textarea";
-import { splitList } from "@/components/dataset-filter-editor";
+import { splitList } from "@/lib/urn-list";
 import type { MetagenRunBody } from "@/types/metagen";
 
 interface RunDialogProps {

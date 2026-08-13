@@ -25,7 +25,7 @@ import {
 } from "@/components/ui/select";
 import { DatasetFilterEditor } from "@/components/dataset-filter-editor";
 import type { MetagenConf, MetagenConfPutBody } from "@/types/metagen";
-import type { DatasetFilter } from "@/types/governance";
+import type { DatasetFilterErrorInfo } from "@/lib/dataset-filter-error";
 
 const confSchema = z.object({
   name: z.string().min(1, "Name is required").max(200),
@@ -39,8 +39,11 @@ type ConfFormValues = z.infer<typeof confSchema>;
 
 interface MetagenConfFormProps {
   initialValues: MetagenConf | null;
-  datasetFilter: DatasetFilter;
-  onDatasetFilterChange: (v: DatasetFilter) => void;
+  /** dataset_filter — a SQL WHERE clause string. */
+  datasetFilter: string;
+  onDatasetFilterChange: (v: string) => void;
+  /** 422 INVALID_DATASET_FILTER from the last save, rendered inline in the editor. */
+  datasetFilterError?: DatasetFilterErrorInfo;
   onSubmit: (body: MetagenConfPutBody) => void;
   /** Server error (e.g. 409 METAGEN_CONF_EXISTS) to surface against the name field. */
   serverError?: string;
@@ -52,6 +55,7 @@ export function MetagenConfForm({
   initialValues,
   datasetFilter,
   onDatasetFilterChange,
+  datasetFilterError,
   onSubmit,
   serverError,
   formId,
@@ -95,7 +99,7 @@ export function MetagenConfForm({
       name: values.name,
       is_enabled: values.is_enabled,
       schedule_tier: values.schedule_tier ?? null,
-      dataset_filter: datasetFilter as Record<string, unknown>,
+      dataset_filter: datasetFilter,
       result_limit: values.result_limit,
       overwrite_pending: values.overwrite_pending,
     });
@@ -166,6 +170,7 @@ export function MetagenConfForm({
       <DatasetFilterEditor
         value={datasetFilter}
         onChange={onDatasetFilterChange}
+        error={datasetFilterError}
       />
 
       <Field

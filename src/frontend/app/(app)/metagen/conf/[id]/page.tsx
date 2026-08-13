@@ -31,7 +31,7 @@ import {
 } from "@/lib/hooks/use-range-selection";
 import { useDisplayTz } from "@/lib/preferences/timezone";
 import { DEFAULT_PAGE_SIZE } from "@/components/pagination";
-import type { DatasetFilter } from "@/types/governance";
+import { datasetFilterError } from "@/lib/dataset-filter-error";
 import type { MetagenConfPutBody, MetagenRunBody } from "@/types/metagen";
 
 const CONF_FORM_ID = "metagen-conf-form";
@@ -50,7 +50,7 @@ export default function MetagenConfDetailPage({
   const [formNonce, setFormNonce] = useState(0);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [runDialogOpen, setRunDialogOpen] = useState(false);
-  const [datasetFilter, setDatasetFilter] = useState<DatasetFilter>({});
+  const [datasetFilter, setDatasetFilter] = useState<string>("");
   const [eventOffset, setEventOffset] = useState(0);
   const [eventLimit, setEventLimit] = useState(DEFAULT_PAGE_SIZE);
   const [coveredOffset, setCoveredOffset] = useState(0);
@@ -85,7 +85,7 @@ export default function MetagenConfDetailPage({
   // Sync the dataset_filter editor when the conf loads.
   useEffect(() => {
     if (conf) {
-      setDatasetFilter((conf.dataset_filter as DatasetFilter) ?? {});
+      setDatasetFilter(conf.dataset_filter ?? "");
     }
   }, [conf]);
 
@@ -125,8 +125,12 @@ export default function MetagenConfDetailPage({
     );
   }
 
-  const saveError =
-    put.error instanceof ApiError
+  // A 422 INVALID_DATASET_FILTER belongs against the filter field, not in the
+  // form's generic error slot (which the conf name Field renders).
+  const filterError = datasetFilterError(put.error);
+  const saveError = filterError
+    ? undefined
+    : put.error instanceof ApiError
       ? `${put.error.error_code}: ${put.error.message}`
       : put.error?.message;
 
@@ -205,7 +209,7 @@ export default function MetagenConfDetailPage({
                   size="sm"
                   onClick={() => {
                     setEditing(false);
-                    setDatasetFilter((conf.dataset_filter as DatasetFilter) ?? {});
+                    setDatasetFilter(conf.dataset_filter ?? "");
                     setFormNonce((n) => n + 1);
                   }}
                   disabled={put.isPending}
@@ -257,6 +261,7 @@ export default function MetagenConfDetailPage({
             initialValues={conf}
             datasetFilter={datasetFilter}
             onDatasetFilterChange={setDatasetFilter}
+            datasetFilterError={filterError}
             onSubmit={handleSave}
             serverError={saveError}
           />

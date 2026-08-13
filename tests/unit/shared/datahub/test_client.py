@@ -216,70 +216,30 @@ async def test_enumerate_datasets(client, mock_graph) -> None:
     assert result == urns
 
 
-def _all_filter_rules(or_filters: list[dict]) -> list[dict]:
-    """Flatten every leaf filter rule out of an extra_or_filters structure
-    (a list of {"and": [rule, ...]} groups)."""
-    rules: list[dict] = []
-    for group in or_filters or []:
-        for rule in group.get("and", []):
-            rules.append(rule)
-    return rules
+async def test_enumerate_datasets_takes_no_filter_dimensions(client, mock_graph) -> None:
+    """The estate enumeration is unfiltered — scope is not resolved by a DataHub search.
 
-
-async def test_enumerate_datasets_emits_values_array_filter_shape(client, mock_graph) -> None:
-    """enumerate_datasets builds each search-filter rule in the DataHub 1.6
-    ``{field, values: [...]}`` array form — never the dropped singular ``value`` scalar.
-
-    Spec: spec/DATAHUB_INTEGRATION.md §Origin filter group — 'Each filter rule uses the
-    **values array** form ({field, values: [...]}) — the DataHub search filter API
-    expresses a single match as a one-element array, not a singular value scalar.'
+    Spec: spec/DATAHUB_INTEGRATION.md §Dataset attribute sync — "**Filter evaluation is
+    DataSpoke-side, not a DataHub search.**"; spec/API.md §`dataset_filter` grammar —
+    "Resolution is a DataSpoke-side SQL query, not a DataHub search". A wrapper that still
+    accepted filter dimensions would make a second, divergent path to scope.
     """
-    mock_graph.get_urns_by_filter.return_value = []
+    import inspect as _inspect
 
-    await client.enumerate_datasets(
-        platform="postgres",
-        tags=["urn:li:tag:PII"],
-        glossary_terms=["urn:li:glossaryTerm:gdpr"],
-        origin="PROD",
+    from src.shared.datahub.client import DataHubClient
+
+    parameters = set(_inspect.signature(DataHubClient.enumerate_datasets).parameters) - {"self"}
+    assert parameters == set(), (
+        f"enumerate_datasets must take no filter dimensions; got {sorted(parameters)}"
     )
 
-    or_filters = mock_graph.get_urns_by_filter.call_args.kwargs["extra_or_filters"]
-    rules = _all_filter_rules(or_filters)
-    assert rules, "expected at least one filter rule to be emitted"
-
-    for rule in rules:
-        # 1.6 shape: a values array, not a singular scalar.
-        assert "values" in rule, f"rule must carry a values array: {rule!r}"
-        assert "value" not in rule, (
-            f"singular 'value' key was dropped in DataHub 1.6: {rule!r}"
-        )
-        assert isinstance(rule["values"], list) and rule["values"], (
-            f"values must be a non-empty list: {rule!r}"
-        )
-        assert "field" in rule, f"rule must name a field: {rule!r}"
-
-    # Each non-origin OR group must AND-in the origin clause (also in values form).
-    fields = {r["field"] for r in rules}
-    assert {"platform", "tags", "glossaryTerms", "origin"} <= fields
-    origin_rules = [r for r in rules if r["field"] == "origin"]
-    assert all(r["values"] == ["PROD"] for r in origin_rules)
-
-
-async def test_enumerate_datasets_origin_only_single_and_clause(client, mock_graph) -> None:
-    """With no OR-dimension filters but an origin set, enumerate_datasets emits a single
-    AND group containing only the origin rule (in values-array form).
-
-    Spec: spec/DATAHUB_INTEGRATION.md §Origin filter group — 'When the OR-group dimensions
-    are all empty, origin becomes the single AND-clause and the enumeration returns every
-    dataset with that origin.'
-    """
     mock_graph.get_urns_by_filter.return_value = []
-
-    await client.enumerate_datasets(origin="DEV")
-
-    or_filters = mock_graph.get_urns_by_filter.call_args.kwargs["extra_or_filters"]
-    rules = _all_filter_rules(or_filters)
-    assert rules == [{"field": "origin", "values": ["DEV"]}]
+    await client.enumerate_datasets()
+    kwargs = mock_graph.get_urns_by_filter.call_args.kwargs
+    assert kwargs.get("entity_types") == ["dataset"]
+    assert not kwargs.get("extra_or_filters"), (
+        f"the sweep enumerates the whole estate; got {kwargs.get('extra_or_filters')!r}"
+    )
 
 
 async def test_list_execution_requests_returns_result_bearing(client, mock_graph) -> None:
@@ -877,3 +837,209 @@ async def test_get_last_ingested_surfaces_an_exhausted_retry_as_the_documented_e
         f"{mock_graph.execute_graphql.call_count} attempts. "
         "spec: DATAHUB_INTEGRATION.md §Observed Ingestion Recency."
     )
+
+
+# ── get_dataset_attributes: the dataset_filter attribute mirror ───────────────
+#
+# spec: spec/DATAHUB_INTEGRATION.md §Dataset attribute sync — "`tag_urns`,
+#   `glossary_term_urns` | one paged `scrollAcrossEntities` | Associations that live only
+#   in DataHub"; the read "selects `urn`, `tags { tags { tag { urn } } }`, and
+#   `glossaryTerms { terms { term { urn } } }` and carries the same four hardening
+#   properties as §Observed Ingestion Recency".
+
+
+def _attribute_hit(urn: str, tag_urns: list[str], term_urns: list[str]) -> dict:
+    """One search hit in the association shape DataHub's `Dataset` type returns."""
+    return {
+        "entity": {
+            "urn": urn,
+            "tags": {"tags": [{"tag": {"urn": t}} for t in tag_urns]},
+            "glossaryTerms": {"terms": [{"term": {"urn": t}} for t in term_urns]},
+        }
+    }
+
+
+async def test_get_dataset_attributes_selects_both_associations_in_a_dataset_fragment(
+    client, mock_graph
+) -> None:
+    """`tags` and `glossaryTerms` are selected inside an `... on Dataset` fragment.
+
+    Pinned as query text for the same reason as `get_last_ingested`: both are declared on
+    the concrete `Dataset` type rather than the `Entity` interface `entity` resolves to,
+    so selecting them on `entity` fails the whole query against a real GMS while a mocked
+    graph returns rows either way.
+
+    spec: spec/DATAHUB_INTEGRATION.md §Dataset attribute sync — "a mandatory `... on
+        Dataset` inline fragment"; the selection list quoted above.
+    """
+    mock_graph.execute_graphql.return_value = _scroll_page([], None)
+
+    await client.get_dataset_attributes()
+
+    query = mock_graph.execute_graphql.call_args.args[0]
+    assert "... on Dataset" in query, f"missing the Dataset inline fragment; got:\n{query}"
+    fragment_body = query.split("... on Dataset", 1)[1]
+    for selection in ("tags", "glossaryTerms"):
+        assert selection in fragment_body, (
+            f"{selection} must be selected INSIDE the Dataset fragment; got:\n{query}"
+        )
+
+
+async def test_get_dataset_attributes_maps_each_dataset_to_its_two_urn_lists(
+    client, mock_graph
+) -> None:
+    """The read answers `{urn: (tag_urns, glossary_term_urns)}`.
+
+    spec: spec/DATAHUB_INTEGRATION.md §Dataset attribute sync — the sweep mirrors
+        `tag_urns` and `glossary_term_urns` from this read into `dataset_registry`.
+    """
+    urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
+    mock_graph.execute_graphql.return_value = _scroll_page(
+        [
+            _attribute_hit(
+                urn,
+                ["urn:li:tag:area:catalog", "urn:li:tag:pii"],
+                ["urn:li:glossaryTerm:pii.gdpr"],
+            )
+        ],
+        None,
+    )
+
+    result = await client.get_dataset_attributes()
+
+    assert result == {
+        urn: (["urn:li:tag:area:catalog", "urn:li:tag:pii"], ["urn:li:glossaryTerm:pii.gdpr"])
+    }
+
+
+async def test_get_dataset_attributes_reports_an_untagged_dataset_as_empty_lists(
+    client, mock_graph
+) -> None:
+    """A dataset carrying neither association is present with two empty lists.
+
+    Presence is what distinguishes "read, and it has no tags" from "not read this sweep";
+    the sweep's never-blank upsert rule keys on exactly that difference, so an omitted
+    entry would make an untagged dataset indistinguishable from an unread one and let its
+    stale tags survive forever.
+
+    spec: spec/DATAHUB_INTEGRATION.md §Dataset attribute sync — "A dataset absent from the
+        attribute read keeps its prior attributes rather than being blanked".
+    """
+    urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.editions,DEV)"
+    mock_graph.execute_graphql.return_value = _scroll_page(
+        [{"entity": {"urn": urn, "tags": None, "glossaryTerms": None}}], None
+    )
+
+    result = await client.get_dataset_attributes()
+
+    assert result == {urn: ([], [])}
+
+
+async def test_get_dataset_attributes_merges_pages_and_sends_the_cursor_only_once_set(
+    client, mock_graph
+) -> None:
+    """Two pages merge; the first request transmits no `scrollId` key at all.
+
+    spec: spec/DATAHUB_INTEGRATION.md §Dataset attribute sync — "one paged
+        `scrollAcrossEntities`"; "`scrollId` transmitted only once non-empty".
+    """
+    first = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
+    second = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.editions,DEV)"
+    mock_graph.execute_graphql.side_effect = [
+        _scroll_page([_attribute_hit(first, ["urn:li:tag:pii"], [])], "cursor-2"),
+        _scroll_page([_attribute_hit(second, [], ["urn:li:glossaryTerm:pii.gdpr"])], None),
+    ]
+
+    result = await client.get_dataset_attributes()
+
+    assert result == {
+        first: (["urn:li:tag:pii"], []),
+        second: ([], ["urn:li:glossaryTerm:pii.gdpr"]),
+    }
+    calls = mock_graph.execute_graphql.call_args_list
+    assert len(calls) == 2
+    assert "scrollId" not in calls[0].kwargs["variables"]["input"]
+    assert calls[1].kwargs["variables"]["input"]["scrollId"] == "cursor-2"
+
+
+@pytest.mark.parametrize(
+    ("label", "hits"),
+    [
+        ("hit is not a mapping", ["not-a-hit"]),
+        ("entity is not a mapping", [{"entity": "not-a-mapping"}]),
+        ("entity missing", [{}]),
+        ("urn missing", [{"entity": {"tags": None}}]),
+        ("urn is not a string", [{"entity": {"urn": 42}}]),
+        ("tags container is not a mapping", [{"entity": {"urn": "urn:li:x", "tags": []}}]),
+        (
+            "association is not a mapping",
+            [{"entity": {"urn": "urn:li:y", "tags": {"tags": ["nope"]}}}],
+        ),
+        (
+            "tag urn is not a string",
+            [{"entity": {"urn": "urn:li:z", "tags": {"tags": [{"tag": {"urn": 7}}]}}}],
+        ),
+    ],
+)
+async def test_get_dataset_attributes_skips_a_malformed_hit_without_raising(
+    client, mock_graph, label: str, hits: list
+) -> None:
+    """A malformed hit is skipped; the well-formed hit in the same page survives.
+
+    The well-formed neighbour is the backstop: an implementation that dropped the whole
+    page on a bad element would fail here rather than pass on the skip.
+
+    spec: spec/DATAHUB_INTEGRATION.md §Dataset attribute sync — "per-element shape checks";
+    spec: spec/feature/BACKEND.md §Best-Effort Operations — an `AttributeError`/`TypeError`
+        out of this client can only be a call-shape fault, so a remote payload must never
+        reach that branch.
+    """
+    usable = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
+    mock_graph.execute_graphql.return_value = _scroll_page(
+        [*hits, _attribute_hit(usable, ["urn:li:tag:pii"], [])], None
+    )
+
+    result = await client.get_dataset_attributes()
+
+    assert result.get(usable) == (["urn:li:tag:pii"], []), (
+        f"{label}: the well-formed hit in the same page must still be read; got {result!r}"
+    )
+
+
+async def test_get_dataset_attributes_stops_on_an_unchanged_cursor(client, mock_graph) -> None:
+    """A repeated `nextScrollId` stops the loop rather than burning the page budget.
+
+    spec: spec/DATAHUB_INTEGRATION.md §Dataset attribute sync — "a page-capped cursor
+        loop", carrying §Observed Ingestion Recency's stop-on-unchanged-cursor property.
+    """
+    from src.shared.datahub.client import _SCROLL_MAX_PAGES
+
+    urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
+    mock_graph.execute_graphql.return_value = _scroll_page(
+        [_attribute_hit(urn, ["urn:li:tag:pii"], [])], "stuck"
+    )
+
+    result = await client.get_dataset_attributes()
+
+    assert mock_graph.execute_graphql.call_count == 2, (
+        f"must stop on the repeated cursor rather than run to the {_SCROLL_MAX_PAGES}-page "
+        f"ceiling; got {mock_graph.execute_graphql.call_count} requests"
+    )
+    assert result == {urn: (["urn:li:tag:pii"], [])}
+
+
+async def test_get_dataset_attributes_raises_the_documented_error_after_retries(
+    client, mock_graph
+) -> None:
+    """A transport fault surfaces as `DataHubUnavailableError`, not a raw `ConnectionError`.
+
+    spec: spec/DATAHUB_INTEGRATION.md §Dataset attribute sync — the read carries the same
+        hardening properties as §Observed Ingestion Recency, whose errors "propagate to the
+        single call site, matching every other client read".
+    """
+    mock_graph.execute_graphql.side_effect = ConnectionError("connection refused")
+
+    with pytest.raises(DataHubUnavailableError):
+        await client.get_dataset_attributes()
+
+    assert mock_graph.execute_graphql.call_count == RETRY_MAX_ATTEMPTS

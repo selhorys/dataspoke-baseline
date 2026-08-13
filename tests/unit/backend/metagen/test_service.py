@@ -59,7 +59,7 @@ def _make_conf_row(
     name: str = "catalog-docs",
     is_enabled: bool = True,
     schedule_tier: str | None = "daily",
-    dataset_filter: dict[str, Any] | None = None,
+    dataset_filter: str | None = None,
     result_limit: int = 3,
     overwrite_pending: bool = True,
 ) -> MagicMock:
@@ -68,7 +68,7 @@ def _make_conf_row(
     row.name = name
     row.is_enabled = is_enabled
     row.schedule_tier = schedule_tier
-    row.dataset_filter = dataset_filter or {}
+    row.dataset_filter = dataset_filter or ""
     row.result_limit = result_limit
     row.overwrite_pending = overwrite_pending
     row.created_at = datetime.now(tz=UTC)
@@ -82,7 +82,7 @@ def _make_conf_dto(
     name: str = "catalog-docs",
     is_enabled: bool = True,
     schedule_tier: str | None = "daily",
-    dataset_filter: dict[str, Any] | None = None,
+    dataset_filter: str | None = None,
     result_limit: int = 3,
     overwrite_pending: bool = True,
 ) -> MetagenConfDTO:
@@ -91,7 +91,7 @@ def _make_conf_dto(
         name=name,
         is_enabled=is_enabled,
         schedule_tier=schedule_tier,
-        dataset_filter=dataset_filter or {},
+        dataset_filter=dataset_filter or "",
         result_limit=result_limit,
         overwrite_pending=overwrite_pending,
         created_at=datetime.now(tz=UTC),
@@ -275,7 +275,7 @@ async def test_create_conf_validates_malformed_urn(svc) -> None:
     """
     with pytest.raises(InvalidDatasetUrnError):
         await svc.create_conf(
-            {"name": "c", "dataset_filter": {"dataset_urns": ["not-a-valid-urn"]}}
+            {"name": "c", "dataset_filter": "dataset_urn = 'not-a-valid-urn'"}
         )
 
 
@@ -462,48 +462,73 @@ async def test_delete_conf_raises_not_found_when_absent(svc, db) -> None:
         await svc.delete_conf(str(_CONF_UUID))
 
 
-# ── _enumerate_in_scope_datasets — delegate to resolve_dataset_scope ─────────
+# ── _enumerate_in_scope_datasets — SQL scope ∩ enabled boundary ──────────────
+
+
+def _scope_session(db: AsyncMock, *, registry: list[str], boundary: list[str]) -> None:
+    """Route the two reads scope resolution issues, by the table each names.
+
+    Routing by SQL rather than call order (spec/TESTING.md §Unit Testing → Mocking
+    rules) is what keeps this from silently mis-attributing a result if the two
+    queries are ever reordered.
+    """
+    # `scalars().all()` on the registry query returns bare URNs, not row objects.
+    registry_result = MagicMock()
+    registry_result.scalars.return_value.all.return_value = list(registry)
+    boundary_result = _make_result([MagicMock(dataset_urn=u) for u in boundary])
+    route_db_execute(
+        db,
+        [
+            ("dataset_registry", registry_result),
+            ("metagen_boundary", boundary_result),
+        ],
+    )
 
 
 @pytest.mark.asyncio
-async def test_enumerate_in_scope_calls_datahub_with_origin(svc, db, datahub) -> None:
-    """_enumerate_in_scope_datasets passes origin from conf.dataset_filter to DataHub.
+async def test_enumerate_in_scope_resolves_the_filter_in_sql(svc, db, datahub) -> None:
+    """Scope comes from one query over `dataset_registry` — no DataHub search.
 
-    Spec: feature/BACKEND.md §Metadata Generation Service — dataset_filter origin
-    AND-ed with the OR-group when resolving scope; forwarded as-is to DataHub.
+    Spec: feature/BACKEND.md §Dataset resolution — "A SQLAlchemy boolean expression over
+          `dataset_registry`, run as one query restricted to `datahub_registered = true`";
+    Spec: DATAHUB_INTEGRATION.md §Dataset attribute sync — "**Filter evaluation is
+          DataSpoke-side, not a DataHub search.**"
     """
-    datahub.enumerate_datasets = AsyncMock(return_value=[_VALID_URN])
-
-    bnd_result = MagicMock()
-    bnd_result.fetchall.return_value = [MagicMock(dataset_urn=_VALID_URN)]
-    db.execute = AsyncMock(return_value=bnd_result)
+    _scope_session(db, registry=[_VALID_URN], boundary=[_VALID_URN])
 
     conf = _make_conf_dto(
-        dataset_filter={"origin": "DEV", "tags": ["urn:li:tag:area:fulfillment"]},
+        dataset_filter="origin = 'DEV' AND 'urn:li:tag:area:fulfillment' IN tag_urns"
     )
     in_scope, _unresolved = await svc._enumerate_in_scope_datasets(conf, None)
 
-    assert datahub.enumerate_datasets.called
-    for call in datahub.enumerate_datasets.call_args_list:
-        assert call.kwargs.get("origin") == "DEV"
-    assert _VALID_URN in in_scope
+    assert in_scope == [_VALID_URN]
+    datahub.enumerate_datasets.assert_not_called()
+    sql = " ".join(
+        str(call.args[0].compile(dialect=_pg_dialect())).lower()
+        for call in db.execute.await_args_list
+    )
+    assert "dataspoke.dataset_registry.origin" in sql, (
+        f"the conf's filter must be pushed into the registry query; got:\n{sql}"
+    )
+    assert "dataspoke.dataset_registry.tag_urns" in sql
+
+
+def _pg_dialect():
+    from sqlalchemy.dialects import postgresql
+
+    return postgresql.dialect()
 
 
 @pytest.mark.asyncio
 async def test_enumerate_in_scope_intersects_with_enabled_boundary(svc, db, datahub) -> None:
-    """_enumerate_in_scope_datasets intersects matched URNs with is_enabled=true boundary rows.
+    """In-scope = filter match ∩ datasets with an is_enabled=true boundary row.
 
-    Spec: feature/BACKEND.md §Generation Pipeline step 1 — in-scope = dataset_filter match
-    ∩ datasets with an is_enabled=true boundary; boundary-less datasets are excluded.
+    Spec: feature/BACKEND.md §Generation Pipeline step 1 — boundary-less datasets are
+          excluded regardless of the filter.
     """
-    datahub.enumerate_datasets = AsyncMock(return_value=[_VALID_URN, _VALID_URN2])
+    _scope_session(db, registry=[_VALID_URN, _VALID_URN2], boundary=[_VALID_URN])
 
-    # Only _VALID_URN has an enabled boundary row
-    bnd_result = MagicMock()
-    bnd_result.fetchall.return_value = [MagicMock(dataset_urn=_VALID_URN)]
-    db.execute = AsyncMock(return_value=bnd_result)
-
-    conf = _make_conf_dto(dataset_filter={})
+    conf = _make_conf_dto(dataset_filter="")
     in_scope, _unresolved = await svc._enumerate_in_scope_datasets(conf, None)
 
     assert in_scope == [_VALID_URN], (
@@ -513,29 +538,49 @@ async def test_enumerate_in_scope_intersects_with_enabled_boundary(svc, db, data
 
 
 @pytest.mark.asyncio
-async def test_enumerate_in_scope_empty_override_falls_through_to_conf_urns(
+async def test_enumerate_in_scope_empty_override_does_not_narrow_the_conf_scope(
     svc, db, datahub
 ) -> None:
-    """override_urns=[] falls through to conf.dataset_filter.dataset_urns.
+    """`override_urns=[]` is "no override", not "an empty scope".
 
-    Spec: API.md §Metadata Generation (/spoke/metagen) — body dataset_urns narrows scope; empty
-    list must not suppress the conf's own dataset_urns.
+    Spec: API.md §Metadata Generation — the run body's `dataset_urns` narrows scope; an
+          empty list must not suppress the conf's own filter.
     """
-    _CONF_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.t_conf,DEV)"
+    conf_urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.t_conf,DEV)"
+    _scope_session(db, registry=[conf_urn], boundary=[conf_urn])
 
-    from datahub.metadata.schema_classes import DatasetPropertiesClass
-
-    datahub.get_aspect = AsyncMock(return_value=MagicMock(spec=DatasetPropertiesClass))
-
-    bnd_result = MagicMock()
-    bnd_result.fetchall.return_value = [MagicMock(dataset_urn=_CONF_URN)]
-    db.execute = AsyncMock(return_value=bnd_result)
-
-    conf = _make_conf_dto(dataset_filter={"dataset_urns": [_CONF_URN]})
-
+    conf = _make_conf_dto(dataset_filter=f"dataset_urn = '{conf_urn}'")
     resolved_urns, _unresolved = await svc._enumerate_in_scope_datasets(conf, override_urns=[])
 
-    assert _CONF_URN in resolved_urns
+    assert resolved_urns == [conf_urn]
+    sql = " ".join(
+        str(call.args[0].compile(dialect=_pg_dialect())).lower()
+        for call in db.execute.await_args_list
+    )
+    assert "dataset_urn in (" not in sql.replace("dataspoke.", ""), (
+        "an empty override must add no IN restriction of its own; the conf's own "
+        f"dataset_urn equality is the only URN predicate. Got:\n{sql}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_enumerate_in_scope_reports_a_named_urn_the_registry_lacks(
+    svc, db, datahub
+) -> None:
+    """A `dataset_urn` literal matching no registered dataset comes back unresolved.
+
+    Spec: API.md §`dataset_filter` grammar — "`dataset_urn` literals that match no
+          registered dataset at run time are reported in the `METRIC.RUN_COMPLETE`
+          event's `unresolved_urns` field" — the same resolver serves UC4's run event.
+    """
+    missing = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.ghost,DEV)"
+    _scope_session(db, registry=[_VALID_URN], boundary=[_VALID_URN])
+
+    conf = _make_conf_dto(dataset_filter=f"dataset_urn IN ('{_VALID_URN}', '{missing}')")
+    in_scope, unresolved = await svc._enumerate_in_scope_datasets(conf, None)
+
+    assert in_scope == [_VALID_URN]
+    assert unresolved == [missing]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -842,7 +887,7 @@ async def test_run_allows_dry_run_when_disabled(svc, cache, db) -> None:
     cache.set_nx = AsyncMock(return_value=True)
     cache.delete_if_value = AsyncMock()
 
-    conf_row = _make_conf_row(is_enabled=False, dataset_filter={"dataset_urns": []})
+    conf_row = _make_conf_row(is_enabled=False, dataset_filter="")
     db.execute = AsyncMock(return_value=_make_result(scalar=conf_row))
 
     with patch.object(
@@ -1988,24 +2033,19 @@ async def test_list_uncovered_reports_no_conf_match_for_unmatched_registered_dat
 ) -> None:
     """A registered dataset matched by no enabled conf yields reason='no_conf_match'.
 
-    Spec: API.md §Metadata Generation — uncovered default mode lists datasets reached by
-    no enabled conf with reason=no_conf_match.
+    Spec: API.md §Metadata Generation — "`uncovered` `reason` values: `no_conf_match`
+    (matched by no enabled conf's `dataset_filter`)".
     """
-    # registered datasets
-    reg_result = _make_result([(_VALID_URN,)])
-    # no enabled confs
-    confs_result = _make_result([])
-    # writable boundary set (empty)
-    bnd_result = _make_result([])
-    # Route by table: registered datasets (dataset_registry), enabled confs
-    # (metagen_config), writable boundary set (metagen_boundary).
+    from types import SimpleNamespace
+
+    # No enabled conf exists, so every registered dataset is unmatched.
     route_db_execute(
         db,
         [
-            ("dataset_registry", reg_result),
-            ("metagen_config", confs_result),
-            ("metagen_boundary", bnd_result),
+            ("metagen_config", _make_result([])),
+            ("count(", _make_result(scalar=1)),
         ],
+        default=_make_result([SimpleNamespace(dataset_urn=_VALID_URN, reason="no_conf_match")]),
     )
 
     rows, total = await svc.list_uncovered(include_disallowed=False)
@@ -2014,44 +2054,116 @@ async def test_list_uncovered_reports_no_conf_match_for_unmatched_registered_dat
     assert isinstance(rows[0], UncoveredRowDTO)
     assert rows[0].dataset_urn == _VALID_URN
     assert rows[0].reason == "no_conf_match"
+    assert datahub.enumerate_datasets.await_count == 0, (
+        "coverage is decided by SQL over the registry, not by a DataHub search. "
+        "spec: DATAHUB_INTEGRATION.md §Dataset attribute sync — 'Filter evaluation is "
+        "DataSpoke-side, not a DataHub search.'"
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_uncovered_ors_every_enabled_confs_filter_into_one_query(
+    svc, db, datahub
+) -> None:
+    """The matched set is the OR of every enabled conf's compiled filter, in one query.
+
+    Spec: feature/BACKEND.md §Dataset resolution — the resolver "materialises no URN
+    list where the caller can page in SQL"; API.md §Metadata Generation — `no_conf_match`
+    is "matched by no enabled conf's `dataset_filter`", i.e. the negation of that OR.
+    """
+    from types import SimpleNamespace
+
+    from sqlalchemy.dialects import postgresql
+
+    confs = [
+        _make_conf_row(conf_id=_CONF_UUID, dataset_filter="origin = 'DEV'"),
+        _make_conf_row(conf_id=_CONF_UUID2, dataset_filter="'urn:li:tag:pii' IN tag_urns"),
+    ]
+    route_db_execute(
+        db,
+        [
+            ("metagen_config", _make_result(confs)),
+            ("count(", _make_result(scalar=0)),
+        ],
+        default=_make_result([SimpleNamespace(dataset_urn=_VALID_URN, reason="no_conf_match")]),
+    )
+
+    await svc.list_uncovered(include_disallowed=False)
+
+    sql = " ".join(
+        str(call.args[0].compile(dialect=postgresql.dialect())).lower()
+        for call in db.execute.await_args_list
+    )
+    assert "dataspoke.dataset_registry.origin" in sql, (
+        f"the first conf's filter must appear in the coverage query; got:\n{sql}"
+    )
+    assert "dataspoke.dataset_registry.tag_urns" in sql, (
+        f"the second conf's filter must appear in the SAME query set; got:\n{sql}"
+    )
+    conf_selects = [
+        call
+        for call in db.execute.await_args_list
+        if "metagen_config" in str(call.args[0].compile(dialect=postgresql.dialect())).lower()
+    ]
+    assert len(conf_selects) == 1, (
+        f"the confs are loaded once, not once per conf; got {len(conf_selects)} loads"
+    )
 
 
 @pytest.mark.asyncio
 async def test_list_uncovered_boundary_blocked_only_with_include_disallowed(
     svc, db, datahub
 ) -> None:
-    """A dataset matched by an enabled conf but blocked by its boundary yields
-    reason='boundary_blocked' only when include_disallowed=true.
+    """`boundary_blocked` is surfaced only when include_disallowed=true.
 
-    Spec: API.md §Metadata Generation — boundary_blocked surfaced only with
-    include_disallowed=true.
+    The discriminating assertion is the predicate the two modes build: the default mode
+    restricts to unmatched datasets alone, while include_disallowed additionally admits
+    the ones a boundary blocks.
+
+    Spec: API.md §Metadata Generation — "`boundary_blocked` (matched by a conf but the
+    boundary is missing, disabled, or has an empty `allowed` — only surfaced when
+    `include_disallowed=true`)".
     """
-    enabled_conf = _make_conf_row(is_enabled=True, dataset_filter={})
+    from types import SimpleNamespace
 
-    datahub.enumerate_datasets = AsyncMock(return_value=[_VALID_URN])
+    from sqlalchemy.dialects import postgresql
 
-    def _three_query_sequence():
-        # registered, enabled confs, writable boundary (none → blocked)
-        return [
-            _make_result([(_VALID_URN,)]),
-            _make_result([enabled_conf]),
-            _make_result([]),
-        ]
+    enabled_conf = _make_conf_row(is_enabled=True, dataset_filter="")
 
-    # include_disallowed=False → matched dataset is NOT listed (it is covered-ish:
-    # matched by a conf, just blocked) → empty
-    db.execute = AsyncMock(side_effect=_three_query_sequence())
+    def _wire(rows: list) -> None:
+        route_db_execute(
+            db,
+            [
+                ("metagen_config", _make_result([enabled_conf])),
+                ("count(", _make_result(scalar=len(rows))),
+            ],
+            default=_make_result(rows),
+        )
+
+    # Default mode: a conf-matched dataset is not uncovered, whatever its boundary.
+    _wire([])
     rows_default, total_default = await svc.list_uncovered(include_disallowed=False)
-    assert total_default == 0, (
-        "A conf-matched dataset must not appear under the default mode. "
-        "spec: API.md §Metadata Generation — boundary_blocked needs include_disallowed=true"
+    assert total_default == 0
+    default_sql = " ".join(
+        str(call.args[0].compile(dialect=postgresql.dialect())).lower()
+        for call in db.execute.await_args_list
+    )
+    assert "metagen_boundary.is_enabled" not in default_sql, (
+        "the default mode filters on conf coverage alone — the boundary state must not "
+        f"narrow it. Got:\n{default_sql}"
     )
 
-    # include_disallowed=True → surfaced with reason=boundary_blocked
-    datahub.enumerate_datasets = AsyncMock(return_value=[_VALID_URN])
-    db.execute = AsyncMock(side_effect=_three_query_sequence())
+    # include_disallowed: the boundary state joins the predicate.
+    _wire([SimpleNamespace(dataset_urn=_VALID_URN, reason="boundary_blocked")])
     rows_incl, total_incl = await svc.list_uncovered(include_disallowed=True)
 
     assert total_incl == 1
     assert rows_incl[0].dataset_urn == _VALID_URN
     assert rows_incl[0].reason == "boundary_blocked"
+    incl_sql = " ".join(
+        str(call.args[0].compile(dialect=postgresql.dialect())).lower()
+        for call in db.execute.await_args_list
+    )
+    assert "metagen_boundary.is_enabled" in incl_sql, (
+        f"include_disallowed must admit boundary-blocked datasets; got:\n{incl_sql}"
+    )

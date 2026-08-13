@@ -5,6 +5,7 @@ import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { ApiError } from "@/lib/api/client";
 import { useCreateMetric } from "@/lib/api/governance";
+import { datasetFilterError } from "@/lib/dataset-filter-error";
 import { MetricForm } from "@/components/governance/metric-form";
 import { toast } from "@/components/ui/use-toast";
 import type { CreateMetricFormValues, MetricFormValues } from "@/types/governance";
@@ -18,12 +19,14 @@ const DEFAULT_VALUES: MetricFormValues = {
   metric_conf: {},
   schedule_tier: "daily",
   is_enabled: false,
-  dataset_filter: {},
+  dataset_filter: "",
 };
 
 export default function NewMetricPage() {
   const router = useRouter();
-  const { mutate, isPending } = useCreateMetric();
+  const { mutate, isPending, error } = useCreateMetric();
+  // A 422 INVALID_DATASET_FILTER renders inline against the filter field.
+  const filterError = datasetFilterError(error);
 
   const handleSubmit = (values: MetricFormValues | CreateMetricFormValues) => {
     mutate(values as CreateMetricFormValues, {
@@ -31,6 +34,7 @@ export default function NewMetricPage() {
         router.push(`/governance/metrics/${created.id}`);
       },
       onError: (err) => {
+        if (datasetFilterError(err)) return; // rendered inline by the editor
         if (err instanceof ApiError) {
           toast({
             variant: "destructive",
@@ -68,6 +72,7 @@ export default function NewMetricPage() {
           onSubmit={handleSubmit}
           onCancel={() => router.push("/governance/metrics")}
           isPending={isPending}
+          filterError={filterError}
         />
       </div>
     </div>

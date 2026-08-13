@@ -342,52 +342,18 @@ class DataHubClient:
         version_list = inner.get("semanticVersionList") or []
         return [v for v in version_list if v.get("semanticVersion")]
 
-    async def enumerate_datasets(
-        self,
-        platform: str | None = None,
-        tags: list[str] | None = None,
-        glossary_terms: list[str] | None = None,
-        origin: str | None = None,
-    ) -> list[str]:
-        """Return all dataset URNs matching the given filters.
+    async def enumerate_datasets(self) -> list[str]:
+        """Return every dataset URN DataHub holds.
 
-        Tag / glossary-term / platform filters are OR-ed; ``origin`` is AND-ed
-        with each OR clause. When ``origin`` is provided and there are no other
-        OR-clause dimensions, a single AND clause with just origin is emitted.
+        The estate enumeration behind the sync sweep's ``dataset_registry``
+        reconcile and the on-demand scoped reconcile. It takes no filter
+        dimensions: ``dataset_filter`` scope is resolved DataSpoke-side by one
+        SQL query over the registry mirror, never by a DataHub search
+        (spec/DATAHUB_INTEGRATION.md §Dataset attribute sync).
         """
-        origin_clause: dict[str, Any] | None = (
-            {"field": "origin", "values": [origin]} if origin else None
-        )
-
-        or_groups: list[dict[str, Any]] = []
-        if platform:
-            and_clauses: list[dict[str, Any]] = [
-                {"field": "platform", "values": [f"urn:li:dataPlatform:{platform}"]}
-            ]
-            if origin_clause:
-                and_clauses.append(origin_clause)
-            or_groups.append({"and": and_clauses})
-        for tag in (tags or []):
-            and_clauses = [{"field": "tags", "values": [tag]}]
-            if origin_clause:
-                and_clauses.append(origin_clause)
-            or_groups.append({"and": and_clauses})
-        for term in (glossary_terms or []):
-            and_clauses = [{"field": "glossaryTerms", "values": [term]}]
-            if origin_clause:
-                and_clauses.append(origin_clause)
-            or_groups.append({"and": and_clauses})
-
-        # When no OR-dimension filters are given but origin is set, emit a
-        # single AND group so DataHub scopes the enumeration to that origin.
-        if not or_groups and origin_clause:
-            or_groups.append({"and": [origin_clause]})
 
         def _fetch() -> list[str]:
-            result = self._graph.get_urns_by_filter(
-                entity_types=["dataset"],
-                extra_or_filters=or_groups if or_groups else None,  # type: ignore[arg-type]  # SDK over-narrows the filter dict to Literal keys.
-            )
+            result = self._graph.get_urns_by_filter(entity_types=["dataset"])
             return list(result) if result else []
 
         return await self._with_retry(_fetch)  # type: ignore[no-any-return]  # DataHub SDK returns Any.
@@ -413,6 +379,7 @@ class DataHubClient:
             return None
         origin = inner[last_comma + 1:].strip()
         return origin if origin else None
+
 
     async def emit_aspect(
         self,
@@ -764,6 +731,121 @@ class DataHubClient:
 
         return result
 
+    async def get_dataset_attributes(
+        self, count: int = 1000
+    ) -> dict[str, tuple[list[str], list[str]]]:
+        """Return ``{dataset_urn: (tag_urns, glossary_term_urns)}`` for the estate.
+
+        The associations a ``dataset_filter`` reads live only in DataHub, so the
+        sweep mirrors them into ``dataset_registry`` from one paged
+        ``scrollAcrossEntities`` (spec/DATAHUB_INTEGRATION.md §Dataset attribute
+        sync). ``origin`` and ``platform_urn`` are **not** read here — the dataset
+        URN encodes both, and parsing them is exact and free.
+
+        This read carries the same four hardening properties as
+        :meth:`get_last_ingested`:
+
+        - **The ``... on Dataset`` inline fragment is mandatory.** ``tags`` and
+          ``glossaryTerms`` are declared on the concrete ``Dataset`` type, not on
+          the ``Entity`` interface ``entity`` resolves to, so selecting them
+          directly on ``entity`` fails the *whole query* as a GraphQL validation
+          error rather than returning null.
+        - **``scrollId`` is transmitted only once non-empty**, so the first page
+          sends no cursor rather than an explicit null.
+        - **The cursor loop is capped** at ``_SCROLL_MAX_PAGES`` and also stops on
+          an unchanged cursor, each with a warning.
+        - **Every element of the response is shape-checked** rather than
+          duck-typed, so a malformed one is skipped instead of raising. The call
+          site treats an ``AttributeError``/``TypeError`` out of this client as a
+          fault in DataSpoke's own call shape; a remote payload must never be able
+          to reach that branch.
+
+        A dataset present in the estate but carrying neither association still
+        yields an entry with two empty lists — that is a *read* answer ("no tags"),
+        distinct from the absence of an entry ("not read this sweep"), which is
+        what the caller's never-blank upsert rule keys on.
+
+        Raises:
+            DataHubUnavailableError: on transport failure after retries. Errors
+            propagate, as in every sibling read; containment lives at the single
+            call site (spec/feature/BACKEND.md §Best-Effort Operations).
+        """
+        _QUERY = """
+        query ScrollDatasetAttributes($input: ScrollAcrossEntitiesInput!) {
+            scrollAcrossEntities(input: $input) {
+                nextScrollId
+                searchResults {
+                    entity {
+                        urn
+                        ... on Dataset {
+                            tags { tags { tag { urn } } }
+                            glossaryTerms { terms { term { urn } } }
+                        }
+                    }
+                }
+            }
+        }
+        """
+        result: dict[str, tuple[list[str], list[str]]] = {}
+        scroll_id: str | None = None
+
+        for _ in range(_SCROLL_MAX_PAGES):
+            scroll_input: dict[str, Any] = {
+                "types": ["DATASET"],
+                "query": "*",
+                "count": count,
+            }
+            if scroll_id:
+                scroll_input["scrollId"] = scroll_id
+
+            raw = await self.execute_graphql(_QUERY, variables={"input": scroll_input})
+            page = raw.get("scrollAcrossEntities") if isinstance(raw, dict) else None
+            if not isinstance(page, dict):
+                logger.warning(
+                    "datahub_dataset_attributes_payload_unreadable — GMS returned no "
+                    "readable scrollAcrossEntities container after %d datasets; "
+                    "stopping this read",
+                    len(result),
+                )
+                break
+
+            hits = page.get("searchResults")
+            for hit in hits if isinstance(hits, list) else []:
+                if not isinstance(hit, dict):
+                    continue
+                entity = hit.get("entity")
+                if not isinstance(entity, dict):
+                    continue
+                urn = entity.get("urn")
+                if not urn or not isinstance(urn, str):
+                    continue
+                result[urn] = (
+                    _association_urns(entity.get("tags"), "tags", "tag"),
+                    _association_urns(entity.get("glossaryTerms"), "terms", "term"),
+                )
+
+            next_scroll_id = page.get("nextScrollId")
+            if not next_scroll_id or not isinstance(next_scroll_id, str):
+                break
+            if next_scroll_id == scroll_id:
+                logger.warning(
+                    "datahub_dataset_attributes_cursor_stalled — GMS returned an "
+                    "unchanged nextScrollId after %d datasets; stopping this read",
+                    len(result),
+                )
+                break
+            scroll_id = next_scroll_id
+        else:
+            logger.warning(
+                "datahub_dataset_attributes_page_cap — stopped at the %d-page ceiling "
+                "with %d datasets read; the estate's remaining datasets keep their "
+                "stored attributes this sweep",
+                _SCROLL_MAX_PAGES,
+                len(result),
+            )
+
+        return result
+
     async def get_pipeline_names(
         self, dataset_urns: list[str]
     ) -> dict[str, str | None]:
@@ -812,6 +894,35 @@ class DataHubClient:
             return True
         except Exception:
             return False
+
+
+def _association_urns(container: Any, list_key: str, entity_key: str) -> list[str]:
+    """Read the URNs out of a DataHub association container, shape-checking each level.
+
+    Both association aspects nest the same way — ``tags { tags { tag { urn } } }``
+    and ``glossaryTerms { terms { term { urn } } }`` — and every level is remote,
+    GMS-supplied payload, so each is checked rather than duck-typed. An
+    unreadable level yields no URNs instead of raising.
+    """
+    if not isinstance(container, dict):
+        return []
+    associations = container.get(list_key)
+    if not isinstance(associations, list):
+        return []
+
+    urns: list[str] = []
+    seen: set[str] = set()
+    for association in associations:
+        if not isinstance(association, dict):
+            continue
+        entity = association.get(entity_key)
+        if not isinstance(entity, dict):
+            continue
+        urn = entity.get("urn")
+        if isinstance(urn, str) and urn and urn not in seen:
+            seen.add(urn)
+            urns.append(urn)
+    return urns
 
 
 def _extract_status_code(exc: Exception) -> int | None:

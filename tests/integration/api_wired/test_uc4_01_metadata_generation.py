@@ -243,7 +243,7 @@ async def test_uc4_metadata_generation_under_stub(
                 "name": f"uc4-eu-{conf_suffix}",
                 "is_enabled": True,
                 "schedule_tier": "daily",
-                "dataset_filter": {"dataset_urns": [EU_PROFILES_URN]},
+                "dataset_filter": f"dataset_urn = '{EU_PROFILES_URN}'",
                 "result_limit": 3,
                 "overwrite_pending": True,
             },
@@ -255,7 +255,7 @@ async def test_uc4_metadata_generation_under_stub(
         conf_eu_body = post_conf_eu.json()
         conf_eu_id = conf_eu_body["id"]
         assert conf_eu_body["is_enabled"] is True
-        assert conf_eu_body["dataset_filter"] == {"dataset_urns": [EU_PROFILES_URN]}
+        assert conf_eu_body["dataset_filter"] == f"dataset_urn = '{EU_PROFILES_URN}'"
 
         post_conf_oe = await api_client.post(
             conf_url,
@@ -264,7 +264,7 @@ async def test_uc4_metadata_generation_under_stub(
                 "name": f"uc4-oe-{conf_suffix}",
                 "is_enabled": True,
                 "schedule_tier": "daily",
-                "dataset_filter": {"dataset_urns": [ORDERS_EVENTS_URN]},
+                "dataset_filter": f"dataset_urn = '{ORDERS_EVENTS_URN}'",
                 "result_limit": 3,
                 "overwrite_pending": True,
             },
@@ -697,7 +697,7 @@ async def test_uc4_metadata_generation_under_stub(
             json={
                 "name": f"uc4-rival-{conf_suffix}",
                 "is_enabled": True,
-                "dataset_filter": {"dataset_urns": [EU_PROFILES_URN]},
+                "dataset_filter": f"dataset_urn = '{EU_PROFILES_URN}'",
                 "result_limit": 3,
                 "overwrite_pending": True,
             },
@@ -1360,6 +1360,9 @@ async def test_uc4_metadata_generation_with_real_llm(
         # The real-LLM mirror uses a single tag-scoped conf covering both
         # fulfillment datasets; the cross-conf exclusivity concern is exercised by
         # the stub test. spec: API.md §Metadata Generation — POST /metagen/conf → 201.
+        # UC4's story clause is "'urn:li:tag:area:fulfillment' IN tag_urns"
+        # (USE_CASE_en.md §UC4 §Imazon Example); the `origin = 'DEV'` conjunct is a
+        # test-environment narrowing to the dev seed's fabric, not part of the story.
         post_conf_resp = await api_client.post(
             conf_url,
             headers=admin_headers,
@@ -1367,7 +1370,9 @@ async def test_uc4_metadata_generation_with_real_llm(
                 "name": f"uc4-real-{uuid.uuid4().hex[:8]}",
                 "is_enabled": True,
                 "schedule_tier": "daily",
-                "dataset_filter": {"origin": "DEV", "tags": [FULFILLMENT_TAG]},
+                "dataset_filter": (
+                    f"origin = 'DEV' AND '{FULFILLMENT_TAG}' IN tag_urns"
+                ),
                 "result_limit": 3,
                 "overwrite_pending": True,
             },
@@ -1383,7 +1388,13 @@ async def test_uc4_metadata_generation_with_real_llm(
         assert conf_body["schedule_tier"] == "daily"
         assert conf_body["result_limit"] == 3
         assert conf_body["overwrite_pending"] is True
-        assert conf_body["dataset_filter"] == {"origin": "DEV", "tags": [FULFILLMENT_TAG]}
+        assert conf_body["dataset_filter"] == (
+            f"origin = 'DEV' AND '{FULFILLMENT_TAG}' IN tag_urns"
+        ), (
+            f"dataset_filter must round-trip verbatim; got {conf_body['dataset_filter']!r}. "
+            "spec: API.md §`dataset_filter` grammar — UC4's per-conf filter uses this "
+            "same grammar"
+        )
 
         # ── Step 4: PUT per-dataset boundaries ───────────────────────────────
         put_eu_boundary_resp = await api_client.put(

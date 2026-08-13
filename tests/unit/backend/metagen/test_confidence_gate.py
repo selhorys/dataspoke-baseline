@@ -37,7 +37,7 @@ def _make_conf(conf_id: str) -> MetagenConfDTO:
         name="catalog-docs",
         is_enabled=True,
         schedule_tier=None,
-        dataset_filter={},
+        dataset_filter="",
         result_limit=3,
         overwrite_pending=True,
         created_at=now,

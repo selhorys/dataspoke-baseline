@@ -16,7 +16,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.backend.metrics.measurers.registry import register_measurer
+from src.backend.metrics.measurers.registry import DatasetVerdict, register_measurer
 from src.shared.datahub.client import DataHubClient
 
 
@@ -27,8 +27,8 @@ async def measure(
     *,
     datahub: DataHubClient,
     db: AsyncSession,
-) -> tuple[dict[str, float], dict[str, Any]]:
-    """Return doc-health values and a breakdown of undocumented datasets.
+) -> tuple[dict[str, float], list[DatasetVerdict]]:
+    """Return doc-health values and one verdict per dataset in scope.
 
     Parameters
     ----------
@@ -43,13 +43,15 @@ async def measure(
 
     Returns
     -------
-    tuple[dict[str, float], dict]
-        ``(values, breakdown)`` where values has keys ``total`` and
-        ``doc_health``; breakdown lists only datasets with score < 1.0.
+    tuple[dict[str, float], list[DatasetVerdict]]
+        ``(values, verdicts)`` where values has keys ``total`` and
+        ``doc_health``. ``met`` is false for a dataset scoring < 1.0.
+        ``evidence_at`` is always ``None``: a documentation state carries no
+        timestamp, so the endpoint falls back to the run's ``measured_at``.
     """
     total = len(datasets)
     doc_health = 0.0
-    failed_datasets: list[dict[str, Any]] = []
+    verdicts: list[DatasetVerdict] = []
 
     aspects_map = await datahub.get_dataset_documentation_aspects(datasets)
 
@@ -62,14 +64,15 @@ async def measure(
 
         if not aspects.field_descriptions:
             # No schema metadata (or empty schema) — cannot satisfy "every column described"
-            failed_datasets.append(
-                {
-                    "urn": urn,
-                    "detail": {
+            verdicts.append(
+                DatasetVerdict(
+                    urn=urn,
+                    met=False,
+                    detail={
                         "missing_table_description": not has_table_desc,
                         "missing_column_descriptions": [],
                     },
-                }
+                )
             )
             continue
 
@@ -83,25 +86,22 @@ async def measure(
             fp for fp, desc in field_descs.items() if not (desc and desc.strip())
         ]
 
-        if has_table_desc and not missing_columns:
+        met = has_table_desc and not missing_columns
+        if met:
             doc_health += 1.0
-        else:
-            failed_datasets.append(
-                {
-                    "urn": urn,
-                    "detail": {
-                        "missing_table_description": not has_table_desc,
-                        "missing_column_descriptions": missing_columns,
-                    },
-                }
+        verdicts.append(
+            DatasetVerdict(
+                urn=urn,
+                met=met,
+                detail={
+                    "missing_table_description": not has_table_desc,
+                    "missing_column_descriptions": missing_columns,
+                },
             )
+        )
 
     values: dict[str, float] = {
         "total": float(total),
         "doc_health": float(doc_health),
     }
-    breakdown: dict[str, Any] = {
-        "dataset_count": total,
-        "datasets": failed_datasets,
-    }
-    return values, breakdown
+    return values, verdicts

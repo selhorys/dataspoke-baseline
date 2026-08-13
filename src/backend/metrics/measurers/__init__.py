@@ -15,6 +15,10 @@ from src.backend.metrics.measurers import (  # noqa: F401
     ingestion_freshness,
     validation_score,
 )
-from src.backend.metrics.measurers.registry import get_measurer, list_measurers
+from src.backend.metrics.measurers.registry import (
+    DatasetVerdict,
+    get_measurer,
+    list_measurers,
+)
 
-__all__ = ["get_measurer", "list_measurers"]
+__all__ = ["DatasetVerdict", "get_measurer", "list_measurers"]

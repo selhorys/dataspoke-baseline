@@ -34,7 +34,7 @@ cards:
 
 | Element | Read | Notes |
 |---|---|---|
-| Combined metric card | `GET /spoke/governance/metric` (filter `is_enabled=true`) + latest `GET .../{id}/attr/result?limit=1` per metric + trend `GET .../{id}/attr/result?from=…&to=…` per metric | One card per metric visible under the view controls. Each card stacks, top to bottom: the metric `title` (emphasized heading), a `metric_type` outline badge, the latest `values` dict rendered as a compact stat row (each key a muted label with its value emphasized alongside) with its measured-at date, and that metric's per-metric trend chart (one line per that metric's `values` key, one visible point per grain window). Per-metric charts avoid collapsing shared keys (e.g. `total`) across metrics onto one ambiguous line. No per-card delta indicator |
+| Combined metric card | `GET /spoke/governance/metric` (filter `is_enabled=true`) + latest `GET .../{id}/attr/result?limit=1` per metric + trend `GET .../{id}/attr/result?from=…&to=…` per metric | One card per metric visible under the view controls. The card header carries the metric `title` as an emphasized heading on the left and, top-right at a smaller size, a `metric_type` outline badge beside a `Details` button linking to `/governance/metrics/{id}`. Below the heading sits `description` in small muted text. The body then stacks the latest `values` dict as a compact stat row (each key a muted label with its value emphasized alongside) with its measured-at date, and that metric's trend chart — one line per entry of the metric's `metrics[]` series descriptors, drawn in `idx` order and stroked with each descriptor's `color`, one visible point per grain window. `description` and `metrics` both come from the list read, so the card needs no extra fetch. Per-metric charts avoid collapsing shared keys (e.g. `total`) across metrics onto one ambiguous line. No per-card delta indicator |
 | Shared RangePicker + ChartGrainPicker | range drives every card's trend `from`/`to` (plus a limit); grain drives no request parameter | A single [RangePicker](FRONTEND_BASIC.md#shared-component-notes) (`date` granularity, presets Last 1 day / 7 days / 2 weeks (default) / 4 weeks / 12 weeks) sits above the grid and applies the same window to every card's chart together, with a [ChartGrainPicker](FRONTEND_BASIC.md#shared-component-notes) immediately beside it applying the same grain to every card's chart. The grain is a client-side display concern — it collapses the fetched rows to one point per window — that window's last measurement — and leaves the read untouched |
 | Metric view controls | the same `GET /spoke/governance/metric` (filter `is_enabled=true`) read that backs the cards — **no request parameter** | A row of three controls beneath the header narrows and orders the already-fetched enabled set entirely client-side, the same way the ChartGrainPicker beside them is display-only: a **metric-type filter** (checkbox-group multi-select over the built-in `metric_type` values listed in [USE_CASE §UC5](../USE_CASE_en.md#uc5-governance), each box labelled by its raw `metric_type` value, all selected by default; deselecting every type yields an empty set rather than falling back to all), a **title search** (case-insensitive substring over each metric's `title`, inactive while blank), and a **title sort** (`Title A→Z` / `Title Z→A`, ascending by default) — the title is the metric's human-facing identifier and what the reader scans the grid by, so both controls key off it. Each selection persists across visits in browser `localStorage` under a stable key, by the same rule as the shared [RangePicker](FRONTEND_BASIC.md#shared-component-notes) and [ChartGrainPicker](FRONTEND_BASIC.md#shared-component-notes) selections. Distinct from the single-select, server-side `metric_type` filter on the [metric list page](#metrics-governancemetrics), which does map to a query parameter |
 | Cap disclosure | `total_count` of the same read | The dashboard read is capped at `limit=100`. When `total_count` exceeds the returned row count, a muted note above the grid states that only the first 100 enabled metrics are shown and that the filter and sort apply to those 100 only |
@@ -59,15 +59,16 @@ catalogue.
 │  [ Search titles…          ]  [ Title A→Z            ▾]  │
 │  Showing the first 100 of 142 enabled metrics            │
 ├──────────────────────────────────────────────────────────┤
-│  ┌─────────────────┐ ┌─────────────────┐ ┌─────────────┐ │
-│  │ Ingestion Fresh.│ │ Validation Score│ │ Doc Health  │ │
-│  │ (freshness)     │ │ (val-score)     │ │ (doc-health)│ │
-│  │ total       142 │ │ total       142 │ │ total    87 │ │
-│  │ in-time     131 │ │ sum     118.50  │ │ doc_h    61 │ │
-│  │ 2026-05-26      │ │ 2026-05-26      │ │ 2026-05-26  │ │
-│  │ ╭─trend chart─╮ │ │ ╭─trend chart─╮ │ │ ╭─trend───╮ │ │
-│  │ ╰─────────────╯ │ │ ╰─────────────╯ │ │ ╰─────────╯ │ │
-│  └─────────────────┘ └─────────────────┘ └─────────────┘ │
+│  ┌──────────────────────┐ ┌──────────────────────┐       │
+│  │ Ingestion Fresh.     │ │ Doc Health           │       │
+│  │      freshness [Deta]│ │    doc-health [Deta] │       │
+│  │ Hourly freshness SLO │ │ Daily doc completen. │       │
+│  │ total            142 │ │ total             87 │       │
+│  │ in-time          131 │ │ doc_health        61 │       │
+│  │ 2026-05-26           │ │ 2026-05-26           │       │
+│  │ ╭─trend chart──────╮ │ │ ╭─trend chart──────╮ │       │
+│  │ ╰──────────────────╯ │ │ ╰──────────────────╯ │       │
+│  └──────────────────────┘ └──────────────────────┘       │
 └──────────────────────────────────────────────────────────┘
         Dashboard (`/governance/dashboard`)
 ```
@@ -113,7 +114,7 @@ list, create, edit, run, disable, delete.
 |---|---|---|
 | `/governance/metrics` (list) | `GET /spoke/governance/metric` — rendered filter bar (`metric_type` / `mode` / status Selects, mapped to query params) plus the shared [Pagination](FRONTEND_BASIC.md#shared-component-notes) control (page-size selector defaulting to 20, Prev/Next, numbered pages) bound to the standard `offset`/`limit`/`total_count` envelope. Each row shows the `title` (link to detail) with `metric_id` as a subtitle, a `metric_type` badge, the `mode` and `schedule_tier`, an `Enabled`/`Disabled` status badge, the `updated_at` timestamp, and a **Last Run** column (`last_run_at`, formatted via the shared tz/datetime helper; `—` when `null`) as the last column | "New metric" action → `/governance/metrics/new` |
 | `/governance/metrics/new` | — | `POST /spoke/governance/metric` (definition fields **plus** a client-supplied `metric_id`) |
-| `/governance/metrics/[id]` | `GET .../attr/conf`, `GET .../attr/result?from&to` (a `date`-granularity [RangePicker](FRONTEND_BASIC.md#shared-component-notes) in the `Result` panel header drives `from`/`to`, with a [ChartGrainPicker](FRONTEND_BASIC.md#shared-component-notes) beside it collapsing the fetched results to one visible point per grain window — display-only, no request parameter), `GET .../event?offset&limit&from&to&sort=occurred_at_desc` (a `datetime` RangePicker drives the event panel's `from`/`to`, with Pagination on `offset`/`limit`) | `PUT/PATCH/DELETE .../attr/conf` (fields: `mode`, `is_enabled`, `metric_type`, `title`, `description`, `metrics`, `metric_conf`, `schedule_tier`, `dataset_filter`); `POST .../method/run` (`?dry_run=true`) |
+| `/governance/metrics/[id]` | `GET .../attr/conf`, `GET .../attr/result?from&to` (a `date`-granularity [RangePicker](FRONTEND_BASIC.md#shared-component-notes) in the `Result` panel header drives `from`/`to`, with a [ChartGrainPicker](FRONTEND_BASIC.md#shared-component-notes) beside it collapsing the fetched results to one visible point per grain window — display-only, no request parameter), `GET .../dataset?met&offset&limit&sort=dataset_urn` (the Datasets panel), `GET .../event?offset&limit&from&to&sort=occurred_at_desc` (a `datetime` RangePicker drives the event panel's `from`/`to`, with Pagination on `offset`/`limit`) | `PUT/PATCH/DELETE .../attr/conf` (fields: `mode`, `is_enabled`, `metric_type`, `title`, `description`, `metrics`, `metric_conf`, `schedule_tier`, `dataset_filter`); `POST .../method/run` (`?dry_run=true`) |
 
 The create form is the edit form (below) with one extra leading field: a
 `metric_id` text input — **create-only** (validated per
@@ -129,10 +130,24 @@ header (the same row as the `Config` heading) while editing.
 
 The detail read-only view (`/governance/metrics/[id]`, not editing) renders
 `description` alongside `mode`, `metric_type`, `schedule_tier`,
-`is_enabled`, `metrics`, `metric_conf`, and `dataset_filter`.
+`is_enabled`, `metrics`, `metric_conf`, and `dataset_filter`. `metrics` renders one
+line per series descriptor — a color swatch, the `name`, and its `idx` — in `idx` order.
 
-`dataset_filter` follows the standard four-dimension shape — see
-[API §Metric `dataset_filter`](../API.md#metric-spokegovernancemetric).
+`dataset_filter` is a SQL `WHERE`-clause string
+([API §`dataset_filter` grammar](../API.md#dataset_filter-grammar)), rendered through
+[DatasetFilterView](FRONTEND_BASIC.md#shared-component-notes) and edited through
+[DatasetFilterEditor](FRONTEND_BASIC.md#shared-component-notes) — a resizable monospace
+box with an **Auto-indent** button and a folded grammar guide. A `422
+INVALID_DATASET_FILTER` from Save renders inline against the field.
+
+The form's `metrics` control is **one row per emitted key** of the selected
+`metric_type` (keys listed in [USE_CASE §UC5](../USE_CASE_en.md#uc5-governance)): a
+checkbox selecting the key, a color control (native color swatch paired with a `#RRGGBB`
+text input, kept in sync) and an order number. Only checked rows are submitted, as
+`{name, color, idx}`. Duplicate `idx` values and a malformed hex color are surfaced
+inline before submit; the server enforces the same rules
+([API §Metric](../API.md#metric-spokegovernancemetric)). Changing `metric_type` reseeds
+the rows to the new type's keys.
 
 Built-in metric types and their `metric_conf` shapes are in
 [USE_CASE §UC5](../USE_CASE_en.md#uc5-governance). `mode: "passive"` is
@@ -148,12 +163,21 @@ detail render a null tier as *on-demand*.
 │  Config                                              │
 │    mode: active  metric_type: doc-health             │
 │      schedule_tier: daily   ✓ enabled               │
-│    metrics: total, doc_health   metric_conf: (none)  │
+│    metrics: ■ total (1)  ■ doc_health (2)            │
+│    metric_conf: (none)                               │
 │    description: Daily documentation-completeness      │
-│    dataset_filter: origin=DEV                        │
+│    dataset_filter: origin = 'DEV'                    │
 │                                                      │
 │  Result          [Last 2 weeks ▾] [Daily ▾]          │
-│    [Recharts line chart — one line per `values` key] │
+│    [Recharts line chart — one line per series, in    │
+│     `idx` order, stroked with each `color`]          │
+│                                                      │
+│  Datasets     [x] true [x] false [x] unknown         │
+│   dataset_urn │ datahub │ met      │ last check      │
+│   …orders     │  ↗      │ ✓ true   │ 2026-04-25 03:0 │
+│   …carriers   │  ↗      │ ✗ false  │ 2026-04-25 03:0 │
+│   …archive    │  ↗      │ ? unknown│ —               │
+│   scope synced 2026-04-25 02:00   [‹ Prev  Next ›]   │
 │                                                      │
 │  Event                     [Last 2 weeks ▾]          │
 │   occurred_at │ status │ event_type    │ detail      │
@@ -173,25 +197,38 @@ detail render a null tier as *on-demand*.
 │  metric_type:  [ doc-health                     v ] │
 │  title:        [ Doc Health (DEV)                 ] │
 │  description:  [ Daily documentation-completeness ] │
-│  metrics:      [x] total   [x] doc_health           │
+│  metrics:      [x] total       [■][#2563EB] idx [1] │
+│                [x] doc_health  [■][#16A34A] idx [2] │
 │  metric_conf:  (none for doc-health)                │
 │  schedule_tier:[ hourly | daily | weekly | on-demand v]│
 │  is_enabled:   [x]                                  │
 │                                                     │
-│  dataset_filter                                     │
-│    origin:           [ DEV                       v] │
-│    tags[]:           ┌─ one URN per line ───────┐   │
-│                      │ urn:li:tag:env:DEV       │   │
-│                      └──────────────────────────┘   │
-│    glossary_terms[]: ┌─ one URN per line ───────┐   │
-│                      │ urn:li:glossaryTerm:…    │   │
-│                      └──────────────────────────┘   │
-│    dataset_urns[]:   ┌─ one URN per line ───────┐   │
-│                      │ urn:li:dataset:(…)       │   │
-│                      └──────────────────────────┘   │
+│  dataset_filter              [ Auto-indent ]        │
+│    ┌─ SQL WHERE clause ────────────────────────┐    │
+│    │ origin = 'DEV'                            │    │
+│    │   AND 'urn:li:tag:env:DEV' IN tag_urns    │    │
+│    └──────────────────────────────────────────◢┘    │
+│    ▸ Filter grammar                                 │
 └─────────────────────────────────────────────────────┘
         Config form (PUT/PATCH .../attr/conf)
 ```
+
+The **Datasets** panel (`MetricDatasetTable`, modelled on the Ingestion
+`SourceDatasetTable`) sits between the `Result` and `Event` panels and answers "which
+datasets does this metric cover, and did each meet the criterion". It binds to
+`GET .../dataset` with columns `dataset_urn` (linked to `/data/[urn]`), `datahub` (the
+shared [DataHub dataset deep-link](FRONTEND_BASIC.md#shared-component-notes)), a `met`
+badge (`true` / `false` / `unknown`), and `last check time` (shared tz/datetime helper;
+em dash when the row is `unknown`). A three-way toggle group — true / false / unknown,
+all on by default — drives the repeatable `met` query param, resetting `offset` on
+change. With **zero** toggles selected the client renders the empty state and issues **no
+request**: an omitted repeatable param and an empty one are the same HTTP request, which
+the API reads as "all three", so the no-selection case cannot be expressed on the wire and
+is resolved client-side instead. The
+shared [Pagination](FRONTEND_BASIC.md#shared-component-notes) drives `offset`/`limit`
+with `sort=dataset_urn`. Beneath the table a muted line states the envelope's
+`attrs_synced_at` as the scope's freshness, so an empty or unexpectedly small table is
+readable as a pending sync rather than as a filter that matches nothing.
 
 The **Event** panel is a table mirroring the Ingestion source-detail event table
 (`MetricEventTable`, modeled on `IngestionEventTable`): columns `occurred_at`, `status`,

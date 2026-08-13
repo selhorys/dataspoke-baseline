@@ -58,7 +58,7 @@ async def _create_conf(
     headers: dict[str, str],
     *,
     is_enabled: bool,
-    dataset_filter: dict,  # type: ignore[type-arg]
+    dataset_filter: str,
     name: str | None = None,
 ) -> str:
     """Create a conf via REST and return its id. Inlined payload for readability."""
@@ -97,7 +97,7 @@ async def test_metagen_run_disabled_conf_non_dry_run_returns_409_metagen_disable
       conf.is_enabled=false (409 METAGEN_DISABLED).
     """
     conf_id = await _create_conf(
-        api_client, admin_headers, is_enabled=False, dataset_filter={"dataset_urns": [_TEST_URN]}
+        api_client, admin_headers, is_enabled=False, dataset_filter=f"dataset_urn = '{_TEST_URN}'"
     )
     try:
         time_before = datetime.now(tz=UTC)
@@ -141,7 +141,7 @@ async def test_metagen_run_dry_run_permitted_when_disabled(
       {items_considered, candidates_proposed}.
     """
     conf_id = await _create_conf(
-        api_client, admin_headers, is_enabled=False, dataset_filter={"dataset_urns": [_TEST_URN]}
+        api_client, admin_headers, is_enabled=False, dataset_filter=f"dataset_urn = '{_TEST_URN}'"
     )
     try:
         run_resp = await api_client.post(
@@ -204,7 +204,7 @@ async def test_metagen_run_concurrent_same_conf_returns_409_metagen_running(
     assert switch.status_code == 200, f"stub_redis_client=false setup failed: {switch.text}"
 
     conf_id = await _create_conf(
-        api_client, admin_headers, is_enabled=True, dataset_filter={"dataset_urns": [_TEST_URN]}
+        api_client, admin_headers, is_enabled=True, dataset_filter=f"dataset_urn = '{_TEST_URN}'"
     )
     lock_key = f"metagen:running:{conf_id}"
     try:
@@ -241,7 +241,7 @@ async def test_metagen_run_empty_scope_completes_with_zero_items(
     """
     boundary_url = f"/api/v1/spoke/common/data/{_ENCODED_URN}/attr/metagen/boundary"
     conf_id = await _create_conf(
-        api_client, admin_headers, is_enabled=True, dataset_filter={"dataset_urns": [_TEST_URN]}
+        api_client, admin_headers, is_enabled=True, dataset_filter=f"dataset_urn = '{_TEST_URN}'"
     )
     try:
         with suppress(Exception):
@@ -299,10 +299,10 @@ async def test_two_confs_coexist_with_isolated_events_and_budgets(
       /event is the cross-conf union.
     """
     conf_a = await _create_conf(
-        api_client, admin_headers, is_enabled=True, dataset_filter={"dataset_urns": [_TEST_URN]}
+        api_client, admin_headers, is_enabled=True, dataset_filter=f"dataset_urn = '{_TEST_URN}'"
     )
     conf_b = await _create_conf(
-        api_client, admin_headers, is_enabled=True, dataset_filter={"dataset_urns": [_TEST_URN2]}
+        api_client, admin_headers, is_enabled=True, dataset_filter=f"dataset_urn = '{_TEST_URN2}'"
     )
     try:
         # Dry-run each conf so a RUN_COMPLETE event lands for each (no LLM/persist needed).

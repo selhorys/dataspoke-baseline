@@ -22,7 +22,7 @@ import {
 } from "@/components/ui/select";
 import { DatasetFilterEditor } from "@/components/dataset-filter-editor";
 import type { OntogenConf, OntogenConfPutBody } from "@/types/ontogen";
-import type { DatasetFilter } from "@/types/governance";
+import type { DatasetFilterErrorInfo } from "@/lib/dataset-filter-error";
 
 const confSchema = z.object({
   is_enabled: z.boolean(),
@@ -35,9 +35,11 @@ type ConfFormValues = z.infer<typeof confSchema>;
 interface OntogenConfFormProps {
   /** Initial conf values; null triggers the empty/create state. */
   initialValues: OntogenConf | null;
-  /** Called with dataset_filter state alongside form values. */
-  datasetFilter: DatasetFilter;
-  onDatasetFilterChange: (v: DatasetFilter) => void;
+  /** Called with dataset_filter state (a SQL WHERE clause) alongside form values. */
+  datasetFilter: string;
+  onDatasetFilterChange: (v: string) => void;
+  /** 422 INVALID_DATASET_FILTER from the last save, rendered inline in the editor. */
+  datasetFilterError?: DatasetFilterErrorInfo;
   onSubmit: (body: OntogenConfPutBody) => void;
   /** id wired to the top-right header Save button via <Button form={id} type="submit">. */
   formId: string;
@@ -47,6 +49,7 @@ export function OntogenConfForm({
   initialValues,
   datasetFilter,
   onDatasetFilterChange,
+  datasetFilterError,
   onSubmit,
   formId,
 }: OntogenConfFormProps) {
@@ -83,7 +86,7 @@ export function OntogenConfForm({
     onSubmit({
       is_enabled: values.is_enabled,
       schedule_tier: values.schedule_tier ?? null,
-      dataset_filter: datasetFilter as Record<string, unknown>,
+      dataset_filter: datasetFilter,
       default_run_prompt: values.default_run_prompt || null,
     });
   }
@@ -131,6 +134,7 @@ export function OntogenConfForm({
           <DatasetFilterEditor
             value={datasetFilter}
             onChange={onDatasetFilterChange}
+            error={datasetFilterError}
           />
         </div>
 

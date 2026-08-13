@@ -115,7 +115,7 @@ Each MANIFESTO feature has a clear integration direction:
 | Feature | UC | Direction | Primary Operations |
 |---------|----|-----------|-------------------|
 | Ingestion Control (`ACTIVE_CUSTOM_MANAGED`) | UC1 | **Write** | The pluggable extractor emits dataset metadata (`Status`, `DatasetProperties`, `SchemaMetadata`) plus per-run `DataProcessInstance` aspects. |
-| Ingestion Control (`DATAHUB_MANAGED` / `PASSIVE`) | UC1 | **Read** | The hourly `datahub-sync-hourly` DAG syncs source defs (`listIngestionSources`), rebuilds the source→dataset mapping, and observes ingestion — `listExecutionRequests` for `DATAHUB_MANAGED`, ingestion-like `Operation` aspects for `PASSIVE`, and the estate-wide `Dataset.lastIngested` read for every mode. No aspect writes by DataSpoke. |
+| Ingestion Control (`DATAHUB_MANAGED` / `PASSIVE`) | UC1 | **Read** | The 2-hourly `datahub-sync-hourly` DAG syncs source defs (`listIngestionSources`), rebuilds the source→dataset mapping, and observes ingestion — `listExecutionRequests` for `DATAHUB_MANAGED`, ingestion-like `Operation` aspects for `PASSIVE`, and the estate-wide `Dataset.lastIngested` read for every mode. No aspect writes by DataSpoke. |
 | Validation | UC2 | **Write** | Emit `assertionInfo` on conf upsert (variable list joined as `customAssertion.logic`); emit `assertionRunEvent` per pipeline-posted result (timestamped to `data_time`); hard-delete the assertion entity on conf DELETE. Validation logic lives in the data pipeline. |
 | Ontology Generation | UC3 | **Read** | Read `datasetProperties`, `schemaMetadata`, `editableDatasetProperties`, `editableSchemaMetadata`, `glossaryTerms`, and `documentInfo` on `document` entities whose `relatedAssets` reference an in-scope dataset. Ontology is modelled as a subject / predicate / object triple set (nodes / edges / triples) and stored entirely in DataSpoke (PostgreSQL relational + pgvector). |
 | Metadata Generation | UC4 | **Read + Write (editable description only)** | Read the same DataHub aspect set as UC3 (`datasetProperties`, `schemaMetadata`, `editableDatasetProperties`, `editableSchemaMetadata`, `glossaryTerms`, `documentInfo`) plus UC3-approved nodes/triples from DataSpoke storage. On reviewer approval of a candidate, write only to the *editable* description aspects — `editableDatasetProperties.description` for `dataset.description` items, `editableSchemaMetadata.editableSchemaFieldInfo[].description` for `column.<fieldPath>.description` items. Tag and glossary-term proposals are future scope. |
@@ -403,7 +403,10 @@ nest under the same database → schema hierarchy as DataHub's managed-PG source
 `datahub-sync-hourly` DAG and write no aspects. That same DAG also reads the dataset-grained
 observation surfaces — `Operation` aspects and `Dataset.lastIngested`
 ([§Observed Ingestion Recency](#observed-ingestion-recency)) — which is why `operation` reads R for
-Ingestion Control below.*
+Ingestion Control below. A cell annotated `dataset_filter` is likewise read by that one sweep
+([§Dataset attribute sync](#dataset-attribute-sync)) and consumed from `dataset_registry`, not
+re-read per feature; an unannotated `R`, or the `per-dataset evidence` half of a combined
+annotation, is a per-feature read of the aspect itself.*
 
 | Aspect | Ingestion Control | Validation | Ontology Generation | Metadata Generation | Governance |
 |--------|:---:|:---:|:---:|:---:|:---:|
@@ -412,8 +415,8 @@ Ingestion Control below.*
 | `schemaMetadata` | W | R | R | R | R *(doc-health column descriptions)* |
 | `editableSchemaMetadata` | — | — | R | R + W (W on approval) | R *(doc-health column descriptions overlay)* |
 | `ownership` | W | — | — | — | — |
-| `globalTags` | W | — | — | — *(future scope)* | R *(dataset_filter.tags)* |
-| `glossaryTerms` | — | — | R | R | R *(dataset_filter.glossary_terms)* |
+| `globalTags` | W | — | R *(`dataset_filter`)* | R *(`dataset_filter`; W is future scope)* | R *(`dataset_filter`)* |
+| `glossaryTerms` | — | — | R *(per-dataset evidence + `dataset_filter`)* | R *(per-dataset evidence + `dataset_filter`)* | R *(`dataset_filter`)* |
 | `upstreamLineage` | W | R | — | — | — |
 | `status` | W | W *(`removed=false` on register; conf DELETE hard-deletes the entity rather than tombstoning)* | — | — | — |
 | `deprecation` | — | — | — | — | — |
@@ -627,7 +630,7 @@ number of round trips per managed corpuser per day). A batched variant via
 DataSpoke models ingestion **per source / recipe** in three modes (`DATAHUB_MANAGED`,
 `ACTIVE_CUSTOM_MANAGED`, `PASSIVE` — see
 [BACKEND §Ingestion Service](feature/BACKEND.md#ingestion-service-srcbackendingestion)). This
-section catalogues the DataHub surfaces the hourly `datahub-sync-hourly` sweep uses; citations
+section catalogues the DataHub surfaces the `datahub-sync-hourly` sweep uses; citations
 are to `ref/github/datahub/` v1.6.0.
 
 - **Reading managed source defs**: `DATAHUB_MANAGED` sources are synced down (DataHub is SSOT)
@@ -727,12 +730,12 @@ are to `ref/github/datahub/` v1.6.0.
     next sweep and that dataset accrues one event per sweep forever; an unbounded upper end lets one
     future-dated value permanently poison every recency reading derived from it, since the newest
     evidence always wins and nothing later can displace it. Sweep wiring and counters:
-    [BACKEND §Ingestion Service step 4](feature/BACKEND.md#ingestion-service-srcbackendingestion).
+    [BACKEND §Ingestion Service — run and observation events](feature/BACKEND.md#ingestion-service-srcbackendingestion).
 
   The source's `latest_run` is the latest terminal outcome of a **run-level** producer
   (`COMPLETE`/`FAIL`, dataset-grained observations excluded — they report recency, not outcome);
   in-progress/pending runs surface no event yet, mirroring DataHub's "Pending…". See
-  [BACKEND §Ingestion Service step 4](feature/BACKEND.md#ingestion-service-srcbackendingestion).
+  [BACKEND §Ingestion Service — run and observation events](feature/BACKEND.md#ingestion-service-srcbackendingestion).
 - **Recipe secret substitution**: DataHub substitutes `${NAME}` where `NAME` matches
   `[A-Za-z_][A-Za-z0-9_]*` (`metadata-ingestion/.../configuration/config_loader.py`). DataSpoke
   uses `${name__key}` and pre-resolves it (split on the last `__` → K8s Secret
@@ -857,7 +860,7 @@ SDK imports resolve from three packages: `datahub.ingestion.graph.client` (for `
 | C. Write regular aspect | `emitter.emit_mcp(MetadataChangeProposalWrapper(entityUrn=urn, aspect=AspectClass(...)))` | `POST /openapi/v3/entity/dataset` | Upsert semantics — creates or overwrites. |
 | D. Write lineage | Same as C with `UpstreamLineageClass(upstreams=[UpstreamClass(dataset=upstream_urn, type=...)])` | `POST /openapi/v3/entity/dataset` (aspect `upstreamLineage`) | Use `make_dataset_urn()` for upstream URN. |
 | E. Write deprecation | Same as C with `DeprecationClass(deprecated=True, note=..., replacement=...)` | `POST /openapi/v3/entity/dataset` (aspect `deprecation`) | Replacement is a dataset URN. |
-| F. Enumerate datasets | `list(graph.get_urns_by_filter(entity_types=["dataset"], ...))` | GraphQL `scrollAcrossEntities` | Supports `platform`, `origin` (DataHub `FabricType` — `PROD`/`DEV`/`CORP`/`EI`/`STG`/`NON_PROD`/…), `tags`, `glossaryTerms`, and `query` filters; used by Governance `dataset_filter` resolution and Ontology Generation. |
+| F. Enumerate datasets | `list(graph.get_urns_by_filter(entity_types=["dataset"], ...))` | GraphQL `scrollAcrossEntities` | Supports `platform`, `origin` (DataHub `FabricType` — `PROD`/`DEV`/`CORP`/`EI`/`STG`/`NON_PROD`/…), `tags`, `glossaryTerms`, and `query` filters; used by the sync sweep to enumerate the estate into `dataset_registry` ([§Dataset attribute sync](#dataset-attribute-sync)). |
 
 For live examples see `src/shared/datahub/client.py` (DataSpoke's wrapper) and per-feature
 service files under `src/backend/`.
@@ -879,45 +882,46 @@ Generation (node and triple inference).
 ### Entity Enumeration by Domain
 
 For cross-entity enumeration, call `graph.execute_graphql(...)` with
-`scrollAcrossEntities` (`types: [DATASET]`) and paginate via `nextScrollId`. Used by
-Ontology Generation, Metadata Generation, and Governance to resolve `dataset_filter`
-(origin / tags / glossary_terms / explicit URNs) into the dataset URN list scanned
-by each pipeline.
+`scrollAcrossEntities` (`types: [DATASET]`) and paginate via `nextScrollId`. The
+`datahub-sync-hourly` sweep uses it twice: once to enumerate the estate into
+`dataset_registry`, and once to read the dataset attributes that `dataset_filter`
+is evaluated against.
 
-#### Origin filter group
+#### Dataset attribute sync
 
-`origin` in DataSpoke is the same `origin` field DataHub carries on every dataset —
-defined on the `DatasetUrn` key (`li-utils/.../common/DatasetUrn.pdl`) with type
-`com.linkedin.common.FabricType`, encoded into the dataset URN itself as
-`urn:li:dataset:(<platform>,<name>,<origin>)`. Example:
-`urn:li:dataset:(urn:li:dataPlatform:kafka,example_kafka.imazon.orders.events,DEV)`
-has `origin="DEV"`.
+`dataset_filter` (UC3 ontogen conf, UC4 metagen conf, UC5 metric definitions) is a
+SQL `WHERE` clause over `dataset_registry` — see
+[API §`dataset_filter` grammar](API.md#dataset_filter-grammar). The sweep mirrors the
+columns that clause reads. Two sources, deliberately different:
 
-DataSpoke accepts any value DataHub's `FabricType` enum accepts and forwards it
-verbatim — no DataSpoke-side allow-list. The DataHub enum currently includes
-`DEV`, `TEST`, `QA`, `UAT`, `EI`, `PRE`, `STG`, `NON_PROD`, `PROD`, `CORP`, `RVW`,
-`PRD`, `TST`, `SIT`, `SBX`, `SANDBOX` (see `FabricType.pdl`). Unknown values are
-rejected by DataHub at query time rather than by DataSpoke at PUT/PATCH time.
+| Columns | Source | Why |
+|---|---|---|
+| `origin`, `platform_urn` | parsed from the dataset URN | `urn:li:dataset:(<platform_urn>,<name>,<origin>)` encodes both by definition — the `origin` field is declared on the `DatasetUrn` key (`li-utils/.../common/DatasetUrn.pdl`) with type `com.linkedin.common.FabricType`. Parsing is exact and free, and does not depend on which fields a GraphQL `Dataset` happens to expose |
+| `tag_urns`, `glossary_term_urns` | one paged `scrollAcrossEntities` | Associations that live only in DataHub |
 
-The resolver in `DataHubClient.enumerate_datasets` emits `origin` as its own
-AND-clause within each `scrollAcrossEntities` `or` group so that DataHub combines
-`origin` with the OR-ed `tags` / `glossaryTerms` / explicit-URN groups. Each filter
-rule uses the **`values` array** form (`{field, values: [...]}`); the DataHub search
-filter API expresses a single match as a one-element array:
+The attribute read selects `urn`, `tags { tags { tag { urn } } }`, and
+`glossaryTerms { terms { term { urn } } }` and carries the same four hardening
+properties as [§Observed Ingestion Recency](#observed-ingestion-recency): a mandatory
+`... on Dataset` inline fragment, per-element shape checks, `scrollId` transmitted only
+once non-empty, and a page-capped cursor loop.
 
-```
-or: [
-  { and: [{ field: "origin", values: ["PROD"] }, { field: "tags", values: ["urn:li:tag:PII"] }] },
-  { and: [{ field: "origin", values: ["PROD"] }, { field: "glossaryTerms", values: ["urn:li:glossaryTerm:..."] }] },
-  ...
-]
-```
+The sweep **upserts per dataset and never deletes-then-inserts**. A dataset absent from
+the attribute read keeps its prior attributes rather than being blanked: a half-completed
+read that emptied `tag_urns` would silently narrow every filter in the system instead of
+failing visibly. `attrs_synced_at` records when each row was last refreshed and is
+surfaced on `GET /spoke/governance/metric/{metric_id}/dataset` so a reader can tell how
+fresh a filter's scope is.
 
-When `origin` is absent the clause is omitted. When the OR-group dimensions are all
-empty, `origin` becomes the single AND-clause and the enumeration returns every
-dataset with that origin. Explicit `dataset_urns` are validated separately via
-`get_aspect` and AND-ed against `origin` by checking the URN's third segment before
-resolving the aspect.
+`origin` holds whatever value DataHub's `FabricType` enum carries — `DEV`, `TEST`, `QA`,
+`UAT`, `EI`, `PRE`, `STG`, `NON_PROD`, `PROD`, `CORP`, `RVW`, `PRD`, `TST`, `SIT`, `SBX`,
+`SANDBOX` (see `FabricType.pdl`). DataSpoke keeps no allow-list; a filter naming a value
+no dataset carries simply matches nothing.
+
+**Filter evaluation is DataSpoke-side, not a DataHub search.** Ontology Generation,
+Metadata Generation, and Governance each resolve a filter with one SQL query against
+`dataset_registry`. `scrollAcrossEntities` is ES-backed, so mirroring does not remove
+DataHub's own tag-index lag — it bounds the resulting staleness to one sweep interval and
+makes it readable.
 
 ### Observed Ingestion Recency
 

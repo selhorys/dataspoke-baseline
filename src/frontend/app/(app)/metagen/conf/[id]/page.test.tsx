@@ -16,6 +16,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import MetagenConfDetailPage from "./page";
+import { ApiError } from "@/lib/api/client";
 import type { MetagenConf } from "@/types/metagen";
 
 vi.mock("next/navigation", () => ({
@@ -32,10 +33,12 @@ vi.mock("@/lib/auth/use-me", () => ({ useMe: () => mockUseMe() }));
 
 const mockConf = vi.fn();
 const putMutate = vi.fn();
+/** Mutable so a test can put a server error on the PUT mutation. */
+let putError: unknown = null;
 vi.mock("@/lib/api/metagen", () => ({
   useMetagenConf: () => mockConf(),
   useUpdateMetagenConf: () => ({
-    put: { mutate: putMutate, isPending: false, error: null },
+    put: { mutate: putMutate, isPending: false, error: putError },
     patch: { mutate: vi.fn(), isPending: false, error: null },
   }),
   useDeleteMetagenConf: () => ({ mutate: vi.fn(), isPending: false, error: null }),
@@ -63,8 +66,22 @@ vi.mock("@/components/range-picker", () => ({
 // internal submit button — mirroring the real component's contract (the Save
 // button lives in the page header and is wired via form={formId} type="submit").
 vi.mock("@/components/metagen/conf-form", () => ({
-  MetagenConfForm: ({ formId }: { formId: string }) =>
-    React.createElement("form", { id: formId, "data-testid": "conf-form" }),
+  MetagenConfForm: ({
+    formId,
+    serverError,
+    datasetFilterError,
+  }: {
+    formId: string;
+    serverError?: string;
+    datasetFilterError?: { message: string };
+  }) =>
+    React.createElement("form", {
+      id: formId,
+      "data-testid": "conf-form",
+      // The page decides which slot an error lands in; surface both to assert on.
+      "data-server-error": serverError ?? "",
+      "data-filter-error": datasetFilterError?.message ?? "",
+    }),
 }));
 
 vi.mock("@/components/metagen/metagen-event-table", () => ({
@@ -85,7 +102,7 @@ function makeConf(): MetagenConf {
     name: "catalog policy",
     is_enabled: true,
     schedule_tier: "daily",
-    dataset_filter: {},
+    dataset_filter: "",
     result_limit: 3,
     overwrite_pending: true,
     dataset_affected_count: 0,
@@ -121,6 +138,7 @@ beforeEach(() => {
   mockUseMe.mockReset();
   mockConf.mockReset();
   putMutate.mockReset();
+  putError = null;
 });
 
 describe("metagen conf detail — read-only view vs edit form", () => {
@@ -245,6 +263,59 @@ describe("metagen conf detail — write gating", () => {
         `page.tsx must keep ${key} on the conditional header button`,
       ).toContain(key);
     }
+  });
+});
+
+describe("metagen conf detail — a save error lands in exactly one slot", () => {
+  // spec/feature/FRONTEND_BASIC.md §Shared component notes: a 422
+  // INVALID_DATASET_FILTER "renders inline against the field". The generic slot
+  // is wired to the conf `name` Field, so routing the filter error there too
+  // would mislabel a valid name as invalid.
+  it("routes a 422 INVALID_DATASET_FILTER to the editor only", async () => {
+    mockUseMe.mockReturnValue({ canWrite: true });
+    mockConf.mockReturnValue({ data: makeConf(), isLoading: false, error: null });
+    putError = new ApiError(
+      {
+        error_code: "INVALID_DATASET_FILTER",
+        message: "unexpected token (at character 17)",
+        trace_id: "t-1",
+        resp_time: "2026-01-01T00:00:00Z",
+        detail: { position: 17 },
+      },
+      422,
+    );
+
+    await renderPage();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+    });
+
+    const form = screen.getByTestId("conf-form");
+    expect(form.getAttribute("data-filter-error")).toContain("INVALID_DATASET_FILTER");
+    expect(form.getAttribute("data-server-error")).toBe("");
+  });
+
+  it("keeps every other save error in the generic slot", async () => {
+    mockUseMe.mockReturnValue({ canWrite: true });
+    mockConf.mockReturnValue({ data: makeConf(), isLoading: false, error: null });
+    putError = new ApiError(
+      {
+        error_code: "CONFLICT",
+        message: "name already used",
+        trace_id: "t-2",
+        resp_time: "2026-01-01T00:00:00Z",
+      },
+      409,
+    );
+
+    await renderPage();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+    });
+
+    const form = screen.getByTestId("conf-form");
+    expect(form.getAttribute("data-server-error")).toContain("CONFLICT");
+    expect(form.getAttribute("data-filter-error")).toBe("");
   });
 });
 

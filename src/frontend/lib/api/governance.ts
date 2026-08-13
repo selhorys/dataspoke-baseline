@@ -5,13 +5,15 @@ import { apiFetch } from "@/lib/api/client";
 import { usePoll } from "@/lib/hooks/use-poll";
 import type {
   CreateMetricFormValues,
-  DatasetFilter,
+  MetricDatasetListResponse,
   MetricDefinition,
   MetricDefinitionListResponse,
   MetricEventListResponse,
   MetricFormValues,
   MetricResultListResponse,
   MetricRunResult,
+  MetricSeries,
+  MetricVerdict,
   ScheduleTier,
 } from "@/types/governance";
 
@@ -140,6 +142,49 @@ export function useMetricEvents(metricId: string, params: MetricEventParams = {}
   });
 }
 
+// ── Covered datasets ───────────────────────────────────────────────────────────
+
+interface MetricDatasetParams {
+  /**
+   * Repeatable verdict filter. Each value is emitted as its own `met` query
+   * pair; an omitted (or empty) list is read by the API as all three states, so
+   * callers wanting "none selected" must skip the request via `enabled: false`
+   * rather than passing `[]`.
+   */
+  met?: MetricVerdict[];
+  offset?: number;
+  limit?: number;
+  sort?: string;
+}
+
+function buildMetricDatasetUrl(metricId: string, params: MetricDatasetParams): string {
+  const sp = new URLSearchParams();
+  for (const verdict of params.met ?? []) sp.append("met", verdict);
+  if (params.offset !== undefined) sp.set("offset", String(params.offset));
+  if (params.limit !== undefined) sp.set("limit", String(params.limit));
+  sp.set("sort", params.sort ?? "dataset_urn");
+  return `/spoke/governance/metric/${metricId}/dataset?${sp.toString()}`;
+}
+
+/**
+ * GET /spoke/governance/metric/{id}/dataset — the datasets the metric's
+ * `dataset_filter` covers, joined to their latest verdict. Polled: a run
+ * replaces the whole verdict set.
+ */
+export function useMetricDatasets(
+  metricId: string,
+  params: MetricDatasetParams = {},
+  options: { enabled?: boolean } = {},
+) {
+  return usePoll<MetricDatasetListResponse>({
+    queryKey: ["governance", "metrics", metricId, "datasets", params],
+    queryFn: () =>
+      apiFetch<MetricDatasetListResponse>(buildMetricDatasetUrl(metricId, params)),
+    enabled: !!metricId && (options.enabled ?? true),
+    meta: { handledInline: true },
+  });
+}
+
 // ── Create metric ──────────────────────────────────────────────────────────────
 
 interface CreateMetricBody {
@@ -149,10 +194,10 @@ interface CreateMetricBody {
   metric_type: string;
   title: string;
   description: string;
-  metrics: string[];
+  metrics: MetricSeries[];
   metric_conf: Record<string, unknown>;
   schedule_tier: ScheduleTier | null;
-  dataset_filter: DatasetFilter;
+  dataset_filter: string;
 }
 
 function toCreateBody(values: CreateMetricFormValues): CreateMetricBody {
@@ -193,10 +238,10 @@ interface ReplaceMetricBody {
   metric_type: string;
   title: string;
   description: string;
-  metrics: string[];
+  metrics: MetricSeries[];
   metric_conf: Record<string, unknown>;
   schedule_tier: ScheduleTier | null;
-  dataset_filter: DatasetFilter;
+  dataset_filter: string;
 }
 
 function toReplaceBody(values: MetricFormValues): ReplaceMetricBody {
@@ -240,10 +285,10 @@ interface PatchMetricBody {
   metric_type?: string;
   title?: string;
   description?: string;
-  metrics?: string[];
+  metrics?: MetricSeries[];
   metric_conf?: Record<string, unknown>;
   schedule_tier?: ScheduleTier | null;
-  dataset_filter?: DatasetFilter;
+  dataset_filter?: string;
 }
 
 export function useUpdateMetricConf() {
@@ -296,6 +341,10 @@ export function useRunMetric() {
       });
       void qc.invalidateQueries({
         queryKey: ["governance", "metrics", vars.metricId, "events"],
+      });
+      // A non-dry run replaces the metric's verdict set wholesale.
+      void qc.invalidateQueries({
+        queryKey: ["governance", "metrics", vars.metricId, "datasets"],
       });
     },
   });

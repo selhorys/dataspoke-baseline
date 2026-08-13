@@ -416,7 +416,7 @@ PUT /api/v1/spoke/ontogen/attr/conf
 {
   "is_enabled": true,
   "schedule_tier": "daily",
-  "dataset_filter": {"tags": ["urn:li:tag:area:catalog"]}
+  "dataset_filter": "'urn:li:tag:area:catalog' IN tag_urns"
 }
 ```
 
@@ -593,7 +593,7 @@ POST /api/v1/spoke/metagen/conf
   "name": "fulfillment",
   "is_enabled": true,
   "schedule_tier": "daily",
-  "dataset_filter": {"tags": ["urn:li:tag:area:fulfillment"]},
+  "dataset_filter": "'urn:li:tag:area:fulfillment' IN tag_urns",
   "result_limit": 3,
   "overwrite_pending": true
 }
@@ -607,7 +607,7 @@ POST /api/v1/spoke/metagen/conf
   "name": "eu-privacy",
   "is_enabled": true,
   "schedule_tier": "weekly",
-  "dataset_filter": {"origin": "EU", "glossary_terms": ["urn:li:glossaryTerm:pii.gdpr"]},
+  "dataset_filter": "origin = 'EU' AND 'urn:li:glossaryTerm:pii.gdpr' IN glossary_term_urns",
   "result_limit": 2,
   "overwrite_pending": false
 }
@@ -745,17 +745,19 @@ GET /api/v1/spoke/metagen/event
 `172800`), 거버넌스 리드가 선언하는 신선도 SLO로서 해당 메트릭이 스캔하는 모든
 데이터셋에 동일하게 적용된다. `doc-health`는 빈 `{}`를 사용한다.
 
-`dataset_filter`는 네 가지 선택적 차원을 갖는다: `origin`(DataHub 데이터셋 URN의
-세 번째 세그먼트로 들어가는 `FabricType` 값 — `PROD` / `DEV` / `CORP` / `EI` /
-`STG` / `NON_PROD` / `QA` / `TEST` / `PRE` / `RVW` / `SIT` / `SANDBOX` / … — 값은
-DataHub로 그대로 전달된다), `tags`(DataHub 태그 URN), `glossary_terms`(DataHub
-용어 URN), `dataset_urns`(명시적 `urn:li:dataset:(…)` URN). 태그·용어·URN
-차원은 하나의 OR-그룹을 이루며, `origin`은 그 OR-그룹과 AND로 결합된다. `{}`는
-모든 데이터셋을 뜻한다. URN 포맷은 PUT/PATCH 시점에 검증되며
-(`422 INVALID_DATASET_URN`), 실행 시점에 해석되지 않는 URN은 건너뛰고
-`METRIC.RUN_COMPLETE` 이벤트의 `unresolved_urns`에 보고된다. 리졸버의 GraphQL
-형태는
-[`DATAHUB_INTEGRATION.md §Origin filter group`](DATAHUB_INTEGRATION.md#origin-filter-group)에,
+`dataset_filter`는 데이터셋 레지스트리 — DataHub 데이터 자산을 DataSpoke가 로컬에
+미러링한 테이블 — 위의 SQL `WHERE` 절 문자열이다. 컬럼은 데이터셋 URN에서 파싱되는
+스칼라 `dataset_urn`·`origin`(DataHub `FabricType` 세그먼트 — `PROD` / `DEV` /
+`CORP` / `EI` / `STG` / `NON_PROD` / …)·`platform_urn`과, DataHub에서 동기화되는
+배열 `tag_urns`·`glossary_term_urns`다. 프레디킷은 `AND` / `OR`와 괄호로 결합하며,
+빈 문자열은 등록된 모든 데이터셋을 뜻한다. 전체 문법과 상한은
+[`API.md` §`dataset_filter` grammar](API.md#dataset_filter-grammar)에 있다. 잘못된
+필터는 PUT/PATCH 시점에 `422 INVALID_DATASET_FILTER`로, 잘못된 `dataset_urn`
+리터럴은 `422 INVALID_DATASET_URN`으로 거부된다. 실행 시점에 어떤 등록 데이터셋과도
+매칭되지 않는 리터럴 URN은 `METRIC.RUN_COMPLETE` 이벤트의 `unresolved_urns`에
+보고된다. 해석은 DataSpoke 측 SQL 질의이므로 필터의 스코프 신선도는 마지막 속성
+스윕 시점에 묶인다
+([`DATAHUB_INTEGRATION.md §Dataset attribute sync`](DATAHUB_INTEGRATION.md#dataset-attribute-sync)).
 breakdown 형태와 DAG 시맨틱은
 [`BACKEND.md §Metrics Service`](feature/BACKEND.md#metrics-service-srcbackendmetrics)에
 정의되어 있다.
@@ -764,7 +766,7 @@ breakdown 형태와 DAG 시맨틱은
 
 최초 기동 시, DataSpoke는 내장 타입별로 한 개씩 메트릭을 시드한다(`metric_definitions`
 행이 부재할 때만 삽입; 멱등). 기본값은 `mode: "active"`, `is_enabled: false`,
-`schedule_tier: "daily"`, `dataset_filter: {}`, 타입에 맞는 `metric_conf`다.
+`schedule_tier: "daily"`, `dataset_filter: ""`, 타입에 맞는 `metric_conf`다.
 시드는 비활성 상태로 들어가므로, 거버넌스 리드가 PATCH `is_enabled: true`로
 명시적으로 켜거나 `?dry_run=true` 1회 실행을 거친 뒤 스케줄 측정이 시작된다.
 사용자는 어떤 디폴트라도 수정·비활성화·삭제할 수 있고, 같은 세 타입으로 메트릭을
@@ -778,6 +780,7 @@ breakdown 형태와 DAG 시맨틱은
 | `PUT/PATCH/GET/DELETE /spoke/governance/metric/{metric_id}/attr/conf` | 기존 메트릭 교체·갱신·읽기·삭제 (`mode`, `is_enabled`, `metric_type`, `title`, `description`, `metrics`, `metric_conf`, `schedule_tier`, `dataset_filter`). `PUT`은 기존 정의를 교체하며 id가 없으면 `404 METRIC_NOT_FOUND` |
 | `POST /spoke/governance/metric/{metric_id}/method/run` | 측정 실행 트리거; `?dry_run=true`는 기록 없이 평가만. 동일 메트릭의 동시 실행은 `409 METRIC_RUNNING` |
 | `GET /spoke/governance/metric/{metric_id}/attr/result?from=…&to=…` | 과거 측정의 시계열 (각 행은 `values`와 데이터셋별 `breakdown`을 담음) |
+| `GET /spoke/governance/metric/{metric_id}/dataset` | 메트릭이 커버하는 데이터셋과 각각의 최신 판정 — `met`은 `true` / `false` / `unknown`(스코프에는 있으나 평가된 적 없음) — 그리고 `last_check_at`과 스코프 신선도 `attrs_synced_at` |
 | `GET /spoke/governance/metric/{metric_id}/event` | 실행 완료·정의 변경 이벤트 |
 | `GET /spoke/governance/metric` | 모든 메트릭 리스트 |
 
@@ -799,10 +802,13 @@ POST /api/v1/spoke/governance/metric
   "metric_type": "doc-health",
   "title": "Doc Health (DEV)",
   "description": "DEV 데이터셋의 일간 문서 완전성 점검",
-  "metrics": ["total", "doc_health"],
+  "metrics": [
+    {"name": "total", "color": "#2563EB", "idx": 1},
+    {"name": "doc_health", "color": "#16A34A", "idx": 2}
+  ],
   "metric_conf": {},
   "schedule_tier": "daily",
-  "dataset_filter": {"origin": "DEV"}
+  "dataset_filter": "origin = 'DEV'"
 }
 ```
 

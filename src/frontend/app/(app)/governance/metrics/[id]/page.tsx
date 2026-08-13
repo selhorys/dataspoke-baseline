@@ -31,12 +31,14 @@ import { toast } from "@/components/ui/use-toast";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { MetricForm } from "@/components/governance/metric-form";
 import { MetricTimeseriesChart } from "@/components/governance/metric-timeseries-chart";
+import { MetricDatasetTable } from "@/components/governance/metric-dataset-table";
 import { MetricEventTable } from "@/components/governance/metric-event-table";
 import { FieldPanel } from "@/components/forms/field-panel";
 import { FormGrid } from "@/components/ui/form-grid";
 import { DatasetFilterView } from "@/components/dataset-filter-view";
 import { ScheduleTierLink, scheduleDagId } from "@/components/schedule-tier-link";
 import { ApiError } from "@/lib/api/client";
+import { datasetFilterError } from "@/lib/dataset-filter-error";
 import {
   useMetricConf,
   useMetricResults,
@@ -154,8 +156,12 @@ export default function MetricDetailPage({
 
   // ── Error messages ──────────────────────────────────────────────────────────
 
-  const saveError =
-    replace.error instanceof ApiError
+  // A 422 INVALID_DATASET_FILTER belongs against the filter field, not in the
+  // form's generic error slot.
+  const filterError = datasetFilterError(replace.error);
+  const saveError = filterError
+    ? undefined
+    : replace.error instanceof ApiError
       ? `${replace.error.error_code}: ${replace.error.message}`
       : replace.error?.message;
 
@@ -306,8 +312,23 @@ export default function MetricDetailPage({
               </FieldPanel>
             </div>
 
+            {/* One line per series descriptor — swatch, name, idx — in idx order. */}
             <FieldPanel label="metrics" className="sm:col-span-2">
-              <span className="font-mono text-xs">{conf.metrics.join(", ")}</span>
+              <ul className="space-y-1">
+                {[...conf.metrics]
+                  .sort((a, b) => a.idx - b.idx)
+                  .map((series) => (
+                    <li key={series.name} className="flex items-center gap-2 font-mono text-xs">
+                      <span
+                        aria-hidden="true"
+                        className="inline-block h-3 w-3 shrink-0 rounded-sm border"
+                        style={{ backgroundColor: series.color }}
+                      />
+                      <span>{series.name}</span>
+                      <span className="text-muted-foreground">({series.idx})</span>
+                    </li>
+                  ))}
+              </ul>
             </FieldPanel>
 
             <FieldPanel label="description" className="sm:col-span-2">
@@ -335,6 +356,7 @@ export default function MetricDetailPage({
             onCancel={() => setIsEditing(false)}
             isPending={replace.isPending}
             serverError={saveError}
+            filterError={filterError}
           />
         )}
       </section>
@@ -355,9 +377,16 @@ export default function MetricDetailPage({
         </div>
         <MetricTimeseriesChart
           results={resultsData?.results ?? []}
+          series={conf.metrics}
           height={200}
           grain={resultGrain}
         />
+      </section>
+
+      {/* dataset — covered datasets with their latest verdict */}
+      <section className="rounded-lg border p-5">
+        <h2 className="mb-3 text-sm font-medium">Datasets</h2>
+        <MetricDatasetTable metricId={metricId} />
       </section>
 
       {/* event log */}

@@ -1,20 +1,17 @@
 """Metadata Generation request/response schemas — UC4."""
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from src.api.schemas._dataset_filter import (
+    DATASET_FILTER_FIELD_DESCRIPTION as _FILTER_DESC,
+)
 from src.api.schemas._dataset_filter import validate_dataset_filter
-from src.api.schemas.common import PaginatedResponse
+from src.api.schemas.common import DatasetUrn, PaginatedResponse
 
 # ── Conf collection ───────────────────────────────────────────────────────────
-
-_FILTER_DESC = (
-    "Optional scope filter. Keys: origin (DataHub FabricType, AND-ed with the OR-group), "
-    "tags (list[str], OR), glossary_terms (list[str], OR), "
-    "dataset_urns (list[str], OR). Each list dimension capped at 1,000 entries."
-)
 
 
 class MetagenConfResponse(BaseModel):
@@ -22,7 +19,7 @@ class MetagenConfResponse(BaseModel):
     name: str
     is_enabled: bool
     schedule_tier: Literal["hourly", "daily", "weekly"] | None
-    dataset_filter: dict[str, Any] = Field(default_factory=dict)
+    dataset_filter: str = Field(default="", description=_FILTER_DESC)
     result_limit: int
     overwrite_pending: bool
     dataset_affected_count: int = 0
@@ -39,7 +36,7 @@ class MetagenConfCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     is_enabled: bool = False
     schedule_tier: Literal["hourly", "daily", "weekly"] | None = None
-    dataset_filter: dict[str, Any] = Field(default_factory=dict, description=_FILTER_DESC)
+    dataset_filter: str = Field(default="", description=_FILTER_DESC)
     result_limit: int = Field(default=3, ge=1, le=20)
     overwrite_pending: bool = True
 
@@ -53,7 +50,7 @@ class MetagenConfPutRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     is_enabled: bool
     schedule_tier: Literal["hourly", "daily", "weekly"] | None = None
-    dataset_filter: dict[str, Any] = Field(default_factory=dict, description=_FILTER_DESC)
+    dataset_filter: str = Field(default="", description=_FILTER_DESC)
     result_limit: int = Field(default=3, ge=1, le=20)
     overwrite_pending: bool = True
 
@@ -67,7 +64,7 @@ class MetagenConfPatchRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     is_enabled: bool | None = None
     schedule_tier: Literal["hourly", "daily", "weekly"] | None = None
-    dataset_filter: dict[str, Any] | None = None
+    dataset_filter: str | None = Field(default=None, description=_FILTER_DESC)
     result_limit: int | None = Field(default=None, ge=1, le=20)
     overwrite_pending: bool | None = None
 
@@ -201,7 +198,13 @@ class MetagenDatasetListResponse(PaginatedResponse):
 
 
 class MetagenRunRequest(BaseModel):
-    dataset_urns: list[str] | None = None
+    #: Narrows the run to these URNs within the conf's own `dataset_filter`
+    #: scope; omitted means the full filter applies. Shape- and length-checked
+    #: here because the resolver binds the list straight into one SQL statement:
+    #: unvalidated, an oversized list is a driver-level failure rather than a 422,
+    #: and the AST's `check_dataset_urn_literals` never sees an override URN.
+    #: Capped at the same 1,000 entries as a filter's `dataset_urn` literals.
+    dataset_urns: Annotated[list[DatasetUrn], Field(max_length=1_000)] | None = None
 
 
 class MetagenRunResponse(BaseModel):

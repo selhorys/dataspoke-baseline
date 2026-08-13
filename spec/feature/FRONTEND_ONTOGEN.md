@@ -31,8 +31,9 @@ The OntoGen sidebar entry is a foldable group with three children —
 | `/ontogen/seed` | `GET .../attr/seed`, `GET .../attr/seed/{seed_id}` (Markdown) | `POST .../attr/seed` (Markdown body), `PATCH/DELETE .../attr/seed/{seed_id}`, `PATCH .../attr/seed/{seed_id}/attr/enabled` (JSON `{is_enabled}`) |
 | `/ontogen/result` | `GET .../result/{node\|edge\|triple}` (each row carries `run_id`) | `POST .../result/{node\|edge\|triple}/{id}/method/review` body `{verdict: "approve"\|"reject", reason}` |
 
-`dataset_filter` follows the standard four-dimension shape — see
-[API §Metric `dataset_filter`](../API.md#metric-spokegovernancemetric).
+`dataset_filter` is a SQL `WHERE`-clause string, edited through the shared
+[DatasetFilterEditor](FRONTEND_BASIC.md#shared-component-notes) — see
+[API §`dataset_filter` grammar](../API.md#dataset_filter-grammar).
 
 The **Seed library** (`/ontogen/seed`) lists **all** seeds — enabled and disabled — each
 row showing an enabled/disabled indicator and a per-seed enable/disable toggle
@@ -109,8 +110,9 @@ The `/ontogen/conf` page renders the singleton conf with all action controls at
 the top-right. When not editing it shows a read-only **view** of the conf fields
 (`is_enabled`, `schedule_tier`, `dataset_filter`, `default_run_prompt`) as plain
 text — the `schedule_tier` value links to its backing Airflow DAG
-(`ontogen-<tier>`), and `default_run_prompt` renders as a preformatted text block
-(em dash when empty). The header shows **Edit** and **Run**; entering
+(`ontogen-<tier>`), `dataset_filter` renders through
+[DatasetFilterView](FRONTEND_BASIC.md#shared-component-notes), and
+`default_run_prompt` renders as a preformatted text block (em dash when empty). The header shows **Edit** and **Run**; entering
 edit mode replaces them with **Save** and **Cancel** and hides Run. **Run**
 opens a dialog (`POST .../method/run`) with an optional Markdown one-shot prompt
 and a "Dry run" checkbox. **Edit** swaps the view for the editable form; **Save**

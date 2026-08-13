@@ -54,12 +54,15 @@ from src.api.schemas.metagen import (
 from src.api.schemas.metrics import (
     CreateMetricConfigRequest,
     MetricAttrResponse,
+    MetricDatasetListResponse,
+    MetricDatasetRow,
     MetricDefinitionListItem,
     MetricDefinitionListResponse,
     MetricDefinitionResponse,
     MetricResultListResponse,
     MetricResultResponse,
     MetricRunResultResponse,
+    MetricSeries,
     PatchMetricConfigRequest,
     ReplaceMetricConfigRequest,
 )
@@ -142,6 +145,8 @@ __all__ = [
     "MetagenUncoveredRow",
     # metrics
     "MetricAttrResponse",
+    "MetricDatasetListResponse",
+    "MetricDatasetRow",
     "MetricDefinitionListItem",
     "MetricDefinitionListResponse",
     "CreateMetricConfigRequest",
@@ -149,6 +154,7 @@ __all__ = [
     "MetricResultListResponse",
     "MetricResultResponse",
     "MetricRunResultResponse",
+    "MetricSeries",
     "PatchMetricConfigRequest",
     "ReplaceMetricConfigRequest",
     # ontogen

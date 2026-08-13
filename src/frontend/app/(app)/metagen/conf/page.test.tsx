@@ -36,7 +36,7 @@ function makeConf(overrides: Partial<MetagenConf> = {}): MetagenConf {
     name: "catalog policy",
     is_enabled: true,
     schedule_tier: "daily",
-    dataset_filter: { tags: ["pii"] },
+    dataset_filter: "'urn:li:tag:pii' IN tag_urns",
     result_limit: 5,
     overwrite_pending: true,
     dataset_affected_count: 0,
@@ -65,7 +65,7 @@ describe("metagen conf list page", () => {
     expect(screen.getByRole("link", { name: "catalog policy" })).toBeTruthy();
     expect(screen.getByText("enabled")).toBeTruthy();
     expect(screen.getByText("daily")).toBeTruthy();
-    expect(screen.getByText("1 tag")).toBeTruthy();
+    expect(screen.getByText("'urn:li:tag:pii' IN tag_urns")).toBeTruthy();
   });
 
   it("Editor sees Create conf and a per-row Run action", () => {

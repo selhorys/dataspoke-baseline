@@ -424,7 +424,7 @@ async def test_ontogen_activity_skips_disabled_conf(
             json={
                 "is_enabled": False,
                 "schedule_tier": "daily",
-                "dataset_filter": original.get("dataset_filter") or {},
+                "dataset_filter": original.get("dataset_filter") or "",
                 "default_run_prompt": original.get("default_run_prompt"),
             },
         )
@@ -454,7 +454,7 @@ async def test_ontogen_activity_skips_disabled_conf(
             json={
                 "is_enabled": original.get("is_enabled", True),
                 "schedule_tier": original.get("schedule_tier"),
-                "dataset_filter": original.get("dataset_filter") or {},
+                "dataset_filter": original.get("dataset_filter") or "",
                 "default_run_prompt": original.get("default_run_prompt"),
             },
         )

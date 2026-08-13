@@ -56,7 +56,8 @@ const WRITE_METHODS = new Set(["PUT", "PATCH"]);
 interface OntogenConfSnapshot {
   is_enabled: boolean;
   schedule_tier: string | null;
-  dataset_filter: Record<string, unknown>;
+  /** SQL WHERE clause over the dataset registry (API.md §`dataset_filter` grammar). */
+  dataset_filter: string;
   default_run_prompt: string | null;
 }
 
@@ -69,7 +70,7 @@ test.beforeAll(async ({ adminApi }) => {
   snapshot = {
     is_enabled: conf.is_enabled,
     schedule_tier: conf.schedule_tier ?? null,
-    dataset_filter: conf.dataset_filter ?? {},
+    dataset_filter: conf.dataset_filter ?? "",
     default_run_prompt: conf.default_run_prompt ?? null,
   };
 });

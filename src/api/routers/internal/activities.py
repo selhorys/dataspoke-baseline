@@ -22,12 +22,14 @@ Spec: spec/feature/BACKEND.md §DAG Catalogue + §Dependency Injection.
 """
 
 import logging
+from typing import Annotated
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from src.api.auth.internal import require_internal_token
+from src.api.schemas.common import DatasetUrn
 from src.shared.events import AUTH_ROLE_SYNC_FIXED
 from src.shared.exceptions import ConflictError, DataSpokeError
 from src.shared.models.enums import EventStatus
@@ -161,7 +163,9 @@ async def ingestion_sync() -> dict[str, object]:
 class MetagenRunRequest(BaseModel):
     # Internal variant; public counterpart is src/api/schemas/metagen.MetagenRunRequest (no `tier`).
     tier: str | None = None
-    dataset_urns: list[str] | None = None
+    # Same shape and cap as the public counterpart: this body reaches the same
+    # resolver, which binds the list into one SQL statement.
+    dataset_urns: Annotated[list[DatasetUrn], Field(max_length=1_000)] | None = None
     dry_run: bool = False
 
 

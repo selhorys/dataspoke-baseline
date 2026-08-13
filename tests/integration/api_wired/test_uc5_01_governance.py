@@ -61,7 +61,10 @@ async def test_uc5_governance_imazon_example(
             "title": "Ingestion Freshness (DEV)",
             "description": "Daily count of datasets ingested within the configured time window "
             "across DEV",
-            "metrics": ["total", "ingested_in_time"],
+            "metrics": [
+                {"name": "total", "color": "#64748B", "idx": 1},
+                {"name": "ingested_in_time", "color": "#22C55E", "idx": 2},
+            ],
             "metric_conf": {"time_window_sec": 172800},
         },
         {
@@ -70,7 +73,10 @@ async def test_uc5_governance_imazon_example(
             "title": "Validation Score (DEV)",
             "description": "Daily sum of dataset validation scores within the configured time "
             "window across DEV",
-            "metrics": ["total", "validation_score_sum"],
+            "metrics": [
+                {"name": "total", "color": "#64748B", "idx": 1},
+                {"name": "validation_score_sum", "color": "#3B82F6", "idx": 2},
+            ],
             "metric_conf": {"time_window_sec": 172800},
         },
         {
@@ -78,7 +84,10 @@ async def test_uc5_governance_imazon_example(
             "type": "doc-health",
             "title": "Doc Health (DEV)",
             "description": "Daily documentation-completeness check across DEV datasets",
-            "metrics": ["total", "doc_health"],
+            "metrics": [
+                {"name": "total", "color": "#64748B", "idx": 1},
+                {"name": "doc_health", "color": "#A855F7", "idx": 2},
+            ],
             "metric_conf": {},
         },
     ]
@@ -110,7 +119,7 @@ async def test_uc5_governance_imazon_example(
                     "metrics": cfg["metrics"],
                     "metric_conf": cfg["metric_conf"],
                     "schedule_tier": "daily",
-                    "dataset_filter": {"origin": "DEV"},
+                    "dataset_filter": "origin = 'DEV'",
                 },
             )
             assert post_resp.status_code == 201, (
@@ -162,7 +171,7 @@ async def test_uc5_governance_imazon_example(
                 "metrics": collision_cfg["metrics"],
                 "metric_conf": collision_cfg["metric_conf"],
                 "schedule_tier": "daily",
-                "dataset_filter": {"origin": "DEV"},
+                "dataset_filter": "origin = 'DEV'",
             },
         )
         assert collision_resp.status_code == 409, (
@@ -193,7 +202,7 @@ async def test_uc5_governance_imazon_example(
                 "metrics": replace_cfg["metrics"],
                 "metric_conf": replace_cfg["metric_conf"],
                 "schedule_tier": "daily",
-                "dataset_filter": {"origin": "DEV"},
+                "dataset_filter": "origin = 'DEV'",
             },
         )
         assert replace_resp.status_code == 200, (
@@ -224,10 +233,13 @@ async def test_uc5_governance_imazon_example(
                 "metric_type": "doc-health",
                 "title": "Should Fail",
                 "description": "PUT on absent id must return 404",
-                "metrics": ["total", "doc_health"],
+                "metrics": [
+                    {"name": "total", "color": "#64748B", "idx": 1},
+                    {"name": "doc_health", "color": "#A855F7", "idx": 2},
+                ],
                 "metric_conf": {},
                 "schedule_tier": "daily",
-                "dataset_filter": {},
+                "dataset_filter": "",
             },
         )
         assert absent_put_resp.status_code == 404, (
@@ -295,10 +307,12 @@ async def test_uc5_governance_imazon_example(
                 "result.values must be a dict. "
                 "spec: USE_CASE_en.md §UC5 §Built-in active metric types."
             )
-            assert set(results[0]["values"].keys()) == set(cfg["metrics"]), (
-                f"'{cfg['metric_id']}' values keys must equal the declared metrics "
-                f"{set(cfg['metrics'])}. "
-                "spec: USE_CASE_en.md §UC5 §Built-in active metric types."
+            declared_names = {series["name"] for series in cfg["metrics"]}
+            assert set(results[0]["values"].keys()) == declared_names, (
+                f"'{cfg['metric_id']}' values keys must equal the declared series names "
+                f"{declared_names}. "
+                "spec: feature/BACKEND.md §Metrics Service — 'the service filters the "
+                "dict to the names declared by attr/conf.metrics[] before persisting'."
             )
 
     finally:
@@ -316,3 +330,220 @@ async def test_uc5_governance_imazon_example(
             )
         # Also clean up throwaway id from Step 1c(b) pre-flight delete.
         await api_client.delete(_throwaway_conf_url, headers=admin_headers)
+
+
+@pytest.mark.asyncio
+async def test_uc5_dataset_filter_worked_examples_and_dataset_view(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """UC5 narrative continued: the CDO scopes a metric with the documented clause
+    forms, runs it, and opens the metric's Datasets panel to see which datasets met
+    the criterion.
+
+    Story steps:
+      1. Create a metric whose `dataset_filter` is the tag-membership clause UC3's
+         Imazon example uses — the simplest of the two documented forms.
+      2. Replace it with the composite clause spec/API.md §`dataset_filter` grammar
+         prints as its worked example (an origin equality AND-ed with a parenthesised
+         tag/glossary-term OR).
+      3. A clause that names a column outside the grammar is rejected with the
+         character position, so the editor can point at the error.
+      4. Run the metric, then read `GET .../dataset`: every covered dataset carries a
+         `met` verdict, a `last_check_at`, and the envelope reports how fresh the
+         scope's attributes are.
+      5. The `met` filter narrows that page.
+
+    spec: USE_CASE_en.md §UC5 §Imazon Example — POST /spoke/governance/metric with a
+          `dataset_filter`, then POST method/run for an immediate first run.
+    spec: API.md §`dataset_filter` grammar — the grammar, the worked example, and the
+          422 INVALID_DATASET_FILTER position.
+    spec: API.md §Metric — GET /spoke/governance/metric/{metric_id}/dataset.
+    """
+    _METRIC_ID = "uc5-filter-worked-examples"
+    conf_url = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/attr/conf"
+    run_url = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/method/run"
+    dataset_url = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/dataset"
+
+    # Pre-flight: a leftover from an aborted run must not turn step 1 into a 409.
+    await api_client.delete(conf_url, headers=admin_headers)
+
+    try:
+        # ── Step 1: create with the tag-membership clause ─────────────────────
+        # spec: USE_CASE_en.md §UC3 §Imazon Example prints this exact clause for the
+        # ontogen conf; §`dataset_filter` grammar states UC5 uses the same grammar.
+        create_resp = await api_client.post(
+            "/api/v1/spoke/governance/metric",
+            headers=admin_headers,
+            json={
+                "metric_id": _METRIC_ID,
+                "mode": "active",
+                "is_enabled": True,
+                "metric_type": "doc-health",
+                "title": "Catalog documentation health",
+                "description": "Documentation completeness across the catalog-tagged estate",
+                "metrics": [
+                    {"name": "total", "color": "#2563EB", "idx": 1},
+                    {"name": "doc_health", "color": "#16A34A", "idx": 2},
+                ],
+                "metric_conf": {},
+                "schedule_tier": "daily",
+                "dataset_filter": "'urn:li:tag:area:catalog' IN tag_urns",
+            },
+        )
+        assert create_resp.status_code == 201, (
+            f"POST /spoke/governance/metric expected 201, got "
+            f"{create_resp.status_code}: {create_resp.text}. "
+            "spec: USE_CASE_en.md §UC5 §Imazon Example."
+        )
+        assert create_resp.json()["dataset_filter"] == "'urn:li:tag:area:catalog' IN tag_urns", (
+            "the clause must round-trip verbatim — the backend owns the grammar, so no "
+            "route rewrites or normalises it. spec: API.md §`dataset_filter` grammar."
+        )
+        assert [series["idx"] for series in create_resp.json()["metrics"]] == [1, 2], (
+            "series descriptors round-trip with their display order. "
+            "spec: API.md §Metric — Definition body."
+        )
+
+        # ── Step 2: replace with the composite worked example ─────────────────
+        # spec: API.md §`dataset_filter` grammar — the printed example clause.
+        composite = (
+            "origin = 'DEV' AND ('urn:li:tag:area:catalog' IN tag_urns"
+            " OR 'urn:li:glossaryTerm:pii.gdpr' IN glossary_term_urns)"
+        )
+        put_resp = await api_client.put(
+            conf_url,
+            headers=admin_headers,
+            json={
+                "mode": "active",
+                "is_enabled": True,
+                "metric_type": "doc-health",
+                "title": "Catalog documentation health",
+                "description": "Documentation completeness across catalog and GDPR datasets",
+                "metrics": [
+                    {"name": "total", "color": "#2563EB", "idx": 1},
+                    {"name": "doc_health", "color": "#16A34A", "idx": 2},
+                ],
+                "metric_conf": {},
+                "schedule_tier": "daily",
+                "dataset_filter": composite,
+            },
+        )
+        assert put_resp.status_code == 200, (
+            f"PUT attr/conf with the composite clause expected 200, got "
+            f"{put_resp.status_code}: {put_resp.text}. "
+            "spec: API.md §`dataset_filter` grammar — depth-1 parentheses are accepted."
+        )
+        assert put_resp.json()["dataset_filter"] == composite
+
+        get_conf = await api_client.get(conf_url, headers=admin_headers)
+        assert get_conf.status_code == 200, get_conf.text
+        assert get_conf.json()["dataset_filter"] == composite, (
+            "the stored clause must read back byte-identical. "
+            "spec: API.md §`dataset_filter` grammar."
+        )
+
+        # ── Step 3: a clause outside the grammar is refused with its position ──
+        # spec: API.md §Error Catalogue — INVALID_DATASET_FILTER, 422, "`detail` carries
+        # the character position of the error".
+        bad_resp = await api_client.patch(
+            conf_url,
+            headers=admin_headers,
+            json={"dataset_filter": "owner = 'catalog-team'"},
+        )
+        assert bad_resp.status_code == 422, (
+            f"PATCH with an unknown column expected 422, got "
+            f"{bad_resp.status_code}: {bad_resp.text}."
+        )
+        bad_body = bad_resp.json()
+        assert bad_body.get("error_code") == "INVALID_DATASET_FILTER", bad_body
+        assert "position" in (bad_body.get("detail") or {}), (
+            f"the 422 must carry the character position so the editor can point at the "
+            f"error; got {bad_body!r}. spec: API.md §Error Catalogue."
+        )
+
+        still = await api_client.get(conf_url, headers=admin_headers)
+        assert still.json()["dataset_filter"] == composite, (
+            "a rejected PATCH must not have altered the stored clause"
+        )
+
+        # ── Step 4: run, then open the Datasets panel ─────────────────────────
+        run_resp = await api_client.post(run_url, headers=admin_headers)
+        assert run_resp.status_code == 200, (
+            f"POST method/run expected 200, got {run_resp.status_code}: {run_resp.text}. "
+            "spec: USE_CASE_en.md §UC5 §Imazon Example — immediate first run."
+        )
+        scanned = int(run_resp.json()["detail"]["values"]["total"])
+
+        view_resp = await api_client.get(f"{dataset_url}?limit=1000", headers=admin_headers)
+        assert view_resp.status_code == 200, (
+            f"GET .../dataset expected 200, got {view_resp.status_code}: {view_resp.text}. "
+            "spec: API.md §Metric — GET /spoke/governance/metric/{metric_id}/dataset."
+        )
+        view = view_resp.json()
+        assert view["total_count"] == scanned, (
+            f"the Datasets panel must cover the same scope the run measured "
+            f"({scanned}); got {view['total_count']}. "
+            "spec: feature/BACKEND.md §Metrics Service — one resolver for both."
+        )
+        assert scanned > 0, (
+            "backstop: the composite clause must match at least one seeded dataset, or "
+            "the row assertions below are vacuous. A zero here means the attribute sweep "
+            "has not run — see spec/TESTING.md §Prerequisites."
+        )
+        for row in view["datasets"]:
+            assert set(row) == {"dataset_urn", "met", "last_check_at", "detail"}, (
+                f"row inventory must be exactly the four documented fields; got "
+                f"{sorted(row)}. spec: API.md §Metric."
+            )
+            assert row["met"] in ("true", "false"), (
+                f"{row['dataset_urn']} was in scope for the run just made, so it must "
+                f"carry a verdict rather than 'unknown'; got {row['met']!r}. "
+                "spec: API.md §Metric — 'unknown' = in scope but never evaluated."
+            )
+            assert row["last_check_at"] is not None, (
+                "doc-health has no per-dataset timestamp, so last_check_at falls back to "
+                f"the run's measured_at; got null for {row['dataset_urn']}. "
+                "spec: API.md §Metric — last_check_at fallback."
+            )
+        assert "attrs_synced_at" in view, (
+            "the envelope must state how fresh the scope's attributes are, so a filter "
+            "matching nothing is distinguishable from one whose attributes have not "
+            "synced. spec: API.md §Metric."
+        )
+
+        # ── Step 5: the met filter narrows the panel ──────────────────────────
+        # spec: API.md §Metric — "Repeatable `met` query param (default: all three)".
+        served = {row["dataset_urn"]: row["met"] for row in view["datasets"]}
+        for state in ("true", "false"):
+            filtered = await api_client.get(
+                f"{dataset_url}?met={state}&limit=1000", headers=admin_headers
+            )
+            assert filtered.status_code == 200, filtered.text
+            body = filtered.json()
+            assert {row["met"] for row in body["datasets"]} <= {state}, (
+                f"met={state} must return that state alone; got "
+                f"{sorted({row['met'] for row in body['datasets']})}."
+            )
+            assert body["total_count"] == sum(1 for met in served.values() if met == state), (
+                f"met={state}: total_count must count the filtered set, not the scope."
+            )
+            assert body["attrs_synced_at"] == view["attrs_synced_at"], (
+                "attrs_synced_at is scope-relative and must not move with the met "
+                "filter. spec: API.md §Metric."
+            )
+
+        unknown_page = await api_client.get(
+            f"{dataset_url}?met=unknown&limit=1000", headers=admin_headers
+        )
+        assert unknown_page.status_code == 200, unknown_page.text
+        assert unknown_page.json()["datasets"] == [], (
+            "every dataset in scope was measured by the run just made, so no dataset "
+            "may read 'unknown'. spec: API.md §Metric."
+        )
+    finally:
+        del_resp = await api_client.delete(conf_url, headers=admin_headers)
+        assert del_resp.status_code in (204, 404), (
+            f"DELETE '{_METRIC_ID}' expected 204 or 404, got "
+            f"{del_resp.status_code}: {del_resp.text}."
+        )

@@ -11,11 +11,11 @@ import { FormGrid } from "@/components/ui/form-grid";
 import { DatasetFilterView } from "@/components/dataset-filter-view";
 import { ScheduleTierLink, scheduleDagId } from "@/components/schedule-tier-link";
 import type { MetagenConf } from "@/types/metagen";
-import type { DatasetFilter } from "@/types/governance";
 
 interface MetagenConfViewProps {
   conf: MetagenConf;
-  datasetFilter: DatasetFilter;
+  /** dataset_filter — a SQL WHERE clause string. */
+  datasetFilter: string;
 }
 
 export function MetagenConfView({ conf, datasetFilter }: MetagenConfViewProps) {

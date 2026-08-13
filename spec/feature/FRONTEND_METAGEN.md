@@ -44,8 +44,9 @@ dataset's metagen events fold into that page's unified **Events** panel.
 | `/metagen/uncovered` | `GET /spoke/metagen/uncovered` (with `include_disallowed` toggle) | — |
 | `/data/[urn]` MetaGen panel | `GET …/attr/metagen/boundary`, `GET …/attr/metagen/item`, `GET …/attr/metagen/item/{item_id}` (per-item candidates) | `PUT/DELETE …/attr/metagen/boundary` (fields: `is_enabled`, `allowed[]`); `POST …/attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review` body `{verdict: "approve"\|"reject", reason}` |
 
-`dataset_filter` follows the standard four-dimension shape — see
-[API §Metric `dataset_filter`](../API.md#metric-spokegovernancemetric).
+`dataset_filter` is a SQL `WHERE`-clause string, edited through the shared
+[DatasetFilterEditor](FRONTEND_BASIC.md#shared-component-notes) — see
+[API §`dataset_filter` grammar](../API.md#dataset_filter-grammar).
 
 ## Conf list (`/metagen/conf`)
 
@@ -223,12 +224,12 @@ uncovered list, and candidate text, with no action buttons.
 ## Components
 
 - `MetagenConfList` — the conf list with the "Create conf" button.
-- `MetagenConfForm` — the conf form (create + edit), with the `dataset_filter` builder.
+- `MetagenConfForm` — the conf form (create + edit), with the `dataset_filter` editor.
 - `MetagenConfView` — the read-only conf view (plain-text fields, `schedule_tier` as a DAG link, `dataset_filter` via `DatasetFilterView`), shown on `/metagen/conf/[id]` until `Edit`.
 - `RunDialog` — per-conf dry-run / run trigger dialog with status. Its optional
-  `dataset_urns` override is a **newline-separated** textarea parsed on submit,
-  following the same input contract as
-  [DatasetFilterEditor](FRONTEND_BASIC.md#shared-component-notes).
+  `dataset_urns` override is a **newline-separated** textarea parsed on submit — one URN
+  per line, edge-trimmed, blank lines dropped. Commas are not separators, since a dataset
+  URN always contains them.
 - `MetagenDatasetTable` — the per-dataset result rollup on `/metagen/result` (`GET /spoke/metagen/dataset`) with the `dataset_urn` text filter and `conf_id` select.
 - `MetagenUncoveredTable` — the uncovered-datasets list with the `include_disallowed` toggle and a `datahub` deep-link second column.
 - `BoundaryForm` — the per-dataset boundary form (`attr/metagen/boundary`).

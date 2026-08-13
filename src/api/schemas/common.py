@@ -1,8 +1,20 @@
 import re
 from datetime import UTC, datetime
-from typing import Any
+from typing import Annotated, Any
 
 from pydantic import BaseModel, Field, field_serializer
+
+# DataHub dataset URN carried in a request **body**. The path-parameter sibling
+# lives in `_paths.py`. Pydantic compiles this with rust-regex, whose `$` is
+# end-of-haystack, so it does not admit the trailing newline Python's `$` would.
+DatasetUrn = Annotated[
+    str,
+    Field(
+        min_length=1,
+        max_length=512,
+        pattern=r"^urn:li:dataset:\(.+\)$",
+    ),
+]
 
 # Characters barred from a display URL anywhere: whitespace, C0 controls (CR/LF
 # header splitting), and the unicode bidi-override set, which can visually

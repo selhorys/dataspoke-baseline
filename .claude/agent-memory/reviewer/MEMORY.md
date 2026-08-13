@@ -4,7 +4,7 @@
 - [Dataset event entity types](project_dataset_event_entity_types.md) — only validation + metagen-candidate land on entity_type="dataset"; ingestion runs come via reverse-lookup
 - [Verify generator dead-code claims](feedback_verify_generator_dead_code_claims.md) — grep "still used elsewhere" claims; refactors orphan old hooks/components
 - [asyncpg str→UUID column](project_asyncpg_str_uuid_column.md) — str(uuid4) binds fine to UUID(as_uuid=True) col via asyncpg pgproto; unit mocks won't catch real mismatch
-- [Metagen conf Save button morph](project_metagen_conf_save_button_morph.md) — metagen conf moved Save into header slot; re-introduces submit-on-Edit hazard, needs keys + browser E2E
+- [Metagen conf Save button morph](project_metagen_conf_save_button_morph.md) — header Save landed WITH distinct keys (safe variant); keys are load-bearing, jsdom can't catch a regression
 - [EXISTS subquery auto-correlate](feedback_exists_subquery_autocorrelate.md) — EXISTS over a table already in outer FROM raises InvalidRequestError at build; compile real SQL, mocks miss it
 - [Helm stale local subchart tgz](project_helm_stale_local_subchart_tgz.md) — umbrella renders stale charts/*.tgz not subcharts/ source; repackage before trusting any review render
 - [Runtime env-file rename blast radius](project_runtime_envfile_rename_blast_radius.md) — renaming helm-charts/.env→.env.dev breaks ~17 hardcoded loaders/skills + a gitignore secret-leak gotcha
@@ -72,3 +72,4 @@
 - [Formatters are not a gate](feedback_frontend_prettier_not_a_gate.md) — prettier AND `ruff format` are dirty at HEAD; isolate vs HEAD before reporting format drift
 - [Frontend role gate reads a stale `me`](project_frontend_role_gate_stale_me.md) — logout clears zustand but not the query cache; `enabled: isAdmin` + "control renders under isAdmin" is ONE signal
 - [Audit list spans a concurrent stage](feedback_audit_list_spans_concurrent_stage.md) — traps for the sibling stage land mid-review; re-run git status + check mtimes before judging
+- [Filter formatter parity](project_filter_formatter_parity.md) — TS Auto-indent == Python format_filter only on canonical input; node --experimental-strip-types recipe

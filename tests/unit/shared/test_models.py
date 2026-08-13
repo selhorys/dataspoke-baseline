@@ -271,18 +271,19 @@ def test_make_dataset_urn_empty_env_rejected() -> None:
         "urn:li:chart:(urn:li:dataPlatform:postgres,db.table,DEV)",
     ],
 )
-def test_invalid_dataset_urn_rejected_by_ontogen_validator(bad_urn: str) -> None:
-    """Malformed URNs are rejected by the shared check_dataset_urn_format function.
+def test_invalid_dataset_urn_rejected_by_the_shared_filter_validator(bad_urn: str) -> None:
+    """A malformed `dataset_urn` literal inside a `dataset_filter` is rejected.
 
-    Verifies API.md §Application Error Codes: 'INVALID_DATASET_URN — A dataset_filter.dataset_urns
-    entry is not a well-formed urn:li:dataset:(…) URN.' The shared validator at
-    src/api/schemas/_dataset_filter.py rejects strings that do not match
-    ^urn:li:dataset:\\(.+\\)$ and raises InvalidDatasetUrnError.
+    Spec: spec/API.md §Error Catalogue — 'INVALID_DATASET_URN | 422 | A
+    `dataset_urn` literal inside a `dataset_filter` is not a well-formed
+    `urn:li:dataset:(…)` URN.' The shared write-boundary validator at
+    src/api/schemas/_dataset_filter.py raises InvalidDatasetUrnError.
     """
-    from src.api.schemas._dataset_filter import check_dataset_urn_format
+    from src.api.schemas._dataset_filter import validate_dataset_filter
 
+    escaped = bad_urn.replace("'", "''")
     with pytest.raises(InvalidDatasetUrnError):
-        check_dataset_urn_format({"dataset_urns": [bad_urn]})
+        validate_dataset_filter(f"dataset_urn = '{escaped}'")
 
 
 def test_invalid_dataset_urn_error_code() -> None:

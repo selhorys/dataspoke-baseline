@@ -69,7 +69,7 @@ async def seed_metagen_conf(
     name: str,
     is_enabled: bool = True,
     schedule_tier: str | None = None,
-    dataset_filter: dict | None = None,  # type: ignore[type-arg]
+    dataset_filter: str | None = None,
     result_limit: int = 3,
     overwrite_pending: bool = True,
 ) -> str:
@@ -88,7 +88,7 @@ async def seed_metagen_conf(
             "INSERT INTO dataspoke.metagen_config"
             " (id, name, is_enabled, schedule_tier, dataset_filter,"
             "  result_limit, overwrite_pending)"
-            " VALUES (:id, :name, :is_enabled, :tier, CAST(:flt AS jsonb),"
+            " VALUES (:id, :name, :is_enabled, :tier, :flt,"
             "         :result_limit, :overwrite_pending)"
         ),
         {
@@ -96,7 +96,7 @@ async def seed_metagen_conf(
             "name": name,
             "is_enabled": is_enabled,
             "tier": schedule_tier,
-            "flt": json.dumps(dataset_filter or {}),
+            "flt": dataset_filter or "",
             "result_limit": result_limit,
             "overwrite_pending": overwrite_pending,
         },

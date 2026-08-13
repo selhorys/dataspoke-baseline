@@ -26,6 +26,7 @@ from sqlalchemy import (
     func,
     text,
 )
+from sqlalchemy.dialects.postgresql import ARRAY as PG_ARRAY
 from sqlalchemy.dialects.postgresql import CITEXT, JSONB, TIMESTAMP, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -223,13 +224,45 @@ class IngestionSourceDataset(Base):
 
 
 class DatasetRegistry(Base):
+    """DataHub dataset mirror plus the attributes ``dataset_filter`` reads.
+
+    ``origin`` and ``platform_urn`` are parsed out of ``dataset_urn`` (the URN
+    encodes both); ``tag_urns`` and ``glossary_term_urns`` come from the sweep's
+    estate-wide attribute read. See spec/feature/BACKEND_SCHEMA.md
+    §``dataset_registry``.
+    """
+
     __tablename__ = "dataset_registry"
-    __table_args__ = {"schema": SCHEMA}
+    __table_args__ = (
+        # Array containment (`col @> ARRAY[…]`) is the array predicate's access
+        # path; the two btree indexes serve `origin` / `platform_urn` equality
+        # and IN predicates.
+        Index("ix_dataset_registry_tag_urns", "tag_urns", postgresql_using="gin"),
+        Index(
+            "ix_dataset_registry_glossary_term_urns",
+            "glossary_term_urns",
+            postgresql_using="gin",
+        ),
+        Index("ix_dataset_registry_origin", "origin"),
+        Index("ix_dataset_registry_platform_urn", "platform_urn"),
+        {"schema": SCHEMA},
+    )
 
     dataset_urn: Mapped[str] = mapped_column(Text, primary_key=True)
     datahub_registered: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
+    origin: Mapped[str | None] = mapped_column(Text, nullable=True)
+    platform_urn: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # PG_ARRAY (not the generic sa.ARRAY): only the PostgreSQL type's comparator
+    # renders `.contains()` as the `@>` containment operator the GIN index serves.
+    tag_urns: Mapped[list[str]] = mapped_column(
+        PG_ARRAY(Text), nullable=False, default=list, server_default=text("'{}'::text[]")
+    )
+    glossary_term_urns: Mapped[list[str]] = mapped_column(
+        PG_ARRAY(Text), nullable=False, default=list, server_default=text("'{}'::text[]")
+    )
+    attrs_synced_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
     )
@@ -303,7 +336,9 @@ class MetagenConfig(Base):
     name: Mapped[str] = mapped_column(Text, nullable=False)
     is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     schedule_tier: Mapped[str | None] = mapped_column(Text, nullable=True)
-    dataset_filter: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    dataset_filter: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
     result_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
     overwrite_pending: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -448,9 +483,12 @@ class MetricDefinition(Base):
     metric_type: Mapped[str] = mapped_column(Text, nullable=False)
     title: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
-    metrics: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    #: Series descriptors — ``[{"name": …, "color": "#RRGGBB", "idx": 1}, …]``.
+    metrics: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
     metric_conf: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
-    dataset_filter: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    dataset_filter: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
     schedule_tier: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -477,6 +515,35 @@ class MetricResult(Base):
     )
     values: Mapped[dict[str, float]] = mapped_column(JSONB, nullable=False, default=dict)
     breakdown: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    measured_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now()
+    )
+
+
+# ── metric_dataset_results ───────────────────────────────────────────────────
+
+
+class MetricDatasetResult(Base):
+    """Latest per-dataset verdict for a metric — not a timeseries.
+
+    A non-dry run replaces the metric's rows wholesale inside the result
+    transaction; a dry run writes nothing. A dataset in the metric's current
+    scope with no row here reads ``met = "unknown"`` on
+    ``GET /spoke/governance/metric/{metric_id}/dataset``.
+    """
+
+    __tablename__ = "metric_dataset_results"
+    __table_args__ = {"schema": SCHEMA}
+
+    metric_id: Mapped[str] = mapped_column(
+        Text,
+        ForeignKey(f"{SCHEMA}.metric_definitions.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    dataset_urn: Mapped[str] = mapped_column(Text, primary_key=True)
+    met: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    evidence_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
+    detail: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     measured_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
     )
@@ -553,7 +620,9 @@ class OntogenConfig(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
     is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     schedule_tier: Mapped[str | None] = mapped_column(Text, nullable=True)
-    dataset_filter: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    dataset_filter: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
     default_run_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now(), onupdate=func.now()

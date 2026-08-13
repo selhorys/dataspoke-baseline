@@ -5,9 +5,10 @@ Spec: spec/API.md §Metadata Generation (/spoke/metagen)
 
 Constraints tested:
   - conf create requires unique `name` (min_length 1); result_limit ∈ [1, 20]
-  - dataset_filter.{tags,glossary_terms,dataset_urns} ≤ 1000 per dimension (POST/PUT/PATCH)
-  - dataset_filter.origin accepted; origin='' rejected at schema layer (unified four-dim shape)
-  - dataset_filter.dataset_urns malformed URN raises INVALID_DATASET_URN at schema layer (UC4)
+  - dataset_filter is a SQL WHERE-clause string on the shared grammar (POST/PUT/PATCH);
+    ≤ 8,000 chars and ≤ 1,000 string literals
+  - a malformed filter raises INVALID_DATASET_FILTER; a malformed `dataset_urn` literal
+    raises INVALID_DATASET_URN — both at the schema layer (UC4)
   - schedule_tier ∈ {hourly, daily, weekly, null}
   - reason max_length=2000 (MetagenReviewRequest); verdict ∈ {approve, reject}
   - MetagenBoundaryPutRequest.allowed ∈ {dataset.description, column.description}
@@ -40,9 +41,17 @@ from src.api.schemas.metagen import (
     MetagenUncoveredResponse,
     MetagenUncoveredRow,
 )
+from src.shared.dataset_filter import DatasetFilterSyntaxError
 from src.shared.exceptions import InvalidDatasetUrnError
 
-_DATASET_FILTER_LIST_CAP = 1000
+#: spec/API.md §`dataset_filter` grammar — Caps.
+_FILTER_LITERAL_CAP = 1000
+_FILTER_CHAR_CAP = 8000
+
+
+def _filter_with_literals(count: int) -> str:
+    """A syntactically valid filter carrying exactly *count* string literals."""
+    return "origin IN (" + ", ".join(f"'v{i}'" for i in range(count)) + ")"
 _REASON_MAX_LEN = 2000
 
 _VALID_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
@@ -116,43 +125,38 @@ class TestMetagenConfCreateRequest:
         with pytest.raises(ValidationError):
             MetagenConfCreateRequest(name="c", result_limit=21)
 
-    def test_dataset_filter_urns_at_cap_valid(self) -> None:
-        """dataset_filter.dataset_urns with exactly 1000 entries is valid.
+    def test_dataset_filter_at_the_literal_cap_is_valid(self) -> None:
+        """A filter carrying exactly 1,000 string literals is accepted.
 
-        Spec: API.md §Payload caps — dataset_filter.dataset_urns ≤ 1,000 entries.
+        Spec: API.md §`dataset_filter` grammar — Caps: "≤ 1,000 string literals"; the
+        per-feature Payload-caps lists "restate these; the values do not vary by feature".
         """
-        urns = [
-            f"urn:li:dataset:(urn:li:dataPlatform:postgres,db.t{i},PROD)"
-            for i in range(_DATASET_FILTER_LIST_CAP)
-        ]
-        req = MetagenConfCreateRequest(name="c", dataset_filter={"dataset_urns": urns})
-        assert len(req.dataset_filter["dataset_urns"]) == _DATASET_FILTER_LIST_CAP
+        at_cap = _filter_with_literals(_FILTER_LITERAL_CAP)
+        req = MetagenConfCreateRequest(name="c", dataset_filter=at_cap)
+        assert req.dataset_filter == at_cap
 
-    def test_dataset_filter_urns_exceeds_cap_raises(self) -> None:
-        """dataset_filter.dataset_urns with 1001 entries raises ValidationError.
+    def test_dataset_filter_over_the_literal_cap_raises(self) -> None:
+        """Spec: API.md §`dataset_filter` grammar — Caps; §Error Catalogue —
+        INVALID_DATASET_FILTER on `POST /spoke/metagen/conf`."""
+        with pytest.raises(DatasetFilterSyntaxError):
+            MetagenConfCreateRequest(
+                name="c", dataset_filter=_filter_with_literals(_FILTER_LITERAL_CAP + 1)
+            )
 
-        Spec: API.md §Payload caps — dataset_filter.dataset_urns ≤ 1,000 entries.
-        """
-        too_many = [
-            f"urn:li:dataset:(urn:li:dataPlatform:postgres,db.t{i},PROD)"
-            for i in range(_DATASET_FILTER_LIST_CAP + 1)
-        ]
-        with pytest.raises(ValidationError):
-            MetagenConfCreateRequest(name="c", dataset_filter={"dataset_urns": too_many})
+    def test_dataset_filter_over_the_character_cap_raises(self) -> None:
+        """Spec: API.md §`dataset_filter` grammar — Caps: "filter text ≤ 8,000
+        characters"."""
+        prefix = "origin = '"
+        over_cap = prefix + "x" * (_FILTER_CHAR_CAP - len(prefix)) + "'"
+        with pytest.raises(DatasetFilterSyntaxError):
+            MetagenConfCreateRequest(name="c", dataset_filter=over_cap)
 
-    @pytest.mark.parametrize("dimension", ["tags", "glossary_terms"])
-    def test_dataset_filter_non_urn_dimensions_exceed_cap_raises(self, dimension: str) -> None:
-        """dataset_filter.{tags,glossary_terms} with 1001 entries raises ValidationError.
-
-        Spec: API.md §Payload caps —
-        dataset_filter.{tags,glossary_terms,dataset_urns} ≤ 1,000 per dimension.
-        """
-        too_many = [
-            f"urn:li:tag:t{i}" if dimension == "tags" else f"urn:li:glossaryTerm:t{i}"
-            for i in range(_DATASET_FILTER_LIST_CAP + 1)
-        ]
-        with pytest.raises(ValidationError):
-            MetagenConfCreateRequest(name="c", dataset_filter={dimension: too_many})
+    def test_dataset_filter_malformed_raises(self) -> None:
+        """Spec: API.md §Error Catalogue — INVALID_DATASET_FILTER, 422, "names an
+        unknown column"."""
+        with pytest.raises(DatasetFilterSyntaxError) as excinfo:
+            MetagenConfCreateRequest(name="c", dataset_filter="owner = 'alice'")
+        assert excinfo.value.error_code == "INVALID_DATASET_FILTER"
 
     def test_schedule_tier_accepts_valid_values(self) -> None:
         """schedule_tier accepts hourly, daily, weekly, and None.
@@ -170,33 +174,31 @@ class TestMetagenConfCreateRequest:
         with pytest.raises(ValidationError):
             MetagenConfCreateRequest(name="c", schedule_tier="minutely")  # type: ignore[arg-type]
 
-    def test_origin_only_accepted(self) -> None:
-        """dataset_filter={"origin": "DEV"} is accepted.
+    @pytest.mark.parametrize(
+        "dataset_filter",
+        [
+            "",
+            "origin = 'DEV'",
+            "origin IN ('DEV', 'PROD')",
+            "'urn:li:tag:area:catalog' IN tag_urns",
+            "origin = 'DEV' AND 'urn:li:glossaryTerm:pii.gdpr' IN glossary_term_urns",
+        ],
+    )
+    def test_grammar_forms_accepted(self, dataset_filter: str) -> None:
+        """UC4's conf filter is the same grammar as UC3's and UC5's.
 
-        Spec: API.md §Governance — Metric (Definition body) — dataset_filter unified
-              four-dimension shape (shared by UC4); origin is an optional AND-filter
-              forwarded to DataHub.
+        Spec: API.md §`dataset_filter` grammar — "UC3's `ontogen/attr/conf.dataset_filter`
+        and UC4's per-conf `metagen/conf.dataset_filter` use this same grammar and
+        validation."
         """
-        req = MetagenConfCreateRequest(name="c", dataset_filter={"origin": "DEV"})
-        assert req.dataset_filter == {"origin": "DEV"}
-
-    def test_empty_origin_raises(self) -> None:
-        """dataset_filter={"origin": ""} raises ValidationError.
-
-        Spec: API.md §Governance — Metric (Definition body) — empty-or-whitespace origin
-        rejected at POST/PUT/PATCH.
-        """
-        with pytest.raises(ValidationError):
-            MetagenConfCreateRequest(name="c", dataset_filter={"origin": ""})
+        req = MetagenConfCreateRequest(name="c", dataset_filter=dataset_filter)
+        assert req.dataset_filter == dataset_filter
 
     def test_malformed_dataset_urn_raises_invalid_dataset_urn_error(self) -> None:
-        """Malformed dataset_urns raises InvalidDatasetUrnError at the schema layer.
-
-        Spec: API.md §Error Catalogue — 422 INVALID_DATASET_URN for malformed URNs;
-        validated at POST for metagen/conf.
-        """
+        """Spec: API.md §Error Catalogue — 422 INVALID_DATASET_URN, validated on
+        `POST /spoke/metagen/conf`."""
         with pytest.raises(InvalidDatasetUrnError):
-            MetagenConfCreateRequest(name="c", dataset_filter={"dataset_urns": ["not-a-urn"]})
+            MetagenConfCreateRequest(name="c", dataset_filter="dataset_urn = 'not-a-urn'")
 
 
 # ── MetagenConfPutRequest ─────────────────────────────────────────────────────
@@ -221,14 +223,24 @@ class TestMetagenConfPutRequest:
             MetagenConfPutRequest(name="c", is_enabled=True, result_limit=0)
 
     def test_malformed_dataset_urn_raises_invalid_dataset_urn_error(self) -> None:
-        """PUT with malformed dataset_urns raises InvalidDatasetUrnError.
-
-        Spec: API.md §Error Catalogue — 422 INVALID_DATASET_URN; validated at PUT.
-        """
+        """Spec: API.md §Error Catalogue — 422 INVALID_DATASET_URN, validated on
+        `PUT /spoke/metagen/conf/{conf_id}`."""
         with pytest.raises(InvalidDatasetUrnError):
             MetagenConfPutRequest(
-                name="c", is_enabled=False, dataset_filter={"dataset_urns": ["not-a-urn"]}
+                name="c", is_enabled=False, dataset_filter="dataset_urn = 'not-a-urn'"
             )
+
+    def test_malformed_filter_raises(self) -> None:
+        """Spec: API.md §Error Catalogue — INVALID_DATASET_FILTER on PUT."""
+        with pytest.raises(DatasetFilterSyntaxError):
+            MetagenConfPutRequest(name="c", is_enabled=False, dataset_filter="origin = ")
+
+    def test_a_well_formed_filter_is_accepted(self) -> None:
+        """Backstop for the two rejections above."""
+        req = MetagenConfPutRequest(
+            name="c", is_enabled=False, dataset_filter="origin = 'DEV'"
+        )
+        assert req.dataset_filter == "origin = 'DEV'"
 
 
 # ── MetagenConfPatchRequest ───────────────────────────────────────────────────
@@ -253,34 +265,28 @@ class TestMetagenConfPatchRequest:
         with pytest.raises(ValidationError):
             MetagenConfPatchRequest(result_limit=0)
 
-    def test_dataset_filter_urns_exceeds_cap_raises(self) -> None:
-        """PATCH with dataset_filter.dataset_urns > 1000 raises ValidationError.
+    def test_dataset_filter_over_the_literal_cap_raises(self) -> None:
+        """Spec: API.md §`dataset_filter` grammar — Caps, enforced on
+        `PATCH /spoke/metagen/conf/{conf_id}` as on every filter write path."""
+        with pytest.raises(DatasetFilterSyntaxError):
+            MetagenConfPatchRequest(
+                dataset_filter=_filter_with_literals(_FILTER_LITERAL_CAP + 1)
+            )
 
-        Spec: API.md §Payload caps — dataset_filter.dataset_urns ≤ 1,000 entries.
-        """
-        too_many = [
-            f"urn:li:dataset:(urn:li:dataPlatform:postgres,db.t{i},PROD)"
-            for i in range(_DATASET_FILTER_LIST_CAP + 1)
-        ]
-        with pytest.raises(ValidationError):
-            MetagenConfPatchRequest(dataset_filter={"dataset_urns": too_many})
-
-    def test_empty_origin_raises(self) -> None:
-        """PATCH with dataset_filter={"origin": ""} raises ValidationError.
-
-        Spec: API.md §Governance — Metric (Definition body) — empty-or-whitespace origin
-        rejected at POST/PUT/PATCH.
-        """
-        with pytest.raises(ValidationError):
-            MetagenConfPatchRequest(dataset_filter={"origin": ""})
+    def test_malformed_filter_raises(self) -> None:
+        """Spec: API.md §Error Catalogue — INVALID_DATASET_FILTER on PATCH."""
+        with pytest.raises(DatasetFilterSyntaxError):
+            MetagenConfPatchRequest(dataset_filter="owner = 'alice'")
 
     def test_malformed_dataset_urn_raises_invalid_dataset_urn_error(self) -> None:
-        """PATCH with malformed dataset_urns raises InvalidDatasetUrnError.
-
-        Spec: API.md §Error Catalogue — 422 INVALID_DATASET_URN; validated at PATCH.
-        """
+        """Spec: API.md §Error Catalogue — 422 INVALID_DATASET_URN on PATCH."""
         with pytest.raises(InvalidDatasetUrnError):
-            MetagenConfPatchRequest(dataset_filter={"dataset_urns": ["not-a-urn"]})
+            MetagenConfPatchRequest(dataset_filter="dataset_urn = 'not-a-urn'")
+
+    def test_a_well_formed_filter_patch_is_accepted(self) -> None:
+        """Backstop for the three rejections above."""
+        req = MetagenConfPatchRequest(dataset_filter="'urn:li:tag:pii' IN tag_urns")
+        assert req.dataset_filter == "'urn:li:tag:pii' IN tag_urns"
 
 
 # ── MetagenConfResponse / MetagenConfListResponse ─────────────────────────────

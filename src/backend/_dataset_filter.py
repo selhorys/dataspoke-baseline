@@ -1,24 +1,42 @@
-"""Shared dataset_filter resolution and validation for backend services.
+"""Shared ``dataset_filter`` resolution for backend services.
 
-Spec references:
-  - spec/feature/BACKEND.md §dataset_filter
-  - spec/DATAHUB_INTEGRATION.md §Dataset Resolution
+UC3 ontogen, UC4 metagen and UC5 metrics resolve scope through this one module.
+Resolution is a **DataSpoke-side SQL query** over ``dataset_registry`` — the
+local mirror of the DataHub estate refreshed by the sync sweep — not a DataHub
+search, so a filter's scope is at most one sweep interval stale.
 
-All three UC services (ontogen, metagen, governance metrics) share the same
-four-step resolution pattern: read dims → empty-filter enumerate-all branch →
-tag/glossary enumerate branch → explicit-URN probe with optional origin
-mismatch check.
+Two exports, and the difference matters:
+
+- :func:`resolve_dataset_scope` materialises the URN list, for callers that need
+  the set itself (a metric run, an ontogen run).
+- :func:`dataset_filter_clause` hands back the compiled clause so a caller that
+  already pages in SQL pushes the predicate into its own query instead of
+  slicing a resolved list in Python.
+
+Spec: spec/feature/BACKEND.md §Dataset resolution,
+spec/API.md §``dataset_filter`` grammar.
 """
 
-import logging
-from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any
 
-from src.api.schemas._dataset_filter import validate_dataset_filter
-from src.shared.exceptions import InvalidDatasetUrnError, PreconditionFailedError
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
-logger = logging.getLogger(__name__)
+from src.shared.dataset_filter import (
+    check_dataset_urn_literals,
+    filter_clause,
+    literal_dataset_urns,
+    parse_filter,
+)
+from src.shared.db.models import DatasetRegistry
+
+__all__ = [
+    "ResolvedDatasetScope",
+    "dataset_filter_clause",
+    "resolve_dataset_scope",
+    "validate_dataset_filter_service",
+]
 
 
 @dataclass
@@ -27,114 +45,69 @@ class ResolvedDatasetScope:
     unresolved_urns: list[str] = field(default_factory=list)
 
 
+def dataset_filter_clause(dataset_filter: str | None) -> ColumnElement[bool]:
+    """Compile *dataset_filter* to a boolean expression over ``dataset_registry``.
+
+    The empty filter compiles to ``TRUE``. Callers add their own
+    ``datahub_registered`` restriction — :func:`resolve_dataset_scope` and every
+    paged view do.
+
+    Raises:
+        DatasetFilterSyntaxError: when the stored text does not parse. Filters
+            are validated on every write path, so this is a defect signal rather
+            than an expected outcome, and it is deliberately not swallowed.
+    """
+    return filter_clause(parse_filter(dataset_filter))
+
+
 async def resolve_dataset_scope(
-    datahub: Any,
-    dataset_filter: Mapping[str, Any],
+    db: AsyncSession,
+    dataset_filter: str | None,
     *,
     explicit_urns_override: list[str] | None = None,
-    swallow_enumerate_errors: bool = False,
 ) -> ResolvedDatasetScope:
-    """Resolve a dataset_filter dict to a ResolvedDatasetScope.
+    """Resolve *dataset_filter* to the registered datasets it matches.
 
-    Steps:
-      1. Read origin, tags, glossary_terms, dataset_urns (use
-         explicit_urns_override instead of dataset_urns when provided).
-      2. When no tags/glossary_terms/explicit urns: enumerate all datasets,
-         optionally filtered by origin.
-      3. When tags or glossary_terms present: enumerate with tag/glossary filter
-         AND-ed with origin.
-      4. For each explicit URN: check origin segment match (if origin set),
-         then probe DataHub for dataset existence.
+    One query: ``dataset_registry`` rows with ``datahub_registered = true`` AND
+    the compiled filter clause. An empty filter is the bare registered set.
 
-    Returns ResolvedDatasetScope with resolved_urns sorted and deduplicated.
-    When swallow_enumerate_errors=True, DataHub enumeration errors are logged
-    and return empty rather than propagating (UC3/UC4 semantics). UC5 uses
-    swallow_enumerate_errors=False (default) and lets errors propagate.
+    ``explicit_urns_override`` **narrows** the result to the named URNs (UC4's
+    ``POST …/method/run {"dataset_urns": […]}``); it never widens scope past the
+    conf's own filter.
+
+    ``unresolved_urns`` are the URNs the operator named that the query did not
+    return — the filter's literal ``dataset_urn`` values plus any override URNs —
+    preserving the run-complete event field's meaning.
     """
-    dataset_filter = dict(dataset_filter) if dataset_filter else {}
+    ast = parse_filter(dataset_filter)
 
-    origin: str | None = dataset_filter.get("origin") or None
-    tags: list[str] = dataset_filter.get("tags") or []
-    glossary_terms: list[str] = dataset_filter.get("glossary_terms") or []
-
+    stmt = select(DatasetRegistry.dataset_urn).where(
+        DatasetRegistry.datahub_registered.is_(True),
+        filter_clause(ast),
+    )
     if explicit_urns_override is not None:
-        explicit_urns: list[str] = explicit_urns_override
-    else:
-        explicit_urns = dataset_filter.get("dataset_urns") or []
+        stmt = stmt.where(DatasetRegistry.dataset_urn.in_(explicit_urns_override))
 
-    resolved_urn_set: set[str] = set()
-    unresolved_urns: list[str] = []
+    rows = (await db.execute(stmt)).scalars().all()
+    resolved = sorted(set(rows))
+    resolved_set = set(resolved)
 
-    if not tags and not glossary_terms and not explicit_urns:
-        try:
-            all_urns = await datahub.enumerate_datasets(origin=origin)
-            resolved_urn_set.update(all_urns)
-        except Exception:
-            if swallow_enumerate_errors:
-                logger.warning("dataset_scope_enumerate_all_failed", exc_info=True)
-                return ResolvedDatasetScope()
-            raise
-    else:
-        if tags or glossary_terms:
-            try:
-                matched = await datahub.enumerate_datasets(
-                    tags=tags if tags else None,
-                    glossary_terms=glossary_terms if glossary_terms else None,
-                    origin=origin,
-                )
-                resolved_urn_set.update(matched)
-            except Exception:
-                if swallow_enumerate_errors:
-                    logger.warning("dataset_scope_enumerate_filtered_failed", exc_info=True)
-                else:
-                    raise
-
-        for urn in explicit_urns:
-            if origin is not None:
-                urn_origin = datahub.origin_from_dataset_urn(urn)
-                if urn_origin != origin:
-                    logger.debug(
-                        "dataset_scope_explicit_urn_origin_mismatch",
-                        extra={
-                            "urn": urn,
-                            "urn_origin": urn_origin,
-                            "requested_origin": origin,
-                        },
-                    )
-                    unresolved_urns.append(urn)
-                    continue
-            try:
-                from datahub.metadata.schema_classes import DatasetPropertiesClass
-
-                props = await datahub.get_aspect(urn, DatasetPropertiesClass)
-                if props is not None:
-                    resolved_urn_set.add(urn)
-                else:
-                    unresolved_urns.append(urn)
-            except Exception:
-                logger.warning(
-                    "dataset_scope_explicit_urn_check_failed",
-                    extra={"urn": urn},
-                    exc_info=True,
-                )
-                unresolved_urns.append(urn)
+    named: list[str] = list(literal_dataset_urns(ast))
+    if explicit_urns_override is not None:
+        named.extend(urn for urn in explicit_urns_override if urn not in named)
 
     return ResolvedDatasetScope(
-        resolved_urns=sorted(resolved_urn_set),
-        unresolved_urns=unresolved_urns,
+        resolved_urns=resolved,
+        unresolved_urns=[urn for urn in named if urn not in resolved_set],
     )
 
 
-def validate_dataset_filter_service(dataset_filter: Mapping[str, Any]) -> None:
-    """Validate a dataset_filter at the service layer.
+def validate_dataset_filter_service(dataset_filter: str | None) -> None:
+    """Validate a ``dataset_filter`` at the service layer.
 
-    Converts ValueError from the schema-layer validator to PreconditionFailedError
-    with error_code='INVALID_PARAMETER' so it maps to the correct HTTP 422 envelope.
-    InvalidDatasetUrnError propagates unchanged (already carries error_code=INVALID_DATASET_URN).
+    Services validate independently of the request schemas because internal
+    callers (activity endpoints, bootstrap) reach them without one. Both
+    exceptions already carry their spec error code and 422 status, so they
+    propagate unchanged.
     """
-    try:
-        validate_dataset_filter(dataset_filter)
-    except InvalidDatasetUrnError:
-        raise
-    except ValueError as exc:
-        raise PreconditionFailedError("INVALID_PARAMETER", str(exc)) from exc
+    check_dataset_urn_literals(parse_filter(dataset_filter))

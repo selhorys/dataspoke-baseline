@@ -9,7 +9,7 @@ Conf collection CRUD (Group 1):
   test_metagen_conf_put_invalid_result_limit_422
   test_metagen_conf_put_invalid_dataset_urn_422
   test_metagen_conf_create_invalid_schedule_tier_422
-  test_metagen_conf_dataset_filter_dimension_caps (parametrized)
+  test_metagen_conf_dataset_filter_literal_cap (parametrized)
 
 Per-dataset boundary CRUD (Group 2):
   test_metagen_boundary_roundtrip_put_get_patch_delete
@@ -19,7 +19,8 @@ Per-dataset boundary CRUD (Group 2):
 These tests are pure REST and do not require raw-SQL seeding.
 
 spec: API.md §Metadata Generation (/spoke/metagen)
-spec: API.md §Payload caps — dataset_filter.{tags,glossary_terms,dataset_urns} ≤ 1,000
+spec: API.md §Metadata Generation §Payload caps — conf `dataset_filter` ≤ 8,000 chars
+      and ≤ 1,000 string literals
 spec: feature/BACKEND.md §Metadata Generation Service — conf collection, boundary
 spec: TESTING.md §Spot vs Api-Wired Integration Tests
 """
@@ -80,7 +81,7 @@ async def test_metagen_conf_create_get_list_put_patch_delete(
                 "name": name,
                 "is_enabled": True,
                 "schedule_tier": "daily",
-                "dataset_filter": {"dataset_urns": [_TEST_URN]},
+                "dataset_filter": f"dataset_urn = '{_TEST_URN}'",
                 "result_limit": 5,
                 "overwrite_pending": False,
             },
@@ -96,7 +97,16 @@ async def test_metagen_conf_create_get_list_put_patch_delete(
         assert body["schedule_tier"] == "daily"
         assert body["result_limit"] == 5
         assert body["overwrite_pending"] is False
-        assert body["dataset_filter"] == {"dataset_urns": [_TEST_URN]}
+        # dataset_filter round-trips verbatim as the SQL WHERE-clause string that was
+        # written — it is a `string` field, not a structured object.
+        # spec: API.md §Metric §Definition body — `dataset_filter` | string | "A SQL
+        #   `WHERE`-clause over the dataset registry (grammar below)"; §`dataset_filter`
+        #   grammar — "UC4's per-conf `metagen/conf.dataset_filter` use this same grammar".
+        assert body["dataset_filter"] == f"dataset_urn = '{_TEST_URN}'", (
+            f"POST response must echo dataset_filter verbatim; got "
+            f"{body.get('dataset_filter')!r}. "
+            "spec: API.md §`dataset_filter` grammar — the filter is a WHERE-clause string"
+        )
         assert "created_at" in body and "updated_at" in body
 
         # GET one
@@ -122,7 +132,7 @@ async def test_metagen_conf_create_get_list_put_patch_delete(
                 "name": name,
                 "is_enabled": False,
                 "schedule_tier": "weekly",
-                "dataset_filter": {},
+                "dataset_filter": "",
                 "result_limit": 10,
                 "overwrite_pending": True,
             },
@@ -131,6 +141,14 @@ async def test_metagen_conf_create_get_list_put_patch_delete(
         put_body = put_resp.json()
         assert put_body["schedule_tier"] == "weekly"
         assert put_body["result_limit"] == 10
+        # PUT is a full replacement: the empty filter replaces the URN clause.
+        # spec: API.md §Metric §Definition body — "The empty string matches every
+        #   registered dataset"
+        assert put_body["dataset_filter"] == "", (
+            f"PUT must replace dataset_filter with the empty clause; got "
+            f"{put_body.get('dataset_filter')!r}. "
+            "spec: API.md §Metric §Definition body — the empty string matches every dataset"
+        )
 
         # PATCH — partial update
         patch_resp = await api_client.patch(
@@ -230,7 +248,7 @@ async def test_metagen_conf_put_invalid_dataset_urn_422(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """POST with a malformed URN in dataset_filter.dataset_urns returns 422.
+    """POST with a malformed `dataset_urn` literal inside dataset_filter returns 422.
 
     spec: API.md §Error Catalogue — 422 INVALID_DATASET_URN for malformed URNs;
       validated at POST/PUT/PATCH for metagen/conf.
@@ -240,7 +258,7 @@ async def test_metagen_conf_put_invalid_dataset_urn_422(
         headers=admin_headers,
         json={
             "name": _unique_name("bad-urn"),
-            "dataset_filter": {"dataset_urns": ["not-a-valid-urn"]},
+            "dataset_filter": "dataset_urn = 'not-a-valid-urn'",
         },
     )
     assert resp.status_code == 422, (
@@ -275,44 +293,34 @@ async def test_metagen_conf_create_invalid_schedule_tier_422(
     [(1000, {201}), (1001, {422})],
     ids=["at-cap-1000-accepted", "over-cap-1001-rejected"],
 )
-@pytest.mark.parametrize(
-    "dimension",
-    ["tags", "glossary_terms", "dataset_urns"],
-    ids=["tags", "glossary_terms", "dataset_urns"],
-)
 @pytest.mark.asyncio
-async def test_metagen_conf_dataset_filter_dimension_caps(
+async def test_metagen_conf_dataset_filter_literal_cap(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
-    dimension: str,
     n: int,
     expected_status_set: set[int],
 ) -> None:
-    """POST at-cap (1000, accepted) and over-cap (1001, rejected) on a single
-    dataset_filter dimension.
+    """POST at-cap (1000 literals, accepted) and over-cap (1001, rejected).
 
-    spec: API.md §Payload caps — dataset_filter.{tags,glossary_terms,dataset_urns}
-      ≤ 1,000 per dimension; exactly 1,000 accepted, 1,001 rejected at the schema boundary.
+    The at-cap side is what proves this is a cap and not a blanket size refusal: a
+    regression dropping the limit to 500 would still reject 1,001 but fail here.
+
+    spec: API.md §`dataset_filter` grammar — Caps: "filter text ≤ 8,000 characters and
+      ≤ 1,000 string literals"; the per-feature payload-caps lists "restate these; the
+      values do not vary by feature".
     """
-    if dimension == "tags":
-        entries = [f"urn:li:tag:t-{i}" for i in range(n)]
-    elif dimension == "glossary_terms":
-        entries = [f"urn:li:glossaryTerm:gt-{i}" for i in range(n)]
-    else:
-        entries = [
-            f"urn:li:dataset:(urn:li:dataPlatform:postgres,db.s.t_{i},DEV)" for i in range(n)
-        ]
+    dataset_filter = "origin IN (" + ", ".join(f"'v{i}'" for i in range(n)) + ")"
 
     created_id = None
     try:
         resp = await api_client.post(
             _CONF_URL,
             headers=admin_headers,
-            json={"name": _unique_name("caps"), "dataset_filter": {dimension: entries}},
+            json={"name": _unique_name("caps"), "dataset_filter": dataset_filter},
         )
         assert resp.status_code in expected_status_set, (
-            f"n={n} {dimension}: expected {expected_status_set}, got {resp.status_code}: "
-            f"{resp.text}. spec: API.md §Payload caps — dataset_filter cap is 1,000 per dimension"
+            f"n={n} literals: expected {expected_status_set}, got {resp.status_code}: "
+            f"{resp.text}. spec: API.md §`dataset_filter` grammar — Caps"
         )
         if resp.status_code == 201:
             created_id = resp.json()["id"]
@@ -361,7 +369,7 @@ async def test_metagen_conf_delete_retains_and_orphans_candidates_and_items(
         async_session,
         name=_unique_name("retain-on-delete"),
         is_enabled=True,
-        dataset_filter={"dataset_urns": [_TEST_URN]},
+        dataset_filter=f"dataset_urn = '{_TEST_URN}'",
     )
     try:
         await seed_metagen_boundary(

@@ -18,17 +18,20 @@ from src.api.schemas.events import EventListResponse, EventResponse
 from src.api.schemas.metrics import (
     CreateMetricConfigRequest,
     MetricAttrResponse,
+    MetricDatasetListResponse,
+    MetricDatasetRow,
     MetricDefinitionListItem,
     MetricDefinitionListResponse,
     MetricDefinitionResponse,
     MetricResultListResponse,
     MetricResultResponse,
     MetricRunResultResponse,
+    MetricSeries,
     PatchMetricConfigRequest,
     ReplaceMetricConfigRequest,
 )
 from src.backend.metrics.service import MetricDefinitionRecord, MetricsService
-from src.shared.db.models import Event, MetricDefinition, MetricResult
+from src.shared.db.models import DatasetRegistry, Event, MetricDefinition, MetricResult
 from src.shared.exceptions import ConflictError, NotImplementedAPIError
 from src.shared.settings import settings
 from src.workflows.airflow.client import AirflowClient
@@ -55,7 +58,7 @@ def _definition_response(m: "MetricDefinitionRecord") -> MetricDefinitionRespons
         metric_type=m.metric_type,
         title=m.title,
         description=m.description,
-        metrics=m.metrics,
+        metrics=[MetricSeries.model_validate(series) for series in m.metrics],
         metric_conf=m.metric_conf,
         schedule_tier=cast(_ScheduleTier | None, m.schedule_tier),
         dataset_filter=m.dataset_filter,
@@ -73,7 +76,7 @@ def _definition_list_item(m: "MetricDefinitionRecord") -> MetricDefinitionListIt
         metric_type=m.metric_type,
         title=m.title,
         description=m.description,
-        metrics=m.metrics,
+        metrics=[MetricSeries.model_validate(series) for series in m.metrics],
         metric_conf=m.metric_conf,
         schedule_tier=cast(_ScheduleTier | None, m.schedule_tier),
         dataset_filter=m.dataset_filter,
@@ -104,7 +107,7 @@ async def post_metric(
         metric_type=body.metric_type,
         title=body.title,
         description=body.description,
-        metrics=body.metrics,
+        metrics=[series.model_dump() for series in body.metrics],
         metric_conf=body.metric_conf,
         dataset_filter=body.dataset_filter,
         schedule_tier=body.schedule_tier,
@@ -203,7 +206,7 @@ async def put_metric_conf(
         metric_type=body.metric_type,
         title=body.title,
         description=body.description,
-        metrics=body.metrics,
+        metrics=[series.model_dump() for series in body.metrics],
         metric_conf=body.metric_conf,
         dataset_filter=body.dataset_filter,
         schedule_tier=body.schedule_tier,
@@ -274,6 +277,48 @@ async def get_metric_results(
                 measured_at=r.measured_at,
             )
             for r in results
+        ],
+    )
+
+
+@router.get("/{metric_id}/dataset", response_model=MetricDatasetListResponse)
+async def get_metric_datasets(
+    metric_id: MetricIdParam,
+    met: Annotated[
+        list[Literal["true", "false", "unknown"]] | None,
+        Query(description="Repeatable verdict filter; defaults to all three states"),
+    ] = None,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=1000),
+    sort: str | None = Query(default=None),
+    service: MetricsService = Depends(get_metrics_service),
+) -> MetricDatasetListResponse:
+    """Datasets this metric's ``dataset_filter`` covers, with their latest verdict.
+
+    Read route — the router-level ``require_authenticated`` dependency is the
+    guard, as on every sibling governance read.
+    """
+    order_by = parse_sort(sort, {"dataset_urn": DatasetRegistry.dataset_urn}, None)
+    rows, total_count, attrs_synced_at = await service.list_metric_datasets(
+        metric_id,
+        met=list(met) if met else None,
+        offset=offset,
+        limit=limit,
+        order_by=order_by,
+    )
+    return MetricDatasetListResponse(
+        offset=offset,
+        limit=limit,
+        total_count=total_count,
+        attrs_synced_at=attrs_synced_at,
+        datasets=[
+            MetricDatasetRow(
+                dataset_urn=row.dataset_urn,
+                met=cast(Literal["true", "false", "unknown"], row.met),
+                last_check_at=row.last_check_at,
+                detail=row.detail,
+            )
+            for row in rows
         ],
     )
 

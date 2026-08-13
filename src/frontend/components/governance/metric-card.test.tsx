@@ -1,19 +1,29 @@
 /**
  * Tests for MetricCard — the combined dashboard card for a single enabled metric.
  *
- * Spec: spec/feature/FRONTEND_GOVERNANCE.md §Dashboard:
- *   "Each card stacks, top to bottom: the metric `title`, a `metric_type`
- *    outline badge, the latest `values` dict (each key on its own line as
- *    `key: value`) with its measured-at date, and that metric's per-metric
- *    trend chart (one line per that metric's `values` key)."
+ * Spec: spec/feature/FRONTEND_GOVERNANCE.md §Dashboard (Combined metric card):
+ *   "The card header carries the metric `title` as an emphasized heading on the
+ *    left and, top-right at a smaller size, a `metric_type` outline badge beside
+ *    a `Details` button linking to `/governance/metrics/{id}`. Below the heading
+ *    sits `description` in small muted text. The body then stacks the latest
+ *    `values` dict as a compact stat row … with its measured-at date, and that
+ *    metric's trend chart — one line per entry of the metric's `metrics[]` series
+ *    descriptors, drawn in `idx` order and stroked with each descriptor's
+ *    `color` … `description` and `metrics` both come from the list read, so the
+ *    card needs no extra fetch."
  *
  * The two governance hooks (latest stat + ranged trend) are mocked, and recharts
  * is stubbed to a lightweight marker so the card structure can be asserted
- * without ResponsiveContainer DOM measurement (no ResizeObserver in jsdom).
+ * without ResponsiveContainer DOM measurement (no ResizeObserver in jsdom). The
+ * mocked governance module exports **only** those two hooks, so a card that
+ * reached for a third read (e.g. a per-metric conf fetch for `description` /
+ * `metrics`) would fail on an undefined import — that is the backstop for the
+ * "needs no extra fetch" clause.
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, cleanup } from "@testing-library/react";
+import { render, screen, cleanup, within } from "@testing-library/react";
+import React from "react";
 import { MetricCard } from "./metric-card";
 import { formatDate } from "@/lib/format-time";
 import type { MetricDefinition, MetricResult } from "@/types/governance";
@@ -23,6 +33,12 @@ import type { RangeValue } from "@/lib/range";
 
 // Deterministic timezone so measured_at formatting does not depend on the host.
 vi.mock("@/lib/preferences/timezone", () => ({ useDisplayTz: () => "utc" }));
+
+// next/link → plain anchor so the Details link's href is assertable in jsdom.
+vi.mock("next/link", () => ({
+  default: ({ href, children, ...rest }: { href: string; children: React.ReactNode }) =>
+    React.createElement("a", { href, ...rest }, children),
+}));
 
 const mockLatest = vi.fn();
 const mockRanged = vi.fn();
@@ -57,7 +73,11 @@ vi.mock("recharts", () => {
         {children}
       </div>
     ),
-    Line: () => <div data-testid="line" />,
+    // `dataKey` / `stroke` are echoed so the card can be shown to hand its
+    // metric's series descriptors (order + color) down to the chart.
+    Line: ({ dataKey, stroke }: { dataKey?: string; stroke?: string }) => (
+      <div data-testid="line" data-key={String(dataKey)} data-stroke={String(stroke)} />
+    ),
     CartesianGrid: () => null,
     Legend: () => null,
     XAxis: () => null,
@@ -75,10 +95,13 @@ const METRIC: MetricDefinition = {
   metric_type: "doc-health",
   title: "Doc Health (DEV)",
   description: "Daily documentation-completeness check across DEV datasets",
-  metrics: ["total", "doc_health"],
+  metrics: [
+    { name: "total", color: "#64748B", idx: 1 },
+    { name: "doc_health", color: "#A855F7", idx: 2 },
+  ],
   metric_conf: {},
   schedule_tier: "daily",
-  dataset_filter: { origin: "DEV" },
+  dataset_filter: "origin = 'DEV'",
   created_at: "2026-05-26T00:00:00Z",
   updated_at: "2026-05-26T00:00:00Z",
 };
@@ -169,6 +192,126 @@ describe("MetricCard — combined dashboard card (FRONTEND_GOVERNANCE.md §Dashb
     // Structural guard: with no latest stat, the values rows must be absent —
     // "total" would render only from the latest result's `values` dict.
     expect(screen.queryByText("total")).not.toBeInTheDocument();
+  });
+});
+
+// ── Header: title left, type badge + Details right, description beneath ────────
+// spec: FRONTEND_GOVERNANCE.md §Dashboard (Combined metric card) — "The card
+// header carries the metric `title` as an emphasized heading on the left and,
+// top-right at a smaller size, a `metric_type` outline badge beside a `Details`
+// button linking to `/governance/metrics/{id}`. Below the heading sits
+// `description` in small muted text."
+
+describe("MetricCard — header layout (FRONTEND_GOVERNANCE.md §Dashboard)", () => {
+  /** True when `a` comes before `b` in document order. */
+  function precedes(a: Element, b: Element): boolean {
+    return Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+  }
+
+  /** The row holding the title — the header line the badge/Details sit on. */
+  function titleRow(): HTMLElement {
+    const row = screen.getByText(METRIC.title).parentElement;
+    expect(row, "the card title must sit in a header row").not.toBeNull();
+    return row as HTMLElement;
+  }
+
+  it("puts the metric_type badge and the Details link on the title's row, after the title", () => {
+    // "the metric `title` … on the left and, top-right …, a `metric_type` outline
+    // badge beside a `Details` button". jsdom loads no stylesheet, so the
+    // observable form of "left / top-right" is: same row, badge and button
+    // following the title.
+    render(<MetricCard metric={METRIC} range={RANGE} />);
+    const row = within(titleRow());
+    const title = screen.getByText(METRIC.title);
+    const badge = row.getByText(METRIC.metric_type);
+    const details = row.getByRole("link", { name: "Details" });
+
+    expect(precedes(title, badge)).toBe(true);
+    expect(precedes(badge, details)).toBe(true);
+  });
+
+  it("renders the description below the title row and above the stat row", () => {
+    render(<MetricCard metric={METRIC} range={RANGE} />);
+    const description = screen.getByText(METRIC.description);
+    const statLabel = screen.getByText("doc_health");
+
+    expect(within(titleRow()).queryByText(METRIC.description)).toBeNull();
+    expect(precedes(screen.getByText(METRIC.title), description)).toBe(true);
+    expect(precedes(description, statLabel)).toBe(true);
+  });
+
+  it("renders the description in small muted text", () => {
+    render(<MetricCard metric={METRIC} range={RANGE} />);
+    const description = screen.getByText(METRIC.description);
+    expect(description.className).toContain("text-xs");
+    expect(description.className).toContain("text-muted-foreground");
+  });
+
+  it("links Details to the metric's detail route, id percent-encoded", () => {
+    render(<MetricCard metric={METRIC} range={RANGE} />);
+    expect(screen.getByRole("link", { name: "Details" })).toHaveAttribute(
+      "href",
+      `/governance/metrics/${encodeURIComponent(METRIC.id)}`,
+    );
+  });
+
+  it("keeps the badge at a smaller type scale than the title", () => {
+    // "top-right at a smaller size". Only the relation is spec'd, not the exact
+    // tokens, so this asserts the title is the larger declared scale.
+    render(<MetricCard metric={METRIC} range={RANGE} />);
+    expect(screen.getByText(METRIC.title).className).toContain("text-lg");
+    expect(screen.getByText(METRIC.metric_type).className).toMatch(/text-\[10px\]|text-xs/);
+  });
+
+  it("renders the stat row and the chart after the header content", () => {
+    // Backstop for the ordering assertions: they are only meaningful if the card
+    // really does render the body below the header.
+    render(<MetricCard metric={METRIC} range={RANGE} />);
+    expect(precedes(screen.getByText(METRIC.description), screen.getByTestId("line-chart"))).toBe(
+      true,
+    );
+  });
+});
+
+// ── The card's chart is drawn from the metric's series descriptors ─────────────
+// spec: FRONTEND_GOVERNANCE.md §Dashboard — "that metric's trend chart — one line
+// per entry of the metric's `metrics[]` series descriptors, drawn in `idx` order
+// and stroked with each descriptor's `color`".
+
+describe("MetricCard — hands its series descriptors to the trend chart", () => {
+  function lines(): Array<{ key: string; stroke: string }> {
+    return screen.getAllByTestId("line").map((el) => ({
+      key: el.getAttribute("data-key") as string,
+      stroke: el.getAttribute("data-stroke") as string,
+    }));
+  }
+
+  it("draws one line per descriptor, in idx order, stroked with its color", () => {
+    // Descriptors declared out of `idx` order so the ordering is observable.
+    const metric: MetricDefinition = {
+      ...METRIC,
+      metrics: [
+        { name: "total", color: "#64748B", idx: 2 },
+        { name: "doc_health", color: "#A855F7", idx: 1 },
+      ],
+    };
+    render(<MetricCard metric={metric} range={RANGE} />);
+
+    expect(lines()).toEqual([
+      { key: "doc_health", stroke: "#A855F7" },
+      { key: "total", stroke: "#64748B" },
+    ]);
+  });
+
+  it("plots only the declared descriptors, not every key in the results", () => {
+    const metric: MetricDefinition = {
+      ...METRIC,
+      metrics: [{ name: "doc_health", color: "#A855F7", idx: 1 }],
+    };
+    render(<MetricCard metric={metric} range={RANGE} />);
+
+    // RANGED carries both `total` and `doc_health`; only the descriptor is drawn.
+    expect(lines()).toEqual([{ key: "doc_health", stroke: "#A855F7" }]);
   });
 });
 

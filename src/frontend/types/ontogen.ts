@@ -14,7 +14,7 @@ export type ReviewVerdict = "approve" | "reject";
 export interface OntogenConf {
   is_enabled: boolean;
   schedule_tier: ScheduleTier | null;
-  dataset_filter: Record<string, unknown>;
+  dataset_filter: string;
   default_run_prompt: string | null;
   updated_at: string | null;
 }
@@ -22,14 +22,14 @@ export interface OntogenConf {
 export interface OntogenConfPutBody {
   is_enabled: boolean;
   schedule_tier: ScheduleTier | null;
-  dataset_filter: Record<string, unknown>;
+  dataset_filter: string;
   default_run_prompt: string | null;
 }
 
 export interface OntogenConfPatchBody {
   is_enabled?: boolean;
   schedule_tier?: ScheduleTier | null;
-  dataset_filter?: Record<string, unknown>;
+  dataset_filter?: string;
   default_run_prompt?: string | null;
 }
 

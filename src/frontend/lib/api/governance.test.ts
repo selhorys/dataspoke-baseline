@@ -52,6 +52,7 @@ import {
   useMetricResults,
   useLatestMetricResult,
   useMetricEvents,
+  useMetricDatasets,
 } from "./governance";
 
 function makeWrapper() {
@@ -227,6 +228,75 @@ describe("useMetricEvents — time bounds on the event URL", () => {
 
   it("does not fire when the metric id is empty", () => {
     renderHook(() => useMetricEvents(""), { wrapper: makeWrapper() });
+    expect(mockApiFetch).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Covered datasets — GET /spoke/governance/metric/{id}/dataset
+// (lib/api/governance.ts → buildMetricDatasetUrl)
+//
+// spec/API.md §Metric — "Repeatable `met` query param (default: all three).
+//   Paginated (`offset`/`limit`/`total_count`), sortable by `dataset_urn`
+//   (default `dataset_urn_asc`)".
+// spec/feature/FRONTEND_GOVERNANCE.md §Metric detail (Datasets panel) — "the
+//   shared Pagination drives `offset`/`limit` with `sort=dataset_urn`" and "With
+//   **zero** toggles selected the client … issues **no request**: an omitted
+//   repeatable param and an empty one are the same HTTP request, which the API
+//   reads as 'all three'".
+// ---------------------------------------------------------------------------
+describe("useMetricDatasets — the covered-dataset read", () => {
+  it("emits one `met` pair per selected verdict, plus paging and sort", async () => {
+    const { result } = renderHook(
+      () =>
+        useMetricDatasets(METRIC_ID, {
+          met: ["true", "false", "unknown"],
+          offset: 20,
+          limit: 50,
+          sort: "dataset_urn",
+        }),
+      { wrapper: makeWrapper() },
+    );
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    const sp = queryOf(lastUrl());
+    expect(sp.getAll("met")).toEqual(["true", "false", "unknown"]);
+    expect(sp.get("offset")).toBe("20");
+    expect(sp.get("limit")).toBe("50");
+    expect(sp.get("sort")).toBe("dataset_urn");
+    expect(lastUrl()).toContain(`/spoke/governance/metric/${METRIC_ID}/dataset`);
+  });
+
+  it("narrows to the verdicts still selected", async () => {
+    const { result } = renderHook(
+      () => useMetricDatasets(METRIC_ID, { met: ["false"], offset: 0, limit: 20 }),
+      { wrapper: makeWrapper() },
+    );
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(queryOf(lastUrl()).getAll("met")).toEqual(["false"]);
+  });
+
+  it("sorts by dataset_urn even when the caller passes no sort", async () => {
+    const { result } = renderHook(() => useMetricDatasets(METRIC_ID, { met: ["true"] }), {
+      wrapper: makeWrapper(),
+    });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(queryOf(lastUrl()).get("sort")).toBe("dataset_urn");
+  });
+
+  it("issues no request when the caller disables it (zero verdicts selected)", () => {
+    // The panel's no-selection state cannot be expressed on the wire, so it is
+    // resolved by not asking at all.
+    renderHook(() => useMetricDatasets(METRIC_ID, { met: [] }, { enabled: false }), {
+      wrapper: makeWrapper(),
+    });
+    expect(mockApiFetch).not.toHaveBeenCalled();
+  });
+
+  it("does not fire when the metric id is empty", () => {
+    renderHook(() => useMetricDatasets(""), { wrapper: makeWrapper() });
     expect(mockApiFetch).not.toHaveBeenCalled();
   });
 });

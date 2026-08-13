@@ -100,14 +100,20 @@ async def test_uc3_ontology_generation(
     try:
         # ── Step 1: PUT ontogen conf ──────────────────────────────────────────
         # UC3 narrative: "The governance team enables ontology generation."
-        # spec: USE_CASE_en.md §UC3 §Imazon Example
+        # spec: USE_CASE_en.md §UC3 §Imazon Example — the story's clause is
+        #   "'urn:li:tag:area:catalog' IN tag_urns". The extra `origin = 'DEV'`
+        #   conjunct is a test-environment narrowing, not part of the story: the dev
+        #   DataHub seed lives at origin DEV, and an origin-free clause would also
+        #   sweep in whatever else a shared cluster carries the tag on.
         put_conf_resp = await api_client.put(
             conf_url,
             headers=admin_headers,
             json={
                 "is_enabled": True,
                 "schedule_tier": "daily",
-                "dataset_filter": {"origin": "DEV", "tags": ["urn:li:tag:area:catalog"]},
+                "dataset_filter": (
+                    "origin = 'DEV' AND 'urn:li:tag:area:catalog' IN tag_urns"
+                ),
             },
         )
         assert put_conf_resp.status_code in (200, 201), (
@@ -123,12 +129,14 @@ async def test_uc3_ontology_generation(
             f"PUT conf response must round-trip schedule_tier='daily'; "
             f"got {conf_body.get('schedule_tier')!r}. spec: USE_CASE_en.md §UC3 §Imazon Example"
         )
-        assert conf_body["dataset_filter"] == {
-            "origin": "DEV",
-            "tags": ["urn:li:tag:area:catalog"],
-        }, (
-            f"dataset_filter not preserved: {conf_body.get('dataset_filter')!r}. "
-            "spec: USE_CASE_en.md §UC3 §Imazon Example"
+        assert conf_body["dataset_filter"] == (
+            "origin = 'DEV' AND 'urn:li:tag:area:catalog' IN tag_urns"
+        ), (
+            f"dataset_filter must round-trip verbatim — the backend owns the grammar and "
+            f"the route neither rewrites nor normalises the clause; got "
+            f"{conf_body.get('dataset_filter')!r}. "
+            "spec: API.md §`dataset_filter` grammar — \"UC3's "
+            "`ontogen/attr/conf.dataset_filter` […] use this same grammar and validation\""
         )
 
         # ── Step 2: POST Markdown seed ────────────────────────────────────────

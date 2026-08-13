@@ -68,7 +68,8 @@ listed here in the backend's order for readability:
 
 The first surviving row supplies the badge; a source whose newest page holds no run outcome shows
 none. A `PASSIVE` source shows none **always**: neither run-level producer covers that mode
-([BACKEND §Sync + mapping sweep](BACKEND.md#sync--mapping-sweep), step 4 — source `latest_run`), so
+([BACKEND §Sync + mapping sweep](BACKEND.md#sync--mapping-sweep), the run and observation
+events step — source `latest_run`), so
 its feed holds only per-dataset observations. The cell then renders the muted `—` placeholder, and
 the reading is "DataSpoke does not orchestrate this pipeline and never learns its run outcome", not
 "the fetch failed" — that source's recency lives on its datasets' timelines instead. Both predicates are required and neither is sufficient alone — the whitelist alone lets a
@@ -121,7 +122,7 @@ daily / weekly) to the backing Airflow DAG
    for `ACTIVE_CUSTOM_MANAGED`; other modes show an explanatory disabled state (the run happens in
    DataHub or externally; the API returns `409 INGESTION_RUN_NOT_APPLICABLE`). For `DATAHUB_MANAGED`
    and `PASSIVE`, a second line below the read-only explanation briefly describes the
-   `datahub-sync-hourly` DAG's role (on a fixed hourly cadence it refreshes the source→dataset
+   `datahub-sync-hourly` DAG's role (on a fixed 2-hour cadence it refreshes the source→dataset
    mapping, observes per-dataset ingestion for both modes, and mirrors DataHub run status for
    `DATAHUB_MANAGED`) with an Airflow link to `<airflowUrl>/dags/datahub-sync-hourly`
    (rendered only when `airflowUrl` is set).

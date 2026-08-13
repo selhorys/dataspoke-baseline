@@ -87,7 +87,10 @@ const ALPHA = {
   // ("Yankee" / "Xray" / "Zulu") appears in any title.
   title: "View Ground Alpha Quebec",
   description: "Yankee seed for the enabled-metric grid",
-  metrics: ["total", "ingested_in_time"],
+  metrics: [
+    { name: "total", color: "#64748B", idx: 1 },
+    { name: "ingested_in_time", color: "#22C55E", idx: 2 },
+  ],
   metric_conf: { time_window_sec: 172800 },
 };
 const BRAVO = {
@@ -100,7 +103,10 @@ const BRAVO = {
   // between Alpha and Charlie for a reader, but after both by code unit.
   title: "View Ground bravado Tango ROMEO",
   description: "Xray seed for the enabled-metric grid",
-  metrics: ["total", "validation_score_sum"],
+  metrics: [
+    { name: "total", color: "#64748B", idx: 1 },
+    { name: "validation_score_sum", color: "#3B82F6", idx: 2 },
+  ],
   metric_conf: { time_window_sec: 172800 },
 };
 const CHARLIE = {
@@ -109,7 +115,10 @@ const CHARLIE = {
   // "sierra" mirrors ROMEO in the other case direction.
   title: "View Ground Charlie Tango sierra",
   description: "Zulu seed for the enabled-metric grid",
-  metrics: ["total", "doc_health"],
+  metrics: [
+    { name: "total", color: "#64748B", idx: 1 },
+    { name: "doc_health", color: "#A855F7", idx: 2 },
+  ],
   metric_conf: {},
 };
 const SEEDED = [ALPHA, BRAVO, CHARLIE];
@@ -136,7 +145,8 @@ test.beforeAll(async ({ adminApi }) => {
         metrics: m.metrics,
         metric_conf: m.metric_conf,
         schedule_tier: null,
-        dataset_filter: {},
+        // Empty clause = every registered dataset (API.md §`dataset_filter` grammar).
+        dataset_filter: "",
       },
     });
     expect(

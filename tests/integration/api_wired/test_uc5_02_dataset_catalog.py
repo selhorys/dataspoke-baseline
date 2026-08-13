@@ -236,7 +236,7 @@ async def test_catalog_metagen_coverage(
                 "name": conf_name,
                 "is_enabled": True,
                 "schedule_tier": "daily",
-                "dataset_filter": {"dataset_urns": [_CATALOG_TITLE_URN]},
+                "dataset_filter": f"dataset_urn = '{_CATALOG_TITLE_URN}'",
                 "result_limit": 3,
                 "overwrite_pending": True,
             },

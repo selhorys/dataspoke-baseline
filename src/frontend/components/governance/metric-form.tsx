@@ -13,10 +13,16 @@
  *   onSubmit       — called with validated form data
  *   isPending      — shows loading state on the Save button
  *   serverError?   — top-level error from the mutation
+ *   filterError?   — 422 INVALID_DATASET_FILTER, rendered inline in the editor
  *   title?         — optional panel heading rendered left of the top action bar
+ *
+ * The `metrics` control is one row per emitted key of the selected metric_type:
+ * a checkbox, a color control (native swatch paired with a #RRGGBB text input),
+ * and a display-order number. Only checked rows are submitted, as
+ * `{name, color, idx}` (spec/feature/FRONTEND_GOVERNANCE.md §Metrics).
  */
 
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -36,25 +42,23 @@ import { Field } from "@/components/forms/field";
 import { FormGrid } from "@/components/ui/form-grid";
 import { ErrorText } from "@/components/forms/error-text";
 import { DatasetFilterEditor } from "@/components/dataset-filter-editor";
-import {
-  METRIC_EMITTED_KEYS,
-  METRIC_TYPES_WITH_TIME_WINDOW,
-} from "@/types/governance";
+import { METRIC_TYPES_WITH_TIME_WINDOW } from "@/types/governance";
 import type {
   CreateMetricFormValues,
-  DatasetFilter,
   MetricFormValues,
   MetricType,
   ScheduleTier,
 } from "@/types/governance";
+import type { DatasetFilterErrorInfo } from "@/lib/dataset-filter-error";
 import {
+  SERIES_COLOR_PATTERN,
   baseSchema,
   createSchema,
   fromInternal,
+  seriesRowsForType,
   toInternal,
-  pruneMetricKeys,
 } from "./metric-form.schema";
-import type { InternalFormValues } from "./metric-form.schema";
+import type { InternalFormValues, MetricSeriesRow } from "./metric-form.schema";
 
 // ── Internal form value shape ─────────────────────────────────────────────────
 
@@ -70,6 +74,7 @@ interface MetricFormProps {
   onCancel?: () => void;
   isPending: boolean;
   serverError?: string;
+  filterError?: DatasetFilterErrorInfo;
   title?: string;
 }
 
@@ -80,6 +85,7 @@ export function MetricForm({
   onCancel,
   isPending,
   serverError,
+  filterError,
   title,
 }: MetricFormProps) {
   const schema = isCreate ? createSchema : baseSchema;
@@ -108,42 +114,59 @@ export function MetricForm({
 
   const mode = watch("mode");
   const metricType = watch("metric_type") as MetricType;
-  const selectedMetrics = watch("metrics");
-  const datasetFilter = watch("dataset_filter") as DatasetFilter;
+  const watchedMetrics = watch("metrics");
+  // Memoised so the row-patch callbacks below do not change identity every render.
+  const seriesRows = useMemo(
+    () => (watchedMetrics ?? []) as MetricSeriesRow[],
+    [watchedMetrics],
+  );
+  const datasetFilter = watch("dataset_filter") as string;
 
-  const emittedKeys = METRIC_EMITTED_KEYS[metricType] ?? [];
+  // `dataset_filter` is driven by setValue (never registered), so its schema
+  // error has no other render site: without this the length cap would make
+  // handleSubmit a silent no-op. The server 422 wins when both are present.
+  const clientFilterError: DatasetFilterErrorInfo | undefined = errors.dataset_filter
+    ?.message
+    ? { message: errors.dataset_filter.message }
+    : undefined;
+
   const needsWindow = METRIC_TYPES_WITH_TIME_WINDOW.includes(metricType);
 
+  // Per-row errors from the series refinement (color / idx), keyed by row index.
+  const seriesErrors = errors.metrics as
+    | ({ message?: string } & Array<
+        { color?: { message?: string }; idx?: { message?: string } } | undefined
+      >)
+    | undefined;
+
   const handleFilterChange = useCallback(
-    (v: DatasetFilter) => {
+    (v: string) => {
       setValue("dataset_filter", v, { shouldDirty: true });
     },
     [setValue],
   );
 
-  const handleToggleMetricKey = useCallback(
-    (key: string, checked: boolean) => {
-      const current: string[] = selectedMetrics ?? [];
-      const next = checked ? [...current, key] : current.filter((k: string) => k !== key);
-      setValue("metrics", next, { shouldDirty: true });
+  const patchSeriesRow = useCallback(
+    (index: number, patch: Partial<MetricSeriesRow>) => {
+      const next = seriesRows.map((row, i) => (i === index ? { ...row, ...patch } : row));
+      setValue("metrics", next, { shouldDirty: true, shouldValidate: false });
     },
-    [selectedMetrics, setValue],
+    [seriesRows, setValue],
   );
 
-  // F3: on type change, prune stale metric keys via pruneMetricKeys and reset time_window_sec.
+  // F3: on type change, reseed the series rows to the new type's emitted keys
+  // (surviving keys keep their color and order) and reset time_window_sec.
   const handleMetricTypeChange = useCallback(
     (newType: MetricType) => {
       setValue("metric_type", newType, { shouldDirty: true });
-
-      const pruned = pruneMetricKeys(newType, selectedMetrics ?? []);
-      setValue("metrics", pruned, { shouldDirty: true });
+      setValue("metrics", seriesRowsForType(newType, seriesRows), { shouldDirty: true });
 
       const newNeedsWindow = (METRIC_TYPES_WITH_TIME_WINDOW as string[]).includes(newType);
       if (!newNeedsWindow) {
         setValue("time_window_sec", undefined, { shouldDirty: true });
       }
     },
-    [selectedMetrics, setValue],
+    [seriesRows, setValue],
   );
 
   const isPassive = mode === "passive";
@@ -270,26 +293,75 @@ export function MetricForm({
           />
         </Field>
 
-        {/* metrics (checkbox list) */}
+        {/* metrics — one row per emitted key: checkbox, color, display order */}
         <Field
           label="metrics"
           htmlFor="metrics"
-          error={(errors.metrics as { message?: string } | undefined)?.message}
+          error={seriesErrors?.message}
           required
-          hint="Which value keys to persist in results"
+          hint="Which value keys to persist, the line color each is drawn in, and their display order"
           className="sm:col-span-2"
         >
-          <div className="flex flex-wrap gap-3">
-            {emittedKeys.map((key) => (
-              <label key={key} className="flex cursor-pointer items-center gap-2 text-sm">
-                <Checkbox
-                  id={`metric-key-${key}`}
-                  checked={selectedMetrics?.includes(key) ?? false}
-                  onCheckedChange={(checked) => handleToggleMetricKey(key, !!checked)}
-                />
-                {key}
-              </label>
-            ))}
+          <div className="space-y-2">
+            {seriesRows.map((row, index) => {
+              const rowErrors = seriesErrors?.[index];
+              const swatch = SERIES_COLOR_PATTERN.test(row.color) ? row.color : "#000000";
+              return (
+                <div key={row.name} className="flex flex-wrap items-center gap-2">
+                  <label
+                    className="flex w-52 cursor-pointer items-center gap-2 text-sm"
+                    htmlFor={`metric-key-${row.name}`}
+                  >
+                    <Checkbox
+                      id={`metric-key-${row.name}`}
+                      checked={row.selected}
+                      onCheckedChange={(checked) =>
+                        patchSeriesRow(index, { selected: !!checked })
+                      }
+                    />
+                    {row.name}
+                  </label>
+
+                  <input
+                    type="color"
+                    aria-label={`${row.name} color swatch`}
+                    value={swatch}
+                    disabled={!row.selected}
+                    onChange={(e) =>
+                      patchSeriesRow(index, { color: e.target.value.toUpperCase() })
+                    }
+                    className="h-9 w-10 cursor-pointer rounded-md border border-input bg-background p-1 disabled:cursor-not-allowed disabled:opacity-50"
+                  />
+                  <Input
+                    aria-label={`${row.name} color`}
+                    value={row.color}
+                    disabled={!row.selected}
+                    onChange={(e) => patchSeriesRow(index, { color: e.target.value })}
+                    placeholder="#2563EB"
+                    className="w-28 font-mono text-xs"
+                  />
+
+                  <Label htmlFor={`metric-idx-${row.name}`} className="text-xs text-muted-foreground">
+                    idx
+                  </Label>
+                  <Input
+                    id={`metric-idx-${row.name}`}
+                    aria-label={`${row.name} display order`}
+                    type="number"
+                    min={1}
+                    value={Number.isFinite(row.idx) ? row.idx : ""}
+                    disabled={!row.selected}
+                    onChange={(e) =>
+                      patchSeriesRow(index, { idx: Number(e.target.value) })
+                    }
+                    className="w-20"
+                  />
+
+                  <ErrorText message={rowErrors?.color?.message} />
+                  <ErrorText message={rowErrors?.idx?.message} />
+                </div>
+              );
+            })}
           </div>
         </Field>
 
@@ -356,7 +428,11 @@ export function MetricForm({
 
         {/* dataset_filter */}
         <div className="sm:col-span-2">
-          <DatasetFilterEditor value={datasetFilter ?? {}} onChange={handleFilterChange} />
+          <DatasetFilterEditor
+            value={datasetFilter ?? ""}
+            onChange={handleFilterChange}
+            error={filterError ?? clientFilterError}
+          />
         </div>
       </FormGrid>
 

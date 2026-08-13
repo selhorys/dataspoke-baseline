@@ -7,22 +7,30 @@ Spec: spec/feature/BACKEND.md §Metrics Service
 """
 
 import logging
+import re
 import secrets
 import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+import sqlalchemy as sa
 import sqlalchemy.exc
 from pydantic import BaseModel
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.backend._dataset_filter import resolve_dataset_scope, validate_dataset_filter_service
-from src.backend.metrics.measurers import get_measurer, list_measurers
+from src.backend._dataset_filter import (
+    dataset_filter_clause,
+    resolve_dataset_scope,
+    validate_dataset_filter_service,
+)
+from src.backend.metrics.measurers import DatasetVerdict, get_measurer, list_measurers
 from src.shared.cache.client import RedisClient
 from src.shared.datahub.client import DataHubClient
 from src.shared.db.models import (
+    DatasetRegistry,
     Event,
+    MetricDatasetResult,
     MetricDefinition,
     MetricResult,
 )
@@ -48,6 +56,15 @@ _EMITTED_KEYS: dict[str, set[str]] = {
     "doc-health": {"total", "doc_health"},
 }
 
+_COLOR_RE = re.compile(r"^#[0-9A-Fa-f]{6}$")
+
+#: The tri-state `met` vocabulary of GET /spoke/governance/metric/{id}/dataset.
+_MET_STATES: frozenset[str] = frozenset({"true", "false", "unknown"})
+
+#: Rows per verdict-insert round trip, so one run over a large estate does not
+#: build a single statement with an unbounded parameter count.
+_VERDICT_CHUNK = 500
+
 
 class MetricDefinitionRecord(BaseModel):
     """Value object mirroring the ORM MetricDefinition."""
@@ -57,14 +74,29 @@ class MetricDefinitionRecord(BaseModel):
     metric_type: str
     title: str
     description: str
-    metrics: list[str]
+    #: Series descriptors — ``[{"name": …, "color": "#RRGGBB", "idx": 1}, …]``.
+    metrics: list[dict[str, Any]]
     metric_conf: dict[str, Any]
-    dataset_filter: dict[str, Any]
+    dataset_filter: str
     schedule_tier: str | None = None
     is_enabled: bool
     created_at: datetime
     updated_at: datetime
     last_run_at: datetime | None = None
+
+
+class MetricDatasetRecord(BaseModel):
+    """One row of ``GET /spoke/governance/metric/{metric_id}/dataset``.
+
+    ``met`` is tri-state: ``"unknown"`` means the dataset is in the metric's
+    current scope but carries no verdict — the metric has never run, or the
+    dataset entered scope after the last run.
+    """
+
+    dataset_urn: str
+    met: str
+    last_check_at: datetime | None = None
+    detail: dict[str, Any] | None = None
 
 
 class MetricResultRecord(BaseModel):
@@ -94,15 +126,81 @@ def _definition_from_row(
         metric_type=row.metric_type,
         title=row.title,
         description=row.description,
-        metrics=row.metrics or [],
+        metrics=list(row.metrics or []),
         metric_conf=row.metric_conf or {},
-        dataset_filter=row.dataset_filter or {},
+        dataset_filter=row.dataset_filter or "",
         schedule_tier=row.schedule_tier,
         is_enabled=row.is_enabled,
         created_at=row.created_at,
         updated_at=row.updated_at,
         last_run_at=last_run_at,
     )
+
+
+def _validate_series(metric_type: str, series: list[dict[str, Any]]) -> None:
+    """Validate ``metrics[]`` series descriptors against *metric_type*.
+
+    Mirrors the schema-layer rules (``src/api/schemas/metrics.py``) for callers
+    that reach the service without a request body — and for PATCH, whose merged
+    state is only knowable here: every ``name`` is one of the type's emitted
+    keys, and ``name`` and ``idx`` are each unique within the metric.
+    """
+    allowed = _EMITTED_KEYS.get(metric_type, set())
+    names: list[str] = []
+    idxs: list[int] = []
+
+    for entry in series:
+        if not isinstance(entry, dict):
+            raise PreconditionFailedError(
+                "INVALID_PARAMETER", "metrics[] entries must be {name, color, idx} objects"
+            )
+        name = entry.get("name")
+        color = entry.get("color")
+        idx = entry.get("idx")
+        if not isinstance(name, str) or not name:
+            raise PreconditionFailedError("INVALID_PARAMETER", "metrics[].name is required")
+        if not isinstance(color, str) or not _COLOR_RE.match(color):
+            raise PreconditionFailedError(
+                "INVALID_PARAMETER", "metrics[].color must be a #RRGGBB hex string"
+            )
+        if isinstance(idx, bool) or not isinstance(idx, int) or idx < 1:
+            raise PreconditionFailedError(
+                "INVALID_PARAMETER", "metrics[].idx must be a positive integer"
+            )
+        names.append(name)
+        idxs.append(idx)
+
+    unknown = set(names) - allowed
+    if unknown:
+        raise PreconditionFailedError(
+            "INVALID_PARAMETER",
+            (
+                f"metrics[] contains keys not emitted by '{metric_type}': "
+                f"{sorted(unknown)}. Allowed: {sorted(allowed)}"
+            ),
+        )
+    if len(set(names)) != len(names):
+        raise PreconditionFailedError("INVALID_PARAMETER", "metrics[].name must be unique")
+    if len(set(idxs)) != len(idxs):
+        raise PreconditionFailedError("INVALID_PARAMETER", "metrics[].idx must be unique")
+
+
+def _breakdown_from_verdicts(verdicts: list[DatasetVerdict]) -> dict[str, Any]:
+    """Derive ``metric_results.breakdown`` from the run's verdicts.
+
+    ``datasets[]`` lists only the failed ones — membership in the list is itself
+    the classification — while ``dataset_count`` is the total scanned. Deriving
+    it here rather than having each measurer build both is what keeps the stored
+    breakdown and ``metric_dataset_results`` from ever disagreeing.
+    """
+    return {
+        "dataset_count": len(verdicts),
+        "datasets": [
+            {"urn": verdict.urn, "detail": verdict.detail}
+            for verdict in verdicts
+            if not verdict.met
+        ],
+    }
 
 
 def _result_from_row(row: MetricResult) -> MetricResultRecord:
@@ -227,9 +325,9 @@ class MetricsService:
         metric_type: str,
         title: str,
         description: str,
-        metrics: list[str],
+        metrics: list[dict[str, Any]],
         metric_conf: dict[str, Any],
-        dataset_filter: dict[str, Any],
+        dataset_filter: str,
         schedule_tier: str | None = None,
         is_enabled: bool = False,
     ) -> MetricDefinitionRecord:
@@ -241,6 +339,7 @@ class MetricsService:
         primary-key ``IntegrityError`` on commit.
         """
         validate_dataset_filter_service(dataset_filter)
+        _validate_series(metric_type, metrics)
 
         result = await self._db.execute(
             select(MetricDefinition).where(MetricDefinition.id == metric_id)
@@ -286,9 +385,9 @@ class MetricsService:
         metric_type: str,
         title: str,
         description: str,
-        metrics: list[str],
+        metrics: list[dict[str, Any]],
         metric_conf: dict[str, Any],
-        dataset_filter: dict[str, Any],
+        dataset_filter: str,
         schedule_tier: str | None = None,
         is_enabled: bool = False,
     ) -> MetricDefinitionRecord:
@@ -298,6 +397,7 @@ class MetricsService:
         does not exist.  Use ``create_metric_config`` to create new entries.
         """
         validate_dataset_filter_service(dataset_filter)
+        _validate_series(metric_type, metrics)
 
         result = await self._db.execute(
             select(MetricDefinition).where(MetricDefinition.id == metric_id)
@@ -360,7 +460,7 @@ class MetricsService:
         # Cross-field re-validation on merged state (mirrors PUT-side invariants).
         merged_type: str = row.metric_type
         merged_conf: dict[str, Any] = row.metric_conf or {}
-        merged_metrics: list[str] = row.metrics or []
+        merged_metrics: list[dict[str, Any]] = list(row.metrics or [])
 
         if merged_type in ("ingestion-freshness", "validation-score"):
             tw = merged_conf.get("time_window_sec")
@@ -377,16 +477,7 @@ class MetricsService:
                     "metric_conf must be {} for metric_type 'doc-health'",
                 )
 
-        allowed_keys = _EMITTED_KEYS.get(merged_type, set())
-        unknown_keys = set(merged_metrics) - allowed_keys
-        if unknown_keys:
-            raise PreconditionFailedError(
-                "INVALID_PARAMETER",
-                (
-                    f"metrics[] contains keys not emitted by '{merged_type}': "
-                    f"{sorted(unknown_keys)}. Allowed: {sorted(allowed_keys)}"
-                ),
-            )
+        _validate_series(merged_type, merged_metrics)
 
         row.updated_at = datetime.now(tz=UTC)
         self._db.add(row)
@@ -416,6 +507,9 @@ class MetricsService:
 
         await self._db.execute(
             delete(MetricResult).where(MetricResult.metric_id == metric_id)
+        )
+        await self._db.execute(
+            delete(MetricDatasetResult).where(MetricDatasetResult.metric_id == metric_id)
         )
         await self._db.delete(row)
         await self._db.commit()
@@ -508,7 +602,8 @@ class MetricsService:
 
         run_id = str(uuid.uuid4())
 
-        values, breakdown, unresolved_urns = await self._measure(definition)
+        values, verdicts, unresolved_urns = await self._measure(definition)
+        breakdown = _breakdown_from_verdicts(verdicts)
 
         detail: dict[str, Any] = {
             "run_id": run_id,
@@ -517,26 +612,62 @@ class MetricsService:
             "dry_run": dry_run,
             "unresolved_urns": unresolved_urns,
             "breakdown_summary": {
-                "dataset_count": breakdown.get("dataset_count", 0),
-                "affected_count": len(breakdown.get("datasets", [])),
+                "dataset_count": breakdown["dataset_count"],
+                "affected_count": len(breakdown["datasets"]),
             },
         }
 
+        # A dry run persists nothing — neither the result row nor the verdicts,
+        # so `/dataset` after a dry run still reports the previous run's.
         if dry_run:
             return MetricRunResult(run_id=run_id, status="success", detail=detail)
 
+        measured_at = datetime.now(tz=UTC)
         result_row = MetricResult(
             metric_id=metric_id,
             values=values,
             breakdown=breakdown,
-            measured_at=datetime.now(tz=UTC),
+            measured_at=measured_at,
         )
         self._db.add(result_row)
+        # The verdict store holds the latest run only, so the metric's rows are
+        # replaced wholesale inside the same transaction as the result row: the
+        # two can never describe different runs.
+        await self._replace_dataset_verdicts(metric_id, verdicts, measured_at)
         await self._db.commit()
 
         await self._record_event(metric_id, METRIC_RUN_COMPLETE, "success", detail)
 
         return MetricRunResult(run_id=run_id, status="success", detail=detail)
+
+    async def _replace_dataset_verdicts(
+        self,
+        metric_id: str,
+        verdicts: list[DatasetVerdict],
+        measured_at: datetime,
+    ) -> None:
+        """Replace this metric's ``metric_dataset_results`` rows. Does not commit."""
+        await self._db.execute(
+            delete(MetricDatasetResult).where(MetricDatasetResult.metric_id == metric_id)
+        )
+        if not verdicts:
+            return
+
+        payload = [
+            {
+                "metric_id": metric_id,
+                "dataset_urn": verdict.urn,
+                "met": verdict.met,
+                "evidence_at": verdict.evidence_at,
+                "detail": verdict.detail,
+                "measured_at": measured_at,
+            }
+            for verdict in verdicts
+        ]
+        for start in range(0, len(payload), _VERDICT_CHUNK):
+            await self._db.execute(
+                sa.insert(MetricDatasetResult), payload[start : start + _VERDICT_CHUNK]
+            )
 
     # ── Events ───────────────────────────────────────────────────────────────
 
@@ -608,17 +739,15 @@ class MetricsService:
     async def _measure(
         self,
         definition: MetricDefinitionRecord,
-    ) -> tuple[dict[str, float], dict[str, Any], list[str]]:
-        """Run measurement and return (values, breakdown, unresolved_urns).
+    ) -> tuple[dict[str, float], list[DatasetVerdict], list[str]]:
+        """Run measurement and return (values, verdicts, unresolved_urns).
 
-        Resolves dataset_filter (origin, tags, glossary_terms, dataset_urns).
-        Explicit dataset_urns that don't resolve in DataHub at runtime, or whose
-        origin segment mismatches the requested origin, are accumulated into
-        unresolved_urns.
+        Resolves ``dataset_filter`` against ``dataset_registry`` — one SQL query,
+        no DataHub call — so the run's verdicts and the ``/dataset`` view can
+        never disagree about scope. Literal ``dataset_urn`` values matching no
+        registered dataset are accumulated into ``unresolved_urns``.
         """
-        scope = await resolve_dataset_scope(
-            self._datahub, definition.dataset_filter or {}
-        )
+        scope = await resolve_dataset_scope(self._db, definition.dataset_filter)
         datasets = scope.resolved_urns
         unresolved_urns = scope.unresolved_urns
 
@@ -630,14 +759,120 @@ class MetricsService:
                 f"Unsupported metric_type: '{definition.metric_type}'. Supported: {supported}.",
             )
 
-        all_values, breakdown = await measurer(
+        all_values, verdicts = await measurer(
             datasets, definition.metric_conf, datahub=self._datahub, db=self._db
         )
 
-        # Filter values to the subset declared in definition.metrics
-        if definition.metrics:
-            filtered_values = {k: v for k, v in all_values.items() if k in definition.metrics}
-        else:
-            filtered_values = all_values
+        # Filter values to the series declared in definition.metrics
+        declared = {
+            series["name"]
+            for series in definition.metrics
+            if isinstance(series, dict) and "name" in series
+        }
+        filtered_values = (
+            {k: v for k, v in all_values.items() if k in declared} if declared else all_values
+        )
 
-        return filtered_values, breakdown, unresolved_urns
+        return filtered_values, verdicts, unresolved_urns
+
+    # ── Per-dataset verdicts ─────────────────────────────────────────────────
+
+    async def list_metric_datasets(
+        self,
+        metric_id: str,
+        *,
+        met: list[str] | None = None,
+        offset: int = 0,
+        limit: int = 20,
+        order_by: Any = None,
+    ) -> tuple[list[MetricDatasetRecord], int, datetime | None]:
+        """The metric's current scope joined to its latest per-dataset verdicts.
+
+        Scope is resolved from the same registry the run resolved it from — the
+        compiled filter clause is pushed into this paginated query rather than a
+        URN list being materialised — so a dataset cannot appear here and be
+        missing from the run, or the reverse. A dataset in scope with no verdict
+        row reads ``met = "unknown"``.
+
+        Returns ``(rows, total_count, attrs_synced_at)`` where ``attrs_synced_at``
+        is the **maximum** ``dataset_registry.attrs_synced_at`` over the datasets
+        in scope — scope-relative and unaffected by ``met`` filtering or paging,
+        because it answers "how fresh is the scope this page is drawn from", not
+        "how fresh is this page".
+
+        Raises EntityNotFoundError("metric", metric_id) when the metric is absent.
+        """
+        definition = await self.get_metric(metric_id)
+        clause = dataset_filter_clause(definition.dataset_filter)
+
+        in_scope = (
+            DatasetRegistry.datahub_registered.is_(True),
+            clause,
+        )
+        verdict_join = sa.and_(
+            MetricDatasetResult.dataset_urn == DatasetRegistry.dataset_urn,
+            MetricDatasetResult.metric_id == metric_id,
+        )
+
+        base = (
+            select(
+                DatasetRegistry.dataset_urn,
+                MetricDatasetResult.met,
+                MetricDatasetResult.evidence_at,
+                MetricDatasetResult.measured_at,
+                MetricDatasetResult.detail,
+            )
+            .select_from(DatasetRegistry)
+            .outerjoin(MetricDatasetResult, verdict_join)
+            .where(*in_scope)
+        )
+
+        # Tri-state filter. `met IS NULL` is the left-join miss — in scope, never
+        # evaluated. Selecting all three states adds no predicate.
+        selected = set(met or _MET_STATES)
+        unknown = selected - _MET_STATES
+        if unknown:
+            raise PreconditionFailedError(
+                "INVALID_PARAMETER",
+                f"met must be one of {sorted(_MET_STATES)}; got {sorted(unknown)}",
+            )
+        if selected != _MET_STATES:
+            conditions = []
+            if "true" in selected:
+                conditions.append(MetricDatasetResult.met.is_(True))
+            if "false" in selected:
+                conditions.append(MetricDatasetResult.met.is_(False))
+            if "unknown" in selected:
+                conditions.append(MetricDatasetResult.met.is_(None))
+            base = base.where(sa.or_(*conditions) if conditions else sa.false())
+
+        count_q = select(func.count()).select_from(base.subquery())
+        total_count = (await self._db.execute(count_q)).scalar() or 0
+
+        default_order = DatasetRegistry.dataset_urn.asc()
+        rows_q = (
+            base.order_by(order_by if order_by is not None else default_order)
+            .offset(offset)
+            .limit(limit)
+        )
+        rows = (await self._db.execute(rows_q)).all()
+
+        synced_q = select(func.max(DatasetRegistry.attrs_synced_at)).where(*in_scope)
+        attrs_synced_at = (await self._db.execute(synced_q)).scalar()
+
+        return (
+            [
+                MetricDatasetRecord(
+                    dataset_urn=row.dataset_urn,
+                    met="unknown" if row.met is None else ("true" if row.met else "false"),
+                    # last_check_at is the per-dataset evidence timestamp falling
+                    # back to the run time — doc-health has no per-dataset
+                    # timestamp, so it always reports the run.
+                    last_check_at=row.evidence_at or row.measured_at,
+                    detail=row.detail,
+                )
+                for row in rows
+            ],
+            total_count,
+            attrs_synced_at,
+        )
