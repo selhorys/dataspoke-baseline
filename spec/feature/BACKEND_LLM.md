@@ -475,7 +475,6 @@ Secret rather than the DB — see [LLM API key](#llm-api-key) below.
 | `metagen_ontology_rag_node_k` | `5` | [0, 20] | metagen Producer-evidence ontology RAG (`0` disables) |
 | `metagen_ontology_rag_edge_k` | `5` | [0, 20] | metagen Producer-evidence ontology RAG (`0` disables) |
 | `metagen_ontology_rag_triple_k` | `5` | [0, 20] | metagen Producer-evidence ontology RAG (`0` disables) |
-| `validation_score_n_intervals` | `3` | ≥ 1 | governance validation-cadence window |
 
 The ontogen persistence gate uses the fixed `ONTOLOGY_CONFIDENCE_THRESHOLD`
 backend constant (see [`BACKEND.md`](BACKEND.md)), not a runtime tunable.

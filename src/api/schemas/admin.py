@@ -115,7 +115,6 @@ class RuntimeConfResponse(SingleResponse):
     metagen_ontology_rag_node_k: int
     metagen_ontology_rag_edge_k: int
     metagen_ontology_rag_triple_k: int
-    validation_score_n_intervals: int
     stub_redis_client: bool
     stub_llm_client: bool
     stub_pgvector_manager: bool
@@ -381,7 +380,6 @@ class RuntimeConfPatchRequest(BaseModel):
     metagen_ontology_rag_node_k: Annotated[int | None, Field(default=None, ge=0, le=20)] = None
     metagen_ontology_rag_edge_k: Annotated[int | None, Field(default=None, ge=0, le=20)] = None
     metagen_ontology_rag_triple_k: Annotated[int | None, Field(default=None, ge=0, le=20)] = None
-    validation_score_n_intervals: Annotated[int | None, Field(default=None, ge=1)] = None
     stub_redis_client: bool | None = None
     stub_llm_client: bool | None = None
     stub_pgvector_manager: bool | None = None

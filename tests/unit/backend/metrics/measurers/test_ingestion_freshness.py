@@ -4,27 +4,38 @@ Spec sources:
   spec/USE_CASE_en.md §UC5 §Built-in active metric types (the row for
   `ingestion-freshness`, quoted verbatim):
     - "`total` = count of datasets matched by `dataset_filter`; `ingested_in_time` =
-      count whose latest `INGESTION.COMPLETE` falls within a **per-dataset freshness
-      window**."
-    - "a scheduled source (`ACTIVE_CUSTOM_MANAGED`/`DATAHUB_MANAGED`) → twice its
-      `schedule_tier` period (`hourly`→7200s, `daily`→172800s, `weekly`→1209600s); a
-      `PASSIVE` source → twice the DataHub-sync cadence (hourly → 7200s); a dataset
-      mapped to no source (or a source with no derivable schedule) falls back to
-      `metric_conf.time_window_sec`."
+      count whose latest ingestion evidence falls within `metric_conf.time_window_sec`
+      of the measurement. The evidence is the owning ingestion source's per-dataset
+      observation for that dataset where DataHub reports one, else that source's newest
+      non-dry-run `INGESTION.COMPLETE`".
+    - "`time_window_sec` for `ingestion-freshness` and `validation-score` — **the**
+      measurement window (positive int seconds, factory default `172800`), the freshness
+      SLO the governance lead declares and the same for every dataset the metric scans".
     - Registered under the `metric_type` value 'ingestion-freshness'; emits
       {'total': float, 'ingested_in_time': float}.
 
-  Note on the boundary: "falls within" fixes the *window*, not the behaviour at the
-  exact-cutoff instant — the spec says nothing about an event whose timestamp equals
-  `now - window`. Where a test below turns on that instant it says so and names the
-  strict comparison as the implementation's chosen tie-break, not a spec requirement.
+  Note on the boundary: USE_CASE's "falls within" fixes the *window*, not the behaviour
+  at the exact-cutoff instant. BACKEND.md's "no older than" / "older than" phrasing does
+  reach that instant and reads inclusive, while the implementation compares strictly.
+  The one test below that turns on the instant pins current behaviour and spells the
+  divergence out; every other windowing assertion here stays clear of it.
 
-  spec/feature/BACKEND.md §Metrics Service §Time windows:
+  spec/feature/BACKEND.md §Metrics Service §Measurement window:
+    - "the window is `metric_conf.time_window_sec`, applied uniformly to every dataset
+      in the run. It is a declared SLO the governance lead owns, not a quantity derived
+      from a per-dataset fact such as an owning source's registered schedule, a
+      sync-loop cadence, or a dataset's observed validation inter-arrival gap".
+    - "`ingestion-freshness`: a dataset counts toward `ingested_in_time` when its
+      resolved ingestion evidence (below) is no older than `time_window_sec` at
+      measurement time."
+    - "Each run records the window it applied in the breakdown's
+      `detail.time_window_sec`."
+
+  spec/feature/BACKEND.md §Metrics Service §Ingestion evidence:
     - "every `INGESTION.*` event is booked on a source (entity_type="ingestion_source",
       entity_id=source_id …) and never on the dataset, so the measurer resolves each
       dataset's **owning source** first. It then reads that source's feed in **two tiers
-      of evidence**, per-dataset first and source-level as fallback. The same resolution
-      supplies the window."
+      of evidence**, per-dataset first and source-level as fallback."
     - Tier 1 (preferred): "max(occurred_at) over the observation events the owning source
       booked **for that dataset**"; tier 2 (fallback): "max(occurred_at) over **every**
       INGESTION.COMPLETE booked on the owning source — no producer filter, **excluding
@@ -32,26 +43,21 @@ Spec sources:
     - "Owning source is what IngestionService.reverse_lookup returns — or, over a
       whole dataset list at once, its batched single-winner sibling
       reverse_lookup_batch, which the measurer calls".
-
-  Which tier each test exercises: every test that seeds only ``events=`` exercises
-  **tier 2** (a source-level COMPLETE, the only evidence available), which is what the
-  window, wrapper-union and owning-source tests are about — they are unchanged in
-  substance by the two-tier split. The tests under §Evidence tiers seed
-  ``observations=`` and exercise **tier 1** and the preference between them.
     - "if the sort winner is itself a wrapper it resolves up to its regular parent —
       a wrapper is never the owning source."
     - "The owning source's **CLI-wrapper runs count as its own** … a source's events
       are the union of its own and its wrappers'."
-    - Window: ACTIVE_CUSTOM_MANAGED / DATAHUB_MANAGED with a schedule →
-      SCHEDULE_TIER_SECONDS[schedule_tier] × 2; PASSIVE → PASSIVE_SYNC_PERIOD_SEC × 2;
-      "a dataset mapped to no source, or a source with no derivable schedule →
-      metric_conf.time_window_sec".
+
+  Which tier each test exercises: every test that seeds only ``events=`` exercises
+  **tier 2** (a source-level COMPLETE, the only evidence available), which is what the
+  wrapper-union and owning-source tests are about. The tests under §Evidence tiers seed
+  ``observations=`` and exercise **tier 1** and the preference between them.
+
   spec/feature/BACKEND.md §Metrics Service §Breakdown format:
     - datasets[] carries only failed entries (stale datasets).
     - Entry shape is {"urn": …, "detail": {…}} — no 'category' field.
-    - detail for ingestion-freshness: {last_event_at, time_window_sec, window_source,
-      evidence_tier} with window_source in {"managed:<tier>", "passive", "default"} and
-      evidence_tier in {"observation", "source_level", null}.
+    - detail for ingestion-freshness: {last_event_at, time_window_sec, evidence_tier}
+      with evidence_tier in {"observation", "source_level", null}.
 """
 
 import re
@@ -178,7 +184,7 @@ def _fake_measurer_db(
       raises ``KeyError`` on a row production could never return.
     - Query 3 must filter or a mutation to the *owning-source resolution* surfaces as a
       ``KeyError`` deep inside the evidence helper instead of as the
-      window assertion the test names as its discriminator. A fake that hands back every
+      evidence assertion the test names as its discriminator. A fake that hands back every
       seeded wrapper regardless of who was asked about hides which step broke.
 
     **Not modelled**, and covered against real PostgreSQL instead — a fake cannot prove a
@@ -336,7 +342,7 @@ async def test_empty_datasets_returns_zeros() -> None:
     assert breakdown["datasets"] == []
 
 
-# ── Fresh / stale against the metric_conf fallback window ─────────────────────
+# ── Fresh / stale against the declared metric_conf window ─────────────────────
 
 
 @pytest.mark.asyncio
@@ -348,8 +354,7 @@ async def test_fresh_dataset_not_in_breakdown() -> None:
     """
     measure = _get_measurer()
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.catalog.title_master,DEV)"
-    # No schedule_tier ⇒ the metric_conf fallback window applies.
-    src = _source(mode="ACTIVE_CUSTOM_MANAGED", schedule_tier=None)
+    src = _source(mode="ACTIVE_CUSTOM_MANAGED")
     recent = datetime.now(tz=UTC) - timedelta(hours=1)
 
     values, breakdown = await measure(
@@ -381,12 +386,13 @@ async def test_dataset_with_no_event_in_breakdown_with_none_last_event() -> None
     helper's result dict rather than mapped to None.
 
     Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format — a dataset is
-          failed when its latest INGESTION.COMPLETE "is older than the dataset's
-          freshness window … or absent"; detail carries last_event_at.
+          failed when its resolved ingestion evidence "is older than
+          ``metric_conf.time_window_sec``, or absent on both tiers"; detail carries
+          ``last_event_at``.
     """
     measure = _get_measurer()
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.catalog.editions,DEV)"
-    src = _source(mode="ACTIVE_CUSTOM_MANAGED", schedule_tier=None)
+    src = _source(mode="ACTIVE_CUSTOM_MANAGED")
 
     values, breakdown = await measure(
         datasets=[urn],
@@ -408,12 +414,13 @@ async def test_dataset_with_stale_event_in_breakdown() -> None:
     """A source run older than the cutoff puts its dataset in breakdown.
 
     Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format —
-          ingestion-freshness: "the resolved ingestion evidence (tier 1 or tier 2)
-          is older than the dataset's freshness window, or absent on both tiers".
+          ingestion-freshness: "the resolved ingestion evidence (tier 1 or tier 2 — see
+          **Ingestion evidence** above) is older than ``metric_conf.time_window_sec``, or
+          absent on both tiers".
     """
     measure = _get_measurer()
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.orders.fulfillment,DEV)"
-    src = _source(mode="ACTIVE_CUSTOM_MANAGED", schedule_tier=None)
+    src = _source(mode="ACTIVE_CUSTOM_MANAGED")
     stale_ts = datetime.now(tz=UTC) - timedelta(seconds=90000)  # older than 86400s
 
     values, breakdown = await measure(
@@ -439,13 +446,13 @@ async def test_event_well_inside_window_is_ingested_in_time() -> None:
     """Event well inside the window (half the window ago) counts as ingested_in_time.
 
     Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — "``ingested_in_time`` =
-          count whose latest ``INGESTION.COMPLETE`` falls within a **per-dataset freshness
-          window**". Half a window ago is unambiguously within it.
+          count whose latest ingestion evidence falls within ``metric_conf.time_window_sec``
+          of the measurement". Half a window ago is unambiguously within it.
     """
     measure = _get_measurer()
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.boundary.test,DEV)"
     time_window_sec = 3600
-    src = _source(mode="ACTIVE_CUSTOM_MANAGED", schedule_tier=None)
+    src = _source(mode="ACTIVE_CUSTOM_MANAGED")
     inside_window = datetime.now(tz=UTC) - timedelta(seconds=time_window_sec // 2)
 
     values, breakdown = await measure(
@@ -467,17 +474,18 @@ async def test_event_well_inside_window_is_ingested_in_time() -> None:
 async def test_event_well_outside_window_is_stale() -> None:
     """Event well outside the window (2x window ago) is stale.
 
-    Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — only a latest
-          ``INGESTION.COMPLETE`` that "falls within a **per-dataset freshness window**"
-          counts; twice the window ago falls outside it.
+    Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — only evidence that
+          "falls within ``metric_conf.time_window_sec`` of the measurement" counts; twice
+          the window ago falls outside it.
     Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format — a dataset is failed
-          when "the resolved ingestion evidence (tier 1 or tier 2) is older than the
-          dataset's freshness window, or absent on both tiers".
+          when "the resolved ingestion evidence (tier 1 or tier 2 — see **Ingestion
+          evidence** above) is older than ``metric_conf.time_window_sec``, or absent on
+          both tiers".
     """
     measure = _get_measurer()
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.boundary2.test,DEV)"
     time_window_sec = 3600
-    src = _source(mode="ACTIVE_CUSTOM_MANAGED", schedule_tier=None)
+    src = _source(mode="ACTIVE_CUSTOM_MANAGED")
     outside_window = datetime.now(tz=UTC) - timedelta(seconds=time_window_sec * 2)
 
     values, breakdown = await measure(
@@ -507,7 +515,7 @@ async def test_breakdown_entries_have_no_category_field() -> None:
     """
     measure = _get_measurer()
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.nocategory.test,DEV)"
-    src = _source(mode="ACTIVE_CUSTOM_MANAGED", schedule_tier=None)
+    src = _source(mode="ACTIVE_CUSTOM_MANAGED")
 
     _values, breakdown = await measure(
         datasets=[urn],
@@ -527,24 +535,27 @@ async def test_breakdown_entries_have_no_category_field() -> None:
 
 @pytest.mark.asyncio
 async def test_stale_breakdown_detail_includes_the_window_and_the_evidence_tier() -> None:
-    """Stale detail carries last_event_at, time_window_sec, window_source, evidence_tier.
+    """Stale detail carries exactly last_event_at, time_window_sec, evidence_tier.
 
     ``evidence_tier`` is ``None`` here because neither tier produced evidence: the dataset
     is mapped to no source at all. The two tiers make different claims, so a stale verdict
-    without it is not diagnosable.
+    without it is not diagnosable. The key set is asserted as an equality so a detail key
+    naming a *derived* window provenance — a quantity the spec says the window is not —
+    cannot reappear unnoticed.
 
     Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format —
-          "ingestion-freshness and validation-score report the applied window via
-          time_window_sec (the resolved per-dataset value) and window_source …
-          alongside last_event_at (freshness)"; "``ingestion-freshness`` additionally
-          names **which tier supplied ``last_event_at``** in ``evidence_tier``
-          (``"observation"`` for tier 1, ``"source_level"`` for tier 2, ``null`` when
-          neither tier produced evidence)".
+          "``ingestion-freshness`` and ``validation-score`` record the window applied at
+          run time in ``time_window_sec`` … alongside ``last_event_at`` (freshness)";
+          "``ingestion-freshness`` additionally names **which tier supplied
+          ``last_event_at``** in ``evidence_tier`` (``"observation"`` for tier 1,
+          ``"source_level"`` for tier 2, ``null`` when neither tier produced evidence)".
+    Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window — "the window is
+          ``metric_conf.time_window_sec``, applied uniformly to every dataset in the run".
     """
     measure = _get_measurer()
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.detail-check,DEV)"
 
-    # No mapping at all → the 'default' window branch, no event → stale.
+    # No mapping at all, no event → stale with neither tier answering.
     _values, breakdown = await measure(
         datasets=[urn],
         metric_conf={"time_window_sec": 86400},
@@ -557,15 +568,21 @@ async def test_stale_breakdown_detail_includes_the_window_and_the_evidence_tier(
     assert set(detail) == {
         "last_event_at",
         "time_window_sec",
-        "window_source",
         "evidence_tier",
     }, (
         "Stale detail keys must be exactly {last_event_at, time_window_sec, "
-        "window_source, evidence_tier}. "
+        "evidence_tier}; got " + f"{sorted(detail)}. "
         "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
     )
-    assert isinstance(detail["time_window_sec"], int)
-    assert isinstance(detail["window_source"], str)
+    assert "window_source" not in detail, (
+        "detail must not name a window provenance: the window is always "
+        "metric_conf.time_window_sec, so there is no provenance to report. "
+        "Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window."
+    )
+    assert detail["time_window_sec"] == 86400, (
+        "detail.time_window_sec must be the metric's declared window. "
+        "Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window."
+    )
     assert detail["evidence_tier"] is None, (
         f"with no owning source neither tier produced evidence, so evidence_tier must be "
         f"null; got {detail['evidence_tier']!r}. "
@@ -584,7 +601,7 @@ async def test_mixed_fresh_and_stale_counts_correctly() -> None:
     the sweep produces. Sharing one source across all three would give all three
     the same freshness and the fresh/stale contrast would collapse.
 
-    Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — "the measurer
+    Spec: spec/feature/BACKEND.md §Metrics Service §Ingestion evidence — "the measurer
           resolves each dataset's owning source first. It then reads that source's
           feed in two tiers of evidence, per-dataset first and source-level as
           fallback."
@@ -596,9 +613,9 @@ async def test_mixed_fresh_and_stale_counts_correctly() -> None:
 
     now = datetime.now(tz=UTC)
     time_window_sec = 86400
-    src_fresh1 = _source(mode="ACTIVE_CUSTOM_MANAGED", schedule_tier=None, name="a")
-    src_fresh2 = _source(mode="ACTIVE_CUSTOM_MANAGED", schedule_tier=None, name="b")
-    src_stale = _source(mode="ACTIVE_CUSTOM_MANAGED", schedule_tier=None, name="c")
+    src_fresh1 = _source(mode="ACTIVE_CUSTOM_MANAGED", name="a")
+    src_fresh2 = _source(mode="ACTIVE_CUSTOM_MANAGED", name="b")
+    src_stale = _source(mode="ACTIVE_CUSTOM_MANAGED", name="c")
 
     values, breakdown = await measure(
         datasets=[urn_fresh1, urn_fresh2, urn_stale],
@@ -635,14 +652,14 @@ async def test_two_datasets_sharing_a_source_share_its_tier_2_evidence() -> None
     contrast is ``test_a_dataset_reads_its_own_observation_and_not_a_siblings``: the same
     two-datasets-one-source shape *does* split once each carries tier-1 evidence.
 
-    Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — tier 2 is
+    Spec: spec/feature/BACKEND.md §Metrics Service §Ingestion evidence — tier 2 is
           "``max(occurred_at)`` over **every** ``INGESTION.COMPLETE`` booked on the owning
           source", applying to "datasets with no observation evidence yet".
     """
     measure = _get_measurer()
     urn_a = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.shared.a,DEV)"
     urn_b = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.shared.b,DEV)"
-    src = _source(mode="ACTIVE_CUSTOM_MANAGED", schedule_tier=None, name="shared")
+    src = _source(mode="ACTIVE_CUSTOM_MANAGED", name="shared")
     stale_ts = datetime.now(tz=UTC) - timedelta(seconds=90000)
 
     values, breakdown = await measure(
@@ -669,13 +686,26 @@ async def test_two_datasets_sharing_a_source_share_its_tier_2_evidence() -> None
 async def test_event_exactly_at_cutoff_is_stale(monkeypatch: pytest.MonkeyPatch) -> None:
     """Event at exactly now - time_window_sec is STALE.
 
-    **This assertion has no spec basis.** The spec says only that ``ingested_in_time``
-    counts a latest ``INGESTION.COMPLETE`` that "falls within a **per-dataset freshness
-    window**" (spec/USE_CASE_en.md §UC5 §Built-in active metric types); it does not fix
-    the behaviour at the exact-cutoff instant, and "falls within" arguably reads inclusive
-    there. Treating the boundary instant as stale is the **implementation's chosen
-    tie-break** (a strict ``>`` against the cutoff), pinned here so a silent flip is
-    visible in review rather than shipped — not because the spec requires it.
+    **This assertion pins current behaviour at an instant where implementation and spec
+    wording diverge; it is not a spec assertion.** spec/USE_CASE_en.md §UC5 §Built-in
+    active metric types counts evidence that "falls within ``metric_conf.time_window_sec``
+    of the measurement", which is silent about the boundary instant itself.
+    spec/feature/BACKEND.md §Metrics Service §Measurement window and §Breakdown format
+    are not silent but read *inclusive*: a dataset counts when its evidence "is no older
+    than ``time_window_sec``", and is failed when it "is older than
+    ``metric_conf.time_window_sec``" — evidence aged exactly ``time_window_sec`` is
+    neither older than nor no-older-than-violating, so on that wording it would be fresh.
+    The implementation compares strictly (``> cutoff``) and calls it stale.
+
+    The divergence is one instant wide and unreachable in practice (measurement time is a
+    fresh microsecond-resolution ``datetime.now``, so an event timestamp never lands
+    exactly on it), so this test pins the behaviour rather than asserting the spec — a
+    silent flip stays visible in review, and the discrepancy is recorded here rather than
+    papered over.
+
+    Note ``validation-score`` resolves the same instant in the opposite direction (see
+    ``test_validation_score.py::test_row_exactly_at_cutoff_is_counted``); both are pinned,
+    neither is spec-mandated.
 
     The spec-grounded side of the boundary is
     ``test_event_one_second_inside_window_is_fresh``.
@@ -686,7 +716,7 @@ async def test_event_exactly_at_cutoff_is_stale(monkeypatch: pytest.MonkeyPatch)
 
     measure = _get_measurer()
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.boundary.exact,DEV)"
-    src = _source(mode="ACTIVE_CUSTOM_MANAGED", schedule_tier=None)
+    src = _source(mode="ACTIVE_CUSTOM_MANAGED")
     exact_cutoff = fixed_now - timedelta(seconds=time_window_sec)
 
     values, breakdown = await measure(
@@ -713,8 +743,8 @@ async def test_event_one_second_inside_window_is_fresh(monkeypatch: pytest.Monke
     the spec does settle.
 
     Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — "``ingested_in_time`` =
-          count whose latest ``INGESTION.COMPLETE`` falls within a **per-dataset freshness
-          window**".
+          count whose latest ingestion evidence falls within
+          ``metric_conf.time_window_sec`` of the measurement".
     """
     time_window_sec = 3600
     fixed_now = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
@@ -722,7 +752,7 @@ async def test_event_one_second_inside_window_is_fresh(monkeypatch: pytest.Monke
 
     measure = _get_measurer()
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.boundary.inside,DEV)"
-    src = _source(mode="ACTIVE_CUSTOM_MANAGED", schedule_tier=None)
+    src = _source(mode="ACTIVE_CUSTOM_MANAGED")
     one_sec_inside = fixed_now - timedelta(seconds=time_window_sec - 1)
 
     values, breakdown = await measure(
@@ -743,265 +773,169 @@ async def test_event_one_second_inside_window_is_fresh(monkeypatch: pytest.Monke
     assert breakdown["datasets"] == []
 
 
-# ── Per-dataset window: managed modes with a schedule tier ───────────────────
+# ── The window is the metric's declared config value, for every dataset ──────
 
 
 @pytest.mark.asyncio
-async def test_active_custom_daily_window_is_twice_daily_period() -> None:
-    """ACTIVE_CUSTOM_MANAGED schedule_tier='daily' uses a 172800s window (2 × 86400).
+async def test_window_is_the_declared_config_value_for_a_passive_owned_dataset() -> None:
+    """A PASSIVE-owned dataset applies the metric's declared window, not a sync cadence.
 
-    A source run 130000s ago (< 172800) is ingested_in_time=1 even though the
-    metric_conf fallback (86400s) would have called it stale.
+    Its only evidence is ~3 hours old and the metric declares a 172800s window, so the
+    dataset is ingested_in_time. The owning source's mode, and the cadence at which
+    DataSpoke polls DataHub on its behalf, state how often something is *expected* to
+    happen — a different question from how recent the evidence must be to count — so
+    neither narrows the window here.
 
-    Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — "a scheduled source
-          (``ACTIVE_CUSTOM_MANAGED``/``DATAHUB_MANAGED``) → twice its ``schedule_tier``
-          period (… ``daily``→172800s …)".
-    Spec: spec/feature/BACKEND.md §Metrics Service §Time windows —
-          "SCHEDULE_TIER_SECONDS[schedule_tier] × 2".
+    Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window — "the window is
+          ``metric_conf.time_window_sec``, applied uniformly to every dataset in the run.
+          It is a declared SLO the governance lead owns, not a quantity derived from a
+          per-dataset fact such as an owning source's registered schedule, a sync-loop
+          cadence, or a dataset's observed validation inter-arrival gap".
+    Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — "``time_window_sec``
+          … **the** measurement window … the same for every dataset the metric scans".
     """
     measure = _get_measurer()
-    urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.daily,DEV)"
-    src = _source(mode="ACTIVE_CUSTOM_MANAGED", schedule_tier="daily")
-    recent = datetime.now(tz=UTC) - timedelta(seconds=130000)
+    urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.passive.declared,DEV)"
+    src = _source(mode="PASSIVE", name="passive-declared")
+    three_hours_ago = datetime.now(tz=UTC) - timedelta(hours=3)
 
     values, breakdown = await measure(
         datasets=[urn],
-        metric_conf={"time_window_sec": 86400},  # fallback — must NOT be used
+        metric_conf={"time_window_sec": 172800},
         datahub=_datahub(),
         db=_fake_measurer_db(
-            mappings=[_mapped(urn, src)],
+            mappings=[_mapped(urn, src, derivation="matched")],
             sources=[src],
-            events=[(str(src.id), recent)],
+            events=[(str(src.id), three_hours_ago)],
         ),
     )
 
     assert values["ingested_in_time"] == 1.0, (
-        "managed daily: a run 130000s ago must be in-time (window=172800s). "
-        "Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — daily→172800s."
+        "evidence 3 hours old is inside the metric's declared 172800s window, so the "
+        "dataset is in-time whatever mode owns it. "
+        "Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window."
     )
     assert breakdown["datasets"] == []
 
 
 @pytest.mark.asyncio
-async def test_active_custom_daily_stale_outside_window() -> None:
-    """ACTIVE_CUSTOM_MANAGED daily: run 200000s ago is stale; detail names the window.
+async def test_a_passive_owned_dataset_outside_the_declared_window_is_stale() -> None:
+    """The same PASSIVE-owned dataset is stale once its evidence outruns the window.
 
-    Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types —
-          active-custom daily window = 172800s; event outside → stale.
-    Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — detail carries
-          time_window_sec and window_source ("managed:<tier>").
+    Mirror of the case above: only the evidence age moves, from inside 172800s to past
+    it, so the pair pins the declared window as the actual boundary rather than merely
+    asserting freshness. ``detail.time_window_sec`` reports the window the run applied.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format — a dataset is
+          failed when "the resolved ingestion evidence (tier 1 or tier 2 …) is older
+          than ``metric_conf.time_window_sec``, or absent on both tiers".
+    Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window — "Each run
+          records the window it applied in the breakdown's ``detail.time_window_sec``".
     """
     measure = _get_measurer()
-    urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.daily-stale,DEV)"
-    src = _source(mode="ACTIVE_CUSTOM_MANAGED", schedule_tier="daily")
-    stale_ts = datetime.now(tz=UTC) - timedelta(seconds=200000)
+    urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.passive.declared,DEV)"
+    src = _source(mode="PASSIVE", name="passive-declared")
+    past_the_window = datetime.now(tz=UTC) - timedelta(seconds=172800 + 3600)
 
     values, breakdown = await measure(
         datasets=[urn],
-        metric_conf={"time_window_sec": 86400},  # fallback — must NOT override the tier
+        metric_conf={"time_window_sec": 172800},
         datahub=_datahub(),
         db=_fake_measurer_db(
-            mappings=[_mapped(urn, src)],
+            mappings=[_mapped(urn, src, derivation="matched")],
             sources=[src],
-            events=[(str(src.id), stale_ts)],
+            events=[(str(src.id), past_the_window)],
         ),
     )
 
     assert values["ingested_in_time"] == 0.0
-    assert len(breakdown["datasets"]) == 1
-    entry = breakdown["datasets"][0]
-    assert entry["urn"] == urn
-
-    detail = entry["detail"]
-    # Spec literal: active-custom daily → 86400 × 2 = 172800s.
-    assert detail["time_window_sec"] == 172800, (
-        "detail.time_window_sec must be 172800 (managed daily = 86400 × 2). "
-        "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows."
+    assert [e["urn"] for e in breakdown["datasets"]] == [urn]
+    detail = breakdown["datasets"][0]["detail"]
+    assert detail["last_event_at"] == past_the_window.isoformat(), (
+        "backstop: the seeded evidence must be what the verdict rests on."
     )
-    assert detail["window_source"] == "managed:daily", (
-        "detail.window_source must be 'managed:daily' for ACTIVE_CUSTOM_MANAGED daily. "
-        "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows."
+    assert detail["time_window_sec"] == 172800, (
+        f"detail.time_window_sec must be the declared window; got "
+        f"{detail['time_window_sec']!r}. "
+        "Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window."
     )
 
 
 @pytest.mark.asyncio
-async def test_datahub_managed_daily_window_matches_active_custom() -> None:
-    """DATAHUB_MANAGED daily derives the same 172800s window as ACTIVE_CUSTOM_MANAGED.
+async def test_every_owning_mode_and_tier_reports_the_same_declared_window() -> None:
+    """Four datasets on sources of differing mode/schedule share one window.
 
-    Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — "ACTIVE_CUSTOM_MANAGED
-          / DATAHUB_MANAGED with a schedule → SCHEDULE_TIER_SECONDS[schedule_tier] × 2".
+    The seeded sources span both managed modes with an hourly and a daily
+    ``schedule_tier``, a managed source with none, and a ``PASSIVE`` source. Those are
+    the per-dataset facts the spec names as things the window is *not* read off, and the
+    fixture varies every one of them. All four carry evidence at the same instant, 8000s
+    old, and the metric declares 86400s, so all four are in-time. A window scaled to any
+    of the varied facts would split the four instead: 8000s is inside 86400s but outside
+    the 7200s an hourly cadence would imply, so ``ingested_in_time`` drops below 4.0 the
+    moment any per-dataset fact narrows the window.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window — the window is
+          "applied uniformly to every dataset in the run".
     """
     measure = _get_measurer()
-    urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.managed-daily,DEV)"
-    src = _source(mode="DATAHUB_MANAGED", schedule_tier="daily")
-    stale_ts = datetime.now(tz=UTC) - timedelta(seconds=200000)
+    hourly_urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.uniform.hourly,DEV)"
+    daily_urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.uniform.daily,DEV)"
+    untiered_urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.uniform.untiered,DEV)"
+    passive_urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.uniform.passive,DEV)"
+
+    src_hourly = _source(mode="ACTIVE_CUSTOM_MANAGED", schedule_tier="hourly", name="h")
+    src_daily = _source(mode="DATAHUB_MANAGED", schedule_tier="daily", name="d")
+    src_untiered = _source(mode="ACTIVE_CUSTOM_MANAGED", name="u")
+    src_passive = _source(mode="PASSIVE", name="p")
+
+    evidence_at = datetime.now(tz=UTC) - timedelta(seconds=8000)
 
     values, breakdown = await measure(
-        datasets=[urn],
+        datasets=[hourly_urn, daily_urn, untiered_urn, passive_urn],
         metric_conf={"time_window_sec": 86400},
         datahub=_datahub(),
         db=_fake_measurer_db(
-            mappings=[_mapped(urn, src)],
-            sources=[src],
-            events=[(str(src.id), stale_ts)],
+            mappings=[
+                _mapped(hourly_urn, src_hourly),
+                _mapped(daily_urn, src_daily),
+                _mapped(untiered_urn, src_untiered),
+                _mapped(passive_urn, src_passive, derivation="matched"),
+            ],
+            sources=[src_hourly, src_daily, src_untiered, src_passive],
+            events=[
+                (str(src_hourly.id), evidence_at),
+                (str(src_daily.id), evidence_at),
+                (str(src_untiered.id), evidence_at),
+                (str(src_passive.id), evidence_at),
+            ],
         ),
     )
 
-    assert values["ingested_in_time"] == 0.0
-    detail = breakdown["datasets"][0]["detail"]
-    assert detail["time_window_sec"] == 172800
-    assert detail["window_source"] == "managed:daily"
+    assert values["total"] == 4.0
+    assert values["ingested_in_time"] == 4.0, (
+        "one declared 86400s window applies to all four owning modes/tiers, and 8000s "
+        "old evidence is inside it for every one of them; stale entries: "
+        f"{[e['urn'] for e in breakdown['datasets']]}. "
+        "Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window."
+    )
+    assert breakdown["datasets"] == []
 
 
 @pytest.mark.asyncio
-async def test_active_custom_hourly_window_is_7200s() -> None:
-    """schedule_tier='hourly' uses a 7200s window (2 × 3600).
+async def test_a_dataset_with_no_owning_source_uses_the_declared_window() -> None:
+    """A dataset covered by no source still reports the declared window, and is stale.
 
-    Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — "twice its
-          ``schedule_tier`` period (``hourly``→7200s …)".
+    With no owning source there is no feed to read on either tier, so the dataset is
+    stale with ``last_event_at=None`` — and ``detail.time_window_sec`` is still the
+    metric's declared value, because the window does not depend on the source.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format — a dataset is
+          failed when its evidence is "absent on both tiers".
+    Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window — the window is
+          ``metric_conf.time_window_sec``.
     """
     measure = _get_measurer()
-    urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.hourly,DEV)"
-    src = _source(mode="ACTIVE_CUSTOM_MANAGED", schedule_tier="hourly")
-    # 8000s ago — past the 7200s hourly window, inside the 86400s fallback.
-    stale_ts = datetime.now(tz=UTC) - timedelta(seconds=8000)
-
-    values, breakdown = await measure(
-        datasets=[urn],
-        metric_conf={"time_window_sec": 86400},  # fallback — must NOT be used
-        datahub=_datahub(),
-        db=_fake_measurer_db(
-            mappings=[_mapped(urn, src)],
-            sources=[src],
-            events=[(str(src.id), stale_ts)],
-        ),
-    )
-
-    assert values["ingested_in_time"] == 0.0, (
-        "managed hourly: a run 8000s ago must be stale (window=7200s). "
-        "Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — hourly→7200s."
-    )
-    # Spec literal: hourly → 3600 × 2 = 7200s.
-    assert breakdown["datasets"][0]["detail"]["time_window_sec"] == 7200
-    assert breakdown["datasets"][0]["detail"]["window_source"] == "managed:hourly"
-
-
-@pytest.mark.asyncio
-async def test_active_custom_weekly_window_is_1209600s() -> None:
-    """schedule_tier='weekly' uses a 1209600s window (2 × 604800).
-
-    Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — "twice its
-          ``schedule_tier`` period (… ``weekly``→1209600s)".
-    """
-    measure = _get_measurer()
-    urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.weekly,DEV)"
-    src = _source(mode="ACTIVE_CUSTOM_MANAGED", schedule_tier="weekly")
-    # 600000s ago — within the 1209600s weekly window, past the 3600s fallback.
-    fresh_ts = datetime.now(tz=UTC) - timedelta(seconds=600000)
-
-    values, _breakdown = await measure(
-        datasets=[urn],
-        metric_conf={"time_window_sec": 3600},  # fallback — must NOT be used
-        datahub=_datahub(),
-        db=_fake_measurer_db(
-            mappings=[_mapped(urn, src)],
-            sources=[src],
-            events=[(str(src.id), fresh_ts)],
-        ),
-    )
-
-    assert values["ingested_in_time"] == 1.0, (
-        "managed weekly: a run 600000s ago must be in-time (window=1209600s). "
-        "Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — weekly→1209600s."
-    )
-
-
-# ── Per-dataset window: passive ───────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_passive_window_is_7200s() -> None:
-    """A PASSIVE source uses a 7200s window (2 × the hourly sync cadence).
-
-    Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — "a ``PASSIVE``
-          source → twice the DataHub-sync cadence (hourly → 7200s)".
-    Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — "PASSIVE (no
-          schedule) → PASSIVE_SYNC_PERIOD_SEC × 2"; window_source='passive'.
-    """
-    measure = _get_measurer()
-    urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.passive,DEV)"
-    src = _source(mode="PASSIVE", schedule_tier=None)
-    stale_ts = datetime.now(tz=UTC) - timedelta(seconds=8000)  # past 7200s
-
-    values, breakdown = await measure(
-        datasets=[urn],
-        metric_conf={"time_window_sec": 86400},  # fallback — must NOT be used for passive
-        datahub=_datahub(),
-        db=_fake_measurer_db(
-            mappings=[_mapped(urn, src, derivation="matched")],
-            sources=[src],
-            events=[(str(src.id), stale_ts)],
-        ),
-    )
-
-    assert values["ingested_in_time"] == 0.0
-    detail = breakdown["datasets"][0]["detail"]
-    # Spec literal: passive → twice the hourly sync cadence = 3600 × 2 = 7200s.
-    assert detail["time_window_sec"] == 7200, (
-        "Passive dataset must use window 7200s (2 × hourly sync cadence). "
-        "Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types."
-    )
-    assert detail["window_source"] == "passive", (
-        "Passive dataset detail.window_source must be 'passive'. "
-        "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows."
-    )
-
-
-@pytest.mark.asyncio
-async def test_passive_in_window_fresh() -> None:
-    """A PASSIVE source that ran 3600s ago (< 7200s) is in-time.
-
-    Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — "a ``PASSIVE``
-          source → twice the DataHub-sync cadence (hourly → 7200s)".
-    """
-    measure = _get_measurer()
-    urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.passive-fresh,DEV)"
-    src = _source(mode="PASSIVE", schedule_tier=None)
-    fresh_ts = datetime.now(tz=UTC) - timedelta(seconds=3600)
-
-    values, _breakdown = await measure(
-        datasets=[urn],
-        metric_conf={"time_window_sec": 600},  # fallback — must NOT override passive
-        datahub=_datahub(),
-        db=_fake_measurer_db(
-            mappings=[_mapped(urn, src, derivation="matched")],
-            sources=[src],
-            events=[(str(src.id), fresh_ts)],
-        ),
-    )
-
-    assert values["ingested_in_time"] == 1.0, (
-        "Passive dataset with event 3600s ago must be in-time (passive window=7200s). "
-        "Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types."
-    )
-
-
-# ── Per-dataset window: the metric_conf fallback ─────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_unmapped_dataset_falls_back_to_metric_conf_time_window() -> None:
-    """A dataset covered by no source uses metric_conf.time_window_sec, window_source='default'.
-
-    With no owning source there is no source-keyed run to read either, so the
-    dataset is stale with last_event_at=None.
-
-    Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — "a dataset mapped
-          to no source, or a source with no derivable schedule →
-          metric_conf.time_window_sec".
-    """
-    measure = _get_measurer()
-    urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.noconfig,DEV)"
+    urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.unclaimed,DEV)"
 
     values, breakdown = await measure(
         datasets=[urn],
@@ -1013,79 +947,12 @@ async def test_unmapped_dataset_falls_back_to_metric_conf_time_window() -> None:
     assert values["total"] == 1.0
     assert values["ingested_in_time"] == 0.0
     detail = breakdown["datasets"][0]["detail"]
-    assert detail["time_window_sec"] == 3600
-    assert detail["window_source"] == "default", (
-        "A dataset mapped to no source must produce window_source='default'. "
-        "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows."
-    )
     assert detail["last_event_at"] is None
-
-
-@pytest.mark.asyncio
-async def test_managed_null_schedule_tier_falls_back_to_metric_conf() -> None:
-    """A managed source with no schedule_tier falls back to metric_conf.time_window_sec.
-
-    Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — "a source with no
-          derivable schedule → metric_conf.time_window_sec".
-    """
-    measure = _get_measurer()
-    urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.activenull,DEV)"
-    src = _source(mode="ACTIVE_CUSTOM_MANAGED", schedule_tier=None)
-    # 50000s ago: inside the 86400s fallback, outside every tier window below it.
-    fresh_ts = datetime.now(tz=UTC) - timedelta(seconds=50000)
-
-    values, breakdown = await measure(
-        datasets=[urn],
-        metric_conf={"time_window_sec": 86400},
-        datahub=_datahub(),
-        db=_fake_measurer_db(
-            mappings=[_mapped(urn, src)],
-            sources=[src],
-            events=[(str(src.id), fresh_ts)],
-        ),
-    )
-
-    assert values["ingested_in_time"] == 1.0, (
-        "managed null tier with fallback 86400s, event 50000s ago → in-time. "
-        "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows."
-    )
-    assert breakdown["datasets"] == []
-
-
-@pytest.mark.asyncio
-async def test_managed_unrecognised_schedule_tier_falls_back_to_metric_conf() -> None:
-    """A managed source whose schedule_tier is not a known tier falls back to the default.
-
-    'monthly' is not one of the tiers ``SCHEDULE_TIER_SECONDS`` defines, so no
-    per-dataset window can be derived from it.
-
-    Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — "a source with no
-          derivable schedule → metric_conf.time_window_sec". Tier→seconds "live in
-          src/shared/schedule.py".
-    """
-    measure = _get_measurer()
-    urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.unknown-tier,DEV)"
-    src = _source(mode="DATAHUB_MANAGED", schedule_tier="monthly")
-    stale_ts = datetime.now(tz=UTC) - timedelta(seconds=5000)
-
-    values, breakdown = await measure(
-        datasets=[urn],
-        metric_conf={"time_window_sec": 3600},  # 5000s > 3600s → stale
-        datahub=_datahub(),
-        db=_fake_measurer_db(
-            mappings=[_mapped(urn, src)],
-            sources=[src],
-            events=[(str(src.id), stale_ts)],
-        ),
-    )
-
-    assert values["ingested_in_time"] == 0.0
-    detail = breakdown["datasets"][0]["detail"]
-    assert detail["time_window_sec"] == 3600
-    assert detail["window_source"] == "default", (
-        "An unrecognised schedule_tier is not a derivable schedule, so the window "
-        "source must be 'default'. "
-        "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows."
+    assert detail["evidence_tier"] is None
+    assert detail["time_window_sec"] == 3600, (
+        f"detail.time_window_sec must be the declared window; got "
+        f"{detail['time_window_sec']!r}. "
+        "Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window."
     )
 
 
@@ -1100,7 +967,7 @@ async def test_run_booked_on_a_wrapper_only_counts_for_the_owning_parent() -> No
     row at all, only the wrapper's does. If the measurer read the registered source
     id alone the dataset would be stale, which is exactly the defect this covers.
 
-    Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — "The owning
+    Spec: spec/feature/BACKEND.md §Metrics Service §Ingestion evidence — "The owning
           source's **CLI-wrapper runs count as its own** — DataHub books a managed
           source's executions on an auto-created wrapper rather than on the
           registered source, so a source's events are the union of its own and its
@@ -1108,10 +975,9 @@ async def test_run_booked_on_a_wrapper_only_counts_for_the_owning_parent() -> No
     """
     measure = _get_measurer()
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.wrapper-only,DEV)"
-    parent = _source(mode="DATAHUB_MANAGED", schedule_tier="daily", name="parent")
+    parent = _source(mode="DATAHUB_MANAGED", name="parent")
     wrapper = _source(
         mode="DATAHUB_MANAGED",
-        schedule_tier=None,
         parent_source_id=parent.id,
         name="[CLI] postgres",
     )
@@ -1119,7 +985,7 @@ async def test_run_booked_on_a_wrapper_only_counts_for_the_owning_parent() -> No
 
     values, breakdown = await measure(
         datasets=[urn],
-        metric_conf={"time_window_sec": 60},  # fallback — must NOT be used
+        metric_conf={"time_window_sec": 172800},
         datahub=_datahub(),
         db=_fake_measurer_db(
             mappings=[_mapped(urn, parent)],
@@ -1131,7 +997,7 @@ async def test_run_booked_on_a_wrapper_only_counts_for_the_owning_parent() -> No
 
     assert values["ingested_in_time"] == 1.0, (
         "A run booked on the CLI wrapper must count as the owning parent's own run. "
-        "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows."
+        "Spec: spec/feature/BACKEND.md §Metrics Service §Ingestion evidence."
     )
     assert breakdown["datasets"] == []
 
@@ -1144,25 +1010,24 @@ async def test_newest_run_across_parent_and_wrapper_wins() -> None:
     only the parent's own event would report the older timestamp and call the
     dataset stale.
 
-    Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — "a source's events
+    Spec: spec/feature/BACKEND.md §Metrics Service §Ingestion evidence — "a source's events
           are the union of its own and its wrappers'".
     """
     measure = _get_measurer()
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.parent-and-wrapper,DEV)"
-    parent = _source(mode="DATAHUB_MANAGED", schedule_tier="hourly", name="parent")
+    parent = _source(mode="DATAHUB_MANAGED", name="parent")
     wrapper = _source(
         mode="DATAHUB_MANAGED",
-        schedule_tier=None,
         parent_source_id=parent.id,
         name="[CLI] postgres",
     )
     now = datetime.now(tz=UTC)
-    parent_run = now - timedelta(seconds=8000)  # outside the 7200s hourly window
+    parent_run = now - timedelta(seconds=8000)  # outside the declared 3600s window
     wrapper_run = now - timedelta(seconds=600)  # inside it, and newer
 
     values, breakdown = await measure(
         datasets=[urn],
-        metric_conf={"time_window_sec": 60},
+        metric_conf={"time_window_sec": 3600},
         datahub=_datahub(),
         db=_fake_measurer_db(
             mappings=[_mapped(urn, parent)],
@@ -1174,23 +1039,26 @@ async def test_newest_run_across_parent_and_wrapper_wins() -> None:
 
     assert values["ingested_in_time"] == 1.0, (
         "The newest run across the source and its wrappers must decide freshness; the "
-        "wrapper's 600s-old run is inside the 7200s hourly window. "
-        "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows."
+        "wrapper's 600s-old run is inside the declared 3600s window while the parent's "
+        "own 8000s-old run is not. "
+        "Spec: spec/feature/BACKEND.md §Metrics Service §Ingestion evidence."
     )
     assert breakdown["datasets"] == []
 
 
 @pytest.mark.asyncio
 async def test_owning_source_is_the_regular_parent_of_a_claiming_wrapper() -> None:
-    """When a wrapper is the ranked winner, the window comes from its regular parent.
+    """When a wrapper is the ranked winner, the evidence feed is its regular parent's.
 
     The wrapper claims the dataset at derivation 'emitted' while its parent only
     'matched' it, so the wrapper outranks the parent and the tie-break never runs —
-    only the explicit resolve-up step can produce the parent here. The parent
-    carries schedule_tier='daily' and the wrapper carries none, so the resolved
-    window ('managed:daily') is what proves which row was used.
+    only the explicit resolve-up step can produce the parent here. The discriminator is
+    *whose feed answered*: the run is booked on the parent id alone, and a source's feed
+    is the union of its own events and its wrappers' — a union that reaches the parent's
+    row from the parent, but never reaches it from the wrapper. So an unresolved wrapper
+    owner would read no evidence at all and report ``last_event_at=None``.
 
-    Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — "if the sort
+    Spec: spec/feature/BACKEND.md §Metrics Service §Ingestion evidence — "if the sort
           winner is itself a wrapper it resolves up to its regular parent — a wrapper
           is never the owning source. The second step … also fires when a wrapper
           claims a dataset at a *higher* derivation rank than its parent, where the
@@ -1198,18 +1066,17 @@ async def test_owning_source_is_the_regular_parent_of_a_claiming_wrapper() -> No
     """
     measure = _get_measurer()
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.wrapper-claims,DEV)"
-    parent = _source(mode="DATAHUB_MANAGED", schedule_tier="daily", name="parent")
+    parent = _source(mode="DATAHUB_MANAGED", name="parent")
     wrapper = _source(
         mode="DATAHUB_MANAGED",
-        schedule_tier=None,
         parent_source_id=parent.id,
         name="[CLI] postgres",
     )
-    stale_ts = datetime.now(tz=UTC) - timedelta(seconds=200000)  # outside 172800s
+    stale_ts = datetime.now(tz=UTC) - timedelta(seconds=200000)  # outside 86400s
 
     values, breakdown = await measure(
         datasets=[urn],
-        metric_conf={"time_window_sec": 86400},  # fallback — the wrapper has no tier
+        metric_conf={"time_window_sec": 86400},
         datahub=_datahub(),
         db=_fake_measurer_db(
             mappings=[
@@ -1224,18 +1091,23 @@ async def test_owning_source_is_the_regular_parent_of_a_claiming_wrapper() -> No
 
     assert values["ingested_in_time"] == 0.0
     detail = breakdown["datasets"][0]["detail"]
-    assert detail["window_source"] == "managed:daily", (
-        "A winning wrapper must resolve up to its regular parent, so the window comes "
-        f"from the parent's daily tier; got {detail['window_source']!r}. "
-        "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows."
+    assert detail["last_event_at"] == stale_ts.isoformat(), (
+        "A winning wrapper must resolve up to its regular parent, so the parent's own "
+        f"run is the evidence read; got {detail['last_event_at']!r}, expected "
+        f"{stale_ts.isoformat()!r}. "
+        "Spec: spec/feature/BACKEND.md §Metrics Service §Ingestion evidence."
     )
-    assert detail["time_window_sec"] == 172800
-    assert detail["last_event_at"] == stale_ts.isoformat()
+    assert detail["evidence_tier"] == "source_level", (
+        f"the parent's run-level COMPLETE is tier-2 evidence; got "
+        f"{detail['evidence_tier']!r}. "
+        "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
+    )
+    assert detail["time_window_sec"] == 86400
 
 
 # ── Evidence tiers: per-dataset observation preferred, source-level as fallback ──
 #
-# spec/feature/BACKEND.md §Metrics Service §Time windows — the two-tier table, and
+# spec/feature/BACKEND.md §Metrics Service §Ingestion evidence — the two-tier table, and
 # "Tier 1 exists because a run-level COMPLETE is a claim about a *run*, not about a
 # dataset"; "Tier 2 … applies only where nothing better exists".
 
@@ -1250,12 +1122,12 @@ async def test_a_dataset_with_its_own_observation_reads_that_instant_not_the_sou
     claim the two-tier rule retires — a run-level COMPLETE says a *run* finished, not that
     this dataset was written.
 
-    Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — tier 1 is
+    Spec: spec/feature/BACKEND.md §Metrics Service §Ingestion evidence — tier 1 is
           "(preferred)"; tier 2 "applies only where nothing better exists".
     """
     measure = _get_measurer()
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.tier1.own,DEV)"
-    src = _source(mode="ACTIVE_CUSTOM_MANAGED", schedule_tier=None, name="tier1-own")
+    src = _source(mode="ACTIVE_CUSTOM_MANAGED", name="tier1-own")
     now = datetime.now(tz=UTC)
     own_observation = now - timedelta(seconds=90_000)  # stale against the 86400s window
     source_run = now - timedelta(hours=1)  # fresh — must NOT be what answers
@@ -1275,7 +1147,7 @@ async def test_a_dataset_with_its_own_observation_reads_that_instant_not_the_sou
     assert values["ingested_in_time"] == 0.0, (
         "the dataset's own observation is the evidence, and it is outside the window, so "
         "the fresh source-level run must not make it in-time. "
-        "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — tier 1 preferred."
+        "Spec: spec/feature/BACKEND.md §Metrics Service §Ingestion evidence — tier 1 preferred."
     )
     detail = breakdown["datasets"][0]["detail"]
     assert detail["last_event_at"] == own_observation.isoformat(), (
@@ -1292,19 +1164,19 @@ async def test_a_dataset_with_its_own_observation_reads_that_instant_not_the_sou
 async def test_a_dataset_reads_its_own_observation_and_not_a_siblings() -> None:
     """Two datasets on one source read their own observations, not each other's.
 
-    Both are covered by the same source, so under the old source-grained rule they were
-    necessarily the same verdict. With per-dataset evidence they split: the sibling's
+    Both are covered by the same source, so a purely source-grained rule would force them
+    to the same verdict. With per-dataset evidence they split: the sibling's
     observation is fresh and this dataset's is stale, so a lookup keyed on the source
     alone would report both fresh.
 
-    Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — tier 1 is
+    Spec: spec/feature/BACKEND.md §Metrics Service §Ingestion evidence — tier 1 is
           "max(occurred_at) over the observation events the owning source booked **for
           that dataset**".
     """
     measure = _get_measurer()
     stale_urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.tier1.stale,DEV)"
     fresh_urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.tier1.fresh,DEV)"
-    src = _source(mode="ACTIVE_CUSTOM_MANAGED", schedule_tier=None, name="tier1-shared")
+    src = _source(mode="ACTIVE_CUSTOM_MANAGED", name="tier1-shared")
     now = datetime.now(tz=UTC)
 
     values, breakdown = await measure(
@@ -1324,7 +1196,7 @@ async def test_a_dataset_reads_its_own_observation_and_not_a_siblings() -> None:
     assert values["total"] == 2.0
     assert values["ingested_in_time"] == 1.0, (
         "two datasets on one source must split on their own observations. "
-        "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — tier 1."
+        "Spec: spec/feature/BACKEND.md §Metrics Service §Ingestion evidence — tier 1."
     )
     assert [e["urn"] for e in breakdown["datasets"]] == [stale_urn], (
         f"only the dataset whose own observation is outside the window is stale; got "
@@ -1340,7 +1212,7 @@ async def test_a_dataset_with_no_observation_falls_back_to_the_source_level_maxi
     does not, so a measurer that had dropped the fallback entirely would report this one
     stale with ``last_event_at=None``.
 
-    Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — tier 2 applies to
+    Spec: spec/feature/BACKEND.md §Metrics Service §Ingestion evidence — tier 2 applies to
           "datasets with no observation evidence yet"; it is "source-grained, not
           producer-filtered: any COMPLETE on the owning source qualifies, so a sibling
           dataset's observation can stand in for a dataset that has none of its own".
@@ -1348,7 +1220,7 @@ async def test_a_dataset_with_no_observation_falls_back_to_the_source_level_maxi
     measure = _get_measurer()
     observed_urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.tier2.observed,DEV)"
     bare_urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.tier2.bare,DEV)"
-    src = _source(mode="ACTIVE_CUSTOM_MANAGED", schedule_tier=None, name="tier2-fallback")
+    src = _source(mode="ACTIVE_CUSTOM_MANAGED", name="tier2-fallback")
     now = datetime.now(tz=UTC)
     source_run = now - timedelta(hours=2)
 
@@ -1367,7 +1239,7 @@ async def test_a_dataset_with_no_observation_falls_back_to_the_source_level_maxi
     assert values["ingested_in_time"] == 2.0, (
         "the dataset with no observation of its own must still read the source-level "
         "maximum and count as in-time. "
-        "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — tier 2."
+        "Spec: spec/feature/BACKEND.md §Metrics Service §Ingestion evidence — tier 2."
     )
     assert breakdown["datasets"] == []
 
@@ -1385,7 +1257,7 @@ async def test_the_fallback_names_the_source_level_tier_in_the_breakdown() -> No
     """
     measure = _get_measurer()
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.tier2.stale,DEV)"
-    src = _source(mode="ACTIVE_CUSTOM_MANAGED", schedule_tier=None, name="tier2-stale")
+    src = _source(mode="ACTIVE_CUSTOM_MANAGED", name="tier2-stale")
     stale_ts = datetime.now(tz=UTC) - timedelta(seconds=90_000)
 
     _values, breakdown = await measure(
@@ -1420,16 +1292,15 @@ async def test_an_observation_on_a_wrapper_counts_for_the_owning_parent() -> Non
     wrapper union is the same rule tier 2 already applies, and it has to hold on tier 1
     too, or a `DATAHUB_MANAGED` source's per-dataset evidence would be invisible.
 
-    Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — "The owning source's
+    Spec: spec/feature/BACKEND.md §Metrics Service §Ingestion evidence — "The owning source's
           **CLI-wrapper runs count as its own** … a source's events are the union of its
           own and its wrappers'."
     """
     measure = _get_measurer()
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.tier1.wrapper,DEV)"
-    parent = _source(mode="DATAHUB_MANAGED", schedule_tier="daily", name="parent")
+    parent = _source(mode="DATAHUB_MANAGED", name="parent")
     wrapper = _source(
         mode="DATAHUB_MANAGED",
-        schedule_tier=None,
         parent_source_id=parent.id,
         name="[CLI] postgres",
     )
@@ -1437,7 +1308,7 @@ async def test_an_observation_on_a_wrapper_counts_for_the_owning_parent() -> Non
 
     values, breakdown = await measure(
         datasets=[urn],
-        metric_conf={"time_window_sec": 60},  # fallback — must NOT be used
+        metric_conf={"time_window_sec": 172800},
         datahub=_datahub(),
         db=_fake_measurer_db(
             mappings=[_mapped(urn, parent)],
@@ -1449,6 +1320,6 @@ async def test_an_observation_on_a_wrapper_counts_for_the_owning_parent() -> Non
 
     assert values["ingested_in_time"] == 1.0, (
         "an observation booked on the CLI wrapper must count as the owning parent's own. "
-        "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows."
+        "Spec: spec/feature/BACKEND.md §Metrics Service §Ingestion evidence."
     )
     assert breakdown["datasets"] == []

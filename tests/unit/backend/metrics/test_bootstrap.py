@@ -8,9 +8,9 @@ Spec sources:
     - Seeds ship disabled so the governance lead opts in explicitly.
     - Bootstrap never overwrites an existing row.
   spec/feature/BACKEND.md §Metrics Service §Factory defaults:
-    - metric_conf={"time_window_sec": 172800} for ingestion-freshness and validation-score
-      (172800 = 2 days; the fallback window when no per-dataset window can be derived).
-    - metric_conf={} for doc-health.
+    - "type-appropriate `metric_conf` (`{"time_window_sec": 172800}` for the first two,
+      `{}` for `doc-health`)" — i.e. the seeded measurement window for
+      ingestion-freshness and validation-score is 172800 seconds.
 
 Bootstrap tests use a mock AsyncSession instead of a live DB. The mock is wired
 to simulate SELECT (no existing row) and to capture db.add() calls so assertions
@@ -164,12 +164,12 @@ async def test_seed_rows_mode_is_active() -> None:
 async def test_seed_rows_metric_conf_matches_spec() -> None:
     """Seed row metric_conf matches spec defaults for each type.
 
-    Spec: spec/feature/BACKEND.md §Metrics Service §Factory defaults:
-          metric_conf={"time_window_sec": 172800} for ingestion-freshness and
-          validation-score (172800 = 2 × 86400 = 2-day fallback window);
-          metric_conf={} for doc-health.
-    Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — metric_conf
-          time_window_sec factory default 172800.
+    Spec: spec/feature/BACKEND.md §Metrics Service §Factory defaults — "type-appropriate
+          ``metric_conf`` (``{"time_window_sec": 172800}`` for the first two, ``{}`` for
+          ``doc-health``)".
+    Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — "``time_window_sec``
+          for ``ingestion-freshness`` and ``validation-score`` — **the** measurement
+          window (positive int seconds, factory default ``172800``)".
     """
     db = _make_empty_db()
     await seed_factory_defaults(db)

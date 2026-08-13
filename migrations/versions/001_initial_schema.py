@@ -496,9 +496,6 @@ def upgrade() -> None:
             "metagen_ontology_rag_triple_k", sa.Integer(), nullable=False, server_default="5"
         ),
         sa.Column(
-            "validation_score_n_intervals", sa.Integer(), nullable=False, server_default="3"
-        ),
-        sa.Column(
             "stub_redis_client", sa.Boolean(), nullable=False, server_default="false"
         ),
         sa.Column(

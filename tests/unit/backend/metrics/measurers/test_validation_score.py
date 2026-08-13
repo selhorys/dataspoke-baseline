@@ -4,26 +4,38 @@ Spec sources:
   spec/USE_CASE_en.md §UC5 §Built-in active metric types:
     - Registered under 'validation-score'.
     - Emits {'total': float, 'validation_score_sum': float}.
-    - total = count of datasets matched by dataset_filter.
-    - validation_score_sum = sum of each dataset's latest validation score
-      within a per-dataset window; 0.0 when no in-window row.
-    - Per-dataset window = 2 × mean(last N inter-arrival gaps), N from
-      settings.validation_score_n_intervals (default 3). Fewer than N+1
-      results → fallback metric_conf.time_window_sec.
-  spec/feature/BACKEND.md §Metrics Service §Time windows:
-    - detail carries time_window_sec (resolved int) and window_source
-      ('intervals' or 'default').
+    - "`total` = count of datasets matched by `dataset_filter`;
+      `validation_score_sum` = sum of each dataset's latest validation `score` whose
+      `data_time` falls within `metric_conf.time_window_sec` of the measurement. The
+      contribution is 0.0 when there is no validation result inside the window".
+    - "`time_window_sec` for `ingestion-freshness` and `validation-score` — **the**
+      measurement window (positive int seconds, factory default `172800`) … the same
+      for every dataset the metric scans".
+  spec/feature/BACKEND.md §Metrics Service §Measurement window:
+    - "the window is `metric_conf.time_window_sec`, applied uniformly to every dataset
+      in the run. It is a declared SLO the governance lead owns, not a quantity derived
+      from a per-dataset fact such as an owning source's registered schedule, a
+      sync-loop cadence, or a dataset's observed validation inter-arrival gap".
+    - "`validation-score`: the score counted is the latest result whose `data_time` is
+      inside `time_window_sec`; a dataset with no result in the window contributes
+      `0.0`."
+    - "Each run records the window it applied in the breakdown's
+      `detail.time_window_sec`."
   spec/feature/BACKEND.md §Metrics Service §Breakdown format:
     - datasets[] carries only failed entries (score < 1.0 or no in-window row).
     - No 'category' field in per-dataset entries.
+    - detail for validation-score: {latest_data_time, score, time_window_sec}.
 """
 
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.backend.metrics.measurers import validation_score  # noqa: F401 — triggers registration
+from src.shared.datahub.client import DataHubClient
 
 
 def _get_measurer():
@@ -31,6 +43,52 @@ def _get_measurer():
     fn = get_measurer("validation-score")
     assert fn is not None, "validation-score measurer must be registered"
     return fn
+
+
+def _row(urn: str, data_time: datetime, score: float) -> MagicMock:
+    """One latest-per-dataset ``validation_results`` row as the measurer reads it."""
+    row = MagicMock()
+    row.dataset_urn = urn
+    row.data_time = data_time
+    row.score = score
+    return row
+
+
+def _db(rows: list) -> AsyncMock:
+    """Mock session returning *rows* for the latest-per-dataset query.
+
+    ``spec=AsyncSession`` so a renamed or mistyped session method fails loud instead of
+    returning a fresh auto-mock (spec/TESTING.md §Unit Testing).
+    """
+    result = MagicMock()
+    result.all.return_value = rows
+    db = AsyncMock(spec=AsyncSession)
+    db.execute = AsyncMock(return_value=result)
+    return db
+
+
+def _datahub() -> MagicMock:
+    """A spec'd DataHubClient stand-in.
+
+    The measurer accepts one for signature uniformity and makes no DataHub call — it is
+    contractually "pure-aggregation and DataSpoke-DB-side" (spec/feature/BACKEND.md
+    §Metrics Service §Measurement window). This exists only to fail loudly if it ever
+    starts making one: ``spec=`` turns a call to a method DataHubClient does not have
+    into an ``AttributeError`` instead of a silently successful auto-mock.
+    """
+    return MagicMock(spec=DataHubClient)
+
+
+def _freeze_now(monkeypatch: pytest.MonkeyPatch, fixed_now: datetime) -> None:
+    """Pin the measurer's ``datetime.now`` so cutoff boundaries are exact."""
+    import src.backend.metrics.measurers.validation_score as _mod
+
+    class _FixedDatetime:
+        @staticmethod
+        def now(tz: Any = None) -> datetime:
+            return fixed_now
+
+    monkeypatch.setattr(_mod, "datetime", _FixedDatetime)
 
 
 # ── Registration ──────────────────────────────────────────────────────────────
@@ -50,23 +108,30 @@ def test_registered_under_correct_key() -> None:
 
 
 @pytest.mark.asyncio
-async def test_empty_datasets_returns_zeros() -> None:
-    """measure([]) returns total=0.0, validation_score_sum=0.0.
+async def test_empty_datasets_returns_zeros_without_querying() -> None:
+    """measure([]) returns total=0.0, validation_score_sum=0.0 and issues no query.
 
-    Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types.
+    ``total`` is the count of datasets matched by ``dataset_filter``, which is zero
+    here, so there is nothing to look up — the ``db.execute`` assertion is what makes
+    "no dataset" distinguishable from "every dataset scored 0.0".
+
+    Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — "``total`` = count of
+          datasets matched by ``dataset_filter``".
     """
     measure = _get_measurer()
+    db = _db([])
 
     values, breakdown = await measure(
         datasets=[],
         metric_conf={"time_window_sec": 86400},
-        datahub=MagicMock(),
-        db=AsyncMock(),
+        datahub=_datahub(),
+        db=db,
     )
 
     assert values == {"total": 0.0, "validation_score_sum": 0.0}
     assert breakdown["dataset_count"] == 0
     assert breakdown["datasets"] == []
+    db.execute.assert_not_awaited()
 
 
 # ── All passing (score=1.0) ───────────────────────────────────────────────────
@@ -85,26 +150,16 @@ async def test_all_datasets_score_one_not_in_breakdown() -> None:
 
     now = datetime.now(tz=UTC)
 
-    row1 = MagicMock()
-    row1.dataset_urn = urn1
-    row1.data_time = now - timedelta(hours=1)
-    row1.score = 1.0
-
-    row2 = MagicMock()
-    row2.dataset_urn = urn2
-    row2.data_time = now - timedelta(hours=2)
-    row2.score = 1.0
-
-    db = AsyncMock()
-    execute_result = MagicMock()
-    execute_result.all.return_value = [row1, row2]
-    db.execute = AsyncMock(return_value=execute_result)
-
     values, breakdown = await measure(
         datasets=[urn1, urn2],
         metric_conf={"time_window_sec": 86400},
-        datahub=MagicMock(),
-        db=db,
+        datahub=_datahub(),
+        db=_db(
+            [
+                _row(urn1, now - timedelta(hours=1), 1.0),
+                _row(urn2, now - timedelta(hours=2), 1.0),
+            ]
+        ),
     )
 
     assert values["total"] == 2.0
@@ -122,8 +177,14 @@ async def test_all_datasets_score_one_not_in_breakdown() -> None:
 async def test_three_datasets_two_full_one_partial() -> None:
     """Three datasets with scores [1.0, 1.0, 0.7]: total=3, sum=2.7, breakdown=1 entry.
 
-    Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — validation_score_sum
-          is the sum across all datasets in the window.
+    The partial dataset is counted in ``validation_score_sum`` *and* listed as failed —
+    an in-window result below 1.0 does both, so summing and flagging are independent.
+
+    Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — "``validation_score_sum``
+          = sum of each dataset's latest validation ``score`` whose ``data_time`` falls
+          within ``metric_conf.time_window_sec`` of the measurement".
+    Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format — a dataset is
+          failed when the "latest validation ``score`` inside the window is ``< 1.0``".
     """
     measure = _get_measurer()
     urn1 = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.full1,DEV)"
@@ -131,39 +192,35 @@ async def test_three_datasets_two_full_one_partial() -> None:
     urn3 = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.partial,DEV)"
 
     now = datetime.now(tz=UTC)
-
-    row1 = MagicMock()
-    row1.dataset_urn = urn1
-    row1.data_time = now - timedelta(hours=1)
-    row1.score = 1.0
-
-    row2 = MagicMock()
-    row2.dataset_urn = urn2
-    row2.data_time = now - timedelta(hours=2)
-    row2.score = 1.0
-
-    row3 = MagicMock()
-    row3.dataset_urn = urn3
-    row3.data_time = now - timedelta(hours=3)
-    row3.score = 0.7
-
-    db = AsyncMock()
-    execute_result = MagicMock()
-    execute_result.all.return_value = [row1, row2, row3]
-    db.execute = AsyncMock(return_value=execute_result)
+    partial_data_time = now - timedelta(hours=3)
 
     values, breakdown = await measure(
         datasets=[urn1, urn2, urn3],
         metric_conf={"time_window_sec": 86400},
-        datahub=MagicMock(),
-        db=db,
+        datahub=_datahub(),
+        db=_db(
+            [
+                _row(urn1, now - timedelta(hours=1), 1.0),
+                _row(urn2, now - timedelta(hours=2), 1.0),
+                _row(urn3, partial_data_time, 0.7),
+            ]
+        ),
     )
 
     assert values["total"] == 3.0
-    assert abs(values["validation_score_sum"] - 2.7) < 1e-6
+    assert abs(values["validation_score_sum"] - 2.7) < 1e-6, (
+        "the in-window 0.7 must accumulate alongside the two 1.0 scores. "
+        "Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types."
+    )
     assert breakdown["dataset_count"] == 3
-    assert len(breakdown["datasets"]) == 1
-    assert breakdown["datasets"][0]["urn"] == urn3
+    assert [e["urn"] for e in breakdown["datasets"]] == [urn3], (
+        "only the sub-1.0 dataset is failed. "
+        "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
+    )
+    assert breakdown["datasets"][0]["detail"]["score"] == 0.7
+    assert breakdown["datasets"][0]["detail"]["latest_data_time"] == (
+        partial_data_time.isoformat()
+    )
 
 
 # ── Dataset with out-of-window result ────────────────────────────────────────
@@ -171,50 +228,42 @@ async def test_three_datasets_two_full_one_partial() -> None:
 
 @pytest.mark.asyncio
 async def test_dataset_with_out_of_window_result_contributes_zero() -> None:
-    """Dataset whose only validation result is outside the fallback time window contributes 0.0.
+    """A dataset whose latest result predates the window contributes 0.0 and is failed.
 
-    The measurer fetches the latest N+1 rows per dataset via SQL (row_number subquery),
-    then applies the time window in Python.  When the only row's data_time is older than
-    the resolved window the dataset contributes 0.0 and appears in breakdown.
+    The latest row's ``score`` is 0.9, so a measurer that ignored ``data_time`` would
+    report 0.9 — the sum assertion is what proves the window gate ran.
 
-    This test exercises the Python-side windowing gate with the fallback
-    (default) window, since only 1 row is returned (< N+1 needed for intervals window).
-
-    Spec: spec/USE_CASE_en.md §UC5 — validation_score_sum sums scores in
-          [now - window_sec, now]; outside the window → 0.0.
-    Spec: spec/feature/BACKEND.md §Metrics Service — datasets with no in-window row
-          appear in breakdown.
+    Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window —
+          "``validation-score``: the score counted is the latest result whose
+          ``data_time`` is inside ``time_window_sec``; a dataset with no result in the
+          window contributes ``0.0``".
+    Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format — a dataset is
+          failed when it has "no result inside the window".
     """
     measure = _get_measurer()
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.old,DEV)"
-    time_window_sec = 86400  # 1-day fallback window
-
-    # Single row older than the window — only 1 row so intervals window won't be used.
-    old_row = MagicMock()
-    old_row.dataset_urn = urn
-    old_row.data_time = datetime.now(tz=UTC) - timedelta(seconds=time_window_sec + 3600)
-    old_row.score = 0.9
-    old_row.rn = 1
-
-    db = AsyncMock()
-    execute_result = MagicMock()
-    execute_result.all.return_value = [old_row]
-    db.execute = AsyncMock(return_value=execute_result)
+    time_window_sec = 86400
+    outside = datetime.now(tz=UTC) - timedelta(seconds=time_window_sec + 3600)
 
     values, breakdown = await measure(
         datasets=[urn],
         metric_conf={"time_window_sec": time_window_sec},
-        datahub=MagicMock(),
-        db=db,
+        datahub=_datahub(),
+        db=_db([_row(urn, outside, 0.9)]),
     )
 
     assert values["total"] == 1.0
     assert values["validation_score_sum"] == 0.0, (
         "A row whose data_time is older than the window must not be counted. "
-        "Spec: spec/USE_CASE_en.md §UC5 — windowing must be enforced."
+        "Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window."
     )
-    assert len(breakdown["datasets"]) == 1
-    assert breakdown["datasets"][0]["urn"] == urn
+    assert [e["urn"] for e in breakdown["datasets"]] == [urn]
+    detail = breakdown["datasets"][0]["detail"]
+    assert detail["latest_data_time"] == outside.isoformat()
+    assert detail["score"] == 0.9, (
+        "the out-of-window row is still reported so the reader can see how stale it is. "
+        "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
+    )
 
 
 # ── Dataset with no validation result ────────────────────────────────────────
@@ -224,28 +273,31 @@ async def test_dataset_with_out_of_window_result_contributes_zero() -> None:
 async def test_dataset_with_no_result_contributes_zero_and_is_in_breakdown() -> None:
     """Dataset with no validation result at all contributes 0.0 and appears in breakdown.
 
-    Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format —
-          datasets with no in-window row contribute 0.0 AND appear in breakdown.
+    Its detail carries a null ``latest_data_time`` and ``score``: there is no result to
+    report, which is a different fact from a result that scored zero.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window — "a dataset with
+          no result in the window contributes ``0.0``".
+    Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format — a dataset is
+          failed when it has "no result inside the window"; detail carries
+          ``latest_data_time`` + ``score``.
     """
     measure = _get_measurer()
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.novalidation,DEV)"
 
-    db = AsyncMock()
-    execute_result = MagicMock()
-    execute_result.all.return_value = []
-    db.execute = AsyncMock(return_value=execute_result)
-
     values, breakdown = await measure(
         datasets=[urn],
         metric_conf={"time_window_sec": 86400},
-        datahub=MagicMock(),
-        db=db,
+        datahub=_datahub(),
+        db=_db([]),
     )
 
     assert values["validation_score_sum"] == 0.0
     assert len(breakdown["datasets"]) == 1
     entry = breakdown["datasets"][0]
     assert entry["urn"] == urn
+    assert entry["detail"]["latest_data_time"] is None
+    assert entry["detail"]["score"] is None
 
 
 # ── No 'category' in breakdown entries ───────────────────────────────────────
@@ -256,331 +308,241 @@ async def test_breakdown_entries_have_no_category_field() -> None:
     """Breakdown entries must not carry a 'category' field.
 
     Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format —
-          datasets[] entries are {urn, detail?} only.
+          datasets[] entries are {"urn": "...", "detail": {...}} only.
     """
     measure = _get_measurer()
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.nocat,DEV)"
 
-    db = AsyncMock()
-    execute_result = MagicMock()
-    execute_result.all.return_value = []
-    db.execute = AsyncMock(return_value=execute_result)
-
-    values, breakdown = await measure(
+    _values, breakdown = await measure(
         datasets=[urn],
         metric_conf={"time_window_sec": 86400},
-        datahub=MagicMock(),
-        db=db,
+        datahub=_datahub(),
+        db=_db([]),
     )
 
-    assert len(breakdown["datasets"]) >= 1
+    assert len(breakdown["datasets"]) == 1
     for entry in breakdown["datasets"]:
         assert "category" not in entry, (
             "Breakdown entries must not have 'category'. "
             "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
         )
-        assert "urn" in entry
+        assert set(entry) == {"urn", "detail"}
 
 
-# ── Per-dataset window: intervals-derived (>= N+1 rows) ─────────────────────
-
-
-def _make_validation_rows(
-    urn: str,
-    data_times: list,
-    scores: list[float] | None = None,
-) -> list[MagicMock]:
-    """Build a list of mock ValidationResult rows ordered by data_time desc (rn=1 is newest).
-
-    data_times should be a list of datetime objects, newest first (same order as the measurer
-    receives after the row_number() subquery orders desc).
-    """
-    rows = []
-    if scores is None:
-        scores = [1.0] * len(data_times)
-    for i, (dt, score) in enumerate(zip(data_times, scores), start=1):
-        row = MagicMock()
-        row.dataset_urn = urn
-        row.data_time = dt
-        row.score = score
-        row.rn = i
-        rows.append(row)
-    return rows
-
-
-def _make_validation_db(rows: list) -> AsyncMock:
-    """Mock DB that returns the given rows for the validation-score subquery."""
-    result = MagicMock()
-    result.all.return_value = rows
-    db = AsyncMock()
-    db.execute = AsyncMock(return_value=result)
-    return db
+# ── The declared window gates in both directions within one run ──────────────
 
 
 @pytest.mark.asyncio
-async def test_intervals_window_derived_from_n_plus_one_rows() -> None:
-    """Dataset with >= N+1 rows uses window = mean(last N gaps) × 2.
+async def test_one_declared_window_splits_two_datasets_in_the_same_run() -> None:
+    """A single run's window admits one dataset and excludes the other.
 
-    With N=3, rows at 0h, -24h, -48h, -72h (4 rows = N+1):
-      gaps = [24h, 24h, 24h] → mean = 24h = 86400s → window = 172800s.
-    Latest row is at now - 0s, which is within the 172800s window → score counted.
+    One latest result is 30 hours old and the other 2 hours old against a declared
+    86400s window, so the run splits: the older contributes 0.0 and is failed, the
+    newer contributes its score and is not. Both directions of the gate are exercised
+    in one call, so neither verdict can be a constant.
 
-    Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — validation-score
-          per-dataset window = 2 × mean(last N inter-arrival gaps).
-    Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — window_source='intervals'.
+    **Scope**: this does *not* establish cross-dataset window *uniformity*. With one row
+    per dataset the fixture cannot tell "one window applied to both" from "two
+    per-dataset windows that happen to coincide" — a per-dataset window needs several
+    rows to derive anything from. Uniformity for validation-score is carried by
+    ``tests/integration/spot/test_metrics.py``
+    ``::test_validation_score_declared_window_gates_the_latest_row``, which seeds four
+    rows per dataset and needs real PostgreSQL for the ``row_number()`` latest-per-dataset
+    pick that the fake session here cannot execute.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window — "the score
+          counted is the latest result whose ``data_time`` is inside ``time_window_sec``;
+          a dataset with no result in the window contributes ``0.0``".
     """
     measure = _get_measurer()
-    urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.intervals,DEV)"
+    outside_urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.window.outside,DEV)"
+    inside_urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.window.inside,DEV)"
 
     now = datetime.now(tz=UTC)
-    # N=3 (default): need N+1=4 rows. Evenly spaced 24h apart.
-    data_times = [
-        now - timedelta(hours=0),   # rn=1 (latest)
-        now - timedelta(hours=24),  # rn=2
-        now - timedelta(hours=48),  # rn=3
-        now - timedelta(hours=72),  # rn=4
-    ]
-    rows = _make_validation_rows(urn, data_times, scores=[1.0, 1.0, 1.0, 1.0])
-    db = _make_validation_db(rows)
 
     values, breakdown = await measure(
-        datasets=[urn],
-        metric_conf={"time_window_sec": 3600},  # fallback — must NOT be used (>= N+1 rows)
-        datahub=MagicMock(),
-        db=db,
+        datasets=[outside_urn, inside_urn],
+        metric_conf={"time_window_sec": 86400},
+        datahub=_datahub(),
+        db=_db(
+            [
+                _row(outside_urn, now - timedelta(hours=30), 1.0),
+                _row(inside_urn, now - timedelta(hours=2), 1.0),
+            ]
+        ),
     )
 
-    # Latest row at 0h is within window=172800s → counted
+    assert values["total"] == 2.0
     assert values["validation_score_sum"] == 1.0, (
-        "Latest in-window row with score=1.0 must be counted. "
-        "Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types."
+        "only the dataset whose latest result is inside the declared 86400s window "
+        "contributes. "
+        "Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window."
     )
-    assert breakdown["datasets"] == [], (
-        "Score=1.0 dataset must not appear in breakdown. "
-        "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
+    assert [e["urn"] for e in breakdown["datasets"]] == [outside_urn], (
+        "the 30-hour-old result is outside the declared window and the 2-hour-old one "
+        "is inside it. "
+        "Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window."
     )
+    assert breakdown["datasets"][0]["detail"]["time_window_sec"] == 86400
+
+
+# ── Deterministic clock boundary ─────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_intervals_window_source_is_intervals_in_detail() -> None:
-    """Dataset with >= N+1 rows has window_source='intervals' in breakdown detail.
+async def test_row_one_second_inside_window_is_counted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A result at now - time_window_sec + 1s is inside the window and is counted.
 
-    Spec: spec/feature/BACKEND.md §Metrics Service §Time windows —
-          window_source='intervals' when window is derived from inter-arrival gaps.
+    One second inside the window is inside it on any reading, so this is the boundary
+    side the spec does settle.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window —
+          "``validation-score``: the score counted is the latest result whose
+          ``data_time`` is inside ``time_window_sec``".
     """
-    measure = _get_measurer()
-    urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.windetail,DEV)"
+    time_window_sec = 3600
+    fixed_now = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+    _freeze_now(monkeypatch, fixed_now)
 
-    now = datetime.now(tz=UTC)
-    # 4 rows (N+1=4 for N=3), evenly spaced 48h → window = 2 × 48h = 96h = 345600s
-    data_times = [
-        now - timedelta(hours=200),  # rn=1 — latest (old, outside window)
-        now - timedelta(hours=248),
-        now - timedelta(hours=296),
-        now - timedelta(hours=344),
-    ]
-    rows = _make_validation_rows(urn, data_times, scores=[0.8, 1.0, 1.0, 1.0])
-    db = _make_validation_db(rows)
+    measure = _get_measurer()
+    urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.boundary.inside,DEV)"
+    one_sec_inside = fixed_now - timedelta(seconds=time_window_sec - 1)
 
     values, breakdown = await measure(
         datasets=[urn],
-        metric_conf={"time_window_sec": 86400},  # fallback — must NOT be used
-        datahub=MagicMock(),
-        db=db,
+        metric_conf={"time_window_sec": time_window_sec},
+        datahub=_datahub(),
+        db=_db([_row(urn, one_sec_inside, 1.0)]),
     )
 
-    # Latest row is 200h ago. window = 2 × mean([48h, 48h, 48h]) × 3600 = 345600s ≈ 96h.
-    # 200h > 96h → latest row is outside window → 0.0 contribution → in breakdown.
-    assert len(breakdown["datasets"]) == 1
-    detail = breakdown["datasets"][0]["detail"]
-    assert detail["window_source"] == "intervals", (
-        "Dataset with >= N+1 rows must have window_source='intervals'. "
-        "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows."
-    )
-    # Spec literal: 4 rows evenly spaced 48h apart → gaps = [48h, 48h, 48h]
-    # → mean = 48h = 172800s → window = 2 × 172800 = 345600s.
-    # spec/USE_CASE_en.md §UC5 §Built-in active metric types — window = 2 × mean(last N gaps).
-    assert detail["time_window_sec"] == 345600, (
-        "Intervals-derived window must be 345600s (2 × mean of three 48h gaps). "
-        "Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types."
-    )
-
-
-@pytest.mark.asyncio
-async def test_intervals_window_latest_in_window_score_counted() -> None:
-    """Latest row inside the intervals-derived window contributes its score.
-
-    N=3: 4 rows spaced 12h apart → window = 2 × 12h = 24h = 86400s.
-    Latest row is 2h ago (< 24h window) with score=0.7 → counted.
-
-    Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types —
-          score counted is the latest result whose data_time is inside the window.
-    """
-    measure = _get_measurer()
-    urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.inwindow,DEV)"
-
-    now = datetime.now(tz=UTC)
-    data_times = [
-        now - timedelta(hours=2),   # rn=1, inside 24h window
-        now - timedelta(hours=14),
-        now - timedelta(hours=26),
-        now - timedelta(hours=38),
-    ]
-    rows = _make_validation_rows(urn, data_times, scores=[0.7, 1.0, 1.0, 1.0])
-    db = _make_validation_db(rows)
-
-    values, breakdown = await measure(
-        datasets=[urn],
-        metric_conf={"time_window_sec": 3600},  # fallback — must NOT be used
-        datahub=MagicMock(),
-        db=db,
-    )
-
-    # window = 2 × mean([12h, 12h, 12h]) = 24h. Latest at 2h < 24h → in-window, score=0.7.
-    assert abs(values["validation_score_sum"] - 0.7) < 1e-6, (
-        "In-window score=0.7 must be summed. "
-        "Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types."
-    )
-    # score=0.7 < 1.0 → appears in breakdown
-    assert len(breakdown["datasets"]) == 1
-    assert breakdown["datasets"][0]["detail"]["window_source"] == "intervals"
-
-
-# ── Per-dataset window: sparse (< N+1 rows) → fallback ──────────────────────
-
-
-@pytest.mark.asyncio
-async def test_sparse_dataset_fewer_than_n_plus_one_rows_uses_fallback() -> None:
-    """Dataset with fewer than N+1 rows falls back to metric_conf.time_window_sec.
-
-    N=3: fewer than 4 rows → window = metric_conf.time_window_sec.
-    With 2 rows, fallback 86400s, latest row 50000s ago → within window → counted.
-
-    Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — fewer than N
-          intervals falls back to metric_conf.time_window_sec.
-    Spec: spec/feature/BACKEND.md §Metrics Service §Time windows —
-          window_source='default' for fallback.
-    """
-    measure = _get_measurer()
-    urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.sparse,DEV)"
-
-    now = datetime.now(tz=UTC)
-    # Only 2 rows (< N+1=4) — insufficient for intervals computation
-    data_times = [
-        now - timedelta(seconds=50000),   # rn=1, latest
-        now - timedelta(seconds=100000),  # rn=2
-    ]
-    rows = _make_validation_rows(urn, data_times, scores=[1.0, 1.0])
-    db = _make_validation_db(rows)
-
-    values, breakdown = await measure(
-        datasets=[urn],
-        metric_conf={"time_window_sec": 86400},  # fallback applied
-        datahub=MagicMock(),
-        db=db,
-    )
-
-    # 50000s < 86400s → in-window using fallback → counted
     assert values["validation_score_sum"] == 1.0, (
-        "Sparse dataset (< N+1 rows) fallback 86400s, latest 50000s ago → in-window. "
-        "Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types."
+        "a result one second inside the window is inside it and must be counted. "
+        "Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window."
     )
     assert breakdown["datasets"] == []
 
 
 @pytest.mark.asyncio
-async def test_sparse_dataset_window_source_is_default() -> None:
-    """Dataset with fewer than N+1 rows has window_source='default' in breakdown detail.
+async def test_row_one_second_outside_window_is_not_counted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A result at now - time_window_sec - 1s is outside the window and contributes 0.0.
 
-    Spec: spec/feature/BACKEND.md §Metrics Service §Time windows —
-          window_source='default' when fallback metric_conf.time_window_sec is used.
+    The mirror of the case above: one second the other side of the cutoff is outside
+    the window on any reading. The pair brackets the cutoff from both directions, so a
+    cutoff computed one second off in either direction moves one of them.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window — "a dataset with
+          no result in the window contributes ``0.0``".
+    Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format — a dataset is
+          failed when it has "no result inside the window".
     """
-    measure = _get_measurer()
-    urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.sparsedetail,DEV)"
+    time_window_sec = 3600
+    fixed_now = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+    _freeze_now(monkeypatch, fixed_now)
 
-    now = datetime.now(tz=UTC)
-    # Only 1 row (< N+1) → fallback 3600s. Latest at 5000s → stale.
-    data_times = [now - timedelta(seconds=5000)]
-    rows = _make_validation_rows(urn, data_times, scores=[0.9])
-    db = _make_validation_db(rows)
+    measure = _get_measurer()
+    urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.boundary.outside,DEV)"
+    one_sec_outside = fixed_now - timedelta(seconds=time_window_sec + 1)
 
     values, breakdown = await measure(
         datasets=[urn],
-        metric_conf={"time_window_sec": 3600},  # fallback
-        datahub=MagicMock(),
-        db=db,
+        metric_conf={"time_window_sec": time_window_sec},
+        datahub=_datahub(),
+        db=_db([_row(urn, one_sec_outside, 1.0)]),
     )
 
-    # 5000s > 3600s → stale
-    assert len(breakdown["datasets"]) == 1
-    detail = breakdown["datasets"][0]["detail"]
-    assert detail["window_source"] == "default", (
-        "Sparse dataset must have window_source='default'. "
-        "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows."
+    assert values["validation_score_sum"] == 0.0, (
+        "a result one second outside the window must not be counted. "
+        "Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window."
     )
-    assert detail["time_window_sec"] == 3600
+    assert [e["urn"] for e in breakdown["datasets"]] == [urn]
+    assert breakdown["datasets"][0]["detail"]["latest_data_time"] == (
+        one_sec_outside.isoformat()
+    ), "backstop: the seeded out-of-window row must be what the verdict rests on."
 
 
 @pytest.mark.asyncio
-async def test_no_validation_result_uses_fallback_and_appears_in_breakdown() -> None:
-    """Dataset with no validation results uses fallback window and contributes 0.0.
+async def test_row_exactly_at_cutoff_is_counted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A result at exactly now - time_window_sec is counted.
 
-    Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — fewer than N
-          intervals falls back; contribution is 0.0 when no result inside the window.
-    Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — window_source='default'.
+    **This assertion pins an implementation choice, not a spec requirement.** The spec
+    fixes the window but not the behaviour at the exact-cutoff instant: it says the
+    counted score is "the latest result whose ``data_time`` is inside
+    ``time_window_sec``" and that a dataset is failed with "no result inside the window"
+    (spec/feature/BACKEND.md §Metrics Service §Measurement window, §Breakdown format) —
+    neither sentence settles the instant that sits exactly on the boundary. Treating it
+    as inside is the **implementation's chosen tie-break** (a non-strict comparison
+    against the cutoff), pinned here so a silent flip is visible in review.
+
+    Note the two windowed measurers resolve this instant in opposite directions —
+    ``ingestion-freshness`` treats it as stale (see
+    ``test_ingestion_freshness.py::test_event_exactly_at_cutoff_is_stale``). Neither
+    direction is spec-mandated, so both are pinned rather than asserted.
+
+    The spec-grounded sides of the boundary are
+    ``test_row_one_second_inside_window_is_counted`` and
+    ``test_row_one_second_outside_window_is_not_counted``.
     """
-    measure = _get_measurer()
-    urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.norows,DEV)"
+    time_window_sec = 3600
+    fixed_now = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+    _freeze_now(monkeypatch, fixed_now)
 
-    db = _make_validation_db([])  # no rows at all
+    measure = _get_measurer()
+    urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.boundary.exact,DEV)"
+    exact_cutoff = fixed_now - timedelta(seconds=time_window_sec)
 
     values, breakdown = await measure(
         datasets=[urn],
-        metric_conf={"time_window_sec": 86400},
-        datahub=MagicMock(),
-        db=db,
+        metric_conf={"time_window_sec": time_window_sec},
+        datahub=_datahub(),
+        db=_db([_row(urn, exact_cutoff, 1.0)]),
     )
 
-    assert values["validation_score_sum"] == 0.0
-    assert len(breakdown["datasets"]) == 1
-    detail = breakdown["datasets"][0]["detail"]
-    assert detail["window_source"] == "default", (
-        "Dataset with no rows must have window_source='default'. "
-        "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows."
-    )
+    assert values["validation_score_sum"] == 1.0
+    assert breakdown["datasets"] == []
 
 
-# ── Breakdown detail shape: time_window_sec and window_source present ────────
+# ── Breakdown detail shape ───────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_breakdown_detail_includes_time_window_sec_and_window_source() -> None:
-    """Breakdown detail must include time_window_sec and window_source for failed datasets.
+async def test_breakdown_detail_keys_are_exactly_the_three_spec_fields() -> None:
+    """Failed detail carries exactly latest_data_time, score, time_window_sec.
 
-    Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — breakdown stale-entry
-          detail includes time_window_sec (resolved int) and window_source.
+    The key set is asserted as an equality so a detail key naming a *derived* window
+    provenance — a quantity the spec says the window is not — cannot reappear unnoticed.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format —
+          "``ingestion-freshness`` and ``validation-score`` record the window applied at
+          run time in ``time_window_sec`` … alongside ``last_event_at`` (freshness) or
+          ``latest_data_time`` + ``score`` (validation-score)".
+    Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window — "Each run
+          records the window it applied in the breakdown's ``detail.time_window_sec``".
     """
     measure = _get_measurer()
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.detailshape,DEV)"
 
-    db = _make_validation_db([])  # no rows → fallback → 0.0
-
-    values, breakdown = await measure(
+    _values, breakdown = await measure(
         datasets=[urn],
         metric_conf={"time_window_sec": 86400},
-        datahub=MagicMock(),
-        db=db,
+        datahub=_datahub(),
+        db=_db([]),
     )
 
     assert len(breakdown["datasets"]) == 1
     detail = breakdown["datasets"][0]["detail"]
-    assert "time_window_sec" in detail, (
-        "Breakdown detail must include 'time_window_sec'. "
-        "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows."
+    assert set(detail) == {"latest_data_time", "score", "time_window_sec"}, (
+        "Failed detail keys must be exactly {latest_data_time, score, "
+        "time_window_sec}; got " + f"{sorted(detail)}. "
+        "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
     )
-    assert "window_source" in detail, (
-        "Breakdown detail must include 'window_source'. "
-        "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows."
+    assert "window_source" not in detail, (
+        "detail must not name a window provenance: the window is always "
+        "metric_conf.time_window_sec, so there is no provenance to report. "
+        "Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window."
     )
-    assert isinstance(detail["time_window_sec"], int)
-    assert isinstance(detail["window_source"], str)
+    assert detail["time_window_sec"] == 86400, (
+        "detail.time_window_sec must be the metric's declared window. "
+        "Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window."
+    )

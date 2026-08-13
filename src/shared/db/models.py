@@ -585,7 +585,6 @@ class RuntimeConfig(Base):
     metagen_ontology_rag_node_k: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
     metagen_ontology_rag_edge_k: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
     metagen_ontology_rag_triple_k: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
-    validation_score_n_intervals: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
     stub_redis_client: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     stub_llm_client: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     stub_pgvector_manager: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

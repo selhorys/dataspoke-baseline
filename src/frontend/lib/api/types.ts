@@ -117,7 +117,6 @@ export interface RuntimeConf {
   metagen_ontology_rag_node_k: number;
   metagen_ontology_rag_edge_k: number;
   metagen_ontology_rag_triple_k: number;
-  validation_score_n_intervals: number;
   stub_redis_client: boolean;
   stub_llm_client: boolean;
   stub_pgvector_manager: boolean;
@@ -298,7 +297,6 @@ export interface RuntimeConfPatch {
   metagen_ontology_rag_node_k?: number;
   metagen_ontology_rag_edge_k?: number;
   metagen_ontology_rag_triple_k?: number;
-  validation_score_n_intervals?: number;
   stub_redis_client?: boolean;
   stub_llm_client?: boolean;
   stub_pgvector_manager?: boolean;

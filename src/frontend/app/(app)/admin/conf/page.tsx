@@ -56,7 +56,6 @@ export default function AdminConfPage() {
       metagen_ontology_rag_node_k: 5,
       metagen_ontology_rag_edge_k: 5,
       metagen_ontology_rag_triple_k: 5,
-      validation_score_n_intervals: 3,
       stub_redis_client: false,
       stub_llm_client: false,
       stub_pgvector_manager: false,
@@ -368,29 +367,6 @@ export default function AdminConfPage() {
                 />
               </Field>
             </FormGrid>
-          </CardContent>
-        </Card>
-
-        {/* Validation */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Validation</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <Field
-              label="Score intervals"
-              htmlFor="validation_score_n_intervals"
-              description="Recent result inter-arrival gaps used to size the validation-score metric window (min 1, default 3)."
-              error={errors.validation_score_n_intervals?.message}
-            >
-              <Input
-                id="validation_score_n_intervals"
-                type="number"
-                min={1}
-                className="max-w-[120px]"
-                {...register("validation_score_n_intervals")}
-              />
-            </Field>
           </CardContent>
         </Card>
 

@@ -24,12 +24,12 @@ spec: feedback_spot_vs_api_wired_principle — spot for raw-SQL/ORM-seeded state
   `COMPLETE` sitting *newer* than a real one, and a source carrying observations for two
   different datasets, are states api-wired's pipeline setup cannot naturally reach.
 
-Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — the two-tier evidence
+Spec: spec/feature/BACKEND.md §Metrics Service §Ingestion evidence — the two-tier evidence
   table; "The **dry-run exclusion is required on tier 2 regardless**, or case 1 survives
   untouched in the fallback path; a producer that carries no ``dry_run`` key at all (the
   mirror and both observation producers) is included, since only the inline
   ``ACTIVE_CUSTOM_MANAGED`` record ever sets it."
-Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — tier 2 "is
+Spec: spec/feature/BACKEND.md §Metrics Service §Ingestion evidence — tier 2 "is
   **source-grained, not producer-filtered**: any ``COMPLETE`` on the owning source
   qualifies".
 """
@@ -160,7 +160,7 @@ async def test_tier_1_keys_each_instant_to_its_own_dataset(
     estate maximum, and without the ``max`` aggregation the pair would be keyed to
     whichever row happened to come back last.
 
-    spec: feature/BACKEND.md §Metrics Service §Time windows — tier 1 is "``max(occurred_at)``
+    spec: feature/BACKEND.md §Metrics Service §Ingestion evidence — tier 1 is "``max(occurred_at)``
       over the observation events the owning source booked **for that dataset**".
     """
     service = IngestionService(datahub=None, db=async_session)  # type: ignore[arg-type]
@@ -199,7 +199,7 @@ async def test_tier_1_keys_each_instant_to_its_own_dataset(
         assert observed.get((source, second)) == second_newest, (
             f"the second dataset must read its own newest observation, not the estate "
             f"maximum; got {observed.get((source, second))!r}, expected "
-            f"{second_newest!r}. spec: feature/BACKEND.md §Metrics Service §Time windows."
+            f"{second_newest!r}. spec: feature/BACKEND.md §Metrics Service §Ingestion evidence."
         )
     finally:
         await _cleanup(async_session, source_ids)
@@ -224,7 +224,7 @@ async def test_tier_1_reads_only_the_observation_producers(
     a scalar ``dataset_urn`` — precisely so the producer term is the only thing that can
     exclude it here.
 
-    spec: feature/BACKEND.md §Metrics Service §Time windows — tier 1 is restricted to
+    spec: feature/BACKEND.md §Metrics Service §Ingestion evidence — tier 1 is restricted to
       "``detail.source ∈ {passive_observation, last_ingested_observation}``".
     """
     service = IngestionService(datahub=None, db=async_session)  # type: ignore[arg-type]
@@ -271,7 +271,7 @@ async def test_tier_1_reads_only_the_observation_producers(
         assert observed.get((source, dataset_urn)) == observed_at, (
             f"only an observation-producer INGESTION.COMPLETE may supply tier-1 evidence; "
             f"got {observed.get((source, dataset_urn))!r}, expected {observed_at!r}. "
-            "spec: feature/BACKEND.md §Metrics Service §Time windows."
+            "spec: feature/BACKEND.md §Metrics Service §Ingestion evidence."
         )
     finally:
         await _cleanup(async_session, source_ids)
@@ -288,7 +288,7 @@ async def test_tier_1_counts_a_wrappers_observation_as_the_parents(
     proving the query returns keys and that the wrapper's did not simply leak onto every
     source.
 
-    spec: feature/BACKEND.md §Metrics Service §Time windows — "The owning source's
+    spec: feature/BACKEND.md §Metrics Service §Ingestion evidence — "The owning source's
       **CLI-wrapper runs count as its own** … so a source's events are the union of its own
       and its wrappers'".
     """
@@ -335,7 +335,7 @@ async def test_tier_1_counts_a_wrappers_observation_as_the_parents(
         assert observed.get((parent, wrapped_urn)) == wrapper_at, (
             f"an observation booked on the wrapper must be keyed to the owning parent; "
             f"got keys {sorted(observed)}. "
-            "spec: feature/BACKEND.md §Metrics Service §Time windows."
+            "spec: feature/BACKEND.md §Metrics Service §Ingestion evidence."
         )
         assert (wrapper, wrapped_urn) not in observed, (
             "the wrapper must not get a key of its own — its rows belong to the parent."
@@ -371,7 +371,7 @@ async def test_tier_2_excludes_a_dry_run_complete(
     ``INGESTION.COMPLETE`` — so without this term one operator's dry run marks every
     dataset mapped to the source ingested-in-time.
 
-    spec: feature/BACKEND.md §Metrics Service §Time windows — "**A dry run emits nothing
+    spec: feature/BACKEND.md §Metrics Service §Ingestion evidence — "**A dry run emits nothing
       by definition**, yet a dry run without errors still books ``INGESTION.COMPLETE``
       (carrying ``detail.dry_run = true``)"; tier 2 is "``max(occurred_at)`` over **every**
       ``INGESTION.COMPLETE`` booked on the owning source — no producer filter, **excluding
@@ -404,7 +404,7 @@ async def test_tier_2_excludes_a_dry_run_complete(
         assert latest.get(source) == real_run_at, (
             f"the newer dry run must not supply the fallback; got {latest.get(source)!r}, "
             f"expected the real run at {real_run_at!r}. "
-            "spec: feature/BACKEND.md §Metrics Service §Time windows."
+            "spec: feature/BACKEND.md §Metrics Service §Ingestion evidence."
         )
     finally:
         await _cleanup(async_session, source_ids)
@@ -422,7 +422,7 @@ async def test_a_source_whose_only_complete_is_a_dry_run_has_no_tier_2_evidence(
     query.
 
     spec: feature/BACKEND.md §Metrics Service §Breakdown format — a dataset is failed when
-      its resolved evidence "is older than the dataset's freshness window, or absent on
+      its resolved evidence "is older than ``metric_conf.time_window_sec``, or absent on
       both tiers".
     """
     service = IngestionService(datahub=None, db=async_session)  # type: ignore[arg-type]
@@ -457,7 +457,7 @@ async def test_a_source_whose_only_complete_is_a_dry_run_has_no_tier_2_evidence(
         assert dry_only not in latest, (
             f"a source whose only COMPLETE is a dry run must be absent from the result; "
             f"got keys {sorted(latest)}. "
-            "spec: feature/BACKEND.md §Metrics Service §Time windows."
+            "spec: feature/BACKEND.md §Metrics Service §Ingestion evidence."
         )
     finally:
         await _cleanup(async_session, source_ids)
@@ -484,7 +484,7 @@ async def test_a_complete_that_is_not_flagged_a_dry_run_still_supplies_tier_2(
     (say ``detail ? 'dry_run'``, or a ``NOT`` without the ``COALESCE``) would empty tier 2
     for exactly the producers `PASSIVE` depends on.
 
-    spec: feature/BACKEND.md §Metrics Service §Time windows — "a producer that carries no
+    spec: feature/BACKEND.md §Metrics Service §Ingestion evidence — "a producer that carries no
       ``dry_run`` key at all (the mirror and both observation producers) is included,
       since only the inline ``ACTIVE_CUSTOM_MANAGED`` record ever sets it."
     """
@@ -507,7 +507,7 @@ async def test_a_complete_that_is_not_flagged_a_dry_run_still_supplies_tier_2(
         assert latest.get(source) == occurred_at, (
             f"{label}: a COMPLETE that is not flagged as a dry run must supply the "
             f"source-level fallback; got {latest.get(source)!r}, expected "
-            f"{occurred_at!r}. spec: feature/BACKEND.md §Metrics Service §Time windows."
+            f"{occurred_at!r}. spec: feature/BACKEND.md §Metrics Service §Ingestion evidence."
         )
     finally:
         await _cleanup(async_session, source_ids)
@@ -524,7 +524,7 @@ async def test_tier_2_stays_producer_agnostic_and_admits_an_observation(
     but empty it, leaving every passive dataset without an observation of its own reading
     permanently stale.
 
-    spec: feature/BACKEND.md §Metrics Service §Time windows — "A producer blacklist on
+    spec: feature/BACKEND.md §Metrics Service §Ingestion evidence — "A producer blacklist on
       tier 2 would not merely narrow the fallback, it would **empty** it for ``PASSIVE``
       … Tier 2 is therefore source-grained and producer-agnostic by design, not by
       omission."
@@ -554,7 +554,7 @@ async def test_tier_2_stays_producer_agnostic_and_admits_an_observation(
         assert latest.get(source) == observed_at, (
             f"an observation must still qualify as source-level fallback evidence; got "
             f"{latest.get(source)!r}, expected {observed_at!r}. "
-            "spec: feature/BACKEND.md §Metrics Service §Time windows."
+            "spec: feature/BACKEND.md §Metrics Service §Ingestion evidence."
         )
     finally:
         await _cleanup(async_session, source_ids)

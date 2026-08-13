@@ -77,7 +77,6 @@ _EXPECTED_RESPONSE_KEYS = {
     "metagen_ontology_rag_node_k",
     "metagen_ontology_rag_edge_k",
     "metagen_ontology_rag_triple_k",
-    "validation_score_n_intervals",
     "stub_redis_client",
     "stub_llm_client",
     "stub_pgvector_manager",
@@ -279,9 +278,9 @@ async def test_internal_patch_conf_wrong_token_returns_401(client) -> None:
 
 @pytest.mark.asyncio
 async def test_get_conf_returns_200_with_all_22_fields(client) -> None:
-    """GET /admin/conf with Admin role returns 200 with EXACTLY the 23 expected fields.
+    """GET /admin/conf with Admin role returns 200 with EXACTLY the 22 expected fields.
 
-    The 23 fields are: 21 config fields (15 DB tunables + 4 stub booleans +
+    The 22 fields are: 20 config fields (14 DB tunables + 4 stub booleans +
     llm_api_key masked indicator + auth_datahub_corp_group) + updated_at + resp_time.
     Any extra or missing key fails the assertion.
 
@@ -597,23 +596,6 @@ async def test_patch_conf_confidence_threshold_above_1_returns_422(client) -> No
     )
     assert resp.status_code == 422, (
         f"metagen_confidence_threshold=1.5 exceeds le=1.0 bound; "
-        f"expected 422 but got {resp.status_code}: {resp.text}"
-    )
-
-
-@pytest.mark.asyncio
-async def test_patch_conf_validation_score_n_intervals_zero_returns_422(client) -> None:
-    """PATCH /admin/conf with validation_score_n_intervals=0 returns 422.
-
-    spec: src/api/schemas/admin.py RuntimeConfPatchRequest — ge=1.
-    """
-    resp = await client.patch(
-        _ADMIN_CONF,
-        json={"validation_score_n_intervals": 0},
-        headers=auth_headers(),
-    )
-    assert resp.status_code == 422, (
-        f"validation_score_n_intervals=0 violates ge=1 bound; "
         f"expected 422 but got {resp.status_code}: {resp.text}"
     )
 

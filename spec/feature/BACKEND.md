@@ -1219,98 +1219,94 @@ responses use the bare `MetricDefinitionResponse` and do not expose it.
 rejected in the route handler with `501 NOT_IMPLEMENTED` — placeholder for ingesting
 results emitted by an external system, deferred to a future release.
 
-**Time windows** (`ingestion-freshness`, `validation-score`): the measurement window is
-resolved **per dataset**, not from a single `metric_conf` value. `metric_conf.time_window_sec`
-is only the fallback used when no per-dataset window can be derived.
+**Measurement window** (`ingestion-freshness`, `validation-score`): the window is
+`metric_conf.time_window_sec`, applied uniformly to every dataset in the run. It is a declared
+SLO the governance lead owns, not a quantity derived from a per-dataset fact such as an owning
+source's registered schedule, a sync-loop cadence, or a dataset's observed validation
+inter-arrival gap — those state how often something is *expected* to happen, which is a
+different question from how recent the evidence must be to count. Each run records the window
+it applied in the breakdown's `detail.time_window_sec`.
 
-- `ingestion-freshness`: every `INGESTION.*` event is booked on a source
-  (`entity_type="ingestion_source"`, `entity_id=source_id` — see the
-  [Event Catalogue](#event-catalogue)) and never on the dataset, so the measurer resolves each
-  dataset's **owning source** first. It then reads that source's feed in **two tiers of
-  evidence**, per-dataset first and source-level as fallback. The same resolution supplies the
-  window.
-
-  | Tier | Evidence | Applies to |
-  |---|---|---|
-  | 1 (preferred) | `max(occurred_at)` over the observation events the owning source booked **for that dataset** — `detail.dataset_urn = <urn>`, `detail.source ∈ {passive_observation, last_ingested_observation}` | any dataset DataHub reports an ingestion trace for |
-  | 2 (fallback) | `max(occurred_at)` over **every** `INGESTION.COMPLETE` booked on the owning source — no producer filter, **excluding dry runs** | datasets with no observation evidence yet |
-
-  Tier 1 exists because a run-level `COMPLETE` is a claim about a *run*, not about a dataset, and
-  four independent facts make it unsound as a per-dataset claim:
-
-  1. **A dry run emits nothing by definition**, yet a dry run without errors still books
-     `INGESTION.COMPLETE` (carrying `detail.dry_run = true`) — only a *real* run whose emitted set
-     is empty is coerced to failure.
-  2. **Partial emission still reads `COMPLETE`.** `discovered − emitted > 0` on a real run signals
-     per-table emission failures, and those tables were not ingested.
-  3. **A `DATAHUB_MANAGED` `SUCCESS` is not a per-table claim** — the status mapping does not
-     inspect the run's structured report.
-  4. **The mapping is broader than the run.** A `matched` mapping is recipe-*pattern* derived, so a
-     dataset the source merely *could* cover inherits its freshness having never been ingested.
-
-  Tier 2 keeps cases 2–4 by construction — an event booked on a source genuinely cannot say which
-  dataset it touched — so it applies only where nothing better exists. It is **source-grained, not
-  producer-filtered**: any `COMPLETE` on the owning source qualifies, so a sibling dataset's
-  observation can stand in for a dataset that has none of its own. That is the same
-  approximation the four cases describe, and it is the reason tier 1 is preferred wherever it
-  exists. Because per-dataset evidence exists for every mode, the measurement is never worse than a
-  purely source-grained one, and exact wherever DataHub can date the dataset. The **dry-run
-  exclusion is required on tier 2 regardless**, or case 1 survives untouched in the fallback path; a
-  producer that carries no `dry_run` key at all (the mirror and both observation producers) is
-  included, since only the inline `ACTIVE_CUSTOM_MANAGED` record ever sets it.
-
-  **`latest_run` and freshness read the same feed differently, deliberately.**
-  `attr/ingestion.latest_run` answers *"what was the last run outcome"*, so it reads run-level
-  producers only and does **not** filter dry runs: a dry run is a real run outcome the operator
-  asked for, and its `detail.dry_run` flag is already on the event for the reader to act on.
-  Freshness answers *"when was this dataset last ingested"*, so it prefers per-dataset evidence,
-  excludes dry runs (which ingested nothing), and applies **no** producer blacklist in its fallback —
-  an observation is exactly the kind of recency evidence it wants, even a sibling's. Filtering dry
-  runs out of `latest_run` would hide a run the operator triggered; admitting them into freshness
-  would mark an untouched estate fresh.
-
-  A producer blacklist on tier 2 would not merely narrow the fallback, it would **empty** it for
-  `PASSIVE`: that mode books no run-level event at all, so its only `INGESTION.COMPLETE` rows are
-  observations. Blacklisting them would leave every `PASSIVE` dataset without its own observation
-  with no evidence of any kind, reading permanently stale. Tier 2 is therefore source-grained and
-  producer-agnostic by design, not by omission.
-
-  **Owning source** is what `IngestionService.reverse_lookup` returns — or, over a whole
-  dataset list at once, its batched single-winner sibling `reverse_lookup_batch`, which the
-  measurer calls and which resolves the identical rule in two queries rather than one round
-  trip per URN. Either way the resolution runs in two steps. First a
-  sort over the dataset's covering sources — a dataset may be covered by several: `derivation`
-  rank `emitted` > `pipeline_name` > `matched`; at equal rank a regular parent beats its CLI
-  wrapper; remaining ties go to the most recent `last_seen_at`. Then, **if the sort winner is
-  itself a wrapper it resolves up to its regular parent** — a wrapper is never the owning
-  source. The second step is not the tie-break restated: it also fires when a wrapper claims a
-  dataset at a *higher* derivation rank than its parent, where the tie-break never runs. That
-  the owning source is always regular is what makes the wrapper-run union below well-defined.
-
-  This is the resolution the per-dataset event timeline also uses, so freshness and the
-  timeline agree on which source owns a dataset by construction. Freshness is explicitly
-  **not** "the most recent event across all covering sources": that is non-deterministic where
-  the priority rule is not, and it would let a source that merely recipe-matches a table
-  (`matched`) mask the staleness of the pipeline that actually writes it. The owning source's
-  **CLI-wrapper runs count as its own** — DataHub books a managed source's executions on an
-  auto-created wrapper rather than on the registered source, so a source's events are the union
-  of its own and its wrappers', the same union `GET /spoke/ingestion/sources/{id}/event` serves
-  (see [Querying Events](#querying-events)).
-
-  **Window**: `ACTIVE_CUSTOM_MANAGED` /
-  `DATAHUB_MANAGED` with a schedule → `SCHEDULE_TIER_SECONDS[schedule_tier] × 2`; `PASSIVE` (no
-  schedule) → `PASSIVE_SYNC_PERIOD_SEC × 2` (mirrors the `@hourly` `datahub-sync-hourly` DAG);
-  a dataset mapped to no source, or a source with no derivable schedule →
-  `metric_conf.time_window_sec`. The `× 2` factor leaves room for transient late ingestion.
-  Tier→seconds and the passive period live in `src/shared/schedule.py`.
-- `validation-score`: for each dataset the measurer reads its most recent `N + 1` validation
-  results (`N` = the `validation_score_n_intervals` runtime config (`/api/v1/admin/conf`),
-  default 3) and sets the window to `mean(last N inter-arrival gaps) × 2`. A dataset with
-  fewer than `N + 1` results falls back to `metric_conf.time_window_sec`. The score counted
-  is the latest result whose `data_time` is inside the window.
+- `ingestion-freshness`: a dataset counts toward `ingested_in_time` when its resolved
+  ingestion evidence (below) is no older than `time_window_sec` at measurement time.
+- `validation-score`: the score counted is the latest result whose `data_time` is inside
+  `time_window_sec`; a dataset with no result in the window contributes `0.0`.
 
 Both measurers stay pure-aggregation and DataSpoke-DB-side: they read `events`,
 `validation_results`, `ingestion_source`, and `ingestion_source_dataset` only — no DataHub call.
+
+**Ingestion evidence** (`ingestion-freshness`): every `INGESTION.*` event is booked on a source
+(`entity_type="ingestion_source"`, `entity_id=source_id` — see the
+[Event Catalogue](#event-catalogue)) and never on the dataset, so the measurer resolves each
+dataset's **owning source** first. It then reads that source's feed in **two tiers of
+evidence**, per-dataset first and source-level as fallback.
+
+| Tier | Evidence | Applies to |
+|---|---|---|
+| 1 (preferred) | `max(occurred_at)` over the observation events the owning source booked **for that dataset** — `detail.dataset_urn = <urn>`, `detail.source ∈ {passive_observation, last_ingested_observation}` | any dataset DataHub reports an ingestion trace for |
+| 2 (fallback) | `max(occurred_at)` over **every** `INGESTION.COMPLETE` booked on the owning source — no producer filter, **excluding dry runs** | datasets with no observation evidence yet |
+
+Tier 1 exists because a run-level `COMPLETE` is a claim about a *run*, not about a dataset, and
+four independent facts make it unsound as a per-dataset claim:
+
+1. **A dry run emits nothing by definition**, yet a dry run without errors still books
+   `INGESTION.COMPLETE` (carrying `detail.dry_run = true`) — only a *real* run whose emitted set
+   is empty is coerced to failure.
+2. **Partial emission still reads `COMPLETE`.** `discovered − emitted > 0` on a real run signals
+   per-table emission failures, and those tables were not ingested.
+3. **A `DATAHUB_MANAGED` `SUCCESS` is not a per-table claim** — the status mapping does not
+   inspect the run's structured report.
+4. **The mapping is broader than the run.** A `matched` mapping is recipe-*pattern* derived, so a
+   dataset the source merely *could* cover inherits its freshness having never been ingested.
+
+Tier 2 keeps cases 2–4 by construction — an event booked on a source genuinely cannot say which
+dataset it touched — so it applies only where nothing better exists. It is **source-grained, not
+producer-filtered**: any `COMPLETE` on the owning source qualifies, so a sibling dataset's
+observation can stand in for a dataset that has none of its own. That is the same
+approximation the four cases describe, and it is the reason tier 1 is preferred wherever it
+exists. Because per-dataset evidence exists for every mode, the measurement is never worse than a
+purely source-grained one, and exact wherever DataHub can date the dataset. The **dry-run
+exclusion is required on tier 2 regardless**, or case 1 survives untouched in the fallback path; a
+producer that carries no `dry_run` key at all (the mirror and both observation producers) is
+included, since only the inline `ACTIVE_CUSTOM_MANAGED` record ever sets it.
+
+**`latest_run` and freshness read the same feed differently, deliberately.**
+`attr/ingestion.latest_run` answers *"what was the last run outcome"*, so it reads run-level
+producers only and does **not** filter dry runs: a dry run is a real run outcome the operator
+asked for, and its `detail.dry_run` flag is already on the event for the reader to act on.
+Freshness answers *"when was this dataset last ingested"*, so it prefers per-dataset evidence,
+excludes dry runs (which ingested nothing), and applies **no** producer blacklist in its fallback —
+an observation is exactly the kind of recency evidence it wants, even a sibling's. Filtering dry
+runs out of `latest_run` would hide a run the operator triggered; admitting them into freshness
+would mark an untouched estate fresh.
+
+A producer blacklist on tier 2 would not merely narrow the fallback, it would **empty** it for
+`PASSIVE`: that mode books no run-level event at all, so its only `INGESTION.COMPLETE` rows are
+observations. Blacklisting them would leave every `PASSIVE` dataset without its own observation
+with no evidence of any kind, reading permanently stale. Tier 2 is therefore source-grained and
+producer-agnostic by design, not by omission.
+
+**Owning source** is what `IngestionService.reverse_lookup` returns — or, over a whole
+dataset list at once, its batched single-winner sibling `reverse_lookup_batch`, which the
+measurer calls and which resolves the identical rule in two queries rather than one round
+trip per URN. Either way the resolution runs in two steps. First a
+sort over the dataset's covering sources — a dataset may be covered by several: `derivation`
+rank `emitted` > `pipeline_name` > `matched`; at equal rank a regular parent beats its CLI
+wrapper; remaining ties go to the most recent `last_seen_at`. Then, **if the sort winner is
+itself a wrapper it resolves up to its regular parent** — a wrapper is never the owning
+source. The second step is not the tie-break restated: it also fires when a wrapper claims a
+dataset at a *higher* derivation rank than its parent, where the tie-break never runs. That
+the owning source is always regular is what makes the wrapper-run union below well-defined.
+
+This is the resolution the per-dataset event timeline also uses, so freshness and the
+timeline agree on which source owns a dataset by construction. Freshness is explicitly
+**not** "the most recent event across all covering sources": that is non-deterministic where
+the priority rule is not, and it would let a source that merely recipe-matches a table
+(`matched`) mask the staleness of the pipeline that actually writes it. The owning source's
+**CLI-wrapper runs count as its own** — DataHub books a managed source's executions on an
+auto-created wrapper rather than on the registered source, so a source's events are the union
+of its own and its wrappers', the same union `GET /spoke/ingestion/sources/{id}/event` serves
+(see [Querying Events](#querying-events)).
 
 **Measurers** (`src/backend/metrics/measurers/`): one async function per built-in
 `metric_type`, registered via the measurer registry. Each measurer receives the resolved
@@ -1351,17 +1347,18 @@ unified shape:
 the classification. A dataset is failed when:
 
 - `ingestion-freshness`: the resolved ingestion evidence (tier 1 or tier 2 — see
-  **Time windows** above) is older than the dataset's freshness window, or absent on both tiers
-- `validation-score`: latest validation `score` inside the dataset's window is `< 1.0`
+  **Ingestion evidence** above) is older than `metric_conf.time_window_sec`, or absent on both
+  tiers
+- `validation-score`: latest validation `score` inside the window is `< 1.0`
   (or no result inside the window)
 - `doc-health`: documentation score is `< 1.0` (table description missing OR any
   column description missing)
 
 `detail` is optional, type-specific metadata. `ingestion-freshness` and `validation-score`
-report the applied window via `time_window_sec` (the resolved per-dataset value) and
-`window_source` (`"managed:<tier>"` / `"passive"` / `"default"` for freshness;
-`"intervals"` / `"default"` for validation-score), alongside `last_event_at` (freshness)
-or `latest_data_time` + `score` (validation-score). `ingestion-freshness` additionally names
+record the window applied at run time in `time_window_sec` — a metric's `metric_conf` can
+change between runs, so a past result stays interpretable only if it carries its own window —
+alongside `last_event_at` (freshness) or `latest_data_time` + `score` (validation-score).
+`ingestion-freshness` additionally names
 **which tier supplied `last_event_at`** in `evidence_tier` (`"observation"` for tier 1,
 `"source_level"` for tier 2, `null` when neither tier produced evidence) — the two tiers make
 different claims, so without it a stale verdict is not diagnosable. Tier 2's label names the

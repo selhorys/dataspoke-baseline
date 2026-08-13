@@ -606,7 +606,7 @@ route paths for read/update/delete and as the DAG-name suffix `metrics-{metric_i
 | `title` | string | Display title |
 | `description` | string | What the metric measures |
 | `metrics` | string[] | Subset of the type's emitted keys (see USE_CASE §UC5); unknown keys return `422 INVALID_PARAMETER` |
-| `metric_conf` | object | Type-specific. `ingestion-freshness` and `validation-score` require `time_window_sec` (positive int seconds) — the fallback window when no per-dataset window can be derived (see USE_CASE §UC5); `doc-health` takes `{}` |
+| `metric_conf` | object | Type-specific. `ingestion-freshness` and `validation-score` require `time_window_sec` (positive int seconds) — the measurement window, applied to every dataset the metric scans (see USE_CASE §UC5); `doc-health` takes `{}` |
 | `schedule_tier` | `"hourly"` \| `"daily"` \| `"weekly"` \| null | When null, the metric runs only on-demand |
 | `dataset_filter` | object | Optional `{origin?, tags?[], glossary_terms?[], dataset_urns?[]}`. `origin` is the DataHub `FabricType` value carried as the third URN segment (e.g. `PROD`/`DEV`/`CORP`/`EI`/`STG`/`NON_PROD`/…); DataSpoke forwards it verbatim and lets DataHub reject unknowns, but an empty-or-whitespace-only `origin` is rejected at PUT/PATCH with `422 INVALID_PARAMETER`. The other three dimensions are OR-ed among themselves and AND-ed with `origin`. `{}` = all datasets. See [DATAHUB_INTEGRATION §Origin filter group](DATAHUB_INTEGRATION.md#origin-filter-group) for the resolver shape |
 
@@ -701,7 +701,7 @@ creation, so operators unpause the groups they want active here. No `/internal` 
 
 `/admin/conf` reads and updates the singleton runtime configuration — the behavioral tunables
 that shape LLM inference and generation (`llm_provider`, `llm_model`, the ontogen/metagen debate,
-RAG, and iteration knobs, `metagen_confidence_threshold`, `validation_score_n_intervals`) plus the
+RAG, and iteration knobs, `metagen_confidence_threshold`) plus the
 auth-mirror knob `auth_datahub_corp_group` (string, default `dataspoke-users`) that names the
 DataHub corpGroup used as the DataSpoke-user provenance marker. The surface also carries four
 boolean dependency toggles — `stub_redis_client`, `stub_llm_client`, `stub_pgvector_manager`,

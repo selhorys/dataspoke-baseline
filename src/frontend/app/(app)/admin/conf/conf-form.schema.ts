@@ -66,10 +66,6 @@ export const confSchema = z.object({
     .int()
     .min(0, "Min 0")
     .max(20, "Max 20"),
-  validation_score_n_intervals: z.coerce
-    .number()
-    .int()
-    .min(1, "Min 1"),
   stub_redis_client: z.boolean(),
   stub_llm_client: z.boolean(),
   stub_pgvector_manager: z.boolean(),
@@ -99,7 +95,6 @@ export function toFormDefaults(conf: RuntimeConf): ConfFormValues {
     metagen_ontology_rag_node_k: conf.metagen_ontology_rag_node_k,
     metagen_ontology_rag_edge_k: conf.metagen_ontology_rag_edge_k,
     metagen_ontology_rag_triple_k: conf.metagen_ontology_rag_triple_k,
-    validation_score_n_intervals: conf.validation_score_n_intervals,
     stub_redis_client: conf.stub_redis_client,
     stub_llm_client: conf.stub_llm_client,
     stub_pgvector_manager: conf.stub_pgvector_manager,
@@ -166,9 +161,6 @@ export function buildPatch(values: ConfFormValues, loaded: RuntimeConf): Runtime
   }
   if (values.metagen_ontology_rag_triple_k !== loaded.metagen_ontology_rag_triple_k) {
     patch.metagen_ontology_rag_triple_k = values.metagen_ontology_rag_triple_k;
-  }
-  if (values.validation_score_n_intervals !== loaded.validation_score_n_intervals) {
-    patch.validation_score_n_intervals = values.validation_score_n_intervals;
   }
   if (values.stub_redis_client !== loaded.stub_redis_client) {
     patch.stub_redis_client = values.stub_redis_client;

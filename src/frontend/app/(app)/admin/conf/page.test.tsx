@@ -9,7 +9,7 @@
  *       shows returned updated_at after save; toast on success; destructive toast on error.
  *   - spec/API.md §/admin/conf + src/api/schemas/admin.py RuntimeConfPatchRequest bounds:
  *       *_llm_max_iterations: 1–20; *_debate_max_turns: 2–10; *_rag_k & ontology rag *_k:
- *       0–20; metagen_confidence_threshold: 0.0–1.0; validation_score_n_intervals: ≥1.
+ *       0–20; metagen_confidence_threshold: 0.0–1.0.
  *   - Numbers sent as numbers, booleans as booleans (not strings) in the PATCH body.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -41,7 +41,6 @@ function makeConf(overrides: Partial<RuntimeConf> = {}): RuntimeConf {
     metagen_ontology_rag_node_k: 5,
     metagen_ontology_rag_edge_k: 5,
     metagen_ontology_rag_triple_k: 5,
-    validation_score_n_intervals: 3,
     stub_redis_client: true,
     stub_llm_client: true,
     stub_pgvector_manager: true,
@@ -208,15 +207,6 @@ describe("AdminConfPage — renders loaded conf values (FRONTEND_BASIC.md §Conf
     });
   });
 
-  it("renders the validation_score_n_intervals field with the loaded value", async () => {
-    render(<AdminConfPage />);
-
-    await waitFor(() => {
-      const input = document.getElementById("validation_score_n_intervals") as HTMLInputElement | null;
-      expect(input?.value).toBe("3");
-    });
-  });
-
   it("renders the stub checkboxes with loaded boolean checked state (F4)", async () => {
     // makeConf sets stub_redis_client: true — the rendered checkbox must reflect checked state
     render(<AdminConfPage />);
@@ -305,20 +295,6 @@ describe("confSchema bounds — *_llm_max_iterations: 1–20 (spec/API.md §/adm
 
   it("rejects metagen_llm_max_iterations = 21 (max+1 fails)", () => {
     expect(confSchema.safeParse({ ...validValues, metagen_llm_max_iterations: 21 }).success).toBe(false);
-  });
-});
-
-describe("confSchema bounds — validation_score_n_intervals: ≥1 (spec/API.md §/admin/conf, RuntimeConfPatchRequest ge=1)", () => {
-  it("rejects validation_score_n_intervals = 0 (min-1 fails)", () => {
-    expect(confSchema.safeParse({ ...validValues, validation_score_n_intervals: 0 }).success).toBe(false);
-  });
-
-  it("accepts validation_score_n_intervals = 1 (lower boundary passes)", () => {
-    expect(confSchema.safeParse({ ...validValues, validation_score_n_intervals: 1 }).success).toBe(true);
-  });
-
-  it("accepts validation_score_n_intervals = 100 (no upper bound in spec)", () => {
-    expect(confSchema.safeParse({ ...validValues, validation_score_n_intervals: 100 }).success).toBe(true);
   });
 });
 
@@ -479,13 +455,6 @@ describe("buildPatch — single numeric field change (FRONTEND_BASIC.md §Config
     expect(patch).toEqual({ metagen_confidence_threshold: 0.5 });
     expect(typeof patch.metagen_confidence_threshold).toBe("number");
   });
-
-  it("returns {validation_score_n_intervals: 10} when only that field changes", () => {
-    const loaded = makeConf();
-    const values = { ...toFormDefaults(loaded), validation_score_n_intervals: 10 };
-    const patch = buildPatch(values, loaded);
-    expect(patch).toEqual({ validation_score_n_intervals: 10 });
-  });
 });
 
 describe("buildPatch — single boolean stub field toggle (FRONTEND_BASIC.md §Configurations)", () => {
@@ -597,7 +566,6 @@ describe("AdminConfPage — PATCH diff: only changed fields sent (FRONTEND_BASIC
     // Other fields must NOT be present in the patch
     expect(patchBody).not.toHaveProperty("llm_provider");
     expect(patchBody).not.toHaveProperty("llm_model");
-    expect(patchBody).not.toHaveProperty("validation_score_n_intervals");
     expect(patchBody).not.toHaveProperty("metagen_debate_max_turns");
   });
 

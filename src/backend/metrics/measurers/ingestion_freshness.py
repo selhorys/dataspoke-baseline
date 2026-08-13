@@ -1,4 +1,9 @@
-"""Measurer: ingestion-freshness — counts datasets ingested within a per-dataset window.
+"""Measurer: ingestion-freshness — counts datasets ingested within the metric's window.
+
+The window is ``metric_conf["time_window_sec"]``, applied uniformly to every dataset in
+the run: it is the freshness SLO the governance lead declares, not a quantity read off
+any per-dataset fact. A dataset counts toward ``ingested_in_time`` when its resolved
+ingestion evidence is no older than that window at measurement time.
 
 Every ``INGESTION.*`` event is booked on a source (``entity_type='ingestion_source'``)
 and never on the dataset, so the measurer resolves each dataset's owning source first
@@ -23,15 +28,7 @@ It is source-grained rather than producer-filtered on purpose: blacklisting
 observations there would leave every ``PASSIVE`` dataset without one of its own with
 no evidence at all.
 
-That same owning source supplies the window:
-
-- ACTIVE_CUSTOM_MANAGED / DATAHUB_MANAGED with a known schedule_tier
-  → SCHEDULE_TIER_SECONDS[tier] × LATE_INGESTION_FACTOR
-- PASSIVE → PASSIVE_SYNC_PERIOD_SEC × LATE_INGESTION_FACTOR
-- dataset mapped to no source, or source with no derivable schedule
-  → metric_conf["time_window_sec"]
-
-Spec: spec/feature/BACKEND.md §Metrics Service — Time windows
+Spec: spec/feature/BACKEND.md §Metrics Service — Measurement window, Ingestion evidence
 """
 
 from datetime import UTC, datetime, timedelta
@@ -42,20 +39,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.backend.ingestion.service import IngestionService, IngestionSourceRecord
 from src.backend.metrics.measurers.registry import register_measurer
 from src.shared.datahub.client import DataHubClient
-from src.shared.models.ingestion import Mode
-from src.shared.schedule import (
-    LATE_INGESTION_FACTOR,
-    PASSIVE_SYNC_PERIOD_SEC,
-    SCHEDULE_TIER_SECONDS,
-)
-
-_MANAGED_MODES = frozenset({
-    Mode.ACTIVE_CUSTOM_MANAGED.value,
-    Mode.DATAHUB_MANAGED.value,
-})
-_PASSIVE_MODES = frozenset({
-    Mode.PASSIVE.value,
-})
 
 
 @register_measurer("ingestion-freshness")
@@ -73,8 +56,8 @@ async def measure(
     datasets:
         Dataset URNs to measure.
     metric_conf:
-        Must contain ``time_window_sec`` (positive int) used as the fallback
-        window when no per-dataset source can be resolved.
+        Must contain ``time_window_sec`` (positive int) — the measurement window
+        applied to every dataset.
     datahub:
         DataHubClient — accepted for signature uniformity; this measurer stays
         DataSpoke-DB-side and makes no DataHub call.
@@ -87,10 +70,11 @@ async def measure(
     tuple[dict[str, float], dict]
         ``(values, breakdown)`` where values has keys ``total`` and
         ``ingested_in_time``; breakdown lists only stale datasets with
-        ``last_event_at``, ``time_window_sec``, ``window_source`` and
-        ``evidence_tier`` in detail.
+        ``last_event_at``, ``time_window_sec`` and ``evidence_tier`` in detail.
     """
-    default_window_sec = int(metric_conf["time_window_sec"])
+    window_sec = int(metric_conf["time_window_sec"])
+    now = datetime.now(tz=UTC)
+    cutoff = now - timedelta(seconds=window_sec)
     ingestion = IngestionService(datahub=datahub, db=db)
 
     # ── 1. Resolve each dataset's owning source ───────────────────────────────
@@ -99,17 +83,6 @@ async def measure(
     # and resolves a winning wrapper up to its regular parent. Every URN is a
     # key; the value is None when no source claims it.
     owners: dict[str, IngestionSourceRecord | None] = await ingestion.reverse_lookup_batch(datasets)
-
-    def _resolve_window(owner: IngestionSourceRecord | None) -> tuple[int, str]:
-        """Return (window_sec, window_source) for a dataset's owning source."""
-        if owner is None:
-            return default_window_sec, "default"
-        tier = owner.schedule_tier
-        if owner.mode in _MANAGED_MODES and tier and tier in SCHEDULE_TIER_SECONDS:
-            return SCHEDULE_TIER_SECONDS[tier] * LATE_INGESTION_FACTOR, f"managed:{tier}"
-        if owner.mode in _PASSIVE_MODES:
-            return PASSIVE_SYNC_PERIOD_SEC * LATE_INGESTION_FACTOR, "passive"
-        return default_window_sec, "default"
 
     # ── 2. Fetch both evidence tiers, keyed by owning source ──────────────────
     # Both helpers union each source's own events with its CLI wrappers' — DataHub
@@ -126,15 +99,12 @@ async def measure(
     )
 
     # ── 3. Evaluate freshness per dataset ─────────────────────────────────────
-    now = datetime.now(tz=UTC)
     total = len(datasets)
     ingested_in_time = 0
     stale_datasets: list[dict[str, Any]] = []
 
     for urn in datasets:
         owner = owners.get(urn)
-        window_sec, window_source = _resolve_window(owner)
-        cutoff = now - timedelta(seconds=window_sec)
 
         # Tier 1 (this dataset's own observations) preferred; tier 2 (any COMPLETE
         # on the owning source) only where tier 1 has nothing. evidence_tier names
@@ -160,7 +130,6 @@ async def measure(
                     "detail": {
                         "last_event_at": last_event_at.isoformat() if last_event_at else None,
                         "time_window_sec": window_sec,
-                        "window_source": window_source,
                         "evidence_tier": evidence_tier,
                     },
                 }

@@ -60,3 +60,4 @@
 - [Admin token inventory test seams](project_admin_token_inventory_test_seams.md) — nulls-last/id-tiebreak IS specced now; lean self item shape unpinned; badge sr-only span breaks Playwright toHaveText
 - [Plugin manifest test seams](project_plugin_manifest_test_seams.md) — #150 anchors; bin/ helpers + allowed-tools + spec-table drift closed by the fix pass; macOS case-rename trap
 - [Passive-observation test seams](project_passive_observation_test_seams.md) — new client method breaks hand-written spot stubs; spot-only predicates; shared catalog URNs make events read-backs estate-wide
+- [Metric measurement-window test seams](project_metric_measurement_window_test_seams.md) — exec-in-place pre-fix harness; the 5 real unit carriers; exact-cutoff divergence is mutual and pinned

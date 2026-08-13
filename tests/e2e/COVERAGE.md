@@ -104,7 +104,7 @@ uncovered view.
 
 | Route | UC test | Ground test |
 |---|---|---|
-| `/admin/conf` | `_smoke.spec.ts` (adminApi probe) | `ground/admin/conf.spec.ts` (form renders from GET conf; edit `validation_score_n_intervals` → Save → persist → revert); `ground/shell/admin-nav-*` (link visible to Admin, absent for editor/reader) |
+| `/admin/conf` | `_smoke.spec.ts` (adminApi probe) | `ground/admin/conf.spec.ts` (form renders from GET conf; edit `metagen_ontology_rag_node_k` → Save → persist → revert); `ground/shell/admin-nav-*` (link visible to Admin, absent for editor/reader) |
 | `/admin/users` | — | `ground/admin/users.spec.ts` (list; role change via Radix Select; delete via ⋯ ConfirmDialog); `ground/shell/admin-nav-hidden.reader.spec.ts` (Reader direct-nav → permission-denied) |
 | `/admin/peripherals` | — | `ground/admin/peripherals.spec.ts` (DataHub + Langfuse cards render from GET; non-secret fields prefilled, secret inputs blank; edit DataHub `default_env` → Save DataHub → persist confirmed via adminApi → revert; secret/`is_configured` untouched; **Kafka security sub-form** — progressive disclosure by `kafka_security_protocol`, `AWS_MSK_IAM` offered under `SASL_SSL` only, IAM swaps credentials for `kafka_aws_region` + the deploy-time-IAM note, all save-free; **two labelled health badges** — the Event stream badge's `data-status` mirrors `GET /admin/peripherals/datahub` `health.status` and the Metadata API badge's mirrors `api_health.status`, each with its own conditional `last_error` detail, so a conflated render of one row into both badges fails whenever the live rows disagree) |
 | `/profile` | — | `ground/account/profile.spec.ts` (email/role locked; change name → Save → confirm via /auth/me → revert) |

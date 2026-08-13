@@ -12,9 +12,9 @@ User story:
 Contract exercised here:
   - Metric creation uses POST /spoke/governance/metric with metric_id in the body (→ 201).
   - PUT /{id}/attr/conf is replace-only (→ 200 on existing, 404 METRIC_NOT_FOUND when absent).
-  - metric_conf.time_window_sec is the fallback window (factory default 172800);
-    per-dataset windows are derived by the server — api-wired does not assert
-    exact window counts (real-pipeline timing is nondeterministic).
+  - metric_conf.time_window_sec is the measurement window (factory default 172800),
+    applied uniformly to every dataset the metric scans — api-wired does not assert
+    exact in-window counts (real-pipeline timing is nondeterministic).
 """
 
 # spec: USE_CASE_en.md §UC5 §Imazon Example
@@ -51,8 +51,9 @@ async def test_uc5_governance_imazon_example(
     # The three built-in active metric types — created DEV-scoped, daily, enabled.
     # spec: USE_CASE_en.md §UC5 §Built-in active metric types
     #
-    # metric_conf.time_window_sec=172800 is the fallback window (factory default).
-    # spec: USE_CASE_en.md §UC5 §Built-in active metric types — factory default 172800.
+    # metric_conf.time_window_sec=172800 is the measurement window (factory default).
+    # spec: USE_CASE_en.md §UC5 §Built-in active metric types — "**the** measurement
+    # window (positive int seconds, factory default 172800)".
     metrics_to_create = [
         {
             "metric_id": "ingestion-freshness-dev",
@@ -265,8 +266,10 @@ async def test_uc5_governance_imazon_example(
         # with from=2026-04-19T00:00:00Z&to=2026-04-25T23:59:59Z (one week span).
         # spec: USE_CASE_en.md §UC5 §Imazon Example
         #
-        # No exact window-count assertions — per-dataset window math is nondeterministic
-        # against real-pipeline timing and is fully covered by the spot suite.
+        # No exact in-window count assertions — how much of the estate happens to fall
+        # inside the declared window is nondeterministic against real-pipeline timing.
+        # The windowing contract itself is covered by the spot suite, which seeds
+        # controlled timestamps.
         # spec: TESTING.md §Spot vs Api-Wired Integration Tests.
         now = datetime.now(tz=UTC)
         from_ts = (now - timedelta(days=7)).isoformat()

@@ -6,10 +6,7 @@ Concerns covered:
    the service layer is reached).
 2. Out-of-bounds float raises ValidationError.
 3. At-boundary values (minimum and maximum) are accepted.
-4. Partial payloads (None / omitted fields) are accepted — schema must not
-   require all 15 fields.
-5. Exact boundary: validation_score_n_intervals=0 is rejected (ge=1); =1 is
-   accepted.
+4. Partial payloads (None / omitted fields) are accepted — no field is required.
 
 Spec traceability:
 - spec/API.md §Admin (/admin) — PATCH numeric fields are bound-validated (out-of-range → 422);
@@ -22,7 +19,6 @@ Spec traceability:
     metagen_debate_rag_k: ge=0, le=20
     metagen_confidence_threshold: ge=0.0, le=1.0
     metagen_ontology_rag_{node,edge,triple}_k: ge=0, le=20
-    validation_score_n_intervals: ge=1
 - spec/API.md §Admin (/admin) — out-of-range values rejected (422); PATCH is partial
   (accepts None / partial). RuntimeConfPatchRequest raises pydantic ValidationError.
 - src/api/schemas/admin.py RuntimeConfPatchRequest
@@ -225,58 +221,23 @@ class TestMetagenConfidenceThresholdBounds:
         assert req.metagen_confidence_threshold == 0.7
 
 
-# ── 3. validation_score_n_intervals boundary ──────────────────────────────────
-
-
-class TestValidationScoreNIntervalsBounds:
-    """validation_score_n_intervals: ge=1 (no upper bound).
-
-    Spec: API.md §Admin (/admin) — out-of-range rejected (422); bounds in
-    src/api/schemas/admin.py (validation_score_n_intervals=0 rejected).
-    """
-
-    def test_zero_rejected(self) -> None:
-        _expect_invalid(validation_score_n_intervals=0)
-
-    def test_negative_rejected(self) -> None:
-        _expect_invalid(validation_score_n_intervals=-1)
-
-    def test_at_minimum_one_accepted(self) -> None:
-        req = _expect_valid(validation_score_n_intervals=1)
-        assert req.validation_score_n_intervals == 1
-
-    def test_large_value_accepted(self) -> None:
-        req = _expect_valid(validation_score_n_intervals=100)
-        assert req.validation_score_n_intervals == 100
-
-
-# ── 4. Partial payloads (None / omitted) ──────────────────────────────────────
+# ── 3. Partial payloads (None / omitted) ──────────────────────────────────────
 
 
 def test_empty_patch_request_is_valid() -> None:
     """An empty RuntimeConfPatchRequest (all fields omitted) is valid.
 
     Spec: API.md §Admin (/admin) — PATCH is partial (accepts None / partial).
-    All 16 fields are optional; callers supply only the fields to update.
+    Every field is optional; callers supply only the fields to update.
     """
     req = RuntimeConfPatchRequest()
-    # All fields default to None (excluded from patch set).
-    assert req.llm_provider is None
-    assert req.llm_model is None
-    assert req.llm_api_key is None
-    assert req.ontogen_llm_max_iterations is None
-    assert req.ontogen_debate_max_turns is None
-    assert req.ontogen_debate_rag_k is None
-    assert req.ontogen_debate_reviewer_model is None
-    assert req.metagen_llm_max_iterations is None
-    assert req.metagen_debate_max_turns is None
-    assert req.metagen_debate_rag_k is None
-    assert req.metagen_debate_reviewer_model is None
-    assert req.metagen_confidence_threshold is None
-    assert req.metagen_ontology_rag_node_k is None
-    assert req.metagen_ontology_rag_edge_k is None
-    assert req.metagen_ontology_rag_triple_k is None
-    assert req.validation_score_n_intervals is None
+    # Every declared field defaults to None (excluded from the patch set). The dump
+    # is asserted wholesale rather than field by field so a newly added field with a
+    # non-None default cannot slip in unnoticed.
+    assert req.model_dump() == dict.fromkeys(RuntimeConfPatchRequest.model_fields), (
+        "every RuntimeConfPatchRequest field must default to None so an empty PATCH "
+        "changes nothing. Spec: API.md §Admin (/admin) — PATCH is partial."
+    )
 
 
 def test_single_field_patch_is_valid() -> None:

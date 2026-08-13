@@ -2,10 +2,18 @@
  * Ground spec: /admin/conf page — narrow UI-flow tests.
  *
  * Concern: the runtime-configuration form renders, is populated from
- * GET /admin/conf (assert two known numeric fields show their current values),
- * and supports a save round-trip on ONE benign numeric field
- * (validation_score_n_intervals). The field is edited → Save → persisted value
+ * GET /admin/conf (assert two known fields show their current values),
+ * and supports a save round-trip on ONE numeric field
+ * (metagen_ontology_rag_node_k). The field is edited → Save → persisted value
  * confirmed via adminApi GET → reverted to original.
+ *
+ * Why that field is safe to write here: it is the MetaGen ontology-RAG top-K, read
+ * only on the LLM grounding path, and this suite runs against the dev profile with
+ * stub_llm_client=true (seeded by helm-charts/bin/post-install/seed-runtime-config.sh),
+ * so no run in the E2E session consumes it and its value has no observable effect on
+ * any other spec. It is also bound-safe (0–20, both the original and the written value
+ * are inside), always differs from whatever is loaded, and is restored twice — inline
+ * at the end of the test and again in afterAll if the test aborts first.
  *
  * CRITICAL: do NOT touch stub_* toggles (other tests depend on stub mode) and do
  * NOT change the LLM API key. Any edit is reverted before the test ends.
@@ -23,7 +31,7 @@ import { test, expect } from "../../fixtures/index";
 interface RuntimeConf {
   llm_provider: string;
   llm_model: string;
-  validation_score_n_intervals: number;
+  metagen_ontology_rag_node_k: number;
   ontogen_llm_max_iterations: number;
   stub_redis_client: boolean;
   stub_llm_client: boolean;
@@ -35,23 +43,25 @@ interface RuntimeConf {
 // ── Module state ──────────────────────────────────────────────────────────────
 
 /** Original value of the field we edit; used in afterAll for revert. */
-let originalIntervals: number | null = null;
+let originalNodeK: number | null = null;
 
 // ── Cleanup ───────────────────────────────────────────────────────────────────
 
 test.afterAll(async ({ adminApi }) => {
-  // Revert validation_score_n_intervals to its original value if we changed it.
-  if (originalIntervals !== null) {
+  // Revert metagen_ontology_rag_node_k to its original value if we changed it.
+  if (originalNodeK !== null) {
     await adminApi.patch("/api/v1/admin/conf", {
-      data: { validation_score_n_intervals: originalIntervals },
+      data: { metagen_ontology_rag_node_k: originalNodeK },
     });
   }
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Test 1 — /admin/conf renders the form with values from GET /admin/conf
-// spec: FRONTEND_BASIC.md §Configurations — GET /admin/conf populates form fields;
-//   field groups: LLM, OntoGen, MetaGen, Validation, Stubs, Auth.
+// spec: FRONTEND_BASIC.md §Configurations — GET /admin/conf populates form fields; the
+//   sketch groups them as LLM / OntoGen / MetaGen / Stubs / Auth.
+// spec: admin/conf/page.tsx — the rendered CardTitle strings for those groups are
+//   "LLM", "Ontology Generation", "Metadata Generation", "Dependency stubs", "Auth".
 // ─────────────────────────────────────────────────────────────────────────────
 
 test("/admin/conf — form renders with current config values from GET /admin/conf", async ({
@@ -87,12 +97,12 @@ test("/admin/conf — form renders with current config values from GET /admin/co
   const providerValue = await providerInput.inputValue();
   expect(providerValue, "llm_provider must be populated from GET /admin/conf").toBe(conf.llm_provider);
 
-  // -- UI assertion: validation_score_n_intervals shows current value --
-  // spec: admin/conf/page.tsx — Input id="validation_score_n_intervals" type="number"
-  const intervalsInput = page.locator("#validation_score_n_intervals");
-  await expect(intervalsInput).toBeVisible({ timeout: 10_000 });
-  const intervalsValue = await intervalsInput.inputValue();
-  expect(Number(intervalsValue)).toBe(conf.validation_score_n_intervals);
+  // -- UI assertion: metagen_ontology_rag_node_k shows current value --
+  // spec: admin/conf/page.tsx — Input id="metagen_ontology_rag_node_k" type="number"
+  const nodeKInput = page.locator("#metagen_ontology_rag_node_k");
+  await expect(nodeKInput).toBeVisible({ timeout: 10_000 });
+  const nodeKValue = await nodeKInput.inputValue();
+  expect(Number(nodeKValue)).toBe(conf.metagen_ontology_rag_node_k);
 
   // -- UI assertion: "Save changes" submit button visible --
   // spec: admin/conf/page.tsx — Button type="submit" "Save changes"
@@ -100,13 +110,13 @@ test("/admin/conf — form renders with current config values from GET /admin/co
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Test 2 — Edit validation_score_n_intervals → Save → confirm persisted → revert
+// Test 2 — Edit metagen_ontology_rag_node_k → Save → confirm persisted → revert
 // spec: FRONTEND_BASIC.md §Configurations — PATCH /admin/conf (partial); save shows
 //   "Saved · updated <timestamp>" text; reverted afterward.
 // CRITICAL: stub_* fields are NOT touched.
 // ─────────────────────────────────────────────────────────────────────────────
 
-test("/admin/conf — edit validation_score_n_intervals → Save → persisted → reverted", async ({
+test("/admin/conf — edit metagen_ontology_rag_node_k → Save → persisted → reverted", async ({
   page,
   adminApi,
 }) => {
@@ -114,11 +124,11 @@ test("/admin/conf — edit validation_score_n_intervals → Save → persisted �
   const preResp = await adminApi.get("/api/v1/admin/conf");
   expect(preResp.status()).toBe(200);
   const pre = (await preResp.json()) as RuntimeConf;
-  originalIntervals = pre.validation_score_n_intervals;
+  originalNodeK = pre.metagen_ontology_rag_node_k;
 
-  // Choose a value that is different from the current value (within valid range ≥ 1).
-  // spec: FRONTEND_BASIC.md §Configurations — validation_score_n_intervals: integer ≥ 1
-  const NEW_VALUE = originalIntervals === 3 ? 4 : 3;
+  // Choose a value that is different from the current value (within valid range 0–20).
+  // spec: FRONTEND_BASIC.md §Configurations — "`*_rag_k` and `metagen_ontology_rag_*_k` 0–20"
+  const NEW_VALUE = originalNodeK === 8 ? 9 : 8;
 
   // Navigate to the page.
   await page.goto("/admin/conf");
@@ -128,14 +138,14 @@ test("/admin/conf — edit validation_score_n_intervals → Save → persisted �
   ).toBeVisible({ timeout: 15_000 });
 
   // Wait for form to be populated (useEffect fires after GET /admin/conf settles).
-  const intervalsInput = page.locator("#validation_score_n_intervals");
-  await expect(intervalsInput).toBeVisible({ timeout: 15_000 });
+  const nodeKInput = page.locator("#metagen_ontology_rag_node_k");
+  await expect(nodeKInput).toBeVisible({ timeout: 15_000 });
   // Wait until the field reflects the real conf value (not the RHF defaultValue).
-  await expect(intervalsInput).toHaveValue(String(originalIntervals), { timeout: 10_000 });
+  await expect(nodeKInput).toHaveValue(String(originalNodeK), { timeout: 10_000 });
 
   // -- UI gesture: clear and fill the new value --
-  // spec: admin/conf/page.tsx — Input id="validation_score_n_intervals" type="number"
-  await intervalsInput.fill(String(NEW_VALUE));
+  // spec: admin/conf/page.tsx — Input id="metagen_ontology_rag_node_k" type="number"
+  await nodeKInput.fill(String(NEW_VALUE));
 
   // -- UI gesture: click "Save changes" --
   // spec: admin/conf/page.tsx — Button type="submit" "Save changes"
@@ -153,14 +163,14 @@ test("/admin/conf — edit validation_score_n_intervals → Save → persisted �
   await expect(page.getByText(/Saved · updated/)).toBeVisible({ timeout: 10_000 });
 
   // -- UI assertion: the field now shows the new value --
-  await expect(intervalsInput).toHaveValue(String(NEW_VALUE), { timeout: 5_000 });
+  await expect(nodeKInput).toHaveValue(String(NEW_VALUE), { timeout: 5_000 });
 
   // -- Backend probe (dual confirmation): GET /admin/conf → new value persisted --
   // spec: FRONTEND_BASIC.md §Configurations — PATCH writes the value; GET reflects it.
   const afterResp = await adminApi.get("/api/v1/admin/conf");
   expect(afterResp.status()).toBe(200);
   const after = (await afterResp.json()) as RuntimeConf;
-  expect(after.validation_score_n_intervals).toBe(NEW_VALUE);
+  expect(after.metagen_ontology_rag_node_k).toBe(NEW_VALUE);
 
   // CRITICAL: stub_* fields must remain unchanged.
   // They are dev-env-wide settings owned by the profile seed
@@ -180,11 +190,11 @@ test("/admin/conf — edit validation_score_n_intervals → Save → persisted �
   // Revert the field via adminApi (mirrors the afterAll, but ensures revert even if
   // the next test runs immediately after).
   const revertResp = await adminApi.patch("/api/v1/admin/conf", {
-    data: { validation_score_n_intervals: originalIntervals },
+    data: { metagen_ontology_rag_node_k: originalNodeK },
   });
   expect(revertResp.status()).toBe(200);
   const reverted = (await revertResp.json()) as RuntimeConf;
-  expect(reverted.validation_score_n_intervals).toBe(originalIntervals);
+  expect(reverted.metagen_ontology_rag_node_k).toBe(originalNodeK);
   // Clear the afterAll guard since we've already reverted.
-  originalIntervals = null;
+  originalNodeK = null;
 });

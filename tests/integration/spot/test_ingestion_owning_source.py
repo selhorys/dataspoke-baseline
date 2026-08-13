@@ -16,7 +16,7 @@ spec: TESTING.md §Spot integration tests §Boundary — "a spot test may call d
 Python directly (e.g., a backend service or a workflow stub)".
 spec: feedback_spot_vs_api_wired_principle — spot for raw-SQL/ORM-seeded state.
 
-Spec: spec/feature/BACKEND.md §Metrics Service §Time windows —
+Spec: spec/feature/BACKEND.md §Metrics Service §Ingestion evidence —
   - "Owning source is what IngestionService.reverse_lookup returns — or, over a whole
     dataset list at once, its batched single-winner sibling reverse_lookup_batch,
     which the measurer calls and which resolves the identical rule in two queries
@@ -186,7 +186,7 @@ async def test_batch_agrees_with_reverse_lookup_on_a_single_urn(
     covering sources at three different derivations, so a winner picked by anything
     other than the derivation rank would differ.
 
-    spec: feature/BACKEND.md §Metrics Service §Time windows — reverse_lookup_batch is
+    spec: feature/BACKEND.md §Metrics Service §Ingestion evidence — reverse_lookup_batch is
     the "batched single-winner sibling" of reverse_lookup which "resolves the identical
     rule in two queries rather than one round trip per URN".
     """
@@ -218,13 +218,13 @@ async def test_batch_agrees_with_reverse_lookup_on_a_single_urn(
         )
         assert single.id == emitted, (
             f"the 'emitted' source must win the derivation rank; got {single.id}. "
-            "spec: feature/BACKEND.md §Metrics Service §Time windows."
+            "spec: feature/BACKEND.md §Metrics Service §Ingestion evidence."
         )
         assert batched[urn] is not None
         assert batched[urn].id == single.id, (
             f"batch and single reverse lookup must agree on the owning source: "
             f"batch={batched[urn].id}, single={single.id}. "
-            "spec: feature/BACKEND.md §Metrics Service §Time windows — the batch "
+            "spec: feature/BACKEND.md §Metrics Service §Ingestion evidence — the batch "
             "'resolves the identical rule'."
         )
         assert batched[urn].model_dump() == single.model_dump(), (
@@ -244,9 +244,13 @@ async def test_every_input_urn_is_a_key_and_unclaimed_urns_map_to_none(
     same call. Callers read every URN unconditionally, so a missing key would be a
     ``KeyError`` in the measurer rather than a "no owner" reading.
 
-    spec: feature/BACKEND.md §Metrics Service §Time windows — "a dataset mapped to no
-    source … → metric_conf.time_window_sec", which the measurer can only apply if the
-    unmapped URN comes back as a key with no owner.
+    spec: feature/BACKEND.md §Metrics Service §Ingestion evidence — the owning source is
+    what ``reverse_lookup_batch`` returns, "which the measurer calls and which resolves
+    the identical rule in two queries rather than one round trip per URN"; a dataset no
+    source claims simply has no owning source, which the measurer can only read as such
+    if the unclaimed URN comes back as a key with no owner.
+    spec: feature/BACKEND.md §Metrics Service §Breakdown format — such a dataset is failed
+    because its evidence is "absent on both tiers".
     """
     claimed = _urn("claimed")
     unclaimed = _urn("unclaimed")
@@ -270,7 +274,7 @@ async def test_every_input_urn_is_a_key_and_unclaimed_urns_map_to_none(
         )
         assert result[unclaimed] is None, (
             "a URN no source claims must map to None, not be omitted. "
-            "spec: feature/BACKEND.md §Metrics Service §Time windows."
+            "spec: feature/BACKEND.md §Metrics Service §Ingestion evidence."
         )
     finally:
         await _cleanup(async_session, source_ids, [claimed, unclaimed])
@@ -291,7 +295,7 @@ async def test_a_wrapper_outranking_its_parent_still_resolves_up_to_the_parent(
     The parent carries schedule_tier='daily' and the wrapper none, so the returned
     record's ``schedule_tier`` independently confirms which row came back.
 
-    spec: feature/BACKEND.md §Metrics Service §Time windows — "if the sort winner is
+    spec: feature/BACKEND.md §Metrics Service §Ingestion evidence — "if the sort winner is
     itself a wrapper it resolves up to its regular parent — a wrapper is never the
     owning source. The second step is not the tie-break restated: it also fires when a
     wrapper claims a dataset at a higher derivation rank than its parent, where the
@@ -325,7 +329,7 @@ async def test_a_wrapper_outranking_its_parent_still_resolves_up_to_the_parent(
         assert owner.id == parent, (
             f"the winning wrapper must resolve up to its regular parent; got {owner.id} "
             f"(wrapper={wrapper}, parent={parent}). "
-            "spec: feature/BACKEND.md §Metrics Service §Time windows."
+            "spec: feature/BACKEND.md §Metrics Service §Ingestion evidence."
         )
         assert owner.parent_source_id is None, (
             f"the owning source is always a regular source; got parent_source_id="
@@ -333,8 +337,9 @@ async def test_a_wrapper_outranking_its_parent_still_resolves_up_to_the_parent(
             "§ingestion_source — a wrapper is a row with parent_source_id IS NOT NULL."
         )
         assert owner.schedule_tier == "daily", (
-            "the returned record must be the parent's row, whose tier is the one the "
-            f"freshness window is derived from; got {owner.schedule_tier!r}."
+            "row identity: only the parent carries schedule_tier='daily', so reading it "
+            "back proves the parent's row was returned rather than the wrapper's; got "
+            f"{owner.schedule_tier!r}."
         )
 
         # And the single-URN sibling agrees, so the measurer and the per-dataset event
@@ -356,7 +361,7 @@ async def test_a_regular_parent_beats_its_wrapper_at_equal_derivation_rank(
     wrapper term and fell through to the ``last_seen_at`` tie-break would pick the
     wrapper.
 
-    spec: feature/BACKEND.md §Metrics Service §Time windows — "at equal rank a regular
+    spec: feature/BACKEND.md §Metrics Service §Ingestion evidence — "at equal rank a regular
     parent beats its CLI wrapper; remaining ties go to the most recent last_seen_at."
     """
     urn = _urn("parent-wins-tie")
@@ -394,7 +399,7 @@ async def test_a_regular_parent_beats_its_wrapper_at_equal_derivation_rank(
         assert owner.id == parent, (
             f"at equal derivation rank the regular parent must beat its wrapper even "
             f"when the wrapper's mapping is newer; got {owner.id}. "
-            "spec: feature/BACKEND.md §Metrics Service §Time windows."
+            "spec: feature/BACKEND.md §Metrics Service §Ingestion evidence."
         )
     finally:
         await _cleanup(async_session, source_ids, [urn])
@@ -417,14 +422,14 @@ async def test_the_most_recent_mapping_wins_a_tie_between_two_regular_sources(
     ``last_seen_at`` term altogether would keep the input order and return the older
     source. Inverting the term returns the older source as well. Each source carries a
     distinct ``schedule_tier``, so the returned record independently names which row came
-    back — and that is the field the freshness measurer derives its window from, which is
-    what makes this term load-bearing rather than cosmetic.
+    back without relying on the id comparison alone. Which source wins is load-bearing
+    because the winner's event feed is the evidence the freshness measurer reads.
 
     Both call sites of the shared rank are asserted, because they must not disagree about
     who owns a dataset: ``reverse_lookup_batch`` (what the measurer calls) and
     ``reverse_lookup`` (what the per-dataset ingestion views call).
 
-    spec: feature/BACKEND.md §Metrics Service §Time windows — "derivation rank emitted >
+    spec: feature/BACKEND.md §Metrics Service §Ingestion evidence — "derivation rank emitted >
     pipeline_name > matched; at equal rank a regular parent beats its CLI wrapper;
     remaining ties go to the most recent last_seen_at."
     """
@@ -466,16 +471,17 @@ async def test_the_most_recent_mapping_wins_a_tie_between_two_regular_sources(
         assert batched.id == newer, (
             f"the most recently seen mapping must win a tie between two regular sources; "
             f"got {batched.id} (older={older}, newer={newer}). "
-            "spec: feature/BACKEND.md §Metrics Service §Time windows — 'remaining ties go "
+            "spec: feature/BACKEND.md §Metrics Service §Ingestion evidence — 'remaining ties go "
             "to the most recent last_seen_at'."
         )
         assert batched.schedule_tier == "hourly", (
-            "the returned record must be the newer source's row, whose tier is the one "
-            f"the freshness window is derived from; got {batched.schedule_tier!r}."
+            "row identity: only the newer source carries schedule_tier='hourly', so "
+            "reading it back proves the newer source's row was returned rather than the "
+            f"older one's; got {batched.schedule_tier!r}."
         )
         assert single.id == newer, (
             f"the single-URN sibling must break the tie the same way; got {single.id}. "
-            "spec: feature/BACKEND.md §Metrics Service §Time windows — the batch "
+            "spec: feature/BACKEND.md §Metrics Service §Ingestion evidence — the batch "
             "'resolves the identical rule'."
         )
     finally:
@@ -493,7 +499,7 @@ async def test_batch_resolves_each_urn_independently(
     asymmetry: URN A's owner claims it at ``matched`` (the weakest rank) while URN B's
     claims it at ``emitted``, and A's owner must still be A's.
 
-    spec: feature/BACKEND.md §Metrics Service §Time windows — the resolution is "a sort
+    spec: feature/BACKEND.md §Metrics Service §Ingestion evidence — the resolution is "a sort
     over *the dataset's* covering sources".
     """
     urn_a = _urn("independent-a")
@@ -551,7 +557,7 @@ async def test_a_run_booked_only_on_a_wrapper_is_attributed_to_its_owner(
     wrapper is deliberately absent from the requested id list: the caller knows only
     the owning source.
 
-    spec: feature/BACKEND.md §Metrics Service §Time windows — "The owning source's
+    spec: feature/BACKEND.md §Metrics Service §Ingestion evidence — "The owning source's
     CLI-wrapper runs count as its own … a source's events are the union of its own and
     its wrappers'."
     """
@@ -577,7 +583,7 @@ async def test_a_run_booked_only_on_a_wrapper_is_attributed_to_its_owner(
         assert parent in latest, (
             "a run booked on the CLI wrapper must surface under the owning parent's id; "
             f"got keys {sorted(latest)}. spec: feature/BACKEND.md §Metrics Service "
-            "§Time windows."
+            "§Ingestion evidence."
         )
         assert latest[parent] == wrapper_run
         assert wrapper not in latest, (
@@ -598,7 +604,7 @@ async def test_newest_run_across_the_source_and_its_wrapper_wins(
     the parent's own event would return the older timestamp. The parent's own row is
     what makes this a *union* test rather than a repeat of the wrapper-only case.
 
-    spec: feature/BACKEND.md §Metrics Service §Time windows — "a source's events are
+    spec: feature/BACKEND.md §Metrics Service §Ingestion evidence — "a source's events are
     the union of its own and its wrappers'."
     """
     service = IngestionService(datahub=None, db=async_session)  # type: ignore[arg-type]
@@ -632,7 +638,7 @@ async def test_newest_run_across_the_source_and_its_wrapper_wins(
         assert latest.get(parent) == newer_on_wrapper, (
             f"the newest run across the source and its wrappers must be returned; got "
             f"{latest.get(parent)!r} (parent's own run was {older_on_parent!r}). "
-            "spec: feature/BACKEND.md §Metrics Service §Time windows."
+            "spec: feature/BACKEND.md §Metrics Service §Ingestion evidence."
         )
     finally:
         await _cleanup(async_session, source_ids, [])
@@ -654,10 +660,10 @@ async def test_only_completed_source_keyed_runs_are_read(
         entity_type predicate
 
     spec: feature/BACKEND.md §Metrics Service §Breakdown format — a dataset fails when
-    "the resolved ingestion evidence (tier 1 or tier 2) is older than the dataset's "
-    "freshness window, or absent on both tiers",
+    "the resolved ingestion evidence (tier 1 or tier 2 — see **Ingestion evidence**
+    above) is older than ``metric_conf.time_window_sec``, or absent on both tiers",
     so a failed run must not refresh it.
-    spec: feature/BACKEND.md §Metrics Service §Time windows — runs are booked with
+    spec: feature/BACKEND.md §Metrics Service §Ingestion evidence — runs are booked with
     entity_type="ingestion_source".
     spec: TESTING.md §Assertion Discipline — "Filter/query/matching tests seed both
     sides."
@@ -688,7 +694,7 @@ async def test_only_completed_source_keyed_runs_are_read(
             f"only the source-keyed INGESTION.COMPLETE may be read; got "
             f"{latest.get(source)!r}, expected {completed!r}. A newer INGESTION.FAIL or "
             "a dataset-keyed row must not refresh the reading. "
-            "spec: feature/BACKEND.md §Metrics Service §Time windows."
+            "spec: feature/BACKEND.md §Metrics Service §Ingestion evidence."
         )
     finally:
         await _cleanup(async_session, source_ids, [])

@@ -7,7 +7,7 @@ Routes under test:
 
 Concerns covered:
 
-1. GET /admin/conf on a fresh (or reset) DB returns all 15 fields at factory
+1. GET /admin/conf on a fresh (or reset) DB returns all 14 behavioral tunables at factory
    defaults, includes resp_time and updated_at, and contains NO secret field.
 
 2. PATCH /admin/conf with a partial body returns 200 with updated values;
@@ -31,14 +31,19 @@ PATCH so later tests start from a known baseline.  The cache is automatically
 warmed with the restored values by that cleanup PATCH.
 
 Spec traceability:
-- API.md §Admin (/admin) — all concerns listed above.
-- src/api/schemas/admin.py RuntimeConfResponse / config_service.py RUNTIME_CONFIG_DEFAULTS — factory
-defaults, 15 fields, auth rules,
-  no-secret-in-response, updated_at, resp_time invariants.
+- spec/API.md §Admin (/admin) — the /admin/conf surface: behavioral tunables +
+  updated_at, partial PATCH, bound-validated numerics (out-of-range → 422),
+  llm_api_key masked on GET. Defaults are explicitly left to impl there.
+- spec/feature/BACKEND_LLM.md §Runtime configuration — the Field/Default/Bounds/Owner
+  table whose 14 rows are the behavioral tunables _EXPECTED_DEFAULTS pins.
 - spec/API.md §Access Control — Admin role required for /admin/*
 - spec/API.md §Internal Admin (/internal/admin) — X-Internal-Token for /internal/…
-- src/api/schemas/admin.py RuntimeConfResponse, RuntimeConfPatchRequest bounds.
-- src/backend/admin/config_service.py RUNTIME_CONFIG_DEFAULTS.
+- spec/API.md §Standard Response Envelope — resp_time on every response.
+
+Impl traceability (the values and exact bounds the spec delegates to code):
+- src/backend/admin/config_service.py RUNTIME_CONFIG_DEFAULTS — factory default values.
+- src/api/schemas/admin.py RuntimeConfResponse / RuntimeConfPatchRequest — response
+  shape and the numeric bounds enforced as 422.
 """
 
 import httpx
@@ -75,7 +80,6 @@ _EXPECTED_DEFAULTS: dict[str, object] = {
     "metagen_ontology_rag_node_k": 5,
     "metagen_ontology_rag_edge_k": 5,
     "metagen_ontology_rag_triple_k": 5,
-    "validation_score_n_intervals": 3,
 }
 
 
@@ -103,7 +107,6 @@ async def _reset_to_defaults(api_client: httpx.AsyncClient, admin_headers: dict)
             "metagen_ontology_rag_node_k": 5,
             "metagen_ontology_rag_edge_k": 5,
             "metagen_ontology_rag_triple_k": 5,
-            "validation_score_n_intervals": 3,
         },
     )
     assert resp.status_code == 200, f"Reset-to-defaults PATCH failed: {resp.text}"
@@ -117,15 +120,18 @@ async def test_get_conf_returns_factory_defaults(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """GET /admin/conf returns all 15 fields at factory defaults.
+    """GET /admin/conf returns all 14 behavioral tunables at factory defaults.
 
     After reset to factory defaults the response values MUST match the
     documented factory defaults exactly.
 
-    spec: API.md §Admin (/admin) — 'GET on a fresh DB returns all 15 fields at
-    factory defaults, includes resp_time, contains NO llm_api_key / no secret key.'
-    spec: src/api/schemas/admin.py RuntimeConfResponse / config_service.py RUNTIME_CONFIG_DEFAULTS —
-    factory defaults section.
+    spec: API.md §Admin (/admin) — `GET /admin/conf` returns "runtime config (behavioral
+    tunables + `updated_at`)"; the surface "is seeded with factory defaults and persisted
+    in the `runtime_config` table … defaults live in impl, not here".
+    spec: BACKEND_LLM.md §Runtime configuration — the Field/Default/Bounds/Owner table
+    enumerates the behavioral tunables; its 14 rows are the set _EXPECTED_DEFAULTS pins.
+    impl: src/backend/admin/config_service.py RUNTIME_CONFIG_DEFAULTS — the default
+    *values*, which API.md explicitly leaves to impl.
     """
     # Drive to known state via PATCH (cache-safe).
     await _reset_to_defaults(api_client, admin_headers)
@@ -151,11 +157,11 @@ async def test_get_conf_includes_resp_time_and_updated_at(
 ) -> None:
     """GET /admin/conf includes resp_time and updated_at in the response.
 
-    spec: API.md §Admin (/admin) — 'includes resp_time'.
-    spec: src/api/schemas/admin.py RuntimeConfResponse / config_service.py RUNTIME_CONFIG_DEFAULTS —
-    'RuntimeConfResponse: 15 fields +
-    updated_at + resp_time'.
+    spec: API.md §Admin (/admin) — `GET /admin/conf` returns "runtime config (behavioral
+    tunables + `updated_at`)".
     spec: API.md §Standard Response Envelope — resp_time on every response.
+    impl: src/api/schemas/admin.py RuntimeConfResponse — carries the tunables plus
+    `updated_at`, and inherits `resp_time` from SingleResponse.
     """
     resp = await api_client.get(_ADMIN_CONF, headers=admin_headers)
     assert resp.status_code == 200
@@ -434,18 +440,18 @@ async def test_patch_conf_only_updates_supplied_fields(
         await api_client.patch(
             _ADMIN_CONF,
             headers=admin_headers,
-            json={"validation_score_n_intervals": 5},
+            json={"metagen_ontology_rag_node_k": 7},
         )
 
         get_resp = await api_client.get(_ADMIN_CONF, headers=admin_headers)
         body = get_resp.json()
 
         # Patched field updated.
-        assert body["validation_score_n_intervals"] == 5
+        assert body["metagen_ontology_rag_node_k"] == 7
 
         # All other fields retain factory defaults.
         for field, expected in _EXPECTED_DEFAULTS.items():
-            if field == "validation_score_n_intervals":
+            if field == "metagen_ontology_rag_node_k":
                 continue
             assert body[field] == expected, (
                 f"Field '{field}' must remain at factory default {expected!r} after partial "
@@ -524,28 +530,6 @@ async def test_patch_conf_confidence_threshold_too_high_returns_422(
     )
     assert resp.status_code == 422, (
         f"metagen_confidence_threshold=1.5 exceeds le=1.0; expected 422 but got "
-        f"{resp.status_code}: {resp.text}"
-    )
-
-
-@pytest.mark.asyncio
-async def test_patch_conf_validation_intervals_zero_returns_422(
-    api_client: httpx.AsyncClient,
-    admin_headers: dict[str, str],
-) -> None:
-    """PATCH /admin/conf with validation_score_n_intervals=0 returns 422.
-
-    spec: src/api/schemas/admin.py RuntimeConfPatchRequest — 'validation_score_n_intervals=0
-    rejected'.
-    spec: src/api/schemas/admin.py RuntimeConfPatchRequest — ge=1.
-    """
-    resp = await api_client.patch(
-        _ADMIN_CONF,
-        headers=admin_headers,
-        json={"validation_score_n_intervals": 0},
-    )
-    assert resp.status_code == 422, (
-        f"validation_score_n_intervals=0 violates ge=1; expected 422 but got "
         f"{resp.status_code}: {resp.text}"
     )
 

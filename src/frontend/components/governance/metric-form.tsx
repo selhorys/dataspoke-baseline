@@ -300,7 +300,7 @@ export function MetricForm({
             htmlFor="time-window-sec"
             error={errors.time_window_sec?.message}
             required
-            hint="Fallback freshness window in seconds (positive integer)"
+            hint="Measurement window in seconds, applied to every dataset (positive integer)"
           >
             <Input
               id="time-window-sec"

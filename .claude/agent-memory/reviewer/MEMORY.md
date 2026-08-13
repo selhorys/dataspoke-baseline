@@ -19,7 +19,7 @@
 - [Helm chart gotchas x4](project_helm_null_and_replicas_gotchas.md) — redis STS `-replicas`; `key: null` varies by depth; db-migrate is POST-install; `"-"` sentinel honoured by only some keys
 - [Verify install.sh prod-branch claims](feedback_verify_install_branch_claims.md) — read the whole prod elif past the last step banner; dev's `_has_component` gating doesn't apply
 - [peripheral_config cache x 2 replicas](project_peripheral_cache_multireplica.md) — 30s process cache + replicaCount 2 makes read-modify-write counters silently no-op
-- [Grep old-rule prose in consumers](feedback_grep_old_rule_prose_in_consumers.md) — deleting a precedence rule? grep its prose across consumers; identifier-only greps miss stale doc comments
+- [Grep old-rule prose in consumers](feedback_grep_old_rule_prose_in_consumers.md) — identifier greps miss stale doc comments AND rendered `hint`/`description` UI strings
 - [XFF trust radius & rate-limit buckets](project_xff_trust_radius_rate_limit.md) — trusts XFF chain entries; pod-CIDR derivation differs GKE vs EKS; chart networkPolicy is egress-only, not a mitigation
 - [Shared response model unpopulated field](feedback_shared_response_model_unpopulated_field.md) — one model two routes: silent default; SHARED_PAGINATED_MODELS reds the suite by design
 - [Isolate failures under concurrent edit](feedback_isolate_failures_concurrent_edit.md) — git archive HEAD into scratchpad, overlay one file; base scenario proves HEAD green

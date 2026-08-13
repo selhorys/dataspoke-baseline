@@ -736,13 +736,14 @@ GET /api/v1/spoke/metagen/event
 
 | `metric_type` | 출력 `values` 키 | 의미 |
 |---|---|---|
-| `ingestion-freshness` | `total`, `ingested_in_time` | `total` = `dataset_filter`에 매칭된 데이터셋 수; `ingested_in_time` = 마지막 `INGESTION.COMPLETE`가 **데이터셋별 신선도 윈도** 안에 있는 데이터셋 수. 윈도는 각 데이터셋을 소유한 인제스천 소스(소스→데이터셋 매핑 경유)에서 도출된다: 스케줄이 있는 소스(`ACTIVE_CUSTOM_MANAGED`/`DATAHUB_MANAGED`) → `schedule_tier` 주기의 2배(`hourly`→7200s, `daily`→172800s, `weekly`→1209600s); `PASSIVE` 소스 → DataHub 동기화 주기의 2배(hourly → 7200s); 어떤 소스에도 매핑되지 않은 데이터셋(또는 스케줄을 도출할 수 없는 소스) → `metric_conf.time_window_sec`로 폴백. 2배는 지연 인제스천을 위한 여유다 |
-| `validation-score` | `total`, `validation_score_sum` | `total` = 매칭된 데이터셋 수; `validation_score_sum` = 각 데이터셋의 최신 검증 `score` 합 — **데이터셋별 윈도** = 해당 데이터셋의 최근 N개 검증 간격 평균 × 2(N은 `validation_score_n_intervals` 런타임 설정, 기본 3). 간격이 N개 미만이면 `metric_conf.time_window_sec`로 폴백; 윈도 안에 검증 결과가 없으면 기여는 0.0 |
+| `ingestion-freshness` | `total`, `ingested_in_time` | `total` = `dataset_filter`에 매칭된 데이터셋 수; `ingested_in_time` = 최신 인제스천 증거가 측정 시점 기준 `metric_conf.time_window_sec` 안에 있는 데이터셋 수. 증거는 DataHub가 해당 데이터셋의 관측을 제공하면 소유 인제스천 소스가 그 데이터셋에 대해 기록한 관측이고, 없으면 그 소스의 최신 비-드라이런 `INGESTION.COMPLETE`다([`BACKEND.md §Metrics Service`](feature/BACKEND.md#metrics-service-srcbackendmetrics) 참조) |
+| `validation-score` | `total`, `validation_score_sum` | `total` = 매칭된 데이터셋 수; `validation_score_sum` = `data_time`이 측정 시점 기준 `metric_conf.time_window_sec` 안에 있는 각 데이터셋의 최신 검증 `score` 합. 윈도 안에 검증 결과가 없으면 기여는 0.0 |
 | `doc-health` | `total`, `doc_health` | `total` = 매칭된 데이터셋 수; `doc_health` = 데이터셋별 문서 점수의 합. 테이블 설명과 모든 컬럼 설명이 비어 있지 않으면 `1.0`, 아니면 `0.0` |
 
 `metric_conf`는 타입별 파라미터를 담는다: `ingestion-freshness`와
-`validation-score`의 `time_window_sec`은 데이터셋별 윈도를 도출할 수 없을 때 쓰는
-**폴백** 윈도이며(양의 정수 초, 팩토리 기본 `172800`), `doc-health`는 빈 `{}`를 사용한다.
+`validation-score`의 `time_window_sec`이 **곧** 측정 윈도이며(양의 정수 초, 팩토리 기본
+`172800`), 거버넌스 리드가 선언하는 신선도 SLO로서 해당 메트릭이 스캔하는 모든
+데이터셋에 동일하게 적용된다. `doc-health`는 빈 `{}`를 사용한다.
 
 `dataset_filter`는 네 가지 선택적 차원을 갖는다: `origin`(DataHub 데이터셋 URN의
 세 번째 세그먼트로 들어가는 `FabricType` 값 — `PROD` / `DEV` / `CORP` / `EI` /

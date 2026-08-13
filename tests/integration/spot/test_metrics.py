@@ -18,14 +18,15 @@ Concerns covered (each test targets one spec contract):
 - PUT dataset_filter.dataset_urns == 1000 entries → 200/201
 - PUT dataset_filter.dataset_urns=['not-a-urn'] → 422 INVALID_DATASET_URN
 - PUT metric_id with invalid path chars → 422
-- ingestion-freshness per-dataset window: ACTIVE_CUSTOM_MANAGED daily (in-time and stale),
-  PASSIVE (boundary ~7200s), no ingestion_source_dataset row (uses metric_conf fallback)
+- ingestion-freshness applies metric_conf.time_window_sec uniformly: a PASSIVE-owned
+  dataset is judged by the declared window (in-time and stale sides both seeded), and a
+  dataset with no ingestion_source_dataset row is stale with no readable evidence
 - ingestion-freshness reads the run booked on the dataset's owning source
   (entity_type='ingestion_source'), never one keyed by dataset URN — both sides seeded,
   in opposite directions
 
-- validation-score per-dataset window: ≥ N+1 rows derive window from intervals
-  (window_source='intervals'); sparse < N+1 rows fall back (window_source='default')
+- validation-score applies metric_conf.time_window_sec uniformly: the latest row inside
+  the declared window is counted, the one outside it is not
 - POST method/run dry_run=true → no persisted result, no RUN_COMPLETE event
 - POST method/run dry_run=false → values is dict[str, float]
 - POST method/run concurrent → 409 METRIC_RUNNING
@@ -34,9 +35,9 @@ Concerns covered (each test targets one spec contract):
   breakdown_summary (bound by run_id): dataset_count == values.total, affected_count == failed count
 - metric_id kebab regex acceptance and rejection
 
-Spot is the right layer for the window-math tests (ingestion-freshness and
-validation-score per-dataset windows) because they require raw ORM/SQL-seeded state
-(events, validation_results, ingestion_source/ingestion_source_dataset with controlled
+Spot is the right layer for the windowing tests (ingestion-freshness and
+validation-score) because they require raw ORM/SQL-seeded state (events,
+validation_results, ingestion_source/ingestion_source_dataset with controlled
 timestamps) that the api-wired pipeline cannot naturally produce.
 Tests insert rows directly via asyncpg and clean up in `finally` blocks.
 
@@ -44,7 +45,8 @@ Spec:
 - spec/USE_CASE_en.md §UC5 — Factory defaults, Built-in active metric types, API Mapping
 - spec/API.md §Metric (/spoke/governance/metric) — field rules, payload caps, error codes,
   create/replace
-- spec/feature/BACKEND.md §Metrics Service §Breakdown format, §Create vs replace, §Time windows
+- spec/feature/BACKEND.md §Metrics Service §Breakdown format, §Create vs replace,
+  §Measurement window, §Ingestion evidence
 """
 
 import asyncio
@@ -74,14 +76,9 @@ _BOUNDED_URN = (
 # Spec: spec/USE_CASE_en.md §UC5 §Factory defaults
 _FACTORY_IDS = {"ingestion-freshness", "validation-score", "doc-health"}
 
-# Per-dataset freshness windows per USE_CASE_en.md §UC5: tier period x2 (daily 172800,
-# hourly/passive 7200). Spec literals, not derived from src/shared/schedule.py.
-_DAILY_WINDOW_SEC = 86400 * 2    # 172800
-_HOURLY_WINDOW_SEC = 3600 * 2   # 7200
-_PASSIVE_WINDOW_SEC = 3600 * 2  # 7200
-
-# Factory default fallback time_window_sec
-# Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — factory default 172800
+# Factory default measurement window
+# Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — "``time_window_sec`` …
+# **the** measurement window (positive int seconds, factory default ``172800``)".
 _FACTORY_DEFAULT_TIME_WINDOW_SEC = 172800
 
 
@@ -182,8 +179,8 @@ async def test_factory_defaults_time_window_sec_is_172800(
 ) -> None:
     """Factory-seeded ingestion-freshness and validation-score have time_window_sec=172800.
 
-    Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — metric_conf
-          factory default time_window_sec is 172800 (2-day fallback window).
+    Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — "``time_window_sec``
+          … **the** measurement window (positive int seconds, factory default ``172800``)".
     Spec: spec/feature/BACKEND.md §Metrics Service §Factory defaults —
           metric_conf={"time_window_sec": 172800} for the two windowed types.
     """
@@ -1240,9 +1237,10 @@ async def test_breakdown_counts_reconcile_with_run_event(
     one-source-per-dataset shape below still produce a fresh/stale split. The empty
     `detail` also has no `dry_run` key, so the tier-2 dry-run exclusion admits both rows.
 
-    Seeds one ACTIVE_CUSTOM_MANAGED daily source **per dataset** — on tier 2 a dataset's
+    Seeds one ACTIVE_CUSTOM_MANAGED source **per dataset** — on tier 2 a dataset's
     recency is the recency of its owning source's runs, so a shared source would give both
-    datasets one verdict and collapse the contrast this test needs — then runs the metric:
+    datasets one verdict and collapse the contrast this test needs — then runs the metric
+    with a declared ``time_window_sec=172800``:
       - urn_stale: its source's INGESTION.COMPLETE 200000s ago (> 172800s) → FAILED
       - urn_fresh: its source's INGESTION.COMPLETE 130000s ago (< 172800s) → in-time
 
@@ -1263,8 +1261,9 @@ async def test_breakdown_counts_reconcile_with_run_event(
           scanned; 'len(datasets) == failed count' is implied; datasets[] lists only failed entries.
     Spec: spec/feature/BACKEND.md §Event Catalogue — METRIC.RUN_COMPLETE detail keys include run_id
           and breakdown_summary {dataset_count, affected_count}.
-    Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — ingestion-freshness
-          ACTIVE_CUSTOM_MANAGED daily window = 86400 × 2 = 172800s.
+    Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — "``ingested_in_time`` =
+          count whose latest ingestion evidence falls within ``metric_conf.time_window_sec``
+          of the measurement".
     Spec: spec/TESTING.md §Integration Lifecycle & Isolation — bind event assertions by run_id.
     """
     _METRIC_ID = "spot-breakdown-reconcile"
@@ -1322,8 +1321,8 @@ async def test_breakdown_counts_reconcile_with_run_event(
             )
 
         # Reset then seed controlled source-keyed INGESTION.COMPLETE timestamps.
-        # spec: feature/BACKEND.md §Metrics Service §Time windows — runs are booked on the
-        # owning source (entity_type='ingestion_source', entity_id=source_id).
+        # spec: feature/BACKEND.md §Metrics Service §Ingestion evidence — runs are booked on
+        # the owning source (entity_type='ingestion_source', entity_id=source_id).
         await conn.execute(
             "DELETE FROM dataspoke.events"
             " WHERE event_type = 'INGESTION.COMPLETE' AND entity_id = ANY($1::text[])",
@@ -1335,7 +1334,7 @@ async def test_breakdown_counts_reconcile_with_run_event(
             "VALUES (gen_random_uuid(), $1, $2, $3, $4, $5::jsonb, $6)",
             "ingestion_source", source_fresh, "INGESTION.COMPLETE", "success",
             json.dumps({}),
-            now - timedelta(seconds=130000),  # within 172800s window → in-time
+            now - timedelta(seconds=130000),  # inside the declared 172800s window → in-time
         )
         await conn.execute(
             "INSERT INTO dataspoke.events "
@@ -1343,7 +1342,7 @@ async def test_breakdown_counts_reconcile_with_run_event(
             "VALUES (gen_random_uuid(), $1, $2, $3, $4, $5::jsonb, $6)",
             "ingestion_source", source_stale, "INGESTION.COMPLETE", "success",
             json.dumps({}),
-            now - timedelta(seconds=200000),  # outside 172800s window → stale/failed
+            now - timedelta(seconds=200000),  # outside the declared 172800s window → failed
         )
 
         # Create + enable the metric scoped to exactly the two seeded datasets.
@@ -1358,7 +1357,9 @@ async def test_breakdown_counts_reconcile_with_run_event(
                 "title": "Breakdown Reconcile Spot Test",
                 "description": "Reconciles result breakdown counts with the RUN_COMPLETE event.",
                 "metrics": ["total", "ingested_in_time"],
-                "metric_conf": {"time_window_sec": 3600},  # fallback — must NOT be used
+                # 130000s is inside this window and 200000s is outside it, so the two
+                # seeded sources land on opposite verdicts.
+                "metric_conf": {"time_window_sec": 172800},
                 "schedule_tier": None,
                 "dataset_filter": {"dataset_urns": [urn_fresh, urn_stale]},
             },
@@ -1514,290 +1515,54 @@ async def test_metric_id_path_regex_acceptance_and_rejection(
         )
 
 
-# ── Ingestion-freshness per-dataset window ────────────────────────────────────
+# ── Ingestion-freshness measurement window and evidence ──────────────────────
 #
 # These tests need raw ORM/SQL-seeded state that the api-wired pipeline cannot
 # naturally produce. They insert rows directly via asyncpg and clean up in finally.
 #
 # The freshness measurer reads ingestion_source + ingestion_source_dataset (via a
-# JOIN) to resolve the per-dataset window. Seeds insert into those tables directly.
+# JOIN) to resolve each dataset's owning source, then that source's event feed.
+# Seeds insert into those tables directly.
 #
-# Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — per-dataset
-#       freshness window derived from ingestion_source / ingestion_source_dataset.
-# Spec: spec/feature/BACKEND.md §Metrics Service §Time windows.
+# Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — ingested_in_time counts
+#       datasets whose latest ingestion evidence falls within metric_conf.time_window_sec.
+# Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window, §Ingestion evidence.
 # Spec: spec/feature/BACKEND_SCHEMA.md §ingestion_source / §ingestion_source_dataset.
 
 
 @pytest.mark.asyncio
-async def test_ingestion_freshness_active_custom_daily_window(
+async def test_ingestion_freshness_declared_window_applies_to_a_passive_source(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """ingestion-freshness: ACTIVE_CUSTOM_MANAGED daily source → window = 172800s.
-
-    Seeds **one ingestion_source per dataset** (mode='ACTIVE_CUSTOM_MANAGED',
-    schedule_tier='daily'), each with its own ingestion_source_dataset row
-    (derivation='emitted') and its own source-keyed INGESTION.COMPLETE:
-      - source_fresh / urn_fresh: run 130000s ago (< 172800s) → in-time
-      - source_stale / urn_stale: run 200000s ago (> 172800s) → stale
-
-    **Evidence tier exercised: 2 (`source_level`).** The seeded rows carry `detail = {}`,
-    so no observation producer wrote them and neither dataset has an observation of its
-    own: tier 1 is empty and the source-level fallback answers. The window resolution
-    under test is tier-independent — it comes from the owning source's mode and
-    schedule_tier, not from which tier supplied the instant.
-
-    One source per dataset is not incidental. On tier 2 a dataset's recency is the
-    recency of its owning source's runs, so two datasets sharing a source necessarily
-    share one verdict: the fresh/stale contrast would collapse and the test would stay
-    green while proving nothing. It is also the shape production produces.
-
-    Breakdown stale entry detail must include time_window_sec=172800,
-    window_source='managed:daily' and evidence_tier='source_level'.
-
-    Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types —
-          ACTIVE_CUSTOM_MANAGED / DATAHUB_MANAGED daily → SCHEDULE_TIER_SECONDS[daily] × 2
-          = 86400 × 2 = 172800s.
-    Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — "every `INGESTION.*`
-          event is booked on a source (entity_type="ingestion_source",
-          entity_id=source_id …) and never on the dataset, so the measurer resolves each
-          dataset's **owning source** first"; breakdown detail carries time_window_sec,
-          window_source and evidence_tier.
-    Spec: spec/feature/BACKEND_SCHEMA.md §ingestion_source / §ingestion_source_dataset.
-    """
-    _METRIC_ID = "spot-freshness-daily-window"
-    base_conf = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/attr/conf"
-    base_run = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/method/run"
-    base_results = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/attr/result"
-
-    urn_fresh = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
-    urn_stale = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.editions,DEV)"
-
-    # Ensure clean state
-    await api_client.delete(base_conf, headers=admin_headers)
-
-    conn = await _get_ds_conn()
-    now = datetime.now(tz=UTC)
-    # Stable, valid UUID v4 source IDs — deterministic so cleanup is reliable even on partial
-    # failure.  Non-standard strings like "00000000-spot-fresh-daily-w-0000" are rejected by
-    # asyncpg as invalid UUIDs; use proper UUID format.
-    # spec: BACKEND_SCHEMA.md §ingestion_source — id column is UUID.
-    source_fresh = str(uuid.UUID("00000000-0000-4000-8000-000000000a01"))
-    source_stale = str(uuid.UUID("00000000-0000-4000-8000-000000000a02"))
-    source_ids = [source_fresh, source_stale]
-    try:
-        # Drop any mapping another test left on these URNs: an extra covering source
-        # would enter the owning-source ranking and could win it.
-        await conn.execute(
-            "DELETE FROM dataspoke.ingestion_source_dataset WHERE dataset_urn = ANY($1::text[])",
-            [urn_fresh, urn_stale],
-        )
-
-        # One ingestion_source per dataset (ACTIVE_CUSTOM_MANAGED, daily schedule_tier)
-        # spec: BACKEND_SCHEMA.md §ingestion_source — columns: id, mode, name, platform, recipe,
-        #   schedule, schedule_tier, datahub_source_urn, status, created_at, updated_at
-        # spec: BACKEND_SCHEMA.md §ingestion_source_dataset
-        # — (source_id, dataset_urn, derivation, ...)
-        for source_id, urn, name in (
-            (source_fresh, urn_fresh, "spot-freshness-daily-fresh"),
-            (source_stale, urn_stale, "spot-freshness-daily-stale"),
-        ):
-            await conn.execute(
-                "INSERT INTO dataspoke.ingestion_source "
-                "(id, mode, name, platform, recipe, schedule, schedule_tier, status) "
-                "VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8) "
-                "ON CONFLICT (id) DO UPDATE SET mode=$2, schedule_tier=$7",
-                source_id,
-                "ACTIVE_CUSTOM_MANAGED",
-                name,
-                "postgres",
-                json.dumps({"source": {"type": "postgres", "config": {}}}),
-                "0 0 * * *",
-                "daily",
-                "OK",
-            )
-            await conn.execute(
-                "INSERT INTO dataspoke.ingestion_source_dataset "
-                "(source_id, dataset_urn, derivation) "
-                "VALUES ($1, $2, $3) "
-                "ON CONFLICT (source_id, dataset_urn) DO UPDATE SET derivation=$3",
-                source_id, urn, "emitted",
-            )
-
-        # Clear any pre-existing INGESTION.COMPLETE booked on these sources or URNs
-        await conn.execute(
-            "DELETE FROM dataspoke.events"
-            " WHERE event_type = 'INGESTION.COMPLETE' AND entity_id = ANY($1::text[])",
-            [*source_ids, urn_fresh, urn_stale],
-        )
-
-        # Insert source-keyed INGESTION.COMPLETE events with controlled timestamps
-        await conn.execute(
-            "INSERT INTO dataspoke.events "
-            "(id, entity_type, entity_id, event_type, status, detail, occurred_at) "
-            "VALUES (gen_random_uuid(), $1, $2, $3, $4, $5::jsonb, $6)",
-            "ingestion_source", source_fresh, "INGESTION.COMPLETE", "success",
-            json.dumps({}),
-            now - timedelta(seconds=130000),  # within 172800s window
-        )
-        await conn.execute(
-            "INSERT INTO dataspoke.events "
-            "(id, entity_type, entity_id, event_type, status, detail, occurred_at) "
-            "VALUES (gen_random_uuid(), $1, $2, $3, $4, $5::jsonb, $6)",
-            "ingestion_source", source_stale, "INGESTION.COMPLETE", "success",
-            json.dumps({}),
-            now - timedelta(seconds=200000),  # outside 172800s window
-        )
-
-        # Create and enable the metric scoped to these two datasets
-        create_resp = await api_client.post(
-            "/api/v1/spoke/governance/metric",
-            headers=admin_headers,
-            json={
-                "metric_id": _METRIC_ID,
-                "mode": "active",
-                "is_enabled": True,
-                "metric_type": "ingestion-freshness",
-                "title": "Daily Window Spot Test",
-                "description": "Tests per-dataset daily window from ingestion_source mapping",
-                "metrics": ["total", "ingested_in_time"],
-                "metric_conf": {"time_window_sec": 3600},  # fallback — must NOT be used
-                "schedule_tier": None,
-                "dataset_filter": {"dataset_urns": [urn_fresh, urn_stale]},
-            },
-        )
-        assert create_resp.status_code == 201, create_resp.text
-
-        # Run
-        run_resp = await api_client.post(
-            base_run,
-            headers=admin_headers,
-            )
-        assert run_resp.status_code == 200, run_resp.text
-
-        # Read results
-        results_resp = await api_client.get(f"{base_results}?limit=5", headers=admin_headers)
-        assert results_resp.status_code == 200
-        results = results_resp.json().get("results", [])
-        assert results, "Expected at least one result row after run."
-        row = results[0]
-
-        values = row["values"]
-        assert values["total"] == 2.0, (
-            f"total must be 2 (both datasets); got {values['total']}. "
-            "Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types."
-        )
-        assert values["ingested_in_time"] == 1.0, (
-            f"ingested_in_time must be 1 (only urn_fresh); got {values['ingested_in_time']}. "
-            "Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — "
-            "ACTIVE_CUSTOM_MANAGED daily window=172800s."
-        )
-
-        # Stale breakdown entry must have time_window_sec=172800 and window_source='managed:daily'
-        # spec: feature/BACKEND.md §Metrics Service §Time windows — window_source='managed:{tier}'
-        # for ACTIVE_CUSTOM_MANAGED / DATAHUB_MANAGED sources.
-        breakdown = row.get("breakdown", {})
-        stale_entries = [e for e in breakdown.get("datasets", []) if e["urn"] == urn_stale]
-        assert len(stale_entries) == 1, (
-            f"urn_stale must appear exactly once in breakdown; got {breakdown.get('datasets')}. "
-            "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
-        )
-        detail = stale_entries[0]["detail"]
-        assert detail["time_window_sec"] == _DAILY_WINDOW_SEC, (
-            f"Stale entry time_window_sec must be {_DAILY_WINDOW_SEC}; "
-            f"got {detail.get('time_window_sec')}. "
-            "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows."
-        )
-        assert detail["window_source"] == "managed:daily", (
-            f"Stale entry window_source must be 'managed:daily' for ACTIVE_CUSTOM_MANAGED daily; "
-            f"got {detail.get('window_source')!r}. "
-            "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — "
-            "window_source='managed:{tier}' for MANAGED modes."
-        )
-        # Which tier answered. The seeded evidence is a source-level COMPLETE with no
-        # detail.source, so the fallback is what supplies last_event_at below and the
-        # instant assertion is a statement about tier 2.
-        # Triage note: 'observation' here means a sync sweep booked a
-        # last_ingested_observation for this dataset on this seeded source while the test
-        # was running — the seeded state was overtaken, not the measurer misreading it.
-        # spec: feature/BACKEND.md §Metrics Service §Breakdown format — evidence_tier is
-        # "'observation' for tier 1, 'source_level' for tier 2, null when neither tier
-        # produced evidence".
-        assert detail["evidence_tier"] == "source_level", (
-            f"the stale entry's evidence must come from the source-level fallback; got "
-            f"evidence_tier={detail.get('evidence_tier')!r}. "
-            "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
-        )
-        # The stale entry must report the run booked on its OWN owning source — not
-        # None (which is what a measurer reading dataset-keyed events would report).
-        # spec: feature/BACKEND.md §Metrics Service §Time windows — the measurer "reads
-        # that source's events".
-        assert detail["last_event_at"] is not None, (
-            "last_event_at must carry the stale source's run; None would mean the "
-            "source-keyed INGESTION.COMPLETE was never read. "
-            "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
-        )
-        last_event_at = datetime.fromisoformat(detail["last_event_at"])
-        assert last_event_at < now - timedelta(seconds=_DAILY_WINDOW_SEC), (
-            f"the reported run must be the out-of-window one that was seeded; got "
-            f"{detail['last_event_at']!r}. "
-            "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
-        )
-
-        # urn_fresh must NOT appear in breakdown (it's in-time)
-        fresh_entries = [e for e in breakdown.get("datasets", []) if e["urn"] == urn_fresh]
-        assert not fresh_entries, (
-            "urn_fresh must not appear in breakdown (it is in-time). "
-            "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format — only stale entries."
-        )
-
-    finally:
-        # Clean up seeds and metric
-        with suppress(Exception):
-            await conn.execute(
-                "DELETE FROM dataspoke.ingestion_source_dataset "
-                "WHERE source_id = ANY($1::uuid[])",
-                source_ids,
-            )
-        with suppress(Exception):
-            await conn.execute(
-                "DELETE FROM dataspoke.ingestion_source WHERE id = ANY($1::uuid[])", source_ids
-            )
-        with suppress(Exception):
-            await conn.execute(
-                "DELETE FROM dataspoke.events"
-                " WHERE event_type = 'INGESTION.COMPLETE' AND entity_id = ANY($1::text[])",
-                [*source_ids, urn_fresh, urn_stale],
-            )
-        await conn.close()
-        with suppress(Exception):
-            await api_client.delete(base_conf, headers=admin_headers)
-
-
-@pytest.mark.asyncio
-async def test_ingestion_freshness_passive_window(
-    api_client: httpx.AsyncClient,
-    admin_headers: dict[str, str],
-) -> None:
-    """ingestion-freshness: PASSIVE source → window = 7200s (2 × hourly sync cadence).
+    """ingestion-freshness: a PASSIVE-owned dataset is judged by the declared window.
 
     Seeds **one PASSIVE ingestion_source per dataset**, each with its own
     ingestion_source_dataset row (derivation='matched') and its own source-keyed
-    INGESTION.COMPLETE:
-      - source_fresh / urn_fresh: run 3600s ago (< 7200s) → in-time
-      - source_stale / urn_stale: run 8000s ago (> 7200s) → stale, window_source='passive'
+    INGESTION.COMPLETE. The metric declares ``time_window_sec=172800``:
+      - source_fresh / urn_fresh: run 3 hours ago (< 172800s) → in-time
+      - source_stale / urn_stale: run 200000s ago (> 172800s) → stale
+
+    The fresh side is the discriminating one. A ``PASSIVE`` source registers no schedule
+    at all and DataSpoke books its events on the hourly ``datahub-sync`` sweep, so any
+    window scaled to how often something is *expected* to happen would be far narrower
+    than 172800s and would call a 3-hour-old evidence row stale. Sync cadence answers a
+    different question from how recent the evidence must be to count.
 
     One source per dataset because freshness is the recency of the *owning source's*
     runs: a single shared source would give both datasets one verdict and the
     fresh/stale contrast would collapse into a vacuous pass.
 
-    Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types —
-          PASSIVE → twice the DataHub-sync cadence (hourly → 7200s).
-    Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — window_source='passive';
-          runs are booked with entity_type='ingestion_source', entity_id=source_id.
+    Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window — "the window is
+          ``metric_conf.time_window_sec``, applied uniformly to every dataset in the run.
+          It is a declared SLO the governance lead owns, not a quantity derived from a
+          per-dataset fact such as an owning source's registered schedule, a sync-loop
+          cadence, or a dataset's observed validation inter-arrival gap."
+    Spec: spec/feature/BACKEND.md §Metrics Service §Ingestion evidence — runs are booked
+          with entity_type='ingestion_source', entity_id=source_id.
     Spec: spec/feature/BACKEND_SCHEMA.md §ingestion_source / §ingestion_source_dataset.
     """
-    _METRIC_ID = "spot-freshness-passive-window"
+    _METRIC_ID = "spot-freshness-declared-window"
     base_conf = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/attr/conf"
     base_run = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/method/run"
     base_results = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/attr/result"
@@ -1867,7 +1632,7 @@ async def test_ingestion_freshness_passive_window(
             "VALUES (gen_random_uuid(), $1, $2, $3, $4, $5::jsonb, $6)",
             "ingestion_source", source_fresh, "INGESTION.COMPLETE", "success",
             json.dumps({}),
-            now - timedelta(seconds=3600),  # within 7200s passive window
+            now - timedelta(hours=3),  # inside the declared 172800s window
         )
         await conn.execute(
             "INSERT INTO dataspoke.events "
@@ -1875,7 +1640,7 @@ async def test_ingestion_freshness_passive_window(
             "VALUES (gen_random_uuid(), $1, $2, $3, $4, $5::jsonb, $6)",
             "ingestion_source", source_stale, "INGESTION.COMPLETE", "success",
             json.dumps({}),
-            now - timedelta(seconds=8000),  # outside 7200s passive window
+            now - timedelta(seconds=200000),  # outside the declared 172800s window
         )
 
         create_resp = await api_client.post(
@@ -1886,10 +1651,10 @@ async def test_ingestion_freshness_passive_window(
                 "mode": "active",
                 "is_enabled": True,
                 "metric_type": "ingestion-freshness",
-                "title": "Passive Window Spot Test",
-                "description": "Tests per-dataset passive window from ingestion_source mapping",
+                "title": "Declared Window Spot Test",
+                "description": "The declared window judges a PASSIVE-owned dataset",
                 "metrics": ["total", "ingested_in_time"],
-                "metric_conf": {"time_window_sec": 86400},  # fallback — must NOT be used
+                "metric_conf": {"time_window_sec": 172800},
                 "schedule_tier": None,
                 "dataset_filter": {"dataset_urns": [urn_fresh, urn_stale]},
             },
@@ -1909,24 +1674,28 @@ async def test_ingestion_freshness_passive_window(
             "If 0, the URN was not registered in DataHub — check DUMMY_DATA_DATAHUB_SCHEMAS."
         )
         assert row["values"]["ingested_in_time"] == 1.0, (
-            "PASSIVE fresh dataset must be counted (event 3600s < 7200s window). "
-            "Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — passive window=7200s."
+            "the PASSIVE-owned dataset whose run is 3 hours old is inside the declared "
+            "172800s window and must be counted; got "
+            f"{row['values']['ingested_in_time']}. "
+            "Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window."
         )
 
-        stale_entries = [
-            e for e in row.get("breakdown", {}).get("datasets", [])
-            if e["urn"] == urn_stale
-        ]
-        assert stale_entries, "urn_stale must be in breakdown."
-        detail = stale_entries[0]["detail"]
-        assert detail["window_source"] == "passive", (
-            "window_source for PASSIVE source must be 'passive'; "
-            f"got {detail.get('window_source')!r}. "
-            "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows."
+        breakdown_urns = [e["urn"] for e in row.get("breakdown", {}).get("datasets", [])]
+        assert breakdown_urns == [urn_stale], (
+            f"only the dataset whose run predates the declared window may be listed; got "
+            f"{breakdown_urns}. "
+            "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
         )
-        assert detail["time_window_sec"] == _PASSIVE_WINDOW_SEC, (
-            f"Passive window must be {_PASSIVE_WINDOW_SEC}s; got {detail.get('time_window_sec')}. "
-            "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows."
+        detail = row["breakdown"]["datasets"][0]["detail"]
+        assert detail["time_window_sec"] == 172800, (
+            "the run must report the window it applied, which is the declared "
+            f"metric_conf.time_window_sec; got {detail.get('time_window_sec')}. "
+            "Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window."
+        )
+        assert "window_source" not in detail, (
+            "detail must not name a window provenance: the window is always the declared "
+            f"metric_conf.time_window_sec; got keys {sorted(detail)}. "
+            "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
         )
         # The stale entry reports the run booked on its own PASSIVE source.
         assert detail["last_event_at"] is not None, (
@@ -1935,10 +1704,16 @@ async def test_ingestion_freshness_passive_window(
             "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
         )
         assert datetime.fromisoformat(detail["last_event_at"]) < now - timedelta(
-            seconds=_PASSIVE_WINDOW_SEC
+            seconds=172800
         ), (
             f"the reported run must be the out-of-window one that was seeded; got "
             f"{detail['last_event_at']!r}."
+        )
+        assert detail["evidence_tier"] == "source_level", (
+            "the seeded rows carry detail={} so no observation producer wrote them: the "
+            "source-level fallback is what supplies last_event_at; got "
+            f"evidence_tier={detail.get('evidence_tier')!r}. "
+            "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
         )
 
     finally:
@@ -1964,15 +1739,15 @@ async def test_ingestion_freshness_passive_window(
 
 
 @pytest.mark.asyncio
-async def test_ingestion_freshness_no_config_fallback(
+async def test_ingestion_freshness_dataset_with_no_owning_source_is_stale(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """ingestion-freshness: dataset with no ingestion_source mapping uses
-    metric_conf.time_window_sec, and has no readable run at all.
+    """ingestion-freshness: a dataset with no ingestion_source mapping has no readable
+    evidence at all, so it is stale and still reports the declared window.
 
-    Uses a URN that has no ingestion_source_dataset row. With fallback
-    time_window_sec=3600 the dataset is stale with window_source='default'.
+    Uses a URN that has no ingestion_source_dataset row and a declared
+    ``time_window_sec=3600``.
 
     The event seeded here is a **decoy**: an INGESTION.COMPLETE 60s old written
     with entity_type='dataset', entity_id=<the URN> — a shape the sweep never emits.
@@ -1980,15 +1755,17 @@ async def test_ingestion_freshness_no_config_fallback(
     would report this dataset as in-time. Asserting ``last_event_at is None``
     therefore has an injected subject rather than being trivially true.
 
-    Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types —
-          dataset mapped to no source → metric_conf.time_window_sec.
-    Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — "every INGESTION.*
-          event is booked on a source (entity_type='ingestion_source',
-          entity_id=source_id …) and never on the dataset"; window_source='default' for a
-          dataset mapped to no source.
-    Spec: spec/feature/BACKEND_SCHEMA.md §ingestion_source_dataset — no row → fallback.
+    Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format — a dataset is
+          failed when its evidence is "absent on both tiers".
+    Spec: spec/feature/BACKEND.md §Metrics Service §Ingestion evidence — "every
+          INGESTION.* event is booked on a source (entity_type='ingestion_source',
+          entity_id=source_id …) and never on the dataset, so the measurer resolves each
+          dataset's owning source first."
+    Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window — "the window is
+          ``metric_conf.time_window_sec``, applied uniformly to every dataset in the run."
+    Spec: spec/feature/BACKEND_SCHEMA.md §ingestion_source_dataset — no row → no owner.
     """
-    _METRIC_ID = "spot-freshness-fallback-window"
+    _METRIC_ID = "spot-freshness-unclaimed-dataset"
     base_conf = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/attr/conf"
     base_run = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/method/run"
     base_results = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/attr/result"
@@ -2011,11 +1788,11 @@ async def test_ingestion_freshness_no_config_fallback(
         # Decoy: a very recent INGESTION.COMPLETE keyed by dataset URN — the shape the
         # sweep never emits. Inside every window, so it is what a measurer reading
         # dataset-keyed events would (wrongly) call in-time.
-        _del_fallback = (
+        _del_decoy = (
             "DELETE FROM dataspoke.events"
             " WHERE entity_id = $1 AND event_type = 'INGESTION.COMPLETE'"
         )
-        await conn.execute(_del_fallback, urn)
+        await conn.execute(_del_decoy, urn)
         await conn.execute(
             "INSERT INTO dataspoke.events "
             "(id, entity_type, entity_id, event_type, status, detail, occurred_at) "
@@ -2025,9 +1802,9 @@ async def test_ingestion_freshness_no_config_fallback(
             now - timedelta(seconds=60),
         )
 
-        # Create with a small fallback window (3600s). The dataset is stale because it
-        # has no owning source and therefore no readable run at all — not because of
-        # the window: the 60s-old decoy would be inside even a 3600s window.
+        # Create with a deliberately narrow declared window (3600s). The dataset is stale
+        # because it has no owning source and therefore no readable evidence at all — not
+        # because of the window: the 60s-old decoy would be inside even a 3600s window.
         create_resp = await api_client.post(
             "/api/v1/spoke/governance/metric",
             headers=admin_headers,
@@ -2036,13 +1813,13 @@ async def test_ingestion_freshness_no_config_fallback(
                 "mode": "active",
                 "is_enabled": True,
                 "metric_type": "ingestion-freshness",
-                "title": "Fallback Window Spot Test",
+                "title": "Unclaimed Dataset Spot Test",
                 "description": (
-                    "Tests metric_conf fallback when no ingestion_source_dataset row exists"
+                    "A dataset with no ingestion_source_dataset row has no evidence to read"
                 ),
                 "metrics": ["total", "ingested_in_time"],
-                # The fallback window that window_source='default' must report. It is
-                # not what makes the dataset stale — the absent owning source is.
+                # The declared window the breakdown must report. It is not what makes the
+                # dataset stale — the absent owning source is.
                 "metric_conf": {"time_window_sec": 3600},
                 "schedule_tier": None,
                 "dataset_filter": {"dataset_urns": [urn]},
@@ -2065,24 +1842,30 @@ async def test_ingestion_freshness_no_config_fallback(
         assert row["values"]["ingested_in_time"] == 0.0, (
             "A dataset mapped to no source has no owning source's runs to read, so it is "
             "stale however recent the dataset-keyed decoy is (ingested_in_time=0). "
-            "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows."
+            "Spec: spec/feature/BACKEND.md §Metrics Service §Ingestion evidence."
         )
         stale_entries = row.get("breakdown", {}).get("datasets", [])
         assert stale_entries, "Must have stale entry."
         detail = stale_entries[0]["detail"]
-        assert detail["window_source"] == "default", (
-            "No source mapping → window_source must be 'default'; "
-            f"got {detail.get('window_source')!r}. "
-            "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows."
-        )
         assert detail["time_window_sec"] == 3600, (
-            f"Fallback time_window_sec must be 3600; got {detail.get('time_window_sec')}. "
-            "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows."
+            "the declared metric_conf.time_window_sec must be reported even where no "
+            f"owning source exists; got {detail.get('time_window_sec')}. "
+            "Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window."
+        )
+        assert "window_source" not in detail, (
+            "detail must not name a window provenance: the window is always the declared "
+            f"metric_conf.time_window_sec; got keys {sorted(detail)}. "
+            "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
         )
         assert detail["last_event_at"] is None, (
             "The seeded dataset-keyed INGESTION.COMPLETE must not be read: runs are booked "
             f"on the owning source, never on the dataset; got {detail['last_event_at']!r}. "
-            "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows."
+            "Spec: spec/feature/BACKEND.md §Metrics Service §Ingestion evidence."
+        )
+        assert detail["evidence_tier"] is None, (
+            "with no owning source neither tier produced evidence; got "
+            f"{detail.get('evidence_tier')!r}. "
+            "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
         )
 
     finally:
@@ -2121,7 +1904,7 @@ async def test_ingestion_freshness_reads_source_keyed_events_not_dataset_keyed(
     ``entity_id=source_id`` rows may be read. Real PostgreSQL is required — the unit
     tier's fake session cannot prove a WHERE clause it would have to reimplement.
 
-    Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — "every INGESTION.*
+    Spec: spec/feature/BACKEND.md §Metrics Service §Ingestion evidence — "every INGESTION.*
           event is booked on a source (entity_type='ingestion_source',
           entity_id=source_id — see the Event Catalogue) and never on the dataset, so the
           measurer resolves each dataset's owning source first. It then reads that
@@ -2211,7 +1994,9 @@ async def test_ingestion_freshness_reads_source_keyed_events_not_dataset_keyed(
                     "Runs are read from the owning source, never from a dataset-keyed row."
                 ),
                 "metrics": ["total", "ingested_in_time"],
-                "metric_conf": {"time_window_sec": 3600},  # fallback — must NOT be used
+                # 130000s is inside this window and 200000s is outside it, so the two
+                # seeded pairs land on opposite verdicts.
+                "metric_conf": {"time_window_sec": 172800},
                 "schedule_tier": None,
                 "dataset_filter": {"dataset_urns": [urn_a, urn_b]},
             },
@@ -2237,7 +2022,7 @@ async def test_ingestion_freshness_reads_source_keyed_events_not_dataset_keyed(
         assert values["ingested_in_time"] == 1.0, (
             f"exactly urn_a must be in-time; got ingested_in_time={values['ingested_in_time']}. "
             "0 means the source-keyed run was not read; 2 means the dataset-keyed decoy was. "
-            "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows."
+            "Spec: spec/feature/BACKEND.md §Metrics Service §Ingestion evidence."
         )
 
         breakdown_urns = [e["urn"] for e in row.get("breakdown", {}).get("datasets", [])]
@@ -2246,17 +2031,16 @@ async def test_ingestion_freshness_reads_source_keyed_events_not_dataset_keyed(
             f"{breakdown_urns}. Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
         )
         detail = row["breakdown"]["datasets"][0]["detail"]
-        assert detail["window_source"] == "managed:daily"
-        assert detail["time_window_sec"] == _DAILY_WINDOW_SEC
+        assert detail["time_window_sec"] == 172800
         assert detail["last_event_at"] is not None, (
             "urn_b's stale entry must report its owning source's run, not None."
         )
         assert datetime.fromisoformat(detail["last_event_at"]) < now - timedelta(
-            seconds=_DAILY_WINDOW_SEC
+            seconds=172800
         ), (
             f"last_event_at must be the source-keyed out-of-window run, not the 60s-old "
             f"dataset-keyed decoy; got {detail['last_event_at']!r}. "
-            "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows."
+            "Spec: spec/feature/BACKEND.md §Metrics Service §Ingestion evidence."
         )
 
     finally:
@@ -2281,38 +2065,60 @@ async def test_ingestion_freshness_reads_source_keyed_events_not_dataset_keyed(
             await api_client.delete(base_conf, headers=admin_headers)
 
 
-# ── Validation-score per-dataset window ──────────────────────────────────────
+# ── Validation-score measurement window ──────────────────────────────────────
 #
-# Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — validation-score
-#       per-dataset window = 2 × mean(last N inter-arrival gaps), N default 3.
-#       Fewer than N+1 rows → fallback metric_conf.time_window_sec.
-# Spec: spec/feature/BACKEND.md §Metrics Service §Time windows.
+# Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — validation_score_sum is
+#       the sum of each dataset's latest validation score whose data_time falls within
+#       metric_conf.time_window_sec of the measurement.
+# Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window.
 
 
 @pytest.mark.asyncio
-async def test_validation_score_intervals_window(
+async def test_validation_score_declared_window_gates_the_latest_row(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """validation-score: ≥ N+1 rows derive window from intervals; window_source='intervals'.
+    """validation-score: one declared window gates both datasets' latest rows.
 
-    Seeds two datasets:
-      - urn_fresh: N+1=4 rows evenly spaced 24h, latest 1h ago (score=1.0) → in-time.
-        Window = 2 × mean([24h, 24h, 24h]) = 48h = 172800s.
-      - urn_stale: N+1=4 rows evenly spaced 24h, latest 200h ago (score=0.5) → outside
-        172800s window → in breakdown; detail.time_window_sec must be 172800 (spec literal).
+    Both datasets are seeded with four results 24 hours apart, and the metric declares
+    ``time_window_sec=86400`` — deliberately *narrower* than the 24-hour spacing:
+      - urn_fresh: latest result 1h ago (score=1.0) → inside the declared window →
+        contributes 1.0 and is not listed.
+      - urn_stale: latest result 30h ago (score=0.5) → outside the declared window →
+        contributes 0.0 and is listed, with detail.time_window_sec reporting 86400.
 
-    Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — per-dataset window
-          = 2 × mean(last N inter-arrival gaps); N default 3.
-    Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — window_source='intervals'.
+    urn_stale's 30-hour age is the load-bearing choice: it sits *outside* the declared
+    86400s window but *inside* twice the seeded 24-hour inter-arrival gap. So the
+    declared window and any window scaled to the dataset's own validation cadence
+    disagree about it, and they disagree on what the run reports —
+    ``validation_score_sum`` (0.5 counted or not) and ``detail.time_window_sec`` both
+    move with the window. Breakdown *membership* is not part of that signal: urn_stale
+    scores 0.5, so it is listed either way — via the "no result inside the window" branch
+    under the declared window and via the "score < 1.0" branch under a wider one. Its
+    score stays at 0.5 rather than 1.0 so ``detail["score"]`` below still identifies
+    whose row was read.
+
+    Real PostgreSQL is required: the latest-per-dataset row is picked by a row_number()
+    window function the unit tier's fake session cannot execute — which is also why this
+    four-rows-per-dataset shape exists only here and not at the unit tier.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window — "the window is
+          ``metric_conf.time_window_sec``, applied uniformly to every dataset in the run
+          … not a quantity derived from a per-dataset fact such as … a dataset's observed
+          validation inter-arrival gap"; "``validation-score``: the score counted is the
+          latest result whose ``data_time`` is inside ``time_window_sec``; a dataset with
+          no result in the window contributes ``0.0``".
+    Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format — a dataset is failed
+          when its "latest validation ``score`` inside the window is ``< 1.0`` (or no
+          result inside the window)"; detail carries ``latest_data_time`` + ``score`` +
+          ``time_window_sec``.
     """
-    _METRIC_ID = "spot-validation-intervals"
+    _METRIC_ID = "spot-validation-declared-window"
     base_conf = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/attr/conf"
     base_run = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/method/run"
     base_results = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/attr/result"
 
     urn_fresh = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
-    # urn_stale: same 24h spacing but latest row is 200h ago — outside 172800s (48h) window.
     urn_stale = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.editions,DEV)"
 
     await api_client.delete(base_conf, headers=admin_headers)
@@ -2326,8 +2132,7 @@ async def test_validation_score_intervals_window(
                 "DELETE FROM dataspoke.validation_results WHERE dataset_urn = $1", urn
             )
 
-        # urn_fresh: N+1=4 rows evenly spaced 24h apart (N=3 → 3 gaps of 24h each)
-        # Latest at 1h → within 172800s window → score=1.0 counted
+        # urn_fresh: four rows 24h apart, latest at 1h → inside the declared 86400s window.
         for offset_hours in [1, 25, 49, 73]:
             await conn.execute(
                 "INSERT INTO dataspoke.validation_results "
@@ -2339,9 +2144,9 @@ async def test_validation_score_intervals_window(
                 json.dumps({"row_cnt": 1250.0}),
             )
 
-        # urn_stale: N+1=4 rows evenly spaced 24h apart, but latest at 200h → outside window
-        # Spec literal: window = 2 × mean([24h, 24h, 24h]) = 172800s; 200h > 48h → stale
-        for offset_hours in [200, 224, 248, 272]:
+        # urn_stale: same 24h spacing, latest at 30h → outside the declared 86400s window
+        # (24h) while still inside twice the seeded 24h gap (48h).
+        for offset_hours in [30, 54, 78, 102]:
             await conn.execute(
                 "INSERT INTO dataspoke.validation_results "
                 "(id, dataset_urn, score, data_time, variables) "
@@ -2360,10 +2165,10 @@ async def test_validation_score_intervals_window(
                 "mode": "active",
                 "is_enabled": True,
                 "metric_type": "validation-score",
-                "title": "Intervals Window Spot Test",
-                "description": "Tests intervals-derived window",
+                "title": "Declared Window Spot Test",
+                "description": "The declared window gates the latest validation row",
                 "metrics": ["total", "validation_score_sum"],
-                "metric_conf": {"time_window_sec": 3600},  # fallback — must NOT be used
+                "metric_conf": {"time_window_sec": 86400},
                 "schedule_tier": None,
                 "dataset_filter": {"dataset_urns": [urn_fresh, urn_stale]},
             },
@@ -2382,37 +2187,40 @@ async def test_validation_score_intervals_window(
             f"total must be 2 (both catalog URNs resolved); got {row['values']['total']}. "
             "If 0, the URN was not registered in DataHub — check DUMMY_DATA_DATAHUB_SCHEMAS."
         )
-        # urn_fresh: latest at 1h is within 172800s window → score=1.0 counted
         assert row["values"]["validation_score_sum"] == 1.0, (
-            "Latest in-window row score=1.0 must be counted; urn_stale is out-of-window → 0.0. "
-            "Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types."
+            "only urn_fresh's latest row is inside the declared 86400s window, so the sum "
+            f"is its 1.0; got {row['values']['validation_score_sum']}. "
+            "Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window."
         )
 
-        # urn_stale must appear in breakdown with window_source='intervals'
-        # and time_window_sec = spec literal 172800 (2 × mean of three 24h gaps).
         breakdown = row.get("breakdown", {})
-        stale_entries = [e for e in breakdown.get("datasets", []) if e["urn"] == urn_stale]
-        assert stale_entries, (
-            "urn_stale (200h > 48h window) must appear in breakdown. "
+        breakdown_urns = [e["urn"] for e in breakdown.get("datasets", [])]
+        assert breakdown_urns == [urn_stale], (
+            "only the dataset with no result inside the declared window may be listed; got "
+            f"{breakdown_urns}. "
             "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
         )
-        detail = stale_entries[0]["detail"]
-        assert detail["window_source"] == "intervals", (
-            f"window_source must be 'intervals'; got {detail.get('window_source')!r}. "
-            "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows."
+        detail = breakdown["datasets"][0]["detail"]
+        assert detail["time_window_sec"] == 86400, (
+            "the run must report the window it applied, which is the declared "
+            f"metric_conf.time_window_sec; got {detail.get('time_window_sec')}. "
+            "Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window."
         )
-        # Spec literal: 2 × mean([24h, 24h, 24h]) × 3600 = 172800s
-        assert detail["time_window_sec"] == 172800, (
-            f"time_window_sec must be 172800 (2 × mean of three 24h gaps); "
-            f"got {detail.get('time_window_sec')}. "
-            "Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types."
-        )
-
-        # urn_fresh must NOT appear in breakdown (score=1.0 → not failed)
-        fresh_entries = [e for e in breakdown.get("datasets", []) if e["urn"] == urn_fresh]
-        assert not fresh_entries, (
-            "urn_fresh (score=1.0, in-time) must not appear in breakdown. "
+        assert "window_source" not in detail, (
+            "detail must not name a window provenance: the window is always the declared "
+            f"metric_conf.time_window_sec; got keys {sorted(detail)}. "
             "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
+        )
+        assert detail["score"] == 0.5, (
+            "backstop: the listed dataset's own out-of-window row must be what is "
+            f"reported; got {detail.get('score')!r}. "
+            "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
+        )
+        assert datetime.fromisoformat(detail["latest_data_time"]) < now - timedelta(
+            seconds=86400
+        ), (
+            "latest_data_time must be the out-of-window row that was seeded; got "
+            f"{detail['latest_data_time']!r}."
         )
 
     finally:
@@ -2421,111 +2229,6 @@ async def test_validation_score_intervals_window(
                 await conn.execute(
                     "DELETE FROM dataspoke.validation_results WHERE dataset_urn = $1", urn
                 )
-        await conn.close()
-        with suppress(Exception):
-            await api_client.delete(base_conf, headers=admin_headers)
-
-
-@pytest.mark.asyncio
-async def test_validation_score_sparse_fallback_window(
-    api_client: httpx.AsyncClient,
-    admin_headers: dict[str, str],
-) -> None:
-    """validation-score: sparse dataset (< N+1 rows) uses fallback; window_source='default'.
-
-    Seeds only 2 rows (< N+1=4) for one dataset.
-    Fallback time_window_sec=3600. Latest row 5000s ago → stale → window_source='default'.
-
-    Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types —
-          fewer than N intervals falls back to metric_conf.time_window_sec.
-    Spec: spec/feature/BACKEND.md §Metrics Service §Time windows — window_source='default'.
-    """
-    _METRIC_ID = "spot-validation-sparse"
-    base_conf = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/attr/conf"
-    base_run = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/method/run"
-    base_results = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/attr/result"
-
-    # Use a catalog URN — only catalog.* is seeded into DataHub by this module's
-    # DUMMY_DATA_DATAHUB_SCHEMAS constant. Non-catalog URNs are unresolved → total=0 → vacuous pass.
-    # catalog.editions is chosen (distinct from urn_fresh/urn_stale in the intervals test).
-    urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.editions,DEV)"
-
-    await api_client.delete(base_conf, headers=admin_headers)
-
-    conn = await _get_ds_conn()
-    now = datetime.now(tz=UTC)
-    try:
-        await conn.execute(
-            "DELETE FROM dataspoke.validation_results WHERE dataset_urn = $1", urn
-        )
-
-        # Only 2 rows (< N+1=4 for N=3) — insufficient for intervals computation
-        for offset_secs in [5000, 100000]:
-            await conn.execute(
-                "INSERT INTO dataspoke.validation_results "
-                "(id, dataset_urn, score, data_time, variables) "
-                "VALUES (gen_random_uuid(), $1, $2, $3, $4::jsonb)",
-                urn,
-                0.9,
-                now - timedelta(seconds=offset_secs),
-                json.dumps({"row_cnt": 750.0}),
-            )
-
-        create_resp = await api_client.post(
-            "/api/v1/spoke/governance/metric",
-            headers=admin_headers,
-            json={
-                "metric_id": _METRIC_ID,
-                "mode": "active",
-                "is_enabled": True,
-                "metric_type": "validation-score",
-                "title": "Sparse Window Spot Test",
-                "description": "Tests fallback window for sparse datasets",
-                "metrics": ["total", "validation_score_sum"],
-                "metric_conf": {"time_window_sec": 3600},  # latest at 5000s > 3600s → stale
-                "schedule_tier": None,
-                "dataset_filter": {"dataset_urns": [urn]},
-            },
-        )
-        assert create_resp.status_code == 201, create_resp.text
-
-        run_resp = await api_client.post(base_run, headers=admin_headers)
-        assert run_resp.status_code == 200, run_resp.text
-
-        results_resp = await api_client.get(f"{base_results}?limit=5", headers=admin_headers)
-        results = results_resp.json().get("results", [])
-        assert results
-        row = results[0]
-
-        assert row["values"]["total"] == 1.0, (
-            f"total must be 1 (catalog.editions URN resolved); got {row['values']['total']}. "
-            "If 0, the URN was not registered in DataHub — check DUMMY_DATA_DATAHUB_SCHEMAS."
-        )
-        # Latest at 5000s > 3600s fallback → stale → 0.0
-        assert row["values"]["validation_score_sum"] == 0.0, (
-            "Sparse dataset: 5000s > 3600s fallback → stale → 0.0. "
-            "Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types."
-        )
-
-        breakdown = row.get("breakdown", {})
-        stale_entries = breakdown.get("datasets", [])
-        assert stale_entries, "Sparse stale dataset must appear in breakdown."
-        detail = stale_entries[0]["detail"]
-        assert detail["window_source"] == "default", (
-            "Sparse dataset must have window_source='default'; "
-            f"got {detail.get('window_source')!r}. "
-            "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows."
-        )
-        assert detail["time_window_sec"] == 3600, (
-            f"Fallback time_window_sec must be 3600; got {detail.get('time_window_sec')}. "
-            "Spec: spec/feature/BACKEND.md §Metrics Service §Time windows."
-        )
-
-    finally:
-        with suppress(Exception):
-            await conn.execute(
-                "DELETE FROM dataspoke.validation_results WHERE dataset_urn = $1", urn
-            )
         await conn.close()
         with suppress(Exception):
             await api_client.delete(base_conf, headers=admin_headers)

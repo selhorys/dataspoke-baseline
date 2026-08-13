@@ -1416,7 +1416,7 @@ class IngestionService:
         This is tier 1 of ``ingestion-freshness`` evidence: the per-dataset
         `INGESTION.COMPLETE`s the owning source booked **for that dataset**, written
         by the two observation producers (spec/feature/BACKEND.md §Metrics Service —
-        Time windows). A run-level `COMPLETE` is a claim about a *run*, not about a
+        Ingestion evidence). A run-level `COMPLETE` is a claim about a *run*, not about a
         dataset, so it cannot serve here; the source-grained fallback is
         :meth:`latest_ingestion_complete_by_source`.
 
@@ -1467,7 +1467,7 @@ class IngestionService:
 
         This is tier 2 of ``ingestion-freshness`` evidence — the source-grained
         fallback for datasets that have no observation of their own
-        (spec/feature/BACKEND.md §Metrics Service — Time windows). It is
+        (spec/feature/BACKEND.md §Metrics Service — Ingestion evidence). It is
         deliberately **producer-agnostic**: a blacklist here would not narrow the
         fallback but empty it for ``PASSIVE``, which books no run-level event at
         all, leaving every passive dataset without its own observation reading

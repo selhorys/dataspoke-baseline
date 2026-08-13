@@ -458,7 +458,7 @@ class TestReverseLookupPrecedence:
         ``last_seen_at`` term would keep that order and return the older source; a lookup
         that inverted it would return the older source as well.
 
-        Spec: feature/BACKEND.md §Metrics Service §Time windows — "derivation rank emitted
+        Spec: feature/BACKEND.md §Metrics Service §Ingestion evidence — "derivation rank emitted
         > pipeline_name > matched; at equal rank a regular parent beats its CLI wrapper;
         remaining ties go to the most recent last_seen_at."
         """
@@ -495,12 +495,13 @@ class TestReverseLookupPrecedence:
         )
         assert winner.name == "newer-source", (
             f"the most recently seen mapping must win the tie; got {winner.name!r}. "
-            "Spec: feature/BACKEND.md §Metrics Service §Time windows — 'remaining ties go "
+            "Spec: feature/BACKEND.md §Metrics Service §Ingestion evidence — 'remaining ties go "
             "to the most recent last_seen_at'."
         )
         assert winner.schedule_tier == "hourly", (
-            "the returned record must be the newer source's row, whose tier is what the "
-            f"freshness measurer derives its window from; got {winner.schedule_tier!r}."
+            "row identity: only the newer source carries schedule_tier='hourly', so "
+            "reading it back proves the newer source's row was returned rather than the "
+            f"older one's; got {winner.schedule_tier!r}."
         )
 
     @pytest.mark.asyncio

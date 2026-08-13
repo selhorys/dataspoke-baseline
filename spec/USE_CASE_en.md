@@ -732,14 +732,14 @@ are NOT pre-computed by the server — clients derive them from the named fields
 
 | `metric_type` | Emitted `values` keys | Meaning of each key |
 |---|---|---|
-| `ingestion-freshness` | `total`, `ingested_in_time` | `total` = count of datasets matched by `dataset_filter`; `ingested_in_time` = count whose latest `INGESTION.COMPLETE` falls within a **per-dataset freshness window**. The window is derived from each dataset's owning ingestion source (via the source→dataset mapping): a scheduled source (`ACTIVE_CUSTOM_MANAGED`/`DATAHUB_MANAGED`) → twice its `schedule_tier` period (`hourly`→7200s, `daily`→172800s, `weekly`→1209600s); a `PASSIVE` source → twice the DataHub-sync cadence (hourly → 7200s); a dataset mapped to no source (or a source with no derivable schedule) falls back to `metric_conf.time_window_sec`. The doubling leaves room for transient late ingestion |
-| `validation-score` | `total`, `validation_score_sum` | `total` = count of datasets matched by `dataset_filter`; `validation_score_sum` = sum of each dataset's latest validation `score` within a **per-dataset window** = 2 × the mean gap between that dataset's last N validation records (N from the `validation_score_n_intervals` runtime config, default 3). A dataset with fewer than N intervals falls back to `metric_conf.time_window_sec`; the contribution is 0.0 when there is no validation result inside the window |
+| `ingestion-freshness` | `total`, `ingested_in_time` | `total` = count of datasets matched by `dataset_filter`; `ingested_in_time` = count whose latest ingestion evidence falls within `metric_conf.time_window_sec` of the measurement. The evidence is the owning ingestion source's per-dataset observation for that dataset where DataHub reports one, else that source's newest non-dry-run `INGESTION.COMPLETE` (see [`BACKEND.md §Metrics Service`](feature/BACKEND.md#metrics-service-srcbackendmetrics)) |
+| `validation-score` | `total`, `validation_score_sum` | `total` = count of datasets matched by `dataset_filter`; `validation_score_sum` = sum of each dataset's latest validation `score` whose `data_time` falls within `metric_conf.time_window_sec` of the measurement. The contribution is 0.0 when there is no validation result inside the window |
 | `doc-health` | `total`, `doc_health` | `total` = count of datasets matched by `dataset_filter`; `doc_health` = sum of per-dataset documentation scores, where a dataset scores `1.0` iff it has a non-empty table description AND every column carries a non-empty description, else `0.0` |
 
 `metric_conf` carries type-specific parameters: `time_window_sec` for
-`ingestion-freshness` and `validation-score` — the **fallback** window (positive int
-seconds, factory default `172800`) used when no per-dataset window can be derived; empty
-`{}` for `doc-health`.
+`ingestion-freshness` and `validation-score` — **the** measurement window (positive int
+seconds, factory default `172800`), the freshness SLO the governance lead declares and the
+same for every dataset the metric scans; empty `{}` for `doc-health`.
 
 `dataset_filter` carries four optional dimensions: `origin` (the DataHub `FabricType`
 value carried as the third URN segment — `PROD` / `DEV` / `CORP` / `EI` / `STG` /

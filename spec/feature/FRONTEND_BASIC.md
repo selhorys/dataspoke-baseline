@@ -377,7 +377,6 @@ page does not invent fields. Fields are grouped for legibility:
 │  MetaGen     max iters [3]  debate turns [4]  rag k [5]       │
 │              reviewer model [        ]  confidence [0.70]     │
 │              ontology rag  node [5]  edge [5]  triple [5]     │
-│  Validation  score intervals [3]                             │
 │  Stubs       ☐ redis  ☐ llm  ☐ pgvector  ☐ notifications     │
 │  Auth        DataHub corp group [dataspoke-users          ]  │
 │                       Saved · updated 14:32   [ Save changes ]│
@@ -388,7 +387,7 @@ page does not invent fields. Fields are grouped for legibility:
 - **Numeric inputs** mirror the API bounds so out-of-range never reaches the
   server (the API still enforces them via `422`): `*_llm_max_iterations` 1–20,
   `*_debate_max_turns` 2–10, `*_rag_k` and `metagen_ontology_rag_*_k` 0–20,
-  `metagen_confidence_threshold` 0.0–1.0, `validation_score_n_intervals` ≥ 1.
+  `metagen_confidence_threshold` 0.0–1.0.
 - **`stub_*` toggles** are booleans rendered as switches; they gate the four
   dependency stubs (redis, llm, pgvector, notifications).
 - **`llm_api_key`** is a masked write-only secret: `GET` returns `""` (unset) or
