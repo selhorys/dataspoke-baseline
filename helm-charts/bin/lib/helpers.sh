@@ -45,8 +45,53 @@ require_tools() {
 # Switch the active kubectl context.
 use_context() {
   local cluster="$1"
+
+  # Pin the run to a private copy of the kubeconfig before selecting the context.
+  #
+  # `kubectl config use-context` sets current-context in the SHARED kubeconfig, and
+  # every later kubectl/helm call resolves the cluster from it. That makes the
+  # target a piece of mutable global state: any other process that rewrites
+  # current-context mid-run silently redirects the rest of the script at a
+  # different cluster. Docker Desktop does exactly this when its bundled
+  # Kubernetes starts — it installs a `docker-desktop` context and makes it
+  # current — and a long install that began against a remote cluster then applies
+  # its remaining steps locally, failing with errors ("namespaces not found") that
+  # name the right object and the wrong cluster.
+  #
+  # A private copy makes the selection process-local: external writes to
+  # ~/.kube/config cannot reach it, and the caller's own current-context is left
+  # untouched when the script exits. The pin is exported, so child scripts
+  # (dev-peripherals/*.sh, build-image.sh) inherit the same cluster and skip
+  # re-pinning.
+  if [[ -z "${DATASPOKE_KUBECONFIG_PINNED:-}" ]]; then
+    local pinned prev_trap
+    pinned="$(mktemp -t dataspoke-kubeconfig.XXXXXX)"
+    chmod 600 "$pinned"
+    # `view --raw` resolves $KUBECONFIG's full precedence list into one document,
+    # so a multi-file setup pins exactly what the caller would have resolved.
+    if ! kubectl config view --raw > "$pinned" 2>/dev/null; then
+      rm -f "$pinned"
+      error "Could not read the kubeconfig to pin this run's cluster."
+    fi
+    # Chain onto any EXIT trap the caller already installed rather than replacing it.
+    prev_trap="$(trap -p EXIT | sed -E "s/^trap -- '(.*)' EXIT\$/\1/")"
+    # shellcheck disable=SC2064  # $pinned must expand now, not at trap time.
+    trap "${prev_trap:+${prev_trap}; }rm -f '${pinned}'" EXIT
+    export KUBECONFIG="$pinned"
+    export DATASPOKE_KUBECONFIG_PINNED=1
+  fi
+
   info "Switching to Kubernetes context: ${cluster}"
   kubectl config use-context "${cluster}"
+
+  # Fail loudly if the requested context is not what we ended up on — a pinned
+  # copy that lacks the context would otherwise leave the run on whatever
+  # current-context the copy happened to carry.
+  local active
+  active="$(kubectl config current-context 2>/dev/null || true)"
+  if [[ "$active" != "$cluster" ]]; then
+    error "Kubernetes context is '${active:-<none>}', expected '${cluster}'. Check that the context exists in your kubeconfig."
+  fi
 }
 
 # ingress_mode

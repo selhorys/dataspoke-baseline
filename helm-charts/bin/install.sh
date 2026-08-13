@@ -254,18 +254,62 @@ _run_bg() {
 }
 
 _wait_all() {
-  local failed=0
-  for i in "${!PIDS[@]}"; do
-    local pid="${PIDS[$i]}"
-    local label="${LABELS[$i]}"
-    if wait "$pid"; then
-      info "  [OK] $label"
-    else
-      warn "  [FAIL] $label (exit $?)"
-      cat "${INSTALL_TMPDIR}/${label//\//-}.log" >&2 || true
-      (( failed++ ))
+  # Report each task the moment it finishes, and print a heartbeat naming what is
+  # still outstanding while we wait.
+  #
+  # Waiting on the PIDs in array order and printing only at the end made this
+  # phase silent for its whole duration — and it is the longest phase in the
+  # install (image builds plus DataHub plus Langfuse, each of which can wait
+  # minutes on cluster scheduling). Each task's output goes to its own log and was
+  # shown only on failure, so a healthy slow run and a hung one produced identical
+  # output: nothing. In-order waiting made it worse, since a task that finished
+  # early stayed unreported until every task ahead of it in the array completed.
+  local failed=0 remaining=${#PIDS[@]} waited=0
+  local -a done_flags=()
+  local i pid label rc heartbeat=0
+  for i in "${!PIDS[@]}"; do done_flags[i]=0; done
+
+  while (( remaining > 0 )); do
+    for i in "${!PIDS[@]}"; do
+      (( done_flags[i] )) && continue
+      pid="${PIDS[$i]}"
+      label="${LABELS[$i]}"
+      # Non-blocking reap: kill -0 fails once the process is gone, and only then
+      # does `wait` return its real exit status instead of blocking.
+      if ! kill -0 "$pid" 2>/dev/null; then
+        rc=0
+        wait "$pid" || rc=$?
+        done_flags[i]=1
+        (( remaining-- ))
+        if (( rc == 0 )); then
+          info "  [OK] $label (t+$((SECONDS - START_TIME))s)"
+        else
+          warn "  [FAIL] $label (exit $rc, t+$((SECONDS - START_TIME))s)"
+          cat "${INSTALL_TMPDIR}/${label//\//-}.log" >&2 || true
+          (( failed++ ))
+        fi
+      fi
+    done
+    (( remaining == 0 )) && break
+    sleep 5
+    waited=$(( waited + 5 ))
+    # Heartbeat every 30s: which tasks are still running, and the last line each
+    # one logged, so a stuck task is distinguishable from a slow one.
+    if (( waited - heartbeat >= 30 )); then
+      heartbeat=$waited
+      local still=""
+      for i in "${!PIDS[@]}"; do
+        (( done_flags[i] )) || still+=" ${LABELS[$i]}"
+      done
+      info "  ... still running:${still} (${waited}s elapsed in this phase)"
+      for i in "${!PIDS[@]}"; do
+        (( done_flags[i] )) && continue
+        local logf="${INSTALL_TMPDIR}/${LABELS[$i]//\//-}.log"
+        [[ -s "$logf" ]] && info "      [${LABELS[$i]}] $(tail -1 "$logf" | tr -d '\r' | cut -c1-120)"
+      done
     fi
   done
+
   PIDS=()
   LABELS=()
   if (( failed > 0 )); then
