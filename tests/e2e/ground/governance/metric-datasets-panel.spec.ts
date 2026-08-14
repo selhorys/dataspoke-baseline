@@ -9,8 +9,9 @@
  *   1. Columns + the never-evaluated row. A metric that has NEVER run has a
  *      scope but no verdicts, so every row reads `unknown` with an em-dash
  *      last-check time — the one state the run-then-read story cannot produce.
- *   2. The three-way verdict toggle drives the repeatable `met` query param
- *      (observed on the wire), and zero toggles issue NO request at all.
+ *   2. The three-way verdict toggle carries its visible `criterion met:` label and
+ *      drives the repeatable `met` query param (observed on the wire), and zero
+ *      toggles issue NO request at all.
  *   3. The scope-freshness line states the envelope's `attrs_synced_at`.
  *
  * Independent: seeds one disabled, on-demand metric via REST so the detail route
@@ -194,6 +195,10 @@ test("lists the covered datasets as unknown until the metric has run", async ({
 //   **no request**: an omitted repeatable param and an empty one are the same HTTP
 //   request, which the API reads as 'all three', so the no-selection case cannot be
 //   expressed on the wire and is resolved client-side instead."
+// spec: FRONTEND_GOVERNANCE.md §Metrics — "The group carries a visible `criterion
+//   met:` label immediately before the three checkboxes, so the three bare words are
+//   readable without relying on the group's accessible name; the table's own column
+//   header is `met criterion`."
 
 test("the verdict toggles drive the met param, and zero toggles issue no request", async ({
   page,
@@ -224,7 +229,15 @@ test("the verdict toggles drive the met param, and zero toggles issue no request
     panel.getByRole("columnheader", { name: "dataset_urn", exact: true }),
   ).toBeVisible({ timeout: 15_000 });
 
-  // -- UI assertion: all three toggles start checked --
+  // -- UI assertion: the group's visible label names what the three words qualify --
+  const verdictGroup = panel.getByRole("group", {
+    name: "Filter datasets by criterion verdict",
+  });
+  await expect(verdictGroup.getByText("criterion met:", { exact: true })).toBeVisible({
+    timeout: 15_000,
+  });
+
+  // -- UI assertion: all three toggles start checked, still named by their verdict --
   for (const verdict of ["true", "false", "unknown"]) {
     await expect(
       panel.getByRole("checkbox", { name: verdict, exact: true }),
@@ -238,6 +251,29 @@ test("the verdict toggles drive the met param, and zero toggles issue no request
   // spec: FRONTEND_GOVERNANCE.md §Metrics — "The shared Pagination drives
   //   `offset`/`limit` with `sort=dataset_urn`."
   expect(datasetQueries.at(-1)!.get("sort")).toBe("dataset_urn");
+
+  // -- Behaviour assertion: the caption is a caption, not a control label --
+  // The exact-name queries above cannot tell the two structures apart: the checkbox
+  // is a Radix `<button role="checkbox" aria-label={verdict}>`, and `aria-label`
+  // outranks a wrapping `<label>` in the accname computation, so a caption nested
+  // inside the first label would keep every name query resolving while silently
+  // making it a click target for the `true` verdict. Clicking it is what separates
+  // them.
+  const readsBeforeCaptionClick = metParams.length;
+  await verdictGroup.getByText("criterion met:", { exact: true }).click();
+  for (const verdict of ["true", "false", "unknown"]) {
+    await expect(
+      panel.getByRole("checkbox", { name: verdict, exact: true }),
+    ).toBeChecked();
+  }
+  // Bounded settle window before an absence assertion — the gestures below prove a
+  // toggle in this group does fire a read, so a quiet window here carries signal.
+  await page.waitForTimeout(500);
+  expect(
+    metParams.length,
+    "clicking the group caption must toggle nothing and fire no read; saw " +
+      `${JSON.stringify(metParams.slice(readsBeforeCaptionClick))}`,
+  ).toBe(readsBeforeCaptionClick);
 
   // -- UI gesture: drop `false` --
   await panel.getByRole("checkbox", { name: "false", exact: true }).uncheck();

@@ -207,6 +207,7 @@ def upgrade() -> None:
             nullable=False,
             server_default=sa.text("'{}'::text[]"),
         ),
+        sa.Column("is_primary", sa.Boolean(), nullable=False, server_default=sa.text("true")),
         sa.Column("attrs_synced_at", TIMESTAMPTZ, nullable=True),
         sa.Column("created_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
         sa.Column("updated_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
@@ -238,6 +239,15 @@ def upgrade() -> None:
         "ix_dataset_registry_platform_urn",
         "dataset_registry",
         ["platform_urn"],
+        schema=SCHEMA,
+    )
+    # Partial: the column is true registry-wide by default, so only the false
+    # side is selective enough for the planner to use an index.
+    op.create_index(
+        "ix_dataset_registry_not_primary",
+        "dataset_registry",
+        ["is_primary"],
+        postgresql_where=sa.text("NOT is_primary"),
         schema=SCHEMA,
     )
 

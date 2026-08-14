@@ -4,7 +4,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, TypeVar
+from typing import Any, NamedTuple, TypeVar
 from urllib.parse import urlsplit
 
 from datahub.emitter.mcp import MetadataChangeProposalWrapper
@@ -56,6 +56,26 @@ class DocumentationAspects:
     editable_table_description: str | None
     field_descriptions: dict[str, str] = field(default_factory=dict)
     editable_field_descriptions: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class DatasetAttributeRead:
+    """One dataset's ``dataset_filter`` attributes as read from DataHub.
+
+    The three fields are what the estate-wide attribute read mirrors into
+    ``dataset_registry`` (spec/DATAHUB_INTEGRATION.md §Dataset attribute sync).
+    ``origin`` and ``platform_urn`` are absent by design — the URN encodes both,
+    so the caller parses them rather than reading them.
+
+    ``is_primary`` is never null: a dataset with no ``siblings`` aspect, no
+    readable ``isPrimary`` flag, or an unreadable aspect altogether all read
+    ``True``, which is the "counted once" default an ``is_primary = true`` filter
+    must not drop a dataset over.
+    """
+
+    tag_urns: list[str]
+    glossary_term_urns: list[str]
+    is_primary: bool
 
 
 def _url_password(url: str) -> str | None:
@@ -731,12 +751,10 @@ class DataHubClient:
 
         return result
 
-    async def get_dataset_attributes(
-        self, count: int = 1000
-    ) -> dict[str, tuple[list[str], list[str]]]:
-        """Return ``{dataset_urn: (tag_urns, glossary_term_urns)}`` for the estate.
+    async def get_dataset_attributes(self, count: int = 1000) -> dict[str, DatasetAttributeRead]:
+        """Return ``{dataset_urn: DatasetAttributeRead}`` for the estate.
 
-        The associations a ``dataset_filter`` reads live only in DataHub, so the
+        The attributes a ``dataset_filter`` reads live only in DataHub, so the
         sweep mirrors them into ``dataset_registry`` from one paged
         ``scrollAcrossEntities`` (spec/DATAHUB_INTEGRATION.md §Dataset attribute
         sync). ``origin`` and ``platform_urn`` are **not** read here — the dataset
@@ -745,11 +763,11 @@ class DataHubClient:
         This read carries the same four hardening properties as
         :meth:`get_last_ingested`:
 
-        - **The ``... on Dataset`` inline fragment is mandatory.** ``tags`` and
-          ``glossaryTerms`` are declared on the concrete ``Dataset`` type, not on
-          the ``Entity`` interface ``entity`` resolves to, so selecting them
-          directly on ``entity`` fails the *whole query* as a GraphQL validation
-          error rather than returning null.
+        - **The ``... on Dataset`` inline fragment is mandatory.** ``tags``,
+          ``glossaryTerms`` and ``siblings`` are declared on the concrete
+          ``Dataset`` type, not on the ``Entity`` interface ``entity`` resolves
+          to, so selecting them directly on ``entity`` fails the *whole query* as
+          a GraphQL validation error rather than returning null.
         - **``scrollId`` is transmitted only once non-empty**, so the first page
           sends no cursor rather than an explicit null.
         - **The cursor loop is capped** at ``_SCROLL_MAX_PAGES`` and also stops on
@@ -764,6 +782,16 @@ class DataHubClient:
         yields an entry with two empty lists — that is a *read* answer ("no tags"),
         distinct from the absence of an entry ("not read this sweep"), which is
         what the caller's never-blank upsert rule keys on.
+
+        ``is_primary`` derives from the ``siblings`` selection, always yielding a
+        non-null boolean (spec/DATAHUB_INTEGRATION.md §Dataset attribute sync):
+        the aspect absent or null ⇒ ``True``; a readable ``isPrimary`` flag ⇒
+        that flag; otherwise ``True``. See :func:`_sibling_is_primary` for why
+        the flag is read before the sibling list. A malformed ``siblings`` object
+        degrades to ``True`` under the same shape checks rather than raising — an
+        unknown sibling relationship must not silently drop a dataset out of an
+        ``is_primary = true`` filter — and one ``datahub_dataset_siblings_shape_
+        degraded`` warning per read reports how many datasets took that branch.
 
         Raises:
             DataHubUnavailableError: on transport failure after retries. Errors
@@ -780,14 +808,16 @@ class DataHubClient:
                         ... on Dataset {
                             tags { tags { tag { urn } } }
                             glossaryTerms { terms { term { urn } } }
+                            siblings { isPrimary siblings { urn } }
                         }
                     }
                 }
             }
         }
         """
-        result: dict[str, tuple[list[str], list[str]]] = {}
+        result: dict[str, DatasetAttributeRead] = {}
         scroll_id: str | None = None
+        siblings_degraded = 0
 
         for _ in range(_SCROLL_MAX_PAGES):
             scroll_input: dict[str, Any] = {
@@ -819,9 +849,15 @@ class DataHubClient:
                 urn = entity.get("urn")
                 if not urn or not isinstance(urn, str):
                     continue
-                result[urn] = (
-                    _association_urns(entity.get("tags"), "tags", "tag"),
-                    _association_urns(entity.get("glossaryTerms"), "terms", "term"),
+                sibling_read = _sibling_is_primary(entity.get("siblings"))
+                if sibling_read.degraded:
+                    siblings_degraded += 1
+                result[urn] = DatasetAttributeRead(
+                    tag_urns=_association_urns(entity.get("tags"), "tags", "tag"),
+                    glossary_term_urns=_association_urns(
+                        entity.get("glossaryTerms"), "terms", "term"
+                    ),
+                    is_primary=sibling_read.is_primary,
                 )
 
             next_scroll_id = page.get("nextScrollId")
@@ -841,6 +877,22 @@ class DataHubClient:
                 "with %d datasets read; the estate's remaining datasets keep their "
                 "stored attributes this sweep",
                 _SCROLL_MAX_PAGES,
+                len(result),
+            )
+
+        if siblings_degraded:
+            # One counter per read, not one line per dataset: an estate-wide
+            # scroll would drown the log. It covers the malformed-but-present
+            # payloads only — the branches that guessed `true` rather than read
+            # it — because that guess silently widens every `is_primary = true`
+            # filter, and for UC4 metagen that filter is a write scope. A
+            # `siblings` selection that drifts does not reach here: an unknown
+            # field fails GraphQL validation, and a partial error raises out of
+            # `execute_graphql` before this line.
+            logger.warning(
+                "datahub_dataset_siblings_shape_degraded — %d of %d datasets read "
+                "is_primary=true from an unreadable siblings payload",
+                siblings_degraded,
                 len(result),
             )
 
@@ -923,6 +975,60 @@ def _association_urns(container: Any, list_key: str, entity_key: str) -> list[st
             seen.add(urn)
             urns.append(urn)
     return urns
+
+
+class _SiblingRead(NamedTuple):
+    """One dataset's sibling verdict plus whether the payload had to be degraded."""
+
+    is_primary: bool
+    degraded: bool
+
+
+def _sibling_is_primary(container: Any) -> _SiblingRead:
+    """Derive ``is_primary`` from a GraphQL ``SiblingProperties`` container.
+
+    ``true`` unless DataHub positively says this dataset is a non-leading member
+    of a sibling set (spec/DATAHUB_INTEGRATION.md §Dataset attribute sync):
+
+    - the aspect absent or null ⇒ ``True``
+    - ``isPrimary`` a boolean ⇒ that flag, whatever the sibling list holds
+    - otherwise ⇒ ``True``
+
+    ``isPrimary`` is read **before** the sibling list, and that order is
+    load-bearing. ``Siblings.pdl`` declares both ``siblings`` and ``primary`` as
+    required fields, so a stored aspect always carries an explicit flag, and
+    ``SiblingsMapper`` sets ``isPrimary`` unconditionally while filtering only the
+    list. An explicit ``false`` is therefore a positive statement of
+    non-leadership and an empty list is evidence of nothing — a deployment with
+    ``VIEW_AUTHORIZATION_ENABLED`` on can return one beside the other. Deciding on
+    emptiness first would read such a dataset as primary and reintroduce the
+    sibling double-count the column exists to prevent.
+
+    Both ``siblings`` and ``isPrimary`` are nullable in DataHub's schema, and the
+    payload is remote, so every level is shape-checked rather than duck-typed.
+    The default is ``True`` in every degraded branch on purpose: an unknown
+    sibling relationship must resolve to the same "counted once" answer as no
+    relationship at all, never to dropping the dataset from an
+    ``is_primary = true`` filter. ``degraded`` marks the branches where that
+    default was a guess rather than an answer, so the caller can report how much
+    of a read it covered.
+    """
+    if container is None:
+        # No siblings aspect — the ordinary case for most of an estate.
+        return _SiblingRead(is_primary=True, degraded=False)
+    if not isinstance(container, dict):
+        return _SiblingRead(is_primary=True, degraded=True)
+
+    is_primary = container.get("isPrimary")
+    if isinstance(is_primary, bool):
+        return _SiblingRead(is_primary=is_primary, degraded=False)
+
+    siblings = container.get("siblings")
+    if siblings is None or (isinstance(siblings, list) and not siblings):
+        # A present aspect with no flag and no sibling says nothing about
+        # leadership, which is the same answer as having no aspect at all.
+        return _SiblingRead(is_primary=True, degraded=False)
+    return _SiblingRead(is_primary=True, degraded=True)
 
 
 def _extract_status_code(exc: Exception) -> int | None:

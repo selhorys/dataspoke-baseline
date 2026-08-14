@@ -73,3 +73,7 @@
 - [Frontend role gate reads a stale `me`](project_frontend_role_gate_stale_me.md) — logout clears zustand but not the query cache; `enabled: isAdmin` + "control renders under isAdmin" is ONE signal
 - [Audit list spans a concurrent stage](feedback_audit_list_spans_concurrent_stage.md) — traps for the sibling stage land mid-review; re-run git status + check mtimes before judging
 - [Filter formatter parity](project_filter_formatter_parity.md) — TS Auto-indent == Python format_filter only on canonical input; node --experimental-strip-types recipe
+- [Radix Checkbox aria-label accname](project_radix_checkbox_aria_label_accname.md) — explicit aria-label wins, so green getByRole("checkbox",{name}) canNOT prove a new group label landed outside the <label>
+- [Grammar mirror has no guard](feedback_grammar_mirror_has_no_guard.md) — dataset-filter-guide.tsx hand-copies API.md's grammar; only the collapsed <summary> is asserted, so prose goes stale unseen
+- [PG `IS FALSE` vs partial index](project_pg_is_false_vs_partial_index.md) — `col IS FALSE` never matches a `WHERE NOT col` partial index (verified PG17, seqscan off); `= false`/`NOT col` do
+- [Code-option fix strands the spec](feedback_code_option_fix_strands_spec.md) — generators can't edit spec/, so a two-option finding leaves the other doc wrong; re-diff spec on re-review

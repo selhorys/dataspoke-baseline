@@ -212,7 +212,9 @@ class DatasetAttributes:
     """One dataset's filter attributes, ready to mirror into ``dataset_registry``.
 
     ``origin`` and ``platform_urn`` are parsed out of the URN by the caller; the
-    two association lists come from the estate-wide attribute read.
+    two association lists and ``is_primary`` come from the estate-wide attribute
+    read. ``is_primary`` is a plain bool, never null — the read resolves absent
+    or unreadable sibling information to ``True``.
     """
 
     dataset_urn: str
@@ -220,6 +222,7 @@ class DatasetAttributes:
     platform_urn: str | None
     tag_urns: list[str]
     glossary_term_urns: list[str]
+    is_primary: bool
 
 
 async def upsert_dataset_attributes(
@@ -269,6 +272,7 @@ async def upsert_dataset_attributes(
             "platform_urn": stmt.excluded.platform_urn,
             "tag_urns": stmt.excluded.tag_urns,
             "glossary_term_urns": stmt.excluded.glossary_term_urns,
+            "is_primary": stmt.excluded.is_primary,
             "attrs_synced_at": stmt.excluded.attrs_synced_at,
             "updated_at": now,
         },
@@ -285,6 +289,7 @@ async def upsert_dataset_attributes(
             "platform_urn": record.platform_urn,
             "tag_urns": list(record.tag_urns),
             "glossary_term_urns": list(record.glossary_term_urns),
+            "is_primary": record.is_primary,
             "attrs_synced_at": now,
             "created_at": now,
             "updated_at": now,

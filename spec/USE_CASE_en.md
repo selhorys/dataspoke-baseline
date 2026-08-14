@@ -744,8 +744,11 @@ same for every dataset the metric scans; empty `{}` for `doc-health`.
 `dataset_filter` is a SQL `WHERE`-clause string over the dataset registry — DataSpoke's
 local mirror of the DataHub estate. Its columns are `dataset_urn`, `origin`, and
 `platform_urn` (scalars parsed from the dataset URN, `origin` being the DataHub
-`FabricType` segment — `PROD` / `DEV` / `CORP` / `EI` / `STG` / `NON_PROD` / …) plus
-`tag_urns` and `glossary_term_urns` (arrays synced from DataHub). Predicates combine with
+`FabricType` segment — `PROD` / `DEV` / `CORP` / `EI` / `STG` / `NON_PROD` / …), the arrays
+`tag_urns` and `glossary_term_urns` (synced from DataHub), and the boolean `is_primary`
+(`true` when the dataset leads its DataHub sibling set or has none, so `is_primary = true`
+scores each logical asset once instead of double-counting a dbt model and its warehouse
+table). Predicates combine with
 `AND` / `OR` and parentheses; the empty string means all registered datasets. The full
 grammar and its caps are in
 [`API.md` §`dataset_filter` grammar](API.md#dataset_filter-grammar). A malformed filter is

@@ -38,7 +38,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.backend.ingestion.extractors import run_extractor
 from src.shared.cache.client import RedisClient
-from src.shared.datahub.client import DataHubClient
+from src.shared.datahub.client import DataHubClient, DatasetAttributeRead
 from src.shared.datahub.urn import platform_from_dataset_urn, platform_urn_from_dataset_urn
 from src.shared.db.models import Event, IngestionSource, IngestionSourceDataset
 from src.shared.db.registry import (
@@ -162,6 +162,25 @@ def _observed_at(ms: Any) -> datetime | None:
         logger.warning("ingestion_observed_at_rejected reason=future value=%r", ms)
         return None
     return observed
+
+
+def _require_attribute_read(attribute: object) -> bool:
+    """Assert one attribute-read value's shape, raising ``TypeError`` if it is wrong.
+
+    Always returns ``True`` so it reads as a filter clause in the comprehension
+    that builds the sweep's ``DatasetAttributes`` records. Its point is the raise:
+    the comprehension also calls DataSpoke's own URN helpers, so an
+    ``AttributeError`` there must stay attributable to a call-shape fault instead
+    of being absorbed by the malformed-payload branch. Checking the shape up front
+    turns a wrong value into a ``TypeError`` and leaves ``AttributeError`` meaning
+    only what it meant before.
+    """
+    if not isinstance(attribute, DatasetAttributeRead):
+        raise TypeError(
+            f"dataset attribute read returned {type(attribute).__name__}, "
+            "expected DatasetAttributeRead"
+        )
+    return True
 
 
 # ── Value objects ─────────────────────────────────────────────────────────────
@@ -1822,9 +1841,10 @@ class IngestionService:
            insert new URNs as registered, soft-flag removed URNs as unregistered.
         3. **Dataset attribute sync**: refresh the dataset_registry columns every
            dataset_filter resolves against — origin and platform_urn parsed from
-           each URN, tag_urns and glossary_term_urns from one paged attribute
-           read, attrs_synced_at as the watermark. Upsert per dataset: a dataset
-           the read missed keeps its prior attributes.
+           each URN, tag_urns, glossary_term_urns and is_primary (derived from the
+           siblings aspect) from one paged attribute read, attrs_synced_at as the
+           watermark. Upsert per dataset: a dataset the read missed keeps its
+           prior attributes.
         4. **Observed enrichment**: for DATAHUB_MANAGED and ACTIVE_CUSTOM_MANAGED
            sources, read systemMetadata.pipelineName per dataset and upsert
            derivation='pipeline_name' rows where the name matches a source.
@@ -2387,8 +2407,9 @@ class IngestionService:
 
         Two sources, deliberately different (spec/DATAHUB_INTEGRATION.md §Dataset
         attribute sync): ``origin`` and ``platform_urn`` are parsed out of each
-        dataset URN, which encodes both by definition, while ``tag_urns`` and
-        ``glossary_term_urns`` come from one paged estate-wide read.
+        dataset URN, which encodes both by definition, while ``tag_urns``,
+        ``glossary_term_urns`` and ``is_primary`` come from one paged estate-wide
+        read.
 
         **A dataset the read did not return keeps its stored attributes.** The
         write is an upsert keyed on the URNs actually read — never a
@@ -2405,10 +2426,11 @@ class IngestionService:
         counter reports: coverage of the estate, not a count of changes.
         """
         # Neither the read nor the shape it returns may escape: this step must not
-        # flip the datahub-api health row, and an exception leaving here would
-        # (spec/feature/BACKEND.md §Health reporting scopes the
-        # interface-violation exemption to the lastIngested read alone). The two
-        # are guarded separately so the log says which one failed.
+        # flip the datahub-api health row, and an exception leaving here would.
+        # This read is exempt from best-effort on call-shape faults, which log at
+        # ERROR but return the fallback rather than re-raising — the ERROR record
+        # is the whole signal (spec/feature/BACKEND.md §Best-Effort Operations).
+        # The two are guarded separately so the log says which one failed.
         try:
             attributes = await self._datahub.get_dataset_attributes()
         except (AttributeError, TypeError):
@@ -2439,19 +2461,36 @@ class IngestionService:
                     # the FIRST comma — a platform id carries none, while a name
                     # segment may (`s3,bucket/a,b.csv,PROD`).
                     platform_urn=platform_urn_from_dataset_urn(urn),
-                    tag_urns=list(tag_urns),
-                    glossary_term_urns=list(glossary_term_urns),
+                    tag_urns=list(attribute.tag_urns),
+                    glossary_term_urns=list(attribute.glossary_term_urns),
+                    is_primary=attribute.is_primary,
                 )
-                for urn, (tag_urns, glossary_term_urns) in attributes.items()
+                for urn, attribute in attributes.items()
+                # Shape-check rather than duck-type, matching the client: a value
+                # that is not a DatasetAttributeRead raises TypeError below and
+                # lands in the payload branch, which keeps an AttributeError
+                # meaning what it meant before — a missing method of DataSpoke's
+                # own (the comprehension calls two URN helpers).
+                if _require_attribute_read(attribute)
             ]
         except (TypeError, ValueError):
             # The read returned something this step cannot iterate as
-            # {urn: (tags, terms)} — a remote-payload problem, not a call-shape
-            # one, so it degrades the signal rather than naming DataSpoke's call.
-            logger.error(
+            # {urn: DatasetAttributeRead} — a remote-payload problem, not a
+            # call-shape one, so it degrades the signal rather than naming
+            # DataSpoke's call.
+            logger.warning(
                 "ingestion_sync_dataset_attributes_payload_unreadable — the attribute "
                 "read returned a shape this step cannot iterate; every dataset keeps "
                 "its stored attributes this tick",
+                exc_info=True,
+            )
+            return 0
+        except AttributeError:
+            # A helper the comprehension calls is missing or renamed: the same
+            # call-shape fault the read guard above names, raised one step later.
+            logger.error(
+                "ingestion_sync_client_interface_error — building dataset attribute "
+                "records; this is a DataSpoke call-shape fault, not a DataHub fault",
                 exc_info=True,
             )
             return 0
@@ -2775,11 +2814,14 @@ class IngestionService:
         renamed client method would otherwise report ``last_ingested_observed = 0``
         forever, indistinguishable from an estate with nothing observable, and a
         duck-typed test double missing the method would pass green with this pass
-        never running. The exemption is scoped to this read alone, whose client
-        parses a fixed-shape GraphQL response with every element shape-checked, so
-        an ``AttributeError``/``TypeError`` here can only be DataSpoke's own call
-        shape — :meth:`_observe_passive_operations` deserialises writer-supplied
-        remote aspects and is deliberately not exempt.
+        never running. The exemption covers the sweep's two estate-wide reads —
+        this one and :meth:`_sync_dataset_attributes` — whose clients each parse a
+        fixed-shape GraphQL response with every element shape-checked, so an
+        ``AttributeError``/``TypeError`` there can only be DataSpoke's own call
+        shape. This read re-raises; the attribute read returns its fallback
+        instead, because that step must not flip the health row.
+        :meth:`_observe_passive_operations` deserialises writer-supplied remote
+        aspects and is deliberately not exempt.
         """
         bookable = [row.id for row in sources if row.parent_source_id is None]
         if not bookable:

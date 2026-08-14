@@ -292,7 +292,7 @@ class TestReplaceMetricConfigRequest:
     )
     def test_dataset_filter_grammar_forms_accepted(self, dataset_filter: str) -> None:
         """Spec: spec/API.md §`dataset_filter` grammar — the productions and the
-        worked example."""
+        depth-1 parenthesised AND/OR composition its worked example prints."""
         req = ReplaceMetricConfigRequest(**{
             **_VALID_INGESTION_BODY,
             "dataset_filter": dataset_filter,

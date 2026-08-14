@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.shared.config import RETRY_MAX_ATTEMPTS
+from src.shared.datahub.client import DatasetAttributeRead
 from src.shared.exceptions import DataHubUnavailableError
 from src.shared.redaction import REDACTED
 
@@ -843,31 +844,51 @@ async def test_get_last_ingested_surfaces_an_exhausted_retry_as_the_documented_e
 #
 # spec: spec/DATAHUB_INTEGRATION.md §Dataset attribute sync — "`tag_urns`,
 #   `glossary_term_urns` | one paged `scrollAcrossEntities` | Associations that live only
-#   in DataHub"; the read "selects `urn`, `tags { tags { tag { urn } } }`, and
-#   `glossaryTerms { terms { term { urn } } }` and carries the same four hardening
-#   properties as §Observed Ingestion Recency".
+#   in DataHub"; "`is_primary` | the `siblings` aspect on the same scroll"; the read
+#   "selects `urn`, `tags { tags { tag { urn } } }`, `glossaryTerms { terms { term { urn }
+#   } }`, and `siblings { isPrimary siblings { urn } }`, and carries the same four
+#   hardening properties as §Observed Ingestion Recency".
 
 
-def _attribute_hit(urn: str, tag_urns: list[str], term_urns: list[str]) -> dict:
-    """One search hit in the association shape DataHub's `Dataset` type returns."""
+def _attribute_hit(
+    urn: str,
+    tag_urns: list[str],
+    term_urns: list[str],
+    siblings: object = None,
+) -> dict:
+    """One search hit in the association shape DataHub's `Dataset` type returns.
+
+    `siblings` defaults to `None` — the ordinary case for most of an estate, and the
+    shape a GMS returns for a dataset carrying no `siblings` aspect.
+    """
     return {
         "entity": {
             "urn": urn,
             "tags": {"tags": [{"tag": {"urn": t}} for t in tag_urns]},
             "glossaryTerms": {"terms": [{"term": {"urn": t}} for t in term_urns]},
+            "siblings": siblings,
         }
     }
 
 
-async def test_get_dataset_attributes_selects_both_associations_in_a_dataset_fragment(
+def _read(
+    tag_urns: list[str], term_urns: list[str], is_primary: bool = True
+) -> DatasetAttributeRead:
+    """The value shape the read answers with, spelled out per call site."""
+    return DatasetAttributeRead(
+        tag_urns=tag_urns, glossary_term_urns=term_urns, is_primary=is_primary
+    )
+
+
+async def test_get_dataset_attributes_selects_every_attribute_in_a_dataset_fragment(
     client, mock_graph
 ) -> None:
-    """`tags` and `glossaryTerms` are selected inside an `... on Dataset` fragment.
+    """`tags`, `glossaryTerms` and `siblings` are selected inside `... on Dataset`.
 
-    Pinned as query text for the same reason as `get_last_ingested`: both are declared on
-    the concrete `Dataset` type rather than the `Entity` interface `entity` resolves to,
-    so selecting them on `entity` fails the whole query against a real GMS while a mocked
-    graph returns rows either way.
+    Pinned as query text for the same reason as `get_last_ingested`: all three are
+    declared on the concrete `Dataset` type rather than the `Entity` interface `entity`
+    resolves to, so selecting them on `entity` fails the whole query against a real GMS
+    while a mocked graph returns rows either way.
 
     spec: spec/DATAHUB_INTEGRATION.md §Dataset attribute sync — "a mandatory `... on
         Dataset` inline fragment"; the selection list quoted above.
@@ -879,19 +900,20 @@ async def test_get_dataset_attributes_selects_both_associations_in_a_dataset_fra
     query = mock_graph.execute_graphql.call_args.args[0]
     assert "... on Dataset" in query, f"missing the Dataset inline fragment; got:\n{query}"
     fragment_body = query.split("... on Dataset", 1)[1]
-    for selection in ("tags", "glossaryTerms"):
+    for selection in ("tags", "glossaryTerms", "siblings", "isPrimary"):
         assert selection in fragment_body, (
             f"{selection} must be selected INSIDE the Dataset fragment; got:\n{query}"
         )
 
 
-async def test_get_dataset_attributes_maps_each_dataset_to_its_two_urn_lists(
+async def test_get_dataset_attributes_maps_each_dataset_to_its_filter_attributes(
     client, mock_graph
 ) -> None:
-    """The read answers `{urn: (tag_urns, glossary_term_urns)}`.
+    """The read answers `{urn: DatasetAttributeRead(tags, terms, is_primary)}`.
 
     spec: spec/DATAHUB_INTEGRATION.md §Dataset attribute sync — the sweep mirrors
-        `tag_urns` and `glossary_term_urns` from this read into `dataset_registry`.
+        `tag_urns`, `glossary_term_urns` and `is_primary` from this read into
+        `dataset_registry`.
     """
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
     mock_graph.execute_graphql.return_value = _scroll_page(
@@ -908,7 +930,9 @@ async def test_get_dataset_attributes_maps_each_dataset_to_its_two_urn_lists(
     result = await client.get_dataset_attributes()
 
     assert result == {
-        urn: (["urn:li:tag:area:catalog", "urn:li:tag:pii"], ["urn:li:glossaryTerm:pii.gdpr"])
+        urn: _read(
+            ["urn:li:tag:area:catalog", "urn:li:tag:pii"], ["urn:li:glossaryTerm:pii.gdpr"]
+        )
     }
 
 
@@ -932,7 +956,7 @@ async def test_get_dataset_attributes_reports_an_untagged_dataset_as_empty_lists
 
     result = await client.get_dataset_attributes()
 
-    assert result == {urn: ([], [])}
+    assert result == {urn: _read([], [])}
 
 
 async def test_get_dataset_attributes_merges_pages_and_sends_the_cursor_only_once_set(
@@ -953,8 +977,8 @@ async def test_get_dataset_attributes_merges_pages_and_sends_the_cursor_only_onc
     result = await client.get_dataset_attributes()
 
     assert result == {
-        first: (["urn:li:tag:pii"], []),
-        second: ([], ["urn:li:glossaryTerm:pii.gdpr"]),
+        first: _read(["urn:li:tag:pii"], []),
+        second: _read([], ["urn:li:glossaryTerm:pii.gdpr"]),
     }
     calls = mock_graph.execute_graphql.call_args_list
     assert len(calls) == 2
@@ -1001,8 +1025,183 @@ async def test_get_dataset_attributes_skips_a_malformed_hit_without_raising(
 
     result = await client.get_dataset_attributes()
 
-    assert result.get(usable) == (["urn:li:tag:pii"], []), (
+    assert result.get(usable) == _read(["urn:li:tag:pii"], []), (
         f"{label}: the well-formed hit in the same page must still be read; got {result!r}"
+    )
+
+
+# -- is_primary derivation truth table ----------------------------------------
+#
+# spec: spec/DATAHUB_INTEGRATION.md §Dataset attribute sync — "`is_primary` derives from
+#   the `siblings` selection in three branches, all yielding a non-null boolean, and the
+#   flag is read **before** the sibling list: the aspect absent or null ⇒ `true`; a
+#   readable `isPrimary` flag ⇒ that flag, whatever the sibling list holds; a present
+#   aspect with no readable flag and an empty or unreadable sibling list ⇒ `true` […].
+#   The flag-first order is load-bearing: `SiblingsMapper` sets `isPrimary`
+#   unconditionally but filters the sibling list through `canView`, so a view-scoped PAT
+#   […] sees `{isPrimary: false, siblings: []}` for a non-leading member whose leader it
+#   may not read. […] A malformed `siblings` object degrades to `true` under the same
+#   shape checks rather than failing the read — an unknown sibling relationship must not
+#   silently drop a dataset from an `is_primary = true` filter."
+#
+# The table is parametrized as one test so the `false` row is the backstop for every
+# `true` row: an implementation that hardcoded `True` would pass each `true` case in
+# isolation and fail here.
+
+_SIBLING = "urn:li:dataset:(urn:li:dataPlatform:dbt,example_db.catalog.title_master,DEV)"
+
+
+@pytest.mark.parametrize(
+    ("label", "siblings", "expected"),
+    [
+        (
+            "no siblings aspect at all",
+            None,
+            True,
+        ),
+        (
+            "aspect present, no flag, empty sibling list",
+            {"isPrimary": None, "siblings": []},
+            True,
+        ),
+        (
+            "aspect present, no flag key at all, empty sibling list",
+            {"siblings": []},
+            True,
+        ),
+        (
+            # `isPrimary: Boolean` is nullable in DataHub's GraphQL schema
+            # (`entity.graphql`) even though `Siblings.pdl`'s `primary` is required, so a
+            # readable sibling list with no readable flag is a shape the remote can send.
+            # The leadership is unknown, and an unknown leadership counts the dataset
+            # once rather than dropping it out of an `is_primary = true` scope.
+            "aspect present, no flag key, a readable non-empty sibling list",
+            {"siblings": [{"urn": _SIBLING}]},
+            True,
+        ),
+        (
+            "leader of a sibling set",
+            {"isPrimary": True, "siblings": [{"urn": _SIBLING}]},
+            True,
+        ),
+        (
+            "non-leading member of a sibling set",
+            {"isPrimary": False, "siblings": [{"urn": _SIBLING}]},
+            False,
+        ),
+        (
+            "non-leader whose sibling list is filtered away by canView",
+            {"isPrimary": False, "siblings": []},
+            False,
+        ),
+        (
+            "malformed: the aspect is not an object",
+            "not-an-object",
+            True,
+        ),
+        (
+            "malformed: the flag is not a boolean",
+            {"isPrimary": "yes", "siblings": [{"urn": _SIBLING}]},
+            True,
+        ),
+    ],
+)
+async def test_get_dataset_attributes_derives_is_primary_from_the_siblings_aspect(
+    client, mock_graph, label: str, siblings: object, expected: bool
+) -> None:
+    """Only a dataset DataHub positively calls a non-leading sibling reads `false`.
+
+    Every other shape — including a malformed one — reads `true`, because
+    `is_primary = true` is the scope-limiting clause an operator writes to count each
+    logical asset once, and a dataset dropped out of it disappears from a metric,
+    an ontogen run, or a metagen write scope without a symptom.
+
+    The empty-sibling-list row with an explicit `isPrimary: false` is the one that
+    pins the branch **order**: a derivation that decided on list emptiness first would
+    read it `true`, which is what a view-scoped PAT sees for every non-leader whose
+    leader it may not read.
+
+    The no-flag-with-a-readable-list row falls outside the literal wording of the
+    third branch (which names "an empty or unreadable sibling list"); it is anchored
+    instead on the rule that closes the same paragraph — "an unknown sibling
+    relationship must not silently drop a dataset from an `is_primary = true` filter"
+    — and on the parenthetical that "an unknown leadership relationship must resolve
+    to the same 'counted once' default as no relationship at all".
+
+    spec: spec/DATAHUB_INTEGRATION.md §Dataset attribute sync — the three-branch
+        derivation, the flag-first order, and the degrade rule quoted above;
+    spec: spec/API.md §`dataset_filter` grammar — "`is_primary` […] `true` when the
+        dataset is the primary member of its DataHub sibling set, or has no siblings".
+    """
+    urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
+    mock_graph.execute_graphql.return_value = _scroll_page(
+        [_attribute_hit(urn, ["urn:li:tag:pii"], [], siblings=siblings)], None
+    )
+
+    result = await client.get_dataset_attributes()
+
+    assert urn in result, f"{label}: the dataset must still be read; got {result!r}"
+    assert result[urn].is_primary is expected, (
+        f"{label}: expected is_primary={expected}; got {result[urn].is_primary}. "
+        "spec: DATAHUB_INTEGRATION.md §Dataset attribute sync."
+    )
+    assert result[urn].tag_urns == ["urn:li:tag:pii"], (
+        f"{label}: the sibling read must not disturb the association read; got "
+        f"{result[urn].tag_urns!r}"
+    )
+
+
+async def test_a_malformed_siblings_aspect_does_not_drop_its_neighbours(
+    client, mock_graph
+) -> None:
+    """One unreadable `siblings` payload degrades that dataset alone, not the page.
+
+    The broken element is junk at *both* levels the derivation reads — neither
+    `isPrimary` nor the sibling list is a shape the derivation can answer from — so it
+    genuinely reaches the degrade branch rather than one of the three well-formed ones
+    (an `isPrimary` of junk with a missing or empty `siblings` key is the readable
+    "no leadership stated" shape, not a malformed one, and would assert the same value
+    for the wrong reason).
+
+    The well-formed neighbour is the backstop: an implementation that abandoned the
+    page (or raised) on a bad element would fail here rather than pass on the degrade.
+
+    spec: spec/DATAHUB_INTEGRATION.md §Dataset attribute sync — "A malformed `siblings`
+        object degrades to `true` under the same shape checks rather than failing the
+        read — an unknown sibling relationship must not silently drop a dataset from an
+        `is_primary = true` filter"; "per-element shape checks";
+    spec: spec/feature/BACKEND.md §Best-Effort Operations — an `AttributeError` /
+        `TypeError` out of this client can only be a call-shape fault, so a remote
+        payload must never reach that branch.
+    """
+    broken = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.editions,DEV)"
+    usable = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
+    mock_graph.execute_graphql.return_value = _scroll_page(
+        [
+            _attribute_hit(
+                broken,
+                [],
+                [],
+                siblings={"isPrimary": {"nested": "junk"}, "siblings": {"not": "a list"}},
+            ),
+            _attribute_hit(
+                usable,
+                [],
+                [],
+                siblings={"isPrimary": False, "siblings": [{"urn": _SIBLING}]},
+            ),
+        ],
+        None,
+    )
+
+    result = await client.get_dataset_attributes()
+
+    assert result[broken].is_primary is True, (
+        "an unreadable sibling payload must resolve to the 'counted once' default"
+    )
+    assert result[usable].is_primary is False, (
+        "backstop: the well-formed neighbour in the same page must still be derived "
+        f"from its own aspect; got {result[usable]!r}"
     )
 
 
@@ -1025,7 +1224,7 @@ async def test_get_dataset_attributes_stops_on_an_unchanged_cursor(client, mock_
         f"must stop on the repeated cursor rather than run to the {_SCROLL_MAX_PAGES}-page "
         f"ceiling; got {mock_graph.execute_graphql.call_count} requests"
     )
-    assert result == {urn: (["urn:li:tag:pii"], [])}
+    assert result == {urn: _read(["urn:li:tag:pii"], [])}
 
 
 async def test_get_dataset_attributes_raises_the_documented_error_after_retries(

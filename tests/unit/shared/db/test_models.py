@@ -239,7 +239,7 @@ def test_dataset_registry_carries_the_filter_attribute_columns() -> None:
 
     spec: BACKEND_SCHEMA.md §dataset_registry — `origin` TEXT NULL, `platform_urn`
     TEXT NULL, `tag_urns` TEXT[] NOT NULL, `glossary_term_urns` TEXT[] NOT NULL,
-    `attrs_synced_at` TIMESTAMPTZ NULL.
+    `is_primary` BOOLEAN NOT NULL DEFAULT `true`, `attrs_synced_at` TIMESTAMPTZ NULL.
     """
     columns = DatasetRegistry.__table__.columns
 
@@ -253,9 +253,78 @@ def test_dataset_registry_carries_the_filter_attribute_columns() -> None:
         assert isinstance(col_type.item_type, Text), f"{name} should be TEXT[]"
         assert columns[name].nullable is False, f"{name} should be NOT NULL"
 
+    # `is_primary` — "`BOOLEAN` NOT NULL DEFAULT `true` […] Not null: absent sibling
+    # information means primary, so a never-swept row is counted once rather than
+    # dropped." A nullable column would make `is_primary = true` skip every row the
+    # sweep has not reached, silently narrowing UC3/UC4/UC5 scope.
+    assert isinstance(columns["is_primary"].type, Boolean), "is_primary should be BOOLEAN"
+    assert columns["is_primary"].nullable is False, "is_primary should be NOT NULL"
+    assert columns["is_primary"].server_default is not None, (
+        "is_primary needs a server-side DEFAULT true, or a row inserted by any writer "
+        "that does not name the column violates NOT NULL. "
+        "spec: BACKEND_SCHEMA.md §dataset_registry."
+    )
+    assert "true" in str(columns["is_primary"].server_default.arg).lower(), (
+        "the default must be true — the 'no sibling information ⇒ primary' rule. "
+        f"got {columns['is_primary'].server_default.arg!r}. "
+        "spec: BACKEND_SCHEMA.md §dataset_registry."
+    )
+    # The Python-side default is the one that actually fires: both row-creating paths
+    # in `src/shared/db/registry.py` construct `DatasetRegistry(...)` through the ORM
+    # without naming this column, so SQLAlchemy emits the client default and the
+    # server default never runs. A python default of `False` would write every
+    # lazily- and bulk-registered dataset as non-primary and drop it out of every
+    # `is_primary = true` filter — exactly the failure the NOT NULL DEFAULT true rule
+    # exists to prevent.
+    assert columns["is_primary"].default is not None, (
+        "is_primary needs a Python-side default too — ORM inserts that omit the "
+        "column would otherwise reach the DB with no value. "
+        "spec: BACKEND_SCHEMA.md §dataset_registry."
+    )
+    assert columns["is_primary"].default.arg is True, (
+        "the Python-side default must be True — 'absent sibling information means "
+        "primary, so a never-swept row is counted once rather than dropped'. got "
+        f"{columns['is_primary'].default.arg!r}. "
+        "spec: BACKEND_SCHEMA.md §dataset_registry."
+    )
+
     assert isinstance(columns["attrs_synced_at"].type, TIMESTAMP)
     assert columns["attrs_synced_at"].type.timezone is True
     assert columns["attrs_synced_at"].nullable is True
+
+
+def test_dataset_registry_indexes_the_selective_side_of_is_primary() -> None:
+    """The `false` side of `is_primary` carries a partial index.
+
+    spec: BACKEND_SCHEMA.md §Indexes — "`dataset_registry` |
+        `ix_dataset_registry_not_primary`: `(is_primary) WHERE NOT is_primary` |
+        `is_primary = false` predicates in `dataset_filter`; partial because the
+        column defaults to `true` registry-wide".
+    """
+    index = next(
+        (
+            idx
+            for idx in DatasetRegistry.__table__.indexes
+            if idx.name == "ix_dataset_registry_not_primary"
+        ),
+        None,
+    )
+    assert index is not None, (
+        "ix_dataset_registry_not_primary is missing; got "
+        f"{sorted(i.name for i in DatasetRegistry.__table__.indexes)}. "
+        "spec: BACKEND_SCHEMA.md §Indexes."
+    )
+    assert [col.name for col in index.columns] == ["is_primary"]
+    where = index.dialect_options["postgresql"].get("where")
+    assert where is not None, (
+        "the index must be partial — a full btree on a column that is true "
+        "registry-wide is not selective enough for the planner to use. "
+        "spec: BACKEND_SCHEMA.md §Indexes."
+    )
+    assert "not is_primary" in str(where).lower(), (
+        f"the index predicate must be `NOT is_primary`; got {where!r}. "
+        "spec: BACKEND_SCHEMA.md §Indexes."
+    )
 
 
 def test_metric_dataset_results_is_keyed_by_metric_and_dataset() -> None:

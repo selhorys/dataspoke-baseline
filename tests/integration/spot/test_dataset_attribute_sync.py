@@ -3,16 +3,19 @@
 The `datahub-sync-hourly` sweep refreshes the `dataset_registry` columns every
 `dataset_filter` is evaluated against. These assertions read the registry columns
 directly through asyncpg, which is what makes spot the right layer: no public route
-returns `origin` / `platform_urn` / `tag_urns` / `glossary_term_urns` row by row, and
-`GET /spoke/governance/metric/{id}/dataset` exposes only the aggregated
+returns `origin` / `platform_urn` / `tag_urns` / `glossary_term_urns` / `is_primary`
+row by row, and `GET /spoke/governance/metric/{id}/dataset` exposes only the aggregated
 `attrs_synced_at` watermark.
 
 Concerns covered (one per test):
-- the sweep populates the five attribute columns for the seeded catalog datasets
+- the sweep populates the attribute columns for the seeded catalog datasets
 - `origin` and `platform_urn` are the URN's own segments, not a fetched field
 - the sweep reports its coverage under the `attrs_synced` summary counter
 - a second sweep refreshes rather than blanks — the never-blank upsert rule
 - a filter written against the synced attributes resolves to the datasets that carry them
+- a boolean `is_primary` clause selects each side of the column, with the non-primary
+  side seeded directly in the registry (the dev DataHub estate carries no `siblings`
+  aspect, so the `false` side is not otherwise reachable from here)
 
 Spec:
 - spec/DATAHUB_INTEGRATION.md §Dataset attribute sync — the two-source split, the
@@ -55,7 +58,7 @@ async def _get_ds_conn() -> asyncpg.Connection:
 async def _registry_row(conn: asyncpg.Connection, dataset_urn: str) -> dict | None:
     row = await conn.fetchrow(
         "SELECT dataset_urn, datahub_registered, origin, platform_urn, tag_urns, "
-        "glossary_term_urns, attrs_synced_at "
+        "glossary_term_urns, is_primary, attrs_synced_at "
         "FROM dataspoke.dataset_registry WHERE dataset_urn = $1",
         dataset_urn,
     )
@@ -79,7 +82,7 @@ async def test_the_sweep_populates_the_filter_attribute_columns(
     api_client: httpx.AsyncClient,
     internal_headers: dict[str, str],
 ) -> None:
-    """After a sweep, a registered dataset carries all five attribute columns.
+    """After a sweep, a registered dataset carries every attribute column.
 
     Spec: spec/feature/BACKEND_SCHEMA.md §dataset_registry — "**Attribute sync**: the
           same sweep refreshes the attribute columns";
@@ -104,6 +107,19 @@ async def test_the_sweep_populates_the_filter_attribute_columns(
         # ("no tags"), distinct from NULL, which the column does not admit.
         assert row["tag_urns"] is not None
         assert row["glossary_term_urns"] is not None
+        # `is_primary` is NOT NULL for the same reason, and the seeded Imazon estate
+        # carries no `siblings` aspect, so "no sibling information ⇒ primary" is the
+        # branch a swept seed row must land in.
+        # spec: BACKEND_SCHEMA.md §dataset_registry — "`is_primary` | `BOOLEAN` NOT
+        #   NULL DEFAULT `true` | `true` when the dataset is the primary member of its
+        #   DataHub `siblings` set, or has no siblings";
+        # spec: DATAHUB_INTEGRATION.md §Dataset attribute sync — "the aspect absent or
+        #   null ⇒ `true`".
+        assert row["is_primary"] is True, (
+            f"a seeded dataset has no siblings, so the sweep must read it as primary; "
+            f"got {row['is_primary']!r}. spec: DATAHUB_INTEGRATION.md §Dataset "
+            "attribute sync."
+        )
     finally:
         await conn.close()
 
@@ -210,10 +226,14 @@ async def test_a_second_sweep_refreshes_rather_than_blanks(
             "strictly advance; a watermark that merely held would mean the second "
             "sweep wrote nothing — the frozen-scope failure the refresh exists to "
             "prevent. spec: BACKEND_SCHEMA.md §dataset_registry — attrs_synced_at is "
-            "'When the four attribute columns above were last refreshed'."
+            "'When the attribute columns above were last refreshed'."
         )
         assert after["origin"] == before["origin"]
         assert after["platform_urn"] == before["platform_urn"]
+        assert after["is_primary"] == before["is_primary"], (
+            "a re-sweep must not flip a dataset's sibling verdict. "
+            "spec: DATAHUB_INTEGRATION.md §Dataset attribute sync."
+        )
         assert list(after["tag_urns"]) == list(before["tag_urns"]), (
             "a re-sweep must not blank the association columns. "
             "spec: DATAHUB_INTEGRATION.md §Dataset attribute sync."
@@ -291,4 +311,125 @@ async def test_a_filter_resolves_against_the_synced_attributes(
     finally:
         with suppress(Exception):
             await api_client.delete(base_conf, headers=admin_headers)
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_a_boolean_filter_resolves_against_the_synced_is_primary(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    internal_headers: dict[str, str],
+) -> None:
+    """`is_primary = false` selects the non-primary rows and `= true` the complement.
+
+    Both sides are seeded: the dev DataHub estate carries no `siblings` aspect, so
+    every swept row reads `true` and a `false` clause would match nothing — an
+    over-broad predicate would then be indistinguishable from a correct one. The
+    non-primary side is written straight into `dataset_registry` here because that is
+    the state a `dataset_filter` is evaluated against; the DataHub-side derivation
+    that produces it is covered by the UC5 api-wired arc, which emits a real
+    `siblings` aspect.
+
+    Spec: spec/API.md §`dataset_filter` grammar — "`is_primary` | bool | `true` when
+          the dataset is the primary member of its DataHub sibling set, or has no
+          siblings. `is_primary = true` scopes a filter to one row per logical asset";
+    Spec: spec/feature/BACKEND_SCHEMA.md §`dataset_registry` — the `is_primary` column.
+    """
+    await _run_sweep(api_client, internal_headers)
+
+    _METRIC_ID = "spot-attr-sync-is-primary"
+    base_conf = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/attr/conf"
+    base_view = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/dataset"
+
+    await api_client.delete(base_conf, headers=admin_headers)
+
+    conn = await _get_ds_conn()
+    try:
+        snapshot = await conn.fetchval(
+            "SELECT is_primary FROM dataspoke.dataset_registry WHERE dataset_urn = $1",
+            _EDITIONS_URN,
+        )
+        assert snapshot is True, (
+            f"backstop: {_EDITIONS_URN} must be a swept, primary row before this test "
+            f"demotes it; got {snapshot!r}. spec: DATAHUB_INTEGRATION.md §Dataset "
+            "attribute sync."
+        )
+
+        try:
+            # Demote one seeded dataset to a non-leading sibling — the `false` side of
+            # the predicate under test.
+            await conn.execute(
+                "UPDATE dataspoke.dataset_registry SET is_primary = FALSE "
+                "WHERE dataset_urn = $1",
+                _EDITIONS_URN,
+            )
+
+            create_resp = await api_client.post(
+                "/api/v1/spoke/governance/metric",
+                headers=admin_headers,
+                json={
+                    "metric_id": _METRIC_ID,
+                    "mode": "active",
+                    "is_enabled": False,
+                    "metric_type": "doc-health",
+                    "title": "Sibling-scoped documentation health",
+                    "description": "A boolean clause reads the column the sweep mirrored.",
+                    "metrics": [
+                        {"name": "total", "color": "#64748B", "idx": 1},
+                        {"name": "doc_health", "color": "#A855F7", "idx": 2},
+                    ],
+                    "metric_conf": {},
+                    "schedule_tier": None,
+                    "dataset_filter": "is_primary = false",
+                },
+            )
+            assert create_resp.status_code == 201, create_resp.text
+
+            false_view = await api_client.get(f"{base_view}?limit=1000", headers=admin_headers)
+            assert false_view.status_code == 200, false_view.text
+            false_urns = {row["dataset_urn"] for row in false_view.json()["datasets"]}
+            assert false_urns == {_EDITIONS_URN}, (
+                f"`is_primary = false` must select exactly the demoted row; got "
+                f"{sorted(false_urns)}. spec: API.md §`dataset_filter` grammar."
+            )
+
+            # The complement: same estate, opposite clause.
+            patch_resp = await api_client.patch(
+                base_conf,
+                headers=admin_headers,
+                json={"dataset_filter": "is_primary = true"},
+            )
+            assert patch_resp.status_code == 200, patch_resp.text
+
+            true_view = await api_client.get(f"{base_view}?limit=1000", headers=admin_headers)
+            assert true_view.status_code == 200, true_view.text
+            true_urns = {row["dataset_urn"] for row in true_view.json()["datasets"]}
+            assert _TITLE_MASTER_URN in true_urns, (
+                "`is_primary = true` must keep the primary seeded datasets in scope; got "
+                f"{sorted(true_urns)}. spec: API.md §`dataset_filter` grammar."
+            )
+            assert _EDITIONS_URN not in true_urns, (
+                "the demoted row must be excluded — otherwise the clause is a no-op and "
+                "the sibling double-count it exists to prevent is still there. "
+                "spec: API.md §`dataset_filter` grammar."
+            )
+        finally:
+            with suppress(Exception):
+                await api_client.delete(base_conf, headers=admin_headers)
+            await conn.execute(
+                "UPDATE dataspoke.dataset_registry SET is_primary = $2 "
+                "WHERE dataset_urn = $1",
+                _EDITIONS_URN,
+                snapshot,
+            )
+            restored = await conn.fetchval(
+                "SELECT is_primary FROM dataspoke.dataset_registry WHERE dataset_urn = $1",
+                _EDITIONS_URN,
+            )
+            assert restored == snapshot, (
+                f"the demoted row must be restored to {snapshot!r} or every later "
+                f"`is_primary` assertion in the suite runs against a mutated registry; "
+                f"got {restored!r}. spec: TESTING.md §Integration Lifecycle & Isolation."
+            )
+    finally:
         await conn.close()

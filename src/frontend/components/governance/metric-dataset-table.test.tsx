@@ -172,6 +172,58 @@ describe("MetricDatasetTable — columns", () => {
 // ── Verdict toggle group → the repeatable `met` param ─────────────────────────
 
 describe("MetricDatasetTable — three-way verdict toggle", () => {
+  it("labels the group with a visible `criterion met:` caption", () => {
+    // spec/feature/FRONTEND_GOVERNANCE.md §Metrics — "The group carries a visible
+    // `criterion met:` label immediately before the three checkboxes, so the three
+    // bare words are readable without relying on the group's accessible name".
+    render(<MetricDatasetTable metricId={METRIC_ID} />);
+
+    const group = screen.getByRole("group", { name: "Filter datasets by criterion verdict" });
+    const caption = within(group).getByText("criterion met:");
+    expect(caption).toBeVisible();
+
+    // The caption precedes the checkboxes — "immediately before the three
+    // checkboxes" is what makes the bare words readable as verdicts.
+    const firstCheckbox = within(group).getAllByRole("checkbox")[0]!;
+    expect(caption.compareDocumentPosition(firstCheckbox)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+  });
+
+  it("keeps each checkbox's accessible name its own verdict", () => {
+    // spec/feature/FRONTEND_GOVERNANCE.md §Metrics — the table's column header is
+    // `met criterion`, while the toggle group's controls stay true / false / unknown.
+    render(<MetricDatasetTable metricId={METRIC_ID} />);
+
+    // A string `name` is a whole-accessible-name match in Testing Library, so
+    // "criterion met: true" would not satisfy this query.
+    for (const verdict of ["true", "false", "unknown"]) {
+      expect(screen.getByRole("checkbox", { name: verdict })).toBeInTheDocument();
+    }
+    expect(screen.getAllByRole("checkbox")).toHaveLength(3);
+    expect(screen.getByRole("columnheader", { name: "met criterion" })).toBeInTheDocument();
+  });
+
+  it("keeps the caption outside every checkbox label", () => {
+    // The caption is a plain sibling of the three labels. Structure, not accessible
+    // name, is what has to be asserted here: `ui/checkbox` renders a Radix
+    // `<button role="checkbox" aria-label={verdict}>`, and `aria-label` outranks a
+    // wrapping `<label>` in the accname computation, so a caption nested inside the
+    // first label would leave every `getByRole("checkbox", { name: verdict })` query
+    // resolving while making a click on "criterion met:" toggle the `true` control.
+    render(<MetricDatasetTable metricId={METRIC_ID} />);
+
+    const group = screen.getByRole("group", { name: "Filter datasets by criterion verdict" });
+    const caption = within(group).getByText("criterion met:");
+    expect(caption.closest("label")).toBeNull();
+
+    // …and each label labels exactly one verdict, nothing more.
+    for (const verdict of ["true", "false", "unknown"]) {
+      const checkbox = screen.getByRole("checkbox", { name: verdict });
+      expect(checkbox.closest("label")?.textContent).toBe(verdict);
+    }
+  });
+
   it("starts with all three verdicts selected and asks for all three", () => {
     render(<MetricDatasetTable metricId={METRIC_ID} />);
 

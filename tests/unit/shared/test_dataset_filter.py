@@ -21,6 +21,7 @@ from src.shared.dataset_filter import (
     MAX_FILTER_CHARS,
     MAX_STRING_LITERALS,
     ArrayContains,
+    BoolEquals,
     DatasetFilterSyntaxError,
     Equals,
     InList,
@@ -187,6 +188,225 @@ class TestArrayContains:
     def test_a_bare_string_without_in_is_rejected(self) -> None:
         with pytest.raises(DatasetFilterSyntaxError):
             parse_filter("'urn:li:tag:pii'")
+
+
+class TestBooleanPredicate:
+    """``predicate := bool_col '=' bool``; the sole boolean column is
+    ``is_primary`` and ``bool := TRUE | FALSE`` is "a bare word, never quoted"
+    (spec/API.md §``dataset_filter`` grammar — grammar block and column table)."""
+
+    def test_true_parses_to_a_boolean_predicate(self) -> None:
+        assert parse_filter("is_primary = true").root == BoolEquals(
+            column="is_primary", value=True
+        )
+
+    def test_false_parses_to_the_opposite_boolean_predicate(self) -> None:
+        """The two words select disjoint sets, so the parsed value is asserted —
+        a parser that mapped both words to ``True`` would scope every filter to
+        the whole registry."""
+        assert parse_filter("is_primary = false").root == BoolEquals(
+            column="is_primary", value=False
+        )
+
+    @pytest.mark.parametrize("word", ["TRUE", "True", "tRuE"])
+    def test_the_bare_word_is_case_insensitive(self, word: str) -> None:
+        """spec/API.md §``dataset_filter`` grammar: "``TRUE``/``FALSE`` are
+        case-insensitive bare words"."""
+        assert parse_filter(f"is_primary = {word}").root == BoolEquals(
+            column="is_primary", value=True
+        )
+
+    @pytest.mark.parametrize("word", ["FALSE", "False", "fAlSe"])
+    def test_the_false_word_is_case_insensitive_too(self, word: str) -> None:
+        assert parse_filter(f"is_primary = {word}").root == BoolEquals(
+            column="is_primary", value=False
+        )
+
+    @pytest.mark.parametrize("column", ["is_primary", "IS_PRIMARY", "Is_Primary"])
+    def test_the_boolean_column_name_is_case_insensitive(self, column: str) -> None:
+        """"column names are case-insensitive" is not qualified by column kind
+        (spec/API.md §``dataset_filter`` grammar)."""
+        assert parse_filter(f"{column} = TRUE").root == BoolEquals(
+            column="is_primary", value=True
+        )
+
+    def test_true_compiles_to_the_constant_predicate_on_the_registry_column(self) -> None:
+        """``is_primary = true`` renders as the SQL constant comparison.
+
+        The spelling is asserted, not merely the column. It is the one carve-out
+        from the bound-parameter rule and the spec states it as such:
+
+        spec/feature/BACKEND.md §Dataset resolution — "**Every user-supplied literal
+            compiles to a bound parameter** — the ``is_primary`` boolean is the one
+            exception: it is never user text but one of two parser-selected Python
+            constants, and it renders inline (``is_primary = true`` / ``= false``) so
+            that the partial index ``WHERE NOT is_primary`` stays reachable, which
+            neither a bound parameter nor an ``IS false`` boolean test achieves";
+        spec/feature/BACKEND_SCHEMA.md §Indexes — the index that carve-out serves:
+            "``ix_dataset_registry_not_primary``: ``(is_primary) WHERE NOT
+            is_primary`` | ``is_primary = false`` predicates in ``dataset_filter``".
+        """
+        sql, params = _compile("is_primary = true")
+        assert "dataset_registry.is_primary = true" in sql, (
+            f"expected the constant boolean comparison; got:\n{sql}"
+        )
+        assert " not " not in f" {sql.lower()} ", f"the predicate is negated:\n{sql}"
+        assert params == {}, (
+            f"a boolean predicate carries no user-supplied literal, so it binds no "
+            f"parameter; got {params!r}"
+        )
+
+    def test_false_compiles_to_the_complementary_constant(self) -> None:
+        sql, params = _compile("is_primary = false")
+        assert "dataset_registry.is_primary = false" in sql, (
+            f"expected the false-side constant comparison; got:\n{sql}"
+        )
+        assert params == {}
+
+    def test_a_quoted_boolean_is_a_syntax_error_at_the_opening_quote(self) -> None:
+        """spec/API.md §``dataset_filter`` grammar: "``is_primary = 'true'`` is a
+        syntax error (``422 INVALID_DATASET_FILTER``)".
+
+        Silently coercing the string would be the dangerous outcome: the filter
+        would read as a boolean to its author while matching a different set.
+        """
+        text = "is_primary = 'true'"
+        with pytest.raises(DatasetFilterSyntaxError) as excinfo:
+            parse_filter(text)
+        assert excinfo.value.position == text.index("'")
+
+    def test_a_boolean_column_with_in_is_a_syntax_error_at_the_keyword(self) -> None:
+        """spec/API.md §``dataset_filter`` grammar: "using a boolean column with
+        ``IN``" is a syntax error."""
+        text = "is_primary IN ('true')"
+        with pytest.raises(DatasetFilterSyntaxError) as excinfo:
+            parse_filter(text)
+        assert excinfo.value.position == text.index("IN")
+
+    def test_a_boolean_column_as_a_membership_target_names_its_kind(self) -> None:
+        """``'x' IN is_primary`` inverts the grammar: ``is_primary`` is neither an
+        array column nor a scalar one, and the error names the kind it actually is.
+
+        spec/feature/BACKEND.md §Dataset resolution — "the column set is the
+            grammar's own whitelist, partitioned by kind (scalar, array, boolean) so
+            that a column used with the wrong operator is a parse error naming the
+            kind it actually is". The assertion stays a substring check: the spec
+            fixes the kind word, not the sentence around it.
+        """
+        text = "'x' IN is_primary"
+        with pytest.raises(DatasetFilterSyntaxError) as excinfo:
+            parse_filter(text)
+        assert excinfo.value.position == text.index("is_primary")
+        assert "boolean" in str(excinfo.value).lower(), (
+            f"the message must name the column's actual kind; got {excinfo.value}"
+        )
+
+    def test_a_scalar_column_with_a_bare_word_is_a_syntax_error(self) -> None:
+        """The complement of the quoted-boolean rule: spec/API.md §``dataset_filter``
+        grammar rejects "a scalar/array column with a bare word"."""
+        text = "origin = TRUE"
+        with pytest.raises(DatasetFilterSyntaxError) as excinfo:
+            parse_filter(text)
+        assert excinfo.value.position == text.index("TRUE")
+
+    @pytest.mark.parametrize("text", ["TRUE IN tag_urns", "true IN tag_urns"])
+    def test_an_array_column_with_a_bare_word_is_a_syntax_error(self, text: str) -> None:
+        """The array half of the same rule — spec/API.md §``dataset_filter`` grammar
+        rejects "a scalar/**array** column with a bare word".
+
+        The array production is ``string IN array_col``, so the bare word sits where a
+        predicate's opening token goes and is read as a column name: the rejection
+        arrives as an unknown column at position 0, not as a membership-operand kind
+        error. The two membership-operand kind errors are covered next door
+        (``is_primary IN ('true')`` and ``'x' IN is_primary``).
+
+        spec/API.md §Error Catalogue — ``INVALID_DATASET_FILTER`` covers a filter that
+            "does not parse under the filter grammar, **names an unknown column**, or
+            exceeds a payload cap. `detail` carries the character position of the
+            error".
+        """
+        with pytest.raises(DatasetFilterSyntaxError) as excinfo:
+            parse_filter(text)
+        assert excinfo.value.position == 0, (
+            f"the error must point at the bare word that opens the predicate; got "
+            f"position {excinfo.value.position} for {text!r}"
+        )
+        assert "unknown column" in str(excinfo.value), (
+            f"a bare word where a predicate opens is read as a column name, so the "
+            f"rejection has to name it as an unknown column; got {excinfo.value}"
+        )
+
+    @pytest.mark.parametrize("value", ["1", "0", "yes", "maybe", "null"])
+    def test_only_the_two_documented_words_are_accepted(self, value: str) -> None:
+        """``bool := TRUE | FALSE`` admits exactly two words — no numeric or
+        truthy-looking stand-ins (spec/API.md §``dataset_filter`` grammar)."""
+        with pytest.raises(DatasetFilterSyntaxError):
+            parse_filter(f"is_primary = {value}")
+
+    def test_a_boolean_column_without_a_value_is_rejected(self) -> None:
+        """The production requires the ``=`` and the word — a bare column name is
+        not a predicate."""
+        with pytest.raises(DatasetFilterSyntaxError):
+            parse_filter("is_primary")
+
+    def test_a_boolean_predicate_composes_with_and(self) -> None:
+        ast = parse_filter("origin = 'DEV' AND is_primary = true")
+        assert ast.root is not None
+        assert getattr(ast.root, "op", None) == "AND"
+        assert getattr(ast.root, "children", ()) == (
+            Equals(column="origin", value="DEV"),
+            BoolEquals(column="is_primary", value=True),
+        )
+
+    def test_a_boolean_predicate_composes_with_or(self) -> None:
+        ast = parse_filter("is_primary = false OR 'urn:li:tag:pii' IN tag_urns")
+        assert getattr(ast.root, "op", None) == "OR"
+        assert getattr(ast.root, "children", ()) == (
+            BoolEquals(column="is_primary", value=False),
+            ArrayContains(column="tag_urns", value="urn:li:tag:pii"),
+        )
+
+    def test_a_boolean_predicate_nests_inside_parentheses(self) -> None:
+        """Nothing about the new production is confined to the top level — it is a
+        ``predicate``, so it appears wherever a ``term`` may (spec/API.md
+        §``dataset_filter`` grammar)."""
+        ast = parse_filter(
+            "origin = 'DEV' AND (is_primary = true OR (is_primary = false "
+            "AND 'urn:li:tag:pii' IN tag_urns))"
+        )
+        assert ast.is_empty is False
+        sql, params = _compile(
+            "origin = 'DEV' AND (is_primary = true OR (is_primary = false "
+            "AND 'urn:li:tag:pii' IN tag_urns))"
+        )
+        assert "dataset_registry.is_primary = true" in sql
+        assert "dataset_registry.is_primary = false" in sql
+        assert sorted(str(value) for value in params.values()) == sorted(
+            ["DEV", str(["urn:li:tag:pii"])]
+        )
+
+    def test_the_composite_spec_example_parses_and_compiles(self) -> None:
+        """spec/API.md §``dataset_filter`` grammar prints this as its worked
+        example: ``origin = 'PROD' AND is_primary = true AND ('urn:li:tag:area:catalog'
+        IN tag_urns OR 'urn:li:glossaryTerm:pii.gdpr' IN glossary_term_urns)``."""
+        sql, params = _compile(
+            "origin = 'PROD' AND is_primary = true "
+            "AND ('urn:li:tag:area:catalog' IN tag_urns "
+            "OR 'urn:li:glossaryTerm:pii.gdpr' IN glossary_term_urns)"
+        )
+        assert "dataset_registry.is_primary = true" in sql
+        assert sorted(str(value) for value in params.values()) == sorted(
+            ["PROD", str(["urn:li:tag:area:catalog"]), str(["urn:li:glossaryTerm:pii.gdpr"])]
+        )
+
+    def test_a_boolean_predicate_names_no_dataset_urn_literal(self) -> None:
+        """``literal_dataset_urns`` walks every node kind; a boolean predicate
+        carries no string literal at all, so the walk must neither raise nor invent
+        one (spec/API.md §``dataset_filter`` grammar — ``unresolved_urns`` reports
+        ``dataset_urn`` literals)."""
+        ast = parse_filter(f"dataset_urn = '{_URN}' AND is_primary = true")
+        assert literal_dataset_urns(ast) == [_URN]
+        check_dataset_urn_literals(ast)
 
 
 # ── Case sensitivity ─────────────────────────────────────────────────────────
@@ -598,6 +818,36 @@ class TestInjectionBattery:
         assert "dataset_registry.tag_urns" not in sql
         assert "dataset_registry.origin" in sql
 
+    @pytest.mark.parametrize("payload", _PAYLOADS)
+    def test_the_boolean_production_admits_no_payload_at_all(self, payload: str) -> None:
+        """The value side of ``bool_col '=' bool`` is the one place the grammar
+        accepts an unquoted token, so it is the one place a payload could reach the
+        statement as text. It admits exactly two words: anything else — quoted or
+        bare — fails to parse, and the two words that do parse are Python constants
+        the parser selected rather than anything the request supplied.
+
+        spec/feature/BACKEND.md §Dataset resolution — "user filter text […] never
+            reaches the database as SQL text", and the boolean carve-out that makes
+            the inline rendering below correct rather than a leak: "**Every
+            user-supplied literal compiles to a bound parameter** — the
+            ``is_primary`` boolean is the one exception: it is never user text but
+            one of two parser-selected Python constants, and it renders inline";
+        spec/API.md §``dataset_filter`` grammar — ``bool := TRUE | FALSE``,
+            "bare word, never quoted".
+        """
+        for text in (
+            f"is_primary = {payload}",
+            f"is_primary = '{payload.replace(chr(39), chr(39) * 2)}'",
+        ):
+            with pytest.raises(DatasetFilterSyntaxError):
+                parse_filter(text)
+
+        sql, params = _compile("is_primary = true")
+        assert params == {}, f"the boolean predicate binds nothing; got {params!r}"
+        assert sql.strip() == "dataspoke.dataset_registry.is_primary = true", (
+            f"the whole rendered predicate must be the column and one constant; got:\n{sql}"
+        )
+
     def test_an_injected_predicate_outside_quotes_is_a_syntax_error(self) -> None:
         """The unquoted form of the same attack does not slip through as text —
         it fails to parse."""
@@ -628,7 +878,11 @@ class TestInjectionBattery:
                 parse_filter(text)
 
     def test_every_literal_of_a_composite_filter_is_bound(self) -> None:
-        """The spec's own worked example — no fragment of it reaches the SQL text."""
+        """A composite clause in the grammar's shape — an origin equality AND-ed with a
+        parenthesised tag/glossary-term OR — with no fragment of it reaching the SQL
+        text. (The grammar's printed worked example carries a third conjunct,
+        ``is_primary = true``; that whole clause is compiled in
+        ``test_the_composite_spec_example_parses_and_compiles``.)"""
         sql, params = _compile(
             "origin = 'PROD' AND ('urn:li:tag:area:catalog' IN tag_urns"
             " OR 'urn:li:glossaryTerm:pii.gdpr' IN glossary_term_urns)"
@@ -672,6 +926,38 @@ class TestFormatFilter:
             ")",
         ]
 
+    def test_a_boolean_predicate_renders_with_its_bare_lowercase_word(self) -> None:
+        """The canonical form keeps the boolean unquoted — a formatter that emitted
+        ``is_primary = 'true'`` would produce output the grammar rejects — and prints
+        it lowercase.
+
+        Two separate spec facts, since the grammar states ``TRUE``/``FALSE`` are
+        case-insensitive and so fixes neither the case of the input nor, by itself,
+        the case of the output:
+
+        spec/API.md §``dataset_filter`` grammar — ``bool := TRUE | FALSE``, "bare
+            word, never quoted" (the quoting);
+        spec/API.md §``dataset_filter`` grammar, worked example — the clause it prints
+            reads ``origin = 'PROD' AND is_primary = true AND (…)``, i.e. the
+            documented rendering of a boolean predicate is the lowercase word.
+        """
+        assert format_filter("IS_PRIMARY=TRUE") == "is_primary = true"
+        assert format_filter("is_primary =  FALSE") == "is_primary = false"
+
+    def test_a_boolean_predicate_takes_its_own_line_in_a_composition(self) -> None:
+        formatted = format_filter(
+            "origin = 'PROD' AND is_primary = true AND ('urn:li:tag:pii' IN tag_urns"
+            " OR origin = 'DEV')"
+        )
+        assert formatted.splitlines() == [
+            "origin = 'PROD'",
+            "AND is_primary = true",
+            "AND (",
+            "    'urn:li:tag:pii' IN tag_urns",
+            "    OR origin = 'DEV'",
+            ")",
+        ]
+
     @pytest.mark.parametrize(
         "text",
         [
@@ -679,8 +965,11 @@ class TestFormatFilter:
             "origin = 'PROD'",
             "origin IN ('PROD', 'DEV')",
             "'urn:li:tag:area:catalog' IN tag_urns",
+            "is_primary = true",
+            "is_primary = false",
             "origin = 'PROD' AND origin = 'DEV'",
             "origin = 'A' AND (origin = 'B' OR (origin = 'C' AND origin = 'D'))",
+            "origin = 'PROD' AND is_primary = true AND (origin = 'A' OR origin = 'B')",
             "origin = 'O''Brien'",
         ],
     )
@@ -694,7 +983,9 @@ class TestFormatFilter:
             "origin = 'PROD'",
             "origin IN ('PROD', 'DEV')",
             "'urn:li:tag:area:catalog' IN tag_urns",
+            "IS_PRIMARY = FALSE",
             "origin = 'A' AND (origin = 'B' OR (origin = 'C' AND origin = 'D'))",
+            "origin = 'PROD' AND is_primary = true",
             "origin = 'O''Brien'",
         ],
     )

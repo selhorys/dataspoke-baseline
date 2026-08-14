@@ -469,8 +469,9 @@ ever emits table datasets, so both sides are plain dataset-URN lists. Exact key 
    until the liveness probe restarts the pod. Bounding pattern execution is tracked as issue
    **#114**.
 3. **Dataset attribute sync**: refresh the `dataset_registry` columns every `dataset_filter`
-   resolves against — `origin` and `platform_urn` parsed out of each dataset URN, `tag_urns` and
-   `glossary_term_urns` from one paged attribute read, and `attrs_synced_at` as the watermark.
+   resolves against — `origin` and `platform_urn` parsed out of each dataset URN, `tag_urns`,
+   `glossary_term_urns`, and `is_primary` (derived from the `siblings` aspect) from one paged
+   attribute read, and `attrs_synced_at` as the watermark.
    Shape and hardening: [DATAHUB_INTEGRATION §Dataset attribute sync](../DATAHUB_INTEGRATION.md#dataset-attribute-sync).
 
    **Partial failure never narrows a filter.** The step **upserts per dataset and never
@@ -1374,9 +1375,15 @@ and one resolver, `src/backend/_dataset_filter.py`. Resolution is two stages:
 | Parse | `src/shared/dataset_filter.py` | An AST, or a syntax error carrying the offending character position (surfaced as `422 INVALID_DATASET_FILTER`). Also exposes the filter's literal `dataset_urn` values and a canonical formatter |
 | Compile + run | `src/backend/_dataset_filter.py` | A SQLAlchemy boolean expression over `dataset_registry`, run as one query restricted to `datahub_registered = true`. An empty filter is the bare registered set |
 
-Two properties are load-bearing. **Every literal compiles to a bound parameter** and the
-column set is the grammar's own whitelist, so user filter text never reaches the database as
-SQL text — the parser is the only thing between an operator's input and a query. And the
+Two properties are load-bearing. **Every literal in the compiled statement is a bound
+parameter, with one deliberate exception** — the boolean operand, which is never user text
+but one of two parser-selected Python constants, and which renders inline (`is_primary =
+true` / `= false`) so that the partial index `WHERE NOT is_primary` stays reachable, which
+neither a bound parameter nor an `IS false` boolean test achieves. And the column set is the
+grammar's own whitelist, partitioned by kind (scalar, array, boolean) so that a column used
+with the wrong operator is a parse error naming the kind it actually is. User filter text
+therefore never reaches the database as SQL text — the parser is the only thing between an
+operator's input and a query. And the
 resolver **materialises no URN list where the caller can page in SQL**: it also exports the
 compiled clause on its own, so per-conf and per-metric dataset views push the filter into
 their own paginated query rather than slicing a resolved list in Python.
@@ -1884,10 +1891,12 @@ Non-critical operations execute best-effort -- if they fail, the primary operati
 state stays durable; the caller may still receive an error (see each row's Fallback).
 Failures of the operations listed below are logged at WARNING with `exc_info=True`; a
 reporter's failure to write its own `peripheral_health` row falls outside this set and is
-logged at `ERROR` (see [§Health reporting](#health-reporting)). One listed row takes the
-same exception: the `api_tokens.last_used_at` stamp is logged at `ERROR` with
-`exc_info=True`, because nothing reads that column in band, so the log record is the only
-trace of a lost stamp — what a reader may then conclude from the column is stated in
+logged at `ERROR` (see [§Health reporting](#health-reporting)). Two listed rows take the
+same exception and log at `ERROR` with `exc_info=True`, each saying so in its Fallback: the
+attribute sweep's `dataset_registry` upsert, whose failure costs a whole sweep's refresh
+rather than one record; and the `api_tokens.last_used_at` stamp, because nothing reads that
+column in band, so the log record is the only trace of a lost stamp — what a reader may
+then conclude from the column is stated in
 [AUTH §Audit and `last_used_at`](AUTH.md#audit-and-last_used_at).
 
 | Operation | Service | Fallback |
@@ -1896,23 +1905,36 @@ trace of a lost stamp — what a reader may then conclude from the column is sta
 | pgvector similarity search | MetagenService | Reviewer proceeds without prior-approved-candidate RAG; debate quality drops but the run completes |
 | DataHub run-history poll | IngestionService (sync sweep) | Skip the affected source for this tick; retry next tick |
 | Estate-wide `lastIngested` read and its per-dataset observation inserts | IngestionService (sync sweep) | The sub-pass books nothing this tick and reports `last_ingested_observed = 0`; the other two sub-passes, the rest of the sweep, and the `datahub-api` health row are untouched; retry next tick |
-| Estate-wide dataset attribute read | IngestionService (sync sweep) | No row is blanked — stored attributes and their `attrs_synced_at` stand, so every `dataset_filter` keeps resolving against the last good sweep; `attrs_synced` reports what did land; the `datahub-api` health row is **not** flipped, so a filter's staleness is read from `attrs_synced_at` rather than from peripheral health; retry next tick |
+| Estate-wide dataset attribute read and its `dataset_registry` upsert | IngestionService (sync sweep) | No row is blanked — stored attributes and their `attrs_synced_at` stand, so every `dataset_filter` keeps resolving against the last good sweep; `attrs_synced` reports what did land; the `datahub-api` health row is **not** flipped, so a filter's staleness is read from `attrs_synced_at` rather than from peripheral health; retry next tick. A failure of the upsert rolls the transaction back and is logged at `ERROR` per the exception in the lead-in above, not at WARNING |
 | `api_tokens.last_used_at` throttled stamp | PAT authentication | The column keeps its prior value; authentication succeeds and the request proceeds. Logged at `ERROR` per the exception in the lead-in above, not at WARNING |
 
-**Interface violations are exempt from best-effort, on the estate-wide `lastIngested` read.** An
-`AttributeError` or `TypeError` raised by that client call is a fault in DataSpoke's own call
-shape — a renamed or removed method — not a fault of the remote system, because the read is a
-fixed-shape traversal of a GraphQL response in which every element is shape-checked. Those are
-logged at `ERROR` and **re-raised**; only transport, protocol and database faults degrade it to its
-fallback. The split matters because a swallowed interface error reports `last_ingested_observed = 0`
-forever, indistinguishable from an estate with nothing observable, and a duck-typed test double
-missing the method passes green with the sub-pass never executing.
+**Interface violations are exempt from best-effort, on the two estate-wide reads of the sync
+sweep — the `lastIngested` read and the dataset attribute read.** An `AttributeError` or
+`TypeError` raised by either client call is a fault in DataSpoke's own call shape — a renamed or
+removed method — not a fault of the remote system, because each read is a fixed-shape traversal of
+a GraphQL response in which every element is shape-checked. Those are logged at `ERROR`; only
+transport, protocol and database faults degrade a read to its fallback. The split matters because a
+swallowed call-shape fault reports `last_ingested_observed = 0` / `attrs_synced = 0` forever,
+indistinguishable from an estate with nothing to read, and a duck-typed test double missing the
+method passes green with the sub-pass never executing.
+
+The two exempt reads differ in what follows the `ERROR` record. The `lastIngested` read
+**re-raises**. The dataset attribute read **returns its fallback rather than re-raising**, because
+that step must not flip the `datahub-api` health row; the `ERROR` record is the whole signal. Its
+exemption covers both points at which a call-shape fault can surface, with a different exempt class
+at each. At the `get_dataset_attributes` call itself the exempt set is `AttributeError` and
+`TypeError` — either means the method is missing or takes different arguments. One step later,
+while the records are built from the returned mapping, only `AttributeError` is exempt: a mapping
+value of the wrong type is converted to a `TypeError` up front precisely so that an `AttributeError`
+there keeps meaning "a helper of DataSpoke's own is missing or renamed". Everything else at that
+second point — a `TypeError` from that conversion, and a `ValueError` the URN helpers raise on a
+malformed URN key — and every other read failure is a remote-payload or transport fault: logged at
+`WARNING`, degrading to the row's stated fallback.
 
 The exemption stops there. The per-dataset `Operation` read is **not** exempt: it deserialises a
 writer-supplied remote aspect through the acryl-datahub SDK, which raises `AttributeError` on a
-malformed stored payload, so an error of that type is not evidence of a call-shape fault and one
-corrupted aspect would abort the sweep for every source. Every failure of that read skips the
-dataset.
+malformed stored payload, so an error of that type is not evidence of a call-shape fault. Every
+failure of that read skips the dataset.
 
 ---
 

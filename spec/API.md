@@ -624,8 +624,11 @@ term        := predicate | '(' expr ')'         -- parens nest at most 2 deep (s
 predicate   := scalar_col '=' string
              | scalar_col IN '(' string {',' string} ')'
              | string IN array_col
+             | bool_col '=' bool
 scalar_col  := dataset_urn | origin | platform_urn
 array_col   := tag_urns | glossary_term_urns
+bool_col    := is_primary
+bool        := TRUE | FALSE                     -- bare word, never quoted
 string      := '...'                            -- single quotes only; '' escapes a quote
 ```
 
@@ -636,9 +639,17 @@ string      := '...'                            -- single quotes only; '' escape
 | `platform_urn` | scalar | The URN's first segment — `urn:li:dataPlatform:…` |
 | `tag_urns` | array | DataHub tag URNs carried by the dataset |
 | `glossary_term_urns` | array | DataHub glossary-term URNs carried by the dataset |
+| `is_primary` | bool | `true` when the dataset is the primary member of its DataHub sibling set, or has no siblings. `is_primary = true` scopes a filter to one row per logical asset, so a metric, ontogen run, or metagen conf counts a dbt model and its warehouse table once |
 
 Keywords (`AND`, `OR`, `IN`) and column names are case-insensitive; values are
-case-sensitive. Mixing `AND` and `OR` at one level requires parentheses.
+case-sensitive. `TRUE`/`FALSE` are case-insensitive bare words — `is_primary = 'true'` is
+a syntax error (`422 INVALID_DATASET_FILTER`), as is using a boolean column with `IN` or a
+scalar/array column with a bare word. Mixing `AND` and `OR` at one level requires
+parentheses.
+
+The registry default is `is_primary = true`, so a dataset that no attribute sweep has
+reached yet reads as primary and `is_primary = false` matches nothing until a sweep has
+run — the same never-swept behaviour as `tag_urns` and `glossary_term_urns`.
 
 **Caps** (part of the grammar, enforced on every route that writes a filter): filter text
 ≤ 8,000 characters and ≤ 1,000 string literals. The per-feature Payload-caps lists restate
@@ -655,7 +666,8 @@ filter returns `422 INVALID_DATASET_FILTER` carrying the character position of t
 this same grammar and validation.
 
 ```sql
-origin = 'PROD' AND ('urn:li:tag:area:catalog' IN tag_urns
+origin = 'PROD' AND is_primary = true
+                AND ('urn:li:tag:area:catalog' IN tag_urns
                      OR 'urn:li:glossaryTerm:pii.gdpr' IN glossary_term_urns)
 ```
 

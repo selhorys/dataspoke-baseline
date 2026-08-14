@@ -68,8 +68,15 @@ class TestOntogenConfPatchRequest:
 class TestOntogenDatasetFilter:
     """UC3's conf filter is the same grammar and the same validation as UC4 and UC5.
 
-    Spec: spec/API.md §`dataset_filter` grammar — "UC3's `ontogen/attr/conf.dataset_filter`
-    and UC4's per-conf `metagen/conf.dataset_filter` use this same grammar and validation."
+    The accepted list enumerates one form per production, `bool_col '=' bool` included:
+    a route that accepted only the scalar and array predicates would scope UC3 by tag
+    and origin but not to one row per logical asset.
+
+    Spec: spec/API.md §`dataset_filter` grammar — the productions
+    `predicate := scalar_col '=' string | scalar_col IN '(' … ')' | string IN array_col
+    | bool_col '=' bool`, with `bool_col := is_primary` and `bool := TRUE | FALSE`
+    ("bare word, never quoted"); "UC3's `ontogen/attr/conf.dataset_filter` and UC4's
+    per-conf `metagen/conf.dataset_filter` use this same grammar and validation."
     """
 
     _ACCEPTED = [
@@ -78,6 +85,8 @@ class TestOntogenDatasetFilter:
         "origin IN ('DEV', 'PROD')",
         "platform_urn = 'urn:li:dataPlatform:postgres'",
         "'urn:li:tag:area:fulfillment' IN tag_urns",
+        # `bool_col '=' bool` — a bare, unquoted TRUE/FALSE against `is_primary`
+        "is_primary = true",
         "origin = 'DEV' AND 'urn:li:tag:area:fulfillment' IN tag_urns",
     ]
 

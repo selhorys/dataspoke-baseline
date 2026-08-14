@@ -15,18 +15,128 @@ Contract exercised here:
   - metric_conf.time_window_sec is the measurement window (factory default 172800),
     applied uniformly to every dataset the metric scans — api-wired does not assert
     exact in-window counts (real-pipeline timing is nondeterministic).
+  - dataset_filter covers every column class of the grammar, the boolean `is_primary`
+    included; the sibling relationship the boolean reads is emitted into DataHub by
+    the `seeded_sibling_pair` fixture, because the seeded estate has none.
 """
 
 # spec: USE_CASE_en.md §UC5 §Imazon Example
 
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
+import pytest_asyncio
+
+from tests.integration.util import datahub as datahub_util
 
 # Declare fixture dependencies so module_dummy_data seeds catalog schema + DataHub.
 # spec: TESTING.md §Per-Module Dummy-Data Reset
 DUMMY_DATA_DATAHUB_SCHEMAS: frozenset[str] = frozenset({"catalog"})
+
+_TITLE_MASTER_URN = (
+    "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
+)
+_EDITIONS_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.editions,DEV)"
+
+
+@pytest_asyncio.fixture
+async def seeded_sibling_pair(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    internal_headers: dict[str, str],
+) -> AsyncIterator[None]:
+    """Make `catalog.editions` a non-leading sibling of `catalog.title_master`.
+
+    Setup only — the test body stays REST-only (spec/TESTING.md §Api-wired
+    integration tests: "Setup/teardown fixtures may use `tests.integration.util` to
+    reset/ingest data; the test itself stays REST-only").
+
+    The seeded Imazon estate carries no `siblings` aspect at all, so without this the
+    whole estate reads `is_primary = true` and the `false` branch of the clause under
+    test is unreachable — the assertions would pass against an empty set and prove
+    nothing.
+
+    Snapshot → mutate → verified restore, on both stores this touches: the `siblings`
+    aspect in DataHub is read before it is written and restored to what was read, and
+    the mirrored `dataset_registry.is_primary` is swept back to `true` and read back
+    through the API. Neither restore is assumed — a restore that did not take fails
+    this test rather than the next one to look at `is_primary`
+    (spec/TESTING.md §Integration Lifecycle & Isolation).
+    """
+    snapshot = datahub_util.read_siblings(_EDITIONS_URN)
+    datahub_util.emit_siblings(_EDITIONS_URN, [_TITLE_MASTER_URN], primary=False)
+    try:
+        yield
+    finally:
+        # Restore the aspect to what was there. Absent is not re-creatable through the
+        # emitter, but an empty sibling set with the leader flag is the same "no
+        # sibling information" reading — the baseline the rest of the suite assumes.
+        restored_urns, restored_primary = snapshot if snapshot is not None else ([], True)
+        datahub_util.emit_siblings(_EDITIONS_URN, restored_urns, primary=restored_primary)
+        assert datahub_util.read_siblings(_EDITIONS_URN) == (restored_urns, restored_primary), (
+            "the siblings aspect must read back as the snapshot this fixture took; a "
+            "silent restore failure leaves the shared estate mis-marked for every later "
+            "test. spec: TESTING.md §Integration Lifecycle & Isolation."
+        )
+
+        # The registry column is a mirror, so restoring the aspect is not enough: until
+        # a sweep runs, `dataset_registry.is_primary` for editions stays `false` for the
+        # rest of the session. Sweep and read the mirror back through the API — the
+        # scroll the sweep reads is eventually consistent, so poll rather than sleep.
+        probe_id = "uc5-sibling-restore-probe"
+        probe_conf_url = f"/api/v1/spoke/governance/metric/{probe_id}/attr/conf"
+        probe_dataset_url = f"/api/v1/spoke/governance/metric/{probe_id}/dataset"
+        await api_client.delete(probe_conf_url, headers=admin_headers)
+        probe_resp = await api_client.post(
+            "/api/v1/spoke/governance/metric",
+            headers=admin_headers,
+            json={
+                "metric_id": probe_id,
+                "mode": "active",
+                "is_enabled": False,
+                "metric_type": "doc-health",
+                "title": "Sibling restore probe",
+                "description": "Reads back the non-leading side of the registry mirror",
+                "metrics": [{"name": "total", "color": "#2563EB", "idx": 1}],
+                "metric_conf": {},
+                "schedule_tier": None,
+                "dataset_filter": "is_primary = false",
+            },
+        )
+        assert probe_resp.status_code == 201, (
+            f"the restore probe metric must be creatable, got {probe_resp.status_code}: "
+            f"{probe_resp.text}."
+        )
+        try:
+            deadline = datetime.now(tz=UTC) + timedelta(seconds=180)
+            non_leading: set[str] = {_EDITIONS_URN}
+            while datetime.now(tz=UTC) < deadline:
+                sync_resp = await api_client.post(
+                    "/internal/activities/ingestion/sync",
+                    headers=internal_headers,
+                    timeout=300.0,
+                )
+                assert sync_resp.status_code == 200, (
+                    f"POST /internal/activities/ingestion/sync expected 200, got "
+                    f"{sync_resp.status_code}: {sync_resp.text}."
+                )
+                probe_view = await api_client.get(
+                    f"{probe_dataset_url}?limit=1000", headers=admin_headers
+                )
+                assert probe_view.status_code == 200, probe_view.text
+                non_leading = {row["dataset_urn"] for row in probe_view.json()["datasets"]}
+                if _EDITIONS_URN not in non_leading:
+                    break
+            assert _EDITIONS_URN not in non_leading, (
+                f"`{_EDITIONS_URN}` must read `is_primary = true` again once the sibling "
+                f"aspect is restored and swept; it is still in the non-leading set "
+                f"{sorted(non_leading)}. spec: TESTING.md §Integration Lifecycle & "
+                "Isolation — the restore is asserted, not assumed."
+            )
+        finally:
+            await api_client.delete(probe_conf_url, headers=admin_headers)
 
 
 @pytest.mark.asyncio
@@ -344,9 +454,9 @@ async def test_uc5_dataset_filter_worked_examples_and_dataset_view(
     Story steps:
       1. Create a metric whose `dataset_filter` is the tag-membership clause UC3's
          Imazon example uses — the simplest of the two documented forms.
-      2. Replace it with the composite clause spec/API.md §`dataset_filter` grammar
-         prints as its worked example (an origin equality AND-ed with a parenthesised
-         tag/glossary-term OR).
+      2. Replace it with a composite clause in the shape the grammar's worked example
+         prints — an origin equality AND-ed with a parenthesised tag/glossary-term OR,
+         here scoped to the seeded DEV estate.
       3. A clause that names a column outside the grammar is rejected with the
          character position, so the editor can point at the error.
       4. Run the metric, then read `GET .../dataset`: every covered dataset carries a
@@ -356,8 +466,8 @@ async def test_uc5_dataset_filter_worked_examples_and_dataset_view(
 
     spec: USE_CASE_en.md §UC5 §Imazon Example — POST /spoke/governance/metric with a
           `dataset_filter`, then POST method/run for an immediate first run.
-    spec: API.md §`dataset_filter` grammar — the grammar, the worked example, and the
-          422 INVALID_DATASET_FILTER position.
+    spec: API.md §`dataset_filter` grammar — the productions, the depth-1 parenthesised
+          AND/OR composition, and the 422 INVALID_DATASET_FILTER position.
     spec: API.md §Metric — GET /spoke/governance/metric/{metric_id}/dataset.
     """
     _METRIC_ID = "uc5-filter-worked-examples"
@@ -405,8 +515,9 @@ async def test_uc5_dataset_filter_worked_examples_and_dataset_view(
             "spec: API.md §Metric — Definition body."
         )
 
-        # ── Step 2: replace with the composite worked example ─────────────────
-        # spec: API.md §`dataset_filter` grammar — the printed example clause.
+        # ── Step 2: replace with a composite clause in the example's shape ────
+        # spec: API.md §`dataset_filter` grammar — `expr := term { (AND|OR) term }`
+        # with `term := '(' expr ')'`, the composition its worked example prints.
         composite = (
             "origin = 'DEV' AND ('urn:li:tag:area:catalog' IN tag_urns"
             " OR 'urn:li:glossaryTerm:pii.gdpr' IN glossary_term_urns)"
@@ -540,6 +651,161 @@ async def test_uc5_dataset_filter_worked_examples_and_dataset_view(
         assert unknown_page.json()["datasets"] == [], (
             "every dataset in scope was measured by the run just made, so no dataset "
             "may read 'unknown'. spec: API.md §Metric."
+        )
+    finally:
+        del_resp = await api_client.delete(conf_url, headers=admin_headers)
+        assert del_resp.status_code in (204, 404), (
+            f"DELETE '{_METRIC_ID}' expected 204 or 404, got "
+            f"{del_resp.status_code}: {del_resp.text}."
+        )
+
+
+@pytest.mark.asyncio
+async def test_uc5_metric_scoped_to_primary_siblings(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    internal_headers: dict[str, str],
+    seeded_sibling_pair: None,
+) -> None:
+    """UC5 narrative continued: the CDO scopes a metric to one row per logical asset.
+
+    Imazon's catalog exists twice in DataHub — the warehouse table and its modelling
+    counterpart are one logical dataset in two platforms, related by DataHub's
+    `siblings` aspect. Counted naively, every estate metric double-counts the pair.
+    The CDO writes `is_primary = true` so each logical asset is scored once.
+
+    Story steps:
+      1. [API-fired setup] The sibling relationship is mirrored into
+         `dataset_registry` by the same `datahub-sync` sweep that mirrors tags.
+      2. The CDO scopes a metric to the non-leading siblings (`is_primary = false`)
+         to see what the naive count was double-counting.
+      3. Flipping the clause to `is_primary = true` yields the complement — the
+         leader is in scope and its non-leading sibling is not.
+      4. A quoted boolean is refused with its character position rather than
+         silently matching nothing.
+
+    spec: USE_CASE_en.md §UC5 §Imazon Example — POST /spoke/governance/metric with a
+          `dataset_filter`.
+    spec: API.md §`dataset_filter` grammar — "`is_primary` | bool | `true` when the
+          dataset is the primary member of its DataHub sibling set, or has no
+          siblings. `is_primary = true` scopes a filter to one row per logical asset,
+          so a metric, ontogen run, or metagen conf counts a dbt model and its
+          warehouse table once"; "`is_primary = 'true'` is a syntax error
+          (`422 INVALID_DATASET_FILTER`)".
+    spec: DATAHUB_INTEGRATION.md §Dataset attribute sync — `is_primary` derives from
+          the `siblings` aspect on the sweep's scroll.
+    """
+    _METRIC_ID = "uc5-sibling-scoped"
+    conf_url = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/attr/conf"
+    dataset_url = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/dataset"
+
+    await api_client.delete(conf_url, headers=admin_headers)
+
+    try:
+        # ── Step 2: scope the metric to the non-leading siblings ──────────────
+        create_resp = await api_client.post(
+            "/api/v1/spoke/governance/metric",
+            headers=admin_headers,
+            json={
+                "metric_id": _METRIC_ID,
+                "mode": "active",
+                "is_enabled": False,
+                "metric_type": "doc-health",
+                "title": "Documentation health — sibling duplicates",
+                "description": "What a naive estate count double-counts",
+                "metrics": [
+                    {"name": "total", "color": "#2563EB", "idx": 1},
+                    {"name": "doc_health", "color": "#16A34A", "idx": 2},
+                ],
+                "metric_conf": {},
+                "schedule_tier": None,
+                "dataset_filter": "is_primary = false",
+            },
+        )
+        assert create_resp.status_code == 201, (
+            f"POST /spoke/governance/metric expected 201, got "
+            f"{create_resp.status_code}: {create_resp.text}. "
+            "spec: API.md §`dataset_filter` grammar — `bool_col '=' bool` is a "
+            "production of the grammar, so the clause is writable."
+        )
+        assert create_resp.json()["dataset_filter"] == "is_primary = false", (
+            "the clause must round-trip verbatim. spec: API.md §`dataset_filter` grammar."
+        )
+
+        # ── Step 1 (deferred): the sweep mirrors the aspect into the registry ──
+        # [API-fired] The sweep is the DAG's own task; UC5's story has no gesture for
+        # it. Poll rather than sleep: the aspect was emitted seconds ago and the
+        # scroll the sweep reads is eventually consistent.
+        # spec: feature/BACKEND.md §Sync + mapping sweep — step 3 "Dataset attribute
+        #       sync"; TESTING.md §Airflow Integration Test Pitfalls — direct activity
+        #       call over DAG orchestration.
+        deadline = datetime.now(tz=UTC) + timedelta(seconds=180)
+        false_urns: set[str] = set()
+        while datetime.now(tz=UTC) < deadline:
+            sync_resp = await api_client.post(
+                "/internal/activities/ingestion/sync", headers=internal_headers, timeout=300.0
+            )
+            assert sync_resp.status_code == 200, (
+                f"POST /internal/activities/ingestion/sync expected 200, got "
+                f"{sync_resp.status_code}: {sync_resp.text}."
+            )
+            view_resp = await api_client.get(f"{dataset_url}?limit=1000", headers=admin_headers)
+            assert view_resp.status_code == 200, view_resp.text
+            false_urns = {row["dataset_urn"] for row in view_resp.json()["datasets"]}
+            if false_urns:
+                break
+
+        assert false_urns == {_EDITIONS_URN}, (
+            f"`is_primary = false` must select exactly the dataset DataHub marks as a "
+            f"non-leading sibling; got {sorted(false_urns)}. A zero here means the "
+            "sweep never mirrored the emitted `siblings` aspect. "
+            "spec: DATAHUB_INTEGRATION.md §Dataset attribute sync."
+        )
+
+        # ── Step 3: the complement — one row per logical asset ────────────────
+        patch_resp = await api_client.patch(
+            conf_url,
+            headers=admin_headers,
+            json={"dataset_filter": "is_primary = true"},
+        )
+        assert patch_resp.status_code == 200, (
+            f"PATCH attr/conf with the true-side clause expected 200, got "
+            f"{patch_resp.status_code}: {patch_resp.text}."
+        )
+
+        true_view = await api_client.get(f"{dataset_url}?limit=1000", headers=admin_headers)
+        assert true_view.status_code == 200, true_view.text
+        true_urns = {row["dataset_urn"] for row in true_view.json()["datasets"]}
+        assert _TITLE_MASTER_URN in true_urns, (
+            f"the sibling leader must stay in scope; got {sorted(true_urns)}. "
+            "spec: API.md §`dataset_filter` grammar."
+        )
+        assert _EDITIONS_URN not in true_urns, (
+            "the non-leading sibling must drop out — otherwise the clause is a no-op "
+            "and the double-count it exists to prevent survives. "
+            "spec: API.md §`dataset_filter` grammar."
+        )
+
+        # ── Step 4: a quoted boolean is refused with its position ─────────────
+        quoted = await api_client.patch(
+            conf_url,
+            headers=admin_headers,
+            json={"dataset_filter": "is_primary = 'true'"},
+        )
+        assert quoted.status_code == 422, (
+            f"a quoted boolean must be a syntax error, not a silently different "
+            f"filter; got {quoted.status_code}: {quoted.text}. "
+            "spec: API.md §`dataset_filter` grammar."
+        )
+        assert quoted.json().get("error_code") == "INVALID_DATASET_FILTER", quoted.text
+        assert "position" in (quoted.json().get("detail") or {}), (
+            f"the 422 must carry the character position so the editor can point at "
+            f"the quote; got {quoted.text}. spec: API.md §Error Catalogue."
+        )
+
+        unchanged = await api_client.get(conf_url, headers=admin_headers)
+        assert unchanged.json()["dataset_filter"] == "is_primary = true", (
+            "a rejected PATCH must not have altered the stored clause"
         )
     finally:
         del_resp = await api_client.delete(conf_url, headers=admin_headers)

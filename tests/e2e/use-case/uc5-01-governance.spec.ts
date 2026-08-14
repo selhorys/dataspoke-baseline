@@ -1068,8 +1068,10 @@ test.describe("UC5 — dataset_filter worked examples and the Datasets panel", (
   // The clause UC3's Imazon example prints — the simplest documented form.
   const TAG_CLAUSE = "'urn:li:tag:area:catalog' IN tag_urns";
 
-  // The worked example printed in API.md §`dataset_filter` grammar, typed as one
-  // line so Auto-indent has something to lay out.
+  // A composite clause in the shape API.md §`dataset_filter` grammar prints as its
+  // worked example — an origin equality AND-ed with a parenthesised tag /
+  // glossary-term OR, here scoped to the seeded DEV estate — typed as one line so
+  // Auto-indent has something to lay out.
   const COMPOSITE_ONE_LINE =
     "origin = 'DEV' AND ('urn:li:tag:area:catalog' IN tag_urns" +
     " OR 'urn:li:glossaryTerm:pii.gdpr' IN glossary_term_urns)";
@@ -1142,7 +1144,7 @@ test.describe("UC5 — dataset_filter worked examples and the Datasets panel", (
       timeout: 10_000,
     });
 
-    // ── Step 2: replace with the composite worked example, via Auto-indent ──
+    // ── Step 2: replace with the composite clause, via Auto-indent ──────────
     const box = await openFilterEditor(page);
     await box.fill(COMPOSITE_ONE_LINE);
 

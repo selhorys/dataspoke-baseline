@@ -27,7 +27,8 @@ wrong for most inputs.
 
 **How to apply:** when a stage claims TS/Python formatter parity, run both. Executing the frontend
 module needs no probe file inside `src/frontend` (which risks colliding with a concurrent test
-stage — see [[scratchpad-shared-with-parallel-agents]]): copy the `.ts` to the scratchpad as
-`.mts`, write an `.mts` driver importing it, and run `node --experimental-strip-types driver.mts`
-(node 24 in this env). For component behaviour a real Vitest probe is still needed — see
+stage — see [[scratchpad-shared-with-parallel-agents]]): write an `.mts` driver in the scratchpad that imports the
+module by its absolute project path (no copy needed — `node --experimental-strip-types driver.mts`
+strips types on the imported `.ts` too; node 24 in this env, one MODULE_TYPELESS_PACKAGE_JSON
+warning is expected). For component behaviour a real Vitest probe is still needed — see
 [[frontend-probe-silent-noop]].

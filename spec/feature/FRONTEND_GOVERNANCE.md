@@ -172,11 +172,12 @@ detail render a null tier as *on-demand*.
 │    [Recharts line chart — one line per series, in    │
 │     `idx` order, stroked with each `color`]          │
 │                                                      │
-│  Datasets     [x] true [x] false [x] unknown         │
-│   dataset_urn │ datahub │ met      │ last check      │
-│   …orders     │  ↗      │ ✓ true   │ 2026-04-25 03:0 │
-│   …carriers   │  ↗      │ ✗ false  │ 2026-04-25 03:0 │
-│   …archive    │  ↗      │ ? unknown│ —               │
+│  Datasets                                            │
+│    criterion met: [x] true [x] false [x] unknown     │
+│   dataset_urn │ datahub │ met criterion │ last check │
+│   …orders     │  ↗      │ ✓ true        │ 2026-04-25 │
+│   …carriers   │  ↗      │ ✗ false       │ 2026-04-25 │
+│   …archive    │  ↗      │ ? unknown     │ —          │
 │   scope synced 2026-04-25 02:00   [‹ Prev  Next ›]   │
 │                                                      │
 │  Event                     [Last 2 weeks ▾]          │
@@ -221,7 +222,9 @@ shared [DataHub dataset deep-link](FRONTEND_BASIC.md#shared-component-notes)), a
 badge (`true` / `false` / `unknown`), and `last check time` (shared tz/datetime helper;
 em dash when the row is `unknown`). A three-way toggle group — true / false / unknown,
 all on by default — drives the repeatable `met` query param, resetting `offset` on
-change. With **zero** toggles selected the client renders the empty state and issues **no
+change. The group carries a visible `criterion met:` label immediately before the three
+checkboxes, so the three bare words are readable without relying on the group's accessible
+name; the table's own column header is `met criterion`. With **zero** toggles selected the client renders the empty state and issues **no
 request**: an omitted repeatable param and an empty one are the same HTTP request, which
 the API reads as "all three", so the no-selection case cannot be expressed on the wire and
 is resolved client-side instead. The

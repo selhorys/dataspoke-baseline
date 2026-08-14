@@ -748,8 +748,11 @@ GET /api/v1/spoke/metagen/event
 `dataset_filter`는 데이터셋 레지스트리 — DataHub 데이터 자산을 DataSpoke가 로컬에
 미러링한 테이블 — 위의 SQL `WHERE` 절 문자열이다. 컬럼은 데이터셋 URN에서 파싱되는
 스칼라 `dataset_urn`·`origin`(DataHub `FabricType` 세그먼트 — `PROD` / `DEV` /
-`CORP` / `EI` / `STG` / `NON_PROD` / …)·`platform_urn`과, DataHub에서 동기화되는
-배열 `tag_urns`·`glossary_term_urns`다. 프레디킷은 `AND` / `OR`와 괄호로 결합하며,
+`CORP` / `EI` / `STG` / `NON_PROD` / …)·`platform_urn`, DataHub에서 동기화되는
+배열 `tag_urns`·`glossary_term_urns`, 그리고 불리언 `is_primary`다. `is_primary`는
+데이터셋이 DataHub 형제(sibling) 집합의 대표이거나 형제가 없을 때 `true`이므로,
+`is_primary = true`로 필터하면 dbt 모델과 그 웨어하우스 테이블을 중복으로 세지 않고
+논리적 자산 하나당 한 번만 평가한다. 프레디킷은 `AND` / `OR`와 괄호로 결합하며,
 빈 문자열은 등록된 모든 데이터셋을 뜻한다. 전체 문법과 상한은
 [`API.md` §`dataset_filter` grammar](API.md#dataset_filter-grammar)에 있다. 잘못된
 필터는 PUT/PATCH 시점에 `422 INVALID_DATASET_FILTER`로, 잘못된 `dataset_urn`

@@ -65,6 +65,7 @@ from datahub.metadata.schema_classes import (
     SchemaFieldClass,
     SchemaFieldDataTypeClass,
     SchemaMetadataClass,
+    SiblingsClass,
     StatusClass,
     StringTypeClass,
     TagAssociationClass,
@@ -1308,6 +1309,49 @@ async def emit_operation(
     )
     print(f"  Emitted Operation({operation_type}@{last_updated_ts_ms}) on {dataset_urn}")
     return last_updated_ts_ms
+
+
+def emit_siblings(dataset_urn: str, sibling_urns: list[str], *, primary: bool) -> None:
+    """Emit a ``siblings`` aspect on ``dataset_urn``.
+
+    DataHub models a logical asset that exists on two platforms (a dbt model and its
+    warehouse table) as a sibling set, one member of which is the leader. The seeded
+    Imazon estate has no sibling relationships at all, so a test that needs the
+    non-leading side of `dataset_registry.is_primary` has to write one.
+
+    `SiblingsClass` carries exactly ``{siblings, primary}``; DataHub's GraphQL
+    surfaces it as ``Dataset.siblings: SiblingProperties { isPrimary, siblings }``,
+    which is what the sweep's attribute read selects.
+
+    Restore the baseline with ``emit_siblings(urn, [], primary=True)`` — an empty
+    sibling set with the leader flag is the "no sibling information" reading.
+
+    spec: spec/DATAHUB_INTEGRATION.md §Dataset attribute sync — the `is_primary` row
+        of the source table and the three-branch derivation.
+    """
+    emitter = DatahubRestEmitter(gms_server=_gms_url, token=_get_token())
+    emitter.emit_mcp(
+        MetadataChangeProposalWrapper(
+            entityUrn=dataset_urn,
+            aspect=SiblingsClass(siblings=list(sibling_urns), primary=primary),
+        )
+    )
+    print(f"  Emitted Siblings(primary={primary}, n={len(sibling_urns)}) on {dataset_urn}")
+
+
+def read_siblings(dataset_urn: str) -> tuple[list[str], bool] | None:
+    """Read the stored ``siblings`` aspect as ``(sibling_urns, primary)``.
+
+    Returns ``None`` when the entity carries no such aspect, which is the seeded
+    estate's baseline. Paired with :func:`emit_siblings` this is the snapshot half of
+    the snapshot → mutate → verified-restore rule that governs any test writing to the
+    shared dev cluster (spec/TESTING.md §Integration Lifecycle & Isolation).
+    """
+    graph = DataHubGraph(DatahubClientConfig(server=_gms_url, token=_get_token()))
+    aspect = graph.get_aspect(entity_urn=dataset_urn, aspect_type=SiblingsClass)
+    if aspect is None:
+        return None
+    return list(aspect.siblings or []), bool(aspect.primary)
 
 
 async def emit_fresh_kafka_operation(dataset_urn: str = ORDERS_KAFKA_URN) -> int:

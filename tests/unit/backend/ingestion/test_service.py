@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -40,6 +41,7 @@ from src.backend.ingestion.service import (
     IngestionService,
     run_report_detail,
 )
+from src.shared.datahub.client import DatasetAttributeRead
 from src.shared.exceptions import (
     ConflictError,
     DataHubUnavailableError,
@@ -4301,7 +4303,7 @@ class TestDatasetAttributeSync:
     async def test_origin_and_platform_are_parsed_from_the_urn_not_fetched(
         self, service: IngestionService, db: AsyncMock, datahub: AsyncMock
     ) -> None:
-        """`origin` and `platform_urn` come from the URN; the read supplies only the arrays.
+        """`origin` and `platform_urn` come from the URN; the read supplies the rest.
 
         spec: DATAHUB_INTEGRATION.md §Dataset attribute sync — "`origin`, `platform_urn` |
             parsed from the dataset URN | `urn:li:dataset:(<platform_urn>,<name>,<origin>)`
@@ -4312,7 +4314,13 @@ class TestDatasetAttributeSync:
         calls = self._capture_upsert(db)
         self._real_origin_parser(datahub)
         datahub.get_dataset_attributes = AsyncMock(
-            return_value={urn: (["urn:li:tag:pii"], ["urn:li:glossaryTerm:pii.gdpr"])}
+            return_value={
+                urn: DatasetAttributeRead(
+                    tag_urns=["urn:li:tag:pii"],
+                    glossary_term_urns=["urn:li:glossaryTerm:pii.gdpr"],
+                    is_primary=True,
+                )
+            }
         )
 
         refreshed = await service._sync_dataset_attributes()
@@ -4328,6 +4336,261 @@ class TestDatasetAttributeSync:
         assert row["attrs_synced_at"] is not None, (
             "the sync watermark is what tells a reader how fresh a filter's scope is. "
             "spec: BACKEND_SCHEMA.md §dataset_registry."
+        )
+
+    @pytest.mark.asyncio
+    async def test_is_primary_is_threaded_from_the_read_into_the_written_row(
+        self, service: IngestionService, db: AsyncMock, datahub: AsyncMock
+    ) -> None:
+        """Each dataset's `is_primary` reaches its registry row as the read stated it.
+
+        Both verdicts are seeded in one read: the column's own default is `true`, so a
+        step that dropped the field — or wrote a constant — would still produce two
+        `true` rows and pass a one-sided assertion.
+
+        spec: feature/BACKEND.md §Sync + mapping sweep — step 3 refreshes "`tag_urns`,
+            `glossary_term_urns`, and `is_primary` (derived from the `siblings` aspect)
+            from one paged attribute read";
+        spec: DATAHUB_INTEGRATION.md §Dataset attribute sync — the `is_primary` row of
+            the source table.
+        """
+        leader = (
+            "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,PROD)"
+        )
+        follower = "urn:li:dataset:(urn:li:dataPlatform:dbt,example_db.catalog.title_master,PROD)"
+        calls = self._capture_upsert(db)
+        self._real_origin_parser(datahub)
+        datahub.get_dataset_attributes = AsyncMock(
+            return_value={
+                leader: DatasetAttributeRead(
+                    tag_urns=[], glossary_term_urns=[], is_primary=True
+                ),
+                follower: DatasetAttributeRead(
+                    tag_urns=[], glossary_term_urns=[], is_primary=False
+                ),
+            }
+        )
+
+        refreshed = await service._sync_dataset_attributes()
+
+        assert refreshed == 2
+        assert calls, "backstop: the step must have written the attributes it read"
+        written = {row["dataset_urn"]: row["is_primary"] for row in calls[0][1]}
+        assert written == {leader: True, follower: False}, (
+            f"each dataset's is_primary must be the one the read reported; got {written}. "
+            "spec: DATAHUB_INTEGRATION.md §Dataset attribute sync."
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_read_of_the_wrong_shape_refreshes_nothing_and_does_not_raise(
+        self,
+        service: IngestionService,
+        db: AsyncMock,
+        datahub: AsyncMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A value the step cannot read as an attribute record blanks nothing.
+
+        The step writes every column of `dataset_registry` a `dataset_filter` reads,
+        so a value it half-understands must not be written at all: a partially
+        populated row would narrow every UC3/UC4/UC5 filter with `attrs_synced_at`
+        advancing as if the sweep had succeeded.
+
+        The failure is also reported: a read that quietly refreshes nothing is
+        indistinguishable from an estate with nothing to read, which is the whole
+        reason the fallback is "retry next tick" rather than an error to the caller.
+
+        spec: feature/BACKEND.md §Best-Effort Operations — "Estate-wide dataset
+            attribute read […] No row is blanked — stored attributes and their
+            `attrs_synced_at` stand"; failures of the listed operations are
+            "logged at WARNING with `exc_info=True`".
+        """
+        urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,PROD)"
+        calls = self._capture_upsert(db)
+        self._real_origin_parser(datahub)
+        datahub.get_dataset_attributes = AsyncMock(return_value={urn: (["urn:li:tag:pii"], [])})
+
+        caplog.set_level(logging.DEBUG)
+        refreshed = await service._sync_dataset_attributes()
+
+        assert refreshed == 0
+        assert calls == [], (
+            f"nothing may be written from a value the step cannot read; got {calls!r}"
+        )
+        assert [r.getMessage() for r in caplog.records], (
+            "backstop: a silent refresh of nothing is indistinguishable from an estate "
+            "with nothing to read — the failure has to leave a log record"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_degraded_attribute_read_is_logged_at_warning(
+        self,
+        service: IngestionService,
+        db: AsyncMock,
+        datahub: AsyncMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """An unreadable payload reports itself at WARNING, not ERROR.
+
+        The level is the operator-facing half of the fault-class split: a payload the
+        step cannot iterate is the remote's problem, degrades to "retry next tick",
+        and must not page anyone. ERROR is what the sibling call-shape branch
+        (`test_a_broken_urn_helper_…`) reserves for a fault of DataSpoke's own, and
+        the two levels have to differ observably for that split to mean anything.
+
+        spec: feature/BACKEND.md §Best-Effort Operations — "Every other read failure,
+            and a payload the step cannot iterate as `{urn: DatasetAttributeRead}`, is
+            a remote-payload or transport fault: logged at `WARNING`, degrading to the
+            row's stated fallback", with "Estate-wide dataset attribute read" among the
+            listed rows.
+        """
+        urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,PROD)"
+        self._capture_upsert(db)
+        self._real_origin_parser(datahub)
+        datahub.get_dataset_attributes = AsyncMock(return_value={urn: (["urn:li:tag:pii"], [])})
+
+        caplog.set_level(logging.DEBUG)
+        assert await service._sync_dataset_attributes() == 0
+
+        attribute_records = [r for r in caplog.records if "attribute" in r.getMessage()]
+        assert attribute_records, (
+            "backstop: the degraded read has to report itself at all before its level "
+            "can be asserted"
+        )
+        assert [r.levelname for r in attribute_records] == ["WARNING"], (
+            "a payload the step cannot iterate is a remote-payload fault and reports at "
+            f"WARNING; got {[(r.levelname, r.getMessage()) for r in attribute_records]!r}. "
+            "spec: feature/BACKEND.md §Best-Effort Operations."
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_look_alike_attribute_value_degrades_at_warning_not_error(
+        self,
+        service: IngestionService,
+        db: AsyncMock,
+        datahub: AsyncMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A mapping value of the wrong type is a payload fault, not a call-shape one.
+
+        The stand-in carries all three field names, so with no up-front shape check it
+        would sail through the record build and be written to `dataset_registry` as if
+        the read had been understood; a value merely *missing* a field would instead
+        raise `AttributeError` inside that comprehension and be reported as a
+        call-shape fault of DataSpoke's own. Checking the value's type first is what
+        keeps the two fault classes distinguishable, and dropping that check is
+        detectable here twice over: nothing may be written, and the report is the
+        payload branch's WARNING rather than the call-shape branch's ERROR.
+
+        spec: feature/BACKEND.md §Best-Effort Operations — "The shape-check that makes
+            the split real is up front — a mapping value that is not a
+            `DatasetAttributeRead` is turned into a `TypeError` precisely so that an
+            `AttributeError` inside that comprehension keeps meaning "call-shape
+            fault"", and "a payload the step cannot iterate as
+            `{urn: DatasetAttributeRead}` […] logged at `WARNING`, degrading to the
+            row's stated fallback";
+        spec: DATAHUB_INTEGRATION.md §Dataset attribute sync — the never-blank upsert
+            rule the empty write protects.
+        """
+        urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,PROD)"
+        calls = self._capture_upsert(db)
+        self._real_origin_parser(datahub)
+        look_alike = SimpleNamespace(
+            tag_urns=["urn:li:tag:pii"],
+            glossary_term_urns=["urn:li:glossaryTerm:pii.gdpr"],
+            is_primary=False,
+        )
+        datahub.get_dataset_attributes = AsyncMock(return_value={urn: look_alike})
+
+        caplog.set_level(logging.DEBUG)
+        refreshed = await service._sync_dataset_attributes()
+
+        assert refreshed == 0
+        assert calls == [], (
+            "a value the step never type-checked must not reach dataset_registry; got "
+            f"{calls!r}"
+        )
+
+        payload_records = [r for r in caplog.records if "attribute" in r.getMessage()]
+        assert payload_records, (
+            "backstop: the degraded read has to report itself at all before its level "
+            "can be asserted"
+        )
+        assert [r.levelname for r in payload_records] == ["WARNING"], (
+            "a wrong-typed mapping value is a remote-payload fault and reports at "
+            "WARNING; an ERROR here means the value reached the comprehension and was "
+            "misattributed to DataSpoke's own call shape. Got "
+            f"{[(r.levelname, r.getMessage()) for r in payload_records]!r}. "
+            "spec: feature/BACKEND.md §Best-Effort Operations."
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_broken_urn_helper_refreshes_nothing_and_does_not_raise(
+        self,
+        service: IngestionService,
+        db: AsyncMock,
+        datahub: AsyncMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A fault while building the records degrades the step, it does not escape.
+
+        The read itself succeeded here — the fault is raised one step later, by a URN
+        helper the record-building calls. The fallback is the same as for a failed
+        read, and it has to be, because an exception escaping this step would abort
+        the whole sync sweep and (per §Health reporting) flip a health row that this
+        step is specified never to touch.
+
+        The **level** is what separates this branch from the unreadable-payload one
+        (`test_a_degraded_attribute_read_is_logged_at_warning`): a missing or renamed
+        helper is a call-shape fault of DataSpoke's own, so it is exempt from
+        best-effort's WARNING and reports at ERROR — otherwise a swept-under
+        `attrs_synced = 0` is indistinguishable from an estate with nothing to read.
+
+        spec: feature/BACKEND.md §Best-Effort Operations — "Estate-wide dataset
+            attribute read […] No row is blanked — stored attributes and their
+            `attrs_synced_at` stand […] the `datahub-api` health row is **not**
+            flipped […] retry next tick"; "Its exemption covers both points at which a
+            call-shape fault can surface — the `get_dataset_attributes` call itself, and
+            the same exception classes raised one step later while building the records
+            from the returned mapping, a step that calls two URN helpers", those being
+            "logged at `ERROR`"; and the attribute read "returns its fallback rather than
+            re-raising".
+        """
+        urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,PROD)"
+        calls = self._capture_upsert(db)
+        self._real_origin_parser(datahub)
+        datahub.get_dataset_attributes = AsyncMock(
+            return_value={
+                urn: DatasetAttributeRead(tag_urns=[], glossary_term_urns=[], is_primary=True)
+            }
+        )
+
+        caplog.set_level(logging.DEBUG)
+        with patch(
+            "src.backend.ingestion.service.platform_urn_from_dataset_urn",
+            side_effect=AttributeError("no attribute 'split'"),
+        ) as broken:
+            refreshed = await service._sync_dataset_attributes()
+
+        assert broken.called, (
+            "backstop: the fault must have been raised from inside the record build — "
+            "otherwise this test asserts the empty-read path instead"
+        )
+        assert refreshed == 0
+        assert calls == [], (
+            f"a step that could not build its records may write nothing; got {calls!r}"
+        )
+
+        build_records = [r for r in caplog.records if "attribute" in r.getMessage()]
+        assert build_records, (
+            "backstop: the degraded step has to report itself at all before its level "
+            "can be asserted"
+        )
+        assert [r.levelname for r in build_records] == ["ERROR"], (
+            "a call-shape fault raised while building the records is exempt from "
+            "best-effort and reports at ERROR, not at the WARNING the payload branch "
+            f"takes; got {[(r.levelname, r.getMessage()) for r in build_records]!r}. "
+            "spec: feature/BACKEND.md §Best-Effort Operations."
         )
 
     @pytest.mark.asyncio
@@ -4376,7 +4639,13 @@ class TestDatasetAttributeSync:
         urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,PROD)"
         self._real_origin_parser(datahub)
         db.execute = AsyncMock(side_effect=RuntimeError("deadlock detected"))
-        datahub.get_dataset_attributes = AsyncMock(return_value={urn: ([], [])})
+        datahub.get_dataset_attributes = AsyncMock(
+            return_value={
+                urn: DatasetAttributeRead(
+                    tag_urns=[], glossary_term_urns=[], is_primary=True
+                )
+            }
+        )
 
         assert await service._sync_dataset_attributes() == 0
         db.rollback.assert_awaited()

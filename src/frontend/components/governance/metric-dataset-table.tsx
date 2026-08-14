@@ -10,8 +10,10 @@
  * (true / false / unknown), and `last check time` (shared tz helper; em dash
  * when the row has no verdict).
  *
- * The three-way toggle group drives the repeatable `met` query param and resets
- * `offset` on change. With **zero** toggles selected the panel renders its empty
+ * The three-way toggle group carries a visible `criterion met:` label, drives the
+ * repeatable `met` query param, and resets `offset` on change. The label is a
+ * plain sibling of the checkbox labels, so each checkbox's accessible name stays
+ * its own verdict. With **zero** toggles selected the panel renders its empty
  * state and issues **no request**: an omitted repeatable param and an empty one
  * are the same HTTP request, which the API reads as "all three", so the
  * no-selection case cannot be expressed on the wire and is resolved client-side.
@@ -92,6 +94,7 @@ export function MetricDatasetTable({ metricId }: MetricDatasetTableProps) {
         role="group"
         aria-label="Filter datasets by criterion verdict"
       >
+        <span className="text-xs font-medium text-muted-foreground">criterion met:</span>
         {METRIC_VERDICTS.map((verdict) => (
           <label
             key={verdict}

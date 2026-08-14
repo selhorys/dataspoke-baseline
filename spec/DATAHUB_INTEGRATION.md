@@ -417,6 +417,7 @@ annotation, is a per-feature read of the aspect itself.*
 | `ownership` | W | — | — | — | — |
 | `globalTags` | W | — | R *(`dataset_filter`)* | R *(`dataset_filter`; W is future scope)* | R *(`dataset_filter`)* |
 | `glossaryTerms` | — | — | R *(per-dataset evidence + `dataset_filter`)* | R *(per-dataset evidence + `dataset_filter`)* | R *(`dataset_filter`)* |
+| `siblings` | — | — | R *(`dataset_filter`)* | R *(`dataset_filter`)* | R *(`dataset_filter`)* |
 | `upstreamLineage` | W | R | — | — | — |
 | `status` | W | W *(`removed=false` on register; conf DELETE hard-deletes the entity rather than tombstoning)* | — | — | — |
 | `deprecation` | — | — | — | — | — |
@@ -892,18 +893,41 @@ is evaluated against.
 `dataset_filter` (UC3 ontogen conf, UC4 metagen conf, UC5 metric definitions) is a
 SQL `WHERE` clause over `dataset_registry` — see
 [API §`dataset_filter` grammar](API.md#dataset_filter-grammar). The sweep mirrors the
-columns that clause reads. Two sources, deliberately different:
+columns that clause reads. Three column groups from two sources, deliberately split:
 
 | Columns | Source | Why |
 |---|---|---|
 | `origin`, `platform_urn` | parsed from the dataset URN | `urn:li:dataset:(<platform_urn>,<name>,<origin>)` encodes both by definition — the `origin` field is declared on the `DatasetUrn` key (`li-utils/.../common/DatasetUrn.pdl`) with type `com.linkedin.common.FabricType`. Parsing is exact and free, and does not depend on which fields a GraphQL `Dataset` happens to expose |
 | `tag_urns`, `glossary_term_urns` | one paged `scrollAcrossEntities` | Associations that live only in DataHub |
+| `is_primary` | the `siblings` aspect on the same scroll | Sibling leadership lives only in DataHub — the aspect carries `{siblings, primary}` (`common/Siblings.pdl`), exposed on GraphQL as `Dataset.siblings: SiblingProperties { isPrimary, siblings }`. `scrollAcrossEntities` does not merge siblings server-side — combination is client-side in DataHub's own UI (`combineSiblingsInSearchResults.ts`) — so both members of a pair appear in the scroll and the non-primary member is reachable |
 
-The attribute read selects `urn`, `tags { tags { tag { urn } } }`, and
-`glossaryTerms { terms { term { urn } } }` and carries the same four hardening
-properties as [§Observed Ingestion Recency](#observed-ingestion-recency): a mandatory
-`... on Dataset` inline fragment, per-element shape checks, `scrollId` transmitted only
-once non-empty, and a page-capped cursor loop.
+The attribute read selects `urn`, `tags { tags { tag { urn } } }`,
+`glossaryTerms { terms { term { urn } } }`, and
+`siblings { isPrimary siblings { urn } }`, and carries the same hardening discipline as
+[§Observed Ingestion Recency](#observed-ingestion-recency) — a mandatory `... on Dataset`
+inline fragment, `scrollId` transmitted only once non-empty, and a page-capped cursor loop
+— plus per-element shape checks on the association and sibling containers.
+
+`is_primary` derives from the `siblings` selection in three branches, all yielding a
+non-null boolean, and the flag is read **before** the sibling list: the aspect absent or
+null ⇒ `true`; a readable `isPrimary` flag ⇒ that flag, whatever the sibling list holds;
+a present aspect with no readable flag ⇒ `true`, again whatever the sibling list holds
+(both `siblings` and `isPrimary` are nullable in DataHub's GraphQL schema, so an unknown
+leadership relationship must resolve to the same "counted once" default as no
+relationship at all). The flag-first order is load-bearing, and the schema is why:
+`common/Siblings.pdl` declares both `siblings: array[Urn]` and `primary: boolean` as
+required fields, so a stored aspect always carries an explicit flag, and `SiblingsMapper`
+sets `isPrimary` unconditionally while filtering only the list. An explicit `false` is
+therefore a positive statement of non-leadership, and an empty list is evidence of nothing
+— deciding on emptiness first would call a non-leading member primary and reintroduce the
+sibling double-count the column exists to prevent. That holds regardless of deployment;
+and a deployment with `VIEW_AUTHORIZATION_ENABLED` on can additionally return an empty
+list beside an explicit `false`, because `SiblingsMapper` filters the list through
+`canView`. A malformed `siblings` object degrades to `true` under the same shape checks
+rather than failing the read — an unknown sibling relationship must not silently drop a
+dataset from an `is_primary = true` filter — and the read reports a per-sweep count of the
+datasets whose verdict was that degraded guess, since the guess silently widens every
+`is_primary = true` filter.
 
 The sweep **upserts per dataset and never deletes-then-inserts**. A dataset absent from
 the attribute read keeps its prior attributes rather than being blanked: a half-completed

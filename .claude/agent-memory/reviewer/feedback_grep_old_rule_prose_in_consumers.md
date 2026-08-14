@@ -5,8 +5,9 @@ metadata:
   type: feedback
 ---
 
-When a stage removes or flips a resolution rule (precedence order, fallback
-chain, source-of-truth plane), do not stop at verifying the implementing module.
+When a stage removes, flips, **or adds an exception to** a rule (precedence
+order, fallback chain, source-of-truth plane, grammar production), do not stop at
+verifying the implementing module.
 Grep the **prose of the old rule** across every non-test consumer, every shell
 helper that documents the same wiring, and every **user-visible UI string**
 (`hint` / `description` / `label` / `placeholder` props).
@@ -28,9 +29,19 @@ reliably miss the copies. Two cases:
   fix exists to eliminate, on a form shared by two metric types ("freshness" was
   also wrong for `validation-score`).
 
+- The `is_primary` dataset_filter column: adding one grammar production
+  (`bool := TRUE | FALSE`, case-insensitive per `API.md`) silently falsified a
+  *universal* sentence sitting three paragraphs below it in the very same
+  rendered component — `dataset-filter-guide.tsx` still tells the user "values
+  are case-sensitive". Nothing was removed or flipped, so the usual
+  removed-identifier grep finds nothing; the trigger was an **addition** that
+  created an exception to a blanket claim.
+
 **How to apply:** grep the distinctive phrase from the old rule (`fallback`,
 `env-first`, `then`, `precedence`, `wins`, `per-dataset`, the removed env-var or
-config names) filtered to non-test sources, e.g.
+config names) filtered to non-test sources — and for an *addition*, re-read the
+surrounding prose of the file you edited for blanket words (`always`, `never`,
+`all`, `only`, `values are …`) that the new case now contradicts, e.g.
 `grep -rni "fallback\|per-dataset" --include=*.ts --include=*.tsx src/frontend/ | grep -v '\.test\.'`
 plus the same phrase over `src/` and `helm-charts/bin/`. A zero-hit grep on
 *identifiers* (the generator's usual evidence) says nothing about prose. When the

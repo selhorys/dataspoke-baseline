@@ -12,21 +12,31 @@ Grammar (spec/API.md §``dataset_filter`` grammar)::
     predicate   := scalar_col '=' string
                  | scalar_col IN '(' string {',' string} ')'
                  | string IN array_col
+                 | bool_col '=' bool
     scalar_col  := dataset_urn | origin | platform_urn
     array_col   := tag_urns | glossary_term_urns
+    bool_col    := is_primary
+    bool        := TRUE | FALSE                  -- bare word, never quoted
     string      := '...'                         -- single quotes; '' escapes one
 
-Keywords (``AND``/``OR``/``IN``) and column names are matched case-insensitively;
-string **values** are case-sensitive. Mixing ``AND`` and ``OR`` at one level
-requires parentheses. Caps: ≤ 8,000 characters and ≤ 1,000 string literals.
+Keywords (``AND``/``OR``/``IN``), the ``TRUE``/``FALSE`` bare words and column
+names are matched case-insensitively; string **values** are case-sensitive. A
+quoted boolean (``is_primary = 'true'``) is a syntax error, as is a boolean
+column used with ``IN``. Mixing ``AND`` and ``OR`` at one level requires
+parentheses. Caps: ≤ 8,000 characters and ≤ 1,000 string literals.
 
 **Security invariant.** User filter text never reaches the database as SQL text.
 :func:`filter_clause` compiles the AST to a SQLAlchemy boolean expression in
-which *every* literal is a bound parameter and *every* column identifier comes
-from the fixed whitelists below (``_SCALAR_COLUMNS`` / ``_ARRAY_COLUMNS``), which
-map grammar keywords to ORM column objects. This module contains no f-string,
-``%``-formatting, ``str.format`` or ``sqlalchemy.text()`` on the compile path —
-the parser is the only thing between an operator's input and a query.
+which every *user-supplied* literal is a bound parameter and *every* column
+identifier comes from the fixed whitelists below (``_SCALAR_COLUMNS`` /
+``_ARRAY_COLUMNS`` / ``_BOOL_COLUMNS``), which map grammar keywords to ORM
+column objects. A boolean predicate is the one exception to the binding rule and
+deliberately so: it compiles to the inline constant ``= true`` / ``= false``,
+whose operand is one of two Python constants the parser selected — never
+operator text — and whose spelling is what keeps the partial index reachable.
+This module contains no f-string, ``%``-formatting, ``str.format`` or
+``sqlalchemy.text()`` on the compile path — the parser is the only thing between
+an operator's input and a query.
 
 Spec: spec/API.md §``dataset_filter`` grammar, spec/feature/BACKEND.md
 §Dataset resolution, spec/feature/BACKEND_SCHEMA.md §``dataset_registry``.
@@ -54,6 +64,7 @@ __all__ = [
     "MAX_PAREN_DEPTH",
     "MAX_STRING_LITERALS",
     "ArrayContains",
+    "BoolEquals",
     "BoolNode",
     "DatasetFilterSyntaxError",
     "Equals",
@@ -86,6 +97,14 @@ _ARRAY_COLUMNS: dict[str, InstrumentedAttribute[Any]] = {
     "tag_urns": DatasetRegistry.tag_urns,
     "glossary_term_urns": DatasetRegistry.glossary_term_urns,
 }
+_BOOL_COLUMNS: dict[str, InstrumentedAttribute[Any]] = {
+    "is_primary": DatasetRegistry.is_primary,
+}
+
+#: The two bare words a boolean predicate accepts, matched case-insensitively.
+#: The parser maps the word to a Python constant here, so the compiler never
+#: sees operator text on the value side of a boolean predicate.
+_BOOL_LITERALS: dict[str, bool] = {"true": True, "false": False}
 
 _IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _CTRL_RE = re.compile(r"[\x00-\x1f\x7f]")
@@ -140,6 +159,18 @@ class ArrayContains:
 
 
 @dataclass(frozen=True)
+class BoolEquals:
+    """``bool_col = TRUE`` / ``bool_col = FALSE``.
+
+    ``value`` is a Python ``bool`` the parser derived from the bare word, not the
+    operator's text — the quoted form (``is_primary = 'true'``) never parses.
+    """
+
+    column: str
+    value: bool
+
+
+@dataclass(frozen=True)
 class BoolNode:
     """``AND``/``OR`` over two or more operands at one nesting level."""
 
@@ -147,7 +178,7 @@ class BoolNode:
     children: tuple["Node", ...]
 
 
-Node = Equals | InList | ArrayContains | BoolNode
+Node = Equals | InList | ArrayContains | BoolEquals | BoolNode
 
 
 @dataclass(frozen=True)
@@ -329,7 +360,15 @@ class _Parser:
             if column not in _ARRAY_COLUMNS:
                 if column in _SCALAR_COLUMNS:
                     raise DatasetFilterSyntaxError(
-                        f"column {_safe(column_token.value)} is not an array column; "
+                        f"column {_safe(column_token.value)} is a scalar column, not an "
+                        f"array column; write it as \"<column> = 'value'\"; "
+                        f"array columns are {_column_list(_ARRAY_COLUMNS)}",
+                        column_token.position,
+                    )
+                if column in _BOOL_COLUMNS:
+                    raise DatasetFilterSyntaxError(
+                        f"column {_safe(column_token.value)} is a boolean column, not an "
+                        'array column; write it as "<column> = TRUE"; '
                         f"array columns are {_column_list(_ARRAY_COLUMNS)}",
                         column_token.position,
                     )
@@ -343,6 +382,8 @@ class _Parser:
         if token.kind == "ident":
             column_token = self._next()
             column = column_token.value.lower()
+            if column in _BOOL_COLUMNS:
+                return self._parse_bool_predicate(column)
             if column not in _SCALAR_COLUMNS:
                 if column in _ARRAY_COLUMNS:
                     raise DatasetFilterSyntaxError(
@@ -350,9 +391,14 @@ class _Parser:
                         "write it as \"'value' IN <column>\"",
                         column_token.position,
                     )
+                # The array columns are deliberately not listed here: they are
+                # named by the wrong-kind branch above, and every clause added to
+                # this message eats into the bound that keeps a 422 body's size
+                # out of the requester's control (see :func:`_safe`).
                 raise DatasetFilterSyntaxError(
                     f"unknown column {_safe(column_token.value)}; "
-                    f"scalar columns are {_column_list(_SCALAR_COLUMNS)}",
+                    f"scalar columns are {_column_list(_SCALAR_COLUMNS)}, "
+                    f"boolean columns are {_column_list(_BOOL_COLUMNS)}",
                     column_token.position,
                 )
 
@@ -373,6 +419,38 @@ class _Parser:
             raise DatasetFilterSyntaxError("expected = or IN after a column name", nxt.position)
 
         raise DatasetFilterSyntaxError("expected a column name or a quoted string", token.position)
+
+    def _parse_bool_predicate(self, column: str) -> Node:
+        """``bool_col '=' bool`` — the column token is already consumed.
+
+        The value is a bare ``TRUE``/``FALSE`` word, matched case-insensitively.
+        A quoted value is rejected rather than coerced: ``is_primary = 'true'``
+        would otherwise have to mean either the boolean or the string ``'true'``,
+        and a silent choice between them is a filter that quietly matches the
+        wrong set of datasets.
+        """
+        nxt = self._peek()
+        if nxt.kind != "=":
+            raise DatasetFilterSyntaxError(
+                "expected = after a boolean column; boolean columns take neither IN "
+                'nor a quoted value, only "<column> = TRUE" or "<column> = FALSE"',
+                nxt.position,
+            )
+        self._next()
+
+        value_token = self._peek()
+        if value_token.kind == "string":
+            raise DatasetFilterSyntaxError(
+                "expected TRUE or FALSE after a boolean column; the value is a bare "
+                "word, never quoted",
+                value_token.position,
+            )
+        if value_token.kind != "ident" or value_token.value.lower() not in _BOOL_LITERALS:
+            raise DatasetFilterSyntaxError(
+                "expected TRUE or FALSE after a boolean column", value_token.position
+            )
+        self._next()
+        return BoolEquals(column=column, value=_BOOL_LITERALS[value_token.value.lower()])
 
 
 def _column_list(columns: dict[str, Any]) -> str:
@@ -454,8 +532,11 @@ def filter_clause(ast: FilterAst) -> ColumnElement[bool]:
     The empty filter compiles to ``TRUE`` — it matches every registered dataset;
     the caller supplies the ``datahub_registered`` restriction.
 
-    Every literal becomes a bound parameter and every column identifier comes
-    from the module's whitelists, so no user text is ever rendered into SQL.
+    Every *user-supplied* literal becomes a bound parameter and every column
+    identifier comes from the module's whitelists, so no user text is ever
+    rendered into SQL. The boolean operand is the sole inline constant: it is one
+    of two Python constants the parser selected, rendered as ``= true`` /
+    ``= false`` so the partial index on ``is_primary`` stays reachable.
     """
     if ast.root is None:
         return sa.true()
@@ -486,6 +567,19 @@ def _compile(node: Node) -> ColumnElement[bool]:
         return column == sa.any_(
             sa.bindparam(None, value=list(node.values), type_=PG_ARRAY(Text()), unique=True)
         )
+
+    if isinstance(node, BoolEquals):
+        bool_column = _BOOL_COLUMNS[node.column]
+        # `= true` / `= false` rather than `= :p` or `IS true` / `IS false`. The
+        # operand is one of two Python constants the parser chose, so nothing of
+        # the operator's text reaches the statement either way, but the spelling
+        # decides whether `ix_dataset_registry_not_primary` (partial,
+        # `WHERE NOT is_primary`) is reachable: PostgreSQL folds `= false` into
+        # `NOT col`, which matches the stored index predicate, while a
+        # `BooleanTest` node (`IS false`) never does and seq-scans the registry.
+        # A bound parameter would match only under a custom plan and lose the
+        # index under `plan_cache_mode = force_generic_plan`.
+        return bool_column == (sa.true() if node.value else sa.false())
 
     if isinstance(node, ArrayContains):
         column = _ARRAY_COLUMNS[node.column]
@@ -553,6 +647,10 @@ def _format_predicate(node: Node) -> str:
         return f"{node.column} IN ({rendered})"
     if isinstance(node, ArrayContains):
         return f"{_quote(node.value)} IN {node.column}"
+    if isinstance(node, BoolEquals):
+        # Lowercase in the canonical form, matching the lowercase column names.
+        rendered = "true" if node.value else "false"
+        return f"{node.column} = {rendered}"
     raise AssertionError(f"unhandled filter node: {type(node).__name__}")
 
 

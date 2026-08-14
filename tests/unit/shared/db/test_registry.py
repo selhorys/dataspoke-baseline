@@ -491,10 +491,14 @@ def _captured_upsert(db: AsyncMock) -> list[tuple[object, object]]:
 
 
 async def test_upsert_dataset_attributes_writes_every_filter_column(db: AsyncMock):
-    """Each record carries origin, platform_urn and both association arrays.
+    """Each record carries origin, platform_urn, both association arrays and is_primary.
 
-    spec: BACKEND_SCHEMA.md §dataset_registry — the five attribute columns
-        (`origin`, `platform_urn`, `tag_urns`, `glossary_term_urns`,
+    `is_primary` is seeded **false** here, against the column's own `true` default:
+    a writer that dropped the field, or hardcoded the default, would still produce a
+    row that reads `true` and would pass a `true`-valued assertion vacuously.
+
+    spec: BACKEND_SCHEMA.md §dataset_registry — the attribute columns (`origin`,
+        `platform_urn`, `tag_urns`, `glossary_term_urns`, `is_primary`,
         `attrs_synced_at`) are what `dataset_filter` is evaluated against.
     """
     from src.shared.db.registry import DatasetAttributes, upsert_dataset_attributes
@@ -511,6 +515,7 @@ async def test_upsert_dataset_attributes_writes_every_filter_column(db: AsyncMoc
                 platform_urn="urn:li:dataPlatform:postgres",
                 tag_urns=["urn:li:tag:pii"],
                 glossary_term_urns=["urn:li:glossaryTerm:pii.gdpr"],
+                is_primary=False,
             )
         ],
         synced_at=synced_at,
@@ -527,6 +532,7 @@ async def test_upsert_dataset_attributes_writes_every_filter_column(db: AsyncMoc
             "platform_urn": "urn:li:dataPlatform:postgres",
             "tag_urns": ["urn:li:tag:pii"],
             "glossary_term_urns": ["urn:li:glossaryTerm:pii.gdpr"],
+            "is_primary": False,
             "attrs_synced_at": synced_at,
             "created_at": synced_at,
             "updated_at": synced_at,
@@ -563,6 +569,7 @@ async def test_upsert_dataset_attributes_only_touches_the_urns_it_was_given(db: 
                 platform_urn="urn:li:dataPlatform:postgres",
                 tag_urns=[],
                 glossary_term_urns=[],
+                is_primary=True,
             )
         ],
     )
@@ -586,7 +593,7 @@ async def test_upsert_dataset_attributes_refreshes_the_attribute_columns_on_conf
     observable symptom — `attrs_synced_at` would stand still while the sweep kept
     reporting success. Each refreshed column is therefore asserted by name.
 
-    spec: BACKEND_SCHEMA.md §dataset_registry — `attrs_synced_at` is "When the four
+    spec: BACKEND_SCHEMA.md §dataset_registry — `attrs_synced_at` is "When the five
         attribute columns above were last refreshed", and the sweep's attribute step
         "refreshes the attribute columns";
     spec: BACKEND.md §dataset_filter — filter staleness is diagnosable from
@@ -607,6 +614,7 @@ async def test_upsert_dataset_attributes_refreshes_the_attribute_columns_on_conf
                 platform_urn="urn:li:dataPlatform:postgres",
                 tag_urns=["urn:li:tag:pii"],
                 glossary_term_urns=["urn:li:glossaryTerm:pii.gdpr"],
+                is_primary=False,
             )
         ],
     )
@@ -625,6 +633,12 @@ async def test_upsert_dataset_attributes_refreshes_the_attribute_columns_on_conf
         "platform_urn",
         "tag_urns",
         "glossary_term_urns",
+        # A missing `is_primary` entry is the silent-staleness case in its purest
+        # form: the column only ever changes on an EXISTING row (a dataset gains or
+        # loses sibling leadership after it was first swept), so an insert-only
+        # write would leave every such row frozen at the `true` default while
+        # `attrs_synced_at` kept advancing.
+        "is_primary",
         "attrs_synced_at",
     ):
         assert f"{column} = excluded.{column}" in conflict_clause, (
@@ -658,6 +672,7 @@ async def test_upsert_dataset_attributes_does_not_register_an_unseen_urn(db: Asy
                 platform_urn="urn:li:dataPlatform:postgres",
                 tag_urns=[],
                 glossary_term_urns=[],
+                is_primary=True,
             )
         ],
     )
@@ -692,6 +707,7 @@ async def test_upsert_dataset_attributes_skips_a_malformed_urn(db: AsyncMock):
                 platform_urn=None,
                 tag_urns=[],
                 glossary_term_urns=[],
+                is_primary=True,
             ),
             DatasetAttributes(
                 dataset_urn=_URN_NEW,
@@ -699,6 +715,7 @@ async def test_upsert_dataset_attributes_skips_a_malformed_urn(db: AsyncMock):
                 platform_urn="urn:li:dataPlatform:postgres",
                 tag_urns=[],
                 glossary_term_urns=[],
+                is_primary=True,
             ),
         ],
     )
@@ -732,6 +749,7 @@ async def test_upsert_dataset_attributes_does_not_commit(db: AsyncMock):
                 platform_urn="urn:li:dataPlatform:postgres",
                 tag_urns=[],
                 glossary_term_urns=[],
+                is_primary=True,
             )
         ],
     )
@@ -760,6 +778,7 @@ async def test_upsert_dataset_attributes_chunks_a_large_estate(db: AsyncMock):
             platform_urn="urn:li:dataPlatform:postgres",
             tag_urns=[],
             glossary_term_urns=[],
+            is_primary=True,
         )
         for i in range(_ATTRIBUTE_CHUNK + 1)
     ]

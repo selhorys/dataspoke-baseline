@@ -227,8 +227,8 @@ class DatasetRegistry(Base):
     """DataHub dataset mirror plus the attributes ``dataset_filter`` reads.
 
     ``origin`` and ``platform_urn`` are parsed out of ``dataset_urn`` (the URN
-    encodes both); ``tag_urns`` and ``glossary_term_urns`` come from the sweep's
-    estate-wide attribute read. See spec/feature/BACKEND_SCHEMA.md
+    encodes both); ``tag_urns``, ``glossary_term_urns`` and ``is_primary`` come
+    from the sweep's estate-wide attribute read. See spec/feature/BACKEND_SCHEMA.md
     §``dataset_registry``.
     """
 
@@ -245,6 +245,13 @@ class DatasetRegistry(Base):
         ),
         Index("ix_dataset_registry_origin", "origin"),
         Index("ix_dataset_registry_platform_urn", "platform_urn"),
+        # Partial: `is_primary` is true registry-wide by default, so only the
+        # false side is selective enough for the planner to use an index.
+        Index(
+            "ix_dataset_registry_not_primary",
+            "is_primary",
+            postgresql_where=text("NOT is_primary"),
+        ),
         {"schema": SCHEMA},
     )
 
@@ -261,6 +268,12 @@ class DatasetRegistry(Base):
     )
     glossary_term_urns: Mapped[list[str]] = mapped_column(
         PG_ARRAY(Text), nullable=False, default=list, server_default=text("'{}'::text[]")
+    )
+    # Not null, defaulting true: absent sibling information means "primary", so a
+    # never-swept row is counted once by an `is_primary = true` filter rather
+    # than dropped from it.
+    is_primary: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
     )
     attrs_synced_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
     created_at: Mapped[datetime] = mapped_column(

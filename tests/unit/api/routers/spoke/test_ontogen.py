@@ -347,8 +347,8 @@ async def test_put_conf_with_a_composite_filter_returns_200(
     """A composite clause round-trips through the route and reaches the service verbatim.
 
     Spec: spec/API.md §`dataset_filter` grammar — "UC3's `ontogen/attr/conf.dataset_filter`
-    […] use[s] this same grammar and validation"; the worked example combines an origin
-    equality with tag / glossary-term membership.
+    […] use[s] this same grammar and validation"; `expr := term { (AND|OR) term }` composes
+    an origin equality with tag membership.
     """
     clause = "origin = 'DEV' AND 'urn:li:tag:area:fulfillment' IN tag_urns"
     conf_row = _make_conf_row()

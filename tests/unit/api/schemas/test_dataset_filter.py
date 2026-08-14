@@ -38,9 +38,12 @@ class TestAcceptedFilters:
             "platform_urn = 'urn:li:dataPlatform:postgres'",
             "'urn:li:tag:area:catalog' IN tag_urns",
             "'urn:li:glossaryTerm:pii.gdpr' IN glossary_term_urns",
+            "is_primary = true",
+            "is_primary = FALSE",
             f"dataset_urn = '{_URN}'",
             (
-                "origin = 'PROD' AND ('urn:li:tag:area:catalog' IN tag_urns"
+                "origin = 'PROD' AND is_primary = true"
+                " AND ('urn:li:tag:area:catalog' IN tag_urns"
                 " OR 'urn:li:glossaryTerm:pii.gdpr' IN glossary_term_urns)"
             ),
         ],
@@ -72,6 +75,13 @@ class TestSyntaxErrorsCarryTheFilterCode:
             "origin = 'A' AND origin = 'B' OR origin = 'C'",
             "origin = 'A' AND (origin = 'B' OR (origin = 'C' AND (origin = 'D' OR origin = 'E')))",
             "origin = 'PROD'; DROP TABLE dataset_registry",
+            # spec/API.md §`dataset_filter` grammar — "`is_primary = 'true'` is a
+            # syntax error (`422 INVALID_DATASET_FILTER`), as is using a boolean
+            # column with `IN` or a scalar/array column with a bare word".
+            "is_primary = 'true'",
+            "is_primary IN ('true')",
+            "'true' IN is_primary",
+            "origin = TRUE",
         ],
     )
     def test_malformed_filter_raises_the_filter_syntax_error(self, dataset_filter: str) -> None:
@@ -79,6 +89,26 @@ class TestSyntaxErrorsCarryTheFilterCode:
             validate_dataset_filter(dataset_filter)
         assert excinfo.value.error_code == "INVALID_DATASET_FILTER"
         assert excinfo.value.detail == {"position": excinfo.value.position}
+
+    def test_a_quoted_boolean_reports_the_position_of_its_opening_quote(self) -> None:
+        """The 422 body must point the editor at the quote it has to delete.
+
+        A position that merely existed (0, or the end of the string) would satisfy the
+        envelope check above while telling the operator nothing, so the exact index is
+        asserted here.
+
+        spec: API.md §Error Catalogue — "INVALID_DATASET_FILTER | 422 | […] `detail`
+            carries the character position of the error";
+        spec: API.md §`dataset_filter` grammar — "`is_primary = 'true'` is a syntax
+            error".
+        """
+        dataset_filter = "origin = 'DEV' AND is_primary = 'true'"
+        with pytest.raises(DatasetFilterSyntaxError) as excinfo:
+            validate_dataset_filter(dataset_filter)
+
+        assert excinfo.value.error_code == "INVALID_DATASET_FILTER"
+        assert excinfo.value.detail == {"position": dataset_filter.index("'true'")}
+        assert dataset_filter[excinfo.value.position] == "'"
 
     def test_the_syntax_error_is_not_a_value_error(self) -> None:
         """Pydantic v2 re-raises non-ValueError exceptions out of a validator
@@ -139,7 +169,18 @@ def test_field_description_states_the_caps_and_columns() -> None:
         "platform_urn",
         "tag_urns",
         "glossary_term_urns",
+        "is_primary",
     ]:
         assert column in DATASET_FILTER_FIELD_DESCRIPTION
+    # The boolean column's literal form is the one a client cannot guess from the
+    # column name: spec/API.md §`dataset_filter` grammar makes `is_primary = 'true'`
+    # an error, so the description has to show the predicate's written form and say
+    # the value is unquoted. Asserting the words TRUE/FALSE alone would be satisfied
+    # by the unrelated "AND/OR/IN/TRUE/FALSE are case-insensitive" sentence.
+    # spec/API.md §`dataset_filter` grammar — `bool := TRUE | FALSE -- bare word,
+    # never quoted`.
+    assert "column = TRUE" in DATASET_FILTER_FIELD_DESCRIPTION
+    assert "column = FALSE" in DATASET_FILTER_FIELD_DESCRIPTION
+    assert "never quoted" in DATASET_FILTER_FIELD_DESCRIPTION
     assert f"{MAX_FILTER_CHARS:,}" in DATASET_FILTER_FIELD_DESCRIPTION
     assert f"{MAX_STRING_LITERALS:,}" in DATASET_FILTER_FIELD_DESCRIPTION

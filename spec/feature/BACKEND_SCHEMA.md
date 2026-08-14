@@ -169,11 +169,12 @@ lives in `validation_configs`.
 | `platform_urn` | `TEXT` NULL | The URN's first segment — `urn:li:dataPlatform:…`. Parsed from `dataset_urn`, not fetched |
 | `tag_urns` | `TEXT[]` NOT NULL DEFAULT `'{}'` | DataHub tag URNs on the dataset |
 | `glossary_term_urns` | `TEXT[]` NOT NULL DEFAULT `'{}'` | DataHub glossary-term URNs on the dataset |
-| `attrs_synced_at` | `TIMESTAMPTZ` NULL | When the four attribute columns above were last refreshed; `null` until the first attribute sweep reaches the row. Surfaced on `GET /spoke/governance/metric/{metric_id}/dataset` |
+| `is_primary` | `BOOLEAN` NOT NULL DEFAULT `true` | `true` when the dataset is the primary member of its DataHub `siblings` set, or has no siblings. Not null: absent sibling information means primary, so a never-swept row is counted once rather than dropped. Distinct from `dataset_node_map.is_primary`, which marks the authoritative dataset of an ontology node — a `dataset_filter` resolves column names only against `dataset_registry` |
+| `attrs_synced_at` | `TIMESTAMPTZ` NULL | When the attribute columns above were last refreshed; `null` until the first attribute sweep reaches the row. Surfaced on `GET /spoke/governance/metric/{metric_id}/dataset` |
 | `created_at` | `TIMESTAMPTZ` | |
 | `updated_at` | `TIMESTAMPTZ` | |
 
-- **Indexes**: GIN on `tag_urns` and `glossary_term_urns` (array containment is the array-column predicate's access path), btree on `origin` and `platform_urn`.
+- **Indexes**: GIN on `tag_urns` and `glossary_term_urns` (array containment is the array-column predicate's access path), btree on `origin` and `platform_urn`, and a partial btree on `is_primary WHERE NOT is_primary` — the column is `true` registry-wide by default, so only the `false` side is selective enough for an index to be used.
 - **Creation / reconcile**: bulk, by the `datahub-sync-hourly` sweep — it enumerates DataHub once and upserts every URN (insert new rows `datahub_registered=true`; soft-flag absent rows `false`; an empty enumeration is skipped as "no signal"). Additionally lazy, via `ensure_dataset_registered()` on validation-config upsert, which probes DataHub on-demand for per-dataset precision (the precondition gate `422 DATASET_NOT_IN_DATAHUB` reads the flag).
 - **Attribute sync**: the same sweep refreshes the attribute columns, upserting per dataset and never deleting-then-inserting — a dataset the attribute read missed keeps its prior attributes, so a partial sweep cannot silently narrow every `dataset_filter` in the system. See [BACKEND §Sync + mapping sweep](BACKEND.md#ingestion-service-srcbackendingestion) and [DATAHUB_INTEGRATION §Dataset attribute sync](../DATAHUB_INTEGRATION.md#dataset-attribute-sync).
 - **DataHub sync**: the scheduled full reconcile is the `datahub-sync-hourly` sweep; `POST /internal/admin/datahub/sync` provides on-demand scoped reconcile.
@@ -365,7 +366,7 @@ Maps datasets to nodes with confidence scores.
 | `node_id` | `TEXT` PK, FK → `ontogen_nodes(id)` | Node |
 | `confidence_score` | `REAL` | LLM inference confidence (0.0–1.0) |
 | `status` | `TEXT` | `llm_pending`, `llm_approved`, `approved`, `rejected` — same vocabulary as `ontogen_nodes`; cascaded from the parent node row on human review |
-| `is_primary` | `BOOLEAN` | True for the primary (authoritative) member dataset of the node |
+| `is_primary` | `BOOLEAN` | True for the primary (authoritative) member dataset of the node — distinct from `dataset_registry.is_primary`, the DataHub sibling-leadership mirror a `dataset_filter` reads |
 | `created_at` | `TIMESTAMPTZ` | |
 
 #### `ontogen_edges`
@@ -594,6 +595,7 @@ without coupling the writes.
 | `metric_results` | `(metric_id, measured_at DESC)` | Time-range queries on measurements |
 | `dataset_registry` | GIN on `tag_urns`; GIN on `glossary_term_urns` | `'…' IN tag_urns` / `IN glossary_term_urns` predicates in `dataset_filter` |
 | `dataset_registry` | `(origin)`, `(platform_urn)` | `origin` / `platform_urn` equality and `IN` predicates in `dataset_filter` |
+| `dataset_registry` | `ix_dataset_registry_not_primary`: `(is_primary) WHERE NOT is_primary` | `is_primary = false` predicates in `dataset_filter`; partial because the column defaults to `true` registry-wide |
 | `events` | `(entity_type, entity_id, occurred_at DESC)` | Event log queries per entity |
 | `events` | `ix_events_ingestion_dataset_urn`: `(entity_id, (detail->>'dataset_urn'), occurred_at DESC) WHERE entity_type='ingestion_source'` | Per-dataset ingestion timeline (`…/data/{urn}/event`) and per-dataset observation evidence for `ingestion-freshness` |
 | `events` | `ix_events_ingestion_run_level`: `(entity_id, occurred_at DESC) WHERE entity_type='ingestion_source' AND event_type IN ('INGESTION.COMPLETE','INGESTION.FAIL') AND (detail->>'source' IS NULL OR detail->>'source' NOT IN (<observation producers>))` | Latest run-outcome lookup behind `attr/ingestion.latest_run` and the source list's status column |

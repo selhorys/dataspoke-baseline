@@ -27,8 +27,10 @@ __all__ = ["DATASET_FILTER_FIELD_DESCRIPTION", "validate_dataset_filter"]
 DATASET_FILTER_FIELD_DESCRIPTION = (
     "SQL WHERE-clause over the dataset registry; the empty string matches every "
     "registered dataset. Columns: dataset_urn, origin, platform_urn (scalar, "
-    "'=' and IN) and tag_urns, glossary_term_urns (array, \"'value' IN column\"). "
-    f"AND/OR/IN are case-insensitive, values are case-sensitive. Max "
+    "'=' and IN), tag_urns, glossary_term_urns (array, \"'value' IN column\") and "
+    'is_primary (boolean, "column = TRUE" / "column = FALSE" — a bare word, never '
+    "quoted). "
+    f"AND/OR/IN/TRUE/FALSE are case-insensitive, values are case-sensitive. Max "
     f"{MAX_FILTER_CHARS:,} characters and {MAX_STRING_LITERALS:,} string literals."
 )
 
