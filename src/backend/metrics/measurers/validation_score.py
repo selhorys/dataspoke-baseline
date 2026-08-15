@@ -5,8 +5,10 @@ the run: it is the recency SLO the governance lead declares, not a quantity read
 dataset's own validation cadence.
 
 The score counted is the latest ``ValidationResult`` row's ``score`` IFF its
-``data_time`` falls within that window. A dataset with no qualifying row contributes
-0.0 and appears in the breakdown.
+``data_time`` falls within that window. The boundary is inclusive — a ``data_time`` of
+exactly one window before the measurement instant (this measurer's own clock reading,
+taken once per run) is in window, the same rule the ingestion-freshness measurer
+applies. A dataset with no qualifying row contributes 0.0 and appears in the breakdown.
 
 Spec: spec/feature/BACKEND.md §Metrics Service — Measurement window
 """
@@ -37,8 +39,10 @@ async def measure(
     datasets:
         Dataset URNs to measure.
     metric_conf:
-        Must contain ``time_window_sec`` (positive int) — the measurement window
-        applied to every dataset.
+        Must contain ``time_window_sec`` — the measurement window in seconds,
+        applied to every dataset. The write boundary admits only a positive int
+        up to :data:`src.shared.metric_conf.MAX_TIME_WINDOW_SEC`; this measurer
+        holds no copy of that bound and trusts ``metric_conf`` by contract.
     datahub:
         DataHubClient — accepted for signature uniformity, not used here.
     db:

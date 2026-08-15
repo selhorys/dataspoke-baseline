@@ -5,10 +5,14 @@
  *   - spec/API.md §Metric (/spoke/governance/metric) — metric_id pattern
  *     (^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$|^[a-z0-9]$)
  *   - src/api/schemas/metrics.py CreateMetricConfigRequest.metric_id pattern
- *   - spec/feature/FRONTEND_GOVERNANCE.md §Metrics create form — metric_id create-only field
+ *   - spec/feature/FRONTEND_GOVERNANCE.md §Metrics (/governance/metrics) — "`metric_id`
+ *     text input — **create-only**"
  *   - src/api/schemas/metrics.py _check_metric_conf_for_type (F2 invariant):
  *     ingestion-freshness and validation-score require a positive int time_window_sec;
  *     doc-health takes {} (no window)
+ *   - spec/feature/BACKEND.md §Metrics Service §Window bounds / spec/API.md §Metric —
+ *     time_window_sec is an integer in [1, 315_360_000] (ten years); the bound is read
+ *     from types/governance.ts METRIC_TIME_WINDOW_SEC_MAX, never retyped here
  *   - src/api/schemas/metrics.py _check_metrics_series (F3 invariant):
  *     metrics[] names ⊆ METRIC_EMITTED_KEYS[type], #RRGGBB color, positive
  *     unique idx
@@ -26,6 +30,7 @@ import {
   toInternal,
 } from "./metric-form.schema";
 import type { InternalFormValues, MetricSeriesRow } from "./metric-form.schema";
+import { METRIC_TIME_WINDOW_SEC_MAX } from "@/types/governance";
 import type { MetricFormValues } from "@/types/governance";
 
 // ── Shared valid base payload (edit schema — no metric_id validation) ──────────
@@ -258,6 +263,50 @@ describe("F2 invariant — time_window_sec required for ingestion-freshness", ()
       withTimeWindow({ metric_type: "ingestion-freshness", time_window_sec: -100 }),
     );
     expect(result.success).toBe(false);
+  });
+
+  it("declares the ceiling the spec names — 315_360_000 (ten years)", () => {
+    // Every other assertion in this block reads the bound through
+    // METRIC_TIME_WINDOW_SEC_MAX, so they would hold for any ceiling. This is the one
+    // place the literal is written out, pinning the constant to the spec rather than to
+    // itself — and, together with
+    // tests/unit/shared/test_metric_conf.py::test_max_time_window_sec_is_the_spec_ceiling,
+    // pinning the TypeScript↔Python mirror that
+    // spec/feature/FRONTEND_GOVERNANCE.md §Metrics (/governance/metrics) requires ("the
+    // bound is declared once, beside the other backend-mirroring constants").
+    // spec/API.md §Metric — "An integer in [1, 315360000] (ten years)".
+    // spec/feature/BACKEND.md §Metrics Service — Window bounds — "an integer in
+    // [1, 315_360_000] — one second to ten years".
+    expect(METRIC_TIME_WINDOW_SEC_MAX).toBe(315_360_000);
+    expect(METRIC_TIME_WINDOW_SEC_MAX).toBe(3650 * 24 * 60 * 60);
+  });
+
+  it("passes at METRIC_TIME_WINDOW_SEC_MAX (the ceiling is admissible)", () => {
+    // spec/API.md §Metric — "An integer in [1, 315360000] (ten years)"; the interval is
+    // closed, so ten years exactly is a legal window.
+    const result = baseSchema.safeParse(
+      withTimeWindow({
+        metric_type: "ingestion-freshness",
+        time_window_sec: METRIC_TIME_WINDOW_SEC_MAX,
+      }),
+    );
+    expect(result.success).toBe(true);
+  });
+
+  it("fails one second above METRIC_TIME_WINDOW_SEC_MAX", () => {
+    // spec/feature/BACKEND.md §Metrics Service §Window bounds — "time_window_sec is an
+    // integer in [1, 315_360_000] — one second to ten years"; out of range is rejected
+    // (API returns 422 INVALID_PARAMETER), so the form must not offer such a value.
+    const result = baseSchema.safeParse(
+      withTimeWindow({
+        metric_type: "ingestion-freshness",
+        time_window_sec: METRIC_TIME_WINDOW_SEC_MAX + 1,
+      }),
+    );
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues.some((i) => i.path[0] === "time_window_sec")).toBe(true);
+    }
   });
 });
 

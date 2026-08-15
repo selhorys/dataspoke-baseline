@@ -42,7 +42,11 @@ import { Field } from "@/components/forms/field";
 import { FormGrid } from "@/components/ui/form-grid";
 import { ErrorText } from "@/components/forms/error-text";
 import { DatasetFilterEditor } from "@/components/dataset-filter-editor";
-import { METRIC_TYPES_WITH_TIME_WINDOW } from "@/types/governance";
+import {
+  METRIC_TIME_WINDOW_SEC_MAX,
+  METRIC_TIME_WINDOW_SEC_MIN,
+  METRIC_TYPES_WITH_TIME_WINDOW,
+} from "@/types/governance";
 import type {
   CreateMetricFormValues,
   MetricFormValues,
@@ -372,12 +376,13 @@ export function MetricForm({
             htmlFor="time-window-sec"
             error={errors.time_window_sec?.message}
             required
-            hint="Measurement window in seconds, applied to every dataset (positive integer)"
+            hint={`Measurement window in seconds, applied to every dataset (integer ${METRIC_TIME_WINDOW_SEC_MIN}–${METRIC_TIME_WINDOW_SEC_MAX}, i.e. up to ten years)`}
           >
             <Input
               id="time-window-sec"
               type="number"
-              min={1}
+              min={METRIC_TIME_WINDOW_SEC_MIN}
+              max={METRIC_TIME_WINDOW_SEC_MAX}
               {...register("time_window_sec")}
               placeholder="172800"
             />

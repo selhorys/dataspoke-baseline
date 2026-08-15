@@ -20,7 +20,7 @@
 - [Default rate-limit plane enforcement](project_default_rate_limit_plane_enforcement.md) — bucket is (caller, "global"); the caller key is attacker-chosen — Bearer dsk_<random> bypasses the whole budget
 - [install.sh pre-flight gate mechanics](project_install_sh_preflight_gate_mechanics.md) — `-` sentinel split now correct; live holes: subchart-scoped `global.storageClass` shadows the checked key, wrong-typed nodes fail open
 - [Redis single failure domain](project_redis_single_failure_domain.md) — one instance, 3 tenants, instance-wide maxmemory; the unbounded tenant is the attacker-keyable DB1 limiter, not the response cache
-- [Reviewer config is generator-writable](project_reviewer_config_is_generator_writable.md) — .claude/agents/** now self-globs; diff the list for removals every run; README.md still uncovered
+- [Reviewer config is generator-writable](project_reviewer_config_is_generator_writable.md) — .claude/agents/** self-globs; diff for removals; src/api/schemas/**, src/workflows/** still uncovered
 - [OAuth 302-only failure surface](project_oauth_302_only_failure_surface.md) — bypass/decoy/CRLF/log-forging all closed & measured; 3 survive: deployment-wide 10/min bucket, hide_parameters, uvicorn access log
 - [Image-digest stamping](project_image_digest_stamping_attestation.md) — resolve-or-abort pinning; r5 pulled digest resolution out of the Airflow-key window on all 4 paths, but dev still writes keys before the Fernet abort
 - [Credential URI escaping boundary](project_credential_uri_escaping_boundary.md) — 4 src DSN sites fixed; 6 raw f-strings remain in tests/; 2 controls never reach an existing install
@@ -42,3 +42,4 @@
 - [runtime_config field lifecycle](project_runtime_conf_field_lifecycle.md) — six layers per /admin/conf field; PATCH silently ignores unknown keys; extra="forbid" would echo a mistyped llm_api_key
 - [dataset_filter compile-path invariant](project_dataset_filter_compile_path_invariant.md) — reachability + closed-vocab fuzz, not grep; 422 bound has ~15 chars headroom
 - [Per-run workflow fail-open](project_per_run_workflow_fail_open.md) — 3 patterns that drop the security verdict; pattern 3 has actually skipped a sign-off
+- [metric_conf write boundary](project_metric_conf_write_boundary.md) — 3 writers, rule now in src/shared/metric_conf.py; write-boundary-only, so a persisted bad row is self-repeating

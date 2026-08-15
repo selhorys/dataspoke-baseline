@@ -606,7 +606,7 @@ route paths for read/update/delete and as the DAG-name suffix `metrics-{metric_i
 | `title` | string | Display title |
 | `description` | string | What the metric measures |
 | `metrics` | object[] | Series descriptors — `{name, color, idx}`. `name` is one of the type's emitted keys (see USE_CASE §UC5); unknown keys return `422 INVALID_PARAMETER`. `color` is a `#RRGGBB` hex string. `idx` is a positive integer display order. `name` and `idx` are each unique within the metric. The dashboard chart draws one line per descriptor, in `idx` order, stroked with `color` |
-| `metric_conf` | object | Type-specific. `ingestion-freshness` and `validation-score` require `time_window_sec` (positive int seconds) — the measurement window, applied to every dataset the metric scans (see USE_CASE §UC5); `doc-health` takes `{}` |
+| `metric_conf` | object | Type-specific. `ingestion-freshness` and `validation-score` require `time_window_sec` — the measurement window in seconds, applied to every dataset the metric scans (see USE_CASE §UC5). An integer in `[1, 315360000]` (ten years); out of range, non-integer, or boolean returns `422 INVALID_PARAMETER`, on `PATCH` as well, where the merged `metric_conf` is what is checked. `doc-health` takes `{}` |
 | `schedule_tier` | `"hourly"` \| `"daily"` \| `"weekly"` \| null | When null, the metric runs only on-demand |
 | `dataset_filter` | string | A SQL `WHERE`-clause over the dataset registry (grammar below). The empty string matches every registered dataset |
 

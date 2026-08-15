@@ -1251,6 +1251,29 @@ it applied in the breakdown's `detail.time_window_sec`.
 - `validation-score`: the score counted is the latest result whose `data_time` is inside
   `time_window_sec`; a dataset with no result in the window contributes `0.0`.
 
+**Boundary is inclusive**, for both measurers: evidence whose instant is exactly one window
+before the measurement instant is *in* window — the comparison is `instant >= cutoff`, never
+`>`. The measurement instant is the run's clock reading taken once at measurer entry, and
+`cutoff` is that reading minus `time_window_sec`. The `measured_at` persisted with the result
+is a later reading, taken after measurement returns; it dates the result and does not define
+the window. The boundary direction is not observable in practice — the reading is
+microsecond-resolution, so a stored timestamp landing on it exactly is a measure-zero event —
+so it is fixed here rather than left to be inferred from a run.
+
+**Window bounds**: `time_window_sec` is an integer in `[1, 315_360_000]` — one second to ten
+years. The ceiling is a *product* bound, not an arithmetic one: the window is a declared SLO,
+and a freshness or validation SLO measured in decades asserts nothing, while 3.15e8 seconds
+sits five orders of magnitude inside what the runtime's duration type can represent. A JSON
+boolean is not an admissible integer here and is rejected with the same error, so
+`{"time_window_sec": true}` is not a one-second window. Enforcement lives at the write
+boundary only — the request schema checks create and replace bodies, and the service checks
+the *merged* `metric_conf` of a `PATCH` — each raising `422 INVALID_PARAMETER`. Measurers
+carry no second copy of the bound; they trust `metric_conf` by contract, and a duplicated
+bound would be free to diverge from this one. Since `metric_conf` is plain JSONB with no
+column constraint, a row carrying an out-of-range window (written by something other than the
+API) makes every run of that metric fail rather than being silently clamped; it is repaired by
+`PATCH`ing a valid window — the patched value wins the merge — not by a migration.
+
 Both measurers stay pure-aggregation and DataSpoke-DB-side: they read `events`,
 `validation_results`, `ingestion_source`, and `ingestion_source_dataset` only — no DataHub call.
 

@@ -77,3 +77,6 @@
 - [Grammar mirror has no guard](feedback_grammar_mirror_has_no_guard.md) — dataset-filter-guide.tsx hand-copies API.md's grammar; only the collapsed <summary> is asserted, so prose goes stale unseen
 - [PG `IS FALSE` vs partial index](project_pg_is_false_vs_partial_index.md) — `col IS FALSE` never matches a `WHERE NOT col` partial index (verified PG17, seqscan off); `= false`/`NOT col` do
 - [Code-option fix strands the spec](feedback_code_option_fix_strands_spec.md) — generators can't edit spec/, so a two-option finding leaves the other doc wrong; re-diff spec on re-review
+- [Frontend numeric bound seams](project_frontend_numeric_bound_seams.md) — no form sets noValidate (min/max attr preempts the zod message); z.coerce.number() takes true as 1
+- [Cited precedent is itself a violation](feedback_cited_precedent_is_itself_violation.md) — BACKEND.md §82 bans src/backend→src/api; two offenders exist, no linter, src/shared is the bridge
+- [Metric cutoff vs measured_at](project_metric_cutoff_vs_measured_at.md) — cutoff is the measurer's own entry-time now; the persisted measured_at is a later reading, so "measured_at - window" prose is wrong

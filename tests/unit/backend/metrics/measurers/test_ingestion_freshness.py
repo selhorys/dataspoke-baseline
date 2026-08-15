@@ -15,10 +15,13 @@ Spec sources:
       {'total': float, 'ingested_in_time': float}.
 
   Note on the boundary: USE_CASE's "falls within" fixes the *window*, not the behaviour
-  at the exact-cutoff instant. BACKEND.md's "no older than" / "older than" phrasing does
-  reach that instant and reads inclusive, while the implementation compares strictly.
-  The one test below that turns on the instant pins current behaviour and spells the
-  divergence out; every other windowing assertion here stays clear of it.
+  at the exact-cutoff instant; spec/feature/BACKEND.md §Metrics Service §Measurement
+  window does settle it — "**Boundary is inclusive**, for both measurers: evidence whose
+  instant is exactly one window before the measurement instant is *in* window — the
+  comparison is `instant >= cutoff`, never `>`". The one test below that turns on that
+  instant asserts exactly that rule. The measurement instant is "the run's clock reading
+  taken once at measurer entry", not the later `measured_at` stored with the result, so
+  the tests freeze that entry-time reading rather than reasoning from `measured_at`.
 
   spec/feature/BACKEND.md §Metrics Service §Measurement window:
     - "the window is `metric_conf.time_window_sec`, applied uniformly to every dataset
@@ -704,36 +707,32 @@ async def test_two_datasets_sharing_a_source_share_its_tier_2_evidence() -> None
         assert entry.detail["last_event_at"] == stale_ts.isoformat()
 
 
-# ── Deterministic clock boundary (strict >) ──────────────────────────────────
+# ── Deterministic clock boundary (inclusive >=) ──────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_event_exactly_at_cutoff_is_stale(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Event at exactly now - time_window_sec is STALE.
+async def test_event_exactly_at_cutoff_is_fresh(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Event at exactly measurement instant - time_window_sec is FRESH.
 
-    **This assertion pins current behaviour at an instant where implementation and spec
-    wording diverge; it is not a spec assertion.** spec/USE_CASE_en.md §UC5 §Built-in
-    active metric types counts evidence that "falls within ``metric_conf.time_window_sec``
-    of the measurement", which is silent about the boundary instant itself.
-    spec/feature/BACKEND.md §Metrics Service §Measurement window and §Breakdown format
-    are not silent but read *inclusive*: a dataset counts when its evidence "is no older
-    than ``time_window_sec``", and is failed when it "is older than
-    ``metric_conf.time_window_sec``" — evidence aged exactly ``time_window_sec`` is
-    neither older than nor no-older-than-violating, so on that wording it would be fresh.
-    The implementation compares strictly (``> cutoff``) and calls it stale.
+    The boundary instant is settled by spec, not by the implementation:
+    spec/feature/BACKEND.md §Metrics Service §Measurement window — "**Boundary is
+    inclusive**, for both measurers: evidence whose instant is exactly one window before
+    the measurement instant is *in* window — the comparison is ``instant >= cutoff``,
+    never ``>``." The same section fixes which clock reading the cutoff hangs off: "The
+    measurement instant is the run's clock reading taken once at measurer entry, and
+    ``cutoff`` is that reading minus ``time_window_sec``. The ``measured_at`` persisted
+    with the result is a later reading … it dates the result and does not define the
+    window." So the event here is dated off the frozen entry-time reading.
 
-    The divergence is one instant wide and unreachable in practice (measurement time is a
-    fresh microsecond-resolution ``datetime.now``, so an event timestamp never lands
-    exactly on it), so this test pins the behaviour rather than asserting the spec — a
-    silent flip stays visible in review, and the discrepancy is recorded here rather than
-    papered over.
+    The same section explains why a test has to carry this rather than a run: "The
+    boundary direction is not observable in practice — the reading is
+    microsecond-resolution, so a stored timestamp landing on it exactly is a measure-zero
+    event — so it is fixed here rather than left to be inferred from a run." This test and
+    ``test_validation_score.py::test_row_exactly_at_cutoff_is_counted`` are therefore the
+    only places the ``>=`` is exercised at the instant that distinguishes it from ``>``.
 
-    Note ``validation-score`` resolves the same instant in the opposite direction (see
-    ``test_validation_score.py::test_row_exactly_at_cutoff_is_counted``); both are pinned,
-    neither is spec-mandated.
-
-    The spec-grounded side of the boundary is
-    ``test_event_one_second_inside_window_is_fresh``.
+    The wider sides of the boundary are ``test_event_one_second_inside_window_is_fresh``
+    and ``test_event_well_outside_window_is_stale``.
     """
     time_window_sec = 3600
     fixed_now = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
@@ -755,9 +754,19 @@ async def test_event_exactly_at_cutoff_is_stale(monkeypatch: pytest.MonkeyPatch)
         ),
     )
 
-    assert values["ingested_in_time"] == 0.0
-    assert len(_failed(verdicts)) == 1
-    assert _failed(verdicts)[0].urn == urn
+    assert values["ingested_in_time"] == 1.0, (
+        "evidence exactly one window before the measurement instant is in window "
+        "(instant >= cutoff). Spec: spec/feature/BACKEND.md §Metrics Service "
+        "§Measurement window — 'Boundary is inclusive'."
+    )
+    assert _failed(verdicts) == []
+    verdict = _verdict(verdicts, urn)
+    assert verdict.met is True
+    assert verdict.detail["last_event_at"] == exact_cutoff.isoformat(), (
+        "backstop: the passing verdict must rest on the event seeded exactly on the "
+        "cutoff, not on some other (or absent) evidence."
+    )
+    assert verdict.detail["time_window_sec"] == time_window_sec
 
 
 @pytest.mark.asyncio
@@ -796,6 +805,95 @@ async def test_event_one_second_inside_window_is_fresh(monkeypatch: pytest.Monke
         "Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types."
     )
     assert _failed(verdicts) == []
+
+
+@pytest.mark.asyncio
+async def test_event_one_second_outside_window_is_stale(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Event at now - time_window_sec - 1s is STALE.
+
+    The mirror of the case above, and the outer bracket of the cutoff: one second the far
+    side of it is outside the window on any reading. The pair straddles the cutoff at
+    one-second granularity, so a cutoff computed one second off in either direction moves
+    one of the two — which the inclusive-boundary pair on its own no longer catches, since
+    ``instant >= cutoff`` admits the cutoff instant itself.
+
+    Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — only evidence that
+          "falls within ``metric_conf.time_window_sec`` of the measurement" counts.
+    Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format — a dataset is failed
+          when "the resolved ingestion evidence (tier 1 or tier 2 — see **Ingestion
+          evidence** above) is older than ``metric_conf.time_window_sec``, or absent on
+          both tiers".
+    """
+    time_window_sec = 3600
+    fixed_now = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+    _freeze_now(monkeypatch, fixed_now)
+
+    measure = _get_measurer()
+    urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.boundary.outside,DEV)"
+    src = _source(mode="ACTIVE_CUSTOM_MANAGED")
+    one_sec_outside = fixed_now - timedelta(seconds=time_window_sec + 1)
+
+    values, verdicts = await measure(
+        datasets=[urn],
+        metric_conf={"time_window_sec": time_window_sec},
+        datahub=_datahub(),
+        db=_fake_measurer_db(
+            mappings=[_mapped(urn, src)],
+            sources=[src],
+            events=[(str(src.id), one_sec_outside)],
+        ),
+    )
+
+    assert values["ingested_in_time"] == 0.0, (
+        "a run one second outside the window does not 'fall within' it and must be STALE. "
+        "Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types."
+    )
+    assert [v.urn for v in _failed(verdicts)] == [urn]
+    assert _failed(verdicts)[0].detail["last_event_at"] == one_sec_outside.isoformat(), (
+        "backstop: the seeded out-of-window run must be what the verdict rests on, not "
+        "absent evidence."
+    )
+
+
+# ── The measurer holds no copy of the write boundary's window bound ──────────
+
+
+@pytest.mark.asyncio
+async def test_an_out_of_range_stored_window_fails_the_run_rather_than_being_clamped() -> None:
+    """A window far past the write boundary's ceiling makes the run fail, not clamp.
+
+    ``metric_conf`` is plain JSONB with no column constraint, so a row written by
+    something other than the API can carry a window the write boundary would have
+    rejected. The spec settles what a measurer does with one: it fails. A measurer that
+    carried its own copy of the bound and clamped to it would return ordinary-looking
+    values here, silently reporting freshness against a window nobody declared — and no
+    other test in this file would notice, because every one of them passes an admissible
+    window.
+
+    ``10**20`` seconds is past what the runtime's duration type can represent, so "fails"
+    is observable as the ``OverflowError`` the arithmetic raises. The assertion is that it
+    propagates.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service — Window bounds — "Measurers carry no
+          second copy of the bound; they trust `metric_conf` by contract … a row carrying
+          an out-of-range window (written by something other than the API) makes every run
+          of that metric fail rather than being silently clamped".
+    """
+    measure = _get_measurer()
+    urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.unbounded.window,DEV)"
+    src = _source(mode="ACTIVE_CUSTOM_MANAGED")
+
+    with pytest.raises(OverflowError):
+        await measure(
+            datasets=[urn],
+            metric_conf={"time_window_sec": 10**20},
+            datahub=_datahub(),
+            db=_fake_measurer_db(
+                mappings=[_mapped(urn, src)],
+                sources=[src],
+                events=[(str(src.id), datetime.now(tz=UTC))],
+            ),
+        )
 
 
 # ── The window is the metric's declared config value, for every dataset ──────

@@ -150,7 +150,11 @@ inline before submit; the server enforces the same rules
 the rows to the new type's keys.
 
 Built-in metric types and their `metric_conf` shapes are in
-[USE_CASE §UC5](../USE_CASE_en.md#uc5-governance). `mode: "passive"` is
+[USE_CASE §UC5](../USE_CASE_en.md#uc5-governance). The `time_window_sec` input the two
+windowed types render constrains its value to the API's admissible range
+([API §Metric](../API.md#metric-spokegovernancemetric)) at both the field and the submit
+check, so an out-of-range window is reported inline rather than as a server `422`; the bound
+is declared once, beside the other backend-mirroring constants. `mode: "passive"` is
 reserved — the form's mode toggle disables the Save button with the hint
 *passive mode not yet supported*. `schedule_tier` offers hourly / daily /
 weekly (default daily) plus an "On-demand only" (null) option; list and

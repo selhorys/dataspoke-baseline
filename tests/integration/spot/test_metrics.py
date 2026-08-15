@@ -550,7 +550,8 @@ async def test_metric_conf_missing_time_window_returns_422(
 ) -> None:
     """PUT ingestion-freshness with metric_conf={} (no time_window_sec) → 422.
 
-    Spec: spec/API.md §Metric — ingestion-freshness requires time_window_sec (positive int).
+    Spec: spec/API.md §Metric — "`ingestion-freshness` and `validation-score` require
+          `time_window_sec`"; a missing one "returns `422 INVALID_PARAMETER`".
     """
     resp = await api_client.put(
         "/api/v1/spoke/governance/metric/spot-missing-tw/attr/conf",
@@ -583,7 +584,9 @@ async def test_metric_conf_negative_time_window_returns_422(
 ) -> None:
     """PUT ingestion-freshness with time_window_sec=-1 → 422.
 
-    Spec: spec/API.md §Metric — time_window_sec must be positive int.
+    Spec: spec/API.md §Metric — time_window_sec is "An integer in `[1, 315360000]` (ten
+          years); out of range … returns `422 INVALID_PARAMETER`". -1 is below the
+          interval.
     """
     resp = await api_client.put(
         "/api/v1/spoke/governance/metric/spot-neg-tw/attr/conf",

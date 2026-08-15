@@ -415,7 +415,7 @@ Governance metric definitions.
 | `title` | `TEXT` | Display title |
 | `description` | `TEXT` | What this metric measures |
 | `metrics` | `JSONB` | Series descriptors — a list of `{name, color, idx}` objects. `name` is one of the type's emitted `values` keys, `color` a `#RRGGBB` hex string, `idx` a positive integer display order; `name` and `idx` are each unique within the row. Determines which keys the metric persists and how the dashboard chart draws them |
-| `metric_conf` | `JSONB` | Type-specific config — `{"time_window_sec": <int>}` for `ingestion-freshness` / `validation-score` (the measurement window applied to every dataset the metric scans; factory default `172800`, see BACKEND §Metrics Service); `{}` for `doc-health` |
+| `metric_conf` | `JSONB` | Type-specific config — `{"time_window_sec": <int>}` for `ingestion-freshness` / `validation-score` (the measurement window applied to every dataset the metric scans; range enforced at the write boundary, not by a column constraint ([API §Metric](../API.md#metric-spokegovernancemetric)); factory default `172800`, see BACKEND §Metrics Service); `{}` for `doc-health` |
 | `dataset_filter` | `TEXT` | Scope filter — a SQL `WHERE` clause over `dataset_registry` ([API §`dataset_filter` grammar](../API.md#dataset_filter-grammar)); `''` = all registered datasets. Same grammar as `ontogen_config.dataset_filter` and `metagen_config.dataset_filter` |
 | `is_enabled` | `BOOLEAN` | Whether scheduled measurement is enabled |
 | `schedule_tier` | `TEXT` NULL | Schedule tier for scheduled measurement — `hourly`, `daily`, or `weekly` (null = on-demand only) |

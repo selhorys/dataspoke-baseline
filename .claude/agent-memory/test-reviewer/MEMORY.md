@@ -60,6 +60,6 @@
 - [Admin token inventory test seams](project_admin_token_inventory_test_seams.md) — nulls-last/id-tiebreak IS specced now; lean self item shape unpinned; badge sr-only span breaks Playwright toHaveText
 - [Plugin manifest test seams](project_plugin_manifest_test_seams.md) — #150 anchors; bin/ helpers + allowed-tools + spec-table drift closed by the fix pass; macOS case-rename trap
 - [Passive-observation test seams](project_passive_observation_test_seams.md) — new client method breaks hand-written spot stubs; spot-only predicates; shared catalog URNs make events read-backs estate-wide
-- [Metric measurement-window test seams](project_metric_measurement_window_test_seams.md) — exec-in-place pre-fix harness; the 5 real unit carriers; exact-cutoff divergence is mutual and pinned
+- [Metric measurement-window test seams](project_metric_measurement_window_test_seams.md) — cycle-2: 10/10 mutants killed; the two exact-instant pins are each the SOLE killer of their >=→> mutant
 - [dataset_filter + verdict test seams](project_dataset_filter_verdict_test_seams.md) — cycle-2: all 5 cycle-1 survivors closed; new blind spot is predicate polarity (== vs !=, is_(True)) + the sibling delete_metric_config DELETE
 - [is_primary filter test seams](project_is_primary_filter_test_seams.md) — post-fix: 20/22 mutants killed; the live blocker is the repo's only xfail, holding an ERROR-vs-WARNING spec violation green

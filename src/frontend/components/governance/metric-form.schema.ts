@@ -10,6 +10,8 @@
 import { z } from "zod";
 import {
   METRIC_EMITTED_KEYS,
+  METRIC_TIME_WINDOW_SEC_MAX,
+  METRIC_TIME_WINDOW_SEC_MIN,
   METRIC_TYPES_WITH_TIME_WINDOW,
   defaultSeriesColor,
 } from "@/types/governance";
@@ -62,7 +64,11 @@ export const baseObject = z.object({
   time_window_sec: z.coerce
     .number()
     .int()
-    .positive("Must be a positive integer")
+    .min(METRIC_TIME_WINDOW_SEC_MIN, "Must be a positive integer")
+    .max(
+      METRIC_TIME_WINDOW_SEC_MAX,
+      `Must be at most ${METRIC_TIME_WINDOW_SEC_MAX} seconds (ten years)`,
+    )
     .optional(),
   schedule_tier: z.enum(["hourly", "daily", "weekly"]).nullable(),
   is_enabled: z.boolean(),
@@ -128,7 +134,8 @@ function checkSeries(data: BaseShape, ctx: z.RefinementCtx): void {
 /**
  * Shared refinements:
  *   - time_window_sec (F2 invariant): metric_type ∈ {ingestion-freshness,
- *     validation-score} → required positive int; doc-health → metric_conf is {}.
+ *     validation-score} → required integer in [1, METRIC_TIME_WINDOW_SEC_MAX];
+ *     doc-health → metric_conf is {}.
  *   - metrics series rules (see checkSeries).
  */
 export function applyMetricRefinements(data: BaseShape, ctx: z.RefinementCtx): void {
@@ -240,8 +247,10 @@ export function toInternal(v: MetricFormValues): InternalFormValues {
  *
  * F2 serialization invariant (mirrors src/api/schemas/metrics.py _check_metric_conf_for_type):
  *   - doc-health             → metric_conf === {}         (no time_window_sec key)
- *   - ingestion-freshness    → metric_conf === { time_window_sec: N }  (positive int)
- *   - validation-score       → metric_conf === { time_window_sec: N }  (positive int)
+ *   - ingestion-freshness    → metric_conf === { time_window_sec: N }  (int in [1, MAX])
+ *   - validation-score       → metric_conf === { time_window_sec: N }  (int in [1, MAX])
+ *
+ * MAX is METRIC_TIME_WINDOW_SEC_MAX (spec/feature/BACKEND.md §Measurement window).
  *
  * Any time_window_sec value present in the internal state is silently dropped for doc-health
  * to prevent a backend 422 from _check_metric_conf_for_type.

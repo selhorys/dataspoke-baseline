@@ -46,6 +46,7 @@ from src.shared.exceptions import (
     EntityNotFoundError,
     PreconditionFailedError,
 )
+from src.shared.metric_conf import is_valid_time_window_sec, time_window_sec_error
 
 logger = logging.getLogger(__name__)
 
@@ -463,12 +464,12 @@ class MetricsService:
         merged_metrics: list[dict[str, Any]] = list(row.metrics or [])
 
         if merged_type in ("ingestion-freshness", "validation-score"):
-            tw = merged_conf.get("time_window_sec")
-            if tw is None or not isinstance(tw, int) or tw <= 0:
+            # The bound and its message come from src.shared.metric_conf so this
+            # PATCH-merge path and the create/replace path cannot drift apart.
+            if not is_valid_time_window_sec(merged_conf.get("time_window_sec")):
                 raise PreconditionFailedError(
                     "INVALID_PARAMETER",
-                    "metric_conf.time_window_sec must be a positive int"
-                    f" for metric_type '{merged_type}'",
+                    time_window_sec_error(merged_type),
                 )
         elif merged_type == "doc-health":
             if merged_conf != {}:

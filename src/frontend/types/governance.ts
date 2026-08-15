@@ -26,6 +26,18 @@ export const METRIC_TYPES_WITH_TIME_WINDOW: MetricType[] = [
   "validation-score",
 ];
 
+/** Smallest admissible metric_conf.time_window_sec (spec/feature/BACKEND.md §Measurement window). */
+export const METRIC_TIME_WINDOW_SEC_MIN = 1;
+
+/**
+ * Largest admissible metric_conf.time_window_sec — 315_360_000 s (ten years),
+ * mirroring MAX_TIME_WINDOW_SEC in src/shared/metric_conf.py. It is a product
+ * ceiling: the window is a declared SLO, and an SLO measured in decades asserts
+ * nothing. Values outside `[MIN, MAX]` are rejected with 422 INVALID_PARAMETER
+ * (spec/API.md §Metric — Definition body).
+ */
+export const METRIC_TIME_WINDOW_SEC_MAX = 315_360_000;
+
 /**
  * One chart series of a metric — which emitted key to draw, in what color, at
  * what display position. The dashboard draws one line per descriptor, in `idx`

@@ -3,7 +3,9 @@
 The window is ``metric_conf["time_window_sec"]``, applied uniformly to every dataset in
 the run: it is the freshness SLO the governance lead declares, not a quantity read off
 any per-dataset fact. A dataset counts toward ``ingested_in_time`` when its resolved
-ingestion evidence is no older than that window at measurement time.
+ingestion evidence is no older than that window at measurement time. The boundary is
+inclusive — evidence dated exactly one window before the measurement instant (this
+measurer's own clock reading, taken once per run) is in window.
 
 Every ``INGESTION.*`` event is booked on a source (``entity_type='ingestion_source'``)
 and never on the dataset, so the measurer resolves each dataset's owning source first
@@ -56,8 +58,10 @@ async def measure(
     datasets:
         Dataset URNs to measure.
     metric_conf:
-        Must contain ``time_window_sec`` (positive int) — the measurement window
-        applied to every dataset.
+        Must contain ``time_window_sec`` — the measurement window in seconds,
+        applied to every dataset. The write boundary admits only a positive int
+        up to :data:`src.shared.metric_conf.MAX_TIME_WINDOW_SEC`; this measurer
+        holds no copy of that bound and trusts ``metric_conf`` by contract.
     datahub:
         DataHubClient — accepted for signature uniformity; this measurer stays
         DataSpoke-DB-side and makes no DataHub call.
@@ -124,7 +128,11 @@ async def measure(
                 if last_event_at is not None:
                     evidence_tier = "source_level"
 
-        met = last_event_at is not None and last_event_at > cutoff
+        # ``>=``: the window boundary is inclusive, so evidence landing exactly on
+        # ``cutoff`` — one window before this run's ``now`` — counts as in-window. The
+        # same rule governs the validation-score measurer
+        # (spec/feature/BACKEND.md §Measurement window).
+        met = last_event_at is not None and last_event_at >= cutoff
         if met:
             ingested_in_time += 1
 

@@ -497,23 +497,25 @@ async def test_row_one_second_outside_window_is_not_counted(
 
 @pytest.mark.asyncio
 async def test_row_exactly_at_cutoff_is_counted(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A result at exactly now - time_window_sec is counted.
+    """A result at exactly measurement instant - time_window_sec is counted.
 
-    **This assertion pins an implementation choice, not a spec requirement.** The spec
-    fixes the window but not the behaviour at the exact-cutoff instant: it says the
-    counted score is "the latest result whose ``data_time`` is inside
-    ``time_window_sec``" and that a dataset is failed with "no result inside the window"
-    (spec/feature/BACKEND.md §Metrics Service §Measurement window, §Breakdown format) —
-    neither sentence settles the instant that sits exactly on the boundary. Treating it
-    as inside is the **implementation's chosen tie-break** (a non-strict comparison
-    against the cutoff), pinned here so a silent flip is visible in review.
+    The boundary instant is settled by spec: spec/feature/BACKEND.md §Metrics Service
+    §Measurement window — "**Boundary is inclusive**, for both measurers: evidence whose
+    instant is exactly one window before the measurement instant is *in* window — the
+    comparison is ``instant >= cutoff``, never ``>``." The same section names the clock
+    reading the cutoff hangs off: "The measurement instant is the run's clock reading
+    taken once at measurer entry … The ``measured_at`` persisted with the result is a
+    later reading … it dates the result and does not define the window." The row below is
+    therefore dated off the frozen entry-time reading, not off ``measured_at``.
 
-    Note the two windowed measurers resolve this instant in opposite directions —
-    ``ingestion-freshness`` treats it as stale (see
-    ``test_ingestion_freshness.py::test_event_exactly_at_cutoff_is_stale``). Neither
-    direction is spec-mandated, so both are pinned rather than asserted.
+    The spec also explains why this rule needs a test rather than a run to hold it: "The
+    boundary direction is not observable in practice — the reading is
+    microsecond-resolution, so a stored timestamp landing on it exactly is a measure-zero
+    event." This test and
+    ``test_ingestion_freshness.py::test_event_exactly_at_cutoff_is_fresh`` are the only
+    two that exercise the comparison at the instant which distinguishes ``>=`` from ``>``.
 
-    The spec-grounded sides of the boundary are
+    The wider sides of the boundary are
     ``test_row_one_second_inside_window_is_counted`` and
     ``test_row_one_second_outside_window_is_not_counted``.
     """
@@ -534,6 +536,43 @@ async def test_row_exactly_at_cutoff_is_counted(monkeypatch: pytest.MonkeyPatch)
 
     assert values["validation_score_sum"] == 1.0
     assert _verdict(verdicts, urn).met is True
+
+
+# ── The measurer holds no copy of the write boundary's window bound ──────────
+
+
+@pytest.mark.asyncio
+async def test_an_out_of_range_stored_window_fails_the_run_rather_than_being_clamped() -> None:
+    """A window far past the write boundary's ceiling makes the run fail, not clamp.
+
+    ``metric_conf`` is plain JSONB with no column constraint, so a row written by
+    something other than the API can carry a window the write boundary would have
+    rejected. The spec settles what a measurer does with one: it fails. A measurer that
+    carried its own copy of the bound and clamped to it would return an ordinary-looking
+    ``validation_score_sum`` here, computed against a window nobody declared — and no
+    other test in this file would notice, because every one of them passes an admissible
+    window.
+
+    ``10**20`` seconds is past what the runtime's duration type can represent, so "fails"
+    is observable as the ``OverflowError`` the arithmetic raises. The assertion is that it
+    propagates. The dataset list is non-empty on purpose: the empty-list short circuit
+    returns before the window is ever used.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service — Window bounds — "Measurers carry no
+          second copy of the bound; they trust `metric_conf` by contract … a row carrying
+          an out-of-range window (written by something other than the API) makes every run
+          of that metric fail rather than being silently clamped".
+    """
+    measure = _get_measurer()
+    urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.unbounded.window,DEV)"
+
+    with pytest.raises(OverflowError):
+        await measure(
+            datasets=[urn],
+            metric_conf={"time_window_sec": 10**20},
+            datahub=_datahub(),
+            db=_db([_row(urn, datetime.now(tz=UTC), 1.0)]),
+        )
 
 
 # ── Verdict detail shape ─────────────────────────────────────────────────────

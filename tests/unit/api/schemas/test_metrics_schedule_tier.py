@@ -9,7 +9,11 @@ Spec sources:
     - metric_type: "ingestion-freshness" | "validation-score" | "doc-health"
     - metrics: list of {name, color, idx} series descriptors; name from the type's
       emitted keys, name and idx each unique within the metric
-    - metric_conf: type-specific (time_window_sec for windowed types; {} for doc-health)
+    - metric_conf: type-specific (time_window_sec for windowed types; {} for doc-health);
+      time_window_sec is "An integer in `[1, 315360000]` (ten years); out of range,
+      non-integer, or boolean returns `422 INVALID_PARAMETER`" — the bound itself is
+      imported from src.shared.metric_conf so this file cannot drift from it
+      (spec/feature/BACKEND.md §Metrics Service §Window bounds)
     - dataset_filter: a SQL WHERE-clause string — ≤ 8,000 chars and ≤ 1,000 string
       literals (spec/API.md §`dataset_filter` grammar — Caps)
     - schedule_tier: "hourly" | "daily" | "weekly" | null
@@ -29,6 +33,7 @@ from src.api.schemas.metrics import (
     PatchMetricConfigRequest,
     ReplaceMetricConfigRequest,
 )
+from src.shared.metric_conf import MAX_TIME_WINDOW_SEC, time_window_sec_error
 
 #: spec/API.md §`dataset_filter` grammar — Caps.
 _FILTER_LITERAL_CAP = 1000
@@ -153,25 +158,116 @@ class TestReplaceMetricConfigRequest:
 
     # ── metric_conf validation ────────────────────────────────────────────────
 
-    def test_ingestion_freshness_requires_positive_time_window(self) -> None:
+    def test_ingestion_freshness_requires_a_time_window(self) -> None:
         """ingestion-freshness with missing time_window_sec raises ValidationError.
 
-        Spec: spec/API.md §Metric — metric_conf must contain time_window_sec
-              (positive int) for ingestion-freshness.
+        Spec: spec/API.md §Metric — "`ingestion-freshness` and `validation-score` require
+              `time_window_sec`".
         """
         with pytest.raises(ValidationError):
             ReplaceMetricConfigRequest(**{**_VALID_INGESTION_BODY, "metric_conf": {}})
 
     def test_ingestion_freshness_rejects_negative_time_window(self) -> None:
-        """ingestion-freshness with time_window_sec <= 0 raises ValidationError.
+        """ingestion-freshness with time_window_sec = -1 raises ValidationError.
 
-        Spec: spec/API.md §Metric — time_window_sec must be positive int.
+        Spec: spec/API.md §Metric — time_window_sec is "An integer in `[1, 315360000]`
+              (ten years); out of range … returns `422 INVALID_PARAMETER`". -1 is below
+              the interval.
         """
         with pytest.raises(ValidationError):
             ReplaceMetricConfigRequest(**{
                 **_VALID_INGESTION_BODY,
                 "metric_conf": {"time_window_sec": -1},
             })
+
+    def test_time_window_of_zero_is_rejected(self) -> None:
+        """A zero-length window is below the interval and is rejected.
+
+        Zero is the lower endpoint's immediate neighbour, and unlike -1 it is a value a
+        client could plausibly type. A window of zero seconds admits nothing at all: the
+        SLO the field declares would be unsatisfiable by construction.
+
+        Spec: spec/feature/BACKEND.md §Metrics Service — Window bounds — "`time_window_sec`
+              is an integer in `[1, 315_360_000]` — one second to ten years."
+              spec/API.md §Metric — "An integer in `[1, 315360000]` (ten years); out of
+              range … returns `422 INVALID_PARAMETER`".
+        """
+        with pytest.raises(ValidationError) as exc_info:
+            ReplaceMetricConfigRequest(**{
+                **_VALID_INGESTION_BODY,
+                "metric_conf": {"time_window_sec": 0},
+            })
+        assert time_window_sec_error("ingestion-freshness") in str(exc_info.value), (
+            "backstop: rejection must come from the window-bound rule, not from some "
+            "other validator on the body."
+        )
+
+    def test_time_window_at_the_lower_bound_is_accepted(self) -> None:
+        """time_window_sec = 1 is admissible — the interval is closed at 1, not open.
+
+        The mirror of ``test_time_window_of_zero_is_rejected``: the pair fixes the lower
+        endpoint at exactly 1, so neither shifting it down to 0 nor up to 2 passes both.
+
+        Spec: spec/feature/BACKEND.md §Metrics Service — Window bounds — "an integer in
+              `[1, 315_360_000]` — **one second** to ten years".
+              spec/API.md §Metric — "An integer in `[1, 315360000]`".
+        """
+        req = ReplaceMetricConfigRequest(**{
+            **_VALID_INGESTION_BODY,
+            "metric_conf": {"time_window_sec": 1},
+        })
+        assert req.metric_conf == {"time_window_sec": 1}
+
+    def test_time_window_at_the_upper_bound_is_accepted(self) -> None:
+        """time_window_sec exactly at the ceiling is admissible.
+
+        Spec: spec/API.md §Metric — time_window_sec is "An integer in `[1, 315360000]`
+              (ten years)"; the interval is closed, so the endpoint itself is valid.
+              spec/feature/BACKEND.md §Metrics Service §Window bounds states the same
+              range.
+        """
+        req = ReplaceMetricConfigRequest(**{
+            **_VALID_INGESTION_BODY,
+            "metric_conf": {"time_window_sec": MAX_TIME_WINDOW_SEC},
+        })
+        assert req.metric_conf == {"time_window_sec": MAX_TIME_WINDOW_SEC}
+
+    def test_time_window_above_the_upper_bound_is_rejected(self) -> None:
+        """One second past the ceiling raises ValidationError.
+
+        Spec: spec/API.md §Metric — "An integer in `[1, 315360000]` (ten years); out of
+              range … returns `422 INVALID_PARAMETER`". spec/feature/BACKEND.md §Metrics
+              Service §Window bounds — "Enforcement lives at the write boundary only —
+              the request schema checks create and replace bodies".
+        """
+        with pytest.raises(ValidationError) as exc_info:
+            ReplaceMetricConfigRequest(**{
+                **_VALID_INGESTION_BODY,
+                "metric_conf": {"time_window_sec": MAX_TIME_WINDOW_SEC + 1},
+            })
+        assert time_window_sec_error("ingestion-freshness") in str(exc_info.value), (
+            "backstop: rejection must come from the window-bound rule, not from some "
+            "other validator on the body."
+        )
+
+    def test_time_window_boolean_true_is_rejected(self) -> None:
+        """A JSON boolean is not a one-second window.
+
+        Spec: spec/feature/BACKEND.md §Metrics Service §Window bounds — "A JSON boolean
+              is not an admissible integer here and is rejected with the same error, so
+              `{"time_window_sec": true}` is not a one-second window."
+              spec/API.md §Metric — "out of range, non-integer, or boolean returns
+              `422 INVALID_PARAMETER`".
+        """
+        with pytest.raises(ValidationError) as exc_info:
+            ReplaceMetricConfigRequest(**{
+                **_VALID_VALIDATION_BODY,
+                "metric_conf": {"time_window_sec": True},
+            })
+        assert time_window_sec_error("validation-score") in str(exc_info.value), (
+            "backstop: rejection must come from the window-bound rule, not from some "
+            "other validator on the body."
+        )
 
     def test_validation_score_requires_positive_time_window(self) -> None:
         """validation-score with missing time_window_sec raises ValidationError.

@@ -13,6 +13,11 @@ from src.api.schemas._dataset_filter import (
 )
 from src.api.schemas._dataset_filter import validate_dataset_filter
 from src.api.schemas.common import PaginatedResponse, SingleResponse
+from src.shared.metric_conf import (
+    MAX_TIME_WINDOW_SEC,
+    is_valid_time_window_sec,
+    time_window_sec_error,
+)
 
 _ScheduleTier = Literal["hourly", "daily", "weekly"]
 
@@ -27,12 +32,8 @@ _EMITTED_KEYS: dict[str, set[str]] = {
 def _check_metric_conf_for_type(metric_type: str, metric_conf: dict[str, Any]) -> None:
     """Raise ValueError when metric_conf is missing or invalid for the given type."""
     if metric_type in ("ingestion-freshness", "validation-score"):
-        tw = metric_conf.get("time_window_sec")
-        if tw is None or not isinstance(tw, int) or tw <= 0:
-            raise ValueError(
-                "metric_conf.time_window_sec must be a positive int"
-                f" for metric_type '{metric_type}'"
-            )
+        if not is_valid_time_window_sec(metric_conf.get("time_window_sec")):
+            raise ValueError(time_window_sec_error(metric_type))
     elif metric_type == "doc-health":
         if metric_conf != {}:
             raise ValueError("metric_conf must be {} for metric_type 'doc-health'")
@@ -99,7 +100,10 @@ class ReplaceMetricConfigRequest(BaseModel):
     metric_conf: dict[str, Any] = Field(
         description=(
             "Type-specific config. 'ingestion-freshness' and 'validation-score' require "
-            "time_window_sec (positive int seconds); 'doc-health' takes {}"
+            f"time_window_sec — the measurement window in seconds, an integer in "
+            f"[1, {MAX_TIME_WINDOW_SEC}] (ten years); a boolean is not accepted. "
+            "Evidence exactly at the window boundary counts as in-window. "
+            "'doc-health' takes {}"
         )
     )
     schedule_tier: _ScheduleTier | None = Field(
@@ -146,7 +150,17 @@ class PatchMetricConfigRequest(BaseModel):
     title: str | None = Field(default=None)
     description: str | None = Field(default=None)
     metrics: list[MetricSeries] | None = Field(default=None)
-    metric_conf: dict[str, Any] | None = Field(default=None)
+    metric_conf: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Type-specific config, replacing the stored dict wholesale. The *merged* "
+            "definition is what is validated: with metric_type 'ingestion-freshness' or "
+            f"'validation-score' the merged conf needs time_window_sec, an integer in "
+            f"[1, {MAX_TIME_WINDOW_SEC}] (ten years) — a boolean is not accepted, and "
+            "evidence exactly at the window boundary counts as in-window. 'doc-health' "
+            "takes {}"
+        ),
+    )
     schedule_tier: _ScheduleTier | None = Field(default=None)
     dataset_filter: str | None = Field(default=None, description=_FILTER_DESC)
 

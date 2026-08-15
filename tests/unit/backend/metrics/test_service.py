@@ -23,6 +23,7 @@ from src.shared.exceptions import (
     InvalidDatasetUrnError,
     PreconditionFailedError,
 )
+from src.shared.metric_conf import MAX_TIME_WINDOW_SEC, time_window_sec_error
 from tests.unit.backend.conftest import (
     make_event_row,
     mock_db_refresh,
@@ -355,10 +356,12 @@ async def test_patch_metric_type_to_doc_health_with_time_window_raises(service, 
 
 
 async def test_patch_metric_conf_invalid_for_windowed_type_raises(service, db):
-    """PATCH metric_conf without time_window_sec for ingestion-freshness raises.
+    """PATCH merging time_window_sec = -1 for ingestion-freshness raises.
 
-    Spec: spec/feature/BACKEND.md §Metrics Service — ingestion-freshness and
-          validation-score require time_window_sec (positive int).
+    Spec: spec/feature/BACKEND.md §Metrics Service §Window bounds — "`time_window_sec` is
+          an integer in `[1, 315_360_000]`"; -1 is below the interval, and "the service
+          checks the *merged* `metric_conf` of a `PATCH` — each raising
+          `422 INVALID_PARAMETER`".
     """
     row = _make_definition_row(
         metric_type="ingestion-freshness",
@@ -374,6 +377,230 @@ async def test_patch_metric_conf_invalid_for_windowed_type_raises(service, db):
         await service.patch_metric_config(row.id, {"metric_conf": {"time_window_sec": -1}})
 
     assert exc_info.value.error_code == "INVALID_PARAMETER"
+
+
+async def test_patch_metric_conf_above_the_window_ceiling_raises(service, db):
+    """PATCH merging a time_window_sec past the ceiling raises INVALID_PARAMETER.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service §Window bounds — "`time_window_sec` is
+          an integer in `[1, 315_360_000]`" and "the service checks the *merged*
+          `metric_conf` of a `PATCH` — each raising `422 INVALID_PARAMETER`".
+          spec/API.md §Metric — out of range "returns `422 INVALID_PARAMETER`, on `PATCH`
+          as well, where the merged `metric_conf` is what is checked".
+    """
+    row = _make_definition_row(
+        metric_type="ingestion-freshness",
+        metric_conf={"time_window_sec": 172800},
+        metrics=[
+            {"name": "total", "color": "#64748B", "idx": 1},
+            {"name": "ingested_in_time", "color": "#22C55E", "idx": 2},
+        ],
+    )
+    mock_scalar_query(db, row)
+
+    with pytest.raises(PreconditionFailedError) as exc_info:
+        await service.patch_metric_config(
+            row.id, {"metric_conf": {"time_window_sec": MAX_TIME_WINDOW_SEC + 1}}
+        )
+
+    assert exc_info.value.error_code == "INVALID_PARAMETER"
+    assert str(exc_info.value) == time_window_sec_error("ingestion-freshness"), (
+        "backstop: the rejection must be the window-bound rule, not another merged-state "
+        "invariant of the same error_code."
+    )
+
+
+async def test_patch_metric_conf_boolean_window_raises(service, db):
+    """PATCH merging time_window_sec=true raises INVALID_PARAMETER.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service §Window bounds — "A JSON boolean is not
+          an admissible integer here and is rejected with the same error, so
+          `{"time_window_sec": true}` is not a one-second window."
+          spec/API.md §Metric — "out of range, non-integer, or boolean returns
+          `422 INVALID_PARAMETER`, on `PATCH` as well".
+    """
+    row = _make_definition_row(
+        metric_type="validation-score",
+        metric_conf={"time_window_sec": 172800},
+        metrics=[
+            {"name": "total", "color": "#64748B", "idx": 1},
+            {"name": "validation_score_sum", "color": "#3B82F6", "idx": 2},
+        ],
+    )
+    mock_scalar_query(db, row)
+
+    with pytest.raises(PreconditionFailedError) as exc_info:
+        await service.patch_metric_config(row.id, {"metric_conf": {"time_window_sec": True}})
+
+    assert exc_info.value.error_code == "INVALID_PARAMETER"
+    assert str(exc_info.value) == time_window_sec_error("validation-score"), (
+        "backstop: the rejection must be the window-bound rule, not another merged-state "
+        "invariant of the same error_code."
+    )
+
+
+async def test_patch_metric_conf_zero_window_raises(service, db):
+    """PATCH merging a zero-length window raises INVALID_PARAMETER.
+
+    Zero is the lower endpoint's immediate neighbour: a window of zero seconds admits no
+    evidence at all, so the SLO the field declares would be unsatisfiable by construction.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service §Window bounds — "`time_window_sec` is
+          an integer in `[1, 315_360_000]` — one second to ten years", and "the service
+          checks the *merged* `metric_conf` of a `PATCH` — each raising
+          `422 INVALID_PARAMETER`".
+    """
+    row = _make_definition_row(
+        metric_type="ingestion-freshness",
+        metric_conf={"time_window_sec": 172800},
+        metrics=[
+            {"name": "total", "color": "#64748B", "idx": 1},
+            {"name": "ingested_in_time", "color": "#22C55E", "idx": 2},
+        ],
+    )
+    mock_scalar_query(db, row)
+
+    with pytest.raises(PreconditionFailedError) as exc_info:
+        await service.patch_metric_config(row.id, {"metric_conf": {"time_window_sec": 0}})
+
+    assert exc_info.value.error_code == "INVALID_PARAMETER"
+    assert str(exc_info.value) == time_window_sec_error("ingestion-freshness"), (
+        "backstop: the rejection must be the window-bound rule, not another merged-state "
+        "invariant of the same error_code."
+    )
+
+
+async def test_patch_metric_conf_at_the_window_floor_is_accepted(service, db):
+    """PATCH merging time_window_sec = 1 is admitted — the interval is closed at 1.
+
+    The mirror of ``test_patch_metric_conf_zero_window_raises``: the pair fixes the lower
+    endpoint at exactly 1, so neither shifting it down to 0 nor up to 2 passes both.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service §Window bounds — the admissible range
+          is "an integer in `[1, 315_360_000]` — **one second** to ten years".
+    """
+    row = _make_definition_row(
+        metric_type="ingestion-freshness",
+        metric_conf={"time_window_sec": 172800},
+        metrics=[
+            {"name": "total", "color": "#64748B", "idx": 1},
+            {"name": "ingested_in_time", "color": "#22C55E", "idx": 2},
+        ],
+    )
+    mock_scalar_query(db, row)
+    mock_db_refresh(db)
+
+    result = await service.patch_metric_config(row.id, {"metric_conf": {"time_window_sec": 1}})
+
+    assert result.metric_conf == {"time_window_sec": 1}
+
+
+async def test_patch_metric_conf_at_the_window_ceiling_is_accepted(service, db):
+    """PATCH merging time_window_sec exactly at the ceiling is admitted.
+
+    The returned record is what is asserted, not the input row: the service ``setattr``s
+    the patched value onto the row *before* validating it, so a row assertion would hold
+    even if the write were rejected downstream and never surfaced to the caller.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service §Window bounds — the admissible range
+          is the closed interval "[1, 315_360_000] — one second to ten years", so the
+          endpoint itself is a legal window and PATCH must let it through.
+    """
+    row = _make_definition_row(
+        metric_type="ingestion-freshness",
+        metric_conf={"time_window_sec": 172800},
+        metrics=[
+            {"name": "total", "color": "#64748B", "idx": 1},
+            {"name": "ingested_in_time", "color": "#22C55E", "idx": 2},
+        ],
+    )
+    mock_scalar_query(db, row)
+    mock_db_refresh(db)
+
+    result = await service.patch_metric_config(
+        row.id, {"metric_conf": {"time_window_sec": MAX_TIME_WINDOW_SEC}}
+    )
+
+    assert result.metric_conf == {"time_window_sec": MAX_TIME_WINDOW_SEC}
+
+
+async def test_patch_repairs_a_stored_conf_the_write_boundary_could_never_have_produced(
+    service, db
+):
+    """A row holding an out-of-range window is repaired by PATCHing a valid one.
+
+    ``metric_conf`` is plain JSONB with no column constraint, so a row written by
+    something other than the API can carry a window past the ceiling — the state seeded
+    here, ten times the ceiling. Every other PATCH test in this file starts from a *valid*
+    stored conf, where "the patched value wins the merge" is satisfied trivially; here the
+    stored value is the one that would fail validation, so acceptance is only possible if
+    the patched value genuinely replaces it before the merged conf is checked.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service §Window bounds — "a row carrying an
+          out-of-range window (written by something other than the API) makes every run of
+          that metric fail rather than being silently clamped; it is repaired by
+          `PATCH`ing a valid window — the patched value wins the merge — not by a
+          migration."
+    """
+    row = _make_definition_row(
+        metric_type="ingestion-freshness",
+        metric_conf={"time_window_sec": MAX_TIME_WINDOW_SEC * 10},
+        metrics=[
+            {"name": "total", "color": "#64748B", "idx": 1},
+            {"name": "ingested_in_time", "color": "#22C55E", "idx": 2},
+        ],
+    )
+    mock_scalar_query(db, row)
+    mock_db_refresh(db)
+
+    result = await service.patch_metric_config(row.id, {"metric_conf": {"time_window_sec": 86400}})
+
+    assert result.metric_conf == {"time_window_sec": 86400}, (
+        "the patched window must win the merge and be what the caller gets back. "
+        "Spec: spec/feature/BACKEND.md §Metrics Service §Window bounds."
+    )
+    assert row.metric_conf == {"time_window_sec": 86400}, (
+        "…and the stored conf must be the repaired value, not the out-of-range one."
+    )
+
+
+async def test_patch_of_another_field_alone_still_rejects_an_out_of_range_stored_window(
+    service, db
+):
+    """A title-only PATCH against an out-of-range stored window is rejected.
+
+    The converse of the repair path, and the more surprising half: because the service
+    validates the *merged* conf rather than only the fields the patch names, a PATCH that
+    does not mention ``metric_conf`` at all still fails while the bad window sits in the
+    row. So the repair is not optional — an operator cannot edit anything else on such a
+    metric until the window is fixed.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service §Window bounds — "the service checks
+          the *merged* `metric_conf` of a `PATCH` — each raising `422 INVALID_PARAMETER`".
+          spec/API.md §Metric — out of range "returns `422 INVALID_PARAMETER`, on `PATCH`
+          as well, where the merged `metric_conf` is what is checked".
+    """
+    row = _make_definition_row(
+        metric_type="ingestion-freshness",
+        metric_conf={"time_window_sec": MAX_TIME_WINDOW_SEC * 10},
+        metrics=[
+            {"name": "total", "color": "#64748B", "idx": 1},
+            {"name": "ingested_in_time", "color": "#22C55E", "idx": 2},
+        ],
+        title="Before",
+    )
+    mock_scalar_query(db, row)
+    mock_db_refresh(db)
+
+    with pytest.raises(PreconditionFailedError) as exc_info:
+        await service.patch_metric_config(row.id, {"title": "After"})
+
+    assert exc_info.value.error_code == "INVALID_PARAMETER"
+    assert str(exc_info.value) == time_window_sec_error("ingestion-freshness"), (
+        "backstop: the rejection must be the window-bound rule applied to the merged "
+        "conf, not another merged-state invariant of the same error_code."
+    )
+    db.commit.assert_not_awaited()
 
 
 async def test_patch_metrics_with_unknown_key_raises(service, db):

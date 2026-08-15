@@ -1,55 +1,59 @@
 ---
 name: metric-measurement-window-test-seams
-description: fix-metric-time-window cycle-1+2 — measured which metric-window tests kill the pre-fix derivation, the exact-cutoff spec/impl divergence, and where the unit fake is blind
+description: metric time-window test seams after two review cycles — the harnesses worth rebuilding, the 10 mutants now all killed and by which tests, and the residual impl-pinned bits (message string, OverflowError, USE_CASE "positive int")
 metadata:
   type: project
 ---
 
-`ingestion-freshness` / `validation-score` dropped per-dataset window derivation for
-`metric_conf.time_window_sec` (BACKEND.md §Measurement window; evidence model moved to
-§Ingestion evidence). Two measured harnesses, both read-only, both worth rebuilding:
+`ingestion-freshness` / `validation-score` apply `metric_conf.time_window_sec`
+(BACKEND.md §Metrics Service — Measurement window / **Boundary is inclusive** /
+**Window bounds**; those are bold-run labels, not markdown headings — citations
+naming them as `§…` are legitimate).
 
-**Pre-fix harness** — `git show dev:` the two measurer files into /tmp, then in a pytest
-plugin (`-p`, on `PYTHONPATH`) **exec the old source into the real module's `__dict__`**.
-Exec-in-place matters: loading the old code as a *separate* module leaves the tests'
-`_freeze_now` monkeypatch (`setattr(<real module>, "datetime", …)`) pointing at the wrong
-globals, and three boundary tests then "fail" for the wrong reason. Also stub
-`src.shared.schedule` (deleted by the fix) and `config_service.get_runtime_config`
-(the DTO no longer carries `validation_score_n_intervals`).
+**Mutation harness worth rebuilding** — `cp` the impl file to the scratchpad,
+`str.replace` with a `count(pattern) == 1` assert, run, restore from the copy in a
+`trap … EXIT`, then `diff -q` the restore. Never `git checkout` a file under review —
+it is uncommitted. (See [[feedback_no_destructive_git_during_review]].)
 
-**Mutation harness** — same trick with a text-substituted copy of the *current* file
-(`assert text.count(pattern) == 1` first).
+**Mutation table — cycle-2 measured, 10/10 killed:**
 
-Measured, post-fix-pass:
+| mutant | killed by |
+|---|---|
+| `src/shared/metric_conf.py` MAX → `1_000_000` | `tests/unit/shared/test_metric_conf.py` (the one Python place the literal is written out) |
+| `src/frontend/types/governance.ts` MAX → `1_000_000` | `metric-form.schema.test.ts` "declares the ceiling the spec names" |
+| freshness `cutoff = now - (window_sec + 1)` | `test_event_one_second_outside_window_is_stale` (sole) |
+| `1 <=` → `0 <=` | `test_time_window_of_zero_is_rejected` + `test_patch_metric_conf_zero_window_raises` |
+| `>=` → `>` on **each** measurer | **exactly one test each** — `test_event_exactly_at_cutoff_is_fresh`, `test_row_exactly_at_cutoff_is_counted`. Relaxing either exact-instant pin to ±1s makes its mutant immortal; the ±1s neighbours added in cycle 2 do **not** cover it |
+| measurers `min(window, 315_360_000)` (own copy of the bound + silent clamp) | `test_an_out_of_range_stored_window_fails_the_run_rather_than_being_clamped` (both measurer files) |
+| PATCH window check gated on `"metric_conf" in patch` | `test_patch_of_another_field_alone_still_rejects_an_out_of_range_stored_window` (sole) |
+| patched `metric_conf` never `setattr`'d onto the row | 7 service tests incl. the repair test |
+| frontend `METRIC_TIME_WINDOW_SEC_MIN` 1 → 0 | pre-existing Vitest "fails when time_window_sec is 0" |
 
-- **Exactly 5 unit tests fail against the pre-fix impl**: freshness
-  `…_passive_owned_dataset_outside_the_declared_window_is_stale`,
-  `window_is_the_declared_config_value_for_a_passive_owned_dataset`,
-  `every_owning_mode_and_tier_reports_the_same_declared_window`,
-  `stale_breakdown_detail_includes_the_window_and_the_evidence_tier`; validation
-  `breakdown_detail_keys_are_exactly_the_three_spec_fields`. The two key-set equalities
-  catch the removed `window_source`; the rest catch PASSIVE→7200.
-- **Genuine spot carriers** (by construction, not run): passive declared-window,
-  unclaimed-dataset (`window_source` absence), validation declared-window
-  (pre-fix sum 1.5 vs 1.0 — 4 rows/dataset 24h apart makes the old 48h window differ
-  from a declared 86400). `breakdown_counts_reconcile` and `reads_source_keyed_events`
-  are **not** carriers: their sources are `ACTIVE_CUSTOM_MANAGED daily`, whose derived
-  window was already 172800.
-- **All 6 cutoff mutants die** (`<`↔`<=`, `>`↔`>=`, `window_sec ± 1` on both measurers).
-  Note the `<=`/`>=` mutants are killed *only* by the two exact-cutoff pins.
+**Residual impl-pinning (accepted, low):**
+- `test_rejection_message_names_the_closed_interval_and_the_metric_type` asserts the
+  *exact* sentence; spec fixes the code (`422 INVALID_PARAMETER`) and the interval,
+  not the wording. Only the interval half is spec-derived.
+- The F5 measurer tests pin `OverflowError` (they pass `10**20`, past `timedelta`'s
+  range). Spec says the run "fails", not which exception. Tolerable only because
+  "Measurers carry no second copy of the bound" makes an explicit measurer-side
+  validation error non-conformant too.
+- `MAX == 3650*24*60*60` (Py and TS) is implied by the preceding literal assert — it
+  can never fail independently; it is documentation, not a second seam.
 
-**Exact-cutoff divergence is real and mutual.** freshness `last_event_at > cutoff`
-(exactly-at ⇒ stale) vs validation `latest_data_time < cutoff` (exactly-at ⇒ counted).
-BACKEND.md's freshness wording ("no older than" / "older than") reads *inclusive*, so
-freshness diverges; validation's "inside the window" is genuinely ambiguous. Both are
-pinned in tests with self-declared "this is not a spec assertion" docstrings. The
-spec should settle it in one clause; until then treat a flip as review-visible, not a bug.
+**Spec propagation gap, not a test defect**: `spec/USE_CASE_en.md` ~L739-740 still says
+"positive int seconds" with no ceiling, contradicting API.md `[1, 315360000]`. Three
+test headers (`test_ingestion_freshness.py`, `test_validation_score.py`,
+`test_bootstrap.py`) quote it verbatim and correctly. USE_CASE is priority-1, so this
+may be deliberate — route it to `spec-reviewer`, not the test agent.
 
-**Blind spots the unit fake cannot see**: the new impl filters `rn == 1` in SQL and then
-builds `{urn: (t, score)}` last-wins, so "newest row per dataset" is only provable at spot
-(the spot fixture's fresh side — 1h vs 25/49/73h against a 24h window — is what carries it).
-A multi-row-per-dataset unit fixture would be testing the fake, not the SQL; the delegation
-is correct, not a hole.
+**Blind spot the unit fake cannot see**: the impl filters `rn == 1` in SQL then builds
+`{urn: (t, score)}` last-wins, so "newest row per dataset" is only provable at spot. A
+multi-row-per-dataset unit fixture would be testing the fake — the delegation is correct.
+
+`_definition_from_row(row)` builds the returned record from the *same* row object the
+service `setattr`s, so in the `AsyncMock(spec=AsyncSession)` unit fakes asserting
+`result.metric_conf` vs `row.metric_conf` is near-equivalent — preferring `result` is
+right but is not the strong seam its docstring claims.
 
 Related: [[project_owning_source_last_seen_tiebreak_untested]],
-[[project_metrics_dryrun_no_event_or_result]].
+[[project_metrics_dryrun_no_event_or_result]], [[feedback_no_destructive_git_during_review]].
