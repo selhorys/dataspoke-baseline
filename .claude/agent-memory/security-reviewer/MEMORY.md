@@ -43,3 +43,4 @@
 - [dataset_filter compile-path invariant](project_dataset_filter_compile_path_invariant.md) — reachability + closed-vocab fuzz, not grep; 422 bound has ~15 chars headroom
 - [Per-run workflow fail-open](project_per_run_workflow_fail_open.md) — 3 patterns that drop the security verdict; pattern 3 has actually skipped a sign-off
 - [metric_conf write boundary](project_metric_conf_write_boundary.md) — 3 writers, rule now in src/shared/metric_conf.py; write-boundary-only, so a persisted bad row is self-repeating
+- [Dev-only bin scripts prod fence](project_devonly_bin_scripts_prod_fence.md) — `set -u` on DATASPOKE_DEV_* was the only prod gate; a `:-` unlocks prod onto ports the test suite defaults to
