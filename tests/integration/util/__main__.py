@@ -63,10 +63,6 @@ import asyncio
 import json
 import os
 import sys
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from sqlalchemy import URL
 
 _UC4_STATE_FILE = "/tmp/dataspoke_uc4_state.json"
 
@@ -89,38 +85,6 @@ _RECOGNIZED_FLAGS = frozenset(
         "--uc4-restore",
     }
 )
-
-
-def _dataspoke_db_url() -> URL:
-    """Build the DataSpoke operational-DB URL from the ``DATASPOKE_DEV_POSTGRES_*`` block.
-
-    The credentials are carried as ``URL`` fields rather than interpolated into a DSN
-    string, matching ``src/shared/db/session.py::_build_url``. An ``@`` in the password
-    truncates an interpolated DSN — the tail becomes the host — and a ``%`` decodes into a
-    different password entirely; held as fields there is no round-trip to get wrong.
-    ``str()`` of the result masks the password, so it cannot reach a traceback.
-
-    spec: feature/BACKEND.md §Shared Services (PostgreSQL row) — 'Credentials are carried
-        as ``sqlalchemy.URL`` fields rather than interpolated into a DSN string, so
-        ``DATASPOKE_POSTGRES_USER`` / ``DATASPOKE_POSTGRES_PASSWORD`` reach the driver
-        verbatim from this connection layer whatever characters they contain, and the
-        URL's string form masks the password.' Same invariant, one layer over: this helper
-        is the reset utility's connection layer and reads the ``DATASPOKE_DEV_*`` block.
-    spec: TESTING.md §Integration Lifecycle & Isolation — 'Reset helpers … read all
-        credentials from the environment (the ``DATASPOKE_DEV_*`` block in
-        ``helm-charts/.env.dev``); no credential is hardcoded in a helper.'
-
-    Covered by ``tests/unit/integration_util/test_main_db_url.py``.
-    """
-    from tests.integration.util.db_url import build_postgres_url
-
-    return build_postgres_url(
-        host=os.environ.get("DATASPOKE_DEV_POSTGRES_HOST", "localhost"),
-        port=os.environ.get("DATASPOKE_DEV_POSTGRES_PORT", "9201"),
-        user=os.environ.get("DATASPOKE_DEV_POSTGRES_USER", "dataspoke"),
-        password=os.environ.get("DATASPOKE_DEV_POSTGRES_PASSWORD", ""),
-        db=os.environ.get("DATASPOKE_DEV_POSTGRES_DB", "dataspoke"),
-    )
 
 
 def main() -> None:
@@ -273,11 +237,12 @@ async def _uc4_seed() -> None:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
     from tests.integration.util.datahub import _gms_url, get_datahub_token
+    from tests.integration.util.db_url import dataspoke_db_url
     from tests.integration.util.metagen import seed_uc4_context
 
     dh_token = get_datahub_token()
 
-    engine = create_async_engine(_dataspoke_db_url())
+    engine = create_async_engine(dataspoke_db_url())
     async_session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
     async with async_session_factory() as session:
@@ -300,6 +265,7 @@ async def _uc4_restore() -> None:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
     from tests.integration.util.datahub import _gms_url, get_datahub_token
+    from tests.integration.util.db_url import dataspoke_db_url
     from tests.integration.util.metagen import restore_uc4_context
 
     with open(_UC4_STATE_FILE) as fh:
@@ -307,7 +273,7 @@ async def _uc4_restore() -> None:
 
     dh_token = get_datahub_token()
 
-    engine = create_async_engine(_dataspoke_db_url())
+    engine = create_async_engine(dataspoke_db_url())
     async_session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
     async with async_session_factory() as session:
@@ -320,38 +286,21 @@ async def _uc4_restore() -> None:
 
 
 async def _datahub_sync() -> None:
-    """Run the real ingestion datahub-sync against the test DB + DataHub.
+    """Run the real ingestion datahub-sync against the test DB + DataHub, and report it.
 
-    Mirrors the production path: builds IngestionService exactly as
-    /internal/activities/ingestion/sync does (DataHubClient(gms_url, token) +
-    an AsyncSession), then calls IngestionService.sync(). That reconcile is the
-    sole writer of dataset_registry, so running it after datahub.seed() +
-    dataspoke_db.reset_all() leaves the registry mirroring the freshly-ingested
-    DataHub URN set (datahub_registered=True for every ingested URN).
+    The sweep itself lives in ``datahub.sync_dataset_registry`` — the same function
+    the provisioning fixture calls after its DataHub ingest legs, so the CLI and the
+    fixture establish the registry the same way. It is the only writer that inserts
+    a dataset_registry row for any URN DataHub holds, and the only writer of their
+    attribute columns, so running it after datahub.seed() + dataspoke_db.reset_all() — which
+    TRUNCATEs the registry — is what rebuilds the registry into a mirror of the
+    freshly-ingested DataHub URN set (datahub_registered=True for every ingested URN).
 
-    The session/token are constructed the same way as _uc4_seed so the util has
-    a single, consistent wiring for "talk to the test DB and DataHub".
-    Idempotent: sync() upserts by URN, so repeated runs reconcile to the same
-    state.
+    This wrapper adds only the operator-facing summary line.
     """
-    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+    from tests.integration.util import datahub
 
-    from src.backend.ingestion.service import IngestionService
-    from src.shared.datahub.client import DataHubClient
-    from tests.integration.util.datahub import _gms_url, get_datahub_token
-
-    dh_token = get_datahub_token()
-
-    engine = create_async_engine(_dataspoke_db_url())
-    async_session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-
-    datahub = DataHubClient(_gms_url, dh_token)
-    try:
-        async with async_session_factory() as session:
-            service = IngestionService(datahub=datahub, db=session)
-            summary = await service.sync()
-    finally:
-        await engine.dispose()
+    summary = await datahub.sync_dataset_registry()
 
     # sources_zero_coverage / sources_pattern_degraded are the sweep's two defect
     # signals (spec/feature/BACKEND.md §Sync + mapping sweep §Sweep summary): every

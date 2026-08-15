@@ -739,8 +739,9 @@ def wait_until_datasets_searchable(
     caller depending on tag-search readiness needs a separate, longer gate.
 
     spec: project_es_indexing_lag_after_reset_seed — ES indexing lags GMS emit.
-    spec: TESTING.md §Per-Module Dummy-Data Reset — ingest post-condition is
-          "emitted AND searchable" so the sync sweep sees the full universe.
+    spec: TESTING.md §Per-Module Dummy-Data Reset — "The ingest legs' post-condition
+          is *emitted and searchable*, not merely emitted", so the sweep enumerates
+          the full estate rather than the already-indexed subset.
     """
     if not expected_urns:
         return
@@ -1414,6 +1415,65 @@ async def seed(
         ingest_kafka_datasets(),
     )
     return deleted + ingested_pg + ingested_kafka
+
+
+async def sync_dataset_registry() -> dict:  # type: ignore[type-arg]
+    """Run the full estate sweep, reconciling dataset_registry. Returns the summary.
+
+    Mirrors the production path: builds IngestionService exactly as
+    /internal/activities/ingestion/sync does (DataHubClient(gms_url, token) + an
+    AsyncSession), then calls IngestionService.sync() — the same sweep the
+    `datahub-sync-hourly` DAG runs on its schedule, with all of its effects. It
+    enumerates the whole DataHub estate and reconciles dataset_registry against
+    that set (inserting URNs DataHub holds, soft-flagging rows it does not),
+    refreshes each row's filter-attribute columns, mirrors DATAHUB_MANAGED
+    ingestion sources (removing stale ones), books INGESTION events, and stamps the
+    shared `datahub-api` peripheral_health row. Callers get an estate-wide
+    reconcile, not a narrow additive registration of whatever was just ingested.
+
+    Other code writes dataset_registry too (ValidationService.upsert_config's
+    ensure_dataset_registered, which inserts a bare row for the single URN a
+    validation config names; POST /internal/admin/datahub/sync, which flips the
+    flag bidirectionally without inserting; the ingest helpers'
+    _mark_registry_registered UPDATE). This sweep is the only writer that inserts
+    a row for any URN DataHub holds, and the only writer of the attribute
+    columns — so it is what makes a
+    just-ingested dataset visible to every feature that resolves through the
+    registry (src/backend/_dataset_filter.py selects rows with
+    datahub_registered=true, and its tag/origin predicates read the attribute
+    columns only this sweep writes).
+
+    Returns the sweep summary dict and prints nothing: callers that report to a
+    developer's terminal (the --datahub-sync CLI) do their own printing, while
+    the provisioning fixture consumes it silently.
+
+    Idempotent: sync() upserts by URN, so repeated runs over an unchanged estate
+    reconcile to the same state.
+
+    spec: feature/BACKEND.md §Sync + mapping sweep — '`IngestionService.sync()`,
+        called every two hours by the `datahub-sync-hourly` DAG'.
+    spec: TESTING.md §Spot integration tests — 'tests do not chain -- one test's
+        pass/fail must not depend on another's state. Reset fixtures handle data
+        lifecycle.' The registry is part of that lifecycle.
+    """
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+    from src.backend.ingestion.service import IngestionService
+    from src.shared.datahub.client import DataHubClient
+    from tests.integration.util.db_url import dataspoke_db_url
+
+    dh_token = get_datahub_token()
+
+    engine = create_async_engine(dataspoke_db_url())
+    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    datahub = DataHubClient(_gms_url, dh_token)
+    try:
+        async with session_factory() as session:
+            service = IngestionService(datahub=datahub, db=session)
+            return await service.sync()
+    finally:
+        await engine.dispose()
 
 
 # ---------------------------------------------------------------------------

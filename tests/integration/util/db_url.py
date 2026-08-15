@@ -2,9 +2,10 @@
 
 The integration layer connects to the dev cluster's DataSpoke Postgres from two
 places — the ``integration_db_url`` session fixture (which the pgvector spot
-fixtures consume) and the reset utility's ``_dataspoke_db_url``. Both read the
-same ``DATASPOKE_DEV_POSTGRES_*`` env block under different fallback policies,
-and both need the same connection invariant, so the URL construction lives here
+fixtures consume) and the utility-layer ``dataspoke_db_url`` below, which the
+reset CLI and the registry reconcile share. Both read the same
+``DATASPOKE_DEV_POSTGRES_*`` env block under different fallback policies, and
+both need the same connection invariant, so the URL construction lives here
 once.
 
 spec: feature/BACKEND.md §Shared Services (PostgreSQL row) — "Credentials are
@@ -13,14 +14,19 @@ spec: feature/BACKEND.md §Shared Services (PostgreSQL row) — "Credentials are
     verbatim from this connection layer whatever characters they contain, and the
     URL's string form masks the password rather than carrying it into a log line
     or traceback." Same invariant, one layer over.
+spec: TESTING.md §Running — "`conftest.py` and `util/*.py` consume the
+    `DATASPOKE_DEV_*` block it contains". Both call sites here are exactly those
+    two consumers.
 spec: TESTING.md §Integration Lifecycle & Isolation — "Reset helpers ... read all
     credentials from the environment (the `DATASPOKE_DEV_*` block in
     `helm-charts/.env.dev`); no credential is hardcoded in a helper." Reading the
     environment stays at the call sites, which is why this helper takes
     parameters: both read the same five keys, but the fixture's required-env
-    fail-fast and the reset utility's fallback defaults are deliberately
+    fail-fast and the utility layer's fallback defaults are deliberately
     different policies.
 """
+
+import os
 
 from sqlalchemy import URL
 
@@ -59,4 +65,44 @@ def build_postgres_url(host: str, port: str | int, user: str, password: str, db:
         # changes without it.
         port=int(port),
         database=db,
+    )
+
+
+def dataspoke_db_url() -> URL:
+    """Build the DataSpoke operational-DB URL from the ``DATASPOKE_DEV_POSTGRES_*`` block.
+
+    The utility layer's single connection layer for the operational DB: the reset
+    CLI's UC4 staging and the ``datahub.sync_dataset_registry`` reconcile both
+    build their engine from it, so the fallback policy for a developer running
+    without ``helm-charts/.env.dev`` exported is stated once.
+
+    The credentials are carried as ``URL`` fields rather than interpolated into a DSN
+    string, matching ``src/shared/db/session.py::_build_url``. An ``@`` in the password
+    truncates an interpolated DSN — the tail becomes the host — and a ``%`` decodes into a
+    different password entirely; held as fields there is no round-trip to get wrong.
+    ``str()`` of the result masks the password, so it cannot reach a traceback.
+
+    spec: feature/BACKEND.md §Shared Services (PostgreSQL row) — 'Credentials are carried
+        as ``sqlalchemy.URL`` fields rather than interpolated into a DSN string, so
+        ``DATASPOKE_POSTGRES_USER`` / ``DATASPOKE_POSTGRES_PASSWORD`` reach the driver
+        verbatim from this connection layer whatever characters they contain, and the
+        URL's string form masks the password.' Same invariant, one layer over: this helper
+        is the test utility's connection layer and reads the ``DATASPOKE_DEV_*`` block.
+    spec: TESTING.md §Running — '``conftest.py`` and ``util/*.py`` consume the
+        ``DATASPOKE_DEV_*`` block it contains'. The on-point anchor for this helper: both
+        of its callers sit in ``util/*.py``, one of them a provisioning reconcile rather
+        than a reset.
+    spec: TESTING.md §Integration Lifecycle & Isolation — 'Reset helpers … read all
+        credentials from the environment (the ``DATASPOKE_DEV_*`` block in
+        ``helm-charts/.env.dev``); no credential is hardcoded in a helper.' Covers the
+        reset-CLI caller specifically.
+
+    Covered by ``tests/unit/integration_util/test_dataspoke_db_url.py``.
+    """
+    return build_postgres_url(
+        host=os.environ.get("DATASPOKE_DEV_POSTGRES_HOST", "localhost"),
+        port=os.environ.get("DATASPOKE_DEV_POSTGRES_PORT", "9201"),
+        user=os.environ.get("DATASPOKE_DEV_POSTGRES_USER", "dataspoke"),
+        password=os.environ.get("DATASPOKE_DEV_POSTGRES_PASSWORD", ""),
+        db=os.environ.get("DATASPOKE_DEV_POSTGRES_DB", "dataspoke"),
     )

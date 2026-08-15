@@ -239,6 +239,22 @@ DUMMY_DATA_DATAHUB_TOPICS: frozenset[str] = frozenset(["imazon.orders.events"])
 them in PG reset). `DUMMY_DATA_DATAHUB_TOPICS` triggers DataHub Kafka registration for those
 topics (auto-includes them in Kafka reset). Modules with no constants are no-ops.
 
+Both DataHub constants provision through to the DataSpoke operational DB: every module
+declaring either one runs the same ingestion sweep the `datahub-sync-hourly` DAG runs in a
+deployment, following the ingest legs whenever those run (`IngestionService.sync()` -- see
+[BACKEND §Sync + mapping sweep](feature/BACKEND.md#ingestion-service-srcbackendingestion)),
+which inserts `dataset_registry` rows for URNs the registry has not seen and refreshes the
+attribute columns (`origin`, `platform_urn`, `tag_urns`, `glossary_term_urns`, `is_primary`,
+`attrs_synced_at`) that `dataset_filter` predicates resolve against. This is a precondition
+rather than a detail: `dataset_filter` resolves over `dataset_registry` rows marked
+`datahub_registered`, so presence in DataHub alone leaves a dataset unresolvable, and a module
+that skipped the sweep would inherit whatever registry state another module left behind.
+
+The ingest legs' post-condition is *emitted and searchable*, not merely emitted: they block
+until the just-emitted URNs are visible to the search-backed read the sweep enumerates
+through. The sweep reconciles against whatever that read returns and soft-flags every registry
+row absent from it, so enumerating a partially-indexed estate would deregister real datasets.
+
 ### Prerequisites
 
 Before running integration tests, ensure the dev environment is installed and the health check

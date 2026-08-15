@@ -3,9 +3,9 @@ every DB-touching integration test connects through (``async_engine``,
 ``schema_bootstrap``, and the pgvector spot fixtures all build their engine from it).
 
 Why a unit test for a fixture. This is the one remaining integration-layer site that can
-regress on its own: the two spot ``_dsn()`` helpers were deleted outright, and the reset
-utility's ``_dataspoke_db_url`` is pinned by ``tests/unit/integration_util/
-test_main_db_url.py``. Nothing else observes this fixture's return value — reverting it
+regress on its own: the two spot ``_dsn()`` helpers were deleted outright, and the utility
+layer's ``dataspoke_db_url`` is pinned by ``tests/unit/integration_util/
+test_dataspoke_db_url.py``. Nothing else observes this fixture's return value — reverting it
 to an interpolated ``f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{db}"``
 leaves the whole unit suite green, and the ``-> URL`` annotation is not a backstop
 either: per ``spec/TESTING.md`` §Unit Testing, "`tests/` is ruff-gated but not
@@ -142,7 +142,7 @@ def test_the_fixture_reads_the_dev_env_block_not_the_app_runtime_one() -> None:
     the app runtime is configured for — in-cluster coordinates unreachable from a
     developer machine. Both blocks are populated here with *different* values, so this
     discriminates; it is the same shape as ``tests/unit/integration_util/
-    test_main_db_url.py::test_every_env_key_the_helper_reads_is_the_dev_block``, applied
+    test_dataspoke_db_url.py::test_every_env_key_the_helper_reads_is_the_dev_block``, applied
     to the other call site.
 
     spec: TESTING.md §Running — "Export `helm-charts/.env.dev` into the shell before
@@ -201,7 +201,7 @@ def test_each_required_key_is_individually_required(missing: str) -> None:
 
     NOT spec-derived: no spec document states this fixture's failure mode. Pinned because
     the fail-fast policy is the fixture's stated contract and the only thing that
-    distinguishes it from the reset utility's defaulted sibling.
+    distinguishes it from the utility layer's defaulted ``dataspoke_db_url``.
     """
     env = {
         "DATASPOKE_DEV_POSTGRES_HOST": "db.example.com",

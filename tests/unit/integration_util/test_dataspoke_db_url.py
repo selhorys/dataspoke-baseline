@@ -1,7 +1,8 @@
-"""Tests for ``tests/integration/util/__main__.py::_dataspoke_db_url`` — the reset
-utility's connection layer, and the fourth credential-carrying URL builder alongside
-``src/shared/db/session.py``, ``migrations/env.py``, and the rate limiter's Redis
-storage URI.
+"""Tests for ``tests/integration/util/db_url.py::dataspoke_db_url`` — the integration
+utility layer's connection layer for the DataSpoke operational DB (the reset CLI and
+the registry reconcile build their engines from it), and the fourth credential-carrying
+URL builder alongside ``src/shared/db/session.py``, ``migrations/env.py``, and the rate
+limiter's Redis storage URI.
 
 Same invariant as ``tests/unit/shared/db/test_session.py``, asserted at the same place —
 the keyword arguments the asyncpg dialect would hand the driver — because "reach the
@@ -18,9 +19,13 @@ spec: feature/BACKEND.md §Shared Services (PostgreSQL row) — "Credentials are
       `DATASPOKE_POSTGRES_USER` / `DATASPOKE_POSTGRES_PASSWORD` reach the driver verbatim
       from this connection layer whatever characters they contain, and the URL's string
       form masks the password rather than carrying it into a log line or traceback".
+spec: TESTING.md §Running — "`conftest.py` and `util/*.py` consume the `DATASPOKE_DEV_*`
+      block it contains". The on-point anchor: the helper under test sits in `util/*.py`
+      and serves a provisioning reconcile as well as the reset CLI.
 spec: TESTING.md §Integration Lifecycle & Isolation — "Reset helpers ... read all
       credentials from the environment (the `DATASPOKE_DEV_*` block in
-      `helm-charts/.env.dev`); no credential is hardcoded in a helper".
+      `helm-charts/.env.dev`); no credential is hardcoded in a helper". Covers the
+      reset-CLI caller specifically.
 """
 
 from typing import Any
@@ -30,13 +35,14 @@ import pytest
 from sqlalchemy import URL
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from tests.integration.util.__main__ import _dataspoke_db_url
+from tests.integration.util.db_url import dataspoke_db_url
 
 # The same hostile set ``tests/unit/shared/db/test_session.py`` and
 # ``tests/unit/migrations/test_env.py`` use, for the same reasons. ``"p@ss"`` is the
 # member that matters most here: with the interpolated DSN this helper used to build,
-# the ``@`` split the netloc and the tail of the password became the host — so the reset
-# utility connected to a host that does not exist instead of reporting a bad credential.
+# the ``@`` split the netloc and the tail of the password became the host — so every caller
+# (the reset CLI and the provisioning registry reconcile alike) connected to a host that
+# does not exist instead of reporting a bad credential.
 _HOSTILE_CREDENTIALS = ["p@ss", "p%2Fss", "pa ss", "p/s?s#x", "p:ss", "100%"]
 
 
@@ -49,7 +55,7 @@ def _url_with_env(**env: str) -> URL:
     below — including the fallback ones.
     """
     with patch.dict("os.environ", env, clear=True):
-        return _dataspoke_db_url()
+        return dataspoke_db_url()
 
 
 def _connect_args(url: URL) -> dict[str, Any]:
@@ -70,8 +76,8 @@ def test_password_reaches_the_driver_verbatim(password: str) -> None:
     """asyncpg receives ``DATASPOKE_DEV_POSTGRES_PASSWORD`` exactly as the operator set it.
 
     The ``host`` assertion is the one that pins the specific corruption: an interpolated
-    DSN carrying ``p@ss`` yields a host of ``ss@127.0.0.1``, and every reset run then
-    fails DNS resolution rather than reporting a bad credential.
+    DSN carrying ``p@ss`` yields a host of ``ss@127.0.0.1``, and every run built on this
+    helper then fails DNS resolution rather than reporting a bad credential.
 
     spec: feature/BACKEND.md §Shared Services (PostgreSQL row) — "Credentials are carried
     as `sqlalchemy.URL` fields rather than interpolated into a DSN string, so
@@ -191,8 +197,8 @@ def test_url_fields_come_from_the_dev_postgres_env_block() -> None:
     assert populated.drivername == "postgresql+asyncpg"
     assert populated.username == "myuser"
     assert populated.password == "p@ss/word"
-    # The ``@`` pin at the URL surface the reset engines are actually built from: with
-    # the pre-fix interpolated DSN the host read ``ss/word@db.example.com``.
+    # The ``@`` pin at the URL surface the utility-layer engines are actually built from:
+    # with the pre-fix interpolated DSN the host read ``ss/word@db.example.com``.
     assert populated.host == "db.example.com"
     assert populated.port == 9999
     assert populated.database == "mydb"
@@ -201,11 +207,13 @@ def test_url_fields_come_from_the_dev_postgres_env_block() -> None:
 def test_every_env_key_the_helper_reads_is_the_dev_block() -> None:
     """The helper reads only ``DATASPOKE_DEV_POSTGRES_*``, never the app-runtime block.
 
-    A reset utility that fell back to ``DATASPOKE_POSTGRES_*`` would silently target
+    A utility-layer helper that fell back to ``DATASPOKE_POSTGRES_*`` would silently target
     whatever the app runtime is configured for — in-cluster coordinates unreachable from
     a developer machine — which is the failure mode issue #118 traced in the reporter.
     Both blocks are populated here with *different* values, so this discriminates.
 
+    spec: TESTING.md §Running — "`conftest.py` and `util/*.py` consume the
+    `DATASPOKE_DEV_*` block it contains".
     spec: TESTING.md §Integration Lifecycle & Isolation — "Reset helpers ... read all
     credentials from the environment (the `DATASPOKE_DEV_*` block in
     `helm-charts/.env.dev`)".
@@ -230,6 +238,6 @@ def test_every_env_key_the_helper_reads_is_the_dev_block() -> None:
         "testpass",
         "testdb",
     ), (
-        f"the reset helper must read the DATASPOKE_DEV_* block, not the app-runtime "
+        f"dataspoke_db_url must read the DATASPOKE_DEV_* block, not the app-runtime "
         f"DATASPOKE_POSTGRES_* one; got {url.render_as_string(hide_password=False)!r}."
     )

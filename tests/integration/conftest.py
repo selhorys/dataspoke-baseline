@@ -526,14 +526,23 @@ def dummy_data_reset(acquire_lock) -> None:  # noqa: ARG001 — depends on lock
     yield  # type: ignore[misc]
 
 
-# Record of the dummy-data baseline the most recently-provisioned module left
+# Record of the *source-store* baseline the most recently-provisioned module left
 # standing (its resolved (schemas, topics, datahub_schemas, datahub_topics)
 # 4-tuple). When the next module declares an identical requirement, the standing
-# baseline already satisfies it and the re-provision is skipped: no test body
-# mutates the source example-postgres/Kafka, hard-deletes the example DataHub
-# datasets, or perturbs their core aspects, so the seeded baseline is stable
-# across a run once provisioned. Process-global, so the spot and api-wired groups
-# (separate pytest invocations, per TESTING.md §Execution Groups) each start cold.
+# baseline already satisfies the source legs and re-running them is skipped: no
+# test body mutates the source example-postgres/Kafka, hard-deletes the example
+# DataHub datasets, or perturbs their core aspects, so the seeded sources are
+# stable across a run once provisioned.
+#
+# That invariant covers the sources only. dataset_registry is NOT stable the same
+# way — test bodies run sweeps of their own against stub DataHub clients, and
+# reconcile_registry soft-flags every registry row absent from what the stub
+# enumerates (src/shared/db/registry.py::reconcile_registry step B). So this record
+# gates the reset/ingest legs alone; the registry reconcile runs for every module
+# declaring a DUMMY_DATA_DATAHUB_* requirement regardless of it.
+#
+# Process-global, so the spot and api-wired groups (separate pytest invocations,
+# per TESTING.md §Execution Groups) each start cold.
 _PROVISIONED_BASELINE: tuple | None = None
 
 
@@ -554,13 +563,49 @@ def module_dummy_data(request) -> None:
 
     Modules that declare no constants are no-ops.
 
+    A module that declares either DUMMY_DATA_DATAHUB_* constant is provisioned
+    through to dataset_registry, not only into DataHub: the ingestion datahub-sync
+    sweep (run on schedule by the datahub-sync-hourly DAG) follows the ingest legs.
+    Only the sweep does what this fixture needs: it is the one that INSERTs a
+    registry row for any URN DataHub holds and the only writer of the row's
+    filter-attribute columns (origin / platform_urn / tag_urns /
+    glossary_term_urns / is_primary / attrs_synced_at). Every other writer does
+    strictly less — ValidationService.upsert_config's ensure_dataset_registered
+    inserts a bare row for the one URN being configured, POST
+    /internal/admin/datahub/sync flips the flag bidirectionally but inserts
+    nothing, and the ingest legs' own _mark_registry_registered is an UPDATE over
+    rows that already exist, never an INSERT. Both gaps bite here — after --reset-all (which
+    TRUNCATEs the registry and, unlike --reset-seed, runs no sweep) a freshly
+    ingested URN has no row at all until this reconcile inserts one, and a
+    dataset_filter carrying a tag or origin predicate resolves against attribute
+    columns nothing else writes. Everything resolving a dataset scope reads that
+    registry — src/backend/_dataset_filter.py selects rows with
+    datahub_registered=true — so without the reconcile the module would inherit its
+    precondition from whatever a previous run happened to leave behind (spec:
+    TESTING.md §Spot integration tests — "tests do not chain -- one test's
+    pass/fail must not depend on another's state").
+
+    The reconcile is also what un-poisons the registry between modules, which is
+    why it is exempt from the skip guard below: test bodies run sweeps of their own
+    against stub DataHub clients that enumerate a handful of URNs (e.g.
+    spot/test_internal_activities.py, spot/test_ingestion_cli_pipeline_inheritance.py),
+    and reconcile_registry soft-flags every registry row absent from that
+    enumeration. A later module reusing the standing source baseline would otherwise
+    start against a registry the previous module left deregistered. The guarantee is
+    per-declaration, not global: a module that declares nothing stays a no-op and may
+    still run against a poisoned registry, which is sound only because declaring
+    nothing is the module's own statement that it reads no provisioned data — the
+    repair lands at the next module that does declare one.
+
     Setup only (no teardown reset): the next module that needs a clean baseline
     resets at its own setup, and modules with no dummy-data needs are unaffected —
     so a symmetric teardown reset would only re-do work the next setup redoes.
-    Setup is itself skipped when the standing baseline already equals this module's
-    requirement (see _PROVISIONED_BASELINE). Independent legs run concurrently:
-    the PG-source reset and Kafka-source reset are independent of each other; the
-    DataHub ingest reads the freshly-reset PG rows, so it follows the reset.
+    The reset/ingest legs are themselves skipped when the standing baseline already
+    equals this module's requirement (see _PROVISIONED_BASELINE); the registry
+    reconcile is not. Independent legs run concurrently: the PG-source reset and
+    Kafka-source reset are independent of each other; the DataHub ingest reads the
+    freshly-reset PG rows, so it follows the reset, and the registry reconcile
+    enumerates the estate the ingest just added to, so it follows the ingest.
     """
 
     global _PROVISIONED_BASELINE
@@ -587,36 +632,59 @@ def module_dummy_data(request) -> None:
 
     requirement = (schemas, topics, datahub_schemas, datahub_topics)
     needs_provision = bool(schemas or topics or datahub_schemas or datahub_topics)
+    needs_registry = bool(datahub_schemas or datahub_topics)
 
-    # Skip guard: the previously-provisioned module already left this exact
-    # baseline standing, and nothing between then and now could have dirtied it.
-    if not needs_provision or requirement == _PROVISIONED_BASELINE:
+    # Skip guard, scoped to the source legs: the previously-provisioned module left
+    # this exact source baseline standing and no test body dirties the sources.
+    reuse_sources = requirement == _PROVISIONED_BASELINE
+
+    # Nothing left to do only when there is no requirement at all, or the sources
+    # are standing AND the module needs no registry state.
+    if not needs_provision or (reuse_sources and not needs_registry):
         yield  # type: ignore[misc]
         return
 
     async def _provision() -> None:
         from tests.integration.util import datahub
 
-        # Reset legs: PG source (async) + Kafka source (sync, off-thread) are
-        # mutually independent → run concurrently.
-        reset_coros = []
-        if schemas:
-            reset_coros.append(postgres.reset_schemas(schemas))
-        if topics:
-            reset_coros.append(asyncio.to_thread(kafka.reset_topics, topics))
-        if reset_coros:
-            await asyncio.gather(*reset_coros)
+        if not reuse_sources:
+            # Reset legs: PG source (async) + Kafka source (sync, off-thread) are
+            # mutually independent → run concurrently.
+            reset_coros = []
+            if schemas:
+                reset_coros.append(postgres.reset_schemas(schemas))
+            if topics:
+                reset_coros.append(asyncio.to_thread(kafka.reset_topics, topics))
+            if reset_coros:
+                await asyncio.gather(*reset_coros)
 
-        # DataHub ingest legs: PG-dataset ingest reads the freshly-reset PG rows,
-        # so it MUST follow the reset above; the two ingests are independent of
-        # each other → run concurrently.
-        ingest_coros = []
-        if datahub_schemas:
-            ingest_coros.append(datahub.ingest_pg_datasets(schemas=datahub_schemas))
-        if datahub_topics:
-            ingest_coros.append(datahub.ingest_kafka_datasets(topics=datahub_topics))
-        if ingest_coros:
-            await asyncio.gather(*ingest_coros)
+            # DataHub ingest legs: PG-dataset ingest reads the freshly-reset PG rows,
+            # so it MUST follow the reset above; the two ingests are independent of
+            # each other → run concurrently.
+            ingest_coros = []
+            if datahub_schemas:
+                ingest_coros.append(datahub.ingest_pg_datasets(schemas=datahub_schemas))
+            if datahub_topics:
+                ingest_coros.append(datahub.ingest_kafka_datasets(topics=datahub_topics))
+            if ingest_coros:
+                await asyncio.gather(*ingest_coros)
+
+        if needs_registry:
+            # Registry reconcile — a full estate sweep (IngestionService.sync()), not a
+            # read of the URNs just emitted: it enumerates all of DataHub, reconciles
+            # dataset_registry against that whole set (inserting URNs it holds,
+            # soft-flagging rows it does not), refreshes the filter-attribute columns,
+            # mirrors DATAHUB_MANAGED ingestion sources, books INGESTION events and
+            # stamps the shared datahub-api peripheral_health row. Estate-wide and
+            # destructive rather than narrow and additive, so it runs strictly after
+            # the ingest legs that add to that estate and never alongside them.
+            #
+            # Run whenever the module declares a DataHub requirement, including when
+            # the source legs above were skipped — the previous module's test bodies
+            # may have deregistered registry rows (see the fixture docstring). This
+            # branch is not reached by a module declaring PG/Kafka sources alone,
+            # which touches no DataHub URN; no module currently has that shape.
+            await datahub.sync_dataset_registry()
 
     asyncio.run(_provision())
     _PROVISIONED_BASELINE = requirement

@@ -84,3 +84,5 @@
 - [kubectl unbounded dial](project_kubectl_unbounded_dial.md) — one `get` vs a blackholed API server >120s; `--request-timeout=10s` still 40s (discovery retries 4x)
 - [Setup-fault contract vs tool gap](feedback_setup_fault_vs_verdict_tool_gap.md) — RESOLVED (4 tools gated); a widened gate is a new operator PREREQUISITE the README still omits
 - [Hand-rolled timeout grandchildren](feedback_handrolled_timeout_grandchildren.md) — kill -9 "$pid" hits the subshell only; uv/redis-cli survive, wall clock still looks correct
+- [Verify spec citations verbatim](feedback_verify_spec_citations_verbatim.md) — docstring `spec:` quotes are sometimes fabricated ("emitted AND searchable" is in no spec); grep before anchoring
+- [dataset_registry writers & staleness](project_dataset_registry_writers_and_staleness.md) — "as fresh as the last sweep" is API.md priority-1 text; 4 writers, validation's lazy insert is specified

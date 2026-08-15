@@ -63,3 +63,4 @@
 - [Metric measurement-window test seams](project_metric_measurement_window_test_seams.md) — cycle-2: 10/10 mutants killed; the two exact-instant pins are each the SOLE killer of their >=→> mutant
 - [dataset_filter + verdict test seams](project_dataset_filter_verdict_test_seams.md) — cycle-2: all 5 cycle-1 survivors closed; new blind spot is predicate polarity (== vs !=, is_(True)) + the sibling delete_metric_config DELETE
 - [is_primary filter test seams](project_is_primary_filter_test_seams.md) — post-fix: 20/22 mutants killed; the live blocker is the repo's only xfail, holding an ERROR-vs-WARNING spec violation green
+- [module_dummy_data registry reconcile](project_module_dummy_data_registry_reconcile.md) — _mark_registry_registered already fixes the flag; the reconcile only adds inserts+attrs; skip guard leaves it stale

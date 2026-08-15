@@ -41,7 +41,9 @@ for **exact equalities** on estate-wide counters and for the branches REST canno
 **4. The stub sweep's side effect is pre-existing, not new.** `sync()` runs
 `reconcile_registry` over the handcrafted URN set, soft-flagging every other
 `dataset_registry` row `datahub_registered=false`; `reset_ingestion_sources()` empties
-`ingestion_source`. `module_dummy_data` does **not** repair the registry. Only three spot
+`ingestion_source`. `module_dummy_data` repairs the registry **only for modules that actually
+re-provision** (requirement != `_PROVISIONED_BASELINE`) — see
+[[module-dummy-data-registry-reconcile]]. Only three spot
 modules read `dataset_registry` — `test_admin.py`, `test_common_data_catalog.py`,
 `test_internal_activities.py` — and all sort at or before `test_internal_activities`, so
 nothing downstream is affected. The two `test_ingestion_*` modules already leave the same

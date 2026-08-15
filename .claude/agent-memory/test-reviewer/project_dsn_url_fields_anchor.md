@@ -11,15 +11,16 @@ string … and the URL's string form masks the password" is specced at
 twice. It is *not* in `spec/TESTING.md §Integration Lifecycle & Isolation` — that bullet (~L333-336)
 is scoped to **reset helpers** ("Reset helpers fail loud and carry no baked-in credentials … read
 all credentials from the environment (the `DATASPOKE_DEV_*` block)"). For a *conftest fixture*
-reading that block, the on-point anchor is **`spec/TESTING.md` L404 (§Running)** — "`conftest.py`
+reading that block, the on-point anchor is **`spec/TESTING.md` §Running (~L397)** — "`conftest.py`
 and `util/*.py` consume the `DATASPOKE_DEV_*` block it contains". Citing L335 for a fixture is a
-scope stretch; L404 is the precise one.
+scope stretch; §Running is the precise one. Same for `util/db_url.py::dataspoke_db_url`, whose
+second caller (`datahub.py::sync_dataset_registry`) is a provisioning reconcile, not a reset.
 
 Reference shape: `tests/unit/shared/db/test_session.py` (~35-128) — parametrize over
 `_HOSTILE_CREDENTIALS = ["p@ss", "p%2Fss", "pa ss", "p/s?s#x", "p:ss", "100%"]`, assert
 `dialect.create_connect_args(url)[1]` round-trips password *and* host (the `@`-truncation pin),
 plus `str`/`repr` masking. `tests/unit/migrations/test_env.py` and
-`tests/unit/integration_util/test_main_db_url.py` use the identical 6-member set.
+`tests/unit/integration_util/test_dataspoke_db_url.py` use the identical 6-member set.
 
 **The 6-member set is not padding — measured.** With the set thinned to `["p@ss/word", "100%"]`,
 `password=unquote(password)` and `username=unquote(user)` (the read-side half of a DSN escape
@@ -32,7 +33,7 @@ password entirely".
 `migrations/`. The two spot `_dsn()` helpers are gone; `tests/integration/util/db_url.py::
 build_postgres_url` is the shared builder for both `tests/integration/conftest.py::
 integration_db_url` (required host/port/user/password, `DB` defaults to `dataspoke`) and
-`tests/integration/util/__main__.py::_dataspoke_db_url` (all five defaulted). The other
+`tests/integration/util/db_url.py::dataspoke_db_url` (all five defaulted; used by the reset CLI **and** `datahub.py::sync_dataset_registry`). The other
 `util/*.py` reset helpers pass keyword args straight to `asyncpg.connect`, so they never had a
 DSN to escape.
 

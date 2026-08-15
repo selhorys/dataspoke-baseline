@@ -1,18 +1,18 @@
 """Tests for ``tests/integration/util/db_url.py::build_postgres_url`` — the URL builder
 both integration-layer Postgres connections are constructed through: the
 ``integration_db_url`` session fixture in ``tests/integration/conftest.py`` (which the
-pgvector spot fixtures consume) and the reset utility's ``_dataspoke_db_url``. Exactly
+pgvector spot fixtures consume) and the utility layer's ``dataspoke_db_url``. Exactly
 two call sites.
 
-**Deliberate duplication.** ``tests/unit/integration_util/test_main_db_url.py`` exercises
-this builder transitively — ``_dataspoke_db_url`` delegates here — so most of what the
+**Deliberate duplication.** ``tests/unit/integration_util/test_dataspoke_db_url.py``
+exercises this builder transitively — ``dataspoke_db_url`` delegates here — so most of what the
 cases below prove, it proves too, and only *for as long as that delegation holds*. The
 overlap is not total even today: a builder that baked in its own ``user`` default is
-caught here and nowhere else, because the reset utility already defaults that key and the
+caught here and nowhere else, because the utility-layer caller already defaults that key and the
 mutation is invisible through the delegation. This file is the pin regardless: it states
 the builder's own contract with no caller in the picture. The cases are trimmed to that
 contract; the callers' env-reading policies are pinned where they live —
-``test_main_db_url.py`` for the reset utility,
+``test_dataspoke_db_url.py`` for the utility layer's ``dataspoke_db_url``,
 ``tests/unit/integration_conftest/test_integration_db_url.py`` for the fixture.
 
 Same invariant as ``tests/unit/shared/db/test_session.py``, asserted at the same place —
@@ -23,7 +23,7 @@ object in between. Anything that reintroduces a DSN round trip fails these tests
 The builder takes parameters rather than reading the environment because its two call
 sites read the *same* five ``DATASPOKE_DEV_POSTGRES_*`` keys under deliberately
 different fallback policies: the fixture requires host/port/user/password and fails
-loudly when `helm-charts/.env.dev` was not exported, while the reset utility falls back
+loudly when `helm-charts/.env.dev` was not exported, while ``dataspoke_db_url`` falls back
 to the forwarded-port dev defaults. Reading the environment therefore stays at the call
 sites, and no environment patching appears here.
 

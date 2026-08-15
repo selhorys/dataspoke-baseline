@@ -53,12 +53,19 @@ def silence_api_health_report(monkeypatch: pytest.MonkeyPatch) -> None:
     **Scope limit — this fixture cannot silence a REST-driven sweep.** ``monkeypatch`` binds
     in the *pytest* process. ``test_internal_activities.py`` also drives the sweep by POSTing
     ``/internal/activities/ingestion/sync`` (10 call sites), which executes inside the API pod
-    where this patch does not exist, so that module still moves the singleton row. Two
-    consequences, both accepted rather than worked around:
+    where this patch does not exist, so that module still moves the singleton row.
+
+    **Second scope limit — the provisioning sweep runs before this fixture exists.** The
+    module-scoped ``module_dummy_data`` in ``tests/integration/conftest.py`` reconciles the
+    registry for any module declaring a ``DUMMY_DATA_DATAHUB_*`` constant, and being
+    module-scoped it runs ahead of this function-scoped patch. That sweep therefore stamps the
+    row with a genuine ``ok`` from a real successful sweep, in opted-in modules too.
+
+    Both limits carry the same two consequences, accepted rather than worked around:
 
     - Nothing here becomes vacuous. No assertion in any opted-in module reads
       ``peripheral_health``, so a stray write cannot make one of their checks pass falsely;
-      the isolation is delivered only for the in-process half.
+      the isolation is delivered only for the sweeps this patch is in scope for.
     - The row is left dirty at session end. Files run in name order, so
       ``test_datahub_api_health.py`` sorts *before* ``test_internal_activities.py``: its
       verified restore does happen, and is then clobbered by the later REST-driven sweeps.
