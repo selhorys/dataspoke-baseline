@@ -1,6 +1,6 @@
 ---
 name: devonly-bin-scripts-prod-fence
-description: The dev-only helm-charts/bin scripts (port-forward.sh, health-check.sh) are fenced off from prod only by `set -u` on DATASPOKE_DEV_* vars — any `:-` default silently unlocks them for prod, onto fixed ports the test suite defaults to
+description: The dev-only helm-charts/bin scripts (port-forward.sh, health-check.sh) are fenced off from prod only by `set -u` on DATASPOKE_DEV_* vars — any `:-` default silently unlocks them for prod, onto fixed ports the test suite defaults to; health-check.sh now pins its context too, which sharpens the exported-ENV_FILE route rather than closing it
 metadata:
   type: project
 ---
@@ -30,14 +30,16 @@ Three facts to re-check on any `bin/` diff of this shape:
 1. **`ENV_FILE` is exported** (`install.sh:177`), and both scripts fall back to it before
    `.env.dev`. So "the operator must type `--env-file .env.prod`" is false — a shell that
    ran a prod install, or follows the `ENV_FILE=` convention, selects prod with no flag.
-2. **`health-check.sh` never calls `use_context`** (`port-forward.sh` does). Its two
-   `kubectl` checks (event-consumer, langfuse-worker) read the operator's *ambient*
-   context while the banner names the env file — so a `--profile prod` run can PASS/skip
-   a component read off the dev cluster. README claims the opposite.
-3. **`--quick` in `shared` mode is nearly vacuous**: `_ingress_port_open` returns 0
-   unconditionally, so api / airflow / frontend / langfuse-web / datahub-gms all
-   `_pass "(tcp)"` without a single packet. Prod defaults to `shared`, and the runbook
-   says "prefer `--quick` on prod" + "read the DataSpoke Infra section and nothing else".
+2. **`health-check.sh` now DOES pin its context** (re-verified 2026-08-16): `require_tools kubectl
+   curl` + an empty-`DATASPOKE_KUBE_CLUSTER` guard + `use_context "${DATASPOKE_KUBE_CLUSTER}"` run
+   before the first probe, and the banner prints `Kube context:`. So the ambient-context hole is
+   CLOSED — but the pin makes fact 1 sharper, not weaker: a bare `health-check.sh` (the form the
+   preflight hook runs) resolves an inherited exported `ENV_FILE` before `.env.dev`, and now
+   actively pins and issues four kubectl reads against whatever cluster that file names. A shell
+   that ran a prod install therefore points the dev pre-flight at prod.
+3. **`--quick` is gone repo-wide** (only `.claude/agent-memory/` still names it), so the vacuous
+   shared-mode `_ingress_port_open` free pass no longer decides any verdict — every check now runs
+   to its application-layer probe. The runbook's "prefer `--quick` on prod" line is gone with it.
 
 **How to apply:** treat any `${DATASPOKE_DEV_*:-}` added to a `bin/` script as a
 prod-unlock and demand an explicit gate in the same diff. `lib/helpers.sh` already has

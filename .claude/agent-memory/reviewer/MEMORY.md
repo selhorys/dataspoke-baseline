@@ -12,7 +12,7 @@
 - [Recharts var() in SVG attr](project_recharts_css_var_svg_attr.md) — var() DOES resolve in SVG presentation attrs (Chromium-verified); Recharts hsl(var(--token)) stroke is fine, not a regression
 - [FastAPI injected Response on error path](project_fastapi_injected_response_error_path.md) — endpoint raise ⇒ sub-response headers dropped; no Set-Cookie on error paths; MRO picks specific handler
 - [Verify branch-reachability rationales](feedback_verify_branch_reachability_rationales.md) — auth is route-level Depends, so unauthenticated routes never 401; prove "unreachable" claims, watch float-vs-floor races
-- [health-check.sh unattended lock prompt](project_healthcheck_unattended_lock_prompt.md) — no --keep-lock ⇒ interactive read aborts under set -e; exit 1 misread as "cluster red"
+- [health-check.sh lock prompt](project_healthcheck_unattended_lock_prompt.md) — read IS EOF-guarded: no abort, it falls through to a counted FAIL + exit 1; --keep-lock is a trade, not a free win
 - [token_urlsafe scrub charset](project_token_urlsafe_scrub_charset.md) — dsk_/token_urlsafe are base64url; scrub regex needs [A-Za-z0-9_-]+ or ~74% of PATs leak a tail
 - [mypy override audit](feedback_mypy_override_audit.md) — --warn-unused-configs misses over-granted codes; re-run mypy with overrides stripped to get the true suppressed set
 - [Display-URL guard x3](project_display_url_guard_three_copies.md) — one safety regex hand-copied into pydantic + Python sanitizer + lib/safe-url.ts; diff-verify recipe
@@ -80,3 +80,7 @@
 - [Frontend numeric bound seams](project_frontend_numeric_bound_seams.md) — no form sets noValidate (min/max attr preempts the zod message); z.coerce.number() takes true as 1
 - [Cited precedent is itself a violation](feedback_cited_precedent_is_itself_violation.md) — BACKEND.md §82 bans src/backend→src/api; two offenders exist, no linter, src/shared is the bridge
 - [Metric cutoff vs measured_at](project_metric_cutoff_vs_measured_at.md) — cutoff is the measurer's own entry-time now; the persisted measured_at is a later reading, so "measured_at - window" prose is wrong
+- [Exit-code contract set -e holes](feedback_exit_code_contract_set_e_holes.md) — error() override misses `source`/`mktemp`/`cd`; on bash 3.2 `source X || handler` skips the handler even for a MISSING file
+- [kubectl unbounded dial](project_kubectl_unbounded_dial.md) — one `get` vs a blackholed API server >120s; `--request-timeout=10s` still 40s (discovery retries 4x)
+- [Setup-fault contract vs tool gap](feedback_setup_fault_vs_verdict_tool_gap.md) — RESOLVED (4 tools gated); a widened gate is a new operator PREREQUISITE the README still omits
+- [Hand-rolled timeout grandchildren](feedback_handrolled_timeout_grandchildren.md) — kill -9 "$pid" hits the subshell only; uv/redis-cli survive, wall clock still looks correct
