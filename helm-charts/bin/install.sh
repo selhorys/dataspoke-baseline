@@ -280,13 +280,13 @@ _wait_all() {
         rc=0
         wait "$pid" || rc=$?
         done_flags[i]=1
-        (( remaining-- ))
+        remaining=$(( remaining - 1 ))
         if (( rc == 0 )); then
           info "  [OK] $label (t+$((SECONDS - START_TIME))s)"
         else
           warn "  [FAIL] $label (exit $rc, t+$((SECONDS - START_TIME))s)"
           cat "${INSTALL_TMPDIR}/${label//\//-}.log" >&2 || true
-          (( failed++ ))
+          failed=$(( failed + 1 ))
         fi
       fi
     done

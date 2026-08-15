@@ -214,7 +214,7 @@ for attempt in 1 2 3; do
     --bootstrap-server localhost:9092 \
     --describe --group "$MAE_GROUP" 2>&1 || true)
   if echo "$MAE_STATE" | grep -q "has no active members"; then
-    (( STALLED_COUNT++ ))
+    STALLED_COUNT=$(( STALLED_COUNT + 1 ))
   fi
   (( attempt < 3 )) && sleep 5
 done

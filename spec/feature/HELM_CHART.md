@@ -2176,8 +2176,12 @@ In **shared** mode the operator's controller serves the virtual hosts over
 controller (emitting HSTS) requires `https` so browser login is not broken by
 mixed-content or auto-upgrade. The TCP datastores are independent of the scheme:
 they are never on the ingress. `bin/port-forward.sh` runs in the foreground and
-`kubectl port-forward`s the same six services to their canonical ports on
-`127.0.0.1`; Kafka EXTERNAL listeners advertise `127.0.0.1:<port>`. Integration
+`kubectl port-forward`s them to their canonical ports on `127.0.0.1`. Which of
+the six it opens follows the env file it resolves: all six under a dev env file,
+and under a prod one only those in `DATASPOKE_KUBE_DATASPOKE_NAMESPACE`, since a
+prod env file carries no `DATASPOKE_DEV_*` namespace for the DataHub and
+dummy-data services and no prod deployment installs `dev-lock`. Kafka EXTERNAL
+listeners advertise `127.0.0.1:<port>`. Integration
 tests, `health-check.sh`, and `helm-charts/.env.dev`'s TCP `DATASPOKE_DEV_*`
 host values all resolve to `127.0.0.1` while the port-forward holds, regardless
 of the virtual-host scheme.

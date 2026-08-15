@@ -224,7 +224,7 @@ check_dataspoke_postgresql() {
   local label="dataspoke-postgresql (${DS_PG_HOST}:${DS_PG_PORT})"
   if ! _tcp_check "$DS_PG_HOST" "$DS_PG_PORT"; then
     _fail "$label — port not reachable"
-    ((FAILURES++)); return
+    FAILURES=$(( FAILURES + 1 )); return
   fi
   if $QUICK; then _pass "$label (tcp)"; return; fi
 
@@ -236,7 +236,7 @@ check_dataspoke_postgresql() {
       _pass "$label"
     else
       _fail "$label — pg_isready failed (pod may be restarting)"
-      ((FAILURES++))
+      FAILURES=$(( FAILURES + 1 ))
     fi
   else
     # Connection parameters on stdin via a heredoc, read from the child's own
@@ -263,7 +263,7 @@ PYEOF
       _pass "$label"
     else
       _fail "$label — cannot connect (pod may be restarting)"
-      ((FAILURES++))
+      FAILURES=$(( FAILURES + 1 ))
     fi
   fi
 }
@@ -272,7 +272,7 @@ check_example_postgres() {
   local label="example-postgres (${DD_PG_HOST}:${DD_PG_PORT})"
   if ! _tcp_check "$DD_PG_HOST" "$DD_PG_PORT"; then
     _fail "$label — port not reachable"
-    ((FAILURES++)); return
+    FAILURES=$(( FAILURES + 1 )); return
   fi
   if $QUICK; then _pass "$label (tcp)"; return; fi
 
@@ -281,7 +281,7 @@ check_example_postgres() {
       _pass "$label"
     else
       _fail "$label — pg_isready failed"
-      ((FAILURES++))
+      FAILURES=$(( FAILURES + 1 ))
     fi
   else
     if PGHOST="$DD_PG_HOST" PGPORT="$DD_PG_PORT" PGUSER="$DD_PG_USER" PGDATABASE="$DD_PG_DB" \
@@ -304,7 +304,7 @@ PYEOF
       _pass "$label"
     else
       _fail "$label — cannot connect"
-      ((FAILURES++))
+      FAILURES=$(( FAILURES + 1 ))
     fi
   fi
 }
@@ -313,7 +313,7 @@ check_dataspoke_redis() {
   local label="dataspoke-redis (${DS_REDIS_HOST}:${DS_REDIS_PORT})"
   if ! _tcp_check "$DS_REDIS_HOST" "$DS_REDIS_PORT"; then
     _fail "$label — port not reachable"
-    ((FAILURES++)); return
+    FAILURES=$(( FAILURES + 1 )); return
   fi
   if $QUICK; then _pass "$label (tcp)"; return; fi
 
@@ -328,7 +328,7 @@ check_dataspoke_redis() {
     _pass "$label"
   else
     _fail "$label — PING did not return PONG"
-    ((FAILURES++))
+    FAILURES=$(( FAILURES + 1 ))
   fi
 }
 
@@ -336,7 +336,7 @@ check_dataspoke_airflow() {
   local label="dataspoke-airflow (${AIRFLOW_URL})"
   if ! _ingress_port_open; then
     _fail "$label — ingress not reachable"
-    ((FAILURES++)); return
+    FAILURES=$(( FAILURES + 1 )); return
   fi
   if $QUICK; then _pass "$label (tcp)"; return; fi
 
@@ -349,10 +349,10 @@ check_dataspoke_airflow() {
     _pass "$label"
   elif _http_alive "${health_url}"; then
     _fail "$label — HTTP alive but health endpoint reports unhealthy: ${health_body}"
-    ((FAILURES++))
+    FAILURES=$(( FAILURES + 1 ))
   else
     _fail "$label — no HTTP response (pod may be starting)"
-    ((FAILURES++))
+    FAILURES=$(( FAILURES + 1 ))
   fi
 }
 
@@ -360,7 +360,7 @@ check_dataspoke_api() {
   local label="dataspoke-api (${DS_API_URL})"
   if ! _ingress_port_open; then
     _fail "$label — ingress not reachable"
-    ((FAILURES++)); return
+    FAILURES=$(( FAILURES + 1 )); return
   fi
   if $QUICK; then _pass "$label (tcp)"; return; fi
 
@@ -392,7 +392,7 @@ check_dataspoke_event_consumer() {
       _pass "$label (${ready} replica(s) ready)"
     else
       _fail "$label — 0 replicas ready"
-      ((FAILURES++))
+      FAILURES=$(( FAILURES + 1 ))
     fi
   else
     # Disabled by default outside dev; absence is a configuration choice.
@@ -405,7 +405,7 @@ check_dataspoke_frontend() {
   local label="dataspoke-frontend (${fe_url})"
   if ! _ingress_port_open; then
     _fail "$label — ingress not reachable"
-    ((FAILURES++)); return
+    FAILURES=$(( FAILURES + 1 )); return
   fi
   if $QUICK; then _pass "$label (tcp)"; return; fi
 
@@ -422,7 +422,7 @@ check_dataspoke_langfuse() {
   local label="langfuse-web (${lf_url})"
   if ! _ingress_port_open; then
     _fail "$label — ingress not reachable"
-    ((FAILURES++)); return
+    FAILURES=$(( FAILURES + 1 )); return
   fi
   if $QUICK; then _pass "$label (tcp)"; return; fi
 
@@ -432,8 +432,8 @@ check_dataspoke_langfuse() {
     _skip "$label — not responding (may not be installed; run: install.sh --profile dev --components langfuse)"
   fi
 
-  local worker_ns="${DATASPOKE_DEV_KUBE_LANGFUSE_NAMESPACE}"
-  if kubectl get deployment/langfuse-worker -n "${worker_ns}" >/dev/null 2>&1; then
+  local worker_ns="${DATASPOKE_DEV_KUBE_LANGFUSE_NAMESPACE:-}"
+  if [[ -n "$worker_ns" ]] && kubectl get deployment/langfuse-worker -n "${worker_ns}" >/dev/null 2>&1; then
     local ready
     ready=$(kubectl get deployment/langfuse-worker -n "${worker_ns}" \
       -o jsonpath='{.status.readyReplicas}' 2>/dev/null) || ready="0"
@@ -441,7 +441,7 @@ check_dataspoke_langfuse() {
       _pass "langfuse-worker (${ready} replica(s) ready)"
     else
       _fail "langfuse-worker — 0 replicas ready"
-      ((FAILURES++))
+      FAILURES=$(( FAILURES + 1 ))
     fi
   else
     _skip "langfuse-worker — not deployed"
@@ -452,7 +452,7 @@ check_datahub_gms() {
   local label="datahub-gms (${DH_GMS_URL})"
   if ! _ingress_port_open; then
     _fail "$label — ingress not reachable"
-    ((FAILURES++)); return
+    FAILURES=$(( FAILURES + 1 )); return
   fi
   if $QUICK; then _pass "$label (tcp)"; return; fi
 
@@ -460,7 +460,7 @@ check_datahub_gms() {
     _pass "$label"
   else
     _fail "$label — /health did not return 2xx"
-    ((FAILURES++))
+    FAILURES=$(( FAILURES + 1 ))
   fi
 }
 
@@ -468,7 +468,7 @@ check_kafka() {
   local label="$1" host="$2" port="$3"
   if ! _tcp_check "$host" "$port"; then
     _fail "$label — port not reachable"
-    ((FAILURES++)); return
+    FAILURES=$(( FAILURES + 1 )); return
   fi
   if $QUICK; then _pass "$label (tcp)"; return; fi
 
@@ -488,7 +488,7 @@ except Exception as e:
     _pass "$label"
   else
     _fail "$label — broker not responding to metadata request"
-    ((FAILURES++))
+    FAILURES=$(( FAILURES + 1 ))
   fi
 }
 
@@ -503,7 +503,7 @@ _release_lock() {
     _info "released lock from '${owner}' (${message})"
   else
     _fail "dev-env lock held by '${owner}' — failed to release"
-    ((FAILURES++))
+    FAILURES=$(( FAILURES + 1 ))
   fi
 }
 
@@ -511,7 +511,7 @@ check_lock_service() {
   local label="lock-service (${LOCK_HOST}:${LOCK_PORT})"
   if ! _tcp_check "$LOCK_HOST" "$LOCK_PORT"; then
     _fail "$label — port not reachable"
-    ((FAILURES++)); return
+    FAILURES=$(( FAILURES + 1 )); return
   fi
   if $QUICK; then _pass "$label (tcp)"; return; fi
 
@@ -519,7 +519,7 @@ check_lock_service() {
     _pass "$label"
   else
     _fail "$label — /health did not return 2xx"
-    ((FAILURES++))
+    FAILURES=$(( FAILURES + 1 ))
     return
   fi
 
@@ -540,12 +540,12 @@ check_lock_service() {
         _info "dev-env lock held by '${owner}' (${message})"
         printf "  Release this lock? [y/N] "
         local answer
-        read -r answer
+        read -r answer || answer=""
         if [[ "$answer" =~ ^[Yy]$ ]]; then
           _release_lock "$owner" "$message"
         else
           _fail "dev-env lock held by '${owner}' — integration tests will skip"
-          ((FAILURES++))
+          FAILURES=$(( FAILURES + 1 ))
         fi
       fi
     else

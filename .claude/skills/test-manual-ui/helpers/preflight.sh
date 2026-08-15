@@ -9,7 +9,7 @@ SIBLING="${REPO_ROOT}/.claude/skills/test-manual-api-wired/helpers"
 
 # ── 1. Health-check ──────────────────────────────────────────────────────────
 echo "── health-check ──────────────────────────────────────────────"
-"${REPO_ROOT}/helm-charts/bin/health-check.sh"
+"${REPO_ROOT}/helm-charts/bin/health-check.sh" --keep-lock
 
 # ── 2. Bootstrap env + admin JWT (reuses the api-wired helper) ───────────────
 echo

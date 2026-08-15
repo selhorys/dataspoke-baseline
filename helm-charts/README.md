@@ -41,7 +41,7 @@ The `--frontend` flag controls how the Next.js UI is handled:
 
 ```bash
 ./helm-charts/bin/health-check.sh --profile dev
-./helm-charts/bin/health-check.sh --profile prod --quick
+./helm-charts/bin/health-check.sh --profile prod
 ```
 
 `--profile {dev|prod}` resolves `helm-charts/.env.<profile>` by the same rule
@@ -60,10 +60,9 @@ report unhealthy, so the summary ends with `N service(s) unhealthy`, a
 <name>`, and exit 1. Neither the count nor the hint is a verdict on your
 deployment.
 
-Prefer `--quick` on prod: the deep (non-`--quick`) Langfuse probe reads
-`DATASPOKE_DEV_KUBE_LANGFUSE_NAMESPACE`, which a prod env file does not carry,
-and the script runs under `set -u`, so a full prod run stops there — after the
-DataSpoke Infra lines it has already printed, and before the summary.
+A full (non-`--quick`) `--profile prod` run reaches the summary; the deep
+Langfuse-worker probe reports `not deployed` (skipped) against a prod env
+file, since it has no `DATASPOKE_DEV_KUBE_LANGFUSE_NAMESPACE` to read.
 
 ### Uninstall
 
@@ -1013,7 +1012,12 @@ depends on `DATASPOKE_KUBE_INGRESS_MODE` in `helm-charts/.env.dev`:
   `DATASPOKE_KUBE_INGRESS_DOMAIN` — wildcard DNS, or a record for each
   `<service>.` host in the table below (`app.`, `api.`, `airflow.`, `datahub.`,
   `datahub-gms.`, `langfuse.`) — and `<TCP_HOST>` is `127.0.0.1` — TCP
-  services are forwarded to the same ports via `./helm-charts/bin/port-forward.sh`.
+  services are forwarded to the same ports via
+  `./helm-charts/bin/port-forward.sh --env-file helm-charts/.env.prod` (dev
+  invocation: `--env-file helm-charts/.env.dev`, the default when `--env-file`
+  is omitted). `PF_SPECS` is the same fixed list in both profiles; the
+  dev-only services (dev-lock, DataHub Kafka, dummy-data Postgres/Kafka) are
+  skipped under a prod env file because it carries no namespace for them.
   `<SCHEME>` is `http` or `https` per `DATASPOKE_KUBE_INGRESS_SCHEME` — set
   `https` when the shared controller terminates TLS + HSTS in front of the
   virtual hosts, since an `http` page would break under browser
