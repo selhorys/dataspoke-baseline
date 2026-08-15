@@ -47,10 +47,15 @@ If no scope arg → menu of all discovered scenarios. Cap at 4 options per
 
 ### 2. Pre-flight
 
-Run `./helm-charts/bin/health-check.sh`. On any FAIL:
+Run `./helm-charts/bin/health-check.sh`. On any FAIL (**exit 1** — the probes ran):
 - Tell the user exactly which subsystem failed.
 - Offer to reinstall via `Skill(k8s-deploy)` action `reinstall`.
 - Do not proceed until green.
+
+On **exit 2** nothing was probed: the check could not be set up on this machine
+(missing `kubectl`, unset `DATASPOKE_KUBE_CLUSTER`, an unresolvable context, a
+missing or unreadable env file). Report it as a local configuration fault and
+fix that — never reinstall components in response to it.
 
 Ask once: reset-seed baseline? Default Yes (per `feedback_reset_before_api_wired`).
 Yes → `set -a && source helm-charts/.env.dev && set +a && uv run python -m tests.integration.util --reset-seed`.

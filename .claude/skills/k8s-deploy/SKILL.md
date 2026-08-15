@@ -352,17 +352,19 @@ There is no dedicated `reinstall.sh`, and `uninstall.sh` does not support `--com
 
 ## Action: health-check
 
-1. Run `./helm-charts/bin/health-check.sh --profile <dev|prod>` and report the results. **Always pass the profile.** With no `--profile` and no `--env-file`, the script falls back to `.env.dev` — a prod operator who runs it bare gets a confident verdict for a different deployment. `--env-file helm-charts/.env.prod` is the equivalent. Either way the script echoes the resolved env file and ingress domain before its first probe; check that line matches the deployment you meant.
+1. Run `./helm-charts/bin/health-check.sh --profile <dev|prod>` and report the results. **Always pass the profile.** With no `--profile` and no `--env-file`, the script falls back to `.env.dev` — a prod operator who runs it bare gets a confident verdict for a different deployment. `--env-file helm-charts/.env.prod` is the equivalent. Either way the script echoes the resolved env file, the kube context it pinned, and the ingress domain before its first probe; check those lines match the deployment you meant.
 2. Supported flags:
    - `--profile {dev|prod}` — resolve `helm-charts/.env.<profile>` the way `install.sh` does
    - `--env-file <path>` — explicit env file; outranks `--profile`
-   - `--quick` — TCP-only checks (skip deep application-layer probes)
    - `--keep-lock` — don't touch an existing dev-env lock
    - `--force-release` — release a held lock without prompting
-3. The DataHub, dummy-data and dev-lock sections have no prod counterpart — they are dev-only peripherals, so they report unreachable against a prod deployment rather than being skipped. Say so rather than reporting them as failures. **On `--profile prod` this means the script can never exit 0**: those sections run unconditionally, so a healthy prod deployment still ends with `N service(s) unhealthy`, the dev-only reinstall hint below, and exit 1. Both the non-zero exit and that hint are expected on prod and are not a verdict on the deployment — judge it on the `DataSpoke Infra` section alone. A full `--profile prod` run (with or without `--quick`) reaches this summary; the deep langfuse-worker probe reports `not deployed` (skipped) against a prod env file.
-4. If any service is unhealthy in **dev**, show the reinstall command:
+
+   Every service is probed at the application layer; there is no TCP-only mode. The script requires `kubectl` and `curl` — every section depends on them, so a missing one aborts with exit 2 instead of producing a page of plausible-looking service failures. `redis-cli`, `uv`, `pg_isready` and `jq` are optional: when one is absent the probe that needs it is skipped with a line naming the missing binary, and the run still exits 0 — a tool missing from your workstation is not a verdict on the deployment. It pins its context to the `DATASPOKE_KUBE_CLUSTER` the resolved env file names, so it reports against the deployment it prints, not the ambient context. Under `shared` ingress mode (the prod posture) the Postgres/Redis/Kafka probes go to `127.0.0.1`, so `./helm-charts/bin/port-forward.sh` must already be running or those lines are unreachable by construction.
+3. **Exit codes: `0` healthy, `1` probes ran and something is unhealthy, `2` the run could not be set up.** A `2` (a missing required local tool, unset `DATASPOKE_KUBE_CLUSTER`, an unresolvable context, a missing env file, an invalid flag) means *nothing was probed* — report it as a local configuration fault and fix that, never as a sick deployment, and never respond to it by reinstalling components.
+4. The DataHub, dummy-data and dev-lock sections have no prod counterpart — they are dev-only peripherals, so they report unreachable against a prod deployment rather than being skipped. Say so rather than reporting them as failures. **On `--profile prod` this means the script can never exit 0**: those sections run unconditionally, so a healthy prod deployment still ends with `N service(s) unhealthy`, the dev-only reinstall hint below, and exit 1. Both the non-zero exit and that hint are expected on prod and are not a verdict on the deployment — judge it on the `DataSpoke Infra` section alone. Inside that section, both Langfuse lines report `not configured` (skipped) against a prod env file, which carries no `DATASPOKE_DEV_KUBE_LANGFUSE_NAMESPACE`. One line in that section can be red for a reason that is not the deployment's: `dataspoke-api` is probed at `api.<DATASPOKE_KUBE_INGRESS_DOMAIN>`, and since the API is required it is a counted **FAIL** — never a skip — when that host does not answer, including when the operator's overlay publishes the API elsewhere. Check the host in the banner before relaying it as a broken API.
+5. If any service is unhealthy in **dev** (exit 1), show the reinstall command:
    `./helm-charts/bin/install.sh --profile dev --components <name>` (component names per the table above). In **prod** there is no per-component reinstall — the fix is a full pre-flight-plus-install cycle (see `Action: reinstall`) — and the script's own hint names the dev command regardless of profile, so do not relay it under prod.
-5. For deeper cluster-level diagnostics, invoke the `/k8s-work` skill.
+6. For deeper cluster-level diagnostics, invoke the `/k8s-work` skill.
 
 ---
 
@@ -373,7 +375,7 @@ Rebuild the DataSpoke API Docker image, redeploy it via `helm upgrade`, and roll
 ### Pre-flight
 
 1. Verify `helm-charts/.env.dev` exists. If not, run **configure** first. This action is dev-only — its deploy command is `--components api`, which `install.sh` rejects under `--profile prod`.
-2. If the user requests it (or `--health-check` flag), run `./helm-charts/bin/health-check.sh --profile dev --quick` to confirm infrastructure is reachable. If it fails, suggest `/k8s-deploy health-check` or `/k8s-deploy install` and stop.
+2. If the user requests it (or `--health-check` flag), run `./helm-charts/bin/health-check.sh --profile dev --keep-lock` to confirm infrastructure is reachable. If it fails, suggest `/k8s-deploy health-check` or `/k8s-deploy install` and stop. `--keep-lock` is deliberate here: this pre-flight runs unattended, and without it a held dev-env lock turns into an interactive release prompt. The trade is explicit — a held lock is reported as `[INFO]` and does **not** block the deploy, so read that line before proceeding: rolling the API pod while another session is mid-integration-run breaks that run.
 3. Run `uv sync` to ensure Python dependencies are up to date.
 
 ### Option parsing
@@ -384,7 +386,7 @@ Parse `$ARGUMENTS` and the user's request for these options:
 |--------|----------|---------|-------------|
 | `skip-build` | `--skip-build` | off | Skip Docker build, deploy existing image only |
 | `image-tag` | `--image-tag <tag>` | `dev` | Override the image tag (CI-built images) |
-| `health-check` | (runs `./helm-charts/bin/health-check.sh --profile dev --quick` first) | off | Pre-flight infrastructure check |
+| `health-check` | (runs `./helm-charts/bin/health-check.sh --profile dev --keep-lock` first) | off | Pre-flight infrastructure check |
 | `stop` | (no flag — see Stop section) | off | Scale down the API deployment |
 
 ### Deploy

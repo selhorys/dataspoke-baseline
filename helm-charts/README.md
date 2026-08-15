@@ -8,6 +8,7 @@ dev-only peripheral manifests in `helm-charts/dev-peripherals/`.
 
 - `kubectl` installed and configured
 - `helm` v3 installed
+- `curl` (required by `bin/health-check.sh`; `redis-cli`, `uv`, `pg_isready` and `jq` are optional there — their probes skip when absent)
 - `python3` (Fernet key generation, values parsing — required by every profile of `bin/install.sh` and by the prod path of `bin/uninstall.sh`)
 - A Kubernetes cluster with **8+ CPUs / 24 GB RAM** (dev) or, for prod, node capacity for the umbrella chart's steady-state resource **requests** — **~4.35 CPU / 7.7 GiB RAM** across all replicas, per `spec/feature/HELM_CHART.md §Resource Sizing`'s Total row (limits burst to ~10.15 CPU / 18.1 GiB; add 66 GiB persistent volume across Postgres and Redis) — see [§Prod profile](#prod-profile), step 1, below for the per-component breakdown
 
@@ -45,11 +46,37 @@ The `--frontend` flag controls how the Next.js UI is handled:
 ```
 
 `--profile {dev|prod}` resolves `helm-charts/.env.<profile>` by the same rule
-`install.sh` uses; `--env-file <path>` overrides it. Either way the script
-echoes the resolved env file and ingress domain before its first probe, so a
-confident verdict is never read off a deployment other than the one you meant.
-A bare invocation still falls back to `.env.dev`. Other flags: `--quick`
-(TCP-only), `--keep-lock`, `--force-release`.
+`install.sh` uses; `--env-file <path>` overrides it. A bare invocation still
+falls back to `.env.dev`. Other flags: `--keep-lock`, `--force-release`.
+
+The script requires `kubectl` and `curl`; `redis-cli`, `uv`, `pg_isready` and
+`jq` are optional, and a probe whose tool is missing is skipped with a line
+naming the binary rather than reported as a failure. It pins the run to the kube context the
+resolved env file names in `DATASPOKE_KUBE_CLUSTER`, instead of reading
+whichever context happens to be current — through the same `use_context`
+helper `install.sh` and `port-forward.sh` use, which works on a private
+kubeconfig copy and leaves your own active context alone. The env file, that
+pinned context and the ingress domain are all echoed before the first probe,
+so a confident verdict is never read off a deployment other than the one you
+meant.
+
+Every service is probed at the application layer — nothing is reported healthy
+on an open TCP port alone. The event-consumer and langfuse-worker serve no HTTP
+surface, so they are judged on their Deployment's ready-replica count, which is
+read whether or not the ingress is up.
+
+In `shared` ingress mode (the prod posture) the Postgres, Redis and Kafka
+probes go to `127.0.0.1` and therefore depend on
+`./helm-charts/bin/port-forward.sh` already running — start it first, or those
+lines report unreachable and the credentials in the env file are offered to
+whatever local process holds those ports.
+
+**Exit codes.** `0` = healthy. `1` = the probes ran and something is unhealthy.
+`2` = the run could not be set up and **nothing was probed** — a missing
+`kubectl`, an unset `DATASPOKE_KUBE_CLUSTER`, a context that is not in your
+kubeconfig, a missing env file, an invalid flag. A `2` is a fault on your
+machine and says nothing about the deployment; automation that heals a cluster
+when this check fails acts on `1` only.
 
 **Under `--profile prod`, read the `DataSpoke Infra` section and nothing else,
 and expect a non-zero exit.** The `DataHub`, `Dummy Data` and `Dev
@@ -60,9 +87,37 @@ report unhealthy, so the summary ends with `N service(s) unhealthy`, a
 <name>`, and exit 1. Neither the count nor the hint is a verdict on your
 deployment.
 
-A full (non-`--quick`) `--profile prod` run reaches the summary; the deep
-Langfuse-worker probe reports `not deployed` (skipped) against a prod env
-file, since it has no `DATASPOKE_DEV_KUBE_LANGFUSE_NAMESPACE` to read.
+Inside `DataSpoke Infra`, the Langfuse lines report `not configured`
+(skipped) against a prod env file, which carries no
+`DATASPOKE_DEV_KUBE_LANGFUSE_NAMESPACE` — the only signal the script has for
+whether a deployment claims Langfuse at all. The worker half skips
+unconditionally; the web half skips once the ingress itself is reachable, since
+an unreachable ingress is a counted failure for it as for every other
+ingress-probed service. The frontend is likewise skipped
+when the release does not contain it (`--frontend none`); a component that
+**is** deployed and fails its probe is always counted as a failure.
+
+One prod caveat inside that section, and it applies to **every ingress-probed
+service, not just the API**: the hostnames are hard-coded as
+`<service>.<DATASPOKE_KUBE_INGRESS_DOMAIN>` over
+`DATASPOKE_KUBE_INGRESS_SCHEME` — `api.`, `app.`, `airflow.` and `langfuse.`
+— and the script has no way to learn that your overlay publishes a service
+somewhere else (see [§3. Author your operator
+overlay](#3-author-your-operator-overlay)). Two consequences under a
+non-default host:
+
+- `dataspoke-api` is a **counted failure** whenever `api.<DOMAIN>/health` does
+  not answer 2xx. The API is required in every profile, so its probe is never
+  downgraded to a skip.
+- `dataspoke-frontend` is a counted failure too, even though it is an
+  *optional* component. Prod defaults to `--frontend cluster`, so the UI **is**
+  in the release; the script confirms that from the Deployment before deciding,
+  and a component that is present but unanswered is reported as deployed and
+  broken rather than skipped. Only a release that genuinely omits the frontend
+  earns the skip.
+
+Read both lines against the hosts the banner printed, not against where your
+overlay actually serves them.
 
 ### Uninstall
 
@@ -574,7 +629,8 @@ nothing in the install depends on it matching a fixed pattern, except
 `bin/health-check.sh`: run as `--profile prod` it builds every probe URL from
 `DATASPOKE_KUBE_INGRESS_DOMAIN` in `.env.prod` and assumes
 `api.<DATASPOKE_KUBE_INGRESS_DOMAIN>` regardless of what your prod overlay
-sets. The example overlay publishes the public API surface — `/api/v1`,
+sets — and because the API is a required component, a probe that does not
+answer there is reported as a counted `[FAIL] dataspoke-api`, not a skip. The example overlay publishes the public API surface — `/api/v1`,
 `/health`, `/ready`, `/redoc`, `/openapi.json` — and never `/internal/*`; a
 prod pre-flight check in `install.sh` refuses to install if any configured
 path would admit `/internal/*`. `/redoc` and `/openapi.json` disclose nothing

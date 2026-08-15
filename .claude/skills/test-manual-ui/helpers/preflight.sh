@@ -9,7 +9,19 @@ SIBLING="${REPO_ROOT}/.claude/skills/test-manual-api-wired/helpers"
 
 # ── 1. Health-check ──────────────────────────────────────────────────────────
 echo "── health-check ──────────────────────────────────────────────"
-"${REPO_ROOT}/helm-charts/bin/health-check.sh" --keep-lock
+# Exit 2 is not a verdict on the cluster: the check could not be set up on this
+# machine and probed nothing. Saying so here stops the operator from reinstalling
+# components in response to a missing kubectl or a kubeconfig typo.
+hc_rc=0
+"${REPO_ROOT}/helm-charts/bin/health-check.sh" --keep-lock || hc_rc=$?
+if (( hc_rc == 2 )); then
+  echo "ERROR: health-check could not run (exit 2) — a LOCAL CONFIGURATION fault, not a sick cluster." >&2
+  echo "       Nothing was probed. Usual causes: kubectl not on PATH, DATASPOKE_KUBE_CLUSTER unset in" >&2
+  echo "       helm-charts/.env.dev, a context missing from your kubeconfig, or an unreadable env file." >&2
+  exit 2
+elif (( hc_rc != 0 )); then
+  exit "$hc_rc"
+fi
 
 # ── 2. Bootstrap env + admin JWT (reuses the api-wired helper) ───────────────
 echo

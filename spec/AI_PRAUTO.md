@@ -283,12 +283,21 @@ from it would let a branch redirect prauto's deploys and resets at a cluster of 
 ### Provisioning
 
 The cluster is prauto's to create, not a precondition it waits on. When
-`./helm-charts/bin/health-check.sh --env-file $PRAUTO_DEV_ENV_FILE` comes back red or the cluster is
-absent, prauto runs a full `install.sh --profile dev --env-file $PRAUTO_DEV_ENV_FILE` and re-checks;
-the cluster stages are skipped only if **provisioning itself** fails. Gated by
-`PRAUTO_CLUSTER_PROVISION_ENABLED` (default `true`). Every `install.sh`/`health-check.sh` invocation
+`./helm-charts/bin/health-check.sh --env-file $PRAUTO_DEV_ENV_FILE --keep-lock` exits 1 — probes ran and the
+deployment is unhealthy or absent — prauto runs a full
+`install.sh --profile dev --env-file $PRAUTO_DEV_ENV_FILE` and re-checks; the cluster stages are
+skipped only if **provisioning itself** fails. Exit 2 is a local setup fault, not cluster evidence
+(`HELM_CHART.md` §Health Check): prauto reports it and provisions nothing, so a missing `kubectl`
+or an unresolvable context cannot trigger an unsupervised cluster build. Gated by
+`PRAUTO_CLUSTER_PROVISION_ENABLED` (default `true`). The health check is run under a wall-clock
+backstop and in a private `TMPDIR`, because this worker is unsupervised: nothing outside it would
+notice a check that never returns, and a run the backstop stops must not leave behind the
+kubeconfig copy the check writes. A fired backstop counts as exit 1. Every
+`install.sh`/`health-check.sh` invocation
 carries `--env-file $PRAUTO_DEV_ENV_FILE`; without it both default to `helm-charts/.env.dev`, the
-shared cluster the per-worker binding exists to avoid.
+shared cluster the per-worker binding exists to avoid. The health check additionally carries
+`--keep-lock` and runs with stdin closed: an unattended gate must never wait on a release prompt,
+and prauto meets a held lock through its own acquire, which skips on 409.
 
 Provisioning cost does not count against `PRAUTO_MAX_RETRIES_PER_JOB` — standing up a cluster is
 not an attempt at the issue, and charging it would abandon jobs for infrastructure latency that
@@ -355,11 +364,13 @@ the diff does not reach its layer. Each stage names its **actor**: Claude runs a
 prompt template inside the session's tool whitelist, while the orchestrator runs a stage from
 `.prauto/` and invokes Claude only for fix sessions.
 
-**Pre-flight gate** *(orchestrator)*: `./helm-charts/bin/health-check.sh` runs before any
-integration work. On red, prauto provisions its own cluster and re-checks
+**Pre-flight gate** *(orchestrator)*: the health check in its
+[Provisioning](#provisioning) form — `--env-file $PRAUTO_DEV_ENV_FILE --keep-lock` — runs before
+any integration work. On exit 1, prauto provisions its own cluster and re-checks
 ([Provisioning](#provisioning)); the integration and E2E stages are **skipped, not failed** only
-if provisioning fails. An unprovisionable cluster is evidence about the infrastructure, not the
-branch, so failing it would burn retries against unrelated code.
+if provisioning fails. On exit 2 it reports the setup fault, provisions nothing, and skips those
+stages rather than failing the issue. An unprovisionable cluster is evidence about the
+infrastructure, not the branch, so failing it would burn retries against unrelated code.
 
 **Environment**: the orchestrator's integration and E2E stages source the worker's env file
 (`$PRAUTO_DEV_ENV_FILE`, resolved under `$REPO_DIR`) via `set -a` (the file carries no `export`

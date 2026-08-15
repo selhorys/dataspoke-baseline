@@ -3,9 +3,49 @@
 # Usage: source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../../lib/helpers.sh"
 #   (adjust the relative path depending on script depth)
 
-info()  { echo -e "\033[0;32m[INFO]\033[0m  $*"; }
-warn()  { echo -e "\033[0;33m[WARN]\033[0m  $*"; }
-error() { echo -e "\033[0;31m[ERROR]\033[0m $*" >&2; exit 1; }
+# The message is a `printf` ARGUMENT, never part of the format string, and
+# `printf` (unlike `echo -e`) never interprets escapes in an argument. Several
+# callers pass text read back from a probed service, a container log or a
+# kubectl response; with `echo -e` a remote `\033[2K` in that text would be
+# expanded into a real terminal escape on the operator's console — and into
+# the stderr a blocking hook hands back to an agent. `%s` also stops a `%` in
+# the message from being read as a conversion specification.
+info()  { printf '\033[0;32m[INFO]\033[0m  %s\n' "$*"; }
+warn()  { printf '\033[0;33m[WARN]\033[0m  %s\n' "$*"; }
+
+# error <msg>
+# Print the red [ERROR] line on stderr and end the run.
+#
+# The exit status is 1 unless DATASPOKE_ERROR_EXIT_CODE says otherwise. That
+# override exists for ONE caller: bin/health-check.sh, whose exit code is a
+# verdict its consumers branch on (`.prauto`'s dev_env_healthy provisions a
+# cluster on 1), and which therefore has to report a fault in its own setup —
+# a missing kubectl, an unresolvable context, an unreadable kubeconfig — as 2
+# rather than as "the deployment is unhealthy". Those abort sites live inside
+# require_tools, use_context, ingress_scheme and datahub_gms_host, i.e. in
+# THIS file, so the caller cannot reach them by writing its own guards without
+# duplicating validation that already lives here.
+#
+# The variable is read, not exported, by that caller, and it unsets it before
+# its first probe — so no child script inherits it and every other bin/ entry
+# point keeps error()'s exit-1 contract byte-for-byte.
+#
+# The override is validated rather than trusted. This helper is the fail-closed
+# abort path for install.sh, uninstall.sh, install-prod-preflight.sh,
+# build-image.sh and every dev-peripheral script, and its status is what the
+# caller of those scripts branches on — so an ambient
+# DATASPOKE_ERROR_EXIT_CODE=0 (from an operator env file, a CI variable, an
+# exported leftover) must not be able to turn an abort into a reported success.
+# Anything that is not a plain 1-255 status falls back to 1.
+error() {
+  printf '\033[0;31m[ERROR]\033[0m %s\n' "$*" >&2
+  local code="${DATASPOKE_ERROR_EXIT_CODE:-1}"
+  # The regex runs FIRST: `(( ))` evaluates its operand as an arithmetic
+  # expression, which expands a command substitution inside it, so an
+  # unvalidated string must never reach that context.
+  [[ "$code" =~ ^[0-9]+$ ]] && (( code >= 1 && code <= 255 )) || code=1
+  exit "$code"
+}
 
 # error_no_exit <msg>
 # Report a failure in error()'s voice — the same red [ERROR] line on stderr —
@@ -14,7 +54,28 @@ error() { echo -e "\033[0;31m[ERROR]\033[0m $*" >&2; exit 1; }
 # credential resolver runs inside `$( ... )`, where error()'s exit would kill
 # only the subshell and leave the caller reading an empty value as though the
 # key had simply resolved to nothing.
-error_no_exit() { echo -e "\033[0;31m[ERROR]\033[0m $*" >&2; return 1; }
+error_no_exit() { printf '\033[0;31m[ERROR]\033[0m %s\n' "$*" >&2; return 1; }
+
+# sanitize_remote_text <text> [max_chars]
+# Echo <text> made safe to print: every control character removed and the
+# result truncated to <max_chars> (default 200).
+#
+# For any text that came back from a probed service or from a control-plane
+# response — an HTTP health body, a lock owner, a kubectl field. Two distinct
+# hazards, and printf alone only covers the first: printf stops the literal
+# four characters `\033` from being expanded, but a RAW 0x1B byte in the
+# remote payload is already an escape and survives every quoting decision, so
+# it has to be deleted from the data. Stripping [:cntrl:] also folds a
+# multi-line body onto one line, which keeps a hostile payload from forging
+# extra [PASS] lines in the report. The length bound is the second half: an
+# unbounded body pasted into a one-line verdict buries the verdict.
+#
+# `tr -d '[:cntrl:]' | cut -c1-N` follows install.sh's own precedent for
+# printing a container log line (`tr -d '\r' | cut -c1-120`).
+sanitize_remote_text() {
+  local text="$1" max="${2:-200}"
+  printf '%s' "$text" | tr -d '[:cntrl:]' | cut -c "1-${max}"
+}
 
 # print_usage [script_path]
 # Print the script's leading comment block (after the shebang), stripped of
@@ -65,8 +126,23 @@ use_context() {
   # re-pinning.
   if [[ -z "${DATASPOKE_KUBECONFIG_PINNED:-}" ]]; then
     local pinned prev_trap
-    pinned="$(mktemp -t dataspoke-kubeconfig.XXXXXX)"
-    chmod 600 "$pinned"
+    # Both routed through error() rather than left to `set -e`, for the same
+    # reason as the use-context call below: a bare failure would end the run
+    # with the failing tool's own status and bypass the exit-status override
+    # error() honours, so a caller whose exit code is a verdict (health-check.sh)
+    # would report a local setup fault as a verdict on the deployment.
+    # The path is built from $TMPDIR explicitly rather than with `mktemp -t`,
+    # which on macOS resolves the per-user Darwin temp directory and IGNORES
+    # $TMPDIR (measured: `TMPDIR=/some/dir mktemp -t x.XXXXXX` lands in
+    # /var/folders/…/T). This file holds `kubectl config view --raw` — every
+    # context's client certificate, key and token — and honouring $TMPDIR is
+    # what lets a caller that may have to kill this script put it somewhere the
+    # caller can reclaim (the integration-test preflight hook runs
+    # health-check.sh in a private TMPDIR for exactly that reason).
+    pinned="$(mktemp "${TMPDIR:-/tmp}/dataspoke-kubeconfig.XXXXXX")" \
+      || error "Could not create a temporary file for this run's kubeconfig copy."
+    chmod 600 "$pinned" \
+      || { rm -f "$pinned"; error "Could not restrict permissions on the kubeconfig copy at ${pinned}."; }
     # `view --raw` resolves $KUBECONFIG's full precedence list into one document,
     # so a multi-file setup pins exactly what the caller would have resolved.
     if ! kubectl config view --raw > "$pinned" 2>/dev/null; then
@@ -82,7 +158,13 @@ use_context() {
   fi
 
   info "Switching to Kubernetes context: ${cluster}"
-  kubectl config use-context "${cluster}"
+  # Routed through error() rather than left to `set -e`: a bare failure here
+  # would end the run with kubectl's own exit 1, bypassing the exit-status
+  # override error() honours (see its comment above) — so health-check.sh's
+  # "a pre-probe abort exits 2" contract would be a half-truth for the single
+  # most likely fault, a context name that is not in the kubeconfig.
+  kubectl config use-context "${cluster}" \
+    || error "Could not select the Kubernetes context '${cluster}'. Check that it exists in your kubeconfig (kubectl config get-contexts)."
 
   # Fail loudly if the requested context is not what we ended up on — a pinned
   # copy that lacks the context would otherwise leave the run on whatever

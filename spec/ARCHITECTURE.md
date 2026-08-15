@@ -469,7 +469,7 @@ and `/api/v1/admin/conf` (see [`spec/API.md` §Admin](API.md)), seeded with fact
 | Prefix | Scope | Who reads it |
 |--------|-------|-------------|
 | `DATASPOKE_*` (no `KUBE`/`DEV`/`PROD`) | App runtime, both profiles | DataSpoke app code (FastAPI, frontend) |
-| `DATASPOKE_KUBE_*` | Kube deployment, both profiles | `helm-charts/bin/*.sh` install/uninstall/build scripts |
+| `DATASPOKE_KUBE_*` | Kube deployment, both profiles | `helm-charts/bin/**/*.sh` — every cluster-touching script |
 | `DATASPOKE_DEV_*` | Dev profile only, operator-supplied | `helm-charts/bin/dev-peripherals/*.sh`, `helm-charts/bin/post-install/*.sh` |
 | `DATASPOKE_DEV_*` | Dev profile only, auto-populated post-install | `tests/integration/{conftest.py,util/*}`, `health-check.sh`, `port-forward.sh` — laptop-side dev access written back by `install.sh`; never read by app pods |
 | `DATASPOKE_PROD_*` | Prod profile only, operator-supplied | `helm-charts/bin/install-prod-preflight.sh`, `helm-charts/bin/post-install/*.sh` — the credential subset is mapped into the credentials Secret; app pods never read the env file |

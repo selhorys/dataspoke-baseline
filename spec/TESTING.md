@@ -248,17 +248,10 @@ passes:
 ./helm-charts/bin/health-check.sh
 ```
 
-The script probes each service via nginx-ingress at the application layer (PostgreSQL, Redis,
-Airflow, DataHub GMS, Kafka, lock service). Do not proceed if any check fails -- reinstall the
-failing subsystem with `./helm-charts/bin/install.sh --profile dev --components <name>`:
-
-| Failing service | Component |
-|---|---|
-| dataspoke-postgresql, redis, airflow, api | `dataspoke-infra` |
-| datahub-gms, datahub-kafka | `datahub` |
-| example-postgres, example-kafka | `dummy-data` |
-| lock-service | `dev-lock` |
-| Langfuse | `langfuse` |
+See `spec/feature/HELM_CHART.md §Health Check` for the transport each service is probed over,
+probe depth, the exit-code contract, and the failing-service → component mapping. Do not
+proceed if any check fails -- reinstall the failing subsystem with
+`./helm-charts/bin/install.sh --profile dev --components <name>`.
 
 The util has two reset modes. `--reset-all` produces an empty baseline (no Imazon entities
 anywhere) — useful for testing UC1 ingestion against a blank slate. `--reset-seed` produces

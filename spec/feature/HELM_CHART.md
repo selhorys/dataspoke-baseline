@@ -161,9 +161,11 @@ wires them via the runtime admin API (`/api/v1/admin/peripherals/{datahub,langfu
 `--profile` is the common selector across the `bin/` entry points an operator
 invokes directly — `install-prod-preflight.sh`, `install.sh`, `uninstall.sh`,
 and `health-check.sh` — each resolving `helm-charts/.env.<profile>` by the same
-rule, with `--env-file` overriding it. `build-image.sh` and `port-forward.sh`
-are driven by the `ENV_FILE` the caller exports rather than by a profile of
-their own.
+rule, with `--env-file` overriding it. `health-check.sh` also accepts neither
+flag, because automated callers such as the integration-test preflight hook
+invoke it bare; it then falls back to an inherited exported `ENV_FILE`, then
+`.env.dev` (§Health Check). `build-image.sh` and `port-forward.sh` have no
+profile of their own and are driven by the `ENV_FILE` the caller exports.
 
 In prod the installer is the second half of a two-command sequence:
 `bin/install-prod-preflight.sh` validates and populates, `install.sh` mutates
@@ -277,6 +279,11 @@ password is printed only while it is still the live one — dev, and prod with
 account to that input (§Prod operator workflow) the summary names the address
 and points at the operator's own password instead, so no summary ever presents a
 superseded credential as the way in.
+
+More generally, no script prints a *generated* credential by value: install,
+prod pre-flight and dev-peripheral summaries name the variable and the path of
+the env file holding it. The fixed, documented dev seed password above is the
+sole exception, and only while it is still the live one.
 
 ---
 
@@ -535,7 +542,7 @@ setting their own list.
 | Tier | Prefix | Scope | Read by |
 |---|---|---|---|
 | App runtime | `DATASPOKE_*` (no `KUBE` / `DEV` / `PROD`) | Both profiles | DataSpoke Python/Node code via K8s ConfigMap/Secret (`envFrom`) |
-| Kube deployment | `DATASPOKE_KUBE_*` | Both profiles | `bin/*.sh` install / uninstall / build scripts |
+| Kube deployment | `DATASPOKE_KUBE_*` | Both profiles | `bin/**/*.sh` — every cluster-touching script |
 | Dev-only inputs | `DATASPOKE_DEV_*` | Dev profile only, **operator-supplied** | `bin/dev-peripherals/*.sh`, `bin/post-install/*.sh` |
 | Dev access | `DATASPOKE_DEV_*` | Dev profile only, **auto-populated post-install; not operator-supplied** | `tests/integration/{conftest.py,util/*}`, `bin/health-check.sh`, `bin/port-forward.sh`; never read by app pods |
 | Prod-only inputs | `DATASPOKE_PROD_*` | Prod profile only | `bin/install-prod-preflight.sh`, `bin/post-install/*.sh`; the credential subset is mapped into the credentials Secret, and app pods never read the env file |
@@ -2530,21 +2537,108 @@ for the policy and ARN forms.
 nginx-ingress (HTTP endpoints) or the laptop-side TCP host (TCP services — the
 ingress IP in managed mode, `127.0.0.1` via `bin/port-forward.sh` in shared
 mode). `--profile` resolves `helm-charts/.env.<profile>` by the same rule
-`install.sh` uses, with `--env-file` overriding it, and the script echoes the
-resolved env file and ingress domain before its first probe — so a confident
-verdict is never read off a deployment other than the one intended. Required
-before any integration test run per `TESTING.md §Prerequisites`. On failure,
-reinstall the affected subsystem via
+`install.sh` uses, with `--env-file` overriding it and, absent both, an
+inherited exported `ENV_FILE` then `.env.dev`. It pins its context to the
+`DATASPOKE_KUBE_CLUSTER` the resolved env file names rather than reading the
+operator's ambient one, through the same `use_context` helper the other
+cluster-touching scripts use — which works on a process-local kubeconfig copy,
+so the operator's own active context is unchanged. The banner echoes the
+resolved env file, that pinned context, and the ingress domain before the first
+probe, so a confident verdict is never read off a deployment other than the one
+intended.
+
+**Exit codes.** `0` healthy; `1` probes ran and something is unhealthy; `2` the
+run could not be set up, so nothing was probed. Every pre-probe abort reports 2,
+including the abort sites inside the shared helpers — an invalid invocation (an
+option given an empty value is rejected, never resolved to the dev default), an
+unreadable env file or helper library, an unset `DATASPOKE_KUBE_CLUSTER`, an
+unresolvable context, and missing ingress coordinates are instances of that rule
+rather than a closed list. The split is load-bearing: a consumer that provisions
+a cluster when the check fails (`.prauto`'s `dev_env_healthy`) must not read a
+local configuration fault as evidence of a sick deployment. Under
+`--profile prod` the dev-only DataHub, dummy-data and dev-lock sections still
+run and report unreachable, so a healthy prod deployment exits 1 — a prod
+verdict is read from the `DataSpoke Infra` section, not from the exit status.
+
+**Tool gate.** `kubectl` and `curl` are hard requirements, checked before the
+first probe: their absence would not fail loudly but would turn most of the
+report into individually plausible service-failure lines under exit 1, which
+`.prauto` answers by provisioning a cluster over a local fault. `redis-cli`,
+`uv`, `pg_isready` and `jq` are not gated — each backs a single probe or has a
+fallback, and a probe whose tools are absent emits a skip naming the missing
+binary while the run still exits 0. A tool missing from the operator's
+workstation is a local condition, not a verdict on the deployment. The cost is
+that a green run can contain an unmeasured service, so the skip lines are part
+of the verdict a caller relays.
+
+**Probe depth.** No service is reported healthy on a TCP probe alone: every
+check runs to its application-layer probe, except the event-consumer and
+langfuse-worker, which serve no HTTP surface and are judged on their
+Deployment's ready-replica count — evidence that the workload started, not that
+it is consuming. A probe that runs and fails is a counted failure.
+
+**Bounded probes.** Wall clock is part of the contract, because the check runs
+inside a blocking PreToolUse hook that fails OPEN if the harness kills it. Every
+reachability probe is connect-timeout bounded — a blocking pre-flight must fail
+fast rather than hang on a host that drops SYNs — and the raw TCP connects reach
+that bound without a non-POSIX binary and without sending a byte to ports that
+speak Postgres, Redis or Kafka. The bound holds for a peer that accepts and then
+never speaks, not only for a refused connection; a hit bound is its own verdict,
+distinct from a refusal; and no probe outlives its bound still holding a
+credential in its environment.
+
+**Absence vs failure.** These are distinct verdicts, and absence is decided from
+the release — the workload is not deployed in the namespace that would hold it —
+never from an HTTP status, because an undeployed component reaching the ingress
+default backend and a deployed-but-broken one both answer non-2xx. The read uses
+each component's default `<release>-<component>` Deployment name (the umbrella
+release for the DataSpoke components, the `langfuse` release for its two), so an
+overlay that renames a sub-chart makes a deployed-but-broken workload answer
+NotFound and earn the skip; a renamed release is outside this check's
+assumptions. A `kubectl` read that fails for any reason other than NotFound is a
+failure, not an absence: an unauthenticated or unauthorised control-plane read
+must not be reported as a component that was never deployed. The two NotFound
+shapes are kept apart for the same reason — a missing Deployment is that
+component's absence, but a missing *namespace* is absence only for a peripheral
+with a namespace of its own. The DataSpoke namespace also holds required
+workloads, so a name the env file carries and the cluster does not have is a
+configuration fault and a counted failure, never a skipped optional component.
+
+Langfuse is decided one step earlier, from configuration, because a prod env
+file carries no `DATASPOKE_DEV_*` names by design: with
+`DATASPOKE_DEV_KUBE_LANGFUSE_NAMESPACE` unset the worker half skips
+unconditionally, and the web half skips in preference to reporting a failed
+probe once the ingress itself is reachable — an unreachable ingress is a counted
+failure for it as for every other ingress-probed service. A `--frontend none`
+dev install and a deployment without Langfuse therefore stay green, skipped with
+their reinstall hint.
+
+**Callers.** The dev-env lock section can prompt for release, and automated
+callers close stdin (`</dev/null`) so the prompt hits EOF and falls through to a
+counted failure — a blocking gate must never wait on stdin, and a lock it does
+not own must not be waved through. `--keep-lock` binds every automated caller by
+one rule: pass it only for a lock the run already owns, since passing it
+unconditionally reports a foreign or stale lock as `[INFO]` and exits 0, letting
+a suite that then skips every test exit 0 as well. `--force-release` is an
+operator flag, not an automation one. See `AI_PRAUTO.md` §Pre-flight gate for
+how the autonomous worker satisfies these. Text read from a probed service
+(health bodies, the lock owner and message) is control-character-stripped,
+length-bounded, and printed as data rather than as format, so remote content can
+neither emit terminal escapes nor forge extra verdict lines.
+
+Required before any integration test run per `TESTING.md §Prerequisites`. On
+failure, reinstall the affected subsystem via
 `bin/install.sh --profile dev --components <name>`; `--components` is dev-only,
 so a prod fix is a full pre-flight-plus-install cycle.
 
 | Failing service | Component to reinstall |
 |---|---|
-| dataspoke-postgresql, redis, airflow, api | `dataspoke-infra` |
+| dataspoke-postgresql, redis, airflow, api, event-consumer | `dataspoke-infra` |
+| dataspoke-frontend | `frontend` |
 | datahub-gms, datahub-kafka | `datahub` |
 | example-postgres, example-kafka | `dummy-data` |
-| dev-lock | `dev-lock` |
-| Langfuse | `langfuse` |
+| lock-service | `dev-lock` |
+| langfuse-web, langfuse-worker | `langfuse` |
 | ingress controller | `nginx-ingress` |
 
 ---

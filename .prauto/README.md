@@ -167,12 +167,21 @@ afterward. They pass `DATASPOKE_DEV_LOCK_PREACQUIRED=1` so the pytest and Playwr
 reuse the orchestrator's hold instead of acquiring their own. When the lock endpoint is
 unreachable, or another owner holds the lock, the stage skips.
 
-Both stages gate on `./helm-charts/bin/health-check.sh --keep-lock` first. A red check triggers
-provisioning ([Per-worker dev cluster](#per-worker-dev-cluster)) and a re-check; the stage is
-**skipped** rather than failed only if provisioning fails — an unhealthy or unprovisionable cluster
-is evidence about the infrastructure, not the branch, and must not burn the job's retries.
+Both stages gate on `./helm-charts/bin/health-check.sh --keep-lock` first. Provisioning is keyed on
+its **exit 1** — "the probes ran and something is unhealthy": that triggers provisioning
+([Per-worker dev cluster](#per-worker-dev-cluster)) and a re-check, and the stage is **skipped**
+rather than failed only if provisioning fails — an unhealthy or unprovisionable cluster is evidence
+about the infrastructure, not the branch, and must not burn the job's retries. **Exit 2 does not
+provision.** It means the check could not be set up and probed nothing (missing `kubectl`, an
+unresolvable context, a missing or unreadable env file), which is evidence about this worker's own
+configuration; the stage is skipped with that reason reported, because building a GKE cluster in
+response to a kubeconfig typo is the failure that split exists to prevent.
 `--keep-lock` is required: without it the health check offers to release a lock held by another
-owner, which prauto must never do.
+owner, which prauto must never do. The call also carries a wall-clock backstop
+(`PRAUTO_HEALTH_CHECK_TIMEOUT_SECS`, default 300) and runs in a private `TMPDIR`: nothing outside
+this unsupervised worker would notice a check that never returns, and a run the backstop has to
+kill must not leave the kubeconfig copy the check writes behind. A backstop that fires counts as
+**exit 1** — something was probed and did not answer — so provisioning may act on it.
 
 The orchestrator resolves the env file (`PRAUTO_DEV_ENV_FILE`), `health-check.sh`, and `install.sh`
 from the repo checkout rather than the branch worktree, and exports the env file only into the

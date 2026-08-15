@@ -173,6 +173,65 @@ provision_dev_env() {
   return 0
 }
 
+# run_health_check <script> <env_file>
+# Run health-check.sh with a wall-clock backstop, leaving its output in
+# HEALTH_CHECK_OUTPUT and returning its exit code (1 if the backstop fired).
+#
+# The check bounds each of its own probes, but this worker is UNSUPERVISED —
+# nothing outside it would ever notice a run that does not return, and the whole
+# heartbeat would park on it. The preflight hook carries a deadline of its own
+# for the same reason; this is that deadline for the prauto path, set far above
+# the check's own worst case so it only ever fires on a genuine stall.
+#
+# A stall is reported as 1, not 2: something was probed and it did not answer,
+# which is evidence about the cluster, so the provisioning branch below may act
+# on it. The child runs in a private TMPDIR because health-check.sh writes a
+# copy of the kubeconfig — credentials — to $TMPDIR, and a run this function had
+# to SIGKILL never reaches its own cleanup.
+HEALTH_CHECK_OUTPUT=""
+run_health_check() {
+  local script="$1" env_file="$2"
+  local timeout="${PRAUTO_HEALTH_CHECK_TIMEOUT_SECS:-300}"
+  local tmpdir out pid deadline rc=0
+
+  HEALTH_CHECK_OUTPUT=""
+  tmpdir="$(mktemp -d)" || {
+    HEALTH_CHECK_OUTPUT="Could not create a temporary directory for the health check."
+    return 2
+  }
+  out="${tmpdir}/output"
+
+  # Own process group, so the backstop takes the check's in-flight children with it.
+  set -m
+  TMPDIR="$tmpdir" bash "$script" --env-file "$env_file" --keep-lock </dev/null >"$out" 2>&1 &
+  pid=$!
+  set +m
+
+  deadline=$(( $(date +%s) + timeout ))
+  while kill -0 "$pid" 2>/dev/null; do
+    if (( $(date +%s) >= deadline )); then
+      # TERM first: bash runs the script's EXIT trap on its way out of a fatal
+      # SIGTERM, which is what removes its kubeconfig copy.
+      kill -TERM -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+      sleep 2
+      if kill -0 "$pid" 2>/dev/null; then
+        kill -9 -"$pid" 2>/dev/null || kill -9 "$pid" 2>/dev/null || true
+      fi
+      wait "$pid" 2>/dev/null || true
+      HEALTH_CHECK_OUTPUT="$(cat "$out" 2>/dev/null || true)
+[health-check did not finish within ${timeout}s and was stopped]"
+      rm -rf "$tmpdir"
+      return 1
+    fi
+    sleep 1
+  done
+
+  wait "$pid" || rc=$?
+  HEALTH_CHECK_OUTPUT="$(cat "$out" 2>/dev/null || true)"
+  rm -rf "$tmpdir"
+  return "$rc"
+}
+
 # Pre-flight gate for the cluster-dependent stages.
 # An unhealthy dev env is evidence about the cluster rather than the branch, so callers
 # skip their stage instead of failing the issue. When the check is red and cluster
@@ -180,6 +239,11 @@ provision_dev_env() {
 # skipped only if provisioning itself fails.
 # --keep-lock leaves a lock held by another owner untouched and un-failed; prauto then
 # meets a held lock through its own acquire, which skips on 409.
+# Provisioning is keyed on health-check.sh's exit 1 — "probes ran, something is unhealthy".
+# Its exit 2 means the check could not be set up at all (missing kubectl, an unresolvable
+# context, an unreadable env file) and never probed anything, which is evidence about this
+# worker's own configuration, not about a cluster: building a GKE cluster in response to a
+# kubeconfig typo is the failure that split exists to prevent.
 # Usage: dev_env_healthy <env_file>
 # Returns: 0 when healthy or the check is unavailable, 1 when the check fails.
 dev_env_healthy() {
@@ -201,10 +265,18 @@ dev_env_healthy() {
 
   info "Running dev-env health check pre-flight..."
   local health_output health_exit=0
-  health_output=$(bash "$script" --env-file "$env_file" --keep-lock </dev/null 2>&1) || health_exit=$?
+  run_health_check "$script" "$env_file" || health_exit=$?
+  health_output="$HEALTH_CHECK_OUTPUT"
   if [[ "$health_exit" -eq 0 ]]; then
     info "Dev-env health check passed."
     return 0
+  fi
+
+  if [[ "$health_exit" -eq 2 ]]; then
+    warn "Dev-env health check could not run (exit 2 — a setup fault on this worker, not a cluster verdict):"
+    warn "$health_output"
+    info "Skipping the cluster stage without provisioning: nothing was probed, so there is no evidence a cluster needs building."
+    return 1
   fi
 
   warn "Dev-env health check failed (exit ${health_exit}):"
@@ -221,7 +293,8 @@ dev_env_healthy() {
 
   info "Re-running dev-env health check after provisioning..."
   health_exit=0
-  health_output=$(bash "$script" --env-file "$env_file" --keep-lock </dev/null 2>&1) || health_exit=$?
+  run_health_check "$script" "$env_file" || health_exit=$?
+  health_output="$HEALTH_CHECK_OUTPUT"
   if [[ "$health_exit" -ne 0 ]]; then
     warn "Dev-env still unhealthy after provisioning (exit ${health_exit}):"
     warn "$health_output"
