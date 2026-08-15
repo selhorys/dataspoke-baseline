@@ -2083,7 +2083,7 @@ if [[ "$PROFILE" == "dev" ]]; then
   fi
   echo ""
   echo "  Credentials (auto-generated): see DATASPOKE_DEV_AIRFLOW_{USER,PASSWORD} in ${ENV_FILE}"
-  echo "  Langfuse: ${DATASPOKE_DEV_LANGFUSE_INIT_USER_EMAIL:-dataspoke@dataspoke.local} / ${DATASPOKE_DEV_LANGFUSE_INIT_USER_PASSWORD:-<see .env>}"
+  echo "  Langfuse: see DATASPOKE_DEV_LANGFUSE_INIT_USER_{EMAIL,PASSWORD} in ${ENV_FILE}"
   echo ""
   case "$FRONTEND_MODE" in
     none)

@@ -214,5 +214,9 @@ echo "  Langfuse UI:    ${LANGFUSE_HOST}/"
 echo "  Namespace:      ${LANGFUSE_NS}"
 echo "  Secret:         dataspoke-langfuse-secret in ${LANGFUSE_NS}"
 echo ""
-echo "  Login: ${DATASPOKE_DEV_LANGFUSE_INIT_USER_EMAIL} / ${DATASPOKE_DEV_LANGFUSE_INIT_USER_PASSWORD}"
+# Names, not values: this password is generated for the operator and lands in
+# the env file, so printing it here would put a live credential on the terminal
+# and into every log that captures this script's output — including a CI
+# transcript and an agent's tool result.
+echo "  Login: see DATASPOKE_DEV_LANGFUSE_INIT_USER_{EMAIL,PASSWORD} in ${ENV_FILE}"
 echo ""
