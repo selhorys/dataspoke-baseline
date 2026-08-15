@@ -9,7 +9,7 @@ Spec sources:
       `data_time` falls within `metric_conf.time_window_sec` of the measurement. The
       contribution is 0.0 when there is no validation result inside the window".
     - "`time_window_sec` for `ingestion-freshness` and `validation-score` — **the**
-      measurement window (positive int seconds, factory default `172800`) … the same
+      measurement window (positive int seconds … factory default `172800`) … the same
       for every dataset the metric scans".
   spec/feature/BACKEND.md §Metrics Service §Measurement window:
     - "the window is `metric_conf.time_window_sec`, applied uniformly to every dataset

@@ -738,8 +738,10 @@ are NOT pre-computed by the server — clients derive them from the named fields
 
 `metric_conf` carries type-specific parameters: `time_window_sec` for
 `ingestion-freshness` and `validation-score` — **the** measurement window (positive int
-seconds, factory default `172800`), the freshness SLO the governance lead declares and the
-same for every dataset the metric scans; empty `{}` for `doc-health`.
+seconds within the API's admissible range,
+[`API.md` §Metric](API.md#metric-spokegovernancemetric); factory default `172800`), the
+freshness SLO the governance lead declares and the same for every dataset the metric
+scans; empty `{}` for `doc-health`.
 
 `dataset_filter` is a SQL `WHERE`-clause string over the dataset registry — DataSpoke's
 local mirror of the DataHub estate. Its columns are `dataset_urn`, `origin`, and

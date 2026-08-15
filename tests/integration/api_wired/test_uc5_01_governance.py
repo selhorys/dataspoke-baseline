@@ -163,7 +163,7 @@ async def test_uc5_governance_imazon_example(
     #
     # metric_conf.time_window_sec=172800 is the measurement window (factory default).
     # spec: USE_CASE_en.md §UC5 §Built-in active metric types — "**the** measurement
-    # window (positive int seconds, factory default 172800)".
+    # window (positive int seconds … factory default 172800)".
     metrics_to_create = [
         {
             "metric_id": "ingestion-freshness-dev",

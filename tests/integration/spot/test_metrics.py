@@ -83,7 +83,7 @@ _FACTORY_IDS = {"ingestion-freshness", "validation-score", "doc-health"}
 
 # Factory default measurement window
 # Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — "``time_window_sec`` …
-# **the** measurement window (positive int seconds, factory default ``172800``)".
+# **the** measurement window (positive int seconds … factory default ``172800``)".
 _FACTORY_DEFAULT_TIME_WINDOW_SEC = 172800
 
 
@@ -185,7 +185,7 @@ async def test_factory_defaults_time_window_sec_is_172800(
     """Factory-seeded ingestion-freshness and validation-score have time_window_sec=172800.
 
     Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — "``time_window_sec``
-          … **the** measurement window (positive int seconds, factory default ``172800``)".
+          … **the** measurement window (positive int seconds … factory default ``172800``)".
     Spec: spec/feature/BACKEND.md §Metrics Service §Factory defaults —
           metric_conf={"time_window_sec": 172800} for the two windowed types.
     """

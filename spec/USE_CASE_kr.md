@@ -741,7 +741,8 @@ GET /api/v1/spoke/metagen/event
 | `doc-health` | `total`, `doc_health` | `total` = 매칭된 데이터셋 수; `doc_health` = 데이터셋별 문서 점수의 합. 테이블 설명과 모든 컬럼 설명이 비어 있지 않으면 `1.0`, 아니면 `0.0` |
 
 `metric_conf`는 타입별 파라미터를 담는다: `ingestion-freshness`와
-`validation-score`의 `time_window_sec`이 **곧** 측정 윈도이며(양의 정수 초, 팩토리 기본
+`validation-score`의 `time_window_sec`이 **곧** 측정 윈도이며(API가 허용하는 범위 안의
+양의 정수 초, [`API.md` §Metric](API.md#metric-spokegovernancemetric) 참조; 팩토리 기본
 `172800`), 거버넌스 리드가 선언하는 신선도 SLO로서 해당 메트릭이 스캔하는 모든
 데이터셋에 동일하게 적용된다. `doc-health`는 빈 `{}`를 사용한다.
 

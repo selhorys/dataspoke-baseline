@@ -2,14 +2,14 @@
 
 Spec sources:
   spec/USE_CASE_en.md §UC5 §Built-in active metric types (the row for
-  `ingestion-freshness`, quoted verbatim):
+  `ingestion-freshness`; quoted text is verbatim, `…` marks an elision):
     - "`total` = count of datasets matched by `dataset_filter`; `ingested_in_time` =
       count whose latest ingestion evidence falls within `metric_conf.time_window_sec`
       of the measurement. The evidence is the owning ingestion source's per-dataset
       observation for that dataset where DataHub reports one, else that source's newest
       non-dry-run `INGESTION.COMPLETE`".
     - "`time_window_sec` for `ingestion-freshness` and `validation-score` — **the**
-      measurement window (positive int seconds, factory default `172800`), the freshness
+      measurement window (positive int seconds … factory default `172800`), the freshness
       SLO the governance lead declares and the same for every dataset the metric scans".
     - Registered under the `metric_type` value 'ingestion-freshness'; emits
       {'total': float, 'ingested_in_time': float}.

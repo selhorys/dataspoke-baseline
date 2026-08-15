@@ -4,7 +4,7 @@ Spec sources:
   spec/USE_CASE_en.md §UC5 §Factory defaults:
     - On first start, seeds one metric of each built-in type.
     - Defaults: mode="active", is_enabled=false, schedule_tier="daily",
-      dataset_filter={}, type-appropriate metric_conf.
+      dataset_filter="", type-appropriate metric_conf.
     - Seeds ship disabled so the governance lead opts in explicitly.
     - Bootstrap never overwrites an existing row.
   spec/feature/BACKEND.md §Metrics Service §Factory defaults:
@@ -169,7 +169,7 @@ async def test_seed_rows_metric_conf_matches_spec() -> None:
           ``doc-health``)".
     Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — "``time_window_sec``
           for ``ingestion-freshness`` and ``validation-score`` — **the** measurement
-          window (positive int seconds, factory default ``172800``)".
+          window (positive int seconds … factory default ``172800``)".
     """
     db = _make_empty_db()
     await seed_factory_defaults(db)

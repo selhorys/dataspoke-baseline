@@ -1,6 +1,6 @@
 ---
 name: metric-measurement-window-test-seams
-description: metric time-window test seams after two review cycles — the harnesses worth rebuilding, the 10 mutants now all killed and by which tests, and the residual impl-pinned bits (message string, OverflowError, USE_CASE "positive int")
+description: metric time-window test seams — the mutation harness, the 10 mutants and their sole killers, the residual impl-pinned bits (message string, OverflowError), and the now-resolved USE_CASE "positive int" citation form
 metadata:
   type: project
 ---
@@ -40,11 +40,16 @@ it is uncommitted. (See [[feedback_no_destructive_git_during_review]].)
 - `MAX == 3650*24*60*60` (Py and TS) is implied by the preceding literal assert — it
   can never fail independently; it is documentation, not a second seam.
 
-**Spec propagation gap, not a test defect**: `spec/USE_CASE_en.md` ~L739-740 still says
-"positive int seconds" with no ceiling, contradicting API.md `[1, 315360000]`. Three
-test headers (`test_ingestion_freshness.py`, `test_validation_score.py`,
-`test_bootstrap.py`) quote it verbatim and correctly. USE_CASE is priority-1, so this
-may be deliberate — route it to `spec-reviewer`, not the test agent.
+**Spec propagation gap — RESOLVED (#166)**: `spec/USE_CASE_en.md` L739-744 / `_kr.md`
+L741-746 now say "positive int seconds **within the API's admissible range**,
+[`API.md` §Metric](API.md#metric-spokegovernancemetric); factory default `172800`" — a
+link, not a copy. `315360000` still lives in exactly two places, `spec/API.md:609` and
+`spec/feature/BACKEND.md:1263`; keep it out of USE_CASE. The seven test citations of
+that sentence are now elided as `(positive int seconds … factory default 172800)`
+(`test_bootstrap.py:172`, `measurers/test_ingestion_freshness.py:12` + `:918`,
+`measurers/test_validation_score.py:12`, `api_wired/test_uc5_01_governance.py:166`,
+`spot/test_metrics.py:86` + `:188`) — the `…` elides exactly the range clause, so the
+elided form is the accurate one. Do not "restore" the old comma form.
 
 **Blind spot the unit fake cannot see**: the impl filters `rn == 1` in SQL then builds
 `{urn: (t, score)}` last-wins, so "newest row per dataset" is only provable at spot. A
