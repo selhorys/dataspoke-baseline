@@ -104,7 +104,10 @@ class LLMClient:
         if cfg is not None:
             invoke_kwargs["config"] = cfg
         response = await self._model.ainvoke(messages, **invoke_kwargs)
-        return str(response.content)
+        # ``.text`` (a str subclass) flattens both shapes LangChain returns:
+        # a plain string, and the content-block list the OpenAI Responses API
+        # produces. ``.content`` would stringify that list into its repr.
+        return str(response.text)
 
     async def complete_json(
         self,
@@ -360,7 +363,17 @@ def _create_chat_model(provider: str, api_key: str, model: str):  # type: ignore
     if provider_lower == "openai":
         from langchain_openai import ChatOpenAI
 
-        return ChatOpenAI(model=model, api_key=api_key)  # type: ignore[arg-type]
+        # Route OpenAI through /v1/responses rather than /v1/chat/completions.
+        # Reasoning models reject function tools on the completions endpoint
+        # unless reasoning_effort is 'none' — which would disable reasoning for
+        # every call. The Responses API accepts tools with reasoning intact, so
+        # the debate/reviewer loops in ontogen and metagen keep working as the
+        # configured model changes.
+        return ChatOpenAI(  # type: ignore[arg-type]
+            model=model,
+            api_key=api_key,
+            use_responses_api=True,
+        )
     elif provider_lower in ("google", "gemini"):
         from langchain_google_genai import ChatGoogleGenerativeAI
 
