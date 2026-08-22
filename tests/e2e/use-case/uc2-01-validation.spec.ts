@@ -723,7 +723,7 @@ test("UC2 step 7 — recreate postgres conf via the Create form; fresh conf, emp
   // The Config form starts with one empty variable row ("Variable name 1").
   // spec: validation-conf-form.tsx — "Add" appends a new variable row.
   await page.getByLabel("Variable name 1").fill(RECREATE_VARIABLES[0]);
-  await validationPanel.getByRole("button", { name: "Add" }).click();
+  await validationPanel.getByRole("button", { name: "Add variable", exact: true }).click();
   await page.getByLabel("Variable name 2").fill(RECREATE_VARIABLES[1]);
 
   // -- UI gesture: submit the form via the header "Save" action --

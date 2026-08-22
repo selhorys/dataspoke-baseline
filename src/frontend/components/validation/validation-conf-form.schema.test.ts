@@ -11,6 +11,13 @@
  *     _DESC_CTRL_RE = r"[\x00-\x08\x0b-\x1f\x7f]" (excludes \t=0x09, \n=0x0a)
  *     min 1 / max 200 variable entries; each variable = { name, description }
  *     variable description: required key, ≤ 200 chars, empty allowed, same control-char rule
+ *   - src/api/schemas/validation.py ValidationAttribute:
+ *     cadence_unit: gt=0, le=MAX_TIME_WINDOW_SEC (315_360_000 — ten years)
+ *     cadence_offset: ge=0, no ceiling of its own
+ *     _check_window_shift: cadence_offset * cadence_unit <= MAX_TIME_WINDOW_SEC
+ *   - src/api/schemas/validation.py _validate_named_entries:
+ *     `variables` and `parameter` share the per-item rules but not the namespace —
+ *     "uniqueness is checked per list, so the same name may appear in both"
  *   - spec/feature/FRONTEND_VALIDATION.md §Page contracts:
  *     "field constraints (rule-description char cap, variable name regex,
  *      per-variable description ≤200 chars empty-allowed, count cap)"
@@ -23,8 +30,10 @@ import {
   fromInternal,
   defaultFormValues,
   VARIABLE_NAME_RE,
+  CADENCE_MAX_SEC,
   variableNameError,
 } from "./validation-conf-form.schema";
+import { METRIC_TIME_WINDOW_SEC_MAX } from "@/types/governance";
 import type { ValidationConfFormValues } from "@/types/validation";
 import type { ValidationConfResponse } from "@/types/validation";
 
@@ -34,6 +43,10 @@ function makeValidForm(overrides: Partial<ValidationConfFormValues> = {}): Valid
   return {
     description: "Daily row count plus key column means and null counts",
     variables: [{ name: "row_cnt", description: "Daily row count" }],
+    // `attribute` is always complete (the API replaces it wholesale) and an
+    // empty `parameter` is the form's spelling of "section absent".
+    attribute: { cadence_unit: 86400, cadence_offset: 0 },
+    parameter: [],
     ...overrides,
   };
 }
@@ -511,6 +524,200 @@ describe("schema variable description — ≤200 chars, empty allowed, control-c
   });
 });
 
+// ── 8b. Schema: attribute (cadence) bounds ────────────────────────────────────
+//
+// This block is the client-side mirror of src/api/schemas/validation.py
+// ValidationAttribute. A stale mirror fails in both directions: too lax and the
+// form submits a body that 422s, too strict and it blocks a value the API
+// accepts. Every case below names the backend rule it mirrors.
+
+function issuePaths(input: ReturnType<typeof makeValidForm>): string[][] {
+  const result = validationConfSchema.safeParse(input);
+  if (result.success) return [];
+  return result.error.issues.map((i) => i.path.map(String));
+}
+
+describe("schema attribute — cadence bounds (src/api/schemas/validation.py ValidationAttribute)", () => {
+  it("declares the ceiling as the same constant the metric window uses", () => {
+    // The backend's ValidationAttribute imports MAX_TIME_WINDOW_SEC from
+    // src/shared/metric_conf.py rather than restating it, because cadence_unit
+    // and metric_conf.time_window_sec are bounded by the same ten years. The
+    // client mirrors that single-source choice; a second literal here could
+    // drift out from under the shared Python constant unnoticed.
+    expect(CADENCE_MAX_SEC).toBe(METRIC_TIME_WINDOW_SEC_MAX);
+    expect(CADENCE_MAX_SEC).toBe(315_360_000);
+    expect(CADENCE_MAX_SEC).toBe(3650 * 24 * 60 * 60);
+  });
+
+  it("accepts cadence_unit at exactly 315_360_000 — le=MAX_TIME_WINDOW_SEC is closed", () => {
+    const result = validationConfSchema.safeParse(
+      makeValidForm({ attribute: { cadence_unit: 315_360_000, cadence_offset: 0 } }),
+    );
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects cadence_unit at 315_360_001 — one second over the ceiling", () => {
+    expect(
+      issuePaths(
+        makeValidForm({ attribute: { cadence_unit: 315_360_001, cadence_offset: 0 } }),
+      ),
+    ).toContainEqual(["attribute", "cadence_unit"]);
+  });
+
+  it("rejects cadence_unit of 0 — backend is gt=0, not ge=0", () => {
+    expect(
+      issuePaths(makeValidForm({ attribute: { cadence_unit: 0, cadence_offset: 0 } })),
+    ).toContainEqual(["attribute", "cadence_unit"]);
+  });
+
+  it("rejects a negative cadence_unit", () => {
+    expect(
+      issuePaths(makeValidForm({ attribute: { cadence_unit: -1, cadence_offset: 0 } })),
+    ).toContainEqual(["attribute", "cadence_unit"]);
+  });
+
+  it("accepts cadence_unit of 1 — the smallest admissible period", () => {
+    const result = validationConfSchema.safeParse(
+      makeValidForm({ attribute: { cadence_unit: 1, cadence_offset: 0 } }),
+    );
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects a negative cadence_offset — backend is ge=0", () => {
+    expect(
+      issuePaths(
+        makeValidForm({ attribute: { cadence_unit: 86400, cadence_offset: -1 } }),
+      ),
+    ).toContainEqual(["attribute", "cadence_offset"]);
+  });
+
+  it("accepts cadence_offset of 0 — D-1 daily data, the API default", () => {
+    const result = validationConfSchema.safeParse(
+      makeValidForm({ attribute: { cadence_unit: 86400, cadence_offset: 0 } }),
+    );
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects a non-integer cadence value — both fields are ints on the backend", () => {
+    expect(
+      issuePaths(
+        makeValidForm({ attribute: { cadence_unit: 86_400.5, cadence_offset: 0 } }),
+      ),
+    ).toContainEqual(["attribute", "cadence_unit"]);
+  });
+
+  it("accepts the product at exactly the ceiling — unit 86400 × offset 3650 = 315_360_000", () => {
+    // ValidationAttribute._check_window_shift rejects only when the product
+    // *exceeds* the bound, so ten years of window shift exactly is admissible.
+    expect(86400 * 3650).toBe(315_360_000);
+    const result = validationConfSchema.safeParse(
+      makeValidForm({ attribute: { cadence_unit: 86400, cadence_offset: 3650 } }),
+    );
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects the product one second over the ceiling, on the cadence_offset path", () => {
+    // The product, not either factor, is the bound: unit 86400 and offset 3651
+    // are each individually legal (offset carries no ceiling of its own), so
+    // only the cross-field check catches this. The backend raises it from a
+    // model_validator, which Pydantic attaches at the model root rather than to
+    // a field; the client attaches it to cadence_offset instead, because
+    // React Hook Form needs a field path to render the message beside an input
+    // and cadence_offset is the factor with no bound of its own — the one the
+    // user has to change.
+    expect(86400 * 3651).toBe(315_446_400);
+    expect(
+      issuePaths(
+        makeValidForm({ attribute: { cadence_unit: 86400, cadence_offset: 3651 } }),
+      ),
+    ).toContainEqual(["attribute", "cadence_offset"]);
+  });
+
+  it("rejects a huge product built from two individually-legal factors", () => {
+    // unit = 315_360_000 (at its ceiling) and offset = 2: both pass their own
+    // bounds, the product is twenty years.
+    expect(
+      issuePaths(
+        makeValidForm({ attribute: { cadence_unit: 315_360_000, cadence_offset: 2 } }),
+      ),
+    ).toContainEqual(["attribute", "cadence_offset"]);
+  });
+});
+
+// ── 8c. Schema: parameter — same per-item rules, separate namespace ───────────
+//
+// Backend: _validate_named_entries is shared by `variables` and `parameter`, and
+// runs per list — "uniqueness is checked per list, so the same name may appear
+// in both" (src/api/schemas/validation.py).
+
+describe("schema parameter — per-list namespace and caps (src/api/schemas/validation.py)", () => {
+  it("accepts the same name in both variables and parameter — separate namespaces", () => {
+    const result = validationConfSchema.safeParse(
+      makeValidForm({
+        variables: [{ name: "z_threshold", description: "Observed z-score" }],
+        parameter: [{ name: "z_threshold", description: "Std-dev cutoff for outliers" }],
+      }),
+    );
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects a duplicate name WITHIN parameter alone, on the duplicate row's path", () => {
+    const result = validationConfSchema.safeParse(
+      makeValidForm({
+        parameter: [
+          { name: "z_threshold", description: "" },
+          { name: "z_threshold", description: "" },
+        ],
+      }),
+    );
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const dupIssue = result.error.issues.find(
+        (i) => i.path[0] === "parameter" && i.path[1] === 1 && i.path[2] === "name",
+      );
+      expect(dupIssue).toBeDefined();
+    }
+  });
+
+  it("accepts an empty parameter list — the form's spelling of 'section absent'", () => {
+    // The API rejects an explicit []; fromInternal omits the key instead, so the
+    // schema must not require a first row the way `variables` does.
+    const result = validationConfSchema.safeParse(makeValidForm({ parameter: [] }));
+    expect(result.success).toBe(true);
+  });
+
+  it("enforces the name regex on a parameter too", () => {
+    const result = validationConfSchema.safeParse(
+      makeValidForm({ parameter: [{ name: "ZThreshold", description: "" }] }),
+    );
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const issue = result.error.issues.find(
+        (i) => i.path[0] === "parameter" && i.path[1] === 0 && i.path[2] === "name",
+      );
+      expect(issue).toBeDefined();
+    }
+  });
+
+  it("rejects a >200-char parameter description, like a variable's", () => {
+    const result = validationConfSchema.safeParse(
+      makeValidForm({ parameter: [{ name: "z_threshold", description: "a".repeat(201) }] }),
+    );
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts exactly 200 parameter entries and rejects 201", () => {
+    const rows = (count: number) =>
+      Array.from({ length: count }, (_, i) => ({ name: `p_${i}`, description: "" }));
+    expect(validationConfSchema.safeParse(makeValidForm({ parameter: rows(200) })).success).toBe(
+      true,
+    );
+    expect(
+      issuePaths(makeValidForm({ parameter: rows(201) })),
+    ).toContainEqual(["parameter"]);
+  });
+});
+
 // ── 9. toInternal: API response → form shape ──────────────────────────────────
 //
 // Spec: toInternal converts a ValidationConfResponse into ValidationConfFormValues.
@@ -525,6 +732,7 @@ describe("toInternal — converts ValidationConfResponse into form shape (FRONTE
       { name: "col1_mean", description: "Mean of col1" },
       { name: "col2_null_cnt", description: "" },
     ],
+    attribute: { cadence_unit: 86400, cadence_offset: 0 },
     created_at: "2026-05-01T00:00:00Z",
     updated_at: "2026-05-08T10:00:00Z",
   };
@@ -605,9 +813,28 @@ describe("fromInternal — serializes form values to API request body (VALIDATIO
     expect(body.description).toBe("");
   });
 
-  it("produces exactly the two keys 'description' and 'variables' in the body", () => {
-    const body = fromInternal(makeValidForm());
-    expect(Object.keys(body).sort()).toEqual(["description", "variables"]);
+  it("always sends a complete 'attribute' object (PUT replaces it wholesale)", () => {
+    const body = fromInternal(
+      makeValidForm({ attribute: { cadence_unit: 3600, cadence_offset: 2 } }),
+    );
+    expect(body.attribute).toEqual({ cadence_unit: 3600, cadence_offset: 2 });
+  });
+
+  it("omits 'parameter' when the list is empty — the API rejects an explicit []", () => {
+    const body = fromInternal(makeValidForm({ parameter: [] }));
+    expect("parameter" in body).toBe(false);
+    expect(Object.keys(body).sort()).toEqual(["attribute", "description", "variables"]);
+  });
+
+  it("sends 'parameter' as {name, description} objects when the list is non-empty", () => {
+    const body = fromInternal(
+      makeValidForm({
+        parameter: [{ name: "z_threshold", description: "Std-dev cutoff for outliers" }],
+      }),
+    );
+    expect(body.parameter).toEqual([
+      { name: "z_threshold", description: "Std-dev cutoff for outliers" },
+    ]);
   });
 });
 
@@ -625,6 +852,8 @@ describe("round-trip toInternal(response) → fromInternal — preserves variabl
       { name: "anomaly_flag", description: "" },
       { name: "qty_total", description: "Total quantity" },
     ],
+    attribute: { cadence_unit: 86400, cadence_offset: 7 },
+    parameter: [{ name: "z_threshold", description: "Std-dev cutoff for outliers" }],
     created_at: "2026-05-01T00:00:00Z",
     updated_at: "2026-05-08T12:00:00Z",
   };
@@ -674,8 +903,24 @@ describe("defaultFormValues — blank form state for a new config", () => {
     ]);
   });
 
-  it("has exactly 2 top-level keys: description and variables", () => {
+  it("pre-fills attribute with the API defaults (86400 / 0)", () => {
+    expect(defaultFormValues().attribute).toEqual({
+      cadence_unit: 86400,
+      cadence_offset: 0,
+    });
+  });
+
+  it("starts parameter as an empty list — the section is absent until a row is added", () => {
+    expect(defaultFormValues().parameter).toEqual([]);
+  });
+
+  it("has exactly the 4 conf sections as top-level keys", () => {
     const v = defaultFormValues();
-    expect(Object.keys(v).sort()).toEqual(["description", "variables"]);
+    expect(Object.keys(v).sort()).toEqual([
+      "attribute",
+      "description",
+      "parameter",
+      "variables",
+    ]);
   });
 });

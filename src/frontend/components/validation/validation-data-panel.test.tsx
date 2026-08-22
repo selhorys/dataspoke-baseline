@@ -120,6 +120,7 @@ function makeConf(): ValidationConfResponse {
     dataset_urn: DATASET_URN,
     description: "Daily row count check",
     variables: [{ name: "row_cnt", description: "Daily row count" }],
+    attribute: { cadence_unit: 86400, cadence_offset: 0 },
     created_at: "2026-05-01T00:00:00Z",
     updated_at: "2026-05-02T00:00:00Z",
   };

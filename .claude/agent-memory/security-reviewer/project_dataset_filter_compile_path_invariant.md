@@ -46,13 +46,23 @@ column. Sole construction site is the `_BOOL_LITERALS[...]` lookup in
 `token.value.lower()` cannot do Turkish-İ / Kelvin-sign tricks into a
 whitelist key.
 
+**Negated forms (`!=`, `NOT IN`, `'v' NOT IN array_col`) re-cleared.** All three
+compile to bound params — `col != :p`, `NOT (col = ANY(:p::TEXT[]))`,
+`NOT (col @> :p::TEXT[])`. Fuzz + targeted battery: 0 vocabulary violations, 0
+literal leaks. `<>` is rejected as `unexpected character '<'` (no `<` branch
+exists), standalone `NOT expr` is rejected as `unknown column 'NOT'`, and
+`is_primary != TRUE` / `is_primary NOT IN (...)` are rejected by
+`_parse_bool_predicate`, so the bool column still never reaches a negated node.
+
 **Two bounds a new column class eats into, both easy to miss:**
 
 1. `tests/unit/shared/test_dataset_filter.py::test_the_message_does_not_echo_an_unbounded_fragment`
    caps a 422 body at **< 200 chars**. Measured worst case over a fuzz of all
    message shapes is **185** (unknown-column, which now lists both the scalar
    and boolean whitelists). ~15 chars of headroom; a second boolean column or a
-   longer name breaches it. That test is the only guard.
+   longer name breaches it. That test is the only guard. The runner-up is
+   the boolean wrong-operator message, which the `!=`/`NOT IN` addition grew
+   from 149 to **161** — still second, but its own headroom is now ~39.
 2. `_safe()` truncates at 64 then `repr()`s — measured max output 67 chars.
    Safe today *only* because `_IDENT_RE` admits no backslash or non-ASCII; a
    widened ident charset would let `repr()` expand the fragment past the cap.
@@ -74,4 +84,4 @@ is a write scope. The widening direction gains an attacker nothing a legitimate
 `siblings.primary = true` write does not already give.
 
 Related: [[api-422-echoes-rejected-input]], [[recipe-regex-trust-boundary]],
-[[consumer-db-plane-to-wire-boundary]]
+[[consumer-db-plane-to-wire-boundary]], [[metrics-measurement-instant-boundary]]

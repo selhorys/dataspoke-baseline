@@ -16,6 +16,10 @@ Concerns covered (one per test):
 - a boolean `is_primary` clause selects each side of the column, with the non-primary
   side seeded directly in the registry (the dev DataHub estate carries no `siblings`
   aspect, so the `false` side is not otherwise reachable from here)
+- a never-swept row is absent from **both** directions of a scalar clause (`NULL`
+  matches neither) while matching every array `NOT IN` (the empty array contains
+  nothing) — the never-swept asymmetry, seeded directly because a row the sweep has
+  reached is by definition no longer never-swept
 
 Spec:
 - spec/DATAHUB_INTEGRATION.md §Dataset attribute sync — the two-source split, the
@@ -42,6 +46,20 @@ _TITLE_MASTER_URN = (
 _EDITIONS_URN = (
     "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.editions,DEV)"
 )
+
+# Registry rows written directly for the never-swept negation test below. They are
+# never emitted to DataHub: the state under test is a row the attribute sweep has not
+# reached, which no DataHub-backed setup can produce.
+_NEVER_SWEPT_URN = (
+    "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.spot_never_swept,EI)"
+)
+_SWEPT_TAGGED_URN = (
+    "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.spot_swept_tagged,EI)"
+)
+_SWEPT_OTHER_ORIGIN_URN = (
+    "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.spot_swept_other,STG)"
+)
+_NEGATION_TAG_URN = "urn:li:tag:spot-negation"
 
 
 async def _get_ds_conn() -> asyncpg.Connection:
@@ -433,3 +451,193 @@ async def test_a_boolean_filter_resolves_against_the_synced_is_primary(
             )
     finally:
         await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_a_never_swept_row_is_outside_both_scalar_directions_but_inside_every_not_in(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """Negation is not a complement of the scope, and the two column kinds differ.
+
+    Three rows are written straight into `dataset_registry`, which is the state a
+    `dataset_filter` is evaluated against and the only way to reach the case under test:
+    a row the sweep has **not** reached is by construction one no DataHub-backed setup
+    can produce, since anything ingested is swept.
+
+      - never-swept: `origin` NULL and `tag_urns` at its `'{}'` default
+      - swept + tagged: `origin = 'EI'`, carrying the negation tag
+      - swept, other origin: `origin = 'STG'`, no tags — the positive member that keeps
+        the `origin != 'EI'` leg from passing on an empty result
+
+    Each of the four clauses is read back through `GET .../dataset`, whose scope is the
+    compiled filter pushed into a query over the registry. Both sides of both column
+    kinds are asserted, so an over-broad predicate (one folding NULLs in) and an
+    over-narrow one (one dropping the empty-array rows) each fail.
+
+    Spec: spec/API.md §`dataset_filter` grammar — Negation: "a row whose scalar column
+          is `NULL` satisfies *neither* `scalar_col = 'x'` nor `scalar_col != 'x'` for
+          any `x`"; "the array columns are not [nullable], so `NOT IN` over `tag_urns` /
+          `glossary_term_urns` *is* a true complement of `IN`";
+    Spec: spec/API.md §`dataset_filter` grammar — Never-swept datasets: "`tag_urns` /
+          `glossary_term_urns` default to the empty array, which contains nothing, so a
+          never-swept dataset matches **every** `NOT IN` predicate over them — there,
+          negation widens where the affirmative form narrows"; "`origin` and
+          `platform_urn` default to `NULL` until the sweep parses them from the URN, and
+          a `NULL` scalar matches neither direction".
+    """
+    _METRIC_ID = "spot-never-swept-negation"
+    base_conf = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/attr/conf"
+    base_view = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/dataset"
+
+    await api_client.delete(base_conf, headers=admin_headers)
+
+    conn = await _get_ds_conn()
+    try:
+        # Written, not swept: only the primary key and the registered flag are set, so
+        # `origin` stays NULL and `tag_urns` keeps its empty-array default.
+        await conn.execute(
+            "INSERT INTO dataspoke.dataset_registry (dataset_urn, datahub_registered) "
+            "VALUES ($1, TRUE) "
+            "ON CONFLICT (dataset_urn) DO UPDATE SET datahub_registered = TRUE, "
+            "origin = NULL, platform_urn = NULL, tag_urns = '{}'::text[], "
+            "attrs_synced_at = NULL",
+            _NEVER_SWEPT_URN,
+        )
+        for urn, origin, tags in (
+            (_SWEPT_TAGGED_URN, "EI", [_NEGATION_TAG_URN]),
+            (_SWEPT_OTHER_ORIGIN_URN, "STG", []),
+        ):
+            await conn.execute(
+                "INSERT INTO dataspoke.dataset_registry "
+                "(dataset_urn, datahub_registered, origin, platform_urn, tag_urns, "
+                " attrs_synced_at) "
+                "VALUES ($1, TRUE, $2, $3, $4::text[], now()) "
+                "ON CONFLICT (dataset_urn) DO UPDATE SET datahub_registered = TRUE, "
+                "origin = $2, platform_urn = $3, tag_urns = $4::text[], "
+                "attrs_synced_at = now()",
+                urn,
+                origin,
+                "urn:li:dataPlatform:postgres",
+                tags,
+            )
+
+        seeded = await conn.fetchrow(
+            "SELECT origin, tag_urns, attrs_synced_at FROM dataspoke.dataset_registry "
+            "WHERE dataset_urn = $1",
+            _NEVER_SWEPT_URN,
+        )
+        assert seeded is not None and seeded["origin"] is None, (
+            "backstop: the row under test must actually carry a NULL origin, or every "
+            f"scalar assertion below is about a different state; got {seeded!r}. "
+            "spec: BACKEND_SCHEMA.md §dataset_registry."
+        )
+        assert list(seeded["tag_urns"]) == [] and seeded["attrs_synced_at"] is None, (
+            f"backstop: the row must be unswept with an empty tag array; got {seeded!r}."
+        )
+
+        create_resp = await api_client.post(
+            "/api/v1/spoke/governance/metric",
+            headers=admin_headers,
+            json={
+                "metric_id": _METRIC_ID,
+                "mode": "active",
+                "is_enabled": False,
+                "metric_type": "doc-health",
+                "title": "Never-swept negation spot test",
+                "description": "Negation is not a complement of the scope.",
+                "metrics": [
+                    {"name": "total", "color": "#64748B", "idx": 1},
+                    {"name": "doc_health", "color": "#A855F7", "idx": 2},
+                ],
+                "metric_conf": {},
+                "schedule_tier": None,
+                "dataset_filter": "origin = 'EI'",
+            },
+        )
+        assert create_resp.status_code == 201, create_resp.text
+
+        async def scope_of(dataset_filter: str) -> set[str]:
+            """URNs the metric's scope covers under *dataset_filter*.
+
+            `GET .../dataset` pushes the compiled clause into its own paginated query
+            over `dataset_registry`, so the page is the filter's scope — no run needed.
+            spec: feature/BACKEND.md §Metrics Service — "it pushes the compiled filter
+            clause into a paginated query over `dataset_registry`".
+            """
+            patch_resp = await api_client.patch(
+                base_conf, headers=admin_headers, json={"dataset_filter": dataset_filter}
+            )
+            assert patch_resp.status_code == 200, patch_resp.text
+            view = await api_client.get(f"{base_view}?limit=1000", headers=admin_headers)
+            assert view.status_code == 200, view.text
+            return {row["dataset_urn"] for row in view.json()["datasets"]}
+
+        # ── Scalar, affirmative ───────────────────────────────────────────────
+        affirmative = await scope_of("origin = 'EI'")
+        assert _SWEPT_TAGGED_URN in affirmative, (
+            "the swept EI row must be in the affirmative scope, or the negated leg "
+            f"below excludes nothing; got {sorted(affirmative)}."
+        )
+        assert _NEVER_SWEPT_URN not in affirmative, (
+            "a NULL origin does not match `origin = 'EI'`. "
+            "spec: API.md §`dataset_filter` grammar — Never-swept datasets."
+        )
+
+        # ── Scalar, negated: the never-swept row is in neither direction ──────
+        negated = await scope_of("origin != 'EI'")
+        assert _SWEPT_OTHER_ORIGIN_URN in negated, (
+            "the swept STG row must be in the negated scope, or this leg passes on an "
+            f"empty result and proves nothing; got {sorted(negated)}."
+        )
+        assert _SWEPT_TAGGED_URN not in negated, (
+            f"`origin != 'EI'` must exclude the EI row; got {sorted(negated)}."
+        )
+        assert _NEVER_SWEPT_URN not in negated, (
+            "the never-swept row satisfies NEITHER direction of a scalar clause — this "
+            "is the whole property: `!=` compiles to plain three-valued SQL, so an "
+            "`IS DISTINCT FROM`, a `COALESCE`, or an `OR col IS NULL` would silently "
+            f"fold the unswept remainder into every negated scope. Got {sorted(negated)}. "
+            "spec: API.md §`dataset_filter` grammar — Negation, Never-swept datasets."
+        )
+
+        # ── Array, affirmative ────────────────────────────────────────────────
+        tagged = await scope_of(f"'{_NEGATION_TAG_URN}' IN tag_urns")
+        assert tagged == {_SWEPT_TAGGED_URN}, (
+            "only the row carrying the tag may be in the affirmative array scope; got "
+            f"{sorted(tagged)}."
+        )
+
+        # ── Array, negated: the never-swept row IS in scope ───────────────────
+        untagged = await scope_of(f"'{_NEGATION_TAG_URN}' NOT IN tag_urns")
+        assert _NEVER_SWEPT_URN in untagged, (
+            "the array columns are NOT NULL with an empty-array default, so a "
+            "never-swept row's empty array contains nothing and matches EVERY `NOT IN` "
+            "predicate — the opposite of how the same row behaves under a scalar "
+            f"negation above; got {sorted(untagged)}. "
+            "spec: API.md §`dataset_filter` grammar — Never-swept datasets."
+        )
+        assert _SWEPT_TAGGED_URN not in untagged, (
+            "`NOT IN` over an array column is an exact complement of `IN`, so the tagged "
+            f"row must be excluded; got {sorted(untagged)}."
+        )
+
+    finally:
+        with suppress(Exception):
+            await api_client.delete(base_conf, headers=admin_headers)
+        with suppress(Exception):
+            await conn.execute(
+                "DELETE FROM dataspoke.dataset_registry WHERE dataset_urn = ANY($1::text[])",
+                [_NEVER_SWEPT_URN, _SWEPT_TAGGED_URN, _SWEPT_OTHER_ORIGIN_URN],
+            )
+        leftover = await conn.fetchval(
+            "SELECT count(*) FROM dataspoke.dataset_registry "
+            "WHERE dataset_urn = ANY($1::text[])",
+            [_NEVER_SWEPT_URN, _SWEPT_TAGGED_URN, _SWEPT_OTHER_ORIGIN_URN],
+        )
+        await conn.close()
+        assert leftover == 0, (
+            f"{leftover} synthetic registry row(s) survived teardown; every later "
+            "estate-wide count in the suite would run against a polluted registry. "
+            "spec: TESTING.md §Integration Lifecycle & Isolation."
+        )

@@ -27,12 +27,23 @@ No-schema signal: when field_descriptions is empty the measurer treats the
 dataset as having no documentable columns (score 0.0).
 """
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
 import pytest
 
 from src.backend.metrics.measurers import doc_health  # noqa: F401 — triggers registration
 from src.shared.datahub.client import DocumentationAspects
+
+#: The run's measurement instant. doc-health dates nothing against it — "a
+#: documentation state carries no timestamp" — so a fixed value serves every call in
+#: this file and no assertion here depends on which instant it is. It is passed all the
+#: same: the parameter list is uniform across measurers.
+#: Spec: spec/feature/BACKEND.md §Metrics Service — Measurers ("Each measurer receives
+#: the resolved dataset URN list, `metric_conf`, the run's measurement instant (above),
+#: a `DataHubClient`, and an `AsyncSession`") and §Verdict contract ("`evidence_at` is
+#: … `None`, since a documentation state carries no timestamp").
+_NOW = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
 
 
 def _get_measurer():
@@ -117,6 +128,7 @@ async def test_empty_datasets_returns_zeros() -> None:
         metric_conf={},
         datahub=_StubDH(),
         db=AsyncMock(),
+        now=_NOW,
     )
 
     assert values == {"total": 0.0, "doc_health": 0.0}
@@ -151,6 +163,7 @@ async def test_fully_documented_dataset_meets_the_criterion() -> None:
         metric_conf={},
         datahub=dh,
         db=AsyncMock(),
+        now=_NOW,
     )
 
     assert values["total"] == 1.0
@@ -190,6 +203,7 @@ async def test_missing_table_description_fails_the_criterion() -> None:
         metric_conf={},
         datahub=dh,
         db=AsyncMock(),
+        now=_NOW,
     )
 
     assert values["doc_health"] == 0.0
@@ -227,6 +241,7 @@ async def test_missing_column_description_fails_the_criterion() -> None:
         metric_conf={},
         datahub=dh,
         db=AsyncMock(),
+        now=_NOW,
     )
 
     assert values["doc_health"] == 0.0
@@ -264,6 +279,7 @@ async def test_editable_table_description_overrides_base() -> None:
         metric_conf={},
         datahub=dh,
         db=AsyncMock(),
+        now=_NOW,
     )
 
     assert values["doc_health"] == 1.0, (
@@ -301,6 +317,7 @@ async def test_editable_schema_overrides_empty_column_description() -> None:
         metric_conf={},
         datahub=dh,
         db=AsyncMock(),
+        now=_NOW,
     )
 
     assert values["doc_health"] == 1.0, (
@@ -327,6 +344,7 @@ async def test_empty_metric_conf_is_accepted() -> None:
         metric_conf={},
         datahub=_StubDH(),
         db=AsyncMock(),
+        now=_NOW,
     )
 
     assert values["total"] == 0.0
@@ -364,6 +382,7 @@ async def test_verdict_carries_exactly_the_four_contract_fields() -> None:
         metric_conf={},
         datahub=dh,
         db=AsyncMock(),
+        now=_NOW,
     )
 
     from dataclasses import fields
@@ -412,6 +431,7 @@ async def test_no_schema_metadata_scores_zero_and_fails_its_verdict() -> None:
         metric_conf={},
         datahub=dh,
         db=AsyncMock(),
+        now=_NOW,
     )
 
     assert values["total"] == 1.0
@@ -447,6 +467,7 @@ async def test_unresolved_urn_scores_zero() -> None:
         metric_conf={},
         datahub=_StubDH({}),
         db=AsyncMock(),
+        now=_NOW,
     )
 
     assert values == {"total": 1.0, "doc_health": 0.0}
@@ -464,9 +485,12 @@ async def test_verdicts_cover_every_dataset_passing_and_failing_alike() -> None:
     `GET /spoke/governance/metric/{id}/dataset` tell "evaluated and passing" from
     "in scope but never evaluated" (`unknown`), which a failures-only return cannot.
 
-    Spec: spec/feature/BACKEND.md §Metrics Service §Verdict contract — "Full coverage
-          is what makes 'in scope but never evaluated' (`unknown`) distinguishable from
-          'evaluated and passing': a failures-only return cannot express the difference."
+    Spec: spec/feature/BACKEND.md §Metrics Service §Verdict contract — "`verdicts`
+          covers every dataset the measurer **evaluated**, not only the failing ones …
+          Covering the passing datasets too is what makes 'in scope but never evaluated'
+          (`unknown`) distinguishable from 'evaluated and passing': a failures-only
+          return cannot express the difference." For `doc-health` the evaluated set is
+          the whole scope.
     """
     measure = _get_measurer()
     good = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.good,DEV)"
@@ -492,6 +516,7 @@ async def test_verdicts_cover_every_dataset_passing_and_failing_alike() -> None:
         metric_conf={},
         datahub=dh,
         db=AsyncMock(),
+        now=_NOW,
     )
 
     assert values == {"total": 2.0, "doc_health": 1.0}

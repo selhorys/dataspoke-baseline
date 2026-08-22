@@ -166,9 +166,10 @@ def test_registered_keys_match_built_in_types_exactly() -> None:
 def test_measurer_fn_protocol_signature() -> None:
     """MeasurerFn Protocol has the correct signature shape.
 
-    Spec: spec/feature/BACKEND.md §Metrics Service §Measurers — each measurer
-          receives (datasets, metric_conf, *, datahub, db) and returns
-          (values: dict[str, float], breakdown: dict).
+    Spec: spec/feature/BACKEND.md §Metrics Service §Measurers — "Each measurer receives
+          the resolved dataset URN list, ``metric_conf``, the run's measurement instant
+          (above), a ``DataHubClient``, and an ``AsyncSession``, and returns
+          ``(values, verdicts)``".
     """
     import inspect
     sig = inspect.signature(MeasurerFn.__call__)
@@ -177,3 +178,59 @@ def test_measurer_fn_protocol_signature() -> None:
     assert "metric_conf" in params
     assert "datahub" in params
     assert "db" in params
+    assert "now" in params
+
+
+def test_measurer_fn_protocol_requires_the_measurement_instant() -> None:
+    """``now`` is a required keyword-only parameter of every measurer.
+
+    The spec makes the instant the service's reading, "passed to every measurer" — so a
+    default here would let a measurer silently fall back to its own wall-clock and
+    re-open the divergence the parameter exists to close.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service — Measurement instant: "one clock
+          reading per run, computed by the service before it dispatches and passed to
+          every measurer, so all of a run's measurers date their evidence against the
+          same instant"; §Measurers: "The instant is a parameter rather than a
+          per-measurer clock read so that one run cannot date two measurers differently".
+    """
+    import inspect
+
+    parameter = inspect.signature(MeasurerFn.__call__).parameters["now"]
+    assert parameter.kind is inspect.Parameter.KEYWORD_ONLY, (
+        "`now` travels with `datahub`/`db` as a keyword-only argument. "
+        "Spec: spec/feature/BACKEND.md §Metrics Service §Measurers."
+    )
+    assert parameter.default is inspect.Parameter.empty, (
+        "`now` carries no default: a measurer must be handed the run's instant, never "
+        "fall back to its own clock. "
+        "Spec: spec/feature/BACKEND.md §Metrics Service — Measurement instant."
+    )
+
+
+def test_every_built_in_measurer_accepts_the_measurement_instant() -> None:
+    """All three registered measurers take ``now`` — signature uniformity, not opt-in.
+
+    ``doc-health`` dates nothing against the instant — "a documentation state carries no
+    timestamp" — and still declares it: the spec's parameter list is unconditional, not
+    per-measurer. Without this test a measurer could drop the parameter and only its own
+    file would notice.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service §Measurers — "**Each** measurer
+          receives the resolved dataset URN list, ``metric_conf``, the run's measurement
+          instant (above), a ``DataHubClient``, and an ``AsyncSession``" (emphasis
+          added); §Verdict contract — ``evidence_at`` is "``None``, since a documentation
+          state carries no timestamp".
+    """
+    import inspect
+
+    import src.backend.metrics.measurers.doc_health  # noqa: F401
+    import src.backend.metrics.measurers.ingestion_freshness  # noqa: F401
+    import src.backend.metrics.measurers.validation_score  # noqa: F401
+
+    for metric_type in ("ingestion-freshness", "validation-score", "doc-health"):
+        fn = get_measurer(metric_type)
+        assert fn is not None, f"{metric_type} must be registered"
+        parameter = inspect.signature(fn).parameters["now"]
+        assert parameter.kind is inspect.Parameter.KEYWORD_ONLY, metric_type
+        assert parameter.default is inspect.Parameter.empty, metric_type

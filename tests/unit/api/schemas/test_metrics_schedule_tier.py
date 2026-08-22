@@ -58,10 +58,11 @@ _VALID_VALIDATION_BODY = {
     "is_enabled": False,
     "metric_type": "validation-score",
     "title": "Validation score",
-    "description": "Sum of validation scores",
+    "description": "Count of datasets whose latest validation result is in window and passing",
     "metrics": [
         {"name": "total", "color": "#64748B", "idx": 1},
-        {"name": "validation_score_sum", "color": "#3B82F6", "idx": 2},
+        {"name": "valid_confd", "color": "#3B82F6", "idx": 2},
+        {"name": "valid_in_time", "color": "#14B8A6", "idx": 3},
     ],
     "metric_conf": {"time_window_sec": 86400},
     "dataset_filter": "",

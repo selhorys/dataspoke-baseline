@@ -724,3 +724,265 @@ async def test_ontogen_run_threads_stub_pgvector_flag(client) -> None:
         f"actual call: {make_pgvector_mock.call_args}. "
         "spec: src/workflows/_common.py — stub= kwarg must be threaded from RuntimeConfigDTO."
     )
+
+
+# ── metrics/run: the measurement instant (scheduled_at) ──────────────────────
+#
+# spec: feature/BACKEND.md §Metrics Service — Measurement instant: a periodic tier DAG
+#       forwards its `data_interval_end` as `scheduled_at` on the internal run request,
+#       so "A scheduled run therefore measures the interval it is *for*, not the interval
+#       it happened to execute in".
+
+
+def _metrics_run_request(**overrides):
+    from src.api.routers.internal.activities import MetricsRunRequest
+
+    return MetricsRunRequest.model_validate({"metric_id": "validation-score", **overrides})
+
+
+def test_metrics_run_request_defaults_scheduled_at_to_none() -> None:
+    """A body that names no instant leaves it None for the service to fall back on.
+
+    spec: feature/BACKEND.md §Metrics Service — Measurement instant: "a request that
+    supplies none falls back to wall-clock."
+    """
+    assert _metrics_run_request().scheduled_at is None
+
+
+def test_metrics_run_request_accepts_a_recent_instant() -> None:
+    """An instant just behind wall-clock — the shape a tier DAG actually sends."""
+    from datetime import UTC, datetime, timedelta
+
+    instant = datetime.now(tz=UTC) - timedelta(hours=1)
+    assert _metrics_run_request(scheduled_at=instant.isoformat()).scheduled_at == instant
+
+
+def test_metrics_run_request_rejects_a_naive_datetime() -> None:
+    """The instant is an absolute time, so it must carry an offset.
+
+    A naive value would be interpreted against whichever clock read it, which is the
+    single-instant-per-run property's whole point.
+
+    spec: API.md §Date/Time — "All timestamps use ISO 8601 with UTC:
+    `2026-02-27T10:00:00.000Z`", i.e. carrying an offset.
+    """
+    import pytest as _pytest
+    from pydantic import ValidationError
+
+    with _pytest.raises(ValidationError):
+        _metrics_run_request(scheduled_at="2026-02-03T00:00:00")
+
+
+def test_metrics_run_request_accepts_an_instant_at_the_future_skew_bound() -> None:
+    """Up to a day ahead is admitted — clock skew between scheduler and API.
+
+    Paired with the rejection below, this fixes the bound rather than merely proving one
+    exists. The margin keeps the value inside the bound as the wall-clock the validator
+    reads advances during the test.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    instant = datetime.now(tz=UTC) + timedelta(days=1) - timedelta(minutes=1)
+    assert _metrics_run_request(scheduled_at=instant.isoformat()).scheduled_at == instant
+
+
+def test_metrics_run_request_rejects_an_instant_far_in_the_future() -> None:
+    """A run dated into the next decade is refused.
+
+    spec: feature/BACKEND.md §Metrics Service — Measurement instant: "`scheduled_at`
+    (internal request field only) is bounded to `[now - 315,360,000 seconds, now + 1
+    day]` — … a one-day allowance on the future side to absorb ordinary clock skew
+    between the DAG worker and the API without opening the window arithmetic to a
+    caller-chosen instant far enough away to overflow it."
+    """
+    from datetime import UTC, datetime, timedelta
+
+    import pytest as _pytest
+    from pydantic import ValidationError
+
+    with _pytest.raises(ValidationError, match=r"future"):
+        _metrics_run_request(
+            scheduled_at=(datetime.now(tz=UTC) + timedelta(days=2)).isoformat()
+        )
+
+
+def test_metrics_run_request_accepts_an_instant_inside_the_ten_year_past_bound() -> None:
+    """Just inside ten years back is admitted — the widest window ever measurable."""
+    from datetime import UTC, datetime, timedelta
+
+    from src.shared.metric_conf import MAX_TIME_WINDOW_SEC
+
+    instant = datetime.now(tz=UTC) - timedelta(seconds=MAX_TIME_WINDOW_SEC - 3600)
+    assert _metrics_run_request(scheduled_at=instant.isoformat()).scheduled_at == instant
+
+
+def test_metrics_run_request_rejects_an_instant_past_the_ten_year_past_bound() -> None:
+    """An instant older than ten years is refused before the window math runs.
+
+    Measurers derive their window by subtracting a bounded `timedelta` from this
+    instant, so a value near `datetime.min` raises `OverflowError` — not a
+    `DataSpokeError`, so it would escape as a bare 500 rather than the 422 the contract
+    promises. The bound is stated as the same ten-year span the window bounds use.
+
+    spec: feature/BACKEND.md §Metrics Service — Window bounds: `time_window_sec` is "an
+    integer in `[1, 315_360_000]` — one second to ten years".
+    """
+    from datetime import UTC, datetime, timedelta
+
+    import pytest as _pytest
+    from pydantic import ValidationError
+
+    from src.shared.metric_conf import MAX_TIME_WINDOW_SEC
+
+    with _pytest.raises(ValidationError, match=r"past"):
+        _metrics_run_request(
+            scheduled_at=(
+                datetime.now(tz=UTC) - timedelta(seconds=MAX_TIME_WINDOW_SEC + 86400)
+            ).isoformat()
+        )
+
+
+def test_metrics_run_request_rejects_datetime_min() -> None:
+    """The underflow case the bound exists for.
+
+    `datetime.min` minus any window is unrepresentable, so without the bound the route
+    would 500 on a well-formed-looking body.
+    """
+    import pytest as _pytest
+    from pydantic import ValidationError
+
+    with _pytest.raises(ValidationError):
+        _metrics_run_request(scheduled_at="0001-01-01T00:00:00+00:00")
+
+
+@pytest.mark.asyncio
+async def test_metrics_run_threads_scheduled_at_to_the_service(client) -> None:
+    """The route forwards the body's instant to `MetricsService.run(scheduled_at=…)`.
+
+    A route that accepted the field and dropped it would satisfy every schema test
+    above while leaving every scheduled run anchored on wall-clock.
+
+    spec: feature/BACKEND.md §Metrics Service — Measurement instant: the DAG run's
+    scheduled boundary time is "forwarded as `scheduled_at` on the internal run request".
+    """
+    from datetime import UTC, datetime, timedelta
+
+    import src.backend.metrics.service as _metrics_svc
+    from src.backend.admin.config_service import RUNTIME_CONFIG_DEFAULTS, RuntimeConfigDTO
+
+    class _FakeSession:
+        async def __aenter__(self):
+            return AsyncMock()
+
+        async def __aexit__(self, *a):
+            pass
+
+    instant = datetime.now(tz=UTC) - timedelta(hours=6)
+    run_mock = AsyncMock(side_effect=DataSpokeError("stub"))
+
+    with (
+        patch("src.shared.settings.settings.internal_token", _INTERNAL_TOKEN),
+        patch("src.api.routers.internal.activities.make_datahub", return_value=MagicMock()),
+        patch(
+            "src.api.routers.internal.activities.make_redis_client",
+            MagicMock(return_value=AsyncMock()),
+        ),
+        patch("src.api.routers.internal.activities.make_db_session", return_value=_FakeSession()),
+        patch(
+            "src.backend.admin.config_service.get_runtime_config",
+            new=AsyncMock(return_value=RuntimeConfigDTO(**RUNTIME_CONFIG_DEFAULTS)),
+        ),
+        patch.object(_metrics_svc.MetricsService, "run", new=run_mock),
+    ):
+        await client.post(
+            _METRICS_RUN,
+            json={"metric_id": "validation-score", "scheduled_at": instant.isoformat()},
+            headers=_internal_headers(),
+        )
+
+    assert run_mock.await_args is not None, "metrics/run did not invoke MetricsService.run"
+    assert run_mock.await_args.kwargs.get("scheduled_at") == instant, (
+        "the body's instant must reach the service verbatim; actual call: "
+        f"{run_mock.await_args}. "
+        "spec: feature/BACKEND.md §Metrics Service — Measurement instant."
+    )
+
+
+@pytest.mark.asyncio
+async def test_metrics_run_forwards_none_when_no_instant_is_supplied(client) -> None:
+    """Backstop for the threading test: an omitted instant reaches the service as None.
+
+    That is what makes the service fall back to wall-clock rather than to some
+    route-invented default.
+
+    spec: feature/BACKEND.md §Metrics Service — Measurement instant: "Omitted, the
+    service falls back to wall-clock `now()`."
+    """
+    import src.backend.metrics.service as _metrics_svc
+    from src.backend.admin.config_service import RUNTIME_CONFIG_DEFAULTS, RuntimeConfigDTO
+
+    class _FakeSession:
+        async def __aenter__(self):
+            return AsyncMock()
+
+        async def __aexit__(self, *a):
+            pass
+
+    run_mock = AsyncMock(side_effect=DataSpokeError("stub"))
+
+    with (
+        patch("src.shared.settings.settings.internal_token", _INTERNAL_TOKEN),
+        patch("src.api.routers.internal.activities.make_datahub", return_value=MagicMock()),
+        patch(
+            "src.api.routers.internal.activities.make_redis_client",
+            MagicMock(return_value=AsyncMock()),
+        ),
+        patch("src.api.routers.internal.activities.make_db_session", return_value=_FakeSession()),
+        patch(
+            "src.backend.admin.config_service.get_runtime_config",
+            new=AsyncMock(return_value=RuntimeConfigDTO(**RUNTIME_CONFIG_DEFAULTS)),
+        ),
+        patch.object(_metrics_svc.MetricsService, "run", new=run_mock),
+    ):
+        await client.post(
+            _METRICS_RUN,
+            json={"metric_id": "validation-score"},
+            headers=_internal_headers(),
+        )
+
+    assert run_mock.await_args is not None, "metrics/run did not invoke MetricsService.run"
+    assert run_mock.await_args.kwargs.get("scheduled_at") is None
+
+
+@pytest.mark.asyncio
+async def test_metrics_run_rejects_an_out_of_bounds_instant_with_422(client) -> None:
+    """An out-of-bounds instant is a 422 at the route, never a 500 from the window math.
+
+    spec: API.md §Error Catalogue §HTTP Status Codes — "`422 Unprocessable Entity` |
+    Pydantic validation failure (field type mismatch, constraint violation)". The bound
+    is a field constraint on `scheduled_at`, so its breach is a 422 rather than the 400
+    the same table gives a merely malformed body.
+    spec: feature/BACKEND.md §Metrics Service — Measurement instant: "An out-of-range
+    value is rejected `422` before it reaches the measurer."
+    """
+    from datetime import UTC, datetime, timedelta
+
+    import src.backend.metrics.service as _metrics_svc
+
+    run_mock = AsyncMock()
+
+    with (
+        patch("src.shared.settings.settings.internal_token", _INTERNAL_TOKEN),
+        patch.object(_metrics_svc.MetricsService, "run", new=run_mock),
+    ):
+        resp = await client.post(
+            _METRICS_RUN,
+            json={
+                "metric_id": "validation-score",
+                "scheduled_at": (datetime.now(tz=UTC) + timedelta(days=30)).isoformat(),
+            },
+            headers=_internal_headers(),
+        )
+
+    assert resp.status_code == 422
+    run_mock.assert_not_awaited()

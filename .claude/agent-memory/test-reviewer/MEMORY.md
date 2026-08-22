@@ -64,3 +64,4 @@
 - [dataset_filter + verdict test seams](project_dataset_filter_verdict_test_seams.md) — cycle-2: all 5 cycle-1 survivors closed; new blind spot is predicate polarity (== vs !=, is_(True)) + the sibling delete_metric_config DELETE
 - [is_primary filter test seams](project_is_primary_filter_test_seams.md) — post-fix: 20/22 mutants killed; the live blocker is the repo's only xfail, holding an ERROR-vs-WARNING spec violation green
 - [module_dummy_data registry reconcile](project_module_dummy_data_registry_reconcile.md) — _mark_registry_registered already fixes the flag; the reconcile only adds inserts+attrs; skip guard leaves it stale
+- [validation-score cadence test seams](project_validation_score_cadence_test_seams.md) — both cycles closed; the 8 orphaned-citation sites left behind + the phrase-window sweep that finds them

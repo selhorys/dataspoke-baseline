@@ -46,11 +46,36 @@ class TestAcceptedFilters:
                 " AND ('urn:li:tag:area:catalog' IN tag_urns"
                 " OR 'urn:li:glossaryTerm:pii.gdpr' IN glossary_term_urns)"
             ),
+            # Negated productions — spec/API.md §`dataset_filter` grammar §Negation.
+            "origin != 'PROD'",
+            "origin NOT IN ('PROD', 'DEV')",
+            f"dataset_urn != '{_URN}'",
+            "platform_urn NOT IN ('urn:li:dataPlatform:kafka')",
+            "'urn:li:tag:lifecycle:deprecated' NOT IN tag_urns",
+            "'urn:li:glossaryTerm:pii.gdpr' NOT IN glossary_term_urns",
         ],
     )
     def test_grammar_forms_pass_the_write_boundary(self, dataset_filter: str) -> None:
         """Every production of spec/API.md §`dataset_filter` grammar is writable."""
         validate_dataset_filter(dataset_filter)
+
+    def test_a_composed_negated_filter_passes_the_write_boundary(self) -> None:
+        """The negated worked example reaches the API through the same entry point.
+
+        The parametrized cases above each exercise one negated production; this is the
+        composition a caller actually writes — a scalar `!=` AND-ed with an array
+        `NOT IN` — proving the write boundary accepts the grammar as a whole and not
+        merely predicate by predicate.
+
+        spec: API.md §`dataset_filter` grammar — Negation: "`origin != 'DEV' AND
+            platform_urn NOT IN ('urn:li:dataPlatform:kafka') AND
+            'urn:li:tag:lifecycle:deprecated' NOT IN tag_urns`".
+        """
+        validate_dataset_filter(
+            "origin != 'DEV'"
+            " AND platform_urn NOT IN ('urn:li:dataPlatform:kafka')"
+            " AND 'urn:li:tag:lifecycle:deprecated' NOT IN tag_urns"
+        )
 
     def test_none_is_treated_as_the_empty_filter(self) -> None:
         """An absent filter is the empty filter — 'the empty string matches every
@@ -184,3 +209,43 @@ def test_field_description_states_the_caps_and_columns() -> None:
     assert "never quoted" in DATASET_FILTER_FIELD_DESCRIPTION
     assert f"{MAX_FILTER_CHARS:,}" in DATASET_FILTER_FIELD_DESCRIPTION
     assert f"{MAX_STRING_LITERALS:,}" in DATASET_FILTER_FIELD_DESCRIPTION
+
+
+def test_field_description_states_the_negated_operators() -> None:
+    """The description is the only place a client learns negation exists.
+
+    The parser accepts `!=` / `NOT IN` on the scalar and array columns, and this string
+    is the OpenAPI text every `dataset_filter` field (ontogen, metagen, metrics) carries.
+    An affirmative-only description would publish a narrower grammar than the API accepts,
+    with nothing else in the suite noticing — the acceptance tests above pass either way.
+
+    spec: API.md §`dataset_filter` grammar — `predicate := scalar_col ('=' | '!=') string
+        | scalar_col [NOT] IN '(' string {',' string} ')' | string [NOT] IN array_col`;
+        §Negation — "Negation is available on the scalar and array columns only — the
+        boolean column takes `=` alone".
+    """
+    assert "!=" in DATASET_FILTER_FIELD_DESCRIPTION, (
+        "the scalar not-equals operator must be named; without it the published grammar "
+        f"is affirmative-only. Got: {DATASET_FILTER_FIELD_DESCRIPTION}"
+    )
+    assert "NOT IN" in DATASET_FILTER_FIELD_DESCRIPTION, (
+        "the negated membership spelling must be named for both the scalar list form and "
+        f"the array form. Got: {DATASET_FILTER_FIELD_DESCRIPTION}"
+    )
+    assert "'value' NOT IN column" in DATASET_FILTER_FIELD_DESCRIPTION, (
+        "the array form's negated spelling puts the value first, which a client cannot "
+        f"guess from the scalar form. Got: {DATASET_FILTER_FIELD_DESCRIPTION}"
+    )
+    # spec: API.md §`dataset_filter` grammar — "Keywords (`AND`, `OR`, `NOT`, `IN`) and
+    # column names are case-insensitive". `NOT` belongs in that list alongside the other
+    # three, so a reader learns it is a keyword and not part of a column name.
+    keyword_sentence = next(
+        sentence
+        for sentence in DATASET_FILTER_FIELD_DESCRIPTION.split(". ")
+        if "case-insensitive" in sentence
+    )
+    for keyword in ("AND", "OR", "NOT", "IN"):
+        assert keyword in keyword_sentence, (
+            f"{keyword} must appear in the case-insensitivity sentence; got "
+            f"{keyword_sentence!r}"
+        )

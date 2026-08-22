@@ -123,7 +123,8 @@ describe("MetricForm — the metrics control is one row per emitted key", () => 
   it("renders no row for a key the selected type does not emit", () => {
     renderForm();
     expect(screen.queryByRole("checkbox", { name: "ingested_in_time" })).toBeNull();
-    expect(screen.queryByRole("checkbox", { name: "validation_score_sum" })).toBeNull();
+    expect(screen.queryByRole("checkbox", { name: "valid_confd" })).toBeNull();
+    expect(screen.queryByRole("checkbox", { name: "valid_in_time" })).toBeNull();
   });
 
   it("seeds each row from the metric's existing descriptor (checked, its color, its idx)", () => {

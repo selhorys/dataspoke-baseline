@@ -12,6 +12,7 @@ satisfied when the column set is unknown.
 Spec: spec/feature/BACKEND.md §Metrics Service — doc-health
 """
 
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,6 +28,7 @@ async def measure(
     *,
     datahub: DataHubClient,
     db: AsyncSession,
+    now: datetime,
 ) -> tuple[dict[str, float], list[DatasetVerdict]]:
     """Return doc-health values and one verdict per dataset in scope.
 
@@ -40,6 +42,10 @@ async def measure(
         DataHubClient for DatasetProperties / SchemaMetadata aspect reads.
     db:
         AsyncSession — accepted for signature uniformity, not used here.
+    now:
+        The run's measurement instant — accepted for signature uniformity. A
+        documentation state is a present-tense fact with no timestamp, so this
+        measurer dates nothing against it.
 
     Returns
     -------

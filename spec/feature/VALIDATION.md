@@ -82,7 +82,10 @@ filter (default `covered`) that selects covered / uncovered / both row sets.
 
 ## Rule Configuration
 
-The configuration is a small, fixed-shape document.
+The configuration is a small, fixed-shape document with four sections: `description` and
+`variables` declare what the pipeline reports, `attribute` states when the dataset's data
+is expected to arrive, and the optional `parameter` section is opaque storage for the
+pipeline's own hyperparameters.
 
 ```json
 {
@@ -91,6 +94,10 @@ The configuration is a small, fixed-shape document.
     {"name": "row_cnt", "description": "Daily row count"},
     {"name": "col1_mean", "description": "Mean of col1"},
     {"name": "col2_null_cnt", "description": "Null count of col2"}
+  ],
+  "attribute": {"cadence_unit": 86400, "cadence_offset": 0},
+  "parameter": [
+    {"name": "z_threshold", "description": "Std-dev cutoff for outliers"}
   ]
 }
 ```
@@ -99,23 +106,64 @@ The configuration is a small, fixed-shape document.
 |---|---|---|---|
 | `description` | `string` | yes | Free-form rule description. Surfaced in the DataHub assertion detail UI. Required key, but the empty string is allowed. ≤ 2,000 chars. No ASCII control characters except `\t` (0x09) and `\n` (0x0a). |
 | `variables` | `list[object]` | yes | The variables this rule will report, each a `{name, description}` object. There MUST be ≥ 1 entry; hard cap **200** entries. |
+| `attribute` | `object` | no | Data-arrival cadence, `{cadence_unit, cadence_offset}` — see below. Omitting it on `PUT` stores the all-defaults object; it is never absent from a stored conf or from a response. |
+| `parameter` | `list[object]` \| absent | no | Pipeline hyperparameters, each a `{name, description}` object with the same shape and per-item rules as `variables`. Absent by default. When the key is present it MUST carry 1–200 entries — an explicit `[]` is rejected exactly as an empty `variables` is. |
 
-Each `variables` element:
+Each `variables` element — and each `parameter` element, under the same rules in its own
+separate namespace (a name may appear in both lists; uniqueness is per list):
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `name` | `string` | yes | Variable name. MUST match `\A[a-z][a-z0-9_]{0,99}\Z` and MUST be unique across the list. |
 | `description` | `string` | yes | Per-variable description (the meaning of the measurement). Required key, but the **empty string is allowed**. ≤ 200 chars. No ASCII control characters except `\t` (0x09) and `\n` (0x0a). |
 
+Each `attribute` field:
+
+| Field | Type | Required | Default | Notes |
+|---|---|---|---|---|
+| `cadence_unit` | `int` | no | `86400` | The period, in seconds, at which the dataset's data is expected to arrive. MUST be `> 0` and `<= 315,360,000` (ten years — the same ceiling as `metric_conf.time_window_sec`, [API §Metric](../API.md#metric-spokegovernancemetric)). |
+| `cadence_offset` | `int` | no | `0` | How many `cadence_unit` periods the arriving data lags the arrival instant. MUST be `>= 0`, and `cadence_offset * cadence_unit` MUST be `<= 315,360,000` — the same product bound the `validation-score` window arithmetic applies to `time_window_sec`, so an accepted `attribute` can never make a governed window's arithmetic overflow. Daily D-1 data is `unit = 86400, offset = 0`; daily D-8 data is `unit = 86400, offset = 7`. |
+
+`attribute` is a **closed, typed object** — unknown keys are not stored. Its shape may grow
+named fields in future releases; it is not an open bag. Supplying `attribute` on `PUT` or
+`PATCH` writes the **complete** per-field-defaulted object, replacing the previous value
+outright rather than deep-merging into it — the same wholesale-replacement rule `variables`
+follows. A `PATCH` carrying `{"attribute": {"cadence_offset": 7}}` therefore also resets
+`cadence_unit` to `86400`.
+
+`parameter` is the only **optional-by-absence** section, so its lifecycle is stated in full:
+
+- **`PUT`** is a full replace, like every other field on it: omitting `parameter` stores it as
+  absent, clearing any previously stored value.
+- **`PATCH`** is a partial update. Omitting `parameter` leaves the stored value unchanged.
+  `"parameter": null` clears it to absent — that is the one spelling for "clear". A non-empty
+  list (1–200 entries, validated exactly as `variables` is) replaces the stored value
+  wholesale. `"parameter": []` is **rejected** (`422`), the same as an empty `variables`, so
+  there is no second spelling of "clear".
+- **`GET`** omits the `parameter` key entirely from the response body when the section is
+  absent; it is never serialized as `null`.
+
+`attribute` is the one section DataSpoke reads for itself: the governance `validation-score`
+metric anchors its per-dataset criterion window on this cadence (see
+[BACKEND §Metrics Service](BACKEND.md#metrics-service-srcbackendmetrics)). `parameter` is
+the opposite — DataSpoke never interprets it and no feature reads it. It exists so a
+pipeline's tunables travel with the rule that uses them instead of in a side channel; the
+algorithm that consumes them is entirely outside DataSpoke, exactly as the rule logic behind
+`variables` already is.
+
 Result POSTs (§5) and stored `validation_results` are keyed by variable **name** only;
 descriptions live solely on the conf and are not echoed into results. The
 `customAssertion.logic` emitted to DataHub (§6) is the comma-joined list of variable
-**names** — descriptions are not emitted into the logic string.
+**names** — descriptions are not emitted into the logic string. Neither `attribute` nor
+`parameter` reaches DataHub: the assertion aspects carry the reported schema, and cadence
+and hyperparameters are DataSpoke-side facts with no DataHub-native slot.
 
 Notes:
 
-- The configuration carries **no** rule logic. It is purely a schema declaration that
-  enables server-side validation of subsequent result POSTs (§5).
+- The configuration carries **no** rule logic. `description`, `variables`, and `parameter`
+  are declarations — `variables` is the schema that enables server-side validation of
+  subsequent result POSTs (§5) — and `attribute` states an expectation about the data, not
+  a computation over it.
 - `PATCH` accepts a partial body. Replacing `variables` is allowed but is a breaking
   edit: prior result rows whose keys are no longer in the declared variable **names**
   remain queryable but silently fall outside the current schema. Pipelines should treat
@@ -349,6 +397,10 @@ spec'd preemptively:
 - **Result retention.** `assertionRunEvent` is timeseries and grows without bound.
   DataHub-side TTL or sampling policy is not addressed here; revisit when storage
   pressure becomes real.
+- **Cadence in the cross-dataset list view.** `GET /spoke/validation` projects each row from
+  the conf and the latest result, and does not surface `attribute.cadence_unit` /
+  `cadence_offset`. Whether it should is deferred — revisit when a use case needs the arrival
+  cadence visible across datasets without opening each dataset's conf.
 - **Notification hooks.** Config lifecycle and result records already land on the
   `event/validation` timeline (see §API Surface), but there is no push/subscription
   delivery — pipelines that want to be notified on "rule failed" must poll. Active

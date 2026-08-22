@@ -257,6 +257,20 @@ def upgrade() -> None:
         sa.Column("dataset_urn", sa.Text(), primary_key=True),
         sa.Column("description", sa.Text(), nullable=False),
         sa.Column("variables", JSONB, nullable=False),
+        # Declared data-arrival cadence. NOT NULL with a server default, so a conf
+        # written without the section still reads as a complete object and the
+        # validation-score measurer never branches on absence. The field bounds
+        # (cadence_unit > 0, cadence_offset >= 0) are enforced at the API schema
+        # layer, so there is deliberately no CHECK constraint here.
+        sa.Column(
+            "attribute",
+            JSONB,
+            nullable=False,
+            server_default=sa.text("'{\"cadence_unit\": 86400, \"cadence_offset\": 0}'::jsonb"),
+        ),
+        # Optional pipeline hyperparameters — NULL is the "not declared" state an
+        # empty array cannot express (an explicit [] is rejected at the API layer).
+        sa.Column("parameter", JSONB, nullable=True),
         sa.Column("created_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
         sa.Column("updated_at", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
         sa.CheckConstraint(

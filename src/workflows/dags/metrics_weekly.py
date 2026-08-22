@@ -45,11 +45,16 @@ with DAG(
     )
 
     @task(task_id="extract_targets")  # type: ignore[untyped-decorator]
-    def extract_targets(metric_ids: list[str]) -> list[str]:
+    def extract_targets(metric_ids: list[str], scheduled_at: str) -> list[str]:
         """Convert a list of metric IDs into JSON-encoded run request bodies."""
-        return [json.dumps({"metric_id": metric_id}) for metric_id in metric_ids]
+        return [
+            json.dumps({"metric_id": metric_id, "scheduled_at": scheduled_at})
+            for metric_id in metric_ids
+        ]
 
-    targets = extract_targets(list_active.output)
+    targets = extract_targets(
+        list_active.output, "{{ (dag_run.data_interval_end or dag_run.run_after).isoformat() }}"
+    )
 
     HttpOperator.partial(
         task_id="run_metric",

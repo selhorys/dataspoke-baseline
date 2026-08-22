@@ -207,7 +207,8 @@ const BRAVO: MetricDefinitionListItem = {
   description: "Xray coverage on PROD runs",
   metrics: [
     { name: "total", color: "#64748B", idx: 1 },
-    { name: "validation_score_sum", color: "#3B82F6", idx: 2 },
+    { name: "valid_confd", color: "#3B82F6", idx: 2 },
+    { name: "valid_in_time", color: "#14B8A6", idx: 3 },
   ],
   metric_conf: { time_window_sec: 172800 },
   schedule_tier: "daily",

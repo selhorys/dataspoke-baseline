@@ -24,7 +24,7 @@ _ScheduleTier = Literal["hourly", "daily", "weekly"]
 # Keys emitted by each built-in metric type
 _EMITTED_KEYS: dict[str, set[str]] = {
     "ingestion-freshness": {"total", "ingested_in_time"},
-    "validation-score": {"total", "validation_score_sum"},
+    "validation-score": {"total", "valid_confd", "valid_in_time"},
     "doc-health": {"total", "doc_health"},
 }
 
@@ -100,10 +100,12 @@ class ReplaceMetricConfigRequest(BaseModel):
     metric_conf: dict[str, Any] = Field(
         description=(
             "Type-specific config. 'ingestion-freshness' and 'validation-score' require "
-            f"time_window_sec — the measurement window in seconds, an integer in "
+            f"time_window_sec — the measurement window's width in seconds, an integer in "
             f"[1, {MAX_TIME_WINDOW_SEC}] (ten years); a boolean is not accepted. "
             "Evidence exactly at the window boundary counts as in-window. "
-            "'doc-health' takes {}"
+            "'validation-score' anchors that width per dataset on the dataset's own "
+            "attr/validation/conf.attribute arrival cadence rather than on the "
+            "measurement instant. 'doc-health' takes {}"
         )
     )
     schedule_tier: _ScheduleTier | None = Field(
@@ -155,7 +157,8 @@ class PatchMetricConfigRequest(BaseModel):
         description=(
             "Type-specific config, replacing the stored dict wholesale. The *merged* "
             "definition is what is validated: with metric_type 'ingestion-freshness' or "
-            f"'validation-score' the merged conf needs time_window_sec, an integer in "
+            f"'validation-score' the merged conf needs time_window_sec, the window's "
+            f"width in seconds — an integer in "
             f"[1, {MAX_TIME_WINDOW_SEC}] (ten years) — a boolean is not accepted, and "
             "evidence exactly at the window boundary counts as in-window. 'doc-health' "
             "takes {}"
@@ -262,7 +265,8 @@ class MetricDatasetRow(BaseModel):
         description=(
             "Whether the dataset met the metric's criterion on the latest non-dry run. "
             "'unknown' means in scope but never evaluated — the metric has never run, "
-            "or the dataset entered scope after the last run"
+            "the dataset entered scope after the last run, or, for 'validation-score', "
+            "the dataset has no validation configuration and is never evaluated"
         )
     )
     last_check_at: datetime | None = Field(

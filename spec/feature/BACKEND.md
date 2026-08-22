@@ -746,7 +746,11 @@ ingest/query — surfaced through the routes below.
 - `PUT`/`PATCH` validates the body against the conf shape (`description ≤ 2,000` chars;
   `variables` a list of `{name, description}` objects, ≤ 200 entries, each `name`
   matching `[a-z][a-z0-9_]{0,99}` and unique within the rule, each `description`
-  required but ≤ 200 chars with the empty string allowed). The dataset must already
+  required but ≤ 200 chars with the empty string allowed; the optional `parameter` list
+  under the identical per-item rules in its own namespace; `attribute` a closed
+  `{cadence_unit > 0, cadence_offset >= 0}` object whose fields default individually).
+  `variables`, `parameter`, and `attribute` are each replaced **wholesale** when supplied —
+  a `PATCH` never deep-merges into a stored section. The dataset must already
   exist in DataHub or the request is rejected with `422 DATASET_NOT_IN_DATAHUB`. On
   success the service:
   1. upserts the row in `validation_configs` (`dataset_urn` PK). A `PUT` against
@@ -1238,27 +1242,78 @@ responses use the bare `MetricDefinitionResponse` and do not expose it.
 rejected in the route handler with `501 NOT_IMPLEMENTED` — placeholder for ingesting
 results emitted by an external system, deferred to a future release.
 
-**Measurement window** (`ingestion-freshness`, `validation-score`): the window is
-`metric_conf.time_window_sec`, applied uniformly to every dataset in the run. It is a declared
-SLO the governance lead owns, not a quantity derived from a per-dataset fact such as an owning
+**Measurement window** (`ingestion-freshness`, `validation-score`): the window's *width* is
+`metric_conf.time_window_sec`, the same for every dataset in the run. It is a declared SLO the
+governance lead owns, not a quantity derived from a per-dataset fact such as an owning
 source's registered schedule, a sync-loop cadence, or a dataset's observed validation
 inter-arrival gap — those state how often something is *expected* to happen, which is a
-different question from how recent the evidence must be to count. Each run records the window
-it applied in the breakdown's `detail.time_window_sec`.
+different question from how long a stretch of evidence counts. Each run records the width it
+applied in the breakdown's `detail.time_window_sec`.
 
 - `ingestion-freshness`: a dataset counts toward `ingested_in_time` when its resolved
-  ingestion evidence (below) is no older than `time_window_sec` at measurement time.
-- `validation-score`: the score counted is the latest result whose `data_time` is inside
-  `time_window_sec`; a dataset with no result in the window contributes `0.0`.
+  ingestion evidence (below) is no older than `time_window_sec` at the measurement instant.
+- `validation-score`: a dataset counts toward `valid_in_time` when its latest validation
+  result falls inside that dataset's **cadence-anchored** window (below) and scored `>= 1.0`.
+
+**The `validation-score` per-dataset test**, stated once and referred to from everywhere else
+in this section: take the dataset's **single latest validation result overall** — the newest
+row by `data_time`, chosen without regard to any window — then ask whether *that* result lies
+inside the dataset's cadence-anchored window and scored `>= 1.0`. Both conditions must hold.
+It is deliberately not "the latest result *among* the in-window results": the metric reports
+the dataset's **current** validation state, and searching backwards for a qualifying row would
+let a superseded result stand in for the newest one, so a dataset could pass on evidence it has
+itself already replaced. A dataset therefore fails when its latest result's `data_time` falls
+outside the window, or falls inside it but scored `< 1.0`, or it has no validation result at
+all.
+
+**Measurement instant**: one clock reading per run, computed by the service before it
+dispatches and passed to every measurer, so all of a run's measurers date their evidence
+against the same instant. Its value depends on how the run was triggered:
+
+| Trigger | Instant |
+|---|---|
+| Periodic tier DAG (`metrics-{hourly,daily,weekly}`) | The DAG run's scheduled boundary time (Airflow `data_interval_end`), forwarded as `scheduled_at` on the internal run request. A manually-triggered run of one of these DAGs carries no `data_interval_end`; the DAG falls back to `dag_run.run_after` (always present, ≈ the trigger instant) so a manual trigger still renders rather than failing at template time |
+| `POST /spoke/governance/metric/{id}/method/run` (on-demand, incl. `dry_run`) | Wall-clock `now()` — a manual run has no schedule to anchor to |
+
+A scheduled run therefore measures the interval it is *for*, not the interval it happened to
+execute in: a retried or backlogged `@daily` run yields the same verdicts as an on-time one.
+The public run route is unchanged by this — `scheduled_at` is an internal-activity concept
+only, and a request that supplies none falls back to wall-clock. `measured_at` persisted on
+`metric_results` / `metric_dataset_results` is unaffected: it stays a later wall-clock reading
+taken after measurement returns, dating the *result* rather than defining the window.
+
+`scheduled_at` (internal request field only) is bounded to
+`[now - 315,360,000 seconds, now + 1 day]` — the same ten-year span as `time_window_sec`'s
+ceiling on the past side, and a one-day allowance on the future side to absorb ordinary clock
+skew between the DAG worker and the API without opening the window arithmetic to a
+caller-chosen instant far enough away to overflow it. An out-of-range value is rejected
+`422` before it reaches the measurer.
+
+**Cadence-anchored window** (`validation-score`): the window's upper bound is shifted back by
+the dataset's own declared arrival lag, read from `validation_configs.attribute` (see
+[VALIDATION §Rule Configuration](VALIDATION.md#rule-configuration)):
+
+```
+upper_bound = instant - (cadence_offset * cadence_unit)
+lower_bound = upper_bound - time_window_sec
+in_window   = lower_bound <= data_time <= upper_bound
+```
+
+With `offset = 0` this is the plain trailing window `[instant - time_window_sec, instant]`;
+with `unit = 86400, offset = 1` it is `[instant - 259200, instant - 86400]` at the factory
+`time_window_sec` of `172800`. The shift exists because a dataset whose D-8 partition is the
+freshest one that can exist is not stale for lacking a D-1 result — anchoring on the
+measurement instant alone would mark every lagged dataset failing at exactly its declared
+lag. `ingestion-freshness` has no analogue: it dates an ingestion *event*, which happens when
+it happens, not a partition the pipeline promises for a later date.
 
 **Boundary is inclusive**, for both measurers: evidence whose instant is exactly one window
-before the measurement instant is *in* window — the comparison is `instant >= cutoff`, never
-`>`. The measurement instant is the run's clock reading taken once at measurer entry, and
-`cutoff` is that reading minus `time_window_sec`. The `measured_at` persisted with the result
-is a later reading, taken after measurement returns; it dates the result and does not define
-the window. The boundary direction is not observable in practice — the reading is
-microsecond-resolution, so a stored timestamp landing on it exactly is a measure-zero event —
-so it is fixed here rather than left to be inferred from a run.
+width from the bound is *in* window — the comparisons are `>= lower_bound` and
+`<= upper_bound`, never strict. For `ingestion-freshness` this is the single test
+`instant >= cutoff` with `cutoff = measurement instant - time_window_sec`. The boundary
+direction is not observable in practice — the reading is microsecond-resolution, so a stored
+timestamp landing on it exactly is a measure-zero event — so it is fixed here rather than
+left to be inferred from a run.
 
 **Window bounds**: `time_window_sec` is an integer in `[1, 315_360_000]` — one second to ten
 years. The ceiling is a *product* bound, not an arithmetic one: the window is a declared SLO,
@@ -1274,8 +1329,29 @@ column constraint, a row carrying an out-of-range window (written by something o
 API) makes every run of that metric fail rather than being silently clamped; it is repaired by
 `PATCH`ing a valid window — the patched value wins the merge — not by a migration.
 
-Both measurers stay pure-aggregation and DataSpoke-DB-side: they read `events`,
-`validation_results`, `ingestion_source`, and `ingestion_source_dataset` only — no DataHub call.
+**`validation-score` counts and the unconfigured set**: the measurer emits three counts —
+`total` (datasets matched by `dataset_filter`), `valid_confd` (of those, the ones carrying a
+`validation_configs` row), and `valid_in_time` (of `valid_confd`, the ones that pass the
+per-dataset test defined above). All three are counts; none is a score sum, so
+`valid_in_time / valid_confd` reads as a pass rate over the configured estate and
+`valid_confd / total` as validation coverage of the scope.
+
+A dataset with **no** validation config gets **no verdict row** — it is neither `met = true`
+nor `met = false`. It has declared no arrival cadence and promised no result, so counting it
+as failing would let a filter widen its way to a falling metric with nothing having changed
+about the datasets that do participate. The absent verdict surfaces through the existing
+`unknown` path: `GET .../dataset` left-joins the verdict store onto the metric's scope, so a
+scoped dataset with no row already reads `met = "unknown"` — no API-contract change, and the
+unconfigured set is visible as an `unknown` bucket rather than silently dropped from the page.
+`valid_confd` is what makes that bucket's size a first-class value on the result row.
+
+Because of this, `validation-score`'s verdict list is a **subset** of its scan. `breakdown`'s
+`dataset_count` remains the total scanned (`= total`) and is derived from the scan, never from
+`len(verdicts)`; only `ingestion-freshness` and `doc-health` have the two coincide.
+
+Both windowed measurers stay pure-aggregation and DataSpoke-DB-side: they read `events`,
+`validation_results`, `validation_configs`, `ingestion_source`, and `ingestion_source_dataset`
+only — no DataHub call.
 
 **Ingestion evidence** (`ingestion-freshness`): every `INGESTION.*` event is booked on a source
 (`entity_type="ingestion_source"`, `entity_id=source_id` — see the
@@ -1352,21 +1428,34 @@ of its own and its wrappers', the same union `GET /spoke/ingestion/sources/{id}/
 
 **Measurers** (`src/backend/metrics/measurers/`): one async function per built-in
 `metric_type`, registered via the measurer registry. Each measurer receives the resolved
-dataset URN list, `metric_conf`, a `DataHubClient`, and an `AsyncSession`, and returns
-`(values, verdicts)`. `values` keys are exactly those listed in
+dataset URN list, `metric_conf`, the run's measurement instant (above), a `DataHubClient`,
+and an `AsyncSession`, and returns `(values, verdicts)`. The instant is a parameter rather
+than a per-measurer clock read so that one run cannot date two measurers differently and so a
+scheduled run can be anchored to its schedule. `values` keys are exactly those listed in
 [USE_CASE §UC5 — Built-in active metric types](../USE_CASE_en.md#built-in-active-metric-types);
 the service filters the dict to the names declared by `attr/conf.metrics[]` before
 persisting.
 
-**Verdict contract.** `verdicts` covers **every** dataset in scope, not only the failing
-ones — one entry per dataset carrying `urn`, `met: bool`, `evidence_at: datetime | None`,
-and a type-specific `detail`. Full coverage is what makes "in scope but never evaluated"
-(`unknown`) distinguishable from "evaluated and passing": a failures-only return cannot
-express the difference. The failures-only `breakdown` below is **derived** from the
+**Verdict contract.** `verdicts` covers every dataset the measurer **evaluated**, not only
+the failing ones — one entry per dataset carrying `urn`, `met: bool`,
+`evidence_at: datetime | None`, and a type-specific `detail`. Covering the passing datasets
+too is what makes "in scope but never evaluated" (`unknown`) distinguishable from "evaluated
+and passing": a failures-only return cannot express the difference. For
+`ingestion-freshness` and `doc-health` the evaluated set is the whole scope; for
+`validation-score` it is the configured subset, and the unconfigured remainder is deliberately
+left verdict-less so it reads `unknown` (above). The failures-only `breakdown` below is **derived** from the
 verdicts, so the stored `metric_results.breakdown` payload is unchanged and the two can
 never disagree. `evidence_at` per type: `ingestion-freshness` → the resolved ingestion
 evidence time; `validation-score` → the counted result's `data_time`; `doc-health` →
 `None`, since a documentation state carries no timestamp.
+
+`evidence_at` is **counted** evidence, so it is `None` for a `validation-score` dataset whose
+latest result lies outside the cadence-anchored window (and for one with no result at all) —
+nothing was counted, and `GET .../dataset` falls back to the run's `measured_at` for that row's
+`last_check_at`. `detail.latest_data_time` is the opposite: it always carries the latest
+validation result's `data_time` whether or not that result was in window, so the stale
+validation date stays readable on the failing row rather than vanishing with the verdict. It is
+`null` only when the dataset has no validation result at all.
 
 **Per-dataset verdict store** (`metric_dataset_results`, keyed `(metric_id, dataset_urn)`)
 holds the **latest** verdict only. A non-dry run replaces the metric's rows wholesale
@@ -1430,22 +1519,32 @@ failed when:
 - `ingestion-freshness`: the resolved ingestion evidence (tier 1 or tier 2 — see
   **Ingestion evidence** above) is older than `metric_conf.time_window_sec`, or absent on both
   tiers
-- `validation-score`: latest validation `score` inside the window is `< 1.0`
-  (or no result inside the window)
+- `validation-score`: the dataset **has** a validation config and fails the
+  **`validation-score` per-dataset test** above — its latest validation result's `data_time` falls outside
+  the cadence-anchored window, or falls inside it but scored `< 1.0`, or it has no validation
+  result at all. A dataset with no validation config is not failed — it is not evaluated at
+  all, and is excluded from `datasets[]` and from the verdict store alike
 - `doc-health`: documentation score is `< 1.0` (table description missing OR any
   column description missing)
 
 `detail` is optional, type-specific metadata. `ingestion-freshness` and `validation-score`
-record the window applied at run time in `time_window_sec` — a metric's `metric_conf` can
-change between runs, so a past result stays interpretable only if it carries its own window —
-alongside `last_event_at` (freshness) or `latest_data_time` + `score` (validation-score).
+record the window width applied at run time in `time_window_sec` — a metric's `metric_conf`
+can change between runs, so a past result stays interpretable only if it carries its own
+window — alongside `last_event_at` (freshness) or `latest_data_time` + `score`
+(validation-score). `validation-score` additionally records the **resolved** window it
+evaluated the dataset against — `cadence_unit`, `cadence_offset`, and the computed
+`lower_bound` / `upper_bound` — because the width alone does not determine it: two datasets
+in one run are judged against different intervals, and without the bounds a per-dataset row on
+`GET .../dataset` cannot be read back.
 `ingestion-freshness` additionally names
 **which tier supplied `last_event_at`** in `evidence_tier` (`"observation"` for tier 1,
 `"source_level"` for tier 2, `null` when neither tier produced evidence) — the two tiers make
 different claims, so without it a stale verdict is not diagnosable. Tier 2's label names the
 *grain*, not a producer: it is the newest `COMPLETE` on the owning source whatever wrote it. `dataset_count` is the total scanned
 (matching `dataset_filter`),
-not the number of failed entries; `len(datasets) == failed count` is implied. The
+not the number of failed entries and not the number of verdicts; it is derived from the scan,
+so `validation-score`'s unconfigured datasets count toward it exactly as they count toward
+`total`. `len(datasets) == failed count` is implied. The
 breakdown lets time-range queries on `attr/result` answer per-dataset historical
 questions without re-running the metric.
 
@@ -1621,6 +1720,13 @@ the upper bound on filter-scope staleness across UC3, UC4, and UC5.
 > When the singleton conf's tier matches but its `is_enabled` is `false`, the
 > `ontogen` activity **skips** (returns `{status: "skipped", reason: "disabled"}`)
 > rather than failing — a disabled conf is a no-op, not an error.
+
+> **Scheduled-time anchoring**: the `metrics-{hourly,daily,weekly}` tier DAGs pass their run's
+> `data_interval_end` as `scheduled_at` on the internal metric-run request, which becomes the
+> run's measurement instant (see [§Metrics Service](#metrics-service-srcbackendmetrics)). It is
+> the only field the tier DAGs add over an on-demand run; the public
+> `POST /spoke/governance/metric/{id}/method/run` route neither accepts nor forwards it, so a
+> manual run measures at wall-clock time.
 
 ### Schedule Control
 

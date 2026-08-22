@@ -27,7 +27,7 @@ fold into that page's unified **Events** panel.
 | Page | Read | Write |
 |---|---|---|
 | `/validation` | `GET /spoke/validation` | — |
-| `/data/[urn]` Validation panel | `GET .../attr/validation/conf`, `GET .../attr/validation/result?from&until&limit` (timeseries) | `PUT/DELETE .../attr/validation/conf` (fields: `description`, `variables[]`) |
+| `/data/[urn]` Validation panel | `GET .../attr/validation/conf`, `GET .../attr/validation/result?from&until&limit` (timeseries) | `PUT/DELETE .../attr/validation/conf` (fields: `description`, `variables[]`, `attribute`, `parameter[]`) |
 
 Each dataset has one validation slot. The data pipeline runs the validation
 logic and POSTs results to `attr/validation/result`. Teams that need multiple distinct
@@ -52,8 +52,9 @@ paged by the shared [Pagination](FRONTEND_BASIC.md#shared-component-notes) contr
 
 The Validation panel on [`/data/[urn]`](FRONTEND_BASIC.md#per-dataset-page-dataurn) renders three
 sections — `Config`, `Quality Score`, and `Variables`. The `Config` section is a single editor
-for `description` plus a **declared-variables list** (the conf's `variables[]` — distinct from the
-top-level `Variables` charts section that plots each variable's result timeseries).
+covering all four conf sections: `description`, the **declared-variables list** (the conf's
+`variables[]` — distinct from the top-level `Variables` charts section that plots each
+variable's result timeseries), `attribute`, and `parameter`.
 Each declared-variable row edits both a `name` input and a `description` input in
 place, with an `[×]` remove button (disabled at the minimum of 1 variable);
 `[+ Add]` appends a new `{name, description}` row. The `Config` read-only view
@@ -62,6 +63,23 @@ renders each variable's description next to its name. Field constraints
 ≤200 chars empty-allowed, count cap) per
 [VALIDATION §Rule Configuration](VALIDATION.md#rule-configuration).
 Saving issues `PUT .../attr/validation/conf`.
+
+**Data arrival** renders the conf's `attribute` section as two number inputs —
+`cadence_unit` (seconds, `> 0`) and `cadence_offset` (`>= 0`) — pre-filled with the
+API's defaults (`86400` / `0`) on `Create`, since the section is always present on a
+stored conf and never absent from the GET response. The section carries a short caption
+naming what the pair drives: the window the governance `validation-score` metric judges
+this dataset against. Both fields submit as one `attribute` object; a `PUT` always sends
+both, matching the wholesale-replacement rule the API applies.
+
+**Parameters** renders the optional `parameter[]` list with the *same* row editor as the
+declared-variables list (`name` + `description` inputs, `[×]`, `[+ Add]`) and one extra
+state the variables list does not have: absent. A conf with no `parameter` shows an empty
+list and omits the key on save; adding the first row starts it, and removing the last row
+returns to absent rather than submitting `[]` (which the API rejects). The read-only view
+hides the section entirely when the conf carries no `parameter`. DataSpoke does not
+interpret these values, so the section carries no validation beyond the shared per-item
+rules and no charting anywhere on the page.
 The shared [RangePicker](FRONTEND_BASIC.md#shared-component-notes) (presets Last
 1 day / 7 days / 2 weeks (default) / 4 weeks / 12 weeks, plus a custom calendar
 range) drives the `Quality Score` and `Variables` sections, both reading
@@ -92,9 +110,9 @@ that `Config` heading's row (`justify-between` — heading left, controls right)
 mode-driven by the GET-conf outcome: an existing rule's read-only view shows `Edit` and
 `Delete`; edit mode shows `Cancel` and `Save`; a slot with no conf
 (`404 CONFIG_NOT_FOUND`) shows **only** the `Config` section — a short "no config yet"
-empty-state line and a `Create` button, with no description/variables sub-sections until
+empty-state line and a `Create` button, with no conf sub-sections until
 editing. `Create` and `Edit` enter the same editable `Config` form. While editing (create
-or edit) the panel renders **only** the `Config` section, with description and variables as
+or edit) the panel renders **only** the `Config` section, with all four conf sections as
 input controls; the `Quality Score` chart and the per-variable `Variables` timeseries are
 not shown — they appear only in the has-conf read-only view (Config read-only + Quality
 Score + Variables charts). The per-row field-array controls `+ Add` and `[×]` are not
@@ -120,6 +138,10 @@ no resurrection branch and no deleted/frozen state to surface.
 │    qty_negative_cnt — Negative-qty rows                      │
 │    qty_total        — Total quantity                         │
 │    user_id_null_cnt — Null user_id count                     │
+│  Data arrival                                                │
+│    cadence_unit 86400 s   cadence_offset 0                   │
+│  Parameters                                                  │
+│    z_threshold      — Std-dev cutoff for outliers            │
 │                                                               │
 │  Quality Score                     [Last 2 weeks ▾] [Daily ▾] │
 │    (attr/validation/result?from=…&until=…&limit=…)            │
@@ -149,6 +171,11 @@ Empty-state (404 CONFIG_NOT_FOUND):   Edit-state (Create or Edit):
                                        │  Variables (declared)           │
                                        │    [ row_cnt ] [ Daily … ] [×]  │
                                        │                        [+ Add]  │
+                                       │  Data arrival                   │
+                                       │    unit [ 86400 ] off [ 0 ]     │
+                                       │  Parameters (optional)          │
+                                       │    [ z_threshold ] [ Std… ] [×] │
+                                       │                        [+ Add]  │
                                        │  (Quality Score / Variables     │
                                        │   charts hidden while editing)  │
                                        └─────────────────────────────────┘
@@ -156,5 +183,5 @@ Empty-state (404 CONFIG_NOT_FOUND):   Edit-state (Create or Edit):
 
 Write actions on the Validation panel are rendered only when
 `role ∈ {Editor, Admin}` — the mode-driven header controls
-(`Edit`/`Delete`/`Cancel`/`Save`/`Create`) and the inline variables-editor
-controls (`+ Add`/`[×]`) alike. The list view is read-only for every role.
+(`Edit`/`Delete`/`Cancel`/`Save`/`Create`) and the inline row-editor
+controls (`+ Add`/`[×]`, on both the variables and parameters lists) alike. The list view is read-only for every role.

@@ -29,12 +29,50 @@ export interface ValidationVariable {
   description: string;
 }
 
+/**
+ * One declared pipeline hyperparameter. Same `{name, description}` shape and
+ * same per-item rules as a variable, in its own namespace — a name may appear
+ * in both lists. DataSpoke never interprets a parameter.
+ */
+export type ValidationParameter = ValidationVariable;
+
+/**
+ * Declared data-arrival cadence of the dataset — the pair the governance
+ * `validation-score` metric anchors its per-dataset window on. Always present
+ * on a stored conf: a conf written without the section carries the defaults.
+ */
+export interface ValidationAttribute {
+  /** Period, in seconds, at which the dataset's data is expected to arrive. */
+  cadence_unit: number;
+  /** How many `cadence_unit` periods the arriving data lags the arrival instant. */
+  cadence_offset: number;
+}
+
 export interface ValidationConfResponse {
   dataset_urn: string;
   description: string;
   variables: ValidationVariable[];
+  attribute: ValidationAttribute;
+  /**
+   * Absent by default. The API omits the key entirely rather than serializing
+   * it as null, so `undefined` is the shape a caller actually sees; `null` is
+   * admitted because it is the spelling a PATCH uses to clear the section.
+   */
+  parameter?: ValidationParameter[] | null;
   created_at: string;
   updated_at: string;
+}
+
+/**
+ * Body of `PUT .../attr/validation/conf` — a full replace. `attribute` always
+ * travels complete (the API replaces it wholesale) and `parameter` is omitted
+ * when the section is absent, since an explicit `[]` is rejected with 422.
+ */
+export interface ValidationConfPutRequest {
+  description: string;
+  variables: ValidationVariable[];
+  attribute: ValidationAttribute;
+  parameter?: ValidationParameter[];
 }
 
 export interface ValidationResultRow {
@@ -72,4 +110,12 @@ export interface ValidationEventListResponse {
 export interface ValidationConfFormValues {
   description: string;
   variables: { name: string; description: string }[];
+  /** Always complete — the API replaces `attribute` wholesale, never merges it. */
+  attribute: { cadence_unit: number; cadence_offset: number };
+  /**
+   * The optional `parameter[]` section, flattened to "empty means absent": the
+   * API rejects an explicit `[]`, so an empty list serializes as an omitted key
+   * rather than as a value.
+   */
+  parameter: { name: string; description: string }[];
 }

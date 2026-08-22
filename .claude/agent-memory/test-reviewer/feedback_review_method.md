@@ -21,8 +21,9 @@ claimed they cover.
 **How to apply:** any stage whose plan lists a named regression risk. Reproduce
 the risk at the *least*-covered site, not the most.
 
-**2. When a change-set edits a spec section, grep the whole test tree for
-quotes of the deleted text — not just the files the agent modified.**
+**2. When a change-set edits a spec section or removes a contract value, grep the
+whole test tree — plus `tests/e2e/` and `src/frontend/` — for the deleted text AND
+the deleted identifier, not just the files the agent modified.**
 `spec/TESTING.md §Assertion Discipline` forbids a `spec:` citation whose text is
 absent at the cited location, and a stage-1 spec rewrite silently orphans
 citations in untouched test files that the test stage never opens.
@@ -31,7 +32,13 @@ citations in untouched test files that the test stage never opens.
 adjacent file passes every gate (typecheck, lint, the suite) and survives.
 
 **How to apply:** normalize whitespace and em/en dashes, then substring-match
-each removed spec sentence against `src/**/*.test.*` and `tests/`.
+each removed spec sentence against `src/**/*.test.*` and `tests/`. Do the same for
+any *identifier* the change removed from an enum / allowlist / emitted-key set — a
+plain `grep -rn <old_key>` across `tests/` + `src/frontend/` catches suites the unit
+run never touches (the `validation_score_sum` → `valid_confd`/`valid_in_time` recast
+left spot, api-wired, two E2E specs and six Vitest files pinning a key the API now
+422s). Beware: a naive `grep` of a long spec quote fails on sentences that wrap
+mid-phrase — normalize newlines before concluding a citation is fabricated.
 
 **3. A static import/source scan closes symbol-swap leaks only — never behavior.**
 When a generator answers "N of M call sites unguarded" with an O(1) source-tree

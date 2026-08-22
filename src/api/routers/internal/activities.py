@@ -22,16 +22,18 @@ Spec: spec/feature/BACKEND.md §DAG Catalogue + §Dependency Injection.
 """
 
 import logging
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import AwareDatetime, BaseModel, Field, field_validator
 
 from src.api.auth.internal import require_internal_token
 from src.api.schemas.common import DatasetUrn
 from src.shared.events import AUTH_ROLE_SYNC_FIXED
 from src.shared.exceptions import ConflictError, DataSpokeError
+from src.shared.metric_conf import MAX_TIME_WINDOW_SEC
 from src.shared.models.enums import EventStatus
 from src.workflows._common import (
     make_datahub,
@@ -282,12 +284,53 @@ async def metrics_list_active(body: MetricsListActiveRequest) -> list[str]:
 _METRIC_ID_PATTERN = r"^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$|^[a-z0-9]$"
 
 
+#: How far ahead of wall-clock a ``scheduled_at`` may sit. A tier DAG forwards a
+#: ``data_interval_end`` that is at or just behind now; a day of slack absorbs
+#: clock skew between the scheduler and the API without admitting a run dated
+#: into the next decade.
+_MAX_SCHEDULED_AT_SKEW = timedelta(days=1)
+
+
 class MetricsRunRequest(BaseModel):
     metric_id: str = Field(
         pattern=_METRIC_ID_PATTERN,
         max_length=64,
     )
     dry_run: bool = False
+    scheduled_at: AwareDatetime | None = Field(
+        default=None,
+        description=(
+            "The run's measurement instant — a periodic tier DAG forwards its "
+            "data_interval_end here so a retried or backlogged run measures the "
+            "interval it is for. Omitted, the service falls back to wall-clock "
+            "now(). Bounded to [now - 10 years, now + 1 day]"
+        ),
+    )
+
+    @field_validator("scheduled_at")
+    @classmethod
+    def _check_scheduled_at(cls, v: datetime | None) -> datetime | None:
+        """Keep the measurement instant inside a range the window math survives.
+
+        Measurers derive their window by subtracting a bounded ``timedelta`` from
+        this instant, so a ``scheduled_at`` near ``datetime.min`` underflows and
+        raises ``OverflowError`` — not a ``DataSpokeError``, so it would escape
+        the route's handlers as a bare 500 — regardless of how well-formed the
+        metric's own conf is. The bound is stated in terms of the same ten-year
+        span the window bounds use, so no run can be dated further back than the
+        widest window it could ever be asked to measure.
+        """
+        if v is None:
+            return v
+        now = datetime.now(tz=UTC)
+        if v > now + _MAX_SCHEDULED_AT_SKEW:
+            raise ValueError("scheduled_at must not be more than 1 day in the future")
+        if v < now - timedelta(seconds=MAX_TIME_WINDOW_SEC):
+            raise ValueError(
+                f"scheduled_at must not be more than {MAX_TIME_WINDOW_SEC} seconds "
+                "(ten years) in the past"
+            )
+        return v
 
 
 @router.post("/metrics/run")
@@ -302,7 +345,9 @@ async def metrics_run(body: MetricsRunRequest) -> dict[str, object]:
             cache = make_redis_client(stub=rc.stub_redis_client)
             datahub = await make_datahub(db)
             service = MetricsService(datahub=datahub, db=db, cache=cache)
-            result = await service.run(body.metric_id, dry_run=body.dry_run)
+            result = await service.run(
+                body.metric_id, dry_run=body.dry_run, scheduled_at=body.scheduled_at
+            )
             return {"run_id": result.run_id, "status": result.status, "detail": result.detail}
     except ConflictError as exc:
         if exc.error_code == "METRIC_RUNNING":

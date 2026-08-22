@@ -356,8 +356,12 @@ describe("seriesRowsForType — one row per emitted key, reseeded on type change
   });
 
   it("seeds unchecked rows with the backend's factory default color", () => {
+    // validation-score emits three keys (spec/USE_CASE_en.md §UC5), each with a
+    // factory default color in src/backend/metrics/bootstrap.py.
     const rows = seriesRowsForType("validation-score", []);
-    expect(rows.find((r) => r.name === "validation_score_sum")?.color).toBe("#3B82F6");
+    expect(rows.map((r) => r.name)).toEqual(["total", "valid_confd", "valid_in_time"]);
+    expect(rows.find((r) => r.name === "valid_confd")?.color).toBe("#3B82F6");
+    expect(rows.find((r) => r.name === "valid_in_time")?.color).toBe("#14B8A6");
   });
 
   it("accepts API series descriptors as the seed", () => {
@@ -592,7 +596,8 @@ describe("round-trip toInternal → fromInternal (API payload field preservation
       description: "Validation score metric",
       metrics: [
         { name: "total", color: "#64748B", idx: 1 },
-        { name: "validation_score_sum", color: "#3B82F6", idx: 2 },
+        { name: "valid_confd", color: "#3B82F6", idx: 2 },
+        { name: "valid_in_time", color: "#14B8A6", idx: 3 },
       ],
       metric_conf: { time_window_sec: 3600 },
       schedule_tier: "hourly",

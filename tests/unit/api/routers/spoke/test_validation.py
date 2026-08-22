@@ -249,6 +249,464 @@ async def test_patch_conf_200_with_merged_response(client, mock_svc: AsyncMock) 
     assert data["description"] == "Updated description"
 
 
+# ── attribute + parameter on the conf routes ─────────────────────────────────
+#
+# spec: VALIDATION.md §Rule Configuration — the `attribute` wholesale-replacement rule
+# and the `parameter` PUT/PATCH/GET lifecycle.
+
+
+def _conf_record(*, attribute: dict | None = None, parameter: list | None = None):
+    """A ValidationConfigRecord with an explicit cadence and parameter state."""
+    from src.backend.validation.service import ValidationConfigRecord
+
+    return ValidationConfigRecord(
+        dataset_urn=_VALID_URN,
+        description="Daily row count check",
+        variables=_DEFAULT_VARS,
+        attribute=attribute if attribute is not None else {"cadence_unit": 86400,
+                                                           "cadence_offset": 0},
+        parameter=parameter,
+        created_at=datetime.now(tz=UTC),
+        updated_at=datetime.now(tz=UTC),
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_conf_omits_the_parameter_key_when_the_section_is_absent(
+    client, mock_svc: AsyncMock
+) -> None:
+    """An absent `parameter` is omitted from the body, never serialized as null.
+
+    Absence and "declared, but empty" are different states, and `[]` is not an
+    admissible value, so a `null` in the body would offer a third spelling the write
+    boundary refuses to accept back.
+
+    The mechanism is `response_model_exclude_none`, which applies to the whole route, so
+    the full key set is pinned alongside: the flag must drop `parameter` and nothing
+    else. The set is every field of `ValidationConfResponse` plus the `resp_time` it
+    inherits from `SingleResponse`.
+
+    spec: VALIDATION.md §Rule Configuration — "**`GET`** omits the `parameter` key
+    entirely from the response body when the section is absent; it is never serialized
+    as `null`."
+    """
+    mock_svc.get_config = AsyncMock(return_value=_conf_record(parameter=None))
+
+    resp = await client.get(_CONF_URL, headers=auth_headers())
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "parameter" not in body, (
+        f"the key must be absent, not null; got {body.get('parameter')!r}"
+    )
+    assert set(body) == {
+        "resp_time",
+        "dataset_urn",
+        "description",
+        "variables",
+        "attribute",
+        "created_at",
+        "updated_at",
+    }, f"exclude_none must drop `parameter` and no other key; got {sorted(body)}"
+
+
+@pytest.mark.asyncio
+async def test_get_conf_carries_the_parameter_key_when_the_section_is_present(
+    client, mock_svc: AsyncMock
+) -> None:
+    """Backstop for the omission above: a stored list is serialized in full.
+
+    Without this, a response model that dropped `parameter` unconditionally would pass
+    the omission test. The key set is the omission test's set plus `parameter`.
+    """
+    stored = [{"name": "z_threshold", "description": "Std-dev cutoff for outliers"}]
+    mock_svc.get_config = AsyncMock(return_value=_conf_record(parameter=stored))
+
+    resp = await client.get(_CONF_URL, headers=auth_headers())
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["parameter"] == stored
+    assert set(body) == {
+        "resp_time",
+        "dataset_urn",
+        "description",
+        "variables",
+        "attribute",
+        "parameter",
+        "created_at",
+        "updated_at",
+    }, f"a present section adds `parameter` and changes nothing else; got {sorted(body)}"
+
+
+@pytest.mark.asyncio
+async def test_put_response_omits_the_parameter_key_when_the_section_is_absent(
+    client, mock_svc: AsyncMock
+) -> None:
+    """The PUT response body obeys the same omission rule as GET.
+
+    A PUT that clears `parameter` returns the cleared conf, so the response must spell
+    absence the same way GET does — a `null` here would be a state the write boundary
+    refuses to accept back, on the very route that just wrote it. The present-section
+    leg is the backstop: a response model that dropped `parameter` unconditionally would
+    satisfy the omission alone. Both legs pin the full key set, because
+    `response_model_exclude_none` is a route-wide flag and must drop `parameter` alone.
+
+    spec: VALIDATION.md §Rule Configuration — "**`GET`** omits the `parameter` key
+    entirely from the response body when the section is absent; it is never serialized
+    as `null`."
+    """
+    mock_svc.upsert_config = AsyncMock(return_value=(_conf_record(parameter=None), False))
+
+    cleared = await client.put(
+        _CONF_URL,
+        json={"description": "Daily row count check", "variables": _DEFAULT_VARS},
+        headers=auth_headers(),
+    )
+
+    assert cleared.status_code == 200
+    cleared_body = cleared.json()
+    assert "parameter" not in cleared_body, (
+        f"the key must be absent, not null; got {cleared_body.get('parameter')!r}"
+    )
+    assert set(cleared_body) == {
+        "resp_time",
+        "dataset_urn",
+        "description",
+        "variables",
+        "attribute",
+        "created_at",
+        "updated_at",
+    }, f"exclude_none must drop `parameter` and no other key; got {sorted(cleared_body)}"
+
+    stored = [{"name": "z_threshold", "description": "Std-dev cutoff for outliers"}]
+    mock_svc.upsert_config = AsyncMock(return_value=(_conf_record(parameter=stored), False))
+
+    written = await client.put(
+        _CONF_URL,
+        json={
+            "description": "Daily row count check",
+            "variables": _DEFAULT_VARS,
+            "parameter": stored,
+        },
+        headers=auth_headers(),
+    )
+
+    assert written.status_code == 200
+    written_body = written.json()
+    assert written_body["parameter"] == stored, (
+        "backstop: a stored list must still be serialized in full on PUT"
+    )
+    assert set(written_body) == {
+        "resp_time",
+        "dataset_urn",
+        "description",
+        "variables",
+        "attribute",
+        "parameter",
+        "created_at",
+        "updated_at",
+    }, f"a present section adds `parameter` and nothing else; got {sorted(written_body)}"
+
+
+@pytest.mark.asyncio
+async def test_patch_response_omits_the_parameter_key_when_the_section_is_absent(
+    client, mock_svc: AsyncMock
+) -> None:
+    """The PATCH response body obeys the same omission rule as GET.
+
+    `PATCH {"parameter": null}` clears the section and returns the merged conf, so this
+    is the third route that can leak a `null` the write boundary would reject. The
+    present-section leg backstops it exactly as on PUT, and both legs pin the full key
+    set so the route-wide `response_model_exclude_none` cannot drop anything else.
+
+    spec: VALIDATION.md §Rule Configuration — "**`GET`** omits the `parameter` key
+    entirely from the response body when the section is absent; it is never serialized
+    as `null`."
+    """
+    mock_svc.patch_config = AsyncMock(return_value=_conf_record(parameter=None))
+
+    cleared = await client.patch(
+        _CONF_URL,
+        json={"parameter": None},
+        headers=auth_headers(),
+    )
+
+    assert cleared.status_code == 200
+    cleared_body = cleared.json()
+    assert "parameter" not in cleared_body, (
+        f"the key must be absent, not null; got {cleared_body.get('parameter')!r}"
+    )
+    assert set(cleared_body) == {
+        "resp_time",
+        "dataset_urn",
+        "description",
+        "variables",
+        "attribute",
+        "created_at",
+        "updated_at",
+    }, f"exclude_none must drop `parameter` and no other key; got {sorted(cleared_body)}"
+
+    stored = [{"name": "z_threshold", "description": "Std-dev cutoff for outliers"}]
+    mock_svc.patch_config = AsyncMock(return_value=_conf_record(parameter=stored))
+
+    written = await client.patch(
+        _CONF_URL,
+        json={"parameter": stored},
+        headers=auth_headers(),
+    )
+
+    assert written.status_code == 200
+    written_body = written.json()
+    assert written_body["parameter"] == stored, (
+        "backstop: a stored list must still be serialized in full on PATCH"
+    )
+    assert set(written_body) == {
+        "resp_time",
+        "dataset_urn",
+        "description",
+        "variables",
+        "attribute",
+        "parameter",
+        "created_at",
+        "updated_at",
+    }, f"a present section adds `parameter` and nothing else; got {sorted(written_body)}"
+
+
+@pytest.mark.asyncio
+async def test_get_conf_always_carries_the_attribute_object(
+    client, mock_svc: AsyncMock
+) -> None:
+    """`attribute` is never omitted — a conf always holds a complete cadence.
+
+    spec: VALIDATION.md §Rule Configuration — "it is never absent from a stored conf or
+    from a response."
+    """
+    mock_svc.get_config = AsyncMock(
+        return_value=_conf_record(attribute={"cadence_unit": 3600, "cadence_offset": 2})
+    )
+
+    resp = await client.get(_CONF_URL, headers=auth_headers())
+
+    assert resp.status_code == 200
+    assert resp.json()["attribute"] == {"cadence_unit": 3600, "cadence_offset": 2}
+
+
+@pytest.mark.asyncio
+async def test_put_hands_the_service_a_complete_attribute_and_a_null_parameter(
+    client, mock_svc: AsyncMock
+) -> None:
+    """A PUT body naming neither section still reaches the service fully specified.
+
+    PUT is a full replace, so the route resolves both sections at the boundary: the
+    all-defaults cadence, and `parameter=None` meaning "clear", rather than leaving
+    either for the service to guess.
+
+    spec: VALIDATION.md §Rule Configuration — "Omitting it on `PUT` stores the
+    all-defaults object"; "omitting `parameter` stores it as absent, clearing any
+    previously stored value."
+    """
+    mock_svc.upsert_config = AsyncMock(return_value=(_conf_record(), True))
+
+    resp = await client.put(
+        _CONF_URL,
+        json={"description": "Daily row count check", "variables": _DEFAULT_VARS},
+        headers=auth_headers(),
+    )
+
+    assert resp.status_code == 201
+    kwargs = mock_svc.upsert_config.await_args.kwargs
+    assert kwargs["attribute"] == {"cadence_unit": 86400, "cadence_offset": 0}
+    assert kwargs["parameter"] is None
+
+
+@pytest.mark.asyncio
+async def test_put_forwards_a_supplied_cadence_and_parameter_list(
+    client, mock_svc: AsyncMock
+) -> None:
+    """Backstop for the defaults above: supplied sections are forwarded as sent.
+
+    The cadence is partial on purpose — the route must forward the *completed* object,
+    which is what makes the stored value independent of the previous one.
+    """
+    mock_svc.upsert_config = AsyncMock(return_value=(_conf_record(), True))
+
+    resp = await client.put(
+        _CONF_URL,
+        json={
+            "description": "D-8 partition check",
+            "variables": _DEFAULT_VARS,
+            "attribute": {"cadence_offset": 7},
+            "parameter": [{"name": "z_threshold", "description": "Std-dev cutoff"}],
+        },
+        headers=auth_headers(),
+    )
+
+    assert resp.status_code == 201
+    kwargs = mock_svc.upsert_config.await_args.kwargs
+    assert kwargs["attribute"] == {"cadence_unit": 86400, "cadence_offset": 7}
+    assert kwargs["parameter"] == [
+        {"name": "z_threshold", "description": "Std-dev cutoff"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_patch_hands_the_service_the_completed_attribute_not_the_named_field(
+    client, mock_svc: AsyncMock
+) -> None:
+    """A PATCH naming one cadence field forwards the complete defaulted object.
+
+    `model_dump(exclude_unset=True)` reaches *into* `attribute` and would forward only
+    `{"cadence_offset": 7}`, leaving the service to merge against whatever is stored —
+    the exact deep-merge the spec forbids. The route re-dumps the section complete, so
+    the assertion is on the presence of the defaulted `cadence_unit`.
+
+    spec: VALIDATION.md §Rule Configuration — "Supplying `attribute` on `PUT` or
+    `PATCH` writes the **complete** per-field-defaulted object, replacing the previous
+    value outright rather than deep-merging into it."
+    """
+    mock_svc.patch_config = AsyncMock(return_value=_conf_record())
+
+    resp = await client.patch(
+        _CONF_URL,
+        json={"attribute": {"cadence_offset": 7}},
+        headers=auth_headers(),
+    )
+
+    assert resp.status_code == 200
+    patch_arg = mock_svc.patch_config.await_args.args[1]
+    assert patch_arg["attribute"] == {"cadence_unit": 86400, "cadence_offset": 7}
+
+
+@pytest.mark.asyncio
+async def test_patch_omitting_parameter_does_not_put_the_key_in_the_patch(
+    client, mock_svc: AsyncMock
+) -> None:
+    """Omission must not reach the service as a key at all.
+
+    The service reads key presence, so a route that always forwarded `parameter` would
+    turn every partial PATCH into a silent clear.
+
+    spec: VALIDATION.md §Rule Configuration — "Omitting `parameter` leaves the stored
+    value unchanged."
+    """
+    mock_svc.patch_config = AsyncMock(return_value=_conf_record())
+
+    resp = await client.patch(
+        _CONF_URL,
+        json={"description": "Updated description"},
+        headers=auth_headers(),
+    )
+
+    assert resp.status_code == 200
+    patch_arg = mock_svc.patch_config.await_args.args[1]
+    assert "parameter" not in patch_arg
+    assert "attribute" not in patch_arg, (
+        "an unsupplied attribute must not be forwarded either, or every partial PATCH "
+        "would reset the stored cadence"
+    )
+
+
+@pytest.mark.asyncio
+async def test_patch_with_an_explicit_null_forwards_the_parameter_key(
+    client, mock_svc: AsyncMock
+) -> None:
+    """An explicit null must reach the service as a present key holding None.
+
+    Paired with the omission test above, this is what makes the two spellings
+    distinguishable end to end: the bodies differ only in whether the key is sent.
+
+    spec: VALIDATION.md §Rule Configuration — "`"parameter": null` clears it to absent —
+    that is the one spelling for 'clear'."
+    """
+    mock_svc.patch_config = AsyncMock(return_value=_conf_record())
+
+    resp = await client.patch(
+        _CONF_URL,
+        json={"parameter": None},
+        headers=auth_headers(),
+    )
+
+    assert resp.status_code == 200
+    patch_arg = mock_svc.patch_config.await_args.args[1]
+    assert "parameter" in patch_arg
+    assert patch_arg["parameter"] is None
+
+
+@pytest.mark.asyncio
+async def test_patch_with_an_empty_parameter_list_is_rejected_with_422(
+    client, mock_svc: AsyncMock
+) -> None:
+    """`[]` is not a second spelling of "clear" — it is a 422.
+
+    spec: VALIDATION.md §Rule Configuration — "`"parameter": []` is **rejected**
+    (`422`), the same as an empty `variables`, so there is no second spelling of
+    'clear'."
+    """
+    mock_svc.patch_config = AsyncMock(return_value=_conf_record())
+
+    resp = await client.patch(
+        _CONF_URL,
+        json={"parameter": []},
+        headers=auth_headers(),
+    )
+
+    assert resp.status_code == 422
+    mock_svc.patch_config.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_put_with_an_empty_parameter_list_is_rejected_with_422(
+    client, mock_svc: AsyncMock
+) -> None:
+    """The same rejection on the replace route.
+
+    spec: VALIDATION.md §Rule Configuration — "When the key is present it MUST carry
+    1–200 entries — an explicit `[]` is rejected exactly as an empty `variables` is."
+    """
+    mock_svc.upsert_config = AsyncMock(return_value=(_conf_record(), True))
+
+    resp = await client.put(
+        _CONF_URL,
+        json={
+            "description": "Daily row count check",
+            "variables": _DEFAULT_VARS,
+            "parameter": [],
+        },
+        headers=auth_headers(),
+    )
+
+    assert resp.status_code == 422
+    mock_svc.upsert_config.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_put_with_an_out_of_range_cadence_is_rejected_with_422(
+    client, mock_svc: AsyncMock
+) -> None:
+    """The cadence bounds are enforced at the write boundary, before the service runs.
+
+    The column is plain JSONB with no CHECK, so this route is the only gate — a body
+    that slipped past it would make every `validation-score` run of that dataset fail.
+
+    spec: VALIDATION.md §Rule Configuration — `cadence_unit` "MUST be `> 0`".
+    """
+    mock_svc.upsert_config = AsyncMock(return_value=(_conf_record(), True))
+
+    resp = await client.put(
+        _CONF_URL,
+        json={
+            "description": "Daily row count check",
+            "variables": _DEFAULT_VARS,
+            "attribute": {"cadence_unit": 0},
+        },
+        headers=auth_headers(),
+    )
+
+    assert resp.status_code == 422
+    mock_svc.upsert_config.assert_not_awaited()
+
+
 # ── DELETE /attr/validation/conf ──────────────────────────────────────────────
 
 

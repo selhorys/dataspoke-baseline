@@ -19,15 +19,30 @@ def _var(name: str, description: str = "") -> dict[str, str]:
     return {"name": name, "description": description}
 
 
+#: The factory default of ``validation_configs.attribute``, spelled out rather than
+#: imported so a change to the impl constant fails a test instead of following it
+#: silently. spec: VALIDATION.md §Rule Configuration — `cadence_unit` defaults to
+#: `86400`, `cadence_offset` to `0`.
+_DEFAULT_ATTRIBUTE: dict[str, int] = {"cadence_unit": 86400, "cadence_offset": 0}
+
+
 def _make_config_row(
     dataset_urn: str = _DATASET_URN,
     description: str = "Daily row count check",
     variables: list[dict[str, str]] | None = None,
+    attribute: dict[str, int] | None = None,
+    parameter: list[dict[str, str]] | None = None,
 ) -> MagicMock:
     """Mock a ValidationConfig ORM row.
 
     ``variables`` is a JSONB array of ``{name, description}`` dicts per
     BACKEND_SCHEMA.md §validation_configs.
+
+    ``attribute`` is set explicitly (defaulting to the factory cadence) because the
+    column is ``NOT NULL`` and always holds a complete object — leaving it as a bare
+    auto-mock would let a test read a value the database cannot produce. ``parameter``
+    is the optional-by-absence section, so ``None`` is a real stored state here rather
+    than an unset attribute.
     """
     row = MagicMock()
     row.dataset_urn = dataset_urn
@@ -37,6 +52,8 @@ def _make_config_row(
         if variables is not None
         else [_var("row_cnt", "Daily row count"), _var("col1_mean", "Mean of col1")]
     )
+    row.attribute = dict(attribute) if attribute is not None else dict(_DEFAULT_ATTRIBUTE)
+    row.parameter = parameter
     row.created_at = datetime.now(tz=UTC)
     row.updated_at = datetime.now(tz=UTC)
     return row

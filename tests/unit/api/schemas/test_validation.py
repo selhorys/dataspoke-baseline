@@ -16,8 +16,11 @@ from src.api.schemas.validation import (
     PatchValidationConfRequest,
     PostValidationResultRequest,
     PutValidationConfRequest,
+    ValidationAttribute,
+    ValidationParameter,
     ValidationVariable,
 )
+from src.shared.metric_conf import MAX_TIME_WINDOW_SEC
 
 
 def _var(name: str, description: str = "") -> dict[str, str]:
@@ -286,6 +289,457 @@ class TestPatchValidationConfRequest:
         # spec: VALIDATION.md §Rule Configuration — names MUST be unique (PATCH too)
         with pytest.raises(ValidationError, match=r"unique|duplicate"):
             PatchValidationConfRequest(variables=[_var("row_cnt"), _var("row_cnt")])
+
+
+# ── attribute (data-arrival cadence) ─────────────────────────────────────────
+
+
+class TestValidationAttribute:
+    """spec: VALIDATION.md §Rule Configuration — the `attribute` field table.
+
+    `cadence_unit` defaults to `86400`, MUST be `> 0` and `<= 315,360,000`;
+    `cadence_offset` defaults to `0`, MUST be `>= 0`, and
+    `cadence_offset * cadence_unit` MUST be `<= 315,360,000`.
+    """
+
+    def test_omitting_the_object_entirely_yields_both_defaults(self) -> None:
+        # spec: VALIDATION.md §Rule Configuration — "Omitting it on `PUT` stores the
+        # all-defaults object; it is never absent from a stored conf or from a response."
+        attribute = ValidationAttribute()
+        assert attribute.cadence_unit == 86400
+        assert attribute.cadence_offset == 0
+
+    def test_supplying_only_the_offset_defaults_the_unit(self) -> None:
+        # spec: VALIDATION.md §Rule Configuration — each field carries its own default,
+        # so a partial object is completed field-by-field rather than rejected.
+        attribute = ValidationAttribute(cadence_offset=7)
+        assert attribute.cadence_offset == 7
+        assert attribute.cadence_unit == 86400
+
+    def test_supplying_only_the_unit_defaults_the_offset(self) -> None:
+        attribute = ValidationAttribute(cadence_unit=3600)
+        assert attribute.cadence_unit == 3600
+        assert attribute.cadence_offset == 0
+
+    def test_the_d8_example_is_accepted(self) -> None:
+        # spec: VALIDATION.md §Rule Configuration — "Daily D-1 data is `unit = 86400,
+        # offset = 0`; daily D-8 data is `unit = 86400, offset = 7`."
+        attribute = ValidationAttribute(cadence_unit=86400, cadence_offset=7)
+        assert (attribute.cadence_unit, attribute.cadence_offset) == (86400, 7)
+
+    def test_cadence_unit_of_one_is_accepted(self) -> None:
+        # spec: VALIDATION.md §Rule Configuration — `cadence_unit` MUST be `> 0`, so the
+        # interval is closed at 1.
+        assert ValidationAttribute(cadence_unit=1).cadence_unit == 1
+
+    @pytest.mark.parametrize("value", [0, -1])
+    def test_cadence_unit_of_zero_or_below_is_rejected(self, value: int) -> None:
+        # spec: VALIDATION.md §Rule Configuration — `cadence_unit` MUST be `> 0`. A
+        # zero-second cadence would make every window collapse to its upper bound.
+        with pytest.raises(ValidationError):
+            ValidationAttribute(cadence_unit=value)
+
+    def test_cadence_unit_at_the_ten_year_ceiling_is_accepted(self) -> None:
+        # spec: VALIDATION.md §Rule Configuration — "MUST be … `<= 315,360,000` (ten
+        # years — the same ceiling as `metric_conf.time_window_sec`)". The endpoint
+        # itself is admissible.
+        attribute = ValidationAttribute(cadence_unit=MAX_TIME_WINDOW_SEC)
+        assert attribute.cadence_unit == MAX_TIME_WINDOW_SEC
+
+    def test_cadence_unit_past_the_ceiling_is_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            ValidationAttribute(cadence_unit=MAX_TIME_WINDOW_SEC + 1)
+
+    def test_cadence_offset_of_zero_is_accepted(self) -> None:
+        # spec: VALIDATION.md §Rule Configuration — `cadence_offset` MUST be `>= 0`, and
+        # 0 is its default: D-1 data lags by no whole period.
+        assert ValidationAttribute(cadence_offset=0).cadence_offset == 0
+
+    def test_negative_cadence_offset_is_rejected(self) -> None:
+        # spec: VALIDATION.md §Rule Configuration — `cadence_offset` MUST be `>= 0`. A
+        # negative lag would shift the window into the future.
+        with pytest.raises(ValidationError):
+            ValidationAttribute(cadence_offset=-1)
+
+    def test_the_product_at_the_ceiling_is_accepted(self) -> None:
+        # spec: VALIDATION.md §Rule Configuration — the product bound is `<= 315,360,000`,
+        # so the endpoint itself passes. Pairs with the test below, which is one second
+        # past it: together they fix the bound rather than merely proving one exists.
+        attribute = ValidationAttribute(cadence_unit=MAX_TIME_WINDOW_SEC, cadence_offset=1)
+        assert attribute.cadence_unit * attribute.cadence_offset == MAX_TIME_WINDOW_SEC
+
+    def test_a_product_past_the_ceiling_is_rejected_though_each_field_is_in_range(
+        self,
+    ) -> None:
+        """The case no per-field bound can express: both factors are individually legal.
+
+        `cadence_unit = 200_000_000` is inside `[1, 315_360_000]` and `cadence_offset = 2`
+        is `>= 0`, yet their product is 400,000,000 — past the ceiling. Only the
+        model-level check catches it, and it is the check that keeps the measurer's
+        `timedelta(seconds=offset * unit)` from overflowing.
+
+        spec: VALIDATION.md §Rule Configuration — "`cadence_offset * cadence_unit` MUST be
+        `<= 315,360,000` — the same product bound the `validation-score` window arithmetic
+        applies to `time_window_sec`, so an accepted `attribute` can never make a governed
+        window's arithmetic overflow."
+        """
+        with pytest.raises(ValidationError, match=r"cadence_offset \* cadence_unit"):
+            ValidationAttribute(cadence_unit=200_000_000, cadence_offset=2)
+
+    def test_the_offset_carries_no_ceiling_of_its_own_up_to_the_product_bound(
+        self,
+    ) -> None:
+        """The product bound's other endpoint: a huge `cadence_offset` with `unit = 1`.
+
+        `cadence_offset` has no per-field ceiling — only the product is bounded — so
+        315,360,000 periods of one second is admissible while 315,360,001 (below) is not.
+        Pairs with the rejection below to fix the bound from the offset side, the way
+        `test_the_product_at_the_ceiling_is_accepted` fixes it from the unit side.
+
+        spec: VALIDATION.md §Rule Configuration — "`cadence_offset` … MUST be `>= 0`, and
+        `cadence_offset * cadence_unit` MUST be `<= 315,360,000`".
+        """
+        attribute = ValidationAttribute(cadence_unit=1, cadence_offset=MAX_TIME_WINDOW_SEC)
+        assert attribute.cadence_unit * attribute.cadence_offset == MAX_TIME_WINDOW_SEC
+
+    def test_the_product_one_second_past_the_ceiling_is_rejected(self) -> None:
+        """315,360,001 is the first rejected product — and it is the *product* check
+        that rejects it.
+
+        Both factors are individually legal (`cadence_unit = 1` is inside `[1,
+        315_360_000]`, `cadence_offset` carries no ceiling of its own), so neither field
+        bound can fire and the model-level `_check_window_shift` is the only thing left
+        that can. The error is asserted to name the product rather than a field, which is
+        what distinguishes this case from the per-field-ceiling test above.
+
+        spec: VALIDATION.md §Rule Configuration — the product bound is inclusive at
+        315,360,000, so 315,360,001 is the first rejected product.
+        """
+        with pytest.raises(ValidationError) as excinfo:
+            ValidationAttribute(cadence_unit=1, cadence_offset=MAX_TIME_WINDOW_SEC + 1)
+
+        (error,) = excinfo.value.errors()
+        assert "cadence_offset * cadence_unit must not exceed" in error["msg"], (
+            "the rejection must be the model-level product bound, not a per-field "
+            f"ceiling; got {error['msg']!r}"
+        )
+        assert error["loc"] == (), (
+            "a model validator's error carries no field location; a `cadence_unit` / "
+            f"`cadence_offset` loc would mean a per-field bound fired instead; got "
+            f"{error['loc']!r}"
+        )
+
+    def test_the_rejection_message_does_not_echo_the_rejected_product(self) -> None:
+        # The rejected value is caller-controlled and arbitrarily long; the bound is what
+        # the caller needs to be told. Keeps a 422 body's size out of the requester's
+        # control, the same way the dataset_filter messages do.
+        with pytest.raises(ValidationError) as excinfo:
+            ValidationAttribute(cadence_unit=MAX_TIME_WINDOW_SEC, cadence_offset=1_000_000)
+        assert "315360000000000" not in str(excinfo.value), (
+            "the message must state the bound, not the rejected product"
+        )
+
+    @pytest.mark.parametrize("field", ["cadence_unit", "cadence_offset"])
+    @pytest.mark.parametrize("value", [True, False])
+    def test_a_json_boolean_is_not_an_admissible_integer(
+        self, field: str, value: bool
+    ) -> None:
+        """`true` must not be admitted as a one-second cadence.
+
+        `bool` subclasses `int`, so Pydantic's lax mode would otherwise coerce it —
+        silently turning `{"cadence_unit": true}` into a one-second arrival cadence and
+        every governed window into a one-second one.
+
+        spec: VALIDATION.md §Rule Configuration — `cadence_unit` / `cadence_offset` are
+        `int`; API.md §Metric states the same refusal for the sibling window integer:
+        "out of range, non-integer, or boolean returns `422 INVALID_PARAMETER`".
+        """
+        with pytest.raises(ValidationError):
+            ValidationAttribute(**{field: value})
+
+    def test_an_unknown_key_is_not_stored(self) -> None:
+        """`attribute` is a closed, typed object — not an open bag.
+
+        spec: VALIDATION.md §Rule Configuration — "`attribute` is a **closed, typed
+        object** — unknown keys are not stored."
+        """
+        attribute = ValidationAttribute.model_validate(
+            {"cadence_unit": 3600, "cadence_offset": 1, "cadence_timezone": "UTC"}
+        )
+        assert attribute.model_dump() == {"cadence_unit": 3600, "cadence_offset": 1}
+
+
+class TestPutValidationConfRequestAttribute:
+    def test_omitting_attribute_stores_the_all_defaults_object(self) -> None:
+        # spec: VALIDATION.md §Rule Configuration — "Omitting it on `PUT` stores the
+        # all-defaults object". The field is non-optional on the response, so the request
+        # model must materialise it rather than leaving it None.
+        req = PutValidationConfRequest(description="d", variables=[_var("row_cnt")])
+        assert req.attribute.cadence_unit == 86400
+        assert req.attribute.cadence_offset == 0
+
+    def test_a_partial_attribute_is_completed_with_per_field_defaults(self) -> None:
+        # spec: VALIDATION.md §Rule Configuration — "Supplying `attribute` on `PUT` or
+        # `PATCH` writes the **complete** per-field-defaulted object".
+        req = PutValidationConfRequest.model_validate(
+            {
+                "description": "d",
+                "variables": [_var("row_cnt")],
+                "attribute": {"cadence_offset": 7},
+            }
+        )
+        assert req.attribute.model_dump() == {"cadence_unit": 86400, "cadence_offset": 7}
+
+    def test_an_out_of_range_attribute_rejects_the_whole_body(self) -> None:
+        with pytest.raises(ValidationError):
+            PutValidationConfRequest.model_validate(
+                {
+                    "description": "d",
+                    "variables": [_var("row_cnt")],
+                    "attribute": {"cadence_unit": 0},
+                }
+            )
+
+
+class TestPatchValidationConfRequestAttribute:
+    def test_omitting_attribute_leaves_it_unset(self) -> None:
+        # spec: VALIDATION.md §Rule Configuration — on PATCH, "Omitted, the stored value
+        # is unchanged", which the schema expresses as None (nothing to write).
+        req = PatchValidationConfRequest(description="d")
+        assert req.attribute is None
+        assert "attribute" not in req.model_dump(exclude_unset=True)
+
+    def test_a_partial_attribute_defaults_the_unnamed_field_not_the_stored_one(
+        self,
+    ) -> None:
+        """A PATCH naming one cadence field materialises the other at its **default**.
+
+        This is the schema half of the wholesale-replacement rule: the model must produce
+        a complete object with `cadence_unit = 86400` here, so a service writing
+        `body.attribute.model_dump()` cannot accidentally deep-merge against whatever was
+        stored. The service half is
+        `tests/unit/backend/validation/test_service_config.py`.
+
+        spec: VALIDATION.md §Rule Configuration — "A `PATCH` carrying
+        `{"attribute": {"cadence_offset": 7}}` therefore also resets `cadence_unit` to
+        `86400`."
+        """
+        req = PatchValidationConfRequest.model_validate({"attribute": {"cadence_offset": 7}})
+        assert req.attribute is not None
+        assert req.attribute.model_dump() == {"cadence_unit": 86400, "cadence_offset": 7}
+
+    def test_an_out_of_range_attribute_rejects_the_patch(self) -> None:
+        with pytest.raises(ValidationError):
+            PatchValidationConfRequest.model_validate({"attribute": {"cadence_offset": -1}})
+
+
+# ── parameter (opaque pipeline hyperparameters) ──────────────────────────────
+
+
+class TestValidationParameterElement:
+    """spec: VALIDATION.md §Rule Configuration — each `parameter` element follows "the
+    same rules in its own separate namespace" as a `variables` element."""
+
+    def test_name_and_description_accepted(self) -> None:
+        parameter = ValidationParameter(name="z_threshold", description="Std-dev cutoff")
+        assert parameter.name == "z_threshold"
+        assert parameter.description == "Std-dev cutoff"
+
+    def test_empty_description_accepted(self) -> None:
+        # spec: VALIDATION.md §Rule Configuration — "Required key, but the **empty string
+        # is allowed**."
+        assert ValidationParameter(name="z_threshold", description="").description == ""
+
+    def test_description_at_200_chars_accepted(self) -> None:
+        parameter = ValidationParameter(name="z_threshold", description="x" * 200)
+        assert len(parameter.description) == 200
+
+    def test_description_at_201_chars_rejected_naming_parameter(self) -> None:
+        """The message says "parameter", not "variable".
+
+        The two lists share their per-item rules but not their identity: a caller told
+        their *variable* description is too long while editing `parameter` is being sent
+        to the wrong field.
+
+        The spec fixes the rule but not the wording — VALIDATION.md §Rule Configuration
+        says only that `parameter` elements follow "the same rules in its own separate
+        namespace". Which namespace the rejection *names* is therefore not a spec line;
+        it is pinned here because the shared validator makes mislabelling the silent
+        default, and this test is what keeps the two labels from collapsing back into one.
+        """
+        with pytest.raises(ValidationError) as excinfo:
+            ValidationParameter(name="z_threshold", description="x" * 201)
+        message = str(excinfo.value)
+        assert "parameter description must not exceed 200 characters" in message, (
+            f"the message must name the parameter namespace; got {message}"
+        )
+        assert "variable description" not in message
+
+    def test_description_with_control_byte_rejected_naming_parameter(self) -> None:
+        with pytest.raises(ValidationError) as excinfo:
+            ValidationParameter(name="z_threshold", description="bad\x01desc")
+        message = str(excinfo.value)
+        assert "parameter description contains control characters" in message, (
+            f"the message must name the parameter namespace; got {message}"
+        )
+        assert "variable description" not in message
+
+    @pytest.mark.parametrize("whitespace", ["\t", "\n"])
+    def test_the_two_carve_out_control_characters_are_accepted(
+        self, whitespace: str
+    ) -> None:
+        # Backstop for the control-character rejection above: \t (0x09) and \n (0x0a) are
+        # the carve-out set, so the check is not simply refusing all whitespace.
+        parameter = ValidationParameter(name="z_threshold", description=f"a{whitespace}b")
+        assert whitespace in parameter.description
+
+    @pytest.mark.parametrize("bad_name", ["1abc", "ZThreshold", "_z", "z-threshold", "café"])
+    def test_the_name_regex_is_the_variable_one(self, bad_name: str) -> None:
+        # spec: VALIDATION.md §Rule Configuration — name "MUST match
+        # `\\A[a-z][a-z0-9_]{0,99}\\Z`", the same production `variables` uses.
+        with pytest.raises(ValidationError):
+            ValidationParameter(name=bad_name, description="")
+
+    def test_a_100_char_name_is_accepted_and_101_is_not(self) -> None:
+        assert ValidationParameter(name="z" * 100, description="").name == "z" * 100
+        with pytest.raises(ValidationError):
+            ValidationParameter(name="z" * 101, description="")
+
+
+class TestPutValidationConfRequestParameter:
+    """spec: VALIDATION.md §Rule Configuration — the `parameter` lifecycle bullet list."""
+
+    def test_omitting_parameter_leaves_it_absent(self) -> None:
+        # spec: VALIDATION.md §Rule Configuration — "**`PUT`** is a full replace, like
+        # every other field on it: omitting `parameter` stores it as absent".
+        req = PutValidationConfRequest(description="d", variables=[_var("row_cnt")])
+        assert req.parameter is None
+
+    def test_a_non_empty_parameter_list_is_accepted(self) -> None:
+        req = PutValidationConfRequest.model_validate(
+            {
+                "description": "d",
+                "variables": [_var("row_cnt")],
+                "parameter": [{"name": "z_threshold", "description": "Std-dev cutoff"}],
+            }
+        )
+        assert req.parameter is not None
+        assert [p.name for p in req.parameter] == ["z_threshold"]
+
+    def test_an_explicit_empty_list_is_rejected(self) -> None:
+        # spec: VALIDATION.md §Rule Configuration — "When the key is present it MUST carry
+        # 1–200 entries — an explicit `[]` is rejected exactly as an empty `variables` is."
+        with pytest.raises(ValidationError, match=r"at least 1"):
+            PutValidationConfRequest.model_validate(
+                {"description": "d", "variables": [_var("row_cnt")], "parameter": []}
+            )
+
+    def test_the_cardinality_message_names_the_parameter_field(self) -> None:
+        # The cardinality checks are about the *field*, so they name "parameter" rather
+        # than "variables" — a caller told `variables` is empty while editing `parameter`
+        # is being sent to the wrong field.
+        with pytest.raises(ValidationError) as excinfo:
+            PutValidationConfRequest.model_validate(
+                {"description": "d", "variables": [_var("row_cnt")], "parameter": []}
+            )
+        message = str(excinfo.value)
+        assert "parameter must have at least 1 entry" in message, (
+            f"the message must name the parameter field; got {message}"
+        )
+        assert "variables must have at least 1 entry" not in message
+
+    def test_200_parameters_are_accepted_and_201_are_not(self) -> None:
+        # spec: VALIDATION.md §Rule Configuration — "MUST carry 1–200 entries".
+        base = {"description": "d", "variables": [_var("row_cnt")]}
+        req = PutValidationConfRequest.model_validate(
+            {**base, "parameter": [_var(f"p{i:03}") for i in range(200)]}
+        )
+        assert req.parameter is not None and len(req.parameter) == 200
+        with pytest.raises(ValidationError, match=r"parameter must not exceed 200 entries"):
+            PutValidationConfRequest.model_validate(
+                {**base, "parameter": [_var(f"p{i:03}") for i in range(201)]}
+            )
+
+    def test_duplicate_parameter_names_are_rejected(self) -> None:
+        # spec: VALIDATION.md §Rule Configuration — a name "MUST be unique across the
+        # list", the list here being `parameter`.
+        with pytest.raises(ValidationError, match=r"parameter names must be unique"):
+            PutValidationConfRequest.model_validate(
+                {
+                    "description": "d",
+                    "variables": [_var("row_cnt")],
+                    "parameter": [_var("z_threshold"), _var("z_threshold")],
+                }
+            )
+
+    def test_a_name_may_appear_in_both_variables_and_parameter(self) -> None:
+        """Uniqueness is per list, so the two namespaces are genuinely separate.
+
+        This is the assertion that distinguishes "two lists validated by one shared
+        helper" from "one merged namespace": a cross-list uniqueness check would reject
+        this body, and nothing else in the file would notice.
+
+        spec: VALIDATION.md §Rule Configuration — "each `parameter` element, under the
+        same rules in its own separate namespace (a name may appear in both lists;
+        uniqueness is per list)".
+        """
+        req = PutValidationConfRequest.model_validate(
+            {
+                "description": "d",
+                "variables": [_var("row_cnt", "Daily row count")],
+                "parameter": [_var("row_cnt", "Expected row count")],
+            }
+        )
+        assert req.variables[0].name == "row_cnt"
+        assert req.parameter is not None
+        assert req.parameter[0].name == "row_cnt"
+        assert req.parameter[0].description == "Expected row count"
+
+
+class TestPatchValidationConfRequestParameter:
+    def test_omitting_parameter_leaves_the_key_unset(self) -> None:
+        """Omission and `null` must be distinguishable at the schema layer.
+
+        Both surface as `parameter is None`, so `exclude_unset` is the only thing that
+        tells "leave the stored value alone" from "clear it" — and the service reads
+        exactly that. Asserting the value alone would pass for both spellings.
+
+        spec: VALIDATION.md §Rule Configuration — "Omitting `parameter` leaves the stored
+        value unchanged. `"parameter": null` clears it to absent".
+        """
+        req = PatchValidationConfRequest(description="d")
+        assert req.parameter is None
+        assert "parameter" not in req.model_dump(exclude_unset=True)
+
+    def test_an_explicit_null_keeps_the_key_present(self) -> None:
+        req = PatchValidationConfRequest.model_validate({"parameter": None})
+        assert req.parameter is None
+        assert "parameter" in req.model_dump(exclude_unset=True), (
+            "an explicit null is the one spelling of 'clear', so the key has to survive "
+            "exclude_unset for the service to see it"
+        )
+
+    def test_a_non_empty_list_replaces_wholesale(self) -> None:
+        # spec: VALIDATION.md §Rule Configuration — "A non-empty list (1–200 entries,
+        # validated exactly as `variables` is) replaces the stored value wholesale."
+        req = PatchValidationConfRequest.model_validate(
+            {"parameter": [_var("z_threshold", "cutoff"), _var("window_days")]}
+        )
+        assert req.parameter is not None
+        assert [p.name for p in req.parameter] == ["z_threshold", "window_days"]
+
+    def test_an_empty_list_is_rejected_on_patch_too(self) -> None:
+        # spec: VALIDATION.md §Rule Configuration — "`"parameter": []` is **rejected**
+        # (`422`), the same as an empty `variables`, so there is no second spelling of
+        # 'clear'."
+        with pytest.raises(ValidationError, match=r"parameter must have at least 1 entry"):
+            PatchValidationConfRequest.model_validate({"parameter": []})
+
+    def test_duplicate_names_are_rejected_on_patch_too(self) -> None:
+        with pytest.raises(ValidationError, match=r"parameter names must be unique"):
+            PatchValidationConfRequest.model_validate(
+                {"parameter": [_var("z_threshold"), _var("z_threshold")]}
+            )
 
 
 # ── POST /attr/validation/result ─────────────────────────────────────────────

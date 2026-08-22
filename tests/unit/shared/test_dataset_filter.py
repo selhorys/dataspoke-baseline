@@ -21,10 +21,13 @@ from src.shared.dataset_filter import (
     MAX_FILTER_CHARS,
     MAX_STRING_LITERALS,
     ArrayContains,
+    ArrayNotContains,
     BoolEquals,
     DatasetFilterSyntaxError,
     Equals,
     InList,
+    NotEquals,
+    NotInList,
     check_dataset_urn_literals,
     filter_clause,
     format_filter,
@@ -409,12 +412,469 @@ class TestBooleanPredicate:
         check_dataset_urn_literals(ast)
 
 
+# ── Negation ─────────────────────────────────────────────────────────────────
+
+
+class TestScalarNotEquals:
+    """``predicate := scalar_col '!=' string`` (spec/API.md §``dataset_filter``
+    grammar — grammar block, §Negation)."""
+
+    @pytest.mark.parametrize(
+        ("column", "value"),
+        [
+            ("dataset_urn", _URN),
+            ("origin", "PROD"),
+            ("platform_urn", "urn:li:dataPlatform:postgres"),
+        ],
+    )
+    def test_every_scalar_column_accepts_not_equals(self, column: str, value: str) -> None:
+        ast = parse_filter(f"{column} != '{value}'")
+        assert ast.root == NotEquals(column=column, value=value)
+
+    def test_not_equals_compiles_to_a_plain_sql_inequality(self) -> None:
+        """The rendered operator is asserted, not just the column.
+
+        ``!=`` and ``IS DISTINCT FROM`` name the same column and bind the same value
+        while selecting different sets — the latter admits every ``NULL`` row — so the
+        spelling is the whole content of the rule.
+
+        spec/API.md §``dataset_filter`` grammar — Negation: "It compiles to plain SQL
+            `!=` / `NOT IN` and inherits standard three-valued logic".
+        """
+        sql, params = _compile("origin != 'PROD'")
+        (name,) = params
+        assert f"dataset_registry.origin != %({name})s" in sql, (
+            f"expected a plain inequality on origin; got:\n{sql}"
+        )
+        assert "distinct from" not in sql.lower(), (
+            "an `IS DISTINCT FROM` would fold every NULL-origin row into the scope. "
+            f"Got:\n{sql}"
+        )
+        assert list(params.values()) == ["PROD"], (
+            "the value still travels as a bound parameter under negation"
+        )
+
+    @pytest.mark.parametrize("operator", ["<>", "!", "<=", ">=", "~"])
+    def test_no_other_comparison_spelling_is_admitted(self, operator: str) -> None:
+        """``!=`` is the only not-equals spelling, and its neighbours are not operators.
+
+        ``<>`` is the one the spec names outright, since a grammar that silently
+        accepted it would fork the canonical form the formatter emits. The rest are the
+        characters a SQL-trained hand reaches for next — ``!`` alone is one half of the
+        two-character token, and ``<=`` / ``>=`` / ``~`` are comparisons the grammar has
+        no production for at all. Each must fail at the offending character rather than
+        being absorbed into a predicate.
+
+        spec/API.md §``dataset_filter`` grammar — `predicate := scalar_col ('=' | '!=')
+            string` (no other comparison operator appears in any production);
+            "`<>` is **not** accepted — `!=` is the only spelling of not-equals the
+            grammar recognises, and `<>` is a syntax error
+            (`422 INVALID_DATASET_FILTER`)".
+        """
+        text = f"origin {operator} 'PROD'"
+        with pytest.raises(DatasetFilterSyntaxError) as excinfo:
+            parse_filter(text)
+        assert excinfo.value.position == text.index(operator[0]), (
+            f"the error must point at the first character of {operator!r}; got position "
+            f"{excinfo.value.position} in {text!r}"
+        )
+        # Only rejection + position are pinned, not the wording — same rule as the
+        # sibling standalone-NOT test, since the spec fixes neither operator's message.
+
+    def test_not_equals_requires_a_quoted_value(self) -> None:
+        with pytest.raises(DatasetFilterSyntaxError):
+            parse_filter("origin != PROD")
+
+    def test_an_array_column_cannot_be_compared_with_not_equals(self) -> None:
+        """``tag_urns != 'x'`` is the negated half of the wrong-kind rule.
+
+        Pinned: the rejection, its position, and that the message names the kind the
+        column actually is — the one thing the spec requires of the wording. How the
+        message goes on to spell the correct forms is left to the parser.
+
+        spec/feature/BACKEND.md §Dataset resolution — "the column set is the grammar's
+            own whitelist, partitioned by kind (scalar, array, boolean) so that a column
+            used with the wrong operator is a parse error naming the kind it actually
+            is".
+        """
+        text = "tag_urns != 'urn:li:tag:pii'"
+        with pytest.raises(DatasetFilterSyntaxError) as excinfo:
+            parse_filter(text)
+        assert excinfo.value.position == text.index("tag_urns")
+        message = str(excinfo.value)
+        assert "array column" in message, f"the message must name the kind; got {message}"
+
+
+class TestScalarNotInList:
+    """``predicate := scalar_col NOT IN '(' string {',' string} ')'``."""
+
+    def test_not_in_list_parses_every_value_in_source_order(self) -> None:
+        ast = parse_filter("origin NOT IN ('PROD', 'DEV', 'STG')")
+        assert ast.root == NotInList(column="origin", values=("PROD", "DEV", "STG"))
+
+    def test_single_element_not_in_list_is_accepted(self) -> None:
+        assert parse_filter("origin NOT IN ('PROD')").root == NotInList(
+            column="origin", values=("PROD",)
+        )
+
+    def test_not_in_compiles_to_a_negated_array_membership(self) -> None:
+        """``NOT (col = ANY(:arr))`` — the negation of the affirmative shape.
+
+        The array binding matters as much as the negation: a chain of ``!=``
+        comparisons would bind one parameter per literal and walk into the
+        wire-protocol parameter ceiling that the affirmative form's array binding
+        exists to avoid.
+
+        spec/API.md §``dataset_filter`` grammar — Negation: "It compiles to plain SQL
+            `!=` / `NOT IN` and inherits standard three-valued logic".
+        """
+        sql, params = _compile("origin NOT IN ('PROD', 'DEV')")
+        (name,) = params
+        assert f"not (dataspoke.dataset_registry.origin = any (%({name})s" in sql.lower(), (
+            f"expected `NOT (origin = ANY(...))`; got:\n{sql}"
+        )
+        assert [value for value in params.values()] == [["PROD", "DEV"]], (
+            "the whole list travels as ONE bound array parameter, as it does affirmatively"
+        )
+
+    def test_empty_not_in_list_is_rejected(self) -> None:
+        """The value-list production is shared with ``IN``, so it admits the same
+        thing: at least one ``string``."""
+        with pytest.raises(DatasetFilterSyntaxError):
+            parse_filter("origin NOT IN ()")
+
+    def test_unterminated_not_in_list_is_rejected(self) -> None:
+        with pytest.raises(DatasetFilterSyntaxError):
+            parse_filter("origin NOT IN ('PROD'")
+
+
+class TestArrayNotContains:
+    """``predicate := string NOT IN array_col``."""
+
+    @pytest.mark.parametrize(
+        ("column", "value"),
+        [
+            ("tag_urns", "urn:li:tag:lifecycle:deprecated"),
+            ("glossary_term_urns", "urn:li:glossaryTerm:pii.gdpr"),
+        ],
+    )
+    def test_every_array_column_accepts_negated_membership(
+        self, column: str, value: str
+    ) -> None:
+        ast = parse_filter(f"'{value}' NOT IN {column}")
+        assert ast.root == ArrayNotContains(column=column, value=value)
+
+    def test_negated_membership_compiles_to_a_negated_containment(self) -> None:
+        """``NOT (col @> ARRAY[value])`` — the GIN-servable operator, negated.
+
+        spec/API.md §``dataset_filter`` grammar — Negation: "the array columns are not
+            [nullable], so `NOT IN` over `tag_urns` / `glossary_term_urns` *is* a true
+            complement of `IN`".
+        """
+        sql, params = _compile("'urn:li:tag:lifecycle:deprecated' NOT IN tag_urns")
+        (name,) = params
+        assert f"not (dataspoke.dataset_registry.tag_urns @> %({name})s" in sql.lower(), (
+            f"expected `NOT (tag_urns @> ARRAY[value])`; got:\n{sql}"
+        )
+        assert [value for value in params.values()] == [
+            ["urn:li:tag:lifecycle:deprecated"]
+        ]
+
+    def test_a_scalar_column_cannot_be_a_negated_membership_target(self) -> None:
+        """``'x' NOT IN origin`` inverts the two IN forms.
+
+        Pinned: rejection, position, and that the message names the kind the column
+        actually is — spec/feature/BACKEND.md §Dataset resolution, "a column used with
+        the wrong operator is a parse error naming the kind it actually is". The rest of
+        the wording is the parser's own.
+        """
+        text = "'x' NOT IN origin"
+        with pytest.raises(DatasetFilterSyntaxError) as excinfo:
+            parse_filter(text)
+        assert excinfo.value.position == text.index("origin")
+        message = str(excinfo.value)
+        assert "scalar column" in message, f"the message must name the kind; got {message}"
+
+    def test_an_unknown_array_column_is_rejected_under_negation_too(self) -> None:
+        with pytest.raises(DatasetFilterSyntaxError):
+            parse_filter("'x' NOT IN owner_urns")
+
+
+class TestNotIsOnlyPartOfNotIn:
+    """spec/API.md §``dataset_filter`` grammar: "`NOT` likewise appears **only** as
+    part of `NOT IN`; there is no standalone `NOT (expr)` prefix form, so a filter
+    negates one predicate at a time rather than a parenthesised group"."""
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "NOT origin = 'PROD'",
+            "NOT (origin = 'PROD')",
+            "NOT (origin = 'PROD' OR origin = 'DEV')",
+        ],
+    )
+    def test_a_leading_not_is_rejected(self, text: str) -> None:
+        """A prefix ``NOT`` is rejected where it stands.
+
+        Only the rejection and its position are pinned: the spec requires that no
+        standalone ``NOT`` prefix form exists, not that the parser explain the refusal
+        with any particular wording, so a spec-compliant parser that phrases the message
+        differently must still pass.
+        """
+        with pytest.raises(DatasetFilterSyntaxError) as excinfo:
+            parse_filter(text)
+        assert excinfo.value.position == 0, (
+            "the error must point at the leading NOT itself, which opens the filter; "
+            f"got position {excinfo.value.position} for {text!r}"
+        )
+
+    def test_a_not_inside_a_composition_is_rejected(self) -> None:
+        text = "origin = 'A' AND NOT (origin = 'B')"
+        with pytest.raises(DatasetFilterSyntaxError) as excinfo:
+            parse_filter(text)
+        assert excinfo.value.position == text.index("NOT")
+
+    def test_not_without_a_following_in_is_rejected_after_a_column(self) -> None:
+        """Only rejection + position are pinned, not the wording — the spec fixes that
+        ``NOT`` appears only as part of ``NOT IN``, not how the parser phrases the
+        refusal."""
+        text = "origin NOT ('a')"
+        with pytest.raises(DatasetFilterSyntaxError) as excinfo:
+            parse_filter(text)
+        assert excinfo.value.position == text.index("(")
+
+    def test_not_without_a_following_in_is_rejected_after_a_string(self) -> None:
+        """Rejection + position only, as in the sibling above."""
+        text = "'x' NOT tag_urns"
+        with pytest.raises(DatasetFilterSyntaxError) as excinfo:
+            parse_filter(text)
+        assert excinfo.value.position == text.index("tag_urns")
+
+    @pytest.mark.parametrize("keyword", ["not", "NOT", "NoT"])
+    def test_the_not_keyword_is_case_insensitive_in_both_forms(self, keyword: str) -> None:
+        """spec/API.md §``dataset_filter`` grammar: "Keywords (`AND`, `OR`, `NOT`,
+        `IN`) and column names are case-insensitive"."""
+        assert parse_filter(f"origin {keyword} IN ('PROD')").root == NotInList(
+            column="origin", values=("PROD",)
+        )
+        assert parse_filter(f"'urn:li:tag:pii' {keyword} IN tag_urns").root == (
+            ArrayNotContains(column="tag_urns", value="urn:li:tag:pii")
+        )
+
+
+class TestBooleanColumnTakesNoNegation:
+    """spec/API.md §``dataset_filter`` grammar — Negation: "Negation is available on
+    the scalar and array columns only — the boolean column takes `=` alone, since
+    `is_primary != true` would be a second spelling of `is_primary = false`, and a
+    boolean column with `NOT IN` is the same syntax error as with `IN`"."""
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "is_primary != TRUE",
+            "is_primary != FALSE",
+            "is_primary != 'true'",
+        ],
+    )
+    def test_the_boolean_column_rejects_not_equals(self, text: str) -> None:
+        """Only rejection + position are pinned, not the wording — the spec fixes that
+        the boolean column "takes `=` alone", not how the parser phrases the refusal."""
+        with pytest.raises(DatasetFilterSyntaxError) as excinfo:
+            parse_filter(text)
+        assert excinfo.value.position == text.index("!=")
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "is_primary NOT IN (TRUE)",
+            "is_primary NOT IN ('true')",
+        ],
+    )
+    def test_the_boolean_column_rejects_not_in(self, text: str) -> None:
+        with pytest.raises(DatasetFilterSyntaxError) as excinfo:
+            parse_filter(text)
+        assert excinfo.value.position == text.index("NOT")
+
+    def test_a_boolean_column_as_a_negated_membership_target_names_its_kind(self) -> None:
+        text = "'x' NOT IN is_primary"
+        with pytest.raises(DatasetFilterSyntaxError) as excinfo:
+            parse_filter(text)
+        assert excinfo.value.position == text.index("is_primary")
+        assert "boolean" in str(excinfo.value).lower()
+
+    def test_the_affirmative_boolean_form_still_parses(self) -> None:
+        """Backstop for the five rejections above: a boolean predicate that uses the
+        one operator it accepts is not collateral damage."""
+        assert parse_filter("is_primary = true").root == BoolEquals(
+            column="is_primary", value=True
+        )
+
+
+class TestNegationIsNotAComplementOfTheScope:
+    """spec/API.md §``dataset_filter`` grammar — Negation and Never-swept datasets.
+
+    The property under test is a **run-time** one — which rows a query returns — and
+    these are unit tests with no database, so it is pinned at the two places it is
+    actually decided: the operator the compiler emits (three-valued plain SQL, never
+    a NULL-absorbing variant) and the registry column's own nullability and default.
+    End-to-end confirmation against real PostgreSQL rows lives in
+    ``tests/integration/spot/test_dataset_attribute_sync.py::
+    test_a_never_swept_row_is_outside_both_scalar_directions_but_inside_every_not_in``,
+    which seeds a never-swept row and reads all four clauses back through the metric's
+    dataset view.
+    """
+
+    def test_a_negated_scalar_predicate_emits_no_null_absorbing_operator(self) -> None:
+        """Neither ``!=`` nor ``NOT IN`` may render an operator that admits NULL.
+
+        This is what makes a never-swept dataset — whose ``origin`` / ``platform_urn``
+        are still ``NULL`` — satisfy *neither* direction. ``IS DISTINCT FROM``, a
+        ``COALESCE`` around the column, or an ``OR col IS NULL`` disjunct would each
+        quietly fold the unswept remainder into every negated scope.
+
+        spec/API.md §``dataset_filter`` grammar — Negation: "a row whose scalar column
+            is `NULL` satisfies *neither* `scalar_col = 'x'` nor `scalar_col != 'x'` for
+            any `x` — the same asymmetry `=` and `IN` already exhibit";
+        §Never-swept datasets: "`origin` and `platform_urn` default to `NULL` until the
+            sweep parses them from the URN, and a `NULL` scalar matches neither
+            direction".
+        """
+        for text in ("origin != 'PROD'", "platform_urn NOT IN ('urn:li:dataPlatform:kafka')"):
+            sql, _params = _compile(text)
+            lowered = sql.lower()
+            assert "distinct from" not in lowered, f"{text!r} renders NULL-absorbing:\n{sql}"
+            assert "coalesce" not in lowered, f"{text!r} renders NULL-absorbing:\n{sql}"
+            assert "is null" not in lowered, f"{text!r} renders NULL-absorbing:\n{sql}"
+
+    def test_the_scalar_columns_negation_reasons_about_are_the_nullable_ones(self) -> None:
+        """Backstop for the rule above: it only bites because these columns are NULL-able.
+
+        Asserting the nullability here is what keeps the three-valued reasoning honest —
+        if ``origin`` were made ``NOT NULL`` the asymmetry would disappear and the spec
+        paragraph above would need rewriting rather than silently becoming vacuous.
+
+        spec/API.md §``dataset_filter`` grammar — Negation: "`origin` and `platform_urn`
+            are nullable in the registry".
+        """
+        from src.shared.db.models import DatasetRegistry
+
+        assert DatasetRegistry.origin.nullable is True
+        assert DatasetRegistry.platform_urn.nullable is True
+
+    def test_a_negated_array_predicate_is_a_true_complement(self) -> None:
+        """The array columns are ``NOT NULL`` with an empty-array default, so
+        ``NOT IN`` over them complements ``IN`` exactly — including for a never-swept
+        row, whose empty array contains nothing and therefore matches every negated
+        membership predicate.
+
+        Both halves are asserted: the column facts that make the complement exact, and
+        the compiled shape (a plain ``NOT`` around the containment test, with no NULL
+        handling bolted on) that would otherwise break it.
+
+        spec/API.md §``dataset_filter`` grammar — Negation: "the array columns are not
+            [nullable], so `NOT IN` over `tag_urns` / `glossary_term_urns` *is* a true
+            complement of `IN`";
+        §Never-swept datasets: "`tag_urns` / `glossary_term_urns` default to the empty
+            array, which contains nothing, so a never-swept dataset matches **every**
+            `NOT IN` predicate over them — there, negation widens where the affirmative
+            form narrows."
+        """
+        from sqlalchemy import text as sa_text
+
+        from src.shared.db.models import DatasetRegistry
+
+        for column in (DatasetRegistry.tag_urns, DatasetRegistry.glossary_term_urns):
+            assert column.nullable is False, (
+                "a nullable array column would make NOT IN three-valued and destroy the "
+                "exact-complement property"
+            )
+            assert str(column.server_default.arg) == str(sa_text("'{}'::text[]").text), (
+                "the default must be the empty array, which contains nothing and so "
+                f"matches every NOT IN predicate; got {column.server_default.arg!r}"
+            )
+
+        affirmative, _ = _compile("'urn:li:tag:pii' IN tag_urns")
+        negated, _ = _compile("'urn:li:tag:pii' NOT IN tag_urns")
+        assert negated.lower() == f"not ({affirmative.lower()})", (
+            "the negated form must be exactly the affirmative one under a NOT, with no "
+            f"NULL handling added; got:\n{negated}\nvs\n{affirmative}"
+        )
+
+    def test_the_negated_spec_example_parses_and_binds_every_literal(self) -> None:
+        """spec/API.md §``dataset_filter`` grammar prints this as its negated worked
+        example: ``origin != 'DEV' AND platform_urn NOT IN ('urn:li:dataPlatform:kafka')
+        AND 'urn:li:tag:lifecycle:deprecated' NOT IN tag_urns``.
+        """
+        sql, params = _compile(
+            "origin != 'DEV' AND platform_urn NOT IN ('urn:li:dataPlatform:kafka') "
+            "AND 'urn:li:tag:lifecycle:deprecated' NOT IN tag_urns"
+        )
+        assert sorted(str(value) for value in params.values()) == sorted(
+            [
+                "DEV",
+                str(["urn:li:dataPlatform:kafka"]),
+                str(["urn:li:tag:lifecycle:deprecated"]),
+            ]
+        )
+        for literal in ["DEV", "urn:li:dataPlatform:kafka", "urn:li:tag:lifecycle:deprecated"]:
+            assert literal not in sql, f"{literal!r} leaked into the SQL text:\n{sql}"
+
+
+class TestNegatedDatasetUrnLiterals:
+    """spec/API.md §``dataset_filter`` grammar: "A `dataset_urn` literal inside a
+    `NOT IN (…)` list or after `!=` is reported in `unresolved_urns` on the same
+    terms — the mechanism reports unregistered literals and cannot read intent", and
+    §Negation: "`dataset_urn` literal handling (URN-shape validation and
+    `unresolved_urns` reporting)" is governed unchanged."""
+
+    def test_a_not_equals_literal_is_reported(self) -> None:
+        assert literal_dataset_urns(parse_filter(f"dataset_urn != '{_URN}'")) == [_URN]
+
+    def test_not_in_list_literals_are_reported_in_source_order(self) -> None:
+        ast = parse_filter(f"dataset_urn NOT IN ('{_URN}', '{_URN_2}')")
+        assert literal_dataset_urns(ast) == [_URN, _URN_2]
+
+    def test_affirmative_and_negated_literals_are_deduplicated_together(self) -> None:
+        """The walk keeps one namespace: a URN named both ways is reported once, in
+        source order."""
+        ast = parse_filter(f"dataset_urn = '{_URN}' OR dataset_urn != '{_URN}'")
+        assert literal_dataset_urns(ast) == [_URN]
+
+    def test_negated_literals_nested_under_parentheses_are_reported(self) -> None:
+        ast = parse_filter(
+            f"origin = 'PROD' AND (dataset_urn != '{_URN}' OR origin = 'DEV')"
+        )
+        assert literal_dataset_urns(ast) == [_URN]
+
+    def test_a_malformed_urn_after_not_equals_raises_invalid_dataset_urn(self) -> None:
+        with pytest.raises(InvalidDatasetUrnError):
+            check_dataset_urn_literals(parse_filter("dataset_urn != 'not-a-urn'"))
+
+    def test_a_malformed_urn_inside_a_not_in_list_is_caught(self) -> None:
+        with pytest.raises(InvalidDatasetUrnError):
+            check_dataset_urn_literals(
+                parse_filter(f"dataset_urn NOT IN ('{_URN}', 'not-a-urn')")
+            )
+
+    def test_a_well_formed_urn_passes_the_check_under_negation(self) -> None:
+        """Backstop for the two rejections above: the check is about URN shape, not
+        about negation, so a well-formed literal still passes on either side."""
+        check_dataset_urn_literals(parse_filter(f"dataset_urn != '{_URN}'"))
+        check_dataset_urn_literals(parse_filter(f"dataset_urn NOT IN ('{_URN}', '{_URN_2}')"))
+
+    def test_a_negated_literal_on_another_column_is_not_urn_checked(self) -> None:
+        """Only ``dataset_urn`` literals carry a URN shape — negation does not change
+        which column that is."""
+        check_dataset_urn_literals(parse_filter("origin != 'not-a-urn'"))
+        check_dataset_urn_literals(parse_filter("'not-a-urn' NOT IN tag_urns"))
+
+
 # ── Case sensitivity ─────────────────────────────────────────────────────────
 
 
 class TestCaseRules:
-    """spec/API.md §``dataset_filter`` grammar: "Keywords (``AND``, ``OR``, ``IN``)
-    and column names are case-insensitive; values are case-sensitive"."""
+    """spec/API.md §``dataset_filter`` grammar: "Keywords (``AND``, ``OR``, ``NOT``,
+    ``IN``) and column names are case-insensitive; values are case-sensitive"."""
 
     @pytest.mark.parametrize(
         "text",
@@ -803,6 +1263,30 @@ class TestInjectionBattery:
         assert [payload_list for payload_list in params.values()] == [[payload]]
         assert payload not in sql
 
+    @pytest.mark.parametrize("payload", _PAYLOADS)
+    def test_not_equals_payload_is_bound_never_rendered(self, payload: str) -> None:
+        """The negated forms are three additional compile paths, so the invariant is
+        re-established on each rather than inherited from the affirmative ones."""
+        sql, params = _compile(f"origin != '{self._escaped(payload)}'")
+        assert payload in params.values(), "payload must survive as a bound value"
+        assert payload not in sql
+        assert "drop" not in sql.lower()
+        assert "delete" not in sql.lower()
+
+    @pytest.mark.parametrize("payload", _PAYLOADS)
+    def test_not_in_list_payload_is_bound_never_rendered(self, payload: str) -> None:
+        sql, params = _compile(f"origin NOT IN ('PROD', '{self._escaped(payload)}')")
+        assert [payload_list for payload_list in params.values()] == [["PROD", payload]]
+        assert payload not in sql
+
+    @pytest.mark.parametrize("payload", _PAYLOADS)
+    def test_negated_array_membership_payload_is_bound_never_rendered(
+        self, payload: str
+    ) -> None:
+        sql, params = _compile(f"'{self._escaped(payload)}' NOT IN tag_urns")
+        assert [payload_list for payload_list in params.values()] == [[payload]]
+        assert payload not in sql
+
     def test_a_payload_shaped_like_a_bind_placeholder_adds_no_parameter(self) -> None:
         """A value spelled exactly like the driver's own placeholder must not be
         re-interpreted as one: the statement still carries a single parameter,
@@ -944,6 +1428,39 @@ class TestFormatFilter:
         assert format_filter("IS_PRIMARY=TRUE") == "is_primary = true"
         assert format_filter("is_primary =  FALSE") == "is_primary = false"
 
+    def test_each_negated_predicate_renders_in_its_own_canonical_spelling(self) -> None:
+        """The three negated forms each round-trip to exactly one rendering.
+
+        The formatter is the executable reference the frontend's lexical Auto-indent is
+        pinned against, so each negated form needs a fixed spelling: `!=` (never `<>`,
+        which the grammar rejects — a formatter emitting it would produce output that no
+        longer parses), and `NOT IN` upper-cased like the other keywords.
+
+        spec/API.md §``dataset_filter`` grammar — grammar block: ``scalar_col ('=' |
+            '!=') string``, ``scalar_col [NOT] IN '(' … ')'``, ``string [NOT] IN
+            array_col``; "`<>` is **not** accepted".
+        """
+        assert format_filter("origin!='PROD'") == "origin != 'PROD'"
+        assert format_filter("origin   not   in('PROD','DEV')") == (
+            "origin NOT IN ('PROD', 'DEV')"
+        )
+        assert format_filter("'urn:li:tag:pii'not in TAG_URNS") == (
+            "'urn:li:tag:pii' NOT IN tag_urns"
+        )
+
+    def test_the_negated_spec_example_formats_one_operand_per_line(self) -> None:
+        """spec/API.md §``dataset_filter`` grammar prints this negated clause as its
+        second worked example."""
+        formatted = format_filter(
+            "origin != 'DEV' AND platform_urn NOT IN ('urn:li:dataPlatform:kafka') "
+            "AND 'urn:li:tag:lifecycle:deprecated' NOT IN tag_urns"
+        )
+        assert formatted.splitlines() == [
+            "origin != 'DEV'",
+            "AND platform_urn NOT IN ('urn:li:dataPlatform:kafka')",
+            "AND 'urn:li:tag:lifecycle:deprecated' NOT IN tag_urns",
+        ]
+
     def test_a_boolean_predicate_takes_its_own_line_in_a_composition(self) -> None:
         formatted = format_filter(
             "origin = 'PROD' AND is_primary = true AND ('urn:li:tag:pii' IN tag_urns"
@@ -971,6 +1488,10 @@ class TestFormatFilter:
             "origin = 'A' AND (origin = 'B' OR (origin = 'C' AND origin = 'D'))",
             "origin = 'PROD' AND is_primary = true AND (origin = 'A' OR origin = 'B')",
             "origin = 'O''Brien'",
+            "origin != 'PROD'",
+            "origin NOT IN ('PROD', 'DEV')",
+            "'urn:li:tag:lifecycle:deprecated' NOT IN tag_urns",
+            "origin != 'DEV' AND ('x' NOT IN tag_urns OR platform_urn NOT IN ('p'))",
         ],
     )
     def test_formatting_is_idempotent(self, text: str) -> None:
@@ -987,6 +1508,10 @@ class TestFormatFilter:
             "origin = 'A' AND (origin = 'B' OR (origin = 'C' AND origin = 'D'))",
             "origin = 'PROD' AND is_primary = true",
             "origin = 'O''Brien'",
+            "ORIGIN != 'PROD'",
+            "origin Not In ('PROD', 'DEV')",
+            "'urn:li:tag:pii' not in TAG_URNS",
+            "origin != 'DEV' AND 'urn:li:tag:lifecycle:deprecated' NOT IN tag_urns",
         ],
     )
     def test_formatting_preserves_meaning(self, text: str) -> None:

@@ -96,10 +96,11 @@ describe("colorForKey — distinct colors within palette", () => {
   });
 
   it("validation-score metric keys get distinct colors", () => {
-    const allKeys = ["total", "validation_score_sum"];
+    const allKeys = ["total", "valid_confd", "valid_in_time"];
     const c0 = colorForKey("total", allKeys);
-    const c1 = colorForKey("validation_score_sum", allKeys);
-    expect(c0).not.toBe(c1);
+    const c1 = colorForKey("valid_confd", allKeys);
+    const c2 = colorForKey("valid_in_time", allKeys);
+    expect(new Set([c0, c1, c2]).size).toBe(3);
   });
 });
 

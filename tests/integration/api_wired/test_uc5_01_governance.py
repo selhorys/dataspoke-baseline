@@ -12,8 +12,10 @@ User story:
 Contract exercised here:
   - Metric creation uses POST /spoke/governance/metric with metric_id in the body (→ 201).
   - PUT /{id}/attr/conf is replace-only (→ 200 on existing, 404 METRIC_NOT_FOUND when absent).
-  - metric_conf.time_window_sec is the measurement window (factory default 172800),
-    applied uniformly to every dataset the metric scans — api-wired does not assert
+  - metric_conf.time_window_sec is the measurement window's *width* (factory default
+    172800), the same for every dataset the metric scans; where that window sits is per
+    type — ingestion-freshness trails the measurement instant, validation-score shifts
+    back by each dataset's own declared arrival cadence. api-wired does not assert
     exact in-window counts (real-pipeline timing is nondeterministic).
   - dataset_filter covers every column class of the grammar, the boolean `is_primary`
     included; the sibling relationship the boolean reads is emitted into DataHub by
@@ -181,11 +183,22 @@ async def test_uc5_governance_imazon_example(
             "metric_id": "validation-score-dev",
             "type": "validation-score",
             "title": "Validation Score (DEV)",
-            "description": "Daily sum of dataset validation scores within the configured time "
-            "window across DEV",
+            # Counts, not a score sum: `valid_confd` is how many of the scoped datasets
+            # carry a validation config, `valid_in_time` how many of those pass their
+            # cadence-anchored window test.
+            # spec: feature/BACKEND.md §Metrics Service — "`validation-score` counts and
+            # the unconfigured set".
+            # Worded to start "Daily count of validated ..." rather than "Daily count of
+            # DEV ...": the latter collided with the ingestion-freshness description
+            # below at the `D`/`d` boundary of "DEV"/"datasets" under Postgres's actual
+            # collation, which orders that boundary differently from Python's
+            # case-sensitive `sorted()` used to compute this test's expected order.
+            "description": "Daily count of validated DEV datasets inside their own "
+            "cadence-anchored window",
             "metrics": [
                 {"name": "total", "color": "#64748B", "idx": 1},
-                {"name": "validation_score_sum", "color": "#3B82F6", "idx": 2},
+                {"name": "valid_confd", "color": "#3B82F6", "idx": 2},
+                {"name": "valid_in_time", "color": "#22C55E", "idx": 3},
             ],
             "metric_conf": {"time_window_sec": 172800},
         },

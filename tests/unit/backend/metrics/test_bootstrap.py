@@ -224,7 +224,7 @@ async def test_seed_rows_carry_one_series_descriptor_per_emitted_key() -> None:
 
     expected_names = {
         "ingestion-freshness": ["total", "ingested_in_time"],
-        "validation-score": ["total", "validation_score_sum"],
+        "validation-score": ["total", "valid_confd", "valid_in_time"],
         "doc-health": ["total", "doc_health"],
     }
     for metric_id, names in expected_names.items():
@@ -239,6 +239,45 @@ async def test_seed_rows_carry_one_series_descriptor_per_emitted_key() -> None:
             f"{metric_id}: each series takes a distinct color. "
             "Spec: BACKEND.md §Factory defaults."
         )
+
+
+@pytest.mark.asyncio
+async def test_validation_score_seed_declares_its_three_counts() -> None:
+    """The `validation-score` seed carries exactly three series, one per emitted count.
+
+    The three are nested subsets — `valid_in_time ⊆ valid_confd ⊆ total` — and the
+    dashboard draws one line each, so all three have to be declared or the run's values
+    are filtered down before persisting and the coverage/pass-rate reading is lost. The
+    equality on the name list is deliberate: an extra series naming a key the type does
+    not emit is a `422` on the next `PUT` of a row nobody authored.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service — "`validation-score` counts and the
+          unconfigured set": "the measurer emits three counts — `total` […],
+          `valid_confd` […], and `valid_in_time` […]. All three are counts; none is a
+          score sum, so `valid_in_time / valid_confd` reads as a pass rate over the
+          configured estate and `valid_confd / total` as validation coverage of the
+          scope."
+    Spec: spec/feature/BACKEND.md §Metrics Service §Factory defaults — "a `metrics`
+          descriptor per emitted key (each with a distinct color and an `idx` in
+          emission order)".
+    """
+    db = _make_empty_db()
+    await seed_factory_defaults(db)
+
+    added = {call.args[0].id: call.args[0] for call in db.add.call_args_list}
+    series = added["validation-score"].metrics
+
+    assert [s["name"] for s in series] == ["total", "valid_confd", "valid_in_time"], (
+        "the seed must name the type's three emitted counts, in emission order; "
+        f"got {series!r}"
+    )
+    assert [s["idx"] for s in series] == [1, 2, 3], (
+        f"idx follows emission order and is unique within the metric; got {series!r}"
+    )
+    assert len({s["color"] for s in series}) == 3, (
+        "three lines sharing a colour are indistinguishable on the chart; "
+        f"got {series!r}"
+    )
 
 
 @pytest.mark.asyncio
@@ -264,7 +303,10 @@ async def test_seed_series_colors_are_hex_triplets() -> None:
                 "Spec: spec/API.md §Metric — Definition body."
             )
             seen += 1
-    assert seen == 6, f"backstop: three seeds × two series each; inspected {seen}"
+    assert seen == 7, (
+        "backstop: two two-series seeds (ingestion-freshness, doc-health) plus "
+        f"validation-score's three counts; inspected {seen}"
+    )
 
 
 # ── seed_factory_defaults is idempotent ───────────────────────────────────────

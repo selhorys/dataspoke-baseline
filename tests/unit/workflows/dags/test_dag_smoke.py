@@ -78,6 +78,80 @@ def test_dag_id_is_registered_in_all_dag_ids(dag_file: Path) -> None:
     )
 
 
+# ── Metrics tier DAGs forward their scheduled boundary time ──────────────────
+
+_METRICS_TIER_DAGS = ["metrics_hourly.py", "metrics_daily.py", "metrics_weekly.py"]
+
+
+@pytest.mark.parametrize("dag_name", _METRICS_TIER_DAGS)
+def test_metrics_tier_dag_sends_scheduled_at_in_its_run_body(dag_name: str) -> None:
+    """Each tier DAG puts a `scheduled_at` field in the run request body it builds.
+
+    Without it, a retried or backlogged tier run measures the interval it *executed* in
+    rather than the one it is *for*, and the internal route's `scheduled_at` is dead
+    weight. All three tiers are checked because the DAG files are near-duplicates, so a
+    fix applied to one is easy to forget on the others.
+
+    Source-text check: Airflow is not importable in the unit environment, so the DAG's
+    task body cannot be executed or its Jinja rendered — the assertion is that the field
+    is present in the constructed body, not what it renders to.
+
+    spec: feature/BACKEND.md §Metrics Service — Measurement instant: for a "Periodic tier
+    DAG (`metrics-{hourly,daily,weekly}`)" the instant is "The DAG run's scheduled
+    boundary time (Airflow `data_interval_end`), forwarded as `scheduled_at` on the
+    internal run request".
+    """
+    source = (_DAGS_DIR / dag_name).read_text(encoding="utf-8")
+    assert '"scheduled_at": scheduled_at' in source, (
+        f"{dag_name} must include scheduled_at in the JSON body it builds for "
+        "/internal/activities/metrics/run. "
+        "spec: feature/BACKEND.md §Metrics Service — Measurement instant."
+    )
+
+
+@pytest.mark.parametrize("dag_name", _METRICS_TIER_DAGS)
+def test_metrics_tier_dag_templates_scheduled_at_from_the_dag_run_interval(
+    dag_name: str,
+) -> None:
+    """The forwarded instant is templated from the DAG run's own interval, not from now().
+
+    `data_interval_end` is the scheduled boundary the spec names. `run_after` is the
+    fallback for a manually-triggered run, which has no data interval — an unguarded
+    `data_interval_end` would render as `None` there and the route would reject the body.
+    Both spellings are pinned so neither half can be dropped.
+
+    A rendered-value assertion is out of reach here (no Airflow, no execution context),
+    so what is asserted is that the value is a Jinja expression over the DAG run rather
+    than a Python-side clock read: a `datetime.now()` in the DAG body would date the run
+    at *parse* time, which is a different instant on every scheduler heartbeat.
+
+    spec: feature/BACKEND.md §Metrics Service — Measurement instant, trigger table:
+    "The DAG run's scheduled boundary time (Airflow `data_interval_end`), forwarded as
+    `scheduled_at` on the internal run request. A manually-triggered run of one of these
+    DAGs carries no `data_interval_end`; the DAG falls back to `dag_run.run_after`
+    (always present, ≈ the trigger instant) so a manual trigger still renders rather
+    than failing at template time".
+    """
+    source = (_DAGS_DIR / dag_name).read_text(encoding="utf-8")
+    assert "dag_run.data_interval_end" in source, (
+        f"{dag_name} must template scheduled_at from dag_run.data_interval_end. "
+        "spec: feature/BACKEND.md §Metrics Service — Measurement instant."
+    )
+    assert "dag_run.run_after" in source, (
+        f"{dag_name} must fall back to dag_run.run_after for a manual trigger, which "
+        "carries no data interval; an unguarded data_interval_end renders as None there."
+    )
+    assert ".isoformat() }}" in source, (
+        f"{dag_name} must forward an RFC 3339 string — the route parses an "
+        "AwareDatetime, and a raw pendulum repr is not one."
+    )
+    assert "datetime.now" not in source, (
+        f"{dag_name} must not read a clock in the DAG body: the instant is the DAG run's "
+        "own interval boundary, not the moment the file was parsed. "
+        "spec: feature/BACKEND.md §Metrics Service — Measurement instant."
+    )
+
+
 def test_dag_file_count_is_exactly_14() -> None:
     """There must be exactly 14 DAG files under test (excluding datahub_sync_hourly).
 

@@ -74,7 +74,7 @@
 - [Audit list spans a concurrent stage](feedback_audit_list_spans_concurrent_stage.md) — traps for the sibling stage land mid-review; re-run git status + check mtimes before judging
 - [Filter formatter parity](project_filter_formatter_parity.md) — TS Auto-indent == Python format_filter only on canonical input; node --experimental-strip-types recipe
 - [Radix Checkbox aria-label accname](project_radix_checkbox_aria_label_accname.md) — explicit aria-label wins, so green getByRole("checkbox",{name}) canNOT prove a new group label landed outside the <label>
-- [Grammar mirror has no guard](feedback_grammar_mirror_has_no_guard.md) — dataset-filter-guide.tsx hand-copies API.md's grammar; only the collapsed <summary> is asserted, so prose goes stale unseen
+- [Grammar mirror x4](feedback_grammar_mirror_has_no_guard.md) — API.md, module docstring, DATASET_FILTER_FIELD_DESCRIPTION's OpenAPI text, the TSX guide; only one has any test
 - [PG `IS FALSE` vs partial index](project_pg_is_false_vs_partial_index.md) — `col IS FALSE` never matches a `WHERE NOT col` partial index (verified PG17, seqscan off); `= false`/`NOT col` do
 - [Code-option fix strands the spec](feedback_code_option_fix_strands_spec.md) — generators can't edit spec/, so a two-option finding leaves the other doc wrong; re-diff spec on re-review
 - [Frontend numeric bound seams](project_frontend_numeric_bound_seams.md) — no form sets noValidate (min/max attr preempts the zod message); z.coerce.number() takes true as 1
@@ -86,3 +86,6 @@
 - [Hand-rolled timeout grandchildren](feedback_handrolled_timeout_grandchildren.md) — kill -9 "$pid" hits the subshell only; uv/redis-cli survive, wall clock still looks correct
 - [Verify spec citations verbatim](feedback_verify_spec_citations_verbatim.md) — docstring `spec:` quotes are sometimes fabricated ("emitted AND searchable" is in no spec); grep before anchoring
 - [dataset_registry writers & staleness](project_dataset_registry_writers_and_staleness.md) — "as fresh as the last sweep" is API.md priority-1 text; 4 writers, validation's lazy insert is specified
+- [Unbounded int reaches timedelta](feedback_unbounded_int_reaches_timedelta.md) — gt=0-only fields that feed timedelta() are an API-accepted 500; also `true`→1 lax coercion
+- [Airflow 3 `ts` fallback is dead](feedback_airflow3_ts_fallback_is_dead.md) — ts and data_interval_end are absent together; StrictUndefined makes the manual-trigger arm a task failure
+- [Nested model_validator loc](project_nested_model_validator_loc.md) — a nested model's `mode="after"` validator reports `["attribute"]`, not `[]`; parse the REQUEST model before trusting an error-shape claim

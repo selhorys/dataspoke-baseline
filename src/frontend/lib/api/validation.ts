@@ -7,6 +7,7 @@ import type {
   ValidationCoverage,
   ValidationListResponse,
   ValidationConfResponse,
+  ValidationConfPutRequest,
   ValidationResultListResponse,
 } from "@/types/validation";
 
@@ -60,7 +61,7 @@ export function useValidationConf(datasetUrn: string) {
 
 export function useUpsertValidationConf(datasetUrn: string) {
   const qc = useQueryClient();
-  return useMutation<ValidationConfResponse, Error, Record<string, unknown>>({
+  return useMutation<ValidationConfResponse, Error, ValidationConfPutRequest>({
     mutationFn: (body) =>
       apiFetch<ValidationConfResponse>(
         `/spoke/common/data/${encodeURIComponent(datasetUrn)}/attr/validation/conf`,

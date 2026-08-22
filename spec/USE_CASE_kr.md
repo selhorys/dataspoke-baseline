@@ -241,10 +241,14 @@ DataSpoke는 설정과 결과 시계열을 저장하며 DataHub assertion aspect
 > *그래서* 데이터 품질 결과가 한 곳에 모이고 DataHub에서 보이도록 하면서도,
 > DataSpoke가 운영용 자격증명을 가질 필요가 없도록 한다.
 
-`validation/conf`는 자유 형식 `description`과 변수 이름 목록(`variables`)으로 이루어진
-작은 고정 문서다. 설정에는 **규칙 로직이 없다**. 데이터 파이프라인이 점검을 수행하고,
+`validation/conf`는 자유 형식 `description`, 변수 이름 목록(`variables`), 데이터가 얼마나
+자주 도착하고 얼마나 지연되는지를 기술하는 `attribute` 섹션, 그리고 파이프라인 자신의
+하이퍼파라미터를 담는 선택적 `parameter` 목록으로 이루어진 작은 고정 문서다. 설정에는
+**규칙 로직이 없다**. 데이터 파이프라인이 점검을 수행하고,
 `score`(0..1)와 명명된 변수 값을 계산해 POST한다. DataSpoke는 결과를 저장하고
 DataHub에 `assertionRunEvent`를 emit하며, 과거 시계열을 조회 가능하게 제공한다.
+네 섹션 중 DataSpoke가 직접 읽는 것은 `attribute` 하나뿐이며, UC5의 `validation-score`
+메트릭이 이를 기준으로 판정 윈도를 잡는다.
 
 데이터셋당 여러 개의 점검(별도의 freshness/volume/field assertion, 컬럼 단위 검증,
 다중 팀 소유 등)이 필요한 팀은 **DataHub의 native assertion API**를 직접 사용한다 —
@@ -256,7 +260,7 @@ aspect emission — 은 [`spec/feature/VALIDATION.md`](feature/VALIDATION.md)에
 
 | 엔드포인트 | 용도 |
 |---|---|
-| `GET/PUT/PATCH/DELETE /spoke/common/data/{urn}/attr/validation/conf` | 검증 슬롯의 읽기 / 생성·교체 / 부분 갱신 / 하드 삭제 (`description` + `variables`). DataHub에 없는 URN에 PUT하면 `422 DATASET_NOT_IN_DATAHUB`. DELETE는 데이터셋의 결과와 검증 이벤트를 캐스케이드 삭제하고 DataHub assertion을 하드 삭제한다(`204`); 이후 슬롯은 생성된 적 없는 상태(`404 CONFIG_NOT_FOUND`)로 읽히며 새 PUT이 conf를 새로 생성한다 |
+| `GET/PUT/PATCH/DELETE /spoke/common/data/{urn}/attr/validation/conf` | 검증 슬롯의 읽기 / 생성·교체 / 부분 갱신 / 하드 삭제 (`description`, `variables`, `attribute`, `parameter`). DataHub에 없는 URN에 PUT하면 `422 DATASET_NOT_IN_DATAHUB`. DELETE는 데이터셋의 결과와 검증 이벤트를 캐스케이드 삭제하고 DataHub assertion을 하드 삭제한다(`204`); 이후 슬롯은 생성된 적 없는 상태(`404 CONFIG_NOT_FOUND`)로 읽히며 새 PUT이 conf를 새로 생성한다 |
 | `POST /spoke/common/data/{urn}/attr/validation/result` | 결과 `{data_time, score, variables}`를 추가. 미선언 변수 키는 `422 UNKNOWN_VARIABLE`; `score`가 `[0,1]` 범위를 벗어나면 `422 INVALID_SCORE` |
 | `GET /spoke/common/data/{urn}/attr/validation/result?from=…&until=…&limit=…` | `data_time`을 기준으로 한 과거 결과 (RFC 3339, `from` 포함, `until` 미포함). 기본 `limit=1000`, 서버 상한 `10000` |
 | `GET /spoke/common/data/{urn}/event/validation` | 데이터셋별 검증 이벤트 이력 |
@@ -737,14 +741,16 @@ GET /api/v1/spoke/metagen/event
 | `metric_type` | 출력 `values` 키 | 의미 |
 |---|---|---|
 | `ingestion-freshness` | `total`, `ingested_in_time` | `total` = `dataset_filter`에 매칭된 데이터셋 수; `ingested_in_time` = 최신 인제스천 증거가 측정 시점 기준 `metric_conf.time_window_sec` 안에 있는 데이터셋 수. 증거는 DataHub가 해당 데이터셋의 관측을 제공하면 소유 인제스천 소스가 그 데이터셋에 대해 기록한 관측이고, 없으면 그 소스의 최신 비-드라이런 `INGESTION.COMPLETE`다([`BACKEND.md §Metrics Service`](feature/BACKEND.md#metrics-service-srcbackendmetrics) 참조) |
-| `validation-score` | `total`, `validation_score_sum` | `total` = 매칭된 데이터셋 수; `validation_score_sum` = `data_time`이 측정 시점 기준 `metric_conf.time_window_sec` 안에 있는 각 데이터셋의 최신 검증 `score` 합. 윈도 안에 검증 결과가 없으면 기여는 0.0 |
+| `validation-score` | `total`, `valid_confd`, `valid_in_time` | `total` = 매칭된 데이터셋 수; `valid_confd` = 그중 검증 설정을 가진 데이터셋 수; `valid_in_time` = 그중 **최신** 검증 결과 — 윈도 안에서 가장 최신인 결과가 아니라 전체에서 가장 최신인 결과 — 가 윈도 안에 있으면서 점수가 `1.0`인 데이터셋 수. 윈도의 폭은 `metric_conf.time_window_sec`이고, 위치는 측정 시점이 아니라 각 데이터셋의 `attr/validation/conf.attribute` 도착 주기를 기준으로 잡는다. 그래서 데이터가 정상적으로 지연되는 데이터셋을 낡은 것으로 판정하지 않는다([`BACKEND.md §Metrics Service`](feature/BACKEND.md#metrics-service-srcbackendmetrics) 참조). 검증 설정이 없는 데이터셋은 아예 평가하지 않는다 — 실패로 세지 않고 `GET .../dataset`에서 `met: "unknown"`으로 읽힌다 |
 | `doc-health` | `total`, `doc_health` | `total` = 매칭된 데이터셋 수; `doc_health` = 데이터셋별 문서 점수의 합. 테이블 설명과 모든 컬럼 설명이 비어 있지 않으면 `1.0`, 아니면 `0.0` |
 
 `metric_conf`는 타입별 파라미터를 담는다: `ingestion-freshness`와
-`validation-score`의 `time_window_sec`이 **곧** 측정 윈도이며(API가 허용하는 범위 안의
+`validation-score`의 `time_window_sec`이 곧 측정 윈도의 **폭**이며(API가 허용하는 범위 안의
 양의 정수 초, [`API.md` §Metric](API.md#metric-spokegovernancemetric) 참조; 팩토리 기본
-`172800`), 거버넌스 리드가 선언하는 신선도 SLO로서 해당 메트릭이 스캔하는 모든
-데이터셋에 동일하게 적용된다. `doc-health`는 빈 `{}`를 사용한다.
+`172800`), 거버넌스 리드가 선언하는 SLO로서 해당 메트릭이 스캔하는 모든
+데이터셋에 동일하게 적용된다. 그 윈도가 어디에 놓이는지는 타입마다 다르다.
+`ingestion-freshness`는 측정 시점 직전 구간을 보고, `validation-score`는 데이터셋마다
+선언된 도착 지연만큼 뒤로 밀어서 본다. `doc-health`는 빈 `{}`를 사용한다.
 
 `dataset_filter`는 데이터셋 레지스트리 — DataHub 데이터 자산을 DataSpoke가 로컬에
 미러링한 테이블 — 위의 SQL `WHERE` 절 문자열이다. 컬럼은 데이터셋 URN에서 파싱되는

@@ -424,7 +424,8 @@ async def test_patch_metric_conf_boolean_window_raises(service, db):
         metric_conf={"time_window_sec": 172800},
         metrics=[
             {"name": "total", "color": "#64748B", "idx": 1},
-            {"name": "validation_score_sum", "color": "#3B82F6", "idx": 2},
+            {"name": "valid_confd", "color": "#3B82F6", "idx": 2},
+            {"name": "valid_in_time", "color": "#14B8A6", "idx": 3},
         ],
     )
     mock_scalar_query(db, row)
@@ -1305,14 +1306,27 @@ async def test_get_events_with_time_range(service, db):
 # ── Verdict persistence (metric_dataset_results) ──────────────────────────────
 
 
-def _stub_measurer(monkeypatch: pytest.MonkeyPatch, values: dict, verdicts: list) -> None:
+def _stub_measurer(
+    monkeypatch: pytest.MonkeyPatch,
+    values: dict,
+    verdicts: list,
+    *,
+    calls: list | None = None,
+) -> None:
     """Stand the registry's measurer lookup in with a fixed (values, verdicts) return.
 
     The measurer contract is covered by tests/unit/backend/metrics/measurers/; what is
-    under test here is what the *service* does with a return that satisfies it.
+    under test here is what the *service* does with a return that satisfies it. The stub
+    mirrors the real ``MeasurerFn`` signature, ``now`` included — spec/feature/BACKEND.md
+    §Metrics Service §Measurers: "Each measurer receives the resolved dataset URN list,
+    ``metric_conf``, the run's measurement instant (above), a ``DataHubClient``, and an
+    ``AsyncSession``". When *calls* is supplied, each invocation's kwargs are appended to
+    it so a test can assert what the service handed the measurer.
     """
 
-    async def _measure(datasets, metric_conf, *, datahub, db):
+    async def _measure(datasets, metric_conf, *, datahub, db, now):
+        if calls is not None:
+            calls.append({"datasets": list(datasets), "metric_conf": metric_conf, "now": now})
         return values, verdicts
 
     monkeypatch.setattr(
@@ -1320,15 +1334,24 @@ def _stub_measurer(monkeypatch: pytest.MonkeyPatch, values: dict, verdicts: list
     )
 
 
-def _run_session(db: AsyncMock, definition_row: MagicMock) -> list:
-    """Route the run's reads: the definition lookup, then an empty registry scope."""
+def _run_session(
+    db: AsyncMock, definition_row: MagicMock, scope_urns: list[str] | None = None
+) -> list:
+    """Route the run's reads: the definition lookup, then the registry scope.
+
+    ``scope_urns`` is what ``resolve_dataset_scope`` sees the registry return, i.e. the
+    run's **scanned** scope. It is deliberately independent of the verdicts a stubbed
+    measurer returns, because a measurer may evaluate a strict subset of its scan
+    (spec/feature/BACKEND.md §Metrics Service — "`validation-score`'s verdict list is a
+    **subset** of its scan").
+    """
     statements: list = []
 
     async def _execute(stmt, *args, **kwargs):
         statements.append((stmt, args[0] if args else None))
         result = MagicMock()
         result.scalar_one_or_none.return_value = definition_row
-        result.scalars.return_value.all.return_value = []
+        result.scalars.return_value.all.return_value = list(scope_urns or [])
         result.all.return_value = []
         return result
 
@@ -1471,7 +1494,7 @@ async def test_the_breakdown_is_derived_from_the_verdicts(
     good = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.good,PROD)"
     bad = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.bad,PROD)"
     row = _make_definition_row(is_enabled=True)
-    _run_session(db, row)
+    _run_session(db, row, scope_urns=[good, bad])
     added: list = []
     db.add = MagicMock(side_effect=added.append)
     _stub_measurer(
@@ -1493,6 +1516,171 @@ async def test_the_breakdown_is_derived_from_the_verdicts(
         f"only the failed verdict is listed; got {breakdown['datasets']!r}"
     )
     assert result.detail["breakdown_summary"] == {"dataset_count": 2, "affected_count": 1}
+
+
+async def test_breakdown_dataset_count_is_the_scanned_scope_not_the_verdict_count(
+    service, db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`dataset_count` counts the scan even when the measurer evaluated a subset.
+
+    This is the case `len(verdicts)` gets wrong: `validation-score` scans its whole
+    filter scope but returns verdicts only for the datasets carrying a validation
+    config, so a run over three datasets where one is unconfigured must still report
+    `dataset_count = 3`. The scope seeded here (three URNs) is deliberately larger than
+    the two verdicts returned, which is exactly the shape a `len(verdicts)`-derived
+    count reports as 2.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service — "`validation-score`'s verdict list
+          is a **subset** of its scan. `breakdown`'s `dataset_count` remains the total
+          scanned (`= total`) and is derived from the scan, never from `len(verdicts)`;
+          only `ingestion-freshness` and `doc-health` have the two coincide."
+    """
+    from src.backend.metrics.measurers import DatasetVerdict
+
+    confd_pass = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.confd_pass,PROD)"
+    confd_fail = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.confd_fail,PROD)"
+    unconfigured = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.unconfigured,PROD)"
+
+    row = _make_definition_row(
+        metric_id="validation-score",
+        metric_type="validation-score",
+        is_enabled=True,
+        metrics=[
+            {"name": "total", "color": "#64748B", "idx": 1},
+            {"name": "valid_confd", "color": "#3B82F6", "idx": 2},
+            {"name": "valid_in_time", "color": "#14B8A6", "idx": 3},
+        ],
+    )
+    _run_session(db, row, scope_urns=[confd_pass, confd_fail, unconfigured])
+    added: list = []
+    db.add = MagicMock(side_effect=added.append)
+    _stub_measurer(
+        monkeypatch,
+        {"total": 3.0, "valid_confd": 2.0, "valid_in_time": 1.0},
+        [
+            DatasetVerdict(urn=confd_pass, met=True, evidence_at=None, detail={}),
+            DatasetVerdict(urn=confd_fail, met=False, evidence_at=None, detail={"why": "stale"}),
+        ],
+    )
+
+    result = await service.run(row.id, dry_run=False)
+
+    stored = [obj for obj in added if hasattr(obj, "breakdown")]
+    assert stored, "backstop: the run must have written a metric_results row"
+    breakdown = stored[0].breakdown
+    assert breakdown["dataset_count"] == 3, (
+        "dataset_count is the scanned scope (3), not the number of verdicts (2). "
+        "Spec: spec/feature/BACKEND.md §Metrics Service."
+    )
+    assert [entry["urn"] for entry in breakdown["datasets"]] == [confd_fail], (
+        "the unconfigured dataset carries no verdict, so it is neither met nor failed "
+        "and must not appear in the failures list; only the evaluated failure does. "
+        f"Got {breakdown['datasets']!r}"
+    )
+    assert result.detail["breakdown_summary"] == {"dataset_count": 3, "affected_count": 1}
+
+
+async def test_run_threads_scheduled_at_to_the_measurer_as_its_instant(
+    service, db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A supplied `scheduled_at` becomes the measurement instant the measurer receives.
+
+    The instant is far from wall-clock on purpose: a service that ignored `scheduled_at`
+    and read its own clock would hand the measurer roughly `datetime.now()`, which this
+    equality rejects.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service — Measurement instant: the periodic
+          tier DAG's instant is "The DAG run's scheduled boundary time (Airflow
+          `data_interval_end`), forwarded as `scheduled_at` on the internal run
+          request", and "A scheduled run therefore measures the interval it is *for*,
+          not the interval it happened to execute in: a retried or backlogged `@daily`
+          run yields the same verdicts as an on-time one."
+    """
+    scheduled_at = datetime(2026, 2, 3, 0, 0, tzinfo=UTC)
+    row = _make_definition_row(is_enabled=True)
+    _run_session(db, row)
+    calls: list = []
+    _stub_measurer(monkeypatch, {"total": 0.0, "ingested_in_time": 0.0}, [], calls=calls)
+
+    await service.run(row.id, dry_run=False, scheduled_at=scheduled_at)
+
+    assert len(calls) == 1, "backstop: the measurer must have been dispatched exactly once"
+    assert calls[0]["now"] == scheduled_at, (
+        "the run's measurement instant must be the supplied scheduled_at, not a fresh "
+        f"clock reading; got {calls[0]['now']!r}. "
+        "Spec: spec/feature/BACKEND.md §Metrics Service — Measurement instant."
+    )
+
+
+async def test_run_without_scheduled_at_anchors_on_wall_clock(
+    service, db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An on-demand run supplies no instant and falls back to wall-clock `now()`.
+
+    The backstop against a hard-coded fallback constant is the freshness bracket: the
+    instant handed to the measurer must sit between two readings taken either side of
+    the call.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service — Measurement instant: `POST
+          /spoke/governance/metric/{id}/method/run` (on-demand, incl. `dry_run`) uses
+          "Wall-clock `now()` — a manual run has no schedule to anchor to".
+    """
+    row = _make_definition_row(is_enabled=True)
+    _run_session(db, row)
+    calls: list = []
+    _stub_measurer(monkeypatch, {"total": 0.0, "ingested_in_time": 0.0}, [], calls=calls)
+
+    before = datetime.now(tz=UTC)
+    await service.run(row.id, dry_run=False)
+    after = datetime.now(tz=UTC)
+
+    assert len(calls) == 1, "backstop: the measurer must have been dispatched exactly once"
+    assert before <= calls[0]["now"] <= after, (
+        "with no scheduled_at the instant is a wall-clock reading taken during the run; "
+        f"got {calls[0]['now']!r} outside [{before!r}, {after!r}]. "
+        "Spec: spec/feature/BACKEND.md §Metrics Service — Measurement instant."
+    )
+
+
+async def test_measured_at_is_a_later_wall_clock_reading_not_the_scheduled_instant(
+    service, db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The persisted `measured_at` dates the result; it is not the measurement instant.
+
+    A backlogged run measures an old interval but is still *recorded* now, so collapsing
+    the two would back-date the result row and make the metric's timeseries claim a
+    measurement that never happened at that time.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service — Measurement instant: "`measured_at`
+          persisted on `metric_results` / `metric_dataset_results` is unaffected: it
+          stays a later wall-clock reading taken after measurement returns, dating the
+          *result* rather than defining the window."
+    """
+    scheduled_at = datetime(2026, 2, 3, 0, 0, tzinfo=UTC)
+    row = _make_definition_row(is_enabled=True)
+    _run_session(db, row)
+    added: list = []
+    db.add = MagicMock(side_effect=added.append)
+    calls: list = []
+    _stub_measurer(monkeypatch, {"total": 0.0, "ingested_in_time": 0.0}, [], calls=calls)
+
+    before = datetime.now(tz=UTC)
+    await service.run(row.id, dry_run=False, scheduled_at=scheduled_at)
+
+    assert calls and calls[0]["now"] == scheduled_at, (
+        "backstop: the run must actually have measured against the supplied instant"
+    )
+    stored = [obj for obj in added if hasattr(obj, "measured_at")]
+    assert stored, "backstop: the run must have written a metric_results row"
+    measured_at = stored[0].measured_at
+    assert measured_at != scheduled_at, (
+        "measured_at dates the result, not the window; it must not be the scheduled "
+        f"instant. Got {measured_at!r}."
+    )
+    assert measured_at >= before, (
+        "measured_at is a wall-clock reading taken after measurement returns; got "
+        f"{measured_at!r}, which precedes the call."
+    )
 
 
 async def test_measured_values_are_filtered_to_the_declared_series(

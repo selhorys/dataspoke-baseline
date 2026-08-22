@@ -286,6 +286,13 @@ class DatasetRegistry(Base):
 
 # ── validation_configs ───────────────────────────────────────────────────────
 
+#: Factory default of ``validation_configs.attribute`` — daily data arriving with
+#: no lag. One Python-side source of truth for the request schema's per-field
+#: defaults, the ORM default, and the measurer's read
+#: (spec/feature/VALIDATION.md §Rule Configuration). The migration restates it as
+#: a column ``server_default`` for rows written outside the API.
+DEFAULT_VALIDATION_ATTRIBUTE: dict[str, int] = {"cadence_unit": 86400, "cadence_offset": 0}
+
 
 class ValidationConfig(Base):
     __tablename__ = "validation_configs"
@@ -300,6 +307,21 @@ class ValidationConfig(Base):
     dataset_urn: Mapped[str] = mapped_column(Text, primary_key=True)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     variables: Mapped[list[dict[str, str]]] = mapped_column(JSONB, nullable=False)
+    #: Declared data-arrival cadence — read by the governance `validation-score`
+    #: measurer to anchor its per-dataset window. Not null: a conf written
+    #: without the section stores the all-defaults object, so the measurer never
+    #: branches on absence. Field bounds live at the API schema layer, so there
+    #: is deliberately no CHECK constraint here.
+    attribute: Mapped[dict[str, int]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=lambda: dict(DEFAULT_VALIDATION_ATTRIBUTE),
+        server_default=text("'{\"cadence_unit\": 86400, \"cadence_offset\": 0}'::jsonb"),
+    )
+    #: Optional pipeline hyperparameters. NULL is the "not declared" state an
+    #: empty array cannot express (an explicit `[]` is rejected at the schema
+    #: layer). Opaque to DataSpoke — no service reads it.
+    parameter: Mapped[list[dict[str, str]] | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
     )

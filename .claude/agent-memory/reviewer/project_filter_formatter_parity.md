@@ -22,6 +22,15 @@ This is by design (FRONTEND_BASIC calls the TS side "purely lexical, no grammar 
 that asserts equality on non-canonical input will fail. `formatDatasetFilter` is idempotent on
 every case tried, including unbalanced parens and unterminated literals.
 
+Re-verified after the `!=` / `NOT IN` grammar addition: `!=` lexes as **one** token (its branch
+sits after the word-start branch and `!` is not a word char, so it is reachable), and the two
+formatters stay byte-identical on `origin != 'DEV'`, `origin!='DEV'`, `origin NOT IN ('CORP',
+'EI')`, `'urn:…' NOT IN tag_urns`, a 3-predicate `AND` chain and a nested group. `NOT` is
+deliberately **absent** from the TS line-break keyword set, so `NOT IN` never splits and the
+existing `IN`-before-`(` lookbehind still fires — no second lookbehind case is needed. Unknown
+punctuation still gains a space, though: `origin <> 'DEV'` → `origin < > 'DEV'`, so a docstring
+calling `<>` "passed through" overstates it (same shape as the `--` row above).
+
 **Why:** the divergence is invisible from either file alone, and the tempting cross-layer test is
 wrong for most inputs.
 

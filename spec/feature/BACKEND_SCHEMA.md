@@ -190,6 +190,8 @@ Stores the single validation slot per dataset (passive result-store model — se
 | `dataset_urn` | `TEXT` PK | Target dataset URN (unique — at most one validation slot per dataset) |
 | `description` | `TEXT` | Free-form description (≤ 2,000 chars; surfaced in DataHub assertion detail UI) |
 | `variables` | `JSONB` | Declared variables the pipeline will report — a JSONB array of `{name, description}` objects. `name` matches `[a-z][a-z0-9_]{0,99}` and is unique within the row; `description` is ≤ 200 chars (empty allowed). `CHECK jsonb_array_length(variables) BETWEEN 1 AND 200`. Variable **names** are joined as `customAssertion.logic` on DataHub emit |
+| `attribute` | `JSONB` NOT NULL DEFAULT `{"cadence_unit": 86400, "cadence_offset": 0}` | Data-arrival cadence `{cadence_unit, cadence_offset}` (see [VALIDATION §Rule Configuration](VALIDATION.md#rule-configuration)). Read by the governance `validation-score` measurer to anchor its per-dataset criterion window. Not null — a conf written without the section stores the all-defaults object, so the measurer never branches on absence. No CHECK constraint: the field bounds (`cadence_unit > 0`, `cadence_offset >= 0`) are enforced at the API schema layer, like `description` |
+| `parameter` | `JSONB` NULL | Optional pipeline hyperparameters — a JSONB array of `{name, description}` objects under the same per-item rules and 1–200 count bound as `variables`, in its own name namespace. `NULL` when the section was never supplied, which is the distinct "not declared" state an empty array does not express (an explicit `[]` is rejected at the API schema layer). Opaque to DataSpoke: no service reads it and it is not emitted to DataHub |
 | `created_at` | `TIMESTAMPTZ` | |
 | `updated_at` | `TIMESTAMPTZ` | |
 
@@ -415,7 +417,7 @@ Governance metric definitions.
 | `title` | `TEXT` | Display title |
 | `description` | `TEXT` | What this metric measures |
 | `metrics` | `JSONB` | Series descriptors — a list of `{name, color, idx}` objects. `name` is one of the type's emitted `values` keys, `color` a `#RRGGBB` hex string, `idx` a positive integer display order; `name` and `idx` are each unique within the row. Determines which keys the metric persists and how the dashboard chart draws them |
-| `metric_conf` | `JSONB` | Type-specific config — `{"time_window_sec": <int>}` for `ingestion-freshness` / `validation-score` (the measurement window applied to every dataset the metric scans; range enforced at the write boundary, not by a column constraint ([API §Metric](../API.md#metric-spokegovernancemetric)); factory default `172800`, see BACKEND §Metrics Service); `{}` for `doc-health` |
+| `metric_conf` | `JSONB` | Type-specific config — `{"time_window_sec": <int>}` for `ingestion-freshness` / `validation-score` (the measurement window's **width**, the same for every dataset the metric scans; where that window *sits* is per type — `ingestion-freshness` trails the measurement instant, `validation-score` positions it per dataset on that dataset's declared arrival cadence. Range enforced at the write boundary, not by a column constraint ([API §Metric](../API.md#metric-spokegovernancemetric)); factory default `172800`, see BACKEND §Metrics Service); `{}` for `doc-health` |
 | `dataset_filter` | `TEXT` | Scope filter — a SQL `WHERE` clause over `dataset_registry` ([API §`dataset_filter` grammar](../API.md#dataset_filter-grammar)); `''` = all registered datasets. Same grammar as `ontogen_config.dataset_filter` and `metagen_config.dataset_filter` |
 | `is_enabled` | `BOOLEAN` | Whether scheduled measurement is enabled |
 | `schedule_tier` | `TEXT` NULL | Schedule tier for scheduled measurement — `hourly`, `daily`, or `weekly` (null = on-demand only) |
@@ -431,13 +433,17 @@ Timeseries of metric measurements.
 | `id` | `UUID` PK | Result identifier |
 | `metric_id` | `TEXT` FK | Metric definition |
 | `values` | `JSONB` | Measured values — dict of named floats, e.g. `{"total": 142.0, "ingested_in_time": 87.0}` |
-| `breakdown` | `JSONB` NULL | Measurement breakdown: `{dataset_count, datasets: [{urn, detail?}]}`. `datasets[]` carries only failed entries (stale / validation `<1.0` / doc-health `<1.0` depending on `metric_type`); `dataset_count` is the total scanned. Derived from the same verdicts that populate `metric_dataset_results` |
+| `breakdown` | `JSONB` NULL | Measurement breakdown: `{dataset_count, datasets: [{urn, detail?}]}`. `datasets[]` carries only failed entries — depending on `metric_type`: stale ingestion evidence; a `validation-score` dataset whose latest validation result is outside its cadence-anchored window, is inside it but scored `<1.0`, or does not exist (a `validation-score` dataset with **no validation config** is excluded entirely, not counted as failed); or doc-health `<1.0`. `dataset_count` is the total scanned. Derived from the same verdicts that populate `metric_dataset_results` |
 | `measured_at` | `TIMESTAMPTZ` | Measurement timestamp |
 
 #### `metric_dataset_results`
 
 The **latest** per-dataset verdict for each metric — one row per dataset the metric
-covered on its most recent non-dry run. Unlike `metric_results`, this is not a timeseries:
+**evaluated** on its most recent non-dry run. Evaluated is not always the same set as covered
+(matched by `dataset_filter`): for `validation-score` the covered set is a strict superset,
+since a dataset with no validation config is never evaluated and gets no row here, reading
+`unknown` instead. For `ingestion-freshness` and `doc-health` the two coincide. Unlike
+`metric_results`, this is not a timeseries:
 a non-dry run replaces the metric's rows wholesale inside the result transaction, and a dry
 run writes nothing. Backs `GET /spoke/governance/metric/{metric_id}/dataset`.
 
@@ -446,7 +452,7 @@ run writes nothing. Backs `GET /spoke/governance/metric/{metric_id}/dataset`.
 | `metric_id` | `TEXT` FK → `metric_definitions(id)` ON DELETE CASCADE | Owning metric |
 | `dataset_urn` | `TEXT` | The evaluated dataset |
 | `met` | `BOOLEAN` | Whether the dataset met the metric's criterion on that run |
-| `evidence_at` | `TIMESTAMPTZ` NULL | The per-dataset evidence timestamp — resolved ingestion evidence (`ingestion-freshness`), counted result `data_time` (`validation-score`), `null` for `doc-health`, which has no per-dataset timestamp |
+| `evidence_at` | `TIMESTAMPTZ` NULL | The per-dataset **counted** evidence timestamp — resolved ingestion evidence (`ingestion-freshness`), counted result `data_time` (`validation-score`), `null` for `doc-health`, which has no per-dataset timestamp. Also `null` when nothing was counted: no ingestion evidence on either tier, or a `validation-score` dataset whose latest validation result fell outside its window or does not exist. The stale date itself stays readable in `detail.latest_data_time` |
 | `detail` | `JSONB` | Type-specific per-dataset metadata, the same payload the failing entries carry in `metric_results.breakdown` |
 | `measured_at` | `TIMESTAMPTZ` | The run that produced this verdict |
 

@@ -6,24 +6,37 @@ UC3 ontogen, UC4 metagen and UC5 metrics share this one grammar.
 
 Grammar (spec/API.md §``dataset_filter`` grammar)::
 
-    filter      := ε | expr                     -- empty string = all datasets
-    expr        := term { (AND|OR) term }        -- one operator kind per level
-    term        := predicate | '(' expr ')'      -- parens nest at most 2 deep
-    predicate   := scalar_col '=' string
-                 | scalar_col IN '(' string {',' string} ')'
-                 | string IN array_col
+    filter      := ε | expr                        -- empty string = all registered datasets
+    expr        := term { (AND|OR) term }           -- one operator kind per level
+    term        := predicate | '(' expr ')'         -- parens nest at most 2 deep (see below)
+    predicate   := scalar_col ('=' | '!=') string
+                 | scalar_col [NOT] IN '(' string {',' string} ')'
+                 | string [NOT] IN array_col
                  | bool_col '=' bool
     scalar_col  := dataset_urn | origin | platform_urn
     array_col   := tag_urns | glossary_term_urns
     bool_col    := is_primary
-    bool        := TRUE | FALSE                  -- bare word, never quoted
-    string      := '...'                         -- single quotes; '' escapes one
+    bool        := TRUE | FALSE                     -- bare word, never quoted
+    string      := '...'                            -- single quotes only; '' escapes a quote
 
-Keywords (``AND``/``OR``/``IN``), the ``TRUE``/``FALSE`` bare words and column
-names are matched case-insensitively; string **values** are case-sensitive. A
-quoted boolean (``is_primary = 'true'``) is a syntax error, as is a boolean
-column used with ``IN``. Mixing ``AND`` and ``OR`` at one level requires
-parentheses. Caps: ≤ 8,000 characters and ≤ 1,000 string literals.
+Keywords (``AND``/``OR``/``NOT``/``IN``), the ``TRUE``/``FALSE`` bare words and
+column names are matched case-insensitively; string **values** are
+case-sensitive. A quoted boolean (``is_primary = 'true'``) is a syntax error, as
+is a boolean column used with ``IN`` or with a negated operator — ``is_primary !=
+true`` would be a second spelling of ``is_primary = false``. ``<>`` is not
+accepted: ``!=`` is the only spelling of not-equals, and ``NOT`` appears only as
+part of ``NOT IN`` (there is no standalone ``NOT (expr)`` prefix). Mixing ``AND``
+and ``OR`` at one level requires parentheses. Caps: ≤ 8,000 characters and
+≤ 1,000 string literals.
+
+**Negation is a negated predicate, not a complement of the scope.** ``!=`` and
+``NOT IN`` compile to plain SQL and inherit three-valued logic, so a row whose
+``origin`` or ``platform_urn`` is ``NULL`` satisfies neither ``col = 'x'`` nor
+``col != 'x'`` — the same asymmetry the affirmative forms already exhibit. The
+array columns are ``NOT NULL``, so ``NOT IN`` over them *is* a true complement of
+``IN``. Every other rule governs the negated forms unchanged, ``dataset_urn``
+literal handling (URN-shape validation and ``unresolved_urns`` reporting)
+included.
 
 **Security invariant.** User filter text never reaches the database as SQL text.
 :func:`filter_clause` compiles the AST to a SQLAlchemy boolean expression in
@@ -64,12 +77,15 @@ __all__ = [
     "MAX_PAREN_DEPTH",
     "MAX_STRING_LITERALS",
     "ArrayContains",
+    "ArrayNotContains",
     "BoolEquals",
     "BoolNode",
     "DatasetFilterSyntaxError",
     "Equals",
     "FilterAst",
     "InList",
+    "NotEquals",
+    "NotInList",
     "check_dataset_urn_literals",
     "filter_clause",
     "format_filter",
@@ -143,6 +159,18 @@ class Equals:
 
 
 @dataclass(frozen=True)
+class NotEquals:
+    """``scalar_col != 'value'``.
+
+    Plain SQL ``!=``, so a ``NULL`` column value satisfies neither this nor
+    :class:`Equals` — the intended three-valued-logic asymmetry.
+    """
+
+    column: str
+    value: str
+
+
+@dataclass(frozen=True)
 class InList:
     """``scalar_col IN ('a', 'b')``."""
 
@@ -151,8 +179,28 @@ class InList:
 
 
 @dataclass(frozen=True)
+class NotInList:
+    """``scalar_col NOT IN ('a', 'b')``."""
+
+    column: str
+    values: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class ArrayContains:
     """``'value' IN array_col``."""
+
+    column: str
+    value: str
+
+
+@dataclass(frozen=True)
+class ArrayNotContains:
+    """``'value' NOT IN array_col``.
+
+    The array columns are ``NOT NULL``, so this is the exact complement of
+    :class:`ArrayContains`.
+    """
 
     column: str
     value: str
@@ -178,7 +226,16 @@ class BoolNode:
     children: tuple["Node", ...]
 
 
-Node = Equals | InList | ArrayContains | BoolEquals | BoolNode
+Node = (
+    Equals
+    | NotEquals
+    | InList
+    | NotInList
+    | ArrayContains
+    | ArrayNotContains
+    | BoolEquals
+    | BoolNode
+)
 
 
 @dataclass(frozen=True)
@@ -197,7 +254,7 @@ class FilterAst:
 
 @dataclass(frozen=True)
 class _Token:
-    kind: str  # "ident" | "string" | "(" | ")" | "," | "=" | "eof"
+    kind: str  # "ident" | "string" | "(" | ")" | "," | "=" | "!=" | "eof"
     value: str
     position: int
 
@@ -219,6 +276,17 @@ def _tokenize(text: str) -> list[_Token]:
             tokens.append(_Token(ch, ch, i))
             i += 1
             continue
+
+        if ch == "!":
+            # `!=` is one token and the grammar's only not-equals spelling. A
+            # lone `!` falls through to the same "unexpected character" error a
+            # stray `<` gets, which is what keeps `<>` a syntax error: no `<`
+            # branch exists, so nothing has to reject it explicitly.
+            if i + 1 < n and text[i + 1] == "=":
+                tokens.append(_Token("!=", "!=", i))
+                i += 2
+                continue
+            raise DatasetFilterSyntaxError(f"unexpected character {_safe(ch)}", i)
 
         if ch == "'":
             start = i
@@ -348,12 +416,19 @@ class _Parser:
         token = self._peek()
 
         if token.kind == "string":
-            # string IN array_col
+            # string [NOT] IN array_col
             self._next()
+            negated = False
+            if self._at_keyword("not"):
+                self._next()
+                negated = True
             if not self._at_keyword("in"):
-                raise DatasetFilterSyntaxError(
-                    "expected IN after a string literal", self._peek().position
+                message = (
+                    "expected IN after NOT"
+                    if negated
+                    else "expected IN or NOT IN after a string literal"
                 )
+                raise DatasetFilterSyntaxError(message, self._peek().position)
             self._next()
             column_token = self._expect("ident", "an array column name")
             column = column_token.value.lower()
@@ -361,7 +436,8 @@ class _Parser:
                 if column in _SCALAR_COLUMNS:
                     raise DatasetFilterSyntaxError(
                         f"column {_safe(column_token.value)} is a scalar column, not an "
-                        f"array column; write it as \"<column> = 'value'\"; "
+                        f"array column; write it as \"<column> = 'value'\" or "
+                        f"\"<column> != 'value'\"; "
                         f"array columns are {_column_list(_ARRAY_COLUMNS)}",
                         column_token.position,
                     )
@@ -377,6 +453,8 @@ class _Parser:
                     f"array columns are {_column_list(_ARRAY_COLUMNS)}",
                     column_token.position,
                 )
+            if negated:
+                return ArrayNotContains(column=column, value=token.value)
             return ArrayContains(column=column, value=token.value)
 
         if token.kind == "ident":
@@ -388,7 +466,8 @@ class _Parser:
                 if column in _ARRAY_COLUMNS:
                     raise DatasetFilterSyntaxError(
                         f"column {_safe(column_token.value)} is an array column; "
-                        "write it as \"'value' IN <column>\"",
+                        "write it as \"'value' IN <column>\" or "
+                        "\"'value' NOT IN <column>\"",
                         column_token.position,
                     )
                 # The array columns are deliberately not listed here: they are
@@ -407,18 +486,42 @@ class _Parser:
                 self._next()
                 value_token = self._expect("string", "a quoted string value")
                 return Equals(column=column, value=value_token.value)
-            if nxt.kind == "ident" and nxt.value.lower() == "in":
+            if nxt.kind == "!=":
                 self._next()
-                self._expect("(", "an opening parenthesis after IN")
-                values: list[str] = [self._expect("string", "a quoted string value").value]
-                while self._peek().kind == ",":
-                    self._next()
-                    values.append(self._expect("string", "a quoted string value").value)
-                self._expect(")", "a closing parenthesis")
-                return InList(column=column, values=tuple(values))
-            raise DatasetFilterSyntaxError("expected = or IN after a column name", nxt.position)
+                value_token = self._expect("string", "a quoted string value")
+                return NotEquals(column=column, value=value_token.value)
+            if self._at_keyword("in"):
+                self._next()
+                return InList(column=column, values=self._parse_value_list())
+            if self._at_keyword("not"):
+                # `NOT` exists only as part of `NOT IN` — there is no standalone
+                # prefix form, so the next token must be `IN`.
+                self._next()
+                if not self._at_keyword("in"):
+                    raise DatasetFilterSyntaxError(
+                        "expected IN after NOT", self._peek().position
+                    )
+                self._next()
+                return NotInList(column=column, values=self._parse_value_list())
+            raise DatasetFilterSyntaxError(
+                "expected =, !=, IN or NOT IN after a column name", nxt.position
+            )
 
         raise DatasetFilterSyntaxError("expected a column name or a quoted string", token.position)
+
+    def _parse_value_list(self) -> tuple[str, ...]:
+        """``'(' string {',' string} ')'`` — the ``IN`` keyword is already consumed.
+
+        Shared by the affirmative and negated list forms so the two cannot drift
+        apart on what a value list admits.
+        """
+        self._expect("(", "an opening parenthesis after IN")
+        values: list[str] = [self._expect("string", "a quoted string value").value]
+        while self._peek().kind == ",":
+            self._next()
+            values.append(self._expect("string", "a quoted string value").value)
+        self._expect(")", "a closing parenthesis")
+        return tuple(values)
 
     def _parse_bool_predicate(self, column: str) -> Node:
         """``bool_col '=' bool`` — the column token is already consumed.
@@ -427,13 +530,17 @@ class _Parser:
         A quoted value is rejected rather than coerced: ``is_primary = 'true'``
         would otherwise have to mean either the boolean or the string ``'true'``,
         and a silent choice between them is a filter that quietly matches the
-        wrong set of datasets.
+        wrong set of datasets. The negated operators are rejected for a different
+        reason: ``is_primary != TRUE`` is a second spelling of ``is_primary =
+        FALSE``, and ``NOT IN`` over a boolean column is the same wrong-operator
+        error ``IN`` already is.
         """
         nxt = self._peek()
         if nxt.kind != "=":
             raise DatasetFilterSyntaxError(
-                "expected = after a boolean column; boolean columns take neither IN "
-                'nor a quoted value, only "<column> = TRUE" or "<column> = FALSE"',
+                "expected = after a boolean column; boolean columns take neither IN, "
+                'NOT IN, != nor a quoted value, only "<column> = TRUE" or '
+                '"<column> = FALSE"',
                 nxt.position,
             )
         self._next()
@@ -489,24 +596,32 @@ def literal_dataset_urns(ast: FilterAst) -> list[str]:
 
     These feed the run-complete event's ``unresolved_urns``: a URN the operator
     named explicitly that matches no registered dataset is reported back.
+
+    Negated predicates are walked on the same terms as affirmative ones: the
+    mechanism reports unregistered literals and cannot read intent, and the same
+    URN-shape validation applies under negation. ``ArrayContains`` /
+    ``ArrayNotContains`` are skipped because an array column is never
+    ``dataset_urn``.
     """
     found: list[str] = []
     seen: set[str] = set()
+
+    def add(value: str) -> None:
+        if value not in seen:
+            seen.add(value)
+            found.append(value)
 
     def walk(node: Node) -> None:
         if isinstance(node, BoolNode):
             for child in node.children:
                 walk(child)
-        elif isinstance(node, Equals):
-            if node.column == "dataset_urn" and node.value not in seen:
-                seen.add(node.value)
-                found.append(node.value)
-        elif isinstance(node, InList):
+        elif isinstance(node, Equals | NotEquals):
+            if node.column == "dataset_urn":
+                add(node.value)
+        elif isinstance(node, InList | NotInList):
             if node.column == "dataset_urn":
                 for value in node.values:
-                    if value not in seen:
-                        seen.add(value)
-                        found.append(value)
+                    add(value)
 
     if ast.root is not None:
         walk(ast.root)
@@ -553,6 +668,15 @@ def _compile(node: Node) -> ColumnElement[bool]:
         # `sa.literal(...)` is a BindParameter — the value travels out-of-band.
         return column == sa.literal(node.value, Text())
 
+    if isinstance(node, NotEquals):
+        column = _SCALAR_COLUMNS[node.column]
+        # Plain `!=`, deliberately NOT `IS DISTINCT FROM`: `origin` and
+        # `platform_urn` are nullable, and a NULL is meant to satisfy neither
+        # direction — the same three-valued asymmetry `=` already exhibits. An
+        # `IS DISTINCT FROM` would silently fold the never-swept remainder into
+        # every negated scope (spec/API.md §dataset_filter grammar — Negation).
+        return column != sa.literal(node.value, Text())
+
     if isinstance(node, InList):
         column = _SCALAR_COLUMNS[node.column]
         # `col = ANY(:p::TEXT[])` rather than `col IN (:p1, :p2, …)`: the whole
@@ -566,6 +690,18 @@ def _compile(node: Node) -> ColumnElement[bool]:
         # list here, not the `"{a,b}"` string form psycopg tolerates.
         return column == sa.any_(
             sa.bindparam(None, value=list(node.values), type_=PG_ARRAY(Text()), unique=True)
+        )
+
+    if isinstance(node, NotInList):
+        column = _SCALAR_COLUMNS[node.column]
+        # The negation of the `= ANY(array)` shape above, not a chain of `!=`
+        # comparisons: one bound array parameter regardless of list length, for
+        # the same wire-protocol reason the affirmative form gives.
+        return sa.not_(
+            column
+            == sa.any_(
+                sa.bindparam(None, value=list(node.values), type_=PG_ARRAY(Text()), unique=True)
+            )
         )
 
     if isinstance(node, BoolEquals):
@@ -588,6 +724,17 @@ def _compile(node: Node) -> ColumnElement[bool]:
         # list here and rejects the `"{a,b}"` string form psycopg tolerates.
         return column.contains(
             sa.bindparam(None, value=[node.value], type_=PG_ARRAY(Text()), unique=True)
+        )
+
+    if isinstance(node, ArrayNotContains):
+        column = _ARRAY_COLUMNS[node.column]
+        # The array columns are NOT NULL (default `'{}'`), so negating the
+        # containment test is an exact complement — including for a never-swept
+        # row, whose empty array contains nothing and therefore matches.
+        return sa.not_(
+            column.contains(
+                sa.bindparam(None, value=[node.value], type_=PG_ARRAY(Text()), unique=True)
+            )
         )
 
     raise AssertionError(f"unhandled filter node: {type(node).__name__}")
@@ -642,11 +789,18 @@ def _format_operand(node: Node, indent: int) -> str:
 def _format_predicate(node: Node) -> str:
     if isinstance(node, Equals):
         return f"{node.column} = {_quote(node.value)}"
+    if isinstance(node, NotEquals):
+        return f"{node.column} != {_quote(node.value)}"
     if isinstance(node, InList):
         rendered = ", ".join(_quote(value) for value in node.values)
         return f"{node.column} IN ({rendered})"
+    if isinstance(node, NotInList):
+        rendered = ", ".join(_quote(value) for value in node.values)
+        return f"{node.column} NOT IN ({rendered})"
     if isinstance(node, ArrayContains):
         return f"{_quote(node.value)} IN {node.column}"
+    if isinstance(node, ArrayNotContains):
+        return f"{_quote(node.value)} NOT IN {node.column}"
     if isinstance(node, BoolEquals):
         # Lowercase in the canonical form, matching the lowercase column names.
         rendered = "true" if node.value else "false"

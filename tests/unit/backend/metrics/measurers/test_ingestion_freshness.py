@@ -8,30 +8,34 @@ Spec sources:
       of the measurement. The evidence is the owning ingestion source's per-dataset
       observation for that dataset where DataHub reports one, else that source's newest
       non-dry-run `INGESTION.COMPLETE`".
-    - "`time_window_sec` for `ingestion-freshness` and `validation-score` — **the**
-      measurement window (positive int seconds … factory default `172800`), the freshness
-      SLO the governance lead declares and the same for every dataset the metric scans".
+    - "`time_window_sec` for `ingestion-freshness` and `validation-score` — the
+      measurement window's **width** (positive int seconds … factory default `172800`),
+      the SLO the governance lead declares and the same for every dataset the metric
+      scans"; "Where that window sits is per type: `ingestion-freshness` trails the
+      measurement instant".
     - Registered under the `metric_type` value 'ingestion-freshness'; emits
       {'total': float, 'ingested_in_time': float}.
 
   Note on the boundary: USE_CASE's "falls within" fixes the *window*, not the behaviour
-  at the exact-cutoff instant; spec/feature/BACKEND.md §Metrics Service §Measurement
-  window does settle it — "**Boundary is inclusive**, for both measurers: evidence whose
-  instant is exactly one window before the measurement instant is *in* window — the
-  comparison is `instant >= cutoff`, never `>`". The one test below that turns on that
-  instant asserts exactly that rule. The measurement instant is "the run's clock reading
-  taken once at measurer entry", not the later `measured_at` stored with the result, so
-  the tests freeze that entry-time reading rather than reasoning from `measured_at`.
+  at the exact-cutoff instant; spec/feature/BACKEND.md §Metrics Service §Boundary is
+  inclusive does settle it — "**Boundary is inclusive**, for both measurers: evidence
+  whose instant is exactly one window width from the bound is *in* window … For
+  `ingestion-freshness` this is the single test `instant >= cutoff` with `cutoff =
+  measurement instant - time_window_sec`". The one test below that turns on that instant
+  asserts exactly that rule. Per §Measurement instant the measurement instant is "one
+  clock reading per run, computed by the service before it dispatches and passed to every
+  measurer", not the later `measured_at` stored with the result, so the tests pass that
+  instant in as `now=` rather than reasoning from `measured_at`.
 
   spec/feature/BACKEND.md §Metrics Service §Measurement window:
-    - "the window is `metric_conf.time_window_sec`, applied uniformly to every dataset
+    - "the window's *width* is `metric_conf.time_window_sec`, the same for every dataset
       in the run. It is a declared SLO the governance lead owns, not a quantity derived
       from a per-dataset fact such as an owning source's registered schedule, a
       sync-loop cadence, or a dataset's observed validation inter-arrival gap".
     - "`ingestion-freshness`: a dataset counts toward `ingested_in_time` when its
-      resolved ingestion evidence (below) is no older than `time_window_sec` at
-      measurement time."
-    - "Each run records the window it applied in the breakdown's
+      resolved ingestion evidence (below) is no older than `time_window_sec` at the
+      measurement instant."
+    - "Each run records the width it applied in the breakdown's
       `detail.time_window_sec`."
 
   spec/feature/BACKEND.md §Metrics Service §Ingestion evidence:
@@ -73,7 +77,6 @@ import re
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -86,6 +89,15 @@ from tests.unit.conftest import route_db_execute
 
 # A quoted UUID or uuid-shaped string as ``literal_binds`` renders it into an IN list.
 _QUOTED_ID = re.compile(r"'([0-9a-fA-F-]{36})'")
+
+#: The run's measurement instant. The service reads the clock once per run and hands the
+#: reading to every measurer, so a test supplies it directly instead of patching a clock:
+#: "one clock reading per run, computed by the service before it dispatches and passed to
+#: every measurer" (spec/feature/BACKEND.md §Metrics Service — Measurement instant). Every
+#: seeded evidence timestamp below is expressed as an offset from this instant, so the
+#: cutoff (`now - time_window_sec`) lands on an exact second and the boundary tests can
+#: bracket it.
+_NOW = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
 
 
 def _get_measurer():
@@ -148,7 +160,7 @@ def _source(
     source_id: uuid.UUID | None = None,
 ) -> IngestionSource:
     """Build a detached ``ingestion_source`` ORM row (no session, no DB)."""
-    now = datetime.now(tz=UTC)
+    now = _NOW
     return IngestionSource(
         id=source_id or uuid.uuid4(),
         mode=mode,
@@ -312,22 +324,10 @@ def _mapped(
     return _MappingRow(
         dataset_urn=urn,
         derivation=derivation,
-        last_seen_at=last_seen_at or datetime.now(tz=UTC),
+        last_seen_at=last_seen_at or _NOW,
         id=source.id,
         parent_source_id=source.parent_source_id,
     )
-
-
-def _freeze_now(monkeypatch: pytest.MonkeyPatch, fixed_now: datetime) -> None:
-    """Pin the measurer's ``datetime.now`` so cutoff boundaries are exact."""
-    import src.backend.metrics.measurers.ingestion_freshness as _mod
-
-    class _FixedDatetime:
-        @staticmethod
-        def now(tz: Any = None) -> datetime:
-            return fixed_now
-
-    monkeypatch.setattr(_mod, "datetime", _FixedDatetime)
 
 
 # ── Registration ──────────────────────────────────────────────────────────────
@@ -360,6 +360,7 @@ async def test_empty_datasets_returns_zeros() -> None:
         metric_conf={"time_window_sec": 86400},
         datahub=_datahub(),
         db=_fake_measurer_db(),
+        now=_NOW,
     )
 
     assert values == {"total": 0.0, "ingested_in_time": 0.0}
@@ -380,7 +381,7 @@ async def test_fresh_dataset_not_in_breakdown() -> None:
     measure = _get_measurer()
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.catalog.title_master,DEV)"
     src = _source(mode="ACTIVE_CUSTOM_MANAGED")
-    recent = datetime.now(tz=UTC) - timedelta(hours=1)
+    recent = _NOW - timedelta(hours=1)
 
     values, verdicts = await measure(
         datasets=[urn],
@@ -391,6 +392,7 @@ async def test_fresh_dataset_not_in_breakdown() -> None:
             sources=[src],
             events=[(str(src.id), recent)],
         ),
+        now=_NOW,
     )
 
     assert values["total"] == 1.0
@@ -424,6 +426,7 @@ async def test_dataset_with_no_event_in_breakdown_with_none_last_event() -> None
         metric_conf={"time_window_sec": 86400},
         datahub=_datahub(),
         db=_fake_measurer_db(mappings=[_mapped(urn, src)], sources=[src], events=[]),
+        now=_NOW,
     )
 
     assert values["total"] == 1.0
@@ -446,7 +449,7 @@ async def test_dataset_with_stale_event_in_breakdown() -> None:
     measure = _get_measurer()
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.orders.fulfillment,DEV)"
     src = _source(mode="ACTIVE_CUSTOM_MANAGED")
-    stale_ts = datetime.now(tz=UTC) - timedelta(seconds=90000)  # older than 86400s
+    stale_ts = _NOW - timedelta(seconds=90000)  # older than 86400s
 
     values, verdicts = await measure(
         datasets=[urn],
@@ -457,6 +460,7 @@ async def test_dataset_with_stale_event_in_breakdown() -> None:
             sources=[src],
             events=[(str(src.id), stale_ts)],
         ),
+        now=_NOW,
     )
 
     assert values["ingested_in_time"] == 0.0
@@ -478,7 +482,7 @@ async def test_event_well_inside_window_is_ingested_in_time() -> None:
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.boundary.test,DEV)"
     time_window_sec = 3600
     src = _source(mode="ACTIVE_CUSTOM_MANAGED")
-    inside_window = datetime.now(tz=UTC) - timedelta(seconds=time_window_sec // 2)
+    inside_window = _NOW - timedelta(seconds=time_window_sec // 2)
 
     values, verdicts = await measure(
         datasets=[urn],
@@ -489,6 +493,7 @@ async def test_event_well_inside_window_is_ingested_in_time() -> None:
             sources=[src],
             events=[(str(src.id), inside_window)],
         ),
+        now=_NOW,
     )
 
     assert values["ingested_in_time"] == 1.0
@@ -511,7 +516,7 @@ async def test_event_well_outside_window_is_stale() -> None:
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.boundary2.test,DEV)"
     time_window_sec = 3600
     src = _source(mode="ACTIVE_CUSTOM_MANAGED")
-    outside_window = datetime.now(tz=UTC) - timedelta(seconds=time_window_sec * 2)
+    outside_window = _NOW - timedelta(seconds=time_window_sec * 2)
 
     values, verdicts = await measure(
         datasets=[urn],
@@ -522,6 +527,7 @@ async def test_event_well_outside_window_is_stale() -> None:
             sources=[src],
             events=[(str(src.id), outside_window)],
         ),
+        now=_NOW,
     )
 
     assert values["ingested_in_time"] == 0.0
@@ -548,6 +554,7 @@ async def test_verdict_carries_exactly_the_four_contract_fields() -> None:
         metric_conf={"time_window_sec": 86400},
         datahub=_datahub(),
         db=_fake_measurer_db(mappings=[_mapped(urn, src)], sources=[src], events=[]),
+        now=_NOW,
     )
 
     from dataclasses import fields
@@ -572,13 +579,14 @@ async def test_stale_breakdown_detail_includes_the_window_and_the_evidence_tier(
     cannot reappear unnoticed.
 
     Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format —
-          "``ingestion-freshness`` and ``validation-score`` record the window applied at
-          run time in ``time_window_sec`` … alongside ``last_event_at`` (freshness)";
-          "``ingestion-freshness`` additionally names **which tier supplied
+          "``ingestion-freshness`` and ``validation-score`` record the window width
+          applied at run time in ``time_window_sec`` … alongside ``last_event_at``
+          (freshness)"; "``ingestion-freshness`` additionally names **which tier supplied
           ``last_event_at``** in ``evidence_tier`` (``"observation"`` for tier 1,
           ``"source_level"`` for tier 2, ``null`` when neither tier produced evidence)".
-    Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window — "the window is
-          ``metric_conf.time_window_sec``, applied uniformly to every dataset in the run".
+    Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window — "the window's
+          *width* is ``metric_conf.time_window_sec``, the same for every dataset in the
+          run".
     """
     measure = _get_measurer()
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.detail-check,DEV)"
@@ -589,6 +597,7 @@ async def test_stale_breakdown_detail_includes_the_window_and_the_evidence_tier(
         metric_conf={"time_window_sec": 86400},
         datahub=_datahub(),
         db=_fake_measurer_db(),
+        now=_NOW,
     )
 
     assert len(_failed(verdicts)) == 1
@@ -603,7 +612,7 @@ async def test_stale_breakdown_detail_includes_the_window_and_the_evidence_tier(
         "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
     )
     assert "window_source" not in detail, (
-        "detail must not name a window provenance: the window is always "
+        "detail must not name a window provenance: the width is always "
         "metric_conf.time_window_sec, so there is no provenance to report. "
         "Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window."
     )
@@ -639,7 +648,7 @@ async def test_mixed_fresh_and_stale_counts_correctly() -> None:
     urn_fresh2 = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.b,DEV)"
     urn_stale = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.c,DEV)"
 
-    now = datetime.now(tz=UTC)
+    now = _NOW
     time_window_sec = 86400
     src_fresh1 = _source(mode="ACTIVE_CUSTOM_MANAGED", name="a")
     src_fresh2 = _source(mode="ACTIVE_CUSTOM_MANAGED", name="b")
@@ -662,6 +671,7 @@ async def test_mixed_fresh_and_stale_counts_correctly() -> None:
                 (str(src_stale.id), now - timedelta(seconds=time_window_sec + 3600)),
             ],
         ),
+        now=_NOW,
     )
 
     assert values["total"] == 3.0
@@ -688,7 +698,7 @@ async def test_two_datasets_sharing_a_source_share_its_tier_2_evidence() -> None
     urn_a = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.shared.a,DEV)"
     urn_b = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.shared.b,DEV)"
     src = _source(mode="ACTIVE_CUSTOM_MANAGED", name="shared")
-    stale_ts = datetime.now(tz=UTC) - timedelta(seconds=90000)
+    stale_ts = _NOW - timedelta(seconds=90000)
 
     values, verdicts = await measure(
         datasets=[urn_a, urn_b],
@@ -699,6 +709,7 @@ async def test_two_datasets_sharing_a_source_share_its_tier_2_evidence() -> None
             sources=[src],
             events=[(str(src.id), stale_ts)],
         ),
+        now=_NOW,
     )
 
     assert values["ingested_in_time"] == 0.0
@@ -711,37 +722,38 @@ async def test_two_datasets_sharing_a_source_share_its_tier_2_evidence() -> None
 
 
 @pytest.mark.asyncio
-async def test_event_exactly_at_cutoff_is_fresh(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_event_exactly_at_cutoff_is_fresh() -> None:
     """Event at exactly measurement instant - time_window_sec is FRESH.
 
     The boundary instant is settled by spec, not by the implementation:
-    spec/feature/BACKEND.md §Metrics Service §Measurement window — "**Boundary is
-    inclusive**, for both measurers: evidence whose instant is exactly one window before
-    the measurement instant is *in* window — the comparison is ``instant >= cutoff``,
-    never ``>``." The same section fixes which clock reading the cutoff hangs off: "The
-    measurement instant is the run's clock reading taken once at measurer entry, and
-    ``cutoff`` is that reading minus ``time_window_sec``. The ``measured_at`` persisted
-    with the result is a later reading … it dates the result and does not define the
-    window." So the event here is dated off the frozen entry-time reading.
+    spec/feature/BACKEND.md §Metrics Service §Boundary is inclusive — "**Boundary is
+    inclusive**, for both measurers: evidence whose instant is exactly one window width
+    from the bound is *in* window — the comparisons are ``>= lower_bound`` and
+    ``<= upper_bound``, never strict. For ``ingestion-freshness`` this is the single test
+    ``instant >= cutoff`` with ``cutoff = measurement instant - time_window_sec``."
+    §Measurement instant fixes which reading the cutoff hangs off: the run's
+    measurement instant — "one clock reading per run, computed by the service before it
+    dispatches and passed to every measurer" — while "``measured_at`` persisted on
+    ``metric_results`` … stays a later wall-clock reading taken after measurement returns,
+    dating the *result* rather than defining the window". The event here is therefore
+    dated off the instant handed in as ``now=``, not off ``measured_at``.
 
-    The same section explains why a test has to carry this rather than a run: "The
-    boundary direction is not observable in practice — the reading is
+    §Boundary is inclusive also explains why a test has to carry this rather than a run:
+    "The boundary direction is not observable in practice — the reading is
     microsecond-resolution, so a stored timestamp landing on it exactly is a measure-zero
     event — so it is fixed here rather than left to be inferred from a run." This test and
-    ``test_validation_score.py::test_row_exactly_at_cutoff_is_counted`` are therefore the
-    only places the ``>=`` is exercised at the instant that distinguishes it from ``>``.
+    ``test_validation_score.py::test_data_time_exactly_on_either_bound_is_in_window`` are
+    therefore the only places the ``>=`` is exercised at the instant that distinguishes it
+    from ``>``.
 
     The wider sides of the boundary are ``test_event_one_second_inside_window_is_fresh``
     and ``test_event_well_outside_window_is_stale``.
     """
     time_window_sec = 3600
-    fixed_now = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
-    _freeze_now(monkeypatch, fixed_now)
-
     measure = _get_measurer()
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.boundary.exact,DEV)"
     src = _source(mode="ACTIVE_CUSTOM_MANAGED")
-    exact_cutoff = fixed_now - timedelta(seconds=time_window_sec)
+    exact_cutoff = _NOW - timedelta(seconds=time_window_sec)
 
     values, verdicts = await measure(
         datasets=[urn],
@@ -752,12 +764,13 @@ async def test_event_exactly_at_cutoff_is_fresh(monkeypatch: pytest.MonkeyPatch)
             sources=[src],
             events=[(str(src.id), exact_cutoff)],
         ),
+        now=_NOW,
     )
 
     assert values["ingested_in_time"] == 1.0, (
-        "evidence exactly one window before the measurement instant is in window "
+        "evidence exactly one window width from the bound is in window "
         "(instant >= cutoff). Spec: spec/feature/BACKEND.md §Metrics Service "
-        "§Measurement window — 'Boundary is inclusive'."
+        "§Boundary is inclusive."
     )
     assert _failed(verdicts) == []
     verdict = _verdict(verdicts, urn)
@@ -770,7 +783,7 @@ async def test_event_exactly_at_cutoff_is_fresh(monkeypatch: pytest.MonkeyPatch)
 
 
 @pytest.mark.asyncio
-async def test_event_one_second_inside_window_is_fresh(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_event_one_second_inside_window_is_fresh() -> None:
     """Event at now - time_window_sec + 1s is FRESH.
 
     One second inside the window is inside it on any reading, so this is the boundary side
@@ -781,13 +794,10 @@ async def test_event_one_second_inside_window_is_fresh(monkeypatch: pytest.Monke
           ``metric_conf.time_window_sec`` of the measurement".
     """
     time_window_sec = 3600
-    fixed_now = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
-    _freeze_now(monkeypatch, fixed_now)
-
     measure = _get_measurer()
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.boundary.inside,DEV)"
     src = _source(mode="ACTIVE_CUSTOM_MANAGED")
-    one_sec_inside = fixed_now - timedelta(seconds=time_window_sec - 1)
+    one_sec_inside = _NOW - timedelta(seconds=time_window_sec - 1)
 
     values, verdicts = await measure(
         datasets=[urn],
@@ -798,6 +808,7 @@ async def test_event_one_second_inside_window_is_fresh(monkeypatch: pytest.Monke
             sources=[src],
             events=[(str(src.id), one_sec_inside)],
         ),
+        now=_NOW,
     )
 
     assert values["ingested_in_time"] == 1.0, (
@@ -808,7 +819,7 @@ async def test_event_one_second_inside_window_is_fresh(monkeypatch: pytest.Monke
 
 
 @pytest.mark.asyncio
-async def test_event_one_second_outside_window_is_stale(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_event_one_second_outside_window_is_stale() -> None:
     """Event at now - time_window_sec - 1s is STALE.
 
     The mirror of the case above, and the outer bracket of the cutoff: one second the far
@@ -825,13 +836,10 @@ async def test_event_one_second_outside_window_is_stale(monkeypatch: pytest.Monk
           both tiers".
     """
     time_window_sec = 3600
-    fixed_now = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
-    _freeze_now(monkeypatch, fixed_now)
-
     measure = _get_measurer()
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.boundary.outside,DEV)"
     src = _source(mode="ACTIVE_CUSTOM_MANAGED")
-    one_sec_outside = fixed_now - timedelta(seconds=time_window_sec + 1)
+    one_sec_outside = _NOW - timedelta(seconds=time_window_sec + 1)
 
     values, verdicts = await measure(
         datasets=[urn],
@@ -842,6 +850,7 @@ async def test_event_one_second_outside_window_is_stale(monkeypatch: pytest.Monk
             sources=[src],
             events=[(str(src.id), one_sec_outside)],
         ),
+        now=_NOW,
     )
 
     assert values["ingested_in_time"] == 0.0, (
@@ -891,8 +900,9 @@ async def test_an_out_of_range_stored_window_fails_the_run_rather_than_being_cla
             db=_fake_measurer_db(
                 mappings=[_mapped(urn, src)],
                 sources=[src],
-                events=[(str(src.id), datetime.now(tz=UTC))],
+                events=[(str(src.id), _NOW)],
             ),
+            now=_NOW,
         )
 
 
@@ -909,18 +919,19 @@ async def test_window_is_the_declared_config_value_for_a_passive_owned_dataset()
     happen — a different question from how recent the evidence must be to count — so
     neither narrows the window here.
 
-    Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window — "the window is
-          ``metric_conf.time_window_sec``, applied uniformly to every dataset in the run.
-          It is a declared SLO the governance lead owns, not a quantity derived from a
-          per-dataset fact such as an owning source's registered schedule, a sync-loop
+    Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window — "the window's
+          *width* is ``metric_conf.time_window_sec``, the same for every dataset in the
+          run. It is a declared SLO the governance lead owns, not a quantity derived from
+          a per-dataset fact such as an owning source's registered schedule, a sync-loop
           cadence, or a dataset's observed validation inter-arrival gap".
     Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — "``time_window_sec``
-          … **the** measurement window … the same for every dataset the metric scans".
+          … the measurement window's **width** … the SLO the governance lead declares and
+          the same for every dataset the metric scans".
     """
     measure = _get_measurer()
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.passive.declared,DEV)"
     src = _source(mode="PASSIVE", name="passive-declared")
-    three_hours_ago = datetime.now(tz=UTC) - timedelta(hours=3)
+    three_hours_ago = _NOW - timedelta(hours=3)
 
     values, verdicts = await measure(
         datasets=[urn],
@@ -931,6 +942,7 @@ async def test_window_is_the_declared_config_value_for_a_passive_owned_dataset()
             sources=[src],
             events=[(str(src.id), three_hours_ago)],
         ),
+        now=_NOW,
     )
 
     assert values["ingested_in_time"] == 1.0, (
@@ -953,12 +965,12 @@ async def test_a_passive_owned_dataset_outside_the_declared_window_is_stale() ->
           failed when "the resolved ingestion evidence (tier 1 or tier 2 …) is older
           than ``metric_conf.time_window_sec``, or absent on both tiers".
     Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window — "Each run
-          records the window it applied in the breakdown's ``detail.time_window_sec``".
+          records the width it applied in the breakdown's ``detail.time_window_sec``".
     """
     measure = _get_measurer()
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.passive.declared,DEV)"
     src = _source(mode="PASSIVE", name="passive-declared")
-    past_the_window = datetime.now(tz=UTC) - timedelta(seconds=172800 + 3600)
+    past_the_window = _NOW - timedelta(seconds=172800 + 3600)
 
     values, verdicts = await measure(
         datasets=[urn],
@@ -969,6 +981,7 @@ async def test_a_passive_owned_dataset_outside_the_declared_window_is_stale() ->
             sources=[src],
             events=[(str(src.id), past_the_window)],
         ),
+        now=_NOW,
     )
 
     assert values["ingested_in_time"] == 0.0
@@ -997,8 +1010,9 @@ async def test_every_owning_mode_and_tier_reports_the_same_declared_window() -> 
     the 7200s an hourly cadence would imply, so ``ingested_in_time`` drops below 4.0 the
     moment any per-dataset fact narrows the window.
 
-    Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window — the window is
-          "applied uniformly to every dataset in the run".
+    Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window — the window's
+          "*width* is ``metric_conf.time_window_sec``, the same for every dataset in the
+          run".
     """
     measure = _get_measurer()
     hourly_urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.uniform.hourly,DEV)"
@@ -1011,7 +1025,7 @@ async def test_every_owning_mode_and_tier_reports_the_same_declared_window() -> 
     src_untiered = _source(mode="ACTIVE_CUSTOM_MANAGED", name="u")
     src_passive = _source(mode="PASSIVE", name="p")
 
-    evidence_at = datetime.now(tz=UTC) - timedelta(seconds=8000)
+    evidence_at = _NOW - timedelta(seconds=8000)
 
     values, verdicts = await measure(
         datasets=[hourly_urn, daily_urn, untiered_urn, passive_urn],
@@ -1032,6 +1046,7 @@ async def test_every_owning_mode_and_tier_reports_the_same_declared_window() -> 
                 (str(src_passive.id), evidence_at),
             ],
         ),
+        now=_NOW,
     )
 
     assert values["total"] == 4.0
@@ -1054,8 +1069,8 @@ async def test_a_dataset_with_no_owning_source_uses_the_declared_window() -> Non
 
     Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format — a dataset is
           failed when its evidence is "absent on both tiers".
-    Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window — the window is
-          ``metric_conf.time_window_sec``.
+    Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window — "the window's
+          *width* is ``metric_conf.time_window_sec``".
     """
     measure = _get_measurer()
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.unclaimed,DEV)"
@@ -1065,6 +1080,7 @@ async def test_a_dataset_with_no_owning_source_uses_the_declared_window() -> Non
         metric_conf={"time_window_sec": 3600},
         datahub=_datahub(),
         db=_fake_measurer_db(),  # no mapping rows at all
+        now=_NOW,
     )
 
     assert values["total"] == 1.0
@@ -1104,7 +1120,7 @@ async def test_run_booked_on_a_wrapper_only_counts_for_the_owning_parent() -> No
         parent_source_id=parent.id,
         name="[CLI] postgres",
     )
-    wrapper_run = datetime.now(tz=UTC) - timedelta(seconds=130000)  # inside 172800s
+    wrapper_run = _NOW - timedelta(seconds=130000)  # inside 172800s
 
     values, verdicts = await measure(
         datasets=[urn],
@@ -1116,6 +1132,7 @@ async def test_run_booked_on_a_wrapper_only_counts_for_the_owning_parent() -> No
             wrappers=[(wrapper.id, parent.id)],
             events=[(str(wrapper.id), wrapper_run)],  # only the wrapper ran
         ),
+        now=_NOW,
     )
 
     assert values["ingested_in_time"] == 1.0, (
@@ -1144,7 +1161,7 @@ async def test_newest_run_across_parent_and_wrapper_wins() -> None:
         parent_source_id=parent.id,
         name="[CLI] postgres",
     )
-    now = datetime.now(tz=UTC)
+    now = _NOW
     parent_run = now - timedelta(seconds=8000)  # outside the declared 3600s window
     wrapper_run = now - timedelta(seconds=600)  # inside it, and newer
 
@@ -1158,6 +1175,7 @@ async def test_newest_run_across_parent_and_wrapper_wins() -> None:
             wrappers=[(wrapper.id, parent.id)],
             events=[(str(parent.id), parent_run), (str(wrapper.id), wrapper_run)],
         ),
+        now=_NOW,
     )
 
     assert values["ingested_in_time"] == 1.0, (
@@ -1195,7 +1213,7 @@ async def test_owning_source_is_the_regular_parent_of_a_claiming_wrapper() -> No
         parent_source_id=parent.id,
         name="[CLI] postgres",
     )
-    stale_ts = datetime.now(tz=UTC) - timedelta(seconds=200000)  # outside 86400s
+    stale_ts = _NOW - timedelta(seconds=200000)  # outside 86400s
 
     values, verdicts = await measure(
         datasets=[urn],
@@ -1210,6 +1228,7 @@ async def test_owning_source_is_the_regular_parent_of_a_claiming_wrapper() -> No
             wrappers=[(wrapper.id, parent.id)],
             events=[(str(parent.id), stale_ts)],
         ),
+        now=_NOW,
     )
 
     assert values["ingested_in_time"] == 0.0
@@ -1251,7 +1270,7 @@ async def test_a_dataset_with_its_own_observation_reads_that_instant_not_the_sou
     measure = _get_measurer()
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.tier1.own,DEV)"
     src = _source(mode="ACTIVE_CUSTOM_MANAGED", name="tier1-own")
-    now = datetime.now(tz=UTC)
+    now = _NOW
     own_observation = now - timedelta(seconds=90_000)  # stale against the 86400s window
     source_run = now - timedelta(hours=1)  # fresh — must NOT be what answers
 
@@ -1265,6 +1284,7 @@ async def test_a_dataset_with_its_own_observation_reads_that_instant_not_the_sou
             observations=[(str(src.id), urn, own_observation)],
             events=[(str(src.id), source_run)],
         ),
+        now=_NOW,
     )
 
     assert values["ingested_in_time"] == 0.0, (
@@ -1300,7 +1320,7 @@ async def test_a_dataset_reads_its_own_observation_and_not_a_siblings() -> None:
     stale_urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.tier1.stale,DEV)"
     fresh_urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.tier1.fresh,DEV)"
     src = _source(mode="ACTIVE_CUSTOM_MANAGED", name="tier1-shared")
-    now = datetime.now(tz=UTC)
+    now = _NOW
 
     values, verdicts = await measure(
         datasets=[stale_urn, fresh_urn],
@@ -1314,6 +1334,7 @@ async def test_a_dataset_reads_its_own_observation_and_not_a_siblings() -> None:
                 (str(src.id), fresh_urn, now - timedelta(hours=1)),
             ],
         ),
+        now=_NOW,
     )
 
     assert values["total"] == 2.0
@@ -1344,7 +1365,7 @@ async def test_a_dataset_with_no_observation_falls_back_to_the_source_level_maxi
     observed_urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.tier2.observed,DEV)"
     bare_urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.tier2.bare,DEV)"
     src = _source(mode="ACTIVE_CUSTOM_MANAGED", name="tier2-fallback")
-    now = datetime.now(tz=UTC)
+    now = _NOW
     source_run = now - timedelta(hours=2)
 
     values, verdicts = await measure(
@@ -1357,6 +1378,7 @@ async def test_a_dataset_with_no_observation_falls_back_to_the_source_level_maxi
             observations=[(str(src.id), observed_urn, now - timedelta(hours=1))],
             events=[(str(src.id), source_run)],
         ),
+        now=_NOW,
     )
 
     assert values["ingested_in_time"] == 2.0, (
@@ -1381,7 +1403,7 @@ async def test_the_fallback_names_the_source_level_tier_in_the_breakdown() -> No
     measure = _get_measurer()
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.tier2.stale,DEV)"
     src = _source(mode="ACTIVE_CUSTOM_MANAGED", name="tier2-stale")
-    stale_ts = datetime.now(tz=UTC) - timedelta(seconds=90_000)
+    stale_ts = _NOW - timedelta(seconds=90_000)
 
     _values, verdicts = await measure(
         datasets=[urn],
@@ -1392,6 +1414,7 @@ async def test_the_fallback_names_the_source_level_tier_in_the_breakdown() -> No
             sources=[src],
             events=[(str(src.id), stale_ts)],
         ),
+        now=_NOW,
     )
 
     assert len(_failed(verdicts)) == 1
@@ -1427,7 +1450,7 @@ async def test_an_observation_on_a_wrapper_counts_for_the_owning_parent() -> Non
         parent_source_id=parent.id,
         name="[CLI] postgres",
     )
-    observed = datetime.now(tz=UTC) - timedelta(seconds=130_000)  # inside 172800s
+    observed = _NOW - timedelta(seconds=130_000)  # inside 172800s
 
     values, verdicts = await measure(
         datasets=[urn],
@@ -1439,6 +1462,7 @@ async def test_an_observation_on_a_wrapper_counts_for_the_owning_parent() -> Non
             wrappers=[(wrapper.id, parent.id)],
             observations=[(str(wrapper.id), urn, observed)],  # only the wrapper booked it
         ),
+        now=_NOW,
     )
 
     assert values["ingested_in_time"] == 1.0, (
@@ -1465,7 +1489,7 @@ async def test_evidence_at_is_the_resolved_evidence_instant_for_a_fresh_dataset(
     measure = _get_measurer()
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.evidence.fresh,DEV)"
     src = _source(mode="ACTIVE_CUSTOM_MANAGED", name="evidence-fresh")
-    observed = datetime.now(tz=UTC) - timedelta(hours=1)
+    observed = _NOW - timedelta(hours=1)
 
     values, verdicts = await measure(
         datasets=[urn],
@@ -1476,6 +1500,7 @@ async def test_evidence_at_is_the_resolved_evidence_instant_for_a_fresh_dataset(
             sources=[src],
             observations=[(str(src.id), urn, observed)],
         ),
+        now=_NOW,
     )
 
     assert values["ingested_in_time"] == 1.0, "backstop: this dataset must be fresh"
@@ -1494,7 +1519,7 @@ async def test_evidence_at_is_carried_on_a_stale_verdict_too() -> None:
     measure = _get_measurer()
     urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.evidence.stale,DEV)"
     src = _source(mode="ACTIVE_CUSTOM_MANAGED", name="evidence-stale")
-    stale_ts = datetime.now(tz=UTC) - timedelta(seconds=90_000)
+    stale_ts = _NOW - timedelta(seconds=90_000)
 
     _values, verdicts = await measure(
         datasets=[urn],
@@ -1505,6 +1530,7 @@ async def test_evidence_at_is_carried_on_a_stale_verdict_too() -> None:
             sources=[src],
             events=[(str(src.id), stale_ts)],
         ),
+        now=_NOW,
     )
 
     verdict = _verdict(verdicts, urn)
@@ -1517,16 +1543,18 @@ async def test_evidence_at_is_carried_on_a_stale_verdict_too() -> None:
 async def test_verdicts_cover_every_dataset_fresh_and_stale_alike() -> None:
     """Both a fresh and a stale dataset get a verdict, in scope order.
 
-    Spec: spec/feature/BACKEND.md §Metrics Service §Verdict contract — "Full coverage
-          is what makes 'in scope but never evaluated' (`unknown`) distinguishable from
-          'evaluated and passing'".
+    Spec: spec/feature/BACKEND.md §Metrics Service §Verdict contract — "`verdicts` covers
+          every dataset the measurer **evaluated**, not only the failing ones … Covering
+          the passing datasets too is what makes 'in scope but never evaluated'
+          (`unknown`) distinguishable from 'evaluated and passing': a failures-only
+          return cannot express the difference."
     """
     measure = _get_measurer()
     fresh_urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.cover.fresh,DEV)"
     stale_urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.cover.stale,DEV)"
     fresh_src = _source(mode="ACTIVE_CUSTOM_MANAGED", name="cover-fresh")
     stale_src = _source(mode="ACTIVE_CUSTOM_MANAGED", name="cover-stale")
-    now = datetime.now(tz=UTC)
+    now = _NOW
 
     values, verdicts = await measure(
         datasets=[fresh_urn, stale_urn],
@@ -1540,6 +1568,7 @@ async def test_verdicts_cover_every_dataset_fresh_and_stale_alike() -> None:
                 (str(stale_src.id), now - timedelta(seconds=90_000)),
             ],
         ),
+        now=_NOW,
     )
 
     assert values == {"total": 2.0, "ingested_in_time": 1.0}

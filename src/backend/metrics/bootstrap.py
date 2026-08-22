@@ -40,10 +40,14 @@ _FACTORY_DEFAULTS: list[dict[str, Any]] = [
         "mode": "active",
         "metric_type": "validation-score",
         "title": "Validation score",
-        "description": "Daily sum of dataset validation scores within the configured time window",
+        "description": (
+            "Daily count of datasets whose latest validation result is inside their "
+            "cadence-anchored window and passing, against the configured estate"
+        ),
         "metrics": [
             {"name": "total", "color": _TOTAL_COLOR, "idx": 1},
-            {"name": "validation_score_sum", "color": "#3B82F6", "idx": 2},
+            {"name": "valid_confd", "color": "#3B82F6", "idx": 2},
+            {"name": "valid_in_time", "color": "#14B8A6", "idx": 3},
         ],
         "metric_conf": {"time_window_sec": 172800},
         "dataset_filter": "",

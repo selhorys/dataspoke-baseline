@@ -40,7 +40,16 @@ sub_router = APIRouter()
 # ── Conf CRUD ─────────────────────────────────────────────────────────────────
 
 
-@sub_router.get("/{dataset_urn}/attr/validation/conf", response_model=ValidationConfResponse)
+# `response_model_exclude_none` on the three conf routes is what omits an absent
+# `parameter` key from the body instead of serializing it as null: absence and
+# "declared, but empty" are different states and the empty list is not an
+# admissible value (spec/feature/VALIDATION.md §Rule Configuration). Every other
+# field of the response is non-null, so nothing else is affected.
+@sub_router.get(
+    "/{dataset_urn}/attr/validation/conf",
+    response_model=ValidationConfResponse,
+    response_model_exclude_none=True,
+)
 async def get_data_validation_conf(
     dataset_urn: DatasetUrnPath,
     service: ValidationService = Depends(get_validation_service),
@@ -54,6 +63,7 @@ async def get_data_validation_conf(
 @sub_router.put(
     "/{dataset_urn}/attr/validation/conf",
     response_model=ValidationConfResponse,
+    response_model_exclude_none=True,
     status_code=status.HTTP_200_OK,
 )
 async def put_data_validation_conf(
@@ -67,20 +77,37 @@ async def put_data_validation_conf(
         dataset_urn=dataset_urn,
         description=body.description,
         variables=[v.model_dump() for v in body.variables],
+        # PUT is a full replace: `attribute` is always the complete
+        # per-field-defaulted object, and an omitted `parameter` clears the
+        # section rather than preserving the stored one.
+        attribute=body.attribute.model_dump(),
+        parameter=(
+            [p.model_dump() for p in body.parameter] if body.parameter is not None else None
+        ),
     )
     if created:
         response.status_code = status.HTTP_201_CREATED
     return ValidationConfResponse.model_validate(config)
 
 
-@sub_router.patch("/{dataset_urn}/attr/validation/conf", response_model=ValidationConfResponse)
+@sub_router.patch(
+    "/{dataset_urn}/attr/validation/conf",
+    response_model=ValidationConfResponse,
+    response_model_exclude_none=True,
+)
 async def patch_data_validation_conf(
     dataset_urn: DatasetUrnPath,
     body: PatchValidationConfRequest,
     service: ValidationService = Depends(get_validation_service),
     _writer: AuthContext = Depends(require_writer),
 ) -> ValidationConfResponse:
+    # exclude_unset is what distinguishes "parameter omitted" (leave the stored
+    # value alone) from "parameter: null" (clear the section) — but it also
+    # reaches into `attribute`, dropping the fields the caller did not name.
+    # `attribute` is replaced wholesale, so it is re-dumped complete.
     patch = body.model_dump(exclude_unset=True)
+    if body.attribute is not None:
+        patch["attribute"] = body.attribute.model_dump()
     config = await service.patch_config(dataset_urn, patch)
     return ValidationConfResponse.model_validate(config)
 

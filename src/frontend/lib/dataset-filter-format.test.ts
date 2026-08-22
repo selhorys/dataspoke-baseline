@@ -91,6 +91,56 @@ describe("formatDatasetFilter — canonical layout", () => {
     expect(formatDatasetFilter("origin='PROD'")).toBe("origin = 'PROD'");
   });
 
+  it("spaces `!=` as one operator, not two adjacent punctuation characters", () => {
+    // spec/API.md §`dataset_filter` grammar: `predicate := scalar_col ('=' | '!=') string`
+    // — `!=` is a single operator token. If the tokenizer split it into `!` and
+    // `=`, the formatter's one-space-between-tokens rule would emit
+    // `origin ! = 'DEV'`, silently rewriting the clause the user typed.
+    // format_filter("origin!='DEV'") returns "origin != 'DEV'".
+    expect(formatDatasetFilter("origin!='DEV'")).toBe("origin != 'DEV'");
+  });
+
+  it("lexes `!=` as a single token", () => {
+    // The direct statement of the invariant the layout assertion above depends on.
+    expect(tokens("origin!='DEV'")).toEqual(["word:origin", "punct:!=", "string:'DEV'"]);
+  });
+
+  it("keeps a NOT IN value list on one line, like the affirmative IN list", () => {
+    // The formatter's only lookbehind is "a `(` directly after the `IN` keyword
+    // is a value list". `NOT IN` needs no second case because `IN` is still the
+    // token immediately before the `(` — this pins that.
+    // format_filter("origin NOT IN ('CORP','EI')") returns "origin NOT IN ('CORP', 'EI')".
+    expect(formatDatasetFilter("origin NOT IN ('CORP','EI')")).toBe(
+      "origin NOT IN ('CORP', 'EI')",
+    );
+  });
+
+  it("never breaks a line before NOT, so NOT IN stays with its IN", () => {
+    // `AND` / `OR` break lines; `NOT` deliberately does not, because it only ever
+    // appears as the first half of `NOT IN` (spec/API.md: "`NOT` likewise appears
+    // **only** as part of `NOT IN`; there is no standalone `NOT (expr)` prefix
+    // form"). This is an invariant of *omission* — adding `NOT` to the
+    // line-breaking keyword set would strand it from its `IN` and this is the
+    // assertion that would catch it.
+    //
+    // The clause is adapted from spec/API.md §`dataset_filter` grammar's second
+    // worked example, mixing a negated scalar `!=`, a negated scalar value
+    // list, and a negated array-column membership. Byte-identical to
+    // format_filter()'s output for the same clause (src/shared/dataset_filter.py).
+    expect(
+      formatDatasetFilter(
+        "origin != 'DEV' AND (platform_urn NOT IN ('urn:li:dataPlatform:kafka'," +
+          "'urn:li:dataPlatform:s3') OR 'urn:li:tag:lifecycle:deprecated' NOT IN tag_urns)",
+      ),
+    ).toBe(
+      "origin != 'DEV'\n" +
+        "AND (\n" +
+        "    platform_urn NOT IN ('urn:li:dataPlatform:kafka', 'urn:li:dataPlatform:s3')\n" +
+        "    OR 'urn:li:tag:lifecycle:deprecated' NOT IN tag_urns\n" +
+        ")",
+    );
+  });
+
   it("renders an empty or whitespace-only clause as the empty string", () => {
     // spec/API.md §`dataset_filter` grammar: "filter := ε | expr — empty string =
     // all registered datasets". Auto-indent must not invent text for it.
@@ -166,6 +216,10 @@ describe("formatDatasetFilter — only whitespace changes", () => {
     "origin = 'PROD' AND 'urn:li:tag:area:catalog' IN tag_urns",
     "origin = 'PROD' AND ('urn:li:tag:a' IN tag_urns OR origin = 'DEV')",
     "origin IN ('PROD','DEV')",
+    "origin!='DEV'",
+    "origin NOT IN ('CORP','EI')",
+    "origin != 'DEV' AND (platform_urn NOT IN ('urn:li:dataPlatform:kafka') OR" +
+      " 'urn:li:tag:lifecycle:deprecated' NOT IN tag_urns)",
     "origin = 'O''Brien'",
     "((origin = 'A'))",
     "ORIGIN = 'PROD' and X",

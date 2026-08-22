@@ -301,6 +301,394 @@ async def test_patch_config_absent_returns_config_not_found(
     assert exc_info.value.error_code == "CONFIG_NOT_FOUND"
 
 
+# ── attribute + parameter lifecycle ──────────────────────────────────────────
+#
+# spec: VALIDATION.md §Rule Configuration — `attribute` is written wholesale, per-field
+# defaulted, on both PUT and PATCH; `parameter` is the one optional-by-absence section,
+# whose PUT/PATCH/GET lifecycle that section states in full.
+
+
+def _patched_registry(db: AsyncMock, config_row) -> None:
+    """Route the upsert's two reads: the registry precondition, then the conf slot."""
+    registry_row = MagicMock()
+    registry_row.datahub_registered = True
+    route_db_execute(
+        db,
+        [("dataset_registry", _scalar_result(registry_row))],
+        default=_scalar_result(config_row),
+    )
+    db.commit = AsyncMock()
+
+
+@pytest.mark.asyncio
+async def test_put_without_attribute_stores_the_all_defaults_cadence(
+    svc: ValidationService, db: AsyncMock, datahub: AsyncMock
+) -> None:
+    """A PUT that names no cadence still stores a complete object.
+
+    The column is NOT NULL and the `validation-score` measurer reads it without
+    branching on absence, so "omitted" has to become the all-defaults object at the
+    write rather than a null the reader has to repair.
+
+    spec: VALIDATION.md §Rule Configuration — "Omitting it on `PUT` stores the
+    all-defaults object; it is never absent from a stored conf or from a response."
+    """
+    _patched_registry(db, None)
+
+    with (
+        patch(_REGISTER, new_callable=AsyncMock),
+        patch(_BUILD_INFO),
+        patch(_BUILD_URN, return_value=_FAKE_URN),
+    ):
+        mock_db_refresh(db)
+        record, _created = await svc.upsert_config(
+            dataset_urn=_DATASET_URN,
+            description="Daily row count check",
+            variables=[_var("row_cnt")],
+        )
+
+    assert record.attribute == {"cadence_unit": 86400, "cadence_offset": 0}
+
+
+@pytest.mark.asyncio
+async def test_put_with_a_partial_attribute_fills_the_unnamed_field_with_its_default(
+    svc: ValidationService, db: AsyncMock, datahub: AsyncMock
+) -> None:
+    """A partially-named cadence is completed field-by-field, not stored partial.
+
+    spec: VALIDATION.md §Rule Configuration — "Supplying `attribute` on `PUT` or
+    `PATCH` writes the **complete** per-field-defaulted object".
+    """
+    _patched_registry(db, None)
+
+    with (
+        patch(_REGISTER, new_callable=AsyncMock),
+        patch(_BUILD_INFO),
+        patch(_BUILD_URN, return_value=_FAKE_URN),
+    ):
+        mock_db_refresh(db)
+        record, _created = await svc.upsert_config(
+            dataset_urn=_DATASET_URN,
+            description="D-8 partition check",
+            variables=[_var("row_cnt")],
+            attribute={"cadence_offset": 7},
+        )
+
+    assert record.attribute == {"cadence_unit": 86400, "cadence_offset": 7}
+
+
+@pytest.mark.asyncio
+async def test_put_replaces_a_stored_attribute_wholesale_rather_than_merging(
+    svc: ValidationService, db: AsyncMock, datahub: AsyncMock
+) -> None:
+    """A PUT over a non-default cadence resets the field it does not name.
+
+    The stored row carries an hourly D-2 cadence; the PUT names only `cadence_offset`,
+    so `cadence_unit` must come back to `86400` — the *default*, never the stored
+    `3600`. A deep-merge would leave 3600 in place and silently keep measuring against
+    a cadence the operator just replaced.
+
+    spec: VALIDATION.md §Rule Configuration — the complete object "replac[es] the
+    previous value outright rather than deep-merging into it — the same
+    wholesale-replacement rule `variables` follows."
+    """
+    existing = _make_config_row(attribute={"cadence_unit": 3600, "cadence_offset": 2})
+    _patched_registry(db, existing)
+
+    with (
+        patch(_REGISTER, new_callable=AsyncMock),
+        patch(_BUILD_INFO),
+        patch(_BUILD_URN, return_value=_FAKE_URN),
+    ):
+        mock_db_refresh(db)
+        record, created = await svc.upsert_config(
+            dataset_urn=_DATASET_URN,
+            description="replaced",
+            variables=[_var("row_cnt")],
+            attribute={"cadence_offset": 7},
+        )
+
+    assert created is False, "backstop: this PUT must have replaced an existing row"
+    assert existing.attribute == {"cadence_unit": 86400, "cadence_offset": 7}
+    assert record.attribute == {"cadence_unit": 86400, "cadence_offset": 7}
+
+
+@pytest.mark.asyncio
+async def test_put_omitting_parameter_clears_a_previously_stored_one(
+    svc: ValidationService, db: AsyncMock, datahub: AsyncMock
+) -> None:
+    """PUT is a full replace, so an omitted `parameter` wipes the stored section.
+
+    The seeded row carries a parameter list, which is what makes the absence
+    meaningful: without it the assertion would hold trivially.
+
+    spec: VALIDATION.md §Rule Configuration — "**`PUT`** is a full replace, like every
+    other field on it: omitting `parameter` stores it as absent, clearing any previously
+    stored value."
+    """
+    existing = _make_config_row(
+        parameter=[{"name": "z_threshold", "description": "Std-dev cutoff"}]
+    )
+    _patched_registry(db, existing)
+
+    with (
+        patch(_REGISTER, new_callable=AsyncMock),
+        patch(_BUILD_INFO),
+        patch(_BUILD_URN, return_value=_FAKE_URN),
+    ):
+        mock_db_refresh(db)
+        record, _created = await svc.upsert_config(
+            dataset_urn=_DATASET_URN,
+            description="replaced without parameters",
+            variables=[_var("row_cnt")],
+        )
+
+    assert existing.parameter is None, (
+        "the stored section must be cleared, not preserved. "
+        "spec: VALIDATION.md §Rule Configuration — PUT is a full replace."
+    )
+    assert record.parameter is None
+
+
+@pytest.mark.asyncio
+async def test_put_stores_a_supplied_parameter_list_verbatim(
+    svc: ValidationService, db: AsyncMock, datahub: AsyncMock
+) -> None:
+    """Backstop for the clearing test above: a supplied list does reach the row.
+
+    Without this, an `upsert_config` that dropped `parameter` unconditionally would
+    still pass the clearing assertion.
+
+    spec: VALIDATION.md §Rule Configuration — `parameter` is "opaque storage for the
+    pipeline's own hyperparameters"; DataSpoke "never interprets it".
+    """
+    _patched_registry(db, None)
+    supplied = [
+        {"name": "z_threshold", "description": "Std-dev cutoff for outliers"},
+        {"name": "window_days", "description": ""},
+    ]
+
+    with (
+        patch(_REGISTER, new_callable=AsyncMock),
+        patch(_BUILD_INFO),
+        patch(_BUILD_URN, return_value=_FAKE_URN),
+    ):
+        mock_db_refresh(db)
+        record, _created = await svc.upsert_config(
+            dataset_urn=_DATASET_URN,
+            description="with hyperparameters",
+            variables=[_var("row_cnt")],
+            parameter=supplied,
+        )
+
+    assert record.parameter == supplied
+
+
+@pytest.mark.asyncio
+async def test_patch_attribute_replaces_wholesale_and_never_merges_the_stored_value(
+    svc: ValidationService, db: AsyncMock
+) -> None:
+    """A PATCH naming one cadence field resets the other to its **default**.
+
+    The stored row's `cadence_unit` is `3600`; the patch names only `cadence_offset`.
+    The result must be `86400` — the default — proving the replacement is against the
+    schema's defaults and not against the prior stored value. This is the one behaviour
+    a deep-merge implementation would get wrong while passing every other test here.
+
+    spec: VALIDATION.md §Rule Configuration — "A `PATCH` carrying
+    `{"attribute": {"cadence_offset": 7}}` therefore also resets `cadence_unit` to
+    `86400`."
+    """
+    existing = _make_config_row(attribute={"cadence_unit": 3600, "cadence_offset": 2})
+    db.execute = AsyncMock(return_value=_scalar_result(existing))
+    db.commit = AsyncMock()
+
+    with (
+        patch(_REGISTER, new_callable=AsyncMock),
+        patch(_BUILD_INFO),
+        patch(_BUILD_URN, return_value=_FAKE_URN),
+    ):
+        mock_db_refresh(db)
+        # The router hands the service the request model's complete dump; here only the
+        # field the caller named is present, which is the harder input — the service's
+        # own defaulting is what has to complete it.
+        record = await svc.patch_config(
+            dataset_urn=_DATASET_URN,
+            patch={"attribute": {"cadence_offset": 7}},
+        )
+
+    assert existing.attribute == {"cadence_unit": 86400, "cadence_offset": 7}, (
+        "cadence_unit must reset to its default, not keep the stored 3600. "
+        "spec: VALIDATION.md §Rule Configuration."
+    )
+    assert record.attribute == {"cadence_unit": 86400, "cadence_offset": 7}
+
+
+@pytest.mark.asyncio
+async def test_patch_without_attribute_leaves_the_stored_cadence_alone(
+    svc: ValidationService, db: AsyncMock
+) -> None:
+    """A PATCH that names no cadence does not touch the stored one.
+
+    The seeded cadence is deliberately non-default, so a service that rewrote the
+    section on every patch would visibly reset it here.
+
+    spec: VALIDATION.md §Rule Configuration — the `attribute` replacement rule binds
+    only when the section is supplied; PATCH is otherwise "a partial update".
+    """
+    existing = _make_config_row(attribute={"cadence_unit": 3600, "cadence_offset": 2})
+    db.execute = AsyncMock(return_value=_scalar_result(existing))
+    db.commit = AsyncMock()
+
+    with (
+        patch(_REGISTER, new_callable=AsyncMock),
+        patch(_BUILD_INFO),
+        patch(_BUILD_URN, return_value=_FAKE_URN),
+    ):
+        mock_db_refresh(db)
+        record = await svc.patch_config(
+            dataset_urn=_DATASET_URN,
+            patch={"description": "renamed only"},
+        )
+
+    assert existing.attribute == {"cadence_unit": 3600, "cadence_offset": 2}
+    assert record.attribute == {"cadence_unit": 3600, "cadence_offset": 2}
+
+
+@pytest.mark.asyncio
+async def test_patch_omitting_parameter_preserves_the_stored_value(
+    svc: ValidationService, db: AsyncMock
+) -> None:
+    """An absent `parameter` key leaves the stored section untouched.
+
+    The patch dict comes from `model_dump(exclude_unset=True)`, so key *presence* is
+    what carries the meaning — an `is not None` test alone could not tell this case
+    from the explicit-null one below.
+
+    spec: VALIDATION.md §Rule Configuration — "Omitting `parameter` leaves the stored
+    value unchanged."
+    """
+    stored = [{"name": "z_threshold", "description": "Std-dev cutoff"}]
+    existing = _make_config_row(parameter=stored)
+    db.execute = AsyncMock(return_value=_scalar_result(existing))
+    db.commit = AsyncMock()
+
+    with (
+        patch(_REGISTER, new_callable=AsyncMock),
+        patch(_BUILD_INFO),
+        patch(_BUILD_URN, return_value=_FAKE_URN),
+    ):
+        mock_db_refresh(db)
+        record = await svc.patch_config(
+            dataset_urn=_DATASET_URN,
+            patch={"description": "renamed only"},
+        )
+
+    assert existing.parameter == stored
+    assert record.parameter == stored
+
+
+@pytest.mark.asyncio
+async def test_patch_with_an_explicit_null_clears_the_parameter_section(
+    svc: ValidationService, db: AsyncMock
+) -> None:
+    """A present-and-null `parameter` clears the section — the one spelling of "clear".
+
+    The contrast with the omission test above is the whole content of the rule: the two
+    calls differ only in whether the key is in the patch dict at all.
+
+    spec: VALIDATION.md §Rule Configuration — "`"parameter": null` clears it to absent —
+    that is the one spelling for 'clear'."
+    """
+    existing = _make_config_row(
+        parameter=[{"name": "z_threshold", "description": "Std-dev cutoff"}]
+    )
+    db.execute = AsyncMock(return_value=_scalar_result(existing))
+    db.commit = AsyncMock()
+
+    with (
+        patch(_REGISTER, new_callable=AsyncMock),
+        patch(_BUILD_INFO),
+        patch(_BUILD_URN, return_value=_FAKE_URN),
+    ):
+        mock_db_refresh(db)
+        record = await svc.patch_config(
+            dataset_urn=_DATASET_URN,
+            patch={"parameter": None},
+        )
+
+    assert existing.parameter is None
+    assert record.parameter is None
+
+
+@pytest.mark.asyncio
+async def test_patch_with_a_non_empty_list_replaces_the_parameter_section_wholesale(
+    svc: ValidationService, db: AsyncMock
+) -> None:
+    """A supplied list replaces the stored one outright — no element-wise merge.
+
+    The stored and patched lists share a name with a different description and the
+    patched list drops one of the stored entries, so a merge would leave the dropped
+    entry behind or keep the stale description.
+
+    spec: VALIDATION.md §Rule Configuration — "A non-empty list (1–200 entries,
+    validated exactly as `variables` is) replaces the stored value wholesale."
+    """
+    existing = _make_config_row(
+        parameter=[
+            {"name": "z_threshold", "description": "old cutoff"},
+            {"name": "window_days", "description": "lookback"},
+        ]
+    )
+    db.execute = AsyncMock(return_value=_scalar_result(existing))
+    db.commit = AsyncMock()
+    replacement = [{"name": "z_threshold", "description": "new cutoff"}]
+
+    with (
+        patch(_REGISTER, new_callable=AsyncMock),
+        patch(_BUILD_INFO),
+        patch(_BUILD_URN, return_value=_FAKE_URN),
+    ):
+        mock_db_refresh(db)
+        record = await svc.patch_config(
+            dataset_urn=_DATASET_URN,
+            patch={"parameter": replacement},
+        )
+
+    assert existing.parameter == replacement, (
+        "the dropped `window_days` entry must not survive the replacement"
+    )
+    assert record.parameter == replacement
+
+
+@pytest.mark.asyncio
+async def test_get_config_carries_a_stored_parameter_and_none_when_absent(
+    svc: ValidationService, db: AsyncMock
+) -> None:
+    """The record distinguishes a stored `parameter` from an absent one.
+
+    `None` is the absent state the route renders by omitting the key; an empty list is
+    not an admissible value, so it must never be what absence reads as.
+
+    spec: VALIDATION.md §Rule Configuration — "**`GET`** omits the `parameter` key
+    entirely from the response body when the section is absent; it is never serialized
+    as `null`."
+    """
+    stored = [{"name": "z_threshold", "description": "Std-dev cutoff"}]
+    db.execute = AsyncMock(return_value=_scalar_result(_make_config_row(parameter=stored)))
+    present = await svc.get_config(dataset_urn=_DATASET_URN)
+    assert present is not None
+    assert present.parameter == stored
+
+    db.execute = AsyncMock(return_value=_scalar_result(_make_config_row(parameter=None)))
+    absent = await svc.get_config(dataset_urn=_DATASET_URN)
+    assert absent is not None
+    assert absent.parameter is None, (
+        "absence must read as None, never as an empty list — `[]` is rejected at the "
+        "write boundary, so it is not a state the store can hold"
+    )
+
+
 # ── delete_config (hard delete + cascade) ─────────────────────────────────────
 
 

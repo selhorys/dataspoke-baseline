@@ -4,8 +4,8 @@ The window is ``metric_conf["time_window_sec"]``, applied uniformly to every dat
 the run: it is the freshness SLO the governance lead declares, not a quantity read off
 any per-dataset fact. A dataset counts toward ``ingested_in_time`` when its resolved
 ingestion evidence is no older than that window at measurement time. The boundary is
-inclusive — evidence dated exactly one window before the measurement instant (this
-measurer's own clock reading, taken once per run) is in window.
+inclusive — evidence dated exactly one window before the measurement instant (the run's
+single clock reading, passed in by the service) is in window.
 
 Every ``INGESTION.*`` event is booked on a source (``entity_type='ingestion_source'``)
 and never on the dataset, so the measurer resolves each dataset's owning source first
@@ -33,7 +33,7 @@ no evidence at all.
 Spec: spec/feature/BACKEND.md §Metrics Service — Measurement window, Ingestion evidence
 """
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -50,6 +50,7 @@ async def measure(
     *,
     datahub: DataHubClient,
     db: AsyncSession,
+    now: datetime,
 ) -> tuple[dict[str, float], list[DatasetVerdict]]:
     """Return ingestion-freshness values and one verdict per dataset in scope.
 
@@ -68,6 +69,9 @@ async def measure(
     db:
         Async SQLAlchemy session for querying ``events``,
         ``ingestion_source_dataset``, and ``ingestion_source``.
+    now:
+        The run's measurement instant — the single clock reading the service took
+        for this run, from which the freshness cutoff is subtracted.
 
     Returns
     -------
@@ -80,7 +84,6 @@ async def measure(
         breakdown from them.
     """
     window_sec = int(metric_conf["time_window_sec"])
-    now = datetime.now(tz=UTC)
     cutoff = now - timedelta(seconds=window_sec)
     ingestion = IngestionService(datahub=datahub, db=db)
 

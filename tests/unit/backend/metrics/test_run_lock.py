@@ -12,6 +12,7 @@ Spec:
   spec/feature/BACKEND.md §Error Model — ConflictError → 409, METRIC_RUNNING.
 """
 
+from datetime import datetime
 from unittest.mock import AsyncMock
 
 import pytest
@@ -69,7 +70,9 @@ async def test_run_releases_lock_on_success() -> None:
 
     held_mid_run: list[bool] = []
 
-    async def _inner(metric_id: str, dry_run: bool) -> MetricRunResult:
+    async def _inner(
+        metric_id: str, dry_run: bool, scheduled_at: datetime | None = None
+    ) -> MetricRunResult:
         held_mid_run.append(await cache.set_nx(_LOCK_KEY, "intruder-token"))
         return _make_result()
 
@@ -94,7 +97,9 @@ async def test_run_releases_lock_on_midrun_failure() -> None:
 
     held_mid_run: list[bool] = []
 
-    async def _inner(metric_id: str, dry_run: bool) -> MetricRunResult:
+    async def _inner(
+        metric_id: str, dry_run: bool, scheduled_at: datetime | None = None
+    ) -> MetricRunResult:
         held_mid_run.append(await cache.set_nx(_LOCK_KEY, "intruder-token"))
         raise RuntimeError("measurement blew up mid-run")
 

@@ -103,9 +103,12 @@ const BRAVO = {
   // between Alpha and Charlie for a reader, but after both by code unit.
   title: "View Ground bravado Tango ROMEO",
   description: "Xray seed for the enabled-metric grid",
+  // `validation-score` emits total / valid_confd / valid_in_time — all counts.
+  // spec: feature/BACKEND.md §Metrics Service — "`validation-score` counts and the
+  //   unconfigured set".
   metrics: [
     { name: "total", color: "#64748B", idx: 1 },
-    { name: "validation_score_sum", color: "#3B82F6", idx: 2 },
+    { name: "valid_in_time", color: "#3B82F6", idx: 2 },
   ],
   metric_conf: { time_window_sec: 172800 },
 };

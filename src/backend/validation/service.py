@@ -5,7 +5,7 @@ import math
 from datetime import UTC, datetime
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,7 +17,13 @@ from src.backend.validation.assertions import (
     report_result,
 )
 from src.shared.datahub.client import DataHubClient
-from src.shared.db.models import DatasetRegistry, Event, ValidationConfig, ValidationResult
+from src.shared.db.models import (
+    DEFAULT_VALIDATION_ATTRIBUTE,
+    DatasetRegistry,
+    Event,
+    ValidationConfig,
+    ValidationResult,
+)
 from src.shared.db.registry import ensure_dataset_registered
 from src.shared.events import (
     VALIDATION_CONFIG_CREATE,
@@ -46,12 +52,21 @@ class ValidationConfigRecord(BaseModel):
 
     ``variables`` is a list of ``{"name": ..., "description": ...}`` dicts,
     matching the JSONB column shape; the API response model coerces each entry
-    into its own ``ValidationVariable``.
+    into its own ``ValidationVariable``. ``parameter`` carries the same shape and
+    is ``None`` when the section was never declared — a state the API response
+    renders by omitting the key rather than by serializing a null.
     """
 
     dataset_urn: str
     description: str
     variables: list[dict[str, str]]
+    #: Never absent — the column is NOT NULL and a conf written without the
+    #: section stores the all-defaults object, so the default here states the
+    #: same contract rather than papering over a missing value.
+    attribute: dict[str, int] = Field(
+        default_factory=lambda: dict(DEFAULT_VALIDATION_ATTRIBUTE)
+    )
+    parameter: list[dict[str, str]] | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -88,6 +103,10 @@ def _config_from_row(row: ValidationConfig) -> ValidationConfigRecord:
         dataset_urn=row.dataset_urn,
         description=row.description,
         variables=[dict(v) for v in (row.variables or [])],
+        attribute=dict(row.attribute or DEFAULT_VALIDATION_ATTRIBUTE),
+        parameter=(
+            [dict(p) for p in row.parameter] if row.parameter is not None else None
+        ),
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
@@ -128,6 +147,8 @@ class ValidationService:
         dataset_urn: str,
         description: str,
         variables: list[dict[str, str]],
+        attribute: dict[str, int] | None = None,
+        parameter: list[dict[str, str]] | None = None,
     ) -> tuple[ValidationConfigRecord, bool]:
         """Create or replace the validation configuration for a dataset.
 
@@ -135,6 +156,9 @@ class ValidationService:
         (``dataset_registry.datahub_registered=true``).
 
         An existing slot is replaced (200); an absent slot is created (201).
+        Every section is replaced wholesale, ``attribute`` and ``parameter``
+        included: ``attribute=None`` stores the all-defaults cadence rather than
+        preserving a previous one, and ``parameter=None`` clears the section.
 
         DB write is committed first, then assertionInfo + status(removed=False)
         emitted to DataHub. On DataHub failure the exception propagates (502/503).
@@ -148,9 +172,19 @@ class ValidationService:
         )
         existing = result.scalar_one_or_none()
 
+        # Defaults fill whatever the caller did not name — including everything,
+        # when the section was omitted entirely — so the stored object is always
+        # complete and the validation-score measurer never branches on absence.
+        stored_attribute: dict[str, int] = {
+            **DEFAULT_VALIDATION_ATTRIBUTE,
+            **(attribute or {}),
+        }
+
         if existing:
             existing.description = description
             existing.variables = variables
+            existing.attribute = stored_attribute
+            existing.parameter = parameter
             existing.updated_at = datetime.now(tz=UTC)
             self._db.add(existing)
             created = False
@@ -159,6 +193,8 @@ class ValidationService:
                 dataset_urn=dataset_urn,
                 description=description,
                 variables=variables,
+                attribute=stored_attribute,
+                parameter=parameter,
             )
             self._db.add(existing)
             created = True
@@ -190,6 +226,14 @@ class ValidationService:
 
         A never-created slot raises ``EntityNotFoundError`` (404
         ``CONFIG_NOT_FOUND``).
+
+        *patch* comes from ``model_dump(exclude_unset=True)``, so key **presence**
+        carries meaning where key **value** cannot: ``parameter`` is cleared only
+        by an explicit ``null`` and left untouched when the key is absent, which
+        an ``is not None`` test alone could not tell apart. ``attribute`` is
+        replaced wholesale when supplied — the request schema has already
+        defaulted its unnamed fields — so a patch naming one cadence field resets
+        the other to its default.
         """
         result = await self._db.execute(
             select(ValidationConfig).where(ValidationConfig.dataset_urn == dataset_urn)
@@ -202,6 +246,16 @@ class ValidationService:
             row.description = patch["description"]
         if "variables" in patch and patch["variables"] is not None:
             row.variables = patch["variables"]
+        if "attribute" in patch and patch["attribute"] is not None:
+            # Defaults fill the unnamed fields, never the previously stored value:
+            # the section is replaced outright, so patching one cadence field
+            # resets the other to its default rather than deep-merging.
+            row.attribute = {**DEFAULT_VALIDATION_ATTRIBUTE, **patch["attribute"]}
+        if "parameter" in patch:
+            # Present-and-null clears the section; a non-empty list replaces it.
+            # An empty list never reaches here — the schema rejects it, so null
+            # stays the single spelling of "clear".
+            row.parameter = patch["parameter"]
 
         row.updated_at = datetime.now(tz=UTC)
         self._db.add(row)

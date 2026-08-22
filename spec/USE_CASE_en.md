@@ -234,11 +234,14 @@ results as a baseline cache.*
 > *so that* data quality results are centralized and surfaced in DataHub without
 > DataSpoke needing production-engine credentials.
 
-A `validation/conf` is a small fixed-shape document — a free-form `description` and a
-list of `variables` (named scalars the pipeline will report). The configuration carries
+A `validation/conf` is a small fixed-shape document — a free-form `description`, a list of
+`variables` (named scalars the pipeline will report), an `attribute` section stating how
+often the dataset's data arrives and by how much it lags, and an optional `parameter` list
+holding the pipeline's own hyperparameters. The configuration carries
 **no** rule logic; the data pipeline runs the check, computes a `score` (0..1) plus
 the named variables, and POSTs them. DataSpoke stores the result, emits a DataHub
-`assertionRunEvent`, and serves the historical timeseries.
+`assertionRunEvent`, and serves the historical timeseries. Of the four sections DataSpoke
+reads only `attribute`, which UC5's `validation-score` metric uses to anchor its window.
 
 Teams that need multiple distinct checks per dataset (separate freshness / volume /
 field assertions, per-column validators, multi-team ownership) use **DataHub's native
@@ -251,7 +254,7 @@ lives in [`spec/feature/VALIDATION.md`](feature/VALIDATION.md).
 
 | Endpoint | Used for |
 |---|---|
-| `GET/PUT/PATCH/DELETE /spoke/common/data/{urn}/attr/validation/conf` | Read / create-or-replace / partial-update / hard-delete the validation slot (`description` + `variables`). PUT for a URN absent from DataHub returns `422 DATASET_NOT_IN_DATAHUB`. DELETE cascades the dataset's results and validation events and hard-deletes the DataHub assertion (`204`); afterwards the slot reads as never-created (`404 CONFIG_NOT_FOUND`) and a fresh PUT creates a new conf |
+| `GET/PUT/PATCH/DELETE /spoke/common/data/{urn}/attr/validation/conf` | Read / create-or-replace / partial-update / hard-delete the validation slot (`description`, `variables`, `attribute`, `parameter`). PUT for a URN absent from DataHub returns `422 DATASET_NOT_IN_DATAHUB`. DELETE cascades the dataset's results and validation events and hard-deletes the DataHub assertion (`204`); afterwards the slot reads as never-created (`404 CONFIG_NOT_FOUND`) and a fresh PUT creates a new conf |
 | `POST /spoke/common/data/{urn}/attr/validation/result` | Append a result `{data_time, score, variables}`. Unknown variable keys → `422 UNKNOWN_VARIABLE`; `score` outside `[0,1]` → `422 INVALID_SCORE` |
 | `GET /spoke/common/data/{urn}/attr/validation/result?from=…&until=…&limit=…` | Historical results filtered by `data_time` (RFC 3339, `from` inclusive, `until` exclusive). Default `limit=1000`, server cap `10000` |
 | `GET /spoke/common/data/{urn}/event/validation` | Per-dataset validation event history |
@@ -733,15 +736,17 @@ are NOT pre-computed by the server — clients derive them from the named fields
 | `metric_type` | Emitted `values` keys | Meaning of each key |
 |---|---|---|
 | `ingestion-freshness` | `total`, `ingested_in_time` | `total` = count of datasets matched by `dataset_filter`; `ingested_in_time` = count whose latest ingestion evidence falls within `metric_conf.time_window_sec` of the measurement. The evidence is the owning ingestion source's per-dataset observation for that dataset where DataHub reports one, else that source's newest non-dry-run `INGESTION.COMPLETE` (see [`BACKEND.md §Metrics Service`](feature/BACKEND.md#metrics-service-srcbackendmetrics)) |
-| `validation-score` | `total`, `validation_score_sum` | `total` = count of datasets matched by `dataset_filter`; `validation_score_sum` = sum of each dataset's latest validation `score` whose `data_time` falls within `metric_conf.time_window_sec` of the measurement. The contribution is 0.0 when there is no validation result inside the window |
+| `validation-score` | `total`, `valid_confd`, `valid_in_time` | `total` = count of datasets matched by `dataset_filter`; `valid_confd` = how many of those carry a validation configuration; `valid_in_time` = how many of *those* have their **latest** validation result — the newest one overall, not the newest one inside the window — falling inside the window and scored `1.0`. The window is `metric_conf.time_window_sec` wide, anchored per dataset on its own `attr/validation/conf.attribute` arrival cadence rather than on the measurement instant, so a dataset whose data legitimately lags is not judged stale (see [`BACKEND.md §Metrics Service`](feature/BACKEND.md#metrics-service-srcbackendmetrics)). Datasets with no validation configuration are not evaluated at all — they read `met: "unknown"` on `GET .../dataset` instead of counting as failures |
 | `doc-health` | `total`, `doc_health` | `total` = count of datasets matched by `dataset_filter`; `doc_health` = sum of per-dataset documentation scores, where a dataset scores `1.0` iff it has a non-empty table description AND every column carries a non-empty description, else `0.0` |
 
 `metric_conf` carries type-specific parameters: `time_window_sec` for
-`ingestion-freshness` and `validation-score` — **the** measurement window (positive int
-seconds within the API's admissible range,
+`ingestion-freshness` and `validation-score` — the measurement window's **width** (positive
+int seconds within the API's admissible range,
 [`API.md` §Metric](API.md#metric-spokegovernancemetric); factory default `172800`), the
-freshness SLO the governance lead declares and the same for every dataset the metric
-scans; empty `{}` for `doc-health`.
+SLO the governance lead declares and the same for every dataset the metric
+scans; empty `{}` for `doc-health`. Where that window sits is per type: `ingestion-freshness`
+trails the measurement instant, `validation-score` shifts back by each dataset's declared
+arrival lag.
 
 `dataset_filter` is a SQL `WHERE`-clause string over the dataset registry — DataSpoke's
 local mirror of the DataHub estate. Its columns are `dataset_urn`, `origin`, and

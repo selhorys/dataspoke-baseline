@@ -37,45 +37,88 @@ import {
 } from "@/lib/api/validation";
 import { useMe } from "@/lib/auth/use-me";
 import { useDisplayTz } from "@/lib/preferences/timezone";
-import type { ValidationConfResponse } from "@/types/validation";
+import type {
+  ValidationConfPutRequest,
+  ValidationConfResponse,
+  ValidationVariable,
+} from "@/types/validation";
 
 const CONF_FORM_ID = "validation-conf-form";
 
 // ── Conf read-only view ────────────────────────────────────────────────────────
 
-function ConfReadOnly({ conf }: { conf: ValidationConfResponse }) {
+/** Read-only `{name, description}` table, shared by variables and parameters. */
+function NamedEntryTable({ entries }: { entries: ValidationVariable[] }) {
   return (
-    <div className="space-y-4">
+    <div className="mt-2 overflow-hidden rounded-md border">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b bg-muted/50 text-xs text-muted-foreground">
+            <th className="w-[35%] px-3 py-1.5 text-left font-medium">name</th>
+            <th className="px-3 py-1.5 text-left font-medium">description</th>
+          </tr>
+        </thead>
+        <tbody>
+          {entries.map((entry) => (
+            <tr key={entry.name} className="border-b last:border-0">
+              <td className="px-3 py-1.5 align-top font-mono text-xs">{entry.name}</td>
+              <td className="px-3 py-1.5 align-top text-muted-foreground">
+                {entry.description || <span className="text-muted-foreground/50">—</span>}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function ConfReadOnly({ conf }: { conf: ValidationConfResponse }) {
+  // `parameter` is optional and the API omits the key when the section is
+  // absent, so the whole block is hidden rather than rendered empty.
+  const parameters = conf.parameter ?? [];
+
+  return (
+    // A description list: each section is one term/definition pair, so the
+    // <dt>/<dd> pairs need a <dl> ancestor to associate for assistive tech.
+    // Labels follow spec/feature/FRONTEND_VALIDATION.md §Detail.
+    <dl className="space-y-4">
       <div>
-        <dt className="text-xs font-medium text-muted-foreground">description</dt>
+        <dt className="text-xs font-medium text-muted-foreground">Description</dt>
         <dd className="mt-1 text-sm">{conf.description}</dd>
       </div>
       <div>
         <dt className="text-xs font-medium text-muted-foreground">
-          variables ({conf.variables.length})
+          Variables ({conf.variables.length})
         </dt>
-        <dd className="mt-2 overflow-hidden rounded-md border">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b bg-muted/50 text-xs text-muted-foreground">
-                <th className="w-[35%] px-3 py-1.5 text-left font-medium">name</th>
-                <th className="px-3 py-1.5 text-left font-medium">description</th>
-              </tr>
-            </thead>
-            <tbody>
-              {conf.variables.map((v) => (
-                <tr key={v.name} className="border-b last:border-0">
-                  <td className="px-3 py-1.5 align-top font-mono text-xs">{v.name}</td>
-                  <td className="px-3 py-1.5 align-top text-muted-foreground">
-                    {v.description || <span className="text-muted-foreground/50">—</span>}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <dd>
+          <NamedEntryTable entries={conf.variables} />
         </dd>
       </div>
-    </div>
+      <div>
+        <dt className="text-xs font-medium text-muted-foreground">Data arrival</dt>
+        <dd className="mt-1 flex flex-wrap gap-x-6 gap-y-1 text-sm">
+          <span>
+            <span className="font-mono text-xs text-muted-foreground">cadence_unit</span>{" "}
+            {conf.attribute.cadence_unit} s
+          </span>
+          <span>
+            <span className="font-mono text-xs text-muted-foreground">cadence_offset</span>{" "}
+            {conf.attribute.cadence_offset}
+          </span>
+        </dd>
+      </div>
+      {parameters.length > 0 && (
+        <div>
+          <dt className="text-xs font-medium text-muted-foreground">
+            Parameters ({parameters.length})
+          </dt>
+          <dd>
+            <NamedEntryTable entries={parameters} />
+          </dd>
+        </div>
+      )}
+    </dl>
   );
 }
 
@@ -113,7 +156,7 @@ export function ValidationDataPanel({ datasetUrn }: ValidationDataPanelProps) {
   const deleteConf = useDeleteValidationConf(datasetUrn);
 
   // ── Handlers ─────────────────────────────────────────────────────────────────
-  const handleSave = (body: Record<string, unknown>) => {
+  const handleSave = (body: ValidationConfPutRequest) => {
     upsert.mutate(body, { onSuccess: () => setIsEditing(false) });
   };
 

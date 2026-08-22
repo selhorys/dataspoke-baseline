@@ -303,9 +303,9 @@ peripheral shortcuts.
 | `GET` | `/spoke/common/data/{dataset_urn}/attr` | Get dataset attributes (schema summary, ownership, tags) | Data Resource | — |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/ingestion` | Reverse-lookup (read-only): the source that covers this dataset, its `mode`, and the latest run (spanning the source's own runs and those booked on its internal wrappers). Ingestion is configured per-source under `/spoke/ingestion/sources` | Ingestion Control | UC1 |
 | `GET` | `/spoke/common/data/{dataset_urn}/event/ingestion` | Ingestion event reports for this dataset (success/failure notices, mirrored from its source's runs incl. internal-wrapper runs; each row carries a derived `wrapper: bool`) | Ingestion Control | UC1 |
-| `GET` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Get validation configuration (`description` + declared `variables`, each variable a `{name, description}` object) | Validation | UC2, UC5 |
-| `PUT` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Create or replace validation configuration. Body `{description, variables}` where each variable is `{name, description}` (`name` matches `[a-z][a-z0-9_]{0,99}` and is unique; `description` required, ≤200 chars, empty allowed). PUT for a URN absent from DataHub returns `422 DATASET_NOT_IN_DATAHUB` | Validation | UC2, UC5 |
-| `PATCH` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Partially update validation configuration | Validation | UC2, UC5 |
+| `GET` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Get validation configuration (`description`, declared `variables`, the `attribute` section, and `parameter` when set — the `parameter` key is omitted from the body when absent, never returned as `null`) | Validation | UC2, UC5 |
+| `PUT` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Create or replace validation configuration. Body `{description, variables, attribute, parameter}` — `variables` and `parameter` are lists of `{name, description}` (`name` matches `[a-z][a-z0-9_]{0,99}`, unique within its own list; `description` required, ≤200 chars, empty allowed); `attribute` is `{cadence_unit, cadence_offset}` describing when the dataset's data is expected to arrive, and is read by the `validation-score` metric. `parameter` is optional and omitting it clears any stored value, since PUT is a full replace. Field semantics and defaults: [VALIDATION §Rule Configuration](feature/VALIDATION.md#rule-configuration). PUT for a URN absent from DataHub returns `422 DATASET_NOT_IN_DATAHUB` | Validation | UC2, UC5 |
+| `PATCH` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Partially update validation configuration. Omitted keys keep their stored value; `parameter: null` clears the section, while `parameter: []` is rejected (`422`), as an empty `variables` is | Validation | UC2, UC5 |
 | `DELETE` | `/spoke/common/data/{dataset_urn}/attr/validation/conf` | Hard-delete the validation slot — removes the conf row, cascades to delete the dataset's validation results and validation events, and hard-deletes the DataHub assertion entity. Returns `204`; afterwards the dataset reads as never-created (`GET`/`PATCH` → `404 CONFIG_NOT_FOUND`) and a fresh `PUT` creates a new conf | Validation | UC2, UC5 |
 | `POST` | `/spoke/common/data/{dataset_urn}/attr/validation/result` | Append a pipeline-emitted result `{data_time, score, variables}`. Unknown variable keys return `422 UNKNOWN_VARIABLE`; `score` outside `[0,1]` returns `422 INVALID_SCORE` | Validation | UC2, UC5 |
 | `GET` | `/spoke/common/data/{dataset_urn}/attr/validation/result` | Get historical results (timeseries on `data_time`; `?from=…&until=…&limit=…` — this endpoint names its end-bound param `until` rather than the convention table's `to`; **the sole documented deviation** from the standard pagination cap: `default limit=1000`, server cap `10000`, fixed `data_time DESC` order — see [API_DESIGN_PRINCIPLE §5](API_DESIGN_PRINCIPLE_en.md#5-url-query-segments-are-for-filtering-sorting-and-pagination)) | Validation | UC2, UC5 |
@@ -443,9 +443,12 @@ K8s Secrets, not secret values; any plaintext secret value is **masked**. There 
 ### Validation (`/spoke/validation`)
 
 A cross-dataset list view of validation attributes. Each row combines dataset identity
-with the validation attributes stored under `common/data/{dataset_urn}/attr/validation/*`
-(`conf` — description and declared variable names — and the latest `result` —
-`data_time` and `score`). Useful for quality dashboards and per-dataset overviews.
+with a projection of the validation attributes stored under
+`common/data/{dataset_urn}/attr/validation/*` — from `conf`, the description and the declared
+variable count (`variable_count`) (the conf's other sections are not projected into a list row;
+its full shape is
+in [VALIDATION §Rule Configuration](feature/VALIDATION.md#rule-configuration)), plus the latest
+`result`'s `data_time` and `score`. Useful for quality dashboards and per-dataset overviews.
 
 DataSpoke is a passive result store for one validation slot per dataset. Data pipelines
 run the checks and POST results; DataSpoke stores them, emits DataHub assertion aspects,
@@ -606,7 +609,7 @@ route paths for read/update/delete and as the DAG-name suffix `metrics-{metric_i
 | `title` | string | Display title |
 | `description` | string | What the metric measures |
 | `metrics` | object[] | Series descriptors — `{name, color, idx}`. `name` is one of the type's emitted keys (see USE_CASE §UC5); unknown keys return `422 INVALID_PARAMETER`. `color` is a `#RRGGBB` hex string. `idx` is a positive integer display order. `name` and `idx` are each unique within the metric. The dashboard chart draws one line per descriptor, in `idx` order, stroked with `color` |
-| `metric_conf` | object | Type-specific. `ingestion-freshness` and `validation-score` require `time_window_sec` — the measurement window in seconds, applied to every dataset the metric scans (see USE_CASE §UC5). An integer in `[1, 315360000]` (ten years); out of range, non-integer, or boolean returns `422 INVALID_PARAMETER`, on `PATCH` as well, where the merged `metric_conf` is what is checked. `doc-health` takes `{}` |
+| `metric_conf` | object | Type-specific. `ingestion-freshness` and `validation-score` require `time_window_sec` — the width in seconds of the measurement window, the same for every dataset the metric scans (see USE_CASE §UC5). An integer in `[1, 315360000]` (ten years); out of range, non-integer, or boolean returns `422 INVALID_PARAMETER`, on `PATCH` as well, where the merged `metric_conf` is what is checked. `validation-score` anchors that width per dataset on the dataset's own `attr/validation/conf.attribute` cadence rather than on the measurement instant ([BACKEND §Metrics Service](feature/BACKEND.md#metrics-service-srcbackendmetrics)). `doc-health` takes `{}` |
 | `schedule_tier` | `"hourly"` \| `"daily"` \| `"weekly"` \| null | When null, the metric runs only on-demand |
 | `dataset_filter` | string | A SQL `WHERE`-clause over the dataset registry (grammar below). The empty string matches every registered dataset |
 
@@ -621,9 +624,9 @@ sweep (see [BACKEND §Sync + mapping sweep](feature/BACKEND.md#ingestion-service
 filter      := ε | expr                        -- empty string = all registered datasets
 expr        := term { (AND|OR) term }           -- one operator kind per level
 term        := predicate | '(' expr ')'         -- parens nest at most 2 deep (see below)
-predicate   := scalar_col '=' string
-             | scalar_col IN '(' string {',' string} ')'
-             | string IN array_col
+predicate   := scalar_col ('=' | '!=') string
+             | scalar_col [NOT] IN '(' string {',' string} ')'
+             | string [NOT] IN array_col
              | bool_col '=' bool
 scalar_col  := dataset_urn | origin | platform_urn
 array_col   := tag_urns | glossary_term_urns
@@ -641,15 +644,40 @@ string      := '...'                            -- single quotes only; '' escape
 | `glossary_term_urns` | array | DataHub glossary-term URNs carried by the dataset |
 | `is_primary` | bool | `true` when the dataset is the primary member of its DataHub sibling set, or has no siblings. `is_primary = true` scopes a filter to one row per logical asset, so a metric, ontogen run, or metagen conf counts a dbt model and its warehouse table once |
 
-Keywords (`AND`, `OR`, `IN`) and column names are case-insensitive; values are
+Keywords (`AND`, `OR`, `NOT`, `IN`) and column names are case-insensitive; values are
 case-sensitive. `TRUE`/`FALSE` are case-insensitive bare words — `is_primary = 'true'` is
 a syntax error (`422 INVALID_DATASET_FILTER`), as is using a boolean column with `IN` or a
 scalar/array column with a bare word. Mixing `AND` and `OR` at one level requires
 parentheses.
 
-The registry default is `is_primary = true`, so a dataset that no attribute sweep has
-reached yet reads as primary and `is_primary = false` matches nothing until a sweep has
-run — the same never-swept behaviour as `tag_urns` and `glossary_term_urns`.
+**Negation** (`!=`, `NOT IN`) is a negated predicate, **not an exact complement of the scope**.
+It compiles to plain SQL `!=` / `NOT IN` and inherits standard three-valued logic, so a row
+whose scalar column is `NULL` satisfies *neither* `scalar_col = 'x'` nor `scalar_col != 'x'`
+for any `x` — the same asymmetry `=` and `IN` already exhibit, since a `NULL` `origin` does not
+match `origin = 'PROD'` either. `origin` and `platform_urn` are nullable in the registry; the
+array columns are not, so `NOT IN` over `tag_urns` / `glossary_term_urns` *is* a true
+complement of `IN`. Negation is available on the scalar and array columns only — the boolean
+column takes `=` alone, since `is_primary != true` would be a second spelling of `is_primary =
+false`, and a boolean column with `NOT IN` is the same syntax error as with `IN`. Every other
+rule that governs the affirmative forms governs the negated ones unchanged: the caps and
+nesting depth below, the error codes, and `dataset_urn` literal handling (URN-shape validation
+and `unresolved_urns` reporting).
+
+`<>` is **not** accepted — `!=` is the only spelling of not-equals the grammar recognises, and
+`<>` is a syntax error (`422 INVALID_DATASET_FILTER`). `NOT` likewise appears **only** as part
+of `NOT IN`; there is no standalone `NOT (expr)` prefix form, so a filter negates one predicate
+at a time rather than a parenthesised group.
+
+**Never-swept datasets** read the registry's defaults, and those defaults differ per column, so
+negation does not uniformly widen. `is_primary` defaults to `true`, so a dataset no attribute
+sweep has reached reads as primary and `is_primary = false` matches nothing until a sweep has
+run. `tag_urns` / `glossary_term_urns` default to the empty array, which contains nothing, so a
+never-swept dataset matches **every** `NOT IN` predicate over them — there, negation widens
+where the affirmative form narrows. `origin` and `platform_urn` default to `NULL` until the
+sweep parses them from the URN, and a `NULL` scalar matches neither direction: an unswept
+dataset satisfies neither `origin = 'PROD'` nor `origin != 'PROD'`, and is absent from both
+scopes. A filter written to catch "everything except X" on a scalar column therefore does not
+catch the unswept remainder; `dataset_filter` scope is only ever as complete as the last sweep.
 
 **Caps** (part of the grammar, enforced on every route that writes a filter): filter text
 ≤ 8,000 characters and ≤ 1,000 string literals. The per-feature Payload-caps lists restate
@@ -665,11 +693,26 @@ filter returns `422 INVALID_DATASET_FILTER` carrying the character position of t
 `ontogen/attr/conf.dataset_filter` and UC4's per-conf `metagen/conf.dataset_filter` use
 this same grammar and validation.
 
+A `dataset_urn` literal inside a `NOT IN (…)` list or after `!=` is reported in
+`unresolved_urns` on the same terms — the mechanism reports unregistered literals and cannot
+read intent. Reading it does differ, though: on a positive predicate an unresolved literal
+usually means a typo or a stale URN silently narrowing the scope to nothing, whereas on a
+negated one it is commonly benign, since an operator may be deliberately excluding a URN that
+is not registered yet.
+
 ```sql
 origin = 'PROD' AND is_primary = true
                 AND ('urn:li:tag:area:catalog' IN tag_urns
                      OR 'urn:li:glossaryTerm:pii.gdpr' IN glossary_term_urns)
+
+origin != 'DEV' AND platform_urn NOT IN ('urn:li:dataPlatform:kafka')
+                AND 'urn:li:tag:lifecycle:deprecated' NOT IN tag_urns
 ```
+
+The second filter scopes to non-`DEV`, non-Kafka, non-deprecated datasets — it is **not**
+"everything the first excludes". Its two scalar predicates skip any dataset whose `origin` or
+`platform_urn` the sweep has not populated, while its `tag_urns` predicate admits never-swept
+datasets, per the never-swept rules above.
 
 | Method | Path | Purpose | Feature | UC |
 |--------|------|---------|---------|-----|
@@ -687,11 +730,15 @@ origin = 'PROD' AND is_primary = true
 | `GET` | `/spoke/governance/metric/{metric_id}/event` | Metric run events (run completions, definition changes). Paginated, sortable by `occurred_at` (default `occurred_at_desc`), `from`/`to` time-range | Governance | UC5 |
 
 `met` is `"unknown"` exactly when the dataset is in the filter's scope but carries no
-verdict — the metric has never run, or the dataset entered scope after the last run.
+verdict — the metric has never run, the dataset entered scope after the last run, or, for
+`validation-score`, the dataset has no validation configuration and is therefore never
+evaluated on any run (see
+[BACKEND §Metrics Service](feature/BACKEND.md#metrics-service-srcbackendmetrics)).
 `last_check_at` is the per-dataset evidence timestamp (`ingestion-freshness`: the resolved
 ingestion evidence time; `validation-score`: the counted result's `data_time`), falling
 back to the run's `measured_at` — `doc-health` has no per-dataset timestamp, so it always
-reports the run time. Every non-dry run replaces the metric's verdict set wholesale; a dry
+reports the run time, and a `validation-score` dataset whose latest result fell outside its
+window counted nothing, so it reports the run time too. Every non-dry run replaces the metric's verdict set wholesale; a dry
 run persists none, so `/dataset` after a dry run still reports the previous run's verdicts.
 
 **Payload caps** (validated at the schema layer; cap violations return `422`):

@@ -14,12 +14,20 @@ from src.shared.datahub.client import DataHubClient
 class DatasetVerdict:
     """One dataset's outcome for one metric run.
 
-    Verdicts cover **every** dataset in scope, not only the failing ones: full
-    coverage is what makes "in scope but never evaluated" (``unknown`` on
-    ``GET /spoke/governance/metric/{metric_id}/dataset``) distinguishable from
-    "evaluated and passing", which a failures-only return cannot express. The
-    service derives the failures-only ``metric_results.breakdown`` from these,
-    so the stored breakdown and the per-dataset store can never disagree.
+    Verdicts cover every dataset the measurer **evaluated**, not only the failing
+    ones: covering the passing ones too is what makes "carries no verdict"
+    (``unknown`` on ``GET /spoke/governance/metric/{metric_id}/dataset``)
+    distinguishable from "evaluated and passing", which a failures-only return
+    cannot express. The service derives the failures-only
+    ``metric_results.breakdown`` from these, so the stored breakdown and the
+    per-dataset store can never disagree.
+
+    The evaluated set is the scanned scope for ``ingestion-freshness`` and
+    ``doc-health``. ``validation-score`` is the exception: it evaluates only the
+    datasets carrying a ``validation_configs`` row and deliberately returns **no**
+    verdict for the rest, so an unconfigured dataset reads ``unknown`` rather than
+    failing for a cadence it never declared. A verdict list shorter than the scope
+    is therefore expected, not a measurer bug.
 
     ``evidence_at`` is the per-dataset evidence timestamp — the resolved
     ingestion evidence time for ``ingestion-freshness``, the counted result's
@@ -36,7 +44,17 @@ class DatasetVerdict:
 
 
 class MeasurerFn(Protocol):
-    """Protocol satisfied by every registered measurer coroutine."""
+    """Protocol satisfied by every registered measurer coroutine.
+
+    ``now`` is the run's **measurement instant**, read once by the service before
+    it dispatches and passed to every measurer, so one run cannot date two
+    measurers differently and a scheduled run can be anchored to the interval it
+    is *for* rather than the one it executed in. It is required of every measurer
+    whether or not the measurer's own logic reads it — the same uniformity
+    ``datahub`` and ``db`` already carry.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service — Measurement instant.
+    """
 
     async def __call__(
         self,
@@ -45,6 +63,7 @@ class MeasurerFn(Protocol):
         *,
         datahub: DataHubClient,
         db: AsyncSession,
+        now: datetime,
     ) -> tuple[dict[str, float], list[DatasetVerdict]]: ...
 
 

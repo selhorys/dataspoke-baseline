@@ -484,6 +484,39 @@ async def test_post_metric_run_disabled_returns_409(
     mock_airflow.trigger_and_wait.assert_not_called()
 
 
+def test_the_public_run_route_exposes_no_scheduled_at_input() -> None:
+    """`scheduled_at` is an internal-activity concept — the public route has no such input.
+
+    A manual run has no schedule to anchor to, so admitting the field here would let a
+    caller back-date a metric's timeseries against an interval nobody scheduled. The
+    OpenAPI document is what is inspected because the route's *only* inputs are the path
+    and query parameters it declares: neither a body nor a query `scheduled_at` may
+    exist.
+
+    spec: feature/BACKEND.md §Metrics Service — Measurement instant: "`POST
+    /spoke/governance/metric/{id}/method/run` (on-demand, incl. `dry_run`)" uses
+    "Wall-clock `now()` — a manual run has no schedule to anchor to", and "The public run
+    route is unchanged by this — `scheduled_at` is an internal-activity concept only".
+    spec: API.md §Metric — the route's documented input is "`?dry_run=true`".
+    """
+    operation = app.openapi()["paths"][
+        "/api/v1/spoke/governance/metric/{metric_id}/method/run"
+    ]["post"]
+
+    parameter_names = {parameter["name"] for parameter in operation.get("parameters", [])}
+    assert "dry_run" in parameter_names, (
+        "backstop: the route's documented query parameter must be present, or the "
+        f"absence below proves nothing. Got {sorted(parameter_names)}"
+    )
+    assert "scheduled_at" not in parameter_names, (
+        f"the public route must expose no scheduled_at input; got {sorted(parameter_names)}"
+    )
+    assert "requestBody" not in operation, (
+        "the public run route takes no body at all, so there is nowhere for a "
+        f"scheduled_at to be smuggled in; got {operation.get('requestBody')!r}"
+    )
+
+
 # ── GET /spoke/governance/metric/{id}/dataset ────────────────────────────────
 
 _METRIC_DATASET_URL = "/api/v1/spoke/governance/metric/{metric_id}/dataset"

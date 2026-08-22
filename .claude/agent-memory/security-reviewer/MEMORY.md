@@ -45,3 +45,5 @@
 - [metric_conf write boundary](project_metric_conf_write_boundary.md) — 3 writers, rule now in src/shared/metric_conf.py; write-boundary-only, so a persisted bad row is self-repeating
 - [Dev-only bin scripts prod fence](project_devonly_bin_scripts_prod_fence.md) — `set -u` on DATASPOKE_DEV_* was the only prod gate; a `:-` unlocks prod onto ports the test suite defaults to
 - [health-check.sh verdict contract](project_health_check_verdict_contract.md) — holes closed incl. _bounded orphans; residuals = env-file `exit`, unpinned hook timeout, 4 stale tool-gate docs, ungitignored bypass token, --keep-lock rule broken by k8s-deploy
+- [Metrics measurement-instant boundary](project_metrics_measurement_instant_boundary.md) — all 3 window inputs now bounded by MAX_TIME_WINDOW_SEC; the product check is load-bearing; jiter's 4300-digit int ceiling
+- [DAG JSON body construction split](project_dag_json_body_construction_split.md) — tier DAGs use json.dumps, on-demand metrics.py hand-splices Jinja into JSON; safe only via _METRIC_ID_PATTERN

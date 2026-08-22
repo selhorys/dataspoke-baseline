@@ -23,15 +23,18 @@ Concerns covered (each test targets one spec contract):
   scope-relative attrs_synced_at watermark
 - DELETE .../attr/conf clears the metric's verdict rows
 - PUT metric_id with invalid path chars → 422
-- ingestion-freshness applies metric_conf.time_window_sec uniformly: a PASSIVE-owned
+- ingestion-freshness trails the measurement instant by the declared
+  metric_conf.time_window_sec width, the same for every dataset in the run: a PASSIVE-owned
   dataset is judged by the declared window (in-time and stale sides both seeded), and a
   dataset with no ingestion_source_dataset row is stale with no readable evidence
 - ingestion-freshness reads the run booked on the dataset's owning source
   (entity_type='ingestion_source'), never one keyed by dataset URN — both sides seeded,
   in opposite directions
 
-- validation-score applies metric_conf.time_window_sec uniformly: the latest row inside
-  the declared window is counted, the one outside it is not
+- validation-score anchors the declared window on each dataset's own cadence: two
+  datasets with identical evidence land on opposite verdicts, and deleting one's
+  validation conf turns its failure into no verdict at all (counted by total, dropped
+  from valid_confd, absent from the breakdown, `unknown` on the dataset view)
 - POST method/run dry_run=true → no persisted result, no RUN_COMPLETE event
 - POST method/run dry_run=false → values is dict[str, float]
 - POST method/run concurrent → 409 METRIC_RUNNING
@@ -51,12 +54,14 @@ Spec:
 - spec/API.md §Metric (/spoke/governance/metric) — field rules, payload caps, error codes,
   create/replace
 - spec/feature/BACKEND.md §Metrics Service §Breakdown format, §Create vs replace,
-  §Measurement window, §Ingestion evidence
+  §Measurement window, §Cadence-anchored window, §`validation-score` counts and the
+  unconfigured set, §Ingestion evidence
 """
 
 import asyncio
 import json
 import os
+import urllib.parse
 import uuid
 from collections.abc import Iterator
 from contextlib import suppress
@@ -83,7 +88,7 @@ _FACTORY_IDS = {"ingestion-freshness", "validation-score", "doc-health"}
 
 # Factory default measurement window
 # Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — "``time_window_sec`` …
-# **the** measurement window (positive int seconds … factory default ``172800``)".
+# the measurement window's **width** (positive int seconds … factory default ``172800``)".
 _FACTORY_DEFAULT_TIME_WINDOW_SEC = 172800
 
 
@@ -185,7 +190,8 @@ async def test_factory_defaults_time_window_sec_is_172800(
     """Factory-seeded ingestion-freshness and validation-score have time_window_sec=172800.
 
     Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — "``time_window_sec``
-          … **the** measurement window (positive int seconds … factory default ``172800``)".
+          … the measurement window's **width** (positive int seconds … factory default
+          ``172800``)".
     Spec: spec/feature/BACKEND.md §Metrics Service §Factory defaults —
           metric_conf={"time_window_sec": 172800} for the two windowed types.
     """
@@ -1608,11 +1614,14 @@ async def test_ingestion_freshness_declared_window_applies_to_a_passive_source(
     runs: a single shared source would give both datasets one verdict and the
     fresh/stale contrast would collapse into a vacuous pass.
 
-    Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window — "the window is
-          ``metric_conf.time_window_sec``, applied uniformly to every dataset in the run.
-          It is a declared SLO the governance lead owns, not a quantity derived from a
-          per-dataset fact such as an owning source's registered schedule, a sync-loop
-          cadence, or a dataset's observed validation inter-arrival gap."
+    Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window — "the window's
+          *width* is ``metric_conf.time_window_sec``, the same for every dataset in the
+          run. It is a declared SLO the governance lead owns, not a quantity derived from
+          a per-dataset fact such as an owning source's registered schedule, a sync-loop
+          cadence, or a dataset's observed validation inter-arrival gap."; for
+          ingestion-freshness the window trails the measurement instant — "a dataset
+          counts toward ``ingested_in_time`` when its resolved ingestion evidence (below)
+          is no older than ``time_window_sec`` at the measurement instant."
     Spec: spec/feature/BACKEND.md §Metrics Service §Ingestion evidence — runs are booked
           with entity_type='ingestion_source', entity_id=source_id.
     Spec: spec/feature/BACKEND_SCHEMA.md §ingestion_source / §ingestion_source_dataset.
@@ -1746,7 +1755,7 @@ async def test_ingestion_freshness_declared_window_applies_to_a_passive_source(
         )
         detail = row["breakdown"]["datasets"][0]["detail"]
         assert detail["time_window_sec"] == 172800, (
-            "the run must report the window it applied, which is the declared "
+            "the run must report the width it applied, which is the declared "
             f"metric_conf.time_window_sec; got {detail.get('time_window_sec')}. "
             "Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window."
         )
@@ -1819,8 +1828,10 @@ async def test_ingestion_freshness_dataset_with_no_owning_source_is_stale(
           INGESTION.* event is booked on a source (entity_type='ingestion_source',
           entity_id=source_id …) and never on the dataset, so the measurer resolves each
           dataset's owning source first."
-    Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window — "the window is
-          ``metric_conf.time_window_sec``, applied uniformly to every dataset in the run."
+    Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window — "the window's
+          *width* is ``metric_conf.time_window_sec``, the same for every dataset in the
+          run"; "Each run records the width it applied in the breakdown's
+          ``detail.time_window_sec``."
     Spec: spec/feature/BACKEND_SCHEMA.md §ingestion_source_dataset — no row → no owner.
     """
     _METRIC_ID = "spot-freshness-unclaimed-dataset"
@@ -2129,97 +2140,132 @@ async def test_ingestion_freshness_reads_source_keyed_events_not_dataset_keyed(
             await api_client.delete(base_conf, headers=admin_headers)
 
 
-# ── Validation-score measurement window ──────────────────────────────────────
+# ── Validation-score cadence-anchored window ─────────────────────────────────
 #
-# Spec: spec/USE_CASE_en.md §UC5 §Built-in active metric types — validation_score_sum is
-#       the sum of each dataset's latest validation score whose data_time falls within
-#       metric_conf.time_window_sec of the measurement.
-# Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window.
+# Spec: spec/feature/BACKEND.md §Metrics Service §Cadence-anchored window — the window's
+#       upper bound is shifted back by the dataset's own declared arrival lag, read from
+#       validation_configs.attribute.
+# Spec: spec/feature/BACKEND.md §Metrics Service §`validation-score` counts and the
+#       unconfigured set — total / valid_confd / valid_in_time are all counts, and a
+#       dataset with no validation config gets no verdict row at all.
 
 
 @pytest.mark.asyncio
-async def test_validation_score_declared_window_gates_the_latest_row(
+async def test_validation_score_anchors_each_datasets_window_on_its_declared_cadence(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """validation-score: one declared window gates both datasets' latest rows.
+    """validation-score: identical evidence, opposite verdicts, set by the cadence alone.
 
-    Both datasets are seeded with four results 24 hours apart, and the metric declares
-    ``time_window_sec=86400`` — deliberately *narrower* than the 24-hour spacing:
-      - urn_fresh: latest result 1h ago (score=1.0) → inside the declared window →
-        contributes 1.0 and is not listed.
-      - urn_stale: latest result 30h ago (score=0.5) → outside the declared window →
-        contributes 0.0 and is listed, with detail.time_window_sec reporting 86400.
+    Both datasets are seeded with the *same* three validation results — 30h, 54h and 78h
+    old, every one scoring 1.0 — and the metric declares one ``time_window_sec=86400``
+    for both. The only difference is each dataset's own ``attribute`` cadence, so the
+    cadence is the sole cause of the split:
 
-    urn_stale's 30-hour age is the load-bearing choice: it sits *outside* the declared
-    86400s window but *inside* twice the seeded 24-hour inter-arrival gap. So the
-    declared window and any window scaled to the dataset's own validation cadence
-    disagree about it, and they disagree on what the run reports —
-    ``validation_score_sum`` (0.5 counted or not) and ``detail.time_window_sec`` both
-    move with the window. Breakdown *membership* is not part of that signal: urn_stale
-    scores 0.5, so it is listed either way — via the "no result inside the window" branch
-    under the declared window and via the "score < 1.0" branch under a wider one. Its
-    score stays at 0.5 rather than 1.0 so ``detail["score"]`` below still identifies
-    whose row was read.
+      - urn_lagged declares ``{unit: 86400, offset: 1}`` → window ``[now-172800,
+        now-86400]``. Its 30h-old latest row is inside → the dataset passes.
+      - urn_prompt declares ``{unit: 86400, offset: 0}`` → window ``[now-86400, now]``.
+        The very same 30h-old row is outside → the dataset fails and is listed in the
+        breakdown, with ``detail.score == 1.0`` proving the failure is the window's doing
+        and not a low score.
+
+    The run then repeats with urn_prompt's validation conf deleted, which is the
+    unconfigured case: ``total`` still counts it, ``valid_confd`` drops, and the dataset
+    that was failing a moment ago carries no verdict at all rather than a ``met=false``
+    one — it reads ``unknown`` on ``GET .../dataset`` and is absent from the breakdown.
 
     Real PostgreSQL is required: the latest-per-dataset row is picked by a row_number()
     window function the unit tier's fake session cannot execute — which is also why this
-    four-rows-per-dataset shape exists only here and not at the unit tier.
+    three-rows-per-dataset shape exists only here and not at the unit tier.
 
-    Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window — "the window is
-          ``metric_conf.time_window_sec``, applied uniformly to every dataset in the run
-          … not a quantity derived from a per-dataset fact such as … a dataset's observed
-          validation inter-arrival gap"; "``validation-score``: the score counted is the
-          latest result whose ``data_time`` is inside ``time_window_sec``; a dataset with
-          no result in the window contributes ``0.0``".
-    Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format — a dataset is failed
-          when its "latest validation ``score`` inside the window is ``< 1.0`` (or no
-          result inside the window)"; detail carries ``latest_data_time`` + ``score`` +
-          ``time_window_sec``.
+    Spec: spec/feature/BACKEND.md §Metrics Service §Cadence-anchored window — "the
+          window's upper bound is shifted back by the dataset's own declared arrival lag,
+          read from ``validation_configs.attribute``"; "``upper_bound = instant -
+          (cadence_offset * cadence_unit)``; ``lower_bound = upper_bound -
+          time_window_sec``".
+    Spec: spec/feature/BACKEND.md §Metrics Service §`validation-score` counts and the
+          unconfigured set — "the measurer emits three counts — ``total`` …,
+          ``valid_confd`` …, and ``valid_in_time`` …. All three are counts, none is a
+          score sum"; "A dataset with **no** validation config gets **no verdict row** —
+          it is neither ``met = true`` nor ``met = false``".
+    Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format — a
+          ``validation-score`` dataset is failed when it "**has** a validation config and
+          fails the **``validation-score`` per-dataset test**"; "A dataset with no
+          validation config is not failed — it is not evaluated at all, and is excluded
+          from ``datasets[]`` and from the verdict store alike".
+    Spec: spec/feature/VALIDATION.md §Rule Configuration — the ``attribute`` section is
+          ``{cadence_unit, cadence_offset}``, written on the conf ``PUT``.
     """
-    _METRIC_ID = "spot-validation-declared-window"
+    _METRIC_ID = "spot-validation-cadence-window"
     base_conf = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/attr/conf"
     base_run = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/method/run"
     base_results = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/attr/result"
+    base_view = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/dataset"
 
-    urn_fresh = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
-    urn_stale = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.editions,DEV)"
+    # Both are catalog datasets, so DUMMY_DATA_DATAHUB_SCHEMAS={"catalog"} guarantees
+    # they resolve in DataHub — a precondition of the validation conf PUT, which returns
+    # 422 DATASET_NOT_IN_DATAHUB otherwise.
+    urn_lagged = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
+    urn_prompt = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.editions,DEV)"
+    conf_url_lagged = (
+        f"/api/v1/spoke/common/data/{urllib.parse.quote(urn_lagged, safe='')}"
+        "/attr/validation/conf"
+    )
+    conf_url_prompt = (
+        f"/api/v1/spoke/common/data/{urllib.parse.quote(urn_prompt, safe='')}"
+        "/attr/validation/conf"
+    )
 
     await api_client.delete(base_conf, headers=admin_headers)
 
     conn = await _get_ds_conn()
     now = datetime.now(tz=UTC)
     try:
-        # Remove any pre-existing validation_results for these URNs
-        for urn in (urn_fresh, urn_stale):
+        # ── Each dataset declares its own arrival cadence ─────────────────────
+        # urn_lagged promises D-1 data one whole period late (offset=1), so its window
+        # is shifted a day back; urn_prompt promises the current period (offset=0).
+        # spec: VALIDATION.md §Rule Configuration — "Daily D-1 data is `unit = 86400,
+        #       offset = 0`; daily D-8 data is `unit = 86400, offset = 7`".
+        for conf_url, cadence_offset in ((conf_url_lagged, 1), (conf_url_prompt, 0)):
+            put_conf = await api_client.put(
+                conf_url,
+                headers=admin_headers,
+                json={
+                    "description": "Cadence-anchored window spot test",
+                    "variables": [{"name": "row_cnt", "description": "Daily row count"}],
+                    "attribute": {"cadence_unit": 86400, "cadence_offset": cadence_offset},
+                },
+            )
+            assert put_conf.status_code in (200, 201), (
+                f"seeding the validation conf for {conf_url} failed: "
+                f"{put_conf.status_code} {put_conf.text}"
+            )
+            assert put_conf.json()["attribute"] == {
+                "cadence_unit": 86400,
+                "cadence_offset": cadence_offset,
+            }, (
+                "backstop: the stored cadence is what anchors the window below; got "
+                f"{put_conf.json().get('attribute')!r}. "
+                "spec: VALIDATION.md §Rule Configuration."
+            )
+
+        # Identical evidence for both datasets: same ages, same perfect scores. The
+        # 30h-old latest row is inside urn_lagged's shifted window and outside
+        # urn_prompt's trailing one.
+        for urn in (urn_lagged, urn_prompt):
             await conn.execute(
                 "DELETE FROM dataspoke.validation_results WHERE dataset_urn = $1", urn
             )
-
-        # urn_fresh: four rows 24h apart, latest at 1h → inside the declared 86400s window.
-        for offset_hours in [1, 25, 49, 73]:
-            await conn.execute(
-                "INSERT INTO dataspoke.validation_results "
-                "(id, dataset_urn, score, data_time, variables) "
-                "VALUES (gen_random_uuid(), $1, $2, $3, $4::jsonb)",
-                urn_fresh,
-                1.0,
-                now - timedelta(hours=offset_hours),
-                json.dumps({"row_cnt": 1250.0}),
-            )
-
-        # urn_stale: same 24h spacing, latest at 30h → outside the declared 86400s window
-        # (24h) while still inside twice the seeded 24h gap (48h).
-        for offset_hours in [30, 54, 78, 102]:
-            await conn.execute(
-                "INSERT INTO dataspoke.validation_results "
-                "(id, dataset_urn, score, data_time, variables) "
-                "VALUES (gen_random_uuid(), $1, $2, $3, $4::jsonb)",
-                urn_stale,
-                0.5,
-                now - timedelta(hours=offset_hours),
-                json.dumps({"row_cnt": 980.0}),
-            )
+            for offset_hours in (30, 54, 78):
+                await conn.execute(
+                    "INSERT INTO dataspoke.validation_results "
+                    "(id, dataset_urn, score, data_time, variables) "
+                    "VALUES (gen_random_uuid(), $1, $2, $3, $4::jsonb)",
+                    urn,
+                    1.0,
+                    now - timedelta(hours=offset_hours),
+                    json.dumps({"row_cnt": 1250.0}),
+                )
 
         create_resp = await api_client.post(
             "/api/v1/spoke/governance/metric",
@@ -2229,15 +2275,16 @@ async def test_validation_score_declared_window_gates_the_latest_row(
                 "mode": "active",
                 "is_enabled": True,
                 "metric_type": "validation-score",
-                "title": "Declared Window Spot Test",
-                "description": "The declared window gates the latest validation row",
+                "title": "Cadence-Anchored Window Spot Test",
+                "description": "Each dataset's declared cadence anchors its own window",
                 "metrics": [
                     {"name": "total", "color": "#64748B", "idx": 1},
-                    {"name": "validation_score_sum", "color": "#3B82F6", "idx": 2},
+                    {"name": "valid_confd", "color": "#3B82F6", "idx": 2},
+                    {"name": "valid_in_time", "color": "#22C55E", "idx": 3},
                 ],
                 "metric_conf": {"time_window_sec": 86400},
                 "schedule_tier": None,
-                "dataset_filter": f"dataset_urn IN ('{urn_fresh}', '{urn_stale}')",
+                "dataset_filter": f"dataset_urn IN ('{urn_lagged}', '{urn_prompt}')",
             },
         )
         assert create_resp.status_code == 201, create_resp.text
@@ -2246,57 +2293,172 @@ async def test_validation_score_declared_window_gates_the_latest_row(
         assert run_resp.status_code == 200, run_resp.text
 
         results_resp = await api_client.get(f"{base_results}?limit=5", headers=admin_headers)
+        assert results_resp.status_code == 200, results_resp.text
         results = results_resp.json().get("results", [])
-        assert results
+        assert len(results) == 1, (
+            f"this fresh metric ran once, so it must have exactly one result; "
+            f"got {len(results)}."
+        )
         row = results[0]
+        values = row["values"]
 
-        assert row["values"]["total"] == 2.0, (
-            f"total must be 2 (both catalog URNs resolved); got {row['values']['total']}. "
+        assert values["total"] == 2.0, (
+            f"total counts the datasets dataset_filter matched; got {values['total']}. "
             "If 0, the URN was not registered in DataHub — check DUMMY_DATA_DATAHUB_SCHEMAS."
         )
-        assert row["values"]["validation_score_sum"] == 1.0, (
-            "only urn_fresh's latest row is inside the declared 86400s window, so the sum "
-            f"is its 1.0; got {row['values']['validation_score_sum']}. "
-            "Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window."
+        assert values["valid_confd"] == 2.0, (
+            "both datasets carry a validation_configs row, so valid_confd counts both; "
+            f"got {values['valid_confd']}. "
+            "Spec: spec/feature/BACKEND.md §Metrics Service §`validation-score` counts."
+        )
+        assert values["valid_in_time"] == 1.0, (
+            "valid_in_time is a COUNT of the configured datasets passing the per-dataset "
+            "test — exactly urn_lagged, whose shifted window contains the same 30h-old "
+            f"row that falls outside urn_prompt's; got {values['valid_in_time']}. "
+            "2 means every dataset was judged on the shifted window instead of its own "
+            "declared cadence, 0 means every dataset was judged on the plain trailing "
+            "window instead. "
+            "Spec: spec/feature/BACKEND.md §Metrics Service §Cadence-anchored window."
         )
 
         breakdown = row.get("breakdown", {})
         breakdown_urns = [e["urn"] for e in breakdown.get("datasets", [])]
-        assert breakdown_urns == [urn_stale], (
-            "only the dataset with no result inside the declared window may be listed; got "
-            f"{breakdown_urns}. "
+        assert breakdown_urns == [urn_prompt], (
+            "only the configured dataset whose latest row falls outside its own "
+            f"cadence-anchored window may be listed; got {breakdown_urns}. "
             "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
         )
+        assert breakdown["dataset_count"] == 2, (
+            "dataset_count is the total scanned, not the number of failures; got "
+            f"{breakdown.get('dataset_count')}. "
+            "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
+        )
+
         detail = breakdown["datasets"][0]["detail"]
         assert detail["time_window_sec"] == 86400, (
-            "the run must report the window it applied, which is the declared "
+            "the run must report the width it applied, which is the declared "
             f"metric_conf.time_window_sec; got {detail.get('time_window_sec')}. "
             "Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window."
         )
+        assert (detail["cadence_unit"], detail["cadence_offset"]) == (86400, 0), (
+            "the listed dataset's own declared cadence must be reported, since the width "
+            f"alone does not determine its window; got {detail!r}. "
+            "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
+        )
+        lower_bound = datetime.fromisoformat(detail["lower_bound"])
+        upper_bound = datetime.fromisoformat(detail["upper_bound"])
+        assert (upper_bound - lower_bound) == timedelta(seconds=86400), (
+            "the resolved bounds must span exactly the declared width; got "
+            f"{detail['lower_bound']} .. {detail['upper_bound']}. "
+            "Spec: spec/feature/BACKEND.md §Metrics Service §Cadence-anchored window."
+        )
+        latest_data_time = datetime.fromisoformat(detail["latest_data_time"])
+        assert latest_data_time < lower_bound, (
+            "the failing dataset's latest row must be the 30h-old one, below its "
+            f"unshifted window; got {detail['latest_data_time']!r} against "
+            f"{detail['lower_bound']!r}."
+        )
+        assert detail["score"] == 1.0, (
+            "backstop: the listed dataset's row scored a perfect 1.0, so the ONLY reason "
+            "it failed is the cadence-anchored window — a score-driven failure would "
+            f"prove nothing about the anchor; got {detail.get('score')!r}. "
+            "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
+        )
         assert "window_source" not in detail, (
-            "detail must not name a window provenance: the window is always the declared "
+            "detail must not name a window provenance: the width is always the declared "
             f"metric_conf.time_window_sec; got keys {sorted(detail)}. "
             "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
         )
-        assert detail["score"] == 0.5, (
-            "backstop: the listed dataset's own out-of-window row must be what is "
-            f"reported; got {detail.get('score')!r}. "
+
+        view_resp = await api_client.get(f"{base_view}?limit=100", headers=admin_headers)
+        assert view_resp.status_code == 200, view_resp.text
+        met_by_urn = {r["dataset_urn"]: r["met"] for r in view_resp.json()["datasets"]}
+        assert met_by_urn == {urn_lagged: "true", urn_prompt: "false"}, (
+            "while both are configured, both carry a verdict — one each way; got "
+            f"{met_by_urn!r}. Spec: spec/API.md §Metric — the tri-state met view."
+        )
+
+        # ── The unconfigured case: no config ⇒ no verdict, not a failure ──────
+        # DELETE hard-deletes the rule and cascades its results, so urn_prompt is now a
+        # scoped dataset with no validation_configs row at all.
+        # spec: VALIDATION.md §API Surface — DELETE "removes the conf, cascades its
+        #       results and validation events".
+        delete_conf = await api_client.delete(conf_url_prompt, headers=admin_headers)
+        assert delete_conf.status_code == 204, (
+            f"DELETE of the validation conf expected 204; got {delete_conf.status_code}: "
+            f"{delete_conf.text}"
+        )
+
+        rerun_resp = await api_client.post(base_run, headers=admin_headers)
+        assert rerun_resp.status_code == 200, rerun_resp.text
+
+        rerun_results = await api_client.get(f"{base_results}?limit=5", headers=admin_headers)
+        assert rerun_results.status_code == 200, rerun_results.text
+        rerun_rows = rerun_results.json().get("results", [])
+        assert len(rerun_rows) == 2, (
+            f"the metric has now run twice, so two results must be readable; got "
+            f"{len(rerun_rows)}."
+        )
+        # Pick the second run's row by its own timestamp rather than trusting the
+        # response order, so the assertions below cannot silently read the first run's
+        # result if the default sort ever changes.
+        rerun = max(rerun_rows, key=lambda r: datetime.fromisoformat(r["measured_at"]))
+        assert datetime.fromisoformat(rerun["measured_at"]) > datetime.fromisoformat(
+            row["measured_at"]
+        ), (
+            "backstop: the row read below must be the *second* run's; got "
+            f"{rerun['measured_at']!r} against the first run's {row['measured_at']!r}."
+        )
+        assert rerun["values"]["total"] == 2.0, (
+            "an unconfigured dataset is still matched by dataset_filter, so total is "
+            f"unchanged; got {rerun['values']['total']}. "
+            "Spec: spec/feature/BACKEND.md §Metrics Service §`validation-score` counts."
+        )
+        assert rerun["values"]["valid_confd"] == 1.0, (
+            "valid_confd counts only the datasets carrying a validation_configs row, so "
+            f"it must drop to 1; got {rerun['values']['valid_confd']}. "
+            "Spec: spec/feature/BACKEND.md §Metrics Service §`validation-score` counts."
+        )
+        assert rerun["values"]["valid_in_time"] == 1.0, (
+            "urn_lagged still passes; got "
+            f"{rerun['values']['valid_in_time']}."
+        )
+        rerun_breakdown_urns = [
+            e["urn"] for e in rerun.get("breakdown", {}).get("datasets", [])
+        ]
+        assert rerun_breakdown_urns == [], (
+            "the dataset that failed a moment ago is now unconfigured, and an "
+            "unconfigured dataset is excluded rather than failed — a filter must not be "
+            f"able to widen its way to a falling metric; got {rerun_breakdown_urns}. "
             "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
         )
-        assert datetime.fromisoformat(detail["latest_data_time"]) < now - timedelta(
-            seconds=86400
-        ), (
-            "latest_data_time must be the out-of-window row that was seeded; got "
-            f"{detail['latest_data_time']!r}."
+        assert rerun["breakdown"]["dataset_count"] == 2, (
+            "dataset_count stays the total scanned even though only one dataset was "
+            f"evaluated; got {rerun['breakdown'].get('dataset_count')}. "
+            "Spec: spec/feature/BACKEND.md §Metrics Service §`validation-score` counts "
+            "and the unconfigured set."
+        )
+
+        rerun_view = await api_client.get(f"{base_view}?limit=100", headers=admin_headers)
+        assert rerun_view.status_code == 200, rerun_view.text
+        rerun_met = {r["dataset_urn"]: r["met"] for r in rerun_view.json()["datasets"]}
+        assert rerun_met == {urn_lagged: "true", urn_prompt: "unknown"}, (
+            "the unconfigured dataset must surface through the existing `unknown` path — "
+            f"no verdict row, neither met=true nor met=false; got {rerun_met!r}. "
+            "Spec: spec/feature/BACKEND.md §Metrics Service §`validation-score` counts "
+            "and the unconfigured set."
         )
 
     finally:
-        for urn in (urn_fresh, urn_stale):
+        for urn in (urn_lagged, urn_prompt):
             with suppress(Exception):
                 await conn.execute(
                     "DELETE FROM dataspoke.validation_results WHERE dataset_urn = $1", urn
                 )
         await conn.close()
+        for conf_url in (conf_url_lagged, conf_url_prompt):
+            with suppress(Exception):
+                await api_client.delete(conf_url, headers=admin_headers)
         with suppress(Exception):
             await api_client.delete(base_conf, headers=admin_headers)
 
@@ -2796,8 +2958,9 @@ async def test_dataset_view_met_filter_combinations(
 
     Spec: spec/API.md §Metric — "Repeatable `met` query param (default: all three)";
           "`met` is `"unknown"` exactly when the dataset is in the filter's scope but
-          carries no verdict — the metric has never run, or the dataset entered scope
-          after the last run".
+          carries no verdict — the metric has never run, the dataset entered scope after
+          the last run, or, for `validation-score`, the dataset has no validation
+          configuration and is therefore never evaluated on any run".
     """
     _METRIC_ID = "spot-dataset-met-filter"
     base_conf = f"/api/v1/spoke/governance/metric/{_METRIC_ID}/attr/conf"

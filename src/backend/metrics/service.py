@@ -53,7 +53,7 @@ logger = logging.getLogger(__name__)
 # Keys emitted by each built-in metric type (mirrors the schema-layer constant).
 _EMITTED_KEYS: dict[str, set[str]] = {
     "ingestion-freshness": {"total", "ingested_in_time"},
-    "validation-score": {"total", "validation_score_sum"},
+    "validation-score": {"total", "valid_confd", "valid_in_time"},
     "doc-health": {"total", "doc_health"},
 }
 
@@ -90,8 +90,9 @@ class MetricDatasetRecord(BaseModel):
     """One row of ``GET /spoke/governance/metric/{metric_id}/dataset``.
 
     ``met`` is tri-state: ``"unknown"`` means the dataset is in the metric's
-    current scope but carries no verdict — the metric has never run, or the
-    dataset entered scope after the last run.
+    current scope but carries no verdict — the metric has never run, the dataset
+    entered scope after the last run, or, for ``validation-score``, the dataset
+    has no validation configuration and is therefore never evaluated on any run.
     """
 
     dataset_urn: str
@@ -186,16 +187,22 @@ def _validate_series(metric_type: str, series: list[dict[str, Any]]) -> None:
         raise PreconditionFailedError("INVALID_PARAMETER", "metrics[].idx must be unique")
 
 
-def _breakdown_from_verdicts(verdicts: list[DatasetVerdict]) -> dict[str, Any]:
+def _breakdown_from_verdicts(
+    verdicts: list[DatasetVerdict], dataset_count: int
+) -> dict[str, Any]:
     """Derive ``metric_results.breakdown`` from the run's verdicts.
 
     ``datasets[]`` lists only the failed ones — membership in the list is itself
-    the classification — while ``dataset_count`` is the total scanned. Deriving
-    it here rather than having each measurer build both is what keeps the stored
-    breakdown and ``metric_dataset_results`` from ever disagreeing.
+    the classification — while ``dataset_count`` is the total **scanned**, passed
+    in by the caller rather than read off ``len(verdicts)``: a measurer may
+    evaluate a strict subset of its scan (``validation-score`` leaves the
+    unconfigured datasets verdict-less), so the two counts are not the same
+    quantity. Deriving the breakdown here rather than having each measurer build
+    both is what keeps the stored breakdown and ``metric_dataset_results`` from
+    ever disagreeing.
     """
     return {
-        "dataset_count": len(verdicts),
+        "dataset_count": dataset_count,
         "datasets": [
             {"urn": verdict.urn, "detail": verdict.detail}
             for verdict in verdicts
@@ -573,7 +580,17 @@ class MetricsService:
         self,
         metric_id: str,
         dry_run: bool = False,
+        scheduled_at: datetime | None = None,
     ) -> MetricRunResult:
+        """Measure one metric.
+
+        ``scheduled_at`` is the run's **measurement instant** when the trigger has
+        a schedule to anchor to — a periodic tier DAG forwards its
+        ``data_interval_end``, so a retried or backlogged run measures the
+        interval it is *for* rather than the one it happened to execute in. An
+        on-demand run supplies none and falls back to wall-clock ``now()``
+        (spec/feature/BACKEND.md §Metrics Service — Measurement instant).
+        """
         lock_key = f"metrics:running:{metric_id}"
         lock_token: str | None = None
 
@@ -587,12 +604,17 @@ class MetricsService:
                 )
 
         try:
-            return await self._run_inner(metric_id, dry_run)
+            return await self._run_inner(metric_id, dry_run, scheduled_at)
         finally:
             if self._cache is not None and lock_token is not None:
                 await self._cache.delete_if_value(lock_key, lock_token)
 
-    async def _run_inner(self, metric_id: str, dry_run: bool) -> MetricRunResult:
+    async def _run_inner(
+        self,
+        metric_id: str,
+        dry_run: bool,
+        scheduled_at: datetime | None = None,
+    ) -> MetricRunResult:
         definition = await self.get_metric(metric_id)
 
         if not definition.is_enabled and not dry_run:
@@ -603,8 +625,12 @@ class MetricsService:
 
         run_id = str(uuid.uuid4())
 
-        values, verdicts, unresolved_urns = await self._measure(definition)
-        breakdown = _breakdown_from_verdicts(verdicts)
+        # The measurement instant: one reading for the whole run, taken before
+        # dispatch. A scheduled trigger supplies its own — see `run`.
+        now = scheduled_at if scheduled_at is not None else datetime.now(tz=UTC)
+
+        values, verdicts, unresolved_urns, dataset_count = await self._measure(definition, now)
+        breakdown = _breakdown_from_verdicts(verdicts, dataset_count)
 
         detail: dict[str, Any] = {
             "run_id": run_id,
@@ -623,6 +649,8 @@ class MetricsService:
         if dry_run:
             return MetricRunResult(run_id=run_id, status="success", detail=detail)
 
+        # A separate, later reading than the measurement instant above: it dates
+        # the *result*, it does not define the window the run measured.
         measured_at = datetime.now(tz=UTC)
         result_row = MetricResult(
             metric_id=metric_id,
@@ -740,13 +768,20 @@ class MetricsService:
     async def _measure(
         self,
         definition: MetricDefinitionRecord,
-    ) -> tuple[dict[str, float], list[DatasetVerdict], list[str]]:
-        """Run measurement and return (values, verdicts, unresolved_urns).
+        now: datetime,
+    ) -> tuple[dict[str, float], list[DatasetVerdict], list[str], int]:
+        """Run measurement and return (values, verdicts, unresolved_urns, scanned).
 
         Resolves ``dataset_filter`` against ``dataset_registry`` — one SQL query,
         no DataHub call — so the run's verdicts and the ``/dataset`` view can
         never disagree about scope. Literal ``dataset_urn`` values matching no
         registered dataset are accumulated into ``unresolved_urns``.
+
+        ``scanned`` is the size of that resolved scope. It is returned alongside
+        the verdicts because a measurer may evaluate a subset of what it scanned,
+        which makes ``len(verdicts)`` the wrong source for the breakdown's
+        ``dataset_count``. ``now`` is the run's measurement instant, passed
+        through to the measurer.
         """
         scope = await resolve_dataset_scope(self._db, definition.dataset_filter)
         datasets = scope.resolved_urns
@@ -761,7 +796,7 @@ class MetricsService:
             )
 
         all_values, verdicts = await measurer(
-            datasets, definition.metric_conf, datahub=self._datahub, db=self._db
+            datasets, definition.metric_conf, datahub=self._datahub, db=self._db, now=now
         )
 
         # Filter values to the series declared in definition.metrics
@@ -774,7 +809,7 @@ class MetricsService:
             {k: v for k, v in all_values.items() if k in declared} if declared else all_values
         )
 
-        return filtered_values, verdicts, unresolved_urns
+        return filtered_values, verdicts, unresolved_urns, len(datasets)
 
     # ── Per-dataset verdicts ─────────────────────────────────────────────────
 
