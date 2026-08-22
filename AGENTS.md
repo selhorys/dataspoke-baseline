@@ -64,9 +64,21 @@ In spec, focus on architecture, decisions, and constraints. From spec, remove ve
 - Conventional Commits: `<type>: <subject>` (e.g. `feat:`, `fix:`, `docs:`, `refactor:`)
 - **Always run `git diff` (or `git diff --staged`) and base the commit message on the actual diff output**, not on prior conversation context or memory of what was changed
 - Body optional, **max 15 lines, max 100 chars per line** if included
-- The repository has no automatic agent lifecycle or Git `commit-msg` hooks. Agents, humans, and
-  other clients apply this convention explicitly; native client permissions govern whether a
-  commit command is allowed.
+- The repository has no automatic agent lifecycle or Git `commit-msg` hooks. A narrowly scoped
+  Claude Code `PreToolUse` hook requests native approval for recognized `git commit` commands on
+  `dev` or `master`. Codex has no project hook; its parent agent must use the native approval or
+  user-question interface immediately before committing on either branch.
+- Install the advisory direct-Git fallback per clone with `./scaffold/bin/install-git-hooks.sh`.
+  It prompts for the exact response `yes` before a commit on `dev` or `master`. Client-side hooks
+  are not an authorization boundary: `--no-verify`, an alternate `core.hooksPath`, or PTY automation
+  can bypass them. Coding agents must never use or automate those bypasses.
+- Immediately before a coding agent commits on `dev` or `master`, it must obtain explicit user
+  approval through the coding client's native approval interface. Approval for planning or editing
+  is not commit approval. Direct human Git usage receives the fallback terminal prompt when installed.
+- The Claude and Git guards are advisory and repository-writable. Their shared classifier recognizes
+  common shell forms conservatively but is not a complete shell grammar or security boundary. Users
+  must trust the checked-out hook files before enabling them; agents must follow this policy even
+  when a command form or client does not trigger a hook.
 
 ## Implementation Workflow
 

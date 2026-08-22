@@ -9,7 +9,10 @@ import json
 import pathlib
 import tomllib
 
-for path in (pathlib.Path('.claude/settings.json'), pathlib.Path('scaffold/contracts/reviewer-verdict.schema.json')):
+for path in (
+    pathlib.Path('.claude/settings.json'),
+    pathlib.Path('scaffold/contracts/reviewer-verdict.schema.json'),
+):
     json.loads(path.read_text())
 for path in pathlib.Path('.codex/agents').glob('*.toml'):
     data = tomllib.loads(path.read_text())
@@ -20,10 +23,32 @@ tomllib.loads(pathlib.Path('.codex/config.toml').read_text())
 roles = {p.stem for p in pathlib.Path('scaffold/roles').glob('*.md')}
 assert {p.stem for p in pathlib.Path('.codex/agents').glob('*.toml')} == roles
 
-assert not pathlib.Path('.codex/hooks.json').exists(), 'project Codex hooks must not be installed'
 assert not pathlib.Path('.codex/hooks').exists(), 'project Codex hook directory must not exist'
+assert not pathlib.Path('.codex/hooks.json').exists(), 'project Codex hooks must not be installed'
 assert not pathlib.Path('.claude/hooks').exists(), 'project Claude hook directory must not exist'
-assert not pathlib.Path('scaffold/hooks').exists(), 'automatic project hook implementations must not exist'
+hook_dir = pathlib.Path('scaffold/hooks')
+hook_entries = {p.name for p in hook_dir.iterdir()}
+allowed_hook_entries = {'protected-commit.py', 'run-protected-commit.sh'}
+if '__pycache__' in hook_entries:
+    cache_entries = list((hook_dir / '__pycache__').iterdir())
+    assert cache_entries and all(
+        path.is_file()
+        and path.name.startswith('protected-commit.')
+        and path.name.endswith('.pyc')
+        for path in cache_entries
+    ), 'only generated cache for the protected-commit classifier is allowed'
+    hook_entries.remove('__pycache__')
+assert hook_entries == allowed_hook_entries, \
+    'only shared protected-commit hook implementations are allowed'
+assert {p.name for p in pathlib.Path('.githooks').iterdir()} == {'pre-commit'}, \
+    'only the protected-branch pre-commit fallback is allowed'
+for path in (
+    pathlib.Path('scaffold/hooks/protected-commit.py'),
+    pathlib.Path('scaffold/hooks/run-protected-commit.sh'),
+    pathlib.Path('scaffold/bin/install-git-hooks.sh'),
+    pathlib.Path('.githooks/pre-commit'),
+):
+    assert path.stat().st_mode & 0o111, f'{path}: hook entrypoint must be executable'
 prauto_workflows = {
     pathlib.Path('.claude/workflows/wf-minimal.js'),
     pathlib.Path('.claude/workflows/wf-is-primary.js'),
@@ -32,8 +57,12 @@ assert all(path.is_file() for path in prauto_workflows), \
     'Prauto-only workflow dependencies must remain present'
 assert set(pathlib.Path('.claude/workflows').glob('*')) == prauto_workflows, \
     'only the two Prauto workflow dependencies are allowed'
-assert 'hooks' not in json.loads(pathlib.Path('.claude/settings.json').read_text()), \
-    'project Claude lifecycle hooks must not be configured'
+claude_hooks = json.loads(pathlib.Path('.claude/settings.json').read_text())['hooks']
+assert set(claude_hooks) == {'PreToolUse'}, 'only Claude PreToolUse hooks are allowed'
+assert len(claude_hooks['PreToolUse']) == 1
+assert claude_hooks['PreToolUse'][0]['matcher'] == 'Bash'
+assert len(claude_hooks['PreToolUse'][0]['hooks']) == 1
+assert 'run-protected-commit.sh' in claude_hooks['PreToolUse'][0]['hooks'][0]['command']
 
 for path in pathlib.Path('.claude/agents').glob('*.md'):
     text = path.read_text()
@@ -96,6 +125,7 @@ PY
 }
 
 for script in scaffold/bin/*.sh; do bash -n "$script"; done
+for script in scaffold/hooks/*.sh .githooks/*; do sh -n "$script"; done
 if rg -n '/Users/[^/]+/|\.Codex|\.Claude' .codex .agents scaffold .claude \
   --glob '!settings.local.json' --glob '!check-bindings.sh' --glob '!**/workflows/**'; then
   echo 'non-portable personal or case-incorrect path found' >&2
