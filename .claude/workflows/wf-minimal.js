@@ -1,6 +1,6 @@
 export const meta = {
   name: 'wf-minimal',
-  description: 'Simplest example of a dynamic agent-fleet workflow: per-stage generate → adversarial-review cycles from an approved plan (CLAUDE.md §Implementation Workflow steps 4-9)',
+  description: 'Simplest example of a dynamic agent-fleet workflow: per-stage generate → adversarial-review cycles from an approved plan (AGENTS.md §Implementation Workflow steps 4-9)',
   whenToUse: 'After a human approves an implementation plan that names generator stages. args = {plan, stages, security?}.',
   phases: [
     { title: 'spec' },
@@ -19,7 +19,7 @@ export const meta = {
 //                                       "test", "frontend", "k8s-helm"]). The `spec` stage, when
 //                                       present, leads so later stages read the updated spec.
 //   security: string[]                — stages whose diff touches the sensitive paths listed in
-//                                       .claude/agents/security-reviewer.md (decided at plan time).
+//                                       scaffold/roles/security-reviewer.md (decided at plan time).
 //                                       Applies to NO_REVIEW stages too — `k8s-helm` writes
 //                                       values*.yaml and dev-peripherals scripts, both sensitive.
 // The harness may deliver args JSON-stringified; normalize before validating.
@@ -29,7 +29,7 @@ if (!ARGS || typeof ARGS.plan !== 'string' || !Array.isArray(ARGS.stages)) {
 }
 
 const REVIEWER_FOR = { test: 'test-reviewer', spec: 'spec-reviewer' } // every other reviewed stage uses `reviewer`
-const NO_REVIEW = ['k8s-helm'] // no spec-compliance review loop, per CLAUDE.md step 9
+const NO_REVIEW = ['k8s-helm'] // no spec-compliance review loop, per AGENTS.md step 9
 const RANK = { APPROVE: 0, REVISE: 1, ESCALATE: 2 }
 
 const REVIEW_SCHEMA = {
@@ -58,7 +58,7 @@ const REVIEW_SCHEMA = {
 const NO_COMMIT = 'DO NOT commit, stage (git add), or push anything, and do not create branches or tags. Leave every change unstaged in the working tree for the human to review.'
 
 function genPrompt(stage, findings) {
-  const base = `You are the ${stage} generator in CLAUDE.md §Implementation Workflow.
+  const base = `You are the ${stage} generator in AGENTS.md §Implementation Workflow.
 
 APPROVED IMPLEMENTATION PLAN:
 ${ARGS.plan}
@@ -85,7 +85,7 @@ Read every changed file yourself — do not trust the report's claims. Return ve
 
 // Reviewers for a stage: `reviewer` (or `test-reviewer` / `spec-reviewer`), plus
 // `security-reviewer` for security-flagged stages. A NO_REVIEW stage skips only the
-// spec-compliance reviewer — CLAUDE.md's sensitive-path rule is stage-independent, so a
+// spec-compliance reviewer — the sensitive-path rule (scaffold/roles/security-reviewer.md) is stage-independent, so a
 // stage named in `args.security` still gets its security pass.
 function reviewersFor(stage) {
   const reviewers = NO_REVIEW.includes(stage) ? [] : [REVIEWER_FOR[stage] || 'reviewer']

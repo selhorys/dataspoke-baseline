@@ -194,10 +194,17 @@ async def datahub_client():
 
 @pytest.fixture(scope="session", autouse=True)
 def require_server(runtime_conf) -> None:  # noqa: ARG001 — runtime_conf performs stub preflight
-    """Assert the API server is reachable, infra stubs are on, and DAGs are registered.
+    """Assert the dev cluster is healthy, the API server is reachable, infra stubs
+    are on, and DAGs are registered.
 
     Shared by both the spot and api-wired layers (inherited from this parent
     conftest). Checks:
+    0. `helm-charts/bin/health-check.sh` passes — the same cluster-wide gate
+       Claude Code's `.claude/hooks/preflight-integration-tests.sh` runs before an
+       agent invokes this suite. Enforcing it here too means the gate holds for any
+       caller (a human, a different coding-agent CLI, CI), not only a Claude Code
+       session with that hook wired in. Skipped (not failed) if the script is
+       missing or not executable, matching the hook's own non-fighting fallback.
     1. runtime_conf preflight confirms stub_redis_client, stub_pgvector_manager,
        stub_notification_service are true (stub_llm_client intentionally excluded
        so real-LLM tests can run).
@@ -210,6 +217,38 @@ def require_server(runtime_conf) -> None:  # noqa: ARG001 — runtime_conf perfo
 
     If any check fails, the test session is aborted with a clear message.
     """
+    import subprocess
+
+    repo_root = Path(__file__).resolve().parents[2]
+    health_check = repo_root / "helm-charts" / "bin" / "health-check.sh"
+    if os.access(health_check, os.X_OK):
+        # The dev-env lock is already held by this point (runtime_conf -> acquire_lock),
+        # so --keep-lock tells health-check.sh not to treat it as foreign or stale.
+        try:
+            result = subprocess.run(
+                [str(health_check), "--keep-lock"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        except subprocess.TimeoutExpired:
+            pytest.fail(
+                "helm-charts/bin/health-check.sh did not finish within 60s — treating "
+                "that as unhealthy (an unreachable API server or a stalled endpoint can "
+                "outlast a bounded probe). Run it directly to see where it stalls."
+            )
+        if result.returncode != 0:
+            pytest.fail(
+                f"helm-charts/bin/health-check.sh failed (exit {result.returncode}). "
+                "Integration tests would fail misleadingly against a broken cluster.\n\n"
+                f"health-check output:\n{result.stdout}{result.stderr}\n\n"
+                "Reinstall the failing subsystem (per AGENTS.md §Integration Test Protocol):\n"
+                "  airflow / postgres / redis → ./helm-charts/bin/install.sh --profile dev --components dataspoke-infra\n"
+                "  datahub-gms / kafka        → ./helm-charts/bin/install.sh --profile dev --components datahub\n"
+                "  example-postgres/kafka     → ./helm-charts/bin/install.sh --profile dev --components dummy-data\n"
+                "  lock-service               → ./helm-charts/bin/install.sh --profile dev --components dev-lock"
+            )
+
     base_url = _shared_ingress_url()
 
     # Check liveness — /health has no /api/v1 prefix (mounted at root)

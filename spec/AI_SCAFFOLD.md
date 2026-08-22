@@ -5,11 +5,12 @@
 1. [Purpose](#purpose)
 2. [Scaffold Structure](#scaffold-structure)
 3. [Skills](#skills)
-4. [Subagents](#subagents)
-5. [Permissions](#permissions)
-6. [Prauto](#prauto)
-7. [Building a Custom Spoke](#building-a-custom-spoke)
-8. [Design Principles](#design-principles)
+4. [Roles](#roles)
+5. [Codex Binding](#codex-binding)
+6. [Permissions](#permissions)
+7. [Prauto](#prauto)
+8. [Building a Custom Spoke](#building-a-custom-spoke)
+9. [Design Principles](#design-principles)
 
 ---
 
@@ -21,52 +22,86 @@ The DataSpoke project develops two core artifacts (from `spec/MANIFESTO_en.md` �
    features (Ingestion Control, Validation, Ontology Generation, Metadata Generation,
    Governance).
 2. **Productized Scaffold** — a framework for custom development, comprising specs, a
-   deployment subsystem (`helm-charts/`), and coding-agent utilities (`.claude/`).
+   deployment subsystem (`helm-charts/`), and coding-agent utilities.
 
-This document covers the **Developer AI Scaffold** — the MANIFESTO §2.2 "AI Scaffold", the
-Claude Code configurations in `.claude/` that make AI-assisted *development of the product*
-immediately productive from the first session. It is complemented by a distinct, sibling
-deliverable: the **End-User AI Scaffold** — a distributable Claude Code plugin that helps
-engineers *consume a running DataSpoke* through its public API, specified in `spec/AI_PLUGIN.md`.
-The two never overlap in access: the Developer scaffold has full repo access (specs, `src/`,
-helm, DB); the End-User plugin sees only the public API surface of a deployed instance.
+This document covers the **Developer AI Scaffold** — the MANIFESTO §2.2 "AI Scaffold" that makes
+AI-assisted *development of the product* immediately productive from the first session. It is
+complemented by a distinct, sibling deliverable: the **End-User AI Scaffold** — a distributable
+Claude Code plugin that helps engineers *consume a running DataSpoke* through its public API,
+specified in `spec/AI_PLUGIN.md`. The two never overlap in access: the Developer scaffold has
+full repo access (specs, `src/`, helm, DB); the End-User plugin sees only the public API surface
+of a deployed instance.
 
-A well-structured scaffold removes the bootstrapping cost of AI coding: the
-agent knows the project layout, naming conventions, spec hierarchy, and operational environment
-before writing a single line of code. The Development Scaffold (Kubernetes-based deployment
-subsystem covering both dev and prod profiles) is specified separately in
-`spec/feature/HELM_CHART.md`.
+A well-structured scaffold removes the bootstrapping cost of AI coding: the agent knows the
+project layout, naming conventions, spec hierarchy, and operational environment before writing a
+single line of code. The Development Scaffold (Kubernetes-based deployment subsystem covering
+both dev and prod profiles) is specified separately in `spec/feature/HELM_CHART.md`.
+
+The Developer scaffold is split into three layers so the same plan → approve → generate →
+evaluate workflow runs under more than one coding-agent CLI, not only Claude Code:
+
+- an **agent-agnostic core** (`scaffold/`) that is the single source of truth for what each role
+  knows and does;
+- a **Claude Code binding** (`.claude/`) — the fullest-featured binding, with native subagents,
+  hooks, a workflow DSL, skills, permissions, and a statusline;
+- a **Codex binding** — root `AGENTS.md` (read natively by Codex) plus `scaffold/bin/` scripts
+  standing in for the native subagent/workflow primitives Codex lacks.
+
+Every role, and the plan → approve → generate → evaluate workflow itself, is defined once and
+read by whichever binding is active for the session.
 
 ---
 
 ## Scaffold Structure
 
-`.claude/` contains: `skills/` (prompt extensions — one directory per skill), `agents/`
-(subagent system prompts — one `.md` per agent), `hooks/` (shell scripts invoked by Claude Code
-events — `settings.json`-wired lifecycle hooks: integration-test preflight, plan-gate reminder,
-permission-hygiene warning, commit confirmation; plus per-agent hooks wired in agent frontmatter:
-ruff lint on edited Python files, frontend typecheck on Stop), `workflows/` (dynamic agent-fleet
-scripts, e.g. `wf-minimal.js`), `statusline.sh` (status line composer), `settings.json` (tool
-permissions + hooks + statusLine), and `settings.local.json` (local overrides). See §Skills and
-§Subagents below for the full catalogue.
+### `scaffold/` — agent-agnostic core
 
-The scaffold works alongside these structural elements:
+```
+scaffold/
+├── roles/    # canonical role definitions — one .md per generator/evaluator
+├── memory/   # persistent cross-session lessons for evaluator roles (non-Claude-Code backends)
+├── bin/      # scripts that drive a role or a full stage loop via a chosen backend CLI
+└── README.md
+```
+
+`scaffold/roles/<name>.md` is the canonical definition of each role (reading list, source layout,
+conventions, invocation modes, and — for evaluators — the scoring rubric and verdict format).
+`scaffold/bin/run-stage.sh` and `run-workflow.sh` let a CLI with no native subagent/workflow
+primitive drive one role, or a full generate → evaluate stage loop, via `--agent {claude|codex}`.
+`scaffold/bin/lint-python.sh` is the portable form of the ruff-check hook. See `scaffold/README.md`
+for the full description of each piece; it is not restated here.
+
+### `.claude/` — Claude Code binding
+
+`.claude/` contains: `skills/` (prompt extensions — one directory per skill), `agents/` (thin
+per-role bindings — frontmatter plus short Claude-Code binding notes, each pointing at its
+`scaffold/roles/<name>.md`), `agent-memory/` (evaluator cross-session memory, checked in), `hooks/`
+(shell scripts invoked by Claude Code events — `settings.json`-wired lifecycle hooks:
+integration-test preflight, plan-gate reminder, permission-hygiene warning, commit confirmation;
+plus per-agent hooks wired in agent frontmatter: ruff lint on edited Python files, frontend
+typecheck on Stop), `workflows/` (dynamic agent-fleet scripts, e.g. `wf-minimal.js`),
+`statusline.sh` (status line composer), `settings.json` (tool permissions + hooks + statusLine),
+and `settings.local.json` (local overrides). See §Skills and §Roles below for the full
+catalogue.
+
+### Other structural elements
 
 | Element | Role |
 |---------|------|
-| `CLAUDE.md` | Root-level agent instructions: project context, spec hierarchy, implementation workflow |
+| `AGENTS.md` | Agent-agnostic root instructions read natively by Codex and other CLIs: project context, spec hierarchy, implementation workflow in CLI-neutral terms |
+| `CLAUDE.md` | Claude-Code-specific binding on top of `AGENTS.md`: Plan mode, `Agent`/`Workflow` tool usage, skills/subagents/hooks/permissions/statusline inventory |
 | `spec/` | Hierarchical spec documents (MANIFESTO → ARCHITECTURE → feature specs) |
 | `helm-charts/` | Umbrella Helm chart + `bin/` install/uninstall/build scripts + dev peripherals. See `spec/feature/HELM_CHART.md` |
 | `ref/` | External source code for AI reference (DataHub v1.6.0, downloaded via `/ref-setup`) |
-| `.prauto/` | Autonomous PR worker: cron-driven issue-to-PR automation. See `spec/AI_PRAUTO.md` |
+| `.prauto/` | Autonomous PR worker: cron-driven issue-to-PR automation, Claude-Code-CLI-only. See `spec/AI_PRAUTO.md` |
 
 ---
 
 ## Skills
 
-Skills are prompt extensions that give the agent specialized context for a specific domain.
-They live in `.claude/skills/<name>/SKILL.md` and are loaded when invoked explicitly
-(`/skill-name`) or when Claude detects a matching context.
+Skills are prompt extensions that give the agent specialized context for a specific domain. They
+are a Claude Code mechanism: they live in `.claude/skills/<name>/SKILL.md` and are loaded when
+invoked explicitly (`/skill-name`) or when Claude detects a matching context.
 
 | Skill | Purpose |
 |-------|---------|
@@ -85,21 +120,27 @@ They live in `.claude/skills/<name>/SKILL.md` and are loaded when invoked explic
 | `test-manual-ui` | Browser-driven sibling of `test-manual-api-wired`: walks the same UC scenario through the reference UI, scripting each gesture from the test file, then confirms both the observed UI state and the backend side effect (REST read-back + probes). Human-in-the-loop stand-in for the unbuilt automated E2E layer |
 
 Each skill's SKILL.md is the authoritative reference for its behavior, invocation options, and
-allowed tools.
+allowed tools. Skills are Claude-Code-only; a non-Claude-Code session has no equivalent and works
+from `AGENTS.md` and the spec hierarchy directly.
 
 ---
 
-## Subagents
+## Roles
 
-Subagents are specialized Claude instances with focused system prompts. They live in
-`.claude/agents/` and are organized into two roles following the **generator → evaluator**
-pattern (see §Design Principles). Planning is handled by Claude's built-in Plan mode before
-generators are invoked.
+Every generator and evaluator role is defined once in `scaffold/roles/<name>.md` — reading list,
+source layout, conventions, invocation modes, and (for evaluators) the scoring rubric and verdict
+format. That file is canonical regardless of which coding-agent CLI is driving a session.
 
-**Why subagents**: The primary reason to delegate implementation to subagents is **context
-confinement**. Each generator operates in a fresh, focused context — it sees only the approved
-plan, the relevant spec, and the files in its scope. This prevents the main conversation from
-accumulating implementation noise (hundreds of lines of generated code, test output, linter
+`.claude/agents/<name>.md` is the Claude Code binding of a role: Claude-Code-specific frontmatter
+(`tools:`, `model:`, `hooks:`, `memory:`, `skills:`) plus a short pointer to the matching
+`scaffold/roles/<name>.md` body. As Claude Code subagents, they fall into two kinds
+following the **generator → evaluator** pattern (see §Design Principles). Planning is handled by
+Claude's built-in Plan mode before generators are invoked.
+
+**Why delegate to roles**: The primary reason to delegate implementation to a generator role is
+**context confinement**. Each generator operates in a fresh, focused context — it sees only the
+approved plan, the relevant spec, and the files in its scope. This prevents the main conversation
+from accumulating implementation noise (hundreds of lines of generated code, test output, linter
 errors) that degrades the quality of subsequent decisions. The main agent stays clean for
 orchestration: passing plans, routing reviewer findings, and deciding what to run next. For
 non-trivial implementation, delegate to the appropriate generator agent rather than writing code
@@ -107,19 +148,19 @@ directly in the main conversation.
 
 ### Evaluator (opus model)
 
-| Subagent | Role | Scope | Tools |
-|----------|------|-------|-------|
-| `reviewer` | Evaluator | Independently reviews code-generator output against spec + implementation plan. Produces structured pass/fail scoring across 5 criteria (spec compliance, architecture adherence, code quality, completeness, inter-component consistency). Invoked after `backend`, `airflow-dag`, and `frontend` generators | Read, Glob, Grep, Bash |
-| `test-reviewer` | Evaluator | Independently reviews test-generator output (pytest **and** Playwright E2E). Produces structured pass/fail scoring across 5 test-specific criteria: spec traceability, spec-derived (vs impl-calibrated) assertions, failure-mode coverage, plausibly-broken-impl sensitivity, and property-based testing opportunity (advisory). Invoked after the `test` generator | Read, Glob, Grep, Bash |
-| `spec-reviewer` | Evaluator | Independently reviews spec-generator output against the spec hierarchy + plan. Produces structured pass/fail scoring across 5 spec-specific criteria: hierarchy/priority compliance, internal consistency & naming, timeless & no-bloat, completeness vs plan, altitude. Invoked after the `spec` generator | Read, Glob, Grep |
-| `security-reviewer` | Evaluator | Parallel security review when a generator's diff touches sensitive paths (all of `src/shared/**` and `src/backend/**`, `src/api/` auth / middleware / routers, migrations, Helm credentials, new dependencies, `.prauto/`). Scores injection, authn/authz, secrets, input validation, supply chain, DataHub emission, crypto. Authoritative glob list lives in the agent file | Read, Glob, Grep, Bash |
+| Role | Scope | Tools |
+|------|-------|-------|
+| `reviewer` | Independently reviews code-generator output against spec + implementation plan. Produces structured pass/fail scoring across 5 criteria (spec compliance, architecture adherence, code quality, completeness, inter-component consistency). Invoked after `backend`, `airflow-dag`, and `frontend` generators | Read, Glob, Grep, Bash |
+| `test-reviewer` | Independently reviews test-generator output (pytest **and** Playwright E2E). Produces structured pass/fail scoring across 5 test-specific criteria: spec traceability, spec-derived (vs impl-calibrated) assertions, failure-mode coverage, plausibly-broken-impl sensitivity, and property-based testing opportunity (advisory). Invoked after the `test` generator | Read, Glob, Grep, Bash |
+| `spec-reviewer` | Independently reviews spec-generator output against the spec hierarchy + plan. Produces structured pass/fail scoring across 5 spec-specific criteria: hierarchy/priority compliance, internal consistency & naming, timeless & no-bloat, completeness vs plan, altitude. Invoked after the `spec` generator | Read, Glob, Grep |
+| `security-reviewer` | Parallel security review when a generator's diff touches sensitive paths (all of `src/shared/**` and `src/backend/**`, `src/api/` auth / middleware / routers, migrations, Helm credentials, new dependencies, `.prauto/`). Scores injection, authn/authz, secrets, input validation, supply chain, DataHub emission, crypto. Authoritative glob list lives in the role file | Read, Glob, Grep, Bash |
 
 All four reviewers use read-only tools — they analyze and report but do not write code.
 
-### Generators (opus by default; sonnet for `airflow-dag` and `k8s-helm`)
+### Generators (sonnet)
 
-| Subagent | Scope | Tools |
-|----------|-------|-------|
+| Role | Scope | Tools |
+|------|-------|-------|
 | `spec` | Specification documents under `spec/` (top-level + `feature/<FEATURE>.md`). Authors and harmonizes timeless reference specs via the `spec-write`/`spec-harmonize`/`spec-sync-with-impl` skills. Leads the run so code generators read the updated spec; runs only when the plan adds or changes specs. Supports fix pass mode | Read, Write, Edit, Glob, Grep |
 | `backend` | FastAPI routes, services, shared libs in `src/api/`, `src/backend/`, `src/shared/`. Reads feature specs and the approved plan. Self-verifies with `pytest`. Supports fix pass mode for reviewer findings | Read, Write, Edit, Glob, Grep, Bash |
 | `airflow-dag` | Airflow DAG Python files in `src/workflows/dags/` and workflow parameter modules. Orchestrates `src/backend/` services via HttpOperator tasks. Supports fix pass mode | Read, Write, Edit, Glob, Grep, Bash |
@@ -129,28 +170,25 @@ All four reviewers use read-only tools — they analyze and report but do not wr
 
 ### Implementation workflow
 
-The standard workflow uses the **plan → approve → generate → evaluate** pattern: plan (Plan
-mode, per §Plan quality checklist) → human approves → per-agent generate+evaluate cycles
-(`spec` when the plan changes specs, leading so later stages read it → backend → airflow-dag →
-test → frontend, each followed by its evaluator — `spec-reviewer` for `spec`, `reviewer` for code
-generators, `test-reviewer` for the `test` agent — with a single fix pass) → `k8s-helm` when
-ready (no review loop). Sequential by default; backend and airflow-dag may run
-concurrently when the DAG work does not consume new API contracts, and frontend may run concurrently
-with the test phase when it does not depend on pending backend changes. The generate+evaluate
-cycles run as direct subagent calls by default — the orchestrator passes the approved plan into each
-generator, generator completion reports into its reviewer, and reviewer findings back for a fix pass;
-the one non-negotiable rule is generator ≠ reviewer. Issues that persist after one fix pass halt the
-run and escalate to the user. When workflow-based multi-agent execution is desired, the orchestrator
-writes a dynamic workflow script: an agent fleet composed from the subagent definitions in
-`.claude/agents/`, with each generator paired against an adversarial reviewer and fan-out /
-parallelism shaped to the task. The per-stage loop above is one of the simplest examples of such a
-workflow, checked in as `.claude/workflows/wf-minimal.js`.
+`AGENTS.md §Implementation Workflow` is the authoritative, CLI-agnostic reference for the
+plan → approve → generate → evaluate steps (skip-plan criteria, the numbered step 1–9 sequence,
+concurrency opportunities, the security-reviewer pairing rule, and the "generator ≠ reviewer,
+one fix pass, escalate on persistent REVISE/ESCALATE" rule). It is not restated here.
 
-See `CLAUDE.md §Implementation Workflow` for the authoritative reference.
+Under Claude Code specifically: Plan mode is the planning step (step 2); each named role maps to
+a `.claude/agents/<name>.md` subagent invoked with the native `Agent` tool; and the generate →
+evaluate cycles run either as direct `Agent` calls (default) or via a dynamic `Workflow` script —
+`.claude/workflows/wf-minimal.js` is the checked-in example of the latter, covering the same
+step 4–9 loop. See `CLAUDE.md §Implementation Workflow — Claude Code binding` for these specifics,
+and §Codex Binding below for how a Codex session drives the identical steps.
+
+`AGENTS.md` step 2 (the planning step) expects the plan to have a specific shape — the
+§Plan quality checklist below is that shape's canonical, CLI-agnostic definition.
 
 ### Plan quality checklist
 
-A good implementation plan produced during the Plan phase should cover:
+Agent-agnostic — the same plan a human approves before any generator runs, regardless of which
+CLI drives the session. A good implementation plan produced during the Plan phase should cover:
 
 1. **Scope and goals** — What the feature does (1-3 sentences), which MANIFESTO feature(s) it
    belongs to or extends (Ingestion Control, Validation, Ontology Generation, Metadata
@@ -158,21 +196,70 @@ A good implementation plan produced during the Plan phase should cover:
 2. **Files to create or modify** — For each file: exact path (following existing conventions),
    purpose (one line), key contents (classes, functions, endpoints — names only, not
    implementations).
-3. **Component boundaries** — Which agent owns which files (backend, airflow-dag, frontend). Data
+3. **Component boundaries** — Which role owns which files (backend, airflow-dag, frontend). Data
    flow between components (API contracts, Airflow DAG inputs/outputs). Scope boundaries — what
-   each agent should defer to others.
+   each role should defer to others.
 4. **Acceptance criteria** — Concrete, testable conditions per component: endpoints that must
    exist, response shapes, error cases, flows that must be deployable, pages that must render,
    which test categories are needed.
-5. **Implementation sequence** — Recommended order of agent invocations with dependencies and
+5. **Implementation sequence** — Recommended order of role invocations with dependencies and
    concurrency opportunities noted.
+
+---
+
+## Codex Binding
+
+Codex (or any coding-agent CLI with no built-in subagent/hook/workflow primitive) reads root
+`AGENTS.md` automatically as its project instructions — no separate configuration step is
+needed. It drives the plan → approve → generate → evaluate workflow of `AGENTS.md
+§Implementation Workflow` using `scaffold/bin/`:
+
+- `scaffold/bin/run-stage.sh <role> <plan-file> --agent codex [--input FILE] [--model NAME]`
+  invokes one role once, non-interactively — the substitute for Claude Code's native `Agent`
+  tool call against a `.claude/agents/<name>.md` subagent.
+- `scaffold/bin/run-workflow.sh <plan-file> --agent codex [--security s1,s2] <stage> [<stage>
+  ...]` drives a full generate → evaluate stage loop across an ordered list of stages (one fix
+  pass on REVISE, escalate on persistent REVISE or any ESCALATE) — a bash port of
+  `.claude/workflows/wf-minimal.js`'s state machine, the substitute for Claude Code's native
+  `Workflow` tool.
+- Evaluator roles accumulate cross-session memory in `scaffold/memory/<evaluator>/MEMORY.md`
+  (read-before/append-after, per each role's `scaffold/roles/<name>.md` instructions) — a
+  separate store from Claude Code's own `.claude/agent-memory/<name>/`.
+
+The `--agent claude` path is fully implemented and needs no qualification. The `--agent codex`
+path is unverified: `invoke_codex()` in `scaffold/bin/run-stage.sh` is an explicit TBD
+placeholder — no `codex` CLI was available when it was written, so its flags are best-effort
+pending a `codex exec --help` check, and since `run-workflow.sh` calls `run-stage.sh` per stage,
+the entire `--agent codex` path inherits that gap. See `scaffold/README.md` for the full
+description of the `bin/` scripts and their flags; it is not restated here.
+
+### Not ported to Codex (or other non-Claude-Code CLIs)
+
+Three Claude Code conveniences have no portable equivalent, by design:
+
+| Component | Why it stays Claude-Code-only |
+|-----------|-------------------------------|
+| `.claude/statusline.sh` | Pure CLI chrome — reads Claude Code's native stdin fields (context window, rate limits); other CLIs have their own status UI |
+| `confirm-commit.sh`'s commit-message-format check | Its rule is carried instead as a plain convention in `AGENTS.md §Git Commit Convention` rather than forcing a new git-hook framework into a repo that otherwise has none |
+| `permission-hygiene-check.sh` | Specific to `.claude/settings.local.json` bloat, meaningless outside Claude Code's permission model |
+
+The lint and typecheck guarantees behind the remaining hooks (ruff on edited Python, frontend
+typecheck) hold for any caller regardless: `scaffold/bin/lint-python.sh` is the portable form of
+the ruff check, and `src/frontend/package.json`'s `pretest` script runs `tsc` ahead of the test
+suite. `.claude/agent-memory/` (Claude Code's own evaluator memory store) and `scaffold/memory/`
+are separate stores that accumulate independently.
+
+Prauto (`spec/AI_PRAUTO.md`) and the End-User AI Scaffold (`spec/AI_PLUGIN.md`, `plugin/`) remain
+Claude-Code-CLI-only for now — generifying them to run under other coding-agent CLIs is a planned
+follow-up.
 
 ---
 
 ## Permissions
 
-Defined in `.claude/settings.json`. The guiding principle: **read freely, mutate with
-confirmation, never destroy**.
+Defined in `.claude/settings.json`. Claude-Code-only — Codex and other CLIs have their own
+permission models. The guiding principle: **read freely, mutate with confirmation, never
+destroy**.
 
 | Category | Policy | Examples |
 |----------|--------|----------|
@@ -191,10 +278,11 @@ reference.
 ## Prauto
 
 Prauto is the autonomous PR worker -- a cron-driven system that picks up GitHub issues labeled
-`prauto:ready`, produces implementation PRs via Claude Code CLI, and manages the full
+`prauto:ready`, produces implementation PRs via the Claude Code CLI, and manages the full
 issue-to-PR lifecycle. It lives in `.prauto/` (config, shell libraries, prompt templates,
-runtime state). See `spec/AI_PRAUTO.md` for the full specification (lifecycle labels, heartbeat
-cycle, phase state machine, per-stage review, dev cluster and deploys, squash-finalize).
+runtime state) and is Claude-Code-CLI-only. See `spec/AI_PRAUTO.md` for the full specification
+(lifecycle labels, heartbeat cycle, phase state machine, per-stage review, dev cluster and
+deploys, squash-finalize).
 
 ---
 
@@ -212,7 +300,7 @@ tailored to an organization's data sources, domain vocabulary, and operational r
 | Baseline feature specs | `spec/feature/` |
 | API routers and backend services | `src/api/`, `src/backend/` |
 | Cluster and namespace config | `helm-charts/.env.dev` / `helm-charts/.env.prod` |
-| Org-specific agent conventions | `.claude/agents/` |
+| Role definitions | `scaffold/roles/` (canonical); `.claude/agents/` for Claude-Code-specific binding tweaks |
 
 ### Recommended sequence
 
@@ -220,9 +308,11 @@ tailored to an organization's data sources, domain vocabulary, and operational r
    host any organization-specific extensions
 2. **Run `/spec-write`** — update architectural specs, then baseline and spoke feature specs
 3. **Run `/k8s-deploy install`** — bring up the DataHub environment
-4. **Implement features** using the plan → approve → generate → evaluate workflow:
-   Plan mode → approve → `spec` → `spec-reviewer` (when specs change) → `backend` → `reviewer` →
-   `airflow-dag` → `reviewer` → `test` → `test-reviewer` → `frontend` → `reviewer` → `k8s-helm`
+4. **Implement features** using the plan → approve → generate → evaluate workflow of `AGENTS.md
+   §Implementation Workflow`: Plan → approve → `spec` → `spec-reviewer` (when specs change) →
+   `backend` → `reviewer` → `airflow-dag` → `reviewer` → `test` → `test-reviewer` → `frontend` →
+   `reviewer` → `k8s-helm`. The sequence is CLI-agnostic; drive it with Claude Code's `Agent`
+   tool or with `scaffold/bin/run-stage.sh` / `run-workflow.sh` under another CLI.
 
 Steps 1-2 ensure every spec follows MANIFESTO conventions.
 
@@ -231,8 +321,8 @@ Steps 1-2 ensure every spec follows MANIFESTO conventions.
 ## Design Principles
 
 1. **Context before code** — The agent reads the spec hierarchy (MANIFESTO → ARCHITECTURE →
-   feature specs) before generating implementation. `CLAUDE.md` is the entry point that orients
-   the agent.
+   feature specs) before generating implementation. `AGENTS.md` (or its Claude Code binding,
+   `CLAUDE.md`) is the entry point that orients the agent.
 
 2. **Spec as the source of truth** — All naming and feature taxonomy derive from
    `MANIFESTO_en.md`. The `spec-write` skill routes new documents to the correct tier
@@ -243,38 +333,39 @@ Steps 1-2 ensure every spec follows MANIFESTO conventions.
    Each capability owns a top-level namespace under `/spoke/` — `/spoke/governance/`,
    `/spoke/ingestion/`, `/spoke/validation/`, `/spoke/ontogen/`, `/spoke/metagen/`.
 
-4. **API-first development** — The `backend` subagent implements API routes as the single source
+4. **API-first development** — The `backend` role implements API routes as the single source
    of truth for the API contract, following the function-namespace URI pattern defined in
    feature specs. FastAPI auto-generates OpenAPI documentation from the implementation.
 
 5. **Least privilege** — Agents read and inspect freely but cannot change shared state without
    user confirmation. Destructive cluster operations are blocked.
 
-6. **Self-verifying subagents** — `backend`, `airflow-dag`, `frontend`, and `test` agents have Bash
-   access to run tests and type-checks, catching errors before reporting completion.
+6. **Self-verifying generators** — `backend`, `airflow-dag`, `frontend`, and `test` roles have
+   shell access to run tests and type-checks, catching errors before reporting completion.
    Self-verification is necessary but not sufficient — it is complemented by independent review
    (see principle 8).
 
-7. **Context confinement** — Each subagent operates in a fresh, focused context containing only
+7. **Context confinement** — Each role operates in a fresh, focused context containing only
    the approved plan, relevant spec, and files in its scope. This keeps the main conversation
    clean for orchestration and prevents implementation noise from degrading decision quality.
-   Delegate implementation to generator agents rather than writing code in the main
+   Delegate implementation to generator roles rather than writing code in the main
    conversation.
 
 8. **Generator-evaluator separation** — Generators (spec, backend, airflow-dag, frontend, test)
-   produce specs, code, or tests and self-verify. An independent evaluator agent — `reviewer` for
+   produce specs, code, or tests and self-verify. An independent evaluator role — `reviewer` for
    code, `test-reviewer` for tests, `spec-reviewer` for specs — then evaluates the output against
    the spec hierarchy and approved plan.
    Self-evaluation is insufficient for quality assurance — models tend to praise their own work.
    External critique from a separate context is a stronger signal. (Source:
    [Anthropic harness design research](https://www.anthropic.com/engineering/harness-design-long-running-apps).)
 
-9. **Model-appropriate roles** — Use the strongest model (opus) for evaluator roles (`reviewer`,
-   `test-reviewer`, `security-reviewer`, `spec-reviewer`), which require judgment, reasoning, and resistance to
-   self-praise patterns. Generators default to opus; the more mechanical `airflow-dag` and
-   `k8s-helm` use the faster sonnet. Planning uses
-   Claude's built-in Plan mode (which runs on the session's current model) rather than a
-   dedicated subagent.
+9. **Model-appropriate roles** — Use the strongest available model for evaluator roles
+   (`reviewer`, `test-reviewer`, `security-reviewer`, `spec-reviewer`), which require judgment,
+   reasoning, and resistance to self-praise patterns; use a faster model for generators (`spec`,
+   `backend`, `airflow-dag`, `test`, `frontend`, `k8s-helm`). The Claude Code binding instantiates
+   this as opus for evaluators and sonnet for generators (see each role's `model:` frontmatter in
+   `.claude/agents/`). Planning and orchestration use the driving CLI's own top-level session
+   (Claude Code's built-in Plan mode, expected opus) rather than a dedicated subagent.
 
 10. **Bounded iteration** — Review loops are capped at 1 fix iteration per generator to control
     cost and latency. Unresolved issues after one fix pass are escalated to the user rather than

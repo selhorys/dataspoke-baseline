@@ -88,9 +88,9 @@ Based on the changed spec and its priority level, identify all documents that sh
 | Target Document | Updated when... |
 |----------------|-----------------|
 | `spec/ARCHITECTURE.md` | Feature-to-architecture mapping table, repository structure, component lists change |
-| `CLAUDE.md` | New priority-level doc added, spec hierarchy table needs update, key reference pointers change |
+| `AGENTS.md`, `CLAUDE.md` | New priority-level doc added, spec hierarchy table needs update, key reference pointers change |
 | `README.md` (root) | Documentation table, features list, or repository structure change |
-| `spec/AI_SCAFFOLD.md` | `.claude/` structure changes, skill/subagent tables need update |
+| `spec/AI_SCAFFOLD.md` | `scaffold/` (roles/memory/bin) or `.claude/` structure changes, role/subagent tables need update |
 | `spec/USE_CASE_en.md` | Cross-references to feature specs need adding/removing |
 | Other `spec/feature/*.md` | Cross-references between related features |
 | Component `README.md` files | Links to relevant specs |

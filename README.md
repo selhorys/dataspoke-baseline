@@ -9,7 +9,7 @@ DataSpoke is a **loosely coupled sidecar** to DataHub. DataHub stores metadata (
 This repository delivers two artifacts:
 
 - **Baseline Product** — A foundational data catalog implementation of the five MANIFESTO features. The API contract in [`spec/API.md`](spec/API.md) is the canonical surface; the frontend is a thin reference UI that consumes those routes verbatim.
-- **Productized Scaffold** — An **AI Scaffold** (Claude Code conventions, generator/evaluator subagents, PRauto) plus a **Development Scaffold** (scripted Kubernetes dev environment) that together let teams fork this repo and build custom Spokes with AI coding agents.
+- **Productized Scaffold** — An **AI Scaffold** (agent-agnostic generator/evaluator roles with Claude Code and Codex bindings, PRauto) plus a **Development Scaffold** (scripted Kubernetes dev environment) that together let teams fork this repo and build custom Spokes with AI coding agents.
 
 Fork or copy this repository to create a data catalog for your organization.
 
@@ -135,7 +135,7 @@ See [`spec/TESTING.md`](spec/TESTING.md) for conventions, group execution sequen
 Use the plan -> approve -> generate -> evaluate workflow:
 
 1. Read the relevant spec in `spec/feature/`
-2. Plan (built-in Plan mode) -> human reviews and approves
+2. Plan -> human reviews and approves
 3. `spec` -> `spec-reviewer` -> [fix pass if needed] (when the plan changes specs)
 4. `backend` -> `reviewer` -> [fix pass if needed]
 5. `airflow-dag` -> `reviewer` -> [fix pass if needed]
@@ -164,7 +164,7 @@ Fork this repository and adapt:
 | [spec/ARCHITECTURE.md](spec/ARCHITECTURE.md) | System architecture, tech stack, deployment |
 | [spec/DATAHUB_INTEGRATION.md](spec/DATAHUB_INTEGRATION.md) | DataHub SDK/API patterns |
 | [spec/API_DESIGN_PRINCIPLE_en.md](spec/API_DESIGN_PRINCIPLE_en.md) | REST API conventions |
-| [spec/AI_SCAFFOLD.md](spec/AI_SCAFFOLD.md) | Claude Code scaffold: skills, subagents, hooks |
+| [spec/AI_SCAFFOLD.md](spec/AI_SCAFFOLD.md) | Developer AI scaffold: agent-agnostic roles (`scaffold/`), Claude Code binding (skills, subagents, hooks), Codex binding |
 | [spec/AI_PRAUTO.md](spec/AI_PRAUTO.md) | PRauto autonomous PR worker: lifecycle labels, heartbeat, phase state machine |
 | [spec/AI_PLUGIN.md](spec/AI_PLUGIN.md) | End-User AI Scaffold: public-API-only Claude Code plugin for consuming a deployed DataSpoke |
 | [spec/TESTING.md](spec/TESTING.md) | Testing conventions and integration test protocol |

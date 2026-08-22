@@ -132,7 +132,7 @@ Phase is always derived fresh from GitHub -- never read from local state.
 ### The plan gate is evidence-based
 
 Only `minor` issues skip `plan-approval`, and **the issue body does not decide that**. The
-`### Change Size` field an author fills in is a hint. `CLAUDE.md §Implementation Workflow` lets a
+`### Change Size` field an author fills in is a hint. `AGENTS.md §Implementation Workflow` lets a
 change skip planning only when **all** of its skip-plan criteria hold:
 
 - touches < 3 files **and** adds/modifies < 60 lines of logic,
@@ -148,7 +148,7 @@ through `plan-approval`, regardless of what the issue body claimed. An author's 
 overridden upward; it can never buy a skip the plan's own evidence does not support.
 
 Reading `### Change Size` straight from the issue body would be the self-classification
-`CLAUDE.md` forbids — *never self-classify a task as "trivial" to skip planning* — and by an author
+`AGENTS.md` forbids — *never self-classify a task as "trivial" to skip planning* — and by an author
 who has not yet seen the plan. Deferring the judgment to the analysis phase is better evidence, though
 it remains a Claude session classifying its own plan, not an escape from self-classification.
 
@@ -227,9 +227,9 @@ enforce.
 **Branch-based continuity**: On restart, the prompt instructs Claude to check for existing
 commits on the branch and continue from there.
 
-### The implementation phase runs the CLAUDE.md workflow
+### The implementation phase runs the AGENTS.md workflow
 
-Prauto's implementation phase is the unattended form of `CLAUDE.md §Implementation Workflow`
+Prauto's implementation phase is the unattended form of `AGENTS.md §Implementation Workflow`
 steps 4–9: it drives `.claude/workflows/wf-minimal.js` (`args = {plan, stages, security}`), which
 runs each reviewed stage as generator → adversarial reviewer → one fix pass on REVISE, escalating
 when a REVISE persists (`k8s-helm` is unreviewed, per step 9). `security-reviewer` runs in parallel
@@ -556,12 +556,12 @@ one of the branch's choosing.
 
 | Scaffold element | Integration |
 |---|---|
-| `CLAUDE.md` | Gives prauto full project context automatically; its Implementation Workflow is what the implementation phase runs |
+| `CLAUDE.md` | Gives prauto full project context automatically, including `AGENTS.md` (imported); `AGENTS.md`'s Implementation Workflow is what the implementation phase runs |
 | `.claude/settings.json` | Permission prompts do not apply — sessions run `--dangerously-skip-permissions`; `DENY_TOOLS` is prauto's own layer |
-| `.claude/agents/` | The implementation phase delegates to the generator and reviewer subagents; their frontmatter governs their tools and turns |
+| `.claude/agents/` | The implementation phase delegates to the generator and reviewer subagents; their frontmatter governs their tools and turns, their bodies point at the canonical role definitions in `scaffold/roles/` |
 | `.claude/workflows/` | `wf-minimal.js` drives the implementation phase's per-stage generate → review cycles |
 | `.claude/skills/` | Available if Claude detects matching context |
-| `spec/` hierarchy | Analysis phase reads specs per CLAUDE.md |
+| `spec/` hierarchy | Analysis phase reads specs per `AGENTS.md` |
 
 Prauto is self-contained in `.prauto/` -- does not modify `.claude/` files. The scaffold serves
 interactive sessions; prauto serves unattended automation. The dependency runs one way and is

@@ -27,7 +27,7 @@ Parse `$ARGUMENTS` for scope and options.
 |----------|---------|
 | `all` | Audit all tiers: specs, scaffold docs, and READMEs |
 | `spec` | Only `spec/**/*.md` documents |
-| `scaffold` | Only AI scaffold: `CLAUDE.md`, `spec/AI_SCAFFOLD.md`, `spec/AI_PRAUTO.md`, and all `.claude/` components (agents, skills, settings) |
+| `scaffold` | Only AI scaffold: `AGENTS.md`, `CLAUDE.md`, `spec/AI_SCAFFOLD.md`, `spec/AI_PRAUTO.md`, `scaffold/` (roles/memory/bin), and all `.claude/` components (agents, skills, settings) |
 | `readme` | Only `README.md` files across the project |
 | `--dry-run` | Report findings without making edits |
 
@@ -54,9 +54,11 @@ wc -l <files> | sort -rn
 - `spec/USE_CASE_en.md` / `spec/USE_CASE_kr.md`
 
 **Tier 2 — AI harness docs** (target: conventions + workflow, not code):
+- `AGENTS.md`
 - `CLAUDE.md`
 - `spec/AI_SCAFFOLD.md`
 - `spec/AI_PRAUTO.md`
+- `scaffold/roles/*.md`, `scaffold/README.md`
 - `.claude/agents/*.md`
 - `.claude/skills/*/SKILL.md`
 - `.claude/settings.json`, `.claude/settings.local.json`

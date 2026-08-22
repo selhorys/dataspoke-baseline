@@ -15,7 +15,7 @@ spec/
 │                                 data flows, feature-to-architecture mapping,
 │                                 shared services, deployment. Conforms to MANIFESTO.
 ├── USE_CASE_en.md / _kr.md    ← Conceptual scenarios UC1–UC5.
-├── AI_SCAFFOLD.md             ← Goal 2: Claude Code scaffold conventions.
+├── AI_SCAFFOLD.md             ← Goal 2: coding-agent scaffold conventions.
 ├── TESTING.md                 ← Testing conventions: toolchain, unit/integration/E2E
 │                                 workflows, Imazon test data.
 ├── DATAHUB_INTEGRATION.md     ← DataHub SDK patterns, aspect catalog, GraphQL,

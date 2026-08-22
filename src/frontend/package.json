@@ -12,6 +12,7 @@
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
     "codegen": "openapi-typescript ${API_OPENAPI_URL:-http://localhost:8000/api/v1/openapi.json} -o lib/api/types.generated.ts",
+    "pretest": "pnpm typecheck",
     "test": "vitest run",
     "test:watch": "vitest"
   },

@@ -23,6 +23,7 @@ __pycache__/
 helm-charts/dataspoke/charts/
 helm-charts/dev-peripherals/langfuse/charts/
 memory/
+!scaffold/memory/
 .claude/*.local.*
 .claude/plans/
 .claude/worktrees/

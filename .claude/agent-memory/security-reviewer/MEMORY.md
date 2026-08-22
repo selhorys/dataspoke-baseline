@@ -47,3 +47,4 @@
 - [health-check.sh verdict contract](project_health_check_verdict_contract.md) — holes closed incl. _bounded orphans; residuals = env-file `exit`, unpinned hook timeout, 4 stale tool-gate docs, ungitignored bypass token, --keep-lock rule broken by k8s-deploy
 - [Metrics measurement-instant boundary](project_metrics_measurement_instant_boundary.md) — all 3 window inputs now bounded by MAX_TIME_WINDOW_SEC; the product check is load-bearing; jiter's 4300-digit int ceiling
 - [DAG JSON body construction split](project_dag_json_body_construction_split.md) — tier DAGs use json.dumps, on-demand metrics.py hand-splices Jinja into JSON; safe only via _METRIC_ID_PATTERN
+- [scaffold/bin verdict + AGENTS.md binding](project_scaffold_bin_verdict_and_binding.md) — awk verdict scrape fails OPEN on a template restatement; run-stage drops all frontmatter; AGENTS.md is NOT auto-loaded

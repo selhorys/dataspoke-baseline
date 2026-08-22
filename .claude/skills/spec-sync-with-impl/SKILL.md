@@ -85,7 +85,7 @@ Parse the user's reply: split on commas; each item is either a preset (number/ke
 | Scope keyword | Spec side | Impl side |
 |---------------|-----------|-----------|
 | `prauto` | `spec/AI_PRAUTO.md`, prauto-related skill declarations, `.prauto/README.md` | `.prauto/` scripts and libs, prauto-related skill logic bodies |
-| `ai-scaffold` | `spec/AI_SCAFFOLD.md`, `CLAUDE.md`, all skill declarations across `.claude/skills/` | `.claude/` settings/hooks/agents, all skill logic bodies |
+| `ai-scaffold` | `spec/AI_SCAFFOLD.md`, `AGENTS.md`, `CLAUDE.md`, all skill declarations across `.claude/skills/` | `scaffold/` (roles/memory/bin), `.claude/` settings/hooks/agents, all skill logic bodies |
 | `k8s-deploy` | `spec/feature/HELM_CHART.md` (bin/ + workflow sections), k8s-deploy skill declaration, `helm-charts/README.md` | `helm-charts/bin/` scripts, k8s-deploy skill logic body |
 | `helm-charts` | `spec/feature/HELM_CHART.md` | `helm-charts/dataspoke/`, `helm-charts/dev-peripherals/` (incl. `langfuse/`) charts/values/templates/manifests |
 | `api` | `spec/API.md`, `spec/API_DESIGN_PRINCIPLE_en.md`, `src/api/README.md` | `src/api/` routers/schemas/auth/middleware |

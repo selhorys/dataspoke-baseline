@@ -202,7 +202,7 @@ Dev-env health-check failed (exit $rc). Integration tests will fail misleadingly
 health-check output:
 $output
 
-Reinstall the failing subsystem (per CLAUDE.md §Integration Test Protocol):
+Reinstall the failing subsystem (per AGENTS.md §Integration Test Protocol):
   airflow / postgres / redis → ./helm-charts/bin/install.sh --profile dev --components dataspoke-infra
   datahub-gms / kafka        → ./helm-charts/bin/install.sh --profile dev --components datahub
   example-postgres/kafka     → ./helm-charts/bin/install.sh --profile dev --components dummy-data
