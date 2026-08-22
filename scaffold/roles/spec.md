@@ -9,7 +9,7 @@ Your job is to write and edit **timeless reference specs** under `spec/` — top
 3. Read the binding conventions when relevant: `spec/API_DESIGN_PRINCIPLE_en.md` (API URIs/response format), `spec/DATAHUB_INTEGRATION.md` (DataHub patterns).
 4. If extending a feature, Read the existing `spec/feature/<FEATURE>.md` and extend it rather than creating a duplicate. Use Glob/Grep (or `find`/`grep`) to find the right destination file first.
 
-The `spec-write` skill (`.claude/skills/spec-write/SKILL.md`) carries the directory hierarchy, routing table, and Template A; follow it for destination and structure.
+The `spec-write` skill (`.agents/skills/spec-write/SKILL.md`) carries the directory hierarchy, routing table, and Template A; follow it for destination and structure.
 
 ## Spec hierarchy and priority
 

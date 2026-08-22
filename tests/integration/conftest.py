@@ -199,12 +199,9 @@ def require_server(runtime_conf) -> None:  # noqa: ARG001 — runtime_conf perfo
 
     Shared by both the spot and api-wired layers (inherited from this parent
     conftest). Checks:
-    0. `helm-charts/bin/health-check.sh` passes — the same cluster-wide gate
-       Claude Code's `.claude/hooks/preflight-integration-tests.sh` runs before an
-       agent invokes this suite. Enforcing it here too means the gate holds for any
-       caller (a human, a different coding-agent CLI, CI), not only a Claude Code
-       session with that hook wired in. Skipped (not failed) if the script is
-       missing or not executable, matching the hook's own non-fighting fallback.
+    0. `helm-charts/bin/health-check.sh` passes. Enforcing the cluster-wide gate in
+       pytest means it holds for every caller (human, coding-agent CLI, or CI).
+       Skipped when the explicit health-check script is missing or not executable.
     1. runtime_conf preflight confirms stub_redis_client, stub_pgvector_manager,
        stub_notification_service are true (stub_llm_client intentionally excluded
        so real-LLM tests can run).

@@ -8,23 +8,22 @@ it. It exists so the plan → approve → generate → evaluate workflow (see ro
 ```
 scaffold/
 ├── roles/    # canonical role definitions — one .md per generator/evaluator
-├── memory/   # persistent cross-session lessons for evaluator roles (non-Claude-Code backends)
-├── bin/      # scripts that drive a role or a full stage loop via a chosen backend CLI
+├── memory/   # shared, version-controlled evaluator lessons
+├── contracts/# structured evaluator output schemas
+├── bin/      # explicit validation and binding-conformance utilities
 └── README.md
 ```
 
 ## Two bindings read this core
 
-- **Claude Code** (`.claude/agents/*.md`): each subagent file keeps its Claude-Code-specific
-  frontmatter (`tools:`, `model:`, `hooks:`, `memory:`, `skills:`) and points to the matching
-  `scaffold/roles/<name>.md` as the canonical role definition. Claude Code's native `Agent` tool
-  and `.claude/workflows/wf-minimal.js` drive delegation and the review loop directly — nothing
-  in `scaffold/bin/` is needed for a Claude Code session.
-- **Codex** (or any other CLI without a built-in subagent/hook/workflow primitive): reads root
-  `AGENTS.md` automatically, and drives one role at a time via `scaffold/bin/run-stage.sh`, or a
-  full stage loop via `scaffold/bin/run-workflow.sh` — a bash port of `wf-minimal.js`'s
-  generate → evaluate state machine, since Codex has no native equivalent to Claude Code's
-  `Agent`/`Workflow` tools.
+- **Claude Code** (`.claude/agents/*.md`): generator bindings point to their live canonical roles.
+  Read-only evaluator bindings require parent-supplied pre-generation authority and never reload
+  live role or memory paths after generation.
+- **Codex** (`.codex/agents/*.toml`): uses native project agents with explicit read-only evaluator
+  and workspace-write generator sandboxes.
+
+Both clients discover canonical skills under `.agents/skills/`; `.claude/skills` is a compatibility
+link. Agent execution occurs only through native parent-coordinated agents.
 
 ## `roles/`
 
@@ -35,31 +34,27 @@ evaluators) the scoring rubric + APPROVE/REVISE/ESCALATE verdict format. This is
 
 ## `memory/`
 
-A flat-file `MEMORY.md` index + note-file convention (same shape as this project's own
-Claude Code session memory) for each evaluator role, used only by non-Claude-Code backends.
-Claude Code's own `memory: project` frontmatter field auto-loads `.claude/agent-memory/<name>/`
-instead — that store is untouched and unrelated to this one. A Codex-driven evaluator session
-follows the explicit read-before/append-after instruction in its `scaffold/roles/<name>.md` file
-to build up its own, separate memory here over time.
+A flat-file `MEMORY.md` index plus note files for each evaluator role. This is the shared,
+version-controlled, read-only SSOT for every client binding; `.claude/agent-memory` links here.
 
-## `bin/`
+## Trusted review boundary
 
-- `run-stage.sh <role> <plan-file> --agent {claude|codex} [--input FILE] [--model NAME]` —
-  invoke one role once, non-interactively, via the chosen backend CLI.
-- `run-workflow.sh <plan-file> --agent {claude|codex} [--security s1,s2] <stage> [<stage> ...]` —
-  drive a full generate → evaluate stage loop (one fix pass on REVISE, escalate on persistent
-  REVISE or any ESCALATE) across an ordered list of stages.
-- `lint-python.sh <file.py>` — the `ruff check` logic behind `.claude/hooks/lint-python-file.sh`,
-  as a plain script any role's self-verification step can call directly.
+Before generation, the native parent captures evaluator bindings, canonical reviewer roles,
+verdict contracts, and relevant evaluator memory from trusted repository state and loads evaluator
+sessions from that snapshot. After generation and every fix pass, it supplies `Pinned evaluator
+authority` and a separate `Untrusted per-pass evidence` payload containing complete status,
+staged/unstaged diff, untracked-file, diff-check, and changed-path evidence. Evaluators never read
+live authority paths. Actual paths determine security review.
+Every verdict is schema- and semantics-validated; authority loss or invalid output escalates.
 
-The Codex adapter in `run-stage.sh` has its exact CLI flags marked TBD — this repo did not have
-`codex` installed when it was written. Run `codex exec --help` against an installed Codex CLI and
-adjust `invoke_codex()` before relying on the `--agent codex` path.
+`bin/` contains explicit validation and binding-conformance utilities only. It does not execute
+generators, reviewers, or workflows. Prauto retains its separate Claude workflow and security
+model outside this interactive contract; see `spec/AI_PRAUTO.md`.
 
-## What deliberately isn't here
+## Validation and permissions
 
-Three Claude Code conveniences have no portable equivalent and aren't ported — see
-`spec/AI_SCAFFOLD.md §Codex Binding` for the rationale: the statusline (pure CLI chrome), the
-commit-message-format check in `confirm-commit.sh` (documented as a convention in `AGENTS.md`
-instead), and `permission-hygiene-check.sh` (specific to `.claude/settings.local.json`).
-`.claude/agent-memory/` (Claude Code's own store) is left as-is, not migrated here.
+The scaffold installs no automatic project lifecycle hooks. Plan and commit rules live in
+`AGENTS.md`; lint, typecheck, and integration validation run through explicit repository scripts
+and test commands. The integration pytest session fixture and frontend package `pretest` enforce
+their respective suite prerequisites. Native client permissions and role sandboxes control
+mutation. The statusline remains Claude-specific presentation.

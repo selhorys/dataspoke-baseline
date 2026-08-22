@@ -24,9 +24,8 @@
 # serve no HTTP surface and are judged on their Deployment's ready-replica
 # count instead, which is read whether or not the ingress is up.
 #
-# Wall clock is a contract here, not an incidental: this script runs inside a
-# blocking PreToolUse hook (.claude/hooks/preflight-integration-tests.sh) that
-# is killed at its own timeout, and a killed hook fails OPEN. So every probe
+# Wall clock is a contract here, not an incidental: interactive, CI, and unattended callers all
+# need this command to return predictably. Every probe therefore
 # carries a bound, and each kind carries its own: TCP connects by
 # TCP_CONNECT_TIMEOUT_SECS, HTTP by curl's --max-time, control-plane reads by
 # --request-timeout, and the redis-cli and `uv run python` probes — neither of
@@ -233,7 +232,7 @@ fi
 # The env file is operator-authored data, not part of this script's exit
 # contract. Re-assert the pre-probe code so a DATASPOKE_ERROR_EXIT_CODE set
 # inside it cannot rewrite what a later abort means to the consumers that
-# branch on it (.prauto's dev_env_healthy, the preflight hook).
+# branch on it (including .prauto's dev_env_healthy).
 # shellcheck disable=SC2034  # read by error() in lib/helpers.sh
 DATASPOKE_ERROR_EXIT_CODE=2
 
@@ -365,8 +364,7 @@ FAILURES=0
 # times out measures ~3.6s rather than 3.0s (measured against a blackholed
 # 192.0.2.1:80). That measured number is what the run's worst-case wall clock
 # is built from: ~6 dead TCP endpoints plus one memoized ingress probe and one
-# memoized control-plane dial keeps a fully-down cluster inside the deadline
-# the preflight hook enforces.
+# memoized control-plane dial keeps a fully-down cluster within a practical bound.
 TCP_CONNECT_TIMEOUT_SECS=3
 
 # Per-request budget for the control-plane reads. kubectl retries its API
@@ -383,9 +381,8 @@ KUBE_REQUEST_TIMEOUT=3s
 # so against a host that DROPS SYNs rather than refusing them — a LoadBalancer
 # with no backends behind it, which is exactly what a scaled-to-zero dev
 # cluster presents — the connect blocks for the kernel's whole retry budget,
-# minutes per probe. This function runs first in nearly every check and gates
-# the blocking integration-test preflight hook, where that stalls the run with
-# no output at all.
+# minutes per probe. This function runs first in nearly every check, so an unbounded connect would
+# stall interactive and unattended runs with no output.
 #
 # Bounded here rather than with `timeout(1)`, which stock macOS does not ship,
 # and without adding a dependency: the connect runs in a background subshell
@@ -437,8 +434,7 @@ PROTOCOL_PROBE_TIMEOUT_SECS=20
 # ordinary shared-mode posture the README describes. redis-cli's own -t bounds
 # the connect only, and the Python clients' socket timeouts do not bound `uv`
 # resolving the environment before them. Unbounded, one such endpoint hangs
-# this script forever, which is precisely the blocking pre-flight the preflight
-# hook and .prauto wait on.
+# this script forever, including the pre-flight that .prauto waits on.
 #
 # Same background-and-kill idiom as _tcp_check, for the same reason: stock
 # macOS ships no timeout(1). <command> may be a shell function, so a probe that
@@ -451,8 +447,7 @@ _bounded() {
 
   _BOUNDED_STDOUT=""
   # Built from $TMPDIR explicitly, like the kubeconfig copy in lib/helpers.sh:
-  # macOS `mktemp -t` ignores $TMPDIR, and a caller that has to kill this run
-  # (the preflight hook's deadline) reclaims what it can see.
+  # macOS `mktemp -t` ignores $TMPDIR, and a caller that has to kill this run reclaims what it can see.
   out="$(mktemp "${TMPDIR:-/tmp}/dataspoke-probe.XXXXXX")" || return 1
 
   # Job control on for the launch, so the child becomes a process-group leader
@@ -460,8 +455,7 @@ _bounded() {
   # the immediate child: `uv run python` execs a python grandchild that would
   # survive its parent, and a probe's environment carries PGPASSWORD or
   # REDISCLI_AUTH for as long as the process lives. An interactive run leaks up
-  # to five such orphans; the hook and .prauto only avoid it by killing the
-  # whole script's group from outside.
+  # to five such orphans; callers avoid it by killing the whole script's group from outside.
   set -m
   "$@" >"$out" 2>/dev/null &
   pid=$!
@@ -527,8 +521,7 @@ _http_reachable() {
 #
 # Memoized: all five HTTP checks probe the same INGRESS_IP:80, so five calls
 # ask one question — and against a LoadBalancer that drops SYNs each repeat
-# costs the full TCP_CONNECT_TIMEOUT_SECS, four times over, inside a blocking
-# hook whose whole budget is under a minute.
+# costs the full TCP_CONNECT_TIMEOUT_SECS four times over.
 _INGRESS_PORT_STATE=""
 _ingress_port_open() {
   if [[ "$INGRESS_MODE" == "shared" ]]; then return 0; fi
@@ -1071,8 +1064,7 @@ _release_lock() {
   # design, but building the document by splicing it into a literal makes the
   # remote string decide the document's shape — a trailing backslash escapes
   # the closing quote and the request stops being JSON. jq when it is present
-  # (it is a hard dependency of the preflight hook that calls this script);
-  # otherwise a backslash-escaping fallback, since the `"` is already excluded
+  # when available; otherwise use a backslash-escaping fallback, since the `"` is already excluded
   # by the extraction below.
   local body
   if command -v jq >/dev/null 2>&1; then

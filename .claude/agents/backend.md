@@ -6,12 +6,6 @@ model: sonnet
 skills:
   - datahub-api
 color: blue
-hooks:
-  PostToolUse:
-    - matcher: Edit|Write
-      hooks:
-        - type: command
-          command: "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/lint-python-file.sh"
 ---
 
 Read `scaffold/roles/backend.md` first — it is the canonical role definition (source layout, tech
@@ -21,6 +15,4 @@ binding.
 ## Claude Code binding notes
 
 - Skill `datahub-api` (declared in this file's frontmatter) is available via slash-command/auto-trigger.
-- A `PostToolUse` hook runs `.claude/hooks/lint-python-file.sh` (ruff check) after every Edit/Write
-  on a `.py` file, blocking with the violations fed back to you until clean. Non-Claude-Code
-  backends run the same check manually via `scaffold/bin/lint-python.sh`.
+- Run Python lint explicitly with `scaffold/bin/lint-python.sh` during verification.

@@ -1,0 +1,12 @@
+name = "backend"
+description = "Writes FastAPI/Python backend code for DataSpoke across src/api/, src/backend/, and src/shared/. Launch only with an approved implementation plan, or for a reviewer-directed fix pass."
+sandbox_mode = "workspace-write"
+developer_instructions = """
+Read `scaffold/roles/backend.md` first — it is the canonical role definition (source layout, tech
+stack rules, invocation modes, completion report contract). Everything below is Codex-specific
+binding.
+
+## Codex binding notes
+
+- Skill `datahub-api` is available via auto-trigger.
+- Run Python lint explicitly with `scaffold/bin/lint-python.sh` during verification."""

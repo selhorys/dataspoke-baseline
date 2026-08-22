@@ -1,10 +1,6 @@
 # spec-reviewer memory index
 
-Persistent lessons for the `spec-reviewer` role, for coding-agent backends with no built-in
-cross-session memory (Codex today). Read this file before reviewing; append a note file plus a
-one-line index entry here after finding something worth remembering (a project-specific gotcha,
-a recurring false-positive pattern, a review technique that worked). Claude Code sessions use
-their own `.claude/agent-memory/spec-reviewer/` instead — this is a separate,
-independently-accumulated store, not a mirror of it.
+Shared, version-controlled, read-only project lessons for every client binding. Evaluators read these notes but do not modify them during review.
 
-(No entries yet.)
+- [project_api_md_heading_citations.md](project_api_md_heading_citations.md)
+- [project_architecture_md_duplicate_route_tree.md](project_architecture_md_duplicate_route_tree.md)

@@ -126,11 +126,12 @@ DataSpoke는 네 가지 컴포넌트로 구성된다.
 
 #### AI Scaffold
 
-생성기·평가기 역할 정의를 담은 에이전트 비종속 코어(`scaffold/`)와,
-CLI별 바인딩(Claude Code용 `.claude/`, Codex 및 기타 CLI용 `AGENTS.md`)으로
-구성되어, 프로젝트 구조·컨벤션·스펙 체계를 첫 세션부터 에이전트가
-인지하도록 한다. 도메인별 스킬과 cron 기반 PR 자동화(PRauto)를
-포함하며, 이 둘은 현재 Claude Code 전용이다. 상세 사양은
+에이전트 비종속 코어(`scaffold/`)는 생성기·평가기 역할, 리뷰 계약,
+공유 평가기 지식을 정의한다. 공유 스킬은 `.agents/skills/`에 두고,
+CLI별 네이티브 바인딩(Claude Code용 `.claude/`, Codex용 `.codex/`)은 호출 및
+권한 설정을 담당한다. 이 구조를 통해 어느 에이전트든 첫 세션부터 프로젝트
+컨벤션과 스펙 체계를 인지하고 동일한 계획 → 승인 → 생성 → 평가 워크플로를
+실행한다. cron 기반 PR 자동화(PRauto)는 Claude Code 통합이다. 상세 사양은
 `spec/AI_SCAFFOLD.md`를 참고한다.
 
 #### Development Scaffold

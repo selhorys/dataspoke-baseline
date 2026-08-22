@@ -4,12 +4,6 @@ description: Writes Airflow DAG Python files and workflow parameter modules in s
 tools: Read, Write, Edit, Glob, Grep, Bash
 model: sonnet
 color: cyan
-hooks:
-  PostToolUse:
-    - matcher: Edit|Write
-      hooks:
-        - type: command
-          command: "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/lint-python-file.sh"
 ---
 
 Read `scaffold/roles/airflow-dag.md` first — it is the canonical role definition (source layout,
@@ -18,6 +12,4 @@ Claude-Code-specific binding.
 
 ## Claude Code binding notes
 
-A `PostToolUse` hook runs `.claude/hooks/lint-python-file.sh` (ruff check) after every Edit/Write
-on a `.py` file, blocking with the violations fed back to you until clean. Non-Claude-Code
-backends run the same check manually via `scaffold/bin/lint-python.sh`.
+Run Python lint explicitly with `scaffold/bin/lint-python.sh` during verification.

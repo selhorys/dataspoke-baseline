@@ -10,7 +10,4 @@ Read `scaffold/roles/k8s-helm.md` first — it is the canonical role definition 
 Helm/Dockerfile/dev-script rules, completion report contract). Everything below is
 Claude-Code-specific binding.
 
-## Claude Code binding notes
-
-No hooks are wired for this role, and it has no review loop (see `scaffold/roles/reviewer.md`
-§What NOT to review).
+This role has no review loop (see `scaffold/roles/reviewer.md` §What NOT to review).

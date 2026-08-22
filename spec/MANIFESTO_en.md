@@ -125,11 +125,13 @@ DataSpoke consists of four components.
 
 #### AI Scaffold
 
-An agent-agnostic core (`scaffold/`) carrying the canonical generator/evaluator role definitions,
-with per-CLI bindings (`.claude/` for Claude Code, `AGENTS.md` for Codex and other CLIs), that lets
-the agent grasp the project's structure, conventions, and spec hierarchy from the very first
-session. Includes domain-specific skills and cron-based PR automation (PRauto), both Claude-Code-
-specific today. See `spec/AI_SCAFFOLD.md` for the full specification.
+An agent-agnostic core (`scaffold/`) carries canonical generator/evaluator roles, review
+contracts, and shared evaluator knowledge. Shared skills live under `.agents/skills/`,
+while native bindings (`.claude/` for Claude Code and `.codex/` for Codex) supply CLI-specific
+invocation and permissions. This structure lets either agent grasp the project's conventions and
+spec hierarchy from the first session and run the same plan → approve → generate → evaluate
+workflow. Cron-based PR automation (PRauto) is a Claude Code integration. See
+`spec/AI_SCAFFOLD.md` for the full specification.
 
 #### Development Scaffold
 

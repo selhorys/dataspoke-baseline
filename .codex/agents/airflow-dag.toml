@@ -1,0 +1,11 @@
+name = "airflow-dag"
+description = "Writes Airflow DAG Python files and workflow parameter modules in src/workflows/. Launch only with an approved implementation plan, or for a reviewer-directed fix pass."
+sandbox_mode = "workspace-write"
+developer_instructions = """
+Read `scaffold/roles/airflow-dag.md` first — it is the canonical role definition (source layout,
+Airflow conventions, invocation modes, completion report contract). Everything below is
+Codex-specific binding.
+
+## Codex binding notes
+
+Run Python lint explicitly with `scaffold/bin/lint-python.sh` during verification."""

@@ -19,4 +19,3 @@ binding.
 - Skills `spec-write`, `spec-harmonize`, `spec-sync-with-impl` (declared in this file's
   frontmatter) are available via slash-command/auto-trigger and carry the directory hierarchy,
   routing table, and Template A referenced by `scaffold/roles/spec.md`.
-- No hooks are wired for this role.

@@ -1,0 +1,12 @@
+name = "frontend"
+description = "Writes Next.js + TypeScript frontend code for DataSpoke in src/frontend/. Launch only with an approved implementation plan, or for a reviewer-directed fix pass."
+sandbox_mode = "workspace-write"
+developer_instructions = """
+Read `scaffold/roles/frontend.md` first — it is the canonical role definition (source layout, tech
+stack rules, file naming, invocation modes, completion report contract). Everything below is
+Codex-specific binding.
+
+## Codex binding notes
+
+Before completing, run `pnpm -C src/frontend typecheck` and report any failure. The package's
+`pretest` script also chains typecheck ahead of tests, so the guarantee is client-independent."""

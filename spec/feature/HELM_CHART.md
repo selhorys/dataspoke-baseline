@@ -162,7 +162,7 @@ wires them via the runtime admin API (`/api/v1/admin/peripherals/{datahub,langfu
 invokes directly — `install-prod-preflight.sh`, `install.sh`, `uninstall.sh`,
 and `health-check.sh` — each resolving `helm-charts/.env.<profile>` by the same
 rule, with `--env-file` overriding it. `health-check.sh` also accepts neither
-flag, because automated callers such as the integration-test preflight hook
+flag, because automated callers such as the integration-test session fixture
 invoke it bare; it then falls back to an inherited exported `ENV_FILE`, then
 `.env.dev` (§Health Check). `build-image.sh` and `port-forward.sh` have no
 profile of their own and are driven by the `ENV_FILE` the caller exports.
@@ -2577,13 +2577,13 @@ langfuse-worker, which serve no HTTP surface and are judged on their
 Deployment's ready-replica count — evidence that the workload started, not that
 it is consuming. A probe that runs and fails is a counted failure.
 
-**Bounded probes.** Wall clock is part of the contract, because the check runs
-inside a blocking PreToolUse hook that fails OPEN if the harness kills it. Every
-reachability probe is connect-timeout bounded — a blocking pre-flight must fail
-fast rather than hang on a host that drops SYNs — and the raw TCP connects reach
-that bound without a non-POSIX binary and without sending a byte to ports that
-speak Postgres, Redis or Kafka. The bound holds for a peer that accepts and then
-never speaks, not only for a refused connection; a hit bound is its own verdict,
+**Bounded probes.** Wall clock is part of the contract because operators and CI
+run the check explicitly before integration tests and deployment-sensitive work.
+Every reachability probe is connect-timeout bounded — a pre-flight must fail fast
+rather than hang on a host that drops SYNs — and the raw TCP connects reach that
+bound without a non-POSIX binary and without sending a byte to ports that speak
+Postgres, Redis or Kafka. The bound holds for a peer that accepts and then never
+speaks, not only for a refused connection; a hit bound is its own verdict,
 distinct from a refusal; and no probe outlives its bound still holding a
 credential in its environment.
 

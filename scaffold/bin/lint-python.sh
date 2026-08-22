@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Portable version of .claude/hooks/lint-python-file.sh's ruff-check logic, for any coding-agent
-# role's self-verification step (not just Claude Code, which wires the hook version in via
-# PostToolUse). No stdin-JSON/exit-2 hook protocol — just a normal script: exit 0 on a clean
+# Explicit ruff-check helper for any coding-agent role's self-verification step. It is a normal
+# command, not a lifecycle hook: exit 0 on a clean
 # check (or missing tooling), exit 1 with ruff's output on stderr otherwise.
 #
 # Usage: scaffold/bin/lint-python.sh <file.py>

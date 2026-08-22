@@ -529,25 +529,32 @@ The repository is organized by deployment concern and application layer. Key top
 | `helm-charts/` | Umbrella Helm chart + `bin/` install/uninstall/build scripts + dev peripherals |
 | `docker-images/` | Dockerfiles per service (api, airflow, postgres) |
 | `migrations/` | Alembic database migrations |
-| `scaffold/` | Agent-agnostic Developer AI Scaffold core — canonical role definitions, cross-session memory convention, and CLI-driver scripts, read by any coding-agent CLI binding. See [`AI_SCAFFOLD.md`](AI_SCAFFOLD.md) |
-| `.claude/` | Claude Code binding of the Developer AI Scaffold (skills, agents, hooks, workflows) for building the product. See [`AI_SCAFFOLD.md`](AI_SCAFFOLD.md) |
+| `scaffold/` | Agent-agnostic Developer AI Scaffold core — canonical roles, evaluator contracts and memory, plus explicit validation and conformance utilities. See [`AI_SCAFFOLD.md`](AI_SCAFFOLD.md) |
+| `.agents/` | Canonical shared coding-agent skills consumed through CLI-specific discovery or thin bindings. See [`AI_SCAFFOLD.md`](AI_SCAFFOLD.md) |
+| `.claude/` | Claude Code binding of the Developer AI Scaffold (native agents, permissions, CLI presentation, and the separate Prauto-only workflow). See [`AI_SCAFFOLD.md`](AI_SCAFFOLD.md) |
+| `.codex/` | Codex binding of the Developer AI Scaffold (native agents, sandbox and concurrency configuration). See [`AI_SCAFFOLD.md`](AI_SCAFFOLD.md) |
 | `plugin/` | End-User AI Scaffold — distributable Claude Code plugin for consuming a running DataSpoke via its public API. See [`AI_PLUGIN.md`](AI_PLUGIN.md) |
 
 ### AI scaffolds (two complementary deliverables)
 
 The **Developer AI Scaffold** (the MANIFESTO §2.2 "AI Scaffold" — the agent-agnostic
-`scaffold/` core plus its `.claude/` (Claude Code) and Codex (`AGENTS.md` + `scaffold/bin/`)
+`scaffold/` core and shared skills plus its `.claude/` (Claude Code) and `.codex/` (Codex)
 bindings, [`AI_SCAFFOLD.md`](AI_SCAFFOLD.md)) is complemented by a distinct
 **End-User AI Scaffold** ([`AI_PLUGIN.md`](AI_PLUGIN.md)). They are sibling deliverables with no
 shared privilege boundary:
 
 | Scaffold | Lives in | Access | Audience |
 |----------|----------|--------|----------|
-| **Developer AI Scaffold** ([`AI_SCAFFOLD.md`](AI_SCAFFOLD.md)) | `scaffold/` + `.claude/` (in repo) | Full repo: specs, `src/`, helm, DB | Contributors building the product |
+| **Developer AI Scaffold** ([`AI_SCAFFOLD.md`](AI_SCAFFOLD.md)) | `scaffold/` + `.agents/` + `.claude/` + `.codex/` | Full repo: specs, `src/`, helm, DB | Contributors building the product |
 | **End-User AI Scaffold** ([`AI_PLUGIN.md`](AI_PLUGIN.md)) | `plugin/` (distributable plugin) | Public API surface only (`/api/v1/{auth,spoke}`, `/ready`, `/openapi.json`, `/redoc`) | Engineers operating a deployed instance |
 
 The Developer scaffold *builds* DataSpoke; the End-User plugin *consumes* a deployed
 DataSpoke.
+
+For interactive development, the parent CLI pins evaluator bindings, canonical reviewer roles,
+verdict contracts, and evaluator memory before generation. Only native agents execute generator
+and evaluator roles; repository utilities validate configuration and evidence without acting as an
+agent runner. Prauto retains the separate workflow and security model in `AI_PRAUTO.md`.
 
 ---
 

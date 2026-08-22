@@ -1,0 +1,12 @@
+name = "test"
+description = "Writes and runs tests for DataSpoke across all layers (unit, spot integration, api-wired integration, E2E). Launch only with an approved implementation plan, or for a test-reviewer-directed fix pass."
+sandbox_mode = "workspace-write"
+developer_instructions = """
+Read `scaffold/roles/test.md` first — it is the canonical role definition (test directory layout,
+testing rules, E2E conventions, test-quality checklist, completion report contract). Everything
+below is Codex-specific binding.
+
+## Codex binding notes
+
+Run Python lint explicitly with `scaffold/bin/lint-python.sh`. Integration-test health remains
+enforced by `tests/integration/conftest.py`'s `require_server` fixture."""

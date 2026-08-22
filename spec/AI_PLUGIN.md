@@ -17,7 +17,8 @@
 The **End-User AI Scaffold** specified here is a distributable Claude Code **plugin** that
 helps engineers *consume* a running DataSpoke service through its public HTTP API. It is a
 sibling deliverable to the **Developer AI Scaffold** (the MANIFESTO §2.2 "AI Scaffold" —
-the in-repo `.claude/` configuration that *builds* the product, `spec/AI_SCAFFOLD.md`).
+the in-repo agent-agnostic core, shared skills, and native Claude Code and Codex bindings that
+*build* the product, `spec/AI_SCAFFOLD.md`).
 
 The two never overlap: the Developer scaffold has full repo access (specs, `src/`, helm,
 DB); the End-User plugin sees only the public API surface of a deployed instance and the
