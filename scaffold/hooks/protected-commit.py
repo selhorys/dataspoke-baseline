@@ -182,11 +182,20 @@ def _cd_target(segment: list[str]) -> Path | None:
 
 
 def _protected_commit(command: str, cwd: Path) -> str | None:
+    try:
+        segments = _segments(command)
+    except ValueError:
+        opaque = "`" in command or "$(" in command
+        return "an unresolved shell branch" if opaque and COMMIT_CAPABLE.search(command) else None
+
     possible_cwds = {cwd.resolve()}
     deferred_cwds: set[Path] = set()
     deferred_operator: str | None = None
     saw_commit = False
-    for segment, next_separator in _segments(command):
+    saw_opaque_substitution = False
+    for segment, next_separator in segments:
+        if any("`" in token for token in segment):
+            saw_opaque_substitution = True
         if segment and segment[0] == "cd":
             target = _cd_target(segment)
             if target is None:
@@ -248,7 +257,7 @@ def _protected_commit(command: str, cwd: Path) -> str | None:
             possible_cwds |= deferred_cwds
             deferred_cwds.clear()
             deferred_operator = None
-    if not saw_commit and COMMIT_CAPABLE.search(command):
+    if not saw_commit and saw_opaque_substitution and COMMIT_CAPABLE.search(command):
         return "an unresolved shell branch"
     return None
 

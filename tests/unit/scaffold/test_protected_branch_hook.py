@@ -110,6 +110,9 @@ def test_native_hook_detects_supported_commit_variants(repo: Path, command: str)
         "git commitment -m nope",
         "printf 'git commit -m nope'",
         "python -c 'print(\"git commit\")'",
+        "git log --grep=commit",
+        "false && git log --oneline --grep=commit",
+        "git log -1 --format=%H commit-ish-ref",
     ],
 )
 def test_native_hook_avoids_non_commit_false_positives(repo: Path, command: str) -> None:
@@ -119,6 +122,42 @@ def test_native_hook_avoids_non_commit_false_positives(repo: Path, command: str)
 
     assert result.returncode == 0
     assert result.stdout == ""
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'echo "it\'s a test"',
+        "echo building it's fine",
+        "git status -m \"$(cat <<'EOF'\nfix: don't break things\nEOF\n)\"",
+    ],
+)
+def test_native_hook_does_not_crash_on_unbalanced_quote_text(repo: Path, command: str) -> None:
+    subprocess.run(["git", "-C", repo, "checkout", "-q", "-b", "dev"], check=True)
+
+    result = _native(repo, command)
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+
+
+def test_native_hook_fails_open_for_unparseable_non_git_command(repo: Path) -> None:
+    subprocess.run(["git", "-C", repo, "checkout", "-q", "-b", "dev"], check=True)
+
+    result = _native(repo, "echo it's just prose with no git in it")
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+
+
+def test_native_hook_still_fails_closed_for_unparseable_opaque_git_commit(repo: Path) -> None:
+    subprocess.run(["git", "-C", repo, "checkout", "-q", "-b", "dev"], check=True)
+
+    result = _native(repo, "echo `git commit -m it's-nested`")
+
+    assert result.returncode == 0
+    decision = json.loads(result.stdout)["hookSpecificOutput"]
+    assert decision["permissionDecision"] == "ask"
 
 
 def test_native_hook_honors_git_dash_c_repository(repo: Path, tmp_path: Path) -> None:
