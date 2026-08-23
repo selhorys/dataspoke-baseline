@@ -87,7 +87,8 @@ npx github-label-sync --access-token "$(gh auth token)" --labels .github/labels.
 
 Running prauto under a separate GitHub account (e.g., `youraccount-prauto`) keeps bot activity
 visually distinct from human commits and PR comments. This is optional — prauto works fine with
-the repo owner's credentials.
+the repo owner's credentials. This method uses `gh`'s login-based multi-account support end to
+end — no manually-created PAT.
 
 ### 1. Invite the bot account as a collaborator
 
@@ -97,30 +98,77 @@ From the repo owner account, go to:
 https://github.com/youraccount/yourrepo/settings/access
 ```
 
-Search for the bot account and send the invitation. For personal repositories, collaborators
-receive Write access by default (no role selector is shown). For organization repositories, select
-the **Write** role.
-
-### 2. Accept the invitation
-
-Log in as the bot account and accept the collaborator invitation at
+Search for the bot account and send the invitation (Write role for an org repo; personal repos
+grant Write by default). Log in as the bot account and accept it at
 `https://github.com/notifications`.
 
-### 3. Create a classic PAT from the bot account
-
-Go to `https://github.com/settings/tokens/new` (logged in as the bot account) and check the
-**`repo`** scope.
-
-> **Why classic PAT, not fine-grained?**
-> Fine-grained PATs require the Resource owner to be the token creator or one of their
-> organizations. Another personal account (the repo owner) cannot appear as a Resource owner, so
-> fine-grained PATs cannot be scoped to a repo owned by a different personal account.
-
-### 4. Set the token in `config.local.env`
+### 2. Log the bot account into `gh` as a second account
 
 ```bash
-GH_TOKEN="«redacted:ghp_…»"
+gh auth login --hostname github.com
 ```
 
-All GitHub API operations (issue labels, comments, PR creation) will then run as the bot account.
-Git commit identity remains whatever is set in `PRAUTO_GIT_AUTHOR_NAME` / `PRAUTO_GIT_AUTHOR_EMAIL`.
+`gh` detects the already-logged-in owner account and offers to add another rather than replacing
+it — authorize the device code while signed into github.com **as the bot account** in the
+browser. `gh auth status` then lists both, one flagged `Active account: true`; `gh auth switch
+--user <bot-account>` changes which one is active. `gh auth token --user <bot-account>` prints
+that account's token without switching — put it straight into `GH_TOKEN` in `config.local.env`.
+It's an OAuth token (`gho_…`, revocable via `gh auth logout`), not a manually-created PAT.
+
+### 3. Generate and register a dedicated SSH key
+
+`GH_TOKEN` covers `gh`-driven GitHub API calls (labels, comments, PR creation) — it does **not**
+cover `git push`, which authenticates via SSH. Reusing your own key won't work (GitHub allows a
+given public key on only one account), so generate one dedicated to the bot:
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519_<bot-account> -C "<bot-account>" -N ""
+gh auth refresh -h github.com -s admin:public_key   # targets whichever account is active
+gh ssh-key add ~/.ssh/id_ed25519_<bot-account>.pub --title "prauto-worker ($(hostname -s))"
+gh auth refresh -h github.com -s admin:public_key -r admin:public_key   # drop it again — one-time use only
+```
+
+`admin:public_key` is needed only for `gh ssh-key add` itself; nothing at runtime uses it (`git
+push` authenticates via the key file, not the token's scopes), so remove it right after. Each
+`gh auth refresh` reissues the token — re-run `gh auth token --user <bot-account>` and update
+`GH_TOKEN` in `config.local.env` after this step, since the string from step 2 no longer matches.
+
+### 4. Scope the SSH key and git identity to prauto's worktrees only
+
+Prauto runs each issue in a linked `git worktree` under `worktrees/`. A linked worktree's
+`gitdir` (what `includeIf.gitdir` matches against) is `<repo>/.git/worktrees/<name>` — **not**
+the worktree's own checkout path — so scope the pattern there. This keeps the bot identity fully
+isolated from the repo owner's own commits/pushes in the primary checkout.
+
+```gitconfig
+# ~/.gitconfig
+[includeIf "gitdir:/abs/path/to/<repo>/.git/worktrees/"]
+	path = ~/.gitconfig-<bot-account>
+```
+
+```gitconfig
+# ~/.gitconfig-<bot-account>
+[core]
+	# -F /dev/null skips ~/.ssh/config, which otherwise stacks any Host github.com
+	# IdentityFile onto this one and lets ssh silently pick the wrong key.
+	sshCommand = ssh -F /dev/null -i ~/.ssh/id_ed25519_<bot-account> -o IdentitiesOnly=yes -o UserKnownHostsFile=~/.ssh/known_hosts
+[user]
+	name = <bot display name>
+	email = <bot-account-id>+<bot-account>@users.noreply.github.com
+```
+
+Verify with `git -C <repo>/.git/worktrees/<any-existing-worktree> ls-remote origin` (or `ssh -F
+/dev/null -i ~/.ssh/id_ed25519_<bot-account> -o IdentitiesOnly=yes -T git@github.com`) — it
+should greet the bot account, not the owner.
+
+### 5. Match `PRAUTO_GIT_AUTHOR_NAME` / `PRAUTO_GIT_AUTHOR_EMAIL` to the same identity
+
+The worker's system prompt runs `git commit --author="{PRAUTO_GIT_AUTHOR_NAME}
+<{PRAUTO_GIT_AUTHOR_EMAIL}>"`, which sets commit *authorship* independently of the `user.email`
+from step 4 (that config supplies the *committer* identity `git commit` requires, plus the SSH
+key). Set `PRAUTO_GIT_AUTHOR_EMAIL` to the same `<id>+<login>@users.noreply.github.com` address —
+an unverified or mismatched email leaves commits shown with no linked GitHub account, or linked
+to the wrong one.
+
+With all five steps done, GitHub API calls, git push, and commit authorship all consistently
+resolve to the bot account.

@@ -93,6 +93,17 @@ A single machine may run multiple prauto instances (distinct worker IDs) sharing
 GitHub credential. If `ANTHROPIC_API_KEY` or `GH_TOKEN` is empty, CLIs fall back to system
 authentication.
 
+### GitHub identity has two independent axes
+
+`GH_TOKEN` authenticates `gh`-driven GitHub API calls only — issue labels, comments, PR creation.
+It does not authenticate `git push`, which goes over SSH and resolves whatever account the local
+`git`/`gh` SSH identity belongs to. `PRAUTO_GIT_AUTHOR_NAME` / `PRAUTO_GIT_AUTHOR_EMAIL` set
+commit *authorship* independently of both (applied via `git commit --author=...` in the worker's
+system prompt). Running prauto under a dedicated bot GitHub account requires all three — API
+token, SSH key, and author identity — to resolve to that same account, or commits, pushes, and
+API actions end up attributed to different identities. See `.prauto/README.md` §Optional:
+Dedicated GitHub Bot Account for the setup.
+
 `PRAUTO_AGENT` (new in v0.8) selects the worker's coding agent: `claude` (default), `codex`, or
 `auto` (Claude first, Codex fallback — see [Agent Availability](#agent-availability)). The
 turn/budget limits in `config.local.env` are per-agent: `PRAUTO_*_MAX_TURNS_*` and
