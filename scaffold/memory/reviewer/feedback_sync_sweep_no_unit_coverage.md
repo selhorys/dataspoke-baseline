@@ -30,7 +30,7 @@ patches `report_peripheral_health` and inspects identities is usually enough, (b
 DB semantics by hand (ORM column types, ON CONFLICT WHERE guards, `rowcount` values), and (c) state
 in the review that the only executable verification is the deferred spot test, so the human knows
 what is still unproven before deploying. Related: [[asyncpg-str-uuid-column]],
-[[exists-subquery-autocorrelate]], [[asyncsession-bind-seam]].
+[[feedback-exists-subquery-autocorrelate]], [[asyncsession-bind-seam]].
 
 **Coupling worth re-checking on every sweep review:** when `build_matcher` degrades a source to
 match-nothing (malformed regex, wrongly-shaped pattern value, SDK import failure), step 2's

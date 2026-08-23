@@ -22,4 +22,4 @@ those verdicts kill the install before its completion summary — the opposite o
 **How to apply:** on any doc/skill diff enumerating status tokens, grep the emitting script for the
 token and confirm it is on an output path rather than only in a `case`/`if` arm; then trace each
 failure arm's exit status up through its caller. Same test for exit codes and log-line formats a
-doc tells someone to match on. Related: [[feedback_verify_branch_reachability_rationales]].
+doc tells someone to match on. Related: [[verify-branch-reachability-rationales]].

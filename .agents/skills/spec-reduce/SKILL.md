@@ -73,6 +73,16 @@ wc -l <files> | sort -rn
 - `src/api/README.md`
 - Any other `README.md` files found via glob
 
+**Tier 5 — Evaluator memory** (target: dedup + trim padding, NOT architecture-doc brevity —
+see [Memory-specific reduction principles](#memory-specific-reduction-principles), which
+supersede G1-G4 for this tier):
+- `scaffold/memory/{reviewer,security-reviewer,test-reviewer,spec-reviewer}/*.md` (every note,
+  excluding the four `MEMORY.md` indexes themselves)
+
+This tier was previously omitted from the inventory even though the `scaffold` scope argument
+already named `scaffold/memory` — the gap let the corpus grow to 200+ notes / 8000+ lines with
+no periodic size discipline. Always include it under `scaffold` and `all` scope.
+
 ---
 
 ## Step 2 — Audit each document
@@ -152,6 +162,46 @@ When the same content appears in multiple places, use this priority to decide wh
 
 ---
 
+### Memory-specific reduction principles
+
+`scaffold/memory/**/*.md` notes are an evaluator's evidence trail (exact measured numbers, exact
+repro commands, exact `file:line` citations), not an architecture doc for readers. **G1-G4 do NOT
+apply to this tier** — a measured command, a specific vector, or a precise number is the finding,
+not implementation detail to strip. Applying G1-G4 here would gut the thing that makes a memory
+note worth more than a spec sentence. Use these principles instead:
+
+#### M1 — Trim restated/padding prose, keep evidence
+Remove throat-clearing, scene-setting, and sentences that just restate the finding in different
+words. Keep: exact measured numbers, exact repro commands/vectors, exact `file:line` citations,
+the causal mechanism ("why"), and the "how to apply" trigger condition.
+
+#### M2 — Dedup against canonical docs
+If the fact (or an equivalent) now lives in `spec/*.md` or `scaffold/roles/*.md`, trim the note to
+a short pointer plus only the residual evidence/incident detail the canonical doc doesn't carry —
+never restate what the canonical doc already says in full.
+
+#### M3 — Compress narrative to the causal chain
+A paragraph narrating "I first tried X, then realized Y, then discovered Z" compresses to the
+causal chain that matters for re-verification — not a travelogue of the investigation.
+
+#### M4 — Merge overlapping Why/How-to-apply boilerplate
+When a note's "Why" and "How to apply" sections restate each other, collapse to the shorter form
+without losing the trigger condition (when does this apply) or the fix.
+
+#### M5 — Never delete a note that has an inbound `[[wiki-link]]`
+`scaffold/bin/check-bindings.sh` asserts every `[[wiki-link]]` resolves to some note's frontmatter
+`name:`. Before removing a file outright, grep the whole corpus for `[[<its-name>]]` — if any
+other note references it, keep it as a stub (frontmatter + 2-4 lines) rather than deleting it.
+A note with zero inbound references may be deleted outright if its content is fully promoted or
+genuinely superseded.
+
+#### M6 — Preserve verbatim
+Exact numbers/measurements, `file:line` citations, command/vector reproductions, and every
+`[[wiki-link]]` cross-reference and frontmatter `name:`/`description:` pair (update `description:`
+only if the trimmed body changes what the note is actually about).
+
+---
+
 ## Step 3 — Report findings
 
 Present findings to the user as a summary table:
@@ -194,6 +244,11 @@ For each document with findings, apply reductions in order of impact (largest sa
 - Never remove sections marked TBD/TODO — these represent planned work
 - Verify that all internal markdown links (`[text](path)` and `[text](path#anchor)`) still resolve after edits
 - Keep the Table of Contents in sync with remaining sections
+- For Tier 5 (`scaffold/memory/`): never remove a note's exact measurement, command, or
+  `file:line` citation (M6); never delete a note with an inbound `[[wiki-link]]` (M5) — trim to a
+  stub instead; after all edits, run `bash scaffold/bin/check-bindings.sh` and confirm it still
+  passes (it asserts no dangling `[[wiki-link]]` and no unsuperseded reference to a deleted
+  mechanism)
 
 ---
 

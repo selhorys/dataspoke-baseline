@@ -52,5 +52,5 @@ The `%`->`%%` doubling in them round-trips correctly today (verified through con
 **Why:** these fixes have no HTTP-observable surface, so mutation probing is the only way to tell
 a real regression test from a decorative one.
 **How to apply:** on any re-review, re-run the three non-kills above rather than re-reading
-docstrings. Restore impl files from a `cp` backup, never `git checkout`. See also [[review-method]]
+docstrings. Restore impl files from a `cp` backup, never `git checkout`. See also [[feedback-review-method]]
 and [[no-destructive-git-during-review]].

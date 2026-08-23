@@ -22,8 +22,7 @@ downgrades a held lock to an info line with no FAILURES bump.
 That downgrade is a trade, not a free win: `.prauto` wants it (it meets a held lock through its
 own 409-skip), but the integration-test preflight hook deliberately does **not** pass it unless
 the command carries the `DATASPOKE_DEV_LOCK_PREACQUIRED=1` prefix — a stale lock silently makes
-pytest skip everything and exit 0 ([[project_integration_lock_stale_skip]]), so the hook wants
-that to block.
+pytest skip everything and exit 0, so the hook wants that to block.
 
 **2. `--profile prod` can never exit 0.** The DataHub, dummy-data and dev-lock probes at the
 bottom of the run list are called unconditionally with no profile gate, so on a perfectly healthy

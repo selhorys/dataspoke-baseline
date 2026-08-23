@@ -68,13 +68,10 @@ only (`config.oauthPostLoginRedirect`), never runtime-DB-settable.
    same stdout the carefully-scrubbed `oauth_route_*` lines go to. The
    structlog middleware already logs every request (path only).
 
-**Also still open:** `src/api/middleware/**` and `src/api/main.py` are *not* in
-the security-reviewer glob list, yet this diff edited `logging.py` (what lands in
-`request.state`), `rate_limit.py` (`_get_client_ip_key`, `auth_route_limit`,
-`DEFAULT_LIMIT_EXEMPT_PATH_PREFIXES`) and `main.py` (removed an exception
-handler; also holds CORS `allow_origins`, `SessionMiddleware` secret/`https_only`
-and the rate-limit middleware registration). All three reached review only
-because `src/api/routers/**` matched in the same diff.
+**Glob gap — closed.** `src/api/middleware/**` and `src/api/main.py` are now both in
+`scaffold/roles/security-reviewer.md`'s glob list (covering `logging.py`, `rate_limit.py`,
+and `main.py`'s CORS/session/rate-limit wiring) — they no longer depend on
+`src/api/routers/**` matching in the same diff to trigger review.
 
 `_error_json` (`src/api/main.py:124`) still re-derives `trace_id` from the header
 only — measured: the 429 envelope carries `trace_id: ""` while its log line

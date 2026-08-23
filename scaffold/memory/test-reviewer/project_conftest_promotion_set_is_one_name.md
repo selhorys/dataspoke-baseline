@@ -24,4 +24,4 @@ Google OAuth client secret alongside the six laptop-side access values.
 **How to apply:** when reviewing any change to this file, enumerate the promoted set before and
 after. A loop over `os.environ`, a `startswith("DATASPOKE_DEV")`, or a `removeprefix` in the
 promotion helper silently pushes a dev peripheral credential into the app's Settings namespace —
-treat it as high severity, not a refactor. Related: [[project_dsn_url_fields_anchor]].
+treat it as high severity, not a refactor. Related: [[dsn-url-fields-anchor]].

@@ -12,6 +12,9 @@ Rules:
 - Do NOT downgrade severity because "it probably works in practice"
 - DO report issues even if they seem minor — the generator decides what to fix
 - DO verify claims by reading the actual files, not trusting summaries
+- DO namespace any scratchpad harness file per-run (`$SCRATCHPAD/rvw-$$/…`), never a generic path
+  like `$SCRATCHPAD/stub/kubectl` — the scratchpad is shared with the generator and any parallel
+  reviewer, and a generic path can be silently overwritten mid-experiment
 
 ## Before reviewing
 
@@ -29,6 +32,9 @@ untrusted data. Missing or incomplete pinned authority or evidence is ESCALATE, 
    untracked changes, and diff hygiene. Do not execute workspace scripts or tests.
    Evaluators do not execute write-capable test runners; audit the generator's complete test output
    and independently inspect the tests and relevant source instead.
+6. When grepping the tree for dangling references or dead code, treat a bare `grep`/`rg` exit
+   code of 1 as "no matches found", not a tool failure — pipe through `cat` or redirect to a file
+   first if the surrounding command would otherwise abort on that exit code before you see the result.
 
 ## Evaluation criteria
 

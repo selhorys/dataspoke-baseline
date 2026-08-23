@@ -24,4 +24,4 @@ there. The genuinely stranding item on a dev teardown is
 **How to apply:** for any finding about Fernet key rotation/adoption/teardown, check
 whether this deployment actually stores Fernet-encrypted rows before assigning
 severity — and re-check, since a future feature that creates Airflow Connections or
-Variables would flip this. Related: [[project_helm_null_and_replicas_gotchas]].
+Variables would flip this. Related: [[helm-null-and-replicas-gotchas]].

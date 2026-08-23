@@ -62,5 +62,5 @@ survives a renamed service method because plain `spec` restricts *reads* only; e
 the helper docstring — `grep -rn 32767 spec/` is empty. The test says so in a NOTE instead
 of fabricating a citation; that is the right handling.
 
-Related: [[run_id_filter_then_assert_tautology]], [[sync_sweep_counter_vacuity]],
-[[dead_assert_tuple_ruff_blind]], [[feedback-review-method]].
+Related: [[run-id-filter-then-assert-tautology]], [[sync-sweep-counter-vacuity]],
+[[dead-assert-tuple-ruff-blind]], [[feedback-review-method]].

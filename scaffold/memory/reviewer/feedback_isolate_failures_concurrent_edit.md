@@ -23,4 +23,4 @@ Isolation proved the reviewed file caused exactly 6 and the concurrent `spec/API
 **How to apply:** works whenever the tests resolve paths from `__file__` rather than cwd (this repo's
 `tests/unit/spec_conformance/_api_md.py` sets `REPO_ROOT = Path(__file__).resolve().parents[3]`).
 Also run the `base` scenario to confirm HEAD is green — that is what makes the delta meaningful.
-Related: [[feedback_verify_generator_dead_code_claims]], [[feedback_verify_branch_reachability_rationales]].
+Related: [[verify-generator-dead-code-claims]], [[verify-branch-reachability-rationales]].

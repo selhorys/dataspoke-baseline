@@ -27,5 +27,5 @@ the fixed code, both introduced by the *same* change set's Stage A one step earl
 findings cited, not just `src/`. A fix that changes an observable branch or a compiled SQL
 shape almost always invalidates a sentence Stage A wrote. Report those at the same severity
 as the code bug and tag them for the spec agent / orchestrator; do not send them back to the
-code generator. Related: [[feedback-grep-old-rule-prose-in-consumers]],
-[[project-pg-is-false-vs-partial-index]].
+code generator. Related: [[grep-old-rule-prose-in-consumers]],
+[[pg-is-false-vs-partial-index]].

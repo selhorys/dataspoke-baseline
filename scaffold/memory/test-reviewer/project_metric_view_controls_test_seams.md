@@ -36,5 +36,5 @@ middle title is what separates ICU from code-unit ordering (`b` 0x62 > `C` 0x43)
 `toLowerCase()` + `<` impl also passes, which is the right altitude since the spec says
 only `A→Z`. Every needle sits mid-`title` and in no description, and vice versa.
 
-Related: [[dashboard-cap-note-count-ambiguous]], [[uc5-governance-e2e-anchors]],
+Related: [[dashboard-cap-note-count-ambiguous]], [[project-uc5-governance-e2e-anchors]],
 [[playwright-tohavetext-regex-not-normalized]].

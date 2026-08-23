@@ -21,11 +21,9 @@ registered as `Bob@example.com` is probed at a URN JIT never created, so the use
 reports `skipped_unprovisioned` forever with no operator signal.
 
 **How to apply:** tests may assert either half — write-time storage or derivation.
-Both are spec-backed; do not flag a storage-lowercasing assertion as impl-pinning.
-
-Worth remembering: the write-time half was undocumented when this memory was first
-written, so a test asserting it cited a section that then said only "case-preserving on
-storage". The spec was corrected rather than the test weakened. On a similar
-spec-vs-test conflict, check which side is actually wrong before assuming the test is.
+Both are spec-backed; do not flag a storage-lowercasing assertion as impl-pinning. (The write-time
+half was originally undocumented — a test citing it once pointed at a section that said only
+"case-preserving on storage," and the spec was corrected rather than the test weakened. On a similar
+spec-vs-test conflict, check which side is actually wrong before assuming the test is.)
 
 Related: [[dead-assert-tuple-ruff-blind]]

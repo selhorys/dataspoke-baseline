@@ -97,9 +97,11 @@ actually exists, (2) enumerate **every** abort between `_ensure_airflow_key_secr
 and `_restart_airflow_key_consumers` per path — not just the one the last round
 fixed — and (3) for any "restart substitutes for the pin" claim, check that
 profile's `imagePullPolicy` **for every image the install `--set`s**.
-`.claude/agents/security-reviewer.md` gained `helm-charts/bin/build-image.sh`
-(round 4, k8s-helm generator — wrong author) and `helm-charts/dataspoke/templates/**`
-+ `subcharts/**/templates/**` (round 5, orchestrator — ratified). Both additive.
+`scaffold/roles/security-reviewer.md` (the canonical glob list; formerly
+`.claude/agents/security-reviewer.md` before the role-config split) gained
+`helm-charts/bin/build-image.sh` (round 4, k8s-helm generator — wrong author) and
+`helm-charts/dataspoke/templates/**` + `subcharts/**/templates/**` (round 5,
+orchestrator — ratified). Both additive.
 Related: [[operator-runbook-is-credential-surface]],
 [[install-sh-preflight-gate-mechanics]], [[reviewer-config-is-generator-writable]],
 [[env-to-sed-helm-interpolation-boundary]].

@@ -32,5 +32,5 @@ repo sets no browserslist and Next polyfills only a fixed set, so a too-new
 built-in throws a TypeError and the client component renders nothing. Check
 `lib`-vs-`target` skew before accepting any new built-in in a review; `new
 Map([entries])` is ES2015 and already used in `lib/ontogen-graph.ts`. Related:
-[[feedback_str_iterated_as_pattern_list]] — both are "the type says it is safe,
+[[str-iterated-as-pattern-list]] — both are "the type says it is safe,
 the runtime disagrees".

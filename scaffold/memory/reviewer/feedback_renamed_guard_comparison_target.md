@@ -23,7 +23,7 @@ proved the old name was live, while the guard never consulted it. `spec/feature/
 the same file for the legacy name — if adoption/read paths know about it but the
 comparison path does not, that asymmetry is the bug. Same shape applies to renamed DB
 columns, cache-key prefixes, and config keys, not just K8s Secrets. Severity still gets
-capped by real blast radius — see [[project_fernet_blast_radius_env_connections]].
+capped by real blast radius — see [[fernet-blast-radius-env-connections]].
 
 **Status of the originating instance (2026-07-30):** fixed — `_ensure_airflow_fernet_secret`
 now `elif`s onto `dataspoke-airflow-fernet-key` for the comparison. Do not re-report it; the

@@ -27,4 +27,4 @@ an error path, don't reason from the handler's status code alone — the injecte
 lookup walks `type(exc).__mro__`, so a specific handler
 (`StorageUnavailableError` → 503) always beats a broader one
 (`DataSpokeError` → 500) regardless of `add_exception_handler` registration
-order. Related: [[project-revoke-swallows-storage-unavailable-bug]].
+order. Related: [[auth-revoke-refresh-asymmetry]].

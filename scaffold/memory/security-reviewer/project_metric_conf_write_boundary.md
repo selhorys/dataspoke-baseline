@@ -67,4 +67,4 @@ against all three writers, not just the one it edits. Adding the service-layer
 check to create/replace is now a two-line import away — the layering objection
 that once justified skipping it is gone.
 Related: [[reviewer-config-is-generator-writable]] (`src/api/schemas/**`, where
-half this control lives, is still off the sensitive-path glob list).
+half this control lives, is now on the sensitive-path glob list).

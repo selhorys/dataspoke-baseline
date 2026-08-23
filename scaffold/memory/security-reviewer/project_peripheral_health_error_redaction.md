@@ -51,7 +51,8 @@ exact-value scrub is available at that call site and used, (c) whether the excep
 actually fires reaches the sanitizer at all. A diff that merely *makes a previously-failing write
 succeed* promotes the redaction chain from dead code to load-bearing — re-verify it then too.
 Related: [[sanitizer-pipeline-ordering]], [[consumer-db-plane-to-wire-boundary]],
-[[recipe-regex-trust-boundary]], [[credential-uri-escaping-boundary]].
+[[project-recipe-regex-trust-boundary]], [[credential-uri-escaping-boundary]].
 
-**Glob-list gaps** (not in the agent's sensitive-path list, but security-load-bearing):
-`src/shared/redaction.py`, `src/backend/admin/peripheral_health.py`, `src/shared/db/session.py`.
+**Glob-list gaps — closed.** `src/shared/redaction.py`, `src/backend/admin/peripheral_health.py`,
+and `src/shared/db/session.py` are now all covered by the `src/shared/**` and `src/backend/**`
+glob entries in `scaffold/roles/security-reviewer.md`.

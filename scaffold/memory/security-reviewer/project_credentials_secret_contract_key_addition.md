@@ -60,10 +60,8 @@ legacy projection name), not just the greenfield path the generator verified wit
 `helm template`. Related: [[operator-runbook-is-credential-surface]],
 [[env-to-sed-helm-interpolation-boundary]].
 
-**Sensitive-path glob gap** (propose to the orchestrator, still unlisted as of
-2026-07-30): `helm-charts/bin/install.sh` and `helm-charts/bin/uninstall.sh` — the
-scripts that generate, project, patch, and delete every DataSpoke credential — match
-**none** of the authoritative globs (`bin/post-install/**`, `bin/dev-peripherals/**`,
-`bin/lib/helpers.sh` are listed; `bin/install.sh` is not). Reviews of this area only
-fire because the same diff happens to touch `values*.yaml`. `.gitignore` is likewise
-unlisted while being the control that keeps `.env.*` credentials out of history.
+**Sensitive-path glob gap — closed for the scripts.** `helm-charts/bin/install.sh` and
+`helm-charts/bin/uninstall.sh` are now both in `scaffold/roles/security-reviewer.md`'s
+glob list alongside `bin/post-install/**`, `bin/dev-peripherals/**`, and
+`bin/lib/helpers.sh`. **`.gitignore` remains unlisted** — still the control that keeps
+`.env.*` credentials out of history, and still worth proposing.

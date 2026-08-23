@@ -1,16 +1,21 @@
 ---
 name: scaffold-bin-verdict-and-binding
-description: scaffold/bin/*.sh is the non-Claude-Code review harness — its awk verdict scrape fails OPEN on a template restatement, it drops every .claude/agents frontmatter control, and AGENTS.md is NOT auto-loaded by Claude Code (measured)
+description: HISTORICAL — scaffold/bin/run-workflow.sh and run-stage.sh (the non-Claude-Code bash review harness) were deleted; sections 1-2 are a postmortem on that deleted code kept for the transferable lessons (schema-typed verdicts, permission-mode axis). Section 3 (Claude Code does not auto-load AGENTS.md) is unrelated and still current.
 metadata:
   type: project
 ---
 
-Three measured facts about the agent-agnostic scaffold (`scaffold/roles/`, `scaffold/bin/`,
-root `AGENTS.md`), all of which decide whether a security verdict is collected and honoured.
+Three measured facts about the agent-agnostic scaffold. Sections 1-2 describe
+`scaffold/bin/run-workflow.sh` and `run-stage.sh`, a bash agent-runner harness that has
+since been **deleted** and replaced by native in-CLI agent invocation
+(`scaffold/bin/check-bindings.sh` now asserts both files are absent). They are kept here
+as a postmortem — the underlying lessons apply to any future verdict-parsing or
+agent-runner code, not just the deleted scripts. Section 3 is a separate, still-live
+fact and is unaffected.
 
-## 1. A text-scraped verdict fails open; wf-minimal.js's schema does not
+## 1. HISTORICAL — a text-scraped verdict fails open; wf-minimal.js's schema does not
 
-`scaffold/bin/run-workflow.sh` extracts the verdict with
+`scaffold/bin/run-workflow.sh` (deleted) extracted the verdict with
 
     awk '/^### Verdict/{found=1; next} found && /^(APPROVE|REVISE|ESCALATE)/{print $1; exit}'
 
@@ -26,25 +31,27 @@ Fail-*closed* directions that do hold (also measured): a bolded `**REVISE**`, an
 h2, or a trailing-period `REVISE.` all yield a token that `rank()`'s `*)` arm maps to ESCALATE.
 Only the exact bare token `APPROVE` is dangerous.
 
-**Why it matters:** `.claude/workflows/wf-minimal.js` — the file this script says it ports —
-uses `REVIEW_SCHEMA` with `verdict: {enum: [APPROVE,REVISE,ESCALATE]}` structured output, so the
-verdict cannot be confused with prose. The bash port replaced a typed field with a heuristic
-scrape. Any future verdict-parsing code gets the same question: **can a reviewer's own prose
+**Why it mattered, and still does for any future verdict-parsing code:**
+`.claude/workflows/wf-minimal.js` uses `REVIEW_SCHEMA` with
+`verdict: {enum: [APPROVE,REVISE,ESCALATE]}` structured output, so the verdict cannot be
+confused with prose. The deleted bash port replaced a typed field with a heuristic scrape.
+Any future verdict-parsing code gets the same question: **can a reviewer's own prose
 produce the token?** Prefer last-match, a unique sentinel, or a schema.
 
-## 2. `run-stage.sh --agent claude` carries no frontmatter controls
+## 2. HISTORICAL — `run-stage.sh --agent claude` carried no frontmatter controls
 
-It invokes exactly `claude -p "$prompt" --model "${model:-sonnet}" --output-format json` (argv
-dumped and verified). Not passed: `disallowedTools: Write, Edit, NotebookEdit` (the read-only
-property of all four evaluators), `model: opus` + `effort: xhigh` (evaluators default to
-**sonnet** here), the PostToolUse ruff / Stop typecheck hooks, `memory: project`, `skills:`.
+It invoked exactly `claude -p "$prompt" --model "${model:-sonnet}" --output-format json` (argv
+dumped and verified, before deletion). Not passed: `disallowedTools: Write, Edit, NotebookEdit`
+(the read-only property of all four evaluators), `model: opus` + `effort: xhigh` (evaluators
+default to **sonnet** here), the PostToolUse ruff / Stop typecheck hooks, `memory: project`,
+`skills:`.
 
-There is **no per-role permission axis in the script at all**. Today a bare `claude -p` cannot
+There was **no per-role permission axis in the script at all**. A bare `claude -p` could not
 Write (measured: "DENIED", no file created — the repo's `.claude/settings.json` has 60 allow
-rules and none grant Edit/Write). So generators invoked this way cannot generate. The moment
-anyone adds `--permission-mode acceptEdits` / `--allowedTools` to fix that, **evaluators get
-write access in the same stroke** — generator ≠ reviewer isolation is gone. Check for that flag
-on every future diff to `scaffold/bin/`.
+rules and none grant Edit/Write). So generators invoked this way could not generate. The lesson
+for any future agent-runner code: the moment `--permission-mode acceptEdits` / `--allowedTools`
+is added to fix that, **evaluators get write access in the same stroke** — generator ≠ reviewer
+isolation is gone. Check for that flag on every future diff to `scaffold/bin/`.
 
 ## 3. Claude Code does NOT auto-load `AGENTS.md` (v2.1.239, measured behaviourally)
 

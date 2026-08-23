@@ -27,7 +27,7 @@ become false if the loader isn't also updated — flag the doc/code contradictio
 straggler's un-renamed secrets file (PG pw, DataHub PAT, LLM key) is no longer ignored and
 `git add .` will stage it. Keep the old path ignored (or use `helm-charts/.env*` +
 `!helm-charts/*.example`). Not a "migration shim" — it's leak prevention. See
-[[feedback-bash-errexit-grep-output]] for the grep-no-match pitfall when scanning.
+[[bash-errexit-grep-output]] for the grep-no-match pitfall when scanning.
 
 **Fix-pass spot-check:** A generator "updated all refs in <file>" claim can still
 miss inline lines in that very file — e.g. `helm-charts/README.md` prose got

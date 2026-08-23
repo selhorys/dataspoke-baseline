@@ -32,5 +32,5 @@ with a justifying comment. Consequences when reviewing:
 field (an aggregate, a status, a count) rather than on envelope plumbing. Pydantic's
 default `extra="ignore"` also means an accidental kwarg on the *other* sibling is
 dropped silently, so constructor-side greps are the only signal. Verify the fix from
-`app.openapi()`, not by reading source — see [[feedback-verify-generator-dead-code-claims]]
+`app.openapi()`, not by reading source — see [[verify-generator-dead-code-claims]]
 for the same "prove it, don't read it" stance.

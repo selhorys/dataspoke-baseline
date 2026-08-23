@@ -32,9 +32,9 @@ so an env-file value that fails the content contract (hex Fernet key,
 `placeholder-` OAuth secret, dev JWT default) is written into the cluster first
 and the script then refuses to rewrite it — the operator must delete by hand.
 
-**Glob gap:** neither `helm-charts/bin/install-prod-preflight.sh` nor
-`helm-charts/bin/health-check.sh` is in `.claude/agents/security-reviewer.md`'s
-sensitive-path list, though the first mints credentials and the second now takes
-`--profile prod`. Related: [[env-file-writer-source-execution]],
-[[operator-runbook-is-credential-surface]],
+**Glob gap — closed.** Both `helm-charts/bin/install-prod-preflight.sh` and
+`helm-charts/bin/health-check.sh` are now listed in
+`scaffold/roles/security-reviewer.md`'s sensitive-path globs (the authoritative copy;
+`.claude/agents/security-reviewer.md` is now a thin binding). Related:
+[[env-file-writer-source-execution]], [[operator-runbook-is-credential-surface]],
 [[credentials-secret-contract-key-addition]].

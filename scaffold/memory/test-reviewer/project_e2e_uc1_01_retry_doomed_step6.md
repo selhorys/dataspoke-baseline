@@ -28,4 +28,5 @@ exposes no platform-scoped hard-delete flag. The api-wired twin solves this in i
 **How to apply:** when auditing an E2E retry stance (`spec/TESTING.md` §E2E §Execution discipline —
 "a file either makes every step re-runnable or sets `retries: 0`"), do not accept "setup pre-deletes
 by natural key" as proof of re-runnability. Check what the *later* steps depend on in DataHub, not
-just what setup creates. Related: [[e2e-skips-breakdown]] (the cascade-skip history).
+just what setup creates. See the user-memory `project_e2e_skips_breakdown` for the cascade-skip
+history (no corresponding note exists in this evaluator-memory corpus).

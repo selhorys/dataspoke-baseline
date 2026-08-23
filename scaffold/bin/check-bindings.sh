@@ -113,6 +113,34 @@ assert 'wf-minimal' in pathlib.Path('.prauto/prompts/implementation.md').read_te
 scaffold_spec = pathlib.Path('spec/AI_SCAFFOLD.md').read_text()
 assert 'Prauto-only checked-in workflow' in scaffold_spec
 assert 'not an\nauthoritative path for interactive development' in scaffold_spec
+
+import re
+
+memory_files = list(pathlib.Path('scaffold/memory').glob('*/*.md'))
+memory_files = [p for p in memory_files if p.name != 'MEMORY.md']
+names = set()
+for path in memory_files:
+    frontmatter = path.read_text().split('---', 2)[1]
+    match = re.search(r'^name:\s*(\S+)', frontmatter, re.MULTILINE)
+    assert match, f'{path}: frontmatter missing name:'
+    names.add(match.group(1))
+for path in memory_files:
+    text = path.read_text()
+    for link in re.findall(r'\[\[([a-zA-Z0-9_-]+)\]\]', text):
+        assert link in names, f'{path}: dangling [[{link}]] — no memory note has that name:'
+
+DELETED_MECHANISM_TOKENS = (
+    'run-stage.sh', 'run-workflow.sh', 'test-adapters.sh', 'reviewer-inspect.sh',
+    '.prauto/lib/', '.prauto/heartbeat.sh', 'prauto-run-heartbeat', 'prauto-check-status',
+)
+SUPERSESSION_MARKERS = ('historical', 'deleted', 'removed', 'superseded')
+for path in memory_files:
+    text = path.read_text()
+    lowered = text.lower()
+    for token in DELETED_MECHANISM_TOKENS:
+        if token in text:
+            assert any(marker in lowered for marker in SUPERSESSION_MARKERS), \
+                f'{path}: mentions deleted {token!r} with no historical/deleted/removed/superseded marker'
 PY
 
 [[ -L .claude/skills && $(readlink .claude/skills) == ../.agents/skills ]] || {

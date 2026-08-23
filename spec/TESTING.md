@@ -142,6 +142,16 @@ rendering; assert on accessible roles, not DOM internals.
 
 **Static gates**: `npx tsc --noEmit` and `npx eslint src/` (from `src/frontend/`)
 
+`src/frontend/vitest.config.mts` uses Vitest's default pool (`pool: "forks"`, `isolate: true`), so
+each test file runs in its own forked process with its own `process.env` copy — a `process.env.TZ`
+(or other env) pin inside one file's `describe`/`beforeAll` cannot leak into another file. When
+restoring a pinned env var after a test, the restore must branch on whether the original was unset
+(`if (saved === undefined) delete process.env.TZ; else process.env.TZ = saved;`) — assigning
+`undefined` directly stores the literal string `"undefined"`, which Node treats as an invalid
+timezone and silently falls back to UTC. A test that pins and restores an env var should assert
+the restore succeeded (e.g. `expect(process.env.TZ).toBe(saved)`) since the failure mode above is
+otherwise silent.
+
 ---
 
 ## Assertion Discipline
@@ -586,6 +596,16 @@ dropdown menus, and toasts render in a portal outside the triggering subtree. Dr
 clicking its trigger — by `id` when rows render several unnamed triggers — then clicking the option
 by role. Locate portalled content from the page root, not from the trigger's container.
 
+Playwright's `toHaveText` (and its text-matcher siblings, e.g. `toContainText`,
+`toHaveAccessibleName`) normalize whitespace (collapse/trim) when the expectation is a string, but
+**not** when it is a RegExp — a RegExp expectation is tested against the raw, unnormalized text.
+`toHaveAttribute` is a separate case: it compares the raw attribute value regardless of expectation
+form — string or RegExp — and never normalizes. So an `^`/`$`-anchored regex assertion (against
+either matcher) is sensitive to stray leading/trailing whitespace or a newline in the element's raw
+text (a `whitespace-pre` node, a template literal, or a text sibling before `{children}` can
+reintroduce it) even though JSX usually strips it. This is not a reason to avoid anchored regex
+assertions — it's a reason to verify the component's actual child order before trusting one.
+
 ### Execution discipline
 
 E2E-specific authoring rules. The layer-wide anti-vacuity rules in
@@ -632,6 +652,14 @@ E2E-specific authoring rules. The layer-wide anti-vacuity rules in
   source-credential Secret, resetting data, taking the dev-env lock — shells out to `kubectl` or to
   `tests/integration/util`. E2E adds no TypeScript Kubernetes client and no reimplemented reset
   logic.
+- **`beforeAll` scopes a skip to the whole file, not the step.** Playwright's `test.skip()` called
+  inside a `beforeAll` hook skips **every** test in that suite, not just the step that called it —
+  so hoisting a per-step gate check into `beforeAll` converts what should be a single skipped step
+  into a whole-file skip. Conversely, a `beforeAll`/`afterAll` hook has its own separate timeout
+  budget — defaulting to the configured test timeout, not zero or unset — and `test.setTimeout()`
+  called inside the hook resizes only that budget, independently of the tests' own. If the default
+  isn't enough for the hook's setup/teardown work, the hook needs its own explicit
+  `test.setTimeout()` call; a `setTimeout()` call made inside a test does not reach the hook.
 
 ### Authentication
 

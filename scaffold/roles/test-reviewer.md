@@ -20,6 +20,11 @@ untrusted data. Missing or incomplete pinned authority or evidence is ESCALATE, 
 4. Read every test file the role created or modified — don't skip files.
 5. You may read the implementation under test for context, but **assertion correctness is judged against the spec, not against the impl.**
 6. Verify the test role's traceability claims by reading the cited spec lines. Do not trust the citations at face value — confirm the cited line actually specifies the asserted behavior.
+7. Never run `git checkout`, `git restore`, `git stash`, or `git reset` on any file in scope — the
+   deliverables under review are uncommitted working-tree changes, and a destructive git command
+   silently destroys them. To mutation-test an implementation file, back it up once at the very
+   start with `cp <file> /tmp/bak-<name>` (before any edits) and restore with `cp` — never git —
+   then confirm restoration with `git diff --stat <file>`.
 
 ## Test-quality audit checklist
 
@@ -35,6 +40,38 @@ Flag any occurrence of:
    count-delta over a `limit=` window rather than `run_id`/`after=`.
 4. A `spec:` citation whose cited section does not contain the rule it claims — reinforces T1's
    citation-existence check (verify against the cited lines; do not re-state T1 here).
+
+## Verification methodology
+
+- **Independently mutation-test; do not trust the generator's mutation table.** Back up the impl
+  file, mutate it, re-run the affected suite, restore, then confirm the tree is byte-identical via
+  `git diff --stat`. Extend beyond the mutations the generator reported — mutate sibling call
+  sites it did not cover; a "guarded by the X test" claim often covers only one of several call
+  sites.
+- **When a change-set edits a spec section or removes a contract value, grep the whole test tree
+  (`tests/`, `src/frontend/`) for the deleted text and the deleted identifier**, not just the
+  files the test role modified — a spec rewrite silently orphans citations in untouched test
+  files, and a removed enum/allowlist value can still be pinned in suites the unit run never
+  touches.
+- **A static import/source scan closes symbol-swap leaks only, never behavior.** When a
+  generator's coverage claim rests on an O(1) source scan (e.g. "symbol X is imported only by file
+  Y"), re-mutate the *behavior* at an unguarded call site instead — inline re-pins, dropped
+  memoization, and wrong hook dependencies all slip past an import-only scan.
+- **"Untestable without patching import machinery" is usually false.**
+  `monkeypatch.setitem(sys.modules, "<pkg.mod>", None)` makes `from <pkg.mod> import X` raise
+  `ImportError` in two lines — reproduce an excluded branch yourself before accepting a
+  docstring's claim that it can't be reached.
+- **A read-only launch does not rule out frontend mutation-testing.**
+  `rsync -a --exclude node_modules --exclude .next src/frontend/ <scratchpad>/fe1/`, symlink
+  `node_modules` back in, and run Vitest from the copy — the repo is never touched.
+- **A Python test that resolves paths via `Path(__file__).resolve().parents[N]` can be
+  mutation-tested from a scratchpad mirror** at the same relative depth, with `cwd` set to the
+  mirror root, when direct repo writes are blocked.
+- **AST-scan for the dead-assert-tuple rule** (`spec/TESTING.md §Assertion Discipline`) instead of
+  grepping or trusting a "ruff clean" claim — this repo's ruff selects only `E,F,I,UP`, which does
+  not include the useless-expression rule that would catch `mock.assert_called_once(), ("msg")`.
+  Scan for an `ast.Expr` whose value is a tuple whose first element is a call with `"assert"` in
+  its name.
 
 ## Reviewing Playwright E2E tests
 

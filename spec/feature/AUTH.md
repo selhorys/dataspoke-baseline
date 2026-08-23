@@ -322,6 +322,27 @@ authorised by state the bind superseded. This is what makes the [credential
 reset on link](#credential-reset-on-link) claim — that a party who held the row
 beforehand keeps no way back into it — true rather than aspirational.
 
+Only `users` takes an explicit row lock (`SELECT … FOR UPDATE`); `api_tokens`
+and `password_reset_tokens` are never locked explicitly — each is locked only
+implicitly, at the moment its own `UPDATE`/`DELETE`/`INSERT` statement runs.
+When a single write path takes more than one of these locks, the explicit
+`users` row lock is acquired first, and the implicit write locks that the
+`api_tokens`/`password_reset_tokens` statements take follow in the order
+`api_tokens` → `password_reset_tokens`; every multi-lock path in this section
+follows it, and it should be preserved by any future one to avoid a lock-order
+deadlock across concurrent requests. This does not mean `api_tokens` or
+`password_reset_tokens` should ever gain an explicit `FOR UPDATE` lock — the
+ordering constraint governs implicit write-lock acquisition, not a requirement
+to add explicit locking to the other two tables.
+
+The re-read-after-lock correctness described above also depends on Postgres
+running at its default READ COMMITTED isolation level: DataSpoke must not
+override the isolation level for these paths, since a re-read after acquiring
+the `users` row lock observes the writer's just-committed change only because
+READ COMMITTED lets each statement see newly-committed data. If the isolation
+level is ever raised to REPEATABLE READ, these re-reads would surface as
+serialization failures instead of the intended re-check behavior.
+
 ### Same-site requirement for cookie-based session
 
 The refresh JWT is an `HttpOnly`, `SameSite=Lax` cookie scoped to the API host;

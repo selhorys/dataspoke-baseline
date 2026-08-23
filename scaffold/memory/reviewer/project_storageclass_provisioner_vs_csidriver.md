@@ -37,5 +37,5 @@ question, not just a coding slip.
 string's own grammar, not the grammar of the object it resembles. Prefer
 `kubectl get <res> -- "$value"` for the leading-dash/argument-injection concern
 over a narrowing regex. Related:
-[[feedback_verify_branch_reachability_rationales]],
-[[project_helm_null_and_replicas_gotchas]].
+[[verify-branch-reachability-rationales]],
+[[helm-null-and-replicas-gotchas]].

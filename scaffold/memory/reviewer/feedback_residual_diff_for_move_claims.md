@@ -30,6 +30,6 @@ review routinely mixes phases; and generators reliably declare body changes whil
 comment-block edits. Character-identity of bodies is necessary but not sufficient.
 
 **How to apply:** any stage whose contract is "extract / relocate / rename, behaviour
-unchanged". Pair it with [[feedback_no_references_remain_brace_grep]] — a rename's stale
+unchanged". Pair it with [[no-references-remain-brace-grep]] — a rename's stale
 references land in chart `values.yaml`/template comments and spec prose that no later
 stage in the plan owns.

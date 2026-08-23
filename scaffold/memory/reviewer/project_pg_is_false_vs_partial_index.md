@@ -31,4 +31,4 @@ docker exec -i pgidx psql -U postgres   # create table, skewed insert, ANALYZE,
 Test the *real* query shape too. RESOLVED in the `is_primary` fix pass: the compiler now
 emits `bool_column == (sa.true() if node.value else sa.false())`, and the exact production
 shape `datahub_registered IS true AND is_primary = false` re-verified on postgres:17-alpine
-as `Index Scan using ix_dataset_registry_not_primary … Filter: (datahub_registered IS TRUE)`. Related: [[project-asyncpg-str-uuid-column]].
+as `Index Scan using ix_dataset_registry_not_primary … Filter: (datahub_registered IS TRUE)`. Related: [[asyncpg-str-uuid-column]].

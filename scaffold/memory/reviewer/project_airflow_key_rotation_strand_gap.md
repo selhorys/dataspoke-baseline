@@ -33,4 +33,4 @@ between the write and the restart **per path** — `grep -n
 helm-charts/bin/install.sh` renders all four interleavings in one screen. A
 residual note that names only the `helm upgrade` is describing prod and
 generalising. Related: [[offload-fix-all-callsites]],
-[[project_fernet_blast_radius_env_connections]].
+[[fernet-blast-radius-env-connections]].

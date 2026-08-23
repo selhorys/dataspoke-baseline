@@ -35,7 +35,7 @@ the last `@`); `%` silently decodes to a different password.
 
 **How to apply:** when reviewing anything that puts a credential in a URI, check which of the
 three shapes it is (URL object / rendered string / hand-built f-string) and which parser
-consumes it. See [[feedback_offload_fix_all_callsites]] for enumerating the sites.
+consumes it. See [[offload-fix-all-callsites]] for enumerating the sites.
 
 **Redis host validation (`_format_redis_host`, `src/api/middleware/rate_limit.py`)** — added in
 the same fix. Escaping the host is not an option (an IPv6 literal needs its bare `[...]`), so

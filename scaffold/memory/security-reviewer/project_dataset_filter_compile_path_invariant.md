@@ -83,5 +83,5 @@ dataset *out* of an `is_primary = true` filter, and for UC4 metagen that filter
 is a write scope. The widening direction gains an attacker nothing a legitimate
 `siblings.primary = true` write does not already give.
 
-Related: [[api-422-echoes-rejected-input]], [[recipe-regex-trust-boundary]],
+Related: [[api-422-echoes-rejected-input]], [[project-recipe-regex-trust-boundary]],
 [[consumer-db-plane-to-wire-boundary]], [[metrics-measurement-instant-boundary]]

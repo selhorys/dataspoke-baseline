@@ -36,5 +36,6 @@ reviewing a *host allowlist*, check whether the allowed suffix contains names th
 can obtain — a suffix match on a cloud provider's shared domain usually does. Related:
 [[peripheral-config-to-href-trust-chain]], [[pydantic-v2-pattern-anchoring]].
 
-Sensitive path not in the agent's glob list: `src/backend/admin/peripheral_health.py`
-(operator-facing error strings persisted and served over the admin API).
+Sensitive path — closed: `src/backend/admin/peripheral_health.py` (operator-facing error
+strings persisted and served over the admin API) is now covered by the `src/backend/**`
+glob entry in `scaffold/roles/security-reviewer.md`.

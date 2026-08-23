@@ -27,7 +27,7 @@ for each key it names. If the referenced key is absent, either add it (commented
 the chart default) or reword the pointer to name `dataspoke/values.yaml` explicitly. When a
 section is inserted, grep the whole file for `below`/`above` and re-check each one against the
 new ordering. Same check applies to `helm-charts/README.md`'s prod runbook, which enumerates
-prerequisites rather than every tunable. Related: [[project_helm_null_and_replicas_gotchas]].
+prerequisites rather than every tunable. Related: [[helm-null-and-replicas-gotchas]].
 
 **Line-number cross-references rot exactly like the direction words.**
 `helm-charts/bin/install.sh:859` cites `values-prod.example.yaml:340-349` for

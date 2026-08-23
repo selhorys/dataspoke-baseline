@@ -32,4 +32,4 @@ is `trap 'cleanup' EXIT` plus `trap 'exit 130' INT` / `trap 'exit 143' TERM`
 (the EXIT trap then fires on the way out). Reproduce with a `sleep` stand-in
 and `start_new_session=True` + `killpg` rather than `kill -INT <pid>` — a
 single-pid SIGINT does not reproduce the terminal case.
-Related: [[isolate-failures-under-concurrent-edit]].
+Related: [[isolate-failures-concurrent-edit]].

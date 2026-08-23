@@ -31,4 +31,4 @@ questions.
 URL. Note `next start`/`next build` load `src/frontend/.env.local` (NEXT_PUBLIC_* only), so
 a local build is not a faithful prod bundle; `src/frontend/.dockerignore` excludes `.env*`.
 Prettier is not enforced here (158 files already fail `--check`, no `format` script, no CI),
-so formatting drift is not a finding. Related: [[feedback-verify-branch-reachability-rationales]].
+so formatting drift is not a finding. Related: [[verify-branch-reachability-rationales]].

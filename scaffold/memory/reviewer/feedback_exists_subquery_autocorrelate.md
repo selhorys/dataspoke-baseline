@@ -18,7 +18,7 @@ broken once `conf_id` adds the membership EXISTS on the same table).
 **Why:** Seen 2026-06 in metagen `/spoke/metagen/dataset` — the conf_id path
 crashed 100% of the time, but the generator's mocked unit tests (282 passed)
 never built real SQL, so it shipped green. Same class as
-[[project_asyncpg_str_uuid_column]]: query-shape bugs hide behind mocks.
+[[asyncpg-str-uuid-column]]: query-shape bugs hide behind mocks.
 
 **How to apply:** When reviewing any new aggregation/list service method that
 joins a table AND also filters on an EXISTS/scalar subquery over the same

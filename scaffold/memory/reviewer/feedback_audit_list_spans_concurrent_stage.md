@@ -24,4 +24,4 @@ findings to the files your generator's report claims, and say explicitly in the 
 items you could not cover and why, so the orchestrator does not read silence as a pass. Cross-stage
 consistency is still fair game and cheap: comparing the frontend's mirrored predicate against the
 backend's landed `get_latest_run_event` took one grep.
-Related: [[feedback_scratchpad_shared_with_parallel_agents]], [[feedback_isolate_failures_concurrent_edit]].
+Related: [[scratchpad-shared-with-parallel-agents]], [[isolate-failures-concurrent-edit]].

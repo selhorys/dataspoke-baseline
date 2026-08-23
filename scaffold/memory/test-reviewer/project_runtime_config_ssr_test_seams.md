@@ -48,4 +48,4 @@ enforce it (`TESTING.md §Assertion Discipline` "Skip only on an absent precondi
 
 **How to apply:** on any re-review of runtime-config or the auth ground specs, re-run the battery
 above rather than trusting a report, and check whether the §Stack promotion has landed.
-Related: [[e2e-testing-md-fabricated-citations]].
+Related: [[e2e-testing-md-citations-resolved]].

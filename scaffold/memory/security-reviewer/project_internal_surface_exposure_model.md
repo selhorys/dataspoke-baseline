@@ -55,7 +55,7 @@ host-root default. See [[operator-runbook-is-credential-surface]] for the
 doc-vs-code rule and [[datahub-gms-public-virtual-host]] for the analogous
 "public host, app-level token is the only control" shape.
 
-**Sensitive-path glob gaps noticed here** (report, never self-edit):
-`helm-charts/README.md`, `helm-charts/.env.*.example`, and
-`spec/feature/HELM_CHART.md` are the operator-facing claim set for this surface
-and match no glob.
+**Sensitive-path glob gaps** (report, never self-edit): `helm-charts/README.md` and
+`spec/feature/HELM_CHART.md` are now both on the glob list. **`helm-charts/.env.*.example`
+remains unlisted** and is still the operator-facing claim set worth proposing for this
+surface.

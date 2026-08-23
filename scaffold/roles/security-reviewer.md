@@ -89,6 +89,11 @@ Score each criterion as **PASS**, **FAIL**, or **PARTIAL** with a one-line justi
 - Role checks enforced at the service layer, not just the router
 - No IDOR — resource access checks ownership, not just authentication
 - Token handling: no tokens in URLs, query strings, or logs
+- When a route re-validates its authorization by re-reading a row after acquiring a lock (e.g.
+  the `users` row-lock pattern in `spec/feature/AUTH.md` §Serialization), confirm the re-read
+  uses `execution_options(populate_existing=True)` — `SessionLocal` is `expire_on_commit=False`,
+  so a naive re-read returns the same already-loaded ORM instance from the session's identity
+  map instead of the fresh, lock-protected row, silently defeating the re-validation
 
 ### 3. Secrets
 
@@ -96,6 +101,14 @@ Score each criterion as **PASS**, **FAIL**, or **PARTIAL** with a one-line justi
 - `src/shared/settings.py` secrets loaded from env; not committed to defaults
 - Logging: no `logger.info(settings)`, no printing of auth headers or request bodies containing secrets
 - Helm: secrets use `existingSecret` references or `envFrom.secretRef`, not inline plaintext
+- `${name__key}` ingestion recipe tokens (`spec/API.md` §ingestion routes) are secret
+  *references*, not values — do not flag them as hardcoded credentials; only flag an actual
+  resolved secret value appearing in code, a log, or a fixture
+- A multi-stage sanitizer/redaction pipeline must normalize (strip control/`Cf` characters,
+  collapse whitespace) *before* applying an exact-value secret scrub, never after — an invisible
+  character inside the secret defeats a scrub placed first, and the later normalization pass then
+  re-assembles the secret in the output. Verify a sanitizer change by executing it against
+  adversarial input built from the sanitizer's own character classes, not by reading the diff
 
 ### 4. Input validation at trust boundaries
 
@@ -103,6 +116,12 @@ Score each criterion as **PASS**, **FAIL**, or **PARTIAL** with a one-line justi
 - Size limits on user-supplied strings, lists, and uploads
 - Type coercion at boundary (no `dict[str, Any]` passed through unchanged)
 - Webhook / callback endpoints verify sender (HMAC, shared secret, or mTLS)
+- Pydantic v2 `Field(pattern=...)` compiles to rust-regex `is_match` with `multi_line` off, so a
+  leading `^` genuinely anchors to start-of-string — do not report an anchored `^scheme://`-style
+  pattern as bypassable via search-semantics or newline/multiline tricks. Do still check what the
+  pattern permits when it lacks a trailing `$`: embedded credentials (`https://user:pass@host`),
+  CRLF/control characters after the scheme, and unicode bidi/confusable characters all pass an
+  anchor-only pattern
 
 ### 5. Supply chain
 
@@ -110,6 +129,10 @@ Score each criterion as **PASS**, **FAIL**, or **PARTIAL** with a one-line justi
 - Package source is reputable (PyPI primary, no obscure forks)
 - Check `uv.lock` / `package-lock.json` was updated alongside the manifest
 - Known CVEs — flag any package with active high-severity CVEs
+- Frontend runtime dependencies in `src/frontend/package.json` use a `^major.minor.patch` floor by
+  convention, not a bare major-only floor (e.g. `"yaml": "^2"`) — flag a new runtime dependency
+  declared with a major-only floor as a low-severity supply-chain hygiene finding. `@types/*`
+  devDependencies are exempt (already major-only by convention)
 
 ### 6. DataHub emission correctness
 

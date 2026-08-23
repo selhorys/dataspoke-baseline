@@ -1,6 +1,6 @@
 ---
 name: operator-runbook-is-credential-surface
-description: helm-charts/README.md prod runbook and values-prod.example.yaml are a credential-path surface not in the sensitive-path globs; verify every doc claim about install.sh/uninstall.sh (auto-seed, pre-flight, teardown remanence) against the code
+description: helm-charts/README.md prod runbook and values-prod.example.yaml are a credential-path surface (README now in the sensitive-path globs); verify every doc claim about install.sh/uninstall.sh (auto-seed, pre-flight, teardown remanence) against the code
 metadata:
   type: project
 ---
@@ -11,11 +11,9 @@ they contain no code. They are the sole instruction set for creating the 13-key
 `dataspoke-secrets`, rotating the seeded default admin, and tearing down without
 stranding or destroying key material.
 
-`helm-charts/bin/install.sh` and `bin/uninstall.sh` are now in the sensitive-path globs
-(added since this memory was first written). **`helm-charts/README.md` still is not** —
-the globs list `helm-charts/**/templates/secrets.yaml` and `values*.yaml`, neither of
-which matches it. Keep re-proposing it: every review of this surface so far has fired
-only because the same diff happened to touch a listed path.
+`helm-charts/bin/install.sh`, `bin/uninstall.sh`, and **`helm-charts/README.md`** are all
+now in `scaffold/roles/security-reviewer.md`'s sensitive-path globs — the last of these
+was the standing gap this note used to track; it's closed.
 
 **Why:** a doc-only diff on this path caused a high-severity finding — the runbook asserted
 prod does no automatic admin seeding, while the prod branch of `install.sh` calls
@@ -48,7 +46,7 @@ published default `dataspoke@dataspoke.local / dataspoke` is live on the interne
 Open `install.sh` / `uninstall.sh` and confirm each behavioral claim and each URL against
 the router prefixes in `src/api/main.py`. Doc-vs-doc consistency is worthless here; three
 artifacts can agree and all be wrong. Cross-check `spec/API.md` — as the priority-1
-contract it has been the accurate one. See [[project-auth-fail-closed-spans-layers]] for
+contract it has been the accurate one. See [[auth-fail-closed-spans-layers]] for
 the analogous "one layer's correctness is undone by another's" pattern, and
 [[install-sh-preflight-gate-mechanics]] for the gate-shape details, and
 [[prod-bootstrap-recipe-measurements]] for §2's measured shell/kubectl facts and the

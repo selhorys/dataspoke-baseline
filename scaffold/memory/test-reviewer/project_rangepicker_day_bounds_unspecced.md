@@ -23,29 +23,26 @@ demand they be removed; do note they'd need a spec anchor (or a "documents impl,
 to be fully clean. The `until = to` param-mapping invariant has NO unit coverage anywhere (no
 validation/governance page tests exist) -- it's only exercised by E2E/integration. Nice-to-have gap.
 
-**Cycle-2 confirmed (2026-06-16, APPROVE):** The Apply-commit test's end-bound assertion was
-weakened from exact `"2024-03-15T06:45:59.999Z"` to prefix `committed.to.startsWith("2024-03-15T06:45")`.
-This is the right call: `composeIso` (range-picker.tsx) hard-codes `seconds=59, ms=999` for the `to`
-bound, so the `:59.999` tail is a pure impl detail. The prefix still pins (a) the seeded end day and
-(b) the user-edited minute, and is asserted alongside `committed.kind==="custom"` (line 181, outside
-the `if` narrowing guard) and `toHaveBeenCalledTimes(1)` (line 179) — so wrong-day, wrong-time, and
-wrong-kind regressions all still fail. The `if (committed.kind==="custom")` is a TS narrowing guard,
-not a mask (line 181 already fails the test if kind is wrong). No TZ dependence: frozen clock + UTC
-ISO throughout. range.test.ts kept the exact T23:59:59.999Z bounds with a "documents impl, not spec"
-comment (acceptable per this note). Renewal invariant (clock-advance preset re-resolves to new day;
-custom stays pinned) intact at range.test.ts:86-136. Persistence hook tests
-(lib/hooks/use-range-selection.test.ts) unchanged and sound. 764/764 pass.
+**Cycle-2 (2026-06-16, APPROVE).** The Apply-commit test's end-bound assertion was weakened from
+exact `"2024-03-15T06:45:59.999Z"` to prefix `committed.to.startsWith("2024-03-15T06:45")` — correct,
+since `composeIso` (range-picker.tsx) hard-codes `seconds=59, ms=999` for `to`, so the `:59.999` tail
+is pure impl detail. The prefix still pins the seeded end day and the user-edited minute, paired with
+`committed.kind==="custom"` (line 181) and `toHaveBeenCalledTimes(1)` (line 179), so wrong-day,
+wrong-time, and wrong-kind regressions all still fail; `range.test.ts` keeps the exact `.999Z` bounds
+elsewhere behind a "documents impl, not spec" comment. Renewal invariant intact at
+`range.test.ts:86-136`; `use-range-selection.test.ts` unchanged. 764/764 pass.
 
-**Per-picker tz toggle removal (2026-06-16, cycle 1, REVISE):** Feature change — the per-picker
-Local|UTC toggle was removed; the picker now takes a fixed `tz` prop from the global Settings
-preference (spec FRONTEND_BASIC.md:290 now reads "**no per-panel timezone control**"). Tests cleanly
-dropped `onTzChange`/`tzOverride`/`setTzOverride` (grep-clean across whole frontend tree); surviving
-picker tests (preset-staging, time-edit→custom, two-calendar, fixedWeeks) all still valid with the
-fixed `tz` prop, 816/816 pass. Global-tz coverage intact: timezone.test.ts (default+persist+reactive),
-format-time.test.ts (local offset-agnostic / utc exact), events-section.test.tsx (display-site
-integration). ONE must-fix: `lib/range.test.ts:223-226` spec-trace COMMENT still quotes the deleted
-spec text "A per-picker timezone toggle — Local or UTC …" — a stale, now-FALSE spec citation in a
-file labelled unchanged-must-pass. It's a comment so the suite is green, but it asserts the spec says
-the opposite of what it says (T1 traceability rot). Fix: rewrite the comment to cite the global-tz
-governance (the `tz` here is a lib/range function PARAM driven by global pref, not the removed UI
-toggle — the local/utc interpretation coverage itself is correct and must stay).
+**Cycle-1 (2026-06-16, REVISE) — per-picker tz toggle removed.** The per-picker Local|UTC toggle was
+removed; the picker now takes a fixed `tz` prop from the global Settings preference
+(`FRONTEND_BASIC.md:290`: "no per-panel timezone control"). Tests dropped `onTzChange`/`tzOverride`/
+`setTzOverride` cleanly (grep-clean across the frontend tree), 816/816 pass. Global-tz coverage:
+`timezone.test.ts`, `format-time.test.ts`; the display-site integration piece moved from the deleted
+`events-section.test.tsx` to `src/frontend/components/events-panel.test.tsx` (`/data/[urn]`
+unified-hub migration, commit `7620ab99`).
+
+**Still open:** `lib/range.test.ts:223-226`'s spec-trace comment still quotes the deleted line "A
+per-picker timezone toggle — Local or UTC …" in a file labelled unchanged-must-pass — a false T1
+citation (the suite stays green since it's only a comment, but it asserts the spec says the opposite
+of what it now says). Fix: repoint the comment to the global-tz governance — the `tz` here is a
+lib/range function param driven by global pref, not the removed toggle; the underlying local/utc test
+coverage itself is correct and must stay.

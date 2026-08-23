@@ -13,7 +13,7 @@ naming them as `§…` are legitimate).
 **Mutation harness worth rebuilding** — `cp` the impl file to the scratchpad,
 `str.replace` with a `count(pattern) == 1` assert, run, restore from the copy in a
 `trap … EXIT`, then `diff -q` the restore. Never `git checkout` a file under review —
-it is uncommitted. (See [[feedback_no_destructive_git_during_review]].)
+it is uncommitted. (See [[no-destructive-git-during-review]].)
 
 **Mutation table — cycle-2 measured, 10/10 killed:**
 
@@ -60,5 +60,7 @@ service `setattr`s, so in the `AsyncMock(spec=AsyncSession)` unit fakes assertin
 `result.metric_conf` vs `row.metric_conf` is near-equivalent — preferring `result` is
 right but is not the strong seam its docstring claims.
 
-Related: [[project_owning_source_last_seen_tiebreak_untested]],
-[[project_metrics_dryrun_no_event_or_result]], [[feedback_no_destructive_git_during_review]].
+Related: [[owning-source-last-seen-tiebreak-untested]],
+[[no-destructive-git-during-review]]. (The user-memory
+`project_metrics_dryrun_no_event_or_result` covers the same dry-run-persists-nothing fact; no
+corresponding note exists in this evaluator-memory corpus.)

@@ -100,13 +100,12 @@ are interpreted, and (c) a copy-pasteable `kubectl get secret ${_fc} ...` line
 inside the prod "recover your Fernet key" runbook message. The less-trusted
 source is the unchecked one. Same class as the IngressClass hole above.
 
-`helm-charts/bin/install.sh`, `helm-charts/bin/uninstall.sh` and
-`helm-charts/prod-prereq/**` are all on the security-reviewer sensitive-path
-list as of 2026-08-02 (the earlier gap was closed). Still unlisted and still
-worth proposing: `helm-charts/README.md` (§Prod runbook — the credential
-creation instructions), `spec/feature/HELM_CHART.md`, and
-`.claude/skills/k8s-deploy/SKILL.md`, all three of which state the credentials
-contract operators act on.
+`helm-charts/bin/install.sh`, `helm-charts/bin/uninstall.sh`,
+`helm-charts/prod-prereq/**`, `helm-charts/README.md`, and
+`spec/feature/HELM_CHART.md` are all on the security-reviewer sensitive-path
+list (`scaffold/roles/security-reviewer.md`) as of 2026-08-02+. Still worth
+proposing: `.agents/skills/k8s-deploy/SKILL.md` (`.claude/skills` is now only a
+compatibility symlink to `.agents/skills`, where the canonical copy lives).
 
 Related: [[env-to-sed-helm-interpolation-boundary]],
 [[operator-runbook-is-credential-surface]],
