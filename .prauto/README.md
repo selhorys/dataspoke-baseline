@@ -57,6 +57,24 @@ absent.
 | `PRAUTO_DEV_ENV_FILE` | `helm-charts/.env.dev` | This worker's dedicated dev-cluster env file; resolves under the repo checkout, never a worktree |
 | `PRAUTO_GITHUB_ISSUE_FROM_ORG_MEMBERS_ONLY` | `true` | Restrict `prauto:ready` pickup to org members |
 
+### Loop-master binding (Hermes cron)
+
+The loop master is a scheduled Hermes cron job. Its settings are preserved as env vars so the job
+is reproducible from the repo. Repo-level fields (what the job *is*) live in `config.env`; the
+instance-identity fields (where/who runs it) live in `config.local.env` (gitignored).
+
+| Var | File | Meaning |
+|-----|------|---------|
+| `PRAUTO_LOOP_MASTER_HERMES_SCHEDULE` | config.env | Wake cadence (`every 4h`) |
+| `PRAUTO_LOOP_MASTER_HERMES_NAME` | config.env | Cron job name |
+| `PRAUTO_LOOP_MASTER_HERMES_SKILLS` | config.env | Skills loaded per tick (`prauto-loop-master claude-code codex`) |
+| `PRAUTO_LOOP_MASTER_HERMES_TOOLSETS` | config.env | Toolsets scoped to the tick (`terminal file`) |
+| `PRAUTO_LOOP_MASTER_HERMES_PROFILE` | config.local.env | Hermes profile that hosts the job |
+| `PRAUTO_LOOP_MASTER_HERMES_WORKDIR` | config.local.env | Local checkout path (the job's `workdir`) |
+| `PRAUTO_LOOP_MASTER_HERMES_DELIVER` | config.local.env | Where tick summaries go (`local`, `telegram`, …) |
+
+See `spec/AI_PRAUTO.md §Installing the loop-master cron job` for the create call that consumes these.
+
 ## Labels
 
 The `prauto:*` label set must exist on the repo. Sync once:

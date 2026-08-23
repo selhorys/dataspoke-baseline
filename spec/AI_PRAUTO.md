@@ -640,11 +640,11 @@ that the v0.7 bash harness hand-rolled. The mapping:
 
 | Loop-master step | Hermes primitive |
 |---|---|
-| Wake on a cadence | `cronjob` (schedule `every 4h`, `continuity` for cross-tick memory, `attach_to_session` for plan-approval pushes) |
-| Concurrency gate | `delegate_task action='list'` (live children) + a durable marker (a GitHub label or a state file) for "pending token reset" |
+| Wake on a cadence | `cronjob` (schedule `every 4h`, from `PRAUTO_LOOP_MASTER_HERMES_SCHEDULE` in `config.env`) |
+| Concurrency gate | `process(action='list')` (durable background processes) + a durable marker (a GitHub label or a state file) for "pending token reset" |
 | Agent availability | a `terminal` pre-step running the [Agent Availability](#agent-availability) probes |
-| Spawn worker | `delegate_task` to a `claude-code` or `codex` skill, with the phase goal and bounds; `enabled_toolsets` scopes the child |
-| Spawn reviewer | `delegate_task` to a second subagent (separate context) over the worker's diff |
+| Spawn worker | `terminal(background=true, notify_on_complete=true)` running `claude -p` / `codex exec` (via the `claude-code`/`codex` skills) with the phase goal; survives the tick |
+| Spawn reviewer | a fresh, separate `claude -p` / `codex exec` invocation over the worker's diff (a new process is what makes generator ≠ reviewer real) |
 | Plan-approval push | `attach_to_session` + `clarify`, or (preferred) the pull model: post the plan comment and poll on the next tick |
 
 The loop master itself is a skill (`prauto-loop-master`) loaded by the cron job; it carries the
@@ -653,9 +653,96 @@ contracts. The worker/reviewer prompts are the `.prauto/prompts/` templates, tra
 agent's invocation.
 
 **Durability note**: a meta-agent scheduler tick is even less durable than the bash worker was —
-its subagents die on process exit and nothing persists in memory between ticks. The
-GitHub-as-SSOT principle ([Overview](#overview)) is therefore not a nicety but the load-bearing
-resumability mechanism. Do not weaken it when re-binding the loop.
+the tick's own context dies on process exit and nothing persists in memory between ticks. The
+worker must therefore be a **background process** (`terminal(background=true)`), not a subagent:
+`delegate_task` children are discarded on session exit and would not survive the multi-hour
+implementation run. The GitHub-as-SSOT principle ([Overview](#overview)) is the load-bearing
+resumability mechanism — the next tick re-derives everything from GitHub. Do not weaken it when
+re-binding the loop.
+
+### Installing the loop-master cron job
+
+The loop master is scheduled as a Hermes cron job. This is the concrete install guide for the
+reference binding; the job is defined once and managed with `hermes cron`.
+
+**Prerequisites**
+
+- Hermes Agent installed. The loop master runs in whichever Hermes profile created the job — no
+  dedicated profile is required. Each cron tick is a fresh session that passes `skip_memory=True`
+  and runs with a scoped toolset, so sharing a profile with interactive sessions is safe; the
+  loop master neither contends for the conversation nor leaks memory into it.
+- The `prauto-loop-master`, `claude-code`, and `codex` skills available to that profile.
+- The repo checked out locally (the job's `workdir`), with `config.local.env` and the `prauto:*`
+  labels already in place.
+- **The gateway running.** The cron scheduler only fires when the Hermes gateway is up; a job
+  defined under a stopped gateway is inert. Install it once:
+
+  ```bash
+  hermes gateway install     # launchd/systemd user service, auto-starts at login
+  hermes cron status         # must print "✓ Gateway is running — cron jobs will fire automatically"
+  ```
+
+**Job definition (canonical)** — every field is preserved in the env files so the job is
+reproducible from the repo. Repo-level fields (what the job *is*) live in `config.env` (committed);
+instance-identity fields (where/who runs it) live in `config.local.env` (gitignored — the repo is
+public, so a checkout path or personal delivery target must not be committed).
+
+| Field | Env var | File | Value |
+|---|---|---|---|
+| `schedule` | `PRAUTO_LOOP_MASTER_HERMES_SCHEDULE` | config.env | `every 4h` (24/7; a tick with no actionable issue is a no-op) |
+| `name` | `PRAUTO_LOOP_MASTER_HERMES_NAME` | config.env | `DataSpoke PRauto loop master` |
+| `skills` | `PRAUTO_LOOP_MASTER_HERMES_SKILLS` | config.env | `prauto-loop-master claude-code codex` |
+| `enabled_toolsets` | `PRAUTO_LOOP_MASTER_HERMES_TOOLSETS` | config.env | `terminal file` (the loop master only probes CLIs, drives `gh`/`git`, and dispatches) |
+| Hermes profile | `PRAUTO_LOOP_MASTER_HERMES_PROFILE` | config.local.env | the profile that hosts the job (e.g. `developer`) — a *record*, not a control |
+| `workdir` | `PRAUTO_LOOP_MASTER_HERMES_WORKDIR` | config.local.env | the local checkout (loads `AGENTS.md`/`CLAUDE.md` into the tick) |
+| `deliver` | `PRAUTO_LOOP_MASTER_HERMES_DELIVER` | config.local.env | `local` by default; a gateway platform (e.g. `telegram`) for per-tick summaries |
+
+The `prompt` is fixed prose (not an env var) — see below.
+
+**Create it** — in a Hermes session, invoke the `cronjob` tool, substituting each value from the
+env files (`$VAR` below is a stand-in; the tool takes literal values):
+
+```
+cronjob(action="create", name="$PRAUTO_LOOP_MASTER_HERMES_NAME",
+        schedule="$PRAUTO_LOOP_MASTER_HERMES_SCHEDULE",
+        skills=["prauto-loop-master", "claude-code", "codex"],
+        enabled_toolsets=["terminal", "file"],
+        workdir="$PRAUTO_LOOP_MASTER_HERMES_WORKDIR",
+        prompt="<one-tick instruction — see below>")
+```
+
+**The prompt** (self-contained; the cron session knows nothing of this repo):
+
+> Run ONE tick of the PRauto loop master for the DataSpoke repository, following the
+> `prauto-loop-master` skill. Repository: /path/to/dataspoke-baseline (base branch `dev`).
+> Work the skill's tick procedure in order, stopping at the first terminal condition:
+> concurrency gate → load config → agent availability (Claude, else Codex) → claim work →
+> derive phase from GitHub → dispatch. Spawn the worker as a background `terminal` process
+> (`background=true`, `notify_on_complete=true`); never use `delegate_task` for the worker.
+> GitHub labels and comments are the single source of truth; derive everything from them. If
+> no issue needs work, exit cleanly and spawn nothing. End with a one-line tick summary.
+
+**Lifecycle** — manage the job from the CLI:
+
+```bash
+hermes cron list                     # job id + status
+hermes cron run <job_id>             # fire one tick now (verify before waiting for the schedule)
+hermes cron pause <job_id>           # stop firing, keep definition
+hermes cron resume <job_id>          # resume
+hermes cron edit <job_id> --schedule "every 2h"   # change cadence
+hermes cron remove <job_id>          # delete
+```
+
+**Two invariants that shape the design**
+
+- **The 3-minute interrupt.** Each cron tick is hard-interrupted at ~3 minutes. The loop
+  master's tick is deliberately fast — gate, probe, derive phase, dispatch — so it completes well
+  inside the budget. The actual coding work is the **background worker process**, which the tick
+  starts and then abandons; the 3-minute bound applies to the tick, not to the worker it spawns.
+  This is why the worker must be a background process rather than work done inside the tick.
+- **Cron sessions pass `skip_memory=True`.** The loop master must not rely on agent memory across
+  ticks — everything is re-derived from GitHub. This is exactly the GitHub-as-SSOT rule and is why
+  the contract is written memory-free.
 
 ### Other bindings
 
