@@ -194,7 +194,7 @@ def _protected_commit(command: str, cwd: Path) -> str | None:
     saw_commit = False
     saw_opaque_substitution = False
     for segment, next_separator in segments:
-        if any("`" in token for token in segment):
+        if any("`" in token or "$(" in token for token in segment):
             saw_opaque_substitution = True
         if segment and segment[0] == "cd":
             target = _cd_target(segment)
@@ -315,41 +315,11 @@ def _native_hook() -> int:
     return 0
 
 
-def _git_hook() -> int:
-    try:
-        branch = _branch(Path.cwd())
-    except (OSError, ValueError) as exc:
-        print(f"Commit blocked: protected-commit classifier failed ({exc}).", file=sys.stderr)
-        return 2
-    if branch not in PROTECTED_BRANCHES:
-        return 0
-    try:
-        with (
-            open("/dev/tty", encoding="utf-8") as terminal_input,
-            open("/dev/tty", "w", encoding="utf-8", buffering=1) as terminal_output,
-        ):
-            terminal_output.write(
-                f"Accidental-commit guard: commit directly to '{branch}'? Type 'yes' to confirm: "
-            )
-            terminal_output.flush()
-            response = terminal_input.readline().rstrip("\n")
-    except OSError as exc:
-        print(
-            f"Commit blocked: {branch} requires interactive confirmation ({exc}).",
-            file=sys.stderr,
-        )
-        return 1
-    if response != "yes":
-        print("Commit blocked: explicit confirmation was not provided.", file=sys.stderr)
-        return 1
-    return 0
-
-
 def main() -> int:
-    if len(sys.argv) != 2 or sys.argv[1] not in {"native", "git-hook"}:
-        print("usage: protected-commit.py {native|git-hook}", file=sys.stderr)
+    if len(sys.argv) != 2 or sys.argv[1] != "native":
+        print("usage: protected-commit.py native", file=sys.stderr)
         return 2
-    return _native_hook() if sys.argv[1] == "native" else _git_hook()
+    return _native_hook()
 
 
 if __name__ == "__main__":

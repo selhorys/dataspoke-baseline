@@ -6,7 +6,6 @@ Requirements: AGENTS.md §Git Commit Convention.
 from __future__ import annotations
 
 import importlib.util
-import io
 import json
 import os
 import shutil
@@ -154,6 +153,24 @@ def test_native_hook_still_fails_closed_for_unparseable_opaque_git_commit(repo: 
     subprocess.run(["git", "-C", repo, "checkout", "-q", "-b", "dev"], check=True)
 
     result = _native(repo, "echo `git commit -m it's-nested`")
+
+    assert result.returncode == 0
+    decision = json.loads(result.stdout)["hookSpecificOutput"]
+    assert decision["permissionDecision"] == "ask"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'echo "$(git commit -m x)"',
+        'printf \'%s\' "$(git commit -m x)"',
+        'VAR="$(git commit -m x)"',
+    ],
+)
+def test_native_hook_flags_quoted_dollar_paren_substitution(repo: Path, command: str) -> None:
+    subprocess.run(["git", "-C", repo, "checkout", "-q", "-b", "dev"], check=True)
+
+    result = _native(repo, command)
 
     assert result.returncode == 0
     decision = json.loads(result.stdout)["hookSpecificOutput"]
@@ -354,242 +371,6 @@ def test_native_hook_normalizes_env_wrappers_with_chdir(
     assert "master" in decision["permissionDecisionReason"]
     assert topic_result.returncode == 0
     assert topic_result.stdout == ""
-
-
-class _Terminal:
-    def __init__(self, response: str) -> None:
-        self.response = io.StringIO(response)
-        self.output = io.StringIO()
-
-    def __enter__(self) -> _Terminal:
-        return self
-
-    def __exit__(self, *_args: object) -> None:
-        pass
-
-    def write(self, value: str) -> int:
-        return self.output.write(value)
-
-    def flush(self) -> None:
-        pass
-
-    def readline(self) -> str:
-        return self.response.readline()
-
-
-class _TTYHandle:
-    def __init__(
-        self,
-        *,
-        response: str = "",
-        events: list[str] | None = None,
-        fail_read: bool = False,
-        fail_write: bool = False,
-        fail_flush: bool = False,
-    ):
-        self.response = io.StringIO(response)
-        self.output = io.StringIO()
-        self.events = events if events is not None else []
-        self.fail_read = fail_read
-        self.fail_write = fail_write
-        self.fail_flush = fail_flush
-
-    def __enter__(self) -> _TTYHandle:
-        return self
-
-    def __exit__(self, *_args: object) -> None:
-        pass
-
-    def readline(self) -> str:
-        self.events.append("read")
-        if self.fail_read:
-            raise OSError("tty read failed")
-        return self.response.readline()
-
-    def write(self, value: str) -> int:
-        self.events.append("write")
-        if self.fail_write:
-            raise OSError("tty write failed")
-        return self.output.write(value)
-
-    def flush(self) -> None:
-        self.events.append("flush")
-        if self.fail_flush:
-            raise OSError("tty flush failed")
-
-
-@pytest.mark.parametrize(("response", "expected"), [("yes\n", 0), ("no\n", 1), ("YES\n", 1)])
-def test_git_fallback_requires_exact_confirmation(
-    classifier: ModuleType,
-    monkeypatch: pytest.MonkeyPatch,
-    response: str,
-    expected: int,
-) -> None:
-    monkeypatch.setattr(classifier, "_branch", lambda _cwd: "dev")
-    terminal = _Terminal(response)
-    monkeypatch.setattr("builtins.open", lambda *_args, **_kwargs: terminal)
-
-    assert classifier._git_hook() == expected
-
-
-def test_git_fallback_uses_separate_nonseeking_tty_handles(
-    classifier: ModuleType, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(classifier, "_branch", lambda _cwd: "dev")
-    events: list[str] = []
-    terminal_input = _TTYHandle(response="yes\n", events=events)
-    terminal_output = _TTYHandle(events=events)
-    calls: list[tuple[str, str]] = []
-
-    def open_tty(path: str, mode: str = "r", **_kwargs: object) -> _TTYHandle:
-        calls.append((path, mode))
-        return terminal_input if mode == "r" else terminal_output
-
-    monkeypatch.setattr("builtins.open", open_tty)
-
-    assert classifier._git_hook() == 0
-    assert calls == [("/dev/tty", "r"), ("/dev/tty", "w")]
-    assert all("+" not in mode for _, mode in calls)
-    assert "Type 'yes' to confirm" in terminal_output.output.getvalue()
-    assert events == ["write", "flush", "read"]
-
-
-@pytest.mark.parametrize("failure", ["input-open", "output-open", "read", "write", "flush"])
-def test_git_fallback_fails_closed_for_each_tty_operation(
-    classifier: ModuleType,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    failure: str,
-) -> None:
-    monkeypatch.setattr(classifier, "_branch", lambda _cwd: "master")
-    terminal_input = _TTYHandle(response="yes\n", fail_read=failure == "read")
-    terminal_output = _TTYHandle(fail_write=failure == "write", fail_flush=failure == "flush")
-
-    def open_tty(_path: str, mode: str = "r", **_kwargs: object) -> _TTYHandle:
-        if failure == "input-open" and mode == "r":
-            raise OSError("tty input open failed")
-        if failure == "output-open" and mode == "w":
-            raise OSError("tty output open failed")
-        return terminal_input if mode == "r" else terminal_output
-
-    monkeypatch.setattr("builtins.open", open_tty)
-
-    assert classifier._git_hook() == 1
-    assert "requires interactive confirmation" in capsys.readouterr().err
-
-
-def test_git_fallback_blocks_without_tty(
-    classifier: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setattr(classifier, "_branch", lambda _cwd: "master")
-
-    def no_terminal(*_args: object, **_kwargs: object) -> None:
-        raise OSError("no controlling terminal")
-
-    monkeypatch.setattr("builtins.open", no_terminal)
-
-    assert classifier._git_hook() == 1
-    assert "requires interactive confirmation" in capsys.readouterr().err
-
-
-def test_git_fallback_allows_other_branches_without_opening_tty(
-    classifier: ModuleType, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(classifier, "_branch", lambda _cwd: "topic")
-
-    def unexpected_open(*_args: object, **_kwargs: object) -> None:
-        pytest.fail("unprotected branches must not prompt")
-
-    monkeypatch.setattr("builtins.open", unexpected_open)
-
-    assert classifier._git_hook() == 0
-
-
-def _installer_fixture(tmp_path: Path) -> Path:
-    repository = tmp_path / "install-repo"
-    (repository / "scaffold/bin").mkdir(parents=True)
-    (repository / "scaffold/hooks").mkdir()
-    (repository / ".githooks").mkdir()
-    shutil.copy2(ROOT / "scaffold/bin/install-git-hooks.sh", repository / "scaffold/bin")
-    shutil.copy2(ROOT / "scaffold/hooks/protected-commit.py", repository / "scaffold/hooks")
-    shutil.copy2(ROOT / "scaffold/hooks/run-protected-commit.sh", repository / "scaffold/hooks")
-    shutil.copy2(ROOT / ".githooks/pre-commit", repository / ".githooks")
-    subprocess.run(["git", "init", "-q", repository], check=True)
-    return repository
-
-
-def test_installer_is_idempotent(tmp_path: Path) -> None:
-    repository = _installer_fixture(tmp_path)
-    installer = repository / "scaffold/bin/install-git-hooks.sh"
-
-    first = subprocess.run([installer], text=True, capture_output=True, check=False)
-    second = subprocess.run([installer], text=True, capture_output=True, check=False)
-
-    assert first.returncode == 0
-    assert second.returncode == 0
-    configured = subprocess.run(
-        ["git", "-C", repository, "config", "--local", "--get", "core.hooksPath"],
-        text=True,
-        capture_output=True,
-        check=True,
-    )
-    assert configured.stdout.strip() == ".githooks"
-
-
-def test_installer_refuses_existing_different_hook_path(tmp_path: Path) -> None:
-    repository = _installer_fixture(tmp_path)
-    subprocess.run(
-        ["git", "-C", repository, "config", "--local", "core.hooksPath", "company-hooks"],
-        check=True,
-    )
-
-    result = subprocess.run(
-        [repository / "scaffold/bin/install-git-hooks.sh"],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode == 1
-    assert "refusing to overwrite" in result.stderr
-    configured = subprocess.run(
-        ["git", "-C", repository, "config", "--local", "--get", "core.hooksPath"],
-        text=True,
-        capture_output=True,
-        check=True,
-    )
-    assert configured.stdout.strip() == "company-hooks"
-
-
-def test_installed_git_hook_allows_topic_and_blocks_protected_without_tty(tmp_path: Path) -> None:
-    repository = _installer_fixture(tmp_path)
-    installer = repository / "scaffold/bin/install-git-hooks.sh"
-    subprocess.run([installer], check=True, capture_output=True, text=True)
-    subprocess.run(["git", "-C", repository, "config", "user.name", "Test User"], check=True)
-    subprocess.run(
-        ["git", "-C", repository, "config", "user.email", "test@example.invalid"], check=True
-    )
-    subprocess.run(["git", "-C", repository, "checkout", "-q", "-b", "topic"], check=True)
-
-    unprotected = subprocess.run(
-        ["git", "-C", repository, "commit", "--allow-empty", "-m", "topic commit"],
-        text=True,
-        capture_output=True,
-        check=False,
-        start_new_session=True,
-    )
-    subprocess.run(["git", "-C", repository, "checkout", "-q", "-b", "dev"], check=True)
-    protected = subprocess.run(
-        ["git", "-C", repository, "commit", "--allow-empty", "-m", "dev commit"],
-        text=True,
-        capture_output=True,
-        check=False,
-        start_new_session=True,
-    )
-
-    assert unprotected.returncode == 0, unprotected.stderr
-    assert protected.returncode != 0
-    assert "requires interactive confirmation" in protected.stderr
 
 
 def test_native_hook_configuration_shapes() -> None:

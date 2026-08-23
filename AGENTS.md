@@ -68,17 +68,13 @@ In spec, focus on architecture, decisions, and constraints. From spec, remove ve
   Claude Code `PreToolUse` hook requests native approval for recognized `git commit` commands on
   `dev` or `master`. Codex has no project hook; its parent agent must use the native approval or
   user-question interface immediately before committing on either branch.
-- Install the advisory direct-Git fallback per clone with `./scaffold/bin/install-git-hooks.sh`.
-  It prompts for the exact response `yes` before a commit on `dev` or `master`. Client-side hooks
-  are not an authorization boundary: `--no-verify`, an alternate `core.hooksPath`, or PTY automation
-  can bypass them. Coding agents must never use or automate those bypasses.
 - Immediately before a coding agent commits on `dev` or `master`, it must obtain explicit user
   approval through the coding client's native approval interface. Approval for planning or editing
-  is not commit approval. Direct human Git usage receives the fallback terminal prompt when installed.
-- The Claude and Git guards are advisory and repository-writable. Their shared classifier recognizes
-  common shell forms conservatively but is not a complete shell grammar or security boundary. Users
-  must trust the checked-out hook files before enabling them; agents must follow this policy even
-  when a command form or client does not trigger a hook.
+  is not commit approval.
+- The Claude guard is advisory and repository-writable. Its classifier recognizes common shell forms
+  conservatively but is not a complete shell grammar or security boundary. Users must trust the
+  checked-out hook files before enabling them; agents must follow this policy even when a command
+  form or client does not trigger a hook.
 
 ## Implementation Workflow
 

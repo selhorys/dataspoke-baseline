@@ -59,18 +59,11 @@ scoped commit-approval guards. Claude Code's `PreToolUse` binding calls the shar
 `git commit` may target `dev` or `master`. Codex has no project hook: the Codex parent follows
 `AGENTS.md` and invokes its native approval or user-question UI immediately before committing.
 Matching Claude input, invocation, branch-resolution, and classifier faults block instead of
-silently allowing a commit.
+silently allowing a commit. Lint, typecheck, integration validation, and agent lifecycle gates
+remain explicit commands rather than hooks. The statusline remains Claude-specific presentation.
 
-For direct Git clients, `./scaffold/bin/install-git-hooks.sh` idempotently configures the clone's
-`core.hooksPath` to `.githooks`; the `pre-commit` fallback requires the exact terminal response
-`yes` on the same branches. This fallback prevents ordinary accidents, but is not an authorization
-boundary: Git permits `--no-verify`, alternate hook paths, and PTY automation. Repository policy
-forbids coding agents from using those bypasses. Lint, typecheck, integration validation, and agent
-lifecycle gates remain explicit commands rather than hooks. The statusline remains Claude-specific
-presentation.
-
-Both hook layers are advisory and writable from the repository. The classifier handles ordinary
-shell chaining, directories, and wrappers conservatively, but it is heuristic rather than a full
-shell grammar. A trusted checkout is required before enabling or accepting either hook. Native
-client policy remains authoritative when shell syntax, aliases, functions, or another client falls
-outside the recognized forms.
+The classifier is advisory and writable from the repository. It handles ordinary shell chaining,
+directories, and wrappers conservatively, but it is heuristic rather than a full shell grammar. A
+trusted checkout is required before enabling or accepting the hook. Native client policy remains
+authoritative when shell syntax, aliases, functions, or another client falls outside the recognized
+forms.

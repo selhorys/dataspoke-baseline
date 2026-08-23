@@ -40,13 +40,11 @@ if '__pycache__' in hook_entries:
     hook_entries.remove('__pycache__')
 assert hook_entries == allowed_hook_entries, \
     'only shared protected-commit hook implementations are allowed'
-assert {p.name for p in pathlib.Path('.githooks').iterdir()} == {'pre-commit'}, \
-    'only the protected-branch pre-commit fallback is allowed'
+assert not pathlib.Path('.githooks').exists(), \
+    'the direct-Git commit-approval fallback must not be reintroduced'
 for path in (
     pathlib.Path('scaffold/hooks/protected-commit.py'),
     pathlib.Path('scaffold/hooks/run-protected-commit.sh'),
-    pathlib.Path('scaffold/bin/install-git-hooks.sh'),
-    pathlib.Path('.githooks/pre-commit'),
 ):
     assert path.stat().st_mode & 0o111, f'{path}: hook entrypoint must be executable'
 prauto_workflows = {
@@ -125,7 +123,7 @@ PY
 }
 
 for script in scaffold/bin/*.sh; do bash -n "$script"; done
-for script in scaffold/hooks/*.sh .githooks/*; do sh -n "$script"; done
+for script in scaffold/hooks/*.sh; do sh -n "$script"; done
 if rg -n '/Users/[^/]+/|\.Codex|\.Claude' .codex .agents scaffold .claude \
   --glob '!settings.local.json' --glob '!check-bindings.sh' --glob '!**/workflows/**'; then
   echo 'non-portable personal or case-incorrect path found' >&2
