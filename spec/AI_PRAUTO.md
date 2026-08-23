@@ -719,6 +719,11 @@ cronjob(action="create", name="$PRAUTO_LOOP_MASTER_HERMES_NAME",
 > concurrency gate → load config → agent availability (Claude, else Codex) → claim work →
 > derive phase from GitHub → dispatch. Spawn the worker as a background `terminal` process
 > (`background=true`, `notify_on_complete=true`); never use `delegate_task` for the worker.
+> Before spawning, translate the dispatched phase's row in `spec/AI_PRAUTO.md §Worker Agent
+> Invocation`'s tool table into the worker's actual CLI flags: `--allowedTools`/`--disallowedTools`
+> from the phase's allowed tools and the standing denylist, `--max-turns` from that phase's
+> `PRAUTO_MAX_TURNS_*`, and `--dangerously-skip-permissions` so the unattended run doesn't block
+> on a permission prompt. Never spawn a worker without these flags set from the phase table.
 > GitHub labels and comments are the single source of truth; derive everything from them. If
 > no issue needs work, exit cleanly and spawn nothing. End with a one-line tick summary.
 
