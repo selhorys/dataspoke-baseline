@@ -6,7 +6,8 @@ metadata:
 ---
 
 `helm-charts/bin/health-check.sh` is the gate five consumers branch on
-(`.claude/hooks/preflight-integration-tests.sh`, `.prauto/lib/phases.sh`,
+(`.claude/hooks/preflight-integration-tests.sh`, the PRauto loop master
+(`spec/AI_PRAUTO.md §Dev Cluster and Deploys`),
 `.claude/skills/{k8s-deploy/SKILL.md,test-manual-api-wired/SKILL.md,
 test-manual-ui/helpers/preflight.sh}`).
 
@@ -56,8 +57,9 @@ covers the stall case.**
 
 1. **`exit` inside the sourced env file bypasses everything.** An env file whose
    first line is `exit 0` makes the script exit **0** with no banner and no
-   probes — the hook then writes its 60s bypass marker and `.prauto` logs
-   "health check passed"; `exit 1` makes `.prauto` provision a GKE cluster. The
+   probes — the hook then writes its 60s bypass marker and the PRauto loop
+   master logs "health check passed"; `exit 1` makes the loop master provision
+   a GKE cluster. The
    env file is `source`d, so it is already RCE-trusted; this is a
    contract/spec-accuracy gap. `HELM_CHART.md §Health Check` states the exit-2
    rule as admitting no exceptions. Catch-all fix is a region-scoped
@@ -123,9 +125,7 @@ covers the stall case.**
 hook's `if` filter, its timeout, the permission allow/deny lists),
 `.claude/agent-memory/**` (checked-in evaluator memory, writable by any
 generator), `.claude/skills/test-manual-*/**` (one is an executable exit-code
-consumer), `.claude/skills/prauto-check-status/**` (its `status.sh` still
-`echo -e`s GitHub issue titles — the #170 escape-expansion class, into an
-agent's context), `spec/AI_PRAUTO.md`. `.claude/hooks/**` was added 2026-08-15.
+consumer), `spec/AI_PRAUTO.md`. `.claude/hooks/**` was added 2026-08-15.
 
 **How to apply:** on any diff to the script or its doc surfaces
 (`HELM_CHART.md §Health Check`, `README.md §Health check`, `TESTING.md

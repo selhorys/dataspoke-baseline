@@ -36,17 +36,9 @@ CLI-agnostic terms. Under Claude Code specifically:
 - For standalone spec authoring outside an implementation run, use `/spec-write` directly; inside
   a run the `spec` subagent (step 4) covers it.
 
-## Testing prauto
-
-Due to Claude's nested-run limit, testing `.prauto/heartbeat.sh` from inside a Claude Code session requires unsetting the `CLAUDECODE` env var:
-
-```bash
-env -u CLAUDECODE bash -x .prauto/heartbeat.sh
-```
-
 ## Claude Code Configuration
 
-**Skills**: `k8s-work`, `spec-write`, `datahub-api`, `prauto-check-status`, `prauto-run-heartbeat`, `k8s-deploy`, `ref-setup`, `spec-sync-with-impl`, `spec-harmonize`, `spec-reduce`, `spec-to-bulk-issue`, `test-manual-api-wired`, `test-manual-ui` (browser-driven sibling — manual UC walkthrough with UI+backend dual confirmation)
+**Skills**: `k8s-work`, `spec-write`, `datahub-api`, `k8s-deploy`, `ref-setup`, `spec-sync-with-impl`, `spec-harmonize`, `spec-reduce`, `spec-to-bulk-issue`, `test-manual-api-wired`, `test-manual-ui` (browser-driven sibling — manual UC walkthrough with UI+backend dual confirmation)
 _(Note: `datahub-api` requires `ref/github/datahub/` — run `/ref-setup` once if not present.)_
 **Subagents**: `reviewer`, `test-reviewer`, `security-reviewer`, and `spec-reviewer` are read-only
 evaluators; the remaining role agents are generators. Each binding points to

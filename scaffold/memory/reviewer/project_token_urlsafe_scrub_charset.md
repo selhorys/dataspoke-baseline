@@ -14,7 +14,7 @@ that fully redacts only ~26% of real tokens: ~71% leak a tail, ~3% don't match a
 with a special char) and leak whole. The JWT rule in the same scrubber correctly uses
 `[A-Za-z0-9_-]`, so the mismatch is easy to spot.
 
-**How to apply:** When reviewing any secret scrubber/redactor (e.g. `.prauto/lib/pr.sh scrub_secrets`),
+**How to apply:** When reviewing any secret scrubber/redactor,
 verify the token-body charset matches the real generator's alphabet. For token_urlsafe secrets the
 charset must be `[A-Za-z0-9_-]+`, not `[A-Za-z0-9]+`. Also check bare (non-`dsk_`) reset tokens,
 Basic-auth base64, and `ghp_`/`sk-ant-` shapes if the scrubbed output can carry them. Prove leak rate

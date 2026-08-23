@@ -1,9 +1,20 @@
 # PRauto: Autonomous PR Worker
 
-> **Document Status**: Specification v0.7 (2026-07-17)
+> **Document Status**: Specification v0.8 (2026-08-23)
 > This document specifies "prauto" -- an autonomous PR worker that monitors GitHub issues,
-> writes code via Claude Code CLI, and submits pull requests. Prauto extends the AI scaffold
-> (`spec/AI_SCAFFOLD.md`) with unattended, cron-driven development automation.
+> writes code via a headless coding-agent CLI, and submits pull requests. Prauto extends the AI
+> scaffold (`spec/AI_SCAFFOLD.md`) with unattended, scheduled development automation.
+
+> **Architecture note (v0.8)**: Prauto is re-specified as a **loop master + contract** split.
+> The *contract* (labels, phase state machine, the evidence-based plan gate, generator ≠ reviewer,
+> deploy ordering, GitHub-as-SSOT, the security model) is substrate-independent and durable. The
+> *loop* (scheduling, agent selection, worker dispatch, quota probing) was previously a
+> hand-rolled bash harness (`.prauto/heartbeat.sh` + `lib/*.sh`), removed in v0.8. It is replaced
+> by a **loop master** — a scheduler-triggered meta-agent that wakes on a cadence, picks a coding
+> agent (Claude Code, falling back to Codex), and spawns worker/reviewer processes. The contract
+> below
+> is written agent-agnostically; a reference loop-master binding (Hermes Agent) is in
+> [Meta-Agent Loop Bindings](#meta-agent-loop-bindings).
 
 ---
 
@@ -11,17 +22,17 @@
 
 1. [Overview](#overview)
 2. [Worker Identity and Configuration](#worker-identity-and-configuration)
-3. [Heartbeat Cycle](#heartbeat-cycle)
-4. [Token Quota Checking](#token-quota-checking)
+3. [Loop Master Cycle](#loop-master-cycle)
+4. [Agent Availability](#agent-availability)
 5. [Job State Machine](#job-state-machine)
 6. [Issue Discovery Protocol](#issue-discovery-protocol)
-7. [Claude Code Invocation](#claude-code-invocation)
+7. [Worker Agent Invocation](#worker-agent-invocation)
 8. [Dev Cluster and Deploys](#dev-cluster-and-deploys)
 9. [PR Lifecycle](#pr-lifecycle)
 10. [Write Idempotency](#write-idempotency)
 11. [Security Model](#security-model)
 12. [Integration with AI Scaffold](#integration-with-ai-scaffold)
-13. [Future: GitHub Actions Migration](#future-github-actions-migration)
+13. [Meta-Agent Loop Bindings](#meta-agent-loop-bindings)
 
 ---
 
@@ -29,31 +40,43 @@
 
 ### What prauto is
 
-Prauto is a cron-triggered bash-based worker that automates the issue-to-PR pipeline. Each
-heartbeat:
+Prauto is a scheduled, unattended worker that automates the issue-to-PR pipeline. Each wake:
 
-1. Checks whether Claude Code API tokens are available
+1. Checks whether a coding agent is available (Claude Code, else Codex; else exit)
 2. Claims new work if under `PRAUTO_OPEN_ISSUE_LIMIT`
 3. Processes **all** claimed issues (oldest first), each via a self-contained state machine
 
-Directory structure and files live in `.prauto/`. See `AI_SCAFFOLD.md §Prauto` for a summary;
-see the directory itself for current structure.
+Two layers, with different lifespans and owners:
+
+- **Contract** — GitHub labels, the phase state machine, the evidence-based plan gate, the
+  generator ≠ reviewer rule, deploy ordering, and the security model. This is the part that
+  survives any re-implementation; it is specified here.
+- **Loop** — the scheduler trigger, agent selection, subagent dispatch, and quota probing. This
+  is provided by a **loop master**; a reference binding is described in
+  [Meta-Agent Loop Bindings](#meta-agent-loop-bindings).
 
 ### Key design decisions
 
-- **GitHub as single source of truth**: Every heartbeat derives its next action from **remote
-  GitHub state** (labels, assignees, comments, review status). Local state files exist for
-  debugging only.
-- **No `--resume`**: Every Claude session starts fresh. The implementation prompt instructs
-  Claude to check the branch for existing work and continue from there.
+- **GitHub as single source of truth**: Every wake derives its next action from **remote
+  GitHub state** (labels, assignees, comments, review status). Local state, where any exists, is
+  for debugging only. This principle matters *more* under a meta-agent loop than under a
+  long-lived bash worker: a scheduler tick is a fresh process with no in-memory carryover, so
+  "derive everything from GitHub, keep nothing in memory" is the only thing that makes the loop
+  resumable across ticks.
+- **No resume, by default**: Each worker session starts fresh. The implementation prompt
+  instructs the agent to check the branch for existing committed work and continue from there.
+  Uncommitted work from a session that died mid-run is invisible to this mechanism and is
+  restarted, not resumed.
 - **Ready-label timestamp as lifecycle anchor**: When `prauto:ready` is set (or re-set), the
   timestamp of that label event marks the start of the current lifecycle. All comment-scanning
-  functions ignore comments before it, enabling clean restarts without manual cleanup.
+  ignores comments before it, enabling clean restarts without manual cleanup.
 
 ### Execution environment
 
-Runs on a local developer machine. Requires: `claude` CLI (authenticated), `gh` CLI
-(authenticated), `git`, `jq`, and `cron`. Docker/K8s/cloud deployments are out of scope for v1.
+Runs on a local developer machine. Requires: a coding-agent CLI with a logged-in account
+(Claude Code and/or Codex — both use login-based OAuth, not API tokens), the `gh` CLI
+(authenticated), `git`, and a scheduler capable of waking the loop master (cron, launchd, or a
+meta-agent scheduler). Docker/K8s/cloud deployments are out of scope for v1.
 
 ---
 
@@ -64,48 +87,74 @@ Runs on a local developer machine. Requires: `claude` CLI (authenticated), `gh` 
 | File | Committed | Purpose |
 |------|-----------|---------|
 | `config.env` | Yes | Repo-level conventions: labels, branch prefix, max retries, model, org-member filter, reviewer |
-| `config.local.env` | No | Instance identity (`PRAUTO_WORKER_ID`), Claude turn/budget limits, `ANTHROPIC_API_KEY`, `GH_TOKEN` |
+| `config.local.env` | No | Instance identity (`PRAUTO_WORKER_ID`), agent choice and turn/budget limits, dev-cluster binding, `ANTHROPIC_API_KEY`, `GH_TOKEN` |
 
 A single machine may run multiple prauto instances (distinct worker IDs) sharing the same
 GitHub credential. If `ANTHROPIC_API_KEY` or `GH_TOKEN` is empty, CLIs fall back to system
 authentication.
 
+`PRAUTO_AGENT` (new in v0.8) selects the worker's coding agent: `claude` (default), `codex`, or
+`auto` (Claude first, Codex fallback — see [Agent Availability](#agent-availability)). The
+turn/budget limits in `config.local.env` are per-agent: `PRAUTO_*_MAX_TURNS_*` and
+`PRAUTO_*_MAX_BUDGET_*` apply to whichever agent is selected; an agent that does not support a
+given cap (e.g. Codex has no `--max-budget-usd`) ignores it.
+
 ---
 
-## Heartbeat Cycle
+## Loop Master Cycle
 
-Each heartbeat runs seven steps in order:
+Each wake runs seven steps in order. The loop master owns every step; the worker/reviewer
+subagents only run when dispatched in step 6.
 
-1. Acquire the PID-based lock (exit if already held).
-2. Load `config.env` + `config.local.env`.
-3. Secure secrets — back up `config.local.env` (a backup for restore, not a containment boundary;
-   see [Security Model](#security-model)).
-4. Check token quota — exit if exhausted; post a quota-paused comment on WIP issues.
-5. Claim a new issue if under `PRAUTO_OPEN_ISSUE_LIMIT`.
-6. Process all claimed issues (oldest first, self-contained state machine per issue):
-   `prauto:done`/`prauto:failed` skip, `prauto:wip` derives phase and handles, `prauto:review`
-   squash-finalizes or addresses feedback.
-7. Restore secrets and release the lock (EXIT trap).
+1. **Concurrency gate** — exit if a worker subagent is already running or pending (a prior
+   tick's worker that is mid-run or waiting out a token reset). Enforced by the loop master's
+   live-subagent inventory plus a durable marker; see [Security Model](#security-model).
+2. **Load config** — `config.env` + `config.local.env`.
+3. **Agent availability** — pick Claude Code, else Codex, else exit and post a
+   quota-paused comment on WIP issues. See [Agent Availability](#agent-availability).
+4. **Claim a new issue** if under `PRAUTO_OPEN_ISSUE_LIMIT`.
+5. **Process all claimed issues** (oldest first, self-contained state machine per issue):
+   `prauto:done`/`prauto:failed` skip, `prauto:wip` derives phase and dispatches a worker
+   subagent for the actionable phase, `prauto:review` squash-finalizes or addresses feedback.
+6. **Dispatch** — one worker subagent per actionable issue (analysis, implementation,
+   integration-fix), then a reviewer subagent over the worker's diff where the contract calls
+   for adversarial review (implementation).
+7. **Finalize** — the loop master (not the worker) pushes, opens/updates PRs, posts test
+   results, and swaps labels.
 
-**Claim-first, then process-all**: Step 5 counts open issues assigned to this worker (excluding
-ready-only restarted issues). If under limit, claims the oldest `prauto:ready` issue. Step 6
+**Claim-first, then process-all**: Step 4 counts open issues assigned to this worker (excluding
+ready-only restarted issues). If under limit, claims the oldest `prauto:ready` issue. Step 5
 loops over all claimed issues.
 
-**Worktree isolation**: Every Claude session runs in a dedicated git worktree. The main repo
-directory is never the working directory during Claude invocations.
+**Worktree isolation**: Every worker session runs in a dedicated git worktree. The main repo
+directory is never the working directory during worker invocations.
 
-**Cron**: Recommended every 30 minutes during working hours.
+**Cadence**: The user-specified interval (default 4 hours). The schedule is owned by the
+scheduler trigger (cron / launchd / meta-agent scheduler), not by `config.local.env`.
 
 ---
 
-## Token Quota Checking
+## Agent Availability
 
-Two-step probe: (1) `claude auth status`, (2) minimal 1-turn dry-run. If either fails with
-quota error, heartbeat exits.
+The loop master probes agent availability with a two-step check per candidate, in order:
 
-- No WIP issue: exit cleanly, retry next heartbeat
-- WIP issue exists: post "Paused" comment (with marker), exit. Retry counter not incremented.
-- On next heartbeat (quota restored): post "Resumed" comment before continuing.
+1. **Claude Code**: `claude auth status` (checks a logged-in OAuth session), then a minimal
+   one-turn dry-run (`claude -p "Reply with exactly: OK" --max-turns 1 --allowedTools ""`).
+2. **Codex**: presence of a CLI OAuth session (`~/.codex/auth.json`), then a minimal dry-run
+   (`codex exec "Reply with exactly: OK"`).
+
+Both agents are authenticated by **login-based subscription accounts, not API tokens**, so the
+probe must invoke the CLI itself — there is no token to inspect out-of-band. If `PRAUTO_AGENT`
+is `claude` or `codex`, only that agent is probed; `auto` probes Claude then Codex.
+
+Outcomes:
+
+- An agent passes → it is selected for this wake.
+- Neither passes → the loop master exits. If a WIP issue exists, post a "Paused" comment
+  (with marker); the retry counter is not incremented. On the next wake with an agent
+  available, post "Resumed" before continuing.
+
+A dry-run timeout (network slowness) is **not** treated as exhausted — proceed anyway.
 
 ---
 
@@ -116,17 +165,17 @@ quota error, heartbeat exits.
 Minor issues flow `analysis → implementation → integration-fix → pr → complete`. Non-minor
 issues insert a `plan-approval` gate between `analysis` and `implementation`; from
 `plan-approval`, an approval advances, a counter-proposal loops back to re-analysis, and no
-response waits until the next heartbeat.
+response waits until the next wake.
 
 Phase is always derived fresh from GitHub -- never read from local state.
 
 | Phase | Description |
 |-------|-------------|
-| `analysis` | Claude reads issue + codebase, produces a plan |
+| `analysis` | Worker reads issue + codebase, produces a plan |
 | `plan-approval` | Wait for human approval (retries not counted) |
-| `implementation` | Claude writes code, runs unit tests, commits |
-| `integration-fix` | Run integration tests; on failure, Claude fixes (up to N attempts) |
-| `pr-review` | Claude addresses reviewer feedback on existing PR |
+| `implementation` | Worker writes code, runs unit tests, commits |
+| `integration-fix` | Run integration tests; on failure, worker fixes (up to N attempts) |
+| `pr-review` | Worker addresses reviewer feedback on existing PR |
 | `pr` | Push branch, create/update PR |
 
 ### The plan gate is evidence-based
@@ -150,11 +199,11 @@ overridden upward; it can never buy a skip the plan's own evidence does not supp
 Reading `### Change Size` straight from the issue body would be the self-classification
 `AGENTS.md` forbids — *never self-classify a task as "trivial" to skip planning* — and by an author
 who has not yet seen the plan. Deferring the judgment to the analysis phase is better evidence, though
-it remains a Claude session classifying its own plan, not an escape from self-classification.
+it remains an agent session classifying its own plan, not an escape from self-classification.
 
 ### Phase derivation from GitHub
 
-On every heartbeat (comment checks scoped to current lifecycle):
+On every wake (comment checks scoped to current lifecycle):
 
 1. PR exists for this branch -> `pr`
 2. `prauto:plan-review` label present -> `plan-approval`
@@ -164,7 +213,7 @@ On every heartbeat (comment checks scoped to current lifecycle):
 
 ### Retry tracking
 
-Each heartbeat posts a marker comment on the issue. `count_heartbeat_comments()` counts markers
+Each wake posts a marker comment on the issue. `count_heartbeat_comments()` counts markers
 within the current lifecycle only (after ready-label timestamp + most recent `Claimed` comment).
 At `PRAUTO_MAX_RETRIES_PER_JOB`, the issue is abandoned. The `plan-approval` phase is exempt.
 
@@ -207,16 +256,20 @@ automatically ignore stale comments from previous attempts.
 
 ---
 
-## Claude Code Invocation
+## Worker Agent Invocation
 
 ### Multi-phase execution model
 
-| Phase | Tools | Max turns |
+The worker is a headless coding-agent session (Claude Code or Codex), one per phase. The loop
+master supplies the phase's goal and bounds; the worker runs the phase's prompt template
+(`.prauto/prompts/`) with the agent's native tool scoping.
+
+| Phase | Tools | Turn cap |
 |-------|-------|-----------|
-| Analysis | Read + Write (plan file only) + limited git | `PRAUTO_CLAUDE_MAX_TURNS_ANALYSIS` |
-| Implementation | Read + Write + Edit + `Agent` + `Workflow` + limited Bash (git; `uv sync`/`uv run` pytest, python3, ruff, mypy; `npm run`, `npx prettier`, `npx tsc`, `npx eslint`, `pnpm`) | `PRAUTO_CLAUDE_MAX_TURNS_IMPLEMENTATION` (parent loop only) |
-| Integration fix | Same as implementation | `PRAUTO_CLAUDE_MAX_TURNS_INTEGRATION_FIX` |
-| PR review | Same as implementation | `PRAUTO_CLAUDE_MAX_TURNS_IMPLEMENTATION` |
+| Analysis | Read + Write (plan file only) + limited git | `PRAUTO_MAX_TURNS_ANALYSIS` |
+| Implementation | Read + Write + Edit + subagents + workflow + limited Bash (git; `uv sync`/`uv run` pytest, python3, ruff, mypy; `npm run`, `npx prettier`, `npx tsc`, `npx eslint`, `pnpm`) | `PRAUTO_MAX_TURNS_IMPLEMENTATION` |
+| Integration fix | Same as implementation | `PRAUTO_MAX_TURNS_INTEGRATION_FIX` |
+| PR review | Same as implementation | `PRAUTO_MAX_TURNS_IMPLEMENTATION` |
 | Squash commit / Feedback response | No tools (text only) | 1 |
 
 **Denylist (all phases)**: `git push`, `rm -rf`, `sudo`, `kubectl`, `helm`, `curl`, `wget`,
@@ -224,17 +277,17 @@ automatically ignore stale comments from previous attempts.
 the parent session only — see [Security Model](#security-model) for what it does and does not
 enforce.
 
-**Branch-based continuity**: On restart, the prompt instructs Claude to check for existing
+**Branch-based continuity**: On restart, the prompt instructs the agent to check for existing
 commits on the branch and continue from there.
 
 ### The implementation phase runs the AGENTS.md workflow
 
 Prauto's implementation phase is the unattended form of `AGENTS.md §Implementation Workflow`
-steps 4–9: it drives `.claude/workflows/wf-minimal.js` (`args = {plan, stages, security}`), which
-runs each reviewed stage as generator → adversarial reviewer → one fix pass on REVISE, escalating
-when a REVISE persists (`k8s-helm` is unreviewed, per step 9). `security-reviewer` runs in parallel
-with `reviewer` on stages named in `security`. The analysis phase emits `stages` (in plan order,
-inner arrays for concurrent stages) and `security` alongside its plan.
+steps 4–9: it drives the generator → adversarial-reviewer → one-fix-pass loop over the plan's
+`stages` (with `security` flagging stages that need `security-reviewer` in parallel). In the
+Claude binding this is `.claude/workflows/wf-minimal.js`; in the Codex binding it is the
+equivalent orchestration expressed in the Codex worker prompt. The analysis phase emits
+`stages` (in plan order, inner arrays for concurrent stages) and `security` alongside its plan.
 
 Review is therefore **per-stage and adversarial** — each generator is evaluated by a separate
 context before later stages build on its output, upholding the generator ≠ reviewer rule that
@@ -252,17 +305,21 @@ the branch holds a partial implementation. Prauto must not carry that forward to
 abandons the job ([Job completion and abandonment](#job-completion-and-abandonment)) rather than
 finalizing.
 
+### Loop-master-owned review gate
+
+In addition to the in-workflow per-stage review, the loop master runs a **final adversarial review
+gate** over the worker's committed diff before the PR is opened: a fresh reviewer subagent — a
+separate context that has not seen the worker's session — reads the diff against
+`scaffold/roles/reviewer.md` and returns a verdict. This is the strengthening that a meta-agent
+loop makes cheap: the reviewer is a genuinely separate process, not an in-session subagent whose
+tool scope the parent whitelist failed to contain. A REVISE verdict feeds one fix pass; an ESCALATE
+abandons the job as above. The gate is mandatory for `implementation`; analysis, integration-fix,
+and pr-review do not re-open it.
+
 Deploys stay orchestrator-owned. Prauto's analysis phase never emits `k8s-helm` as a stage: that
 stage would deploy under whatever its kubeconfig points at, ignoring the worker-cluster binding and
 the api-then-frontend ordering ([Branch image deploys](#branch-image-deploys)), and it carries no
-reviewer. All cluster mutation runs from `.prauto/` against `$PRAUTO_DEV_ENV_FILE`.
-
-**Divergence from the official recommendation**: the Agent SDK, not the CLI, is what Anthropic
-recommends for unattended multi-agent pipelines. Prauto stays on the CLI because prauto is bash,
-and rewriting it around the SDK is a larger change than the automation currently justifies. The
-tradeoff is real and is accepted knowingly: prauto gets no SDK-level session control, and the
-containment gaps in [Security Model](#security-model) are a direct consequence of driving
-multi-agent work through a CLI whose flags bind only the parent.
+reviewer. All cluster mutation runs from the loop master against `$PRAUTO_DEV_ENV_FILE`.
 
 ---
 
@@ -347,8 +404,8 @@ run would only re-prove it at far higher cost.
 
 ### Push and PR creation
 
-After implementation, push branch, check for existing PR, create one if none exists (with
-`prauto:review` label, assignee, optional reviewer).
+After implementation, the loop master (not the worker) pushes the branch, checks for an existing
+PR, and creates one if none exists (with `prauto:review` label, assignee, optional reviewer).
 
 ### PR review handling
 
@@ -360,11 +417,11 @@ make the PR actionable again.
 
 Prauto runs the unattended form of the protocol in [`TESTING.md`](TESTING.md), which is
 authoritative for layers, commands, and constraints. Stages run in order; each is skipped when
-the diff does not reach its layer. Each stage names its **actor**: Claude runs a stage from its
-prompt template inside the session's tool whitelist, while the orchestrator runs a stage from
-`.prauto/` and invokes Claude only for fix sessions.
+the diff does not reach its layer. Each stage names its **actor**: the worker runs a stage from
+its prompt template inside the session's tool whitelist, while the loop master runs a stage
+directly and invokes the worker only for fix sessions.
 
-**Pre-flight gate** *(orchestrator)*: the health check in its
+**Pre-flight gate** *(loop master)*: the health check in its
 [Provisioning](#provisioning) form — `--env-file $PRAUTO_DEV_ENV_FILE --keep-lock` — runs before
 any integration work. On exit 1, prauto provisions its own cluster and re-checks
 ([Provisioning](#provisioning)); the integration and E2E stages are **skipped, not failed** only
@@ -372,30 +429,30 @@ if provisioning fails. On exit 2 it reports the setup fault, provisions nothing,
 stages rather than failing the issue. An unprovisionable cluster is evidence about the
 infrastructure, not the branch, so failing it would burn retries against unrelated code.
 
-**Environment**: the orchestrator's integration and E2E stages source the worker's env file
+**Environment**: the loop master's integration and E2E stages source the worker's env file
 (`$PRAUTO_DEV_ENV_FILE`, resolved under `$REPO_DIR`) via `set -a` (the file carries no `export`
 prefixes) and hold the dev-env lock at `$DATASPOKE_DEV_LOCK_URL`.
 
-**Stage 1 -- Static gates** *(Claude)*: `uv run ruff check src/ tests/` and `uv run mypy src/`,
+**Stage 1 -- Static gates** *(worker)*: `uv run ruff check src/ tests/` and `uv run mypy src/`,
 invoked as **checks, never `--fix`** — prauto verifies the author-run gate rather than mutating
 the diff until it passes. Frontend-touching work adds `npx tsc --noEmit` and `npx eslint src/`
 from `src/frontend/`; diffs touching `tests/e2e/` add `pnpm -C tests/e2e typecheck`. These are
 the four author-run gates of [`TESTING.md §CI Behavior`](TESTING.md#ci-behavior); no
 `.github/workflows/` exists, so they are the only thing standing between prauto and a red `dev`.
 
-**Stage 2 -- Unit** *(Claude)*: `uv run pytest tests/unit/`; frontend-touching work also runs
+**Stage 2 -- Unit** *(worker)*: `uv run pytest tests/unit/`; frontend-touching work also runs
 `pnpm -C src/frontend test` (offline, mocked). Needs no cluster and no lock.
 
-**Stage 3 -- Integration fix loop (pre-push)** *(orchestrator; Claude for fixes)*: after
+**Stage 3 -- Integration fix loop (pre-push)** *(loop master; worker for fixes)*: after
 implementation, under the dev-env lock. A diff touching `src/{api,backend,shared}` deploys the
 branch's API first ([Branch image deploys](#branch-image-deploys)) so the tests reach the
 branch's code rather than a stale image. Then spot (`tests/integration/spot/`) and api-wired
 (`tests/integration/api_wired/`) run as **two separate groups**, never mixed — a mixed run puts
 competing Airflow load on the cluster and flakes on timing. The split binds every integration
-invocation, Stage 5 included. Failures feed Claude's fix loop up to
+invocation, Stage 5 included. Failures feed the worker's fix loop up to
 `PRAUTO_INTEGRATION_FIX_MAX_RETRIES`.
 
-**Stage 4 -- E2E (Playwright)** *(orchestrator; Claude for fixes)*: runs when the diff touches
+**Stage 4 -- E2E (Playwright)** *(loop master; worker for fixes)*: runs when the diff touches
 `src/frontend/`, `tests/e2e/`, or `src/api/` ([Branch image deploys](#branch-image-deploys)), and
 acquires the dev-env lock for its own run, strictly after the integration groups release theirs. It
 deploys the branch's frontend, then runs `pnpm -C tests/e2e test`.
@@ -412,7 +469,7 @@ deploys the branch's frontend, then runs `pnpm -C tests/e2e test`.
   session only on a non-final attempt, so a single attempt runs the suite and reports the result
   without fixing. Raising it buys fix attempts at a full rebuild + redeploy each.
 
-**Stage 5 -- Final test report (post-push)** *(orchestrator)*: runs unit + integration tests —
+**Stage 5 -- Final test report (post-push)** *(loop master)*: runs unit + integration tests —
 integration under Stage 3's two-group split — and posts results as collapsible PR comments.
 
 ### What a green run proves
@@ -435,7 +492,7 @@ against real LLM, Redis, or notification backends.
 **Trigger**: PR has `prauto:review` label, assigned to worker, mergeable, clean, latest review
 APPROVED.
 
-**Steps**: Rebase on base -> generate squash commit message (1-turn Claude, no tools) ->
+**Steps**: Rebase on base -> generate squash commit message (1-turn worker, no tools) ->
 `git reset --soft` + commit -> force-push with lease -> update PR title -> labels to
 `prauto:done` on issue + PR. Does **not** merge or close -- left to the human.
 
@@ -476,56 +533,56 @@ cost of casual misuse and catches accidental and low-effort failure modes, which
 It does not contain a determined or prompt-injected session, and must not be relied on as though
 it does.
 
-The implementation phase grants `Bash(uv run python3 *)`, which is general-purpose code
-execution: a session that shells out from Python reaches every command the denylist names —
-`kubectl`, `helm`, `curl`, `wget`, `git push`. Sessions also run with
-`--dangerously-skip-permissions`, and no path restriction bounds `Write`/`Edit`. The grant is
+The implementation phase grants general-purpose code execution (e.g. `Bash(uv run python3 *)`),
+which is general-purpose code execution: a session that shells out from Python reaches every
+command the denylist names — `kubectl`, `helm`, `curl`, `wget`, `git push`. Sessions also run with
+permissions auto-approved, and no path restriction bounds `Write`/`Edit`. The grant is
 load-bearing (prauto writes Python), so the gap is inherent to the phase's purpose rather than
 an oversight to be patched by trimming the list.
 
-**Delegation removes even the speed bump.** `--allowedTools`/`--disallowedTools` do not propagate
-to subagents; a subagent's own `.claude/agents/<name>.md` frontmatter governs. The project's
-generators (`backend`, `test`, `k8s-helm`) each declare unrestricted `Bash` with no denylist, so
-granting `Agent` means delegated work reaches `kubectl`, `helm`, `git push`, and `curl` directly —
-no reach-around needed. `DENY_TOOLS` binds the parent session and nothing beyond it. The same holds
-for `Read(.prauto/config.local.env)`: a subagent reads that file directly, exposing
+**Delegation removes even the speed bump.** Tool scoping does not propagate to subagents; a
+subagent's own definition governs its tools. The project's generators (`backend`, `test`,
+`k8s-helm`) each declare unrestricted `Bash` with no denylist, so granting subagent delegation
+means delegated work reaches `kubectl`, `helm`, `git push`, and `curl` directly — no reach-around
+needed. The parent denylist binds the parent session and nothing beyond it. The same holds for
+`Read(.prauto/config.local.env)`: a subagent reads that file directly, exposing
 `ANTHROPIC_API_KEY` and `GH_TOKEN`. That denial was never the real boundary regardless — both are
-already exported into every Claude child's environment — so delegation widens an existing exposure
+already exported into every child's environment — so delegation widens an existing exposure
 rather than opening a new one.
 
-Turn and budget caps thin out the same way. `--max-turns` bounds the parent loop only; subagents
-take `maxTurns` from frontmatter and no project agent sets one, so `PRAUTO_CLAUDE_MAX_TURNS_*`
-stops bounding delegated work. Whether `--max-budget-usd` aggregates across subagents is
-**unverified** — treat delegated spend as unbounded until someone establishes otherwise.
+Turn and budget caps thin out the same way. A parent turn cap bounds the parent loop only;
+subagents take their own limits, and no project agent sets one, so `PRAUTO_MAX_TURNS_*` stops
+bounding delegated work. Whether a budget cap aggregates across subagents is **unverified** —
+treat delegated spend as unbounded until someone establishes otherwise.
 
-**The real boundary is the machine the heartbeat runs on and the credentials available to it.**
-Scope those — not the whitelist — when deciding what a prauto instance may reach. The per-worker
-dedicated cluster ([Dev Cluster and Deploys](#dev-cluster-and-deploys)) bounds *where prauto's
-deploys land*: every `install.sh`/`health-check.sh` call carries `--env-file $PRAUTO_DEV_ENV_FILE`
-resolved from `$REPO_DIR`, so even though the branch deploys execute the worktree's own build/deploy
-scripts, a bad chart or a destructive reset lands only on the worker's cluster, and the credentials
-resolved from `$REPO_DIR` stay out of branch-authored reach. It does not bound what a delegated
-session *may* do:
-a subagent with `Bash` inherits the dev machine's kubeconfig and can `kubectl config use-context`
-any cluster the developer can reach. And the binding is only as strong as its configuration — the
-default `PRAUTO_DEV_ENV_FILE` is `helm-charts/.env.dev`, the shared cluster, so containment holds
-only once a worker points it at a dedicated one in `config.local.env`.
+### The meta-agent loop narrows the boundary, and relocates it
+
+The loop-master split changes the trust calculus in one direction: the **reviewer is now a
+separate process** with its own context, so the "generator reviews its own work" escape no longer
+exists — the reviewer subagent was never in the worker's session and inherits no tool grants from
+it. This is a real strengthening of the generator ≠ reviewer rule.
+
+It widens the boundary in another: a meta-agent's worker/reviewer subagents run with the loop
+master's own tool surface (terminal/file access), which is *broader* than prauto's whitelisted
+bash parent. The cluster binding (`$PRAUTO_DEV_ENV_FILE` resolved from `$REPO_DIR`) is therefore
+the only real containment left, and it must be treated as the primary boundary — not the tool
+whitelist.
 
 | Layer | Restriction | Enforced? |
 |-------|-------------|-----------|
-| Claude CLI tools | Phase-specific whitelists | No — speed bump; `uv run python3` reaches around it, `Agent` bypasses it |
+| Coding-agent tools | Phase-specific whitelists | No — speed bump; `uv run python3` reaches around it, subagent delegation bypasses it |
 | Network access | No web fetch, curl, wget | No — `npx`/`pnpm dlx` fetch and execute arbitrary packages |
-| Cluster access | No kubectl, helm for the parent session | No — same reach-around; generators grant `Bash` outright; orchestrator deploys via `install.sh` |
+| Cluster access | No kubectl, helm for the parent session | No — same reach-around; generators grant `Bash` outright; loop master deploys via `install.sh` |
 | Destructive ops | No rm -rf, sudo | No — speed bump only |
-| Git push | Only orchestrator pushes (`git-ops.sh`) | No — speed bump; still valuable (see below) |
+| Git push | Only loop master pushes | No — speed bump; still valuable (see below) |
 | Issue author | Org-member filter (on by default; disable in `config.local.env`) | Yes — `PRAUTO_GITHUB_ISSUE_FROM_ORG_MEMBERS_ONLY` |
-| Turn limits | Per-job caps | Parent only — subagents take `maxTurns` from frontmatter; none set |
-| Budget limits | Per-job cap | Unverified across subagents — `--max-budget-usd` |
-| Concurrency | Max open issues + PID lock | Yes — `PRAUTO_OPEN_ISSUE_LIMIT` (default 1) |
+| Turn limits | Per-job caps | Parent only — subagents take their own limits; none set |
+| Budget limits | Per-job cap | Unverified across subagents |
+| Concurrency | Max open issues + a single live worker per wake | Yes — `PRAUTO_OPEN_ISSUE_LIMIT` (default 1) + the loop master's concurrency gate |
 | Cluster blast radius | Worker-dedicated dev cluster (default points at the shared one) | Partly — `--env-file` from `$REPO_DIR` pins where deploys/resets land, even for the worktree-run deploy scripts; a delegated `Bash` session still reaches any context in the machine's kubeconfig |
-| Secrets | Gitignored + denylist + temp backup | No against delegation — a subagent `Read`s `config.local.env` directly, and `ANTHROPIC_API_KEY`/`GH_TOKEN` are already in the child's environment |
+| Secrets | Gitignored + denylist | No against delegation — a subagent `Read`s `config.local.env` directly, and `ANTHROPIC_API_KEY`/`GH_TOKEN` are already in the child's environment |
 
-**Why the push separation still earns its place**: keeping `git push` out of the prompt's tool
+**Why the push separation still earns its place**: keeping `git push` out of the worker's tool
 vocabulary means a confused or drifting session does not push to an unexpected branch or remote
 in the ordinary course of its work. It is a speed bump against accident, not a control against
 intent.
@@ -536,9 +593,9 @@ This is inherent, not incidental: test code must come from the branch to test th
 stage that runs integration or E2E executes code the branch authored, before a human has read it.
 No arrangement of the deploy removes this; it is the cost of testing a branch at all.
 
-- Branch-authored `conftest.py` and `tests/e2e` package scripts run **as the orchestrator** on the
+- Branch-authored `conftest.py` and `tests/e2e` package scripts run **as the loop master** on the
   dev machine, not inside a builder.
-- The branch's own `install.sh` / `build-image.sh` run **as the orchestrator** during the deploy
+- The branch's own `install.sh` / `build-image.sh` run **as the loop master** during the deploy
   stages, and their `docker build` runs over branch source, so branch build-time content
   (`package.json`, `next.config`, the Dockerfile, the chart) executes on the dev machine and
   in-cluster. This is the accepted cost of testing a branch's infra changes: proving them requires
@@ -556,29 +613,63 @@ one of the branch's choosing.
 
 | Scaffold element | Integration |
 |---|---|
-| `CLAUDE.md` | Gives prauto full project context automatically, including `AGENTS.md` (imported); `AGENTS.md`'s Implementation Workflow is what the implementation phase runs |
-| `.claude/settings.json` | Permission prompts do not apply — sessions run `--dangerously-skip-permissions`; `DENY_TOOLS` is prauto's own layer |
-| `.claude/agents/` | The implementation phase delegates to the generator and reviewer subagents; their frontmatter governs their tools and turns, their bodies point at the canonical role definitions in `scaffold/roles/` |
-| `.claude/workflows/` | `wf-minimal.js` drives the implementation phase's per-stage generate → review cycles |
-| `.claude/skills/` | Available if Claude detects matching context |
+| `CLAUDE.md` / `AGENTS.md` | Gives the worker full project context automatically; `AGENTS.md`'s Implementation Workflow is what the implementation phase runs |
+| `.claude/settings.json` | Permission prompts do not apply — sessions run with permissions auto-approved; the denylist is prauto's own layer |
+| `.claude/agents/` / `.codex/agents/` | The implementation phase delegates to the generator and reviewer subagents; their definitions govern their tools and turns, their bodies point at the canonical role definitions in `scaffold/roles/` |
+| `.claude/workflows/` | `wf-minimal.js` drives the Claude binding's per-stage generate → review cycles (Codex expresses the equivalent orchestration in its worker prompt) |
+| `scaffold/roles/` | Canonical generator/evaluator roles — the loop master's final review gate reads `reviewer.md` directly |
+| `scaffold/contracts/` | `reviewer-verdict.schema.json` is the verdict schema the review gate validates against |
 | `spec/` hierarchy | Analysis phase reads specs per `AGENTS.md` |
 
-Prauto is self-contained in `.prauto/` -- does not modify `.claude/` files. The scaffold serves
+Prauto is self-contained — it does not modify `.claude/` files. The scaffold serves
 interactive sessions; prauto serves unattended automation. The dependency runs one way and is
-load-bearing: prauto's containment and turn bounds for delegated work are whatever
-`.claude/agents/` frontmatter says they are.
+load-bearing: prauto's containment and turn bounds for delegated work are whatever the agent
+definitions say they are.
 
 ---
 
-## Future: GitHub Actions Migration
+## Meta-Agent Loop Bindings
 
-Prauto's design maps directly to `claude-code-action`:
+This section is the reference implementation of the loop layer. It is binding-specific; the
+contract above is the durable part and must hold across any binding.
 
-| Prauto (local) | `claude-code-action` (GH Actions) |
+### Reference binding: Hermes Agent
+
+A meta-agent harness provides the scheduler, the concurrency inventory, and subagent isolation
+that the v0.7 bash harness hand-rolled. The mapping:
+
+| Loop-master step | Hermes primitive |
 |---|---|
-| `heartbeat.sh` (cron) | `schedule:` trigger |
-| `lib/issues.sh` | `issues: [labeled]` event trigger |
-| `prompts/*.md` | `prompt:` / `claude_args:` inputs |
-| `--allowedTools` / `--disallowedTools` | `claude_args:` |
-| `config.env` | Workflow environment variables |
-| `config.local.env` | GitHub Actions secrets |
+| Wake on a cadence | `cronjob` (schedule `every 4h`, `continuity` for cross-tick memory, `attach_to_session` for plan-approval pushes) |
+| Concurrency gate | `delegate_task action='list'` (live children) + a durable marker (a GitHub label or a state file) for "pending token reset" |
+| Agent availability | a `terminal` pre-step running the [Agent Availability](#agent-availability) probes |
+| Spawn worker | `delegate_task` to a `claude-code` or `codex` skill, with the phase goal and bounds; `enabled_toolsets` scopes the child |
+| Spawn reviewer | `delegate_task` to a second subagent (separate context) over the worker's diff |
+| Plan-approval push | `attach_to_session` + `clarify`, or (preferred) the pull model: post the plan comment and poll on the next tick |
+
+The loop master itself is a skill (`prauto-loop-master`) loaded by the cron job; it carries the
+seven-step cycle, the phase-derivation logic, the agent-selection probes, and the dispatch
+contracts. The worker/reviewer prompts are the `.prauto/prompts/` templates, translated into the
+agent's invocation.
+
+**Durability note**: a meta-agent scheduler tick is even less durable than the bash worker was —
+its subagents die on process exit and nothing persists in memory between ticks. The
+GitHub-as-SSOT principle ([Overview](#overview)) is therefore not a nicety but the load-bearing
+resumability mechanism. Do not weaken it when re-binding the loop.
+
+### Other bindings
+
+The contract maps cleanly onto any scheduler that can spawn a headless coding-agent process:
+cron/launchd, GitHub Actions (`claude-code-action` with a
+`schedule:`/`issues: [labeled]` trigger), or a CI runner. Each must reproduce the seven-step
+cycle and the four non-negotiables: GitHub-as-SSOT, the evidence-based plan gate, generator ≠
+reviewer, and the `$REPO_DIR`-anchored cluster binding.
+
+### Migration from the v0.7 bash harness
+
+The v0.7 bash harness (`.prauto/heartbeat.sh` + `lib/*.sh`) and its two operational skills
+(`prauto-run-heartbeat`, `prauto-check-status`) have been removed. The loop master is the sole
+executor. What remains in `.prauto/` is the substrate-independent contract surface: the prompt
+templates (`prompts/*.md`) and the configuration (`config.env`, `config.local.env`). Both the
+former harness and the loop master consume these, so a future re-binding to another scheduler
+(GitHub Actions, a CI runner) reuses them unchanged.

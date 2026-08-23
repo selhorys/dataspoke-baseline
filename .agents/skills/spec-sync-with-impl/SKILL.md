@@ -212,8 +212,8 @@ Present a structured report **before making any changes**:
 
 | # | Side(s) involved | Gap shape | Summary | Proposed default | Options |
 |---|------------------|-----------|---------|------------------|---------|
-| 1 | spec/AI_PRAUTO.md ↔ .prauto/lib/ | undocumented in spec | new module `quota.sh` not mentioned | impl→spec (document) | a) document  b) remove from impl  c) leave flagged |
-| 2 | .prauto/README.md ↔ .prauto/heartbeat.sh | stale reference | prerequisites list outdated | impl→spec (update spec) | a) update spec  b) update impl  c) leave flagged |
+| 1 | spec/AI_PRAUTO.md ↔ .prauto/prompts/ | undocumented in spec | new template `pr-review.md` not mentioned | impl→spec (document) | a) document  b) remove from impl  c) leave flagged |
+| 2 | .prauto/README.md ↔ .prauto/config.env | stale reference | config knob list outdated | impl→spec (update spec) | a) update spec  b) update impl  c) leave flagged |
 | 3 | .agents/skills/k8s-deploy/SKILL.md decl ↔ body | skill declaration drift | argument-hint missing `reset` action | impl→spec (decl update) | a) decl→match body  b) body→match decl  c) leave flagged |
 | 4 | spec/API.md ↔ src/api/routers/ | spec gap in impl (substantial) | endpoint X required, not implemented | leave flagged → implementation workflow | a) plan+generate  b) drop from spec  c) leave flagged |
 
