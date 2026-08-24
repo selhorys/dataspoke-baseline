@@ -2,8 +2,10 @@
 name: spec-sync-with-impl
 description: >-
   Bidirectional sync between DataSpoke specs and implementation. Accepts a
-  preset scope (prauto, ai-scaffold, k8s-deploy, helm-charts, api, ref, backend,
-  frontend, all) or a free-form description of an area (e.g., "recently
+  preset scope (prauto, ai-scaffold, k8s-deploy, helm-charts, plugin,
+  ingestion, validation, ontogen, metagen, governance, auth, dataset,
+  datahub, admin, secrets, events, airflow, frontend-shared, all) or a
+  free-form description of an area (e.g., "recently
   developed backend ingestion secret resolution"). Audits the scope, reports
   the gaps, asks the user which direction to resolve each gap (spec→impl,
   impl→spec, or leave-as-flagged), then applies the chosen edits. Trigger when
@@ -60,22 +62,32 @@ Parse `$ARGUMENTS`:
 Select scope(s) to sync. You can pick presets, free-form, or a mix:
 
 Presets (numbers or keywords, comma-separated):
-  1. all          — All preset scopes that have both spec and impl files
-  2. prauto       — .prauto scripts, prauto-related specs and skills
-  3. ai-scaffold  — CLAUDE.md, .claude/ settings, hooks, agents, all skills
-  4. k8s-deploy   — helm-charts/bin scripts, k8s-deploy skill
-  5. helm-charts  — Helm chart definitions, helm-charts/dev-peripherals/, HELM_CHART spec
-  6. api          — API specs, src/api/ code
-  7. ref          — ref/ setup scripts and reference materials
-  8. backend      — Backend services, shared libs, Airflow workflows
-  9. frontend     — Next.js frontend code
+   1. all              — All preset scopes that have both spec and impl files
+   2. prauto           — .prauto scripts, prauto-related specs and skills
+   3. ai-scaffold      — CLAUDE.md, .claude/ settings, hooks, agents, all skills, ref/ system
+   4. k8s-deploy       — helm-charts/bin scripts, k8s-deploy skill
+   5. helm-charts      — Helm chart definitions, helm-charts/dev-peripherals/, HELM_CHART spec
+   6. plugin           — End-user AI plugin (plugin/, AI_PLUGIN.md)
+   7. ingestion        — UC1: ingestion service, extractors, ingestion DAG, ingestion UI
+   8. validation       — UC2: validation service, assertions, validation UI
+   9. ontogen          — UC3: ontology generation service, LLM debate loop, ontogen DAG, ontogen UI
+  10. metagen          — UC4: metadata generation service, LLM debate loop, metagen DAG, metagen UI
+  11. governance       — UC5: governance metrics service, metrics DAG, governance UI
+  12. auth             — Auth/identity service, tokens, OAuth, login/register/profile UI
+  13. dataset          — Cross-feature dataset service, dataset_filter grammar, data UI
+  14. datahub          — DataHub projection/integration layer (src/backend/datahub/)
+  15. admin            — Admin & peripheral config services, admin/settings UI
+  16. secrets          — Cross-cutting secret resolution (ingestion/LLM/Langfuse/SMTP/DataHub)
+  17. events           — Event catalogue, event schemas, internal event consumer
+  18. airflow          — Airflow client subpackage, DAG catalogue, schedule control
+  19. frontend-shared  — Shared frontend layout/components not owned by one feature
 
 Or describe a free-form scope in plain text, e.g.:
   - "recently developed backend ingestion secret resolution"
   - "Airflow scheduler retry policy"
   - "/api/v1/spoke/governance routes only"
 
-Examples: "1"   "prauto, api"   "2,3,6"   "frontend dataset detail page"
+Examples: "1"   "prauto, ingestion"   "2,3,10"   "frontend dataset detail page"
 ```
 
 Parse the user's reply: split on commas; each item is either a preset (number/keyword) or a free-form description. The directories listed in the preset table are **starting points** — always glob the actual tree to discover what exists. If files have moved or been renamed, follow the real structure rather than these hints.
@@ -85,13 +97,23 @@ Parse the user's reply: split on commas; each item is either a preset (number/ke
 | Scope keyword | Spec side | Impl side |
 |---------------|-----------|-----------|
 | `prauto` | `spec/AI_PRAUTO.md`, prauto-related skill declarations, `.prauto/README.md` | `.prauto/` scripts and libs, prauto-related skill logic bodies |
-| `ai-scaffold` | `spec/AI_SCAFFOLD.md`, `AGENTS.md`, `CLAUDE.md`, all skill declarations across `.agents/skills/` | `scaffold/` (roles/memory/bin), `.claude/` settings/hooks/agents, all skill logic bodies |
+| `ai-scaffold` | `spec/AI_SCAFFOLD.md`, `AGENTS.md`, `CLAUDE.md`, all skill declarations across `.agents/skills/`, ref-setup skill declaration | `scaffold/` (roles/memory/bin), `.claude/` settings/hooks/agents, all skill logic bodies, `ref/` setup scripts and reference materials |
 | `k8s-deploy` | `spec/feature/HELM_CHART.md` (bin/ + workflow sections), k8s-deploy skill declaration, `helm-charts/README.md` | `helm-charts/bin/` scripts, k8s-deploy skill logic body |
 | `helm-charts` | `spec/feature/HELM_CHART.md` | `helm-charts/dataspoke/`, `helm-charts/dev-peripherals/` (incl. `langfuse/`) charts/values/templates/manifests |
-| `api` | `spec/API.md`, `spec/API_DESIGN_PRINCIPLE_en.md`, `src/api/README.md` | `src/api/` routers/schemas/auth/middleware |
-| `ref` | `spec/AI_SCAFFOLD.md` (ref section), ref-setup skill declaration, `ref/README.md` | `ref/` setup scripts and reference materials, ref-setup skill logic body |
-| `backend` | `spec/feature/BACKEND.md`, `BACKEND_LLM.md`, `BACKEND_SCHEMA.md`, `AUTH.md`, `VALIDATION.md`, `SECRET_RESOLUTION.md` | `src/backend/` per-feature services, `src/shared/` (config/db/llm/datahub/models/secrets/vector/graph), `src/workflows/` Airflow DAGs + params |
-| `frontend` | `spec/feature/FRONTEND_BASIC.md` + `FRONTEND_{GOVERNANCE,INGESTION,VALIDATION,ONTOGEN,METAGEN}.md`, `src/frontend/README.md` | `src/frontend/` app routes, components, lib, types |
+| `plugin` | `spec/AI_PLUGIN.md` | `plugin/`, `.claude-plugin/marketplace.json` |
+| `ingestion` | `spec/feature/BACKEND.md` §Ingestion Service + §Custom Extractor Authoring Contract, `spec/feature/FRONTEND_INGESTION.md`, `spec/USE_CASE_en.md` UC1 | `src/backend/ingestion/`, `src/workflows/ingestion.py`, `src/api/routers/spoke/` (ingestion routes), `src/api/schemas/ingestion.py`, `src/frontend/app/(app)/ingestion/` |
+| `validation` | `spec/feature/VALIDATION.md`, `spec/feature/BACKEND.md` §Validation Service, `spec/feature/FRONTEND_VALIDATION.md`, `spec/USE_CASE_en.md` UC2 | `src/backend/validation/`, `src/api/schemas/validation.py`, `src/frontend/app/(app)/validation/` |
+| `ontogen` | `spec/feature/BACKEND_LLM.md` (ontogen sections), `spec/feature/BACKEND.md` §Ontology Generation Service, `spec/feature/FRONTEND_ONTOGEN.md`, `spec/USE_CASE_en.md` UC3 | `src/backend/ontogen/`, `src/workflows/ontogen.py`, `src/api/schemas/ontogen.py`, `src/frontend/app/(app)/ontogen/` |
+| `metagen` | `spec/feature/BACKEND_LLM.md` (metagen sections), `spec/feature/BACKEND.md` §Metadata Generation Service, `spec/feature/FRONTEND_METAGEN.md`, `spec/USE_CASE_en.md` UC4 | `src/backend/metagen/`, `src/workflows/metagen.py`, `src/api/schemas/metagen.py`, `src/frontend/app/(app)/metagen/` |
+| `governance` | `spec/feature/BACKEND.md` §Metrics Service, `spec/API.md` §Governance, `spec/feature/FRONTEND_GOVERNANCE.md`, `spec/USE_CASE_en.md` UC5 | `src/backend/metrics/`, `src/workflows/metrics.py`, `src/api/schemas/metrics.py`, `src/frontend/app/(app)/governance/` |
+| `auth` | `spec/feature/AUTH.md` | `src/backend/auth/`, `src/api/routers/auth.py`, `src/api/auth/`, `src/frontend/app/(public)/{login,register,forgot-password,reset-password,oauth-error}/`, `src/frontend/app/(app)/profile/` |
+| `dataset` | `spec/API.md` §Dataset Service (`/spoke/common/data`, `dataset_filter` grammar) | `src/backend/dataset/`, `src/backend/_dataset_filter.py`, `src/api/schemas/dataset.py`, `src/api/schemas/_dataset_filter.py`, `src/frontend/app/(app)/data/` |
+| `datahub` | `spec/DATAHUB_INTEGRATION.md` | `src/backend/datahub/` |
+| `admin` | `spec/feature/BACKEND.md` (peripheral/admin sections) | `src/backend/admin/`, `src/api/routers/admin.py`, `src/api/schemas/admin.py`, `src/frontend/app/(app)/admin/`, `src/frontend/app/(app)/settings/` |
+| `secrets` | `spec/feature/SECRET_RESOLUTION.md` | `src/backend/admin/*_secret.py`, `src/backend/ingestion/extractors.py` (connector credentials), secret-related templates under `helm-charts/dataspoke/templates/` |
+| `events` | `spec/feature/BACKEND.md` §Event Catalogue + §Querying Events | `src/api/schemas/events.py`, `src/api/routers/internal/` (event consumer), event-producer call sites across `src/backend/` services |
+| `airflow` | `spec/feature/BACKEND.md` §Airflow Client Subpackage + §DAG Catalogue + §Schedule Control + §Concurrency Guards | `src/workflows/airflow/`, `src/workflows/_common.py`, `src/workflows/_stubs.py`, `src/workflows/dags/` |
+| `frontend-shared` | `spec/feature/FRONTEND_BASIC.md` | `src/frontend/` shared layout/components/lib not owned by a single feature domain |
 | `all` | All of the above | All of the above |
 
 - If the user selects `all`, expand to every preset scope that has both spec and impl files present.
