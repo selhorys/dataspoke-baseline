@@ -4,14 +4,17 @@ Prauto is the DataSpoke autonomous PR worker: it monitors GitHub issues labeled 
 produces implementation PRs via a headless coding-agent CLI (Claude Code or Codex), and manages the
 issue-to-PR lifecycle.
 
-The system is a **loop master + contract** split:
+The system is an **executor + scheduler + contract** split:
 
 - **Contract** (this directory, plus `spec/AI_PRAUTO.md`) — the durable, substrate-independent
   rules: GitHub labels, the phase state machine, the evidence-based plan gate, generator ≠
-  reviewer, deploy ordering, and the security model.
-- **Loop master** — the executor. It wakes on a schedule (a Hermes `cronjob`), gates on
-  concurrency, probes agent availability (Claude → Codex fallback), derives phase from GitHub, and
-  dispatches worker/reviewer processes. See the `prauto-loop-master` skill.
+  reviewer, deploy ordering, quota-pause/resume, and the security model.
+- **Executor** — `.prauto/heartbeat.sh` + `.prauto/lib/*.sh`. It implements the tick
+  deterministically: PID lock, config, agent selection, claim, phase derivation, dispatch,
+  finalize, and the quota-pause resume protocol. Run `bash .prauto/heartbeat.sh` for a manual
+  tick.
+- **Scheduler** — a thin Hermes cron job (`prauto-loop-master` skill) that probes the agents,
+  sets `PRAUTO_AGENT` to the winner, and invokes the executor.
 
 See `spec/AI_PRAUTO.md` for the full specification.
 
@@ -19,17 +22,17 @@ See `spec/AI_PRAUTO.md` for the full specification.
 
 | Path | Purpose |
 |------|---------|
+| `heartbeat.sh` | The executor entrypoint (one wake of the tick) |
+| `lib/*.sh` | Executor modules: `helpers` (logging), `state` (lock/reset), `quota` (agent probe + pause/resume), `agent` (dispatch), `issues` (SSOT readers), `git-ops` (worktrees), `pr` (PR lifecycle), `phases` (phase handlers) |
 | `config.env` | Repo-level conventions (committed): labels, branch prefix, max retries, model, org-member filter, reviewer |
 | `config.local.env` | Instance identity + secrets (gitignored): `PRAUTO_WORKER_ID`, `PRAUTO_AGENT`, dev-cluster binding, `GH_TOKEN`, `ANTHROPIC_API_KEY` |
 | `config.local.env.example` | Committed template for `config.local.env` |
-| `prompts/*.md` | Worker phase prompt templates (analysis, implementation, integration-fix, e2e-fix, pr-review, squash-commit, feedback-response, system-append) — consumed by the loop master's worker dispatch |
+| `prompts/*.md` | Worker phase prompt templates (analysis, implementation, integration-fix, e2e-fix, pr-review, squash-commit, feedback-response, system-append) — consumed by the executor's dispatch |
 | `state/` | Runtime state (gitignored) — session artifacts and logs |
 | `worktrees/` | Per-issue git worktrees (gitignored) |
 
-The v0.7 bash harness (`heartbeat.sh` + `lib/*.sh`) and its two operational skills
-(`prauto-run-heartbeat`, `prauto-check-status`) have been removed. The loop master is the sole
-executor; what remains here is the contract surface both the former harness and the loop master
-consume.
+The executor is self-contained: `bash .prauto/heartbeat.sh` runs a full tick (it selects the
+agent itself when `PRAUTO_AGENT` is unset or `auto`).
 
 ## Prerequisites
 
@@ -56,11 +59,14 @@ absent.
 | `PRAUTO_MAX_RETRIES_PER_JOB` | `3` | Heartbeat-marked attempts before abandonment |
 | `PRAUTO_DEV_ENV_FILE` | `helm-charts/.env.dev` | This worker's dedicated dev-cluster env file; resolves under the repo checkout, never a worktree |
 | `PRAUTO_GITHUB_ISSUE_FROM_ORG_MEMBERS_ONLY` | `true` | Restrict `prauto:ready` pickup to org members |
+| `PRAUTO_GITHUB_EXPECTED_ACTOR` | (optional) | The GitHub login the executor must authenticate as; the executor aborts if `gh api user` resolves to anything else — the guard against a comment/label/assignee being attributed to the keyring account instead of the worker |
+| `PRAUTO_QUOTA_TIMEOUT` | `45` | Seconds a dry-run may run before it is treated as a timeout (proceed) rather than a rate-limit |
 
-### Loop-master binding (Hermes cron)
+### Scheduler binding (Hermes cron)
 
-The loop master is a scheduled Hermes cron job. Its settings are preserved as env vars so the job
-is reproducible from the repo. Repo-level fields (what the job *is*) live in `config.env`; the
+The scheduler is a thin Hermes cron job: it probes the agents, sets `PRAUTO_AGENT` to the winner,
+and invokes `bash .prauto/heartbeat.sh`. Its settings are preserved as env vars so the job is
+reproducible from the repo. Repo-level fields (what the job *is*) live in `config.env`; the
 instance-identity fields (where/who runs it) live in `config.local.env` (gitignored).
 
 | Var | File | Meaning |
