@@ -786,6 +786,94 @@ async def test_a_stored_attribute_missing_a_key_falls_back_to_that_key_s_default
     )
 
 
+# ── Latest-result tiebreak (regression: GH #194) ───────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_latest_result_query_orders_by_data_time_then_ingestion_time() -> None:
+    """The latest-per-dataset row_number() window partitions by dataset_urn and
+    orders by data_time DESC, then ingestion_time DESC.
+
+    ``validation_results`` is append-only, so a re-posted result for the same
+    ``data_time`` leaves two rows; without the ``ingestion_time`` tiebreaker
+    ``row_number()`` can resolve the tie to the stale row instead of the
+    most-recently-ingested one. A canned ``db.execute`` return value cannot
+    exercise that — Postgres decides the tie inside the window function, before
+    Python ever sees a row — so this compiles the *actual* statement the
+    measurer builds and asserts on the ``OVER (...)`` window clause itself,
+    pinning both ``PARTITION BY dataset_urn`` and the ``ORDER BY`` column order
+    within that one clause — not just anywhere in the statement — so a mutation
+    that also swapped the partition key (e.g. accidentally copying the sibling
+    ``get_results`` site's ``partition_by=data_time`` shape) is caught too.
+
+    **Scope**: this proves the *statement DataSpoke builds* carries the right
+    partition and tiebreak columns; it cannot prove PostgreSQL's `row_number()`
+    actually resolves a real tie the way the SQL text says it will — that needs
+    two real rows sharing a `data_time` and a live database. That proof belongs
+    in ``tests/integration/spot/test_metrics.py``.
+
+    Spec: spec/feature/VALIDATION.md §Duplicate `data_time` policy — "This
+          last-write-wins resolution — newest `ingestion_time` breaks a
+          `data_time` tie — is the tiebreak rule for **every** DataSpoke read
+          that selects one `validation_results` row per group... It governs:
+          ... the governance `validation-score` measurer's per-dataset
+          latest-result read (`src/backend/metrics/measurers/validation_score.py`)."
+    """
+    from sqlalchemy.dialects import postgresql
+
+    measure = _get_measurer()
+    urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.orderby_tiebreak,DEV)"
+
+    db = _db(confs=[_conf_row(urn, _DAILY_NO_LAG)], results=[])
+
+    await measure(
+        datasets=[urn],
+        metric_conf={"time_window_sec": 86400},
+        datahub=_datahub(),
+        db=db,
+        now=_NOW,
+    )
+
+    results_stmt = None
+    for call in db.execute.call_args_list:
+        stmt = call.args[0]
+        rendered = str(stmt.compile(dialect=postgresql.dialect()))
+        if "validation_results" in rendered:
+            results_stmt = rendered
+            break
+    assert results_stmt is not None, (
+        "the measurer must issue a validation_results query; "
+        f"got calls: {[str(c.args[0]) for c in db.execute.call_args_list]}"
+    )
+
+    # Isolate the row_number() window clause itself — `OVER (... ) AS rn` — so
+    # the PARTITION BY / ORDER BY assertions below can't be satisfied by text
+    # sitting elsewhere in the statement (e.g. an unrelated WHERE clause).
+    over_start = results_stmt.index("OVER (") + len("OVER (")
+    over_end = results_stmt.index(") AS rn")
+    window_clause = results_stmt[over_start:over_end]
+
+    partition_idx = window_clause.index("PARTITION BY")
+    order_idx = window_clause.index("ORDER BY")
+    partition_segment = window_clause[partition_idx:order_idx]
+    assert "validation_results.dataset_urn" in partition_segment, (
+        "expected the window to partition by dataset_urn (per-dataset latest "
+        f"row); got PARTITION BY segment:\n{partition_segment}"
+    )
+
+    order_segment = window_clause[order_idx:]
+    data_time_idx = order_segment.find("data_time DESC")
+    ingestion_time_idx = order_segment.find("ingestion_time DESC")
+    assert data_time_idx != -1 and ingestion_time_idx != -1, (
+        "expected both 'data_time DESC' and 'ingestion_time DESC' in the "
+        f"row_number() window's ORDER BY; got:\n{order_segment}"
+    )
+    assert data_time_idx < ingestion_time_idx, (
+        "data_time must be the primary sort key and ingestion_time the "
+        f"tiebreaker, in that order; got ORDER BY clause:\n{order_segment}"
+    )
+
+
 # ── Verdict shape ─────────────────────────────────────────────────────────────
 
 

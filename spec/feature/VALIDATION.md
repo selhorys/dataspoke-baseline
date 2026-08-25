@@ -214,11 +214,24 @@ The pipeline POSTs results as it produces partitions. The body is small.
 ### Duplicate `data_time` policy
 
 Multiple POSTs with the same `data_time` are **append-only**: each becomes a distinct
-`assertionRunEvent` row in DataHub's timeseries store. On read, the GET endpoint
-returns the most recent one (last-write-wins) for each distinct `data_time`. Append is
-chosen because DataHub's timeseries aspect is fundamentally append-only and forcing
-replace requires `messageId` workarounds; last-write-wins on read keeps the surface
-clean for the common case (idempotent retry from the pipeline).
+`assertionRunEvent` row in DataHub's timeseries store. Append is chosen because
+DataHub's timeseries aspect is fundamentally append-only and forcing replace requires
+`messageId` workarounds; last-write-wins on read keeps the surface clean for the common
+case (idempotent retry from the pipeline).
+
+This last-write-wins resolution — newest `ingestion_time` breaks a `data_time` tie — is
+the tiebreak rule for **every** DataSpoke read that selects one `validation_results` row
+per group, not the result-history GET alone. It governs:
+
+- the result-history GET (`GET .../attr/validation/result`, `ValidationService.get_results`)
+  returning the most recent row for each distinct `data_time` in the requested range;
+- the cross-dataset list view's per-dataset latest result
+  (`ValidationService._latest_results_by_urn`, backing `GET /spoke/validation`);
+- the governance `validation-score` measurer's per-dataset latest-result read
+  (`src/backend/metrics/measurers/validation_score.py`).
+
+All three pick one row per group with the same ordering: newest `data_time` first,
+newest `ingestion_time` breaking a tie within that `data_time`.
 
 ### GET result
 

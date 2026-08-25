@@ -485,7 +485,10 @@ class ValidationService:
                 func.row_number()
                 .over(
                     partition_by=ValidationResult.dataset_urn,
-                    order_by=ValidationResult.data_time.desc(),
+                    order_by=(
+                        ValidationResult.data_time.desc(),
+                        ValidationResult.ingestion_time.desc(),
+                    ),
                 )
                 .label("rn"),
             )

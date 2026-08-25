@@ -796,8 +796,7 @@ ingest/query — surfaced through the routes below.
 
 **Append-only timeseries.** Multiple POSTs with the same `data_time` are stored as
 distinct rows and emit distinct `assertionRunEvent` entries; this matches DataHub's
-timeseries aspect being fundamentally append-only. The GET endpoint collapses duplicates
-on read.
+timeseries aspect being fundamentally append-only.
 
 **Run-event emission is best-effort but not silent.** A DataHub error while emitting
 `assertionRunEvent` keeps the row in `validation_results` (the local store remains the
@@ -813,7 +812,8 @@ a dataset's `attr/validation/*` (conf `description` + `variable_count` + latest 
 `covered`) selects the row set, kept SQL-paginated in all branches:
 
 - `covered` — datasets that hold a `validation_configs` slot, joined to their latest result
-  (current behavior, unchanged).
+  (current behavior, unchanged; tiebreak on a shared `data_time` per
+  VALIDATION.md §Duplicate `data_time` policy).
 - `uncovered` — registered URNs (`dataset_registry`) `NOT IN (SELECT validation_configs.dataset_urn)`,
   the same registry-difference shape as `/ingestion/unmanaged`; no result join, conf fields null.
 - `both` — `dataset_registry LEFT JOIN validation_configs`, conf fields null for the uncovered
@@ -1257,7 +1257,8 @@ applied in the breakdown's `detail.time_window_sec`.
 
 **The `validation-score` per-dataset test**, stated once and referred to from everywhere else
 in this section: take the dataset's **single latest validation result overall** — the newest
-row by `data_time`, chosen without regard to any window — then ask whether *that* result lies
+row by `data_time` (tie broken per VALIDATION.md §Duplicate `data_time` policy), chosen
+without regard to any window — then ask whether *that* result lies
 inside the dataset's cadence-anchored window and scored `>= 1.0`. Both conditions must hold.
 It is deliberately not "the latest result *among* the in-window results": the metric reports
 the dataset's **current** validation state, and searching backwards for a qualifying row would
