@@ -34,6 +34,23 @@ See `spec/AI_PRAUTO.md` for the full specification.
 The executor is self-contained: `bash .prauto/heartbeat.sh` runs a full tick (it selects the
 agent itself when `PRAUTO_AGENT` is unset or `auto`).
 
+## Agent session adapters
+
+Claude and Codex use different session contracts. A fresh Claude invocation receives a harness
+generated `--session-id` and later resumes with that value. A fresh Codex invocation is always
+`codex exec --json --sandbox workspace-write`; the executor records its native `thread_id` only
+from the JSONL `thread.started` event. A later continuation is exactly
+`codex exec resume --json <thread-id> <prompt>` — no Claude-only session, sandbox, tool, turn, or
+budget flags are applied.
+
+If Codex exits before `thread.started`, PRauto has no trustworthy resume target. It preserves the
+raw JSONL artifact and its stderr sidecar for diagnosis but treats the run as an ordinary failed
+attempt, so the next heartbeat follows the normal retry/restart path instead of posting a
+resumable quota marker. After `thread.started`, PRauto stores a local, persistent anchor for the
+issue's current `prauto:ready` lifecycle. It resumes only when the GitHub marker was authored by
+the authenticated worker, has a strict UUID, and exactly matches that local anchor; GitHub still
+remains the SSOT for phase state.
+
 ## Prerequisites
 
 - A coding-agent CLI with a logged-in account: Claude Code (`claude`) and/or Codex (`codex`) —
@@ -61,6 +78,10 @@ absent.
 | `PRAUTO_GITHUB_ISSUE_FROM_ORG_MEMBERS_ONLY` | `true` | Restrict `prauto:ready` pickup to org members |
 | `PRAUTO_GITHUB_EXPECTED_ACTOR` | (optional) | The GitHub login the executor must authenticate as; the executor aborts if `gh api user` resolves to anything else — the guard against a comment/label/assignee being attributed to the keyring account instead of the worker |
 | `PRAUTO_QUOTA_TIMEOUT` | `45` | Seconds a dry-run may run before it is treated as a timeout (proceed) rather than a rate-limit |
+
+Claude-specific `PRAUTO_CLAUDE_MAX_TURNS_*` and `PRAUTO_CLAUDE_MAX_BUDGET_*` settings are not
+passed to Codex. Codex quota probes and worker sessions use JSONL so the executor can classify its
+structured rate-limit/error events and capture the native thread id.
 
 ### Scheduler binding (Hermes cron)
 

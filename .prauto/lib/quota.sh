@@ -30,6 +30,41 @@ run_with_timeout() {
   return "$exit_code"
 }
 
+# codex_jsonl_has_quota_signal <jsonl_file>
+# A Codex quota pause is allowed only for explicit protocol fields/codes, never
+# for arbitrary agent text or a human-readable diagnostic. These are the
+# installed CLI's usage-limit codes plus structured rate-limit variants.
+codex_jsonl_has_quota_signal() {
+  local output_file="$1"
+  jq -se '
+    def terminal_failure:
+      .type == "error"
+      or .type == "turn.failed"
+      or .payload.type == "error"
+      or .payload.type == "turn.failed";
+    def quota_code:
+      . == "usage_limit_exceeded"
+      or . == "workspace_owner_usage_limit_reached"
+      or . == "workspace_member_usage_limit_reached"
+      or . == "rate_limit_exceeded"
+      or . == "rate_limited"
+      or . == "rate_limit";
+    any(.[];
+      type == "object" and terminal_failure and
+      ([
+          .error.code, .error.type, .error.kind, .error.reason,
+          .error.data.code, .error.data.type, .error.data.kind, .error.data.reason,
+          .payload.error.code, .payload.error.type, .payload.error.kind, .payload.error.reason,
+          .payload.error.data.code, .payload.error.data.type,
+          .payload.error.data.kind, .payload.error.data.reason,
+          .rate_limit.code, .rate_limit.type, .rate_limit.reason,
+          .payload.rate_limit.code, .payload.rate_limit.type, .payload.rate_limit.reason
+        ]
+        | any(.[]?; type == "string" and quota_code))
+    ) | select(.)
+  ' "$output_file" >/dev/null 2>&1
+}
+
 # check_quota [agent]
 # Probe whether an agent's quota is available. Returns 0 if available, 1 if
 # exhausted/auth-invalid. A dry-run TIMEOUT is not exhaustion — returns 0.
@@ -63,19 +98,32 @@ check_quota() {
 
   # codex
   [[ -f ~/.codex/auth.json ]] || { warn "Codex auth.json missing."; return 1; }
-  local stderr_file="${STATE_DIR}/.quota-check-$$.stderr"
+  # Codex reports structured failures on its JSONL stream. Capture both streams
+  # so a rate-limit event remains distinguishable from an ordinary auth/error.
+  local output_file="${STATE_DIR}/.quota-check-$$.jsonl"
+  local stderr_file="${output_file}.stderr"
   if run_with_timeout "$quota_timeout" \
-      codex exec "Reply with exactly: OK" 2>"$stderr_file" >/dev/null; then
-    rm -f "$stderr_file"; return 0
+      codex exec --json --sandbox workspace-write "Reply with exactly: OK" \
+        >"$output_file" 2>"$stderr_file"; then
+    if codex_jsonl_has_quota_signal "$output_file"; then
+      rm -f "$output_file" "$stderr_file"
+      warn "Codex quota exhausted or rate-limited."
+      return 1
+    fi
+    rm -f "$output_file" "$stderr_file"; return 0
   fi
-  local code=$?; local stderr; stderr=$(cat "$stderr_file" 2>/dev/null || printf ''); rm -f "$stderr_file"
+  local code=$? quota_signaled=0 details
+  codex_jsonl_has_quota_signal "$output_file" && quota_signaled=1
+  details=$(cat "$output_file" 2>/dev/null || printf '')
+  [[ -z "$details" ]] && details=$(cat "$stderr_file" 2>/dev/null || printf '')
+  rm -f "$output_file" "$stderr_file"
   if [[ "$code" -eq 124 ]]; then
     warn "Codex dry-run timed out after ${quota_timeout}s — proceeding anyway."
     return 0
-  elif printf '%s' "$stderr" | grep -qi "rate limit\|quota\|session limit"; then
+  elif [[ "$quota_signaled" -eq 1 ]]; then
     warn "Codex quota exhausted or rate-limited."
   else
-    warn "Codex dry-run failed (exit ${code})."
+    warn "Codex dry-run failed (exit ${code}): $(printf '%s' "$details" | head -c 200)"
   fi
   return 1
 }
@@ -120,25 +168,44 @@ has_quota_paused_comment() {
 }
 
 # read_pause_marker <issue_number>
-# Extract the latest pause marker's agent and (optional) session id.
-# Sets: PAUSED_AGENT, PAUSED_SESSION_ID (may be empty). Returns 1 if no marker.
+# Extract the latest pause marker's agent, optional session id, and author.
+# Sets: PAUSED_AGENT, PAUSED_SESSION_ID (may be empty), PAUSED_MARKER_AUTHOR.
+# The author is retained because GitHub comments are untrusted input until a
+# Codex resume anchor validates it against the worker's authenticated actor.
+# Returns 1 if no marker.
 read_pause_marker() {
   local issue_number="$1"
   local prefix="prauto(${PRAUTO_WORKER_ID}):"
   local ready_ts="${READY_LABEL_TIMESTAMP:-}"
-  local body
-  body=$(gh issue view "$issue_number" -R "$PRAUTO_GITHUB_REPO" --json comments --jq '.comments' 2>/dev/null \
+  local marker body
+  marker=$(gh issue view "$issue_number" -R "$PRAUTO_GITHUB_REPO" --json comments --jq '.comments' 2>/dev/null \
     | jq -r --arg prefix "$prefix" --arg ready_ts "$ready_ts" '
       [.[] | select($ready_ts == "" or .createdAt > $ready_ts)
             | select(.body | startswith($prefix))
             | select(.body | contains("prauto:quota-paused"))]
-      | last | .body // ""
+      | last // empty
     ') || return 1
+  [[ -n "$marker" ]] || return 1
+  body=$(printf '%s' "$marker" | jq -r '.body // ""')
   [[ -n "$body" ]] || return 1
+  PAUSED_MARKER_AUTHOR=$(printf '%s' "$marker" | jq -r '.author.login // ""')
   PAUSED_AGENT=$(printf '%s' "$body" | sed -n 's/^prauto:agent=\([a-z]*\)$/\1/p' | head -1)
   PAUSED_SESSION_ID=$(printf '%s' "$body" | sed -n 's/^prauto:session=\([^ ]*\)$/\1/p' | head -1)
   [[ -n "$PAUSED_AGENT" ]] || PAUSED_AGENT="claude"
   return 0
+}
+
+# codex_pause_marker_is_trusted <issue_number>
+# Require all three independently held facts before Codex resume: a comment by
+# this worker account, a strict UUID (not a Codex thread name), and a matching
+# local native-session anchor for the current ready-label lifecycle.
+codex_pause_marker_is_trusted() {
+  local issue_number="$1"
+  [[ "${PAUSED_AGENT:-}" == "codex" ]] || return 1
+  [[ -n "${PRAUTO_GITHUB_ACTOR:-}" ]] || return 1
+  [[ "${PAUSED_MARKER_AUTHOR:-}" == "$PRAUTO_GITHUB_ACTOR" ]] || return 1
+  is_strict_uuid "${PAUSED_SESSION_ID:-}" || return 1
+  codex_native_session_anchor_matches "$issue_number" "${READY_LABEL_TIMESTAMP:-}" "$PAUSED_SESSION_ID"
 }
 
 # has_abandon_override <issue_number>
@@ -194,4 +261,27 @@ post_restart_comment() {
     --body "prauto(${PRAUTO_WORKER_ID}): Restarting — previous session abandoned per instruction. Fresh ${agent} session." 2>/dev/null \
     || warn "Failed to post restart comment on issue #${issue_number}."
   info "Restart marker posted on issue #${issue_number} (agent=${agent})."
+}
+
+# post_untrusted_resume_restart_comment <issue_number> <agent>
+# A forged/stale Codex pause marker cannot be deleted from GitHub. Post a later
+# lifecycle marker so has_quota_paused_comment becomes false and the normal
+# retry path starts a fresh agent instead of ever resuming the supplied id.
+post_untrusted_resume_restart_comment() {
+  local issue_number="$1" agent="$2"
+  gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
+    --body "prauto(${PRAUTO_WORKER_ID}): Restarting — the previous Codex pause marker did not match a trusted local native-session anchor. Fresh ${agent} session." 2>/dev/null \
+    || warn "Failed to post untrusted-resume restart marker on issue #${issue_number}."
+  info "Untrusted Codex resume marker bypassed on issue #${issue_number}."
+}
+
+# post_resume_failure_restart_comment <issue_number> <agent>
+# An ordinary resume failure must also supersede its pause marker; otherwise the
+# next heartbeat would retry the same failed resume without advancing retries.
+post_resume_failure_restart_comment() {
+  local issue_number="$1" agent="$2"
+  gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
+    --body "prauto(${PRAUTO_WORKER_ID}): Restarting — the previous ${agent} resume failed without a recognized quota signal. Fresh ${agent} session on the next retry." 2>/dev/null \
+    || warn "Failed to post resume-failure restart marker on issue #${issue_number}."
+  info "Resume failure converted to ordinary retry on issue #${issue_number}."
 }

@@ -176,8 +176,17 @@ if [[ "${ALL_CLAIMED_COUNT:-0}" -gt 0 ]]; then
 
       # ---- Quota-pause state machine (analysis/implementation/pr phases) ----
       if has_quota_paused_comment "$CUR_ISSUE_NUMBER"; then
-        read_pause_marker "$CUR_ISSUE_NUMBER"
-        if has_abandon_override "$CUR_ISSUE_NUMBER"; then
+        if ! read_pause_marker "$CUR_ISSUE_NUMBER"; then
+          warn "Issue #${CUR_ISSUE_NUMBER}: could not read its quota marker. Waiting for a later wake."
+          pending_claimed_count=$((pending_claimed_count + 1))
+          claim_i=$((claim_i + 1)); continue
+        elif [[ "$PAUSED_AGENT" == "codex" ]] && ! codex_pause_marker_is_trusted "$CUR_ISSUE_NUMBER"; then
+          # GitHub markers are not authority for a Codex resume. A missing,
+          # corrupt, stale, or foreign-author anchor becomes a fresh retry.
+          warn "Issue #${CUR_ISSUE_NUMBER}: Codex pause marker is not locally trusted; restarting fresh."
+          post_untrusted_resume_restart_comment "$CUR_ISSUE_NUMBER" "$ACTIVE_AGENT"
+          # Fall through to normal dispatch below.
+        elif has_abandon_override "$CUR_ISSUE_NUMBER"; then
           # Human abandoned the previous session: restart fresh. Re-select the
           # agent (under `auto`, codex takes over if the paused agent is down).
           if ! select_agent; then
