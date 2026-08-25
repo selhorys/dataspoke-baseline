@@ -28,6 +28,11 @@ def _var(name: str, description: str = "") -> dict[str, str]:
     return {"name": name, "description": description}
 
 
+def _param(name: str, value: str = "", description: str = "") -> dict[str, str]:
+    """Build a {name, value, description} parameter object."""
+    return {"name": name, "value": value, "description": description}
+
+
 # ── ValidationVariable element ────────────────────────────────────────────────
 
 
@@ -540,18 +545,81 @@ class TestValidationParameterElement:
     """spec: VALIDATION.md §Rule Configuration — each `parameter` element follows "the
     same rules in its own separate namespace" as a `variables` element."""
 
-    def test_name_and_description_accepted(self) -> None:
-        parameter = ValidationParameter(name="z_threshold", description="Std-dev cutoff")
+    def test_name_value_and_description_accepted(self) -> None:
+        parameter = ValidationParameter(
+            name="z_threshold", value="2.5", description="Std-dev cutoff"
+        )
         assert parameter.name == "z_threshold"
+        assert parameter.value == "2.5"
         assert parameter.description == "Std-dev cutoff"
+
+    def test_value_is_required_and_must_be_a_json_string(self) -> None:
+        # spec: VALIDATION.md §Rule Configuration — value is a required string field.
+        with pytest.raises(ValidationError):
+            ValidationParameter(name="z_threshold", description="cutoff")
+        for non_string in (2.5, 3, True, None, {"threshold": 2.5}, ["2.5"]):
+            with pytest.raises(ValidationError):
+                ValidationParameter.model_validate(
+                    {
+                        "name": "z_threshold",
+                        "value": non_string,
+                        "description": "cutoff",
+                    }
+                )
+
+    def test_empty_value_is_accepted(self) -> None:
+        # spec: VALIDATION.md §Rule Configuration — value is required but empty allowed.
+        parameter = ValidationParameter(name="z_threshold", value="", description="")
+        assert parameter.value == ""
+
+    def test_value_at_200_chars_is_accepted_and_201_is_rejected(self) -> None:
+        # spec: VALIDATION.md §Rule Configuration — parameter value is ≤ 200 chars.
+        assert (
+            ValidationParameter(name="z_threshold", value="x" * 200, description="").value
+            == "x" * 200
+        )
+        with pytest.raises(ValidationError, match=r"value must not exceed 200 characters"):
+            ValidationParameter(name="z_threshold", value="x" * 201, description="")
+
+    @pytest.mark.parametrize(
+        "control_code",
+        [*range(0x00, 0x09), *range(0x0B, 0x20), 0x7F],
+    )
+    def test_value_rejects_every_forbidden_ascii_control_character(
+        self, control_code: int
+    ) -> None:
+        # spec: VALIDATION.md §Rule Configuration — value excludes ASCII controls except
+        # tab and newline.
+        with pytest.raises(ValidationError, match=r"value contains control characters"):
+            ValidationParameter(
+                name="z_threshold",
+                value=f"before{chr(control_code)}after",
+                description="",
+            )
+
+    @pytest.mark.parametrize("allowed", ["left\tright", "line1\nline2"])
+    def test_value_accepts_tab_and_newline(self, allowed: str) -> None:
+        # Backstop: the two explicit carve-outs must survive verbatim.
+        parameter = ValidationParameter(
+            name="z_threshold", value=allowed, description=""
+        )
+        assert parameter.value == allowed
+
+    def test_value_is_preserved_verbatim(self) -> None:
+        # spec: VALIDATION.md §Rule Configuration — value is stored/returned verbatim.
+        supplied = '  {"threshold": 2.50}\t\n '
+        parameter = ValidationParameter(
+            name="z_threshold", value=supplied, description=""
+        )
+        assert parameter.value == supplied
 
     def test_empty_description_accepted(self) -> None:
         # spec: VALIDATION.md §Rule Configuration — "Required key, but the **empty string
         # is allowed**."
-        assert ValidationParameter(name="z_threshold", description="").description == ""
+        assert ValidationParameter(name="z_threshold", value="", description="").description == ""
 
     def test_description_at_200_chars_accepted(self) -> None:
-        parameter = ValidationParameter(name="z_threshold", description="x" * 200)
+        parameter = ValidationParameter(name="z_threshold", value="", description="x" * 200)
         assert len(parameter.description) == 200
 
     def test_description_at_201_chars_rejected_naming_parameter(self) -> None:
@@ -568,7 +636,7 @@ class TestValidationParameterElement:
         default, and this test is what keeps the two labels from collapsing back into one.
         """
         with pytest.raises(ValidationError) as excinfo:
-            ValidationParameter(name="z_threshold", description="x" * 201)
+            ValidationParameter(name="z_threshold", value="", description="x" * 201)
         message = str(excinfo.value)
         assert "parameter description must not exceed 200 characters" in message, (
             f"the message must name the parameter namespace; got {message}"
@@ -577,7 +645,7 @@ class TestValidationParameterElement:
 
     def test_description_with_control_byte_rejected_naming_parameter(self) -> None:
         with pytest.raises(ValidationError) as excinfo:
-            ValidationParameter(name="z_threshold", description="bad\x01desc")
+            ValidationParameter(name="z_threshold", value="", description="bad\x01desc")
         message = str(excinfo.value)
         assert "parameter description contains control characters" in message, (
             f"the message must name the parameter namespace; got {message}"
@@ -590,7 +658,9 @@ class TestValidationParameterElement:
     ) -> None:
         # Backstop for the control-character rejection above: \t (0x09) and \n (0x0a) are
         # the carve-out set, so the check is not simply refusing all whitespace.
-        parameter = ValidationParameter(name="z_threshold", description=f"a{whitespace}b")
+        parameter = ValidationParameter(
+            name="z_threshold", value="", description=f"a{whitespace}b"
+        )
         assert whitespace in parameter.description
 
     @pytest.mark.parametrize("bad_name", ["1abc", "ZThreshold", "_z", "z-threshold", "café"])
@@ -598,12 +668,12 @@ class TestValidationParameterElement:
         # spec: VALIDATION.md §Rule Configuration — name "MUST match
         # `\\A[a-z][a-z0-9_]{0,99}\\Z`", the same production `variables` uses.
         with pytest.raises(ValidationError):
-            ValidationParameter(name=bad_name, description="")
+            ValidationParameter(name=bad_name, value="", description="")
 
     def test_a_100_char_name_is_accepted_and_101_is_not(self) -> None:
-        assert ValidationParameter(name="z" * 100, description="").name == "z" * 100
+        assert ValidationParameter(name="z" * 100, value="", description="").name == "z" * 100
         with pytest.raises(ValidationError):
-            ValidationParameter(name="z" * 101, description="")
+            ValidationParameter(name="z" * 101, value="", description="")
 
 
 class TestPutValidationConfRequestParameter:
@@ -620,7 +690,7 @@ class TestPutValidationConfRequestParameter:
             {
                 "description": "d",
                 "variables": [_var("row_cnt")],
-                "parameter": [{"name": "z_threshold", "description": "Std-dev cutoff"}],
+                "parameter": [_param("z_threshold", "2.5", "Std-dev cutoff")],
             }
         )
         assert req.parameter is not None
@@ -652,12 +722,12 @@ class TestPutValidationConfRequestParameter:
         # spec: VALIDATION.md §Rule Configuration — "MUST carry 1–200 entries".
         base = {"description": "d", "variables": [_var("row_cnt")]}
         req = PutValidationConfRequest.model_validate(
-            {**base, "parameter": [_var(f"p{i:03}") for i in range(200)]}
+            {**base, "parameter": [_param(f"p{i:03}") for i in range(200)]}
         )
         assert req.parameter is not None and len(req.parameter) == 200
         with pytest.raises(ValidationError, match=r"parameter must not exceed 200 entries"):
             PutValidationConfRequest.model_validate(
-                {**base, "parameter": [_var(f"p{i:03}") for i in range(201)]}
+                {**base, "parameter": [_param(f"p{i:03}") for i in range(201)]}
             )
 
     def test_duplicate_parameter_names_are_rejected(self) -> None:
@@ -668,7 +738,7 @@ class TestPutValidationConfRequestParameter:
                 {
                     "description": "d",
                     "variables": [_var("row_cnt")],
-                    "parameter": [_var("z_threshold"), _var("z_threshold")],
+                    "parameter": [_param("z_threshold"), _param("z_threshold")],
                 }
             )
 
@@ -687,7 +757,7 @@ class TestPutValidationConfRequestParameter:
             {
                 "description": "d",
                 "variables": [_var("row_cnt", "Daily row count")],
-                "parameter": [_var("row_cnt", "Expected row count")],
+                "parameter": [_param("row_cnt", "500", "Expected row count")],
             }
         )
         assert req.variables[0].name == "row_cnt"
@@ -723,7 +793,7 @@ class TestPatchValidationConfRequestParameter:
         # spec: VALIDATION.md §Rule Configuration — "A non-empty list (1–200 entries,
         # validated exactly as `variables` is) replaces the stored value wholesale."
         req = PatchValidationConfRequest.model_validate(
-            {"parameter": [_var("z_threshold", "cutoff"), _var("window_days")]}
+            {"parameter": [_param("z_threshold", "2.5", "cutoff"), _param("window_days", "7")]}
         )
         assert req.parameter is not None
         assert [p.name for p in req.parameter] == ["z_threshold", "window_days"]
@@ -738,7 +808,7 @@ class TestPatchValidationConfRequestParameter:
     def test_duplicate_names_are_rejected_on_patch_too(self) -> None:
         with pytest.raises(ValidationError, match=r"parameter names must be unique"):
             PatchValidationConfRequest.model_validate(
-                {"parameter": [_var("z_threshold"), _var("z_threshold")]}
+                {"parameter": [_param("z_threshold"), _param("z_threshold")]}
             )
 
 

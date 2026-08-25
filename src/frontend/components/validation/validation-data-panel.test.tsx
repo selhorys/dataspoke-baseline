@@ -317,6 +317,26 @@ describe("ValidationDataPanel — existing conf", () => {
     expect(screen.queryByTestId("conf-form")).toBeNull();
   });
 
+  it("renders parameter name, value, and description in distinct read-only columns", async () => {
+    mockUseMe.mockReturnValue({ canWrite: false, isAdmin: false, isEditor: false });
+    mockConf.mockReturnValue({
+      data: {
+        ...makeConf(),
+        parameter: [
+          { name: "z_threshold", value: " 2.5 ", description: "Std-dev cutoff" },
+        ],
+      },
+      isLoading: false,
+      error: null,
+    });
+    await renderPanel();
+
+    expect(screen.getByRole("columnheader", { name: "value" })).toBeTruthy();
+    expect(screen.getByText("z_threshold")).toBeTruthy();
+    expect(screen.getByText("2.5").textContent).toBe(" 2.5 ");
+    expect(screen.getByText("Std-dev cutoff")).toBeTruthy();
+  });
+
   it("clicking Edit on an existing conf mounts the form and hides the charts", async () => {
     // spec: FRONTEND_VALIDATION.md §Detail — the Quality Score / Variables
     // timeseries appear only in the has-conf read-only view; while editing (create

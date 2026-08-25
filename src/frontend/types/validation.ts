@@ -30,11 +30,15 @@ export interface ValidationVariable {
 }
 
 /**
- * One declared pipeline hyperparameter. Same `{name, description}` shape and
- * same per-item rules as a variable, in its own namespace — a name may appear
+ * One declared pipeline hyperparameter. Its `value` is opaque string storage;
+ * the name and description rules match variables, in its own namespace — a name may appear
  * in both lists. DataSpoke never interprets a parameter.
  */
-export type ValidationParameter = ValidationVariable;
+export interface ValidationParameter {
+  name: string;
+  value: string;
+  description: string;
+}
 
 /**
  * Declared data-arrival cadence of the dataset — the pair the governance
@@ -117,5 +121,5 @@ export interface ValidationConfFormValues {
    * API rejects an explicit `[]`, so an empty list serializes as an omitted key
    * rather than as a value.
    */
-  parameter: { name: string; description: string }[];
+  parameter: { name: string; value: string; description: string }[];
 }

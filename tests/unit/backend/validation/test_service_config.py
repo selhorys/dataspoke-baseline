@@ -427,7 +427,7 @@ async def test_put_omitting_parameter_clears_a_previously_stored_one(
     stored value."
     """
     existing = _make_config_row(
-        parameter=[{"name": "z_threshold", "description": "Std-dev cutoff"}]
+        parameter=[{"name": "z_threshold", "value": "2.5", "description": "Std-dev cutoff"}]
     )
     _patched_registry(db, existing)
 
@@ -464,8 +464,12 @@ async def test_put_stores_a_supplied_parameter_list_verbatim(
     """
     _patched_registry(db, None)
     supplied = [
-        {"name": "z_threshold", "description": "Std-dev cutoff for outliers"},
-        {"name": "window_days", "description": ""},
+        {
+            "name": "z_threshold",
+            "value": '  {"sigma": 2.50}\t\n ',
+            "description": "Std-dev cutoff for outliers",
+        },
+        {"name": "window_days", "value": "", "description": ""},
     ]
 
     with (
@@ -568,7 +572,7 @@ async def test_patch_omitting_parameter_preserves_the_stored_value(
     spec: VALIDATION.md §Rule Configuration — "Omitting `parameter` leaves the stored
     value unchanged."
     """
-    stored = [{"name": "z_threshold", "description": "Std-dev cutoff"}]
+    stored = [{"name": "z_threshold", "value": "2.5", "description": "Std-dev cutoff"}]
     existing = _make_config_row(parameter=stored)
     db.execute = AsyncMock(return_value=_scalar_result(existing))
     db.commit = AsyncMock()
@@ -601,7 +605,7 @@ async def test_patch_with_an_explicit_null_clears_the_parameter_section(
     that is the one spelling for 'clear'."
     """
     existing = _make_config_row(
-        parameter=[{"name": "z_threshold", "description": "Std-dev cutoff"}]
+        parameter=[{"name": "z_threshold", "value": "2.5", "description": "Std-dev cutoff"}]
     )
     db.execute = AsyncMock(return_value=_scalar_result(existing))
     db.commit = AsyncMock()
@@ -636,13 +640,13 @@ async def test_patch_with_a_non_empty_list_replaces_the_parameter_section_wholes
     """
     existing = _make_config_row(
         parameter=[
-            {"name": "z_threshold", "description": "old cutoff"},
-            {"name": "window_days", "description": "lookback"},
+            {"name": "z_threshold", "value": "2.0", "description": "old cutoff"},
+            {"name": "window_days", "value": "14", "description": "lookback"},
         ]
     )
     db.execute = AsyncMock(return_value=_scalar_result(existing))
     db.commit = AsyncMock()
-    replacement = [{"name": "z_threshold", "description": "new cutoff"}]
+    replacement = [{"name": "z_threshold", "value": "2.5", "description": "new cutoff"}]
 
     with (
         patch(_REGISTER, new_callable=AsyncMock),
@@ -674,7 +678,7 @@ async def test_get_config_carries_a_stored_parameter_and_none_when_absent(
     entirely from the response body when the section is absent; it is never serialized
     as `null`."
     """
-    stored = [{"name": "z_threshold", "description": "Std-dev cutoff"}]
+    stored = [{"name": "z_threshold", "value": "2.5", "description": "Std-dev cutoff"}]
     db.execute = AsyncMock(return_value=_scalar_result(_make_config_row(parameter=stored)))
     present = await svc.get_config(dataset_urn=_DATASET_URN)
     assert present is not None

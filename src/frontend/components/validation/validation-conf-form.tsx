@@ -7,7 +7,7 @@
  *   description  — editable textarea, ≤ 2,000 chars
  *   variables[]  — field-array of named scalars; add / remove / rename
  *   attribute    — Data arrival: cadence_unit / cadence_offset number inputs
- *   parameter[]  — optional field-array, same row editor as variables
+ *   parameter[]  — optional field-array of name / value / description rows
  *
  * Props:
  *   formId         — id assigned to the <form>; lets a submit button placed
@@ -58,6 +58,8 @@ interface NamedEntryEditorProps {
   minRows: number;
   namePlaceholder: string;
   descriptionPlaceholder: string;
+  /** Parameters alone carry an opaque value string. */
+  hasValue?: boolean;
   /** Rendered when the list is empty (only reachable for `parameter`). */
   emptyHint?: string;
   /**
@@ -86,6 +88,7 @@ function NamedEntryEditor({
   minRows,
   namePlaceholder,
   descriptionPlaceholder,
+  hasValue = false,
   emptyHint,
   addAriaLabel,
   hint,
@@ -94,6 +97,12 @@ function NamedEntryEditor({
   errors,
 }: NamedEntryEditorProps) {
   const { fields, append, remove } = useFieldArray({ control, name });
+  // React Hook Form resolves a union field-array name to its common (variable)
+  // row shape. Keep the runtime-discriminated parameter row without weakening
+  // the form itself to `any`.
+  const appendEntry = append as unknown as (
+    value: { name: string; description: string; value?: string },
+  ) => void;
 
   // "variable" → "Variable", for the sentence-cased per-row aria-labels.
   const Noun = noun.charAt(0).toUpperCase() + noun.slice(1);
@@ -102,7 +111,7 @@ function NamedEntryEditor({
   // errors arrive as an array. Both live at the same key, so discriminate first.
   const arrayErrors = errors[name];
   const rootError = Array.isArray(arrayErrors) ? undefined : arrayErrors?.message;
-  const rowError = (index: number, key: "name" | "description"): string | undefined =>
+  const rowError = (index: number, key: "name" | "value" | "description"): string | undefined =>
     Array.isArray(arrayErrors) ? arrayErrors[index]?.[key]?.message : undefined;
 
   return (
@@ -117,7 +126,13 @@ function NamedEntryEditor({
           variant="outline"
           size="sm"
           aria-label={addAriaLabel}
-          onClick={() => append({ name: "", description: "" })}
+          onClick={() =>
+            appendEntry(
+              hasValue
+                ? { name: "", value: "", description: "" }
+                : { name: "", description: "" },
+            )
+          }
         >
           <Plus className="mr-1 h-3.5 w-3.5" />
           Add
@@ -133,10 +148,11 @@ function NamedEntryEditor({
       <div className="space-y-2">
         {fields.map((field, index) => {
           const nameError = rowError(index, "name");
+          const valueError = rowError(index, "value");
           const descError = rowError(index, "description");
           return (
             <div key={field.id} className="flex items-start gap-2">
-              <div className="w-1/3 min-w-0">
+              <div className={hasValue ? "w-1/4 min-w-0" : "w-1/3 min-w-0"}>
                 <Input
                   {...register(`${name}.${index}.name` as const)}
                   placeholder={namePlaceholder}
@@ -145,6 +161,19 @@ function NamedEntryEditor({
                 />
                 {nameError && <p className="mt-1 text-xs text-destructive">{nameError}</p>}
               </div>
+              {hasValue && (
+                <div className="w-1/4 min-w-0">
+                  <Textarea
+                    {...register(`parameter.${index}.value`)}
+                    placeholder="2.5"
+                    aria-label={`${Noun} value ${index + 1}`}
+                    maxLength={200}
+                    rows={2}
+                    className={`resize-y ${valueError ? "border-destructive" : ""}`}
+                  />
+                  {valueError && <p className="mt-1 text-xs text-destructive">{valueError}</p>}
+                </div>
+              )}
               <div className="flex-1 min-w-0">
                 <Input
                   {...register(`${name}.${index}.description` as const)}
@@ -293,12 +322,14 @@ export function ValidationConfForm({
         minRows={0}
         namePlaceholder="z_threshold"
         descriptionPlaceholder="Std-dev cutoff for outliers"
+        hasValue
         emptyHint="None declared — the section is omitted from the config until a row is added."
         addAriaLabel="Add parameter"
         hint={
           <>
             Optional hyperparameters for the pipeline&apos;s own use; DataSpoke stores them
-            without interpreting them. Same rules as variables, in a separate namespace.
+            without interpreting their values. Values and descriptions may be blank and are
+            limited to 200 characters; names use a separate namespace from variables.
           </>
         }
         control={control}
