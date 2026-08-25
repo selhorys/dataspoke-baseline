@@ -655,7 +655,7 @@ describe("schema parameter — per-list namespace and caps (src/api/schemas/vali
     const result = validationConfSchema.safeParse(
       makeValidForm({
         variables: [{ name: "z_threshold", description: "Observed z-score" }],
-        parameter: [{ name: "z_threshold", description: "Std-dev cutoff for outliers" }],
+        parameter: [{ name: "z_threshold", value: "2.5", description: "Std-dev cutoff for outliers" }],
       }),
     );
     expect(result.success).toBe(true);
@@ -665,8 +665,8 @@ describe("schema parameter — per-list namespace and caps (src/api/schemas/vali
     const result = validationConfSchema.safeParse(
       makeValidForm({
         parameter: [
-          { name: "z_threshold", description: "" },
-          { name: "z_threshold", description: "" },
+          { name: "z_threshold", value: "2.5", description: "" },
+          { name: "z_threshold", value: "3", description: "" },
         ],
       }),
     );
@@ -688,7 +688,7 @@ describe("schema parameter — per-list namespace and caps (src/api/schemas/vali
 
   it("enforces the name regex on a parameter too", () => {
     const result = validationConfSchema.safeParse(
-      makeValidForm({ parameter: [{ name: "ZThreshold", description: "" }] }),
+      makeValidForm({ parameter: [{ name: "ZThreshold", value: "", description: "" }] }),
     );
     expect(result.success).toBe(false);
     if (!result.success) {
@@ -701,20 +701,38 @@ describe("schema parameter — per-list namespace and caps (src/api/schemas/vali
 
   it("rejects a >200-char parameter description, like a variable's", () => {
     const result = validationConfSchema.safeParse(
-      makeValidForm({ parameter: [{ name: "z_threshold", description: "a".repeat(201) }] }),
+      makeValidForm({ parameter: [{ name: "z_threshold", value: "", description: "a".repeat(201) }] }),
     );
     expect(result.success).toBe(false);
   });
 
   it("accepts exactly 200 parameter entries and rejects 201", () => {
     const rows = (count: number) =>
-      Array.from({ length: count }, (_, i) => ({ name: `p_${i}`, description: "" }));
+      Array.from({ length: count }, (_, i) => ({ name: `p_${i}`, value: `${i}`, description: "" }));
     expect(validationConfSchema.safeParse(makeValidForm({ parameter: rows(200) })).success).toBe(
       true,
     );
     expect(
       issuePaths(makeValidForm({ parameter: rows(201) })),
     ).toContainEqual(["parameter"]);
+  });
+
+  it("accepts an empty value and preserves tabs/newlines", () => {
+    expect(validationConfSchema.safeParse(makeValidForm({
+      parameter: [{ name: "threshold", value: "", description: "" }],
+    })).success).toBe(true);
+    expect(validationConfSchema.safeParse(makeValidForm({
+      parameter: [{ name: "threshold", value: "\tline one\nline two ", description: "" }],
+    })).success).toBe(true);
+  });
+
+  it("rejects parameter values over 200 chars and disallowed ASCII controls", () => {
+    expect(issuePaths(makeValidForm({
+      parameter: [{ name: "threshold", value: "a".repeat(201), description: "" }],
+    }))).toContainEqual(["parameter", "0", "value"]);
+    expect(issuePaths(makeValidForm({
+      parameter: [{ name: "threshold", value: "bad\u0000value", description: "" }],
+    }))).toContainEqual(["parameter", "0", "value"]);
   });
 });
 
@@ -826,14 +844,14 @@ describe("fromInternal — serializes form values to API request body (VALIDATIO
     expect(Object.keys(body).sort()).toEqual(["attribute", "description", "variables"]);
   });
 
-  it("sends 'parameter' as {name, description} objects when the list is non-empty", () => {
+  it("sends 'parameter' as {name, value, description} objects verbatim when non-empty", () => {
     const body = fromInternal(
       makeValidForm({
-        parameter: [{ name: "z_threshold", description: "Std-dev cutoff for outliers" }],
+        parameter: [{ name: "z_threshold", value: " 2.5\n", description: "Std-dev cutoff for outliers" }],
       }),
     );
     expect(body.parameter).toEqual([
-      { name: "z_threshold", description: "Std-dev cutoff for outliers" },
+      { name: "z_threshold", value: " 2.5\n", description: "Std-dev cutoff for outliers" },
     ]);
   });
 });
@@ -853,7 +871,7 @@ describe("round-trip toInternal(response) → fromInternal — preserves variabl
       { name: "qty_total", description: "Total quantity" },
     ],
     attribute: { cadence_unit: 86400, cadence_offset: 7 },
-    parameter: [{ name: "z_threshold", description: "Std-dev cutoff for outliers" }],
+    parameter: [{ name: "z_threshold", value: "2.5", description: "Std-dev cutoff for outliers" }],
     created_at: "2026-05-01T00:00:00Z",
     updated_at: "2026-05-08T12:00:00Z",
   };

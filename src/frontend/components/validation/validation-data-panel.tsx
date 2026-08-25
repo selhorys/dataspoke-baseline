@@ -40,6 +40,7 @@ import { useDisplayTz } from "@/lib/preferences/timezone";
 import type {
   ValidationConfPutRequest,
   ValidationConfResponse,
+  ValidationParameter,
   ValidationVariable,
 } from "@/types/validation";
 
@@ -47,7 +48,7 @@ const CONF_FORM_ID = "validation-conf-form";
 
 // ── Conf read-only view ────────────────────────────────────────────────────────
 
-/** Read-only `{name, description}` table, shared by variables and parameters. */
+/** Read-only declared-variable table. */
 function NamedEntryTable({ entries }: { entries: ValidationVariable[] }) {
   return (
     <div className="mt-2 overflow-hidden rounded-md border">
@@ -62,6 +63,34 @@ function NamedEntryTable({ entries }: { entries: ValidationVariable[] }) {
           {entries.map((entry) => (
             <tr key={entry.name} className="border-b last:border-0">
               <td className="px-3 py-1.5 align-top font-mono text-xs">{entry.name}</td>
+              <td className="px-3 py-1.5 align-top text-muted-foreground">
+                {entry.description || <span className="text-muted-foreground/50">—</span>}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/** Read-only parameter table; values are rendered verbatim, including whitespace. */
+function ParameterTable({ entries }: { entries: ValidationParameter[] }) {
+  return (
+    <div className="mt-2 overflow-hidden rounded-md border">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b bg-muted/50 text-xs text-muted-foreground">
+            <th className="w-1/4 px-3 py-1.5 text-left font-medium">name</th>
+            <th className="w-1/4 px-3 py-1.5 text-left font-medium">value</th>
+            <th className="px-3 py-1.5 text-left font-medium">description</th>
+          </tr>
+        </thead>
+        <tbody>
+          {entries.map((entry) => (
+            <tr key={entry.name} className="border-b last:border-0">
+              <td className="px-3 py-1.5 align-top font-mono text-xs">{entry.name}</td>
+              <td className="whitespace-pre-wrap px-3 py-1.5 align-top font-mono text-xs">{entry.value}</td>
               <td className="px-3 py-1.5 align-top text-muted-foreground">
                 {entry.description || <span className="text-muted-foreground/50">—</span>}
               </td>
@@ -114,7 +143,7 @@ function ConfReadOnly({ conf }: { conf: ValidationConfResponse }) {
             Parameters ({parameters.length})
           </dt>
           <dd>
-            <NamedEntryTable entries={parameters} />
+            <ParameterTable entries={parameters} />
           </dd>
         </div>
       )}

@@ -43,6 +43,10 @@ def _var(name: str, description: str = "") -> dict[str, str]:
     return {"name": name, "description": description}
 
 
+def _param(name: str, value: str = "", description: str = "") -> dict[str, str]:
+    return {"name": name, "value": value, "description": description}
+
+
 _DEFAULT_VARS = [_var("row_cnt", "Daily row count"), _var("col1_mean", "Mean of col1")]
 
 
@@ -319,7 +323,7 @@ async def test_get_conf_carries_the_parameter_key_when_the_section_is_present(
     Without this, a response model that dropped `parameter` unconditionally would pass
     the omission test. The key set is the omission test's set plus `parameter`.
     """
-    stored = [{"name": "z_threshold", "description": "Std-dev cutoff for outliers"}]
+    stored = [_param("z_threshold", "2.5", "Std-dev cutoff for outliers")]
     mock_svc.get_config = AsyncMock(return_value=_conf_record(parameter=stored))
 
     resp = await client.get(_CONF_URL, headers=auth_headers())
@@ -379,7 +383,7 @@ async def test_put_response_omits_the_parameter_key_when_the_section_is_absent(
         "updated_at",
     }, f"exclude_none must drop `parameter` and no other key; got {sorted(cleared_body)}"
 
-    stored = [{"name": "z_threshold", "description": "Std-dev cutoff for outliers"}]
+    stored = [_param("z_threshold", "2.5", "Std-dev cutoff for outliers")]
     mock_svc.upsert_config = AsyncMock(return_value=(_conf_record(parameter=stored), False))
 
     written = await client.put(
@@ -447,7 +451,7 @@ async def test_patch_response_omits_the_parameter_key_when_the_section_is_absent
         "updated_at",
     }, f"exclude_none must drop `parameter` and no other key; got {sorted(cleared_body)}"
 
-    stored = [{"name": "z_threshold", "description": "Std-dev cutoff for outliers"}]
+    stored = [_param("z_threshold", "2.5", "Std-dev cutoff for outliers")]
     mock_svc.patch_config = AsyncMock(return_value=_conf_record(parameter=stored))
 
     written = await client.patch(
@@ -537,7 +541,7 @@ async def test_put_forwards_a_supplied_cadence_and_parameter_list(
             "description": "D-8 partition check",
             "variables": _DEFAULT_VARS,
             "attribute": {"cadence_offset": 7},
-            "parameter": [{"name": "z_threshold", "description": "Std-dev cutoff"}],
+            "parameter": [_param("z_threshold", "2.5", "Std-dev cutoff")],
         },
         headers=auth_headers(),
     )
@@ -545,9 +549,32 @@ async def test_put_forwards_a_supplied_cadence_and_parameter_list(
     assert resp.status_code == 201
     kwargs = mock_svc.upsert_config.await_args.kwargs
     assert kwargs["attribute"] == {"cadence_unit": 86400, "cadence_offset": 7}
-    assert kwargs["parameter"] == [
-        {"name": "z_threshold", "description": "Std-dev cutoff"}
-    ]
+    assert kwargs["parameter"] == [_param("z_threshold", "2.5", "Std-dev cutoff")]
+
+
+@pytest.mark.asyncio
+async def test_put_parameter_missing_value_is_rejected_with_422(
+    client, mock_svc: AsyncMock
+) -> None:
+    """The request boundary rejects the stale two-field parameter shape.
+
+    spec: VALIDATION.md §Rule Configuration — every `parameter` element requires
+    `{name, value, description}` and `value` is a required string field.
+    """
+    mock_svc.upsert_config = AsyncMock(return_value=(_conf_record(), True))
+
+    resp = await client.put(
+        _CONF_URL,
+        json={
+            "description": "Daily row count check",
+            "variables": _DEFAULT_VARS,
+            "parameter": [{"name": "z_threshold", "description": "Std-dev cutoff"}],
+        },
+        headers=auth_headers(),
+    )
+
+    assert resp.status_code == 422
+    mock_svc.upsert_config.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -747,7 +747,9 @@ ingest/query — surfaced through the routes below.
   `variables` a list of `{name, description}` objects, ≤ 200 entries, each `name`
   matching `[a-z][a-z0-9_]{0,99}` and unique within the rule, each `description`
   required but ≤ 200 chars with the empty string allowed; the optional `parameter` list
-  under the identical per-item rules in its own namespace; `attribute` a closed
+  of `{name, value, description}` objects in its own namespace, `name` under the same
+  regex and `value`/`description` under the same per-field string rule as `variables`'
+  `description`; `attribute` a closed
   `{cadence_unit > 0, cadence_offset >= 0}` object whose fields default individually).
   `variables`, `parameter`, and `attribute` are each replaced **wholesale** when supplied —
   a `PATCH` never deep-merges into a stored section. The dataset must already

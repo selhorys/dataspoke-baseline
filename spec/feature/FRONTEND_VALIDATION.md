@@ -72,12 +72,14 @@ naming what the pair drives: the window the governance `validation-score` metric
 this dataset against. Both fields submit as one `attribute` object; a `PUT` always sends
 both, matching the wholesale-replacement rule the API applies.
 
-**Parameters** renders the optional `parameter[]` list with the *same* row editor as the
-declared-variables list (`name` + `description` inputs, `[×]`, `[+ Add]`) and one extra
-state the variables list does not have: absent. A conf with no `parameter` shows an empty
-list and omits the key on save; adding the first row starts it, and removing the last row
-returns to absent rather than submitting `[]` (which the API rejects). The read-only view
-hides the section entirely when the conf carries no `parameter`. DataSpoke does not
+**Parameters** renders the optional `parameter[]` list with a row editor of the same
+*behavior* as the declared-variables list — `[×]`, `[+ Add]`, the shared per-field string
+rules — but a different row shape (three inputs, `name` + `value` + `description`, not the
+variables list's two) and one extra state the variables list does not have: absent. A conf
+with no `parameter` shows an empty list and omits the key on save; adding the first row
+starts it, and removing the last row returns to absent rather than submitting `[]` (which the
+API rejects). The read-only view hides the section entirely when the conf carries no
+`parameter`. DataSpoke does not
 interpret these values, so the section carries no validation beyond the shared per-item
 rules and no charting anywhere on the page.
 The shared [RangePicker](FRONTEND_BASIC.md#shared-component-notes) (presets Last
@@ -141,7 +143,7 @@ no resurrection branch and no deleted/frozen state to surface.
 │  Data arrival                                                │
 │    cadence_unit 86400 s   cadence_offset 0                   │
 │  Parameters                                                  │
-│    z_threshold      — Std-dev cutoff for outliers            │
+│    z_threshold      2.5   — Std-dev cutoff for outliers      │
 │                                                               │
 │  Quality Score                     [Last 2 weeks ▾] [Daily ▾] │
 │    (attr/validation/result?from=…&until=…&limit=…)            │
@@ -174,7 +176,8 @@ Empty-state (404 CONFIG_NOT_FOUND):   Edit-state (Create or Edit):
                                        │  Data arrival                   │
                                        │    unit [ 86400 ] off [ 0 ]     │
                                        │  Parameters (optional)          │
-                                       │    [ z_threshold ] [ Std… ] [×] │
+                                       │    [ z_threshold ] [ 2.5 ]      │
+                                       │      [ Std… ]              [×]  │
                                        │                        [+ Add]  │
                                        │  (Quality Score / Variables     │
                                        │   charts hidden while editing)  │

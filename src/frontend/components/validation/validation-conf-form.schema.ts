@@ -8,8 +8,7 @@
  *   variables[].description: required key, ≤ 200 chars, empty allowed,
  *                          no ASCII control characters except \t (0x09) and \n (0x0a).
  *   attribute:             {cadence_unit, cadence_offset} — always complete, replaced wholesale.
- *   parameter:             absent, or 1–200 entries under the same per-item rules as
- *                          variables in its own namespace. An explicit [] is rejected.
+ *   parameter:             absent, or 1–200 `{name, value, description}` entries.
  *
  * Spec: spec/feature/FRONTEND_VALIDATION.md, spec/feature/VALIDATION.md §Rule Configuration.
  */
@@ -83,7 +82,15 @@ function namedEntrySchema(label: string) {
 }
 
 const variableItemSchema = namedEntrySchema("Variable");
-const parameterItemSchema = namedEntrySchema("Parameter");
+const parameterItemSchema = namedEntrySchema("Parameter").extend({
+  value: z
+    .string()
+    .max(200, "Parameter value must not exceed 200 characters")
+    .refine(
+      (v) => !CONTROL_CHAR_RE.test(v),
+      "Parameter value contains invalid control characters",
+    ),
+});
 
 /**
  * A cadence integer. `valueAsNumber` on an emptied number input yields `NaN`,
@@ -180,6 +187,7 @@ export function toInternal(conf: ValidationConfResponse): ValidationConfFormValu
     },
     parameter: (conf.parameter ?? []).map((p) => ({
       name: p.name,
+      value: p.value,
       description: p.description,
     })),
   };
@@ -221,6 +229,7 @@ export function fromInternal(v: ValidationConfFormValues): ValidationConfPutRequ
   if (v.parameter.length > 0) {
     body.parameter = v.parameter.map((item) => ({
       name: item.name,
+      value: item.value,
       description: item.description,
     }));
   }
