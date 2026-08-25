@@ -52,9 +52,11 @@ class ValidationConfigRecord(BaseModel):
 
     ``variables`` is a list of ``{"name": ..., "description": ...}`` dicts,
     matching the JSONB column shape; the API response model coerces each entry
-    into its own ``ValidationVariable``. ``parameter`` carries the same shape and
-    is ``None`` when the section was never declared — a state the API response
-    renders by omitting the key rather than by serializing a null.
+    into its own ``ValidationVariable``. ``parameter`` entries are
+    ``{"name", "value", "description"}`` dicts — one field wider than
+    ``variables`` — and the list is ``None`` when the section was never
+    declared — a state the API response renders by omitting the key rather
+    than by serializing a null.
     """
 
     dataset_urn: str

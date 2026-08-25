@@ -54,17 +54,36 @@ class ValidationVariable(BaseModel):
 
 
 class ValidationParameter(ValidationVariable):
-    """One declared pipeline hyperparameter: a name plus a description.
+    """One declared pipeline hyperparameter: a name, a value, and a description.
 
-    Same shape and same per-item rules as :class:`ValidationVariable`, in its own
-    namespace — a name may appear in both lists, since uniqueness is per list.
-    DataSpoke never interprets a parameter: it is opaque storage so a pipeline's
-    tunables travel with the rule that uses them.
+    One field wider than :class:`ValidationVariable` — ``value`` carries the
+    hyperparameter's own value as a string — but otherwise the same per-item
+    rules, in its own namespace: a name may appear in both lists, since
+    uniqueness is per list. DataSpoke never interprets a parameter: it is
+    opaque storage so a pipeline's tunables travel with the rule that uses them.
+    Because this class inherits :class:`ValidationVariable`, the model's actual
+    field/schema order is ``(name, description, value)``, not the ``(name,
+    value, description)`` order used by examples and spec prose below — the two
+    orderings are equivalent since JSON object keys are unordered.
 
     Spec: spec/feature/VALIDATION.md §Rule Configuration.
     """
 
     _entry_label: ClassVar[str] = "parameter"
+
+    value: str = Field(
+        description="Hyperparameter value, stored and returned verbatim as a "
+        "string (≤ 200 chars; empty string allowed)"
+    )
+
+    @field_validator("value")
+    @classmethod
+    def _check_value(cls, v: str) -> str:
+        if len(v) > 200:
+            raise ValueError(f"{cls._entry_label} value must not exceed 200 characters")
+        if _DESC_CTRL_RE.search(v):
+            raise ValueError(f"{cls._entry_label} value contains control characters")
+        return v
 
 
 class ValidationAttribute(BaseModel):
@@ -213,10 +232,10 @@ class PutValidationConfRequest(BaseModel):
     parameter: list[ValidationParameter] | None = Field(
         default=None,
         description=(
-            "Optional pipeline hyperparameters, each a {name, description} object "
-            "under the same rules as variables in its own namespace. Omitting the "
-            "key on PUT stores the section as absent, clearing any previous value; "
-            "an explicit empty list is rejected"
+            "Optional pipeline hyperparameters, each a {name, value, description} "
+            "object under the same rules as variables in its own namespace. "
+            "Omitting the key on PUT stores the section as absent, clearing any "
+            "previous value; an explicit empty list is rejected"
         ),
     )
 
@@ -254,7 +273,11 @@ class PutValidationConfRequest(BaseModel):
                 ],
                 "attribute": {"cadence_unit": 86400, "cadence_offset": 0},
                 "parameter": [
-                    {"name": "z_threshold", "description": "Std-dev cutoff for outliers"}
+                    {
+                        "name": "z_threshold",
+                        "value": "2.5",
+                        "description": "Std-dev cutoff for outliers",
+                    }
                 ],
             }
         }
@@ -285,10 +308,11 @@ class PatchValidationConfRequest(BaseModel):
     parameter: list[ValidationParameter] | None = Field(
         default=None,
         description=(
-            "Replacement hyperparameter list. Omitting the key leaves the stored "
-            "value unchanged; an explicit null clears the section; a non-empty list "
-            "(1–200 entries, validated as variables are) replaces it wholesale. An "
-            "empty list is rejected, so null is the single spelling of 'clear'"
+            "Replacement hyperparameter list of {name, value, description} objects. "
+            "Omitting the key leaves the stored value unchanged; an explicit null "
+            "clears the section; a non-empty list (1–200 entries, validated as "
+            "variables are) replaces it wholesale. An empty list is rejected, so "
+            "null is the single spelling of 'clear'"
         ),
     )
 
@@ -393,9 +417,10 @@ class ValidationConfResponse(SingleResponse):
     parameter: list[ValidationParameter] | None = Field(
         default=None,
         description=(
-            "Declared pipeline hyperparameters. The key is omitted entirely from "
-            "the body when the section is absent; it is never serialized as null. "
-            "The conf routes carry response_model_exclude_none for exactly that"
+            "Declared pipeline hyperparameters, each a {name, value, description} "
+            "object. The key is omitted entirely from the body when the section is "
+            "absent; it is never serialized as null. The conf routes carry "
+            "response_model_exclude_none for exactly that"
         ),
     )
     created_at: datetime = Field(description="UTC timestamp when the config was created")

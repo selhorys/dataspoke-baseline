@@ -97,7 +97,7 @@ pipeline's own hyperparameters.
   ],
   "attribute": {"cadence_unit": 86400, "cadence_offset": 0},
   "parameter": [
-    {"name": "z_threshold", "description": "Std-dev cutoff for outliers"}
+    {"name": "z_threshold", "value": "2.5", "description": "Std-dev cutoff for outliers"}
   ]
 }
 ```
@@ -107,15 +107,19 @@ pipeline's own hyperparameters.
 | `description` | `string` | yes | Free-form rule description. Surfaced in the DataHub assertion detail UI. Required key, but the empty string is allowed. ≤ 2,000 chars. No ASCII control characters except `\t` (0x09) and `\n` (0x0a). |
 | `variables` | `list[object]` | yes | The variables this rule will report, each a `{name, description}` object. There MUST be ≥ 1 entry; hard cap **200** entries. |
 | `attribute` | `object` | no | Data-arrival cadence, `{cadence_unit, cadence_offset}` — see below. Omitting it on `PUT` stores the all-defaults object; it is never absent from a stored conf or from a response. |
-| `parameter` | `list[object]` \| absent | no | Pipeline hyperparameters, each a `{name, description}` object with the same shape and per-item rules as `variables`. Absent by default. When the key is present it MUST carry 1–200 entries — an explicit `[]` is rejected exactly as an empty `variables` is. |
+| `parameter` | `list[object]` \| absent | no | Pipeline hyperparameters, each a `{name, value, description}` object — one field wider than `variables`' `{name, description}`, though every field shared between the two follows the same per-field string rule. Absent by default. When the key is present it MUST carry 1–200 entries — an explicit `[]` is rejected exactly as an empty `variables` is. |
 
-Each `variables` element — and each `parameter` element, under the same rules in its own
-separate namespace (a name may appear in both lists; uniqueness is per list):
+Each `variables` element is `{name, description}`; each `parameter` element is
+`{name, value, description}` — one extra field, `value`, carrying the hyperparameter's own
+value as a string. Both lists share the same per-field rules and the same uniqueness scope
+(name unique within its own list; a name may appear in both lists, since each list is its own
+namespace):
 
-| Field | Type | Required | Notes |
-|---|---|---|---|
-| `name` | `string` | yes | Variable name. MUST match `\A[a-z][a-z0-9_]{0,99}\Z` and MUST be unique across the list. |
-| `description` | `string` | yes | Per-variable description (the meaning of the measurement). Required key, but the **empty string is allowed**. ≤ 200 chars. No ASCII control characters except `\t` (0x09) and `\n` (0x0a). |
+| Field | Type | Required | In | Notes |
+|---|---|---|---|---|
+| `name` | `string` | yes | `variables`, `parameter` | Variable/parameter name. MUST match `\A[a-z][a-z0-9_]{0,99}\Z` and MUST be unique across its own list. |
+| `value` | `string` | yes | `parameter` only | The hyperparameter's value, stored and returned verbatim as a string. Required key, but the **empty string is allowed**. ≤ 200 chars. No ASCII control characters except `\t` (0x09) and `\n` (0x0a). |
+| `description` | `string` | yes | `variables`, `parameter` | Per-item description (the meaning of the measurement, or of the hyperparameter). Required key, but the **empty string is allowed**. ≤ 200 chars. No ASCII control characters except `\t` (0x09) and `\n` (0x0a). |
 
 Each `attribute` field:
 
@@ -137,9 +141,10 @@ follows. A `PATCH` carrying `{"attribute": {"cadence_offset": 7}}` therefore als
   absent, clearing any previously stored value.
 - **`PATCH`** is a partial update. Omitting `parameter` leaves the stored value unchanged.
   `"parameter": null` clears it to absent — that is the one spelling for "clear". A non-empty
-  list (1–200 entries, validated exactly as `variables` is) replaces the stored value
-  wholesale. `"parameter": []` is **rejected** (`422`), the same as an empty `variables`, so
-  there is no second spelling of "clear".
+  list (1–200 entries, under the same count bound as `variables`, each item validated per its
+  own `{name, value, description}` field table above) replaces the stored value wholesale.
+  `"parameter": []` is **rejected** (`422`), the same as an empty `variables`, so there is no
+  second spelling of "clear".
 - **`GET`** omits the `parameter` key entirely from the response body when the section is
   absent; it is never serialized as `null`.
 
