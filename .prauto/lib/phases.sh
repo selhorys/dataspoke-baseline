@@ -563,6 +563,11 @@ implement_and_finalize() {
       post_quota_paused_comment "$issue_number" "$ACTIVE_AGENT" "$PAUSED_SESSION_ID"
       return 0
     fi
+    if [[ "$AGENT_STATUS" != "ok" ]]; then
+      warn "Issue #${issue_number}: resumed ${ACTIVE_AGENT} failed. Will retry through the normal path."
+      post_resume_failure_restart_comment "$issue_number" "$ACTIVE_AGENT"
+      return 0
+    fi
     post_quota_resumed_comment "$issue_number"
   else
     # FRESH dispatch.
@@ -614,6 +619,11 @@ handle_phase_analysis() {
     if [[ "$AGENT_STATUS" == "quota" ]]; then
       warn "Issue #${issue_number}: resumed analysis died on quota again. Re-pausing."
       post_quota_paused_comment "$issue_number" "$ACTIVE_AGENT" "$PAUSED_SESSION_ID"
+      return 0
+    fi
+    if [[ "$AGENT_STATUS" != "ok" ]]; then
+      warn "Issue #${issue_number}: resumed analysis failed. Will retry through the normal path."
+      post_resume_failure_restart_comment "$issue_number" "$ACTIVE_AGENT"
       return 0
     fi
     post_quota_resumed_comment "$issue_number"

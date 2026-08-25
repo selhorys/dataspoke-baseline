@@ -5,13 +5,81 @@
 STATE_DIR="${PRAUTO_DIR}/state"
 LOCK_FILE="${STATE_DIR}/heartbeat.lock"
 SESSIONS_DIR="${STATE_DIR}/sessions"
+# Persistent, local-only anchors for agent-native sessions. Unlike SESSIONS_DIR,
+# this directory survives reset_ephemeral_state so a later heartbeat can verify
+# a GitHub pause marker before asking Codex to resume it.
+NATIVE_SESSIONS_DIR="${STATE_DIR}/native-sessions"
 
 # Current issue session directory (set by init_issue_session).
 CUR_SESSION_DIR=""
 
 # Ensure the state/worktree directories exist.
 ensure_state_dirs() {
-  mkdir -p "$STATE_DIR" "$SESSIONS_DIR" "${PRAUTO_DIR}/worktrees"
+  mkdir -p "$STATE_DIR" "$SESSIONS_DIR" "$NATIVE_SESSIONS_DIR" "${PRAUTO_DIR}/worktrees"
+  chmod 700 "$NATIVE_SESSIONS_DIR" 2>/dev/null || true
+}
+
+# is_strict_uuid <value>
+# Codex accepts either a UUID or a thread name. PRauto persists and resumes only
+# canonical UUIDs so a GitHub comment cannot turn a session field into a name or
+# an option-like argument.
+is_strict_uuid() {
+  [[ "$1" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]
+}
+
+# native_session_anchor_file <issue_number>
+native_session_anchor_file() {
+  local issue_number="$1"
+  [[ "$issue_number" =~ ^[0-9]+$ ]] || return 1
+  printf '%s/issue-%s.json' "$NATIVE_SESSIONS_DIR" "$issue_number"
+}
+
+# record_codex_native_session <issue> <ready_timestamp> <thread_id>
+# Persist the exact local proof only after Codex emitted thread.started. The
+# ready timestamp binds a reused issue number to its current GitHub lifecycle.
+record_codex_native_session() {
+  local issue_number="$1" ready_timestamp="$2" thread_id="$3"
+  [[ -n "$ready_timestamp" ]] || return 1
+  is_strict_uuid "$thread_id" || return 1
+  local anchor_file tmp_file
+  anchor_file=$(native_session_anchor_file "$issue_number") || return 1
+  mkdir -p "$NATIVE_SESSIONS_DIR"
+  chmod 700 "$NATIVE_SESSIONS_DIR" 2>/dev/null || true
+  tmp_file=$(mktemp "${anchor_file}.tmp.XXXXXX") || return 1
+  if ! jq -n \
+      --arg issue_number "$issue_number" \
+      --arg ready_timestamp "$ready_timestamp" \
+      --arg agent "codex" \
+      --arg thread_id "$thread_id" \
+      '{issue_number: $issue_number, ready_timestamp: $ready_timestamp, agent: $agent, thread_id: $thread_id}' \
+      > "$tmp_file"; then
+    rm -f "$tmp_file"
+    return 1
+  fi
+  chmod 600 "$tmp_file" 2>/dev/null || true
+  mv -f "$tmp_file" "$anchor_file"
+}
+
+# codex_native_session_anchor_matches <issue> <ready_timestamp> <thread_id>
+# Validate a local anchor exactly. GitHub remains phase SSOT; this proves only
+# that the session id in its marker was created by this executor in this issue's
+# current lifecycle.
+codex_native_session_anchor_matches() {
+  local issue_number="$1" ready_timestamp="$2" thread_id="$3"
+  [[ -n "$ready_timestamp" ]] || return 1
+  is_strict_uuid "$thread_id" || return 1
+  local anchor_file
+  anchor_file=$(native_session_anchor_file "$issue_number") || return 1
+  [[ -f "$anchor_file" ]] || return 1
+  jq -e \
+    --arg issue_number "$issue_number" \
+    --arg ready_timestamp "$ready_timestamp" \
+    --arg thread_id "$thread_id" '
+      .issue_number == $issue_number
+      and .ready_timestamp == $ready_timestamp
+      and .agent == "codex"
+      and .thread_id == $thread_id
+    ' "$anchor_file" >/dev/null 2>&1
 }
 
 # Initialize a per-issue session directory.

@@ -42,14 +42,51 @@ select_agent() {
   return 1
 }
 
-# new_session_id — generate a session id the harness can address later.
-# The id is generated UPFRONT and passed as --session-id, so a resume is
-# deterministic regardless of how the worker exits (a crash never leaves us
-# guessing which session to resume).
+# new_session_id — generate a Claude session id the harness can address later.
+# Claude accepts --session-id on a fresh invocation. Codex does not: its native
+# thread id is emitted only after the process starts (see codex_thread_id).
 new_session_id() {
   uuidgen 2>/dev/null | tr '[:upper:]' '[:lower:]' \
     || cat /proc/sys/kernel/random/uuid 2>/dev/null \
     || printf '%s-%s' "$(date +%s)" "$$"
+}
+
+# codex_thread_id <jsonl_file>
+# Return the native thread id emitted by `codex exec --json`. Never synthesize
+# an id: Codex resume can address only a thread the CLI actually created.
+codex_thread_id() {
+  local output_file="$1"
+  jq -r -s '[.[] | select(.type == "thread.started") | .thread_id] | first // empty' \
+    "$output_file" 2>/dev/null
+}
+
+# codex_final_output <jsonl_file>
+# `item.completed` agent_message is Codex exec's final user-facing response.
+# Keep all JSONL in the artifact for diagnostics; callers consume only its last
+# agent message as the phase result.
+codex_final_output() {
+  local output_file="$1"
+  jq -r -s '
+    [ .[]
+      | select(.type == "item.completed" or .type == "item_completed")
+      | (.item // .payload.item // {})
+      | select(.type == "agent_message" or .type == "AgentMessage")
+      | (.text // .content // empty)
+    ]
+    | last // empty
+  ' "$output_file" 2>/dev/null
+}
+
+# codex_has_terminal_error <jsonl_file>
+# A tool item can fail while the agent recovers, so only terminal error events
+# classify the whole invocation as failed.
+codex_has_terminal_error() {
+  local output_file="$1"
+  jq -e '
+    select(type == "object")
+    | select(.type == "error" or .type == "turn.failed"
+             or .payload.type == "error" or .payload.type == "turn.failed")
+  ' "$output_file" >/dev/null 2>&1
 }
 
 # prepare_system_prompt — render prompts/system-append.md with worker identity.
@@ -64,15 +101,26 @@ prepare_system_prompt() {
   printf '%s' "$rendered_file"
 }
 
-# classify_exit <output_file> <exit_code>
+# classify_exit <output_file> <exit_code> [agent]
 # Set AGENT_STATUS from a completed claude/codex run: ok, quota, or error.
-# A quota death is recognized by an api_error terminal_reason or a
-# rate-limit/session-limit string in the output — the signal a resume must wait
-# on, distinct from an ordinary failure (which restarts rather than resumes).
+# Claude retains its established textual classification. Codex quota is more
+# strict: only codex_jsonl_has_quota_signal's vetted protocol fields may create
+# a resumable pause; arbitrary messages and agent text are ordinary errors.
 classify_exit() {
-  local output_file="$1" exit_code="$2"
+  local output_file="$1" exit_code="$2" agent="${3:-claude}"
   local raw
   raw=$(cat "$output_file" 2>/dev/null || printf '')
+  if [[ "$agent" == "codex" ]]; then
+    if codex_jsonl_has_quota_signal "$output_file"; then
+      AGENT_STATUS=quota
+    elif codex_has_terminal_error "$output_file" || [[ "$exit_code" -ne 0 ]]; then
+      AGENT_STATUS=error
+    else
+      AGENT_STATUS=ok
+    fi
+    return
+  fi
+
   if [[ "$exit_code" -eq 0 ]]; then
     AGENT_STATUS=ok
   elif printf '%s' "$raw" | grep -qi "rate limit\|quota\|session limit\|api_error\|API error"; then
@@ -83,19 +131,26 @@ classify_exit() {
 }
 
 # invoke_agent <prompt> <allowed_tools> <max_turns> [budget]
-# Dispatch a fresh session under ACTIVE_AGENT. Sets AGENT_SESSION_ID (always,
-# generated upfront), AGENT_OUTPUT, AGENT_STATUS.
+# Dispatch a fresh session under ACTIVE_AGENT. Claude receives a harness-created
+# id; Codex records only the native `thread.started` id. Sets AGENT_SESSION_ID,
+# AGENT_OUTPUT, AGENT_STATUS.
 invoke_agent() {
   local prompt="$1" allowed_tools="$2" max_turns="$3" budget="${4:-}"
-  local system_file; system_file=$(prepare_system_prompt)
-  local session_id; session_id=$(new_session_id)
+  local system_file=""
+  [[ "$ACTIVE_AGENT" == "claude" ]] && system_file=$(prepare_system_prompt)
+  local session_id=""
+  [[ "$ACTIVE_AGENT" == "claude" ]] && session_id=$(new_session_id)
 
-  local output_file="${CUR_SESSION_DIR}/agent-${session_id}.json"
+  local output_suffix="${session_id:-codex-$(date +%s)-$$}"
+  local output_file="${CUR_SESSION_DIR}/agent-${output_suffix}.json"
+  local stderr_file="${output_file}.stderr"
+  local code=0
   local -a cmd
 
   if [[ "$ACTIVE_AGENT" == "codex" ]]; then
-    cmd=(codex exec --sandbox workspace-write)
-    [[ -n "$budget" ]] && cmd+=(--max-budget-usd "$budget")
+    # Codex deliberately receives none of Claude's session/tool/turn/budget
+    # flags. Its thread id is emitted in JSONL after startup.
+    cmd=(codex exec --json --sandbox workspace-write)
     cmd+=("$prompt")
   else
     cmd=(claude -p "$prompt"
@@ -110,19 +165,58 @@ invoke_agent() {
     [[ -n "$budget" ]] && cmd+=(--max-budget-usd "$budget")
   fi
 
-  info "Invoking ${ACTIVE_AGENT} (session=${session_id}, max_turns=${max_turns})..."
+  info "Invoking ${ACTIVE_AGENT} (session=${session_id:-native-pending}, max_turns=${max_turns})..."
   # claude -p stdout is unreliable through $(...); redirect to a file and read it.
-  "${cmd[@]}" > "$output_file" 2>&1
-  local code=$?
-
-  AGENT_SESSION_ID="$session_id"
-  AGENT_OUTPUT=$(jq -r '.result // empty' "$output_file" 2>/dev/null || printf '')
-  # An error subtype (error_max_turns, error_budget, api_error) carries no .result.
-  local subtype; subtype=$(jq -r '.subtype // empty' "$output_file" 2>/dev/null || printf '')
-  if [[ "$subtype" == error_* ]] || [[ -z "$AGENT_OUTPUT" ]]; then
-    [[ -z "$AGENT_OUTPUT" ]] && AGENT_OUTPUT=$(cat "$output_file" 2>/dev/null || printf '')
+  # Codex JSONL must remain stdout-only: stderr can contain non-JSON runtime
+  # diagnostics, which would otherwise make thread.started unparsable. Retain
+  # that raw stderr sidecar for postmortem diagnosis.
+  if [[ "$ACTIVE_AGENT" == "codex" ]]; then
+    if "${cmd[@]}" > "$output_file" 2> "$stderr_file"; then
+      code=0
+    else
+      code=$?
+    fi
+  else
+    if "${cmd[@]}" > "$output_file" 2>&1; then
+      code=0
+    else
+      code=$?
+    fi
   fi
-  classify_exit "$output_file" "$code"
+
+  if [[ "$ACTIVE_AGENT" == "codex" ]]; then
+    AGENT_SESSION_ID=$(codex_thread_id "$output_file")
+    # The local anchor is written immediately after the native event and before
+    # quota handling can publish a resume marker. A failed write means no safe
+    # resume target even if Codex did start successfully.
+    if [[ -n "$AGENT_SESSION_ID" ]] && ! record_codex_native_session \
+        "${CUR_ISSUE_NUMBER:-}" "${READY_LABEL_TIMESTAMP:-}" "$AGENT_SESSION_ID"; then
+      warn "Could not persist Codex native-session anchor; leaving this attempt non-resumable."
+      AGENT_SESSION_ID=""
+    fi
+    AGENT_OUTPUT=$(codex_final_output "$output_file")
+    [[ -z "$AGENT_OUTPUT" ]] && AGENT_OUTPUT=$(cat "$output_file" 2>/dev/null || printf '')
+    if [[ -z "$AGENT_OUTPUT" ]] && [[ -s "$stderr_file" ]]; then
+      AGENT_OUTPUT=$(cat "$stderr_file" 2>/dev/null || printf '')
+    fi
+    classify_exit "$output_file" "$code" codex
+    # No native identity means no safe resume target. Treat an otherwise quota
+    # exit as an ordinary failure so the heartbeat retries/restarts instead of
+    # publishing a misleading resumable pause marker.
+    if [[ -z "$AGENT_SESSION_ID" ]] && [[ "$AGENT_STATUS" != "ok" ]]; then
+      warn "Codex exited before emitting thread.started; leaving this attempt non-resumable."
+      AGENT_STATUS=error
+    fi
+  else
+    AGENT_SESSION_ID="$session_id"
+    AGENT_OUTPUT=$(jq -r '.result // empty' "$output_file" 2>/dev/null || printf '')
+    # An error subtype (error_max_turns, error_budget, api_error) carries no .result.
+    local subtype; subtype=$(jq -r '.subtype // empty' "$output_file" 2>/dev/null || printf '')
+    if [[ "$subtype" == error_* ]] || [[ -z "$AGENT_OUTPUT" ]]; then
+      [[ -z "$AGENT_OUTPUT" ]] && AGENT_OUTPUT=$(cat "$output_file" 2>/dev/null || printf '')
+    fi
+    classify_exit "$output_file" "$code" claude
+  fi
 }
 
 # resume_agent <prompt> <allowed_tools> <max_turns> <session_id> [budget]
@@ -131,12 +225,27 @@ invoke_agent() {
 # abandon+restart. Sets AGENT_OUTPUT, AGENT_STATUS.
 resume_agent() {
   local prompt="$1" allowed_tools="$2" max_turns="$3" session_id="$4" budget="${5:-}"
-  local system_file; system_file=$(prepare_system_prompt)
+  if [[ "$ACTIVE_AGENT" == "codex" ]]; then
+    if [[ "$session_id" != "${PAUSED_SESSION_ID:-}" ]] || \
+       ! codex_pause_marker_is_trusted "${CUR_ISSUE_NUMBER:-}"; then
+      warn "Refusing Codex resume without a matching trusted native-session anchor."
+      AGENT_SESSION_ID=""
+      AGENT_OUTPUT=""
+      AGENT_STATUS=error
+      return 0
+    fi
+  fi
+  local system_file=""
+  [[ "$ACTIVE_AGENT" == "claude" ]] && system_file=$(prepare_system_prompt)
   local output_file="${CUR_SESSION_DIR}/agent-${session_id}-resume.json"
+  local stderr_file="${output_file}.stderr"
+  local code=0
   local -a cmd
 
   if [[ "$ACTIVE_AGENT" == "codex" ]]; then
-    cmd=(codex exec resume "$session_id" "$prompt")
+    # Resume accepts the agent-native id and prompt only; do not append fresh
+    # execution options (sandbox/tool/turn/budget/session flags are Claude-only).
+    cmd=(codex exec resume --json "$session_id" "$prompt")
   else
     cmd=(claude -p "$prompt"
       --resume "$session_id"
@@ -151,12 +260,32 @@ resume_agent() {
   fi
 
   info "Resuming ${ACTIVE_AGENT} session ${session_id}..."
-  "${cmd[@]}" > "$output_file" 2>&1
-  local code=$?
+  if [[ "$ACTIVE_AGENT" == "codex" ]]; then
+    if "${cmd[@]}" > "$output_file" 2> "$stderr_file"; then
+      code=0
+    else
+      code=$?
+    fi
+  else
+    if "${cmd[@]}" > "$output_file" 2>&1; then
+      code=0
+    else
+      code=$?
+    fi
+  fi
 
-  AGENT_OUTPUT=$(jq -r '.result // empty' "$output_file" 2>/dev/null || printf '')
-  [[ -z "$AGENT_OUTPUT" ]] && AGENT_OUTPUT=$(cat "$output_file" 2>/dev/null || printf '')
-  classify_exit "$output_file" "$code"
+  if [[ "$ACTIVE_AGENT" == "codex" ]]; then
+    AGENT_OUTPUT=$(codex_final_output "$output_file")
+    [[ -z "$AGENT_OUTPUT" ]] && AGENT_OUTPUT=$(cat "$output_file" 2>/dev/null || printf '')
+    if [[ -z "$AGENT_OUTPUT" ]] && [[ -s "$stderr_file" ]]; then
+      AGENT_OUTPUT=$(cat "$stderr_file" 2>/dev/null || printf '')
+    fi
+    classify_exit "$output_file" "$code" codex
+  else
+    AGENT_OUTPUT=$(jq -r '.result // empty' "$output_file" 2>/dev/null || printf '')
+    [[ -z "$AGENT_OUTPUT" ]] && AGENT_OUTPUT=$(cat "$output_file" 2>/dev/null || printf '')
+    classify_exit "$output_file" "$code" claude
+  fi
 }
 
 # render_prompt <template_file> <var1=val1> [var2=val2 ...]
