@@ -217,8 +217,8 @@ issues the deletes explicitly keyed on `dataset_urn`.
 Indexes: `(dataset_urn, data_time DESC)` to serve the historical-baseline GET.
 
 Multiple rows may share `(dataset_urn, data_time)` — append-only matches DataHub's
-timeseries aspect semantics. The GET endpoint collapses duplicates with last-write-wins
-per distinct `data_time`.
+timeseries aspect semantics. Reads that select one row per group resolve the duplicate
+per VALIDATION.md §Duplicate `data_time` policy.
 
 #### `metagen_config`
 

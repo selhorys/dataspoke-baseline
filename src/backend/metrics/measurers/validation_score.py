@@ -7,8 +7,10 @@ per-dataset test below). None is a score sum, so ``valid_in_time / valid_confd``
 pass rate over the configured estate and ``valid_confd / total`` as validation coverage.
 
 **The per-dataset test**: take the dataset's single latest validation result overall — the
-newest row by ``data_time``, chosen without regard to any window — then ask whether *that*
-result lies inside the dataset's cadence-anchored window and scored ``>= 1.0``. Both
+newest row by ``data_time`` (ties broken by ``ingestion_time`` descending, so a re-posted
+result for the same ``data_time`` supersedes the one it replaced), chosen without regard to
+any window — then ask whether *that* result lies inside the dataset's cadence-anchored window
+and scored ``>= 1.0``. Both
 conditions must hold. Searching backwards for a qualifying row instead would let a
 superseded result stand in for the newest one, so a dataset could pass on evidence it has
 itself already replaced.
@@ -151,7 +153,8 @@ async def measure(
     # No window predicate here on purpose: the test is about the dataset's newest
     # result, and filtering first would let an older in-window row stand in for
     # it. One query — row_number() partitioned by dataset_urn, ordered by
-    # data_time desc, filtered to rn == 1.
+    # data_time desc then ingestion_time desc (last-write-wins on a re-posted
+    # data_time), filtered to rn == 1.
     sub = (
         select(
             ValidationResult.dataset_urn,
@@ -160,7 +163,10 @@ async def measure(
             func.row_number()
             .over(
                 partition_by=ValidationResult.dataset_urn,
-                order_by=ValidationResult.data_time.desc(),
+                order_by=(
+                    ValidationResult.data_time.desc(),
+                    ValidationResult.ingestion_time.desc(),
+                ),
             )
             .label("rn"),
         )
