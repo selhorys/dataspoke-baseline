@@ -8,8 +8,10 @@
 4. [Credential Model](#credential-model)
 5. [Skills](#skills)
 6. [Validation Routine Authoring (Flagship)](#validation-routine-authoring-flagship)
-7. [Governance Metric Lifecycle](#governance-metric-lifecycle)
-8. [Open Questions](#open-questions)
+7. [Ontology Generation Workflow](#ontology-generation-workflow)
+8. [Metadata Generation Workflow](#metadata-generation-workflow)
+9. [Governance Metric Lifecycle](#governance-metric-lifecycle)
+10. [Open Questions](#open-questions)
 
 ---
 
@@ -172,16 +174,16 @@ Write operations (source CRUD, conf PUT/PATCH/DELETE, result POST) require an ef
 
 ## Skills
 
-Six skills, each tracing to routes in `spec/API.md`. Four are full capabilities; two are
-stubs pending demand.
+Six skills, each tracing to routes in `spec/API.md`, provide end-user workflows for the
+five baseline features.
 
 | Skill | UC | Maturity | Primary routes |
 |-------|----|----------|----------------|
 | `dataspoke-access` | — | full | `GET /ready`, `GET /auth/me`, `POST /auth/token`, `POST /auth/api-tokens` |
 | `dataspoke-ingestion` | UC1 | full | `/spoke/ingestion/sources` CRUD, `…/method/run`, `…/event`, `…/datasets`, `/spoke/ingestion/unmanaged` |
 | `dataspoke-validation` | UC2 | full (flagship) | routine authoring into the user's pipeline, over `…/attr/validation/{conf,result}`; plus `/spoke/validation`, `…/event/validation` |
-| `dataspoke-ontogen` | UC3 | stub | `/spoke/ontogen/…` |
-| `dataspoke-metagen` | UC4 | stub | `/spoke/metagen/…`, `…/attr/metagen/…` |
+| `dataspoke-ontogen` | UC3 | full | `/spoke/ontogen/…` |
+| `dataspoke-metagen` | UC4 | full | `/spoke/metagen/…`, `…/attr/metagen/…` |
 | `dataspoke-governance` | UC5 | full | `/spoke/governance/…` |
 
 ### `dataspoke-access`
@@ -227,13 +229,24 @@ existing metrics, scaffold a definition for any built-in metric type, validate a
 request, create or update only after confirmation, prefer a dry run before scheduled execution,
 and interpret results, per-dataset verdicts, events, unresolved URNs, and scope freshness.
 
-### `dataspoke-ontogen` / `dataspoke-metagen` (stubs)
+### `dataspoke-ontogen`
 
-Each stub knows its route prefix, reads the current contract with `bin/dataspoke-schema`
-(handing `/redoc` to the user when they want to browse it), and answers basic questions about
-the feature's surface. They are deliberately thin — marked **TBD** until a concrete end-user
-workflow justifies promoting them to full capabilities. No invented behavior beyond what the
-API already exposes.
+Guide UC3's global ontology lifecycle: inspect or change its singleton conf, manage the
+Markdown seeds that steer inference, exercise manual inference, and review nodes, edges, and
+triples. It exposes the global run history and per-result histories so a reviewer can assess a
+proposal before deciding. The skill processes the review queue in the required **nodes → edges
+→ triples** order and surfaces `ONTOGEN_TRIPLE_DEPENDENCY_PENDING` rather than attempting to
+review a triple whose dependencies are not human-approved.
+
+### `dataspoke-metagen`
+
+Guide UC4's documentation lifecycle: manage named generation confs, inspect their matched and
+uncovered datasets, set each dataset's opt-in boundary, run a scoped generation, and review
+candidates through the global or per-dataset queue. It makes the boundary explicit: a conf's
+filter alone does not permit generation; a dataset also needs an enabled boundary whose
+`allowed` kinds cover the target field. It explains the global one-approved-candidate-per-item
+invariant, including that approving a sibling from another conf supersedes the prior approval
+and that rejecting an approved candidate removes the editable DataHub description it wrote.
 
 ---
 
@@ -327,6 +340,64 @@ final numbers.
 
 ---
 
+## Ontology Generation Workflow
+
+The `dataspoke-ontogen` skill turns UC3 into a guided workflow for the global ontology. The
+live OpenAPI fragment is authoritative for conf and review payloads, content types, and route
+availability; the skill retrieves it through `bin/dataspoke-schema` before preparing a write.
+
+1. **Inspect and scope** — load the singleton conf, seed inventory, current results, and recent
+   inference events. Explain that the ontology and its conf are global, while a one-shot Markdown
+   prompt applies only to its individual manual run.
+2. **Configure and seed** — present the exact conf or raw Markdown seed body before creating,
+   replacing, patching, enabling, disabling, or deleting it. A newly created seed is disabled,
+   so the skill makes a separate, explicit choice before it can steer inference.
+3. **Exercise safely** — recommend `dry_run=true` before a non-dry manual inference and show
+   its scope and one-shot prompt, if any. Surface `ONTOGEN_RUNNING` and `ONTOGEN_DISABLED` as
+   outcomes; do not retry around concurrent execution or a disabled non-dry run.
+4. **Review in dependency order** — filter and inspect proposed nodes, then edges, then triples,
+   including their detail and event histories. Before each review verdict, show the target,
+   verdict, and reason, then require explicit confirmation. A triple review remains blocked until
+   both nodes and its edge are human-approved.
+
+The skill requires explicit confirmation immediately before every conf or seed write, seed
+enablement change, deletion, non-dry run, and review verdict. It reports role, validation, and
+conflict errors verbatim rather than inferring a different global state.
+
+---
+
+## Metadata Generation Workflow
+
+The `dataspoke-metagen` skill turns UC4 into a guided workflow for generated editable DataHub
+descriptions. It reads the live OpenAPI fragment before writing and keeps three distinct scopes
+visible: a named conf's dataset filter, a dataset's opt-in boundary, and a manual run's optional
+dataset-URN selection.
+
+1. **Inspect coverage** — list and read confs, inspect a conf's matched datasets, check the
+   per-dataset rollup and review queues, and use the uncovered view to distinguish
+   `no_conf_match` from `boundary_blocked`.
+2. **Set policy and boundary** — preview a conf's exact JSON body before its CRUD operation and
+   a boundary before its CRUD operation. Explain that each target dataset needs both a matching
+   enabled conf and an enabled boundary whose `allowed` kinds include the requested description
+   slot.
+3. **Exercise safely** — prefer a dry run before a non-dry generation. For every run, show the
+   conf, narrowed dataset-URN scope when supplied, and whether durable candidates will be
+   created. Surface `METAGEN_RUNNING`, `METAGEN_DISABLED`, duplicate-name, and filter errors
+   without bypassing them.
+4. **Review deliberately** — open an item from the global or per-dataset queue and display every
+   candidate, its producing conf, status, evidence, and proposed Markdown before seeking a
+   verdict. Approval writes the editable DataHub description and is globally mutable across
+   confs; rejecting an approved candidate removes that description. The skill therefore requires
+   a fresh confirmation immediately before every candidate verdict, and surfaces
+   `METAGEN_DATASET_NOT_IN_BOUNDARY` when the dataset is not opted in.
+
+The same confirmation gate applies to every conf or boundary write, delete, enablement change,
+and non-dry run. Before deleting a conf, the skill explains that its results become orphaned and
+approved descriptions remain in DataHub; before deleting or disabling a boundary, it explains
+that future generation for the dataset is excluded or blocked.
+
+---
+
 ## Governance Metric Lifecycle
 
 The `dataspoke-governance` skill turns UC5's metric API into a guided workflow for the three
@@ -383,8 +454,6 @@ passive mode, invalid filters, and unresolved dataset literals as user-visible o
 
 - [ ] MCP promotion criteria — which (if any) skill warrants a structured MCP tool surface
       over the curl-wrapper approach.
-- [ ] Promotion of the ontogen / metagen stubs — concrete end-user workflows
-      that justify full skills.
 - [ ] Forecast library choice in generated routines — Prophet is the default example;
       whether to template alternatives (statsmodels, simple rolling thresholds) per user
       preference.

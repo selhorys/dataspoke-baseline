@@ -36,7 +36,9 @@ For local development against a checkout: `/plugin marketplace add ./` then
 | `dataspoke-access` | Connect to / verify a deployment; mint & store a `dsk_` token. **Run first.** |
 | `dataspoke-ingestion` | Manage ingestion sources (UC1): list, create/edit, dry-run + run, check results. |
 | `dataspoke-validation` | Write validation into your pipeline (UC2, flagship) — metrics, baseline, scoring, and the DataSpoke calls. Also manages validation slots directly. |
-| `dataspoke-ontogen` / `-metagen` / `-governance` | Stubs (UC3/4/5): answer questions + basic reads; point at `/redoc`. |
+| `dataspoke-ontogen` | Manage Ontology Generation (UC3): singleton conf, Markdown seeds, dry-run + inference runs, result/event inspection, and node → edge → triple review. |
+| `dataspoke-metagen` | Manage Metadata Generation (UC4): named confs, dataset opt-in boundaries, dry-run + generation runs, coverage, candidates, and global mutable review. |
+| `dataspoke-governance` | Manage Governance metrics (UC5): define active metrics, dry-run + evaluate, and inspect trends, scoped datasets, and events. |
 
 ## Credentials & security
 

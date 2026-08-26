@@ -6,12 +6,15 @@
 #
 # Usage:
 #   dataspoke-api <METHOD> <PATH> [JSON_BODY]
+#   dataspoke-api <METHOD> <PATH> --content-type <MEDIA_TYPE> <BODY>
 #
 #   METHOD     GET | POST | PUT | PATCH | DELETE
 #   PATH       Feature paths (/auth, /spoke) are prefixed with /api/v1
 #              automatically. Root paths (/ready, /redoc, /health, /openapi.json)
 #              and any already-/api/v1-prefixed path are used as-is.
-#   JSON_BODY  optional request body (a JSON string)
+#   JSON_BODY   optional request body (a JSON string)
+#   MEDIA_TYPE  explicit content type for BODY (for example, text/markdown)
+#   BODY        request body preserved as one argument
 #
 # Config resolution (first match wins):
 #   1. env: DATASPOKE_API_URL + DATASPOKE_API_TOKEN
@@ -21,20 +24,57 @@
 #   dataspoke-api GET  /auth/me
 #   dataspoke-api GET  /spoke/validation
 #   dataspoke-api PUT  '/spoke/common/data/<urn>/attr/validation/conf' '{"description":"…","variables":[]}'
+#   dataspoke-api POST /spoke/ontogen/attr/seed --content-type text/markdown '# Seed ontology'
 #   dataspoke-api GET  /ready
 set -uo pipefail
 
 CONFIG="${HOME}/.dataspoke/config.json"
 err() { printf '%s\n' "$*" >&2; }
 
-if [[ $# -lt 2 ]]; then
+usage() {
   err "usage: dataspoke-api <METHOD> <PATH> [JSON_BODY]"
+  err "       dataspoke-api <METHOD> <PATH> --content-type <MEDIA_TYPE> <BODY>"
+}
+
+if [[ $# -lt 2 ]]; then
+  usage
   exit 2
 fi
 
 METHOD="$1"
 PATH_ARG="$2"
-BODY="${3:-}"
+BODY=""
+CONTENT_TYPE=""
+SEND_BODY=false
+
+case "$#" in
+  2) ;;
+  3)
+    BODY="$3"
+    CONTENT_TYPE="application/json"
+    # Preserve the legacy no-body behavior for an explicitly empty JSON argument.
+    [[ -n "$BODY" ]] && SEND_BODY=true
+    ;;
+  5)
+    if [[ "$3" != "--content-type" ]]; then
+      usage
+      exit 2
+    fi
+    CONTENT_TYPE="$4"
+    BODY="$5"
+    SEND_BODY=true
+    # A header value must be one well-formed media type. Reject control
+    # characters explicitly and allow only horizontal whitespace around params.
+    if [[ "$CONTENT_TYPE" =~ [[:cntrl:]] ]] || [[ ! "$CONTENT_TYPE" =~ ^[[:alnum:]!#\$\&\^_.+-]+/[[:alnum:]!#\$\&\^_.+-]+([[:blank:]]*\;[[:blank:]]*[[:alnum:]!#\$\&\^_.+-]+=[[:alnum:]!#\$\&\^_.:+-]+)*$ ]]; then
+      err "Invalid content type: $CONTENT_TYPE"
+      exit 2
+    fi
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac
 
 BASE="${DATASPOKE_API_URL:-}"
 TOKEN="${DATASPOKE_API_TOKEN:-}"
@@ -63,7 +103,7 @@ esac
 
 args=(-sS -X "$METHOD" -w $'\n%{http_code}')
 [[ -n "$TOKEN" ]] && args+=(-H "Authorization: Bearer ${TOKEN}")
-[[ -n "$BODY" ]] && args+=(-H "Content-Type: application/json" -d "$BODY")
+[[ "$SEND_BODY" == true ]] && args+=(-H "Content-Type: ${CONTENT_TYPE}" -d "$BODY")
 
 RESP="$(curl "${args[@]}" "$URL")" || { err "curl failed for ${METHOD} ${URL}"; exit 4; }
 
