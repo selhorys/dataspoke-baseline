@@ -8,7 +8,8 @@
 4. [Credential Model](#credential-model)
 5. [Skills](#skills)
 6. [Validation Routine Authoring (Flagship)](#validation-routine-authoring-flagship)
-7. [Open Questions](#open-questions)
+7. [Governance Metric Lifecycle](#governance-metric-lifecycle)
+8. [Open Questions](#open-questions)
 
 ---
 
@@ -171,7 +172,7 @@ Write operations (source CRUD, conf PUT/PATCH/DELETE, result POST) require an ef
 
 ## Skills
 
-Six skills, each tracing to routes in `spec/API.md`. Three are full capabilities; three are
+Six skills, each tracing to routes in `spec/API.md`. Four are full capabilities; two are
 stubs pending demand.
 
 | Skill | UC | Maturity | Primary routes |
@@ -181,7 +182,7 @@ stubs pending demand.
 | `dataspoke-validation` | UC2 | full (flagship) | routine authoring into the user's pipeline, over `…/attr/validation/{conf,result}`; plus `/spoke/validation`, `…/event/validation` |
 | `dataspoke-ontogen` | UC3 | stub | `/spoke/ontogen/…` |
 | `dataspoke-metagen` | UC4 | stub | `/spoke/metagen/…`, `…/attr/metagen/…` |
-| `dataspoke-governance` | UC5 | stub | `/spoke/governance/…` |
+| `dataspoke-governance` | UC5 | full | `/spoke/governance/…` |
 
 ### `dataspoke-access`
 
@@ -219,7 +220,14 @@ assertion, leaving the slot as never-created. Replacing a conf's `variables[]` d
 past results, which retain the keys they were posted with, so a rename orphans the existing
 series and breaks the pipeline's next POST with `422 UNKNOWN_VARIABLE`.
 
-### `dataspoke-ontogen` / `dataspoke-metagen` / `dataspoke-governance` (stubs)
+### `dataspoke-governance`
+
+Guide the complete active-metric lifecycle described below: inspect the deployed contract and
+existing metrics, scaffold a definition for any built-in metric type, validate and preview the
+request, create or update only after confirmation, prefer a dry run before scheduled execution,
+and interpret results, per-dataset verdicts, events, unresolved URNs, and scope freshness.
+
+### `dataspoke-ontogen` / `dataspoke-metagen` (stubs)
 
 Each stub knows its route prefix, reads the current contract with `bin/dataspoke-schema`
 (handing `/redoc` to the user when they want to browse it), and answers basic questions about
@@ -319,11 +327,63 @@ final numbers.
 
 ---
 
+## Governance Metric Lifecycle
+
+The `dataspoke-governance` skill turns UC5's metric API into a guided workflow for the three
+built-in active types: `ingestion-freshness`, `validation-score`, and `doc-health`. It operates
+only through the public `/spoke/governance/…` routes and never substitutes database, DataHub,
+cluster, or admin access for a missing public capability.
+
+The deployment's live OpenAPI document is authoritative for request schemas, enum values, and
+route availability. The skill consults it through `bin/dataspoke-schema` before preparing a
+write. YAML is solely the human-facing guide and authoring representation: samples and working
+definitions may be shown or edited as YAML, but each definition-bearing `POST`, `PUT`, or `PATCH`
+request uses `Content-Type: application/json` and a JSON body produced by a lossless conversion.
+`GET` and bodyless `DELETE` requests remain governed by live OpenAPI. Before a write, the skill
+shows derived JSON when the operation carries a body
+rather than implying that YAML is accepted by the API.
+
+### Guided flow
+
+The lifecycle proceeds in this order:
+
+1. **Inspect** — verify access and effective role, load the governance fragment from live
+   OpenAPI, and list or read existing metrics before deciding whether the requested identity is
+   new or existing.
+2. **Scaffold** — offer an editable YAML definition for the selected built-in type. The guide
+   explains its valid `metrics[].name` series, type-specific `metric_conf`, scheduling behavior,
+   and `dataset_filter`; it includes a usable example for each built-in type.
+3. **Validate and preview** — convert the YAML losslessly to JSON, validate the JSON against the
+   live contract and relevant cross-field constraints, and display the exact method, public
+   route, and JSON body. Validation includes create-only `metric_id`, type-appropriate series and
+   configuration, filter syntax accepted by the API, and the distinction between a disabled
+   definition and an enabled schedule.
+4. **Choose create or update** — create a missing metric with `POST /spoke/governance/metric`;
+   update an existing metric at `.../{metric_id}/attr/conf`. The skill does not use update as an
+   implicit upsert: full replacement and partial update remain explicit choices matching the
+   live contract.
+5. **Confirm and apply** — require explicit user confirmation immediately before any definition
+   write, delete, enabling of scheduled execution, or non-dry run. The confirmation identifies
+   the metric, operation, scope, schedule effect, and exact JSON payload where applicable.
+6. **Exercise safely** — recommend an on-demand `?dry_run=true` after creation or a material
+   definition change and before enabling its schedule. A dry run is presented as evaluation
+   without persisted results or verdict replacement, not as a write-validation endpoint.
+7. **Interpret** — read result timeseries, per-dataset verdicts, and lifecycle events together.
+   Explain `true`, `false`, and `unknown` verdicts; distinguish aggregate values from client-
+   derived ratios; surface `unresolved_urns`; and report `attrs_synced_at` as scope-relative
+   registry freshness rather than measurement time or registry-wide freshness.
+
+The skill reports API errors without bypassing them. In particular, it preserves create/update
+identity semantics, read-only-role rejection, disabled and concurrent-run conflicts, unsupported
+passive mode, invalid filters, and unresolved dataset literals as user-visible outcomes.
+
+---
+
 ## Open Questions
 
 - [ ] MCP promotion criteria — which (if any) skill warrants a structured MCP tool surface
       over the curl-wrapper approach.
-- [ ] Promotion of the ontogen / metagen / governance stubs — concrete end-user workflows
+- [ ] Promotion of the ontogen / metagen stubs — concrete end-user workflows
       that justify full skills.
 - [ ] Forecast library choice in generated routines — Prophet is the default example;
       whether to template alternatives (statsmodels, simple rolling thresholds) per user
